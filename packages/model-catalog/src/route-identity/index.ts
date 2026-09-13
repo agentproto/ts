@@ -53,6 +53,8 @@ import {
 } from "../llm/catalog.js"
 import { OPENROUTER_ROUTES } from "../llm/openrouter-routes.generated.js"
 import { REQUESTY_ROUTES } from "../llm/requesty-routes.generated.js"
+import { OPENCODE_GO_ROUTES } from "../llm/opencode-go-routes.generated.js"
+import { OPENCODE_ZEN_ROUTES } from "../llm/opencode-zen-routes.generated.js"
 import {
   HUGGINGFACE_ROUTES,
   type HuggingFaceRouteProvider,
@@ -489,6 +491,9 @@ export function clearCustomRoutes(): void {
  *   openai/gpt-4o            → direct OpenAI pricing / transport
  *   openai/gpt-4o@openrouter → OpenRouter route pricing / transport
  *   openai/gpt-4o@requesty   → Requesty route pricing / transport
+ *   opencode-go/glm-5.3      → OpenCode Go route pricing / transport (the
+ *                              provider IS the id's vendor segment here)
+ *   opencode/claude-sonnet-4-6 → OpenCode Zen, NOT direct Anthropic
  *   meta-llama/Llama-3.1-8B:cerebras@huggingface → HuggingFace, pinned to the "cerebras" inference provider
  *   openai/gpt-4o@agentik-proxy → custom route config (if registered)
  *
@@ -511,6 +516,51 @@ export function resolveLlmModelRoute(
   const { ref: modelRef, legacy } = ref
   const directPricing = resolvePricing(modelRef.product)
   const canonicalProductId = resolveAlias(modelRef.product)
+
+  // ── OpenCode Zen / OpenCode Go routes ───────────────────────────────────
+  // Checked BEFORE the direct-vendor branch, unlike the OpenRouter / Requesty
+  // / HuggingFace branches further down — and that ordering is the whole
+  // point of this branch, not an accident.
+  //
+  // models.dev publishes both OpenCode endpoints with BARE product ids
+  // (`glm-5.3`, `claude-sonnet-4-6`) and no vendor namespace, and opencode's
+  // own config addresses them as `opencode-go/glm-5.3` / `opencode/<id>` —
+  // the same string the runtime derives the billing endpoint from
+  // (`modelIdPrefixProvider`) and the same string the opencode adapter puts
+  // on the wire. So these tables are keyed `<provider>/<bare-id>`, which
+  // makes `route === vendor` for every one of their refs and would otherwise
+  // fall straight into the direct-vendor branch below and look the BARE
+  // product up in `LLM_PRICING_CATALOG`. It must not: `claude-sonnet-5` on
+  // Zen is a different endpoint, a different price and a different bill than
+  // direct Anthropic, and the bare product is also where a same-named
+  // first-party model legitimately lives.
+  //
+  // Same invariant as the Requesty table for the same reason: neither route
+  // table is spread into `LLM_PRICING_CATALOG` (that map is the legacy
+  // bare-id path and feeds credit cost), so a bare `claude-sonnet-5` keeps
+  // meaning direct Anthropic and only the prefixed ref prices on OpenCode.
+  const opencodeRoutes =
+    modelRef.route === "opencode-go"
+      ? OPENCODE_GO_ROUTES
+      : modelRef.route === "opencode"
+        ? OPENCODE_ZEN_ROUTES
+        : undefined
+  if (opencodeRoutes) {
+    const pricing = opencodeRoutes[`${modelRef.vendor}/${modelRef.product}`]
+    if (!pricing) return undefined
+    return buildLlmRoute(modelRef, canonicalProductId, pricing, {
+      flavor: modelRef.route,
+      // models.dev's own `api` for the provider (see the committed snapshots).
+      // One base serves all three of the endpoint's wire surfaces —
+      // `/chat/completions`, `/messages`, `/responses` — which per model is
+      // discriminated by the generated `*_ANTHROPIC_MODELS` list and the
+      // source's `provider.npm`.
+      baseUrl:
+        modelRef.route === "opencode-go"
+          ? "https://opencode.ai/zen/go/v1"
+          : "https://opencode.ai/zen/v1",
+    })
+  }
 
   // ── Direct vendor route ─────────────────────────────────────────────────
   if (modelRef.route === modelRef.vendor) {
@@ -615,10 +665,11 @@ export function resolveLlmModelRoute(
   )
 }
 
-/** The bare `vendor/product` keys a router's generated route table carries.
- *  Unknown routers (or non-router providers) yield an empty list — the
- *  three branches are otherwise identical, so a new router only needs a
- *  case here plus a branch in `resolveLlmModelRoute`. */
+/** The keys a router's generated route table carries — bare `vendor/product`
+ *  for the vendor-namespacing routers, `<provider>/<bare-id>` for the two
+ *  OpenCode endpoints. Unknown routers (or non-router providers) yield an
+ *  empty list — the branches are otherwise identical, so a new router only
+ *  needs a case here plus a branch in `resolveLlmModelRoute`. */
 function routerRouteKeys(router: string): string[] {
   switch (router) {
     case "openrouter":
@@ -627,6 +678,15 @@ function routerRouteKeys(router: string): string[] {
       return Object.keys(REQUESTY_ROUTES)
     case "huggingface":
       return Object.keys(HUGGINGFACE_ROUTES)
+    // `<provider>/<bare-id>` keys (see the OpenCode branch in
+    // `resolveLlmModelRoute`), so `listRouterLlmRoutes` re-appends a `@route`
+    // that `formatModelRef` then drops again — route === vendor for these, so
+    // the enumerated id is the bare `opencode-go/glm-5.3` form a caller
+    // actually spawns, not a `…@opencode-go` annotation.
+    case "opencode-go":
+      return Object.keys(OPENCODE_GO_ROUTES)
+    case "opencode":
+      return Object.keys(OPENCODE_ZEN_ROUTES)
     default:
       return []
   }

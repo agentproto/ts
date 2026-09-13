@@ -54,11 +54,27 @@ import type { RouteSpec } from "./session-config.js"
 export type { RouteSpec } from "./session-config.js"
 
 /** Routers the catalog probes to widen beyond any adapter's declared model
- *  list (SPEC §5.1) — same three route-identity widens, `route-identity/
- *  index.ts:54-59`. Exported so `model-wire.ts` can reuse the SAME set when
- *  deciding whether a wire model needs a literal router-prefix (never a
- *  second hand-maintained list). */
-export const WIDENING_ROUTES = ["openrouter", "requesty", "huggingface"] as const
+ *  list (SPEC §5.1) — the same routes route-identity resolves from generated
+ *  tables (`route-identity/index.ts`'s imports). Exported so `model-wire.ts`
+ *  can reuse the SAME set when deciding whether a wire model needs a literal
+ *  router-prefix (never a second hand-maintained list).
+ *
+ *  `opencode-go` / `opencode` (OpenCode Go and Zen) widen just like the other
+ *  three, but their tables are keyed `<provider>/<bare-id>` rather than
+ *  `<vendor>/<product>`, so a probe of `${vendor}/${product}@opencode-go` can
+ *  only ever hit when the vendor segment IS `opencode-go` — no other model can
+ *  pick up a spurious OpenCode route. What this buys: `serviceableModelRoutes`
+ *  answers `["opencode-go"]` for `opencode-go/glm-5.3` instead of `[]`, so the
+ *  Configuration Lab / VS Code pickers resolve its route (and don't flag it
+ *  unroutable), and `normalizeModelForWire` keeps the provider as the literal
+ *  leading wire segment opencode itself requires. */
+export const WIDENING_ROUTES = [
+  "openrouter",
+  "requesty",
+  "huggingface",
+  "opencode-go",
+  "opencode",
+] as const
 
 /**
  * Vendor-specific compatibility routes: canonical protocol surfaces that can
@@ -841,9 +857,36 @@ export function reconcileModelRoute(input: {
  */
 export function serviceableModelRoutes(model: string): string[] {
   const routes = new Set<string>()
-  const provider = getModelProvider(model)
-  if (provider) routes.add(provider)
   const parsed = tryParseModelRef(normalizeRouterPrefixedId(model))
+  // The `getModelProvider` seed is SKIPPED for a SELF-ROUTED id — one whose
+  // leading segment is itself a widening route that bills the resolved route
+  // (`opencode/claude-sonnet-4-6` ⇒ `opencode`, `opencode-go/glm-5.3` ⇒
+  // `opencode-go`). `getModelProvider` answers those WRONGLY, via
+  // `resolvePricing`'s substring fallback: `"opencode/claude-sonnet-4-6"`
+  // CONTAINS the first-party `claude-sonnet-4-6` catalog key, so it reports
+  // `anthropic` — a wallet that cannot serve that literal id at all (only the
+  // BARE product is direct-billable; the prefixed ref is a different endpoint
+  // and a different price). Left in, it both loosened the money-safety guard
+  // and made `serviceableModelRoutes(model)[0]` — how the Configuration Lab
+  // picks a route — choose Anthropic for a Zen model. The widening probe below
+  // adds the real route.
+  //
+  // Deliberately narrow: it requires the resolved route's own billing provider
+  // to EQUAL the leading segment. A `<router>/<vendor>/<product>` id is
+  // normalized to `<vendor>/<product>@<router>` above (so `route !== vendor`
+  // and this never fires), and an odd 2-segment form like `openrouter/gpt-4o`
+  // resolves with `pricing.provider === "openai"` ≠ `openrouter`, so it keeps
+  // its seed.
+  const selfRouted =
+    parsed !== undefined &&
+    parsed.route === parsed.vendor &&
+    (WIDENING_ROUTES as readonly string[]).includes(parsed.vendor) &&
+    tryResolveLlmModelRoute(`${parsed.vendor}/${parsed.product}`)?.pricing.provider ===
+      parsed.vendor
+  if (!selfRouted) {
+    const provider = getModelProvider(model)
+    if (provider) routes.add(provider)
+  }
   if (parsed) {
     // An explicit `@route` in the id is itself a serviceable route (and keeps
     // the `getModelProvider` quirk on `<vendor>/<product>@<router>` forms from

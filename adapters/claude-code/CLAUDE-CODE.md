@@ -42,6 +42,16 @@ models:
     - { id: moonshotai/kimi-k2, provider: openrouter }
     - { id: sference/thinkingcap-qwen3.6-27b, provider: requesty }
     - { id: sference/glm-5.2, provider: requesty }
+    # OpenCode Go / OpenCode Zen. For these two endpoints the route IS the
+    # id's leading segment (no `@route` suffix), and ONLY each endpoint's
+    # Anthropic-surface ids are listed — the rest of their lineups speak
+    # OpenAI chat/completions or Responses and 404 on /v1/messages. The real
+    # lists are derived from the catalog, not hand-typed; Zen's is the whole
+    # Claude family, Go's is four ids.
+    - { id: opencode-go/minimax-m3, provider: opencode-go }
+    - { id: opencode-go/qwen3.8-flash, provider: opencode-go }
+    - { id: opencode/claude-sonnet-4-6, provider: opencode }
+    - { id: opencode/claude-opus-5, provider: opencode }
   env:
     anthropic: ANTHROPIC_API_KEY
 capabilities:

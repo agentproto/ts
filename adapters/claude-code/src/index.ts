@@ -10,7 +10,10 @@ import {
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
 import { ANTHROPIC_CORE_SCRUB_ENV } from "@agentproto/provider-presets"
-import { listNativeModelIds } from "@agentproto/model-catalog/llm"
+import {
+  listNativeModelIds,
+  listOpencodeAnthropicModelRefs,
+} from "@agentproto/model-catalog/llm"
 
 // Cloud-provider redirect toggles that must be scrubbed alongside the core
 // ANTHROPIC_API_KEY whenever the claude binary is pointed at a non-Anthropic
@@ -45,6 +48,29 @@ const NATIVE_ANTHROPIC_DENYLIST = new Set<string>([])
 const NATIVE_ANTHROPIC_MODELS = listNativeModelIds("anthropic")
   .filter(id => !NATIVE_ANTHROPIC_DENYLIST.has(id))
   .map(id => ({ id, provider: "anthropic" as const }))
+
+// OpenCode Go / OpenCode Zen, both fronted through their Anthropic-compatible
+// gateway presets (`opencode-go` / `opencode` in @agentproto/provider-presets).
+// Derived, not hand-typed, and deliberately NOT the endpoints' full lineups:
+// each endpoint serves three wire surfaces behind one base URL and only the
+// `/v1/messages` subset is reachable from the claude binary, so the menu comes
+// from the catalog's generated per-model surface discriminator
+// (`listOpencodeAnthropicModelRefs`). Zen's subset is the entire Claude family
+// — the valuable path here, since it drives this very harness on real Claude
+// models against a Zen balance. Go's is four ids (minimax-m2.5/m2.7/m3,
+// qwen3.8-flash). The refs carry NO `@route` suffix: for these endpoints the
+// route IS the id's leading segment (`opencode/claude-sonnet-4-6`), which is
+// what the catalog keys and what `modelIdPrefixProvider` reads.
+const OPENCODE_ANTHROPIC_MODELS = [
+  ...listOpencodeAnthropicModelRefs("opencode-go").map(id => ({
+    id,
+    provider: "opencode-go" as const,
+  })),
+  ...listOpencodeAnthropicModelRefs("opencode").map(id => ({
+    id,
+    provider: "opencode" as const,
+  })),
+]
 
 export const claudeCode: AgentCliHandle = defineAgentCli({
   name: "claude-code",
@@ -191,6 +217,8 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
       // Requesty — route resolved from the catalog `@route`
       { id: "sference/thinkingcap-qwen3.6-27b@requesty", provider: "requesty" },
       { id: "sference/glm-5.2@requesty", provider: "requesty" },
+      // OpenCode Go + OpenCode Zen — see OPENCODE_ANTHROPIC_MODELS above.
+      ...OPENCODE_ANTHROPIC_MODELS,
       // Local llm-endpoint proxy — route resolved from the catalog `@route`
       // (registerBuiltinRoutes registers `llm-endpoint` → Anthropic surface at
       // localhost:18090). A SMALL curated set from the proxy's own `default`

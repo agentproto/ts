@@ -5,9 +5,10 @@ agentproto provider-preset list [--json]
 ```
 
 List the built-in provider gateway presets shipped in
-`@agentproto/provider-presets` (moonshot, openrouter, requesty, deepseek, xai,
-xai-anthropic, llm-endpoint, openai, openai-direct, mistral, groq, nebius,
-huggingface, deepinfra), each with its live key-env status. A preset is static data a claude-code / claude-sdk
+`@agentproto/provider-presets` (moonshot, openrouter, requesty, opencode-go,
+opencode, deepseek, xai, xai-anthropic, llm-endpoint, openai, openai-direct,
+mistral, groq, nebius, huggingface, deepinfra), each with its live key-env
+status. A preset is static data a claude-code / claude-sdk
 agent can front via a mode or the `base_url` option — there is no install step,
 no setup pipeline, and no credentials store.
 
@@ -25,6 +26,14 @@ key is unset in the terminal you typed the command into, and vice versa.
 |--------|---------|
 | `ready` | The preset's API-key env var is set (e.g. `MOONSHOT_API_KEY`). |
 | `available` | The env var isn't set. Export it in the daemon's environment to make the preset ready, or pass an `auth_token` at spawn. |
+
+A key env var can be shared by two presets, in which case both read the same
+status off it. `opencode-go` (the flat OpenCode Go subscription) and `opencode`
+(OpenCode Zen, pay-as-you-go) both declare `OPENCODE_API_KEY` — opencode's own
+convention — so one exported key flips **both** to `ready` even though only one
+of the two balances is actually funded. They are separate billing rails with
+separate secrets; which one a session bills is decided by its auth profile's
+endpoint (`--access-profile`), not by the shared env name.
 
 ## Subverbs
 
@@ -58,6 +67,8 @@ ID            STATUS      SCHEMA      KEY ENV                 DEFAULT MODEL     
 moonshot      ready       anthropic   MOONSHOT_API_KEY        kimi-k2.7-code      https://api.moonshot.ai/anthropic
 openrouter    available   anthropic   OPENROUTER_API_KEY      —                   https://openrouter.ai/api
 requesty      available   anthropic   REQUESTY_API_KEY        —                   https://router.requesty.ai
+opencode-go   available   anthropic   OPENCODE_API_KEY        minimax-m3          https://opencode.ai/zen/go
+opencode      available   anthropic   OPENCODE_API_KEY        claude-sonnet-4-6   https://opencode.ai/zen
 deepseek      available   anthropic   DEEPSEEK_API_KEY        deepseek-v4-pro     https://api.deepseek.com/anthropic
 xai           available   openai      XAI_API_KEY             grok-4.5            http://localhost:18090/v1
 xai-anthropic available   anthropic   XAI_API_KEY             grok-4.5            https://api.x.ai

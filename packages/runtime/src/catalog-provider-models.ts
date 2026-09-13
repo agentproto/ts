@@ -16,14 +16,17 @@
  * kind-organized catalogs, so NO adapters, NO profiles, NO host wiring.
  * `getModelsByProvider` is itself router-aware: OpenRouter's route table is
  * spread into `LLM_PRICING_CATALOG` upstream (`llm/catalog.ts`), so an
- * `openrouter` query returns that full, large list with bare ids; Requesty
- * and HuggingFace are NOT spread into that catalog — spreading a second
- * router's bare-id pricing there would repoint direct-vendor ids at router
- * pricing (`route-identity/index.ts`) — so `getModelsByProvider` instead
- * folds their generated route tables in directly, emitting `vendor/
- * product@route` ids. All three routers enumerate through the same path;
- * the picker paginates client-side. NEVER log the rows: OpenRouter alone is
- * thousands.
+ * `openrouter` query returns that full, large list with bare ids; Requesty,
+ * HuggingFace and OpenCode's two hosted endpoints (`opencode-go`,
+ * `opencode`) are NOT spread into that catalog — spreading a second router's
+ * bare-id pricing there would repoint direct-vendor ids at router pricing
+ * (`route-identity/index.ts`) — so `getModelsByProvider` instead folds their
+ * generated route tables in directly. The emitted id is whatever the ref
+ * formats to: `vendor/product@route` for the vendor-namespacing routers, and
+ * the bare `opencode-go/glm-5.3` form for the OpenCode endpoints, whose route
+ * IS the id's leading segment. Every provider enumerates through the same
+ * path; the picker paginates client-side. NEVER log the rows: OpenRouter
+ * alone is thousands.
  */
 
 import {
