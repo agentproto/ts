@@ -304,7 +304,7 @@ jobs:
       # writes changesets by guessing the package name; --fix corrects an
       # unambiguous scope↔dash near-miss before it lands).
       - name: Run changeset-check tests
-        run: node --test scripts/check-changesets.test.mjs scripts/check-changeset-coverage.test.mjs scripts/list-changed-packages.test.mjs
+        run: node --test scripts/check-changesets.test.mjs scripts/check-changeset-coverage.test.mjs scripts/list-changed-packages.test.mjs scripts/list-published-changes.test.mjs
 
       # Guards the pr-review workflow's placement switch (host/sandbox/local
       # prompt branches in entry.mjs) — a `pnpm test`-only gate would miss this
@@ -384,27 +384,20 @@ jobs:
             echo "No @agentproto/* package changes — no changeset required."
             exit 0
           fi
-          # Private packages (agentproto-vscode, agentproto-desktop, …) ship via
-          # the VS Code Marketplace / platform installers on their own cadence,
-          # not npm — scripts/auto-changeset.mjs already excludes them (its
-          # `!priv` filter) since it would never have a changeset to write for
-          # them. Mirror that here: drop changed paths under any top-level
-          # packages/**|adapters/** dir whose package.json has "private": true,
-          # then only require a changeset if publishable paths remain.
-          PRIVATE_PREFIXES=$(
-            find packages adapters -maxdepth 2 -name package.json -not -path '*/node_modules/*' 2>/dev/null \
-              | while read -r pkgJson; do
-                  if jq -e '.private == true' "$pkgJson" >/dev/null 2>&1; then
-                    dirname "$pkgJson"
-                  fi
-                done
-          )
-          PUBLISHABLE_CHANGES="$PKG_CHANGES"
-          for prefix in $PRIVATE_PREFIXES; do
-            PUBLISHABLE_CHANGES=$(echo "$PUBLISHABLE_CHANGES" | grep -v "^${prefix}/" || true)
-          done
+          # A changed path only requires a changeset if it reaches the
+          # published npm surface: private packages (agentproto-vscode,
+          # agentproto-desktop, …) ship via the VS Code Marketplace / platform
+          # installers on their own cadence, not npm, and even within a public
+          # package only paths inside its package.json `files[]` (plus npm's
+          # implicit package.json/README/LICENSE/CHANGELOG, and `src/**` for
+          # any package with a `src/` dir — see the script) land in the
+          # tarball. A docs-only change under a public package's `files[]`
+          # exclusions (e.g. `packages/llm-endpoint/docs/*.md`, PR #690) does
+          # NOT require one; a change to README, LICENSE, or shipped source
+          # does. See scripts/list-published-changes.mjs for the exact rule.
+          PUBLISHABLE_CHANGES=$(echo "$PKG_CHANGES" | node scripts/list-published-changes.mjs)
           if [ -z "$PUBLISHABLE_CHANGES" ]; then
-            echo "Only private-package changes ($PKG_CHANGES) — these ship via Marketplace/installers, not npm; no changeset required."
+            echo "Package changes present ($PKG_CHANGES) but none reach the published npm surface — no changeset required."
             exit 0
           fi
           ADDED=$(git diff --diff-filter=A --name-only origin/main...HEAD -- '.changeset/*.md' \
@@ -721,22 +714,12 @@ jobs:
           # ba3a65a with no changeset commit behind it; see #1088. Compute
           # whether a changeset is actually owed and already settled on this
           # branch before trusting any dedupe below — mirrors the
-          # "changeset-check" job's own rule (private packages don't count).
+          # "changeset-check" job's own rule (only a change reaching the
+          # published npm surface owes one; see list-published-changes.mjs).
           CHANGESET_OWED=false
           PKG_CHANGES=$(git diff --name-only origin/main...HEAD -- 'packages/**' 'adapters/**' || true)
           if [ -n "$PKG_CHANGES" ]; then
-            PRIVATE_PREFIXES=$(
-              find packages adapters -maxdepth 2 -name package.json -not -path '*/node_modules/*' 2>/dev/null \
-                | while read -r pkgJson; do
-                    if jq -e '.private == true' "$pkgJson" >/dev/null 2>&1; then
-                      dirname "$pkgJson"
-                    fi
-                  done
-            )
-            PUBLISHABLE_CHANGES="$PKG_CHANGES"
-            for prefix in $PRIVATE_PREFIXES; do
-              PUBLISHABLE_CHANGES=$(echo "$PUBLISHABLE_CHANGES" | grep -v "^${prefix}/" || true)
-            done
+            PUBLISHABLE_CHANGES=$(echo "$PKG_CHANGES" | node scripts/list-published-changes.mjs)
             if [ -n "$PUBLISHABLE_CHANGES" ]; then
               CHANGESET_OWED=true
             fi
