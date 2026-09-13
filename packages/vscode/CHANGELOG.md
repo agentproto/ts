@@ -1,5 +1,12 @@
 # agentproto-vscode
 
+## 0.15.1
+
+### Patch Changes
+
+- fee0522: Test-only: add runtime capability probes (Seatbelt nesting, loopback bind) so environment-dependent suites skip with a clear reason instead of failing in confined environments.
+  - @agentproto/runtime@3.2.1
+
 ## 0.15.0
 
 ### Minor Changes

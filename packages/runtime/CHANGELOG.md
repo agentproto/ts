@@ -1,5 +1,13 @@
 # @agentproto/runtime
 
+## 3.2.1
+
+### Patch Changes
+
+- Updated dependencies [fee0522]
+  - @agentproto/command-sandbox@0.2.2
+  - @agentproto/driver-agent-cli@2.4.3
+
 ## 3.2.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @agentproto/sandbox-e2b
 
+## 0.5.1
+
+### Patch Changes
+
+- 750839b: Test-only: replace presence-only env gates for live e2e suites (moonshot, hermes bin, Box, e2b/OpenRouter) with runtime preflight credential/capability probes that skip loudly on definitively dead credentials and run honestly on ambiguity.
+
 ## 0.5.0
 
 ### Minor Changes

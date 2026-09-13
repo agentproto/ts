@@ -1,5 +1,11 @@
 # @agentproto/adapter-grok-cli
 
+## 0.2.5
+
+### Patch Changes
+
+- @agentproto/driver-agent-cli@2.4.3
+
 ## 0.2.4
 
 ### Patch Changes
