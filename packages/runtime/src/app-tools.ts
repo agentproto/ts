@@ -215,27 +215,23 @@ export interface AppToolCallDeps {
 }
 
 /**
- * The `app_tool_call` gateway's whole behaviour — allowlist enforcement
- * against the installed app's `ui.tools` UNION the read-only, non-secret
- * `APP_UI_DISCOVERY_TOOLS` (`adapter_list`, `harness_preset_list` — every
- * app UI gets these for free, regardless of what it declared, so
- * `@agentproto/app-client/runner-select`'s `mountRunnerSelect` works out of
- * the box) — then dispatch through the daemon's own tools or an imported MCP
- * server. Shared verbatim between the MCP verb below and the HTTP twin
- * (`POST /apps/:appId/tool-call`, http-server.ts) so the two surfaces can
- * never drift. Returns the MCP result envelope both callers hand back
- * untouched.
+ * The `app_tool_call` gateway's whole behaviour minus allowlist resolution
+ * — allowlist enforcement against the caller-supplied `declaredAllowlist`
+ * UNION the read-only, non-secret `APP_UI_DISCOVERY_TOOLS` (`adapter_list`,
+ * `harness_preset_list` — every app UI gets these for free, regardless of
+ * what it declared, so `@agentproto/app-client/runner-select`'s
+ * `mountRunnerSelect` works out of the box) — then dispatch through the
+ * daemon's own tools or an imported MCP server. Factored out of
+ * `performAppToolCall` so `performBuiltinPanelToolCall` can share the exact
+ * same enforcement + dispatch against a builtin panel's `ui.tools` instead
+ * of an `AppRegistry` record's — the allowlist source differs, the
+ * enforcement and dispatch must not.
  */
-export async function performAppToolCall(
-  appRegistry: AppRegistry,
+async function dispatchAllowlistedAppTool(
+  declaredAllowlist: readonly string[],
   input: { appId: string; tool: string; args?: Record<string, unknown> },
   deps: AppToolCallDeps,
 ): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult>> {
-  const installed = appRegistry.getApp(input.appId)
-  if (!installed || !installed.ui) {
-    return errorResult(`app_tool_call: app "${input.appId}" is not installed or has no UI.`)
-  }
-  const declaredAllowlist = installed.ui.tools ?? []
   const effectiveAllowlist: readonly string[] = [...declaredAllowlist, ...APP_UI_DISCOVERY_TOOLS]
   if (!effectiveAllowlist.includes(input.tool)) {
     return errorResult(
@@ -264,6 +260,51 @@ export async function performAppToolCall(
   } catch (err) {
     return errorResult(`app_tool_call: ${err instanceof Error ? err.message : String(err)}`)
   }
+}
+
+/**
+ * The `app_tool_call` gateway's whole behaviour — allowlist enforcement
+ * against the installed app's `ui.tools` UNION `APP_UI_DISCOVERY_TOOLS` (see
+ * `dispatchAllowlistedAppTool`), then dispatch. Shared verbatim between the
+ * MCP verb below and the HTTP twin (`POST /apps/:appId/tool-call`,
+ * http-server.ts) so the two surfaces can never drift. Returns the MCP
+ * result envelope both callers hand back untouched.
+ */
+export async function performAppToolCall(
+  appRegistry: AppRegistry,
+  input: { appId: string; tool: string; args?: Record<string, unknown> },
+  deps: AppToolCallDeps,
+): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult>> {
+  const installed = appRegistry.getApp(input.appId)
+  if (!installed || !installed.ui) {
+    return errorResult(`app_tool_call: app "${input.appId}" is not installed or has no UI.`)
+  }
+  return dispatchAllowlistedAppTool(installed.ui.tools ?? [], input, deps)
+}
+
+/**
+ * The builtin-panel twin of `performAppToolCall`, for `POST
+ * /apps/:appId/tool-call` (http-server.ts) when the appId names a builtin
+ * panel instead of an installed app — a builtin is never persisted to
+ * `AppRegistry` (builtin-apps.ts), so there is no `installed.ui.tools` to
+ * read there. The caller resolves the allowlist itself (`
+ * resolveBuiltinPanelUi(appId, ...)?.tools`, builtin-apps.ts) and hands it
+ * in — `tools === undefined` means "no such builtin", kept distinct from a
+ * real builtin declaring an empty allowlist (`[]`, which still refuses
+ * every non-discovery tool rather than 404ing). Reuses the exact same
+ * enforcement + dispatch as `performAppToolCall` via
+ * `dispatchAllowlistedAppTool`, so a builtin's tool-call route is exactly as
+ * locked down as an installed app's.
+ */
+export async function performBuiltinPanelToolCall(
+  tools: readonly string[] | undefined,
+  input: { appId: string; tool: string; args?: Record<string, unknown> },
+  deps: AppToolCallDeps,
+): Promise<ReturnType<typeof textResult> | ReturnType<typeof errorResult>> {
+  if (tools === undefined) {
+    return errorResult(`app_tool_call: app "${input.appId}" is not installed or has no UI.`)
+  }
+  return dispatchAllowlistedAppTool(tools, input, deps)
 }
 
 function refIdOf(ref: AnyRef): string {
