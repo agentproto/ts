@@ -192,6 +192,23 @@ const DEFAULT_ALLOWED_ORIGINS: readonly string[] = [
 ]
 
 /**
+ * Default `frame-ancestors` CSP sources allowed to EMBED (not call —
+ * that's `allowedOrigins`, a different axis) `GET /apps/:appId/ui`'s
+ * response when `RuntimeHttpServerOptions.frameAncestors` doesn't list
+ * them explicitly. `vscode-webview:` is a URI *scheme*, not an origin: it
+ * matches any `vscode-webview://<random-uuid>` a VS Code webview mints, one
+ * per webview instance and never reused. A hostile web page cannot mint or
+ * spoof that scheme — only the VS Code host process can — so allowing the
+ * scheme wholesale is exactly as narrow as allowlisting `vscode-webview:`
+ * itself, unlike `*` (any embedder at all, including a hostile top-level
+ * page that would then be able to drive the page's injected
+ * `POST /apps/:appId/tool-call` bridge — see `handleAppUiPage`) or a
+ * wildcard domain (still forgeable by registering a matching subdomain).
+ * Extra sources are additive via `RuntimeHttpServerOptions.frameAncestors`.
+ */
+const DEFAULT_FRAME_ANCESTORS: readonly string[] = ["vscode-webview:"]
+
+/**
  * Request headers whose mere presence proves a proxy/tunnel forwarded the
  * request — so a loopback socket carrying any of them did NOT originate on
  * this machine and must not get the loopback auth bypass (`isLoopback`).
@@ -711,6 +728,18 @@ export interface RuntimeHttpServerOptions {
    *  specific port. Default false (current behaviour — any browser
    *  on `localhost` is trusted). */
   strictOrigins?: boolean
+  /** Extra `frame-ancestors` CSP sources for `GET /apps/:appId/ui`
+   *  (`handleAppUiPage`), ADDED to `DEFAULT_FRAME_ANCESTORS`
+   *  (`vscode-webview:`) — WHO may EMBED the standalone app host in an
+   *  iframe. Deliberately a separate list from `allowedOrigins`: that one
+   *  gates who may CALL the daemon's mutating routes (including the app's
+   *  own `tool-call` bridge), this one gates who may DISPLAY the page at
+   *  all. A scheme like `vscode-webview:` or an exact origin
+   *  (`https://guilde.work`) is safe to add — each is unforgeable by a
+   *  hostile page. Never add `*` here; that would let ANY page frame the
+   *  UI and drive its tool-call bridge via clickjacking, exactly what
+   *  `frame-ancestors` exists to prevent. */
+  frameAncestors?: readonly string[]
   /** Whether `POST /sessions/terminal` + WS upgrade are advertised.
    *  Reflects whether the host injected a PTY factory into the
    *  SessionsRegistry. When false, the terminal HTTP route returns
@@ -2876,6 +2905,7 @@ export async function startHttpServer(
               res,
               decodeURIComponent(uiMatch[1]!),
               opts.appRegistry,
+              [...DEFAULT_FRAME_ANCESTORS, ...(opts.frameAncestors ?? [])],
             )
             return
           }
@@ -6946,22 +6976,36 @@ function requestHttpBaseUrl(req: IncomingMessage): string {
  *  `window.McpApp.connect()` works with no host iframe (callTool POSTs to
  *  the sibling `./tool-call` route — `./` resolves against the document
  *  URL, so the appId segment carries over whichever spelling it used).
- *  Default posture is `frame-ancestors 'none'` (plus `x-frame-options: DENY`
- *  for older browsers): standalone means a top-level tab — refusing
- *  embedding closes the drive-by where a hostile page iframes the UI and
- *  lets the app's own boot sequence fire allowlisted tools. Opt-out:
- *  `?embed=1` drops both headers ONLY for a proven trusted embedder (see
- *  `iframeEmbedAllowed` below) — the deep-link spelling the builtin
- *  `agentproto_session_chat` widget and the VS Code chat-panel webview
- *  both use for the `@agentik/session-chat` app. guardBrowserOrigin and
- *  authorize() still gate the route exactly as for a top-level tab, and
- *  the tool-call route the embedded page POSTs to keeps its own gating,
- *  so embedding widens who can *display* the UI, not what it can do. */
+ *
+ *  Default posture is `frame-ancestors 'self' <frameAncestors>` (defaulting
+ *  to `vscode-webview:` — see `DEFAULT_FRAME_ANCESTORS`): standalone means
+ *  a top-level tab, so embedding is refused by default EXCEPT from sources
+ *  that are structurally unforgeable by a hostile web page. `'self'` covers
+ *  the daemon framing its own UI; `vscode-webview:` covers a VS Code
+ *  webview panel (e.g. the HTTP-iframe app panel) — its origin is
+ *  `vscode-webview://<random-uuid>`, a scheme no ordinary web page can
+ *  mint. That still closes the drive-by this header exists for: a hostile
+ *  *web* page iframing the UI to drive its `tool-call` bridge cannot
+ *  present either source. `x-frame-options` has no allowlist syntax beyond
+ *  `SAMEORIGIN`/`DENY` — it cannot express "self or this one scheme" — so
+ *  it is only emitted (as `SAMEORIGIN`) when `frameAncestors` is empty and
+ *  the CSP list collapses to plain `'self'`; once any extra source widens
+ *  the CSP, XFO is omitted rather than emitting a stale `DENY`/`SAMEORIGIN`
+ *  that would contradict the CSP the same response just granted. `?embed=1`
+ *  drops all frame headers for a proven trusted embedder beyond the
+ *  defaults above (see `iframeEmbedAllowed` below) — e.g. an app's own
+ *  declared `csp.frameDomains` — the deep-link spelling the builtin
+ *  `agentproto_session_chat` widget uses for the `@agentik/session-chat`
+ *  app. guardBrowserOrigin and authorize() still gate the route exactly as
+ *  for a top-level tab, and the tool-call route the embedded page POSTs to
+ *  keeps its own gating, so embedding widens who can *display* the UI, not
+ *  what it can do. */
 async function handleAppUiPage(
   req: IncomingMessage,
   res: ServerResponse,
   appId: string,
   appRegistry: AppRegistry,
+  frameAncestors: readonly string[],
 ): Promise<void> {
   const app = appRegistry.getApp(appId)
   const builtin = app?.ui ? undefined : resolveBuiltinPanelUi(appId, requestHttpBaseUrl(req))
@@ -7001,8 +7045,10 @@ async function handleAppUiPage(
   // "embeddable only from the daemon's own origin / a proven vscode-webview",
   // same as an installed app with no `csp.frameDomains` declared.
   if (!(embedRequested && iframeEmbedAllowed(req, app ?? {}))) {
-    headers["x-frame-options"] = "DENY"
-    headers["content-security-policy"] = "frame-ancestors 'none'"
+    headers["content-security-policy"] = `frame-ancestors 'self' ${frameAncestors.join(" ")}`.trimEnd()
+    if (frameAncestors.length === 0) {
+      headers["x-frame-options"] = "SAMEORIGIN"
+    }
   }
   res.writeHead(200, headers)
   res.end(injectStandaloneAppBridge(raw))

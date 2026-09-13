@@ -97,13 +97,35 @@ describe("standalone app UI host — REST routes", () => {
       const res = await fetch(`${base}/apps/${APP_ID}/ui`)
       expect(res.status).toBe(200)
       expect(res.headers.get("content-type")).toContain("text/html")
-      expect(res.headers.get("x-frame-options")).toBe("DENY")
+      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview:")
+      expect(res.headers.get("x-frame-options")).toBeNull()
       const html = await res.text()
       expect(html).toContain("media-viewer-marker")
       // Bridge injected before the app's own script, pointing at ./tool-call.
       expect(html.indexOf('fetch("./tool-call"')).toBeGreaterThan(-1)
       expect(html.indexOf('fetch("./tool-call"')).toBeLessThan(html.indexOf("media-viewer-marker"))
     })
+  })
+
+  it("GET /apps/:appId/ui does not permit an arbitrary public origin to frame it", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${APP_ID}/ui`)
+      const csp = res.headers.get("content-security-policy")
+      expect(csp).not.toContain("*")
+      expect(csp).not.toContain("https://evil.example")
+    })
+  })
+
+  it("GET /apps/:appId/ui includes a configured extra frame-ancestor source", async () => {
+    await withServer(
+      async base => {
+        const res = await fetch(`${base}/apps/${APP_ID}/ui`)
+        const csp = res.headers.get("content-security-policy")
+        expect(csp).toContain("https://panel.example")
+        expect(csp).toContain("vscode-webview:")
+      },
+      { frameAncestors: ["https://panel.example"] },
+    )
   })
 
   it("GET with a %2F-encoded appId serves the same app", async () => {
@@ -167,27 +189,27 @@ describe("standalone app UI host — REST routes", () => {
         headers: { "sec-fetch-dest": "iframe" },
       })
       expect(res.status).toBe(200)
-      expect(res.headers.get("x-frame-options")).toBe("DENY")
-      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'none'")
+      expect(res.headers.get("x-frame-options")).toBeNull()
+      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview:")
     })
   })
 
-  it("GET with ?embed=1 and a non-iframe sec-fetch-dest keeps the headers (top-level navigation)", async () => {
+  it("GET with ?embed=1 and a non-iframe sec-fetch-dest keeps the default headers (top-level navigation)", async () => {
     await withServer(async base => {
       const res = await fetch(`${base}/apps/${APP_ID}/ui?embed=1`, {
         headers: { "sec-fetch-dest": "document", origin: base },
       })
-      expect(res.headers.get("x-frame-options")).toBe("DENY")
+      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview:")
     })
   })
 
-  it("GET with ?embed=1 from a non-embedder origin keeps the headers (Referer-only fallback refused)", async () => {
+  it("GET with ?embed=1 from a non-embedder origin keeps the default headers (Referer-only fallback refused)", async () => {
     await withServer(async base => {
       const res = await fetch(`${base}/apps/${APP_ID}/ui?embed=1`, {
         headers: { "sec-fetch-dest": "iframe", referer: "http://evil.example/page" },
       })
       expect(res.status).toBe(200)
-      expect(res.headers.get("x-frame-options")).toBe("DENY")
+      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview:")
     })
   })
 
@@ -200,10 +222,10 @@ describe("standalone app UI host — REST routes", () => {
     })
   })
 
-  it("GET with a non-1 embed value keeps the anti-framing headers", async () => {
+  it("GET with a non-1 embed value keeps the default anti-framing headers", async () => {
     await withServer(async base => {
       const res = await fetch(`${base}/apps/${APP_ID}/ui?embed=0`)
-      expect(res.headers.get("x-frame-options")).toBe("DENY")
+      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview:")
     })
   })
 
