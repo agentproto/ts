@@ -439,6 +439,19 @@ function toGcPlanEntryView(entry: GcPlanEntry): WorktreeGcPlanEntryView {
       liveness: { state: "orphan", sessionCount: 0 },
     }
   }
+  if (entry.prunable) {
+    return {
+      path: entry.path,
+      branch: entry.branch,
+      head: entry.head,
+      class: entry.class,
+      prunable: true,
+      ...(entry.reclaimReason ? { reclaimReason: entry.reclaimReason } : {}),
+      tree: "prunable",
+      integration: { state: "prunable" },
+      liveness: { state: "prunable", sessionCount: 0 },
+    }
+  }
   const tree = entry.tree
   const integrationState = entry.integration
   const liveness = entry.liveness

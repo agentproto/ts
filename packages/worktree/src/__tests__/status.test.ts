@@ -616,6 +616,37 @@ describe("listGitWorktrees + computeWorktreeStatus orchestration", () => {
   })
 })
 
+// ── the prunable line: a registration git already knows is dead ───────────
+//
+// `git worktree list --porcelain` emits a `prunable <reason>` line for an
+// entry whose gitdir file points at a working directory that no longer
+// exists on disk — the directory was removed by something other than `git
+// worktree remove`/`prune`. This is a hand-rolled porcelain string (not a
+// real repo) because it only needs to prove the parser reads the line; the
+// real-repo regression that a dropped `prunable` line causes downstream
+// lives in gc.test.ts, driven through `planGc` end to end.
+
+describe("listGitWorktrees — the `prunable` line", () => {
+  it("carries prunable through on the ref it belongs to, and leaves other entries unmarked", async () => {
+    const { parseGitWorktreePorcelain } = await import("../status.js")
+    const porcelain = [
+      "worktree /repo",
+      "HEAD 1111111111111111111111111111111111111111",
+      "branch refs/heads/main",
+      "",
+      "worktree /repo/../gone-worktree",
+      "HEAD 2222222222222222222222222222222222222222",
+      "branch refs/heads/wt/session-liveness",
+      "prunable gitdir file points to non-existent location",
+      "",
+    ].join("\n")
+    const entries = parseGitWorktreePorcelain(porcelain)
+    expect(entries.find((e) => e.path === "/repo")?.prunable).toBeUndefined()
+    const dead = entries.find((e) => e.path === "/repo/../gone-worktree")
+    expect(dead?.prunable).toBe("gitdir file points to non-existent location")
+  })
+})
+
 describe("determinism — same repo state, two runs, byte-identical JSON (PLAN.md §7.9)", () => {
   const cleanupPaths: string[] = []
   afterEach(async () => {

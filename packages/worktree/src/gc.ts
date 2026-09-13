@@ -42,7 +42,7 @@
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { readFile, readdir, realpath, rm, stat } from "node:fs/promises"
 import { runTool } from "@agentproto/driver"
-import { execArgv } from "./exec.js"
+import { execArgv, execGit } from "./exec.js"
 import { cleanupWorktreeTool } from "./tools/index.js"
 import { worktreeProvider } from "./provider/index.js"
 import { salvageWorktree } from "./salvage.js"
@@ -113,14 +113,22 @@ export function classifyForGc(
 
 /**
  * The reclaim reasons this module can attach. `dep-bump` promotes a `hold`
- * to `reclaim` (see above). `orphan` is different in kind — it never starts
- * from a `hold` verdict at all, because an orphan was never classified in
- * the first place (see the "orphan reclaim" section below): a directory
- * physically present under the repo's worktree pool that `git worktree
- * list` no longer knows about, so none of `classify`'s three axes can be
- * computed for it.
+ * to `reclaim` (see above). `orphan` and `prunable` are both different in
+ * kind — neither ever starts from a `hold` verdict, because neither was
+ * classified via `classify`'s three axes in the first place:
+ *   - `orphan`: a directory physically present under the repo's worktree
+ *     pool that `git worktree list` no longer knows about at all (see the
+ *     "orphan reclaim" section below).
+ *   - `prunable`: the mirror image — `git worktree list` still has a
+ *     registration, but git itself already reports it `prunable` because
+ *     the working directory is gone. Distinct from `orphan` on purpose: an
+ *     orphan's directory is still there to lose (it just failed removal),
+ *     so `reclaimOrphan` does `rm -rf`; a prunable entry's directory is
+ *     already gone, so there's nothing to inspect and nothing to `rm` — the
+ *     only irreversible thing history nearly did to it (deleting the branch)
+ *     must not happen either. See "prunable reclaim" below.
  */
-export type GcReclaimReason = "dep-bump" | "orphan"
+export type GcReclaimReason = "dep-bump" | "orphan" | "prunable"
 
 // ── live-session-cwd protection ─────────────────────────────────────────
 //
@@ -246,17 +254,19 @@ export interface GcPlanEntry {
   branch: string | null
   head: string
   /**
-   * Absent only for an orphan entry (`orphan: true`) — git itself cannot
-   * answer the tree/integration/liveness questions for a directory it no
-   * longer recognizes as a worktree, so this module never fabricates a
-   * value for them rather than reporting a fact it can't actually check.
+   * Absent for an orphan entry (`orphan: true`) or a prunable entry
+   * (`prunable: true`) — git itself cannot answer the tree/integration/
+   * liveness questions for a directory it no longer recognizes as a
+   * worktree (orphan) or whose working directory is simply gone (prunable),
+   * so this module never fabricates a value for them rather than reporting
+   * a fact it can't actually check.
    */
   tree?: TreeState
   integration?: IntegrationState
   liveness?: LivenessState
   /** Classification per PLAN.md §5.1, after `--include-detached` (if set). */
   class: GcClass
-  /** Set only when `class === "reclaim"` via the dep-bump exemption or the orphan reclaim path — see `resolveGcClass` / `scanOrphanWorktreePaths`. */
+  /** Set only when `class === "reclaim"` via the dep-bump exemption, the orphan reclaim path, or the prunable reclaim path — see `resolveGcClass` / `scanOrphanWorktreePaths` / `toPlanEntry`. */
   reclaimReason?: GcReclaimReason
   /** Set only when `class === "hold"` via `protectedPaths` (`isProtectedPath`) — distinguishes this from an ordinary snapshot-based hold. */
   holdReason?: GcHoldReason
@@ -269,6 +279,14 @@ export interface GcPlanEntry {
    * it classifies.
    */
   orphan?: boolean
+  /**
+   * `true` only for a linked worktree `git worktree list --porcelain` itself
+   * already marked `prunable` — its working directory is gone, so none of
+   * `classify`'s three axes were computed (no git command was ever run
+   * against the dead path). Always paired with `class: "reclaim"` and
+   * `reclaimReason: "prunable"` — see "prunable reclaim" below `toPlanEntry`.
+   */
+  prunable?: boolean
 }
 
 export interface PlanGcInput {
@@ -509,6 +527,77 @@ async function reclaimOrphan(entry: GcPlanEntry, options: ApplyGcOptions): Promi
   return { path: entry.path, branch: null, result: "reclaimed", reclaimReason: "orphan" }
 }
 
+// ── prunable reclaim: a registration git already knows is dead ─────────────
+//
+// `git worktree list --porcelain` itself emits a `prunable <reason>` line
+// when a linked worktree's working directory is gone but its `.git/
+// worktrees/<name>` registration is still intact (the mirror image of the
+// orphan case above, where the registration is gone but the directory
+// isn't). Before this section, `linkedWorktreesOf` still handed this entry
+// to `computeWorktreeStatus`, which spawns `git status --porcelain=v2 -C
+// <dead path>` and throws — a throw that escaped `planGc`'s loop entirely
+// and took the whole plan down with it, for every worktree in the repo, not
+// just the dead one.
+//
+// Classification here never runs a single git command against the dead
+// path: git's own `prunable` line is trusted as-is (`GitWorktreeRef.prunable`,
+// status.ts), never re-derived with `existsSync` or any filesystem check of
+// our own. Reclaiming it is `git worktree prune` alone — no
+// `cleanupWorktreeTool`/`git worktree remove` (which needs a working
+// directory to operate on and would refuse or misbehave against one that's
+// already gone), and critically no branch deletion: there is nothing left to
+// inspect to decide a branch is safe to delete, so this path must never
+// reach `reclaimOne`'s `deleteBranch: true`.
+
+function makePrunablePlanEntry(worktree: GitWorktreeRef, protectedPaths: readonly string[] | undefined): GcPlanEntry {
+  if (isProtectedPath(worktree.path, protectedPaths)) {
+    return { path: worktree.path, branch: worktree.branch, head: worktree.head, class: "hold", holdReason: "live-session-cwd" }
+  }
+  return {
+    path: worktree.path,
+    branch: worktree.branch,
+    head: worktree.head,
+    class: "reclaim",
+    reclaimReason: "prunable",
+    prunable: true,
+  }
+}
+
+/**
+ * Apply-time re-check (layer 2, mirrored from `verifyOrphan`): re-list from
+ * scratch immediately before touching anything, rather than trusting the
+ * plan's stale snapshot.
+ *   - entry no longer listed at all: a prior/concurrent `gc` (or a plain
+ *     `git worktree prune` run by something else) already finished the job —
+ *     reclaiming this is a no-op success, not a failure.
+ *   - still listed, still `prunable`: safe to prune.
+ *   - still listed, no longer `prunable`: something changed since the plan
+ *     was made (most plausibly: a new worktree got registered at the exact
+ *     same path) — refuse, exactly like `applyOne`'s `aborted-reclassified`.
+ */
+async function reclaimPrunable(entry: GcPlanEntry, options: ApplyGcOptions): Promise<GcApplyOutcome> {
+  const fresh = await listGitWorktrees(options.repoRoot)
+  const stillThere = fresh.find((w) => w.path === entry.path)
+  if (stillThere && !stillThere.prunable) {
+    return { path: entry.path, branch: stillThere.branch, result: "aborted-reclassified", from: "reclaim", to: "hold" }
+  }
+  if (stillThere) {
+    try {
+      await execGit(options.repoRoot, ["worktree", "prune"])
+    } catch (err) {
+      return {
+        path: entry.path,
+        branch: entry.branch,
+        result: "failed",
+        message: err instanceof Error ? err.message : String(err),
+      }
+    }
+  }
+  // Either just pruned above, or already gone by the time we re-listed —
+  // either way, the registration is now clear and the branch is untouched.
+  return { path: entry.path, branch: entry.branch, result: "reclaimed", reclaimReason: "prunable" }
+}
+
 async function toPlanEntry(
   repoRoot: string,
   defaultBranchRef: string | undefined,
@@ -561,6 +650,13 @@ export async function planGc(input: PlanGcInput): Promise<GcPlanEntry[]> {
   const worktrees = await linkedWorktreesOf(input.repoRoot)
   const entries: GcPlanEntry[] = []
   for (const worktree of worktrees) {
+    // git already told us this one is dead — classify it from that signal
+    // alone, without spawning a single git command against its (nonexistent)
+    // path. See the "prunable reclaim" section above `toPlanEntry`.
+    if (worktree.prunable) {
+      entries.push(makePrunablePlanEntry(worktree, input.protectedPaths))
+      continue
+    }
     const status = await computeWorktreeStatus({
       repoRoot: input.repoRoot,
       repoName: input.repoName,
@@ -749,6 +845,13 @@ async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<Gc
   if (entry.orphan) {
     return reclaimOrphan(entry, options)
   }
+  // Prunable entries never go through `computeWorktreeStatus` below either —
+  // that would spawn `git status` against a working directory that's gone,
+  // the exact throw this whole path exists to avoid. See "prunable reclaim"
+  // above `reclaimPrunable` for its own from-scratch TOCTOU re-check.
+  if (entry.prunable) {
+    return reclaimPrunable(entry, options)
+  }
   if (entry.class === "hold") {
     return { path: entry.path, branch: entry.branch, result: "held" }
   }
@@ -850,6 +953,9 @@ export async function reclaimOneWorktree(
 ): Promise<GcApplyOutcome | null> {
   const worktree = await findWorktree(options.repoRoot, worktreePath)
   if (!worktree) return null
+  if (worktree.prunable) {
+    return applyOne(makePrunablePlanEntry(worktree, options.protectedPaths), options)
+  }
   const status = await computeWorktreeStatus({
     repoRoot: options.repoRoot,
     repoName: options.repoName,
