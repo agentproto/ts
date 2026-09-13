@@ -33,6 +33,54 @@
  * — same pattern as guilde's canvas.app.ts canvasShellHtml() (the reference
  * implementation that renders correctly in Claude hosts). No auto-request:
  * panels stay inline until the user clicks.
+ *
+ * Standalone HTTP mode: `GET /apps/:appId/ui` (packages/runtime
+ * http-server.ts) serves this exact script with NO postMessage host on the
+ * other end of `window.parent` — it's a plain browser tab (or a VS Code
+ * *HTTP-iframe* panel), so `window.parent === window` and nothing ever
+ * answers `initBridge()`'s `ui/initialize` request, leaving every panel
+ * stuck on "Connecting to bridge…" forever. `injectStandaloneAppBridge`
+ * (app-ui-apps.ts) papers over exactly this for installed apps by injecting
+ * `window.McpApp.connect() -> Promise<{callTool, ...}>`, a REST-backed
+ * stand-in whose `callTool` POSTs to the sibling `./tool-call` route — but
+ * this bridge never consumed `window.McpApp`, so builtin panels (the only
+ * consumers of this module) were left hanging regardless.
+ *
+ * Fixed here by detecting that same standalone shape and short-circuiting
+ * both `initBridge()` (resolves locally, no round trip) and `callTool()`
+ * (routes through `window.McpApp.connect()` instead of `tools/call` over
+ * postMessage). The detection requires BOTH `window.parent === window` (no
+ * host to talk to — this is the actual condition standalone mode means) AND
+ * `window.McpApp` being present with a `connect` function (the capability
+ * this bridge needs from it): `window.McpApp` presence alone was considered
+ * and rejected as the sole signal, even though it happens to also hold today
+ * — the VS Code webview's `srcdoc` relay (packages/vscode
+ * appPanel.ts/appPanelController.ts) answers this bridge's raw postMessage
+ * JSON-RPC directly and never defines `window.McpApp` for a builtin panel
+ * (only `createUiHtmlCache`'s `injectMcpAppBridge`, used for INSTALLED
+ * apps' `ui.path` html, defines it) — but that's an accident of today's
+ * wiring, not a guarantee; `window.parent === window` is the direct,
+ * load-bearing signal ("is there anyone to postMessage?") and doesn't
+ * depend on which injector happened to run. There is no host in standalone
+ * mode, so `initBridge()` seeds a default `hostContext` of `{displayMode:
+ * 'inline', availableDisplayModes: []}` — an empty `availableDisplayModes`
+ * is what keeps the `#dm`/`#pin` toggle buttons hidden (they only show for
+ * modes `hostContext.availableDisplayModes` lists), rather than rendering
+ * two buttons with nothing to switch to.
+ *
+ * The real postMessage-host path (a compliant MCP-Apps host, or the VS Code
+ * srcdoc relay) is untouched byte-for-byte: same `rpcRequest`/`rpcNotify`
+ * over `window.parent.postMessage`, same handshake, same display-mode
+ * plumbing.
+ *
+ * Asymmetry not fixed here (flagged, not papered over): `window.McpApp`'s
+ * `sendMessage`/`updateModelContext` (STANDALONE_REST_BRIDGE_SCRIPT,
+ * app-ui-apps.ts) reject with "no host (standalone mode)", while
+ * `appPanelController.ts`'s `ui/message`/`ui/update-model-context` handlers
+ * accept-and-drop (`return {}`). This bridge doesn't currently expose either
+ * call, so the difference is latent, but it's the last behavioural delta
+ * between the two panel paths and worth a follow-up if this bridge ever
+ * grows those methods.
  */
 
 export function panelBridgeScript(appName: string): string {
@@ -40,6 +88,10 @@ export function panelBridgeScript(appName: string): string {
 // JSON-RPC 2.0 over window.parent.postMessage · spec 2026-01-26
 var _nextId = 1, _pending = {}, _notifyHandlers = [];
 var _hostContext = null, _hostContextHandlers = [];
+var _standaloneApp = null;
+function _isStandalone(){
+  return window.parent === window && !!window.McpApp && typeof window.McpApp.connect === 'function';
+}
 function post(msg){ window.parent.postMessage(msg, '*'); }
 function getHostContext(){ return _hostContext; }
 function onHostContext(cb){
@@ -86,6 +138,16 @@ window.addEventListener('message', function(evt){
   }
 });
 function initBridge(){
+  if (_isStandalone()){
+    return window.McpApp.connect().then(function(conn){
+      _standaloneApp = conn;
+      // No host to advertise a hostContext — default to inline with no
+      // other modes available, which keeps the #dm/#pin toggle buttons
+      // hidden (they only show for modes hostContext.availableDisplayModes
+      // lists) instead of rendering two buttons with nothing to switch to.
+      _setHostContext({displayMode: 'inline', availableDisplayModes: []});
+    });
+  }
   return rpcRequest('ui/initialize', {
     appInfo: {name: ${JSON.stringify(appName)}, version: '0.1.0'},
     appCapabilities: {availableDisplayModes: ['inline', 'fullscreen', 'pip']},
@@ -101,7 +163,10 @@ function requestDisplayMode(mode){
   return rpcRequest('ui/request-display-mode', {mode: mode});
 }
 function callTool(name, args){
-  return rpcRequest('tools/call', {name: name, arguments: args || {}}).then(function(result){
+  var raw = _standaloneApp
+    ? _standaloneApp.callTool(name, args || {})
+    : rpcRequest('tools/call', {name: name, arguments: args || {}});
+  return raw.then(function(result){
     if (result.isError){
       var e = (result.content && result.content[0] && result.content[0].text) || 'tool error';
       throw new Error(e);
