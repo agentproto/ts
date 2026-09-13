@@ -1,5 +1,25 @@
 # Local Router: llm-endpoint as a first-class panel provider
 
+> **Partly superseded — read §1 and §5 as current, §2 and §4 as historical.**
+>
+> This document was written in July 2026, when the only candidate backend for
+> an `agproxy` provider was this proxy. Since then the openagentik **router**
+> (`core` + `cli` + `cloud`) shipped its phase 3: BYOK billing, budget guards,
+> Prometheus metrics, a transform pipeline, conversation ratchet, warming, and
+> sticky virtual models. It serves the **same three surfaces** as this proxy
+> (`/v1/messages`, `/v1/chat/completions`, `/v1/responses`), so the §2 proposal
+> and the §4 build sequence may be targeting the wrong backend.
+>
+> What remains current and is recorded nowhere else: the **§1 source audit**,
+> and the **§5 resolved research** — notably the `anthropic-beta:
+> oauth-2025-04-20` header and the fail-closed rule.
+>
+> The routing primitive this document treats as proxy-local is being
+> standardised as **AIP-57 MODEL-ROUTING** (`@agentproto/model-routing`), after
+> the observation that `ModelPack` here, `defineRoutingPack` in
+> `@agstudio/agent-framework`, and the router's virtual-model chains are three
+> partial implementations of one thing.
+
 **Status:** Draft / for discussion — not a commitment to build.
 **Audience:** the maintainer deciding whether and how to build this.
 **TL;DR:** Model the `llm-endpoint` proxy as one self-hosted "Local Router"
