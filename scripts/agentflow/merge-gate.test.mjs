@@ -185,3 +185,40 @@ test('the green guard survives always()', () => {
   const hasGreenCheck = /needs\.build-and-test\.result\s*==\s*'success'/.test(block)
   assert.ok(!hasAlways || hasGreenCheck, 'always() without an explicit build-and-test success check re-opens #379')
 })
+
+// ── stale-base ⇒ never arm (regression for the #1300/#1302/#1303 race) ────
+// `main` has no branch protection, so a PR's own green `Build + test` only
+// proves its OWN tree was self-consistent — not that it still is once merged
+// on top of whatever landed on `main` after its branch was last updated.
+// #1302 predated #1303's fix, was never brought up to date, and merged with
+// a generated bundle built from the pre-fix source: its `Build + test` run
+// was legitimately green the whole time. `decideMergeGate` deliberately has
+// no opinion on this (same split as the #379 CI-green guard above) — the
+// mergeability check lives in the workflow, not the pure function.
+test('auto-merge queries mergeStateStatus before arming', () => {
+  const block = autoMergeJobBlock()
+  assert.match(block, /mergeStateStatus/, 'auto-merge must check the PR\'s mergeStateStatus against its base')
+})
+
+test('auto-merge refuses to arm while the PR is BEHIND its base', () => {
+  const block = autoMergeJobBlock()
+  assert.match(block, /BEHIND/, 'auto-merge must recognize mergeStateStatus=BEHIND')
+  const gateGuard = /steps\.gate\.outputs\.action\s*==\s*'arm'/.exec(block)
+  assert.ok(gateGuard, 'auto-merge must still gate arming on merge-gate\'s own action')
+  const behindGuard = /steps\.behind\.outputs\.behind\s*!=\s*'true'/.test(block)
+  assert.ok(
+    behindGuard,
+    "auto-merge's `if` must require steps.behind.outputs.behind != 'true' before computing or acting on " +
+      'the merge-gate decision — otherwise a PR behind main can still arm on a stale tree.',
+  )
+})
+
+test('the behind guard reaches both the gate computation and the arming step', () => {
+  const block = autoMergeJobBlock()
+  const behindChecks = block.match(/steps\.behind\.outputs\.behind\s*!=\s*'true'/g) || []
+  assert.ok(
+    behindChecks.length >= 2,
+    'steps.behind.outputs.behind must gate both "Compute merge-gate decision" and "Maintainer judgment + arm" ' +
+      `(found ${behindChecks.length} occurrence(s)) — gating only one leaves a path to arm on a stale base`,
+  )
+})
