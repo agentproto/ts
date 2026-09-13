@@ -61,6 +61,11 @@
       "import": "./dist/generators/llm-requesty.mjs",
       "default": "./dist/generators/llm-requesty.mjs"
     },
+    "./generators/llm-opencode": {
+      "types": "./dist/generators/llm-opencode.d.ts",
+      "import": "./dist/generators/llm-opencode.mjs",
+      "default": "./dist/generators/llm-opencode.mjs"
+    },
     "./refresh-workflow": {
       "types": "./dist/refresh-workflow.d.ts",
       "import": "./dist/refresh-workflow.mjs",

@@ -317,18 +317,23 @@ export function listModels(filter: ListModelsFilter = {}): ResolvedModel[] {
  * catalog" (openai, google, anthropic, replicate, openrouter, …): a
  * derived query over the kind-organized catalogs, NOT a parallel store.
  *
- * When `provider` names a router (openrouter, requesty, huggingface),
- * this also folds in that router's generated route table
- * (`listRouterLlmRoutes`), emitting `vendor/product@router` ids — the
- * router's full surface, not just what happens to be curated into
- * `LLM_PRICING_CATALOG`. OpenRouter's routes are already spread into that
- * catalog (bare `vendor/product` ids, `llm/catalog.ts`), so its router-table
- * entries are deduped against the bare ids `listModels` already returned;
- * Requesty and HuggingFace have no such overlap today, so their route table
- * entries are added in full. Deliberately NOT achieved by spreading
- * `REQUESTY_ROUTES`/`HUGGINGFACE_ROUTES` into `LLM_PRICING_CATALOG` itself —
- * that catalog is the legacy bare-id path, and a bare id must keep meaning
- * direct-vendor pricing (`route-identity/index.ts`).
+ * When `provider` names a router or a routed endpoint (openrouter, requesty,
+ * huggingface, opencode, opencode-go), this also folds in that provider's
+ * generated route table (`listRouterLlmRoutes`) — the provider's full
+ * surface, not just what happens to be curated into `LLM_PRICING_CATALOG`.
+ * The emitted id is whatever `formatModelRef` produces for the resolved ref:
+ * `vendor/product@router` for the vendor-namespacing routers, and the bare
+ * `opencode-go/glm-5.3` / `opencode/claude-sonnet-4-6` form for the two
+ * OpenCode endpoints, whose route IS the id's leading segment (so there is no
+ * `@route` to append). OpenRouter's routes are already spread into
+ * `LLM_PRICING_CATALOG` (bare `vendor/product` ids, `llm/catalog.ts`), so its
+ * router-table entries are deduped against the bare ids `listModels` already
+ * returned; Requesty, HuggingFace and the two OpenCode endpoints have no such
+ * overlap, so their route table entries are added in full. Deliberately NOT
+ * achieved by spreading `REQUESTY_ROUTES`/`HUGGINGFACE_ROUTES`/
+ * `OPENCODE_*_ROUTES` into `LLM_PRICING_CATALOG` itself — that catalog is the
+ * legacy bare-id path, and a bare id must keep meaning direct-vendor pricing
+ * (`route-identity/index.ts`).
  */
 export function getModelsByProvider(provider: string): ResolvedModel[] {
   const models = listModels({ provider })

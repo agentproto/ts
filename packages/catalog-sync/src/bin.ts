@@ -13,6 +13,10 @@
 
 import { llmOpenRouterGenerator } from "./generators/llm-openrouter.js"
 import { llmRequestyGenerator } from "./generators/llm-requesty.js"
+import {
+  llmOpencodeGoGenerator,
+  llmOpencodeZenGenerator,
+} from "./generators/llm-opencode.js"
 import { llmHuggingfaceGenerator } from "./generators/llm-huggingface.js"
 import { llmContextWindowsGenerator } from "./generators/llm-context-windows.js"
 import { voiceElevenlabs } from "./generators/voice-elevenlabs.js"
@@ -44,6 +48,8 @@ const check = flags.has("--check")
 const generators = [
   llmOpenRouterGenerator,
   llmRequestyGenerator,
+  llmOpencodeGoGenerator,
+  llmOpencodeZenGenerator,
   llmHuggingfaceGenerator,
   llmContextWindowsGenerator,
   voiceElevenlabs,

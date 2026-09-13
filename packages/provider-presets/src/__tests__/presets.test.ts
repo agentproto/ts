@@ -20,6 +20,8 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
       "nebius",
       "openai",
       "openai-direct",
+      "opencode",
+      "opencode-go",
       "openrouter",
       "requesty",
       "xai",
@@ -145,6 +147,41 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
     expect(xa.keyEnv).toBe("XAI_API_KEY")
     expect(xa.defaultModel).toBe("grok-4.5")
     expect(xa.scrubEnv).toContain("ANTHROPIC_API_KEY")
+  })
+
+  it("the OpenCode presets are keyed by their catalog route id, not a prettier name", () => {
+    // Load-bearing, not cosmetic: `resolveAuthSpec` resolves a spawn's
+    // base URL with `findAnthropicGatewayPreset(route.gateway)`, and the
+    // route id comes from the model ref's own leading segment
+    // (`opencode-go/minimax-m3` ⇒ `opencode-go`, `opencode/claude-sonnet-4-6`
+    // ⇒ `opencode`). A preset named `opencode-zen` would leave the Zen route
+    // with no base URL at all.
+    expect(Object.keys(ANTHROPIC_GATEWAY_PRESETS)).toContain("opencode")
+    expect(Object.keys(ANTHROPIC_GATEWAY_PRESETS)).toContain("opencode-go")
+    expect(Object.keys(ANTHROPIC_GATEWAY_PRESETS)).not.toContain("opencode-zen")
+  })
+
+  it("opencode-go points at the Go subscription's Anthropic surface", () => {
+    const go = getAnthropicGatewayPreset("opencode-go")
+    // No /v1 — models.dev's endpoint is https://opencode.ai/zen/go/v1 and the
+    // Anthropic client appends /v1/messages itself.
+    expect(go.baseUrl).toBe("https://opencode.ai/zen/go")
+    expect(go.schemaFlavor).toBe("anthropic")
+    expect(go.keyEnv).toBe("OPENCODE_API_KEY")
+    expect(go.defaultModel).toBe("minimax-m3")
+    expect(go.scrubEnv).toContain("ANTHROPIC_API_KEY")
+  })
+
+  it("opencode (Zen) points at the PAYG Anthropic surface with a Claude default", () => {
+    const zen = getAnthropicGatewayPreset("opencode")
+    expect(zen.baseUrl).toBe("https://opencode.ai/zen")
+    expect(zen.label).toBe("OpenCode Zen")
+    expect(zen.schemaFlavor).toBe("anthropic")
+    expect(zen.keyEnv).toBe("OPENCODE_API_KEY")
+    expect(zen.defaultModel).toBe("claude-sonnet-4-6")
+    expect(zen.scrubEnv).toContain("ANTHROPIC_API_KEY")
+    // Zen's base must not swallow Go's: they are separate balances.
+    expect(zen.baseUrl).not.toBe(getAnthropicGatewayPreset("opencode-go").baseUrl)
   })
 
   it("xai uses the intentional local OpenAI-compatible proxy", () => {

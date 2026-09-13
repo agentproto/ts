@@ -46,6 +46,14 @@ export const CatalogProviderSchema = z.enum([
   "minimax",
   "mistral",
   "moonshot",
+  // OpenCode's two hosted endpoints, DISTINCT billing rails with distinct
+  // lineups and prices: `opencode` is OpenCode Zen (pay-as-you-go,
+  // https://opencode.ai/zen/v1) and `opencode-go` is the flat OpenCode Go
+  // subscription (https://opencode.ai/zen/go/v1). Both are keyed the same way
+  // in opencode's own config (`opencode/<id>`, `opencode-go/<id>`), which is
+  // also this catalog's route-table key form.
+  "opencode",
+  "opencode-go",
   "openai",
   "openai-realtime",
   "openrouter",
@@ -98,6 +106,18 @@ export const PROVIDER_KEY_ENV: Record<CatalogProvider, string> = {
   minimax: "MINIMAX_API_KEY",
   mistral: "MISTRAL_API_KEY",
   moonshot: "MOONSHOT_API_KEY",
+  // BOTH OpenCode endpoints read the SAME env name — that is opencode's own
+  // convention (models.dev records `env: ["OPENCODE_API_KEY"]` for each), and
+  // it is precedented here (`openai`/`openai-realtime`, `google`/
+  // `gemini-live`). The difference that matters: a Zen key and a Go key are
+  // two DIFFERENT secrets sharing one env name, so a host holding both can
+  // only ever inject one of them (`injectProviderKeysIntoEnv` in
+  // `@agentproto/providers-store` resolves that collision deterministically,
+  // by sorted provider name). The per-spawn auth profile (`accessProfile`,
+  // whose `endpoint` is `opencode` or `opencode-go`) is what disambiguates
+  // which rail a session bills — never the store.
+  opencode: "OPENCODE_API_KEY",
+  "opencode-go": "OPENCODE_API_KEY",
   openai: "OPENAI_API_KEY",
   "openai-realtime": "OPENAI_API_KEY",
   openrouter: "OPENROUTER_API_KEY",

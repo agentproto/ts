@@ -92,6 +92,30 @@ describe("listPresets", () => {
     expect(openrouter?.info?.keyEnv).toBe("OPENROUTER_API_KEY")
     expect(openrouter?.info?.defaultModel).toBeUndefined()
   })
+
+  it("lists both OpenCode endpoints, sharing one key env but not one base URL", () => {
+    const entries = listPresets({})
+    const go = entries.find((e) => e.slug === "opencode-go")
+    const zen = entries.find((e) => e.slug === "opencode")
+    // Both must be visible in `agentproto presets list`.
+    expect(go?.info?.baseUrl).toBe("https://opencode.ai/zen/go")
+    expect(zen?.info?.baseUrl).toBe("https://opencode.ai/zen")
+    // Same env NAME, two different secrets (a Go key is not a Zen key) — the
+    // per-spawn auth profile's endpoint is what picks the rail.
+    expect(go?.info?.keyEnv).toBe("OPENCODE_API_KEY")
+    expect(zen?.info?.keyEnv).toBe("OPENCODE_API_KEY")
+    expect(go?.info?.defaultModel).toBe("minimax-m3")
+    expect(zen?.info?.defaultModel).toBe("claude-sonnet-4-6")
+  })
+
+  it("reports both OpenCode endpoints ready off the one shared key env", () => {
+    // Consequence of the shared env name: one OPENCODE_API_KEY flips BOTH to
+    // "ready" even though only one of the two balances is actually funded.
+    // Documented here so the honest-status vocabulary isn't mistaken for a bug.
+    const entries = listPresets({ OPENCODE_API_KEY: "sk-test" })
+    expect(entries.find((e) => e.slug === "opencode-go")?.status).toBe("ready")
+    expect(entries.find((e) => e.slug === "opencode")?.status).toBe("ready")
+  })
 })
 
 // ── registerPresetTools / list_provider_presets ────────────────────────────────

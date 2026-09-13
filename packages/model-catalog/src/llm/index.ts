@@ -32,6 +32,11 @@ export type {
   ModelRoute,
 } from "./catalog.js"
 export type { ContextWindowEntry } from "./context-windows.generated.js"
+export {
+  listOpencodeModelRefs,
+  listOpencodeAnthropicModelRefs,
+} from "./opencode.js"
+export type { OpencodeEndpoint } from "./opencode.js"
 export { formatTokens } from "./tokens.js"
 export {
   WORKFLOW_FAST_MODEL,

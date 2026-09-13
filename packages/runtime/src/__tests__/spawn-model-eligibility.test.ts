@@ -108,6 +108,50 @@ describe("serviceableModelRoutes — reuses the catalog route-resolution", () =>
     expect(serviceableModelRoutes("totally-made-up-xyz-model")).toEqual([])
   })
 
+  it("an OpenCode Go / Zen model resolves to its own endpoint, and only its own", () => {
+    // These carry no pricing-catalog `provider` for `getModelProvider` to
+    // return and no explicit `@route` either — their route IS the id's
+    // leading segment, so the widening-route probe is what finds it. Before
+    // the endpoints joined the catalog this was `[]`, which made the models
+    // "unknown" to the wallet guard and unroutable to the pickers.
+    expect(serviceableModelRoutes("opencode-go/glm-5.3")).toEqual(["opencode-go"])
+    expect(serviceableModelRoutes("opencode/claude-sonnet-4-6")).toEqual(["opencode"])
+    // The two balances never bleed into each other.
+    expect(serviceableModelRoutes("opencode-go/glm-5.3")).not.toContain("opencode")
+    // A bare Claude id keeps its direct-Anthropic route: the Zen table is not
+    // spread into LLM_PRICING_CATALOG, so `opencode` is not serviceable for it.
+    expect(serviceableModelRoutes("claude-sonnet-4-6")).not.toContain("opencode")
+  })
+
+  it("a self-routed id does NOT also earn the route its BARE product bills on", () => {
+    // `resolvePricing`'s substring fallback makes
+    // `getModelProvider("opencode/claude-sonnet-4-6")` report `anthropic` —
+    // the full id CONTAINS the first-party `claude-sonnet-4-6` key. That route
+    // is not serviceable: an Anthropic wallet cannot serve the literal
+    // prefixed id, only the bare product, and the two are different endpoints
+    // at different prices. Same class for Zen's gpt-5.x / kimi overlap.
+    for (const [id, wrongRoute] of [
+      ["opencode/claude-sonnet-4-6", "anthropic"],
+      ["opencode/gpt-5.4", "openai"],
+      ["opencode/kimi-k3", "moonshot"],
+    ] as const) {
+      const routes = serviceableModelRoutes(id)
+      expect(routes, id).toEqual(["opencode"])
+      expect(routes, id).not.toContain(wrongRoute)
+    }
+  })
+
+  it("the skip is scoped to self-routed ids — a router-prefixed or odd 2-segment id keeps its seed", () => {
+    // `<router>/<vendor>/<product>` normalizes to `<vendor>/<product>@<router>`,
+    // so `route !== vendor` and the skip never fires.
+    expect(serviceableModelRoutes("openrouter/z-ai/glm-5.2")).toContain("openrouter")
+    // A 2-segment `openrouter/<product>` resolves with pricing.provider
+    // "openai" (not "openrouter"), so it is NOT self-routed and keeps the seed.
+    expect(serviceableModelRoutes("openrouter/gpt-4o")).toContain("openai")
+    // And an ordinary vendor-prefixed id is untouched.
+    expect(serviceableModelRoutes("anthropic/claude-sonnet-5")).toContain("anthropic")
+  })
+
   it("a first-party model whose vendor/product form COLLIDES with a router key keeps its own vendor route (claude-sonnet-5 / claude-fable-5)", () => {
     // OpenRouter keys `anthropic/claude-sonnet-5` and `anthropic/claude-fable-5`
     // with the SAME dash spelling Anthropic uses (tagged provider:"openrouter"),

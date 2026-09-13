@@ -62,15 +62,44 @@ tier the harness might internally request — `ANTHROPIC_MODEL`,
 Native Anthropic (no `base_url`) leaves tier routing untouched.
 
 The runtime resolver injects the correct `ANTHROPIC_BASE_URL` and credential for
-registered gateway providers (Moonshot, OpenRouter, Requesty, DeepSeek,
-`llm-endpoint`, etc.), so the adapter no longer hard-codes gateway URLs or modes.
-You can still override manually with `base_url` + `auth_token` for a gateway that
-is not yet in the catalog.
+registered gateway providers (Moonshot, OpenRouter, Requesty, OpenCode Go,
+OpenCode Zen, DeepSeek, `llm-endpoint`, etc.), so the adapter no longer
+hard-codes gateway URLs or modes. You can still override manually with
+`base_url` + `auth_token` for a gateway that is not yet in the catalog.
 
 Note the Anthropic-flavored base URLs carry no `/v1`: the SDK appends
 `/v1/messages` itself, so a `/v1` in the preset yields `…/v1/v1/messages` → 404.
 Verify a gateway by POSTing to `<base_url>/v1/messages` — NOT by curling the
 endpoint you think it serves.
+
+### OpenCode Go / OpenCode Zen
+
+Two separate OpenCode billing rails, both Anthropic-compatible and both keyed
+on `OPENCODE_API_KEY` (opencode's own convention — same env NAME, two different
+secrets, so the per-spawn auth profile's endpoint is what picks the rail):
+
+| Route | Preset base URL | What the Anthropic surface serves |
+|-------|-----------------|-----------------------------------|
+| `opencode-go` | `https://opencode.ai/zen/go` | 4 of 36 ids: `minimax-m2.5`, `minimax-m2.7`, `minimax-m3`, `qwen3.8-flash` |
+| `opencode` (Zen) | `https://opencode.ai/zen` | 20 of 102 ids — the entire Claude family (`claude-opus-5`, `claude-sonnet-5`, `claude-sonnet-4-6`, `claude-fable-5`/`-5-1`, `claude-haiku-4-5`, …) plus `qwen3.5/3.6-plus` and the `minimax-*-free` variants |
+
+Zen is the valuable one here: it drives this very harness on real Claude models
+against a Zen balance.
+
+Model ids for these two carry **no `@route` suffix** — the route IS the id's
+leading segment (`opencode/claude-sonnet-4-6`, `opencode-go/minimax-m3`),
+matching opencode's own config spelling. Each endpoint also serves OpenAI
+chat/completions-, OpenAI Responses- and (Zen only) Gemini-flavored models
+behind the same base URL; those are unreachable from an Anthropic client and are
+deliberately absent from this adapter's menu — run them through the `opencode`
+adapter instead. The menu is derived from the catalog's generated per-model
+surface discriminator (`listOpencodeAnthropicModelRefs`), never hand-typed.
+
+Not verified live: no OpenCode key was available when this shipped, so unlike
+the Moonshot / OpenRouter / Requesty rows above, these base URLs come from
+models.dev's published endpoints (`https://opencode.ai/zen/go/v1`,
+`https://opencode.ai/zen/v1`) minus the `/v1` the client appends, not from a
+successful `claude -p` run.
 
 ### Extended thinking
 
