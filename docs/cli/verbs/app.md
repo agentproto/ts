@@ -77,14 +77,20 @@ Print every registered app as `id -> dir`, each followed by its data dir
 
 ### `serve [appDir] [--port <n>] [--app <appId>] [--json]`
 
-Serve an agentproto app's `.agentproto/ui/` as a standalone webapp with a
-working `window.McpApp` bridge wired to the daemon's `/mcp` endpoint. The same
+Serve an agentproto app's UI as a standalone webapp with a working
+`window.McpApp` bridge wired to the daemon's `/mcp` endpoint. The same
 HTML dashboard that renders inside an MCP-Apps panel now runs in a plain
 browser tab with full MCP connectivity.
 
+The UI root is resolved from APP.md frontmatter: when `ui.path` is
+declared (e.g. `ui.path: ui/index.html`), the directory containing that
+file is used as the UI root; when `ui` is absent, the legacy
+`.agentproto/ui/` directory is used. A missing resolved UI root is a
+hard exit-2 error.
+
 | Flag | Default | Description |
 |------|---------|-------------|
-| `appDir` | current directory | Directory holding `.agentproto/APP.md` + `.agentproto/ui/`. Ignored in remote mode (see below). |
+| `appDir` | current directory | Directory holding `.agentproto/APP.md`. Ignored in remote mode (see below). |
 | `--app <appId>` | unset | Serve an installed app by its registered id (from `~/.agentproto/apps.json`, written by [`install`](#install-appdir---data-dir-path)) instead of a directory path. Mutually exclusive with `appDir`. |
 | `--port <n>` | `PORT` env, then `ui.port` in `APP.md`, else OS-assigned | Port to bind. Resolution order: explicit `--port` > `PORT` env var > `APP.md` `ui.port` > OS-assigned. A declared `ui.port` that is already taken falls back to auto-assign; an explicit `--port` that is taken is a hard error. Not read in remote mode (no `APP.md`) — there `--port` or `PORT` env or auto-assign applies. |
 | `--remote-mcp-url <url>` | unset | Streamable-HTTP MCP endpoint of a remote server (e.g. `https://api.example.com/mcp`). Setting this enables **remote mode** (see below). Env: `AGENTPROTO_REMOTE_MCP_URL`. |
@@ -139,9 +145,11 @@ artifact, not part of the app) into the destination.
 
 ### `serve [appDir] [--port <n>] [--json]`
 
-Serves `<appDir>/.agentproto/ui/` as a standalone webapp with a working
+Serves an agentproto app's UI as a standalone webapp with a working
 `window.McpApp` bridge, so the same UI that renders inside an MCP-Apps panel
-runs in a plain browser tab with full MCP connectivity. Port resolution:
+runs in a plain browser tab with full MCP connectivity. The UI root is resolved
+from APP.md frontmatter `ui.path` (directory containing the entry file), falling
+back to the legacy `.agentproto/ui/`. Port resolution:
 `--port` > `PORT` env var > the app's declared `ui.port` (APP.md frontmatter) > an
 OS-assigned free port. Requires the daemon (`agentproto serve`) to be
 running — the bridge forwards tool calls to its `/mcp` endpoint.
