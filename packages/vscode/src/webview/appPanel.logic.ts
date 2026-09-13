@@ -50,11 +50,18 @@ export function builtinViewResourceUri(entry: {
  *  (`POST /apps/<appId>/tool-call`) rather than `postMessage` to a host.
  *
  *  `appId` (`@scope/name`) carries a literal slash, and the daemon route is
- *  `^/apps/(.+)/(ui|tool-call)$`, so we URL-encode the id (`%40agentproto%2Fmail-triage`)
- *  — the route matches both the literal-slash and the %2F-encoded spelling
- *  (http-server.ts comment). `daemonUrl` is resolved from the extension config
- *  (getConfig().daemonUrl) by the caller. */
+ *  `^/apps/(.+)/(ui|tool-call)$`, so either the literal-slash or the
+ *  %2F-encoded spelling of the id routes correctly (http-server.ts comment).
+ *  We encode per path segment and keep `@` literal so the url a human reads
+ *  in a panel/devtools stays `/apps/@scope/name/ui` instead of the
+ *  unreadable fully-percent-encoded form. `daemonUrl` is resolved from the
+ *  extension config (getConfig().daemonUrl) by the caller. */
 export function appStandaloneUrl(daemonUrl: string, appId: string): string {
   const base = daemonUrl.replace(/\/+$/, "")
-  return `${base}/apps/${encodeURIComponent(appId)}/ui`
+  const encodedId = appId
+    .split("/")
+    .map(encodeURIComponent)
+    .join("/")
+    .replace(/%40/g, "@")
+  return `${base}/apps/${encodedId}/ui`
 }

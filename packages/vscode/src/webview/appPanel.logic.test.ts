@@ -67,12 +67,12 @@ describe("builtinViewResourceUri", () => {
 })
 
 describe("appStandaloneUrl", () => {
-  it("builds the standalone HTTP route with the appId URL-encoded", () => {
+  it("encodes a scoped appId per segment, keeping @ and / literal", () => {
     expect(appStandaloneUrl("http://127.0.0.1:18790", "@agentproto/mail-triage")).toBe(
-      "http://127.0.0.1:18790/apps/%40agentproto%2Fmail-triage/ui",
+      "http://127.0.0.1:18790/apps/@agentproto/mail-triage/ui",
     )
     expect(appStandaloneUrl("http://127.0.0.1:18790/", "@agentik/clipsmith")).toBe(
-      "http://127.0.0.1:18790/apps/%40agentik%2Fclipsmith/ui",
+      "http://127.0.0.1:18790/apps/@agentik/clipsmith/ui",
     )
   })
 
@@ -85,6 +85,18 @@ describe("appStandaloneUrl", () => {
   it("keeps an appId without a scope slash intact", () => {
     expect(appStandaloneUrl("http://localhost:18790", "plain-app")).toBe(
       "http://localhost:18790/apps/plain-app/ui",
+    )
+  })
+
+  it("still escapes characters that genuinely need it", () => {
+    expect(appStandaloneUrl("http://localhost:18790", "@acme/my app")).toBe(
+      "http://localhost:18790/apps/@acme/my%20app/ui",
+    )
+    expect(appStandaloneUrl("http://localhost:18790", "weird#name")).toBe(
+      "http://localhost:18790/apps/weird%23name/ui",
+    )
+    expect(appStandaloneUrl("http://localhost:18790", "weird?name")).toBe(
+      "http://localhost:18790/apps/weird%3Fname/ui",
     )
   })
 })

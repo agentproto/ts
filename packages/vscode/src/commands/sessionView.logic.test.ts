@@ -27,13 +27,13 @@ describe("installedSessionChatApp", () => {
 describe("chatUrl", () => {
   it("builds the standalone app-host deep link", () => {
     expect(chatUrl("http://127.0.0.1:18790", "sess_abc")).toBe(
-      "http://127.0.0.1:18790/apps/%40agentik%2Fsession-chat/ui?session=sess_abc",
+      "http://127.0.0.1:18790/apps/@agentik/session-chat/ui?session=sess_abc",
     )
   })
 
   it("encodes the session id and tolerates a trailing slash on daemonUrl", () => {
     expect(chatUrl("http://127.0.0.1:18790/", "sess_a b")).toBe(
-      "http://127.0.0.1:18790/apps/%40agentik%2Fsession-chat/ui?session=sess_a%20b",
+      "http://127.0.0.1:18790/apps/@agentik/session-chat/ui?session=sess_a%20b",
     )
   })
 })
@@ -41,7 +41,7 @@ describe("chatUrl", () => {
 describe("chatPanelUrl", () => {
   it("appends embed=1 to the chat deep link", () => {
     expect(chatPanelUrl("http://127.0.0.1:18790", "sess_abc")).toBe(
-      "http://127.0.0.1:18790/apps/%40agentik%2Fsession-chat/ui?session=sess_abc&embed=1",
+      "http://127.0.0.1:18790/apps/@agentik/session-chat/ui?session=sess_abc&embed=1",
     )
   })
 })

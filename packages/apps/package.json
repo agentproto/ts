@@ -150,7 +150,9 @@
     "clean": "rm -rf dist",
     "check-types": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "build:ui": "tsc --noEmit -p src/work-board/ui/tsconfig.json && node scripts/build-work-board-ui.mjs",
+    "build:ui:check": "tsc --noEmit -p src/work-board/ui/tsconfig.json && node scripts/build-work-board-ui.mjs --check"
   },
   "dependencies": {
     "@agentproto/agent": "workspace:*",
@@ -168,6 +170,8 @@
     "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
+    "vite": "^7.3.6",
+    "vite-plugin-singlefile": "^2.3.0",
     "vitest": "^3.2.7"
   }
 }
