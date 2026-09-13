@@ -20,6 +20,39 @@ orphaned-tool-call repair, and thinking-block stripping where needed.
 
 ---
 
+## Why this package is `private` (not published to npm)
+
+`private: true` has been set since the package was created (#288) but the reason
+was never written down, so it read as a scaffolding leftover — it is not. This
+package is **deliberately unpublished**, and should stay that way:
+
+- It can forward a **subscription OAuth token** (`sk-ant-oat…`) to
+  `api.anthropic.com`, using the `anthropic-beta: oauth-2025-04-20` header
+  (shipped in #694, fail-closed: the OAuth path is *only* ever taken for the
+  `anthropic` upstream, everything else `401`s). Publishing a package whose
+  documented capability is fronting a consumer Claude subscription behind a
+  gateway is terms-adjacent in a way an API-key-only proxy is not. Keeping it
+  workspace-local keeps that capability a local dev tool rather than a
+  distributed one.
+- It is a **server**, not a library: nothing in the workspace imports it, and
+  it is consumed through its `bin` / the daemon-supervised lifecycle, not as a
+  dependency.
+
+**This is not a reason to keep the routing logic unpublished.** Route
+resolution (`src/packs.ts` — `ModelPack`, `ModelRoute`, `PACK_REGISTRY`) is
+pure and carries none of the above; it is also the third re-implementation of
+the same idea in this org (see `@agstudio/agent-framework`'s routing packs,
+which were modelled on it, and the openagentik router's virtual-model chains).
+That primitive is intended to be extracted into its own published package so
+downstream consumers can depend on it without depending on this server.
+
+**Changeset note:** because this package is private, `changeset version` bumps
+its version and CHANGELOG but `changeset publish` skips it — and CI's
+`changeset-check` exempts PRs that only touch private packages. A changeset
+here is therefore never an npm release.
+
+---
+
 ## Quick start (client config)
 
 Point any Anthropic- or OpenAI-compatible client at the proxy:
