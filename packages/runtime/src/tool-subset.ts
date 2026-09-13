@@ -24,13 +24,16 @@ export function withToolSubset(
 ): McpServer {
   return new Proxy(server, {
     get(target, prop, receiver) {
-      if (prop === "tool") {
-        // One guard for every `server.tool(name, …)` call: drop the
-        // registration entirely when the name is outside the allowlist.
+      // Both SDK registration entry points must be guarded: `tool()` AND
+      // `registerTool()` (the config-object overload MCP-App tools use for
+      // `_meta.ui.resourceUri` — e.g. `agent_start` now carries the live
+      // widget resource). Guarding only `tool()` would let a `registerTool`
+      // registration slip the allowlist entirely. Mirrors deferred-tools.ts.
+      if (prop === "tool" || prop === "registerTool") {
         return (name: string, ...rest: unknown[]): unknown => {
           if (!subset.has(name)) return undefined
           return (
-            target.tool as unknown as (n: string, ...r: unknown[]) => unknown
+            target[prop] as unknown as (n: string, ...r: unknown[]) => unknown
           )(name, ...rest)
         }
       }
@@ -60,11 +63,16 @@ export function withToolExclusion(
 ): McpServer {
   return new Proxy(server, {
     get(target, prop, receiver) {
-      if (prop === "tool") {
+      // Guard BOTH `tool()` and `registerTool()` — see withToolSubset. The
+      // executor-role gate denies `agent_start`, which is now registered via
+      // `registerTool` (it carries `_meta.ui.resourceUri` for the live
+      // widget), so a `tool`-only intercept would leak delegation tools to
+      // an executor child.
+      if (prop === "tool" || prop === "registerTool") {
         return (name: string, ...rest: unknown[]): unknown => {
           if (excluded.has(name)) return undefined
           return (
-            target.tool as unknown as (n: string, ...r: unknown[]) => unknown
+            target[prop] as unknown as (n: string, ...r: unknown[]) => unknown
           )(name, ...rest)
         }
       }

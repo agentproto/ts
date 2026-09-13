@@ -10,7 +10,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import type { SessionsRegistry } from "./sessions.js"
+import type { SessionsRegistry, SessionWatcherInfo } from "./sessions.js"
 import type {
   SessionEventBus,
   SessionEventType,
@@ -21,13 +21,28 @@ import type { WorkflowRunner } from "./workflow-runner.js"
 import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
 import { withToolSubset } from "./tool-subset.js"
 import { jsonTolerant } from "./json-tolerant.js"
+import { paginate, pageParamsShape, toolText } from "./tool-envelope.js"
+import {
+  catchErrors,
+  paginated,
+  type McpTextResult,
+  type PageParams,
+  type ToolTransformer,
+} from "@agentproto/tool"
+import { registerBuiltinTool } from "@agentproto/mcp-server"
 import { collectSubtree } from "./session-tools.js"
 import { policyWatchesSession } from "./supervisor.js"
 import type { PolicyRunState } from "./supervisor.js"
+import type { WorkflowRun } from "./workflow-runner.js"
+import type { ActivityRecord } from "./activity-projection.js"
 import type { InboundWatcher } from "./inbound-watcher.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
 import type { TransmitterBindingStore } from "./transmitter-bindings.js"
 import type { InboundEndpointStore } from "./inbound-endpoints.js"
+import type { InboundEndpoint } from "./inbound-endpoints.js"
+import type { WatcherDescriptor } from "./inbound-watcher.js"
+import type { CronJob } from "./cron-scheduler.js"
+import type { RoutineFrontmatter } from "@agentproto/routine"
 import { type InboundProvider, INBOUND_PROVIDERS } from "./inbound-adapters.js"
 import {
   type OutboundProvider,
@@ -48,6 +63,98 @@ import {
   ACTIVITY_STATES,
   type ActivityListFilter,
 } from "./activity-projection.js"
+
+// ── COMPACT projections + legacy-envelope helper (tool-transformer batch) ──
+//
+// The tools below are migrated onto the AIP contract layer (defineTool +
+// implementTool + toMcpTool) with the shared `paginated()` transformer
+// applying the pagination/compact/fields concerns at registration. Each
+// tool gets a REAL compact projection: rows are slim by default, and
+// `full: true` / `compact: false` return the unprojected records exactly
+// as before.
+
+/**
+ * File-local companion to `paginated()`: the stock transformer always wraps
+ * the NON-paginated branch in `{ [itemKey]: rows }`, but this file's legacy
+ * list tools have two other default shapes — a bare top-level array
+ * (`workflow_list`, `policy_list`) and rows wrapped alongside a sibling
+ * `counts` field (`activities_list`). Declared BEFORE `paginated()` in each
+ * tool's transformer list (first declared = outermost), it reshapes ONLY the
+ * non-paginated branch back to the exact legacy envelope; the paginated
+ * `{ items, nextCursor?, total }` envelope branch passes through untouched.
+ */
+function legacyListEnvelope<TItem extends object>(
+  unwrap: (rows: TItem[]) => unknown,
+  indent?: number,
+): ToolTransformer<unknown, unknown, McpTextResult> {
+  return {
+    name: "legacyListEnvelope",
+    wrapHandler: handler => async input => {
+      const params = (input ?? {}) as PageParams
+      const result = (await handler(input)) as McpTextResult
+      if (params.limit !== undefined || params.cursor !== undefined) return result
+      const { items } = JSON.parse(result.content[0]!.text) as { items: TItem[] }
+      return { content: [{ type: "text", text: JSON.stringify(unwrap(items), null, indent) }] }
+    },
+  }
+}
+
+/** COMPACT `permissions_list` row — identity + decision fields only. */
+const compactPermissionItem = (p: Record<string, unknown>) => ({
+  id: p.id,
+  sessionId: p.sessionId,
+  ...(p.adapter !== undefined ? { adapter: p.adapter } : {}),
+  ...(p.sessionLabel !== undefined ? { sessionLabel: p.sessionLabel } : {}),
+  ...(p.sessionTitle !== undefined ? { sessionTitle: p.sessionTitle } : {}),
+  ...(p.toolName !== undefined ? { toolName: p.toolName } : {}),
+  ...(p.rawInput !== undefined ? { rawInput: p.rawInput } : {}),
+  options: p.options,
+  ageMs: p.ageMs,
+})
+
+/** COMPACT `workflow_list` row — the run summary; per-stage detail stays behind `full: true`. */
+const compactWorkflowRun = (r: WorkflowRun) => ({
+  runId: r.runId,
+  workflowId: r.workflowId,
+  status: r.status,
+  startedAt: r.startedAt,
+  ...(r.endedAt !== undefined ? { endedAt: r.endedAt } : {}),
+  ...(r.error !== undefined ? { error: r.error } : {}),
+  ...(r.awaitingApproval !== undefined ? { awaitingApproval: r.awaitingApproval } : {}),
+  ...(r.awaitingSuspend !== undefined ? { awaitingSuspend: r.awaitingSuspend } : {}),
+})
+
+/** COMPACT `policy_list` row — the run summary; gate stdout/verdict/commitPlan stay behind `full: true`. */
+const compactPolicyRunState = (p: PolicyRunState) => ({
+  policyId: p.policyId,
+  sessionId: p.sessionId,
+  sessionIds: p.sessionIds,
+  pending: p.pending,
+  status: p.status,
+  retries: p.retries,
+  startedAt: p.startedAt,
+  ...(p.endedAt !== undefined ? { endedAt: p.endedAt } : {}),
+  ...(p.commitSha !== undefined ? { commitSha: p.commitSha } : {}),
+  ...(p.nextPolicyId !== undefined ? { nextPolicyId: p.nextPolicyId } : {}),
+  ...(p.error !== undefined ? { error: p.error } : {}),
+})
+
+/** COMPACT `activities_list` row — the read-model summary; `error` detail stays behind `full: true`. */
+const compactActivityRecord = (a: ActivityRecord) => ({
+  id: a.id,
+  kind: a.kind,
+  ...(a.sessionId !== undefined ? { sessionId: a.sessionId } : {}),
+  ...(a.sessionIds !== undefined ? { sessionIds: a.sessionIds } : {}),
+  sourceRef: a.sourceRef,
+  source: a.source,
+  title: a.title,
+  state: a.state,
+  ...(a.waitingOn !== undefined ? { waitingOn: a.waitingOn } : {}),
+  startedAt: a.startedAt,
+  ...(a.endedAt !== undefined ? { endedAt: a.endedAt } : {}),
+  ...(a.staleSince !== undefined ? { staleSince: a.staleSince } : {}),
+  ...(a.taskId !== undefined ? { taskId: a.taskId } : {}),
+})
 
 /**
  * Zod schema for the `gate` field of `policy_attach`.
@@ -130,6 +237,19 @@ export interface SessionWaitResult {
    *  dropped work that was NOT re-run — the in-place resume never auto-retries.
    *  Absent (not `false`) when the session was not interrupted. */
   interrupted?: boolean
+  /** True when the matched turn-end produced ZERO assistant output and
+   *  zero tool calls — a silent no-op (see `SessionTurnEndEvent.empty`'s
+   *  doc). Surfaced on `event: "turn-end"` matches across all three
+   *  branches (ring-replay, sync fast-path via
+   *  `SessionDescriptor.lastTurnEmpty`, bus long-poll) so a caller doesn't
+   *  mistake a green turn-end for real progress. Absent (not `false`) on a
+   *  normal, productive turn. */
+  empty?: boolean
+  /** The matched turn-end's `SessionTurnEndEvent.reason` (e.g.
+   *  `"completed"`, `"error"`, `"aborted"`), when the adapter/daemon
+   *  reported one. `"error"` means the adapter reported a failed turn.
+   *  Same three-branch coverage as `empty`. */
+  reason?: string
 }
 
 /**
@@ -157,6 +277,15 @@ interface SessionMonitorResult extends SessionWaitResult {
  * `since` is an EventRing cursor: when provided, already-emitted matching
  * events for the watched sessions that occurred after that cursor are
  * returned immediately (race-free replay) before subscribing to the bus.
+ *
+ * The synchronous already-in-target-state check for `turn-end` ALSO
+ * requires `since` to be present (even `since: 0`) — `turnsCompleted > 0`
+ * never resets, so without a cursor to anchor "since when", it can't tell
+ * a turn this call should wait for apart from any turn the session ever
+ * completed, including ones from long before this call started. A
+ * `since`-less `turn-end` wait (e.g. a fresh `agentproto sessions wait`
+ * process, which has no persisted cursor) always falls through to the real
+ * bus-subscribe long-poll instead.
  */
 export async function monitorSessionWait(opts: {
   registry: SessionsRegistry
@@ -166,6 +295,14 @@ export async function monitorSessionWait(opts: {
   event?: SessionWaitEvent
   timeoutMs?: number
   since?: number
+  /**
+   * The calling orchestrator's scope, when this wait was initiated by an
+   * agent session (the scoped orchestrator sub-gateway stamps
+   * `ownerSessionId`). Used ONLY to attribute the watcher attach/detach bus
+   * events this wait emits while blocked — an anonymous CLI/HTTP waiter
+   * leaves it absent. Never changes the wait's own semantics.
+   */
+  callerScope?: { ownerSessionId?: string }
 }): Promise<SessionWaitResult> {
   const {
     registry,
@@ -173,6 +310,7 @@ export async function monitorSessionWait(opts: {
     eventRing,
     sessionIds,
     timeoutMs = 25_000,
+    callerScope,
   } = opts
   const targetEvent: SessionWaitEvent = opts.event ?? "any"
 
@@ -208,6 +346,10 @@ export async function monitorSessionWait(opts: {
         ev.type === "session:turn-end" || ev.type === "session:awaiting-input"
           ? ev.question
           : undefined
+      // `empty`/`reason` only exist on `session:turn-end` — see
+      // `SessionTurnEndEvent`'s doc.
+      const empty = ev.type === "session:turn-end" ? ev.empty : undefined
+      const reason = ev.type === "session:turn-end" ? ev.reason : undefined
       const replayDesc = evWithSid.sessionId
         ? registry.get(evWithSid.sessionId)
         : undefined
@@ -218,6 +360,8 @@ export async function monitorSessionWait(opts: {
         since: opts.since,
         ...(question ? { question } : {}),
         ...(replayDesc?.interrupted ? { interrupted: true } : {}),
+        ...(empty ? { empty: true } : {}),
+        ...(reason ? { reason } : {}),
       }
     }
   }
@@ -243,7 +387,22 @@ export async function monitorSessionWait(opts: {
       }
     }
     // Already-finished turn: turnsCompleted > 0 && !busy && running.
+    //
+    // Gated on `opts.since !== undefined` (bug fix, see this function's
+    // doc): `turnsCompleted > 0` is true forever after the session's
+    // first-ever completed turn — it never resets and isn't scoped to
+    // "since this wait call started". Without a `since` anchor there is no
+    // way to tell "the turn this caller is waiting for already finished"
+    // apart from "some turn, possibly hours ago, finished once" — so a
+    // bare `since`-less wait (every fresh `agentproto sessions wait`
+    // invocation, since a separate CLI process has no persisted cursor)
+    // would instantly "succeed" against stale history instead of waiting
+    // for a NEW turn-end. Requiring `since` mirrors the ring-replay branch
+    // above, which already requires a cursor to fire; when `since` is
+    // omitted this falls through to the real bus-subscribe long-poll below
+    // instead of trusting a snapshot with no time correlation.
     if (
+      opts.since !== undefined &&
       (desc.turnsCompleted ?? 0) > 0 &&
       !desc.busy &&
       desc.status === "running" &&
@@ -257,6 +416,8 @@ export async function monitorSessionWait(opts: {
         status: desc.status,
         turnsCompleted: desc.turnsCompleted,
         ...(desc.interrupted ? { interrupted: true } : {}),
+        ...(desc.lastTurnEmpty ? { empty: true } : {}),
+        ...(desc.lastTurnReason !== undefined ? { reason: desc.lastTurnReason } : {}),
       }
     }
     const terminal =
@@ -278,11 +439,66 @@ export async function monitorSessionWait(opts: {
     const unsubs: Array<() => void> = []
     let settled = false
 
+    // This is the one real blocking path (the ring-replay and
+    // already-in-target-state branches above return synchronously without
+    // subscribing, so they are NOT waiters). Register each target id as a live
+    // watcher for the life of this wait so `session_list`/`GET /sessions`
+    // surface "someone is supervising this" (#session-visibility). Balanced in
+    // `finish()`, which fires on both a match and the timeout.
+    //
+    // Each attach/detach also rides the session event bus so a live UI (the
+    // transcript panel) can surface "a watcher attached/detached" inside the
+    // WATCHED session — not just in the supervisor's own view. `watchers` is
+    // the count AFTER the change, read back from the registry (a concurrent
+    // waiter may have moved it); `watcherSessionId`/`label` name the
+    // supervising session when this wait was initiated by one (absent for an
+    // anonymous CLI/HTTP waiter). Detection + signal only — the wait itself is
+    // unchanged.
+    //
+    // The SAME `watcherDetail` object is registered on every id in a
+    // multi-id wait (`session_monitor`'s fan-in) and passed BACK by reference
+    // to `decWatchers` in `finish()` — reference equality is how the registry
+    // removes exactly this waiter from each id's detail list.
+    const watcherLabel = callerScope?.ownerSessionId
+      ? (registry.get(callerScope.ownerSessionId)?.label ?? registry.get(callerScope.ownerSessionId)?.title)
+      : undefined
+    const watcherDetail: SessionWatcherInfo = {
+      ...(callerScope?.ownerSessionId ? { watcherSessionId: callerScope.ownerSessionId } : {}),
+      ...(watcherLabel ? { watcherLabel } : {}),
+      event: targetEvent,
+      ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      since: new Date().toISOString(),
+    }
+    for (const id of resolvedIds) {
+      registry.incWatchers(id, watcherDetail)
+      const watchers = registry.get(id)?.watchers ?? 0
+      sessionEvents.emit({
+        type: "session:watcher-attached",
+        sessionId: id,
+        watchers,
+        ...(callerScope?.ownerSessionId ? { watcherSessionId: callerScope.ownerSessionId } : {}),
+        ...(watcherLabel ? { label: watcherLabel } : {}),
+        ts: new Date().toISOString(),
+      })
+    }
+
     const finish = (result: SessionWaitResult): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
       for (const u of unsubs) u()
+      for (const id of resolvedIds) {
+        registry.decWatchers(id, watcherDetail)
+        const watchers = registry.get(id)?.watchers ?? 0
+        sessionEvents.emit({
+          type: "session:watcher-detached",
+          sessionId: id,
+          watchers,
+          ...(callerScope?.ownerSessionId ? { watcherSessionId: callerScope.ownerSessionId } : {}),
+          ...(watcherLabel ? { label: watcherLabel } : {}),
+          ts: new Date().toISOString(),
+        })
+      }
       resolve(result)
     }
 
@@ -307,6 +523,9 @@ export async function monitorSessionWait(opts: {
           const sessionId = (ev as { sessionId?: string }).sessionId
           if (!sessionId || !idSet.has(sessionId)) return
           const desc = registry.get(sessionId)
+          // `empty`/`reason` only exist on `session:turn-end` — see
+          // `SessionTurnEndEvent`'s doc.
+          const evTurnEnd = ev.type === "session:turn-end" ? ev : undefined
           finish({
             sessionId,
             event: ev.type.replace("session:", ""),
@@ -315,6 +534,8 @@ export async function monitorSessionWait(opts: {
             status: desc?.status ?? "unknown",
             ...(desc?.awaitingQuestion ? { question: desc.awaitingQuestion } : {}),
             ...(desc?.interrupted ? { interrupted: true } : {}),
+            ...(evTurnEnd?.empty ? { empty: true } : {}),
+            ...(evTurnEnd?.reason !== undefined ? { reason: evTurnEnd.reason } : {}),
           })
         }),
       )
@@ -478,6 +699,18 @@ export function registerOrchestrationTools(
     return ids.every(id => subtree.has(id))
   }
 
+  /** True when a session is inside the caller's subtree (WP6 scoping). Root/
+   *  operator callers (no scope) see every session. */
+  const isSessionInScope = (sessionId: string): boolean => {
+    if (!callerScope) return true
+    if (!callerScope.ownerSessionId) return false
+    // includeArchived: true — see isPolicyInSubtree's comment above.
+    return collectSubtree(
+      callerScope.ownerSessionId,
+      registry.list({ includeArchived: true }),
+    ).has(sessionId)
+  }
+
   // ── session_events_poll ───────────────────────────────────────────
   server.tool(
     "session_events_poll",
@@ -510,6 +743,14 @@ export function registerOrchestrationTools(
         .max(200)
         .optional()
         .describe("Max events to return. Default 50."),
+      full: z
+        .boolean()
+        .optional()
+        .describe(
+          "Request verbose per-event detail. Accepted for forward " +
+            "compatibility — this build always returns the same compact " +
+            "event shape regardless of the flag. Default false.",
+        ),
     },
     async input => {
       const cursor = input.since ?? eventRing.since(0).nextCursor
@@ -518,9 +759,19 @@ export function registerOrchestrationTools(
         types: input.types as SessionEventType[] | undefined,
         limit: input.limit,
       })
+      // WP6 scoping: a scoped child orchestrator only sees events for
+      // sessions within its own subtree (mirrors policy_list/policy_attach/
+      // policy_cancel). Events without a sessionId (cron/activity/task
+      // ledger churn) are not session-attributable and pass through.
+      const scoped = callerScope
+        ? events.filter(ev => {
+            const sid = (ev as { sessionId?: string }).sessionId
+            return typeof sid !== "string" || isSessionInScope(sid)
+          })
+        : events
       return {
         content: [
-          { type: "text", text: JSON.stringify({ events, nextCursor }, null, 2) },
+          { type: "text", text: JSON.stringify({ events: scoped, nextCursor }) },
         ],
       }
     },
@@ -532,18 +783,6 @@ export function registerOrchestrationTools(
   // request is surfaced + parked (see the pending-permissions registry in
   // sessions.ts) rather than auto-answered, so a human/orchestrator can
   // approve/deny it from one place. Mirrors `policy_ack`'s approve/deny shape.
-
-  /** True when a session is inside the caller's subtree (WP6 scoping). Root/
-   *  operator callers (no scope) see every session. */
-  const isSessionInScope = (sessionId: string): boolean => {
-    if (!callerScope) return true
-    if (!callerScope.ownerSessionId) return false
-    // includeArchived: true — see isPolicyInSubtree's comment above.
-    return collectSubtree(
-      callerScope.ownerSessionId,
-      registry.list({ includeArchived: true }),
-    ).has(sessionId)
-  }
 
   const enrichPermission = (
     p: ReturnType<SessionsRegistry["listPendingPermissions"]>[number],
@@ -559,31 +798,43 @@ export function registerOrchestrationTools(
     }
   }
 
-  server.tool(
-    "permissions_list",
-    "List permission requests currently HELD across all permission-hold " +
+  const permissionsListSchema = z.object({
+    sessionId: z
+      .string()
+      .optional()
+      .describe("Filter to one session's pending permissions. Omit → all sessions."),
+    ...pageParamsShape,
+  })
+  type PermissionsListInput = z.infer<typeof permissionsListSchema>
+
+  registerBuiltinTool<PermissionsListInput, Record<string, unknown>[]>(server, {
+    id: "permissions_list",
+    description: "List permission requests currently HELD across all permission-hold " +
       "sessions (spawned with `permissionHold`). Each entry: id, sessionId, " +
       "session adapter/title, the tool being requested, its raw input when " +
       "the driver supplied one (e.g. a Bash tool's command string, " +
       "harness-shaped — don't assume a stable schema), the offered options, " +
       "and age. Resolve one with `permissions_respond`. Optionally filter by " +
-      "`sessionId`. Empty list = nothing is waiting on a decision.",
-    {
-      sessionId: z
-        .string()
-        .optional()
-        .describe("Filter to one session's pending permissions. Omit → all sessions."),
-    },
-    async input => {
-      const pending = registry
+      "`sessionId`. Empty list = nothing is waiting on a decision. COMPACT " +
+      "BY DEFAULT: each entry is a slim projection (id/sessionId/adapter/" +
+      "sessionLabel/sessionTitle/toolName/rawInput/options/ageMs) — the ACP " +
+      "`text` line, `_meta` payload, and `toolCallId` echo are behind " +
+      "`full: true` / `compact: false`.",
+    inputSchema: permissionsListSchema,
+    handler: async (input) => registry
         .listPendingPermissions(input.sessionId ? { sessionId: input.sessionId } : undefined)
         .filter(p => isSessionInScope(p.sessionId))
-        .map(enrichPermission)
-      return {
-        content: [{ type: "text", text: JSON.stringify({ permissions: pending }, null, 2) }],
-      }
-    },
-  )
+        .map(enrichPermission),
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: compactPermissionItem,
+        keyOf: p => (typeof p.id === "string" ? p.id : null),
+        maxLimit: 200,
+        itemKey: "permissions",
+      }),
+    ],
+  })
 
   server.tool(
     "permissions_respond",
@@ -607,6 +858,14 @@ export function registerOrchestrationTools(
         .enum(["once", "always"])
         .optional()
         .describe("For approve: prefer allow-always when the request offers it."),
+      feedback: z
+        .string()
+        .optional()
+        .describe(
+          "Optional free text sent alongside the outcome (e.g. \"reject, but do X " +
+            "instead\"). Adapters that support it (mastra-agent suspensions) fold it " +
+            "into the tool's resume data.",
+        ),
     },
     async input => {
       // WP6 scoping: a scoped child may only resolve permissions for sessions
@@ -628,6 +887,7 @@ export function registerOrchestrationTools(
         decision: input.decision,
         ...(input.optionId ? { optionId: input.optionId } : {}),
         ...(input.scope ? { scope: input.scope } : {}),
+        ...(input.feedback ? { feedback: input.feedback } : {}),
       })
       if (!result.ok) {
         return {
@@ -728,11 +988,14 @@ export function registerOrchestrationTools(
         cwd: z.string().optional().describe("Working directory for spawned sessions."),
         notifyUrl: z.string().url().optional().describe("Webhook URL to call on run completion or escalation."),
         cacheKey: z.string().optional().describe("Enable journal caching for this run. On a re-invocation with the same cacheKey, cacheable steps whose inputs are unchanged replay their cached output instead of re-spawning."),
+        appId: z.string().optional().describe("App provenance — the installed app this run belongs to. Omit to let the runner resolve it from the app registry when the workflow id is owned by exactly one installed app."),
+        appRunId: z.string().optional().describe("The app_run this run belongs to, when started through an app."),
+        item: z.string().optional().describe("Optional ledger item — stamped as `item` on every app-ledger event this run appends, scoping them to one sub-key inside each stage."),
       },
       async input => {
         const run = await workflowRunner.start(input)
         return {
-          content: [{ type: "text", text: JSON.stringify({ runId: run.runId, status: run.status }, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify({ runId: run.runId, status: run.status }) }],
         }
       },
     )
@@ -753,7 +1016,7 @@ export function registerOrchestrationTools(
         try {
           const run = await workflowRunner.startFromFile(input)
           return {
-            content: [{ type: "text", text: JSON.stringify({ runId: run.runId, status: run.status }, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify({ runId: run.runId, status: run.status }) }],
           }
         } catch (err) {
           return {
@@ -784,7 +1047,7 @@ export function registerOrchestrationTools(
             content: [{ type: "text", text: JSON.stringify({ error: "run not found", runId: input.runId }) }],
           }
         }
-        return { content: [{ type: "text", text: JSON.stringify(run, null, 2) }] }
+        return { content: [{ type: "text", text: JSON.stringify(run) }] }
       },
     )
 
@@ -804,29 +1067,143 @@ export function registerOrchestrationTools(
 
     server.tool(
       "workflow_escalation_resolve",
-      "Provide an external answer to a workflow step that escalated because a " +
-        "session asked for human input (policy=escalate).",
+        "Provide an external answer to a workflow step that escalated because a " +
+        "session asked for human input (policy=escalate), OR resolve a " +
+        "workflow run's parked human APPROVAL (`kind: \"approval\"` step): " +
+        "pass `approvalId` (from `workflow_status`'s `awaitingApproval`) plus " +
+        "`approved` + `who` (+ optional `note`) — the run resumes on the " +
+        "approve/reject branch and the decision is ledgered. OR resume a run " +
+        "parked at a `kind: \"suspend\"` step: pass `payload` (from " +
+        "`workflow_status`'s `awaitingSuspend`).",
       {
         runId: z.string().describe("Run id."),
-        stageIndex: z.number().int().min(0).describe("Stage index containing the escalated step (0-based)."),
-        stepIndex: z.number().int().min(0).describe("Step index within the stage to resolve (0-based)."),
-        response: z.string().describe("The answer to inject into the awaiting session."),
+        stageIndex: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Stage index containing the escalated step (0-based). Legacy escalate form."),
+        stepIndex: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe("Step index within the stage to resolve (0-based). Legacy escalate form."),
+        response: z
+          .string()
+          .optional()
+          .describe("The answer to inject into the awaiting session. Legacy escalate form."),
+        approvalId: z
+          .string()
+          .optional()
+          .describe("Parked approval id from `workflow_status`'s `awaitingApproval.approvalId`. Presence selects the approval form."),
+        approved: z
+          .boolean()
+          .optional()
+          .describe("Approval form: true → the step's onApprove branch; false → onReject."),
+        who: z
+          .string()
+          .optional()
+          .describe("Approval form: who decided (recorded on the run + app ledger). Defaults to \"human\"."),
+        note: z.string().optional().describe("Approval form: optional free-text note recorded with the decision."),
+        payload: z
+          .any()
+          .describe("Suspend form: resume payload supplied to the parked `kind: \"suspend\"` step. Presence (not undefined) selects the suspend form."),
       },
       async input => {
+        const approvalForm =
+          input.approvalId !== undefined ||
+          input.approved !== undefined ||
+          input.note !== undefined
+        const suspendForm = input.payload !== undefined
+        if (suspendForm && !approvalForm) {
+          const result = workflowRunner.resumeSuspend(input.runId, {
+            payload: input.payload,
+          })
+          if (!result.ok) {
+            return {
+              content: [{ type: "text", text: JSON.stringify({ error: result.error, message: result.message }) }],
+              isError: true,
+            }
+          }
+          const run = workflowRunner.status(input.runId)
+          return {
+            content: [
+              { type: "text", text: JSON.stringify({ ok: true, runId: input.runId, status: run?.status }) },
+            ],
+          }
+        }
+        if (approvalForm) {
+          if (input.approved === undefined) {
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify({
+                    error: "missing_approved",
+                    message: "the approval form requires boolean `approved`",
+                  }),
+                },
+              ],
+              isError: true,
+            }
+          }
+          const result = workflowRunner.resolveApproval(input.runId, {
+            ...(input.approvalId !== undefined ? { approvalId: input.approvalId } : {}),
+            approved: input.approved,
+            who: input.who ?? "human",
+            ...(input.note !== undefined ? { note: input.note } : {}),
+          })
+          if (!result.ok) {
+            return {
+              content: [{ type: "text", text: JSON.stringify({ error: result.error, message: result.message }) }],
+              isError: true,
+            }
+          }
+          const run = workflowRunner.status(input.runId)
+          return {
+            content: [
+              { type: "text", text: JSON.stringify({ ok: true, runId: input.runId, status: run?.status }) },
+            ],
+          }
+        }
+        if (input.stageIndex === undefined || input.stepIndex === undefined || input.response === undefined) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "missing_fields",
+                  message:
+                    "escalate form requires `stageIndex` + `stepIndex` + `response`; approval form requires `approved` (+ `approvalId`)",
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
         workflowRunner.resolve(input.runId, input.stageIndex, input.stepIndex, input.response)
         return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] }
       },
     )
 
-    server.tool(
-      "workflow_list",
-      "List all workflow runs (running, done, failed, cancelled).",
-      {},
-      async () => {
-        const runs = workflowRunner.list()
-        return { content: [{ type: "text", text: JSON.stringify(runs, null, 2) }] }
-      },
-    )
+    const workflowListSchema = z.object({ ...pageParamsShape })
+    type WorkflowListInput = z.infer<typeof workflowListSchema>
+
+    registerBuiltinTool<WorkflowListInput, WorkflowRun[]>(server, {
+      id: "workflow_list",
+      description: "List all workflow runs (running, done, failed, cancelled). " +
+        "COMPACT BY DEFAULT: each entry is a slim projection (runId/" +
+        "workflowId/status/startedAt/endedAt/error/awaitingApproval) — the " +
+        "full per-stage step detail is behind `full: true` / `compact: false`.",
+      inputSchema: workflowListSchema,
+      handler: async () => workflowRunner.list(),
+      transformers: [
+        catchErrors(),
+        legacyListEnvelope(rows => rows),
+        paginated({ project: compactWorkflowRun, keyOf: r => r.runId, maxLimit: 200 }),
+      ],
+    })
   }
 
   // ── Supervisor tools ─────────────────────────────────────────────────────────
@@ -1041,7 +1418,7 @@ export function registerOrchestrationTools(
             next: input.next as AttachPolicyInput["next"],
           })
           return {
-            content: [{ type: "text", text: JSON.stringify({ policyId: state.policyId, status: state.status }, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify({ policyId: state.policyId, status: state.status }) }],
           }
         } catch (err) {
           return {
@@ -1179,24 +1556,35 @@ export function registerOrchestrationTools(
     )
     } // end if (supervisor) for policy_ack
 
-    server.tool(
-      "policy_list",
-      "List completion policies (watching, gating, done, blocked, cancelled). " +
+    const policyListSchema = z.object({
+      sessionId: z
+        .string()
+        .optional()
+        .describe(
+          "Only list policies watching this session — matches its single " +
+            "`sessionId` or any member of its fan-in `sessionIds` group. " +
+            "Omit to list everything in scope.",
+        ),
+      ...pageParamsShape,
+    })
+    type PolicyListInput = z.infer<typeof policyListSchema>
+
+    registerBuiltinTool<PolicyListInput, PolicyRunState[]>(server, {
+      id: "policy_list",
+      description: "List completion policies (watching, gating, done, blocked, cancelled). " +
         "Pass `sessionId` to answer the reverse question — which policies are " +
-        "attached to this session — instead of scanning the whole list.",
-      {
-        sessionId: z
-          .string()
-          .optional()
-          .describe(
-            "Only list policies watching this session — matches its single " +
-              "`sessionId` or any member of its fan-in `sessionIds` group. " +
-              "Omit to list everything in scope.",
-          ),
-      },
-      async input => {
+        "attached to this session — instead of scanning the whole list. " +
+        "COMPACT BY DEFAULT: each entry is a slim projection (policyId/" +
+        "sessionId/sessionIds/pending/status/retries/startedAt/endedAt/" +
+        "commitSha/nextPolicyId/error) — gate stdout/stderr, judge verdicts, " +
+        "and the full commitPlan are behind `full: true` / `compact: false`.",
+      inputSchema: policyListSchema,
+      handler: async (input) => {
         if (!supervisor) {
-          return { content: [{ type: "text", text: JSON.stringify({ error: "supervisor not available" }) }] }
+          // With no supervisor wired the tool answers a structured error
+          // instead of a live result (see the registration note above);
+          // `catchErrors()` renders the throw as the canonical error result.
+          throw new Error("supervisor not available")
         }
         let policies = supervisor.list()
         // WP6 scoping: a child orchestrator only sees policies whose watched
@@ -1216,9 +1604,14 @@ export function registerOrchestrationTools(
           const wanted = input.sessionId
           policies = policies.filter(p => policyWatchesSession(p, wanted))
         }
-        return { content: [{ type: "text", text: JSON.stringify(policies, null, 2) }] }
+        return policies
       },
-    )
+      transformers: [
+        catchErrors(),
+        legacyListEnvelope(rows => rows),
+        paginated({ project: compactPolicyRunState, keyOf: p => p.policyId, maxLimit: 200 }),
+      ],
+    })
   }
 
   // ── Task ledger tools (task_create / task_list / task_claim / task_update) ─
@@ -1243,39 +1636,47 @@ export function registerOrchestrationTools(
   // shape).
   const { activityProjector } = opts
   if (activityProjector) {
-    server.tool(
-      "activities_list",
-      "List activities — the unified read-model of what is ACTIVE (the daemon " +
+    const activitiesListSchema = z.object({
+      sessionId: z
+        .string()
+        .optional()
+        .describe(
+          "Only activities on this session — matches a record's `sessionId` " +
+            "or any member of its fan-in `sessionIds`. Omit for all sessions.",
+        ),
+      state: z
+        .enum(ACTIVITY_STATES)
+        .optional()
+        .describe("Filter to one state. A terminal state implies `includeTerminal`."),
+      kind: z.enum(ACTIVITY_KINDS).optional().describe("Filter to one activity kind."),
+      source: z
+        .enum(ACTIVITY_SOURCES)
+        .optional()
+        .describe("Filter to one owning subsystem."),
+      includeTerminal: z
+        .boolean()
+        .optional()
+        .describe("Include done/failed/cancelled records. Default false."),
+      ...pageParamsShape,
+    })
+    type ActivitiesListInput = z.infer<typeof activitiesListSchema>
+
+    registerBuiltinTool<ActivitiesListInput, ActivityRecord[]>(server, {
+      id: "activities_list",
+      description: "List activities — the unified read-model of what is ACTIVE (the daemon " +
         "is consuming compute now) vs PENDING (blocked on an external signal: " +
         "another session's turn, a human ack, a forge, a cap slot) across " +
         "completion policies, session turns, routine/workflow steps, and " +
         "opened PRs. Each pending record carries `waitingOn` naming the " +
         "blocker. Default non-terminal; pass `includeTerminal` (or a terminal " +
         "`state` filter) for done/failed/cancelled records. Subscribe to " +
-        "`activity:changed` via `session_events_poll` for live transitions.",
-      {
-        sessionId: z
-          .string()
-          .optional()
-          .describe(
-            "Only activities on this session — matches a record's `sessionId` " +
-              "or any member of its fan-in `sessionIds`. Omit for all sessions.",
-          ),
-        state: z
-          .enum(ACTIVITY_STATES)
-          .optional()
-          .describe("Filter to one state. A terminal state implies `includeTerminal`."),
-        kind: z.enum(ACTIVITY_KINDS).optional().describe("Filter to one activity kind."),
-        source: z
-          .enum(ACTIVITY_SOURCES)
-          .optional()
-          .describe("Filter to one owning subsystem."),
-        includeTerminal: z
-          .boolean()
-          .optional()
-          .describe("Include done/failed/cancelled records. Default false."),
-      },
-      async input => {
+        "`activity:changed` via `session_events_poll` for live transitions. " +
+        "COMPACT BY DEFAULT: each record is a slim projection (id/kind/" +
+        "sessionId/sourceRef/source/title/state/waitingOn/startedAt/endedAt/" +
+        "staleSince/taskId) — the `error` detail is behind `full: true` / " +
+        "`compact: false`.",
+      inputSchema: activitiesListSchema,
+      handler: async (input) => {
         const filter: ActivityListFilter = {
           ...(input.sessionId !== undefined ? { sessionId: input.sessionId } : {}),
           ...(input.state !== undefined ? { state: input.state } : {}),
@@ -1285,21 +1686,17 @@ export function registerOrchestrationTools(
             ? { includeTerminal: input.includeTerminal }
             : {}),
         }
-        const activities = activityProjector.list(filter)
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(
-                { activities, counts: activityCounts(activities) },
-                null,
-                2,
-              ),
-            },
-          ],
-        }
+        return activityProjector.list(filter)
       },
-    )
+      transformers: [
+        catchErrors(),
+        legacyListEnvelope<ActivityRecord>(
+          rows => ({ activities: rows, counts: activityCounts(rows) }),
+          2,
+        ),
+        paginated({ project: compactActivityRecord, keyOf: a => a.id, maxLimit: 200 }),
+      ],
+    })
   }
 
   // ── session_monitor ──────────────────────────────────────────────
@@ -1404,6 +1801,7 @@ export function registerOrchestrationTools(
         event: targetEvent,
         timeoutMs: timeout,
         ...(input.since !== undefined ? { since: input.since } : {}),
+        ...(callerScope ? { callerScope } : {}),
       })
 
       // The MCP tool's contract: a ring-replay hit echoes back the cursor
@@ -1422,6 +1820,45 @@ export function registerOrchestrationTools(
           "If you have shell access, prefer `agentproto sessions wait <id> " +
           "[--until <event>]` instead of polling this tool in a loop — it's " +
           "a scriptable blocking wait with no 49s cap."
+      }
+      // Fail loud on a silent no-op turn — same precedent as
+      // sessions-registry-agent-host.ts's `waitTurnEnd` (used by the
+      // workflow runner against the same bus event): a caller treating a
+      // bare "turn-end: success" as real progress is exactly the gap that
+      // let a bad auth/model config go unnoticed. `isError: true` so an
+      // agent reading the tool result sees a real failure, not a green
+      // check with a field it may not think to inspect.
+      if (result.empty === true) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                ...payload,
+                error:
+                  `session ${result.sessionId} produced an empty turn — no assistant output or ` +
+                  `tool call (commonly an auth failure or an invalid model id)`,
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      if (result.reason === "error") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                ...payload,
+                error:
+                  `session ${result.sessionId} ended its turn with reason 'error' — the ` +
+                  `adapter reported a failed turn (commonly an auth failure)`,
+              }),
+            },
+          ],
+          isError: true,
+        }
       }
       return {
         content: [{ type: "text", text: JSON.stringify(payload) }],
@@ -1510,7 +1947,7 @@ export function registerOrchestrationTools(
       },
       async input => {
         const desc = inboundWatcher.start(input)
-        return { content: [{ type: "text", text: JSON.stringify(desc, null, 2) }] }
+        return { content: [{ type: "text", text: JSON.stringify(desc) }] }
       },
     )
 
@@ -1548,16 +1985,38 @@ export function registerOrchestrationTools(
       },
     )
 
-    server.tool(
-      "inbound_watcher_list",
-      "List all inbound watchers (running and stopped) with their cursor position, " +
-        "last poll time, last fire time, and total spawned session count.",
-      {},
-      async () => {
-        const watchers = inboundWatcher.list()
-        return { content: [{ type: "text", text: JSON.stringify(watchers, null, 2) }] }
-      },
-    )
+    // Migrated onto the AIP contract layer (defineTool + implementTool +
+    // toMcpTool) so pagination/compact/fields are applied by the
+    // `paginated()` transformer instead of hand-rolled in the handler.
+    const watcherListSchema = z.object({})
+    type WatcherListInput = z.infer<typeof watcherListSchema>
+    const projectWatcherCompact = (w: WatcherDescriptor) => ({
+      watcherId: w.watcherId,
+      alias: w.alias,
+      source: w.source,
+      adapter: w.adapter,
+      status: w.status,
+      spawned: w.spawned,
+    })
+    registerBuiltinTool<WatcherListInput, WatcherDescriptor[]>(server, {
+      id: "inbound_watcher_list",
+      description: "List all inbound watchers (running and stopped) with their cursor position, " +
+          "last poll time, last fire time, and total spawned session count. " +
+          "COMPACT BY DEFAULT: each entry is a slim projection (watcherId/alias/" +
+          "source/adapter/status/spawned); pass `full: true` (or `compact: false`) " +
+          "for the complete watcher descriptor including cursor/lastPollAt/lastFireAt.",
+      inputSchema: watcherListSchema,
+      handler: async () => inboundWatcher.list(),
+      transformers: [
+        catchErrors(),
+        paginated({
+          project: projectWatcherCompact,
+          keyOf: w => w.watcherId,
+          maxLimit: 200,
+          itemKey: "watchers",
+        }),
+      ],
+    })
   }
 
   // ── transmit_message ────────────────────────────────────────────
@@ -1742,25 +2201,50 @@ export function registerOrchestrationTools(
       },
     )
 
-    server.tool(
-      "inbound_endpoint_list",
-      "List all provider-agnostic inbound push endpoints. Secrets are never emitted.",
-      {},
-      async () => {
-        const list = endpointStore.list().map(e => ({
-          slug: e.slug,
-          provider: e.provider,
-          alias: e.alias,
-          source: e.source,
-          mode: e.mode,
-          enabled: e.enabled,
-          createdTs: e.createdTs,
-          lastSeenTs: e.lastSeenTs,
-          has_secret: !!e.secret,
-        }))
-        return { content: [{ type: "text", text: JSON.stringify(list, null, 2) }] }
-      },
-    )
+    // Migrated onto the AIP contract layer (defineTool + implementTool +
+    // toMcpTool) so pagination/compact/fields are applied by the
+    // `paginated()` transformer instead of hand-rolled in the handler.
+    // The handler still strips `secret` (never emitted — only `has_secret`),
+    // so `full: true` returns the sanitized record, not the raw endpoint.
+    const projectEndpointFull = (e: InboundEndpoint) => ({
+      slug: e.slug,
+      provider: e.provider,
+      alias: e.alias,
+      source: e.source,
+      mode: e.mode,
+      enabled: e.enabled,
+      createdTs: e.createdTs,
+      lastSeenTs: e.lastSeenTs,
+      has_secret: !!e.secret,
+    })
+    type EndpointFull = ReturnType<typeof projectEndpointFull>
+    const endpointListSchema = z.object({})
+    type EndpointListInput = z.infer<typeof endpointListSchema>
+    const projectEndpointCompact = (e: EndpointFull) => ({
+      slug: e.slug,
+      provider: e.provider,
+      alias: e.alias,
+      mode: e.mode,
+      enabled: e.enabled,
+    })
+    registerBuiltinTool<EndpointListInput, EndpointFull[]>(server, {
+      id: "inbound_endpoint_list",
+      description: "List all provider-agnostic inbound push endpoints. Secrets are never emitted. " +
+          "COMPACT BY DEFAULT: each entry is a slim projection (slug/provider/alias/" +
+          "mode/enabled); pass `full: true` (or `compact: false`) for the sanitized " +
+          "record including source/createdTs/lastSeenTs/has_secret.",
+      inputSchema: endpointListSchema,
+      handler: async () => endpointStore.list().map(projectEndpointFull),
+      transformers: [
+        catchErrors(),
+        paginated({
+          project: projectEndpointCompact,
+          keyOf: e => e.slug,
+          maxLimit: 200,
+          itemKey: "endpoints",
+        }),
+      ],
+    })
 
     server.tool(
       "inbound_endpoint_delete",
@@ -1868,15 +2352,38 @@ export function registerOrchestrationTools(
       },
     )
 
-    server.tool(
-      "cron_list",
-      "List all cron jobs (active and inactive) with their schedule, last result, and next fire time.",
-      {},
-      async () => {
-        const jobs = cronScheduler.list()
-        return { content: [{ type: "text", text: JSON.stringify(jobs, null, 2) }] }
-      },
-    )
+    // Migrated onto the AIP contract layer (defineTool + implementTool +
+    // toMcpTool) so pagination/compact/fields are applied by the
+    // `paginated()` transformer instead of hand-rolled in the handler.
+    const cronListSchema = z.object({})
+    type CronListInput = z.infer<typeof cronListSchema>
+    const projectCronJobCompact = (j: CronJob) => ({
+      id: j.id,
+      label: j.label,
+      schedule: j.schedule,
+      recurring: j.recurring,
+      active: j.active,
+      nextRunAt: j.nextRunAt,
+      lastRunAt: j.lastRunAt,
+    })
+    registerBuiltinTool<CronListInput, CronJob[]>(server, {
+      id: "cron_list",
+      description: "List all cron jobs (active and inactive) with their schedule, last result, and next fire time. " +
+          "COMPACT BY DEFAULT: each entry is a slim projection (id/label/schedule/" +
+          "recurring/active/nextRunAt/lastRunAt); pass `full: true` (or `compact: false`) " +
+          "for the complete job record including action/createdAt/lastResult.",
+      inputSchema: cronListSchema,
+      handler: async () => cronScheduler.list(),
+      transformers: [
+        catchErrors(),
+        paginated({
+          project: projectCronJobCompact,
+          keyOf: j => j.id,
+          maxLimit: 200,
+          itemKey: "jobs",
+        }),
+      ],
+    })
 
     server.tool(
       "cron_delete",
@@ -1934,17 +2441,39 @@ export function registerOrchestrationTools(
   // requiring `reconcile()` to have registered a cron job for it first.
   const { routineRegistrar } = opts
   if (routineRegistrar) {
-    server.tool(
-      "routine_list",
-      "List all AIP-41 routine DEFINITIONS known from `.routines/*` (id, " +
-        "schedule, target, enabled). See `workflow_list` / `activities_list` " +
-        "for run history.",
-      {},
-      async () => {
-        const routines = routineRegistrar.list()
-        return { content: [{ type: "text", text: JSON.stringify(routines, null, 2) }] }
-      },
-    )
+    // Migrated onto the AIP contract layer (defineTool + implementTool +
+    // toMcpTool) so pagination/compact/fields are applied by the
+    // `paginated()` transformer instead of hand-rolled in the handler.
+    const routineListSchema = z.object({})
+    type RoutineListInput = z.infer<typeof routineListSchema>
+    const projectRoutineCompact = (r: RoutineFrontmatter) => ({
+      id: r.id,
+      description: r.description,
+      version: r.version,
+      schedule: r.schedule,
+      enabled: r.enabled,
+      tags: r.tags,
+    })
+    registerBuiltinTool<RoutineListInput, RoutineFrontmatter[]>(server, {
+      id: "routine_list",
+      description: "List all AIP-41 routine DEFINITIONS known from `.routines/*` (id, " +
+          "schedule, target, enabled). See `workflow_list` / `activities_list` " +
+          "for run history. COMPACT BY DEFAULT: each entry is a slim projection " +
+          "(id/description/version/schedule/enabled/tags); pass `full: true` " +
+          "(or `compact: false`) for the complete frontmatter including " +
+          "target/retry/on_failure/metadata.",
+      inputSchema: routineListSchema,
+      handler: async () => routineRegistrar.list(),
+      transformers: [
+        catchErrors(),
+        paginated({
+          project: projectRoutineCompact,
+          keyOf: r => r.id,
+          maxLimit: 200,
+          itemKey: "routines",
+        }),
+      ],
+    })
 
     server.tool(
       "routine_trigger",

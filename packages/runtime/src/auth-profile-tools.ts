@@ -21,6 +21,8 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
+import { registerBuiltinTool } from "@agentproto/mcp-server"
+import { catchErrors, paginated } from "@agentproto/tool"
 import {
   KeychainStore,
   addAuthProfile,
@@ -29,6 +31,7 @@ import {
   deleteAuthProfile,
   getAuthProfile,
   listAuthProfiles,
+  refreshAuthProfileModels,
   removeAuthProfile,
   setAuthProfileEnabled,
   setAuthProfileModels,
@@ -41,6 +44,7 @@ import {
   importDiscoveredCredential,
   CredentialImportError,
 } from "./credential-discovery.js"
+import { buildCatalogProviderModels } from "./catalog-provider-models.js"
 
 /** Wire `@agentproto/auth`'s provisioning helpers to the real keychain +
  *  on-disk profile store. Shared by the MCP tools here and the HTTP routes in
@@ -64,7 +68,7 @@ type ProfileKeyStatus = "stored" | "self-refreshing" | "unavailable"
 
 /** `auth_profile_list`'s per-profile row — the profile's non-secret metadata
  *  plus its key identity. NEVER carries the credential itself. */
-interface AuthProfileListRow extends AuthProfile {
+export interface AuthProfileListRow extends AuthProfile {
   keyStatus: ProfileKeyStatus
   /** One-way fingerprint of the stored secret — present only when
    *  `keyStatus === "stored"`. */
@@ -74,6 +78,30 @@ interface AuthProfileListRow extends AuthProfile {
    *  reveal a tail safely. */
   last4?: string
 }
+
+/**
+ * `auth_profile_list`'s COMPACT per-row projection: every field the VS Code
+ * auth panels and spawn-side consumers read — identity, method, credential
+ * shape, enable/curation state, provenance, and the WS5 key identity — minus
+ * the one bulky field nothing consumes over this surface: `costBudget` (the
+ * windowed spend cap is enforced daemon-side at turn-end; a listing caller
+ * never evaluates it). `full: true` / `compact: false` restores the complete
+ * row including `costBudget`.
+ */
+export const compactAuthProfileRow = (p: AuthProfileListRow) => ({
+  id: p.id,
+  endpoint: p.endpoint,
+  method: p.method,
+  ...(p.credentialRef !== undefined ? { credentialRef: p.credentialRef } : {}),
+  ...(p.source !== undefined ? { source: p.source } : {}),
+  ...(p.label !== undefined ? { label: p.label } : {}),
+  ...(p.disabled !== undefined ? { disabled: p.disabled } : {}),
+  ...(p.models !== undefined ? { models: p.models } : {}),
+  ...(p.origin !== undefined ? { origin: p.origin } : {}),
+  keyStatus: p.keyStatus,
+  ...(p.fingerprint !== undefined ? { fingerprint: p.fingerprint } : {}),
+  ...(p.last4 !== undefined ? { last4: p.last4 } : {}),
+})
 
 /**
  * Enrich one profile with its key identity (WS5), computed SERVER-SIDE from the
@@ -116,7 +144,7 @@ function text(value: string | object): {
     content: [
       {
         type: "text",
-        text: typeof value === "string" ? value : JSON.stringify(value, null, 2),
+        text: typeof value === "string" ? value : JSON.stringify(value),
       },
     ],
   }
@@ -131,9 +159,24 @@ function errorText(message: string): {
 
 export function registerAuthProfileTools(server: McpServer): void {
   // ── auth_profile_list ─────────────────────────────────────────
-  server.tool(
-    "auth_profile_list",
-    "List the named auth profiles configured on this host (from " +
+  // Migrated onto the AIP contract layer (defineTool + implementTool +
+  // toMcpTool): pagination/compact/fields are applied by the `paginated()`
+  // transformer at registration and error normalization by `catchErrors()`,
+  // instead of hand-rolled in the handler.
+  const authProfileListSchema = z.object({
+    endpoint: z
+      .string()
+      .optional()
+      .describe("Keep only profiles for this billing endpoint (e.g. anthropic)."),
+  })
+  type AuthProfileListInput = z.infer<typeof authProfileListSchema>
+
+  // Body: filter + keychain enrichment ONLY. Pagination, compact projection,
+  // and error normalization are the transformers' job (applied below).
+  registerBuiltinTool<AuthProfileListInput, AuthProfileListRow[]>(server, {
+    id: "auth_profile_list",
+    description:
+      "List the named auth profiles configured on this host (from " +
       "`~/.agentproto/auth-profiles.json`). Returns only non-secret metadata " +
       "— id, endpoint, method, credentialRef, label, plus the enable/disable " +
       "state (`disabled`) and any per-model curation (`models`) — never the " +
@@ -141,26 +184,26 @@ export function registerAuthProfileTools(server: McpServer): void {
       "computed server-side from the keychain: `keyStatus` (`stored` / " +
       "`self-refreshing` / `unavailable`) and, for a stored secret, a one-way " +
       "`fingerprint` + `last4` (never the secret). Optionally filter to one " +
-      "billing endpoint.",
-    {
-      endpoint: z
-        .string()
-        .optional()
-        .describe("Keep only profiles for this billing endpoint (e.g. anthropic)."),
+      "billing endpoint. COMPACT BY DEFAULT: the per-row `costBudget` " +
+      "(windowed spend cap — enforced daemon-side, never evaluated by a " +
+      "listing caller) is dropped; pass `full: true` (or `compact: false`) " +
+      "for the complete row.",
+    inputSchema: authProfileListSchema,
+    handler: async (input) => {
+      const profiles = await listAuthProfiles(input.endpoint)
+      const store = new KeychainStore()
+      return Promise.all(profiles.map(p => describeProfileKey(p, store)))
     },
-    async ({ endpoint }) => {
-      try {
-        const profiles = await listAuthProfiles(endpoint)
-        const store = new KeychainStore()
-        const enriched = await Promise.all(profiles.map(p => describeProfileKey(p, store)))
-        return text({ profiles: enriched })
-      } catch (err) {
-        return errorText(
-          `auth_profile_list failed: ${err instanceof Error ? err.message : String(err)}`,
-        )
-      }
-    },
-  )
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: compactAuthProfileRow,
+        keyOf: p => p.id,
+        maxLimit: 200,
+        itemKey: "profiles",
+      }),
+    ],
+  })
 
   // ── auth_profile_create ───────────────────────────────────────
   server.tool(
@@ -320,6 +363,47 @@ export function registerAuthProfileTools(server: McpServer): void {
         }
         return errorText(
           `auth_profile_set_models failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    },
+  )
+
+  // ── auth_profile_refresh_models ───────────────────────────────
+  server.tool(
+    "auth_profile_refresh_models",
+    "Re-sync a `mode: \"allow\"` profile's curated `ids` against the CURRENT " +
+      "model catalog for its endpoint — fixes curation drift, where an " +
+      "allowlist generated once at import/provision time never picks up " +
+      "models the catalog adds later or drops models it retires. Re-runs the " +
+      "same enumeration (`catalog_provider_models` for the profile's " +
+      "endpoint) that would build the list today and replaces `ids` with it. " +
+      "Explicit and opt-in: nothing calls this automatically, so a profile " +
+      "is only ever touched when this tool is invoked on it by name. " +
+      "Rejects a profile with no `mode: \"allow\"` curation (a `mode: \"all\"` " +
+      "profile already tracks the live catalog on every read, so there is " +
+      "nothing to refresh). Returns the updated profile plus the `added`/" +
+      "`removed` id diff.",
+    {
+      id: z.string().describe("The profile id to refresh."),
+    },
+    async ({ id }) => {
+      try {
+        const deps = defaultProfileProvisionDeps()
+        const profile = await deps.getProfile(id)
+        if (!profile) {
+          return errorText(`auth_profile_refresh_models rejected: no profile with id "${id}"`)
+        }
+        const currentIds = buildCatalogProviderModels({ endpoint: profile.endpoint }).models.map(
+          m => m.id,
+        )
+        const result = await refreshAuthProfileModels(id, currentIds, deps)
+        return text({ profile: result.profile, added: result.added, removed: result.removed })
+      } catch (err) {
+        if (err instanceof AuthProfileValidationError) {
+          return errorText(`auth_profile_refresh_models rejected: ${err.message}`)
+        }
+        return errorText(
+          `auth_profile_refresh_models failed: ${err instanceof Error ? err.message : String(err)}`,
         )
       }
     },

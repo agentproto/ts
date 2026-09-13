@@ -22,7 +22,7 @@ export function statusText(s: SessionDescriptor): string {
     case "perm":
       return "awaiting permission"
     case "input":
-      return "awaiting your input"
+      return s.awaitingQuestion?.text || "awaiting your input"
     case "run": {
       const turn = s.turnsCompleted
       return typeof turn === "number" && turn > 0 ? `running · turn ${turn + 1}` : "running"
@@ -40,6 +40,21 @@ export function statusText(s: SessionDescriptor): string {
 /** Best display title, in the daemon's own fallback order. */
 export function sessionTitle(s: SessionDescriptor): string {
   return s.title || s.label || s.name || s.command || s.id
+}
+
+/** A structured question ready to render: the prompt text plus zero or more
+ *  answer buttons. */
+export interface QuestionView {
+  text: string
+  options: string[]
+}
+
+/** Derive the renderable question from a session's `awaitingQuestion`, or
+ *  `null` when there's nothing to show (no question, or one with no text). */
+export function questionView(s: SessionDescriptor): QuestionView | null {
+  const q = s.awaitingQuestion
+  if (!q?.text) return null
+  return { text: q.text, options: q.options ?? [] }
 }
 
 /** A session paired with its nested children (one level, by parentSessionId). */

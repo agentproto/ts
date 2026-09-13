@@ -1,5 +1,24 @@
 # @agentproto/agencies-engine
 
+## 0.1.6
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/agencies@0.1.3
+  - @agentproto/governance@0.1.3
+  - @agentproto/governance-engine@0.1.6
+
+## 0.1.5
+
+### Patch Changes
+
+- Updated dependencies [f0c51a7]
+  - @agentproto/agencies@0.1.2
+  - @agentproto/governance@0.1.2
+  - @agentproto/governance-engine@0.1.5
+
 ## 0.1.4
 
 ### Patch Changes

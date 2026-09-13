@@ -21,7 +21,24 @@ import { resolve } from 'node:path'
 
 export const DEFAULTS = {
   changeset: { stage: 'manual', engine: 'local', model: null, command: 'claude' },
-  review: { stage: 'manual', engine: 'local', bypassCi: false, blocking: false, fix: 'off', maxLoops: 3, model: null, command: 'claude' },
+  review: {
+    stage: 'manual',
+    engine: 'local',
+    bypassCi: false,
+    blocking: false,
+    fix: 'off',
+    maxLoops: 3,
+    model: null,
+    command: 'claude',
+    // engine "daemon": runs the SAME pr-review WORKFLOW.md CI runs, through
+    // the developer's already-running local agentproto daemon over MCP.
+    daemonPort: 18790,
+    daemonTimeoutMinutes: 15,
+    // Override .github/agentic-review.json's reviewerAdapter for the daemon
+    // run; null keeps the file's value (a dev's daemon typically has
+    // "claude-code").
+    adapter: null,
+  },
 }
 
 function readJson(path) {
@@ -55,12 +72,13 @@ export function loadAgentflowConfig(root) {
 /**
  * Resolve the engine for a feature with precedence:
  *   CLI flag (--engine) > env AGENTFLOW_ENGINE > config > default.
- * Returns "local" | "cloud".
+ * Returns "local" | "cloud" | "daemon". ("daemon" is currently only wired up
+ * for the `review` feature — see scripts/agentflow/review.mjs.)
  */
 export function resolveEngine(featureCfg, { flag, env = process.env } = {}) {
   const pick = flag || env.AGENTFLOW_ENGINE || featureCfg?.engine || 'local'
-  if (pick !== 'local' && pick !== 'cloud') {
-    throw new Error(`[agentflow] invalid engine "${pick}" (want "local" | "cloud")`)
+  if (pick !== 'local' && pick !== 'cloud' && pick !== 'daemon') {
+    throw new Error(`[agentflow] invalid engine "${pick}" (want "local" | "cloud" | "daemon")`)
   }
   return pick
 }

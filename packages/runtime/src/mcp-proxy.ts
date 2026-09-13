@@ -61,6 +61,9 @@ export interface ProxyToolDescriptor {
   /** JSON Schema as published by the upstream server. Forwarded to
    *  the operator verbatim — they read it to figure out args. */
   inputSchema?: unknown
+  /** Opaque metadata from the upstream tool listing. Carries client-side
+   *  hints such as `x-client-resolve`. */
+  _meta?: Record<string, unknown>
 }
 
 export interface ProxyAliasSummary {
@@ -229,12 +232,18 @@ export class McpProxyRegistry {
         error: handle.lastError ?? "client not connected",
       }
     }
+    const hint = handle.tools
+      ?.find(t => t.name === toolName)
+      ?._meta?.["x-client-resolve"] as
+      | { read: string; inject: string }
+      | undefined
+    const resolved = await applyClientResolve(hint, args)
     try {
       const result = await handle.client.callTool({
         name: toolName,
         arguments:
-          args && typeof args === "object"
-            ? (args as Record<string, unknown>)
+          resolved && typeof resolved === "object"
+            ? (resolved as Record<string, unknown>)
             : {},
       })
       return { ok: true, result }
@@ -261,6 +270,33 @@ export class McpProxyRegistry {
   }
 }
 
+/**
+ * Generic client-side file resolution driven by the upstream tool's
+ * `_meta["x-client-resolve"]` hint: `{ read: "<path-field>", inject: "<data-field>" }`.
+ *
+ * When the hint is present and `args[read]` is a local path whose `args[inject]`
+ * is not yet set, the proxy reads the file on the client machine, base64-encodes
+ * it, and injects it before forwarding — zero context tokens, works even when
+ * the MCP server is remote. Any tool from any server can opt in by declaring
+ * `x-client-resolve` in its `_meta`.
+ */
+async function applyClientResolve(
+  hint: { read: string; inject: string } | undefined,
+  args: unknown
+): Promise<unknown> {
+  if (!hint) return args
+  if (!args || typeof args !== "object") return args
+  const a = args as Record<string, unknown>
+  if (typeof a[hint.read] !== "string" || a[hint.inject] !== undefined)
+    return args
+  try {
+    const bytes = await fs.readFile(a[hint.read] as string)
+    return { ...a, [hint.inject]: bytes.toString("base64") }
+  } catch {
+    return args
+  }
+}
+
 function freshPlaceholder(entry: ImportedMcpEntry): ProxyClient {
   return { entry, client: null, tools: null, lastError: null }
 }
@@ -269,11 +305,13 @@ function toDescriptor(tool: {
   name: string
   description?: string
   inputSchema?: unknown
+  _meta?: Record<string, unknown>
 }): ProxyToolDescriptor {
   return {
     name: tool.name,
     ...(tool.description ? { description: tool.description } : {}),
     ...(tool.inputSchema ? { inputSchema: tool.inputSchema } : {}),
+    ...(tool._meta ? { _meta: tool._meta } : {}),
   }
 }
 

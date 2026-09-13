@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-knowledge-corpus",
-  "version": "0.2.0",
+  "version": "0.3.6",
   "description": "Composable knowledge adapter: implements @agentproto/knowledge-engine's IKnowledgeProvider over an AIP-10 @agentproto/corpus workspace, wrapping any backing IKnowledgeProvider and hydrating every hit with canonical AIP-10 provenance + access policy. Public ingest/delete are rejected — corpus writes go through the privileged CorpusInternalWriter. Registers as a provider-kit family and ships a node:fs FsPort so it runs standalone.",
   "keywords": [
     "agentproto",
@@ -55,17 +55,17 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/knowledge-engine": "workspace:*",
     "@agentproto/corpus": "workspace:*",
+    "@agentproto/knowledge-engine": "workspace:*",
     "@agentproto/provider-kit": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/tool": "workspace:*",
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   },
   "engines": {
     "node": ">=20.9.0"

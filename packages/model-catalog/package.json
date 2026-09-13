@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/model-catalog",
-  "version": "0.7.0",
+  "version": "0.9.4",
   "description": "Unified, dependency-light model catalog: LLM, image, video, audio entries + cost dispatcher + picker. Zod-only; the OSS core that @agstudio/model-catalog layers billing/access/BYOK on top of.",
   "keywords": [
     "agentproto",
@@ -127,14 +127,15 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
+    "@agentproto/provider-presets": "workspace:*",
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   },
   "engines": {
     "node": ">=20.9.0"

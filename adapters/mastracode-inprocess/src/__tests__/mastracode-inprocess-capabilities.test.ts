@@ -13,6 +13,12 @@ function makeCtx(): DiscoverCtx {
 }
 
 describe("mastracodeInprocessCapabilities", () => {
+  it("reports the strategy as discovered, but declared (no live/parse probing)", async () => {
+    const caps = await mastracodeInprocessCapabilities(mastracodeInprocess, makeCtx())
+    expect(caps.source).toBe("discovered")
+    expect(caps.discoverable).toBe("declared")
+  })
+
   it("keeps the manifest-derived env-slot providers/models/authStores", async () => {
     const caps = await mastracodeInprocessCapabilities(mastracodeInprocess, makeCtx())
     const declared = deriveDeclaredCapabilities(mastracodeInprocess)

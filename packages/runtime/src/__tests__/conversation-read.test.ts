@@ -6,7 +6,7 @@
  * run for real, with a stub registry standing in for the daemon's.
  */
 
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -14,6 +14,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { readConversation, registerConversationReadTool } from "../conversation-read.js"
+import { CONVERSATION_STORES } from "../conversation-store.js"
 import type { SessionDescriptor, SessionsRegistry } from "../sessions.js"
 
 // ── fixtures ──────────────────────────────────────────────────────────
@@ -366,5 +367,315 @@ describe("conversation_read tool — registration", () => {
     expect(result.isError).toBe(true)
 
     await client.close()
+  })
+})
+
+// ── daemon-events fallback (readConversation) ────────────────────────────
+//
+// When the provider's native transcript is missing (e.g. a process killed
+// mid-turn before claude-code finalized its own jsonl), readConversation
+// falls back to the daemon's own capture in events.jsonl — keyed by the
+// agentproto session id (desc.id), NOT the native conversation id.
+
+function writeEventsJsonl(sessionId: string, lines: object[]): void {
+  const dir = join(fakeHome, ".agentproto", "sessions", sessionId)
+  mkdirSync(dir, { recursive: true })
+  const content = lines.map(l => JSON.stringify(l)).join("\n") + "\n"
+  writeFileSync(join(dir, "events.jsonl"), content)
+}
+
+describe("readConversation — daemon-events fallback when the native jsonl is missing", () => {
+  it("recovers from a missing native jsonl via events.jsonl, marking source daemon-events", async () => {
+    setupFakeHome()
+    const cwd = "/gone/transcript"
+    claudeProjectDir(cwd) // native dir exists but no jsonl written in it
+    const desc = makeDescriptor({
+      kind: "agent-cli",
+      adapterSlug: "claude-code",
+      adapterSessionId: "missing-uuid-0000",
+      cwd,
+    })
+    writeEventsJsonl(desc.id, [
+      { seq: 1, ts: "2026-05-13T10:00:00.000Z", kind: "user-prompt", text: "hello daemon" },
+      { seq: 2, ts: "2026-05-13T10:00:01.000Z", kind: "text-delta", text: "hi from events\n" },
+      { seq: 3, ts: "2026-05-13T10:00:02.000Z", kind: "turn-end" },
+    ])
+
+    const result = await readConversation(stubRegistry(desc), { idOrName: "sess_test" })
+
+    expect(result.conversation).not.toBeNull()
+    expect(result.conversation?.meta.source).toBe("daemon-events")
+    expect(result.conversationId).toBe("missing-uuid-0000")
+    expect(result.reason).toBeUndefined()
+    // The daemon-events transcript should render as content (here a user
+    // prompt + an assistant text-delta).
+    expect(result.content).toContain("hello daemon")
+    expect(result.content).toContain("hi from events")
+  })
+
+  it("combines both failure messages when neither the native jsonl nor events.jsonl exists", async () => {
+    setupFakeHome()
+    const cwd = "/no/transcript/at/all"
+    claudeProjectDir(cwd) // no native jsonl, and NO events.jsonl
+    const desc = makeDescriptor({
+      kind: "agent-cli",
+      adapterSlug: "claude-code",
+      adapterSessionId: "missing-uuid-9999",
+      cwd,
+    })
+
+    const result = await readConversation(stubRegistry(desc), { idOrName: "sess_test" })
+
+    expect(result.conversation).toBeNull()
+    expect(result.reason).toBeTruthy()
+    expect(result.reason).toContain("daemon-events fallback also failed")
+  })
+
+  it("reads the native jsonl with no events.jsonl present — the happy path is unchanged", async () => {
+    setupFakeHome()
+    const cwd = "/present/transcript"
+    const dir = claudeProjectDir(cwd)
+    const own = "cccccccc-0000-0000-0000-000000000001"
+    writeJsonl(dir, own, [
+      {
+        type: "user",
+        timestamp: "2026-05-13T10:00:00.000Z",
+        message: { role: "user", content: [{ type: "text", text: "native only" }] },
+      },
+    ])
+    // Deliberately NO events.jsonl — must not be required for the native path.
+    const desc = makeDescriptor({
+      kind: "agent-cli",
+      adapterSlug: "claude-code",
+      adapterSessionId: own,
+      cwd,
+    })
+
+    const result = await readConversation(stubRegistry(desc), { idOrName: "sess_test" })
+
+    expect(result.conversation).not.toBeNull()
+    expect(result.reason).toBeUndefined()
+    expect(result.conversation?.meta.source).not.toBe("daemon-events")
+    expect(result.content).toContain("native only")
+  })
+})
+
+// ── daemon fallback when conversation-id resolution finds nothing ──────
+//
+// `resolveConversationId` returns `{ kind: "none" }` for a bare PTY with no
+// known agent binary and no `--resume` argv — previously a dead end,
+// now rescued by the same daemon-events fallback used for a native-read
+// failure. Keyed by `desc.id` (the agentproto session id), since there is
+// no native conversation id to key by.
+
+describe("readConversation — daemon fallback when id resolution fails entirely (resolved.kind === 'none')", () => {
+  it("falls back to events.jsonl for a PTY with no known agent binary and no --resume argv", async () => {
+    setupFakeHome()
+    const desc = makeDescriptor({
+      kind: "terminal",
+      pty: true,
+      argv: ["some-unknown-binary"],
+      cwd: "/home/user",
+    })
+    writeEventsJsonl(desc.id, [
+      { seq: 1, ts: "2026-05-13T10:00:00.000Z", kind: "user-prompt", text: "rescued unknown binary" },
+      { seq: 2, ts: "2026-05-13T10:00:01.000Z", kind: "turn-end" },
+    ])
+
+    const result = await readConversation(stubRegistry(desc), { idOrName: "sess_test" })
+
+    expect(result.conversation).not.toBeNull()
+    expect(result.conversation?.meta.source).toBe("daemon-events")
+    expect(result.conversationId).toBe(desc.id)
+    expect(result.adapter).toBe("daemon")
+    expect(result.reason).toBeUndefined()
+    expect(result.content).toContain("rescued unknown binary")
+  })
+
+  it("combines both messages when there's no known store AND no events.jsonl", async () => {
+    setupFakeHome()
+    const desc = makeDescriptor({
+      kind: "terminal",
+      pty: true,
+      argv: ["some-unknown-binary"],
+      cwd: "/home/user",
+    })
+    // Deliberately no events.jsonl written for desc.id.
+
+    const result = await readConversation(stubRegistry(desc), { idOrName: "sess_test" })
+
+    expect(result.conversation).toBeNull()
+    expect(result.reason).toBeTruthy()
+    expect(result.reason).toContain("daemon-events fallback also failed")
+  })
+})
+
+// ── daemon fallback when the resolved store is not registered ──────────
+//
+// `resolved.storeKey` is only ever produced from a key `CONVERSATION_STORES`
+// already has an entry for (see `knownStoreKey`), so this is a defensive
+// path guarding against the entry disappearing between resolution and the
+// read that follows it. Simulated here by having the store's own
+// `discover` — the last thing the ladder calls before returning
+// `{ kind: "found" }` — remove its own `CONVERSATION_STORES` entry as a
+// side effect, so it's gone by the time `readConversation` looks it up.
+
+describe("readConversation — daemon fallback when the conversation store is not registered", () => {
+  it("falls back to events.jsonl when CONVERSATION_STORES has no entry for the resolved store key", async () => {
+    setupFakeHome()
+    const cwd = "/vanishing/store"
+    const dir = claudeProjectDir(cwd)
+    const uuid = "dddddddd-0000-0000-0000-000000000001"
+    writeJsonl(dir, uuid, [
+      {
+        type: "user",
+        timestamp: "2026-05-13T10:00:00.000Z",
+        message: { role: "user", content: [{ type: "text", text: "will vanish" }] },
+      },
+    ])
+    const desc = makeDescriptor({
+      kind: "agent-cli",
+      adapterSlug: "claude-code",
+      cwd,
+      startedAt: "2026-05-13T09:00:00.000Z",
+    })
+    writeEventsJsonl(desc.id, [
+      { seq: 1, ts: "2026-05-13T10:00:00.000Z", kind: "user-prompt", text: "daemon rescue" },
+      { seq: 2, ts: "2026-05-13T10:00:01.000Z", kind: "turn-end" },
+    ])
+
+    const store = CONVERSATION_STORES["claude-code"]!
+    const originalDiscover = store.discover.bind(store)
+    const spy = vi.spyOn(store, "discover").mockImplementation(async input => {
+      const result = await originalDiscover(input)
+      // Simulate the entry vanishing after the ladder already resolved
+      // this session to the "claude-code" store key but before
+      // readConversation's own lookup runs.
+      delete CONVERSATION_STORES["claude-code"]
+      return result
+    })
+
+    try {
+      const result = await readConversation(stubRegistry(desc), { idOrName: "sess_test" })
+
+      expect(result.conversation).not.toBeNull()
+      expect(result.conversation?.meta.source).toBe("daemon-events")
+      expect(result.conversationId).toBe(uuid)
+      expect(result.adapter).toBe("claude-code")
+      expect(result.reason).toBeUndefined()
+      expect(result.content).toContain("daemon rescue")
+    } finally {
+      spy.mockRestore()
+      CONVERSATION_STORES["claude-code"] = store
+    }
+  })
+})
+
+// ── additive transcript windowing: lastN + message-index cursor ────────
+//
+// PR-5 pagination: `lastN` and `cursor` narrow the rendered transcript.
+// The default (neither given) MUST still return the FULL transcript —
+// covered by every test above; the first test here pins it explicitly.
+
+describe("readConversation — additive lastN + cursor windowing", () => {
+  function makeMultiMessageDesc(uuid: string, cwd: string): SessionDescriptor {
+    return makeDescriptor({
+      kind: "agent-cli",
+      adapterSlug: "claude-code",
+      adapterSessionId: uuid,
+      cwd,
+    })
+  }
+
+  function writeMultiMessageTranscript(dir: string, uuid: string): void {
+    writeJsonl(dir, uuid, [1, 2, 3, 4, 5, 6].map(n => ({
+      type: "user",
+      timestamp: `2026-05-13T10:00:0${n}.000Z`,
+      message: { role: "user", content: [{ type: "text", text: `msg-${n}` }] },
+    })))
+  }
+
+  it("returns the FULL transcript when neither lastN nor cursor is given (default unchanged)", async () => {
+    setupFakeHome()
+    const cwd = "/window/full"
+    const dir = claudeProjectDir(cwd)
+    const uuid = "eeeeeeee-0000-0000-0000-000000000001"
+    writeMultiMessageTranscript(dir, uuid)
+
+    const result = await readConversation(stubRegistry(makeMultiMessageDesc(uuid, cwd)), {
+      idOrName: "sess_test",
+    })
+    expect(result.conversation).not.toBeNull()
+    expect(result.window).toBeUndefined()
+    for (const n of [1, 2, 3, 4, 5, 6]) {
+      expect(result.content).toContain(`msg-${n}`)
+    }
+  })
+
+  it("lastN keeps only the last N messages and reports the window", async () => {
+    setupFakeHome()
+    const cwd = "/window/lastn"
+    const dir = claudeProjectDir(cwd)
+    const uuid = "eeeeeeee-0000-0000-0000-000000000002"
+    writeMultiMessageTranscript(dir, uuid)
+
+    const result = await readConversation(stubRegistry(makeMultiMessageDesc(uuid, cwd)), {
+      idOrName: "sess_test",
+      lastN: 2,
+    })
+    expect(result.conversation?.messages.map(m => m.text)).toEqual(["msg-5", "msg-6"])
+    expect(result.content).toContain("msg-5")
+    expect(result.content).toContain("msg-6")
+    expect(result.content).not.toContain("msg-4")
+    expect(result.window).toEqual({
+      start: 4,
+      count: 2,
+      total: 6,
+      truncated: true,
+    })
+  })
+
+  it("cursor starts the window at the given message index and chains via nextCursor", async () => {
+    setupFakeHome()
+    const cwd = "/window/cursor"
+    const dir = claudeProjectDir(cwd)
+    const uuid = "eeeeeeee-0000-0000-0000-000000000003"
+    writeMultiMessageTranscript(dir, uuid)
+    const desc = makeMultiMessageDesc(uuid, cwd)
+
+    const page1 = await readConversation(stubRegistry(desc), {
+      idOrName: "sess_test",
+      cursor: 2,
+    })
+    expect(page1.conversation?.messages.map(m => m.text)).toEqual(["msg-3", "msg-4", "msg-5", "msg-6"])
+    expect(page1.window).toEqual({
+      start: 2,
+      count: 4,
+      total: 6,
+      truncated: true,
+    })
+
+    const page2 = await readConversation(stubRegistry(desc), {
+      idOrName: "sess_test",
+      cursor: page1.window?.start ?? 0,
+      lastN: 2,
+    })
+    expect(page2.conversation?.messages.map(m => m.text)).toEqual(["msg-5", "msg-6"])
+    expect(page2.window?.start).toBe(4)
+  })
+
+  it("cursor past EOF yields an empty window, not an error", async () => {
+    setupFakeHome()
+    const cwd = "/window/past-eof"
+    const dir = claudeProjectDir(cwd)
+    const uuid = "eeeeeeee-0000-0000-0000-000000000004"
+    writeMultiMessageTranscript(dir, uuid)
+
+    const result = await readConversation(stubRegistry(makeMultiMessageDesc(uuid, cwd)), {
+      idOrName: "sess_test",
+      cursor: 99,
+    })
+    expect(result.conversation?.messages).toEqual([])
+    expect(result.window).toEqual({ start: 6, count: 0, total: 6, truncated: true })
   })
 })

@@ -14,7 +14,14 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import { listAuthProfiles } from "@agentproto/auth"
+import { listAuthProfiles, type AuthProfile } from "@agentproto/auth"
+import { registerBuiltinTool } from "@agentproto/mcp-server"
+import {
+  catchErrors,
+  paginated,
+  type McpTextResult,
+  type ToolTransformer,
+} from "@agentproto/tool"
 import type { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import {
   CANONICAL_UPSTREAMS,
@@ -36,7 +43,7 @@ function text(value: string | object): {
     content: [
       {
         type: "text",
-        text: typeof value === "string" ? value : JSON.stringify(value, null, 2),
+        text: typeof value === "string" ? value : JSON.stringify(value),
       },
     ],
   }
@@ -54,6 +61,87 @@ function errText(
       },
     ],
     isError: true,
+  }
+}
+
+/** One `llm_endpoint_list_links` row BEFORE compact projection: the upstream's
+ *  link state plus the FULL non-secret auth-profile metadata of every
+ *  eligible profile. `project` (below) narrows `eligible` to the documented
+ *  `{id, label?, method, endpoint}` picker shape; `full: true` /
+ *  `compact: false` keeps the whole profile row (curation, provenance, … —
+ *  still never a secret). */
+export interface UpstreamLinkRow {
+  provider: string
+  /** The DESIRED (persisted) link — a running proxy may lag until restarted. */
+  linkedProfile: string | null
+  eligible: AuthProfile[]
+}
+
+/**
+ * `llm_endpoint_list_links`'s COMPACT per-row projection: narrows each
+ * eligible profile to exactly the fields the VS Code link pickers render
+ * (`id`, `label`, `method`, `endpoint`) — the shape the tool has always
+ * documented and returned by default. The bulkier non-secret profile
+ * metadata (`models` curation, `costBudget`, `origin`, `credentialRef`, …)
+ * stays behind `full: true` / `compact: false`.
+ */
+export const compactUpstreamLinkRow = (row: UpstreamLinkRow) => ({
+  provider: row.provider,
+  linkedProfile: row.linkedProfile,
+  eligible: row.eligible.map(p => ({
+    id: p.id,
+    ...(p.label !== undefined ? { label: p.label } : {}),
+    method: p.method,
+    endpoint: p.endpoint,
+  })),
+})
+
+/**
+ * Tool-specific composition transformer for `llm_endpoint_list_links`: the
+ * legacy default output was `{ links, upstreams }` — a top-level link MAP
+ * alongside the per-upstream rows — and the VS Code client reads
+ * `.links` directly (authProfilesTree, localRouter, authExplorer). The
+ * `paginated()` transformer's non-paginated wrapper is single-key, so this
+ * transformer (declared OUTSIDE `paginated`, i.e. wrapping its output)
+ * re-attaches the map. It is DERIVED from the rows the handler returned —
+ * every row carries its `linkedProfile`, and the links store only ever holds
+ * canonical upstreams, so `{provider → linkedProfile}` over the rows is
+ * byte-equal to the store map (no second disk read, no TOCTOU skew). The
+ * paginated envelope branch never carried the map, so it is left untouched.
+ */
+function withLinksMap(): ToolTransformer<unknown, unknown, McpTextResult> {
+  return {
+    name: "withLinksMap",
+    wrapHandler: handler => async input => {
+      const result = (await handler(input)) as McpTextResult
+      const text = result.content[0]?.text
+      if (result.isError || text === undefined) return result
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(text)
+      } catch {
+        return result
+      }
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        return result
+      }
+      const obj = parsed as Record<string, unknown>
+      // Legacy default branch only — the paginated envelope (`{items, …}`)
+      // never carried the map.
+      if (!Array.isArray(obj.upstreams) || "items" in obj) return result
+      const links: Record<string, string> = {}
+      for (const row of obj.upstreams as Array<{
+        provider?: unknown
+        linkedProfile?: unknown
+      }>) {
+        if (typeof row?.provider === "string" && typeof row.linkedProfile === "string") {
+          links[row.provider] = row.linkedProfile
+        }
+      }
+      return {
+        content: [{ type: "text", text: JSON.stringify({ links, upstreams: obj.upstreams }) }],
+      }
+    },
   }
 }
 
@@ -216,36 +304,48 @@ export function registerLlmEndpointTools(
   )
 
   // ── llm_endpoint_list_links ────────────────────────────────────
-  server.tool(
-    "llm_endpoint_list_links",
-    "List the persisted upstream→auth-profile links plus, per upstream, the " +
+  // Migrated onto the AIP contract layer (defineTool + implementTool +
+  // toMcpTool): pagination/compact/fields via `paginated()`, error
+  // normalization via `catchErrors()`, and the legacy top-level `links` map
+  // preserved by the tool-specific `withLinksMap()` composition transformer.
+  const llmEndpointListLinksSchema = z.object({})
+  type LlmEndpointListLinksInput = z.infer<typeof llmEndpointListLinksSchema>
+
+  registerBuiltinTool<LlmEndpointListLinksInput, UpstreamLinkRow[]>(server, {
+    id: "llm_endpoint_list_links",
+    description: "List the persisted upstream→auth-profile links plus, per upstream, the " +
       "auth-profiles ELIGIBLE to be linked. A profile is eligible for upstream " +
       "P iff its billing endpoint equals P, its method is compatible (api-key " +
       "for any upstream; oauth-bearer only for anthropic), and it is not " +
       "disabled. Reports the desired (persisted) link — a running proxy may lag " +
-      "until restarted (see `llm_endpoint_set_upstream_link`). Never returns a " +
-      "secret: eligible profiles carry only {id, label, method, endpoint}.",
-    {},
-    async () => {
-      try {
-        const [links, profiles] = await Promise.all([
-          listLlmEndpointLinks(),
-          listAuthProfiles(),
-        ])
-        const upstreams = CANONICAL_UPSTREAMS.map(provider => ({
-          provider,
-          linkedProfile: links[provider] ?? null,
-          eligible: eligibleProfilesForUpstream(profiles, provider).map(p => ({
-            id: p.id,
-            ...(p.label != null ? { label: p.label } : {}),
-            method: p.method,
-            endpoint: p.endpoint,
-          })),
-        }))
-        return text({ links, upstreams })
-      } catch (err) {
-        return errText("llm_endpoint_list_links", err)
-      }
+      "until restarted (see `llm_endpoint_set_upstream_link`). The default " +
+      "output is `{ links, upstreams }`: `links` maps provider → linked " +
+      "profile id, and each `upstreams` row carries `provider`, " +
+      "`linkedProfile`, and `eligible`. Never returns a secret: compact " +
+      "eligible profiles carry only {id, label, method, endpoint}; pass " +
+      "`full: true` (or `compact: false`) to also surface each eligible " +
+      "profile's remaining non-secret metadata (curation, provenance, …).",
+    inputSchema: llmEndpointListLinksSchema,
+    handler: async () => {
+      const [links, profiles] = await Promise.all([
+        listLlmEndpointLinks(),
+        listAuthProfiles(),
+      ])
+      return CANONICAL_UPSTREAMS.map(provider => ({
+        provider,
+        linkedProfile: links[provider] ?? null,
+        eligible: eligibleProfilesForUpstream(profiles, provider),
+      }))
     },
-  )
+    transformers: [
+      catchErrors(),
+      withLinksMap(),
+      paginated({
+        project: compactUpstreamLinkRow,
+        keyOf: u => u.provider,
+        maxLimit: 200,
+        itemKey: "upstreams",
+      }),
+    ],
+  })
 }

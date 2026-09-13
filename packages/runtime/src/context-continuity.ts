@@ -9,6 +9,18 @@
  * limit.
  */
 
+/**
+ * `manual` suppresses every automatic *nudge* (warn/compact/continue-fresh —
+ * see `contextContinuityNextAction`) so the session is left alone until the
+ * caller acts. It does NOT suppress `hard-stop`: that state is an
+ * unconditional safety floor, independent of mode, by design — its whole
+ * purpose is to stop a session from silently running past the model's real
+ * context window (further prompts would be truncated/rejected by the
+ * provider, or corrupt the conversation) even when nothing is watching.
+ * `manual` means "don't nag me", not "let me drive off the window's edge".
+ * A session that wants to opt out of the hard stop should set
+ * `hardStopAtPct` above what it will ever reach, not rely on mode.
+ */
 export type ContextContinuityMode = "manual" | "ask" | "auto"
 
 export interface ContextContinuityThresholds {
@@ -208,13 +220,28 @@ export function resolveContextContinuityPolicy(
   return resolved
 }
 
-/** Compute context percentage from usage fields, returning null when unknown. */
+/**
+ * Compute context percentage from usage fields, returning null when unknown
+ * — never a fabricated number the rail can act on.
+ *
+ * `contextSize === contextUsed` is treated as unknown too, not "100% full":
+ * a window size this codebase never had (an adapter that reports its raw
+ * token count as both fields because it has no real window figure — see
+ * the `pi` adapter's historical bug, fixed in pi-events.ts `usageUpdate`)
+ * is indistinguishable from a session that has genuinely filled its window
+ * to the last token. Treating the ambiguous case as "cannot compute" is
+ * the safe default: an adapter approaching a real 100% will already have
+ * crossed every lower threshold (warn/compact/continue-fresh/hard-stop) on
+ * the way there, since `contextUsed` grows toward — not straight to — the
+ * window size.
+ */
 export function computeContextPct(
   contextSize: number | undefined,
   contextUsed: number | undefined,
 ): number | null {
   if (contextSize === undefined || contextSize <= 0) return null
   if (contextUsed === undefined || contextUsed < 0) return null
+  if (contextUsed === contextSize) return null
   // Clamp to contextSize in the percentage; implausibly large values are
   // handled upstream by plausibleContextUsed, but we guard here too.
   const used = Math.min(contextUsed, contextSize)
@@ -252,6 +279,9 @@ export function contextContinuityNextAction(
       if (mode === "ask") return "ask"
       return "continue-fresh"
     case "hard-stop":
+      // Mode-independent by design — see the `ContextContinuityMode` doc
+      // comment: hard-stop is an unconditional floor, not a nudge `manual`
+      // can silence.
       return "hard-stop"
   }
 }

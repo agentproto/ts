@@ -39,19 +39,38 @@ function approxMessageLen(m: ExportedMessage): number {
 }
 
 /**
+ * Result of attempting to build a resume context digest — explicitly
+ * distinguishes "no context at all" from "partial context recovered
+ * from daemon transcript" so the restart banner can be honest about
+ * what was recovered.
+ */
+export interface ResumeContextDigestResult {
+  /** The framed digest text to inject as the first user message, when
+   *  `hasContent` is true. Undefined when no digest could be built. */
+  digest?: string
+  /** True when the digest contains actual conversation content (at least
+   *  one message recovered from the daemon transcript), false when the
+   *  daemon transcript was empty or missing. This lets callers
+   *  distinguish "fresh with zero context" from "fresh with partial
+   *  digest injected" — the banner changes accordingly. */
+  hasContent: boolean
+}
+
+/**
  * Builds a bounded, tool-truncated, most-recent-turns-first digest of
  * `sessionId`'s daemon-events transcript, framed as an explicit best-effort
- * summary — or `undefined` when there's nothing to summarize (no
- * `events.jsonl` for this session, or an empty one).
+ * summary. Returns `{ hasContent: false }` when there's nothing to summarize
+ * (no `events.jsonl` for this session, or an empty one), and
+ * `{ digest, hasContent: true }` when at least one message was recovered.
  */
-export async function buildResumeContextDigest(sessionId: string): Promise<string | undefined> {
+export async function buildResumeContextDigest(sessionId: string): Promise<ResumeContextDigestResult> {
   let messages: ExportedMessage[]
   try {
     messages = (await exportDaemonEventsSession(sessionId)).messages
   } catch {
-    return undefined
+    return { hasContent: false }
   }
-  if (messages.length === 0) return undefined
+  if (messages.length === 0) return { hasContent: false }
 
   // Keep the most recent turns: walk backward from the end, accumulating an
   // approximate rendered length, and stop once the budget is spent —
@@ -78,5 +97,8 @@ export async function buildResumeContextDigest(sessionId: string): Promise<strin
       ? `${rendered.slice(0, DIGEST_CHAR_BUDGET)}\n… [${rendered.length - DIGEST_CHAR_BUDGET} chars truncated]`
       : rendered
 
-  return DIGEST_FRAME + body
+  return {
+    digest: DIGEST_FRAME + body,
+    hasContent: true,
+  }
 }

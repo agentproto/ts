@@ -4,7 +4,7 @@ Apply these repo-specific rules to any review, fix, or PR you produce.
 
 ## Architecture
 - This monorepo implements open agent standards (AIPs) as `@agentproto/*`
-  packages. Each spec under `specs/` has a matching package. Keep code and spec
+  packages. Each spec under `specs/resources/` has a matching package. Keep code and spec
   in sync — a behavior change usually needs both.
 - Tools are authored with `defineTool → implementTool → defineDriver` and
   projected to cli/http/mcp/sdk/mastra/ai-sdk. A new verb is new public surface.
@@ -25,8 +25,9 @@ Apply these repo-specific rules to any review, fix, or PR you produce.
 ## Type safety
 - No `any` in exported signatures. Prefer discriminated unions over boolean
   flags for multi-state inputs.
-- `exactOptionalPropertyTypes` is on — spread optional props conditionally
-  (`...(x ? { x } : {})`) rather than passing `undefined`.
+- The shared tsconfig base is `"strict": true` (`packages/tooling/typescript/base.json`);
+  `exactOptionalPropertyTypes` is NOT enabled — do not demand conditional
+  spreads (`...(x ? { x } : {})`) on that basis.
 
 ## Tests
 - New exported behavior needs a test. Bug fixes need a regression test that

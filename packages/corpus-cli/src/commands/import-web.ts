@@ -59,6 +59,7 @@ import { OpenAiWhisperStt, type SttPort } from "../ports/stt.port.js"
 import { AssemblyAiStt } from "../ports/assemblyai-stt.adapter.js"
 import { ChunkedStt } from "../ports/chunked-stt.adapter.js"
 import { HttpReadabilityFetcher } from "../ports/http-readability-fetcher.adapter.js"
+import { PdfFetcher } from "../ports/pdf-fetcher.adapter.js"
 import { CompositeFetcher } from "../ports/composite-fetcher.js"
 import { ThrottleFetcher } from "../ports/throttle-fetcher.adapter.js"
 import { NodeFsAdapter } from "../ports/local-fs.adapter.js"
@@ -226,10 +227,11 @@ export async function runImportWeb(args: readonly string[]): Promise<ExitCode> {
   process.stdout.write(`import-web\n${plan}`)
 
   // Build the fetcher chain (first non-null wins):
-  //   1. videos  → yt-dlp captions/auto-subs  (free, no key; default)
-  //   2. videos  → yt-dlp audio → Whisper     (caption-less fallback; needs OPENAI_API_KEY)
-  //   3. articles→ authed browser readability (only if --browser-mcp given)
-  //   4. articles→ plain HTTP readability     (browser-free fallback)
+  //   1. videos    → yt-dlp captions/auto-subs  (free, no key; default)
+  //   2. videos    → yt-dlp audio → Whisper     (caption-less fallback; needs OPENAI_API_KEY)
+  //   3. PDFs      → plain HTTP + unpdf extraction (pure-JS, no browser/key)
+  //   4. articles  → authed browser readability (only if --browser-mcp given)
+  //   5. articles  → plain HTTP readability     (browser-free fallback)
   const chain: FetcherPort[] = []
 
   // Tier-1 (free, no key): pull the video's captions/auto-subs. Resolves
@@ -288,6 +290,17 @@ export async function runImportWeb(args: readonly string[]): Promise<ExitCode> {
         ...(parsed.ffmpegLocation ? { ffmpegLocation: parsed.ffmpegLocation } : {}),
       })
     )
+
+  // PDFs: pure-JS, no browser/key needed, always available. Sits AHEAD of
+  // the browser-based fetchers below — handing a raw PDF URL to a headless
+  // browser renders the native PDF viewer, not extractable text, and a
+  // public court/registry PDF needs no authenticated session anyway. It
+  // claims a URL by extension OR by a real `application/pdf` content-type
+  // (see pdf-fetcher.adapter.ts), so falls through to those richer
+  // fetchers for anything that merely LOOKED like it might be a PDF but
+  // wasn't (e.g. an unauthenticated request blocked/redirected to a login
+  // page instead of the file).
+  chain.push(new PdfFetcher())
 
   // A `scrape` MCP server (e.g. the browser project's tiered router) handles
   // walled / JS-rendered pages with stealth + auto-escalation and returns

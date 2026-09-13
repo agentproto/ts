@@ -18,6 +18,7 @@
  */
 
 import { promises as fs, constants as fsConstants } from "node:fs"
+import { homedir } from "node:os"
 import { delimiter, join } from "node:path"
 import {
   defineAgentCli,
@@ -158,6 +159,7 @@ export const ACP_CATALOG: readonly AcpAgentSpec[] = [
       "Google's Gemini CLI in ACP mode (`gemini --experimental-acp`). Open-source terminal agent; drives Gemini models over the Agent Client Protocol.",
     bin: "gemini",
     bin_args: ["--experimental-acp"],
+    provider: "google",
     install_hint: "npm install -g @google/gemini-cli",
   },
   {
@@ -177,6 +179,55 @@ export const ACP_CATALOG: readonly AcpAgentSpec[] = [
     bin: "iflow",
     bin_args: ["--experimental-acp"],
     install_hint: "npm install -g @iflow-ai/iflow-cli",
+  },
+  {
+    slug: "mistral-vibe",
+    name: "Mistral Vibe",
+    description:
+      "Mistral AI's Vibe coding CLI, driven over the Agent Client Protocol via its bundled `vibe-acp` binary. Auth via MISTRAL_API_KEY (`vibe --setup`).",
+    bin: "vibe-acp",
+    provider: "mistral",
+    models: {
+      default: "mistral-vibe-cli-latest",
+      allowed: [
+        "mistral-vibe-cli-latest",
+        "mistral-vibe-cli-fast",
+        "mistral-vibe-cli-with-tools",
+        "mistral-medium-latest",
+        "mistral-medium-3-5",
+        "mistral-large-latest",
+        "mistral-small-latest",
+        "codestral-latest",
+        "devstral-latest",
+        "devstral-medium-latest",
+        "magistral-small-latest",
+        "ministral-8b-latest",
+      ],
+    },
+    install_hint: "uv tool install mistral-vibe",
+  },
+  {
+    slug: "kimi-cli",
+    name: "Kimi CLI",
+    description:
+      "Moonshot AI's Kimi CLI in ACP server mode (`kimi acp`), driven over the Agent Client Protocol. Requires `kimi login` once beforehand.",
+    bin: "kimi",
+    bin_args: ["acp"],
+    provider: "moonshot",
+    models: {
+      default: "kimi-k3",
+      allowed: [
+        "kimi-k3",
+        "kimi-k2.7-code",
+        "kimi-k2.6",
+        "kimi-k2.5",
+        "kimi-k2-thinking",
+        "kimi-k2-thinking-turbo",
+        "kimi-k2-turbo-preview",
+        "kimi-k2-0905-preview",
+      ],
+    },
+    install_hint: "uv tool install --python 3.13 kimi-cli",
   },
 ] as const
 
@@ -203,9 +254,36 @@ export async function resolveAcpSpec(
 }
 
 /**
- * Is `bin` runnable — a path that exists+executable, or a bare name found
- * on PATH? Used to classify generic ACP agents in the listing:
- * `available` when present, `supported` (install_hint) when not.
+ * Well-known install directories for the package managers `install-hint.ts`
+ * recognizes (uv/pipx/pip --user, cargo, go, brew) — checked as a FALLBACK
+ * when a bare bin isn't found on `process.env.PATH`. Exists because the
+ * daemon is a long-running process: it inherits PATH once at boot, and a
+ * `uv tool install`/`cargo install`/… run afterward (e.g. via the
+ * `adapter_install` route) drops its binary into one of these directories,
+ * which is commonly NOT yet on PATH on a machine's first install of that
+ * tool (the tool itself prints a "restart your shell" hint) — so a
+ * genuinely-installed adapter kept reporting "supported" (not installed)
+ * until the daemon itself was restarted. Checking these literal paths is
+ * PATH-independent, so a fresh install is visible on the very next listing
+ * without requiring a daemon restart.
+ */
+export function fallbackBinDirs(): readonly string[] {
+  const home = homedir()
+  return [
+    join(home, ".local", "bin"), // uv tool install, pipx, pip install --user
+    join(home, ".cargo", "bin"), // cargo install
+    join(home, "go", "bin"), // go install (GOPATH unset)
+    "/opt/homebrew/bin", // brew, Apple Silicon
+    "/usr/local/bin", // brew, Intel mac / generic unix
+  ]
+}
+
+/**
+ * Is `bin` runnable — a path that exists+executable, a bare name found on
+ * PATH, or one found in a well-known package-manager install dir PATH
+ * hasn't picked up yet (see {@link fallbackBinDirs})? Used to classify
+ * generic ACP agents in the listing: `ready` when present, `supported`
+ * (install_hint) when not.
  */
 export async function binOnPath(bin: string): Promise<boolean> {
   // A path with a separator is checked directly, not walked on PATH.
@@ -213,7 +291,7 @@ export async function binOnPath(bin: string): Promise<boolean> {
     return canExecute(bin)
   }
   const pathVar = process.env.PATH ?? ""
-  const dirs = pathVar.split(delimiter).filter(Boolean)
+  const dirs = [...pathVar.split(delimiter).filter(Boolean), ...fallbackBinDirs()]
   const exts =
     process.platform === "win32"
       ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean)
@@ -238,7 +316,7 @@ async function canExecute(path: string): Promise<boolean> {
 /** A generic ACP entry as surfaced in the adapter listing — the same
  *  UI-safe shape as `listAdaptersWithCatalog` entries, plus provenance. */
 export type AcpGenericListEntry = AdapterInfo & {
-  status: "supported" | "available"
+  status: "supported" | "ready"
   hint?: string
   source: AcpSpecSource
 }
@@ -246,8 +324,17 @@ export type AcpGenericListEntry = AdapterInfo & {
 /**
  * List the generic ACP agents (curated catalog + user config, config
  * shadowing catalog) with a runtime `status` derived from bin presence:
- * `available` when the bin is on PATH, `supported` (not installed, shows
+ * `ready` when the bin is on PATH, `supported` (not installed, shows
  * `install_hint`) otherwise. Config-defined agents are always listed.
+ *
+ * `ready`, not `available`: in the merged listing's vocabulary
+ * (`listAdaptersWithCatalog`), "available" means installed-but-setup/auth-
+ * pending — a state a generic spec can never leave, since it declares no
+ * setup ledger or auth descriptor for anyone to complete. Reporting it
+ * kept UIs offering "Install" forever on an installed CLI (the install
+ * re-ran the hint as a no-op) while never offering "Start". A CLI whose
+ * own auth is missing (`kimi login`, MISTRAL_API_KEY) now fails at spawn
+ * with its real error instead — actionable, where the Install loop was not.
  *
  * `excludeSlugs` drops entries already covered by an npm adapter /
  * native catalog entry, so a generic spec never double-appears next to a
@@ -285,12 +372,17 @@ export async function listAcpGenericAdapters(opts?: {
       commands: [],
       models: spec.models?.allowed ?? [],
       modes: [],
-      // Generic ACP config entries (`~/.agentproto/config.json`) declare only
-      // bare id strings (AcpAgentConfigEntry.models.allowed) — no
-      // provider/mode binding surface, so every entry states an unstated
-      // provider, same as a bare string in an AIP-45 manifest would.
-      modelDetails: (spec.models?.allowed ?? []).map((id) => ({ id })),
-      status: present ? "available" : "supported",
+      // Generic ACP entries declare bare id strings
+      // (AcpAgentConfigEntry.models.allowed) with no per-model binding
+      // surface; the spec-level `provider` (the endpoint the CLI's own
+      // auth bills) is stamped onto each so clients can link the harness
+      // to that provider's wallets.
+      modelDetails: (spec.models?.allowed ?? []).map((id) => ({
+        id,
+        ...(spec.provider ? { provider: spec.provider } : {}),
+      })),
+      ...(spec.provider ? { provider: spec.provider } : {}),
+      status: present ? "ready" : "supported",
       source,
       ...(spec.install_hint ? { hint: spec.install_hint } : {}),
     })

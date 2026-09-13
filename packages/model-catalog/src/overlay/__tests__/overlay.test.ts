@@ -50,7 +50,7 @@ describe("consumer catalog overlay", () => {
       llm: { [coreId]: { inputPer1M: 999, outputPer1M: 999, provider: "anthropic" } as never },
     })
     const m = getModel(coreId)
-    expect(m && m.kind === "llm" ? m.pricing.inputPer1M : null).toBe(999)
+    expect(m && m.kind === "llm" ? m.pricing?.inputPer1M : null).toBe(999)
     const occurrences = listModels({ kind: "llm" }).filter(x => x.id === coreId)
     expect(occurrences).toHaveLength(1)
   })

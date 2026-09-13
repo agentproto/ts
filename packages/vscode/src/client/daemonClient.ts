@@ -30,7 +30,10 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 import { type DaemonConfig, buildAuthHeaders } from "../config.js"
+import { renestCatalog } from "./daemonCompat.js"
 import type {
+  ActivityListFilter,
+  ActivityRecord,
   AdapterInfo,
   AdapterInstallResult,
   AuthProfileSummary,
@@ -42,6 +45,7 @@ import type {
   DiscoveredCredential,
   HarnessCapabilities,
   ImportCredentialRequest,
+  InstalledAppInfo,
   LlmEndpointDescriptorResult,
   LlmEndpointLinksResult,
   LlmEndpointReloadPacksResult,
@@ -51,14 +55,21 @@ import type {
   LlmEndpointUpstreamTestResult,
   PendingPermission,
   ProviderPresetEntry,
+  RestartOverridePayload,
   RouteSpec,
   SessionDescriptor,
   SessionEventsPage,
   SessionEventsPollResult,
   SessionSummary,
+  TaskListFilter,
+  TaskPatchInput,
+  TaskPatchResult,
+  TaskRecord,
   UserPreset,
   WorkspacesConfig,
   WorktreeGcResult,
+  AppCatalogEntry,
+  WorkflowRunStart,
 } from "./types.js"
 
 export interface SessionEventsOptions {
@@ -84,6 +95,33 @@ export class WorkspacesRouteMissingError extends Error {
   constructor() {
     super("POST /workspaces is not available on this daemon — update your agentproto install.")
     this.name = "WorkspacesRouteMissingError"
+  }
+}
+
+/** Raised by {@link DaemonClient.listActivities} on the daemon's 501
+ *  `activities_not_configured` — it was started without an activity
+ *  projector wired, not "no activities right now". Callers must not treat
+ *  this the same as an empty list. */
+export class ActivitiesUnavailableError extends Error {
+  constructor() {
+    super(
+      "GET /activities is not enabled on this daemon — it was started without an activity projector.",
+    )
+    this.name = "ActivitiesUnavailableError"
+  }
+}
+
+/** Raised by the task-ledger methods when the daemon was started without a
+ *  task ledger wired. Unlike `/activities`, an unwired `/tasks` has no
+ *  dedicated 501 — every route under it 404s through the generic dispatcher
+ *  fallthrough (`{error:"not_found"}`), which is what this class detects and
+ *  re-raises as a typed, recognisable failure instead of a raw 404. */
+export class TasksUnavailableError extends Error {
+  constructor() {
+    super(
+      "The task ledger is not enabled on this daemon — it was started without a task ledger wired.",
+    )
+    this.name = "TasksUnavailableError"
   }
 }
 
@@ -144,6 +182,38 @@ export interface PromptOptions {
   interrupt?: boolean
   /** wait=true blocks until the turn ends; wait=false is fire-and-forget. */
   wait?: boolean
+  /** Append to the daemon's FIFO instead of the mid-turn 409 rejection when
+   *  the session is busy — see `SessionsRegistry.enqueuePrompt`'s `queue`
+   *  opt. A no-op on an idle session (dispatches immediately either way). */
+  queue?: boolean
+  /** Only meaningful alongside `queue`: insert at the FRONT of the FIFO
+   *  instead of the back. Never touches the live turn — that's `interrupt`. */
+  force?: boolean
+}
+
+/** One entry in `GET /sessions/:id/queue` — the after-the-fact prompt FIFO
+ *  view. Mirrors `@agentproto/runtime` QueuedPromptView. */
+export interface QueueViewItem {
+  id: string
+  /** Human-readable origin ("user", "agent <id>", "child <id>"). */
+  origin: string
+  /** Short text preview of the queued message. */
+  preview: string
+  queuedAt: string
+  /** 0 = next to dispatch. */
+  position: number
+}
+
+/** `POST /sessions/:id/prompt?wait=false`'s response body — `pending` (with
+ *  `queueId`/`queuePosition`) is present only when the prompt genuinely
+ *  landed in the FIFO rather than dispatching immediately. */
+export interface PromptResult {
+  ok: boolean
+  id: string
+  queued: boolean
+  pending?: boolean
+  queueId?: string
+  queuePosition?: number
 }
 
 export interface WaitOptions {
@@ -156,6 +226,26 @@ export interface RespondPermissionInput {
   decision: "approve" | "deny"
   optionId?: string
   scope?: "once" | "always"
+}
+
+/** One `GET /brain/query` hit — the lean shape the daemon route maps
+ *  provider hits to (http-server.ts). `workspace` is always present
+ *  (which brain the hit came from); `sessionId`/`title` are absent for
+ *  a knowledge-file source that isn't a conversation. */
+export interface BrainQueryHit {
+  readonly sourceId: string
+  readonly workspace: string
+  readonly sessionId?: string
+  readonly title?: string
+  readonly score: number
+  readonly snippet: string
+}
+
+export interface BrainQueryResult {
+  readonly workspace: string
+  readonly hits: readonly BrainQueryHit[]
+  /** Slugs skipped in federated mode after their provider threw. */
+  readonly workspacesErrored?: readonly string[]
 }
 
 export class DaemonClient {
@@ -222,6 +312,25 @@ export class DaemonClient {
 
   async getSession(id: string): Promise<SessionDescriptor> {
     return this.getJson<SessionDescriptor>(`/sessions/${encodeURIComponent(id)}`)
+  }
+
+  /**
+   * GET /brain/query — fuzzy (BM25) search over ingested session
+   * transcripts. The daemon splits its corpus across multiple
+   * per-workspace brains, so `workspace` is left unset here on purpose:
+   * the route's own default (`workspace=all`) federates every registered
+   * brain and tags each hit with the workspace it came from — exactly
+   * what "search all session transcripts" (the command this backs) means.
+   */
+  async searchTranscripts(
+    q: string,
+    opts?: { topK?: number; workspace?: string },
+  ): Promise<BrainQueryResult> {
+    const params = new URLSearchParams()
+    params.set("q", q)
+    if (typeof opts?.topK === "number") params.set("topK", String(opts.topK))
+    if (opts?.workspace) params.set("workspace", opts.workspace)
+    return this.getJson<BrainQueryResult>(`/brain/query?${params.toString()}`)
   }
 
   /**
@@ -311,13 +420,66 @@ export class DaemonClient {
     id: string,
     prompt: string,
     opts: PromptOptions = {},
-  ): Promise<unknown> {
+  ): Promise<PromptResult> {
     const wait = opts.wait ?? true
     const url = `/sessions/${encodeURIComponent(id)}/prompt?wait=${wait ? "true" : "false"}`
-    return this.postJson<unknown>(url, {
-      prompt,
-      ...(opts.interrupt ? { interrupt: true } : {}),
-    })
+    return this.postJson<PromptResult>(
+      url,
+      {
+        prompt,
+        ...(opts.interrupt ? { interrupt: true } : {}),
+        ...(opts.queue ? { queue: true } : {}),
+        ...(opts.force ? { force: true } : {}),
+      },
+      // The prompt route AWAITS registry.enqueuePrompt even in wait=false
+      // (fire-and-forget) mode, because admission includes the lazy resume
+      // attempt (maybeResumeAgent respawns a dead/reaped adapter) plus the
+      // admission checks. A resume — or a slow adapter — can blow well past
+      // the blanket 30s, so the client aborted with a TimeoutError while the
+      // daemon finished the work anyway (which is why the instant retry
+      // "worked"). Give the prompt POST enough room for a cold resume; every
+      // other route keeps the 30s default.
+      { timeoutMs: 120_000 },
+    )
+  }
+
+  /** Cancel one not-yet-dispatched item from a session's prompt FIFO —
+   *  `DELETE /sessions/:id/queue/:queueId`. Idempotent: an already-gone id
+   *  (dispatched, already removed) still resolves `{removed: false}`. */
+  async removeQueuedPrompt(
+    id: string,
+    queueId: string,
+  ): Promise<{ ok: boolean; id: string; queueId: string; removed: boolean }> {
+    return this.deleteJson(`/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(queueId)}`)
+  }
+
+  /** One entry in `GET /sessions/:id/queue` — the after-the-fact view of a
+   *  session's prompt FIFO (origin, preview, queuedAt, position; position 0
+   *  = next to dispatch). Mirrors the runtime `QueuedPromptView`. */
+  async getSessionQueue(
+    id: string,
+  ): Promise<{ ok: boolean; id: string; queue: QueueViewItem[] }> {
+    return this.getJson(`/sessions/${encodeURIComponent(id)}/queue`)
+  }
+
+  /** Reorder-only force: jump an already-queued item to the FRONT without
+   *  touching the in-flight turn — `POST /:id/queue/:queueId/promote`.
+   *  The after-the-fact counterpart of the enqueue-time `force` opt. */
+  async promoteQueuedPrompt(
+    id: string,
+    queueId: string,
+  ): Promise<{ ok: boolean; id: string; queueId: string; position: number }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(queueId)}/promote`, {})
+  }
+
+  /** Deliver-now (interrupt): cancel whatever's running and dispatch THIS
+   *  queued item as the new turn — `POST /:id/queue/:queueId/deliver`. The
+   *  "I need this NOW" op; distinct from promote. */
+  async deliverQueuedPrompt(
+    id: string,
+    queueId: string,
+  ): Promise<{ ok: boolean; id: string; queueId: string; interrupted: boolean }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/queue/${encodeURIComponent(queueId)}/deliver`, {})
   }
 
   /**
@@ -385,6 +547,16 @@ export class DaemonClient {
     return this.postJson(`/sessions/${encodeURIComponent(id)}/kill`, {})
   }
 
+  /**
+   * Set or clear a session's list-visibility pin — `POST /sessions/:id/pin`,
+   * the HTTP twin of the `session_set_pinned` MCP verb. Pure sort/display
+   * state: never touches keepAlive, the idle-reaper, or emits any
+   * notification. See `SessionDescriptor.pinned`.
+   */
+  async setPinned(id: string, pinned: boolean): Promise<{ ok: boolean; sessionId: string; pinned: boolean }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/pin`, { pinned })
+  }
+
   /** Cancel the in-flight turn on a live agent session and leave the
    *  session itself alive and idle — unlike `kill()`, which ends it. */
   async interrupt(id: string): Promise<{ ok: boolean; id: string; wasBusy: boolean }> {
@@ -403,6 +575,49 @@ export class DaemonClient {
     model: string,
   ): Promise<{ ok: boolean; id: string; applied: boolean; model?: string; reason?: string }> {
     return this.postJson(`/sessions/${encodeURIComponent(id)}/model`, { model })
+  }
+
+  /**
+   * Switch the reasoning/compute budget (effort) on a LIVE agent-cli session —
+   * `POST /sessions/:id/effort`, the effort-axis sibling of {@link setSessionModel}.
+   * Same non-fatal contract: an effort the current model rejects resolves
+   * `{applied:false, reason}` rather than throwing.
+   */
+  async setSessionEffort(
+    id: string,
+    effort: string,
+  ): Promise<{ ok: boolean; id: string; applied: boolean; effort?: string; reason?: string }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/effort`, { effort })
+  }
+
+  /**
+   * Switch the posture on a LIVE agent-cli session — `POST /sessions/:id/posture`.
+   * A posture that maps to a native advertised harness mode switches live; one
+   * with no native mode resolves `{applied:false, reason:"requires-restart"}`,
+   * telling the caller to route it through {@link restartSessionWithOverride}.
+   * `posture` is a canonical value ("plan"/"bypass"/…) or a raw harness mode id.
+   */
+  async setSessionPosture(
+    id: string,
+    posture: string,
+  ): Promise<{ ok: boolean; id: string; applied: boolean; posture?: string; reason?: string }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/posture`, { posture })
+  }
+
+  /**
+   * Restart an agent-cli session with axis overrides, carrying the conversation
+   * over — `POST /sessions/:id/restart`. The single path for the restart-only
+   * axes (wallet via `access.profileRef`, route via `route.gateway`, plus
+   * model/effort/posture/contextProfile/mode). Returns the NEW descriptor (a
+   * fresh id) with `resumeVia` ("resumed via ACP" / "…summary") and
+   * `resumeFallback` describing what carried over. An unknown/ineligible
+   * override is a real error (thrown), NEVER a silent blank session.
+   */
+  async restartSessionWithOverride(
+    id: string,
+    overrides: RestartOverridePayload,
+  ): Promise<SessionDescriptor & { resumedFrom?: string; resumeVia?: string; resumeFallback?: boolean }> {
+    return this.postJson(`/sessions/${encodeURIComponent(id)}/restart`, overrides)
   }
 
   async deleteSession(id: string): Promise<{ ok: boolean; id: string }> {
@@ -506,7 +721,10 @@ export class DaemonClient {
    */
   async mcpCall<T = unknown>(toolName: string, args: Record<string, unknown> = {}): Promise<T> {
     const token = await this.resolveToken()
-    const res = await this.fetchImpl(`${this.url}/mcp`, {
+    // Announce this client's source label so a spawn made through it (agent_start)
+    // is stamped origin=vscode instead of landing as a bare root
+    // (#session-visibility — the daemon reads `?origin=` in handleMcp).
+    const res = await this.fetchImpl(`${this.url}/mcp?origin=vscode`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -533,12 +751,53 @@ export class DaemonClient {
   }
 
   /**
+   * Read an MCP resource over the same stateless /mcp endpoint (JSON-RPC
+   * `resources/read`). Returns the first contents entry's text — the shape
+   * every `ui://` panel resource serves (mcp-apps-adapter.ts registers one
+   * text/html content item per read).
+   */
+  async readResource(uri: string): Promise<string> {
+    const token = await this.resolveToken()
+    const res = await this.fetchImpl(`${this.url}/mcp?origin=vscode`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        // Streamable-HTTP MCP servers 406 unless the client accepts BOTH.
+        accept: "application/json, text/event-stream",
+        ...buildAuthHeaders(this.config.authHeaders, token),
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "resources/read",
+        params: { uri },
+      }),
+      signal: AbortSignal.timeout(30_000),
+    })
+    if (!res.ok) {
+      throw new Error(`MCP resources/read failed: HTTP ${res.status} ${await describeError(res)}`)
+    }
+    const envelope = await parseMcpBody<{ contents?: Array<{ text?: string }> }>(res)
+    if (envelope.error) {
+      throw new Error(`MCP resources/read error: ${JSON.stringify(envelope.error)}`)
+    }
+    const text = envelope.result?.contents?.[0]?.text
+    if (typeof text !== "string") {
+      throw new Error(`MCP resource ${uri} returned no text content`)
+    }
+    return text
+  }
+
+  /**
    * adapter_list is an MCP-only tool — fetch the daemon's installed
    * adapter registry via mcpCall("adapter_list").
    */
   async listAdapters(): Promise<AdapterInfo[]> {
     const result = await this.mcpCall<{ adapters?: AdapterInfo[] } | AdapterInfo[]>(
       "adapter_list",
+      // Compact-by-default daemon (0.20+) drops modes/modelDetails/status
+      // without this — the Configuration Lab + mind map read them.
+      { full: true },
     )
     if (Array.isArray(result)) return result
     return result.adapters ?? []
@@ -553,6 +812,60 @@ export class DaemonClient {
    */
   async installAdapter(slug: string): Promise<AdapterInstallResult> {
     return this.mcpCall<AdapterInstallResult>("adapter_install", { slug })
+  }
+
+  /**
+   * `app_list` is an MCP-only tool — fetch the daemon's installed-app
+   * registry (each record carries the `ui` block when the app ships a
+   * panel).
+   */
+  async listApps(): Promise<InstalledAppInfo[]> {
+    // `full: true` — compact app_list flattens agents/workflows to bare id
+    // strings and drops `ui`, leaving the Apps tree without manifest paths.
+    const result = await this.mcpCall<InstalledAppInfo[]>("app_list", { full: true })
+    return Array.isArray(result) ? result : []
+  }
+
+  /**
+   * `app_catalog` — the curated catalog file merged with installed status.
+   * The Apps view reads it only for each app's `category`; a daemon without
+   * the verb makes this throw, which callers tolerate (ungrouped fallback).
+   */
+  async appCatalog(): Promise<AppCatalogEntry[]> {
+    const result = await this.mcpCall<AppCatalogEntry[]>("app_catalog")
+    return Array.isArray(result) ? result : []
+  }
+
+  /**
+   * `workflow_run_file` — start one of an installed app's workflows from
+   * its emitted WORKFLOW.md (the path `app_list` reports under
+   * `workflows[].path`). `cwd` should be the app's install dir so spawned
+   * steps resolve the app's agents. Throws with the daemon's message when
+   * the run is refused (the tool answers `isError`).
+   */
+  async runWorkflowFile(args: {
+    path: string
+    cwd?: string
+    input?: Record<string, unknown>
+  }): Promise<WorkflowRunStart> {
+    return this.mcpCall<WorkflowRunStart>("workflow_run_file", {
+      path: args.path,
+      ...(args.cwd ? { cwd: args.cwd } : {}),
+      ...(args.input ? { input: args.input } : {}),
+    })
+  }
+
+  /**
+   * `app_tool_call` — call one of an installed app's UI-exposed tools
+   * (the `ui.tools` allowlist the daemon enforces). Returns the dispatched
+   * tool's own result, unwrapped from the MCP content envelope.
+   */
+  async appToolCall(
+    appId: string,
+    tool: string,
+    args?: Record<string, unknown>,
+  ): Promise<unknown> {
+    return this.mcpCall("app_tool_call", { appId, tool, ...(args ? { args } : {}) })
   }
 
   /**
@@ -574,8 +887,12 @@ export class DaemonClient {
    * vendor/product/route model catalog.
    */
   async catalogModels(): Promise<CatalogModelsResponse> {
-    const result = await this.mcpCall<CatalogModelsResponse>("catalog_models")
-    return result ?? { vendors: [] }
+    // `full: true` — the compact projection returns a flat `{ routes: [...] }`
+    // array the legacy consumers can't walk; renestCatalog regroups it into
+    // the nested { vendors: [...] } tree (and default-fills the fields the
+    // compact rows lack).
+    const result = await this.mcpCall<unknown>("catalog_models", { full: true })
+    return renestCatalog(result) ?? { vendors: [] }
   }
 
   /**
@@ -955,6 +1272,141 @@ export class DaemonClient {
     })
   }
 
+  // ── Activity projection & Task ledger ───────────────────────────────
+
+  /**
+   * GET /activities — the daemon's unified Activity projection (completion
+   * policies, session turns, workflow steps, opened PRs; a read-only
+   * projection recomputed on every call, never stored). Mirrors the MCP
+   * `activities_list` tool's filter and shape.
+   *
+   * Throws {@link ActivitiesUnavailableError} on the daemon's 501
+   * `activities_not_configured` (started without an activity projector
+   * wired) instead of returning a silent empty array — "no activities right
+   * now" and "this daemon can't do that" are different answers.
+   */
+  async listActivities(filter?: ActivityListFilter): Promise<ActivityRecord[]> {
+    const params = new URLSearchParams()
+    if (filter?.sessionId) params.set("sessionId", filter.sessionId)
+    if (filter?.state) params.set("state", filter.state)
+    if (filter?.kind) params.set("kind", filter.kind)
+    if (filter?.source) params.set("source", filter.source)
+    if (filter?.includeTerminal) params.set("includeTerminal", "true")
+    const qs = params.toString()
+    const path = `/activities${qs ? `?${qs}` : ""}`
+    const res = await this.authedFetch(path, {
+      method: "GET",
+      headers: { "content-type": "application/json" },
+      timeoutMs: 30_000,
+    })
+    if (res.status === 501) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string; message?: string }
+      if (body.error === "activities_not_configured") throw new ActivitiesUnavailableError()
+      throw new Error(`GET ${path} failed: HTTP 501 ${body.message ?? body.error ?? "HTTP 501"}`)
+    }
+    if (!res.ok) {
+      throw new Error(`GET ${path} failed: HTTP ${res.status} ${await describeError(res)}`)
+    }
+    const body = (await res.json()) as { activities: ActivityRecord[] }
+    return body.activities ?? []
+  }
+
+  /**
+   * GET /tasks — the caller's task board (operator context over HTTP:
+   * `ws:<activeWorkspaceSlug>` by default; pass `boardId` to read another,
+   * e.g. a session tree's `tree:<rootSessionId>` board). Mirrors the MCP
+   * `task_list` tool's filter and shape.
+   *
+   * Throws {@link TasksUnavailableError} on the daemon's generic 404
+   * fallthrough (started without a task ledger wired — this whole route
+   * family 404s, there is no dedicated 501 the way `/activities` has)
+   * instead of returning a silent empty array.
+   */
+  async listTasks(opts?: TaskListFilter): Promise<TaskRecord[]> {
+    const params = new URLSearchParams()
+    if (opts?.boardId) params.set("boardId", opts.boardId)
+    if (opts?.status) params.set("status", opts.status)
+    if (opts?.includeClosed) params.set("includeClosed", "true")
+    const qs = params.toString()
+    const path = `/tasks${qs ? `?${qs}` : ""}`
+    const res = await this.authedFetch(path, {
+      method: "GET",
+      headers: { "content-type": "application/json" },
+      timeoutMs: 30_000,
+    })
+    if (res.status === 404) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string }
+      if (body.error === "not_found") throw new TasksUnavailableError()
+      throw new Error(`GET ${path} failed: HTTP 404 ${body.error ?? "HTTP 404"}`)
+    }
+    if (!res.ok) {
+      throw new Error(`GET ${path} failed: HTTP ${res.status} ${await describeError(res)}`)
+    }
+    const body = (await res.json()) as { boardId: string; tasks: TaskRecord[] }
+    return body.tasks ?? []
+  }
+
+  /**
+   * GET /tasks/:id. A daemon with no task ledger wired and a task that was
+   * simply never created both 404 — distinguished by the `error` field: the
+   * ledger's own per-task miss carries `task_not_found` (surfaced as a
+   * plain thrown Error, same as {@link getSession} on a missing session),
+   * while the route-absent fallthrough carries the generic dispatcher's
+   * `not_found`, raised as {@link TasksUnavailableError} so callers can tell
+   * "no board here at all" from "that task got deleted".
+   */
+  async getTask(taskId: string): Promise<TaskRecord> {
+    const path = `/tasks/${encodeURIComponent(taskId)}`
+    const res = await this.authedFetch(path, {
+      method: "GET",
+      headers: { "content-type": "application/json" },
+      timeoutMs: 30_000,
+    })
+    if (res.status === 404) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string }
+      if (body.error === "not_found") throw new TasksUnavailableError()
+      throw new Error(`GET ${path} failed: HTTP 404 ${body.error ?? "task_not_found"}`)
+    }
+    if (!res.ok) {
+      throw new Error(`GET ${path} failed: HTTP ${res.status} ${await describeError(res)}`)
+    }
+    return (await res.json()) as TaskRecord
+  }
+
+  /**
+   * PATCH /tasks/:id — the Task ledger's rev-CAS write path (status, owner
+   * reassign/release, title/description/blockedBy edits, a free-text note,
+   * or the `evidence` shortcut for an already-passed verify gate).
+   *
+   * Returns the {@link TaskPatchResult} union UNFLATTENED: a 200 can carry
+   * `verifying: true` (accepted, but a background Tier-1 verify gate hasn't
+   * settled the status yet — watch for `task:changed` or re-fetch), a 409
+   * is a rev-CAS conflict to rebase off `current`, and a 400 is a clean
+   * refusal (bad status transition, wrong owner, …). None of those three
+   * throw — they are legitimate answers the caller must branch on, exactly
+   * like the daemon's own `task_update` tool. Only a disabled route (404,
+   * generic `not_found` → {@link TasksUnavailableError}) or a transport
+   * failure throws.
+   */
+  async patchTask(taskId: string, patch: TaskPatchInput): Promise<TaskPatchResult> {
+    const path = `/tasks/${encodeURIComponent(taskId)}`
+    const res = await this.authedFetch(path, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+      timeoutMs: 30_000,
+    })
+    if (res.status === 404) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string }
+      if (body.error === "not_found") throw new TasksUnavailableError()
+      throw new Error(`PATCH ${path} failed: HTTP 404 ${body.error ?? "task_not_found"}`)
+    }
+    if (res.status === 200 || res.status === 409 || res.status === 400) {
+      return (await res.json()) as TaskPatchResult
+    }
+    throw new Error(`PATCH ${path} failed: HTTP ${res.status} ${await describeError(res)}`)
+  }
+
   // ── Token resolution (recon §Auth) ─────────────────────────────────
 
   /**
@@ -1019,8 +1471,8 @@ export class DaemonClient {
     return this.request<T>("GET", path)
   }
 
-  private async postJson<T>(path: string, body: unknown): Promise<T> {
-    return this.request<T>("POST", path, body)
+  private async postJson<T>(path: string, body: unknown, opts: { timeoutMs?: number } = {}): Promise<T> {
+    return this.request<T>("POST", path, body, opts)
   }
 
   private async deleteJson<T>(path: string): Promise<T> {
@@ -1068,12 +1520,13 @@ export class DaemonClient {
     method: string,
     path: string,
     body?: unknown,
+    opts: { timeoutMs?: number } = {},
   ): Promise<T> {
     const res = await this.authedFetch(path, {
       method,
       headers: { "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
-      timeoutMs: 30_000,
+      timeoutMs: opts.timeoutMs ?? 30_000,
     })
     if (!res.ok) {
       throw new Error(`${method} ${path} failed: HTTP ${res.status} ${await describeError(res)}`)
@@ -1176,10 +1629,10 @@ interface McpResult {
   isError?: boolean
 }
 
-interface McpResponse {
+interface McpResponse<R = McpResult> {
   jsonrpc: "2.0"
   id: number
-  result?: McpResult
+  result?: R
   error?: { code: number; message: string; data?: unknown }
 }
 
@@ -1188,17 +1641,17 @@ interface McpResponse {
  * (content-type text/event-stream) even for a single request/response —
  * in the SSE case the JSON-RPC envelope is the first `data:` frame.
  */
-async function parseMcpBody(res: Response): Promise<McpResponse> {
+async function parseMcpBody<R = McpResult>(res: Response): Promise<McpResponse<R>> {
   const contentType = res.headers.get("content-type") ?? ""
   if (!contentType.includes("text/event-stream")) {
-    return (await res.json()) as McpResponse
+    return (await res.json()) as McpResponse<R>
   }
   const text = await res.text()
   for (const line of text.split("\n")) {
     if (!line.startsWith("data:")) continue
     const payload = line.slice(5).trim()
     if (!payload) continue
-    const parsed = JSON.parse(payload) as McpResponse
+    const parsed = JSON.parse(payload) as McpResponse<R>
     if (parsed.result !== undefined || parsed.error !== undefined) return parsed
   }
   throw new Error("MCP SSE response contained no JSON-RPC envelope")

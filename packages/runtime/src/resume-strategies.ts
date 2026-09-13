@@ -75,16 +75,29 @@ export interface ResumeStrategy {
    *  most-recently-modified, filtered to files at-or-after `prevStartedAt`
    *  (avoids resuming an unrelated prior conversation).
    *
+   *  `configDir` is the session's isolated provider config dir
+   *  (`SessionDescriptor.adapterConfigDir`): a daemon-spawned claude-code
+   *  session (#824) persists its transcripts under that dir, not the
+   *  provider's global store — the probe must look there. Omit for a
+   *  native PTY / pre-#824 session (global store applies).
+   *
    *  Skip when the adapter doesn't persist sessions externally. */
   fsProbe?(
     cwd: string,
     prevStartedAt: string,
     expectedId?: string,
+    configDir?: string,
   ): Promise<string | null>
   /** Return the argv to spawn a PTY that resumes into the given id.
    *  When omitted, the daemon falls back to ACP-level resume via
    *  the agent-cli protocol instead of the provider's native CLI. */
   spawnArgs?(id: string): string[]
+  /** Env var the resumed PTY needs pointed at the session's isolated
+   *  provider config dir to find ITS OWN conversation store — see
+   *  `ConversationStore.configDirEnvVar`'s doc (conversation-store.ts) for
+   *  why this exists and what silently omitting it breaks. Undefined for
+   *  a provider with no config-dir-isolated store. */
+  configDirEnvVar?: string
 }
 
 // Project every conversation store that declares a native PTY attach argv
@@ -103,11 +116,13 @@ export const RESUME_STRATEGIES: Record<string, ResumeStrategy> = Object.fromEntr
         {
           outputHint: store.outputHint,
           storeAs: store.storeAs,
-          fsProbe: async (cwd, prevStartedAt, expectedId) => {
+          ...(store.configDirEnvVar ? { configDirEnvVar: store.configDirEnvVar } : {}),
+          fsProbe: async (cwd, prevStartedAt, expectedId, configDir) => {
             const candidates = await s.discover({
               cwd,
               since: prevStartedAt,
               expectedId,
+              configDir,
             })
             return candidates[0]?.conversationId ?? null
           },
@@ -164,6 +179,12 @@ export interface RestartCandidate {
 export interface FsProbeCandidate extends RestartCandidate {
   cwd?: string
   startedAt: string
+  /** The session's isolated provider config dir (`SessionDescriptor.
+   *  adapterConfigDir`) — where a daemon-spawned claude-code session's
+   *  transcripts actually live since #824. A full `SessionDescriptor`
+   *  satisfies this structurally; absent on pre-#824/PTY rows, where the
+   *  provider's global store is the right place to probe. */
+  adapterConfigDir?: string
 }
 
 /**
@@ -171,12 +192,15 @@ export interface FsProbeCandidate extends RestartCandidate {
  *
  *   1. pty-native  — the adapter has a captured resume id AND declares
  *      `spawnArgs` (e.g. claude-code): respawn a PTY running the
- *      provider's own resume command. Most reliable — works whenever
- *      the provider persisted the session, regardless of whether the
- *      ACP wrapper did.
+ *      provider's own resume command. Most reliable CONTINUITY mechanism
+ *      when it applies — but only actually reachable by default when the
+ *      prior session was ITSELF a real PTY (`prev.pty === true`), or the
+ *      caller explicitly opts in (`preferNativeTerminal`) — see the
+ *      `mayPreferNative` doc below for why.
  *   2. pty-plain   — the previous session was a real PTY with no
  *      native strategy match: re-run the same argv, no continuity.
- *   3. agent       — an agent-cli session with no native strategy:
+ *   3. agent       — an agent-cli session with no native strategy (or an
+ *      ACP-origin session where pty-native doesn't apply — see above):
  *      resume at the ACP level via the adapter's own session id (may
  *      still 404 if the adapter never persisted a turn — callers
  *      should retry without `resumeSessionId` on a "not found" error).
@@ -189,13 +213,39 @@ export type RestartStrategy =
   | { kind: "agent"; resumeSessionId?: string; resumeFallback?: boolean }
   | { kind: "unsupported"; reason: string }
 
-export function decideRestartStrategy(prev: RestartCandidate): RestartStrategy {
+export interface DecideRestartStrategyOptions {
+  /**
+   * Explicit opt-in to provider-native terminal resume for a session whose
+   * ORIGIN was agent-cli/ACP (not itself a PTY) — a human who wants the raw
+   * provider TUI instead of ACP-level resume, understanding the tradeoffs
+   * (see `mayPreferNative`'s doc below). Default false/omitted: an
+   * ACP-origin session always resumes via ACP.
+   */
+  preferNativeTerminal?: boolean
+}
+
+export function decideRestartStrategy(
+  prev: RestartCandidate,
+  opts: DecideRestartStrategyOptions = {},
+): RestartStrategy {
   // Provider-native terminal resume takes precedence over ACP-level resume —
   // but ONLY when the adapter manifest explicitly declares a verified native
-  // TUI resume capability (`nativeTerminalResume`). ACP resumability alone
-  // (`resumable`) does not imply it is safe or correct to reattach as a raw
-  // PTY; without the flag we fall back to ACP-level or fresh-spawn restart.
-  if (prev.adapterSlug && prev.nativeTerminalResume === true) {
+  // TUI resume capability (`nativeTerminalResume`) AND (origin-gate, closing
+  // the "restart starts a terminal but it doesn't work" bug) either the prior
+  // session was ITSELF a raw PTY (`prev.pty === true` — a real provider TUI a
+  // human was already looking at, whose config dir went through the actual
+  // interactive onboarding wizard), or the caller explicitly opted in
+  // (`preferNativeTerminal`). An agent-cli/ACP session's isolated
+  // `CLAUDE_CONFIG_DIR` (#824) is populated ONLY by the headless ACP
+  // entrypoint, which never runs the interactive TUI wizard — so defaulting
+  // an ACP-origin session's restart to pty-native silently drops it onto
+  // claude-code's first-run onboarding screen (theme picker, "detected a
+  // custom API key" prompt) with no one attached to answer it, forever.
+  // `nativeTerminalResume` alone is a CAPABILITY declaration ("this adapter
+  // supports native resume for a real terminal"), not license to mode-switch
+  // a headless session into an unattended one.
+  const mayPreferNative = prev.pty === true || opts.preferNativeTerminal === true
+  if (prev.adapterSlug && prev.nativeTerminalResume === true && mayPreferNative) {
     const strategy = RESUME_STRATEGIES[prev.adapterSlug]
     const id = strategy?.storeAs
       ? prev.resumeMetadata?.[strategy.storeAs]
@@ -261,6 +311,14 @@ export const RESUME_ID_REJECTED_RE =
  * past the kill, …). Eligible only when the file is at-or-after the
  * session's `startedAt` (avoid resuming an unrelated prior session
  * in the same cwd — see ResumeStrategy.fsProbe comment).
+ *
+ * Fix: when NO `adapterSessionId` was ever captured (session killed
+ * before the ACP handshake), run a recency-window probe. When an
+ * `adapterSessionId` exists but points to a missing JSONL, the probe
+ * tries exact-bind and returns nothing — that's correct, we NEVER
+ * silently resume a sibling conversation (safety: prevents cross-
+ * session contamination). The adapter-level resume will fail with
+ * "not found", triggering the fresh-spawn fallback + digest injection.
  */
 export async function augmentWithFsResume<T extends FsProbeCandidate>(
   prev: T,
@@ -278,15 +336,27 @@ export async function augmentWithFsResume<T extends FsProbeCandidate>(
   // uuid — acp-host.ts pins them equal) so the probe binds to THIS
   // session's transcript instead of the newest one in the cwd. Without
   // it, a restart of a session that shares a cwd with a concurrent one
-  // could silently resume the wrong conversation.
+  // could silently resume the wrong conversation. When the exact-bind
+  // finds nothing (the JSONL is gone), we deliberately do NOT fall
+  // through to a sibling — better to fail-fast and inject a digest.
   const id = await strategy.fsProbe(
     prev.cwd,
     prev.startedAt,
     prev.adapterSessionId,
+    // A config-dir-isolated session (#824) persisted its transcript under
+    // its own CLAUDE_CONFIG_DIR — probe there, not the global ~/.claude.
+    prev.adapterConfigDir,
   )
   if (!id) return prev
   return {
     ...prev,
+    // When `adapterSessionId` was never captured (session killed before
+    // the ACP handshake completed), backfill it from the fsProbe result
+    // so the agent restart path can attempt ACP-level resume too — not
+    // just the PTY-native path. For claude-code (and most adapters) the
+    // on-disk conversation id IS the ACP session id, so the values are
+    // interchangeable. Only backfills; never overwrites an existing id.
+    ...(!prev.adapterSessionId ? { adapterSessionId: id } : {}),
     resumeMetadata: {
       ...(prev.resumeMetadata ?? {}),
       [strategy.storeAs]: id,
@@ -304,9 +374,22 @@ export async function augmentWithFsResume<T extends FsProbeCandidate>(
  * declared capability backs that claim (`resumable !== false`). An adapter
  * that declared `resumable: false` but still carries an `adapterSessionId`
  * gets an honest degraded label instead of the lie — never silently "".
+ *
+ * Origin gate (mirrors `decideRestartStrategy`'s own — MUST stay in sync or
+ * this label lies about what actually happened): the native-resume phrasing
+ * is only reported when `decideRestartStrategy` itself would have picked
+ * pty-native for this `prev` — i.e. `prev.pty === true` or the caller passed
+ * the SAME `preferNativeTerminal` it decided the strategy with. Without this
+ * gate, a captured `resumeMetadata` alone used to make this function claim
+ * "resumed via claude --resume" even when the actual decision (now)
+ * downgrades an ACP-origin session to ACP-level resume instead.
  */
-export function describeResumePath(prev: RestartCandidate): string {
-  if (prev.adapterSlug) {
+export function describeResumePath(
+  prev: RestartCandidate,
+  opts: DecideRestartStrategyOptions = {},
+): string {
+  const mayPreferNative = prev.pty === true || opts.preferNativeTerminal === true
+  if (prev.adapterSlug && mayPreferNative) {
     const s = RESUME_STRATEGIES[prev.adapterSlug]
     if (s?.spawnArgs && s.storeAs && prev.resumeMetadata?.[s.storeAs]) {
       const sample = s.spawnArgs("…")[0] ?? prev.adapterSlug

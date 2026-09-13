@@ -13,9 +13,11 @@
  * Subsequent `start` calls read the persisted config automatically via
  * `resolve-launch.ts` in the adapter package.
  *
- * Endpoint discovery: reads `~/.agentproto/runtime.json` written by the
- * daemon at startup. Falls back to `AGENTPROTO_DAEMON_URL` env var.
- * Token from the same file is sent as Bearer on mutating routes.
+ * Endpoint discovery: same layered `discoverDaemon()` fallback as
+ * `agentproto sessions` — env override first, then a live home
+ * runtime.json, then the central registry, then workspace runtime.json
+ * files; a dead-pid descriptor is skipped. Token from whichever
+ * descriptor wins is sent as Bearer on mutating routes.
  *
  * Transport: HTTP, same pattern as `agentproto sessions`. No MCP in the
  * CLI layer — the MCP tools (start_browser, stop_browser, …) are the
@@ -71,8 +73,12 @@ Examples:
   agentproto browser status sess_abc12345
   agentproto browser stop sess_abc12345
 
-Discovers the daemon via ~/.agentproto/runtime.json. Set AGENTPROTO_DAEMON_URL
-(+ AGENTPROTO_DAEMON_TOKEN) to override.
+Discovers the daemon the same layered way \`agentproto sessions\` does — env
+override, then a live home runtime.json, then the central registry for the
+config-declared port, then each workspace's own runtime.json; a descriptor
+whose pid is dead is skipped. Run \`agentproto sessions --help\` or see this
+package's README ("Discovery + token") for the full order. Set
+AGENTPROTO_DAEMON_URL (+ AGENTPROTO_DAEMON_TOKEN) to override outright.
 `
 
 export async function runBrowser(args: readonly string[]): Promise<number> {

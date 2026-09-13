@@ -3,7 +3,7 @@ import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 export default createTsupConfig({
   banner: `/**
  * @agentproto/ref v0.1.0-alpha
- * agentref/v1 (AIP-27) — composable reference primitive.
+ * AIP-54 REF reference implementation (absorbing AIP-27's world scheme).
  */`,
   entry: {
     index: "src/index.ts",

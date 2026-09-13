@@ -171,6 +171,7 @@ describe("worktree_status — MCP tool", () => {
     const registry = createSessionsRegistry({ persist: false })
     const { server } = await createMcpServer({ specs: [], name: "main", version: "0" })
     registerSessionTools(server, {
+      workspace: process.cwd(),
       registry,
       ...(listWorktreeStatuses ? { listWorktreeStatuses } : {}),
     })
@@ -199,19 +200,37 @@ describe("worktree_status — MCP tool", () => {
     }
   })
 
-  it("returns worktrees and forwards repoRoot to the injected lister", async () => {
+  it("returns compact worktrees by default and the full view via full:true, forwarding repoRoot", async () => {
     let seenRoot: string | undefined
     const h = await harness(async repoRoot => {
       seenRoot = repoRoot
       return FAKE_VIEWS
     })
     try {
-      const result = await h.client.callTool({
+      // Default: COMPACT projection — no per-session roster.
+      const compactResult = await h.client.callTool({
         name: "worktree_status",
         arguments: { repoRoot: "/some/repo" },
       })
-      expect(payload(result)).toEqual({ worktrees: FAKE_VIEWS })
+      const compact = payload(compactResult)
+      expect(compact.worktrees).toHaveLength(2)
+      expect(compact.worktrees[0]).toMatchObject({
+        path: "/tmp/wt/one",
+        branch: "wt/one",
+        class: "hold",
+        pr: { state: "open", number: 7 },
+        liveness: { state: "sessions", sessionCount: 1 },
+      })
+      expect(compact.worktrees[0]).not.toHaveProperty("sessions")
+      expect(compact.worktrees[1]).not.toHaveProperty("sessions")
       expect(seenRoot).toBe("/some/repo")
+
+      // full:true — the complete unprojected WorktreeStatusView.
+      const fullResult = await h.client.callTool({
+        name: "worktree_status",
+        arguments: { repoRoot: "/some/repo", full: true },
+      })
+      expect(payload(fullResult)).toEqual({ worktrees: FAKE_VIEWS })
     } finally {
       await h.close()
     }
@@ -227,6 +246,41 @@ describe("worktree_status — MCP tool", () => {
       const body = payload(result)
       expect(body.worktrees).toHaveLength(1)
       expect(body.worktrees[0]!.pr).toEqual({ state: "open", number: 7 })
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("page-walk with limit=1 covers exactly the unpaginated list; rows COMPACT by default", async () => {
+    const h = await harness(async () => FAKE_VIEWS)
+    try {
+      // Default call: the { worktrees } envelope, COMPACT rows, no page fields.
+      const result = await h.client.callTool({
+        name: "worktree_status",
+        arguments: { repoRoot: "/repo" },
+      })
+      const body = payload(result)
+      expect(body.worktrees.map(w => w.path)).toEqual(FAKE_VIEWS.map(w => w.path))
+      expect(body.worktrees[0]).not.toHaveProperty("sessions")
+      expect(body.worktrees[1]).not.toHaveProperty("sessions")
+
+      // Page-walk: the union of pages equals the unpaginated list exactly.
+      const union: Array<{ path: string }> = []
+      let cursor: string | undefined
+      do {
+        const page = JSON.parse(
+          (
+            (await h.client.callTool({
+              name: "worktree_status",
+              arguments: { repoRoot: "/repo", limit: 1, ...(cursor ? { cursor } : {}) },
+            })) as { content: Array<{ text: string }> }
+          ).content[0]!.text,
+        ) as { items: WorktreeStatusView[]; total: number; nextCursor?: string }
+        expect(page.total).toBe(2)
+        union.push(...page.items)
+        cursor = page.nextCursor
+      } while (cursor)
+      expect(union.map(w => w.path)).toEqual(FAKE_VIEWS.map(w => w.path))
     } finally {
       await h.close()
     }

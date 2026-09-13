@@ -1,7 +1,14 @@
 import { describe, it, expect } from "vitest"
 import { defineAgentCli } from "../define-agent-cli.js"
 import { parseAgentCliManifest } from "../manifest/index.js"
-import type { AgentCliDefinition } from "../types.js"
+import type { AgentCliAuthSubscription, AgentCliDefinition } from "../types.js"
+
+// These tests construct single-surface `authSubscription` fixtures, so a
+// direct read narrows the single-or-array type back down for the assertion.
+const singleSurface = (
+  sub: AgentCliAuthSubscription | AgentCliAuthSubscription[] | undefined,
+): AgentCliAuthSubscription | undefined =>
+  Array.isArray(sub) ? sub[0] : sub
 
 const minimal = (overrides: Partial<AgentCliDefinition> = {}): AgentCliDefinition => ({
   name: "hermes",
@@ -280,7 +287,7 @@ body
       const handle = defineAgentCli(
         minimal({ provider: "anthropic", authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" } }),
       )
-      expect(handle.authSubscription?.setEnv).toBe("CLAUDE_CODE_OAUTH_TOKEN")
+      expect(singleSurface(handle.authSubscription)?.setEnv).toBe("CLAUDE_CODE_OAUTH_TOKEN")
     })
 
     it("accepts an external subscription (external:true, no setEnv, conflictEnv scrub)", () => {
@@ -290,8 +297,8 @@ body
           authSubscription: { external: true, conflictEnv: ["CODEX_API_KEY"] },
         }),
       )
-      expect(handle.authSubscription?.external).toBe(true)
-      expect(handle.authSubscription?.setEnv).toBeUndefined()
+      expect(singleSurface(handle.authSubscription)?.external).toBe(true)
+      expect(singleSurface(handle.authSubscription)?.setEnv).toBeUndefined()
     })
 
     it("rejects external:true WITH setEnv (an external subscription injects nothing)", () => {

@@ -21,9 +21,14 @@ import * as vscode from "vscode"
 export const OUTPUT_SCHEME = "agentproto-output"
 
 class OutputDocumentProvider implements vscode.TextDocumentContentProvider {
+  private readonly scheme: string
   private readonly contents = new Map<string, string>()
   private readonly _onDidChange = new vscode.EventEmitter<vscode.Uri>()
   readonly onDidChange = this._onDidChange.event
+
+  constructor(scheme: string) {
+    this.scheme = scheme
+  }
 
   provideTextDocumentContent(uri: vscode.Uri): string {
     return this.contents.get(uri.path) ?? ""
@@ -32,7 +37,7 @@ class OutputDocumentProvider implements vscode.TextDocumentContentProvider {
   /** Register (or replace) a document's content and return its URI. */
   put(name: string, text: string): vscode.Uri {
     const path = name.startsWith("/") ? name : `/${name}`
-    const uri = vscode.Uri.parse(`${OUTPUT_SCHEME}:${path}`)
+    const uri = vscode.Uri.parse(`${this.scheme}:${path}`)
     const previous = this.contents.get(path)
     this.contents.set(path, text)
     // A pending tool call can be opened, then re-opened once its result
@@ -53,10 +58,18 @@ export interface OutputDocuments {
   show(name: string, text: string): Promise<void>
 }
 
-export function registerOutputDocuments(ctx: vscode.ExtensionContext): OutputDocuments {
-  const provider = new OutputDocumentProvider()
+/**
+ * Register a read-only document provider. A scheme may only be registered
+ * once per extension host, so a second caller (the Apps view's manifest
+ * viewer) passes its own `scheme` rather than sharing the transcript's.
+ */
+export function registerOutputDocuments(
+  ctx: vscode.ExtensionContext,
+  scheme: string = OUTPUT_SCHEME,
+): OutputDocuments {
+  const provider = new OutputDocumentProvider(scheme)
   ctx.subscriptions.push(
-    vscode.workspace.registerTextDocumentContentProvider(OUTPUT_SCHEME, provider),
+    vscode.workspace.registerTextDocumentContentProvider(scheme, provider),
     provider,
   )
 

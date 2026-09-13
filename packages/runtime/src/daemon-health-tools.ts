@@ -44,6 +44,22 @@ export interface RegisterDaemonHealthToolsOptions {
    *  before this knob existed still type-checks; defaults to 0 where
    *  consumed. */
   restartSweepIntervalMs?: number
+  /** Effective value of the `daemon.turnStallAfterMs` knob (turn-liveness-
+   *  watchdog chantier) — the silence threshold (ms) past which a busy,
+   *  unblocked agent-cli session's turn is flagged stalled, or 0 when
+   *  explicitly disabled. Detection is default-on, same shape as
+   *  `crashDetectIntervalMs`, so this is normally a positive value even when
+   *  the knob was never configured. Optional so a caller from before this
+   *  knob existed still type-checks; defaults to 0 where consumed. */
+  turnStallAfterMs?: number
+  /** Daemon build version (the CLI's `__CLI_VERSION__` when served by
+   *  `agentproto serve`). Mirrors `/health`'s field of the same name. */
+  version?: string
+  /** Build identity of the binary actually serving (sha + builtAt stamped
+   *  at build time, source judged at serve time) — see GatewayOptions.build.
+   *  Mirrors `/health`'s field of the same name; version alone can't
+   *  distinguish a workspace dist from the published tarball. */
+  build?: { sha?: string; builtAt?: string; source?: string }
 }
 
 function text(value: string | object): {
@@ -53,7 +69,7 @@ function text(value: string | object): {
     content: [
       {
         type: "text",
-        text: typeof value === "string" ? value : JSON.stringify(value, null, 2),
+        text: typeof value === "string" ? value : JSON.stringify(value),
       },
     ],
   }
@@ -81,6 +97,9 @@ export function registerDaemonHealthTools(
         idleReapAfterMs: opts.idleReapAfterMs,
         crashDetectIntervalMs: opts.crashDetectIntervalMs ?? 0,
         restartSweepIntervalMs: opts.restartSweepIntervalMs ?? 0,
+        turnStallAfterMs: opts.turnStallAfterMs ?? 0,
+        version: opts.version ?? null,
+        build: opts.build ?? null,
       })
     },
   )

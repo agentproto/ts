@@ -7,6 +7,7 @@ import {
   buildSessionConfigChips,
   canonicalForModeId,
   currentRouteOf,
+  isRouteSwitchable,
   RESTART_AFFIX,
   resolveAccessRows,
   resolveCapabilities,
@@ -183,6 +184,42 @@ describe("resolvePostureRows — native vs advisory labeling (SPEC Rw)", () => {
     const architect = rows.find(r => r.value === "architect")
     expect(architect?.enforcement).toBe("enforced")
     expect(architect?.label).toBe("Architect (enforced)")
+  })
+})
+
+describe("isRouteSwitchable — the route chip's dim signal (chip-pickers)", () => {
+  it("true when a model has more than one gateway route", () => {
+    // claude-opus-4-8 → anthropic + moonshot.
+    expect(isRouteSwitchable(catalog(), "claude-opus-4-8")).toBe(true)
+  })
+  it("false for a single-route model, an unknown model, or no catalog", () => {
+    const single: CatalogModelsResult = {
+      vendors: [
+        {
+          vendor: "anthropic",
+          products: [
+            {
+              product: "solo",
+              routes: [
+                {
+                  route: "anthropic",
+                  ref: "anthropic/solo",
+                  baseUrl: null,
+                  runnable: true,
+                  eligibleProfiles: ["k"],
+                  adapterModes: [],
+                  adapters: ["claude-code"],
+                  curated: true,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+    expect(isRouteSwitchable(single, "solo")).toBe(false)
+    expect(isRouteSwitchable(catalog(), "mystery-model")).toBe(false)
+    expect(isRouteSwitchable(undefined, "claude-opus-4-8")).toBe(false)
   })
 })
 

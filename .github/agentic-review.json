@@ -7,10 +7,14 @@
   "maxReviewTurns": 50,
   "cliSource": "workspace",
   "cliVersion": "0.8.0",
-  "reviewerAdapter": "claude-sdk",
-  "reviewerAuthMode": "subscription",
-  "reviewerSandbox": "e2b",
-  "reviewerSandboxEnv": ["ANTHROPIC_AUTH_TOKEN", "GITHUB_TOKEN"],
+  "reviewerAdapter": "opencode",
+  "reviewerAuthMode": "api-key",
+  "reviewerModel": "openrouter/z-ai/glm-5.3-flash",
+  "reviewerSandbox": {
+    "provider": "e2b",
+    "lifecycle": { "destroy_on": "workspace-close" }
+  },
+  "reviewerSandboxEnv": ["OPENROUTER_API_KEY", "GITHUB_TOKEN"],
   "describe": {
     "auto": true,
     "minBodyChars": 80

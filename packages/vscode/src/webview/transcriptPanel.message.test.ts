@@ -4,6 +4,7 @@ vi.mock("vscode", () => ({
   window: {
     showInformationMessage: vi.fn(),
     showErrorMessage: vi.fn(),
+    showWarningMessage: vi.fn(),
   },
   commands: {
     executeCommand: vi.fn().mockResolvedValue(undefined),
@@ -73,7 +74,35 @@ describe("handleWebviewMessage", () => {
     expect(executeCommand).toHaveBeenCalledWith("agentproto.restartAsTerminal", "session-abc")
   })
 
-  it("changePosture routes to the unified agentproto.configureSession picker", async () => {
+  it("changeEffort routes to the per-axis configureSessionAxis picker for effort (chip-pickers)", async () => {
+    await handleWebviewMessage(
+      { type: "changeEffort" },
+      panel,
+      controller,
+      outputDocs,
+      client,
+    )
+    expect(executeCommand).toHaveBeenCalledWith("agentproto.configureSessionAxis", {
+      sessionId: "session-abc",
+      axis: "effort",
+    })
+  })
+
+  it("changeRoute routes to the per-axis configureSessionAxis picker for route (chip-pickers)", async () => {
+    await handleWebviewMessage(
+      { type: "changeRoute" },
+      panel,
+      controller,
+      outputDocs,
+      client,
+    )
+    expect(executeCommand).toHaveBeenCalledWith("agentproto.configureSessionAxis", {
+      sessionId: "session-abc",
+      axis: "route",
+    })
+  })
+
+  it("changePosture routes to the per-axis configureSessionAxis picker for posture (chip-pickers)", async () => {
     await handleWebviewMessage(
       { type: "changePosture" },
       panel,
@@ -81,10 +110,13 @@ describe("handleWebviewMessage", () => {
       outputDocs,
       client,
     )
-    expect(executeCommand).toHaveBeenCalledWith("agentproto.configureSession", "session-abc")
+    expect(executeCommand).toHaveBeenCalledWith("agentproto.configureSessionAxis", {
+      sessionId: "session-abc",
+      axis: "posture",
+    })
   })
 
-  it("changeAccess routes to the unified agentproto.configureSession picker", async () => {
+  it("changeAccess routes to the per-axis configureSessionAxis picker for access/wallet (chip-pickers)", async () => {
     await handleWebviewMessage(
       { type: "changeAccess" },
       panel,
@@ -92,7 +124,10 @@ describe("handleWebviewMessage", () => {
       outputDocs,
       client,
     )
-    expect(executeCommand).toHaveBeenCalledWith("agentproto.configureSession", "session-abc")
+    expect(executeCommand).toHaveBeenCalledWith("agentproto.configureSessionAxis", {
+      sessionId: "session-abc",
+      axis: "access",
+    })
   })
 
   it("WP3: setView conversation reveals the webview panel", async () => {
@@ -106,5 +141,71 @@ describe("handleWebviewMessage", () => {
     )
     expect(controller.onSetView).toHaveBeenCalledWith("conversation")
     expect(panel.reveal).toHaveBeenCalledWith(vscode.ViewColumn.One, false)
+  })
+
+  describe("resolveQuestion", () => {
+    it("resolves the pending permission matched by toolCallId via permissions_respond", async () => {
+      client.listPermissions = vi
+        .fn()
+        .mockResolvedValue([
+          { id: "perm-db-id", toolCallId: "tc-1" },
+          { id: "other", toolCallId: "tc-2" },
+        ]) as DaemonClient["listPermissions"]
+      client.respondPermission = vi.fn().mockResolvedValue(undefined) as DaemonClient["respondPermission"]
+
+      await handleWebviewMessage(
+        { type: "resolveQuestion", toolCallId: "tc-1", decision: "approve", optionId: "allow_once" },
+        panel,
+        controller,
+        outputDocs,
+        client,
+      )
+
+      expect(client.listPermissions).toHaveBeenCalledWith("session-abc")
+      expect(client.respondPermission).toHaveBeenCalledWith("perm-db-id", {
+        decision: "approve",
+        optionId: "allow_once",
+      })
+      expect(vscode.window.showWarningMessage).not.toHaveBeenCalled()
+    })
+
+    it("warns and does nothing when the message carries no toolCallId", async () => {
+      client.listPermissions = vi.fn() as unknown as DaemonClient["listPermissions"]
+      client.respondPermission = vi.fn() as unknown as DaemonClient["respondPermission"]
+
+      await handleWebviewMessage(
+        { type: "resolveQuestion", decision: "approve", optionId: "allow_once" },
+        panel,
+        controller,
+        outputDocs,
+        client,
+      )
+
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+        expect.stringContaining("no toolCallId"),
+      )
+      expect(client.listPermissions).not.toHaveBeenCalled()
+      expect(client.respondPermission).not.toHaveBeenCalled()
+    })
+
+    it("warns when no pending permission matches the toolCallId (already resolved)", async () => {
+      client.listPermissions = vi
+        .fn()
+        .mockResolvedValue([{ id: "other", toolCallId: "tc-2" }]) as DaemonClient["listPermissions"]
+      client.respondPermission = vi.fn() as unknown as DaemonClient["respondPermission"]
+
+      await handleWebviewMessage(
+        { type: "resolveQuestion", toolCallId: "tc-gone", decision: "deny", optionId: "deny" },
+        panel,
+        controller,
+        outputDocs,
+        client,
+      )
+
+      expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+        expect.stringContaining("not found"),
+      )
+      expect(client.respondPermission).not.toHaveBeenCalled()
+    })
   })
 })

@@ -105,14 +105,29 @@ async function checkSkipIf(skip: AgentCliSetupSkipIf): Promise<boolean> {
 }
 
 /**
+ * Distinct exit code for "a setup step needs an interactive terminal and
+ * this process has none". Lets programmatic hosts (the daemon's
+ * adapter_install path) tell "setup is blocked on a human in a TTY" apart
+ * from a genuinely failed setup, instead of both collapsing into exit 1 —
+ * the openclaw incident: its clack-style `onboard --install-daemon` TUI,
+ * run under the TTY-less daemon, silently defaulted its confirm to "No"
+ * and died as an inscrutable `exit 1`.
+ */
+export const EXIT_SETUP_NEEDS_TTY = 78 // sysexits EX_CONFIG
+
+/**
  * Execute one `AgentCliSetupStep`. Injected into the wizard as `runStep`.
  * The wizard handles ledger-skip and `force`; this function handles `skip_if`
  * and the actual cmd / prompt / external / oauth execution.
  *
  * `force` is closed over from `RunSetupOptions` so `skip_if` is bypassed
  * consistently with the old `runSteps` behaviour.
+ *
+ * `blocked` is an out-param: set when an `interactive: true` cmd step was
+ * refused because stdin is not a TTY — running a TUI against a pipe can
+ * only hang or die on its own defaults, never succeed.
  */
-function makeAgentCliStepRunner(force: boolean | undefined) {
+function makeAgentCliStepRunner(force: boolean | undefined, blocked?: { onInteractiveNoTty: boolean }) {
   return async function agentCliRunStep(
     handle: AgentCliSetupHandle,
     step: AdapterWizardStep,
@@ -138,6 +153,14 @@ function makeAgentCliStepRunner(force: boolean | undefined) {
 
     switch (fullStep.kind) {
       case "cmd": {
+        if (fullStep.interactive && process.stdin.isTTY !== true) {
+          process.stderr.write(
+            `setup: ${fullStep.id}: needs an interactive terminal (stdin is not a TTY here) — ` +
+              `run \`agentproto setup ${handle.slug}\` in a real terminal to complete it.\n`
+          )
+          if (blocked) blocked.onInteractiveNoTty = true
+          return { ok: false }
+        }
         if (fullStep.description) process.stdout.write(`setup: ${fullStep.description}\n`)
         process.stdout.write(`setup: $ ${fullStep.cmd}\n`)
         const captured = await runShellCapturing(fullStep.cmd, {
@@ -263,6 +286,7 @@ export interface RunSetupOptions {
 
 export async function runSetup(opts: RunSetupOptions): Promise<number> {
   const wrappedHandle = wrapForSetup(opts.slug, opts.handle)
+  const blocked = { onInteractiveNoTty: false }
 
   // Synthesise a single-entry catalog so the wizard auto-picks the slug.
   const catalogEntry = CATALOG.find((e) => e.slug === opts.slug) ?? {
@@ -290,32 +314,65 @@ export async function runSetup(opts: RunSetupOptions): Promise<number> {
             s.kind === "prompt" && (s as Extract<AgentCliSetupStep, { kind: "prompt" }>).type === "secret",
         })
       ),
-    runStep: makeAgentCliStepRunner(opts.force),
+    runStep: makeAgentCliStepRunner(opts.force, blocked),
     log: (msg) => process.stdout.write(msg + "\n"),
   })
 
-  return wizard.run({
+  const code = await wizard.run({
     force: opts.force,
     dryRun: opts.dryRun,
     only: opts.only,
   })
+  // The blocked-on-TTY refusal is a distinct outcome, not a plain failure —
+  // programmatic hosts key off this code to offer a real terminal instead.
+  if (code !== 0 && blocked.onInteractiveNoTty) return EXIT_SETUP_NEEDS_TTY
+  return code
 }
+
+const USAGE = `agentproto setup <slug> — re-run an adapter's setup pipeline (AIP-29)
+
+Usage:
+  agentproto setup     <slug> [--force] [--dry-run] [--only <stepId>...]
+
+Examples:
+  agentproto setup openclaw                # re-run setup (idempotent via skip_if + ledger)
+`
 
 /**
  * `agentproto setup <slug>` — re-run the setup pipeline for an
  * already-installed bundle.
  */
 export async function runSetupCommand(args: readonly string[]): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: [...args],
-    allowPositionals: true,
-    strict: true,
-    options: {
-      force: { type: "boolean", short: "f" },
-      "dry-run": { type: "boolean" },
-      only: { type: "string", multiple: true },
-    },
-  })
+  if (args.includes("--help") || args.includes("-h")) {
+    process.stdout.write(USAGE)
+    return 0
+  }
+  let values: {
+    force?: boolean
+    "dry-run"?: boolean
+    only?: string[]
+  }
+  let positionals: string[]
+  try {
+    ;({ values, positionals } = parseArgs({
+      args: [...args],
+      allowPositionals: true,
+      strict: true,
+      options: {
+        force: { type: "boolean", short: "f" },
+        "dry-run": { type: "boolean" },
+        only: { type: "string", multiple: true },
+      },
+    }))
+  } catch (err) {
+    // A friendly message on an unknown flag/arg instead of a raw parseArgs
+    // stack — point at the help so callers can discover the supported set.
+    process.stderr.write(
+      `agentproto setup: ${err instanceof Error ? err.message : String(err)}\n` +
+        "  See: agentproto setup --help\n"
+    )
+    return 2
+  }
   const slug = positionals[0]
   if (!slug) {
     process.stderr.write(

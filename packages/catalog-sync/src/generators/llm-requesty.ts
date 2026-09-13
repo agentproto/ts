@@ -1,6 +1,14 @@
 import { z } from "zod"
 
 import { defineGenerator, type GeneratedFiles, type GeneratorContext } from "../types.js"
+import {
+  computeAddedAtLedger,
+  isoDateFromUnixSeconds,
+  ledgerRelPath,
+  readLedger,
+  serializeLedger,
+  todayIso,
+} from "../added-at.js"
 
 /**
  * PINNED source. The Requesty `/v1/models` payload lists every route the
@@ -28,6 +36,9 @@ const OUTPUT_PATH = "packages/model-catalog/src/llm/requesty-routes.generated.ts
 // keeps the other live keys (context_window, supports_vision, description,
 // …) forward-compatible without a regenerate — we only read what we model.
 
+// `created` is Unix seconds — Requesty's own route-creation timestamp, used
+// to backfill `addedAt` for ids not already in the ledger (see
+// `../added-at.ts`). Verified present on the live payload (2026-08-31).
 const ModelSchema = z
   .object({
     id: z.string(),
@@ -35,6 +46,7 @@ const ModelSchema = z
     output_price: z.number().optional(),
     cached_price: z.number().optional(),
     supports_caching: z.boolean().optional(),
+    created: z.number().optional(),
   })
   .passthrough()
 
@@ -53,6 +65,8 @@ interface LLMPricingEntry {
   inputPer1M: number
   outputPer1M: number
   cacheReadMultiplier?: number
+  /** ISO date this id was first seen by a sync run. See `../added-at.ts`. */
+  addedAt?: string
   vendor: string
   provider: "requesty"
 }
@@ -98,6 +112,9 @@ function serializeEntry(e: LLMPricingEntry): string {
   if (e.cacheReadMultiplier !== undefined) {
     fields.push(`cacheReadMultiplier: ${fmt(e.cacheReadMultiplier)}`)
   }
+  if (e.addedAt !== undefined) {
+    fields.push(`addedAt: ${JSON.stringify(e.addedAt)}`)
+  }
   fields.push(`vendor: ${JSON.stringify(e.vendor)}`)
   fields.push(`provider: ${JSON.stringify(e.provider)}`)
   return `{\n    ${fields.join(",\n    ")},\n  }`
@@ -115,6 +132,9 @@ function serializeFile(entries: Record<string, LLMPricingEntry>): string {
     "// multiplier (cacheReadMultiplier) derived from the source's cached_price",
     "// per-token field when `supports_caching` is true. Requesty has no",
     "// cache-write price, so cacheWriteMultiplier is never emitted.",
+    "// addedAt is the ISO date this id was first seen by a sync run — backfilled",
+    "// from the source's own `created` timestamp, then NEVER mutated; see",
+    "// packages/catalog-sync/src/added-at.ts and the package README.",
     "",
     'import type { LLMPricing } from "./catalog.js"',
     "",
@@ -137,12 +157,15 @@ function serializeFile(entries: Record<string, LLMPricingEntry>): string {
 
 // ── Generator ───────────────────────────────────────────────────────────
 
+const LEDGER_ID = "llm-requesty"
+
 async function generate(ctx: GeneratorContext): Promise<GeneratedFiles> {
   const src = sources[0]
   if (!src) throw new Error("llm:requesty: no source configured")
   const parsed = SnapshotSchema.parse(await ctx.fetchSource(src))
 
   const entries: Record<string, LLMPricingEntry> = {}
+  const createdAt: Record<string, string> = {}
   for (const model of parsed.data) {
     const inputPer1M = per1m(model.input_price)
     const outputPer1M = per1m(model.output_price)
@@ -165,9 +188,21 @@ async function generate(ctx: GeneratorContext): Promise<GeneratedFiles> {
     }
 
     entries[model.id] = entry
+    if (model.created !== undefined) createdAt[model.id] = isoDateFromUnixSeconds(model.created)
   }
 
-  return { [OUTPUT_PATH]: serializeFile(entries) }
+  const ledger = computeAddedAtLedger(
+    Object.keys(entries),
+    readLedger(LEDGER_ID),
+    createdAt,
+    todayIso()
+  )
+  for (const [id, entry] of Object.entries(entries)) entry.addedAt = ledger[id]
+
+  return {
+    [OUTPUT_PATH]: serializeFile(entries),
+    [ledgerRelPath(LEDGER_ID)]: serializeLedger(ledger),
+  }
 }
 
 const sources = [

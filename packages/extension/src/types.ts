@@ -78,6 +78,29 @@ export interface ExtensionDefinition {
    */
   path_convention?: string
   /**
+   * Parent property names this extension REMOVES from the inherited
+   * schema. GUARDED: a field in the parent's `required[]` MUST NOT be
+   * removed (removing it would invalidate parent-validated instances;
+   * mirrors AIP-18's "children MUST NOT remove an inherited status").
+   * Runtimes MUST refuse registration when the guard is violated.
+   */
+  remove_fields?: string[]
+  /**
+   * Per-aspect selection — choose which aspects of the parent compose,
+   * instead of v1's wholesale merge. Omitted keys default to true
+   * (backwards compatible with v1: wholesale inheritance).
+   */
+  inherit?: {
+    /** Inherit the parent's schema (minus `remove_fields`). Default true. */
+    schema?: boolean
+    /** Layer the parent's defaults under the extension's. Default true. */
+    defaults?: boolean
+    /** Reuse the parent's manifest parser. When false, the extension MUST supply its own parser at registration. Default true. */
+    parse?: boolean
+    /** Fall back to the parent's pathOf. When false, `path_convention` becomes REQUIRED. Default true. */
+    path?: boolean
+  }
+  /**
    * Public AIPs the extension depends on, in addition to its parent.
    */
   requires?: number[]

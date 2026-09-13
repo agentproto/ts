@@ -1,0 +1,11 @@
+{
+  "name": "__APP_SLUG__",
+  "private": true,
+  "version": "0.1.0",
+  "description": "__APP_NAME__ — an agentproto agent app.",
+  "scripts": {
+    "dev": "agentproto app dev .",
+    "build": "agentproto app build .",
+    "serve": "agentproto app serve ."
+  }
+}

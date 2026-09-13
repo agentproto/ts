@@ -94,7 +94,9 @@ const THIRD_PARTY_SANDBOX_PROVIDERS: Record<string, ThirdPartySandboxDescriptor>
     exportName: "e2bSandboxProvider",
     name: "e2b",
     description:
-      "Runs the agentproto daemon inside an e2b Firecracker microVM (agentproto-workstation template).",
+      /* sync-templates:start */
+      "Runs the agentproto daemon inside an e2b Firecracker microVM (agentproto-workstation template, baked @agentproto/cli 0.17.0).",
+      /* sync-templates:end */
     capabilities: E2B_CAPABILITIES,
     credEnvVar: "E2B_API_KEY",
     setupFields: [

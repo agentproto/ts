@@ -172,6 +172,7 @@ describe("restartAgentSession — billing-auth re-resolution", () => {
       setEnv: "OPENAI_API_KEY",
       fingerprint: "api-key · sk-proj-…0000",
     })
+    expect(restarted.desc.adapterProvider).toBe("openai")
   })
 
   it("(3) resolved mode with no credential anywhere ⇒ restart FAILS LOUD and registers no new session", async () => {

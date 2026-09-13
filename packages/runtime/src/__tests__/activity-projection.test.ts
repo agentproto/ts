@@ -166,6 +166,109 @@ describe("policyToActivities", () => {
     const slice = policy({ status: "gating", lastGate: { exitCode: 0, at: T1 } })
     expect(policyToActivities(slice)).toEqual(policyToActivities(slice))
   })
+
+  // Two REAL rows read off a daemon's persisted supervisor state that
+  // predates the fan-in fields — verbatim, `retries` included. Before the
+  // read-tolerance fix, either of these threw
+  // `TypeError: Cannot read properties of undefined (reading 'length')` and
+  // took the whole Activity read-model down with it.
+  const legacyRows: readonly (ActivityPolicySlice & { retries: number })[] = [
+    {
+      policyId: "policy_aed74755",
+      sessionId: "sess_test",
+      status: "cancelled",
+      retries: 2,
+      startedAt: "2026-06-21T12:27:10.936Z",
+      lastGate: { exitCode: 1, at: "2026-06-21T12:30:27.277Z" },
+      endedAt: "2026-06-21T13:38:52.345Z",
+      error: "session absent at reload",
+    },
+    {
+      policyId: "policy_ab280871",
+      sessionId: "sess_test",
+      status: "cancelled",
+      retries: 0,
+      startedAt: "2026-06-21T12:30:27.274Z",
+      endedAt: "2026-06-21T12:30:27.274Z",
+    },
+  ]
+
+  it("projects a legacy persisted row (no sessionIds/pending) instead of throwing", () => {
+    for (const row of legacyRows) {
+      const records = policyToActivities(row)
+      expect(records).toHaveLength(row.lastGate ? 2 : 1) // policy + settled gate child
+      const parent = byId(records, `policy:${row.policyId}`)
+      expect(parent?.state).toBe("cancelled")
+      expect(parent?.sessionId).toBe("sess_test")
+      // A one-member group is not > 1 — no sessionIds on the output.
+      expect(parent?.sessionIds).toBeUndefined()
+    }
+  })
+
+  it("a legacy watching row waits on its single sessionId", () => {
+    const row: ActivityPolicySlice & { retries: number } = {
+      policyId: "policy_watch1",
+      sessionId: "sess_test",
+      status: "watching",
+      retries: 0,
+      startedAt: "2026-06-21T12:27:10.936Z",
+    }
+    const parent = byId(policyToActivities(row), "policy:policy_watch1")
+    expect(parent?.state).toBe("pending")
+    expect(parent?.waitingOn?.kind).toBe("session-turn")
+    expect(parent?.waitingOn?.refs).toEqual(["sess_test"])
+  })
+
+  it("regression: a modern row (both fan-in fields) projects exactly as before", () => {
+    const slice = policy({
+      policyId: "plc_mod",
+      sessionIds: ["sess_a", "sess_b"],
+      pending: ["sess_b"],
+      status: "gating",
+      lastGate: { exitCode: 0, at: T1 },
+      commitPlan: { paths: ["a.ts"], message: "m" },
+    })
+    expect(policyToActivities(slice)).toEqual([
+      {
+        id: "policy:plc_mod",
+        kind: "policy",
+        sessionId: "sess_a",
+        sessionIds: ["sess_a", "sess_b"],
+        sourceRef: "plc_mod",
+        source: "supervisor",
+        title: "Completion policy plc_mod on 2 sessions",
+        startedAt: T0,
+        state: "active",
+      },
+      {
+        id: "gate:plc_mod",
+        kind: "gate",
+        sessionId: "sess_a",
+        parentActivityId: "policy:plc_mod",
+        sourceRef: "plc_mod",
+        source: "supervisor",
+        title: "Gate for policy plc_mod",
+        startedAt: T0,
+        state: "active",
+      },
+      {
+        id: "commit:plc_mod",
+        kind: "commit",
+        sessionId: "sess_a",
+        parentActivityId: "policy:plc_mod",
+        sourceRef: "plc_mod",
+        source: "supervisor",
+        title: "Commit for policy plc_mod",
+        startedAt: T0,
+        state: "pending",
+        waitingOn: {
+          kind: "human-ack",
+          refs: ["plc_mod"],
+          detail: "prepared commit awaiting policy_ack",
+        },
+      },
+    ])
+  })
 })
 
 describe("turnToActivities", () => {

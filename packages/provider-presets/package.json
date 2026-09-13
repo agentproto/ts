@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/provider-presets",
-  "version": "0.5.0",
+  "version": "0.6.2",
   "description": "@agentproto/provider-presets — concrete provider/backend preset registry (baseUrl, keyEnv, scrubEnv, defaultModel) shared by Anthropic/OpenAI-compatible adapters and the user-facing presets catalog. Pure TS data; projection stays in the consumer.",
   "keywords": [
     "agentproto",
@@ -49,9 +49,9 @@
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   }
 }

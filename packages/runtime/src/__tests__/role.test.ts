@@ -34,6 +34,29 @@ const REVIEWER_ROLE: RoleProfile = {
   level: 10,
 }
 
+describe("role disposition semantics (the delegation contract, as prose)", () => {
+  it("executor disposition explicitly blocks native subagent/Task spawns — the daemon cannot strip them", () => {
+    // A native subagent/Task tool is not an MCP tool and can't be gated by
+    // `toolPolicy` (that only strips agent_start/agent_prompt), so the ONLY
+    // thing standing between an executor and an unchecked native spawn is
+    // this wording. A rewrite must never silently drop it.
+    expect(EXECUTOR_ROLE.disposition).toMatch(/subagent|Task tool/i)
+    expect(EXECUTOR_ROLE.disposition).toMatch(/never spawn|do not spawn|not.*spawn/i)
+    expect(EXECUTOR_ROLE.disposition).toMatch(/native/i)
+  })
+
+  it("supervisor disposition routes delegation through agent_start (the daemon-observed channel), not a native tool", () => {
+    expect(SUPERVISOR_ROLE.disposition).toMatch(/agent_start/)
+    expect(SUPERVISOR_ROLE.disposition).toMatch(/subagent|Task tool/i)
+  })
+
+  it("the DAEMON-side hard gate still strips delegation tools from a deny role even if the prose ever drifts", () => {
+    expect(EXECUTOR_ROLE.toolPolicy.delegation).toBe("deny")
+    expect(canSpawn(EXECUTOR_ROLE, SUPERVISOR_ROLE)).toBe(false)
+    expect(canSpawn(EXECUTOR_ROLE, EXECUTOR_ROLE)).toBe(false)
+  })
+})
+
 describe("resolveRole", () => {
   it("resolves 'executor' by name regardless of depth", () => {
     expect(resolveRole("executor", 0)).toBe(EXECUTOR_ROLE)

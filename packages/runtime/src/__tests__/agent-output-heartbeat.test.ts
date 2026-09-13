@@ -105,6 +105,9 @@ describe("agent_output — liveness heartbeat", () => {
       )
       // Live OS check — the fake agent's pid is this test process, so alive.
       expect(payload.processAlive).toBe(true)
+      expect(payload.currentPhase).toBe("idle")
+      expect(payload.toolCallsThisTurn).toBe(0)
+      expect(payload.secondsSinceLastActivity).toBeTypeOf("number")
     } finally {
       await harness.close()
       registry.shutdown()

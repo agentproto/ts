@@ -328,11 +328,31 @@ export class RestForgeClient implements ForgeClient {
   }
 }
 
-/** Cheap "is `gh` on PATH and authenticated" probe — avoids a slow failure per branch. */
+/**
+ * Cheap "is `gh` on PATH and authenticated" probe — avoids a slow failure per
+ * branch.
+ *
+ * Deliberately `gh auth token`, not `gh auth status`: `status` audits **every**
+ * configured account and exits non-zero when *any* of them is broken, even
+ * while the active credential works fine for real calls. A single stale keyring
+ * entry for a second account is enough to make it exit 1 — and because a false
+ * negative here lands on `UnreachableForgeClient`, every worktree's integration
+ * silently degrades to `unknown(offline)` and `worktree gc` holds everything it
+ * would otherwise reclaim. Observed exactly that: `gh auth status` exiting 1 on
+ * a stale account while `gh pr list` and `gh api rate_limit` both answered
+ * normally.
+ *
+ * `gh auth token` answers the question this probe actually asks — "is gh on
+ * PATH with a usable credential" — and does it locally, with no network call.
+ * It cannot prove the token is still valid server-side, but neither could
+ * `status`: a token revoked upstream fails at call time either way, which is
+ * exactly what `ForgeUnavailableError` and the memo/`unknown(offline)` fallback
+ * already handle.
+ */
 async function ghIsUsable(repoRoot: string): Promise<boolean> {
   try {
-    const res = await execArgv("gh", ["auth", "status"], repoRoot)
-    return res.exitCode === 0
+    const res = await execArgv("gh", ["auth", "token"], repoRoot)
+    return res.exitCode === 0 && res.stdout.trim() !== ""
   } catch {
     return false
   }

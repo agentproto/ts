@@ -1,0 +1,66 @@
+/**
+ * Client-side multi-source fan-out for {@link ICodeBrainProvider.graphQuery}.
+ *
+ * Upstream gbrain's `query` tool accepts exactly one `source_id` (or the
+ * `__all__` sentinel) per call — there is no "search these N specific
+ * sources" primitive on the wire. `queryManySources` works around that from
+ * the pure contract side, so it works against ANY {@link ICodeBrainProvider}:
+ * it issues one `graphQuery` per source in parallel (never a combined wire
+ * call), then merges the results into a single deduped, score-ranked hit
+ * list.
+ */
+
+import type { GraphHit, GraphResult, ICodeBrainProvider } from "./types.js"
+
+/**
+ * A stable dedupe key for a hit. `file` + `span` identifies the same source
+ * location when two sources both surface it; when a hit carries neither
+ * (gbrain couldn't recover a location header from the snippet), `title` +
+ * `body` is the next-best identity.
+ */
+function hitKey(hit: GraphHit): string {
+  if (hit.file !== undefined && hit.span !== undefined) {
+    return `${hit.file}:${hit.span.startLine}-${hit.span.endLine}`
+  }
+  return `${hit.title}\u0000${hit.body}`
+}
+
+/**
+ * Query several sources for the same question and merge the results.
+ *
+ * Runs one `provider.graphQuery({ question, scope, limit })` per entry in
+ * `sources`, in parallel. Duplicate hits (by {@link hitKey}, first
+ * occurrence wins) are dropped, and the merged list is re-sorted by `score`
+ * descending so the caller sees one ranked result regardless of how many
+ * sources answered — a hit with no `score` sorts as if it scored `0`.
+ */
+export async function queryManySources(
+  provider: Pick<ICodeBrainProvider, "graphQuery">,
+  sources: readonly string[],
+  question: string,
+  limit?: number,
+): Promise<GraphResult> {
+  const results = await Promise.all(
+    sources.map((scope) =>
+      provider.graphQuery({
+        question,
+        scope,
+        ...(limit !== undefined ? { limit } : {}),
+      }),
+    ),
+  )
+
+  const seen = new Set<string>()
+  const hits: GraphHit[] = []
+  for (const result of results) {
+    for (const hit of result.hits) {
+      const key = hitKey(hit)
+      if (seen.has(key)) continue
+      seen.add(key)
+      hits.push(hit)
+    }
+  }
+  hits.sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+
+  return { hits }
+}

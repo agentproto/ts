@@ -104,6 +104,60 @@ describe("registry + flavor selection", () => {
     expect(ids).toContain("claude-code-oauth")
     expect(ids).toContain("codex")
     expect(ids).toContain("gemini")
+    expect(ids).toContain("opencode")
+    expect(ids).toContain("mastracode")
+  })
+
+  it("opencode/mastracode recipes point at each CLI's own anthropic OAuth entry", () => {
+    // These back the adapters' `authSubscription: {external: true, provider:
+    // "anthropic"}` — the runtime verifies the CLI's own Claude Pro/Max
+    // login is present via these sources (and injects nothing).
+    const opencode = resolveRecipeMethod("opencode")
+    expect(opencode.method.source).toEqual({
+      file: "~/.local/share/opencode/auth.json",
+      jsonPath: "anthropic.access",
+    })
+    const mastracode = resolveRecipeMethod("mastracode")
+    // Platform-dependent app-data dir → source chain, macOS first.
+    expect(mastracode.method.source).toEqual([
+      {
+        file: "~/Library/Application Support/mastracode/auth.json",
+        jsonPath: "anthropic.access",
+      },
+      {
+        file: "~/.local/share/mastracode/auth.json",
+        jsonPath: "anthropic.access",
+      },
+    ])
+  })
+
+  it("opencode/mastracode recipes also carry an openai-oauth (ChatGPT) method", () => {
+    // Back the adapters' `authSubscription` openai-scoped surface — the
+    // runtime resolves this via `<provider>-oauth` (`openai-oauth`), NOT the
+    // default (first) method, so `resolveRecipeMethod`'s `--method` selection
+    // must find it by id explicitly.
+    const opencode = resolveRecipeMethod("opencode", "openai-oauth")
+    expect(opencode.method.source).toEqual({
+      file: "~/.local/share/opencode/auth.json",
+      // opencode keys the ChatGPT OAuth login under the SAME "openai"
+      // provider id as its api-key flow — there is no separate "chatgpt"
+      // key (reverse-engineered from the shipped binary's Auth.set call
+      // sites; see the builtins.ts docblock).
+      jsonPath: "openai.access",
+    })
+    const mastracode = resolveRecipeMethod("mastracode", "openai-oauth")
+    expect(mastracode.method.source).toEqual([
+      {
+        file: "~/Library/Application Support/mastracode/auth.json",
+        // mastracode's own naming — DISTINCT from opencode's "openai" key,
+        // and from mastracode's own "anthropic" key.
+        jsonPath: "openai-codex.access",
+      },
+      {
+        file: "~/.local/share/mastracode/auth.json",
+        jsonPath: "openai-codex.access",
+      },
+    ])
   })
 
   it("defaults to the first method when --method is omitted", () => {

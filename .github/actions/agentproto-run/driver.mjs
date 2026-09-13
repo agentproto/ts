@@ -35,6 +35,10 @@ import { fileURLToPath } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+// Repo-relative: this driver always runs from the checked-out repo (the
+// composite action is `uses: ./.github/actions/agentproto-run`), so the pure
+// artifact-ledger helpers are on disk two levels up from `.github/actions/*/`.
+import { parseArtifactMarkers } from "../../../scripts/lib/artifact-ledger.mjs"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -322,6 +326,13 @@ async function main() {
   // the artifact deterministically, without the model having to know its own id
   // or cost. Verb-agnostic: /pr and /fix can reuse it for a PR-body stamp.
   const provenance = []
+  // Artifact ledger — PR/review/comment records the delivery helper emitted as
+  // `::agentproto-artifact::` marker lines AT CREATION TIME. Harvested from the
+  // session's own output (same transport as `provenance`) and surfaced as the
+  // `artifacts` output so the stamp scripts key the footer by id instead of
+  // re-discovering the artifact. Best-effort: an empty ledger degrades to the
+  // stamp scripts' discovery fallback (which now warns loudly).
+  const artifacts = []
   // Cap the dump fan-out — a pathological run should not flood the job log.
   for (const sid of [...sessionIds].slice(0, 8)) {
     const desc = listedSessions.find((s) => s?.id === sid)
@@ -380,6 +391,34 @@ async function main() {
         `driver: agent_output ${sid} failed: ${err instanceof Error ? err.message : String(err)}`,
       )
     }
+    // Harvest artifact-ledger markers the delivery helper printed (PR/review/
+    // comment ids). The clean=true success-path fetch above can strip
+    // tool-result lines, so re-read RAW (clean:false) just for the harvest and
+    // attach THIS session's id (the box-side helper can't know its own id).
+    try {
+      const harvestRes = await client.callTool({
+        name: "agent_output",
+        arguments: { sessionId: sid, lastN: 400, clean: false },
+      })
+      const harvestRaw =
+        typeof harvestRes?.content?.[0]?.text === "string" ? harvestRes.content[0].text : ""
+      let harvestText = harvestRaw
+      try {
+        const parsed = JSON.parse(harvestRaw)
+        if (Array.isArray(parsed?.lines)) harvestText = parsed.lines.join("\n")
+      } catch {
+        // non-JSON envelope — scan the raw string as-is
+      }
+      for (const rec of parseArtifactMarkers(harvestText, { sessionId: sid })) {
+        if (artifacts.some((a) => JSON.stringify(a) === JSON.stringify(rec))) continue
+        artifacts.push(rec)
+        console.log(`driver: harvested artifact ${rec.kind} id=${rec.id} from session ${sid}`)
+      }
+    } catch (err) {
+      console.error(
+        `driver: artifact harvest ${sid} failed: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
     // Empty buffer on a failed run: fall back to the daemon-captured
     // transcript (`agent_export` reads events.jsonl, which survives even
     // when the ring buffer never got a line — e.g. a spawn that died before
@@ -422,6 +461,8 @@ async function main() {
   // Single-line JSON (no newline) — safe for the `name=value` GITHUB_OUTPUT form.
   await writeGithubOutput("provenance", JSON.stringify(provenance))
   console.log(`driver: provenance=${JSON.stringify(provenance)}`)
+  await writeGithubOutput("artifacts", JSON.stringify(artifacts))
+  console.log(`driver: artifacts=${JSON.stringify(artifacts)}`)
   return finalStatus === "done" ? 0 : 1
 }
 

@@ -4,9 +4,12 @@
 agentproto auth login   [--host <url>] [--label <name>] [--no-browser] [--scope <s>]
 agentproto auth status  [--host <url>] [--json]
 agentproto auth logout  [--host <url>]
-agentproto auth cred set <id> <token> --api-base <url> [--audience <aud>] [--description <text>]
-agentproto auth cred list [--json]
-agentproto auth cred rm  <id>
+agentproto auth provider <set|list|rm> …   — LLM provider API keys
+agentproto auth cred     <set|list|rm> …   — broker creds for child-MCP auth
+agentproto auth profile <create|list|rm|import|set-models|set-enabled|refresh-models> …
+                                           — named auth profiles (subscriptions / API keys)
+agentproto auth discover [--endpoint <e>] [--json]
+                                           — scan this host for importable credentials
 ```
 
 Manages host-binding tokens — the JWT `agentproto serve --connect <host>`
@@ -123,6 +126,135 @@ ceremony). Only if that fails does it log a warning and fall back to the
 stale token — the host's 401 then surfaces a clearer error than a silent
 disconnect. Re-run `agentproto auth login --host <host>` if silent
 refresh fails or no refresh token is stored.
+
+## `provider` — LLM provider API keys
+
+Stores provider API keys the `models` verb and adapters resolve at spawn
+time:
+
+```bash
+agentproto auth provider set anthropic sk-ant-…
+agentproto auth provider set openrouter sk-or-… --base-url https://…
+agentproto auth provider list [--json]
+agentproto auth provider rm openai
+```
+
+## `profile` — named auth profiles
+
+Named auth profiles (`~/.agentproto/auth-profiles.json` + OS keychain)
+attach a billing credential to a name so spawns can reference it with
+`--access-profile <id>` / `agent_start.access.profileRef`. All `profile`
+subcommands operate daemon-less.
+
+### `profile create <id> <endpoint>`
+
+```bash
+op paste | agentproto auth profile create work-anthropic anthropic \
+    --method oauth-bearer --label "work sub"
+agentproto auth profile create gateway-or openrouter \
+    --method api-key --credential-env OR_API_KEY
+```
+
+Flags:
+
+| Flag | Description |
+|------|-------------|
+| `--method <oauth-bearer\|api-key>` | Required. How the credential is used at spawn time. |
+| `--label <text>` | Human-readable name for the profile. |
+| `--source <name>` | Source tag for oauth-bearer profiles (enables self-refreshing). |
+| `--credential-file <path>` | Read the credential from a file. |
+| `--credential-env <VAR>` | Read the credential from an environment variable. |
+| `--credential-ref <slot>` | Reference an existing keychain slot directly. |
+| `--json` | Emit the created profile as JSON. |
+
+The credential itself is **never** a command-line argument — pipe it on
+stdin, or supply it via `--credential-file` / `--credential-env`.
+
+### `profile list [--endpoint <e>] [--json]`
+
+```bash
+agentproto auth profile list
+agentproto auth profile list --endpoint anthropic --json
+```
+
+Lists all named profiles (non-secret metadata only). `--endpoint` filters
+by provider endpoint (e.g. `anthropic`, `openrouter`).
+
+### `profile rm <id>`
+
+```bash
+agentproto auth profile rm work-anthropic
+```
+
+Removes the profile and clears its keychain slot (when no other profile
+references the same slot).
+
+### `profile import <origin> <endpoint>`
+
+```bash
+agentproto auth profile import claude-code anthropic
+agentproto auth profile import claude-code anthropic --id my-claude --label "Claude Pro"
+```
+
+Materializes a credential discovered by `agentproto auth discover` into a
+named profile. Source-backed where the origin self-refreshes. Origins:
+`claude-code`, `hermes-config`, `env`, `codex`, `gemini`.
+
+| Flag | Description |
+|------|-------------|
+| `--id <id>` | Profile id to use instead of the auto-derived default. |
+| `--label <text>` | Human-readable label. |
+
+### `profile set-models <id> <all|allow> [<ids…>]`
+
+```bash
+agentproto auth profile set-models work-anthropic allow claude-code/claude-sonnet-4
+agentproto auth profile set-models work-anthropic all
+```
+
+Curates which model ids the profile is eligible for. `allow` narrows to
+exactly the listed ids; `all` clears the curation (all models for the
+endpoint).
+
+### `profile set-enabled <id> <true|false>`
+
+```bash
+agentproto auth profile set-enabled work-anthropic false
+```
+
+Toggles a whole profile. A disabled profile is skipped by the catalog
+and spawn resolution — effectively suspended without deleting it.
+
+### `profile refresh-models <id>`
+
+Re-syncs a named auth profile's curated model ids against the current
+catalog:
+
+```bash
+agentproto auth profile refresh-models openrouter-api --json
+```
+
+Explicit and opt-in; refuses a `mode: "all"` profile (nothing to
+refresh).
+
+## `discover`
+
+```bash
+agentproto auth discover
+agentproto auth discover --endpoint anthropic --json
+```
+
+Scans this host for credentials that can be imported into named profiles.
+Looks for: claude-code login files, hermes config, environment variables,
+codex auth, gemini login. Each hit prints:
+
+```text
+origin: claude-code   endpoint: anthropic
+  import: agentproto auth profile import claude-code anthropic
+```
+
+`--endpoint <e>` filters results to a specific provider endpoint.
+`--json` emits the raw `{ credentials: […] }` array.
 
 ## `cred` — broker credentials for child-MCP auth (0.5.0+)
 

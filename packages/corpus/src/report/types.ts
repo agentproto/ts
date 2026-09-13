@@ -21,6 +21,7 @@ export const reportCoverPageSchema = z
   .object({
     kicker: z.string().optional(),
     title: z.string().optional(),
+    body: z.string().optional(), // closes the drift vs. render-side coverPageDataSchema
     meta: z.string().optional(),
     tag: z.string().optional(),
     align: z.string().optional(),
@@ -71,6 +72,17 @@ export const reportChapterSchema = z
     kw: z.array(z.string()).optional(),
     /** build-packs: max distilled claims in the view (default 28). */
     cap: z.number().optional(),
+    /** Bundle-repo artifact this chapter teaches + validates against (book use case). */
+    artifact: z
+      .object({
+        /** Path relative to the bundle repo root, e.g. "chapters/03-mcp-server". */
+        path: z.string(),
+        /** Specific files the writer should ground the chapter in. */
+        files: z.array(z.string()).optional(),
+        /** Command the bundle repo's own CI runs to prove the example works — informational only, never executed by this engine. */
+        run: z.string().optional(),
+      })
+      .optional(),
   })
   .passthrough()
 
@@ -101,6 +113,20 @@ export const reportConfigSchema = z
     rulesText: z.string().optional(),
     factsText: z.string().optional(),
     briefText: z.string().optional(),
+
+    /** Bundle-repo root, resolved relative to the book config's own dir. */
+    bundleRepo: z.string().optional(),
+    /** Page geometry passthrough for render.document (e.g. "6in 9in" — KDP paperback trim). */
+    pageSize: z.string().optional(),
+    /** KDP requires bleed on print interiors with bleed images (e.g. "3mm"). */
+    pageBleed: z.string().optional(),
+    /** Additive output target: pandoc-driven EPUB export (studio-side `reports epub` CLI). */
+    epub: z
+      .object({
+        out: z.string(),
+        pandocArgs: z.array(z.string()).optional(),
+      })
+      .optional(),
 
     chapters: z.array(reportChapterSchema),
   })

@@ -20,6 +20,14 @@ export interface InboundMessage {
   contactRef: string
   /** Rendered user-turn text. */
   text: string
+  /** Human-readable name of the sender, when the ingress knows one.
+   *  Present => the routed turn is prefixed so the agent can tell senders
+   *  apart. Absent => the text is enqueued exactly as before. */
+  displayName?: string
+  /** The surface the message came in on (`telegram`, `whatsapp`, `email`).
+   *  Distinct from `source`, which is a routing key, not something to show
+   *  an agent. */
+  surface?: string
   /** Raw agentpush events, forwarded to the spawn fallback template. */
   messages?: unknown[]
 }
@@ -30,7 +38,7 @@ export interface InboundMessage {
 export type InboundEnqueuePrompt = (
   sessionId: string,
   text: string,
-  opts?: { interrupt?: boolean },
+  opts?: { interrupt?: boolean; queue?: boolean },
 ) => Promise<void> | void
 
 /** Whether `sessionId` is currently live enough to route into without a
@@ -57,6 +65,31 @@ export interface InboundRouterDeps {
 }
 
 export type InboundRouteAction = "routed" | "spawned" | "restarted-routed" | "skipped"
+
+/**
+ * The text a bound session actually receives.
+ *
+ * Attribution is OPT-IN, by the presence of `displayName`/`surface`: a
+ * one-to-one binding (the original transmitter case) must keep receiving the
+ * sender's words verbatim, with nothing prepended. A caller that knows who is
+ * speaking opts in by passing a name, and the agent then sees a stable
+ * `[Name · surface]` prefix it can use to address its answer.
+ */
+export function attributeInboundText(msg: InboundMessage): string {
+  // Present-but-blank means the caller has no identity to offer — treat it
+  // as absent so we never emit a useless `[ · ]` prefix.
+  const displayName = typeof msg.displayName === "string" && msg.displayName.trim() !== ""
+    ? msg.displayName
+    : undefined
+  const surface = typeof msg.surface === "string" && msg.surface.trim() !== ""
+    ? msg.surface
+    : undefined
+
+  if (!displayName && !surface) return msg.text
+  if (!surface) return `[${displayName}] ${msg.text}`
+  const name = displayName ?? msg.contactRef
+  return `[${name} · ${surface}] ${msg.text}`
+}
 
 export async function routeInboundMessage(
   deps: InboundRouterDeps,
@@ -89,7 +122,10 @@ export async function routeInboundMessage(
   }
 
   const routeInto = async (sessionId: string): Promise<{ action: InboundRouteAction; sessionId: string }> => {
-    await deps.enqueuePrompt(sessionId, msg.text)
+    // Queue when the session is mid-turn instead of rejecting — an
+    // inbound message must never be dropped just because the bound
+    // session is still working on its previous turn.
+    await deps.enqueuePrompt(sessionId, attributeInboundText(msg), { queue: true })
     deps.bindings.upsert({
       alias: binding.alias,
       source: binding.source,

@@ -214,6 +214,38 @@ describe("ClaudeSdkAcpAgent — smoke (faked SDK stream)", () => {
     expect((updates[0]!.content as { text: string }).text).toContain("claude-sdk error")
   })
 
+  it("fails fast on an unrouted vendor/product model — no query() call, no billed turn", async () => {
+    // The dogfooding bug: a gateway model (deepseek/deepseek-v4-flash-0731)
+    // spawned with no base_url. Previously this reached query() and, depending
+    // on the SDK/gateway, came back as an empty billed turn, a 400 with the
+    // wrong model prefix, or — worst — a silent real-Anthropic answer. The
+    // guard in buildQueryOptions must reject it BEFORE query() is ever called.
+    const updates: Array<Record<string, unknown>> = []
+    let queryCalls = 0
+    const query: QueryFn = () => {
+      queryCalls++
+      return (async function* (): AsyncGenerator<SDKMessage> {})()
+    }
+    const host = new ClaudeSdkAcpAgent(
+      fakeConn(updates),
+      { model: "deepseek/deepseek-v4-flash-0731" },
+      query,
+    )
+
+    const { sessionId } = await host.newSession({ cwd: "/tmp", mcpServers: [] } as never)
+    const res = await host.prompt({
+      sessionId,
+      prompt: [{ type: "text", text: "hello" }],
+    } as never)
+
+    expect(res.stopReason).toBe("refusal")
+    expect(queryCalls).toBe(0)
+    expect((updates[0]!.content as { text: string }).text).toContain("claude-sdk error")
+    expect((updates[0]!.content as { text: string }).text).toContain(
+      "deepseek/deepseek-v4-flash-0731",
+    )
+  })
+
   it("keeps the turn alive during a long tool run: pending tool uses a longer watchdog", async () => {
     const updates: Array<Record<string, unknown>> = []
     const query: QueryFn = () =>

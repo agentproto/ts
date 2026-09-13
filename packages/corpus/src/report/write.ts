@@ -24,6 +24,8 @@ export interface ChapterWriteContext {
   readonly bibliography?: string
   /** Global rules block (`ReportConfig.rulesText`) — appended verbatim. */
   readonly rules?: string
+  /** Sibling chapters (the caller filters out the current one) for cross-refs. */
+  readonly outline?: ReadonlyArray<{ id: string; title: string }>
 }
 
 export function buildChapterWritePrompt(
@@ -47,6 +49,11 @@ export function buildChapterWritePrompt(
         ? `## Per-facet analysis (for deeper context):\n\n${ctx.analysisContext}\n\n`
         : "") +
       `## Bibliography (for citation verification):\n\n${ctx.bibliography ?? ""}\n\n` +
+      (ctx.outline && ctx.outline.length > 0
+        ? `## Book outline (for forward/back references)\n\n${ctx.outline
+            .map((o) => `- ${o.id}: ${o.title}`)
+            .join("\n")}\n\nReference sibling chapters as [[chapter-id]] where helpful.\n\n`
+        : "") +
       `Write the chapter now. Start with the "## ${ctx.chapter.title}" heading, then the content.`,
   }
 }

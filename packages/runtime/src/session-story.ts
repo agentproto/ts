@@ -7,7 +7,7 @@
  * unit-testable so a future LLM-backed chaptering/summarizing pass can
  * replace the internals behind the same `buildStory(messages) => Story`
  * interface (mirrors the summarize_session heuristic → LLM swap path
- * described in agents-overview-app.ts).
+ * described in summarize-session-tool.ts).
  *
  * Folding rule (mirrors transcript-export.ts's own batching): an assistant
  * message plus every immediately-following `role: "tool"` message collapse

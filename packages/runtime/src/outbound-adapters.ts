@@ -357,7 +357,7 @@ function telegramMediaTypeFor(type: OutboundAttachment["type"]): string {
   }
 }
 
-function mimeTypeFor(ext: string, kind: OutboundAttachment["type"]): string {
+export function mimeTypeFor(ext: string, kind: OutboundAttachment["type"]): string {
   const e = ext.toLowerCase()
   switch (kind) {
     case "photo":

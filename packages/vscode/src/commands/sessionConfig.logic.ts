@@ -317,6 +317,18 @@ function findCatalogProduct(
  * (⇒ chip hidden) when the catalog knows no routes for the model — never a
  * hardcoded gateway list.
  */
+/** True when the current (harness×)model has more than one gateway route to
+ *  choose from — the signal the composer's route chip uses to decide whether to
+ *  offer a switch or sit dimmed. One (or zero) route ⇒ nothing to pick ⇒ dim.
+ *  Reuses {@link resolveRouteRows}, the same catalog source the model picker's
+ *  "change route" row draws from. */
+export function isRouteSwitchable(
+  catalog: CatalogModelsResult | undefined,
+  model: string | undefined,
+): boolean {
+  return resolveRouteRows(catalog, model).length > 1
+}
+
 export function resolveRouteRows(
   catalog: CatalogModelsResult | undefined,
   model: string | undefined,

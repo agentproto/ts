@@ -18,8 +18,22 @@ export const provisionWorktreeTool = defineTool({
     "path. If `linkPaths` is given, each is symlinked from `repoRoot` into " +
     "the worktree before `depsCmd` runs — for gitignored, expensive-to-" +
     "recreate trees a fresh worktree lacks (node_modules, sibling workspace " +
-    "repos) so the workspace graph resolves without a full reinstall. Also " +
-    "writes a creation-provenance marker into the worktree's private gitdir.",
+    "repos) so the workspace graph resolves without a full reinstall. If " +
+    "`writeFiles` is given, each entry's `content` is written into the " +
+    "worktree at `path` before `depsCmd` runs — for generated, worktree-" +
+    "specific config a tool invoked by `depsCmd` needs to see (e.g. a " +
+    "package-manager config pointing a cache/store dir outside the " +
+    "worktree, so it isn't shared with — or clobbered by — a sibling " +
+    "worktree). `mode: \"create\"` (default) skips an entry whose path " +
+    "already exists, matching `linkPaths`' never-clobber rule; " +
+    "`mode: \"append\"` always appends (creating the file if missing) and, " +
+    "if git already tracks that path, marks it `skip-worktree` afterwards " +
+    "so the tweak never shows up as a local modification the caller could " +
+    "accidentally commit — callers are responsible for making the content " +
+    "itself idempotent (e.g. checking `repoRoot`'s copy of the file for the " +
+    "line before including the entry, since a fresh worktree's tracked " +
+    "files start as a byte-identical checkout). Also writes a creation-" +
+    "provenance marker into the worktree's private gitdir.",
   version: "0.2.0",
   inputSchema: z.object({
     repoRoot: z.string().describe("Absolute path to the git repository root."),
@@ -51,6 +65,19 @@ export const provisionWorktreeTool = defineTool({
       .array(z.string())
       .optional()
       .describe("Relative paths (dirs or files) symlinked from repoRoot into the worktree before depsCmd, e.g. 'node_modules' or a gitignored sibling workspace repo. Lets the workspace graph resolve without a full reinstall."),
+    writeFiles: z
+      .array(
+        z.object({
+          path: z.string().describe("Path relative to the worktree root."),
+          content: z.string().describe("File content, written or appended verbatim."),
+          mode: z
+            .enum(["create", "append"])
+            .optional()
+            .describe("'create' (default): write only if path doesn't already exist. 'append': always append (creating if missing); if git tracks the path, it's marked skip-worktree afterwards so the change never shows as a local modification."),
+        }),
+      )
+      .optional()
+      .describe("Files written into the worktree before depsCmd runs, e.g. a package-manager config generated for this specific worktree."),
     runSetup: z
       .boolean()
       .optional()

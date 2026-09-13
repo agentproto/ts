@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest"
-import { routeInboundMessage } from "../inbound-router.js"
+import { routeInboundMessage, attributeInboundText } from "../inbound-router.js"
 import type { InboundMessage, InboundRouterDeps } from "../inbound-router.js"
 import type { TransmitterBinding, TransmitterBindingStore } from "../transmitter-bindings.js"
 
@@ -105,7 +105,7 @@ describe("routeInboundMessage", () => {
 
     expect(result).toEqual({ action: "routed", sessionId: "sess_1" })
     expect(isSessionAlive).toHaveBeenCalledWith("sess_1")
-    expect(enqueuePrompt).toHaveBeenCalledWith("sess_1", msg.text)
+    expect(enqueuePrompt).toHaveBeenCalledWith("sess_1", msg.text, { queue: true })
     expect(restartSession).not.toHaveBeenCalled()
     expect(upsert).toHaveBeenCalledWith({
       alias: "agentpush",
@@ -165,7 +165,7 @@ describe("routeInboundMessage", () => {
 
     expect(result).toEqual({ action: "restarted-routed", sessionId: "sess_1-restarted" })
     expect(restartSession).toHaveBeenCalledWith("sess_1")
-    expect(enqueuePrompt).toHaveBeenCalledWith("sess_1-restarted", msg.text)
+    expect(enqueuePrompt).toHaveBeenCalledWith("sess_1-restarted", msg.text, { queue: true })
     expect(upsert).toHaveBeenCalledWith({
       alias: "agentpush",
       source: "+33600000000",
@@ -253,5 +253,77 @@ describe("routeInboundMessage", () => {
         provider: "telegram",
       }),
     )
+  })
+})
+
+describe("attributeInboundText", () => {
+  it("returns msg.text unchanged when neither displayName nor surface is set", () => {
+    const msg = makeMsg()
+    expect(attributeInboundText(msg)).toBe("hello from alice")
+  })
+
+  it("returns msg.text unchanged when displayName and surface are present but blank", () => {
+    // A caller with no identity to offer must not degrade the 1:1 path —
+    // `""`/whitespace is treated as absent, so no `[ · ]` prefix appears.
+    expect(attributeInboundText(makeMsg({ displayName: "" }))).toBe("hello from alice")
+    expect(attributeInboundText(makeMsg({ surface: "   " }))).toBe("hello from alice")
+    expect(attributeInboundText(makeMsg({ displayName: "  ", surface: "" }))).toBe("hello from alice")
+  })
+
+  it("prefixes [displayName] when only displayName is set", () => {
+    const msg = makeMsg({ displayName: "Alice" })
+    expect(attributeInboundText(msg)).toBe("[Alice] hello from alice")
+  })
+
+  it("prefixes [contactRef · surface] when only surface is set", () => {
+    const msg = makeMsg({ surface: "telegram" })
+    expect(attributeInboundText(msg)).toBe("[alice · telegram] hello from alice")
+  })
+
+  it("prefixes [displayName · surface] when both are set", () => {
+    const msg = makeMsg({ displayName: "Alice", surface: "telegram" })
+    expect(attributeInboundText(msg)).toBe("[Alice · telegram] hello from alice")
+  })
+
+  it("uses raw values verbatim — no truncation, lowercase, or rewrite", () => {
+    const msg = makeMsg({ displayName: "  WeIrD   NAME  ", surface: "Telegram" })
+    expect(attributeInboundText(msg)).toBe("[  WeIrD   NAME   · Telegram] hello from alice")
+  })
+
+  it("enqueues the ATTRIBUTED text into a bound session", async () => {
+    const { store } = makeBindingStore({
+      alias: "agentpush",
+      source: "+33600000000",
+      contactRef: "alice",
+      sessionId: "sess_1",
+      mode: "route",
+      lastSeenTs: 100,
+    })
+    const enqueuePrompt = vi.fn()
+    const deps = makeDeps({ bindings: store, enqueuePrompt, isSessionAlive: vi.fn(() => true) })
+
+    await routeInboundMessage(deps, makeMsg({ displayName: "Alice", surface: "sms" }), "route")
+
+    expect(enqueuePrompt).toHaveBeenCalledWith("sess_1", "[Alice · sms] hello from alice", {
+      queue: true,
+    })
+  })
+
+  it("still enqueues the raw text byte-for-byte when no attribution fields are present (1:1 regression guard)", async () => {
+    const { store } = makeBindingStore({
+      alias: "agentpush",
+      source: "+33600000000",
+      contactRef: "alice",
+      sessionId: "sess_1",
+      mode: "route",
+      lastSeenTs: 100,
+    })
+    const enqueuePrompt = vi.fn()
+    const deps = makeDeps({ bindings: store, enqueuePrompt, isSessionAlive: vi.fn(() => true) })
+
+    const msg = makeMsg()
+    await routeInboundMessage(deps, msg, "route")
+
+    expect(enqueuePrompt).toHaveBeenCalledWith("sess_1", "hello from alice", { queue: true })
   })
 })

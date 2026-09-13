@@ -111,6 +111,8 @@ function buildMsg(
     source: string | undefined | (() => string | undefined)
     contactRef: string | undefined | (() => string | undefined)
     text: string | undefined | (() => string | undefined)
+    displayName?: string | undefined | (() => string | undefined)
+    surface?: string | undefined | (() => string | undefined)
     providerMessageId?: string | undefined | (() => string | undefined)
   },
 ): NormalizeInboundResult {
@@ -123,6 +125,9 @@ function buildMsg(
       : fields.contactRef
   const text =
     typeof fields.text === "function" ? fields.text() : fields.text
+  const displayName =
+    typeof fields.displayName === "function" ? fields.displayName() : fields.displayName
+  const surface = typeof fields.surface === "function" ? fields.surface() : fields.surface
   const providerMessageId =
     typeof fields.providerMessageId === "function"
       ? fields.providerMessageId()
@@ -137,6 +142,10 @@ function buildMsg(
     source,
     contactRef,
     text,
+    // Opt-in attribution — only set when the dialect knows a sender name,
+    // so 1:1 bindings keep receiving the raw text unprefixed.
+    ...(displayName ? { displayName } : {}),
+    ...(surface ? { surface } : {}),
     ...(Array.isArray(body) ? { messages: body } : {}),
   }
 
@@ -239,10 +248,22 @@ function normalizeTelegram(
       ? String(message.message_id)
       : undefined
 
+  // Telegram puts the sender's identity in `from` — surface it so the
+  // routed turn can be attributed once multiple contacts share a session.
+  // first_name beats username: it is what a human would call them.
+  const displayName =
+    typeof from?.first_name === "string" && from.first_name
+      ? from.first_name
+      : typeof from?.username === "string" && from.username
+        ? from.username
+        : undefined
+
   return buildMsg(body, ctx, {
     source,
     contactRef,
     text,
+    displayName,
+    surface: "telegram",
     providerMessageId,
   })
 }

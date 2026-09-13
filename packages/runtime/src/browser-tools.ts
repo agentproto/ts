@@ -22,7 +22,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { AdapterLister } from "@agentproto/provider-kit"
-import type { SessionsRegistry } from "./sessions.js"
+import { registerBuiltinTool } from "@agentproto/mcp-server"
+import { catchErrors, paginated } from "@agentproto/tool"
+import type { SessionsRegistry, SessionDescriptor } from "./sessions.js"
 
 // ── Minimal structural types (no dep on @agentproto/adapter-browser) ──────────
 
@@ -110,10 +112,60 @@ export interface BrowserAdapterInfo {
   defaultPort: number
 }
 
+/** One `browser_adapter_list` row before projection: the legacy lister shape
+ *  (id/name/description/defaultPort + optional manifest metadata). Kit-path
+ *  rows (`BrowserAdapterInfo`) are structurally compatible. */
+export interface BrowserAdapterListRow {
+  id: string
+  name: string
+  description: string
+  defaultPort: number
+  location?: "local" | "cloud"
+  install?: unknown[]
+  config?: unknown[]
+}
+
+/**
+ * `browser_adapter_list`'s COMPACT per-row projection: the fields a caller
+ * needs to pick an adapter and route `start_browser` — id, display name,
+ * default port, and (when declared) where it runs. The verbose prose
+ * `description` and the bulky informational `install`/`config` manifest
+ * arrays stay behind `full: true` / `compact: false`.
+ */
+export const compactBrowserAdapterRow = (a: BrowserAdapterListRow) => ({
+  id: a.id,
+  name: a.name,
+  defaultPort: a.defaultPort,
+  ...(a.location !== undefined ? { location: a.location } : {}),
+})
+
+/**
+ * `list_browsers`'s COMPACT per-row projection: the identity/routing fields
+ * of a browser session descriptor — id, name/label, status, the browser
+ * coordinates (`browserAdapterId`/`browserPort`/`browserBaseUrl`/
+ * `browserLocation`), pid, and activity timestamps. The bulky descriptor
+ * remainder (resume/restart bookkeeping, spawn metadata, … — fields a
+ * browser lister never consumes) stays behind `full: true` /
+ * `compact: false`, which return the unmodified SessionDescriptor rows.
+ */
+export const compactBrowserSessionRow = (d: SessionDescriptor) => ({
+  id: d.id,
+  ...(d.name !== undefined ? { name: d.name } : {}),
+  ...(d.label !== undefined ? { label: d.label } : {}),
+  status: d.status,
+  ...(d.pid != null ? { pid: d.pid } : {}),
+  ...(d.browserAdapterId !== undefined ? { browserAdapterId: d.browserAdapterId } : {}),
+  ...(d.browserPort !== undefined ? { browserPort: d.browserPort } : {}),
+  ...(d.browserBaseUrl !== undefined ? { browserBaseUrl: d.browserBaseUrl } : {}),
+  ...(d.browserLocation !== undefined ? { browserLocation: d.browserLocation } : {}),
+  startedAt: d.startedAt,
+  ...(d.lastActivityAt !== undefined ? { lastActivityAt: d.lastActivityAt } : {}),
+})
+
 // ── Shared result helpers ─────────────────────────────────────────────────────
 
 const okResult = (r: Record<string, unknown>) => ({
-  content: [{ type: "text" as const, text: JSON.stringify(r, null, 2) }],
+  content: [{ type: "text" as const, text: JSON.stringify(r) }],
   structuredContent: r,
 })
 
@@ -149,41 +201,48 @@ export function registerBrowserTools(
   const { registry, resolveBrowserAdapter, listBrowserAdapters, lister, log } = opts
 
   // ── browser_adapter_list ────────────────────────────────────────────────────
-  server.tool(
-    "browser_adapter_list",
-    "List available browser adapter ids and their metadata (name, description, default port). " +
-      "Use the `id` field to reference an adapter in `start_browser`.",
-    {},
-    async () => {
+  // Migrated onto the AIP contract layer (defineTool + implementTool +
+  // toMcpTool): pagination/compact/fields via `paginated()` and error
+  // normalization via `catchErrors()` at registration. The not-configured
+  // guard now THROWS the same message — `catchErrors()` turns it into the
+  // same canonical error result.
+  const browserAdapterListSchema = z.object({})
+  type BrowserAdapterListInput = z.infer<typeof browserAdapterListSchema>
+
+  registerBuiltinTool<BrowserAdapterListInput, BrowserAdapterListRow[]>(server, {
+    id: "browser_adapter_list",
+    description: "List available browser adapter ids and their metadata (name, default port). " +
+      "Use the `id` field to reference an adapter in `start_browser`. " +
+      "COMPACT BY DEFAULT: rows are {id, name, defaultPort, location?}; pass " +
+      "`full: true` (or `compact: false`) to also carry the prose " +
+      "`description` and the informational `install`/`config` manifest arrays.",
+    inputSchema: browserAdapterListSchema,
+    handler: async () => {
       // Kit path: async lister supplied — extract info fields to preserve the
       // existing { id, name, description, defaultPort }[] response shape.
       if (lister) {
         const entries = await lister()
-        const adapters = entries.flatMap(e => (e.info ? [e.info] : []))
-        return {
-          content: [{ type: "text" as const, text: JSON.stringify(adapters, null, 2) }],
-        }
+        return entries.flatMap(e => (e.info ? [e.info] : []))
       }
       // Legacy path: synchronous injected lister.
       if (!listBrowserAdapters) {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text:
-                "browser_adapter_list is not enabled — the daemon was started without " +
-                "a browser adapter lister. Re-run with `listBrowserAdapters` wired.",
-            },
-          ],
-          isError: true,
-        }
+        throw new Error(
+          "browser_adapter_list is not enabled — the daemon was started without " +
+            "a browser adapter lister. Re-run with `listBrowserAdapters` wired.",
+        )
       }
-      const adapters = listBrowserAdapters()
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(adapters, null, 2) }],
-      }
-    }
-  )
+      return listBrowserAdapters()
+    },
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: compactBrowserAdapterRow,
+        keyOf: a => a.id,
+        maxLimit: 200,
+        itemKey: "adapters",
+      }),
+    ],
+  })
 
   // ── start_browser ────────────────────────────────────────────────────────────
   server.tool(
@@ -375,7 +434,7 @@ export function registerBrowserTools(
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ ok, sessionId: input.sessionId }, null, 2),
+            text: JSON.stringify({ ok, sessionId: input.sessionId }),
           },
         ],
       }
@@ -383,29 +442,45 @@ export function registerBrowserTools(
   )
 
   // ── list_browsers ────────────────────────────────────────────────────────────
-  server.tool(
-    "list_browsers",
-    "List browser sessions tracked by the daemon (all or alive-only).",
-    {
-      onlyAlive: z
-        .boolean()
-        .optional()
-        .describe(
-          "When true, return only sessions with status='running'. Default false (all including killed/exited)."
-        ),
-    },
-    async input => {
+  // Migrated onto the AIP contract layer (defineTool + implementTool +
+  // toMcpTool): pagination/compact/fields via `paginated()` and error
+  // normalization via `catchErrors()` at registration.
+  const listBrowsersSchema = z.object({
+    onlyAlive: z
+      .boolean()
+      .optional()
+      .describe(
+        "When true, return only sessions with status='running'. Default false (all including killed/exited)."
+      ),
+  })
+  type ListBrowsersInput = z.infer<typeof listBrowsersSchema>
+
+  registerBuiltinTool<ListBrowsersInput, SessionDescriptor[]>(server, {
+    id: "list_browsers",
+    description: "List browser sessions tracked by the daemon (all or alive-only). " +
+      "COMPACT BY DEFAULT: each row is a slim projection (id/name/label/" +
+      "status/browserAdapterId/browserPort/browserBaseUrl/browserLocation/" +
+      "pid/startedAt/lastActivityAt); pass `full: true` (or `compact: false`) " +
+      "for the complete, unprojected session descriptors.",
+    inputSchema: listBrowsersSchema,
+    handler: async (input) => {
       const all = registry
         .list()
         .filter(d => d.kind === "browser")
-      const result = input.onlyAlive
+      return input.onlyAlive
         ? all.filter(d => d.status === "running")
         : all
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
-      }
-    }
-  )
+    },
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: compactBrowserSessionRow,
+        keyOf: d => d.id,
+        maxLimit: 200,
+        itemKey: "browsers",
+      }),
+    ],
+  })
 
   // ── browser_status ───────────────────────────────────────────────────────────
   server.tool(
@@ -466,7 +541,7 @@ export function registerBrowserTools(
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ descriptor: desc, healthy, healthBody }, null, 2),
+            text: JSON.stringify({ descriptor: desc, healthy, healthBody }),
           },
         ],
       }

@@ -27,11 +27,12 @@ function offlineCtx(): GeneratorContext {
 }
 
 const OUTPUT_PATH = "packages/model-catalog/src/llm/openrouter-routes.generated.ts"
+const LEDGER_PATH = "packages/catalog-sync/ledger/llm-openrouter.json"
 
 describe("llm:openrouter generator", () => {
-  it("emits exactly one drop-in file at the model-catalog path", async () => {
+  it("emits the drop-in file plus its addedAt ledger", async () => {
     const files = await llmOpenRouterGenerator.generate(offlineCtx())
-    expect(Object.keys(files)).toEqual([OUTPUT_PATH])
+    expect(Object.keys(files).sort()).toEqual([LEDGER_PATH, OUTPUT_PATH].sort())
   })
 
   it("emits a parseable OPENROUTER_ROUTES map with ≥1 entry", async () => {

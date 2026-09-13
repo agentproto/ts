@@ -130,7 +130,7 @@ lands later — see *Client routing* below).
 
 ```bash
 agentproto pair exec my-laptop -- sessions ls
-agentproto pair exec my-laptop -- mcp-bridge --list
+agentproto pair exec my-laptop -- permissions ls
 ```
 
 `exec` reconnects the pairing using the current epoch routing token (falling

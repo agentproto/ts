@@ -23,6 +23,7 @@ npm add @agentproto/model-catalog
 | `…/llm` · `…/image` · `…/video` · `…/audio` · `…/voice` | per-modality catalogs |
 | `…/cost` · `…/pricing` | cost dispatcher + pricing helpers |
 | `…/curation` · `…/picker` | surfacing + selection helpers |
+| `…/route-identity` | `parseModelRef`, `resolveLlmModelRoute`, `listRouterLlmRoutes` — vendor/product[@route] grammar and router enumeration |
 | `…/byok` · `…/access` | policy hooks (debit decision, access evaluation) |
 
 ```ts

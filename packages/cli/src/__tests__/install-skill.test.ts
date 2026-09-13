@@ -133,9 +133,9 @@ afterAll(async () => {
 
 describe("parseSkillFrontmatter (unit)", () => {
   it("parses name + description from a real SKILL.md", async () => {
-    const dir = join(packSkillsDir(), "agent-session-orchestration-agentproto")
+    const dir = join(packSkillsDir(), "ap-spawn-agent")
     const info = await parseSkillFrontmatter(dir)
-    expect(info.name).toBe("agent-session-orchestration-agentproto")
+    expect(info.name).toBe("ap-spawn-agent")
     expect(info.description.length).toBeGreaterThan(0)
     expect(info.dir).toBe(dir)
   })
@@ -163,11 +163,13 @@ describe("agentproto install skill (dry-run via real CLI)", () => {
   it("--list shows all pack skills", () => {
     const { stdout, code } = runCli(["skill/agentproto-pack", "--list"])
     expect(code).toBe(0)
-    expect(stdout).toContain("adapter-setup-kit")
-    expect(stdout).toContain("agent-session-orchestration-agentproto")
-    expect(stdout).toContain("durable-supervision")
-    expect(stdout).toContain("light-coder-orchestration")
-    expect(stdout).toContain("nested-orchestration")
+    // one entry per layer of the 3-layer pack (L0 map, L1 primitive,
+    // L2 grouper, L3 playbook) — see packages/skill-pack-agentproto/manifest.json
+    expect(stdout).toContain("agentproto")
+    expect(stdout).toContain("ap-spawn-agent")
+    expect(stdout).toContain("drive-agents")
+    expect(stdout).toContain("pb-supervise-parallel-mission")
+    expect(stdout).toContain("agentproto-llm-endpoint")
   })
 
   it("--list shows descriptions", () => {
@@ -180,7 +182,7 @@ describe("agentproto install skill (dry-run via real CLI)", () => {
 
   it("hermes --dry-run for a single skill", () => {
     const { stdout, code } = runCli([
-      "skill/agent-session-orchestration-agentproto",
+      "skill/ap-spawn-agent",
       "--target",
       "hermes",
       "--dry-run",
@@ -188,7 +190,7 @@ describe("agentproto install skill (dry-run via real CLI)", () => {
     expect(code).toBe(0)
     expect(stdout).toContain("dry-run")
     expect(stdout).toContain("hermes")
-    expect(stdout).toContain("agent-session-orchestration-agentproto")
+    expect(stdout).toContain("ap-spawn-agent")
   })
 
   it("claude-code --dry-run with --out tmp dir", () => {
@@ -196,7 +198,7 @@ describe("agentproto install skill (dry-run via real CLI)", () => {
     const tmpOut = join(base, "out")
     try {
       const { stdout, code } = runCli([
-        "skill/agent-session-orchestration-agentproto",
+        "skill/ap-spawn-agent",
         "--target",
         "claude-code",
         "--dry-run",
@@ -214,7 +216,7 @@ describe("agentproto install skill (dry-run via real CLI)", () => {
 
   it("--force skips overwrite prompt (hermes --dry-run)", () => {
     const { stdout, code } = runCli([
-      "skill/agent-session-orchestration-agentproto",
+      "skill/ap-spawn-agent",
       "--target",
       "hermes",
       "--force",
@@ -237,7 +239,7 @@ describe("agentproto install skill (dry-run via real CLI)", () => {
 
   it("both targets specified", () => {
     const { stdout, code } = runCli([
-      "skill/agent-session-orchestration-agentproto",
+      "skill/ap-spawn-agent",
       "--target",
       "hermes",
       "--target",
@@ -266,7 +268,7 @@ describe("install-skill claude-code emit", () => {
 
   it("emits plugin bundle to --out dir", () => {
     const { stdout, code } = runCli([
-      "skill/agent-session-orchestration-agentproto",
+      "skill/ap-spawn-agent",
       "--target",
       "claude-code",
       "--out",
@@ -281,13 +283,13 @@ describe("install-skill claude-code emit", () => {
 
     expect(existsSync(join(tmpDir, ".claude-plugin", "plugin.json"))).toBe(true)
     expect(
-      existsSync(join(tmpDir, "skills", "agent-session-orchestration-agentproto")),
+      existsSync(join(tmpDir, "skills", "ap-spawn-agent")),
     ).toBe(true)
   })
 
   it("emits a plugin zip when `zip` is available", () => {
     const { code } = runCli([
-      "skill/agent-session-orchestration-agentproto",
+      "skill/ap-spawn-agent",
       "--target",
       "claude-code",
       "--out",
@@ -311,7 +313,7 @@ describe("overwrite / dry-run", () => {
     const tmpOut = join(base, "out")
     try {
       const { stdout, code } = runCli([
-        "skill/agent-session-orchestration-agentproto",
+        "skill/ap-spawn-agent",
         "--target",
         "claude-code",
         "--out",
@@ -331,7 +333,7 @@ describe("overwrite / dry-run", () => {
     const tmpOut = join(base, "out")
     try {
       const { code } = runCli([
-        "skill/agent-session-orchestration-agentproto",
+        "skill/ap-spawn-agent",
         "--target",
         "claude-code",
         "--out",
@@ -441,7 +443,7 @@ describe("upsertSkillManifestEntry (unit)", () => {
     }
     const result = upsertSkillManifestEntry(
       manifest,
-      { name: "agent-session-orchestration-agentproto", description: "ours" },
+      { name: "ap-spawn-agent", description: "ours" },
       5000000,
       "skill_local_feedface",
     )
@@ -510,7 +512,7 @@ describe("loadSkillsManifest (unit)", () => {
 describe("install-skill claude-desktop target", () => {
   it("--target claude-desktop --dry-run exits 0, mentions claude-desktop + dry-run", () => {
     const { stdout, stderr, code } = runCli([
-      "skill/agent-session-orchestration-agentproto",
+      "skill/ap-spawn-agent",
       "--target",
       "claude-desktop",
       "--dry-run",
@@ -522,7 +524,7 @@ describe("install-skill claude-desktop target", () => {
 
   it("--target claude-desktop without Claude installed reports skipped (not a crash)", () => {
     const { stdout, stderr, code } = runCli([
-      "skill/agent-session-orchestration-agentproto",
+      "skill/ap-spawn-agent",
       "--target",
       "claude-desktop",
     ])
@@ -678,7 +680,7 @@ describe("agentproto install skill --pack (dry-run via real CLI)", () => {
 
   it("unknown --pack name produces a clear, actionable error", () => {
     const { stderr, code } = runCli([
-      "skill/agent-session-orchestration-agentproto",
+      "skill/ap-spawn-agent",
       "--pack",
       "totally-nonexistent-pack-xyz",
       "--dry-run",
@@ -727,13 +729,13 @@ describe("isAdapterSkillsTarget (unit)", () => {
 describe("agentproto install skill fan-out (no --target, dry-run via real CLI)", () => {
   it("installs into every adapter declaring metadata.skills, skips the rest informationally", () => {
     const { stdout, code } = runCli([
-      "skill/agent-session-orchestration-agentproto",
+      "skill/ap-spawn-agent",
       "--dry-run",
     ])
     expect(code).toBe(0)
     // hermes (flat-dir) and claude-code (claude-plugin) both declare
     // metadata.skills in adapters/{hermes,claude-code}/src/index.ts.
-    expect(stdout).toContain("hermes: agent-session-orchestration-agentproto")
+    expect(stdout).toContain("hermes: ap-spawn-agent")
     expect(stdout).toContain("claude-code: agentproto plugin")
     expect(stdout).toContain("dry-run")
     // adapters with no metadata.skills block are skipped informationally,
@@ -747,7 +749,7 @@ describe("agentproto install skill fan-out (no --target, dry-run via real CLI)",
       const cliEntry = join(REPO_ROOT, "packages/cli/dist/cli.mjs")
       const result = spawnSync(
         "node",
-        [cliEntry, "install", "skill/agent-session-orchestration-agentproto", "--dry-run"],
+        [cliEntry, "install", "skill/ap-spawn-agent", "--dry-run"],
         { cwd: REPO_ROOT, env: { ...process.env, HOME: fakeHome }, timeout: 15_000 },
       )
       const stdout = result.stdout?.toString("utf8") ?? ""
@@ -764,7 +766,7 @@ describe("agentproto install skill fan-out (no --target, dry-run via real CLI)",
     const fakeHome = await mkdtemp(join(tmpdir(), "agentproto-fanout-symlink-"))
     const hermesSkillsDir = join(fakeHome, ".hermes", "skills")
     const linkTarget = join(fakeHome, "dev-skill-source")
-    const linkDest = join(hermesSkillsDir, "agent-session-orchestration-agentproto")
+    const linkDest = join(hermesSkillsDir, "ap-spawn-agent")
 
     await mkdir(linkTarget, { recursive: true })
     await mkdir(hermesSkillsDir, { recursive: true })
@@ -774,7 +776,7 @@ describe("agentproto install skill fan-out (no --target, dry-run via real CLI)",
       const cliEntry = join(REPO_ROOT, "packages/cli/dist/cli.mjs")
       const result = spawnSync(
         "node",
-        [cliEntry, "install", "skill/agent-session-orchestration-agentproto", "--force"],
+        [cliEntry, "install", "skill/ap-spawn-agent", "--force"],
         { cwd: REPO_ROOT, env: { ...process.env, HOME: fakeHome }, timeout: 15_000 },
       )
       const stdout = result.stdout?.toString("utf8") ?? ""
@@ -782,7 +784,7 @@ describe("agentproto install skill fan-out (no --target, dry-run via real CLI)",
       // the compact summary line reports the skip; the full "symlinked at
       // ... left untouched" explanation lives in the action's `detail`
       // field, which isn't printed in the one-line-per-action summary.
-      expect(stdout).toContain("hermes: agent-session-orchestration-agentproto — skipped")
+      expect(stdout).toContain("hermes: ap-spawn-agent — skipped")
       // the symlink itself must survive (never clobbered)
       expect(await isSymlink(linkDest)).toBe(true)
     } finally {

@@ -26,7 +26,7 @@ describe("buildFooter", () => {
         "<sub>🤖 **@agentproto-bot** — PR · session `sess_abc123` (`fix-foo`) · " +
         "claude-code / subscription · model `kimi-k2.7-code` · 12.3k in / 67.9k out · $0.1234 · " +
         "run [123456789](https://github.com/agentproto/ts/actions/runs/123456789) · " +
-        "sha `abcdef1`</sub>",
+        "sha `abcdef1234567890`</sub>",
     )
   })
 
@@ -37,6 +37,7 @@ describe("buildFooter", () => {
         source: "local",
         host: "jeremy-mac-studio",
         cwd: "/Volumes/SSDExternalMacStudio/Code/_agentproto-worktrees/ts/local-pr-provenance-audit",
+        workspaceSlug: "ts",
       },
       authMode: "subscription",
       sha: "abcdef1234567890",
@@ -46,8 +47,8 @@ describe("buildFooter", () => {
       "\n\n---\n" +
         "<sub>🤖 **@agentproto-bot** — PR · session `sess_abc123` (`fix-foo`) · " +
         "claude-code / subscription · model `kimi-k2.7-code` · 12.3k in / 67.9k out · $0.1234 (local) · " +
-        "host `jeremy-mac-studio` · cwd `local-pr-provenance-audit` · " +
-        "sha `abcdef1`</sub>",
+        "host `jeremy-mac-studio` · cwd `ts/local-pr-provenance-audit` · " +
+        "sha `abcdef1234567890`</sub>",
     )
   })
 
@@ -62,7 +63,7 @@ describe("buildFooter", () => {
       "\n\n---\n" +
         "<sub>🤖 **@agentproto-bot** — PR · session `sess_abc123` (`fix-foo`) · " +
         "claude-code / subscription · model `kimi-k2.7-code` · 12.3k in / 67.9k out · $0.1234 (local) · " +
-        "sha `abcdef1`</sub>",
+        "sha `abcdef1234567890`</sub>",
     )
   })
 

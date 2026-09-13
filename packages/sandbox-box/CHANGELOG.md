@@ -1,5 +1,77 @@
 # @agentproto/sandbox-box
 
+## 0.2.10
+
+### Patch Changes
+
+- Updated dependencies [5c0acd2]
+- Updated dependencies [d3f0e0d]
+  - @agentproto/sandbox@0.5.0
+
+## 0.2.9
+
+### Patch Changes
+
+- Updated dependencies [d034471]
+- Updated dependencies [648e789]
+- Updated dependencies [87a2814]
+- Updated dependencies [834bfb8]
+- Updated dependencies [feffc34]
+  - @agentproto/sandbox@0.4.0
+
+## 0.2.8
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/sandbox@0.3.1
+
+## 0.2.7
+
+### Patch Changes
+
+- Updated dependencies [db90fb3]
+- Updated dependencies [c71753a]
+  - @agentproto/sandbox@0.3.0
+
+## 0.2.6
+
+### Patch Changes
+
+- @agentproto/sandbox@0.2.6
+
+## 0.2.5
+
+### Patch Changes
+
+- Updated dependencies [f0c51a7]
+  - @agentproto/sandbox@0.2.5
+
+## 0.2.4
+
+### Patch Changes
+
+- @agentproto/sandbox@0.2.4
+
+## 0.2.3
+
+### Patch Changes
+
+- @agentproto/sandbox@0.2.3
+
+## 0.2.2
+
+### Patch Changes
+
+- @agentproto/sandbox@0.2.2
+
+## 0.2.1
+
+### Patch Changes
+
+- @agentproto/sandbox@0.2.1
+
 ## 0.2.0
 
 ### Minor Changes

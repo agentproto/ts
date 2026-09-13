@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-code-brain-gbrain",
-  "version": "0.2.0",
+  "version": "0.2.4",
   "description": "Impure code-brain adapter: implements @agentproto/code-brain's ICodeBrainProvider against a live gbrain code-intelligence backend, two ways (local docker exec + HTTP/bearer). Registers as a provider-kit family and ships the tracked gbrain runtime + an MCP server for ask_codebase. All gbrain query dialect (code-def, __all__, --source-id, bearer) is confined to this package.",
   "keywords": [
     "agentproto",
@@ -58,18 +58,18 @@
   },
   "dependencies": {
     "@agentproto/code-brain": "workspace:*",
+    "@agentproto/driver": "workspace:*",
     "@agentproto/provider-kit": "workspace:*",
     "@agentproto/tool": "workspace:*",
-    "@agentproto/driver": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "zod": "^4.4.3"
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   },
   "engines": {
     "node": ">=20.9.0"

@@ -19,6 +19,42 @@ import type { SandboxHandle } from "./types.js"
 /** AIP-36 sandbox manifest handle — provider id, config, env passthrough, limits. */
 export type SandboxSpec = SandboxHandle
 
+/**
+ * Thrown when the box booted (or reconnected to) but the daemon MCP
+ * connection on top of it failed. The box itself already existed at that
+ * point, so `createSandboxAgentSessionHost` reaped it (paused when the
+ * provider supports it, killed otherwise) before throwing — `cleanedUp`
+ * records which. Callers use this to stamp the sandbox ledger instead of
+ * leaving a live box with no owner.
+ */
+export class SandboxHostBootFailedError extends Error {
+  readonly sandboxId: string
+  /** What the cleanup did to the box: "paused" or "stopped". Always set —
+   *  the cleanup itself is best-effort, so a failed cleanup still records
+   *  the attempt. */
+  readonly cleanedUp: "paused" | "stopped"
+
+  constructor(message: string, info: { sandboxId: string; cleanedUp: "paused" | "stopped" }) {
+    super(message)
+    this.name = "SandboxHostBootFailedError"
+    this.sandboxId = info.sandboxId
+    this.cleanedUp = info.cleanedUp
+  }
+}
+
+/**
+ * Thrown when a caller requests port exposure on a `BootedSandbox` whose
+ * provider does not support it — i.e. the sandbox handle has no `expose()`
+ * method. Callers should check for `expose` before calling it, or catch
+ * this error and fall back gracefully.
+ */
+export class SandboxPortExposureUnsupportedError extends Error {
+  constructor(message?: string) {
+    super(message ?? "This sandbox provider does not support port exposure.")
+    this.name = "SandboxPortExposureUnsupportedError"
+  }
+}
+
 /** What a `SandboxProvider` hands back once the box is up and reachable. */
 export interface BootedSandbox {
   /** The booted agentproto daemon's MCP endpoint, reachable from this process. */
@@ -43,6 +79,24 @@ export interface BootedSandbox {
    *  token-only provider that omits this is treated by `buildMcpConfigSnippet`
    *  as `Authorization: Bearer <token>`. */
   authHeaders?: Record<string, string>
+  /**
+   * Expose an app port on the sandbox and return its public URL. E2B returns
+   * `https://<port>-<sandboxId>.e2b.app`. Loopback bind is enough inside the
+   * VM — the provider's edge handles the forwarding.
+   *
+   * Optional: providers that cannot expose arbitrary ports omit this method.
+   * Callers should check for presence before calling, or catch
+   * `SandboxPortExposureUnsupportedError` when using `exposePort()`.
+   */
+  expose?(port: number): Promise<{ url: string }>
+  /**
+   * Ports resolved at boot time from `SandboxSpec.extraPorts` — a map of
+   * port number to public URL. Only present when the spec declared
+   * `extraPorts` AND the provider supports exposure. Callers that need a
+   * port URL at runtime should use `expose()` directly when this map is
+   * absent or doesn't include the target port.
+   */
+  ports?: Record<number, string>
   /** Tear down the sandbox. */
   stop(): Promise<void>
   /** Pause the sandbox instead of killing it — keeps it reconnectable via
@@ -50,6 +104,20 @@ export interface BootedSandbox {
    *  that can't pause (or don't support reconnect at all) omit it; callers
    *  that want to pause fall back to `stop()` when it's absent. */
   pause?(): Promise<void>
+}
+
+/**
+ * Expose a port on a booted sandbox. Throws `SandboxPortExposureUnsupportedError`
+ * when the provider's sandbox handle has no `expose()` method.
+ */
+export async function exposePort(booted: BootedSandbox, port: number): Promise<{ url: string }> {
+  if (!booted.expose) {
+    throw new SandboxPortExposureUnsupportedError(
+      `sandbox "${booted.sandboxId}" does not support port exposure — ` +
+        "the provider has no expose() implementation.",
+    )
+  }
+  return booted.expose(port)
 }
 
 /** Env resolved from secrets, handed to `provider.boot`. */
@@ -78,6 +146,39 @@ export interface SandboxBootOpts {
 }
 
 /**
+ * Thrown by a provider's `connect()` when the provider answers that the
+ * sandbox id no longer exists (e2b's `"Sandbox Not Found"` 404) — the box
+ * died out from under the session while the local ledger still shows it
+ * paused/connected. Distinct from a generic connect failure so callers
+ * (session-spawn's reconnect path, the ledger) can mark the row GONE
+ * instead of leaving a phantom paused box on the books.
+ */
+export class SandboxBoxGoneError extends Error {
+  constructor(sandboxId: string, cause?: unknown) {
+    super(
+      `sandbox "${sandboxId}" no longer exists on its provider — the box is gone ` +
+        "(the session descriptor and ledger can outlive a provider-reaped box).",
+    )
+    this.name = "SandboxBoxGoneError"
+    this.cause = cause
+  }
+}
+
+/** Structural check (name-based, so it works across package boundaries and
+ *  with mocked errors) — true when the error means "the box is gone". */
+export function isSandboxBoxGoneError(err: unknown): boolean {
+  return err instanceof Error && err.name === "SandboxBoxGoneError"
+}
+
+/** What a `SandboxProvider.probe` liveness check reports about a box. */
+export interface SandboxProbeResult {
+  /** False means the provider answers the id is gone (404 / not-found). */
+  alive: boolean
+  /** Provider-reported box state (e.g. "running", "paused"), when available. */
+  state?: string
+}
+
+/**
  * Backend-agnostic sandbox lifecycle. Concrete implementations (e2b, modal,
  * daytona, blaxel, …) live in their own packages so this one stays free of
  * vendor SDK dependencies — see `@agentproto/sandbox-e2b`.
@@ -90,6 +191,17 @@ export interface SandboxProvider {
    *  which tears down its temp workspace on `stop()`) omit it; the runtime
    *  errors clearly when reuse is requested against such a provider. */
   connect?(sandboxId: string, spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox>
+  /**
+   * Liveness probe against the PROVIDER (not the box's daemon): answers
+   * whether the sandbox id still exists at all — the signal a box death
+   * needs, distinct from a session dying. Polling the provider's control
+   * plane (`GET /sandboxes/:id`, 404 ⇒ gone) is deliberately cheap.
+   * `{ alive: false }` means the provider answered the id is gone; a THROWN
+   * error means the check itself failed (callers treat a throw as
+   * "unknown", never as death). Optional: providers with no such API omit
+   * it; a caller reading `sandboxAlive` then reports "unknown".
+   */
+  probe?(sandboxId: string): Promise<SandboxProbeResult>
 }
 
 /** Which secrets to resolve into the sandbox's env, and how. */
@@ -110,9 +222,20 @@ export interface CreateSandboxAgentSessionHostOpts {
 }
 
 export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
+  /** The booted sandbox daemon's MCP endpoint (`BootedSandbox.mcpUrl`) —
+   *  surfaced so a caller can drive the box's OTHER daemon tools (app_install,
+   *  command_execute, …) the same way the session host drives agent_start. */
+  mcpUrl: string
   /** Provider-assigned sandbox id (`BootedSandbox.sandboxId`) — surfaced so a
    *  caller can record it (there's no local PID for a sandboxed session). */
   sandboxId: string
+  /** Ports resolved at boot from `SandboxSpec.extraPorts` — forwarded from
+   *  `BootedSandbox.ports` so the runtime can record them on the session
+   *  descriptor without reaching into the booted handle after the fact. */
+  ports?: Record<number, string>
+  /** Expose an app port and return its public URL — forwarded from
+   *  `BootedSandbox.expose`. Absent when the provider doesn't support it. */
+  expose?: BootedSandbox["expose"]
   /** Close the daemon connection AND tear down the sandbox. */
   stop(): Promise<void>
   /** Close the daemon connection and PAUSE the sandbox instead of killing
@@ -147,12 +270,29 @@ export async function createSandboxAgentSessionHost(
   try {
     host = await connectDaemonAgentSessionHost({ url: booted.mcpUrl })
   } catch (err) {
-    await booted.stop()
-    throw err
+    // The box EXISTS at this point — the daemon connection on top of it
+    // failed. Reap it so a failed boot never leaves a live box behind:
+    // pause when the provider supports it (keeps a reconnected box
+    // reconnectable — it was already there before this spawn), kill
+    // otherwise. Then rethrow annotated so the caller can stamp the
+    // ledger with the actual outcome.
+    const cleanedUp = booted.pause ? "paused" : "stopped"
+    if (booted.pause) {
+      await booted.pause().catch(() => undefined)
+    } else {
+      await booted.stop().catch(() => undefined)
+    }
+    throw new SandboxHostBootFailedError(
+      err instanceof Error ? err.message : String(err),
+      { sandboxId: booted.sandboxId, cleanedUp },
+    )
   }
   return {
     ...host,
+    mcpUrl: booted.mcpUrl,
     sandboxId: booted.sandboxId,
+    ...(booted.ports ? { ports: booted.ports } : {}),
+    ...(booted.expose ? { expose: booted.expose.bind(booted) } : {}),
     async stop(): Promise<void> {
       await host.close()
       await booted.stop()

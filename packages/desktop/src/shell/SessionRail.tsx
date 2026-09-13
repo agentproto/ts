@@ -9,6 +9,7 @@ import {
   groupSessions,
   sessionTitle,
   statusKind,
+  statusText,
   type SessionNode,
   type WorkspaceGroup,
 } from "../data/session-view"
@@ -55,10 +56,15 @@ function Row({
       className={`srow${child ? " child" : ""}${active ? " active" : ""}`}
       onClick={() => onSelect(session.id)}
     >
-      <span className={`dot ${statusKind(session)}`} />
+      <span className={`dot ${statusKind(session)}`} title={statusText(session)} />
       <div>
         <div className="stitle">{sessionTitle(session)}</div>
         <div className="smeta">
+          {statusKind(session) === "input" && session.awaitingQuestion?.text ? (
+            <span className="tag question" title={session.awaitingQuestion.text}>
+              {session.awaitingQuestion.text}
+            </span>
+          ) : null}
           {session.adapterSlug ? <span className="tag adapter">{session.adapterSlug}</span> : null}
           {session.model ? <span className="tag">{session.model}</span> : null}
           {stat && (stat.added || stat.removed) ? (

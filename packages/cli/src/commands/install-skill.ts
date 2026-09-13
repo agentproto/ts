@@ -85,7 +85,7 @@ export async function runInstallSkill(
 
   if (!rawSlug.length) {
     process.stderr.write(
-      "agentproto install skill: missing skill slug. Try: agentproto install skill/agent-session-orchestration-agentproto\n",
+      "agentproto install skill: missing skill slug. Try: agentproto install skill/ap-spawn-agent\n",
     )
     return 2
   }

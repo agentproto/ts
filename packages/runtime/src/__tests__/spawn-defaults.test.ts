@@ -16,13 +16,14 @@ import {
   resolveSubscriptionCredential,
   SubscriptionSourceError,
   CLAUDE_CODE_OAUTH_SOURCE,
+  subscriptionSurfaceFor,
   type SpawnDefaultsConfig,
   type AdapterAuthDescriptor,
 } from "../spawn-defaults.js"
 
 // resolveSpawnDefaults now surfaces RAW auth material; with nothing
 // configured that's just `{ explicit: false }`.
-const NO_AUTH = { auth: { explicit: false } }
+const NO_AUTH = { auth: { explicit: false, explicitConfig: false } }
 
 // The claude-code auth descriptor the runtime projects from the manifest —
 // used by the resolver tests below to prove byte-identical #312 scrub sets.
@@ -124,7 +125,7 @@ describe("resolveSpawnDefaults", () => {
 describe("resolveSpawnDefaults auth — raw material precedence", () => {
   it("surfaces `explicit: false` and nothing else when nothing is configured", () => {
     const result = resolveSpawnDefaults(undefined, "claude-code", {})
-    expect(result.auth).toEqual({ explicit: false })
+    expect(result.auth).toEqual({ explicit: false, explicitConfig: false })
   })
 
   it("surfaces the per-adapter config mode + api key + explicit:true", () => {
@@ -134,6 +135,7 @@ describe("resolveSpawnDefaults auth — raw material precedence", () => {
     const result = resolveSpawnDefaults(defaults, "claude-code", {})
     expect(result.auth).toEqual({
       explicit: true,
+      explicitConfig: true,
       requestedMode: "api-key",
       apiKeyCredential: "sk-ant-api03-cfg",
     })
@@ -155,6 +157,7 @@ describe("resolveSpawnDefaults auth — raw material precedence", () => {
     // see availability before it picks.
     expect(result.auth).toEqual({
       explicit: true,
+      explicitConfig: true,
       requestedMode: "subscription",
       subscriptionCredential: "sk-ant-oat01-cfg",
       apiKeyCredential: "sk-ant-api03-cfg",
@@ -170,6 +173,7 @@ describe("resolveSpawnDefaults auth — raw material precedence", () => {
     })
     expect(result.auth).toEqual({
       explicit: true,
+      explicitConfig: true,
       requestedMode: "subscription",
       subscriptionCredential: "sk-ant-oat01-explicit",
     })
@@ -181,6 +185,7 @@ describe("resolveSpawnDefaults auth — raw material precedence", () => {
     })
     expect(result.auth).toEqual({
       explicit: true,
+      explicitConfig: false,
       requestedMode: "api-key",
       provider: "anthropic",
     })
@@ -191,7 +196,7 @@ describe("resolveSpawnDefaults auth — raw material precedence", () => {
       adapters: { "claude-code": { auth: { mode: "api-key", apiKey: "sk-ant-api03-cfg" } } },
     }
     const result = resolveSpawnDefaults(defaults, "hermes", {})
-    expect(result.auth).toEqual({ explicit: false })
+    expect(result.auth).toEqual({ explicit: false, explicitConfig: false })
   })
 
   it("surfaces the config `auth.source` opt-in (Mode 3) as raw material", () => {
@@ -201,6 +206,7 @@ describe("resolveSpawnDefaults auth — raw material precedence", () => {
     const result = resolveSpawnDefaults(defaults, "claude-code", {})
     expect(result.auth).toEqual({
       explicit: true,
+      explicitConfig: true,
       subscriptionSource: "claude-code-oauth",
     })
   })
@@ -214,6 +220,7 @@ describe("resolveSpawnDefaults auth — raw material precedence", () => {
     })
     expect(result.auth).toEqual({
       explicit: true,
+      explicitConfig: true,
       subscriptionSource: "claude-code-oauth",
     })
   })
@@ -227,6 +234,7 @@ describe("resolveSpawnDefaults auth — raw material precedence", () => {
     const result = resolveSpawnDefaults(defaults, "claude-code", {})
     expect(result.auth).toEqual({
       explicit: true,
+      explicitConfig: true,
       subscriptionCredential: "sk-ant-oat01-cfg",
       subscriptionSource: "claude-code-oauth",
     })
@@ -309,6 +317,228 @@ describe("resolveAuthSpec — modelDerivedApiKey", () => {
     })
     expect(r?.echo.provider).toBe("anthropic")
     expect(r?.spec.setEnv).toBe("ANTHROPIC_API_KEY")
+  })
+})
+
+describe("resolveAuthSpec — provider-scoped authSubscription (pi)", () => {
+  // pi's manifest shape: multi-provider (modelDerivedApiKey) with an
+  // anthropic-only bearer door (`ANTHROPIC_OAUTH_TOKEN — Anthropic OAuth
+  // token (alternative to API key)`, pi 0.80.x --help).
+  const PI_DESCRIPTOR = {
+    modelDerivedApiKey: true,
+    authSubscription: { setEnv: "ANTHROPIC_OAUTH_TOKEN", provider: "anthropic" },
+  }
+
+  it("subscription on an anthropic model injects the OAuth var, not the api-key var", () => {
+    const r = resolveAuthSpec({
+      descriptor: PI_DESCRIPTOR,
+      model: "anthropic/claude-sonnet-4-5",
+      explicit: true,
+      requestedMode: "subscription",
+      subscriptionCredential: "sk-ant-oat01-sub",
+    })
+    expect(r?.echo.provider).toBe("anthropic")
+    expect(r?.echo.authMode).toBe("subscription")
+    expect(r?.spec.setEnv).toBe("ANTHROPIC_OAUTH_TOKEN")
+    expect(r?.spec.credential).toBe("sk-ant-oat01-sub")
+    // The api-key var is the non-set sibling credential — scrubbed so a
+    // leftover key can't silently flip billing to API credits.
+    expect(r?.spec.unsetEnv).toContain("ANTHROPIC_API_KEY")
+  })
+
+  it("subscription requested on a NON-matching provider (openai model) rejects", () => {
+    expect(() =>
+      resolveAuthSpec({
+        descriptor: PI_DESCRIPTOR,
+        model: "openai/gpt-5",
+        explicit: true,
+        requestedMode: "subscription",
+        subscriptionCredential: "sk-ant-oat01-sub",
+      }),
+    ).toThrow(AuthResolutionError)
+  })
+
+  it("ordered preference on a non-matching provider falls to api-key, never subscription", () => {
+    const r = resolveAuthSpec({
+      descriptor: PI_DESCRIPTOR,
+      model: "openai/gpt-5",
+      explicit: true,
+      subscriptionCredential: "sk-ant-oat01-sub",
+      apiKeyConfigCredential: "sk-proj-x",
+    })
+    expect(r?.echo.authMode).toBe("api-key")
+    expect(r?.spec.setEnv).toBe("OPENAI_API_KEY")
+  })
+})
+
+describe("resolveAuthSpec — external provider-scoped authSubscription (opencode/mastracode)", () => {
+  // opencode/mastracode shape: multi-provider (modelDerivedApiKey) whose ONLY
+  // working Claude-subscription path is the CLI's OWN Pro/Max OAuth login
+  // (external — inject nothing, scrub the api-key vars), scoped to anthropic.
+  const OPENCODE_DESCRIPTOR = {
+    modelDerivedApiKey: true,
+    authSubscription: { external: true, provider: "anthropic" as const },
+  }
+
+  it("subscription on an anthropic model resolves external: inject nothing, scrub the api-key var", () => {
+    const r = resolveAuthSpec({
+      descriptor: OPENCODE_DESCRIPTOR,
+      model: "anthropic/claude-sonnet-4-5",
+      explicit: true,
+      requestedMode: "subscription",
+      externalSubscriptionVerified: true,
+    })
+    expect(r?.echo.authMode).toBe("subscription")
+    expect(r?.spec.setEnv).toBe("")
+    expect(r?.spec.credential).toBeUndefined()
+    expect(r?.spec.externalCredential).toBe(true)
+    // A leftover key must not override the CLI's own login.
+    expect(r?.spec.unsetEnv).toContain("ANTHROPIC_API_KEY")
+    expect(r?.echo.credentialSource).toBe("cli-local-login")
+  })
+
+  it("subscription requested on a non-anthropic model still rejects (scope holds for external too)", () => {
+    expect(() =>
+      resolveAuthSpec({
+        descriptor: OPENCODE_DESCRIPTOR,
+        model: "openai/gpt-5",
+        explicit: true,
+        requestedMode: "subscription",
+        externalSubscriptionVerified: true,
+      }),
+    ).toThrow(AuthResolutionError)
+  })
+})
+
+describe("subscriptionSurfaceFor — multi-surface array descriptor (mastracode/opencode)", () => {
+  // mastracode/opencode's shape: TWO native OAuth logins, one per provider —
+  // each declared as its own external, provider-scoped entry in an array.
+  const MULTI_SURFACE: AdapterAuthDescriptor["authSubscription"] = [
+    { external: true, provider: "anthropic" },
+    { external: true, provider: "openai" },
+  ]
+
+  it("matches the anthropic-scoped entry for an anthropic endpoint", () => {
+    expect(subscriptionSurfaceFor(MULTI_SURFACE, "anthropic")).toEqual({
+      external: true,
+      provider: "anthropic",
+    })
+  })
+
+  it("matches the openai-scoped entry for an openai endpoint", () => {
+    expect(subscriptionSurfaceFor(MULTI_SURFACE, "openai")).toEqual({
+      external: true,
+      provider: "openai",
+    })
+  })
+
+  it("matches neither entry for a third provider (moonshot)", () => {
+    expect(subscriptionSurfaceFor(MULTI_SURFACE, "moonshot")).toBeUndefined()
+  })
+
+  it("cannot disambiguate an unknown endpoint across two scoped surfaces", () => {
+    // Unlike the single-surface case (an unknown endpoint is treated as
+    // applying — the fixed-provider case), guessing here would pick a
+    // specific but possibly WRONG provider's bearer door.
+    expect(subscriptionSurfaceFor(MULTI_SURFACE, undefined)).toBeUndefined()
+  })
+
+  it("falls back to the one unscoped surface when present alongside scoped ones", () => {
+    const mixed: AdapterAuthDescriptor["authSubscription"] = [
+      { external: true, provider: "anthropic" },
+      { setEnv: "GENERIC_OAUTH_TOKEN" },
+    ]
+    expect(subscriptionSurfaceFor(mixed, "moonshot")).toEqual({
+      setEnv: "GENERIC_OAUTH_TOKEN",
+    })
+  })
+})
+
+describe("resolveAuthSpec — multi-surface array descriptor (mastracode/opencode)", () => {
+  const MASTRACODE_DESCRIPTOR: AdapterAuthDescriptor = {
+    modelDerivedApiKey: true,
+    authSubscription: [
+      { external: true, provider: "anthropic" },
+      { external: true, provider: "openai" },
+    ],
+  }
+
+  it("anthropic model resolves the anthropic surface (external, scrubs ANTHROPIC_API_KEY)", () => {
+    const r = resolveAuthSpec({
+      descriptor: MASTRACODE_DESCRIPTOR,
+      model: "anthropic/claude-sonnet-4-5",
+      explicit: true,
+      requestedMode: "subscription",
+      externalSubscriptionVerified: true,
+    })
+    expect(r?.echo.provider).toBe("anthropic")
+    expect(r?.echo.authMode).toBe("subscription")
+    expect(r?.spec.setEnv).toBe("")
+    expect(r?.spec.externalCredential).toBe(true)
+    expect(r?.spec.unsetEnv).toContain("ANTHROPIC_API_KEY")
+    expect(r?.spec.unsetEnv).not.toContain("OPENAI_API_KEY")
+  })
+
+  it("openai model resolves the openai surface (external, scrubs OPENAI_API_KEY)", () => {
+    const r = resolveAuthSpec({
+      descriptor: MASTRACODE_DESCRIPTOR,
+      model: "openai/gpt-5",
+      explicit: true,
+      requestedMode: "subscription",
+      externalSubscriptionVerified: true,
+    })
+    expect(r?.echo.provider).toBe("openai")
+    expect(r?.echo.authMode).toBe("subscription")
+    expect(r?.spec.setEnv).toBe("")
+    expect(r?.spec.externalCredential).toBe(true)
+    expect(r?.spec.unsetEnv).toContain("OPENAI_API_KEY")
+    expect(r?.spec.unsetEnv).not.toContain("ANTHROPIC_API_KEY")
+  })
+
+  it("a third provider (moonshot) has neither surface — subscription request rejects", () => {
+    expect(() =>
+      resolveAuthSpec({
+        descriptor: MASTRACODE_DESCRIPTOR,
+        model: "moonshotai/kimi-k2.7-code",
+        explicit: true,
+        requestedMode: "subscription",
+        externalSubscriptionVerified: true,
+      }),
+    ).toThrow(AuthResolutionError)
+  })
+})
+
+describe("resolveAuthSpec — modelDerivedApiKey alone no longer implies subscription", () => {
+  // The old `supportsSub = sub || modelDerivedApiKey` clause injected a
+  // subscription OAT into the x-api-key var for opencode/mastracode/jcode
+  // ("Anthropic OATs work as API keys" — false on that header): the
+  // upstream rejected it as an invalid key AFTER the session was live.
+  // An opencode-shaped descriptor must now fail fast at resolution.
+  it("explicit subscription on an opencode-shaped descriptor rejects with an actionable message", () => {
+    expect(() =>
+      resolveAuthSpec({
+        descriptor: { modelDerivedApiKey: true },
+        model: "anthropic/claude-fable-5",
+        explicit: true,
+        requestedMode: "subscription",
+        subscriptionCredential: "sk-ant-oat01-sub",
+      }),
+    ).toThrow(/api-key header|api-key profile/)
+  })
+
+  it("ordered preference with only a subscription credential no longer picks subscription", () => {
+    const r = resolveAuthSpec({
+      descriptor: { modelDerivedApiKey: true },
+      model: "anthropic/claude-fable-5",
+      explicit: true,
+      subscriptionCredential: "sk-ant-oat01-sub",
+    })
+    // api-key is the only supported mode; with no api-key credential the
+    // pick is flagged as unconfigured rather than silently injecting the
+    // OAT into ANTHROPIC_API_KEY.
+    expect(r?.echo.authMode).toBe("api-key")
+    expect(r?.spec.credential).toBeUndefined()
+    expect(r?.spec.neitherConfigured).toBe(true)
   })
 })
 

@@ -47,32 +47,21 @@ An unconfigured codex spawn stays ambient — codex's own precedence already
 prefers a ChatGPT login over an ambient `OPENAI_API_KEY` — so this only ADDS an
 explicit, verified, billing-guaranteed, observable opt-in.
 
-## Gemini — deferred (needs a native adapter first)
+## Gemini — shipped (`@agentproto/adapter-gemini`)
 
 Gemini's subscription login (`~/.gemini/oauth_creds.json` + the
-`GOOGLE_GENAI_USE_GCA` code-assist path) is ALSO file-based and would reuse the
-exact primitive above. The blocker is upstream of auth: **there is no native
-`@agentproto/adapter-gemini`** — only the generic ACP entry
-(`gemini --experimental-acp`, `packages/cli/src/registry/acp-generic.ts`), which
-carries no `provider`/`authSubscription`, so `resolveAuthSpec` returns nothing
-for it (pure ambient).
+`GOOGLE_GENAI_USE_GCA` code-assist path) is ALSO file-based and reuses the
+exact primitive above. `@agentproto/adapter-gemini` shipped in this release
+with:
 
-To enable "use my existing Gemini login", the scoped work is:
+1. A native AIP-45 adapter wrapping `gemini --experimental-acp`.
+2. `provider: "google"` and `authSubscription: { external: true, conflictEnv: ["GEMINI_API_KEY", "GOOGLE_API_KEY"] }`
+   scrubbing both sibling api-key vars so a leftover key can't override the
+   OAuth login.
+3. Login presence verified fail-loud via the `gemini` provision recipe.
+4. VSCode connect action "Use my existing Gemini login" (`source: "gemini"`,
+   endpoint `google`, `method: "oauth-bearer"`, `credentialFile:
+   "~/.gemini/oauth_creds.json"`).
 
-1. A native `@agentproto/adapter-gemini` AIP-45 adapter wrapping
-   `gemini --experimental-acp` (mirror `adapters/codex`), with `provider`
-   pointing at the Gemini catalog vendor and model entries.
-2. On it, declare `authSubscription: { external: true, conflictEnv: [...] }`
-   scrubbing `GEMINI_API_KEY` **and** `GOOGLE_API_KEY` (Google's CLI prefers
-   `GOOGLE_API_KEY`, and env API keys OVERRIDE the OAuth login — so both must be
-   scrubbed for the login to win).
-3. A `gemini` provision recipe already exists
-   (`~/.gemini/oauth_creds.json` → `access_token`); wire it as the fail-loud
-   presence probe (source `"gemini"`).
-4. Add the `gemini-local` row to `LOCAL_LOGIN_RECIPES`
-   (`packages/vscode/.../authProfileFlow.logic.ts`) — endpoint = the gemini
-   catalog vendor, `method: "oauth-bearer"`, `credentialFile:
-   "~/.gemini/oauth_creds.json"`. No new mechanism.
-
-Nothing in the daemon primitive is Gemini-specific; it drops in as a third row
-once (1) exists.
+Nothing in the daemon primitive is Gemini-specific; it dropped in as a third
+row once the native adapter existed.

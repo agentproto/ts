@@ -17,6 +17,9 @@ import {
   formatDuration,
   activityFor,
   iconFor,
+  iconForSession,
+  presenceIconFor,
+  subtreeBusiestActivity,
   isResumableInPlace,
   isStalled,
   isolationLabelFor,
@@ -131,6 +134,30 @@ describe("descriptionFor", () => {
       // row is byte-identical to the pre-feature rendering.
       const s = session({ startedAt: "2026-01-01T00:00:00Z" })
       expect(descriptionFor(s, { now })).toBe("in-place · 5 days ago")
+    })
+
+    it("appends a bg-tasks-pending suffix when the session parked with work outstanding", () => {
+      const s = session({ startedAt: "2026-01-01T00:00:00Z", pendingBgTasks: 2 })
+      expect(descriptionFor(s, { now })).toBe("in-place · 5 days ago · 2 bg tasks pending")
+      // Singular grammar, and absent/zero pendingBgTasks add nothing.
+      expect(
+        descriptionFor(session({ startedAt: "2026-01-01T00:00:00Z", pendingBgTasks: 1 }), { now }),
+      ).toContain("1 bg task pending")
+      expect(descriptionFor(session({ startedAt: "2026-01-01T00:00:00Z" }), { now })).not.toContain(
+        "bg task",
+      )
+    })
+
+    it("appends the N queued badge when prompts sit in the session's FIFO", () => {
+      const s = session({ startedAt: "2026-01-01T00:00:00Z", queuedPrompts: 2 })
+      expect(descriptionFor(s, { now })).toBe("in-place · 5 days ago · ⧉ 2 queued")
+      // Singular grammar, and absent/zero queuedPrompts add nothing.
+      expect(
+        descriptionFor(session({ startedAt: "2026-01-01T00:00:00Z", queuedPrompts: 1 }), { now }),
+      ).toContain("⧉ 1 queued")
+      expect(descriptionFor(session({ startedAt: "2026-01-01T00:00:00Z" }), { now })).not.toContain(
+        "queued",
+      )
     })
   })
 })
@@ -351,6 +378,65 @@ describe("activityFor", () => {
   it("ranks what needs a human above everything else", () => {
     expect(activityFor(session({ busy: true, awaitingInput: true }))).toBe("needs-you")
   })
+
+  it("an alive, idle session with background tasks pending reads as parked-bg", () => {
+    // The session ended its turn with work outstanding — a silent dead end
+    // unless someone re-prompts. It must NOT read as plain idle.
+    expect(activityFor(session({ pendingBgTasks: 2 }))).toBe("parked-bg")
+    expect(activityFor(session({ pendingBgTasks: 1 }))).toBe("parked-bg")
+  })
+
+  it("a busy session with pendingBgTasks is working, never parked-bg", () => {
+    // The bg check sits AFTER busy: a turn in flight outranks leftover
+    // background work from the previous one.
+    expect(activityFor(session({ busy: true, pendingBgTasks: 3 }))).toBe("working")
+    // A starting session hasn't finished a turn yet either.
+    expect(activityFor(session({ status: "starting", pendingBgTasks: 1 }))).toBe("working")
+    // needs-you outranks parked-bg too.
+    expect(activityFor(session({ awaitingInput: true, pendingBgTasks: 1 }))).toBe("needs-you")
+  })
+
+  it("parked-bg tolerates the field's absence (older daemon) and zero", () => {
+    expect(activityFor(session())).toBe("idle")
+    expect(activityFor(session({ pendingBgTasks: 0 }))).toBe("idle")
+  })
+
+  it("parked-bg never applies to a terminal session", () => {
+    expect(activityFor(session({ status: "exited", exitCode: 0, pendingBgTasks: 2 }))).toBe("done")
+    expect(activityFor(session({ status: "killed", pendingBgTasks: 2 }))).toBe("stopped")
+  })
+
+  it("an idle session whose last turn errored in-band reads as stalled, not idle", () => {
+    // The adapter's OWN turn-end reported failure while the process stayed
+    // alive — status never left "running" — so nothing else would flag it.
+    expect(activityFor(session({ lastTurnErroredAt: "2026-01-01T00:05:00Z" }))).toBe("stalled")
+  })
+
+  it("a busy session retrying after a prior turn error reads as working, not stalled", () => {
+    // The marker survives until the retry's own turn-end clears it — while
+    // that retry is in flight, busy outranks the stale marker.
+    expect(activityFor(session({ busy: true, lastTurnErroredAt: "2026-01-01T00:05:00Z" }))).toBe(
+      "working",
+    )
+  })
+
+  it("needs-you and mid-turn stall both outrank a stale turn-error marker", () => {
+    expect(
+      activityFor(session({ awaitingInput: true, lastTurnErroredAt: "2026-01-01T00:05:00Z" })),
+    ).toBe("needs-you")
+  })
+
+  it("a turn-error marker outranks parked-bg", () => {
+    expect(
+      activityFor(session({ pendingBgTasks: 2, lastTurnErroredAt: "2026-01-01T00:05:00Z" })),
+    ).toBe("stalled")
+  })
+
+  it("a turn-error marker never applies to a terminal session", () => {
+    expect(
+      activityFor(session({ status: "exited", exitCode: 0, lastTurnErroredAt: "2026-01-01T00:05:00Z" })),
+    ).toBe("done")
+  })
 })
 
 describe("iconFor", () => {
@@ -412,6 +498,79 @@ describe("iconFor", () => {
     expect(iconFor(session({ busy: true, awaitingInput: true }))).toEqual({
       id: "question",
       color: "warning",
+    })
+  })
+})
+
+describe("presenceIconFor — the four dashboard presence states", () => {
+  it("full filled circle for running, dashed (half) for tending", () => {
+    expect(presenceIconFor("running")).toEqual({ id: "circle-filled" })
+    // No literal half-circle exists in the codicon set — `circle-dashed` is
+    // the closest available, reading "present but not fully turned".
+    expect(presenceIconFor("tending")).toEqual({ id: "circle-dashed" })
+  })
+
+  it("amber question for attention, hollow for quiet", () => {
+    expect(presenceIconFor("attention")).toEqual({ id: "question", color: "warning" })
+    expect(presenceIconFor("quiet")).toEqual({ id: "circle-outline" })
+  })
+})
+
+describe("iconForSession — the shared classifier drives the tree row icon", () => {
+  // NOW is 60s after the fixture's startedAt; a lastActivityAt younger than
+  // that sits inside the shared grace window.
+  const NOW = Date.parse("2026-01-01T00:01:20Z") // 80s after the bare fixture ("T00:00:00Z")
+  const freshAt = "2026-01-01T00:01:00Z" // 60s before NOW — just finished, in grace
+
+  it("shows the full dot for a just-finished session still inside the grace window", () => {
+    expect(iconForSession(session({ busy: false, lastActivityAt: freshAt }), NOW)).toEqual({
+      id: "circle-filled",
+    })
+  })
+
+  it("shows the resting hollow dot once the grace window has elapsed", () => {
+    const idleSince = "2026-01-01T00:00:00Z" // 80s before NOW — past the 60s grace
+    expect(iconForSession(session({ busy: false, lastActivityAt: idleSince }), NOW, false)).toEqual({
+      id: "circle-outline",
+    })
+  })
+
+  it("shows the half (dashed) icon for a supervisor tending its busy children", () => {
+    expect(iconForSession(session({ busy: false, childrenBusy: 2 }), NOW)).toEqual({
+      id: "circle-dashed",
+    })
+  })
+
+  it("shows the half (dashed) icon for a session parked with background tasks pending", () => {
+    expect(iconForSession(session({ busy: false, pendingBgTasks: 1 }), NOW)).toEqual({
+      id: "circle-dashed",
+    })
+  })
+
+  it("keeps the needed-amber for something waiting on the human", () => {
+    expect(iconForSession(session({ awaitingInput: true }), NOW)).toEqual({
+      id: "question",
+      color: "warning",
+    })
+  })
+
+  it("preserves the terminal + stalled rich icons instead of folding them onto presence", () => {
+    expect(iconForSession(session({ status: "error" }), NOW)).toEqual({ id: "error", color: "error" })
+    // Busy but silent past STALL_AFTER_MS → stalled keeps its warning icon rather
+    // than reading as a healthy "running" fill.
+    const stalled = session({ busy: true, lastActivityAt: "2025-12-31T00:00:00Z" })
+    expect(iconForSession(stalled, NOW)).toEqual({ id: "warning", color: "warning" })
+  })
+
+  it("honours a configured (non-default) grace window", () => {
+    // busy:false with lastActivityAt 60s back → past the default 60s, so it
+    // settles; but a configured 600s window keeps it running.
+    const at = "2026-01-01T00:00:20Z" // 60s before the NOW above
+    expect(iconForSession(session({ busy: false, lastActivityAt: at }), NOW, false)).toEqual({
+      id: "circle-outline",
+    })
+    expect(iconForSession(session({ busy: false, lastActivityAt: at }), NOW, false, 600)).toEqual({
+      id: "circle-filled",
     })
   })
 })
@@ -505,6 +664,17 @@ describe("treeContextValueFor", () => {
       "session-done-archived",
     )
   })
+  it("appends -watched AFTER any -archived suffix when watched", () => {
+    expect(treeContextValueFor(session({ status: "running" }), true)).toBe("session-live-watched")
+    expect(treeContextValueFor(session({ awaitingInput: true }), true)).toBe(
+      "session-awaiting-watched",
+    )
+    expect(treeContextValueFor(session({ status: "exited", archived: true }), true)).toBe(
+      "session-done-archived-watched",
+    )
+    // Unwatched (or unspecified) rows are byte-identical to before.
+    expect(treeContextValueFor(session({ status: "running" }), false)).toBe("session-live")
+  })
 })
 
 describe("withArchivedTag", () => {
@@ -570,6 +740,27 @@ describe("tooltipFieldsFor", () => {
   })
   it("formats cost to 4 decimal places", () => {
     expect(tooltipFieldsFor(session({ costUsd: 0.1 }))).toContainEqual({ label: "cost", value: "$0.1000" })
+  })
+  it("carries a bg-tasks-pending row only when background work is outstanding", () => {
+    expect(tooltipFieldsFor(session({ pendingBgTasks: 2 }))).toContainEqual({
+      label: "bg tasks pending",
+      value: "2",
+    })
+    expect(tooltipFieldsFor(session({ pendingBgTasks: 0 }))).not.toContainEqual(
+      expect.objectContaining({ label: "bg tasks pending" }),
+    )
+    expect(tooltipFieldsFor(session())).not.toContainEqual(
+      expect.objectContaining({ label: "bg tasks pending" }),
+    )
+  })
+  it("carries a last-turn-errored row only when the adapter's own last turn reported failure", () => {
+    expect(tooltipFieldsFor(session({ lastTurnErroredAt: "2026-01-01T00:05:00Z" }))).toContainEqual({
+      label: "last turn errored",
+      value: "2026-01-01T00:05:00Z",
+    })
+    expect(tooltipFieldsFor(session())).not.toContainEqual(
+      expect.objectContaining({ label: "last turn errored" }),
+    )
   })
   it("formats tokens in/out together, defaulting missing side to 0", () => {
     expect(tooltipFieldsFor(session({ tokensIn: 10 }))).toContainEqual({
@@ -891,5 +1082,47 @@ describe("formatDuration", () => {
     expect(formatDuration(12 * 60_000)).toBe("12min")
     expect(formatDuration(3 * 3_600_000)).toBe("3h")
     expect(formatDuration(2 * 86_400_000)).toBe("2d")
+  })
+})
+
+describe("subtreeBusiestActivity — collapsed parent inherits busiest descendant (#session-visibility)", () => {
+  const node = (over: Partial<SessionDescriptor>, children: SessionNode[] = []): SessionNode => ({
+    session: session(over),
+    children,
+  })
+
+  it("a quiet parent inherits a mid-turn grandchild's 'working'", () => {
+    const tree = node({ id: "root", busy: false }, [
+      node({ id: "mid", busy: false }, [node({ id: "leaf", busy: true })]),
+    ])
+    expect(subtreeBusiestActivity(tree)).toBe("working")
+  })
+
+  it("busy outranks a deeper awaiting descendant (approved precedence)", () => {
+    const tree = node({ id: "root", busy: false }, [
+      node({ id: "a", busy: true }),
+      node({ id: "b", awaitingInput: true }),
+    ])
+    expect(subtreeBusiestActivity(tree)).toBe("working")
+  })
+
+  it("a leaf keeps its own activity", () => {
+    expect(subtreeBusiestActivity(node({ id: "solo", busy: false }))).toBe("idle")
+  })
+
+  it("parked-bg outranks idle but loses to working/stalled/needs-you", () => {
+    // A collapsed parent whose loudest descendant parked with bg tasks pending
+    // must surface that, not plain idle.
+    const parkedLeaf = node({ id: "root", busy: false }, [
+      node({ id: "a", busy: false, pendingBgTasks: 1 }),
+      node({ id: "b", busy: false }),
+    ])
+    expect(subtreeBusiestActivity(parkedLeaf)).toBe("parked-bg")
+    // …but a working child still wins.
+    const workingChild = node({ id: "root", busy: false }, [
+      node({ id: "a", busy: false, pendingBgTasks: 1 }),
+      node({ id: "b", busy: true }),
+    ])
+    expect(subtreeBusiestActivity(workingChild)).toBe("working")
   })
 })

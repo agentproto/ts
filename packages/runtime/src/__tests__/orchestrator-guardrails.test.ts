@@ -19,12 +19,16 @@
  */
 
 import { describe, it, expect } from "vitest"
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { createMcpServer } from "@agentproto/mcp-server"
 import type { AcpMcpServer } from "@agentproto/acp"
 
 import { registerSessionTools } from "../session-tools.js"
+import { registerOrchestrationTools } from "../orchestration-tools.js"
+import { createEventRing } from "../event-ring.js"
+import { McpProxyRegistry, type ProxyToolDescriptor } from "../mcp-proxy.js"
 import {
   createScopeTokenRegistry,
   createOrchestratorInjector,
@@ -93,6 +97,7 @@ async function harness(opts?: {
     scopeTokens: ScopeTokenRegistry,
     registry: SessionsRegistry,
   ) => OrchestratorScope | undefined
+  mcpProxy?: McpProxyRegistry
 }): Promise<Harness> {
   const sessionEvents = createSessionEventBus()
   const registry = createSessionsRegistry({ sessionEvents, persist: false })
@@ -111,10 +116,12 @@ async function harness(opts?: {
     version: "0",
   })
   registerSessionTools(server, {
+    workspace: process.cwd(),
     registry,
     resolveAgentAdapter: makeResolver(capture),
     buildOrchestratorMcp: injector,
     ...(callerScope ? { callerScope } : {}),
+    ...(opts?.mcpProxy ? { mcpProxy: opts.mcpProxy } : {}),
   })
 
   const [clientTransport, serverTransport] =
@@ -476,6 +483,305 @@ describe("orchestrator guardrails — subtree scoping (WP4)", () => {
       expect(h.registry.get(ids.X)!.status).toBe("killed")
     } finally {
       await h.close()
+    }
+  })
+
+  it("(§4 PR-2) paginated session_list still scopes: page-walk union equals the unpaginated scoped call exactly", async () => {
+    // C is the calling orchestrator. Its subtree: 6 descendants, mixed
+    // alive/exited, one archived mid-chain (D). X is an unrelated root.
+    // collectSubtree must run over the FULL registry (so archived D keeps
+    // its descendant G/H connected) and pagination must apply LAST — a
+    // regression that paginates before collectSubtree feeds the BFS only
+    // the 2-row window of a page and orphans descendants, which the
+    // union-equality assertion below catches.
+    let ids!: {
+      C: string
+      D: string
+      E: string
+      F: string
+      G: string
+      H: string
+      X: string
+    }
+    const h = await harness({
+      caller: (st, reg) => {
+        const C = spawnNode(reg, undefined, 0)
+        const D = spawnNode(reg, C.id, 1) // archived mid-chain
+        const E = spawnNode(reg, C.id, 1)
+        const F = spawnNode(reg, C.id, 1)
+        const G = spawnNode(reg, D.id, 2) // child of the archived node
+        const H = spawnNode(reg, G.id, 3)
+        const X = spawnNode(reg, undefined, 0)
+        reg.kill(D.id) // archive needs terminal status
+        reg.archiveSession(D.id)
+        reg.kill(E.id) // exited descendant
+        ids = { C: C.id, D: D.id, E: E.id, F: F.id, G: G.id, H: H.id, X: X.id }
+        const scope = st.mint({ depth: 0 })
+        st.bindOwner(scope.token, C.id)
+        return scope
+      },
+    })
+    try {
+      const unpaginated = payload<{ sessions: SessionDescriptor[] }>(
+        await h.client.callTool({ name: "session_list", arguments: {} }),
+      )
+      const expected = unpaginated.sessions.map(s => s.id)
+      // Default view: archived D hidden, but its non-archived descendants
+      // G/H stay connected and visible through the full-registry BFS.
+      expect(new Set(expected)).toEqual(
+        new Set([ids.C, ids.E, ids.F, ids.G, ids.H]),
+      )
+
+      // Walk pages of 2 through the SAME scoped gateway.
+      const union: string[] = []
+      let cursor: string | undefined
+      do {
+        const page = payload<{ items: SessionDescriptor[]; nextCursor?: string }>(
+          await h.client.callTool({
+            name: "session_list",
+            arguments: { limit: 2, ...(cursor ? { cursor } : {}) },
+          }),
+        )
+        union.push(...page.items.map(s => s.id))
+        cursor = page.nextCursor
+      } while (cursor)
+
+      expect(union).toEqual(expected)
+      expect(union).not.toContain(ids.X) // no root-level session leaked
+      expect(union).not.toContain(ids.D) // archived stays hidden
+    } finally {
+      await h.close()
+    }
+  })
+})
+
+// ── PR-6: mcp_imported_tool_list additive projections + pagination ───────────
+
+interface ProxyHarness extends Harness {
+  proxyTools: ProxyToolDescriptor[]
+}
+
+const PROXY_TOOLS: ProxyToolDescriptor[] = [
+  {
+    name: "navigate_page",
+    description: "Navigate to a URL.",
+    inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] },
+  },
+  {
+    name: "take_screenshot",
+    description: "Screenshot the page.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "click",
+    description: "Click an element.",
+    inputSchema: { type: "object", properties: { uid: { type: "string" } } },
+    _meta: { "x-client-resolve": { read: "snapshot", inject: "uid" } },
+  },
+  {
+    name: "list_pages",
+    description: "List open pages.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "select_page",
+    description: "Focus a page.",
+    inputSchema: { type: "object", properties: { pageIdx: { type: "number" } } },
+  },
+]
+
+class FakeProxy extends McpProxyRegistry {
+  constructor(private readonly tools: ProxyToolDescriptor[]) {
+    super()
+  }
+  override async listTools(
+    _alias: string,
+  ): Promise<{ ok: true; tools: ProxyToolDescriptor[] } | { ok: false; error: string }> {
+    return { ok: true, tools: this.tools }
+  }
+}
+
+describe("PR-6 → transformer migration — mcp_imported_tool_list compact/full/limit/cursor", () => {
+  async function proxyHarness(): Promise<ProxyHarness> {
+    const h = await harness({ mcpProxy: new FakeProxy(PROXY_TOOLS) })
+    return { ...h, proxyTools: PROXY_TOOLS }
+  }
+
+  it("default (no params) returns the COMPACT projection — name+description per tool, no alias echo", async () => {
+    const h = await proxyHarness()
+    try {
+      const body = payload<{ tools: Array<Record<string, unknown>> }>(
+        await h.client.callTool({
+          name: "mcp_imported_tool_list",
+          arguments: { alias: "chrome-devtools" },
+        }),
+      )
+      expect(body.tools).toHaveLength(PROXY_TOOLS.length)
+      for (const t of body.tools) {
+        expect(Object.keys(t).sort()).toEqual(["description", "name"])
+      }
+      expect(body.tools[0]).toEqual({
+        name: "navigate_page",
+        description: "Navigate to a URL.",
+      })
+      expect(JSON.stringify(body)).not.toContain("inputSchema")
+      expect(JSON.stringify(body)).not.toContain("x-client-resolve")
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("full:true restores the complete upstream descriptor (inputSchema, _meta) per tool", async () => {
+    const h = await proxyHarness()
+    try {
+      const body = payload<{
+        tools: Array<{ name: string; inputSchema?: unknown; _meta?: unknown }>
+      }>(
+        await h.client.callTool({
+          name: "mcp_imported_tool_list",
+          arguments: { alias: "chrome-devtools", full: true },
+        }),
+      )
+      const click = body.tools.find(t => t.name === "click")
+      expect(click).toBeDefined()
+      expect(click!.inputSchema).toEqual(
+        { type: "object", properties: { uid: { type: "string" } } },
+      )
+      expect(JSON.stringify(click)).toContain("x-client-resolve")
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("page-walk union over limit/cursor equals the full tool list", async () => {
+    const h = await proxyHarness()
+    try {
+      const expected = payload<{ tools: Array<{ name: string }> }>(
+        await h.client.callTool({
+          name: "mcp_imported_tool_list",
+          arguments: { alias: "chrome-devtools" },
+        }),
+      ).tools.map(t => t.name)
+
+      const union: string[] = []
+      let cursor: string | undefined
+      let total: number | undefined
+      do {
+        const page = payload<{
+          items: Array<{ name: string }>
+          nextCursor?: string
+          total?: number
+        }>(
+          await h.client.callTool({
+            name: "mcp_imported_tool_list",
+            arguments: {
+              alias: "chrome-devtools",
+              limit: 2,
+              ...(cursor ? { cursor } : {}),
+            },
+          }),
+        )
+        expect(page.total).toBe(PROXY_TOOLS.length)
+        total = page.total
+        union.push(...page.items.map(t => t.name))
+        cursor = page.nextCursor
+      } while (cursor)
+
+      expect(union).toEqual(expected)
+      expect(total).toBe(PROXY_TOOLS.length)
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("limit on a short list returns one page with no nextCursor", async () => {
+    const h = await proxyHarness()
+    try {
+      const page = payload<{ items: ProxyToolDescriptor[]; nextCursor?: string; total: number }>(
+        await h.client.callTool({
+          name: "mcp_imported_tool_list",
+          arguments: { alias: "chrome-devtools", limit: 200 },
+        }),
+      )
+      expect(page.items).toHaveLength(PROXY_TOOLS.length)
+      expect(page.total).toBe(PROXY_TOOLS.length)
+      expect(page.nextCursor).toBeUndefined()
+    } finally {
+      await h.close()
+    }
+  })
+})
+
+// ── PR-6: session_events_poll accepts the additive `full` flag ───────────────
+
+describe("PR-6 — session_events_poll full flag (additive, no-op)", () => {
+  async function eventsHarness() {
+    const sessionEvents = createSessionEventBus()
+    const registry = createSessionsRegistry({ sessionEvents, persist: false })
+    const eventRing = createEventRing()
+    eventRing.wire(sessionEvents)
+
+    const server = new McpServer({ name: "events", version: "0" })
+    registerOrchestrationTools(server, { registry, sessionEvents, eventRing })
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "events-client", version: "0.0.1" })
+    await client.connect(clientTransport)
+
+    sessionEvents.emit({
+      type: "session:turn-end",
+      sessionId: "s1",
+      awaitingInput: false,
+      ts: new Date().toISOString(),
+    })
+
+    return {
+      client,
+      close: async () => {
+        await client.close()
+      },
+    }
+  }
+
+  it("since:0 replay returns the retained event (contract unchanged)", async () => {
+    const { client, close } = await eventsHarness()
+    try {
+      const body = payload<{
+        events: Array<{ type: string; sessionId: string }>
+        nextCursor: number
+      }>(
+        await client.callTool({
+          name: "session_events_poll",
+          arguments: { since: 0 },
+        }),
+      )
+      expect(body.events).toHaveLength(1)
+      expect(body.events[0]!.type).toBe("session:turn-end")
+      expect(body.events[0]!.sessionId).toBe("s1")
+      expect(body.nextCursor).toBe(1)
+    } finally {
+      await close()
+    }
+  })
+
+  it("full:true is accepted and leaves the output shape unchanged", async () => {
+    const { client, close } = await eventsHarness()
+    try {
+      const args = [{ since: 0 }, { since: 0, full: true }] as const
+      const [plain, withFull] = await Promise.all(
+        args.map(a => client.callTool({ name: "session_events_poll", arguments: a })),
+      )
+      expect(withFull).toEqual(plain)
+      const body = payload<{
+        events: Array<{ type: string }>
+        nextCursor: number
+      }>(withFull)
+      expect(body.events).toHaveLength(1)
+      expect(body.events[0]!.type).toBe("session:turn-end")
+      expect(body.nextCursor).toBe(1)
+    } finally {
+      await close()
     }
   })
 })

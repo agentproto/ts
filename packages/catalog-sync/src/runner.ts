@@ -8,6 +8,8 @@ import type {
   GeneratedFiles,
   GeneratorContext,
 } from "./types.js"
+import { appendChangelog, diffModelIds, type GeneratorChangelogEntry } from "./changelog.js"
+import { todayIso } from "./added-at.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -75,6 +77,14 @@ function resolveHeaders(headers?: Record<string, string>): {
   return { headers: out, missing }
 }
 
+/** Repo-relative path of the human-readable model-add/remove log (see `changelog.ts`). */
+export const CATALOG_CHANGELOG_PATH = "packages/model-catalog/CATALOG-CHANGELOG.md"
+
+/** Generated files whose top-level id keys are worth diffing for the changelog. */
+function isChangelogEligible(relPath: string): boolean {
+  return relPath.endsWith(".generated.ts")
+}
+
 export interface RunGeneratorsOptions {
   /** When true, missing snapshots are fetched from their pinned `url`. */
   refresh: boolean
@@ -93,12 +103,18 @@ export interface RunGeneratorsResult {
  * them. `changed` is ALWAYS computed — it is the diff of generated content
  * vs disk — so `--check` (write=false) can surface drift without mutating
  * anything. Writes only happen when `write=true` AND a path differs.
+ *
+ * Also appends `CATALOG_CHANGELOG_PATH` (see `changelog.ts`) when this run's
+ * per-generator diffs add or remove any model id — folded into the same
+ * `files`/`changed` bookkeeping as every other generated file, so `--check`
+ * catches an un-committed changelog entry too.
  */
 export async function runGenerators(
   gens: CatalogGenerator[],
   opts: RunGeneratorsOptions
 ): Promise<RunGeneratorsResult> {
   const files: GeneratedFiles = {}
+  const pathToGenerator: Record<string, string> = {}
 
   for (const gen of gens) {
     const ctx: GeneratorContext = {
@@ -158,11 +174,13 @@ export async function runGenerators(
     const out = await gen.generate(ctx)
     for (const [path, content] of Object.entries(out)) {
       files[path] = content
+      pathToGenerator[path] = gen.name
     }
   }
 
   const root = repoRoot()
   const changed: string[] = []
+  const changelogEntries: GeneratorChangelogEntry[] = []
   for (const [relPath, content] of Object.entries(files)) {
     const abs = join(root, relPath)
     const existing = readIfExists(abs)
@@ -172,6 +190,27 @@ export async function runGenerators(
         mkdirSync(dirname(abs), { recursive: true })
         writeFileSync(abs, content, "utf8")
       }
+    }
+    if (isChangelogEligible(relPath)) {
+      const { added, removed } = diffModelIds(existing, content)
+      if (added.length > 0 || removed.length > 0) {
+        changelogEntries.push({ generator: pathToGenerator[relPath] ?? relPath, added, removed })
+      }
+    }
+  }
+
+  // CATALOG-CHANGELOG.md: appended (never touched when there's nothing to
+  // report) from the per-generator id diffs gathered above. Goes through the
+  // same changed/write bookkeeping as any other generated file.
+  const changelogAbs = join(root, CATALOG_CHANGELOG_PATH)
+  const changelogExisting = readIfExists(changelogAbs)
+  const newChangelog = appendChangelog(changelogExisting, todayIso(), changelogEntries)
+  if (newChangelog !== undefined) {
+    files[CATALOG_CHANGELOG_PATH] = newChangelog
+    changed.push(CATALOG_CHANGELOG_PATH)
+    if (opts.write) {
+      mkdirSync(dirname(changelogAbs), { recursive: true })
+      writeFileSync(changelogAbs, newChangelog, "utf8")
     }
   }
 

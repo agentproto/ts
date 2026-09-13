@@ -8,8 +8,9 @@
  * not just the two adapters `transcript-export.ts` knows how to re-read
  * from their own native stores.
  *
- * File layout: `~/.agentproto/sessions/<sessionId>/events.jsonl`, one
- * JSON object per line: `{seq, ts, kind, ...fields}`.
+ * File layout: `~/.agentproto/sessions/<sessionId>/events.jsonl` (the
+ * root is overridable via the daemon config's `sessions.eventsDir` — see
+ * `setDefaultSessionsBaseDir`), one JSON object per line: `{seq, ts, kind, ...fields}`.
  *
  * PTY (`terminal`) and `command` sessions never call into this writer —
  * they have no structured event source (see report-transcript-
@@ -19,10 +20,11 @@
 
 import { createWriteStream, mkdirSync, readFileSync, type WriteStream } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 import type { SessionObserver } from "./session-observer.js"
 import type { AgentStreamEvent } from "./sessions.js"
 import { extractCommandArgs } from "./tool-call-record.js"
+import { detectShellPrCreate } from "./pr-provenance.js"
 import type { SessionUsage } from "./usage.js"
 
 /** Debounce window for flushing a buffered text-delta/thought fragment
@@ -33,11 +35,33 @@ import type { SessionUsage } from "./usage.js"
  *  angle added. */
 const DEBOUNCE_MS = 250
 
-/** `baseDir` defaults to `~/.agentproto/sessions` — overridable so tests
- *  (and a future `--home` style daemon flag) can redirect writes away from
- *  the real home directory instead of mocking `node:os`. */
+/** The one default root every per-session transcript directory resolves
+ *  against. Overridable so tests (and the daemon's `sessions.eventsDir`
+ *  config key) can redirect writes away from the real home directory
+ *  instead of mocking `node:os`. Explicit `baseDir` arguments (tests,
+ *  the registry's `transcriptDir` option) always win over this. */
+let defaultSessionsBaseDir: string | undefined
+
+/** Point the no-`baseDir` path resolution at `dir`. Called once at daemon
+ *  boot from the loaded config (`sessions.eventsDir`); `undefined` restores
+ *  the hardcoded `~/.agentproto/sessions` default. Relative paths are
+ *  resolved against the home directory. */
+export function setDefaultSessionsBaseDir(dir: string | undefined): void {
+  if (!dir) {
+    defaultSessionsBaseDir = undefined
+    return
+  }
+  defaultSessionsBaseDir = isAbsolute(dir) ? dir : join(homedir(), dir)
+}
+
+/** The effective default base dir — the configured one, or the hardcoded
+ *  `~/.agentproto/sessions`. */
+export function defaultTranscriptBaseDir(): string {
+  return defaultSessionsBaseDir ?? join(homedir(), ".agentproto", "sessions")
+}
+
 export function sessionTranscriptDir(sessionId: string, baseDir?: string): string {
-  return join(baseDir ?? join(homedir(), ".agentproto", "sessions"), sessionId)
+  return join(baseDir ?? defaultTranscriptBaseDir(), sessionId)
 }
 
 export function sessionEventsPath(sessionId: string, baseDir?: string): string {
@@ -80,8 +104,22 @@ export interface TranscriptWriter extends SessionObserver {
    *  kind (ACP's own "agent-prompt" means the agent asking the human a
    *  question, the opposite direction) — recorded under its own
    *  "user-prompt" kind so turns stay reconstructable without overloading
-   *  that name. */
-  recordPrompt(sessionId: string, message: unknown): void
+   *  that name. `opts.source` (provenance, e.g. `agent:<sessionId>` for a
+   *  supervisor-injected prompt) rides onto the record's `source` field.
+   *
+   *  `opts.system`, when present, is the daemon-composed SYSTEM slice of
+   *  `message` (role disposition + AGENTS.md + lineage — the preamble the
+   *  daemon prepended to a spawned child's prompt, which the ADAPTER still
+   *  receives as one string). It is recorded as its own `system-prompt`
+   *  record AHEAD of the `user-prompt`, and that user-prompt carries only
+   *  the CALLER's own ask (the preamble stripped) — so viewers can fold
+   *  the synthesized text instead of showing it as a user bubble. Recording-
+   *  only; never alters what the adapter receives or how the turn runs. */
+  recordPrompt(
+    sessionId: string,
+    message: unknown,
+    opts?: { source?: string; system?: string }
+  ): void
   /** Record one structured stream event, ahead of `projectEvent`'s
    *  flattening. Coalesces consecutive text-delta/thought chunks the same
    *  way the ring buffer does. */
@@ -254,11 +292,43 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
   }
 
   return {
-    recordPrompt(sessionId, message) {
+    recordPrompt(sessionId, message, opts) {
       const state = getState(sessionId)
       flushBuffers(sessionId, state)
       const text = typeof message === "string" ? message : JSON.stringify(message)
-      writeRecord(sessionId, state, { kind: "user-prompt", sessionId, text })
+      // The daemon-composed SYSTEM slice of a spawned child's initial
+      // prompt is recorded apart from the caller's ask. The user-prompt
+      // text is the composed string with that preamble stripped (the
+      // preamble was prepended verbatim at composition, joined by "\n\n").
+      if (opts?.system) {
+        writeRecord(sessionId, state, { kind: "system-prompt", sessionId, text: opts.system })
+      }
+      // Strip the system preamble off the front of `text` to get the
+      // caller's own ask. Guarded by an explicit prefix check (not just a
+      // length comparison) so a future change to the composition format
+      // (session-spawn.ts's `composedPreamble`/`effectivePrompt` join) can't
+      // silently slice the wrong bytes here — if the invariant doesn't
+      // hold, fall back to recording the FULL text rather than producing
+      // corrupted output.
+      let userText = text
+      if (opts?.system) {
+        if (text.startsWith(opts.system)) {
+          userText = text.slice(opts.system.length).replace(/^\n\n/, "")
+        } else {
+          console.warn(
+            `[transcript-writer] recordPrompt: system preamble is not a prefix of the composed ` +
+              `prompt for session ${sessionId} — composition invariant violated (see ` +
+              `session-spawn.ts's composedPreamble), recording the full text as user-prompt ` +
+              `instead of risking a bad slice.`,
+          )
+        }
+      }
+      writeRecord(sessionId, state, {
+        kind: "user-prompt",
+        sessionId,
+        text: userText,
+        ...(opts?.source ? { source: opts.source } : {}),
+      })
     },
     recordEvent(sessionId, evt) {
       const state = getState(sessionId)
@@ -348,6 +418,18 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
           const meta = evt.toolCallId ? state.toolCallMeta.get(evt.toolCallId) : undefined
           if (evt.toolCallId) state.toolCallMeta.delete(evt.toolCallId)
           const { command, args } = extractCommandArgs(meta?.arguments)
+          // Exact PR-creation provenance, captured at the only moment both
+          // halves exist together (command + result text) — see the
+          // `createdPrUrl` field's doc in tool-call-record.ts. Some harnesses
+          // surface the shell string as the tool NAME rather than in
+          // arguments, so fall back to that.
+          const createdPr =
+            (evt.isError ?? false)
+              ? null
+              : detectShellPrCreate(
+                  command ?? meta?.toolName,
+                  typeof evt.result === "string" ? evt.result : undefined,
+                )
           writeRecord(sessionId, state, {
             kind: "tool-call-record",
             sessionId,
@@ -356,6 +438,7 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
             ...(args !== undefined ? { args } : {}),
             isError: evt.isError ?? false,
             ...(meta ? { durationMs: Date.now() - meta.startedAt } : {}),
+            ...(createdPr ? { createdPrUrl: createdPr.url, createdPrNumber: createdPr.number } : {}),
           })
           break
         }
@@ -366,6 +449,22 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
             sessionId,
             toolCallId: evt.toolCallId,
             options: evt.options,
+          })
+          break
+        // Durable counterpart to "agent-prompt" — recorded when
+        // `respondPermission` (or a dying session's cancel-in-flight sweep)
+        // resolves the ask, keyed by the same `toolCallId` so a reader can
+        // tell an answered request from a still-pending one without relying
+        // on the in-memory pending-permissions map (see sessions.ts's
+        // `resolvePendingPermission` / `cancelPendingPermissionsForSession`).
+        case "permission-resolved":
+          flushBuffers(sessionId, state)
+          writeRecord(sessionId, state, {
+            kind: "permission-resolved",
+            sessionId,
+            toolCallId: evt.toolCallId,
+            decision: evt.decision,
+            ...(evt.optionId ? { optionId: evt.optionId } : {}),
           })
           break
         case "turn-end":
@@ -388,7 +487,12 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
           break
         case "plan":
           flushBuffers(sessionId, state)
-          writeRecord(sessionId, state, { kind: "plan", sessionId, entries: evt.entries ?? [] })
+          writeRecord(sessionId, state, {
+            kind: "plan",
+            sessionId,
+            ...(evt.title ? { title: evt.title } : {}),
+            entries: evt.entries ?? [],
+          })
           break
         case "usage_update":
           flushBuffers(sessionId, state)
@@ -404,6 +508,14 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
             // price/aggregate a session even without a `cost` block.
             ...(evt.tokensIn !== undefined ? { tokensIn: evt.tokensIn } : {}),
             ...(evt.tokensOut !== undefined ? { tokensOut: evt.tokensOut } : {}),
+          })
+          break
+        case "available-commands":
+          flushBuffers(sessionId, state)
+          writeRecord(sessionId, state, {
+            kind: "available-commands",
+            sessionId,
+            commands: evt.commands ?? [],
           })
           break
         default:

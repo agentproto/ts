@@ -77,6 +77,18 @@ vi.mock("@agentproto/runtime/config", async importOriginal => {
   }
 })
 
+// ── mock app-serve (installed-app lookup for --app scoped mode) ────────────────
+
+vi.mock("../app-serve.js", async importOriginal => {
+  const orig = await importOriginal<typeof import("../app-serve.js")>()
+  return {
+    ...orig,
+    findInstalledAppDir: vi.fn(),
+    readDeclaredCategory: vi.fn(),
+    readDeclaredLibraryBookIds: vi.fn(),
+  }
+})
+
 import {
   runInstallMcp,
   upsertHermesMcpServer,
@@ -88,6 +100,10 @@ const discoverDaemon = vi.mocked(helpers.discoverDaemon)
 const httpGetJson = vi.mocked(helpers.httpGetJson)
 const { loadConfig } = await import("@agentproto/runtime/config")
 const mockLoadConfig = vi.mocked(loadConfig)
+const appServe = await import("../app-serve.js")
+const findInstalledAppDir = vi.mocked(appServe.findInstalledAppDir)
+const readDeclaredCategory = vi.mocked(appServe.readDeclaredCategory)
+const readDeclaredLibraryBookIds = vi.mocked(appServe.readDeclaredLibraryBookIds)
 
 // ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -199,6 +215,9 @@ beforeEach(() => {
     stale: [],
   })
   httpGetJson.mockResolvedValue({ status: "ok" })
+  findInstalledAppDir.mockReturnValue(undefined)
+  readDeclaredCategory.mockResolvedValue(undefined)
+  readDeclaredLibraryBookIds.mockResolvedValue([])
   spawnMock.mockImplementation(() => ({
     on: (_event: string, cb: (code: number) => void) => cb(1),
     stdout: {
@@ -469,6 +488,271 @@ describe("runInstallMcp normal install", () => {
 
     expect(code).toBe(1)
     expect(chunks.join("")).toContain("None of the requested agents")
+  })
+})
+
+// ── tests: windsurf ──────────────────────────────────────────────────────────
+
+describe("runInstallMcp — windsurf", () => {
+  it("registers windsurf via stdio JSON at ~/.codeium/windsurf/mcp_config.json", async () => {
+    const windsurfConfigPath = "/tmp/fake-home/.codeium/windsurf/mcp_config.json"
+    mockMultiPath({
+      files: { [windsurfConfigPath]: JSON.stringify({ mcpServers: {} }) },
+      dirs: ["/tmp/fake-home/.codeium/windsurf"],
+    })
+
+    const code = await runInstallMcp(["--agent", "windsurf", "--yes"])
+    expect(code).toBe(0)
+
+    const configWrite = mockFs.writeFile.mock.calls.find(c => c[0] === windsurfConfigPath)
+    expect(configWrite).toBeDefined()
+    const written = JSON.parse(configWrite![1] as string)
+    expect(written.mcpServers.agentproto.command).toBe("agentproto")
+    expect(written.mcpServers.agentproto.args).toEqual(["mcp-bridge"])
+  })
+
+  it("is not detected when neither the config file nor its dir exist", async () => {
+    // No files/dirs mocked as existing at all — nothing detected.
+    const { chunks, restore } = captureStdout()
+    const code = await runInstallMcp(["--yes"])
+    restore()
+    expect(code).toBe(0)
+    expect(chunks.join("")).toContain("No coding-CLI agents detected")
+  })
+})
+
+// ── tests: --app scoped mode ─────────────────────────────────────────────────
+
+describe("runInstallMcp --app", () => {
+  it("exits 1 when the app is not installed", async () => {
+    findInstalledAppDir.mockReturnValue(undefined)
+    mockDirExists("/tmp/fake-home/.cursor")
+    mockFileExists("/tmp/fake-home/.cursor/mcp.json", "{}")
+
+    const { chunks, restore } = captureStderr()
+    const code = await runInstallMcp(["--app", "book1", "--yes"])
+    restore()
+
+    expect(code).toBe(1)
+    expect(chunks.join("")).toContain('no installed app "book1"')
+  })
+
+  it("exits 1 when the installed app has no book/library contract", async () => {
+    findInstalledAppDir.mockReturnValue("/apps/not-a-book")
+    readDeclaredCategory.mockResolvedValue(undefined)
+    readDeclaredLibraryBookIds.mockResolvedValue([])
+    mockDirExists("/tmp/fake-home/.cursor")
+    mockFileExists("/tmp/fake-home/.cursor/mcp.json", "{}")
+
+    const { chunks, restore } = captureStderr()
+    const code = await runInstallMcp(["--app", "not-a-book", "--yes"])
+    restore()
+
+    expect(code).toBe(1)
+    expect(chunks.join("")).toContain("no book/library contract")
+  })
+
+  it("accepts eligibility via category: book alone", async () => {
+    findInstalledAppDir.mockReturnValue("/apps/book1")
+    readDeclaredCategory.mockResolvedValue("book")
+    readDeclaredLibraryBookIds.mockResolvedValue([])
+    const cursorConfigPath = "/tmp/fake-home/.cursor/mcp.json"
+    mockMultiPath({ files: { [cursorConfigPath]: JSON.stringify({ mcpServers: {} }) }, dirs: ["/tmp/fake-home/.cursor"] })
+
+    const code = await runInstallMcp(["--app", "book1", "--agent", "cursor", "--yes"])
+    expect(code).toBe(0)
+  })
+
+  it("accepts eligibility via a non-empty library.books alone", async () => {
+    findInstalledAppDir.mockReturnValue("/apps/book1")
+    readDeclaredCategory.mockResolvedValue(undefined)
+    readDeclaredLibraryBookIds.mockResolvedValue(["book1"])
+    const cursorConfigPath = "/tmp/fake-home/.cursor/mcp.json"
+    mockMultiPath({ files: { [cursorConfigPath]: JSON.stringify({ mcpServers: {} }) }, dirs: ["/tmp/fake-home/.cursor"] })
+
+    const code = await runInstallMcp(["--app", "book1", "--agent", "cursor", "--yes"])
+    expect(code).toBe(0)
+  })
+
+  it("writes a scoped agentproto-app-<id> entry (not the full-daemon 'agentproto' key) for cursor", async () => {
+    findInstalledAppDir.mockReturnValue("/apps/book1")
+    readDeclaredCategory.mockResolvedValue("book")
+    const cursorConfigPath = "/tmp/fake-home/.cursor/mcp.json"
+    mockMultiPath({ files: { [cursorConfigPath]: JSON.stringify({ mcpServers: {} }) }, dirs: ["/tmp/fake-home/.cursor"] })
+
+    const code = await runInstallMcp(["--app", "book1", "--agent", "cursor", "--yes"])
+    expect(code).toBe(0)
+
+    const configWrite = mockFs.writeFile.mock.calls.find(c => c[0] === cursorConfigPath)
+    const written = JSON.parse(configWrite![1] as string)
+    expect(written.mcpServers.agentproto).toBeUndefined()
+    expect(written.mcpServers["agentproto-app-book1"]).toBeDefined()
+    expect(written.mcpServers["agentproto-app-book1"].command).toBe("agentproto")
+    expect(written.mcpServers["agentproto-app-book1"].args).toEqual(["mcp-app", "book1"])
+  })
+
+  it("scoped and full-daemon entries for the same agent coexist without clobbering each other", async () => {
+    findInstalledAppDir.mockReturnValue("/apps/book1")
+    readDeclaredCategory.mockResolvedValue("book")
+    const cursorConfigPath = "/tmp/fake-home/.cursor/mcp.json"
+    mockMultiPath({ files: { [cursorConfigPath]: JSON.stringify({ mcpServers: {} }) }, dirs: ["/tmp/fake-home/.cursor"] })
+
+    // Full-daemon registration first.
+    let code = await runInstallMcp(["--agent", "cursor", "--yes"])
+    expect(code).toBe(0)
+    let written = JSON.parse(
+      mockFs.writeFile.mock.calls.filter(c => c[0] === cursorConfigPath).at(-1)![1] as string,
+    )
+    // Re-seed the mocked file with what was just "written" so the next call reads it back.
+    mockMultiPath({ files: { [cursorConfigPath]: JSON.stringify(written) }, dirs: ["/tmp/fake-home/.cursor"] })
+
+    // Then a scoped registration for the same agent.
+    code = await runInstallMcp(["--app", "book1", "--agent", "cursor", "--yes"])
+    expect(code).toBe(0)
+    written = JSON.parse(
+      mockFs.writeFile.mock.calls.filter(c => c[0] === cursorConfigPath).at(-1)![1] as string,
+    )
+
+    expect(written.mcpServers.agentproto.args).toEqual(["mcp-bridge"])
+    expect(written.mcpServers["agentproto-app-book1"].args).toEqual(["mcp-app", "book1"])
+  })
+
+  it("writes a scoped [mcp_servers.agentproto-app-<id>] TOML table for codex", async () => {
+    findInstalledAppDir.mockReturnValue("/apps/book1")
+    readDeclaredCategory.mockResolvedValue("book")
+    const codexConfigPath = "/tmp/fake-home/.codex/config.toml"
+    mockMultiPath({ files: { [codexConfigPath]: "" }, dirs: [] })
+
+    const code = await runInstallMcp(["--app", "book1", "--agent", "codex", "--yes"])
+    expect(code).toBe(0)
+
+    const configWrite = mockFs.writeFile.mock.calls.find(c => c[0] === codexConfigPath)
+    expect(configWrite).toBeDefined()
+    const content = configWrite![1] as string
+    expect(content).toContain("[mcp_servers.agentproto-app-book1]")
+    expect(content).toContain('args = ["mcp-app","book1"]')
+    expect(content).not.toContain("[mcp_servers.agentproto]")
+  })
+
+  it("sanitizes an appId with special characters for the TOML/JSON server key", async () => {
+    findInstalledAppDir.mockReturnValue("/apps/weird")
+    readDeclaredCategory.mockResolvedValue("book")
+    const cursorConfigPath = "/tmp/fake-home/.cursor/mcp.json"
+    mockMultiPath({ files: { [cursorConfigPath]: JSON.stringify({ mcpServers: {} }) }, dirs: ["/tmp/fake-home/.cursor"] })
+
+    const code = await runInstallMcp(["--app", "@scope/weird id!", "--agent", "cursor", "--yes"])
+    expect(code).toBe(0)
+
+    const configWrite = mockFs.writeFile.mock.calls.find(c => c[0] === cursorConfigPath)
+    const written = JSON.parse(configWrite![1] as string)
+    const keys = Object.keys(written.mcpServers)
+    expect(keys).toHaveLength(1)
+    expect(keys[0]).toMatch(/^agentproto-app-[A-Za-z0-9_-]+$/)
+    expect(written.mcpServers[keys[0]!].args).toEqual(["mcp-app", "@scope/weird id!"])
+  })
+
+  it("exits 2 when an explicitly-requested agent doesn't support scoped mode", async () => {
+    findInstalledAppDir.mockReturnValue("/apps/book1")
+    readDeclaredCategory.mockResolvedValue("book")
+    const claudeConfigPath = "/tmp/fake-home/.claude.json"
+    mockFileExists(claudeConfigPath, "{}")
+
+    const { chunks, restore } = captureStderr()
+    const code = await runInstallMcp(["--app", "book1", "--agent", "claude", "--yes"])
+    restore()
+
+    expect(code).toBe(2)
+    expect(chunks.join("")).toContain("--app is not supported for claude")
+  })
+
+  it("silently skips unsupported agents and registers only scoped-capable ones with --all", async () => {
+    findInstalledAppDir.mockReturnValue("/apps/book1")
+    readDeclaredCategory.mockResolvedValue("book")
+    const claudeConfigPath = "/tmp/fake-home/.claude.json"
+    const cursorConfigPath = "/tmp/fake-home/.cursor/mcp.json"
+    mockMultiPath({
+      files: {
+        [claudeConfigPath]: "{}",
+        [cursorConfigPath]: JSON.stringify({ mcpServers: {} }),
+      },
+      dirs: ["/tmp/fake-home/.cursor"],
+    })
+
+    const { chunks, restore } = captureStdout()
+    const code = await runInstallMcp(["--app", "book1", "--yes"])
+    restore()
+
+    expect(code).toBe(0)
+    expect(chunks.join("")).toContain("Skipping")
+    expect(chunks.join("")).toContain("claude")
+
+    const configWrite = mockFs.writeFile.mock.calls.find(c => c[0] === cursorConfigPath)
+    expect(configWrite).toBeDefined()
+    const claudeWrite = mockFs.writeFile.mock.calls.find(c => c[0] === claudeConfigPath)
+    expect(claudeWrite).toBeUndefined()
+  })
+
+  it("exits 0 with nothing to do when only unsupported agents are detected", async () => {
+    findInstalledAppDir.mockReturnValue("/apps/book1")
+    readDeclaredCategory.mockResolvedValue("book")
+    const claudeConfigPath = "/tmp/fake-home/.claude.json"
+    mockFileExists(claudeConfigPath, "{}")
+
+    const { chunks, restore } = captureStdout()
+    const code = await runInstallMcp(["--app", "book1", "--yes"])
+    restore()
+
+    expect(code).toBe(0)
+    expect(chunks.join("")).toContain("No scoped-capable agents detected")
+  })
+
+  it("--uninstall removes only the scoped entry, leaving a full-daemon entry for the same agent intact", async () => {
+    const statePath = "/tmp/fake-home/.agentproto/install-state.json"
+    const cursorConfigPath = "/tmp/fake-home/.cursor/mcp.json"
+    const existingConfig = {
+      mcpServers: {
+        agentproto: { command: "agentproto", args: ["mcp-bridge"] },
+        "agentproto-app-book1": { command: "agentproto", args: ["mcp-app", "book1"] },
+      },
+    }
+    const state = {
+      entries: [
+        { agent: "cursor", configPath: cursorConfigPath, transport: "stdio", registeredAt: "now" },
+        { agent: "cursor", configPath: cursorConfigPath, transport: "stdio", registeredAt: "now", appId: "book1" },
+      ],
+    }
+
+    mockMultiPath({
+      files: {
+        [statePath]: JSON.stringify(state),
+        [cursorConfigPath]: JSON.stringify(existingConfig),
+      },
+      dirs: [],
+    })
+
+    const code = await runInstallMcp(["--uninstall"])
+    expect(code).toBe(0)
+
+    // --uninstall removes every tracked entry, so both the full-daemon and
+    // scoped registrations get torn down here — but each is a SEPARATE,
+    // surgical removeFromJsonConfig() call keyed by its own serverKeyFor(),
+    // so neither call ever touches the other's key. Assert that per-call
+    // scoping directly: each of the two writes to the cursor config deletes
+    // only its own entry's key, proving a scoped and full-daemon entry for
+    // the same agent can never clobber each other on removal either.
+    const configWrites = mockFs.writeFile.mock.calls.filter(c => c[0] === cursorConfigPath)
+    expect(configWrites).toHaveLength(2)
+    const writtenConfigs = configWrites.map(c => JSON.parse(c[1] as string))
+    expect(writtenConfigs).toContainEqual(
+      expect.objectContaining({
+        mcpServers: expect.not.objectContaining({ agentproto: expect.anything() }),
+      }),
+    )
+    expect(writtenConfigs).toContainEqual(
+      expect.objectContaining({
+        mcpServers: expect.not.objectContaining({ "agentproto-app-book1": expect.anything() }),
+      }),
+    )
   })
 })
 

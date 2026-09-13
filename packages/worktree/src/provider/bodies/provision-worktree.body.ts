@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { mkdir, copyFile, symlink, lstat } from "node:fs/promises"
+import { mkdir, copyFile, symlink, lstat, appendFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { implementTool } from "@agentproto/driver"
 import { ToolError } from "@agentproto/tool"
@@ -45,6 +45,26 @@ export const provisionWorktreeBuiltin = implementTool(
       if (existing) continue
       await mkdir(dirname(dest), { recursive: true })
       await symlink(target, dest, "dir")
+    }
+
+    // Write generated, worktree-specific config BEFORE depsCmd, so a tool it
+    // invokes (e.g. a package manager) sees it on first run.
+    for (const file of input.writeFiles ?? []) {
+      const dest = join(cwd, file.path)
+      await mkdir(dirname(dest), { recursive: true })
+      if (file.mode === "append") {
+        await appendFile(dest, file.content)
+        // Mark skip-worktree so this worktree-local tweak to a (likely)
+        // tracked file never shows up as a modification the caller could
+        // accidentally commit. Best-effort: a no-op path (never tracked to
+        // begin with) makes `update-index --skip-worktree` fail — that's
+        // fine, there's nothing to hide from `git status` for it anyway.
+        await execGit(cwd, ["update-index", "--skip-worktree", file.path]).catch(() => {})
+      } else {
+        const existing = await lstat(dest).catch(() => null)
+        if (existing) continue
+        await writeFile(dest, file.content)
+      }
     }
 
     if (input.depsCmd) {

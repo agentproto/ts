@@ -10,7 +10,15 @@ pipeline.
 | axis     | values                     | meaning                                              |
 | -------- | -------------------------- | ---------------------------------------------------- |
 | `stage`  | `manual` · `commit` · `push` | when a git hook runs it (`manual` = only on demand)  |
-| `engine` | `local` · `cloud`          | `local` = Claude Code CLI (your sub); `cloud` = API  |
+| `engine` | `local` · `cloud` · `daemon` | `local` = Claude Code CLI (your sub); `cloud` = API; `daemon` = `review` only — the CI lane's full pr-review WORKFLOW.md, run through your local `agentproto serve` daemon (see below) |
+
+### `review`'s three engines
+
+| engine   | what runs                                                                             | diff cap                     | needs                                                     |
+| -------- | -------------------------------------------------------------------------------------- | ----------------------------- | ---------------------------------------------------------- |
+| `local`  | single-shot judge over the diff (`primitives/review.mjs#reviewDiff`), Claude Code CLI  | `DIFF_CAP` (16k chars)         | Claude Code CLI (subscription)                              |
+| `cloud`  | same single-shot judge, via `api.anthropic.com`                                       | `DIFF_CAP` (16k chars)         | `ANTHROPIC_API_KEY`                                          |
+| `daemon` | the SAME agentic review CI runs — `.github/agentproto-workflows/pr-review/WORKFLOW.md`, `placement: "local"`, full tool access (reads the live checkout, greps, follows references) | none — the agent reads the checkout itself | `agentproto serve` running locally (default port 18790) |
 
 ## Config (deep-merged, later wins)
 
@@ -75,9 +83,11 @@ once).
 
 ## Review + CI bypass
 
-`review.mjs` is a fast single-shot diff review (vs `origin/main`) — the
-lightweight sibling of the CI agentic reviewer (`../review-pr.mjs`). Run it
-locally for quick feedback before pushing.
+`review.mjs` reviews the branch vs `origin/main` before you push, via one of
+three engines (see the table above). `local`/`cloud` are a fast single-shot
+diff review — the lightweight sibling of the CI agentic reviewer
+(`../review-pr.mjs`). `daemon` runs the CI reviewer's own workflow, unabridged,
+on your machine — see "`review`'s three engines" above.
 
 To bypass the cloud reviewer, run `pnpm review:ai --stamp` **before** you push:
 an *approving* review writes an empty `[agentflow-reviewed]` marker commit,
@@ -89,9 +99,11 @@ a non-hook run): a commit created *inside* the pre-push hook is **not** part of
 the in-flight push, so the push-stage hook reviews for feedback but never
 stamps — it just reminds you to run `--stamp` if you want the bypass.
 
-Default OFF: the local single-shot pass is lighter than CI's agentic review, and
-the marker is a trust convenience (any in-range commit can carry it), not a
-security boundary. When you bypass, make sure a changeset exists too.
+Default OFF: the marker is a trust convenience (any in-range commit can carry
+it), not a security boundary. When you bypass, make sure a changeset exists
+too. (This caveat used to also note that the local pass is lighter than CI's
+— that's still true for `local`/`cloud`, but engine `daemon` runs the exact
+same workflow CI does, so there's no strength gap to weigh there.)
 
 ## Two primitives, composed into flows
 
@@ -116,8 +128,9 @@ The loop keeps the *actor* on one session (continuity) but the *judge* fresh
 | ----------------------------- | ----------------------------------------------------------- |
 | `config.mjs`                  | load + merge config, resolve engine                         |
 | `llm.mjs`                     | engine router: `runLlm({engine})` → CLI or API; `stripFences`|
-| `primitives/review.mjs`       | review primitive — `gatherDiff` + `reviewDiff` (judge)      |
+| `primitives/review.mjs`       | review primitive — `gatherDiff`/`gatherChangedFiles` + `reviewDiff` (single-shot judge) + `reviewViaDaemon` (engine `daemon`) |
 | `primitives/code.mjs`         | code primitive — `runCode` (actor, session-carrying)        |
+| `../lib/daemon-mcp.mjs`       | local-daemon MCP contract: read the bearer token, connect, drive `workflow_run_file` to a terminal status, read a session's output tail — what `reviewViaDaemon` is built on |
 | `loop.mjs`                    | review→fix→re-review loop (composes the two primitives)     |
 | `docs.mjs`                    | cli-docs flow — deterministic coverage detector + `code` (+ `review`) |
 | `hook.mjs`                    | git-hook dispatcher (`commit`/`push` → matching features)   |

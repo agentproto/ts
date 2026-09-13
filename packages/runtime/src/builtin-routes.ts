@@ -36,18 +36,22 @@ import { loadOperatorRoutes } from "./routes-config.js"
  * external, must `await` the returned promise or operator-route overrides
  * will silently not apply.
  */
-export async function registerBuiltinRoutes(): Promise<void> {
-  // The local llm-endpoint Anthropic-compatible proxy. Its baseUrl/flavor/
-  // key-env are owned by the gateway preset (the single source of truth for
-  // these facts across adapters) — mirror them so a preset change here can't
-  // silently diverge from the route the catalog resolves.
-  const preset = getAnthropicGatewayPreset("llm-endpoint")
-  registerCustomRoute("llm-endpoint", {
-    label: preset.label,
-    flavor: preset.schemaFlavor,
-    baseUrl: preset.baseUrl,
-    authEnv: preset.keyEnv,
-  })
+export async function registerBuiltinRoutes(opts?: {
+  llmEndpoint?: boolean
+}): Promise<void> {
+  // The local llm-endpoint Anthropic-compatible proxy — gated behind the
+  // `features.llmEndpoint` config knob (default false). When off, the route
+  // is never registered, so `@llm-endpoint` catalog rows carry no transport
+  // and the `llm_endpoint_*` MCP tools are not exposed.
+  if (opts?.llmEndpoint) {
+    const preset = getAnthropicGatewayPreset("llm-endpoint")
+    registerCustomRoute("llm-endpoint", {
+      label: preset.label,
+      flavor: preset.schemaFlavor,
+      baseUrl: preset.baseUrl,
+      authEnv: preset.keyEnv,
+    })
+  }
 
   // xAI's Anthropic-compatible Messages endpoint (https://api.x.ai/v1/messages).
   // Registering it as a custom route lets route-identity resolve

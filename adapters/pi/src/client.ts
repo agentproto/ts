@@ -33,6 +33,7 @@ import type {
   AgentCliHandle,
   StreamEvent,
 } from "@agentproto/driver-agent-cli"
+import { resolveContextWindow } from "@agentproto/model-catalog/llm"
 import { enumerateMcpTools } from "./mcp-bridge/enumerate.js"
 import {
   classifyPiLine,
@@ -144,10 +145,24 @@ function extractPromptText(message: unknown): string {
   return JSON.stringify(message)
 }
 
+/** Resolve a model id to its real context-window size via
+ *  `@agentproto/model-catalog`. `undefined` for an absent/uncataloged model
+ *  id — never a fabricated number (see `usageUpdate` in pi-events.ts, which
+ *  treats `undefined` as "unknown window", not "zero tokens"). */
+export function resolvePiContextWindow(modelId: string | undefined): number | undefined {
+  return modelId ? resolveContextWindow(modelId)?.contextWindow : undefined
+}
+
 export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient {
   let child: ChildProcessWithoutNullStreams | undefined
   let piSessionId: string | undefined
   let connectEffort: string | undefined
+  /** Model's real context-window size, resolved once at `connect()` time from
+   *  `@agentproto/model-catalog` by model id. `undefined` when the model
+   *  isn't in the catalog — pi's own usage payload carries no window figure
+   *  (see pi-events.ts `usageUpdate`), so an unresolved model means an
+   *  unknown window, not a fabricated one. */
+  let contextWindow: number | undefined
   let onActivity: (() => void) | undefined
   /** Session temp dir holding the bridge config JSON; removed on close(). */
   let bridgeTempDir: string | undefined
@@ -221,7 +236,7 @@ export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient
     onActivity?.()
     const turn = currentTurn
     if (!turn) return
-    for (const mapped of mapPiEvent(event, piSessionId ?? "", mapperState)) {
+    for (const mapped of mapPiEvent(event, piSessionId ?? "", mapperState, contextWindow)) {
       turn.push(mapped)
       if (mapped.kind === "turn-end") turn.close()
     }
@@ -276,6 +291,7 @@ export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient
     async connect(opts: AgentCliConnectOptions): Promise<void> {
       onActivity = opts.onActivity
       connectEffort = opts.effort
+      contextWindow = resolvePiContextWindow(opts.model)
 
       const args = ["--mode", "rpc"]
       if (opts.model) args.push("--model", opts.model)

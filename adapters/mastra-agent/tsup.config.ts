@@ -20,6 +20,8 @@ export default createTsupConfig({
     "@agentproto/driver-agent-cli",
     "@agentproto/mastra",
     "@agentclientprotocol/sdk",
+    "@ai-sdk/anthropic",
+    "@ai-sdk/provider",
     "@mastra/core",
     "@mastra/memory",
     "@mastra/libsql",

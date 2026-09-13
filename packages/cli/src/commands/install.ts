@@ -19,7 +19,13 @@
  *   - `go`             ✓
  *   - `apt/dnf/pacman` ✗ (privilege escalation needs explicit sudo policy)
  *   - `choco/scoop`    ✗ (Windows-only; not yet platform-detected)
- *   - `vendored`       ✗ (workspace-relative; needs a workspace root)
+ *   - `vendored`       ✓ for generic ACP agents (acp-generic.ts) whose
+ *                        `metadata.acpGeneric.install_hint` names a known
+ *                        package manager (npm/uv/pip/pipx/brew/cargo/go) —
+ *                        the SAME hint the daemon's `adapter_install` path
+ *                        already runs (see install-driver.ts). A step with
+ *                        no runnable hint and no binary already on PATH
+ *                        still reports "install it manually".
  *
  * After install, runs the optional `setup[]` pipeline (AIP-29 § Setup).
  */
@@ -30,14 +36,77 @@ import { mkdir, mkdtemp, rm, writeFile, chmod } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseArgs } from "node:util"
-import type { AgentCliInstallMethod } from "@agentproto/driver-agent-cli"
+import type { AgentCliHandle, AgentCliInstallMethod } from "@agentproto/driver-agent-cli"
 import { resolveAdapter } from "../registry/resolve.js"
 import { runSetup } from "./setup.js"
 import { runInstallProfile } from "./install-profile.js"
 import { runInstallSkill } from "./install-skill.js"
 import { CATALOG } from "../registry/catalog.js"
+import { binOnPath } from "../registry/acp-generic.js"
+import {
+  parseNpmPackageFromHint,
+  parseShellHint,
+  commandOnPath,
+  KNOWN_INSTALL_COMMANDS,
+} from "../registry/install-hint.js"
+
+const INSTALL_USAGE = `agentproto install <slug> — install an adapter's underlying CLI (AIP-29)
+
+One verb, three flag surfaces — the slug form decides which applies:
+
+  agentproto install <adapter-slug>           install an adapter's underlying CLI
+  agentproto install runtime-profile/<name>   copy a runtime profile into a directory
+  agentproto install skill/<name>             install an AIP-3 skill from a skill pack
+  agentproto install skill/agentproto-pack --list   list a pack's skills and exit
+
+adapter surface flags:
+  --force, -f            reinstall even when version_check already passes
+  --dry-run              print what would run, run nothing
+  --skip-setup           skip the post-install AIP-29 setup[] pipeline
+  --allow-unverified     run a curl/download installer that declares no
+                           verify_sha256 (refused by default in non-interactive
+                           contexts — agents, daemon, CI)
+
+runtime-profile/<name> surface flags:
+  --force, -f            re-apply even when the ledger says the profile is current
+  --dry-run              print what would be written, write nothing
+  --skip-setup           skip the profile's declared setup steps
+  --cwd <dir>            target directory (default: the current directory)
+  --package <name>       npm package providing the profile (default:
+                           @agentproto/runtime-profile-<name>, or the
+                           profile's declared alias)
+
+skill/<name> surface flags:
+  --target <t>…          install into the named target(s) only (repeatable;
+                           e.g. hermes, claude-code, claude-desktop) instead of
+                           fanning out to every adapter with a skills block
+  --pack <pack>          pack source: a path, name[@version], npm:<pkg>[@ver],
+                           or github:<owner>/<repo>[@ver]. Default: the legacy
+                           .skills/ directory → node_modules → npm latest
+  --refresh              bypass the pack cache and re-fetch
+  --list                 list the pack's skills (name + description) and exit
+  --out <dir>            output directory for the built plugin bundle
+                           (default: ./agentproto-skill-plugin)
+  --force                overwrite existing skill files
+  --dry-run              show what would be installed, install nothing
+
+After the adapter surface installs, the manifest's setup[] pipeline runs
+(idempotent — skip_if short-circuits satisfied steps) unless --skip-setup
+is passed.
+
+Examples:
+  agentproto install claude-code
+  agentproto install runtime-profile/standard  # drops .claude/ swarm scaffolding into the cwd
+`
 
 export async function runInstall(args: readonly string[]): Promise<number> {
+  // Print a combined usage for all three flag surfaces — the slug decides
+  // which parser (and which flag set) actually applies below, so `--help`
+  // must show all of them, labelled by surface.
+  if (args.includes("--help") || args.includes("-h")) {
+    process.stdout.write(INSTALL_USAGE)
+    return 0
+  }
   // Peek at the slug before parseArgs — it influences which option set is
   // valid. Adapter slugs, runtime-profile/* slugs, and skill/* slugs share
   // the verb but route through separate handlers with different flags.
@@ -55,22 +124,39 @@ export async function runInstall(args: readonly string[]): Promise<number> {
     )
   }
 
-  const { values, positionals } = parseArgs({
-    args: [...args],
-    allowPositionals: true,
-    strict: true,
-    options: {
-      force: { type: "boolean", short: "f" },
-      "dry-run": { type: "boolean" },
-      "skip-setup": { type: "boolean" },
-      // Opt-in to running a `curl | bash` / `download` installer that
-      // declares no `verify_sha256`. Off by default: in a non-interactive
-      // context (agent, daemon, CI) an unverified installer is refused (see
-      // `shouldRefuseUnverifiedInstaller`), because a silent MITM there
-      // compromises the machine. A human at a TTY still gets warn-and-proceed.
-      "allow-unverified": { type: "boolean" },
-    },
-  })
+  let values: {
+    force?: boolean
+    "dry-run"?: boolean
+    "skip-setup"?: boolean
+    "allow-unverified"?: boolean
+  }
+  let positionals: string[]
+  try {
+    ;({ values, positionals } = parseArgs({
+      args: [...args],
+      allowPositionals: true,
+      strict: true,
+      options: {
+        force: { type: "boolean", short: "f" },
+        "dry-run": { type: "boolean" },
+        "skip-setup": { type: "boolean" },
+        // Opt-in to running a `curl | bash` / `download` installer that
+        // declares no `verify_sha256`. Off by default: in a non-interactive
+        // context (agent, daemon, CI) an unverified installer is refused (see
+        // `shouldRefuseUnverifiedInstaller`), because a silent MITM there
+        // compromises the machine. A human at a TTY still gets warn-and-proceed.
+        "allow-unverified": { type: "boolean" },
+      },
+    }))
+  } catch (err) {
+    // A friendly message on an unknown flag/arg instead of a raw parseArgs
+    // stack — point at the help so callers can discover the supported set.
+    process.stderr.write(
+      `agentproto install: ${err instanceof Error ? err.message : String(err)}\n` +
+        "  See: agentproto install --help\n"
+    )
+    return 2
+  }
 
   const slug = positionals[0]
   if (!slug) {
@@ -119,12 +205,11 @@ export async function runInstall(args: readonly string[]): Promise<number> {
       )
       return code
     }
-    // Re-resolve. A failed dynamic `import()` is not cached by Node, so
-    // the second call re-resolves from disk and picks up the freshly-
-    // installed global package (the global node_modules is an ancestor of
-    // a globally-installed CLI's location). Falling through to the
-    // original `resolveAdapter` keeps the proprietary-adapter path-rewrite
-    // and every other resolution nicety in one place.
+    // Re-resolve in the same process. Node ≥23 can retain a negative
+    // package.json lookup after the first miss, so `resolveAdapter` has a
+    // narrow filesystem fallback for that poisoned-cache signature. Keeping
+    // the retry here still centralizes the proprietary-adapter path rewrite
+    // and every other resolution nicety in `resolveAdapter`.
     try {
       adapter = await resolveAdapter(slug)
     } catch (retryErr) {
@@ -132,7 +217,7 @@ export async function runInstall(args: readonly string[]): Promise<number> {
         retryErr instanceof Error ? retryErr.message : String(retryErr)
       process.stderr.write(
         `agentproto install: ${pkg} installed but could not be loaded: ${cause}\n` +
-          `Re-run \`agentproto install ${slug}\` from a fresh shell, or install manually: npm i -g ${pkg}\n`
+          `Verify ${pkg} has a valid package.json export under \`npm root -g\`, then retry.\n`
       )
       return 1
     }
@@ -156,6 +241,8 @@ export async function runInstall(args: readonly string[]): Promise<number> {
     }
   }
 
+  const installHint = installHintOf(adapter.handle)
+
   if (!alreadyInstalled) {
     let lastFailure: { step: AgentCliInstallMethod; code: number } | null = null
     let succeeded = false
@@ -167,18 +254,18 @@ export async function runInstall(args: readonly string[]): Promise<number> {
       // surface the last one if every method falls through.
       if (step.experimental) {
         process.stdout.write(
-          `agentproto install [${i + 1}/${installSteps.length}] ${describeStep(step)} (experimental — skipping)\n`
+          `agentproto install [${i + 1}/${installSteps.length}] ${describeStep(step, installHint)} (experimental — skipping)\n`
         )
         continue
       }
       process.stdout.write(
-        `agentproto install [${i + 1}/${installSteps.length}] ${describeStep(step)}\n`
+        `agentproto install [${i + 1}/${installSteps.length}] ${describeStep(step, installHint)}\n`
       )
       if (values["dry-run"]) {
         succeeded = true
         continue
       }
-      const code = await runStep(step, values["allow-unverified"] === true)
+      const code = await runStep(step, values["allow-unverified"] === true, installHint)
       if (code === 0) {
         succeeded = true
         break
@@ -222,7 +309,22 @@ export async function runInstall(args: readonly string[]): Promise<number> {
   return 0
 }
 
-function describeStep(step: AgentCliInstallMethod): string {
+/**
+ * Pull a generic ACP handle's human "how to install" line out of its
+ * manifest (`acp-generic.ts`'s `acpHandleFromSpec` stashes it at
+ * `metadata.acpGeneric.install_hint` — there's no first-class AIP-45 field
+ * for it, since a native adapter's `install[]` steps are already
+ * self-describing). Returns `undefined` for a native adapter or a generic
+ * agent declared with no hint (a true bring-your-own-binary CLI).
+ */
+function installHintOf(handle: AgentCliHandle): string | undefined {
+  const acpGeneric = handle.metadata?.["acpGeneric"]
+  if (!acpGeneric || typeof acpGeneric !== "object") return undefined
+  const hint = (acpGeneric as Record<string, unknown>)["install_hint"]
+  return typeof hint === "string" ? hint : undefined
+}
+
+function describeStep(step: AgentCliInstallMethod, hint?: string): string {
   switch (step.method) {
     case "npm":
       return `npm install ${step.global ? "-g " : ""}${step.package ?? "(?)"}`
@@ -238,6 +340,8 @@ function describeStep(step: AgentCliInstallMethod): string {
       return `curl ${step.url ?? "(?)"} | bash`
     case "download":
       return `download ${step.url ?? "(?)"} → ${step.extract_bin ?? "(?)"}`
+    case "vendored":
+      return hint ? `${hint} (vendored: ${step.path ?? "(?)"})` : `vendored ${step.path ?? "(?)"}`
     default:
       return `${step.method} ${step.package ?? step.url ?? step.path ?? "(?)"}`
   }
@@ -246,6 +350,7 @@ function describeStep(step: AgentCliInstallMethod): string {
 async function runStep(
   step: AgentCliInstallMethod,
   allowUnverified: boolean,
+  installHint?: string,
 ): Promise<number> {
   switch (step.method) {
     case "npm": {
@@ -316,6 +421,44 @@ async function runStep(
         verifySha256: step.verify_sha256,
         allowUnverified,
       })
+    }
+    case "vendored": {
+      // BYO binary (generic ACP agents — acp-generic.ts). Already present ⇒
+      // nothing to do. Otherwise run its `install_hint` through the SAME
+      // parser the daemon's `adapter_install` path uses (install-hint.ts),
+      // so `agentproto install mistral-vibe` actually runs
+      // `uv tool install mistral-vibe` instead of silently doing nothing —
+      // the bug this case fixes (issue: adapter installed via the daemon
+      // path showed as installed, but the CLI-direct path always failed
+      // with "not yet implemented", which some install flows fall back to).
+      if (step.path && (await binOnPath(step.path))) {
+        process.stdout.write(
+          `agentproto install: '${step.path}' already on PATH — nothing to do.\n`
+        )
+        return 0
+      }
+      const npmPkg = parseNpmPackageFromHint(installHint)
+      if (npmPkg) {
+        return spawnInherit("npm", ["install", "-g", npmPkg])
+      }
+      const shell = parseShellHint(installHint)
+      if (shell) {
+        if (!commandOnPath(shell.command)) {
+          const howTo = KNOWN_INSTALL_COMMANDS[shell.command]
+          process.stderr.write(
+            `agentproto install: '${shell.command}' is not installed — required to install ` +
+              `'${step.path ?? "this agent"}'. Install ${shell.command} first: ${howTo}\n`
+          )
+          return 1
+        }
+        return spawnInherit(shell.command, shell.args)
+      }
+      process.stderr.write(
+        `agentproto install: '${step.path ?? "this binary"}' is bring-your-own — ` +
+          `${installHint ? `unrecognized install hint "${installHint}"` : "no install hint declared"}. ` +
+          `Install it manually (see the adapter's docs).\n`
+      )
+      return 1
     }
     default:
       process.stderr.write(

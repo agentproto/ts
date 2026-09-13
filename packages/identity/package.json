@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/identity",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "@agentproto/identity — AIP-23 IDENTITY.md reference implementation. A workspace AIP that defines layered, composable agent identity — typed layers as AIP-18 collections, confidence-scored items, optional temporal entries, and compression-artifact tiers — owning only the workspace root manifest, layer registry, compression policy, junction rules, and cross-AIP composition.",
   "keywords": [
     "agentproto",
@@ -56,13 +56,13 @@
   "dependencies": {
     "@agentproto/define-doctype": "workspace:*",
     "gray-matter": "^4.0.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   }
 }

@@ -1,10 +1,23 @@
 /**
- * WP2 — the agent side of AIP-44 ACP, backed by a live Mastra agent.
+ * WP2 — the agent side of AIP-44 ACP, backed by a Mastra `AgentController`.
  *
  * Implements the `@agentclientprotocol/sdk` `Agent` interface: handles the
- * session lifecycle and, on `session/prompt`, drives a Mastra agent's
- * `stream()` — relaying each text delta as an `agent_message_chunk`
- * `session/update`, exactly as an IDE/host expects from codex or claude-code.
+ * session lifecycle and, on `session/prompt`, drives a controller `Session`'s
+ * `sendMessage()` — relaying its subscription events as ACP `session/update`s
+ * (text deltas as `agent_message_chunk`, tool activity as `tool_call` /
+ * `tool_call_update`), exactly as an IDE/host expects from codex or
+ * claude-code.
+ *
+ * Beyond the prompt loop, this file bridges the rest of the session surface:
+ *   - `session/load` — reconnect to the Mastra thread keyed by the ACP session
+ *     id and replay its text history as user/agent message chunks
+ *   - `tool_approval_required` / `tool_suspended` — parked controller runs
+ *     surface as `session/request_permission` round-trips
+ *   - `session/set_config_option` (model) and `session/set_mode` — applied via
+ *     `session.model.switch` / `session.mode.switch`, with `model_changed` /
+ *     `mode_changed` relayed back as config/mode session updates
+ *   - image / audio / embedded-resource prompt blocks — passed to
+ *     `sendMessage` as file attachments
  *
  * No Mastra-specific protocol knowledge leaks past this file; everything above
  * is the standard ACP wire, so the daemon spawns this like any other arm.
@@ -17,86 +30,286 @@ import type {
   CancelNotification,
   InitializeRequest,
   InitializeResponse,
+  LoadSessionRequest,
+  LoadSessionResponse,
   NewSessionRequest,
   NewSessionResponse,
+  PermissionOption,
   PromptRequest,
   PromptResponse,
+  SessionConfigOption,
   SetSessionConfigOptionRequest,
   SetSessionConfigOptionResponse,
   SetSessionModeRequest,
 } from "@agentclientprotocol/sdk"
 import { PROTOCOL_VERSION } from "@agentclientprotocol/sdk"
-import { type MastraStreamChunk, chunkToSessionUpdate } from "./tool-call-map.js"
+import type { AgentControllerEvent } from "@mastra/core/agent-controller"
+import {
+  createEventMapper,
+  messageText,
+  toolCallTitle,
+  toolKindFor,
+} from "./tool-call-map.js"
 
-/** A built Mastra agent — only the surface we need (its `stream`). Typed
- *  structurally so we don't couple to a specific @mastra/core version.
- *
- *  We read `fullStream` (the typed chunk union: text deltas AND tool-call /
- *  tool-result events) so tool activity surfaces as ACP `tool_call` updates,
- *  not only the final prose. `textStream` is kept as an optional fallback for
- *  a stripped agent that exposes only text. */
-export interface MastraLike {
-  stream(
-    input: string,
-    options?: {
-      abortSignal?: AbortSignal
-      /** Memory threading — `thread` scopes recall to one ACP session. */
-      memory?: { thread?: string; resource?: string }
-      /** Max agentic loop steps (tool-call → execute → continue). Default 1 = no loop. */
-      maxSteps?: number
-    },
-  ): Promise<{
-    fullStream?: ReadableStream<unknown>
-    textStream?: ReadableStream<string>
-    text?: Promise<string>
-  }>
+/** A prompt attachment in the shape `Session.sendMessage` accepts: text
+ *  attachments carry raw text, binary ones base64 (Mastra inlines `text/*` /
+ *  JSON as fenced code and forwards the rest as model file parts). */
+export interface PromptFile {
+  data: string
+  mediaType: string
+  filename?: string
 }
 
-/** Lazily builds the Mastra agent (so model/key errors surface on the first
- *  prompt with a clear message, not at process spawn). */
-export type AgentFactory = () => Promise<MastraLike>
+/** The slice of a thread message that history replay reads (text parts). */
+export interface ThreadMessageLike {
+  role: string
+  content?: { parts?: unknown[] }
+}
+
+/** The slice of a controller `Session` this host drives. Typed structurally so
+ *  tests can script one and we don't couple to a specific @mastra/core
+ *  version's `Session` generics. */
+export interface ControllerSessionLike {
+  subscribe(
+    listener: (event: AgentControllerEvent) => void | Promise<void>,
+  ): () => void
+  sendMessage(input: { content: string; files?: PromptFile[] }): Promise<void>
+  /** Abort the active run and send in one step — the interrupt semantics a
+   *  mid-turn prompt maps to. */
+  steer(input: { content: string }): Promise<void>
+  abort(): void
+  respondToToolApproval(input: {
+    decision: "approve" | "decline" | "always_allow_category"
+    toolCallId?: string
+    declineContext?: { reason?: string; message?: string }
+  }): void
+  respondToToolSuspension(input: {
+    resumeData: unknown
+    toolCallId?: string
+  }): Promise<void>
+  model: {
+    /** The currently-selected model id ('' when none selected yet). */
+    get(): string
+    switch(input: { modelId: string }): Promise<void>
+  }
+  mode: {
+    switch(input: { modeId: string }): Promise<void>
+  }
+  thread: {
+    listMessages(input: {
+      threadId: string
+      limit?: number
+    }): Promise<ThreadMessageLike[]>
+  }
+}
+
+/** The slice of an `AgentController` this host drives (structural, as above).
+ *  `createSession` keys on (resourceId, scope) — one ACP session maps to one
+ *  controller session via a unique scope, with the thread pinned to the ACP
+ *  session id so memory recall is scoped exactly as before. */
+export interface ControllerLike {
+  init(): Promise<void>
+  createSession(opts: {
+    resourceId?: string
+    scope?: string
+    threadId?: string
+  }): Promise<ControllerSessionLike>
+}
+
+/** Lazily builds the controller (so model/key/AGENT.md errors surface on the
+ *  first prompt with a clear message, not at process spawn or session/new). */
+export type ControllerFactory = () => Promise<{ controller: ControllerLike }>
+
+/** The model catalog reported through the `model` session config option.
+ *  Mirrors `models.allowed` in the manifest (index.ts) — keep in sync. Any
+ *  Mastra-routable id is still accepted as a value; this is just what the
+ *  client's selector lists. */
+export const DEFAULT_MODEL_CATALOG: ReadonlyArray<{ id: string; name?: string }> = [
+  { id: "openrouter/z-ai/glm-5.2" },
+  { id: "openrouter/deepseek/deepseek-v4-pro" },
+  { id: "openai/gpt-5" },
+]
+
+const APPROVAL_OPTIONS: PermissionOption[] = [
+  { optionId: "approve", name: "Approve", kind: "allow_once" },
+  {
+    optionId: "always_allow_category",
+    name: "Always allow this category",
+    kind: "allow_always",
+  },
+  { optionId: "decline", name: "Decline", kind: "reject_once" },
+]
+
+const SUSPENSION_OPTIONS: PermissionOption[] = [
+  { optionId: "approve", name: "Continue", kind: "allow_once" },
+  { optionId: "decline", name: "Cancel", kind: "reject_once" },
+]
+
+/** `_meta` keys used to carry Mastra suspension payloads over the ACP
+ *  permission round-trip (ACP has no first-class tool-suspension surface). */
+const META_SUSPEND_PAYLOAD = "mastra-agent/suspendPayload"
+const META_RESUME_SCHEMA = "mastra-agent/resumeSchema"
+const META_RESUME_DATA = "mastra-agent/resumeData"
+/** Daemon convention (see @agentproto/acp's `ACP_META_FEEDBACK`): free-text
+ *  feedback the human attached to the approve/deny decision, forwarded on the
+ *  ACP outcome's `_meta`. */
+const META_FEEDBACK = "agentproto/feedback"
 
 interface SessionState {
-  prompt: AbortController | null
+  /** The controller session, created lazily on the first prompt. */
+  session: ControllerSessionLike | null
+  /** The in-flight prompt turn, if any. Turn-scoped (not session-scoped) so a
+   *  superseding prompt cancelling this one can't clobber its own state. */
+  turn: { cancelled: boolean } | null
+  /** Model/mode chosen via ACP before the controller session exists (the
+   *  daemon applies config right after session/new); applied on creation. */
+  pendingModelId: string | null
+  pendingModeId: string | null
+  /** Suspended tool calls with an ACP permission request in flight, so a
+   *  `tool_suspension_cancelled` can void the eventual client answer. */
+  suspensions: Map<string, { cancelled: boolean }>
+}
+
+function emptySessionState(): SessionState {
+  return {
+    session: null,
+    turn: null,
+    pendingModelId: null,
+    pendingModeId: null,
+    suspensions: new Map(),
+  }
 }
 
 /** Pull the user's text out of an ACP prompt (its `text` content blocks). */
 export function promptText(params: PromptRequest): string {
+  return promptContent(params).text
+}
+
+/** File name hint from a resource URI: its last path segment, if any. */
+function filenameOf(uri: unknown): string | undefined {
+  if (typeof uri !== "string" || !uri) return undefined
+  return uri.split("/").pop() || undefined
+}
+
+/** Coerce an embedded *text* resource's mime type to one Mastra inlines as
+ *  fenced text (`text/*` or JSON) — its data is raw text, so letting e.g.
+ *  `application/x-typescript` through would ship raw text as a base64 file
+ *  part. */
+function textMediaType(mimeType: string | null | undefined): string {
+  if (mimeType && (mimeType.startsWith("text/") || mimeType === "application/json")) {
+    return mimeType
+  }
+  return "text/plain"
+}
+
+/**
+ * Split an ACP prompt into the user's text (its `text` blocks, exactly as
+ * {@link promptText} always did) and file attachments: `image`/`audio` blocks
+ * (base64 + mime type) and embedded `resource` blocks (text or blob contents).
+ * `resource_link` blocks carry no contents to attach — hosts inline referenced
+ * context as `resource` blocks when `embeddedContext` is on — so they are
+ * skipped, as before.
+ */
+export function promptContent(params: PromptRequest): {
+  text: string
+  files: PromptFile[]
+} {
   const blocks = Array.isArray(params.prompt) ? params.prompt : []
-  return blocks
-    .filter((b): b is { type: "text"; text: string } =>
-      Boolean(b) && (b as { type?: string }).type === "text" &&
-      typeof (b as { text?: unknown }).text === "string",
-    )
-    .map((b) => b.text)
-    .join("")
-    .trim()
+  let text = ""
+  const files: PromptFile[] = []
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue
+    switch (block.type) {
+      case "text":
+        if (typeof block.text === "string") text += block.text
+        break
+      case "image": {
+        const filename = filenameOf(block.uri)
+        files.push({
+          data: block.data,
+          mediaType: block.mimeType,
+          ...(filename ? { filename } : {}),
+        })
+        break
+      }
+      case "audio":
+        files.push({ data: block.data, mediaType: block.mimeType })
+        break
+      case "resource": {
+        const resource = block.resource
+        if (!resource || typeof resource !== "object") break
+        const filename = filenameOf(resource.uri)
+        if ("text" in resource && typeof resource.text === "string") {
+          files.push({
+            data: resource.text,
+            mediaType: textMediaType(resource.mimeType),
+            ...(filename ? { filename } : {}),
+          })
+        } else if ("blob" in resource && typeof resource.blob === "string") {
+          files.push({
+            data: resource.blob,
+            mediaType: resource.mimeType || "application/octet-stream",
+            ...(filename ? { filename } : {}),
+          })
+        }
+        break
+      }
+      default:
+        break
+    }
+  }
+  return { text: text.trim(), files }
+}
+
+/** Extract a useful message from an error, digging into `.cause` when the
+ *  top-level message is generic (e.g. a bare `new Error()` wrapping a real
+ *  failure), and appending the first stack frames for traceability. */
+export function describeError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err)
+  const msg = err.message || undefined
+  const causeMsg = err.cause instanceof Error ? err.cause.message : undefined
+  const detail =
+    msg && msg !== "Error" ? msg : causeMsg || msg || "unknown error"
+  const frames = err.stack
+    ?.split("\n")
+    .slice(1, 3)
+    .map((l) => l.trim())
+    .filter(Boolean)
+  return frames?.length ? `${detail} [${frames.join(" ← ")}]` : detail
 }
 
 export class MastraAcpAgent implements AcpAgent {
   readonly #conn: AgentSideConnection
-  readonly #buildAgent: AgentFactory
+  readonly #buildController: ControllerFactory
   readonly #resource: string
+  readonly #models: ReadonlyArray<{ id: string; name?: string }>
   readonly #sessions = new Map<string, SessionState>()
-  #agent: MastraLike | null = null
+  #controller: ControllerLike | null = null
 
   constructor(
     conn: AgentSideConnection,
-    buildAgent: AgentFactory,
+    buildController: ControllerFactory,
     resource = "mastra-agent",
+    models: ReadonlyArray<{ id: string; name?: string }> = DEFAULT_MODEL_CATALOG,
   ) {
     this.#conn = conn
-    this.#buildAgent = buildAgent
+    this.#buildController = buildController
     // `resource` groups a user's threads in Mastra memory; one per agent here.
     this.#resource = resource
+    this.#models = models
   }
 
   async initialize(_params: InitializeRequest): Promise<InitializeResponse> {
     return {
       protocolVersion: PROTOCOL_VERSION,
       agentCapabilities: {
-        // Stateless per-prompt for now; no resume/replay surface.
-        loadSession: false,
+        // session/load reconnects the Mastra thread and replays its history.
+        loadSession: true,
+        promptCapabilities: {
+          image: true,
+          audio: true,
+          embeddedContext: true,
+        },
       },
     }
   }
@@ -111,38 +324,217 @@ export class MastraAcpAgent implements AcpAgent {
 
   async newSession(_params: NewSessionRequest): Promise<NewSessionResponse> {
     const sessionId = randomId()
-    this.#sessions.set(sessionId, { prompt: null })
+    this.#sessions.set(sessionId, emptySessionState())
     return { sessionId }
   }
 
-  async prompt(params: PromptRequest): Promise<PromptResponse> {
-    const session = this.#sessions.get(params.sessionId)
-    if (!session) throw new Error(`unknown session ${params.sessionId}`)
-
-    // Cancel any in-flight turn for this session before starting a new one.
-    session.prompt?.abort()
-    const ac = new AbortController()
-    session.prompt = ac
-
-    const text = promptText(params)
-    try {
-      const agent = await this.#ensureAgent()
-      // Thread = ACP session id → recall is scoped to this session's history.
-      const result = await agent.stream(text, {
-        abortSignal: ac.signal,
-        memory: { thread: params.sessionId, resource: this.#resource },
-        maxSteps: 200,
+  /**
+   * Resume an existing session: reconnect the controller session (scope +
+   * thread keyed by the ACP session id — `createSession` resumes an existing
+   * Mastra thread with full history) and replay the conversation to the
+   * client, as the `session/load` contract requires, via `user_message_chunk`
+   * / `agent_message_chunk` updates.
+   *
+   * Unlike `prompt`, this NEEDS the controller now (replay reads the thread),
+   * so build errors surface as this request's JSON-RPC error rather than a
+   * first-prompt error chunk.
+   */
+  async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+    const sessionId = params.sessionId
+    let state = this.#sessions.get(sessionId)
+    if (!state) {
+      state = emptySessionState()
+      this.#sessions.set(sessionId, state)
+    }
+    const session = await this.#ensureSession(sessionId, state)
+    const messages = await session.thread.listMessages({ threadId: sessionId })
+    for (const message of messages) {
+      // Only conversation text replays; tool traffic and system reminders have
+      // no faithful ACP replay surface (chunks are the history wire).
+      if (message.role !== "user" && message.role !== "assistant") continue
+      const text = messageText(message)
+      if (!text) continue
+      await this.#conn.sessionUpdate({
+        sessionId,
+        update: {
+          sessionUpdate:
+            message.role === "user" ? "user_message_chunk" : "agent_message_chunk",
+          content: { type: "text", text },
+        },
       })
-      if (result.fullStream) {
-        // Preferred path: the typed chunk stream carries text deltas AND
-        // tool-call / tool-result events, so tool activity surfaces live.
-        await this.#pumpFullStream(params.sessionId, result.fullStream, ac)
-      } else if (result.textStream) {
-        // Fallback: a text-only agent — relay prose deltas, no tool surface.
-        await this.#pumpTextStream(params.sessionId, result.textStream, ac)
+    }
+    return { configOptions: this.#modelConfigOptions(this.#currentModelId(state)) }
+  }
+
+  async prompt(params: PromptRequest): Promise<PromptResponse> {
+    const state = this.#sessions.get(params.sessionId)
+    if (!state) throw new Error(`unknown session ${params.sessionId}`)
+
+    // ACP carries no queue-vs-interrupt signal on session/prompt: a prompt
+    // landing mid-turn IS the interrupt path. Mark the active turn cancelled
+    // here; the actual abort happens via `steer` (abort + send in one step).
+    const interrupted = state.turn
+    if (interrupted) interrupted.cancelled = true
+    const turn = { cancelled: false }
+    state.turn = turn
+
+    const { text, files } = promptContent(params)
+    try {
+      // A run parked on a tool suspension (e.g. `submit_plan` with no
+      // responder on the approval channel) has already fired its terminal
+      // `agent_end` (reason "suspended") — so a NEW prompt here would be
+      // accepted into the run's follow-up queue and then deadlock this
+      // handler forever awaiting an `agent_end` that never fires again:
+      // the session looks idle/healthy while every queued prompt silently
+      // evaporates (the observed submit_plan wedge). Reject the prompt
+      // loudly instead; the client must resolve the pending permission
+      // request (or cancel) before sending another turn. A mid-turn
+      // prompt (interrupted) is exempt — `steer` aborts the parked run,
+      // which drops its suspensions.
+      if (!interrupted && state.suspensions.size > 0) {
+        await this.#conn.sessionUpdate({
+          sessionId: params.sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: {
+              type: "text",
+              text: "\n[mastra-agent] run is suspended awaiting approval — resolve the pending permission request (or cancel the session) before sending another prompt.\n",
+            },
+          },
+        })
+        return { stopReason: "refusal" }
       }
+
+      const session = await this.#ensureSession(params.sessionId, state)
+
+      // One mapper per turn: it holds the per-message "text already relayed"
+      // state that turns Mastra's full-message updates into ACP deltas.
+      const map = createEventMapper()
+      let endReason: string | undefined
+      let lastError: Error | null = null
+      // Updates must hit the wire in event order; the listener is synchronous
+      // while sessionUpdate is not, so sends are chained.
+      let relay: Promise<void> = Promise.resolve()
+
+      // Mastra's Session.sendMessage may return before the run completes on
+      // follow-up turns (its internal `wasActive` check can see stale stream
+      // state). Track agent_end independently so we keep the subscription
+      // alive until the run truly finishes.
+      let resolveAgentEnd: (() => void) | undefined
+      const agentEndPromise = new Promise<void>((r) => {
+        resolveAgentEnd = r
+      })
+
+      const unsubscribe = session.subscribe((event) => {
+        if (event.type === "error") {
+          lastError = event.error
+          return
+        }
+        if (event.type === "agent_end") {
+          endReason = event.reason ?? "complete"
+          resolveAgentEnd?.()
+          if (event.reason === "suspended") {
+            // Make the parked run legible on the wire: the turn ends here
+            // with the permission request still in flight, and without
+            // this note the transcript shows a normal-looking end with no
+            // record that the run is parked (the submit_plan wedge's
+            // invisibility).
+            relay = relay
+              .then(() =>
+                this.#conn.sessionUpdate({
+                  sessionId: params.sessionId,
+                  update: {
+                    sessionUpdate: "agent_message_chunk",
+                    content: {
+                      type: "text",
+                      text: "\n[mastra-agent] run suspended — waiting for approval before continuing.\n",
+                    },
+                  },
+                }),
+              )
+              .catch(() => {})
+          }
+          return
+        }
+        if (event.type === "tool_approval_required") {
+          // Sequence the permission request behind already-queued updates (so
+          // the client has seen everything up to the gate), but don't block
+          // later updates on the user's answer — the run itself is parked
+          // until we respond, and `cancel` resolves it via abort().
+          const tail = relay
+          void tail
+            .catch(() => {})
+            .then(() => this.#bridgeApproval(params.sessionId, session, event))
+            .catch(() => {})
+          return
+        }
+        if (event.type === "tool_suspended") {
+          const pending = { cancelled: false }
+          state.suspensions.set(event.toolCallId, pending)
+          const tail = relay
+          void tail
+            .catch(() => {})
+            .then(() =>
+              this.#bridgeSuspension(params.sessionId, session, state, event, pending),
+            )
+            .catch(() => {})
+          return
+        }
+        if (event.type === "tool_suspension_cancelled") {
+          // The SDK has no way to retract an in-flight outgoing request, so
+          // the ACP permission request stays up; voiding the pending entry
+          // makes its eventual answer a no-op instead.
+          const pending = state.suspensions.get(event.toolCallId)
+          if (pending) pending.cancelled = true
+          state.suspensions.delete(event.toolCallId)
+          return
+        }
+        const update = map(event)
+        if (!update) return
+        relay = relay.then(() =>
+          this.#conn.sessionUpdate({ sessionId: params.sessionId, update }),
+        )
+      })
+      try {
+        // Awaits the whole run; events stream via the subscription above.
+        if (interrupted) {
+          if (files.length) {
+            // `steer` can't carry attachments — unroll its abort+send.
+            session.abort()
+            await session.sendMessage({ content: text, files })
+          } else {
+            await session.steer({ content: text })
+          }
+        } else if (files.length) {
+          await session.sendMessage({ content: text, files })
+        } else {
+          await session.sendMessage({ content: text })
+        }
+        // Mastra's sendMessage may resolve before agent_end on follow-up
+        // turns (stale wasActive check). Keep the subscription alive until
+        // the run actually finishes so we capture all events.
+        if (!endReason && !lastError && !turn.cancelled) {
+          await agentEndPromise
+        }
+      } finally {
+        unsubscribe()
+        // Flush queued updates; a dead connection shouldn't mask the turn's
+        // real outcome (and there is nowhere left to report it anyway).
+        await relay.catch(() => {})
+      }
+
+      if (turn.cancelled || endReason === "aborted") {
+        return { stopReason: "cancelled" }
+      }
+      if (endReason === "error") {
+        // `sendMessage` resolves even when the run dies (the engine reports
+        // via `error` events + agent_end reason) — re-throw into the shared
+        // error path so the failure surfaces exactly as before.
+        throw lastError ?? new Error("the agent run ended with an error")
+      }
+      return { stopReason: "end_turn" }
     } catch (err) {
-      if (ac.signal.aborted) return { stopReason: "cancelled" }
+      if (turn.cancelled) return { stopReason: "cancelled" }
       // Surface the failure to the client as a message chunk, then end the
       // turn — better UX than a bare JSON-RPC error the host may swallow.
       await this.#conn.sessionUpdate({
@@ -151,98 +543,283 @@ export class MastraAcpAgent implements AcpAgent {
           sessionUpdate: "agent_message_chunk",
           content: {
             type: "text",
-            text: `\n[mastra-agent error] ${(err as Error).message}\n`,
+            text: `\n[mastra-agent error] ${describeError(err)}\n`,
           },
         },
       })
-      session.prompt = null
       return { stopReason: "refusal" }
+    } finally {
+      if (state.turn === turn) state.turn = null
     }
-
-    const cancelled = ac.signal.aborted
-    session.prompt = null
-    return { stopReason: cancelled ? "cancelled" : "end_turn" }
   }
 
   async cancel(params: CancelNotification): Promise<void> {
-    this.#sessions.get(params.sessionId)?.prompt?.abort()
+    const state = this.#sessions.get(params.sessionId)
+    if (!state) return
+    if (state.turn) state.turn.cancelled = true
+    // abort() also declines a parked approval gate and drops parked
+    // suspensions, so a run waiting on a permission answer still finalizes.
+    state.session?.abort()
   }
 
   /**
-   * The host applies the `model` (and other operator options) as a `--model`
-   * spawn arg via the manifest `bin_args_template`, then ALSO calls this ACP
-   * config hook (the daemon's default "config" apply path). The model is
-   * already in effect, so this is a no-op that just reports our (empty) set of
-   * runtime-configurable options. Without it the spawn fails with
-   * "Method not found: session/set_config_option".
+   * The host applies the operator's `model` as a `--model` spawn arg via the
+   * manifest `bin_args_template`, then ALSO calls this ACP config hook (the
+   * daemon's default "config" apply path). Runtime switches go through
+   * `session.model.switch`; a choice made before the controller session
+   * exists is remembered and applied on creation, preserving the invariant
+   * that controller build errors surface on the first prompt.
    */
   async setSessionConfigOption(
-    _params: SetSessionConfigOptionRequest,
+    params: SetSessionConfigOptionRequest,
   ): Promise<SetSessionConfigOptionResponse> {
-    return { configOptions: [] }
+    const state = this.#sessions.get(params.sessionId)
+    if (!state) throw new Error(`unknown session ${params.sessionId}`)
+    if (params.configId === "model") {
+      const modelId = String((params as { value?: unknown }).value ?? "")
+      if (modelId) {
+        if (state.session) await state.session.model.switch({ modelId })
+        else state.pendingModelId = modelId
+      }
+    }
+    // Unknown option ids are accepted and ignored; the full set reports back.
+    return {
+      configOptions: this.#modelConfigOptions(this.#currentModelId(state)),
+    }
   }
 
-  /** No agent-specific modes; accept and ignore so a host that sets one
-   *  doesn't error. */
+  /** Switch the controller session's mode (the catalog itself is controller
+   *  config — WP-3). Mode-change confirmations reach the client via the
+   *  session-lifetime `mode_changed` → `current_mode_update` relay. */
   async setSessionMode(
-    _params: SetSessionModeRequest,
+    params: SetSessionModeRequest,
   ): Promise<Record<string, never>> {
+    const state = this.#sessions.get(params.sessionId)
+    if (!state) throw new Error(`unknown session ${params.sessionId}`)
+    if (state.session) await state.session.mode.switch({ modeId: params.modeId })
+    else state.pendingModeId = params.modeId
     return {}
   }
 
-  /** Drain Mastra's typed `fullStream`, mapping each chunk to an ACP
-   *  `session/update` (text deltas + tool_call / tool_call_update). */
-  async #pumpFullStream(
-    sessionId: string,
-    stream: ReadableStream<unknown>,
-    ac: AbortController,
-  ): Promise<void> {
-    const reader = stream.getReader()
-    try {
-      for (;;) {
-        const { value, done } = await reader.read()
-        if (done || ac.signal.aborted) break
-        if (!value) continue
-        // Single boundary cast: raw Mastra chunks include many event types
-        // beyond what MastraStreamChunk models; chunkToSessionUpdate returns
-        // null for anything it doesn't recognise.
-        const update = chunkToSessionUpdate(value as MastraStreamChunk)
-        if (update) await this.#conn.sessionUpdate({ sessionId, update })
-      }
-    } finally {
-      reader.releaseLock()
+  /** The ACP `model` config option (a select), reflecting `currentValue`.
+   *  A free-form current id not in the catalog is appended so the reported
+   *  state stays coherent. */
+  #modelConfigOptions(currentValue: string): SessionConfigOption[] {
+    const options = this.#models.map((m) => ({ value: m.id, name: m.name ?? m.id }))
+    if (currentValue && !options.some((o) => o.value === currentValue)) {
+      options.push({ value: currentValue, name: currentValue })
     }
+    return [
+      {
+        type: "select",
+        id: "model",
+        name: "Model",
+        category: "model",
+        description: "Model id routed via Mastra's model gateway",
+        currentValue,
+        options,
+      },
+    ]
   }
 
-  /** Fallback drain for an agent exposing only a plain text stream. */
-  async #pumpTextStream(
+  #currentModelId(state: SessionState): string {
+    const selected = state.session?.model.get() ?? ""
+    return selected || state.pendingModelId || this.#models[0]?.id || ""
+  }
+
+  /** Relay a parked `tool_approval_required` gate as an ACP permission
+   *  request and feed the user's decision back to the controller session. */
+  async #bridgeApproval(
     sessionId: string,
-    stream: ReadableStream<string>,
-    ac: AbortController,
+    session: ControllerSessionLike,
+    event: Extract<AgentControllerEvent, { type: "tool_approval_required" }>,
   ): Promise<void> {
-    const reader = stream.getReader()
+    const toolName = event.toolName || "tool"
+    let decision: "approve" | "decline" | "always_allow_category" = "decline"
     try {
-      for (;;) {
-        const { value, done } = await reader.read()
-        if (done || ac.signal.aborted) break
-        if (value) {
-          await this.#conn.sessionUpdate({
-            sessionId,
-            update: {
-              sessionUpdate: "agent_message_chunk",
-              content: { type: "text", text: value },
-            },
-          })
+      const { outcome } = await this.#conn.requestPermission({
+        sessionId,
+        toolCall: {
+          toolCallId: event.toolCallId,
+          title: toolCallTitle(toolName, event.args),
+          kind: toolKindFor(toolName),
+          status: "pending",
+          rawInput: event.args,
+        },
+        options: APPROVAL_OPTIONS,
+      })
+      if (outcome.outcome === "selected") {
+        if (
+          outcome.optionId === "approve" ||
+          outcome.optionId === "always_allow_category"
+        ) {
+          decision = outcome.optionId
         }
       }
+      // "cancelled": session.abort() (the cancel path) already declined the
+      // parked gate; the decline below is then a no-op.
+    } catch {
+      // The client errored/refused the request — decline so the parked run
+      // can finalize instead of hanging.
+    }
+    session.respondToToolApproval({ decision, toolCallId: event.toolCallId })
+  }
+
+  /**
+   * Relay a `tool_suspended` run as an ACP permission request. ACP's answer is
+   * an option pick, not free-form data, so the suspend payload and resume
+   * schema ride out on the request's `_meta` and the resume data rides back on
+   * the outcome's `_meta` (`mastra-agent/resumeData`) when the client supplies
+   * it — else Continue/Cancel resume with `{ approved: true | false }` (the
+   * shape the built-in `submit_plan` approval path consumes).
+   */
+  async #bridgeSuspension(
+    sessionId: string,
+    session: ControllerSessionLike,
+    state: SessionState,
+    event: Extract<AgentControllerEvent, { type: "tool_suspended" }>,
+    pending: { cancelled: boolean },
+  ): Promise<void> {
+    const toolName = event.toolName || "tool"
+    try {
+      const { outcome } = await this.#conn.requestPermission({
+        sessionId,
+        toolCall: {
+          toolCallId: event.toolCallId,
+          title: toolCallTitle(toolName, event.args),
+          kind: toolKindFor(toolName),
+          status: "in_progress",
+          rawInput: event.args,
+          _meta: {
+            [META_SUSPEND_PAYLOAD]: event.suspendPayload,
+            ...(event.resumeSchema !== undefined
+              ? { [META_RESUME_SCHEMA]: event.resumeSchema }
+              : {}),
+          },
+        },
+        options: SUSPENSION_OPTIONS,
+      })
+      if (pending.cancelled) return
+      // "cancelled": abort() already dropped the parked suspension.
+      if (outcome.outcome !== "selected") return
+      const meta = outcome._meta as Record<string, unknown> | null | undefined
+      const feedback =
+        meta && typeof meta[META_FEEDBACK] === "string" ? (meta[META_FEEDBACK] as string) : undefined
+      const resumeData =
+        meta && META_RESUME_DATA in meta
+          ? meta[META_RESUME_DATA]
+          : {
+              approved: outcome.optionId === "approve",
+              ...(feedback ? { feedback } : {}),
+            }
+      await session.respondToToolSuspension({
+        resumeData,
+        toolCallId: event.toolCallId,
+      })
+    } catch {
+      // Request failed at the client — resume as not-approved so the parked
+      // run can finalize (unless the suspension was already cancelled).
+      if (!pending.cancelled) {
+        await session
+          .respondToToolSuspension({
+            resumeData: { approved: false },
+            toolCallId: event.toolCallId,
+          })
+          .catch(() => {})
+      }
     } finally {
-      reader.releaseLock()
+      if (state.suspensions.get(event.toolCallId) === pending) {
+        state.suspensions.delete(event.toolCallId)
+      }
     }
   }
 
-  async #ensureAgent(): Promise<MastraLike> {
-    if (!this.#agent) this.#agent = await this.#buildAgent()
-    return this.#agent
+  /** Resolve this ACP session's controller session, creating it on first use.
+   *  Deferred to the first prompt (not session/new) on purpose: controller
+   *  construction parses the AGENT.md and resolves the model, and those
+   *  errors must keep surfacing as a first-prompt error chunk + "refusal",
+   *  never as a session/new JSON-RPC failure. (`session/load` opts into the
+   *  eager path — replay can't happen without the controller.) */
+  async #ensureSession(
+    acpSessionId: string,
+    state: SessionState,
+  ): Promise<ControllerSessionLike> {
+    if (state.session) return state.session
+    const controller = await this.#ensureController()
+    // Thread = ACP session id, resource = the shared agent resource — the same
+    // memory layout the raw-stream host used, so recall stays scoped to this
+    // session's history. `scope` keeps concurrent ACP sessions on distinct
+    // controller sessions despite the shared resourceId.
+    const session = await controller.createSession({
+      resourceId: this.#resource,
+      scope: acpSessionId,
+      threadId: acpSessionId,
+    })
+    // Mode/model changes can fire outside a prompt turn (idle switches, mode
+    // transitions), so they relay on this session-lifetime subscription — the
+    // per-turn mapper deliberately ignores them. Suspension cancellations
+    // ALSO arrive outside a turn (abort, error cleanup, an out-of-band
+    // resume): the per-turn subscriber that voids the pending bridge only
+    // lives during a prompt, so without this the parked entry leaks and
+    // every future prompt would be (wrongly) rejected as "still suspended".
+    session.subscribe((event) => {
+      if (event.type === "tool_suspension_cancelled") {
+        const pending = state.suspensions.get(event.toolCallId)
+        if (pending) pending.cancelled = true
+        state.suspensions.delete(event.toolCallId)
+        return
+      }
+      if (event.type === "mode_changed") {
+        void this.#conn
+          .sessionUpdate({
+            sessionId: acpSessionId,
+            update: {
+              sessionUpdate: "current_mode_update",
+              currentModeId: event.modeId,
+            },
+          })
+          .catch(() => {})
+      } else if (event.type === "model_changed") {
+        void this.#conn
+          .sessionUpdate({
+            sessionId: acpSessionId,
+            update: {
+              sessionUpdate: "config_option_update",
+              // Read the session's own selection: a `model_changed` scoped to
+              // a non-active mode doesn't move the effective model.
+              configOptions: this.#modelConfigOptions(
+                session.model.get() || event.modelId,
+              ),
+            },
+          })
+          .catch(() => {})
+      }
+    })
+    state.session = session
+    // A mode/model chosen over ACP before the controller session existed
+    // applies now — mode first, so an explicit model choice overrides the
+    // incoming mode's per-mode model.
+    if (state.pendingModeId) {
+      const modeId = state.pendingModeId
+      state.pendingModeId = null
+      await session.mode.switch({ modeId })
+    }
+    if (state.pendingModelId) {
+      const modelId = state.pendingModelId
+      state.pendingModelId = null
+      await session.model.switch({ modelId })
+    }
+    return session
+  }
+
+  async #ensureController(): Promise<ControllerLike> {
+    // Memoize only on success so a transient failure retries on the next
+    // prompt instead of pinning every future turn to the first error.
+    if (this.#controller) return this.#controller
+    const { controller } = await this.#buildController()
+    await controller.init()
+    this.#controller = controller
+    return controller
   }
 }
 

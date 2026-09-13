@@ -61,6 +61,7 @@ async function buildHarness(notifier: WebhookNotifier) {
   const { server } = await createMcpServer({ specs: [], name: "test", version: "0" })
 
   registerSessionTools(server, {
+      workspace: process.cwd(),
     registry,
     resolveAgentAdapter: makeResolver(),
     webhookNotifier: notifier,

@@ -332,7 +332,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
         <select id="route" disabled><option value="">Select a model first…</option></select>
       </div>
       <div class="row">
-        <label for="profile">Auth profile</label>
+        <label for="profile">Wallet (auth profile)</label>
         <select id="profile" disabled><option value="">Select a route first…</option></select>
       </div>
       <div class="row">
@@ -484,11 +484,11 @@ export function buildHtml(nonce: string, cspSource: string): string {
           function (m) { return m.id; }
         );
         renderSelect(routeEl, snapshot.axes.routes, snapshot.selection.route, 'Select a route…',
-          function (r) { return r.label + (r.curated ? ' ★' : '') + (r.runnable ? '' : ' (no profile)'); },
+          function (r) { return r.label + (r.curated ? ' ★' : '') + (r.runnable ? '' : ' (no wallet)'); },
           function (r) { return r.value; },
           function (r) { return r.runnable ? '' : 'runnable-false'; }
         );
-        renderSelect(profileEl, snapshot.axes.profiles, snapshot.selection.profile, 'Select a profile…',
+        renderSelect(profileEl, snapshot.axes.profiles, snapshot.selection.profile, 'Select a wallet…',
           function (p) { return p.addProfile ? p.label : p.label; },
           function (p) { return p.value || ''; }
         );

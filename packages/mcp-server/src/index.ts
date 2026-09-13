@@ -120,6 +120,10 @@ export async function runStdioServer(
 }
 
 export {
+  registerBuiltinTool,
+  type RegisterBuiltinToolOptions,
+} from "./register-builtin-tool.js"
+export {
   toMcpTool,
   buildMcpTool,
   type ToMcpToolOptions,

@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/auth",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "@agentproto/auth — AIP-50 AUTH.md reference implementation. Auth-provider doctype: how CLI tools and agents authenticate to API servers via a standardized discovery chain and pluggable flow engines, aligned to the WorkOS auth.md open standard.",
   "keywords": [
     "agentproto",
@@ -52,13 +52,13 @@
   "dependencies": {
     "@agentproto/define-doctype": "workspace:*",
     "gray-matter": "^4.0.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   }
 }

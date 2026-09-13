@@ -16,7 +16,7 @@ import { parseArgs } from "node:util"
 import { listAdaptersWithCatalog } from "../registry/resolve.js"
 import { CATALOG } from "../registry/catalog.js"
 import { loadProviders, providerEnvVar } from "@agentproto/runtime/providers-store"
-import { LLM_PRICING_CATALOG } from "@agentproto/model-catalog/llm"
+import { LLM_PRICING_CATALOG, resolveContextWindow, formatTokens } from "@agentproto/model-catalog/llm"
 
 const USAGE = `agentproto models — list runnable models per adapter
 
@@ -29,7 +29,9 @@ Usage:
 
 Each model is marked ✓ (provider key available) or ✗ (no key — set one with
 \`agentproto auth provider set <provider> <key>\`). Prices, when known, come
-from @agentproto/model-catalog ($ per 1M in/out tokens).
+from @agentproto/model-catalog ($ per 1M in/out tokens); context window and
+max output tokens come from the live-synced CONTEXT_WINDOWS table — shown as
+\`ctx 1M / out 128k\` and \`contextWindow\`/\`maxOutput\` in --json when known.
 `
 
 interface PricingEntry {
@@ -126,12 +128,15 @@ export async function runModels(args: readonly string[]): Promise<number> {
             models: a.models.map(id => {
               const pricing = pricingOf(id)
               const provider = providerOf(id, pricing)
+              const ctx = resolveContextWindow(id)
               return {
                 id,
                 provider,
                 runnable: hasKey(provider),
                 inputPer1M: pricing?.inputPer1M ?? null,
                 outputPer1M: pricing?.outputPer1M ?? null,
+                contextWindow: formatTokens(ctx?.contextWindow),
+                maxOutput: formatTokens(ctx?.maxOutput),
               }
             }),
           })),
@@ -155,8 +160,13 @@ export async function runModels(args: readonly string[]): Promise<number> {
         pricing?.inputPer1M != null
           ? `  $${pricing.inputPer1M}/$${pricing.outputPer1M ?? "?"} per 1M`
           : ""
+      const ctx = resolveContextWindow(id)
+      const ctxText =
+        ctx?.contextWindow != null
+          ? `  ctx ${formatTokens(ctx.contextWindow)}/${ctx.maxOutput != null ? `out ${formatTokens(ctx.maxOutput)}` : "out ?"}`
+          : ""
       process.stdout.write(
-        `  ${ok ? "✓" : "✗"} ${id}${" ".repeat(Math.max(1, 36 - id.length))}${provider}${price}\n`,
+        `  ${ok ? "✓" : "✗"} ${id}${" ".repeat(Math.max(1, 36 - id.length))}${provider}${price}${ctxText}\n`,
       )
     }
   }

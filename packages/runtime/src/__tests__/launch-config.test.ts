@@ -150,4 +150,60 @@ describe("buildRouteAwareLaunchConfig", () => {
     })
     expect(result.wireModel).toBe("z-ai/glm-5.2")
   })
+
+  // THE BUG, observed in production (daemon.log): `agent_start` on opencode
+  // with the bare catalog-native id `z-ai/glm-5.3-flash` — the eligibility
+  // guards (`checkModelWalletEligibility`/`checkModelAdapterEligibility`) both
+  // pass it (openrouter genuinely bills it, and opencode's own catalog row
+  // DOES curate the model+route, just under its `openrouter/z-ai/glm-5.3-flash`
+  // literal) — and it 404s at the ACP `session/set_config_option` boundary
+  // with "model not found: z-ai/glm-5.3-flash" because opencode parses the wire
+  // model's OWN leading segment as the billing provider (`modelDerivedApiKey`)
+  // and validates the literal shape against its own live selector.
+  it("re-adds the router prefix for a modelDerivedApiKey adapter billed through a gateway (opencode bug)", () => {
+    const result = buildRouteAwareLaunchConfig({
+      adapter: "opencode",
+      model: "z-ai/glm-5.3-flash",
+      route: { gateway: "openrouter" },
+      routeSelection: "derived-from-model",
+      adapterProvider: "openrouter",
+      modelDerivedApiKey: true,
+    })
+    expect(result.wireModel).toBe("openrouter/z-ai/glm-5.3-flash")
+  })
+
+  it("is idempotent when the caller already passed the router-prefixed shape", () => {
+    const result = buildRouteAwareLaunchConfig({
+      adapter: "opencode",
+      model: "openrouter/z-ai/glm-5.3-flash",
+      route: { gateway: "openrouter" },
+      routeSelection: "derived-from-model",
+      adapterProvider: "openrouter",
+      modelDerivedApiKey: true,
+    })
+    expect(result.wireModel).toBe("openrouter/z-ai/glm-5.3-flash")
+  })
+
+  it("does NOT add a router prefix for a derived-from-model adapter without modelDerivedApiKey (hermes)", () => {
+    const result = buildRouteAwareLaunchConfig({
+      adapter: "hermes",
+      model: "z-ai/glm-5.2",
+      route: { gateway: "openrouter" },
+      routeSelection: "derived-from-model",
+      adapterProvider: "openrouter",
+    })
+    expect(result.wireModel).toBe("z-ai/glm-5.2")
+  })
+
+  it("does NOT add a router prefix on a direct (non-widening) route even with modelDerivedApiKey", () => {
+    const result = buildRouteAwareLaunchConfig({
+      adapter: "opencode",
+      model: "anthropic/claude-sonnet-4-5",
+      route: { gateway: "anthropic" },
+      routeSelection: "derived-from-model",
+      adapterProvider: "anthropic",
+      modelDerivedApiKey: true,
+    })
+    expect(result.wireModel).toBe("anthropic/claude-sonnet-4-5")
+  })
 })

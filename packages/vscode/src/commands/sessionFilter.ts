@@ -25,9 +25,11 @@ import {
   sameWorkspaces,
   workspaceLabelsIn,
 } from "../services/workspaces.logic.js"
+import { originLabelFor } from "../views/sessionsGroups.logic.js"
 import {
   adapterIdentitiesIn,
   EMPTY_FILTER,
+  originIdentitiesIn,
   type SessionFilterState,
 } from "../views/sessionFilter.logic.js"
 
@@ -125,6 +127,7 @@ type FilterPickValue =
   | { category: "status"; id: SessionFilterState["status"][number] }
   | { category: "workspace"; id: string }
   | { category: "adapter"; id: string }
+  | { category: "origin"; id: string }
 
 interface FilterPickItem extends vscode.QuickPickItem {
   value?: FilterPickValue
@@ -167,6 +170,18 @@ function buildFilterItems(
     }
   }
 
+  const origins = originIdentitiesIn(sessions)
+  if (origins.length > 0) {
+    items.push({ label: "Origin", kind: vscode.QuickPickItemKind.Separator })
+    for (const id of origins) {
+      items.push({
+        label: originLabelFor(id),
+        value: { category: "origin", id },
+        picked: (state.origin ?? []).includes(id),
+      })
+    }
+  }
+
   return items
 }
 
@@ -179,7 +194,7 @@ async function runFilterPicker(
   const items = buildFilterItems(sessions, workspaces, state)
   const picked = await vscode.window.showQuickPick(items, {
     canPickMany: true,
-    placeHolder: "Filter sessions by status / workspace / adapter — pick 'Clear filters' to reset",
+    placeHolder: "Filter sessions by status / workspace / adapter / origin — pick 'Clear filters' to reset",
   })
   if (!picked) return
 
@@ -188,13 +203,20 @@ async function runFilterPicker(
     return
   }
 
-  const next: SessionFilterState = { status: [], workspaces: [], adapters: [], search: state.search }
+  const next: SessionFilterState = {
+    status: [],
+    workspaces: [],
+    adapters: [],
+    origin: [],
+    search: state.search,
+  }
   for (const item of picked) {
     const value = item.value
     if (!value) continue
     if (value.category === "status") next.status.push(value.id)
     else if (value.category === "workspace") next.workspaces.push(value.id)
     else if (value.category === "adapter") next.adapters.push(value.id)
+    else if (value.category === "origin") next.origin!.push(value.id)
   }
   setState(next)
 }

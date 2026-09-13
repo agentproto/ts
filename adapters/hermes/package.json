@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-hermes",
-  "version": "0.4.0",
+  "version": "0.4.13",
   "description": "@agentproto/adapter-hermes — AIP-45 AGENT-CLI adapter for Nous Research's Hermes Agent. Spawns `hermes acp` and drives it as an agentproto agent CLI via the ACP protocol arm of @agentproto/driver-agent-cli.",
   "keywords": [
     "agentproto",
@@ -52,13 +52,14 @@
   },
   "dependencies": {
     "@agentproto/driver-agent-cli": "workspace:*",
+    "@agentproto/model-catalog": "workspace:*",
     "@agentproto/provider-kit": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   }
 }

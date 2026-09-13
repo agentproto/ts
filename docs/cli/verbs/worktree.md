@@ -96,7 +96,7 @@ nothing is touched without `--apply`.**
 
 | Class | Definition | `--apply` does |
 |-------|-----------|----------------|
-| `reclaim` | (merged or fresh) + clean + idle | Removes it (plain, non-force `git worktree remove` — refuses if the tree turned dirty since the plan was made) and deletes its branch. |
+| `reclaim` | `(merged or fresh) + clean + idle`, **or** a clean `unpushed` worktree whose only commits are mechanical dependency bumps (`chore(deps)` / `fix(deps)` subjects and the diff touches only lockfiles + `package.json`) | Removes it (plain, non-force `git worktree remove` — refuses if the tree turned dirty since the plan was made) and deletes its branch. |
 | `salvage` | merged + dirty, and not written to in the last 15 minutes | Nothing, unless `--salvage-dirty` — then archives it (snapshot, then remove). |
 | `hold` | everything else, including a fresh or merged branch with uncommitted work | **Never touched**, with or without flags. |
 
@@ -138,10 +138,19 @@ agentproto worktree gc --apply --salvage-dirty
 `agent_start` takes a `worktree` field so a spawn isolates itself without a
 separate `worktree new` first: `worktree: true` provisions one (branch
 `wt/<slug>` cut from `origin/main`, slug auto-minted from the session label)
-and lands the session in it; `worktree: { slug, base }` pins either. It bites
-only for a **root** spawn whose cwd is inside a git repo — a spawn made through
-an orchestrator inherits its parent's tree, and a cwd outside any repo spawns
-plain.
+and lands the session in it; `worktree: { slug, base }` pins either.
+Provisioning (`git worktree add` plus the repo's own setup hooks, which can
+run minutes) now returns immediately by default — the session descriptor
+comes back right away with status `"starting"`, and the resolved `cwd` is
+backfilled once the tree is ready. Poll the session's status: it flips to
+`"running"` on success, or `"error"` with a readable `lastError` on failure —
+it never sits in `"starting"` forever. Pass `worktree: { async: false }` for
+the old blocking contract (wait for the tree before `agent_start` returns);
+`wait: true` falls back to that same synchronous path automatically (there's
+no first-turn output to block on otherwise), and combining `wait: true` with
+an *explicit* `async: true` is rejected outright. It bites only for a **root**
+spawn whose cwd is inside a git repo — a spawn made through an orchestrator
+inherits its parent's tree, and a cwd outside any repo spawns plain.
 
 The daemon can force the behaviour with `worktrees.isolation` in
 `~/.agentproto/config.json` (or `AGENTPROTO_WORKTREES_ISOLATION`): `always`

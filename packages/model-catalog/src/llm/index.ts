@@ -12,6 +12,9 @@ export {
   resolvePricingExact,
   resolveAlias,
   resolveContextWindow,
+  listNativeModelIds,
+  isKnownLlmId,
+  listUnpricedKnownLlmIds,
   getModelProvider,
   resolveModelRoute,
   calculateLLMCreditCost,
@@ -29,6 +32,7 @@ export type {
   ModelRoute,
 } from "./catalog.js"
 export type { ContextWindowEntry } from "./context-windows.generated.js"
+export { formatTokens } from "./tokens.js"
 export {
   WORKFLOW_FAST_MODEL,
   WORKFLOW_PREMIUM_MODEL,

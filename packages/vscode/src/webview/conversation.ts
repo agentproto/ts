@@ -50,6 +50,13 @@ interface SegmentBase {
 export interface TextSegment extends SegmentBase {
   kind: "user" | "assistant-text" | "reasoning"
   text: string
+  /** Reducer-internal continuation hint: true when the LATEST record folded
+   *  into this segment was flagged `partial` (an explicitly unterminated
+   *  debounce flush, see transcript-writer.ts). This flag is the ONLY glue
+   *  signal across an interleaved tool card — a non-partial record with no
+   *  trailing "\n" is the writer's normal end-of-text-block shape, not a
+   *  mid-line tear. */
+  partial?: boolean
 }
 
 export interface ToolSegment extends SegmentBase {
@@ -70,14 +77,41 @@ export interface PlanEntry {
 
 export interface PlanSegment extends SegmentBase {
   kind: "plan"
+  title?: string
   entries: PlanEntry[]
   done: number
   total: number
 }
 
+/** One offered option of an agent-question, in the daemon's offer order.
+ *  `id` is the daemon's own optionId when the ask carried structured options;
+ *  absent for a plain-string (legacy) option, which is not respondable. */
+export interface QuestionOptionItem {
+  id?: string
+  label: string
+}
+
 export interface QuestionSegment extends SegmentBase {
   kind: "agent-question"
   options: string[]
+  /** Ordered `{id?, label}` pairs the chips render from — the id rides WITH
+   *  its label, so the renderer never has to reverse a map (labels are not
+   *  unique; ids are). Same objects `options` was flattened from. */
+  optionItems?: QuestionOptionItem[]
+  /** Correlates this ask to its "permission-resolved" record (same
+   *  toolCallId the daemon's "agent-prompt" carried) — absent for a
+   *  question that isn't a respondable permission (e.g. an ACP driver
+   *  that never sends a toolCallId). */
+  toolCallId?: string
+  /** optionId -> display label for THIS ask's offered options — same objects
+   *  `options` was flattened from. Reducer-internal: lets a later
+   *  "permission-resolved" record (which carries only an opaque optionId)
+   *  resolve back to a human label without a second daemon round-trip. Not
+   *  forwarded to the presented layer. */
+  optionsById?: Record<string, string>
+  /** Set once a "permission-resolved" record for this toolCallId arrives —
+   *  an ask with this set is ANSWERED, not still awaiting a human. */
+  resolved?: { decision: "approve" | "deny" | "cancelled"; optionId?: string; optionLabel?: string }
 }
 
 export interface ErrorSegment extends SegmentBase {
@@ -98,6 +132,10 @@ export interface ConversationTurn {
   role: "user" | "assistant"
   startedAt?: string
   segments: ConversationSegment[]
+  /** User turns only: the prompt's provenance from the "user-prompt"
+   *  record's `source` — `agent:<sessionId>` when another session injected
+   *  it (a supervisor's agent_prompt / spawn prompt); absent for a human. */
+  promptSource?: string
 }
 
 /** Latest usage recap — conversation-level metadata, not an inline segment. */
@@ -146,6 +184,7 @@ export function reduceConversation(
   let assistant: ConversationTurn | undefined
   let usage: ConversationUsage | undefined
   const toolIndex = new Map<string, ToolSegment>()
+  const questionIndex = new Map<string, QuestionSegment>()
   let cursor = 0
 
   const openAssistant = (rec: SessionEventRecord): ConversationTurn => {
@@ -170,6 +209,7 @@ export function reduceConversation(
           segments: [
             { kind: "user", id: `seg-${rec.seq}`, seq: rec.seq, ts: rec.ts, text: rec.text ?? "" },
           ],
+          ...(rec.source ? { promptSource: rec.source } : {}),
         })
         break
       }
@@ -178,16 +218,31 @@ export function reduceConversation(
         const turn = openAssistant(rec)
         const last = turn.segments[turn.segments.length - 1]
         if (last && last.kind === "assistant-text") {
-          last.text += rec.text
-        } else {
-          turn.segments.push({
-            kind: "assistant-text",
-            id: `seg-${rec.seq}`,
-            seq: rec.seq,
-            ts: rec.ts,
-            text: rec.text,
-          })
+          appendTextDelta(last, rec)
+          break
         }
+        // The daemon's transcript debounce can flush an unterminated mid-word
+        // fragment ("Bien re") flagged `partial: true`, let a tool-call record
+        // land, then flush the continuation ("çu — …") — continue that segment
+        // in place rather than splitting the sentence into a second paragraph
+        // after the interleave. Only the explicit `partial` flag glues: the
+        // writer's ordering flush (tool-call/turn-end) emits the END of a text
+        // block as a non-partial record with no trailing "\n", so treating
+        // every unterminated segment as mid-line ran paragraphs together
+        // ("…the client.Trial/grace logic…") whenever tool calls interleaved.
+        const open = lastAssistantText(turn)
+        if (open && open.partial === true) {
+          appendTextDelta(open, rec)
+          break
+        }
+        turn.segments.push({
+          kind: "assistant-text",
+          id: `seg-${rec.seq}`,
+          seq: rec.seq,
+          ts: rec.ts,
+          text: rec.text,
+          ...(rec.partial === true ? { partial: true } : {}),
+        })
         break
       }
       case "thought": {
@@ -267,6 +322,7 @@ export function reduceConversation(
         const turn = openAssistant(rec)
         const entries = rec.entries ?? []
         const done = entries.filter(e => e.status === "completed").length
+        const title = rec.title || undefined
         // A plan streams updates — collapse them onto one segment per turn
         // (keeping the first segment's stable id) instead of stacking dupes.
         const prevPlan = turn.segments.find((s): s is PlanSegment => s.kind === "plan")
@@ -275,12 +331,14 @@ export function reduceConversation(
           prevPlan.done = done
           prevPlan.total = entries.length
           prevPlan.ts = rec.ts
+          if (title) prevPlan.title = title
         } else {
           turn.segments.push({
             kind: "plan",
             id: `seg-${rec.seq}`,
             seq: rec.seq,
             ts: rec.ts,
+            ...(title ? { title } : {}),
             entries,
             done,
             total: entries.length,
@@ -290,13 +348,32 @@ export function reduceConversation(
       }
       case "agent-prompt": {
         const turn = openAssistant(rec)
-        turn.segments.push({
+        const optionItems = normalizeOptionItems(rec.options)
+        const optionsById = optionsByIdFrom(optionItems)
+        const seg: QuestionSegment = {
           kind: "agent-question",
           id: `seg-${rec.seq}`,
           seq: rec.seq,
           ts: rec.ts,
-          options: normalizeOptions(rec.options),
-        })
+          options: optionItems.map(i => i.label),
+          ...(optionItems.length > 0 ? { optionItems } : {}),
+          ...(rec.toolCallId ? { toolCallId: rec.toolCallId } : {}),
+          ...(optionsById ? { optionsById } : {}),
+        }
+        turn.segments.push(seg)
+        if (rec.toolCallId) questionIndex.set(rec.toolCallId, seg)
+        break
+      }
+      case "permission-resolved": {
+        const seg = rec.toolCallId ? questionIndex.get(rec.toolCallId) : undefined
+        if (seg && (rec.decision === "approve" || rec.decision === "deny" || rec.decision === "cancelled")) {
+          const optionLabel = rec.optionId ? seg.optionsById?.[rec.optionId] : undefined
+          seg.resolved = {
+            decision: rec.decision,
+            ...(rec.optionId ? { optionId: rec.optionId } : {}),
+            ...(optionLabel ? { optionLabel } : {}),
+          }
+        }
         break
       }
       case "error": {
@@ -318,6 +395,10 @@ export function reduceConversation(
         break
       }
       case "turn-end":
+        // A terminal event settles any legacy/orphaned tool starts that made
+        // it into the transcript without a matching result. This is not a
+        // timeout: the adapter has explicitly ended the turn.
+        settlePendingTools(assistant)
         assistant = undefined
         break
       default:
@@ -327,6 +408,40 @@ export function reduceConversation(
   }
 
   return { version: CONVERSATION_SCHEMA_VERSION, sessionId, turns, usage, cursor }
+}
+
+/**
+ * A terminal turn is conclusive even when an adapter omitted one or more
+ * `tool-result` frames. Hermes can do this for nested/parallel calls, and
+ * old durable transcripts cannot be repaired at the wire boundary. Settle
+ * only cards that are still pending; an actual result always wins and keeps
+ * its output/error state intact.
+ */
+/** Most recent assistant-text segment of a turn, looking past interleaved
+ *  non-text segments (tool cards, reasoning, …). */
+function lastAssistantText(turn: ConversationTurn): TextSegment | undefined {
+  for (let i = turn.segments.length - 1; i >= 0; i--) {
+    const seg = turn.segments[i]!
+    if (seg.kind === "assistant-text") return seg
+  }
+  return undefined
+}
+
+/** Fold a text-delta record into an existing segment, keeping the segment's
+ *  `partial` hint in step with the latest folded record. */
+function appendTextDelta(seg: TextSegment, rec: SessionEventRecord): void {
+  seg.text += rec.text ?? ""
+  if (rec.partial === true) seg.partial = true
+  else delete seg.partial
+}
+
+function settlePendingTools(turn: ConversationTurn | undefined): void {
+  if (!turn) return
+  for (const segment of turn.segments) {
+    if (segment.kind === "tool" && segment.status === "pending") {
+      segment.status = "ok"
+    }
+  }
 }
 
 function mergeUsage(
@@ -348,25 +463,39 @@ function mergeUsage(
 
 /**
  * Narrow an agent-prompt event's `options` (typed `unknown` at the record
- * boundary) into a flat label list — accepts plain strings or objects
- * exposing `label`/`name`/`id`/`optionId`. Mirrors the daemon's own
- * `normalizeAgentPromptOptions` (sessions.ts) so the two agree.
+ * boundary) into an ordered `{id?, label}` list — accepts plain strings
+ * (label only, not respondable) or objects exposing `label`/`name`/`id`/
+ * `optionId` (the daemon's structured shape, id preserved). Mirrors the
+ * daemon's own `normalizeAgentPromptOptions` (sessions.ts) so the two agree.
+ * ONE pass feeds everything downstream: the label list, the render items,
+ * and the id→label map — so they can never disagree about order or pairing.
  */
-function normalizeOptions(raw: unknown): string[] {
+function normalizeOptionItems(raw: unknown): QuestionOptionItem[] {
   if (!Array.isArray(raw)) return []
-  const out: string[] = []
+  const out: QuestionOptionItem[] = []
   for (const o of raw) {
     if (typeof o === "string") {
-      out.push(o)
+      out.push({ label: o })
       continue
     }
     if (o && typeof o === "object") {
       const r = o as Record<string, unknown>
       const label = r.label ?? r.name ?? r.id ?? r.optionId
-      if (typeof label === "string") out.push(label)
+      if (typeof label !== "string") continue
+      out.push(typeof r.optionId === "string" ? { id: r.optionId, label } : { label })
     }
   }
   return out
+}
+
+/** The `optionId → label` lookup a later "permission-resolved" record needs,
+ *  derived from the SAME items the chips render — id-less entries drop out. */
+function optionsByIdFrom(items: readonly QuestionOptionItem[]): Record<string, string> | undefined {
+  const out: Record<string, string> = {}
+  for (const item of items) {
+    if (item.id) out[item.id] = item.label
+  }
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
 // ── Presentation layer (host-side, injected renderers) ──────────────────
@@ -404,11 +533,18 @@ export interface PresentedToolSegment {
   status: "pending" | "ok" | "error"
   /** ISO timestamp the call opened — the webview's elapsed-time display for a pending call. */
   ts?: string
+  /** True when this call was started with `run_in_background: true` (the
+   *  daemon's `pendingBgTasks` heuristic, `@agentproto/runtime` sessions.ts
+   *  `isBackgroundToolCallArguments` — mirrored here rather than imported
+   *  since this module stays dependency-free). Only ever `true` or absent
+   *  (never `false`) so an unset field never appears in a patch's diff. */
+  background?: true
 }
 
 export interface PresentedPlanSegment {
   kind: "plan"
   id: string
+  title?: string
   entries: PlanEntry[]
   done: number
   total: number
@@ -418,6 +554,21 @@ export interface PresentedQuestionSegment {
   kind: "agent-question"
   id: string
   options: string[]
+  /** Ordered `{id?, label}` pairs the webview renders chips from — the id
+   *  travels WITH its label (labels are not unique keys). An id-less item is
+   *  presentational only. Absent for a legacy ask that predates the
+   *  structured-options path. */
+  optionItems?: QuestionOptionItem[]
+  /** ACP tool-call id correlating this ask to its pending permission — the
+   *  webview forwards it back when the user picks an option, so the host
+   *  can call `permissions_respond` with the right daemon permission id. */
+  toolCallId?: string
+  /** optionId → display label for THIS ask's offered options — kept for the
+   *  resolved-state label lookup; chips render from `optionItems`. */
+  optionsById?: Record<string, string>
+  /** Set once this ask has been answered — see `QuestionSegment.resolved`.
+   *  Absent means still awaiting a human/orchestrator decision. */
+  resolved?: { decision: "approve" | "deny" | "cancelled"; optionId?: string; optionLabel?: string }
 }
 
 export interface PresentedErrorSegment {
@@ -467,6 +618,16 @@ export interface PresentedTurn {
   id: string
   role: "user" | "assistant"
   segments: PresentedSegment[]
+  /**
+   * ISO start time of the turn, when the reducer captured one. Purely a
+   * host-side view-model field (carried through from `ConversationTurn`); no
+   * daemon/protocol change. The "book" fold layer uses it to derive a
+   * chapter's duration, and gracefully omits the duration when it's absent.
+   */
+  startedAt?: string
+  /** Carried from `ConversationTurn.promptSource` — the book layer uses it
+   *  to attribute an ask card to a supervisor instead of "you". */
+  promptSource?: string
 }
 
 export interface PresentedConversation {
@@ -496,6 +657,8 @@ export function presentConversation(
       id: turn.id,
       role: turn.role,
       segments: groupActivity(turn.segments.map(seg => presentSegment(seg, renderers))),
+      ...(turn.startedAt !== undefined ? { startedAt: turn.startedAt } : {}),
+      ...(turn.promptSource !== undefined ? { promptSource: turn.promptSource } : {}),
     })),
   }
 }
@@ -598,6 +761,17 @@ function stepLabel(seg: PresentedActivityChild): string {
   return seg.kind === "tool" ? (seg.toolName ?? "tool") : "Working"
 }
 
+/** Mirrors `@agentproto/runtime` sessions.ts `isBackgroundToolCallArguments` —
+ *  matched generically on the `run_in_background` property, not the tool
+ *  name, so any adapter/tool sharing the convention is picked up. */
+function isBackgroundToolArguments(args: unknown): boolean {
+  return (
+    typeof args === "object" &&
+    args !== null &&
+    (args as Record<string, unknown>).run_in_background === true
+  )
+}
+
 function presentSegment(seg: ConversationSegment, r: Renderers): PresentedSegment {
   switch (seg.kind) {
     case "user":
@@ -629,12 +803,21 @@ function presentSegment(seg: ConversationSegment, r: Renderers): PresentedSegmen
         isError: seg.isError,
         status: seg.status,
         ts: seg.ts,
+        ...(seg.status === "pending" && isBackgroundToolArguments(seg.arguments) ? { background: true } : {}),
       }
     }
     case "plan":
-      return { kind: "plan", id: seg.id, entries: seg.entries, done: seg.done, total: seg.total }
+      return { kind: "plan", id: seg.id, ...(seg.title ? { title: seg.title } : {}), entries: seg.entries, done: seg.done, total: seg.total }
     case "agent-question":
-      return { kind: "agent-question", id: seg.id, options: seg.options }
+      return {
+        kind: "agent-question",
+        id: seg.id,
+        options: seg.options,
+        ...(seg.optionItems ? { optionItems: seg.optionItems } : {}),
+        ...(seg.toolCallId ? { toolCallId: seg.toolCallId } : {}),
+        ...(seg.optionsById ? { optionsById: seg.optionsById } : {}),
+        ...(seg.resolved ? { resolved: seg.resolved } : {}),
+      }
     case "error":
       return { kind: "error", id: seg.id, text: r.escapeHtml(seg.message) }
   }

@@ -64,6 +64,47 @@ export interface PrintArmOptions {
   /** Extra write-capable paths beyond the default toolchain set, e.g. the
    *  per-session `CLAUDE_CONFIG_DIR` temp dir set up by the caller. */
   extraWritePaths?: string[]
+  /** Extra READ-only paths beyond the confinement boundary — the exact-file
+   *  AGENTS.md grant (`AgentCliStartOptions.additionalReadPaths`). READ
+   *  exceptions only; never widens writes. */
+  extraReadPaths?: string[]
+  /**
+   * The explicitly requested model id — when set, a wire event that
+   * truthfully reports which model the agent ACTUALLY started on (today:
+   * the jcode-ndjson `start` line's `model` field) is checked against it,
+   * and a mismatch aborts the turn loudly (child killed, error event)
+   * instead of letting the agent run on a model the operator didn't name.
+   * Set by `define-agent-cli.ts` only for `routeSelection:
+   * "derived-from-model"` adapters with an explicit `model` option — the
+   * print-protocol counterpart of its ACP-arm guard. The bug this closes:
+   * jcode's CLI silently falls back to its own default on an unknown
+   * `--model` id (observed live: `--model totally-bogus-xyz` →
+   * `{"type":"start","model":"gpt-5.6-sol","provider":"OpenAI"}`), which
+   * for a derived-from-model adapter is a different provider on a
+   * different bill. Schemas that never report the started model are
+   * unaffected. Compared via {@link printModelMismatch} (basename,
+   * `@suffix`/`provider/`-prefix tolerant).
+   */
+  expectedModel?: string
+}
+
+/**
+ * Whether the agent's reported model contradicts the requested one.
+ * Compares the model BASENAME (last `/` segment, `@route` suffix stripped,
+ * case-insensitive) because the wire echoes a normalized form of the id:
+ * jcode reports `deepseek/deepseek-v4-pro` for a requested
+ * `deepseek/deepseek-v4-pro@openrouter` — same model, different spelling.
+ * Basename equality keeps that a match while still catching a silent
+ * default-model fallback (requested `gpt-5` vs reported `gpt-5.6-sol` IS a
+ * mismatch — no substring leniency).
+ */
+export function printModelMismatch(requested: string, reported: string): boolean {
+  const basename = (id: string): string => {
+    const noSuffix = id.split("@")[0] ?? id
+    const segs = noSuffix.split("/")
+    return (segs[segs.length - 1] ?? noSuffix).trim().toLowerCase()
+  }
+  return basename(requested) !== basename(reported)
 }
 
 // ── Defaults (Claude Code backward-compatible) ──────────────────────
@@ -71,6 +112,11 @@ export interface PrintArmOptions {
 const DEFAULT_OUTPUT: string[] = ["--output-format", "stream-json"]
 const DEFAULT_PRE_PROMPT: string[] = ["--no-interactive"]
 const DEFAULT_RESUME = { flag: "--resume", kind: "value" as const }
+
+/** The event taxonomies the print arm knows how to map. Mirrors
+ *  `AgentCliPrintConfig.event_schema` (minus the optional/undefined) so the
+ *  mapper dispatch and the manifest stay in lockstep. */
+type PrintEventSchema = NonNullable<AgentCliPrintConfig["event_schema"]>
 
 export function createPrintSession(
   opts: PrintArmOptions,
@@ -132,6 +178,7 @@ export function createPrintSession(
         mode: opts.commandSandbox,
         cwd: opts.cwd,
         ...(opts.extraWritePaths ? { extraWritePaths: opts.extraWritePaths } : {}),
+        ...(opts.extraReadPaths ? { extraReadPaths: opts.extraReadPaths } : {}),
         label: "print-arm",
       })
       const child = spawn(execBin, execArgs, {
@@ -140,6 +187,28 @@ export function createPrintSession(
         stdio: ["ignore", "pipe", "pipe"],
       })
       activeChild = child
+
+      // Attached synchronously, before any `await`/generator suspension
+      // below, so a spawn failure (bad binary, PATH miss) is never left
+      // as an unhandled 'error' on the child — which would throw and
+      // crash the whole daemon process. See the matching guard + incident
+      // note in `define-agent-cli.ts`'s ACP spawn.
+      let spawnFailure: Error | undefined
+      await new Promise<void>(resolve => {
+        child.once("spawn", () => resolve())
+        child.once("error", err => {
+          spawnFailure = err
+          resolve()
+        })
+      })
+      if (spawnFailure) {
+        activeChild = null
+        yield {
+          kind: "error",
+          error: { message: `failed to spawn '${execBin} ${execArgs.join(" ")}': ${spawnFailure.message}` },
+        }
+        return
+      }
 
       const stderrLines: string[] = []
       const STDERR_KEEP = 80
@@ -161,6 +230,10 @@ export function createPrintSession(
           eventSchema === "mastra-jsonl"
             ? createMastraMapperState()
             : undefined
+        const jcodeState =
+          eventSchema === "jcode-ndjson"
+            ? createJcodeMapperState()
+            : undefined
 
         // ── Decouple pipe draining from downstream consumption ────────
         // A `for await (const line of rl)` loop backpressures onto
@@ -179,13 +252,48 @@ export function createPrintSession(
         // backpressure from a slow client.
         const rl = createInterface({ input: child.stdout, crlfDelay: Infinity })
         const queue = new EventQueue()
+        let modelMismatchAborted = false
 
         rl.on("line", (line: string) => {
           if (!line.trim()) return
+          if (modelMismatchAborted) return
           let evt: Record<string, unknown>
           try {
             evt = JSON.parse(line) as Record<string, unknown>
           } catch {
+            return
+          }
+
+          // Derived-from-model guard (see PrintArmOptions.expectedModel):
+          // the jcode-ndjson `start` line truthfully names the model the
+          // agent actually chose — if that contradicts the explicitly
+          // requested one, the CLI silently fell back to its own default.
+          // Abort the turn NOW, before the model call completes, instead
+          // of running (and billing) a model the operator didn't name.
+          if (
+            opts.expectedModel &&
+            eventSchema === "jcode-ndjson" &&
+            evt.type === "start" &&
+            typeof evt.model === "string" &&
+            printModelMismatch(opts.expectedModel, evt.model)
+          ) {
+            modelMismatchAborted = true
+            const provider =
+              typeof evt.provider === "string" ? ` (provider ${evt.provider})` : ""
+            queue.push({
+              kind: "error",
+              error: {
+                message:
+                  `model mismatch: requested "${opts.expectedModel}" but the agent ` +
+                  `started on "${evt.model}"${provider} — its CLI silently fell back ` +
+                  `to a default it resolved itself. This adapter routes AND bills by ` +
+                  `the model id, so the turn was aborted instead of silently running ` +
+                  `(and billing) a model you didn't ask for. Check the id against ` +
+                  `the adapter's model menu.`,
+              },
+            })
+            queue.end()
+            child.kill("SIGTERM")
             return
           }
 
@@ -194,8 +302,15 @@ export function createPrintSession(
           if (csid) capturedSessionId = csid
 
           const sid = capturedSessionId || sessionId || ""
-          const mapped = mapEvent(evt, sid, stderrLines, eventSchema, mastraState)
-          if (mapped) queue.push(mapped)
+          const mapped = mapEvent(evt, sid, stderrLines, eventSchema, mastraState, jcodeState)
+          // A single wire line can fan out to several StreamEvents — e.g. an
+          // Antigravity tool step carries both the call and its result, and its
+          // terminal `result` line carries usage + turn-end together.
+          if (Array.isArray(mapped)) {
+            for (const m of mapped) queue.push(m)
+          } else if (mapped) {
+            queue.push(mapped)
+          }
         })
         rl.once("close", () => queue.end())
 
@@ -211,7 +326,13 @@ export function createPrintSession(
 
         if (exitCode !== 0 && exitCode !== null) {
           const binLabel =
-            eventSchema === "mastra-jsonl" ? "mastracode" : "claude"
+            eventSchema === "mastra-jsonl"
+              ? "mastracode"
+              : eventSchema === "antigravity-stream-json"
+                ? "agy"
+                : eventSchema === "jcode-ndjson"
+                  ? "jcode"
+                  : "claude"
           const errEvt: StreamEvent = {
             kind: "error",
             error: {
@@ -298,7 +419,7 @@ export function createPrintSession(
  */
 function setupMcpConfigFile(
   opts: PrintArmOptions,
-  eventSchema: "claude-stream-json" | "mastra-jsonl",
+  eventSchema: PrintEventSchema,
 ): (() => void) | undefined {
   if (eventSchema !== "mastra-jsonl") return undefined
   if (!opts.mcpServers || opts.mcpServers.length === 0) return undefined
@@ -417,7 +538,7 @@ function extractPromptText(message: unknown): string {
 
 function captureSessionId(
   evt: Record<string, unknown>,
-  schema: "claude-stream-json" | "mastra-jsonl",
+  schema: PrintEventSchema,
 ): string | null {
   switch (schema) {
     case "claude-stream-json":
@@ -428,6 +549,24 @@ function captureSessionId(
       )
         return evt.session_id
       return null
+    case "antigravity-stream-json": {
+      // `agy` stamps `conversation_id` on every line, but at two different
+      // levels: top-level on the opening `init` event, and nested in the
+      // payload on `result`. Capture it from the `init` (available before
+      // the turn produces any text — so a mid-turn crash still resumes) and
+      // re-confirm it from the authoritative terminal `result`. A pre-flight
+      // failure (e.g. unknown --model) emits `result` with an empty
+      // conversation_id; the `&& id` guard drops that so we never clobber a
+      // good id with "". Verified against antigravity.google/docs/cli/headless.
+      if (evt.event === "init" && typeof evt.conversation_id === "string" && evt.conversation_id)
+        return evt.conversation_id
+      if (evt.event === "result") {
+        const r = evt.result as Record<string, unknown> | undefined
+        if (typeof r?.conversation_id === "string" && r.conversation_id)
+          return r.conversation_id
+      }
+      return null
+    }
     case "mastra-jsonl":
       // Mastra Code writes exactly one authoritative final line per run
       // regardless of success/failure path: { type: "result", threadId,
@@ -442,6 +581,17 @@ function captureSessionId(
       )
         return evt.threadId
       return null
+    case "jcode-ndjson":
+      // jcode stamps `session_id` on the opening `start` line (available
+      // before any text — so a mid-turn crash still resumes) and again on
+      // the terminal `done` line, which re-confirms it.
+      if (
+        (evt.type === "start" || evt.type === "done") &&
+        typeof evt.session_id === "string" &&
+        evt.session_id
+      )
+        return evt.session_id
+      return null
   }
 }
 
@@ -451,12 +601,15 @@ function mapEvent(
   evt: Record<string, unknown>,
   sessionId: string,
   stderrLines: string[],
-  schema: "claude-stream-json" | "mastra-jsonl",
+  schema: PrintEventSchema,
   mastraState?: MastraMapperState,
-): StreamEvent | null {
+  jcodeState?: JcodeMapperState,
+): StreamEvent | StreamEvent[] | null {
   switch (schema) {
     case "claude-stream-json":
       return mapClaudeEvent(evt, sessionId, stderrLines)
+    case "antigravity-stream-json":
+      return mapAntigravityEvent(evt, sessionId, stderrLines)
     case "mastra-jsonl": {
       if (!mastraState) {
         // Should never happen — mastra-jsonl schema always creates state
@@ -464,6 +617,8 @@ function mapEvent(
       }
       return mapMastraEvent(evt, sessionId, stderrLines, mastraState)
     }
+    case "jcode-ndjson":
+      return mapJcodeEvent(evt, sessionId, jcodeState ?? createJcodeMapperState())
     default:
       return mapClaudeEvent(evt, sessionId, stderrLines)
   }
@@ -536,6 +691,300 @@ function mapClaudeEvent(
 
     default:
       return null
+  }
+}
+
+// ── Google Antigravity stream-json mapper ──────────────────────────
+
+/**
+ * Maps a single Google Antigravity (`agy --output-format stream-json`)
+ * NDJSON line to this repo's {@link StreamEvent} taxonomy.
+ *
+ * The wire shape was verified against antigravity.google/docs/cli/headless.
+ * Despite `agy` mirroring Claude Code's headless FLAGS (`-p`,
+ * `--output-format stream-json`, `--continue`), its EVENTS are a different
+ * taxonomy discriminated by an `event` field, not Claude's `type`:
+ *
+ *   {"event":"init","conversation_id":"…","init":{cwd,tools,permission_mode,…}}
+ *   {"event":"step_update","step_update":{conversation_id,step_index,state,
+ *       step_type,text_delta?,tool_name?,tool_info?,usage?,…}}
+ *   {"event":"result","result":{conversation_id,status,response,error?,usage,…}}
+ *
+ * - Text streams as INCREMENTAL `step_update.text_delta` fragments on
+ *   `agent_response` steps (the docs' own `jq -j … .text_delta` recipe
+ *   concatenates them, so fragments never overlap — emit each verbatim, no
+ *   accumulation state needed, unlike the Mastra mapper).
+ * - A `tool` step's terminal `DONE` carries the call AND its result in one
+ *   `tool_info` ({name, parameters, output, error?}). `agy` assigns no tool
+ *   call id, so we synthesize one from `step_index` to correlate the pair.
+ *   Returning a two-element array fans that single line out to a `tool-call`
+ *   + `tool-result` (the print-arm line handler flattens arrays).
+ * - The terminal `result` carries the run's total `usage` and its `status`;
+ *   we emit a `usage_update` then the terminal `turn-end`/`error`.
+ */
+function mapAntigravityEvent(
+  evt: Record<string, unknown>,
+  sessionId: string,
+  stderrLines: string[],
+): StreamEvent | StreamEvent[] | null {
+  switch (evt.event) {
+    case "step_update": {
+      const su = evt.step_update as Record<string, unknown> | undefined
+      if (!su) return null
+      const stepType = su.step_type
+
+      // Incremental assistant text.
+      if (
+        stepType === "agent_response" &&
+        typeof su.text_delta === "string" &&
+        su.text_delta
+      ) {
+        return { kind: "text-delta", sessionId, text: su.text_delta }
+      }
+
+      // A completed tool step carries the call and its result together.
+      // Emit the pair only on DONE; a preceding ACTIVE tool step (if any)
+      // is skipped so the call isn't announced twice.
+      if (stepType === "tool" && su.state === "DONE") {
+        const ti = su.tool_info as Record<string, unknown> | undefined
+        const toolName =
+          typeof su.tool_name === "string" && su.tool_name
+            ? su.tool_name
+            : typeof ti?.name === "string" && ti.name
+              ? (ti.name as string)
+              : "?"
+        const toolCallId =
+          typeof su.step_index === "number" ? `step-${su.step_index}` : ""
+        const err = ti?.error as Record<string, unknown> | undefined
+        const call: StreamEvent = {
+          kind: "tool-call",
+          sessionId,
+          toolCallId,
+          toolName,
+          arguments: ti?.parameters ?? {},
+        }
+        const result: StreamEvent = {
+          kind: "tool-result",
+          sessionId,
+          toolCallId,
+          result: err
+            ? typeof err.message === "string"
+              ? err.message
+              : err
+            : (ti?.output ?? null),
+          isError: !!err,
+        }
+        return [call, result]
+      }
+
+      // user_input / checkpoint / subagent steps carry no host-facing
+      // StreamEvent — skip them (subagents are surfaced by their own run).
+      return null
+    }
+
+    case "result": {
+      const r = evt.result as Record<string, unknown> | undefined
+      if (!r) return null
+      const status = typeof r.status === "string" ? r.status : ""
+      const out: StreamEvent[] = []
+
+      const usage = mapAntigravityUsage(r.usage, sessionId)
+      if (usage) out.push(usage)
+
+      if (status === "ERROR" || status === "INVALID") {
+        out.push({
+          kind: "error",
+          sessionId,
+          error: {
+            message:
+              typeof r.error === "string" && r.error
+                ? r.error
+                : `agy run ended with status ${status || "ERROR"}`,
+            ...(stderrLines.length
+              ? { data: { stderr: stderrLines.join("\n") } }
+              : {}),
+          },
+        })
+      } else {
+        out.push({
+          kind: "turn-end",
+          sessionId,
+          reason: mapAntigravityStatus(status),
+        })
+      }
+      return out.length ? out : null
+    }
+
+    // init and any unknown event carry no host-facing StreamEvent.
+    default:
+      return null
+  }
+}
+
+/**
+ * Normalize `agy` terminal `result.status` to a StreamEvent turn-end reason.
+ * ERROR / INVALID are handled as `error` events upstream, so only the
+ * non-error terminal statuses land here.
+ */
+function mapAntigravityStatus(
+  raw: string,
+): "completed" | "cancelled" | "max_turns" | "error" {
+  switch (raw) {
+    case "CANCELED":
+    case "INTERRUPTED":
+      return "cancelled"
+    // SUCCESS, WAITING, RUNNING (or anything else non-error): the turn ended.
+    default:
+      return "completed"
+  }
+}
+
+/**
+ * Map `agy`'s `result.usage` ({input_tokens, output_tokens, thinking_tokens,
+ * cache_read_tokens, total_tokens}) to a `usage_update` StreamEvent. `agy`
+ * reports no context-window size/used or per-turn cost here, so those stay 0
+ * / absent (the daemon's projector guards on >0 and never clobbers a real
+ * size). Returns null when no token counts are present.
+ */
+function mapAntigravityUsage(
+  usage: unknown,
+  sessionId: string,
+): StreamEvent | null {
+  if (usage === null || typeof usage !== "object") return null
+  const u = usage as Record<string, unknown>
+  const tokensIn = typeof u.input_tokens === "number" ? u.input_tokens : undefined
+  const tokensOut =
+    typeof u.output_tokens === "number" ? u.output_tokens : undefined
+  if (tokensIn === undefined && tokensOut === undefined) return null
+  return {
+    kind: "usage_update",
+    sessionId,
+    size: 0,
+    used: 0,
+    ...(tokensIn !== undefined ? { tokensIn } : {}),
+    ...(tokensOut !== undefined ? { tokensOut } : {}),
+  }
+}
+
+// ── jcode NDJSON mapper ─────────────────────────────────────────────
+
+/**
+ * Mutable per-stream state for the jcode NDJSON mapper. Tool arguments
+ * arrive as JSON-string `tool_input` deltas between `tool_start` and
+ * `tool_exec`, so the pending call accumulates here until complete.
+ */
+export interface JcodeMapperState {
+  pending?: { id: string; name: string; input: string }
+}
+
+export function createJcodeMapperState(): JcodeMapperState {
+  return {}
+}
+
+/**
+ * Maps a single `jcode run --ndjson` line to this repo's
+ * {@link StreamEvent} taxonomy. Wire shape verified against a live
+ * `jcode run --ndjson` (2026-08-14):
+ *
+ *   {type:"start", session_id, model, provider}          → session capture
+ *   {type:"status_detail"|"connection_phase"|
+ *    "connection_type"|"message_end", …}                 → dropped (noise)
+ *   {type:"text_delta", text}                            → text-delta
+ *   {type:"tool_start", id, name}                        → open pending call
+ *   {type:"tool_input", delta}                           → accumulate args
+ *   {type:"tool_exec", id, name}                         → tool-call
+ *   {type:"tool_done", id, name, output, error}          → tool-result
+ *   {type:"tokens", input, output, cache_read_input, …}  → usage_update
+ *   {type:"done", text, session_id, usage}               → turn-end
+ *
+ * `tokens` fires once per upstream API call (a tool round-trip produces
+ * several), so usage arrives as successive updates, not one total.
+ */
+export function mapJcodeEvent(
+  evt: Record<string, unknown>,
+  sessionId: string,
+  state: JcodeMapperState,
+): StreamEvent | StreamEvent[] | null {
+  switch (evt.type) {
+    case "text_delta":
+      return typeof evt.text === "string"
+        ? { kind: "text-delta", sessionId, text: evt.text }
+        : null
+
+    case "tool_start":
+      state.pending = {
+        id: typeof evt.id === "string" ? evt.id : "",
+        name: typeof evt.name === "string" ? evt.name : "?",
+        input: "",
+      }
+      return null
+
+    case "tool_input":
+      if (state.pending && typeof evt.delta === "string")
+        state.pending.input += evt.delta
+      return null
+
+    case "tool_exec":
+      return flushPendingJcodeCall(state, sessionId)
+
+    case "tool_done": {
+      // Defensive: if `tool_exec` never arrived, flush the call here so
+      // the result is never orphaned from its call.
+      const call = flushPendingJcodeCall(state, sessionId)
+      const result: StreamEvent = {
+        kind: "tool-result",
+        sessionId,
+        toolCallId: typeof evt.id === "string" ? evt.id : "",
+        result: evt.output ?? null,
+        isError: evt.error !== null && evt.error !== undefined,
+      }
+      return call ? [call, result] : result
+    }
+
+    case "tokens": {
+      const tokensIn = typeof evt.input === "number" ? evt.input : undefined
+      const tokensOut = typeof evt.output === "number" ? evt.output : undefined
+      if (tokensIn === undefined && tokensOut === undefined) return null
+      // jcode reports no context-window size/used here, so those stay 0
+      // (the daemon's projector guards on >0 and never clobbers a real
+      // size) — same contract as the antigravity usage mapper.
+      return {
+        kind: "usage_update",
+        sessionId,
+        size: 0,
+        used: 0,
+        ...(tokensIn !== undefined ? { tokensIn } : {}),
+        ...(tokensOut !== undefined ? { tokensOut } : {}),
+      }
+    }
+
+    case "done":
+      return { kind: "turn-end", sessionId, reason: "completed" }
+
+    default:
+      return null
+  }
+}
+
+function flushPendingJcodeCall(
+  state: JcodeMapperState,
+  sessionId: string,
+): StreamEvent | null {
+  const pending = state.pending
+  state.pending = undefined
+  if (!pending) return null
+  let args: unknown
+  try {
+    args = JSON.parse(pending.input)
+  } catch {
+    args = { raw: pending.input }
+  }
+  return {
+    kind: "tool-call",
+    sessionId,
+    toolCallId: pending.id,
+    toolName: pending.name,
+    arguments: args,
   }
 }
 

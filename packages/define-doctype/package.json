@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/define-doctype",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "agentproto/define-doctype — meta-factory for AIP `defineX(definition)` constructors. Centralises the cross-spec invariants every define-* shares (id shape, description length, top-level freeze, error-message prefix); leaves spec-specific defaulting + nested freezing to per-AIP `build()`. Used by @agentproto/tool, @agentproto/driver, and any future AIP doctype implementation.",
   "keywords": [
     "agentproto",
@@ -50,9 +50,9 @@
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   }
 }

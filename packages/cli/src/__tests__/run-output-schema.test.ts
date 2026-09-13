@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 
 type Ev =
   | { kind: "text-delta"; sessionId: string; text: string }
+  | { kind: "error"; sessionId: string; error: { message: string } }
   | { kind: "turn-end"; sessionId: string; reason: "completed" | "error" }
 
 /** Each element scripts one turn's event stream, consumed in order by send(). */
@@ -174,5 +175,44 @@ describe("agentproto run — --output-schema", () => {
     expect(code).toBe(2)
     expect(startSpy).not.toHaveBeenCalled()
     expect(stderr.join("")).toContain("cannot be combined with --json")
+  })
+})
+
+describe("agentproto run — authentication guidance", () => {
+  it("prints setup guidance for an authentication failure", async () => {
+    turns = [
+      [
+        {
+          kind: "error",
+          sessionId: "s",
+          error: { message: "Authentication required" },
+        },
+        done,
+      ],
+    ]
+
+    const code = await runRun(["claude-code", "-p", "hello"])
+
+    expect(code).toBe(1)
+    expect(stderr.join("")).toContain("claude setup-token")
+    expect(stderr.join("")).toContain("agentproto auth provider set")
+  })
+
+  it("does not print credential guidance for an unrelated error", async () => {
+    turns = [
+      [
+        {
+          kind: "error",
+          sessionId: "s",
+          error: { message: "github-auth helper executable is missing" },
+        },
+        done,
+      ],
+    ]
+
+    const code = await runRun(["claude-code", "-p", "hello"])
+
+    expect(code).toBe(1)
+    expect(stderr.join("")).not.toContain("no credential configured?")
   })
 })

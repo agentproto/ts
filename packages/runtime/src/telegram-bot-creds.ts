@@ -106,7 +106,7 @@ export function registerTelegramBotTools(server: McpServer, opts: RegisterTelegr
       const creds = await telegramCreds.read(botAlias)
       if (!creds || !creds.token) {
         return {
-          content: [{ type: "text", text: JSON.stringify({ alias: botAlias, configured: false }, null, 2) }],
+          content: [{ type: "text", text: JSON.stringify({ alias: botAlias, configured: false }) }],
         }
       }
       const identity = credentialIdentity(creds.token)

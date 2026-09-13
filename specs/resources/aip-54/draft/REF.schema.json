@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-54/REF.schema.json",
+  "title": "ref/v1 frontmatter (AIP-54)",
+  "description": "Validates an AIP-54 typed artifact reference — the one cross-AIP reference shape. An ArtifactRef names an artifact by its owning AIP number and that AIP's registry key, optionally pinned to a version. It replaces every per-primitive reference mechanism (AIP-18's collection-scoped refKind, inline doctype handles, AIP-53's draft appRef/packRef union, bare id strings). Resolution is host-side via AIP-43 registries joined by a RefCatalog; an unresolvable ref is a HARD failure in strict hosts and MUST never silently degrade to a dangling id string.",
+  "type": "object",
+  "required": ["aip", "id"],
+  "additionalProperties": false,
+  "properties": {
+    "aip": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The referenced artifact's owning AIP number — the type discriminator that names the registry family (42 = app, 52 = pack, 14 = tool, …)."
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "The artifact's registry key in its family — the same key the family's AIP-43 registry (or the family's keyBy) derives. Hosts MUST use the family's keyBy; a ref id and its registry key can never be allowed to drift."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[A-Za-z0-9.-]+)?$",
+      "description": "OPTIONAL semver pin recording what was meant at authoring time. Absent = floating (resolve whatever is registered now). Pins are advisory metadata for hosts; AIP-43 registries do not version."
+    }
+  }
+}

@@ -102,6 +102,7 @@ async function buildHarness(opts?: {
 
   const { server } = await createMcpServer({ specs: [], name: "test", version: "0" })
   registerSessionTools(server, {
+    workspace: process.cwd(),
     registry,
     ...(callerScope ? { callerScope } : {}),
     buildOrchestratorMcp: injector,
@@ -393,6 +394,270 @@ describe("session_tree tool — no scope (root /mcp)", () => {
       expect(allNodes).toHaveLength(1)
       expect(allNodes[0]!.label).toBe("alive")
       void alive // used
+    } finally {
+      await close()
+    }
+  })
+})
+
+// ── (d) session_tree tool — groupByOrigin (PR-6) ─────────────────────────────
+
+describe("session_tree tool — groupByOrigin (PR-6)", () => {
+  it("default still includes the byOrigin companion view", async () => {
+    const { client, registry, close } = await buildHarness()
+
+    try {
+      const desktop = spawnNode(registry, undefined, 0, "desktop-root", "claude-code")
+      spawnNode(registry, desktop.id, 1, "desktop-child")
+      spawnNode(registry, undefined, 0, "vscode-root", "vscode")
+
+      const result = await client.callTool({ name: "session_tree", arguments: {} })
+      const body = payload<{
+        tree: SessionTreeNode[]
+        byOrigin: ReturnType<typeof groupRootsByOrigin>
+      }>(result)
+
+      expect("byOrigin" in body).toBe(true)
+      expect(body.tree).toHaveLength(2)
+      const byKey = new Map(body.byOrigin.map(g => [g.origin, g]))
+      expect(byKey.get("claude-code")!.sessions).toHaveLength(1)
+      expect(byKey.get("vscode")!.sessions).toHaveLength(1)
+    } finally {
+      await close()
+    }
+  })
+
+  it("groupByOrigin:false suppresses byOrigin but leaves the tree intact", async () => {
+    const { client, registry, close } = await buildHarness()
+
+    try {
+      const root = spawnNode(registry, undefined, 0, "root", "cron")
+      spawnNode(registry, root.id, 1, "child")
+
+      const result = await client.callTool({
+        name: "session_tree",
+        arguments: { groupByOrigin: false },
+      })
+      const body = payload<{ tree: SessionTreeNode[]; byOrigin?: unknown }>(result)
+
+      expect("byOrigin" in body).toBe(false)
+      expect(body.tree).toHaveLength(1)
+      expect(body.tree[0]!.label).toBe("root")
+      expect(body.tree[0]!.children).toHaveLength(1)
+      expect(body.tree[0]!.children[0]!.label).toBe("child")
+    } finally {
+      await close()
+    }
+  })
+
+  it("groupByOrigin:true explicitly keeps byOrigin", async () => {
+    const { client, registry, close } = await buildHarness()
+
+    try {
+      spawnNode(registry, undefined, 0, "root", "vscode")
+
+      const result = await client.callTool({
+        name: "session_tree",
+        arguments: { groupByOrigin: true },
+      })
+      const body = payload<{
+        tree: SessionTreeNode[]
+        byOrigin?: ReturnType<typeof groupRootsByOrigin>
+      }>(result)
+      expect("byOrigin" in body).toBe(true)
+      expect(body.byOrigin).toHaveLength(1)
+      expect(body.byOrigin![0]!.origin).toBe("vscode")
+    } finally {
+      await close()
+    }
+  })
+})
+
+// ── (e) session_tree tool — nodeId/direction navigation ──────────────────────
+
+describe("session_tree tool — nodeId/direction navigation", () => {
+  /** Seed: root → (a, b), a → (a1, a2), a1 → (a1x). Returns descriptors by label. */
+  async function seedNavTree() {
+    const harness = await buildHarness()
+    const { registry } = harness
+    const root = spawnNode(registry, undefined, 0, "root")
+    const a = spawnNode(registry, root.id, 1, "a")
+    const b = spawnNode(registry, root.id, 1, "b")
+    const a1 = spawnNode(registry, a.id, 2, "a1")
+    const a2 = spawnNode(registry, a.id, 2, "a2")
+    const a1x = spawnNode(registry, a1.id, 3, "a1x")
+    const byLabel = Object.fromEntries(
+      [root, a, b, a1, a2, a1x].map(s => [s.label!, s]),
+    ) as Record<string, SessionDescriptor>
+    return { ...harness, root, a, b, a1, a2, a1x, byLabel }
+  }
+
+  it("children returns direct children only, one level", async () => {
+    const { client, close, byLabel } = await seedNavTree()
+    try {
+      const result = await client.callTool({
+        name: "session_tree",
+        arguments: { nodeId: byLabel.a!.id, direction: "children" },
+      })
+      const { children } = payload<{ children: SessionTreeNode[] }>(result)
+      expect(children.map(c => c.label).sort()).toEqual(["a1", "a2"])
+      expect(children.every(c => c.children.length === 0)).toBe(true)
+    } finally {
+      await close()
+    }
+  })
+
+  it("parent returns the single parent, or null for a root", async () => {
+    const { client, close, byLabel } = await seedNavTree()
+    try {
+      const child = await client.callTool({
+        name: "session_tree",
+        arguments: { nodeId: byLabel.a1!.id, direction: "parent" },
+      })
+      const { parent } = payload<{ parent: SessionTreeNode | null }>(child)
+      expect(parent?.label).toBe("a")
+
+      const rootRes = await client.callTool({
+        name: "session_tree",
+        arguments: { nodeId: byLabel.root!.id, direction: "parent" },
+      })
+      expect(payload<{ parent: SessionTreeNode | null }>(rootRes).parent).toBeNull()
+    } finally {
+      await close()
+    }
+  })
+
+  it("siblings excludes the node itself and other parents' children", async () => {
+    const { client, close, byLabel } = await seedNavTree()
+    try {
+      const result = await client.callTool({
+        name: "session_tree",
+        arguments: { nodeId: byLabel.a!.id, direction: "siblings" },
+      })
+      const { siblings } = payload<{ siblings: SessionTreeNode[] }>(result)
+      expect(siblings.map(s => s.label)).toEqual(["b"])
+
+      // A root has no parent → no siblings.
+      const rootRes = await client.callTool({
+        name: "session_tree",
+        arguments: { nodeId: byLabel.root!.id, direction: "siblings" },
+      })
+      expect(payload<{ siblings: SessionTreeNode[] }>(rootRes).siblings).toEqual([])
+    } finally {
+      await close()
+    }
+  })
+
+  it("ancestors returns the nearest-first chain up to the root, honoring depth", async () => {
+    const { client, close, byLabel } = await seedNavTree()
+    try {
+      const full = await client.callTool({
+        name: "session_tree",
+        arguments: { nodeId: byLabel.a1x!.id, direction: "ancestors" },
+      })
+      const { ancestors } = payload<{ ancestors: SessionTreeNode[] }>(full)
+      expect(ancestors.map(n => n.label)).toEqual(["a1", "a", "root"])
+
+      const capped = await client.callTool({
+        name: "session_tree",
+        arguments: { nodeId: byLabel.a1x!.id, direction: "ancestors", depth: 1 },
+      })
+      expect(
+        payload<{ ancestors: SessionTreeNode[] }>(capped).ancestors.map(n => n.label),
+      ).toEqual(["a1"])
+    } finally {
+      await close()
+    }
+  })
+
+  it("descendants returns the node's subtree; depth caps the walk", async () => {
+    const { client, close, byLabel } = await seedNavTree()
+    try {
+      const full = await client.callTool({
+        name: "session_tree",
+        arguments: { nodeId: byLabel.a!.id, direction: "descendants" },
+      })
+      const { tree } = payload<{ tree: SessionTreeNode[] }>(full)
+      expect(tree).toHaveLength(1)
+      expect(tree[0]!.label).toBe("a")
+      const flat = flattenTree(tree)
+      expect(flat.map(n => n.label).sort()).toEqual(
+        ["a", "a1", "a1x", "a2"].sort(),
+      )
+      // depth preserved from the descriptors
+      expect(tree[0]!.depth).toBe(1)
+      expect(tree[0]!.children[0]!.depth).toBe(2)
+
+      const capped = await client.callTool({
+        name: "session_tree",
+        arguments: { nodeId: byLabel.a!.id, direction: "descendants", depth: 1 },
+      })
+      const cappedTree = payload<{ tree: SessionTreeNode[] }>(capped).tree
+      expect(flattenTree(cappedTree).map(n => n.label).sort()).toEqual(
+        ["a", "a1", "a2"].sort(),
+      )
+    } finally {
+      await close()
+    }
+  })
+
+  it("direction without nodeId is a validation error, not a silent full dump", async () => {
+    const { client, close } = await seedNavTree()
+    try {
+      const result = await client.callTool({
+        name: "session_tree",
+        arguments: { direction: "children" },
+      })
+      expect((result as { isError?: boolean }).isError).toBe(true)
+      expect(payload<{ error: string }>(result).error).toContain("together")
+    } finally {
+      await close()
+    }
+  })
+
+  it("nodeId without direction is a validation error", async () => {
+    const { client, close, byLabel } = await seedNavTree()
+    try {
+      const result = await client.callTool({
+        name: "session_tree",
+        arguments: { nodeId: byLabel.a!.id },
+      })
+      expect((result as { isError?: boolean }).isError).toBe(true)
+      expect(payload<{ error: string }>(result).error).toContain("together")
+    } finally {
+      await close()
+    }
+  })
+
+  it("unknown nodeId returns a clear error, not an empty tree", async () => {
+    const { client, close } = await seedNavTree()
+    try {
+      const result = await client.callTool({
+        name: "session_tree",
+        arguments: { nodeId: "no-such-session", direction: "children" },
+      })
+      expect((result as { isError?: boolean }).isError).toBe(true)
+      expect(payload<{ error: string }>(result).error).toContain("no-such-session")
+    } finally {
+      await close()
+    }
+  })
+
+  it("regression: omitting both params returns the exact full-dump shape", async () => {
+    const { client, registry, close } = await seedNavTree()
+    try {
+      const result = await client.callTool({ name: "session_tree", arguments: {} })
+      const body = payload<{
+        tree: SessionTreeNode[]
+        byOrigin: ReturnType<typeof groupRootsByOrigin>
+      }>(result)
+      // Byte-comparable with the pre-navigation full dump.
+      expect(body).toEqual({
+        tree: buildSessionTree(registry.list({ includeArchived: true })),
+        byOrigin: groupRootsByOrigin(
+          buildSessionTree(registry.list({ includeArchived: true })),
+        ),
+      })
     } finally {
       await close()
     }

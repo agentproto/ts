@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/tool",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "agentproto/tool-runtime — reference implementation of AIP-14 TOOL.md `defineTool` contract. Vendor-neutral tool registration with validated input/output schemas, structured error envelopes, and side-effect declarations. Per-framework adapters (Mastra, LangChain, A2A) consume the produced ToolHandle.",
   "keywords": [
     "agentproto",
@@ -58,13 +58,13 @@
     "@agentproto/manifest": "workspace:*",
     "ajv": "^8.20.0",
     "gray-matter": "^4.0.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   }
 }

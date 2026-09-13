@@ -2,9 +2,17 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentproto.sh/schemas/aip-40/EXTENSION.schema.json",
   "title": "ExtensionDefinition",
-  "description": "Validates the YAML frontmatter portion of an AIP-40 EXTENSION.md manifest. An extension declares a workspace-local doctype that inherits a public AIP's schema and may add fields, tighten constraints, set defaults, and override the path convention.",
+  "description": "Validates the YAML frontmatter portion of an AIP-40 EXTENSION.md manifest. An extension declares a workspace-local doctype that inherits a public AIP's schema \u2014 adding fields (add_fields), tightening constraints (tighten), selectively REMOVING non-required parent fields (remove_fields, guarded: parent-required fields refuse removal, mirroring AIP-18's inherited-status rule), choosing which aspects compose per-aspect (inherit: {schema, defaults, parse, path}; omitted = v1 wholesale inheritance), setting defaults, and overriding the path convention.",
   "type": "object",
-  "required": ["schema", "slug", "title", "description", "version", "status", "extends"],
+  "required": [
+    "schema",
+    "slug",
+    "title",
+    "description",
+    "version",
+    "status",
+    "extends"
+  ],
   "additionalProperties": false,
   "properties": {
     "schema": {
@@ -14,7 +22,7 @@
     "slug": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9-]*:[a-z][a-z0-9-]*[a-z0-9]$",
-      "description": "Namespaced identifier — `<namespace>:<name>`. Lowercase, digits, dashes; single colon separator. Example: `acme:deal`."
+      "description": "Namespaced identifier \u2014 `<namespace>:<name>`. Lowercase, digits, dashes; single colon separator. Example: `acme:deal`."
     },
     "title": {
       "type": "string",
@@ -35,7 +43,7 @@
     },
     "status": {
       "const": "Local",
-      "description": "Extensions are perpetually Local — they never enter the public registry's Draft/Review/Final lifecycle."
+      "description": "Extensions are perpetually Local \u2014 they never enter the public registry's Draft/Review/Final lifecycle."
     },
     "extends": {
       "anyOf": [
@@ -58,11 +66,13 @@
         "properties": {
           "type": "object",
           "additionalProperties": true,
-          "description": "JSON Schema property definitions to merge into the parent's properties. Collisions are an error — use `tighten` to narrow an existing field."
+          "description": "JSON Schema property definitions to merge into the parent's properties. Collisions are an error \u2014 use `tighten` to narrow an existing field."
         },
         "required": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "uniqueItems": true,
           "default": [],
           "description": "Field names that become required in addition to parent's required[]. Unioned with parent's required, never replaces."
@@ -76,12 +86,26 @@
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "pattern": { "type": "string" },
-          "enum": { "type": "array" },
-          "minLength": { "type": "integer", "minimum": 0 },
-          "maxLength": { "type": "integer", "minimum": 0 },
-          "minimum": { "type": "number" },
-          "maximum": { "type": "number" }
+          "pattern": {
+            "type": "string"
+          },
+          "enum": {
+            "type": "array"
+          },
+          "minLength": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "maxLength": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "minimum": {
+            "type": "number"
+          },
+          "maximum": {
+            "type": "number"
+          }
         }
       },
       "description": "Per-field constraint overrides. Each entry MUST tighten (not loosen) the parent's constraints; runtimes verify monotonicity at registration."
@@ -111,6 +135,43 @@
       "additionalProperties": true,
       "default": {},
       "description": "Free-form vendor extensions under namespaced keys (`metadata.<vendor>.<field>`)."
+    },
+    "remove_fields": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true,
+      "default": [],
+      "description": "OPTIONAL \u2014 parent property names this extension REMOVES from the inherited schema. GUARDED: a field listed in the parent's required[] MUST NOT be removed (removing it would invalidate parent-validated instances; mirrors AIP-18's 'children MUST NOT remove an inherited status'). Runtimes MUST refuse registration when the guard is violated. Also independent of `inherit.schema`: removing fields implies schema inheritance stays on."
+    },
+    "inherit": {
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "properties": {
+        "schema": {
+          "type": "boolean",
+          "default": true,
+          "description": "Inherit the parent's schema (properties/required minus remove_fields). When false, add_fields becomes the full schema (root-like composition)."
+        },
+        "defaults": {
+          "type": "boolean",
+          "default": true,
+          "description": "Layer the parent's defaults under the extension's. When false, parent defaults are NOT applied."
+        },
+        "parse": {
+          "type": "boolean",
+          "default": true,
+          "description": "Reuse the parent's manifest parser. When false, the extension MUST supply its own parser at registration (root-doctype rule)."
+        },
+        "path": {
+          "type": "boolean",
+          "default": true,
+          "description": "Fall back to the parent's pathOf convention. When false, path_convention becomes REQUIRED."
+        }
+      },
+      "description": "Per-aspect selection \u2014 choose which aspects of the parent compose, instead of AIP-40 v1's wholesale merge. Omitted keys default to true (backwards compatible with v1: wholesale inheritance)."
     }
   }
 }

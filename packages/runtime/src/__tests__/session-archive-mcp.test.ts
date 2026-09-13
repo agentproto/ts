@@ -36,7 +36,7 @@ async function buildHarness(): Promise<{
   const sessionEvents = createSessionEventBus()
   const registry = createSessionsRegistry({ sessionEvents, persist: false })
   const { server } = await createMcpServer({ specs: [], name: "test", version: "0" })
-  registerSessionTools(server, { registry })
+  registerSessionTools(server, { registry, workspace: process.cwd() })
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)

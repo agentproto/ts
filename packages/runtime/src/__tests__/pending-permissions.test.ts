@@ -15,7 +15,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createServer } from "node:http"
@@ -30,6 +30,7 @@ import {
   type AgentSessionLike,
   type SessionsRegistry,
 } from "../sessions.js"
+import { sessionEventsPath } from "../transcript-writer.js"
 import { createSessionEventBus, type SessionEvent } from "../session-event-bus.js"
 import { createEventRing } from "../event-ring.js"
 import { registerOrchestrationTools } from "../orchestration-tools.js"
@@ -51,6 +52,7 @@ function holdSession(
   requestId = "perm-1",
   rawInput?: unknown,
   toolName = "Write",
+  meta?: unknown,
 ): {
   session: AgentSessionLike
   responded: Array<{ requestId: string; resolution: unknown }>
@@ -68,6 +70,7 @@ function holdSession(
         text: `Allow "${toolName}"?`,
         options: OPTIONS,
         ...(rawInput !== undefined ? { rawInput } : {}),
+        ...(meta !== undefined ? { _meta: meta } : {}),
       }
       await new Promise<void>(r => {
         release = r
@@ -109,6 +112,20 @@ async function spawnAndPark(
     await new Promise(r => setTimeout(r, 5))
   }
   return desc.id
+}
+
+/** Read a session's durable structured-transcript records (events.jsonl),
+ *  parsed one JSON object per line — same file the book view reads. */
+function readTranscript(transcriptDir: string, sessionId: string): Array<Record<string, unknown>> {
+  const path = sessionEventsPath(sessionId, transcriptDir)
+  if (!existsSync(path)) return []
+  const out: Array<Record<string, unknown>> = []
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+    out.push(JSON.parse(trimmed) as Record<string, unknown>)
+  }
+  return out
 }
 
 describe("pending-permissions inbox — registry", () => {
@@ -169,6 +186,34 @@ describe("pending-permissions inbox — registry", () => {
     registry.shutdown()
   })
 
+  it("carries the tool call's _meta (e.g. a mastra suspension payload) through to the pending permission", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const meta = { "mastra-agent/suspendPayload": { plan: "1. do things\n2. push" } }
+    const fake = holdSession("acp-meta", "perm-meta", { plan: "1. do things\n2. push" }, "submit_plan", meta)
+    const id = await spawnAndPark(registry, fake)
+
+    const pending = registry.listPendingPermissions()
+    expect(pending).toHaveLength(1)
+    expect(pending[0]).toMatchObject({ id: "perm-meta", sessionId: id, _meta: meta })
+
+    registry.shutdown()
+  })
+
+  it("threads feedback through respondPermission onto the driver resolution", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const fake = holdSession("acp-fb", "perm-fb")
+    await spawnAndPark(registry, fake)
+    const r = await registry.respondPermission("perm-fb", {
+      decision: "deny",
+      feedback: "reject, but do X instead",
+    })
+    expect(r.ok).toBe(true)
+    expect(fake.responded).toEqual([
+      { requestId: "perm-fb", resolution: { optionId: "opt-reject", feedback: "reject, but do X instead" } },
+    ])
+    registry.shutdown()
+  })
+
   it("approve → allow_once, scope:always → allow_always, deny → reject_once", async () => {
     const registry = createSessionsRegistry({ persist: false, transcriptDir })
 
@@ -224,6 +269,28 @@ describe("pending-permissions inbox — registry", () => {
     registry.shutdown()
   })
 
+  it("writes a durable permission-resolved record to the session transcript, keyed by toolCallId", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const fake = holdSession("acp-transcript", "perm-t")
+    const id = await spawnAndPark(registry, fake)
+    await registry.respondPermission("perm-t", { decision: "approve" })
+
+    // The write stream flushes asynchronously — poll rather than assume
+    // it's already durable the instant respondPermission resolves.
+    let records: Array<Record<string, unknown>> = []
+    for (let i = 0; i < 100; i++) {
+      records = readTranscript(transcriptDir, id)
+      if (records.some(r => r.kind === "permission-resolved")) break
+      await new Promise(r => setTimeout(r, 5))
+    }
+    const ask = records.find(r => r.kind === "agent-prompt")
+    const resolved = records.find(r => r.kind === "permission-resolved")
+    expect(ask).toMatchObject({ toolCallId: "perm-t" })
+    expect(resolved).toMatchObject({ toolCallId: "perm-t", decision: "approve", optionId: "opt-once" })
+
+    registry.shutdown()
+  })
+
   it("errors clearly on an unknown / already-resolved id", async () => {
     const registry = createSessionsRegistry({ persist: false, transcriptDir })
     const r1 = await registry.respondPermission("nope", { decision: "approve" })
@@ -254,6 +321,18 @@ describe("pending-permissions inbox — registry", () => {
       e => e.type === "session:permission-resolved" && e.permissionId === "perm-k",
     )
     expect(resolved).toMatchObject({ decision: "cancelled" })
+
+    let records: Array<Record<string, unknown>> = []
+    for (let i = 0; i < 100; i++) {
+      records = readTranscript(transcriptDir, id)
+      if (records.some(r => r.kind === "permission-resolved")) break
+      await new Promise(r => setTimeout(r, 5))
+    }
+    expect(records.find(r => r.kind === "permission-resolved")).toMatchObject({
+      toolCallId: "perm-k",
+      decision: "cancelled",
+    })
+
     registry.shutdown()
   })
 })
@@ -450,6 +529,97 @@ describe("pending-permissions inbox — MCP tools", () => {
     registry.shutdown()
   })
 
+  it("permissions_list: page-walk with limit=2 covers exactly the unpaginated scoped list", async () => {
+    const bus = createSessionEventBus()
+    const eventRing = createEventRing()
+    const registry = createSessionsRegistry({ persist: false, transcriptDir, sessionEvents: bus })
+    const requestIds = ["perm-walk-1", "perm-walk-2", "perm-walk-3"]
+    for (const requestId of requestIds) {
+      await spawnAndPark(registry, holdSession(`acp-${requestId}`, requestId, { command: "git push --force" }))
+    }
+
+    const server = new McpServer({ name: "perms-mcp-page", version: "0.0.0" })
+    registerOrchestrationTools(server, { registry, sessionEvents: bus, eventRing })
+    const [ct, st] = InMemoryTransport.createLinkedPair()
+    await server.connect(st)
+    const client = new Client({ name: "perms-mcp-page-client", version: "0.0.0" })
+    await client.connect(ct)
+
+    // Default call unchanged: the pre-pagination envelope, no page fields.
+    const unpaginated = parse(await client.callTool({ name: "permissions_list", arguments: {} }))
+    expect(unpaginated.permissions).toHaveLength(3)
+    expect(unpaginated.total).toBeUndefined()
+    expect(unpaginated.items).toBeUndefined()
+
+    // Page-walk: the union of pages equals the unpaginated scoped list exactly.
+    const union: Array<{ id: string }> = []
+    let cursor: string | undefined
+    do {
+      const page = parse(
+        await client.callTool({
+          name: "permissions_list",
+          arguments: { limit: 2, ...(cursor ? { cursor } : {}) },
+        }),
+      )
+      expect(page.total).toBe(3)
+      union.push(...page.items)
+      cursor = page.nextCursor
+    } while (cursor)
+    expect(union.map(p => p.id)).toEqual(unpaginated.permissions.map((p: { id: string }) => p.id))
+
+    registry.shutdown()
+  })
+
+  it("permissions_list: a scoped caller's page total reflects subtree scoping — paginate runs AFTER scoping", async () => {
+    const bus = createSessionEventBus()
+    const eventRing = createEventRing()
+    const registry = createSessionsRegistry({ persist: false, transcriptDir, sessionEvents: bus })
+    // Three parked sessions; the scope owner is the first. collectSubtree
+    // over root sessions yields only the owner itself, so the scoped view
+    // holds exactly ONE permission even though three are parked.
+    const requestIds = ["perm-scope-1", "perm-scope-2", "perm-scope-3"]
+    const ids: string[] = []
+    for (const requestId of requestIds) {
+      ids.push(
+        await spawnAndPark(registry, holdSession(`acp-${requestId}`, requestId, { command: "git push --force" })),
+      )
+    }
+
+    const server = new McpServer({ name: "perms-mcp-scope", version: "0.0.0" })
+    registerOrchestrationTools(server, {
+      registry,
+      sessionEvents: bus,
+      eventRing,
+      callerScope: { ownerSessionId: ids[0] },
+    })
+    const [ct, st] = InMemoryTransport.createLinkedPair()
+    await server.connect(st)
+    const client = new Client({ name: "perms-mcp-scope-client", version: "0.0.0" })
+    await client.connect(ct)
+
+    const unpaginated = parse(await client.callTool({ name: "permissions_list", arguments: {} }))
+    expect(unpaginated.permissions).toHaveLength(1)
+
+    const union: Array<{ id: string }> = []
+    let cursor: string | undefined
+    do {
+      const page = parse(
+        await client.callTool({
+          name: "permissions_list",
+          arguments: { limit: 1, ...(cursor ? { cursor } : {}) },
+        }),
+      )
+      // total=1 (the scoped set), NOT 3 — pagination never sees the rows
+      // scoping already removed.
+      expect(page.total).toBe(1)
+      union.push(...page.items)
+      cursor = page.nextCursor
+    } while (cursor)
+    expect(union.map(p => p.id)).toEqual(unpaginated.permissions.map((p: { id: string }) => p.id))
+
+    registry.shutdown()
+  })
+
   it("permissions_respond errors on an unknown id", async () => {
     const bus = createSessionEventBus()
     const eventRing = createEventRing()
@@ -526,6 +696,30 @@ describe("pending-permissions inbox — REST routes", () => {
       const body = (await postRes.json()) as Record<string, unknown>
       expect(body).toMatchObject({ ok: true, id: "perm-http", decision: "approve", optionId: "opt-always" })
       expect(fake.responded).toEqual([{ requestId: "perm-http", resolution: { optionId: "opt-always" } }])
+    })
+    registry.shutdown()
+  })
+
+  it("GET /permissions carries the request's _meta and POST forwards feedback", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const meta = { "mastra-agent/suspendPayload": { plan: "1. do things" } }
+    const fake = holdSession("acp-http-meta", "perm-http-meta", undefined, "submit_plan", meta)
+    await spawnAndPark(registry, fake)
+
+    await withServer(registry, async base => {
+      const listRes = await fetch(`${base}/permissions`)
+      const list = (await listRes.json()) as { permissions: Array<Record<string, unknown>> }
+      expect(list.permissions[0]).toMatchObject({ id: "perm-http-meta", _meta: meta })
+
+      const postRes = await fetch(`${base}/permissions/perm-http-meta`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "deny", feedback: "do X instead" }),
+      })
+      expect(postRes.status).toBe(200)
+      expect(fake.responded).toEqual([
+        { requestId: "perm-http-meta", resolution: { optionId: "opt-reject", feedback: "do X instead" } },
+      ])
     })
     registry.shutdown()
   })

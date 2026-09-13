@@ -1,19 +1,48 @@
 import { z } from "zod"
 
 import { defineGenerator, type CatalogSource, type GeneratedFiles, type GeneratorContext } from "../types.js"
+import { GOOGLE_NATIVE_MODEL_IDS } from "./google-native-model-ids.mjs"
 
 /**
  * Context window (max input tokens) + max output tokens, live per model id,
- * for the four providers that publish a machine-readable models-list with
- * this data: Anthropic, Groq, xAI, Moonshot. This is NOT pricing — Anthropic's
- * `/v1/models` carries no price at all, and Groq/xAI pricing units need
- * separate verification before they're trusted for billing; see
- * `LLM_PRICING_CATALOG` / `OPENROUTER_ROUTES` in `catalog.ts` for that.
+ * for the providers that publish a machine-readable models-list with this
+ * data: Anthropic, Groq, xAI, Moonshot, Mistral. This is NOT pricing —
+ * Anthropic's `/v1/models` carries no price at all, and Groq/xAI/Mistral
+ * pricing units need separate verification before they're trusted for
+ * billing; see `LLM_PRICING_CATALOG` / `OPENROUTER_ROUTES` in `catalog.ts`
+ * for that.
  *
  * ZAI/Zhipu and OpenAI are deliberately excluded: ZAI's `/v4/models` list
  * returns bare `{id, owned_by, created}` with no context field, and OpenAI
  * has no stable models-list endpoint at all (see `sources/openai.ts`) — both
  * stay hand-maintained until (if ever) they publish one.
+ *
+ * Google/Gemini — SOURCED FROM OPENROUTER (Google API blocked), ids
+ * remapped. The native source, `GET generativelanguage.googleapis.com/
+ * v1beta/models` (auth via `x-goog-api-key`), would fit this generator's
+ * shape directly, but every Google key available to this sync run 403s with
+ * `PERMISSION_DENIED — Lightning dunning decision is deny` (a billing hold
+ * on the project, not a missing/invalid key; verified 2026-08-30). Rather
+ * than leave Google unsynced, we read `GET openrouter.ai/api/v1/models`
+ * (already pinned as the `llm-openrouter` source for the `llm:openrouter`
+ * generator — reused here, not re-fetched) and remap its `google/<id>`
+ * routes to bare native ids by stripping the `google/` prefix. ONLY ids
+ * that exactly match a real native Gemini id already in use elsewhere in
+ * this codebase (the `gemini` adapter's `models.allowed` list,
+ * `adapters/gemini/src/index.ts`, and the hand-maintained pricing rows in
+ * `model-catalog/src/llm/catalog.ts`) are kept — everything else under
+ * `google/` on OpenRouter is logged and skipped rather than guessed:
+ * `:batch` suffixed routes (a distinct billing surface, not the same model),
+ * dated/preview/image/customtools variants with no confirmed native
+ * counterpart (e.g. `gemini-3-pro-image`, `gemini-2.5-pro-preview-05-06`,
+ * `gemini-3.1-pro-preview-customtools`), non-Gemini families (`gemma-*`,
+ * `lyria-*`), and newer Gemini lines OpenRouter carries that aren't yet a
+ * confirmed native id here (`gemini-3.6-flash`, `gemini-3.7-flash`).
+ * Native-only surfaces (imagen-*, gemini-live*, embedding models) never
+ * appear under OpenRouter's `google/` prefix at all, so there is nothing to
+ * filter for those — they simply aren't representable via this source.
+ * When a working Google key exists, swap this block for a direct
+ * `generativelanguage.googleapis.com/v1beta/models` source instead.
  */
 
 /** Repo-relative drop-in target for {@link @agentproto/model-catalog}. */
@@ -25,7 +54,7 @@ interface ContextWindowEntry {
   contextWindow: number
   maxOutput?: number
   displayName?: string
-  provider: "anthropic" | "groq" | "xai" | "moonshot"
+  provider: "anthropic" | "groq" | "xai" | "moonshot" | "mistral" | "google"
 }
 
 // ── Source schemas ───────────────────────────────────────────────────────
@@ -68,6 +97,34 @@ const MoonshotModelSchema = z
   .passthrough()
 const MoonshotSnapshotSchema = z.object({ data: z.array(MoonshotModelSchema) })
 
+// Mistral's `name` is NOT a human display name — it's an alias pointing at
+// the canonical dated id (e.g. id `mistral-small-latest`, name
+// `mistral-small-2603`), so it's read only as passthrough, never surfaced as
+// `displayName` (verified against the live payload, 2026-08-30).
+const MistralModelSchema = z
+  .object({
+    id: z.string(),
+    max_context_length: z.number().optional(),
+  })
+  .passthrough()
+const MistralSnapshotSchema = z.object({ data: z.array(MistralModelSchema) })
+
+// OpenRouter's `/api/v1/models` — reused (same source id, same pinned
+// snapshot) from `llm-openrouter.ts`'s own generator. We only read
+// `context_length` and `top_provider.max_completion_tokens`; pricing is
+// deliberately NOT read here (see the module doc comment / generator below).
+const OpenRouterModelSchema = z
+  .object({
+    id: z.string(),
+    context_length: z.number().nullable().optional(),
+    top_provider: z
+      .object({ max_completion_tokens: z.number().nullable().optional() })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough()
+const OpenRouterSnapshotSchema = z.object({ data: z.array(OpenRouterModelSchema) })
+
 // ── Serialization ────────────────────────────────────────────────────────
 
 function serializeEntry(e: ContextWindowEntry): string {
@@ -84,7 +141,12 @@ function serializeFile(entries: Record<string, ContextWindowEntry>): string {
     "// AUTO-GENERATED by @agentproto/catalog-sync (llm:context-windows).",
     "// Do not edit by hand — re-run `pnpm --filter @agentproto/catalog-sync generate --refresh`.",
     "// Sources: api.anthropic.com/v1/models, api.groq.com/openai/v1/models,",
-    "//         api.x.ai/v1/models, api.moonshot.ai/v1/models",
+    "//         api.x.ai/v1/models, api.moonshot.ai/v1/models,",
+    "//         api.mistral.ai/v1/models",
+    "// google entries: SOURCED FROM OPENROUTER (openrouter.ai/api/v1/models),",
+    "//         Google's native API is billing-blocked — ids remapped from",
+    "//         google/<id> to the bare native id; see the generator's module",
+    "//         doc comment for the exact remap + skip rules.",
     "// Context window (max input tokens) + max output tokens per live model id.",
     "// NOT pricing — see LLM_PRICING_CATALOG / OPENROUTER_ROUTES in catalog.ts.",
     "",
@@ -92,7 +154,7 @@ function serializeFile(entries: Record<string, ContextWindowEntry>): string {
     "  contextWindow: number",
     "  maxOutput?: number",
     "  displayName?: string",
-    '  provider: "anthropic" | "groq" | "xai" | "moonshot"',
+    '  provider: "anthropic" | "groq" | "xai" | "moonshot" | "mistral" | "google"',
     "}",
     "",
     "export const CONTEXT_WINDOWS: Record<string, ContextWindowEntry> = {",
@@ -121,6 +183,28 @@ async function generate(ctx: GeneratorContext): Promise<GeneratedFiles> {
         ...(m.display_name ? { displayName: m.display_name } : {}),
         provider: "anthropic",
       }
+    }
+
+    // Some Anthropic model generations "age out" of the live /v1/models
+    // listing into a dated-only id (e.g. claude-opus-4-5-20251101) while
+    // the bare "latest" spelling (claude-opus-4-5) stays a valid, callable
+    // back-compat id — just no longer separately listed. Mechanically
+    // derive the bare form from every dated entry (strip the trailing
+    // -YYYYMMDD), identical to its dated sibling, the same way
+    // `scripts/catalog-sync/sync-anthropic.mjs` already does for pricing —
+    // this generator has its own independent entries map (context window,
+    // not price) and was missing the same derivation, which dropped the
+    // bare id from `listNativeModelIds("anthropic")` (and so from every
+    // adapter's native model menu) even though it still priced and
+    // resolved fine. Skips a bare id that's already a distinct,
+    // separately-listed entry (a live, non-aged model should never be
+    // silently overwritten).
+    for (const [id, entry] of Object.entries(entries)) {
+      if (entry.provider !== "anthropic") continue
+      const bare = id.replace(/-\d{8}$/, "")
+      if (bare === id) continue
+      if (bare in entries) continue
+      entries[bare] = { ...entry }
     }
   }
 
@@ -155,6 +239,47 @@ async function generate(ctx: GeneratorContext): Promise<GeneratedFiles> {
     }
   }
 
+  const mistralSrc = sources.find(s => s.id === "llm-mistral")
+  if (mistralSrc) {
+    const parsed = MistralSnapshotSchema.parse(await ctx.fetchSource(mistralSrc))
+    for (const m of parsed.data) {
+      if (!m.max_context_length) continue
+      entries[m.id] = { contextWindow: m.max_context_length, provider: "mistral" }
+    }
+  }
+
+  // Google/Gemini via OpenRouter (see module doc comment for the "why").
+  const googleSrc = sources.find(s => s.id === "llm-openrouter")
+  if (googleSrc) {
+    const parsed = OpenRouterSnapshotSchema.parse(await ctx.fetchSource(googleSrc))
+    for (const m of parsed.data) {
+      if (!m.id.startsWith("google/")) continue
+      const nativeId = m.id.slice("google/".length)
+      if (m.id.includes(":")) {
+        console.error(
+          `llm:context-windows: skipping "${m.id}" — ":"-suffixed batch route, ` +
+            `not the same billing surface as the base model.`
+        )
+        continue
+      }
+      if (!GOOGLE_NATIVE_MODEL_IDS.has(nativeId)) {
+        console.error(
+          `llm:context-windows: skipping "${m.id}" — no confirmed native Gemini ` +
+            `id "${nativeId}" (see GOOGLE_NATIVE_MODEL_IDS); not guessing the remap.`
+        )
+        continue
+      }
+      if (!m.context_length) continue
+      entries[nativeId] = {
+        contextWindow: m.context_length,
+        ...(m.top_provider?.max_completion_tokens
+          ? { maxOutput: m.top_provider.max_completion_tokens }
+          : {}),
+        provider: "google",
+      }
+    }
+  }
+
   return { [OUTPUT_PATH]: serializeFile(entries) }
 }
 
@@ -181,6 +306,18 @@ const sources: CatalogSource[] = [
     id: "llm-moonshot",
     url: "https://api.moonshot.ai/v1/models",
     headers: { Authorization: "Bearer env:MOONSHOT_API_KEY" },
+  },
+  {
+    id: "llm-mistral",
+    url: "https://api.mistral.ai/v1/models",
+    headers: { Authorization: "Bearer env:MISTRAL_API_KEY" },
+  },
+  // Google via OpenRouter (no Google key needed — see module doc comment).
+  // Same source id/url as `llm-openrouter.ts`'s own generator, so both share
+  // the one pinned `snapshots/llm-openrouter.json` instead of fetching twice.
+  {
+    id: "llm-openrouter",
+    url: "https://openrouter.ai/api/v1/models",
   },
 ]
 

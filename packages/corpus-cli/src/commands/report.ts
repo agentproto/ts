@@ -107,7 +107,7 @@ async function runReportPacks(args: readonly string[]): Promise<ExitCode> {
   }
 
   process.stdout.write(
-    `report packs → ${result.files.length} files · ${result.bibliography} sources\n` +
+    `report packs → ${result.files.length} files · ${result.bibliography} sources · bib-sha ${result.bibliographySha}\n` +
       result.chapters.map((c) => `  ${c.id}: ${c.entryCount}`).join("\n") +
       "\n"
   )
@@ -160,12 +160,21 @@ async function runReportStitch(args: readonly string[]): Promise<ExitCode> {
   }
 
   const reportFs = new NodeFsAdapter({ root })
-  const { content, wordCount } = await stitchReport({
-    config,
-    report: reportFs,
-    ...(chaptersDir ? { chaptersDir } : {}),
-    ...(viewsDir ? { viewsDir } : {}),
-  })
+  let stitched
+  try {
+    stitched = await stitchReport({
+      config,
+      report: reportFs,
+      ...(chaptersDir ? { chaptersDir } : {}),
+      ...(viewsDir ? { viewsDir } : {}),
+    })
+  } catch (err) {
+    return fail(
+      `report stitch failed: ${err instanceof Error ? err.message : String(err)}`,
+      1
+    )
+  }
+  const { content, wordCount } = stitched
   await reportFs.writeFile(out ?? "REPORT.md", content)
   process.stdout.write(`report stitch → ${out ?? "REPORT.md"} · ${wordCount} words\n`)
   return 0

@@ -13,8 +13,12 @@ import type { AgentStreamEvent } from "./sessions.js"
 import type { SessionUsage } from "./usage.js"
 
 export interface SessionObserver {
-  /** Record the outgoing message that opens a new turn. */
-  recordPrompt(sessionId: string, message: unknown): void
+  /** Record the outgoing message that opens a new turn. `opts.source`, when
+   *  set, is the prompt's provenance — `agent:<sessionId>` for a prompt
+   *  injected by another session (`agent_prompt` from a supervisor), absent
+   *  for a human operator — so a transcript view can attribute the turn to
+   *  its real author instead of "you". */
+  recordPrompt(sessionId: string, message: unknown, opts?: { source?: string }): void
   /** Record one structured stream event (text-delta, tool-call, usage_update, …). */
   recordEvent(sessionId: string, evt: AgentStreamEvent): void
   /** Record the durable turn-boundary / exit usage snapshot. */
@@ -62,8 +66,8 @@ export function composeSessionObservers(
   }
 
   return {
-    recordPrompt(sessionId, message) {
-      forEachSafe((o) => o.recordPrompt(sessionId, message))
+    recordPrompt(sessionId, message, opts) {
+      forEachSafe((o) => o.recordPrompt(sessionId, message, opts))
     },
     recordEvent(sessionId, evt) {
       forEachSafe((o) => o.recordEvent(sessionId, evt))
@@ -96,10 +100,10 @@ export function filterSessionObserver(
   shouldObserve: (sessionId: string) => boolean,
 ): SessionObserver {
   return {
-    recordPrompt(sessionId, message) {
+    recordPrompt(sessionId, message, opts) {
       if (!shouldObserve(sessionId)) return
       try {
-        inner.recordPrompt(sessionId, message)
+        inner.recordPrompt(sessionId, message, opts)
       } catch {
         // isolate: a failing observer must not break the turn loop
       }

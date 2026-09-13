@@ -1,8 +1,9 @@
 # `agentproto pack`
 
 ```text
-agentproto pack skill --manifest <path> [--source <dir>]
+agentproto pack skill --manifest <path> [--source <dir>] [--version <semver>]
                       [--bump patch|minor|major] [--dry-run] [--out <dir>]
+agentproto pack build [dir]
 ```
 
 Generate a versioned skill pack from a manifest of source skills — the reverse
@@ -10,7 +11,13 @@ of [`agentproto install skill/<slug>`](./install.md). `pack skill` assembles a
 pack directory from source; `install skill/<slug>` consumes one and installs it
 into targets.
 
-`skill` is the only sub-verb today; anything else exits `2`.
+`pack build` builds a whole skill-pack **package** (for example
+`packages/skill-pack-<name>`) from its `src/skills/` into the two shapes it
+ships as: a flat npm layout (`skills/` + `.claude-plugin/` copied to the
+package root) and a versioned Anthropic/Claude Code bundle under
+`dist/<name>-v<version>/` plus its `.zip`. The version is taken from the
+package's own `package.json` (the changesets source of truth), not from any
+hand-declared manifest version.
 
 ## Flags
 
@@ -18,6 +25,7 @@ into targets.
 |------|---------|-------------|
 | `--manifest <path>` | *(required)* | Path to the pack manifest JSON, resolved against the cwd. |
 | `--source <dir>` | *(manifest `sourceDir`)* | Absolute source-skills dir. Wins over the manifest. `~` is expanded. |
+| `--version <semver>` | *(manifest `version`)* | Explicit version for the pack, overriding the manifest's own `version`. |
 | `--bump <kind>` | — | `patch`, `minor`, or `major` — bumps from the highest existing pack version in `--out`. Anything else exits `2`. |
 | `--dry-run` | `false` | Print the plan (version transition, output dir, per-skill copy/overwrite/missing) and write nothing. |
 | `--out <dir>` | `.skills` | Where pack directories are written, resolved against the cwd. |
@@ -64,7 +72,8 @@ For each listed skill, `<sourceDir>/<skill>/` is copied wholesale to
 The README is regenerated, not overwritten blind: the previous version's
 "How it works" prose and existing changelog entries are carried forward, and a
 `--bump` prepends a `- **<version>** — TODO: describe changes` entry for you to
-fill in. Without `--bump`, the manifest's own `version` is used — re-running on
+fill in. Without `--bump`, the manifest's own `version` is used (unless
+`--version <semver>` overrides it) — re-running on
 an existing version dir is an in-place resync.
 
 ## Examples
@@ -92,7 +101,27 @@ agentproto pack skill --manifest ./skills-pack.json \
     ❌ retired-skill — SOURCE MISSING
 ```
 
-## See also
+## `build [dir]`
+
+```bash
+# Build the skill-pack package in the current directory
+agentproto pack build
+
+# Build a specific package directory
+agentproto pack build packages/skill-pack-agentproto
+```
+
+Builds a skill-pack **package** from its own `package.json` version. It expects
+`package.json` and `manifest.json` in the target directory (default cwd), runs
+the same assembly logic as `pack skill`, then:
+
+1. Copies `skills/` and `.claude-plugin/` flat to the package root for npm
+   consumers.
+2. Writes `dist/<name>-v<version>.zip` containing the self-contained versioned
+   bundle for Claude Code / Anthropic consumers.
+
+Fails with exit code `1` if `package.json` has no `version` or if either
+required file is missing; exit code `2` for argument errors.
 
 - [`install.md`](./install.md) — the consuming side: `install skill/<slug>`
 - [`onboard.md`](./onboard.md) — installs the published pack on first run

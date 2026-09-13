@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/eval-reporters",
-  "version": "0.2.4",
+  "version": "0.2.12",
   "description": "Adapter-kit family for eval reporters. Pluggable backends (Langfuse, stderr, in-memory array) configured by slug + credentials, mirroring the tunnel-provider adapter family.",
   "keywords": [
     "agentproto",
@@ -51,18 +51,18 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/provider-kit": "workspace:*",
     "@agentproto/eval": "workspace:*",
+    "@agentproto/provider-kit": "workspace:*",
     "@agentproto/telemetry": "workspace:*",
     "@agentproto/telemetry-langfuse": "workspace:*",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   },
   "engines": {
     "node": ">=20.9.0"

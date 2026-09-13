@@ -22,7 +22,7 @@ unchanged — reach for those directly when you only want one half:
 | `--yes` | `false` | Non-interactive — forwarded to `install-mcp`. |
 | `--no-skills` | `false` | Skip step ②. Step ① still runs. |
 | `--skills <slug>` | `skill/agentproto-pack` | Install this skill instead of the full pack. A bare slug is accepted — `--skills nested-orchestration` becomes `skill/nested-orchestration`. |
-| `--agent <name>` | *(all detected)* | Limit MCP registration to these agents; repeatable. Passed straight through to `install-mcp --agent`, so the same names apply: `claude`, `cursor`, `codex`, `claude-desktop`, `aider`, `hermes`. With none given, `install-mcp --all` runs. |
+| `--agent <name>` | *(all detected)* | Limit MCP registration to these agents; repeatable. Passed straight through to `install-mcp --agent`, so the same names apply: `claude`, `cursor`, `codex`, `claude-desktop`, `aider`, `windsurf`, `hermes`. With none given, `install-mcp --all` runs. |
 
 ## Output
 

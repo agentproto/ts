@@ -61,6 +61,7 @@ export async function buildMastraAgent(
     tools,
     memory,
     voice,
+    ...(opts.inputProcessors?.length ? { inputProcessors: opts.inputProcessors } : {}),
   } as unknown as ConstructorParameters<typeof Agent>[0]) as unknown as Agent
 
   return {

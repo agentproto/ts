@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/mcp-server",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "@agentproto/mcp-server — exposes every AIP doctype as MCP tools. Pass DoctypeSpec instances + an optional workspace dir for EXTENSION.md auto-loading; the server registers create_X / load_X / list_X / update_X / resolve_X / delete_X for each registered doctype, including AIP-40 extensions. Compose to build agent runtimes that author and edit AIP manifests over MCP.",
   "keywords": [
     "agentproto",
@@ -56,14 +56,14 @@
     "@agentproto/manifest": "workspace:*",
     "@agentproto/routine": "workspace:*",
     "@agentproto/tool": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "zod": "^4.4.3"
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   }
 }

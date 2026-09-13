@@ -6,15 +6,16 @@
  *
  * Deliberately dependency-free — a `SessionState`, two pure summarisers, one
  * regenerate/guard helper — so it can be BOTH:
- *   - reused verbatim by `summarize_session` (agents-overview-app.ts re-exports
- *     `summarizeLines` / `deriveSessionState` from here), and
+ *   - reused verbatim by `summarize_session` (summarize-session-tool.ts
+ *     imports `summarizeLines` / `deriveSessionState` from here), and
  *   - imported by the session store (sessions.ts) to stamp `activitySummary`
  *     onto the descriptor on turn-end, WITHOUT dragging the overview panel's
- *     HTML bundle or the MCP-app wiring into the hot session path.
+ *     HTML bundle (now @agentproto/apps/agents-overview) or the MCP-app
+ *     wiring into the hot session path.
  *
- * HEURISTIC, no LLM: `@agentproto/runtime` has no inference client (see the
- * agents-overview-app.ts header for why a `ModelLike.complete` call is too
- * heavy today). `regenerateActivitySummary` is the documented swap point —
+ * HEURISTIC, no LLM: `@agentproto/runtime` has no inference client (see
+ * summarize-session-tool.ts's header for why a `ModelLike.complete` call is
+ * too heavy today). `regenerateActivitySummary` is the documented swap point —
  * replace its `summarizeLines`/`deriveSessionState` body with a
  * `ModelLike.complete({ system, prompt })` call to upgrade the line to a
  * semantic one; the trigger + `renamedByUser` guard contract and the

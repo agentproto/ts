@@ -58,6 +58,12 @@ export interface ConversationIndexRecord {
   cwd: string
   adapterSlug: string
   adapterSessionId: string
+  /** The session's isolated provider config dir at write time (see
+   *  `ResolveNativeLinkInput.adapterConfigDir`) — recorded so readers
+   *  that go through the store abstraction (`store.read`, not
+   *  `native.path`) can resolve the same isolated dir. Absent on
+   *  pre-#824 rows and native PTY sessions. */
+  adapterConfigDir?: string
   /** Absent when `adapterSlug` has no known native store (an adapter
    *  outside claude-code/hermes) — the record still links session ↔
    *  cwd ↔ adapterSessionId, it just can't point at a native file. */
@@ -99,6 +105,12 @@ export interface ResolveNativeLinkInput {
   cwd: string
   adapterSlug: string
   adapterSessionId: string
+  /** The session's isolated provider config dir (`SessionDescriptor.
+   *  adapterConfigDir`): since #824 a daemon-spawned claude-code session
+   *  writes its transcripts under `<adapterConfigDir>/projects/<slug>`,
+   *  not `~/.claude/projects/<slug>`. Absent for a native PTY or a
+   *  pre-#824 row — the global dir applies. */
+  adapterConfigDir?: string
 }
 
 /**
@@ -113,9 +125,9 @@ export interface ResolveNativeLinkInput {
 export async function resolveNativeLink(
   input: ResolveNativeLinkInput,
 ): Promise<ConversationNativeRef | undefined> {
-  const { cwd, adapterSlug, adapterSessionId } = input
+  const { cwd, adapterSlug, adapterSessionId, adapterConfigDir } = input
   if (adapterSlug === "claude-code") {
-    const dir = claudeCodeProjectDir(cwd)
+    const dir = claudeCodeProjectDir(cwd, adapterConfigDir)
     const path = join(dir, `${adapterSessionId}.jsonl`)
     const subagents = await listClaudeSubagents(dir, adapterSessionId)
     return { kind: "claude-jsonl", path, subagents }

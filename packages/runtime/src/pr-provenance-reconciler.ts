@@ -9,12 +9,22 @@
  * footer is never applied.
  *
  * This closes that gap tool-agnostically: it subscribes to the session event
- * bus and, at each executor session's turn-end / exit, resolves the OPEN PR for
- * that session's branch (via the injected {@link OpenPrResolver} port) and
- * stamps the same `@agentproto-bot` footer if it's missing — reusing
- * {@link stampFooterOnPr}. Turn-end/exit are only poll checkpoints, never an
- * assertion the PR is ready: the real predicate is "does an open PR for this
- * branch now exist?", answered by the resolver, not by timing.
+ * bus and, at each executor session's turn-end / exit, checks two lanes in
+ * order and stamps the same `@agentproto-bot` footer if it's missing —
+ * reusing {@link stampFooterOnPr}:
+ *
+ *   A. EXACT — the session's own recorded tool calls: the transcript writer
+ *      marks a successful `gh pr create` with the created PR's url/number
+ *      (`ToolCallRecord.createdPrUrl`), naming the author session directly.
+ *      Immune to branch switches and shared checkouts.
+ *   B. BRANCH — resolve the OPEN PR for the session cwd's current branch
+ *      (via the injected {@link OpenPrResolver} port), the fallback for
+ *      adapters whose tool calls aren't recorded.
+ *
+ * Turn-end/exit are only poll checkpoints, never an assertion the PR is
+ * ready: the real predicate is "did this session create a PR / does an open
+ * PR for this branch now exist?", answered by the records and resolver, not
+ * by timing.
  *
  * Strictly best-effort: every handler is wrapped so a missing session, an
  * unreachable forge, or a failed `gh` can never throw out of a bus callback.
@@ -28,6 +38,8 @@
 import type { SessionEventBus } from "./session-event-bus.js"
 import { stampFooterOnPr, type GhRunner } from "./pr-provenance-stamp.js"
 import type { FooterSession } from "./pr-provenance.js"
+import { readToolCallRecords } from "./tool-call-log.js"
+import type { ToolCallRecord } from "./tool-call-record.js"
 
 /**
  * Resolve the OPEN pull request for a session's working directory — i.e. the
@@ -44,7 +56,14 @@ export type OpenPrResolver = (cwd: string) => Promise<{ number: number; url: str
  *  full `SessionDescriptor` satisfies this structurally. */
 export interface ReconcilerSession extends FooterSession {
   worktreePath?: string
-  openedPrs?: readonly { url: string }[]
+  openedPrs?: readonly { url: string; number?: number }[]
+}
+
+/** PR number from a forge PR url (`…/pull/42`), for `openedPrs` rows recorded
+ *  before the number was kept. Null when the url has no such segment. */
+export function prNumberFromUrl(url: string): number | null {
+  const m = /\/pull\/(\d+)(?:[/?#]|$)/.exec(url)
+  return m ? Number(m[1]) : null
 }
 
 /** The registry slice the reconciler needs — structurally satisfied by the full
@@ -70,6 +89,10 @@ export function createPrProvenanceReconciler(opts: {
   registry: ReconcilerRegistry
   sessionEvents: SessionEventBus
   resolveOpenPr: OpenPrResolver
+  /** Session's recorded tool calls, the exact-attribution source (lane A).
+   *  Defaults to reading the session's own events.jsonl via
+   *  {@link readToolCallRecords}; injectable for tests. */
+  listToolCalls?: (sessionId: string) => Promise<ToolCallRecord[]>
   run?: GhRunner
   host?: string
 }): PrProvenanceReconciler {
@@ -77,6 +100,10 @@ export function createPrProvenanceReconciler(opts: {
   // session, so a session that opens several PRs stamps each one once. Also
   // short-circuited by the descriptor's own `openedPrs` (survives restarts).
   const stampedPrUrls = new Set<string>()
+  // PRs whose footer has been re-rendered with the session's spend (or
+  // already carried one) — the cost refresh is a once-per-PR follow-up to
+  // the first, mid-turn stamp that lands before any usage is known.
+  const costRefreshedPrUrls = new Set<string>()
   const lastPollAt = new Map<string, number>()
 
   const reconcile = async (sessionId: string, terminal: boolean): Promise<void> => {
@@ -96,17 +123,18 @@ export function createPrProvenanceReconciler(opts: {
       lastPollAt.set(sessionId, Date.now())
     }
 
-    const pr = await opts.resolveOpenPr(cwd)
-    if (!pr) return
-
-    // Per-PR dedupe: skip a PR already stamped this run, or one already recorded
-    // on the descriptor (a prior daemon generation, or the command_execute
-    // path). A session may legitimately open more than one PR — each distinct
-    // url is stamped exactly once.
-    if (stampedPrUrls.has(pr.url)) return
-    if (desc.openedPrs && desc.openedPrs.some(recorded => recorded.url === pr.url)) {
-      stampedPrUrls.add(pr.url)
-      return
+    // Per-PR dedupe shared by both lanes: skip a PR already stamped this run,
+    // or one already recorded on the descriptor (a prior daemon generation, or
+    // the command_execute path). A session may legitimately open more than one
+    // PR — each distinct url is stamped exactly once. Returns true when the
+    // caller should stamp.
+    const shouldStamp = (url: string): boolean => {
+      if (stampedPrUrls.has(url)) return false
+      if (desc.openedPrs && desc.openedPrs.some(recorded => recorded.url === url)) {
+        stampedPrUrls.add(url)
+        return false
+      }
+      return true
     }
 
     const supervisor =
@@ -114,20 +142,80 @@ export function createPrProvenanceReconciler(opts: {
         ? opts.registry.get(desc.parentSessionId) ?? { id: desc.parentSessionId }
         : null
 
-    const outcome = await stampFooterOnPr({
-      registry: opts.registry,
-      session: desc,
-      supervisor,
-      prNumber: pr.number,
-      prUrl: pr.url,
-      cwd,
-      ...(opts.run ? { run: opts.run } : {}),
-      ...(opts.host ? { host: opts.host } : {}),
-    })
-    // Record this PR as stamped only on a real stamp (or an already-stamped
-    // body). A transient `gh` failure leaves it unstamped so a later event
-    // retries.
-    if (outcome.stamped) stampedPrUrls.add(pr.url)
+    const stamp = async (pr: { number: number; url: string }): Promise<void> => {
+      const outcome = await stampFooterOnPr({
+        registry: opts.registry,
+        session: desc,
+        supervisor,
+        prNumber: pr.number,
+        prUrl: pr.url,
+        cwd,
+        ...(opts.run ? { run: opts.run } : {}),
+        ...(opts.host ? { host: opts.host } : {}),
+      })
+      // Record this PR as stamped only on a real stamp (or an already-stamped
+      // body). A transient `gh` failure leaves it unstamped so a later event
+      // retries.
+      if (outcome.stamped) stampedPrUrls.add(pr.url)
+    }
+
+    // Lane A — EXACT attribution from the session's own recorded tool calls.
+    // The transcript writer marks a successful shell-shaped `gh pr create`
+    // with the created PR's url/number on its `tool-call-record` line (see
+    // tool-call-record.ts `createdPrUrl`), so the session whose log holds the
+    // record IS the creator — no branch inference, immune to the two failure
+    // modes of lane B: a chat session that branches → PRs → checks the shared
+    // main checkout back out within one turn (the PR's branch is gone by
+    // turn-end), and two sessions sharing one cwd (branch→PR answers the same
+    // for both; the record answers only for the real author).
+    const records = await (opts.listToolCalls ?? readToolCallRecords)(sessionId)
+    for (const record of records) {
+      if (!record.createdPrUrl || record.createdPrNumber === undefined) continue
+      if (!shouldStamp(record.createdPrUrl)) continue
+      await stamp({ number: record.createdPrNumber, url: record.createdPrUrl })
+    }
+
+    // Lane B — branch→PR reconciliation, the fallback for adapters whose tool
+    // calls aren't recorded (or a PR opened by a path no record captured).
+    const pr = await opts.resolveOpenPr(cwd)
+    if (pr && shouldStamp(pr.url)) await stamp(pr)
+
+    await refreshCost(desc, supervisor, cwd)
+  }
+
+  // Cost refresh: a PR opened THROUGH the daemon (`command_execute`) is
+  // stamped the instant `gh pr create` returns — mid-turn, when a
+  // claude-code/claude-sdk session has reported no usage yet (cost only
+  // arrives on the turn's `result`). Once the session knows its spend,
+  // re-render each recorded PR's footer exactly once.
+  const refreshCost = async (
+    desc: ReconcilerSession,
+    supervisor: { id: string } | null,
+    cwd: string,
+  ): Promise<void> => {
+    if (typeof desc.costUsd !== "number") return
+    for (const opened of desc.openedPrs ?? []) {
+      if (costRefreshedPrUrls.has(opened.url)) continue
+      const number = opened.number ?? prNumberFromUrl(opened.url)
+      if (number === null) {
+        costRefreshedPrUrls.add(opened.url)
+        continue
+      }
+      const outcome = await stampFooterOnPr({
+        registry: opts.registry,
+        session: desc,
+        supervisor,
+        prNumber: number,
+        prUrl: opened.url,
+        cwd,
+        refresh: true,
+        ...(opts.run ? { run: opts.run } : {}),
+        ...(opts.host ? { host: opts.host } : {}),
+      })
+      // Settled either way (re-rendered, or already carried a cost); a
+      // failed gh call is retried at the next turn-end.
+      if (outcome.stamped) costRefreshedPrUrls.add(opened.url)
+    }
   }
 
   const safeReconcile = (sessionId: string, terminal: boolean): void => {
@@ -135,11 +223,42 @@ export function createPrProvenanceReconciler(opts: {
     void reconcile(sessionId, terminal).catch(() => {})
   }
 
+  // Cost-only counterpart to `reconcile`'s PR-discovery lanes, for a turn
+  // that can't have opened a NEW PR but may still have just learned the
+  // session's spend. Some adapters (OpenRouter-routed models observed via
+  // hermes AND direct ACP harnesses alike — see `SessionTurnEndEvent.empty`'s
+  // doc) settle their cost on a trailing turn that carries no assistant text
+  // and no tool call — exactly the shape `emptyTurn` flags. Skipping
+  // `reconcile()` outright on that turn (as the turn-end handler below does,
+  // correctly, for PR discovery) also skipped this cost refresh, so a session
+  // whose PR-creating turn stamped a footer with no amount could go the rest
+  // of its life — every later turn "empty" the same way, then no `exited`
+  // event at all if it stays parked/kept-alive — without ever re-rendering
+  // the footer, even once `desc.costUsd` was known. Never throws.
+  const safeRefreshCostOnly = (sessionId: string): void => {
+    void (async () => {
+      const desc = opts.registry.get(sessionId)
+      if (!desc || desc.kind !== "agent-cli") return
+      const cwd = desc.cwd ?? desc.worktreePath
+      if (!cwd) return
+      const supervisor =
+        desc.parentSessionId != null
+          ? opts.registry.get(desc.parentSessionId) ?? { id: desc.parentSessionId }
+          : null
+      await refreshCost(desc, supervisor, cwd)
+    })().catch(() => {})
+  }
+
   const unsubscribes: Array<() => void> = [
     opts.sessionEvents.on("session:turn-end", ev => {
-      // Skip silent no-op turns (zero output, zero tool calls) — they can't
-      // have opened a PR.
-      if (ev.empty === true) return
+      // A silent no-op turn (zero output, zero tool calls) can't have opened
+      // a NEW PR, so the discovery lanes are skipped — but it CAN be the
+      // turn that finally reports the session's cost (see
+      // `safeRefreshCostOnly`'s doc), so that half still runs.
+      if (ev.empty === true) {
+        safeRefreshCostOnly(ev.sessionId)
+        return
+      }
       safeReconcile(ev.sessionId, false)
     }),
     opts.sessionEvents.on("session:exited", ev => {
@@ -151,6 +270,7 @@ export function createPrProvenanceReconciler(opts: {
     dispose() {
       for (const unsubscribe of unsubscribes) unsubscribe()
       stampedPrUrls.clear()
+      costRefreshedPrUrls.clear()
       lastPollAt.clear()
     },
   }

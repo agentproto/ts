@@ -23,6 +23,17 @@ export interface ModelRoute {
    * a Claude family for the generated alias; ignored on every routing path.
    */
   tier?: ModelTier;
+  /**
+   * Verified context window of the upstream route, in tokens. Surfaced in the
+   * /v1/models metadata when present; never guessed — leave absent when the
+   * limit for this specific route is not verified.
+   */
+  contextWindow?: number;
+  /**
+   * Verified max output tokens for the upstream route, in tokens. Same
+   * honesty rule as {@link ModelRoute.contextWindow}.
+   */
+  maxOutputTokens?: number;
 }
 
 /**
@@ -43,6 +54,20 @@ export interface ModelPack {
   label: string;
   description: string;
   models: Record<string, ModelRoute>;
+  /**
+   * Exclude-list of tool-name patterns applied to every request routed through
+   * this pack (wildcards allowed, e.g. "mcp__*"). Cuts upstream prefill cost
+   * when a client (e.g. Claude Desktop) sends hundreds of tool definitions.
+   * Applied after per-request header/query trims so an explicit client
+   * X-Proxy-Tools allow-list still wins.
+   */
+  toolsExclude?: string[];
+  /**
+   * Allow-list of tool-name patterns applied to every request routed through
+   * this pack (wildcards allowed). Kept only when no toolsAllow is set on the
+   * request itself; a request-level ?tools=/X-Proxy-Tools always wins.
+   */
+  toolsAllow?: string[];
 }
 
 // ── Official packs (committed) ─────────────────────────────────────────────
@@ -55,6 +80,7 @@ export const defaultPack: ModelPack = {
   label: 'Default transparent routes',
   description: 'Provider-transparent model IDs routed directly to each backend',
   models: {
+    'kimi-k3': { provider: 'moonshot', model: 'kimi-k3' },
     'kimi-k2.7-code': { provider: 'moonshot', model: 'kimi-k2.7-code' },
     'kimi-k2.6': { provider: 'moonshot', model: 'kimi-k2.6' },
     'llama-3.3-70b-versatile': { provider: 'groq', model: 'llama-3.3-70b-versatile' },
@@ -63,6 +89,11 @@ export const defaultPack: ModelPack = {
     'gpt-4.1': { provider: 'openai', model: 'gpt-4.1' },
     'gpt-4o': { provider: 'openai', model: 'gpt-4o' },
     'gpt-4o-mini': { provider: 'openai', model: 'gpt-4o-mini' },
+    // OpenRouter-hosted GLM. Also reachable via the transparent
+    // "openrouter/z-ai/glm-5.3-flash" reference, but a plain code is needed
+    // for the `@llm-endpoint` daemon route, which forwards a bare
+    // "<vendor>/<model>" string (one slash only) as the model field.
+    'z-ai/glm-5.3-flash': { provider: 'openrouter', model: 'z-ai/glm-5.3-flash' },
   },
 };
 
@@ -314,7 +345,7 @@ function validateModelRoute(route: unknown, where: string, errors: string[]): Mo
     errors.push(`${where}: expected an object, got ${route === null ? 'null' : typeof route}`);
     return null;
   }
-  const { provider, model, equivalentClaudeName, tier } = route;
+  const { provider, model, equivalentClaudeName, tier, contextWindow, maxOutputTokens } = route;
   let ok = true;
   if (typeof provider !== 'string' || provider.length === 0) {
     errors.push(`${where}.provider: required non-empty string`);
@@ -332,10 +363,24 @@ function validateModelRoute(route: unknown, where: string, errors: string[]): Mo
     errors.push(`${where}.tier: must be one of extra-high|high|medium|small when present`);
     ok = false;
   }
+  if (contextWindow !== undefined && !(typeof contextWindow === 'number' && Number.isFinite(contextWindow) && contextWindow > 0)) {
+    errors.push(`${where}.contextWindow: must be a positive finite number when present`);
+    ok = false;
+  }
+  if (maxOutputTokens !== undefined && !(typeof maxOutputTokens === 'number' && Number.isFinite(maxOutputTokens) && maxOutputTokens > 0)) {
+    errors.push(`${where}.maxOutputTokens: must be a positive finite number when present`);
+    ok = false;
+  }
   if (!ok || typeof provider !== 'string' || typeof model !== 'string') return null;
   const built: ModelRoute = { provider, model };
   if (typeof equivalentClaudeName === 'string') built.equivalentClaudeName = equivalentClaudeName;
   if (typeof tier === 'string' && isModelTier(tier)) built.tier = tier;
+  if (typeof contextWindow === 'number' && Number.isFinite(contextWindow) && contextWindow > 0) {
+    built.contextWindow = contextWindow;
+  }
+  if (typeof maxOutputTokens === 'number' && Number.isFinite(maxOutputTokens) && maxOutputTokens > 0) {
+    built.maxOutputTokens = maxOutputTokens;
+  }
   return built;
 }
 
@@ -355,10 +400,19 @@ export function validateModelPack(pack: unknown, label = 'pack'): ModelPackValid
   if (!isRecord(pack)) {
     return { ok: false, errors: [`${label}: expected an object, got ${pack === null ? 'null' : typeof pack}`] };
   }
-  const { id, label: packLabel, description, models } = pack;
+  const { id, label: packLabel, description, models, toolsExclude, toolsAllow } = pack;
   if (typeof id !== 'string' || id.length === 0) errors.push(`${label}.id: required non-empty string`);
   if (typeof packLabel !== 'string') errors.push(`${label}.label: required string`);
   if (typeof description !== 'string') errors.push(`${label}.description: required string`);
+  /** Validates an optional string[] of non-empty tool-name patterns. */
+  const validPatternList = (v: unknown): v is string[] =>
+    Array.isArray(v) && v.every((p) => typeof p === 'string' && p.length > 0);
+  if (toolsExclude !== undefined && !validPatternList(toolsExclude)) {
+    errors.push(`${label}.toolsExclude: must be an array of non-empty strings when present`);
+  }
+  if (toolsAllow !== undefined && !validPatternList(toolsAllow)) {
+    errors.push(`${label}.toolsAllow: must be an array of non-empty strings when present`);
+  }
   const builtModels: Record<string, ModelRoute> = {};
   if (!isRecord(models)) {
     errors.push(`${label}.models: required object mapping code → route`);
@@ -372,7 +426,17 @@ export function validateModelPack(pack: unknown, label = 'pack'): ModelPackValid
   // Re-narrow the primitives (the imperative checks above don't flow through) to
   // rebuild a typed ModelPack with no cast. Unreachable else — errors would be set.
   if (typeof id === 'string' && typeof packLabel === 'string' && typeof description === 'string') {
-    return { ok: true, pack: { id, label: packLabel, description, models: builtModels } };
+    return {
+      ok: true,
+      pack: {
+        id,
+        label: packLabel,
+        description,
+        models: builtModels,
+        ...(validPatternList(toolsExclude) ? { toolsExclude } : {}),
+        ...(validPatternList(toolsAllow) ? { toolsAllow } : {}),
+      },
+    };
   }
   return { ok: false, errors: [`${label}: failed final type narrowing`] };
 }

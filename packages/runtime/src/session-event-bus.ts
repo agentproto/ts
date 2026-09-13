@@ -17,16 +17,25 @@ import type { TaskStatus } from "./task-ledger.js"
 export type SessionEventType =
   | "session:turn-end"
   | "session:awaiting-input"
+  | "session:awaiting-input-flagged"
+  | "session:awaiting-question-answered"
   | "session:permission-request"
   | "session:permission-resolved"
   | "session:exited"
   | "session:reaped"
+  | "session:stalled"
+  | "session:stall-cleared"
+  | "session:watcher-attached"
+  | "session:watcher-detached"
+  | "session:bg-tasks-parked"
+  | "session:bg-tasks-cleared"
   | "session:resumed"
   | "session:spawned"
   | "session:command-done"
   | "session:model-changed"
   | "session:config-changed"
   | "session:renamed"
+  | "session:pinned-changed"
   | "policy:passed"
   | "policy:failed"
   | "policy:commit-ready"
@@ -36,6 +45,44 @@ export type SessionEventType =
   | "cron:failed"
   | "activity:changed"
   | "task:changed"
+  | "workflow:gate-report"
+  | "workflow:suspended"
+  | "workflow:suspend-resumed"
+  | "session:harness-warning"
+
+/**
+ * Fixed severity vocabulary for a judge-gate finding (WP-D). Deliberately
+ * small and fixed so `policy_status` output is comparable across different
+ * judge gates — but the engine never interprets it as a pass/fail threshold;
+ * see `JudgeVerdict`'s doc for why.
+ */
+export type VerdictSeverity = "info" | "low" | "medium" | "high" | "critical"
+
+/** One finding inside a structured judge verdict — mirrors the shape a real
+ *  consumer (the agentik-studio push gate reviewer) already produces. */
+export interface VerdictFinding {
+  severity: VerdictSeverity
+  file?: string
+  note: string
+}
+
+/**
+ * Structured judge-gate verdict (WP-D), an optional richer alternative to the
+ * plain `VERDICT: PASS|FAIL` text line WP7 already parses. `decision` is the
+ * SAME single bit the text line always carried: the engine's pass/fail comes
+ * directly from `decision`, never computed from `findings`' severities.
+ * Severity thresholds are deliberately the CALLER's business — encoded in the
+ * judge's own prompt ("FAIL if any finding is high or above"), not baked into
+ * this engine, because "what severity blocks" is domain vocabulary that
+ * differs per gate (a security review and a style lint don't share a bar).
+ * `summary`/`findings` are informational only, persisted so an operator
+ * reading a FAILED gate learns WHY it failed, not just THAT it failed.
+ */
+export interface JudgeVerdict {
+  decision: "PASS" | "FAIL"
+  summary?: string
+  findings?: VerdictFinding[]
+}
 
 /**
  * Structured detail on why a session is awaiting input, when derivable.
@@ -91,6 +138,40 @@ export interface SessionAwaitingInputEvent {
 }
 
 /**
+ * Emitted by `SessionsRegistry.flagAwaitingInput` (the `session_flag_status`
+ * MCP verb) when something EXTERNAL — a human, another agent, the future
+ * session watchdog — manually corrects a session's `awaitingInput`/
+ * `awaitingQuestion` classification, overriding (or confirming) what the
+ * internal heuristic (`deriveHeuristicQuestion`) or a driver-reported
+ * `agent-prompt` last set. Distinct from `session:awaiting-input` (which only
+ * ever fires when the flag flips TRUE, from the daemon's own turn-end
+ * detection): this fires for BOTH directions of a manual override, always
+ * carries the mandatory `reason` the caller gave (audit trail — this is the
+ * one write path for this field with no automatic sensor behind it), and
+ * `awaitingInput` states the value the override just set rather than being
+ * implied by the event firing at all. Same bus distribution as every other
+ * lifecycle event (`session_events_poll`, the webhook notifier, the routine
+ * engine, `session_monitor`).
+ */
+export interface SessionAwaitingInputFlaggedEvent {
+  type: "session:awaiting-input-flagged"
+  sessionId: string
+  awaitingInput: boolean
+  /** Required justification the caller passed to `session_flag_status` —
+   *  why this override was made. */
+  reason: string
+  label?: string
+  ts: string
+  /** Present only when `awaitingInput:true` and a `question` was attached —
+   *  mirrors the descriptor's `awaitingQuestion` after the override, same
+   *  shape as every other site that sets it (`source: "structured"`, since a
+   *  manual override is at least as authoritative as a driver-reported
+   *  prompt). Absent when `awaitingInput:false` (the override always clears
+   *  any prior question in that case) or when no `question` was given. */
+  question?: SessionAwaitingQuestion
+}
+
+/**
  * Emitted when a permission-hold session parks a `session/request_permission`
  * (see the pending-permissions inbox in sessions.ts). `permissionId` is the
  * stable id `permissions_respond` / `POST /permissions/:id` resolve it with.
@@ -101,6 +182,27 @@ export interface SessionPermissionRequestEvent {
   permissionId: string
   toolName?: string
   text: string
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted when a client's next prompt text matched one of a structured
+ * `awaitingQuestion`'s `options` (case-insensitive, trimmed) and was
+ * therefore treated as an answer instead of a normal turn — see
+ * `sessions.ts`'s structured-question-answer dispatch. Distinct from
+ * `session:awaiting-input-flagged`: that fires for an EXTERNAL manual
+ * override of the flag; this fires when the session's own declared options
+ * were used as intended, by whichever seam the prompt came through
+ * (`agent_prompt`, the HTTP prompt route, or the CLI).
+ */
+export interface SessionAwaitingQuestionAnsweredEvent {
+  type: "session:awaiting-question-answered"
+  sessionId: string
+  /** The matched option string, verbatim from `question.options`. */
+  answer: string
+  /** The question that was answered. */
+  question: SessionAwaitingQuestion
   label?: string
   ts: string
 }
@@ -155,6 +257,141 @@ export interface SessionReapedEvent {
   type: "session:reaped"
   sessionId: string
   idleMs: number
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted by the turn-liveness watchdog (`runStallWatchdogPass`) when a
+ * mid-turn agent-cli session's adapter stream has gone silent past the
+ * configured threshold: `busy:true`, not legitimately `blockedOn` a
+ * subagent/command, and no `lastActivityAt` traffic since. The target
+ * failure mode is a DEAD adapter stream — zero frames mid-turn, e.g. a
+ * network drop — that otherwise leaves the row `status:"running"`,
+ * `lastError:null`, indistinguishable from healthy long work except by
+ * manually comparing `lastActivityAt` to the clock. Detection + signal
+ * ONLY: nothing here kills or restarts the session (unlike `session:reaped`
+ * / crash-detect's `session:exited`). `stalledSinceMs` is the epoch ms of
+ * the last real activity that was observed before the trip — a consumer
+ * computes "silent for" as `Date.now() - stalledSinceMs`. Same bus
+ * distribution as every other lifecycle event (`session_events_poll`, the
+ * webhook notifier, the routine engine, `session_monitor`). Paired with
+ * `session:stall-cleared` when the flag is later cleared.
+ */
+export interface SessionStalledEvent {
+  type: "session:stalled"
+  sessionId: string
+  stalledSinceMs: number
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted when a session's `stalledSinceMs` flag (see {@link
+ * SessionStalledEvent}) is cleared — by new adapter activity
+ * (`pulseActivity`), the next turn starting, or the turn's own `finally`
+ * (busy flips false, so "mid-turn and silent" no longer holds either way).
+ * Does NOT imply the earlier trip was a false alarm — recovery from a
+ * genuinely dead stream normally happens via the turn eventually erroring
+ * out or being killed, not via a resumed stream; a clear immediately
+ * followed by fresh `lastActivityAt` traffic is the "it wasn't actually
+ * dead" case. Same bus distribution as every other lifecycle event.
+ */
+export interface SessionStallClearedEvent {
+  type: "session:stall-cleared"
+  sessionId: string
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted by the wait long-poll helper (`monitorSessionWait`) the moment a
+ * blocking wait actually SUBSCRIBES to this session — a `/sessions/:id/wait`
+ * long-poll or a `session_monitor` call that has to park. This is the bus
+ * twin of the ephemeral `watchers` descriptor counter (`incWatchers`,
+ * #session-visibility): where the counter lets `session_list` surface "N
+ * supervisors are blocked on this session", the event lets a LIVE consumer
+ * (the transcript panel inside the WATCHED session) react the instant a
+ * watcher appears rather than on its next descriptor poll. Detection +
+ * signal ONLY — nothing here changes the wait's own semantics. `watchers`
+ * is the counter AFTER the attach (read back from the registry, so a
+ * concurrent waiter is already reflected). `watcherSessionId` names the
+ * supervising session when the wait was initiated by one (the scoped
+ * orchestrator's `callerScope.ownerSessionId`); `label` is that session's
+ * label/title, resolved once at attach time (a best-effort snapshot, not
+ * live). Both absent for an anonymous CLI/HTTP waiter. Same bus distribution
+ * as every other lifecycle event (`session_events_poll`, the webhook
+ * notifier, the routine engine, `session_monitor`). Paired with
+ * `session:watcher-detached` when the wait resolves or times out.
+ */
+export interface SessionWatcherAttachedEvent {
+  type: "session:watcher-attached"
+  sessionId: string
+  watchers: number
+  watcherSessionId?: string
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted when a blocking wait on this session releases its watcher — the
+ * wait resolved (a matching lifecycle event landed) or timed out; see
+ * {@link SessionWatcherAttachedEvent}. `watchers` is the counter AFTER the
+ * detach, so a consumer can tell "the last watcher left" (`0`) from "one of
+ * several left". Detection + signal only — a zero count does NOT imply the
+ * session is unsupervised in every sense (a completion policy watches via
+ * its own mechanism, not this counter); it only means no `monitorSessionWait`
+ * long-poll is currently parked on it. Same bus distribution as every other
+ * lifecycle event.
+ */
+export interface SessionWatcherDetachedEvent {
+  type: "session:watcher-detached"
+  sessionId: string
+  watchers: number
+  watcherSessionId?: string
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted at turn-end when the turn that just finished started one or more
+ * BACKGROUND tool calls (a tool-call whose `arguments` object carries
+ * `run_in_background: true` — how Claude Code's Bash announces a
+ * `run_in_background` task; matched generically on the property, not the
+ * tool name) AND the session is NOT `awaitingInput`. The target failure
+ * mode is the turn-END twin of `session:stalled`: the harness's own
+ * task-completion notification does NOT trigger a new turn, so the session
+ * sits `busy:false`, `awaitingInput:false`, background tasks pending — a
+ * silent dead end that looks exactly like a session idle and waiting to be
+ * re-prompted. Detection + signal ONLY: nothing here re-prompts or wakes
+ * the session (no auto-wake — a wake-up path would have to decide what to
+ * say, and that policy belongs to the supervisor, not the daemon). `count`
+ * is how many background tool starts the turn observed. Same bus
+ * distribution as every other lifecycle event (`session_events_poll`, the
+ * webhook notifier, the routine engine, `session_monitor`). Paired with
+ * `session:bg-tasks-cleared` when the flag is later cleared.
+ */
+export interface SessionBgTasksParkedEvent {
+  type: "session:bg-tasks-parked"
+  sessionId: string
+  count: number
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted when a session's `pendingBgTasks` flag (see {@link
+ * SessionBgTasksParkedEvent}) is cleared — by the next turn starting (the
+ * session was re-prompted, so it is no longer parked: its new turn will see
+ * whatever the background tasks produced) or by the session exiting (a dead
+ * row carries no live flag). Does NOT imply the background tasks finished
+ * or their output was consumed — only that the "ended its turn with
+ * background work pending and no wake-up path" condition no longer holds.
+ * Same bus distribution as every other lifecycle event.
+ */
+export interface SessionBgTasksClearedEvent {
+  type: "session:bg-tasks-cleared"
+  sessionId: string
   label?: string
   ts: string
 }
@@ -227,6 +464,17 @@ export interface SessionModelChangedEvent {
   type: "session:model-changed"
   sessionId: string
   model: string
+  /**
+   * The model now believed to be ACTIVE — mirrors
+   * `SessionDescriptor.activeModel`. Absent only for adapters/paths that
+   * predate this field; once populated it's kept in lockstep with `model`
+   * (equal when a switch went through this daemon, divergent when learned
+   * from an adapter's own reply to a `/model` sent as an ordinary prompt).
+   * REPORTED BY THE ADAPTER, NOT INDEPENDENTLY VERIFIED when it diverges
+   * from `model` — see `SessionDescriptor.activeModel`'s doc. A display
+   * hint, never a source of billing/cost truth.
+   */
+  activeModel?: string
   label?: string
   ts: string
 }
@@ -294,6 +542,25 @@ export interface SessionRenamedEvent {
 }
 
 /**
+ * Emitted when an operator pins or unpins a session for list visibility
+ * (`POST /sessions/:id/pin`, the `session_set_pinned` MCP verb). Like
+ * `session:renamed`, this is NOT a `SessionConfig` axis — pinning never
+ * touches the live agent, the idle-reaper, or any notification path, it's
+ * purely a `SessionDescriptor.pinned` display/sort flag — so it rides its
+ * own event rather than `session:config-changed`. `pinned` carries the value
+ * now on the descriptor. Same bus distribution as every other lifecycle event
+ * (`session_events_poll`, the webhook notifier, the routine engine), which is
+ * how a live UI (the VS Code sessions webview) learns to resort its list
+ * without waiting for its next snapshot poll.
+ */
+export interface SessionPinnedEvent {
+  type: "session:pinned-changed"
+  sessionId: string
+  pinned: boolean
+  ts: string
+}
+
+/**
  * Emitted when a session is first registered in the registry (WP-R3) — both
  * the agent-cli spawn path (`spawnAgent`) and the terminal path (`spawnPty`).
  * The lineage-attribution signal a live UI (the VS Code sessions tree) uses to
@@ -317,6 +584,9 @@ export interface PolicyPassedEvent {
   type: "policy:passed"
   policyId: string
   sessionId: string
+  /** The judge's structured verdict (WP-D), when the gate was a judge gate
+   *  and the judge emitted a parseable one. Absent for shell/cost gates. */
+  verdict?: JudgeVerdict
   ts: string
 }
 
@@ -326,6 +596,10 @@ export interface PolicyFailedEvent {
   policyId: string
   sessionId: string
   exitCode?: number
+  /** The judge's structured verdict (WP-D), when the gate was a judge gate
+   *  and the judge emitted a parseable one. Absent for shell/cost gates, and
+   *  for a judge gate whose reply was unparseable (fail-safe FAIL). */
+  verdict?: JudgeVerdict
   ts: string
 }
 
@@ -418,19 +692,124 @@ export interface TaskChangedEvent {
   ts: string
 }
 
+/**
+ * Emitted by the workflow runner (`workflow-runner.ts`) for every `kind:
+ * "gate"` step command attempt — not just the last — carrying that attempt's
+ * pass/fail, exit code, and parsed report (AIP-15 P3). Rides the same bus
+ * fan-out as every other lifecycle event (`session_events_poll`, the
+ * webhook notifier, `session_monitor`), giving a live watcher visibility
+ * into a retry-with-reprompt loop as it happens, not just its final state.
+ */
+export interface WorkflowGateReportEvent {
+  type: "workflow:gate-report"
+  runId: string
+  stepId: string
+  ok: boolean
+  exitCode: number
+  report: unknown
+  attempt: number
+  ts: string
+}
+
+/**
+ * Emitted by the workflow runner (`workflow-runner.ts`) when a `kind:
+ * "approval"` step parks its run awaiting a human decision — the run's
+ * status flips to `awaiting-approval`, `workflow_status` carries
+ * `awaitingApproval`, and `workflow_escalation_resolve` (approval form)
+ * resolves it. Same bus distribution as every other lifecycle event.
+ */
+export interface WorkflowApprovalRequestedEvent {
+  type: "workflow:approval-requested"
+  runId: string
+  approvalId: string
+  stepId: string
+  prompt: string
+  approvers: readonly string[]
+  artifacts?: readonly string[]
+  requestedAt: string
+  ts: string
+}
+
+/**
+ * Emitted by the workflow runner when a parked approval is resolved — by a
+ * human (`workflow_escalation_resolve`), a timeout (`who: "timeout"`), or a
+ * cancel. The run resumes (or unwinds) right after this fires.
+ */
+export interface WorkflowApprovalResolvedEvent {
+  type: "workflow:approval-resolved"
+  runId: string
+  approvalId: string
+  stepId: string
+  approved: boolean
+  who: string
+  note?: string
+  ts: string
+}
+
+/**
+ * Emitted by the workflow runner (`workflow-runner.ts`) when a `kind:
+ * "suspend"` step parks its run awaiting an external event — the run's
+ * status flips to `awaiting-input` with a durable `awaitingSuspend` record
+ * (AIP-15 conformance rule 7), and `workflow_escalation_resolve`'s suspend
+ * form resumes it. Same bus distribution as every other lifecycle event.
+ */
+export interface WorkflowSuspendedEvent {
+  type: "workflow:suspended"
+  runId: string
+  stepId: string
+  on: readonly string[]
+  ts: string
+}
+
+/**
+ * Emitted by the workflow runner when a parked `kind: "suspend"` step is
+ * resumed — live (the run continues) or after a daemon restart (the run's
+ * execution could not resume and it is marked failed with a clear reason).
+ */
+export interface WorkflowSuspendResumedEvent {
+  type: "workflow:suspend-resumed"
+  runId: string
+  stepId: string
+  ts: string
+}
+
+/**
+ * Emitted when a `kind: "agent"` step's `harness` block declared a field the
+ * spawn couldn't honor (today: `harness.tools` — no adapter exposes a
+ * generic per-spawn tool allowlist this runtime can drive; see
+ * `AgentHarness.tools`'s doc) — the "never silently ignore" fallback AIP-15
+ * P2 requires. Same bus distribution as every other lifecycle event.
+ */
+export interface SessionHarnessWarningEvent {
+  type: "session:harness-warning"
+  sessionId: string
+  warnings: string[]
+  label?: string
+  ts: string
+}
+
 export type SessionEvent =
   | SessionTurnEndEvent
   | SessionAwaitingInputEvent
+  | SessionAwaitingInputFlaggedEvent
+  | SessionAwaitingQuestionAnsweredEvent
   | SessionPermissionRequestEvent
   | SessionPermissionResolvedEvent
   | SessionExitedEvent
   | SessionReapedEvent
+  | SessionStalledEvent
+  | SessionStallClearedEvent
+  | SessionWatcherAttachedEvent
+  | SessionWatcherDetachedEvent
+  | SessionBgTasksParkedEvent
+  | SessionBgTasksClearedEvent
   | SessionResumedEvent
   | SessionSpawnedEvent
   | SessionCommandDoneEvent
   | SessionModelChangedEvent
   | SessionConfigChangedEvent
   | SessionRenamedEvent
+  | SessionPinnedEvent
   | PolicyPassedEvent
   | PolicyFailedEvent
   | PolicyCommitReadyEvent
@@ -440,6 +819,12 @@ export type SessionEvent =
   | CronFailedEvent
   | ActivityChangedEvent
   | TaskChangedEvent
+  | WorkflowGateReportEvent
+  | WorkflowApprovalRequestedEvent
+  | WorkflowApprovalResolvedEvent
+  | WorkflowSuspendedEvent
+  | WorkflowSuspendResumedEvent
+  | SessionHarnessWarningEvent
 
 export interface SessionEventBus {
   emit(ev: SessionEvent): void

@@ -13,11 +13,19 @@ export {
   compileWorkflow,
   WorkflowCompileError,
   resolveRef,
+  resolveRefPrefixed,
   resolveValue,
   evalPredicate,
   type CompileWorkflowOptions,
 } from "./compile-workflow.js"
 export { compileWorkflowManifest } from "./load-workflow.js"
+export { buildAgentStep, type AgentStepFields } from "./build-agent-step.js"
+export {
+  materializeKnowledge,
+  resolveKnowledgeSelectors,
+  type MaterializedKnowledge,
+} from "./knowledge.js"
+export { NodeFsPort } from "./node-fs-port.js"
 export type {
   Bindings,
   Selector,
@@ -36,6 +44,14 @@ export type {
   GroupStep,
   SubworkflowStep,
   AgentStep,
+  AgentHarness,
+  HarnessKnowledgeSelector,
+  KnowledgeAppliedRecord,
+  GateStep,
+  GateCommandResult,
+  GateCommandRunner,
+  GateReportEvent,
+  AgentRefResolution,
   AgentSandboxRef,
   AgentSessionHost,
   StepCache,
@@ -43,6 +59,7 @@ export type {
   RuntimeWorkflow,
   RunWorkflowArgs,
   ApprovalRequest,
+  ApprovalDecision,
   ResumeRequest,
   WorkflowRunResult,
 } from "./types.js"

@@ -103,6 +103,25 @@ function legacyAgentSession(): AgentSessionLike {
   }
 }
 
+/** A driver session that records the exact model id passed to `setModel`,
+ *  so tests can assert what the adapter's wire receives after registry-level
+ *  normalization. */
+function recordingAgentSession(): AgentSessionLike & { lastSetModel?: string } {
+  const session: AgentSessionLike & { lastSetModel?: string } = {
+    sessionId: "recording-session",
+    async *send() {
+      yield { kind: "turn-end", reason: "completed" }
+    },
+    async cancel() {},
+    async close() {},
+    async setModel(modelId: string) {
+      session.lastSetModel = modelId
+      return { applied: true, model: modelId }
+    },
+  }
+  return session
+}
+
 describe("SessionsRegistry.setModel", () => {
   it("applies the switch, updates the descriptor's model, and emits session:model-changed", async () => {
     const bus = createSessionEventBus()
@@ -121,12 +140,16 @@ describe("SessionsRegistry.setModel", () => {
     const result = await reg.setModel(desc.id, "claude-sonnet-5")
     expect(result).toEqual({ applied: true, model: "claude-sonnet-5" })
     expect(reg.get(desc.id)?.model).toBe("claude-sonnet-5")
+    // A switch made through this daemon means requested and active agree —
+    // see SessionDescriptor.activeModel's doc.
+    expect(reg.get(desc.id)?.activeModel).toBe("claude-sonnet-5")
 
     const modelChanged = seen.find(ev => ev.type === "session:model-changed")
     expect(modelChanged).toEqual({
       type: "session:model-changed",
       sessionId: desc.id,
       model: "claude-sonnet-5",
+      activeModel: "claude-sonnet-5",
       label: "my-conversation",
       ts: expect.any(String),
     })
@@ -205,6 +228,180 @@ describe("SessionsRegistry.setModel", () => {
       stderr: "",
     })
     await expect(reg.setModel(desc.id, "x")).rejects.toThrow(/not an agent-cli session/)
+    reg.shutdown()
+  })
+
+  it("strips only @openrouter for derived-from-model adapters (Hermes / Kimi)", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const session = recordingAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: session,
+      adapterSlug: "hermes",
+      routeSelection: "derived-from-model",
+      model: "moonshotai/kimi-k2.7-code@openrouter",
+    })
+
+    await expect(
+      reg.setModel(desc.id, "moonshotai/kimi-k2.7-code@openrouter"),
+    ).resolves.toEqual({
+      applied: true,
+      model: "moonshotai/kimi-k2.7-code@openrouter",
+    })
+    expect(session.lastSetModel).toBe("moonshotai/kimi-k2.7-code")
+    expect(reg.get(desc.id)?.model).toBe("moonshotai/kimi-k2.7-code@openrouter")
+    reg.shutdown()
+  })
+
+  it("strips only @openrouter for derived-from-model adapters (Hermes / DeepSeek)", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const session = recordingAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: session,
+      adapterSlug: "hermes",
+      routeSelection: "derived-from-model",
+      model: "deepseek/deepseek-chat@openrouter",
+    })
+
+    await expect(
+      reg.setModel(desc.id, "deepseek/deepseek-v4-pro@openrouter"),
+    ).resolves.toEqual({
+      applied: true,
+      model: "deepseek/deepseek-v4-pro@openrouter",
+    })
+    expect(session.lastSetModel).toBe("deepseek/deepseek-v4-pro")
+    expect(reg.get(desc.id)?.model).toBe("deepseek/deepseek-v4-pro@openrouter")
+    reg.shutdown()
+  })
+
+  it("bares direct vendor/product refs for fixed native adapters (claude-code / anthropic)", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const session = recordingAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: session,
+      adapterSlug: "claude-code",
+      adapterProvider: "anthropic",
+      model: "anthropic/claude-sonnet-5",
+    })
+
+    await expect(
+      reg.setModel(desc.id, "anthropic/claude-opus-4-8"),
+    ).resolves.toEqual({
+      applied: true,
+      model: "anthropic/claude-opus-4-8",
+    })
+    expect(session.lastSetModel).toBe("claude-opus-4-8")
+    expect(reg.get(desc.id)?.model).toBe("anthropic/claude-opus-4-8")
+    reg.shutdown()
+  })
+
+  it("keeps vendor/product on a non-native gateway while stripping the route suffix", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const session = recordingAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: session,
+      adapterSlug: "claude-code",
+      routeSelection: "free",
+      adapterProvider: "anthropic",
+      route: { gateway: "openrouter" },
+      model: "moonshotai/kimi-k2.7-code@openrouter",
+    })
+
+    await expect(
+      reg.setModel(desc.id, "deepseek/deepseek-v4-pro@openrouter"),
+    ).resolves.toEqual({
+      applied: true,
+      model: "deepseek/deepseek-v4-pro@openrouter",
+    })
+    expect(session.lastSetModel).toBe("deepseek/deepseek-v4-pro")
+    expect(reg.get(desc.id)?.model).toBe("deepseek/deepseek-v4-pro@openrouter")
+    reg.shutdown()
+  })
+
+  it("hydrates adapter metadata before switching a pre-normalization descriptor", async () => {
+    const session = recordingAgentSession()
+    const reg = createSessionsRegistry({
+      persist: false,
+      resolveAgentAdapter: async () => ({
+        startSession: async () => recordingAgentSession(),
+        commandPreview: "claude-code",
+        routeSelection: "free",
+        authDescriptor: { provider: "anthropic" },
+      }),
+    })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: session,
+      adapterSlug: "claude-code",
+      model: "anthropic/claude-sonnet-5",
+    })
+
+    await reg.setModel(desc.id, "anthropic/claude-opus-4-8")
+    expect(session.lastSetModel).toBe("claude-opus-4-8")
+    expect(reg.get(desc.id)).toMatchObject({
+      model: "anthropic/claude-opus-4-8",
+      routeSelection: "free",
+      adapterProvider: "anthropic",
+    })
+    reg.shutdown()
+  })
+
+  it("keeps the cross-route guard and does not call setModel across routes", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const session = recordingAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: session,
+      adapterSlug: "claude-code",
+      adapterProvider: "anthropic",
+      model: "anthropic/claude-sonnet-5",
+    })
+
+    const result = await reg.setModel(desc.id, "deepseek/deepseek-v4-pro@openrouter")
+    expect(result).toEqual({
+      applied: false,
+      reason: "requires-restart",
+      suggestedOverride: {
+        route: { gateway: "openrouter" },
+        model: "deepseek/deepseek-v4-pro@openrouter",
+      },
+    })
+    expect(session.lastSetModel).toBeUndefined()
+    reg.shutdown()
+  })
+
+  it("recognizes router-prefixed target ids in the cross-route guard", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const session = recordingAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: session,
+      adapterSlug: "claude-code",
+      adapterProvider: "anthropic",
+      model: "anthropic/claude-sonnet-5",
+    })
+
+    await expect(
+      reg.setModel(desc.id, "openrouter/deepseek/deepseek-v4-pro"),
+    ).resolves.toEqual({
+      applied: false,
+      reason: "requires-restart",
+      suggestedOverride: {
+        route: { gateway: "openrouter" },
+        model: "openrouter/deepseek/deepseek-v4-pro",
+      },
+    })
+    expect(session.lastSetModel).toBeUndefined()
     reg.shutdown()
   })
 })

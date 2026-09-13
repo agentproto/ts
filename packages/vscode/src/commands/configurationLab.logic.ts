@@ -374,10 +374,10 @@ function buildEffectiveConfig(
     }),
   )
   fields.push(
-    effectiveField("Auth profile", {
+    effectiveField("Wallet", {
       explicit: profileIsDefault ? undefined : selection.profile,
       defaultValue: profileIsDefault ? selection.profile : undefined,
-      detail: profileIsDefault ? "default eligible profile" : selection.profile ? undefined : "daemon resolves default wallet",
+      detail: profileIsDefault ? "default eligible wallet" : selection.profile ? undefined : "daemon resolves default wallet",
     }),
   )
   fields.push(

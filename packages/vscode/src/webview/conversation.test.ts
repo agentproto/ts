@@ -102,6 +102,18 @@ describe("reduceConversation", () => {
     })
   })
 
+  it("carries a user-prompt record's `source` onto the turn as promptSource", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "user-prompt", text: "status?", source: "agent:sess_boss1" }),
+      rec({ kind: "turn-end", reason: "completed" }),
+      rec({ kind: "user-prompt", text: "a human turn" }),
+    ])
+    expect(conv.turns[0]!.promptSource).toBe("agent:sess_boss1")
+    // A source-less prompt (human) stays without the field.
+    expect(conv.turns[conv.turns.length - 1]!.promptSource).toBeUndefined()
+  })
+
   it("keeps reasoning, text, and tool segments in emission order", () => {
     freshSeq()
     const conv = reduceConversation("s1", [
@@ -133,6 +145,74 @@ describe("reduceConversation", () => {
     expect((asst.segments[3] as { text: string }).text).toBe("Done\n")
   })
 
+  it("rejoins an unterminated fragment split by an interleaved tool-call (mid-word debounce flush)", () => {
+    freshSeq()
+    // Real shape from a recorded session: the model paused >250ms mid-word
+    // while emitting a tool_use block, so the transcript debounce flushed
+    // "Bien re", the tool-call record landed, then the continuation arrived.
+    const conv = reduceConversation("s1", [
+      rec({ kind: "user-prompt", text: "go" }),
+      // The writer's debounce flush flags the mid-line fragment `partial`.
+      rec({ kind: "text-delta", text: "Bien re", partial: true }),
+      rec({ kind: "tool-call", toolCallId: "t1", toolName: "bash", arguments: { command: "ls" } }),
+      rec({ kind: "text-delta", text: "çu — suite." }),
+      rec({ kind: "turn-end", reason: "completed" }),
+    ])
+    const asst = conv.turns[1]!
+    // ONE sentence, not two paragraphs — and the tool card keeps its slot.
+    expect(asst.segments.map(s => s.kind)).toEqual(["assistant-text", "tool"])
+    expect(asst.segments[0]).toMatchObject({ kind: "assistant-text", text: "Bien reçu — suite." })
+    expect(asst.segments[1]).toMatchObject({ kind: "tool", toolCallId: "t1" })
+  })
+
+  it("does NOT rejoin across a tool-call when the earlier line was terminated (control)", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "user-prompt", text: "go" }),
+      rec({ kind: "text-delta", text: "done.\n" }), // terminated — carries its "\n"
+      rec({ kind: "tool-call", toolCallId: "t1", toolName: "bash" }),
+      rec({ kind: "text-delta", text: "Next thing." }),
+      rec({ kind: "turn-end", reason: "completed" }),
+    ])
+    const asst = conv.turns[1]!
+    expect(asst.segments.map(s => s.kind)).toEqual(["assistant-text", "tool", "assistant-text"])
+    expect(asst.segments[0]).toMatchObject({ text: "done.\n" })
+    expect(asst.segments[2]).toMatchObject({ text: "Next thing." })
+  })
+
+  it("does NOT rejoin across a tool-call when the earlier flush was final but unterminated", () => {
+    freshSeq()
+    // The writer's ordering flush (flushBuffers on the next tool-call) emits
+    // the END of a text block as a non-partial record with no trailing "\n" —
+    // the standard end-of-message shape. Gluing here ran whole paragraphs
+    // together ("…the client.Trial/grace logic…").
+    const conv = reduceConversation("s1", [
+      rec({ kind: "user-prompt", text: "go" }),
+      rec({ kind: "text-delta", text: "Checking the client." }), // final, no "\n", no partial
+      rec({ kind: "tool-call", toolCallId: "t1", toolName: "bash" }),
+      rec({ kind: "text-delta", text: "Trial logic lives in Simone." }),
+      rec({ kind: "turn-end", reason: "completed" }),
+    ])
+    const asst = conv.turns[1]!
+    expect(asst.segments.map(s => s.kind)).toEqual(["assistant-text", "tool", "assistant-text"])
+    expect(asst.segments[0]).toMatchObject({ text: "Checking the client." })
+    expect(asst.segments[2]).toMatchObject({ text: "Trial logic lives in Simone." })
+  })
+
+  it("treats a `partial`-flagged flush as unterminated even when it happens to end in a newline", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "user-prompt", text: "go" }),
+      rec({ kind: "text-delta", text: "list:\n", partial: true }),
+      rec({ kind: "tool-call", toolCallId: "t1", toolName: "bash" }),
+      rec({ kind: "text-delta", text: "- item one\n" }),
+      rec({ kind: "turn-end", reason: "completed" }),
+    ])
+    const asst = conv.turns[1]!
+    expect(asst.segments.map(s => s.kind)).toEqual(["assistant-text", "tool"])
+    expect(asst.segments[0]).toMatchObject({ text: "list:\n- item one\n" })
+  })
+
   it("correlates a tool-result with its earlier tool-call by toolCallId", () => {
     freshSeq()
     const conv = reduceConversation("s1", [
@@ -143,6 +223,38 @@ describe("reduceConversation", () => {
     // One card — the result folded into the call, not a second segment.
     expect(tools).toHaveLength(1)
     expect(tools[0]).toMatchObject({ status: "ok", result: "contents", toolName: "read" })
+  })
+
+  it("settles nested streaming calls at turn-end without overwriting an arrived result", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "tool-call", toolCallId: "outer", toolName: "View Image", arguments: { path: "one.png" } }),
+      rec({ kind: "tool-call", toolCallId: "inner", toolName: "View Image", arguments: { path: "two.png" } }),
+      // Streaming updates enrich the already-announced nested calls rather
+      // than creating cards of their own.
+      rec({ kind: "tool-call", toolCallId: "outer", toolName: "View Image /one.png", isUpdate: true }),
+      rec({ kind: "tool-call", toolCallId: "inner", toolName: "View Image /two.png", isUpdate: true }),
+      // The inner result arrived; Hermes omitted the outer completion.
+      rec({ kind: "tool-result", toolCallId: "inner", result: "rendered", isError: false }),
+      rec({ kind: "turn-end", reason: "completed" }),
+    ])
+
+    const tools = conv.turns[0]!.segments.filter(s => s.kind === "tool")
+    expect(tools).toHaveLength(2)
+    expect(tools).toMatchObject([
+      { toolCallId: "outer", toolName: "View Image /one.png", status: "ok" },
+      { toolCallId: "inner", toolName: "View Image /two.png", status: "ok", result: "rendered" },
+    ])
+
+    // The presentation/activity layer receives no pending leaf, so it stops
+    // ticking and the closed row reports completed steps instead of running.
+    const presented = presentConversation(conv, {
+      renderMarkdown: text => text,
+      escapeHtml: text => text,
+    })
+    const activity = presented.turns[0]!.segments[0] as PresentedActivitySegment
+    expect(activity).toMatchObject({ kind: "activity", status: "ok", summary: "2 steps" })
+    expect(activity.pendingSince).toBeUndefined()
   })
 
   it("marks a failed tool-result as error status", () => {
@@ -187,6 +299,44 @@ describe("reduceConversation", () => {
     expect(plans[0]).toMatchObject({ done: 1, total: 2 })
   })
 
+  it("preserves plan title through reducer and presenter", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "user-prompt", text: "plan it" }),
+      rec({
+        kind: "plan",
+        title: "Multi-provider workspace-brain",
+        entries: [
+          { content: "step 1", priority: "high", status: "pending" },
+          { content: "step 2", priority: "medium", status: "pending" },
+        ],
+      }),
+    ])
+    const plan = conv.turns[1]!.segments.find(s => s.kind === "plan")!
+    expect(plan).toMatchObject({ title: "Multi-provider workspace-brain", done: 0, total: 2 })
+  })
+
+  it("adopts title from a later plan update if the first had none", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "user-prompt", text: "plan it" }),
+      rec({
+        kind: "plan",
+        entries: [{ content: "step 1", priority: "high", status: "pending" }],
+      }),
+      rec({
+        kind: "plan",
+        title: "Late title",
+        entries: [
+          { content: "step 1", priority: "high", status: "completed" },
+          { content: "step 2", priority: "medium", status: "pending" },
+        ],
+      }),
+    ])
+    const plan = conv.turns[1]!.segments.find(s => s.kind === "plan")!
+    expect(plan).toMatchObject({ title: "Late title", done: 1, total: 2 })
+  })
+
   it("folds usage_update and usage_snapshot into merged conversation metadata", () => {
     freshSeq()
     const conv = reduceConversation("s1", [
@@ -216,6 +366,54 @@ describe("reduceConversation", () => {
     expect(kinds).toEqual(["agent-question", "error"])
     expect(conv.turns[0]!.segments[0]).toMatchObject({ options: ["Allow", "Deny"] })
     expect(conv.turns[0]!.segments[1]).toMatchObject({ message: "kaput" })
+  })
+
+  it("pairs each option's id WITH its label in optionItems, in offer order", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({
+        kind: "agent-prompt",
+        toolCallId: "p1",
+        options: [
+          { optionId: "allow_once", name: "Allow" },
+          { optionId: "allow_always", label: "Allow" }, // duplicate label — ids must not collide
+          "Deny", // plain string: label only, not respondable
+        ],
+      }),
+    ])
+    const question = conv.turns[0]!.segments.find(s => s.kind === "agent-question")!
+    expect(question).toMatchObject({
+      options: ["Allow", "Allow", "Deny"],
+      optionItems: [
+        { id: "allow_once", label: "Allow" },
+        { id: "allow_always", label: "Allow" },
+        { label: "Deny" },
+      ],
+      optionsById: { allow_once: "Allow", allow_always: "Allow" },
+    })
+  })
+
+  it("marks a question resolved once a matching permission-resolved record arrives", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "agent-prompt", toolCallId: "p1", options: [{ optionId: "a", name: "Allow" }, "Deny"] }),
+      rec({ kind: "permission-resolved", toolCallId: "p1", decision: "approve", optionId: "a" }),
+    ])
+    const question = conv.turns[0]!.segments.find(s => s.kind === "agent-question")
+    expect(question).toMatchObject({
+      toolCallId: "p1",
+      resolved: { decision: "approve", optionId: "a" },
+    })
+  })
+
+  it("ignores a permission-resolved record with no matching pending question", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "permission-resolved", toolCallId: "unknown", decision: "deny" }),
+    ])
+    // No agent-prompt was ever seen for "unknown" — nothing to resolve, and no
+    // segment gets synthesized out of thin air.
+    expect(conv.turns.flatMap(t => t.segments)).toHaveLength(0)
   })
 
   // ── Idempotency / incremental replay ──────────────────────────────────
@@ -396,6 +594,18 @@ describe("provider-family reasoning normalization → one collapsed segment", ()
   })
 })
 
+// Recurses into activity-group children (groupActivity folds ≥2 consecutive
+// tool/reasoning segments into one 'activity' wrapper) — a test asserting on
+// "all tool segments" must look inside, or a fold silently drops coverage.
+function allToolSegments(segments: readonly PresentedSegment[]): PresentedToolSegment[] {
+  const out: PresentedToolSegment[] = []
+  for (const seg of segments) {
+    if (seg.kind === "tool") out.push(seg)
+    else if (seg.kind === "activity") out.push(...allToolSegments(seg.children))
+  }
+  return out
+}
+
 describe("presentConversation", () => {
   const renderers = {
     // Stub renderers whose output makes escaping/markdown observable.
@@ -466,6 +676,46 @@ describe("presentConversation", () => {
     // cross the boundary at all — the host re-derives it on demand instead.
     expect(tool.resultText).not.toContain("SECRET_TAIL")
     expect(JSON.stringify(tool)).not.toContain("SECRET_TAIL")
+  })
+
+  it("flags a still-running run_in_background tool call as background", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({
+        kind: "tool-call",
+        toolCallId: "t1",
+        toolName: "bash",
+        arguments: { command: "pnpm dev", run_in_background: true },
+      }),
+    ])
+    const tool = presentConversation(conv, renderers).turns[0]!.segments.find(
+      s => s.kind === "tool",
+    ) as PresentedToolSegment
+    expect(tool.status).toBe("pending")
+    expect(tool.background).toBe(true)
+  })
+
+  it("does not flag a settled run_in_background call, or a foreground call, as background", () => {
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({
+        kind: "tool-call",
+        toolCallId: "t1",
+        toolName: "bash",
+        arguments: { command: "pnpm dev", run_in_background: true },
+      }),
+      rec({ kind: "tool-result", toolCallId: "t1", result: "done", isError: false }),
+      rec({ kind: "tool-call", toolCallId: "t2", toolName: "bash", arguments: { command: "ls" } }),
+    ])
+    // Two consecutive tool segments fold into one activity group (groupActivity,
+    // MIN_ACTIVITY_GROUP = 2) — recurse into `children` to find both underneath.
+    const tools = allToolSegments(presentConversation(conv, renderers).turns.flatMap(t => t.segments))
+    expect(tools).toHaveLength(2)
+    // Settled — the background window has closed even though it started as one.
+    expect(tools[0]!.background).toBeUndefined()
+    // Never backgrounded to begin with, and still pending.
+    expect(tools[1]!.status).toBe("pending")
+    expect(tools[1]!.background).toBeUndefined()
   })
 
   it("preserves segment ids and usage metadata through presentation", () => {

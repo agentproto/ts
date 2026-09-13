@@ -19,7 +19,7 @@ metadata:
 >   `CAMOFOX_URL` (⚠️ use `127.0.0.1`, not `localhost` — node/undici picks IPv6
 >   ::1 and fails).
 > - **X adapter** — `SOCIAL_PLATFORMS.x` in `@agstudio/browser-social`
->   (`x.adapter.ts`): profile · authored · engagement-given/received ·
+>   (`sites/x/adapter.ts`): profile · authored · engagement-given/received ·
 >   connections, as a `SocialSourcePort`. queryIds read **live from X's JS
 >   bundle** (drift-proof); `features` flags **self-heal** on 400s. The capture
 >   recipe lives in the registry, not a script-local helper.

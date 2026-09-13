@@ -5,6 +5,7 @@ import {
   computeContextPct,
   contextContinuityNextAction,
   contextContinuityStateForPct,
+  isContextContinuityHardStopped,
   resolveContextContinuityPolicy,
   validateContextContinuityPolicy,
   type ContextContinuityPolicy,
@@ -100,6 +101,20 @@ describe("computeContextPct", () => {
     expect(computeContextPct(1000, 550)).toBe(55)
     expect(computeContextPct(1000, 555)).toBe(56)
   })
+
+  // Regression: an adapter with no real context-window figure (e.g. pi's
+  // historical bug, adapters/pi/src/pi-events.ts) can report the exact same
+  // number for both fields. That's indistinguishable from "unknown" — never
+  // a real 100% — so the rail must not act on it (sess_e9edfc55: this
+  // pinned contextPct at 100% and hard-stopped a healthy session on turn 1).
+  it("returns null when contextSize === contextUsed (degenerate, indistinguishable from unknown)", () => {
+    expect(computeContextPct(9009, 9009)).toBeNull()
+    expect(computeContextPct(1, 1)).toBeNull()
+  })
+
+  it("still computes a real percentage when used is merely close to, but not equal to, size", () => {
+    expect(computeContextPct(9009, 9008)).toBe(100)
+  })
 })
 
 describe("contextContinuityStateForPct", () => {
@@ -181,5 +196,24 @@ describe("computeContextContinuityStatus", () => {
     expect(status.state).toBe("hard-stop")
     expect(status.nextAction).toBe("hard-stop")
     expect(status.nextThresholdDelta).toBeNull()
+  })
+
+  // Regression for sess_e9edfc55 (pi adapter, moonshotai/kimi-k2.5): the
+  // adapter's contextSize/contextUsed were both 9009 (its per-turn token
+  // total, echoed into both fields for lack of a real window figure). The
+  // rail must treat that as unknown and take no action — not hard-stop a
+  // session on its very first turn.
+  it("takes no rail action when contextSize === contextUsed (the pi turn-1 bug)", () => {
+    const status = computeContextContinuityStatus("sess_e9edfc55", policy, 9009, 9009)
+    expect(status.contextPct).toBeNull()
+    expect(status.state).toBe("ok")
+    expect(status.nextAction).toBe("none")
+    expect(isContextContinuityHardStopped(status.contextPct, policy)).toBe(false)
+  })
+
+  it("takes no rail action when contextSize is entirely absent", () => {
+    const status = computeContextContinuityStatus("sess_1", policy, undefined, 500)
+    expect(status.nextAction).toBe("none")
+    expect(isContextContinuityHardStopped(status.contextPct, policy)).toBe(false)
   })
 })

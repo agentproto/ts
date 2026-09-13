@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/worktree-agent-example",
-  "version": "0.0.6",
+  "version": "0.0.15",
   "description": "Example: a code-defined AIP-15 workflow that provisions a git worktree, runs a coding agent in it (AgentStep.cwd bound to the provisioned worktree), gates the result, waits for human approval, then cleans up.",
   "private": true,
   "license": "Apache-2.0",
@@ -20,9 +20,9 @@
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   }
 }

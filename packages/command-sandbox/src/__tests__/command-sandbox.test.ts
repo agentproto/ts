@@ -24,6 +24,7 @@ import {
   resolveCommandSandbox,
   seatbeltSandbox,
 } from "../index.js"
+import { probeSeatbelt, TEST_OVERRIDE as SEATBELT_TEST_OVERRIDE } from "./seatbelt-capability.js"
 
 describe("buildSeatbeltProfile", () => {
   it("allows default, denies home, re-allows workspace + extras, denies net (strict)", () => {
@@ -368,11 +369,41 @@ describe("bwrapSandbox.wrap", () => {
   })
 })
 
-// End-to-end: only where Seatbelt actually exists. Skipped on Linux CI.
-const canRunSeatbelt =
-  process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec")
+describe("probeSeatbelt", () => {
+  it("honours the test-only override verbatim (the hook used to exercise the skip path on a capable host)", () => {
+    const forced = { supported: false, reason: "forced-false (test-only override)" }
+    const prev = SEATBELT_TEST_OVERRIDE.value
+    SEATBELT_TEST_OVERRIDE.value = forced
+    try {
+      expect(probeSeatbelt()).toBe(forced)
+    } finally {
+      SEATBELT_TEST_OVERRIDE.value = prev
+    }
+  })
 
-describe.runIf(canRunSeatbelt)("seatbelt end-to-end", () => {
+  it("caches the verdict per process — the second call returns the same object without re-probing", () => {
+    const first = probeSeatbelt()
+    const second = probeSeatbelt()
+    expect(second).toBe(first)
+  })
+})
+
+// End-to-end: only where Seatbelt actually exists AND this process may
+// actually spawn it. The platform/binary conditions handle "no sandbox-exec
+// at all" (e.g. Linux CI); the runtime probe below handles "sandbox-exec
+// exists but nesting is denied because this test process is itself already
+// confined" — probed by really running a trivial sandbox-exec once and
+// caching the verdict per process.
+const seatbelt = probeSeatbelt()
+const canRunSeatbelt =
+  process.platform === "darwin" &&
+  existsSync("/usr/bin/sandbox-exec") &&
+  seatbelt.supported
+if (!canRunSeatbelt && seatbelt.reason) {
+  console.warn(`[skip] seatbelt end-to-end: ${seatbelt.reason}`)
+}
+
+describe.skipIf(!canRunSeatbelt)("seatbelt end-to-end", () => {
   it("allows a workspace read but denies a home-dir read", async () => {
     // Both dirs live under $HOME so the deny-home rule is what's under test:
     // the workspace re-allow must win for one and not the other.

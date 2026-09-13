@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "target": "es2022",
+    "lib": ["es2022", "dom"],
+    "types": [],
+    "skipLibCheck": false,
+    "paths": {
+      "zod": ["./node_modules/zod"]
+    }
+  },
+  "include": ["consumer.ts"]
+}

@@ -23,12 +23,56 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
+import { listModels } from "@agentproto/model-catalog"
 import type {
   AuthStore,
   CapabilityStrategy,
   CredSource,
   ProviderCapability,
 } from "@agentproto/provider-kit"
+
+/**
+ * Build hermes's model menu from the shared provider catalog instead of a
+ * hand-maintained allowlist. Hermes routes by the model id's own vendor
+ * prefix (routeSelection: "derived-from-model"), so every entry carries
+ * the billing provider the runtime's eligibility projection needs.
+ *
+ * Only providers hermes genuinely supports today are included:
+ *   - OpenRouter (`openrouter/<vendor>/<id>` router prefix)
+ *   - OpenAI (direct `openai/<id>` vendor prefix)
+ *
+ * Anthropic models are excluded — hermes is the budget arm and those are
+ * reserved for the claude-code adapter (enforced by models.deny).
+ */
+function buildHermesModelMenu(): Array<{ id: string; provider: string }> {
+  const supported = [
+    { provider: "openrouter", prefix: "openrouter" },
+    { provider: "openai", prefix: "openai" },
+  ] as const
+
+  const seen = new Set<string>()
+  const out: Array<{ id: string; provider: string }> = []
+
+  for (const { provider, prefix } of supported) {
+    for (const model of listModels({ kind: "llm", provider })) {
+      const bareId = model.id
+      // Skip anthropic models (reserved for claude-code adapter) and
+      // tilde-prefixed OpenRouter provider aliases (~deepseek, ~google, …)
+      // which aren't real vendor names and break the route-identity parser.
+      if (/anthropic|claude|^~/.test(bareId)) continue
+      const canonicalId = bareId.includes("/") ? bareId : `${prefix}/${bareId}`
+      const id = provider === "openrouter" ? `${bareId}@openrouter` : canonicalId
+      if (seen.has(id)) continue
+      seen.add(id)
+      out.push({ id, provider })
+    }
+  }
+
+  return out.sort((a, b) => {
+    if (a.provider !== b.provider) return a.provider.localeCompare(b.provider)
+    return a.id.localeCompare(b.id)
+  })
+}
 
 export const hermes: AgentCliHandle = defineAgentCli({
   name: "hermes",
@@ -86,24 +130,14 @@ export const hermes: AgentCliHandle = defineAgentCli({
   models: {
     // Cheap OpenRouter models by default — hermes is the budget delegation
     // arm (a Sonnet default would defeat the purpose). glm-5.2 + deepseek
-    // are the go-to cheap coders. `allowed` is only the curated menu: the
-    // `model` option is free-form, so any OpenRouter id (kimi, qwen, …) can
-    // still be passed even when it isn't listed here.
+    // are the go-to cheap coders.
     default: "z-ai/glm-5.2@openrouter",
-    allowed: [
-      "z-ai/glm-5.2@openrouter",
-      "deepseek/deepseek-v4-pro@openrouter",
-      "meta-llama/llama-3.3-70b-instruct@openrouter",
-      "openai/gpt-4",
-      "x-ai/grok-4.5@openrouter",
-      "x-ai/grok-4.20@openrouter",
-      "x-ai/grok-4.3@openrouter",
-      "google/gemini-3.1-pro-preview@openrouter",
-      "google/gemini-3.5-flash@openrouter",
-      "google/gemini-2.5-flash@openrouter",
-      "google/gemini-2.5-pro@openrouter",
-      "moonshotai/kimi-k2.7-code@openrouter",
-    ],
+    // Generated from the shared provider catalog so the Configuration Lab /
+    // harness picker shows genuinely reachable OpenRouter + OpenAI models
+    // instead of a hand-maintained static list. Anthropic models are filtered
+    // out at generation time (and enforced by deny below). The free-form
+    // `model` option still accepts any valid OpenRouter/OpenAI id.
+    allowed: buildHermesModelMenu(),
     // Anthropic models are reserved for the dedicated claude-code adapter —
     // hermes must NEVER route to them, even if a caller passes the id
     // explicitly. Enforced at compose time (RuntimeConfigError), so the
@@ -130,7 +164,13 @@ export const hermes: AgentCliHandle = defineAgentCli({
     // `hermes --resume <SESSION> --tui`. This lets the daemon offer
     // provider-native terminal restart for Hermes sessions, distinct from
     // its ACP-level `resumable: false` honesty.
-    nativeTerminalResume: true,
+    // Gated on Node ≥22.5: hermes TUI uses node:sqlite which is
+    // unavailable on older runtimes — attempting pty-native restart on
+    // Node <22.5 errors at startup, not at resume.
+    nativeTerminalResume: (() => {
+      const [major, minor] = process.versions.node.split(".").map(Number)
+      return (major ?? 0) > 22 || ((major ?? 0) === 22 && (minor ?? 0) >= 5)
+    })(),
   },
   modes: [
     {

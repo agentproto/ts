@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/rendezvous",
-  "version": "0.2.1",
+  "version": "0.2.3",
   "description": "@agentproto/rendezvous — an untrusted ciphertext splicer for E2E daemon pairing. A deliberately dumb WebSocket broker: it matches two sockets sharing a one-time token and pipes their bytes verbatim, learning only token, IPs, sizes, and timing — never plaintext.",
   "keywords": [
     "agentproto",
@@ -58,15 +58,15 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "ws": "^8.21.1"
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
-    "@types/ws": "^8.5.13",
+    "@types/node": "^25.9.5",
+    "@types/ws": "^8.18.1",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   },
   "engines": {
     "node": ">=20.9.0"

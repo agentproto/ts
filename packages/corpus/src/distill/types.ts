@@ -62,3 +62,22 @@ export interface DistillInput {
 export interface DistillPort {
   distill(input: DistillInput): Promise<readonly DistilledItem[]>
 }
+
+/**
+ * Optional capability alongside `DistillPort`: distill many sources in one
+ * call, keyed by a caller-supplied `key` (not by position — a batch-backed
+ * implementation returns results in arbitrary order). A port that can't
+ * batch simply doesn't implement this; callers check with {@link
+ * hasDistillMany} rather than assuming every `DistillPort` has it.
+ */
+export interface DistillBatchPort {
+  distillMany(
+    inputs: ReadonlyArray<{ readonly key: string; readonly input: DistillInput }>
+  ): Promise<ReadonlyMap<string, readonly DistilledItem[]>>
+}
+
+/** Runtime guard — narrows a `DistillPort` to one that also implements
+ *  `DistillBatchPort`, without a cast. */
+export function hasDistillMany(port: DistillPort): port is DistillPort & DistillBatchPort {
+  return "distillMany" in port && typeof port.distillMany === "function"
+}

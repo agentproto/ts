@@ -44,13 +44,17 @@
  * announced via `session:config-changed` (#490).
  */
 
-import type {
-  SessionDescriptor,
-  SessionsRegistry,
-  SessionAuthEcho,
-  SessionAccessProfileEcho,
+import {
+  adapterConfigDirFor,
+  mintSessionId,
+  SESSION_ID_ENV,
+  WORKSPACE_SLUG_ENV,
+  type SessionDescriptor,
+  type SessionsRegistry,
+  type SessionAuthEcho,
+  type SessionAccessProfileEcho,
 } from "./sessions.js"
-import type { AgentAdapterResolver } from "./http-server.js"
+import type { AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
   decideRestartStrategy,
   augmentWithFsResume,
@@ -61,6 +65,7 @@ import {
 import {
   resolveSpawnDefaults,
   resolveAuthSpec,
+  subscriptionSurfaceFor,
   type SpawnDefaultsConfig,
   type DefaultsAdapterAuthConfig,
   type ResolvedAuthSpec,
@@ -75,7 +80,9 @@ import { buildResumeContextDigest } from "./resume-context-digest.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import {
+  checkModelAdapterEligibility,
   checkModelWalletEligibility,
+  modelAdapterIncompatibleMessage,
   modelWalletIneligibleMessage,
   reconcileModelRoute,
 } from "./catalog-models.js"
@@ -91,6 +98,16 @@ import {
   type AuthMethod,
   type AdapterAuthManifest,
 } from "@agentproto/auth"
+import {
+  createSandboxAgentSessionHost,
+  resolveLifecyclePolicy,
+  type SandboxAgentSessionHost,
+  type SandboxSpec,
+} from "@agentproto/sandbox"
+import { createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
+import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
+import type { SandboxProviderResolver } from "./sandbox-adapters.js"
+import type { AcpMcpServer } from "@agentproto/acp"
 
 /**
  * Axis overrides a restart-with-override applies (SPEC §4.3, build step 6).
@@ -174,9 +191,16 @@ function methodToMode(method: AuthMethod): "subscription" | "api-key" {
  *  from the same projection `resolveAuthSpec` reads (`authSubscription` ⇒
  *  oauth-bearer, `provider` ⇒ api-key) — the method-side of the eligibility
  *  predicate (SPEC §3.4). Mirrors `catalog-models.ts`'s `methodsForDirect`. */
-function directMethods(descriptor: AdapterAuthDescriptor | undefined): AuthMethod[] {
+function directMethods(
+  descriptor: AdapterAuthDescriptor | undefined,
+  endpoint?: string,
+): AuthMethod[] {
   const methods: AuthMethod[] = []
-  if (descriptor?.authSubscription) methods.push("oauth-bearer")
+  // oauth-bearer requires an explicit, provider-matching subscription
+  // surface — see `subscriptionSurfaceFor`'s doc in spawn-defaults.ts.
+  if (subscriptionSurfaceFor(descriptor?.authSubscription, endpoint) !== undefined) {
+    methods.push("oauth-bearer")
+  }
   if (descriptor?.provider || descriptor?.modelDerivedApiKey) methods.push("api-key")
   return methods
 }
@@ -208,7 +232,9 @@ function eligibilityManifest(
   // oauth-bearer path). Otherwise it's the direct route.
   const isDirect = baseVendor !== undefined && routeId === baseVendor
   const billedVendor = isDirect ? baseVendor : routeId
-  const methods: readonly AuthMethod[] = isDirect ? directMethods(descriptor) : ["api-key"]
+  const methods: readonly AuthMethod[] = isDirect
+    ? directMethods(descriptor, billedVendor)
+    : ["api-key"]
   return {
     manifest: {
       id: adapterSlug,
@@ -256,6 +282,10 @@ export interface ResolveResumeAuthOptions {
   /** Resolve `accessProfileRef` → profile metadata + secret. Defaults to
    *  {@link resolveAccessProfileFromStore}; tests inject a stub. */
   resolveAccessProfile?: AccessProfileResolver
+  /** Same seam as `SpawnAgentSessionDeps.listCatalogModels` in
+   *  session-spawn.ts — feeds the adapter-capability guard
+   *  (`checkModelAdapterEligibility`). Omitted ⇒ the guard is skipped. */
+  listCatalogModels?: CatalogModelsLister
 }
 
 /**
@@ -434,6 +464,30 @@ export async function resolveResumeAuth(
       )
     }
   }
+  // Adapter-capability guard — same rationale/scope as session-spawn.ts's
+  // mirror: the wallet guard above proves the ROUTE can bill this model, not
+  // that THIS adapter's manifest can reach it there. Optional dep; skipped
+  // (no protection, same as before this guard existed) when unwired.
+  if (
+    effRoute?.gateway === undefined &&
+    authModel !== undefined &&
+    resolvedProvider !== undefined &&
+    opts.listCatalogModels
+  ) {
+    const catalog = await opts.listCatalogModels({})
+    const verdict = checkModelAdapterEligibility(catalog, adapterSlug, authModel, resolvedProvider)
+    if (!verdict.ok) {
+      throw new RestartOverrideError(
+        modelAdapterIncompatibleMessage({
+          prefix,
+          adapter: adapterSlug,
+          model: authModel,
+          route: resolvedProvider,
+          compatibleAdapters: verdict.compatibleAdapters,
+        }),
+      )
+    }
+  }
   // Same non-authenticating hint as session-spawn.ts: only when about to
   // hard-fail (enforce "always", no credential) and auth wasn't explicit.
   if (
@@ -456,6 +510,13 @@ export interface RestartAgentSessionResult {
   resumedFrom: string
   resumeVia: string
   resumeFallback?: boolean
+  /** True when a fallback occurred AND the daemon transcript contained
+   *  actual conversation content that was injected as a digest. False
+   *  when no digest was available (daemon transcript empty/missing) or
+   *  when no fallback occurred (successful native/ACP resume). This
+   *  lets callers distinguish "fresh with zero context" from "fresh
+   *  with partial digest injected" for the restart banner. */
+  digestRecovered?: boolean
 }
 
 export interface RestartAgentSessionOptions {
@@ -493,6 +554,17 @@ export interface RestartAgentSessionOptions {
    *  Defaults to {@link resolveAccessProfileFromStore}; tests inject a stub.
    *  Only consulted when `overrides.access.profileRef` is set. */
   resolveAccessProfile?: AccessProfileResolver
+  /** Same seam as `SpawnAgentSessionDeps.listCatalogModels` in
+   *  session-spawn.ts — feeds the adapter-capability guard
+   *  (`checkModelAdapterEligibility`) via `resolveResumeAuth`. Omitted ⇒ the
+   *  guard is skipped. */
+  listCatalogModels?: CatalogModelsLister
+  /** Required to restart a sandbox session (`prev.remote === true` carrying a
+   *  `sandboxId`): resolves the box's provider so the EXISTING sandbox can be
+   *  re-connected and the adapter re-spawned inside it. Never consulted for a
+   *  local session. Omitted for a sandbox session ⇒ a loud error — never a
+   *  local spawn of a box path (`/home/user` etc.). */
+  resolveSandboxProvider?: SandboxProviderResolver
 }
 
 /**
@@ -509,13 +581,30 @@ export async function restartAgentSession(
   prev: SessionDescriptor,
   opts: RestartAgentSessionOptions = {},
 ): Promise<RestartAgentSessionResult> {
+  // Sandbox gate — BEFORE any local strategy decision: a sandbox descriptor's
+  // `cwd` is a path INSIDE the box (`/home/user`, …), so the local branches
+  // below (adapter resolution → `startSession` with `cwd = prev.cwd` on the
+  // HOST) would spawn `npx opencode-ai` locally against a nonexistent host
+  // directory. A sandbox restart re-attaches the box and re-spawns the
+  // adapter inside it instead (see `spawnInSandbox`).
+  const sandboxId =
+    prev.remote === true && prev.sandboxId !== undefined ? prev.sandboxId : undefined
   // `forceAgentResume` never consults `augmented` (see the `resumeVia`
   // comment below) — skip the FS probe entirely rather than pay for I/O
-  // whose result is discarded.
-  const augmented = opts.forceAgentResume ? prev : await augmentWithFsResume(prev)
-  const strategy: RestartStrategy = opts.forceAgentResume
-    ? { kind: "agent", resumeSessionId: prev.adapterSessionId }
-    : decideRestartStrategy(augmented)
+  // whose result is discarded. A sandbox session skips it too: its `cwd`
+  // is a box path, meaningless on the host FS.
+  const augmented =
+    sandboxId !== undefined || opts.forceAgentResume ? prev : await augmentWithFsResume(prev)
+  const strategy: RestartStrategy =
+    sandboxId !== undefined
+      ? // The adapter is re-spawned fresh inside the box (the box daemon's
+        // `agent_start` has no resume surface) — a flagged fallback, so the
+        // caller gets the honest `resumeFallback` marker and the digest
+        // injection below still runs off the host's own transcript.
+        { kind: "agent", resumeFallback: true }
+      : opts.forceAgentResume
+        ? { kind: "agent", resumeSessionId: prev.adapterSessionId }
+        : decideRestartStrategy(augmented)
 
   if (strategy.kind !== "agent") {
     throw new Error(
@@ -532,7 +621,7 @@ export async function restartAgentSession(
   }
 
   const resolved = await resolveAgentAdapter(adapterSlug)
-  if (!resolved) {
+  if (!resolved && sandboxId === undefined) {
     throw new Error(`restartAgentSession: adapter '${adapterSlug}' not found.`)
   }
 
@@ -601,6 +690,12 @@ export async function restartAgentSession(
       )
     }
     const { profile, credential } = found
+    if (!resolved) {
+      throw new RestartOverrideError(
+        `restart access override: adapter "${adapterSlug}" is not installed on the host — ` +
+          `profile "${profile.id}" eligibility cannot be verified, refusing to spawn.`,
+      )
+    }
     if (!resolved.authDescriptor) {
       throw new RestartOverrideError(
         `restart access override: adapter "${adapterSlug}" presents no billing-auth, ` +
@@ -663,20 +758,21 @@ export async function restartAgentSession(
       endpoint: profile.endpoint,
       method: profile.method,
     }
-  } else if (resolved.authDescriptor) {
-    // Base mode path (no `access` override): re-resolve billing-auth from the
-    // prior descriptor's `auth.mode` echo through the shared helper the lazy
-    // in-place resume hook also uses. `accessProfileRef` is intentionally NOT
-    // passed here — this branch's job is the base mode re-resolution ONLY (the
-    // `access` OVERRIDE is the `if` branch above), so passing no profileRef
-    // keeps this byte-identical to the pre-extraction inline block. `prefix:
-    // "restart"` preserves the exact model↔wallet ineligibility wording.
+  } else if (resolved?.authDescriptor) {
+    // Base mode path (no explicit `access` override): re-resolve billing-auth.
+    // When the prior session was pinned to a named profile, pass its profileRef
+    // so `resolveResumeAuth` re-reads the CURRENT credential from the keychain
+    // rather than falling through to the stale mode-based path.
     const resumeAuth = await resolveResumeAuth(prev, resolved, {
       adapterSlug,
       ...(effModel ? { model: effModel } : {}),
       ...(effRoute ? { route: effRoute } : {}),
+      ...(prev.accessProfile?.profileRef
+        ? { accessProfileRef: prev.accessProfile.profileRef }
+        : {}),
       prefix: "restart",
       ...(opts.loadDefaultsConfig ? { loadDefaultsConfig: opts.loadDefaultsConfig } : {}),
+      ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
     })
     authSpec = resumeAuth.authSpec
     authEcho = resumeAuth.authEcho
@@ -686,6 +782,19 @@ export async function restartAgentSession(
     resumeSessionId?: string,
   ): Promise<SessionDescriptor> => {
     let liveSessionId: string | undefined
+    // Minted BEFORE `startSession` — same reason as session-spawn.ts's
+    // `mintedSessionId`: a restart/resume gets a FRESH id (see
+    // `spawnAgent`'s `resumedFrom: prev.id` lineage below, not an in-place
+    // id reuse), and that fresh id has to be known before the adapter
+    // process ever exec's so it can be injected as AGENTPROTO_SESSION_ID —
+    // never the id being restarted FROM.
+    const restartedSessionId = mintSessionId()
+    if (sandboxId !== undefined) {
+      return spawnInSandbox(sandboxId, restartedSessionId)
+    }
+    if (!resolved) {
+      throw new Error(`restartAgentSession: adapter '${adapterSlug}' not found.`)
+    }
     let launchConfig: RouteAwareLaunchConfig
     try {
       launchConfig = buildRouteAwareLaunchConfig({
@@ -696,15 +805,25 @@ export async function restartAgentSession(
         declaredOptions: resolved.declaredOptions,
         routeSelection: resolved.routeSelection,
         adapterProvider: resolved.authDescriptor?.provider,
+        modelDerivedApiKey: resolved.authDescriptor?.modelDerivedApiKey,
         prefix: "restart",
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       throw new Error(message)
     }
+    // Carry the prior session's persistent isolated-config dir forward —
+    // the provider's conversation store lives inside it, so reusing the
+    // SAME dir is what lets `resumeSessionId` restore full context (a
+    // fresh dir here is exactly the old always-degrade-to-digest bug).
+    // A legacy row with no recorded dir gets one keyed by the NEW id, so
+    // the lineage is resumable from here on even if THIS restart lands as
+    // a digest fallback.
+    const restartConfigDir = prev.adapterConfigDir ?? adapterConfigDirFor(restartedSessionId)
     const agentSession = await resolved.startSession({
       cwd,
       ...(resumeSessionId ? { resumeSessionId } : {}),
+      configDir: restartConfigDir,
       ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),
       ...(effEffort ? { effort: effEffort } : {}),
       ...(effPosture !== undefined ? { posture: effPosture } : {}),
@@ -715,6 +834,10 @@ export async function restartAgentSession(
       ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
       ...(authSpec ? { auth: authSpec } : {}),
       ...(launchConfig.options ? { options: launchConfig.options } : {}),
+      env: {
+        [SESSION_ID_ENV]: restartedSessionId,
+        [WORKSPACE_SLUG_ENV]: prev.workspaceSlug,
+      },
       onActivity: () => {
         if (liveSessionId) registry.pulseActivity(liveSessionId)
       },
@@ -741,15 +864,26 @@ export async function restartAgentSession(
         ? "resumed via ACP"
         : describeResumePath(augmented)
     const desc = registry.spawnAgent({
+      id: restartedSessionId,
       workspaceSlug: prev.workspaceSlug,
       cwd,
       agentSession,
       adapterSlug,
+      adapterConfigDir: restartConfigDir,
       ...(resolved.resumable !== undefined ? { resumable: resolved.resumable } : {}),
       ...(resolved.nativeTerminalResume !== undefined
         ? { nativeTerminalResume: resolved.nativeTerminalResume }
         : {}),
       harness: effHarness,
+      ...(resolved.routeSelection !== undefined
+        ? { routeSelection: resolved.routeSelection }
+        : {}),
+      ...(resolved.authDescriptor?.provider !== undefined
+        ? { adapterProvider: resolved.authDescriptor.provider }
+        : {}),
+      ...(resolved.authDescriptor?.modelDerivedApiKey !== undefined
+        ? { modelDerivedApiKey: resolved.authDescriptor.modelDerivedApiKey }
+        : {}),
       ...(prev.label ? { label: prev.label } : {}),
       ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
       ...(effModel ? { model: effModel } : {}),
@@ -764,6 +898,15 @@ export async function restartAgentSession(
       ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
       ...(effMode ? { mode: effMode } : {}),
       ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
+      // Lineage carry-forward (#session-visibility). A restart is a NEW
+      // descriptor, but it is the same logical session continued — so its
+      // origin (which channel spawned it: cowork/vscode/codex/cron) and its
+      // parent/depth must survive, exactly as continue-fresh already carries
+      // them (session-continue-fresh.ts). Dropping them here is what left a
+      // restarted session a bare top-level root with no source trace.
+      ...(prev.origin ? { origin: prev.origin } : {}),
+      ...(prev.parentSessionId ? { parentSessionId: prev.parentSessionId } : {}),
+      ...(prev.depth !== undefined ? { depth: prev.depth } : {}),
       // Verifiability echo (never the credential) — see the auth
       // resolution block above. Absent when no credential resolved,
       // same as session-spawn.ts.
@@ -782,6 +925,149 @@ export async function restartAgentSession(
       resumeVia,
     })
     liveSessionId = desc.id
+    return desc
+  }
+
+  // ── Sandbox branch: re-attach the box, re-spawn the adapter inside it ──
+  // Mirrors session-spawn.ts's `bootSandboxAgentSession` reuse path
+  // (`agent_start.sandbox.reuse`): resolve the provider, `connect()` (never
+  // boot) the EXISTING `sandboxId` — `Sandbox.connect` re-arms its timeout —
+  // then start the adapter on the BOX's own `agent_start` with the prior
+  // descriptor's adapter/cwd/model/posture and the restart's overrides.
+  // The helpers it needs (`toMcpServerMounts`, `sandboxAuthFromResolved`,
+  // `resolveSandboxSecret`) are module-private in session-spawn.ts, so
+  // byte-equivalent copies live at the bottom of this file — keep in sync
+  // by inspection, same as the auth-resolution block above.
+  const spawnInSandbox = async (
+    boxSandboxId: string,
+    restartedSessionId: string,
+  ): Promise<SessionDescriptor> => {
+    if (!opts.resolveSandboxProvider) {
+      throw new Error(
+        `restartAgentSession: session '${prev.id}' runs in a sandbox but the daemon has ` +
+          "no sandbox provider resolver wired — cannot re-attach its box.",
+      )
+    }
+    const providerSlug = parseSandboxProviderSlug(prev.command)
+    if (!providerSlug) {
+      throw new Error(
+        `restartAgentSession: session '${prev.id}' records no sandbox provider ` +
+          "(no `sandbox:<provider>` command preview) — cannot re-attach its box.",
+      )
+    }
+    const handle = await opts.resolveSandboxProvider(providerSlug)
+    if (!handle) {
+      throw new Error(
+        `restartAgentSession: sandbox provider "${providerSlug}" not found — cannot ` +
+          `re-attach sandbox "${boxSandboxId}".`,
+      )
+    }
+    const spec: SandboxSpec = { provider: providerSlug, config: {} }
+    const lifecyclePolicy = resolveLifecyclePolicy(spec, true)
+    let host: SandboxAgentSessionHost
+    try {
+      host = await createSandboxAgentSessionHost({
+        provider: handle.provider,
+        spec,
+        sandboxId: boxSandboxId,
+        secrets: { slugs: [], resolver: resolveSandboxSecretFromBroker },
+      })
+    } catch (err) {
+      throw new Error(
+        `restartAgentSession: sandbox "${boxSandboxId}" expired or is unreachable ` +
+          `(provider "${providerSlug}") — spawn a fresh session. ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+    let remoteSessionId: string
+    try {
+      const remoteDesc = await host.start({
+        adapter: adapterSlug,
+        ...(cwd ? { cwd } : {}),
+        ...(effModel ? { model: effModel } : {}),
+        ...(effRoute?.gateway
+          ? {
+              route: {
+                gateway: effRoute.gateway,
+                ...(effRoute.baseUrl ? { baseUrl: effRoute.baseUrl } : {}),
+              },
+            }
+          : {}),
+        ...(effEffort ? { effort: effEffort } : {}),
+        ...(prev.label ? { label: prev.label } : {}),
+        ...(prev.mcpServers ? { mcpServers: toBoxMcpServerMounts(prev.mcpServers) } : {}),
+        ...(authSpec ? { auth: sandboxAuthForBox(authSpec) } : {}),
+      })
+      remoteSessionId = remoteDesc.id
+    } catch (err) {
+      await host.stop().catch(() => undefined)
+      throw new Error(
+        `restartAgentSession: the sandbox's own agent_start failed for adapter ` +
+          `"${adapterSlug}" — ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+    const agentSession = createSandboxAgentSessionProxy({
+      host,
+      remoteSessionId,
+      lifecyclePolicy,
+    })
+    // A fresh box-spawned adapter has no conversation continuity (the box
+    // daemon's `agent_start` has no resume surface) — `resumeVia: ""` plus
+    // the strategy's `resumeFallback` flag keeps that honest, and the host
+    // digest injection below still fires.
+    const desc = registry.spawnAgent({
+      id: restartedSessionId,
+      workspaceSlug: prev.workspaceSlug,
+      cwd,
+      agentSession,
+      adapterSlug,
+      adapterConfigDir: adapterConfigDirFor(restartedSessionId),
+      ...(resolved?.resumable !== undefined ? { resumable: resolved.resumable } : {}),
+      ...(resolved?.nativeTerminalResume !== undefined
+        ? { nativeTerminalResume: resolved.nativeTerminalResume }
+        : {}),
+      harness: effHarness,
+      ...(resolved?.routeSelection !== undefined
+        ? { routeSelection: resolved.routeSelection }
+        : {}),
+      ...(resolved?.authDescriptor?.provider !== undefined
+        ? { adapterProvider: resolved.authDescriptor.provider }
+        : {}),
+      ...(resolved?.authDescriptor?.modelDerivedApiKey !== undefined
+        ? { modelDerivedApiKey: resolved.authDescriptor.modelDerivedApiKey }
+        : {}),
+      ...(prev.label ? { label: prev.label } : {}),
+      ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
+      ...(effModel ? { model: effModel } : {}),
+      ...(effEffort ? { effort: effEffort } : {}),
+      ...(effPosture !== undefined ? { posture: effPosture } : {}),
+      ...(effRoute ? { route: effRoute } : {}),
+      ...(effContextProfile ? { contextProfile: effContextProfile } : {}),
+      ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
+      ...(effMode ? { mode: effMode } : {}),
+      ...(prev.origin ? { origin: prev.origin } : {}),
+      ...(prev.parentSessionId ? { parentSessionId: prev.parentSessionId } : {}),
+      ...(prev.depth !== undefined ? { depth: prev.depth } : {}),
+      ...(authEcho?.fingerprint
+        ? {
+            auth: {
+              mode: authEcho.authMode,
+              fingerprint: authEcho.fingerprint,
+              provider: authEcho.provider,
+              credentialSource: authEcho.credentialSource,
+              setEnv: authEcho.setEnv,
+            } satisfies SessionAuthEcho,
+          }
+        : {}),
+      remote: true,
+      sandboxId: host.sandboxId,
+      sandboxProvider: providerSlug,
+      sandboxTeardown: lifecyclePolicy.teardown,
+      ...(host.ports && Object.keys(host.ports).length > 0 ? { sandboxPorts: host.ports } : {}),
+      commandPreview: `sandbox:${providerSlug} → ${adapterSlug}`,
+      resumedFrom: prev.id,
+      resumeVia: "",
+    })
     return desc
   }
 
@@ -812,9 +1098,13 @@ export async function restartAgentSession(
   // `runAgentTurn` to inject once. Gated strictly on `resumeFallback` — a
   // successful resume (pty-native or a clean ACP resume) never reaches
   // here, so it's never double-fed its own context.
+  let digestRecovered = false
   if (resumeFallback) {
-    const digest = await buildResumeContextDigest(prev.id)
-    if (digest) desc.pendingResumeContext = digest
+    const result = await buildResumeContextDigest(prev.id)
+    if (result.digest) {
+      desc.pendingResumeContext = result.digest
+      digestRecovered = result.hasContent
+    }
   }
 
   // ── Announce the changed axes (SPEC §4.3) ────────────────────────
@@ -854,5 +1144,60 @@ export async function restartAgentSession(
     // satisfying the optional field's type.
     resumeVia: desc.resumeVia ?? "",
     ...(resumeFallback ? { resumeFallback: true } : {}),
+    ...(digestRecovered ? { digestRecovered: true } : {}),
+  }
+}
+
+/** `command` stamped by sandbox spawns (`agent_start.sandbox`): the booted
+ *  box's preview, `sandbox:<provider> → <adapter>`. This is the only place
+ *  the sandbox provider slug survives onto the descriptor. */
+const SANDBOX_PREVIEW_RE = /^sandbox:(\S+) → /
+
+/** The sandbox provider slug a prior sandbox session was spawned with. */
+function parseSandboxProviderSlug(command: string | undefined): string | undefined {
+  return command?.match(SANDBOX_PREVIEW_RE)?.[1]
+}
+
+/** session-spawn.ts's private `toMcpServerMounts` — keep in sync by inspection. */
+function toBoxMcpServerMounts(entries: readonly AcpMcpServer[]): Array<{
+  name: string
+  transport: "stdio" | "http" | "sse"
+  ref?: string
+  headers?: Record<string, string>
+}> {
+  return entries.map(e => ({
+    name: e.name,
+    transport: e.transport,
+    ...(e.ref !== undefined ? { ref: e.ref } : {}),
+    ...(e.headers !== undefined ? { headers: e.headers } : {}),
+  }))
+}
+
+/** session-spawn.ts's private `sandboxAuthFromResolved` — keep in sync by inspection. */
+function sandboxAuthForBox(auth: ResolvedAuthSpec): DefaultsAdapterAuthConfig {
+  return {
+    mode: auth.mode,
+    ...(auth.mode === "api-key"
+      ? auth.credential !== undefined
+        ? { apiKey: auth.credential }
+        : {}
+      : auth.credential !== undefined
+        ? { token: auth.credential }
+        : {}),
+  }
+}
+
+/** session-spawn.ts's private `resolveSandboxSecret` — keep in sync by inspection. */
+async function resolveSandboxSecretFromBroker(slug: string): Promise<string | null> {
+  const { resolveSandboxSecret: resolve } = getMcpCredentialDeps()
+  if (!resolve) return null
+  try {
+    return await resolve(slug)
+  } catch (err) {
+    console.warn(
+      `[restartAgentSession] sandbox secret resolution failed for "${slug}": ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    )
+    return null
   }
 }

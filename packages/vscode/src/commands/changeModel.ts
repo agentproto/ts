@@ -70,10 +70,25 @@ export async function runChangeModelFlow(
   if (picked.model === undefined) return
 
   if (picked.restartRequired) {
-    void vscode.window.showWarningMessage(
-      `agentproto: switching to "${picked.model}" needs a session restart — ` +
-        "pick it from agentproto: Configure Session instead.",
+    const go = await vscode.window.showWarningMessage(
+      `Switching to "${picked.model}" restarts the session — the conversation carries over. Continue?`,
+      { modal: true },
+      "Restart & switch",
     )
+    if (go !== "Restart & switch") return
+    try {
+      const result = await client.restartSessionWithOverride(session.id, { model: picked.model })
+      await vscode.commands.executeCommand("agentproto.openTranscript", result.id)
+      void vscode.window.showInformationMessage(
+        `agentproto: restarted as ${result.label ?? result.id}` +
+          (result.resumeVia ? ` (${result.resumeVia})` : "") +
+          ".",
+      )
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        `agentproto: restart failed — ${describeError(err)}`,
+      )
+    }
     return
   }
 

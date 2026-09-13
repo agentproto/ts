@@ -2,8 +2,8 @@
 
 ```text
 agentproto permissions ls        [--json] [--session <id>]
-agentproto permissions approve   <id> [--always] [--option-id <id>] [--json]
-agentproto permissions deny      <id> [--option-id <id>] [--json]
+agentproto permissions approve   <id> [--always] [--option-id <id>] [--feedback <text>] [--json]
+agentproto permissions deny      <id> [--option-id <id>] [--feedback <text>] [--json]
 agentproto permissions watch     [--allow-tool <pat>]... [--deny-tool <pat>]...
                                  [--session <id>] [--rules-json <json|@file>]
                                  [--always] [--interval <dur>] [--timeout <dur>]
@@ -64,7 +64,8 @@ perm_2      ses_def456      Bash                3s     Allow "Bash"?
 
 `--json` emits the full records (id, sessionId, toolCallId, toolName, text,
 options, requestedAt, plus the owning session's adapter/title and age).
-`--session <id>` filters to one session.
+The tool's raw input (e.g. the Bash command string) is included as `rawInput`
+and rendered as a truncated preview in the text table. `--session <id>` filters to one session.
 
 ### `approve <id>`
 
@@ -77,8 +78,10 @@ agentproto permissions approve perm_1 --option-id allow_edits
 POSTs `/permissions/:id` with `{ decision: "approve" }`. Selects an
 allow-flavored option — allow-once by default, or allow-always when the
 request offers one and `--always` is passed. `--option-id` picks an exact
-offered option, overriding the decision→option mapping. The agent's turn
-resumes with the granted tool call.
+offered option, overriding the decision→option mapping. `--feedback <text>`
+attaches free-text context to the resolution; adapters that support it
+(e.g. mastra-agent suspensions) fold it into the tool's resume data. The
+agent's turn resumes with the granted tool call.
 
 ### `deny <id>`
 
@@ -88,7 +91,9 @@ agentproto permissions deny perm_2
 
 POSTs `/permissions/:id` with `{ decision: "deny" }`. Selects a
 reject-flavored option, or cancels the request outright when none is offered.
-The tool call fails cleanly and the agent keeps reasoning.
+`--feedback <text>` attaches free-text context (e.g. "reject, but do X
+instead") for adapters that support it. The tool call fails cleanly and the
+agent keeps reasoning.
 
 ### `watch`
 

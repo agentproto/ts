@@ -215,6 +215,86 @@ describe("agentproto sessions wait — long-poll loop + exit codes", () => {
 })
 
 /**
+ * Fail-loud on a silent no-op turn (bug 2 fix — `monitorSessionWait`
+ * dropping `empty`/`reason` everywhere). A caller branching only on
+ * exit-code-0-vs-nonzero must not read `empty: true` / `reason: "error"` as
+ * success — mirrors the `waitTurnEnd` precedent in
+ * sessions-registry-agent-host.ts.
+ */
+describe("agentproto sessions wait — fails loud on a silent no-op turn", () => {
+  let stderrChunks: string[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let stderrSpy: any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let stdoutSpy: any
+
+  beforeEach(() => {
+    stderrChunks = []
+    stderrSpy = vi
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .spyOn(process.stderr as any, "write")
+      .mockImplementation((chunk: unknown) => {
+        stderrChunks.push(String(chunk))
+        return true
+      })
+    stdoutSpy = vi
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .spyOn(process.stdout as any, "write")
+      .mockImplementation(() => true)
+    discoverDaemon.mockResolvedValue({
+      found: { url: "http://127.0.0.1:18790", token: "tok" },
+      stale: [],
+    })
+  })
+
+  afterEach(() => {
+    stderrSpy.mockRestore()
+    stdoutSpy.mockRestore()
+    vi.resetAllMocks()
+  })
+
+  it("exits 4 when the matched turn-end carries `empty: true`", async () => {
+    httpGetJson.mockResolvedValue({
+      event: "turn-end",
+      sessionId: "sess_1",
+      status: "running",
+      empty: true,
+    })
+
+    const code = await runSessions(["wait", "sess_1", "--until", "turn-end"])
+
+    expect(code).toBe(4)
+    expect(stderrChunks.join("")).toContain("empty turn")
+  })
+
+  it("exits 4 when the matched turn-end carries `reason: \"error\"`", async () => {
+    httpGetJson.mockResolvedValue({
+      event: "turn-end",
+      sessionId: "sess_1",
+      status: "running",
+      reason: "error",
+    })
+
+    const code = await runSessions(["wait", "sess_1", "--until", "turn-end"])
+
+    expect(code).toBe(4)
+    expect(stderrChunks.join("")).toContain("reason 'error'")
+  })
+
+  it("exits 0 for a productive turn-end (no empty/reason fields)", async () => {
+    httpGetJson.mockResolvedValue({
+      event: "turn-end",
+      sessionId: "sess_1",
+      status: "running",
+    })
+
+    const code = await runSessions(["wait", "sess_1", "--until", "turn-end"])
+
+    expect(code).toBe(0)
+  })
+})
+
+/**
  * The operator incident this whole module exists for: --timeout 3000
  * (meant as 3000 SECONDS) blocked 3 seconds, said "timed out", and read as
  * a broken session rather than a units mistake — because the resolved

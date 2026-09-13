@@ -71,6 +71,24 @@ async function installHarness(
           void vscode.window.showInformationMessage(
             result.message || `Installed '${slug}'.`,
           )
+        } else if (result.needsInteractiveSetup) {
+          // Not a plain failure: a setup step needs a human in a real
+          // terminal (e.g. openclaw's onboarding TUI). Offer one — a
+          // daemon-managed PTY session running the CLI's own setup verb,
+          // which re-skips already-completed steps via its ledger.
+          void vscode.window
+            .showWarningMessage(
+              `'${slug}' needs an interactive setup step to finish. Open a terminal session to complete it?`,
+              "Open Setup Terminal",
+            )
+            .then(choice => {
+              if (choice !== "Open Setup Terminal") return
+              void vscode.commands.executeCommand(
+                "agentproto.spawnHarnessTerminal",
+                slug,
+                ["agentproto", "setup", slug],
+              )
+            })
         } else {
           void vscode.window.showErrorMessage(
             result.message || `Failed to install '${slug}'.`,

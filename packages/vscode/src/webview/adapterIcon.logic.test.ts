@@ -18,18 +18,25 @@ describe("adapterLogoFor", () => {
     expect(adapterLogoFor("browser")).toEqual({ kind: "icon", file: "browser.svg" })
   })
 
+  it("maps newly added brand icons", () => {
+    expect(adapterLogoFor("deepseek")).toEqual({ kind: "icon", file: "deepseek.svg" })
+    expect(adapterLogoFor("gemini")).toEqual({ kind: "icon", file: "gemini.svg" })
+    expect(adapterLogoFor("gemini-cli")).toEqual({ kind: "icon", file: "gemini.svg" })
+    expect(adapterLogoFor("grok-cli")).toEqual({ kind: "icon", file: "grok.svg" })
+    expect(adapterLogoFor("mistral-vibe")).toEqual({ kind: "icon", file: "mistral.svg" })
+    expect(adapterLogoFor("openrouter")).toEqual({ kind: "icon", file: "openrouter.svg" })
+    expect(adapterLogoFor("qwen-code")).toEqual({ kind: "icon", file: "qwen.svg" })
+  })
+
   it("falls back to a lettermark for unknown slugs", () => {
     expect(adapterLogoFor("pi")).toEqual({ kind: "lettermark", text: "π" })
     expect(adapterLogoFor("moonshot")).toEqual({ kind: "lettermark", text: "K" })
-    expect(adapterLogoFor("openrouter")).toEqual({ kind: "lettermark", text: "OR" })
-    expect(adapterLogoFor("gemini")).toEqual({ kind: "lettermark", text: "G" })
     expect(adapterLogoFor("xai")).toEqual({ kind: "lettermark", text: "X" })
-    expect(adapterLogoFor("deepseek")).toEqual({ kind: "lettermark", text: "D" })
     expect(adapterLogoFor("requesty")).toEqual({ kind: "lettermark", text: "R" })
   })
 
   it("is case-insensitive and trims whitespace", () => {
     expect(adapterLogoFor("Claude-Code ")).toEqual({ kind: "icon", file: "claude.svg" })
-    expect(adapterLogoFor("  OPENROUTER ")).toEqual({ kind: "lettermark", text: "OR" })
+    expect(adapterLogoFor("  OPENROUTER ")).toEqual({ kind: "icon", file: "openrouter.svg" })
   })
 })

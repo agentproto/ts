@@ -207,6 +207,9 @@ export function createAcpProtocolArm(
     get availableConfigOptions() {
       return session?.availableConfigOptions ?? []
     },
+    get modelApplyRejection() {
+      return session?.modelApplyRejection
+    },
     get availableModes() {
       return session?.availableModes ?? []
     },

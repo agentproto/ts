@@ -24,18 +24,21 @@ const ICON_FILES: Readonly<Record<string, string>> = {
   "mastra-agent": "mastra.svg",
   openclaw: "openclaw.png",
   browser: "browser.svg",
+  deepseek: "deepseek.svg",
+  gemini: "gemini.svg",
+  "gemini-cli": "gemini.svg",
+  "grok-cli": "grok.svg",
+  "mistral-vibe": "mistral.svg",
+  openrouter: "openrouter.svg",
+  "qwen-code": "qwen.svg",
 }
 
 const LETTERMARK_OVERRIDES: Readonly<Record<string, string>> = {
-  deepseek: "D",
-  gemini: "G",
-  "gemini-cli": "G",
   "iflow-cli": "i",
+  "kimi-cli": "K",
   "llm-endpoint": "E",
   moonshot: "K",
-  openrouter: "OR",
   pi: "π",
-  "qwen-code": "Q",
   requesty: "R",
   xai: "X",
 }

@@ -27,7 +27,6 @@ import {
   computeProvenance,
   readSessionsRegistry,
   sessionInWorktree,
-  SESSIONS_FILE_PATH,
   type ComputeProvenanceOptions,
   type ProvenanceInfo,
 } from "./provenance.js"
@@ -510,12 +509,21 @@ export type LivenessState =
  * `daemon-unreachable` fires only when the sessions snapshot itself is
  * present but unreadable (corrupt/permission-denied), not merely absent —
  * "no daemon has ever run" is a legitimate empty registry, not an error.
+ *
+ * `options.sessionsPath` is passed straight to `readSessionsRegistry`
+ * un-defaulted — same as `computeProvenance` — so an omitted path resolves
+ * to the bucket-union-plus-legacy read (AIP-46 §State partitioning,
+ * `provenance.ts`'s header), not just the frozen legacy file. Defaulting to
+ * `SESSIONS_FILE_PATH()` here used to silently blind this check to every
+ * session living in a per-workspace bucket — i.e. every session created
+ * after the AIP-46 partitioning shipped — which is how a running session's
+ * own cwd got classified `reclaim` by `gc` in production.
  */
 export async function computeLiveness(
   worktreePath: string,
   options: ComputeProvenanceOptions = {},
 ): Promise<LivenessState> {
-  const registry = await readSessionsRegistry(options.sessionsPath ?? SESSIONS_FILE_PATH())
+  const registry = await readSessionsRegistry(options.sessionsPath)
   if (registry === null) return { state: "daemon-unreachable", sessions: [], services: [] }
   const live = registry
     .filter((s) => sessionInWorktree(s, worktreePath))

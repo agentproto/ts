@@ -65,9 +65,14 @@ describe("listHarnessCapabilities", () => {
     }
   })
 
+  // 30s, not vitest's 5s default: this imports EVERY installed adapter,
+  // including the @mastra/core graph (mastracode-inprocess, mastra-agent),
+  // on a cold worker. Under a full parallel `pnpm test` run that first
+  // import alone can blow 5s on a loaded machine — observed as the only
+  // red in an otherwise green gate; passes in isolation.
   it("lists every installed adapter when `adapter` is omitted", async () => {
     const capabilities = await listHarnessCapabilities()
     expect(capabilities.length).toBeGreaterThan(0)
     expect(capabilities.some((c) => c.adapter === "hermes")).toBe(true)
-  })
+  }, 30_000)
 })

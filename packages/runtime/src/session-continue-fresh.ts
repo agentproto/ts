@@ -40,6 +40,38 @@ function formatAccessForSpawn(desc: SessionDescriptor): { profileRef?: string } 
   return { profileRef: desc.accessProfile.profileRef }
 }
 
+/**
+ * Drop the RETIRED session's own identity stamp from carried-over MCP
+ * mounts so the spawn path re-stamps them with the fresh session's id.
+ *
+ * The spawn path bakes `callerSessionId=<own id>` into daemon-targeting
+ * `mcpServers` refs (identity, not capability — see session-spawn.ts) and
+ * deliberately respects an entry that already carries one. Copying `prev`'s
+ * mounts verbatim would therefore pin the NEW session's outbound identity —
+ * and every descendant's auto-attach lineage — to the dead id. Strip
+ * exactly our own stale stamp (value === `prev.id`); an explicit foreign
+ * pin someone set on purpose is preserved, matching the spawn path's
+ * "caller who set callerSessionId themselves is respected" contract.
+ */
+export function stripOwnCallerStamp(
+  servers: SessionDescriptor["mcpServers"],
+  prevId: string,
+): SessionDescriptor["mcpServers"] {
+  if (!servers) return servers
+  return servers.map(entry => {
+    if (entry.transport !== "http" || typeof entry.ref !== "string") return entry
+    let url: URL
+    try {
+      url = new URL(entry.ref)
+    } catch {
+      return entry
+    }
+    if (url.searchParams.get("callerSessionId") !== prevId) return entry
+    url.searchParams.delete("callerSessionId")
+    return { ...entry, ref: url.toString() }
+  })
+}
+
 function formatPostureForSpawn(
   desc: SessionDescriptor,
 ): import("./session-config.js").Posture | undefined {
@@ -85,7 +117,7 @@ export async function continueAgentSessionFresh(
     access: formatAccessForSpawn(prev),
     posture: formatPostureForSpawn(prev),
     contextProfile: prev.contextProfile,
-    mcpServers: prev.mcpServers,
+    mcpServers: stripOwnCallerStamp(prev.mcpServers, prev.id),
     label: prev.label ? `${prev.label} (continued)` : undefined,
     title: prev.title ? `${prev.title} (continued)` : undefined,
     contextContinuity: opts.contextContinuity ?? prev.contextContinuity,

@@ -36,6 +36,16 @@ export interface ToolCallRecord {
   exitCode?: number
   isError?: boolean
   durationMs?: number
+  /** The PR this call CREATED, when the call was a successful shell-shaped
+   *  `gh pr create` (detected at write time via `detectShellPrCreate` in
+   *  pr-provenance.ts, from the command string + the call's result text).
+   *  This is the exact-attribution source the PR-provenance reconciler
+   *  prefers over branch→PR guessing: the session whose events.jsonl holds
+   *  this record IS the session that opened the PR, no matter what branch
+   *  its cwd sits on by the time the turn ends. Absent for every other
+   *  call. */
+  createdPrUrl?: string
+  createdPrNumber?: number
   ts: string
 }
 

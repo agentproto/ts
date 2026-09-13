@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/lifecycle",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "@agentproto/lifecycle — AIP-37 LIFECYCLE.md reference implementation. A vocabulary AIP defining the standard lifecycle event names that hosts fire and that policy blocks (storage sync, sandbox lifecycle, etc.) reference. Not a runtime — just a shared language so configs across hosts mean the same thing.",
   "keywords": [
     "agentproto",
@@ -51,9 +51,9 @@
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   }
 }

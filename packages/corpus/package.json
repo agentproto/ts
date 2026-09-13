@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/corpus",
-  "version": "0.4.0",
+  "version": "0.7.3",
   "description": "@agentproto/corpus — canonical composition of AIP-10 KNOWLEDGE, AIP-12 PLAYBOOK, AIP-18 COLLECTION, AIP-9 OPERATOR, AIP-15 WORKFLOW, AIP-41 ROUTINE into an autonomous knowledge-improvement system. Pure: zero runtime, zero filesystem, zero HTTP — all I/O via injected ports.",
   "keywords": [
     "agentproto",
@@ -69,17 +69,17 @@
     "@agentproto/registry": "workspace:*",
     "@agentproto/routine": "workspace:*",
     "@agentproto/workflow": "workspace:*",
-    "ajv": "^8.17.1",
+    "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "gray-matter": "^4.0.3",
     "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   }
 }

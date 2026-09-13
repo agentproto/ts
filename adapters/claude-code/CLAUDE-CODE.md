@@ -4,7 +4,7 @@ id: claude-code
 description: Anthropic's Claude Code wrapped as an ACP agent via @agentclientprotocol/claude-agent-acp. Spawns the wrapper as `npx @agentclientprotocol/claude-agent-acp` and drives Claude Code over stdio JSON-RPC. Use when an operator should run inside Claude Code's agent loop instead of in-process.
 version: 0.1.0
 bin: npx
-bin_args: ["-y", "@agentclientprotocol/claude-agent-acp@0.59.0"]
+bin_args: ["-y", "@agentclientprotocol/claude-agent-acp@0.67.0"]
 install:
   - method: npm
     package: "@agentclientprotocol/claude-agent-acp"

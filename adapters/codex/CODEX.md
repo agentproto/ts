@@ -1,18 +1,18 @@
 ---
 name: codex
 id: codex
-description: OpenAI's Codex coding agent wrapped as an ACP server by @agentclientprotocol/codex-acp. Spawned via `npx -y @agentclientprotocol/codex-acp` and driven over stdio JSON-RPC. The wrapper bundles a compatible Codex runtime — no separate @openai/codex install required.
+description: OpenAI's Codex coding agent wrapped as an ACP server by @agentclientprotocol/codex-acp. Spawned via a version-pinned npx package and driven over stdio JSON-RPC. The wrapper bundles a compatible Codex runtime — no separate @openai/codex install required.
 version: 0.1.0
 bin: npx
-bin_args: ["-y", "@agentclientprotocol/codex-acp"]
+bin_args: ["-y", "@agentclientprotocol/codex-acp@1.1.14"]
 install:
   - method: npm
-    package: "@agentclientprotocol/codex-acp"
+    package: "@agentclientprotocol/codex-acp@1.1.14"
     global: true
 version_check:
-  cmd: npm view @agentclientprotocol/codex-acp version
+  cmd: npm view @agentclientprotocol/codex-acp@1.1.14 version
   parse: "(\\d+\\.\\d+\\.\\d+)"
-  range: ">=1.1.7"
+  range: "=1.1.14"
   timeout_ms: 15000
 auth:
   ref: ./SECRETS.md
@@ -64,10 +64,10 @@ full-access session modes.
 
 ```bash
 # npm (global) — recommended for fast spawn
-npm install -g @agentclientprotocol/codex-acp
+npm install -g @agentclientprotocol/codex-acp@1.1.14
 
 # or rely on the npx form (no manual install)
-npx -y @agentclientprotocol/codex-acp
+npx -y @agentclientprotocol/codex-acp@1.1.14
 ```
 
 The wrapper ships platform-specific native binaries via npm optional

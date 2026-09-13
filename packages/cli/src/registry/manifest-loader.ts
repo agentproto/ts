@@ -1,20 +1,20 @@
 /**
- * Manifest-based plugin wiring.
+ * Manifest-based adapter wiring.
  *
- * Given a plugin package id, locate its plugin manifest, validate it,
+ * Given an adapter package id, locate its adapter manifest, validate it,
  * and register every declared adapter (substrate, dispatcher,
- * executor, state store) with the runtime registry. The plugin
+ * executor, state store) with the runtime registry. The adapter
  * doesn't need to call register* itself — the manifest declares what
  * it provides, this loader handles the wiring.
  *
- * Discovery order, per plugin:
+ * Discovery order, per adapter:
  *   1. `<package-root>/agentproto.json`
  *   2. `<package-root>/package.json` → `.agentproto` block
  *
- * Returns the manifest (so callers like `agentproto plugins show` can
+ * Returns the manifest (so callers like `agentproto adapters show` can
  * print it) or `null` if neither location declares one. A `null`
  * return is not an error — the caller may fall back to side-effect
- * imports for legacy plugins.
+ * imports for legacy adapters.
  */
 
 import { readFile } from "node:fs/promises"
@@ -22,8 +22,8 @@ import { dirname, join } from "node:path"
 import { createRequire } from "node:module"
 import { pathToFileURL } from "node:url"
 import {
-  PluginManifestSchema,
-  type PluginManifest,
+  AdapterManifestSchema,
+  type AdapterManifest,
 } from "./manifest.js"
 import {
   registerDispatcher,
@@ -37,21 +37,21 @@ import {
 } from "./runtime.js"
 
 /**
- * Load and register every adapter declared in a plugin's manifest.
- * Returns the manifest on success, `null` if the plugin doesn't ship
+ * Load and register every adapter declared in an adapter's manifest.
+ * Returns the manifest on success, `null` if the adapter doesn't ship
  * one (so the caller can fall back to side-effect import).
  */
-export async function loadPluginFromManifest(
-  pluginId: string
-): Promise<PluginManifest | null> {
-  const result = await readPluginManifest(pluginId)
+export async function loadAdapterFromManifest(
+  adapterId: string
+): Promise<AdapterManifest | null> {
+  const result = await readAdapterManifest(adapterId)
   if (!result) return null
   const { manifest, packageRoot } = result
 
   for (const sub of manifest.substrates) {
     const factory = await importFactory<SubstrateFactory>(
       packageRoot,
-      pluginId,
+      adapterId,
       sub.entry,
       sub.export
     )
@@ -60,7 +60,7 @@ export async function loadPluginFromManifest(
   for (const dis of manifest.dispatchers) {
     const factory = await importFactory<DispatcherFactory>(
       packageRoot,
-      pluginId,
+      adapterId,
       dis.entry,
       dis.export
     )
@@ -69,7 +69,7 @@ export async function loadPluginFromManifest(
   for (const exe of manifest.executors) {
     const factory = await importFactory<ExecutorFactory>(
       packageRoot,
-      pluginId,
+      adapterId,
       exe.entry,
       exe.export
     )
@@ -78,7 +78,7 @@ export async function loadPluginFromManifest(
   for (const st of manifest.stateStores) {
     const factory = await importFactory<StateStoreFactory>(
       packageRoot,
-      pluginId,
+      adapterId,
       st.entry,
       st.export
     )
@@ -89,13 +89,13 @@ export async function loadPluginFromManifest(
 }
 
 /**
- * Read + validate a plugin's manifest without registering anything.
- * Used by `agentproto plugins show` to introspect installed plugins.
+ * Read + validate an adapter's manifest without registering anything.
+ * Used by `agentproto adapters show` to introspect installed adapters.
  */
-export async function readPluginManifest(
-  pluginId: string
-): Promise<{ manifest: PluginManifest; packageRoot: string } | null> {
-  const packageJsonPath = resolvePluginPackageJson(pluginId)
+export async function readAdapterManifest(
+  adapterId: string
+): Promise<{ manifest: AdapterManifest; packageRoot: string } | null> {
+  const packageJsonPath = resolveAdapterPackageJson(adapterId)
   if (!packageJsonPath) return null
 
   const packageRoot = dirname(packageJsonPath)
@@ -105,7 +105,7 @@ export async function readPluginManifest(
   const standalone = await readJsonIfExists(standalonePath)
   if (standalone !== undefined) {
     return {
-      manifest: PluginManifestSchema.parse(standalone),
+      manifest: AdapterManifestSchema.parse(standalone),
       packageRoot,
     }
   }
@@ -116,7 +116,7 @@ export async function readPluginManifest(
     | undefined
   if (pkgJson && typeof pkgJson === "object" && pkgJson.agentproto) {
     return {
-      manifest: PluginManifestSchema.parse(pkgJson.agentproto),
+      manifest: AdapterManifestSchema.parse(pkgJson.agentproto),
       packageRoot,
     }
   }
@@ -126,7 +126,7 @@ export async function readPluginManifest(
 
 async function importFactory<TFactory>(
   packageRoot: string,
-  pluginId: string,
+  adapterId: string,
   entry: string,
   exportName: string
 ): Promise<TFactory> {
@@ -140,15 +140,15 @@ async function importFactory<TFactory>(
   const exported = mod[exportName]
   if (typeof exported !== "function") {
     throw new Error(
-      `agentproto plugin '${pluginId}': manifest entry '${entry}' has no callable export '${exportName}' (got ${typeof exported}).`
+      `agentproto adapter '${adapterId}': manifest entry '${entry}' has no callable export '${exportName}' (got ${typeof exported}).`
     )
   }
   return exported as TFactory
 }
 
-function resolvePluginPackageJson(pluginId: string): string | null {
+function resolveAdapterPackageJson(adapterId: string): string | null {
   // Try the cli's own resolution first (global install + monorepo
-  // workspace deps), then the user's cwd (locally-installed plugins).
+  // workspace deps), then the user's cwd (locally-installed adapters).
   // `require.resolve` needs `createRequire` since we're an ESM bundle.
   const candidates = [
     import.meta.url,
@@ -156,7 +156,7 @@ function resolvePluginPackageJson(pluginId: string): string | null {
   ]
   for (const root of candidates) {
     try {
-      return createRequire(root).resolve(`${pluginId}/package.json`)
+      return createRequire(root).resolve(`${adapterId}/package.json`)
     } catch {
       // try next root
     }

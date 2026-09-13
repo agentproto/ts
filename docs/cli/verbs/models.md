@@ -38,7 +38,8 @@ mastra-agent  (installed)
     agentproto auth provider set openai <api-key>
 ```
 
-With `--json`, emits:
+With `--json`, emits (plus `contextWindow` / `maxOutput` per model, when
+the live-synced CONTEXT_WINDOWS table knows them):
 
 ```json
 {
@@ -52,7 +53,9 @@ With `--json`, emits:
           "provider": "openrouter",
           "runnable": true,
           "inputPer1M": null,
-          "outputPer1M": null
+          "outputPer1M": null,
+          "contextWindow": 1000000,
+          "maxOutput": 128000
         },
         {
           "id": "openrouter/deepseek/deepseek-v4-pro",

@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/code-brain",
-  "version": "0.2.0",
+  "version": "0.3.2",
   "description": "Pure, backend-agnostic code-intelligence contract (ICodeBrainProvider) + the AIP-14 `ask_codebase` tool, its AIP-30 builtin provider, and AIP-29/31/32 surface projections. Names no code-intelligence engine — a backend is injected via the tool context.",
   "keywords": [
     "agentproto",
@@ -81,19 +81,19 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/tool": "workspace:*",
     "@agentproto/driver": "workspace:*",
-    "@agentproto/driver-mcp": "workspace:*",
-    "@agentproto/driver-http": "workspace:*",
     "@agentproto/driver-cli": "workspace:*",
-    "zod": "^4.4.3"
+    "@agentproto/driver-http": "workspace:*",
+    "@agentproto/driver-mcp": "workspace:*",
+    "@agentproto/tool": "workspace:*",
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   },
   "engines": {
     "node": ">=20.9.0"

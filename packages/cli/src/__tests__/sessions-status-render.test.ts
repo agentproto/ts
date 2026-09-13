@@ -1,10 +1,12 @@
 /**
  * Unit tests for the pure status-rendering helpers in `commands/sessions.ts`
  * (`isStaleRunning` / `statusBadge` / `statusLabel` / `statusColour`) — the
- * bits that decide how the dashboard shows busy/idle and a `running` status
- * whose process has actually died. Also covers the `turnsCompleted`-derived
- * "○" badge, which distinguishes "idle, finished a turn" from "idle, never
- * ran one" — both fell through to the same blank badge before.
+ * bits that decide how the dashboard shows presence. The badges are now driven
+ * by the SHARED four-state presence classifier (`presenceFor` in
+ * @agentproto/runtime/session-presence): ● running (turning or just-finished,
+ * still inside the grace window), ◐ tending (idle but busy through children /
+ * background tasks), ?/!/✗ attention (something is waiting on the human), ○
+ * quiet (parked). `isStaleRunning` stays a pure dead-pid lifecycle flag.
  */
 
 import { describe, it, expect } from "vitest"
@@ -14,6 +16,13 @@ import {
   statusLabel,
   statusColour,
 } from "../commands/sessions.js"
+
+/** Bare live descriptor — turn idle, nothing pending, out of grace. */
+const live = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+  status: "running",
+  busy: false,
+  ...over,
+})
 
 describe("isStaleRunning", () => {
   it("is true only for status=running with a confirmed-dead process", () => {
@@ -34,162 +43,91 @@ describe("isStaleRunning", () => {
   })
 })
 
-describe("statusBadge", () => {
-  it("prioritises the stale warning over busy/awaitingInput", () => {
+describe("statusBadge — shared presence classifier", () => {
+  it("prioritises the stale warning over every presence state", () => {
     expect(
-      statusBadge({
-        status: "running",
-        processAlive: false,
-        busy: true,
-        awaitingInput: false,
-      }),
+      statusBadge(live({ processAlive: false, busy: true, awaitingInput: true })),
     ).toBe("⚠")
   })
 
-  it("shows the busy dot for a running, busy session", () => {
+  it("shows the busy dot for a turning session", () => {
+    expect(statusBadge(live({ busy: true }))).toBe("●")
+  })
+
+  it("shows the running dot for a session still inside the grace window after a turn", () => {
     expect(
-      statusBadge({ status: "running", processAlive: true, busy: true, awaitingInput: false }),
+      statusBadge(live({ lastActivityAt: new Date(Date.now() - 5_000).toISOString() })),
     ).toBe("●")
   })
 
   it("shows a question mark when awaiting input", () => {
-    expect(
-      statusBadge({
-        status: "running",
-        processAlive: true,
-        busy: false,
-        awaitingInput: true,
-      }),
-    ).toBe("?")
+    expect(statusBadge(live({ awaitingInput: true }))).toBe("?")
   })
 
-  it("is empty for a healthy idle running session that never ran a turn", () => {
-    expect(
-      statusBadge({ status: "running", processAlive: true, busy: false, awaitingInput: false }),
-    ).toBe("")
-    expect(
-      statusBadge({
-        status: "running",
-        processAlive: true,
-        busy: false,
-        awaitingInput: false,
-        turnsCompleted: 0,
-      }),
-    ).toBe("")
-  })
-
-  it("shows a distinct badge when idle after completing a turn — the working-vs-done signal", () => {
-    expect(
-      statusBadge({
-        status: "running",
-        processAlive: true,
-        busy: false,
-        awaitingInput: false,
-        turnsCompleted: 1,
-      }),
-    ).toBe("○")
-    expect(
-      statusBadge({
-        status: "running",
-        processAlive: true,
-        busy: false,
-        awaitingInput: false,
-        turnsCompleted: 3,
-      }),
-    ).toBe("○")
-  })
-
-  it("prioritises busy and awaitingInput over the turnsCompleted badge", () => {
-    expect(
-      statusBadge({
-        status: "running",
-        processAlive: true,
-        busy: true,
-        awaitingInput: false,
-        turnsCompleted: 5,
-      }),
-    ).toBe("●")
-    expect(
-      statusBadge({
-        status: "running",
-        processAlive: true,
-        busy: false,
-        awaitingInput: true,
-        turnsCompleted: 5,
-      }),
-    ).toBe("?")
-  })
-
-  it("is empty for non-running statuses", () => {
-    expect(
-      statusBadge({ status: "exited", processAlive: false, busy: false, awaitingInput: false }),
-    ).toBe("")
-  })
-
-  it("shows the '!' held-permission badge and prioritises it over busy/awaitingInput", () => {
-    expect(
-      statusBadge({
-        status: "running",
-        processAlive: true,
-        busy: false,
-        awaitingInput: false,
-        awaitingPermission: true,
-      }),
-    ).toBe("!")
+  it("shows '!' for a held permission and prioritises it over busy/awaitingInput", () => {
+    expect(statusBadge(live({ awaitingPermission: true }))).toBe("!")
     // A held permission is the strongest live signal — even mid-turn/awaiting.
+    expect(statusBadge(live({ busy: true, awaitingInput: true, awaitingPermission: true }))).toBe("!")
+  })
+
+  it("shows the half dot (◐) for an idle session tending its busy children", () => {
+    expect(statusBadge(live({ childrenBusy: 2 }))).toBe("◐")
+  })
+
+  it("shows the half dot (◐) for a session parked with background tasks pending", () => {
+    expect(statusBadge(live({ pendingBgTasks: 1 }))).toBe("◐")
+  })
+
+  it("shows ✗ for the adapter's own last-turn in-band failure", () => {
     expect(
-      statusBadge({
-        status: "running",
-        processAlive: true,
-        busy: true,
-        awaitingInput: true,
-        awaitingPermission: true,
-      }),
-    ).toBe("!")
+      statusBadge(live({ lastTurnErroredAt: new Date(Date.now() - 5_000).toISOString() })),
+    ).toBe("✗")
+  })
+
+  it("shows the hollow dot for a parked (quiet) running session", () => {
+    expect(statusBadge(live({}))).toBe("○")
+    expect(statusBadge(live({ busy: true, awaitingPermission: true }))).not.toBe("○")
+  })
+
+  it("is empty for terminal statuses — the raw status word is shown instead", () => {
+    expect(statusBadge(live({ status: "exited" }))).toBe("")
+    expect(statusBadge(live({ status: "killed" }))).toBe("")
   })
 })
 
 describe("statusLabel", () => {
-  it("appends the badge to the bare status when present", () => {
-    expect(
-      statusLabel({ status: "running", processAlive: false, busy: false, awaitingInput: false }),
-    ).toBe("running ⚠")
+  it("appends the badge to the bare status for a live session", () => {
+    expect(statusLabel(live({ busy: true }))).toBe("running ●")
+    expect(statusLabel(live({ awaitingInput: true }))).toBe("running ?")
+    expect(statusLabel(live({ childrenBusy: 1 }))).toBe("running ◐")
   })
 
-  it("returns the bare status when there is no badge", () => {
-    expect(
-      statusLabel({ status: "running", processAlive: true, busy: false, awaitingInput: false }),
-    ).toBe("running")
-    expect(
-      statusLabel({ status: "exited", processAlive: false, busy: false, awaitingInput: false }),
-    ).toBe("exited")
+  it("appends the stale warning when the process is dead", () => {
+    expect(statusLabel(live({ processAlive: false }))).toBe("running ⚠")
   })
 
-  it("appends the idle-after-turn badge so a finished agent-cli session reads distinctly from a fresh one", () => {
-    expect(
-      statusLabel({
-        status: "running",
-        processAlive: true,
-        busy: false,
-        awaitingInput: false,
-        turnsCompleted: 2,
-      }),
-    ).toBe("running ○")
+  it("returns the bare status for a terminal session", () => {
+    expect(statusLabel(live({ status: "exited" }))).toBe("exited")
   })
 })
 
 describe("statusColour", () => {
   it("renders a stale running session in amber, not the healthy green", () => {
-    const stale = statusColour({ status: "running", processAlive: false })
-    const healthy = statusColour({ status: "running", processAlive: true })
-    expect(stale).not.toBe(healthy)
-    expect(stale).toBe("\x1b[33m")
-    expect(healthy).toBe("\x1b[32m")
+    expect(statusColour(live({ processAlive: false }))).toBe("\x1b[33m")
+    expect(statusColour(live({ processAlive: true }))).toBe("\x1b[2m") // healthy quiet is dim
   })
 
-  it("keeps killed/error red and exited dim", () => {
-    expect(statusColour({ status: "killed", processAlive: false })).toBe("\x1b[31m")
-    expect(statusColour({ status: "error", processAlive: false })).toBe("\x1b[31m")
-    expect(statusColour({ status: "exited", processAlive: false })).toBe("\x1b[2m")
+  it("greens running and tending, ambers attention, dims quiet", () => {
+    expect(statusColour(live({ busy: true }))).toBe("\x1b[32m")
+    expect(statusColour(live({ childrenBusy: 1 }))).toBe("\x1b[32m")
+    expect(statusColour(live({ awaitingInput: true }))).toBe("\x1b[33m")
+    expect(statusColour(live({}))).toBe("\x1b[2m")
+  })
+
+  it("keeps killed/error red, starting yellow, exited dim", () => {
+    expect(statusColour(live({ status: "killed" }))).toBe("\x1b[31m")
+    expect(statusColour(live({ status: "error" }))).toBe("\x1b[31m")
+    expect(statusColour(live({ status: "starting" }))).toBe("\x1b[33m")
+    expect(statusColour(live({ status: "exited" }))).toBe("\x1b[2m")
   })
 })

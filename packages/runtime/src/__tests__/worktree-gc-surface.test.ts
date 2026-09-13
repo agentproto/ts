@@ -17,7 +17,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
 import { startHttpServer, type RuntimeHttpServerHandle } from "../http-server.js"
 import { registerSessionTools } from "../session-tools.js"
-import { createSessionsRegistry } from "../sessions.js"
+import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
 import { createRuntimeEvents } from "../events.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
@@ -54,6 +54,18 @@ function noopConversations(): ConversationStore {
 
 function noopHeartbeat(): HeartbeatRunner {
   return { start() {}, stop() {}, async fireNow() {} }
+}
+
+function fakeAgentSession(): AgentSessionLike {
+  return {
+    sessionId: "acp_gc_surface_test",
+    // eslint-disable-next-line require-yield
+    async *send(): AsyncIterable<never> {
+      return
+    },
+    async cancel() {},
+    async close() {},
+  }
 }
 
 async function mcpServerFactory() {
@@ -216,6 +228,44 @@ describe("POST /worktrees/gc — HTTP route", () => {
       await http.stop()
     }
   })
+
+  it("protectedPaths carries the cwd of a live session from the wired SessionsRegistry, excluding a killed one", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp/wt/live-session-cwd",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "fake",
+    })
+    const dying = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp/wt/dead-session-cwd",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "fake",
+    })
+    registry.kill(dying.id)
+
+    const { runner, seen } = recordingRunner()
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      meta: { workspace: process.cwd(), registered: [] },
+      runWorktreeGc: runner,
+      sessions: registry,
+    })
+    try {
+      const res = await post(http, { repoRoot: "/repo" })
+      expect(res.status).toBe(200)
+      expect(seen()?.protectedPaths).toEqual(["/tmp/wt/live-session-cwd"])
+    } finally {
+      await http.stop()
+    }
+  })
 })
 
 describe("worktree_gc — MCP tool", () => {
@@ -223,6 +273,7 @@ describe("worktree_gc — MCP tool", () => {
     const registry = createSessionsRegistry({ persist: false })
     const { server } = await createMcpServer({ specs: [], name: "main", version: "0" })
     registerSessionTools(server, {
+      workspace: process.cwd(),
       registry,
       ...(runWorktreeGc ? { runWorktreeGc } : {}),
     })
@@ -265,6 +316,9 @@ describe("worktree_gc — MCP tool", () => {
         apply: false,
         salvageDirty: false,
         includeDetached: false,
+        // The harness's registry has no live sessions — see the
+        // "protectedPaths" describe block below for the non-empty case.
+        protectedPaths: [],
       })
     } finally {
       await h.close()
@@ -285,6 +339,7 @@ describe("worktree_gc — MCP tool", () => {
         apply: true,
         salvageDirty: true,
         includeDetached: false,
+        protectedPaths: [],
       })
     } finally {
       await h.close()
@@ -305,9 +360,43 @@ describe("worktree_gc — MCP tool", () => {
         apply: true,
         salvageDirty: false,
         includeDetached: true,
+        protectedPaths: [],
       })
     } finally {
       await h.close()
+    }
+  })
+
+  it("protectedPaths carries every live (running/starting) session's cwd from the registry, excluding a killed one", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const { server } = await createMcpServer({ specs: [], name: "main", version: "0" })
+    const { runner, seen } = recordingRunner()
+    registerSessionTools(server, { registry, workspace: process.cwd(), runWorktreeGc: runner })
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "test", version: "0.0.1" })
+    await client.connect(clientTransport)
+
+    try {
+      registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp/wt/live-session-cwd",
+        agentSession: fakeAgentSession(),
+        adapterSlug: "fake",
+      })
+      const dying = registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp/wt/dead-session-cwd",
+        agentSession: fakeAgentSession(),
+        adapterSlug: "fake",
+      })
+      registry.kill(dying.id)
+
+      await client.callTool({ name: "worktree_gc", arguments: { repoRoot: "/repo" } })
+      expect(seen()?.protectedPaths).toEqual(["/tmp/wt/live-session-cwd"])
+    } finally {
+      await client.close()
     }
   })
 })

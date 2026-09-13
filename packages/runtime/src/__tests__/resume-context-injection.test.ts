@@ -249,6 +249,7 @@ describe("session_restart: gated resume-context injection on a fresh-spawn fallb
     })
     const { server } = await createMcpServer({ specs: [], name: "test", version: "0" })
     registerSessionTools(server, {
+      workspace: process.cwd(),
       registry,
       resolveAgentAdapter: makeResolver({ rejectResumeOnce: true }),
       ptyEnabled: true,
@@ -294,6 +295,7 @@ describe("session_restart: gated resume-context injection on a fresh-spawn fallb
     })
     const { server } = await createMcpServer({ specs: [], name: "test", version: "0" })
     registerSessionTools(server, {
+      workspace: process.cwd(),
       registry,
       resolveAgentAdapter: makeResolver(),
       ptyEnabled: true,

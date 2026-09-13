@@ -99,6 +99,7 @@ async function harness(): Promise<{
     version: "0",
   })
   registerSessionTools(server, {
+      workspace: process.cwd(),
     registry,
     resolveAgentAdapter: makeResolver(capture),
     buildOrchestratorMcp: injector,

@@ -30,3 +30,4 @@ export {
 
 export { askCodebaseTool } from "./tools/index.js"
 export { codeBrainProvider, askCodebaseBuiltin } from "./provider/index.js"
+export { queryManySources } from "./query-many-sources.js"

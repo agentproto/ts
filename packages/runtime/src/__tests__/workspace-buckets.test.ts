@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -28,6 +28,8 @@ import {
   migrationMarkerPath,
   readRegisteredSlugs,
   resolveBucketSlug,
+  writeBucketSnapshot,
+  writeBucketSnapshotSync,
 } from "../workspace-buckets.js"
 
 const REGISTERED = new Set(["agentik-studio", "client-app"])
@@ -417,5 +419,61 @@ describe("listBuckets", () => {
 
   it("is empty (not an error) when nothing is partitioned", () => {
     expect(listBuckets(join(home, ".agentproto", "workspaces"))).toEqual([])
+  })
+})
+
+describe("writeBucketSnapshot — concurrent writes to one bucket", () => {
+  let root: string
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "agentproto-bucket-writes-"))
+  })
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  const snapshot = (n: number) => ({
+    savedAt: `2026-08-14T00:00:00.00${n % 10}Z`,
+    sessions: [{ id: `sess_${n}`, startedAt: "2026-08-14T00:00:00.000Z" }],
+  })
+
+  it("N overlapping async writes all resolve and leave one complete snapshot", async () => {
+    // Regression for the 2026-08-14 registry wipe: with a pid-only tmp
+    // suffix, overlapping writes shared one tmp path — the loser's rename
+    // threw ENOENT ("persist failed" storm) and the winner could promote
+    // the loser's half-written bytes. Unique per-write tmp names make
+    // every rename promote only its own fully-written file.
+    const writes = Array.from({ length: 25 }, (_, n) =>
+      writeBucketSnapshot(root, "alpha", snapshot(n)),
+    )
+    await expect(Promise.all(writes)).resolves.toBeDefined()
+
+    const parsed = JSON.parse(
+      readFileSync(bucketSessionsFile(root, "alpha"), "utf8"),
+    ) as { sessions: { id: string }[] }
+    // Whatever ordering won, the surviving file is ONE of the snapshots,
+    // intact — never an interleaving of two.
+    expect(parsed.sessions).toHaveLength(1)
+    expect(parsed.sessions[0]!.id).toMatch(/^sess_\d+$/)
+  })
+
+  it("sync and async writers interleave without sharing tmp files", async () => {
+    const inflight = Array.from({ length: 10 }, (_, n) =>
+      writeBucketSnapshot(root, "alpha", snapshot(n)),
+    )
+    // The shutdown-path sync writer lands mid-flight — with a shared tmp
+    // path it could truncate an async write's tmp file under it.
+    writeBucketSnapshotSync(root, "alpha", snapshot(99))
+    await expect(Promise.all(inflight)).resolves.toBeDefined()
+
+    const parsed = JSON.parse(
+      readFileSync(bucketSessionsFile(root, "alpha"), "utf8"),
+    ) as { sessions: unknown[] }
+    expect(parsed.sessions).toHaveLength(1)
+    // No abandoned tmp litter: every write renamed its own file away.
+    const leftovers = readdirSync(join(root, "alpha")).filter(f =>
+      f.includes(".tmp."),
+    )
+    expect(leftovers).toEqual([])
   })
 })

@@ -42,6 +42,15 @@ import { registerCommandTools, runCommand, withSanePath } from "../command-tools
 import { COMMAND_SANDBOX_MODE_ENV } from "@agentproto/command-sandbox"
 import { createSessionsRegistry, type AgentSessionLike, type SessionsRegistry } from "../sessions.js"
 
+const fakeAgent = (): AgentSessionLike => ({
+  sessionId: "acp-session-id",
+  async *send() {
+    yield { kind: "turn-end", reason: "completed" }
+  },
+  async cancel() {},
+  async close() {},
+})
+
 async function buildHarness(
   workspace: string,
   registry: SessionsRegistry,
@@ -148,6 +157,49 @@ describe("command_execute → session-based persistence", () => {
     const desc = registry.get(sessionId)
     expect(desc?.origin).toBe("command_execute")
     expect(desc?.callerSessionId).toBeUndefined()
+
+    await close()
+  })
+
+  it("nests the minted session under the callerSessionId parent at parent.depth + 1", async () => {
+    // The parent — the agent session that invoked this /mcp request —
+    // registered itself first, at depth 2 under some root.
+    const parent = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: workspace,
+      agentSession: fakeAgent(),
+      adapterSlug: "fake",
+      parentSessionId: "sess_root00",
+      depth: 2,
+    })
+    const { client, close } = await buildHarness(workspace, registry, {
+      callerSessionId: parent.id,
+    })
+    const result = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('hi')"] },
+    })
+    const { sessionId } = JSON.parse(textOf(result))
+    const desc = registry.get(sessionId)
+    expect(desc?.parentSessionId).toBe(parent.id)
+    expect(desc?.callerSessionId).toBe(parent.id)
+    expect(desc?.depth).toBe(3)
+
+    await close()
+  })
+
+  it("stamps no depth when the callerSessionId parent can't be resolved", async () => {
+    const { client, close } = await buildHarness(workspace, registry, {
+      callerSessionId: "sess_missing0",
+    })
+    const result = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('hi')"] },
+    })
+    const { sessionId } = JSON.parse(textOf(result))
+    const desc = registry.get(sessionId)
+    expect(desc?.parentSessionId).toBe("sess_missing0")
+    expect(desc?.depth).toBe(0)
 
     await close()
   })
@@ -380,6 +432,71 @@ describe("tool_calls_list — unified logger over the proxy + in-agent paths (PR
       arguments: { sessionId: "sess_doesnotexist" },
     })
     expect(JSON.parse(textOf(result))).toEqual({ records: [] })
+    await close()
+  })
+
+  it("(fields) projects each record down to exactly the requested keys", async () => {
+    const { client, close } = await buildHarness(workspace, registry)
+    const exec = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('hi')"] },
+    })
+    const { sessionId } = JSON.parse(textOf(exec))
+
+    const { records } = await pollUntil(
+      async () => {
+        const result = await client.callTool({
+          name: "tool_calls_list",
+          arguments: { sessionId, fields: ["tool", "sessionId"] },
+        })
+        return JSON.parse(textOf(result)) as { records: Array<Record<string, unknown>> }
+      },
+      result => result.records.length > 0,
+    )
+    expect(records).toHaveLength(1)
+    expect(Object.keys(records[0] as object).sort()).toEqual(["sessionId", "tool"])
+    expect(records[0]?.tool).toBe("command_execute")
+    expect(records[0]?.sessionId).toBe(sessionId)
+    // Projected fields the caller did not ask for must not leak through.
+    expect(records[0]?.command).toBeUndefined()
+    expect(records[0]?.exitCode).toBeUndefined()
+
+    await close()
+  })
+
+  it("(full: true) is the legacy escape hatch — output identical to the default", async () => {
+    const { client, close } = await buildHarness(workspace, registry)
+    const exec = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('hi')"] },
+    })
+    const { sessionId } = JSON.parse(textOf(exec))
+
+    const { records: fullRecords } = await pollUntil(
+      async () => {
+        const result = await client.callTool({
+          name: "tool_calls_list",
+          arguments: { sessionId, full: true },
+        })
+        return JSON.parse(textOf(result)) as { records: Array<Record<string, unknown>> }
+      },
+      result => result.records.length > 0,
+    )
+    const defaultResult = await client.callTool({
+      name: "tool_calls_list",
+      arguments: { sessionId },
+    })
+    const { records: defaultRecords } = JSON.parse(textOf(defaultResult)) as {
+      records: Array<Record<string, unknown>>
+    }
+    // full: true must be byte-for-byte what the default returns.
+    expect(JSON.stringify(fullRecords)).toBe(JSON.stringify(defaultRecords))
+    // And both are FULL records — no projection, no preview.
+    expect(Object.keys(defaultRecords[0] as object)).toContain("command")
+    expect(Object.keys(defaultRecords[0] as object)).toContain("exitCode")
+    expect(Object.keys(defaultRecords[0] as object)).toContain("durationMs")
+    expect(Object.keys(defaultRecords[0] as object)).toContain("ts")
+
     await close()
   })
 })

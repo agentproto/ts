@@ -34,6 +34,18 @@ export const adapterFor = (config, verb) =>
   String(resolveCommandConfig(config, verb).reviewerAdapter || "claude-code")
 
 /**
+ * Model id override for the lane (per-verb override allowed via
+ * commands.<verb>.reviewerModel) — resolved per run by the step's `model`
+ * selector (same semantics as `agent_start.model`; supported on workflow
+ * agent steps since #1236). Empty/absent ⇒ undefined ⇒ the adapter keeps its
+ * default model.
+ */
+export const reviewerModelFor = (config, verb) => {
+  const m = resolveCommandConfig(config, verb).reviewerModel
+  return typeof m === "string" && m.trim() ? m.trim() : undefined
+}
+
+/**
  * Provision-time setup command (e2b `setupCommands`) that installs a git
  * `commit-msg` hook STRIPPING AI-attribution trailer lines, so a sandboxed
  * model's native-shell commits can't deadlock the PR against the repo's own
@@ -75,30 +87,54 @@ export const ATTRIBUTION_STRIP_SETUP_COMMAND = [
 ].join("\n")
 
 /**
- * Sandbox placement: `reviewerSandbox` selects a provider slug (e.g. "e2b");
- * absent/empty ⇒ host spawn. The inline spec's `env.passthrough` names the
+ * Sandbox placement. `reviewerSandbox` accepts two shapes:
+ *
+ *   · **string** (e.g. "e2b") — a provider slug; the spec is fully derived
+ *     here (adapter install + attribution-strip hook + env passthrough).
+ *   · **object** — a NATIVE SandboxSpec used verbatim as the base:
+ *     `{ provider: "e2b", config?: {...}, env?: { passthrough?: [...] },
+ *     lifecycle?: {...}, reuse?: … }`. Defaults are merged under it, never
+ *     over it: if the object's `env.passthrough` is absent it falls back to
+ *     `reviewerSandboxEnv`, then to `["ANTHROPIC_API_KEY", "GITHUB_TOKEN"]`;
+ *     the setup hook + `cliVersion` pin are merged into
+ *     `config` (object-provided config keys win); any other top-level keys of
+ *     the object are carried through untouched — nothing is invented.
+ *
+ * In both shapes, absent/empty ⇒ host spawn. The spec's `env.passthrough`
+ * names the
  * daemon-process env vars injected into the box — the box's own daemon +
  * adapters resolve auth from that env (there is no ~/.agentproto/config.json
  * inside a fresh box; claude-sdk reads ANTHROPIC_API_KEY /
  * ANTHROPIC_AUTH_TOKEN from env — proven headless in a live e2b box).
  *
- * `installPackages` (e2b): the boot-time CLI update replaces the box's global
- * npm install and LOSES the template-baked adapters (verified live), so the
- * verb's adapter must be reinstalled in the same `npm i -g` — plus the
- * Claude Code CLI itself when the adapter is claude-code.
+ * `installPackages` (e2b): the verb's adapter package is NOT installed here —
+ * the runtime auto-injects it at spawn time (#1232,
+ * `sandboxAdapterBootPackages`).
  */
 export const sandboxRefFor = (config, verb) => {
   const cfg = resolveCommandConfig(config, verb)
-  const slug = typeof cfg.reviewerSandbox === "string" ? cfg.reviewerSandbox.trim() : ""
-  if (!slug) return undefined
-  const adapter = adapterFor(config, verb)
-  const passthrough = Array.isArray(cfg.reviewerSandboxEnv) && cfg.reviewerSandboxEnv.length > 0
-    ? cfg.reviewerSandboxEnv
-    : ["ANTHROPIC_API_KEY", "GITHUB_TOKEN"]
-  const installPackages = [
-    `@agentproto/adapter-${adapter}@latest`,
-    ...(adapter === "claude-code" ? ["@anthropic-ai/claude-code@latest"] : []),
-  ]
+  const raw = cfg.reviewerSandbox
+  const slug = typeof raw === "string" ? raw.trim() : ""
+  const nativeProvider =
+    raw !== null && typeof raw === "object" && typeof raw.provider === "string"
+      ? raw.provider.trim()
+      : ""
+  if (!slug && !nativeProvider) return undefined
+  const nativeEnv = raw !== null && typeof raw === "object" && raw.env !== null && typeof raw.env === "object" ? raw.env : undefined
+  const nativePassthrough =
+    nativeEnv && Array.isArray(nativeEnv.passthrough) && nativeEnv.passthrough.length > 0
+      ? nativeEnv.passthrough
+      : undefined
+  const passthrough =
+    nativePassthrough ??
+    (Array.isArray(cfg.reviewerSandboxEnv) && cfg.reviewerSandboxEnv.length > 0
+      ? cfg.reviewerSandboxEnv
+      : ["ANTHROPIC_API_KEY", "GITHUB_TOKEN"])
+  // The verb's adapter is NOT installed here anymore: the runtime
+  // auto-injects the adapter boot package since #1232
+  // (`sandboxAdapterBootPackages` in session-spawn.ts), so a CI-side
+  // `@agentproto/adapter-<slug>@latest` install would only risk racing the
+  // boot CLI update that loses it anyway.
   // Pin the boot CLI install to a known-good version so a broken
   // `@agentproto/cli@latest` publish can't silently kill the box. Only pass
   // the key when configured — the provider defaults to `@latest` otherwise.
@@ -106,9 +142,20 @@ export const sandboxRefFor = (config, verb) => {
   // Provision-time commit-msg hook that strips AI-attribution trailers, so a
   // sandboxed model's native commits can't deadlock the PR against Hygiene (#589).
   const sandboxConfig = {
-    installPackages,
     setupCommands: [ATTRIBUTION_STRIP_SETUP_COMMAND],
     ...(cliVersion ? { cliVersion } : {}),
+  }
+  if (!slug) {
+    // Native object form: the object is the verbatim base of the spec; our
+    // derived defaults merge UNDER it (its own config/env keys win).
+    const nativeConfig =
+      raw.config !== null && typeof raw.config === "object" ? raw.config : {}
+    return {
+      ...raw,
+      provider: nativeProvider,
+      config: { ...sandboxConfig, ...nativeConfig },
+      env: { ...(nativeEnv ?? {}), passthrough },
+    }
   }
   return { provider: slug, config: sandboxConfig, env: { passthrough } }
 }
@@ -155,17 +202,22 @@ export const skillsBlock = (config, verb) => {
   ].join("\n")
 }
 
-/** Post a PR review via curl REST (write body to a file first — safe JSON quoting). */
+/**
+ * Post a PR review via the shared delivery helper (write body to a file first —
+ * safe JSON quoting). The helper does the REST POST AND records the created
+ * review to the artifact ledger, so the runner stamps the provenance footer by
+ * id instead of re-discovering the review.
+ */
 export const restPostReviewBlock = ({ repo, prNumber }) => [
-  `   Write the review body to a file first (safe JSON quoting), then POST it via the GitHub REST API:`,
+  `   Write the review body to a file first (safe JSON quoting), then deliver it via the shared helper (which POSTs to the GitHub REST API AND records the created review to the artifact ledger so CI can stamp its provenance footer):`,
   `   \`\`\`bash`,
   `   # review.md contains your review markdown`,
   `   node -e 'const fs=require("fs");fs.writeFileSync("payload.json",JSON.stringify({event:process.argv[1],body:fs.readFileSync("review.md","utf8")}))' COMMENT`,
-  `   curl -sS -X POST -H "Authorization: Bearer \${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" \\`,
-  `     "https://api.github.com/repos/${repo}/pulls/${prNumber}/reviews" \\`,
-  `     --data @payload.json`,
+  `   node .github/agentproto-workflows/lib/deliver-artifact.mjs \\`,
+  `     --kind review --body-file payload.json \\`,
+  `     --url "https://api.github.com/repos/${repo}/pulls/${prNumber}/reviews"`,
   `   \`\`\``,
-  `   Set the first node argument to APPROVE, REQUEST_CHANGES, or COMMENT as appropriate. Check the curl response: a JSON object with an "id" field means the review posted; anything else, print the response and retry once.`,
+  `   Set the first node argument to APPROVE, REQUEST_CHANGES, or COMMENT as appropriate. The helper exits 0 and prints \`created review id=…\` on success; if it exits non-zero it prints the API response — read it and retry once.`,
 ].join("\n")
 
 /**
@@ -180,12 +232,12 @@ export const restOpenPrBlock = ({ repo, branch, base, titleHint }) => [
   `   git add -A && git commit -m "<concise conventional-commit title>"`,
   `   git push origin "HEAD:${branch}"`,
   `   node -e 'const fs=require("fs");fs.writeFileSync("pr.json",JSON.stringify({title:process.argv[1],head:"${branch}",base:"${base}",body:fs.readFileSync("pr-body.md","utf8")}))' "<PR title>"`,
-  `   curl -sS -X POST -H "Authorization: Bearer \${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" \\`,
-  `     "https://api.github.com/repos/${repo}/pulls" --data @pr.json`,
+  `   node .github/agentproto-workflows/lib/deliver-artifact.mjs \\`,
+  `     --kind pr --body-file pr.json \\`,
+  `     --url "https://api.github.com/repos/${repo}/pulls"`,
   `   \`\`\``,
-  `   Write \`pr-body.md\` BEFORE the curl: what changed, why, how it was verified${titleHint ? `, and reference ${titleHint}` : ""}.`,
-  `   The LAST line of \`pr-body.md\` must be exactly the hidden placeholder \`<!-- agentproto-bot:provenance -->\` — the CI runner replaces it with a provenance footer (session id, cost, run link); do not omit it.`,
-  `   Check the response has an "id"/"number" field; anything else, print it and retry once.`,
+  `   Write \`pr-body.md\` BEFORE running the helper: what changed, why, how it was verified${titleHint ? `, and reference ${titleHint}` : ""}. Do NOT add a signature or provenance footer — the CI runner stamps a deterministic \`@agentproto-bot\` footer (session id, cost, run link) onto the PR body it just recorded.`,
+  `   The helper (\`.github/agentproto-workflows/lib/deliver-artifact.mjs\`) POSTs the PR AND records it to the artifact ledger so CI can stamp by id. It exits 0 and prints \`created pr id=… number=…\` on success; if it exits non-zero it prints the API response — read it and retry once.`,
 ].join("\n")
 
 /** Commit-mode delivery: push the change directly onto an existing branch. */

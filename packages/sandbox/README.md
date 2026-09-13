@@ -44,6 +44,45 @@ try {
 }
 ```
 
+## Adapter auto-install on boot
+
+A box's boot-time `npm i -g @agentproto/cli` replaces the global install and
+loses the template-baked `@agentproto/adapter-*` packages. Providers that
+accept `config.installPackages` (e2b, box) install those entries in the SAME
+npm invocation as the CLI update; when spawning through the runtime
+(`spawnAgentSession`), the adapter about to be launched — plus
+`@anthropic-ai/claude-code` for the `claude-code` adapter — is injected there
+automatically (a caller-declared pin always wins, nothing is injected for
+non-sandbox spawns).
+
+For harnesses BEYOND the spawned adapter, declare semantic slugs instead of
+raw npm specs: `config.installAdapters: ["hermes", "claude-code"]`. Each slug
+expands to `@agentproto/adapter-<slug>@latest` (plus that adapter's declared
+boot extras, e.g. `@anthropic-ai/claude-code`) and merges into
+`config.installPackages` with dedupe — a caller's explicit pin for the same
+package always wins. An unknown slug still expands (the box's npm install is
+the authority); an absent field changes nothing.
+
+## Billing-auth auto-passthrough (opt-in)
+
+Set `env.autoPassthrough: true` on a sandbox spec and the runtime adds the
+spawn's RESOLVED billing-credential env-var NAME (e.g. `ANTHROPIC_API_KEY`) to
+`env.passthrough` before the box boots — so a fresh box inherits host auth
+without the caller naming vars. Only the NAME is injected; the value travels
+via the normal passthrough mechanism (host secrets broker → box env) and is
+never read by the flag. Billing credential only (no `GITHUB_TOKEN`); the
+caller's explicit `env.passthrough` entries are kept and deduped. When no
+credential resolved — or the host cannot resolve the var — nothing is
+injected and the spawn proceeds: the flag is a convenience, not a contract.
+
+## Lifecycle: pause is the default teardown
+
+Closing a session PAUSES its box by default (`pause({ keepMemory: true })`)
+rather than killing it — any closed box stays reattachable via
+`sandbox.reuse` / `agentproto sandbox attach`. A paused box still dies at its
+own `timeoutMs` (45 min by default), so paused boxes don't accumulate
+indefinitely; declare `lifecycle.destroy_on` for a hard kill on close.
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).

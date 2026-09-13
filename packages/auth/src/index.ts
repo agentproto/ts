@@ -25,6 +25,9 @@
  *   resolveEndpoint/methodsPresentable/
  *   eligibleProfiles                  — (adapter × route) → endpoint + the
  *                                        profile eligibility predicate
+ *   refreshAuthProfileModels(id, ids) — re-sync a mode:"allow" profile's
+ *                                        `ids` against a current catalog
+ *                                        snapshot (fixes curation drift)
  */
 
 export { defineAuthProvider } from "./define-auth-provider.js"
@@ -83,6 +86,7 @@ export {
   deleteAuthProfile,
   setAuthProfileEnabled,
   setAuthProfileModels,
+  refreshAuthProfileModels,
   validateCreateInput,
   deriveCredentialRef,
   fingerprintCredential,
@@ -94,6 +98,7 @@ export {
   type CredentialIdentity,
   type ProfileProvisionDeps,
   type ValidatedCreateInput,
+  type RefreshAuthProfileModelsResult,
 } from "./profile-provision.js"
 export {
   resolveEndpoint,

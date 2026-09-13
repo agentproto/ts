@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/corpus-presets",
-  "version": "0.2.3",
+  "version": "0.2.11",
   "description": "@agentproto/corpus-presets — catalog of starter workspaces for the AIP-10 corpus runtime. Subpath exports per vertical (marketing, sales, …). Each preset is pure TS data — host iterates `files` and writes via FsPort. Mirrors @agentproto/role-catalog.",
   "keywords": [
     "agentproto",
@@ -85,9 +85,9 @@
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   }
 }

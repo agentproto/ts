@@ -1,9 +1,29 @@
 import { writeFileSync } from "node:fs"
 import { createServer, type Server } from "node:http"
-import { AddressInfo } from "node:net"
+import { type AddressInfo } from "node:net"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
-import { DaemonClient, NoTranscriptError, WorkspacesRouteMissingError } from "./daemonClient.js"
+import {
+  ActivitiesUnavailableError,
+  DaemonClient,
+  NoTranscriptError,
+  TasksUnavailableError,
+  WorkspacesRouteMissingError,
+} from "./daemonClient.js"
+import { probeLoopbackBind, TEST_OVERRIDE as BIND_TEST_OVERRIDE } from "./loopbackBindCapability.js"
+
+/**
+ * Runtime capability gate: this suite stands up real HTTP servers on
+ * 127.0.0.1 ephemeral ports. Where socket bind is denied (confined
+ * containers/sandboxes) every test would fail for environmental, not code,
+ * reasons — so probe the capability once (a throwaway listen(0)) and skip
+ * the whole suite when it's absent, loudly naming the reason.
+ */
+const bindProbe = probeLoopbackBind()
+const canBindLoopback = bindProbe.supported
+if (!canBindLoopback) {
+  console.warn(`[skip] DaemonClient suites: ${bindProbe.reason}`)
+}
 
 /**
  * Spin a mock daemon on an ephemeral port. Returns base URL + request log.
@@ -47,7 +67,25 @@ async function mockDaemon(handler: (req: {
   return { url: `http://127.0.0.1:${port}`, server, requests }
 }
 
-describe("DaemonClient — URL + auth header mapping", () => {
+describe("probeLoopbackBind", () => {
+  it("honours the test-only override verbatim (the hook used to exercise the skip path on a capable host)", () => {
+    const forced = { supported: false, reason: "forced-false (test-only override)" }
+    const prev = BIND_TEST_OVERRIDE.value
+    BIND_TEST_OVERRIDE.value = forced
+    try {
+      expect(probeLoopbackBind()).toBe(forced)
+    } finally {
+      BIND_TEST_OVERRIDE.value = prev
+    }
+  })
+
+  it("caches the verdict per process — the second call returns the same object without re-probing", () => {
+    const first = probeLoopbackBind()
+    expect(probeLoopbackBind()).toBe(first)
+  })
+})
+
+describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", () => {
   let daemon: Awaited<ReturnType<typeof mockDaemon>>
 
   beforeEach(async () => {
@@ -58,6 +96,83 @@ describe("DaemonClient — URL + auth header mapping", () => {
       if (req.url?.startsWith("/sessions/summaries") && req.method === "GET") return { status: 200, body: { summaries: [{ id: "s1", kind: "agent-cli", status: "running", command: "x", pid: 1, startedAt: "t", workspaceSlug: "ws" }], total: 1 } }
       if (req.url === "/permissions" && req.method === "GET") return { status: 200, body: { permissions: [] } }
       if (req.url?.startsWith("/permissions?sessionId=") && req.method === "GET") return { status: 200, body: { permissions: [] } }
+      if (req.url?.startsWith("/activities") && req.method === "GET") {
+        return {
+          status: 200,
+          body: {
+            activities: [
+              {
+                id: "policy:plc_1",
+                kind: "policy",
+                sessionId: "s1",
+                sourceRef: "plc_1",
+                source: "supervisor",
+                title: "Completion policy plc_1 on s1",
+                startedAt: "t",
+                state: "pending",
+                waitingOn: {
+                  kind: "session-turn",
+                  refs: ["s1"],
+                  detail: "waiting for the watched session(s) to finish their turn",
+                },
+              },
+            ],
+            counts: { active: 0, pending: 1 },
+          },
+        }
+      }
+      if (req.url === "/tasks" && req.method === "GET") {
+        return {
+          status: 200,
+          body: {
+            boardId: "ws:ws",
+            tasks: [
+              { taskId: "task_1", boardId: "ws:ws", title: "Do the thing", status: "pending", createdBy: "operator", rev: 0, createdAt: "t", updatedAt: "t" },
+            ],
+          },
+        }
+      }
+      if (req.url?.startsWith("/tasks?") && req.method === "GET") {
+        return { status: 200, body: { boardId: "ws:ws", tasks: [] } }
+      }
+      if (req.url === "/tasks/task_1" && req.method === "GET") {
+        return { status: 200, body: { taskId: "task_1", boardId: "ws:ws", title: "Do the thing", status: "pending", createdBy: "operator", rev: 0, createdAt: "t", updatedAt: "t" } }
+      }
+      if (req.url === "/tasks/missing" && req.method === "GET") {
+        return { status: 404, body: { error: "task_not_found", taskId: "missing" } }
+      }
+      if (req.url === "/tasks/task_1" && req.method === "PATCH") {
+        const patch = req.body as { rev: number; status?: string; note?: string }
+        if (patch.rev === 1) {
+          return {
+            status: 409,
+            body: {
+              conflict: true,
+              current: { taskId: "task_1", boardId: "ws:ws", title: "Do the thing", status: "pending", createdBy: "operator", rev: 3, createdAt: "t", updatedAt: "t" },
+            },
+          }
+        }
+        if (patch.rev === 2) {
+          return { status: 400, body: { error: "cannot transition done -> pending without an explicit reopen" } }
+        }
+        return {
+          status: 200,
+          body: {
+            task: {
+              taskId: "task_1",
+              boardId: "ws:ws",
+              title: "Do the thing",
+              status: patch.status ?? "pending",
+              createdBy: "operator",
+              rev: patch.rev + 1,
+              createdAt: "t",
+              updatedAt: "t",
+              ...(patch.note ? { meta: { note: patch.note } } : {}),
+            },
+            ...(patch.status === "done" ? { verifying: true } : {}),
+          },
+        }
+      }
       if (req.url?.startsWith("/sessions/s1/events") && req.method === "GET") {
         return {
           status: 200,
@@ -79,9 +194,19 @@ describe("DaemonClient — URL + auth header mapping", () => {
       if (req.url === "/sessions/agent" && req.method === "POST") return { status: 201, body: { id: "s2", kind: "agent-cli", status: "starting", command: "c", pid: 2, startedAt: "t", workspaceSlug: "ws" } }
       if (req.url === "/sessions/terminal" && req.method === "POST") return { status: 201, body: { id: "t1", kind: "terminal", status: "running", command: "claude --resume X", pid: 3, startedAt: "t", workspaceSlug: "ws", pty: true, argv: ["claude", "--resume", "X"], cwd: "/ws" } }
       if (req.url?.startsWith("/sessions/s1/kill") && req.method === "POST") return { status: 200, body: { ok: true, sessionId: "s1" } }
+      if (req.url?.startsWith("/sessions/s1/pin") && req.method === "POST") return { status: 200, body: { ok: true, sessionId: "s1", pinned: (req.body as { pinned: boolean }).pinned } }
       if (req.url?.startsWith("/sessions/s1/interrupt") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", wasBusy: true } }
       if (req.url?.startsWith("/sessions/s1/model") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", applied: true, model: (req.body as { model?: string }).model } }
+      if (req.url?.startsWith("/sessions/s1/effort") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", applied: true, effort: (req.body as { effort?: string }).effort } }
+      // Posture that has no native mode: a clean, non-fatal reject.
+      if (req.url?.startsWith("/sessions/s1/posture") && req.method === "POST") return { status: 200, body: { ok: true, id: "s1", applied: false, reason: "requires-restart" } }
+      if (req.url?.startsWith("/sessions/s1/restart") && req.method === "POST") return { status: 200, body: { id: "s2", kind: "agent-cli", status: "running", command: "c", pid: 9, startedAt: "t", workspaceSlug: "ws", resumedFrom: "s1", resumeVia: "resumed via ACP" } }
+      if (req.url?.startsWith("/sessions/ghostwallet/restart") && req.method === "POST") return { status: 400, body: { error: "restart_override_invalid", message: "unknown access profile", sessionId: "ghostwallet" } }
       if (req.url?.startsWith("/sessions/s1/prompt") && req.method === "POST") return { status: 200, body: { ok: true } }
+      if (req.url?.startsWith("/sessions/s1/queue/") && req.method === "DELETE") {
+        const queueId = req.url.split("/").pop()!
+        return { status: 200, body: { ok: true, id: "s1", queueId, removed: true } }
+      }
       if (req.url === "/sessions/s1" && req.method === "PATCH") {
         const patch = req.body as { title?: string | null; label?: string | null }
         return { status: 200, body: { id: "s1", kind: "agent-cli", status: "running", command: "x", pid: 1, startedAt: "t", workspaceSlug: "ws", ...(patch.label ? { label: patch.label } : {}), ...(patch.title ? { title: patch.title } : {}) } }
@@ -108,10 +233,15 @@ describe("DaemonClient — URL + auth header mapping", () => {
           },
         }
       }
-      if (req.url === "/mcp" && req.method === "POST") {
+      if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         const rpc = req.body as { method: string; params: { name: string; arguments: Record<string, unknown> } }
         if (rpc.method === "tools/call" && rpc.params.name === "adapter_list") {
-          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ adapters: [{ slug: "claude-code" }] }) }] } } }
+          // Daemon 0.20+: { full: true } returns the FULL manifest (compact
+          // default would keep only slug/name/version/protocol/models).
+          if (!(rpc.params.arguments as { full?: boolean }).full) {
+            return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ adapters: [{ slug: "claude-code" }] }) }] } } }
+          }
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ adapters: [{ slug: "claude-code", name: "Claude Code", protocol: "acp", version: "1.0.0", models: ["claude-opus-4-8"], modes: [{ id: "subscription", status: "active" }], modelDetails: [{ id: "claude-opus-4-8", provider: "anthropic", mode: "subscription" }], status: "ready" }] }) }] } } }
         }
         if (rpc.method === "tools/call" && rpc.params.name === "harness_capabilities") {
           const args = rpc.params.arguments as { adapter?: string }
@@ -120,7 +250,10 @@ describe("DaemonClient — URL + auth header mapping", () => {
           return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ capabilities: filtered }) }] } } }
         }
         if (rpc.method === "tools/call" && rpc.params.name === "catalog_models") {
-          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ vendors: [{ vendor: "anthropic", products: [{ product: "claude-opus-4-8", routes: [{ route: "anthropic", ref: "anthropic/claude-opus-4-8", baseUrl: null, pricing: { inPer1M: 15, outPer1M: 75 }, runnable: true, eligibleProfiles: ["personal"], adapterModes: [], adapters: ["claude-code"], curated: true }] }] }] }) }] } } }
+          // Daemon 0.20+ always answers with flat per-route rows under
+          // `routes`; with { full: true } the rows carry the complete
+          // CatalogRoute fields.
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ routes: [{ vendor: "anthropic", product: "claude-opus-4-8", route: "anthropic", ref: "anthropic/claude-opus-4-8", baseUrl: null, pricing: { inPer1M: 15, outPer1M: 75 }, runnable: true, eligibleProfiles: ["personal"], adapterModes: [], adapters: ["claude-code"], curated: true }] }) }] } } }
         }
         if (rpc.method === "tools/call" && rpc.params.name === "list_provider_presets") {
           return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ presets: [{ slug: "moonshot", name: "Moonshot", status: "available", info: { schemaFlavor: "anthropic", baseUrl: "https://api.moonshot.ai/anthropic", keyEnv: "MOONSHOT_API_KEY" } }] }) }] } } }
@@ -135,6 +268,34 @@ describe("DaemonClient — URL + auth header mapping", () => {
           const a = rpc.params.arguments as { provider: string; profileId: string | null }
           return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ ok: true, provider: a.provider, profileId: a.profileId, applied: false, restartRequired: true }) }] } } }
         }
+        if (rpc.method === "tools/call" && rpc.params.name === "app_list") {
+          // Daemon 0.20+: { full: true } returns FULL records (compact would
+          // drop `ui` and flatten agents/workflows to bare id strings).
+          if (!(rpc.params.arguments as { full?: boolean }).full) {
+            return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify([{ appId: "mail-triage", agents: ["triage"], workflows: ["ship"] }]) }] } } }
+          }
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify([{ appId: "mail-triage", dir: "/apps/mail", ui: { path: "/apps/mail/ui.html", title: "Mail Triage", tools: ["mail_list"] }, agents: [{ id: "triage", path: "/apps/mail/.agentproto/AGENT.md" }], workflows: [{ id: "ship", path: "/apps/mail/.agentproto/WORKFLOW.md" }] }]) }] } } }
+        }
+        if (rpc.method === "tools/call" && rpc.params.name === "app_tool_call") {
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ echoed: rpc.params.arguments }) }] } } }
+        }
+        if (rpc.method === "tools/call" && rpc.params.name === "app_catalog") {
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify([{ appId: "mail-triage", dir: "/apps/mail", category: "app", installed: true, hasUi: true }, { appId: "code-team", dir: "/apps/code-team", category: "team", installed: true, hasUi: false }]) }] } } }
+        }
+        if (rpc.method === "tools/call" && rpc.params.name === "workflow_run_file") {
+          const a = rpc.params.arguments as { path: string }
+          if (a.path.endsWith("/missing/WORKFLOW.md")) {
+            return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { isError: true, content: [{ type: "text", text: JSON.stringify({ error: "workflow file not found" }) }] } } }
+          }
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ runId: "run_42", status: "running", echoed: rpc.params.arguments }) }] } } }
+        }
+        if (rpc.method === "resources/read") {
+          const params = (req.body as { params: { uri: string } }).params
+          if (params.uri === "ui://app_ui_mail_triage/view") {
+            return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { contents: [{ uri: params.uri, mimeType: "text/html;profile=mcp-app", text: "<html><body>panel</body></html>" }] } } }
+          }
+          return { status: 200, body: { jsonrpc: "2.0", id: 1, error: { code: -32002, message: "resource not found" } } }
+        }
         return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "{}" }] } } }
       }
       return { status: 404, body: { error: "not_found" } }
@@ -142,7 +303,9 @@ describe("DaemonClient — URL + auth header mapping", () => {
   })
 
   afterEach(async () => {
-    await new Promise<void>(resolve => daemon.server.close(() => resolve()))
+    // Guard: if beforeEach failed (e.g. the mock daemon could not bind),
+    // daemon is undefined — don't turn one root failure into a cascade.
+    if (daemon) await new Promise<void>(resolve => daemon.server.close(() => resolve()))
   })
 
   function client(tokenPath = ""): DaemonClient {
@@ -217,9 +380,40 @@ describe("DaemonClient — URL + auth header mapping", () => {
     expect(last.body).toMatchObject({ prompt: "go", interrupt: true })
   })
 
+  it("prompt queue:true and force:true are sent in the body", async () => {
+    await client().prompt("s1", "go", { queue: true, force: true })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.body).toMatchObject({ prompt: "go", queue: true, force: true })
+  })
+
+  it("prompt omits queue/force from the body when not set — no accidental FIFO opt-in", async () => {
+    await client().prompt("s1", "go")
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.body).toEqual({ prompt: "go" })
+  })
+
+  it("DELETE /sessions/:id/queue/:queueId cancels a queued item", async () => {
+    const res = await client().removeQueuedPrompt("s1", "q_abc")
+    expect(res).toEqual({ ok: true, id: "s1", queueId: "q_abc", removed: true })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.method).toBe("DELETE")
+    expect(last.url).toBe("/sessions/s1/queue/q_abc")
+  })
+
   it("POST /sessions/:id/kill returns { ok, sessionId }", async () => {
     const res = await client().kill("s1")
     expect(res).toEqual({ ok: true, sessionId: "s1" })
+  })
+
+  it("POST /sessions/:id/pin sends { pinned } and returns { ok, sessionId, pinned }", async () => {
+    const res = await client().setPinned("s1", true)
+    expect(res).toEqual({ ok: true, sessionId: "s1", pinned: true })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url.split("?")[0]).toBe("/sessions/s1/pin")
+    expect(last.body).toEqual({ pinned: true })
+
+    const unpin = await client().setPinned("s1", false)
+    expect(unpin).toEqual({ ok: true, sessionId: "s1", pinned: false })
   })
 
   it("POST /sessions/:id/interrupt returns { ok, id, wasBusy }", async () => {
@@ -237,6 +431,36 @@ describe("DaemonClient — URL + auth header mapping", () => {
     expect(last.method).toBe("POST")
     expect(last.url).toBe("/sessions/s1/model")
     expect(last.body).toEqual({ model: "opus-5" })
+  })
+
+  it("POST /sessions/:id/effort sends the effort body and returns the structured result", async () => {
+    const res = await client().setSessionEffort("s1", "high")
+    expect(res).toEqual({ ok: true, id: "s1", applied: true, effort: "high" })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url).toBe("/sessions/s1/effort")
+    expect(last.body).toEqual({ effort: "high" })
+  })
+
+  it("POST /sessions/:id/posture surfaces a clean {applied:false, reason} reject without throwing", async () => {
+    const res = await client().setSessionPosture("s1", "plan")
+    expect(res.applied).toBe(false)
+    expect(res.reason).toBe("requires-restart")
+  })
+
+  it("POST /sessions/:id/restart carries overrides and returns the NEW descriptor + resumeVia", async () => {
+    const res = await client().restartSessionWithOverride("s1", { access: { profileRef: "claude-subs" } })
+    expect(res.id).toBe("s2") // rebind target — a fresh session id
+    expect(res.resumedFrom).toBe("s1")
+    expect(res.resumeVia).toBe("resumed via ACP")
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url).toBe("/sessions/s1/restart")
+    expect(last.body).toEqual({ access: { profileRef: "claude-subs" } })
+  })
+
+  it("restart-with-override THROWS on a rejected override — never a silent blank session", async () => {
+    await expect(
+      client().restartSessionWithOverride("ghostwallet", { access: { profileRef: "nope" } }),
+    ).rejects.toThrow(/400/)
   })
 
   it("throws on a non-2xx response", async () => {
@@ -270,7 +494,10 @@ describe("DaemonClient — URL + auth header mapping", () => {
     const result = await client().mcpCall<{ adapters: Array<{ slug: string }> }>("adapter_list")
     expect(result.adapters?.[0]?.slug).toBe("claude-code")
     const last = daemon.requests[daemon.requests.length - 1]!
-    expect(last.url).toBe("/mcp")
+    // Path is /mcp; the client announces its source channel via ?origin=
+    // (#session-visibility) so a spawn it makes is stamped origin=vscode.
+    expect(last.url?.split("?")[0]).toBe("/mcp")
+    expect(last.url).toContain("origin=vscode")
     expect(last.body).toMatchObject({ jsonrpc: "2.0", method: "tools/call", params: { name: "adapter_list" } })
   })
 
@@ -333,6 +560,101 @@ describe("DaemonClient — URL + auth header mapping", () => {
     expect(adapters[0]?.slug).toBe("claude-code")
   })
 
+  it("listAdapters() requests { full: true } and keeps the full manifest fields", async () => {
+    const adapters = await client().listAdapters()
+    const last = daemon.requests[daemon.requests.length - 1]!
+    const args = (last.body as { params: { arguments: Record<string, unknown> } }).params.arguments
+    expect(args).toEqual({ full: true })
+    expect(adapters[0]?.modes).toEqual([{ id: "subscription", status: "active" }])
+    expect(adapters[0]?.modelDetails?.[0]?.provider).toBe("anthropic")
+    expect(adapters[0]?.status).toBe("ready")
+  })
+
+  it("listApps() routes through mcpCall app_list", async () => {
+    const apps = await client().listApps()
+    expect(apps).toHaveLength(1)
+    expect(apps[0]?.appId).toBe("mail-triage")
+    expect(apps[0]?.ui?.title).toBe("Mail Triage")
+  })
+
+  it("listApps() requests { full: true } and keeps the FULL-shaped record (ui, dir, ref paths)", async () => {
+    const apps = await client().listApps()
+    const last = daemon.requests[daemon.requests.length - 1]!
+    const args = (last.body as { params: { arguments: Record<string, unknown> } }).params.arguments
+    expect(args).toEqual({ full: true })
+    expect(apps[0]?.dir).toBe("/apps/mail")
+    expect(apps[0]?.agents).toEqual([{ id: "triage", path: "/apps/mail/.agentproto/AGENT.md" }])
+    expect(apps[0]?.workflows).toEqual([{ id: "ship", path: "/apps/mail/.agentproto/WORKFLOW.md" }])
+    expect(apps[0]?.ui?.title).toBe("Mail Triage")
+  })
+
+  it("appCatalog() routes through mcpCall app_catalog and keeps each entry's category", async () => {
+    const entries = await client().appCatalog()
+    expect(entries.map(e => [e.appId, e.category])).toEqual([
+      ["mail-triage", "app"],
+      ["code-team", "team"],
+    ])
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.body).toMatchObject({ method: "tools/call", params: { name: "app_catalog" } })
+  })
+
+  it("runWorkflowFile() posts workflow_run_file with path/cwd/input and returns the run ack", async () => {
+    const run = await client().runWorkflowFile({
+      path: "/apps/code-team/.agentproto/workflows/deliver-change/WORKFLOW.md",
+      cwd: "/apps/code-team",
+      input: { topic: "x" },
+    })
+    expect(run).toMatchObject({ runId: "run_42", status: "running" })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.body).toMatchObject({
+      method: "tools/call",
+      params: {
+        name: "workflow_run_file",
+        arguments: {
+          path: "/apps/code-team/.agentproto/workflows/deliver-change/WORKFLOW.md",
+          cwd: "/apps/code-team",
+          input: { topic: "x" },
+        },
+      },
+    })
+  })
+
+  it("runWorkflowFile() omits cwd/input when not given, and throws on an isError result", async () => {
+    await client().runWorkflowFile({ path: "/apps/x/WORKFLOW.md" })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    const args = (last.body as { params: { arguments: Record<string, unknown> } }).params.arguments
+    expect(Object.keys(args)).toEqual(["path"])
+
+    await expect(client().runWorkflowFile({ path: "/apps/missing/WORKFLOW.md" })).rejects.toThrow(
+      /workflow file not found/,
+    )
+  })
+
+  it("appToolCall() posts app_tool_call with appId/tool/args", async () => {
+    const result = await client().appToolCall("mail-triage", "mail_list", { folder: "inbox" })
+    expect(result).toEqual({
+      echoed: { appId: "mail-triage", tool: "mail_list", args: { folder: "inbox" } },
+    })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.body).toMatchObject({ method: "tools/call", params: { name: "app_tool_call" } })
+  })
+
+  it("readResource posts a JSON-RPC resources/read envelope and returns the first contents text", async () => {
+    const html = await client().readResource("ui://app_ui_mail_triage/view")
+    expect(html).toBe("<html><body>panel</body></html>")
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url?.split("?")[0]).toBe("/mcp")
+    expect(last.body).toMatchObject({
+      jsonrpc: "2.0",
+      method: "resources/read",
+      params: { uri: "ui://app_ui_mail_triage/view" },
+    })
+  })
+
+  it("readResource throws on a JSON-RPC error envelope", async () => {
+    await expect(client().readResource("ui://app_ui_ghost/view")).rejects.toThrow(/resource not found/)
+  })
+
   it("harnessCapabilities() routes through mcpCall harness_capabilities", async () => {
     const caps = await client().harnessCapabilities("claude-code")
     expect(caps).toHaveLength(1)
@@ -352,6 +674,24 @@ describe("DaemonClient — URL + auth header mapping", () => {
     const catalog = await client().catalogModels()
     expect(catalog.vendors[0]?.vendor).toBe("anthropic")
     expect(catalog.vendors[0]?.products[0]?.routes[0]?.eligibleProfiles).toEqual(["personal"])
+  })
+
+  it("catalogModels() requests { full: true } and renests the flat {routes:[...]} payload daemon 0.20 sends", async () => {
+    const catalog = await client().catalogModels()
+    const last = daemon.requests[daemon.requests.length - 1]!
+    const args = (last.body as { params: { arguments: Record<string, unknown> } }).params.arguments
+    expect(args).toEqual({ full: true })
+    expect(catalog.vendors).toHaveLength(1)
+    expect(catalog.vendors[0]?.vendor).toBe("anthropic")
+    expect(catalog.vendors[0]?.products[0]?.product).toBe("claude-opus-4-8")
+    expect(catalog.vendors[0]?.products[0]?.routes[0]).toMatchObject({
+      route: "anthropic",
+      ref: "anthropic/claude-opus-4-8",
+      pricing: { inPer1M: 15, outPer1M: 75 },
+      runnable: true,
+      curated: true,
+      adapters: ["claude-code"],
+    })
   })
 
   it("listProviderPresets() routes through mcpCall list_provider_presets", async () => {
@@ -469,9 +809,137 @@ describe("DaemonClient — URL + auth header mapping", () => {
     })
     await expect(client().mcpCall("adapter_list")).rejects.toThrow(/bad args/)
   })
+
+  it("listActivities() unwraps { activities } and forwards the filter as query params", async () => {
+    const activities = await client().listActivities({
+      sessionId: "s1",
+      state: "pending",
+      kind: "policy",
+      source: "supervisor",
+      includeTerminal: true,
+    })
+    expect(activities).toHaveLength(1)
+    expect(activities[0]?.id).toBe("policy:plc_1")
+    expect(activities[0]?.state).toBe("pending")
+    if (activities[0]?.state === "pending") {
+      expect(activities[0].waitingOn.kind).toBe("session-turn")
+    }
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url).toBe(
+      "/activities?sessionId=s1&state=pending&kind=policy&source=supervisor&includeTerminal=true",
+    )
+  })
+
+  it("listTasks() unwraps { tasks }", async () => {
+    const tasks = await client().listTasks()
+    expect(tasks).toHaveLength(1)
+    expect(tasks[0]?.taskId).toBe("task_1")
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url).toBe("/tasks")
+  })
+
+  it("listTasks() forwards boardId/status/includeClosed as query params", async () => {
+    await client().listTasks({ boardId: "ws:ws", status: "pending", includeClosed: true })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.url).toBe("/tasks?boardId=ws%3Aws&status=pending&includeClosed=true")
+  })
+
+  it("getTask() returns a single TaskRecord", async () => {
+    const task = await client().getTask("task_1")
+    expect(task.taskId).toBe("task_1")
+    expect(task.status).toBe("pending")
+  })
+
+  it("getTask() throws a plain error (not TasksUnavailableError) on a genuinely missing task", async () => {
+    const c = client()
+    await expect(c.getTask("missing")).rejects.toThrow(/task_not_found/)
+    await expect(c.getTask("missing")).rejects.not.toBeInstanceOf(TasksUnavailableError)
+  })
+
+  it("patchTask() returns { task, verifying:true } unflattened on the Tier-1 done path", async () => {
+    const result = await client().patchTask("task_1", { rev: 0, status: "done" })
+    expect(result).toEqual({
+      task: expect.objectContaining({ taskId: "task_1", status: "done", rev: 1 }),
+      verifying: true,
+    })
+  })
+
+  it("patchTask() returns a plain { task } with no verifying flag on a Tier-0 write", async () => {
+    const result = await client().patchTask("task_1", { rev: 0, status: "in_progress", note: "claiming" })
+    expect(result).toEqual({
+      task: expect.objectContaining({ status: "in_progress", rev: 1, meta: { note: "claiming" } }),
+    })
+    expect((result as { verifying?: boolean }).verifying).toBeUndefined()
+  })
+
+  it("patchTask() returns the { conflict, current } shape on a stale rev, not a thrown error", async () => {
+    const result = await client().patchTask("task_1", { rev: 1, status: "done" })
+    expect(result).toEqual({
+      conflict: true,
+      current: expect.objectContaining({ taskId: "task_1", rev: 3 }),
+    })
+  })
+
+  it("patchTask() returns the bare { error } shape on a clean refusal, not a thrown error", async () => {
+    const result = await client().patchTask("task_1", { rev: 2, status: "pending" })
+    expect(result).toEqual({ error: expect.stringContaining("reopen") })
+  })
 })
 
-describe("DaemonClient.addWorkspace — old daemon (no POST /workspaces route)", () => {
+describe.skipIf(!canBindLoopback)("DaemonClient — Activity/Task ledger not wired on the daemon", () => {
+  let daemon: Awaited<ReturnType<typeof mockDaemon>>
+
+  beforeEach(async () => {
+    daemon = await mockDaemon(req => {
+      if (req.url?.startsWith("/activities") && req.method === "GET") {
+        return {
+          status: 501,
+          body: {
+            error: "activities_not_configured",
+            message:
+              "GET /activities is not enabled — the daemon was started without an activity projector.",
+          },
+        }
+      }
+      // No /tasks handler at all — every route under it falls through to the
+      // mock's default 404, standing in for a daemon booted without a task
+      // ledger wired (the whole /tasks family 404s through the dispatcher's
+      // generic fallthrough — there is no dedicated 501 the way /activities
+      // has one).
+      return { status: 404, body: { error: "not_found" } }
+    })
+  })
+
+  afterEach(async () => {
+    // Guard: if beforeEach failed (e.g. the mock daemon could not bind),
+    // daemon is undefined — don't turn one root failure into a cascade.
+    if (daemon) await new Promise<void>(resolve => daemon.server.close(() => resolve()))
+  })
+
+  function client(): DaemonClient {
+    return new DaemonClient({ daemonUrl: daemon.url, tokenPath: "", pollIntervalMs: 5000 })
+  }
+
+  it("listActivities() raises ActivitiesUnavailableError on the 501, not a silent empty array", async () => {
+    await expect(client().listActivities()).rejects.toBeInstanceOf(ActivitiesUnavailableError)
+  })
+
+  it("listTasks() raises TasksUnavailableError on the generic 404 fallthrough, not a silent empty array", async () => {
+    await expect(client().listTasks()).rejects.toBeInstanceOf(TasksUnavailableError)
+  })
+
+  it("getTask() raises TasksUnavailableError on the generic 404 fallthrough", async () => {
+    await expect(client().getTask("task_1")).rejects.toBeInstanceOf(TasksUnavailableError)
+  })
+
+  it("patchTask() raises TasksUnavailableError on the generic 404 fallthrough", async () => {
+    await expect(
+      client().patchTask("task_1", { rev: 0, status: "done" }),
+    ).rejects.toBeInstanceOf(TasksUnavailableError)
+  })
+})
+
+describe.skipIf(!canBindLoopback)("DaemonClient.addWorkspace — old daemon (no POST /workspaces route)", () => {
   let daemon: Awaited<ReturnType<typeof mockDaemon>>
 
   beforeEach(async () => {
@@ -482,7 +950,9 @@ describe("DaemonClient.addWorkspace — old daemon (no POST /workspaces route)",
   })
 
   afterEach(async () => {
-    await new Promise<void>(resolve => daemon.server.close(() => resolve()))
+    // Guard: if beforeEach failed (e.g. the mock daemon could not bind),
+    // daemon is undefined — don't turn one root failure into a cascade.
+    if (daemon) await new Promise<void>(resolve => daemon.server.close(() => resolve()))
   })
 
   it("raises WorkspacesRouteMissingError, not a generic HTTP error", async () => {
@@ -528,7 +998,7 @@ async function uploadMock(
   return { url: `http://127.0.0.1:${port}`, server, requests }
 }
 
-describe("DaemonClient.uploadFile — raw binary transport", () => {
+describe.skipIf(!canBindLoopback)("DaemonClient.uploadFile — raw binary transport", () => {
   let daemon: Awaited<ReturnType<typeof uploadMock>>
 
   afterEach(async () => {
@@ -632,7 +1102,7 @@ async function gatedMock(state: GatedState): Promise<{
   return { url: `http://127.0.0.1:${port}`, port, server, requests }
 }
 
-describe("DaemonClient — bearer refresh across a daemon restart", () => {
+describe.skipIf(!canBindLoopback)("DaemonClient — bearer refresh across a daemon restart", () => {
   let home: string
   let workspace: string
   let daemon: Awaited<ReturnType<typeof gatedMock>>
@@ -651,7 +1121,9 @@ describe("DaemonClient — bearer refresh across a daemon restart", () => {
   })
 
   afterEach(async () => {
-    await new Promise<void>(resolve => daemon.server.close(() => resolve()))
+    // Guard: if beforeEach failed (e.g. the mock daemon could not bind),
+    // daemon is undefined — don't turn one root failure into a cascade.
+    if (daemon) await new Promise<void>(resolve => daemon.server.close(() => resolve()))
     const { rm } = await import("node:fs/promises")
     await rm(home, { recursive: true, force: true })
     await rm(workspace, { recursive: true, force: true })
@@ -761,11 +1233,11 @@ describe("DaemonClient — bearer refresh across a daemon restart", () => {
   })
 })
 
-describe("DaemonClient — llmEndpointReloadPacks", () => {
+describe.skipIf(!canBindLoopback)("DaemonClient — llmEndpointReloadPacks", () => {
   it("reads the status baseUrl, POSTs /v1/packs/reload directly, and returns the result", async () => {
     let base = ""
     const daemon = await mockDaemon(req => {
-      if (req.url === "/mcp" && req.method === "POST") {
+      if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         const rpc = req.body as { params?: { name?: string } }
         if (rpc.params?.name === "llm_endpoint_status") {
           return {
@@ -826,7 +1298,7 @@ describe("DaemonClient — llmEndpointReloadPacks", () => {
   it("throws with the field-scoped errors when the reload is rejected (HTTP 400)", async () => {
     let base = ""
     const daemon = await mockDaemon(req => {
-      if (req.url === "/mcp" && req.method === "POST") {
+      if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         return {
           status: 200,
           body: {
@@ -868,7 +1340,7 @@ describe("DaemonClient — llmEndpointReloadPacks", () => {
 
   it("throws when the router is not running (no base URL)", async () => {
     const daemon = await mockDaemon(req => {
-      if (req.url === "/mcp" && req.method === "POST") {
+      if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         return {
           status: 200,
           body: {
@@ -894,11 +1366,11 @@ describe("DaemonClient — llmEndpointReloadPacks", () => {
   })
 })
 
-describe("DaemonClient — llmEndpointTestUpstream", () => {
+describe.skipIf(!canBindLoopback)("DaemonClient — llmEndpointTestUpstream", () => {
   it("reads the status baseUrl, POSTs /v1/upstreams/:p/test directly, and returns the verdict", async () => {
     let base = ""
     const daemon = await mockDaemon(req => {
-      if (req.url === "/mcp" && req.method === "POST") {
+      if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         const rpc = req.body as { params?: { name?: string } }
         if (rpc.params?.name === "llm_endpoint_status") {
           return {
@@ -946,7 +1418,7 @@ describe("DaemonClient — llmEndpointTestUpstream", () => {
 
   it("throws when the router is not running (no base URL)", async () => {
     const daemon = await mockDaemon(req => {
-      if (req.url === "/mcp" && req.method === "POST") {
+      if ((req.url ?? "").split("?")[0] === "/mcp" && req.method === "POST") {
         return {
           status: 200,
           body: {

@@ -83,8 +83,7 @@
     {
       "id": "grok-4.3",
       "aliases": [
-        "grok-4.3-latest",
-        "grok-latest"
+        "grok-4.3-latest"
       ],
       "context_length": 1000000,
       "created": 1776384000,
@@ -119,6 +118,22 @@
       "long_context_threshold": 200000
     },
     {
+      "id": "grok-4.6",
+      "aliases": [],
+      "context_length": 500000,
+      "created": 1785974400,
+      "object": "model",
+      "owned_by": "xai",
+      "prompt_text_token_price": 20000,
+      "cached_prompt_text_token_price": 5000,
+      "prompt_image_token_price": 20000,
+      "completion_text_token_price": 60000,
+      "prompt_text_token_price_long_context": 40000,
+      "cached_prompt_text_token_price_long_context": 10000,
+      "completion_text_token_price_long_context": 120000,
+      "long_context_threshold": 200000
+    },
+    {
       "id": "grok-build-0.1",
       "aliases": [
         "grok-code-fast-1",
@@ -143,11 +158,42 @@
       "aliases": [
         "grok-imagine-image-2026-03-02"
       ],
-      "context_length": 8000,
+      "context_length": 16000,
       "created": 1769558400,
       "object": "model",
       "owned_by": "xai",
       "image_price": 200000000
+    },
+    {
+      "id": "grok-imagine-image-2.0",
+      "aliases": [],
+      "context_length": 64000,
+      "created": 1786147200,
+      "object": "model",
+      "owned_by": "xai",
+      "image_price": 600000000,
+      "pricing": [
+        {
+          "quality": "low",
+          "resolution": "1k",
+          "price_per_image": 400000000
+        },
+        {
+          "quality": "low",
+          "resolution": "2k",
+          "price_per_image": 600000000
+        },
+        {
+          "quality": "medium",
+          "resolution": "1k",
+          "price_per_image": 600000000
+        },
+        {
+          "quality": "medium",
+          "resolution": "2k",
+          "price_per_image": 800000000
+        }
+      ]
     },
     {
       "id": "grok-imagine-image-quality",
@@ -156,7 +202,7 @@
         "grok-imagine-image-quality-latest",
         "grok-imagine-image-pro"
       ],
-      "context_length": 8000,
+      "context_length": 16000,
       "created": 1775174400,
       "object": "model",
       "owned_by": "xai",

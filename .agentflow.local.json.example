@@ -1,4 +1,5 @@
 {
-  "$comment": "Copy to .agentflow.local.json (gitignored) to opt in. Example: auto-generate a changeset locally before each push using the Claude Code CLI.",
-  "changeset": { "stage": "push", "engine": "local" }
+  "$comment": "Copy to .agentflow.local.json (gitignored) to opt in. Example: auto-generate a changeset locally before each push using the Claude Code CLI, and review before pushing using the SAME pr-review workflow CI runs, driven through your local `agentproto serve` daemon.",
+  "changeset": { "stage": "push", "engine": "local" },
+  "review": { "stage": "manual", "engine": "daemon" }
 }

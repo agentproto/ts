@@ -1,0 +1,23 @@
+{
+  "name": "agentpush-plugin",
+  "description": "Bridge an imported agentpush MCP server (Telegram, WhatsApp, etc.) with live agentproto sessions: send outbound messages via transmit_message, bind contacts to sessions, route inbound replies back into the same session instead of spawning a fresh agent every time, and wire per-service auth (Bearer/OAuth credentials) through @agentproto/auth's credential broker.",
+  "skills": [
+    "agentpush",
+    "auth"
+  ],
+  "sourceDir": "./src/skills",
+  "author": { "name": "Jeremy — fabrikapp" },
+  "keywords": [
+    "agentpush",
+    "transmitter",
+    "inbound",
+    "outbound",
+    "telegram",
+    "whatsapp",
+    "slack",
+    "webhook",
+    "auth",
+    "credentials",
+    "mcp"
+  ]
+}

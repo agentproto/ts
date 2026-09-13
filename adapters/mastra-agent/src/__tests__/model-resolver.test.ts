@@ -1,10 +1,20 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import {
   modelRefToString,
   normalizeModelId,
   providerOf,
   resolveMastraModel,
 } from "../model-resolver.js"
+
+vi.mock("@ai-sdk/anthropic", () => ({
+  createAnthropic: vi.fn((opts: Record<string, unknown>) => {
+    return (modelId: string) => ({
+      _oatModel: true,
+      authToken: opts.authToken,
+      modelId,
+    })
+  }),
+}))
 
 describe("modelRefToString", () => {
   it("passes a bare string through, trimmed", () => {
@@ -71,6 +81,41 @@ describe("resolveMastraModel", () => {
     // Still key-checked under the inferred provider.
     expect(() => resolveMastraModel("claude-sonnet-5", {})).toThrow(
       /ANTHROPIC_API_KEY/,
+    )
+  })
+
+  it("returns a model object (not a string) when ANTHROPIC_API_KEY is an OAT", () => {
+    const oatEnv = { ANTHROPIC_API_KEY: "sk-ant-oat01-abc123" }
+    const result = resolveMastraModel("anthropic/claude-sonnet-5", oatEnv)
+    expect(result).toEqual({
+      _oatModel: true,
+      authToken: "sk-ant-oat01-abc123",
+      modelId: "claude-sonnet-5",
+    })
+  })
+
+  it("strips the anthropic/ prefix from the model id for the OAT provider", () => {
+    const oatEnv = { ANTHROPIC_API_KEY: "sk-ant-oat01-xyz" }
+    const result = resolveMastraModel("anthropic/claude-opus-4-8", oatEnv) as unknown as {
+      modelId: string
+    }
+    expect(result.modelId).toBe("claude-opus-4-8")
+  })
+
+  it("handles a bare Claude id with an OAT (normalization + OAT path)", () => {
+    const oatEnv = { ANTHROPIC_API_KEY: "sk-ant-oat01-def" }
+    const result = resolveMastraModel("claude-sonnet-5", oatEnv) as unknown as {
+      modelId: string
+      authToken: string
+    }
+    expect(result.modelId).toBe("claude-sonnet-5")
+    expect(result.authToken).toBe("sk-ant-oat01-def")
+  })
+
+  it("still returns a string for a regular Anthropic API key", () => {
+    const regularEnv = { ANTHROPIC_API_KEY: "sk-ant-api03-regular" }
+    expect(resolveMastraModel("anthropic/claude-opus-4-8", regularEnv)).toBe(
+      "anthropic/claude-opus-4-8",
     )
   })
 })

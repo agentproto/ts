@@ -31,10 +31,13 @@ import { NoTranscriptError } from "../client/daemonClient.js"
 import type { DaemonClient } from "../client/daemonClient.js"
 import { subscribeSse, type SseSubscription } from "../client/sse.js"
 import type {
+  CatalogModelsResponse,
   SessionDescriptor,
   SessionEventRecord,
   SessionStreamLine,
+  SessionWatcherInfo,
 } from "../client/types.js"
+import { isRouteSwitchable } from "../commands/sessionConfig.logic.js"
 import type { SessionStore } from "../services/sessionStore.js"
 import { buildAuthHeaders } from "../auth.js"
 
@@ -59,6 +62,7 @@ import {
   isExited,
   sendFailureTitle,
   toolIoDocumentName,
+  watcherBannerFor,
 } from "./transcript.logic.js"
 import { walkResumeChain } from "./resumeChain.logic.js"
 import type { ExtMessage, PresentedLine, ResumeChainEntry } from "./protocol.js"
@@ -102,6 +106,22 @@ export interface TranscriptPanelControllerOptions {
     messenger: PanelMessenger,
     initialDims: { cols: number; rows: number },
   ) => { sendInput(text: string): void; resize(cols: number, rows: number): void; dispose(): void }
+  /**
+   * Delay (ms) before the ONE automatic retry of a send whose prompt POST
+   * timed out (see {@link onSend}). Defaults to 3000 — long enough for the
+   * daemon's lazy resume to settle, short enough to feel like the same
+   * gesture. Tests inject 0 so they don't sleep.
+   */
+  sendRetryDelayMs?: number
+  /**
+   * Auto-dismiss delay (ms) for a TRANSIENT cross-session info banner (E3) —
+   * the "watcher detached" / "message from another session" ping clears
+   * itself after this long (the permanent affordance is the turn badge /
+   * watcher count; the banner is only the "something just happened" ping).
+   * Defaults to 10 000; tests inject a large value (or drive the timer) so
+   * they never wait on it.
+   */
+  infoBannerAutoDismissMs?: number
 }
 
 /**
@@ -249,6 +269,8 @@ export class TranscriptPanelController {
   private readonly autoPoll: boolean
   private readonly fetchImpl: typeof fetch
   private readonly ptyBridgeFactory: NonNullable<TranscriptPanelControllerOptions["ptyBridgeFactory"]>
+  private readonly sendRetryDelayMs: number
+  private readonly infoBannerAutoDismissMs: number
 
   private initSent = false
   private initPromise: Promise<void> | undefined
@@ -286,6 +308,23 @@ export class TranscriptPanelController {
   private ptyHandle: ReturnType<typeof bridgePtyToWebview> | undefined
   /** Last conversation posted to the webview — the diff base for the next patch. */
   private lastPresented: PresentedConversation | undefined
+  /** Model catalog, fetched once and cached — used only to stamp
+   *  `routeSwitchable` onto the session so the composer's route chip can dim
+   *  when there's a single gateway (chip-pickers). Static-ish, so one fetch. */
+  private catalog: CatalogModelsResponse | undefined
+  private catalogRequested = false
+
+  // ── Cross-session info banners (E3) ─────────────────────────────────
+  /** `watchers` count on the PREVIOUS descriptor — the diff base for the
+   *  "a watcher attached/detached" banner. Seeded from the initial
+   *  descriptor so hydration doesn't announce a count the panel opened with. */
+  private prevWatchers: number
+  /** `watcherDetails` on the PREVIOUS descriptor — lets the detach banner
+   *  name who just left when exactly one watcher was attached before the
+   *  drop to zero. Same seeding rationale as `prevWatchers`. */
+  private prevWatcherDetails: readonly SessionWatcherInfo[]
+  /** Live auto-dismiss timer for the transient info banner, if one's up. */
+  private infoBannerTimer: ReturnType<typeof setTimeout> | undefined
 
   private readonly renderers = { renderMarkdown, escapeHtml }
 
@@ -299,6 +338,10 @@ export class TranscriptPanelController {
     this.autoPoll = opts.autoPoll ?? true
     this.fetchImpl = opts.fetchImpl ?? fetch
     this.ptyBridgeFactory = opts.ptyBridgeFactory ?? bridgePtyToWebview
+    this.sendRetryDelayMs = opts.sendRetryDelayMs ?? 3000
+    this.infoBannerAutoDismissMs = opts.infoBannerAutoDismissMs ?? 10_000
+    this.prevWatchers = opts.initialSession.watchers ?? 0
+    this.prevWatcherDetails = opts.initialSession.watcherDetails ?? []
     this.exited = isExited(opts.initialSession.status)
     // Open the raw stream up front so pre-ready lines are buffered for the
     // raw fallback. In structured mode these are ignored (see onLine).
@@ -307,14 +350,61 @@ export class TranscriptPanelController {
     })
   }
 
+  /** Stamp the UI-computed `routeSwitchable` flag onto a descriptor from the
+   *  cached catalog (chip-pickers). Left undefined until the catalog loads. */
+  private stampRouteSwitchable(session: SessionDescriptor): SessionDescriptor {
+    if (!this.catalog) return session
+    return { ...session, routeSwitchable: isRouteSwitchable(this.catalog, session.model) }
+  }
+
   onSessionUpdate(session: SessionDescriptor): void {
     this.exited = isExited(session.status)
     this.currentSession = session
+    // Cross-session visibility (E3): the watcher-count (+ per-waiter detail)
+    // diff rides the descriptor the panel already receives — the bus
+    // attach/detach events never reach the structured record feed, so the
+    // panel diffs `watchers`/`watcherDetails` instead. `watcherDetails` names
+    // the waiter (label + wait condition) when the daemon resolved one; see
+    // watcherBannerFor. Runs even pre-init so the diff base advances (an
+    // update that lands before init just folds into `pendingSessionUpdate`;
+    // a banner fired pre-init is still posted — the webview holds it).
+    const watcherText = watcherBannerFor(this.prevWatchers, session.watchers, {
+      prevDetails: this.prevWatcherDetails,
+      nextDetails: session.watcherDetails,
+    })
+    this.prevWatchers = session.watchers ?? 0
+    this.prevWatcherDetails = session.watcherDetails ?? []
+    if (watcherText !== undefined) {
+      this.postInfoBanner("watcher", watcherText, { autoDismiss: watcherText.startsWith("Watcher detached") })
+    }
+    // Fetch the catalog once (fire-and-forget); until it lands, routeSwitchable
+    // is left undefined (chip stays active). Once cached, we re-post so the
+    // route chip can settle into its dimmed/active state.
+    if (!this.catalogRequested) {
+      this.catalogRequested = true
+      // Defensive: the catalog is a NICE-TO-HAVE (route-chip dimming), never a
+      // reason to break a session update — a client without the method, or a
+      // synchronous throw, just leaves routeSwitchable unknown.
+      try {
+        void this.client
+          .catalogModels()
+          .then(catalog => {
+            this.catalog = catalog
+            if (this.initSent && !this.disposed) {
+              this.messenger.postMessage({ type: "sessionUpdate", session: this.stampRouteSwitchable(this.currentSession) })
+            }
+          })
+          .catch(() => {})
+      } catch {
+        /* no catalog support — route chip stays active */
+      }
+    }
+    const stamped = this.stampRouteSwitchable(session)
     if (!this.initSent) {
-      this.pendingSessionUpdate = session
+      this.pendingSessionUpdate = stamped
       return
     }
-    this.messenger.postMessage({ type: "sessionUpdate", session })
+    this.messenger.postMessage({ type: "sessionUpdate", session: stamped })
     // A lifecycle change (turn-end, exit, …) is a good moment to drain any
     // newly-durable events so the timeline stays responsive between ticks.
     if (this.autoPoll && this.mode === "structured") {
@@ -589,7 +679,47 @@ export class TranscriptPanelController {
   /** Fold newly-fetched records in and post a patch if the presented timeline changed. */
   private applyRecords(records: readonly SessionEventRecord[]): void {
     const added = this.appendRecords(records)
+    // Cross-session visibility (E3): a NEW agent-injected user-prompt is the
+    // "something just happened" ping. This path only runs on the LIVE feed /
+    // post-hydration poll — hydration folds records via `appendRecords`
+    // directly, so a historical agent prompt never re-announces on load.
+    // The permanent attribution is the turn badge (E2); this banner is the
+    // transient complement.
+    if (added) {
+      for (const rec of records) {
+        if (rec.kind !== "user-prompt" || !rec.source) continue
+        const match = /^agent:(.+)$/.exec(rec.source)
+        if (match) {
+          this.postInfoBanner(`agent-msg:${rec.seq}`, `Message from ${match[1]}`, {
+            autoDismiss: true,
+          })
+        }
+      }
+    }
     if (added && !this.disposed) this.postPatch()
+  }
+
+  /**
+   * Post a cross-session INFO banner (E3). Same `id` replaces the current
+   * banner (no stacking); a dismissed id may reappear on a new occurrence.
+   * `autoDismiss` arms a timer that sends `dismissInfoBanner` after
+   * `infoBannerAutoDismissMs` — for the transient "watcher detached" /
+   * "message arrived" pings; a "watcher attached" banner stays until the
+   * count changes (it describes an ongoing state, not a momentary event).
+   */
+  private postInfoBanner(id: string, text: string, opts: { autoDismiss?: boolean } = {}): void {
+    if (this.disposed) return
+    if (this.infoBannerTimer) {
+      clearTimeout(this.infoBannerTimer)
+      this.infoBannerTimer = undefined
+    }
+    this.messenger.postMessage({ type: "infoBanner", id, text })
+    if (opts.autoDismiss) {
+      this.infoBannerTimer = setTimeout(() => {
+        this.infoBannerTimer = undefined
+        if (!this.disposed) this.messenger.postMessage({ type: "dismissInfoBanner", id })
+      }, this.infoBannerAutoDismissMs)
+    }
   }
 
   /** Diff against the last posted snapshot and post ONLY when something changed. */
@@ -707,38 +837,124 @@ export class TranscriptPanelController {
     return this.client.setSessionModel(this.sessionId, model)
   }
 
-  async onSend(text: string, interrupt: boolean): Promise<void> {
+  async onSend(text: string, interrupt: boolean, force?: boolean, localId?: string): Promise<void> {
     if (this.isSending) return
     this.isSending = true
-    this.messenger.postMessage({ type: "sending" })
+    // Sending to a terminal-status session triggers the daemon's lazy resume
+    // (maybeResumeAgent respawns the adapter) — that can take far longer than
+    // an ordinary admission, so say so up front instead of letting the user
+    // stare at silence.
+    this.messenger.postMessage(
+      isExited(this.currentSession.status)
+        ? { type: "sending", note: "Waking session…" }
+        : { type: "sending" },
+    )
     try {
-      if (this.currentSession.kind === "terminal") {
-        // A PTY/terminal session has no agent `prompt` route (that 400s for
-        // kind=terminal) — reply flows through the terminal-input broker
-        // instead. A terminal has no mid-turn ACP queue, so `interrupt` is a
-        // no-op here and is ignored. The native autoPoll reflects the reply
-        // back on its own (see pollOnce/fetchNewNativeRecords) — nothing else
-        // to do.
-        await this.client.writeTerminalInput(this.sessionId, text)
-      } else {
-        await this.client.prompt(this.sessionId, text, { interrupt, wait: false })
+      // The prompt route awaits admission even in fire-and-forget mode, so a
+      // resume/slow adapter can push the POST past the client timeout — the
+      // daemon often completes the send a beat later, which is exactly why a
+      // manual retry "worked". Automate that ONE retry on a timeout
+      // classification; a genuine refusal (not-alive/other) never retries.
+      // isSending stays true for the whole arc so a concurrent onSend is
+      // still suppressed during the wait.
+      const maxAttempts = 2
+      for (let attempt = 1; ; attempt++) {
+        try {
+          if (this.currentSession.kind === "terminal") {
+            // A PTY/terminal session has no agent `prompt` route (that 400s
+            // for kind=terminal) — reply flows through the terminal-input
+            // broker instead. A terminal has no mid-turn ACP queue, so
+            // `interrupt`/`queue`/`force` are all no-ops here. The native
+            // autoPoll reflects the reply back on its own (see
+            // pollOnce/fetchNewNativeRecords) — nothing else to do.
+            await this.client.writeTerminalInput(this.sessionId, text)
+            this.messenger.postMessage({ type: "sendAck" })
+            return
+          }
+          // `queue: true` is ALWAYS set (not just when the composer already
+          // knows it's busy): the daemon's own busy check is the source of
+          // truth, not a client-side snapshot that can race it. A no-op on
+          // an idle session — the prompt dispatches immediately either way
+          // (see `SessionsRegistry.enqueuePrompt`'s doc). `interrupt` still
+          // wins outright when both are set.
+          const result = await this.client.prompt(this.sessionId, text, {
+            interrupt,
+            force,
+            queue: true,
+            wait: false,
+          })
+          if (result.pending && result.queueId !== undefined) {
+            this.messenger.postMessage({
+              type: "queued",
+              localId: localId ?? result.queueId,
+              queueId: result.queueId,
+              text,
+              queuePosition: result.queuePosition ?? 0,
+            })
+          } else {
+            this.messenger.postMessage({ type: "sendAck", localId })
+          }
+          return
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          // Echo the text back alongside a classification: "busy" is now
+          // unreachable here (queue: true above means a mid-turn session
+          // queues instead of 409ing) — kept for whatever else still hits
+          // the bare mid-turn rejection (see classifySendFailure).
+          const kind = classifySendFailure(message)
+          if (kind === "timeout" && attempt < maxAttempts) {
+            // First timeout: never leave the user staring at silence — say
+            // we're retrying, wait for the daemon's work to land, then resend
+            // the SAME text exactly once.
+            this.messenger.postMessage({
+              type: "sending",
+              note: "Session is slow to respond — retrying…",
+            })
+            await new Promise(resolve => setTimeout(resolve, this.sendRetryDelayMs))
+            continue
+          }
+          if (kind === "busy" && attempt > 1) {
+            // The retry landed mid-turn. Given the first attempt TIMED OUT
+            // client-side while the daemon's route handler kept running, the
+            // overwhelmingly likely story is: the daemon dispatched our first
+            // prompt anyway (that's the mechanism behind the timeout), and
+            // this retry is what got refused. Treating the 409 as proof the
+            // text was delivered — ack and stop here. Posting the busy
+            // sendError instead would make the webview show a SECOND queued
+            // entry for the same text. Trade-off: in the rare case the turn
+            // belongs to a concurrent third-party prompt, the user sees no
+            // reply and resends — strictly better than a silent double
+            // execution.
+            this.messenger.postMessage({ type: "sendAck", localId })
+            return
+          }
+          this.messenger.postMessage({
+            type: "sendError",
+            message,
+            kind,
+            title: sendFailureTitle(kind),
+            text,
+            localId,
+          })
+          return
+        }
       }
-      this.messenger.postMessage({ type: "sendAck" })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      // Echo the text back alongside a classification: a mid-turn rejection is
-      // not an error the user should see, it's a cue to queue the text and
-      // send it when the turn ends (see classifySendFailure).
-      const kind = classifySendFailure(message)
-      this.messenger.postMessage({
-        type: "sendError",
-        message,
-        kind,
-        title: sendFailureTitle(kind),
-        text,
-      })
     } finally {
       this.isSending = false
+    }
+  }
+
+  /** Cancel one not-yet-dispatched item from the daemon's prompt FIFO — the
+   *  queued-messages block's per-item remove button. Best-effort: the
+   *  webview has already removed it from its own list optimistically by the
+   *  time this fires (same as `queuedCancel` on the old single-slot queue),
+   *  so a failure here (already dispatched, network hiccup) is silently
+   *  swallowed rather than resurrecting an entry the user already dismissed. */
+  async onCancelQueued(queueId: string): Promise<void> {
+    try {
+      await this.client.removeQueuedPrompt(this.sessionId, queueId)
+    } catch {
+      // best-effort — see doc comment above
     }
   }
 
@@ -832,7 +1048,12 @@ export class TranscriptPanelController {
    * `showErrorMessage` — nothing further to do here.
    */
   async onRestart(): Promise<void> {
-    await vscode.commands.executeCommand("agentproto.restartSession", this.sessionId)
+    try {
+      await vscode.commands.executeCommand("agentproto.restartSession", this.sessionId)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      this.messenger.postMessage({ type: "restartFailed", title: "Restart failed", message })
+    }
   }
 
   /**
@@ -904,6 +1125,10 @@ export class TranscriptPanelController {
 
   dispose(): void {
     this.disposed = true
+    if (this.infoBannerTimer) {
+      clearTimeout(this.infoBannerTimer)
+      this.infoBannerTimer = undefined
+    }
     this.feed?.dispose()
     this.ptyHandle?.dispose()
     this.focusDisposable.dispose()

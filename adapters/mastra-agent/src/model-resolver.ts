@@ -7,9 +7,16 @@
  * the provider's key from the environment. So the resolver is a thin,
  * *validated* pass-through: extract the ref string, sanity-check the shape,
  * surface a friendly error when the obvious provider key is missing, and hand
- * the string to Mastra. No bespoke provider wiring, no extra ai-sdk deps.
+ * the string to Mastra.
+ *
+ * Exception: Anthropic OAuth Access Tokens (OATs, `sk-ant-oat*`) need
+ * `Authorization: Bearer`, not `x-api-key`. Mastra's router always sends
+ * `x-api-key`, so OATs bypass the string path — the resolver builds the
+ * ai-sdk model directly via `createAnthropic({ authToken })`.
  */
 
+import { createAnthropic } from "@ai-sdk/anthropic"
+import type { LanguageModelV3 } from "@ai-sdk/provider"
 import type { ModelRef } from "@agentproto/agent"
 
 /** Best-effort provider -> env var map, used only for a friendly preflight
@@ -61,13 +68,18 @@ export function normalizeModelId(modelId: string): string {
 
 /**
  * Resolve an AIP-42 model ref to the value Mastra's `Agent` constructor takes.
- * Returns the `provider/model` string — Mastra routes it. `env` defaults to
- * `process.env`; injectable for tests.
+ *
+ * For most providers this returns the `provider/model` string and Mastra's
+ * internal router does the rest. For Anthropic OAuth Access Tokens (OATs) it
+ * returns a pre-built ai-sdk `LanguageModel` with `authToken` so the token
+ * is sent as `Authorization: Bearer` instead of `x-api-key`.
+ *
+ * `env` defaults to `process.env`; injectable for tests.
  */
 export function resolveMastraModel(
   ref: ModelRef,
   env: Record<string, string | undefined> = process.env,
-): string {
+): string | LanguageModelV3 {
   const modelId = normalizeModelId(modelRefToString(ref))
   if (!modelId) {
     throw new Error("mastra-agent: empty `model` ref.")
@@ -80,5 +92,14 @@ export function resolveMastraModel(
         `(provider '${provider}'). Set it on the spawn env or export it.`,
     )
   }
+
+  if (provider === "anthropic") {
+    const key = env["ANTHROPIC_API_KEY"]
+    if (key?.startsWith("sk-ant-oat")) {
+      const bareId = modelId.slice(modelId.indexOf("/") + 1)
+      return createAnthropic({ authToken: key })(bareId)
+    }
+  }
+
   return modelId
 }

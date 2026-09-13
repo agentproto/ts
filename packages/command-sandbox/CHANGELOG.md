@@ -1,5 +1,11 @@
 # @agentproto/command-sandbox
 
+## 0.2.1
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+
 ## 0.2.0
 
 ### Minor Changes

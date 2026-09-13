@@ -8,7 +8,7 @@
 
 import { describe, it, expect } from "vitest"
 import { z } from "zod"
-import { defineTool } from "@agentproto/tool"
+import { defineTool, catchErrors, paginated, type ToolTransformer } from "@agentproto/tool"
 import { defineDriver, implementTool } from "@agentproto/driver"
 import { buildMcpTool } from "../to-mcp-tool.js"
 
@@ -103,5 +103,126 @@ describe("toMcpTool", () => {
     const res = await reg.handler({ x: 5 })
     expect(parse(res)).toEqual({ y: 15 })
     expect(factoryCalls).toBe(1)
+  })
+})
+
+describe("toMcpTool transformers", () => {
+  const listTool = defineTool({
+    id: "demo.list",
+    description: "Return the fixed demo rows.",
+    inputSchema: z.object({}),
+    outputSchema: z.array(z.object({ id: z.string() })).optional(),
+  })
+  const listDriver = defineDriver({
+    id: "list-builtin",
+    name: "List",
+    description: "Fixed rows.",
+    kind: "builtin",
+    implements: [{ tool: "demo.list", version: "0.1.0" }],
+    implementations: [
+      implementTool(listTool, () => [
+        { id: "a", extra: 1 },
+        { id: "b", extra: 2 },
+      ]),
+    ],
+  })
+
+  it("applies wrapShape and the paginated transformer end-to-end", async () => {
+    const reg = buildMcpTool({
+      tool: listTool,
+      candidates: [listDriver],
+      transformers: [
+        paginated({ project: (i: { id: string }) => ({ id: i.id }) }),
+      ],
+    })
+    // wrapShape extended the declared (empty) shape with the page params.
+    expect(Object.keys(reg.inputShape).sort()).toEqual(
+      ["compact", "cursor", "fields", "full", "limit"].sort(),
+    )
+    const page = JSON.parse((await reg.handler({ limit: 1 })).content[0]!.text) as {
+      items: Array<Record<string, unknown>>
+      total: number
+      nextCursor?: string
+    }
+    expect(page.items).toEqual([{ id: "a" }])
+    expect(page.total).toBe(2)
+    expect(page.nextCursor).toBeDefined()
+  })
+
+  it("composes left-to-right: first declared transformer is the outermost wrapper", async () => {
+    const mark =
+      (name: string): ToolTransformer =>
+      ({
+        name,
+        wrapHandler: handler => async input => ({
+          marker: name,
+          inner: await handler(input),
+        }),
+      }) as ToolTransformer
+    const reg = buildMcpTool({
+      tool: listTool,
+      candidates: [listDriver],
+      transformers: [mark("first"), mark("second")],
+    })
+    const parsed = parse(await reg.handler({})) as {
+      marker: string
+      inner: { marker: string }
+    }
+    expect(parsed.marker).toBe("first")
+    expect(parsed.inner.marker).toBe("second")
+  })
+
+  it("catchErrors outermost turns a throwing body into the canonical error result", async () => {
+    const boomTool = defineTool({
+      id: "demo.boom",
+      description: "Always throws.",
+      inputSchema: z.object({}),
+    })
+    const boomDriver = defineDriver({
+      id: "boom-builtin",
+      name: "Boom",
+      description: "Throws.",
+      kind: "builtin",
+      implements: [{ tool: "demo.boom", version: "0.1.0" }],
+      implementations: [
+        implementTool(boomTool, () => {
+          throw new Error("kaput")
+        }),
+      ],
+    })
+    const reg = buildMcpTool({
+      tool: boomTool,
+      candidates: [boomDriver],
+      transformers: [catchErrors()],
+    })
+    const res = await reg.handler({})
+    expect(res.isError).toBe(true)
+    expect(res.content[0]?.text).toBe("kaput")
+  })
+
+  it("falls back to the contract's own tool.transformers when the option is absent", async () => {
+    const handleTool = defineTool({
+      id: "demo.handle",
+      description: "Contract-carried transformers.",
+      inputSchema: z.object({}),
+      outputSchema: z.array(z.object({ id: z.string() })).optional(),
+      transformers: [
+        paginated({ project: (i: { id: string }) => ({ id: i.id }) }),
+      ],
+    })
+    const handleDriver = defineDriver({
+      id: "handle-builtin",
+      name: "Handle",
+      description: "Fixed rows.",
+      kind: "builtin",
+      implements: [{ tool: "demo.handle", version: "0.1.0" }],
+      implementations: [
+        implementTool(handleTool, () => [{ id: "a" }, { id: "b" }]),
+      ],
+    })
+    const reg = buildMcpTool({ tool: handleTool, candidates: [handleDriver] })
+    expect(Object.keys(reg.inputShape)).toContain("limit")
+    const parsed = parse(await reg.handler({})) as { items?: unknown[] }
+    expect(parsed.items).toHaveLength(2)
   })
 })

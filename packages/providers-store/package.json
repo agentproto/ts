@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/providers-store",
-  "version": "0.3.2",
+  "version": "0.3.13",
   "description": "@agentproto/providers-store — the `~/.agentproto/providers.json` LLM provider API-key store (mode 0600) and the `injectProviderKeysIntoEnv` helper that lets any process (daemon or standalone gateway) boot with keys set via `agentproto auth provider set`, without ever logging a value. Explicit env always wins.",
   "keywords": [
     "agentproto",
@@ -53,10 +53,10 @@
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   },
   "engines": {
     "node": ">=20.9.0"

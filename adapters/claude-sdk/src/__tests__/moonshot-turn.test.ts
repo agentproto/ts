@@ -40,6 +40,7 @@ import type {
 import { describe, expect, it } from "vitest"
 import { ClaudeSdkAcpAgent, type QueryFn } from "../acp-host.js"
 import type { ClaudeSdkConfig } from "../options.js"
+import { probeMoonshotCredential } from "./moonshot-credential.js"
 
 const MOONSHOT_MODEL = "kimi-k2.7-code"
 // Moonshot returns a non-Anthropic message id (`chatcmpl-…`, not `msg_…`).
@@ -341,10 +342,15 @@ describe("claude-sdk moonshot turn (mock SDK stream)", () => {
 })
 
 /**
- * Gated live e2e (skipped without `MOONSHOT_API_KEY`) — mirrors the repo's
- * `describe.skipIf(!process.env.X_API_KEY)` convention. Drives a REAL turn
- * against Moonshot's Anthropic-compatible endpoint and asserts genuine
- * completion: `stopReason: "end_turn"` plus the assistant text.
+ * Gated live e2e — mirrors the repo's `describe.skipIf(!process.env.X_API_KEY)`
+ * convention, but the gate is a **preflight credential probe**, not a presence
+ * check (see `moonshot-credential.ts`). A key that is present but dead (no
+ * credit / suspended) skips the suite loudly instead of burning its 45s idle
+ * timeout and failing every local run; any AMBIGUOUS failure (network error,
+ * 5xx, transient 429, probe crash) keeps the suite running so it can fail
+ * honestly. Drives a REAL turn against Moonshot's Anthropic-compatible
+ * endpoint and asserts genuine completion: `stopReason: "end_turn"` plus the
+ * assistant text.
  *
  * The assertion cannot silently pass on a hang: `idleTimeoutMs` bounds each
  * wait, so a wedged stream aborts to `stopReason: "refusal"` well inside the
@@ -354,7 +360,13 @@ describe("claude-sdk moonshot turn (mock SDK stream)", () => {
  *   MOONSHOT_API_KEY=… npx vitest run src/__tests__/moonshot-turn.test.ts \
  *     -t "completes a real moonshot turn"
  */
-describe.skipIf(!process.env.MOONSHOT_API_KEY)(
+const moonshotCredential = probeMoonshotCredential()
+if (!moonshotCredential.supported) {
+  console.log(
+    `[skip] claude-sdk moonshot turn (live e2e): ${moonshotCredential.reason}`,
+  )
+}
+describe.skipIf(!moonshotCredential.supported)(
   "claude-sdk moonshot turn (live e2e)",
   () => {
     it("completes a real moonshot turn", async () => {

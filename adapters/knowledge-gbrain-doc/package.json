@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-knowledge-gbrain-doc",
-  "version": "0.2.0",
+  "version": "0.2.3",
   "description": "Knowledge adapter: implements @agentproto/knowledge-engine's IKnowledgeProvider over a gbrain server's document API (put_page / search) via pure fetch over its JSON-RPC /mcp endpoint. gbrain fuses lexical (tsvector) + semantic recall. Registers as a provider-kit family. No vendor SDK, no app coupling. Distinct from the code-graph gbrain adapter.",
   "keywords": [
     "agentproto",
@@ -57,15 +57,15 @@
   "dependencies": {
     "@agentproto/knowledge-engine": "workspace:*",
     "@agentproto/provider-kit": "workspace:*",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tool": "workspace:*",
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   },
   "engines": {
     "node": ">=20.9.0"

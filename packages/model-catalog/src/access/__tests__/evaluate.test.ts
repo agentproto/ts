@@ -24,6 +24,7 @@ function llmModel(id: string): ResolvedModel {
       outputPer1M: 15,
       provider: "anthropic",
     } as never,
+    provider: "anthropic",
   }
 }
 

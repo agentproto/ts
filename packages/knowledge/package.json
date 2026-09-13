@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/knowledge",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "@agentproto/knowledge — AIP-10 KNOWLEDGE.md reference implementation. A filesystem-first knowledge-base format where an LLM curates, links, and lints a markdown wiki on top of immutable raw sources, turning agent knowledge into a compounding artifact instead of a per-query retrieval miss.",
   "keywords": [
     "agentproto",
@@ -56,13 +56,13 @@
   "dependencies": {
     "@agentproto/define-doctype": "workspace:*",
     "gray-matter": "^4.0.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   }
 }

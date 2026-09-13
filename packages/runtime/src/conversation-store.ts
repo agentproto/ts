@@ -56,6 +56,15 @@ export interface DiscoverInput {
    *  Conservative: a candidate with no `lastWriter` is never dropped, and
    *  omitting this field applies no mode filtering at all. */
   attachmentMode?: "native" | "acp"
+  /** The session's isolated provider config dir (`SessionDescriptor.
+   *  adapterConfigDir` — the `CLAUDE_CONFIG_DIR` the daemon spawns
+   *  claude-code with since the #824 MCP-isolation fix). When set, the
+   *  provider wrote its transcripts under THIS dir, not its global
+   *  default (`~/.claude`), so discovery must look there. Omit for a
+   *  native PTY / pre-#824 session — the global store applies. Only
+   *  claude-code keys its store off a config dir; other stores ignore
+   *  this field. */
+  configDir?: string
   /** When set, bind to EXACTLY this conversation or return [].
    *  MUST NOT fall back to a recency guess — see invariants. */
   expectedId?: string
@@ -68,12 +77,25 @@ export interface ConversationStore {
   /** argv that attaches a NATIVE PTY to an existing conversation.
    *  Omitted ⇒ this provider has no native attach path. */
   attachArgv?(conversationId: string): string[]
+  /** The env var `attachArgv`'s spawned PTY reads to find its conversation
+   *  store, when the store is keyed off a per-session isolated config dir
+   *  (`DiscoverInput.configDir`'s doc — today only claude-code's
+   *  `CLAUDE_CONFIG_DIR`; see #824). When set, `session_restart`'s
+   *  `pty-native` branch (session-tools.ts) passes
+   *  `{ [configDirEnvVar]: descriptor.adapterConfigDir }` to the resumed
+   *  PTY's env — omitting it is what leaves a `claude --resume <id>`
+   *  looking in the global `~/.claude` for a transcript that only exists
+   *  under the session's isolated dir, failing with "No conversation
+   *  found" before the resumed session's first turn. Omitted for stores
+   *  with no config-dir isolation (hermes: global store only). */
+  configDirEnvVar?: string
   /** Find conversations in the provider's native store. `[]` = none —
    *  a normal answer (e.g. the PTY is a bash shell). Never throws for
    *  "nothing found"; throws only on a genuinely unreadable store. */
   discover(input: DiscoverInput): Promise<ConversationCandidate[]>
-  /** Read a full conversation into the shared export model. */
-  read(conversationId: string, cwd?: string): Promise<ExportedSession>
+  /** Read a full conversation into the shared export model. `configDir`
+   *  has the same semantics as `DiscoverInput.configDir`. */
+  read(conversationId: string, cwd?: string, configDir?: string): Promise<ExportedSession>
   /** Follow a conversation live. Resolves to an unsubscribe fn.
    *  Omitted ⇒ no live tail for this provider (caller polls `read`). */
   follow?(input: {
@@ -88,7 +110,10 @@ export interface ConversationStore {
 // Native store: ~/.claude/projects/<cwd-encoded>/<uuid>.jsonl, one file per
 // conversation. `<cwd-encoded>` is the absolute cwd run through
 // `claudeProjectSlug` (claude's own convention — see that function's
-// docblock for the empirically-verified rule).
+// docblock for the empirically-verified rule). A daemon-spawned session is
+// config-dir-isolated (#824) and its store root is the session's
+// `CLAUDE_CONFIG_DIR` instead of `~/.claude` — same `projects/<slug>`
+// layout under it; see `DiscoverInput.configDir`.
 
 interface ClaudeJsonlMeta {
   type?: string
@@ -127,9 +152,16 @@ export function claudeProjectSlug(cwd: string): string {
 }
 
 /** Exported so `conversation-index.ts` can resolve the same directory
- *  without re-deriving the slug rule itself. */
-export function claudeCodeProjectDir(cwd: string): string {
-  return resolve(homedir(), ".claude", "projects", claudeProjectSlug(cwd))
+ *  without re-deriving the slug rule itself.
+ *
+ *  `configDir` is the session's isolated `CLAUDE_CONFIG_DIR` (see
+ *  `DiscoverInput.configDir`): the SDK mirrors the global layout under it
+ *  (`<configDir>/projects/<slug>/<uuid>.jsonl`, empirically verified
+ *  against real `~/.agentproto/adapter-config/sess_<id>` trees), so the
+ *  only difference is the base dir. */
+export function claudeCodeProjectDir(cwd: string, configDir?: string): string {
+  const base = configDir ?? resolve(homedir(), ".claude")
+  return resolve(base, "projects", claudeProjectSlug(cwd))
 }
 
 function extractFirstText(content: unknown): string | undefined {
@@ -219,8 +251,8 @@ function claudeEntrypointFor(mode: "native" | "acp"): string {
 }
 
 async function discoverClaudeCode(input: DiscoverInput): Promise<ConversationCandidate[]> {
-  const { cwd, since, until, attachmentMode, expectedId } = input
-  const dir = claudeCodeProjectDir(cwd)
+  const { cwd, since, until, attachmentMode, configDir, expectedId } = input
+  const dir = claudeCodeProjectDir(cwd, configDir)
 
   // Ground truth beats heuristic: bind to exactly the conversation we were
   // asked about, never whichever transcript happens to be newest. Never
@@ -282,7 +314,7 @@ async function discoverClaudeCode(input: DiscoverInput): Promise<ConversationCan
   return scored.map(s => s.candidate)
 }
 
-async function readClaudeCode(conversationId: string, cwd?: string): Promise<ExportedSession> {
+async function readClaudeCode(conversationId: string, cwd?: string, configDir?: string): Promise<ExportedSession> {
   // Dynamic import, not a top-level one: resume-strategies.ts is its own
   // lean tsup entry (splitting:false) and pulls this module in as a value
   // import via CONVERSATION_STORES. esbuild still bundles transcript-
@@ -292,7 +324,7 @@ async function readClaudeCode(conversationId: string, cwd?: string): Promise<Exp
   // the first time `read()` is actually called, not merely by importing
   // resume-strategies.ts. See resume-strategies.ts's splitting:false note.
   const { exportClaudeCodeSession } = await import("./transcript-export.js")
-  return exportClaudeCodeSession(conversationId, cwd)
+  return exportClaudeCodeSession(conversationId, cwd, configDir)
 }
 
 // ── hermes store ────────────────────────────────────────────────────
@@ -395,6 +427,7 @@ export const CONVERSATION_STORES: Record<string, ConversationStore> = {
     // (default). Example: `claude --resume 0e483f81-1a44-4bec-9667-b37158450296`
     outputHint: /claude\s+--resume\s+([0-9a-f-]{8,})/i,
     attachArgv: (conversationId: string) => ["claude", "--resume", conversationId],
+    configDirEnvVar: "CLAUDE_CONFIG_DIR",
     discover: discoverClaudeCode,
     read: readClaudeCode,
   },
@@ -431,4 +464,44 @@ export const CONVERSATION_STORES: Record<string, ConversationStore> = {
     discover: discoverPi,
     read: readPi,
   },
+}
+
+/**
+ * Bare (non-resume) launch argv for a provider's native terminal/TUI — the
+ * "start fresh" counterpart to `attachArgv`, used to open a NEW native
+ * session (e.g. a harness card's "Terminal" button) rather than reattach an
+ * existing conversation.
+ *
+ * Coverage is deliberately BROADER than `attachArgv`'s: reattach needs a
+ * documented resume flag, but a fresh launch only needs the CLI's
+ * interactive arm. npx-spawned adapters use the same npx form here so the
+ * terminal works wherever the adapter itself works, PATH binary or not.
+ *
+ * Absent on purpose (no interactive arm to launch):
+ *  - `mastracode-inprocess` — in-process SDK, nothing to exec
+ *  - `mastra-agent`, `claude-sdk` — first-party ACP servers, no TUI
+ *  - `antigravity` — `agy` is headless-only (`-p`/stream-json), no TUI
+ */
+export const NATIVE_LAUNCH_ARGV: Record<string, string[]> = {
+  "claude-code": ["claude"],
+  hermes: ["hermes", "--tui"],
+  // Bare arm of the same npx package the adapter spawns IS the TUI.
+  opencode: ["npx", "-y", "opencode-ai"],
+  mastracode: ["npx", "-y", "mastracode"],
+  // The adapter bundles the codex-acp wrapper (ACP-only); the interactive
+  // Codex TUI lives in @openai/codex, fetched by npx on first use.
+  codex: ["npx", "-y", "@openai/codex"],
+  // ACP arms add flags/subcommands to these binaries; bare is interactive.
+  gemini: ["gemini"],
+  "grok-cli": ["grok"],
+  pi: ["pi"],
+  jcode: ["jcode"],
+  // `openclaw chat` = "Open a local terminal UI (alias for tui --local)".
+  openclaw: ["openclaw", "chat"],
+  // Generic ACP catalog CLIs whose ACP arm is a separate binary/subcommand;
+  // the bare bin is the interactive TUI.
+  "gemini-cli": ["gemini"],
+  "qwen-code": ["qwen"],
+  "mistral-vibe": ["vibe"],
+  "kimi-cli": ["kimi"],
 }

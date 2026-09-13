@@ -10,6 +10,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   CONVERSATION_STORES,
+  claudeCodeProjectDir,
   claudeProjectSlug,
   type ConversationStore,
   type ResumeMetadataKey,
@@ -492,5 +493,117 @@ describe("claude-code read", () => {
 
     const store = CONVERSATION_STORES["claude-code"]!
     await expect(store.read("does-not-exist", "/nowhere")).rejects.toThrow(/not found/)
+  })
+})
+
+// ── config-dir isolation (#824) ──────────────────────────────────────
+//
+// Since the MCP-isolation fix, a daemon-spawned claude-code session runs
+// with its own CLAUDE_CONFIG_DIR and the SDK mirrors the global layout
+// under it: <configDir>/projects/<slug>/<uuid>.jsonl. Discovery and read
+// must look THERE when the caller passes the session's config dir — and
+// keep resolving ~/.claude when it doesn't (native PTY / pre-#824 rows).
+
+describe("claude-code config-dir isolation", () => {
+  let fakeHome: string
+  let originalHome: string | undefined
+
+  afterEach(() => {
+    if (fakeHome) {
+      rmSync(fakeHome, { recursive: true, force: true })
+    }
+    if (originalHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = originalHome
+    }
+  })
+
+  /** A fake HOME plus an isolated config dir OUTSIDE ~/.claude — mirrors
+   *  the real ~/.agentproto/adapter-config/<sess>/ shape. */
+  function setupIsolated(cwd: string): {
+    configDir: string
+    isolatedSessionsDir: string
+    globalSessionsDir: string
+  } {
+    originalHome = process.env.HOME
+    fakeHome = mkdtempSync(join(tmpdir(), "conversation-store-configdir-"))
+    process.env.HOME = fakeHome
+    const encoded = cwd.replace(/\//g, "-")
+    const configDir = join(fakeHome, ".agentproto", "adapter-config", "sess_test")
+    const isolatedSessionsDir = join(configDir, "projects", encoded)
+    const globalSessionsDir = join(fakeHome, ".claude", "projects", encoded)
+    mkdirSync(isolatedSessionsDir, { recursive: true })
+    mkdirSync(globalSessionsDir, { recursive: true })
+    return { configDir, isolatedSessionsDir, globalSessionsDir }
+  }
+
+  function writeJsonl(dir: string, uuid: string, mtime: Date): void {
+    const path = join(dir, `${uuid}.jsonl`)
+    writeFileSync(
+      path,
+      JSON.stringify({
+        type: "user",
+        timestamp: "2026-08-07T10:00:00.000Z",
+        message: { role: "user", content: [{ type: "text", text: "hi" }] },
+      }) + "\n",
+    )
+    utimesSync(path, mtime, mtime)
+  }
+
+  it("claudeCodeProjectDir resolves under configDir when given, ~/.claude otherwise", () => {
+    const cwd = "/my/proj"
+    const { configDir } = setupIsolated(cwd)
+    expect(claudeCodeProjectDir(cwd, configDir)).toBe(join(configDir, "projects", "-my-proj"))
+    expect(claudeCodeProjectDir(cwd)).toBe(join(fakeHome, ".claude", "projects", "-my-proj"))
+  })
+
+  it("discover({configDir}) finds a transcript that lives ONLY in the isolated dir", async () => {
+    const cwd = "/my/proj"
+    const { configDir, isolatedSessionsDir } = setupIsolated(cwd)
+    const uuid = "aaaaaaaa-0000-0000-0000-000000000001"
+    writeJsonl(isolatedSessionsDir, uuid, new Date("2026-08-07T10:00:00Z"))
+    const store = CONVERSATION_STORES["claude-code"]!
+    // The bug this pins: without configDir the isolated transcript is
+    // invisible — discovery searched ~/.claude only.
+    await expect(store.discover({ cwd })).resolves.toEqual([])
+    const found = await store.discover({ cwd, configDir })
+    expect(found.map(c => c.conversationId)).toEqual([uuid])
+  })
+
+  it("discover({configDir, expectedId}) exact-binds inside the isolated dir", async () => {
+    const cwd = "/my/proj"
+    const { configDir, isolatedSessionsDir } = setupIsolated(cwd)
+    const own = "aaaaaaaa-0000-0000-0000-000000000001"
+    const sibling = "bbbbbbbb-0000-0000-0000-000000000002"
+    writeJsonl(isolatedSessionsDir, own, new Date("2026-08-07T10:00:00Z"))
+    writeJsonl(isolatedSessionsDir, sibling, new Date("2026-08-07T12:00:00Z"))
+    const store = CONVERSATION_STORES["claude-code"]!
+    const found = await store.discover({ cwd, configDir, expectedId: own })
+    expect(found.map(c => c.conversationId)).toEqual([own])
+  })
+
+  it("discover WITHOUT configDir keeps resolving ~/.claude (native PTY / pre-#824 sessions)", async () => {
+    const cwd = "/my/proj"
+    const { globalSessionsDir } = setupIsolated(cwd)
+    const uuid = "cccccccc-0000-0000-0000-000000000003"
+    writeJsonl(globalSessionsDir, uuid, new Date("2026-08-07T10:00:00Z"))
+    const store = CONVERSATION_STORES["claude-code"]!
+    const found = await store.discover({ cwd })
+    expect(found.map(c => c.conversationId)).toEqual([uuid])
+  })
+
+  it("read(id, cwd, configDir) reads the transcript from the isolated dir", async () => {
+    const cwd = "/my/proj"
+    const { configDir, isolatedSessionsDir } = setupIsolated(cwd)
+    const uuid = "dddddddd-0000-0000-0000-000000000004"
+    writeJsonl(isolatedSessionsDir, uuid, new Date("2026-08-07T10:00:00Z"))
+    const store = CONVERSATION_STORES["claude-code"]!
+    // Without configDir the read misses (file isn't under ~/.claude)…
+    await expect(store.read(uuid, cwd)).rejects.toThrow(/not found/)
+    // …with it, the isolated transcript reads normally.
+    const session = await store.read(uuid, cwd, configDir)
+    expect(session.messages).toHaveLength(1)
+    expect(session.messages[0]).toMatchObject({ role: "user", text: "hi" })
   })
 })
