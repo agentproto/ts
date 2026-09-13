@@ -44,8 +44,9 @@ import type { PairingRegistry } from "./pairing-registry.js"
 import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import type { AppRegistry } from "./app-registry.js"
-import { performAppToolCall, type AppToolCallDeps } from "./app-tools.js"
+import { performAppToolCall, performBuiltinPanelToolCall, type AppToolCallDeps } from "./app-tools.js"
 import { injectStandaloneAppBridge } from "./app-ui-apps.js"
+import { resolveBuiltinPanelUi } from "./builtin-apps.js"
 import {
   assertExternalPathRealInside,
   isExternalRootGranted,
@@ -798,13 +799,15 @@ export interface RuntimeHttpServerOptions {
   /** Optional — required when `appRegistry` is wired, for tool validation during install. */
   listRegisteredToolIds?: () => Promise<string[]>
   /** Optional — when wired alongside `appRegistry`, backs the standalone app
-   *  host routes: `GET /apps/:appId/ui` (an installed app's html with a REST
-   *  `window.McpApp` bridge injected, so the same UI runs in a plain browser
-   *  tab) and `POST /apps/:appId/tool-call` (the REST twin of the MCP
-   *  `app_tool_call` gateway — same `ui.tools` allowlist, same dispatch
-   *  chain, via `performAppToolCall`). `dispatchTool`/`callImportedTool` are
-   *  the same functions index.ts hands `registerAppTools`; omitted ⇒
-   *  tool-call dispatch reports "not enabled", the UI route still serves. */
+   *  host routes: `GET /apps/:appId/ui` (an installed app's html, or a
+   *  builtin panel's via `resolveBuiltinPanelUi`, with a REST `window.McpApp`
+   *  bridge injected so the same UI runs in a plain browser tab) and `POST
+   *  /apps/:appId/tool-call` (the REST twin of the MCP `app_tool_call`
+   *  gateway — same `ui.tools` allowlist, same dispatch chain, via
+   *  `performAppToolCall` for an installed app or `performBuiltinPanelToolCall`
+   *  for a builtin). `dispatchTool`/`callImportedTool` are the same functions
+   *  index.ts hands `registerAppTools`; omitted ⇒ tool-call dispatch reports
+   *  "not enabled", the UI route still serves. */
   appToolCallDeps?: AppToolCallDeps
   /** Optional — when wired, enables `POST /inbound`, the push-ingress
    *  counterpart to `inbound-watcher.ts`'s poll loop. A human reply
@@ -2843,10 +2846,12 @@ export async function startHttpServer(
         }
 
         // Standalone app UI host — GET /apps/:appId/ui serves an installed
-        // app's html with a REST `window.McpApp` bridge injected (the same
-        // UI that renders in an MCP-Apps iframe works in a plain browser
-        // tab), POST /apps/:appId/tool-call is the REST twin of the MCP
-        // app_tool_call gateway. `(.+)` (not `[^/]+`): appIds are
+        // app's html, or (falling back via resolveBuiltinPanelUi when the
+        // appId isn't installed) a builtin panel's, with a REST
+        // `window.McpApp` bridge injected (the same UI that renders in an
+        // MCP-Apps iframe works in a plain browser tab), POST
+        // /apps/:appId/tool-call is the REST twin of the MCP app_tool_call
+        // gateway, same builtin fallback. `(.+)` (not `[^/]+`): appIds are
         // `@scope/name`, so both the literal-slash and the %2F-encoded
         // spelling of the id must route. Gated like the other browser-
         // reachable routes: guardBrowserOrigin blocks a non-allowlisted
@@ -6922,17 +6927,31 @@ async function handleProviderInbound(
   res.end(JSON.stringify(result))
 }
 
-/** `GET /apps/:appId/ui` — an installed app's `ui.path` html, with the
- *  standalone REST bridge injected so `window.McpApp.connect()` works with
- *  no host iframe (callTool POSTs to the sibling `./tool-call` route —
- *  `./` resolves against the document URL, so the appId segment carries
- *  over whichever spelling it used). Default posture is `frame-ancestors
- *  'none'` (plus `x-frame-options: DENY` for older browsers): standalone
- *  means a top-level tab — refusing embedding closes the drive-by where a
- *  hostile page iframes the UI and lets the app's own boot sequence fire
- *  allowlisted tools. Opt-out: `?embed=1` drops both headers ONLY for a
- *  proven trusted embedder (see `iframeEmbedAllowed` below) — the deep-link
- *  spelling the builtin
+/** The daemon's own HTTP origin as seen by THIS request — used to re-bake
+ *  live-session's `window.__APP_INIT__.httpBaseUrl` for `GET
+ *  /apps/:appId/ui` (see `resolveBuiltinPanelUi`, builtin-apps.ts) rather
+ *  than trusting its static snapshot's baked-in default port. Same "assume
+ *  http, trust the Host header" shape the daemon already uses to build its
+ *  own default origin (`http://127.0.0.1:${port}`, index.ts) — this is a
+ *  loopback-bound daemon, not a public origin behind unknown TLS. */
+function requestHttpBaseUrl(req: IncomingMessage): string {
+  return `http://${req.headers.host ?? "127.0.0.1"}`
+}
+
+/** `GET /apps/:appId/ui` — an installed app's `ui.path` html, or (when
+ *  `appId` doesn't resolve to an installed app) a builtin panel's html via
+ *  `resolveBuiltinPanelUi` — builtins are never persisted to `AppRegistry`
+ *  (builtin-apps.ts), so this route would otherwise 404 every one of them.
+ *  Either way, the standalone REST bridge is injected so
+ *  `window.McpApp.connect()` works with no host iframe (callTool POSTs to
+ *  the sibling `./tool-call` route — `./` resolves against the document
+ *  URL, so the appId segment carries over whichever spelling it used).
+ *  Default posture is `frame-ancestors 'none'` (plus `x-frame-options: DENY`
+ *  for older browsers): standalone means a top-level tab — refusing
+ *  embedding closes the drive-by where a hostile page iframes the UI and
+ *  lets the app's own boot sequence fire allowlisted tools. Opt-out:
+ *  `?embed=1` drops both headers ONLY for a proven trusted embedder (see
+ *  `iframeEmbedAllowed` below) — the deep-link spelling the builtin
  *  `agentproto_session_chat` widget and the VS Code chat-panel webview
  *  both use for the `@agentik/session-chat` app. guardBrowserOrigin and
  *  authorize() still gate the route exactly as for a top-level tab, and
@@ -6945,22 +6964,27 @@ async function handleAppUiPage(
   appRegistry: AppRegistry,
 ): Promise<void> {
   const app = appRegistry.getApp(appId)
-  if (!app?.ui) {
+  const builtin = app?.ui ? undefined : resolveBuiltinPanelUi(appId, requestHttpBaseUrl(req))
+  if (!app?.ui && !builtin) {
     res.writeHead(404, { "content-type": "application/json" })
     res.end(JSON.stringify({ error: `app "${appId}" is not installed or has no UI.` }))
     return
   }
   let raw: string
-  try {
-    raw = await readFile(app.ui.path, "utf8")
-  } catch (err) {
-    res.writeHead(500, { "content-type": "application/json" })
-    res.end(
-      JSON.stringify({
-        error: `could not read app "${appId}"'s ui html at "${app.ui.path}": ${err instanceof Error ? err.message : String(err)}`,
-      }),
-    )
-    return
+  if (app?.ui) {
+    try {
+      raw = await readFile(app.ui.path, "utf8")
+    } catch (err) {
+      res.writeHead(500, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: `could not read app "${appId}"'s ui html at "${app.ui.path}": ${err instanceof Error ? err.message : String(err)}`,
+        }),
+      )
+      return
+    }
+  } else {
+    raw = builtin!.html
   }
   // `?embed=1` — the trusted-embedder opt-out (see doc above + the
   // `iframeEmbedAllowed` contract): the flag alone is attacker-controlled,
@@ -6971,7 +6995,12 @@ async function handleAppUiPage(
     "content-type": "text/html; charset=utf-8",
     "cache-control": "no-store",
   }
-  if (!(embedRequested && iframeEmbedAllowed(req, app))) {
+  // No builtin covered here declares `csp.frameDomains` (only the
+  // session-chat widget does, and it's excluded from `resolveBuiltinPanelUi`
+  // — see that function's doc), so `app ?? {}` degrades a builtin to
+  // "embeddable only from the daemon's own origin / a proven vscode-webview",
+  // same as an installed app with no `csp.frameDomains` declared.
+  if (!(embedRequested && iframeEmbedAllowed(req, app ?? {}))) {
     headers["x-frame-options"] = "DENY"
     headers["content-security-policy"] = "frame-ancestors 'none'"
   }
@@ -7145,10 +7174,15 @@ async function handleAppExternalBlob(
 }
 
 /** `POST /apps/:appId/tool-call` `{ tool, args? }` — the REST twin of the
- *  MCP `app_tool_call` gateway, sharing its exact allowlist + dispatch via
- *  `performAppToolCall`. Replies 200 with the MCP result envelope (isError
- *  ones included — a postMessage host's `tools/call` reply RESOLVES with
- *  those, so the REST bridge must too); only a malformed body is a 400.
+ *  MCP `app_tool_call` gateway. When `appId` resolves to an installed app,
+ *  shares its exact allowlist + dispatch via `performAppToolCall`; when it
+ *  doesn't, falls back to `performBuiltinPanelToolCall` gated by that
+ *  builtin panel's OWN declared `ui.tools` (`resolveBuiltinPanelUi`,
+ *  builtin-apps.ts is the SERVER-side source of that allowlist — nothing
+ *  the client sends is trusted for it). Replies 200 with the MCP result
+ *  envelope (isError ones included — a postMessage host's `tools/call`
+ *  reply RESOLVES with those, so the REST bridge must too); only a
+ *  malformed body is a 400.
  *
  *  The bundled UIs address the daemon-level gateway through their bridge
  *  (`callTool("app_tool_call", { appId, tool, args })` — see media-viewer's
@@ -7194,7 +7228,14 @@ async function handleAppUiToolCall(
         ? (inner.args as Record<string, unknown>)
         : {}
   }
-  const result = await performAppToolCall(appRegistry, { appId, tool, args }, deps)
+  const installed = appRegistry.getApp(appId)
+  const result = installed?.ui
+    ? await performAppToolCall(appRegistry, { appId, tool, args }, deps)
+    : await performBuiltinPanelToolCall(
+        resolveBuiltinPanelUi(appId, requestHttpBaseUrl(req))?.tools,
+        { appId, tool, args },
+        deps,
+      )
   res.writeHead(200, { "content-type": "application/json" })
   res.end(JSON.stringify(result))
 }

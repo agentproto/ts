@@ -24,6 +24,14 @@
  * portable, dependency-free `AgnoMcpApp` factory) so this file is a
  * focused list of "here are the @agentproto/apps panels we mount
  * unconditionally, no install step required".
+ *
+ * Also home to `resolveBuiltinPanelUi` — the fallback `GET /apps/:appId/ui`
+ * / `POST /apps/:appId/tool-call` (http-server.ts) take when `AppRegistry
+ * .getApp` misses. A builtin panel is never persisted to `AppRegistry`
+ * (there's no install step, per the doc above), so the standalone REST
+ * bridge those routes serve to installed apps 404s for every builtin
+ * unless something else resolves its html + `ui.tools` allowlist — this is
+ * that something else.
  */
 
 import {
@@ -137,6 +145,56 @@ export interface BuiltinPanelCatalogEntry {
  * are never invoked — only the static id metadata on each built `AgnoMcpApp`
  * is read.
  */
+/** One builtin panel's standalone-serving material — the fallback
+ *  `GET /apps/:appId/ui` / `POST /apps/:appId/tool-call` (http-server.ts)
+ *  take when `AppRegistry.getApp` misses, since a builtin is never
+ *  persisted there (see this file's header doc). `tools` is the panel's
+ *  OWN declared allowlist — the same list `performBuiltinPanelToolCall`
+ *  (app-tools.ts) gates dispatch against, so a builtin's tool-call route is
+ *  exactly as locked down as an installed app's `ui.tools`. */
+export interface BuiltinPanelUi {
+  readonly html: string
+  readonly tools: readonly string[]
+}
+
+/**
+ * Resolve a builtin panel's standalone html + tool allowlist by its catalog
+ * `appId` (e.g. `@agentproto/work-board`) — `undefined` for anything that
+ * isn't one of the panels this WP covers, which the caller must then 404
+ * rather than fall through to an installed-app lookup.
+ *
+ * `@agentproto/session-chat-widget` (`sessionChatApp`) is deliberately NOT
+ * resolvable here even though it's in `PANEL_APP_HANDLES`: its html is only
+ * ever a deep-link iframe (or install notice) pointed at the INSTALLED
+ * `@agentik/session-chat` app's own `/apps/:appId/ui` (see
+ * session-chat/index.ts's `sessionChatAppUrl`) — that route already serves
+ * it, so there is no separate standalone content to serve under the
+ * widget's own id.
+ *
+ * `live-session` is the one panel whose html is origin-dependent
+ * (`window.__APP_INIT__.httpBaseUrl`, read by its SSE `EventSource`) — its
+ * static `AppHandle.ui.html` (the catalog/emit/`app_install` snapshot) bakes
+ * the daemon's documented DEFAULT port, which is only correct when the
+ * daemon happens to be running there. Re-rendered here with the CALLER's
+ * own `httpBaseUrl` (the requesting daemon's real origin, derived by
+ * http-server.ts from the request itself) instead, so the served widget's
+ * stream always points at the daemon that's actually serving it. Every
+ * other panel's html only ever talks to its host via the relative
+ * `./tool-call` bridge fetch, so it's served unmodified.
+ */
+export function resolveBuiltinPanelUi(appId: string, httpBaseUrl: string): BuiltinPanelUi | undefined {
+  if (appId === liveSessionApp.id) {
+    const app = makeLiveSessionApp({ httpBaseUrl })
+    const html = typeof app.html === "function" ? app.html({ httpBaseUrl }) : app.html
+    return { html, tools: liveSessionApp.ui?.tools ?? [] }
+  }
+  const handle = [sessionsPanelApp, agentsOverviewApp, bureauSessionsApp, sessionStoryApp, workBoardApp].find(
+    h => h.id === appId,
+  )
+  if (!handle?.ui) return undefined
+  return { html: handle.ui.html, tools: handle.ui.tools ?? [] }
+}
+
 export function builtinPanelCatalogEntries(): BuiltinPanelCatalogEntry[] {
   const apps = makeBuiltinPanelApps({
     listSessions: () => [],

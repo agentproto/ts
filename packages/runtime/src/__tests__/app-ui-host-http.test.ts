@@ -14,6 +14,7 @@ import { join } from "node:path"
 import { createServer } from "node:http"
 import type { AddressInfo } from "node:net"
 import { createMcpServer } from "@agentproto/mcp-server"
+import { workBoardApp, liveSessionApp, sessionChatApp } from "@agentproto/apps"
 
 import { startHttpServer, type RuntimeHttpServerOptions } from "../http-server.js"
 import { createRuntimeEvents } from "../events.js"
@@ -322,6 +323,149 @@ describe("standalone app UI host — REST routes", () => {
     } finally {
       await http.stop()
     }
+  })
+})
+
+/**
+ * Builtin-panel fallback — `resolveBuiltinPanelUi` (builtin-apps.ts) lets
+ * `GET /apps/:appId/ui` / `POST /apps/:appId/tool-call` serve a builtin
+ * panel (never persisted to `AppRegistry`, so `appRegistry.getApp` always
+ * misses for one) the same way they already serve an installed app's.
+ * `appRegistry` here is deliberately empty — the point is that the FALLBACK
+ * carries the whole route without any installed-app record at all.
+ */
+describe("standalone app UI host — builtin panel fallback", () => {
+  let appRegistry: AppRegistry
+  let dispatched: Array<{ name: string; args: Record<string, unknown> }>
+
+  beforeEach(() => {
+    appRegistry = createAppRegistry()
+    dispatched = []
+  })
+
+  async function withServer(fn: (base: string) => Promise<void>): Promise<void> {
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory: async () =>
+        (await createMcpServer({ specs: [], name: "main", version: "0" })).server,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      meta: { workspace: process.cwd(), registered: [] },
+      appRegistry,
+      appToolCallDeps: {
+        dispatchTool: async (name, args) => {
+          dispatched.push({ name, args })
+          return `dispatched:${name}`
+        },
+      },
+    })
+    try {
+      await fn(`http://127.0.0.1:${port}`)
+    } finally {
+      await http.stop()
+    }
+  }
+
+  it("GET serves the work-board builtin's html with the REST bridge injected", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${encodeURIComponent(workBoardApp.id!)}/ui`)
+      expect(res.status).toBe(200)
+      expect(res.headers.get("content-type")).toContain("text/html")
+      const html = await res.text()
+      expect(html).toContain("agentproto work board")
+      expect(html.indexOf('fetch("./tool-call"')).toBeGreaterThan(-1)
+    })
+  })
+
+  it("GET re-bakes live-session's httpBaseUrl to the REQUESTING daemon's real origin, not its static default", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${encodeURIComponent(liveSessionApp.id!)}/ui`)
+      expect(res.status).toBe(200)
+      const html = await res.text()
+      expect(html).toContain(`"httpBaseUrl":"${base}"`)
+      expect(html).not.toContain("127.0.0.1:18790")
+    })
+  })
+
+  it("GET 404s for an appId that is neither installed nor a builtin", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/@nope/nothing/ui`)
+      expect(res.status).toBe(404)
+      const body = (await res.json()) as { error: string }
+      expect(body.error).toContain("not installed")
+    })
+  })
+
+  it("GET 404s for the session-chat widget — it has no standalone content of its own", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${encodeURIComponent(sessionChatApp.id!)}/ui`)
+      expect(res.status).toBe(404)
+    })
+  })
+
+  it("POST dispatches a tool the builtin's OWN ui.tools declares (task_list, work-board)", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${encodeURIComponent(workBoardApp.id!)}/tool-call`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tool: "task_list", args: { full: true } }),
+      })
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { content: Array<{ text: string }>; isError?: boolean }
+      expect(body.isError).toBeUndefined()
+      expect(JSON.parse(body.content[0]!.text)).toBe("dispatched:task_list")
+      expect(dispatched).toEqual([{ name: "task_list", args: { full: true } }])
+    })
+  })
+
+  it("POST refuses a tool NOT in the builtin's declared ui.tools allowlist — the security-critical case", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${encodeURIComponent(workBoardApp.id!)}/tool-call`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tool: "command_execute", args: { command: "rm -rf /" } }),
+      })
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { content: Array<{ text: string }>; isError?: boolean }
+      expect(body.isError).toBe(true)
+      expect(body.content[0]!.text).toContain("allowlist")
+      // Never reached dispatchTool — refused before dispatch, not after.
+      expect(dispatched).toEqual([])
+    })
+  })
+
+  it("POST 404-shaped-refuses for an appId that is neither installed nor a builtin", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/@nope/nothing/tool-call`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tool: "task_list" }),
+      })
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { content: Array<{ text: string }>; isError?: boolean }
+      expect(body.isError).toBe(true)
+      expect(body.content[0]!.text).toContain("not installed")
+      expect(dispatched).toEqual([])
+    })
+  })
+
+  it("blocks a non-allowlisted browser origin's drive-by on the builtin fallback too", async () => {
+    await withServer(async base => {
+      const ui = await fetch(`${base}/apps/${encodeURIComponent(workBoardApp.id!)}/ui`, {
+        headers: { origin: "http://evil.example" },
+      })
+      expect(ui.status).toBe(403)
+      const call = await fetch(`${base}/apps/${encodeURIComponent(workBoardApp.id!)}/tool-call`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "http://evil.example" },
+        body: JSON.stringify({ tool: "task_list" }),
+      })
+      expect(call.status).toBe(403)
+      expect(dispatched).toEqual([])
+    })
   })
 })
 
