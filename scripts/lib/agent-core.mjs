@@ -69,6 +69,11 @@ export const CONFIG_DEFAULTS = {
    *  gate if it doesn't), so this is headroom, not a target. Overridable
    *  per-command via commands.review.maxReviewTurns. */
   maxReviewTurns: 50,
+  /** `max_tokens` for every Messages API call in the agent loop. Must comfortably
+   *  fit the LARGEST single assistant turn a flow produces — for the reviewer
+   *  that is the whole `gh_pr_review` body, which blew through the old 4096 cap
+   *  on PR #1297 and truncated the mandatory review call into nothing. */
+  maxResponseTokens: 16_384,
   /** Per-command overrides: { review: { model?, skills?, ... }, fix: {...} }. */
   commands: {},
 }
@@ -193,6 +198,14 @@ export async function callClaude({ apiKey, model, system, tools, messages, maxTo
   return response.json()
 }
 
+/** Appended to the last user turn when a response came back truncated, so the
+ *  retry knows WHY it is being re-asked and what to do differently. */
+const TRUNCATION_NOTICE =
+  '⚠️ Your previous response was cut off because it exceeded the per-response ' +
+  'token limit, so none of it could be used. Redo that turn, but keep it SHORT: ' +
+  'no preamble, no restating the diff, and if you were writing a long tool input ' +
+  '(e.g. a review body) trim it to the essentials before emitting it.'
+
 /**
  * Drive a tool-use loop until the model stops calling tools or maxTurns is hit.
  *
@@ -207,8 +220,16 @@ export async function runAgentLoop({
   userPrompt,
   maxTokens = 4096,
   maxTurns = 24,
+  // How many `stop_reason: "max_tokens"` responses to absorb (with a rewind +
+  // "be terse" nudge) before giving up. Exhausting them THROWS rather than
+  // returning a clean-looking empty result — see the rewind below.
+  maxTruncationRetries = 2,
   onTurn,
   onToolCall,
+  // Called once per API response with `{ turn, stopReason, toolNames, textChars }`.
+  // The ONLY place `stop_reason` surfaces; without it a truncated turn is
+  // indistinguishable from a finished one in the logs.
+  onResponse,
   // When set, inject `wrapUpMessage` once, as a text block appended to the tool
   // results, as soon as `maxTurns - turn <= wrapUpMargin`. Gives a flow with a
   // mandatory final action (e.g. the reviewer must call gh_pr_review) a chance
@@ -220,15 +241,57 @@ export async function runAgentLoop({
   const messages = [{ role: 'user', content: userPrompt }]
   let turn = 0
   let wrappedUp = false
+  let truncations = 0
 
   while (turn < maxTurns) {
     turn++
     onTurn?.(turn)
 
     const resp = await callClaude({ apiKey, model, system, tools, messages, maxTokens })
+    const toolUses = resp.content.filter((b) => b.type === 'tool_use')
+    onResponse?.({
+      turn,
+      stopReason: resp.stop_reason ?? null,
+      toolNames: toolUses.map((b) => b.name),
+      textChars: resp.content
+        .filter((b) => b.type === 'text')
+        .reduce((n, b) => n + b.text.length, 0),
+    })
+
+    // A `max_tokens` stop means the turn is UNUSABLE, not finished: the model
+    // was mid-sentence, or — worse — mid-`tool_use`, where the input JSON may
+    // have been cut before it closed. Executing a half-parsed tool call could
+    // post a mangled review; keeping the turn and falling through to the
+    // "no tool uses ⇒ the model is done" branch below is how PR #1297's
+    // reviewer exited clean having never called the mandatory `gh_pr_review`
+    // (46s of generation, zero tool calls, empty finalText, exit 0 from the
+    // loop's point of view). So: never trust it, rewind, re-ask tersely.
+    if (resp.stop_reason === 'max_tokens') {
+      truncations++
+      if (truncations > maxTruncationRetries) {
+        throw new Error(
+          `runAgentLoop: response truncated by max_tokens (${maxTokens}) ` +
+            `${truncations}× — raise maxTokens or shorten the flow's output. ` +
+            'Refusing to return a partial result that would read as success.',
+        )
+      }
+      // Drop the truncated assistant turn entirely and append the notice to the
+      // preceding USER turn — re-asking the same question with an explicit
+      // "you were cut off, be terse" rider. Pushing the partial turn instead
+      // would leave a dangling tool_use with no tool_result (API error) or a
+      // half-thought the model then tries to continue from.
+      const last = messages[messages.length - 1]
+      const notice = { type: 'text', text: TRUNCATION_NOTICE }
+      if (typeof last.content === 'string') {
+        last.content = [{ type: 'text', text: last.content }, notice]
+      } else {
+        last.content.push(notice)
+      }
+      continue
+    }
+
     messages.push({ role: 'assistant', content: resp.content })
 
-    const toolUses = resp.content.filter((b) => b.type === 'tool_use')
     if (toolUses.length === 0) {
       const finalText = resp.content
         .filter((b) => b.type === 'text')
