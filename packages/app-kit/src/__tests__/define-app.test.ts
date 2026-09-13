@@ -147,6 +147,117 @@ describe("defineApp — multi-agent + attachment invariant", () => {
     ).toThrow(/defineWorkspace \(AIP-34\)/)
   })
 
+  it("carries optional app identity through to the handle, defaulting version when id is set", () => {
+    const app = defineApp({
+      agents: [agent("solo", [])],
+      id: "@acme/reviewers-app",
+      name: "Reviewers",
+      description: "A reviewer app.",
+    })
+    expect(app.id).toBe("@acme/reviewers-app")
+    expect(app.name).toBe("Reviewers")
+    expect(app.version).toBe("0.1.0")
+    expect(app.description).toBe("A reviewer app.")
+  })
+
+  it("keeps an explicit version instead of the default when id is set", () => {
+    const app = defineApp({ agents: [agent("solo", [])], id: "app-1", version: "2.3.0" })
+    expect(app.version).toBe("2.3.0")
+  })
+
+  it("leaves id/name/version/description undefined when none is given", () => {
+    const app = defineApp({ agents: [agent("solo", [])] })
+    expect(app.id).toBeUndefined()
+    expect(app.name).toBeUndefined()
+    expect(app.version).toBeUndefined()
+    expect(app.description).toBeUndefined()
+  })
+
+  it("throws on an empty (but present) app id", () => {
+    expect(() => defineApp({ agents: [agent("solo", [])], id: "  " })).toThrow(AppDefinitionError)
+  })
+
+  it("carries ui/artifact/artifacts/dev/skill through to the handle, frozen", () => {
+    const app = defineApp({
+      agents: [agent("solo", [])],
+      ui: {
+        html: "<html><body>Hi</body></html>",
+        title: "Solo Panel",
+        tools: ["read_file"],
+        csp: { connectDomains: ["api.example.com"] },
+      },
+      artifact: { path: "/tmp/artifact.html", title: "Dashboard", description: "A dashboard." },
+      skill: { path: "/tmp/skill-dir", title: "My Skill", description: "A test skill." },
+      artifacts: [{ type: "report", description: "A generated report." }],
+      dev: {
+        launch: [{ name: "dev", runtimeExecutable: "node", runtimeArgs: ["server.js"], port: 3000 }],
+      },
+    })
+    expect(app.ui?.title).toBe("Solo Panel")
+    expect(app.ui?.tools).toEqual(["read_file"])
+    expect(app.ui?.csp).toEqual({ connectDomains: ["api.example.com"] })
+    expect(app.artifact?.path).toBe("/tmp/artifact.html")
+    expect(app.artifact?.title).toBe("Dashboard")
+    expect(app.artifact?.description).toBe("A dashboard.")
+    expect(app.skill?.path).toBe("/tmp/skill-dir")
+    expect(app.skill?.title).toBe("My Skill")
+    expect(app.skill?.description).toBe("A test skill.")
+    expect(app.artifacts).toEqual([{ type: "report", description: "A generated report." }])
+    expect(app.dev?.launch).toEqual([
+      { name: "dev", runtimeExecutable: "node", runtimeArgs: ["server.js"], port: 3000 },
+    ])
+    expect(Object.isFrozen(app.ui)).toBe(true)
+    expect(Object.isFrozen(app.artifact)).toBe(true)
+    expect(Object.isFrozen(app.skill)).toBe(true)
+    expect(Object.isFrozen(app.artifacts)).toBe(true)
+    expect(Object.isFrozen(app.artifacts![0])).toBe(true)
+    expect(Object.isFrozen(app.dev)).toBe(true)
+    expect(Object.isFrozen(app.dev!.launch)).toBe(true)
+    expect(Object.isFrozen(app.dev!.launch[0])).toBe(true)
+  })
+
+  it("throws when ui.html is missing or empty", () => {
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], ui: { html: "" } }),
+    ).toThrow(/ui\.html/)
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], ui: { html: "   " } }),
+    ).toThrow(/ui\.html/)
+  })
+
+  it("throws when dev.launch is present but empty", () => {
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], dev: { launch: [] } }),
+    ).toThrow(/dev\.launch/)
+  })
+
+  it("throws when artifact.path is missing or empty", () => {
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], artifact: { path: "" } }),
+    ).toThrow(/artifact\.path/)
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], artifact: { path: "   " } }),
+    ).toThrow(/artifact\.path/)
+  })
+
+  it("throws when skill.path is missing or empty", () => {
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], skill: { path: "" } }),
+    ).toThrow(/skill\.path/)
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], skill: { path: "   " } }),
+    ).toThrow(/skill\.path/)
+  })
+
+  it("leaves ui/artifact/artifacts/dev/skill undefined when none given", () => {
+    const app = defineApp({ agents: [agent("solo", [])] })
+    expect(app.ui).toBeUndefined()
+    expect(app.artifact).toBeUndefined()
+    expect(app.skill).toBeUndefined()
+    expect(app.artifacts).toBeUndefined()
+    expect(app.dev).toBeUndefined()
+  })
+
   it("matches string and { ref } workflow refs by the same key", () => {
     const app = defineApp({
       agents: [
@@ -163,5 +274,117 @@ describe("defineApp — multi-agent + attachment invariant", () => {
       workflows: [reviewWorkflow()],
     })
     expect(app.workflows[0]!.id).toBe("review-and-fix")
+  })
+})
+
+describe("defineApp — UI-only apps (zero agents)", () => {
+  it("accepts an explicit empty agents array when ui is present", () => {
+    const app = defineApp({ agents: [], ui: { html: "<html></html>" } })
+    expect(app.agents).toEqual([])
+    expect(app.ui?.html).toBe("<html></html>")
+  })
+
+  it("accepts agents omitted entirely when ui is present", () => {
+    const app = defineApp({ ui: { html: "<html></html>" } })
+    expect(app.agents).toEqual([])
+    expect(app.ui?.html).toBe("<html></html>")
+  })
+
+  it("throws when agents is empty and ui is absent", () => {
+    expect(() => defineApp({ agents: [] })).toThrow(AppDefinitionError)
+    expect(() => defineApp({ agents: [] })).toThrow(/at least one agent.*ui.*block/i)
+  })
+
+  it("throws when both agents and ui are omitted", () => {
+    expect(() => defineApp({})).toThrow(AppDefinitionError)
+    expect(() => defineApp({})).toThrow(/at least one agent.*ui.*block/i)
+  })
+
+  it("still defaults version to 0.1.0 for a UI-only app with an id", () => {
+    const app = defineApp({ id: "@acme/ui-only", ui: { html: "<html></html>" } })
+    expect(app.version).toBe("0.1.0")
+  })
+
+  it("toMastraAgent throws on a zero-agent app", async () => {
+    const app = defineApp({ ui: { html: "<html></html>" } })
+    await expect(app.toMastraAgent({ resolveModel: () => { throw new Error("unreachable") } })).rejects.toThrow(
+      AppDefinitionError,
+    )
+  })
+
+  it("toMastraAgents resolves to an empty object on a zero-agent app", async () => {
+    const app = defineApp({ ui: { html: "<html></html>" } })
+    await expect(
+      app.toMastraAgents({ resolveModel: () => { throw new Error("unreachable") } }),
+    ).resolves.toEqual({})
+  })
+
+  it("pick([]) returns [] and pick with an unknown id still throws", () => {
+    const app = defineApp({ ui: { html: "<html></html>" } })
+    expect(app.pick([])).toEqual([])
+    expect(() => app.pick(["missing"])).toThrow(/not in this app/)
+  })
+})
+
+describe("defineApp — data dir hint", () => {
+  it("carries `data.dir` through to the handle, frozen", () => {
+    const app = defineApp({ agents: [agent("solo", [])], data: { dir: "data" } })
+    expect(app.data).toEqual({ dir: "data" })
+    expect(Object.isFrozen(app.data)).toBe(true)
+  })
+
+  it("is absent when not declared", () => {
+    expect(defineApp({ agents: [agent("solo", [])] }).data).toBeUndefined()
+  })
+
+  it("throws when data.dir is empty", () => {
+    expect(() => defineApp({ agents: [agent("solo", [])], data: { dir: "" } })).toThrow(/data\.dir/)
+    expect(() => defineApp({ agents: [agent("solo", [])], data: { dir: "   " } })).toThrow(/data\.dir/)
+  })
+})
+
+describe("defineApp — category", () => {
+  it("carries category through to the handle", () => {
+    const app = defineApp({ agents: [agent("solo", [])], category: "widget" })
+    expect(app.category).toBe("widget")
+  })
+
+  it("is absent when not declared", () => {
+    expect(defineApp({ agents: [agent("solo", [])] }).category).toBeUndefined()
+  })
+
+  it("throws when category is empty", () => {
+    expect(() => defineApp({ agents: [agent("solo", [])], category: "" })).toThrow(/category/)
+    expect(() => defineApp({ agents: [agent("solo", [])], category: "   " })).toThrow(/category/)
+  })
+})
+
+describe("defineApp — absolute artifact.path / skill.path (AIP-53 rule 7)", () => {
+  it("accepts absolute paths on both fields", () => {
+    expect(() =>
+      defineApp({
+        agents: [agent("solo", [])],
+        artifact: { path: "/abs/artifact/index.html" },
+        skill: { path: "/abs/skills/my-skill" },
+      }),
+    ).not.toThrow()
+  })
+
+  it("rejects a relative artifact.path, naming the field and the value", () => {
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], artifact: { path: "artifact/index.html" } }),
+    ).toThrow(AppDefinitionError)
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], artifact: { path: "artifact/index.html" } }),
+    ).toThrow(/`artifact\.path`.*absolute.*artifact\/index\.html/)
+  })
+
+  it("rejects a relative skill.path, naming the field and the value", () => {
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], skill: { path: "skills/my-skill" } }),
+    ).toThrow(AppDefinitionError)
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], skill: { path: "skills/my-skill" } }),
+    ).toThrow(/`skill\.path`.*absolute.*skills\/my-skill/)
   })
 })

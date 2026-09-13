@@ -27,6 +27,7 @@ import type { CatalogProvider } from "@agentproto/model-catalog"
 import { resolveCustomRoute } from "@agentproto/model-catalog/route-identity"
 import { findAnthropicGatewayPreset } from "@agentproto/provider-presets"
 import { providerEnvVar } from "./providers-store.js"
+import type { ContextContinuityPolicy } from "./context-continuity.js"
 
 /**
  * Deterministic billing-auth config for one adapter slug (today, only
@@ -70,6 +71,7 @@ export interface DefaultsAdapterConfig {
   skills?: string[]
   options?: Record<string, boolean | number | string>
   auth?: DefaultsAdapterAuthConfig
+  contextContinuity?: ContextContinuityPolicy
 }
 
 /** Shape of `config.json`'s top-level `defaults` block. */
@@ -77,6 +79,7 @@ export interface SpawnDefaultsConfig {
   skills?: string[]
   options?: Record<string, boolean | number | string>
   adapters?: Record<string, DefaultsAdapterConfig>
+  contextContinuity?: ContextContinuityPolicy
   /** Depth cutoff for the role-derived default (see `resolveRole` in
    *  `role.ts`) applied when an `agent_start` call omits `role`:
    *  `depth < cutoff` → supervisor, `depth >= cutoff` → executor.
@@ -116,6 +119,9 @@ export interface ResolveSpawnDefaultsInput {
    *  RESOLVED mode wins over the matching config field. Undefined ⇒ falls
    *  through entirely to the per-adapter config default. */
   auth?: DefaultsAdapterAuthConfig
+  /** Explicit-call context-continuity policy — wins over global and
+   *  per-adapter config defaults. */
+  contextContinuity?: ContextContinuityPolicy
 }
 
 export interface ResolvedSpawnDefaults {
@@ -127,6 +133,7 @@ export interface ResolvedSpawnDefaults {
    *  are surfaced (NOT collapsed to one), since the ordered-mode selection
    *  needs to know which are available before it picks the mode. */
   auth: ResolvedSpawnAuthMaterial
+  contextContinuity?: ContextContinuityPolicy
 }
 
 export interface ResolvedSpawnAuthMaterial {
@@ -138,6 +145,14 @@ export interface ResolvedSpawnAuthMaterial {
    *  key" (fail-fast) from "set nothing" (ambient) — both give no credential.
    *  DECISION 5. */
   explicit: boolean
+  /** True when the `auth` block came from CONFIG (`defaults.adapters.<slug>.auth`)
+   *  rather than the per-spawn `agent_start.auth` request. A sandboxed spawn
+   *  bills on the BOX daemon, which has neither the host's config nor its
+   *  keychain — the host uses this to know it must resolve the configured
+   *  wallet credential itself and forward it (see `session-spawn.ts`'s
+   *  `resolveHostAuth`). A per-spawn `auth` keeps its own raw-forward path
+   *  and never forces host adapter resolution. */
+  explicitConfig: boolean
   /** Subscription bearer token (per-spawn > config), if configured. STATIC
    *  material only — the self-refreshing {@link subscriptionSource} is resolved
    *  separately (and impurely) by the caller. */
@@ -180,17 +195,22 @@ export function resolveSpawnDefaults(
   const apiKeyCredential = input.auth?.apiKey ?? adapterDefaults?.auth?.apiKey
   const authProvider = input.auth?.provider ?? adapterDefaults?.auth?.provider
 
+  const contextContinuity =
+    input.contextContinuity ?? adapterDefaults?.contextContinuity ?? defaults?.contextContinuity
+
   return {
     skills,
     options,
     auth: {
       explicit,
+      explicitConfig: adapterDefaults?.auth !== undefined,
       ...(requestedMode ? { requestedMode } : {}),
       ...(subscriptionCredential !== undefined ? { subscriptionCredential } : {}),
       ...(subscriptionSource !== undefined ? { subscriptionSource } : {}),
       ...(apiKeyCredential !== undefined ? { apiKeyCredential } : {}),
       ...(authProvider ? { provider: authProvider } : {}),
     },
+    ...(contextContinuity !== undefined ? { contextContinuity } : {}),
   }
 }
 
@@ -239,6 +259,30 @@ export function credentialFingerprint(
 }
 
 /**
+ * One subscription (OAuth/bearer) surface — mirrors the driver's
+ * `AgentCliAuthSubscription`. `external: true` (codex/gemini/mastracode/
+ * opencode) ⇒ file-based: the CLI reads its own local-login file, so
+ * `setEnv` is absent and the runtime injects NO bearer — it only scrubs the
+ * conflicting api-key vars.
+ */
+export interface AuthSubscriptionSurface {
+  /** Env var SET to the resolved subscription credential — absent for an
+   *  {@link external} surface. */
+  setEnv?: string
+  external?: boolean
+  conflictEnv?: string[]
+  unsetEnvAdd?: string[]
+  /** Provider scope for a multi-provider adapter's surface — pi's
+   *  `ANTHROPIC_OAUTH_TOKEN` is an anthropic-only door; mastracode/opencode's
+   *  file-based ChatGPT login is an openai-only door alongside their
+   *  anthropic one. When set, this surface only MATCHES a spawn whose
+   *  resolved provider equals this id (see {@link subscriptionSurfaceFor}).
+   *  Omitted for a fixed-provider adapter (claude-code, codex) — their
+   *  descriptor-level `provider` already pins it. */
+  provider?: string
+}
+
+/**
  * The adapter's billing-auth capability, projected from its AIP-45 manifest
  * (`provider` / `authEnforce` / `authSubscription`) by the host resolver. The
  * runtime reads THIS, never the manifest directly — keeping the LLM-catalog
@@ -252,21 +296,35 @@ export interface AdapterAuthDescriptor {
    *  #312 fail-fast); `"when-configured"` (default) only when `explicit`. */
   authEnforce?: "always" | "when-configured"
   /** Subscription (OAuth/bearer) support. Presence ⇒ the adapter supports
-   *  `"subscription"` mode. Mirrors the driver's `AgentCliAuthSubscription`.
-   *  `external: true` (codex/gemini) ⇒ file-based: the CLI reads its own
-   *  local-login file, so `setEnv` is absent and the runtime injects NO
-   *  bearer — it only scrubs the conflicting api-key vars. */
-  authSubscription?: {
-    setEnv?: string
-    external?: boolean
-    conflictEnv?: string[]
-    unsetEnvAdd?: string[]
-  }
+   *  `"subscription"` mode. A SINGLE surface for a fixed/single-provider
+   *  subscription, or an ARRAY of surfaces for an adapter with more than one
+   *  native OAuth login (mastracode/opencode: both an anthropic- and an
+   *  openai-scoped file-based login) — see {@link subscriptionSurfaceFor},
+   *  which resolves the matching surface for a spawn's resolved provider. */
+  authSubscription?: AuthSubscriptionSurface | AuthSubscriptionSurface[]
   /** True when the adapter's api-key auth is derived from the requested
    *  model rather than a fixed provider (e.g. `pi`, `opencode`). When set,
    *  the adapter supports `"api-key"` on the model-derived direct endpoint,
    *  and `spawnEligibilityManifest` includes it for direct routes. */
   modelDerivedApiKey?: boolean
+  /** How THIS adapter receives a GATEWAY-routed bearer credential — see
+   *  `AgentCliDefinition.gatewayAuth` (the manifest field this is projected
+   *  from). Distinct from a gateway preset's `keyEnv` (the providers-store
+   *  lookup key) and from `authSubscription.setEnv` (this adapter's own
+   *  native bearer). When a gateway route resolves, `resolveAuthSpec` injects
+   *  the credential into `gatewayAuth.setEnv` instead of the preset's
+   *  `keyEnv` — e.g. claude-code/claude-sdk read `ANTHROPIC_AUTH_TOKEN`.
+   *  Omit when the adapter reads the preset's own `keyEnv` directly (hermes). */
+  gatewayAuth?: { setEnv: string }
+  /** Model id → the BILLING provider THIS adapter itself declares for it
+   *  (`AgentCliModelEntry.provider`, projected from `models.allowed`) —
+   *  authoritative for a model-derived-api-key adapter (`pi`, `opencode`),
+   *  whose `provider` above is absent so the eligibility projection would
+   *  otherwise fall through to the GLOBAL catalog's own (possibly different)
+   *  routing for the same model id. Consulted by `spawnEligibilityManifest`
+   *  BEFORE the catalog fallback; absent/no-match ⇒ catalog derivation,
+   *  unchanged. */
+  modelProviders?: Readonly<Record<string, CatalogProvider>>
 }
 
 /** The fully-resolved spec the driver applies mechanically. Structurally
@@ -402,6 +460,59 @@ export interface ResolveAuthSpecInput {
  * apply (it engages then throws `missing_auth_credential`), so the `explicit`
  * / `enforce` signals are carried through on the spec.
  */
+export function modelIdPrefixProvider(modelId: string): string | undefined {
+  const slash = modelId.indexOf("/")
+  return slash > 0 ? modelId.slice(0, slash) : undefined
+}
+
+/**
+ * Resolve WHICH of an adapter's declared subscription surface(s) applies on
+ * `endpoint` — THE one lookup every subscription-eligibility site shares
+ * (`resolveAuthSpec` below, plus the three mirrored direct-methods
+ * projections in `session-spawn.ts` / `session-restart-core.ts` /
+ * `catalog-models.ts`), so they can never drift. Returns the matching
+ * surface, or `undefined` when none applies — callers that only need the
+ * old boolean predicate check `!== undefined`.
+ *
+ * `authSubscription` is a single surface OR an array of surfaces (one
+ * per provider, for an adapter with more than one native OAuth login —
+ * mastracode/opencode: anthropic AND openai). For a SINGLE surface, this
+ * preserves the original predicate exactly: a provider-scoped surface (pi's
+ * `ANTHROPIC_OAUTH_TOKEN`) applies only on its own provider; an unscoped one
+ * (fixed-provider adapters — claude-code, codex) applies wherever the
+ * adapter itself does; an unknown endpoint is treated as applying — the
+ * fixed-provider case, where the caller had no per-model derivation to
+ * offer. For an ARRAY of surfaces, an explicit provider match wins;
+ * otherwise the one unscoped surface (if any) applies. An unknown endpoint
+ * against MULTIPLE provider-scoped surfaces cannot be disambiguated — unlike
+ * the single-surface case, guessing here would pick a specific but WRONG
+ * provider's bearer door, not just skip a scrub — so nothing matches.
+ *
+ * This lookup REPLACED the old `modelDerivedApiKey ⇒ subscription works`
+ * assumption ("Anthropic OATs work as API keys"): an OAT presented on the
+ * x-api-key header is rejected by Anthropic's edge regardless of account
+ * validity — observed live as opencode's opaque "Internal error: API key is
+ * invalid" when the runtime injected a subscription token into
+ * `ANTHROPIC_API_KEY`. Subscription support now requires an EXPLICIT
+ * `authSubscription` declaration naming the env var the CLI actually reads
+ * a bearer from.
+ */
+export function subscriptionSurfaceFor(
+  sub: AdapterAuthDescriptor["authSubscription"],
+  endpoint: string | undefined,
+): AuthSubscriptionSurface | undefined {
+  if (sub === undefined) return undefined
+  if (!Array.isArray(sub)) {
+    return sub.provider === undefined || endpoint === undefined || sub.provider === endpoint
+      ? sub
+      : undefined
+  }
+  return (
+    sub.find(s => s.provider !== undefined && s.provider === endpoint) ??
+    sub.find(s => s.provider === undefined)
+  )
+}
+
 export function resolveAuthSpec(
   input: ResolveAuthSpecInput,
 ): { spec: ResolvedAuthSpec; echo: AuthEcho } | undefined {
@@ -417,35 +528,80 @@ export function resolveAuthSpec(
       : undefined
   const gatewayRoute = gatewayPreset ?? customRoute
 
+  // A gateway preset whose id is the adapter's own fixed native provider is a
+  // native match (e.g. codex with `provider: "openai"` and `route.gateway:
+  // "openai"`). The route still selects the auth profile / API-key env var, but
+  // the resolved base_url would point at a proxy/alternate endpoint the adapter
+  // never asked for — codex has no `base_url` option and already talks to the
+  // OpenAI endpoint natively. Skip the preset base_url so session-spawn routing
+  // does not try to inject it (and so restart/resume paths don't re-inject it),
+  // and keep subscription mode eligible because the route is direct, not a
+  // third-party gateway.
+  const isNativeGatewayPreset =
+    gatewayPreset !== undefined && input.routeGateway === input.descriptor.provider
+
   // 1. Provider: per-spawn pin → adapter-fixed → model-derived. None ⇒
   //    ambient (no injection); an unknown/free-form model id lands here too.
   //    A matched gateway route overrides all three — the route IS the provider.
+  //    The only exception is a native-provider gateway preset, which is treated
+  //    as a direct route (same provider the adapter already bills through).
   let provider: string | undefined
   let baseUrl: string | undefined
   let apiKeyEnv: string
   let gatewayScrub: string[] = []
   if (gatewayRoute) {
     provider = input.routeGateway
-    baseUrl = gatewayPreset?.baseUrl ?? customRoute?.baseUrl
+    baseUrl = isNativeGatewayPreset
+      ? undefined
+      : gatewayPreset?.baseUrl ?? customRoute?.baseUrl
     apiKeyEnv =
       gatewayPreset?.keyEnv ??
       customRoute?.authEnv ??
       (provider ? providerEnvVar(provider) : "")
     gatewayScrub = gatewayPreset ? [...gatewayPreset.scrubEnv] : []
   } else {
+    // Same precedence as `spawnEligibilityManifest` (session-spawn.ts) —
+    // deliberately kept in lockstep. A model-derived-api-key adapter has no
+    // fixed `provider`, so without the `modelProviders` tier the catalog
+    // fallback is the only signal here, and the catalog's route for an id can
+    // legitimately differ from what THIS adapter bills it through (D3: pi
+    // bills `moonshotai/kimi-k2.7-code` via `moonshot`; the catalog routes
+    // that same id to `openrouter`). Consulting it in the eligibility
+    // projection but NOT here would let the two disagree: the access-profile
+    // check would clear a moonshot wallet while this resolver injected an
+    // OPENROUTER_API_KEY — billing the wrong wallet on a spawn that passed
+    // its own gate.
     provider =
       input.requestedProvider ??
       input.descriptor.provider ??
+      (input.model ? input.descriptor.modelProviders?.[input.model] : undefined) ??
+      (input.model && input.descriptor.modelDerivedApiKey
+        ? modelIdPrefixProvider(input.model)
+        : undefined) ??
       (input.model ? getModelProvider(input.model) : undefined)
     if (!provider) return undefined
     apiKeyEnv = providerEnvVar(provider)
   }
   if (!provider) return undefined
 
-  const sub = input.descriptor.authSubscription
-  // Gateway routes are API-key only; subscription mode is only supported on
-  // direct routes where the adapter declares authSubscription.
-  const supportsSub = sub !== undefined && gatewayRoute === undefined
+  // Subscription support requires an EXPLICIT, provider-matching
+  // authSubscription declaration ({@link subscriptionSurfaceFor}) — the old
+  // `|| modelDerivedApiKey` clause assumed "Anthropic OATs work as API
+  // keys", which is false on the x-api-key header: it silently injected the
+  // subscription token into ANTHROPIC_API_KEY for opencode/mastracode/jcode
+  // and the upstream rejected it as an invalid key. A multi-provider
+  // adapter that DOES have a bearer door declares it (pi:
+  // `authSubscription: {setEnv: "ANTHROPIC_OAUTH_TOKEN", provider:
+  // "anthropic"}`); a multi-SURFACE adapter declares one entry per provider
+  // (mastracode/opencode: an anthropic AND an openai external surface) and
+  // this resolves the one matching the spawn's resolved provider; the rest
+  // fail fast below instead of failing upstream. Gateway routes stay
+  // API-key only; a native fixed-provider gateway preset (e.g. codex +
+  // route.gateway "openai") is a direct route, so subscription stays
+  // eligible there.
+  const sub = subscriptionSurfaceFor(input.descriptor.authSubscription, provider)
+  const supportsSub =
+    sub !== undefined && (gatewayRoute === undefined || isNativeGatewayPreset)
   const enforce = input.descriptor.authEnforce ?? "when-configured"
 
   // File-based (external) subscription (codex/gemini): the CLI reads its OWN
@@ -474,8 +630,11 @@ export function resolveAuthSpec(
   if (input.requestedMode) {
     if (input.requestedMode === "subscription" && !supportsSub) {
       throw new AuthResolutionError(
-        `auth mode "subscription" is not supported for provider "${provider}" ` +
-          `(this adapter declares no authSubscription) — use api-key instead.`,
+        `auth mode "subscription" is not supported for provider "${provider}" on this ` +
+          `adapter (no matching authSubscription surface): it presents credentials on ` +
+          `the api-key header, where a subscription OAuth token is rejected upstream as ` +
+          `an invalid key. Use an api-key profile (a console key) or route the model ` +
+          `via a gateway profile (e.g. openrouter) instead.`,
       )
     }
     mode = input.requestedMode
@@ -508,17 +667,32 @@ export function resolveAuthSpec(
     credentialSource = subCredAvailable ? "cli-local-login" : "none"
     externalCredential = true
   } else if (mode === "subscription") {
-    // Guaranteed present: the explicit path validated supportsSub, and the
-    // ordered path only yields "subscription" when supportsSub. A bearer
-    // (non-external) authSubscription always declares setEnv (schema-enforced).
-    setEnv = sub!.setEnv!
+    // Bearer authSubscription declares setEnv (schema-enforced) — for pi
+    // that's ANTHROPIC_OAUTH_TOKEN, its documented bearer door. The
+    // `?? apiKeyEnv` fallback is defensive only: subscription mode can no
+    // longer resolve without a matching authSubscription (see supportsSub).
+    setEnv = sub?.setEnv ?? apiKeyEnv
     credential = input.subscriptionCredential
     credentialSource =
       credential !== undefined
         ? (input.subscriptionCredentialSource ?? "explicit-config")
         : "none"
   } else {
-    setEnv = apiKeyEnv
+    // `apiKeyEnv` is the preset's/provider's conventional key-env — the
+    // OPERATOR's providers-store lookup key (unaffected below; the store
+    // read is keyed by PROVIDER id, never by this env name). The var
+    // actually INJECTED into the child is a separate fact: for a gateway
+    // route, an adapter that declares `gatewayAuth` (claude-code/claude-sdk
+    // → ANTHROPIC_AUTH_TOKEN) receives the credential there instead, because
+    // that's the var its OWN wire protocol reads a bearer from — injecting
+    // the preset's `keyEnv` would land the credential in a var nothing reads
+    // (the D4 bug: OPENROUTER_API_KEY set, but the Anthropic SDK only ever
+    // looks at ANTHROPIC_AUTH_TOKEN). An adapter with no `gatewayAuth`
+    // (hermes) keeps `apiKeyEnv` verbatim — it genuinely reads that var.
+    setEnv =
+      gatewayRoute && input.descriptor.gatewayAuth?.setEnv
+        ? input.descriptor.gatewayAuth.setEnv
+        : apiKeyEnv
     if (input.apiKeyConfigCredential !== undefined) {
       credential = input.apiKeyConfigCredential
       credentialSource = "explicit-config"
@@ -587,6 +761,22 @@ export function resolveAuthSpec(
 export const CLAUDE_CODE_OAUTH_SOURCE = "claude-code-oauth"
 
 /**
+ * `auth.source`/profile-`source` values that are RECOGNIZED elsewhere in the
+ * system (the codex/gemini adapters' own `authSubscription: { external: true
+ * }` file-based login, and the "Use my existing Codex/Gemini login" profile
+ * flow — see `verifyLocalLoginPresent`) but can never be satisfied by {@link
+ * resolveSubscriptionCredential}: they name a FILE the target CLI reads
+ * itself, not an extractable bearer, so there is nothing this Mode-3 resolver
+ * could ever fetch for them. Used only to sharpen the `unsupported_auth_source`
+ * error for THESE specific values (e.g. spawning `pi` — which has no
+ * `authSubscription.external` — with `auth.source: "codex"`, likely inherited
+ * from a codex-flavored parent session or auth profile) instead of the
+ * generic "only claude-code-oauth is supported" message, which doesn't
+ * explain why a seemingly-valid value (codex IS a real source elsewhere)
+ * failed here. Does NOT change behavior — still fails loud either way. */
+export const FILE_BASED_AUTH_SOURCES: ReadonlySet<string> = new Set(["codex", "gemini"])
+
+/**
  * Raised when `auth.source` is configured but cannot yield a credential — an
  * unknown source value (`unsupported_auth_source`) or the recipe resolving to
  * nothing / not-logged-in (`auth_source_unresolved`). A LOUD, actionable
@@ -653,11 +843,21 @@ export async function resolveSubscriptionCredential(
   // (b) Opt-in self-refreshing source.
   if (input.source !== undefined) {
     if (input.source !== CLAUDE_CODE_OAUTH_SOURCE) {
-      throw new SubscriptionSourceError(
-        "unsupported_auth_source",
-        `auth.source: "${input.source}" is not supported — the only supported ` +
-          `value is "${CLAUDE_CODE_OAUTH_SOURCE}".`,
-      )
+      // A file-based source (codex/gemini) is a real value elsewhere in the
+      // system — just not one this bearer-fetch resolver can ever satisfy.
+      // Name that explicitly so the caller understands WHY a seemingly-valid
+      // source failed here, instead of implying "claude-code-oauth" is the
+      // only auth concept that exists.
+      const message = FILE_BASED_AUTH_SOURCES.has(input.source)
+        ? `auth.source: "${input.source}" is a file-based (external) login — only ` +
+          `adapters that declare "authSubscription.external" (e.g. codex, gemini ` +
+          `themselves) can use it, and this adapter isn't one of them, so there is ` +
+          `no bearer to inject. Use auth.source: "${CLAUDE_CODE_OAUTH_SOURCE}" for ` +
+          `a Claude subscription, or configure a real API key for this adapter's ` +
+          `target provider instead.`
+        : `auth.source: "${input.source}" is not supported — the only supported ` +
+          `value is "${CLAUDE_CODE_OAUTH_SOURCE}".`
+      throw new SubscriptionSourceError("unsupported_auth_source", message)
     }
     let token: string
     try {

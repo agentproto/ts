@@ -12,6 +12,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const SNAPSHOTS_DIR = join(HERE, "..", "..", "snapshots")
 
 const OUTPUT_PATH = "packages/model-catalog/src/llm/requesty-routes.generated.ts"
+const LEDGER_PATH = "packages/catalog-sync/ledger/llm-requesty.json"
 
 /**
  * OFFLINE context — reads the committed (REAL, live-fetched) snapshot from
@@ -88,9 +89,9 @@ function entryBlock(src: string, id: string): string {
 }
 
 describe("llm:requesty generator — hand-written fixture", () => {
-  it("emits exactly one drop-in file at the model-catalog path", async () => {
+  it("emits the drop-in file plus its addedAt ledger", async () => {
     const files = await llmRequestyGenerator.generate(fixtureCtx())
-    expect(Object.keys(files)).toEqual([OUTPUT_PATH])
+    expect(Object.keys(files).sort()).toEqual([LEDGER_PATH, OUTPUT_PATH].sort())
   })
 
   it("converts per-token USD NUMBERS (not strings) to USD-per-1M", async () => {

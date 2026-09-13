@@ -18,12 +18,15 @@ import {
   parseModelRef,
   tryParseModelRef,
   formatModelRef,
+  stripRouteSuffix,
+  stripAnthropicNativeVendor,
   isModelRefString,
   InvalidModelRefError,
   resolveLlmModelRoute,
   registerCustomRoute,
   clearCustomRoutes,
   diagnoseModelRef,
+  listRouterLlmRoutes,
   OPENROUTER_VARIANTS,
   type ModelRef,
   type CustomRouteConfig,
@@ -230,6 +233,87 @@ describe("formatModelRef", () => {
   })
 })
 
+describe("stripRouteSuffix", () => {
+  it("strips the gateway @route suffix from a canonical ref (OpenRouter form)", () => {
+    expect(stripRouteSuffix("z-ai/glm-5.2@openrouter")).toBe("z-ai/glm-5.2")
+  })
+
+  it("strips @requesty while keeping vendor/product", () => {
+    expect(stripRouteSuffix("sference/glm-5.2@requesty")).toBe("sference/glm-5.2")
+  })
+
+  it("keeps the pin (variant) but drops the route", () => {
+    expect(stripRouteSuffix("deepseek/deepseek-chat:free@openrouter")).toBe(
+      "deepseek/deepseek-chat:free",
+    )
+  })
+
+  it("keeps an inferenceProvider pin but drops the route", () => {
+    expect(stripRouteSuffix("meta-llama/Llama-3.1-8B:cerebras@huggingface")).toBe(
+      "meta-llama/Llama-3.1-8B:cerebras",
+    )
+  })
+
+  it("strips a trailing @route from a vendor-less proxy alias the strict grammar rejects", () => {
+    // `glm-5.2@llm-endpoint` has no vendor slash → parseModelRef rejects it;
+    // the naive-but-safe last-`@` fallback still bares it (the SEGMENT grammar
+    // forbids `@` anywhere but the route separator).
+    expect(stripRouteSuffix("glm-5.2@llm-endpoint")).toBe("glm-5.2")
+  })
+
+  it("leaves a bare native model id unchanged (no route)", () => {
+    expect(stripRouteSuffix("claude-opus-4-8")).toBe("claude-opus-4-8")
+  })
+
+  it("leaves a direct vendor/product route unchanged (route === vendor)", () => {
+    expect(stripRouteSuffix("openai/gpt-4o")).toBe("openai/gpt-4o")
+  })
+
+  it("is idempotent — a stripped id re-strips to itself", () => {
+    const bare = stripRouteSuffix("z-ai/glm-5.2@openrouter")
+    expect(stripRouteSuffix(bare)).toBe(bare)
+  })
+})
+
+describe("stripAnthropicNativeVendor", () => {
+  it("collapses a direct-anthropic ref to the bare product (the bug fix)", () => {
+    expect(stripAnthropicNativeVendor("anthropic/claude-sonnet-4-5")).toBe(
+      "claude-sonnet-4-5",
+    )
+  })
+
+  it("keeps the vendor/product for a GATEWAY-routed anthropic ref", () => {
+    // Served through the adapter's base_url → the gateway needs vendor/product;
+    // only the @route annotation is peeled.
+    expect(stripAnthropicNativeVendor("anthropic/claude-sonnet-4-5@openrouter")).toBe(
+      "anthropic/claude-sonnet-4-5",
+    )
+  })
+
+  it("leaves a non-anthropic gateway ref as bare vendor/product", () => {
+    expect(stripAnthropicNativeVendor("z-ai/glm-5.2@openrouter")).toBe("z-ai/glm-5.2")
+  })
+
+  it("leaves a non-anthropic llm-endpoint alias as vendor/product", () => {
+    expect(stripAnthropicNativeVendor("moonshot/kimi-k2.7-code@llm-endpoint")).toBe(
+      "moonshot/kimi-k2.7-code",
+    )
+  })
+
+  it("leaves an already-bare native id unchanged", () => {
+    expect(stripAnthropicNativeVendor("claude-sonnet-5")).toBe("claude-sonnet-5")
+  })
+
+  it("leaves a direct non-anthropic vendor/product unchanged", () => {
+    expect(stripAnthropicNativeVendor("openai/gpt-4o")).toBe("openai/gpt-4o")
+  })
+
+  it("is idempotent on the bared product", () => {
+    const bare = stripAnthropicNativeVendor("anthropic/claude-sonnet-4-5")
+    expect(stripAnthropicNativeVendor(bare)).toBe(bare)
+  })
+})
+
 describe("isModelRefString", () => {
   it("returns true for canonical refs", () => {
     expect(isModelRefString("openai/gpt-4o")).toBe(true)
@@ -358,6 +442,58 @@ describe("resolveLlmModelRoute", () => {
     expect(route).toBeUndefined()
   })
 
+  // ── llm-endpoint built-in proxy route (PR-5) ──────────────────────────────
+  // The runtime registers this route at daemon boot via `registerBuiltinRoutes`
+  // (packages/runtime/src/builtin-routes.ts) with the SAME config asserted here,
+  // derived from the `llm-endpoint` gateway preset. model-catalog can't depend
+  // on the runtime (wrong direction), so these tests register it directly — the
+  // route-identity contract the runtime relies on.
+  const LLM_ENDPOINT_CONFIG: CustomRouteConfig = {
+    label: "LLM Endpoint",
+    flavor: "anthropic",
+    baseUrl: "http://localhost:18090",
+    authEnv: "LLM_ENDPOINT_API_KEY",
+  }
+
+  it("resolves a curated <vendor>/<product>@llm-endpoint ref (Anthropic surface)", () => {
+    registerCustomRoute("llm-endpoint", LLM_ENDPOINT_CONFIG)
+    const route = resolveLlmModelRoute("moonshot/kimi-k2.7-code@llm-endpoint")
+    expect(route).toBeDefined()
+    expect(route!.route).toBe("llm-endpoint")
+    expect(route!.vendor).toBe("moonshot")
+    expect(route!.product).toBe("kimi-k2.7-code")
+    expect(route!.transport.flavor).toBe("anthropic")
+    expect(route!.transport.baseUrl).toBe("http://localhost:18090")
+    expect(route!.availability).toBe("available")
+  })
+
+  it("resolves a routeless product on @llm-endpoint via DEFAULT_PRICING", () => {
+    // A product with NO direct pricing catalog entry ("routeless") still
+    // resolves through the custom route — the custom branch falls back to
+    // DEFAULT_PRICING rather than dropping the ref, so the proxy can serve
+    // upstreams the catalog has never priced.
+    registerCustomRoute("llm-endpoint", LLM_ENDPOINT_CONFIG)
+    const route = resolveLlmModelRoute("acme/no-such-model-xyz@llm-endpoint")
+    expect(route).toBeDefined()
+    expect(route!.route).toBe("llm-endpoint")
+    expect(route!.transport.flavor).toBe("anthropic")
+    expect(route!.transport.baseUrl).toBe("http://localhost:18090")
+    expect(route!.pricing.inputPer1M).toBe(0.15)
+    expect(route!.pricing.outputPer1M).toBe(0.6)
+  })
+
+  it("returns undefined for a @llm-endpoint ref when the route is unregistered", () => {
+    // No registerCustomRoute this test (beforeEach cleared the map) → the ref
+    // does not resolve, proving the built-in registration is load-bearing.
+    const route = resolveLlmModelRoute("moonshot/kimi-k2.7-code@llm-endpoint")
+    expect(route).toBeUndefined()
+  })
+
+  it("returns undefined for an unregistered @bogus-route even alongside llm-endpoint", () => {
+    registerCustomRoute("llm-endpoint", LLM_ENDPOINT_CONFIG)
+    expect(resolveLlmModelRoute("moonshot/kimi-k2.7-code@bogus-route")).toBeUndefined()
+  })
+
   it("preserves legacy bare id compatibility", () => {
     const route = resolveLlmModelRoute("gpt-4o")
     expect(route).toBeDefined()
@@ -410,8 +546,12 @@ describe("resolveLlmModelRoute", () => {
     })
 
     it("falls back to default pricing and no context limit for a pinned sparse provider", () => {
-      // cerebras is live but carries no pricing/context_length for this model.
-      const route = resolveLlmModelRoute("google/gemma-4-31B-it:cerebras@huggingface")
+      // featherless-ai is live but carries no pricing/context_length for this
+      // model. (Was cerebras until it started reporting both — repointed rather
+      // than relaxed, so the fallback path stays covered.)
+      const route = resolveLlmModelRoute(
+        "google/gemma-4-31B-it:featherless-ai@huggingface"
+      )
       expect(route).toBeDefined()
       expect(route!.pricing.provider).toBe("huggingface")
       expect(route!.limits.contextWindow).toBeUndefined()
@@ -428,6 +568,53 @@ describe("resolveLlmModelRoute", () => {
       )
       expect(route).toBeUndefined()
     })
+  })
+})
+
+describe("listRouterLlmRoutes", () => {
+  it("resolves every OpenRouter route table entry that round-trips through the ref grammar", () => {
+    const routes = listRouterLlmRoutes("openrouter")
+    expect(routes.length).toBeGreaterThan(100)
+    expect(routes.every(r => r.route === "openrouter")).toBe(true)
+    // Every resolved id parses back cleanly to the same route.
+    for (const r of routes.slice(0, 20)) {
+      expect(formatModelRef(r.ref)).toContain("@openrouter")
+    }
+  })
+
+  it("resolves Requesty routes that round-trip, skipping keys the ref grammar can't express", () => {
+    const routes = listRouterLlmRoutes("requesty")
+    expect(routes.length).toBeGreaterThan(0)
+    expect(routes.every(r => r.route === "requesty")).toBe(true)
+    // A region-qualified azure key (`azure/gpt-4.1-mini@eastus2`) packs a
+    // second `@` into the product, which collides with the `@route` suffix
+    // and can't round-trip through parseModelRef's single-`@` grammar — it's
+    // skipped rather than crashing enumeration. The unqualified sibling
+    // (`azure/gpt-4.1`, no region) has no such collision and DOES resolve.
+    expect(routes.some(r => r.vendor === "azure" && r.product === "gpt-4.1-mini")).toBe(false)
+    expect(routes.some(r => r.vendor === "azure" && r.product === "gpt-4.1")).toBe(true)
+    // `deepinfra/<upstream>/<model>` nests an upstream provider ahead of
+    // vendor/product (e.g. `deepinfra/Qwen/Qwen3-235B-A22B`) — that
+    // triple-segment shape doesn't round-trip, since its "product" would
+    // still contain a `/`. Not every `deepinfra/…` key has this shape
+    // though: some list a model directly under the vendor
+    // (`deepinfra/glm-5.3-flash`), which resolves cleanly as
+    // vendor="deepinfra", product="glm-5.3-flash".
+    expect(routes.some(r => r.vendor === "deepinfra" && r.product === "Qwen/Qwen3-235B-A22B")).toBe(
+      false
+    )
+    expect(routes.some(r => r.vendor === "deepinfra" && r.product === "glm-5.3-flash")).toBe(true)
+  })
+
+  it("resolves every HuggingFace route table entry", () => {
+    const routes = listRouterLlmRoutes("huggingface")
+    expect(routes.length).toBeGreaterThan(0)
+    expect(routes.every(r => r.route === "huggingface")).toBe(true)
+  })
+
+  it("returns an empty list for a non-router provider", () => {
+    expect(listRouterLlmRoutes("anthropic")).toEqual([])
+    expect(listRouterLlmRoutes("no-such-router")).toEqual([])
   })
 })
 

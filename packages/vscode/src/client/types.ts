@@ -5,6 +5,41 @@
  * a coordinated change across all WPs.
  */
 
+import type { RouteSpec } from "@agentproto/runtime/catalog-models"
+export type { RouteSpec }
+
+// Activity projection + Task ledger: the runtime's root export already
+// carries these verbatim (packages/runtime/src/index.ts), so re-export
+// rather than hand-mirror — a `type`-only import is fully erased at build
+// time (no runtime cost, no bundle weight), and re-exporting means a new
+// ACTIVITY_KINDS/TASK_STATUSES member reaches this client for free instead
+// of silently drifting the way a hand copy would.
+import type {
+  ActivityKind,
+  ActivityListFilter,
+  ActivityRecord,
+  ActivitySource,
+  ActivityState,
+  ActivityWaitingOn,
+  TaskListFilter,
+  TaskRecord,
+  TaskStatus,
+  TaskUpdateInput,
+  TaskVerification,
+} from "@agentproto/runtime"
+export type {
+  ActivityKind,
+  ActivityListFilter,
+  ActivityRecord,
+  ActivitySource,
+  ActivityState,
+  ActivityWaitingOn,
+  TaskListFilter,
+  TaskRecord,
+  TaskStatus,
+  TaskVerification,
+}
+
 /** Mirrors @agentproto/runtime AcpMcpServer (packages/acp/src/types.ts). */
 export interface AcpMcpServer {
   name: string
@@ -19,6 +54,18 @@ export interface SessionAwaitingQuestion {
   text: string
   options?: string[]
   source: "structured" | "heuristic"
+}
+
+/** Mirrors @agentproto/runtime SessionWatcherInfo — one live waiter behind
+ *  `SessionDescriptor.watchers` (#session-visibility). See the runtime type's
+ *  doc for the attach-time-snapshot semantics (never live-updated, never
+ *  persisted). */
+export interface SessionWatcherInfo {
+  watcherSessionId?: string
+  watcherLabel?: string
+  event: string
+  timeoutMs?: number
+  since: string
 }
 
 export type SessionKind = "terminal" | "agent-cli" | "command" | "browser"
@@ -48,13 +95,6 @@ export type CanonicalPosture = "default" | "plan" | "accept-edits" | "bypass" | 
  *  mode id from the ACP mode registry (SPEC §3.4a). */
 export type Posture = CanonicalPosture | { harnessModeId: string }
 
-/** Mirrors @agentproto/runtime RouteSpec — endpoint / gateway rail. `baseUrl`
- *  only for a custom gateway the catalog can't resolve. */
-export interface RouteSpec {
-  gateway: string
-  baseUrl?: string
-}
-
 /** Mirrors @agentproto/runtime ContextProfile — `"lean"` drops bundled skills. */
 export type ContextProfile = "full" | "lean" | (string & {})
 
@@ -70,6 +110,77 @@ export interface SessionAccessProfileEcho {
   label?: string
   vendor: string
   method: AuthMethod
+}
+
+/** Mirrors @agentproto/runtime RestartPolicy (restart-scheduler PR-2) — the
+ *  opt-in auto-restart policy a session can carry. Minimal mirror (the field
+ *  round-trips through spawn/descriptor reads; no client UI reads into it
+ *  yet). */
+export interface RestartPolicy {
+  on: ("crashed" | "error")[]
+  maxRetries: number
+  windowMs: number
+  baseDelayMs: number
+  factor: number
+  maxDelayMs: number
+  resume?: boolean
+}
+
+/** Axis overrides for `POST /sessions/:id/restart` — mirrors @agentproto/runtime
+ *  RestartOverrides (the wire body of the restart-with-override route). Each
+ *  present axis overlays the prior session; an omitted one carries forward.
+ *  `access.profileRef` is the wallet swap; `route.gateway` the route swap. */
+export interface RestartOverridePayload {
+  model?: string
+  effort?: EffortLevel
+  /** A canonical posture value ("plan"/"bypass"/…) OR a raw harness mode id
+   *  wrapped as `{ harnessModeId }` — the daemon's restart-override accepts
+   *  both (session-tools.ts posture union). */
+  posture?: string | { harnessModeId: string }
+  contextProfile?: string
+  mode?: string
+  access?: { profileRef: string }
+  route?: { gateway: string; baseUrl?: string }
+}
+
+export type ContextContinuityMode = "manual" | "ask" | "auto"
+
+export interface ContextContinuityPolicy {
+  mode?: ContextContinuityMode
+  warnAtPct?: number
+  compactAtPct?: number
+  continueFreshAtPct?: number
+  hardStopAtPct?: number
+  goal?: boolean
+  plan?: boolean
+  decisions?: boolean
+  changedFiles?: boolean
+  gitStatus?: boolean
+  tests?: boolean
+  errors?: boolean
+  risks?: boolean
+  nextStep?: boolean
+  config?: boolean
+  label?: string
+}
+
+export interface ResolvedContextContinuityPolicy extends ContextContinuityPolicy {
+  mode: ContextContinuityMode
+  warnAtPct: number
+  compactAtPct: number
+  continueFreshAtPct: number
+  hardStopAtPct: number
+  goal: boolean
+  plan: boolean
+  decisions: boolean
+  changedFiles: boolean
+  gitStatus: boolean
+  tests: boolean
+  errors: boolean
+  risks: boolean
+  nextStep: boolean
+  config: boolean
+  label: string
 }
 
 /**
@@ -106,8 +217,10 @@ export interface SessionDescriptor {
    *  ordinary terminal row: an agent-cli row with `endedReason:"daemon-restart"`
    *  can be revived IN PLACE (same id, same history) by a single plain prompt —
    *  the daemon's lazy resume-on-prompt path. See `isResumableInPlace` in
-   *  sessionsTree.logic.ts. */
-  endedReason?: "daemon-restart"
+   *  sessionsTree.logic.ts. Also mirrors `"crashed"` — the crash-detect sweep
+   *  found the adapter's OS process gone between turns; see `lastError`/
+   *  `crashedAt`. */
+  endedReason?: "daemon-restart" | "crashed"
   /** Mirrors `@agentproto/runtime` SessionDescriptor.interrupted (#635) — a
    *  DERIVED, read-time field (never persisted): `true` when this session died
    *  with a turn in flight under a daemon restart
@@ -123,6 +236,50 @@ export interface SessionDescriptor {
   lastOutputAt?: string
   lastActivityAt?: string
   processAlive?: boolean
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.watchers — the live count
+   *  of supervisors blocked waiting on this session (#session-visibility).
+   *  Ephemeral, stamped at read time; 0/absent ⇒ nothing is watching. */
+  watchers?: number
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.watcherDetails — per-waiter
+   *  detail behind `watchers`: who is watching (when named) and what they're
+   *  waiting for. Same lifetime as `watchers`; empty/absent ⇒ nothing is
+   *  watching. Drives the transcript panel's watcher presence chip. */
+  watcherDetails?: readonly SessionWatcherInfo[]
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.pendingBgTasks — how many
+   *  background tool starts were counted in the session's last turn; the
+   *  session ended its turn with them likely still pending. Ephemeral, stamped
+   *  at read time; 0/absent ⇒ none outstanding. Drives the tree's `parked-bg`
+   *  activity (a silent dead end unless someone re-prompts) and the webview's
+   *  bg chip. */
+  pendingBgTasks?: number
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.lastTurnErroredAt — ISO
+   *  8601 timestamp of the last turn that ended because the adapter's OWN
+   *  turn-end event reported failure, while the process stayed alive. Drives
+   *  the tree's `stalled` activity for an otherwise-idle session. Cleared the
+   *  moment a later turn completes without one. */
+  lastTurnErroredAt?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.childrenBusy — how many
+   *  descendant sessions are currently mid-turn (subtree rollup,
+   *  #session-visibility). Drives the "delegating" row state for an idle parent
+   *  waiting on its busy subtree. Ephemeral, stamped at read time. */
+  childrenBusy?: number
+  /** UI-COMPUTED, not from the daemon: whether the current model has more than
+   *  one gateway route to switch between (chip-pickers). The transcript panel
+   *  stamps it from the catalog before posting so the composer's route chip can
+   *  dim when there's nothing to pick. Absent ⇒ unknown (chip stays active). */
+  routeSwitchable?: boolean
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.lastError — a short
+   *  human-readable string for the most recent automatic failure (currently
+   *  only stamped by the crash-detect sweep). */
+  lastError?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.crashedAt — ISO 8601
+   *  timestamp of the crash-detect sweep that flipped this row to
+   *  `endedReason:"crashed"`. */
+  crashedAt?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.restartPolicy — the
+   *  opt-in auto-restart policy (restart-scheduler PR-2). Absent for the
+   *  overwhelming majority of sessions (today's lazy-resume-only default). */
+  restartPolicy?: RestartPolicy
   label?: string
   /** Derived from the session's FIRST prompt — see the runtime's
    *  SessionDescriptor.title doc for the derivation + overwrite rules. Now
@@ -155,6 +312,19 @@ export interface SessionDescriptor {
    *  from `listSessions()` here too, unless `includeArchived` is passed).
    *  Set/cleared via `session_archive`/`session_unarchive`. */
   archived?: boolean
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.keepAlive — when `true`,
+   *  the idle-reaper never retires this session regardless of idle time.
+   *  Set at spawn time or toggled via `session_set_keepalive`. */
+  keepAlive?: boolean
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.pinned — a
+   *  server-persisted, list-visibility-only favorite flag toggled via
+   *  `session_set_pinned` / `POST /sessions/:id/pin`. Pinned sessions sort to
+   *  the top of the session list (CLI table, the webview's dedicated
+   *  "Pinned" group). Deliberately distinct from `keepAlive` (idle-reaper
+   *  exemption), the extension's client-side-only "watch" eye (toast
+   *  notifications, never persisted on the descriptor), and `watchers` (live
+   *  supervisor wait count) — pin has no operational side effects. */
+  pinned?: boolean
   pty?: boolean
   name?: string
   argv?: readonly string[]
@@ -182,6 +352,15 @@ export interface SessionDescriptor {
    *  picking it is a live switch or needs a restart. */
   mode?: string
   model?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.activeModel — the model
+   *  believed to be running right now, when it may differ from `model`
+   *  above (the requested/spawn-time value). Populated by a live switch
+   *  through this daemon, or by picking a switch acknowledgement out of an
+   *  adapter's own reply to a `/model` sent as an ordinary prompt — that
+   *  second source is REPORTED BY THE ADAPTER, NOT INDEPENDENTLY VERIFIED,
+   *  a display hint for the composer chip, never billing/cost truth. Absent
+   *  when never learned, or equal to `model` when nothing has diverged. */
+  activeModel?: string
   auth?: {
     mode: "subscription" | "api-key"
     fingerprint: string
@@ -211,12 +390,30 @@ export interface SessionDescriptor {
   awaitingPermission?: boolean
   turnsCompleted?: number
   busy?: boolean
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.promptQueue — prompts
+   *  that arrived mid-turn and were queued (FIFO, or front-inserted with
+   *  `force`) instead of rejected. Drains one at a time as turns end; the
+   *  transcript panel's queued-messages block reads straight off this. */
+  promptQueue?: Array<{ id: string; message: unknown; queuedAt: string; source?: string }>
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.queuedPrompts — cheap
+   *  badge count of items sitting in {@link promptQueue}, stamped at read
+   *  time. 0/absent ⇒ nothing waiting. */
+  queuedPrompts?: number
   blockedOn?: "subagent" | "command"
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.stalledSinceMs — epoch
+   *  ms of the last known adapter activity at the moment the turn-liveness
+   *  watchdog flagged this mid-turn session's stream silent past the
+   *  threshold. Absent unless currently flagged. */
+  stalledSinceMs?: number
   pendingToolCallId?: string
   /** Source label — the channel/harness this session was spawned from
    *  ("codex", "cowork", "vscode", …). Mirrors runtime SessionDescriptor.origin. */
   origin?: string
   parentSessionId?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.notifyParentOnCrash —
+   *  opt-in for the direct in-band `[child-crashed]` notice to `parentSessionId`
+   *  on this session's crash. Default false/absent. */
+  notifyParentOnCrash?: boolean
   depth?: number
   priorCommandSessionId?: string
   /** Id of the prior session this one continues from — set when this session
@@ -230,6 +427,127 @@ export interface SessionDescriptor {
    *  --resume", "resumed via ACP", or "" when no continuity was established.
    *  Only meaningful alongside `resumedFrom`. */
   resumeVia?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.contextContinuity — the
+   *  resolved context-continuity policy driving warning/compact/continue-fresh
+   *  decisions. */
+  contextContinuity?: ResolvedContextContinuityPolicy
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.contextContinuityHardStopped. */
+  contextContinuityHardStopped?: boolean
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.checkpointId — the most
+   *  recent context-continuity checkpoint. */
+  checkpointId?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.continuedFrom — source
+   *  session when this session is a fresh continuation. */
+  continuedFrom?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.continuedTo — target
+   *  session when this session was continued fresh. */
+  continuedTo?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.permissionHold — true when
+   *  the session was spawned in permission-hold mode. */
+  permissionHold?: boolean
+  browserAdapterId?: string
+  browserPort?: number
+  browserBaseUrl?: string
+  browserLocation?: "local" | "cloud"
+  remote?: boolean
+  sandboxId?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.sandboxProvider — the
+   *  sandbox provider slug (e.g. "e2b", "local"), when `remote` is true. */
+  sandboxProvider?: string
+  sandboxTeardown?: "kill" | "pause"
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.availableCommands — the
+   *  slash-commands/skills the active harness/adapter currently advertises
+   *  for THIS session (ACP's `available_commands_update`). REPLACES wholesale
+   *  on each update, not a merge; absent for a harness that doesn't advertise
+   *  any. Feeds the composer's `/`-popup (transcriptPanel.ts). */
+  availableCommands?: Array<{
+    name: string
+    description?: string
+    input?: { hint?: string } | null
+    _meta?: { scope?: string; path?: string; bareName?: string; qualifiedName?: string }
+  }>
+}
+
+/**
+ * Lightweight panel projection of SessionDescriptor for the VS Code Sessions
+ * webview. Excludes large resume / transcript / policy context that the panel
+ * never renders. See the runtime's SessionSummary doc for the exact exclusion
+ * list; this mirror is hand-maintained so the vscode package does not depend on
+ * @agentproto/runtime types at build time.
+ */
+export interface SessionSummary {
+  id: string
+  kind: SessionKind
+  workspaceSlug: string
+  command: string
+  pid: number | null
+  status: SessionStatus
+  startedAt: string
+  endedAt?: string
+  exitCode?: number
+  killedMidTurn?: boolean
+  lastOutputAt?: string
+  lastActivityAt?: string
+  processAlive?: boolean
+  /** Live supervisor waiter count (#session-visibility) — how many
+   *  `/sessions/:id/wait` long-polls / `session_monitor` subscriptions are
+   *  blocked on this session right now. Ephemeral, stamped at read time by the
+   *  daemon; 0/absent ⇒ nothing is watching. */
+  watchers?: number
+  /** Background tool starts counted in the session's last turn that are likely
+   *  still pending — the session parked itself with work outstanding. Ephemeral,
+   *  stamped at read time; 0/absent ⇒ none. Drives the webview's pulsing
+   *  bg-tasks dot after the cost tag. */
+  pendingBgTasks?: number
+  /** Adapter-reported turn-error marker — see
+   *  `SessionDescriptor.lastTurnErroredAt` above. Stamped at turn-end,
+   *  cleared on the next turn that completes without one. */
+  lastTurnErroredAt?: string
+  /** Busy-descendant count (#session-visibility, subtree rollup) — drives the
+   *  "delegating" state for an idle parent waiting on its busy subtree. */
+  childrenBusy?: number
+  label?: string
+  title?: string
+  renamedByUser?: boolean
+  activitySummary?: {
+    text: string
+    state: string
+    at: string
+  }
+  archived?: boolean
+  keepAlive?: boolean
+  /** Mirrors `@agentproto/runtime` SessionSummary.pinned — see the
+   *  SessionDescriptor field above for the full doc. */
+  pinned?: boolean
+  pty?: boolean
+  name?: string
+  argv?: readonly string[]
+  cwd?: string
+  worktreePath?: string
+  worktreeId?: string
+  adapterSlug?: string
+  mode?: string
+  model?: string
+  costUsd?: number
+  tokensIn?: number
+  tokensOut?: number
+  contextSize?: number
+  contextUsed?: number
+  usageSource?: "adapter" | "computed" | "no-pricing" | "none"
+  awaitingInput?: boolean
+  awaitingQuestion?: SessionAwaitingQuestion
+  awaitingPermission?: boolean
+  turnsCompleted?: number
+  busy?: boolean
+  blockedOn?: "subagent" | "command"
+  stalledSinceMs?: number
+  origin?: string
+  parentSessionId?: string
+  depth?: number
+  priorCommandSessionId?: string
+  continuedFrom?: string
+  continuedTo?: string
+  permissionHold?: boolean
   browserAdapterId?: string
   browserPort?: number
   browserBaseUrl?: string
@@ -307,6 +625,22 @@ export interface AdapterInfo {
    * `"config"`.
    */
   modelApply?: "config" | "command" | "arg"
+  /**
+   * How this adapter's spawn ROUTE relates to the chosen model (AIP-45
+   * launch-menu drill-down). `"free"` = the route is an independent choice
+   * and the adapter can route models through gateways. `"derived-from-model"`
+   * = the endpoint falls out of the model id's vendor prefix. Absent ⇒ a
+   * fixed single-provider adapter.
+   */
+  routeSelection?: "free" | "derived-from-model"
+  /**
+   * Billing endpoint this adapter's own auth bills (manifest-level
+   * `provider`, or an ACP spec's `provider` — e.g. "mistral" for
+   * mistral-vibe). Links the harness to that provider's wallets even when
+   * the adapter declares no model list. Absent when unstated (never
+   * guessed) or on an older daemon that predates this projection.
+   */
+  provider?: string
 }
 
 /** Mirrors @agentproto/runtime AdapterInstallResult — the outcome of an
@@ -317,6 +651,7 @@ export interface AdapterInstallResult {
   ok: boolean
   method:
     | "npm-global"
+    | "shell-hint"
     | "agentproto-install"
     | "already-installed"
     | "unsupported"
@@ -324,6 +659,81 @@ export interface AdapterInstallResult {
   command?: string
   exitCode?: number
   status?: "supported" | "available" | "ready" | "unresolvable"
+  /** Install failed only because a setup step needs an interactive
+   *  terminal the daemon doesn't have — offer a PTY running
+   *  `agentproto setup <slug>` instead of a bare error. */
+  needsInteractiveSetup?: boolean
+}
+
+/** An installed app's UI panel declaration (`defineApp({ ui })` →
+ *  app_install's `record.ui`). `tools` is the allowlist `app_tool_call`
+ *  enforces. */
+export interface InstalledAppUi {
+  path: string
+  title?: string
+  description?: string
+  tools?: string[]
+  csp?: {
+    connectDomains?: string[]
+    resourceDomains?: string[]
+  }
+}
+
+/** An agent or workflow an installed app bundles: its id plus the absolute
+ *  path of the emitted manifest (`AGENT.md` / `WORKFLOW.md`) on the daemon
+ *  host — what `@agentproto/app-kit`'s `emit` materializes. */
+export interface InstalledAppRef {
+  id: string
+  path: string
+}
+
+/** One entry in the daemon's installed-app registry (MCP-only:
+ *  mcpCall("app_list"), no HTTP route). Only the fields the extension
+ *  reads — the daemon record carries more (unvalidatedAgentTools, runs…). */
+export interface InstalledAppInfo {
+  appId: string
+  name?: string
+  description?: string
+  version?: string
+  /** Install directory on the daemon host; the root manifest lives at
+   *  `<dir>/.agentproto/APP.md`. Absent on daemons predating the field. */
+  dir?: string
+  agents?: InstalledAppRef[]
+  workflows?: InstalledAppRef[]
+  /** Catalog category (`app` | `team` | …). Not on the `app_list` record
+   *  itself — the Apps view stamps it from `app_catalog`
+   *  (views/appsTree.logic.ts `withCatalogCategories`). */
+  category?: string
+  ui?: InstalledAppUi
+}
+
+/** One entry of `app_catalog`: the curated `~/.agentproto/app-catalog.json`
+ *  merged with installed status. `category` is the file's classification;
+ *  installed apps the file doesn't list come back without one. */
+export interface AppCatalogEntry {
+  appId: string
+  name?: string
+  description?: string
+  dir: string
+  category?: string
+  installed: boolean
+  hasUi: boolean
+  /** `category: "builtin"` only — the MCP tool the daemon registered the
+   *  panel under, and the `resources/read` uri it serves the panel html at.
+   *  A builtin is compiled into the daemon (`packages/apps/src/<slug>`), so
+   *  it is ALWAYS `installed: true`, never appears in `app_list`, and is
+   *  served at `ui://<toolId>/view` — not the `ui://app_ui_<slug>/view` that
+   *  webview/appPanel.logic.ts derives for an installed app. Absent on
+   *  daemons predating the fields, and on non-builtin entries. */
+  toolId?: string
+  resourceUri?: string
+}
+
+/** `workflow_run_file` acknowledgement — the run was accepted and is
+ *  progressing in the background (poll with `workflow_status`). */
+export interface WorkflowRunStart {
+  runId: string
+  status: string
 }
 
 /** /health probe result. */
@@ -332,6 +742,12 @@ export interface DaemonHealth {
   workspace: string
   registered: readonly string[]
   uptimeMs?: number
+  /** Daemon build version. Absent on daemons predating the field. */
+  version?: string | null
+  /** Build identity of the running binary — `source` says workspace dist
+   *  vs published tarball, `sha`/`builtAt` pin the exact build (the
+   *  version string alone can't). Absent on daemons predating the field. */
+  build?: { sha?: string; builtAt?: string; source?: string } | null
   /** Effective `daemon.resumeSessionsOnBoot` knob — the live boot-behavior the
    *  daemon is actually running with (runtime http-server `handleHealth`).
    *  Absent on daemons predating the field. */
@@ -395,6 +811,112 @@ export interface CatalogProviderModel {
 export interface CatalogProviderModelsResponse {
   provider: string
   models: CatalogProviderModel[]
+}
+
+/**
+ * Result of the `llm_endpoint_status` MCP verb — the daemon-supervised
+ * `@agentproto/llm-endpoint` proxy sidecar's lifecycle state. `running`
+ * reflects a live child, `healthy` a live `GET /v1/models` probe;
+ * `never-started` is the fresh-boot state before it has ever been spawned.
+ * Mirrors runtime LlmEndpointRegistry.status().
+ */
+export interface LlmEndpointStatusResult {
+  running: boolean
+  pid: number | null
+  port: number | null
+  baseUrl: string | null
+  healthy: boolean
+  startedAt: string | null
+  status: "starting" | "running" | "stopped" | "error" | "never-started"
+  lastError?: string
+  injectedProviders?: string[]
+  linkedProviders?: string[]
+}
+
+/** One auth-profile eligible to be linked to an upstream, as reported by
+ *  `llm_endpoint_list_links`. Never carries a secret. */
+export interface EligibleLinkProfile {
+  id: string
+  label?: string
+  method: "api-key" | "oauth-bearer"
+  endpoint: string
+}
+
+/** One upstream's link state + its eligible profiles, from `llm_endpoint_list_links`. */
+export interface UpstreamLinkInfo {
+  provider: string
+  /** The DESIRED (persisted) link — a running proxy may lag until restarted. */
+  linkedProfile: string | null
+  eligible: EligibleLinkProfile[]
+}
+
+/** Result of `llm_endpoint_list_links` — the persisted link map plus, per
+ *  upstream, the profiles eligible to be linked. */
+export interface LlmEndpointLinksResult {
+  links: Record<string, string>
+  upstreams: UpstreamLinkInfo[]
+}
+
+/** Result of `llm_endpoint_set_upstream_link` — the link is persisted; a running
+ *  proxy must be restarted to apply it (`restartRequired`). Never hot-applied. */
+export interface LlmEndpointSetLinkResult {
+  ok: boolean
+  provider: string
+  profileId: string | null
+  cleared?: boolean
+  applied: boolean
+  restartRequired: boolean
+}
+
+/**
+ * Result of the proxy's `POST /v1/packs/reload` route — the hot-reload of
+ * packs.local.json. Reached directly over loopback (the proxy's HTTP surface
+ * isn't exposed through the daemon MCP verbs), mirroring the `/v1/models`
+ * discovery transport. `pack_ids` is the merged built-in + local id list;
+ * `local_pack_ids` is just the reloaded local packs.
+ */
+export interface LlmEndpointReloadPacksResult {
+  object: "packs.reload"
+  reloaded: boolean
+  source: string | null
+  local_pack_ids: string[]
+  pack_ids: string[]
+  count: number
+}
+
+/**
+ * Result of the proxy's `POST /v1/upstreams/:provider/test` route — the
+ * cheapest authenticated call to an upstream, reached directly over loopback
+ * (mirroring the reload transport). Never carries a secret. A verdict is
+ * `{ok, status, detail}`; an upstream with no cheap safe probe is
+ * `{ok:null, reason:"no-probe"}`.
+ */
+export type LlmEndpointUpstreamTestResult =
+  | { provider: string; ok: boolean; status: number; detail: string }
+  | { provider: string; ok: null; reason: string }
+
+/** Descriptor returned by `llm_endpoint_start` — the freshly spawned (or
+ *  reused) proxy child. `wasAlreadyRunning` is true on an idempotent no-op. */
+export interface LlmEndpointDescriptorResult {
+  pid: number | null
+  port: number
+  baseUrl: string
+  status: "starting" | "running" | "stopped" | "error"
+  startedAt: string
+  stoppedAt?: string
+  lastError?: string
+  injectedProviders?: string[]
+  wasAlreadyRunning?: boolean
+}
+
+/** Options for the `llm_endpoint_start` verb — all optional; the daemon
+ *  defaults the port (LLM_ENDPOINT_PORT, then 18090) and leaves the proxy
+ *  open when no access tokens are supplied. */
+export interface LlmEndpointStartOptions {
+  port?: number
+  accessTokens?: string
+  env?: Record<string, string>
+  binPath?: string
 }
 
 /** User-facing info of a provider preset, from `list_provider_presets`. */
@@ -591,6 +1113,14 @@ export interface SessionEventRecord {
   reason?: string
   error?: { message: string; code?: number; data?: unknown }
   options?: unknown
+  /** "permission-resolved" outcome for the "agent-prompt" (same toolCallId)
+   *  it answers — see @agentproto/runtime's transcript-writer.ts. */
+  decision?: "approve" | "deny" | "cancelled"
+  /** "permission-resolved" chosen option id, when the driver's offered
+   *  options included one. */
+  optionId?: string
+  /** "plan" event title — displayed in the plan widget header alongside the done/total count. */
+  title?: string
   entries?: Array<{ content: string; priority: string; status: string }>
   size?: number
   used?: number
@@ -602,6 +1132,10 @@ export interface SessionEventRecord {
   costUsd?: number
   contextSize?: number
   contextUsed?: number
+  /** usage_snapshot: which usage source produced the recap. user-prompt:
+   *  the turn's provenance — `agent:<sessionId>` when another session
+   *  injected it (agent_prompt from a supervisor, a parent's spawn
+   *  prompt); absent for a human operator. */
   source?: string
 }
 
@@ -678,11 +1212,29 @@ export interface WorkspacesConfig {
 //    removed with salvageDirty; `hold` = kept (open PR or a live session). ──
 export type WorktreeGcClass = "reclaim" | "salvage" | "hold"
 
+/** `dep-bump` is set on a `reclaim`-class entry/outcome promoted out of
+ *  `hold` by the dep-bump exemption — absent for an ordinary merged/fresh
+ *  reclaim. `orphan` is set on an entry/outcome the orphan scan found: a
+ *  directory physically present under the repo's worktree pool with no `git
+ *  worktree list` entry at all (see `WorktreeGcPlanEntryView.orphan`).
+ *  `prunable` is the mirror image: `git worktree list --porcelain` itself
+ *  already reported the entry dead (registration intact, working directory
+ *  gone) — see `WorktreeGcPlanEntryView.prunable`. */
+export type WorktreeGcReclaimReason = "dep-bump" | "orphan" | "prunable"
+
 export interface WorktreeGcPlanEntryView {
   path: string
   branch: string | null
   head: string
   class: WorktreeGcClass
+  reclaimReason?: WorktreeGcReclaimReason
+  /** `true` only for an orphan-scan entry — `tree`/`integration`/`liveness`
+   *  carry the literal `"orphan"` placeholder rather than a real axis read. */
+  orphan?: boolean
+  /** `true` only for a linked entry git itself already reported `prunable` —
+   *  `tree`/`integration`/`liveness` carry the literal `"prunable"`
+   *  placeholder rather than a real axis read. */
+  prunable?: boolean
   tree: string
   integration: { state: string; pr?: number }
   liveness: { state: string; sessionCount: number }
@@ -699,6 +1251,7 @@ export interface WorktreeGcOutcomeView {
     | "aborted-reclassified"
     | "aborted-vanished"
     | "failed"
+  reclaimReason?: WorktreeGcReclaimReason
   salvageDir?: string
   from?: WorktreeGcClass
   to?: WorktreeGcClass
@@ -708,3 +1261,175 @@ export interface WorktreeGcOutcomeView {
 export type WorktreeGcResult =
   | { mode: "plan"; plan: WorktreeGcPlanEntryView[] }
   | { mode: "apply"; outcomes: WorktreeGcOutcomeView[] }
+
+// ── Configuration Lab read-only mirrors ─────────────────────────────────────
+//    Non-secret shapes surfaced by the Agentproto Configuration Lab panel.
+
+/** A provider capability advertised by a harness (mirror of provider-kit
+ *  ProviderCapability, trimmed to what the Lab displays). */
+export interface HarnessProviderCapability {
+  id: string
+  name?: string
+  ready?: boolean
+  /** Billing endpoint this provider bills against (mirror of provider-kit
+   *  ProviderCapability.billingEndpoint). The daemon sends it on the wire;
+   *  the auth-model mind map reads it to key a harness→provider edge. Absent
+   *  ⇒ fall back to `id`. */
+  billingEndpoint?: string
+  /** Native wire protocol this provider speaks (mirror of provider-kit
+   *  ProviderCapability.apiMode). Drives native-vs-router classification. */
+  apiMode?: "anthropic" | "chat_completions"
+}
+
+/** Model discovery summary advertised by a harness (mirror of provider-kit
+ *  ModelDiscovery, trimmed). */
+export interface HarnessModelDiscovery {
+  defaultModel?: string
+  supported?: string[]
+}
+
+/** Application contract defaults/options advertised by a harness (mirror of
+ *  provider-kit ApplicationContract, trimmed). */
+export interface HarnessApplicationContract {
+  defaultOptions?: Record<string, unknown>
+  supportedOptions?: string[]
+}
+
+/** Non-secret harness capability snapshot, returned by MCP
+ *  `harness_capabilities`. */
+export interface HarnessCapabilities {
+  adapter: string
+  /** Whether capabilities came from live discovery or manifest fallback. */
+  source?: "discovered" | "manifest-fallback"
+  /** Auth store kinds this harness can read (e.g. "keychain", "env"). */
+  authStores?: string[]
+  /** Providers this harness can bill. */
+  providers?: HarnessProviderCapability[]
+  /** Model defaults / supported model ids. */
+  models?: HarnessModelDiscovery
+  /** Adapter-specific spawn options / defaults. */
+  application?: HarnessApplicationContract
+  /** Which OpenAI/Anthropic-compatible endpoint this harness can be re-pointed
+   *  at, and how (mirror of provider-kit EndpointCompat). Presence of
+   *  `anthropic` is the live signal that a harness speaks the Anthropic wire
+   *  and accepts a custom base_url — the key input to the mind map's
+   *  native-vs-via-router reach classification. The daemon sends it on the
+   *  wire; older client mirrors dropped it. */
+  endpointCompat?: {
+    openai?: { via: "env" | "config-block" | "per-spawn-option"; key: string }
+    anthropic?: { via: "env" | "config-block" | "per-spawn-option"; key: string }
+  }
+}
+
+/** Per-axis option list for the Configuration Lab UI. */
+export interface ConfigurationLabAxisOptions {
+  models: Array<{ id: string; provider?: string; mode?: string }>
+  routes: Array<{ value: string; label: string; runnable: boolean; curated: boolean; eligibleProfiles: string[]; fixed?: boolean; ref?: string }>
+  profiles: Array<{ value?: string; label: string; description?: string; addProfile?: boolean }>
+  postures: Array<{ value: string; label: string; enforcement: "enforced" | "advisory"; restartRequired: boolean }>
+  efforts: string[]
+}
+
+/** One field in the readable effective-config summary. */
+export interface ConfigurationLabEffectiveField {
+  key: string
+  /** Human-readable display value; undefined means unset. */
+  value?: string
+  /** Whether this value came from an explicit user selection, an adapter
+   *  default, or is unset. */
+  source: "explicit" | "default" | "unset"
+  /** Optional extra context (e.g. the resolved gateway, advisory label). */
+  detail?: string
+}
+
+/** A validation issue surfaced by the Lab. */
+export interface ConfigurationLabIssue {
+  severity: "error" | "warning" | "info"
+  axis?: "harness" | "model" | "route" | "profile" | "posture" | "effort" | "option"
+  message: string
+}
+
+/** The serializable snapshot passed from extension host to the Lab webview. */
+export interface ConfigurationLabSnapshot {
+  /** Current user selections. */
+  selection: {
+    adapter?: string
+    model?: string
+    route?: string
+    profile?: string
+    posture?: string
+    effort?: string
+    options?: Record<string, unknown>
+  }
+  /** All installed adapters, so the webview can render the harness dropdown. */
+  adapters: AdapterInfo[]
+  /** Harness layer (A). */
+  harness: {
+    slug: string
+    name?: string
+    version?: string
+    protocol?: string
+    modes?: Array<{ id: string; status?: string; status_note?: string }>
+    capabilities?: HarnessCapabilities
+  } | null
+  /** Configuration layer (B) — per-axis options. */
+  axes: ConfigurationLabAxisOptions
+  /** Resolved/effective launch configuration summary. */
+  effective: ConfigurationLabEffectiveField[]
+  /** Validation issues, if any. */
+  issues: ConfigurationLabIssue[]
+}
+
+/** Input the Lab sends when it wants a fresh snapshot for a new selection. */
+export interface ConfigurationLabSelectionInput {
+  adapter?: string
+  model?: string
+  route?: string
+  profile?: string
+  posture?: string
+  effort?: string
+  options?: Record<string, unknown>
+}
+
+/** Aggregate fetched from the daemon to produce a ConfigurationLabSnapshot. */
+export interface ConfigurationLabRawData {
+  adapters: AdapterInfo[]
+  capabilities: HarnessCapabilities[]
+  catalog: CatalogModelsResponse
+  profiles: AuthProfileSummary[]
+  presets: ProviderPresetEntry[]
+}
+
+// ── Activity projection & Task ledger — client-only shapes ──────────────
+//    ActivityRecord/ActivityListFilter/TaskRecord/TaskStatus/etc. are
+//    re-exported above straight off @agentproto/runtime's root export
+//    (activity-projection.ts / task-ledger.ts). Only what's genuinely
+//    DIFFERENT from the runtime's own shape lives here.
+
+/**
+ * Body for `patchTask` — the runtime's own `TaskUpdateInput` minus `taskId`,
+ * which this client passes as `patchTask`'s own parameter instead of folding
+ * it into the body. `rev` is the last-read optimistic-concurrency token; a
+ * stale one comes back as a {@link TaskPatchResult} conflict, never a thrown
+ * error.
+ */
+export type TaskPatchInput = Omit<TaskUpdateInput, "taskId">
+
+/**
+ * `PATCH /tasks/:id`'s response, modeled without flattening it into one
+ * shape: `verifying` marks the Tier-1 done path (the write was ACCEPTED but
+ * the status hasn't transitioned yet — a background verify gate is running
+ * and announces its outcome later via `task:changed`); `conflict` is a
+ * rev-CAS miss to rebase off `current`; the bare `error` shape is a clean
+ * refusal (bad status transition, wrong owner, …). None of these three are
+ * thrown — only a disabled route or a transport failure is.
+ *
+ * This is the HTTP route's own wire shape (`http-server.ts`'s `writeResult`
+ * flattens the ledger's internal `ok`-wrapped `TaskWriteResult` into exactly
+ * these three bodies), not the runtime's `TaskWriteResult` verbatim — hence
+ * hand-written rather than re-exported.
+ */
+export type TaskPatchResult =
+  | { task: TaskRecord; verifying?: boolean }
+  | { conflict: true; current: TaskRecord }
+  | { error: string }

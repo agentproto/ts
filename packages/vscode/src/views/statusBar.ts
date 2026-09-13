@@ -38,6 +38,12 @@ function buildTooltip(summary: LiveSummary): vscode.MarkdownString {
   } else {
     md.appendMarkdown(summary.live.map(s => `- ${s.label ?? s.command}`).join("\n"))
   }
+  // Machine-origin sessions (gate reviewers, …) are excluded from the counts
+  // above but must still be visible SOMEWHERE — this is that somewhere.
+  if (summary.machineLive.length > 0) {
+    md.appendMarkdown("\n\n_Automated (not counted above):_\n\n")
+    md.appendMarkdown(summary.machineLive.map(s => `- ${s.label ?? s.command}`).join("\n"))
+  }
   md.appendMarkdown("\n\nClick to check daemon health.")
   return md
 }

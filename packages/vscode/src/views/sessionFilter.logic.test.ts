@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest"
 
 import type { SessionDescriptor, WorkspacesConfig } from "../client/types.js"
+import { UNKNOWN_ORIGIN_SLUG } from "./sessionsGroups.logic.js"
 import {
   adapterIdentitiesIn,
   EMPTY_FILTER,
   filterSessions,
   filterSummary,
   isFilterActive,
+  originIdentitiesIn,
   type SessionFilterState,
 } from "./sessionFilter.logic.js"
 
@@ -39,6 +41,11 @@ describe("isFilterActive", () => {
     expect(isFilterActive({ ...EMPTY_FILTER, status: ["live"] })).toBe(true)
     expect(isFilterActive({ ...EMPTY_FILTER, workspaces: ["Agentik Studio"] })).toBe(true)
     expect(isFilterActive({ ...EMPTY_FILTER, adapters: ["claude-code"] })).toBe(true)
+    expect(isFilterActive({ ...EMPTY_FILTER, origin: ["gate"] })).toBe(true)
+  })
+  it("false when `origin` is absent entirely (state persisted before the field existed)", () => {
+    const legacyState = { status: [], workspaces: [], adapters: [], search: "" } as SessionFilterState
+    expect(isFilterActive(legacyState)).toBe(false)
   })
   it("true when search is non-blank, false when search is only whitespace", () => {
     expect(isFilterActive({ ...EMPTY_FILTER, search: "foo" })).toBe(true)
@@ -133,6 +140,46 @@ describe("filterSessions", () => {
     ).toEqual(["MATCH-ME"])
   })
 
+  it("search tokenizes on whitespace and ANDs tokens across different fields", () => {
+    const sessions = [
+      session({ id: "match", label: "gemini review", command: "claude-code --print" }),
+      session({ id: "only-gemini", label: "gemini task", command: "npm run build" }),
+      session({ id: "only-review", label: "review notes", command: "claude-code --print" }),
+    ]
+    const state: SessionFilterState = { ...EMPTY_FILTER, search: "gemini review" }
+    expect(filterSessions(sessions, state, config).map(s => s.id)).toEqual(["match"])
+  })
+
+  it("search token order is independent", () => {
+    const sessions = [session({ id: "s", label: "Sales Analysis", command: "npm run BUILD" })]
+    expect(
+      filterSessions(sessions, { ...EMPTY_FILTER, search: "build sales" }, config).map(s => s.id),
+    ).toEqual(["s"])
+    expect(
+      filterSessions(sessions, { ...EMPTY_FILTER, search: "sales build" }, config).map(s => s.id),
+    ).toEqual(["s"])
+  })
+
+  it("search excludes a session when any token fails to match", () => {
+    const sessions = [session({ id: "s", label: "Sales Analysis", command: "npm run BUILD" })]
+    expect(
+      filterSessions(sessions, { ...EMPTY_FILTER, search: "sales nope" }, config).map(s => s.id),
+    ).toEqual([])
+  })
+
+  it("search treats an empty or whitespace-only query as matching everything", () => {
+    const sessions = [session({ id: "a" }), session({ id: "b" })]
+    expect(filterSessions(sessions, { ...EMPTY_FILTER, search: "" }, config)).toEqual(sessions)
+    expect(filterSessions(sessions, { ...EMPTY_FILTER, search: "   " }, config)).toEqual(sessions)
+  })
+
+  it("search is case-insensitive across tokens", () => {
+    const sessions = [session({ id: "s", label: "Gemini Review" })]
+    expect(
+      filterSessions(sessions, { ...EMPTY_FILTER, search: "GEMINI review" }, config).map(s => s.id),
+    ).toEqual(["s"])
+  })
+
   it("combines predicates with AND", () => {
     const sessions = [
       session({ id: "match", status: "running", adapterSlug: "claude-code" }),
@@ -181,6 +228,91 @@ describe("filterSessions", () => {
     const state: SessionFilterState = { ...EMPTY_FILTER, search: "nope" }
     expect(filterSessions(sessions, state, config)).toEqual([])
   })
+
+  it("filters by origin, falling back to UNKNOWN_ORIGIN_SLUG for an originless session", () => {
+    const sessions = [
+      session({ id: "gate", origin: "gate" }),
+      session({ id: "human", origin: "claude-code" }),
+      session({ id: "none" }),
+    ]
+    expect(
+      filterSessions(sessions, { ...EMPTY_FILTER, origin: ["gate"] }, config).map(s => s.id),
+    ).toEqual(["gate"])
+    expect(
+      filterSessions(sessions, { ...EMPTY_FILTER, origin: [UNKNOWN_ORIGIN_SLUG] }, config).map(s => s.id),
+    ).toEqual(["none"])
+  })
+
+  it("treats a state object missing the `origin` key (pre-existing persisted state) as no origin filter", () => {
+    const sessions = [session({ id: "a", origin: "gate" })]
+    const legacyState = { status: [], workspaces: [], adapters: [], search: "" } as SessionFilterState
+    expect(filterSessions(sessions, legacyState, config)).toEqual(sessions)
+  })
+
+  describe("hideMachineSessions default (agentproto.hideMachineSessions)", () => {
+    const sessions = [
+      session({ id: "gate", origin: "gate" }),
+      session({ id: "human", origin: "claude-code" }),
+    ]
+
+    it("off (default option): a machine-origin session is not filtered out", () => {
+      expect(filterSessions(sessions, EMPTY_FILTER, config).map(s => s.id).sort()).toEqual([
+        "gate",
+        "human",
+      ])
+    })
+
+    it("on, no explicit origin filter: excludes machine-origin sessions", () => {
+      expect(
+        filterSessions(sessions, EMPTY_FILTER, config, { hideMachineSessions: true }).map(s => s.id),
+      ).toEqual(["human"])
+    })
+
+    it("on, but the operator explicitly asked for gate sessions: the explicit filter wins", () => {
+      const state: SessionFilterState = { ...EMPTY_FILTER, origin: ["gate"] }
+      expect(
+        filterSessions(sessions, state, config, { hideMachineSessions: true }).map(s => s.id),
+      ).toEqual(["gate"])
+    })
+
+    it("on, operator filtered to a human origin: machine sessions already excluded by that filter", () => {
+      const state: SessionFilterState = { ...EMPTY_FILTER, origin: ["claude-code"] }
+      expect(
+        filterSessions(sessions, state, config, { hideMachineSessions: true }).map(s => s.id),
+      ).toEqual(["human"])
+    })
+
+    it("on, every session is machine-origin and nothing else filters: returns empty, not the unfiltered list", () => {
+      const allGate = [session({ id: "g1", origin: "gate" }), session({ id: "g2", origin: "gate" })]
+      expect(filterSessions(allGate, EMPTY_FILTER, config, { hideMachineSessions: true })).toEqual([])
+    })
+
+    it("keeps a human ancestor of a machine-origin descendant's match irrelevant — parent-retention still applies to the default", () => {
+      const withChild = [
+        session({ id: "root", origin: "claude-code" }),
+        session({ id: "gate-child", origin: "gate", parentSessionId: "root" }),
+      ]
+      // The gate child itself is hidden by the default and has no matching
+      // descendant of its own, so only the (non-machine) root survives.
+      expect(
+        filterSessions(withChild, EMPTY_FILTER, config, { hideMachineSessions: true }).map(s => s.id),
+      ).toEqual(["root"])
+    })
+  })
+})
+
+describe("originIdentitiesIn", () => {
+  it("collects distinct origin ?? UNKNOWN_ORIGIN_SLUG values, sorted", () => {
+    const sessions = [
+      session({ origin: "vscode" }),
+      session({ id: "s2" }), // no origin
+      session({ id: "s3", origin: "gate" }),
+    ]
+    expect(originIdentitiesIn(sessions)).toEqual(["gate", UNKNOWN_ORIGIN_SLUG, "vscode"])
+  })
+  it("returns an empty array for an empty session list", () => {
+    expect(originIdentitiesIn([])).toEqual([])
+  })
 })
 
 describe("adapterIdentitiesIn", () => {
@@ -217,5 +349,12 @@ describe("filterSummary", () => {
   })
   it("ignores whitespace-only search", () => {
     expect(filterSummary({ ...EMPTY_FILTER, search: "   " })).toBe("")
+  })
+  it("summarizes the origin dimension", () => {
+    expect(filterSummary({ ...EMPTY_FILTER, origin: ["gate"] })).toBe("origin: gate")
+  })
+  it("omits origin when the state predates the field entirely", () => {
+    const legacyState = { status: [], workspaces: [], adapters: [], search: "" } as SessionFilterState
+    expect(filterSummary(legacyState)).toBe("")
   })
 })

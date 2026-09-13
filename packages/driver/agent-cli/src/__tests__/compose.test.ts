@@ -472,12 +472,12 @@ describe("composeSpawn model deny-list (AIP-45)", () => {
 })
 
 describe("composeSpawn models.apply:\"arg\" (AIP-45)", () => {
-  // A codex-shaped handle: the model is a CLI config override composed
-  // into bin_args, not an ACP session config — mirrors adapters/codex.
+  // This is the generic argv strategy retained for adapters that select a
+  // model before creating their ACP session. Codex now uses apply:"config".
   const argHandle = (): AgentCliHandle =>
     handle({
-      id: "codex",
-      bin_args: ["-y", "@zed-industries/codex-acp"],
+      id: "argv-model-adapter",
+      bin_args: ["-y", "@example/acp-bridge"],
       options: [
         {
           id: "model",
@@ -499,7 +499,7 @@ describe("composeSpawn models.apply:\"arg\" (AIP-45)", () => {
     })
     expect(composed.binArgs).toEqual([
       "-y",
-      "@zed-industries/codex-acp",
+      "@example/acp-bridge",
       "-c",
       'model="gpt-5-codex"',
     ])
@@ -507,7 +507,7 @@ describe("composeSpawn models.apply:\"arg\" (AIP-45)", () => {
 
   it("does not touch bin_args when no model is requested", () => {
     const composed = composeSpawn(argHandle(), {})
-    expect(composed.binArgs).toEqual(["-y", "@zed-industries/codex-acp"])
+    expect(composed.binArgs).toEqual(["-y", "@example/acp-bridge"])
   })
 
   it("skips the model argv when told the current auth mode must preserve the CLI default", () => {
@@ -518,13 +518,33 @@ describe("composeSpawn models.apply:\"arg\" (AIP-45)", () => {
       },
       { skipModelArg: true },
     )
-    expect(composed.binArgs).toEqual(["-y", "@zed-industries/codex-acp"])
+    expect(composed.binArgs).toEqual(["-y", "@example/acp-bridge"])
   })
 
   it("still enforces the option's own enum before composing", () => {
     expect(() =>
       composeSpawn(argHandle(), { options: { model: "gpt-9-nonexistent" } })
     ).toThrow(RuntimeConfigError)
+  })
+})
+
+describe("composeSpawn models.apply:\"config\"", () => {
+  it("leaves a requested model out of argv for the ACP session-config layer", () => {
+    const configHandle = handle({
+      id: "codex",
+      bin_args: ["-y", "@agentclientprotocol/codex-acp"],
+      options: [{ id: "model", type: "string" as const }],
+      models: { apply: "config" },
+    })
+
+    const composed = composeSpawn(configHandle, {
+      options: { model: "gpt-5-codex" },
+    })
+
+    expect(composed.binArgs).toEqual([
+      "-y",
+      "@agentclientprotocol/codex-acp",
+    ])
   })
 })
 

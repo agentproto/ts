@@ -6,10 +6,12 @@
  * or setup; "ready" means the provider's API-key env var is set where the daemon
  * runs (i.e. where agents spawn), "available" means it isn't (set it to use).
  *
- * Discovers the daemon via ~/.agentproto/runtime.json (same pattern as
- * `agentproto tunnel list`) and hits GET /presets. The daemon answers from its
- * own process.env, so the status reflects what a spawned agent would actually
- * see — not the CLI caller's shell.
+ * Discovers the daemon via the same layered `discoverDaemon()` fallback as
+ * `agentproto tunnel list` (env override > live home runtime.json > central
+ * registry > workspace runtime.json; dead-pid descriptors are skipped) and
+ * hits GET /presets. The daemon answers from its own process.env, so the
+ * status reflects what a spawned agent would actually see — not the CLI
+ * caller's shell.
  */
 import { parseArgs } from "node:util"
 import type { AdapterEntry } from "@agentproto/provider-kit"

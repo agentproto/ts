@@ -54,9 +54,10 @@ describe("RESUME_STRATEGIES", () => {
 describe("hasResumeStrategy", () => {
   it("true for adapters with declared hooks", () => {
     expect(hasResumeStrategy("claude-code")).toBe(true)
+    expect(hasResumeStrategy("hermes")).toBe(true)
   })
   it("false for unknown / missing adapters", () => {
-    expect(hasResumeStrategy("hermes")).toBe(false)
+    expect(hasResumeStrategy("codex")).toBe(false)
     expect(hasResumeStrategy(undefined)).toBe(false)
     expect(hasResumeStrategy("")).toBe(false)
   })
@@ -218,15 +219,67 @@ describe("claude-code fsProbe", () => {
  * them (pty-native beats pty-plain beats agent beats unsupported).
  */
 describe("decideRestartStrategy", () => {
-  it("picks pty-native when the adapter has a captured resume id + spawnArgs", () => {
+  it("picks pty-native for a PTY-origin session with a captured resume id + spawnArgs + nativeTerminalResume", () => {
     const strategy = decideRestartStrategy({
       adapterSlug: "claude-code",
       resumeMetadata: { claudeResumeId: "abc-123" },
+      nativeTerminalResume: true,
+      pty: true,
     })
     expect(strategy).toEqual({
       kind: "pty-native",
       argv: ["claude", "--resume", "abc-123"],
     })
+  })
+
+  // ── origin gate (root-cause fix: "restart starts a terminal but it
+  // doesn't work") ──────────────────────────────────────────────────
+  //
+  // An agent-cli/ACP-origin session's isolated CLAUDE_CONFIG_DIR is
+  // populated ONLY by the headless ACP entrypoint, which never runs
+  // claude-code's interactive first-run wizard (theme picker, "detected a
+  // custom API key" prompt) — so a DEFAULT pty-native restart of such a
+  // session silently drops it onto that wizard with no one attached to
+  // answer it. `nativeTerminalResume` is a capability declaration, not
+  // license to mode-switch a headless session into an unattended terminal.
+
+  it("an ACP-origin session (prev.pty not true) does NOT get pty-native by default, even with nativeTerminalResume + a captured id — resumes via agent/ACP instead", () => {
+    const strategy = decideRestartStrategy({
+      adapterSlug: "claude-code",
+      resumeMetadata: { claudeResumeId: "abc-123" },
+      nativeTerminalResume: true,
+      adapterSessionId: "acp-session-1",
+    })
+    expect(strategy).toEqual({ kind: "agent", resumeSessionId: "acp-session-1" })
+  })
+
+  it("preferNativeTerminal:true opts an ACP-origin session INTO pty-native", () => {
+    const strategy = decideRestartStrategy(
+      {
+        adapterSlug: "claude-code",
+        resumeMetadata: { claudeResumeId: "abc-123" },
+        nativeTerminalResume: true,
+        adapterSessionId: "acp-session-1",
+      },
+      { preferNativeTerminal: true },
+    )
+    expect(strategy).toEqual({
+      kind: "pty-native",
+      argv: ["claude", "--resume", "abc-123"],
+    })
+  })
+
+  it("preferNativeTerminal is irrelevant (and unnecessary) for a genuinely PTY-origin session", () => {
+    const strategy = decideRestartStrategy(
+      {
+        adapterSlug: "claude-code",
+        resumeMetadata: { claudeResumeId: "abc-123" },
+        nativeTerminalResume: true,
+        pty: true,
+      },
+      { preferNativeTerminal: false },
+    )
+    expect(strategy.kind).toBe("pty-native")
   })
 
   it("falls back to pty-plain for a real PTY session with no adapter match", () => {
@@ -241,6 +294,7 @@ describe("decideRestartStrategy", () => {
       adapterSlug: "claude-code",
       resumeMetadata: { claudeResumeId: "abc-123" },
       pty: true,
+      nativeTerminalResume: true,
     })
     expect(strategy.kind).toBe("pty-native")
   })
@@ -252,11 +306,14 @@ describe("decideRestartStrategy", () => {
     const strategy = decideRestartStrategy({
       adapterSlug: "claude-code",
       pty: true,
+      nativeTerminalResume: true,
     })
     expect(strategy).toEqual({ kind: "pty-plain" })
   })
 
-  it("picks agent (ACP resume) for an agent-cli session with no native strategy", () => {
+  it("picks agent (ACP resume) for an agent-cli session with no native terminal capability", () => {
+    // Hermes now has a store entry, but without nativeTerminalResume the
+    // daemon must not restart it as a raw PTY — ACP/agent is the only path.
     const strategy = decideRestartStrategy({
       adapterSlug: "hermes",
       adapterSessionId: "chat_42",
@@ -264,9 +321,78 @@ describe("decideRestartStrategy", () => {
     expect(strategy).toEqual({ kind: "agent", resumeSessionId: "chat_42" })
   })
 
+  it("picks pty-native for a PTY-origin hermes session when nativeTerminalResume is set and a resume id is captured", () => {
+    const strategy = decideRestartStrategy({
+      adapterSlug: "hermes",
+      resumeMetadata: { hermesResumeId: "h-1" },
+      nativeTerminalResume: true,
+      pty: true,
+    })
+    expect(strategy).toEqual({
+      kind: "pty-native",
+      argv: ["hermes", "--resume", "h-1", "--tui"],
+    })
+  })
+
   it("agent strategy omits resumeSessionId when the adapter never persisted one", () => {
     const strategy = decideRestartStrategy({ adapterSlug: "hermes" })
     expect(strategy).toEqual({ kind: "agent" })
+  })
+
+  // ── resume-honesty fix: capability-based downgrade ──────────────────
+  //
+  // An adapter that declares `resumable: false` (hermes, mastra-agent, …)
+  // cannot rehydrate a prior conversation from `adapterSessionId` at all —
+  // this was the silent-blank-session bug (`describeResumePath` used to
+  // report "resumed via ACP" regardless of capability). The decision tree
+  // must never hand back a phantom `resumeSessionId` for one of these, and
+  // must flag the downgrade so callers stamp `resumeFallback: true`.
+
+  it("resumable:false never emits resumeSessionId, even with a captured adapterSessionId — flags resumeFallback instead", () => {
+    const strategy = decideRestartStrategy({
+      adapterSlug: "hermes",
+      adapterSessionId: "chat_42",
+      resumable: false,
+    })
+    expect(strategy).toEqual({ kind: "agent", resumeFallback: true })
+  })
+
+  it("resumable:false with no captured id at all is just the ordinary empty case (nothing to downgrade)", () => {
+    const strategy = decideRestartStrategy({
+      adapterSlug: "hermes",
+      resumable: false,
+    })
+    expect(strategy).toEqual({ kind: "agent" })
+  })
+
+  it("resumable:true (or unknown) is unaffected — unchanged behaviour", () => {
+    expect(
+      decideRestartStrategy({
+        adapterSlug: "hermes",
+        adapterSessionId: "chat_42",
+        resumable: true,
+      }),
+    ).toEqual({ kind: "agent", resumeSessionId: "chat_42" })
+    expect(
+      decideRestartStrategy({
+        adapterSlug: "hermes",
+        adapterSessionId: "chat_42",
+      }),
+    ).toEqual({ kind: "agent", resumeSessionId: "chat_42" })
+  })
+
+  it("claude-code's pty-native happy path is unaffected by resumable:false (nativeTerminalResume governs pty-native, not resumable)", () => {
+    const strategy = decideRestartStrategy({
+      adapterSlug: "claude-code",
+      resumeMetadata: { claudeResumeId: "abc-123" },
+      resumable: false,
+      nativeTerminalResume: true,
+      pty: true,
+    })
+    expect(strategy).toEqual({
+      kind: "pty-native",
+      argv: ["claude", "--resume", "abc-123"],
+    })
   })
 
   it("returns unsupported for a generic command session", () => {
@@ -279,13 +405,36 @@ describe("decideRestartStrategy", () => {
 })
 
 describe("describeResumePath", () => {
-  it("describes a captured native resume id", () => {
+  it("describes a captured native resume id (PTY-origin session)", () => {
     expect(
       describeResumePath({
         adapterSlug: "claude-code",
         resumeMetadata: { claudeResumeId: "abc-123" },
+        pty: true,
       }),
     ).toBe("resumed via claude --resume")
+  })
+
+  it("describes a captured native resume id via the preferNativeTerminal opt-in (ACP-origin session)", () => {
+    expect(
+      describeResumePath(
+        {
+          adapterSlug: "claude-code",
+          resumeMetadata: { claudeResumeId: "abc-123" },
+        },
+        { preferNativeTerminal: true },
+      ),
+    ).toBe("resumed via claude --resume")
+  })
+
+  it("an ACP-origin session with a captured native id but NO opt-in describes ACP resume, not the native label (origin gate)", () => {
+    expect(
+      describeResumePath({
+        adapterSlug: "claude-code",
+        resumeMetadata: { claudeResumeId: "abc-123" },
+        adapterSessionId: "acp-session-1",
+      }),
+    ).toBe("resumed via ACP")
   })
 
   it("describes an ACP-level resume", () => {
@@ -297,6 +446,39 @@ describe("describeResumePath", () => {
   it("returns empty string when nothing was resumed", () => {
     expect(describeResumePath({})).toBe("")
     expect(describeResumePath({ adapterSlug: "hermes" })).toBe("")
+  })
+
+  // ── resume-honesty fix ────────────────────────────────────────────
+  it("never claims 'resumed via ACP' for a resumable:false adapter — honest degraded label instead", () => {
+    expect(
+      describeResumePath({
+        adapterSlug: "hermes",
+        adapterSessionId: "chat_42",
+        resumable: false,
+      }),
+    ).toBe("fresh — resume not supported by hermes")
+  })
+
+  it("claude-code (resumable:true) keeps saying 'resumed via ACP' when it takes the ACP branch", () => {
+    // claude-code normally resolves pty-native (see the describe block
+    // above) — this pins the ACP branch specifically stays truthful when
+    // resumable is explicitly true, unaffected by the honesty gate.
+    expect(
+      describeResumePath({
+        adapterSlug: "claude-code",
+        adapterSessionId: "acp-abc",
+        resumable: true,
+      }),
+    ).toBe("resumed via ACP")
+  })
+
+  it("resumable:true or unknown for a no-native-strategy adapter is unaffected — still 'resumed via ACP'", () => {
+    expect(
+      describeResumePath({ adapterSlug: "hermes", adapterSessionId: "chat_42", resumable: true }),
+    ).toBe("resumed via ACP")
+    expect(
+      describeResumePath({ adapterSlug: "hermes", adapterSessionId: "chat_42" }),
+    ).toBe("resumed via ACP")
   })
 })
 
@@ -395,6 +577,31 @@ describe("augmentWithFsResume", () => {
     expect(result.resumeMetadata).toEqual({ claudeResumeId: uuid })
   })
 
+  it("backfills adapterSessionId from fsProbe when it was never captured", async () => {
+    const cwd = "/my/proj"
+    const { sessionsDir } = setupFakeHome(cwd)
+    const uuid = "ffffffff-0000-0000-0000-000000000099"
+    writeFileSync(join(sessionsDir, `${uuid}.jsonl`), "")
+    const prev: FsProbeCandidate = { adapterSlug: "claude-code", cwd, startedAt: "1970-01-01T00:00:00Z" }
+    const result = await augmentWithFsResume(prev)
+    expect(result.adapterSessionId).toBe(uuid)
+  })
+
+  it("does not overwrite an existing adapterSessionId with the fsProbe result", async () => {
+    const cwd = "/my/proj"
+    const { sessionsDir } = setupFakeHome(cwd)
+    const own = "aaaaaaaa-0000-0000-0000-000000000001"
+    writeFileSync(join(sessionsDir, `${own}.jsonl`), "")
+    const prev: FsProbeCandidate = {
+      adapterSlug: "claude-code",
+      cwd,
+      startedAt: "1970-01-01T00:00:00Z",
+      adapterSessionId: own,
+    }
+    const result = await augmentWithFsResume(prev)
+    expect(result.adapterSessionId).toBe(own)
+  })
+
   it("returns the same object when the probe finds nothing eligible", async () => {
     const cwd = "/my/proj"
     setupFakeHome(cwd)
@@ -460,6 +667,110 @@ describe("augmentWithFsResume", () => {
     }
     // No claudeResumeId attached → decideRestartStrategy takes the `agent`
     // branch and resumes at the ACP level via the real adapterSessionId.
+    await expect(augmentWithFsResume(prev)).resolves.toBe(prev)
+  })
+})
+
+/**
+ * Config-dir isolation (#824): a daemon-spawned claude-code session runs
+ * with its own CLAUDE_CONFIG_DIR, so its transcript lives under
+ * `<adapterConfigDir>/projects/<slug>/` — NOT `~/.claude/projects/<slug>/`.
+ * The fs probe must look in the isolated dir when the descriptor carries
+ * `adapterConfigDir`, and keep probing ~/.claude when it doesn't (native
+ * PTY / pre-#824 rows). This was the 100%-broken-native-resume bug: the
+ * probe never found the isolated transcript, `claudeResumeId` never got
+ * populated, and every daemon restart fell back to the truncated digest.
+ */
+describe("augmentWithFsResume with an isolated adapterConfigDir", () => {
+  let fakeHome: string
+  let originalHome: string | undefined
+
+  afterEach(() => {
+    if (fakeHome) {
+      rmSync(fakeHome, { recursive: true, force: true })
+    }
+    if (originalHome === undefined) {
+      delete process.env.HOME
+    } else {
+      process.env.HOME = originalHome
+    }
+  })
+
+  /** Fake HOME + an isolated config dir shaped like the real
+   *  ~/.agentproto/adapter-config/<sess>/ tree. Both project dirs exist;
+   *  each test chooses where to write the transcript. */
+  function setupIsolated(cwd: string): {
+    configDir: string
+    isolatedSessionsDir: string
+    globalSessionsDir: string
+  } {
+    originalHome = process.env.HOME
+    fakeHome = mkdtempSync(join(tmpdir(), "resume-strategies-configdir-"))
+    process.env.HOME = fakeHome
+    const encoded = cwd.replace(/\//g, "-")
+    const configDir = join(fakeHome, ".agentproto", "adapter-config", "sess_test")
+    const isolatedSessionsDir = join(configDir, "projects", encoded)
+    const globalSessionsDir = join(fakeHome, ".claude", "projects", encoded)
+    mkdirSync(isolatedSessionsDir, { recursive: true })
+    mkdirSync(globalSessionsDir, { recursive: true })
+    return { configDir, isolatedSessionsDir, globalSessionsDir }
+  }
+
+  it("fsProbe(…, configDir) exact-binds a transcript that exists ONLY in the isolated dir", async () => {
+    const cwd = "/my/proj"
+    const { configDir, isolatedSessionsDir } = setupIsolated(cwd)
+    const own = "aaaaaaaa-0000-0000-0000-000000000001"
+    writeFileSync(join(isolatedSessionsDir, `${own}.jsonl`), "")
+    const probe = RESUME_STRATEGIES["claude-code"]!.fsProbe!
+    // Without the config dir the probe searches ~/.claude and misses —
+    // the exact regression this suite pins.
+    await expect(probe(cwd, "1970-01-01T00:00:00Z", own)).resolves.toBeNull()
+    await expect(probe(cwd, "1970-01-01T00:00:00Z", own, configDir)).resolves.toBe(own)
+  })
+
+  it("attaches claudeResumeId from the isolated dir when the descriptor carries adapterConfigDir", async () => {
+    const cwd = "/my/proj"
+    const { configDir, isolatedSessionsDir } = setupIsolated(cwd)
+    const own = "bbbbbbbb-0000-0000-0000-000000000002"
+    writeFileSync(join(isolatedSessionsDir, `${own}.jsonl`), "")
+    const prev: FsProbeCandidate = {
+      adapterSlug: "claude-code",
+      cwd,
+      startedAt: "1970-01-01T00:00:00Z",
+      adapterSessionId: own,
+      adapterConfigDir: configDir,
+    }
+    const result = await augmentWithFsResume(prev)
+    expect(result.resumeMetadata).toEqual({ claudeResumeId: own })
+  })
+
+  it("without adapterConfigDir the probe keeps finding legacy transcripts under ~/.claude", async () => {
+    const cwd = "/my/proj"
+    const { globalSessionsDir } = setupIsolated(cwd)
+    const own = "cccccccc-0000-0000-0000-000000000003"
+    writeFileSync(join(globalSessionsDir, `${own}.jsonl`), "")
+    const prev: FsProbeCandidate = {
+      adapterSlug: "claude-code",
+      cwd,
+      startedAt: "1970-01-01T00:00:00Z",
+      adapterSessionId: own,
+    }
+    const result = await augmentWithFsResume(prev)
+    expect(result.resumeMetadata).toEqual({ claudeResumeId: own })
+  })
+
+  it("an isolated session's probe never falls back to a ~/.claude sibling (cross-session safety)", async () => {
+    const cwd = "/my/proj"
+    const { configDir, globalSessionsDir } = setupIsolated(cwd)
+    // A sibling conversation in the GLOBAL store shares the cwd — it must
+    // never be picked up for a config-dir-isolated session.
+    writeFileSync(join(globalSessionsDir, "dddddddd-0000-0000-0000-000000000004.jsonl"), "")
+    const prev: FsProbeCandidate = {
+      adapterSlug: "claude-code",
+      cwd,
+      startedAt: "1970-01-01T00:00:00Z",
+      adapterConfigDir: configDir,
+    }
     await expect(augmentWithFsResume(prev)).resolves.toBe(prev)
   })
 })

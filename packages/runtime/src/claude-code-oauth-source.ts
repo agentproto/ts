@@ -41,14 +41,25 @@ export async function resolveClaudeCodeOauthToken(id: string): Promise<string> {
  * silently fall back to api-key billing under a "subscription" label. `recipeId`
  * is the provision-recipe id (e.g. `"codex"` → `~/.codex/auth.json`);
  * `adapterSlug` only shapes the actionable error message.
+ *
+ * `methodId` selects among the recipe's methods for a MULTI-SURFACE adapter
+ * (mastracode/opencode: `"anthropic-oauth"` vs `"openai-oauth"`, by
+ * convention `<provider>-oauth`) — omitted, it falls back to the recipe's
+ * default (first) method, unchanged for every single-surface adapter
+ * (codex, gemini, pi). A caller resolving a specific provider's surface
+ * MUST pass the matching methodId: a recipe missing that method throws
+ * (via `resolveRecipeMethod`), which this function turns into the same
+ * loud `SubscriptionSourceError` as an unresolved source, never a silent
+ * fallback to the wrong provider's login.
  */
 export async function verifyLocalLoginPresent(
   recipeId: string,
   adapterSlug: string,
+  methodId?: string,
 ): Promise<void> {
   let token: string
   try {
-    const { method } = resolveRecipeMethod(recipeId)
+    const { method } = resolveRecipeMethod(recipeId, methodId)
     token = (await resolveSourceSpec(method.source)).trim()
   } catch (err) {
     throw new SubscriptionSourceError(

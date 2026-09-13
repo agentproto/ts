@@ -13,11 +13,17 @@
  *
  * Backed straight by the static catalog's `getModelsByProvider`
  * (`@agentproto/model-catalog`, `registry/index.ts`) — a pure query over the
- * kind-organized catalogs, so NO adapters, NO profiles, NO host wiring. The
- * generated OpenRouter route table is folded into the LLM result upstream
- * (`OPENROUTER_ROUTES` is spread into `LLM_PRICING_CATALOG`, `llm/catalog.ts`),
- * so an `openrouter` query returns the full, large list — the picker
- * paginates client-side. NEVER log the rows: OpenRouter alone is thousands.
+ * kind-organized catalogs, so NO adapters, NO profiles, NO host wiring.
+ * `getModelsByProvider` is itself router-aware: OpenRouter's route table is
+ * spread into `LLM_PRICING_CATALOG` upstream (`llm/catalog.ts`), so an
+ * `openrouter` query returns that full, large list with bare ids; Requesty
+ * and HuggingFace are NOT spread into that catalog — spreading a second
+ * router's bare-id pricing there would repoint direct-vendor ids at router
+ * pricing (`route-identity/index.ts`) — so `getModelsByProvider` instead
+ * folds their generated route tables in directly, emitting `vendor/
+ * product@route` ids. All three routers enumerate through the same path;
+ * the picker paginates client-side. NEVER log the rows: OpenRouter alone is
+ * thousands.
  */
 
 import {
@@ -59,6 +65,11 @@ export interface CatalogProviderModel {
   /** Per-1M-token pricing for LLM models; `null` for the media kinds, whose
    *  pricing is per-image/second/character rather than per token. */
   pricing: CatalogProviderPricing | null
+  /** ISO date (`YYYY-MM-DD`) this model first appeared in the catalog, when
+   *  known — see `LLMPricing.addedAt` (`model-catalog/src/llm/catalog.ts`)
+   *  for the convention. `null` for media kinds and for LLM entries the sync
+   *  never stamped (hand-maintained rows). Lets a picker show a "new" badge. */
+  addedAt: string | null
 }
 
 export interface CatalogProviderModelsResponse {
@@ -88,13 +99,21 @@ function labelOf(model: ResolvedModel): string {
  *  provider (which IS the queried provider on this per-provider query) is the
  *  meaningful value; the media kinds are statically pinned to their adapter. */
 function routeOf(model: ResolvedModel): string | null {
-  if (model.kind === "llm") return model.pricing.provider ?? null
+  // `model.provider` (not `model.pricing?.provider`) so a known-but-not-
+  // yet-priced id (pricing undefined — see ResolvedModel's doc comment)
+  // still reports its provider, derived from CONTEXT_WINDOWS by `getModel`.
+  if (model.kind === "llm") return model.provider ?? null
   return getStaticModelProvider(model) ?? null
 }
 
 function pricingOf(model: ResolvedModel): CatalogProviderPricing | null {
-  if (model.kind !== "llm") return null
+  if (model.kind !== "llm" || !model.pricing) return null
   return { inPer1M: model.pricing.inputPer1M, outPer1M: model.pricing.outputPer1M }
+}
+
+function addedAtOf(model: ResolvedModel): string | null {
+  if (model.kind !== "llm" || !model.pricing) return null
+  return model.pricing.addedAt ?? null
 }
 
 /**
@@ -115,6 +134,7 @@ export function buildCatalogProviderModels(
     label: labelOf(m),
     route: routeOf(m),
     pricing: pricingOf(m),
+    addedAt: addedAtOf(m),
   }))
   return { provider, models }
 }

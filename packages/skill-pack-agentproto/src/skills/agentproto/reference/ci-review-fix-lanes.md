@@ -4,13 +4,12 @@ How the `agentproto/ts` repo makes a **sandboxed agent** review PRs, apply
 review fixes, and open PRs from an issue/request — all config-driven, one
 composable block, billing our **subscription**. This is the dev-SOP for
 building and extending those lanes. Everything below is grounded in
-`.github/`.
+`projects/agentproto/ts/.github/`.
 
 > **Scope.** These are GitHub-Actions CI lanes that drive an agent over the
 > agentproto daemon's MCP. Do NOT confuse with agentproto's in-daemon
-> **workflow-engine** (`workflow_start` / `workflow_run_file` — `workflowRunner`) —
-> different thing. The word "workflow" here = an agentflow lane defined by a
-> `WORKFLOW.md`.
+> **workflow-engine** (`workflow_run_file` / `RoutineRunner`) — different thing.
+> The word "workflow" here = an agentflow lane defined by a `WORKFLOW.md`.
 
 ---
 
@@ -23,7 +22,6 @@ building and extending those lanes. Everything below is grounded in
 .github/agentproto-workflows/<lane>/  ← LANE: WORKFLOW.md (manifest) + entry.mjs (prompt builder)
       │   pr-review/      verb: review
       │   agent-verb/     verbs: pr, fix (+ implement alias)
-      │   docs-audit/     doc-drift audit; also host-runnable via workflow_run_file
       │   lib/sandbox-agent.mjs   ← the command-AGNOSTIC block builders (shared)
       ▼
 .github/actions/agentproto-run/       ← RUNNER: daemon boot + driver + auth env + observability
@@ -98,19 +96,6 @@ be overridden per verb, not just `skills`/`fixDelivery`.
 | `review` | `pr-review/entry.mjs` | read diff → POST a structured review → write changeset | posts a review (+ pushes changeset to PR head) |
 | `fix` | `agent-verb/entry.mjs` | apply the latest review's CHANGES_REQUESTED | `fixDelivery`: `commit` (push to PR branch) or `pr` (`bot/fix-<n>` PR) |
 | `pr` (`implement` alias) | `agent-verb/entry.mjs` | implement a free-text request or an issue end-to-end | always opens a fresh PR (`bot/request-*` / `bot/issue-<n>`) |
-| `docs-audit` | `docs-audit/entry.mjs` (2 steps: `audit` → `deliver` via `sessionRef`) | audit docs against a shipped surface → report drift | per-run **`delivery`** input: `review` (report only) / `commit` / `pr` — NOT an `agentic-review.json` key |
-
-**`docs-audit` is the odd one out — read it before copying the pattern.** Unlike
-the CI-only lanes above, it's designed to **also run locally** via
-`workflow_run_file` (omit `reviewConfig` ⇒ host spawn, `claude-code`, the
-daemon's subscription billing), so it bridges the "lane" and "in-daemon
-workflow-engine" worlds the Scope note separates. Its delivery is a per-run
-**input** (`delivery: review|commit|pr`), deliberately not an
-`agentic-review.json`/`fixDelivery` key, so the lane needs no merge-machinery
-edit to be useful. And it is **two-step**: a single "report THEN deliver" prompt
-is unreliable (the model treats the report as terminal and stops), so `deliver`
-is a separate step that continues the same session via `sessionRef` — the
-`review-fix-demo` shape. Copy THAT when a lane both reports and acts.
 
 **`fixDelivery`** is THE knob for "commit vs open-a-PR", resolved
 `commands.<verb>.fixDelivery → global → default`. `entry.mjs:47` (`fixDeliveryOf`)

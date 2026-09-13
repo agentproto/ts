@@ -3,7 +3,7 @@ import type { WorktreeAgentInput } from "../workflow.js"
 
 export const USAGE = `usage: worktree-agent run --repo <abs repo root> --slug <id> --task "<prompt>" --gate "<check cmd>"
   [--base <ref>] [--adapter <slug>] [--deps-cmd "<cmd>"] [--copy-glob <glob>]...
-  [--link <path>]... [--no-cleanup] [--yes]
+  [--link <path>]... [--write-file <json>]... [--no-cleanup] [--yes]
 
   --repo        Absolute (or cwd-relative) path to the git repository root.
   --slug        Worktree/branch identifier, e.g. 'fix-flaky-test'.
@@ -15,6 +15,8 @@ export const USAGE = `usage: worktree-agent run --repo <abs repo root> --slug <i
   --copy-glob   Gitignored glob to copy into the worktree (repeatable).
   --link        Gitignored dir/file to symlink from the host repo into the worktree
                 before deps (node_modules, sibling workspace repos); repeatable.
+  --write-file  JSON {"path","content","mode"?} written into the worktree before
+                deps, e.g. generated package-manager config (repeatable).
   --no-cleanup  Keep the worktree's branch after cleanup (still removes the worktree dir).
   --yes         Auto-approve the cleanup step instead of prompting.
 `
@@ -42,6 +44,7 @@ export function parseArgs(argv: readonly string[]): ParsedCli {
   let depsCmd: string | undefined
   const copyGlobs: string[] = []
   const linkPaths: string[] = []
+  const writeFiles: NonNullable<WorktreeAgentInput["writeFiles"]> = []
   let deleteBranch = true
   let yes = false
 
@@ -81,6 +84,25 @@ export function parseArgs(argv: readonly string[]): ParsedCli {
       case "--link":
         linkPaths.push(nextValue(arg, ++i))
         break
+      case "--write-file": {
+        const raw = nextValue(arg, ++i)
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(raw)
+        } catch {
+          throw new CliUsageError(`--write-file value is not valid JSON: ${raw}\n\n${USAGE}`)
+        }
+        if (
+          typeof parsed !== "object" ||
+          parsed === null ||
+          typeof (parsed as { path?: unknown }).path !== "string" ||
+          typeof (parsed as { content?: unknown }).content !== "string"
+        ) {
+          throw new CliUsageError(`--write-file requires {"path": string, "content": string, "mode"?: "create"|"append"}: ${raw}\n\n${USAGE}`)
+        }
+        writeFiles.push(parsed as NonNullable<WorktreeAgentInput["writeFiles"]>[number])
+        break
+      }
       case "--no-cleanup":
         deleteBranch = false
         break
@@ -113,6 +135,7 @@ export function parseArgs(argv: readonly string[]): ParsedCli {
     ...(depsCmd !== undefined ? { depsCmd } : {}),
     ...(copyGlobs.length > 0 ? { copyGlobs } : {}),
     ...(linkPaths.length > 0 ? { linkPaths } : {}),
+    ...(writeFiles.length > 0 ? { writeFiles } : {}),
   }
   return { input, yes }
 }

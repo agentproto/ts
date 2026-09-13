@@ -327,9 +327,17 @@ function mapModel(raw: ReplicateModel): ImageModelEntry {
 // `id` MUST match the snapshot filename stem — the framework's
 // `ctx.fetchSource` resolves `snapshots/<id>.json` (single dist-safe reader;
 // generators never touch the filesystem themselves).
+// The Replicate models endpoint is authed. Declare the token as an `env:` header
+// token so the runner's missing-env gate (runner.ts `resolveHeaders`) SKIPS the
+// refresh and reuses the committed snapshot when `REPLICATE_API_TOKEN` is absent
+// — exactly like the authed LLM sources (Anthropic/Groq/xAI/Moonshot). Without
+// this a token-less `catalog-sync generate --refresh` fetched unauthenticated,
+// 401'd, and threw — crashing the whole run for anyone (or the weekly Action)
+// without the secret. `--check` never fetches, so it is unaffected.
 export const REPLICATE_SOURCE: CatalogSource = {
   id: "image-replicate",
   url: "https://api.replicate.com/v1/models?query=image+generation",
+  headers: { Authorization: "Bearer env:REPLICATE_API_TOKEN" },
 }
 
 export const imageReplicate: CatalogGenerator = defineGenerator({

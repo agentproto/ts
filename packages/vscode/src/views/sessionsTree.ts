@@ -51,6 +51,7 @@ import type { SessionDescriptor } from "../client/types.js"
 import { isPendingSession } from "../services/pending.logic.js"
 import type { SeenTracker } from "../services/seen.js"
 import type { SessionStore } from "../services/sessionStore.js"
+import type { WatchedSessions } from "../services/watchedSessions.js"
 import { filterSessions, filterSummary, isFilterActive } from "./sessionFilter.logic.js"
 import {
   buildSessionsRoots,
@@ -58,6 +59,7 @@ import {
   groupDescriptionFor,
   isCtaNode,
   isGroupNode,
+  isMachineOrigin,
   type CtaNode,
   type GroupNode,
   type RootNode,
@@ -67,7 +69,7 @@ import {
   collapseResumeChains,
   descriptionFor,
   formatDuration,
-  iconFor,
+  iconForSession,
   isSeparatorNode,
   labelFor,
   silentForMs,
@@ -75,8 +77,13 @@ import {
   treeContextValueFor,
   TREE_REPAINT_INTERVAL_MS,
   withArchivedTag,
+  type SessionIcon,
   type SessionNode,
 } from "./sessionsTree.logic.js"
+import {
+  DEFAULT_ATTENTION_DELAY_SEC,
+  resolveAttentionDelaySec,
+} from "@agentproto/runtime/session-presence"
 
 /** Reads live (not cached): the operator can add/close a folder mid-session,
  *  and the "(open)" marker + Create-workspace CTA must track that. */
@@ -103,10 +110,19 @@ function groupingSetting(): SessionGrouping {
   return cfg.get<boolean>("groupByWorkspace", true) ? "workspace" : "none"
 }
 
+/** `agentproto.hideMachineSessions` — default true, read fresh on every
+ *  rebuild. Safe to default on only because the tree always reports what it
+ *  hid (`hiddenCount`, the view badge below) — an operator who never sees a
+ *  gate-review session anywhere still sees the number change. */
+function hideMachineSessionsSetting(): boolean {
+  return vscode.workspace.getConfiguration("agentproto").get<boolean>("hideMachineSessions", true)
+}
+
 export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, vscode.Disposable {
   private readonly store: SessionStore
   private readonly filter: SessionFilterController
   private readonly seen: SeenTracker
+  private readonly watched: WatchedSessions | undefined
   private readonly _onDidChange = new vscode.EventEmitter<void>()
   readonly onDidChangeTreeData = this._onDidChange.event
   private nodes: RootNode[] = []
@@ -115,12 +131,32 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
   private groupOf = new Map<string, GroupNode>()
   private now = Date.now()
   private _hiddenCount = 0
+  private _hidingMachineDefault = false
+  /** Grace window (seconds) for the shared presence classifier — resolved once
+   *  from the daemon config (`sessions.attentionDelaySec`), defaulting to the
+   *  shared 60s when unset/overridden. A just-finished session stays `running`
+   *  for this long before settling grey. */
+  private attentionDelaySec = DEFAULT_ATTENTION_DELAY_SEC
   private readonly repaintTimer: ReturnType<typeof setInterval>
 
-  constructor(store: SessionStore, filter: SessionFilterController, seen: SeenTracker) {
+  constructor(
+    store: SessionStore,
+    filter: SessionFilterController,
+    seen: SeenTracker,
+    watched?: WatchedSessions,
+  ) {
     this.store = store
     this.filter = filter
     this.seen = seen
+    this.watched = watched
+    // Resolve the configured grace window once (config doesn't change under a
+    // running extension); if it differs from the default, repaint with it.
+    void resolveAttentionDelaySec().then(v => {
+      if (v !== this.attentionDelaySec) {
+        this.attentionDelaySec = v
+        this.rebuild()
+      }
+    })
     this.rebuild()
     this.store.onDidChange(() => this.rebuild())
     this.filter.onDidChange(() => this.rebuild())
@@ -128,6 +164,10 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
     // the session, and the row must say so without waiting for the daemon to
     // happen to emit something.
     this.seen.onDidChange(() => this.rebuild())
+    // A watched/unwatched toggle changes the row's contextValue (`-watched`
+    // suffix → the Watch/Unwatch menu swap) and its 👁 prefix, so it is a
+    // state change like any other.
+    this.watched?.onDidChange(() => this.rebuild())
     // Rebuild on a clock as well as on change. Every row is rendered against
     // `now`, so the passage of time is itself a state change — one the store
     // can never report, because nothing happened. See TREE_REPAINT_INTERVAL_MS.
@@ -139,9 +179,20 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
     this._onDidChange.dispose()
   }
 
-  /** Sessions present in the store but excluded by the current filter. */
+  /** Sessions present in the store but excluded by the current filter (this
+   *  includes any hidden by the `hideMachineSessions` default below — the
+   *  badge doesn't distinguish the two sources, it just has to never lie
+   *  about the total). */
   get hiddenCount(): number {
     return this._hiddenCount
+  }
+
+  /** True when this rebuild's `hiddenCount` includes machine-origin sessions
+   *  hidden by the `agentproto.hideMachineSessions` default (as opposed to
+   *  only an explicit operator filter) — registerSessionsView's view
+   *  description reads this so the default hiding itself is never silent. */
+  get hidingMachineDefault(): boolean {
+    return this._hidingMachineDefault
   }
 
   /** Current top-level nodes — used by the "Expand All" command to reveal each
@@ -160,11 +211,20 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
   private rebuild(): void {
     this.now = Date.now()
     const all = this.store.sessions
+    const hideMachineSessions = hideMachineSessionsSetting()
     // Filter first, then lay out the survivors: recency is a top-level
     // presentation split, not a filter dimension, so the divider is decided
     // from what's actually shown.
-    const survivors = filterSessions(all, this.filter.state, this.filter.workspaces)
+    const survivors = filterSessions(all, this.filter.state, this.filter.workspaces, {
+      hideMachineSessions,
+    })
     this._hiddenCount = all.length - survivors.length
+    // Mirrors filterSessions' own "operator's explicit origin choice wins"
+    // rule (sessionFilter.logic.ts's passesMachineDefault) — the description
+    // below must say "machine sessions hidden" only while that default is
+    // the thing actually doing the hiding, not whenever the setting merely
+    // happens to be on.
+    this._hidingMachineDefault = hideMachineSessions && (this.filter.state.origin?.length ?? 0) === 0
     // Collapse resume chains AFTER the filter (which already excludes
     // archived rows via the store's includeArchived toggle — see
     // sessionStore.ts) so a predecessor is hidden ONLY when its successor is
@@ -208,6 +268,7 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
         : vscode.TreeItemCollapsibleState.None
     const item = new vscode.TreeItem(labelFor(session), collapsibleState)
     item.id = session.id
+    const isWatched = this.watched?.isWatched(session.id) === true
     const baseDescription = descriptionFor(session, {
       now: this.now,
       childCount: element.children.length,
@@ -215,25 +276,37 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
     // Archived rows only ever reach the tree when the "show archived"
     // toggle is on (the daemon's default list() already excludes them) —
     // visually distinct so they read as "kept around, not currently in
-    // view" rather than a normal terminal session.
-    item.description = withArchivedTag(baseDescription, session.archived)
-    item.contextValue = treeContextValueFor(session)
-    item.tooltip = buildTooltip(session, this.now)
+    // view" rather than a normal terminal session. A watched row leads its
+    // description with the 👁 prefix so the eye is visible at a glance.
+    const withWatch = isWatched ? `👁 ${baseDescription}` : baseDescription
+    item.description = withArchivedTag(withWatch, session.archived)
+    item.contextValue = treeContextValueFor(session, isWatched)
+    item.tooltip = buildTooltip(session, this.now, isWatched)
+    // A live row's icon comes from the SHARED dashboard presence classifier
+    // (running ◉ / tending ◌ / attention ? / quiet ○) — same source as the CLI
+    // table and the webview, so a supervisor with busy executors shows the
+    // half-fill `tending` glyph rather than a spinner or a resting dot.
+    // Terminal and stalled rows keep their richer existing icons
+    // (done/stopped/failed/warning) — see iconForSession.
     item.iconPath = session.archived
       ? new vscode.ThemeIcon("archive")
-      : toThemeIcon(iconFor(session, this.now, this.seen.isUnread(session)))
-    // Single click opens the transcript — the inline $(open-preview) icon
-    // (view/item/context menu, wired in package.json) remains as a second
-    // way to trigger the same command.
+      : toThemeIcon(
+          iconForSession(session, this.now, this.seen.isUnread(session), this.attentionDelaySec),
+        )
+    // Single click routes to the view matching the session's kind — real
+    // terminal, browser live view, or the transcript panel (see
+    // sessionOpen.logic.ts's defaultOpenTarget). The inline $(open-preview)
+    // icon (view/item/context menu, wired in package.json) still opens the
+    // transcript unconditionally via agentproto.openTranscript.
     //
     // Except on an optimistic row: there is no session behind it yet, so a
-    // click could only open a transcript for an id the daemon has never heard
-    // of. Leaving `command` unset makes the row inert rather than a trap —
-    // it's there to say "coming up", and it'll be a real row in a moment.
+    // click could only open a view for an id the daemon has never heard of.
+    // Leaving `command` unset makes the row inert rather than a trap — it's
+    // there to say "coming up", and it'll be a real row in a moment.
     if (!isPendingSession(session)) {
       item.command = {
-        command: "agentproto.openTranscript",
-        title: "Open Transcript",
+        command: "agentproto.openSession",
+        title: "Open Session",
         arguments: [element],
       }
     }
@@ -277,7 +350,12 @@ function findNode(nodes: readonly RootNode[], id: string): SessionNode | undefin
 /** Open/closed root-folder icon doubles as the "(open)" marker at a glance,
  *  same visual language VS Code's own Explorer uses for a workspace root. An
  *  origin group instead reads as a source: a plug icon + its own contextValue
- *  (no workspace inline actions apply to it). */
+ *  (no workspace inline actions apply to it) — EXCEPT a machine-origin group
+ *  (isMachineOrigin, e.g. `gate`), which gets `verified` instead of `plug`:
+ *  a plug reads as "a live connection to a place a person is", which is
+ *  exactly the wrong read for automated push-gate reviewer bookkeeping —
+ *  `verified` reads as automated verification/review, matching what these
+ *  sessions actually are. */
 function groupTreeItem(group: GroupNode): vscode.TreeItem {
   const collapsibleState =
     group.children.length > 0
@@ -290,7 +368,7 @@ function groupTreeItem(group: GroupNode): vscode.TreeItem {
   item.description = groupDescriptionFor(group.count)
   if (group.variant === "origin") {
     item.contextValue = "origin-group"
-    item.iconPath = new vscode.ThemeIcon("plug")
+    item.iconPath = new vscode.ThemeIcon(isMachineOrigin(group.slug) ? "verified" : "plug")
   } else if (group.variant === "status") {
     item.contextValue = "status-group"
     item.iconPath = new vscode.ThemeIcon("pulse")
@@ -314,16 +392,21 @@ function ctaTreeItem(cta: CtaNode): vscode.TreeItem {
   return item
 }
 
-function toThemeIcon(icon: ReturnType<typeof iconFor>): vscode.ThemeIcon {
+function toThemeIcon(icon: SessionIcon): vscode.ThemeIcon {
   if (!icon.color) return new vscode.ThemeIcon(icon.id)
   const themeColorId =
     icon.color === "error" ? "problemsErrorIcon.foreground" : "problemsWarningIcon.foreground"
   return new vscode.ThemeIcon(icon.id, new vscode.ThemeColor(themeColorId))
 }
 
-function buildTooltip(session: SessionDescriptor, now: number): vscode.MarkdownString {
+function buildTooltip(session: SessionDescriptor, now: number, watched?: boolean): vscode.MarkdownString {
   const md = new vscode.MarkdownString()
   md.appendMarkdown(`**${labelFor(session)}**\n\n`)
+  if (watched) {
+    // Same vocabulary as the webview's plain-👁 chip — one watch pattern
+    // across both surfaces.
+    md.appendMarkdown(`👁 watched — you get a notification when this session changes state\n\n`)
+  }
   for (const field of tooltipFieldsFor(session)) {
     md.appendMarkdown(`- **${field.label}:** ${field.value}\n`)
   }
@@ -341,8 +424,9 @@ export function registerSessionsView(
   store: SessionStore,
   filter: SessionFilterController,
   seen: SeenTracker,
+  watched?: WatchedSessions,
 ): void {
-  const provider = new SessionsTreeProvider(store, filter, seen)
+  const provider = new SessionsTreeProvider(store, filter, seen, watched)
   const view = vscode.window.createTreeView("agentproto.sessions", {
     treeDataProvider: provider,
     showCollapseAll: true,
@@ -359,7 +443,8 @@ export function registerSessionsView(
     vscode.workspace.onDidChangeConfiguration(e => {
       if (
         e.affectsConfiguration("agentproto.sessionGrouping") ||
-        e.affectsConfiguration("agentproto.groupByWorkspace")
+        e.affectsConfiguration("agentproto.groupByWorkspace") ||
+        e.affectsConfiguration("agentproto.hideMachineSessions")
       ) {
         provider.refresh()
       }
@@ -417,9 +502,17 @@ export function registerSessionsView(
 
   // The tree must never lie about hiding things: badge the count of
   // sessions the current filter excludes, and summarize the filter in the
-  // view description. Both clear the moment the filter goes inactive.
+  // view description. Both clear the moment nothing is being hidden.
+  //
+  // `active` covers two independent reasons hiddenCount can be nonzero: an
+  // explicit operator filter (isFilterActive), and the on-by-default
+  // `agentproto.hideMachineSessions` setting quietly dropping gate/review
+  // sessions (provider.hidingMachineDefault). Defaulting that setting to
+  // true is only safe BECAUSE this badge/description already surface
+  // whatever it hides — an operator who never sees a gate session anywhere
+  // still sees the count.
   const updateViewMeta = (): void => {
-    const active = isFilterActive(filter.state)
+    const active = isFilterActive(filter.state) || provider.hidingMachineDefault
     view.badge =
       active && provider.hiddenCount > 0
         ? {
@@ -427,7 +520,9 @@ export function registerSessionsView(
             tooltip: `${provider.hiddenCount} session${provider.hiddenCount === 1 ? "" : "s"} hidden by filter`,
           }
         : undefined
-    view.description = active ? filterSummary(filter.state) : undefined
+    const parts = [filterSummary(filter.state)].filter(Boolean)
+    if (provider.hidingMachineDefault) parts.push("machine sessions hidden")
+    view.description = parts.length > 0 ? parts.join(" · ") : undefined
   }
   updateViewMeta()
   ctx.subscriptions.push(provider.onDidChangeTreeData(updateViewMeta))

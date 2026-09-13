@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/redaction",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "agentproto/redaction — vendor-neutral Redactor port + built-in redactors (none, deny-list, truncate, chain) and a catalog/resolver so any egress boundary can scrub outbound payloads before they leave the process.",
   "keywords": [
     "agentproto",
@@ -51,9 +51,9 @@
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   }
 }

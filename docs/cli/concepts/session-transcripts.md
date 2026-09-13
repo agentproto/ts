@@ -14,6 +14,12 @@ tool calls, plans, usage) instead of replaying raw stream bytes.
 ~/.agentproto/sessions/<sessionId>/events.jsonl
 ```
 
+The root is configurable via the daemon config's `sessions.eventsDir`
+key (see [`reference/config-schema.md`](../reference/config-schema.md));
+the default above is unchanged when the key is absent. A spawn response
+(`agent_start`'s descriptor) carries the resolved absolute path of the
+session's own transcript as `descriptor.eventsPath`.
+
 One JSON object per line, written at the same tap point that flattens
 `StreamEvent`s into the ring buffer — but *before* that flattening, so
 no structure is lost. Every line has:
@@ -40,12 +46,13 @@ append to a prior session's file.
 
 | Kind | Fields (beyond `seq`/`ts`/`kind`/`sessionId`) | Notes |
 |------|------------------------------------------------|-------|
-| `user-prompt` | `text` | The outgoing message for a new turn. Named `user-prompt` (not ACP's `agent-prompt`) to avoid clashing with the kind below, which means the opposite direction. |
+| `user-prompt` | `text`, `source?` | The outgoing message for a new turn. Named `user-prompt` (not ACP's `agent-prompt`) to avoid clashing with the kind below, which means the opposite direction. `source` records prompt provenance when a supervisor/session injected the prompt (e.g. `agent:<sessionId>`), surfaced in UIs as "SUPERVISOR ASKED". |
 | `text-delta` | `text`, `partial?` | Assistant reply text. Streamed chunks are coalesced up to each newline; a trailing fragment with no newline yet is flushed after a 250ms debounce with `partial: true`. |
 | `thought` | `text`, `partial?` | Same coalescing/debounce behavior as `text-delta`, for reasoning/thinking output. |
 | `tool-call` | `toolCallId`, `toolName`, `arguments` | One record per tool invocation. |
 | `tool-result` | `toolCallId`, `result`, `isError` | Correlates to a prior `tool-call` via `toolCallId`. |
 | `agent-prompt` | `toolCallId`, `options` | The agent asking the human a question (e.g. a tool permission prompt) — ACP's own "agent-prompt" direction. |
+| `permission-resolved` | `toolCallId`, `decision`, `optionId?` | Durable counterpart to an `agent-prompt` ask, written when the request is approved, denied, or cancelled. `decision` is `"approve"`, `"deny"`, or `"cancelled"`; `optionId` mirrors the chosen option when one was offered (e.g. `allow_always`). |
 | `plan` | `entries` (`{content, priority, status}[]`) | Structured plan/todo-list snapshot. |
 | `usage_update` | `size`, `used`, `cost?` | Context window usage; `cost` is only present when the adapter reports one. |
 | `usage_snapshot` | `model?`, `costUsd?`, `tokensIn?`, `tokensOut?`, `contextSize?`, `contextUsed?`, `source` | On-demand usage pull (e.g. from the `session_usage` MCP tool). |

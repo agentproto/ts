@@ -5,8 +5,9 @@ agentproto provider-preset list [--json]
 ```
 
 List the built-in provider gateway presets shipped in
-`@agentproto/provider-presets` (moonshot, openrouter, requesty, deepseek, xai), each with
-its live key-env status. A preset is static data a claude-code / claude-sdk
+`@agentproto/provider-presets` (moonshot, openrouter, requesty, deepseek, xai,
+xai-anthropic, llm-endpoint, openai, openai-direct, mistral, groq, nebius,
+huggingface, deepinfra), each with its live key-env status. A preset is static data a claude-code / claude-sdk
 agent can front via a mode or the `base_url` option — there is no install step,
 no setup pipeline, and no credentials store.
 
@@ -59,6 +60,15 @@ openrouter    available   anthropic   OPENROUTER_API_KEY      —               
 requesty      available   anthropic   REQUESTY_API_KEY        —                   https://router.requesty.ai
 deepseek      available   anthropic   DEEPSEEK_API_KEY        deepseek-v4-pro     https://api.deepseek.com/anthropic
 xai           available   openai      XAI_API_KEY             grok-4.5            http://localhost:18090/v1
+xai-anthropic available   anthropic   XAI_API_KEY             grok-4.5            https://api.x.ai
+llm-endpoint  available   anthropic   LLM_ENDPOINT_ACCESS_TOKENS  kimi-k2.7-code  http://localhost:18090
+openai        available   openai      OPENAI_API_KEY          gpt-4.1             http://localhost:18090/v1
+openai-direct available   openai      OPENAI_API_KEY          gpt-4.1             https://api.openai.com/v1
+mistral       available   openai      MISTRAL_API_KEY         mistral-large-latest https://api.mistral.ai/v1
+groq          available   openai      GROQ_API_KEY            —                   https://api.groq.com/openai/v1
+nebius        available   openai      NEBIUS_API_KEY          —                   https://api.studio.nebius.com/v1
+huggingface   available   openai      HF_TOKEN                —                   https://router.huggingface.co/v1
+deepinfra     available   openai      DEEPINFRA_API_KEY       —                   https://api.deepinfra.com/v1/openai
 ```
 
 Exit codes: `2` when no daemon is found (or an unknown subcommand is passed),

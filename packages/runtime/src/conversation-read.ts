@@ -14,7 +14,12 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
 import { CONVERSATION_STORES, type ConversationCandidate } from "./conversation-store.js"
-import { renderMarkdown, renderJson, type ExportedSession } from "./transcript-export.js"
+import {
+  exportDaemonEventsSession,
+  renderMarkdown,
+  renderJson,
+  type ExportedSession,
+} from "./transcript-export.js"
 
 /** Binary (argv[0] basename) → `CONVERSATION_STORES` key. Only needed for
  *  PTY sessions with no `adapterSlug` recorded — an agent-cli session's
@@ -119,6 +124,9 @@ async function resolveConversationId(desc: SessionDescriptor): Promise<LadderRes
     // with no upper bound — only a dead session's endedAt narrows.
     ...(desc.endedAt ? { until: desc.endedAt } : {}),
     ...(attachmentMode ? { attachmentMode } : {}),
+    // A config-dir-isolated session's store lives under its own
+    // CLAUDE_CONFIG_DIR (#824), not the provider's global dir.
+    ...(desc.adapterConfigDir ? { configDir: desc.adapterConfigDir } : {}),
   })
   if (candidates.length === 0) {
     return {
@@ -136,6 +144,27 @@ export interface ConversationReadInput {
   /** agentproto session id (sess_xxx) or session name. */
   idOrName: string
   format?: "markdown" | "json"
+  /** Keep only the LAST N messages of the transcript. Omit to return the
+   *  full transcript (the default). */
+  lastN?: number
+  /** 0-based message index to start the read window from. Omit to start
+   *  from the beginning (or, combined with `lastN`, to window backwards
+   *  from the end). */
+  cursor?: number
+}
+
+export interface ConversationReadWindow {
+  /** 0-based index of the first message in the returned window. */
+  start: number
+  /** Number of messages actually returned. */
+  count: number
+  /** Total messages in the full transcript. */
+  total: number
+  /** True when the window does not cover the whole transcript. */
+  truncated: boolean
+  /** Cursor to pass as `cursor` on the next call to continue after this
+   *  window. Omitted when the window reaches the end of the transcript. */
+  nextCursor?: number
 }
 
 export interface ConversationReadResult {
@@ -152,6 +181,39 @@ export interface ConversationReadResult {
   /** Set only for the ambiguous-discovery outcome — candidates instead of
    *  a guess. `conversation` is null alongside this. */
   candidates?: ConversationCandidate[]
+  /** Set only when a `lastN`/`cursor` window was applied to the transcript. */
+  window?: ConversationReadWindow
+}
+
+/** Additive transcript windowing — applied ONLY when `lastN` or `cursor`
+ *  is provided; with neither, `readConversation` returns the full
+ *  transcript exactly as before. */
+function windowSession(
+  session: ExportedSession,
+  lastN: number | undefined,
+  cursor: number | undefined,
+): { session: ExportedSession; window: ConversationReadWindow } | null {
+  if (lastN === undefined && cursor === undefined) return null
+  const total = session.messages.length
+  const start = Math.min(cursor ?? 0, total)
+  const afterCursor = session.messages.slice(start)
+  const windowed =
+    lastN === undefined ? afterCursor : afterCursor.slice(Math.max(0, afterCursor.length - lastN))
+  const windowStart = start + (afterCursor.length - windowed.length)
+  const end = windowStart + windowed.length
+  return {
+    session: {
+      meta: { ...session.meta, ...(windowed.length !== total ? { messageCount: windowed.length } : {}) },
+      messages: windowed,
+    },
+    window: {
+      start: windowStart,
+      count: windowed.length,
+      total,
+      truncated: windowStart > 0 || end < total,
+      ...(end < total ? { nextCursor: end } : {}),
+    },
+  }
 }
 
 /** Core logic shared by the MCP tool and the HTTP route below — resolves
@@ -166,6 +228,35 @@ export async function readConversation(
     return { conversation: null, reason: `session "${input.idOrName}" not found` }
   }
 
+  const format = input.format ?? "markdown"
+
+  const tryDaemonFallback = async (
+    nativeReason: string,
+    nativeIdentity?: Pick<ConversationReadResult, "conversationId" | "adapter">,
+  ): Promise<ConversationReadResult> => {
+    try {
+      const exported = await exportDaemonEventsSession(desc.id, desc)
+      const win = windowSession(exported, input.lastN, input.cursor)
+      const session = win ? win.session : exported
+      const content = format === "json" ? renderJson(session) : renderMarkdown(session)
+      return {
+        conversation: session,
+        conversationId: nativeIdentity?.conversationId ?? desc.id,
+        adapter: nativeIdentity?.adapter ?? "daemon",
+        format,
+        content,
+        ...(win ? { window: win.window } : {}),
+      }
+    } catch (daemonErr) {
+      const daemonMsg = daemonErr instanceof Error ? daemonErr.message : String(daemonErr)
+      return {
+        conversation: null,
+        ...nativeIdentity,
+        reason: `${nativeReason}\n(daemon-events fallback also failed: ${daemonMsg})`,
+      }
+    }
+  }
+
   const resolved = await resolveConversationId(desc)
   if (resolved.kind === "ambiguous") {
     return {
@@ -175,20 +266,20 @@ export async function readConversation(
     }
   }
   if (resolved.kind === "none") {
-    return { conversation: null, reason: resolved.reason }
+    return tryDaemonFallback(resolved.reason)
   }
 
   const store = CONVERSATION_STORES[resolved.storeKey]
   if (!store) {
-    return {
-      conversation: null,
-      reason: `no conversation store registered for adapter "${resolved.storeKey}"`,
-    }
+    return tryDaemonFallback(`no conversation store registered for adapter "${resolved.storeKey}"`, {
+      conversationId: resolved.conversationId,
+      adapter: resolved.storeKey,
+    })
   }
-
-  const format = input.format ?? "markdown"
   try {
-    const session = await store.read(resolved.conversationId, desc.cwd)
+    const exported = await store.read(resolved.conversationId, desc.cwd, desc.adapterConfigDir)
+    const win = windowSession(exported, input.lastN, input.cursor)
+    const session = win ? win.session : exported
     const content = format === "json" ? renderJson(session) : renderMarkdown(session)
     return {
       conversation: session,
@@ -196,14 +287,14 @@ export async function readConversation(
       adapter: resolved.storeKey,
       format,
       content,
+      ...(win ? { window: win.window } : {}),
     }
-  } catch (err) {
-    return {
-      conversation: null,
+  } catch (readErr) {
+    const nativeMsg = readErr instanceof Error ? readErr.message : String(readErr)
+    return tryDaemonFallback(nativeMsg, {
       conversationId: resolved.conversationId,
       adapter: resolved.storeKey,
-      reason: err instanceof Error ? err.message : String(err),
-    }
+    })
   }
 }
 
@@ -239,14 +330,38 @@ export function registerConversationReadTool(server: McpServer, ops: Conversatio
           "Output format for the rendered transcript when a conversation is found. " +
             "`markdown` (default) or `json`.",
         ),
+      lastN: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe(
+          "Keep only the LAST N messages of the transcript. Omit to return the full transcript.",
+        ),
+      cursor: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe(
+          "0-based message index to start the window from (or a prior call's `window.nextCursor`).",
+        ),
     },
     async input => {
       const result = await readConversation(ops.registry, {
         idOrName: input.idOrName,
         ...(input.format ? { format: input.format } : {}),
+        ...(input.lastN !== undefined ? { lastN: input.lastN } : {}),
+        ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),
       })
       if (result.conversation) {
-        return { content: [{ type: "text" as const, text: result.content ?? "" }] }
+        const windowNote = result.window
+          ? `\n\n---\n[window: messages ${result.window.start}–${result.window.start + result.window.count - 1} of ${result.window.total}` +
+            `${result.window.nextCursor !== undefined ? `, nextCursor=${result.window.nextCursor}` : ""}]`
+          : ""
+        return {
+          content: [{ type: "text" as const, text: (result.content ?? "") + windowNote }],
+        }
       }
       const isUnknownSession = (result.reason ?? "").includes("not found")
       return {

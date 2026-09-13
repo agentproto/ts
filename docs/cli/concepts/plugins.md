@@ -5,15 +5,17 @@ new substrates, dispatchers, participant executors, or state stores —
 the four port kinds the MultiAgentRuntime kernel composes per swarm.
 
 Plugins ship as npm packages, declare what they provide via the
-`agentproto/plugin/v1` manifest, and are managed with the
-[`agentproto plugins`](../verbs/plugins.md) verb.
+`agentproto/adapter/v1` manifest, and are managed with the
+[`agentproto adapters`](../verbs/adapters.md) verb — renamed from
+`agentproto plugins` in 0.20.0 (the config key `plugins[]` became
+`adapters[]` alongside it).
 
 ## Quick example
 
 ```bash
-agentproto plugins install @guilde/agentproto-bridge
-agentproto plugins list
-agentproto plugins show @guilde/agentproto-bridge
+agentproto adapters install @guilde/agentproto-bridge
+agentproto adapters list
+agentproto adapters show @guilde/agentproto-bridge
 ```
 
 After install, the bridge's `guilde-mcp` substrate and `db-operator`
@@ -53,7 +55,7 @@ Two different extension points; see
 | Adapter                                  | Plugin                                              |
 | ---------------------------------------- | --------------------------------------------------- |
 | Drives a specific CLI agent              | Extends the swarm kernel                            |
-| Installed via `agentproto install`       | Installed via `agentproto plugins install`          |
+| Installed via `agentproto install`       | Installed via `agentproto adapters install`         |
 | Used by `run`, `sessions`, `agent-cli` swarm executor | Used by `run-swarm` substrate / dispatcher / executor / state |
 | Examples: claude-code, hermes, goose     | Examples: guilde-mcp substrate, db-operator         |
 
@@ -70,7 +72,7 @@ The CLI tolerates two locations per plugin:
 {
   "name": "@your/agentproto-thing",
   "agentproto": {
-    "schema": "agentproto/plugin/v1",
+    "schema": "agentproto/adapter/v1",
     "substrates": [ … ],
     "executors": [ … ]
   }
@@ -84,30 +86,30 @@ package.json.
 
 ## Config keys
 
-`~/.agentproto/config.json` carries the enabled-plugins list:
+`~/.agentproto/config.json` carries the enabled-adapters list:
 
 ```jsonc
 {
-  "plugins": [
+  "adapters": [
     "@guilde/agentproto-bridge",
     "@acme/agentproto-slack"
   ]
 }
 ```
 
-`agentproto plugins install` appends; `uninstall` / `disable` removes.
-Plugins load in array order on every `run-swarm` invocation — last
+`agentproto adapters install` appends; `uninstall` / `disable` removes.
+Adapters load in array order on every `run-swarm` invocation — last
 write wins on duplicate kinds, which lets you override a built-in
 with a custom implementation.
 
 ## Per-invocation override
 
-Skip the config and load a plugin for one run:
+Skip the config and load an adapter for one run:
 
 ```bash
-agentproto run-swarm --plugin @acme/agentproto-experimental \
+agentproto run-swarm --adapter @acme/agentproto-experimental \
   --manifest .runtime/multi-agent.yaml
 ```
 
-Multiple `--plugin` flags allowed; they're appended after anything in
+Multiple `--adapter` flags allowed; they're appended after anything in
 the config.

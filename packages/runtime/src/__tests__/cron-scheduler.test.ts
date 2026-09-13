@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { createCronScheduler } from "../cron-scheduler.js"
 import { createSessionEventBus } from "../session-event-bus.js"
-import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
+import { createSessionsRegistry, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, type SessionsRegistry } from "../sessions.js"
 
 // ── helpers ────────────────────────────────────────────────────────
 
@@ -353,9 +353,17 @@ describe("CronScheduler", () => {
       expect(startSession).toHaveBeenCalledOnce()
       expect(startSession).toHaveBeenCalledWith({
         cwd: workspace,
+        // Persistent isolated-config dir, keyed by the minted session id —
+        // what lets a reaped cron session natively resume (see
+        // adapterConfigDirFor in sessions.ts).
+        configDir: expect.stringContaining("adapter-config"),
         mode: "bypass-permissions",
         permissionHold: true,
         options: { skills: "fast", verbose: true },
+        env: {
+          [SESSION_ID_ENV]: expect.any(String),
+          [WORKSPACE_SLUG_ENV]: "default",
+        },
       })
       expect(spawnAgent).toHaveBeenCalledOnce()
       expect(spawnAgent).toHaveBeenCalledWith(
@@ -401,6 +409,46 @@ describe("CronScheduler", () => {
       expect(spawnArgs).not.toHaveProperty("mode")
     } finally {
       scheduler.shutdown()
+    }
+  })
+
+  it("tick() — does not overlap a slow agent action while its scheduled slot is elapsed", async () => {
+    vi.useFakeTimers()
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const { registry } = makeMockRegistry({ processAlive: true })
+    const sessionEvents = createSessionEventBus()
+    let finishStart: (() => void) | undefined
+    const startSession = vi.fn(
+      () => new Promise<void>(resolve => { finishStart = resolve }),
+    )
+    const resolveAgentAdapter = vi.fn().mockResolvedValue({ startSession })
+    const scheduler = createCronScheduler({ sessionEvents, registry, resolveAgentAdapter, workspace })
+    try {
+      const job = scheduler.create({
+        schedule: "0 0 1 1 *",
+        recurring: true,
+        action: { kind: "agent", adapter: "mock", prompt: "slow maintenance" },
+      })
+      // Make the job due now. The first tick starts it; the second tick lands
+      // before startSession resolves and must observe the in-flight lease.
+      job.nextRunAt = new Date(Date.now() - 1).toISOString()
+
+      await vi.advanceTimersByTimeAsync(20_000)
+      await Promise.resolve()
+      expect(startSession).toHaveBeenCalledOnce()
+
+      await vi.advanceTimersByTimeAsync(20_000)
+      await Promise.resolve()
+      expect(startSession).toHaveBeenCalledOnce()
+
+      finishStart?.()
+      // Let fireJob finish without draining the scheduler's recurring interval.
+      await Promise.resolve()
+      await Promise.resolve()
+    } finally {
+      scheduler.shutdown()
+      vi.useRealTimers()
     }
   })
 
@@ -755,7 +803,17 @@ describe("CronScheduler", () => {
 
       expect(startSession).toHaveBeenCalledOnce()
       const startSessionArg = startSession.mock.calls[0]![0]
-      expect(startSessionArg).toEqual({ cwd: workspace })
+      expect(startSessionArg).toEqual({
+        cwd: workspace,
+        // Always present — the persistent isolated-config dir is not one of
+        // the leak-prone optional fields this test guards, it's part of the
+        // base spawn contract (see adapterConfigDirFor in sessions.ts).
+        configDir: expect.stringContaining("adapter-config"),
+        env: {
+          [SESSION_ID_ENV]: expect.any(String),
+          [WORKSPACE_SLUG_ENV]: "default",
+        },
+      })
       expect(startSessionArg).not.toHaveProperty("mode")
       expect(startSessionArg).not.toHaveProperty("permissionHold")
       expect(startSessionArg).not.toHaveProperty("options")

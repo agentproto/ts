@@ -17,6 +17,7 @@
 import matter from "gray-matter"
 import type { FsPort } from "../ports/fs.port.js"
 import type { ReportConfig } from "./types.js"
+import { bibliographySha } from "./bib-sha.js"
 
 export interface PackFile {
   /** Path relative to the report root (e.g. `views/_bibliography.json`). */
@@ -29,6 +30,12 @@ export interface BuildPacksResult {
   readonly files: readonly PackFile[]
   /** Number of sources in the global bibliography. */
   readonly bibliography: number
+  /**
+   * Content-sha of the `[n]` → source-id mapping. Thread it into
+   * `assembleChapters({ bibSha })` so stitch can detect chapters written
+   * against a bibliography that has since been renumbered.
+   */
+  readonly bibliographySha: string
   /** Per-chapter view summary. */
   readonly chapters: ReadonlyArray<{
     readonly id: string
@@ -183,10 +190,11 @@ export async function buildPacks(
   }
 
   // ── outputs ────────────────────────────────────────────────────────────
+  const sha = bibliographySha(sources)
   const files: PackFile[] = []
   files.push({
     path: `${viewsDir}/_bibliography.json`,
-    content: JSON.stringify({ sources }, null, 2),
+    content: JSON.stringify({ sha, sources }, null, 2),
   })
   files.push({
     path: `${viewsDir}/_bibliography.md`,
@@ -237,5 +245,5 @@ export async function buildPacks(
     chapters.push({ id: ch.id, title: ch.title, entryCount: picks.length })
   }
 
-  return { files, bibliography: sources.length, chapters }
+  return { files, bibliography: sources.length, bibliographySha: sha, chapters }
 }

@@ -373,22 +373,55 @@ export function mapHarnessEntryItems(adapters: SpawnAdapterInfo[]): SpawnQuickPi
   return items
 }
 
+function makeHarnessRow(
+  harness: string,
+  vendor: string,
+  product: string,
+  route: CatalogRoute,
+  explicitRoute: boolean,
+): SpawnQuickPickItem {
+  const profileHint =
+    route.eligibleProfiles.length === 1
+      ? route.eligibleProfiles[0]
+      : route.eligibleProfiles.length > 1
+        ? `${route.eligibleProfiles.length} profiles`
+        : "no profile"
+  return {
+    label: explicitRoute ? `${product} · ${route.route}` : product,
+    description: route.runnable
+      ? `${vendor} · ${route.route} · ${profileHint}`
+      : `${vendor} · ${route.route} · ${profileHint}`,
+    adapter: { slug: harness, name: harness } as SpawnAdapterInfo,
+    model: route.ref,
+    mode: route.adapterModes[0],
+    route: route.route,
+    eligibleProfiles: route.eligibleProfiles,
+    runnable: route.runnable,
+  }
+}
+
 /**
  * Stage two of the harness-first flow: the models a chosen harness can serve,
  * from the unified catalog, filtered to routes whose `adapters` include that
- * harness. Same collapse/section rules as mapCatalogSpawnQuickPickItems — one
- * row per product on its best route (pickPrimaryRoute), runnable models grouped
- * by vendor first, non-runnable swept under "Needs a profile" — but scoped to
- * the harness, so the provider is the vendor·route in the row (the adapter is
- * fixed and no longer worth repeating). A trailing custom… row types any model
- * id for this harness; there's no Configure row here (Configure is its own
- * entry path). Empty of model rows when the catalog knows nothing this harness
- * serves — the caller then falls back to the manifest list.
+ * harness.
+ *
+ * For `routeSelection: "free"` adapters (claude-code, claude-sdk, …) the route
+ * is an independent choice, so every served route is emitted as its own row —
+ * the user picks the model AND the billing gateway in one step. For fixed or
+ * `derived-from-model` adapters the route is not a real choice, so the picker
+ * collapses each product to its best route via `pickPrimaryRoute`.
+ *
+ * Runnable models are grouped under their vendor heading first; non-runnable
+ * rows are swept under "Needs a profile". A trailing custom… row types any
+ * model id for this harness. Empty of model rows when the catalog knows nothing
+ * this harness serves — the caller then falls back to the manifest list.
  */
 export function mapHarnessCatalogModelItems(
   catalog: CatalogModelsResponse,
   harness: string,
+  routeSelection?: "free" | "derived-from-model",
 ): SpawnQuickPickItem[] {
+  const freeRouteChoice = routeSelection === "free"
   const runnableByVendor: { vendor: string; rows: SpawnQuickPickItem[] }[] = []
   const needsProfile: SpawnQuickPickItem[] = []
 
@@ -396,23 +429,25 @@ export function mapHarnessCatalogModelItems(
     const rows: SpawnQuickPickItem[] = []
     for (const product of vendor.products) {
       const served = product.routes.filter(r => r.adapters.includes(harness))
-      const route = pickPrimaryRoute(served)
-      if (!route) continue
-      const extraRoutes = served.length - 1
-      const row: SpawnQuickPickItem = {
-        label: product.product,
-        description: route.runnable
-          ? `${vendor.vendor} · ${route.route}${extraRoutes > 0 ? ` · +${extraRoutes} more` : ""}`
-          : `${vendor.vendor} · ${route.route} · no profile`,
-        adapter: { slug: harness, name: harness } as SpawnAdapterInfo,
-        model: route.ref,
-        mode: route.adapterModes[0],
-        route: route.route,
-        eligibleProfiles: route.eligibleProfiles,
-        runnable: route.runnable,
+      if (served.length === 0) continue
+
+      if (freeRouteChoice) {
+        const ordered = [...served].sort((a, b) => {
+          const rank = (r: CatalogRoute): number => (r.runnable ? 0 : 2) + (r.curated ? 0 : 1)
+          return rank(a) - rank(b) || a.route.localeCompare(b.route)
+        })
+        for (const route of ordered) {
+          const row = makeHarnessRow(harness, vendor.vendor, product.product, route, true)
+          if (route.runnable) rows.push(row)
+          else needsProfile.push(row)
+        }
+      } else {
+        const route = pickPrimaryRoute(served)
+        if (!route) continue
+        const row = makeHarnessRow(harness, vendor.vendor, product.product, route, false)
+        if (route.runnable) rows.push(row)
+        else needsProfile.push(row)
       }
-      if (route.runnable) rows.push(row)
-      else needsProfile.push(row)
     }
     if (rows.length > 0) runnableByVendor.push({ vendor: vendor.vendor, rows })
   }

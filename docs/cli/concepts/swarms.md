@@ -66,9 +66,9 @@ Free-form documentation of what this swarm does.
 
 Every `*.kind` resolves through the registry. Built-ins: `file`
 (substrate), `mention` (dispatcher), `fs` (state), `agent-cli`
-(executor). Other kinds come from installed plugins —
-[`agentproto plugins show <pkg>`](../verbs/plugins.md) prints what
-each plugin declares.
+(executor). Other kinds come from installed adapters —
+[`agentproto adapters show <pkg>`](../verbs/adapters.md) prints what
+each adapter declares.
 
 See [`verbs/run-swarm.md`](../verbs/run-swarm.md) for the verb itself.
 

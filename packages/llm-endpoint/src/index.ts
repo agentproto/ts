@@ -15,6 +15,8 @@ import {
   parseTransparentModel,
   KNOWN_TRANSPARENT_PROVIDERS,
   toAnthropicStyle,
+  validateLocalPacks,
+  isRecord,
 } from './packs.js';
 import {
   validateResponsesRequest,
@@ -22,6 +24,8 @@ import {
   chatCompletionsJsonToResponses,
   OpenAIChatToResponsesStreamConverter,
 } from './responses.js';
+import { getAuthProfile, KeychainStore } from '@agentproto/auth';
+import { handleBatchesRequest, isInternalLoopbackRequest, resumeIncompleteLocalQueueBatches } from './batches.js';
 
 // Port local du proxy — surchargeable via env (LLM_ENDPOINT_PORT | PORT).
 // NOTE: evaluated once at module-load time. Set the env variable *before*
@@ -48,11 +52,21 @@ function resolvePackMerged(packId: string | null | undefined): ModelPack {
 
 let _localPacksCache: Record<string, ModelPack> | null = null;
 
-// Load local pack overrides from gitignored JSON (ESM-safe; uses fileURLToPath).
-// Searches: CWD/packs.local.json, then src/packs.local.json (dev), then
-// the directory of this module file.
-function getLocalPacks(): Record<string, ModelPack> {
-  if (_localPacksCache !== null) return _localPacksCache;
+/** Outcome of reading packs.local.json from disk: the validated local packs,
+ *  any field-scoped validation errors, and which candidate file was used. */
+interface LocalPacksLoad {
+  packs: Record<string, ModelPack>;
+  errors: string[];
+  path: string | null;
+}
+
+// Read + validate local pack overrides from gitignored JSON (ESM-safe; uses
+// fileURLToPath). Searches: CWD/packs.local.json, then src/packs.local.json
+// (dev), then the directory of this module file. Returns the FIRST candidate
+// carrying a `{ packs: {...} }` envelope, validated against the ModelPack shape;
+// `errors` names each offending pack/field. Does NOT touch the cache — callers
+// decide fail-soft (load time) vs hard-fail (the reload endpoint).
+function readLocalPacksFromDisk(): LocalPacksLoad {
   const moduleDir = fileURLToPath(new URL('.', import.meta.url));
   const candidates = [
     resolvePath(process.cwd(), 'packs.local.json'),
@@ -67,19 +81,49 @@ function getLocalPacks(): Record<string, ModelPack> {
       // file doesn't exist — try next candidate
       continue;
     }
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(raw);
-      if (parsed.packs) {
-        // TODO: validate that each entry conforms to the ModelPack shape
-        _localPacksCache = parsed.packs as Record<string, ModelPack>;
-        return _localPacksCache;
-      }
+      parsed = JSON.parse(raw);
     } catch (err) {
-      console.warn(`[llm-endpoint] Skipping malformed packs.local.json at ${localPath}:`, err instanceof Error ? err.message : String(err));
+      return { packs: {}, errors: [`${localPath}: invalid JSON — ${err instanceof Error ? err.message : String(err)}`], path: localPath };
     }
+    // A file without a truthy `packs` envelope isn't a local-packs source —
+    // ignore it and try the next candidate (unchanged from prior behaviour).
+    if (!isRecord(parsed) || !('packs' in parsed) || !parsed.packs) {
+      continue;
+    }
+    const result = validateLocalPacks(parsed);
+    if (!result.ok) {
+      return { packs: {}, errors: result.errors.map((e) => `${localPath}: ${e}`), path: localPath };
+    }
+    return { packs: result.packs, errors: [], path: localPath };
   }
-  _localPacksCache = {};
+  return { packs: {}, errors: [], path: null };
+}
+
+// Load (and cache) local pack overrides. Fail-soft at load time: an invalid
+// packs.local.json is skipped so the proxy keeps serving the built-in registry,
+// but every offending pack/field is named in the warning — the reload endpoint
+// turns the same errors into a hard 400.
+function getLocalPacks(): Record<string, ModelPack> {
+  if (_localPacksCache !== null) return _localPacksCache;
+  const { packs, errors } = readLocalPacksFromDisk();
+  for (const e of errors) {
+    console.warn(`[llm-endpoint] Skipping invalid packs.local.json — ${e}`);
+  }
+  _localPacksCache = packs;
   return _localPacksCache;
+}
+
+/**
+ * Drop the cached local packs (and the derived merged-id cache) so the next
+ * getLocalPacks()/getMergedPackIds() re-reads packs.local.json from disk. The
+ * clear lives here rather than in the reload handler so the handler never
+ * reaches into the module cache vars directly.
+ */
+function resetLocalPacksCache(): void {
+  _localPacksCache = null;
+  _mergedPackIdsCache = null;
 }
 
 // Limite max d'outils par provider (au-delà, Groq renvoie 400 "maximum number of items is 128").
@@ -103,6 +147,10 @@ export interface ToolTrimOptions {
   headerTools: string | null;
   headerNoTools: string | null;
   headerExcludeTools: string | null;
+  /** Pack-level exclude patterns (pack.toolsExclude) — applied last. */
+  packToolsExclude?: string[];
+  /** Pack-level allow patterns (pack.toolsAllow) — applied last. */
+  packToolsAllow?: string[];
 }
 
 // Trimme/strip les outils du payload selon :
@@ -114,7 +162,7 @@ export interface ToolTrimOptions {
 // OpenAI function: .function.name). Doit tourner AVANT la transformation de forme
 // propre à chaque provider (ZAI/Groq mappent input_schema → function.parameters).
 export function trimTools(payload: any, opts: ToolTrimOptions): void {
-  const { provider, queryTools, queryNoTools, headerTools, headerNoTools, headerExcludeTools } = opts;
+  const { provider, queryTools, queryNoTools, headerTools, headerNoTools, headerExcludeTools, packToolsExclude, packToolsAllow } = opts;
   if (!payload || !Array.isArray(payload.tools) || payload.tools.length === 0) return;
 
   // 1. Strip total demandé explicite (?notools=1 ou ?tools=none ou header X-Proxy-No-Tools: 1)
@@ -152,6 +200,29 @@ export function trimTools(payload: any, opts: ToolTrimOptions): void {
     if (payload.tools.length === 0) { delete payload.tools; delete payload.tool_choice; }
     return;
   }
+
+  // 2c. Filtres déclarés au niveau du pack (toolsExclude / toolsAllow dans le
+  // pack, typically packs.local.json) — s'appliquent à TOUTE requête routée via
+  // ce pack, après les overrides explicites du client (headers/query ci-dessus).
+  // Cas d'usage : un client type Claude Desktop envoie des centaines de
+  // définitions d'outils que le prefill upstream paie à chaque tour ; le pack
+  // rogne sans que le client ait à changer.
+  if (packToolsExclude && packToolsExclude.length > 0) {
+    const before = payload.tools.length;
+    payload.tools = payload.tools.filter((t: any) => {
+      const name = (t && (t.name || (t.function && t.function.name))) || '';
+      return !packToolsExclude!.some((p) => matchesPattern(name, p));
+    });
+    console.log(`[Proxy][tools] pack exclude-list {${packToolsExclude.join(',')}} → ${before}→${payload.tools.length}`);
+  } else if (packToolsAllow && packToolsAllow.length > 0) {
+    const before = payload.tools.length;
+    payload.tools = payload.tools.filter((t: any) => {
+      const name = (t && (t.name || (t.function && t.function.name))) || '';
+      return packToolsAllow.some((p) => matchesPattern(name, p));
+    });
+    console.log(`[Proxy][tools] pack allow-list {${packToolsAllow.join(',')}} → ${before}→${payload.tools.length}`);
+  }
+  if (payload.tools.length === 0) { delete payload.tools; delete payload.tool_choice; }
 
   // 3. Troncation au cap du provider (?tools absent)
   const cap = PROVIDER_MAX_TOOLS[provider];
@@ -386,6 +457,444 @@ function getApiKey(provider: string): string {
   return getResolvedKeys()[provider as keyof ProviderKeys] || '';
 }
 
+// ── Named-auth-profile credential resolution ──────────────────────────────
+// An upstream can be authenticated from a NAMED auth-profile
+// (`@agentproto/auth`) instead of only per-provider env vars. Map a provider
+// to a profile id via `LLM_ENDPOINT_PROFILE_<PROVIDER_UPPER>`
+// (e.g. LLM_ENDPOINT_PROFILE_ANTHROPIC=claude-subs-agentik). Absent → the
+// existing env-key path is used, byte-identical to before.
+
+// Anthropic OAuth wire constants — re-declared locally as string literals
+// (mirrors remaining-quota.ts:179-181) so this package never imports
+// @agentproto/runtime.
+const ANTHROPIC_VERSION = '2023-06-01';
+const ANTHROPIC_OAUTH_BETA = 'oauth-2025-04-20';
+
+type UpstreamAuthMethod = 'api-key' | 'oauth-bearer';
+
+/** A resolved upstream credential: the secret plus the header shape to use. */
+export interface UpstreamCredential {
+  value: string;
+  method: UpstreamAuthMethod;
+}
+
+function upstreamProfileEnvVar(provider: string): string {
+  return `LLM_ENDPOINT_PROFILE_${provider.toUpperCase()}`;
+}
+
+// Anthropic OAuth Access Tokens (subscription OATs) are shape-identifiable —
+// `sk-ant-oat…` — and require `Authorization: Bearer`, never `x-api-key`.
+// Mirrors the same prefix check adapters/mastra-agent and the pi CLI's own
+// SDK use; re-declared locally (not imported) for the same reason as the
+// ANTHROPIC_VERSION/ANTHROPIC_OAUTH_BETA constants above — this package
+// never imports @agentproto/runtime.
+function isAnthropicOAuthToken(provider: string, value: string): boolean {
+  return provider === 'anthropic' && value.startsWith('sk-ant-oat');
+}
+
+// Log-once dedupe so a persistent misconfig (e.g. non-darwin keychain) doesn't
+// spam a warning on every single request.
+const _warnedUpstream = new Set<string>();
+function warnUpstreamOnce(key: string, message: string): void {
+  if (_warnedUpstream.has(key)) return;
+  _warnedUpstream.add(key);
+  console.warn(message);
+}
+
+/**
+ * Resolve the outbound credential for `provider`. Mirrors getApiKey()'s
+ * provider-string contract but returns the credential AND the header method.
+ *
+ * - `LLM_ENDPOINT_PROFILE_<P>` set → resolve the named profile:
+ *     • missing / disabled          → undefined (caller 401s, as today)
+ *     • source-backed (no credRef)  → undefined + a clear follow-up log
+ *                                      (self-refresh not supported here yet)
+ *     • credentialRef-backed        → { value, method: profile.method }
+ *     • keychain read returns null (credential absent / present-but-unreadable
+ *       on a supported host, e.g. a locked Keychain) → undefined (fail-closed;
+ *       caller 401s — we do NOT silently downgrade a mapped profile to the env
+ *       key)
+ *     • keychain read throws (platform-unsupported backend, e.g. non-darwin
+ *       host) → env-key fallback + a one-time log; never crashes the request
+ * - no mapping → env-key path: method is derived from the credential's own
+ *   shape, not hardcoded — an anthropic env key that is actually a
+ *   subscription OAT (`sk-ant-oat…`, e.g. injected by the runtime's
+ *   billing-auth resolver for a modelDerivedApiKey adapter with no
+ *   `authSubscription`, such as pi) resolves to "oauth-bearer" so
+ *   {@link buildUpstreamAuthHeaders} sends it as `Authorization: Bearer`
+ *   instead of `x-api-key` — Anthropic hard-401s an OAT presented as
+ *   `x-api-key` ("invalid x-api-key"). Any other anthropic key, and every
+ *   other provider, keeps "api-key" exactly as before.
+ */
+export async function resolveUpstreamCredential(
+  provider: string,
+): Promise<UpstreamCredential | undefined> {
+  const profileId = process.env[upstreamProfileEnvVar(provider)]?.trim();
+  if (profileId) {
+    const profile = await getAuthProfile(profileId);
+    if (!profile || profile.disabled) {
+      warnUpstreamOnce(
+        `profile:${provider}:${profileId}`,
+        `[Proxy][auth] profile "${profileId}" mapped for provider "${provider}" is ${profile ? 'disabled' : 'missing'}; request will 401. Enable/create it or unset ${upstreamProfileEnvVar(provider)}.`,
+      );
+      return undefined;
+    }
+    if (!profile.credentialRef) {
+      // Source-backed profile (e.g. source:"claude-code-oauth"). Self-refresh
+      // would require re-homing a runtime helper — out of scope for the proxy.
+      warnUpstreamOnce(
+        `source:${provider}:${profileId}`,
+        `[Proxy][auth] profile "${profileId}" is source-backed (source="${profile.source ?? '?'}"); source-backed profiles are not yet supported by the proxy — use a credentialRef profile or a per-provider API-key env var instead. Request will 401.`,
+      );
+      return undefined;
+    }
+    try {
+      const stored = await new KeychainStore().read({ path: profile.credentialRef });
+      if (!stored) {
+        // Read succeeded but the credential is absent / unreadable (e.g. a
+        // locked or emptied Keychain entry on a supported host). Fail closed —
+        // do NOT fall back to the env key, which could silently swap in a
+        // different credential for a deliberately-mapped profile.
+        warnUpstreamOnce(
+          `noref:${provider}:${profileId}`,
+          `[Proxy][auth] profile "${profileId}" credentialRef resolved no stored credential; failing closed — request will 401 (no env-key fallback for a mapped profile).`,
+        );
+        return undefined;
+      }
+      return { value: stored.value, method: profile.method };
+    } catch (err) {
+      // Keychain backend unusable on this host (platform-unsupported, e.g. a
+      // non-darwin host with no Keychain) → fall back to the env key rather than
+      // failing the request. This is the ONLY keychain path that degrades to the
+      // env key; a null read above fails closed instead.
+      warnUpstreamOnce(
+        `keychain:${provider}:${profileId}`,
+        `[Proxy][auth] keychain backend unavailable for profile "${profileId}" (${(err as Error).message}); platform-unsupported — falling back to the ${provider} env key.`,
+      );
+      // fall through to the env-key path below
+    }
+  }
+  // No mapping (or keychain fallback): existing env-key path, method now
+  // shape-derived instead of hardcoded (see doc comment above).
+  const value = getApiKey(provider);
+  return { value, method: isAnthropicOAuthToken(provider, value) ? 'oauth-bearer' : 'api-key' };
+}
+
+/**
+ * Single source of truth for the outbound upstream-auth header shape. Given a
+ * resolved credential, returns the auth-related headers to merge into the
+ * request. For an `api-key` credential each provider keeps its existing header
+ * exactly; for `oauth-bearer` (only meaningful on the anthropic upstream) it
+ * emits the Bearer + anthropic-version + anthropic-beta triple.
+ *
+ * Fail-closed: an `oauth-bearer` credential (e.g. a Claude subscription OAT)
+ * resolved for a NON-anthropic provider returns `null` — the token is never
+ * emitted to a third-party upstream. Callers MUST treat `null` as a hard 401
+ * and send no request.
+ */
+export function buildUpstreamAuthHeaders(
+  provider: string,
+  cred: UpstreamCredential,
+): Record<string, string> | null {
+  const { value, method } = cred;
+
+  if (method === 'oauth-bearer') {
+    if (provider !== 'anthropic') {
+      // oauth-bearer is only meaningful for the anthropic upstream. Sending a
+      // Claude subscription OAT to any other host would leak the token to a
+      // third party — reject rather than forward it.
+      warnUpstreamOnce(
+        `oauth-misconfig:${provider}`,
+        `[Proxy][auth] oauth-bearer credential resolved for non-anthropic provider "${provider}"; refusing to forward it (subscription/oauth credentials are only valid for the anthropic upstream). Request will 401.`,
+      );
+      return null;
+    }
+    return {
+      'Authorization': `Bearer ${value}`,
+      'anthropic-version': ANTHROPIC_VERSION,
+      'anthropic-beta': ANTHROPIC_OAUTH_BETA,
+    };
+  }
+
+  // api-key — preserve each provider's existing header shape verbatim.
+  switch (provider) {
+    case 'anthropic':
+      return { 'x-api-key': value, 'anthropic-version': ANTHROPIC_VERSION };
+    case 'moonshot':
+      return { 'X-API-Key': value };
+    // openrouter/requesty also set `anthropic-version` at their call sites
+    // (left inline — it is a request-shape header, not an auth header).
+    default:
+      return { 'Authorization': `Bearer ${value}` };
+  }
+}
+
+/**
+ * Fail-closed guard for the OpenAI-compatible surfaces (/v1/responses,
+ * /v1/chat/completions). Those surfaces are ALWAYS non-anthropic
+ * (getChatCompletionsEndpoint returns null for anthropic) and forward the
+ * resolved credential as `Authorization: Bearer <value>` — so only an
+ * `api-key` credential may be used. A subscription/oauth credential (e.g. a
+ * Claude OAT) must be rejected, never leaked to a third-party host.
+ *
+ * Returns true when the credential may proceed on this surface. An absent
+ * credential returns true here (the caller's missing-key check 401s it).
+ */
+export function isCredentialAllowedOnOpenAiSurface(
+  cred: UpstreamCredential | undefined,
+): boolean {
+  return !cred || cred.method === 'api-key';
+}
+
+// ── Per-upstream credential status (GET /v1/upstreams) ────────────────────────
+// A read-only view of HOW a credential would resolve for each canonical
+// upstream — the profile/env/none precedence resolveUpstreamCredential itself
+// applies — WITHOUT ever returning the secret. Powers the vscode Upstreams
+// subtree + the optional live test below.
+
+// The 8 canonical upstreams. Built from a `Record<keyof ProviderKeys, …>` so
+// the compiler forces this list to stay exactly in sync with ProviderKeys
+// (every key required, no extras) — no drift, no runtime cost.
+const CANONICAL_UPSTREAM_ORDER: Record<keyof ProviderKeys, true> = {
+  anthropic: true,
+  moonshot: true,
+  openrouter: true,
+  requesty: true,
+  zai: true,
+  groq: true,
+  xai: true,
+  openai: true,
+};
+export const CANONICAL_UPSTREAMS = Object.keys(CANONICAL_UPSTREAM_ORDER) as (keyof ProviderKeys)[];
+
+/** Narrow an arbitrary provider string to one of the canonical upstreams. */
+export function isCanonicalUpstream(provider: string): provider is keyof ProviderKeys {
+  return (CANONICAL_UPSTREAMS as readonly string[]).includes(provider);
+}
+
+/** How a credential WOULD resolve for an upstream (never leaks the value). */
+export type UpstreamSource = 'profile' | 'env' | 'none';
+
+/**
+ * Non-secret status of one upstream's outbound credential:
+ *  - `linkedProfile`: the `LLM_ENDPOINT_PROFILE_<P>` profile id, or null.
+ *  - `source`: how a credential would resolve — a mapped profile ("profile",
+ *    even if that profile is missing/disabled), else a non-empty per-provider
+ *    env key ("env"), else "none".
+ *  - `method`: the outbound auth shape — the mapped profile's method, or
+ *    "api-key" for the env path, or null when nothing is configured.
+ *  - `present`: whether a credential actually resolves. Known for free for the
+ *    env ("env" ⇒ true) and none ("none" ⇒ false) sources; for a profile source
+ *    it is `null` unless `?probe=1` was requested, because confirming it reads
+ *    the OS keychain (one read per mapped profile).
+ */
+export interface UpstreamStatus {
+  provider: string;
+  linkedProfile: string | null;
+  source: UpstreamSource;
+  method: UpstreamAuthMethod | null;
+  present: boolean | null;
+}
+
+/**
+ * Whether a credential actually resolves for `provider`, as a pure boolean —
+ * reuses resolveUpstreamCredential's exact precedence (profile → keychain →
+ * env fallback) and NEVER exposes the value. For a profile source this reads
+ * the keychain, so it is only called on the `?probe=1` path.
+ */
+async function upstreamCredentialPresent(provider: string): Promise<boolean> {
+  const cred = await resolveUpstreamCredential(provider);
+  return Boolean(cred?.value);
+}
+
+/**
+ * Describe one upstream's credential status without returning a secret. The
+ * default (mapping-only) view is cheap — an env-var read plus, for a mapped
+ * provider, one auth-profiles.json read for the method. `present` for a profile
+ * source is filled only when `opts.probe` is set (it costs a keychain read).
+ */
+export async function describeUpstreamStatus(
+  provider: string,
+  opts: { probe: boolean },
+): Promise<UpstreamStatus> {
+  const linkedProfile = process.env[upstreamProfileEnvVar(provider)]?.trim() || null;
+  if (linkedProfile) {
+    // Profile metadata only (no keychain, no secret) — `method` and whether the
+    // mapped profile even exists. `source` stays "profile" regardless: a
+    // missing/disabled profile still describes intent, and `present` (on probe)
+    // tells the truth about whether it resolves.
+    const profile = await getAuthProfile(linkedProfile);
+    const present = opts.probe ? await upstreamCredentialPresent(provider) : null;
+    return { provider, linkedProfile, source: 'profile', method: profile?.method ?? null, present };
+  }
+  // getApiKey returns the env secret — used ONLY as a boolean here, never
+  // returned. A non-empty env key ⇒ present:true for free.
+  if (getApiKey(provider)) {
+    return { provider, linkedProfile: null, source: 'env', method: 'api-key', present: true };
+  }
+  return { provider, linkedProfile: null, source: 'none', method: null, present: false };
+}
+
+/** Status for all 8 canonical upstreams, in ProviderKeys order. */
+export async function collectUpstreamStatuses(opts: { probe: boolean }): Promise<UpstreamStatus[]> {
+  return Promise.all(CANONICAL_UPSTREAMS.map((provider) => describeUpstreamStatus(provider, opts)));
+}
+
+// ── Per-upstream live test (POST /v1/upstreams/:provider/test) ────────────────
+// Best-effort, time-boxed: the CHEAPEST authenticated call to an upstream (a
+// models-list GET / key-info GET — no token cost) using the resolved
+// credential, reporting only {ok, status, detail} — never a secret, never the
+// upstream body. Upstreams with no cheap safe probe return {ok:null,
+// reason:"no-probe"} rather than inventing a costly call.
+
+const UPSTREAM_TEST_TIMEOUT_MS = 4000;
+
+interface UpstreamProbe {
+  hostname: string;
+  path: string;
+}
+
+/**
+ * The cheapest authenticated GET that verifies an upstream credential. Most
+ * providers expose an OpenAI-style `/v1/models` that 401s without a valid key;
+ * anthropic has its native Models API; openrouter's `/api/v1/key` returns the
+ * key's own metadata. Returns null for a provider with no cheap safe probe
+ * (caller responds {ok:null, reason:"no-probe"}).
+ *
+ * NOTE (honesty): the zai / requesty paths are best-effort and unverified live
+ * — a wrong path surfaces honestly as a non-2xx `status` with a "not found"
+ * detail, distinct from the 401/403 "credential rejected" verdict.
+ */
+function getUpstreamProbe(provider: string): UpstreamProbe | null {
+  switch (provider) {
+    case 'anthropic':
+      return { hostname: 'api.anthropic.com', path: '/v1/models?limit=1' };
+    case 'moonshot':
+      return { hostname: 'api.moonshot.ai', path: '/v1/models' };
+    case 'openrouter':
+      return { hostname: 'openrouter.ai', path: '/api/v1/key' };
+    case 'requesty':
+      return { hostname: 'router.requesty.ai', path: '/v1/models' };
+    case 'zai':
+      return { hostname: 'open.bigmodel.cn', path: '/api/paas/v4/models' };
+    case 'groq':
+      return { hostname: 'api.groq.com', path: '/openai/v1/models' };
+    case 'xai':
+      return { hostname: 'api.x.ai', path: '/v1/models' };
+    case 'openai':
+      return { hostname: 'api.openai.com', path: '/v1/models' };
+    default:
+      return null;
+  }
+}
+
+/** The result of a per-upstream live test — a verdict, or "no cheap probe". */
+export type UpstreamTestResult =
+  | { ok: boolean; status: number; detail: string }
+  | { ok: null; reason: 'no-probe' };
+
+/** Human-readable interpretation of a probe's HTTP status (no secret). */
+function describeProbeStatus(status: number): string {
+  if (status >= 200 && status < 300) return 'authenticated ok';
+  if (status === 401 || status === 403) return 'credential rejected';
+  if (status === 404) return 'probe endpoint not found (best-effort path)';
+  if (status === 429) return 'rate limited';
+  return `unexpected status ${status}`;
+}
+
+/**
+ * Issue the time-boxed authenticated GET and resolve to {ok, status, detail}.
+ * The upstream body is drained and discarded — only the HTTP status shapes the
+ * verdict, so no account identifiers or secrets can leak through. Network
+ * errors / timeouts resolve (never reject) with ok:false and status 0.
+ */
+function probeUpstreamHttp(
+  probe: UpstreamProbe,
+  headers: Record<string, string>,
+  timeoutMs: number,
+): Promise<{ ok: boolean; status: number; detail: string }> {
+  return new Promise((resolvePromise) => {
+    const proxyReq = request(
+      { hostname: probe.hostname, port: 443, path: probe.path, method: 'GET', headers },
+      (proxyRes) => {
+        const status = proxyRes.statusCode ?? 0;
+        proxyRes.on('data', () => {}); // drain + discard — never parsed/returned
+        proxyRes.on('end', () =>
+          resolvePromise({ ok: status >= 200 && status < 300, status, detail: describeProbeStatus(status) }),
+        );
+      },
+    );
+    proxyReq.on('error', (err) =>
+      resolvePromise({ ok: false, status: 0, detail: `network error: ${err.message}` }),
+    );
+    proxyReq.setTimeout(timeoutMs, () => {
+      proxyReq.destroy();
+      resolvePromise({ ok: false, status: 0, detail: `timed out after ${timeoutMs}ms` });
+    });
+    proxyReq.end();
+  });
+}
+
+/**
+ * Run the cheapest authenticated call for `provider` and return a verdict.
+ * Resolves the credential through the same precedence as a real request, then
+ * uses buildUpstreamAuthHeaders for the exact per-provider header shape — so an
+ * oauth-bearer credential mis-mapped to a non-anthropic upstream is refused
+ * (never forwarded) rather than tested.
+ */
+export async function testUpstream(provider: string): Promise<UpstreamTestResult> {
+  const probe = getUpstreamProbe(provider);
+  if (!probe) return { ok: null, reason: 'no-probe' };
+  const cred = await resolveUpstreamCredential(provider);
+  if (!cred?.value) {
+    return { ok: false, status: 401, detail: 'no credential resolved for this upstream' };
+  }
+  const authHeaders = buildUpstreamAuthHeaders(provider, cred);
+  if (!authHeaders) {
+    return { ok: false, status: 401, detail: 'resolved credential is not forwardable to this upstream' };
+  }
+  return probeUpstreamHttp(probe, authHeaders, UPSTREAM_TEST_TIMEOUT_MS);
+}
+
+/**
+ * GET /v1/upstreams — write the per-upstream credential status list. Async
+ * (profile/keychain reads) so it's invoked fire-and-forget from the sync
+ * server callback; a resolution failure returns a 500 rather than hanging.
+ */
+async function handleUpstreamsStatus(res: ServerResponse, opts: { probe: boolean }): Promise<void> {
+  try {
+    const data = await collectUpstreamStatuses(opts);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ object: 'list', probe: opts.probe, data }));
+  } catch (e) {
+    console.error('[Proxy][upstreams] status error', e);
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { type: 'api_error', message: e instanceof Error ? e.message : String(e) } }));
+  }
+}
+
+/**
+ * POST /v1/upstreams/:provider/test — write the per-upstream live-test verdict.
+ * A non-canonical provider is a 404; everything else returns {provider, ...}
+ * with the {ok, status, detail} or {ok:null, reason} shape.
+ */
+async function handleUpstreamTest(res: ServerResponse, provider: string): Promise<void> {
+  try {
+    if (!isCanonicalUpstream(provider)) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: `Unknown upstream "${provider}". Known: ${CANONICAL_UPSTREAMS.join(', ')}` } }));
+      return;
+    }
+    const result = await testUpstream(provider);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ provider, ...result }));
+  } catch (e) {
+    console.error('[Proxy][upstreams] test error', e);
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { type: 'api_error', message: e instanceof Error ? e.message : String(e) } }));
+  }
+}
+
 /**
  * Handles POST /v1/responses (and /v1/{pack}/responses).
  *
@@ -414,7 +923,7 @@ function handleResponsesRequest(
     body += chunk;
   });
 
-  req.on('end', () => {
+  req.on('end', async () => {
     try {
       const payload = JSON.parse(body);
       const validated = validateResponsesRequest(payload);
@@ -453,7 +962,18 @@ function handleResponsesRequest(
         return;
       }
       const { hostname, path } = endpoint;
-      const targetApiKey = getApiKey(resolvedTarget.provider);
+      const cred = await resolveUpstreamCredential(resolvedTarget.provider);
+      const targetApiKey = cred?.value ?? '';
+      // Fail closed: this OpenAI-compatible surface is ALWAYS non-anthropic
+      // (getChatCompletionsEndpoint returns null for anthropic). A non-api-key
+      // credential (e.g. a Claude subscription OAT) must never be forwarded as a
+      // Bearer token to a third-party host — reject before sending the request.
+      if (!isCredentialAllowedOnOpenAiSurface(cred)) {
+        console.warn(`[Proxy][responses] refusing to forward a ${cred!.method} credential to non-anthropic provider "${resolvedTarget.provider}"; returning 401.`);
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'authentication_error', message: `Subscription/oauth credentials cannot be used on this OpenAI-compatible surface for provider "${resolvedTarget.provider}".` } }));
+        return;
+      }
       if (!targetApiKey) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { type: 'authentication_error', message: `No API key for provider "${resolvedTarget.provider}"` } }));
@@ -462,6 +982,10 @@ function handleResponsesRequest(
 
       console.log(`[Proxy Sortant][responses] Redirection vers ${resolvedTarget.provider} (${hostname}${path}) avec le modèle "${chatPayload.model}"`);
 
+      // OpenAI-compatible surface — always Authorization: Bearer (never a
+      // provider's Anthropic-surface header). buildUpstreamAuthHeaders is
+      // keyed on provider, not surface, so it is NOT used here; only the
+      // resolved credential value is (credentialRef-backed profiles included).
       const options: RequestOptions = {
         hostname,
         port: 443,
@@ -550,7 +1074,7 @@ function handleChatCompletionsRequest(
     body += chunk;
   });
 
-  req.on('end', () => {
+  req.on('end', async () => {
     try {
       const payload = JSON.parse(body);
 
@@ -588,7 +1112,18 @@ function handleChatCompletionsRequest(
         return;
       }
       const { hostname, path } = endpoint;
-      const targetApiKey = getApiKey(resolvedTarget.provider);
+      const cred = await resolveUpstreamCredential(resolvedTarget.provider);
+      const targetApiKey = cred?.value ?? '';
+      // Fail closed: this OpenAI-compatible surface is ALWAYS non-anthropic
+      // (getChatCompletionsEndpoint returns null for anthropic). A non-api-key
+      // credential (e.g. a Claude subscription OAT) must never be forwarded as a
+      // Bearer token to a third-party host — reject before sending the request.
+      if (!isCredentialAllowedOnOpenAiSurface(cred)) {
+        console.warn(`[Proxy][chat/completions] refusing to forward a ${cred!.method} credential to non-anthropic provider "${resolvedTarget.provider}"; returning 401.`);
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'authentication_error', message: `Subscription/oauth credentials cannot be used on this OpenAI-compatible surface for provider "${resolvedTarget.provider}".` } }));
+        return;
+      }
       if (!targetApiKey) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { type: 'authentication_error', message: `No API key for provider "${resolvedTarget.provider}"` } }));
@@ -597,6 +1132,9 @@ function handleChatCompletionsRequest(
 
       console.log(`[Proxy Sortant][chat/completions] Redirection vers ${resolvedTarget.provider} (${hostname}${path}) avec le modèle "${payload.model}"`);
 
+      // OpenAI-compatible surface — always Authorization: Bearer (see the
+      // /v1/responses handler above for why buildUpstreamAuthHeaders, which is
+      // keyed on provider not surface, is deliberately not used here).
       const options: RequestOptions = {
         hostname,
         port: 443,
@@ -808,7 +1346,7 @@ function adaptAnthropicToOpenAI(payload: any) {
 // contenu et n'affiche rien. On retire donc thinking/redacted_thinking côté proxy
 // pour ne garder que les blocs text/tool_use que le CLI sait afficher.
 
-function stripThinkingFromAnthropicJson(jsonStr: string): string {
+export function stripThinkingFromAnthropicJson(jsonStr: string): string {
   try {
     const obj = JSON.parse(jsonStr);
     if (Array.isArray(obj.content)) {
@@ -1302,7 +1840,7 @@ export function isPublicModelListPath(pathname: string): boolean {
 const server = createServer((req, res) => {
   // CORS & Options
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key, Authorization, anthropic-version, X-Proxy-Access, X-Proxy-Pack, X-Proxy-Format, X-Edge-Auth');
 
   if (req.method === 'OPTIONS') {
@@ -1327,10 +1865,15 @@ const server = createServer((req, res) => {
   // selector. Only `/v1/models` (`/models`) — pack lists stay gated.
   const gateExempt = publicModels() && isPublicModelListPath(urlPath);
 
+  // Loopback bypass — the local-queue batch emulation calls this proxy's own
+  // /v1/messages over loopback and authenticates with a process-local token
+  // instead of a normal access/edge token (see batches.ts).
+  const internalLoopback = isInternalLoopbackRequest(req.headers);
+
   // Inbound access gate — 401 any non-preflight request without a valid token
   // when LLM_ENDPOINT_ACCESS_TOKENS is set. Gates discovery too (unless exempt
   // above), so pack config isn't readable unauthenticated.
-  if (!gateExempt && !isAuthorized(req.headers, accessTokens())) {
+  if (!gateExempt && !internalLoopback && !isAuthorized(req.headers, accessTokens())) {
     res.writeHead(401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: { type: 'authentication_error', message: 'Missing or invalid proxy access token.' } }));
     return;
@@ -1339,7 +1882,7 @@ const server = createServer((req, res) => {
   // Edge/WAF token gate — independent of the inbound access gate above. Off
   // by default (unset LLM_ENDPOINT_EDGE_TOKENS); see buildWafRuleExpression
   // for enforcing the same policy at the edge instead of in-process.
-  if (!gateExempt && !isEdgeAuthorized(req.headers, edgeTokens())) {
+  if (!gateExempt && !internalLoopback && !isEdgeAuthorized(req.headers, edgeTokens())) {
     res.writeHead(401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: { type: 'authentication_error', message: 'Missing or invalid edge token.' } }));
     return;
@@ -1365,10 +1908,10 @@ const server = createServer((req, res) => {
 
   // 2. URL path /v1/{pack}/...
   if (!packId) {
-    const packPathMatch = urlPath.match(/^\/v1\/([^\/]+)(?:\/messages|\/models|\/chat\/completions|\/responses)?$/);
+    const packPathMatch = urlPath.match(/^\/v1\/([^\/]+)(?:\/messages(?:\/batches(?:\/[^/]+)?(?:\/(?:results|cancel))?)?|\/models|\/chat\/completions|\/responses)?$/);
     if (packPathMatch) {
       const potentialPack = packPathMatch[1];
-      const RESERVED_SEGMENTS = new Set(['v1', 'messages', 'models', 'packs', 'chat', 'responses']);
+      const RESERVED_SEGMENTS = new Set(['v1', 'messages', 'models', 'packs', 'chat', 'responses', 'upstreams']);
       if (potentialPack && !RESERVED_SEGMENTS.has(potentialPack)) {
         if (getMergedPackIds().includes(potentialPack)) {
           packId = potentialPack;
@@ -1466,6 +2009,59 @@ const server = createServer((req, res) => {
     return;
   }
 
+  // 0a. Hot-reload local packs from packs.local.json (POST). Gated by the same
+  // access token as every other route (checked above). Re-reads + validates the
+  // local envelope; unlike the fail-soft load path, an EXPLICIT reload gets a
+  // hard 400 with the field-scoped errors so a bad edit is legible instead of
+  // silently ignored. On success the cache is dropped and repopulated, and the
+  // reloaded pack ids + count are returned.
+  if (req.method === 'POST' && (urlPath === '/v1/packs/reload' || urlPath === '/packs/reload')) {
+    const load = readLocalPacksFromDisk();
+    if (load.errors.length > 0) {
+      // Leave the previously-cached packs in place — a rejected reload must not
+      // wipe a working config.
+      console.warn(`[Proxy] Pack reload rejected — ${load.errors.length} validation error(s).`);
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: 'Invalid packs.local.json', errors: load.errors } }));
+      return;
+    }
+    resetLocalPacksCache();
+    const localPacks = getLocalPacks(); // repopulate the cache from the now-validated file
+    const packIds = getMergedPackIds();
+    console.log(`[Proxy] Reloaded packs from ${load.path ?? '(no local file)'} — ${packIds.length} packs (${Object.keys(localPacks).length} local).`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      object: 'packs.reload',
+      reloaded: true,
+      source: load.path,
+      local_pack_ids: Object.keys(localPacks),
+      pack_ids: packIds,
+      count: packIds.length,
+    }));
+    return;
+  }
+
+  // 0d. Per-upstream credential status (GET /v1/upstreams). Reports, for each
+  // canonical upstream, how a credential WOULD resolve (linked profile / env /
+  // none + method) WITHOUT returning a secret. `?probe=1` adds the profile-
+  // source `present` boolean at the cost of a keychain read; the default view
+  // stays mapping-only. Gated by the same access token as every route (checked
+  // above) — NOT covered by the /v1/models public exemption.
+  if (req.method === 'GET' && (urlPath === '/v1/upstreams' || urlPath === '/upstreams')) {
+    const probe = parsedUrl.searchParams.get('probe') === '1';
+    void handleUpstreamsStatus(res, { probe });
+    return;
+  }
+
+  // 0e. Optional per-upstream live test (POST /v1/upstreams/:provider/test).
+  // The cheapest authenticated call to the upstream; {ok, status, detail} or
+  // {ok:null, reason:"no-probe"}. Gated like every other route.
+  const upstreamTestMatch = urlPath.match(/^\/(?:v1\/)?upstreams\/([^/]+)\/test$/);
+  if (req.method === 'POST' && upstreamTestMatch) {
+    void handleUpstreamTest(res, upstreamTestMatch[1]!);
+    return;
+  }
+
   // 1. Endpoint /v1/models pour la découverte des modèles
   // Supporte aussi /v1/{pack}/models pour la sélection de pack via URL path
   if (req.method === 'GET' && (urlPath === '/v1/models' || urlPath === '/models' || urlPath.endsWith('/models'))) {
@@ -1487,6 +2083,11 @@ const server = createServer((req, res) => {
             created_at: '2026-02-04T00:00:00Z',
             type: 'model',
             capabilities: {},
+            // Champs officiels du schéma Anthropic ModelInfo (docs
+            // /en/api/models-list) : max_input_tokens = fenêtre de contexte,
+            // max_tokens = budget de sortie max. Absents si non vérifiés.
+            ...(target.contextWindow !== undefined ? { max_input_tokens: target.contextWindow } : {}),
+            ...(target.maxOutputTokens !== undefined ? { max_tokens: target.maxOutputTokens } : {}),
           };
         }),
         has_more: false,
@@ -1506,6 +2107,9 @@ const server = createServer((req, res) => {
           object: 'model',
           created: 1718841600,
           owned_by: target.provider,
+          // Verified per-route limits only — fields are absent when unknown.
+          ...(target.contextWindow !== undefined ? { context_length: target.contextWindow } : {}),
+          ...(target.maxOutputTokens !== undefined ? { max_completion_tokens: target.maxOutputTokens } : {}),
         }))
       };
       console.log(`[Proxy] Returning standard OpenAI-formatted model list.`);
@@ -1513,6 +2117,31 @@ const server = createServer((req, res) => {
       res.end(JSON.stringify(openaiModelsResponse));
       return;
     }
+  }
+
+  // 1b. /v1/messages/batches* — matched before the generic '/messages' check
+  // below, since a batches path never ends in exactly '/messages'.
+  if (
+    handleBatchesRequest(
+      req,
+      res,
+      {
+        activePack,
+        parsedUrl,
+        queryModelCode,
+        queryProvider,
+        forcedAliasCode,
+        anthropicFormat,
+        queryTools,
+        queryNoTools,
+        headerTools,
+        headerNoTools,
+        headerExcludeTools,
+      },
+      urlPath,
+    )
+  ) {
+    return;
   }
 
   // 2. Traitement des messages
@@ -1527,7 +2156,7 @@ const server = createServer((req, res) => {
     body += chunk;
   });
 
-  req.on('end', () => {
+  req.on('end', async () => {
     try {
       const payload = JSON.parse(body);
 
@@ -1549,10 +2178,54 @@ const server = createServer((req, res) => {
         return;
       }
 
+      // Détail de la requête : modèle résolu + budget de sortie demandé. Rend
+      // visibles les tours "warm-up" (max_tokens:1) et les appels coûteux dans
+      // les logs sans capture de corps.
+      //
+      // Short-circuit warm-up (LLM_ENDPOINT_SHORTCIRCUIT_WARMUP=1) : les clients
+      // type Claude Desktop sondent chaque modèle du pack avec des pings
+      // max_tokens<=1 non-streaming avant/autour du vrai message — chaque ping
+      // paie un aller-retour upstream complet (1-6 s mesurés). Quand le flag est
+      // actif, le proxy répond localement sans upstream : disponibilité du
+      // modèle toujours "OK", rafale quasi gratuite.
+      if (
+        process.env.LLM_ENDPOINT_SHORTCIRCUIT_WARMUP === '1' &&
+        payload.stream !== true &&
+        typeof payload.max_tokens === 'number' && payload.max_tokens <= 1 &&
+        Array.isArray(payload.messages) && payload.messages.length <= 2
+      ) {
+        console.log(`[Proxy] warm-up short-circuit: model=${resolvedTarget.provider}:${resolvedTarget.model} max_tokens=${payload.max_tokens} (no upstream call)`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          id: `msg_warmup_${Date.now().toString(36)}`,
+          type: 'message',
+          role: 'assistant',
+          model: payload.model,
+          content: [{ type: 'text', text: 'ok' }],
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        }));
+        return;
+      }
+      {
+        const mt = payload.max_tokens;
+        const mtNote = (typeof mt === 'number' && mt <= 4) ? '  <== warm-up/1-token' : '';
+        console.log(
+          `[Proxy] req: model=${resolvedTarget.provider}:${resolvedTarget.model}` +
+            ` max_tokens=${typeof mt === 'number' ? mt : 'unset'}` +
+            ` stream=${payload.stream === true ? 'true' : 'false'}` +
+            ` msgs=${Array.isArray(payload.messages) ? payload.messages.length : '?'}` +
+            ` tools=${Array.isArray(payload.tools) ? payload.tools.length : 0}` +
+            mtNote
+        );
+      }
+
       // Configuration de la requête sortante selon le provider résolu
       let hostname = '';
       let path = '';
       let targetApiKey = '';
+      let cred: UpstreamCredential | undefined;
       let headers: Record<string, string> = { 'Content-Type': 'application/json' };
 
       payload.model = resolvedTarget.model;
@@ -1566,6 +2239,8 @@ const server = createServer((req, res) => {
         headerTools,
         headerNoTools,
         headerExcludeTools,
+        packToolsExclude: activePack.toolsExclude,
+        packToolsAllow: activePack.toolsAllow,
       });
 
       switch (resolvedTarget.provider) {
@@ -1573,9 +2248,9 @@ const server = createServer((req, res) => {
           // Anthropic natif — pas de transformation de forme requise.
           hostname = 'api.anthropic.com';
           path = '/v1/messages';
-          targetApiKey = getApiKey('anthropic');
-          headers['x-api-key'] = targetApiKey;
-          headers['anthropic-version'] = '2023-06-01';
+          cred = await resolveUpstreamCredential('anthropic');
+          targetApiKey = cred?.value ?? '';
+          if (cred) Object.assign(headers, buildUpstreamAuthHeaders('anthropic', cred));
           break;
 
         case 'openrouter':
@@ -1586,8 +2261,9 @@ const server = createServer((req, res) => {
           // tool_choice, stop_sequences passent en natif Anthropic côté OpenRouter.
           hostname = 'openrouter.ai';
           path = '/api/v1/messages';
-          targetApiKey = getApiKey('openrouter');
-          headers['Authorization'] = `Bearer ${targetApiKey}`;
+          cred = await resolveUpstreamCredential('openrouter');
+          targetApiKey = cred?.value ?? '';
+          if (cred) Object.assign(headers, buildUpstreamAuthHeaders('openrouter', cred));
           headers['anthropic-version'] = '2023-06-01';
           break;
 
@@ -1598,16 +2274,18 @@ const server = createServer((req, res) => {
           // request/response, tools/system/thinking passent en natif.
           hostname = 'router.requesty.ai';
           path = '/v1/messages';
-          targetApiKey = getApiKey('requesty');
-          headers['Authorization'] = `Bearer ${targetApiKey}`;
+          cred = await resolveUpstreamCredential('requesty');
+          targetApiKey = cred?.value ?? '';
+          if (cred) Object.assign(headers, buildUpstreamAuthHeaders('requesty', cred));
           headers['anthropic-version'] = '2023-06-01';
           break;
 
         case 'zai':
           hostname = 'open.bigmodel.cn';
           path = '/api/paas/v4/chat/completions'; // Zhipu AI standard path
-          targetApiKey = getApiKey('zai');
-          headers['Authorization'] = `Bearer ${targetApiKey}`;
+          cred = await resolveUpstreamCredential('zai');
+          targetApiKey = cred?.value ?? '';
+          if (cred) Object.assign(headers, buildUpstreamAuthHeaders('zai', cred));
           adaptAnthropicToOpenAI(payload);
 
           // Transformation des tools Anthropic pour ZAI
@@ -1631,8 +2309,9 @@ const server = createServer((req, res) => {
         case 'groq':
           hostname = 'api.groq.com';
           path = '/openai/v1/chat/completions'; // Groq utilise l'API OpenAI standard
-          targetApiKey = getApiKey('groq');
-          headers['Authorization'] = `Bearer ${targetApiKey}`;
+          cred = await resolveUpstreamCredential('groq');
+          targetApiKey = cred?.value ?? '';
+          if (cred) Object.assign(headers, buildUpstreamAuthHeaders('groq', cred));
           adaptAnthropicToOpenAI(payload);
           // Raisonnement modèle-aware — Groq a 3 familles aux APIs incompatibles :
           //  - qwen/qwen3.6-27b : reasoning_effort:"none" coupe le raisonnement à la source
@@ -1670,8 +2349,9 @@ const server = createServer((req, res) => {
         case 'xai':
           hostname = 'api.x.ai';
           path = '/v1/chat/completions'; // xAI uses OpenAI-compatible API
-          targetApiKey = getApiKey('xai');
-          headers['Authorization'] = `Bearer ${targetApiKey}`;
+          cred = await resolveUpstreamCredential('xai');
+          targetApiKey = cred?.value ?? '';
+          if (cred) Object.assign(headers, buildUpstreamAuthHeaders('xai', cred));
           adaptAnthropicToOpenAI(payload);
 
           // Transformation des tools Anthropic pour xAI (format OpenAI)
@@ -1695,8 +2375,9 @@ const server = createServer((req, res) => {
         case 'openai':
           hostname = 'api.openai.com';
           path = '/v1/chat/completions';
-          targetApiKey = getApiKey('openai');
-          headers['Authorization'] = `Bearer ${targetApiKey}`;
+          cred = await resolveUpstreamCredential('openai');
+          targetApiKey = cred?.value ?? '';
+          if (cred) Object.assign(headers, buildUpstreamAuthHeaders('openai', cred));
           adaptAnthropicToOpenAI(payload);
 
           // Transformation des tools Anthropic pour OpenAI (format function)
@@ -1721,8 +2402,9 @@ const server = createServer((req, res) => {
         default:
           hostname = 'api.moonshot.ai';
           path = '/anthropic/v1/messages'; // Mode d'émulation Anthropic natif (Pas besoin de changer les tools)
-          targetApiKey = getApiKey('moonshot');
-          headers['X-API-Key'] = targetApiKey;
+          cred = await resolveUpstreamCredential('moonshot');
+          targetApiKey = cred?.value ?? '';
+          if (cred) Object.assign(headers, buildUpstreamAuthHeaders('moonshot', cred));
           headers['Accept'] = 'text/event-stream';
 
           if (!payload.max_tokens) {
@@ -1732,6 +2414,17 @@ const server = createServer((req, res) => {
             payload.thinking = { type: 'enabled', budget_tokens: 4000 };
           }
           break;
+      }
+
+      // Fail closed: buildUpstreamAuthHeaders returns null when a non-api-key
+      // credential (e.g. a Claude subscription OAT) is resolved for a
+      // non-anthropic upstream. The per-provider Object.assign above already
+      // refused to emit it — but we must NOT fall through to an unauthenticated
+      // https.request either. 401 before any request is sent.
+      if (cred && buildUpstreamAuthHeaders(resolvedTarget.provider, cred) === null) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'authentication_error', message: `The resolved credential for provider "${resolvedTarget.provider}" cannot be used on this upstream (subscription/oauth credentials are only valid for the anthropic upstream).` } }));
+        return;
       }
 
       if (!targetApiKey) {
@@ -1758,8 +2451,23 @@ const server = createServer((req, res) => {
           : 0;
 
       const sendUpstream = (): void => {
+      // Chronométrage du tour upstream : ttfb = premier octet de réponse,
+      // total = fin du corps. Gate LLM_ENDPOINT_DEBUG_TIMING=1 — diagnostic,
+      // pas du bruit de production.
+      const upstreamStart = Date.now();
+      let upstreamTtfbMs: number | null = null;
       const proxyReq = request(options, (proxyRes) => {
         const status = proxyRes.statusCode || 200;
+        if (upstreamTtfbMs === null) upstreamTtfbMs = Date.now() - upstreamStart;
+        proxyRes.on('end', () => {
+          if (process.env.LLM_ENDPOINT_DEBUG_TIMING === '1') {
+            console.log(
+              `[Proxy] upstream done: ${resolvedTarget.provider}:${resolvedTarget.model}` +
+                ` status=${status} ttfb=${upstreamTtfbMs}ms total=${Date.now() - upstreamStart}ms` +
+                ` stream=${payload.stream === true ? 'true' : 'false'}`
+            );
+          }
+        });
         const contentType = proxyRes.headers['content-type'] as string || '';
         const isStreaming = (payload.stream === true) && /text\/event-stream/i.test(contentType);
         /** Rejoue le tour. Retourne false si le budget est épuisé. */
@@ -1908,6 +2616,9 @@ export { isEmptyAnthropicTurn, resolveEmptyTurnRetries };
 
 /** Démarre le proxy sur `port` (défaut : {@link PORT}). Renvoie le serveur en écoute. */
 export function start(port: number = PORT) {
+  void resumeIncompleteLocalQueueBatches().catch((err: unknown) => {
+    console.error('[Proxy][batches] boot reconciliation failed', err);
+  });
   return server.listen(port, () => {
     console.log(`[Proxy Server] Live on http://localhost:${port}`);
     console.log(`[Proxy Server] Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses surfaces configured.`);

@@ -13,11 +13,21 @@ import {
   changesetRulesBlock,
   hardRulesBlock,
   restPostReviewBlock,
+  reviewerModelFor,
   sandboxRefFor,
   workspaceCwdFor,
 } from "../lib/sandbox-agent.mjs"
 
-const sandboxRef = (bindings) => sandboxRefFor(bindings?.input?.reviewConfig, "review")
+// placement "local" is always a HOST spawn on the CALLER's daemon, in the
+// caller's cwd — regardless of what reviewConfig says. This is a deliberate
+// second line of defense: the daemon caller (scripts/agentflow/primitives/
+// review.mjs#reviewViaDaemon) already strips reviewerSandbox before sending
+// reviewConfig, but this step must not depend on that — a mis-scoped or
+// stale reviewConfig reaching here must never accidentally route a "local"
+// run through sandboxRefFor (which would try to provision e2b, something a
+// dev's own daemon has no way to do).
+const sandboxRef = (bindings) =>
+  bindings?.input?.placement === "local" ? undefined : sandboxRefFor(bindings?.input?.reviewConfig, "review")
 
 const inSandbox = (bindings) => sandboxRef(bindings) !== undefined
 
@@ -231,7 +241,7 @@ export default {
   name: "Agentproto PR Review",
   id: "agentproto-pr-review",
   description:
-    "Agentic PR reviewer that reads the diff, writes an accurate changeset, and posts a structured review (APPROVE / REQUEST_CHANGES / COMMENT). Driven by claude-code over the agentproto daemon.",
+    "Agentic PR reviewer that reads the diff, writes an accurate changeset, and posts a structured review (APPROVE / REQUEST_CHANGES / COMMENT). Driven by the configured reviewerAdapter over the agentproto daemon.",
   version: "0.1.0",
   inputs: {
     placement: {
@@ -268,14 +278,20 @@ export default {
       // Claude Code CLI, which no-ops headless in CI ("Authentication
       // required" / empty turn) — claude-sdk (SDK-based) authenticates headless.
       adapter: (b) => adapterFor(b?.input?.reviewConfig, "review"),
+      // Model id override (reviewerModel in .github/agentic-review.json) —
+      // same selector semantics as `adapter`; undefined ⇒ adapter default.
+      model: (b) => reviewerModelFor(b?.input?.reviewConfig, "review"),
       // Sandbox placement (reviewerSandbox, e.g. "e2b"): the daemon-internal
       // spawn failure on the CI runner does not reproduce inside a sandbox —
       // the box's OWN daemon spawns the adapter (proven via agent_start
       // sandbox:"local", 5/6 adapters green). undefined ⇒ host spawn.
       sandbox: sandboxRef,
       // A remote box can't see the runner's checkout path — land in the box
-      // workspace and let the Phase 0 bootstrap clone the repo there.
-      cwd: (b) => workspaceCwdFor(b?.input?.reviewConfig, "review"),
+      // workspace and let the Phase 0 bootstrap clone the repo there. Same
+      // "local" override as sandboxRef above — undefined ⇒ run in the
+      // caller's own cwd (its already-checked-out worktree).
+      cwd: (b) =>
+        b?.input?.placement === "local" ? undefined : workspaceCwdFor(b?.input?.reviewConfig, "review"),
       prompt: reviewPrompt,
     },
   ],

@@ -24,7 +24,10 @@ export type AuthMethod = "oauth-bearer" | "api-key"
  *  {@link AuthProfile.models}) services every model the profile is otherwise
  *  eligible for — today's behavior. `mode: "allow"` narrows the profile to
  *  exactly `ids`: it services a model only when the model's catalog identity
- *  (its `vendor/product` or its route-qualified `ref`) is in the list. The
+ *  — its route-qualified `ref` (`z-ai/glm-5.2@openrouter`), its
+ *  route-independent `vendor/product` (`z-ai/glm-5.2`), or (DIRECT routes
+ *  only) the bare product (`claude-opus-4-8`) — is in the list; see
+ *  `profileAllowsModel` in `catalog-models.ts` for the exact match rule. The
  *  intersection is applied INSIDE the catalog eligibility join
  *  (`catalog-models.ts`), never at the endpoint/method predicate here, so a
  *  curated profile stays endpoint-eligible but only makes its chosen model

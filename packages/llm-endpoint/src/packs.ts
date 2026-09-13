@@ -23,6 +23,17 @@ export interface ModelRoute {
    * a Claude family for the generated alias; ignored on every routing path.
    */
   tier?: ModelTier;
+  /**
+   * Verified context window of the upstream route, in tokens. Surfaced in the
+   * /v1/models metadata when present; never guessed — leave absent when the
+   * limit for this specific route is not verified.
+   */
+  contextWindow?: number;
+  /**
+   * Verified max output tokens for the upstream route, in tokens. Same
+   * honesty rule as {@link ModelRoute.contextWindow}.
+   */
+  maxOutputTokens?: number;
 }
 
 /**
@@ -43,6 +54,20 @@ export interface ModelPack {
   label: string;
   description: string;
   models: Record<string, ModelRoute>;
+  /**
+   * Exclude-list of tool-name patterns applied to every request routed through
+   * this pack (wildcards allowed, e.g. "mcp__*"). Cuts upstream prefill cost
+   * when a client (e.g. Claude Desktop) sends hundreds of tool definitions.
+   * Applied after per-request header/query trims so an explicit client
+   * X-Proxy-Tools allow-list still wins.
+   */
+  toolsExclude?: string[];
+  /**
+   * Allow-list of tool-name patterns applied to every request routed through
+   * this pack (wildcards allowed). Kept only when no toolsAllow is set on the
+   * request itself; a request-level ?tools=/X-Proxy-Tools always wins.
+   */
+  toolsAllow?: string[];
 }
 
 // ── Official packs (committed) ─────────────────────────────────────────────
@@ -55,6 +80,7 @@ export const defaultPack: ModelPack = {
   label: 'Default transparent routes',
   description: 'Provider-transparent model IDs routed directly to each backend',
   models: {
+    'kimi-k3': { provider: 'moonshot', model: 'kimi-k3' },
     'kimi-k2.7-code': { provider: 'moonshot', model: 'kimi-k2.7-code' },
     'kimi-k2.6': { provider: 'moonshot', model: 'kimi-k2.6' },
     'llama-3.3-70b-versatile': { provider: 'groq', model: 'llama-3.3-70b-versatile' },
@@ -63,6 +89,11 @@ export const defaultPack: ModelPack = {
     'gpt-4.1': { provider: 'openai', model: 'gpt-4.1' },
     'gpt-4o': { provider: 'openai', model: 'gpt-4o' },
     'gpt-4o-mini': { provider: 'openai', model: 'gpt-4o-mini' },
+    // OpenRouter-hosted GLM. Also reachable via the transparent
+    // "openrouter/z-ai/glm-5.3-flash" reference, but a plain code is needed
+    // for the `@llm-endpoint` daemon route, which forwards a bare
+    // "<vendor>/<model>" string (one slash only) as the model field.
+    'z-ai/glm-5.3-flash': { provider: 'openrouter', model: 'z-ai/glm-5.3-flash' },
   },
 };
 
@@ -284,6 +315,158 @@ export function buildMappingFromPack(pack: ModelPack): Record<string, ModelRoute
  */
 export function listPackIds(): string[] {
   return Object.keys(PACK_REGISTRY);
+}
+
+// ── Local-pack schema validation ────────────────────────────────────────────
+// Local packs come from a hand-edited, gitignored packs.local.json, so they are
+// untrusted input. The repo ships no schema library, so these are hand-written
+// typed guards over the ModelPack/ModelRoute shape. Each error names the
+// offending pack + field so a fail-soft load can warn precisely and the reload
+// endpoint (POST /v1/packs/reload) can return a legible 400.
+
+/** Narrow an unknown to a plain object (records, not arrays/null). */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** The four legal ModelRoute tiers, as a guard so `tier` narrows to ModelTier. */
+function isModelTier(value: string): value is ModelTier {
+  return value === 'extra-high' || value === 'high' || value === 'medium' || value === 'small';
+}
+
+/**
+ * Validate a single ModelRoute, appending `<where>.<field>`-scoped messages to
+ * `errors`. Returns the rebuilt, typed route on success, else null — the route
+ * is reconstructed from the validated primitives rather than cast, so the
+ * caller gets a real ModelRoute without an `as`.
+ */
+function validateModelRoute(route: unknown, where: string, errors: string[]): ModelRoute | null {
+  if (!isRecord(route)) {
+    errors.push(`${where}: expected an object, got ${route === null ? 'null' : typeof route}`);
+    return null;
+  }
+  const { provider, model, equivalentClaudeName, tier, contextWindow, maxOutputTokens } = route;
+  let ok = true;
+  if (typeof provider !== 'string' || provider.length === 0) {
+    errors.push(`${where}.provider: required non-empty string`);
+    ok = false;
+  }
+  if (typeof model !== 'string' || model.length === 0) {
+    errors.push(`${where}.model: required non-empty string`);
+    ok = false;
+  }
+  if (equivalentClaudeName !== undefined && typeof equivalentClaudeName !== 'string') {
+    errors.push(`${where}.equivalentClaudeName: must be a string when present`);
+    ok = false;
+  }
+  if (tier !== undefined && !(typeof tier === 'string' && isModelTier(tier))) {
+    errors.push(`${where}.tier: must be one of extra-high|high|medium|small when present`);
+    ok = false;
+  }
+  if (contextWindow !== undefined && !(typeof contextWindow === 'number' && Number.isFinite(contextWindow) && contextWindow > 0)) {
+    errors.push(`${where}.contextWindow: must be a positive finite number when present`);
+    ok = false;
+  }
+  if (maxOutputTokens !== undefined && !(typeof maxOutputTokens === 'number' && Number.isFinite(maxOutputTokens) && maxOutputTokens > 0)) {
+    errors.push(`${where}.maxOutputTokens: must be a positive finite number when present`);
+    ok = false;
+  }
+  if (!ok || typeof provider !== 'string' || typeof model !== 'string') return null;
+  const built: ModelRoute = { provider, model };
+  if (typeof equivalentClaudeName === 'string') built.equivalentClaudeName = equivalentClaudeName;
+  if (typeof tier === 'string' && isModelTier(tier)) built.tier = tier;
+  if (typeof contextWindow === 'number' && Number.isFinite(contextWindow) && contextWindow > 0) {
+    built.contextWindow = contextWindow;
+  }
+  if (typeof maxOutputTokens === 'number' && Number.isFinite(maxOutputTokens) && maxOutputTokens > 0) {
+    built.maxOutputTokens = maxOutputTokens;
+  }
+  return built;
+}
+
+/** The outcome of validating one pack: the rebuilt typed pack, or its errors. */
+export type ModelPackValidation =
+  | { ok: true; pack: ModelPack }
+  | { ok: false; errors: string[] };
+
+/**
+ * Validate a single ModelPack shape. On success returns the rebuilt, typed
+ * pack; on failure returns the collected, field-scoped errors. `label` scopes
+ * the messages (e.g. the pack key from the envelope). Accepts a built-in pack
+ * and rejects anything missing an id / a valid models map / a valid route.
+ */
+export function validateModelPack(pack: unknown, label = 'pack'): ModelPackValidation {
+  const errors: string[] = [];
+  if (!isRecord(pack)) {
+    return { ok: false, errors: [`${label}: expected an object, got ${pack === null ? 'null' : typeof pack}`] };
+  }
+  const { id, label: packLabel, description, models, toolsExclude, toolsAllow } = pack;
+  if (typeof id !== 'string' || id.length === 0) errors.push(`${label}.id: required non-empty string`);
+  if (typeof packLabel !== 'string') errors.push(`${label}.label: required string`);
+  if (typeof description !== 'string') errors.push(`${label}.description: required string`);
+  /** Validates an optional string[] of non-empty tool-name patterns. */
+  const validPatternList = (v: unknown): v is string[] =>
+    Array.isArray(v) && v.every((p) => typeof p === 'string' && p.length > 0);
+  if (toolsExclude !== undefined && !validPatternList(toolsExclude)) {
+    errors.push(`${label}.toolsExclude: must be an array of non-empty strings when present`);
+  }
+  if (toolsAllow !== undefined && !validPatternList(toolsAllow)) {
+    errors.push(`${label}.toolsAllow: must be an array of non-empty strings when present`);
+  }
+  const builtModels: Record<string, ModelRoute> = {};
+  if (!isRecord(models)) {
+    errors.push(`${label}.models: required object mapping code → route`);
+  } else {
+    for (const [code, route] of Object.entries(models)) {
+      const built = validateModelRoute(route, `${label}.models.${code}`, errors);
+      if (built) builtModels[code] = built;
+    }
+  }
+  if (errors.length > 0) return { ok: false, errors };
+  // Re-narrow the primitives (the imperative checks above don't flow through) to
+  // rebuild a typed ModelPack with no cast. Unreachable else — errors would be set.
+  if (typeof id === 'string' && typeof packLabel === 'string' && typeof description === 'string') {
+    return {
+      ok: true,
+      pack: {
+        id,
+        label: packLabel,
+        description,
+        models: builtModels,
+        ...(validPatternList(toolsExclude) ? { toolsExclude } : {}),
+        ...(validPatternList(toolsAllow) ? { toolsAllow } : {}),
+      },
+    };
+  }
+  return { ok: false, errors: [`${label}: failed final type narrowing`] };
+}
+
+/** The outcome of validating a `{ packs: {...} }` envelope. */
+export type LocalPacksValidation =
+  | { ok: true; packs: Record<string, ModelPack> }
+  | { ok: false; errors: string[] };
+
+/**
+ * Validate the `{ packs: { <id>: ModelPack } }` envelope read from
+ * packs.local.json. On success returns the typed pack map; on failure returns
+ * the collected, field-scoped errors from every invalid pack.
+ */
+export function validateLocalPacks(envelope: unknown): LocalPacksValidation {
+  if (!isRecord(envelope)) {
+    return { ok: false, errors: [`root: expected an object with a "packs" key, got ${envelope === null ? 'null' : typeof envelope}`] };
+  }
+  if (!isRecord(envelope.packs)) {
+    return { ok: false, errors: ['packs: expected an object mapping id → pack'] };
+  }
+  const errors: string[] = [];
+  const packs: Record<string, ModelPack> = {};
+  for (const [id, pack] of Object.entries(envelope.packs)) {
+    const result = validateModelPack(pack, `packs.${id}`);
+    if (result.ok) packs[id] = result.pack;
+    else errors.push(...result.errors);
+  }
+  if (errors.length > 0) return { ok: false, errors };
+  return { ok: true, packs };
 }
 
 /**

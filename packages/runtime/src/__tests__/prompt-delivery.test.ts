@@ -238,7 +238,13 @@ describe("prompt delivery — busy session (bug 2)", () => {
     reg.shutdown()
   })
 
-  it("MCP agent_prompt: a prompt sent during an active turn gets a loud busy error, not a silent drop", async () => {
+  // This test predates queue-by-default: it was written when `agent_prompt`
+  // rejected every mid-turn prompt, to prove the rejection was LOUD rather
+  // than a silent drop. That concern now has two answers, and both are
+  // covered: the default path queues and delivers (see
+  // `agent-prompt-queue.test.ts`), and the `queue: false` opt-out still
+  // errors — which is what this one pins, hence the explicit flag below.
+  it("MCP agent_prompt with queue:false: a prompt sent during an active turn gets a loud busy error, not a silent drop", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const { agent, release } = hangingAgentSession()
     const desc = registry.spawnAgent({
@@ -264,7 +270,11 @@ describe("prompt delivery — busy session (bug 2)", () => {
 
     const second = (await client.callTool({
       name: "agent_prompt",
-      arguments: { sessionId: desc.id, prompt: "second (sent via HTTP arm in the real repro)" },
+      arguments: {
+        sessionId: desc.id,
+        prompt: "second (sent via HTTP arm in the real repro)",
+        queue: false,
+      },
     })) as { isError?: boolean; content?: Array<{ type: string; text?: string }> }
     expect(second.isError).toBe(true)
     expect(second.content?.[0]?.text).toContain("mid-turn")

@@ -6,7 +6,10 @@
 import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
-import type { AuthProfileSummary } from "../client/types.js"
+import type {
+  AuthProfileSummary,
+  CatalogModelsResponse,
+} from "../client/types.js"
 import {
   buildPresetNodes,
   buildProfileNodesWithProfiles,
@@ -25,14 +28,71 @@ import {
   type AuthProfileTreeNode,
   type ServicedModel,
 } from "./authProfilesTree.logic.js"
+import {
+  buildCatalogPricingIndex,
+  emptyPricingIndex,
+  lookupModelPricing,
+  modelRowDescription,
+  parseDiscoveredModels,
+  parseRouterPacks,
+  parseRouterUpstreams,
+  resolveRouterModelChildren,
+  resolveRouterPackChildren,
+  resolveRouterUpstreamChildren,
+  routerContextValue,
+  routerDescription,
+  routerIcon,
+  routerLabel,
+  routerPackDescription,
+  routerServing,
+  routerTooltip,
+  routerUpstreamDescription,
+  routerUpstreamIcon,
+  routerUpstreamTooltip,
+  type CatalogPricingIndex,
+  type DiscoveredModel,
+  type LlmEndpointStatusResult,
+  type ModelsFetcher,
+  type PacksFetcher,
+  type RouterPack,
+  type RouterUpstream,
+  type UpstreamsFetcher,
+} from "./localRouterTree.logic.js"
 
 const PRESETS_GROUP: AuthProfileGroup = { kind: "presets", label: "Provider Presets" }
 const PROFILES_GROUP: AuthProfileGroup = { kind: "profiles", label: "Model Profiles" }
+
+async function defaultFetchModels(baseUrl: string): Promise<DiscoveredModel[]> {
+  const res = await fetch(`${baseUrl}/v1/models`, { signal: AbortSignal.timeout(5_000) })
+  if (!res.ok) {
+    throw new Error(`GET ${baseUrl}/v1/models failed: HTTP ${res.status}`)
+  }
+  return parseDiscoveredModels(await res.json())
+}
+
+async function defaultFetchPacks(baseUrl: string): Promise<RouterPack[]> {
+  const res = await fetch(`${baseUrl}/v1/packs`, { signal: AbortSignal.timeout(5_000) })
+  if (!res.ok) {
+    throw new Error(`GET ${baseUrl}/v1/packs failed: HTTP ${res.status}`)
+  }
+  return parseRouterPacks(await res.json())
+}
+
+async function defaultFetchUpstreams(baseUrl: string): Promise<RouterUpstream[]> {
+  const res = await fetch(`${baseUrl}/v1/upstreams`, { signal: AbortSignal.timeout(5_000) })
+  if (!res.ok) {
+    throw new Error(`GET ${baseUrl}/v1/upstreams failed: HTTP ${res.status}`)
+  }
+  return parseRouterUpstreams(await res.json())
+}
 
 export class AuthProfilesTreeProvider
   implements vscode.TreeDataProvider<AuthProfileTreeNode>, vscode.Disposable
 {
   private readonly client: DaemonClient
+  private readonly fetchModels: ModelsFetcher
+  private readonly fetchPacks: PacksFetcher
+  private readonly fetchUpstreams: UpstreamsFetcher
   private readonly _onDidChange = new vscode.EventEmitter<void>()
   readonly onDidChangeTreeData = this._onDidChange.event
 
@@ -41,9 +101,31 @@ export class AuthProfilesTreeProvider
   private servicedByProfile = new Map<string, ServicedModel[]>()
   private profilesById = new Map<string, AuthProfileSummary>()
   private loadError = false
+  // Kept for the Local Router's discovered-model pricing cross-reference — the
+  // same catalog the profiles tree is already built from, so no extra fetch.
+  private catalog: CatalogModelsResponse = { vendors: [] }
+  // Pricing keyed by every id a discovered model might carry (route ref /
+  // vendor/product / product), plus per-product vendor sets so an owned_by-aware
+  // lookup can disambiguate. Rebuilt with the catalog so the router-model rows
+  // render prices without walking the catalog per item.
+  private pricingIndex: CatalogPricingIndex = emptyPricingIndex()
+  private routerStatus: LlmEndpointStatusResult | null = null
+  // The DESIRED (persisted) upstream→profile links, fetched alongside the
+  // router status. Compared against the running proxy's /v1/upstreams to flag a
+  // row "pending restart" when a link was set but not yet applied. Empty on any
+  // fetch failure (an older daemon lacks the verb) — no pending hints, no harm.
+  private desiredLinks: Record<string, string> = {}
 
-  constructor(client: DaemonClient) {
+  constructor(
+    client: DaemonClient,
+    fetchModels: ModelsFetcher = defaultFetchModels,
+    fetchPacks: PacksFetcher = defaultFetchPacks,
+    fetchUpstreams: UpstreamsFetcher = defaultFetchUpstreams,
+  ) {
     this.client = client
+    this.fetchModels = fetchModels
+    this.fetchPacks = fetchPacks
+    this.fetchUpstreams = fetchUpstreams
     void this.refresh()
   }
 
@@ -59,6 +141,8 @@ export class AuthProfilesTreeProvider
         this.client.catalogModels(),
         this.client.listAuthProfiles(),
       ])
+      this.catalog = catalog
+      this.pricingIndex = buildCatalogPricingIndex(catalog)
       this.servicedByProfile = servicedModelsByProfile(catalog)
       this.profilesById = new Map(authProfiles.map(p => [p.id, p]))
       this.presets = buildPresetNodes(presetEntries, authProfiles)
@@ -72,6 +156,23 @@ export class AuthProfilesTreeProvider
       this.profiles = []
       this.servicedByProfile = new Map()
       this.profilesById = new Map()
+      this.catalog = { vendors: [] }
+      this.pricingIndex = emptyPricingIndex()
+    }
+    // The Local Router lives on its OWN fetch: an older daemon without the
+    // llm_endpoint_* verbs (or a transient failure) must not blank the auth
+    // tree, so its status is resolved independently and degrades to "stopped".
+    try {
+      this.routerStatus = await this.client.llmEndpointStatus()
+    } catch {
+      this.routerStatus = null
+    }
+    // Desired links ride on their own fetch (same tolerance as the status): an
+    // older daemon without `llm_endpoint_list_links` just yields no pending hints.
+    try {
+      this.desiredLinks = (await this.client.llmEndpointListLinks()).links
+    } catch {
+      this.desiredLinks = {}
     }
     this._onDidChange.fire()
   }
@@ -122,6 +223,108 @@ export class AuthProfilesTreeProvider
       return item
     }
 
+    // The Local Router node — a top-level sibling of the two groupings that
+    // renders the llm-endpoint proxy's lifecycle status. Expandable (to its
+    // discovered models) only when it's up AND its /v1/models probe passed.
+    if (element.kind === "router") {
+      const status = this.routerStatus
+      const collapsibleState = routerServing(status)
+        ? vscode.TreeItemCollapsibleState.Collapsed
+        : vscode.TreeItemCollapsibleState.None
+      const item = new vscode.TreeItem(routerLabel(status), collapsibleState)
+      item.id = "local-router"
+      item.description = routerDescription(status)
+      item.tooltip = new vscode.MarkdownString(routerTooltip(status))
+      item.iconPath = new vscode.ThemeIcon(routerIcon(status))
+      // Drives the start/stop menu split (start-when-stopped, stop-when-running).
+      item.contextValue = routerContextValue(status)
+      return item
+    }
+
+    // The "Packs" grouping under the Local Router — expands to the packs the
+    // proxy exposes (fetched from its /v1/packs). Carries the reload inline
+    // action (the menu binds on this context value).
+    if (element.kind === "router-packs") {
+      const item = new vscode.TreeItem("Packs", vscode.TreeItemCollapsibleState.Collapsed)
+      item.id = "local-router-packs"
+      item.iconPath = new vscode.ThemeIcon("layers")
+      item.contextValue = "local-router-packs"
+      return item
+    }
+
+    // A single pack the proxy exposes, with its model count.
+    if (element.kind === "router-pack") {
+      const pack = element.pack
+      const item = new vscode.TreeItem(pack.id)
+      item.id = `router-pack:${pack.id}`
+      item.description = routerPackDescription(pack)
+      item.tooltip = new vscode.MarkdownString(
+        [
+          `**${pack.id}**`,
+          ``,
+          ...(pack.label ? [`- Label: ${pack.label}`] : []),
+          `- Models: ${pack.modelCount}`,
+        ].join("\n"),
+      )
+      item.iconPath = new vscode.ThemeIcon("package")
+      item.contextValue = "local-router-pack"
+      return item
+    }
+
+    // The "Upstreams" grouping under the Local Router — expands to the per-
+    // upstream credential status the proxy reports (fetched from its
+    // /v1/upstreams). Sibling of the Packs group.
+    if (element.kind === "router-upstreams") {
+      const item = new vscode.TreeItem("Upstreams", vscode.TreeItemCollapsibleState.Collapsed)
+      item.id = "local-router-upstreams"
+      item.iconPath = new vscode.ThemeIcon("key")
+      item.contextValue = "local-router-upstreams"
+      return item
+    }
+
+    // A single upstream with its compact credential status. Carries the Test
+    // inline action (the menu binds on this context value).
+    if (element.kind === "router-upstream") {
+      const upstream = element.upstream
+      const item = new vscode.TreeItem(upstream.provider)
+      item.id = `router-upstream:${upstream.provider}`
+      item.description = routerUpstreamDescription(upstream)
+      item.tooltip = new vscode.MarkdownString(routerUpstreamTooltip(upstream))
+      item.iconPath = new vscode.ThemeIcon(routerUpstreamIcon(upstream))
+      item.contextValue = "local-router-upstream"
+      return item
+    }
+
+    // A discovered model the proxy currently serves, with catalog pricing
+    // cross-referenced for display.
+    if (element.kind === "router-model") {
+      const model = element.model
+      const pricing = lookupModelPricing(this.pricingIndex, model.id, model.ownedBy)
+      const item = new vscode.TreeItem(model.id)
+      item.id = `router-model:${model.id}`
+      item.description = modelRowDescription(model, pricing)
+      item.tooltip = new vscode.MarkdownString(
+        [
+          `**${model.id}**`,
+          ``,
+          ...(model.ownedBy ? [`- Owned by: ${model.ownedBy}`] : []),
+          `- Pricing: ${pricing ? `$${pricing.inPer1M} in / $${pricing.outPer1M} out per 1M tokens` : "no catalog pricing"}`,
+        ].join("\n"),
+      )
+      item.iconPath = new vscode.ThemeIcon("symbol-method")
+      item.contextValue = "local-router-model"
+      return item
+    }
+
+    // A "loading…"/"unavailable"/"no models" placeholder child.
+    if (element.kind === "router-message") {
+      const item = new vscode.TreeItem(element.message)
+      item.id = `router-message:${element.message}`
+      item.iconPath = new vscode.ThemeIcon("info")
+      item.contextValue = "local-router-message"
+      return item
+    }
+
     // A profile node — expandable when it services at least one model.
     const serviced = this.servicedByProfile.get(element.profileId) ?? []
     const summary = this.profilesById.get(element.profileId)
@@ -142,13 +345,39 @@ export class AuthProfilesTreeProvider
     return item
   }
 
-  getChildren(element?: AuthProfileTreeNode): AuthProfileTreeNode[] {
-    if (this.loadError) {
-      return [{ kind: "presets", label: "Could not load auth profiles" }]
+  getChildren(element?: AuthProfileTreeNode): vscode.ProviderResult<AuthProfileTreeNode[]> {
+    if (!element) {
+      // The Local Router sits alongside the two auth groupings and stays
+      // present even when the auth load failed — it's on an independent fetch,
+      // so a router that's up is still usable while the profiles tree recovers.
+      const roots: AuthProfileTreeNode[] = this.loadError
+        ? [{ kind: "presets", label: "Could not load auth profiles" }]
+        : [PRESETS_GROUP, PROFILES_GROUP]
+      roots.push({ kind: "router" })
+      return roots
     }
 
-    if (!element) {
-      return [PRESETS_GROUP, PROFILES_GROUP]
+    // Expanding the Local Router fetches its live /v1/models. Returning the
+    // promise lets VS Code render the rest of the tree immediately and only
+    // spin on the router's own children (async, never blocks siblings).
+    if (element.kind === "router") {
+      return this.loadRouterChildren()
+    }
+
+    // Expanding the "Packs" grouping fetches the proxy's /v1/packs.
+    if (element.kind === "router-packs") {
+      return resolveRouterPackChildren(this.routerStatus, this.fetchPacks)
+    }
+
+    // Expanding the "Upstreams" grouping fetches the proxy's /v1/upstreams and
+    // annotates each row with any pending link change (persisted link ≠ the
+    // running proxy's) using the desired-links map fetched in refresh().
+    if (element.kind === "router-upstreams") {
+      return resolveRouterUpstreamChildren(
+        this.routerStatus,
+        this.fetchUpstreams,
+        this.desiredLinks,
+      )
     }
 
     if (isAuthProfileGroup(element)) {
@@ -162,6 +391,17 @@ export class AuthProfilesTreeProvider
     }
 
     return []
+  }
+
+  /** Fetch + build the Local Router's discovered-model children. Only reached
+   *  when the node is expandable (running & healthy); the orchestration
+   *  (resolveRouterModelChildren) surfaces a mid-poll failure or a missing
+   *  address as a placeholder message rather than a silently-empty node. */
+  private async loadRouterChildren(): Promise<AuthProfileTreeNode[]> {
+    // The "Packs" and "Upstreams" groupings lead (each with its own lazy fetch
+    // on expand), followed by the discovered-model rows.
+    const models = await resolveRouterModelChildren(this.routerStatus, this.fetchModels)
+    return [{ kind: "router-packs" }, { kind: "router-upstreams" }, ...models]
   }
 }
 

@@ -1,4 +1,4 @@
-import type { ZodType } from "zod"
+import type { ZodRawShape, ZodType } from "zod"
 
 /**
  * AIP-14 ToolDefinition — the abstract agent contract.
@@ -93,6 +93,12 @@ export interface ToolDefinition<
    * HTTP" (`forbid: ["http"]`) for self-hosted-only contracts.
    */
   driverConstraints?: DriverConstraints
+
+  /**
+   * Cross-cutting concerns (see {@link ToolHandle.transformers}) carried on
+   * the contract and applied by MCP-facing adapters at registration.
+   */
+  transformers?: readonly ToolTransformer[]
 }
 
 export type DriverKind = "cli" | "http" | "mcp" | "sdk" | "builtin"
@@ -159,6 +165,45 @@ export interface ToolHandle<
   readonly idempotent: boolean
   readonly defaultImplementation?: string
   readonly driverConstraints: Required<DriverConstraints>
+  /**
+   * Cross-cutting concerns applied by MCP-facing adapters (`toMcpTool`) at
+   * registration time — pagination, error normalization, … Listed
+   * outermost-first: `wrapHandler` folds so the FIRST declared transformer
+   * ends up the OUTERMOST wrapper around the base handler (e.g.
+   * `[catchErrors(), paginated(...)]` paginates around the body, then
+   * catchErrors around that).
+   */
+  readonly transformers?: readonly ToolTransformer[]
+}
+
+/**
+ * A composable cross-cutting concern applied to a TOOL's MCP projection.
+ *
+ * Two hooks:
+ *  - `wrapShape` extends the declared zod raw shape with the transformer's
+ *    own input params (applied in declared order).
+ *  - `wrapHandler` wraps the handler pipeline (applied outermost-first —
+ *    see {@link ToolHandle.transformers}). Unlike `wrapShape`, the wrapped
+ *    pipeline may CHANGE the output type (`TNext`): concrete transformers
+ *    typically terminate the pipeline by returning a pre-serialized MCP
+ *    text result (`{ content: [{ type: "text", text }], isError? }`), which
+ *    the MCP adapter passes through verbatim instead of JSON-stringifying.
+ *
+ * Composition order: transformers compose LEFT-TO-RIGHT in declared order —
+ * the first transformer listed is the outermost wrapper. E.g.
+ * `[catchErrors(), paginated(...)]` runs paginate around the base handler,
+ * then catchErrors around that, so even a pagination failure is caught.
+ */
+export interface ToolTransformer<TInput = unknown, TOutput = unknown, TNext = TOutput> {
+  /** Diagnostic name (surfaced in registration errors / audits). */
+  name: string
+  /** Extend the declared input shape with this transformer's params. */
+  wrapShape?: (shape: ZodRawShape) => ZodRawShape
+  /** Wrap the handler pipeline. (Method syntax: keeps heterogeneous
+   *  transformer generics assignable to `ToolTransformer[]`.) */
+  wrapHandler(
+    handler: (input: TInput) => Promise<TOutput>,
+  ): (input: TInput) => Promise<TNext>
 }
 
 /**

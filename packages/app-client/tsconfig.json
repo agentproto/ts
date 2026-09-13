@@ -1,0 +1,10 @@
+{
+  "extends": "@agentproto/tooling/typescript/bundler.json",
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "declaration": false,
+    "declarationMap": false
+  },
+  "include": ["src/**/*"],
+  "exclude": ["dist", "node_modules"]
+}

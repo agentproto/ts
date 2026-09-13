@@ -1,11 +1,15 @@
 # @agentproto/skill-pack-agentproto
 
 The `agentproto-plugin` skill pack — source of truth for the skills that
-teach an agent to operate the `agentproto` CLI/daemon itself: agent-session
-orchestration, light-coder orchestration, hermes headless background runs,
-nested orchestration, durable supervision, adapter setup, LLM endpoint
-proxying, supervisor sessions, CI review/fix lanes, and skill-authoring
-reference guides.
+teach an agent to operate the `agentproto` CLI/daemon itself. The agentproto
+skills are organized as a 3-layer family: an L0 master map (`agentproto`),
+18 L1 primitives (`ap-*`, one daemon action each), 4 L2 groupers that route
+to primitives without duplicating mechanics (`drive-agents`,
+`supervise-long-missions`, `cheap-coders`, `extend-agentproto`), and 6 L3
+end-to-end playbooks (`pb-*`), plus two standalone guides kept from the
+previous flat set: `agentproto-apps` (app anatomy, `app serve` UI bridge,
+`app_data_migrate`, smoke-testing) and `agentproto-llm-endpoint` (custom
+LLM endpoint proxying).
 
 ## Editing
 

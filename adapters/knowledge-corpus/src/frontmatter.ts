@@ -48,6 +48,17 @@ export interface CorpusTemporal {
   defaultHalfLifeDays?: number
   lastSeen?: string
   mentions?: ReadonlyArray<{ at?: string; weight?: number }>
+  // Legal validity window — DISTINCT from halfLife (marketing-style
+  // relevance decay). These describe when the underlying norm is
+  // legally in force, not how fresh the entry is.
+  /** ISO date the norm enters into force. */
+  inForceFrom?: string
+  /** ISO date the norm ceases to be in force. */
+  inForceTo?: string
+  /** True when the norm has been abrogated / repealed. */
+  abrogated?: boolean
+  /** ISO date of the consolidated version this entry was taken from. */
+  versionedAt?: string
 }
 
 /**

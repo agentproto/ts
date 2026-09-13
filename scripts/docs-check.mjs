@@ -39,7 +39,10 @@
  *                       single doc against the current code.
  *
  * Env:
- *   MOONSHOT_API_KEY   — required (the gateway bearer)
+ *   AGENT_LANE         — billing lane (see scripts/lib/agent-lane.mjs); unset ⇒ first lane
+ *                        whose credential is present (subscription → … → moonshot)
+ *   <lane credential>  — CLAUDE_CODE_OAUTH_TOKEN / …_FALLBACK / OPENROUTER_API_KEY /
+ *                        MOONSHOT_API_KEY / ANTHROPIC_API_KEY
  *   ANTHROPIC_API_KEY  — must NOT be set for this to reach the gateway; if it
  *                        is set, it is scrubbed before the SDK spawns its child
  *                        (see buildEnv below) so it can never leak to Moonshot.
@@ -54,9 +57,10 @@
 
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { execSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { makeConfineToRepoRoot } from './lib/path-confine.mjs'
+import { describeLane, pickLane, resolveLane } from './lib/agent-lane.mjs'
 
 // ── root ──────────────────────────────────────────────────────────────────
 
@@ -246,52 +250,46 @@ When you're done, summarize what you changed (or confirm nothing needed changing
 // and any CLAUDE_CODE_USE_* cloud-provider redirect leaked from a parent
 // Claude Code shell must be scrubbed so it doesn't out-rank ANTHROPIC_BASE_URL.
 
-const MOONSHOT_BASE_URL = 'https://api.moonshot.ai/anthropic'
-const MODEL = 'kimi-k2.7-code'
+// ── billing lane ─────────────────────────────────────────────────────────────
+//
+// One lane per invocation, picked by AGENT_LANE (see scripts/lib/agent-lane.mjs):
+// subscription | subscription-fallback | openrouter | moonshot | api-key. The
+// release workflow walks the lanes in order until this step reports
+// `status=ok`, so a dead Moonshot account (2026-09-01: "suspended due to
+// insufficient balance") no longer means no docs check at all. The lane env
+// is built with every OTHER lane's credential scrubbed — a stale
+// ANTHROPIC_API_KEY on the runner must never out-rank the lane asked for.
 
-const CLOUD_PROVIDER_REDIRECT_TOGGLES = [
-  'CLAUDE_CODE_USE_BEDROCK',
-  'CLAUDE_CODE_USE_VERTEX',
-  'CLAUDE_CODE_USE_FOUNDRY',
-  'CLAUDE_CODE_USE_ANTHROPIC_AWS',
-  'CLAUDE_CODE_USE_MANTLE',
-  'CLAUDE_CODE_USE_GATEWAY',
-]
+const LANE_NAME = pickLane()
+const LANE = LANE_NAME ? resolveLane(LANE_NAME) : null
+const MODEL = LANE?.model ?? '(no lane)'
 
-function buildEnv() {
-  const bearer = process.env.ANTHROPIC_AUTH_TOKEN ?? process.env.MOONSHOT_API_KEY
-  if (!bearer) {
-    console.error('Error: MOONSHOT_API_KEY (or ANTHROPIC_AUTH_TOKEN) is not set.')
-    process.exit(1)
-  }
-  const env = { ...process.env }
-  delete env.ANTHROPIC_API_KEY
-  for (const key of CLOUD_PROVIDER_REDIRECT_TOGGLES) delete env[key]
-  env.ANTHROPIC_BASE_URL = MOONSHOT_BASE_URL
-  env.ANTHROPIC_AUTH_TOKEN = bearer
-  env.ANTHROPIC_MODEL = MODEL
-  env.ANTHROPIC_DEFAULT_OPUS_MODEL = MODEL
-  env.ANTHROPIC_DEFAULT_SONNET_MODEL = MODEL
-  env.ANTHROPIC_DEFAULT_HAIKU_MODEL = MODEL
-  env.ANTHROPIC_SMALL_FAST_MODEL = MODEL
-  return env
+/** Surface the outcome to the workflow (`steps.<id>.outputs.status`) so the
+ *  ladder can decide whether to try the next lane. Always exits 0 — this step
+ *  is a best-effort bonus and must never redden a release on its own. */
+function emitStatus(status) {
+  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `status=${status}\n`)
+  console.log(`docs-check status: ${status}`)
 }
 
-// ── permission guard ────────────────────────────────────────────────────────
-//
-// See scripts/lib/path-confine.mjs for why `tools` alone isn't confinement
-// and why `PreToolUse` (not `canUseTool`) is the enforcement point. This also
-// covers the --path/--base path-scoped mode (glob/base ref are only used for
-// local `git` shelling-out and prompt text — the model never receives them
-// as a tool-callable path), so there's no separate escape surface to confine
-// there.
+function buildEnv() {
+  if (!LANE || LANE.missing) {
+    console.error(
+      `Error: no usable agent lane — ${LANE ? describeLane(LANE) : 'no credential set (CLAUDE_CODE_OAUTH_TOKEN / OPENROUTER_API_KEY / MOONSHOT_API_KEY / ANTHROPIC_API_KEY)'}.`,
+    )
+    emitStatus('no-lane')
+    process.exit(0)
+  }
+  return LANE.env
+}
 
 const confineToRepoRoot = makeConfineToRepoRoot(ROOT)
 
 // ── run ───────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log(`\n📚 docs-check starting${DRY_RUN ? ' (dry-run)' : ''} — ${scopeLabel}, model ${MODEL}…`)
+  const env = buildEnv()
+  console.log(`\n📚 docs-check starting${DRY_RUN ? ' (dry-run)' : ''} — ${scopeLabel}, lane ${describeLane(LANE)}…`)
 
   const abortController = new AbortController()
   const result = query({
@@ -300,7 +298,7 @@ async function main() {
       model: MODEL,
       abortController,
       cwd: ROOT,
-      env: buildEnv(),
+      env,
       // bypassPermissions: this runs unattended in CI, with no human able to
       // answer a permission prompt (mirrors adapters/claude-sdk's own
       // unattended-arm rationale). The PreToolUse hook below is a separate
@@ -315,7 +313,7 @@ async function main() {
       // observably alive in the meantime (mirrors adapters/claude-sdk's
       // acp-host.ts, which depends on this for the same reason).
       includePartialMessages: true,
-      thinking: { type: 'enabled' },
+      ...(LANE.thinking ? { thinking: { type: 'enabled' } } : {}),
       // `tools` restricts the base toolset available at all — Read/Grep/Glob
       // always, Edit only outside --dry-run. The PreToolUse hook above then
       // confines every call within that set to ROOT.
@@ -370,19 +368,24 @@ async function main() {
     // the log, is preferable to no PR at all).
     console.warn(`\n⚠️  docs-check did not finish cleanly: ${e.message}`)
     console.warn('Any edits made before the cutoff are still on disk; the workflow will PR them if present.')
+    emitStatus('error')
     return
   }
 
   if (!finalResult) {
     console.warn('\n⚠️  docs-check produced no result message (stream ended without one).')
+    emitStatus('no-result')
     return
   }
   if (finalResult.is_error) {
     console.warn(`\n⚠️  docs-check ended with an error (stop_reason: ${finalResult.stop_reason}): ${finalResult.result}`)
+    emitStatus('error')
     return
   }
 
-  console.log(`\n✅ docs-check complete (${finalResult.num_turns} turns, $${finalResult.total_cost_usd.toFixed(4)}).`)
+  const cost = typeof finalResult.total_cost_usd === 'number' ? `, $${finalResult.total_cost_usd.toFixed(4)}` : ''
+  console.log(`\n✅ docs-check complete (${finalResult.num_turns} turns${cost}).`)
+  emitStatus('ok')
 }
 
 await main()

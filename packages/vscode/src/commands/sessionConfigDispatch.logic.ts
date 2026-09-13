@@ -15,6 +15,7 @@
  */
 
 import type { ConfigAxis, ConfigChip, ConfigChipRow, ConfigVerb } from "./sessionConfig.logic.js"
+import { modelWithRoute } from "@agentproto/runtime/catalog-models"
 
 /** The `session_restart` override object for one axis + value (SPEC §4.3). */
 export type RestartOverride =
@@ -30,17 +31,27 @@ export type RestartOverride =
  *  string (session-tools.ts posture union). */
 const CANONICAL_POSTURES = new Set(["default", "plan", "accept-edits", "bypass", "read-only"])
 
-/** Build the restart override for an axis + row value. Returns undefined for an
- *  axis that carries no restart override (there is none today, but keeps the
- *  mapping total + future-proof). */
-export function restartOverrideFor(axis: ConfigAxis, value: string): RestartOverride | undefined {
+/** Build the restart override for an axis + row value, given the session's
+ *  current model so a route change can rewrite the model's `@route` suffix
+ *  instead of independently setting `route.gateway`. Returns undefined for an
+ *  axis that carries no restart override. */
+export function restartOverrideFor(
+  axis: ConfigAxis,
+  value: string,
+  currentModel?: string,
+): RestartOverride | undefined {
   switch (axis) {
     case "model":
       return { model: value }
     case "effort":
       return { effort: value }
-    case "route":
+    case "route": {
+      if (currentModel) {
+        const rewritten = modelWithRoute(currentModel, value)
+        if (rewritten !== currentModel) return { model: rewritten }
+      }
       return { route: { gateway: value } }
+    }
     case "access":
       return { access: { profileRef: value } }
     case "posture":
@@ -65,10 +76,14 @@ export type ChipDispatch =
  * runs (with a `requires-restart` fallback the caller handles via
  * {@link liveFallbackToRestart}).
  */
-export function planChipDispatch(chip: ConfigChip, row: ConfigChipRow): ChipDispatch {
+export function planChipDispatch(
+  chip: ConfigChip,
+  row: ConfigChipRow,
+  currentModel?: string,
+): ChipDispatch {
   if (row.addProfile) return { kind: "addProfile" }
   if (row.current) return { kind: "noop" }
-  const override = restartOverrideFor(chip.axis, row.value)
+  const override = restartOverrideFor(chip.axis, row.value, currentModel)
   if (!override) return { kind: "noop" }
   if (chip.restart || row.restartRequired) {
     return { kind: "restart", axis: chip.axis, value: row.value, override }

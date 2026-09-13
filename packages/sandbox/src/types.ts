@@ -51,7 +51,16 @@ export interface SandboxDefinition {
   /**
    * Provider-specific connection fields. Shape varies per provider (see AIP-36 §Provider config shapes).
    */
-  config: {}
+  config: {
+    /**
+     * Semantic harness slugs to pre-install in the box at boot (e.g. `["hermes", "claude-code"]`).
+     * Each expands to `@agentproto/adapter-<slug>@latest` plus that adapter's declared boot extras;
+     * a `config.installPackages` pin for the same package always wins. Additive — absent means no
+     * extra install.
+     */
+    installAdapters?: string[]
+    [k: string]: unknown
+  }
   /**
    * Resource caps per command.
    */
@@ -66,6 +75,17 @@ export interface SandboxDefinition {
      * Static host env-var names to forward into the sandbox.
      */
     passthrough?: string[]
+    /**
+     * Opt-in: forward the spawn's RESOLVED billing-credential env-var NAME
+     * (e.g. `ANTHROPIC_API_KEY`) into `passthrough` so a fresh box inherits
+     * host auth without the caller naming vars. Only the name is injected —
+     * the value travels via the normal passthrough mechanism (host secrets
+     * broker → box env) and is never read by this flag. Billing credential
+     * only: other vars (GITHUB_TOKEN, …) stay the job of an explicit
+     * `passthrough`. A convenience, not a contract: when no credential
+     * resolved, nothing is injected and the spawn proceeds.
+     */
+    autoPassthrough?: boolean
   }
   network?: {
     /**
@@ -95,6 +115,13 @@ export interface SandboxDefinition {
    * Reject command execution at the sandbox layer. Read-only sandbox calls fail with `sandbox_read_only`.
    */
   read_only?: boolean
+  /**
+   * App ports to expose at boot time. Resolved into `BootedSandbox.ports` (port → public URL)
+   * by providers that support port exposure (e.g. e2b via `getHost(port)`). Providers that do
+   * not support exposure ignore this field — callers that need a URL must check `ports` on the
+   * booted handle and call `expose()` explicitly when the field is absent.
+   */
+  extraPorts?: number[]
   /**
    * Free-form, namespaced. Adapter hints under `metadata.<adapter>.*`.
    */

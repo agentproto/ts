@@ -25,6 +25,11 @@ export interface DistillUsage {
   readonly label: string
   readonly startedAt: string
   readonly endedAt: string
+  /** "batch" halves the cost estimate — a provider batch API call, billed at
+   *  50% of the standard token price. Absent/"standard" → full price. */
+  readonly billing?: "standard" | "batch"
+  /** Prompt-cache hit tokens, when the provider reports them. */
+  readonly cacheReadInputTokens?: number
 }
 
 /** A sink a distiller calls once per metered LLM call. `flush` ships + reports. */
@@ -52,8 +57,9 @@ function priceFor(model: string): { inPerM: number; outPerM: number } {
 
 function costUsd(u: DistillUsage): { input: number; output: number; total: number } {
   const { inPerM, outPerM } = priceFor(u.model)
-  const input = (u.inputTokens / 1_000_000) * inPerM
-  const output = (u.outputTokens / 1_000_000) * outPerM
+  const discount = u.billing === "batch" ? 0.5 : 1
+  const input = (u.inputTokens / 1_000_000) * inPerM * discount
+  const output = (u.outputTokens / 1_000_000) * outPerM * discount
   return { input, output, total: input + output }
 }
 
@@ -152,24 +158,42 @@ export function createUsageSink(opts: { runName: string }): UsageSink {
       // Per-model rollup for the stderr summary.
       const byModel = new Map<
         string,
-        { input: number; output: number; cost: number; calls: number }
+        {
+          input: number
+          output: number
+          cost: number
+          calls: number
+          cacheRead: number
+          batchCalls: number
+        }
       >()
       let grandTotal = 0
       for (const u of records) {
         const c = costUsd(u)
         grandTotal += c.total
-        const m = byModel.get(u.model) ?? { input: 0, output: 0, cost: 0, calls: 0 }
+        const m = byModel.get(u.model) ?? {
+          input: 0,
+          output: 0,
+          cost: 0,
+          calls: 0,
+          cacheRead: 0,
+          batchCalls: 0,
+        }
         m.input += u.inputTokens
         m.output += u.outputTokens
         m.cost += c.total
         m.calls += 1
+        if (u.cacheReadInputTokens) m.cacheRead += u.cacheReadInputTokens
+        if (u.billing === "batch") m.batchCalls += 1
         byModel.set(u.model, m)
       }
 
       process.stderr.write(`\nusage — ${records.length} metered call(s):\n`)
       for (const [model, m] of byModel) {
+        const batchNote = m.batchCalls > 0 ? ` (${m.batchCalls} batch-billed, ×0.5)` : ""
+        const cacheNote = m.cacheRead > 0 ? ` · cache-read ${fmt(m.cacheRead)}` : ""
         process.stderr.write(
-          `  ${model}  ${m.calls} call(s) · in ${fmt(m.input)} · out ${fmt(m.output)} · ~${usd(m.cost)} est.\n`
+          `  ${model}  ${m.calls} call(s)${batchNote} · in ${fmt(m.input)} · out ${fmt(m.output)}${cacheNote} · ~${usd(m.cost)} est.\n`
         )
       }
       process.stderr.write(`  total ~${usd(grandTotal)} est.\n`)

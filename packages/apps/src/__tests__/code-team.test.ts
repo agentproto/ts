@@ -4,6 +4,12 @@ import { codeTeam } from "../code-team/index.js"
 const fakeModel = { provider: "test", id: "test-model" }
 
 describe("code-team app", () => {
+  it("exposes stable app identity fields", () => {
+    expect(codeTeam.id).toBe("@agentproto/code-team")
+    expect(codeTeam.name).toBe("Code Team")
+    expect(codeTeam.version).toBe("0.1.0")
+  })
+
   it("bundles the three team agents bound to the delivery workflow", () => {
     expect(codeTeam.agents.map((a) => a.agent.id).sort()).toEqual([
       "@agentproto/fixer",
@@ -39,5 +45,16 @@ describe("code-team app", () => {
   it("lets a host use just one agent of the team", async () => {
     const built = await codeTeam.toMastraAgents({ resolveModel: () => fakeModel })
     expect(built["@agentproto/reviewer"]!.agent.name).toBe("reviewer")
+  })
+
+  it("delivers the change through three agent steps, one per team agent (WP-B4)", () => {
+    const wf = codeTeam.workflows[0]!
+    expect(wf.steps.map((s) => `${s.id}:${s.kind}`)).toEqual([
+      "implement:agent",
+      "review:agent",
+      "fix:agent",
+    ])
+    const refs = wf.steps.map((s) => (s as { agent?: { ref: string } }).agent?.ref)
+    expect(refs).toEqual(["@agentproto/implementer", "@agentproto/reviewer", "@agentproto/fixer"])
   })
 })

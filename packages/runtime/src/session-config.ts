@@ -39,6 +39,7 @@ import { inferLegacyModeKind } from "@agentproto/driver-agent-cli"
 // its windowed-spend type here — unlike the structurally-mirrored `AuthMethod`
 // facet below — takes no value dependency and cannot introduce a cycle.
 import type { CostBudget } from "@agentproto/auth"
+import type { ContextContinuityPolicy } from "./context-continuity.js"
 
 /**
  * Reasoning / compute budget label.
@@ -142,6 +143,9 @@ export interface SessionConfig {
    *  `@agentproto/auth` (`CostBudget { maxCostUsd, window, scope }`). Omit ⇒ no
    *  windowed budget. */
   costBudget?: CostBudget
+  /** Configurable context-continuity policy for this session — controls
+   *  warning/compact/continue-fresh thresholds and checkpoint sections. */
+  contextContinuity?: ContextContinuityPolicy
   /** Adapter harness slug — the canonical name for the adapter that runs the
    *  session (e.g. 'claude-code', 'hermes'). This is the same value historically
    *  carried on the wire as `adapter` / `adapterSlug`; the `harness` field is the

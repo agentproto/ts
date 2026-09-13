@@ -118,6 +118,78 @@ describe("createAcpClient — permission-hold mode", () => {
     expect(evt.rawInput).toEqual({ command: "rm -rf /tmp/x" })
   })
 
+  it("carries toolCall._meta through to the agent-prompt event", async () => {
+    const client = await createAcpClient({ ...fakeStreams(), permissionHold: true })
+    const session = await client.newSession({ cwd: "/tmp" })
+    const iter = session
+      .prompt({ messages: [{ type: "text", text: "go" }] })
+      [Symbol.asyncIterator]()
+
+    const handlers = capturedHandlersFactory!()
+    const rpc = handlers.requestPermission({
+      sessionId: "sess-hold",
+      toolCall: {
+        toolCallId: "tc-3",
+        title: "submit_plan",
+        rawInput: { plan: "do things" },
+        _meta: { "mastra-agent/suspendPayload": { plan: "do things" } },
+      },
+      options: PERM_PARAMS.options,
+    })
+    void rpc.catch(() => {})
+
+    const { value } = await iter.next()
+    const evt = value as Extract<StreamEvent, { kind: "agent-prompt" }>
+    expect(evt.toolName).toBe("submit_plan")
+    expect(evt._meta).toEqual({ "mastra-agent/suspendPayload": { plan: "do things" } })
+  })
+
+  it("omits _meta from the agent-prompt event when the request has none", async () => {
+    const client = await createAcpClient({ ...fakeStreams(), permissionHold: true })
+    const session = await client.newSession({ cwd: "/tmp" })
+    const iter = session
+      .prompt({ messages: [{ type: "text", text: "go" }] })
+      [Symbol.asyncIterator]()
+
+    const handlers = capturedHandlersFactory!()
+    void handlers.requestPermission(PERM_PARAMS).catch(() => {})
+
+    const { value } = await iter.next()
+    const evt = value as Extract<StreamEvent, { kind: "agent-prompt" }>
+    expect(evt._meta).toBeUndefined()
+  })
+
+  it("forwards resolution feedback on the outcome's _meta (agentproto/feedback)", async () => {
+    const client = await createAcpClient({ ...fakeStreams(), permissionHold: true })
+    const session = await client.newSession({ cwd: "/tmp" })
+    const iter = session
+      .prompt({ messages: [{ type: "text", text: "go" }] })
+      [Symbol.asyncIterator]()
+
+    const handlers = capturedHandlersFactory!()
+    let resolved: unknown
+    const rpc = handlers.requestPermission(PERM_PARAMS).then(r => {
+      resolved = r
+    })
+    const { value } = await iter.next()
+    const evt = value as Extract<StreamEvent, { kind: "agent-prompt" }>
+
+    expect(
+      client.respondPermission(evt.toolCallId, {
+        optionId: "r",
+        feedback: "reject, but do X instead",
+      }),
+    ).toBe(true)
+    await rpc
+    expect(resolved).toEqual({
+      outcome: {
+        outcome: "selected",
+        optionId: "r",
+        _meta: { "agentproto/feedback": "reject, but do X instead" },
+      },
+    })
+  })
+
   it("holds even when a handlers.requestPermission is ALSO supplied (guard not clobbered)", async () => {
     // Regression: the arm always passes a `requestPermission` handler. If that
     // handler reached the SDK it would auto-answer, silently defeating hold

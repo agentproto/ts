@@ -6,7 +6,7 @@
  * observable immediately after `bus.emit(...)`.
  */
 
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import {
   createSessionEventBus,
   type ActivityChangedEvent,
@@ -17,7 +17,11 @@ import {
   type ActivityProjectorSession,
   type PrStateResolver,
 } from "../activities.js"
-import type { ActivityPolicySlice, ActivityTaskSlice } from "../activity-projection.js"
+import type {
+  ActivityPolicySlice,
+  ActivityTaskSlice,
+  ActivityWorkflowRunSlice,
+} from "../activity-projection.js"
 
 const T0 = "2026-07-22T10:00:00.000Z"
 
@@ -217,6 +221,123 @@ describe("createActivityProjector", () => {
     // the bus callback.
     expect(() => bus.emit(turnEnd("sess_a"))).not.toThrow()
     expect(seen.map(ev => ev.activity.id)).toEqual(["turn:sess_a:1"])
+  })
+
+  it("list() still returns the other owners' records when one owner's list() throws", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const { state, projector } = harness({
+        sessions: [agentSession({ busy: true })],
+      })
+      // Poison the supervisor owner itself (outside any per-row loop): one
+      // throwing owner must not take the whole read-model down.
+      const poisoned = createActivityProjector({
+        registry: { list: () => state.sessions },
+        sessionEvents: createSessionEventBus(),
+        supervisor: {
+          list: () => {
+            throw new Error("supervisor exploded")
+          },
+        },
+      })
+      expect(poisoned.list().map(r => r.id)).toEqual(["turn:sess_a:1"])
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(warn.mock.calls[0]?.[0]).toContain("supervisor")
+      poisoned.dispose()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // Per-record-source containment: a row that throws INSIDE an owner's
+  // projection is skipped by identity — its SIBLINGS still project. Each
+  // poison is a throwing property getter, so no casts are needed.
+  it("one throwing POLICY is skipped; the other policies still project", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const badPolicy: ActivityPolicySlice = {
+        policyId: "plc_bad",
+        sessionId: "sess_bad",
+        sessionIds: ["sess_bad"],
+        pending: ["sess_bad"],
+        get status(): ActivityPolicySlice["status"] {
+          throw new Error("bad policy exploded")
+        },
+        startedAt: T0,
+      }
+      const { projector } = harness({ policies: [badPolicy, policy({ status: "gating" })] })
+      warn.mockClear()
+      expect(projector.list({ includeTerminal: true }).map(r => r.id).sort()).toEqual([
+        "gate:plc_1",
+        "policy:plc_1",
+      ])
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(warn.mock.calls[0]?.[0]).toContain("plc_bad")
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it("one throwing SESSION is skipped; other sessions' turns and PRs still project", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const badSession: ActivityProjectorSession = {
+        id: "sess_bad",
+        startedAt: T0,
+        get kind(): string {
+          throw new Error("bad session exploded")
+        },
+      }
+      const { projector } = harness({
+        sessions: [badSession, agentSession({ id: "sess_good", busy: true })],
+      })
+      warn.mockClear()
+      expect(projector.list().map(r => r.id)).toEqual(["turn:sess_good:1"])
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(warn.mock.calls[0]?.[0]).toContain("sess_bad")
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it("one throwing WORKFLOW RUN is skipped; other runs still project", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const bus = createSessionEventBus()
+      const badRun: ActivityWorkflowRunSlice = {
+        runId: "wf_bad",
+        status: "running",
+        startedAt: T0,
+        get stages(): ActivityWorkflowRunSlice["stages"] {
+          throw new Error("bad run exploded")
+        },
+      }
+      const goodRun: ActivityWorkflowRunSlice = {
+        runId: "wf_good",
+        status: "running",
+        startedAt: T0,
+        stages: [
+          {
+            index: 0,
+            status: "running",
+            steps: [{ index: 0, label: "step", status: "running" }],
+          },
+        ],
+      }
+      const projector = createActivityProjector({
+        registry: { list: () => [] },
+        sessionEvents: bus,
+        supervisor: { list: () => [] },
+        workflowRunner: { list: () => [badRun, goodRun] },
+      })
+      warn.mockClear()
+      expect(projector.list().map(r => r.id)).toEqual(["workflow-step:wf_good:0:0"])
+      projector.dispose()
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(warn.mock.calls[0]?.[0]).toContain("wf_bad")
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it("drops a vanished owner row from the diff cache without announcing", () => {

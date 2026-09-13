@@ -1,7 +1,7 @@
 /**
  * `agentproto install-mcp` — auto-register the daemon's MCP server with
  * installed coding-CLI agents (Claude Code, Cursor, Codex CLI, Claude
- * Desktop, Aider).
+ * Desktop, Aider, Windsurf).
  *
  * Detects which agents are installed, ensures the daemon is running (or
  * starts it), then writes the appropriate MCP server entry into each
@@ -9,10 +9,24 @@
  * `~/.agentproto/install-state.json` so `--update` and `--uninstall`
  * work precisely without clobbering user-added MCP servers.
  *
+ * `--app <appId>` switches to SCOPED mode: instead of the full daemon
+ * entry (`agentproto mcp-bridge`, ~100 tools), it writes
+ * `agentproto mcp-app <appId>` — the curated, one-app proxy from
+ * `mcp-app.ts` — for an installed app that declares the book/library
+ * contract (`category: "book"` or a non-empty `library.books` in its
+ * APP.md frontmatter — a convention this CLI reads directly; app-kit has
+ * no typed support for it). Only agents whose config format can
+ * hold multiple named MCP entries side-by-side support this today —
+ * `cursor`, `codex`, `claude-desktop`, `windsurf`. `claude`/`hermes`
+ * register over HTTP through a different mechanism, and `aider`'s writer
+ * assumes agentproto is its only MCP entry (see `registerAider`) and would
+ * clobber siblings — all three are refused in `--app` mode.
+ *
  * Usage:
  *   agentproto install-mcp [--agent <name>...] [--all] [--yes] [--update] [--uninstall]
+ *   agentproto install-mcp --app <appId> [--agent <name>...] [--yes]
  *
- * Agent names: claude, cursor, codex, claude-desktop, aider
+ * Agent names: claude, cursor, codex, claude-desktop, aider, windsurf, hermes
  */
 
 import { spawn } from "node:child_process"
@@ -22,10 +36,11 @@ import { join, dirname } from "node:path"
 import { parseArgs } from "node:util"
 import { loadConfig } from "@agentproto/runtime/config"
 import { discoverDaemon, httpGetJson } from "./_daemon-helpers.js"
+import { findInstalledAppDir, readDeclaredCategory, readDeclaredLibraryBookIds } from "../app-serve.js"
 
 // ── types ───────────────────────────────────────────────────────────────────
 
-type AgentName = "claude" | "cursor" | "codex" | "claude-desktop" | "aider" | "hermes"
+type AgentName = "claude" | "cursor" | "codex" | "claude-desktop" | "aider" | "hermes" | "windsurf"
 type Transport = "http" | "stdio"
 
 interface InstallStateEntry {
@@ -33,6 +48,10 @@ interface InstallStateEntry {
   configPath: string
   transport: Transport
   registeredAt: string
+  /** Present only for a scoped `--app` registration — the installed app's
+   *  id, so `--update`/`--uninstall` know which named entry to touch and
+   *  can tell it apart from a full-daemon registration for the same agent. */
+  appId?: string
 }
 
 interface InstallState {
@@ -62,10 +81,14 @@ const USAGE = `agentproto install-mcp — register the daemon's MCP server with 
 Usage:
   agentproto install-mcp [--agent <name>...] [--all] [--yes]
                           [--update] [--uninstall]
+  agentproto install-mcp --app <appId> [--agent <name>...] [--yes]
 
 Options:
-  --agent <name>   Target a specific agent (repeatable). Known: claude, cursor, codex, claude-desktop, aider, hermes
+  --agent <name>   Target a specific agent (repeatable). Known: claude, cursor, codex, claude-desktop, aider, windsurf, hermes
   --all            Target all detected agents (default when no --agent given)
+  --app <appId>    Scoped mode: write \`agentproto mcp-app <appId>\` instead of the full
+                   daemon entry. Requires the app to be installed and declare the
+                   book/library contract. Supported agents: cursor, codex, claude-desktop, windsurf.
   --yes            Skip prompts (non-interactive; auto-confirm)
   --skip-daemon    Skip daemon discovery/start (use default port from config)
   --update         Re-run registration for previously-registered agents (e.g. after a port change)
@@ -77,6 +100,7 @@ Detected agents are registered with the right MCP transport:
   codex           → stdio entry in ~/.codex/config.toml
   claude-desktop  → stdio entry in ~/Library/Application Support/Claude/claude_desktop_config.json
   aider           → stdio entry in ~/.aider.conf.yml
+  windsurf        → stdio entry in ~/.codeium/windsurf/mcp_config.json
   hermes          → HTTP entry under mcp_servers.agentproto in ~/.hermes/config.yaml
 `
 
@@ -86,8 +110,15 @@ const ALL_AGENTS: AgentName[] = [
   "codex",
   "claude-desktop",
   "aider",
+  "windsurf",
   "hermes",
 ]
+
+/** Agents whose config format can hold multiple named MCP entries
+ *  side-by-side, so a scoped `--app` registration can coexist with (or
+ *  without) a full-daemon one. See the file header for why the rest are
+ *  excluded. */
+const SCOPED_CAPABLE_AGENTS: AgentName[] = ["cursor", "codex", "claude-desktop", "windsurf"]
 
 // ── entry point ──────────────────────────────────────────────────────────────
 
@@ -108,6 +139,7 @@ export async function runInstallMcp(args: readonly string[]): Promise<number> {
       update: { type: "boolean" },
       uninstall: { type: "boolean" },
       "skip-daemon": { type: "boolean" },
+      app: { type: "string" },
     },
   })
 
@@ -169,6 +201,56 @@ export async function runInstallMcp(args: readonly string[]): Promise<number> {
     targets = detected
   }
 
+  // 2b. --app: scope registration to one installed app's mcp-app proxy
+  // instead of the full daemon entry.
+  const scopedAppId = values.app
+  if (scopedAppId) {
+    const appDir = findInstalledAppDir(scopedAppId)
+    if (!appDir) {
+      process.stderr.write(
+        `agentproto install-mcp: no installed app "${scopedAppId}" — run \`agentproto app install <dir>\` first.\n`,
+      )
+      return 1
+    }
+    const [category, bookIds] = await Promise.all([
+      readDeclaredCategory(appDir),
+      readDeclaredLibraryBookIds(appDir),
+    ])
+    const eligible = category === "book" || bookIds.length > 0
+    if (!eligible) {
+      process.stderr.write(
+        `agentproto install-mcp: app "${scopedAppId}" has no book/library contract ` +
+          `(category: "book" or a non-empty library.books in APP.md) — --app mode scopes a ` +
+          "buyer-facing MCP entry to a book bundle's curated tools.\n",
+      )
+      return 1
+    }
+
+    if (values.agent && values.agent.length > 0) {
+      const unsupported = targets.filter((t) => !SCOPED_CAPABLE_AGENTS.includes(t.name))
+      if (unsupported.length > 0) {
+        process.stderr.write(
+          `agentproto install-mcp: --app is not supported for ${unsupported.map((t) => t.name).join(", ")} ` +
+            `(scoped mode supports: ${SCOPED_CAPABLE_AGENTS.join(", ")}).\n`,
+        )
+        return 2
+      }
+    } else {
+      const excluded = targets.filter((t) => !SCOPED_CAPABLE_AGENTS.includes(t.name))
+      targets = targets.filter((t) => SCOPED_CAPABLE_AGENTS.includes(t.name))
+      if (excluded.length > 0) {
+        process.stdout.write(
+          `Skipping ${excluded.map((t) => t.label).join(", ")} for --app mode ` +
+            `(scoped mode supports: ${SCOPED_CAPABLE_AGENTS.join(", ")}).\n`,
+        )
+      }
+      if (targets.length === 0) {
+        process.stdout.write("No scoped-capable agents detected. Nothing to do.\n")
+        return 0
+      }
+    }
+  }
+
   // 3. Ensure the daemon is running (unless --skip-daemon)
   const skipDaemon = values["skip-daemon"] === true
   let port = DEFAULT_PORT
@@ -194,11 +276,15 @@ export async function runInstallMcp(args: readonly string[]): Promise<number> {
 
   for (const target of targets) {
     try {
-      const entry = await registerAgent(target, port, values.yes === true)
+      const entry = scopedAppId
+        ? await registerAgentScoped(target, scopedAppId, port, values.yes === true)
+        : await registerAgent(target, port, values.yes === true)
       if (entry) {
-        // Replace any existing entry for this agent
+        // Replace any existing entry for this agent + scope (a full-daemon
+        // entry and one-or-more scoped `--app` entries for the same agent
+        // are distinct entries, keyed by appId).
         const existingIdx = state.entries.findIndex(
-          e => e.agent === target.name,
+          e => e.agent === target.name && (e.appId ?? null) === (scopedAppId ?? null),
         )
         if (existingIdx >= 0) {
           state.entries[existingIdx] = entry
@@ -297,9 +383,13 @@ async function runUpdate(yes: boolean): Promise<number> {
       continue
     }
     try {
-      const updated = await registerAgent(detection, daemonPort, yes)
+      const updated = entry.appId
+        ? await registerAgentScoped(detection, entry.appId, daemonPort, yes)
+        : await registerAgent(detection, daemonPort, yes)
       if (updated) {
-        const idx = state.entries.findIndex(e => e.agent === entry.agent)
+        const idx = state.entries.findIndex(
+          e => e.agent === entry.agent && (e.appId ?? null) === (entry.appId ?? null),
+        )
         if (idx >= 0) state.entries[idx] = updated
         process.stdout.write(
           `  ✓ ${entry.agent} — updated → ${updated.configPath}\n`,
@@ -380,6 +470,18 @@ async function detectAgent(name: AgentName): Promise<AgentDetection | null> {
       if (!hasBinary && !hasConfig) return null
       return { name, label: "Hermes", configPath, hasBinary, hasConfig }
     }
+    case "windsurf": {
+      // Windsurf is an editor (Cascade), not a standalone CLI binary — same
+      // detection shape as cursor: config file/dir presence only. Path
+      // verified against current docs: docs.windsurf.com/windsurf/cascade/mcp
+      // (redirects to docs.devin.ai/desktop/cascade/mcp) — NOT the shorter
+      // `~/.codeium/mcp_config.json` some third-party guides use.
+      const configPath = join(home, ".codeium", "windsurf", "mcp_config.json")
+      const hasConfig =
+        (await fileExists(configPath)) || (await dirExists(join(home, ".codeium", "windsurf")))
+      if (!hasConfig) return null
+      return { name, label: "Windsurf", configPath, hasBinary: false, hasConfig }
+    }
   }
 }
 
@@ -407,6 +509,53 @@ async function registerAgent(
       return registerAider(detection, stdioEnv)
     case "hermes":
       return registerHermes(detection, mcpUrl)
+    case "windsurf":
+      return registerStdioJson(detection, "windsurf", stdioEnv)
+  }
+}
+
+/** Sanitize an appId down to a TOML-bare-key/JSON-key-safe suffix for a
+ *  scoped entry's mcpServers/[mcp_servers.*] key. */
+function scopedServerKey(appId: string): string {
+  return `agentproto-app-${appId.replace(/[^A-Za-z0-9_-]/g, "-")}`
+}
+
+/** The mcpServers/[mcp_servers.*] key a state entry was written under —
+ *  `SERVER_NAME` for a full-daemon registration, `scopedServerKey(appId)`
+ *  for a scoped `--app` one. Derived rather than stored so old
+ *  (pre-`appId`) state entries still resolve correctly. */
+function serverKeyFor(appId?: string): string {
+  return appId ? scopedServerKey(appId) : SERVER_NAME
+}
+
+/** Scoped counterpart of `registerAgent`: writes `agentproto mcp-app <appId>`
+ *  under a distinct, app-specific server key instead of the full-daemon
+ *  `mcp-bridge` entry, for the agents whose config format supports holding
+ *  multiple named MCP entries at once (see `SCOPED_CAPABLE_AGENTS`). */
+async function registerAgentScoped(
+  detection: AgentDetection,
+  appId: string,
+  port: number,
+  _yes: boolean,
+): Promise<InstallStateEntry | null> {
+  const serverKey = scopedServerKey(appId)
+  const args = ["mcp-app", appId]
+  const env: Record<string, string> =
+    port === DEFAULT_PORT ? {} : { AGENTPROTO_DAEMON_URL: `http://127.0.0.1:${port}` }
+
+  switch (detection.name) {
+    case "cursor":
+    case "claude-desktop":
+    case "windsurf":
+      return registerStdioJson(detection, detection.name, env, { serverKey, args, appId })
+    case "codex":
+      return registerCodex(detection, env, { serverKey, args, appId })
+    case "claude":
+    case "aider":
+    case "hermes":
+      // Unreachable: callers filter targets to SCOPED_CAPABLE_AGENTS before
+      // calling this function (see the --app handling in runInstallMcp).
+      throw new Error(`agentproto mcp-app scoped mode is not supported for "${detection.name}".`)
   }
 }
 
@@ -464,11 +613,14 @@ async function registerClaude(
   }
 }
 
-/** Cursor / Claude Desktop: write/merge stdio entry into JSON config */
+/** Cursor / Claude Desktop / Windsurf: write/merge stdio entry into JSON
+ *  config. `opts` lets a scoped `--app` registration write under a distinct
+ *  key with `mcp-app <appId>` args instead of the default full-daemon entry. */
 async function registerStdioJson(
   detection: AgentDetection,
   agentName: string,
   env: Record<string, string>,
+  opts?: { serverKey?: string; args?: string[]; appId?: string },
 ): Promise<InstallStateEntry> {
   const configPath = detection.configPath
   let config: Record<string, unknown> = {}
@@ -484,9 +636,9 @@ async function registerStdioJson(
     config.mcpServers = {}
   }
   const servers = config.mcpServers as Record<string, Record<string, unknown>>
-  servers[SERVER_NAME] = {
+  servers[opts?.serverKey ?? SERVER_NAME] = {
     command: "agentproto",
-    args: ["mcp-bridge"],
+    args: opts?.args ?? ["mcp-bridge"],
     env,
   }
 
@@ -498,15 +650,20 @@ async function registerStdioJson(
     configPath,
     transport: "stdio",
     registeredAt: new Date().toISOString(),
+    ...(opts?.appId ? { appId: opts.appId } : {}),
   }
 }
 
-/** Codex: write/merge [mcp_servers.agentproto] into config.toml */
+/** Codex: write/merge [mcp_servers.agentproto] into config.toml. `opts` lets
+ *  a scoped `--app` registration write under a distinct table name with
+ *  `mcp-app <appId>` args instead of the default full-daemon entry. */
 async function registerCodex(
   detection: AgentDetection,
   env: Record<string, string>,
+  opts?: { serverKey?: string; args?: string[]; appId?: string },
 ): Promise<InstallStateEntry> {
   const configPath = detection.configPath
+  const serverKey = opts?.serverKey ?? SERVER_NAME
   let content = ""
   try {
     content = await fs.readFile(configPath, "utf8")
@@ -514,14 +671,21 @@ async function registerCodex(
     // File doesn't exist — start fresh
   }
 
-  // Remove any existing [mcp_servers.agentproto] block
-  content = removeTomlTable(content, "mcp_servers.agentproto")
+  // Remove any existing [mcp_servers.<serverKey>] block
+  content = removeTomlTable(content, `mcp_servers.${serverKey}`)
 
-  // Append the new block
+  // Append the new block. Env values (e.g. a "http://host:port" URL) carry
+  // colons, so they're rendered as a TOML inline table of quoted strings
+  // rather than JSON.stringify()'d and colon-substituted — a naive `:` → `
+  // = ` replace across the whole JSON blob mangles any colon inside a
+  // value, not just the key/value separator.
   const envLine = Object.keys(env).length > 0
-    ? `env = ${JSON.stringify(env).replace(/,/g, ", ").replace(/:/g, " = ")}\n`
+    ? `env = { ${Object.entries(env)
+        .map(([k, v]) => `${k} = ${JSON.stringify(v)}`)
+        .join(", ")} }\n`
     : ""
-  const block = `\n[mcp_servers.agentproto]\ncommand = "agentproto"\nargs = ["mcp-bridge"]\n${envLine}`
+  const argsToml = JSON.stringify(opts?.args ?? ["mcp-bridge"])
+  const block = `\n[mcp_servers.${serverKey}]\ncommand = "agentproto"\nargs = ${argsToml}\n${envLine}`
 
   content = content.trimEnd() + "\n" + block
 
@@ -533,6 +697,7 @@ async function registerCodex(
     configPath,
     transport: "stdio",
     registeredAt: new Date().toISOString(),
+    ...(opts?.appId ? { appId: opts.appId } : {}),
   }
 }
 
@@ -618,6 +783,7 @@ async function registerHermes(
 // ── unregister ───────────────────────────────────────────────────────────────
 
 async function unregisterAgent(entry: InstallStateEntry): Promise<void> {
+  const serverKey = serverKeyFor(entry.appId)
   switch (entry.agent) {
     case "claude": {
       // Try `claude mcp remove` first, then fall back to file editing
@@ -627,14 +793,15 @@ async function unregisterAgent(entry: InstallStateEntry): Promise<void> {
       if (result.code !== 0) {
         // Fall back to removing from .mcp.json
         if (entry.configPath.endsWith(".mcp.json")) {
-          await removeFromJsonConfig(entry.configPath)
+          await removeFromJsonConfig(entry.configPath, serverKey)
         }
       }
       break
     }
     case "cursor":
     case "claude-desktop":
-      await removeFromJsonConfig(entry.configPath)
+    case "windsurf":
+      await removeFromJsonConfig(entry.configPath, serverKey)
       break
     case "codex": {
       let content = ""
@@ -643,7 +810,7 @@ async function unregisterAgent(entry: InstallStateEntry): Promise<void> {
       } catch {
         return // file gone, nothing to remove
       }
-      content = removeTomlTable(content, "mcp_servers.agentproto")
+      content = removeTomlTable(content, `mcp_servers.${serverKey}`)
       await fs.writeFile(entry.configPath, content.trimEnd() + "\n", "utf8")
       break
     }
@@ -673,7 +840,7 @@ async function unregisterAgent(entry: InstallStateEntry): Promise<void> {
   }
 }
 
-async function removeFromJsonConfig(configPath: string): Promise<void> {
+async function removeFromJsonConfig(configPath: string, serverKey: string = SERVER_NAME): Promise<void> {
   let config: Record<string, unknown> = {}
   try {
     const raw = await fs.readFile(configPath, "utf8")
@@ -683,7 +850,7 @@ async function removeFromJsonConfig(configPath: string): Promise<void> {
   }
   if (config.mcpServers && typeof config.mcpServers === "object") {
     const servers = config.mcpServers as Record<string, unknown>
-    delete servers[SERVER_NAME]
+    delete servers[serverKey]
     await fs.writeFile(configPath, JSON.stringify(config, null, 2) + "\n", "utf8")
   }
 }
@@ -735,6 +902,12 @@ async function ensureDaemon(yes: boolean): Promise<number | null> {
       stdio: "ignore",
       detached: true,
     })
+    // A detached fire-and-forget spawn still throws an unhandled
+    // exception on a bare 'error' event (e.g. "agentproto" not on PATH) —
+    // the `waitForHealth` timeout below already reports the failure
+    // (returns null), so this only needs to keep the event from going
+    // unhandled.
+    child.once("error", () => {})
     child.unref()
 
     if (await waitForHealth(port, 10_000)) {

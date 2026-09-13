@@ -48,6 +48,31 @@ export function parseJsonLoose(text) {
   throw new Error(`no parseable JSON object in model output: ${raw.slice(0, 120)}…`)
 }
 
+/**
+ * Parse the LAST JSON object in a text — for outputs where the verdict is the
+ * final message of a longer transcript (an agent session's output tail). The
+ * loose parser above slices first-`{`…last-`}` across the whole text, which
+ * breaks as soon as any earlier prose or tool output contains a brace; this
+ * walks the `{` positions from the end and returns the first slice that
+ * parses. Falls back to `parseJsonLoose` (fences, whole text) before giving up.
+ */
+export function parseLastJsonObject(text) {
+  const raw = String(text)
+  const end = raw.lastIndexOf('}')
+  if (end !== -1) {
+    for (let s = raw.lastIndexOf('{', end); s !== -1; s = raw.lastIndexOf('{', s - 1)) {
+      try {
+        const v = JSON.parse(raw.slice(s, end + 1))
+        if (v && typeof v === 'object' && !Array.isArray(v)) return v
+      } catch {
+        /* keep walking back */
+      }
+      if (s === 0) break
+    }
+  }
+  return parseJsonLoose(raw)
+}
+
 export async function runLlm({ system, user, engine = 'local', model, claudeBin = 'claude' }) {
   return engine === 'cloud'
     ? runCloud({ system, user, model })

@@ -18,9 +18,10 @@
  * agent attached to its workflows" means, made checkable.
  */
 
-import { buildMastraAgent } from "@agentproto/mastra"
+import { isAbsolute } from "node:path"
 import { defineWorkspace } from "@agentproto/workspace"
 import type { AgentHandle, AnyRef } from "@agentproto/agent"
+import type { BuildMastraAgentResult } from "@agentproto/mastra"
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { WorkspaceHandle } from "@agentproto/workspace"
 import type {
@@ -42,14 +43,65 @@ export class AppDefinitionError extends Error {
 }
 
 export function defineApp(def: AppDefinition): AppHandle {
-  if (!Array.isArray(def.agents) || def.agents.length === 0) {
-    throw new AppDefinitionError("`agents` must be a non-empty array.")
+  if (def.id !== undefined && def.id.trim() === "") {
+    throw new AppDefinitionError("`id` must be non-empty when present.")
+  }
+  if (def.ui !== undefined && (typeof def.ui.html !== "string" || def.ui.html.trim() === "")) {
+    throw new AppDefinitionError("`ui.html` must be a non-empty string when `ui` is present.")
+  }
+  if ((def.agents === undefined || def.agents.length === 0) && def.ui === undefined) {
+    throw new AppDefinitionError(
+      "an app needs at least one agent, or a `ui` block for a UI-only app — got neither.",
+    )
+  }
+  if (def.dev !== undefined && (!Array.isArray(def.dev.launch) || def.dev.launch.length === 0)) {
+    throw new AppDefinitionError("`dev.launch` must be a non-empty array when `dev` is present.")
+  }
+  if (def.data !== undefined && def.data.dir !== undefined && (typeof def.data.dir !== "string" || def.data.dir.trim() === "")) {
+    throw new AppDefinitionError("`data.dir` must be a non-empty string when present.")
+  }
+if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.artifact.path.trim() === "")) {
+    throw new AppDefinitionError("`artifact.path` must be a non-empty string when `artifact` is present.")
+  }
+  // AIP-53 rule 7: `artifact.path` / `skill.path` MUST be absolute —
+  // `emit` copies from them at write time and a relative path has no
+  // defined base to resolve against.
+  if (def.artifact !== undefined && !isAbsolute(def.artifact.path)) {
+    throw new AppDefinitionError(
+      `\`artifact.path\` must be an absolute filesystem path, got '${def.artifact.path}' — a relative path has no defined base to resolve against (AIP-53 rule 7).`,
+    )
+  }
+  if (def.skill !== undefined && (typeof def.skill.path !== "string" || def.skill.path.trim() === "")) {
+    throw new AppDefinitionError("`skill.path` must be a non-empty string when `skill` is present.")
+  }
+  if (def.skill !== undefined && !isAbsolute(def.skill.path)) {
+    throw new AppDefinitionError(
+      `\`skill.path\` must be an absolute filesystem path, got '${def.skill.path}' — a relative path has no defined base to resolve against (AIP-53 rule 7).`,
+    )
+  }
+  if (def.category !== undefined && def.category.trim() === "") {
+    throw new AppDefinitionError("`category` must be a non-empty string when present.")
   }
 
-  const agents = def.agents.map(normalizeEntry)
+  const agents = (def.agents ?? []).map(normalizeEntry)
   const workflows = def.workflows ?? []
   const attachments = def.attach ?? []
   const workspace = def.workspace ? toWorkspaceHandle(def.workspace) : undefined
+  const id = def.id
+  const name = def.name
+  const version = def.version ?? (id ? "0.1.0" : undefined)
+  const description = def.description
+  const requires = def.requires ? Object.freeze([...def.requires]) : undefined
+  const ui = def.ui ? Object.freeze({ ...def.ui }) : undefined
+  const artifact = def.artifact ? Object.freeze({ ...def.artifact }) : undefined
+  const skill = def.skill ? Object.freeze({ ...def.skill }) : undefined
+  const artifacts = def.artifacts ? Object.freeze(def.artifacts.map(a => Object.freeze({ ...a }))) : undefined
+  const dev = def.dev
+    ? Object.freeze({ launch: Object.freeze(def.dev.launch.map(l => Object.freeze({ ...l }))) })
+    : undefined
+  const externalReadRoots = def.externalReadRoots ? Object.freeze([...def.externalReadRoots]) : undefined
+  const data = def.data ? Object.freeze({ ...def.data }) : undefined
+  const category = def.category
 
   validateAttachment(agents, workflows)
 
@@ -62,10 +114,23 @@ export function defineApp(def: AppDefinition): AppHandle {
     workflows: frozenWorkflows,
     attachments: frozenAttachments,
     ...(workspace ? { workspace } : {}),
+    ...(id !== undefined ? { id } : {}),
+    ...(name !== undefined ? { name } : {}),
+    ...(version !== undefined ? { version } : {}),
+    ...(description !== undefined ? { description } : {}),
+    ...(requires !== undefined ? { requires } : {}),
+    ...(ui !== undefined ? { ui } : {}),
+    ...(artifact !== undefined ? { artifact } : {}),
+    ...(skill !== undefined ? { skill } : {}),
+    ...(artifacts !== undefined ? { artifacts } : {}),
+    ...(dev !== undefined ? { dev } : {}),
+    ...(data !== undefined ? { data } : {}),
+    ...(externalReadRoots !== undefined ? { externalReadRoots } : {}),
+    ...(category !== undefined ? { category } : {}),
 
     async toMastraAgents(opts: ToMastraAgentOptions, only?: readonly string[]) {
       const targets = only ? selectAgents(frozenAgents, only) : frozenAgents
-      const out: Record<string, Awaited<ReturnType<typeof buildMastraAgent>>> = {}
+      const out: Record<string, BuildMastraAgentResult> = {}
       for (const entry of targets) {
         out[entry.agent.id] = await buildOne(entry, opts)
       }
@@ -87,7 +152,24 @@ export function defineApp(def: AppDefinition): AppHandle {
 
     emit(dir: string) {
       return emitApp(
-        { agents: frozenAgents, workflows: frozenWorkflows, ...(workspace ? { workspace } : {}) },
+        {
+          agents: frozenAgents,
+          workflows: frozenWorkflows,
+          ...(workspace ? { workspace } : {}),
+          ...(id !== undefined ? { id } : {}),
+          ...(name !== undefined ? { name } : {}),
+          ...(version !== undefined ? { version } : {}),
+          ...(description !== undefined ? { description } : {}),
+          ...(requires !== undefined ? { requires } : {}),
+          ...(ui !== undefined ? { ui } : {}),
+          ...(artifact !== undefined ? { artifact } : {}),
+          ...(skill !== undefined ? { skill } : {}),
+          ...(artifacts !== undefined ? { artifacts } : {}),
+          ...(dev !== undefined ? { dev } : {}),
+          ...(data !== undefined ? { data } : {}),
+          ...(externalReadRoots !== undefined ? { externalReadRoots } : {}),
+          ...(category !== undefined ? { category } : {}),
+        },
         dir,
       )
     },
@@ -138,7 +220,14 @@ function selectAgents(
   })
 }
 
-function buildOne(entry: AgentEntry, opts: ToMastraAgentOptions) {
+async function buildOne(entry: AgentEntry, opts: ToMastraAgentOptions): Promise<BuildMastraAgentResult> {
+  // Dynamic import, not a static top-level one: `@agentproto/mastra` pulls in
+  // `@mastra/core` (a documented peer dependency — see index.ts), which a
+  // bundler would otherwise inline into ANY host that merely calls
+  // `defineApp()` without ever calling `toMastraAgent(s)` (e.g. a UI-only app
+  // consumer). Loading it lazily, only from the one place it's actually used,
+  // keeps `defineApp()`/the rest of this module free of that cost.
+  const { buildMastraAgent } = await import("@agentproto/mastra")
   // `entry.body` (the AGENT.md body) wins as instructions; an explicit
   // `opts.body` still overrides, matching buildMastraAgent's contract.
   return buildMastraAgent(entry.agent, { body: entry.body, ...opts })

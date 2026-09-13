@@ -51,6 +51,7 @@ import {
   makeWorktreeProvisioner,
   makeWorktreeStatusLister,
   makeWorktreeGcRunner,
+  makeWorktreeAutoReclaimer,
   makeOpenPrResolver,
   makePrStateResolver,
 } from "./worktree.js"
@@ -87,7 +88,7 @@ import {
   type PairingRegistry,
   type PairingChannelHandle,
 } from "@agentproto/runtime"
-import { CatalogProviderSchema } from "@agentproto/model-catalog"
+import { CatalogProviderSchema, type CatalogProvider } from "@agentproto/model-catalog"
 import { loadOrCreateIdentity } from "@agentproto/secrets/identity"
 import { buildDaemonTunnelServerOptions } from "../util/tunnel-serve.js"
 import { homedir } from "node:os"
@@ -107,11 +108,13 @@ import { loadCachedCatalogVoices } from "../provider-catalog.js"
 import { getBrowserAdapter, browserAdapters } from "@agentproto/adapter-browser"
 import { createAgentCliRuntime } from "@agentproto/driver-agent-cli"
 import { readHermesUsage } from "@agentproto/adapter-hermes"
+import { readOpenCodeUsage } from "@agentproto/adapter-opencode"
 import { driverSpec } from "@agentproto/driver"
 import {
   resolveAdapter,
   listAdaptersWithCatalog,
   listAdaptersWithAcp,
+  listHarnessCapabilities,
 } from "../registry/resolve.js"
 import { installAdapter } from "../registry/install-driver.js"
 import { listCatalogModelsFromInstalled } from "../registry/catalog-models.js"
@@ -246,6 +249,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
 
   const cfgDaemon = { ...(cfg.daemon ?? {}), ...(profile?.daemon ?? {}) }
   const cfgTunnel = { ...(cfg.tunnel ?? {}), ...(profile?.tunnel ?? {}) }
+  const cfgFeatures = { ...(cfg.features ?? {}), ...(profile?.features ?? {}) }
 
   // Workspace defaults: --workspace > config.json > cwd. Validated
   // below — must exist + be a directory.
@@ -425,6 +429,20 @@ export async function runServe(args: readonly string[]): Promise<number> {
       const providerParse = adapter.handle.provider
         ? CatalogProviderSchema.safeParse(adapter.handle.provider)
         : undefined
+      // The adapter's OWN declared per-model billing provider
+      // (`models.allowed[].provider`) — authoritative for a model-derived-
+      // api-key adapter (no fixed `provider` above) whose declared model
+      // otherwise falls through to the GLOBAL catalog's (possibly
+      // different) routing for the same id (D3: pi bills
+      // `moonshotai/kimi-k2.7-code` via `moonshot`; the catalog routes that
+      // id to `openrouter`). Same catalog-enum validation as `provider`
+      // above — an unrecognized string is dropped, never guessed.
+      const modelProviders: Record<string, CatalogProvider> = {}
+      for (const entry of adapter.handle.models?.allowed ?? []) {
+        if (typeof entry === "string" || !entry.provider) continue
+        const parsed = CatalogProviderSchema.safeParse(entry.provider)
+        if (parsed.success) modelProviders[entry.id] = parsed.data
+      }
       const authDescriptor: AdapterAuthDescriptor = {
         ...(providerParse?.success ? { provider: providerParse.data } : {}),
         ...(adapter.handle.authEnforce ? { authEnforce: adapter.handle.authEnforce } : {}),
@@ -434,9 +452,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(adapter.handle.modelDerivedApiKey
           ? { modelDerivedApiKey: adapter.handle.modelDerivedApiKey }
           : {}),
+        ...(adapter.handle.gatewayAuth ? { gatewayAuth: adapter.handle.gatewayAuth } : {}),
+        ...(Object.keys(modelProviders).length > 0 ? { modelProviders } : {}),
       }
       return {
-        async startSession({ cwd, resumeSessionId, mode, options, model, effort, posture, contextProfile, mcpServers, onActivity, permissionHold, auth, commandSandbox }) {
+        async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, onActivity, permissionHold, auth, commandSandbox, env }) {
           // Build config.options only when there's something to set — an
           // empty object would pass undefined validation but trips the
           // "no declared options" early-return in composeSpawn. Caller-
@@ -463,6 +483,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
           return runtime.start({
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),
+            ...(configDir ? { configDir } : {}),
             ...(Object.keys(config).length > 0 ? { config } : {}),
             ...(mcpServers ? { mcpServers } : {}),
             ...(onActivity ? { onActivity } : {}),
@@ -471,18 +492,29 @@ export async function runServe(args: readonly string[]): Promise<number> {
             ...(typeof posture === "string" ? { posture } : {}),
             ...(contextProfile ? { contextProfile } : {}),
             ...(commandSandbox ? { commandSandbox } : {}),
+            ...(env ? { env } : {}),
           })
         },
         commandPreview:
           `${adapter.handle.bin} ${(adapter.handle.bin_args ?? []).join(" ")}`.trim(),
         ...(slug === "hermes" ? { readUsage: (sid: string) => readHermesUsage(sid) } : {}),
+        ...(slug === "opencode" ? { readUsage: (sid: string) => readOpenCodeUsage(sid) } : {}),
         declaredOptions: (adapter.handle.options ?? []).map(o => ({
           id: o.id,
           type: o.type,
         })),
         authDescriptor,
+        ...(adapter.handle.routeSelection
+          ? { routeSelection: adapter.handle.routeSelection }
+          : {}),
         ...(adapter.handle.models?.default
           ? { defaultModel: adapter.handle.models.default }
+          : {}),
+        ...(adapter.handle.capabilities?.resumable !== undefined
+          ? { resumable: adapter.handle.capabilities.resumable }
+          : {}),
+        ...(adapter.handle.capabilities?.nativeTerminalResume === true
+          ? { nativeTerminalResume: true }
           : {}),
       }
     } catch (err) {
@@ -638,6 +670,23 @@ export async function runServe(args: readonly string[]): Promise<number> {
         bind: opts.bind,
         specs: [driverSpec],
         name: "agentproto-serve",
+        // Surfaced over MCP and `/health` — what is actually running.
+        version: __CLI_VERSION__,
+        // Build identity: sha + builtAt were stamped into this bundle at
+        // build time; `source` is judged here from where the entry actually
+        // lives, because the version string alone cannot distinguish a
+        // workspace dist from the published tarball of the same release.
+        build: {
+          sha: __CLI_BUILD_SHA__,
+          builtAt: __CLI_BUILT_AT__,
+          source: (() => {
+            const entry = process.argv[1] ?? ""
+            if (!entry) return "unknown"
+            return entry.includes("/node_modules/") || entry.includes("/.npm/")
+              ? "published"
+              : "workspace"
+          })(),
+        },
         // BOOT.md is silly for a tunnel daemon — skip it.
         boot: false,
         // Opt-in eager resume-on-boot (§5, PR-4). Resolved from
@@ -649,6 +698,21 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // off. A positive ms value arms the periodic sweep; anything else keeps
         // it off (0), so idle sessions are never auto-retired unless opted in.
         idleReapAfterMs: resolveIdleReapAfterMs(cfgDaemon.idleReapAfterMs),
+        // Crash-detect sweep (crash-detect PR-1). DEFAULT ON: resolution order
+        // mirrors idleReapAfterMs's comment above (env > config field), but an
+        // unset value here passes `undefined` through so createGateway applies
+        // its own sane default rather than reading "unset" as off.
+        crashDetectIntervalMs: resolveCrashDetectIntervalMs(cfgDaemon.crashDetectIntervalMs),
+        // Restart-sweep tick (restart-scheduler PR-2). OFF by default —
+        // resolution order mirrors idleReapAfterMs's comment above (env >
+        // config field > off).
+        restartSweepIntervalMs: resolveRestartSweepIntervalMs(cfgDaemon.restartSweepIntervalMs),
+        // Turn-liveness watchdog (turn-liveness-watchdog chantier). DEFAULT
+        // ON: resolution order mirrors crashDetectIntervalMs's comment above
+        // — an unset value here passes `undefined` through so createGateway
+        // applies its own sane default rather than reading "unset" as off.
+        turnStallAfterMs: resolveTurnStallAfterMs(cfgDaemon.turnStallAfterMs),
+        llmEndpoint: cfgFeatures.llmEndpoint === true,
         resolveAgentAdapter,
         // Injected port behind `agent_start.worktree` + the `worktrees.isolation`
         // policy: runs `worktree.provision` over @agentproto/worktree, a dep the
@@ -663,6 +727,13 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // `planGc` / `applyGc` engine over @agentproto/worktree (defaults to a
         // dry run), same dep reasoning as above.
         runWorktreeGc: makeWorktreeGcRunner(),
+        // Injected port behind `sessions.ts`'s exit-time worktree auto-reclaim
+        // (`SessionDescriptor.worktreeAutoProvisioned`): a policy-provisioned
+        // (implicit) session's own worktree is reclaimed the moment it exits,
+        // if — and only if — it classifies clean/idle/merged-or-fresh. Same
+        // dep reasoning as above; a worktree the caller explicitly requested
+        // is never routed through this port at all.
+        runWorktreeAutoReclaim: makeWorktreeAutoReclaimer(),
         // Injected port behind the daemon PR-provenance reconciler: resolves the
         // open PR for a session's branch (branch→PR over @agentproto/worktree),
         // so an executor's PR gets the provenance footer even though it opened it
@@ -679,6 +750,12 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // appends the generic ACP agents (curated ACP_CATALOG + a user's
         // config.acpAgents) so a zero-code ACP CLI is discoverable too.
         listAgentAdapters: () => listAdaptersWithAcp(CATALOG),
+        // Harness capability-discovery — the `harness_capabilities` MCP tool.
+        // What each installed adapter can actually DO on this host (creds
+        // present, reachable providers, model-discovery mechanism, endpoint
+        // compat, model/posture application), complementing the static
+        // manifest fields `listAgentAdapters` surfaces.
+        listHarnessCapabilities: (opts) => listHarnessCapabilities(opts),
         // Mutation companion to `listAgentAdapters` — `POST /adapters/:slug/
         // install` + the `adapter_install` MCP tool. Drives npm-global for
         // acp-catalog CLIs and the manifest install[] pipeline for first-party
@@ -823,12 +900,13 @@ export async function runServe(args: readonly string[]): Promise<number> {
 
   // ── shutdown wiring (covers both local-only and tunnel modes) ──
   const aborter = new AbortController()
+  const bootedAt = Date.now()
   let shuttingDown = false
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
     if (shuttingDown) return
     shuttingDown = true
     process.stderr.write(
-      `\n${color.dim}── shutting down (${signal}) ──${color.reset}\n`,
+      `\n${color.dim}── shutting down (${signal}) · v${__CLI_VERSION__} · up ${formatDuration(Date.now() - bootedAt)} ──${color.reset}\n`,
     )
     aborter.abort()
     await gateway.stop().catch(() => undefined)
@@ -1214,6 +1292,63 @@ function resolveIdleReapAfterMs(configured: number | undefined): number {
 }
 
 /**
+ * Resolve the effective crash-detect sweep interval (crash-detect PR-1):
+ * `AGENTPROTO_CRASH_DETECT_INTERVAL_MS` env > the `daemon.crashDetectIntervalMs`
+ * config field > `undefined` (letting `createGateway` apply its own DEFAULT-ON
+ * fallback). Unlike `resolveIdleReapAfterMs`, an unset/malformed value here does
+ * NOT mean "off" — it means "let the gateway pick its default", since detection
+ * is non-destructive observability and opt-in-to-DISABLE, not opt-in-to-enable.
+ * An explicit non-positive value at either layer DOES disable it.
+ */
+function resolveCrashDetectIntervalMs(configured: number | undefined): number | undefined {
+  const raw = process.env.AGENTPROTO_CRASH_DETECT_INTERVAL_MS
+  if (raw !== undefined && raw.trim() !== "") {
+    const parsed = Number.parseInt(raw, 10)
+    if (Number.isFinite(parsed)) return parsed > 0 ? parsed : 0
+    return undefined
+  }
+  return configured
+}
+
+/**
+ * Resolve the effective turn-liveness watchdog threshold (turn-liveness-
+ * watchdog chantier): `AGENTPROTO_TURN_STALL_AFTER_MS` env > the
+ * `daemon.turnStallAfterMs` config field > `undefined` (letting
+ * `createGateway` apply its own DEFAULT-ON fallback). Same shape as
+ * `resolveCrashDetectIntervalMs`: an unset/malformed value does NOT mean
+ * "off" — detection is non-destructive observability, opt-in-to-DISABLE
+ * rather than opt-in-to-enable. An explicit non-positive value at either
+ * layer DOES disable it.
+ */
+function resolveTurnStallAfterMs(configured: number | undefined): number | undefined {
+  const raw = process.env.AGENTPROTO_TURN_STALL_AFTER_MS
+  if (raw !== undefined && raw.trim() !== "") {
+    const parsed = Number.parseInt(raw, 10)
+    if (Number.isFinite(parsed)) return parsed > 0 ? parsed : 0
+    return undefined
+  }
+  return configured
+}
+
+/**
+ * Resolve the effective restart-sweep interval (restart-scheduler PR-2):
+ * `AGENTPROTO_RESTART_SWEEP_INTERVAL_MS` env > the
+ * `daemon.restartSweepIntervalMs` config field > off. Returns a positive ms
+ * value to arm the sweep, or 0 to leave it off (the default) — same
+ * off-by-default shape as `resolveIdleReapAfterMs` (unlike
+ * `resolveCrashDetectIntervalMs`, which is default-ON).
+ */
+function resolveRestartSweepIntervalMs(configured: number | undefined): number {
+  const raw = process.env.AGENTPROTO_RESTART_SWEEP_INTERVAL_MS
+  if (raw !== undefined && raw.trim() !== "") {
+    const parsed = Number.parseInt(raw, 10)
+    if (Number.isFinite(parsed) && parsed > 0) return parsed
+    return 0
+  }
+  return typeof configured === "number" && configured > 0 ? configured : 0
+}
+
+/**
  * Dial a rendezvous broker outbound (daemon side) and adapt the socket to a
  * `FrameSink`. Injected into the pairing registry. Honours the registry's abort
  * signal so shutdown tears down an in-flight dial promptly.
@@ -1319,8 +1454,13 @@ function printBootBanner(opts: {
     ? `${c.amber}bearer${c.reset} ${c.dim}(daemon.authToken)${c.reset}`
     : `${c.dim}open (no token set)${c.reset}`
   const line = `${c.dim}─${c.reset}`
+  const entry = process.argv[1] ?? "?"
+  const bin =
+    home && entry.startsWith(home) ? "~" + entry.slice(home.length) : entry
   process.stderr.write(
     `\n${line} ${c.bold}agentproto${c.reset} ${c.dim}·${c.reset} gateway up ${c.dim}·${c.reset} ${c.cyan}${opts.url}${c.reset} ${line}\n` +
+      `  ${c.dim}version${c.reset}      ${__CLI_VERSION__} ${c.dim}· pid ${process.pid} · node ${process.version}${c.reset}\n` +
+      `  ${c.dim}bin${c.reset}          ${bin}\n` +
       `  ${c.dim}workspace${c.reset}    ${workspace}\n` +
       `  ${c.dim}pty${c.reset}          ${ptyState}\n` +
       `  ${c.dim}origins${c.reset}      ${origins}\n` +
@@ -1329,6 +1469,18 @@ function printBootBanner(opts: {
       `  ${c.dim}mode${c.reset}         ${mode}\n` +
       `\n`,
   )
+}
+
+/** `3h12m`, `47m`, `12s` — compact elapsed-time tag for the lifecycle lines. */
+function formatDuration(ms: number): string {
+  const s = Math.floor(ms / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h${m % 60 ? `${m % 60}m` : ""}`
+  const d = Math.floor(h / 24)
+  return `${d}d${h % 24 ? `${h % 24}h` : ""}`
 }
 
 /**

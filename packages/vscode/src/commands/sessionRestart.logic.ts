@@ -27,12 +27,19 @@ export interface RestartResult {
    * human-readable reason since the wire only carries a boolean flag.
    */
   resumeFallback?: string
+  /** True when a fallback occurred AND the daemon recovered partial context
+   *  from its own transcript (daemon events.jsonl). False or absent when no
+   *  context was recovered. */
+  digestRecovered?: boolean
   kind?: string
   pty?: boolean
 }
 
-const RESUME_FALLBACK_MESSAGE =
+const RESUME_FALLBACK_MESSAGE_NO_CONTEXT =
   "the prior session had no resumable history — this is a fresh spawn, not a continued conversation"
+
+const RESUME_FALLBACK_MESSAGE_PARTIAL_CONTEXT =
+  "the prior session had no resumable history — partial context was recovered from the daemon transcript"
 
 /**
  * True for any terminal-status session — the daemon has no restart guard, so
@@ -68,7 +75,11 @@ export function parseRestartResult(raw: unknown): RestartResult | undefined {
   if (typeof record.resumeFallback === "string" && record.resumeFallback.length > 0) {
     result.resumeFallback = record.resumeFallback
   } else if (record.resumeFallback === true) {
-    result.resumeFallback = RESUME_FALLBACK_MESSAGE
+    const digestRecovered = record.digestRecovered === true
+    result.resumeFallback = digestRecovered
+      ? RESUME_FALLBACK_MESSAGE_PARTIAL_CONTEXT
+      : RESUME_FALLBACK_MESSAGE_NO_CONTEXT
+    result.digestRecovered = digestRecovered
   }
 
   return result

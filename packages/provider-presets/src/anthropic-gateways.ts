@@ -85,16 +85,41 @@ export const ANTHROPIC_GATEWAY_PRESETS = {
     defaultModel: "deepseek-v4-pro",
     homepage: "https://api-docs.deepseek.com",
   },
+  "xai-anthropic": {
+    id: "xai-anthropic",
+    label: "xAI (Anthropic-compatible)",
+    description:
+      "xAI Grok models via xAI's live Anthropic-compatible Messages endpoint " +
+      "at https://api.x.ai/v1/messages. Base URL has NO /v1 suffix — the " +
+      "client appends /v1/messages itself. Set XAI_API_KEY in env. Note: " +
+      "xAI's own docs do not document this surface, but the endpoint is live " +
+      "and returns standard Anthropic message responses.",
+    schemaFlavor: "anthropic",
+    // NO /v1 suffix: the Anthropic client appends /v1/messages itself.
+    baseUrl: "https://api.x.ai",
+    keyEnv: "XAI_API_KEY",
+    scrubEnv: ANTHROPIC_CORE_SCRUB_ENV,
+    defaultModel: "grok-4.5",
+    homepage: "https://docs.x.ai",
+  },
   "llm-endpoint": {
     id: "llm-endpoint",
     label: "LLM Endpoint",
     description:
       "Local llm-endpoint Anthropic-compatible proxy. Upstream routing is " +
       "decided by the runtime resolver; the client just sees an Anthropic " +
-      "Messages surface at localhost:18090. Auth via LLM_ENDPOINT_API_KEY.",
+      "Messages surface at localhost:18090. Auth via LLM_ENDPOINT_ACCESS_TOKENS " +
+      "— the SAME shared-secret var the proxy's inbound gate accepts (see " +
+      "`parseAccessTokens(process.env.LLM_ENDPOINT_ACCESS_TOKENS)` in " +
+      "@agentproto/llm-endpoint), so one value serves both the server's " +
+      "allow-list and the client's presented bearer.",
     schemaFlavor: "anthropic",
     baseUrl: "http://localhost:18090",
-    keyEnv: "LLM_ENDPOINT_API_KEY",
+    // The proxy gates inbound requests on LLM_ENDPOINT_ACCESS_TOKENS and reads
+    // no other var; LLM_ENDPOINT_API_KEY was dead on both sides (never read by
+    // the proxy, never a real client key). Point the client's key-env at the
+    // one the gate actually checks so the profile's token reaches it.
+    keyEnv: "LLM_ENDPOINT_ACCESS_TOKENS",
     scrubEnv: ANTHROPIC_CORE_SCRUB_ENV,
     defaultModel: "kimi-k2.7-code",
   },
@@ -139,6 +164,80 @@ export const ANTHROPIC_GATEWAY_PRESETS = {
     scrubEnv: [],
     defaultModel: "gpt-4.1",
     homepage: "https://platform.openai.com",
+  },
+  mistral: {
+    id: "mistral",
+    label: "Mistral",
+    description:
+      "Mistral models direct to api.mistral.ai (OpenAI-compatible). Use the " +
+      "model option with Mistral ids (e.g. mistral-large-latest, " +
+      "codestral-latest — the -latest aliases are Mistral's own stable " +
+      "pointers). Set MISTRAL_API_KEY in env.",
+    schemaFlavor: "openai",
+    baseUrl: "https://api.mistral.ai/v1",
+    keyEnv: "MISTRAL_API_KEY",
+    scrubEnv: [],
+    defaultModel: "mistral-large-latest",
+    homepage: "https://docs.mistral.ai",
+  },
+  groq: {
+    id: "groq",
+    label: "Groq",
+    description:
+      "Groq LPU inference direct to api.groq.com (OpenAI-compatible; note " +
+      "the /openai path segment in the base URL). Open-weight models at very " +
+      "high tokens/s — see GET /models for the live list; no pinned default, " +
+      "the lineup rotates. Set GROQ_API_KEY in env.",
+    schemaFlavor: "openai",
+    baseUrl: "https://api.groq.com/openai/v1",
+    keyEnv: "GROQ_API_KEY",
+    scrubEnv: [],
+    homepage: "https://console.groq.com/docs",
+  },
+  nebius: {
+    id: "nebius",
+    label: "Nebius AI Studio",
+    description:
+      "Nebius AI Studio direct to api.studio.nebius.com (OpenAI-compatible). " +
+      "Open-weight chat models plus embeddings (e.g. BAAI/bge-m3) — see " +
+      "GET /models for the live list; no pinned default. Set NEBIUS_API_KEY " +
+      "in env (Studio-era auth0 JWTs were invalidated by their IAM " +
+      "migration — mint a fresh key in the Studio console if auth fails " +
+      "with a non-expired token).",
+    schemaFlavor: "openai",
+    baseUrl: "https://api.studio.nebius.com/v1",
+    keyEnv: "NEBIUS_API_KEY",
+    scrubEnv: [],
+    homepage: "https://studio.nebius.com",
+  },
+  huggingface: {
+    id: "huggingface",
+    label: "Hugging Face (Inference Providers)",
+    description:
+      "Hugging Face Inference Providers router (OpenAI-compatible). Model " +
+      "ids are Hub repo ids (e.g. moonshotai/Kimi-K3, deepseek-ai/…) — the " +
+      "router picks a backing provider per model; see GET /models for the " +
+      "live list; no pinned default. Set HF_TOKEN in env (the ecosystem-wide " +
+      "HF convention — not an *_API_KEY name).",
+    schemaFlavor: "openai",
+    baseUrl: "https://router.huggingface.co/v1",
+    keyEnv: "HF_TOKEN",
+    scrubEnv: [],
+    homepage: "https://huggingface.co/docs/inference-providers",
+  },
+  deepinfra: {
+    id: "deepinfra",
+    label: "DeepInfra",
+    description:
+      "DeepInfra direct to api.deepinfra.com (OpenAI-compatible; note the " +
+      "/v1/openai path). Open-weight chat models plus embeddings at " +
+      "per-token pricing — see GET /models for the live list; no pinned " +
+      "default. Set DEEPINFRA_API_KEY in env.",
+    schemaFlavor: "openai",
+    baseUrl: "https://api.deepinfra.com/v1/openai",
+    keyEnv: "DEEPINFRA_API_KEY",
+    scrubEnv: [],
+    homepage: "https://deepinfra.com/docs",
   },
 } as const satisfies Record<string, ProviderPreset>
 

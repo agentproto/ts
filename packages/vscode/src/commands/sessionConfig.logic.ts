@@ -28,6 +28,7 @@ import type {
   SessionDescriptor,
 } from "../client/types.js"
 import { mapChangeModelQuickPickItems } from "./changeModel.logic.js"
+import { resolveEffectiveRoute } from "@agentproto/runtime/catalog-models"
 import type { SpawnAdapterInfo } from "./spawn.logic.js"
 
 /** The persistent affix a restart-only chip renders (SPEC §6 rendering rule 2). */
@@ -61,6 +62,7 @@ export interface CatalogRouteRow {
   runnable: boolean
   eligibleProfiles: string[]
   adapterModes: string[]
+  adapters: string[]
   curated: boolean
 }
 export interface CatalogProductRow {
@@ -163,6 +165,10 @@ export interface RouteRow {
   /** The `profileRef`s eligible for this route (§1c) — pre-computed by the
    *  catalog so the access chip can pre-select on a route switch. */
   eligibleProfiles: string[]
+  /** Canonical model ref for this route (e.g. `anthropic/claude-sonnet-5`). */
+  ref?: string
+  /** True for synthesized native routes that are not in the catalog. */
+  fixed?: boolean
 }
 
 /** One access row — an eligible profile, or the trailing "+ add profile" flow. */
@@ -291,6 +297,17 @@ function findCatalogProduct(
   for (const vendor of catalog.vendors) {
     const match = vendor.products.find(p => p.product === product || p.product === model)
     if (match) return { vendor: vendor.vendor, product: match }
+    // Router-prefixed ids (`openrouter/vendor/product`) yield `product =
+    // vendor/product`; try matching that split explicitly.
+    const slash = product.indexOf("/")
+    if (slash !== -1) {
+      const productVendor = product.slice(0, slash)
+      const productName = product.slice(slash + 1)
+      if (productVendor === vendor.vendor) {
+        const splitMatch = vendor.products.find(p => p.product === productName)
+        if (splitMatch) return { vendor: vendor.vendor, product: splitMatch }
+      }
+    }
   }
   return undefined
 }
@@ -300,6 +317,18 @@ function findCatalogProduct(
  * (⇒ chip hidden) when the catalog knows no routes for the model — never a
  * hardcoded gateway list.
  */
+/** True when the current (harness×)model has more than one gateway route to
+ *  choose from — the signal the composer's route chip uses to decide whether to
+ *  offer a switch or sit dimmed. One (or zero) route ⇒ nothing to pick ⇒ dim.
+ *  Reuses {@link resolveRouteRows}, the same catalog source the model picker's
+ *  "change route" row draws from. */
+export function isRouteSwitchable(
+  catalog: CatalogModelsResult | undefined,
+  model: string | undefined,
+): boolean {
+  return resolveRouteRows(catalog, model).length > 1
+}
+
 export function resolveRouteRows(
   catalog: CatalogModelsResult | undefined,
   model: string | undefined,
@@ -314,6 +343,7 @@ export function resolveRouteRows(
     runnable: route.runnable,
     curated: route.curated,
     eligibleProfiles: [...route.eligibleProfiles],
+    ref: route.ref,
   }))
 }
 
@@ -329,10 +359,12 @@ function routeDescription(vendor: string, route: CatalogRouteRow): string {
 }
 
 /**
- * The route the session is currently on: the descriptor's explicit `route.gateway`
- * matched against the catalog product's routes (by route id OR `adapterModes`),
- * else the DIRECT route (the model's own vendor, `baseUrl === null`), else the
- * first known route. Undefined when the catalog knows no routes for the model.
+ * The route the session is currently on. The canonical resolver gives the
+ * model ref's own pinned `@route` precedence over `route.gateway` so the two
+ * fields never disagree on the billing endpoint; this function then maps that
+ * resolved route string back to a catalog row. Falls back to the DIRECT route
+ * or the first known route when the catalog has no match. Undefined when the
+ * catalog knows no routes for the model.
  */
 export function currentRouteOf(
   descriptor: Pick<SessionDescriptor, "route" | "model">,
@@ -340,14 +372,14 @@ export function currentRouteOf(
 ): RouteRow | undefined {
   const rows = resolveRouteRows(catalog, descriptor.model)
   if (rows.length === 0) return undefined
-  const gateway = descriptor.route?.gateway
-  if (gateway) {
-    const explicit = rows.find(r => r.value === gateway)
+  const effectiveRoute = resolveEffectiveRoute(descriptor.model, descriptor.route?.gateway)
+  if (effectiveRoute) {
+    const explicit = rows.find(r => r.value === effectiveRoute)
     if (explicit) return explicit
     // A gateway named by its adapter-mode id (e.g. "moonshot") resolving to a
     // catalog route whose adapterModes carries it.
     const byMode = rows.find(r =>
-      (catalogRouteFor(catalog, descriptor.model, r.value)?.adapterModes ?? []).includes(gateway),
+      (catalogRouteFor(catalog, descriptor.model, r.value)?.adapterModes ?? []).includes(effectiveRoute),
     )
     if (byMode) return byMode
   }
@@ -499,6 +531,7 @@ export function buildSessionConfigChips(
   const modelRows: ConfigChipRow[] = mapChangeModelQuickPickItems(input.adapter, {
     model: descriptor.model,
     mode: descriptor.mode,
+    route: descriptor.route,
   })
     .filter(item => item.model !== undefined)
     .map(item => ({

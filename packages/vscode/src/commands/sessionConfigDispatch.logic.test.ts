@@ -30,6 +30,24 @@ describe("restartOverrideFor", () => {
     expect(restartOverrideFor("posture", "plan")).toEqual({ posture: "plan" })
     expect(restartOverrideFor("posture", "acme-turbo")).toEqual({ posture: { harnessModeId: "acme-turbo" } })
   })
+
+  it("rewrites a parseable model's @route suffix for a route chip instead of setting route.gateway", () => {
+    expect(restartOverrideFor("route", "openrouter", "anthropic/claude-sonnet-5")).toEqual({
+      model: "anthropic/claude-sonnet-5@openrouter",
+    })
+  })
+
+  it("falls back to route.gateway for a route chip when the current model is bare/unparseable", () => {
+    expect(restartOverrideFor("route", "openrouter", "claude-opus-4-8")).toEqual({
+      route: { gateway: "openrouter" },
+    })
+  })
+
+  it("falls back to route.gateway when the picked route does not change the model's suffix", () => {
+    expect(restartOverrideFor("route", "anthropic", "anthropic/claude-sonnet-5")).toEqual({
+      route: { gateway: "anthropic" },
+    })
+  })
 })
 
 describe("planChipDispatch", () => {
@@ -54,6 +72,20 @@ describe("planChipDispatch", () => {
   it("routes a live chip's restart-tagged row (model↔route trap) through session_restart", () => {
     const d = planChipDispatch(chip({ axis: "model", verb: "agent_set_model", restart: false }), row({ value: "deepseek@openrouter", restartRequired: true }))
     expect(d.kind).toBe("restart")
+  })
+
+  it("routes a route chip through session_restart and rewrites the model @route suffix when parseable", () => {
+    const d = planChipDispatch(
+      chip({ axis: "route", verb: "session_restart", restart: true }),
+      row({ value: "openrouter" }),
+      "anthropic/claude-sonnet-5",
+    )
+    expect(d).toEqual({
+      kind: "restart",
+      axis: "route",
+      value: "openrouter",
+      override: { model: "anthropic/claude-sonnet-5@openrouter" },
+    })
   })
 })
 

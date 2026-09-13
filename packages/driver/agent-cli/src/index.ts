@@ -30,6 +30,8 @@ export {
   createArmSessionControls,
   applyModelCommand,
   promptTurn,
+  isModelSwitchAcknowledgement,
+  parseModelSwitchCommand,
   type ArmSessionControls,
 } from "./session-controls.js"
 // Agent CLI → generic model port: one executor backing every prompt→completion
@@ -63,8 +65,11 @@ export {
   createPrintSession,
   mapMastraEvent,
   createMastraMapperState,
+  mapJcodeEvent,
+  createJcodeMapperState,
   type PrintArmOptions,
   type MastraMapperState,
+  type JcodeMapperState,
 } from "./protocol/print-arm.js"
 // Generic proprietary-protocol arm loader — dynamically imports the
 // manifest's `adapter` package. Exported so proprietary adapter packages

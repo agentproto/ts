@@ -14,7 +14,7 @@
  * "default", and an unreadable registry never breaks the spawn.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest"
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { createMcpServer } from "@agentproto/mcp-server"
@@ -57,7 +57,7 @@ function fakePtyFactory(): PtyFactory {
 async function harness(): Promise<{ client: Client; close: () => Promise<void> }> {
   const registry = createSessionsRegistry({ persist: false, spawnPty: fakePtyFactory() })
   const { server } = await createMcpServer({ specs: [], name: "test", version: "0" })
-  registerSessionTools(server, { registry, ptyEnabled: true })
+  registerSessionTools(server, { registry, workspace: process.cwd(), ptyEnabled: true })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
   const client = new Client({ name: "test-client", version: "0" })
@@ -78,6 +78,9 @@ async function startAndReadSlug(
 }
 
 beforeEach(() => {
+  // This file tests cwd → workspaceSlug reverse-mapping, not the terminal
+  // gate — opt out explicitly rather than weakening the default.
+  process.env.AGENTPROTO_TERMINAL_GATE = "all"
   wsState.throws = false
   wsState.config = {
     version: 1,
@@ -87,6 +90,10 @@ beforeEach(() => {
       { slug: "ts", path: "/Code/studio/projects/ts", addedAt: "", updatedAt: "" },
     ],
   }
+})
+
+afterEach(() => {
+  delete process.env.AGENTPROTO_TERMINAL_GATE
 })
 
 describe("terminal_start — cwd → workspaceSlug", () => {

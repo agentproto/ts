@@ -8,8 +8,8 @@
  * Adapter wiring goes through the runtime registry — built-in adapters
  * (file substrate, mention dispatcher, fs state, agent-cli participant)
  * are pre-registered; transport-specific adapters ship as separate
- * packages and register themselves when loaded via `--plugin <id>` or
- * the `plugins[]` array in `~/.agentproto/config.json`.
+ * packages and register themselves when loaded via `--adapter <id>` or
+ * the `adapters[]` array in `~/.agentproto/config.json`.
  */
 
 import { parseArgs } from "node:util"
@@ -39,23 +39,54 @@ import {
 } from "../registry/runtime.js"
 import { registerBuiltins } from "../registry/builtins.js"
 import {
-  loadPlugins,
-  loadPluginsFromConfig,
-} from "../registry/plugins.js"
+  loadAdapters,
+  loadAdaptersFromConfig,
+} from "../registry/adapters.js"
+
+const USAGE = `agentproto run-swarm — run a multi-agent runtime manifest in a loop
+
+Usage:
+  agentproto run-swarm --manifest <path> [--once] [--interval <duration>] [--verbose]
+                       [--adapter <module-id>…]
+
+Examples:
+  agentproto run-swarm --manifest .runtime/local.yaml --verbose
+`
 
 export async function runRunSwarm(args: readonly string[]): Promise<number> {
-  const { values } = parseArgs({
-    args: [...args],
-    allowPositionals: false,
-    strict: true,
-    options: {
-      manifest: { type: "string", short: "m" },
-      once: { type: "boolean" },
-      interval: { type: "string" },
-      verbose: { type: "boolean", short: "v" },
-      plugin: { type: "string", multiple: true },
-    },
-  })
+  if (args.includes("--help") || args.includes("-h")) {
+    process.stdout.write(USAGE)
+    return 0
+  }
+  let values: {
+    manifest?: string
+    once?: boolean
+    interval?: string
+    verbose?: boolean
+    adapter?: string[]
+  }
+  try {
+    ;({ values } = parseArgs({
+      args: [...args],
+      allowPositionals: false,
+      strict: true,
+      options: {
+        manifest: { type: "string", short: "m" },
+        once: { type: "boolean" },
+        interval: { type: "string" },
+        verbose: { type: "boolean", short: "v" },
+        adapter: { type: "string", multiple: true },
+      },
+    }))
+  } catch (err) {
+    // A friendly message on an unknown flag/arg instead of a raw parseArgs
+    // stack — point at the help so callers can discover the supported set.
+    process.stderr.write(
+      `agentproto run-swarm: ${err instanceof Error ? err.message : String(err)}\n` +
+        "  See: agentproto run-swarm --help\n"
+    )
+    return 2
+  }
 
   if (!values.manifest) {
     process.stderr.write(
@@ -75,9 +106,9 @@ export async function runRunSwarm(args: readonly string[]): Promise<number> {
   }
 
   registerBuiltins()
-  const cliPlugins = values.plugin ?? []
-  const configPlugins = await loadPluginsFromConfig()
-  await loadPlugins([...configPlugins, ...cliPlugins])
+  const cliAdapters = values.adapter ?? []
+  const configAdapters = await loadAdaptersFromConfig()
+  await loadAdapters([...configAdapters, ...cliAdapters])
 
   const loaded = await loadManifest(resolvePath(values.manifest))
   const verbose = values.verbose === true
@@ -178,7 +209,7 @@ async function buildSubstrate(
   const factory = getSubstrateFactory(cfg.kind)
   if (!factory) {
     throw new Error(
-      `unknown substrate kind '${cfg.kind}'. Registered kinds: [${listRegisteredKinds().substrates.join(", ") || "(none)"}]. Pass --plugin <module-id> or add it to ~/.agentproto/config.json plugins[] to register a third-party substrate.`
+      `unknown substrate kind '${cfg.kind}'. Registered kinds: [${listRegisteredKinds().substrates.join(", ") || "(none)"}]. Pass --adapter <module-id> or add it to ~/.agentproto/config.json adapters[] to register a third-party substrate.`
     )
   }
   return factory(cfg, ctx)
@@ -234,7 +265,7 @@ async function buildExecutors(
     const factory = getExecutorFactory(p.executor)
     if (!factory) {
       throw new Error(
-        `unknown executor kind '${p.executor}'. Registered kinds: [${listRegisteredKinds().executors.join(", ") || "(none)"}]. Pass --plugin <module-id> or add the executor's package to ~/.agentproto/config.json plugins[].`
+        `unknown executor kind '${p.executor}'. Registered kinds: [${listRegisteredKinds().executors.join(", ") || "(none)"}]. Pass --adapter <module-id> or add the executor's package to ~/.agentproto/config.json adapters[].`
       )
     }
     const config: AdapterConfig = {

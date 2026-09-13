@@ -42,15 +42,35 @@ import {
 import {
   getModelProvider,
   resolvePricingExact,
+  resolveContextWindow,
+  formatTokens,
   LLM_PRICING_CATALOG,
   MODEL_ALIASES,
 } from "@agentproto/model-catalog/llm"
-import type { AdapterAuthDescriptor } from "./spawn-defaults.js"
+import { getAnthropicGatewayPreset } from "@agentproto/provider-presets"
+import { subscriptionSurfaceFor, type AdapterAuthDescriptor } from "./spawn-defaults.js"
+import type { RouteSpec } from "./session-config.js"
+
+export type { RouteSpec } from "./session-config.js"
 
 /** Routers the catalog probes to widen beyond any adapter's declared model
  *  list (SPEC §5.1) — same three route-identity widens, `route-identity/
- *  index.ts:54-59`. */
-const WIDENING_ROUTES = ["openrouter", "requesty", "huggingface"] as const
+ *  index.ts:54-59`. Exported so `model-wire.ts` can reuse the SAME set when
+ *  deciding whether a wire model needs a literal router-prefix (never a
+ *  second hand-maintained list). */
+export const WIDENING_ROUTES = ["openrouter", "requesty", "huggingface"] as const
+
+/**
+ * Vendor-specific compatibility routes: canonical protocol surfaces that can
+ * bill the same model family without duplicating catalog entries. A model whose
+ * pricing-catalog vendor is `xai` is legitimately reachable both on the native
+ * `xai` API route and on the Anthropic-compatible `xai-anthropic` route; the
+ * two routes are distinct billing endpoints so the right auth profile matches
+ * the right protocol.
+ */
+const VENDOR_COMPATIBILITY_ROUTES: Readonly<Record<string, readonly string[]>> = {
+  xai: ["xai", "xai-anthropic"],
+}
 
 /** One model entry as declared in an adapter's `models.allowed`
  *  (`AdapterModelInfo`, `packages/cli/src/registry/resolve.ts:134-142`) —
@@ -59,9 +79,13 @@ export interface CatalogAdapterModelInput {
   /** Model id exactly as declared — bare (`"claude-opus-4-8"`) or
    *  `vendor/product` form. */
   id: string
+  /** The billing provider/route this model entry reaches on (`
+   *  AdapterModelInfo.provider`) — e.g. `"moonshot"` or `"openrouter"`.
+   *  Takes precedence over the id's own implied vendor route. */
+  provider?: string
   /** The adapter mode id that must be applied to reach this model on a
    *  non-direct route (`AdapterModelInfo.mode`) — e.g. `"moonshot"`.
-   *  Undefined ⇒ direct route (the model's own vendor). */
+   *  Undefined ⇒ direct route (the model's own vendor, or `provider`). */
   mode?: string
 }
 
@@ -74,6 +98,13 @@ export interface CatalogAdapterInput {
    *  ⇒ the adapter presents no auth method, so rows it curates are
    *  discoverable but never runnable through it alone. */
   authDescriptor?: AdapterAuthDescriptor
+  /** How this adapter's spawn ROUTE relates to the chosen model (AIP-45
+   *  launch-menu drill-down). `"free"` = the adapter can route arbitrary
+   *  models through gateways (`base_url`). `"derived-from-model"` = the
+   *  endpoint falls out of the model id's vendor prefix. Absent/undefined
+   *  ⇒ fixed single-provider adapter; widened gateway routes are not
+   *  attached to it. */
+  routeSelection?: "free" | "derived-from-model"
 }
 
 export interface CatalogModelsQuery {
@@ -97,6 +128,14 @@ export interface CatalogRoute {
   ref: string
   baseUrl: string | null
   pricing: CatalogPricing | null
+  /** Human-readable max input tokens (e.g. `"1M"`, `"200k"`), from the
+   *  live-synced CONTEXT_WINDOWS table (`resolveContextWindow`); null when
+   *  no synced provider carries this id. Consumers wanting the raw integer
+   *  can re-resolve via `resolveContextWindow(ref product)` or parse. */
+  contextWindow: string | null
+  /** Human-readable max output tokens (same source/format), null when the
+   *  source doesn't publish a completion cap for this id. */
+  maxOutput: string | null
   runnable: boolean
   eligibleProfiles: string[]
   adapterModes: string[]
@@ -281,10 +320,15 @@ function resolveModelId(id: string): ResolvedModel {
  *  path), regardless of what the underlying model's own vendor is. */
 function methodsForDirect(
   descriptor: AdapterAuthDescriptor | undefined,
+  endpoint?: string,
 ): AuthMethod[] {
   const methods: AuthMethod[] = []
-  if (descriptor?.authSubscription) methods.push("oauth-bearer")
-  if (descriptor?.provider) methods.push("api-key")
+  // oauth-bearer requires an explicit, provider-matching subscription
+  // surface — see `subscriptionSurfaceFor`'s doc in spawn-defaults.ts.
+  if (subscriptionSurfaceFor(descriptor?.authSubscription, endpoint) !== undefined) {
+    methods.push("oauth-bearer")
+  }
+  if (descriptor?.provider || descriptor?.modelDerivedApiKey) methods.push("api-key")
   return methods
 }
 
@@ -296,9 +340,11 @@ function methodsForDirect(
  *  claude-code's `moonshot` mode) — SPEC §1c's "moonshot profile, not the
  *  Claude sub" holds regardless of whose model is being served. An id
  *  that already carries its own `@route` suffix (`resolved.directRoute !==
- *  resolved.vendor`) is equally a router path even with no adapter mode. */
-function isDirectRoute(mode: string | undefined, resolved: ResolvedModel): boolean {
-  return mode === undefined && resolved.directRoute === resolved.vendor
+ *  resolved.vendor`) is equally a router path even with no adapter mode.
+ *  A `model.provider` that matches the model's own vendor is still a
+ *  direct route; only a provider/route that differs is a redirection. */
+function isDirectRoute(route: string, mode: string | undefined, resolved: ResolvedModel): boolean {
+  return mode === undefined && route === resolved.vendor && resolved.directRoute === resolved.vendor
 }
 
 interface RouteContribution {
@@ -322,9 +368,9 @@ function curatedContributions(
   for (const adapter of adapters) {
     for (const model of adapter.models) {
       const resolved = resolveModelId(model.id)
-      const route = model.mode ?? resolved.directRoute
-      const methods: AuthMethod[] = isDirectRoute(model.mode, resolved)
-        ? methodsForDirect(adapter.authDescriptor)
+      const route = model.mode ?? model.provider ?? resolved.directRoute
+      const methods: AuthMethod[] = isDirectRoute(route, model.mode, resolved)
+        ? methodsForDirect(adapter.authDescriptor, route)
         : ["api-key"]
       out.push({
         vendor: resolved.vendor,
@@ -347,10 +393,22 @@ function curatedContributions(
  *  distinct (vendor, product) already known from a curated contribution,
  *  probe the router routes route-identity knows about and add a
  *  non-curated contribution for any that resolve and aren't already
- *  covered by a curated row. */
+ *  covered by a curated row.
+ *
+ *  Widened routes are only attached to adapters that explicitly declare
+ *  `routeSelection: "free"` — those are the adapters that can route an
+ *  arbitrary model through a gateway via `base_url`. Fixed-provider and
+ *  `derived-from-model` adapters must not be advertised on routes they
+ *  cannot truthfully choose. */
 function widenedContributions(
+  adapters: readonly CatalogAdapterInput[],
   curated: readonly RouteContribution[],
 ): RouteContribution[] {
+  const freeAdapters = adapters
+    .filter(a => a.routeSelection === "free")
+    .map(a => a.slug)
+  if (freeAdapters.length === 0) return []
+
   const seenProducts = new Map<string, Set<string>>() // "vendor/product" -> routes already present
   for (const c of curated) {
     const key = `${c.vendor}/${c.product}`
@@ -364,21 +422,89 @@ function widenedContributions(
     const [vendor, product] = key.split("/", 2) as [string, string]
     for (const router of WIDENING_ROUTES) {
       if (existingRoutes.has(router)) continue
-      const resolved = resolveLlmModelRoute(`${vendor}/${product}@${router}`)
+      const resolved = tryResolveLlmModelRoute(`${vendor}/${product}@${router}`)
       if (!resolved) continue
-      out.push({
+      for (const adapterSlug of freeAdapters) {
+        out.push({
+          vendor,
+          product,
+          route: router,
+          ref: formatModelRef(resolved.ref),
+          baseUrl: resolved.transport.baseUrl ?? null,
+          pricing: {
+            inPer1M: resolved.pricing.inputPer1M,
+            outPer1M: resolved.pricing.outputPer1M,
+          },
+          curated: false,
+          adapterSlug,
+          methods: ["api-key"],
+        })
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * Compatibility routes: canonical protocol surfaces that bill a model family
+ * without duplicating pricing entries. For xAI, the same Grok models are
+ * reachable on the native OpenAI-flavor `xai` route and on the Anthropic-
+ * compatible `xai-anthropic` route; the catalog joins both so the matching
+ * auth profile (`xai` vs `xai-anthropic`) can be endpoint-eligible for the
+ * right protocol.
+ *
+ * Rows are generated straight from the static pricing catalog (vendor `xai`),
+ * not from adapter curation, because the existing adapters only declare the
+ * OpenRouter xAI ids (`x-ai/grok-*@openrouter`). The `xai-anthropic` rows are
+ * attached to adapters that can route arbitrary models through an Anthropic-
+ * compatible gateway (`routeSelection: "free"`). The direct `xai` rows carry
+ * no adapter attachment because there is no agent adapter in the registry that
+ * speaks the native xAI OpenAI surface today; they are still listed so the
+ * `xai` profile can see the models it bills and whether they are runnable.
+ */
+function compatibilityContributions(
+  adapters: readonly CatalogAdapterInput[],
+): RouteContribution[] {
+  const freeAdapters = adapters
+    .filter(a => a.routeSelection === "free")
+    .map(a => a.slug)
+  const out: RouteContribution[] = []
+
+  for (const [product, pricing] of Object.entries(LLM_PRICING_CATALOG)) {
+    if (pricing.provider !== "xai") continue
+    const vendor = pricing.vendor ?? "xai"
+    const compatRoutes = VENDOR_COMPATIBILITY_ROUTES[vendor]
+    if (!compatRoutes) continue
+
+    const direct = resolveLlmModelRoute(`${vendor}/${product}`)
+    if (!direct) continue
+
+    for (const route of compatRoutes) {
+      const ref = route === vendor ? `${vendor}/${product}` : `${vendor}/${product}@${route}`
+      const baseUrl =
+        route === "xai-anthropic"
+          ? getAnthropicGatewayPreset("xai-anthropic").baseUrl
+          : null
+      const rowBase: RouteContribution = {
         vendor,
         product,
-        route: router,
-        ref: formatModelRef(resolved.ref),
-        baseUrl: resolved.transport.baseUrl ?? null,
+        route,
+        ref,
+        baseUrl,
         pricing: {
-          inPer1M: resolved.pricing.inputPer1M,
-          outPer1M: resolved.pricing.outputPer1M,
+          inPer1M: direct.pricing.inputPer1M,
+          outPer1M: direct.pricing.outputPer1M,
         },
         curated: false,
         methods: ["api-key"],
-      })
+      }
+      if (route === "xai-anthropic" && freeAdapters.length > 0) {
+        for (const adapterSlug of freeAdapters) {
+          out.push({ ...rowBase, adapterSlug })
+        }
+      } else {
+        out.push(rowBase)
+      }
     }
   }
   return out
@@ -494,9 +620,11 @@ function profileAllowsModel(profile: AuthProfile, ref: string, vendorProduct: st
 export function buildCatalogModels(
   input: BuildCatalogModelsInput,
 ): CatalogModelsResponse {
+  const curated = curatedContributions(input.adapters)
   const contributions = [
-    ...curatedContributions(input.adapters),
-    ...widenedContributions(curatedContributions(input.adapters)),
+    ...curated,
+    ...widenedContributions(input.adapters, curated),
+    ...compatibilityContributions(input.adapters),
   ]
   const merged = mergeContributions(contributions)
   const query = input.query ?? {}
@@ -559,11 +687,19 @@ export function buildCatalogModels(
     const runnable = eligible.length > 0
     if (query.runnableOnly && !runnable) continue
 
+    const ctx = resolveContextWindow(row.product)
     const route: CatalogRoute = {
       route: row.route,
       ref: row.ref,
       baseUrl: row.baseUrl,
       pricing: row.pricing,
+      // Live-synced context window (max input) + max output, when a synced
+      // provider (Anthropic/Groq/xAI/Moonshot/Mistral/Google) carries this
+      // id — null otherwise. All CONTEXT_WINDOWS providers get this, not
+      // only Anthropic. Formatted for display (`1M`/`200k`); consumers
+      // needing the raw integer resolve it themselves.
+      contextWindow: formatTokens(ctx?.contextWindow),
+      maxOutput: formatTokens(ctx?.maxOutput),
       runnable,
       eligibleProfiles: eligible.map(p => p.id),
       adapterModes: row.adapterModes,
@@ -600,6 +736,90 @@ export function buildCatalogModels(
     }))
 
   return { vendors: result, routes }
+}
+
+/**
+ * Resolve the effective billing route for a session: a parseable model ref's
+ * own route is authoritative, `routeGateway` is only consulted when the model
+ * carries no explicit `@route` or is unparseable (including router-prefixed ids
+ * like `openrouter/vendor/product`, which are normalized to the canonical
+ * suffix form first).
+ */
+export function resolveEffectiveRoute(
+  model: string | undefined,
+  routeGateway: string | undefined,
+): string | undefined {
+  if (!model) return routeGateway
+  const normalized = normalizeRouterPrefixedId(model)
+  const parsed = tryParseModelRef(normalized)
+  if (!parsed) return routeGateway
+  if (parsed.route !== parsed.vendor) return parsed.route
+  return routeGateway ?? parsed.route
+}
+
+/** Rewrite `model`'s `@route` suffix to `route`. Bare/unparseable ids are
+ *  returned unchanged because they have no suffix to rewrite. */
+export function modelWithRoute(model: string, route: string): string {
+  const parsed = tryParseModelRef(model)
+  if (!parsed) return model
+  return formatModelRef({ ...parsed, route })
+}
+
+/**
+ * Reconcile independent `model` and `route` overrides so they never describe
+ * two different billing endpoints. Returns the effective values; mutating
+ * callers replace their effective model/route with these results.
+ *
+ * Rules:
+ *  - explicit `@route` on the model wins over a stale/conflicting route.gateway;
+ *  - a route-only override rewrites a parseable model string to match;
+ *  - a model-only override synthesizes a route field whenever the model's
+ *    resolved route differs from the previous route.gateway;
+ *  - passing BOTH overrides that contradict each other is a caller bug → throw.
+ */
+export function reconcileModelRoute(input: {
+  prevModel?: string
+  prevRoute?: RouteSpec
+  model?: string
+  route?: RouteSpec
+}): { model?: string; route?: RouteSpec } {
+  const { prevModel, prevRoute, model: overrideModel, route: overrideRoute } = input
+
+  if (overrideModel !== undefined && overrideRoute !== undefined) {
+    const parsed = tryParseModelRef(overrideModel)
+    if (parsed && parsed.route !== parsed.vendor && parsed.route !== overrideRoute.gateway) {
+      throw new Error(
+        `reconcileModelRoute: model "${overrideModel}" pins route "${parsed.route}" ` +
+          `but route override is "${overrideRoute.gateway}"`,
+      )
+    }
+    return { model: overrideModel, route: overrideRoute }
+  }
+
+  if (overrideModel !== undefined) {
+    const parsed = tryParseModelRef(overrideModel)
+    if (parsed) {
+      const hasExplicitRoute = parsed.route !== parsed.vendor
+      // An explicit @route always deserves a matching route field; a vendor-
+      // implied route only rewrites a stale/conflicting prevRoute.
+      if (hasExplicitRoute && prevRoute?.gateway !== parsed.route) {
+        return { model: overrideModel, route: { gateway: parsed.route } }
+      }
+      if (!hasExplicitRoute && prevRoute && prevRoute.gateway !== parsed.route) {
+        return { model: overrideModel, route: { gateway: parsed.route } }
+      }
+    }
+    return { model: overrideModel, route: prevRoute }
+  }
+
+  if (overrideRoute !== undefined) {
+    if (prevModel !== undefined) {
+      return { model: modelWithRoute(prevModel, overrideRoute.gateway), route: overrideRoute }
+    }
+    return { route: overrideRoute }
+  }
+
+  return { model: prevModel, route: prevRoute }
 }
 
 /**
@@ -726,6 +946,88 @@ export function checkModelWalletEligibility(
     return { ok: true, suggestedRoutes: [] }
   }
   return { ok: false, suggestedRoutes: serviceable.filter(r => r !== walletRoute) }
+}
+
+/** Verdict of the spawn-time adapter-capability guard
+ *  ({@link checkModelAdapterEligibility}). */
+export interface ModelAdapterEligibility {
+  ok: boolean
+  /** Other installed adapters whose catalog row already curates this exact
+   *  model on this exact route — the actionable set to re-spawn onto. Empty
+   *  when `ok`, or when NO installed adapter (this one included) curates the
+   *  combination — nobody has proven it reachable at all, so this guard has
+   *  nothing to reject on. */
+  compatibleAdapters: string[]
+}
+
+/**
+ * Adapter-capability spawn guard: the money-safety guard above
+ * ({@link checkModelWalletEligibility}) proves the resolved ROUTE can bill
+ * `model`; it says nothing about whether THIS adapter's own manifest can
+ * actually reach it there. A fixed hand-curated client (claude-code's ACP
+ * wrapper validates every model id against its own live selector and 404s on
+ * anything it doesn't recognize) can be routeSelection:"free" — genuinely able
+ * to reach several gateways — while still only supporting a small, explicitly
+ * vetted model list on each one. A pass-through client (opencode/mastracode/
+ * hermes/jcode, routeSelection:"derived-from-model") instead auto-derives a
+ * broad curated list straight from the pricing catalog, so it ends up
+ * supporting far more of a gateway's models without needing a per-model
+ * allowlist maintained by hand.
+ *
+ * Takes the SAME `CatalogModelsResponse` shape `buildCatalogModels` (and
+ * therefore `catalog_models`) produces — reusing that exact join, never a
+ * parallel per-adapter table — and looks up whether `adapterSlug` is among
+ * the resolved (vendor, product, route) row's `adapters`.
+ *
+ * `ok:true` when EITHER no installed adapter's catalog row covers this exact
+ * model+route (nobody has proven it servable at all — the same never-reject-
+ * an-unknown-combination stance {@link checkModelWalletEligibility} takes), OR
+ * `adapterSlug` is already among the row's adapters. `ok:false` only when the
+ * row exists and excludes `adapterSlug` — a proven "wrong client for this
+ * model" mismatch, with the row's other adapters (if any) as the actionable
+ * alternative.
+ */
+export function checkModelAdapterEligibility(
+  catalog: CatalogModelsResponse,
+  adapterSlug: string,
+  model: string,
+  route: string,
+): ModelAdapterEligibility {
+  const target = resolveModelId(model)
+  const routeEntry = catalog.vendors
+    .find(v => v.vendor === target.vendor)
+    ?.products.find(p => p.product === target.product)
+    ?.routes.find(r => r.route === route)
+  if (!routeEntry) return { ok: true, compatibleAdapters: [] }
+  if (routeEntry.adapters.includes(adapterSlug)) return { ok: true, compatibleAdapters: [] }
+  return { ok: false, compatibleAdapters: routeEntry.adapters }
+}
+
+/**
+ * The actionable fail-fast message for {@link checkModelAdapterEligibility} —
+ * names the adapters that DO already curate the model on this route (when any
+ * do) so the operator can re-spawn without opening the catalog by hand. Never
+ * auto-switches adapters for the operator; only rejects.
+ */
+export function modelAdapterIncompatibleMessage(opts: {
+  prefix: string
+  adapter: string
+  model: string
+  route: string
+  compatibleAdapters: string[]
+}): string {
+  const alternative =
+    opts.compatibleAdapters.length > 0
+      ? `Adapters that already support it on "${opts.route}": ${opts.compatibleAdapters
+          .map(a => `"${a}"`)
+          .join(", ")} — re-spawn with one of those instead.`
+      : `No installed adapter currently supports it on "${opts.route}" either — check ` +
+        `\`catalog_models\` for a route this model IS servable on.`
+  return (
+    `${opts.prefix}: adapter "${opts.adapter}" does not declare support for model "${opts.model}" ` +
+    `on route "${opts.route}" and would 404/reject upstream even though that route can bill it. ` +
+    `${alternative} This guard only rejects; it never switches adapters for you.`
+  )
 }
 
 /**

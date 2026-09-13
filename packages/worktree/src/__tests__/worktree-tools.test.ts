@@ -224,6 +224,76 @@ describe("worktree.provision + worktree.cleanup (real git, disposable repo)", ()
     })
   })
 
+  it("writeFiles 'create' mode writes a new file before depsCmd, never clobbering an existing one", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+
+    const provisioned = await runTool({
+      tool: provisionWorktreeTool,
+      candidates,
+      input: {
+        repoRoot,
+        base: "main",
+        slug: "with-write-files",
+        writeFiles: [
+          { path: "generated.cfg", content: "answer=42\n" },
+          // README.md is tracked, so this entry must be a no-op.
+          { path: "README.md", content: "clobbered\n" },
+        ],
+        // Proves the file exists BEFORE depsCmd runs.
+        depsCmd:
+          "node -e \"require('fs').copyFileSync('generated.cfg', 'seen-by-deps.cfg')\"",
+      },
+    })
+    cleanupPaths.push(provisioned.cwd)
+
+    const generated = await readFile(join(provisioned.cwd, "generated.cfg"), "utf8")
+    expect(generated).toBe("answer=42\n")
+    const seenByDeps = await readFile(join(provisioned.cwd, "seen-by-deps.cfg"), "utf8")
+    expect(seenByDeps).toBe("answer=42\n")
+    const readme = await readFile(join(provisioned.cwd, "README.md"), "utf8")
+    expect(readme).toBe("hello\n")
+
+    await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: { repoRoot, cwd: provisioned.cwd, discardUntracked: true },
+    })
+  })
+
+  it("writeFiles 'append' mode appends to a tracked file and marks it skip-worktree", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+
+    const provisioned = await runTool({
+      tool: provisionWorktreeTool,
+      candidates,
+      input: {
+        repoRoot,
+        base: "main",
+        slug: "with-append",
+        writeFiles: [{ path: "README.md", content: "appended\n", mode: "append" }],
+      },
+    })
+    cleanupPaths.push(provisioned.cwd)
+
+    const content = await readFile(join(provisioned.cwd, "README.md"), "utf8")
+    expect(content).toBe("hello\nappended\n")
+
+    // Tracked and locally modified, but marked skip-worktree — must not show
+    // up as a modification `git status`/`git add -A` would pick up.
+    const status = await execGit(provisioned.cwd, ["status", "--porcelain", "README.md"])
+    expect(status.stdout.trim()).toBe("")
+    const lsFiles = await execGit(provisioned.cwd, ["ls-files", "-v", "README.md"])
+    expect(lsFiles.stdout.trim().charAt(0)).toBe("S")
+
+    await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: { repoRoot, cwd: provisioned.cwd },
+    })
+  })
+
   it("archives a real linked git worktree — dir removed, branch deleted, worktree list clean", async () => {
     const repoRoot = await makeTempRepo()
     cleanupPaths.push(repoRoot)

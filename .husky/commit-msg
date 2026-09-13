@@ -1,0 +1,17 @@
+# Strip AI-attribution trailers so a commit can never trip THIS repo's own
+# Hygiene check (.github/workflows/ci.yml — ATTRIBUTION_PATTERN). The pattern
+# below is a case-insensitive mirror of that gate.
+#
+# Why a committed hook and not only the sandbox reviewer's global one: the box
+# that opens/updates a PR installs a global commit-msg strip hook via
+# ATTRIBUTION_STRIP_SETUP_COMMAND (.github/agentproto-workflows/lib/sandbox-agent.mjs),
+# set through a GLOBAL core.hooksPath. But husky (this repo's `prepare` script)
+# points a LOCAL core.hooksPath at .husky/_, and a local hooksPath SHADOWS the
+# global one the moment the box runs `pnpm install`. When that happened, the
+# reviewer's own changeset commit kept the harness's `Co-Authored-By: Claude …`
+# trailer and deadlocked the PR against Hygiene (observed on PR #676). A hook
+# committed here runs under husky's own path (.husky/_/commit-msg execs it), so
+# every commit made in an installed checkout is covered regardless of which
+# hooksPath wins.
+grep -ivE 'Co-authored-by:.*@anthropic\.com|Co-authored-by:.*claude\.ai|Generated with' "$1" > "$1.agentproto.tmp" || true
+mv "$1.agentproto.tmp" "$1"

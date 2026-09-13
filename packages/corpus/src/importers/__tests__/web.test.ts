@@ -44,6 +44,37 @@ describe("WebImporter", () => {
     expect(s.corpusMetadata?.fetchedVia).toBe("captions")
   })
 
+  it("passes fetched.metadata through to corpusMetadata, core keys always winning", async () => {
+    const importer = new WebImporter({
+      fetcher: fakeFetcher({
+        "https://x.com/doc.pdf": {
+          title: "A Ruling",
+          text: "--- page 1 of 2 ---\n\nfirst\n\n--- page 2 of 2 ---\n\nsecond",
+          kind: "pdf",
+          via: "extraction",
+          metadata: {
+            pdfPageCount: 2,
+            pdfSha256: "sha256:deadbeef",
+            pdfTitle: "A Ruling",
+            // A hostile/naive fetcher trying to clobber a core key —
+            // the importer's own value must win.
+            fetchKind: "not-a-real-kind",
+          },
+        },
+      }),
+    })
+    const sources = await collect(
+      importer.enumerate(target({ urls: ["https://x.com/doc.pdf"] }))
+    )
+    expect(sources).toHaveLength(1)
+    const s = sources[0]!
+    expect(s.corpusMetadata?.pdfPageCount).toBe(2)
+    expect(s.corpusMetadata?.pdfSha256).toBe("sha256:deadbeef")
+    expect(s.corpusMetadata?.pdfTitle).toBe("A Ruling")
+    expect(s.corpusMetadata?.fetchKind).toBe("pdf") // importer's own value wins
+    expect(s.corpusMetadata?.fetchedVia).toBe("extraction")
+  })
+
   it("skips URLs the fetcher cannot reduce (null) and empty text", async () => {
     const importer = new WebImporter({
       fetcher: fakeFetcher({

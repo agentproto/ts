@@ -39,8 +39,8 @@ agents.
 
 Transport-bridge profiles (Slack, hosted chat servers, MCP-bridged
 threads) ship as separate `@<vendor>/runtime-profile-*` packages and
-register their adapters through the [plugin
-system](./plugins.md).
+register their adapters through the runtime-adapter system
+([`agentproto adapters`](../verbs/adapters.md), formerly `plugins`).
 
 ## Aliases for third-party profiles
 

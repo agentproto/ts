@@ -14,6 +14,19 @@ export const worktreeAgentInputSchema = z.object({
   depsCmd: z.string().optional().describe("Command to install deps inside the worktree, e.g. 'pnpm install --prefer-offline'."),
   copyGlobs: z.array(z.string()).optional().describe("Gitignored files to copy into the worktree, e.g. secrets."),
   linkPaths: z.array(z.string()).optional().describe("Gitignored dirs/files symlinked from the host repo into the worktree before depsCmd (node_modules, sibling workspace repos) so the graph resolves without a full reinstall."),
+  writeFiles: z
+    .array(
+      z.object({
+        path: z.string().describe("Path relative to the worktree root."),
+        content: z.string().describe("File content, written or appended verbatim."),
+        mode: z
+          .enum(["create", "append"])
+          .optional()
+          .describe("'create' (default): write only if path doesn't already exist. 'append': always append (creating if missing); if git tracks the path, it's marked skip-worktree afterwards."),
+      }),
+    )
+    .optional()
+    .describe("Files written into the worktree before depsCmd runs, e.g. a package-manager config generated for this specific worktree."),
   task: z.string().describe("The prompt sent to the coding agent."),
   adapter: z.string().optional().describe("Agent adapter slug. Default 'claude-code'."),
   gateCmd: z.string().describe("Command run inside the worktree to check the agent's work, e.g. 'pnpm test'."),
@@ -54,6 +67,7 @@ export const worktreeAgentWorkflow: RuntimeWorkflow = {
           depsCmd: i.depsCmd,
           copyGlobs: i.copyGlobs,
           linkPaths: i.linkPaths,
+          writeFiles: i.writeFiles,
         }
       },
     },

@@ -129,12 +129,12 @@ describe("runOnboard --skills <name>", () => {
     const { restore } = captureStdout()
     const deps = createFakeDeps()
 
-    const code = await runOnboard(["--skills", "nested-orchestration"], deps)
+    const code = await runOnboard(["--skills", "ap-spawn-agent"], deps)
     restore()
 
     expect(code).toBe(0)
     expect(deps.skillCalls).toHaveLength(1)
-    expect(deps.skillCalls[0]!.slug).toBe("skill/nested-orchestration")
+    expect(deps.skillCalls[0]!.slug).toBe("skill/ap-spawn-agent")
     expect(deps.skillCalls[0]!.args).toEqual([])
   })
 })
@@ -144,12 +144,12 @@ describe("runOnboard --skills skill/<name>", () => {
     const { restore } = captureStdout()
     const deps = createFakeDeps()
 
-    const code = await runOnboard(["--skills", "skill/nested-orchestration"], deps)
+    const code = await runOnboard(["--skills", "skill/ap-spawn-agent"], deps)
     restore()
 
     expect(code).toBe(0)
     expect(deps.skillCalls).toHaveLength(1)
-    expect(deps.skillCalls[0]!.slug).toBe("skill/nested-orchestration")
+    expect(deps.skillCalls[0]!.slug).toBe("skill/ap-spawn-agent")
     expect(deps.skillCalls[0]!.args).toEqual([])
   })
 })

@@ -60,6 +60,13 @@ describe("isWebviewMessage", () => {
     expect(isWebviewMessage({ type: "openToolIo", field: "input" })).toBe(false)
   })
 
+  it("accepts openBlock only with text and name strings", () => {
+    expect(isWebviewMessage({ type: "openBlock", text: "a\tb", name: "table.tsv" })).toBe(true)
+    expect(isWebviewMessage({ type: "openBlock", text: "a\tb" })).toBe(false)
+    expect(isWebviewMessage({ type: "openBlock", name: "table.tsv" })).toBe(false)
+    expect(isWebviewMessage({ type: "openBlock", text: 5, name: "x" })).toBe(false)
+  })
+
   it("accepts attachImage carrying real bytes (ArrayBuffer or a view)", () => {
     expect(isWebviewMessage({ type: "attachImage", bytes: new ArrayBuffer(4), mime: "image/png" })).toBe(true)
     expect(isWebviewMessage({ type: "attachImage", bytes: new Uint8Array([1, 2]), mime: "image/jpeg" })).toBe(true)
@@ -84,7 +91,11 @@ describe("isWebviewMessage", () => {
     expect(isWebviewMessage({ type: "requestMentions", query: 5 })).toBe(false)
   })
 
-  it("accepts openTerminal (header Terminal segment) with no payload", () => {
+  it("accepts restartAsTerminal (header Restart as Terminal button) with no payload", () => {
+    expect(isWebviewMessage({ type: "restartAsTerminal" })).toBe(true)
+  })
+
+  it("accepts openTerminal (header Terminal button) with no payload", () => {
     expect(isWebviewMessage({ type: "openTerminal" })).toBe(true)
   })
 
@@ -92,5 +103,35 @@ describe("isWebviewMessage", () => {
     expect(isWebviewMessage({ type: "changeModel" })).toBe(true)
     expect(isWebviewMessage({ type: "changePosture" })).toBe(true)
     expect(isWebviewMessage({ type: "changeAccess" })).toBe(true)
+  })
+
+  it("accepts ptyInput with text", () => {
+    expect(isWebviewMessage({ type: "ptyInput", text: "hello" })).toBe(true)
+    expect(isWebviewMessage({ type: "ptyInput" })).toBe(false)
+    expect(isWebviewMessage({ type: "ptyInput", text: 123 })).toBe(false)
+  })
+
+  it("accepts ptyResize with numeric cols/rows", () => {
+    expect(isWebviewMessage({ type: "ptyResize", cols: 80, rows: 24 })).toBe(true)
+    expect(isWebviewMessage({ type: "ptyResize", cols: "80", rows: 24 })).toBe(false)
+    expect(isWebviewMessage({ type: "ptyResize", cols: 80 })).toBe(false)
+  })
+
+  it("accepts openLink with a known kind, a target, and an optional line", () => {
+    expect(isWebviewMessage({ type: "openLink", kind: "external", target: "https://x" })).toBe(true)
+    expect(isWebviewMessage({ type: "openLink", kind: "file", target: "src/a.ts", line: 12 })).toBe(true)
+    expect(isWebviewMessage({ type: "openLink", kind: "file", target: "src/a.ts" })).toBe(true)
+    expect(isWebviewMessage({ type: "openLink", kind: "mailto", target: "x" })).toBe(false)
+    expect(isWebviewMessage({ type: "openLink", kind: "file" })).toBe(false)
+    expect(isWebviewMessage({ type: "openLink", kind: "file", target: "src/a.ts", line: "12" })).toBe(false)
+  })
+
+  it("accepts resolveQuestion with a known decision, a string optionId, and an optional toolCallId", () => {
+    expect(isWebviewMessage({ type: "resolveQuestion", decision: "approve", optionId: "a" })).toBe(true)
+    expect(isWebviewMessage({ type: "resolveQuestion", toolCallId: "tc-1", decision: "deny", optionId: "d" })).toBe(true)
+    expect(isWebviewMessage({ type: "resolveQuestion", decision: "cancelled", optionId: "a" })).toBe(false)
+    expect(isWebviewMessage({ type: "resolveQuestion", decision: "approve" })).toBe(false)
+    expect(isWebviewMessage({ type: "resolveQuestion", decision: "approve", optionId: 1 })).toBe(false)
+    expect(isWebviewMessage({ type: "resolveQuestion", toolCallId: 42, decision: "approve", optionId: "a" })).toBe(false)
   })
 })

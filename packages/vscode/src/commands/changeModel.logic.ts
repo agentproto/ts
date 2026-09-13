@@ -12,6 +12,8 @@
  * reused as-is.
  */
 
+import { resolveEffectiveRoute } from "@agentproto/runtime/catalog-models"
+
 import type { SessionDescriptor } from "../client/types.js"
 import { modelEntriesOf, type SpawnAdapterInfo } from "./spawn.logic.js"
 
@@ -32,6 +34,11 @@ export interface ChangeModelQuickPickItem {
   /** True on the row matching the session's currently active model. */
   current?: boolean
   /**
+   * True when picking this row opens the route chip picker instead of
+   * switching model. Set only on the synthetic "Change route" top-row.
+   */
+  openRouteChip?: boolean
+  /**
    * True when picking this row is known to be impossible without
    * restarting the session: the adapter's own `modelApply` is `"arg"`
    * (baked into spawn-time argv, so EVERY row is restart-required
@@ -41,6 +48,18 @@ export interface ChangeModelQuickPickItem {
    * `POST /sessions/:id/model` cannot perform on a live process).
    */
   restartRequired?: boolean
+}
+
+function routeDescription(
+  restartRequired: boolean,
+  current: boolean,
+  route: string | undefined,
+): string | undefined {
+  const parts: string[] = []
+  if (restartRequired) parts.push("restart required")
+  else if (current) parts.push("current")
+  if (route) parts.push(`via ${route}`)
+  return parts.length > 0 ? parts.join(" · ") : undefined
 }
 
 /**
@@ -54,7 +73,7 @@ export interface ChangeModelQuickPickItem {
  */
 export function mapChangeModelQuickPickItems(
   adapter: SpawnAdapterInfo,
-  session: Pick<SessionDescriptor, "model" | "mode">,
+  session: Pick<SessionDescriptor, "model" | "mode" | "route">,
 ): ChangeModelQuickPickItem[] {
   const groups = new Map<string, { heading: string; rows: ChangeModelQuickPickItem[] }>()
 
@@ -71,16 +90,16 @@ export function mapChangeModelQuickPickItems(
     // A restart-required current row can happen (an "arg" adapter's
     // running model is itself only reachable via spawn-time argv) — still
     // worth flagging honestly rather than special-casing it away.
-    const restartRequired =
-      adapter.modelApply === "arg" || (entry.mode !== undefined && entry.mode !== session.mode)
+    const modeMismatch = entry.mode !== undefined && entry.mode !== session.mode
+    const rowRoute = resolveEffectiveRoute(entry.id, undefined)
+    const sessionRoute = resolveEffectiveRoute(session.model, session.route?.gateway)
+    const routeMismatch = rowRoute !== undefined && rowRoute !== sessionRoute
+    const restartRequired = adapter.modelApply === "arg" || modeMismatch || routeMismatch
+    const description = routeDescription(restartRequired, current, rowRoute)
 
     group.rows.push({
       label: entry.id,
-      ...(restartRequired
-        ? { description: "restart required" }
-        : current
-          ? { description: "current" }
-          : {}),
+      ...(description ? { description } : {}),
       model: entry.id,
       ...(entry.mode ? { mode: entry.mode } : {}),
       ...(current ? { current: true } : {}),
@@ -94,6 +113,18 @@ export function mapChangeModelQuickPickItems(
     items.push(...group.rows)
   }
   return items
+}
+
+/** Label for the synthetic top-row that hands off to the route chip picker. */
+export const CHANGE_ROUTE_LABEL = "$(arrow-swap) Change route…"
+
+/** Synthetic row that opens the route chip picker instead of picking a model. */
+export function makeChangeRouteItem(): ChangeModelQuickPickItem {
+  return {
+    label: CHANGE_ROUTE_LABEL,
+    description: "pick which gateway bills the current model",
+    openRouteChip: true,
+  }
 }
 
 /** placeHolder for the change-model picker — names the session's current

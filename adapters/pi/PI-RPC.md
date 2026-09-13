@@ -137,11 +137,22 @@ only the final `agent_end{willRetry:false}` emits `turn-end`.
 ## Known gaps / assumptions
 
 - **`usage_update.size` / `.used`** — pi's per-message `Usage` reports token
-  totals + cost, but **no context-window size**. The mapper surfaces
-  `usage.totalTokens` as both `size` and `used`. `tokensIn`/`tokensOut` =
+  totals + cost, but **no context-window size**. `client.ts` resolves the
+  window once per `connect()` from `@agentproto/model-catalog`'s
+  `resolveContextWindow(opts.model)` and the mapper surfaces it as `size`;
+  when the model isn't in the catalog, `size` is sent as `0` (this
+  codebase's "unknown window" sentinel — the runtime only applies `size`
+  when `> 0`, so `contextSize` is left unset rather than defaulted to a
+  token count). `used` is `usage.totalTokens`. `tokensIn`/`tokensOut` =
   `input`/`output`; `cost = { amount: usage.cost.total, currency: "USD" }`.
-  A future improvement could issue `get_session_stats` (which carries
-  `contextUsage`) for a true window size, at the cost of an extra round-trip.
+  Previously this mapper sent `usage.totalTokens` as BOTH `size` and `used`,
+  which pinned `contextPct` at 100% on every turn and tripped the
+  context-continuity hard stop immediately — fixed alongside a
+  `contextSize === contextUsed` guard in the runtime's
+  `computeContextPct` (`packages/runtime/src/context-continuity.ts`). A
+  further improvement could issue `get_session_stats` (which carries
+  `contextUsage`) for a live `used` figure straight from pi, at the cost of
+  an extra round-trip.
 - **`length` → `max_turns`** — pi's `length` stop reason is a token/context
   cap, not a turn-count cap. `max_turns` is the closest canonical "budget hit"
   reason; there is no exact equivalent in the `StreamEvent` taxonomy.

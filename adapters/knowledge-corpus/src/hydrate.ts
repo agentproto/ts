@@ -6,7 +6,9 @@
  * The corpus adapter's contract is: every hit returned to the LLM
  * carries `entryPath`, `sourceIds`, `sourceHashes`, `kind`, `status`,
  * `qualityScore`, `riskScore`, `domain`, `channel`, and the temporal
- * block (lastSeen, mentionCount, temporalScore). The backing engine
+ * block (lastSeen, mentionCount, temporalScore, plus the legal
+ * validity window inForceFrom/inForceTo/abrogated/versionedAt when
+ * declared — distinct from half-life decay). The backing engine
  * holds the chunk text + vector; the AIP-10 entry file holds the
  * provenance metadata. Hydration is the join.
  *
@@ -173,6 +175,9 @@ export function hydrateHit(
   }
 
   const temporal = computeTemporalScore(entry, nowMs, index.halfLifeDays)
+  // Legal validity window (distinct from decay) — pass through verbatim
+  // so retrieval consumers can flag not-in-force law without rescoring.
+  const temporalFm = readCorpusTemporal(fm)
 
   const hydratedMetadata: Record<string, unknown> = {
     ...hit.metadata,
@@ -197,6 +202,18 @@ export function hydrateHit(
       lastSeen: temporal.lastSeen,
       mentionCount: temporal.mentionCount,
       temporalScore: temporal.temporalScore,
+      ...(temporalFm?.inForceFrom !== undefined
+        ? { inForceFrom: temporalFm.inForceFrom }
+        : {}),
+      ...(temporalFm?.inForceTo !== undefined
+        ? { inForceTo: temporalFm.inForceTo }
+        : {}),
+      ...(temporalFm?.abrogated !== undefined
+        ? { abrogated: temporalFm.abrogated }
+        : {}),
+      ...(temporalFm?.versionedAt !== undefined
+        ? { versionedAt: temporalFm.versionedAt }
+        : {}),
     },
   }
 

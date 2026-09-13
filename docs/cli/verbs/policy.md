@@ -70,6 +70,39 @@ The commit flags (`--commit-path`, `--commit-message`, `--ack`, `--no-ack`)
 only apply with `--then commit`; passing them alongside `--then emit` exits `2`
 rather than silently ignoring them.
 
+### Judge gate details
+
+A judge gate spawns a short-lived adapter session, waits for its answer, and
+treats the reply as a pass/fail verdict. The legacy plain-text form still
+works: the judge can end with a line `VERDICT: PASS` or `VERDICT: FAIL`.
+
+Since WP-D the judge may also return a **structured JSON verdict** (usually
+inside a fenced ` ```json ... ``` block):
+
+```json
+{
+  "decision": "PASS",
+  "summary": "No issues found",
+  "findings": [
+    { "severity": "medium", "file": "src/auth.ts", "note": "missing input validation" }
+  ]
+}
+```
+
+The engine uses only `decision` for the gate outcome; `summary` and `findings`
+are persisted and echoed on `policy:passed`/`policy:failed` events so operators
+can see *why* a gate failed. Severities are `info | low | medium | high | critical`;
+which severity blocks is up to the judge's own prompt.
+
+When building the gate via `--attach-json` / MCP / HTTP, the `judge` object
+accepts the CLI flags (`adapter`, `model`, `prompt`, `timeoutMs`) plus:
+
+| Field | Meaning |
+|-------|---------|
+| `judge.access.profileRef` | Pin the judge spawn to a named auth profile instead of the daemon's ambient wallet. |
+| `judge.route` | Route identity for the judge spawn (consulted together with `access.profileRef`). |
+| `judge.mode` | AIP-45 mode id forwarded to the judge adapter (e.g. `plan`, `bypass-permissions`). |
+
 ## `status` vs `wait`
 
 `status` is a **non-blocking snapshot**. It composes over `GET /policies` —

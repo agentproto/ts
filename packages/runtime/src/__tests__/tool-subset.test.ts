@@ -17,6 +17,19 @@ function registerProbeTools(server: McpServer, names: readonly string[]): void {
   }
 }
 
+function registerProbeToolsViaRegisterTool(
+  server: McpServer,
+  names: readonly string[],
+): void {
+  for (const name of names) {
+    server.registerTool(
+      name,
+      { description: `probe tool ${name}`, inputSchema: {} },
+      async () => ({ content: [{ type: "text", text: name }] }),
+    )
+  }
+}
+
 function registeredToolNames(server: McpServer): string[] {
   // `McpServer` exposes its registered tools on `_registeredTools` in
   // the current SDK version — reach in rather than spinning up a full
@@ -40,6 +53,13 @@ describe("withToolExclusion", () => {
     registerProbeTools(guarded, ["agent_start", "command_execute"])
     expect(registeredToolNames(server).sort()).toEqual(["agent_start", "command_execute"])
   })
+
+  it("also guards registerTool registrations", () => {
+    const server = new McpServer({ name: "test", version: "0.0.1" })
+    const guarded = withToolExclusion(server, new Set(["agent_start"]))
+    registerProbeToolsViaRegisterTool(guarded, ["agent_start", "command_execute"])
+    expect(registeredToolNames(server)).toEqual(["command_execute"])
+  })
 })
 
 describe("withToolSubset (existing allowlist guard, sanity check)", () => {
@@ -47,6 +67,13 @@ describe("withToolSubset (existing allowlist guard, sanity check)", () => {
     const server = new McpServer({ name: "test", version: "0.0.1" })
     const guarded = withToolSubset(server, new Set(["agent_start"]))
     registerProbeTools(guarded, ["agent_start", "command_execute"])
+    expect(registeredToolNames(server)).toEqual(["agent_start"])
+  })
+
+  it("also guards registerTool registrations", () => {
+    const server = new McpServer({ name: "test", version: "0.0.1" })
+    const guarded = withToolSubset(server, new Set(["agent_start"]))
+    registerProbeToolsViaRegisterTool(guarded, ["agent_start", "command_execute"])
     expect(registeredToolNames(server)).toEqual(["agent_start"])
   })
 })

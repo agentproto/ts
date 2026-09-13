@@ -180,5 +180,5 @@ outreach order for free.
 ## Caching → workspace
 
 Every fetched Person/Post → write JSON to the workspace (the MCP result
-persister auto-syncs large/media; or `write_file`). Build a local LinkedIn KB;
+persister auto-syncs large/media; or `file_write`). Build a local LinkedIn KB;
 query cache first, fetch only deltas. (`mcp-content/`, `mcp-media/` paths.)

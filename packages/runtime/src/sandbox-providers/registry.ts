@@ -37,10 +37,17 @@ const CAPABILITIES_TODAY: SandboxProviderCapabilities = {
   readOnly: false,
 }
 
-/** e2b alone can pause/reconnect (`Sandbox.pause()` + `Sandbox.connect()`) —
+/** e2b and Box can both pause/reconnect (e2b: `Sandbox.pause()` +
+ *  `Sandbox.connect()`; Box: `box stop` snapshots, `box resume` restores) —
  *  the `local` passthrough tears down its temp workspace on `stop()`, and
  *  `modal`/`daytona` are unpublished catalog placeholders. */
 const E2B_CAPABILITIES: SandboxProviderCapabilities = {
+  ...CAPABILITIES_TODAY,
+  lifecyclePause: true,
+}
+
+/** Box's `box stop` snapshots the box for later `box resume`/`box fork`. */
+const BOX_CAPABILITIES: SandboxProviderCapabilities = {
   ...CAPABILITIES_TODAY,
   lifecyclePause: true,
 }
@@ -73,6 +80,12 @@ interface ThirdPartySandboxDescriptor {
   description: string
   capabilities: SandboxProviderCapabilities
   setupFields: readonly SetupField[]
+  /** Env var the provider's SDK reads its control-plane API key from
+   *  (e.g. `BOX_API_KEY`, `E2B_API_KEY`). When the stored `apiKey` cred is
+   *  present and this var is unset in the process env, the resolver fills it
+   *  so `setup_sandbox_provider` actually authenticates `boot()` — see
+   *  `importThirdPartyProvider`. */
+  credEnvVar?: string
 }
 
 const THIRD_PARTY_SANDBOX_PROVIDERS: Record<string, ThirdPartySandboxDescriptor> = {
@@ -81,12 +94,32 @@ const THIRD_PARTY_SANDBOX_PROVIDERS: Record<string, ThirdPartySandboxDescriptor>
     exportName: "e2bSandboxProvider",
     name: "e2b",
     description:
-      "Runs the agentproto daemon inside an e2b Firecracker microVM (agentproto-workstation template).",
+      /* sync-templates:start */
+      "Runs the agentproto daemon inside an e2b Firecracker microVM (agentproto-workstation template, baked @agentproto/cli 0.17.0).",
+      /* sync-templates:end */
     capabilities: E2B_CAPABILITIES,
+    credEnvVar: "E2B_API_KEY",
     setupFields: [
       {
         name: "apiKey",
         description: "e2b API key (from e2b.dev/dashboard).",
+        required: true,
+        sensitive: true,
+      },
+    ],
+  },
+  box: {
+    packageName: "@agentproto/sandbox-box",
+    exportName: "boxSandboxProvider",
+    name: "Box",
+    description:
+      "Runs the agentproto daemon on an ascii.dev Box cloud computer, behind an always-on systemd unit.",
+    capabilities: BOX_CAPABILITIES,
+    credEnvVar: "BOX_API_KEY",
+    setupFields: [
+      {
+        name: "apiKey",
+        description: "Box API key (BOX_API_KEY, from ascii.dev).",
         required: true,
         sensitive: true,
       },
@@ -138,6 +171,18 @@ async function importThirdPartyProvider(
   const candidate = mod[descriptor.exportName]
   if (!isSandboxProvider(candidate)) return null
 
+  // Make `setup_sandbox_provider` actually authenticate `boot()`. These
+  // providers' SDKs read their control-plane API key straight from
+  // `process.env[credEnvVar]` (mirroring how e2b reads `E2B_API_KEY`), but a
+  // key configured via `setup_sandbox_provider` lives in the creds store, not
+  // the daemon's env — so without this, a "ready"/"available" provider still
+  // 401s on the first real boot (observed live with Box: the launchd daemon
+  // had no `BOX_API_KEY`). Fill the env from the stored `apiKey` cred, but
+  // only when unset, so an explicit process-env key still wins.
+  if (descriptor.credEnvVar && creds?.apiKey && !process.env[descriptor.credEnvVar]) {
+    process.env[descriptor.credEnvVar] = creds.apiKey
+  }
+
   return {
     provider: candidate,
     slug,
@@ -169,7 +214,7 @@ export interface ResolveSandboxProviderOpts {
 
 /**
  * Resolve a slug to a concrete sandbox provider handle. Built-ins first (no
- * import), then the fixed third-party catalog (`e2b`/`modal`/`daytona`).
+ * import), then the fixed third-party catalog (`e2b`/`box`/`modal`/`daytona`).
  * Returns null when the slug is unknown, or a catalog third-party package
  * isn't installed — the kit's "supported but unavailable" signal.
  */

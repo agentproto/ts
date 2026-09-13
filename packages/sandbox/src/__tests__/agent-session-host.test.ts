@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { createSandboxAgentSessionHost, type SandboxProvider, type SandboxSpec } from "../agent-session-host.js"
+import {
+  createSandboxAgentSessionHost,
+  exposePort,
+  SandboxPortExposureUnsupportedError,
+  type BootedSandbox,
+  type SandboxProvider,
+  type SandboxSpec,
+} from "../agent-session-host.js"
 
 const { connectDaemonAgentSessionHostMock } = vi.hoisted(() => ({
   connectDaemonAgentSessionHostMock: vi.fn(),
@@ -128,6 +135,47 @@ describe("createSandboxAgentSessionHost", () => {
     expect(stopBox).toHaveBeenCalledTimes(1)
   })
 
+  it("reaps the box when the daemon MCP connect fails after boot/connect succeeded — and surfaces the CONNECT error, not a teardown error", async () => {
+    // Upstream finding 3 — the failure one step AFTER a successful
+    // `provider.boot()`/`provider.connect()`: the box exists (resumed and
+    // billed, for a reconnect) and the MCP transport connect on top of it
+    // throws. The box must be reaped before the error propagates, and a
+    // teardown that itself fails must never mask the original connect
+    // error (the caller would otherwise see a bogus "daemon unreachable"
+    // and lose the real signal).
+    process.env[FAKE_SLUG] = "or-key-123"
+    const stopBox = vi.fn(async () => {
+      throw new Error("e2b kill API 503 — teardown failed")
+    })
+    const provider = fakeProvider({
+      // Reuse path — this is the reconnect (`sandbox.reuse`) shape the
+      // finding was written against; a fresh boot shares the same catch.
+      boot: vi.fn(async () => {
+        throw new Error("boot should not be called for a reuse request")
+      }),
+      connect: vi.fn(async (sandboxId: string) => ({
+        mcpUrl: "https://sandbox-123.e2b.dev/mcp",
+        sandboxId,
+        stop: stopBox,
+      })),
+    })
+    connectDaemonAgentSessionHostMock.mockImplementation(async () => {
+      throw new Error("could not reach the agentproto daemon's MCP endpoint")
+    })
+
+    await expect(
+      createSandboxAgentSessionHost({
+        provider,
+        spec,
+        sandboxId: "sbx_reconnect",
+        secrets: { slugs: [FAKE_SLUG] },
+      }),
+    ).rejects.toThrow("could not reach the agentproto daemon's MCP endpoint")
+    expect(connectDaemonAgentSessionHostMock).toHaveBeenCalledTimes(1)
+    // The resumed box must not outlive the failed connect.
+    expect(stopBox).toHaveBeenCalledTimes(1)
+  })
+
   it("delegates spawn/sendPromptAndWait/resolveByLabel to the connected daemon host", async () => {
     process.env[FAKE_SLUG] = "or-key-123"
     const inner = fakeHost()
@@ -212,5 +260,129 @@ describe("createSandboxAgentSessionHost", () => {
       secrets: { slugs: [FAKE_SLUG] },
     })
     expect(host.pause).toBeUndefined()
+  })
+
+  it("forwards expose() and ports from the booted sandbox when present", async () => {
+    process.env[FAKE_SLUG] = "or-key-123"
+    const exposeFn = vi.fn(async (port: number) => ({ url: `https://sbx-abc-${port}.e2b.dev` }))
+    const provider = fakeProvider({
+      boot: vi.fn(async () => ({
+        mcpUrl: "https://sandbox-123.e2b.dev/mcp",
+        sandboxId: "sbx_123",
+        stop: vi.fn(async () => {}),
+        expose: exposeFn,
+        ports: { 3210: "https://sbx-abc-3210.e2b.dev" },
+      })),
+    })
+    const host = await createSandboxAgentSessionHost({
+      provider,
+      spec,
+      secrets: { slugs: [FAKE_SLUG] },
+    })
+    expect(host.expose).toBeDefined()
+    const result = await host.expose!(3210)
+    expect(result.url).toBe("https://sbx-abc-3210.e2b.dev")
+    expect(host.ports).toEqual({ 3210: "https://sbx-abc-3210.e2b.dev" })
+  })
+
+  it("omits expose() and ports when the booted sandbox doesn't support them", async () => {
+    process.env[FAKE_SLUG] = "or-key-123"
+    const provider = fakeProvider()
+    const host = await createSandboxAgentSessionHost({
+      provider,
+      spec,
+      secrets: { slugs: [FAKE_SLUG] },
+    })
+    expect(host.expose).toBeUndefined()
+    expect(host.ports).toBeUndefined()
+  })
+
+  it("a daemon-connect failure reaps the box (pause when supported) and throws SandboxHostBootFailedError", async () => {
+    process.env[FAKE_SLUG] = "or-key-123"
+    connectDaemonAgentSessionHostMock.mockImplementation(async () => {
+      throw new Error("could not reach the daemon")
+    })
+    const pauseFn = vi.fn(async () => {})
+    const stopFn = vi.fn(async () => {})
+    const provider = fakeProvider({
+      boot: vi.fn(async () => ({
+        mcpUrl: "https://sandbox-123.e2b.dev/mcp",
+        sandboxId: "sbx_123",
+        stop: stopFn,
+        pause: pauseFn,
+      })),
+    })
+    await expect(
+      createSandboxAgentSessionHost({ provider, spec, secrets: { slugs: [FAKE_SLUG] } }),
+    ).rejects.toMatchObject({
+      name: "SandboxHostBootFailedError",
+      sandboxId: "sbx_123",
+      cleanedUp: "paused",
+    })
+    expect(pauseFn).toHaveBeenCalledTimes(1)
+    expect(stopFn).not.toHaveBeenCalled()
+  })
+
+  it("a daemon-connect failure on a non-pausable provider kills the box and reports cleanedUp stopped", async () => {
+    process.env[FAKE_SLUG] = "or-key-123"
+    connectDaemonAgentSessionHostMock.mockImplementation(async () => {
+      throw new Error("could not reach the daemon")
+    })
+    const stopFn = vi.fn(async () => {})
+    const provider = fakeProvider({
+      boot: vi.fn(async () => ({
+        mcpUrl: "https://sandbox-123.e2b.dev/mcp",
+        sandboxId: "sbx_123",
+        stop: stopFn,
+      })),
+    })
+    await expect(
+      createSandboxAgentSessionHost({ provider, spec, secrets: { slugs: [FAKE_SLUG] } }),
+    ).rejects.toMatchObject({ name: "SandboxHostBootFailedError", cleanedUp: "stopped" })
+    expect(stopFn).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("exposePort", () => {
+  it("delegates to booted.expose when present", async () => {
+    const exposeFn = vi.fn(async (port: number) => ({ url: `https://sbx-abc-${port}.e2b.dev` }))
+    const booted: BootedSandbox = {
+      mcpUrl: "https://sbx-abc-18790.e2b.dev/mcp",
+      sandboxId: "sbx_abc",
+      expose: exposeFn,
+      stop: vi.fn(async () => {}),
+    }
+    const result = await exposePort(booted, 3210)
+    expect(result.url).toBe("https://sbx-abc-3210.e2b.dev")
+    expect(exposeFn).toHaveBeenCalledWith(3210)
+  })
+
+  it("throws SandboxPortExposureUnsupportedError when expose is absent", async () => {
+    const booted: BootedSandbox = {
+      mcpUrl: "https://local-sandbox/mcp",
+      sandboxId: "local-abc",
+      stop: vi.fn(async () => {}),
+    }
+    await expect(exposePort(booted, 3210)).rejects.toBeInstanceOf(SandboxPortExposureUnsupportedError)
+    await expect(exposePort(booted, 3210)).rejects.toThrow(/does not support port exposure/)
+  })
+})
+
+describe("SandboxPortExposureUnsupportedError", () => {
+  it("has the expected name and inherits from Error", () => {
+    const err = new SandboxPortExposureUnsupportedError()
+    expect(err).toBeInstanceOf(Error)
+    expect(err).toBeInstanceOf(SandboxPortExposureUnsupportedError)
+    expect(err.name).toBe("SandboxPortExposureUnsupportedError")
+  })
+
+  it("uses a default message when none is provided", () => {
+    const err = new SandboxPortExposureUnsupportedError()
+    expect(err.message).toMatch(/does not support port exposure/)
+  })
+
+  it("uses a custom message when provided", () => {
+    const err = new SandboxPortExposureUnsupportedError("custom message")
+    expect(err.message).toBe("custom message")
   })
 })

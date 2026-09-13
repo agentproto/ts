@@ -52,6 +52,7 @@ import {
   parseSkillFrontmatter,
 } from "./skill-install/pack-resolve.js"
 import { pathExists } from "./skill-install/shared.js"
+import { zipPackDir } from "./skill-install/zip-pack.js"
 import type { SkillInfo } from "./skill-install/types.js"
 
 // ── types ────────────────────────────────────────────────────────────────
@@ -105,17 +106,129 @@ export { bumpSemver, readManifest }
 // ── public entry ─────────────────────────────────────────────────────────
 
 export async function runPack(args: readonly string[]): Promise<number> {
-  const subVerb = args.find((a) => !a.startsWith("-"))
+  const subVerbIdx = args.findIndex((a) => !a.startsWith("-"))
+  const subVerb = subVerbIdx === -1 ? undefined : args[subVerbIdx]
+  const rest =
+    subVerbIdx === -1
+      ? [...args]
+      : [...args.slice(0, subVerbIdx), ...args.slice(subVerbIdx + 1)]
   if (subVerb === "skill") {
-    return runPackSkill(args.filter((a) => a !== subVerb))
+    return runPackSkill(rest)
+  }
+  if (subVerb === "build") {
+    return runPackBuild(rest)
   }
 
   // No sub-verb or unknown sub-verb
   process.stderr.write(
       `agentproto pack: unknown sub-command${subVerb ? " '" + subVerb + "'" : ""}.\n` +
-      "Usage: agentproto pack skill --manifest <path> [--source <dir>] [--version <semver>] [--bump patch|minor|major] [--dry-run] [--out <dir>]\n",
+      "Usage: agentproto pack skill --manifest <path> [--source <dir>] [--version <semver>] [--bump patch|minor|major] [--dry-run] [--out <dir>]\n" +
+      "       agentproto pack build [dir]\n",
   )
   return 2
+}
+
+/**
+ * `agentproto pack build [dir]` — build a skill-pack PACKAGE (a monorepo
+ * package like packages/skill-pack-<name>) from its src/skills/ into the two
+ * shapes it ships as:
+ *
+ *  1. npm consumer (`agentproto install skill/<slug> --pack <manifest.name>`,
+ *     or the bare npm dual-naming resolver once published): `skills/` +
+ *     `.claude-plugin/plugin.json` copied flat to the PACKAGE ROOT, because
+ *     pack-resolve.ts's npm lookup treats the resolved node_modules dir
+ *     itself as the pack dir — no nested version folder.
+ *  2. Claude Code / Anthropic consumer: a self-contained, versioned bundle
+ *     directory at dist/<manifest.name>-v<version>/ (what `pack skill`
+ *     naturally produces) plus its .zip, both attached to the GitHub
+ *     release by .github/workflows/release.yml. Not published to npm —
+ *     "files" in package.json only lists skills/ + .claude-plugin/.
+ *
+ * Both come from ONE call to `runPackSkill` plus one directory copy and one
+ * zip. The version is the package's own package.json version — changesets'
+ * source of truth — never hand-declared in manifest.json. This replaces the
+ * per-pack scripts/build.mjs copies that used to carry these semantics.
+ */
+export async function runPackBuild(args: readonly string[]): Promise<number> {
+  const { positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {},
+  })
+
+  if (positionals.length > 1) {
+    process.stderr.write(
+      "agentproto pack build: expected at most one positional argument ([dir], default cwd).\n",
+    )
+    return 2
+  }
+
+  const packageDir = resolve(process.cwd(), positionals[0] ?? ".")
+  const packageJsonPath = join(packageDir, "package.json")
+  const manifestPath = join(packageDir, "manifest.json")
+
+  for (const p of [packageJsonPath, manifestPath]) {
+    if (!(await pathExists(p))) {
+      process.stderr.write(`agentproto pack build: not found: ${p}\n`)
+      return 1
+    }
+  }
+
+  try {
+    const pkg: Record<string, unknown> = JSON.parse(
+      await readFile(packageJsonPath, "utf8"),
+    )
+    const version = pkg.version
+    if (typeof version !== "string") {
+      process.stderr.write(
+        `agentproto pack build: ${packageJsonPath} has no "version" — ` +
+          "the package's own package.json version (changesets' source of truth) drives the build.\n",
+      )
+      return 1
+    }
+    const manifest = await readManifest(manifestPath)
+
+    const stagingOut = join(packageDir, "dist", "staging")
+    const code = await runPackSkill([
+      "--manifest",
+      manifestPath,
+      "--out",
+      stagingOut,
+      "--version",
+      version,
+    ])
+    if (code !== 0) return code
+
+    const bundleDir = join(stagingOut, `${manifest.name}-v${version}`)
+
+    // 1. Flatten skills/ + .claude-plugin/ up to the package root for npm
+    //    consumption (pack-resolve.ts expects them there, unversioned).
+    for (const entry of ["skills", ".claude-plugin"]) {
+      const dest = join(packageDir, entry)
+      await rm(dest, { recursive: true, force: true })
+      await cp(join(bundleDir, entry), dest, { recursive: true })
+    }
+
+    // 2. Zip the self-contained versioned bundle for the Claude Code /
+    //    Anthropic consumer — same technique claude-plugin.ts uses at
+    //    install time, reused rather than reimplemented.
+    const zipDest = join(packageDir, "dist", `${manifest.name}-v${version}.zip`)
+    await mkdir(dirname(zipDest), { recursive: true })
+    const { zipped, zipPath } = await zipPackDir(bundleDir, zipDest)
+
+    process.stdout.write(
+      `${typeof pkg.name === "string" ? pkg.name : manifest.name}: built skills/ + .claude-plugin/ (v${version})\n` +
+        (zipped
+          ? `  bundle zip: ${zipPath}\n`
+          : `  warning: zip unavailable — bundle dir only: ${bundleDir}\n`),
+    )
+    return 0
+  } catch (err) {
+    const e = err as Error
+    process.stderr.write(`${e.stack ?? e.message}\n`)
+    return 1
+  }
 }
 
 export async function runPackSkill(args: readonly string[]): Promise<number> {

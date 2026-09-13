@@ -21,7 +21,12 @@
  *   resumed by scanning existing entries.
  *
  * Engines (`--engine`, default `anthropic-api`):
- *   anthropic-api  metered Messages API (needs ANTHROPIC_API_KEY)
+ *   anthropic-api    metered Messages API (needs ANTHROPIC_API_KEY)
+ *   anthropic-batch  Anthropic Message Batches — 50% token price, async
+ *                    submit/poll/collect (needs ANTHROPIC_API_KEY)
+ *   openrouter-batch OpenRouter Batch API — 50% token price, `--model` is an
+ *                    OpenRouter slug, default anthropic/claude-sonnet-5
+ *                    (needs OPENROUTER_API_KEY)
  *   claude-code    local `claude` CLI, billed against the logged-in subscription
  *                  (no API key) — cheaper for large batches, subject to rate caps
  *   gemini         local `gemini` CLI (Google login / GEMINI_API_KEY)
@@ -29,6 +34,16 @@
  *   opencode       local `opencode run` (provider key: ANTHROPIC/OPENAI/OPENROUTER…)
  * The three CLI engines use each tool's first-party non-interactive print mode
  * (prompt on stdin → plain text out); confirm flags against `<cli> --help`.
+ *
+ * BATCH ENGINES (`anthropic-batch` / `openrouter-batch`):
+ *   All pending sources for this run are submitted as ONE provider batch
+ *   (not one call per source), then polled to completion — `--throttle` is
+ *   ignored (there's no per-call pacing to throttle). The batch id prints
+ *   right after submit; if the run is interrupted, re-attach with
+ *   `--batch-id <id>` to skip straight to poll/collect/write instead of
+ *   resubmitting. Sources that come back `expired` or `errored` are left
+ *   undistilled — the existing resume logic (ledger under a lens, entry-scan
+ *   without one) picks them up on the next run.
  */
 
 import { readFile, readdir } from "node:fs/promises"
@@ -69,14 +84,18 @@ import matter from "gray-matter"
 import {
   DistillIndex,
   DistillRunner,
+  hasDistillMany,
   lensAspect,
   systemClock,
+  type DistillInput,
   type DistillSource,
   type DistillPort,
   type EntryLayout,
   type Lens,
 } from "@agentproto/corpus"
+import { BatchStore, anthropicBatchDriver, openrouterBatchDriver, type BatchDriver } from "@agentproto/batch"
 import { AnthropicDistiller } from "../ports/anthropic-distiller.js"
+import { BatchDistiller } from "../ports/batch-distiller.js"
 import { CliAgentDistiller } from "../ports/cli-agent-distiller.js"
 import { CLI_ENGINES } from "../ports/cli-engines.js"
 import { NodeFsAdapter } from "../ports/local-fs.adapter.js"
@@ -105,27 +124,38 @@ async function readEntryLayout(target: string): Promise<EntryLayout | undefined>
   }
 }
 
-/** A selectable distill engine: whether it needs an API key + how to build it. */
+/** A selectable distill engine: what env var it needs (if any) + how to build it. */
 interface DistillerEngine {
   readonly id: string
-  readonly needsApiKey: boolean
+  /** Env var this engine's API key comes from. Absent → no key needed (CLI engines). */
+  readonly envKey?: "ANTHROPIC_API_KEY" | "OPENROUTER_API_KEY"
   create(opts: {
     apiKey?: string
     model?: string
     onUsage?: (usage: DistillUsage) => void
     lang?: string
+    /** Every engine gets one — only the batch engines use it. */
+    store: BatchStore
+    /** Test seam: force a specific driver instead of building the real one. */
+    driver?: BatchDriver
+    batchId?: string
+    pollIntervalMs?: number
   }): DistillPort
 }
 
+const ANTHROPIC_BATCH_ENGINE = "anthropic-batch"
+const OPENROUTER_BATCH_ENGINE = "openrouter-batch"
+const OPENROUTER_DEFAULT_MODEL = "anthropic/claude-sonnet-5"
+
 /**
- * Engine registry — the metered API plus every CLI engine, dispatched by id (no
- * `engine === "..."` branching at the call site). Add a CLI engine in
- * cli-engines.ts and it appears here automatically.
+ * Engine registry — the metered API, the two batch engines, plus every CLI
+ * engine, dispatched by id (no `engine === "..."` branching at the call
+ * site). Add a CLI engine in cli-engines.ts and it appears here automatically.
  */
 const DISTILLER_ENGINES: Readonly<Record<string, DistillerEngine>> = {
   [DEFAULT_ENGINE]: {
     id: DEFAULT_ENGINE,
-    needsApiKey: true,
+    envKey: "ANTHROPIC_API_KEY",
     create: ({ apiKey, model, onUsage, lang }) =>
       new AnthropicDistiller({
         apiKey: apiKey!,
@@ -134,12 +164,39 @@ const DISTILLER_ENGINES: Readonly<Record<string, DistillerEngine>> = {
         ...(lang ? { lang } : {}),
       }),
   },
+  [ANTHROPIC_BATCH_ENGINE]: {
+    id: ANTHROPIC_BATCH_ENGINE,
+    envKey: "ANTHROPIC_API_KEY",
+    create: ({ apiKey, model, onUsage, lang, store, driver, batchId, pollIntervalMs }) =>
+      new BatchDistiller({
+        driver: driver ?? anthropicBatchDriver({ apiKey: apiKey! }),
+        store,
+        ...(model ? { model } : {}),
+        ...(onUsage ? { onUsage } : {}),
+        ...(lang ? { lang } : {}),
+        ...(batchId ? { batchId } : {}),
+        ...(pollIntervalMs !== undefined ? { pollIntervalMs } : {}),
+      }),
+  },
+  [OPENROUTER_BATCH_ENGINE]: {
+    id: OPENROUTER_BATCH_ENGINE,
+    envKey: "OPENROUTER_API_KEY",
+    create: ({ apiKey, model, onUsage, lang, store, driver, batchId, pollIntervalMs }) =>
+      new BatchDistiller({
+        driver: driver ?? openrouterBatchDriver({ apiKey: apiKey! }),
+        store,
+        model: model ?? OPENROUTER_DEFAULT_MODEL,
+        ...(onUsage ? { onUsage } : {}),
+        ...(lang ? { lang } : {}),
+        ...(batchId ? { batchId } : {}),
+        ...(pollIntervalMs !== undefined ? { pollIntervalMs } : {}),
+      }),
+  },
   ...Object.fromEntries(
     Object.values(CLI_ENGINES).map(engine => [
       engine.id,
       {
         id: engine.id,
-        needsApiKey: false,
         create: ({ model, lang }) =>
           new CliAgentDistiller({
             engine,
@@ -163,6 +220,9 @@ export interface ParsedArgs {
   lens: string | undefined
   /** `--lens-file <path>` — an ad-hoc lens declaration, resolved by path. */
   lensFile: string | undefined
+  /** `--batch-id <id>` — re-attach to a batch already submitted in a prior,
+   *  interrupted run instead of submitting a new one. */
+  batchId: string | undefined
 }
 
 export function parse(args: readonly string[]): ParsedArgs {
@@ -176,6 +236,7 @@ export function parse(args: readonly string[]): ParsedArgs {
     lang: undefined,
     lens: undefined,
     lensFile: undefined,
+    batchId: undefined,
   }
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!
@@ -189,6 +250,7 @@ export function parse(args: readonly string[]): ParsedArgs {
       case "--lang": out.lang = next(); break
       case "--lens": out.lens = next(); break
       case "--lens-file": out.lensFile = next(); break
+      case "--batch-id": out.batchId = next(); break
       default:
         if (!a.startsWith("-") && out.workspace === undefined) out.workspace = a
     }
@@ -273,10 +335,27 @@ function applyLens(src: RawSource, lens: Lens): DistillSource {
   }
 }
 
+/** Overlay a lens's extraction instruction / kinds / aspect onto a raw source,
+ *  then flatten to the plain DistillInput shape a DistillPort/DistillBatchPort
+ *  consumes — the same mapping DistillRunner.run() does internally. */
+function toDistillInput(source: DistillSource): DistillInput {
+  return {
+    title: source.title,
+    body: source.body,
+    ...(source.tags ? { tags: source.tags } : {}),
+    ...(source.kinds ? { kinds: source.kinds } : {}),
+    ...(source.instruction ? { instruction: source.instruction } : {}),
+  }
+}
+
 /** Injectable deps — the distiller is a test seam (bypasses the engine registry). */
 export interface RunDistillDeps {
   /** Replace the engine-built DistillPort (tests inject a fake; no API key needed). */
   readonly distiller?: DistillPort
+  /** Force a specific BatchDriver instead of the real one an engine would
+   *  build — tests exercise `--engine anthropic-batch`/`openrouter-batch`
+   *  through a fake in-memory driver, no API key or network needed. */
+  readonly driver?: BatchDriver
 }
 
 export async function runDistill(
@@ -305,6 +384,7 @@ export async function runDistill(
 
   // The distiller: an injected one (tests) or one built from the engine registry.
   const usage = createUsageSink({ runName: basename(target) })
+  const store = new BatchStore({ stateDir: join(target, ".distill") })
   let distiller: DistillPort
   let engineLabel: string
   if (deps.distiller) {
@@ -318,18 +398,25 @@ export async function runDistill(
         2
       )
     }
-    const apiKey = process.env.ANTHROPIC_API_KEY
-    if (engine.needsApiKey && !apiKey) {
-      return fail(`distill engine "${engine.id}" needs ANTHROPIC_API_KEY in the environment.`, 2)
+    const apiKey = engine.envKey ? process.env[engine.envKey] : undefined
+    if (engine.envKey && !apiKey && !deps.driver) {
+      return fail(`distill engine "${engine.id}" needs ${engine.envKey} in the environment.`, 2)
     }
     distiller = engine.create({
       ...(apiKey ? { apiKey } : {}),
       ...(parsed.model ? { model: parsed.model } : {}),
       onUsage: usage.record,
       ...(parsed.lang ? { lang: parsed.lang } : {}),
+      store,
+      ...(deps.driver ? { driver: deps.driver } : {}),
+      ...(parsed.batchId ? { batchId: parsed.batchId } : {}),
     })
     engineLabel = engine.id
   }
+  // Narrow once, into a variable (not a boolean) — narrowing a `DistillPort`
+  // through a type-predicate call doesn't survive being captured as a plain
+  // boolean and re-checked later.
+  const batchDistiller = hasDistillMany(distiller) ? distiller : undefined
 
   const fs = new NodeFsAdapter({ root: target })
   const all = await readSources(target)
@@ -338,26 +425,49 @@ export async function runDistill(
   // Resume set. Under a lens: the `(source, lens)` ledger (independent cadence
   // per lens). Without a lens: the legacy entry-scan (unchanged back-compat).
   const index = new DistillIndex({ fs })
-  let pool: RawSource[]
-  if (parsed.sourceId) {
-    pool = all.filter(s => s.id === parsed.sourceId)
-  } else if (lens) {
-    pool = []
-    for (const s of all) {
-      if (!(await index.isDistilled(s.id, s.contentHash, lens.id))) pool.push(s)
+  let batch: RawSource[]
+  let poolLength: number
+  if (parsed.batchId) {
+    // Re-attach: the exact set of sources originally submitted, recovered
+    // from the store's own record of what it sent — not a fresh resume scan.
+    const record = await store.load(parsed.batchId)
+    if (!record) {
+      return fail(`--batch-id ${parsed.batchId}: no batch found under ${target}/.distill`, 2)
     }
+    const byId = new Map(all.map(s => [s.id, s]))
+    batch = []
+    for (const req of record.requests) {
+      const src = byId.get(req.customId)
+      if (src) batch.push(src)
+      else process.stdout.write(`  ! ${req.customId} — source no longer found on disk, skipping\n`)
+    }
+    poolLength = batch.length
   } else {
-    const done = await scanDistilledSourceIds(target)
-    pool = all.filter(s => !done.has(s.id))
+    let pool: RawSource[]
+    if (parsed.sourceId) {
+      pool = all.filter(s => s.id === parsed.sourceId)
+    } else if (lens) {
+      pool = []
+      for (const s of all) {
+        if (!(await index.isDistilled(s.id, s.contentHash, lens.id))) pool.push(s)
+      }
+    } else {
+      const done = await scanDistilledSourceIds(target)
+      pool = all.filter(s => !done.has(s.id))
+    }
+    poolLength = pool.length
+    batch = parsed.max !== undefined ? pool.slice(0, parsed.max) : pool
   }
-  const batch = parsed.max !== undefined ? pool.slice(0, parsed.max) : pool
 
   process.stdout.write(
     `distill → ${target}\n` +
       `  engine:   ${engineLabel}\n` +
       (lens ? `  lens:     ${lens.id} (aspect:${lensAspect(lens)})\n` : "") +
-      `  sources:  ${all.length} total · ${all.length - pool.length} already distilled · ${pool.length} to do\n` +
-      `  this run: ${batch.length}${parsed.max !== undefined ? ` (--max ${parsed.max})` : ""}\n`
+      (parsed.batchId
+        ? `  batch-id: ${parsed.batchId} — re-attaching, skipping submit\n`
+        : `  sources:  ${all.length} total · ${all.length - poolLength} already distilled · ${poolLength} to do\n` +
+          `  this run: ${batch.length}${parsed.max !== undefined ? ` (--max ${parsed.max})` : ""}\n`) +
+      (batchDistiller ? "  note:     --throttle is ignored for batch engines\n" : "")
   )
   if (batch.length === 0) {
     process.stdout.write("  nothing to do.\n")
@@ -365,38 +475,79 @@ export async function runDistill(
   }
 
   const layout = await readEntryLayout(target)
-  const runner = new DistillRunner({
-    fs,
-    clock: systemClock,
-    ...(layout ? { layout } : {}),
-    distiller,
-  })
-
   let totalEntries = 0
-  for (let i = 0; i < batch.length; i++) {
-    const raw = batch[i]!
-    const src = lens ? applyLens(raw, lens) : raw
-    if (i > 0 && parsed.throttleMs > 0) await sleep(parsed.throttleMs)
-    try {
-      const report = await runner.run(src)
-      totalEntries += report.entryPaths.length
-      // Under a lens, record the run in the `(source, lens)` ledger so a re-run
-      // of THIS lens skips the unchanged source without touching other lenses.
-      if (lens) {
-        await index.record({
-          sourceId: raw.id,
-          lensId: lens.id,
-          title: raw.title,
-          distilledAt: systemClock.now().toISOString(),
-          engine: engineLabel,
-          contentHash: raw.contentHash,
-          entryCount: report.entryPaths.length,
-          ...(report.entryPaths.length ? { entryPaths: report.entryPaths } : {}),
-        })
+
+  if (batchDistiller) {
+    const inputs = batch.map(raw => ({
+      key: raw.id,
+      input: toDistillInput(lens ? applyLens(raw, lens) : raw),
+    }))
+    const resultsByKey = await batchDistiller.distillMany(inputs)
+    for (const raw of batch) {
+      const src = lens ? applyLens(raw, lens) : raw
+      const items = resultsByKey.get(raw.id)
+      if (items === undefined) {
+        process.stdout.write(`  ! ${raw.id} — not distilled this run (errored or expired in the batch)\n`)
+        continue
       }
-      process.stdout.write(`  ✓ ${raw.id} → ${report.entryPaths.length} entries\n`)
-    } catch (e) {
-      process.stdout.write(`  ! ${raw.id} — ${e instanceof Error ? e.message : String(e)}\n`)
+      const oneShotRunner = new DistillRunner({
+        fs,
+        clock: systemClock,
+        ...(layout ? { layout } : {}),
+        distiller: { distill: async () => items },
+      })
+      try {
+        const report = await oneShotRunner.run(src)
+        totalEntries += report.entryPaths.length
+        if (lens) {
+          await index.record({
+            sourceId: raw.id,
+            lensId: lens.id,
+            title: raw.title,
+            distilledAt: systemClock.now().toISOString(),
+            engine: engineLabel,
+            contentHash: raw.contentHash,
+            entryCount: report.entryPaths.length,
+            ...(report.entryPaths.length ? { entryPaths: report.entryPaths } : {}),
+          })
+        }
+        process.stdout.write(`  ✓ ${raw.id} → ${report.entryPaths.length} entries\n`)
+      } catch (e) {
+        process.stdout.write(`  ! ${raw.id} — ${e instanceof Error ? e.message : String(e)}\n`)
+      }
+    }
+  } else {
+    const runner = new DistillRunner({
+      fs,
+      clock: systemClock,
+      ...(layout ? { layout } : {}),
+      distiller,
+    })
+    for (let i = 0; i < batch.length; i++) {
+      const raw = batch[i]!
+      const src = lens ? applyLens(raw, lens) : raw
+      if (i > 0 && parsed.throttleMs > 0) await sleep(parsed.throttleMs)
+      try {
+        const report = await runner.run(src)
+        totalEntries += report.entryPaths.length
+        // Under a lens, record the run in the `(source, lens)` ledger so a re-run
+        // of THIS lens skips the unchanged source without touching other lenses.
+        if (lens) {
+          await index.record({
+            sourceId: raw.id,
+            lensId: lens.id,
+            title: raw.title,
+            distilledAt: systemClock.now().toISOString(),
+            engine: engineLabel,
+            contentHash: raw.contentHash,
+            entryCount: report.entryPaths.length,
+            ...(report.entryPaths.length ? { entryPaths: report.entryPaths } : {}),
+          })
+        }
+        process.stdout.write(`  ✓ ${raw.id} → ${report.entryPaths.length} entries\n`)
+      } catch (e) {
+        process.stdout.write(`  ! ${raw.id} — ${e instanceof Error ? e.message : String(e)}\n`)
+      }
     }
   }
   process.stdout.write(`\n${totalEntries} refined entries written (each with sources:[<id>] provenance).\n`)

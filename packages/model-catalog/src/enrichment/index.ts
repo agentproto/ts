@@ -26,6 +26,7 @@
 
 import type { CatalogPriceTier, Lifecycle, ModelKind } from "../schema/index.js"
 import type { ResolvedModel } from "../registry/index.js"
+import { DEFAULT_PRICING } from "../llm/index.js"
 import {
   getActions,
   assertReservedPrefixDiscipline,
@@ -188,8 +189,12 @@ function inferCatalogPriceTier(model: ResolvedModel): CatalogPriceTier {
     case "llm": {
       // Bucket on provider USD/1M output tokens (output dominates spend).
       // Stable across markup changes — was previously keyed on the
-      // credit-side rate, which moved with formula tweaks.
-      const out = model.pricing.outputPer1M
+      // credit-side rate, which moved with formula tweaks. A known-but-
+      // unpriced id (pricing undefined — see ResolvedModel's doc comment)
+      // buckets on DEFAULT_PRICING, same fallback convention as
+      // `calculateLLMCreditCost` and the HuggingFace route in
+      // `route-identity/index.ts`.
+      const out = model.pricing?.outputPer1M ?? DEFAULT_PRICING.outputPer1M
       if (out <= 1) return "low"
       if (out <= 10) return "mid"
       if (out <= 30) return "high"
@@ -236,7 +241,8 @@ export function priceTierForModel(model: ResolvedModel): number {
       return 5
     }
     case "llm": {
-      const out = model.pricing.outputPer1M
+      // Same DEFAULT_PRICING fallback as inferCatalogPriceTier above.
+      const out = model.pricing?.outputPer1M ?? DEFAULT_PRICING.outputPer1M
       if (out <= 1) return 1
       if (out <= 10) return 2
       if (out <= 30) return 3

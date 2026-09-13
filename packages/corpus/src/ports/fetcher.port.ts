@@ -20,7 +20,7 @@
  * videos — the importer never changes.
  */
 
-export type FetchedSourceKind = "video" | "article" | "page" | "unknown"
+export type FetchedSourceKind = "video" | "article" | "page" | "pdf" | "unknown"
 
 export interface FetchedSource {
   /** Human-readable title (video/page title or article headline). */
@@ -32,7 +32,15 @@ export interface FetchedSource {
   /** BCP-47 language code, when the fetcher can detect it. */
   readonly language?: string
   /** How the text was obtained — for provenance / dedup auditing. */
-  readonly via?: "captions" | "readability" | "transcription" | string
+  readonly via?: "captions" | "readability" | "transcription" | "extraction" | string
+  /**
+   * Format-specific provenance the {@link WebImporter} passes through
+   * verbatim into `ImportedSource.corpusMetadata` (frontmatter
+   * `metadata.corpus.*`) — e.g. a PDF's page count, file sha256, and
+   * document-info title/author/producer/dates. Keys here never override
+   * the importer's own `importerSourceUrl` / `fetchKind` / `fetchedVia`.
+   */
+  readonly metadata?: Readonly<Record<string, unknown>>
 }
 
 export interface FetcherPort {

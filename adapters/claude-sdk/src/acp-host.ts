@@ -42,6 +42,7 @@ import { sdkMessageToUpdates, systemInitSessionId } from "./message-map.js"
 import {
   buildQueryOptions,
   DEFAULT_IDLE_TIMEOUT_MS,
+  DEFAULT_TOOL_IDLE_TIMEOUT_MS,
   type ClaudeSdkConfig,
 } from "./options.js"
 
@@ -244,6 +245,7 @@ export class ClaudeSdkAcpAgent implements AcpAgent {
     ac: AbortController,
   ): Promise<void> {
     const idleMs = this.#config.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
+    const toolIdleMs = this.#config.toolIdleTimeoutMs ?? DEFAULT_TOOL_IDLE_TIMEOUT_MS
     const iterator = this.#query({ prompt: text, options })[
       Symbol.asyncIterator
     ]()
@@ -251,14 +253,35 @@ export class ClaudeSdkAcpAgent implements AcpAgent {
     // complete `assistant` message repeats it — suppress its text so the ring
     // isn't fed the same prose twice (see message-map's suppressAssistantText).
     let sawPartial = false
+    // Tool execution is silent between the SDK's `tool_use` and the matching
+    // `tool_result`. While any tool is pending, use the longer toolIdleMs
+    // watchdog instead of the generation watchdog so healthy tool runs are not
+    // aborted after 90s.
+    let pendingTool = false
     try {
       while (!ac.signal.aborted) {
-        const next = await this.#nextMessage(iterator, idleMs, ac)
+        const nextIdleMs = pendingTool ? toolIdleMs : idleMs
+        const next = await this.#nextMessage(iterator, nextIdleMs, ac)
         if (next.done) break
         const msg = next.value
         const sdkId = systemInitSessionId(msg)
         if (sdkId) session.sdkSessionId = sdkId
         if (msg.type === "stream_event") sawPartial = true
+
+        if (msg.type === "assistant") {
+          for (const block of msg.message.content) {
+            if (block.type === "tool_use") pendingTool = true
+          }
+        } else if (msg.type === "user") {
+          const content = msg.message.content
+          if (
+            Array.isArray(content) &&
+            content.some((block) => block.type === "tool_result")
+          ) {
+            pendingTool = false
+          }
+        }
+
         for (const update of sdkMessageToUpdates(msg, {
           suppressAssistantText: sawPartial,
         })) {

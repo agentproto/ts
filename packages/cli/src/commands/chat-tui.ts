@@ -21,7 +21,8 @@ import http from "node:http"
 import https from "node:https"
 import chalk from "chalk"
 import {
-  TUI,
+  TuiMainScreen,
+  type TUI,
   Text,
   Input,
   Loader,
@@ -193,7 +194,7 @@ class ChatController {
     this.resolveExit = opts.resolveExit
 
     const term = new ProcessTerminal()
-    this.tui = new TUI(term)
+    this.tui = new TuiMainScreen(term)
 
     // Build the initial TUI layout (top to bottom):
     //   headerText

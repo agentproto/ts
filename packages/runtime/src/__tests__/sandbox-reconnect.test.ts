@@ -74,7 +74,10 @@ function makeFakeCliResolver(receivedPrompts: string[]): AgentAdapterResolver {
  * — a `connect()` in these tests reconnects to the SAME live gateway a prior
  * `boot()` would have produced, exactly like e2b reconnecting to the same box.
  */
-async function bootFakeReconnectableBox(receivedPrompts: string[]): Promise<{
+async function bootFakeReconnectableBox(
+  receivedPrompts: string[],
+  opts?: { ports?: Record<number, string> },
+): Promise<{
   provider: SandboxProvider
   gateway: GatewayHandle
   workspace: string
@@ -239,7 +242,7 @@ describe("agent_start sandbox — reconnect/reuse + lifecycle pause", () => {
     expect(box.stopSpy).not.toHaveBeenCalled()
   })
 
-  it("a plain ephemeral spawn (no reuse, no lifecycle) still KILLS on close", async () => {
+  it("a plain ephemeral spawn (no reuse, no lifecycle) PAUSES on close (the default)", async () => {
     const result = await spawnAgentSession(deps, {
       adapter: "fake-cli",
       cwd: workspace,
@@ -247,11 +250,11 @@ describe("agent_start sandbox — reconnect/reuse + lifecycle pause", () => {
     })
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(registry.get(result.descriptor.id)?.sandboxTeardown).toBe("kill")
+    expect(registry.get(result.descriptor.id)?.sandboxTeardown).toBe("pause")
 
     registry.kill(result.descriptor.id)
-    await vi.waitFor(() => expect(box.stopSpy).toHaveBeenCalledTimes(1))
-    expect(box.pauseSpy).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(box.pauseSpy).toHaveBeenCalledTimes(1))
+    expect(box.stopSpy).not.toHaveBeenCalled()
   })
 
   it("lifecycle.destroy_on always kills, even when reuse is set", async () => {
@@ -307,6 +310,40 @@ describe("agent_start sandbox — reconnect/reuse + lifecycle pause", () => {
     if (result.ok) return
     expect(result.code).toBe("sandbox_reconnect_failed")
     expect(result.message).toContain("no connect()")
+  })
+
+  it("reaps the reconnected box when the daemon MCP connect fails after connect() succeeded", async () => {
+    // Upstream finding 3 — the failure one step AFTER a successful
+    // `provider.connect()`: the box is resumed and billed, then the MCP
+    // transport connect on top of it throws. Whatever `connect()` resumed
+    // must be reaped before `sandbox_reconnect_failed` is returned — a
+    // failed reconnect must never leave a live box with no session
+    // tracking it.
+    const deadPort = await freePort()
+    box.connectSpy.mockImplementationOnce(async (sandboxId: string) => ({
+      mcpUrl: `http://127.0.0.1:${deadPort}/mcp`,
+      sandboxId,
+      stop: box.stopSpy,
+      pause: box.pauseSpy,
+    }))
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "fake-cli",
+      cwd: workspace,
+      sandbox: { provider: "fake", config: {}, reuse: "sbx_dead_mcp" },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe("sandbox_reconnect_failed")
+    expect(box.connectSpy).toHaveBeenCalledTimes(1)
+    // The box `connect()` resumed must not outlive the failed spawn — but
+    // for a REUSE the reap is a pause, not a kill: the box pre-existed this
+    // spawn, so killing it would destroy something this spawn never owned.
+    // `createSandboxAgentSessionHost` picks pause whenever the provider
+    // offers one (this fake does), and the paused box stays accounted for
+    // via the ledger stamp on `SandboxHostBootFailedError`.
+    await vi.waitFor(() => expect(box.pauseSpy).toHaveBeenCalledTimes(1))
+    expect(box.stopSpy).not.toHaveBeenCalled()
   })
 
   it("returns sandbox_reconnect_failed when connect() itself throws", async () => {

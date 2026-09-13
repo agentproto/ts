@@ -16,6 +16,10 @@ import { fixer } from "./agents/fixer.js"
 import { deliverChange } from "./workflows/deliver-change.js"
 
 export const codeTeam: AppHandle = defineApp({
+  id: "@agentproto/code-team",
+  name: "Code Team",
+  version: "0.1.0",
+  description: "Implement, review, and fix code changes.",
   agents: [implementer, reviewer, fixer],
   workflows: [deliverChange],
 })

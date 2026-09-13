@@ -61,6 +61,13 @@ export interface StartAgentArgs {
   prompt?: string
   label?: string
   model?: string
+  /** Canonical provider route for a routed model.  This must travel with a
+   * sandbox handoff: a fresh daemon cannot infer that (for example) a Kimi
+   * model is meant to bill Moonshot rather than the adapter's native rail. */
+  route?: {
+    gateway: string
+    baseUrl?: string
+  }
   effort?: string
   mcpServers?: McpServerMount[]
   orchestrator?: OrchestratorOption
@@ -129,3 +136,22 @@ export interface CoderContext {
 
 /** Alias for the spec-facing name. */
 export type StartArgs = StartAgentArgs
+
+/**
+ * `session_usage` answer: model, cumulative USD cost, token counts, context
+ * window. `source` says where `costUsd` came from — `adapter` (the adapter's
+ * own reader or a usage_update cost block), `computed` (tokens × in-repo
+ * catalog price), `no-pricing` (tokens but no price for the model — cost
+ * deliberately omitted), `none` (nothing measured). Absent fields are
+ * omitted, never zeroed.
+ */
+export interface SessionUsageSnapshot {
+  sessionId?: string
+  model?: string
+  costUsd?: number
+  tokensIn?: number
+  tokensOut?: number
+  contextSize?: number
+  contextUsed?: number
+  source?: "adapter" | "computed" | "no-pricing" | "none"
+}

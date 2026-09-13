@@ -9,10 +9,32 @@
 
 import * as vscode from "vscode"
 
+import { buildAuthHeaders } from "./auth.js"
+
+export { buildAuthHeaders }
+
 export interface DaemonConfig {
   daemonUrl: string
   tokenPath: string
   pollIntervalMs: number
+  authHeaders?: Record<string, string>
+}
+
+const DEFAULT_RELEASE_CHECK_INTERVAL_MIN = 60
+const MIN_RELEASE_CHECK_INTERVAL_MIN = 10
+
+/** `agentproto.releaseCheck.intervalMin` — npm poll TTL for the release
+ *  indicator, in minutes. Default ~1 h, floor 10 (never below: a sub-10 min
+ *  npm poll would be aggressive noise, per the plan). */
+export function getReleaseCheckIntervalMin(): number {
+  const v = vscode.workspace.getConfiguration(SECTION).get<number>("releaseCheck.intervalMin")
+  if (typeof v === "number" && v >= MIN_RELEASE_CHECK_INTERVAL_MIN) return v
+  return DEFAULT_RELEASE_CHECK_INTERVAL_MIN
+}
+
+/** Convenience: the same interval in milliseconds. */
+export function getReleaseCheckIntervalMs(): number {
+  return getReleaseCheckIntervalMin() * 60_000
 }
 
 const SECTION = "agentproto"
@@ -26,7 +48,7 @@ const DEFAULT_DAEMON_URL = "http://127.0.0.1:18790"
  *  "reload the window" banner for those would be actively wrong — most
  *  visibly for groupByWorkspace, whose own toolbar toggle is supposed to
  *  update the tree instantly, not prompt for a reload. */
-const RELOAD_REQUIRED_KEYS = ["daemonUrl", "tokenPath", "pollIntervalMs"] as const
+const RELOAD_REQUIRED_KEYS = ["daemonUrl", "tokenPath", "pollIntervalMs", "authHeaders"] as const
 
 export function getConfig(): DaemonConfig {
   const cfg = vscode.workspace.getConfiguration(SECTION)
@@ -38,6 +60,7 @@ export function getConfig(): DaemonConfig {
       typeof pollIntervalMs === "number" && pollIntervalMs >= 1000
         ? pollIntervalMs
         : 5000,
+    authHeaders: cfg.get<Record<string, string>>("authHeaders") ?? undefined,
   }
 }
 

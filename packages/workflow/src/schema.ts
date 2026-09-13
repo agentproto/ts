@@ -13,6 +13,44 @@
 
 import { z } from "zod"
 
-export const workflowFrontmatterSchema = z.object({ "name": z.string().min(1).max(80), "id": z.string().regex(new RegExp("^[a-z][a-z0-9-]*[a-z0-9]$")).min(2).max(64), "description": z.string().min(1).max(2000), "version": z.string().regex(new RegExp("^\\d+\\.\\d+\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$")), "entry": z.string().optional(), "inputs": z.any().describe("Defined by AIP-16 — the IO `inputs` block."), "outputs": z.any().describe("Defined by AIP-16 — the IO `outputs` block."), "result": z.union([z.record(z.string(), z.any()).describe("Optional value expression mapping step results to the workflow output, using the same reference grammar as a step's `inputs` ($input.*, $steps.<id>.*, literals). Omitted ⇒ the output is the final step's result. Its shape SHOULD satisfy `outputs`."), z.string().describe("Optional value expression mapping step results to the workflow output, using the same reference grammar as a step's `inputs` ($input.*, $steps.<id>.*, literals). Omitted ⇒ the output is the final step's result. Its shape SHOULD satisfy `outputs`.")]).describe("Optional value expression mapping step results to the workflow output, using the same reference grammar as a step's `inputs` ($input.*, $steps.<id>.*, literals). Omitted ⇒ the output is the final step's result. Its shape SHOULD satisfy `outputs`.").optional(), "steps": z.array(z.any()).min(1), "start": z.string().optional(), "suspendable": z.boolean().optional(), "triggers": z.array(z.any()).default([] as never), "requires": z.object({ "network": z.array(z.string()).optional(), "fs.read": z.array(z.string()).optional(), "fs.write": z.array(z.string()).optional(), "env": z.array(z.string()).optional(), "secrets": z.array(z.string()).optional(), "tools": z.array(z.string()).optional() }).strict().optional(), "approval": z.any().default("per-step"), "risk_level": z.number().int().gte(0).lte(3).optional(), "timeout_ms": z.number().int().gte(1).default(600000), "max_steps": z.number().int().gte(1).default(100), "retry": z.any().optional(), "cost_class": z.enum(["trivial","metered","expensive"]).default("metered"), "tags": z.array(z.string().regex(new RegExp("^[a-z][a-z0-9-]*$"))).default([] as never), "metadata": z.record(z.string(), z.any()).default({} as never), "inputsFiles": z.any().describe("Defined by AIP-16 — the IO `inputsFiles` block.").optional(), "outputsFiles": z.any().describe("Defined by AIP-16 — the IO `outputsFiles` block.").optional(), "runtime": z.any().describe("Defined by AIP-17 — the runner block.").optional() }).strict().describe("Validates the YAML frontmatter portion of an AIP-15 WORKFLOW.md manifest.")
+export const workflowFrontmatterSchema = z.object({ "name": z.string().min(1).max(80), "id": z.string().regex(new RegExp("^[a-z][a-z0-9-]*[a-z0-9]$")).min(2).max(64), "description": z.string().min(1).max(2000), "version": z.string().regex(new RegExp("^\\d+\\.\\d+\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$")), "entry": z.string().optional(), "inputs": z.any().describe("Defined by AIP-16 — the IO `inputs` block."), "outputs": z.any().describe("Defined by AIP-16 — the IO `outputs` block."), "result": z.union([z.record(z.string(), z.any()).describe("Optional value expression mapping step results to the workflow output, using the same reference grammar as a step's `inputs` ($input.*, $steps.<id>.*, literals). Omitted ⇒ the output is the final step's result. Its shape SHOULD satisfy `outputs`."), z.string().describe("Optional value expression mapping step results to the workflow output, using the same reference grammar as a step's `inputs` ($input.*, $steps.<id>.*, literals). Omitted ⇒ the output is the final step's result. Its shape SHOULD satisfy `outputs`.")]).describe("Optional value expression mapping step results to the workflow output, using the same reference grammar as a step's `inputs` ($input.*, $steps.<id>.*, literals). Omitted ⇒ the output is the final step's result. Its shape SHOULD satisfy `outputs`.").optional(), "steps": z.array(z.any()).min(1), "start": z.string().optional(), "suspendable": z.boolean().optional(), "triggers": z.array(z.any()).default([] as never), "routines": z.array(z.any()).default([] as never), "requires": z.object({ "network": z.array(z.string()).optional(), "fs.read": z.array(z.string()).optional(), "fs.write": z.array(z.string()).optional(), "env": z.array(z.string()).optional(), "secrets": z.array(z.string()).optional(), "tools": z.array(z.string()).optional() }).strict().optional(), "approval": z.any().default("per-step"), "risk_level": z.number().int().gte(0).lte(3).optional(), "timeout_ms": z.number().int().gte(1).default(600000), "max_steps": z.number().int().gte(1).default(100), "retry": z.any().optional(), "cost_class": z.enum(["trivial","metered","expensive"]).default("metered"), "tags": z.array(z.string().regex(new RegExp("^[a-z][a-z0-9-]*$"))).default([] as never), "metadata": z.record(z.string(), z.any()).default({} as never), "inputsFiles": z.any().describe("Defined by AIP-16 — the IO `inputsFiles` block.").optional(), "outputsFiles": z.any().describe("Defined by AIP-16 — the IO `outputsFiles` block.").optional(), "runtime": z.any().describe("Defined by AIP-17 — the runner block.").optional() }).strict().describe("Validates the YAML frontmatter portion of an AIP-15 WORKFLOW.md manifest.")
 
 export type WorkflowFrontmatter = z.infer<typeof workflowFrontmatterSchema>
+
+/**
+ * Hand-tuned companion to the generated schema above: the steps array is
+ * `z.any()` there (step shapes + cross-field rules don't convert cleanly),
+ * so the AIP-15 P2 `harness` block gets its own strict zod here and is
+ * applied per agent step by `defineWorkflow`'s `validate()` (and by
+ * `@agentproto/workflow-loader` on the .md path). Mirrors
+ * `$defs.harness` / `$defs.knowledgeSelector` in
+ * `resources/aip-15/draft/WORKFLOW.schema.json`.
+ */
+export const knowledgeSelectorSchema = z
+  .object({
+    workspace: z.string().min(1),
+    anyOf: z.array(z.string()).optional(),
+    allOf: z.array(z.string()).optional(),
+    kinds: z.array(z.string()).optional(),
+    maxEntries: z.number().int().gte(1).optional(),
+    mode: z.enum(["files"]).optional(),
+    deferred: z.boolean().optional(),
+  })
+  .strict()
+
+export const harnessSchema = z
+  .object({
+    model: z.string().optional(),
+    effort: z.string().optional(),
+    role: z.string().optional(),
+    tools: z.array(z.string()).optional(),
+    skills: z.array(z.string()).optional(),
+    cwd: z.string().optional(),
+    promptFile: z.string().optional(),
+    promptSha: z.string().optional(),
+    knowledge: z.array(knowledgeSelectorSchema).optional(),
+  })
+  .strict()
+
+export type KnowledgeSelectorSchema = z.infer<typeof knowledgeSelectorSchema>
+export type HarnessSchema = z.infer<typeof harnessSchema>

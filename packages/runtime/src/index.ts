@@ -31,23 +31,27 @@ import {
   registerSessionTools,
   registerExportSessionTool,
   registerConversationReadTool,
+  registerConversationLocateTool,
+  registerConversationExportTool,
 } from "./session-tools.js"
+import { registerBrainTools } from "./brain-tools.js"
+import { createWorkspaceBrains } from "./workspace-brains.js"
+import { createWorkspaceBrainSubscriber } from "./workspace-brain-subscriber.js"
 import {
   registerBrowserTools,
   type BrowserAdapterResolver,
   type BrowserAdapterLister,
 } from "./browser-tools.js"
 import { registerAuthProfileTools } from "./auth-profile-tools.js"
+import { registerHarnessPresetTools } from "./harness-preset-tools.js"
 import { registerCredentialDiscoveryTools } from "./credential-discovery.js"
+import { registerWebSearchTools } from "./web-search-tools.js"
 import { registerMcpApps } from "./mcp-apps-adapter.js"
-import { makeSessionsPanelApp } from "./sessions-panel-app.js"
-import {
-  makeAgentsOverviewApp,
-  registerSummarizeSessionTool,
-} from "./agents-overview-app.js"
-import { makeBureauSessionsApp } from "./bureau-sessions-app.js"
-import { makeSessionStoryPanelApp } from "./session-story-panel-app.js"
+import { makeBuiltinPanelApps } from "./builtin-apps.js"
+import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
+import { registerSummarizeSessionTool } from "./summarize-session-tool.js"
 import { makeTerminalPanelApp } from "./terminal-panel-app.js"
+import { registerAppPullTools } from "./app-pull-tools.js"
 import {
   loadWorkspacesConfig,
   findWorkspace,
@@ -65,21 +69,39 @@ import {
   type AgentAdapterLister,
   type AgentAdapterInstaller,
   type CatalogModelsLister,
+  type AdapterCapabilitiesLister,
 } from "./http-server.js"
 import {
   createSessionsRegistry,
+  SESSION_ID_ENV,
+  WORKSPACE_SLUG_ENV,
   type SessionsRegistry,
   type SessionDescriptor,
   type PtyFactory,
 } from "./sessions.js"
 import { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
 import { runIdleReapPass, type IdleReapSummary } from "./idle-reaper.js"
+import { runCrashDetectPass } from "./crash-reaper.js"
+import { runStallWatchdogPass } from "./stall-watchdog.js"
+import { createRestartScheduler, runRestartSweepPass } from "./restart-scheduler.js"
 import { loadConfig } from "./config.js"
-import { resolveResumeAuth } from "./session-restart-core.js"
+import { defaultTranscriptBaseDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
+import { resolveResumeAuth, restartAgentSession } from "./session-restart-core.js"
+import { createTransmitterBindingStore } from "./transmitter-bindings.js"
+import { createInboundEndpointStore } from "./inbound-endpoints.js"
+import { routeInboundMessage } from "./inbound-router.js"
+import { makeTelegramBotCredsStore, registerTelegramBotTools } from "./telegram-bot-creds.js"
+import type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
 import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
 import { makeEvalReporterCredsStore } from "@agentproto/eval-reporters"
 import { McpProxyRegistry } from "./mcp-proxy.js"
 import { registerOrchestrationTools } from "./orchestration-tools.js"
+import { registerAppTools, resolveAgentRefsForWorkflow, performInstall } from "./app-tools.js"
+import { registerAppDataTools } from "./app-data.js"
+import { APP_STATE_APPEND_TOOL_NAME } from "./app-state.js"
+import { registerAppExternalTools } from "./app-external.js"
+import { createAppRegistry } from "./app-registry.js"
+import { makeInstalledAppUiApps, createUiHtmlCache } from "./app-ui-apps.js"
 import { createSessionEventBus } from "./session-event-bus.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
@@ -92,6 +114,7 @@ import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createPrProvenanceReconciler, type OpenPrResolver } from "./pr-provenance-reconciler.js"
 import { createActivityProjector, type PrStateResolver } from "./activities.js"
 import { createTaskLedger } from "./task-ledger.js"
+import { wireSupervisorNotify } from "./supervisor-notify.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler } from "./cron-scheduler.js"
 import { createRoutineRegistrar } from "./routine-registrar.js"
@@ -101,6 +124,30 @@ export type {
   WatcherDescriptor,
   InboundWatcher,
 } from "./inbound-watcher.js"
+export type {
+  InboundMessage,
+  InboundRouteMode,
+  InboundRouterDeps,
+  InboundEnqueuePrompt,
+  InboundIsSessionAlive,
+  InboundRestartSession,
+  InboundSpawnForContact,
+  InboundRouterLog,
+} from "./inbound-router.js"
+export type { TransmitterBinding, TransmitterBindingStore } from "./transmitter-bindings.js"
+export {
+  createInboundEndpointStore,
+  type InboundEndpoint,
+  type InboundEndpointStore,
+  type InboundEndpointStoreOptions,
+} from "./inbound-endpoints.js"
+export {
+  normalizeInbound,
+  verifyInboundSignature,
+  type InboundProvider,
+  INBOUND_PROVIDERS,
+  type NormalizeInboundResult,
+} from "./inbound-adapters.js"
 import {
   createScopeTokenRegistry,
   createOrchestratorMcpServerFactory,
@@ -116,6 +163,7 @@ export type {
   AdapterInstallResult,
   AdapterListEntry,
   CatalogModelsLister,
+  AdapterCapabilitiesLister,
 } from "./http-server.js"
 export type {
   WorktreeStatusLister,
@@ -127,6 +175,7 @@ export type {
   WorktreeGcRunInput,
   WorktreeGcResult,
   WorktreeGcClass,
+  WorktreeGcReclaimReason,
   WorktreeGcPlanEntryView,
   WorktreeGcOutcomeView,
 } from "./worktree-gc.js"
@@ -141,6 +190,28 @@ export type {
   ActivityWorkflowLister,
   PrStateResolver,
 } from "./activities.js"
+export { registerBrainTools } from "./brain-tools.js"
+export {
+  registerWebSearchTools,
+  defineBraveSearchHttpDriver,
+  defineSerperHttpDriver,
+  webSearchTool,
+} from "./web-search-tools.js"
+export type {
+  RegisterWebSearchToolsOptions,
+  WebSearchInput,
+  WebSearchOutput,
+  WebSearchResult,
+} from "./web-search-tools.js"
+export type { RegisterBrainToolsOptions } from "./brain-tools.js"
+export { createWorkspaceBrains, readSessionForBrain } from "./workspace-brains.js"
+export type { WorkspaceBrains } from "./workspace-brains.js"
+export {
+  createWorkspaceBrainSubscriber,
+  type WorkspaceBrainSubscriber,
+  type WorkspaceBrainSubscriberOptions,
+} from "./workspace-brain-subscriber.js"
+export type { BrainManager, BrainStats, IngestResult, IngestReport } from "@agentproto/workspace-brain"
 export {
   policyToActivities,
   turnToActivities,
@@ -194,6 +265,23 @@ export {
 } from "./user-presets.js"
 export type { UserPreset, UserPresetsFile } from "./user-presets.js"
 export {
+  harnessPresetsPath,
+  loadHarnessPresets,
+  listHarnessPresets,
+  getHarnessPreset,
+  getDefaultHarnessPreset,
+  addHarnessPreset,
+  updateHarnessPreset,
+  removeHarnessPreset,
+  setDefaultPreset,
+  HarnessPresetValidationError,
+} from "./harness-preset-store.js"
+export type {
+  HarnessPreset,
+  HarnessPresetsFile,
+  HarnessPresetValidationDeps,
+} from "./harness-preset-store.js"
+export {
   buildCatalogModels,
   type CatalogAdapterInput,
   type CatalogAdapterModelInput,
@@ -205,6 +293,10 @@ export {
   type CatalogRouteSummary,
   type CatalogPricing,
 } from "./catalog-models.js"
+// NOTE: as of this export, `registerBuiltinRoutes` is `async` (it now also
+// loads operator routes from `~/.agentproto/routes.json`). Callers MUST
+// `await` it — an un-awaited call will silently skip operator-route loading.
+export { registerBuiltinRoutes } from "./builtin-routes.js"
 export {
   buildCatalogProviderModels,
   type CatalogProviderModelsQuery,
@@ -224,10 +316,47 @@ export type {
   SandboxProviderHandle,
   SandboxProviderCapabilities,
 } from "./sandbox-providers/types.js"
+export {
+  attachSandbox,
+  buildMcpConfigSnippet,
+  registerSandboxAttachTool,
+  type AttachSandboxOpts,
+  type AttachSandboxResult,
+  type SandboxConnectionDescriptor,
+} from "./sandbox-attach.js"
+export {
+  makeSandboxResolver,
+  makeSandboxCredsStore,
+} from "./sandbox-adapters.js"
+export {
+  readSandboxLedger,
+  recordSandboxBoot,
+  recordSandboxLiveness,
+  recordSandboxOrigin,
+  recordSandboxState,
+  removeSandboxLedgerEntry,
+  resolveReuseFromLedger,
+  sandboxLedgerPath,
+  upsertSandboxLedger,
+  type ReuseResolution,
+  type SandboxLedgerEntry,
+  type SandboxLedgerState,
+} from "./sandbox-ledger.js"
+export {
+  collectGcCandidates,
+  reapGcEntry,
+  DEAD_SESSION_STATUSES,
+  GC_REAPABLE_STATES,
+  type SandboxGcCandidate,
+  type SandboxGcReapDeps,
+  type SandboxGcProviderHandle,
+  type SandboxGcReapResult,
+} from "./sandbox-gc.js"
 export type {
   AgentSessionLike,
   AgentStreamEvent,
   SessionDescriptor,
+  SessionCurrentPhase,
   SessionKind,
   SessionStatus,
   SpawnSessionInput,
@@ -242,6 +371,9 @@ export type {
 // Value export (a class, used with `instanceof` at the HTTP/MCP boundary and by
 // PR-4's eager pass) — not a type-only export like the block above.
 export { ResumeDisabledError } from "./sessions.js"
+// Session identity env var names injected into every spawned process
+// (assigned last, after caller-supplied env, so they cannot be forged).
+export { SESSION_ID_ENV, WORKSPACE_SLUG_ENV } from "./sessions.js"
 export type {
   EagerResumeOutcome,
   EagerResumeSkipReason,
@@ -253,6 +385,16 @@ export {
   type IdleReapSummary,
   type IdleReaperRegistry,
 } from "./idle-reaper.js"
+export {
+  runCrashDetectPass,
+  type CrashDetectSummary,
+  type CrashReaperRegistry,
+} from "./crash-reaper.js"
+export {
+  runStallWatchdogPass,
+  type StallWatchdogSummary,
+  type StallWatchdogRegistry,
+} from "./stall-watchdog.js"
 export { formatToolCall, formatToolResult } from "./tool-presenter.js"
 export { deriveSessionUsage, projectSessionUsage } from "./usage.js"
 export {
@@ -307,6 +449,9 @@ import type { PairingRegistry } from "./pairing-registry.js"
 import { registerDaemonHealthTools } from "./daemon-health-tools.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
+import { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
+import { registerLlmEndpointTools } from "./llm-endpoint-tools.js"
+import { registerBuiltinRoutes } from "./builtin-routes.js"
 import {
   registerTunnelAdapterTools,
   makeTunnelCredsStore,
@@ -318,7 +463,8 @@ import {
   type SandboxProviderResolver,
   type SandboxProviderLister,
 } from "./sandbox-adapters.js"
-import type { WorktreeProvisioner } from "./worktree-isolation.js"
+import { registerSandboxAttachTool } from "./sandbox-attach.js"
+import type { WorktreeProvisioner, WorktreeAutoReclaimer } from "./worktree-isolation.js"
 import { registerEvalReporterTools } from "./eval-reporter-tools.js"
 import { registerPresetTools } from "./preset-tools.js"
 import { createWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js"
@@ -340,6 +486,7 @@ export type {
   WorktreeField,
   WorktreeIsolationMode,
   WorktreeProvisioner,
+  WorktreeAutoReclaimer,
   WorktreeProvisionRequest,
   WorktreeProvisionOutcome,
   WorktreeDecision,
@@ -467,6 +614,11 @@ export {
   type DeclaredAdapterOption,
 } from "./spawn-defaults.js"
 export {
+  buildRouteAwareLaunchConfig,
+  type RouteAwareLaunchConfig,
+  type RouteAwareLaunchConfigInput,
+} from "./launch-config.js"
+export {
   DEFAULT_ORCHESTRATOR_TOOLS,
   narrowOrchestratorTools,
   createScopeTokenRegistry,
@@ -537,6 +689,39 @@ export interface CreateGatewayOptions {
    *  kept lazy-resumable). Unset / 0 / negative ⇒ the reaper never runs.
    *  Surfaced in `daemon_health` / `GET /health`. */
   idleReapAfterMs?: number
+  /** Crash-detect sweep interval in ms (crash-detect PR-1). Mirrors the
+   *  `daemon.crashDetectIntervalMs` config knob; the CLI resolves it (env >
+   *  config > a sane default — DEFAULT ON, unlike `idleReapAfterMs`) and
+   *  passes it here. The gateway starts a periodic sweep that probes every
+   *  live agent-cli session's OS process and marks the row `error`/
+   *  `endedReason:"crashed"` when it's provably gone
+   *  (`registry.markCrashed`, driven by `runCrashDetectPass`). Non-positive ⇒
+   *  the sweep never runs. Surfaced in `daemon_health` / `GET /health`. */
+  crashDetectIntervalMs?: number
+  /** Restart-scheduler sweep interval in ms (restart-scheduler PR-2). Mirrors
+   *  the `daemon.restartSweepIntervalMs` config knob; the CLI resolves it
+   *  (env > config > off) and passes it here. OFF by default — unlike
+   *  `crashDetectIntervalMs`, a positive value here doesn't itself opt any
+   *  session in, it only arms the periodic sweep that EXECUTES an already-
+   *  scheduled restart for a session that carries a per-session
+   *  `restartPolicy` (`agent_start.restartPolicy`). The event-driven half
+   *  that SCHEDULES a restart (`createRestartScheduler`, subscribing to
+   *  `session:exited`) runs regardless of this knob — it just has nothing to
+   *  execute against until the sweep is armed. Non-positive / undefined ⇒
+   *  the sweep never runs, so a scheduled `nextRestartAt` sits inert.
+   *  Surfaced in `daemon_health` / `GET /health`. */
+  restartSweepIntervalMs?: number
+  /** Turn-liveness watchdog threshold in ms (turn-liveness-watchdog
+   *  chantier). Mirrors the `daemon.turnStallAfterMs` config knob; the CLI
+   *  resolves it (env > config > a sane default — DEFAULT ON, same shape as
+   *  `crashDetectIntervalMs`) and passes it here. The gateway starts a
+   *  periodic sweep that flags a BUSY agent-cli session mid-turn, not
+   *  legitimately `blockedOn` a subagent/command, and silent past this
+   *  threshold: stamps `stalledSinceMs` and emits `session:stalled`
+   *  (`registry.markStalled`, driven by `runStallWatchdogPass`). Non-positive
+   *  ⇒ the sweep never runs. Detects only; never kills or restarts. Surfaced
+   *  in `daemon_health` / `GET /health`. */
+  turnStallAfterMs?: number
   /**
    * Resolves a heartbeat-runnable agent from its workspace id.
    * Required for HEARTBEAT.md to do anything; without it ticks emit
@@ -547,6 +732,21 @@ export interface CreateGatewayOptions {
   name?: string
   /** Server version advertised over MCP. */
   version?: string
+  /** Build identity of the binary actually serving — surfaced verbatim via
+   *  `/health` and `daemon_health` so an operator can tell a workspace dist
+   *  from the published tarball of the same version. `sha`/`builtAt` are
+   *  stamped into the CLI at build time (tsup `define`); `source` is the
+   *  serve command's runtime judgement of where its own entry lives. */
+  build?: {
+    /** Short git sha of the checkout the dist was built from ("" when the
+     *  build ran outside git). */
+    sha?: string
+    /** ISO timestamp of the build. */
+    builtAt?: string
+    /** "workspace" (a checkout's dist), "published" (npm/npx install), or
+     *  "unknown". */
+    source?: string
+  }
   /**
    * Run BOOT.md once at startup. Pass `false` to disable. Defaults to
    * `true`. The boot file is plain markdown — frontmatter-free; the
@@ -566,6 +766,12 @@ export interface CreateGatewayOptions {
    *  `GET /adapters` HTTP route + `adapter_list` MCP tool so UIs
    *  can discover what's installed on the host. */
   listAgentAdapters?: AgentAdapterLister
+  /** Optional harness capability-discovery lister — when provided, enables
+   *  the `harness_capabilities` MCP tool so callers can introspect what an
+   *  installed adapter can actually DO on this host (creds present,
+   *  reachable providers, model-discovery mechanism, endpoint compat,
+   *  application contract), not just its static manifest fields. */
+  listHarnessCapabilities?: AdapterCapabilitiesLister
   /** Optional adapter installer — when provided, enables
    *  `POST /adapters/:slug/install` HTTP route + `adapter_install` MCP
    *  tool so UIs can install a not-yet-installed harness. Hosts ship the
@@ -674,6 +880,17 @@ export interface CreateGatewayOptions {
    */
   runWorktreeGc?: WorktreeGcRunner
   /**
+   * Optional best-effort exit-time reclaim of ONE policy-provisioned
+   * (implicit) session's own worktree — powers `SessionDescriptor.
+   * worktreeAutoProvisioned` (see that field's doc in `sessions.ts`).
+   * Injected for the same reason as `runWorktreeGc`: the classify/remove
+   * logic runs over `@agentproto/worktree`, a dependency the runtime
+   * deliberately does NOT take. The CLI wires it (over `reclaimOneWorktree`).
+   * Omitted → exit-time auto-reclaim is simply skipped; an implicit
+   * worktree is still reclaimable manually or via a scheduled `gc` sweep.
+   */
+  runWorktreeAutoReclaim?: WorktreeAutoReclaimer
+  /**
    * Optional resolver: given a session's cwd, return the OPEN PR for that
    * cwd's git branch (or null). Powers the daemon PR-provenance reconciler,
    * which stamps the `@agentproto-bot` footer onto PRs an executor session
@@ -705,6 +922,11 @@ export interface CreateGatewayOptions {
    * returns) so the injected `serve` can capture the finished gateway.
    */
   pairingRegistry?: PairingRegistry
+  /** Enable the local LLM Endpoint proxy sidecar (route registration,
+   *  MCP tools, child-process lifecycle). Default false — the endpoint is
+   *  an opt-in feature; when off, the `llm-endpoint` custom route is not
+   *  registered and the `llm_endpoint_*` MCP tools are not exposed. */
+  llmEndpoint?: boolean
 }
 
 /**
@@ -715,6 +937,21 @@ export interface CreateGatewayOptions {
  * workflow_*, policy_*, inbound_watcher_*, session_tree, agent_export,
  * adapter_list, ...) starts deferred.
  */
+/** Default crash-detect sweep interval (crash-detect PR-1) when
+ *  `crashDetectIntervalMs` is left unset — detection is default-on, so this
+ *  is what actually arms the sweep for the common case of a caller never
+ *  touching the knob. 30s is frequent enough to notice a crashed parked
+ *  session promptly without meaningfully taxing an idle daemon. */
+const DEFAULT_CRASH_DETECT_INTERVAL_MS = 30_000
+
+/** Default turn-liveness watchdog threshold (turn-liveness-watchdog
+ *  chantier) when `turnStallAfterMs` is left unset — detection is
+ *  default-on, same reasoning as `DEFAULT_CRASH_DETECT_INTERVAL_MS`. 5
+ *  minutes is generous enough that a slow-starting turn or a burst of
+ *  legitimate thinking time never trips it, while still catching a dead
+ *  stream long before the 36-minute silence that motivated this chantier. */
+const DEFAULT_TURN_STALL_AFTER_MS = 5 * 60_000
+
 const DEFAULT_ALWAYS_ON_TOOLS: readonly string[] = [
   "daemon_health",
   "agent_start",
@@ -726,6 +963,7 @@ const DEFAULT_ALWAYS_ON_TOOLS: readonly string[] = [
   "session_events_poll",
   "permissions_list",
   "permissions_respond",
+  "app_tool_call",
 ]
 
 export interface GatewayHandle {
@@ -788,6 +1026,11 @@ export async function createGateway(
   opts: CreateGatewayOptions,
 ): Promise<GatewayHandle> {
   const startedAt = Date.now()
+  // Activate the built-in custom routes (the local `llm-endpoint` proxy) before
+  // anything resolves a model ref or builds the catalog — `resolveLlmModelRoute`
+  // reads the custom-route map at call time, so a curated `@llm-endpoint` row is
+  // only priced + reachable once this has run (`builtin-routes.ts`). Idempotent.
+  await registerBuiltinRoutes({ llmEndpoint: opts.llmEndpoint === true })
   // Effective idle-reap threshold (PR-6): a positive ms value enables the
   // periodic reaper, anything else (unset / 0 / negative) keeps it off. Kept as
   // a plain `0`-means-off number so `daemon_health` / `GET /health` can surface
@@ -796,6 +1039,33 @@ export async function createGateway(
     typeof opts.idleReapAfterMs === "number" && opts.idleReapAfterMs > 0
       ? opts.idleReapAfterMs
       : 0
+  // Effective crash-detect interval (crash-detect PR-1): DEFAULT ON, unlike
+  // idleReapAfterMs — an unset knob still gets a sane default sweep cadence
+  // since detection is non-destructive observability. A caller must pass an
+  // explicit non-positive value to actually disable the sweep.
+  const crashDetectIntervalMs =
+    typeof opts.crashDetectIntervalMs === "number"
+      ? opts.crashDetectIntervalMs > 0
+        ? opts.crashDetectIntervalMs
+        : 0
+      : DEFAULT_CRASH_DETECT_INTERVAL_MS
+  // Effective restart-sweep interval (restart-scheduler PR-2): OFF by
+  // default, same shape as idleReapAfterMs — a caller must opt in with a
+  // positive ms value before the sweep ever runs.
+  const restartSweepIntervalMs =
+    typeof opts.restartSweepIntervalMs === "number" && opts.restartSweepIntervalMs > 0
+      ? opts.restartSweepIntervalMs
+      : 0
+  // Effective turn-stall threshold (turn-liveness-watchdog chantier):
+  // DEFAULT ON, same shape as crashDetectIntervalMs — an unset knob still
+  // gets a sane default since this is non-destructive observability. A
+  // caller must pass an explicit non-positive value to disable the sweep.
+  const turnStallAfterMs =
+    typeof opts.turnStallAfterMs === "number"
+      ? opts.turnStallAfterMs > 0
+        ? opts.turnStallAfterMs
+        : 0
+      : DEFAULT_TURN_STALL_AFTER_MS
   const workspace = resolve(opts.workspace)
   if (!existsSync(workspace)) {
     throw new Error(`runtime: workspace dir does not exist: ${workspace}`)
@@ -883,6 +1153,22 @@ export async function createGateway(
     // restoreOnBoot already logs per-tunnel failures via onLog.
   })
 
+  // Single-sidecar registry for the @agentproto/llm-endpoint proxy — gated
+  // behind `opts.llmEndpoint` (default false). When off, no registry is
+  // created, no MCP tools are registered, and the route is absent too
+  // (`registerBuiltinRoutes` above already skipped it).
+  const llmEndpoint = opts.llmEndpoint
+    ? new LlmEndpointRegistry({
+        workspace,
+        onLog: line =>
+          events.emit({
+            type: "remote-log",
+            at: new Date().toISOString(),
+            line,
+          }),
+      })
+    : undefined
+
   // Build a server once eagerly so we can capture `registered` for
   // `/health`. The server is NOT used for serving — every `/mcp`
   // request gets its own freshly-constructed pair, mirroring the
@@ -911,12 +1197,31 @@ export async function createGateway(
     webhookNotifier.unregister(ev.sessionId)
   })
 
+  // Per-workspace brain: auto-ingest a workspace's conversations when its
+  // sessions exit (debounced, fire-and-forget), and expose them queryably
+  // via the workspace_brain_* MCP tools. Same wiring discipline as the
+  // webhook notifier — a brain failure never throws into the exit path.
+  const workspaceBrains = createWorkspaceBrains()
+  const brainSubscriber = createWorkspaceBrainSubscriber({
+    bus: sessionEvents,
+    brains: workspaceBrains,
+  })
+  brainSubscriber.start()
+
   // Opt-in Langfuse session tracer — built once here (shared, pure) from the
   // eval-reporter's stored langfuse creds, same store `setup_eval_reporter`
   // writes to. Absent creds ⇒ undefined, and the registry never gates
   // anything on a tracer that doesn't exist — tracing-off behaviour is
   // unchanged from before this existed.
-  const configDefaults = (await loadConfig()).defaults
+  const daemonConfig = await loadConfig()
+  const configDefaults = daemonConfig.defaults
+  // Per-session transcript root from config (`sessions.eventsDir`). Applied
+  // BEFORE the registry is built so the writers AND every no-`baseDir`
+  // reader (http-server routes, exports, tool-call/usage logs) resolve off
+  // the same configured root. Unset ⇒ no-op (hardcoded default stands).
+  if (daemonConfig.sessions?.eventsDir) {
+    setDefaultSessionsBaseDir(daemonConfig.sessions.eventsDir)
+  }
   const lfCreds = await makeEvalReporterCredsStore().read("langfuse").catch(() => null)
   const langfuseTracer = lfCreds
     ? langfuseSessionTracer({
@@ -942,8 +1247,13 @@ export async function createGateway(
   const sessions = createSessionsRegistry({
     sessionEvents,
     persist,
+    ...(daemonConfig.sessions?.eventsDir
+      ? { transcriptDir: defaultTranscriptBaseDir() }
+      : {}),
+    ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
     ...(opts.persistPath ? { persistPath: opts.persistPath } : {}),
     ...(opts.spawnPty ? { spawnPty: opts.spawnPty } : {}),
+    ...(opts.runWorktreeAutoReclaim ? { runWorktreeAutoReclaim: opts.runWorktreeAutoReclaim } : {}),
     ...(langfuseTracer ? { langfuseTracer } : {}),
     langfuseTracingDefault: configDefaults?.langfuseTracing ?? false,
     // Resume hook: when a prompt arrives for a dead agent-cli row
@@ -991,6 +1301,16 @@ export async function createGateway(
               return await adapter.startSession({
                 cwd,
                 resumeSessionId,
+                // Point the respawned adapter at the SAME persistent
+                // isolated-config dir the original spawn used — the
+                // provider's conversation store lives inside it, so this is
+                // what makes `resumeSessionId` restore full context instead
+                // of degrading to the daemon-transcript digest. Absent on
+                // legacy rows spawned before adapterConfigDir existed (those
+                // keep today's digest-fallback behaviour).
+                ...(descriptor.adapterConfigDir
+                  ? { configDir: descriptor.adapterConfigDir }
+                  : {}),
                 // Re-mount the persisted spawn-time toolset on resume
                 // (orchestrator WP1) — closes the gap where re-spawn
                 // dropped mcpServers.
@@ -1000,6 +1320,14 @@ export async function createGateway(
                   ? { options: { base_url: resolvedBaseUrl } }
                   : {}),
                 ...(onActivity ? { onActivity } : {}),
+                // Lazy in-place resume (daemon restart / crash): unlike
+                // `session_restart` this revives the SAME descriptor row, not
+                // a fresh one — `descriptor.id` never changes across this
+                // call, so the identity env carries forward unchanged.
+                env: {
+                  [SESSION_ID_ENV]: descriptor.id,
+                  [WORKSPACE_SLUG_ENV]: descriptor.workspaceSlug,
+                },
               })
             } catch (err) {
               console.warn(
@@ -1013,6 +1341,14 @@ export async function createGateway(
         }
       : {}),
   })
+
+  // Restart scheduler (restart-scheduler PR-2) — the EVENT-driven half only;
+  // it subscribes to session:exited and stamps/gives-up a schedule on an
+  // eligible, opted-in death. Runs regardless of `restartSweepIntervalMs`:
+  // that knob only arms the periodic sweep further below that EXECUTES a
+  // landed schedule. Declared right after `sessions` (needs the registry +
+  // its own event bus); disposed in stop().
+  const restartScheduler = createRestartScheduler({ registry: sessions, sessionEvents })
 
   // Completion-policy supervisor — watches sessions and runs shell gates.
   // Declared after `sessions` so it can resolve session cwd at gate time.
@@ -1064,6 +1400,18 @@ export async function createGateway(
     return dispatchToolBox.fn(name, inputs)
   }
 
+  // Same forward-reference trick as `dispatchToolBox` above, for `app_install`'s
+  // WORKFLOW.md tool-step validation (app-tools.ts) — it needs the SET of
+  // dispatchable tool ids, not a dispatcher. Wired to the real internal
+  // McpServer's `_registeredTools` keys alongside `dispatchToolBox.fn` below.
+  const listToolIdsBox: { fn?: () => Promise<string[]> } = {}
+  const listRegisteredToolIds = async (): Promise<string[]> => {
+    if (!listToolIdsBox.fn) {
+      throw new Error("app_install: tool registry not ready yet (daemon still booting)")
+    }
+    return listToolIdsBox.fn()
+  }
+
   // Cron scheduler — singleton per daemon, persisted to
   // ~/.agentproto/cron-jobs.json. Jobs survive daemon restarts;
   // skipped fires during downtime are NOT backfilled (documented behaviour).
@@ -1091,6 +1439,20 @@ export async function createGateway(
     dispatchTool,
   })
 
+  // Installed-app registry — singleton per daemon, shared between
+  // `registerAppTools` (app_install/app_run/…) and the workflow runner's
+  // `compileWorkflow` closure below, so a declarative `kind:"agent"` step's
+  // `agent.ref` resolves against every app this daemon has installed (WP-B4).
+  // Declared here (not inside `registerAppTools`) purely so both consumers
+  // share the one instance — same persistence defaults as before this WP.
+  const appRegistry = createAppRegistry({ persist })
+
+  // HTML cache for installed apps' `ui.path` panels (app-ui-apps.ts) —
+  // gateway-scope singleton so a `/mcp` request doesn't re-read an
+  // unchanged panel's HTML off disk every time `mcpServerFactory` rebuilds
+  // the server. Keyed by (path, app.updatedAt), so a re-install invalidates.
+  const appUiHtmlCache = createUiHtmlCache()
+
   // Workflow runner — singleton per daemon, shared across all MCP
   // connections. Persists run state to ~/.agentproto/workflow-runs.json so
   // runs survive daemon restarts (interrupted runs are marked "failed" on
@@ -1115,7 +1477,18 @@ export async function createGateway(
         // the same `dispatchTool` the routine registrar / cron scheduler use
         // (see `workflow-tool-registry.ts`). Agent-step workflows are
         // unaffected: an empty tool registry compiles them exactly as before.
-        compileWorkflow: handle => compileWorkflow(handle, createDaemonToolRegistry(handle, dispatchTool)),
+        // `agentRefs` resolves a declarative agent-step's `agent.ref` against
+        // whichever installed app bundles this workflow id (undefined when
+        // none does — a plain `workflow_run_file` outside any app).
+        compileWorkflow: handle =>
+          compileWorkflow(handle, {
+            ...createDaemonToolRegistry(handle, dispatchTool),
+            agentRefs: resolveAgentRefsForWorkflow(appRegistry, handle.id),
+          }),
+        // App state ledger bridge: runs whose workflow belongs to an
+        // installed app append stage-started/gate-report/stage-done/blocked
+        // events to that app's ledger (see workflow-runner.ts, WP-Q).
+        appRegistry,
       })
     : undefined
 
@@ -1139,6 +1512,12 @@ export async function createGateway(
     persist,
     ...(operatorWorkspaceSlug ? { operatorWorkspaceSlug } : {}),
   })
+
+  // Supervisor crash-notification (crash-detect PR-4). Opt-in per child
+  // (`notifyParentOnCrash`) — delivers a `[child-crashed] …` notice into a
+  // crashed child's live parent, without ever interrupting a busy one. See
+  // supervisor-notify.ts's header doc for the full contract.
+  wireSupervisorNotify({ registry: sessions, sessionEvents })
 
   // Activity projector — the unified active/pending read-model over
   // completion policies, session turns, workflow steps, and opened PRs
@@ -1171,9 +1550,80 @@ export async function createGateway(
   // sessions instead of re-spawning stdio children.
   const mcpProxy = new McpProxyRegistry()
 
+  // Same proxy `mcp_imported_call` (session-tools.ts) dispatches through —
+  // unwraps `{ok,result}|{ok:false,error}` into a plain return-or-throw for
+  // `app_tool_call`'s `imported:<alias>/<toolName>` ids. Hoisted so the MCP
+  // verb (registerAppTools below) and the REST twin (startHttpServer's
+  // `appToolCallDeps`) share one definition.
+  const callImportedAppTool = async (
+    alias: string,
+    tool: string,
+    args: Record<string, unknown>,
+  ): Promise<unknown> => {
+    const out = await mcpProxy.callTool(alias, tool, args)
+    if (!out.ok) throw new Error(`app_tool_call: imported "${alias}".${tool}: ${out.error}`)
+    return out.result
+  }
+
+  // Transmitter binding store — single shared instance mapping an
+  // agentpush (alias, source, contactRef) triple to the agentproto
+  // session its replies should route into. Shared by the inbound
+  // watcher (poll ingress), the `transmit_message` tool (binds on
+  // send), and `POST /inbound` (push ingress) below. No `persist`
+  // knob (mirrors policies.json/cron-jobs.json, per gateway-persist.
+  // test.ts's documented precedent for gateway-owned stores with no
+  // path knob) — writes only happen on an explicit bind, which no
+  // test exercises incidentally the way session spawns do.
+  const transmitterBindings = createTransmitterBindingStore()
+  // Keyed off the SAME `persist` switch every sibling store uses (see its
+  // definition above) -- an endpoint registered via inbound_endpoint_create
+  // must survive a daemon restart in production, or every provider webhook
+  // already pointed at it (e.g. a live Telegram bot's setWebhook) starts
+  // 404ing as unknown_inbound_endpoint with no signal to the remote caller.
+  // Hardcoding persist:true here (an earlier version of this fix) ignored
+  // opts.persist entirely -- a test gateway created with `persist: false`
+  // would still flushSync on stop() and overwrite the developer's real
+  // ~/.agentproto/inbound-endpoints.json with an empty store.
+  const inboundEndpointStore = createInboundEndpointStore({
+    persist,
+  })
+  const telegramBotCreds = makeTelegramBotCredsStore()
+
+  // Adapts SessionsRegistry to InboundRouterDeps' liveness/restart
+  // shape (inbound-router.ts) — same primitives cron-scheduler.ts's
+  // `prompt-session` action uses (`desc.processAlive`, forceAgentResume).
+  // `processAlive` is only stamped for a pid-bearing session (sessions.ts
+  // `stampProcessAlive`) — it's `undefined`, not `false`, for a pid-less
+  // ACP-native/remote session, and cron-scheduler.ts's own dead check
+  // (`desc.processAlive === false`) treats that as "still fine, don't
+  // restart". Mirror that exactly: only a MISSING session or an explicit
+  // `false` counts as not-alive.
+  const isSessionAlive = (id: string): boolean => {
+    const desc = sessions.get(id)
+    if (!desc) return false
+    return desc.processAlive !== false
+  }
+  const restartInboundSession = async (id: string): Promise<string> => {
+    const desc = sessions.get(id)
+    if (!desc) {
+      throw new Error(`restartInboundSession: no session "${id}"`)
+    }
+    if (!opts.resolveAgentAdapter) {
+      throw new Error(
+        `restartInboundSession: session "${id}" is not alive and agent restart is not enabled (no resolveAgentAdapter)`,
+      )
+    }
+    const restarted = await restartAgentSession(sessions, opts.resolveAgentAdapter, desc, {
+      forceAgentResume: true,
+    })
+    return restarted.desc.id
+  }
+
   // Inbound watcher — polls an agentpush source on a timer and spawns
-  // one agent per new contact_ref. Wired when an adapter resolver is
-  // available (otherwise the watcher would have nowhere to spawn).
+  // one agent per new contact_ref (mode "spawn", default), or routes
+  // into a bound session (mode "route"/"route-or-spawn") via the
+  // shared transmitterBindings store. Wired when an adapter resolver
+  // is available (otherwise the watcher would have nowhere to spawn).
   const inboundWatcher =
     opts.resolveAgentAdapter
       ? createInboundWatcher({
@@ -1181,6 +1631,10 @@ export async function createGateway(
           registry: sessions,
           resolveAgentAdapter: opts.resolveAgentAdapter,
           persist,
+          bindings: transmitterBindings,
+          enqueuePrompt: sessions.enqueuePrompt,
+          isSessionAlive,
+          restartSession: restartInboundSession,
         })
       : undefined
 
@@ -1256,11 +1710,15 @@ export async function createGateway(
     ...(opts.listAgentAdapters
       ? { listAgentAdapters: opts.listAgentAdapters }
       : {}),
+    ...(opts.listHarnessCapabilities
+      ? { listHarnessCapabilities: opts.listHarnessCapabilities }
+      : {}),
   })
 
   const mcpServerFactory = async (
     denyTools?: ReadonlySet<string>,
     callerSessionId?: string,
+    origin?: string,
   ) => {
     const { server: rawServer } = await createMcpServer({
       specs: opts.specs,
@@ -1285,6 +1743,16 @@ export async function createGateway(
     if (denyTools && denyTools.size > 0) {
       server = withToolExclusion(server, denyTools)
     }
+    // App state ledger write gate (app-state.ts's access rule): a request
+    // identified as coming from a daemon-spawned agent session
+    // (`?callerSessionId=` — the same identity plumbing command provenance
+    // uses) never gets `app_state_append` registered. App agents cannot
+    // self-certify state; the daemon runner and UI actions (no caller
+    // session id) keep it. Same hard-gate style as denyTools: the name is
+    // stripped at registration, not merely unlisted.
+    if (callerSessionId) {
+      server = withToolExclusion(server, new Set([APP_STATE_APPEND_TOOL_NAME]))
+    }
     // Canonical filesystem tools so remote MCP clients (cloud
     // workspace-providers, IDEs, ad-hoc tooling) can read/write the
     // workspace without each implementing AIP-aware glue. Names match
@@ -1298,6 +1766,11 @@ export async function createGateway(
       startedAt,
       resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
       idleReapAfterMs,
+      crashDetectIntervalMs,
+      restartSweepIntervalMs,
+      turnStallAfterMs,
+      ...(opts.version ? { version: opts.version } : {}),
+      ...(opts.build ? { build: opts.build } : {}),
     })
     // Subprocess execution — the runtime's superpower for cloud
     // agents. Any allowlisted CLI on the user's machine (claude, gh,
@@ -1329,6 +1802,7 @@ export async function createGateway(
     // singletons on the gateway, same closure-rebind pattern.
     registerSessionTools(server, {
       registry: sessions,
+      workspace,
       mcpProxy,
       ptyEnabled: opts.spawnPty != null,
       // Phase 4: lets an `agent_start` carrying `costBudget` auto-attach a
@@ -1340,6 +1814,9 @@ export async function createGateway(
       // a spawn made by an agent session attaches under it by default (see
       // spawn-attach.ts). Absent on a human/root `/mcp` call → no auto-parent.
       ...(callerSessionId ? { callerSessionId } : {}),
+      // `?origin=` query (#session-visibility) — the connecting client's source
+      // label, used as the default origin for a spawn that doesn't set its own.
+      ...(origin ? { mcpBridgeOrigin: origin } : {}),
       webhookNotifier,
       daemonMcpUrl,
       resolveSandboxProvider: resolveSandboxProviderResolved,
@@ -1349,6 +1826,9 @@ export async function createGateway(
         : {}),
       ...(opts.listAgentAdapters
         ? { listAgentAdapters: opts.listAgentAdapters }
+        : {}),
+      ...(opts.listHarnessCapabilities
+        ? { listHarnessCapabilities: opts.listHarnessCapabilities }
         : {}),
       ...(opts.installAgentAdapter
         ? { installAgentAdapter: opts.installAgentAdapter }
@@ -1361,15 +1841,30 @@ export async function createGateway(
         : {}),
       ...(opts.runWorktreeGc ? { runWorktreeGc: opts.runWorktreeGc } : {}),
     })
+    // Per-workspace brain — query/status/ingest over the shared brain
+    // registry declared at gateway boot (workspaceBrains).
+    registerBrainTools(server, {
+      brains: workspaceBrains,
+      registry: sessions,
+      ...(callerSessionId ? { callerSessionId } : {}),
+    })
     // Named auth-profile lifecycle (auth_profile_create/delete/list). No
     // host wiring — `@agentproto/auth` reads/writes the fixed
     // `~/.agentproto/auth-profiles.json` + keychain slots directly, same as
     // the profile readers already mounted in session-spawn.ts.
     registerAuthProfileTools(server)
+    // Persisted harness→profile bindings (harness_preset_list/create/delete/
+    // set_default). Same no-host-wiring stance as the auth-profile tools —
+    // the store reads/writes the fixed `~/.agentproto/harness-presets.json`.
+    registerHarnessPresetTools(server)
     // Read-only scanner: report locally-present credentials (Claude Code /
     // Codex / Gemini logins, ~/.hermes/config.yaml, provider env keys) with
     // provenance, so onboarding can offer an import. Never returns a value.
     registerCredentialDiscoveryTools(server)
+    // Multi-candidate AIP-30 tool: Brave (free tier) + Serper HTTP drivers,
+    // resolved by the 6-phase resolver. Key-gated — registers nothing when
+    // neither BRAVE_SEARCH_API_KEY nor SERPER_API_KEY is set.
+    registerWebSearchTools(server)
     registerBrowserTools(server, {
       registry: sessions,
       ...(opts.resolveBrowserAdapter
@@ -1390,7 +1885,36 @@ export async function createGateway(
       ...(inboundWatcher ? { inboundWatcher } : {}),
       cronScheduler,
       routineRegistrar,
+      mcpProxy,
+      bindingStore: transmitterBindings,
+      endpointStore: inboundEndpointStore,
+      telegramCreds: telegramBotCreds,
     })
+    // @agentproto/app-kit app lifecycle — install/list/run/status/stop
+    // (app-tools.ts). `resolveAgentAdapter` gates the adapter-resolves check
+    // (app_install) and the spawn (app_run) the same way it gates
+    // `workflowRunner` above; `listRegisteredToolIds` is always wired (the
+    // same lazy internal-server reach-in `dispatchTool` uses).
+    registerAppTools(server, {
+      registry: sessions,
+      listRegisteredToolIds,
+      appRegistry,
+      dispatchTool,
+      callImportedTool: callImportedAppTool,
+      ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
+      ...(workflowRunner ? { workflowRunner } : {}),
+    })
+    // App-scoped durable data plane (app-data.ts) — app_data_read/write/list/
+    // migrate, anchored to each installed app's own dir with traversal guard.
+    registerAppDataTools(server, { appRegistry })
+    // Read-only external filesystem plane (app-external.ts) —
+    // app_external_list/app_external_read, anchored to each installed app's
+    // opted-in InstalledApp.externalReadRoots (never the app's own sandbox
+    // dir). No write/delete tool exists here by design; binary files are
+    // never read into a tool response — see GET /apps/:appId/external-blob
+    // in http-server.ts for that.
+    registerAppExternalTools(server, { appRegistry })
+    registerTelegramBotTools(server, { telegramCreds: telegramBotCreds })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
     // Tool: agentproto_sessions  Resource: ui://agentproto_sessions/view
     const listSessionsFiltered = (filter?: "running" | "all") => {
@@ -1405,11 +1929,46 @@ export async function createGateway(
       }
       return rows
     }
-    registerMcpApps(server, [
-      makeSessionsPanelApp({ listSessions: listSessionsFiltered }),
-      makeAgentsOverviewApp({ listSessions: listSessionsFiltered }),
-      makeBureauSessionsApp({ listSessions: listSessionsFiltered }),
-      makeSessionStoryPanelApp({ listSessions: listSessionsFiltered }),
+    // App-only pull tools (visibility:["app"]) the live-session widget calls
+    // over the postMessage bridge to refresh WITHOUT hitting the model:
+    // `app_session_tree` (left pane) + `app_session_events` (right-pane poll
+    // fallback). Registered THROUGH `server` so the subset/exclusion proxies
+    // (tool-subset.ts, now registerTool-aware) can drop them on scoped/child
+    // gateways — they belong only on the full /mcp surface a host connects to.
+    registerAppPullTools(server, { registry: sessions })
+    // The daemon-builtin panels — now house-app-quality code in
+    // @agentproto/apps, mounted here without an app_install step (see
+    // builtin-apps.ts for why they aren't AppHandles).
+    const builtinPanelApps = [
+      ...makeBuiltinPanelApps({
+        listSessions: listSessionsFiltered,
+        // httpBaseUrl = this daemon's own origin (SSE stream + bridge
+        // fallback for the live-session widget).
+        httpBaseUrl: `http://127.0.0.1:${port}`,
+        // The session-chat widget is a thin launcher for the installed
+        // `@agentik/session-chat` studio app — resolve installed-ness from
+        // the AppRegistry at call time (not boot) so `app_install`/
+        // `app_uninstall` of that app is reflected without a daemon restart.
+        isSessionChatInstalled: () => {
+          try {
+            return appRegistry.getApp(SESSION_CHAT_APP_ID)?.ui != null
+          } catch {
+            return false
+          }
+        },
+        // Work-board widget's read path — the root `/mcp` endpoint has no
+        // scope, so this mount is always the operator caller (default
+        // board `ws:<slug>`); `canAccessBoard` lets the operator read any
+        // board (including a `tree:*` one) when an explicit boardId is
+        // passed in from the panel's board switcher.
+        listTasks: (boardId) => ({
+          boardId: taskLedger.resolveBoardId({ kind: "operator" }, boardId),
+          tasks: taskLedger.list(
+            { ...(boardId ? { boardId } : {}), includeClosed: true },
+            { kind: "operator" },
+          ),
+        }),
+      }),
       // Same ptyEnabled gate as terminal_start/terminal_input/… in
       // session-tools.ts — the panel would be able to open the WS but
       // every spawn/attach would fail once node-pty isn't available, so
@@ -1459,9 +2018,20 @@ export async function createGateway(
             }),
           ]
         : []),
-    ])
+    ]
+    // Dynamic UI panels for installed `@agentproto/app-kit` apps that ship
+    // a `ui` block (app-ui-apps.ts) — appended after the built-in panels so
+    // their tool ids can be checked for collisions against them. Never
+    // throws: a bad app record is skipped with a `console.warn` instead of
+    // failing the whole `/mcp` request.
+    const installedAppUiApps = await makeInstalledAppUiApps(
+      appRegistry,
+      appUiHtmlCache,
+      new Set(builtinPanelApps.map(app => app.id)),
+    )
+    registerMcpApps(server, [...builtinPanelApps, ...installedAppUiApps])
     // Server-side per-session summariser backing the agents-overview panel.
-    // Heuristic today (no LLM in @agentproto/runtime) — see agents-overview-app.ts.
+    // Heuristic today (no LLM in @agentproto/runtime) — see summarize-session-tool.ts.
     registerSummarizeSessionTool(server, {
       getSession: (id) => sessions.get(id),
       tailLines: (id, lastN) => {
@@ -1483,8 +2053,20 @@ export async function createGateway(
     // of requiring one already recorded on the descriptor. Co-located with
     // the tools above; same registry-access pattern.
     registerConversationReadTool(server, { registry: sessions })
+    // Conversation locator — bidirectional session ↔ native-transcript
+    // lookup over the persisted per-workspace index. Stateless (bucketsRoot
+    // resolves straight off HOME), so it needs no injected deps.
+    registerConversationLocateTool(server)
+    // Conversation exporter — WRITE side of the cross-adapter pivot above:
+    // copies a daemon session's events.jsonl transcript into a target
+    // adapter's native conversation store (today claude-code JSONL) and
+    // hands back a `claude --resume <uuid>` handle. Read-only with respect
+    // to the daemon's own capture; the session is never modified or resumed.
+    registerConversationExportTool(server, { registry: sessions })
     // Multi-tunnel tools — same closure-rebind pattern.
     registerTunnelTools(server, { registry: tunnels })
+    // llm-endpoint proxy sidecar lifecycle — only when the feature is on.
+    if (llmEndpoint) registerLlmEndpointTools(server, { registry: llmEndpoint })
     // Tunnel adapter introspection/setup, riding on @agentproto/provider-kit
     // (list_tunnel_adapters + setup_tunnel_provider). Stateless wrt the
     // gateway — creds/ledger live under ~/.agentproto.
@@ -1497,6 +2079,12 @@ export async function createGateway(
       ...(opts.listSandboxProviders
         ? { listSandboxProviders: opts.listSandboxProviders }
         : {}),
+    })
+    // Phase 1 `sandbox attach` — connect to an ALREADY-EXISTING sandbox
+    // without tearing it down. Same shared resolver as above so it sees
+    // the exact same provider set `list_sandbox_providers` reports ready.
+    registerSandboxAttachTool(server, {
+      resolveSandboxProvider: resolveSandboxProviderResolved,
     })
     // Eval-reporter introspection/setup, riding on @agentproto/eval-reporters
     // (list_eval_reporters + setup_eval_reporter). Credentials live 0600 under
@@ -1532,6 +2120,12 @@ export async function createGateway(
       throw new Error(`routine/cron tool dispatch: unknown daemon tool "${name}"`)
     }
     return tool.handler(inputs, {})
+  }
+  listToolIdsBox.fn = async () => {
+    if (!internalToolServerPromise) internalToolServerPromise = mcpServerFactory()
+    const internalServer = await internalToolServerPromise
+    const internal = internalServer as unknown as { _registeredTools?: Record<string, unknown> }
+    return Object.keys(internal._registeredTools ?? {})
   }
 
   // AIP-41 routine registrar's first pass — scans `.routines/*/ROUTINE.md`
@@ -1590,6 +2184,7 @@ export async function createGateway(
     events,
     heartbeat,
     sessions,
+    brains: workspaceBrains,
     mcpProxy,
     token,
     ptyEnabled: opts.spawnPty != null,
@@ -1601,6 +2196,36 @@ export async function createGateway(
     activityProjector,
     taskLedger,
     ...(workflowRunner ? { workflowRunner } : {}),
+    appRegistry,
+    performAppInstall: performInstall,
+    listRegisteredToolIds,
+    // Same dispatch pair registerAppTools gets above — the REST
+    // /apps/:appId/tool-call twin must run the exact chain the MCP
+    // app_tool_call verb runs.
+    appToolCallDeps: { dispatchTool, callImportedTool: callImportedAppTool },
+    // POST /inbound push ingress — same shared transmitterBindings store
+    // and liveness/restart adapters the inbound watcher's "route"/
+    // "route-or-spawn" modes use above. No `spawnForContact`: an
+    // unauthenticated webhook payload carries no adapter/prompt template
+    // to spawn with, so an unbound contact is "skipped" rather than
+    // spawning an arbitrary agent from push input.
+    // provider-specific `POST /inbound/:slug` push ingress reads endpoint
+    // config (secret, provider, mode) from the SAME store the
+    // inbound_endpoint_create/list/delete MCP tools write to — without
+    // this, every slug 404s as "unknown_inbound_endpoint" regardless of
+    // what's registered, since the http layer never saw the store at all.
+    endpointStore: inboundEndpointStore,
+    routeInboundMessage: (msg: InboundMessage, mode: InboundRouteMode) =>
+      routeInboundMessage(
+        {
+          bindings: transmitterBindings,
+          enqueuePrompt: sessions.enqueuePrompt,
+          isSessionAlive,
+          restartSession: restartInboundSession,
+        },
+        msg,
+        mode,
+      ),
     ...(opts.allowedOrigins ? { allowedOrigins: opts.allowedOrigins } : {}),
     ...(opts.strictOrigins ? { strictOrigins: true } : {}),
     ...(opts.resolveAgentAdapter
@@ -1613,8 +2238,12 @@ export async function createGateway(
     buildOrchestratorMcp: orchestratorInjector,
     daemonMcpUrl,
     ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
+    resolveSandboxProvider: resolveSandboxProviderResolved,
     ...(opts.listAgentAdapters
       ? { listAgentAdapters: opts.listAgentAdapters }
+      : {}),
+    ...(opts.listHarnessCapabilities
+      ? { listHarnessCapabilities: opts.listHarnessCapabilities }
       : {}),
     ...(opts.installAgentAdapter
       ? { installAgentAdapter: opts.installAgentAdapter }
@@ -1636,8 +2265,13 @@ export async function createGateway(
       workspace,
       registered,
       startedAt,
+      ...(opts.version ? { version: opts.version } : {}),
+      ...(opts.build ? { build: opts.build } : {}),
       resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
       idleReapAfterMs,
+      crashDetectIntervalMs,
+      restartSweepIntervalMs,
+      turnStallAfterMs,
     },
     cronScheduler,
     routineRegistrar,
@@ -1678,6 +2312,106 @@ export async function createGateway(
       }
     }, intervalMs)
     idleReapTimer.unref?.()
+  }
+
+  // Crash-detect sweep (crash-detect PR-1). DEFAULT ON — armed whenever
+  // `crashDetectIntervalMs > 0`, which it is unless a caller explicitly
+  // disabled it (see the normalization above). Detects (and surfaces) a
+  // dead adapter process for a parked agent-cli session that would
+  // otherwise stay lying `status:"running"` until its next prompt's RPC
+  // throws. Never restarts or notifies — that's a later PR.
+  // `.unref()` so the ticker never keeps the process alive on its own.
+  let crashDetectTimer: ReturnType<typeof setInterval> | null = null
+  if (crashDetectIntervalMs > 0) {
+    crashDetectTimer = setInterval(() => {
+      try {
+        const summary = runCrashDetectPass({ registry: sessions, crashDetectIntervalMs })
+        if (summary.crashed > 0) {
+          // One line per sweep that actually found something (silent otherwise
+          // so a quiet daemon doesn't log every tick).
+          console.log(
+            `[crash-detect] marked ${summary.crashed}/${summary.candidates} ` +
+              `crashed agent session(s): ${summary.ids.join(", ")}`,
+          )
+        }
+      } catch (err) {
+        // A sweep must never crash the daemon — log and let the next tick retry.
+        console.warn(
+          `[crash-detect] sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }, crashDetectIntervalMs)
+    crashDetectTimer.unref?.()
+  }
+
+  // Turn-liveness watchdog sweep (turn-liveness-watchdog chantier). DEFAULT
+  // ON — armed whenever `turnStallAfterMs > 0`, which it is unless a caller
+  // explicitly disabled it (see the normalization above). Flags a mid-turn
+  // agent-cli session whose adapter stream has gone silent past the
+  // threshold — a dead stream that would otherwise sit indistinguishable
+  // from healthy long work. Never kills or restarts — detection only.
+  // Sweeps on a fixed cadence — min(threshold, 60s), same reasoning as
+  // idle-reap's ticker — so a short threshold still gets a timely sweep and
+  // the default 5-minute one doesn't spin needlessly, overridable via
+  // AGENTPROTO_TURN_STALL_INTERVAL_MS. `.unref()` so the ticker never keeps
+  // the process alive on its own.
+  let turnStallTimer: ReturnType<typeof setInterval> | null = null
+  if (turnStallAfterMs > 0) {
+    const rawInterval = process.env.AGENTPROTO_TURN_STALL_INTERVAL_MS
+    const parsedInterval = rawInterval ? Number.parseInt(rawInterval, 10) : NaN
+    const intervalMs =
+      Number.isFinite(parsedInterval) && parsedInterval > 0
+        ? parsedInterval
+        : Math.min(turnStallAfterMs, 60_000)
+    turnStallTimer = setInterval(() => {
+      try {
+        const summary = runStallWatchdogPass({ registry: sessions, turnStallAfterMs })
+        if (summary.stalled > 0) {
+          // One line per sweep that actually flagged something (silent
+          // otherwise so a quiet daemon doesn't log every tick).
+          console.log(
+            `[stall-watchdog] flagged ${summary.stalled}/${summary.candidates} ` +
+              `stalled agent session(s): ${summary.ids.join(", ")}`,
+          )
+        }
+      } catch (err) {
+        // A sweep must never crash the daemon — log and let the next tick retry.
+        console.warn(
+          `[stall-watchdog] sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }, intervalMs)
+    turnStallTimer.unref?.()
+  }
+
+  // Restart-sweep tick (restart-scheduler PR-2). OFF by default — only armed
+  // when `restartSweepIntervalMs > 0`. This is the half that EXECUTES a
+  // schedule the event-driven `restartScheduler` above already stamped
+  // (`nextRestartAt`); the knob controls the sweep cadence, not whether any
+  // given session opted in (that's per-session `restartPolicy`).
+  // `.unref()` so the ticker never keeps the process alive on its own.
+  let restartSweepTimer: ReturnType<typeof setInterval> | null = null
+  if (restartSweepIntervalMs > 0) {
+    restartSweepTimer = setInterval(() => {
+      runRestartSweepPass({ registry: sessions, restartSweepIntervalMs })
+        .then(summary => {
+          if (summary.resumed > 0) {
+            // One line per sweep that actually resumed something (silent
+            // otherwise so a quiet daemon doesn't log every tick).
+            console.log(
+              `[restart-scheduler] resumed ${summary.resumed}/${summary.candidates} ` +
+                `restart-scheduled agent session(s): ${summary.ids.join(", ")}`,
+            )
+          }
+        })
+        .catch(err => {
+          // A sweep must never crash the daemon — log and let the next tick retry.
+          console.warn(
+            `[restart-scheduler] sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        })
+    }, restartSweepIntervalMs)
+    restartSweepTimer.unref?.()
   }
 
   events.emit({
@@ -1734,8 +2468,23 @@ export async function createGateway(
       heartbeat.stop()
       // Stop the idle-reaper sweep before sessions shut down (PR-6).
       if (idleReapTimer) clearInterval(idleReapTimer)
+      // Stop the crash-detect sweep before sessions shut down (crash-detect PR-1).
+      if (crashDetectTimer) clearInterval(crashDetectTimer)
+      // Stop the turn-liveness watchdog sweep before sessions shut down
+      // (turn-liveness-watchdog chantier).
+      if (turnStallTimer) clearInterval(turnStallTimer)
+      // Stop the restart-sweep tick before sessions shut down (restart-scheduler PR-2).
+      if (restartSweepTimer) clearInterval(restartSweepTimer)
+      // Detach the restart-scheduler's session:exited subscription.
+      restartScheduler.dispose()
       // Flush inbound-watcher cursor state before sessions shut down.
       inboundWatcher?.shutdown()
+      // Flush inbound-endpoint state synchronously -- persistence is a
+      // debounced async write, so an endpoint registered via
+      // inbound_endpoint_create just before a restart would otherwise be
+      // lost inside that window, the exact 404-after-bounce failure
+      // persisting the store exists to prevent.
+      inboundEndpointStore.flushSync()
       // Stop the cron scheduler tick loop before sessions shut down.
       cronScheduler.shutdown()
       // Flush completion-policy state before sessions shut down so
@@ -1765,6 +2514,8 @@ export async function createGateway(
       // controller's single-gateway tunnel. Both before HTTP so
       // cloudflared doesn't briefly proxy to a dead port.
       await tunnels.shutdown()
+      // Stop the llm-endpoint proxy child (if running) before HTTP tears down.
+      await llmEndpoint?.shutdown()
       await remote.shutdown()
       await http.stop()
     },

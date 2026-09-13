@@ -141,7 +141,7 @@ A credentials file after logging into two hosts:
 The `version` field exists to gate future incompatible changes — if
 the CLI bumps to `version: 2`, older binaries refuse the file with
 guidance to re-login. This file format is independent of the npm
-package version. See [`../../VERSIONING.md`](../../VERSIONING.md) for
+package version. See [`../../../VERSIONING.md`](../../../VERSIONING.md) for
 the multi-axis version story.
 
 ## Broker provider format — `~/.agentproto/auth-providers.json` (0.5.0+)

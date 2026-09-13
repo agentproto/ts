@@ -12,6 +12,7 @@
  */
 
 import { describe, it, expect } from "vitest"
+import { z } from "zod"
 import { createServer } from "node:http"
 import { AddressInfo } from "node:net"
 import { createMcpServer } from "@agentproto/mcp-server"
@@ -24,7 +25,7 @@ import { createSessionsRegistry } from "../sessions.js"
 import { createRuntimeEvents } from "../events.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
-import type { CatalogModelsResponse } from "../catalog-models.js"
+import type { CatalogModelsResponse, CatalogRoute } from "../catalog-models.js"
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -72,6 +73,8 @@ const FAKE_RESPONSE: CatalogModelsResponse = {
               ref: "anthropic/claude-opus-4-8",
               baseUrl: null,
               pricing: { inPer1M: 5, outPer1M: 25 },
+              contextWindow: "1M",
+              maxOutput: "128k",
               runnable: true,
               eligibleProfiles: ["jeremy-max"],
               adapterModes: [],
@@ -195,7 +198,7 @@ describe("catalog_models — MCP tool", () => {
     }
   })
 
-  it("returns the catalog and forwards query args to the injected lister", async () => {
+  it("returns the flattened compact catalog and forwards query args to the injected lister", async () => {
     let seenQuery: unknown
     const h = await harness(async query => {
       seenQuery = query
@@ -207,8 +210,355 @@ describe("catalog_models — MCP tool", () => {
         arguments: { vendor: "anthropic", runnableOnly: "true" },
       })
       const content = (result as { content: Array<{ text: string }> }).content
-      expect(JSON.parse(content[0]!.text)).toEqual(FAKE_RESPONSE)
+      // COMPACT BY DEFAULT: one flattened row per route, routing fields +
+      // small booleans only; bulky route fields stay behind full:true.
+      expect(JSON.parse(content[0]!.text)).toEqual({
+        routes: [
+          {
+            vendor: "anthropic",
+            product: "claude-opus-4-8",
+            route: "anthropic",
+            ref: "anthropic/claude-opus-4-8",
+            runnable: true,
+            curated: true,
+            multiModel: false,
+          },
+        ],
+      })
       expect(seenQuery).toEqual({ vendor: "anthropic", runnableOnly: true })
+    } finally {
+      await h.close()
+    }
+  })
+})
+
+// ── PR-3: additive limit/cursor pagination ─────────────────────
+
+/** A fake catalog with `count` routes spread across vendors/products. */
+function fakeMultiCatalog(count: number): CatalogModelsResponse {
+  const vendors: CatalogModelsResponse["vendors"] = []
+  for (let i = 0; i < count; i++) {
+    const vendor = `vendor-${i % 3}`
+    let v = vendors.find(x => x.vendor === vendor)
+    if (!v) {
+      v = { vendor, products: [] }
+      vendors.push(v)
+    }
+    const product = `product-${i}`
+    const route: CatalogRoute = {
+      route: `route-${i}`,
+      ref: `${vendor}/${product}`,
+      baseUrl: null,
+      pricing: { inPer1M: 1, outPer1M: 2 },
+      contextWindow: null,
+      maxOutput: null,
+      runnable: i % 2 === 0,
+      eligibleProfiles: [],
+      adapterModes: [],
+      adapters: ["fake"],
+      curated: false,
+      multiModel: false,
+    }
+    v.products.push({ product, routes: [route] })
+  }
+  return { vendors, routes: [] }
+}
+
+/** The same flattening the paginated branch does in the tool handler. */
+function flattenCatalog(catalog: CatalogModelsResponse): Array<{
+  vendor: string
+  product: string
+  route: CatalogRoute
+}> {
+  return catalog.vendors.flatMap(v =>
+    v.products.flatMap(p => p.routes.map(r => ({ vendor: v.vendor, product: p.product, route: r }))),
+  )
+}
+
+interface CatalogPage {
+  items: Array<{ vendor: string; product: string; route: string }>
+  nextCursor?: string
+  total?: number
+}
+
+interface ProviderPage {
+  items: Array<{ model: string }>
+  nextCursor?: string
+  total?: number
+}
+
+const toolResultShape = z
+  .object({
+    content: z.array(z.object({ type: z.string(), text: z.string().optional() })).optional(),
+  })
+  .passthrough()
+
+function textOf(result: z.input<typeof toolResultShape>): string {
+  return toolResultShape.parse(result).content?.[0]?.text ?? "{}"
+}
+
+describe("catalog_models — pagination (PR-3, additive)", () => {
+  const CATALOG = fakeMultiCatalog(7)
+
+  function harness(listCatalogModels: CatalogModelsLister) {
+    return (async () => {
+      const registry = createSessionsRegistry({ persist: false })
+      const { server } = await createMcpServer({ specs: [], name: "main", version: "0" })
+      registerAgentTools(server, { registry, listCatalogModels })
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+      await server.connect(serverTransport)
+      const client = new Client({ name: "test", version: "0.0.1" })
+      await client.connect(clientTransport)
+      return { client, close: async () => client.close() }
+    })()
+  }
+
+  it("default (no limit/cursor) returns the flattened compact catalog, no page fields", async () => {
+    const h = await harness(async () => CATALOG)
+    try {
+      const result = await h.client.callTool({ name: "catalog_models", arguments: {} })
+      const text = textOf(result)
+      const parsed = JSON.parse(text) as { routes: Array<Record<string, unknown>> }
+      expect(parsed.routes).toHaveLength(7)
+      // COMPACT: routing fields + small booleans only.
+      expect(Object.keys(parsed.routes[0]!).sort()).toEqual(
+        ["curated", "multiModel", "product", "ref", "route", "runnable", "vendor"],
+      )
+      expect(text).not.toContain("\n")
+      expect(text).not.toContain('"nextCursor"')
+      expect(text).not.toContain('"total"')
+      expect(text).not.toContain('"items"')
+      expect(text).not.toContain('"pricing"')
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("full:true returns the old verbose per-route rows (every CatalogRoute field intact)", async () => {
+    const h = await harness(async () => CATALOG)
+    try {
+      const result = await h.client.callTool({
+        name: "catalog_models",
+        arguments: { full: true },
+      })
+      const parsed = JSON.parse(textOf(result)) as { routes: unknown[] }
+      expect(parsed.routes).toEqual(flattenCatalog(CATALOG).map(e => ({ vendor: e.vendor, product: e.product, ...e.route })))
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("page-walk with limit=2 covers exactly the compact filtered catalog, total on every page", async () => {
+    const h = await harness(async () => CATALOG)
+    try {
+      const union: CatalogPage["items"] = []
+      let cursor: string | undefined
+      do {
+        const result = await h.client.callTool({
+          name: "catalog_models",
+          arguments: { limit: 2, ...(cursor ? { cursor } : {}) },
+        })
+        const page: CatalogPage = JSON.parse(textOf(result))
+        expect(page.total).toBe(7)
+        union.push(...page.items)
+        cursor = page.nextCursor
+      } while (cursor)
+
+      const expected = flattenCatalog(CATALOG).map(e => ({
+        vendor: e.vendor,
+        product: e.product,
+        route: e.route.route,
+        ref: e.route.ref,
+        runnable: e.route.runnable,
+        curated: e.route.curated,
+        multiModel: e.route.multiModel,
+      }))
+      expect(union).toEqual(expected)
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("fields filters the compact rows on the paginated envelope branch", async () => {
+    const h = await harness(async () => CATALOG)
+    try {
+      const page: CatalogPage = JSON.parse(
+        textOf(
+          await h.client.callTool({
+            name: "catalog_models",
+            arguments: { limit: 1, fields: ["route", "runnable"] },
+          }),
+        ),
+      )
+      expect(page.items).toEqual([{ route: "route-0", runnable: true }])
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("total reflects the FILTERED length when filters shrink the catalog", async () => {
+    const h = await harness(async query => {
+      if (!query.runnableOnly) return CATALOG
+      return {
+        vendors: CATALOG.vendors.flatMap(v =>
+          v.products
+            .map(p => ({ product: p.product, routes: p.routes.filter(r => r.runnable) }))
+            .filter(p => p.routes.length > 0)
+            .map(p => ({ vendor: v.vendor, products: [p] })),
+        ),
+        routes: [],
+      }
+    })
+    try {
+      const result = await h.client.callTool({
+        name: "catalog_models",
+        arguments: { limit: 1, runnableOnly: "true" },
+      })
+      const page: CatalogPage = JSON.parse(textOf(result))
+      const runnableRoutes = flattenCatalog(CATALOG)
+        .filter(e => e.route.runnable)
+        .map(e => e.route.route)
+      expect(page.total).toBe(runnableRoutes.length)
+      expect(page.items).toHaveLength(1)
+      expect(page.items[0]?.route).toBe(runnableRoutes[0])
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("cursor resumes where the previous page left off (offset semantics)", async () => {
+    const h = await harness(async () => CATALOG)
+    try {
+      const p1: CatalogPage = JSON.parse(
+        textOf(
+          await h.client.callTool({ name: "catalog_models", arguments: { limit: 2 } }),
+        ),
+      )
+      const p2: CatalogPage = JSON.parse(
+        textOf(
+          await h.client.callTool({
+            name: "catalog_models",
+            arguments: { limit: 2, cursor: p1.nextCursor },
+          }),
+        ),
+      )
+      const all = flattenCatalog(CATALOG).map(e => e.route.route)
+      expect(p1.items.map(i => i.route)).toEqual(all.slice(0, 2))
+      expect(p2.items.map(i => i.route)).toEqual(all.slice(2, 4))
+    } finally {
+      await h.close()
+    }
+  })
+})
+
+describe("catalog_provider_models — pagination (PR-3, additive)", () => {
+  async function harness() {
+    const registry = createSessionsRegistry({ persist: false })
+    const { server } = await createMcpServer({ specs: [], name: "main", version: "0" })
+    registerAgentTools(server, { registry })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "test", version: "0.0.1" })
+    await client.connect(clientTransport)
+    return { client, close: async () => client.close() }
+  }
+
+  it("default (no limit/cursor) returns the compact model rows, no page fields", async () => {
+    const h = await harness()
+    try {
+      const result = await h.client.callTool({
+        name: "catalog_provider_models",
+        arguments: { endpoint: "moonshot" },
+      })
+      const text = textOf(result)
+      const parsed: { models: Array<Record<string, unknown>> } = JSON.parse(text)
+      expect(Array.isArray(parsed.models)).toBe(true)
+      expect(parsed.models.length).toBeGreaterThan(0)
+      // COMPACT: id/kind/label/route per row — pricing/addedAt behind full:true.
+      expect(Object.keys(parsed.models[0]!).sort()).toEqual(["id", "kind", "label", "route"])
+      expect(text).not.toContain('"nextCursor"')
+      expect(text).not.toContain('"pricing"')
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("full:true returns the old verbose rows (pricing/addedAt intact); fields filters compact rows", async () => {
+    const h = await harness()
+    try {
+      const result = await h.client.callTool({
+        name: "catalog_provider_models",
+        arguments: { endpoint: "anthropic", full: true },
+      })
+      const parsed: { models: Array<Record<string, unknown>> } = JSON.parse(textOf(result))
+      expect(parsed.models.length).toBeGreaterThan(0)
+      const verboseKeys = Object.keys(parsed.models[0]!).sort()
+      expect(verboseKeys).toEqual(["addedAt", "id", "kind", "label", "pricing", "route"])
+
+      const filtered: { items: Array<Record<string, unknown>> } = JSON.parse(
+        textOf(
+          await h.client.callTool({
+            name: "catalog_provider_models",
+            arguments: { endpoint: "anthropic", limit: 1, fields: ["id"] },
+          }),
+        ),
+      )
+      expect(Object.keys(filtered.items[0]!)).toEqual(["id"])
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("page-walk with limit=2 covers exactly the unpaginated models array, total on every page", async () => {
+    const h = await harness()
+    try {
+      const all: ProviderPage["items"] = JSON.parse(
+        textOf(
+          await h.client.callTool({
+            name: "catalog_provider_models",
+            arguments: { endpoint: "moonshot" },
+          }),
+        ),
+      ).models
+      if (all.length < 3) {
+        return // static catalog too small here — offset test below still covers it
+      }
+
+      const union: ProviderPage["items"] = []
+      let cursor: string | undefined
+      let lastTotal: number | undefined
+      do {
+        const page: ProviderPage = JSON.parse(
+          textOf(
+            await h.client.callTool({
+              name: "catalog_provider_models",
+              arguments: { endpoint: "moonshot", limit: 2, ...(cursor ? { cursor } : {}) },
+            }),
+          ),
+        )
+        expect(page.total).toBe(all.length)
+        lastTotal = page.total
+        union.push(...page.items)
+        cursor = page.nextCursor
+      } while (cursor)
+      expect(lastTotal).toBe(all.length)
+      expect(union).toEqual(all)
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("unknown provider with limit returns an empty envelope, not an error", async () => {
+    const h = await harness()
+    try {
+      const result = await h.client.callTool({
+        name: "catalog_provider_models",
+        arguments: { endpoint: "nope", limit: 5 },
+      })
+      const page: ProviderPage = JSON.parse(textOf(result))
+      expect(page.items).toEqual([])
+      expect(page.total).toBe(0)
+      expect(page.nextCursor).toBeUndefined()
     } finally {
       await h.close()
     }

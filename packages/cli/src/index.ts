@@ -12,7 +12,7 @@ export { runServe } from "./commands/serve.js"
 export { runAcp } from "./commands/acp.js"
 export { runPreset } from "./commands/preset.js"
 export { runProviderPresets } from "./commands/presets.js"
-export { runPackSkill } from "./commands/pack.js"
+export { runPackSkill, runPackBuild } from "./commands/pack.js"
 export { zipPackDir } from "./commands/skill-install/zip-pack.js"
 export type { ZipPackResult } from "./commands/skill-install/zip-pack.js"
 export {

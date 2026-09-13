@@ -25,6 +25,7 @@ function createFakeClient(): DaemonClient & {
 } {
   return {
     url: "http://127.0.0.1:18790",
+    authHeaders: undefined,
     listSessions: vi.fn().mockResolvedValue([]),
     listPermissions: vi.fn().mockResolvedValue([]),
     sessionEventsPoll: vi.fn().mockResolvedValue({ events: [], nextCursor: 0 }),
@@ -281,6 +282,25 @@ describe("SessionStore — showArchived", () => {
   })
 })
 
+describe("SessionStore — daemon connection state", () => {
+  it("starts connecting, reports an unreachable daemon, and recovers on the next snapshot", async () => {
+    const client = createFakeClient()
+    client.listSessions.mockRejectedValue(new Error("connection refused"))
+    client.listPermissions.mockRejectedValue(new Error("connection refused"))
+    const store = new SessionStore(client, 5000, new ManualScheduler())
+
+    expect(store.connectionState).toBe("connecting")
+    await store.refreshAll()
+    expect(store.connectionState).toBe("unreachable")
+
+    client.listSessions.mockResolvedValue([])
+    client.listPermissions.mockResolvedValue([])
+    await store.refreshAll()
+    expect(store.connectionState).toBe("connected")
+    store.dispose()
+  })
+})
+
 describe("SessionStore — debounced refresh", () => {
   beforeEach(() => {
     vi.useFakeTimers()
@@ -312,6 +332,29 @@ describe("SessionStore — debounced refresh", () => {
     // The poll is now sleeping on the manual scheduler. The 150ms debounce
     // timer is the only fake timer in play.
     client.listSessions.mockResolvedValue([session({ busy: false, lastActivityAt: "t" })])
+    await vi.advanceTimersByTimeAsync(150)
+    expect(client.listSessions).toHaveBeenCalledTimes(2) // debounced refresh
+    store.dispose()
+  })
+
+  it("refreshes the session list on a model switch, so the composer chip repaints promptly", async () => {
+    const client = createFakeClient()
+    client.sessionEventsPoll.mockResolvedValue({
+      events: [{ type: "session:model-changed", sessionId: "s1" }],
+      nextCursor: 1,
+    })
+    client.listSessions.mockResolvedValue([session({ model: "sonnet-5" })])
+
+    const scheduler = new ManualScheduler()
+    const store = new SessionStore(client, 5000, scheduler)
+    store.start()
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(client.listSessions).toHaveBeenCalledTimes(1) // boot
+
+    client.listSessions.mockResolvedValue([
+      session({ model: "sonnet-5", activeModel: "sonnet-4-5" }),
+    ])
     await vi.advanceTimersByTimeAsync(150)
     expect(client.listSessions).toHaveBeenCalledTimes(2) // debounced refresh
     store.dispose()

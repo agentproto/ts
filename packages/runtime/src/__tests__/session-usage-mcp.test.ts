@@ -88,7 +88,7 @@ describe("per-session usage observability (MCP e2e)", () => {
 
   async function connectTools(registry: ReturnType<typeof createSessionsRegistry>) {
     const server = new McpServer({ name: "usage-test", version: "0.0.0" })
-    registerSessionTools(server, { registry })
+    registerSessionTools(server, { registry, workspace: process.cwd() })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     await server.connect(serverTransport)
     const client = new Client({ name: "usage-client", version: "0.0.0" })

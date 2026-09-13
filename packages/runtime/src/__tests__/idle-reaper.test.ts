@@ -122,6 +122,13 @@ describe("runIdleReapPass — candidate selection", () => {
     expect(reaped).toEqual([])
   })
 
+  it("does NOT reap a keepAlive:true row, independent of the crash-reaper's own guards", () => {
+    const { registry, reaped } = stubRegistry([row({ id: "pinned", keepAlive: true })])
+    const summary = runIdleReapPass({ registry, idleReapAfterMs: THIRTY_MIN, now })
+    expect(summary.reaped).toBe(0)
+    expect(reaped).toEqual([])
+  })
+
   it("does NOT reap a non-running (already terminal) row", () => {
     const { registry, reaped } = stubRegistry([
       row({ id: "killed", status: "killed" }),

@@ -66,6 +66,11 @@ Added generic ACP agent 'my-agent'.
   Run it with:  agentproto run my-agent --prompt "..."
 ```
 
+If the agent declares an `install_hint`, `agentproto install my-agent` can now
+execute it when the binary is missing. The CLI recognizes `npm`, `uv`, `pip`,
+`pip3`, `pipx`, `brew`, `cargo`, and `go` hints and runs them with the same
+safety guards as adapter `install[]` steps.
+
 ## `acp rm`
 
 Removes one of your config-defined agents. Curated catalog entries have no

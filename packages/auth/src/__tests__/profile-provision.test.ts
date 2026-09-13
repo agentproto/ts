@@ -8,6 +8,7 @@ import {
   deleteAuthProfile,
   deriveCredentialRef,
   fingerprintCredential,
+  refreshAuthProfileModels,
   setAuthProfileEnabled,
   setAuthProfileModels,
   validateCreateInput,
@@ -250,6 +251,103 @@ describe("setAuthProfileModels (WS3)", () => {
     await expect(
       setAuthProfileModels("nope", { mode: "allow", ids: [] }, deps),
     ).rejects.toThrow(AuthProfileValidationError)
+  })
+})
+
+describe("refreshAuthProfileModels", () => {
+  it("re-syncs ids against a fake catalog snapshot: drops stale, adds newly-eligible", async () => {
+    const { deps, profiles } = makeDeps([
+      {
+        id: "openrouter-env",
+        endpoint: "openrouter",
+        method: "api-key",
+        credentialRef: "ref",
+        label: "OpenRouter (env key)",
+        models: {
+          mode: "allow",
+          ids: ["z-ai/glm-5.2", "deepseek/deepseek-v3.2", "retired/old-model"],
+        },
+      },
+    ])
+    const currentCatalogSnapshot = [
+      "z-ai/glm-5.2",
+      "deepseek/deepseek-v4-pro", // deepseek-v3.2 retired, v4-pro is new
+      "anthropic/claude-opus-5", // brand-new model
+    ]
+
+    const result = await refreshAuthProfileModels("openrouter-env", currentCatalogSnapshot, deps)
+
+    expect(result.profile.models).toEqual({
+      mode: "allow",
+      ids: ["z-ai/glm-5.2", "deepseek/deepseek-v4-pro", "anthropic/claude-opus-5"],
+    })
+    expect(result.added.sort()).toEqual(["anthropic/claude-opus-5", "deepseek/deepseek-v4-pro"])
+    expect(result.removed.sort()).toEqual(["deepseek/deepseek-v3.2", "retired/old-model"])
+    // Every other field (label, credentialRef, …) is preserved untouched.
+    expect(profiles.get("openrouter-env")).toMatchObject({
+      id: "openrouter-env",
+      endpoint: "openrouter",
+      credentialRef: "ref",
+      label: "OpenRouter (env key)",
+    })
+  })
+
+  it("trims and de-dupes the supplied catalog snapshot", async () => {
+    const { deps } = makeDeps([
+      {
+        id: "p",
+        endpoint: "anthropic",
+        method: "api-key",
+        credentialRef: "ref",
+        models: { mode: "allow", ids: ["a/b"] },
+      },
+    ])
+    const result = await refreshAuthProfileModels(
+      "p",
+      [" a/b ", "a/b", "", "c/d"],
+      deps,
+    )
+    expect(result.profile.models).toEqual({ mode: "allow", ids: ["a/b", "c/d"] })
+    expect(result.added).toEqual(["c/d"])
+    expect(result.removed).toEqual([])
+  })
+
+  it("a mode:\"all\" profile is rejected rather than silently no-op'd", async () => {
+    const { deps } = makeDeps([
+      { id: "p", endpoint: "anthropic", method: "api-key", credentialRef: "ref" },
+    ])
+    await expect(refreshAuthProfileModels("p", ["a/b"], deps)).rejects.toThrow(
+      AuthProfileValidationError,
+    )
+    await expect(refreshAuthProfileModels("p", ["a/b"], deps)).rejects.toThrow(
+      /no mode:"allow" curation to refresh/,
+    )
+  })
+
+  it("never touches a hand-curated allow profile unless explicitly invoked", async () => {
+    // Simulates a human deliberately narrowing a profile to 2 models — refresh
+    // must only run when THIS call happens; nothing here calls it implicitly.
+    const { deps, profiles } = makeDeps([
+      {
+        id: "curated",
+        endpoint: "anthropic",
+        method: "api-key",
+        credentialRef: "ref",
+        models: { mode: "allow", ids: ["anthropic/claude-opus-5"] },
+      },
+    ])
+    // No refresh call at all — the stored allowlist stays exactly as the human left it.
+    expect(profiles.get("curated")?.models).toEqual({
+      mode: "allow",
+      ids: ["anthropic/claude-opus-5"],
+    })
+  })
+
+  it("rejects an unknown id", async () => {
+    const { deps } = makeDeps()
+    await expect(refreshAuthProfileModels("nope", ["a/b"], deps)).rejects.toThrow(
+      AuthProfileValidationError,
+    )
   })
 })
 

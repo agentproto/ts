@@ -279,6 +279,111 @@ export function formatModelRef(ref: ModelRef): string {
   return out
 }
 
+/**
+ * Strip a route-identity `@route` SUFFIX from a model id, returning the bare
+ * id that an UPSTREAM (the provider/gateway, via `ANTHROPIC_MODEL` or the wire
+ * `model`) actually understands. The `@route` suffix is a catalog-join
+ * annotation used to pin which serving route a picked model uses — the gateway
+ * itself never sees it (OpenRouter/Requesty/the llm-endpoint proxy don't
+ * recognise `z-ai/glm-5.2@openrouter`, only `z-ai/glm-5.2`). At spawn the route
+ * is already carried separately (`route.gateway` → base_url), so the suffix is
+ * redundant metadata that must not leak to the wire.
+ *
+ * - `z-ai/glm-5.2@openrouter`            → `z-ai/glm-5.2`
+ * - `deepseek/deepseek-chat:free@openrouter` → `deepseek/deepseek-chat:free` (variant kept)
+ * - `glm-5.2@llm-endpoint`               → `glm-5.2` (routeless proxy alias)
+ * - `claude-opus-4-8`                    → `claude-opus-4-8` (no route, unchanged)
+ * - `openai/gpt-4o`                      → `openai/gpt-4o` (direct route, unchanged)
+ *
+ * Prefers the strict parser so an id is only altered when the trailing token is
+ * a genuine explicit route (`route !== vendor`); the pin (`:variant` /
+ * `:inferenceProvider`) is preserved because gateways accept it. Falls back to
+ * removing only a trailing `@…` for ids the strict grammar rejects (e.g. the
+ * vendor-less `glm-5.2@llm-endpoint`): the SEGMENT grammar forbids `@`
+ * anywhere but the route separator, so the last `@` can only be that.
+ */
+export function stripRouteSuffix(raw: string): string {
+  const ref = tryParseModelRef(raw)
+  if (ref) {
+    // Re-emit without the route suffix. `formatModelRef` omits `@route` exactly
+    // when `route === vendor`, so forcing that yields `vendor/product[:pin]`.
+    return formatModelRef({ ...ref, route: ref.vendor })
+  }
+  const atIdx = raw.lastIndexOf("@")
+  return atIdx === -1 ? raw : raw.slice(0, atIdx)
+}
+
+/**
+ * Reduce a DIRECT-anthropic catalog ref to the BARE product id the native
+ * Anthropic wire expects (the `claude` ACP wrapper's `session/set_config_option`
+ * model selector, and claude-sdk's `env.ANTHROPIC_MODEL`) — both resolve only
+ * bare Anthropic ids (`claude-sonnet-4-5`), never the catalog's canonical
+ * `anthropic/claude-sonnet-4-5` route form. {@link stripRouteSuffix} only peels
+ * the `@route` SUFFIX and deliberately keeps `vendor/product`, so a
+ * direct-anthropic ref survives it prefixed and the wrapper mis-resolves it.
+ *
+ * ONLY a `anthropic/<product>` ref in DIRECT form (route === vendor, i.e. no
+ * gateway `@route`) collapses to `<product>`. Everything else falls through to
+ * {@link stripRouteSuffix} untouched:
+ *   - a GATEWAY-routed anthropic ref (`anthropic/claude-x@openrouter`) keeps its
+ *     `vendor/product` because the gateway needs it,
+ *   - other vendors (`z-ai/glm-5.2@openrouter`, `moonshot/kimi-k2.7-code@llm-endpoint`)
+ *     keep `vendor/product` — those same claude-code/claude-sdk adapters route
+ *     them through `base_url`, where the gateway rejects a bare product,
+ *   - already-bare ids (`claude-sonnet-5`) are unchanged.
+ *
+ * Callers MUST gate this on the adapter being Anthropic-NATIVE (claude-code /
+ * claude-sdk, `provider: "anthropic"`); a `derived-from-model` adapter (hermes,
+ * opencode, …) derives its route FROM the vendor prefix and needs it kept.
+ *
+ * - `anthropic/claude-sonnet-4-5`            → `claude-sonnet-4-5`
+ * - `anthropic/claude-sonnet-4-5@openrouter` → `anthropic/claude-sonnet-4-5`
+ * - `z-ai/glm-5.2@openrouter`                → `z-ai/glm-5.2`
+ * - `claude-sonnet-5`                        → `claude-sonnet-5`
+ */
+export function stripAnthropicNativeVendor(raw: string): string {
+  return stripFixedNativeVendor(raw, "anthropic")
+}
+
+/**
+ * Generalized form of {@link stripAnthropicNativeVendor} — reduce a
+ * DIRECT-`vendor` catalog ref to the BARE product id a fixed-single-provider
+ * adapter's own wire expects, for ANY vendor, not just Anthropic. Every
+ * adapter whose manifest declares a FIXED `provider` and takes bare model ids
+ * on its native route (claude-code/claude-sdk → anthropic, codex → openai,
+ * gemini → google, …) hits this same class of bug: the catalog's canonical
+ * `vendor/product` form survives onto the wire and the adapter's own
+ * `models.allowed` enum — which declares bare ids — rejects it
+ * (`option_enum_violation`).
+ *
+ * ONLY a `<vendor>/<product>` ref in DIRECT form (route === vendor, i.e. no
+ * gateway `@route`) AND matching the given `vendor` collapses to `<product>`.
+ * Everything else falls through to {@link stripRouteSuffix} untouched:
+ *   - a GATEWAY-routed ref (`openai/gpt-5@openrouter`) keeps its
+ *     `vendor/product` because the gateway needs it,
+ *   - a ref for a DIFFERENT vendor (`z-ai/glm-5.2` handed to an
+ *     `openai`-fixed adapter) keeps `vendor/product` — stripping would
+ *     invent a wrong bare id for a model this adapter doesn't natively serve,
+ *   - already-bare ids (`gpt-5`) are unchanged.
+ *
+ * Callers MUST gate this on the adapter being a FIXED-single-provider,
+ * non-derived-from-model adapter (`routeSelection !== "derived-from-model"`
+ * AND a fixed `provider`); a `derived-from-model` adapter (hermes, pi,
+ * opencode, …) derives its route FROM the vendor prefix and needs it kept.
+ *
+ * - `openai/gpt-5`               (vendor "openai") → `gpt-5`
+ * - `openai/gpt-5@openrouter`    (vendor "openai") → `openai/gpt-5`
+ * - `z-ai/glm-5.2`               (vendor "openai") → `z-ai/glm-5.2` (mismatch, unchanged)
+ * - `gpt-5`                      (vendor "openai") → `gpt-5` (already bare)
+ */
+export function stripFixedNativeVendor(raw: string, vendor: string): string {
+  const ref = tryParseModelRef(raw)
+  if (ref && ref.vendor === vendor && ref.route === ref.vendor) {
+    return ref.product
+  }
+  return stripRouteSuffix(raw)
+}
+
 /** True when `raw` matches the `vendor/product[@route]` shape. */
 export function isModelRefString(raw: string): boolean {
   try {
@@ -508,6 +613,57 @@ export function resolveLlmModelRoute(
     },
     { availability: custom.availability, limits: custom.limits }
   )
+}
+
+/** The bare `vendor/product` keys a router's generated route table carries.
+ *  Unknown routers (or non-router providers) yield an empty list — the
+ *  three branches are otherwise identical, so a new router only needs a
+ *  case here plus a branch in `resolveLlmModelRoute`. */
+function routerRouteKeys(router: string): string[] {
+  switch (router) {
+    case "openrouter":
+      return Object.keys(OPENROUTER_ROUTES)
+    case "requesty":
+      return Object.keys(REQUESTY_ROUTES)
+    case "huggingface":
+      return Object.keys(HUGGINGFACE_ROUTES)
+    default:
+      return []
+  }
+}
+
+/**
+ * Every LLM route a router serves, resolved through the same
+ * `resolveLlmModelRoute` path used at spawn/billing time — enumeration and
+ * resolution can never disagree. Ids carry the explicit `@route` suffix
+ * (`vendor/product@router`), exactly what a caller passes to `agent_start`.
+ * A HuggingFace key with zero live providers resolves to `undefined` and is
+ * skipped, same as at resolution time. `[]` for a provider that isn't a
+ * known router.
+ *
+ * Some generated table keys don't round-trip through the canonical
+ * `vendor/product[@route]` grammar — Requesty's own key format packs a
+ * region into the product with a second `@` (`azure/gpt-4.1@eastus2`) or
+ * nests an upstream provider ahead of vendor/product
+ * (`deepinfra/meta-llama/Llama-3.3-70B-Instruct`), and both collide with
+ * `parseModelRef`'s single-`@`, single-`/`-per-segment rules. Those keys are
+ * unreachable from a plain model id today regardless of enumeration — a
+ * caller can't spawn what it can't spell — so `parseModelRef` throwing here
+ * is skipped rather than propagated, the same way `tryParseModelRef` treats
+ * any other unparseable ref.
+ */
+export function listRouterLlmRoutes(router: string): ResolvedLlmModelRoute[] {
+  const routes: ResolvedLlmModelRoute[] = []
+  for (const key of routerRouteKeys(router)) {
+    let resolved: ResolvedLlmModelRoute | undefined
+    try {
+      resolved = resolveLlmModelRoute(`${key}@${router}`)
+    } catch {
+      continue
+    }
+    if (resolved) routes.push(resolved)
+  }
+  return routes
 }
 
 /** Narrows a HuggingFace provider entry to one that carries both prices. */

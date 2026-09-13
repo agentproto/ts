@@ -33,9 +33,17 @@ export interface ProviderPreset {
   baseUrl: string
   /**
    * Conventional env var holding this provider's API key
-   * (e.g. MOONSHOT_API_KEY, OPENROUTER_API_KEY). Adapters that auto-resolve a
-   * gateway key from the environment (claude-sdk's CLAUDE_SDK_GATEWAY_KEY_ENV)
-   * read this; operators may also pass it via an `auth_token` option.
+   * (e.g. MOONSHOT_API_KEY, OPENROUTER_API_KEY) — the STORE lookup key
+   * (`agentproto auth provider set <id> <key>` / `providers.json`), not
+   * necessarily the var injected into every consuming adapter's child env.
+   * An adapter that receives a gateway bearer on a DIFFERENT var than this
+   * one declares `AgentCliDefinition.gatewayAuth.setEnv` (e.g. claude-sdk /
+   * claude-code inject it as `ANTHROPIC_AUTH_TOKEN`, since that's what the
+   * Anthropic SDK/CLI actually read); the runtime's `resolveAuthSpec` honors
+   * that declaration for gateway routes. An adapter with no `gatewayAuth`
+   * (hermes) reads this var directly. (There is no
+   * `CLAUDE_SDK_GATEWAY_KEY_ENV` auto-resolution — that was a stale claim;
+   * `gatewayAuth` is the real, implemented mechanism.)
    */
   keyEnv: string
   /**

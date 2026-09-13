@@ -20,10 +20,10 @@ agentproto-mastra acp --model anthropic/claude-opus-4-8
 AGENT.md ──parseAgentManifest──▶ AgentHandle
                                      │ buildMastraAgent (@agentproto/mastra)
                                      ▼
-                              Mastra Agent.stream()
-                                     │ text deltas
+                         Mastra AgentController
+                                     │ AgentControllerEvent subscription
                                      ▼
-          MastraAcpAgent (src/acp-host.ts)  ──agent_message_chunk──▶ ACP client
+          MastraAcpAgent (src/acp-host.ts)  ──agent_message_chunk / tool_call ──▶ ACP client
                                      ▲
                        @agentclientprotocol/sdk AgentSideConnection (stdio)
 ```
@@ -33,6 +33,16 @@ AGENT.md ──parseAgentManifest──▶ AgentHandle
   spawn environment. Default: `openrouter/z-ai/glm-5.2`.
 - **Agent** — pass `--agent ./path/AGENT.md` (or `AGENTPROTO_MASTRA_AGENT_FILE`)
   to run a custom agent; omit for a built-in coding default.
+- **Modes** — the default agent runs a `plan` → `build` → `review` cycle via
+  Mastra's `AgentController`. A custom `AGENT.md` can override the modes with a
+  `## Modes` section; `submit_plan` gates the transition from plan to build.
+- **Daemon integration** — when spawned by the agentproto daemon, the adapter
+  discovers it via `DaemonClient` and a `SignalProvider` pushes session lifecycle
+  events (turn-end, errors, permissions, child-session exits) plus workspace git
+  state into the agent thread.
+- **Tool approvals / suspension** — workspace tools can surface a
+  `session/request_permission` round-trip through the ACP host, and suspended
+  tools resume once the host responds.
 
 ## Workspace tools
 
@@ -46,13 +56,19 @@ cwd** (path-traversal guarded):
 | `write_file` | Create/overwrite a file (mkdir -p). |
 | `edit_file` | Replace a unique substring. |
 | `run_command` | Run a shell command (cwd-scoped, timeout). |
+| `read_diff` | Show `git diff` against HEAD (or a base ref), optionally scoped to paths. |
+| `apply_patch` | Apply a unified diff to workspace files (`git apply`). |
+| `run_tests` | Run the workspace test command (default `npm test`, overrideable). |
 
 > **Note:** `read_file` and `write_file` here are Mastra-native workspace tools
 > scoped to this adapter's session cwd. They are distinct from the runtime MCP
 > filesystem tools (`file_read`, `file_write`) registered on the daemon's `/mcp`
 > endpoint.
 
-`run_command` is on by default; set `AGENTPROTO_MASTRA_NO_EXEC=1` to withhold it.
+`run_command`, `read_diff`, `apply_patch`, and `run_tests` are gated by `allowExec`
+(default `true`); set `AGENTPROTO_MASTRA_NO_EXEC=1` to withhold them. Embedding hosts
+can also pass `extraTools` to merge additional tools over the built-in set (extra wins
+on id collision).
 
 ## Memory
 
@@ -67,6 +83,7 @@ across spawns), overridable with `AGENTPROTO_MASTRA_MEMORY_DB`. A custom
 Streaming conversation + workspace tools (edit/run) + SQLite memory, with tool
 activity surfaced live: each tool the agent runs is relayed to the host as an
 ACP `tool_call` (status `in_progress`) and then a `tool_call_update` (status
-`completed`/`failed` with the raw output) — read off Mastra's `fullStream` and
-mapped in `src/tool-call-map.ts`. So a host (codex/claude-code/an IDE) shows the
-"🔧 run_command: …" feed, not just the final prose.
+`completed`/`failed` with the raw output) — read from the `AgentController`
+event subscription and mapped in `src/tool-call-map.ts`. The adapter also
+supports plan/build/review modes, tool-approval round-trips, and session resume
+via the ACP `session/load` flow.

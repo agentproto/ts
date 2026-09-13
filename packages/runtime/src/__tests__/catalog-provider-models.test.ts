@@ -35,6 +35,16 @@ describe("buildCatalogProviderModels", () => {
     expect(res.models.every(m => m.route === "openrouter")).toBe(true)
   })
 
+  it("surfaces addedAt (ISO date) for a sync-stamped OpenRouter route, null for a hand-maintained one", () => {
+    const openrouter = buildCatalogProviderModels({ endpoint: "openrouter" })
+    const glm = openrouter.models.find(m => m.id === "z-ai/glm-5.3-flash")
+    expect(glm?.addedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+
+    const anthropic = buildCatalogProviderModels({ endpoint: "anthropic" })
+    const opus = anthropic.models.find(m => m.id === "claude-opus-4-8")
+    expect(opus?.addedAt).toBeNull()
+  })
+
   it("treats `route` as a synonym for `endpoint`, precedence to `route`", () => {
     const byRoute = buildCatalogProviderModels({ route: "anthropic" })
     const byEndpoint = buildCatalogProviderModels({ endpoint: "anthropic" })
@@ -42,6 +52,30 @@ describe("buildCatalogProviderModels", () => {
     // route wins when both are given.
     const both = buildCatalogProviderModels({ route: "anthropic", endpoint: "openai" })
     expect(both.provider).toBe("anthropic")
+  })
+
+  it("enumerates Requesty's routed surface (REQUESTY_ROUTES, not LLM_PRICING_CATALOG)", () => {
+    const res = buildCatalogProviderModels({ endpoint: "requesty" })
+    expect(res.models.length).toBeGreaterThan(0)
+    expect(res.models.every(m => m.kind === "llm")).toBe(true)
+    expect(res.models.every(m => m.route === "requesty")).toBe(true)
+    expect(res.models.every(m => m.id.endsWith("@requesty"))).toBe(true)
+    const first = res.models[0]
+    expect(first?.pricing?.inPer1M).toBeGreaterThan(0)
+  })
+
+  it("enumerates HuggingFace's routed surface uniformly with the other routers", () => {
+    const res = buildCatalogProviderModels({ endpoint: "huggingface" })
+    expect(res.models.length).toBeGreaterThan(0)
+    expect(res.models.every(m => m.kind === "llm")).toBe(true)
+    expect(res.models.every(m => m.route === "huggingface")).toBe(true)
+    expect(res.models.every(m => m.id.endsWith("@huggingface"))).toBe(true)
+  })
+
+  it("does not duplicate OpenRouter ids when the router-table pass also serves them", () => {
+    const res = buildCatalogProviderModels({ endpoint: "openrouter" })
+    const ids = res.models.map(m => m.id)
+    expect(new Set(ids).size).toBe(ids.length)
   })
 
   it("returns an empty list for an unknown provider — never throws", () => {

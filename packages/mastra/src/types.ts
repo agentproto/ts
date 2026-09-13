@@ -117,6 +117,12 @@ export interface BuildMastraAgentOptions {
    * silently dropping. Defaults to `false` (warn + drop).
    */
   strict?: boolean
+  /**
+   * Optional. Mastra input processors to attach to the built Agent.
+   * Use `ProviderHistoryCompat` from `@mastra/core/processors` to
+   * strip trailing thinking blocks that the Anthropic API rejects.
+   */
+  inputProcessors?: unknown[]
 }
 
 /**

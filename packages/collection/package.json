@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/collection",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "@agentproto/collection — AIP-18 COLLECTION.md reference implementation. A composable primitive pack that lets any AIP define domain-extensible item types as on-disk schema files (`COLLECTION.md`) instantiated by markdown records (`ITEM.md`), so future workspace AIPs (work, knowledge, companies) compose on a shared type system instead of inventing their own.",
   "keywords": [
     "agentproto",
@@ -56,13 +56,13 @@
   "dependencies": {
     "@agentproto/define-doctype": "workspace:*",
     "gray-matter": "^4.0.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   }
 }

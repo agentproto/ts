@@ -15,7 +15,7 @@
  *    walls. Default stays base64 (back-compat).
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, beforeAll, afterAll } from "vitest"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { createMcpServer } from "@agentproto/mcp-server"
@@ -24,6 +24,15 @@ import { registerSessionTools } from "../session-tools.js"
 import { createSessionsRegistry } from "../sessions.js"
 import type { PtyFactory, PtyProcess, SessionsRegistry } from "../sessions.js"
 import type { OrchestratorScope } from "../orchestrator-gateway.js"
+
+// These tests exercise parent attribution, not the terminal gate — opt the
+// harness workspace out explicitly rather than weakening the default.
+beforeAll(() => {
+  process.env.AGENTPROTO_TERMINAL_GATE = "all"
+})
+afterAll(() => {
+  delete process.env.AGENTPROTO_TERMINAL_GATE
+})
 
 /** Fake PTY that exposes the registry's onData callback so tests can
  *  feed bytes into the ring buffer as if the child process wrote them. */
@@ -66,6 +75,7 @@ async function buildHarness(opts?: { callerScope?: OrchestratorScope }): Promise
   })
   const { server } = await createMcpServer({ specs: [], name: "test", version: "0" })
   registerSessionTools(server, {
+    workspace: process.cwd(),
     registry,
     ptyEnabled: true,
     ...(opts?.callerScope ? { callerScope: opts.callerScope } : {}),
@@ -186,6 +196,93 @@ describe("terminal_output — clean plaintext mode", () => {
       lastBytes: 11,
     })
     expect(out.text).toBe("tail-marker")
+    await close()
+  })
+})
+
+describe("terminal_output — truncated companion flag (PR-4, additive)", () => {
+  it("truncated: true appears only when a lastBytes window is applied and filled", async () => {
+    const { client, sink, close } = await buildHarness()
+    const desc = await callTool(client, "terminal_start", {
+      argv: ["bash"],
+      cwd: "/tmp",
+    })
+    sink.feed?.("0123456789abcdef")
+    const out = await callTool(client, "terminal_output", {
+      sessionId: desc.id as string,
+      clean: true,
+      lastBytes: 4,
+    })
+    expect(out.text).toBe("cdef")
+    expect(out.truncated).toBe(true)
+    await close()
+  })
+
+  it("truncated: false when the window is larger than the buffer", async () => {
+    const { client, sink, close } = await buildHarness()
+    const desc = await callTool(client, "terminal_start", {
+      argv: ["bash"],
+      cwd: "/tmp",
+    })
+    sink.feed?.("small")
+    const out = await callTool(client, "terminal_output", {
+      sessionId: desc.id as string,
+      clean: true,
+      lastBytes: 4096,
+    })
+    expect(out.text).toBe("small")
+    expect(out.truncated).toBe(false)
+    await close()
+  })
+
+  it("default (no lastBytes) applies the 4096-byte PR-10 window and carries truncated", async () => {
+    const { client, sink, close } = await buildHarness()
+    const desc = await callTool(client, "terminal_start", {
+      argv: ["bash"],
+      cwd: "/tmp",
+    })
+    sink.feed?.("plain-chunk")
+    const out = await callTool(client, "terminal_output", {
+      sessionId: desc.id as string,
+    })
+    expect(out.truncated).toBe(false)
+    expect(out.bytes).toBe("plain-chunk".length)
+    expect(typeof out.b64).toBe("string")
+    await close()
+  })
+
+  it("default window caps output at 4096 bytes (PR-10)", async () => {
+    const { client, sink, close } = await buildHarness()
+    const desc = await callTool(client, "terminal_start", {
+      argv: ["bash"],
+      cwd: "/tmp",
+    })
+    sink.feed?.("x".repeat(5000) + "tail-marker")
+    const out = await callTool(client, "terminal_output", {
+      sessionId: desc.id as string,
+      clean: true,
+    })
+    // Only the LAST 4096 bytes survive: the 5000 x's overflow the window,
+    // so the tail marker is fully inside it.
+    expect(out.text).toBe("x".repeat(4085) + "tail-marker")
+    expect(out.truncated).toBe(true)
+    await close()
+  })
+
+  it("lastBytes: 65536 is the escape hatch to the full ring", async () => {
+    const { client, sink, close } = await buildHarness()
+    const desc = await callTool(client, "terminal_start", {
+      argv: ["bash"],
+      cwd: "/tmp",
+    })
+    sink.feed?.("x".repeat(5000) + "tail-marker")
+    const out = await callTool(client, "terminal_output", {
+      sessionId: desc.id as string,
+      clean: true,
+      lastBytes: 65536,
+    })
+    expect(out.text).toBe("x".repeat(5000) + "tail-marker")
+    expect(out.truncated).toBe(false)
     await close()
   })
 })

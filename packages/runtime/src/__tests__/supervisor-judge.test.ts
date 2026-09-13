@@ -7,6 +7,15 @@ import { createSessionEventBus } from "../session-event-bus.js"
 import type { SessionsRegistry, SessionDescriptor } from "../sessions.js"
 import type { SessionEventBus } from "../session-event-bus.js"
 import type { AgentAdapterResolver } from "../http-server.js"
+// WP-D: mocked so the wallet-passthrough tests below control the profile
+// resolution outcome directly, without touching real keychain/auth-profile
+// I/O — `resolveAccessProfileAuth` itself is exercised end-to-end by
+// session-spawn.test.ts's "billing-auth resolution wiring" suite.
+import { resolveAccessProfileAuth } from "../session-spawn.js"
+
+vi.mock("../session-spawn.js", () => ({
+  resolveAccessProfileAuth: vi.fn(),
+}))
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -312,5 +321,368 @@ describe("CompletionPolicySupervisor — WP7 judge-gate", () => {
     await waitFor(() => supervisor.getStatus(state.policyId)?.status === "blocked")
     expect(registry.spawnAgent).not.toHaveBeenCalled()
     expect(supervisor.getStatus(state.policyId)?.error).toMatch(/not enabled/i)
+  })
+})
+
+describe("CompletionPolicySupervisor — WP-D structured verdict", () => {
+  let workspace: string
+
+  beforeEach(async () => {
+    workspace = await makeWorkspace()
+  })
+
+  afterEach(async () => {
+    await rm(workspace, { recursive: true, force: true })
+  })
+
+  it("(a) fenced JSON verdict PASS is persisted on state.verdict and echoed on policy:passed", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeJudgeRegistry(workspace, [
+      "Here is my assessment.",
+      "```json",
+      '{"decision": "PASS", "summary": "looks good", "findings": [{"severity": "low", "file": "a.ts", "note": "nit"}]}',
+      "```",
+      "VERDICT: PASS",
+    ])
+    const supervisor = createCompletionPolicySupervisor({
+      registry,
+      sessionEvents: bus,
+      workspace,
+      resolveAgentAdapter: makeResolver(),
+    })
+
+    const passed: Array<{ policyId: string; verdict?: unknown }> = []
+    bus.on("policy:passed", ev => passed.push(ev))
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { judge: { adapter: "claude-code", prompt: "ok?" } },
+      then: "emit",
+    })
+
+    fireTurnEnd(bus, "sess_test")
+    await waitFor(() => judgePrompted(registry))
+    fireTurnEnd(bus, JUDGE_ID)
+
+    await waitFor(() => supervisor.getStatus(state.policyId)?.status === "done")
+    const finalState = supervisor.getStatus(state.policyId)
+    expect(finalState?.verdict).toEqual({
+      decision: "PASS",
+      summary: "looks good",
+      findings: [{ severity: "low", file: "a.ts", note: "nit" }],
+    })
+    expect(passed.find(ev => ev.policyId === state.policyId)?.verdict).toEqual(finalState?.verdict)
+  })
+
+  it("(b) fenced JSON verdict FAIL blocks even though every finding is low severity — decision alone drives pass/fail, never a severity threshold", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeJudgeRegistry(workspace, [
+      "```json",
+      '{"decision": "FAIL", "findings": [{"severity": "low", "note": "minor nit only"}]}',
+      "```",
+      "VERDICT: FAIL",
+    ])
+    const supervisor = createCompletionPolicySupervisor({
+      registry,
+      sessionEvents: bus,
+      workspace,
+      resolveAgentAdapter: makeResolver(),
+    })
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { judge: { adapter: "claude-code", prompt: "ok?" } },
+      then: "emit",
+    })
+
+    fireTurnEnd(bus, "sess_test")
+    await waitFor(() => judgePrompted(registry))
+    fireTurnEnd(bus, JUDGE_ID)
+
+    await waitFor(() => supervisor.getStatus(state.policyId)?.status === "blocked")
+    const finalState = supervisor.getStatus(state.policyId)
+    expect(finalState?.verdict?.decision).toBe("FAIL")
+    expect(finalState?.error).toMatch(/judge verdict: FAIL/)
+  })
+
+  it("(c) an unknown severity string collapses to 'medium' rather than being dropped or guessed as an extreme", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeJudgeRegistry(workspace, [
+      "```json",
+      '{"decision": "PASS", "findings": [{"severity": "blocker", "note": "custom vocabulary"}]}',
+      "```",
+      "VERDICT: PASS",
+    ])
+    const supervisor = createCompletionPolicySupervisor({
+      registry,
+      sessionEvents: bus,
+      workspace,
+      resolveAgentAdapter: makeResolver(),
+    })
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { judge: { adapter: "claude-code", prompt: "ok?" } },
+      then: "emit",
+    })
+
+    fireTurnEnd(bus, "sess_test")
+    await waitFor(() => judgePrompted(registry))
+    fireTurnEnd(bus, JUDGE_ID)
+
+    await waitFor(() => supervisor.getStatus(state.policyId)?.status === "done")
+    expect(supervisor.getStatus(state.policyId)?.verdict?.findings?.[0]?.severity).toBe("medium")
+  })
+
+  it("(d) malformed JSON in the fence falls back to the plain VERDICT: line — verdict carries only `decision`", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeJudgeRegistry(workspace, [
+      "```json",
+      "{not valid json at all",
+      "```",
+      "VERDICT: PASS",
+    ])
+    const supervisor = createCompletionPolicySupervisor({
+      registry,
+      sessionEvents: bus,
+      workspace,
+      resolveAgentAdapter: makeResolver(),
+    })
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { judge: { adapter: "claude-code", prompt: "ok?" } },
+      then: "emit",
+    })
+
+    fireTurnEnd(bus, "sess_test")
+    await waitFor(() => judgePrompted(registry))
+    fireTurnEnd(bus, JUDGE_ID)
+
+    await waitFor(() => supervisor.getStatus(state.policyId)?.status === "done")
+    expect(supervisor.getStatus(state.policyId)?.verdict).toEqual({ decision: "PASS" })
+  })
+
+  it("(e) plain VERDICT: line only (no JSON block, WP7 legacy prompts) → verdict carries only `decision`", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeJudgeRegistry(workspace, ["some reasoning", "VERDICT: PASS"])
+    const supervisor = createCompletionPolicySupervisor({
+      registry,
+      sessionEvents: bus,
+      workspace,
+      resolveAgentAdapter: makeResolver(),
+    })
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { judge: { adapter: "claude-code", prompt: "ok?" } },
+      then: "emit",
+    })
+
+    fireTurnEnd(bus, "sess_test")
+    await waitFor(() => judgePrompted(registry))
+    fireTurnEnd(bus, JUDGE_ID)
+
+    await waitFor(() => supervisor.getStatus(state.policyId)?.status === "done")
+    expect(supervisor.getStatus(state.policyId)?.verdict).toEqual({ decision: "PASS" })
+  })
+
+  it("(f) wholly unparseable reply → fail-safe FAIL, verdict stays unset", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeJudgeRegistry(workspace, ["I cannot decide right now"])
+    const supervisor = createCompletionPolicySupervisor({
+      registry,
+      sessionEvents: bus,
+      workspace,
+      resolveAgentAdapter: makeResolver(),
+    })
+
+    const failed: Array<{ policyId: string; verdict?: unknown }> = []
+    bus.on("policy:failed", ev => failed.push(ev))
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { judge: { adapter: "claude-code", prompt: "ok?" } },
+      then: "emit",
+    })
+
+    fireTurnEnd(bus, "sess_test")
+    await waitFor(() => judgePrompted(registry))
+    fireTurnEnd(bus, JUDGE_ID)
+
+    await waitFor(() => supervisor.getStatus(state.policyId)?.status === "blocked")
+    expect(supervisor.getStatus(state.policyId)?.verdict).toBeUndefined()
+    expect(failed.find(ev => ev.policyId === state.policyId)?.verdict).toBeUndefined()
+  })
+
+  it("(g) a nudged retry clears the previous round's verdict rather than carrying it forward", async () => {
+    const bus = createSessionEventBus()
+    // First gate run: FAIL with a JSON verdict. Second (post-nudge) run: PASS,
+    // plain VERDICT line only — the mock replays the SAME lines both times
+    // (attach() re-plays judgeReply on every call), so use a resolver whose
+    // second reply differs isn't needed: what matters is that the SECOND run's
+    // (plain-PASS) verdict shape doesn't retain the FIRST run's `findings`.
+    const registry = makeJudgeRegistry(workspace, ["VERDICT: PASS"])
+    const supervisor = createCompletionPolicySupervisor({
+      registry,
+      sessionEvents: bus,
+      workspace,
+      resolveAgentAdapter: makeResolver(),
+    })
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { judge: { adapter: "claude-code", prompt: "ok?" } },
+      then: "emit",
+      onFail: { maxRetries: 2 },
+    })
+
+    fireTurnEnd(bus, "sess_test")
+    await waitFor(() => judgePrompted(registry))
+    fireTurnEnd(bus, JUDGE_ID)
+
+    await waitFor(() => supervisor.getStatus(state.policyId)?.status === "done")
+    expect(supervisor.getStatus(state.policyId)?.verdict).toEqual({ decision: "PASS" })
+  })
+})
+
+describe("CompletionPolicySupervisor — WP-D judge wallet passthrough", () => {
+  let workspace: string
+
+  beforeEach(async () => {
+    workspace = await makeWorkspace()
+  })
+
+  afterEach(async () => {
+    await rm(workspace, { recursive: true, force: true })
+    vi.mocked(resolveAccessProfileAuth).mockReset()
+  })
+
+  it("origin: 'gate' is stamped on every judge spawn (PR #800 grouping)", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeJudgeRegistry(workspace, ["VERDICT: PASS"])
+    const supervisor = createCompletionPolicySupervisor({
+      registry,
+      sessionEvents: bus,
+      workspace,
+      resolveAgentAdapter: makeResolver(),
+    })
+
+    supervisor.attach({
+      sessionId: "sess_test",
+      gate: { judge: { adapter: "claude-code", prompt: "ok?" } },
+      then: "emit",
+    })
+
+    fireTurnEnd(bus, "sess_test")
+    await waitFor(() => judgePrompted(registry))
+    expect(registry.spawnAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ origin: "gate" }),
+    )
+  })
+
+  it("access.profileRef resolves via resolveAccessProfileAuth and forwards the resulting `auth` + `mode` to startSession", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeJudgeRegistry(workspace, ["VERDICT: PASS"])
+    const fakeAuthSpec = { mode: "subscription" } as unknown as Record<string, unknown>
+    vi.mocked(resolveAccessProfileAuth).mockResolvedValue({
+      ok: true,
+      authSpec: fakeAuthSpec,
+      accessProfileEcho: { profileRef: "prof-1", endpoint: "anthropic", method: "oauth-bearer" },
+    } as never)
+    const startSession = vi.fn(async () => ({}) as unknown)
+    const resolveAgentAdapter = vi.fn(async () => ({
+      startSession,
+      commandPreview: "judge (agent)",
+      authDescriptor: { provider: "anthropic" },
+    })) as unknown as AgentAdapterResolver
+
+    const supervisor = createCompletionPolicySupervisor({
+      registry,
+      sessionEvents: bus,
+      workspace,
+      resolveAgentAdapter,
+    })
+
+    supervisor.attach({
+      sessionId: "sess_test",
+      gate: {
+        judge: {
+          adapter: "claude-code",
+          prompt: "ok?",
+          access: { profileRef: "prof-1" },
+          mode: "plan",
+        },
+      },
+      then: "emit",
+    })
+
+    fireTurnEnd(bus, "sess_test")
+    await waitFor(() => judgePrompted(registry))
+
+    expect(resolveAccessProfileAuth).toHaveBeenCalledWith(
+      expect.objectContaining({ adapter: "claude-code", profileRef: "prof-1" }),
+    )
+    expect(startSession).toHaveBeenCalledWith(
+      expect.objectContaining({ auth: fakeAuthSpec, mode: "plan" }),
+    )
+  })
+
+  it("an unresolvable access profile fails the gate fail-safe — the judge is never spawned", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeJudgeRegistry(workspace, ["VERDICT: PASS"])
+    vi.mocked(resolveAccessProfileAuth).mockResolvedValue({
+      ok: false,
+      code: "access_profile_not_found",
+      message: 'no auth profile "prof-x" found.',
+    } as never)
+    const supervisor = createCompletionPolicySupervisor({
+      registry,
+      sessionEvents: bus,
+      workspace,
+      resolveAgentAdapter: makeResolver(),
+    })
+
+    const state = supervisor.attach({
+      sessionId: "sess_test",
+      gate: { judge: { adapter: "claude-code", prompt: "ok?", access: { profileRef: "prof-x" } } },
+      then: "emit",
+    })
+
+    fireTurnEnd(bus, "sess_test")
+    await waitFor(() => supervisor.getStatus(state.policyId)?.status === "blocked")
+    expect(registry.spawnAgent).not.toHaveBeenCalled()
+    expect(supervisor.getStatus(state.policyId)?.error).toMatch(/access profile/i)
+  })
+
+  it("omitting access/route/mode is a no-op — resolveAccessProfileAuth is never called and startSession gets neither `auth` nor `mode`", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeJudgeRegistry(workspace, ["VERDICT: PASS"])
+    const startSession = vi.fn(async (_opts: Record<string, unknown>) => ({}) as unknown)
+    const resolveAgentAdapter = vi.fn(async () => ({
+      startSession,
+      commandPreview: "judge (agent)",
+    })) as unknown as AgentAdapterResolver
+
+    const supervisor = createCompletionPolicySupervisor({
+      registry,
+      sessionEvents: bus,
+      workspace,
+      resolveAgentAdapter,
+    })
+
+    supervisor.attach({
+      sessionId: "sess_test",
+      gate: { judge: { adapter: "claude-code", prompt: "ok?" } },
+      then: "emit",
+    })
+
+    fireTurnEnd(bus, "sess_test")
+    await waitFor(() => judgePrompted(registry))
+
+    expect(resolveAccessProfileAuth).not.toHaveBeenCalled()
+    const call = startSession.mock.calls[0]?.[0]
+    expect(call).not.toHaveProperty("auth")
+    expect(call).not.toHaveProperty("mode")
   })
 })

@@ -15,6 +15,14 @@ export type {
 
 export { citesOf, outOfRangeCites } from "./cites.js"
 
+export {
+  bibliographySha,
+  bibShaMarker,
+  recordedBibSha,
+  stripBibShaMarker,
+} from "./bib-sha.js"
+export type { BibShaSource } from "./bib-sha.js"
+
 export { assembleChapters, cleanDraft } from "./assemble.js"
 export type {
   AssembleOptions,

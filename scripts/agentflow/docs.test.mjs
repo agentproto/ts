@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseVerbs, missingVerbPages, findStaleVersions } from './docs.mjs'
+import { parseVerbs, missingVerbPages, findStaleVersions, findMdxComments } from './docs.mjs'
 
 // The dispatcher shape docs.mjs parses out of packages/cli/src/cli.ts.
 const CLI_SRC = `
@@ -65,4 +65,18 @@ test('findStaleVersions catches multiple drifted tokens across fences, not prose
     { found: '0.5.0', expected: '0.6.0' },
     { found: '0.4.0', expected: '0.6.0' },
   ])
+})
+
+test('findMdxComments flags an HTML comment with its 1-indexed line', () => {
+  const text = '# Guide\n\n<!-- sync marker -->\n\nbody'
+  assert.deepEqual(findMdxComments(text), [{ line: 3, snippet: '<!-- sync marker -->' }])
+})
+
+test('findMdxComments ignores fences (HTML examples are legitimate there)', () => {
+  const text = 'prose\n\n```html\n<!-- ok in a fence -->\n```\n\n<!-- not ok -->'
+  assert.deepEqual(findMdxComments(text), [{ line: 7, snippet: '<!-- not ok -->' }])
+})
+
+test('findMdxComments returns empty for clean docs', () => {
+  assert.deepEqual(findMdxComments('# Guide\n\nuse {/* comment */} in MDX\n'), [])
 })

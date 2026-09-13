@@ -1,6 +1,14 @@
 import { z } from "zod"
 
 import { defineGenerator, type GeneratedFiles, type GeneratorContext } from "../types.js"
+import {
+  computeAddedAtLedger,
+  isoDateFromUnixSeconds,
+  ledgerRelPath,
+  readLedger,
+  serializeLedger,
+  todayIso,
+} from "../added-at.js"
 
 /**
  * PINNED source. The OpenRouter `/api/v1/models` payload lists every route
@@ -32,10 +40,14 @@ const PricingSchema = z
   })
   .passthrough()
 
+// `created` is Unix seconds — OpenRouter's own route-creation timestamp,
+// used to backfill `addedAt` for ids not already in the ledger (see
+// `../added-at.ts`). Verified present on the live payload (2026-08-31).
 const ModelSchema = z
   .object({
     id: z.string(),
     pricing: PricingSchema.optional(),
+    created: z.number().optional(),
   })
   .passthrough()
 
@@ -57,6 +69,8 @@ interface LLMPricingEntry {
   outputPer1M: number
   cacheReadMultiplier?: number
   cacheWriteMultiplier?: number
+  /** ISO date this id was first seen by a sync run. See `../added-at.ts`. */
+  addedAt?: string
   vendor: string
   provider: "openrouter"
 }
@@ -101,6 +115,9 @@ function serializeEntry(e: LLMPricingEntry): string {
   if (e.cacheWriteMultiplier !== undefined) {
     fields.push(`cacheWriteMultiplier: ${fmt(e.cacheWriteMultiplier)}`)
   }
+  if (e.addedAt !== undefined) {
+    fields.push(`addedAt: ${JSON.stringify(e.addedAt)}`)
+  }
   fields.push(`vendor: ${JSON.stringify(e.vendor)}`)
   fields.push(`provider: ${JSON.stringify(e.provider)}`)
   return `{\n    ${fields.join(",\n    ")},\n  }`
@@ -117,6 +134,9 @@ function serializeFile(entries: Record<string, LLMPricingEntry>): string {
     "// Pricing carries provider USD (inputPer1M / outputPer1M) plus cache",
     "// multipliers (cacheReadMultiplier / cacheWriteMultiplier) derived from the",
     "// source's input_cache_read / input_cache_write per-token fields when present.",
+    "// addedAt is the ISO date this id was first seen by a sync run — backfilled",
+    "// from the source's own `created` timestamp, then NEVER mutated; see",
+    "// packages/catalog-sync/src/added-at.ts and the package README.",
     "",
     'import type { LLMPricing } from "./catalog.js"',
     "",
@@ -139,12 +159,15 @@ function serializeFile(entries: Record<string, LLMPricingEntry>): string {
 
 // ── Generator ───────────────────────────────────────────────────────────
 
+const LEDGER_ID = "llm-openrouter"
+
 async function generate(ctx: GeneratorContext): Promise<GeneratedFiles> {
   const src = sources[0]
   if (!src) throw new Error("llm:openrouter: no source configured")
   const parsed = SnapshotSchema.parse(await ctx.fetchSource(src))
 
   const entries: Record<string, LLMPricingEntry> = {}
+  const createdAt: Record<string, string> = {}
   for (const model of parsed.data) {
     const pricing = model.pricing
     if (!pricing) continue
@@ -171,9 +194,21 @@ async function generate(ctx: GeneratorContext): Promise<GeneratedFiles> {
     }
 
     entries[model.id] = entry
+    if (model.created !== undefined) createdAt[model.id] = isoDateFromUnixSeconds(model.created)
   }
 
-  return { [OUTPUT_PATH]: serializeFile(entries) }
+  const ledger = computeAddedAtLedger(
+    Object.keys(entries),
+    readLedger(LEDGER_ID),
+    createdAt,
+    todayIso()
+  )
+  for (const [id, entry] of Object.entries(entries)) entry.addedAt = ledger[id]
+
+  return {
+    [OUTPUT_PATH]: serializeFile(entries),
+    [ledgerRelPath(LEDGER_ID)]: serializeLedger(ledger),
+  }
 }
 
 const sources = [{ id: "llm-openrouter", url: OPENROUTER_MODELS_URL }]

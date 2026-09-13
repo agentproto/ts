@@ -42,6 +42,15 @@ import { registerCommandTools, runCommand, withSanePath } from "../command-tools
 import { COMMAND_SANDBOX_MODE_ENV } from "@agentproto/command-sandbox"
 import { createSessionsRegistry, type AgentSessionLike, type SessionsRegistry } from "../sessions.js"
 
+const fakeAgent = (): AgentSessionLike => ({
+  sessionId: "acp-session-id",
+  async *send() {
+    yield { kind: "turn-end", reason: "completed" }
+  },
+  async cancel() {},
+  async close() {},
+})
+
 async function buildHarness(
   workspace: string,
   registry: SessionsRegistry,
@@ -152,6 +161,49 @@ describe("command_execute → session-based persistence", () => {
     await close()
   })
 
+  it("nests the minted session under the callerSessionId parent at parent.depth + 1", async () => {
+    // The parent — the agent session that invoked this /mcp request —
+    // registered itself first, at depth 2 under some root.
+    const parent = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: workspace,
+      agentSession: fakeAgent(),
+      adapterSlug: "fake",
+      parentSessionId: "sess_root00",
+      depth: 2,
+    })
+    const { client, close } = await buildHarness(workspace, registry, {
+      callerSessionId: parent.id,
+    })
+    const result = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('hi')"] },
+    })
+    const { sessionId } = JSON.parse(textOf(result))
+    const desc = registry.get(sessionId)
+    expect(desc?.parentSessionId).toBe(parent.id)
+    expect(desc?.callerSessionId).toBe(parent.id)
+    expect(desc?.depth).toBe(3)
+
+    await close()
+  })
+
+  it("stamps no depth when the callerSessionId parent can't be resolved", async () => {
+    const { client, close } = await buildHarness(workspace, registry, {
+      callerSessionId: "sess_missing0",
+    })
+    const result = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('hi')"] },
+    })
+    const { sessionId } = JSON.parse(textOf(result))
+    const desc = registry.get(sessionId)
+    expect(desc?.parentSessionId).toBe("sess_missing0")
+    expect(desc?.depth).toBe(0)
+
+    await close()
+  })
+
   it("passes an explicit origin through onto the minted session", async () => {
     const { client, close } = await buildHarness(workspace, registry)
     const result = await client.callTool({
@@ -232,7 +284,9 @@ describe("command_execute → session-based persistence", () => {
       result => result.entries.every(e => typeof e.stdout === "string"),
     )
     expect(entries).toHaveLength(2)
-    expect(entries.map(e => e.stdout!.trim())).toEqual(["2", "3"])
+    // Strip ANSI color codes — FORCE_COLOR=1 in env leaks them into stdout.
+    const stripAnsi = (s: string) => s.replace(/\u001b\[\d+m/g, "")
+    expect(entries.map(e => stripAnsi(e.stdout!).trim())).toEqual(["2", "3"])
 
     await close()
   })
@@ -272,9 +326,10 @@ describe("tool_calls_list — unified logger over the proxy + in-agent paths (PR
     registry = createSessionsRegistry({ persistPath: join(workspace, "sessions.json"), persist: false })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await registry.settlePendingWrites()
     registry.shutdown()
-    rmSync(workspace, { recursive: true, force: true })
+    rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
   })
 
   it("(sessionId) reads back the proxy path's ToolCallRecord", async () => {
@@ -377,6 +432,71 @@ describe("tool_calls_list — unified logger over the proxy + in-agent paths (PR
       arguments: { sessionId: "sess_doesnotexist" },
     })
     expect(JSON.parse(textOf(result))).toEqual({ records: [] })
+    await close()
+  })
+
+  it("(fields) projects each record down to exactly the requested keys", async () => {
+    const { client, close } = await buildHarness(workspace, registry)
+    const exec = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('hi')"] },
+    })
+    const { sessionId } = JSON.parse(textOf(exec))
+
+    const { records } = await pollUntil(
+      async () => {
+        const result = await client.callTool({
+          name: "tool_calls_list",
+          arguments: { sessionId, fields: ["tool", "sessionId"] },
+        })
+        return JSON.parse(textOf(result)) as { records: Array<Record<string, unknown>> }
+      },
+      result => result.records.length > 0,
+    )
+    expect(records).toHaveLength(1)
+    expect(Object.keys(records[0] as object).sort()).toEqual(["sessionId", "tool"])
+    expect(records[0]?.tool).toBe("command_execute")
+    expect(records[0]?.sessionId).toBe(sessionId)
+    // Projected fields the caller did not ask for must not leak through.
+    expect(records[0]?.command).toBeUndefined()
+    expect(records[0]?.exitCode).toBeUndefined()
+
+    await close()
+  })
+
+  it("(full: true) is the legacy escape hatch — output identical to the default", async () => {
+    const { client, close } = await buildHarness(workspace, registry)
+    const exec = await client.callTool({
+      name: "command_execute",
+      arguments: { command: "node", args: ["-e", "console.log('hi')"] },
+    })
+    const { sessionId } = JSON.parse(textOf(exec))
+
+    const { records: fullRecords } = await pollUntil(
+      async () => {
+        const result = await client.callTool({
+          name: "tool_calls_list",
+          arguments: { sessionId, full: true },
+        })
+        return JSON.parse(textOf(result)) as { records: Array<Record<string, unknown>> }
+      },
+      result => result.records.length > 0,
+    )
+    const defaultResult = await client.callTool({
+      name: "tool_calls_list",
+      arguments: { sessionId },
+    })
+    const { records: defaultRecords } = JSON.parse(textOf(defaultResult)) as {
+      records: Array<Record<string, unknown>>
+    }
+    // full: true must be byte-for-byte what the default returns.
+    expect(JSON.stringify(fullRecords)).toBe(JSON.stringify(defaultRecords))
+    // And both are FULL records — no projection, no preview.
+    expect(Object.keys(defaultRecords[0] as object)).toContain("command")
+    expect(Object.keys(defaultRecords[0] as object)).toContain("exitCode")
+    expect(Object.keys(defaultRecords[0] as object)).toContain("durationMs")
+    expect(Object.keys(defaultRecords[0] as object)).toContain("ts")
+
     await close()
   })
 })
@@ -484,9 +604,10 @@ describe("command_execute → argv-level allowlist matching (Gap 10)", () => {
     registry = createSessionsRegistry({ persistPath: join(workspace, "sessions.json"), persist: false })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await registry.settlePendingWrites()
     registry.shutdown()
-    rmSync(workspace, { recursive: true, force: true })
+    rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
   })
 
   it("a plain basename string entry stays unconstrained — any argv is allowed (backward compat)", async () => {
@@ -589,9 +710,10 @@ describe("command_execute → callerSessionId provenance (Gap 7)", () => {
     registry = createSessionsRegistry({ persistPath: join(workspace, "sessions.json"), persist: false })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    await registry.settlePendingWrites()
     registry.shutdown()
-    rmSync(workspace, { recursive: true, force: true })
+    rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
   })
 
   it("records the mounting registration's callerSessionId onto every command session it mints", async () => {
@@ -671,4 +793,68 @@ describe("runCommand — resolves a tool that's only on a default dir, not the i
       process.env.PATH = originalPath
     }
   })
+})
+
+/** Resolve `true` once `pid` no longer exists (a signal-0 probe throws
+ * ESRCH), or `false` if it's still alive after `timeoutMs`. Same-user
+ * spawns, so an EPERM (process alive, not ours) can't happen here. */
+async function waitForPidGone(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    try {
+      process.kill(pid, 0)
+    } catch {
+      return true // ESRCH — the process is gone
+    }
+    if (Date.now() >= deadline) return false
+    await new Promise(r => setTimeout(r, 50))
+  }
+}
+
+describe("runCommand — timeouts are honest and reap the whole process group", () => {
+  it("marks timedOut + appends guidance naming the cap when the timeoutMs fires", async () => {
+    const result = await runCommand({
+      command: "sleep",
+      args: ["30"],
+      cwd: tmpdir(),
+      timeoutMs: 300,
+    })
+    // New machine-readable flag: a caller no longer has to string-match a
+    // signal to know a timeout from any other SIGTERM — which is the whole
+    // point, since the OS reports the real "SIGTERM" here and the synthetic
+    // "SIGTERM-timeout" marker is only the fallback when close carries no
+    // signal at all.
+    expect(result.timedOut).toBe(true)
+    // Either way it's a SIGTERM-family kill (back-compat marker unchanged).
+    expect(result.signal).toContain("SIGTERM")
+    // The human note names the effective cap and steers to a persistent
+    // session that outlives the RPC.
+    expect(result.stderr).toContain("killed after 300ms")
+    expect(result.stderr).toContain("agentproto sessions start")
+  })
+
+  // POSIX-only: process groups (and the negative-pid kill) don't exist on
+  // Windows, where `detached` degrades to a plain child kill.
+  it.skipIf(process.platform === "win32")(
+    "kills a slow grandchild's process group, not just the direct child",
+    async () => {
+      // `bash -c` runs with job control OFF, so the backgrounded `sleep`
+      // shares bash's process group — a group-targeted kill reaps it, while a
+      // child-only kill would SIGTERM `bash` and orphan `sleep` (reparented to
+      // init, still ticking). We echo the background pid so we can prove it's
+      // actually gone rather than merely trusting a prompt return.
+      const result = await runCommand({
+        command: "bash",
+        args: ["-c", "sleep 30 & echo $!; wait"],
+        cwd: tmpdir(),
+        timeoutMs: 300,
+      })
+      expect(result.timedOut).toBe(true)
+      const grandchildPid = Number(result.stdout.trim())
+      expect(Number.isInteger(grandchildPid)).toBe(true)
+      // SIGTERM to the group fells `sleep` at once; allow the OS a beat to
+      // reap it before asserting the pid is gone.
+      expect(await waitForPidGone(grandchildPid, 2_000)).toBe(true)
+    },
+  )
 })

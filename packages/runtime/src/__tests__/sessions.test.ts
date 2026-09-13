@@ -4,11 +4,19 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
   createSessionsRegistry,
+  SESSION_ID_ENV,
+  WORKSPACE_SLUG_ENV,
   type AgentSessionLike,
+  type PtyFactory,
   type PtyProcess,
 } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
+import { buildSessionTree } from "../session-tools.js"
 import { sessionTranscriptDir } from "../transcript-writer.js"
+import {
+  CONTEXT_CONTINUITY_DEFAULTS,
+  type ResolvedContextContinuityPolicy,
+} from "../context-continuity.js"
 
 /**
  * Tests covering the registry behaviours that have historically
@@ -772,6 +780,171 @@ describe("createSessionsRegistry", () => {
     expect(reg.get(desc.id)?.awaitingInput).toBe(true)
     expect(reg.get(desc.id)?.awaitingQuestion).toBeUndefined()
     reg.shutdown()
+  })
+
+  describe("structured-question answers — context-continuity ask mode", () => {
+    // Low, evenly-spaced thresholds so a small usage_update swing crosses
+    // them deterministically without needing a huge fake context window.
+    const askPolicy: ResolvedContextContinuityPolicy = {
+      ...CONTEXT_CONTINUITY_DEFAULTS,
+      mode: "ask",
+      warnAtPct: 10,
+      compactAtPct: 15,
+      continueFreshAtPct: 20,
+      hardStopAtPct: 90,
+      label: "ask",
+    }
+
+    it("'keep-going' clears the question without starting a turn, and re-asking is suppressed until context grows further", async () => {
+      const bus = createSessionEventBus()
+      const answeredHandler = vi.fn()
+      bus.on("session:awaiting-question-answered", answeredHandler)
+      const reg = createSessionsRegistry({ persistPath, persist: false, sessionEvents: bus })
+
+      let call = 0
+      const fakeAgent: AgentSessionLike = {
+        sessionId: "acp-ask-keep-going",
+        async *send() {
+          call += 1
+          const used = call < 3 ? 25 : 30
+          yield { kind: "usage_update", size: 100, used }
+          yield { kind: "turn-end" }
+        },
+        async cancel() {},
+        async close() {},
+      }
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent,
+        adapterSlug: "fake",
+        contextContinuity: askPolicy,
+      })
+
+      await reg.sendPrompt(desc.id, "go")
+      expect(reg.get(desc.id)?.awaitingQuestion).toEqual({
+        source: "structured",
+        text: "Context is at 25%. Continue fresh to avoid losing continuity?",
+        options: ["continue-fresh", "keep-going"],
+      })
+
+      await reg.sendPrompt(desc.id, "  Keep-Going  ") // case/whitespace-insensitive match
+      expect(call).toBe(1) // answering never dispatched a second turn
+      expect(reg.get(desc.id)?.awaitingInput).toBeFalsy()
+      expect(reg.get(desc.id)?.awaitingQuestion).toBeUndefined()
+      expect(answeredHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "session:awaiting-question-answered",
+          sessionId: desc.id,
+          answer: "keep-going",
+        }),
+      )
+
+      // A further turn at the SAME pct must not immediately re-ask.
+      await reg.sendPrompt(desc.id, "still working on it")
+      expect(call).toBe(2)
+      expect(reg.get(desc.id)?.awaitingInput).toBeFalsy()
+      expect(reg.get(desc.id)?.awaitingQuestion).toBeUndefined()
+
+      // Context climbs past the acknowledged pct — the question returns.
+      await reg.sendPrompt(desc.id, "still working on it")
+      expect(call).toBe(3)
+      expect(reg.get(desc.id)?.awaitingQuestion).toEqual({
+        source: "structured",
+        text: "Context is at 30%. Continue fresh to avoid losing continuity?",
+        options: ["continue-fresh", "keep-going"],
+      })
+
+      reg.shutdown()
+    })
+
+    it("'continue-fresh' answer routes into the continue-fresh handoff, not a normal turn", async () => {
+      const bus = createSessionEventBus()
+      const answeredHandler = vi.fn()
+      bus.on("session:awaiting-question-answered", answeredHandler)
+      // No `resolveAgentAdapter` configured — `performContextContinueFresh`
+      // takes its documented "hard-stop instead" fallback, which is fully
+      // in-memory/deterministic and distinguishable (by its own log line and
+      // by NOT setting `contextContinuityHardStopped` via the separate
+      // automatic hard-stop path) from both the automatic hard-stop action
+      // and a normal turn.
+      const reg = createSessionsRegistry({ persistPath, persist: false, sessionEvents: bus })
+
+      let call = 0
+      const fakeAgent: AgentSessionLike = {
+        sessionId: "acp-ask-continue-fresh",
+        async *send() {
+          call += 1
+          yield { kind: "usage_update", size: 100, used: 25 }
+          yield { kind: "turn-end" }
+        },
+        async cancel() {},
+        async close() {},
+      }
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent,
+        adapterSlug: "fake",
+        contextContinuity: askPolicy,
+      })
+
+      await reg.sendPrompt(desc.id, "go")
+      expect(reg.get(desc.id)?.awaitingQuestion?.options).toEqual(["continue-fresh", "keep-going"])
+
+      await reg.sendPrompt(desc.id, "continue-fresh")
+
+      expect(call).toBe(1) // the original session's agent never got a second turn
+      expect(answeredHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "session:awaiting-question-answered",
+          sessionId: desc.id,
+          answer: "continue-fresh",
+        }),
+      )
+      const lines: string[] = []
+      const unsub = reg.attach(desc.id, line => { lines.push(line) })
+      if (unsub) unsub()
+      expect(
+        lines.some(l => l.includes("continue-fresh requested but no adapter resolver is configured")),
+      ).toBe(true)
+      expect(reg.get(desc.id)?.status).toBe("killed")
+
+      reg.shutdown()
+    })
+
+    it("prompt text that doesn't match a declared option still runs a normal turn", async () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+
+      let call = 0
+      const fakeAgent: AgentSessionLike = {
+        sessionId: "acp-ask-unrelated",
+        async *send() {
+          call += 1
+          yield { kind: "usage_update", size: 100, used: 25 }
+          yield { kind: "turn-end" }
+        },
+        async cancel() {},
+        async close() {},
+      }
+      const desc = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: fakeAgent,
+        adapterSlug: "fake",
+        contextContinuity: askPolicy,
+      })
+
+      await reg.sendPrompt(desc.id, "go")
+      expect(reg.get(desc.id)?.awaitingQuestion?.options).toEqual(["continue-fresh", "keep-going"])
+
+      await reg.sendPrompt(desc.id, "actually let's just keep debugging this")
+      expect(call).toBe(2) // a real second turn ran — the text was not treated as an answer
+      // never acknowledged, so the ask state re-fires exactly as before.
+      expect(reg.get(desc.id)?.awaitingQuestion?.options).toEqual(["continue-fresh", "keep-going"])
+
+      reg.shutdown()
+    })
   })
 
   it("WP0: emits session:exited when kill() is called on an agent-cli session", async () => {
@@ -1552,6 +1725,86 @@ describe("createSessionsRegistry", () => {
       expect(reg.get(desc.id)).toMatchObject({ origin: "cron", callerSessionId: "sess_abcd1234" })
       reg.shutdown()
     })
+
+    it("stamps parentSessionId and depth onto the descriptor when passed", () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const desc = reg.recordCommand({
+        workspaceSlug: "default",
+        cwd: workspace,
+        command: "echo",
+        args: ["hi"],
+        exitCode: 0,
+        signal: null,
+        durationMs: 1,
+        stdout: "hi\n",
+        stderr: "",
+        parentSessionId: "sess_parent01",
+        depth: 3,
+      })
+      expect(desc.parentSessionId).toBe("sess_parent01")
+      expect(desc.depth).toBe(3)
+      expect(reg.get(desc.id)).toMatchObject({ parentSessionId: "sess_parent01", depth: 3 })
+      reg.shutdown()
+    })
+
+    it("records depth: 0 and no parentSessionId key when neither is passed", () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const desc = reg.recordCommand({
+        workspaceSlug: "default",
+        cwd: workspace,
+        command: "echo",
+        args: ["hi"],
+        exitCode: 0,
+        signal: null,
+        durationMs: 1,
+        stdout: "hi\n",
+        stderr: "",
+      })
+      expect(desc.depth).toBe(0)
+      expect("parentSessionId" in desc).toBe(false)
+      reg.shutdown()
+    })
+
+    it("nests the command session under its parent in buildSessionTree", () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const fakeAgent = (): AgentSessionLike => ({
+        sessionId: "acp-session-id",
+        async *send() {
+          yield { kind: "turn-end", reason: "completed" }
+        },
+        async cancel() {},
+        async close() {},
+      })
+      const parent = reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: workspace,
+        agentSession: fakeAgent(),
+        adapterSlug: "fake",
+        depth: 2,
+        parentSessionId: "sess_root00",
+      })
+      const cmd = reg.recordCommand({
+        workspaceSlug: "default",
+        cwd: workspace,
+        command: "echo",
+        args: ["hi"],
+        exitCode: 0,
+        signal: null,
+        durationMs: 1,
+        stdout: "hi\n",
+        stderr: "",
+        parentSessionId: parent.id,
+        depth: (parent.depth ?? 0) + 1,
+      })
+      const tree = buildSessionTree(reg.list())
+      // "sess_root00" isn't itself registered, so `parent` is a root here.
+      const roots = tree.filter(n => n.id === parent.id)
+      expect(roots).toHaveLength(1)
+      const parentChildren = roots[0]?.children ?? []
+      expect(parentChildren.map(n => n.id)).toContain(cmd.id)
+      expect(parentChildren.find(n => n.id === cmd.id)?.depth).toBe(3)
+      reg.shutdown()
+    })
   })
 
   describe("recordOpenedPr", () => {
@@ -1750,6 +2003,282 @@ describe("createSessionsRegistry", () => {
       expect(lines).toHaveLength(2)
       const first = JSON.parse(lines[0]!)
       expect(Buffer.from(first.bytes, "base64").toString("utf8")).toBe("hello pty\n")
+      reg.shutdown()
+    })
+  })
+
+  describe("session-identity env injection (AGENTPROTO_SESSION_ID / AGENTPROTO_WORKSPACE_SLUG)", () => {
+    it("spawn(): child gets its OWN minted id, surviving both an ambient-env leak and a forged caller env", async () => {
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const outFile = join(tmp, "env-probe.txt")
+      // Simulate the one scenario that would make identity accidentally
+      // inheritable: the daemon's OWN process env already carries a session
+      // id (e.g. a misconfigured nested daemon). `spawn()` must still win
+      // with its own freshly minted id, not this ambient leftover.
+      const priorAmbient = process.env[SESSION_ID_ENV]
+      process.env[SESSION_ID_ENV] = "sess_ambient_leak"
+      try {
+        const script =
+          `require("fs").writeFileSync(process.argv[1], ` +
+          `[process.env.${SESSION_ID_ENV}, process.env.${WORKSPACE_SLUG_ENV}].join("|"))`
+        const desc = reg.spawn({
+          kind: "command",
+          workspaceSlug: "real-workspace",
+          cwd: process.cwd(),
+          argv: [process.execPath, "-e", script, outFile],
+          // A caller-supplied env (e.g. POST /sessions' `env` body field)
+          // trying to forge both vars — must lose to the registry's own
+          // assign-last injection.
+          env: {
+            [SESSION_ID_ENV]: "sess_forged_by_caller",
+            [WORKSPACE_SLUG_ENV]: "forged-workspace",
+          },
+        })
+        const output = await pollUntil(async () => {
+          if (!existsSync(outFile)) return null
+          // `writeFileSync` truncates the file to 0 bytes on open before
+          // writing, so a poll landing in that window sees an empty file.
+          // The probe always emits `id|slug`, so wait for the delimiter
+          // rather than accepting a partial (empty) read as the result.
+          const s = readFileSync(outFile, "utf8")
+          return s.includes("|") ? s : null
+        })
+        const [gotId, gotSlug] = output.split("|")
+        expect(gotId).toBe(desc.id)
+        expect(gotId).not.toBe("sess_ambient_leak")
+        expect(gotId).not.toBe("sess_forged_by_caller")
+        expect(gotSlug).toBe("real-workspace")
+      } finally {
+        if (priorAmbient === undefined) delete process.env[SESSION_ID_ENV]
+        else process.env[SESSION_ID_ENV] = priorAmbient
+        reg.shutdown()
+      }
+    })
+
+    it("spawnPty(): injects the session's own id + slug into the PTY factory's env, overriding a forged caller env", () => {
+      let capturedEnv: Record<string, string> | undefined
+      const capturingPtyFactory: PtyFactory = opts => {
+        capturedEnv = opts.env
+        return {
+          pid: process.pid,
+          write() {},
+          resize() {},
+          kill() {},
+          onData() {},
+          onExit() {},
+        }
+      }
+      const reg = createSessionsRegistry({
+        persistPath,
+        persist: false,
+        spawnPty: capturingPtyFactory,
+      })
+      const desc = reg.spawnPty({
+        workspaceSlug: "real-workspace",
+        cwd: tmp,
+        argv: ["bash"],
+        cols: 80,
+        rows: 24,
+        env: {
+          [SESSION_ID_ENV]: "sess_forged_by_caller",
+          [WORKSPACE_SLUG_ENV]: "forged-workspace",
+        },
+      })
+      expect(capturedEnv?.[SESSION_ID_ENV]).toBe(desc.id)
+      expect(capturedEnv?.[WORKSPACE_SLUG_ENV]).toBe("real-workspace")
+      reg.shutdown()
+    })
+
+    // A restarted PTY that dies before its first turn (e.g. a `claude
+    // --resume <id>` the provider rejects) used to leave `status: "exited"`
+    // with no `lastError` — indistinguishable from a normal graceful exit,
+    // and completely silent in daemon.log. These drive the fix: an abnormal
+    // exit (nonzero code / signal, and not an operator-targeted kill()) must
+    // surface a readable cause.
+    describe("spawnPty(): abnormal-exit observability", () => {
+      function controllablePtyFactory(): {
+        factory: PtyFactory
+        emitData: (chunk: string) => void
+        emitExit: (evt: { exitCode: number; signal?: number }) => void
+      } {
+        let onData: ((chunk: string) => void) | undefined
+        let onExit: ((evt: { exitCode: number; signal?: number }) => void) | undefined
+        const factory: PtyFactory = (): PtyProcess => ({
+          pid: process.pid,
+          write() {},
+          resize() {},
+          kill() {},
+          onData: cb => {
+            onData = cb
+          },
+          onExit: cb => {
+            onExit = cb
+          },
+        })
+        return {
+          factory,
+          emitData: chunk => onData?.(chunk),
+          emitExit: evt => onExit?.(evt),
+        }
+      }
+
+      it("a nonzero exit with captured output sets status:error and a readable lastError", () => {
+        const { factory, emitData, emitExit } = controllablePtyFactory()
+        const reg = createSessionsRegistry({ persistPath, persist: false, spawnPty: factory })
+        const desc = reg.spawnPty({
+          workspaceSlug: "default",
+          cwd: tmp,
+          argv: ["claude", "--resume", "c643a525-5d7a-4a45-a9a0-666215eb6e77"],
+          cols: 80,
+          rows: 24,
+        })
+        // The real-world failure this regresses: claude's TUI prints an
+        // ANSI-decorated rejection line, then exits nonzero.
+        emitData(
+          "\x1b[?25l\x1b[91mNo conversation found with session ID: c643a525-5d7a-4a45-a9a0-666215eb6e77\x1b[39m\r\n"
+        )
+        emitExit({ exitCode: 1 })
+
+        const after = reg.get(desc.id)
+        expect(after?.status).toBe("error")
+        expect(after?.exitCode).toBe(1)
+        expect(after?.lastError).toContain(
+          "No conversation found with session ID: c643a525-5d7a-4a45-a9a0-666215eb6e77"
+        )
+        reg.shutdown()
+      })
+
+      it("a clean zero-code exit stays status:exited with no lastError", () => {
+        const { factory, emitExit } = controllablePtyFactory()
+        const reg = createSessionsRegistry({ persistPath, persist: false, spawnPty: factory })
+        const desc = reg.spawnPty({
+          workspaceSlug: "default",
+          cwd: tmp,
+          argv: ["bash"],
+          cols: 80,
+          rows: 24,
+        })
+        emitExit({ exitCode: 0 })
+
+        const after = reg.get(desc.id)
+        expect(after?.status).toBe("exited")
+        expect(after?.lastError).toBeUndefined()
+        reg.shutdown()
+      })
+
+      it("a clean exit with node-pty's real {exitCode: 0, signal: 0} shape stays status:exited with no lastError", () => {
+        // node-pty's actual clean-exit payload sets `signal` to the number
+        // 0, not `undefined` — a naive `evt.signal !== undefined` check
+        // reads that as "a signal fired" and misclassifies every normal
+        // exit as abnormal. This is the shape that must not regress.
+        const { factory, emitExit } = controllablePtyFactory()
+        const reg = createSessionsRegistry({ persistPath, persist: false, spawnPty: factory })
+        const desc = reg.spawnPty({
+          workspaceSlug: "default",
+          cwd: tmp,
+          argv: ["bash"],
+          cols: 80,
+          rows: 24,
+        })
+        emitExit({ exitCode: 0, signal: 0 })
+
+        const after = reg.get(desc.id)
+        expect(after?.status).toBe("exited")
+        expect(after?.lastError).toBeUndefined()
+        reg.shutdown()
+      })
+
+      it("a nonzero signal with exitCode 0 and no operator kill() still sets status:error", () => {
+        const { factory, emitExit } = controllablePtyFactory()
+        const reg = createSessionsRegistry({ persistPath, persist: false, spawnPty: factory })
+        const desc = reg.spawnPty({
+          workspaceSlug: "default",
+          cwd: tmp,
+          argv: ["bash"],
+          cols: 80,
+          rows: 24,
+        })
+        emitExit({ exitCode: 0, signal: 15 })
+
+        const after = reg.get(desc.id)
+        expect(after?.status).toBe("error")
+        expect(after?.lastError).toContain("signal 15")
+        reg.shutdown()
+      })
+
+      it("an operator-targeted kill() is never relabeled — status stays killed, no lastError", () => {
+        const { factory, emitExit } = controllablePtyFactory()
+        const reg = createSessionsRegistry({ persistPath, persist: false, spawnPty: factory })
+        const desc = reg.spawnPty({
+          workspaceSlug: "default",
+          cwd: tmp,
+          argv: ["bash"],
+          cols: 80,
+          rows: 24,
+        })
+        reg.kill(desc.id)
+        // The real pty later reports its own exit — after SIGTERM, most
+        // shells exit nonzero (128+signal) or with a signal set.
+        emitExit({ exitCode: 143, signal: 15 })
+
+        const after = reg.get(desc.id)
+        expect(after?.status).toBe("killed")
+        expect(after?.lastError).toBeUndefined()
+        reg.shutdown()
+      })
+
+      it("a nonzero exit with no captured output still sets a diagnosable lastError", () => {
+        const { factory, emitExit } = controllablePtyFactory()
+        const reg = createSessionsRegistry({ persistPath, persist: false, spawnPty: factory })
+        const desc = reg.spawnPty({
+          workspaceSlug: "default",
+          cwd: tmp,
+          argv: ["false"],
+          cols: 80,
+          rows: 24,
+        })
+        emitExit({ exitCode: 1 })
+
+        const after = reg.get(desc.id)
+        expect(after?.status).toBe("error")
+        expect(after?.lastError).toContain("code 1")
+        reg.shutdown()
+      })
+    })
+
+    it("two agent-cli sessions spawned back to back each get a distinct minted id via recordCommand's `id` passthrough", () => {
+      // Exercises the same "own id, not a shared/parent one" contract
+      // recordCommand-backed spawners (command_execute, cron) rely on:
+      // passing `id` pins the descriptor to a pre-minted value instead of
+      // recordCommand minting a second, different one.
+      const reg = createSessionsRegistry({ persistPath, persist: false })
+      const first = reg.recordCommand({
+        id: "sess_preminted_one",
+        workspaceSlug: "default",
+        cwd: tmp,
+        command: "true",
+        args: [],
+        exitCode: 0,
+        signal: null,
+        durationMs: 1,
+        stdout: "",
+        stderr: "",
+      })
+      const second = reg.recordCommand({
+        id: "sess_preminted_two",
+        workspaceSlug: "default",
+        cwd: tmp,
+        command: "true",
+        args: [],
+        exitCode: 0,
+        signal: null,
+        durationMs: 1,
+        stdout: "",
+        stderr: "",
+      })
+      expect(first.id).toBe("sess_preminted_one")
+      expect(second.id).toBe("sess_preminted_two")
+      expect(first.id).not.toBe(second.id)
       reg.shutdown()
     })
   })

@@ -35,6 +35,11 @@ import { fileURLToPath } from "node:url"
 import { setTimeout as sleep } from "node:timers/promises"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+// Repo-relative: this driver always runs from the checked-out repo (the
+// composite action is `uses: ./.github/actions/agentproto-run`), so the pure
+// artifact-ledger helpers are on disk two levels up from `.github/actions/*/`.
+import { parseArtifactMarkers } from "../../../scripts/lib/artifact-ledger.mjs"
+import { describeRunProgress } from "../../../scripts/lib/workflow-progress.mjs"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -216,20 +221,16 @@ async function main() {
   const { runId } = started
   console.log(`driver: started workflow run ${runId}`)
 
-  const pollDeadline = Date.now() + timeoutMinutes * 60_000
+  const pollStartedAt = Date.now()
+  const pollDeadline = pollStartedAt + timeoutMinutes * 60_000
+  // Re-log the fingerprint at least this often even when nothing changed, so a
+  // stalled run still produces a "+Ns, still here, still stuck on X" line.
+  const HEARTBEAT_MS = 60_000
+  let lastProgress = ""
+  let lastHeartbeatAt = 0
+  let timedOut = false
   let run
   for (;;) {
-    if (Date.now() > pollDeadline) {
-      console.error(
-        `driver: timed out after ${timeoutMinutes}m waiting for run ${runId} — cancelling`,
-      )
-      try {
-        await client.callTool({ name: "workflow_cancel", arguments: { runId } })
-      } catch (err) {
-        console.error(`driver: workflow_cancel failed: ${err.message}`)
-      }
-      throw new Error(`workflow run ${runId} did not reach a terminal status within ${timeoutMinutes}m`)
-    }
     const statusResult = await client.callTool({
       name: "workflow_status",
       arguments: { runId },
@@ -239,11 +240,57 @@ async function main() {
     // (the failure reason once status reaches "failed") — only a MISSING
     // `status` means the tool call itself errored (e.g. "run not found").
     if (!run.status) throw new Error(`workflow_status failed: ${run.error ?? "unknown error"}`)
+
+    const progress = describeRunProgress(run)
+    if (progress !== lastProgress || Date.now() - lastHeartbeatAt >= HEARTBEAT_MS) {
+      console.log(`driver: [+${Math.round((Date.now() - pollStartedAt) / 1000)}s] ${progress}`)
+      lastProgress = progress
+      lastHeartbeatAt = Date.now()
+    }
+
     if (TERMINAL_STATUSES.has(run.status)) break
+
+    // Deadline checked AFTER the status read so a run that lands terminal right
+    // on the boundary is still harvested as terminal rather than cancelled.
+    if (Date.now() > pollDeadline) {
+      timedOut = true
+      console.error(
+        `driver: timed out after ${timeoutMinutes}m waiting for run ${runId} — cancelling. ` +
+          `Last progress: ${progress}`,
+      )
+      try {
+        await client.callTool({ name: "workflow_cancel", arguments: { runId } })
+      } catch (err) {
+        console.error(`driver: workflow_cancel failed: ${err.message}`)
+      }
+      // Re-read post-cancel: cancelling is what makes the runner flush the
+      // stage/step state (and the sessionIds) the post-mortem below needs.
+      try {
+        const after = parseToolResult(
+          await client.callTool({ name: "workflow_status", arguments: { runId } }),
+        )
+        if (after?.status) run = after
+      } catch (err) {
+        console.error(`driver: post-cancel workflow_status failed: ${err.message}`)
+      }
+      // Deliberately NOT a throw. Throwing here skipped the ENTIRE post-mortem
+      // below (step errors, session harvest, agent_output/agent_export dumps,
+      // and the artifact ledger that tells the caller whether a review had
+      // already been posted) — the one failure mode that most needs it got the
+      // least diagnostics. Fall through; `timedOut` keeps the exit non-zero.
+      break
+    }
     await sleep(3000)
   }
 
-  console.log(`driver: run ${runId} reached terminal status=${run.status}`)
+  if (timedOut) {
+    console.error(
+      `driver: run ${runId} did not reach a terminal status within ${timeoutMinutes}m ` +
+        `(status=${run.status}) — post-mortem follows, then the driver fails.`,
+    )
+  } else {
+    console.log(`driver: run ${runId} reached terminal status=${run.status}`)
+  }
 
   // A failed run must explain itself: surface run.error and every step error
   // (the workflow-runner puts the failure reason there — e.g. an empty-turn or
@@ -314,7 +361,7 @@ async function main() {
     `driver: run produced sessionIds=${JSON.stringify([...sessionIds])}` +
       (structuredIdCount === 0 && sessionIds.size > 0 ? " (recovered via agent_sessions_list)" : ""),
   )
-  const failed = run.status !== "done"
+  const failed = timedOut || run.status !== "done"
   let sawAgentOutput = false
   // Provenance record per session — session_usage (cost/tokens) + descriptor
   // (adapter, sandbox, parentSessionId=supervisor). Emitted as the `provenance`
@@ -322,6 +369,13 @@ async function main() {
   // the artifact deterministically, without the model having to know its own id
   // or cost. Verb-agnostic: /pr and /fix can reuse it for a PR-body stamp.
   const provenance = []
+  // Artifact ledger — PR/review/comment records the delivery helper emitted as
+  // `::agentproto-artifact::` marker lines AT CREATION TIME. Harvested from the
+  // session's own output (same transport as `provenance`) and surfaced as the
+  // `artifacts` output so the stamp scripts key the footer by id instead of
+  // re-discovering the artifact. Best-effort: an empty ledger degrades to the
+  // stamp scripts' discovery fallback (which now warns loudly).
+  const artifacts = []
   // Cap the dump fan-out — a pathological run should not flood the job log.
   for (const sid of [...sessionIds].slice(0, 8)) {
     const desc = listedSessions.find((s) => s?.id === sid)
@@ -380,6 +434,34 @@ async function main() {
         `driver: agent_output ${sid} failed: ${err instanceof Error ? err.message : String(err)}`,
       )
     }
+    // Harvest artifact-ledger markers the delivery helper printed (PR/review/
+    // comment ids). The clean=true success-path fetch above can strip
+    // tool-result lines, so re-read RAW (clean:false) just for the harvest and
+    // attach THIS session's id (the box-side helper can't know its own id).
+    try {
+      const harvestRes = await client.callTool({
+        name: "agent_output",
+        arguments: { sessionId: sid, lastN: 400, clean: false },
+      })
+      const harvestRaw =
+        typeof harvestRes?.content?.[0]?.text === "string" ? harvestRes.content[0].text : ""
+      let harvestText = harvestRaw
+      try {
+        const parsed = JSON.parse(harvestRaw)
+        if (Array.isArray(parsed?.lines)) harvestText = parsed.lines.join("\n")
+      } catch {
+        // non-JSON envelope — scan the raw string as-is
+      }
+      for (const rec of parseArtifactMarkers(harvestText, { sessionId: sid })) {
+        if (artifacts.some((a) => JSON.stringify(a) === JSON.stringify(rec))) continue
+        artifacts.push(rec)
+        console.log(`driver: harvested artifact ${rec.kind} id=${rec.id} from session ${sid}`)
+      }
+    } catch (err) {
+      console.error(
+        `driver: artifact harvest ${sid} failed: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
     // Empty buffer on a failed run: fall back to the daemon-captured
     // transcript (`agent_export` reads events.jsonl, which survives even
     // when the ring buffer never got a line — e.g. a spawn that died before
@@ -408,7 +490,8 @@ async function main() {
     }
   }
 
-  const silentNoop = run.status === "done" && (sessionIds.size === 0 || !sawAgentOutput)
+  const silentNoop =
+    !timedOut && run.status === "done" && (sessionIds.size === 0 || !sawAgentOutput)
   if (silentNoop) {
     console.error(
       "driver: run reached status=done but produced NO agent session output — treating " +
@@ -416,12 +499,20 @@ async function main() {
         "fallback reviewer should take over.",
     )
   }
-  const finalStatus = silentNoop ? "failed" : run.status
+  // Every consumer in ci.yml tests `outputs.status == 'done'`, so "timed-out"
+  // reads exactly like the empty string this step used to emit when it threw —
+  // no gate behaviour changes. What DOES change: `provenance` and `artifacts`
+  // are now emitted on the timeout path too, so a run that posted its review
+  // and THEN hung no longer looks (to the postcheck's live-head recount) like
+  // nothing was posted — which is what arms a duplicate fallback review.
+  const finalStatus = timedOut ? "timed-out" : silentNoop ? "failed" : run.status
   await writeGithubOutput("run-id", runId)
   await writeGithubOutput("status", finalStatus)
   // Single-line JSON (no newline) — safe for the `name=value` GITHUB_OUTPUT form.
   await writeGithubOutput("provenance", JSON.stringify(provenance))
   console.log(`driver: provenance=${JSON.stringify(provenance)}`)
+  await writeGithubOutput("artifacts", JSON.stringify(artifacts))
+  console.log(`driver: artifacts=${JSON.stringify(artifacts)}`)
   return finalStatus === "done" ? 0 : 1
 }
 

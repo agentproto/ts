@@ -23,6 +23,7 @@ import { createSessionsRegistry, type SessionsRegistry, type AgentSessionLike, t
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { SandboxProviderHandle } from "../sandbox-providers/types.js"
 import type { OrchestratorScope } from "../orchestrator-gateway.js"
+import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -48,12 +49,23 @@ function extractText(message: unknown): string {
 /** Fake CLI adapter for the BOX's own `agent_start` — echoes the prompt back
  *  as a single text-delta, then a normal turn-end. Records every prompt it
  *  receives so tests can assert the round-trip actually reached it. */
-function makeFakeCliResolver(receivedPrompts: string[]): AgentAdapterResolver {
+const CLAUDE_SDK_GATEWAY_AUTH: AdapterAuthDescriptor = {
+  provider: "anthropic",
+  authSubscription: { setEnv: "ANTHROPIC_AUTH_TOKEN" },
+  gatewayAuth: { setEnv: "ANTHROPIC_AUTH_TOKEN" },
+}
+
+function makeFakeCliResolver(
+  receivedPrompts: string[],
+  receivedStarts: Array<Record<string, unknown>>,
+): AgentAdapterResolver {
   return async slug => {
     if (slug !== "fake-cli") return null
     return {
       commandPreview: "fake-cli (test double)",
-      async startSession(): Promise<AgentSessionLike> {
+      authDescriptor: CLAUDE_SDK_GATEWAY_AUTH,
+      async startSession(args): Promise<AgentSessionLike> {
+        receivedStarts.push(args as Record<string, unknown>)
         return {
           sessionId: "remote_sess_1",
           async *send(message: unknown): AsyncIterable<AgentStreamEvent> {
@@ -71,7 +83,10 @@ function makeFakeCliResolver(receivedPrompts: string[]): AgentAdapterResolver {
 }
 
 /** Boot a real in-process daemon (the "box") and wrap it as a `SandboxProvider`. */
-async function bootFakeBox(receivedPrompts: string[]): Promise<{
+async function bootFakeBox(
+  receivedPrompts: string[],
+  receivedStarts: Array<Record<string, unknown>>,
+): Promise<{
   provider: SandboxProvider
   gateway: GatewayHandle
   workspace: string
@@ -91,7 +106,7 @@ async function bootFakeBox(receivedPrompts: string[]): Promise<{
     // gated on `persist`.
     persist: false,
     persistPath: join(workspace, "sessions.json"),
-    resolveAgentAdapter: makeFakeCliResolver(receivedPrompts),
+    resolveAgentAdapter: makeFakeCliResolver(receivedPrompts, receivedStarts),
   })
   const stopSpy = vi.fn(async () => {
     await gateway.stop()
@@ -110,6 +125,7 @@ async function bootFakeBox(receivedPrompts: string[]): Promise<{
 
 describe("agent_start sandbox — boot box + proxy session", () => {
   let receivedPrompts: string[]
+  let receivedStarts: Array<Record<string, unknown>>
   let box: Awaited<ReturnType<typeof bootFakeBox>>
   let registry: SessionsRegistry
   let workspace: string
@@ -118,7 +134,8 @@ describe("agent_start sandbox — boot box + proxy session", () => {
 
   beforeEach(async () => {
     receivedPrompts = []
-    box = await bootFakeBox(receivedPrompts)
+    receivedStarts = []
+    box = await bootFakeBox(receivedPrompts, receivedStarts)
     workspace = await mkdtemp(join(tmpdir(), "agentproto-sandbox-host-"))
     // `transcriptDir` as well as `persist: false`: transcripts default to a
     // sibling of the (real) sessions.json path and are written regardless of
@@ -200,6 +217,99 @@ describe("agent_start sandbox — boot box + proxy session", () => {
     // The echoed reply flowed back through the proxy into the HOST's own
     // transcript/output — proving event-shape parity with the local path.
     expect(result.output?.some(line => line.includes("echo: "))).toBe(true)
+  })
+
+  it("forwards a routed API-key launch to the fresh sandbox daemon", async () => {
+    const result = await spawnAgentSession(deps, {
+      adapter: "fake-cli",
+      cwd: workspace,
+      sandbox: "fake",
+      model: "kimi-k2.7-code",
+      route: { gateway: "moonshot" },
+      auth: { mode: "api-key", apiKey: "test-moonshot-key" },
+    })
+
+    expect(result.ok).toBe(true)
+    expect(receivedStarts[0]).toMatchObject({
+      auth: {
+        mode: "api-key",
+        credential: "test-moonshot-key",
+        setEnv: "ANTHROPIC_AUTH_TOKEN",
+      },
+    })
+  })
+
+  it("forwards a CONFIG-default wallet to the fresh sandbox daemon — the host resolves the credential the box cannot", async () => {
+    // The wallet lives in the HOST's `defaults.adapters.<slug>.auth`; a fresh
+    // box has no config and no keychain, so the host must resolve the
+    // credential and hand it over — otherwise the sandboxed child shows
+    // "no wallet" and bills nothing.
+    const hostResolver = vi.fn(async (slug: string) =>
+      slug === "fake-cli"
+        ? {
+            commandPreview: "fake-cli (host)",
+            authDescriptor: CLAUDE_SDK_GATEWAY_AUTH,
+            async startSession(): Promise<AgentSessionLike> {
+              throw new Error("a sandboxed spawn must never start the host adapter")
+            },
+          }
+        : null,
+    )
+    const result = await spawnAgentSession(
+      {
+        ...deps,
+        resolveAgentAdapter: hostResolver,
+        loadDefaultsConfig: async () => ({
+          adapters: { "fake-cli": { auth: { mode: "api-key", apiKey: "cfg-default-key" } } },
+        }),
+      },
+      { adapter: "fake-cli", cwd: workspace, sandbox: "fake" },
+    )
+
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(receivedStarts[0]).toMatchObject({
+      auth: {
+        mode: "api-key",
+        credential: "cfg-default-key",
+        setEnv: "ANTHROPIC_API_KEY",
+      },
+    })
+    // The host descriptor echoes the wallet it forwarded — the UI's access
+    // chip reads this instead of showing "no wallet".
+    expect(result.descriptor.auth).toMatchObject({ mode: "api-key", provider: "anthropic" })
+  })
+
+  it("fails LOUD when a config-default wallet needs the host adapter and the adapter is not resolvable on the host", async () => {
+    const result = await spawnAgentSession(
+      {
+        ...deps,
+        loadDefaultsConfig: async () => ({
+          adapters: { "fake-cli": { auth: { mode: "api-key", apiKey: "cfg-default-key" } } },
+        }),
+      },
+      { adapter: "fake-cli", cwd: workspace, sandbox: "fake" },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe("access_profile_ineligible")
+    expect(result.message).toContain("configured default wallet")
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("an UNCONFIGURED sandbox spawn resolves no host wallet — the box stays credential-free, no host adapter call", async () => {
+    const result = await spawnAgentSession(deps, {
+      adapter: "fake-cli",
+      cwd: workspace,
+      sandbox: "fake",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(deps.resolveAgentAdapter).not.toHaveBeenCalled()
+    expect(result.descriptor.auth).toBeUndefined()
+    expect(result.descriptor.accessProfile).toBeUndefined()
+    const boxAuth = receivedStarts[0]?.auth as Record<string, unknown> | undefined
+    expect(boxAuth?.credential).toBeUndefined()
   })
 
   it("agent_kill tears down the fake box, and the conversation stays readable after kill (amendment)", async () => {

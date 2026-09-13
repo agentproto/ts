@@ -15,6 +15,11 @@
  * non-transcribing tier) is skipped — the runner records it as a
  * warning rather than aborting the batch.
  *
+ * `FetchedSource.metadata` (format-specific provenance — a PDF's page
+ * count, file sha256, document-info title/author/dates, …) is merged
+ * into `corpusMetadata` verbatim, under the importer's own
+ * `importerSourceUrl` / `fetchKind` / `fetchedVia` keys, which always win.
+ *
  * Pure kit code — consumes FetcherPort, no node:fs / no network of its
  * own. Slug: derived from title, else the URL. Hash: sha256 of the text.
  */
@@ -89,6 +94,10 @@ export class WebImporter implements CorpusImporter {
           ? { tags: config.tags }
           : {}),
         corpusMetadata: {
+          // Format-specific provenance (PDF page count, file sha256,
+          // document-info title/author/dates, …) spreads FIRST so the
+          // importer's own core fields below always win the key.
+          ...fetched.metadata,
           importerSourceUrl: url,
           fetchKind: fetched.kind,
           ...(fetched.via ? { fetchedVia: fetched.via } : {}),

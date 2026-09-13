@@ -109,6 +109,44 @@ describe("writeChapter", () => {
     expect(withoutCover.prompt).not.toContain("Chapter brief")
   })
 
+  it("without outline, no book-outline block is injected (backward compatible)", () => {
+    const prompt = buildChapterWritePrompt({
+      chapter: { id: "ch01", title: "1. Thesis", words: "700-900" },
+      title: "Test Report",
+      packContent: "- **[principle]** Exclusivity [1]",
+      bibliography: "1. Source A — https://a",
+    })
+    expect(prompt.prompt).not.toContain("Book outline")
+  })
+
+  it("with outline present, injects a Book outline block listing siblings with [[id]] instruction", () => {
+    const prompt = buildChapterWritePrompt({
+      chapter: { id: "ch01", title: "1. Thesis", words: "700-900" },
+      title: "Test Report",
+      packContent: "- **[principle]** Exclusivity [1]",
+      bibliography: "1. Source A — https://a",
+      outline: [
+        { id: "ch02", title: "2. Antithesis" },
+        { id: "ch03", title: "3. Synthesis" },
+      ],
+    })
+    expect(prompt.prompt).toContain("## Book outline (for forward/back references)")
+    expect(prompt.prompt).toContain("- ch02: 2. Antithesis")
+    expect(prompt.prompt).toContain("- ch03: 3. Synthesis")
+    expect(prompt.prompt).toContain("[[chapter-id]]")
+  })
+
+  it("with an empty outline array, no book-outline block is injected", () => {
+    const prompt = buildChapterWritePrompt({
+      chapter: { id: "ch01", title: "1. Thesis", words: "700-900" },
+      title: "Test Report",
+      packContent: "- **[principle]** Exclusivity [1]",
+      bibliography: "1. Source A — https://a",
+      outline: [],
+    })
+    expect(prompt.prompt).not.toContain("Book outline")
+  })
+
   it("appends rulesText to the system prompt verbatim, after the base instructions", () => {
     const base = buildChapterWritePrompt({
       chapter: { id: "ch01", title: "1. Thesis", words: "700-900" },

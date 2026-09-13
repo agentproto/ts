@@ -18,25 +18,25 @@ metadata:
 
 # Bureau — the installable browser capability server
 
-## Démarrage rapide : bureau start
+## Quick start: bureau start
 
-`bureau start` orchestre Camofox headless + `bureau serve` en une seule
-commande.
+`bureau start` orchestrates headless Camofox + `bureau serve` in a single
+command.
 
 ```bash
-bureau start                              # Camofox :9377 + serve :8830, avant-plan
-bureau start --detach                     # tout en arrière-plan, exit 0 si healthy
-bureau start bureau-only                  # Camofox supposé up, démarre juste serve
-bureau start --port 9000                  # bureau serve sur :9000
+bureau start                              # Camofox :9377 + serve :8830, foreground
+bureau start --detach                     # everything in the background, exit 0 if healthy
+bureau start bureau-only                  # Camofox assumed up, starts just serve
+bureau start --port 9000                  # bureau serve on :9000
 bureau start --camofox-port 9400 --detach
 bureau start --camofox-cmd "camoufox serve --port 9377" --detach
-bureau start --timeout 90                 # délai max 90 s (défaut 60)
+bureau start --timeout 90                 # max delay 90 s (default 60)
 ```
 
-Résolution de la commande Camofox (ordre) : `--camofox-cmd` →
-`$CAMOFOX_SERVE_CMD` → `launchctl start com.agentik.camofox` (macOS). Si rien
-n'est résolvable, erreur explicite avec instructions. Idempotent : si Camofox
-est déjà up, ne le respawn pas.
+Camofox command resolution (in order): `--camofox-cmd` →
+`$CAMOFOX_SERVE_CMD` → `launchctl start com.agentik.camofox` (macOS). If
+nothing resolves, explicit error with instructions. Idempotent: if Camofox is
+already up, it is not respawned.
 
 Bureau is the **standalone, shipped product** of the browser stack: one daemon
 co-located with a stealth Firefox (Camofox), exposing browser capabilities as

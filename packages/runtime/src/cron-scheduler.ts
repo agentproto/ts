@@ -40,7 +40,7 @@ import {
 } from "node:fs"
 import { Cron } from "croner"
 import { loadAllowlist, runCommand } from "./command-tools.js"
-import type { SessionsRegistry } from "./sessions.js"
+import { SESSION_ID_ENV, WORKSPACE_SLUG_ENV, adapterConfigDirFor, mintSessionId, type SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import { restartAgentSession } from "./session-restart-core.js"
@@ -138,6 +138,13 @@ interface JobState {
   job: CronJob
   /** Live croner instance — kept for nextDate() queries and released when deleted. */
   cronInstance?: Cron
+  /**
+   * In-memory execution lease. A slow action must not be re-fired by the
+   * 20-second tick while its `nextRunAt` still points at the elapsed slot.
+   * Deliberately not persisted: after a daemon restart, the normal stale-slot
+   * rehydration advances `nextRunAt` to the next scheduled occurrence.
+   */
+  running?: boolean
 }
 
 // ── Factory ──────────────────────────────────────────────────────────
@@ -302,11 +309,19 @@ export function createCronScheduler(opts: {
         )
       }
       const cwd = action.cwd ?? workspace
+      // Minted BEFORE the spawn — same rule as command_execute
+      // (command-tools.ts) — so it can be injected as AGENTPROTO_SESSION_ID
+      // into the command's own env and re-used (not re-minted) below.
+      const commandSessionId = mintSessionId()
       const result = await runCommand({
         command: action.command,
         args: action.args ?? [],
         cwd,
         timeoutMs: action.timeoutMs ?? 60_000,
+        env: {
+          [SESSION_ID_ENV]: commandSessionId,
+          [WORKSPACE_SLUG_ENV]: "default",
+        },
       })
       // Same session-based record as command_execute — cron "command" jobs
       // already share its allowlist + runCommand ("one enforcement path,
@@ -314,6 +329,7 @@ export function createCronScheduler(opts: {
       // the fired job gets its own session row in command_list/session_list,
       // not just a line in `job.lastResult`.
       registry.recordCommand({
+        id: commandSessionId,
         workspaceSlug: "default",
         cwd,
         command: action.command,
@@ -416,18 +432,29 @@ export function createCronScheduler(opts: {
       )
     }
     const cwd = action.cwd ?? workspace
+    // Minted BEFORE the spawn — same reason as the `command` action above:
+    // the id has to be known before the adapter process ever exec's so it
+    // can be injected as AGENTPROTO_SESSION_ID.
+    const agentSessionId = mintSessionId()
     const agentSession = await resolved.startSession({
       cwd,
+      configDir: adapterConfigDirFor(agentSessionId),
       ...(action.model ? { model: action.model } : {}),
       ...(action.mode ? { mode: action.mode } : {}),
       ...(action.permissionHold ? { permissionHold: true } : {}),
       ...(action.options && Object.keys(action.options).length > 0 ? { options: action.options } : {}),
+      env: {
+        [SESSION_ID_ENV]: agentSessionId,
+        [WORKSPACE_SLUG_ENV]: "default",
+      },
     })
     const desc = registry.spawnAgent({
+      id: agentSessionId,
       workspaceSlug: "default",
       cwd,
       agentSession,
       adapterSlug: action.adapter,
+      adapterConfigDir: adapterConfigDirFor(agentSessionId),
       origin: "cron",
       label: `cron:${job.id}`,
       ...(action.mode ? { mode: action.mode } : {}),
@@ -446,6 +473,13 @@ export function createCronScheduler(opts: {
   // ── Fire a job ────────────────────────────────────────────────────
 
   const fireJob = async (state: JobState): Promise<void> => {
+    // `tick()` intentionally does not await fireJob. Without this lease, a
+    // slow agent start leaves nextRunAt in the past and every subsequent tick
+    // starts another identical agent before the first one completes.
+    if (state.running) return
+    state.running = true
+
+    try {
     const { job } = state
     const now = new Date().toISOString()
     job.lastRunAt = now
@@ -499,6 +533,9 @@ export function createCronScheduler(opts: {
       job.nextRunAt = next?.toISOString()
     }
     persistNow()
+    } finally {
+      state.running = false
+    }
   }
 
   // ── Tick loop ─────────────────────────────────────────────────────

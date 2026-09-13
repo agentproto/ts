@@ -67,6 +67,8 @@ declare module "jsdom" {
     hidden?: boolean
     /** Native tooltip text. */
     title?: string
+    /** Read an attribute (e.g. the book fold's `aria-expanded`). */
+    getAttribute(name: string): string | null
     dispatchEvent(event: DomEvent): boolean
     querySelector(selectors: string): DomElement | null
     querySelectorAll(selectors: string): Iterable<DomElement>
@@ -74,6 +76,8 @@ declare module "jsdom" {
 
   export interface DomDocument {
     getElementById(id: string): DomElement | null
+    /** The focused element — the book's pause card focuses the composer. */
+    readonly activeElement: DomElement | null
     dispatchEvent(event: DomEvent): boolean
   }
 
@@ -90,6 +94,24 @@ declare module "jsdom" {
     takeRecords(): unknown[]
   }
 
+  /** The MCP-Apps standalone shim's shape (`window.McpApp`, injected by
+   *  packages/runtime's `injectStandaloneAppBridge` for `GET
+   *  /apps/:appId/ui`) — just enough of `connect()`'s resolved surface for
+   *  panelBridge.standalone.dom.test.ts to stand a fake in for it. */
+  export interface DomMcpAppTool {
+    content?: { type: string; text: string }[]
+    isError?: boolean
+  }
+
+  export interface DomMcpApp {
+    connect: () => Promise<{
+      callTool: (
+        name: string,
+        args: Record<string, string | number | boolean | null | undefined>,
+      ) => Promise<DomMcpAppTool>
+    }>
+  }
+
   export interface DomWindow {
     readonly document: DomDocument
     Date: DateConstructor
@@ -101,10 +123,13 @@ declare module "jsdom" {
       getState: () => unknown
       setState: (state: unknown) => void
     }
+    /** Set (or left undefined) by a test's `beforeParse` to stand in for the
+     *  daemon-injected standalone bridge — see {@link DomMcpApp}. */
+    McpApp?: DomMcpApp
     dispatchEvent(event: DomEvent): boolean
     Event: new (type: string, init?: { cancelable?: boolean; bubbles?: boolean }) => DomEvent
     MessageEvent: new (type: string, init?: { data?: unknown }) => DomEvent
-    KeyboardEvent: new (type: string, init?: { key?: string }) => DomEvent
+    KeyboardEvent: new (type: string, init?: { key?: string; bubbles?: boolean }) => DomEvent
     MutationObserver: new (callback: (records: unknown[]) => void) => DomMutationObserver
     File: new (bits: readonly unknown[], name: string, options?: { type?: string }) => DomFile
   }

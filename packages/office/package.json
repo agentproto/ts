@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/office",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "@agentproto/office — AIP-22 OFFICE.md reference implementation. A live operating workspace for an organisation — declares which collections (roles, objectives, departments, teams, policies) are tracked, the org-tree containment, reporting hierarchy, and cross-AIP composition with governance, work, knowledge, and agency. Distinct from AIP-6's static company profile (companies.sh community standard).",
   "keywords": [
     "agentproto",
@@ -56,13 +56,13 @@
   "dependencies": {
     "@agentproto/define-doctype": "workspace:*",
     "gray-matter": "^4.0.3",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@types/node": "^25.6.2",
+    "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   }
 }

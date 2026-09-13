@@ -98,6 +98,26 @@ export function findStaleVersions(text, version) {
   return out
 }
 
+/** HTML comments (`<!-- … -->`) — legal Markdown, fatal in MDX. cli.agentproto.sh
+ *  compiles every `docs/cli/**` page as MDX, so one of these takes the whole
+ *  site build down (ts#1256). Skipped inside fenced code blocks: a doc showing
+ *  real HTML is a legitimate use. Pure. */
+export function findMdxComments(text) {
+  const out = []
+  let inFence = false
+  const lines = text.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*```/.test(lines[i])) {
+      inFence = !inFence
+      continue
+    }
+    if (inFence) continue
+    const idx = lines[i].indexOf('<!--')
+    if (idx !== -1) out.push({ line: i + 1, snippet: lines[i].slice(idx, idx + 40) })
+  }
+  return out
+}
+
 function markdownFiles(dir, out = []) {
   for (const name of readdirSync(dir)) {
     const full = join(dir, name)
@@ -116,12 +136,17 @@ function detectDocGaps() {
 
   const version = JSON.parse(readFileSync(CLI_PKG, 'utf8')).version
   const staleVersions = []
+  const mdxComments = []
   for (const file of markdownFiles(DOCS_DIR)) {
-    for (const hit of findStaleVersions(readFileSync(file, 'utf8'), version)) {
+    const text = readFileSync(file, 'utf8')
+    for (const hit of findStaleVersions(text, version)) {
       staleVersions.push({ file: relative(ROOT, file), ...hit })
     }
+    for (const hit of findMdxComments(text)) {
+      mdxComments.push({ file: relative(ROOT, file), ...hit })
+    }
   }
-  return { version, verbs, missingVerbs, staleVersions }
+  return { version, verbs, missingVerbs, staleVersions, mdxComments }
 }
 
 // ── goal for the actor ─────────────────────────────────────────────────────
@@ -178,13 +203,15 @@ function buildGoal({ version, missingVerbs, staleVersions }) {
 
 // ── flow ────────────────────────────────────────────────────────────────────
 
-/** Missing pages are gate-failing; version drift is advisory (never reds the
- *  gate — a version bump would otherwise strand `pnpm test`). */
+/** Missing pages and MDX-hostile syntax are gate-failing; version drift is
+ *  advisory (never reds the gate — a version bump would otherwise strand
+ *  `pnpm test`). An MDX comment reds the PUBLIC site's build, not this repo's,
+ *  so it must block here. */
 function isBlocking(gaps) {
-  return gaps.missingVerbs.length > 0
+  return gaps.missingVerbs.length > 0 || gaps.mdxComments.length > 0
 }
 
-function printGaps({ verbs, missingVerbs, staleVersions, version }) {
+function printGaps({ verbs, missingVerbs, staleVersions, mdxComments, version }) {
   console.log(`[agentflow] cli-docs: ${verbs.length} verbs, CLI version ${version}`)
   if (missingVerbs.length) {
     console.log(`  ✗ ${missingVerbs.length} verb(s) with no doc page: ${missingVerbs.join(', ')}`)
@@ -192,7 +219,13 @@ function printGaps({ verbs, missingVerbs, staleVersions, version }) {
   for (const s of staleVersions) {
     console.log(`  ⚠ stale example in ${s.file}: "${s.found}" (expected "${s.expected}") — advisory, run cli-docs:ai`)
   }
-  if (!missingVerbs.length && !staleVersions.length) console.log('  ✓ docs in sync')
+  for (const c of mdxComments) {
+    console.log(
+      `  ✗ MDX-hostile HTML comment in ${c.file}:${c.line}: "${c.snippet}" — ` +
+        'use {/* … */} instead: docs/cli/** is compiled as MDX by cli.agentproto.sh, where `<!--` is a fatal parse error.'
+    )
+  }
+  if (!missingVerbs.length && !staleVersions.length && !mdxComments.length) console.log('  ✓ docs in sync')
 }
 
 async function main() {
@@ -206,7 +239,8 @@ async function main() {
   const gaps = detectDocGaps()
   // A missing page fails the gate; a drifted example is worth the actor's time
   // (it can fix it) but must never block.
-  const hasWork = gaps.missingVerbs.length > 0 || gaps.staleVersions.length > 0
+  const hasWork =
+    gaps.missingVerbs.length > 0 || gaps.staleVersions.length > 0 || gaps.mdxComments.length > 0
 
   if (has('--check')) {
     printGaps(gaps)

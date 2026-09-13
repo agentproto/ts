@@ -147,6 +147,9 @@ you turn it on. To activate it in a workspace:
 
 The safety invariants are enforced by the engine and cannot be weakened by the
 routine: reclaim is **merge-gated** (integration ∈ {merged, fresh} **and** the
-tree is clean), an **open** PR or live-session worktree is always **held**, and
-a **dirty** integrated worktree is only ever archived — never discarded — and
-only when `salvageDirty` is `true`.
+tree is clean) **except** for a narrow dep-bump exemption: a clean `unpushed`
+worktree whose commits are all mechanical dependency bumps (`chore(deps)` /
+`fix(deps)` subjects and a diff touching only lockfiles + `package.json`) is
+also promoted to `reclaim`. An **open** PR or live-session worktree is always
+**held**, and a **dirty** integrated worktree is only ever archived — never
+discarded — and only when `salvageDirty` is `true`.

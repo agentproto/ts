@@ -116,6 +116,20 @@ export interface AgentCliAuthSubscription {
    * which is why this is separate from {@link conflictEnv}.
    */
   unsetEnvAdd?: string[]
+  /**
+   * Scope this subscription surface to ONE billing provider — for a
+   * multi-provider (`modelDerivedApiKey`) adapter whose bearer door is
+   * provider-specific: pi reads `ANTHROPIC_OAUTH_TOKEN` as its documented
+   * alternative to `ANTHROPIC_API_KEY`, an anthropic-only path that means
+   * nothing for its openai/google/moonshot models. When set, the runtime
+   * only treats subscription mode as supported (and only advertises
+   * oauth-bearer eligibility) when the spawn's RESOLVED provider equals
+   * this id — so an anthropic subscription profile lights up pi's
+   * anthropic models without making, say, a codex OAuth profile look
+   * eligible for pi's openai models. Omit for a fixed-provider adapter
+   * (claude-code, codex): the descriptor-level `provider` already pins it.
+   */
+  provider?: string
 }
 
 /**
@@ -274,9 +288,13 @@ export interface AgentCliModels {
    *   - "command" — `set_config_option` is a no-op / silently rejected on
    *     this agent (e.g. hermes), so instead send a `/model <id>` control
    *     turn after `newSession` and drain it. The agent's reply is checked
-   *     for a "switched" acknowledgement; a failure is warned, not fatal.
+   *     for a "switched" acknowledgement; a failure is warned, not fatal —
+   *     EXCEPT for a `routeSelection:"derived-from-model"` adapter, where
+   *     an unacknowledged switch refuses the spawn (the model id is the
+   *     route and the bill; see the derived-from-model guard in
+   *     `define-agent-cli.ts`, same contract as the "config" path).
    *   - "arg" — this CLI takes its model as a CLI argument, not an ACP
-   *     session config or control turn (e.g. codex-acp's `-c model="<id>"`).
+   *     session config or control turn.
    *     The requested model is composed into `bin_args` at spawn time via
    *     `bin_args_template` (below) — no post-`newSession` ACP call is
    *     made at all.
@@ -311,6 +329,15 @@ export interface AgentCliCapabilities {
    * Paired with the daemon's POST /files/upload route.
    */
   file_attach?: boolean
+  /**
+   * The adapter has a verified native CLI resume path into a real
+   * terminal / TUI session (e.g. `claude --resume <id>` or
+   * `hermes --resume <id> --tui`). When true, the daemon MAY offer
+   * provider-native terminal restart for this adapter. ACP-level
+   * resumability (`resumable`) alone does NOT imply this — a JSON-RPC
+   * session id is not a native TUI resume. Default false.
+   */
+  nativeTerminalResume?: boolean
 }
 
 /**
@@ -614,8 +641,22 @@ export interface AgentCliPrintConfig {
    *   `--output-format stream-json` taxonomy.
    * - `"mastra-jsonl"` — Mastra Code's `--output jsonl` taxonomy
    *   (`AgentControllerEvent` shapes).
+   * - `"antigravity-stream-json"` — Google Antigravity's (`agy`)
+   *   `--output-format stream-json` taxonomy. Superficially it mirrors
+   *   Claude Code's headless flag surface (`-p`, `--output-format
+   *   stream-json`, `--continue`), but the WIRE events do NOT: each line
+   *   is discriminated by an `event` field ("init" | "step_update" |
+   *   "result"), the payload is nested under a matching key, and the
+   *   session id is a nested `conversation_id` — so it needs its own
+   *   mapper, not the Claude one.
+   * - `"jcode-ndjson"` — jcode's `run --ndjson` taxonomy. Lines are
+   *   discriminated by a `type` field ("start" | "text_delta" |
+   *   "tool_start" | "tool_input" | "tool_exec" | "tool_done" |
+   *   "tokens" | "done" | connection noise), with tool arguments
+   *   streamed as JSON-string `tool_input` deltas between `tool_start`
+   *   and `tool_exec`.
    */
-  event_schema?: "claude-stream-json" | "mastra-jsonl"
+  event_schema?: "claude-stream-json" | "mastra-jsonl" | "antigravity-stream-json" | "jcode-ndjson"
 }
 
 /**
@@ -664,9 +705,33 @@ export interface AgentCliDefinition {
    * Declares that this adapter supports `subscription` billing mode and how
    * (which env var to set + what to scrub). Presence = supported; absence
    * means a `subscription` request is rejected with `unsupported_auth_mode`.
-   * Only the Claude adapters set it. See {@link AgentCliAuthSubscription}.
+   * A SINGLE surface for a fixed/single-provider subscription (claude-code),
+   * or an ARRAY of surfaces for an adapter with more than one native OAuth
+   * login (mastracode: both an anthropic and an openai `provider`-scoped
+   * entry) — the runtime matches the spawn's resolved provider against each
+   * entry's `provider` scope (see `subscriptionSurfaceFor` in
+   * `@agentproto/runtime`'s `spawn-defaults.ts`). See
+   * {@link AgentCliAuthSubscription}.
    */
-  authSubscription?: AgentCliAuthSubscription
+  authSubscription?: AgentCliAuthSubscription | AgentCliAuthSubscription[]
+  /**
+   * Declares how THIS adapter receives a GATEWAY-routed bearer credential —
+   * distinct from a gateway preset's own `keyEnv`
+   * (`@agentproto/provider-presets` — the var the OPERATOR's `providers.json`
+   * store is keyed under) and from {@link authSubscription}'s `setEnv` (this
+   * adapter's OWN native/subscription bearer, unrelated to a third-party
+   * gateway). When a `route.gateway` preset/custom route resolves AND this is
+   * declared, the runtime's `resolveAuthSpec` injects the resolved gateway
+   * credential into `setEnv` here INSTEAD of the preset's `keyEnv` — e.g.
+   * claude-code/claude-sdk read a gateway bearer via `ANTHROPIC_AUTH_TOKEN`
+   * (the Anthropic SDK's `Authorization: Bearer` var), never a preset's own
+   * conventional key-env name (`OPENROUTER_API_KEY`, `MOONSHOT_API_KEY`, …).
+   * Omit when the adapter reads a gateway credential directly off the
+   * preset's own `keyEnv` (e.g. hermes, which genuinely reads
+   * `OPENROUTER_API_KEY`) — the fix is adapter-driven, never a blanket
+   * rename of every adapter's gateway var.
+   */
+  gatewayAuth?: { setEnv: string }
   /**
    * True when the adapter's api-key auth is derived from the requested model
    * rather than a fixed `provider` (e.g. `pi`, `opencode`). When set, the
@@ -955,6 +1020,18 @@ export interface AgentCliClient {
    */
   readonly availableConfigOptions?: SessionConfigOption[]
   /**
+   * Set when the connect-time `model` apply was rejected by the ACP server
+   * — the session is live but on the agent's own DEFAULT model, not the
+   * requested one (see `@agentproto/acp/client`'s
+   * `AcpClientSession.modelApplyRejection` for the full contract). Only the
+   * ACP arm populates this; other arms leave it undefined. Read by
+   * `define-agent-cli.ts` right after `connect()`: for a
+   * `routeSelection:"derived-from-model"` adapter (opencode & co. — the
+   * model id IS the route and the bill) a rejected explicit model is a
+   * spawn-fatal misroute, not a cosmetic default.
+   */
+  readonly modelApplyRejection?: { requested: string; reason: string }
+  /**
    * The wrapper's advertised session modes, captured at connect time
    * (`SessionModeState.availableModes`) — see `@agentproto/acp/client`'s
    * `AcpClientSession.availableModes`. Only the ACP arm populates this;
@@ -1033,6 +1110,23 @@ export interface AgentCliStartOptions {
    */
   resumeSessionId?: string
   /**
+   * Persistent location for the adapter's ISOLATED config dir (claude-code's
+   * `CLAUDE_CONFIG_DIR`), replacing the default throwaway `mkdtemp` under
+   * `os.tmpdir()`. The driver creates it (recursive) and seeds/re-asserts the
+   * same isolation content either way — explicit empty `mcpServers` in
+   * `.claude.json`, attribution suppression + permission mode in
+   * `settings.json` — so this changes WHERE the isolation lives, never
+   * WHETHER it applies. The point: the SDK's conversation store
+   * (`projects/<cwd-slug>/<uuid>.jsonl`) lands somewhere a later respawn can
+   * point back at, making `resumeSessionId` actually able to restore full
+   * context after the adapter process was reaped (a temp dir dies with the
+   * process's run; the transcript inside it is what native resume needs).
+   * The daemon keys this per session lineage — see the runtime's
+   * `SessionDescriptor.adapterConfigDir`. Adapters that don't isolate a
+   * config dir ignore it.
+   */
+  configDir?: string
+  /**
    * MCP servers to mount into the spawned agent's session. Threaded
    * through to `protocolArm.connect({ mcpServers })` → the ACP arm's
    * `session/new.mcpServers`. Lets the host inject a scoped toolset
@@ -1104,6 +1198,17 @@ export interface AgentCliStartOptions {
    */
   contextProfile?: string
   /**
+   * Absolute paths OUTSIDE `cwd` the adapter's workspace toolset may READ
+   * (never write). Daemon-authored only (`spawnAgentSession` hands it down
+   * for the exact AGENTS.md an inherited pointer prompt names). Threaded two
+   * ways: onto the child env (`AGENTPROTO_ADDITIONAL_READ_PATHS`, for
+   * adapters that build their own toolset from it) and onto the
+   * `commandSandbox` confinement as extra READ paths — writes and sibling
+   * reads stay denied either way. Adapters that can't model the grant
+   * ignore it.
+   */
+  additionalReadPaths?: string[]
+  /**
    * OS-level confinement for the spawned child itself (macOS Seatbelt /
    * Linux bubblewrap, `@agentproto/command-sandbox`) — confines the
    * adapter's own process tree, unlike `posture`/`contextProfile` which
@@ -1165,6 +1270,17 @@ export interface ResolvedAuthSpec {
    *  `defaults.adapters.<slug>.auth` block. Never used to authenticate —
    *  only read by the fail-fast message. */
   ignoredApiKeyInStore?: boolean
+  /** Present ONLY when the runtime resolved an explicit gateway route (a
+   *  preset/custom route) — the `base_url` it also routes into the adapter's
+   *  base_url option. Its PRESENCE is the driver's signal that this api-key
+   *  credential is COUPLED to that gateway base_url (they were resolved
+   *  together), so billing-auth must engage even though ANTHROPIC_BASE_URL is
+   *  already in the spawn env — distinguishing it from a base_url set MANUALLY
+   *  via option with a native credential (no baseUrl), where engaging would
+   *  leak a native credential to a foreign host. Never set for native/
+   *  subscription specs. The driver reads only its presence, not its value
+   *  (the value reaches the child via the base_url option). */
+  baseUrl?: string
 }
 
 /**

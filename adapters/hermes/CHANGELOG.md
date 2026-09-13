@@ -1,5 +1,178 @@
 # @agentproto/adapter-hermes
 
+## 0.4.14
+
+### Patch Changes
+
+- 750839b: Test-only: replace presence-only env gates for live e2e suites (moonshot, hermes bin, Box, e2b/OpenRouter) with runtime preflight credential/capability probes that skip loudly on definitively dead credentials and run honestly on ambiguity.
+  - @agentproto/driver-agent-cli@2.4.3
+
+## 0.4.13
+
+### Patch Changes
+
+- Updated dependencies [bb3342f]
+  - @agentproto/model-catalog@0.9.4
+
+## 0.4.12
+
+### Patch Changes
+
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [b70149b]
+- Updated dependencies [2f37e7b]
+  - @agentproto/model-catalog@0.9.3
+  - @agentproto/driver-agent-cli@2.4.2
+  - @agentproto/provider-kit@0.4.3
+
+## 0.4.11
+
+### Patch Changes
+
+- Updated dependencies [692d659]
+- Updated dependencies [6bfb633]
+  - @agentproto/model-catalog@0.9.2
+  - @agentproto/driver-agent-cli@2.4.1
+  - @agentproto/provider-kit@0.4.2
+
+## 0.4.10
+
+### Patch Changes
+
+- Updated dependencies [139c198]
+  - @agentproto/model-catalog@0.9.1
+
+## 0.4.9
+
+### Patch Changes
+
+- Updated dependencies [4b924c9]
+- Updated dependencies [008a483]
+- Updated dependencies [3496977]
+- Updated dependencies [008a483]
+- Updated dependencies [dfda0b1]
+- Updated dependencies [f0c51a7]
+- Updated dependencies [12bb9e8]
+- Updated dependencies [001a2a0]
+- Updated dependencies [5dcc733]
+  - @agentproto/model-catalog@0.9.0
+  - @agentproto/driver-agent-cli@2.4.0
+  - @agentproto/provider-kit@0.4.2
+
+## 0.4.8
+
+### Patch Changes
+
+- Updated dependencies [95f7b5e]
+- Updated dependencies [e826a4a]
+- Updated dependencies [76f2c78]
+- Updated dependencies [64088e0]
+- Updated dependencies [e3ad769]
+- Updated dependencies [1fd4a15]
+  - @agentproto/model-catalog@0.8.5
+  - @agentproto/driver-agent-cli@2.3.1
+
+## 0.4.7
+
+### Patch Changes
+
+- Updated dependencies [7b28edf]
+- Updated dependencies [e8d39e8]
+  - @agentproto/model-catalog@0.8.4
+
+## 0.4.6
+
+### Patch Changes
+
+- Updated dependencies [27a22ca]
+- Updated dependencies [ce7cbb7]
+- Updated dependencies [cbe11c2]
+  - @agentproto/driver-agent-cli@2.3.0
+
+## 0.4.5
+
+### Patch Changes
+
+- ec9efa3: **Hermes nativeTerminalResume gated on Node ≥22.5** — hermes TUI uses node:sqlite which is unavailable on older runtimes; the capability is now computed at import time so restart falls back to ACP agent-cli instead of crashing.
+
+  **augmentWithFsResume backfills adapterSessionId** — when never captured (session killed before ACP handshake), backfill it from filesystem probe so agent restart can attempt ACP-level resume in addition to PTY-native restart.
+
+  **restartAsTerminal opens transcript on fallback** — when restart falls back to agent-cli (no PTY available), open the conversation transcript view instead of the agent-mirror pseudo-terminal.
+
+- Updated dependencies [415044d]
+- Updated dependencies [bf3407e]
+- Updated dependencies [82ca9e6]
+  - @agentproto/model-catalog@0.8.3
+  - @agentproto/driver-agent-cli@2.2.2
+
+## 0.4.4
+
+### Patch Changes
+
+- 665019a: **adapters/hermes:** Replace hand-maintained model allowlist with dynamic catalog-based menu from the shared provider catalog, keeping it in sync with all available OpenRouter and OpenAI models.
+
+  **adapters/mastracode:** Replace static model allowlist with dynamic catalog-based menu; add `modelDerivedApiKey: true` for correct billing-auth eligibility.
+
+  **adapters/pi:** Replace static model allowlist with dynamic catalog-based menu; add `modelDerivedApiKey: true` fixing moonshot profile eligibility (profile was rejected because `methodsForDirect()` returned empty without this flag).
+
+- 6e1fcf3: Remove tilde-prefixed OpenRouter aliases and use non-throwing route resolution in widening
+- Updated dependencies [2b58616]
+- Updated dependencies [6e1fcf3]
+  - @agentproto/model-catalog@0.8.2
+
+## 0.4.3
+
+### Patch Changes
+
+- Updated dependencies [08bcd4a]
+  - @agentproto/driver-agent-cli@2.2.1
+
+## 0.4.2
+
+### Patch Changes
+
+- Updated dependencies [3e187e5]
+- Updated dependencies [492240c]
+  - @agentproto/driver-agent-cli@2.2.0
+
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies [c1399f3]
+  - @agentproto/provider-kit@0.4.1
+
+## 0.4.0
+
+### Minor Changes
+
+- 831d4f5: Implement route-selection axis for AIP-45 launch-menu drill-down (WP1): add declarative `routeSelection` field to adapter manifests (distinguishes "free" vs. "derived-from-model"), project it through resolve/runtime layers, enrich catalog with per-route `multiModel` flags and flat routes index for tier-pinning logic.
+- f3b54ad: Implement harness capability discovery — a new layer that answers "what can this adapter actually DO on this host right now" by discovering credentials, providers, model-discovery mechanisms, endpoint compatibility, and application contracts at runtime. Each adapter optionally exports a `<camelSlug>Capabilities` strategy that parses its native config/creds stores (e.g., `~/.gemini/settings.json`, `~/.hermes/auth.json`) to report live state. Falls back gracefully to a pure manifest projection when no strategy is available or it throws. Never surfaces raw credential values — only presence, fingerprints, and last-4 chars. Exposed via the new `harness_capabilities` MCP tool and `@agentproto/cli`'s `listHarnessCapabilities` function.
+
+### Patch Changes
+
+- a88a78b: Fix model routing for multi-vendor gateways (OpenRouter/Requesty) by introducing route-identity suffixes. Add bare-product curation tolerance for existing allowlists on direct routes. Export a new `@agentproto/runtime/catalog-models` subpath for the vscode picker's unroutable-model warning.
+- 4832ced: Terminal restart fidelity: route-aware launch config, native terminal resume capability, and resume honesty.
+  - Extracts `buildRouteAwareLaunchConfig` so fresh spawn and restart inject `base_url` identically; derived-from-model adapters (e.g. hermes) no longer receive an unsupported `options.base_url`.
+  - Adds `capabilities.nativeTerminalResume` to the agent-cli manifest schema and stamps it on session descriptors; `pty-native` restart is now an explicit capability, not implied by ACP resumability.
+  - Preserves auth profile, route, model, posture, effort, and effective environment across restarts; wire model strips catalog `@route` suffixes and fixed-provider native vendor prefixes.
+  - Resume-honesty fix: adapters declaring `resumable: false` degrade to a flagged fresh spawn instead of a phantom ACP resume.
+
+- Updated dependencies [c736c02]
+- Updated dependencies [8367648]
+- Updated dependencies [93e6309]
+- Updated dependencies [c506d87]
+- Updated dependencies [392021a]
+- Updated dependencies [3865de6]
+- Updated dependencies [5643cb6]
+- Updated dependencies [f3b54ad]
+- Updated dependencies [42f1217]
+- Updated dependencies [4542ca3]
+- Updated dependencies [c064bc7]
+- Updated dependencies [4832ced]
+  - @agentproto/driver-agent-cli@2.1.0
+  - @agentproto/provider-kit@0.4.0
+
 ## 0.3.4
 
 ### Patch Changes

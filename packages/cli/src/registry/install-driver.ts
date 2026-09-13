@@ -2,15 +2,16 @@
  * `installAdapter(slug)` — install an agent CLI adapter (harness) by slug,
  * the mutation companion to `listAdaptersWithAcp`.
  *
- * Two install classes, decided purely by `planAdapterInstall` (below):
+ * Three install classes, decided purely by `planAdapterInstall` (below):
  *
- *   - **acp-catalog / acp-config** — a generic ACP CLI with no
- *     `@agentproto/adapter-*` package (gemini-cli, qwen-code, iflow-cli, or a
- *     user's `config.acpAgents` entry). Its harness lives in an npm package
- *     named only in the entry's `install_hint` ("npm install -g …"); we parse
- *     that and run `npm i -g <package>` directly. `agentproto install <slug>`
- *     can't do this — a generic ACP handle's only install step is
- *     `{method:"vendored"}`, which the install runner treats as BYO-binary.
+ *   - **acp-catalog / acp-config (npm)** — a generic ACP CLI whose
+ *     `install_hint` is an `npm install -g` line (gemini-cli, qwen-code,
+ *     iflow-cli). We parse the package name and run `npm i -g <package>`.
+ *
+ *   - **acp-catalog / acp-config (shell-hint)** — a generic ACP CLI whose
+ *     `install_hint` uses a recognized non-npm package manager (uv, pip,
+ *     brew, cargo, go, pipx — e.g. `uv tool install mistral-vibe`). We run
+ *     the hint command directly.
  *
  *   - **first-party** — a native `@agentproto/adapter-*` adapter in the
  *     catalog (claude-code, opencode, …). Driven through the existing
@@ -29,6 +30,20 @@ import type { AdapterInstallResult } from "@agentproto/runtime"
 import { listAdaptersWithAcp, type AdapterListing } from "./resolve.js"
 import { CATALOG } from "./catalog.js"
 import { runInstall } from "../commands/install.js"
+import { EXIT_SETUP_NEEDS_TTY } from "../commands/setup.js"
+import {
+  KNOWN_INSTALL_COMMANDS,
+  parseNpmPackageFromHint,
+  parseShellHint,
+  commandOnPath,
+} from "./install-hint.js"
+
+// Re-exported for back-compat — these used to be defined in this module;
+// they now live in `install-hint.js` so `commands/install.ts`'s CLI-direct
+// `vendored` install step can share the same hint parsing (see its module
+// header) without a circular import (that module is what THIS one calls
+// into for the first-party install pipeline).
+export { KNOWN_INSTALL_COMMANDS, parseNpmPackageFromHint, parseShellHint }
 
 /** The minimal slice of an adapter listing `planAdapterInstall` reads —
  *  a structural subset of {@link AdapterListing} so the planner stays pure
@@ -56,26 +71,17 @@ export type AdapterInstallPlan =
       args: string[]
     }
   | {
+      kind: "shell-hint"
+      command: string
+      args: string[]
+    }
+  | {
       kind: "agentproto-install"
       slug: string
       command: "agentproto"
       args: string[]
     }
   | { kind: "unsupported"; reason: string }
-
-/**
- * Pull the npm package out of an acp entry's `install_hint`
- * (`"npm install -g @google/gemini-cli"` → `"@google/gemini-cli"`). Accepts
- * both `install`/`i` and `-g`/`--global` spellings. Returns `undefined` when
- * the hint isn't an npm-global install line (a BYO-binary agent, a `brew`
- * hint, etc.) — the caller then reports it as unsupported rather than
- * guessing a package.
- */
-export function parseNpmPackageFromHint(hint?: string): string | undefined {
-  if (!hint) return undefined
-  const m = hint.match(/npm\s+(?:i|install)\s+(?:-g|--global)\s+(\S+)/)
-  return m?.[1]
-}
 
 /**
  * Decide how to install `entry` — pure, so it's the unit-tested heart of the
@@ -90,20 +96,25 @@ export function planAdapterInstall(
   // only install path is npm-global from its hint.
   if (entry.source === "acp-catalog" || entry.source === "acp-config") {
     const pkg = parseNpmPackageFromHint(entry.hint)
-    if (!pkg) {
+    if (pkg) {
       return {
-        kind: "unsupported",
-        reason:
-          entry.hint
-            ? `no npm package found in install hint "${entry.hint}" — install ${entry.slug} manually.`
-            : `'${entry.slug}' is a bring-your-own-binary ACP agent with no install hint — install it manually.`,
+        kind: "npm-global",
+        packageName: pkg,
+        command: "npm",
+        args: ["install", "-g", pkg],
       }
     }
+
+    const shell = parseShellHint(entry.hint)
+    if (shell) {
+      return { kind: "shell-hint", command: shell.command, args: shell.args }
+    }
+
     return {
-      kind: "npm-global",
-      packageName: pkg,
-      command: "npm",
-      args: ["install", "-g", pkg],
+      kind: "unsupported",
+      reason: entry.hint
+        ? `unrecognized install hint "${entry.hint}" — install ${entry.slug} manually.`
+        : `'${entry.slug}' is a bring-your-own-binary ACP agent with no install hint — install it manually.`,
     }
   }
 
@@ -111,11 +122,22 @@ export function planAdapterInstall(
   // pipeline. Works whether it's "supported" (not installed → bootstrap the
   // package + run install[]) or "available" (installed, setup/auth pending →
   // idempotent re-run).
+  //
+  // `--allow-unverified`: this path only runs for an explicit
+  // `adapter_install` / `POST /adapters/:slug/install` request — a
+  // deliberate install action on a cataloged `@agentproto/adapter-*`
+  // manifest, whose install steps ship inside a versioned npm package
+  // rather than from anywhere caller-controlled. The daemon has no TTY, so
+  // without the flag the runner's non-interactive gate would refuse every
+  // curl/download-method adapter (e.g. antigravity), making them
+  // permanently uninstallable from UIs. The gate keeps protecting the
+  // ambient cases it was built for (agents shelling out `agentproto
+  // install`, CI).
   return {
     kind: "agentproto-install",
     slug: entry.slug,
     command: "agentproto",
-    args: ["install", entry.slug],
+    args: ["install", entry.slug, "--allow-unverified"],
   }
 }
 
@@ -263,7 +285,17 @@ export async function installAdapter(
   let exitCode: number
   let failureDetail = ""
 
-  if (plan.kind === "npm-global") {
+  if (plan.kind === "npm-global" || plan.kind === "shell-hint") {
+    if (!commandOnPath(plan.command)) {
+      const howTo = KNOWN_INSTALL_COMMANDS[plan.command]
+      return {
+        slug,
+        ok: false,
+        method: plan.kind,
+        command,
+        message: `'${plan.command}' is not installed. ${slug} requires it.\nInstall ${plan.command} first: ${howTo}`,
+      }
+    }
     const res = await runCommand(plan.command, plan.args)
     ok = res.code === 0
     exitCode = res.code
@@ -273,14 +305,19 @@ export async function installAdapter(
         : ` (exit ${res.code})${lastLine(res.output)}`
     }
   } else {
-    // agentproto-install
-    const res = await runInstallBounded(plan.args)
+    // agentproto-install. `runInstall` is the handler FOR the `install`
+    // verb — it wants the args after the verb (slug first). plan.args keeps
+    // the verb so `command` logs the real invocation; strip it here or the
+    // runner resolves an adapter literally named "install" and dies.
+    const res = await runInstallBounded(plan.args.slice(1))
     ok = res.code === 0
     exitCode = res.code
     if (!ok) {
       failureDetail = res.timedOut
         ? ` (timed out after ${INSTALL_TIMEOUT_MS / 60_000}m)`
-        : ` (exit ${res.code})`
+        : res.code === EXIT_SETUP_NEEDS_TTY
+          ? ` — a setup step needs an interactive terminal; run \`agentproto setup ${slug}\` in a real terminal to finish`
+          : ` (exit ${res.code})`
     }
   }
 
@@ -304,6 +341,7 @@ export async function installAdapter(
       ? `installed '${slug}' via \`${command}\`${freshStatus ? ` (now ${freshStatus})` : ""}.`
       : `install of '${slug}' failed${failureDetail}. Ran: \`${command}\`.`,
     ...(freshStatus ? { status: freshStatus } : {}),
+    ...(exitCode === EXIT_SETUP_NEEDS_TTY ? { needsInteractiveSetup: true } : {}),
   }
 }
 

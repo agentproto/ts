@@ -7,7 +7,8 @@
 
 import { describe, it, expect } from "vitest"
 import type { AuthProfile } from "@agentproto/auth"
-import { buildCatalogModels, type CatalogAdapterInput } from "../catalog-models.js"
+import { buildCatalogModels, modelWithRoute, reconcileModelRoute, resolveEffectiveRoute, type CatalogAdapterInput } from "../catalog-models.js"
+import { registerBuiltinRoutes } from "../builtin-routes.js"
 
 const CLAUDE_CODE: CatalogAdapterInput = {
   slug: "claude-code",
@@ -15,11 +16,13 @@ const CLAUDE_CODE: CatalogAdapterInput = {
   // Direct-route billing-auth capability (spawn-defaults.ts's
   // AdapterAuthDescriptor shape): a fixed anthropic provider + subscription
   // support, mirroring the real claude-code manifest facts the auth
-  // package's eligibility fixtures already document.
+  // package's eligibility fixtures already document. claude-code declares
+  // routeSelection: "free" in its manifest, so it gets widened gateway routes.
   authDescriptor: {
     provider: "anthropic",
     authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" },
   },
+  routeSelection: "free",
 }
 
 const HERMES: CatalogAdapterInput = {
@@ -128,6 +131,50 @@ describe("buildCatalogModels — runnable is profile-aware (SPEC §5.3)", () => 
     expect(route?.runnable).toBe(false)
     expect(route?.eligibleProfiles).toEqual([])
   })
+})
+
+describe("buildCatalogModels — first-party ids whose vendor/product COLLIDES with a router pricing key stay runnable on their own anthropic route (#688 regression)", () => {
+  // `anthropic/claude-sonnet-5` and `anthropic/claude-fable-5` are keyed in the
+  // OpenRouter pricing data with the SAME dash spelling Anthropic uses and
+  // `provider:"openrouter"`, so `getModelProvider` resolves them to the ROUTER
+  // and the direct `anthropic` route would drop out of `serviceableModelRoutes`
+  // — flipping the wallet-eligibility gate and rendering these models
+  // non-runnable even with an eligible anthropic subscription profile. The
+  // `resolvePricingExact` restore (catalog-models.ts) re-adds the vendor route.
+  // Their non-colliding siblings (`claude-opus-4-8`, `claude-haiku-4-5`) never
+  // hit the collision — assert them side-by-side so a future regression can't
+  // silently single out the collision ids again.
+  const CLAUDE_CODE_FULL: CatalogAdapterInput = {
+    slug: "claude-code",
+    models: [
+      { id: "claude-sonnet-5" },
+      { id: "claude-fable-5" },
+      { id: "claude-opus-4-8" },
+      { id: "claude-haiku-4-5" },
+    ],
+    authDescriptor: {
+      provider: "anthropic",
+      authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" },
+    },
+    routeSelection: "free",
+  }
+
+  for (const product of [
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-opus-4-8",
+    "claude-haiku-4-5",
+  ]) {
+    it(`${product} is runnable on its anthropic route via an oauth-bearer subscription profile`, () => {
+      const response = buildCatalogModels({
+        adapters: [CLAUDE_CODE_FULL],
+        profiles: [anthropicOauth],
+      })
+      const route = findRoute(response, "anthropic", product, "anthropic")
+      expect(route?.runnable).toBe(true)
+      expect(route?.eligibleProfiles).toEqual(["jeremy-max"])
+    })
+  }
 })
 
 describe("buildCatalogModels — whole-profile disable (WS2) + per-model curation (WS3)", () => {
@@ -299,7 +346,7 @@ describe("buildCatalogModels — curated vs catalog-known routes (SPEC §5.1/§5
     const requesty = product?.routes.find(r => r.route === "requesty")
     expect(requesty).toBeDefined()
     expect(requesty?.curated).toBe(false)
-    expect(requesty?.adapters).toEqual([])
+    expect(requesty?.adapters).toEqual(["claude-code"])
     expect(requesty?.adapterModes).toEqual([])
     // The curated direct route is still present alongside it.
     const direct = product?.routes.find(r => r.route === "anthropic")
@@ -314,6 +361,286 @@ describe("buildCatalogModels — curated vs catalog-known routes (SPEC §5.1/§5
     const requesty = findRoute(response, "anthropic", "claude-opus-4-8", "requesty")
     expect(requesty?.runnable).toBe(true)
     expect(requesty?.eligibleProfiles).toEqual(["requesty-key"])
+  })
+})
+
+describe("buildCatalogModels — per-model provider drives the billing route", () => {
+  const CLAUDE_SDK_MOONSHOT: CatalogAdapterInput = {
+    slug: "claude-sdk",
+    models: [{ id: "kimi-k2.7-code", provider: "moonshot" }],
+    authDescriptor: { provider: "anthropic", authSubscription: { setEnv: "ANTHROPIC_AUTH_TOKEN" } },
+    routeSelection: "free",
+  }
+
+  it("a curated entry with provider: moonshot produces a moonshot route", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_SDK_MOONSHOT],
+      profiles: [moonshotApiKey],
+    })
+    const route = findRoute(response, "moonshot", "kimi-k2.7-code", "moonshot")
+    expect(route).toBeDefined()
+    expect(route?.ref).toBe("moonshot/kimi-k2.7-code")
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toEqual(["personal-moonshot"])
+    expect(route?.adapters).toEqual(["claude-sdk"])
+  })
+
+  it("the anthropic subscription is not eligible for a moonshot-routed model", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_SDK_MOONSHOT],
+      profiles: [anthropicOauth, moonshotApiKey],
+    })
+    const route = findRoute(response, "moonshot", "kimi-k2.7-code", "moonshot")
+    expect(route?.eligibleProfiles).toEqual(["personal-moonshot"])
+  })
+
+  it("a free adapter's widened openrouter route carries the adapter slug", () => {
+    const freeDeepseek: CatalogAdapterInput = {
+      slug: "claude-sdk",
+      models: [{ id: "deepseek/deepseek-v4-pro", provider: "deepseek" }],
+      authDescriptor: { provider: "anthropic", authSubscription: { setEnv: "ANTHROPIC_AUTH_TOKEN" } },
+      routeSelection: "free",
+    }
+    const response = buildCatalogModels({ adapters: [freeDeepseek], profiles: [] })
+    const openrouter = findRoute(response, "deepseek", "deepseek-v4-pro", "openrouter")
+    expect(openrouter).toBeDefined()
+    expect(openrouter?.curated).toBe(false)
+    expect(openrouter?.adapters).toEqual(["claude-sdk"])
+  })
+})
+
+describe("buildCatalogModels — fixed/derived adapters do not get widened gateway routes", () => {
+  it("a fixed-provider adapter without routeSelection: free gets no widened routes", () => {
+    const fixed: CatalogAdapterInput = {
+      slug: "codex",
+      models: [{ id: "gpt-5-codex" }],
+      authDescriptor: { provider: "openai" },
+      // routeSelection intentionally omitted
+    }
+    const response = buildCatalogModels({ adapters: [fixed], profiles: [] })
+    const product = response.vendors.find(v => v.vendor === "openai")?.products.find(p => p.product === "gpt-5-codex")
+    expect(product?.routes.map(r => r.route)).toEqual(["openai"])
+  })
+
+  it("a derived-from-model adapter gets no widened routes", () => {
+    const derived: CatalogAdapterInput = {
+      slug: "mastracode",
+      models: [{ id: "anthropic/claude-sonnet-4-5" }],
+      authDescriptor: { modelDerivedApiKey: true },
+      routeSelection: "derived-from-model",
+    }
+    const response = buildCatalogModels({ adapters: [derived], profiles: [] })
+    const product = response.vendors
+      .find(v => v.vendor === "anthropic")
+      ?.products.find(p => p.product === "claude-sonnet-4-5")
+    expect(product?.routes.some(r => r.route === "openrouter")).toBe(false)
+  })
+})
+
+describe("buildCatalogModels — mastracode model-derived api-key eligibility", () => {
+  const MASTRACODE: CatalogAdapterInput = {
+    slug: "mastracode",
+    models: [
+      { id: "anthropic/claude-sonnet-4-5", provider: "anthropic" },
+      { id: "openai/gpt-5.1", provider: "openai" },
+      { id: "openrouter/deepseek/deepseek-v4-pro", provider: "openrouter" },
+    ],
+    authDescriptor: {
+      modelDerivedApiKey: true,
+      modelProviders: {
+        "anthropic/claude-sonnet-4-5": "anthropic",
+        "openai/gpt-5.1": "openai",
+        "openrouter/deepseek/deepseek-v4-pro": "openrouter",
+      },
+    },
+    routeSelection: "derived-from-model",
+  }
+
+  const anthropicApiKey: AuthProfile = {
+    id: "work-anthropic-key",
+    endpoint: "anthropic",
+    method: "api-key",
+    credentialRef: "ref-anthropic-key",
+  }
+  const anthropicSubscription: AuthProfile = {
+    id: "jeremy-max",
+    endpoint: "anthropic",
+    method: "oauth-bearer",
+    credentialRef: "ref-oauth",
+  }
+  const openaiApiKey: AuthProfile = {
+    id: "personal-openai",
+    endpoint: "openai",
+    method: "api-key",
+    credentialRef: "ref-openai-key",
+  }
+  const openrouterApiKey: AuthProfile = {
+    id: "personal-openrouter",
+    endpoint: "openrouter",
+    method: "api-key",
+    credentialRef: "ref-openrouter-key",
+  }
+
+  it("makes an anthropic api-key profile eligible for the mastracode anthropic route", () => {
+    const response = buildCatalogModels({
+      adapters: [MASTRACODE],
+      profiles: [anthropicApiKey],
+    })
+    const route = findRoute(response, "anthropic", "claude-sonnet-4-5", "anthropic")
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toEqual(["work-anthropic-key"])
+  })
+
+  it("does NOT make an anthropic subscription profile eligible for mastracode (x-api-key client — an OAT is rejected upstream)", () => {
+    // This asserted the OPPOSITE before the fix: `modelDerivedApiKey` alone
+    // granted oauth-bearer eligibility, so the runtime injected the
+    // subscription OAT into ANTHROPIC_API_KEY and the upstream rejected it
+    // as an invalid key AFTER the session was live (observed on opencode:
+    // "Internal error: API key is invalid"). mastracode declares no bearer
+    // surface, so a subscription profile must not light it up.
+    const response = buildCatalogModels({
+      adapters: [MASTRACODE],
+      profiles: [anthropicSubscription],
+    })
+    const route = findRoute(response, "anthropic", "claude-sonnet-4-5", "anthropic")
+    expect(route?.runnable).toBe(false)
+    expect(route?.eligibleProfiles).toEqual([])
+  })
+
+  it("makes an anthropic subscription profile eligible for pi via its provider-scoped authSubscription — and only on anthropic models", () => {
+    // pi's real shape: modelDerivedApiKey + an anthropic-only bearer door
+    // (`ANTHROPIC_OAUTH_TOKEN`, pi 0.80.x --help).
+    const PI: CatalogAdapterInput = {
+      slug: "pi",
+      models: [
+        { id: "anthropic/claude-sonnet-4-5", provider: "anthropic" },
+        { id: "openai/gpt-5.1", provider: "openai" },
+      ],
+      authDescriptor: {
+        modelDerivedApiKey: true,
+        authSubscription: { setEnv: "ANTHROPIC_OAUTH_TOKEN", provider: "anthropic" },
+      },
+      routeSelection: "derived-from-model",
+    }
+    const response = buildCatalogModels({
+      adapters: [PI],
+      profiles: [anthropicSubscription],
+    })
+    const anthropicRoute = findRoute(response, "anthropic", "claude-sonnet-4-5", "anthropic")
+    expect(anthropicRoute?.runnable).toBe(true)
+    expect(anthropicRoute?.eligibleProfiles).toEqual(["jeremy-max"])
+    // The scope holds: the same subscription profile must NOT light up pi's
+    // openai models (nothing reads an anthropic bearer there).
+    const openaiRoute = findRoute(response, "openai", "gpt-5.1", "openai")
+    expect(openaiRoute?.runnable).toBe(false)
+    expect(openaiRoute?.eligibleProfiles).toEqual([])
+  })
+
+  it("makes anthropic AND openai subscription profiles eligible for a multi-surface adapter (mastracode/opencode) — each scoped to its own surface", () => {
+    // mastracode/opencode's real shape: modelDerivedApiKey + an array of
+    // provider-scoped file-based bearer doors, one per native OAuth login
+    // (Claude Pro/Max AND ChatGPT).
+    const MASTRACODE_MULTI: CatalogAdapterInput = {
+      slug: "mastracode",
+      models: [
+        { id: "anthropic/claude-sonnet-4-5", provider: "anthropic" },
+        { id: "openai/gpt-5.1", provider: "openai" },
+      ],
+      authDescriptor: {
+        modelDerivedApiKey: true,
+        authSubscription: [
+          { external: true, provider: "anthropic" },
+          { external: true, provider: "openai" },
+        ],
+      },
+      routeSelection: "derived-from-model",
+    }
+    const openaiSubscription: AuthProfile = {
+      id: "jeremy-chatgpt",
+      endpoint: "openai",
+      method: "oauth-bearer",
+      credentialRef: "ref-oauth-openai",
+    }
+    const response = buildCatalogModels({
+      adapters: [MASTRACODE_MULTI],
+      profiles: [anthropicSubscription, openaiSubscription],
+    })
+    const anthropicRoute = findRoute(response, "anthropic", "claude-sonnet-4-5", "anthropic")
+    expect(anthropicRoute?.runnable).toBe(true)
+    expect(anthropicRoute?.eligibleProfiles).toEqual(["jeremy-max"])
+    const openaiRoute = findRoute(response, "openai", "gpt-5.1", "openai")
+    expect(openaiRoute?.runnable).toBe(true)
+    expect(openaiRoute?.eligibleProfiles).toEqual(["jeremy-chatgpt"])
+  })
+
+  it("keeps direct-route eligibility scoped by model-derived provider", () => {
+    const response = buildCatalogModels({
+      adapters: [MASTRACODE],
+      profiles: [anthropicApiKey, openaiApiKey],
+    })
+    expect(findRoute(response, "anthropic", "claude-sonnet-4-5", "anthropic")?.eligibleProfiles).toEqual([
+      "work-anthropic-key",
+    ])
+    expect(findRoute(response, "openai", "gpt-5.1", "openai")?.eligibleProfiles).toEqual(["personal-openai"])
+  })
+
+  it("makes an openrouter api-key profile eligible for an openrouter-routed mastracode model", () => {
+    const response = buildCatalogModels({
+      adapters: [MASTRACODE],
+      profiles: [openrouterApiKey],
+    })
+    const route = findRoute(response, "deepseek", "deepseek-v4-pro", "openrouter")
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toEqual(["personal-openrouter"])
+  })
+})
+
+describe("buildCatalogModels — model-derived api-key adapters (opencode)", () => {
+  const opencodeAdapter = (models: CatalogAdapterInput["models"]): CatalogAdapterInput => ({
+    slug: "opencode",
+    models,
+    authDescriptor: { modelDerivedApiKey: true },
+    routeSelection: "derived-from-model",
+  })
+
+  it("makes a direct Anthropic route runnable when an anthropic api-key profile exists", () => {
+    const response = buildCatalogModels({
+      adapters: [opencodeAdapter([{ id: "anthropic/claude-sonnet-4-5", provider: "anthropic" }])],
+      profiles: [anthropicApiKey],
+    })
+    const route = findRoute(response, "anthropic", "claude-sonnet-4-5", "anthropic")
+    expect(route).toBeDefined()
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toContain("work-anthropic-key")
+    expect(route?.curated).toBe(true)
+    expect(route?.adapters).toContain("opencode")
+  })
+
+  it("leaves a direct route unrunnable when no matching profile exists", () => {
+    const response = buildCatalogModels({
+      adapters: [opencodeAdapter([{ id: "anthropic/claude-sonnet-4-5", provider: "anthropic" }])],
+      profiles: [],
+    })
+    const route = findRoute(response, "anthropic", "claude-sonnet-4-5", "anthropic")
+    expect(route?.runnable).toBe(false)
+    expect(route?.eligibleProfiles).toEqual([])
+  })
+
+  it("treats an explicit OpenRouter model as a gateway route (api-key only)", () => {
+    const openrouterKey: AuthProfile = {
+      id: "personal-openrouter",
+      endpoint: "openrouter",
+      method: "api-key",
+      credentialRef: "ref-openrouter",
+    }
+    const response = buildCatalogModels({
+      adapters: [opencodeAdapter([{ id: "openrouter/anthropic/claude-sonnet-4-5", provider: "openrouter" }])],
+      profiles: [openrouterKey],
+    })
+    const route = findRoute(response, "anthropic", "claude-sonnet-4-5", "openrouter")
+    expect(route).toBeDefined()
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toContain("personal-openrouter")
   })
 })
 
@@ -597,6 +924,7 @@ describe("buildCatalogModels — catalog↔spawn wallet-eligibility parity (SPEC
       provider: "anthropic",
       authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" },
     },
+    routeSelection: "free",
   }
 
   it("a gateway-only model is NOT runnable on its adapter's direct (fixed-wallet) route — matches the spawn 500", () => {
@@ -667,6 +995,7 @@ describe("buildCatalogModels — first-party ↔ router-key collision (firstpart
       provider: "anthropic",
       authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" },
     },
+    routeSelection: "free",
   })
 
   for (const product of ["claude-sonnet-5", "claude-fable-5"]) {
@@ -736,5 +1065,371 @@ describe("buildCatalogModels — first-party ↔ router-key collision (firstpart
     expect(direct).toBeDefined()
     expect(direct?.runnable).toBe(false)
     expect(direct?.eligibleProfiles).toEqual([])
+  })
+})
+
+describe("buildCatalogModels — curated @llm-endpoint proxy route (PR-5)", async () => {
+  // The built-in `llm-endpoint` custom route must be registered for a curated
+  // `<vendor>/<product>@llm-endpoint` row to carry a baseUrl to spawn against.
+  // `registerBuiltinRoutes` writes it into the (module-global, idempotent)
+  // custom-route map — the same call `createGateway` makes at daemon boot.
+  await registerBuiltinRoutes({ llmEndpoint: true })
+
+  // claude-code curates a native id, an @openrouter id, and an @llm-endpoint id
+  // — mirroring the real adapter allowlist, so the same fixture proves the new
+  // llm-endpoint row is runnable AND the existing direct/@openrouter rows are
+  // untouched by it.
+  const CLAUDE_CODE_LLM: CatalogAdapterInput = {
+    slug: "claude-code",
+    models: [
+      { id: "claude-opus-4-8" },
+      { id: "z-ai/glm-5.2@openrouter" },
+      { id: "moonshot/kimi-k2.7-code@llm-endpoint" },
+    ],
+    authDescriptor: {
+      provider: "anthropic",
+      authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" },
+    },
+  }
+
+  // The CRUX (STEP 0b): a gateway route bills its OWN route id, so an
+  // llm-endpoint profile must carry `endpoint: "llm-endpoint"` + `method:
+  // "api-key"` — NOT the underlying model's vendor (`moonshot`).
+  const llmEndpointKey: AuthProfile = {
+    id: "llm-endpoint-key",
+    endpoint: "llm-endpoint",
+    method: "api-key",
+    credentialRef: "ref-llm-endpoint",
+  }
+  const openrouterKey: AuthProfile = {
+    id: "personal-openrouter",
+    endpoint: "openrouter",
+    method: "api-key",
+    credentialRef: "ref-or",
+  }
+
+  it("runnable:true given an enabled api-key profile whose endpoint is `llm-endpoint`", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_CODE_LLM],
+      profiles: [llmEndpointKey],
+    })
+    const route = findRoute(response, "moonshot", "kimi-k2.7-code", "llm-endpoint")
+    expect(route).toBeDefined()
+    expect(route?.runnable).toBe(true)
+    expect(route?.baseUrl).toBe("http://localhost:18090")
+    expect(route?.eligibleProfiles).toEqual(["llm-endpoint-key"])
+  })
+
+  it("runnable:false without an llm-endpoint api-key profile (anthropic/openrouter don't bill it)", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_CODE_LLM],
+      profiles: [anthropicOauth, openrouterKey],
+    })
+    const route = findRoute(response, "moonshot", "kimi-k2.7-code", "llm-endpoint")
+    expect(route).toBeDefined()
+    expect(route?.runnable).toBe(false)
+    expect(route?.eligibleProfiles).toEqual([])
+  })
+
+  it("a gateway route never accepts an oauth-bearer profile, even at the right endpoint", () => {
+    const llmEndpointOauth: AuthProfile = {
+      id: "llm-endpoint-oauth",
+      endpoint: "llm-endpoint",
+      method: "oauth-bearer",
+      credentialRef: "ref-oauth",
+    }
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_CODE_LLM],
+      profiles: [llmEndpointOauth],
+    })
+    const route = findRoute(response, "moonshot", "kimi-k2.7-code", "llm-endpoint")
+    expect(route?.runnable).toBe(false)
+  })
+
+  it("a disabled llm-endpoint profile drops the row to non-runnable (WS2)", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_CODE_LLM],
+      profiles: [{ ...llmEndpointKey, disabled: true }],
+    })
+    const route = findRoute(response, "moonshot", "kimi-k2.7-code", "llm-endpoint")
+    expect(route?.runnable).toBe(false)
+  })
+
+  it("leaves the direct and @openrouter rows unchanged by the llm-endpoint wiring", () => {
+    const response = buildCatalogModels({
+      adapters: [CLAUDE_CODE_LLM],
+      profiles: [anthropicOauth, openrouterKey, llmEndpointKey],
+    })
+    // Direct anthropic route: still runnable via the Claude subscription.
+    const direct = findRoute(response, "anthropic", "claude-opus-4-8", "anthropic")
+    expect(direct?.runnable).toBe(true)
+    expect(direct?.eligibleProfiles).toEqual(["jeremy-max"])
+    // @openrouter route: still runnable via the openrouter api-key, and never
+    // eligible for the llm-endpoint profile.
+    const openrouter = findRoute(response, "z-ai", "glm-5.2", "openrouter")
+    expect(openrouter?.runnable).toBe(true)
+    expect(openrouter?.eligibleProfiles).toEqual(["personal-openrouter"])
+  })
+})
+
+describe("buildCatalogModels — xAI native + Anthropic-compatible routes", async () => {
+  // xai-anthropic is a built-in custom route; ensure it is registered the same
+  // way createGateway does at daemon boot.
+  await registerBuiltinRoutes({ llmEndpoint: true })
+
+  const xaiApiKey: AuthProfile = {
+    id: "personal-xai",
+    endpoint: "xai",
+    method: "api-key",
+    credentialRef: "ref-xai",
+  }
+  const xaiAnthropicApiKey: AuthProfile = {
+    id: "personal-xai-anthropic",
+    endpoint: "xai-anthropic",
+    method: "api-key",
+    credentialRef: "ref-xai-anthropic",
+  }
+
+  it("surfaces every xAI-priced model on the native `xai` direct route", () => {
+    const response = buildCatalogModels({ adapters: [], profiles: [] })
+    const route = findRoute(response, "xai", "grok-4.5", "xai")
+    expect(route).toBeDefined()
+    expect(route?.ref).toBe("xai/grok-4.5")
+    expect(route?.curated).toBe(false)
+    expect(route?.pricing).toEqual({ inPer1M: 2.0, outPer1M: 6.0 })
+  })
+
+  it("surfaces every xAI-priced model on the `xai-anthropic` compatibility route", () => {
+    const response = buildCatalogModels({ adapters: [], profiles: [] })
+    const route = findRoute(response, "xai", "grok-4.5", "xai-anthropic")
+    expect(route).toBeDefined()
+    expect(route?.ref).toBe("xai/grok-4.5@xai-anthropic")
+    expect(route?.curated).toBe(false)
+    expect(route?.baseUrl).toBe("https://api.x.ai")
+    expect(route?.pricing).toEqual({ inPer1M: 2.0, outPer1M: 6.0 })
+  })
+
+  it("makes the native `xai` route runnable with an `xai` api-key profile", () => {
+    const response = buildCatalogModels({ adapters: [], profiles: [xaiApiKey] })
+    const route = findRoute(response, "xai", "grok-4.5", "xai")
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toEqual(["personal-xai"])
+  })
+
+  it("makes the `xai-anthropic` route runnable with an `xai-anthropic` api-key profile", () => {
+    const response = buildCatalogModels({ adapters: [], profiles: [xaiAnthropicApiKey] })
+    const route = findRoute(response, "xai", "grok-4.5", "xai-anthropic")
+    expect(route?.runnable).toBe(true)
+    expect(route?.eligibleProfiles).toEqual(["personal-xai-anthropic"])
+  })
+
+  it("does not cross-eligible `xai` and `xai-anthropic` profiles", () => {
+    const response = buildCatalogModels({
+      adapters: [],
+      profiles: [xaiApiKey, xaiAnthropicApiKey],
+    })
+    expect(findRoute(response, "xai", "grok-4.5", "xai")?.eligibleProfiles).toEqual([
+      "personal-xai",
+    ])
+    expect(findRoute(response, "xai", "grok-4.5", "xai-anthropic")?.eligibleProfiles).toEqual([
+      "personal-xai-anthropic",
+    ])
+  })
+
+  it("attaches `xai-anthropic` rows to free adapters", () => {
+    const free: CatalogAdapterInput = {
+      slug: "claude-code",
+      models: [{ id: "anthropic/claude-opus-4-8" }],
+      authDescriptor: { provider: "anthropic", authSubscription: { setEnv: "x" } },
+      routeSelection: "free",
+    }
+    const response = buildCatalogModels({ adapters: [free], profiles: [] })
+    const route = findRoute(response, "xai", "grok-4.5", "xai-anthropic")
+    expect(route?.adapters).toEqual(["claude-code"])
+  })
+
+  it("does not attach `xai-anthropic` rows to fixed or derived-from-model adapters", () => {
+    const fixed: CatalogAdapterInput = {
+      slug: "codex",
+      models: [{ id: "gpt-5-codex" }],
+      authDescriptor: { provider: "openai" },
+    }
+    const derived: CatalogAdapterInput = {
+      slug: "hermes",
+      models: [{ id: "anthropic/claude-opus-4-8" }],
+      authDescriptor: { provider: "anthropic" },
+      routeSelection: "derived-from-model",
+    }
+    const response = buildCatalogModels({ adapters: [fixed, derived], profiles: [] })
+    const route = findRoute(response, "xai", "grok-4.5", "xai-anthropic")
+    expect(route).toBeDefined()
+    expect(route?.adapters).toEqual([])
+  })
+})
+
+describe("resolveEffectiveRoute", () => {
+  it("returns the model's explicit @route over a stale route.gateway", () => {
+    expect(resolveEffectiveRoute("z-ai/glm-5.2@openrouter", "requesty")).toBe("openrouter")
+  })
+
+  it("returns route.gateway for a parseable model with no explicit @route", () => {
+    expect(resolveEffectiveRoute("anthropic/claude-sonnet-5", "openrouter")).toBe("openrouter")
+  })
+
+  it("returns the vendor-implied route when no route.gateway is set", () => {
+    expect(resolveEffectiveRoute("anthropic/claude-sonnet-5", undefined)).toBe("anthropic")
+  })
+
+  it("normalizes a router-prefixed id (`openrouter/vendor/product`) to its explicit route", () => {
+    expect(resolveEffectiveRoute("openrouter/anthropic/claude-sonnet-5", undefined)).toBe("openrouter")
+  })
+
+  it("returns route.gateway for a bare/unparseable model", () => {
+    expect(resolveEffectiveRoute("claude-opus-4-8", "anthropic")).toBe("anthropic")
+  })
+
+  it("returns undefined when neither model nor route.gateway is known", () => {
+    expect(resolveEffectiveRoute(undefined, undefined)).toBeUndefined()
+  })
+})
+
+describe("modelWithRoute", () => {
+  it("rewrites the @route suffix on a parseable model", () => {
+    expect(modelWithRoute("z-ai/glm-5.2@openrouter", "requesty")).toBe("z-ai/glm-5.2@requesty")
+  })
+
+  it("adds an @route suffix when the model had none", () => {
+    expect(modelWithRoute("anthropic/claude-sonnet-5", "openrouter")).toBe(
+      "anthropic/claude-sonnet-5@openrouter",
+    )
+  })
+
+  it("omits the suffix when the new route equals the vendor (direct route)", () => {
+    expect(modelWithRoute("anthropic/claude-sonnet-5@openrouter", "anthropic")).toBe(
+      "anthropic/claude-sonnet-5",
+    )
+  })
+
+  it("preserves a :pin when rewriting the route", () => {
+    expect(modelWithRoute("anthropic/claude-sonnet-5:pin@openrouter", "requesty")).toBe(
+      "anthropic/claude-sonnet-5:pin@requesty",
+    )
+  })
+
+  it("returns bare ids unchanged", () => {
+    expect(modelWithRoute("claude-opus-4-8", "anthropic")).toBe("claude-opus-4-8")
+  })
+})
+
+describe("reconcileModelRoute", () => {
+  it("route-only override rewrites a parseable model to match", () => {
+    expect(
+      reconcileModelRoute({
+        prevModel: "z-ai/glm-5.2@openrouter",
+        prevRoute: { gateway: "openrouter" },
+        route: { gateway: "requesty" },
+      }),
+    ).toEqual({
+      model: "z-ai/glm-5.2@requesty",
+      route: { gateway: "requesty" },
+    })
+  })
+
+  it("model-only override synthesizes a route when it conflicts", () => {
+    expect(
+      reconcileModelRoute({
+        prevModel: "anthropic/claude-sonnet-5",
+        prevRoute: { gateway: "openrouter" },
+        model: "anthropic/claude-sonnet-5",
+      }),
+    ).toEqual({
+      model: "anthropic/claude-sonnet-5",
+      route: { gateway: "anthropic" },
+    })
+  })
+
+  it("model-only override with explicit @route synthesizes the matching route", () => {
+    expect(
+      reconcileModelRoute({
+        prevModel: "z-ai/glm-5.2@requesty",
+        prevRoute: { gateway: "requesty" },
+        model: "z-ai/glm-5.2@openrouter",
+      }),
+    ).toEqual({
+      model: "z-ai/glm-5.2@openrouter",
+      route: { gateway: "openrouter" },
+    })
+  })
+
+  it("model-only override with explicit @route synthesizes route even without a prevRoute", () => {
+    expect(
+      reconcileModelRoute({
+        model: "z-ai/glm-5.2@openrouter",
+      }),
+    ).toEqual({
+      model: "z-ai/glm-5.2@openrouter",
+      route: { gateway: "openrouter" },
+    })
+  })
+
+  it("model-only override with a vendor-implied route does NOT invent a route when there is no prevRoute", () => {
+    expect(
+      reconcileModelRoute({
+        model: "anthropic/claude-sonnet-5",
+      }),
+    ).toEqual({
+      model: "anthropic/claude-sonnet-5",
+      route: undefined,
+    })
+  })
+
+  it("throws when both overrides contradict each other", () => {
+    expect(() =>
+      reconcileModelRoute({
+        prevModel: "z-ai/glm-5.2@openrouter",
+        prevRoute: { gateway: "openrouter" },
+        model: "z-ai/glm-5.2@openrouter",
+        route: { gateway: "requesty" },
+      }),
+    ).toThrow(/pins route "openrouter" but route override is "requesty"/)
+  })
+
+  it("allows non-contradicting both overrides", () => {
+    expect(
+      reconcileModelRoute({
+        prevModel: "z-ai/glm-5.2@openrouter",
+        prevRoute: { gateway: "openrouter" },
+        model: "z-ai/glm-5.2@openrouter",
+        route: { gateway: "openrouter" },
+      }),
+    ).toEqual({
+      model: "z-ai/glm-5.2@openrouter",
+      route: { gateway: "openrouter" },
+    })
+  })
+
+  it("returns prev values when no overrides are given", () => {
+    expect(
+      reconcileModelRoute({
+        prevModel: "anthropic/claude-sonnet-5",
+        prevRoute: { gateway: "anthropic" },
+      }),
+    ).toEqual({
+      model: "anthropic/claude-sonnet-5",
+      route: { gateway: "anthropic" },
+    })
+  })
+
+  it("carries prevRoute forward when model has no explicit route and does not conflict", () => {
+    expect(
+      reconcileModelRoute({
+        prevModel: "anthropic/claude-sonnet-5",
+        prevRoute: { gateway: "anthropic" },
+        model: "anthropic/claude-sonnet-5",
+      }),
+    ).toEqual({
+      model: "anthropic/claude-sonnet-5",
+      route: { gateway: "anthropic" },
+    })
   })
 })

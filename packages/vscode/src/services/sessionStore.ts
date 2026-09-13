@@ -24,6 +24,7 @@ import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
 import { subscribeSse } from "../client/sse.js"
+import { buildAuthHeaders } from "../config.js"
 import { makePendingSession, type PendingSessionDraft } from "./pending.logic.js"
 import type {
   PendingPermission,
@@ -47,6 +48,11 @@ const MAX_IDLE_BACKOFF_MS = 2_000
 const SESSION_REFRESH_DEBOUNCE_MS = 150
 const SESSION_REFRESH_RETRY_MAX_MS = 5_000
 
+/** Connectivity as experienced by the Sessions surfaces. A successful
+ * list-sessions snapshot is the authoritative proof that the daemon is
+ * reachable; session-event polling alone is not enough to populate a view. */
+export type DaemonConnectionState = "connecting" | "connected" | "unreachable"
+
 const SESSION_DESCRIPTOR_EVENT_TYPES = new Set([
   "session:turn-end",
   "session:awaiting-input",
@@ -56,6 +62,18 @@ const SESSION_DESCRIPTOR_EVENT_TYPES = new Set([
   // authoritative list so the tree/tab/header repaint without waiting for the
   // next clock snapshot.
   "session:renamed",
+  // A pin/unpin mutates the descriptor's `pinned` flag — refresh so the
+  // webview's Pinned group / the CLI table (list-visibility only, no
+  // operational effect) resorts without waiting for the next clock snapshot.
+  "session:pinned-changed",
+  // A model switch mutates `model` and/or `activeModel` — refresh so the
+  // transcript panel's composer chip repaints (requested vs. active) without
+  // waiting for the idle-poll fallback. Both the axis-generic event and its
+  // back-compat `model-changed` alias are listed: either can arrive alone
+  // depending on which write-path fired (see @agentproto/runtime
+  // sessions.ts's `setModel` and its ordinary-prompt learn-path).
+  "session:config-changed",
+  "session:model-changed",
 ])
 
 export interface FocusOutputHandlers {
@@ -124,6 +142,7 @@ export class SessionStore {
 
   private msSinceSnapshot = 0
   private pendingSeq = 0
+  private _connectionState: DaemonConnectionState = "connecting"
 
   /** Off by default — archived sessions are hidden from every fetch this
    *  store makes until a caller opts in (the "show archived" tree toggle,
@@ -153,6 +172,12 @@ export class SessionStore {
   /** True when the session_events_poll loop is healthy. */
   get healthy(): boolean {
     return this.consecutiveFailures < HEALTH_THRESHOLD
+  }
+
+  /** The latest daemon reachability result, used by views to render a useful
+   * first-run/offline state instead of a misleading empty session list. */
+  get connectionState(): DaemonConnectionState {
+    return this._connectionState
   }
 
   get showArchived(): boolean {
@@ -234,7 +259,10 @@ export class SessionStore {
     } catch {
       // permissions endpoint optional/failed — non-fatal.
     }
-    if (changed) this._onDidChange.fire()
+    const nextConnectionState: DaemonConnectionState = reachable ? "connected" : "unreachable"
+    const connectionChanged = this._connectionState !== nextConnectionState
+    this._connectionState = nextConnectionState
+    if (changed || connectionChanged) this._onDidChange.fire()
     return { changed, reachable }
   }
 
@@ -413,7 +441,7 @@ export class SessionStore {
       if (this.stopped || sub.cancelled) return
       sub.sse = subscribeSse(
         url,
-        token ? { authorization: `Bearer ${token}` } : {},
+        buildAuthHeaders(this.client.authHeaders, token),
         {
           onEvent: (data) => {
             if (sub.cancelled) return

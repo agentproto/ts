@@ -17,6 +17,7 @@
 import { z } from "zod"
 import type { FsPort } from "../ports/fs.port.js"
 import type { ReportConfig } from "./types.js"
+import { bibliographySha, recordedBibSha, stripBibShaMarker } from "./bib-sha.js"
 
 /** What role a section plays in the document. */
 export const reportSectionKindSchema = z.enum([
@@ -76,9 +77,42 @@ export interface CollectSectionsOptions {
   readonly chaptersDir?: string
   /** Subdir holding the bibliography. Default `views`. */
   readonly viewsDir?: string
+  /**
+   * Verify each chapter's recorded bib-sha marker (stamped by
+   * `assembleChapters({ bibSha })`) against the current
+   * `_bibliography.json` before stitching, and throw when the bibliography
+   * has been renumbered since the chapter was written — its `[n]`s would
+   * silently cite the wrong sources. Default true; unstamped (legacy)
+   * chapters are never checked. Markers are stripped from the output
+   * sections either way.
+   */
+  readonly checkBibSha?: boolean
 }
 
 const stripHeading = (s: string): string => s.replace(/^#+\s*/, "").trim()
+
+/** Parse `<viewsDir>/_bibliography.json` → entries, or null when absent/invalid. */
+async function readBibEntries(
+  report: FsPort,
+  viewsDir: string
+): Promise<BibEntry[] | null> {
+  try {
+    const raw = await report.readFile(`${viewsDir}/_bibliography.json`)
+    const parsed = JSON.parse(raw) as { sources?: unknown }
+    const src = Array.isArray(parsed.sources) ? parsed.sources : []
+    return src.map((s) => {
+      const o = (s ?? {}) as Record<string, unknown>
+      return {
+        n: typeof o.n === "number" ? o.n : 0,
+        id: typeof o.id === "string" ? o.id : "",
+        title: typeof o.title === "string" ? o.title : "",
+        url: typeof o.url === "string" ? o.url : "",
+      }
+    })
+  } catch {
+    return null
+  }
+}
 
 /**
  * Collect a report's ordered sections from the report root. This is the
@@ -158,7 +192,31 @@ export async function collectReportSections(
     kind: "sources",
   })
 
-  return sections
+  // Bib-sha honesty check: a chapter stamped by `assembleChapters({ bibSha })`
+  // must match the CURRENT bibliography numbering — regenerating packs mid-run
+  // renumbers [n] globally while the chapter's literal [n]s stay put, which
+  // the range check can never see. Unstamped chapters (legacy) pass untouched.
+  const bibEntries = await readBibEntries(report, viewsDir)
+  const currentSha =
+    bibEntries && bibEntries.length ? bibliographySha(bibEntries) : null
+  const stale: string[] = []
+  const out = sections.map((s) => {
+    if (s.kind !== "chapter") return s
+    const recorded = recordedBibSha(s.markdown)
+    if (!recorded) return s
+    if ((opts.checkBibSha ?? true) && currentSha && recorded !== currentSha)
+      stale.push(`${s.id} (written against ${recorded})`)
+    return { ...s, markdown: stripBibShaMarker(s.markdown) }
+  })
+  if (stale.length) {
+    throw new Error(
+      `bibliography has been renumbered (current sha ${currentSha}) since ` +
+        `these chapters were written — their [n] citations point at the ` +
+        `wrong sources: ${stale.join(", ")}. Re-run write/assemble for them ` +
+        `(or pass checkBibSha: false to override).`
+    )
+  }
+  return out
 }
 
 /**
@@ -193,25 +251,11 @@ export async function buildReportContent(
     title = front?.markdown.match(/^#\s+(.+)$/m)?.[1]?.trim() ?? "Report"
   }
 
-  // Structured bibliography from the JSON view (the .md is for the Sources block).
+  // Structured bibliography from the JSON view (the .md is for the Sources
+  // block). Absent/invalid view → content is still valid without one.
   let bibliography: ReportContent["bibliography"]
-  try {
-    const raw = await report.readFile(`${viewsDir}/_bibliography.json`)
-    const parsed = JSON.parse(raw) as { sources?: unknown }
-    const src = Array.isArray(parsed.sources) ? parsed.sources : []
-    const entries: BibEntry[] = src.map((s) => {
-      const o = (s ?? {}) as Record<string, unknown>
-      return {
-        n: typeof o.n === "number" ? o.n : 0,
-        id: typeof o.id === "string" ? o.id : "",
-        title: typeof o.title === "string" ? o.title : "",
-        url: typeof o.url === "string" ? o.url : "",
-      }
-    })
-    if (entries.length) bibliography = { mode: "numbered", entries }
-  } catch {
-    // No bibliography view — content is still valid without one.
-  }
+  const entries = await readBibEntries(report, viewsDir)
+  if (entries && entries.length) bibliography = { mode: "numbered", entries }
 
   // Document metadata — presentation-free scalars from the cover, if present.
   const meta: Record<string, string> = {}

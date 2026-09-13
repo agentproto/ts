@@ -1,0 +1,538 @@
+name: Update deps
+
+# Weekly dependency refresh + security audit for the agentproto/ts monorepo.
+# The `update` job is deterministic — no LLM, standard GITHUB_TOKEN, never
+# pushes to main, never merges. The `security-audit` job runs independently in
+# parallel and reports/admits high-severity pnpm audit findings; when blocked,
+# `security-audit-fix` drives an agentproto-native dependency-only fix flow.
+#
+# Two update modes (workflow_dispatch → inputs; weekly schedule → defaults):
+#   minor-patch   pnpm up -r — range-respecting update across the workspace
+#                 (stays within declared ranges, never a major).
+#   scoped-latest bump one package family/glob to its latest npm version,
+#                 applied with the portable GNU/BSD sed used by the
+#                 agentik-studio reference script.
+#
+# The PR title is a fixed dedup key (see the "Dedup contract" note in each
+# generated PR body).
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "minor-patch = pnpm up -r across the workspace (stays in ranges); scoped-latest = pin the scope family to latest."
+        type: choice
+        default: minor-patch
+        options:
+          - minor-patch
+          - scoped-latest
+      scope:
+        description: "Only for mode=scoped-latest. Package family/families to bump to latest, comma-separated globs, e.g. '@agentproto/*' or 'zod,typescript'."
+        type: string
+        default: ""
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC → defaults (minor-patch)
+
+# One group for the whole workflow so a scheduled run and a manual dispatch can
+# never stack a second update/audit on the same date. cancel-in-progress: false
+# keeps an in-flight run intact if a new trigger arrives.
+concurrency:
+  group: update-deps
+  cancel-in-progress: false
+
+# Minimal: write contents to push the branch, write pull-requests to open the
+# PR. The security job scopes its own `issues: write`.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  # ── Job 1 — update ────────────────────────────────────────────────────────
+  update:
+    name: Update deps
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        # version read from packageManager field in package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies (clean baseline)
+        run: pnpm install --frozen-lockfile
+
+      # Resolve effective mode/scope (schedule has no inputs → defaults) + the
+      # stable branch name that stays constant across steps. The PR title is a
+      # FIXED constant — the dedup key the local plugin-updater-weekly cron
+      # checks before opening its own bump.
+      - name: Resolve job context
+        id: ctx
+        env:
+          DISPATCH_MODE: ${{ inputs.mode }}
+          DISPATCH_SCOPE: ${{ inputs.scope }}
+        run: |
+          MODE="minor-patch"
+          SCOPE=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            MODE="$DISPATCH_MODE"
+            SCOPE="$DISPATCH_SCOPE"
+          fi
+          BRANCH="chore/update-deps-$(date +%Y-%m-%d)"
+          { echo "MODE=$MODE"; echo "SCOPE=$SCOPE"; echo "BRANCH=$BRANCH"; } >> "$GITHUB_ENV"
+          { echo "mode=$MODE"; echo "scope=$SCOPE"; } >> "$GITHUB_OUTPUT"
+          echo "Resolved mode=$MODE scope='$SCOPE' branch=$BRANCH"
+
+      # Mode-aware apply. minor-patch updates now (pnpm up -r); scoped-latest
+      # edits the matching package.json specs with the portable sed (no set -e
+      # — grep/xargs non-matches are expected to return non-zero and must not
+      # abort the loop), then regenerates the lockfile. `changed` comes from a
+      # git diff so both modes funnel through one gate.
+      - name: Apply update (mode-aware)
+        id: apply
+        run: |
+          # shellcheck disable=SC2001 # dynamic-package sed spec extraction below
+          if [ "$MODE" = "minor-patch" ]; then
+            echo "Applying range-respecting update across the workspace: pnpm up -r"
+            pnpm up -r || { echo "::error::pnpm up -r failed."; exit 1; }
+          else
+            if [ -z "$SCOPE" ]; then
+              echo "mode=scoped-latest but no scope provided — nothing to do."
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Bumping scope family '$SCOPE' to latest..."
+            FILES=$(find . -name package.json \
+              -not -path '*/node_modules/*' \
+              -not -path '*/dist/*' \
+              -not -path '*/.turbo/*' \
+              -not -path '*/.next/*' \
+              -not -path '*/out/*')
+            pattern=""
+            IFS=',' read -ra SCOPES <<< "$SCOPE"
+            for s in "${SCOPES[@]}"; do
+              r=$(printf '%s' "$s" | sed -e 's/[].[()^$+{}|\\]/\\&/g' -e 's/\*/[^"]*/g')
+              if [ -n "$pattern" ]; then pattern="${pattern}|"; fi
+              pattern="${pattern}\"$r\":"
+            done
+            PACKAGES=$(echo "$FILES" | xargs grep -ohE "$pattern" 2>/dev/null | sort -u | sed 's/"//g; s/://')
+            if [ -z "$PACKAGES" ]; then
+              echo "No dependency in the workspace matched scope '$SCOPE'."
+            else
+              for pkg in $PACKAGES; do
+                latest=$(npm view "$pkg" version 2>/dev/null || true)
+                if [ -z "$latest" ]; then
+                  printf '  %-40s %s\n' "$pkg" "(not found, skipping)"
+                  continue
+                fi
+                for f in $FILES; do
+                  grep -q "\"$pkg\":" "$f" 2>/dev/null || continue
+                  spec=$(grep -oE "\"$pkg\": \"\\^?[0-9][^\"]*\"" "$f" 2>/dev/null | head -1 | sed "s|\"$pkg\": \"||; s|\"||")
+                  if [ -z "$spec" ]; then continue; fi
+                  if [[ "$spec" == ^* ]]; then
+                    caret=true; current="${spec#^}"
+                  else
+                    caret=false; current="$spec"
+                  fi
+                  if [ "$current" = "$latest" ]; then continue; fi
+                  if $caret; then old="\\^$current"; new="^$latest"; else old="$current"; new="$latest"; fi
+                  escaped=$(printf '%s' "$pkg" | sed 's/\//\\\//g')
+                  printf '    %-45s %-30s %s -> %s\n' "$(echo "$f" | sed "s|$PWD/||")" "$pkg" "$old" "$new"
+                  if sed --version >/dev/null 2>&1; then
+                    sed -i "s/\"$escaped\": \"$old\"/\"$escaped\": \"$new\"/g" "$f"
+                  else
+                    sed -i '' "s/\"$escaped\": \"$old\"/\"$escaped\": \"$new\"/g" "$f"
+                  fi
+                done
+              done
+              echo "Regenerating lockfile for the bumped scope..."
+              pnpm install || { echo "::error::pnpm install (lockfile regen) failed."; exit 1; }
+            fi
+          fi
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No updates to apply — nothing to PR."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Sanity only — full test suite is the PR CI's job. Real exit codes,
+      # redirected, never `tail`'s status (AGENTS.md).
+      - name: Sanity build & type-check
+        if: steps.apply.outputs.changed == 'true'
+        run: |
+          pnpm build > /tmp/update-build.log 2>&1; B=$?
+          pnpm check-types > /tmp/update-ct.log 2>&1; T=$?
+          tail -n 60 /tmp/update-build.log
+          tail -n 60 /tmp/update-ct.log
+          echo "BUILD_EXIT=$B  TYPES_EXIT=$T"
+          [ "$B" -eq 0 ] && [ "$T" -eq 0 ]
+
+      - name: Commit, push & open PR
+        if: steps.apply.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          git config user.name "deps-updater"
+          git config user.email "actions@users.noreply.github.com"
+          git switch -C "$BRANCH"
+
+          # Build the bumps list (old -> new) from the changed package.json
+          # manifests — covers both modes uniformly.
+          git diff --name-only -- '**/package.json' > /tmp/changed-manifests.txt
+          : > /tmp/bumps.txt
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            GH_HEAD="$(git rev-parse HEAD)" node -e '
+              const fs=require("fs"),cp=require("child_process");
+              const p=process.argv[1], gh=process.env.GH_HEAD;
+              let old={};
+              try{ old=JSON.parse(cp.execSync("git show "+gh+":"+p,{encoding:"utf8"})); }catch(e){}
+              const neu=JSON.parse(fs.readFileSync(p,"utf8"));
+              const all={...(old.dependencies||{}),...(old.devDependencies||{})};
+              for(const k of Object.keys(all)){
+                const ov=all[k];
+                const nv=(neu.dependencies&&neu.dependencies[k])??(neu.devDependencies&&neu.devDependencies[k]);
+                if(nv && ov!==nv) console.log(k+": "+ov+" -> "+nv);
+              }
+            ' "$f"
+          done < /tmp/changed-manifests.txt | sort -u > /tmp/bumps.txt
+
+          {
+            echo "Automated weekly dependency refresh via this repo's \`update-deps\` workflow."
+            echo ""
+            echo "**Mode:** $MODE${SCOPE:+** — Scope:** \`$SCOPE\` (pinned to latest)}"
+            echo ""
+            echo "### Version bumps"
+            if [ -s /tmp/bumps.txt ]; then cat /tmp/bumps.txt; else echo "(none — lockfile/transitive-only change)"; fi
+            echo ""
+            echo "### Sanity"
+            echo "Build + check-types pass in this workflow. The full \`pnpm test\` suite runs via the repo's PR CI."
+            echo ""
+            echo "### Merge note"
+            echo "This PR touches \`.github/workflows/**\`, so the repo's merge-gate (\`SELF_MODIFICATION_RE\`) escalates it to a human maintainer — expected; it will not auto-merge."
+            echo ""
+            echo "### How to run each job alone"
+            echo "Both jobs live in one workflow; a dispatch runs update + security-audit independently in parallel. Run the whole thing:"
+            echo '```'
+            echo 'gh workflow run update-deps.yml'
+            echo '```'
+            echo "Force a mode / scope (dispatch only):"
+            echo '```'
+            echo 'gh workflow run update-deps.yml -f mode=scoped-latest -f scope="@agentproto/*"'
+            echo '```'
+            echo "The security audit alone: dispatch with no changes — the \`update\` job no-ops when nothing drifts, while \`security-audit\` always runs."
+            echo ""
+            echo "### Dedup contract"
+            echo "Branch is \`chore/update-deps-<date>\` and the PR title is exactly \`chore(deps): weekly minor/patch bump\`. The local \`plugin-updater-weekly\` cron skips its bump when a PR with that title is already open, and this workflow's \`update-deps\` concurrency group (cancel-in-progress: false) serializes overlapping triggers — so a same-day run never opens a second PR."
+          } > /tmp/pr-body.md
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No staged changes after install — nothing to PR."
+            exit 0
+          fi
+          git commit -m "chore(deps): weekly minor/patch bump"
+          git push -u origin "$BRANCH" --force-with-lease
+
+          PR_NUM=$(gh pr view --head "$BRANCH" --repo "${{ github.repository }}" --json number -q .number 2>/dev/null || true)
+          if [ -n "$PR_NUM" ]; then
+            echo "PR #$PR_NUM already open for $BRANCH — updating title/body."
+            gh pr edit "$PR_NUM" --repo "${{ github.repository }}" \
+              --title "chore(deps): weekly minor/patch bump" --body-file /tmp/pr-body.md >/dev/null
+          else
+            gh pr create --base main --head "$BRANCH" \
+              --title "chore(deps): weekly minor/patch bump" \
+              --body-file /tmp/pr-body.md
+          fi
+
+  # ── Job 2 — security audit ────────────────────────────────────────────────
+  # Independent of the update job: same triggers, runs in parallel, and reports
+  # high/critical pnpm audit findings to a SINGLE deduplicated GitHub issue.
+  security-audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      blocked: ${{ steps.parse.outputs.blocked }}
+    permissions:
+      contents: read # checkout
+      issues: write # open/update a single audit issue
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Prod audit first, full audit second. Exit codes are captured (audit
+      # exits non-zero on any finding at default --audit-level) but the real
+      # gate is severity parsed from the JSON below, so these can't redden the
+      # job by themselves. --json output goes to a file to stay parseable.
+      - name: Run pnpm audit (prod + full)
+        id: audit
+        run: |
+          set +e
+          pnpm audit --prod --json > /tmp/audit-prod.json 2>/tmp/audit-prod.err; PROD_EXIT=$?
+          pnpm audit --json > /tmp/audit-full.json 2>/tmp/audit-full.err; FULL_EXIT=$?
+          set -e
+          echo "prod_exit=$PROD_EXIT"
+          echo "full_exit=$FULL_EXIT"
+          echo "prod_exit=$PROD_EXIT" >> "$GITHUB_OUTPUT"
+          echo "full_exit=$FULL_EXIT" >> "$GITHUB_OUTPUT"
+
+      - name: Parse audit results & build report
+        id: parse
+        env:
+          PROD_EXIT: ${{ steps.audit.outputs.prod_exit }}
+          FULL_EXIT: ${{ steps.audit.outputs.full_exit }}
+        run: |
+          node - <<'NODE'
+          const fs=require("fs");
+          function load(p){ try{ return JSON.parse(fs.readFileSync(p,"utf8")); }catch(e){ return null; } }
+          const prod=load("/tmp/audit-prod.json");
+          const full=load("/tmp/audit-full.json");
+          const map=new Map();
+          function add(obj,label){
+            if(!obj||!obj.advisories) return;
+            for(const [id,adv] of Object.entries(obj.advisories)){
+              if(map.has(id)) map.get(id).sources.push(label);
+              else map.set(id,{...adv,sources:[label]});
+            }
+          }
+          add(prod,"prod"); add(full,"full");
+          const list=[...map.values()];
+          const SEV={critical:3,high:2,moderate:1,low:0};
+          const blocked=list
+            .filter(a=>a.severity==="critical"||a.severity==="high")
+            .sort((a,b)=>SEV[b.severity]-SEV[a.severity]);
+          const total=list.length;
+          const cnt=(src)=>list.reduce((c,a)=>{ if(!src||a.sources.includes(src)){ if(a.severity in c) c[a.severity]++; } return c; },{critical:0,high:0,moderate:0,low:0});
+          const pc=cnt("prod"), fc=cnt("full");
+          // clean only when there are truly no advisories AND the audits
+          // themselves succeeded (exit 0) — a registry error otherwise looks
+          // like zero findings and would falsely close a real issue.
+          const prodExit=parseInt(process.env.PROD_EXIT||"0",10);
+          const fullExit=parseInt(process.env.FULL_EXIT||"0",10);
+          const clean=(total===0 && prodExit===0 && fullExit===0);
+
+          const when=new Date().toISOString().slice(0,10);
+          let r=`# pnpm audit findings — ${when}\n\n`;
+          r+=`Run: ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}\n\n`;
+          r+=`## Summary\n\n| severity | prod | full |\n|---|---|---|\n`;
+          for(const s of ["critical","high","moderate","low"]){
+            r+=`| ${s} | ${pc[s]} | ${fc[s]} |\n`;
+          }
+          r+=`\n**High/critical (blocking):** ${blocked.length} advisory(ies) across ${total} total.\n`;
+
+          if(blocked.length){
+            r+=`\n## High / critical advisories\n`;
+            blocked.forEach((a,i)=>{
+              const path=(a.findings&&a.findings[0]&&a.findings[0].paths&&a.findings[0].paths[0])||"(unknown path)";
+              r+=`\n${i+1}. **${a.module_name}** — *${a.severity}* — vulnerable \`${a.vulnerable_versions}\` → patched \`${a.patched_versions||"none"}\`\n`;
+              r+=`   - remote: ${a.sources.join(", ")}\n`;
+              r+=`   - advisory: ${a.title||"(untitled)"} — ${a.url||""}\n`;
+              r+=`   - path: \`${path}\`\n`;
+            });
+          } else if(total===0){
+            if(clean){
+              r+=`\nNo vulnerabilities found — **clean**.\n`;
+            } else {
+              r+=`\nNo advisories parsed but an audit exited non-zero (registry error?) — cannot confirm clean.\n`;
+            }
+          } else {
+            r+=`\nNo high/critical advisories; only moderate/low (summarized; non-blocking).\n`;
+          }
+          fs.writeFileSync("/tmp/audit-report.md", r);
+          console.log(`blocked=${blocked.length}`) ;
+          console.log(`clean=${clean}`);
+          console.log(`total=${total}`);
+          require("fs").writeFileSync(process.env.GITHUB_OUTPUT, `blocked=${blocked.length>0}\nclean=${clean}\ntotal=${total}\n`);
+          NODE
+
+      - name: Report to step summary
+        run: |
+          cat /tmp/audit-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Jobs do not share /tmp. Persist the exact report plus both raw JSON
+      # inputs before the intentional fail step so the agent job can restore
+      # them to the same absolute paths on its own runner.
+      - name: Preserve audit inputs for security fixer
+        if: steps.parse.outputs.blocked == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-audit-input-${{ github.run_id }}
+          path: |
+            /tmp/audit-report.md
+            /tmp/audit-prod.json
+            /tmp/audit-full.json
+          if-no-files-found: error
+          retention-days: 1
+
+      # Dedup: open/update ONE issue for high/critical. Look it up by title first
+      # and edit its body — never a fresh issue per run. Non-failing by itself;
+      # the explicit fail step below turns the job red so the finding is visible.
+      - name: Open or update security issue (high/critical)
+        if: steps.parse.outputs.blocked == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NUM=$(gh issue list --repo "${{ github.repository }}" --state open \
+            --search '"security: pnpm audit findings" in:title' \
+            --json number --jq '.[0].number // ""' 2>/dev/null || true)
+          if [ -n "$NUM" ]; then
+            echo "Updating existing security issue #$NUM"
+            gh issue edit "$NUM" --repo "${{ github.repository }}" --body-file /tmp/audit-report.md
+          else
+            echo "Creating security issue"
+            gh issue create --repo "${{ github.repository }}" \
+              --title "security: pnpm audit findings" \
+              --body-file /tmp/audit-report.md
+          fi
+
+      # Visible failure: high/critical present → the job turns red.
+      - name: Fail job on high/critical findings
+        if: steps.parse.outputs.blocked == 'true'
+        run: |
+          echo "::error::pnpm audit found high/critical advisories — see the 'security: pnpm audit findings' issue and the step summary."
+          exit 1
+
+      # Zero findings → note clean in the summary and resolve any prior open
+      # issue with a resolution comment (then close it).
+      - name: Resolve previous issue (clean)
+        if: steps.parse.outputs.blocked == 'false' && steps.parse.outputs.clean == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NUM=$(gh issue list --repo "${{ github.repository }}" --state open \
+            --search '"security: pnpm audit findings" in:title' \
+            --json number --jq '.[0].number // ""' 2>/dev/null || true)
+          if [ -n "$NUM" ]; then
+            echo "Marking previous security issue #$NUM resolved"
+            gh issue close "$NUM" --repo "${{ github.repository }}" \
+              --comment "Resolved on $(date -u +%Y-%m-%d) — no vulnerabilities remain. See ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}."
+          else
+            echo "No prior open security issue — nothing to resolve."
+          fi
+
+  # ── Job 3 — security audit fix ───────────────────────────────────────────
+  # The audit job intentionally fails when blocked, so always() is required
+  # for this dependent job to evaluate its explicit blocked output. The agent
+  # runs host-side because it must share one filesystem with /tmp, the repo,
+  # pnpm, and gh; adapter/auth/CLI conventions still come from the review
+  # lane's existing .github/agentic-review.json keys.
+  security-audit-fix:
+    name: Fix security audit findings
+    needs: security-audit
+    if: ${{ always() && needs.security-audit.outputs.blocked == 'true' }}
+    runs-on: ubuntu-latest
+    # Leave headroom around the composite action's own 60-minute poll timeout
+    # for checkout, install, artifact restore, and a workspace CLI build.
+    timeout-minutes: 90
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Restore audit inputs
+        uses: actions/download-artifact@v5
+        with:
+          name: security-audit-input-${{ github.run_id }}
+          path: /tmp
+
+      - name: Resolve agentproto lane config
+        id: lane
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          node - <<'NODE'
+          const fs = require("fs");
+          const cfg = JSON.parse(fs.readFileSync(".github/agentic-review.json", "utf8"));
+          const input = {
+            repo: process.env.REPO,
+            baseRef: "main",
+            auditReportPath: "/tmp/audit-report.md",
+            auditProdPath: "/tmp/audit-prod.json",
+            auditFullPath: "/tmp/audit-full.json",
+            reviewConfig: cfg,
+          };
+          const out = [
+            `adapter=${String(cfg.reviewerAdapter || "claude-code")}`,
+            `auth_mode=${String(cfg.reviewerAuthMode || "api-key")}`,
+            `cli_source=${String(cfg.cliSource || "npm")}`,
+            `cli_version=${String(cfg.cliVersion || "0.8.0")}`,
+            `model=${String(cfg.model || "")}`,
+            `workflow_input=${JSON.stringify(input)}`,
+            "",
+          ].join("\n");
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, out);
+          NODE
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build local agentproto CLI
+        if: steps.lane.outputs.cli_source == 'workspace'
+        env:
+          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
+          TURBO_TEAM: agentproto-ts
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+          TURBO_SCM_BASE: origin/main
+        run: pnpm build --filter @agentproto/cli... --filter "@agentproto/adapter-${{ steps.lane.outputs.adapter }}..."
+
+      - name: Run security-fix agentflow
+        id: security-fix
+        uses: ./.github/actions/agentproto-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          adapter: ${{ steps.lane.outputs.adapter }}
+          auth-mode: ${{ steps.lane.outputs.auth_mode }}
+          oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          model: ${{ steps.lane.outputs.model }}
+          langfuse-public-key: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          langfuse-secret-key: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          langfuse-base-url: ${{ secrets.LANGFUSE_BASE_URL }}
+          langfuse-project: ${{ secrets.LANGFUSE_PROJECT }}
+          workflow-path: .github/agentproto-workflows/security-fix/WORKFLOW.md
+          workflow-input: ${{ steps.lane.outputs.workflow_input }}
+          cli-source: ${{ steps.lane.outputs.cli_source }}
+          cli-version: ${{ steps.lane.outputs.cli_version }}
+          timeout-minutes: '60'
+
+      - name: Report result
+        run: |
+          echo "run-id: ${{ steps.security-fix.outputs.run-id }}"
+          echo "status: ${{ steps.security-fix.outputs.status }}"

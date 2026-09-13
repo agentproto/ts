@@ -120,7 +120,9 @@ const result = await runAgentLoop({
   tools: defs,
   toolImpls: impls,
   userPrompt,
-  maxTokens: 4096,
+  // The review body is the biggest single thing this flow emits — 4096 was not
+  // enough for it and silently truncated the mandatory gh_pr_review call (#1297).
+  maxTokens: cmd.maxResponseTokens ?? 16_384,
   maxTurns: MAX_TURNS,
   // Warn the reviewer to stop exploring and post while it still has turns left,
   // so it never runs out mid-Phase-1 without ever calling gh_pr_review (#437).
@@ -131,6 +133,13 @@ const result = await runAgentLoop({
     'then write_changeset. Do not read any more files.',
   onTurn: (t) => console.log(`\n⟳  Turn ${t}`),
   onToolCall: (name, input) => console.log(`   🔧 ${name}(${Object.keys(input).join(', ')})`),
+  // Log stop_reason every turn. Without it, a turn that generated for 46s and
+  // returned nothing (#1297) is indistinguishable in CI from a turn where the
+  // model simply had nothing more to do.
+  onResponse: ({ stopReason, toolNames, textChars }) =>
+    console.log(
+      `   ↳ stop=${stopReason} tools=${toolNames.length ? toolNames.join(',') : 'none'} text=${textChars}c`,
+    ),
 })
 
 if (result.finalText) console.log('\n' + result.finalText)

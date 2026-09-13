@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-55/PRODUCT.schema.json",
+  "title": "product/v1 frontmatter (AIP-55)",
+  "description": "Validates the YAML frontmatter portion of an AIP-55 PRODUCT.md — a pricing CAPABILITY attached to any referenced AIP artifact. The target is addressed by an AIP-54 ref/v1 (aip:// URI in string contexts); the target AIP needs zero pricing awareness. Price models: 'one-time', 'prepaid-pool', 'pay-per-call'. Minor units are normative. billingRail is projection config, never the source of truth.",
+  "$defs": {
+    "price": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["model", "amountMinor", "currency"],
+          "additionalProperties": false,
+          "properties": {
+            "model": { "const": "one-time", "description": "Single payment for perpetual access." },
+            "amountMinor": { "type": "integer", "minimum": 0, "description": "Amount in MINOR units of the currency (cents for usd). Minor units are normative — major-unit floats are the x100 bug class." },
+            "currency": { "type": "string", "pattern": "^[a-z]{3}$", "description": "ISO-4217 lowercase, e.g. 'usd'." }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["model", "unitPriceMinor", "currency", "grantUnits"],
+          "additionalProperties": false,
+          "properties": {
+            "model": { "const": "prepaid-pool", "description": "Buy a pool of meter units up front; consumption draws the pool down. Pool STATE is host-side on every rail — the rail only initiates the top-up payment." },
+            "unitPriceMinor": { "type": "integer", "minimum": 0, "description": "Price per unit in minor units of the currency." },
+            "currency": { "type": "string", "pattern": "^[a-z]{3}$" },
+            "grantUnits": { "type": "integer", "minimum": 1, "description": "Meter units granted per purchase. Unit semantics are declared by the host, not the spec; if a wallet asset backs the pool, units MUST be minor units of that asset's `decimals` (AIP-49)." }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["model", "unitPriceMinor", "currency", "meter"],
+          "additionalProperties": false,
+          "properties": {
+            "model": { "const": "pay-per-call", "description": "Post-paid metering: each unit consumed is billed." },
+            "unitPriceMinor": { "type": "integer", "minimum": 0, "description": "Price per meter unit in minor units." },
+            "currency": { "type": "string", "pattern": "^[a-z]{3}$" },
+            "meter": { "type": "string", "minLength": 1, "maxLength": 96, "description": "Host-declared meter id, e.g. 'agent-call', 'tokens-1k', 'sandbox-hour'. Open vocabulary; hosts SHOULD namespace host-specific meters." }
+          }
+        }
+      ]
+    },
+    "billingRail": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["rail"],
+          "additionalProperties": false,
+          "properties": {
+            "rail": { "const": "stripe" },
+            "productId": { "type": "string", "description": "Stripe Product id — a CACHE of the last projection, never the source of truth for the price." },
+            "priceId": { "type": "string", "description": "Stripe Price id." },
+            "meterId": { "type": "string", "description": "Stripe Meter id — REQUIRED when price.model is 'pay-per-call'; Stripe meters are created out-of-band and cannot be derived from the Price id." },
+            "recurrence": { "enum": ["month", "year", "week", "day"], "description": "Billing recurrence for metered prices. Absent = per-unit without period." }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rail"],
+          "additionalProperties": false,
+          "properties": {
+            "rail": { "const": "autumn" },
+            "featureId": { "type": "string", "description": "Autumn feature id. Autumn natively models both metered usage and prepaid credit grants, so prepaid-pool and pay-per-call both project onto one featureId." },
+            "grantId": { "type": "string", "description": "Autumn credit-grant id for prepaid-pool products, if distinct from featureId." }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rail"],
+          "additionalProperties": false,
+          "properties": {
+            "rail": { "const": "tbd", "description": "Commerce shape decided, provider not chosen yet." }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["rail"],
+          "additionalProperties": true,
+          "properties": {
+            "rail": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "not": { "enum": ["stripe", "autumn", "tbd"] }, "description": "Vendor-specific rail. Rail-specific config lives under namespaced keys; unknown rails MUST be tolerated by hosts that only consume the price union." }
+          }
+        }
+      ]
+    }
+  },
+  "type": "object",
+  "required": ["schema", "id", "on", "price"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "product/v1", "description": "Doctype discriminator." },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$", "minLength": 2, "maxLength": 96, "description": "Stable kebab-case pricing-capability id." },
+    "kind": { "const": "pricing", "description": "Capability kind. AIP-55 v2 is a capability; other capability kinds may exist under the capability/v1 pattern without their own AIP." },
+    "on": {
+      "$ref": "https://agentproto.sh/schemas/aip-54/REF.schema.json",
+      "description": "The referenced artifact this pricing attaches to (AIP-54 ref/v1). String contexts use the aip:// URI form, e.g. 'aip://42/book-companion@1.2.0'. The target AIP needs zero pricing awareness; hosts MUST refuse when the ref does not resolve."
+    },
+    "title": { "type": "string", "minLength": 1, "maxLength": 200, "description": "Human-readable display name, e.g. a checkout label." },
+    "description": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "price": { "$ref": "#/$defs/price", "description": "The source of truth for what is charged. billingRail is projection config; a generator derives Stripe Prices / Autumn features FROM this." },
+    "billingRail": { "$ref": "#/$defs/billingRail" },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Vendor-specific extensions, namespaced under <vendor>. Hosts MUST tolerate unknown keys."
+    }
+  }
+}

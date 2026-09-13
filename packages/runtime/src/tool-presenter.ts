@@ -156,3 +156,36 @@ export function formatToolResult(
   }
   return truncate(lines[0]!, MAX_RESULT_LENGTH)
 }
+
+/** The stdout sentinel the CI artifact-ledger delivery helper prints when it
+ *  creates a PR / review / comment — MUST byte-match `ARTIFACT_MARKER` in
+ *  `scripts/lib/artifact-ledger.mjs` (the runner-side harvester). */
+export const ARTIFACT_MARKER = "::agentproto-artifact::"
+
+/** Ring lines per tool result the marker passthrough will re-emit at most —
+ *  a delivery tool call creates one artifact, so >1 is already unusual; the
+ *  cap only bounds a pathological result that echoes markers in a loop. */
+const MAX_ARTIFACT_MARKER_LINES = 8
+
+/**
+ * The `::agentproto-artifact::` marker lines buried in a tool result, if any.
+ *
+ * The one-line summary {@link formatToolResult} produces is deliberately
+ * lossy ("N lines, XB") — correct for humans, fatal for the CI artifact
+ * ledger: the agentflow delivery helper (`deliver-artifact.mjs`) prints its
+ * marker to a tool's stdout precisely so the `agentproto-run` driver can
+ * harvest created PR/review/comment ids back out of `agent_output`. This
+ * extracts those lines so the ring can carry them verbatim alongside the
+ * summary. Returned WITHOUT ANSI styling on purpose: the harvester
+ * (`parseArtifactMarkers`) does `indexOf(marker)` then `JSON.parse` of the
+ * line's remainder, so a trailing reset code would corrupt the JSON.
+ */
+export function artifactMarkerLines(result: unknown): string[] {
+  const text = extractText(result)
+  if (text == null || !text.includes(ARTIFACT_MARKER)) return []
+  return text
+    .split(/\r?\n/)
+    .filter(line => line.includes(ARTIFACT_MARKER))
+    .slice(0, MAX_ARTIFACT_MARKER_LINES)
+    .map(line => line.trim())
+}

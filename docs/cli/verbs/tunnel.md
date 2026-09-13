@@ -15,7 +15,10 @@ expose a local port to the internet through Cloudflare or Ngrok, driven
 by the daemon — no separate tunnel CLI process to manage.
 
 Requires a running daemon ([`serve.md`](./serve.md) or
-[`daemon.md`](./daemon.md)). Discovery reads `~/.agentproto/runtime.json`.
+[`daemon.md`](./daemon.md)). Discovery follows the same layered order as
+[`sessions.md`](./sessions.md): env override → `~/.agentproto/runtime.json`
+(pid-checked) → the central registry → each configured workspace's own
+`runtime.json`.
 
 ## Providers
 

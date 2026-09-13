@@ -1,9 +1,9 @@
 /**
  * Single shared `zip` implementation for a skill pack directory. Used by
  * `claude-plugin.ts` (consumer-side install, `agentproto install skill/...`)
- * and by a package's own release-time build script (producer-side, see
- * `packages/skill-pack-<name>/scripts/build.mjs`) — one zip technique, not
- * one per caller.
+ * and by `agentproto pack build` (producer-side, release-time build of the
+ * `packages/skill-pack-<name>` packages) — one zip technique, not one per
+ * caller.
  */
 
 import { basename, dirname, resolve } from "node:path"

@@ -1,9 +1,10 @@
 /**
  * @agentproto/adapter-codex — AIP-45 adapter for OpenAI Codex via the
- * Zed-published ACP wrapper @zed-industries/codex-acp.
+ * maintained ACP wrapper @agentclientprotocol/codex-acp.
  *
  * The wrapper bundles its own Codex runtime (Rust binary delivered via
- * npm optional deps) so a single `npx -y @zed-industries/codex-acp`
+ * npm dependency) so a single
+ * `npx -y @agentclientprotocol/codex-acp@1.10.0`
  * invocation is enough — no separate @openai/codex install needed.
  *
  *   import { codex, codexRuntime } from "@agentproto/adapter-codex"
@@ -27,21 +28,26 @@ export const codex: AgentCliHandle = defineAgentCli({
   name: "codex",
   id: "codex",
   description:
-    "OpenAI's Codex coding agent wrapped as an ACP server by Zed's @zed-industries/codex-acp. Spawned via `npx -y @zed-industries/codex-acp` and driven over stdio JSON-RPC. The wrapper bundles its own Codex runtime — no separate @openai/codex install required.",
+    "OpenAI's Codex coding agent wrapped as an ACP server by @agentclientprotocol/codex-acp. Spawned via a version-pinned npx package and driven over stdio JSON-RPC. The wrapper bundles a compatible Codex runtime — no separate @openai/codex install required.",
   version: "0.1.0",
   bin: "npx",
-  bin_args: ["-y", "@zed-industries/codex-acp"],
+  // Keep spawn deterministic. An unversioned npx target performs registry
+  // resolution at session startup and can silently replace both the bridge
+  // and its bundled Codex runtime exactly when either publishes an update.
+  bin_args: ["-y", "@agentclientprotocol/codex-acp@1.10.0"],
   install: [
     {
       method: "npm",
-      package: "@zed-industries/codex-acp",
+      package: "@agentclientprotocol/codex-acp@1.10.0",
       global: true,
     },
   ],
   version_check: {
-    cmd: "npm view @zed-industries/codex-acp version",
+    // PRESENCE probe — local (global npm tree), not a registry query. See
+    // claude-code's version_check note for the npm-view trap this replaces.
+    cmd: "npm ls -g @agentclientprotocol/codex-acp --depth=0",
     parse: "(\\d+\\.\\d+\\.\\d+)",
-    range: ">=0.14.0",
+    range: "=1.10.0",
     timeout_ms: 15_000,
   },
   auth: {
@@ -81,23 +87,67 @@ export const codex: AgentCliHandle = defineAgentCli({
     context_carryover: true,
   },
   models: {
-    default: "gpt-5-codex",
-    allowed: ["gpt-5-codex", "gpt-5", "gpt-5-mini", "gpt-5-pro"],
+    // Do not declare a fixed default: a ChatGPT subscription exposes valid
+    // models dynamically, and forcing a historic ID can make a session fail.
+    // Keep this curated menu for catalog consumers and compatibility with the
+    // existing CLI discovery contract. It is not a default or an allow-list:
+    // explicit model IDs are still validated dynamically by Codex.
+    allowed: [
+      // Codex-specialized (coding) models.
+      "gpt-5-codex",
+      "gpt-5.1-codex",
+      "gpt-5.1-codex-mini",
+      "gpt-5.1-codex-max",
+      "gpt-5.2-codex",
+      // GPT-5 generalist family.
+      "gpt-5",
+      "gpt-5-mini",
+      "gpt-5-nano",
+      "gpt-5-pro",
+      "gpt-5.1",
+      "gpt-5.2",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.4-nano",
+      "gpt-5.4-pro",
+      "gpt-5.5",
+      "gpt-5.5-pro",
+      // GPT-5.6 family.
+      "gpt-5.6-luna",
+      "gpt-5.6-luna-pro",
+      "gpt-5.6-sol",
+      "gpt-5.6-sol-pro",
+      "gpt-5.6-terra",
+      "gpt-5.6-terra-pro",
+      // GPT-4.1 / 4o generation.
+      "gpt-4.1",
+      "gpt-4.1-mini",
+      "gpt-4.1-nano",
+      "gpt-4o",
+      "gpt-4o-mini",
+      // o-series reasoning models.
+      "o3",
+      "o3-pro",
+      "o3-mini",
+      "o3-deep-research",
+      "o4-mini",
+      "o4-mini-high",
+      "o4-mini-deep-research",
+      "o1",
+      "o1-mini",
+      "o1-pro",
+    ],
     env: { openai: "OPENAI_API_KEY", codex: "CODEX_API_KEY" },
-    // codex-acp takes its model as a CLI config override, not an ACP
-    // session config — `codex-acp --help` documents `-c model="o3"`.
-    // There is no `session/set_config_option` capability to fire at all
-    // (confirmed against v0.16.0's `initialize` response); the model must
-    // be composed into argv at spawn time instead.
-    apply: "arg",
-    bin_args_template: ["-c", 'model="{model}"'],
+    // The maintained ACP bridge exposes `session/set_config_option`, so the
+    // model is selected after session creation rather than through argv.
+    apply: "config",
   },
   capabilities: {
     streaming: true,
     tool_calls: true,
     sub_agents: false,
     file_io: true,
-    // The Zed wrapper forwards ACP image content blocks to Codex which
+    // The maintained wrapper forwards ACP image content blocks to Codex which
     // runs them through the underlying GPT-5 vision pipeline.
     multimodal: true,
     // codex-acp implements full ACP session lifecycle (newSession /
@@ -115,15 +165,9 @@ export const codex: AgentCliHandle = defineAgentCli({
   options: [
     {
       id: "model",
-      type: "enum",
-      enum: ["gpt-5-codex", "gpt-5", "gpt-5-mini", "gpt-5-pro"],
-      description: "Override the default model for this operator binding.",
-      // No bin_args_template here — codex-acp doesn't accept a bare
-      // `--model` flag (`error: unexpected argument '--model' found`,
-      // confirmed against v0.16.0; it crashes the process before the ACP
-      // handshake even starts). This option exists only so
-      // `config.options.model` validates; the real composition happens
-      // via `models.apply: "arg"` above.
+      type: "string",
+      description:
+        "Optional Codex model ID. Omit it to use the model selected by the current ChatGPT or API-key account; the ACP bridge validates explicit IDs against that account.",
     },
   ],
   continuation: {

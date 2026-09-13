@@ -6,27 +6,44 @@ agentproto sessions --watch [--simple] [--no-color]
 agentproto sessions --attach <id-or-name> [--no-color]
 agentproto sessions --json                         JSON dump
 agentproto sessions start    <adapter> [--cwd <dir>] [--workspace <slug>]
-                                       [--model <id>] [--base-url <url>]
-                                       [--auth-token <token>]
-                                       [--options-json <json|@file>]
-                                       [--prompt <text>] [--label <text>]
-                                       [--title <text>]
-                                       [--orchestrator | --orchestrator-json <json>]
-                                       [--mcp-servers-json <json|@file>]
-                                       [--hold-permissions]
-                                       [--attach] [--json] [--no-color]
-agentproto sessions terminal -- <argv...> [--cwd <dir>] [--workspace <slug>]
-                                          [--name <slug>] [--label <text>]
-                                          [--cols <n>] [--rows <n>]
-                                          [--attach] [--json] [--no-color]
+                                        [--model <id>] [--base-url <url>]
+                                        [--auth subscription|api-key]
+                                        [--auth-token <token>]
+                                        [--options-json <json|@file>]
+                                        [--access-profile <ref>]
+                                        [--worktree | --no-worktree]
+                                        [--mode <id>] [--effort <level>]
+                                        [--prompt <text>] [--label <text>]
+                                        [--title <text>]
+                                        [--orchestrator | --orchestrator-json <json>]
+                                        [--mcp-servers-json <json|@file>]
+                                        [--sandbox <provider-or-json|@file>]
+                                        [--hold-permissions]
+                                        [--max-cost-usd <n>]
+                                        [--cost-budget <spec>]
+                                        [--attach] [--json] [--no-color]
+agentproto sessions terminal [--preset <name>] [-- <argv...>]
+                                           [--cwd <dir>] [--workspace <slug>]
+                                           [--name <slug>] [--label <text>]
+                                           [--cols <n>] [--rows <n>]
+                                           [--attach] [--json] [--no-color]
 agentproto sessions restart  <id-or-name> [--attach] [--json] [--no-color]
+agentproto sessions prompt   <id-or-name> --prompt <text> [--wait] [--interrupt]
+                                           [--force] [--json]
+agentproto sessions pin      <id-or-name> [--json]
+agentproto sessions unpin    <id-or-name> [--json]
 agentproto sessions mirror   <id-or-name> [--no-color]
 agentproto sessions story    <id-or-name> [--json] [--no-color]
-                                          [--source auto|native|daemon]
+                                           [--source auto|native|daemon]
 agentproto sessions export   <id-or-name> [--json] [-o <file>]
-                                          [--source auto|native|daemon]
-                                          [--adapter <slug>] [--cwd <dir>]
+                                           [--source auto|native|daemon]
+                                           [--adapter <slug>] [--cwd <dir>]
 agentproto sessions stop     <id-or-name> [--json]
+agentproto sessions wait     <id-or-name> [--until <event>] [--timeout <duration>]
+                                           [--policy <policyId>] [--json]
+agentproto sessions gc       [--older-than-days <n>] [--forget] [--json]
+agentproto sessions queue    <id-or-name> [--force <n>] [--deliver <n>]
+                                           [--drop <n>] [--json]
 ```
 
 Browse and control the daemon's live sessions — terminals, agent CLIs,
@@ -35,9 +52,21 @@ generic commands — from any shell. Requires a running daemon
 
 ## Discovery
 
-Sessions discovers the daemon via `<workspace>/.agentproto/runtime.json`
-written by `serve` at boot. The token in that file is sent as Bearer
-on mutating routes. Override with env:
+Sessions discovers the daemon by trying candidates in this order — the
+first live one wins:
+
+1. `AGENTPROTO_DAEMON_URL` env var (token from
+   `AGENTPROTO_DAEMON_TOKEN`, or looked up from a matching
+   `runtime.json` if unset):
+2. `~/.agentproto/runtime.json`, only if its pid is still alive;
+3. the central registry `~/.agentproto/daemons/<port>.json`, for the
+   port declared in `config.json` (falling back to any other live
+   entry);
+4. each configured workspace's own
+   `<workspace>/.agentproto/runtime.json` (written by `serve` at boot).
+
+A descriptor whose pid is dead is ignored, never trusted. The token
+from whichever candidate wins is sent as Bearer on mutating routes:
 
 ```bash
 AGENTPROTO_DAEMON_URL=http://127.0.0.1:18790 \
@@ -71,11 +100,15 @@ agentproto sessions --json
 Prints a table:
 
 ```text
-ID         KIND       WORKSPACE  STATUS    AGE       COMMAND
-ses_abc12  agent-cli  my-proj    running   3m        claude --print --output-format=json
-ses_def34  pty        my-proj    running   1m        bash
-ses_ghi56  agent-cli  my-proj    exited    1h        claude --print …
+PIN ID         KIND       WORKSPACE  STATUS    AGE       COMMAND
+●   ses_abc12  agent-cli  my-proj    running   3m        claude --print --output-format=json
+    ses_def34  pty        my-proj    running   1m        bash
+    ses_ghi56  agent-cli  my-proj    exited    1h        claude --print …
 ```
+
+Pinned sessions sort to the top and are marked with `●` in the `PIN`
+column. Pinning is list-visibility only — it does not affect
+keep-alive, the idle reaper, or notifications.
 
 When any session was spawned inside a git worktree, a `WORKTREE` column is
 inserted between `WORKSPACE` and `STATUS` showing the worktree's leaf directory
@@ -102,6 +135,7 @@ Keys:
 | `R` | Restart selected from history (works on exited/killed too) |
 | `K` | Kill selected (POST `/sessions/:id/kill`) |
 | `d` | Forget selected (DELETE `/sessions/:id`; exited/killed/error only) |
+| `s` | Show the selected session's Story / conversation |
 | `r` | Refresh now |
 | `q` / `Ctrl-C` | Quit |
 
@@ -157,7 +191,15 @@ reattached later.
 | `--orchestrator` | Make this child a scoped **orchestrator** — the daemon mounts a scoped sub-gateway into the session so it can spawn + supervise its own sub-agents. |
 | `--orchestrator-json <json>` | Object form of the above: `{"tools":[…],"maxDepth":N,"maxChildren":N}`. Wins over `--orchestrator` when both are passed. |
 | `--mcp-servers-json <json\|@file>` | Inject MCP servers (`AcpMcpServer[]`) into the session — inline JSON array, or `@path` to read it from a file. |
+| `--sandbox <provider-or-json\|@file>` | Spawn inside an isolated sandbox box instead of the local host. Pass a provider slug (e.g. `e2b` or `box`, configured via `setup_sandbox_provider`) or an inline AIP-36 `SandboxDefinition` JSON object (optionally with `{"reuse":"<sandboxId>"}` for reconnect). `@file` reads the slug or JSON from a file. Mirrors `agent_start.sandbox`. |
+| `--access-profile <ref>` | Bill this spawn through a named auth profile (CLI twin of `agent_start`'s `access.profileRef` — pin endpoint + credential, never silently the default). Overrides the daemon's default profile. See [Config axes](#config-axes-mcphttp). |
+| `--worktree` | Isolate this spawn in its own git worktree (auto-minted slug/branch on `origin/main`) regardless of the daemon's `worktrees.isolation` policy. Mirrors `agent_start.worktree=true`. |
+| `--no-worktree` | Spawn in cwd directly, overriding an isolation policy that would otherwise isolate. Mirrors `agent_start.worktree=false`. |
+| `--mode <id>` | Manifest-declared posture mode id applied at spawn (e.g. claude-code `plan`, codex `read-only`). Mirrors `agent_start.mode`. |
+| `--effort <level>` | Reasoning effort — `low\|medium\|high\|xhigh\|max\|ultracode`, calibrated per model. Mirrors `agent_start.effort`. |
 | `--hold-permissions` | Start in **permission-hold mode**: every tool-permission request the agent raises is parked in the cross-session inbox instead of auto-answered. Approve/deny with [`permissions.md`](./permissions.md). |
+| `--max-cost-usd <n>` | HARD spend ceiling in USD for this session: the daemon kills the session at the next turn-end once cumulative cost exceeds `n`. A positive number; rejected client-side if non-numeric or ≤ 0. Mirrors `agent_start.maxCostUsd`. |
+| `--cost-budget <spec>` | Windowed governance cap that **never kills** the session — raises a notification when the window's cumulative cost exceeds the cap, leaving the decision to an orchestrator or human. Two spellings: compact `<usd>:<window>[:<scope>]` (e.g. `20:5h:profile`, `15:7d`) or full JSON `{"maxCostUsd":20,"window":"5h","scope":"session"}`. `scope` is `session` (default) or `profile`. Mirrors `agent_start.costBudget`. |
 | `--attach` | Attach immediately after spawn. |
 | `--json` | Emit the session descriptor as JSON instead of a friendly line. |
 
@@ -166,6 +208,55 @@ spawn-time role gating (whether this child may itself delegate, and
 to whom) is MCP/HTTP-only: the `agent_start` MCP tool's `role` /
 `promptAppend` fields, or the same fields on the `POST /sessions/agent`
 body. See [`concepts/roles.md`](../concepts/roles.md).
+
+#### Session identity env
+
+Every process the daemon spawns on a session's behalf — an agent-CLI adapter
+(this verb), a `terminal -- <argv...>` PTY, or a `command_execute` /
+cron `kind:"command"` shell command — gets these identity env vars set into
+its own process environment. The first two are always present; the third is
+added only for agent-CLI children that resolved a `parentSessionId`:
+
+| Var | Value |
+|---|---|
+| `AGENTPROTO_SESSION_ID` | The spawned session's own id (`sess_…`) — the same id `session_list`/`agent_sessions_list` show for it. |
+| `AGENTPROTO_WORKSPACE_SLUG` | The workspace slug the session resolved to (`"default"` when none). |
+| `AGENTPROTO_PARENT_SESSION_ID` | The id of the session that spawned this one. Present only for nested agent-CLI children; lets a child report back via the `message_parent` MCP tool without a registry round-trip. |
+
+A hook, script, or tool a session shells out to can read these to report
+back, tag telemetry, or spawn a further child with `parentSessionId` set to
+its own id — closing the loop for e.g. a `git push` hook that spawns a
+reviewer session and wants it nested under the session that triggered it.
+
+These are set **last**, after any other env the spawn composes (manifest
+defaults, billing-auth, a caller-supplied `env` on `POST /sessions` or
+`POST /sessions/terminal`) — a caller can never override or forge them, and
+a session never inherits a value from the daemon's own process env. Every
+spawn — including a resumed/restarted one — gets its own freshly minted id;
+`session_restart` mints a new id (see `resumedFrom` on the descriptor for
+lineage back to the prior one), while the daemon's own crash/restart-time
+lazy resume revives the same descriptor row and so keeps the same id.
+`label`/`name` are deliberately not carried into env — they're optional,
+mutable, and absent on most sessions; look one up via
+`AGENTPROTO_SESSION_ID` + `session_list` instead.
+
+#### Implicit spawn deduplication
+
+`agent_start` deduplicates spawns by default. When a spawn has a `label` and no
+explicit `idempotencyKey`, the daemon derives an implicit key from the label
+plus a hash of the initial `prompt`; a repeat with the same adapter, cwd, and
+key within ~2 minutes returns the existing session instead of forking a second
+one. Unlabelled spawns are never deduped, so deliberate parallel fan-out into
+one cwd is still safe.
+
+Control the policy with the `spawn.dedupe` config field or the
+`AGENTPROTO_SPAWN_DEDUPE` env var:
+
+- `"always"` (default) — derive an implicit key whenever a label is present.
+- `"on-request"` — only an explicit `idempotencyKey` dedupes (pre-default behaviour).
+
+Over MCP/HTTP, pass `dedupe: false` on a single spawn to opt out regardless of
+the policy. `session_restart` always mints a new session id and is unaffected.
 
 #### Orchestrator & `mcpServers`
 
@@ -217,19 +308,21 @@ Same capability over MCP (`agent_start { permissionHold: true }` +
 [`permissions.md`](./permissions.md) for the full inbox verb. ACP adapters
 only (e.g. claude-code); adapters with no permission surface ignore the flag.
 
-#### Sandbox (MCP/HTTP only — no CLI flag yet)
+#### Sandbox
 
-`agent_start` accepts a `sandbox` field that boots the session inside an
-isolated cloud sandbox instead of the local machine, via a pluggable
+`agent_start` (and the `--sandbox` CLI flag above) boot the session inside
+an isolated cloud sandbox instead of the local machine, via a pluggable
 `SandboxProvider` (e2b's Firecracker microVMs ship today —
 `@agentproto/sandbox-e2b`). The daemon boots the box, starts its own
 sub-daemon inside it, and proxies the session's turns back over that box's
 MCP endpoint (`SandboxAgentSessionProxy`) — from the outside it behaves like
-any other session. Supports reconnecting to an existing sandbox id and
-pausing it on close (AIP-36 lifecycle) instead of tearing it down.
+any other session. Closing the session **pauses** the box by default
+(AIP-36 lifecycle) — it stays reattachable via `agentproto sandbox attach`
+or `sandbox.reuse`. An explicit `lifecycle.destroy_on` declaration kills
+the box instead.
 
-Only reachable today via the MCP `start_agent_session` tool or
-`POST /sessions/agent`, not a `sessions start` CLI flag. Companion MCP tools:
+Reachable via the `--sandbox` flag (CLI), the MCP `agent_start` tool's
+`sandbox` field, or `POST /sessions/agent`. Companion MCP tools:
 `list_sandbox_providers` (see what's configured) and
 `setup_sandbox_provider` (register credentials for one).
 
@@ -364,6 +457,39 @@ an axis). This is the way to apply an axis that a [live switch](#config-axes-mcp
 reported as `requires-restart`. Only agent-CLI sessions have axes to override —
 a PTY/command restart with overrides is rejected `400`.
 
+### `prompt <id-or-name>`
+
+```bash
+agentproto sessions prompt claude-tui --prompt "check the PR comments"
+agentproto sessions prompt claude-tui --prompt "stop and fix this" --interrupt
+agentproto sessions prompt claude-tui --prompt "one more thing" --wait
+```
+
+POSTs `/sessions/:id/prompt` to send a follow-up message into an
+already-running session. Default is fire-and-forget and queued behind any
+in-flight turn — the reply is not printed; read it back with
+[`story`](#story-id-or-name) or [`export`](#export-id-or-name).
+
+| Flag | Purpose |
+|------|---------|
+| `--prompt <text>`, `-p` | Message to send (required). |
+| `--wait` | Block until the turn this prompt starts has drained. |
+| `--interrupt` | Cancel the in-flight turn and dispatch immediately instead of queuing. |
+| `--force` | Jump the prompt queue (only meaningful without `--wait`). |
+| `--json` | Emit the raw server response as JSON. |
+
+### `pin <id-or-name>` / `unpin <id-or-name>`
+
+```bash
+agentproto sessions pin claude-tui
+agentproto sessions unpin ses_abc12
+```
+
+POSTs `/sessions/:id/pin`. A pinned session sorts to the top of the
+`sessions` table and the VS Code "Pinned" group, marked with a `PIN`
+indicator. Pinning is list-visibility only — it has no effect on
+keep-alive, the idle reaper, or notifications.
+
 ### `mirror <id-or-name>`
 
 ```bash
@@ -435,20 +561,114 @@ agentproto sessions stop claude-tui --json
 POSTs `/sessions/:id/kill` — sends SIGTERM to the child. Idempotent
 on already-dead sessions (reports "not running"; exit `1`).
 
-## Interrupting a live session (MCP/HTTP only)
+### `wait <id-or-name>`
 
-There is no `agentproto sessions` subverb for this — it's exposed on
-the MCP `agent_prompt` tool and the HTTP prompt route only:
+```bash
+agentproto sessions wait ses_abc12
+agentproto sessions wait ses_abc12 --until turn-end --timeout 5m
+agentproto sessions wait --policy pol_abc12 --timeout 2m
+```
+
+Blocking long-poll: blocks the caller until the session fires a lifecycle
+event or the timeout expires. Chains calls across the daemon's ~55s
+per-call ceiling so the CLI-side timeout can be arbitrarily long.
+
+This is the scriptable equivalent of the `session_monitor` MCP tool, but
+without the 49s MCP constraint — prefer it when you have shell access.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--until <event>` | `any` | Which lifecycle event to wait on: `turn-end`, `awaiting-input`, `exited`, `any`. |
+| `--timeout <duration>` | `60s` / `15m` | Total wait budget. Duration string: `500ms`, `30s`, `5m`, `2h`. Bare integers under 1000 are rejected as ambiguous (`3000` → "did you mean 3000ms or 3s?"). Default is `60s` without `--until`, `15m` with `--until` (agent turns commonly run 5-20 minutes). |
+| `--policy <policyId>` | — | Wait on a completion policy instead of a session event. Long-polls `GET /policies/:id/wait` until the policy leaves `watching`/`gating`/`queued`/`nudging`/`acting`. When set, the positional `<id-or-name>` is ignored. |
+| `--json` | `false` | Machine-readable output. Suppresses the up-front "waiting up to…" banner; the matched result includes `timeoutMs` and `timeout` fields. |
+
+Before blocking, the CLI prints its interpreted budget to stderr
+(`waiting up to 5m (300000ms) for turn-end on ses_abc12…`) so a units
+mistake is caught immediately — the incident this module exists for was a
+`--timeout 3000` that was meant as 3000 seconds, not 3000ms.
+
+#### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Condition met (session event matched, or policy reached `done`/`awaiting-ack`). |
+| `2` | Timeout expired, usage error, or policy `blocked`/`cancelled`. |
+| `3` | Session/policy not found, or daemon unreachable. |
+| `4` | The matched turn-end was a silent no-op — `empty: true` (zero assistant output, zero tool calls) — or ended with `reason: "error"` (the adapter reported a failed turn). The wait DID resolve; the turn it resolved on produced nothing. Commonly a bad auth/model config. |
+
+#### `status` vs `wait`
+
+`agentproto sessions` (or `--json`) is a **non-blocking snapshot** — it
+shows current state. `wait` **blocks** until a state transition occurs.
+Use `wait` in scripts and supervisors; use the snapshot for dashboards
+and humans.
+
+#### When to use `wait` vs `session_monitor` (MCP)
+
+| Surface | Max timeout | Multi-session | Use when |
+|---------|-------------|---------------|----------|
+| `sessions wait` (CLI) | Unlimited (chains calls) | No (one session) | You have a shell and want to script a gate or supervisor loop. |
+| `session_monitor` (MCP) | 49s (MCP constraint) | Yes (up to 20) | You're an agent with MCP tools and need to fan-in across children. |
+
+Both hit the same daemon endpoint (`GET /sessions/:id/wait`); the CLI
+chains across the ~55s per-call ceiling, while `session_monitor`
+multiplexes across sessions but is capped by MCP's own timeout.
+
+### `gc`
+
+```bash
+agentproto sessions gc                         # print plan, archive eligible
+agentproto sessions gc --apply                 # actually archive
+agentproto sessions gc --forget                # drop descriptors instead of archiving
+agentproto sessions gc --older-than-days 7 --apply
+```
+
+Bulk garbage-collects terminal-status sessions (`exited`/`killed`/`error`).
+By default it **archives** them (hidden from the default view, still
+readable/importable) via `POST /sessions/gc`. Pass `--forget` to drop the
+descriptors instead (the native conversation on disk survives). `--older-than-days`
+keeps anything more recent. Live sessions are never touched.
+
+### `queue <id-or-name>`
+
+```bash
+agentproto sessions queue ses_abc12
+agentproto sessions queue claude-tui --json
+agentproto sessions queue claude-tui --deliver 2
+agentproto sessions queue claude-tui --drop 3
+agentproto sessions queue claude-tui --force 2
+```
+
+Inspects — and optionally manipulates — the session's prompt FIFO. With no
+action flag, lists what's queued: each item's position (`1` = next to
+dispatch), origin (`user`/`agent`/`child`), preview, and `queuedAt`.
+
+| Flag | Effect |
+|------|--------|
+| `--force <n>` | Jump position `n` to the **front** of the queue without touching the in-flight turn. |
+| `--deliver <n>` | Interrupt whatever is running and dispatch position `n` now. |
+| `--drop <n>` | Remove the item at position `n` without delivering it. |
+
+Positions are 1-indexed, matching `sessions prompt` output. After any
+action the queue is re-listed to show the result.
+
+## Interrupting a live session
+
+Use `agentproto sessions prompt <id> --prompt "..." --interrupt`, or call
+the same capability through the MCP `agent_prompt` tool and the HTTP prompt
+route:
 
 ```text
+CLI:  agentproto sessions prompt <id-or-name> --prompt "..." --interrupt
 MCP:  agent_prompt { sessionId, prompt, interrupt: true }
 HTTP: POST /sessions/:id/prompt?wait=false  { "prompt": "...", "interrupt": true }
 ```
 
-By default, sending a prompt to a session that's still mid-turn is
-rejected (see [`chat.md`](./chat.md#prompt-delivery) — `409
-send_prompt_failed`, "...is mid-turn — wait for it to finish or
-cancel"). Passing `interrupt: true` changes that: the daemon cancels
+By default, sending a prompt to a session that's still mid-turn
+**queues it** (FIFO) — the prompt is dispatched automatically when the
+current turn ends, so fan-in bursts are delivered in order instead of
+dropped. Passing `interrupt: true` changes that: the daemon cancels
 the in-flight turn (the adapter's own soft Ctrl-C — ACP
 `session/cancel`, or an adapter-specific SIGINT), waits for it to
 actually settle, then delivers the new prompt on the **same** live

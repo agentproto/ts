@@ -31,6 +31,19 @@ export function resolveMemoryDbPath(
 }
 
 /**
+ * Build the LibSQL store backing the agent's memory. Exposed separately so the
+ * `AgentController` can share the SAME store instance as its `storage` (thread
+ * rows, per-thread settings) — two stores on one SQLite file would race each
+ * other on writes.
+ */
+export function buildSqliteStore(
+  env: Record<string, string | undefined> = process.env,
+): LibSQLStore {
+  const dbPath = resolveMemoryDbPath(env)
+  return new LibSQLStore({ id: "mastra-agent-memory", url: `file:${dbPath}` })
+}
+
+/**
  * Build a Mastra `Memory` from an AIP-42 `memory:` config. Returns `undefined`
  * when memory is disabled (`scope: "none"`) so `buildMastraAgent` attaches none.
  *
@@ -38,19 +51,21 @@ export function resolveMemoryDbPath(
  *   replay into context). Defaults to 20.
  * - Semantic recall is left off (it needs an embedder + vector index) — this is
  *   conversation-history memory, the SQLite ask.
+ * - `store` lets the caller share one LibSQL store between this memory and the
+ *   AgentController's storage; omitted, a fresh store is built.
  */
 export function buildSqliteMemory(
   config?: MemoryConfig,
   env: Record<string, string | undefined> = process.env,
+  store?: LibSQLStore,
 ): MastraMemoryLike | undefined {
   if (config?.scope === "none") return undefined
-  const dbPath = resolveMemoryDbPath(env)
   const lastMessages =
     typeof config?.retention_turns === "number" && config.retention_turns > 0
       ? config.retention_turns
       : 20
   return new Memory({
-    storage: new LibSQLStore({ id: "mastra-agent-memory", url: `file:${dbPath}` }),
+    storage: store ?? buildSqliteStore(env),
     options: {
       lastMessages,
       semanticRecall: false,

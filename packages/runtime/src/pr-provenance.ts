@@ -57,6 +57,29 @@ export interface FooterProvenance {
   source?: string
   host?: string
   cwd?: string
+  /** The session's registered workspace slug (`SessionDescriptor.workspaceSlug`,
+   *  e.g. "ts", "default"). Rendered alongside `cwd`'s leaf directory name so
+   *  the footer identifies WHICH workspace ran the command, not just an
+   *  arbitrary trailing path segment — a bare `basename(cwd)` reads as
+   *  meaningless (or actively misleading) when the session's cwd is a
+   *  workspace root rather than a per-branch worktree. */
+  workspaceSlug?: string
+}
+
+/**
+ * Render the footer's `cwd` value. A bare `basename(cwd)` collapses to a
+ * meaningless (or actively misleading) fragment whenever the session's cwd IS
+ * the workspace root rather than a per-branch worktree dir — e.g. a checkout
+ * literally named `ts` renders as the opaque `cwd \`ts\`` with no indication
+ * that's a workspace name, not a worktree/branch leaf. Prefixing the
+ * registered workspace slug disambiguates it, and is dropped when it's
+ * identical to the leaf (the common per-worktree case) so the common case
+ * stays exactly as compact as before.
+ */
+function cwdLabel(cwd: string, workspaceSlug?: string): string {
+  const leaf = basename(cwd)
+  if (!workspaceSlug || workspaceSlug === leaf) return workspaceSlug ?? leaf
+  return `${workspaceSlug}/${leaf}`
 }
 
 export interface BuildFooterInput {
@@ -101,9 +124,9 @@ export const buildFooter = ({
   if (runId && !showLocalHostCwd) parts.push(`run [${runId}](${runUrl})`)
   if (showLocalHostCwd) {
     if (prov?.host) parts.push(`host \`${prov.host}\``)
-    if (prov?.cwd) parts.push(`cwd \`${basename(prov.cwd)}\``)
+    if (prov?.cwd) parts.push(`cwd \`${cwdLabel(prov.cwd, prov.workspaceSlug)}\``)
   }
-  if (sha) parts.push(`sha \`${sha.slice(0, 7)}\``)
+  if (sha) parts.push(`sha \`${sha}\``)
   return `\n\n---\n<sub>${parts.join(" · ")}</sub>`
 }
 
@@ -117,6 +140,7 @@ export interface FooterSession {
   startedAt?: string
   label?: string
   cwd?: string
+  workspaceSlug?: string
   adapterSlug?: string
   harness?: string
   model?: string
@@ -159,6 +183,7 @@ export function sessionFooterProvenance(
     source: options.source ?? "daemon",
     host: options.host,
     cwd: session.cwd,
+    workspaceSlug: session.workspaceSlug,
   }
   return { prov, authMode: session.auth?.mode }
 }
@@ -179,8 +204,90 @@ export function buildSessionPrFooter(
  * a second footer.
  */
 export function appendFooterOnce(body: string, footer: string): string {
-  if (body.includes(MARKER)) return body
+  if (hasProvenanceFooter(body)) return body
   return `${body}${footer}`
+}
+
+/**
+ * Whether a PR/review body already carries a RENDERED provenance footer — the
+ * `<sub>…@agentproto-bot…</sub>` line {@link buildFooter} emits — as opposed
+ * to merely MENTIONING the marker in prose. The distinction matters: a PR
+ * whose description discusses the provenance machinery itself (they exist —
+ * #999 explains a footer bug and quotes the marker) would otherwise read as
+ * "already stamped" forever and never receive its real footer.
+ */
+export function hasProvenanceFooter(body: string): boolean {
+  return new RegExp(`<sub>[^\\n]*${MARKER}`).test(body)
+}
+
+/** The rendered footer block, as {@link buildFooter} emits it (with the
+ *  `\n\n---\n` lead-in when present). */
+const FOOTER_BLOCK_RE = new RegExp(`(?:\\n+---)?\\n*<sub>[^\\n]*${MARKER}[^\\n]*</sub>`)
+
+/** Just the `<sub>…</sub>` span of a rendered footer within `body` (or a
+ *  standalone footer string, which is itself `<sub>…</sub>`-shaped) — every
+ *  "read a signal out of an existing footer" helper below shares this
+ *  extraction so they agree on what "the footer" means. Undefined when `body`
+ *  carries no rendered footer at all. */
+function extractFooterBlock(body: string): string | undefined {
+  return new RegExp(`<sub>[^\\n]*${MARKER}[^\\n]*</sub>`).exec(body)?.[0]
+}
+
+/** True when a body's provenance footer already carries a spend figure. */
+export function footerHasCost(body: string): boolean {
+  const block = extractFooterBlock(body)
+  return block !== undefined && /\$\d/.test(block)
+}
+
+/**
+ * The `session \`<id>\`` a rendered footer names, or undefined when the body
+ * carries no footer or the footer names no session (the legacy-fallback
+ * shape, e.g. a bare CI API-key run with no agent session behind it).
+ *
+ * Used to recognize "this footer already names ME" — both the daemon's own
+ * `buildSessionPrFooter` render and the `gh` PATH shim's thin one
+ * (gh-provenance-shim.ts) render the SAME `session \`<id>\`` segment, so a
+ * footer this returns OUR session id for is safe to enrich/upgrade: the
+ * misattribution risk `hasProvenanceFooter`'s callers guard against is a
+ * footer naming a DIFFERENT session, not our own.
+ */
+export function footerSessionId(body: string): string | undefined {
+  const block = extractFooterBlock(body)
+  if (block === undefined) return undefined
+  return /session `([^`]+)`/.exec(block)?.[1]
+}
+
+/**
+ * Whether `candidate` (a standalone footer, as {@link buildFooter} renders
+ * it, or a full body containing one) carries a provenance signal — spend,
+ * bound auth-profile identity, or token counts — that `existing` doesn't.
+ * Used to decide whether replacing an already-posted footer with a fresh
+ * daemon render is a genuine UPGRADE rather than a no-op re-render: the `gh`
+ * PATH shim's thin footer (gh-provenance-shim.ts) can only ever render
+ * session/adapter/model/host/cwd — never cost, auth-profile, or tokens, since
+ * those aren't known to a bare `gh` subprocess — so a shim-stamped body
+ * always has ROOM for this kind of upgrade once the daemon knows more.
+ */
+export function footerIsRicherThan(candidate: string, existing: string): boolean {
+  const candidateBlock = extractFooterBlock(candidate) ?? ""
+  const existingBlock = extractFooterBlock(existing) ?? ""
+  const gained = (has: (block: string) => boolean) => has(candidateBlock) && !has(existingBlock)
+  const hasCost = (block: string) => /\$\d/.test(block)
+  const hasAuthProfile = (block: string) => /auth-profile `/.test(block)
+  const hasTokens = (block: string) => / in \/ .{1,20} out\b/.test(block)
+  return gained(hasCost) || gained(hasAuthProfile) || gained(hasTokens)
+}
+
+/**
+ * Replace an existing footer with a fresh one (append when there is none).
+ * The daemon stamps a PR the instant `gh pr create` returns — mid-turn, when
+ * a claude-code/claude-sdk session has reported no usage yet (cost only
+ * arrives on the turn's `result`), so the first footer has no amount. At
+ * turn-end the reconciler re-renders it with what the session now knows.
+ */
+export function replaceProvenanceFooter(body: string, footer: string): string {
+  if (!hasProvenanceFooter(body)) return appendFooterOnce(body, footer)
+  return body.replace(FOOTER_BLOCK_RE, footer)
 }
 
 /**
@@ -205,6 +312,37 @@ export function parseGhPrCreate(
   let match: RegExpExecArray | null
   let last: { url: string; number: number } | null = null
   while ((match = re.exec(stdout)) !== null) {
+    last = { url: match[0], number: Number(match[1]) }
+  }
+  return last
+}
+
+/**
+ * String-form counterpart of {@link parseGhPrCreate} for the in-agent tool
+ * lane: an ACP harness's Bash-style tool reports ONE shell string (possibly
+ * compound — `git push && gh pr create … | tail -1`), not an argv, so the
+ * argv parser above can't see it. Detects "this call created a PR" from the
+ * command string plus the call's recorded result text, and returns the
+ * created PR (LAST `…/pull/<n>` match in the result, same shadowing rule as
+ * {@link parseGhPrCreate} — `gh pr create` prints its URL after any notices).
+ *
+ * Quoted spans are stripped before matching so a command that merely
+ * MENTIONS the phrase — `grep "gh pr create" src/` over a result that quotes
+ * a PR url — can never read as a create. Best-effort by design: the caller
+ * additionally gates on the call's own `isError` (a failed create whose
+ * stderr cites an existing PR must not attribute that PR here).
+ */
+export function detectShellPrCreate(
+  command: string | undefined,
+  resultText: string | undefined,
+): { url: string; number: number } | null {
+  if (!command || !resultText) return null
+  const unquoted = command.replace(/'[^']*'/g, " ").replace(/"(?:[^"\\]|\\.)*"/g, " ")
+  if (!/(^|[\s;&|({])gh\s+pr\s+create(\s|$)/.test(unquoted)) return null
+  const re = /https?:\/\/\S+?\/pull\/(\d+)/g
+  let match: RegExpExecArray | null
+  let last: { url: string; number: number } | null = null
+  while ((match = re.exec(resultText)) !== null) {
     last = { url: match[0], number: Number(match[1]) }
   }
   return last

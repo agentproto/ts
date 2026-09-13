@@ -113,11 +113,19 @@ changeset write. Instead of Phase 2 "Act", the agent's only job is Phase 2
 { "conclusion": "approve" | "request_changes", "summary": "...", "findings": [...] }
 ```
 
-This placement exists so the local pre-push gate
-(`scripts/agentflow/review.mjs`, currently its own single-shot
-`primitives/review.mjs` implementation — see `scripts/agentflow/README.md`)
-can eventually drive this SAME workflow through the daemon instead of a
-separate review path, once a caller exists that can reach `workflow_run_file`
-headless from a plain node script and read a structured verdict back out of
-the finished run. Landing that caller is tracked separately — this entry only
-adds the placement the caller will need.
+This placement exists so the local pre-push gate can drive this SAME workflow
+through the daemon instead of a separate review path — and now it does: `node
+scripts/agentflow/review.mjs --engine daemon` (or `.agentflow.local.json` /
+`.agentflow.json`'s `review.engine: "daemon"`) is the caller. It reads the
+bearer token from `~/.agentproto/daemons/<port>.json` (the developer's own
+already-running `agentproto serve`, default port 18790 — NOT the CI driver's
+`.agentproto/runtime.json`, which only a daemon *this repo's own tooling*
+booted writes), connects over MCP
+(`scripts/lib/daemon-mcp.mjs`), calls `workflow_run_file` against this
+WORKFLOW.md with `input: { placement: "local", baseRef, prNumber: 0,
+reviewConfig }` (`reviewConfig` = `.github/agentic-review.json` with
+`reviewerSandbox` stripped — a local run is always a HOST spawn on the dev's
+daemon), polls `workflow_status` to a terminal state, and parses the JSON
+verdict off the last session's output tail
+(`scripts/agentflow/primitives/review.mjs#reviewViaDaemon`). No diff cap: the
+agent reads the live checkout itself, same as every other placement.

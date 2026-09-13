@@ -36,6 +36,7 @@ import type { TaskLedger } from "./task-ledger.js"
 import type {
   AgentAdapterResolver,
   AgentAdapterLister,
+  AdapterCapabilitiesLister,
 } from "./http-server.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
@@ -65,6 +66,11 @@ export const DEFAULT_ORCHESTRATOR_TOOLS: readonly string[] = [
   "agent_prompt",
   "agent_output",
   "agent_kill",
+  // Child→parent report-back. NOT a delegation tool (takes no session id;
+  // the daemon resolves the caller's own recorded parent, and it can reach
+  // nothing else) — it's also the sole tool of the minimal report-only
+  // scope `session-spawn.ts` mints for a gateway-less child with a parent.
+  "message_parent",
   "session_monitor",
   "session_events_poll",
   "session_list",
@@ -241,6 +247,7 @@ export interface OrchestratorGatewayDeps {
   taskLedger?: TaskLedger
   resolveAgentAdapter?: AgentAdapterResolver
   listAgentAdapters?: AgentAdapterLister
+  listHarnessCapabilities?: AdapterCapabilitiesLister
   /** Orchestrator injector (WP3/WP4). When wired, a child orchestrator
    *  driving the scoped server can itself spawn sub-orchestrators
    *  (`orchestrator: true` on its `agent_start`) — the new
@@ -292,6 +299,7 @@ export function createOrchestratorMcpServerFactory(
     })
     registerSessionTools(server, {
       registry: deps.registry,
+      workspace: deps.workspace,
       toolSubset: scope.tools,
       // The verified scope IS the calling orchestrator's identity:
       // spawns through this server are attributed to `scope.ownerSessionId`
@@ -306,6 +314,9 @@ export function createOrchestratorMcpServerFactory(
         : {}),
       ...(deps.listAgentAdapters
         ? { listAgentAdapters: deps.listAgentAdapters }
+        : {}),
+      ...(deps.listHarnessCapabilities
+        ? { listHarnessCapabilities: deps.listHarnessCapabilities }
         : {}),
       ...(deps.webhookNotifier
         ? { webhookNotifier: deps.webhookNotifier }

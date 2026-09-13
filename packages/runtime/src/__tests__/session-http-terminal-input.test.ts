@@ -85,6 +85,29 @@ function makeCapturingPtyFactory(writes: string[]): PtyFactory {
   })
 }
 
+/** Fake PTY that ALSO exposes the `onData` handler sessions.ts registers,
+ *  so a test can simulate the PTY announcing bracketed-paste mode
+ *  (`\x1b[?2004h`/`\x1b[?2004l`) from its OUTPUT stream. */
+function makeControllablePtyFactory(writes: string[]): {
+  factory: PtyFactory
+  emitOutput: (chunk: string) => void
+} {
+  let handler: ((data: string) => void) | undefined
+  const factory: PtyFactory = (): PtyProcess => ({
+    pid: 7779,
+    write: (data: string) => {
+      writes.push(data)
+    },
+    resize: () => {},
+    kill: () => {},
+    onData: h => {
+      handler = h
+    },
+    onExit: () => {},
+  })
+  return { factory, emitOutput: chunk => handler?.(chunk) }
+}
+
 function fakeAgentSession(): AgentSessionLike {
   return {
     sessionId: "acp_ti_test",
@@ -134,6 +157,44 @@ function postInput(port: number, id: string, body: unknown): Promise<Response> {
     body: JSON.stringify(body),
   })
 }
+
+/** Same shape as `withServer` but wired to the controllable PTY factory so
+ *  the caller can flip bracketed-paste mode via `emitOutput` before
+ *  posting input. */
+async function withControllableServer(
+  run: (
+    port: number,
+    registry: SessionsRegistry,
+    writes: string[],
+    emitOutput: (chunk: string) => void,
+  ) => Promise<void>,
+): Promise<void> {
+  const writes: string[] = []
+  const { factory, emitOutput } = makeControllablePtyFactory(writes)
+  const registry = createSessionsRegistry({ persist: false, spawnPty: factory })
+  const port = await freePort()
+  const http = await startHttpServer({
+    port,
+    auth: { mode: "none" },
+    mcpServerFactory,
+    conversations: noopConversations(),
+    events: createRuntimeEvents(),
+    heartbeat: noopHeartbeat(),
+    sessions: registry,
+    resolveAgentAdapter,
+    ptyEnabled: true,
+    meta: { workspace: process.cwd(), registered: [] },
+  })
+  try {
+    await run(port, registry, writes, emitOutput)
+  } finally {
+    await http.stop()
+    registry.shutdown()
+  }
+}
+
+const BP_ON = "\x1b[?2004h"
+const BP_OFF = "\x1b[?2004l"
 
 describe("POST /sessions/:id/terminal/input", () => {
   it("writes text then a lone CR (default enter) and returns {ok:true}", async () => {
@@ -205,6 +266,56 @@ describe("POST /sessions/:id/terminal/input", () => {
 
       expect(res.status).toBe(400)
       expect(writes).toEqual([])
+    })
+  })
+})
+
+describe("POST /sessions/:id/terminal/input — bracketed-paste wrap (FIX round 2)", () => {
+  it("wraps multi-line text once the PTY has announced paste mode ON", async () => {
+    await withControllableServer(async (port, registry, writes, emitOutput) => {
+      const desc = registry.spawnPty({ workspaceSlug: "default", cwd: process.cwd(), argv: ["bash"], cols: 80, rows: 24 })
+      emitOutput(BP_ON)
+
+      const res = await postInput(port, desc.id, { text: "line1\nline2" })
+
+      expect(res.status).toBe(200)
+      expect(writes).toEqual(["\x1b[200~line1\nline2\x1b[201~", "\r"])
+    })
+  })
+
+  it("does not wrap single-line text even in paste mode ON", async () => {
+    await withControllableServer(async (port, registry, writes, emitOutput) => {
+      const desc = registry.spawnPty({ workspaceSlug: "default", cwd: process.cwd(), argv: ["bash"], cols: 80, rows: 24 })
+      emitOutput(BP_ON)
+
+      const res = await postInput(port, desc.id, { text: "line1" })
+
+      expect(res.status).toBe(200)
+      expect(writes).toEqual(["line1", "\r"])
+    })
+  })
+
+  it("does not wrap multi-line text before any paste-mode announcement (unknown)", async () => {
+    await withControllableServer(async (port, registry, writes) => {
+      const desc = registry.spawnPty({ workspaceSlug: "default", cwd: process.cwd(), argv: ["bash"], cols: 80, rows: 24 })
+
+      const res = await postInput(port, desc.id, { text: "line1\nline2" })
+
+      expect(res.status).toBe(200)
+      expect(writes).toEqual(["line1\nline2", "\r"])
+    })
+  })
+
+  it("does not wrap multi-line text once paste mode has gone OFF again", async () => {
+    await withControllableServer(async (port, registry, writes, emitOutput) => {
+      const desc = registry.spawnPty({ workspaceSlug: "default", cwd: process.cwd(), argv: ["bash"], cols: 80, rows: 24 })
+      emitOutput(BP_ON)
+      emitOutput(BP_OFF)
+
+      const res = await postInput(port, desc.id, { text: "line1\nline2" })
+
+      expect(res.status).toBe(200)
+      expect(writes).toEqual(["line1\nline2", "\r"])
     })
   })
 })

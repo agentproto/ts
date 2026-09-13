@@ -15,6 +15,10 @@ the adapter, model, route, auth-profile, posture, effort and context axes in
 native posture, use `--mode-id <id>` instead (for example `--mode-id architect`);
 the two flags are mutually exclusive.
 
+Other axis flags: `--base-url <url>` (custom gateway URL — requires
+`--gateway`) and `--context <profile>` (`full`, `lean`, or an
+adapter-specific context profile).
+
 This is not a provider preset. Static gateway definitions such as OpenRouter
 and Moonshot are listed with `agentproto provider-preset list`.
 

@@ -74,10 +74,11 @@ afterEach(() => {
 // ── catalog ──────────────────────────────────────────────────────────────
 
 describe("sandbox catalog", () => {
-  it("exposes local, e2b, modal, daytona in order", () => {
+  it("exposes local, e2b, box, modal, daytona in order", () => {
     expect(SANDBOX_CATALOG.map((c) => c.slug)).toEqual([
       "local",
       "e2b",
+      "box",
       "modal",
       "daytona",
     ])
@@ -114,6 +115,36 @@ describe("resolveSandboxProvider", () => {
     expect(typeof handle?.provider.boot).toBe("function")
   })
 
+  it("fills the provider's control-plane env var from the stored apiKey cred when unset (so setup actually authenticates boot)", async () => {
+    const saved = process.env.E2B_API_KEY
+    delete process.env.E2B_API_KEY
+    try {
+      await resolveSandboxProvider("e2b", {
+        creds: E2B_CREDS,
+        importPackage: async () => fakeE2bModule(),
+      })
+      expect(process.env.E2B_API_KEY).toBe(E2B_CREDS.apiKey)
+    } finally {
+      if (saved === undefined) delete process.env.E2B_API_KEY
+      else process.env.E2B_API_KEY = saved
+    }
+  })
+
+  it("never overwrites an explicit control-plane env var with the stored cred (env wins)", async () => {
+    const saved = process.env.E2B_API_KEY
+    process.env.E2B_API_KEY = "from_env_wins"
+    try {
+      await resolveSandboxProvider("e2b", {
+        creds: E2B_CREDS,
+        importPackage: async () => fakeE2bModule(),
+      })
+      expect(process.env.E2B_API_KEY).toBe("from_env_wins")
+    } finally {
+      if (saved === undefined) delete process.env.E2B_API_KEY
+      else process.env.E2B_API_KEY = saved
+    }
+  })
+
   it("returns null for modal/daytona (no package published yet)", async () => {
     expect(await resolveSandboxProvider("modal")).toBeNull()
     expect(await resolveSandboxProvider("daytona")).toBeNull()
@@ -127,7 +158,7 @@ describe("resolveSandboxProvider", () => {
 // ── lister: status classification ───────────────────────────────────────
 
 describe("sandbox lister", () => {
-  it("classifies local as ready, e2b/modal/daytona as supported when e2b isn't importable", async () => {
+  it("classifies local as ready, e2b/box/modal/daytona as supported when none are importable", async () => {
     const credsStore = makeSandboxCredsStore(home)
     const ledger = makeSetupLedger({ home })
     const resolver = makeSandboxResolver(credsStore, {
@@ -141,6 +172,7 @@ describe("sandbox lister", () => {
     expect(entries.map((e) => e.slug)).toEqual([
       "local",
       "e2b",
+      "box",
       "modal",
       "daytona",
     ])
@@ -149,7 +181,7 @@ describe("sandbox lister", () => {
     expect(local.status).toBe("ready")
     expect(local.info?.capabilities.networkEgress).toBe(true)
 
-    for (const slug of ["e2b", "modal", "daytona"]) {
+    for (const slug of ["e2b", "box", "modal", "daytona"]) {
       const entry = entries.find((e) => e.slug === slug)!
       expect(entry.status).toBe("supported")
       expect(entry.version).toBe("not installed")
@@ -227,8 +259,9 @@ describe("list_sandbox_providers tool", () => {
     const entries = JSON.parse(
       res.content[0]!.text,
     ) as AdapterEntry<SandboxAdapterInfo>[]
-    expect(entries).toHaveLength(4)
+    expect(entries).toHaveLength(5)
     expect(entries.map((e) => e.slug).sort()).toEqual([
+      "box",
       "daytona",
       "e2b",
       "local",

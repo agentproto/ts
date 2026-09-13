@@ -221,6 +221,60 @@ the **transparent** `provider/model` surface, not through alias packs.
 
 ---
 
+## Batches
+
+`POST /v1/messages/batches` (and `/v1/{pack}/messages/batches`) exposes the
+Anthropic Message Batches API on top of the proxy's own routing — a client
+pointed at the proxy can use the Anthropic SDK's batches surface unchanged
+(`client.messages.batches.create/retrieve/results/cancel/list/delete`) with
+`params.model` being **any** model the active pack routes. Batch is a delivery
+mode, not a model: each item's `params` is the same Messages body the sync
+`/v1/messages` route understands, so per-item routing, tool-trimming, and
+translation are all reused, not reimplemented.
+
+| Route | Behaviour |
+| :--- | :--- |
+| `POST /v1/messages/batches` | `{ requests: [{ custom_id, params }] }`. Validated (unique `custom_id`, no `stream`/`speed`/`fallbacks`/forced `tool_choice`, resolvable `model`) — 400 lists every offending item. Returns a `message_batch` object. |
+| `GET /v1/messages/batches/{id}` | Aggregate status across sub-batches: `processing_status`, `request_counts`, `results_url` (once ended). |
+| `GET /v1/messages/batches/{id}/results` | 404 until ended, then JSONL — one `{ custom_id, result }` line per item, cached after the first fetch so a repeat GET doesn't re-hit the provider. |
+| `POST /v1/messages/batches/{id}/cancel` | Fans out to every sub-batch; a provider that doesn't support cancel (OpenRouter) is recorded, not fatal. |
+| `GET /v1/messages/batches` | List, newest first (`?limit=`). |
+| `DELETE /v1/messages/batches/{id}` | Only once ended (else `409`); best-effort forwarded to Anthropic for native sub-batches. |
+
+### Native vs emulated
+
+A batch whose items resolve to several providers is split into per-provider
+sub-batches and re-aggregated by `custom_id`:
+
+- **`anthropic`** and **`openrouter`** run on that provider's own async Batch
+  API — **50% of token price**, up to a 24h window.
+- **Everything else** (`moonshot`, `requesty`, `zai`, `groq`, `xai`, `openai`)
+  has no batch API of its own, so items run through a local-queue emulation:
+  the proxy submits each item to its **own** `/v1/messages` over loopback, so
+  tool caps, thinking-strip, and empty-turn retry all still apply. **Full
+  price** — there is no provider-side discount to draw from.
+
+### Credentials
+
+Batches reuse the same per-provider credential resolution as `/v1/messages`.
+One exception: if the resolved `anthropic` credential is a subscription OAuth
+token (`sk-ant-oat…`) rather than an API key, batch creation fails closed with
+a `401` — the Anthropic Batches API only accepts API keys, so the proxy never
+attempts to send a subscription token to it.
+
+### Config
+
+| Env var | Effect |
+| :--- | :--- |
+| `LLM_ENDPOINT_STATE_DIR` | Where batch records + local-queue results are persisted. Default `~/.agentproto/llm-endpoint`. |
+| `LLM_ENDPOINT_BATCH_CONCURRENCY` | Concurrent in-flight loopback requests per local-queue sub-batch. Default `4`. |
+
+Batch records outlive the process — on restart, a native sub-batch simply
+re-polls the provider by its stored id, and an unfinished local-queue
+sub-batch resumes only the items still missing a result.
+
+---
+
 ## Tool handling
 
 ### Automatic trimming

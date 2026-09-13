@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
-import { mkdtemp, rm, readFile } from "node:fs/promises"
+import { mkdtemp, rm, mkdir, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import matter from "gray-matter"
 import { defineAgent } from "@agentproto/agent"
 import { parseAgentManifest } from "@agentproto/agent/manifest"
 import { defineWorkflow } from "@agentproto/workflow"
@@ -131,5 +132,279 @@ describe("emit — manifests round-trip through the loaders", () => {
   it("omits WORKSPACE.md when the app has no workspace", async () => {
     const { workspacePath } = await buildApp().emit(dir)
     expect(workspacePath).toBeUndefined()
+  })
+
+  it("always writes a root APP.md with schema/agents/workflows refs relative to dir", async () => {
+    const app = buildApp()
+    const { appPath, agentPaths, workflowPaths } = await app.emit(dir)
+
+    expect(appPath).toMatch(/\.agentproto\/APP\.md$/)
+    const parsed = matter(await readFile(appPath, "utf8"))
+    expect(parsed.data.schema).toBe("app/v1")
+    expect(parsed.data.version).toBe("0.1.0")
+    expect(parsed.data.id).toBeUndefined()
+    expect(parsed.data.workspace).toBeUndefined()
+
+    expect(parsed.data.agents).toEqual([
+      { id: "@agentik/reviewer", path: ".agentproto/agents/reviewer/AGENT.md" },
+      { id: "fixer", path: ".agentproto/agents/fixer/AGENT.md" },
+    ])
+    expect(parsed.data.workflows).toEqual([
+      { id: "review-and-fix", path: ".agentproto/workflows/review-and-fix/WORKFLOW.md" },
+    ])
+    // The relative paths in APP.md must actually resolve to what emit wrote.
+    expect(join(dir, parsed.data.agents[0].path)).toBe(agentPaths["@agentik/reviewer"])
+    expect(join(dir, parsed.data.workflows[0].path)).toBe(workflowPaths[0])
+  })
+
+  it("writes app identity + the workspace id into APP.md when the app declares them", async () => {
+    const app = defineApp({
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "@acme/reviewer",
+            description: "A reviewer in a workspace.",
+            model: "claude-sonnet-5",
+          }),
+          body: "Review.",
+        },
+      ],
+      workspace: {
+        id: "@acme/reviewers",
+        name: "Acme Reviewers",
+        owner: { type: "guild", id: "guild_123", slug: "acme" },
+      },
+      id: "@acme/reviewer-app",
+      name: "Reviewer App",
+      description: "Reviews PRs.",
+    })
+    const { appPath } = await app.emit(dir)
+    const parsed = matter(await readFile(appPath, "utf8"))
+
+    expect(parsed.data.id).toBe("@acme/reviewer-app")
+    expect(parsed.data.name).toBe("Reviewer App")
+    expect(parsed.data.version).toBe("0.1.0")
+    expect(parsed.data.description).toBe("Reviews PRs.")
+    expect(parsed.data.workspace).toBe("@acme/reviewers")
+    // Body = the app description.
+    expect(parsed.content.trim()).toBe("Reviews PRs.")
+  })
+
+  it("writes .agentproto/ui/index.html and points APP.md's ui.path at it, without inlining html", async () => {
+    const html = "<html><body><h1>Panel</h1></body></html>"
+    const app = defineApp({
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "solo",
+            description: "Solo agent with a ui.",
+            model: "claude-sonnet-5",
+          }),
+          body: "Solo.",
+        },
+      ],
+      ui: {
+        html,
+        title: "Solo Panel",
+        description: "A panel.",
+        tools: ["read_file"],
+        port: 8123,
+        csp: { connectDomains: ["api.example.com"] },
+      },
+    })
+    const { uiPath, appPath } = await app.emit(dir)
+
+    expect(uiPath).toMatch(/\.agentproto\/ui\/index\.html$/)
+    expect(await readFile(uiPath!, "utf8")).toBe(html)
+
+    const parsed = matter(await readFile(appPath, "utf8"))
+    expect(parsed.data.ui.path).toBe(".agentproto/ui/index.html")
+    expect(parsed.data.ui.title).toBe("Solo Panel")
+    expect(parsed.data.ui.description).toBe("A panel.")
+    expect(parsed.data.ui.tools).toEqual(["read_file"])
+    expect(parsed.data.ui.port).toBe(8123)
+    expect(parsed.data.ui.csp).toEqual({ connectDomains: ["api.example.com"] })
+    expect(parsed.data.ui.html).toBeUndefined()
+    expect(join(dir, parsed.data.ui.path)).toBe(uiPath)
+  })
+
+  it("omits uiPath and ui frontmatter when the app has no ui", async () => {
+    const { uiPath, appPath } = await buildApp().emit(dir)
+    expect(uiPath).toBeUndefined()
+    const parsed = matter(await readFile(appPath, "utf8"))
+    expect(parsed.data.ui).toBeUndefined()
+  })
+
+  it("writes artifacts and dev verbatim into APP.md frontmatter", async () => {
+    const app = defineApp({
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "solo",
+            description: "Solo agent.",
+            model: "claude-sonnet-5",
+          }),
+          body: "Solo.",
+        },
+      ],
+      artifacts: [{ type: "report", description: "A generated report." }],
+      dev: {
+        launch: [{ name: "dev", runtimeExecutable: "node", runtimeArgs: ["server.js"], port: 3000 }],
+      },
+    })
+    const { appPath } = await app.emit(dir)
+    const parsed = matter(await readFile(appPath, "utf8"))
+
+    expect(parsed.data.artifacts).toEqual([{ type: "report", description: "A generated report." }])
+    expect(parsed.data.dev).toEqual({
+      launch: [{ name: "dev", runtimeExecutable: "node", runtimeArgs: ["server.js"], port: 3000 }],
+    })
+  })
+
+  it("copies artifact/index.html from source and writes path into APP.md frontmatter", async () => {
+    const artifactHtml = "<html><body><h1>Dashboard</h1></body></html>"
+    const artifactSrc = join(dir, "source-artifact.html")
+    await writeFile(artifactSrc, artifactHtml, "utf8")
+
+    const app = defineApp({
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "solo",
+            description: "Solo agent with artifact.",
+            model: "claude-sonnet-5",
+          }),
+          body: "Solo.",
+        },
+      ],
+      artifact: { path: artifactSrc, title: "Dashboard", description: "A dashboard." },
+    })
+    const { artifactPath, appPath } = await app.emit(dir)
+
+    expect(artifactPath).toMatch(/\.agentproto\/artifact\/index\.html$/)
+    expect(await readFile(artifactPath!, "utf8")).toBe(artifactHtml)
+
+    const parsed = matter(await readFile(appPath, "utf8"))
+    expect(parsed.data.artifact.path).toBe(".agentproto/artifact/index.html")
+    expect(parsed.data.artifact.title).toBe("Dashboard")
+    expect(parsed.data.artifact.description).toBe("A dashboard.")
+    expect(join(dir, parsed.data.artifact.path)).toBe(artifactPath)
+  })
+
+  it("omits artifactPath and artifact frontmatter when the app has no artifact", async () => {
+    const { artifactPath, appPath } = await buildApp().emit(dir)
+    expect(artifactPath).toBeUndefined()
+    const parsed = matter(await readFile(appPath, "utf8"))
+    expect(parsed.data.artifact).toBeUndefined()
+  })
+
+  it("copies the skill directory to .agentproto/skill/ and writes path into APP.md frontmatter", async () => {
+    const skillDir = join(dir, "my-skill")
+    await mkdir(skillDir, { recursive: true })
+    await writeFile(join(skillDir, "SKILL.md"), "---\nname: my-skill\ndescription: A test skill.\n---\n\nSkill body.", "utf8")
+    await writeFile(join(skillDir, "helper.js"), "console.log('hello')", "utf8")
+
+    const app = defineApp({
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "solo",
+            description: "Solo agent with skill.",
+            model: "claude-sonnet-5",
+          }),
+          body: "Solo.",
+        },
+      ],
+      skill: { path: skillDir, title: "My Skill", description: "A test skill." },
+    })
+    const { skillPath, appPath } = await app.emit(dir)
+
+    expect(skillPath).toMatch(/\.agentproto\/skill$/)
+    expect(await readFile(join(skillPath!, "SKILL.md"), "utf8")).toContain("name: my-skill")
+    expect(await readFile(join(skillPath!, "helper.js"), "utf8")).toBe("console.log('hello')")
+
+    const parsed = matter(await readFile(appPath, "utf8"))
+    expect(parsed.data.skill.path).toBe(".agentproto/skill")
+    expect(parsed.data.skill.title).toBe("My Skill")
+    expect(parsed.data.skill.description).toBe("A test skill.")
+  })
+
+  it("omits skillPath and skill frontmatter when the app has no skill", async () => {
+    const { skillPath, appPath } = await buildApp().emit(dir)
+    expect(skillPath).toBeUndefined()
+    const parsed = matter(await readFile(appPath, "utf8"))
+    expect(parsed.data.skill).toBeUndefined()
+  })
+})
+
+describe("emit — UI-only apps (zero agents)", () => {
+  it("writes an APP.md with agents: [], no agent files, and .agentproto/ui/index.html", async () => {
+    const html = "<html><body><h1>UI-only</h1></body></html>"
+    const uiOnlyDir = await mkdtemp(join(tmpdir(), "app-kit-emit-ui-only-"))
+    try {
+      const app = defineApp({ ui: { html, title: "Panel" } })
+      const { agentPaths, workflowPaths, uiPath, appPath } = await app.emit(uiOnlyDir)
+
+      expect(agentPaths).toEqual({})
+      expect(workflowPaths).toEqual([])
+      expect(uiPath).toMatch(/\.agentproto\/ui\/index\.html$/)
+      expect(await readFile(uiPath!, "utf8")).toBe(html)
+
+      const parsed = matter(await readFile(appPath, "utf8"))
+      expect(parsed.data.agents).toEqual([])
+      expect(parsed.data.workflows).toEqual([])
+      expect(parsed.data.ui.path).toBe(".agentproto/ui/index.html")
+      expect(parsed.data.ui.title).toBe("Panel")
+    } finally {
+      await rm(uiOnlyDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("emit — data dir hint", () => {
+  it("writes `data` verbatim into APP.md frontmatter, and omits it when absent", async () => {
+    const solo = () =>
+      defineAgent({ schema: "agent/v1", id: "solo", description: "Solo agent.", model: "claude-sonnet-5" })
+    const withHint = await mkdtemp(join(tmpdir(), "app-kit-emit-data-"))
+    const without = await mkdtemp(join(tmpdir(), "app-kit-emit-nodata-"))
+    try {
+      const { appPath } = await defineApp({ agents: [{ agent: solo(), body: "Solo." }], data: { dir: "data" } }).emit(withHint)
+      expect(matter(await readFile(appPath, "utf8")).data.data).toEqual({ dir: "data" })
+
+      const bare = await defineApp({ agents: [{ agent: solo(), body: "Solo." }] }).emit(without)
+      expect("data" in matter(await readFile(bare.appPath, "utf8")).data).toBe(false)
+    } finally {
+      await rm(withHint, { recursive: true, force: true })
+      await rm(without, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("emit — category", () => {
+  it("writes category verbatim into APP.md frontmatter, and omits it when absent", async () => {
+    const solo = () =>
+      defineAgent({ schema: "agent/v1", id: "solo", description: "Solo agent.", model: "claude-sonnet-5" })
+    const withCategory = await mkdtemp(join(tmpdir(), "app-kit-emit-category-"))
+    const without = await mkdtemp(join(tmpdir(), "app-kit-emit-nocategory-"))
+    try {
+      const { appPath } = await defineApp({
+        agents: [{ agent: solo(), body: "Solo." }],
+        category: "widget",
+      }).emit(withCategory)
+      const parsed = matter(await readFile(appPath, "utf8"))
+      expect(parsed.data.category).toBe("widget")
+
+      const bare = await defineApp({ agents: [{ agent: solo(), body: "Solo." }] }).emit(without)
+      const bareParsed = matter(await readFile(bare.appPath, "utf8"))
+      expect("category" in bareParsed.data).toBe(false)
+    } finally {
+      await rm(withCategory, { recursive: true, force: true })
+      await rm(without, { recursive: true, force: true })
+    }
   })
 })

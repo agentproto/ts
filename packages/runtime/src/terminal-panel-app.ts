@@ -1,9 +1,12 @@
 /**
  * McpApp definition for a REAL interactive terminal — connects the MCP App
  * iframe directly to the daemon's live PTY WebSocket (`/sessions/:id/pty`),
- * not a poll loop. Distinct from sessions-panel-app.ts/agents-overview-app.ts/
- * bureau-sessions-app.ts, which are all read-only snapshots refreshed via
- * `tools/call`.
+ * not a poll loop. Distinct from @agentproto/apps's sessions-panel/
+ * agents-overview/bureau-sessions, which are all read-only snapshots
+ * refreshed via `tools/call`. This is the one builtin panel that stays in
+ * runtime (needs the PTY WebSocket + `spawnOrAttach`, not a portable,
+ * dependency-free `AgnoMcpApp` factory) — see builtin-apps.ts for the five
+ * that moved.
  *
  * Uses the same AgnoMcpApp contract (no @agstudio/mcp-apps dependency —
  * agentproto is a standalone workspace). Wire via `registerMcpApps`.
@@ -30,7 +33,7 @@
  */
 
 import { z } from "zod"
-import type { AgnoMcpApp } from "./sessions-panel-app.js"
+import type { AgnoMcpApp } from "@agentproto/apps"
 
 export const terminalPanelInputSchema = z.object({
   sessionId: z

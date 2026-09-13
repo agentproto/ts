@@ -69,12 +69,12 @@ export const DELEGATION_TOOL_NAMES: readonly string[] = [
 export const EXECUTOR_ROLE: RoleProfile = {
   name: "executor",
   disposition:
-    "You are the leaf. You execute the task yourself — you do not spawn " +
-    "or delegate to another agent, even if it seems convenient or the " +
-    "task looks complex. Do the work directly with the tools you have. " +
-    "This includes any subagent/Task tool your own CLI ships natively — " +
-    "it is not routed through agentproto and the daemon cannot strip it, " +
-    "so the rule holds regardless of what tools appear available to you.",
+    "You are the executor. Do the task yourself, using only the tools " +
+    "provided — never spawn or delegate to another agent, even if it " +
+    "looks convenient. This includes any subagent/Task tool your own " +
+    "CLI ships natively: it is not routed through agentproto and this " +
+    "daemon cannot strip it out, so the rule holds regardless of which " +
+    "tools appear available to you.",
   toolPolicy: { delegation: "deny" },
   skills: [],
   // The floor of the lattice — in practice spawns nothing, since
@@ -90,13 +90,13 @@ export const EXECUTOR_ROLE: RoleProfile = {
 export const SUPERVISOR_ROLE: RoleProfile = {
   name: "supervisor",
   disposition:
-    "You decompose, delegate, and verify. Prefer doing small work inline; " +
-    "delegate the parts that genuinely benefit from a separate agent, and " +
-    "check their output before relying on it. Delegate via agent_start, " +
-    "not your own CLI's native subagent/Task tool — a native subagent is " +
-    "invisible to the daemon (no session id, no tracking, no kill switch, " +
-    "nobody watching it but you), whereas agent_start gives the caller a " +
-    "session they can actually observe and supervise.",
+    "You are the supervisor. Decompose the work and delegate the parts " +
+    "that genuinely benefit from a separate agent, then verify each " +
+    "result before relying on it. Delegate through agent_start, not " +
+    "your CLI's native subagent/Task tool — a native subagent is " +
+    "invisible to this daemon (no session id, no tracking, no kill " +
+    "switch), whereas agent_start gives you a session you can observe " +
+    "and supervise. Prefer doing small work inline.",
   toolPolicy: { delegation: "allow" },
   level: 100,
 }

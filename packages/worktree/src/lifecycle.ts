@@ -1,5 +1,5 @@
 import { normalizeHook, type AgentprotoConfig } from "./config.js"
-import { hookEnv, type WorktreeEnvContext } from "./env.js"
+import { hookEnv, resolveWorktreesTurboCacheDir, type WorktreeEnvContext } from "./env.js"
 import { execShell, type ExecResult } from "./exec.js"
 
 /** One hook command's result, kept for error reporting / logging. */
@@ -25,9 +25,14 @@ export class HookError extends Error {
 
 /**
  * Run the `worktree.setup` hooks sequentially in the worktree, with the
- * `AGENTPROTO_*` context env injected. The first non-zero exit throws
- * {@link HookError} (setup failure must fail provisioning). No-op when the
- * repo declares no setup.
+ * `AGENTPROTO_*` context env injected — plus `TURBO_CACHE_DIR`, pointed at a
+ * directory shared across every provisioned worktree (see
+ * {@link resolveWorktreesTurboCacheDir}), so a `pnpm build` (or any other
+ * turbo-driven build) run BY a setup hook restores from cache instead of
+ * paying a full cold build every single time a worktree is provisioned. A
+ * setup hook that doesn't use turbo simply never reads the var. The first
+ * non-zero exit throws {@link HookError} (setup failure must fail
+ * provisioning). No-op when the repo declares no setup.
  */
 export async function runSetup(
   config: AgentprotoConfig,
@@ -35,7 +40,7 @@ export async function runSetup(
 ): Promise<HookRun[]> {
   const commands = normalizeHook(config.worktree?.setup)
   const runs: HookRun[] = []
-  const env = hookEnv(ctx)
+  const env = { ...hookEnv(ctx), TURBO_CACHE_DIR: resolveWorktreesTurboCacheDir() }
   for (const command of commands) {
     const result = await execShell(command, ctx.worktreePath, { env })
     const run = { command, result }

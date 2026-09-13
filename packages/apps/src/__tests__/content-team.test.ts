@@ -5,6 +5,12 @@ import { refKey } from "@agentproto/app-kit"
 const fakeModel = { provider: "test", id: "test-model" }
 
 describe("content-team app", () => {
+  it("exposes stable app identity fields", () => {
+    expect(contentTeam.id).toBe("@agentproto/content-team")
+    expect(contentTeam.name).toBe("Content Team")
+    expect(contentTeam.version).toBe("0.1.0")
+  })
+
   it("bundles the four team agents bound to their production workflows", () => {
     expect(contentTeam.agents.map((a) => a.agent.id).sort()).toEqual([
       "@agentproto/editor",

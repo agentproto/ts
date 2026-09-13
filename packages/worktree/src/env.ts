@@ -1,3 +1,6 @@
+import { homedir } from "node:os"
+import { join, resolve } from "node:path"
+
 /**
  * Typed env surface for worktree lifecycle hooks, scripts, and services.
  *
@@ -99,4 +102,42 @@ export function serviceEnv(args: {
     [ENV_VARS.url]: args.self.url,
     ...peerEnv(args.peers),
   }
+}
+
+/** Explicit override for {@link resolveWorktreesTurboCacheDir} — a daemon-
+ *  level pin, same naming shape as `AGENTPROTO_WORKTREES_ROOT`/
+ *  `AGENTPROTO_WORKTREES_ISOLATION` in `@agentproto/runtime`. */
+export const WORKTREES_TURBO_CACHE_DIR_ENV = "AGENTPROTO_WORKTREES_TURBO_CACHE_DIR"
+
+/**
+ * Resolve the turbo build-cache directory `runSetup` points every
+ * provisioned worktree's setup hooks at (`TURBO_CACHE_DIR` — see turbo's own
+ * `--cache-dir` flag, which this env var sets). Measured on a real machine
+ * (WP-F): a repo's main checkout carries a turbo cache in the hundreds of MB;
+ * a freshly provisioned worktree, with none, pays a full cold `pnpm build`
+ * (~103 tasks) instead of a cache restore. `agentproto.json`'s own
+ * `worktree.setup` never set this, so every worktree paid that cost
+ * independently — this closes it by pointing every worktree at ONE shared
+ * directory instead.
+ *
+ * Deliberately NOT inside any worktree (would die with `worktree rm`) and
+ * NOT inside the monorepo checkout being built (would otherwise sit inside
+ * pnpm's/turbo's own workspace-relative globs, risking either tool treating
+ * its own cache as workspace content). Precedence, matching the rest of this
+ * codebase's `worktrees.*` knobs:
+ *   1. `AGENTPROTO_WORKTREES_TURBO_CACHE_DIR` — explicit override.
+ *   2. a bare `TURBO_CACHE_DIR` already in this process's env — an operator
+ *      who already exports it (AGENTS.md's own advice, for a *manually*
+ *      driven worktree) is respected rather than silently redirected.
+ *   3. `~/.agentproto/turbo-cache` — a real, single default, mirroring
+ *      `worktrees.root`'s own reasoning: zero-config still converges every
+ *      worktree's build cache to one shared place rather than leaving it
+ *      unset (today's behaviour — each worktree builds cold).
+ */
+export function resolveWorktreesTurboCacheDir(): string {
+  const pinned = process.env[WORKTREES_TURBO_CACHE_DIR_ENV]
+  if (pinned) return resolve(pinned)
+  const ambient = process.env.TURBO_CACHE_DIR
+  if (ambient) return ambient
+  return join(homedir(), ".agentproto", "turbo-cache")
 }

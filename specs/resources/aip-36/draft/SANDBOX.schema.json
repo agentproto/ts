@@ -28,6 +28,14 @@
     },
     "config": {
       "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "installAdapters": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Semantic harness slugs to pre-install in the box at boot (e.g. [\"hermes\", \"claude-code\"]). Each expands to @agentproto/adapter-<slug>@latest plus that adapter's declared boot extras; a config.installPackages pin for the same package always wins. Additive — absent means no extra install."
+        }
+      },
       "description": "Provider-specific connection fields. Shape varies per provider (see AIP-36 §Provider config shapes)."
     },
     "limits": {
@@ -50,6 +58,10 @@
           "items": { "type": "string" },
           "default": [],
           "description": "Static host env-var names to forward into the sandbox."
+        },
+        "autoPassthrough": {
+          "type": "boolean",
+          "description": "Opt-in: forward the spawn's resolved billing-credential env-var NAME (e.g. ANTHROPIC_API_KEY) into passthrough so a fresh box inherits host auth without the caller naming vars. Only the name is injected — the value travels via the normal passthrough mechanism."
         }
       }
     },
@@ -99,6 +111,11 @@
       "type": "boolean",
       "default": false,
       "description": "Reject command execution at the sandbox layer. Read-only sandbox calls fail with `sandbox_read_only`."
+    },
+    "extraPorts": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 1 },
+      "description": "App ports to expose at boot time. Resolved into BootedSandbox.ports (port → public URL) by providers that support port exposure."
     },
     "metadata": {
       "type": "object",

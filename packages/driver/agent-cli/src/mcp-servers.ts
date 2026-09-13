@@ -57,7 +57,7 @@ export function toFileBasedMcpServers(
     out[s.name] =
       s.transport === "stdio"
         ? { command: s.ref ?? "" }
-        : { url: s.ref ?? "" }
+        : { url: s.ref ?? "", ...(s.headers !== undefined ? { headers: s.headers } : {}) }
   }
   return out
 }

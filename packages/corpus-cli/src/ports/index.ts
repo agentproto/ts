@@ -45,6 +45,13 @@ export type { ThrottleFetcherOptions } from "./throttle-fetcher.adapter.js"
 export { HttpReadabilityFetcher } from "./http-readability-fetcher.adapter.js"
 export type { HttpReadabilityFetcherOptions } from "./http-readability-fetcher.adapter.js"
 
+export { PdfFetcher } from "./pdf-fetcher.adapter.js"
+export type {
+  PdfFetcherOptions,
+  PdfExtractor,
+  PdfExtraction,
+} from "./pdf-fetcher.adapter.js"
+
 export { GhPrSourceAdapter } from "./gh-pr-source.adapter.js"
 export type { GhPrSourceAdapterOptions, GhRunner } from "./gh-pr-source.adapter.js"
 
@@ -53,6 +60,9 @@ export type { AnthropicDistillerOptions } from "./anthropic-distiller.js"
 
 export { CliAgentDistiller } from "./cli-agent-distiller.js"
 export type { CliAgentDistillerOptions } from "./cli-agent-distiller.js"
+
+export { BatchDistiller } from "./batch-distiller.js"
+export type { BatchDistillerOptions } from "./batch-distiller.js"
 
 export { CLI_ENGINES } from "./cli-engines.js"
 export type { CliEngine } from "./cli-engines.js"

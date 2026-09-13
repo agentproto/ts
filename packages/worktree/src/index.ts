@@ -49,6 +49,8 @@ export {
   serviceEnv,
   peerEnvKey,
   serviceEnvToken,
+  resolveWorktreesTurboCacheDir,
+  WORKTREES_TURBO_CACHE_DIR_ENV,
   type WorktreeEnvContext,
   type PeerService,
 } from "./env.js"
@@ -138,10 +140,17 @@ export {
 } from "./agent-session-host.js"
 export {
   classifyForGc,
+  resolveGcClass,
+  isMechanicalDepBumpRange,
   planGc,
   applyGc,
+  reclaimOneWorktree,
   type GcClass,
+  type GcReclaimReason,
+  type GcHoldReason,
   type ClassifyForGcOptions,
+  type ResolveGcClassOptions,
+  type ResolvedGcClass,
   type GcPlanEntry,
   type PlanGcInput,
   type ApplyGcOptions,

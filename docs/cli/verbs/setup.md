@@ -101,3 +101,11 @@ Errors halt the pipeline:
 The ledger is saved incrementally — already-completed steps stay
 recorded across a failure, so the next `agentproto setup <slug>` (or
 `--only <next-step>`) doesn't re-prompt for what already worked.
+
+## Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Setup completed (or all steps skipped). |
+| `2` | Usage error, e.g. missing slug. |
+| `78` | An interactive setup step needed a TTY but `stdin` was not one. Programmatic hosts can key off this code to offer a real terminal. |

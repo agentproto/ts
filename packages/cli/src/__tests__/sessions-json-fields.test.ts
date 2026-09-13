@@ -175,7 +175,7 @@ describe("agentproto sessions --json — field parity with MCP session_list/agen
   })
 })
 
-describe("agentproto sessions (human table) — idle-after-turn reads distinctly from never-run", () => {
+describe("agentproto sessions (human table) — the quiet ○ presence badge", () => {
   let stdoutChunks: string[]
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let stdoutSpy: any
@@ -200,7 +200,7 @@ describe("agentproto sessions (human table) — idle-after-turn reads distinctly
     vi.restoreAllMocks()
   })
 
-  it("shows the ○ badge for a session idle after a turn, and no badge for one that never ran one", async () => {
+  it("shows the ○ badge for both quiet presences (after a turn AND never ran) — parked reads as quiet either way", async () => {
     const freshAgentSession: SessionDescriptor = {
       ...idleAfterTurnAgentSession,
       id: "sess_fresh01",
@@ -221,7 +221,8 @@ describe("agentproto sessions (human table) — idle-after-turn reads distinctly
     const freshLine = out.split("\n").find(l => l.includes("sess_fresh01"))
     expect(idleLine).toBeDefined()
     expect(freshLine).toBeDefined()
+    // Both are parked-with-nothing-pending → the shared quiet ○ badge.
     expect(idleLine).toContain("○")
-    expect(freshLine).not.toContain("○")
+    expect(freshLine).toContain("○")
   })
 })

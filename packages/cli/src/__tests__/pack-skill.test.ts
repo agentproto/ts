@@ -580,6 +580,154 @@ describe("agentproto pack skill --version override", () => {
   })
 })
 
+// ── integration: pack build (whole-package build) ────────────────────────
+
+describe("agentproto pack build", () => {
+  let tmp: string
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), "agentproto-pack-build-"))
+  })
+
+  afterEach(async () => {
+    await rm(tmp, { recursive: true, force: true }).catch(() => {})
+  })
+
+  /** Scaffold a minimal skill-pack PACKAGE: package.json (version source of
+   *  truth) + manifest.json (no version) + src/skills/<slug>/SKILL.md. */
+  async function createPackageFixture(opts?: { pkgVersion?: string }): Promise<{
+    packageDir: string
+    packName: string
+    version: string
+  }> {
+    const packageDir = join(tmp, "skill-pack-test")
+    const packName = "test-pack"
+    const version = opts?.pkgVersion ?? "1.2.3"
+
+    await mkdir(join(packageDir, "src", "skills", "skill-a"), { recursive: true })
+    await writeFile(
+      join(packageDir, "src", "skills", "skill-a", "SKILL.md"),
+      `---
+name: skill-a
+description: "Description for skill-a"
+---
+
+# skill-a
+`,
+      "utf8",
+    )
+    await writeFile(
+      join(packageDir, "src", "skills", "skill-a", "asset.txt"),
+      "asset content\n",
+      "utf8",
+    )
+
+    await writeFile(
+      join(packageDir, "package.json"),
+      JSON.stringify(
+        { name: "@agentproto/skill-pack-test", version, type: "module" },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    )
+
+    // No `version` in the manifest — package.json is the source of truth.
+    await writeFile(
+      join(packageDir, "manifest.json"),
+      JSON.stringify(
+        {
+          name: packName,
+          description: "A test skill pack",
+          skills: ["skill-a"],
+          sourceDir: "./src/skills",
+          author: { name: "Test Author" },
+          keywords: ["test"],
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf8",
+    )
+
+    return { packageDir, packName, version }
+  }
+
+  function assertBuiltShapes(
+    packageDir: string,
+    packName: string,
+    version: string,
+    stdout: string,
+  ): void {
+    // 1. Flat npm layout at the package root
+    expect(existsSync(join(packageDir, "skills", "skill-a", "SKILL.md"))).toBe(true)
+    expect(existsSync(join(packageDir, "skills", "skill-a", "asset.txt"))).toBe(true)
+    const plugin = JSON.parse(
+      readFileSync(join(packageDir, ".claude-plugin", "plugin.json"), "utf8"),
+    )
+    expect(plugin.name).toBe(packName)
+    // plugin.json version comes from package.json, never manifest.json
+    expect(plugin.version).toBe(version)
+
+    // 2. Self-contained versioned bundle under dist/
+    const bundleDir = join(packageDir, "dist", "staging", `${packName}-v${version}`)
+    expect(existsSync(join(bundleDir, "skills", "skill-a", "SKILL.md"))).toBe(true)
+    expect(existsSync(join(bundleDir, ".claude-plugin", "plugin.json"))).toBe(true)
+    expect(existsSync(join(bundleDir, "README.md"))).toBe(true)
+
+    // ... plus its zip (best-effort: `zip` may be absent — the command then
+    // reports a warning instead, and the bundle dir stands alone).
+    const zipPath = join(packageDir, "dist", `${packName}-v${version}.zip`)
+    if (stdout.includes("bundle zip:")) {
+      expect(existsSync(zipPath)).toBe(true)
+    } else {
+      expect(stdout).toContain("zip unavailable")
+    }
+  }
+
+  it("builds flat skills/ + .claude-plugin/ at root and a versioned dist bundle + zip", async () => {
+    const { packageDir, packName, version } = await createPackageFixture()
+
+    const { stdout, code } = runPackCli(["build", packageDir], tmp)
+
+    expect(code).toBe(0)
+    assertBuiltShapes(packageDir, packName, version, stdout)
+  })
+
+  it("defaults [dir] to the cwd", async () => {
+    const { packageDir, packName, version } = await createPackageFixture()
+
+    const { stdout, code } = runPackCli(["build"], packageDir)
+
+    expect(code).toBe(0)
+    assertBuiltShapes(packageDir, packName, version, stdout)
+  })
+
+  it("fails with a clear error when manifest.json is missing", async () => {
+    const { packageDir } = await createPackageFixture()
+    await rm(join(packageDir, "manifest.json"))
+
+    const { code, stderr } = runPackCli(["build", packageDir], tmp)
+
+    expect(code).toBe(1)
+    expect(stderr).toContain("manifest.json")
+  })
+
+  it("fails when package.json has no version", async () => {
+    const { packageDir } = await createPackageFixture()
+    await writeFile(
+      join(packageDir, "package.json"),
+      JSON.stringify({ name: "@agentproto/skill-pack-test" }, null, 2) + "\n",
+      "utf8",
+    )
+
+    const { code, stderr } = runPackCli(["build", packageDir], tmp)
+
+    expect(code).toBe(1)
+    expect(stderr).toContain("version")
+  })
+})
+
 describe("agentproto pack skill — manifest sourceDir env-var expansion", () => {
   let tmp: string
 

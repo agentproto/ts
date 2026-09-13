@@ -8,16 +8,22 @@ import {
 import type { ProviderPreset } from "../types.js"
 
 describe("ANTHROPIC_GATEWAY_PRESETS", () => {
-  it("exposes moonshot, openrouter, requesty, deepseek, llm-endpoint, xai, openai and openai-direct", () => {
+  it("exposes the full endpoint catalog (anthropic-flavored gateways + openai-flavored direct providers)", () => {
     expect(Object.keys(ANTHROPIC_GATEWAY_PRESETS).sort()).toEqual([
+      "deepinfra",
       "deepseek",
+      "groq",
+      "huggingface",
       "llm-endpoint",
+      "mistral",
       "moonshot",
+      "nebius",
       "openai",
       "openai-direct",
       "openrouter",
       "requesty",
       "xai",
+      "xai-anthropic",
     ])
   })
 
@@ -33,7 +39,13 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
         expect(preset.description).toBeTruthy()
         const url = new URL(preset.baseUrl)
         expect(url.protocol).toMatch(/^https?:$/)
-        expect(preset.keyEnv).toMatch(/_API_KEY$/)
+        // Conventionally a `<PROVIDER>_API_KEY` var — except the local
+        // llm-endpoint proxy, whose client bearer IS the proxy's own inbound
+        // shared-secret gate var (`LLM_ENDPOINT_ACCESS_TOKENS`), so one value
+        // serves both sides of the localhost loop — and Hugging Face, whose
+        // ecosystem-wide convention is `HF_TOKEN` (what every HF tool reads);
+        // inventing an HF_API_KEY here would break ambient-credential pickup.
+        expect(preset.keyEnv).toMatch(/(_API_KEY|_ACCESS_TOKENS|_TOKEN)$/)
         expect(["anthropic", "openai"]).toContain(preset.schemaFlavor)
       })
 
@@ -83,7 +95,13 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
     const ep = getAnthropicGatewayPreset("llm-endpoint")
     expect(ep.baseUrl).toBe("http://localhost:18090")
     expect(ep.schemaFlavor).toBe("anthropic")
-    expect(ep.keyEnv).toBe("LLM_ENDPOINT_API_KEY")
+    // keyEnv MUST be the same var the proxy's inbound gate reads
+    // (`parseAccessTokens(process.env.LLM_ENDPOINT_ACCESS_TOKENS)` in
+    // @agentproto/llm-endpoint) — otherwise the profile's presented bearer is
+    // read from a var the proxy never checks and the gate 401s. The dead
+    // `LLM_ENDPOINT_API_KEY` (read by neither side) must not reappear.
+    expect(ep.keyEnv).toBe("LLM_ENDPOINT_ACCESS_TOKENS")
+    expect(ep.keyEnv).not.toBe("LLM_ENDPOINT_API_KEY")
     expect(ep.defaultModel).toBe("kimi-k2.7-code")
     expect(ep.scrubEnv).toContain("ANTHROPIC_API_KEY")
   })
@@ -98,6 +116,35 @@ describe("ANTHROPIC_GATEWAY_PRESETS", () => {
 
   it("openrouter ships no pinned default model (operator picks via model option)", () => {
     expect(getAnthropicGatewayPreset("openrouter").defaultModel).toBeUndefined()
+  })
+
+  it("mistral pins its own stable -latest alias as default model", () => {
+    const m = getAnthropicGatewayPreset("mistral")
+    expect(m.defaultModel).toBe("mistral-large-latest")
+    expect(m.schemaFlavor).toBe("openai")
+    expect(m.baseUrl).toBe("https://api.mistral.ai/v1")
+  })
+
+  it("rotating-lineup direct providers ship no pinned default model", () => {
+    // groq/nebius/huggingface/deepinfra lineups churn; a pinned default would
+    // rot into a 404 the way a hardcoded model id always does. The operator
+    // picks via the model option against GET /models.
+    for (const id of ["groq", "nebius", "huggingface", "deepinfra"] as const) {
+      expect(getAnthropicGatewayPreset(id).defaultModel).toBeUndefined()
+    }
+  })
+
+  it("huggingface keeps the ecosystem HF_TOKEN convention as keyEnv", () => {
+    expect(getAnthropicGatewayPreset("huggingface").keyEnv).toBe("HF_TOKEN")
+  })
+
+  it("xai-anthropic points directly at xAI with no /v1 suffix and Anthropic flavor", () => {
+    const xa = getAnthropicGatewayPreset("xai-anthropic")
+    expect(xa.baseUrl).toBe("https://api.x.ai")
+    expect(xa.schemaFlavor).toBe("anthropic")
+    expect(xa.keyEnv).toBe("XAI_API_KEY")
+    expect(xa.defaultModel).toBe("grok-4.5")
+    expect(xa.scrubEnv).toContain("ANTHROPIC_API_KEY")
   })
 
   it("xai uses the intentional local OpenAI-compatible proxy", () => {
@@ -139,7 +186,7 @@ describe("getAnthropicGatewayPreset", () => {
 describe("findAnthropicGatewayPreset", () => {
   it("returns a built-in preset for a known id", () => {
     expect(findAnthropicGatewayPreset("moonshot")?.keyEnv).toBe("MOONSHOT_API_KEY")
-    expect(findAnthropicGatewayPreset("llm-endpoint")?.keyEnv).toBe("LLM_ENDPOINT_API_KEY")
+    expect(findAnthropicGatewayPreset("llm-endpoint")?.keyEnv).toBe("LLM_ENDPOINT_ACCESS_TOKENS")
   })
 
   it("returns undefined for an unknown id", () => {

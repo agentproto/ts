@@ -14,7 +14,9 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import type { TunnelRegistry } from "./tunnel-registry.js"
+import type { TunnelDescriptor, TunnelRegistry } from "./tunnel-registry.js"
+import { catchErrors, paginated } from "@agentproto/tool"
+import { registerBuiltinTool } from "@agentproto/mcp-server"
 
 export interface RegisterTunnelToolsOptions {
   registry: TunnelRegistry
@@ -27,7 +29,7 @@ function text(value: string | object): {
     content: [
       {
         type: "text",
-        text: typeof value === "string" ? value : JSON.stringify(value, null, 2),
+        text: typeof value === "string" ? value : JSON.stringify(value),
       },
     ],
   }
@@ -53,6 +55,18 @@ export function registerTunnelTools(
   opts: RegisterTunnelToolsOptions,
 ): void {
   const { registry } = opts
+
+  const compactTunnelItem = (t: TunnelDescriptor) => ({
+    id: t.id,
+    name: t.name,
+    label: t.label,
+    provider: t.provider,
+    targetPort: t.targetPort,
+    publicUrl: t.publicUrl,
+    status: t.status,
+    hostname: t.hostname,
+    createdAt: t.createdAt,
+  })
 
   // ── tunnel_create ──────────────────────────────────────────────
   server.tool(
@@ -155,31 +169,47 @@ export function registerTunnelTools(
   )
 
   // ── tunnel_list ───────────────────────────────────────────────
-  server.tool(
-    "tunnel_list",
-    "List all tunnels tracked by the daemon — active, stopped, and errored. " +
+  const tunnelListSchema = z.object({
+    onlyActive: z
+      .boolean()
+      .optional()
+      .describe(
+        "When true, return only tunnels with status `starting` or `active`. " +
+          "Default false (return all).",
+      ),
+  })
+  type TunnelListInput = z.infer<typeof tunnelListSchema>
+
+  registerBuiltinTool<TunnelListInput, TunnelDescriptor[]>(server, {
+    id: "tunnel_list",
+    description: "List all tunnels tracked by the daemon — active, stopped, and errored. " +
       "Each entry includes provider, target port, public URL, status, pid, " +
       "and age. Use before `tunnel_create` to avoid spawning duplicates " +
-      "for the same port.",
-    {
-      onlyActive: z
-        .boolean()
-        .optional()
-        .describe(
-          "When true, return only tunnels with status `starting` or `active`. " +
-            "Default false (return all).",
-        ),
-    },
-    async input => {
+      "for the same port. COMPACT BY DEFAULT: each entry is a slim " +
+      "projection (id/name/label/provider/targetPort/publicUrl/status/" +
+      "hostname/createdAt); pass `full: true` (or `compact: false`) for " +
+      "the complete descriptor (pid, stoppedAt, lastError, targetHost, " +
+      "autostart, tunnelId, credentialsFile).",
+    inputSchema: tunnelListSchema,
+    handler: async (input) => {
       let tunnels = registry.list()
       if (input.onlyActive) {
         tunnels = tunnels.filter(
           t => t.status === "starting" || t.status === "active",
         )
       }
-      return text({ tunnels })
+      return tunnels
     },
-  )
+    transformers: [
+      catchErrors(),
+      paginated({
+        project: compactTunnelItem,
+        keyOf: t => t.id,
+        maxLimit: 200,
+        itemKey: "tunnels",
+      }),
+    ],
+  })
 
   // ── tunnel_stop ────────────────────────────────────────────────
   server.tool(

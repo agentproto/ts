@@ -1,5 +1,145 @@
 # @agentproto/adapter-mastracode-inprocess
 
+## 0.3.11
+
+### Patch Changes
+
+- @agentproto/driver-agent-cli@2.4.3
+
+## 0.3.10
+
+### Patch Changes
+
+- 81752fa: Update upstream dependencies for improved compatibility and stability: @anthropic-ai/claude-agent-sdk (0.3.263), @mastra/core (1.64.0), @mastra/memory (1.28.2), @types/react-dom (19.2.7), and @tauri-apps/plugin-opener (2.5.5).
+- 2f37e7b: Bump third-party dependency versions (weekly deps update)
+- Updated dependencies [2f37e7b]
+  - @agentproto/driver-agent-cli@2.4.2
+  - @agentproto/provider-kit@0.4.3
+
+## 0.3.9
+
+### Patch Changes
+
+- @agentproto/driver-agent-cli@2.4.1
+- @agentproto/provider-kit@0.4.2
+
+## 0.3.8
+
+### Patch Changes
+
+- Updated dependencies [dfda0b1]
+- Updated dependencies [f0c51a7]
+- Updated dependencies [12bb9e8]
+  - @agentproto/driver-agent-cli@2.4.0
+  - @agentproto/provider-kit@0.4.2
+
+## 0.3.7
+
+### Patch Changes
+
+- e2314b3: Weekly dependency update: minor/patch-range bumps across the workspace.
+  - @mastra/core 1.57.0 → 1.59.0
+  - @mastra/memory 1.26.0 → 1.26.2
+  - @mastra/libsql 1.19.0 → 1.20.0
+  - turbo 2.10.9 → 2.10.10
+  - unpdf 1.8.0 → 1.8.1
+  - e2b 2.38.2 → 2.39.0
+  - @anthropic-ai/claude-agent-sdk 0.3.226/0.3.232 → 0.3.233
+  - @earendil-works/pi-tui 0.84.1 → 0.84.2
+  - mastracode 0.32.6 → 0.33.1
+
+- b95e23b: Weekly dependency update: bump external dependencies to latest minor/patch versions.
+  - @anthropic-ai/claude-agent-sdk 0.3.233 → 0.3.241
+  - @ast-grep/napi 0.45.1 → 0.45.2
+  - @mastra/core 1.59.0 → 1.61.0
+  - @mastra/libsql 1.20.0 → 1.21.1
+  - @mastra/memory 1.26.2 → 1.27.0
+  - @tanstack/react-query 5.66.0 → 5.102.2
+  - @types/react-dom 19.2.4 → 19.2.5
+  - @types/vscode 1.90.0 → 1.134.0
+  - e2b 2.39.0 → 2.45.0
+  - mastracode 0.33.1 → 0.35.0
+  - turbo 2.10.10 → 2.10.11
+
+  No code changes; pnpm-lock.yaml updated to reflect new dependency versions.
+
+- Updated dependencies [76f2c78]
+- Updated dependencies [64088e0]
+- Updated dependencies [e3ad769]
+  - @agentproto/driver-agent-cli@2.3.1
+
+## 0.3.6
+
+### Patch Changes
+
+- a30db02: Stamp source/discoverable fields on capability strategy results
+- Updated dependencies [27a22ca]
+- Updated dependencies [ce7cbb7]
+- Updated dependencies [cbe11c2]
+  - @agentproto/driver-agent-cli@2.3.0
+
+## 0.3.5
+
+### Patch Changes
+
+- Updated dependencies [bf3407e]
+- Updated dependencies [82ca9e6]
+  - @agentproto/driver-agent-cli@2.2.2
+
+## 0.3.4
+
+### Patch Changes
+
+- e68c999: Weekly minor/patch dependency bump (w33). Fixes `TUI` class → `TuiMainScreen` rename from `@earendil-works/pi-tui` 0.84.1.
+
+## 0.3.3
+
+### Patch Changes
+
+- Updated dependencies [08bcd4a]
+  - @agentproto/driver-agent-cli@2.2.1
+
+## 0.3.2
+
+### Patch Changes
+
+- Updated dependencies [3e187e5]
+- Updated dependencies [492240c]
+  - @agentproto/driver-agent-cli@2.2.0
+
+## 0.3.1
+
+### Patch Changes
+
+- c1399f3: Weekly dependency update: bump @modelcontextprotocol/sdk, @mastra/core and ecosystem packages, turbo, tsx, and React types to latest patch/minor versions within semver constraints.
+- Updated dependencies [c1399f3]
+  - @agentproto/provider-kit@0.4.1
+
+## 0.3.0
+
+### Minor Changes
+
+- 831d4f5: Implement route-selection axis for AIP-45 launch-menu drill-down (WP1): add declarative `routeSelection` field to adapter manifests (distinguishes "free" vs. "derived-from-model"), project it through resolve/runtime layers, enrich catalog with per-route `multiModel` flags and flat routes index for tier-pinning logic.
+- f3b54ad: Implement harness capability discovery — a new layer that answers "what can this adapter actually DO on this host right now" by discovering credentials, providers, model-discovery mechanisms, endpoint compatibility, and application contracts at runtime. Each adapter optionally exports a `<camelSlug>Capabilities` strategy that parses its native config/creds stores (e.g., `~/.gemini/settings.json`, `~/.hermes/auth.json`) to report live state. Falls back gracefully to a pure manifest projection when no strategy is available or it throws. Never surfaces raw credential values — only presence, fingerprints, and last-4 chars. Exposed via the new `harness_capabilities` MCP tool and `@agentproto/cli`'s `listHarnessCapabilities` function.
+
+### Patch Changes
+
+- 04aedad: Weekly dependency bump with semver-safe minor/patch updates across 18 packages. Includes Mastra ecosystem update (1.31-1.48.x → 1.52.1), Claude SDK patch (0.3.200 → 0.3.220), build tool updates (turbo, tsx), and general dependency maintenance (yaml, ws, react, etc.). All changes verified to pass build, test, and type checks.
+- Updated dependencies [c736c02]
+- Updated dependencies [8367648]
+- Updated dependencies [93e6309]
+- Updated dependencies [c506d87]
+- Updated dependencies [392021a]
+- Updated dependencies [3865de6]
+- Updated dependencies [5643cb6]
+- Updated dependencies [f3b54ad]
+- Updated dependencies [42f1217]
+- Updated dependencies [4542ca3]
+- Updated dependencies [c064bc7]
+- Updated dependencies [4832ced]
+  - @agentproto/driver-agent-cli@2.1.0
+  - @agentproto/provider-kit@0.4.0
+
 ## 0.2.6
 
 ### Patch Changes

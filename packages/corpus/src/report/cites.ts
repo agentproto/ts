@@ -3,9 +3,16 @@
  * `[n, m, …]` referencing the global bibliography index.
  */
 
-/** Every citation number referenced in a string (flattening `[a, b]`). */
+/** Blank out fenced code blocks and inline code spans so `arr[0]`-style
+ * array indexing in code never reads as a citation. */
+function stripCode(s: string): string {
+  return s.replace(/```[\s\S]*?```/g, "").replace(/`[^`\n]*`/g, "")
+}
+
+/** Every citation number referenced in a string (flattening `[a, b]`).
+ * Ignores brackets inside fenced/inline code and `[n](...)` markdown links. */
 export function citesOf(s: string): number[] {
-  return [...s.matchAll(/\[(\d{1,3}(?:,\s*\d{1,3})*)\]/g)].flatMap((m) =>
+  return [...stripCode(s).matchAll(/\[(\d{1,3}(?:,\s*\d{1,3})*)\](?!\()/g)].flatMap((m) =>
     m[1]!.split(",").map((n) => parseInt(n.trim(), 10))
   )
 }

@@ -356,6 +356,18 @@ function printPretty(ev: StreamEvent): void {
       process.stderr.write(
         `\x1b[31m[error]${code} ${ev.error.message}\x1b[0m\n`,
       )
+      // A bare "Authentication required" on a fresh machine is a dead end —
+      // point at the two real remedies (the agent CLI's own login, or an
+      // API key via `agentproto auth provider set`) instead of making the
+      // user guess. Cold-install audit papercut, 2026-08-07.
+      if (/\b(?:authentication|not authenticated|credentials?)\b/i.test(ev.error.message)) {
+        process.stderr.write(
+          `\x1b[2mhint: no credential configured? Log in with your agent ` +
+            `CLI (e.g. \`claude setup-token\` for a Claude subscription), or ` +
+            `set an API key: \`agentproto auth provider set <provider> ` +
+            `<api-key>\`. \`agentproto models\` shows what's runnable.\x1b[0m\n`,
+        )
+      }
       // Attached child stderr (added by define-agent-cli) — usually
       // the most useful line ("not authenticated", "model gated",
       // missing binary path). Print after the headline so the

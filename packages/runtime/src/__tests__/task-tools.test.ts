@@ -315,3 +315,40 @@ describe("result rendering", () => {
     await mcp.close()
   })
 })
+
+// ── Pagination (PR-8) ─────────────────────────────────────────────────
+
+describe("task_list pagination", () => {
+  it("page-walk with limit=2 covers exactly the unpaginated list; the default call is unchanged", async () => {
+    const { ledger } = fakeLedger()
+    const three = [
+      record({ taskId: "task_1" }),
+      record({ taskId: "task_2", title: "second" }),
+      record({ taskId: "task_3", title: "third" }),
+    ]
+    const mcp = await client({ ledger: { ...ledger, list: () => three } })
+
+    // Default call unchanged: the pre-pagination envelope, no page fields.
+    const unpaginated = await call(mcp, "task_list", {})
+    expect(unpaginated.boardId).toBe("ws:default")
+    expect(Array.isArray(unpaginated.tasks)).toBe(true)
+    expect(unpaginated.items).toBeUndefined()
+    expect(unpaginated.total).toBeUndefined()
+
+    // Page-walk: the union of pages equals the unpaginated list exactly.
+    const union: Array<{ taskId: string }> = []
+    let cursor: string | undefined
+    do {
+      const page = await call(mcp, "task_list", {
+        limit: 2,
+        ...(cursor ? { cursor } : {}),
+      })
+      expect(page.total).toBe(3)
+      union.push(...(page.items as Array<{ taskId: string }>))
+      cursor = typeof page.nextCursor === "string" ? page.nextCursor : undefined
+    } while (cursor)
+    expect(union.map(t => t.taskId)).toEqual(three.map(t => t.taskId))
+
+    await mcp.close()
+  })
+})
