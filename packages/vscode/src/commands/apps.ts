@@ -4,6 +4,11 @@
  * - refreshApps forces the tree to reload the daemon's installed apps.
  * - openAppPanel opens an app's UI in its webview panel; without a tree
  *   node (command palette) it offers a QuickPick of the apps that ship a UI.
+ *   Routes between the srcdoc relay panel (appPanels, path 1 — every app,
+ *   including builtins) and the HTTP iframe panel (appIframePanels, path 2 —
+ *   installed apps with a `ui` block only) per `agentproto.appPanelMode`
+ *   and apps.logic.ts's `resolveAppPanelRoute`; falls back to path 1
+ *   silently when the setting asks for path 2 but the app can't use it.
  * - openAppInBrowser opens an app's UI in the standalone HTTP host (a real
  *   browser tab), where clicks and native keyboard shortcuts work — unlike
  *   the webview panel, which VS Code strips of editor shortcuts (Cmd+C/V/F…)
@@ -32,7 +37,14 @@ import {
 import type { AppsTreeProvider } from "../views/appsTree.js"
 import type { AppPanels } from "../webview/appPanel.js"
 import { appStandaloneUrl } from "../webview/appPanel.logic.js"
-import { describeWorkflowRun, parseWorkflowInput, workflowPickItems } from "./apps.logic.js"
+import type { AppIframePanels } from "../webview/appIframePanel.js"
+import {
+  describeWorkflowRun,
+  parseWorkflowInput,
+  resolveAppPanelRoute,
+  workflowPickItems,
+  type AppPanelMode,
+} from "./apps.logic.js"
 
 /** Own scheme: the transcript panel already owns `agentproto-output`, and a
  *  scheme can only be registered once per extension host. */
@@ -42,6 +54,7 @@ export function registerAppCommands(
   ctx: vscode.ExtensionContext,
   client: DaemonClient,
   appPanels: AppPanels,
+  appIframePanels: AppIframePanels,
   provider: AppsTreeProvider,
 ): void {
   const manifestDocs = registerOutputDocuments(ctx, MANIFEST_SCHEME)
@@ -50,7 +63,7 @@ export function registerAppCommands(
       void provider.refresh()
     }),
     vscode.commands.registerCommand("agentproto.openAppPanel", (node?: AppNode) => {
-      void openAppPanel(client, appPanels, node)
+      void openAppPanel(client, appPanels, appIframePanels, node)
     }),
     vscode.commands.registerCommand("agentproto.openAppInBrowser", (node?: AppNode) => {
       void openAppInBrowser(client, node)
@@ -64,18 +77,35 @@ export function registerAppCommands(
   )
 }
 
+/** Read the per-open setting — deliberately NOT part of getConfig()/
+ *  RELOAD_REQUIRED_KEYS, same reasoning as sessionView.ts's getSessionView:
+ *  switching it doesn't invalidate the daemon client. */
+function getAppPanelMode(): AppPanelMode {
+  const v = vscode.workspace.getConfiguration("agentproto").get<string>("appPanelMode")
+  return v === "iframe" ? "iframe" : "srcdoc"
+}
+
+function openAppPanelRouted(app: InstalledAppInfo, appPanels: AppPanels, appIframePanels: AppIframePanels): void {
+  if (resolveAppPanelRoute(app, getAppPanelMode()) === "iframe") {
+    appIframePanels.open(app)
+    return
+  }
+  appPanels.open(app)
+}
+
 async function openAppPanel(
   client: DaemonClient,
   appPanels: AppPanels,
+  appIframePanels: AppIframePanels,
   node?: AppNode,
 ): Promise<void> {
   if (node?.app?.ui) {
-    appPanels.open(node.app)
+    openAppPanelRouted(node.app, appPanels, appIframePanels)
     return
   }
 
   const app = await pickAppWithUi(client)
-  if (app) appPanels.open(app)
+  if (app) openAppPanelRouted(app, appPanels, appIframePanels)
 }
 
 async function listAppsOrReport(client: DaemonClient): Promise<InstalledAppInfo[] | undefined> {
