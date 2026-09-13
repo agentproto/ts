@@ -259,6 +259,17 @@ jobs:
       - name: Check template sync drift
         run: node scripts/sync-templates.mjs --check
 
+      # work-board's panel.generated.ts (committed) must stay in sync with
+      # its Vite UI sources (packages/apps/src/work-board/ui/**) — same
+      # drift-check pattern as the two steps above, scoped to that package
+      # since the Vite toolchain (vite, vite-plugin-singlefile) is a
+      # devDependency there, not at the repo root. A UI change that forgot
+      # to run `build:ui`, or a hand-edit of the generated file, would
+      # otherwise ship stale/drifted html silently — panel.ts just
+      # re-exports the string with no further validation.
+      - name: Check work-board UI drift
+        run: pnpm --filter @agentproto/apps run build:ui:check
+
       - name: Run sync-templates tests
         run: node --test scripts/sync-templates.test.mjs
 

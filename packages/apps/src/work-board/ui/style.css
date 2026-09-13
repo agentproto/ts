@@ -1,0 +1,203 @@
+/* ═══════════════════════════════════════════════════════════════════
+   Semantic tokens + runtime mapping sheets.
+
+   Every rule below the next section reads ONLY the --wb-* custom
+   properties. Each one resolves through TWO mapping sheets, chosen at
+   PAINT time via plain CSS var() fallback — no build step, no JS, so a
+   host that swaps its theme live (VS Code) is never frozen at whatever
+   theme happened to be active when this bundle was built:
+
+     1. embedded  — VS Code injects a live --vscode-* custom-property set
+        into the webview and swaps it on theme change. Whenever the
+        relevant --vscode-* variable exists, it wins — in a VS Code
+        `srcdoc` relay panel AND (structurally identically) any other host
+        that happened to expose the same names, though none is known to.
+     2. standalone — the agentproto brand tokens (see
+        projects/agentproto/site/src/app/brand.css), used whenever no
+        --vscode-* variable is set — a plain MCP-Apps host or the daemon's
+        own `/apps/.../ui` tab. `--phos`/`--amber`/`--crimson` are
+        THEME-INVARIANT in brand.css (the phosphor terminal palette), so
+        they're identical in both blocks below; the rest follow brand.css's
+        light/dark split via `prefers-color-scheme` — a standalone tab has
+        no host to pick a theme for it, unlike VS Code's own.
+   ═══════════════════════════════════════════════════════════════════ */
+
+:root {
+  --wb-bg: var(--vscode-editor-background, #f5f6f3);
+  --wb-surface: var(--vscode-sideBar-background, #ffffff);
+  --wb-ink: var(--vscode-editor-foreground, #171a1e);
+  --wb-ink-muted: var(--vscode-descriptionForeground, #5c6470);
+  --wb-border: var(--vscode-panel-border, #dde0da);
+  --wb-accent: var(--vscode-button-background, #0f62fe);
+
+  /* Status colors — phos/amber/crimson are the theme-invariant terminal
+     palette in brand.css, so light and dark standalone fallbacks match. */
+  --wb-status-pending: var(--vscode-descriptionForeground, #5c6470);
+  --wb-status-in-progress: var(--vscode-charts-yellow, #f0b429);
+  --wb-status-done: var(--vscode-charts-green, #3edc81);
+  --wb-status-failed: var(--vscode-charts-red, #fa4d56);
+  --wb-status-cancelled: var(--vscode-descriptionForeground, #5c6470);
+  --wb-status-cancelled-weak: color-mix(in srgb, var(--wb-status-cancelled) 55%, transparent);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --wb-bg: var(--vscode-editor-background, #101214);
+    --wb-surface: var(--vscode-sideBar-background, #16191d);
+    --wb-ink: var(--vscode-editor-foreground, #e8eaed);
+    --wb-ink-muted: var(--vscode-descriptionForeground, #99a2ad);
+    --wb-border: var(--vscode-panel-border, #272c33);
+    --wb-accent: var(--vscode-button-background, #4589ff);
+
+    --wb-status-pending: var(--vscode-descriptionForeground, #99a2ad);
+    --wb-status-in-progress: var(--vscode-charts-yellow, #f0b429);
+    --wb-status-done: var(--vscode-charts-green, #3edc81);
+    --wb-status-failed: var(--vscode-charts-red, #fa4d56);
+    --wb-status-cancelled: var(--vscode-descriptionForeground, #99a2ad);
+    --wb-status-cancelled-weak: color-mix(in srgb, var(--wb-status-cancelled) 55%, transparent);
+  }
+}
+
+/* ── Base ─────────────────────────────────────────────────────────── */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  background: var(--wb-bg);
+  color: var(--wb-ink);
+  overflow: hidden;
+}
+
+.mono {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, "Courier New", monospace;
+}
+
+#app { display: flex; flex-direction: column; height: 100%; }
+
+#toolbar {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--wb-border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--wb-surface);
+  flex-shrink: 0;
+}
+#board-label { font-size: 11px; color: var(--wb-ink-muted); }
+#board-id { font-weight: 600; color: var(--wb-ink); font-size: 12px; font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, "Courier New", monospace; }
+#board-input {
+  background: var(--wb-bg);
+  border: 1px solid var(--wb-border);
+  color: var(--wb-ink);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  width: 220px;
+}
+.tbtn {
+  background: var(--wb-bg);
+  border: 1px solid var(--wb-border);
+  color: var(--wb-ink);
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+.tbtn:hover { background: var(--wb-border); }
+#new-title {
+  flex: 1;
+  min-width: 120px;
+  background: var(--wb-bg);
+  border: 1px solid var(--wb-border);
+  color: var(--wb-ink);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+#columns { flex: 1; display: flex; overflow-x: auto; overflow-y: hidden; }
+.col {
+  width: 260px;
+  min-width: 220px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--wb-border);
+}
+.col-hdr {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--wb-border);
+  background: var(--wb-surface);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--wb-ink-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  display: flex;
+  justify-content: space-between;
+}
+.col-body { flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+
+.card {
+  background: var(--wb-surface);
+  border: 1px solid var(--wb-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.c-title { font-size: 12px; font-weight: 500; margin-bottom: 4px; word-break: break-word; }
+.c-id {
+  font-size: 10px;
+  color: var(--wb-ink-muted);
+  margin-bottom: 6px;
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, "Courier New", monospace;
+}
+.c-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 6px; }
+
+.tag { display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 10px; font-weight: 600; white-space: nowrap; }
+.t-unclaimed { background: color-mix(in srgb, var(--wb-ink-muted) 15%, transparent); color: var(--wb-ink-muted); border: 1px dashed var(--wb-ink-muted); }
+.t-owner { background: color-mix(in srgb, var(--wb-accent) 15%, transparent); color: var(--wb-accent); }
+
+/* Verification tell: gate solid green, self-report amber outline, human
+   blue, a declared verify with no verification yet grey "gated" — never
+   render an unverified done as gate-passed (see render.ts's verificationTag). */
+.t-gate { background: color-mix(in srgb, var(--wb-status-done) 18%, transparent); color: var(--wb-status-done); }
+.t-self { background: transparent; color: var(--wb-status-in-progress); border: 1px solid var(--wb-status-in-progress); }
+.t-human { background: color-mix(in srgb, var(--wb-accent) 18%, transparent); color: var(--wb-accent); }
+.t-gated { background: color-mix(in srgb, var(--wb-ink-muted) 12%, transparent); color: var(--wb-ink-muted); }
+.t-cancelled {
+  background: color-mix(in srgb, var(--wb-status-cancelled) 10%, transparent);
+  color: var(--wb-status-cancelled-weak);
+  border: 1px dashed color-mix(in srgb, var(--wb-status-cancelled) 40%, transparent);
+}
+
+.c-err { font-size: 10px; color: var(--wb-status-failed); margin-bottom: 6px; word-break: break-word; }
+.c-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.abtn {
+  background: var(--wb-bg);
+  border: 1px solid var(--wb-border);
+  color: var(--wb-ink);
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+}
+.abtn:hover { background: var(--wb-border); }
+.abtn.danger { border-color: var(--wb-status-failed); color: var(--wb-status-failed); }
+.abtn.primary { border-color: var(--wb-status-done); color: var(--wb-status-done); }
+
+#statusbar {
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--wb-ink-muted);
+  border-top: 1px solid var(--wb-border);
+  background: var(--wb-surface);
+  flex-shrink: 0;
+}
+.empty { padding: 16px 8px; color: var(--wb-ink-muted); font-size: 11px; text-align: center; }
