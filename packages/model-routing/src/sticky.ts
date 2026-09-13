@@ -58,6 +58,11 @@ export function defineChain(chain: Chain, chainIds: ReadonlySet<string> | readon
       )
     }
   }
+  if (chain.chain.length < 2) {
+    throw new Error(
+      `chain "${chain.id}": a chain MUST have at least 2 entries (AIP-57 §5) — got ${chain.chain.length}`
+    )
+  }
   return chain
 }
 
