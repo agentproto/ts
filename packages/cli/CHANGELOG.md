@@ -1,5 +1,14 @@
 # @agentproto/cli
 
+## 0.21.1
+
+### Patch Changes
+
+- Updated dependencies [750839b]
+  - @agentproto/sandbox-box@0.2.11
+  - @agentproto/sandbox-e2b@0.5.1
+  - @agentproto/driver-agent-cli@2.4.3
+
 ## 0.21.0
 
 ### Minor Changes
