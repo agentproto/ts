@@ -100,7 +100,13 @@ Pick whichever matches what you're trying to do:
 ```bash
 npm i -g @agentproto/cli
 agentproto --version
+agentproto --version --check-updates   # also compare against the published version on npm
 ```
+
+`--check-updates` makes one npm registry call and prints an update hint only
+when a newer version is published; it prints nothing extra when already
+current or offline. `--version` alone stays instant and offline — safe in
+scripts and CI.
 
 Node ≥ 20.9.0. Optional `node-pty` for terminal sessions —
 `npm i -g node-pty` if you want `agentproto sessions terminal` and
