@@ -20,6 +20,38 @@ orphaned-tool-call repair, and thinking-block stripping where needed.
 
 ---
 
+## Credentials this proxy handles
+
+Read this before pointing the proxy at anything you care about. The package
+ships **no credentials** — every key below is one you supply — but it is a
+credential-forwarding component, so its handling rules are part of its
+contract.
+
+- **Per-provider API keys** resolve from one env var each
+  (`resolveSecretKeys`), or from `~/.agentproto/providers.json`. They are
+  injected at proxy boot and never logged.
+- **Anthropic subscription OAuth tokens** (`sk-ant-oat…`) are supported as an
+  alternative to an API key on the `anthropic` upstream. When one is resolved,
+  the proxy sends `Authorization: Bearer <oat>` plus
+  `anthropic-beta: oauth-2025-04-20` and `anthropic-version: 2023-06-01`.
+  This path is **fail-closed**: an OAuth credential is *only* ever sent to the
+  `anthropic` upstream, and every other route `401`s rather than leaking it to
+  a third-party provider. Batch creation also refuses an OAuth token outright,
+  because the Anthropic Batches API only accepts API keys.
+- A **stored** OAuth token works while it is valid. The proxy does not yet
+  drive a self-refreshing source (`source: "claude-code-oauth"`) to re-mint an
+  expired one.
+- `KeychainStore` is **macOS-only**; elsewhere the proxy falls back to the
+  per-provider env key.
+
+Fronting a personal Claude subscription through a shared gateway may not be
+compatible with your Anthropic plan's terms — that is a question about **your
+deployment**, not about this package. If you expose the proxy beyond localhost,
+read [Securing a public deployment](#securing-a-public-deployment) first: the
+access gate is **off by default**.
+
+---
+
 ## Quick start (client config)
 
 Point any Anthropic- or OpenAI-compatible client at the proxy:
