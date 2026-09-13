@@ -33,18 +33,6 @@
  * — same pattern as guilde's canvas.app.ts canvasShellHtml() (the reference
  * implementation that renders correctly in Claude hosts). No auto-request:
  * panels stay inline until the user clicks.
- *
- * Standalone fallback: `window.parent === window` (no host iframe at all —
- * the panel is a top-level tab, e.g. the daemon's own `GET /apps/:appId/ui`)
- * means there is no host on the other end of `postMessage` to answer
- * `ui/initialize`, so `initBridge()` would otherwise hang forever waiting on
- * a reply nobody sends. Detected once at load and handled two ways: 1)
- * `initBridge()` resolves immediately (no handshake to perform), and 2)
- * `callTool` POSTs to the sibling `./tool-call` route (`POST
- * /apps/:appId/tool-call`, http-server.ts) instead of the postMessage
- * `tools/call` round-trip — same MCP result envelope either way, so the
- * unwrapping logic is shared. Display-mode buttons stay hidden in this mode
- * (no hostContext is ever set, so `syncBtn` never runs).
  */
 
 export function panelBridgeScript(appName: string): string {
@@ -52,9 +40,6 @@ export function panelBridgeScript(appName: string): string {
 // JSON-RPC 2.0 over window.parent.postMessage · spec 2026-01-26
 var _nextId = 1, _pending = {}, _notifyHandlers = [];
 var _hostContext = null, _hostContextHandlers = [];
-// No parent frame at all ⇒ no host to answer postMessage — see the
-// "Standalone fallback" doc above.
-var _standalone = (window.parent === window);
 function post(msg){ window.parent.postMessage(msg, '*'); }
 function getHostContext(){ return _hostContext; }
 function onHostContext(cb){
@@ -101,9 +86,6 @@ window.addEventListener('message', function(evt){
   }
 });
 function initBridge(){
-  // Standalone: no host on the other end of postMessage to answer the
-  // handshake — nothing to do (see "Standalone fallback" doc above).
-  if (_standalone) return Promise.resolve();
   return rpcRequest('ui/initialize', {
     appInfo: {name: ${JSON.stringify(appName)}, version: '0.1.0'},
     appCapabilities: {availableDisplayModes: ['inline', 'fullscreen', 'pip']},
@@ -118,23 +100,15 @@ function initBridge(){
 function requestDisplayMode(mode){
   return rpcRequest('ui/request-display-mode', {mode: mode});
 }
-function _unwrapToolResult(result){
-  if (result.isError){
-    var e = (result.content && result.content[0] && result.content[0].text) || 'tool error';
-    throw new Error(e);
-  }
-  var text = (result.content && result.content[0] && result.content[0].text) || '{}';
-  return JSON.parse(text);
-}
 function callTool(name, args){
-  if (_standalone){
-    return fetch('./tool-call', {
-      method: 'POST',
-      headers: {'content-type': 'application/json'},
-      body: JSON.stringify({tool: name, args: args || {}})
-    }).then(function(res){ return res.json(); }).then(_unwrapToolResult);
-  }
-  return rpcRequest('tools/call', {name: name, arguments: args || {}}).then(_unwrapToolResult);
+  return rpcRequest('tools/call', {name: name, arguments: args || {}}).then(function(result){
+    if (result.isError){
+      var e = (result.content && result.content[0] && result.content[0].text) || 'tool error';
+      throw new Error(e);
+    }
+    var text = (result.content && result.content[0] && result.content[0].text) || '{}';
+    return JSON.parse(text);
+  });
 }
 
 // ── Display-mode toggle buttons (NO auto-request) ──────────────────────

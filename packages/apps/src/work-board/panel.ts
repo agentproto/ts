@@ -28,11 +28,14 @@
  * classic `<script>` ahead of the bundled module script.
  *
  * Protocol: MCP Apps ext spec 2026-01-26
- *   – Bridge: JSON-RPC 2.0 over window.parent.postMessage (falls back to a
- *     `POST ./tool-call` REST call when there's no parent frame to answer
- *     it at all — see panel-bridge.ts's "Standalone fallback" doc — so the
- *     SAME bundle works under an MCP-Apps host, the VS Code `srcdoc` relay,
- *     AND a standalone `GET /apps/:appId/ui` tab with no host)
+ *   – Bridge: JSON-RPC 2.0 over window.parent.postMessage (../panel-bridge.ts,
+ *     unmodified by this change — this app only calls its `initBridge()`/
+ *     `callTool()` surface). Standalone (no host at all, e.g. a top-level
+ *     `GET /apps/:appId/ui` tab) does NOT connect yet: panel-bridge.ts's
+ *     handshake has no reply to wait for in that case and hangs on
+ *     "Connecting to bridge…" — a known gap being fixed in panel-bridge.ts
+ *     itself by a separate change. This app will pick that fix up automatically
+ *     (rebuild + rebase) once it lands; nothing here needs to special-case it.
  *   – Handshake: ui/initialize → host result → ui/notifications/initialized
  *   – Data: tools/call → task_list (`full: true` — the compact projection
  *     drops `verification`, which the verification tell needs) on a ~4 s poll
