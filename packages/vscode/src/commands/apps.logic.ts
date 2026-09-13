@@ -54,3 +54,26 @@ export function describeWorkflowRun(workflowId: string, run: WorkflowRunStart | 
   if (!run?.runId) return `Workflow "${workflowId}" started.`
   return `Workflow "${workflowId}" started — run ${run.runId} (${run.status}).`
 }
+
+/** `agentproto.appPanelMode` — which panel implementation `agentproto.openAppPanel`
+ *  renders an app's UI through. See package.json's enumDescriptions for the
+ *  user-facing trade-off; the short version: "srcdoc" (default) works for
+ *  every app including builtins, "iframe" gives real built-web-app
+ *  rendering but only for installed apps that ship a `ui` block. */
+export type AppPanelMode = "srcdoc" | "iframe"
+
+/**
+ * Which panel path `openAppPanel` should use for `app`:
+ * - "iframe" only when the setting asks for it AND the app has a `ui` block
+ *   — a daemon-served HTTP url (`GET /apps/<appId>/ui`) only exists then.
+ * - "srcdoc" otherwise: the setting is "srcdoc", or the app has no `ui`
+ *   block (a BUILTIN's `app_catalog` entry, or a future app-list record
+ *   with none) — builtins are never in the HTTP registry (404), so they
+ *   MUST keep using the srcdoc relay regardless of the setting. This is a
+ *   silent fallback, matching the rest of this file's fallback discipline
+ *   (installedSessionChatApp / resolveSessionOpen in sessionView.logic.ts) —
+ *   no warning popup, the app just opens.
+ */
+export function resolveAppPanelRoute(app: InstalledAppInfo, mode: AppPanelMode): "iframe" | "srcdoc" {
+  return mode === "iframe" && app.ui ? "iframe" : "srcdoc"
+}

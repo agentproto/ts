@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import type { InstalledAppInfo } from "../client/types.js"
-import { describeWorkflowRun, parseWorkflowInput, workflowPickItems } from "./apps.logic.js"
+import { describeWorkflowRun, parseWorkflowInput, resolveAppPanelRoute, workflowPickItems } from "./apps.logic.js"
 
 describe("parseWorkflowInput", () => {
   it("treats blank as no input", () => {
@@ -71,5 +71,23 @@ describe("describeWorkflowRun", () => {
 
   it("degrades gracefully without a run id", () => {
     expect(describeWorkflowRun("wf", undefined)).toBe('Workflow "wf" started.')
+  })
+})
+
+describe("resolveAppPanelRoute", () => {
+  const withUi: InstalledAppInfo = { appId: "@x/a", ui: { path: "ui.html" } }
+  const withoutUi: InstalledAppInfo = { appId: "@x/builtin" }
+
+  it("routes to srcdoc regardless of ui when the setting is srcdoc", () => {
+    expect(resolveAppPanelRoute(withUi, "srcdoc")).toBe("srcdoc")
+    expect(resolveAppPanelRoute(withoutUi, "srcdoc")).toBe("srcdoc")
+  })
+
+  it("routes to iframe when the setting is iframe AND the app has a ui block", () => {
+    expect(resolveAppPanelRoute(withUi, "iframe")).toBe("iframe")
+  })
+
+  it("falls back to srcdoc when the setting is iframe but the app has no ui block (e.g. a builtin)", () => {
+    expect(resolveAppPanelRoute(withoutUi, "iframe")).toBe("srcdoc")
   })
 })

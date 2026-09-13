@@ -1006,6 +1006,19 @@
           "default": "chat",
           "description": "How opening a session shows its conversation (agentproto: Open Session). Read per open — takes effect immediately, no window reload needed. agentproto: Open Session in Chat UI always uses the chat UI; agentproto: Open Session in Chat Panel always uses the chat-panel webview."
         },
+        "agentproto.appPanelMode": {
+          "type": "string",
+          "enum": [
+            "srcdoc",
+            "iframe"
+          ],
+          "enumDescriptions": [
+            "Fetch the app's UI as a self-contained HTML string and relay it into a sandboxed srcdoc iframe via postMessage. Works for every app, including builtins — but the app must be one self-contained HTML string: no external CSS, no webfonts, no framework, no build step.",
+            "Point an iframe straight at the daemon's HTTP UI host (agentproto.daemonUrl) — no relay, the app talks to the daemon directly. Supports a real built web app (a Vite/Tailwind/etc. bundle), but only for installed apps with a `ui` block; builtins have no HTTP url and always fall back to srcdoc silently."
+          ],
+          "default": "srcdoc",
+          "description": "How agentproto: Open App Panel renders an installed app's UI. srcdoc (default) works for every app including builtins; iframe gives real web-app rendering but only for installed apps that ship a `ui` block — it falls back to srcdoc silently otherwise."
+        },
         "agentproto.sessionsView": {
           "type": "string",
           "enum": [

@@ -68,6 +68,7 @@ import { registerActivityWebview } from "./webview/activityWebviewPanel.js"
 import { registerWorkWebview } from "./webview/workWebviewPanel.js"
 import { registerAppPanels } from "./webview/appPanel.js"
 import { builtinViewResourceUri } from "./webview/appPanel.logic.js"
+import { registerAppIframePanels } from "./webview/appIframePanel.js"
 import { registerChatPanels } from "./webview/chatPanel.js"
 import { registerStoryPanels } from "./webview/storyPanel.js"
 import { registerBrowserPanels } from "./webview/browserPanel.js"
@@ -182,9 +183,10 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerConfigurationLabWebview(ctx, client)
   const storyPanels = registerStoryPanels(ctx, client) // agentproto.openStory (live session-story overlay)
   const browserPanels = registerBrowserPanels(ctx, client) // agentproto.openBrowser (live browser session view)
-  const appPanels = registerAppPanels(ctx, client) // agentproto.openAppPanel (installed app UI panels)
+  const appPanels = registerAppPanels(ctx, client) // agentproto.openAppPanel (installed app UI panels, srcdoc relay)
+  const appIframePanels = registerAppIframePanels(ctx) // agentproto.openAppPanel (installed app UI panels, HTTP iframe — agentproto.appPanelMode === "iframe")
   const chatPanels = registerChatPanels(ctx) // agentproto.openSessionInChatPanel (session-chat iframe panels)
-  registerAppCommands(ctx, client, appPanels, appsProvider) // agentproto.openAppPanel / refreshApps
+  registerAppCommands(ctx, client, appPanels, appIframePanels, appsProvider) // agentproto.openAppPanel / refreshApps
   const authModelMindmap = registerAuthModelMindmap(ctx, client) // agentproto.openAuthModel (auth/model config map)
   const authExplorer = registerAuthExplorer(ctx, client, authProfilesProvider) // agentproto.openAuthExplorer (editable auth & models)
   const terminalSwitch = registerTerminalSwitch(ctx, client, store, () => transcriptPanels.activeSessionId())
