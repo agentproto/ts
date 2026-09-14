@@ -97,3 +97,11 @@ for that.
 
 ### image:replicate
 - Added: flux, flux-1.1-pro-ultra, flux-2-dev, flux-kontext-max, flux-kontext-pro, gpt-image-1, ideogram-v3, minimax, nano-banana, nano-banana-2, nano-banana-pro, recraft, seedream-4
+
+## 2026-09-14
+
+### llm:huggingface
+- Removed: CohereLabs/c4ai-command-r7b-arabic-02-2025, CohereLabs/command-a-plus-05-2026-bf16, zai-org/GLM-4.6-FP8, zai-org/GLM-4.7-FP8, zai-org/GLM-5.1-FP8
+
+### image:replicate
+- Added: flux, flux-1.1-pro-ultra, flux-2-dev, flux-kontext-max, flux-kontext-pro, gpt-image-1, ideogram-v3, minimax, nano-banana, nano-banana-2, nano-banana-pro, recraft, seedream-4
