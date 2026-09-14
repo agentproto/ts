@@ -9,12 +9,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { runInNewContext } from "node:vm"
 import {
   appUiToolId,
   createUiHtmlCache,
   injectMcpAppBridge,
   injectStandaloneAppBridge,
   makeInstalledAppUiApps,
+  STANDALONE_REST_BRIDGE_SCRIPT,
 } from "../app-ui-apps.js"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
 
@@ -262,4 +264,90 @@ describe("injectStandaloneAppBridge", () => {
     const twice = injectStandaloneAppBridge(once)
     expect(twice.match(/window\.AgentprotoUI\s*=/g)?.length).toBe(1)
   })
+})
+
+/**
+ * Executes the REAL `STANDALONE_REST_BRIDGE_SCRIPT` in a `vm` sandbox (the
+ * script only touches `window` / `fetch` / `Promise` / `JSON` / `Error`, no
+ * DOM) with a stubbed `fetch`, so the precedence between a route's
+ * `message`, its machine `error` slug, and the HTTP status is asserted on
+ * behavior rather than on the emitted string.
+ */
+interface FakeResponse {
+  ok: boolean
+  status: number
+  json: () => Promise<unknown>
+}
+
+interface StandaloneConn {
+  callTool: (name: string, args?: unknown) => Promise<unknown>
+}
+
+function loadStandaloneBridge(fetchImpl: () => Promise<FakeResponse>): {
+  connect: () => Promise<StandaloneConn>
+} {
+  const windowObj: Record<string, unknown> = {}
+  const sandbox: Record<string, unknown> = {
+    window: windowObj,
+    fetch: fetchImpl,
+    Promise,
+    JSON,
+    Error,
+  }
+  const js = STANDALONE_REST_BRIDGE_SCRIPT.replace("<script>", "").replace("</script>", "")
+  runInNewContext(js, sandbox)
+  return windowObj.McpApp as { connect: () => Promise<StandaloneConn> }
+}
+
+function response(status: number, body: unknown): FakeResponse {
+  return { ok: status >= 200 && status < 300, status, json: () => Promise.resolve(body) }
+}
+
+async function callToolError(res: FakeResponse): Promise<string> {
+  const bridge = loadStandaloneBridge(() => Promise.resolve(res))
+  const conn = await bridge.connect()
+  try {
+    await conn.callTool("rendezvous_send", {})
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err)
+  }
+  throw new Error("expected callTool to reject on a non-ok response")
+}
+
+describe("STANDALONE_REST_BRIDGE_SCRIPT callTool error precedence", () => {
+  it("surfaces body.message, not the machine slug, when both are present", async () => {
+    const message =
+      "MCP error -32600: rendezvous_send: this principal token was derived read-only, " +
+      "so it can list your rooms but not speak in them. The send capability is part " +
+      "of the token itself, not a setting — mint a new one with `principal-token " +
+      "<provider> <contactRef> --can-send`."
+    expect(await callToolError(response(502, { error: "tool_call_failed", message }))).toBe(message)
+  })
+
+  it("falls back to the body.error slug when there is no message", async () => {
+    expect(await callToolError(response(502, { error: "tool_call_failed" }))).toBe("tool_call_failed")
+  })
+
+  it("surfaces the HTTP status when the body is unparseable", async () => {
+    const res: FakeResponse = {
+      ok: false,
+      status: 502,
+      json: () => Promise.reject(new SyntaxError("Unexpected token")),
+    }
+    expect(await callToolError(res)).toBe("tool-call failed: HTTP 502")
+  })
+
+  // Every error framing app-serve.ts can emit carries its human reason in
+  // `message`; fix the precedence for all of them, not just the 502 slug.
+  const envelopes: [number, { error: string; message: string }][] = [
+    [400, { error: "bad_request", message: 'body must be `{ "name": string, args?: object }`.' }],
+    [403, { error: "forbidden", message: 'tool "x" is not in this app\'s ui.tools allowlist: a' }],
+    [502, { error: "tool_call_failed", message: "MCP error -32600: read-only token" }],
+    [502, { error: "daemon_unreachable", message: "could not reach the MCP endpoint: ECONNREFUSED." }],
+  ]
+  for (const [status, body] of envelopes) {
+    it(`surfaces the message for the ${status} ${body.error} envelope`, async () => {
+      expect(await callToolError(response(status, body))).toBe(body.message)
+    })
+  }
 })
