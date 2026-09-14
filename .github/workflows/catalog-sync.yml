@@ -97,6 +97,20 @@ jobs:
           pnpm --filter @agentproto/catalog-sync exec node dist/bin.mjs generate \
             ${{ (github.event_name == 'schedule' || inputs.refresh) && '--refresh' || '' }}
 
+      # Some synced prices are asserted by snapshot rather than by a hardcoded
+      # pin (the OpenRouter-routed Kimi rows — see
+      # packages/model-catalog/src/__tests__/catalog.test.ts), precisely so
+      # that drift reads as a reviewable diff instead of a red CI pin. That
+      # only works if something rewrites the snapshot when the generated file
+      # moves: the test's own comment claimed this job did, but nothing did,
+      # so every sync touching a snapshotted price opened a PR that was red on
+      # arrival (#1313: kimi-k3 3/15 → 2.648138/13.282724). `-u` rewrites
+      # snapshots only — a real generator bug (wrong vendor/provider, a
+      # pricing shape that vanished) is asserted by hardcoded expectations and
+      # still fails here, and again on the PR's own Build + test.
+      - name: Refresh catalog test snapshots
+        run: pnpm --filter @agentproto/model-catalog exec vitest run -u
+
       - name: Detect drift
         id: drift
         run: |
