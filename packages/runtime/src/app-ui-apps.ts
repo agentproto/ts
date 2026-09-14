@@ -151,7 +151,7 @@ export function injectMcpAppBridge(html: string): string {
  * `connect()` rejects when `window.parent === window`, which is exactly the
  * standalone case this one exists for.
  */
-const STANDALONE_REST_BRIDGE_SCRIPT = `<script>
+export const STANDALONE_REST_BRIDGE_SCRIPT = `<script>
 (function () {
   if (window.McpApp) return;
   window.McpApp = {
@@ -166,7 +166,7 @@ const STANDALONE_REST_BRIDGE_SCRIPT = `<script>
             return res.json().catch(function () {
               throw new Error("tool-call failed: HTTP " + res.status);
             }).then(function (body) {
-              if (!res.ok) throw new Error((body && body.error) || ("tool-call failed: HTTP " + res.status));
+              if (!res.ok) throw new Error((body && (body.message || body.error)) || ("tool-call failed: HTTP " + res.status));
               return body;
             });
           });
