@@ -9,7 +9,7 @@ exports[`LLM_PRICING_CATALOG — Moonshot (Kimi) > moonshotai/kimi-k2.7-code res
 
 exports[`LLM_PRICING_CATALOG — Moonshot (Kimi) > moonshotai/kimi-k3 resolves to an OpenRouter-routed pricing snapshot 1`] = `
 {
-  "inputPer1M": 3,
-  "outputPer1M": 15,
+  "inputPer1M": 2.648138,
+  "outputPer1M": 13.282724,
 }
 `;
