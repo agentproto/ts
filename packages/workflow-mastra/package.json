@@ -60,11 +60,11 @@
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
-    "@mastra/core": "1.64.0",
+    "@mastra/core": "1.66.0",
     "@types/node": "^25.9.5",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7",
-    "zod": "^4.5.4"
+    "zod": "^4.6.5"
   }
 }

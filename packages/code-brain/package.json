@@ -86,7 +86,7 @@
     "@agentproto/driver-http": "workspace:*",
     "@agentproto/driver-mcp": "workspace:*",
     "@agentproto/tool": "workspace:*",
-    "zod": "^4.5.4"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
