@@ -47,6 +47,13 @@ const ENTRY_FRONTMATTER = z
                     title: z.string().optional().catch(undefined),
                     authority: z.string().optional().catch(undefined),
                     language: z.string().optional().catch(undefined),
+                    // Content address of the origin document. Declared rather
+                    // than left to `.loose()`: a corpus whose origins are not
+                    // web-fetchable (a bucket of scanned papers) has no `url`
+                    // to cite, and a caller that wants to resolve the source
+                    // needs a stable key it can look up. Passing through
+                    // untyped worked by accident; a consumer could not see it.
+                    sha: z.string().optional().catch(undefined),
                   })
                   .loose()
               )
@@ -79,6 +86,13 @@ export interface SourceRef {
   readonly title?: string
   readonly authority?: string
   readonly language?: string
+  /**
+   * Content address (sha256) of the origin document — the stable key for
+   * resolving it wherever it is stored, when `url` is absent or deliberately
+   * withheld. Independent of `id`, which is a human-readable slug and may be
+   * rewritten; this is not.
+   */
+  readonly sha?: string
 }
 
 export interface ResolvedEntry {

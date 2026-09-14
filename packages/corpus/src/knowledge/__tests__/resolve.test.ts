@@ -96,4 +96,58 @@ describe("resolveKnowledge", () => {
     ])
     expect(hits.find(h => h.slug === "a")?.sourceRefs).toBeUndefined()
   })
+
+  it("carries a source's content address, with or without a url", async () => {
+    const sha =
+      "37c3bc70c1b26ab7cb25d753fcf3ae770c62e221bd8aa7b9119bcfd595a8b1d4"
+    const withSha = matter.stringify("\ninsight", {
+      schema: "knowledge.entry/v1",
+      slug: "s",
+      kind: "principle",
+      title: "s",
+      sources: ["src-scan"],
+      confidence: 0.9,
+      tags: ["screening"],
+      metadata: {
+        corpus: {
+          status: "active",
+          // No url on purpose: this is the case the field exists for — an
+          // origin that is a stored document, not a fetchable page.
+          source_refs: [{ id: "src-scan", title: "Scan", sha }],
+        },
+      },
+    })
+    const hits = await resolveKnowledge({
+      fs: fakeFs({ "entries/principles/2026/s.md": withSha }),
+      query: { tags: ["screening"] },
+    })
+    expect(hits[0]?.sourceRefs).toEqual([
+      { id: "src-scan", title: "Scan", sha },
+    ])
+  })
+
+  it("drops a top-level `source` block — provenance rides on source_refs", async () => {
+    // Pins the asymmetry rather than leaving it to be rediscovered: the
+    // frontmatter schema is `.loose()`, so an author can put anything at the
+    // top level and it parses — but ResolvedEntry is built field by field, so
+    // only what the shape declares reaches a consumer. A generator writing
+    // `source: { sha }` at the top level ships data no caller can ever read.
+    const topLevel = matter.stringify("\ninsight", {
+      schema: "knowledge.entry/v1",
+      slug: "t",
+      kind: "principle",
+      title: "t",
+      sources: ["src-top"],
+      confidence: 0.9,
+      tags: ["screening"],
+      source: { sha: "deadbeef", filename: "f.pdf" },
+      metadata: { corpus: { status: "active" } },
+    })
+    const hits = await resolveKnowledge({
+      fs: fakeFs({ "entries/principles/2026/t.md": topLevel }),
+      query: { tags: ["screening"] },
+    })
+    expect(hits[0]).toBeDefined()
+    expect("source" in hits[0]!).toBe(false)
+  })
 })
