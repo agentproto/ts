@@ -58,7 +58,7 @@
   "dependencies": {
     "@agentproto/knowledge-engine": "workspace:*",
     "@agentproto/provider-kit": "workspace:*",
-    "zod": "^4.5.4"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@agentproto/tool": "workspace:*",

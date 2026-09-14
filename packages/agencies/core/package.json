@@ -81,8 +81,8 @@
   "dependencies": {
     "@agentproto/governance": "workspace:*",
     "gray-matter": "^4.0.3",
-    "yaml": "^2.9.0",
-    "zod": "^4.5.4"
+    "yaml": "^2.9.1",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

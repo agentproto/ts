@@ -62,7 +62,7 @@
     "zod": "^4"
   },
   "dependencies": {
-    "yaml": "^2.9.0"
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
@@ -70,6 +70,6 @@
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7",
-    "zod": "^4.5.4"
+    "zod": "^4.6.5"
   }
 }

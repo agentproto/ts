@@ -57,7 +57,7 @@
     "@agentproto/auth": "workspace:*",
     "@agentproto/batch": "workspace:*",
     "@agentproto/providers-store": "workspace:*",
-    "zod": "^4.5.4"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

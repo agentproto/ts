@@ -62,11 +62,11 @@
     "@agentproto/runtime": "workspace:*",
     "@ai-sdk/anthropic": "^3.0.116",
     "@ai-sdk/provider": "^3.0.15",
-    "@mastra/core": "^1.64.0",
-    "@mastra/libsql": "~1.21.1",
-    "@mastra/memory": "^1.28.2",
+    "@mastra/core": "^1.66.0",
+    "@mastra/libsql": "~1.22.5",
+    "@mastra/memory": "^1.29.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
-    "zod": "^4.5.4"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@agentproto/app-kit": "workspace:*",
