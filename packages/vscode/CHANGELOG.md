@@ -1,5 +1,21 @@
 # agentproto-vscode
 
+## 0.16.1
+
+### Patch Changes
+
+- 974c4dd: Fix standalone app URL encoding: encode scoped appIds per path segment and keep `@` and `/` literal, so deep links read `/apps/@scope/name/ui` while still escaping characters that genuinely need it.
+- 13858b8: Fix builtin panels served standalone (`GET /apps/:appId/ui`) hanging on "Connecting to bridge…": `panelBridgeScript` now detects the standalone shape (`window.parent === window` plus a working `window.McpApp.connect`), short-circuits `initBridge()` with a default inline hostContext, and routes `callTool` through the injected standalone app bridge. The postMessage-host path is unchanged. Adds static script assertions in `@agentproto/apps` and real-jsdom coverage in `agentproto-vscode`.
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [7941fc7]
+- Updated dependencies [13858b8]
+- Updated dependencies [7473ccd]
+- Updated dependencies [ea6757f]
+- Updated dependencies [c27f0b8]
+- Updated dependencies [42fffb9]
+  - @agentproto/apps@0.11.0
+  - @agentproto/runtime@3.4.0
+
 ## 0.16.0
 
 ### Minor Changes

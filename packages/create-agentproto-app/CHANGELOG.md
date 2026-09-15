@@ -1,5 +1,12 @@
 # create-agentproto-app
 
+## 0.3.3
+
+### Patch Changes
+
+- Updated dependencies [c27f0b8]
+  - @agentproto/app-client@0.3.3
+
 ## 0.3.2
 
 ### Patch Changes

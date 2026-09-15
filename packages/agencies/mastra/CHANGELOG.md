@@ -1,5 +1,14 @@
 # @agentproto/agencies-mastra
 
+## 0.1.4
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [c27f0b8]
+  - @agentproto/agencies@0.1.4
+  - @agentproto/governance@0.1.4
+
 ## 0.1.3
 
 ### Patch Changes

@@ -1,5 +1,16 @@
 # @agentproto/worktree
 
+## 0.7.1
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [c27f0b8]
+  - @agentproto/driver@0.2.3
+  - @agentproto/harness@0.4.6
+  - @agentproto/tool@0.3.1
+  - @agentproto/workflow-runtime@0.11.1
+
 ## 0.7.0
 
 ### Minor Changes

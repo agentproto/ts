@@ -1,5 +1,33 @@
 # @agentproto/cli
 
+## 0.21.2
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- 42fffb9: Surface the tool-call route's human-readable `message` (not the machine `error` slug) in both UI bridge scripts on non-ok responses, and reword the `daemon_unreachable` advice so it does not assume the target is the local daemon. Exports `STANDALONE_REST_BRIDGE_SCRIPT` from `@agentproto/runtime`.
+- Updated dependencies [9c31c86]
+- Updated dependencies [f89414a]
+- Updated dependencies [bced1de]
+- Updated dependencies [ea6757f]
+- Updated dependencies [c27f0b8]
+- Updated dependencies [9c31c86]
+  - @agentproto/model-catalog@0.10.0
+  - @agentproto/auth@1.0.3
+  - @agentproto/acp@0.8.2
+  - @agentproto/app-client@0.3.3
+  - @agentproto/app-kit@1.2.1
+  - @agentproto/driver@0.2.3
+  - @agentproto/driver-agent-cli@2.4.4
+  - @agentproto/provider-kit@0.4.4
+  - @agentproto/sandbox-e2b@0.5.2
+  - @agentproto/secrets@0.2.6
+  - @agentproto/workflow-loader@0.2.3
+  - @agentproto/worktree@0.7.1
+  - @agentproto/runtime-profile-standard@0.1.3
+  - create-agentproto-app@0.3.3
+  - @agentproto/sandbox-box@0.2.12
+
 ## 0.21.1
 
 ### Patch Changes

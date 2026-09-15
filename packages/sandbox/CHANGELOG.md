@@ -1,5 +1,15 @@
 # @agentproto/sandbox
 
+## 0.5.2
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [c27f0b8]
+  - @agentproto/secrets@0.2.6
+  - @agentproto/workflow-runtime@0.11.1
+  - @agentproto/worktree@0.7.1
+
 ## 0.5.1
 
 ### Patch Changes
