@@ -90,6 +90,15 @@ describe("buildBridgeScript", () => {
     const script = buildBridgeScript("/x")
     expect(script).toContain('addEventListener("beforeunload"')
   })
+
+  it("callTool prefers body.message over the machine slug, then error, then HTTP status", () => {
+    // The route's human reason lives in `message`; `error` is a fixed slug.
+    // Both bridge copies (this one and runtime's STANDALONE_REST_BRIDGE_SCRIPT)
+    // must pick the same precedence or a refusal reads as "tool_call_failed".
+    const script = buildBridgeScript("/__agentproto/tool-call")
+    expect(script).toContain("(body && (body.message || body.error))")
+    expect(script).toContain('("tool-call failed: HTTP " + res.status)')
+  })
 })
 
 describe("buildBridgeScript + RUNNER_SELECT_SCRIPT", () => {
@@ -364,7 +373,10 @@ describe("callDaemonTool", () => {
       { name: "command_execute" },
     )
     expect(status).toBe(502)
-    expect((body as { message: string }).message).toContain("Start the daemon first")
+    // The advice must not assert the target is the daemon: the same route
+    // backs `--remote-mcp-url` servers too, which are not the daemon.
+    expect((body as { message: string }).message).toContain("Is the target server running")
+    expect((body as { message: string }).message).toContain("agentproto serve")
   })
 
   it("forwards the call through the client and returns the MCP result envelope", async () => {

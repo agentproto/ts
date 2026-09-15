@@ -468,9 +468,10 @@ export async function callDaemonTool(
       {
         error: "daemon_unreachable",
         message:
-          `could not reach the daemon's /mcp endpoint: ` +
+          `could not reach the MCP endpoint: ` +
           `${err instanceof Error ? err.message : String(err)}. ` +
-          `Start the daemon first: agentproto serve`,
+          `Is the target server running? (For the local daemon, start it first: ` +
+          `agentproto serve.)`,
       },
     ]
   }
@@ -850,7 +851,7 @@ export function buildBridgeScript(route: string): string {
             return res.json().catch(function () {
               throw new Error("tool-call failed: HTTP " + res.status);
             }).then(function (body) {
-              if (!res.ok) throw new Error((body && body.error) || ("tool-call failed: HTTP " + res.status));
+              if (!res.ok) throw new Error((body && (body.message || body.error)) || ("tool-call failed: HTTP " + res.status));
               return body;
             });
           });
