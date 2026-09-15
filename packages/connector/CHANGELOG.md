@@ -1,5 +1,14 @@
 # @agentproto/connector
 
+## 0.1.10
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [c27f0b8]
+  - @agentproto/provider-kit@0.4.4
+  - @agentproto/secrets@0.2.6
+
 ## 0.1.9
 
 ### Patch Changes

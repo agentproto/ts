@@ -1,5 +1,18 @@
 # @agentproto/workspace-brain
 
+## 0.4.6
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [c27f0b8]
+- Updated dependencies [f94b632]
+  - @agentproto/adapter-knowledge-gbrain-doc@0.2.4
+  - @agentproto/adapter-knowledge-qdrant@0.2.4
+  - @agentproto/corpus@0.8.0
+  - @agentproto/knowledge-engine@0.2.3
+  - @agentproto/adapter-knowledge-files@0.2.9
+
 ## 0.4.5
 
 ### Patch Changes

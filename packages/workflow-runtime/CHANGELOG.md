@@ -1,5 +1,17 @@
 # @agentproto/workflow-runtime
 
+## 0.11.1
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [c27f0b8]
+- Updated dependencies [f94b632]
+  - @agentproto/corpus@0.8.0
+  - @agentproto/driver@0.2.3
+  - @agentproto/tool@0.3.1
+  - @agentproto/workflow@0.6.1
+
 ## 0.11.0
 
 ### Minor Changes

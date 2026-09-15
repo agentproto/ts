@@ -1,5 +1,56 @@
 # @agentproto/runtime
 
+## 3.4.0
+
+### Minor Changes
+
+- 42fffb9: Surface the tool-call route's human-readable `message` (not the machine `error` slug) in both UI bridge scripts on non-ok responses, and reword the `daemon_unreachable` advice so it does not assume the target is the local daemon. Exports `STANDALONE_REST_BRIDGE_SCRIPT` from `@agentproto/runtime`.
+
+### Patch Changes
+
+- ea6757f: Add OpenCode's two hosted endpoints as first-class billing providers: `opencode-go` (OpenCode Go, the flat subscription, 36 models) and `opencode` (OpenCode Zen, pay-as-you-go, 102 models). Two new catalog-sync generators (`llm:opencode-go`, `llm:opencode-zen`) source both from models.dev and emit `OPENCODE_GO_ROUTES` / `OPENCODE_ZEN_ROUTES`, each with a pruned per-provider snapshot rather than the 4.6 MB whole-ecosystem payload. Prices are used verbatim (models.dev already publishes USD per 1M tokens); zero-priced `-free` variants are kept, and cache multipliers are omitted where the base input price is 0.
+
+  Route tables are keyed `<provider>/<bare-id>` (`opencode-go/glm-5.3`) — opencode's own config spelling, and the same string the runtime derives the billing endpoint from — so `resolveLlmModelRoute` resolves the OpenCode branch ahead of the direct-vendor branch. Neither table is spread into `LLM_PRICING_CATALOG`, so a bare `claude-sonnet-5` keeps meaning direct Anthropic rather than Zen pricing.
+
+  Two Anthropic gateway presets (`opencode-go`, `opencode`) put each endpoint's Anthropic-surface models behind claude-code / claude-sdk — Zen's subset is the whole Claude family. Preset ids deliberately match the catalog route ids, since `resolveAuthSpec` resolves a spawn's base URL by route id. The opencode adapter now offers both endpoints in full in its generated model menu.
+
+  Fixes two spillovers found along the way: `serviceableModelRoutes` no longer reports a spurious direct-vendor route for a self-routed id (`opencode/claude-sonnet-4-6` had picked up `anthropic` via `resolvePricing`'s substring fallback, loosening the money-safety guard and mis-routing the Configuration Lab), and `injectProviderKeysIntoEnv` now visits providers in sorted order so two providers sharing one env name (both OpenCode endpoints read `OPENCODE_API_KEY`) resolve deterministically instead of by `providers.json` write order.
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [9c31c86]
+- Updated dependencies [f89414a]
+- Updated dependencies [7941fc7]
+- Updated dependencies [13858b8]
+- Updated dependencies [bced1de]
+- Updated dependencies [7473ccd]
+- Updated dependencies [ea6757f]
+- Updated dependencies [c27f0b8]
+- Updated dependencies [9c31c86]
+  - @agentproto/model-catalog@0.10.0
+  - @agentproto/apps@0.11.0
+  - @agentproto/auth@1.0.3
+  - @agentproto/provider-presets@0.7.0
+  - @agentproto/providers-store@0.3.14
+  - @agentproto/acp@0.8.2
+  - @agentproto/agent@0.2.4
+  - @agentproto/app-client@0.3.3
+  - @agentproto/app-kit@1.2.1
+  - @agentproto/driver@0.2.3
+  - @agentproto/driver-agent-cli@2.4.4
+  - @agentproto/driver-http@0.1.7
+  - @agentproto/eval-reporters@0.2.13
+  - @agentproto/mcp-server@0.3.1
+  - @agentproto/provider-kit@0.4.4
+  - @agentproto/routine@0.2.3
+  - @agentproto/sandbox@0.5.2
+  - @agentproto/secrets@0.2.6
+  - @agentproto/tool@0.3.1
+  - @agentproto/workflow@0.6.1
+  - @agentproto/workflow-loader@0.2.3
+  - @agentproto/workflow-runtime@0.11.1
+  - @agentproto/workspace-brain@0.4.6
+  - @agentproto/telemetry-langfuse@0.2.11
+
 ## 3.3.0
 
 ### Minor Changes
