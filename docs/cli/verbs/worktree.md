@@ -56,7 +56,7 @@ creation-provenance marker into its private gitdir.
 | `--base <ref>` | `origin/main` | Ref the branch is cut from. |
 | `--branch <name>` | `wt/<slug>` | Branch to create. |
 | `--root <dir>` | *(see above)* | Override `worktrees.root` for this run. |
-| `--no-setup` | `false` | Skip the repo's `agentproto.json` setup hooks. |
+| `--no-setup` | `false` | Skip the repo's `agentproto.json` lifecycle entirely — setup hooks, and the `worktree.depsCmd`/`worktree.linkPaths` declarative defaults. |
 | `--json` | `false` | Emit the provisioned descriptor as JSON. |
 
 ### `rm <path>`
