@@ -24,7 +24,7 @@ function adapter(overrides: Partial<SpawnAdapterInfo> = {}): SpawnAdapterInfo {
 
 type PickerDescriptor = Pick<
   SessionDescriptor,
-  "model" | "mode" | "effort" | "posture" | "route" | "contextProfile" | "accessProfile" | "busy"
+  "model" | "mode" | "effort" | "posture" | "route" | "contextProfile" | "accessProfile" | "busy" | "currentModeId"
 >
 
 function descriptor(overrides: Partial<PickerDescriptor> = {}): PickerDescriptor {
@@ -548,6 +548,57 @@ describe("posture chip — mixes live native + restart advisory rows", () => {
     expect(plan?.restartRequired).toBe(false)
     expect(bypass?.enforcement).toBe("advisory")
     expect(bypass?.restartRequired).toBe(true)
+  })
+
+  it("offers every advertised native mode as an enforced, live row (no advisory duplicate)", () => {
+    const chips = buildSessionConfigChips(
+      descriptor({ model: "claude-opus-4-8" }),
+      baseInput({
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "plan", name: "Plan" },
+          { id: "acceptEdits", name: "Accept Edits" },
+          { id: "bypassPermissions", name: "Bypass" },
+        ],
+      }),
+    )
+    const posture = chips.find(c => c.axis === "posture")!
+    // Native modes are offered once, canonicalized; only the uncovered
+    // read-only posture falls back to advisory.
+    expect(posture.rows.map(r => r.value)).toEqual([
+      "default",
+      "plan",
+      "accept-edits",
+      "bypass",
+      "read-only",
+    ])
+    for (const value of ["default", "plan", "accept-edits", "bypass"]) {
+      const row = posture.rows.find(r => r.value === value)!
+      expect(row.enforcement).toBe("enforced")
+      expect(row.restartRequired).toBe(false)
+    }
+    const readOnly = posture.rows.find(r => r.value === "read-only")!
+    expect(readOnly.enforcement).toBe("advisory")
+    expect(readOnly.restartRequired).toBe(true)
+  })
+
+  it("marks the current native row via currentModeId when no posture echo was written", () => {
+    const chips = buildSessionConfigChips(
+      descriptor({ model: "claude-opus-4-8", currentModeId: "acceptEdits" }),
+      baseInput({
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "acceptEdits", name: "Accept Edits" },
+          { id: "plan", name: "Plan" },
+        ],
+      }),
+    )
+    const posture = chips.find(c => c.axis === "posture")!
+    const current = posture.rows.filter(r => r.current)
+    expect(current).toHaveLength(1)
+    // acceptEdits canonicalizes to accept-edits, so the canonical row is current.
+    expect(current[0]!.value).toBe("accept-edits")
+    expect(current[0]!.enforcement).toBe("enforced")
   })
 })
 

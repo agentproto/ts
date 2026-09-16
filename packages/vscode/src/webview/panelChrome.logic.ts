@@ -91,10 +91,14 @@ export function postureLabel(posture: Posture | undefined): string {
  * into the webview alongside postureLabel.
  */
 export function defaultPostureLabel(
-  session: Pick<SessionDescriptor, "kind" | "adapterSlug" | "posture">,
+  session: Pick<SessionDescriptor, "kind" | "adapterSlug" | "posture" | "currentModeId">,
 ): string {
   const explicit = postureLabel(session.posture)
   if (explicit) return explicit
+  // No canonical posture echo, but the daemon stamped the harness's live mode
+  // id — show THAT rather than a generic "default", so a session whose mode was
+  // chosen inside the harness reads accurately at a glance.
+  if (session.currentModeId) return session.currentModeId
   if (session.kind === "terminal") return "terminal"
   const slug = (session.adapterSlug ?? "").toLowerCase()
   if (slug.includes("claude")) return "default"

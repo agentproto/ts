@@ -4,6 +4,7 @@ import {
   accessIdentity,
   contextGauge,
   contextRingLevel,
+  defaultPostureLabel,
   formatCostShort,
   harnessGlyph,
   postureLabel,
@@ -98,6 +99,36 @@ describe("postureLabel", () => {
 
   it("returns an empty string when absent", () => {
     expect(postureLabel(undefined)).toBe("")
+  })
+})
+
+describe("defaultPostureLabel", () => {
+  it("prefers the canonical posture echo when present", () => {
+    expect(defaultPostureLabel({ kind: "agent-cli", adapterSlug: "claude-code", posture: "plan" })).toBe("plan")
+  })
+
+  it("falls back to the live harness currentModeId when no posture echo exists", () => {
+    expect(
+      defaultPostureLabel({
+        kind: "agent-cli",
+        adapterSlug: "claude-code",
+        currentModeId: "acceptEdits",
+      }),
+    ).toBe("acceptEdits")
+  })
+
+  it("renders a raw harness-mode posture when present", () => {
+    expect(
+      defaultPostureLabel({
+        kind: "agent-cli",
+        adapterSlug: "opencode",
+        posture: { harnessModeId: "architect" },
+      }),
+    ).toBe("architect")
+  })
+
+  it("falls back to a meaningful default (never empty) with neither signal", () => {
+    expect(defaultPostureLabel({ kind: "agent-cli", adapterSlug: "hermes" })).toBe("default")
   })
 })
 
