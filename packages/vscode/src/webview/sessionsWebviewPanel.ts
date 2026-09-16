@@ -325,6 +325,10 @@ export function visibleRows(
   return [...pendingRows, ...liveExtras, ...summaries]
 }
 
+export function shouldApplySummaryPage(requestLane: SessionLane, currentLane: SessionLane): boolean {
+  return requestLane === currentLane
+}
+
 class SessionsWebviewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined
   private lane: SessionLane = "agents"
@@ -339,6 +343,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
   private summaries: SessionSummary[] = []
   private serverTotal = 0
   private loading = false
+  private reloadAfterCurrentRequest = false
   private loadError: string | undefined
   /** "Show archived" toggle — switches the view between active-only (off,
    *  the default) and archived-only (on): the summary fetch and the model
@@ -439,8 +444,10 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
         this.post()
         return
       case "lane":
+        if (this.lane === msg.lane) return
         this.lane = msg.lane
-        this.post()
+        if (this.loading) this.reloadAfterCurrentRequest = true
+        void this.loadInitial()
         return
       case "project":
         this.project = msg.slug
@@ -609,20 +616,30 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     if (this.loading) return
     this.loading = true
     this.loadError = undefined
+    const requestLane = this.lane
     this.post()
     try {
       const result = await this.client.listSessionSummaries({
         includeArchived: this.showArchived,
+        lane: requestLane,
         limit: PAGE_SIZE,
         offset,
       })
-      this.summaries = offset === 0 ? result.summaries : [...this.summaries, ...result.summaries]
-      this.serverTotal = result.total
+      if (shouldApplySummaryPage(requestLane, this.lane)) {
+        this.summaries = offset === 0 ? result.summaries : [...this.summaries, ...result.summaries]
+        this.serverTotal = result.total
+      }
     } catch (err) {
-      this.loadError = err instanceof Error ? err.message : String(err)
+      if (shouldApplySummaryPage(requestLane, this.lane)) {
+        this.loadError = err instanceof Error ? err.message : String(err)
+      }
     } finally {
       this.loading = false
       this.post()
+      if (this.reloadAfterCurrentRequest) {
+        this.reloadAfterCurrentRequest = false
+        void this.fetchPage(0)
+      }
     }
   }
 
@@ -635,20 +652,30 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
   private async refreshSummaries(): Promise<void> {
     if (this.loading || this.summaries.length === 0) return
     this.loading = true
+    const requestLane = this.lane
     try {
       const result = await this.client.listSessionSummaries({
         includeArchived: this.showArchived,
+        lane: requestLane,
         limit: this.summaries.length,
         offset: 0,
       })
-      this.summaries = result.summaries
-      this.serverTotal = result.total
-      this.loadError = undefined
+      if (shouldApplySummaryPage(requestLane, this.lane)) {
+        this.summaries = result.summaries
+        this.serverTotal = result.total
+        this.loadError = undefined
+      }
     } catch (err) {
-      this.loadError = err instanceof Error ? err.message : String(err)
+      if (shouldApplySummaryPage(requestLane, this.lane)) {
+        this.loadError = err instanceof Error ? err.message : String(err)
+      }
     } finally {
       this.loading = false
       this.post()
+      if (this.reloadAfterCurrentRequest) {
+        this.reloadAfterCurrentRequest = false
+        void this.fetchPage(0)
+      }
     }
   }
 

@@ -2890,6 +2890,7 @@ export interface SessionsRegistry {
    */
   listSummaries(opts?: {
     includeArchived?: boolean
+    lane?: "agents" | "auto"
     limit?: number
     offset?: number
   }): { summaries: SessionSummary[]; total: number }
@@ -7341,11 +7342,38 @@ export function createSessionsRegistry(opts?: {
     },
     listSummaries(opts) {
       const includeArchived = opts?.includeArchived ?? false
+      const lane = opts?.lane
       const limit = Math.max(1, Math.min(200, opts?.limit ?? 50))
       const offset = Math.max(0, opts?.offset ?? 0)
       const childrenBusy = childrenBusyCounts()
+      const hasMachineLineage = (rt: SessionRuntime): boolean => {
+        const ownMachine = (desc: SessionDescriptor): boolean =>
+          desc.origin === "cron" || desc.origin === "gate"
+        if (ownMachine(rt.desc)) return true
+
+        const seen = new Set<string>([rt.desc.id])
+        let current = rt.desc
+        while (current.parentSessionId) {
+          const parent = sessions.get(current.parentSessionId)?.desc
+          // Unreachable or cyclic ancestry is an Auto task, matching the webview's fallback.
+          if (!parent || seen.has(parent.id)) return true
+          // Shell roots are not shown in the Sessions panel; their descendants are Auto tasks.
+          if (parent.kind === "terminal" || parent.kind === "command") return true
+          seen.add(parent.id)
+          current = parent
+        }
+        return ownMachine(current)
+      }
       const all = Array.from(sessions.values())
         .filter(rt => includeArchived || !rt.desc.archived)
+        .filter(rt => {
+          if (!lane) return true
+          // These rows belong to the Activity panel, not either Sessions lane.
+          if (rt.desc.kind === "terminal" || rt.desc.kind === "command") return false
+          // Match the webview's lineage-aware lane classifier before paginating summary rows.
+          const machine = hasMachineLineage(rt)
+          return lane === "auto" ? machine : !machine
+        })
         .sort((a, b) => b.desc.startedAt.localeCompare(a.desc.startedAt))
       const slice = all.slice(offset, offset + limit)
       const summaries = slice.map(rt => {

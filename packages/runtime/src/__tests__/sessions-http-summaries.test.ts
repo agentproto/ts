@@ -170,6 +170,63 @@ describe("GET /sessions/summaries", () => {
     })
   })
 
+  it("filters machine sessions by lane before pagination", async () => {
+    await withServer(async (port, registry) => {
+      const spawnAgent = (origin?: string, parentSessionId?: string) =>
+        registry.spawnAgent({
+          workspaceSlug: "default",
+          cwd: process.cwd(),
+          agentSession: fakeAgentSession("agent"),
+          adapterSlug: "fake",
+          origin,
+          parentSessionId,
+        })
+      const agent = spawnAgent()
+      const cron = spawnAgent("cron")
+      const cronChild = spawnAgent(undefined, cron.id)
+      const orphan = spawnAgent(undefined, "missing-parent")
+      const gate = spawnAgent("gate")
+      const command = registry.recordCommand({
+        workspaceSlug: "default",
+        cwd: process.cwd(),
+        command: "true",
+        args: [],
+        exitCode: 0,
+        signal: null,
+        stdout: "",
+        stderr: "",
+        durationMs: 0,
+      })
+
+      const agents = (await getJson(port, "/sessions/summaries?lane=agents&limit=10")) as {
+        summaries: Array<{ id: string }>
+        total: number
+      }
+      expect(agents.total).toBe(1)
+      expect(agents.summaries.map(summary => summary.id)).toEqual([agent.id])
+      expect(agents.summaries.map(summary => summary.id)).not.toContain(command.id)
+
+      const auto = (await getJson(port, "/sessions/summaries?lane=auto&limit=10")) as {
+        summaries: Array<{ id: string }>
+        total: number
+      }
+      expect(auto.total).toBe(4)
+      expect(auto.summaries.map(summary => summary.id)).toEqual(
+        expect.arrayContaining([cron.id, cronChild.id, orphan.id, gate.id]),
+      )
+      expect(auto.summaries.map(summary => summary.id)).not.toContain(command.id)
+
+      const unfiltered = (await getJson(port, "/sessions/summaries")) as {
+        summaries: Array<{ id: string }>
+        total: number
+      }
+      const invalid = (await getJson(port, "/sessions/summaries?lane=invalid")) as typeof unfiltered
+      expect(unfiltered.total).toBe(6)
+      expect(unfiltered.summaries.map(summary => summary.id)).toContain(command.id)
+      expect(invalid).toEqual(unfiltered)
+    })
+  })
+
   it("keeps GET /sessions returning full descriptors unchanged", async () => {
     await withServer(async (port, registry) => {
       registry.spawnAgent({

@@ -299,11 +299,13 @@ export class DaemonClient {
    */
   async listSessionSummaries(opts?: {
     includeArchived?: boolean
+    lane?: "agents" | "auto"
     limit?: number
     offset?: number
   }): Promise<{ summaries: SessionSummary[]; total: number }> {
     const params = new URLSearchParams()
     if (opts?.includeArchived) params.set("includeArchived", "true")
+    if (opts?.lane) params.set("lane", opts.lane)
     if (typeof opts?.limit === "number") params.set("limit", String(opts.limit))
     if (typeof opts?.offset === "number") params.set("offset", String(opts.offset))
     const qs = params.toString()
