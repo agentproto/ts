@@ -331,8 +331,11 @@ describe("llm:opencode-* generators — real committed snapshots (offline)", () 
     const src = files[GO_OUTPUT]!
     expect(src).toContain('import type { LLMPricing } from "./catalog.js"')
     expect(src).toContain("export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {")
-    // The verified Go lineup: 36 models, 4 of them on the Anthropic surface.
-    expect((src.match(/inputPer1M:/g) ?? []).length).toBe(36)
+    // Bounds, not exact counts: these tables are catalog-synced, and an
+    // exact-length pin reddens the weekly "Regenerate catalog data" job the
+    // moment the endpoint's live roster gains or loses a model. Same pattern
+    // as #1324 in model-catalog.
+    expect((src.match(/inputPer1M:/g) ?? []).length).toBeGreaterThan(30)
     const list = src.slice(src.indexOf("OPENCODE_GO_ANTHROPIC_MODELS"))
     expect([...list.matchAll(/^ {2}"([^"]+)",$/gm)].map(m => m[1])).toEqual([
       "minimax-m2.5",
@@ -345,11 +348,11 @@ describe("llm:opencode-* generators — real committed snapshots (offline)", () 
   it("emits the full OpenCode Zen surface, whose Anthropic subset is the Claude family", async () => {
     const files = await llmOpencodeZenGenerator.generate(offlineCtx())
     const src = files[ZEN_OUTPUT]!
-    // The verified Zen lineup: 102 models, 20 on the Anthropic surface.
-    expect((src.match(/inputPer1M:/g) ?? []).length).toBe(102)
+    // Bounds, not exact counts: see the Go case above (#1324 pattern).
+    expect((src.match(/inputPer1M:/g) ?? []).length).toBeGreaterThan(90)
     const list = src.slice(src.indexOf("OPENCODE_ZEN_ANTHROPIC_MODELS"))
     const anthropicIds = [...list.matchAll(/^ {2}"([^"]+)",$/gm)].map(m => m[1])
-    expect(anthropicIds).toHaveLength(20)
+    expect(anthropicIds.length).toBeGreaterThan(15)
     for (const id of ["claude-opus-5", "claude-sonnet-5", "claude-sonnet-4-6", "claude-fable-5-1"]) {
       expect(anthropicIds).toContain(id)
     }
