@@ -7348,15 +7348,15 @@ export function createSessionsRegistry(opts?: {
       const childrenBusy = childrenBusyCounts()
       const hasMachineLineage = (rt: SessionRuntime): boolean => {
         const ownMachine = (desc: SessionDescriptor): boolean =>
-          desc.origin === "cron" || desc.origin === "gate" || desc.kind === "command"
+          desc.origin === "cron" || desc.origin === "gate"
         if (ownMachine(rt.desc)) return true
 
         const seen = new Set<string>([rt.desc.id])
         let current = rt.desc
         while (current.parentSessionId) {
           const parent = sessions.get(current.parentSessionId)?.desc
-          // A missing ancestor or cycle has no resolvable root, so retain this row's own classification.
-          if (!parent || seen.has(parent.id)) return ownMachine(rt.desc)
+          // Unreachable or cyclic ancestry is an Auto task, matching the webview's fallback.
+          if (!parent || seen.has(parent.id)) return true
           // Shell roots are not shown in the Sessions panel; their descendants are Auto tasks.
           if (parent.kind === "terminal" || parent.kind === "command") return true
           seen.add(parent.id)
@@ -7368,6 +7368,8 @@ export function createSessionsRegistry(opts?: {
         .filter(rt => includeArchived || !rt.desc.archived)
         .filter(rt => {
           if (!lane) return true
+          // These rows belong to the Activity panel, not either Sessions lane.
+          if (rt.desc.kind === "terminal" || rt.desc.kind === "command") return false
           // Match the webview's lineage-aware lane classifier before paginating summary rows.
           const machine = hasMachineLineage(rt)
           return lane === "auto" ? machine : !machine
