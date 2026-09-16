@@ -467,8 +467,13 @@ describe("resolveLlmModelRoute", () => {
   it("enumerates each OpenCode endpoint's full surface with bare, spawnable ids", () => {
     const go = listRouterLlmRoutes("opencode-go")
     const zen = listRouterLlmRoutes("opencode")
-    expect(go).toHaveLength(36)
-    expect(zen).toHaveLength(102)
+    // Bounds, not exact counts: these tables are catalog-synced, and an
+    // exact-length pin reddens the weekly "Regenerate catalog data" job
+    // outright the moment either endpoint's live roster gains or loses a
+    // model — before it ever reaches the reviewable sync PR. Same pattern
+    // as the openrouter/requesty/huggingface enumeration tests below.
+    expect(go.length).toBeGreaterThan(30)
+    expect(zen.length).toBeGreaterThan(90)
     // No `@route` annotation: route === vendor, so `formatModelRef` drops it
     // and the enumerated id is exactly what a caller passes to `agent_start`.
     expect(go.map(r => formatModelRef(r.ref))).toContain("opencode-go/glm-5.3")
