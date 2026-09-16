@@ -27,6 +27,18 @@ const configSchema = z.object({
     .object({
       setup: hookSchema.optional(),
       teardown: hookSchema.optional(),
+      /** Command to install deps inside a freshly provisioned worktree, e.g.
+       *  'pnpm install --prefer-offline'. Same trust model as `setup`/
+       *  `teardown` — see the SECURITY note above. An explicit `depsCmd`
+       *  passed straight to the `worktree.provision` tool still wins over
+       *  this declarative default. */
+      depsCmd: z.string().optional(),
+      /** Gitignored dirs/files (e.g. `node_modules`, sibling workspace
+       *  repos) symlinked from the host repo into the worktree before
+       *  `depsCmd` runs, so the dependency graph resolves without a full
+       *  reinstall. Same fallback rule as `depsCmd`: an explicit `linkPaths`
+       *  tool input wins over this one. */
+      linkPaths: z.array(z.string()).optional(),
     })
     .optional(),
   scripts: z.record(z.string(), scriptSchema).optional(),
