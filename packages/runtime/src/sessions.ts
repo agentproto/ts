@@ -1312,6 +1312,15 @@ export interface SessionDescriptor {
    *  posture or a raw `{ harnessModeId }` sourced from the harness's ACP mode
    *  registry (SPEC §3.4a). */
   posture?: Posture
+  /**
+   * Read-surface echo of the live harness's advertised ACP session modes
+   * (`SessionModeState.availableModes`, #482) — stamped at READ TIME from the
+   * live agent session by `list()`/`get()`, never persisted. A client posture
+   * picker resolves the native (enforced, live-switchable) rows from this;
+   * absent for arms with no native mode registry (print/proprietary) and for a
+   * session whose live runtime handle is gone.
+   */
+  availableModes?: SessionMode[]
   /** Endpoint / gateway rail (SPEC §3.1 axis 4). `baseUrl` is carried only
    *  for a custom gateway the catalog can't resolve; `access` is downstream
    *  of this axis (SPEC §1c). */
@@ -2215,6 +2224,26 @@ function stampInterrupted(desc: SessionDescriptor): void {
     desc.interrupted = true
   } else {
     delete desc.interrupted
+  }
+}
+
+/**
+ * Read-time projection of the LIVE agent session's advertised ACP mode registry
+ * onto the descriptor (`availableModes`). Same convention as
+ * the other read-time stampers (`processAlive`, `watchers`): ephemeral, never
+ * persisted — `availableModes` is a connect-time snapshot held on the runtime
+ * handle, not a descriptor field. Deleted (not left stale) when the handle is
+ * gone or advertises no registry, so a client never reads a mode list off a
+ * dead/print-arm session (SPEC §3.4a, #482 read-surface). This is the daemon
+ * half of the VS Code posture picker's native-vs-advisory resolution: without
+ * it the client can only offer prompt-injected advisory postures.
+ */
+function stampLiveModes(desc: SessionDescriptor, rt: SessionRuntime): void {
+  const modes = rt.agentSession?.availableModes
+  if (modes && modes.length > 0) {
+    desc.availableModes = [...modes]
+  } else {
+    delete desc.availableModes
   }
 }
 
@@ -4303,6 +4332,7 @@ export function createSessionsRegistry(opts?: {
         secondsSinceLastActivity: _secondsSinceLastActivity,
         toolCallsThisTurn: _toolCallsThisTurn,
         eventsPath: _eventsPath,
+        availableModes: _availableModes,
         ...rest
       } = s.desc
       return rest
@@ -7335,6 +7365,7 @@ export function createSessionsRegistry(opts?: {
           stampInterrupted(desc)
           stampCurrentStatus(rt)
           stampWatchers(desc)
+          stampLiveModes(desc, rt)
           desc.childrenBusy = childrenBusy.get(desc.id) ?? 0
           desc.queuedPrompts = desc.promptQueue?.length ?? 0
           return desc
@@ -7396,6 +7427,7 @@ export function createSessionsRegistry(opts?: {
         stampInterrupted(desc)
         stampCurrentStatus(rt)
         stampWatchers(desc)
+        stampLiveModes(desc, rt)
         desc.childrenBusy = childrenBusyCounts().get(desc.id) ?? 0
         desc.queuedPrompts = desc.promptQueue?.length ?? 0
       }

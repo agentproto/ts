@@ -371,6 +371,14 @@ export interface SessionDescriptor {
    *  default. See the axis type docs above. */
   effort?: EffortLevel
   posture?: Posture
+  /** Advertised native ACP session modes for THIS live session (mirror of
+   *  `@agentproto/runtime` SessionDescriptor.availableModes,
+   *  `SessionModeState.availableModes`). Stamped at read time by the daemon from
+   *  the live agent handle; absent for a print/proprietary arm or a dead
+   *  session. The per-session posture picker resolves native (enforced,
+   *  live-switchable) rows from this — without it only prompt-injected advisory
+   *  postures are offerable. */
+  availableModes?: Array<{ id: string; name?: string; description?: string }>
   route?: RouteSpec
   contextProfile?: ContextProfile
   /** Named auth-profile echo for the `access` axis (SPEC §3.6) — mirrors the
