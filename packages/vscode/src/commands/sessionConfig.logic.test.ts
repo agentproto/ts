@@ -24,7 +24,7 @@ function adapter(overrides: Partial<SpawnAdapterInfo> = {}): SpawnAdapterInfo {
 
 type PickerDescriptor = Pick<
   SessionDescriptor,
-  "model" | "mode" | "effort" | "posture" | "route" | "contextProfile" | "accessProfile" | "busy" | "currentModeId"
+  "model" | "mode" | "effort" | "posture" | "route" | "contextProfile" | "accessProfile" | "busy"
 >
 
 function descriptor(overrides: Partial<PickerDescriptor> = {}): PickerDescriptor {
@@ -582,24 +582,6 @@ describe("posture chip — mixes live native + restart advisory rows", () => {
     expect(readOnly.restartRequired).toBe(true)
   })
 
-  it("marks the current native row via currentModeId when no posture echo was written", () => {
-    const chips = buildSessionConfigChips(
-      descriptor({ model: "claude-opus-4-8", currentModeId: "acceptEdits" }),
-      baseInput({
-        availableModes: [
-          { id: "default", name: "Default" },
-          { id: "acceptEdits", name: "Accept Edits" },
-          { id: "plan", name: "Plan" },
-        ],
-      }),
-    )
-    const posture = chips.find(c => c.axis === "posture")!
-    const current = posture.rows.filter(r => r.current)
-    expect(current).toHaveLength(1)
-    // acceptEdits canonicalizes to accept-edits, so the canonical row is current.
-    expect(current[0]!.value).toBe("accept-edits")
-    expect(current[0]!.enforcement).toBe("enforced")
-  })
 })
 
 describe("access chip — surfaces the ineligible-attached-profile re-pick", () => {

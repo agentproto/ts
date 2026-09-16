@@ -1,9 +1,8 @@
 /**
  * The daemon's per-session mode READ-SURFACE: a live agent-cli session's
- * advertised ACP mode registry (`SessionModeState.availableModes`) and the
- * currently-active mode id are stamped onto the descriptor at read time
- * (list()/get()), so `GET /sessions` and `GET /sessions/:id` carry them. This is
- * the server half of the VS Code posture picker's native-vs-advisory
+ * advertised ACP mode registry (`SessionModeState.availableModes`) is stamped
+ * onto the descriptor at read time (list()/get()), so `GET /sessions` and
+ * `GET /sessions/:id` carry it. This is the server half of the VS Code posture picker's native-vs-advisory
  * resolution: without it the client can only offer prompt-injected advisory
  * postures. Coverage: presence for a live ACP arm, absence for an arm with no
  * native registry, and the never-persisted (read-time-only) contract.
@@ -20,12 +19,10 @@ let n = 0
 
 function fakeAgentSession(
   modes?: readonly SessionMode[],
-  currentModeId?: string,
 ): AgentSessionLike {
   return {
     sessionId: `c_${n++}`,
     ...(modes ? { availableModes: modes } : {}),
-    ...(currentModeId ? { currentModeId } : {}),
     // eslint-disable-next-line require-yield
     async *send(): AsyncIterable<AgentStreamEvent> {
       return
@@ -59,9 +56,9 @@ const NATIVE_MODES: SessionMode[] = [
 ]
 
 describe("session read-surface — live ACP modes", () => {
-  it("stamps availableModes + currentModeId on get() and list()", () => {
+  it("stamps availableModes on get() and list()", () => {
     const registry = reg()
-    const id = spawnLive(registry, fakeAgentSession(NATIVE_MODES, "acceptEdits"))
+    const id = spawnLive(registry, fakeAgentSession(NATIVE_MODES))
     try {
       const got = registry.get(id)
       expect(got?.availableModes?.map(m => m.id)).toEqual([
@@ -70,7 +67,6 @@ describe("session read-surface — live ACP modes", () => {
         "acceptEdits",
         "bypassPermissions",
       ])
-      expect(got?.currentModeId).toBe("acceptEdits")
 
       const listed = registry.list().find(s => s.id === id)
       expect(listed?.availableModes?.map(m => m.id)).toEqual([
@@ -79,7 +75,6 @@ describe("session read-surface — live ACP modes", () => {
         "acceptEdits",
         "bypassPermissions",
       ])
-      expect(listed?.currentModeId).toBe("acceptEdits")
     } finally {
       registry.shutdown()
     }
@@ -91,7 +86,6 @@ describe("session read-surface — live ACP modes", () => {
     try {
       const got = registry.get(id)
       expect(got?.availableModes).toBeUndefined()
-      expect(got?.currentModeId).toBeUndefined()
     } finally {
       registry.shutdown()
     }

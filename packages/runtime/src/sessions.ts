@@ -176,12 +176,6 @@ export interface AgentSessionLike {
    * routes to restart.
    */
   readonly availableModes?: readonly SessionMode[]
-  /**
-   * The native mode id the harness reports as CURRENTLY active
-   * (`SessionModeState.currentModeId`). Optional, same treatment as
-   * `availableModes` — absent for arms with no native mode registry.
-   */
-  readonly currentModeId?: string
   close(): Promise<void>
 }
 
@@ -1327,14 +1321,6 @@ export interface SessionDescriptor {
    * session whose live runtime handle is gone.
    */
   availableModes?: SessionMode[]
-  /**
-   * Read-surface echo of the native mode id the harness reports active
-   * (`SessionModeState.currentModeId`) — stamped at read time alongside
-   * `availableModes`. Lets a UI show the true current mode when the canonical
-   * `posture` echo was never written (e.g. a mode switched from inside the
-   * harness itself).
-   */
-  currentModeId?: string
   /** Endpoint / gateway rail (SPEC §3.1 axis 4). `baseUrl` is carried only
    *  for a custom gateway the catalog can't resolve; `access` is downstream
    *  of this axis (SPEC §1c). */
@@ -2243,7 +2229,7 @@ function stampInterrupted(desc: SessionDescriptor): void {
 
 /**
  * Read-time projection of the LIVE agent session's advertised ACP mode registry
- * onto the descriptor (`availableModes` + `currentModeId`). Same convention as
+ * onto the descriptor (`availableModes`). Same convention as
  * the other read-time stampers (`processAlive`, `watchers`): ephemeral, never
  * persisted — `availableModes` is a connect-time snapshot held on the runtime
  * handle, not a descriptor field. Deleted (not left stale) when the handle is
@@ -2259,9 +2245,6 @@ function stampLiveModes(desc: SessionDescriptor, rt: SessionRuntime): void {
   } else {
     delete desc.availableModes
   }
-  const current = rt.agentSession?.currentModeId
-  if (current) desc.currentModeId = current
-  else delete desc.currentModeId
 }
 
 /**
@@ -4349,7 +4332,6 @@ export function createSessionsRegistry(opts?: {
         toolCallsThisTurn: _toolCallsThisTurn,
         eventsPath: _eventsPath,
         availableModes: _availableModes,
-        currentModeId: _currentModeId,
         ...rest
       } = s.desc
       return rest

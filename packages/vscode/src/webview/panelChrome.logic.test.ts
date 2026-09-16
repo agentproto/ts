@@ -107,16 +107,6 @@ describe("defaultPostureLabel", () => {
     expect(defaultPostureLabel({ kind: "agent-cli", adapterSlug: "claude-code", posture: "plan" })).toBe("plan")
   })
 
-  it("falls back to the live harness currentModeId when no posture echo exists", () => {
-    expect(
-      defaultPostureLabel({
-        kind: "agent-cli",
-        adapterSlug: "claude-code",
-        currentModeId: "acceptEdits",
-      }),
-    ).toBe("acceptEdits")
-  })
-
   it("renders a raw harness-mode posture when present", () => {
     expect(
       defaultPostureLabel({

@@ -379,11 +379,6 @@ export interface SessionDescriptor {
    *  live-switchable) rows from this — without it only prompt-injected advisory
    *  postures are offerable. */
   availableModes?: Array<{ id: string; name?: string; description?: string }>
-  /** The native mode id the harness reports active (mirror of `@agentproto/
-   *  runtime` SessionDescriptor.currentModeId). Lets the composer posture chip
-   *  show the true current mode when no canonical `posture` echo was written
-   *  (e.g. a mode switched from inside the harness itself). */
-  currentModeId?: string
   route?: RouteSpec
   contextProfile?: ContextProfile
   /** Named auth-profile echo for the `access` axis (SPEC §3.6) — mirrors the

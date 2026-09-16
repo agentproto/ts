@@ -513,24 +513,6 @@ function describePosture(posture: Posture | undefined): string | undefined {
 }
 
 /**
- * The session's current posture for chip-face + current-row marking, with a
- * fallback to the live harness mode id. A session whose mode was switched from
- * INSIDE the harness (or that was spawned natively) may carry no canonical
- * `posture` echo, but the daemon still stamps the live `currentModeId` — map it
- * back to a canonical posture when it names one, else expose the raw mode id so
- * its own native row still reads as current.
- */
-function describeCurrentPosture(
-  posture: Posture | undefined,
-  currentModeId: string | undefined,
-): string | undefined {
-  const explicit = describePosture(posture)
-  if (explicit) return explicit
-  if (currentModeId) return canonicalForModeId(currentModeId) ?? currentModeId
-  return undefined
-}
-
-/**
  * Build the dynamic config-chip strip for one session (SPEC §6). Each axis is
  * resolved from `resolveCapabilities`; a chip with an EMPTY resolved set is
  * omitted entirely (hidden, not a dead affordance). Order follows the SPEC
@@ -539,7 +521,7 @@ function describeCurrentPosture(
 export function buildSessionConfigChips(
   descriptor: Pick<
     SessionDescriptor,
-    "model" | "mode" | "effort" | "posture" | "route" | "contextProfile" | "accessProfile" | "currentModeId"
+    "model" | "mode" | "effort" | "posture" | "route" | "contextProfile" | "accessProfile"
   >,
   input: CapabilityResolutionInput,
 ): ConfigChip[] {
@@ -632,7 +614,7 @@ export function buildSessionConfigChips(
   // posture — live (native) chip, but advisory rows are individually restart-tagged.
   const postures = resolvePostureRows(input.availableModes)
   if (postures.length > 0) {
-    const currentPosture = describeCurrentPosture(descriptor.posture, descriptor.currentModeId)
+    const currentPosture = describePosture(descriptor.posture)
     chips.push({
       axis: "posture",
       verb: "agent_set_posture",
