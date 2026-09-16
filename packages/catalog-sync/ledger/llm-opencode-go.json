@@ -34,5 +34,6 @@
   "opencode-go/qwen3.7-max": "2026-05-21",
   "opencode-go/qwen3.7-plus": "2026-06-02",
   "opencode-go/qwen3.8-flash": "2026-08-26",
-  "opencode-go/qwen3.8-max": "2026-08-03"
+  "opencode-go/qwen3.8-max": "2026-08-03",
+  "opencode-go/union-alpha": "2026-09-16"
 }

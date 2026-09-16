@@ -313,6 +313,13 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     vendor: "qwen",
     provider: "opencode-go",
   },
+  "opencode-go/union-alpha": {
+    inputPer1M: 0,
+    outputPer1M: 0,
+    addedAt: "2026-09-16",
+    vendor: "opencode",
+    provider: "opencode-go",
+  },
 }
 
 /**
@@ -329,4 +336,5 @@ export const OPENCODE_GO_ANTHROPIC_MODELS: readonly string[] = [
   "minimax-m2.7",
   "minimax-m3",
   "qwen3.8-flash",
+  "union-alpha",
 ]

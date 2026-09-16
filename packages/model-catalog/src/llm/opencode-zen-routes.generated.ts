@@ -816,6 +816,13 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     vendor: "arcee-ai",
     provider: "opencode",
   },
+  "opencode/union-alpha": {
+    inputPer1M: 0,
+    outputPer1M: 0,
+    addedAt: "2026-09-16",
+    vendor: "opencode",
+    provider: "opencode",
+  },
   "opencode/x-preview-f-free": {
     inputPer1M: 0,
     outputPer1M: 0,
@@ -855,4 +862,5 @@ export const OPENCODE_ZEN_ANTHROPIC_MODELS: readonly string[] = [
   "qwen3.5-plus",
   "qwen3.6-plus",
   "qwen3.6-plus-free",
+  "union-alpha",
 ]
