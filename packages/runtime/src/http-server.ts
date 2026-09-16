@@ -4172,16 +4172,20 @@ async function handleSessions(
   if (path === "/sessions/summaries" && req.method === "GET") {
     // Lightweight, paginated panel projection of list(). Query params:
     //   includeArchived=true  (default false)
+    //   lane=agents|auto      (default unfiltered)
     //   limit=N               (default 50, clamped to [1,200])
     //   offset=N              (default 0, min 0)
     const reqUrl = req.url ?? ""
     const queryString = reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : ""
     const params = new URLSearchParams(queryString)
     const includeArchived = params.get("includeArchived") === "true"
+    const laneParam = params.get("lane")
+    const lane = laneParam === "agents" || laneParam === "auto" ? laneParam : undefined
     const limit = Number.parseInt(params.get("limit") ?? "", 10)
     const offset = Number.parseInt(params.get("offset") ?? "", 10)
     const result = registry.listSummaries({
       includeArchived,
+      lane,
       limit: Number.isNaN(limit) ? undefined : limit,
       offset: Number.isNaN(offset) ? undefined : offset,
     })

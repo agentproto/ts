@@ -2890,6 +2890,7 @@ export interface SessionsRegistry {
    */
   listSummaries(opts?: {
     includeArchived?: boolean
+    lane?: "agents" | "auto"
     limit?: number
     offset?: number
   }): { summaries: SessionSummary[]; total: number }
@@ -7341,11 +7342,19 @@ export function createSessionsRegistry(opts?: {
     },
     listSummaries(opts) {
       const includeArchived = opts?.includeArchived ?? false
+      const lane = opts?.lane
       const limit = Math.max(1, Math.min(200, opts?.limit ?? 50))
       const offset = Math.max(0, opts?.offset ?? 0)
       const childrenBusy = childrenBusyCounts()
       const all = Array.from(sessions.values())
         .filter(rt => includeArchived || !rt.desc.archived)
+        .filter(rt => {
+          if (!lane) return true
+          const machine =
+            rt.desc.origin === "cron" || rt.desc.origin === "gate" || rt.desc.kind === "command"
+          // Machine-root children remain visible in default/agents; lineage nesting stays client-side.
+          return lane === "auto" ? machine : !machine
+        })
         .sort((a, b) => b.desc.startedAt.localeCompare(a.desc.startedAt))
       const slice = all.slice(offset, offset + limit)
       const summaries = slice.map(rt => {

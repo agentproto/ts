@@ -13,7 +13,13 @@ import { describe, expect, it } from "vitest"
 
 import { UNASSIGNED_COLOR_INDEX, workspaceColorFor, WORKSPACE_PALETTE } from "./sessionsWebview.logic.js"
 import type { SessionDescriptor, SessionSummary } from "../client/types.js"
-import { COLOR_OVERRIDES_KEY, nextColorOverrides, readColorOverrides, visibleRows } from "./sessionsWebviewPanel.js"
+import {
+  COLOR_OVERRIDES_KEY,
+  nextColorOverrides,
+  readColorOverrides,
+  shouldApplySummaryPage,
+  visibleRows,
+} from "./sessionsWebviewPanel.js"
 
 /** Minimal in-memory stand-in for `vscode.ExtensionContext.globalState`. */
 function fakeMemento(initial: Record<string, unknown> = {}): Memento {
@@ -116,5 +122,14 @@ describe("visibleRows — render pool == action pool", () => {
     const loaded: SessionSummary[] = [summary("sess_other", "exited")]
     expect(visibleRows(store, loaded).find(r => r.id === "sess_child")).toBeDefined()
     expect(loaded.find(r => r.id === "sess_child")).toBeUndefined()
+  })
+})
+
+describe("summary-page lane consistency", () => {
+  it("applies a response only while its requested lane is still selected", () => {
+    expect(shouldApplySummaryPage("agents", "agents")).toBe(true)
+    expect(shouldApplySummaryPage("auto", "auto")).toBe(true)
+    expect(shouldApplySummaryPage("agents", "auto")).toBe(false)
+    expect(shouldApplySummaryPage("auto", "agents")).toBe(false)
   })
 })
