@@ -201,20 +201,17 @@ describe("GET /sessions/summaries", () => {
         summaries: Array<{ id: string }>
         total: number
       }
-      expect(agents.total).toBe(2)
-      expect(agents.summaries.map(summary => summary.id)).toEqual(
-        expect.arrayContaining([agent.id, cronChild.id]),
-      )
+      expect(agents.total).toBe(1)
+      expect(agents.summaries.map(summary => summary.id)).toEqual([agent.id])
 
-      const auto = (await getJson(port, "/sessions/summaries?lane=auto&limit=2")) as {
+      const auto = (await getJson(port, "/sessions/summaries?lane=auto&limit=10")) as {
         summaries: Array<{ id: string }>
         total: number
       }
-      expect(auto.total).toBe(3)
-      expect(auto.summaries).toHaveLength(2)
-      expect(
-        auto.summaries.every(summary => [cron.id, gate.id, command.id].includes(summary.id)),
-      ).toBe(true)
+      expect(auto.total).toBe(4)
+      expect(auto.summaries.map(summary => summary.id)).toEqual(
+        expect.arrayContaining([cron.id, cronChild.id, gate.id, command.id]),
+      )
 
       const unfiltered = (await getJson(port, "/sessions/summaries")) as {
         summaries: Array<{ id: string }>

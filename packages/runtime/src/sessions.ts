@@ -7346,13 +7346,30 @@ export function createSessionsRegistry(opts?: {
       const limit = Math.max(1, Math.min(200, opts?.limit ?? 50))
       const offset = Math.max(0, opts?.offset ?? 0)
       const childrenBusy = childrenBusyCounts()
+      const hasMachineLineage = (rt: SessionRuntime): boolean => {
+        const ownMachine = (desc: SessionDescriptor): boolean =>
+          desc.origin === "cron" || desc.origin === "gate" || desc.kind === "command"
+        if (ownMachine(rt.desc)) return true
+
+        const seen = new Set<string>([rt.desc.id])
+        let current = rt.desc
+        while (current.parentSessionId) {
+          const parent = sessions.get(current.parentSessionId)?.desc
+          // A missing ancestor or cycle has no resolvable root, so retain this row's own classification.
+          if (!parent || seen.has(parent.id)) return ownMachine(rt.desc)
+          // Shell roots are not shown in the Sessions panel; their descendants are Auto tasks.
+          if (parent.kind === "terminal" || parent.kind === "command") return true
+          seen.add(parent.id)
+          current = parent
+        }
+        return ownMachine(current)
+      }
       const all = Array.from(sessions.values())
         .filter(rt => includeArchived || !rt.desc.archived)
         .filter(rt => {
           if (!lane) return true
-          const machine =
-            rt.desc.origin === "cron" || rt.desc.origin === "gate" || rt.desc.kind === "command"
-          // Machine-root children remain visible in default/agents; lineage nesting stays client-side.
+          // Match the webview's lineage-aware lane classifier before paginating summary rows.
+          const machine = hasMachineLineage(rt)
           return lane === "auto" ? machine : !machine
         })
         .sort((a, b) => b.desc.startedAt.localeCompare(a.desc.startedAt))
