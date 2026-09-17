@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/plugin",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "@agentproto/plugin — Agent Plugins v1.0.0 cross-vendor plugin format reference implementation.",
   "keywords": [
     "agentproto",

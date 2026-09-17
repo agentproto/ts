@@ -1,5 +1,17 @@
 # @agentproto/llm-endpoint
 
+## 0.6.2
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [bced1de]
+- Updated dependencies [ea6757f]
+- Updated dependencies [c27f0b8]
+  - @agentproto/auth@1.0.3
+  - @agentproto/providers-store@0.3.14
+  - @agentproto/batch@0.2.2
+
 ## 0.6.1
 
 ### Patch Changes

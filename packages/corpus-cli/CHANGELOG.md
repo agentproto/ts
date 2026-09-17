@@ -1,5 +1,16 @@
 # @agentproto/corpus-cli
 
+## 0.9.4
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [c27f0b8]
+- Updated dependencies [f94b632]
+  - @agentproto/batch@0.2.2
+  - @agentproto/corpus@0.8.0
+  - @agentproto/corpus-presets@0.2.12
+
 ## 0.9.3
 
 ### Patch Changes

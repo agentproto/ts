@@ -1,5 +1,13 @@
 # @agentproto/driver
 
+## 0.2.3
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [c27f0b8]
+  - @agentproto/tool@0.3.1
+
 ## 0.2.2
 
 ### Patch Changes

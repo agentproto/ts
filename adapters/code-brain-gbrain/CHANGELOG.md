@@ -1,5 +1,16 @@
 # @agentproto/adapter-code-brain-gbrain
 
+## 0.2.5
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [c27f0b8]
+  - @agentproto/code-brain@0.3.3
+  - @agentproto/driver@0.2.3
+  - @agentproto/provider-kit@0.4.4
+  - @agentproto/tool@0.3.1
+
 ## 0.2.4
 
 ### Patch Changes

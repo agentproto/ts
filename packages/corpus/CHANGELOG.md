@@ -1,5 +1,22 @@
 # @agentproto/corpus
 
+## 0.8.0
+
+### Minor Changes
+
+- f94b632: Declare an optional `sha` content address on knowledge `SourceRef`, so corpus entries whose origins are not fetchable pages can still carry a stable resolution key.
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [c27f0b8]
+  - @agentproto/collection@0.1.3
+  - @agentproto/knowledge@0.1.3
+  - @agentproto/operator@0.1.3
+  - @agentproto/playbook@0.1.3
+  - @agentproto/routine@0.2.3
+  - @agentproto/workflow@0.6.1
+
 ## 0.7.3
 
 ### Patch Changes

@@ -1,5 +1,17 @@
 # @agentproto/app-kit
 
+## 1.2.1
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [c27f0b8]
+  - @agentproto/agent@0.2.4
+  - @agentproto/mastra@0.2.14
+  - @agentproto/workflow@0.6.1
+  - @agentproto/workflow-loader@0.2.3
+  - @agentproto/workspace@0.1.3
+
 ## 1.2.0
 
 ### Minor Changes

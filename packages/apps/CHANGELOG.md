@@ -1,5 +1,21 @@
 # @agentproto/apps
 
+## 0.11.0
+
+### Minor Changes
+
+- 7941fc7: Rebuild the work-board panel as a single-file Vite app (committed generated artifact with a CI drift check) and add a standalone tool-call fallback to the shared panel bridge (`POST ./tool-call` when no host iframe is present), plus agentproto branding for the work-board UI.
+
+### Patch Changes
+
+- 13858b8: Fix builtin panels served standalone (`GET /apps/:appId/ui`) hanging on "Connecting to bridge…": `panelBridgeScript` now detects the standalone shape (`window.parent === window` plus a working `window.McpApp.connect`), short-circuits `initBridge()` with a default inline hostContext, and routes `callTool` through the injected standalone app bridge. The postMessage-host path is unchanged. Adds static script assertions in `@agentproto/apps` and real-jsdom coverage in `agentproto-vscode`.
+- 7473ccd: Regenerate the stale work-board `panel.generated.ts` bundle so the committed artifact matches the post-#1303 panel-bridge sources (standalone connect behavior, display-mode/pin toggles). Also hardens the auto-merge workflow to skip arming while a PR is behind its base, closing the stale-merge race from #1302/#1303.
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [c27f0b8]
+  - @agentproto/agent@0.2.4
+  - @agentproto/app-kit@1.2.1
+  - @agentproto/workflow@0.6.1
+
 ## 0.10.0
 
 ### Minor Changes
