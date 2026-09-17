@@ -338,13 +338,11 @@ describe("llm:opencode-* generators — real committed snapshots (offline)", () 
     expect((src.match(/inputPer1M:/g) ?? []).length).toBeGreaterThan(30)
     const list = src.slice(src.indexOf("OPENCODE_GO_ANTHROPIC_MODELS"))
     const goAnthropicIds = [...list.matchAll(/^ {2}"([^"]+)",$/gm)].map(m => m[1])
-    // Membership, not an exact list: the roster is catalog-synced (see the
-    // bounds above) — union-alpha joined the Anthropic surface after #1309
-    // verified the original four, reddening the weekly sync the same way.
-    expect(goAnthropicIds.length).toBeGreaterThan(3)
-    for (const id of ["minimax-m2.5", "minimax-m2.7", "minimax-m3", "qwen3.8-flash"]) {
-      expect(goAnthropicIds).toContain(id)
-    }
+    // Exact list: unlike the route table above, this is a small, hand-curated
+    // subset (the Anthropic-surface bare ids) and the committed snapshot has
+    // exactly these four today — no data or generator change backs a looser
+    // membership check here.
+    expect(goAnthropicIds).toEqual(["minimax-m2.5", "minimax-m2.7", "minimax-m3", "qwen3.8-flash"])
   })
 
   it("emits the full OpenCode Zen surface, whose Anthropic subset is the Claude family", async () => {
