@@ -115,6 +115,32 @@ describe("makeSessionChatApp", () => {
     })
     expect(html).toContain('src="http://127.0.0.1:18790/apps/@agentik/session-chat/ui?session=x&quot;&amp;embed=1"')
   })
+
+  it("the static ui:// render (empty initData) self-bootstraps over the bridge and consumes agent_start's result", () => {
+    // registerMcpApps renders the resource ONCE with `{}` — the page must
+    // not bake a decision in: no iframe, no notice, a spec-correct bridge
+    // handshake, and the tool-result hook that pins the spawned session.
+    const html = sessionChatEmbedHtml({})
+    expect(html).not.toContain("<iframe")
+    expect(html).not.toContain('id="notice" class="show"')
+    expect(html).toContain("appInfo")
+    expect(html).not.toContain("clientInfo")
+    expect(html).toContain("ui/notifications/tool-result")
+    expect(html).toContain("extractToolResultSessionId")
+    // agent_start's result is a session descriptor (`id`); the widget turns
+    // it into the deep link by calling its own tool over the bridge.
+    expect(html).toContain("callTool('agentproto_session_chat'")
+    expect(html).toContain("window.__APP_INIT__ = {}")
+    // Still no vendored chat machinery.
+    expect(html).not.toContain("conversation_read")
+  })
+
+  it("the not-installed render shows the notice inline and still carries the bridge", () => {
+    const html = sessionChatEmbedHtml({ installed: false, url: null })
+    expect(html).toContain('id="notice" class="show"')
+    expect(html).toContain("agentproto app install @agentik/session-chat")
+    expect(html).toContain("ui/notifications/tool-result")
+  })
 })
 
 describe("sessionChatApp (AppHandle / catalog path)", () => {

@@ -69,4 +69,23 @@ describe("builtin-apps.ts — boot-time mount, no app_install required", () => {
 
     await client.close()
   })
+
+  it("serves the session-chat widget as a self-bootstrapping bridge page (agent_start's launch card)", async () => {
+    // agent_start binds to ui://agentproto_session_chat/view (agent-tools.ts);
+    // the resource is rendered once with empty initData, so the page must
+    // resolve the deep link at runtime from the host's tool-result push.
+    const client = await setup()
+    const result = await client.readResource({ uri: "ui://agentproto_session_chat/view" })
+    const content = result.contents[0]
+    if (!content || !("text" in content)) throw new Error("expected text resource")
+
+    expect(content.mimeType).toBe("text/html;profile=mcp-app")
+    expect(content.text).toContain("appInfo")
+    expect(content.text).toContain("ui/notifications/tool-result")
+    expect(content.text).toContain("extractToolResultSessionId")
+    expect(content.text).toContain("callTool('agentproto_session_chat'")
+    expect(content.text).not.toContain("<iframe")
+
+    await client.close()
+  })
 })
