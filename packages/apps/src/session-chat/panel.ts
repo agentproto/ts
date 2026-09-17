@@ -78,8 +78,14 @@ export function sessionChatEmbedHtml(initData: Partial<SessionChatOutput>): stri
 html,body{height:100%;font-family:system-ui,-apple-system,sans-serif;background:#0d1117;color:#e6edf3;overflow:hidden}
 #bar{padding:6px 12px;font-size:12px;color:#8b949e;background:#161b22;border-bottom:1px solid #30363d}
 #bar a{color:#58a6ff}
-#stage{height:calc(100% - 29px)}
-#chat{border:0;display:block;width:100%;height:100%}
+#stage{position:relative;height:calc(100% - 29px)}
+#chat{position:absolute;inset:0;z-index:2;border:0;display:block;width:100%;height:100%}
+#card{position:absolute;inset:0;z-index:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;text-align:center;padding:24px}
+#card h2{font-size:15px;font-weight:600}
+#card .sid{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:#8b949e;background:#161b22;border:1px solid #30363d;border-radius:4px;padding:2px 8px}
+#card p{font-size:12px;color:#8b949e;max-width:420px;line-height:1.5}
+#card a{display:inline-block;margin-top:2px;border:1px solid #30363d;background:#161b22;color:#58a6ff;font-size:13px;padding:7px 14px;border-radius:6px;text-decoration:none}
+#card a:hover{border-color:#58a6ff}
 #notice{display:none;max-width:560px;margin:0 auto;padding:48px 24px;line-height:1.6}
 #notice.show{display:block}
 #notice h1{font-size:18px;margin-bottom:12px}
@@ -89,7 +95,12 @@ html,body{height:100%;font-family:system-ui,-apple-system,sans-serif;background:
 </head>
 <body>
 <div id="bar">Session Chat &#183; <span id="link">${link}</span></div>
-<div id="stage">${iframe}<div id="notice"${notInstalled ? ' class="show"' : ""}>
+<div id="stage">${iframe}<div id="card">
+  <h2>Session Chat</h2>
+  <div id="card-session" class="sid">&#8212;</div>
+  <p>Full embed isn't supported by this host &#8212; the chat opens in a browser tab.</p>
+  <a id="card-open" href="#">Open chat</a>
+</div><div id="notice"${notInstalled ? ' class="show"' : ""}>
   <h1>Session Chat is not installed</h1>
   <p>This panel is a thin launcher for the <code>@agentik/session-chat</code> app &#8212;
   it does not bundle the chat UI itself.</p>
@@ -107,6 +118,9 @@ var pinnedSessionId = null;   // session named by the host's tool-result push
 var pendingUrl = null;        // url pushed by the host before the bridge was up
 var pendingNotInstalled = false;
 var bridged = false;
+var cardUrl = null;           // deep link once resolved (drives the card button)
+var cardSessionEl = document.getElementById('card-session');
+var cardOpenEl = document.getElementById('card-open');
 
 function escapeHtml(text) {
   return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
@@ -124,6 +138,8 @@ function mount(url) {
   frame.title = 'Session Chat';
   frame.src = withEmbedToken(url);
   stage.insertBefore(frame, stage.firstChild);
+  setCardUrl(url);
+  armBlockProbe(frame);
   document.getElementById('link').innerHTML =
     '<a href="' + escapeHtml(url) + '" target="_blank" rel="noreferrer">open in a tab</a>';
 }
@@ -132,6 +148,7 @@ function showNotInstalled() {
   var old = document.getElementById('chat');
   if (old) old.remove();
   mountedUrl = null;
+  document.getElementById('card').style.display = 'none';
   document.getElementById('notice').className = 'show';
   document.getElementById('link').textContent = 'app not installed';
 }
@@ -162,6 +179,7 @@ function extractToolResultSessionId(params) {
 
 // Turn a session id into the installed app's deep link over the bridge.
 function resolveSession(sessionId) {
+  noteSession(sessionId);
   return callTool('agentproto_session_chat', sessionId ? { sessionId: sessionId } : {})
     .then(function(out) {
       if (out && out.installed && typeof out.url === 'string' && out.url) mount(out.url);
@@ -172,12 +190,57 @@ function resolveSession(sessionId) {
     });
 }
 
+// ── Launcher card (the frame-blocked fallback UI) ────────────────────────
+// The iframe mounts OVER the card. When the host's own CSP refuses the
+// frame (Claude Desktop / Codex widget frames run frame-src 'self' blob:
+// data: and do not yet merge csp.frameDomains), the frame stays on a
+// same-origin about:blank — readable, unlike the loaded cross-origin chat —
+// and is removed after a settle window so the card becomes the interactive
+// surface.
+cardOpenEl.addEventListener('click', function (evt) {
+  if (!cardUrl) { evt.preventDefault(); return; }
+  var ctx = getHostContext() || {};
+  if (ctx.openLinks) {           // host advertised ui/open-link
+    evt.preventDefault();
+    openLink(cardUrl).catch(function () { window.open(cardUrl, '_blank'); });
+  }
+  // else: the anchor's own target=_blank handles it.
+});
+
+function noteSession(id) {
+  if (id && cardSessionEl) cardSessionEl.textContent = id;
+}
+
+function setCardUrl(u) {
+  if (!u) return;
+  cardUrl = u;
+  cardOpenEl.setAttribute('href', u);
+}
+
+// A blocked frame never leaves about:blank (same-origin with this page —
+// readable); the loaded chat is cross-origin (the probe throws). A readable
+// frame that is STILL blank when the settle window closes = blocked.
+function armBlockProbe(frame) {
+  var settle = null;
+  function probe() {
+    var blank = false;
+    try { blank = frame.contentWindow.location.href === 'about:blank'; } catch (_) { blank = false; }
+    if (settle) { clearTimeout(settle); settle = null; }
+    if (!blank) return;
+    settle = setTimeout(function () { frame.remove(); }, 2000);
+  }
+  setTimeout(function () {
+    frame.addEventListener('load', probe);
+    probe();
+  }, 100);
+}
+
 // A url baked at render time (a host that re-renders per call with a real
 // initData) mounts on boot — through the embed token like every other
 // mount, since the same opaque widget context frames it.
 if (mountedUrl) {
   var frame = document.getElementById('chat');
-  if (frame) frame.src = withEmbedToken(mountedUrl);
+  if (frame) { frame.src = withEmbedToken(mountedUrl); setCardUrl(mountedUrl); armBlockProbe(frame); }
 }
 
 // The host pushes the triggering tool call's result (ext-apps
@@ -198,6 +261,7 @@ onHostNotification(function(method, params) {
   var id = extractToolResultSessionId(params);
   if (!id || id === pinnedSessionId) return;
   pinnedSessionId = id;
+  noteSession(id);
   if (bridged) resolveSession(id);
 });
 

@@ -177,6 +177,10 @@ function initBridge(){
 function requestDisplayMode(mode){
   return rpcRequest('ui/request-display-mode', {mode: mode});
 }
+function openLink(url){
+  if (_standaloneApp && typeof _standaloneApp.openLink === 'function') return _standaloneApp.openLink(url);
+  return rpcRequest('ui/open-link', {url: url});
+}
 function callTool(name, args){
   var raw = _standaloneApp
     ? _standaloneApp.callTool(name, args || {})

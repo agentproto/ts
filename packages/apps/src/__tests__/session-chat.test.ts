@@ -154,6 +154,20 @@ describe("makeSessionChatApp", () => {
     expect(baked).toContain("frame.src = withEmbedToken(url)")
   })
 
+  it("degrades to an inline launcher card when the host refuses the frame", () => {
+    const html = sessionChatEmbedHtml({})
+    // The card is the default surface; the iframe mounts OVER it and is
+    // removed by the block probe when a host CSP (Claude Desktop / Codex:
+    // frame-src 'self' blob: data:, csp.frameDomains not yet merged) refuses it.
+    expect(html).toContain('<div id="card">')
+    expect(html).toContain('id="card-open"')
+    expect(html).toContain("armBlockProbe(frame)")
+    expect(html).toContain("frame.contentWindow.location.href === 'about:blank'")
+    // The card routes its CTA through the spec's ui/open-link when the host
+    // advertises it, falling back to the anchor.
+    expect(html).toContain("openLink(cardUrl)")
+  })
+
   it("the not-installed render shows the notice inline and still carries the bridge", () => {
     const html = sessionChatEmbedHtml({ installed: false, url: null })
     expect(html).toContain('id="notice" class="show"')
