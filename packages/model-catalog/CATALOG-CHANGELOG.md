@@ -105,3 +105,22 @@ for that.
 
 ### image:replicate
 - Added: flux, flux-1.1-pro-ultra, flux-2-dev, flux-kontext-max, flux-kontext-pro, gpt-image-1, ideogram-v3, minimax, nano-banana, nano-banana-2, nano-banana-pro, recraft, seedream-4
+
+## 2026-09-16
+
+### llm:openrouter
+- Added: ~deepseek/deepseek-flash-latest, ~deepseek/deepseek-pro-latest
+- Removed: google/gemini-2.5-pro-preview-05-06, google/gemma-4-31b-it:batch, openai/gpt-4-turbo-preview, openai/gpt-oss-20b:batch, thinkingmachines/inkling-small:batch
+
+### llm:opencode-go
+- Added: opencode-go/union-alpha
+
+### llm:opencode-zen
+- Added: opencode/union-alpha
+
+### llm:huggingface
+- Added: CohereLabs/c4ai-command-r7b-arabic-02-2025, CohereLabs/command-a-plus-05-2026-bf16, zai-org/GLM-4.7-FP8, zai-org/GLM-5.1-FP8
+- Removed: Qwen/Qwen2.5-7B-Instruct, google/gemma-3n-E4B-it, ibm-granite/granite-4.2-30b
+
+### image:replicate
+- Added: flux, flux-1.1-pro-ultra, flux-2-dev, flux-kontext-max, flux-kontext-pro, gpt-image-1, ideogram-v3, minimax, nano-banana, nano-banana-2, nano-banana-pro, recraft, seedream-4

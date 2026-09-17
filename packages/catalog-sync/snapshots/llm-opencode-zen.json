@@ -478,7 +478,7 @@
       "glm-5.3-flash": {
         "id": "glm-5.3-flash",
         "name": "GLM-5.3-Flash",
-        "family": "glm",
+        "family": "glm-flash",
         "release_date": "2026-08-26",
         "cost": {
           "input": 0.15,
@@ -1302,6 +1302,19 @@
         "cost": {
           "input": 0,
           "output": 0
+        }
+      },
+      "union-alpha": {
+        "id": "union-alpha",
+        "name": "Union Alpha Free",
+        "release_date": "2026-09-16",
+        "provider": {
+          "npm": "@ai-sdk/anthropic"
+        },
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
         }
       },
       "x-preview-f-free": {
