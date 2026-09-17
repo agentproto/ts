@@ -80,10 +80,17 @@ async function connectTools(
   return client
 }
 
+/** Wraps a payload the way a real MCP `tools/call` result does — a JSON text
+ *  content block, no `structuredContent` — matching what agentpush's server
+ *  actually returns. */
+function mcpTextResult(payload: unknown): ProxyCallOutcome {
+  return { ok: true, result: { content: [{ type: "text", text: JSON.stringify(payload) }] } }
+}
+
 describe("transmit_message", () => {
-  it("agentpush provider calls send_message and binds by default", async () => {
+  it("agentpush provider calls send_message, binds by default, and surfaces message_id", async () => {
     const callTool = vi.fn(
-      async (): Promise<ProxyCallOutcome> => ({ ok: true, result: { content: [] } }),
+      async (): Promise<ProxyCallOutcome> => mcpTextResult({ status: "sent", message_id: "msg-1" }),
     )
     const mcpProxy = { callTool } as unknown as McpProxyRegistry
     const bindingStore = makeBindingStore()
@@ -108,7 +115,7 @@ describe("transmit_message", () => {
       to: { channel: "+33600000000", address: "alice" },
       content: { text: "hello alice" },
     })
-    expect(JSON.parse(textOf(res))).toEqual({ sent: true, bound: true })
+    expect(JSON.parse(textOf(res))).toEqual({ sent: true, bound: true, message_id: "msg-1" })
 
     const binding = bindingStore.get("agentpush", "+33600000000", "alice")
     expect(binding).toMatchObject({
@@ -121,16 +128,58 @@ describe("transmit_message", () => {
     })
   })
 
+  it("agentpush blocked status is reported as sent:false with blocked_reason/suggestion and does not bind", async () => {
+    // The exact body agentpush returned (HTTP 200) for the WhatsApp send that
+    // never arrived — proven in prod 2026-09-17.
+    const callTool = vi.fn(
+      async (): Promise<ProxyCallOutcome> =>
+        mcpTextResult({
+          status: "blocked",
+          blocked_reason: "session_expired",
+          suggestion:
+            "La fenêtre de session WhatsApp 24h est expirée ou absente. Utilisez un template approuvé pour initier la conversation.",
+        }),
+    )
+    const mcpProxy = { callTool } as unknown as McpProxyRegistry
+    const bindingStore = makeBindingStore()
+    const registry = createSessionsRegistry({ persist: false })
+
+    const client = await connectTools(registry, mcpProxy, bindingStore)
+
+    const res = (await client.callTool({
+      name: "transmit_message",
+      arguments: {
+        provider: "agentpush",
+        alias: "agentpush-prod",
+        source: "whatsapp",
+        contact_ref: "+33679942048",
+        text: "hello",
+        sessionId: "sess_blocked",
+      },
+    })) as ToolResult
+
+    expect(res.isError).toBe(true)
+    expect(JSON.parse(textOf(res))).toEqual({
+      sent: false,
+      bound: false,
+      error: "session_expired",
+      blocked_reason: "session_expired",
+      suggestion:
+        "La fenêtre de session WhatsApp 24h est expirée ou absente. Utilisez un template approuvé pour initier la conversation.",
+    })
+    expect(bindingStore.get("agentpush-prod", "whatsapp", "+33679942048")).toBeUndefined()
+  })
+
   it("agentpush provider uploads attachments and sends media", async () => {
     vi.mocked(readFile).mockResolvedValue(Buffer.from("fake-bytes"))
 
     const callTool = vi.fn(
       async (_alias: string, tool: string): Promise<ProxyCallOutcome> => {
         if (tool === "upload_media") {
-          return { ok: true, result: { media_id: "media-789", url: "https://example.com/x" } }
+          return mcpTextResult({ media_id: "media-789", url: "https://example.com/x" })
         }
         if (tool === "send_message") {
-          return { ok: true, result: { messageId: "msg-789" } }
+          return mcpTextResult({ status: "sent", message_id: "msg-789" })
         }
         return { ok: false, error: "unexpected tool" }
       },
@@ -177,12 +226,12 @@ describe("transmit_message", () => {
         ],
       },
     })
-    expect(JSON.parse(textOf(res))).toEqual({ sent: true, bound: true })
+    expect(JSON.parse(textOf(res))).toEqual({ sent: true, bound: true, message_id: "msg-789" })
   })
 
   it("agentpush provider defaults when provider omitted", async () => {
     const callTool = vi.fn(
-      async (): Promise<ProxyCallOutcome> => ({ ok: true, result: { content: [] } }),
+      async (): Promise<ProxyCallOutcome> => mcpTextResult({ status: "sent", message_id: "msg-default" }),
     )
     const mcpProxy = { callTool } as unknown as McpProxyRegistry
     const bindingStore = makeBindingStore()
@@ -213,7 +262,7 @@ describe("transmit_message", () => {
 
   it("agentpush provider requires alias", async () => {
     const callTool = vi.fn(
-      async (): Promise<ProxyCallOutcome> => ({ ok: true, result: { content: [] } }),
+      async (): Promise<ProxyCallOutcome> => mcpTextResult({ status: "sent", message_id: "unused" }),
     )
     const mcpProxy = { callTool } as unknown as McpProxyRegistry
     const bindingStore = makeBindingStore()
@@ -281,7 +330,7 @@ describe("transmit_message", () => {
       },
     )
     expect(callTool).not.toHaveBeenCalled()
-    expect(JSON.parse(textOf(res))).toEqual({ sent: true, bound: true })
+    expect(JSON.parse(textOf(res))).toEqual({ sent: true, bound: true, message_id: "42" })
 
     const binding = bindingStore.get("default", "123456789", "123456789")
     expect(binding).toMatchObject({
@@ -335,6 +384,42 @@ describe("transmit_message", () => {
     vi.unstubAllGlobals()
   })
 
+  it("telegram provider surfaces an HTTP-200 ok:false reply as sent:false, not sent:true, and does not bind", async () => {
+    const globalFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: false, error_code: 400, description: "Bad Request: chat not found" }),
+    } as unknown as Response)
+    vi.stubGlobal("fetch", globalFetch)
+
+    const telegramCreds = makeMockTelegramCreds({ token: "test-token-123" })
+    const mcpProxy = { callTool: vi.fn() } as unknown as McpProxyRegistry
+    const bindingStore = makeBindingStore()
+    const registry = createSessionsRegistry({ persist: false })
+
+    const client = await connectTools(registry, mcpProxy, bindingStore, telegramCreds)
+
+    const res = (await client.callTool({
+      name: "transmit_message",
+      arguments: {
+        provider: "telegram",
+        source: "000",
+        contact_ref: "000",
+        text: "hi",
+        sessionId: "sess_tg_fail",
+      },
+    })) as ToolResult
+
+    expect(res.isError).toBe(true)
+    expect(JSON.parse(textOf(res))).toMatchObject({
+      sent: false,
+      bound: false,
+      error: expect.stringContaining("Bad Request: chat not found"),
+    })
+    expect(bindingStore.get("default", "000", "000")).toBeUndefined()
+
+    vi.unstubAllGlobals()
+  })
+
   it("telegram provider surfaces missing creds as error", async () => {
     const mcpProxy = { callTool: vi.fn() } as unknown as McpProxyRegistry
     const bindingStore = makeBindingStore()
@@ -362,7 +447,7 @@ describe("transmit_message", () => {
 
   it("bind:false sends without upserting a binding", async () => {
     const callTool = vi.fn(
-      async (): Promise<ProxyCallOutcome> => ({ ok: true, result: { content: [] } }),
+      async (): Promise<ProxyCallOutcome> => mcpTextResult({ status: "sent", message_id: "msg-2" }),
     )
     const mcpProxy = { callTool } as unknown as McpProxyRegistry
     const bindingStore = makeBindingStore()
@@ -383,7 +468,7 @@ describe("transmit_message", () => {
     })) as ToolResult
 
     expect(res.isError).toBeFalsy()
-    expect(JSON.parse(textOf(res))).toEqual({ sent: true, bound: false })
+    expect(JSON.parse(textOf(res))).toEqual({ sent: true, bound: false, message_id: "msg-2" })
     expect(bindingStore.get("agentpush", "+33600000000", "bob")).toBeUndefined()
   })
 
