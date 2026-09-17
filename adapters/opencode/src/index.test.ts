@@ -61,13 +61,15 @@ describe("@agentproto/adapter-opencode", () => {
         )
         .map((entry) => entry.id)
 
-    // The verified models.dev lineups: Go 36, Zen 102. These live only in the
-    // generated route tables (deliberately not spread into
-    // LLM_PRICING_CATALOG), so they reach the menu via getModelsByProvider.
+    // These live only in the generated route tables (deliberately not spread
+    // into LLM_PRICING_CATALOG), so they reach the menu via getModelsByProvider.
+    // Bounds, not exact counts: the lineups are catalog-synced, and an exact
+    // length pin reddens the weekly sync when the roster gains or loses a
+    // model — union-alpha moved Go 36 to 37 (cf. #1324/#1328, same pattern).
     const go = byProvider("opencode-go")
     const zen = byProvider("opencode")
-    expect(go).toHaveLength(36)
-    expect(zen).toHaveLength(102)
+    expect(go.length).toBeGreaterThan(30)
+    expect(zen.length).toBeGreaterThan(90)
 
     // `<provider>/<bare-id>` — exactly how opencode's own config addresses
     // them, which is also what `modelIdPrefixProvider` reads to derive the
