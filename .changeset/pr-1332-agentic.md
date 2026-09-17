@@ -1,5 +1,6 @@
 ---
 "@agentproto/adapter-claude-code": patch
+"@agentproto/adapter-claude-sdk": patch
 ---
 
-Relax the curated-models test's `opencode-go` assertion from an exact literal list to membership checks, keeping the derived-menu equality assertions as the exact-shape guard (de-flakes catalog syncs).
+Relax curated-models / gateway-modes test assertions for `opencode-go` from exact literal id lists to membership checks, keeping the derived-menu equality assertions as the exact-shape guard (de-flakes catalog syncs).
