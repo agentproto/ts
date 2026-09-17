@@ -1,5 +1,11 @@
 # @agentproto/runtime
 
+## 3.5.0
+
+### Minor Changes
+
+- b8fdbc6: Fix transmit_message/sendOutbound reporting sent:true on a blocked/failed agentpush send; surface message_id, blocked_reason, and suggestion
+
 ## 3.4.0
 
 ### Minor Changes
