@@ -77,8 +77,19 @@ and, by default, binds the recipient to the calling session:
 - `bind` defaults to `true` — on a successful send, upserts a binding
   `(alias, source, contact_ref) -> sessionId` with `mode: "route-or-spawn"` and
   the chosen `provider`. Pass `bind: false` to send without binding.
-- Returns `{ sent: boolean, bound: boolean }`. A send failure (`sent:
-  false`) never binds.
+- Returns `{ sent: boolean, bound: boolean, message_id?: string }` on success,
+  or `{ sent: false, bound: false, error: string, blocked_reason?: string,
+  suggestion?: string }` on failure. A send failure (`sent: false`) never
+  binds. `message_id` is the provider's own id for the sent message — pass it
+  to `check_delivery` to verify the send landed.
+- **agentpush never throws for a send it can't make** — it replies HTTP 200
+  with `status: "blocked"` (opt-out, expired session, unapproved template…)
+  or `status: "failed"`. `transmit_message` reads that status instead of
+  treating MCP transport success as delivery: a `blocked` or `failed` reply
+  is surfaced as `sent: false` with `blocked_reason`/`suggestion` (or
+  `error`) propagated, never as a false `sent: true`. Telegram gets the same
+  treatment for its own backward-compat case — an HTTP 200 body with
+  `ok: false` is also reported as `sent: false`, not `sent: true`.
 
 ### Provider-specific behaviour
 

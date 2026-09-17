@@ -2120,7 +2120,16 @@ export function registerOrchestrationTools(
         if (!out.ok) {
           return {
             content: [
-              { type: "text", text: JSON.stringify({ sent: false, bound: false, error: out.error }) },
+              {
+                type: "text",
+                text: JSON.stringify({
+                  sent: false,
+                  bound: false,
+                  error: out.error,
+                  ...(out.blockedReason ? { blocked_reason: out.blockedReason } : {}),
+                  ...(out.suggestion ? { suggestion: out.suggestion } : {}),
+                }),
+              },
             ],
             isError: true,
           }
@@ -2138,7 +2147,18 @@ export function registerOrchestrationTools(
           })
         }
 
-        return { content: [{ type: "text", text: JSON.stringify({ sent: true, bound }) }] }
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                sent: true,
+                bound,
+                ...(out.providerMessageId ? { message_id: out.providerMessageId } : {}),
+              }),
+            },
+          ],
+        }
       },
     )
   }

@@ -51,7 +51,7 @@ export interface SendOutboundDeps {
 
 export type SendOutboundResult =
   | { ok: true; providerMessageId?: string }
-  | { ok: false; error: string }
+  | { ok: false; error: string; blockedReason?: string; suggestion?: string }
 
 export async function sendOutbound(
   provider: OutboundProvider,
@@ -77,6 +77,34 @@ export async function sendOutbound(
 // ── agentpush ───────────────────────────────────────────────────────────
 
 type AgentpushMediaType = "image" | "video" | "audio" | "document"
+
+/**
+ * Unwrap an MCP `tools/call` result into its payload object. agentpush tools
+ * return structured JSON (`structuredContent`, or a JSON-serialized text
+ * content block) rather than a flat object — reading fields straight off the
+ * `CallToolResult` envelope silently finds nothing. Falls back to treating
+ * the input as an already-flat payload for callers/tests that pass one directly.
+ */
+function unwrapMcpToolResult(result: unknown): Record<string, unknown> {
+  if (!result || typeof result !== "object") return {}
+  const envelope = result as {
+    structuredContent?: unknown
+    content?: Array<{ type?: string; text?: string }>
+  }
+  if (envelope.structuredContent && typeof envelope.structuredContent === "object") {
+    return envelope.structuredContent as Record<string, unknown>
+  }
+  const text = envelope.content?.find(c => c.type === "text")?.text
+  if (typeof text === "string") {
+    try {
+      const parsed = JSON.parse(text) as unknown
+      if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>
+    } catch {
+      // Not JSON — fall through to the flat-payload treatment below.
+    }
+  }
+  return result as Record<string, unknown>
+}
 
 async function sendAgentpush(
   input: SendOutboundInput,
@@ -115,10 +143,7 @@ async function sendAgentpush(
         return { ok: false, error: `upload_media_failed: ${upload.error}` }
       }
 
-      const result =
-        typeof upload.result === "object" && upload.result !== null
-          ? (upload.result as Record<string, unknown>)
-          : {}
+      const result = unwrapMcpToolResult(upload.result)
       const providerMediaId =
         typeof result.media_id === "string"
           ? result.media_id
@@ -153,8 +178,30 @@ async function sendAgentpush(
     return { ok: false, error: out.error }
   }
 
-  // Try to extract a provider message id from the result.
-  const providerMessageId = extractProviderMessageId(out.result)
+  // agentpush's house convention: a tool never throws for a send it can't
+  // make — it replies HTTP 200 with `status: "blocked"` (opt-out, expired
+  // session, unapproved template…) or `status: "failed"`. Reading only the
+  // MCP transport's own success (`out.ok`) — as this used to — reports
+  // `sent: true` on a message that never left. Read the payload's own
+  // status instead of trusting transport-level success.
+  const payload = unwrapMcpToolResult(out.result)
+  const status = typeof payload.status === "string" ? payload.status : undefined
+
+  if (status === "blocked") {
+    const blockedReason =
+      typeof payload.blocked_reason === "string" ? payload.blocked_reason : "blocked"
+    const suggestion = typeof payload.suggestion === "string" ? payload.suggestion : undefined
+    return { ok: false, error: blockedReason, blockedReason, ...(suggestion ? { suggestion } : {}) }
+  }
+  if (status === "failed") {
+    const error = typeof payload.error === "string" ? payload.error : "failed"
+    return { ok: false, error }
+  }
+
+  // status is "sent" | "queued" (or an unrecognized/legacy shape) — treat as
+  // a real send and surface the provider's own message id so `check_delivery`
+  // (which requires `message_id` or `broadcast_id`) can be used afterwards.
+  const providerMessageId = extractProviderMessageId(payload)
   return { ok: true, providerMessageId }
 }
 
@@ -189,13 +236,7 @@ async function sendTelegram(
       }),
     })
 
-    if (!res.ok) {
-      const body = await res.text().catch(() => "")
-      return { ok: false, error: `telegram_http_${res.status}: ${body}` }
-    }
-
-    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
-    return { ok: true, providerMessageId: extractTelegramMessageId(json) }
+    return parseTelegramSendResponse(res)
   }
 
   // Media path: read files and build multipart/form-data.
@@ -235,13 +276,7 @@ async function sendTelegram(
       body: toFetchBody(body),
     })
 
-    if (!res.ok) {
-      const bodyText = await res.text().catch(() => "")
-      return { ok: false, error: `telegram_http_${res.status}: ${bodyText}` }
-    }
-
-    const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
-    return { ok: true, providerMessageId: extractTelegramMessageId(json) }
+    return parseTelegramSendResponse(res)
   }
 
   const mediaJson = input.attachments.map((att, index) => {
@@ -279,12 +314,28 @@ async function sendTelegram(
     body: toFetchBody(body),
   })
 
+  return parseTelegramSendResponse(res)
+}
+
+/**
+ * Parses a Telegram Bot API send response. Telegram's own docs note that,
+ * for backward compatibility, some errors are returned with HTTP status 200
+ * and `ok: false` in the body rather than a non-2xx status — the exact same
+ * class of false positive as agentpush's `status: "blocked"`. Check the
+ * body's own `ok` field instead of trusting the HTTP status alone.
+ */
+async function parseTelegramSendResponse(res: Response): Promise<SendOutboundResult> {
   if (!res.ok) {
-    const bodyText = await res.text().catch(() => "")
-    return { ok: false, error: `telegram_http_${res.status}: ${bodyText}` }
+    const body = await res.text().catch(() => "")
+    return { ok: false, error: `telegram_http_${res.status}: ${body}` }
   }
 
   const json = (await res.json().catch(() => ({}))) as Record<string, unknown>
+  if (json.ok !== true) {
+    const description = typeof json.description === "string" ? json.description : "unknown_error"
+    return { ok: false, error: `telegram_error: ${description}` }
+  }
+
   return { ok: true, providerMessageId: extractTelegramMessageId(json) }
 }
 
