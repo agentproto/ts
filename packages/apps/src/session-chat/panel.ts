@@ -99,7 +99,7 @@ html,body{height:100%;font-family:system-ui,-apple-system,sans-serif;background:
   <h2>Session Chat</h2>
   <div id="card-session" class="sid">&#8212;</div>
   <p>Full embed isn't supported by this host &#8212; the chat opens in a browser tab.</p>
-  <a id="card-open" href="#">Open chat</a>
+  <a id="card-open" href="#" target="_blank" rel="noreferrer">Open chat</a>
 </div><div id="notice"${notInstalled ? ' class="show"' : ""}>
   <h1>Session Chat is not installed</h1>
   <p>This panel is a thin launcher for the <code>@agentik/session-chat</code> app &#8212;
@@ -197,14 +197,14 @@ function resolveSession(sessionId) {
 // same-origin about:blank — readable, unlike the loaded cross-origin chat —
 // and is removed after a settle window so the card becomes the interactive
 // surface.
+//
+// The anchor itself carries target="_blank" rel="noreferrer", so a plain
+// click always opens the deep link in a new tab without touching this
+// frame — no host-context capability to branch on here (the ext-apps spec
+// has no openLinks / ui/open-link host-context field for this app to
+// check).
 cardOpenEl.addEventListener('click', function (evt) {
   if (!cardUrl) { evt.preventDefault(); return; }
-  var ctx = getHostContext() || {};
-  if (ctx.openLinks) {           // host advertised ui/open-link
-    evt.preventDefault();
-    openLink(cardUrl).catch(function () { window.open(cardUrl, '_blank'); });
-  }
-  // else: the anchor's own target=_blank handles it.
 });
 
 function noteSession(id) {
@@ -220,14 +220,23 @@ function setCardUrl(u) {
 // A blocked frame never leaves about:blank (same-origin with this page —
 // readable); the loaded chat is cross-origin (the probe throws). A readable
 // frame that is STILL blank when the settle window closes = blocked.
+function isBlank(frame) {
+  try { return frame.contentWindow.location.href === 'about:blank'; } catch (_) { return false; }
+}
+
 function armBlockProbe(frame) {
   var settle = null;
   function probe() {
-    var blank = false;
-    try { blank = frame.contentWindow.location.href === 'about:blank'; } catch (_) { blank = false; }
     if (settle) { clearTimeout(settle); settle = null; }
-    if (!blank) return;
-    settle = setTimeout(function () { frame.remove(); }, 2000);
+    if (!isBlank(frame)) return;
+    // Still on about:blank right now — arm the settle window, but
+    // re-check when it closes: a slow (not blocked) load may have landed
+    // in the meantime, and only a frame STILL blank after the window gets
+    // removed. `load` firing in between clears this timeout above.
+    settle = setTimeout(function () {
+      settle = null;
+      if (isBlank(frame)) frame.remove();
+    }, 2000);
   }
   setTimeout(function () {
     frame.addEventListener('load', probe);

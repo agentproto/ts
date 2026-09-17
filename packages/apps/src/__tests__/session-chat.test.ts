@@ -163,9 +163,20 @@ describe("makeSessionChatApp", () => {
     expect(html).toContain('id="card-open"')
     expect(html).toContain("armBlockProbe(frame)")
     expect(html).toContain("frame.contentWindow.location.href === 'about:blank'")
-    // The card routes its CTA through the spec's ui/open-link when the host
-    // advertises it, falling back to the anchor.
-    expect(html).toContain("openLink(cardUrl)")
+    // The CTA is a plain new-tab anchor — no host-context field exists to
+    // branch on, so the click handler must not depend on one.
+    expect(html).toContain('<a id="card-open" href="#" target="_blank" rel="noreferrer">Open chat</a>')
+    expect(html).not.toContain("ctx.openLinks")
+    expect(html).not.toContain("openLink(cardUrl)")
+  })
+
+  it("re-checks the frame before removing it when the block-probe settle window closes (no false positive on a slow load)", () => {
+    const html = sessionChatEmbedHtml({})
+    // The settle timeout must re-read the frame's location instead of
+    // unconditionally removing it — a legitimately slow (not blocked) load
+    // that lands its `load` event mid-window must not get torn down.
+    expect(html).toContain("settle = setTimeout(function () {")
+    expect(html).toContain("if (isBlank(frame)) frame.remove();")
   })
 
   it("the not-installed render shows the notice inline and still carries the bridge", () => {
