@@ -45,8 +45,10 @@ describe("makeSessionChatApp", () => {
     expect(app.inputSchema.shape.sessionId).toBeDefined()
     // sessionId is optional — omitting it opens the app's session picker.
     expect(app.inputSchema.safeParse({}).success).toBe(true)
-    // CSP: frame the daemon origin only (the standalone app host).
+    // CSP: frame AND connect to the daemon origin only (the standalone app
+    // host — framed by the direct mount, fetched by the blob pass-through).
     expect(app.csp?.frameDomains).toEqual(["http://127.0.0.1:18790"])
+    expect(app.csp?.connectDomains).toEqual(["http://127.0.0.1:18790"])
   })
 
   it("resolves sessionId -> deep-link url when the app is installed", async () => {
@@ -85,8 +87,10 @@ describe("makeSessionChatApp", () => {
       url: "http://127.0.0.1:18790/apps/@agentik/session-chat/ui?session=s1&embed=1",
     })
     expect(html).toContain('<iframe id="chat" title="Session Chat"></iframe>')
-    // The url mounts through the embed token, never as an inline src.
-    expect(html).toContain("frame.src = withEmbedToken(mountedUrl)")
+    // The baked url goes through the same blob-first mount() as a pushed
+    // one, never as an inline src.
+    expect(html).toContain("mount(bootUrl)")
+    expect(html).not.toMatch(/<iframe[^>]*\ssrc=/)
     expect(html).toContain("open in a tab")
     // No vendored chat UI — the page must not carry chat machinery.
     expect(html).not.toContain("conversation_read")
@@ -146,12 +150,35 @@ describe("makeSessionChatApp", () => {
     // bakes a real token over it when serving the resource.
     expect(html).toContain('window.__AGENPROTO_EMBED_TOKEN__ = "__AGENPROTO_EMBED_TOKEN__"')
     expect(html).toContain("function withEmbedToken(url)")
-    // The deep-linked mount (and only it — the open-in-tab link stays
-    // token-free) goes through the token.
+    // The deep-linked mounts (and only they — the open-in-tab link stays
+    // token-free) go through the token: the blob fetch and the direct frame.
+    expect(html).toContain("var tokened = withEmbedToken(url)")
+    expect(html).toContain("fetch(tokened, { credentials: 'omit' })")
     expect(html).toContain("frame.src = withEmbedToken(url)")
-    // With a baked token the mounted url gains `et=`.
-    const baked = sessionChatEmbedHtml({ installed: true, url: "http://127.0.0.1:18790/apps/x/ui?embed=1" })
-    expect(baked).toContain("frame.src = withEmbedToken(url)")
+    expect(html).toContain("'<a href=\"' + escapeHtml(url) + '\" target=\"_blank\"")
+  })
+
+  it("mounts the chat as a blob: document first (host frame-src 'self' blob: data:), direct frame as the fallback", () => {
+    const html = sessionChatEmbedHtml({})
+    // The shared transform is embedded, and the fetched html goes through it.
+    expect(html).toContain("function transformChatHtmlForBlob(html, url, token)")
+    expect(html).toContain("transformChatHtmlForBlob(html, url, window.__AGENPROTO_EMBED_TOKEN__)")
+    expect(html).toContain("URL.createObjectURL(new Blob([doc], { type: 'text/html' }))")
+    expect(html).toContain("frame.src = blobUrl")
+    // Object-url lifecycle: revoked on re-mount / not-installed / fallback.
+    expect(html).toContain("URL.revokeObjectURL(blobUrl)")
+    expect(html.match(/revokeBlob\(\)/g)!.length).toBeGreaterThanOrEqual(3)
+    // Boot ack probe: the blob document must announce itself or the panel
+    // falls back to the direct frame (whose block probe ends on the card).
+    expect(html).toContain("d.type !== \"agentproto-blob-boot\"")
+    expect(html).toContain("evt.source !== frame.contentWindow")
+    expect(html).toContain("armBlobBootProbe(frame, url, gen)")
+    // Both failure modes (fetch refused, no boot ack) land on mountDirect.
+    expect(html.match(/mountDirect\(url\)/g)!.length).toBeGreaterThanOrEqual(3)
+    // No token baked (standalone tab / VS Code) ⇒ no blob attempt at all.
+    expect(html).toContain("if (tokened === url) {")
+    // Still no vendored chat machinery.
+    expect(html).not.toContain("conversation_read")
   })
 
   it("degrades to an inline launcher card when the host refuses the frame", () => {

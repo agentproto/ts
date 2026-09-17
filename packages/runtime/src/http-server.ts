@@ -1025,7 +1025,8 @@ export async function startHttpServer(
     if (
       typeof origin === "string" &&
       origin.length > 0 &&
-      !originAllowed(origin)
+      !originAllowed(origin) &&
+      !embedTokenTrusted(req)
     ) {
       const auth = readAuth()
       const header = req.headers.authorization
@@ -1090,7 +1091,33 @@ export async function startHttpServer(
     const origin = req.headers.origin
     if (typeof origin === "string" && originAllowed(origin)) return "ok"
 
+    // 4. A valid per-boot widget embed token (`?et=`, see
+    //    `embedTokenTrusted`) — the MCP-Apps widget path, whose blob:
+    //    document has an opaque origin no allowlist can name.
+    if (embedTokenTrusted(req)) return "ok"
+
     return header ? "bad" : "missing"
+  }
+
+  /**
+   * A valid per-boot widget embed token (`?et=`, embed-tokens.ts) rides on
+   * the request url. Treated as the equivalent of an allowlisted `Origin`
+   * by every browser-facing gate (`guardBrowserOrigin`, `authorizeMcp`,
+   * `checkSessionsToken`, `applyCors`): the token is minted only into the
+   * daemon's own MCP-Apps panel resources, so its holder is by construction
+   * an MCP-authenticated host that already has `tools/call` — no new
+   * privilege is granted, only the ability to reach the same surface from a
+   * context whose `Origin` is opaque (`null`). That is exactly the
+   * session-chat widget's blob-frame path (packages/apps session-chat
+   * panel.ts): Claude Desktop / Codex widget frames run `frame-src 'self'
+   * blob: data:`, so the chat UI is fetched, re-based, and mounted as a
+   * `blob:` document whose every daemon request carries `Origin: null`
+   * plus this token. A hostile web page can never obtain the token (no MCP
+   * access to read the resource; can't read the host's cross-origin widget
+   * frame), and it dies with the daemon process.
+   */
+  function embedTokenTrusted(req: IncomingMessage): boolean {
+    return isValidAppEmbedToken(requestEmbedToken(req))
   }
 
   function originAllowed(origin: string): boolean {
@@ -1525,7 +1552,8 @@ export async function startHttpServer(
    *
    * Returns `true` when it has REJECTED the request (wrote a 403) — the caller
    * must stop. Returns `false` when the request may proceed to its normal
-   * auth path (no Origin, an allowlisted Origin, or a valid bearer token).
+   * auth path (no Origin, an allowlisted Origin, a valid per-boot widget
+   * embed token — see `embedTokenTrusted` — or a valid bearer token).
    */
   function guardBrowserOrigin(
     req: IncomingMessage,
@@ -1535,7 +1563,8 @@ export async function startHttpServer(
     if (
       typeof origin === "string" &&
       origin.length > 0 &&
-      !originAllowed(origin)
+      !originAllowed(origin) &&
+      !embedTokenTrusted(req)
     ) {
       const auth = readAuth()
       const header = req.headers.authorization
@@ -1580,14 +1609,7 @@ export async function startHttpServer(
     // the token — not the origin — is what unlocks the PNA preflight for
     // them. (Frame DISPLAY stays governed by the route's own CSP; this only
     // keeps the preflight from failing before that CSP is ever consulted.)
-    let tokenTrusted = false
-    try {
-      tokenTrusted = isValidAppEmbedToken(
-        new URL(req.url ?? "/", "http://localhost").searchParams.get("et"),
-      )
-    } catch {
-      // Unparseable url — treat as untrusted; nothing below depends on it.
-    }
+    const tokenTrusted = embedTokenTrusted(req)
     const originTrusted =
       typeof origin === "string" && origin.length > 0 && originAllowed(origin)
     const trusted = originTrusted || tokenTrusted
@@ -2941,6 +2963,9 @@ export async function startHttpServer(
           }
           const toolCallMatch = path.match(/^\/apps\/(.+)\/tool-call$/)
           if (toolCallMatch && req.method === "POST") {
+            // The blob-frame widget path POSTs here from an opaque origin
+            // (`Origin: null`) with `?et=` — guardBrowserOrigin itself
+            // honours the token (embedTokenTrusted), no scoped bypass needed.
             if (guardBrowserOrigin(req, res)) return
             if (!authorize(req, res)) return
             await handleAppUiToolCall(
@@ -7086,7 +7111,11 @@ async function handleAppUiPage(
     if (frameAncestors.length === 0) {
       headers["x-frame-options"] = "SAMEORIGIN"
     }
-    if (embedRequested) {
+    // A valid token with a non-iframe sec-fetch-dest is the session-chat
+    // widget's blob pass-through FETCHING the html to re-mount it as a
+    // blob: document (panel.ts mountBlob) — frame headers are moot for a
+    // fetched body, so that isn't a refusal worth logging.
+    if (embedRequested && !isValidAppEmbedToken(requestEmbedToken(req))) {
       // Observability: a widget embed that still gets refused names the
       // blocking gate right where the operator can see it — missing
       // Origin/Referer (opaque widget context with no/stale token), or a

@@ -36,6 +36,7 @@ import type { AgnoMcpApp } from "../mcp-app-types.js"
 import { SESSION_CHAT_FALLBACK_HTML, sessionChatEmbedHtml } from "./panel.js"
 
 export { SESSION_CHAT_FALLBACK_HTML, sessionChatEmbedHtml }
+export { BLOB_BOOT_MESSAGE_TYPE, blobEmbedScript } from "./blob-embed.js"
 
 /** The installed studio app this builtin widget is a launcher for. */
 export const SESSION_CHAT_APP_ID = "@agentik/session-chat"
@@ -83,9 +84,12 @@ export function sessionChatAppUrl(httpBaseUrl: string, sessionId?: string): stri
   return `${base}?${params.toString()}`
 }
 
-/** The daemon origin the widget's host-iframe CSP must allow as a frame
- *  target (same derivation as live-session's connectDomains entry). */
-function frameOrigin(httpBaseUrl: string): string {
+/** The daemon origin the widget's host-iframe CSP must allow both as a
+ *  frame target (the direct-src mount) AND as a connect target (the blob
+ *  pass-through fetches the chat html, and the blob document's own daemon
+ *  calls inherit the widget CSP — see ./blob-embed.ts). Same derivation as
+ *  live-session's connectDomains entry. */
+function daemonOrigin(httpBaseUrl: string): string {
   return new URL(httpBaseUrl).origin
 }
 
@@ -114,7 +118,15 @@ export function makeSessionChatApp(
       url: installed ? sessionChatAppUrl(ops.httpBaseUrl, input.sessionId) : null,
     }),
     html: (initData: SessionChatOutput) => sessionChatEmbedHtml(initData),
-    csp: { frameDomains: [frameOrigin(ops.httpBaseUrl)] },
+    // Spec-correct either way (ext-apps McpUiResourceMeta). Measured
+    // 2026-09-18: Claude Desktop / Codex do NOT merge frameDomains into
+    // their widget frame-src; whether they merge connectDomains is unknown,
+    // so the panel probes it at runtime (blob fetch → fallback) rather than
+    // assuming either way.
+    csp: {
+      frameDomains: [daemonOrigin(ops.httpBaseUrl)],
+      connectDomains: [daemonOrigin(ops.httpBaseUrl)],
+    },
   }
 }
 

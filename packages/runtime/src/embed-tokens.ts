@@ -15,7 +15,20 @@
  *   2. the panel appends it to the iframe URL it mounts (`?et=…`) —
  *      `GET /apps/:appId/ui` (see panel-bridge.ts `withEmbedToken`);
  *   3. handleAppUiPage drops the anti-framing headers when `et` validates,
- *      and applyCors grants the PNA preflight the same way.
+ *      and applyCors grants the PNA preflight the same way;
+ *   4. every browser-facing gate (`guardBrowserOrigin`, `authorizeMcp`,
+ *      `checkSessionsToken` — see http-server.ts `embedTokenTrusted`) treats
+ *      a valid `et` like an allowlisted `Origin`. That is what lets the
+ *      widget's blob-frame path work: hosts whose widget CSP is `frame-src
+ *      'self' blob: data:` (Claude Desktop, Codex) refuse a direct daemon
+ *      iframe, so the panel fetches the chat html and re-mounts it as a
+ *      `blob:` document — an opaque origin whose every daemon request
+ *      (`/mcp`, `/sessions/*`, `tool-call`) carries `Origin: null` plus the
+ *      token. The holder is by construction an MCP-authenticated host that
+ *      already has `tools/call`, so no privilege is added — but a token
+ *      leaked out of a widget IS an `/mcp` credential until the next daemon
+ *      restart, which is why it never rides on the user-facing
+ *      "open in a tab" link.
  *
  * A hostile web page can never obtain the token: it has no MCP access to
  * read the resource, and cannot read it out of the host's cross-origin
