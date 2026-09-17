@@ -92,6 +92,21 @@ var _standaloneApp = null;
 function _isStandalone(){
   return window.parent === window && !!window.McpApp && typeof window.McpApp.connect === 'function';
 }
+// ── Per-boot embed token (runtime embed-tokens.ts) ────────────────────────
+// Panels that iframe the daemon's standalone app host carry this proof so
+// GET /apps/:appId/ui?embed=1&et=... can drop its anti-framing headers for
+// MCP-Apps hosts whose widget context is an opaque origin (Claude Desktop).
+// registerMcpApps replaces the placeholder with a real per-boot token when
+// serving the panel as a resource; every other render (tests, standalone
+// tab, VS Code HTTP-iframe panel — the latter two already pass
+// iframeEmbedAllowed's origin checks) keeps the literal, and
+// withEmbedToken() then degrades to an identity function.
+window.__AGENPROTO_EMBED_TOKEN__ = "__AGENPROTO_EMBED_TOKEN__";
+function withEmbedToken(url){
+  var t = window.__AGENPROTO_EMBED_TOKEN__;
+  if (!t || t === '__AGENPROTO_EMBED_TOKEN__') return url;
+  return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'et=' + encodeURIComponent(t);
+}
 function post(msg){ window.parent.postMessage(msg, '*'); }
 function getHostContext(){ return _hostContext; }
 function onHostContext(cb){

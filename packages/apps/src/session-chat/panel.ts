@@ -61,7 +61,11 @@ export function sessionChatEmbedHtml(initData: Partial<SessionChatOutput>): stri
         : "connecting…"
   const iframe =
     url != null
-      ? `<iframe id="chat" title="Session Chat" src="${escapeAttr(url)}"></iframe>`
+      // No inline src: the url mounts through the bridge script below, via
+      // withEmbedToken(), so the frame never loads without the per-boot
+      // embed proof — whichever render path (static resource or a host
+      // re-render with a real initData) produced it.
+      ? `<iframe id="chat" title="Session Chat"></iframe>`
       : ""
   return `<!DOCTYPE html>
 <html lang="en">
@@ -118,7 +122,7 @@ function mount(url) {
   var frame = document.createElement('iframe');
   frame.id = 'chat';
   frame.title = 'Session Chat';
-  frame.src = url;
+  frame.src = withEmbedToken(url);
   stage.insertBefore(frame, stage.firstChild);
   document.getElementById('link').innerHTML =
     '<a href="' + escapeHtml(url) + '" target="_blank" rel="noreferrer">open in a tab</a>';
@@ -166,6 +170,14 @@ function resolveSession(sessionId) {
     .catch(function(err) {
       document.getElementById('link').textContent = 'bridge error: ' + (err && err.message ? err.message : String(err));
     });
+}
+
+// A url baked at render time (a host that re-renders per call with a real
+// initData) mounts on boot — through the embed token like every other
+// mount, since the same opaque widget context frames it.
+if (mountedUrl) {
+  var frame = document.getElementById('chat');
+  if (frame) frame.src = withEmbedToken(mountedUrl);
 }
 
 // The host pushes the triggering tool call's result (ext-apps

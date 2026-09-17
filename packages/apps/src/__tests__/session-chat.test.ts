@@ -84,7 +84,9 @@ describe("makeSessionChatApp", () => {
       installed: true,
       url: "http://127.0.0.1:18790/apps/@agentik/session-chat/ui?session=s1&embed=1",
     })
-    expect(html).toContain('src="http://127.0.0.1:18790/apps/@agentik/session-chat/ui?session=s1&amp;embed=1"')
+    expect(html).toContain('<iframe id="chat" title="Session Chat"></iframe>')
+    // The url mounts through the embed token, never as an inline src.
+    expect(html).toContain("frame.src = withEmbedToken(mountedUrl)")
     expect(html).toContain("open in a tab")
     // No vendored chat UI — the page must not carry chat machinery.
     expect(html).not.toContain("conversation_read")
@@ -108,12 +110,15 @@ describe("makeSessionChatApp", () => {
     expect(SESSION_CHAT_FALLBACK_HTML).not.toContain("<iframe")
   })
 
-  it("the embed page escapes the sessionId in the iframe src attribute", () => {
+  it("the embed page escapes the sessionId in the payload and the href attribute", () => {
     const html = sessionChatEmbedHtml({
       installed: true,
       url: 'http://127.0.0.1:18790/apps/@agentik/session-chat/ui?session=x"&embed=1',
     })
-    expect(html).toContain('src="http://127.0.0.1:18790/apps/@agentik/session-chat/ui?session=x&quot;&amp;embed=1"')
+    // The url travels as JSON in __APP_INIT__ (raw quote escaped) and in the
+    // escaped href attribute — never as an unescaped attribute value.
+    expect(html).not.toContain('session=x"')
+    expect(html).toContain("&quot;")
   })
 
   it("the static ui:// render (empty initData) self-bootstraps over the bridge and consumes agent_start's result", () => {
@@ -133,6 +138,20 @@ describe("makeSessionChatApp", () => {
     expect(html).toContain("window.__APP_INIT__ = {}")
     // Still no vendored chat machinery.
     expect(html).not.toContain("conversation_read")
+  })
+
+  it("mounts the iframe through the per-boot embed token (opaque MCP-Apps hosts pass no origin check)", () => {
+    const html = sessionChatEmbedHtml({})
+    // The placeholder rides in the shared bridge script; registerMcpApps
+    // bakes a real token over it when serving the resource.
+    expect(html).toContain('window.__AGENPROTO_EMBED_TOKEN__ = "__AGENPROTO_EMBED_TOKEN__"')
+    expect(html).toContain("function withEmbedToken(url)")
+    // The deep-linked mount (and only it — the open-in-tab link stays
+    // token-free) goes through the token.
+    expect(html).toContain("frame.src = withEmbedToken(url)")
+    // With a baked token the mounted url gains `et=`.
+    const baked = sessionChatEmbedHtml({ installed: true, url: "http://127.0.0.1:18790/apps/x/ui?embed=1" })
+    expect(baked).toContain("frame.src = withEmbedToken(url)")
   })
 
   it("the not-installed render shows the notice inline and still carries the bridge", () => {
