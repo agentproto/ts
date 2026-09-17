@@ -34,6 +34,7 @@ import { ZodError } from "zod"
 import type { UIMessageChunk } from "ai"
 import type { AgentprotoRawTranscriptRecord } from "@agentproto/transcript-fixtures"
 import type { ConversationStore } from "./conversations.js"
+import { isValidAppEmbedToken } from "./embed-tokens.js"
 import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
 import type { SessionsRegistry, AgentSessionLike, RestartPolicy } from "./sessions.js"
@@ -1572,11 +1573,31 @@ export async function startHttpServer(
   // origins — an untrusted page shouldn't be waved through the PNA gate.
   function applyCors(req: IncomingMessage, res: ServerResponse): void {
     const origin = req.headers.origin
-    const trusted =
+    // A valid widget embed token (embed-tokens.ts) rides in the URL — an
+    // unforgeable per-boot proof that the caller chain includes a legitimate
+    // MCP-Apps host rendering this daemon's own panel resource. MCP-Apps
+    // widget contexts are sandboxed/opaque origins no allowlist can name, so
+    // the token — not the origin — is what unlocks the PNA preflight for
+    // them. (Frame DISPLAY stays governed by the route's own CSP; this only
+    // keeps the preflight from failing before that CSP is ever consulted.)
+    let tokenTrusted = false
+    try {
+      tokenTrusted = isValidAppEmbedToken(
+        new URL(req.url ?? "/", "http://localhost").searchParams.get("et"),
+      )
+    } catch {
+      // Unparseable url — treat as untrusted; nothing below depends on it.
+    }
+    const originTrusted =
       typeof origin === "string" && origin.length > 0 && originAllowed(origin)
-    if (trusted) {
+    const trusted = originTrusted || tokenTrusted
+    if (originTrusted) {
       res.setHeader("Access-Control-Allow-Origin", origin as string)
       res.setHeader("Access-Control-Allow-Credentials", "true")
+    } else if (tokenTrusted && origin && origin !== "null") {
+      // Reflect without credentials — enough for the widget preflight, and
+      // never pairs Allow-Credentials with a non-allowlisted origin.
+      res.setHeader("Access-Control-Allow-Origin", origin)
     } else {
       res.setHeader("Access-Control-Allow-Origin", "*")
     }
@@ -2896,9 +2917,18 @@ export async function startHttpServer(
             // Scoped guardBrowserOrigin pass-through for proven trusted
             // embedders (vscode-webview:// scheme, app-declared
             // csp.frameDomains — origins a hostile web page cannot hold;
-            // see iframeEmbedOriginAllowed). Every other cross-origin
-            // browser request keeps taking the guard's 403, unchanged.
-            if (!iframeEmbedOriginAllowed(req, uiApp ?? {}) && guardBrowserOrigin(req, res)) return
+            // see iframeEmbedOriginAllowed) and for holders of a valid
+            // per-boot widget embed token (`?et=` — an MCP-Apps host's
+            // opaque widget context passes no origin check; see
+            // iframeEmbedAllowed). Every other cross-origin browser request
+            // keeps taking the guard's 403, unchanged.
+            if (
+              !iframeEmbedOriginAllowed(req, uiApp ?? {}) &&
+              !isValidAppEmbedToken(requestEmbedToken(req)) &&
+              guardBrowserOrigin(req, res)
+            ) {
+              return
+            }
             if (!authorize(req, res)) return
             await handleAppUiPage(
               req,
@@ -7047,11 +7077,29 @@ async function handleAppUiPage(
   // session-chat widget does, and it's excluded from `resolveBuiltinPanelUi`
   // — see that function's doc), so `app ?? {}` degrades a builtin to
   // "embeddable only from the daemon's own origin / a proven vscode-webview",
-  // same as an installed app with no `csp.frameDomains` declared.
+  // same as an installed app with no `csp.frameDomains` declared. MCP-Apps
+  // widget contexts (Claude Desktop's sandboxed opaque iframe, …) can pass
+  // NO origin check — the per-boot embed token (`?et=`, iframeEmbedAllowed)
+  // is their proof, and a refusal now says which gate fired.
   if (!(embedRequested && iframeEmbedAllowed(req, app ?? {}))) {
     headers["content-security-policy"] = `frame-ancestors 'self' ${frameAncestors.join(" ")}`.trimEnd()
     if (frameAncestors.length === 0) {
       headers["x-frame-options"] = "SAMEORIGIN"
+    }
+    if (embedRequested) {
+      // Observability: a widget embed that still gets refused names the
+      // blocking gate right where the operator can see it — missing
+      // Origin/Referer (opaque widget context with no/stale token), or a
+      // sec-fetch-dest that isn't an iframe at all.
+      console.warn(
+        `[app-ui] embed refused for "${appId}": ` +
+          JSON.stringify({
+            secFetchDest: req.headers["sec-fetch-dest"] ?? null,
+            origin: req.headers.origin ?? null,
+            referer: req.headers.referer ?? null,
+            embedToken: requestEmbedToken(req) != null,
+          }),
+      )
     }
   }
   res.writeHead(200, headers)
@@ -7082,6 +7130,12 @@ function iframeEmbedAllowed(
   const secFetchDest = req.headers["sec-fetch-dest"]
   if (secFetchDest !== undefined && secFetchDest !== "iframe") return false
 
+  // MCP-Apps widget contexts (Claude Desktop's sandboxed opaque iframe, …)
+  // can pass NO origin check — the per-boot embed token (embed-tokens.ts),
+  // baked into the panel's own resource and appended to the frame URL by the
+  // panel bridge, is the third proof alongside the origin checks below.
+  if (isValidAppEmbedToken(requestEmbedToken(req))) return true
+
   const origin = typeof req.headers.origin === "string" && req.headers.origin.length > 0 ? req.headers.origin : null
   const referer = typeof req.headers.referer === "string" && req.headers.referer.length > 0 ? req.headers.referer : null
   if (!origin && !referer) return false
@@ -7104,6 +7158,15 @@ function iframeEmbedAllowed(
     if ((app.ui?.csp?.frameDomains ?? []).includes(candidate)) return true
   }
   return false
+}
+
+/** The `et` embed token carried by a request url, or null. */
+function requestEmbedToken(req: IncomingMessage): string | null {
+  try {
+    return new URL(req.url ?? "/", "http://localhost").searchParams.get("et")
+  } catch {
+    return null
+  }
 }
 
 /** The origin half of `iframeEmbedAllowed`, WITHOUT the `sec-fetch-dest`

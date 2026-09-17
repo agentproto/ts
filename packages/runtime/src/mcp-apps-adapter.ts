@@ -21,8 +21,19 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { AgnoMcpApp } from "@agentproto/apps"
+import { mintAppEmbedToken } from "./embed-tokens.js"
 
 const MIME_TYPE = "text/html;profile=mcp-app"
+
+/**
+ * Placeholder the panel HTML carries inside its bridge script
+ * (panel-bridge.ts); registerMcpApps replaces it — ALL occurrences, only the
+ * assignment uses the double-quoted spelling — with a real per-boot token
+ * (embed-tokens.ts) when the panel is served as an MCP-Apps resource.
+ * Panels rendered outside that path (tests, docs) keep the literal, and the
+ * bridge's `withEmbedToken()` then degrades to an identity function.
+ */
+export const EMBED_TOKEN_PLACEHOLDER = '"__AGENPROTO_EMBED_TOKEN__"'
 
 /**
  * Register every AgnoMcpApp on the MCP server:
@@ -37,8 +48,15 @@ export function registerMcpApps(
 ): void {
   for (const app of apps) {
     const resourceUri = `ui://${app.id}/view`
-    const html =
-      typeof app.html === "string" ? app.html : app.html({} as never)
+    let html = typeof app.html === "string" ? app.html : app.html({} as never)
+    // Bake the per-boot embed token (see embed-tokens.ts) into panels that
+    // iframe the standalone app host. Panels without the placeholder render
+    // byte-identical to before.
+    if (html.includes(EMBED_TOKEN_PLACEHOLDER)) {
+      html = html
+        .split(EMBED_TOKEN_PLACEHOLDER)
+        .join(JSON.stringify(mintAppEmbedToken(app.id)))
+    }
 
     // 1. Resource — HTML panel served at ui://<id>/view
     //

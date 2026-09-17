@@ -7,7 +7,7 @@
  * pattern as workspaces-http-routes.test.ts.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -17,6 +17,7 @@ import { createMcpServer } from "@agentproto/mcp-server"
 import { workBoardApp, liveSessionApp, sessionChatApp } from "@agentproto/apps"
 
 import { startHttpServer, type RuntimeHttpServerOptions } from "../http-server.js"
+import { mintAppEmbedToken } from "../embed-tokens.js"
 import { createRuntimeEvents } from "../events.js"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
 import type { ConversationStore } from "../conversations.js"
@@ -226,6 +227,75 @@ describe("standalone app UI host — REST routes", () => {
     await withServer(async base => {
       const res = await fetch(`${base}/apps/${APP_ID}/ui?embed=0`)
       expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview:")
+    })
+  })
+
+  it("GET with ?embed=1 and a valid per-boot embed token drops the headers with no Origin/Referer at all (Claude Desktop widget case)", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${APP_ID}/ui?session=sess_1&embed=1&et=${mintAppEmbedToken(APP_ID)}`, {
+        headers: { "sec-fetch-dest": "iframe" },
+      })
+      expect(res.status).toBe(200)
+      expect(res.headers.get("x-frame-options")).toBeNull()
+      expect(res.headers.get("content-security-policy")).toBeNull()
+      expect(await res.text()).toContain("media-viewer-marker")
+    })
+  })
+
+  it("GET with ?embed=1 and an INVALID embed token keeps the headers and names the refusal", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      await withServer(async base => {
+        const res = await fetch(`${base}/apps/${APP_ID}/ui?session=sess_1&embed=1&et=stale-or-forged`, {
+          headers: { "sec-fetch-dest": "iframe" },
+        })
+        expect(res.status).toBe(200)
+        expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview:")
+        const warned = warn.mock.calls.find(call => String(call[0]).includes("[app-ui] embed refused"))
+        expect(warned).toBeDefined()
+        expect(String(warned![0])).toContain('"embedToken":true')
+      })
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it("a valid embed token with a non-iframe sec-fetch-dest still keeps the headers", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${APP_ID}/ui?embed=1&et=${mintAppEmbedToken(APP_ID)}`, {
+        headers: { "sec-fetch-dest": "document", origin: base },
+      })
+      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview:")
+    })
+  })
+
+  it("OPTIONS preflight for a token-bearing widget embed grants the PNA acknowledgement", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${APP_ID}/ui?embed=1&et=${mintAppEmbedToken(APP_ID)}`, {
+        method: "OPTIONS",
+        headers: {
+          origin: "https://claude.ai",
+          "access-control-request-private-network": "true",
+        },
+      })
+      expect(res.status).toBe(204)
+      expect(res.headers.get("access-control-allow-private-network")).toBe("true")
+      expect(res.headers.get("access-control-allow-origin")).toBe("https://claude.ai")
+    })
+  })
+
+  it("OPTIONS preflight WITHOUT a valid token keeps the untrusted-origin posture", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${APP_ID}/ui?embed=1&et=forged`, {
+        method: "OPTIONS",
+        headers: {
+          origin: "https://claude.ai",
+          "access-control-request-private-network": "true",
+        },
+      })
+      expect(res.status).toBe(204)
+      expect(res.headers.get("access-control-allow-private-network")).toBeNull()
+      expect(res.headers.get("access-control-allow-origin")).toBe("*")
     })
   })
 
