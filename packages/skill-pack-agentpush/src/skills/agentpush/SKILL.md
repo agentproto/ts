@@ -113,7 +113,12 @@ without one of these, the corresponding tools are simply absent — check
 - `bind` — default `true`: upserts `(alias, source, contact_ref) ->
   sessionId` with `mode: "route-or-spawn"` and the resolved `provider`. A
   failed send (`sent: false`) never binds.
-- Returns `{ sent: boolean, bound: boolean }`.
+- Returns `{ sent: true, bound: boolean, message_id?: string }` on success,
+  or `{ sent: false, bound: false, error: string, blocked_reason?: string, suggestion?: string }` on failure.
+  A failed send (`sent: false`) never binds. `message_id` is the provider's own id for the sent message.
+  `blocked_reason` and `suggestion` are populated when agentpush responds HTTP 200 with `status: "blocked"`
+  (opt-out, expired session, unapproved template, etc.) or `status: "failed"` — `transmit_message` surfaces
+  those as `sent: false`, never as a false `sent: true`.
 
 **agentpush** dispatch calls the imported alias's real `send_message` tool:
 `{ to: { channel: source, address: contact_ref }, content: { text } }`.
