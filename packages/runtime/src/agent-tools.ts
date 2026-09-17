@@ -980,14 +980,20 @@ export function registerAgentTools(
             "rm|archive|gc`."
         ),
       },
-      // Live-session widget: rendering agent_start's result auto-mounts the
-      // live widget for the new session (ext-apps `_meta.ui.resourceUri` at
-      // the tool-definition level — same mechanism as the panel apps in
-      // mcp-apps-adapter.ts). `visibility:["model","app"]` keeps agent_start
-      // fully usable by the model AND lets the widget re-call it if needed.
+      // Session-chat widget: rendering agent_start's result auto-mounts the
+      // session-chat launcher for the new session (ext-apps
+      // `_meta.ui.resourceUri` at the tool-definition level — same mechanism
+      // as the panel apps in mcp-apps-adapter.ts). The widget reads the
+      // spawned `{ id: "sess_…" }` off the host's tool-result notification
+      // and deep-links the installed `@agentik/session-chat` app straight
+      // into that session (apps/src/session-chat/panel.ts). The older
+      // `ui://live_session/view` resource stays registered for its own
+      // `live_session` tool and other consumers — only this binding moved.
+      // `visibility:["model","app"]` keeps agent_start fully usable by the
+      // model AND lets the widget re-call it if needed.
       _meta: {
         ui: {
-          resourceUri: "ui://live_session/view",
+          resourceUri: "ui://agentproto_session_chat/view",
           visibility: ["model", "app"],
         },
       },
