@@ -82,7 +82,14 @@ export const CATALOG_CHANGELOG_PATH = "packages/model-catalog/CATALOG-CHANGELOG.
 
 /** Generated files whose top-level id keys are worth diffing for the changelog. */
 function isChangelogEligible(relPath: string): boolean {
-  return relPath.endsWith(".generated.ts")
+  if (!relPath.endsWith(".generated.ts")) return false
+  // The catalog-sync/generated/ dir is gitignored scratch output: on every
+  // fresh run (the weekly Action) the file isn't on disk, so `existing` is
+  // undefined and the id diff reports the whole roster as "Added" — one
+  // identical changelog section per sync. Only tracked outputs (the consumed
+  // model-catalog artifacts) carry a meaningful before/after diff.
+  if (relPath.startsWith("packages/catalog-sync/generated/")) return false
+  return true
 }
 
 export interface RunGeneratorsOptions {
