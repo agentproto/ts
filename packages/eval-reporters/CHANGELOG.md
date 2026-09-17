@@ -1,5 +1,15 @@
 # @agentproto/eval-reporters
 
+## 0.2.13
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [c27f0b8]
+  - @agentproto/eval@0.2.11
+  - @agentproto/provider-kit@0.4.4
+  - @agentproto/telemetry-langfuse@0.2.11
+
 ## 0.2.12
 
 ### Patch Changes

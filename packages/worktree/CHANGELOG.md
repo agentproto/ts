@@ -1,5 +1,20 @@
 # @agentproto/worktree
 
+## 0.8.0
+
+### Minor Changes
+
+- 6fb4a28: Add declarative `worktree.depsCmd` and `worktree.linkPaths` to `agentproto.json`, used as fallbacks by `worktree.provision` when the corresponding tool inputs are omitted. Explicit tool inputs still win, and the `runSetup` gate now also covers the declarative `depsCmd`/`linkPaths` lifecycle.
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [c27f0b8]
+  - @agentproto/driver@0.2.3
+  - @agentproto/harness@0.4.6
+  - @agentproto/tool@0.3.1
+  - @agentproto/workflow-runtime@0.11.1
+
 ## 0.7.0
 
 ### Minor Changes

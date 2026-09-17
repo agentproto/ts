@@ -1,5 +1,32 @@
 # @agentproto/adapter-claude-sdk
 
+## 0.7.0
+
+### Minor Changes
+
+- ea6757f: Add OpenCode's two hosted endpoints as first-class billing providers: `opencode-go` (OpenCode Go, the flat subscription, 36 models) and `opencode` (OpenCode Zen, pay-as-you-go, 102 models). Two new catalog-sync generators (`llm:opencode-go`, `llm:opencode-zen`) source both from models.dev and emit `OPENCODE_GO_ROUTES` / `OPENCODE_ZEN_ROUTES`, each with a pruned per-provider snapshot rather than the 4.6 MB whole-ecosystem payload. Prices are used verbatim (models.dev already publishes USD per 1M tokens); zero-priced `-free` variants are kept, and cache multipliers are omitted where the base input price is 0.
+
+  Route tables are keyed `<provider>/<bare-id>` (`opencode-go/glm-5.3`) — opencode's own config spelling, and the same string the runtime derives the billing endpoint from — so `resolveLlmModelRoute` resolves the OpenCode branch ahead of the direct-vendor branch. Neither table is spread into `LLM_PRICING_CATALOG`, so a bare `claude-sonnet-5` keeps meaning direct Anthropic rather than Zen pricing.
+
+  Two Anthropic gateway presets (`opencode-go`, `opencode`) put each endpoint's Anthropic-surface models behind claude-code / claude-sdk — Zen's subset is the whole Claude family. Preset ids deliberately match the catalog route ids, since `resolveAuthSpec` resolves a spawn's base URL by route id. The opencode adapter now offers both endpoints in full in its generated model menu.
+
+  Fixes two spillovers found along the way: `serviceableModelRoutes` no longer reports a spurious direct-vendor route for a self-routed id (`opencode/claude-sonnet-4-6` had picked up `anthropic` via `resolvePricing`'s substring fallback, loosening the money-safety guard and mis-routing the Configuration Lab), and `injectProviderKeysIntoEnv` now visits providers in sorted order so two providers sharing one env name (both OpenCode endpoints read `OPENCODE_API_KEY`) resolve deterministically instead of by `providers.json` write order.
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- 4ade388: Refresh ledger and provider snapshots from pinned sources (opencode-go/zen, openrouter sync). Relax exact roster pins in the claude-code curated-models, claude-sdk gateway-modes, and opencode endpoint-menu tests to membership/bounds checks so catalog-synced roster growth doesn't redden the weekly sync.
+- 6ea5679: Relax curated-models / gateway-modes / endpoint-menu test assertions from exact literal id lists and pinned counts to membership and bounds checks, keeping the catalog-derived equality assertions as the exact-shape guard (de-flakes weekly catalog syncs, cf. #1324/#1328/#1309/#1331).
+- Updated dependencies [9c31c86]
+- Updated dependencies [4ade388]
+- Updated dependencies [f89414a]
+- Updated dependencies [ea6757f]
+- Updated dependencies [c27f0b8]
+- Updated dependencies [9c31c86]
+  - @agentproto/model-catalog@0.10.0
+  - @agentproto/provider-presets@0.7.0
+  - @agentproto/driver-agent-cli@2.4.4
+
 ## 0.6.2
 
 ### Patch Changes
