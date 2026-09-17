@@ -52,14 +52,22 @@ describe("claude-code curated models", () => {
     expect(ids("opencode").sort()).toEqual(listOpencodeAnthropicModelRefs("opencode"))
 
     // Zen's subset is the whole Claude family (the valuable path: this harness
-    // on real Claude models against a Zen balance); Go's is four ids.
+    // on real Claude models against a Zen balance); Go's is a small
+    // Anthropic-surface set.
     expect(ids("opencode")).toContain("opencode/claude-sonnet-4-6")
-    expect(ids("opencode-go")).toEqual([
+    // Membership, not an exact list: the roster is catalog-synced, and the
+    // derived-menu equality above already pins the exact shape. union-alpha
+    // joined Go's Anthropic surface after #1309 verified the original four —
+    // an exact literal here reddens every sync that gains a model (cf. #1328,
+    // #1331).
+    for (const id of [
       "opencode-go/minimax-m2.5",
       "opencode-go/minimax-m2.7",
       "opencode-go/minimax-m3",
       "opencode-go/qwen3.8-flash",
-    ])
+    ]) {
+      expect(ids("opencode-go")).toContain(id)
+    }
     // The OpenAI-flavored majority of Go stays out — it 404s on /v1/messages.
     expect(ids("opencode-go")).not.toContain("opencode-go/glm-5.3")
 
