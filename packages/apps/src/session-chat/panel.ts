@@ -232,7 +232,7 @@ function armBlockProbe(frame) {
     // Still on about:blank right now — arm the settle window, but
     // re-check when it closes: a slow (not blocked) load may have landed
     // in the meantime, and only a frame STILL blank after the window gets
-    // removed. `load` firing in between clears this timeout above.
+    // removed. load firing in between clears this timeout above.
     settle = setTimeout(function () {
       settle = null;
       if (isBlank(frame)) frame.remove();
