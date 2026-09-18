@@ -7,6 +7,7 @@ import {
   firstPersonRatio,
   questionRate,
   meanSentenceLength,
+  splitSentences,
   computeTextStats,
 } from "../index.js"
 
@@ -21,12 +22,22 @@ describe("bulletsRatio", () => {
   it("is 0 for prose with no bullets", () => {
     expect(bulletsRatio("Ceci est une phrase.\nEt une autre.")).toBe(0)
   })
+
+  it("does not count a number glued to its marker as a bullet (1.5 million, -42 degrés)", () => {
+    const text = "1.5 million de personnes\n-42 degrés ce matin\nprose normale"
+    expect(bulletsRatio(text)).toBe(0)
+  })
 })
 
 describe("firstPersonRatio", () => {
   it("detects je/j'/moi/mon/ma/mes", () => {
     const text = "Je pense que c'est bien. Moi, je préfère ça. Le chat dort."
     expect(firstPersonRatio(text)).toBeCloseTo(2 / 3, 10)
+  })
+
+  it("detects me/m'/nous/notre/nos/mien(ne)(s)", () => {
+    const text = "Il me dit bonjour. Nous partons demain. Notre projet avance. Ce livre est mien."
+    expect(firstPersonRatio(text)).toBeCloseTo(1, 10)
   })
 
   it("is 0 when no first-person marker appears", () => {
@@ -47,6 +58,28 @@ describe("meanSentenceLength", () => {
 
   it("returns 0 for empty text", () => {
     expect(meanSentenceLength("")).toBe(0)
+  })
+})
+
+describe("sentence splitting — abbreviation guard", () => {
+  it("does not split after M., Mme, Dr, etc., cf., or p. ex.", () => {
+    const text =
+      "M. Dupont et Mme Martin ont consulté le Dr Leroy. " +
+      "Ils ont apporté des documents, etc. Voir cf. le rapport, p. ex. la page trois."
+    // Every one of those periods is an abbreviation, not a sentence end — so
+    // this whole passage is exactly 2 real sentences (the two "." that ARE
+    // sentence-final: after "Leroy" is folded into the M./Mme merge chain,
+    // and after "trois").
+    expect(splitSentences(text).length).toBe(2)
+  })
+
+  it("does not split after an isolated capital initial (J. Dupont)", () => {
+    const text = "J. Dupont a signé le contrat. Tout est en ordre."
+    expect(splitSentences(text).length).toBe(2)
+  })
+
+  it("still splits normally on ordinary sentence-final periods", () => {
+    expect(splitSentences("Premiere phrase. Deuxieme phrase. Troisieme phrase.").length).toBe(3)
   })
 })
 

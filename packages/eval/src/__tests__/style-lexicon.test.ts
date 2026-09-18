@@ -69,4 +69,57 @@ describe("eval.lexicon-hit-rate — runTool", () => {
     })
     expect(score.value).toBe(0)
   })
+
+  it("matches accented terms as whole words — \\b is ASCII-only and misses these", async () => {
+    const score = await runTool({
+      tool: lexiconHitRateTool,
+      candidates,
+      input: { text: "il aime écrire la vérité, même pour un benêt", lexicon: ["écrire", "vérité", "benêt"] },
+    })
+    expect(score.value).toBe(1)
+  })
+
+  it("does not false-positive an accented term as a substring of a longer accented word", async () => {
+    const score = await runTool({
+      tool: lexiconHitRateTool,
+      candidates,
+      input: { text: "le prétexte ne suffit pas", lexicon: ["texte"] },
+    })
+    expect(score.value).toBe(0)
+  })
+
+  it("matches regardless of NFC/NFD normalization of the input text", async () => {
+    const nfd = "il aime écrire".normalize("NFD") // "é" as e + combining acute accent
+    const score = await runTool({
+      tool: lexiconHitRateTool,
+      candidates,
+      input: { text: nfd, lexicon: ["écrire"] },
+    })
+    expect(score.value).toBe(1)
+  })
+
+  it("rejects an empty lexicon at the schema boundary", async () => {
+    await expect(
+      runTool({
+        tool: lexiconHitRateTool,
+        candidates,
+        input: { text: "peu importe", lexicon: [] },
+      }),
+    ).rejects.toThrow()
+  })
+})
+
+describe("extractLexicon with a background corpus", () => {
+  it("without a background corpus, ranks purely by raw frequency", () => {
+    const foreground = ["chat chat chat forge", "chat forge"]
+    const lexicon = extractLexicon(foreground, { top: 2, minLen: 3 })
+    expect(lexicon).toEqual(["chat", "forge"]) // chat (4) outranks forge (2) on raw count
+  })
+
+  it("with a background corpus, a term frequent in both ranks below one specific to the foreground, even with a lower raw count", () => {
+    const foreground = ["chat chat chat forge", "chat forge"] // chat: 4, forge: 2
+    const background = ["chat chat chat chat chat chat", "chat chat"] // chat: 8, forge: 0
+    const lexicon = extractLexicon(foreground, { top: 2, minLen: 3, background })
+    expect(lexicon).toEqual(["forge", "chat"]) // log-odds flips the raw-frequency order
+  })
 })

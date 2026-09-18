@@ -21,6 +21,7 @@ export {
   firstPersonRatio,
   questionRate,
   meanSentenceLength,
+  splitSentences,
   computeTextStats,
   type TextStats,
   type LengthBand,
@@ -47,10 +48,13 @@ export {
   styleEmbeddingTool,
   makeStyleEmbeddingDriver,
   cosineToCentroid,
+  EmbeddingDimensionError,
   type StyleEmbeddingInput,
   type EmbedFn,
   type MakeStyleEmbeddingDriverOptions,
 } from "./style-embedding.js"
+
+export { parseVerdict } from "./verdict.js"
 
 export {
   outlineFidelityTool,

@@ -206,14 +206,18 @@ capability. No LLM SDK, no network dependency, same discipline as
 | Tool id                  | Input                                  | Behavior |
 | ------------------------ | --------------------------------------- | -------- |
 | `eval.text-stats`        | `{ text, thresholds? }`                 | Deterministic. Computes bullet-line ratio, first-person ratio, question rate, and mean sentence length (+ `inBand`) over French text. `passed` is derived from caller-supplied `thresholds` (`maxBulletsRatio` default 0.02, `minFirstPersonRatio` default 0.6, `lengthBand` default `{min: 5, max: 30}` words) — this tool owns no fixed gate. |
-| `eval.lexicon-hit-rate`  | `{ text, lexicon, threshold? }`         | Deterministic. Fraction of `lexicon` terms present as whole words in `text`. `passed = hitRate >= threshold` (default 0.5). Build a signature lexicon offline with the pure helper `extractLexicon(corpusTexts, { top?, minLen? })`. |
-| `eval.style-pairwise`    | `{ reference, a, b, criteria }`         | Model-backed via `makeStylePairwiseDriver(judge: JudgeFn)` — reuses the `eval.llm-judge` `JudgeFn` seam. `value` encodes preference (1 = `a` wins, 0 = `b` wins, 0.5 = tie). The pure helper `pairwiseWinRate(verdicts)` aggregates verdicts collected across position permutations and multiple judges into `{ winRate, kappa, n }`, neutralizing position bias and reporting inter-judge Cohen's kappa. |
-| `eval.style-embedding`   | `{ candidate, references[] }`           | Model-backed via `makeStyleEmbeddingDriver(embed: EmbedFn)`, `EmbedFn = (texts) => Promise<number[][]>`. `value` = cosine similarity of `candidate` to the `references` centroid, mapped from `[-1, 1]` to `[0, 1]` (a candidate equal to the centroid scores 1). Pure helper: `cosineToCentroid(candidate, references)`. |
-| `eval.outline-fidelity`  | `{ outline, answer }`                   | Model-backed via `makeOutlineFidelityDriver(judge: JudgeFn)`. `value` = judged outline coverage; `passed = value >= 0.95` — a **fixed** gate, never overridden by the judge's own `passed` (unlike `eval.llm-judge`'s threshold semantics). |
+| `eval.lexicon-hit-rate`  | `{ text, lexicon (min 1), threshold? }` | Deterministic. Fraction of `lexicon` terms present as whole words in `text`, Unicode-aware (accented terms like `écrire` match correctly; ASCII `\b` would miss them). Text and terms are NFC-normalized before matching. `passed = hitRate >= threshold` (default 0.5). Build a signature lexicon offline with the pure helper `extractLexicon(corpusTexts, { top?, minLen?, background? })` — with `background`, terms are ranked by a log-odds ratio against that corpus instead of raw frequency (a simple frequency-ratio estimator, not the full variance-weighted informative-Dirichlet estimator). |
+| `eval.style-pairwise`    | `{ reference, a, b, criteria }`         | Model-backed via `makeStylePairwiseDriver(judge: JudgeFn)` — reuses the `eval.llm-judge` `JudgeFn` seam (the raw verdict is validated with `judgeVerdictSchema`; a malformed verdict fails the score instead of propagating `NaN`). `value` encodes preference (1 = `a` wins, 0 = `b` wins, 0.5 = tie). The pure helper `pairwiseWinRate(verdicts)` aggregates `PairwiseVerdict[]` (each carrying a required `item` id) into `{ winRate, kappa, n, nNormal, nSwapped, balanced }`: `winRate` averages the normal-order and swapped-order rates (falling back to whichever order is present, flagged via `balanced: false`, when one is missing entirely); `kappa` is Cohen's kappa between the two most-represented judges, joined by `item` (so a normal+swapped pair on the same item is one observation, not two) — it is `null`, not a default `1`, when there are fewer than two judges or fewer than two items in common, and a `null` must be treated as a gate FAILURE, not skipped. |
+| `eval.style-embedding`   | `{ candidate, references[] (min 1) }`   | Model-backed via `makeStyleEmbeddingDriver(embed: EmbedFn)`, `EmbedFn = (texts) => Promise<number[][]>`. `value` = cosine similarity of `candidate` to the `references` centroid, clamped to `[0, 1]` via `max(0, cosine)` — NOT remapped via `(cosine + 1) / 2`, which put an uninformative orthogonal candidate at the same 0.5 as the default pass threshold. A candidate equal to the centroid scores 1; orthogonal or opposing candidates score 0. Heterogeneous embedding dimensions (mismatched candidate/reference vectors) fail the score with a rationale instead of silently padding/truncating. Pure helper: `cosineToCentroid(candidate, references)` (throws `EmbeddingDimensionError` on dimension mismatch — callers at the tool boundary must catch it). |
+| `eval.outline-fidelity`  | `{ outline, answer }`                   | Model-backed via `makeOutlineFidelityDriver(judge: JudgeFn)`. `value` = judged outline coverage; `passed = value >= 0.95` — a **fixed** gate, never overridden by the judge's own `passed` (unlike `eval.llm-judge`'s threshold semantics). The raw verdict is validated with `judgeVerdictSchema`; a malformed verdict fails the score. |
 
 French text conventions used by `eval.text-stats`: first-person markers are
-`je`, `j'`, `moi`, `mon`/`ma`/`mes`; a bullet line starts with `-`, `*`, `•`,
-or a numbered marker like `1.`.
+`je`, `j'`, `moi`, `mon`/`ma`/`mes`, `me`/`m'`, `nous`, `notre`/`nos`,
+`mien(ne)(s)`; a bullet line starts with `-`, `*`, `•`, or a numbered marker
+like `1.` followed by whitespace (`1.5 million` and `-42 degrés` are prose,
+not bullets). Sentence splitting guards against common French abbreviations
+(`M.`, `Mme`, `Dr`, `etc.`, `cf.`, `p. ex.`) and isolated capital initials
+(`J. Dupont`) so those periods are not treated as sentence ends.
 
 ```ts
 import { runTool } from "@agentproto/driver"
@@ -264,8 +268,8 @@ toVitest(
 - `JudgeFn`, `JudgeVerdict`, `judgeVerdictSchema`, `LlmJudgeInput`,
   `MakeLlmJudgeDriverOptions`, `LlmJudgeBinding`
 - `textStatsTool` / `textStatsImpl` — plus pure helpers `bulletsRatio`,
-  `firstPersonRatio`, `questionRate`, `meanSentenceLength`, `computeTextStats`
-  (`TextStats`, `LengthBand`)
+  `firstPersonRatio`, `questionRate`, `meanSentenceLength`, `splitSentences`,
+  `computeTextStats` (`TextStats`, `LengthBand`)
 - `lexiconHitRateTool` / `lexiconHitRateImpl` — plus `extractLexicon`
   (`ExtractLexiconOptions`)
 - `styleScorersProvider` — the builtin PROVIDER bundling the two
@@ -273,9 +277,12 @@ toVitest(
 - `stylePairwiseTool`, `makeStylePairwiseDriver`, `pairwiseWinRate`
   (`StylePairwiseInput`, `PairwiseWinner`, `PairwiseVerdict`,
   `PairwiseWinRateResult`)
-- `styleEmbeddingTool`, `makeStyleEmbeddingDriver`, `cosineToCentroid`
+- `styleEmbeddingTool`, `makeStyleEmbeddingDriver`, `cosineToCentroid`,
+  `EmbeddingDimensionError`
   (`StyleEmbeddingInput`, `EmbedFn`, `MakeStyleEmbeddingDriverOptions`)
 - `outlineFidelityTool`, `makeOutlineFidelityDriver` (`OutlineFidelityInput`)
+- `parseVerdict` — shared `style/` helper: validates a raw judge return value
+  against `judgeVerdictSchema`, returning `null` on malformed input
 
 ## License
 

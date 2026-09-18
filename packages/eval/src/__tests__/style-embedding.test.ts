@@ -4,6 +4,7 @@ import {
   styleEmbeddingTool,
   makeStyleEmbeddingDriver,
   cosineToCentroid,
+  EmbeddingDimensionError,
   type EmbedFn,
 } from "../index.js"
 
@@ -16,9 +17,9 @@ describe("cosineToCentroid", () => {
     expect(cosineToCentroid([1, 0, 0], references)).toBeCloseTo(1, 10)
   })
 
-  it("returns 0.5 when the candidate is orthogonal to the centroid", () => {
+  it("clamps an orthogonal candidate to 0, not 0.5 — an uninformative signal must not clear a 0.5 default threshold", () => {
     const references = [[1, 0]]
-    expect(cosineToCentroid([0, 1], references)).toBeCloseTo(0.5, 10)
+    expect(cosineToCentroid([0, 1], references)).toBeCloseTo(0, 10)
   })
 
   it("returns 0 when the candidate opposes the centroid", () => {
@@ -30,6 +31,14 @@ describe("cosineToCentroid", () => {
     expect(cosineToCentroid([1, 0], [])).toBe(0)
   })
 
+  it("returns 0 for a zero candidate vector", () => {
+    expect(cosineToCentroid([0, 0], [[1, 0]])).toBe(0)
+  })
+
+  it("returns 0 when every reference vector is zero", () => {
+    expect(cosineToCentroid([1, 0], [[0, 0], [0, 0]])).toBe(0)
+  })
+
   it("averages multiple references into a centroid", () => {
     const references = [
       [2, 0],
@@ -37,6 +46,14 @@ describe("cosineToCentroid", () => {
     ]
     // centroid = [1, 1]; candidate = [1, 1] → cosine 1
     expect(cosineToCentroid([1, 1], references)).toBeCloseTo(1, 10)
+  })
+
+  it("throws EmbeddingDimensionError when reference vectors have inconsistent dimensions", () => {
+    expect(() => cosineToCentroid([1, 0], [[1, 0], [1, 0, 0]])).toThrow(EmbeddingDimensionError)
+  })
+
+  it("throws EmbeddingDimensionError when the candidate's dimension differs from the references'", () => {
+    expect(() => cosineToCentroid([1, 0, 0], [[1, 0], [1, 0]])).toThrow(EmbeddingDimensionError)
   })
 })
 
@@ -84,14 +101,27 @@ describe("eval.style-embedding — runTool", () => {
   })
 
   it("honors a custom threshold", async () => {
-    const embed: EmbedFn = async () => [[0, 1], [1, 0]] // candidate orthogonal to ref → value 0.5
+    const embed: EmbedFn = async () => [[0, 1], [1, 0]] // candidate orthogonal to ref → clamped to 0
     const driver = makeStyleEmbeddingDriver(embed, { threshold: 0.9 })
     const score = await runTool({
       tool: styleEmbeddingTool,
       candidates: [driver],
       input: { candidate: "c", references: ["r1"] },
     })
-    expect(score.value).toBeCloseTo(0.5, 10)
+    expect(score.value).toBeCloseTo(0, 10)
     expect(score.passed).toBe(false)
+  })
+
+  it("fails the score (no throw) when the embedder returns heterogeneous dimensions", async () => {
+    const embed: EmbedFn = async () => [[1, 0], [1, 0, 0]]
+    const driver = makeStyleEmbeddingDriver(embed)
+    const score = await runTool({
+      tool: styleEmbeddingTool,
+      candidates: [driver],
+      input: { candidate: "c", references: ["r1"] },
+    })
+    expect(score.passed).toBe(false)
+    expect(score.value).toBe(0)
+    expect(score.rationale).toMatch(/dimension/u)
   })
 })

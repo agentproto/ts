@@ -3,6 +3,7 @@ import { defineTool } from "@agentproto/tool"
 import { defineDriver, implementTool, type DriverHandle } from "@agentproto/driver"
 import { scoreSchema } from "../score.js"
 import type { JudgeFn } from "../judge.js"
+import { parseVerdict } from "./verdict.js"
 
 /**
  * `eval.style-pairwise` — model-backed A/B scorer: which of `a`/`b` reads
@@ -74,11 +75,20 @@ export function makeStylePairwiseDriver(judge: JudgeFn): DriverHandle {
     implements: [{ tool: "eval.style-pairwise", version: "0.1.0" }],
     implementations: [
       implementTool(stylePairwiseTool, async ({ input }) => {
-        const verdict = await judge({
+        const raw = await judge({
           output: { reference: input.reference, a: input.a, b: input.b },
           criteria: input.criteria,
           expected: input.reference,
         })
+        const verdict = parseVerdict(raw)
+        if (!verdict) {
+          return {
+            value: 0,
+            passed: false,
+            label: "style-pairwise",
+            rationale: "judge returned a malformed verdict",
+          }
+        }
         const value = clamp01(verdict.value)
         const passed = verdict.passed ?? value >= 0.5
         return {
@@ -108,6 +118,8 @@ export type PairwiseWinner = "a" | "b" | "tie"
  * aggregating, which is what neutralizes that bias.
  */
 export interface PairwiseVerdict {
+  /** Identifies which item this verdict scored — required so verdicts from different items are never zipped together. */
+  readonly item: string
   /** Judge identity — distinguishes the (at least two) judges being compared. */
   readonly judge: string
   /** Physical presentation order this verdict was collected under. */
@@ -117,12 +129,24 @@ export interface PairwiseVerdict {
 }
 
 export interface PairwiseWinRateResult {
-  /** Logical a-win rate (ties count as 0.5), after order de-biasing. */
+  /** Logical a-win rate (ties count as 0.5), after order de-biasing. Averages the normal-order and swapped-order rates when both are present. */
   readonly winRate: number
-  /** Cohen's kappa agreement between the two most-represented judges. */
-  readonly kappa: number
+  /**
+   * Cohen's kappa agreement between the two most-represented judges, computed
+   * over items both judges rated. `null` when there are fewer than two
+   * judges, or fewer than two items in common — a `null` here means the
+   * agreement gate has no evidence and any threshold check against it (e.g.
+   * "kappa >= 0.4") must be treated as a FAILURE, not skipped.
+   */
+  readonly kappa: number | null
   /** Number of verdicts folded in. */
   readonly n: number
+  /** Number of verdicts collected under `order: "normal"`. */
+  readonly nNormal: number
+  /** Number of verdicts collected under `order: "swapped"`. */
+  readonly nSwapped: number
+  /** `false` when one of the two presentation orders has zero verdicts — `winRate` then reflects only the order that is present, and is not order-debiased. */
+  readonly balanced: boolean
 }
 
 function unswap(winner: PairwiseWinner, order: "normal" | "swapped"): PairwiseWinner {
@@ -130,10 +154,15 @@ function unswap(winner: PairwiseWinner, order: "normal" | "swapped"): PairwiseWi
   return winner === "a" ? "b" : "a"
 }
 
-/** Cohen's kappa for two equal-length categorical rating sequences. */
+function aWinScore(winner: PairwiseWinner): number {
+  if (winner === "a") return 1
+  if (winner === "tie") return 0.5
+  return 0
+}
+
+/** Cohen's kappa for two equal-length categorical rating sequences. Callers must ensure `r1.length >= 2`. */
 function cohenKappa(r1: readonly PairwiseWinner[], r2: readonly PairwiseWinner[]): number {
   const n = r1.length
-  if (n === 0) return 1
   let agree = 0
   const categories: PairwiseWinner[] = ["a", "b", "tie"]
   const counts1 = new Map<PairwiseWinner, number>(categories.map((c) => [c, 0]))
@@ -153,38 +182,57 @@ function cohenKappa(r1: readonly PairwiseWinner[], r2: readonly PairwiseWinner[]
 
 /**
  * Aggregate collected {@link PairwiseVerdict}s into an order-debiased win
- * rate and inter-judge Cohen's kappa. Position bias is neutralized by
- * un-swapping each verdict's `winner` against its `order` before folding it
- * in — a judge that always picks the physically-first option nets out near
- * 0.5 rather than always "a". Kappa is computed between the two judges with
- * the most verdicts, zipped in encounter order.
+ * rate and inter-judge Cohen's kappa.
+ *
+ * Win rate: each verdict is un-swapped against its `order` (neutralizing
+ * position bias), then the normal-order rate and swapped-order rate are
+ * averaged — not a flat average over all verdicts — so a judge that always
+ * picks the physically-first slot nets out near 0.5 even if one order was
+ * sampled more than the other. When only one order was collected at all,
+ * `balanced` is `false` and `winRate` falls back to that order's rate alone.
+ *
+ * Kappa: verdicts are joined by `item` — for each of the two
+ * most-represented judges, at most one (first-seen, un-swapped) winner is
+ * kept per item, so a normal+swapped pair on the same item is one
+ * observation, not two. Kappa is then computed over the items both judges
+ * rated; see {@link PairwiseWinRateResult.kappa} for the `null` cases.
  */
 export function pairwiseWinRate(verdicts: readonly PairwiseVerdict[]): PairwiseWinRateResult {
   const n = verdicts.length
-  const normalized = verdicts.map((v) => ({ judge: v.judge, winner: unswap(v.winner, v.order) }))
+  const normalized = verdicts.map((v) => ({ ...v, winner: unswap(v.winner, v.order) }))
 
-  const aWins = normalized.reduce((sum, v) => {
-    if (v.winner === "a") return sum + 1
-    if (v.winner === "tie") return sum + 0.5
-    return sum
-  }, 0)
-  const winRate = n === 0 ? 0 : aWins / n
+  const normalGroup = normalized.filter((v) => v.order === "normal")
+  const swappedGroup = normalized.filter((v) => v.order === "swapped")
+  const nNormal = normalGroup.length
+  const nSwapped = swappedGroup.length
+  const rateNormal = nNormal === 0 ? null : normalGroup.reduce((sum, v) => sum + aWinScore(v.winner), 0) / nNormal
+  const rateSwapped =
+    nSwapped === 0 ? null : swappedGroup.reduce((sum, v) => sum + aWinScore(v.winner), 0) / nSwapped
+  const balanced = nNormal > 0 && nSwapped > 0
+  const winRate = rateNormal !== null && rateSwapped !== null ? (rateNormal + rateSwapped) / 2 : (rateNormal ?? rateSwapped ?? 0)
 
-  const byJudge = new Map<string, PairwiseWinner[]>()
+  const byJudge = new Map<string, Map<string, PairwiseWinner>>()
   for (const v of normalized) {
-    const arr = byJudge.get(v.judge) ?? []
-    arr.push(v.winner)
-    byJudge.set(v.judge, arr)
+    let items = byJudge.get(v.judge)
+    if (!items) {
+      items = new Map()
+      byJudge.set(v.judge, items)
+    }
+    if (!items.has(v.item)) items.set(v.item, v.winner)
   }
-  const judges = [...byJudge.entries()].sort((a, b) => b[1].length - a[1].length)
+  const judges = [...byJudge.entries()].sort((a, b) => b[1].size - a[1].size)
 
-  let kappa = 1
+  let kappa: number | null = null
   if (judges.length >= 2) {
-    const [, r1] = judges[0]!
-    const [, r2] = judges[1]!
-    const m = Math.min(r1.length, r2.length)
-    kappa = cohenKappa(r1.slice(0, m), r2.slice(0, m))
+    const [, items1] = judges[0]!
+    const [, items2] = judges[1]!
+    const commonItems = [...items1.keys()].filter((item) => items2.has(item)).sort()
+    if (commonItems.length >= 2) {
+      const r1 = commonItems.map((item) => items1.get(item)!)
+      const r2 = commonItems.map((item) => items2.get(item)!)
+      kappa = cohenKappa(r1, r2)
+    }
   }
 
-  return { winRate, kappa, n }
+  return { winRate, kappa, n, nNormal, nSwapped, balanced }
 }
