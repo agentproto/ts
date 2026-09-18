@@ -43,6 +43,14 @@ describe("firstPersonRatio", () => {
   it("is 0 when no first-person marker appears", () => {
     expect(firstPersonRatio("Le chat dort. Il fait beau.")).toBe(0)
   })
+
+  it("does not treat an accented letter abutting a short marker as a word boundary", () => {
+    // "problèmes" contains "mes", "démon" contains "mon" — but only because
+    // ASCII `\b` treats the accented `è`/`é` as a non-word character. Neither
+    // sentence has an actual first-person marker.
+    const text = "Il y a des problèmes techniques. Ce démon tourne en arrière-plan."
+    expect(firstPersonRatio(text)).toBe(0)
+  })
 })
 
 describe("questionRate", () => {

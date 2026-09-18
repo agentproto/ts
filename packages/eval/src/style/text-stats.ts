@@ -18,7 +18,29 @@ import { scoreSchema } from "../score.js"
 // pure metric helpers
 // ---------------------------------------------------------------------------
 
-const FIRST_PERSON_RE = /\b(je|j'|j’|moi|mon|ma|mes|me|m'|m’|nous|notre|nos|mien(?:ne)?s?)\b/iu
+/**
+ * French first-person markers. `\b` is deliberately NOT used here: it is an
+ * ASCII word-boundary even under the `u` flag, so it treats any accented
+ * letter as a non-word character and creates a spurious boundary right
+ * next to one — `/\bmes\b/iu.test("problèmes")` is `true` because `è` reads
+ * as `\W`. That's exactly the class of bug `containsWord` in `lexicon.ts`
+ * was rewritten to avoid, so the same accent-safe lookaround boundaries
+ * (against `\p{L}\p{N}_`) are used here. Terms ending in an apostrophe
+ * (elisions like `j'`, `m'`) get no trailing boundary — the letter right
+ * after the apostrophe (`j'aime`) is the point, not a boundary.
+ */
+const FIRST_PERSON_TERMS = [
+  "je", "j'", "j\u2019", "moi", "mon", "ma", "mes", "me", "m'", "m\u2019",
+  "nous", "notre", "nos", "mien(?:ne)?s?",
+]
+
+const FIRST_PERSON_RE = new RegExp(
+  FIRST_PERSON_TERMS.map((term) => {
+    const isElision = term.endsWith("'") || term.endsWith("\u2019")
+    return `(?<![\\p{L}\\p{N}_])${term}${isElision ? "" : "(?![\\p{L}\\p{N}_])"}`
+  }).join("|"),
+  "iu",
+)
 
 /**
  * Sentence-final abbreviations that must NOT be treated as a sentence
