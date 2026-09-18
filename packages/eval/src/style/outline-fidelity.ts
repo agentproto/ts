@@ -3,6 +3,7 @@ import { defineTool } from "@agentproto/tool"
 import { defineDriver, implementTool, type DriverHandle } from "@agentproto/driver"
 import { scoreSchema } from "../score.js"
 import type { JudgeFn } from "../judge.js"
+import { parseVerdict } from "./verdict.js"
 
 /**
  * `eval.outline-fidelity` — model-backed scorer: does `answer` cover every
@@ -62,11 +63,20 @@ export function makeOutlineFidelityDriver(judge: JudgeFn): DriverHandle {
     implements: [{ tool: "eval.outline-fidelity", version: "0.1.0" }],
     implementations: [
       implementTool(outlineFidelityTool, async ({ input }) => {
-        const verdict = await judge({
+        const raw = await judge({
           output: input.answer,
           criteria: FIDELITY_CRITERIA,
           expected: input.outline,
         })
+        const verdict = parseVerdict(raw)
+        if (!verdict) {
+          return {
+            value: 0,
+            passed: false,
+            label: "outline-fidelity",
+            rationale: "judge returned a malformed verdict",
+          }
+        }
         const value = Math.min(1, Math.max(0, verdict.value))
         const passed = value >= FIDELITY_THRESHOLD
         return {

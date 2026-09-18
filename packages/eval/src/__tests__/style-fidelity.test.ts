@@ -68,4 +68,17 @@ describe("eval.outline-fidelity — runTool", () => {
     expect(score.value).toBeLessThanOrEqual(1)
     expect(score.value).toBeGreaterThanOrEqual(0)
   })
+
+  it("fails the score (no throw) when the judge returns a malformed verdict", async () => {
+    const judge = (async () => ({ notAValue: true })) as unknown as JudgeFn
+    const driver = makeOutlineFidelityDriver(judge)
+    const score = await runTool({
+      tool: outlineFidelityTool,
+      candidates: [driver],
+      input: { outline: "o", answer: "a" },
+    })
+    expect(score.passed).toBe(false)
+    expect(score.value).toBe(0)
+    expect(score.rationale).toMatch(/malformed/u)
+  })
 })

@@ -18,26 +18,83 @@ import { scoreSchema } from "../score.js"
 // pure metric helpers
 // ---------------------------------------------------------------------------
 
-const FIRST_PERSON_RE = /\b(je|j'|j’|moi|mon|ma|mes)\b/iu
+/**
+ * French first-person markers. `\b` is deliberately NOT used here: it is an
+ * ASCII word-boundary even under the `u` flag, so it treats any accented
+ * letter as a non-word character and creates a spurious boundary right
+ * next to one — `/\bmes\b/iu.test("problèmes")` is `true` because `è` reads
+ * as `\W`. That's exactly the class of bug `containsWord` in `lexicon.ts`
+ * was rewritten to avoid, so the same accent-safe lookaround boundaries
+ * (against `\p{L}\p{N}_`) are used here. Terms ending in an apostrophe
+ * (elisions like `j'`, `m'`) get no trailing boundary — the letter right
+ * after the apostrophe (`j'aime`) is the point, not a boundary.
+ */
+const FIRST_PERSON_TERMS = [
+  "je", "j'", "j\u2019", "moi", "mon", "ma", "mes", "me", "m'", "m\u2019",
+  "nous", "notre", "nos", "mien(?:ne)?s?",
+]
+
+const FIRST_PERSON_RE = new RegExp(
+  FIRST_PERSON_TERMS.map((term) => {
+    const isElision = term.endsWith("'") || term.endsWith("\u2019")
+    return `(?<![\\p{L}\\p{N}_])${term}${isElision ? "" : "(?![\\p{L}\\p{N}_])"}`
+  }).join("|"),
+  "iu",
+)
+
+/**
+ * Sentence-final abbreviations that must NOT be treated as a sentence
+ * boundary — lowercased, without the trailing period. `p` + `ex` covers
+ * "p. ex." (split across two chunks by the naive `.`-boundary split, then
+ * re-merged token by token).
+ */
+const ABBREVIATIONS = new Set([
+  "m", "mme", "mlle", "dr", "st", "ste", "etc", "cf", "vs", "p", "ex", "no", "art", "vol", "pp", "chap",
+])
 
 /** Split text into non-empty lines. */
 function splitLines(text: string): string[] {
   return text.split("\n").map((line) => line.trim()).filter((line) => line.length > 0)
 }
 
-/** Split text into non-empty sentences on `.`/`!`/`?` boundaries. */
-function splitSentences(text: string): string[] {
-  return text
+/** True when `chunk` ends in an abbreviation (or a single capital initial) rather than a real sentence-final period. */
+function endsWithAbbreviation(chunk: string): boolean {
+  const match = chunk.match(/(\p{L}+)\.$/u)
+  if (!match) return false
+  const word = match[1]!
+  if (ABBREVIATIONS.has(word.toLowerCase())) return true
+  return word.length === 1 && /\p{Lu}/u.test(word)
+}
+
+/**
+ * Split text into non-empty sentences on `.`/`!`/`?` boundaries, guarding
+ * against abbreviations (`M.`, `Mme`, `Dr`, `etc.`, `cf.`, `p. ex.`) and
+ * isolated capital initials (`J. Dupont`) so those periods don't count as
+ * sentence ends.
+ */
+export function splitSentences(text: string): string[] {
+  const chunks = text
     .split(/(?<=[.!?])\s+|\n+/u)
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
+  const sentences: string[] = []
+  for (const chunk of chunks) {
+    const prevIndex = sentences.length - 1
+    const prev = prevIndex >= 0 ? sentences[prevIndex] : undefined
+    if (prev !== undefined && endsWithAbbreviation(prev)) {
+      sentences[prevIndex] = `${prev} ${chunk}`
+    } else {
+      sentences.push(chunk)
+    }
+  }
+  return sentences
 }
 
-/** Fraction of lines that open with a bullet marker (`-`, `*`, `•`, or `1.`). */
+/** Fraction of lines that open with a bullet marker (`-`, `*`, `•`, or `1.`) followed by whitespace — a marker glued to the next character (`1.5 million`, `-42 degrés`) is prose, not a bullet. */
 export function bulletsRatio(text: string): number {
   const lines = splitLines(text)
   if (lines.length === 0) return 0
-  const bulletLines = lines.filter((line) => /^([-*•]|\d+\.)\s*/u.test(line))
+  const bulletLines = lines.filter((line) => /^([-*•]|\d+\.)\s+/u.test(line))
   return bulletLines.length / lines.length
 }
 
@@ -104,6 +161,7 @@ const textStatsThresholdsSchema = z.object({
   minFirstPersonRatio: z.number().min(0).max(1).optional().describe("Default 0.6."),
   lengthBand: z
     .object({ min: z.number().min(0), max: z.number().min(0) })
+    .refine((band) => band.min <= band.max, { message: "lengthBand.min must be <= lengthBand.max" })
     .optional()
     .describe("Word-count band for mean sentence length. Default { min: 5, max: 30 }."),
 })
