@@ -193,6 +193,39 @@ value >= threshold` (`threshold` defaults to `0.5`).
 A real adapter wiring `JudgeFn` up to an agent session or the supervisor's
 judge-gate is a documented follow-up — not built in this package.
 
+## Style scorers
+
+Five more `eval.*` TOOL contracts, under `src/style/` (see DESIGN.md §7 in the
+`factory` plan for the production bands/gates these back). Two are
+deterministic — bundled into `styleScorersProvider` exactly like
+`evalScorersProvider` — and three are model-backed, each built by a
+`make*Driver(...)` factory that closes over an injected, vendor-neutral
+capability. No LLM SDK, no network dependency, same discipline as
+`eval.llm-judge`.
+
+| Tool id                  | Input                                  | Behavior |
+| ------------------------ | --------------------------------------- | -------- |
+| `eval.text-stats`        | `{ text, thresholds? }`                 | Deterministic. Computes bullet-line ratio, first-person ratio, question rate, and mean sentence length (+ `inBand`) over French text. `passed` is derived from caller-supplied `thresholds` (`maxBulletsRatio` default 0.02, `minFirstPersonRatio` default 0.6, `lengthBand` default `{min: 5, max: 30}` words) — this tool owns no fixed gate. |
+| `eval.lexicon-hit-rate`  | `{ text, lexicon, threshold? }`         | Deterministic. Fraction of `lexicon` terms present as whole words in `text`. `passed = hitRate >= threshold` (default 0.5). Build a signature lexicon offline with the pure helper `extractLexicon(corpusTexts, { top?, minLen? })`. |
+| `eval.style-pairwise`    | `{ reference, a, b, criteria }`         | Model-backed via `makeStylePairwiseDriver(judge: JudgeFn)` — reuses the `eval.llm-judge` `JudgeFn` seam. `value` encodes preference (1 = `a` wins, 0 = `b` wins, 0.5 = tie). The pure helper `pairwiseWinRate(verdicts)` aggregates verdicts collected across position permutations and multiple judges into `{ winRate, kappa, n }`, neutralizing position bias and reporting inter-judge Cohen's kappa. |
+| `eval.style-embedding`   | `{ candidate, references[] }`           | Model-backed via `makeStyleEmbeddingDriver(embed: EmbedFn)`, `EmbedFn = (texts) => Promise<number[][]>`. `value` = cosine similarity of `candidate` to the `references` centroid, mapped from `[-1, 1]` to `[0, 1]` (a candidate equal to the centroid scores 1). Pure helper: `cosineToCentroid(candidate, references)`. |
+| `eval.outline-fidelity`  | `{ outline, answer }`                   | Model-backed via `makeOutlineFidelityDriver(judge: JudgeFn)`. `value` = judged outline coverage; `passed = value >= 0.95` — a **fixed** gate, never overridden by the judge's own `passed` (unlike `eval.llm-judge`'s threshold semantics). |
+
+French text conventions used by `eval.text-stats`: first-person markers are
+`je`, `j'`, `moi`, `mon`/`ma`/`mes`; a bullet line starts with `-`, `*`, `•`,
+or a numbered marker like `1.`.
+
+```ts
+import { runTool } from "@agentproto/driver"
+import { textStatsTool, styleScorersProvider } from "@agentproto/eval"
+
+const score = await runTool({
+  tool: textStatsTool,
+  candidates: [styleScorersProvider],
+  input: { text: "Je pense que ceci illustre bien mon propos.", thresholds: { minFirstPersonRatio: 0.5 } },
+})
+```
+
 ## As a CI gate
 
 `toVitest` turns a suite into vitest test registrations — one `it(caseId)` per
@@ -230,6 +263,19 @@ toVitest(
 - `llmJudge` — convenience: build a ready-to-use `ScorerBinding` around a judge
 - `JudgeFn`, `JudgeVerdict`, `judgeVerdictSchema`, `LlmJudgeInput`,
   `MakeLlmJudgeDriverOptions`, `LlmJudgeBinding`
+- `textStatsTool` / `textStatsImpl` — plus pure helpers `bulletsRatio`,
+  `firstPersonRatio`, `questionRate`, `meanSentenceLength`, `computeTextStats`
+  (`TextStats`, `LengthBand`)
+- `lexiconHitRateTool` / `lexiconHitRateImpl` — plus `extractLexicon`
+  (`ExtractLexiconOptions`)
+- `styleScorersProvider` — the builtin PROVIDER bundling the two
+  deterministic style scorers
+- `stylePairwiseTool`, `makeStylePairwiseDriver`, `pairwiseWinRate`
+  (`StylePairwiseInput`, `PairwiseWinner`, `PairwiseVerdict`,
+  `PairwiseWinRateResult`)
+- `styleEmbeddingTool`, `makeStyleEmbeddingDriver`, `cosineToCentroid`
+  (`StyleEmbeddingInput`, `EmbedFn`, `MakeStyleEmbeddingDriverOptions`)
+- `outlineFidelityTool`, `makeOutlineFidelityDriver` (`OutlineFidelityInput`)
 
 ## License
 
