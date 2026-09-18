@@ -86,9 +86,18 @@ describe("blobEmbedScript / transformChatHtmlForBlob", () => {
         async () => new Response("ok"),
       )
       const postMessage = vi.fn<(msg: unknown, target: string) => void>()
-      const win: Record<string, unknown> = { fetch: inner, parent: { postMessage } }
+      const replaceState = vi.fn()
+      const pushState = vi.fn()
+      // The blob document's location is the blob url (creator origin), while
+      // document.baseURI is the daemon deep link — a cross-origin pair.
+      const win: Record<string, unknown> = {
+        fetch: inner,
+        parent: { postMessage },
+        location: { href: "blob:http://127.0.0.1:18923/abc", origin: "http://127.0.0.1:18923" },
+        history: { replaceState, pushState },
+      }
       new Function("window", "document", src)(win, { baseURI: url })
-      return { win, inner, postMessage }
+      return { win, inner, postMessage, replaceState, pushState }
     }
 
     it("posts the boot ack to its parent FIRST, so a CSP-killed script is detectable by its absence", () => {
@@ -103,6 +112,26 @@ describe("blobEmbedScript / transformChatHtmlForBlob", () => {
     it("points __AGENTPROTO_BASEURL__ at the deep link's daemon origin (non-default ports work)", () => {
       const { win } = runShim("http://127.0.0.1:19999/apps/@agentik/session-chat/ui?embed=1")
       expect(win.__AGENTPROTO_BASEURL__).toBe("http://127.0.0.1:19999")
+    })
+
+    it("shims history.replaceState/pushState so the app's router survives the cross-origin <base href>", () => {
+      // TanStack stamps its key via history.replaceState(_, _, "") on boot;
+      // the empty url resolves against <base href> (the DAEMON origin) while
+      // the blob location is the creator origin — a raw call throws
+      // SecurityError and kills router init (blank transcript). The shim
+      // redirects any write whose base-resolved origin differs from the blob
+      // origin to location.href.
+      const out = transform(SERVED_HTML, URL_, TOKEN)
+      const src = injectedShimSource(out)
+      expect(src).toContain("_h.replaceState = function")
+      expect(src).toContain("_sameOrLoc")
+      const { win, replaceState } = runShim()
+      const patched = (win.history as { replaceState: (s: unknown, t: string, u: string) => void }).replaceState
+      patched({ key: "tsr" }, "", "")
+      expect(replaceState).toHaveBeenCalledWith({ key: "tsr" }, "", "blob:http://127.0.0.1:18923/abc")
+      // A same-origin write passes through untouched.
+      patched({ k: 2 }, "", "blob:http://127.0.0.1:18923/xyz")
+      expect(replaceState).toHaveBeenLastCalledWith({ k: 2 }, "", "blob:http://127.0.0.1:18923/xyz")
     })
 
     it("hands the deep link's query to the app as __AGENTPROTO_BOOT_QUERY__, with the embed token stripped", () => {
