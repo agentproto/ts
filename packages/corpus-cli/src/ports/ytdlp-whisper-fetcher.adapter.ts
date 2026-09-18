@@ -126,8 +126,9 @@ export class YtDlpWhisperFetcher implements FetcherPort {
     try {
       const t = await this.stt.transcribe(dl.audioPath)
       if (!t.text.trim()) return null
-      const diarized = t.utterances && t.utterances.length > 0
-      const speakers = diarized ? new Set(t.utterances!.map(u => u.speaker)).size : 0
+      const utterances = t.utterances ?? []
+      const diarized = utterances.length > 0
+      const speakers = diarized ? new Set(utterances.map(u => u.speaker)).size : 0
       return {
         title: dl.title || url,
         text: t.text,
@@ -137,7 +138,17 @@ export class YtDlpWhisperFetcher implements FetcherPort {
           : {}),
         via: diarized ? "diarized-transcription" : "transcription",
         ...(diarized
-          ? { metadata: { speech: { regime: "spoken", diarized: true, engine: "assemblyai", speakers } } }
+          ? {
+              metadata: {
+                speech: {
+                  regime: "spoken",
+                  diarized: true,
+                  engine: t.engine ?? "unknown",
+                  speakers,
+                  ...(t.speakerLabelsLocalToSegment ? { segmented: true } : {}),
+                },
+              },
+            }
           : {}),
       }
     } catch (e) {

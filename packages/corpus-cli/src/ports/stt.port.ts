@@ -36,6 +36,17 @@ export interface Transcript {
    * (speaker counting, per-turn attribution) without re-parsing `text`.
    */
   readonly utterances?: ReadonlyArray<Utterance>
+  /** Which STT engine produced this transcript (e.g. "assemblyai"). */
+  readonly engine?: string
+  /**
+   * True when `utterances[].speaker` labels are only stable WITHIN this
+   * transcript and can't be compared across a different call (set by
+   * `ChunkedStt`, whose parts are each diarized independently). Consumers
+   * that count distinct speakers should treat the labels as already
+   * disambiguated (e.g. prefixed) rather than re-merging same-named
+   * speakers from different segments.
+   */
+  readonly speakerLabelsLocalToSegment?: boolean
 }
 
 export interface SttPort {

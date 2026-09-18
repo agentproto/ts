@@ -39,9 +39,11 @@ const AAI_TRANSCRIPT = z
         z.object({
           speaker: z.string(),
           text: z.string(),
-          // AssemblyAI reports these in milliseconds.
-          start: z.number().optional(),
-          end: z.number().optional(),
+          // AssemblyAI reports these in milliseconds. Nullish, not just
+          // optional: an explicit `null` from the API must parse cleanly
+          // rather than failing the whole video's transcript.
+          start: z.number().nullish(),
+          end: z.number().nullish(),
         })
       )
       .nullish(),
@@ -100,6 +102,7 @@ export class AssemblyAiStt implements SttPort {
     const utterances = toUtterances(job)
     return {
       text: formatDiarized(job),
+      engine: "assemblyai",
       ...(job.language_code ? { language: job.language_code } : {}),
       ...(utterances ? { utterances } : {}),
     }
@@ -128,8 +131,8 @@ function toUtterances(job: AaiTranscript): ReadonlyArray<Utterance> | undefined 
   return job.utterances.map(u => ({
     speaker: u.speaker,
     text: u.text.trim(),
-    ...(u.start !== undefined ? { start: u.start / 1000 } : {}),
-    ...(u.end !== undefined ? { end: u.end / 1000 } : {}),
+    ...(u.start != null ? { start: u.start / 1000 } : {}),
+    ...(u.end != null ? { end: u.end / 1000 } : {}),
   }))
 }
 
