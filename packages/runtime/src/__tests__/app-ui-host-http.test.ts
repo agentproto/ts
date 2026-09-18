@@ -381,6 +381,91 @@ describe("standalone app UI host — REST routes", () => {
     })
   })
 
+  it("GET /ui with a valid token and a non-iframe sec-fetch-dest (the blob pass-through FETCH) logs no embed refusal", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      await withServer(async base => {
+        const res = await fetch(`${base}/apps/${APP_ID}/ui?embed=1&et=${mintAppEmbedToken(APP_ID)}`, {
+          headers: { "sec-fetch-dest": "empty", origin: "null" },
+        })
+        expect(res.status).toBe(200)
+        expect(await res.text()).toContain("media-viewer-marker")
+        expect(warn.mock.calls.find(call => String(call[0]).includes("[app-ui] embed refused"))).toBeUndefined()
+      })
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  // ── Blob-frame widget path: an opaque (`Origin: null`) blob: document
+  // reaching the daemon with the per-boot embed token on every request.
+  it("POST /apps/:appId/tool-call from a null Origin with a valid embed token dispatches", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${APP_ID}/tool-call?et=${mintAppEmbedToken(APP_ID)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "null" },
+        body: JSON.stringify({ tool: "directory_list", args: { path: "/tmp" } }),
+      })
+      expect(res.status).toBe(200)
+      expect(dispatched).toEqual([{ name: "directory_list", args: { path: "/tmp" } }])
+    })
+  })
+
+  it("POST /apps/:appId/tool-call from a null Origin with a FORGED token still 403s", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${APP_ID}/tool-call?et=forged`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "null" },
+        body: JSON.stringify({ tool: "directory_list" }),
+      })
+      expect(res.status).toBe(403)
+      expect(((await res.json()) as { error: string }).error).toBe("forbidden_origin")
+      expect(dispatched).toEqual([])
+    })
+  })
+
+  it("POST /mcp from a null Origin passes the origin gate with a valid token and 403s with a forged one", async () => {
+    await withServer(async base => {
+      const call = (et: string) =>
+        fetch(`${base}/mcp?et=${et}`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+            origin: "null",
+          },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+        })
+      const ok = await call(mintAppEmbedToken(APP_ID))
+      expect(ok.status).toBe(200)
+      const forged = await call("forged")
+      expect(forged.status).toBe(403)
+      expect(((await forged.json()) as { error: string }).error).toBe("mcp_forbidden_origin")
+    })
+  })
+
+  it("mutating /sessions-class routes (checkSessionsToken) accept a valid embed token from a null Origin", async () => {
+    await withServer(
+      async base => {
+        // /files/upload shares the mutating-/sessions gate; with the gate
+        // passed it 400s on the missing cwd/name, never 401.
+        const ok = await fetch(`${base}/files/upload?et=${mintAppEmbedToken(APP_ID)}`, {
+          method: "POST",
+          headers: { origin: "null" },
+          body: "x",
+        })
+        expect(ok.status).toBe(400)
+        const forged = await fetch(`${base}/files/upload?et=forged`, {
+          method: "POST",
+          headers: { origin: "null" },
+          body: "x",
+        })
+        expect(forged.status).toBe(401)
+      },
+      { token: "per-boot-sessions-secret" },
+    )
+  })
+
   it("blocks a non-allowlisted browser origin's drive-by on both routes", async () => {
     await withServer(async base => {
       const ui = await fetch(`${base}/apps/${APP_ID}/ui`, {
