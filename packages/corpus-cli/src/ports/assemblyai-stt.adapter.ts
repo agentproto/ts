@@ -15,7 +15,7 @@
 
 import { readFile } from "node:fs/promises"
 import { z } from "zod"
-import type { SttPort, Transcript } from "./stt.port.js"
+import type { SttPort, Transcript, Utterance } from "./stt.port.js"
 
 export interface AssemblyAiSttOptions {
   readonly apiKey: string
@@ -35,7 +35,15 @@ const AAI_TRANSCRIPT = z
     language_code: z.string().optional(),
     error: z.string().optional(),
     utterances: z
-      .array(z.object({ speaker: z.string(), text: z.string() }))
+      .array(
+        z.object({
+          speaker: z.string(),
+          text: z.string(),
+          // AssemblyAI reports these in milliseconds.
+          start: z.number().optional(),
+          end: z.number().optional(),
+        })
+      )
       .nullish(),
   })
   .loose()
@@ -89,9 +97,11 @@ export class AssemblyAiStt implements SttPort {
     }
     if (job.status === "error") throw new Error(`AssemblyAI transcript failed: ${job.error ?? "unknown"}`)
 
+    const utterances = toUtterances(job)
     return {
       text: formatDiarized(job),
       ...(job.language_code ? { language: job.language_code } : {}),
+      ...(utterances ? { utterances } : {}),
     }
   }
 
@@ -110,6 +120,17 @@ export class AssemblyAiStt implements SttPort {
     if (!r.ok) throw new Error(`AssemblyAI GET ${path} ${r.status}: ${(await r.text()).slice(0, 200)}`)
     return AAI_TRANSCRIPT.parse(await r.json())
   }
+}
+
+/** Structured utterances (ms → s), or `undefined` when AssemblyAI didn't diarize. */
+function toUtterances(job: AaiTranscript): ReadonlyArray<Utterance> | undefined {
+  if (!job.utterances || job.utterances.length === 0) return undefined
+  return job.utterances.map(u => ({
+    speaker: u.speaker,
+    text: u.text.trim(),
+    ...(u.start !== undefined ? { start: u.start / 1000 } : {}),
+    ...(u.end !== undefined ? { end: u.end / 1000 } : {}),
+  }))
 }
 
 /** Join utterances as `Speaker A: …` blocks; fall back to flat text. */

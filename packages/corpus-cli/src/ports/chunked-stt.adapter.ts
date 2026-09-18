@@ -26,7 +26,7 @@ import { mkdtemp, readdir, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { extname, join } from "node:path"
 import { promisify } from "node:util"
-import type { SttPort, Transcript } from "./stt.port.js"
+import type { SttPort, Transcript, Utterance } from "./stt.port.js"
 
 const execFileAsync = promisify(execFile)
 
@@ -86,14 +86,31 @@ export class ChunkedStt implements SttPort {
         return this.base.transcribe(audioPath)
       }
       const texts: string[] = []
+      const utterances: Utterance[] = []
+      let hasUtterances = false
       let language: string | undefined
       let failed = 0
       let firstErr: unknown
-      for (const part of parts) {
+      for (const [i, part] of parts.entries()) {
         try {
           const t = await this.base.transcribe(part)
           if (t.text.trim()) texts.push(t.text.trim())
           language ??= t.language
+          if (t.utterances && t.utterances.length > 0) {
+            hasUtterances = true
+            // Each part is a fixed `segmentSeconds`-long slice (except
+            // possibly the last), so shifting by `i * segmentSeconds`
+            // recovers absolute offsets into the original audio.
+            const offset = i * this.segmentSeconds
+            for (const u of t.utterances) {
+              utterances.push({
+                speaker: u.speaker,
+                text: u.text,
+                ...(u.start !== undefined ? { start: u.start + offset } : {}),
+                ...(u.end !== undefined ? { end: u.end + offset } : {}),
+              })
+            }
+          }
         } catch (e) {
           // One segment failing (after the base engine's own retries) must
           // not discard the whole multi-hour transcript — keep the rest.
@@ -115,6 +132,7 @@ export class ChunkedStt implements SttPort {
       return {
         text: texts.join("\n\n"),
         ...(language ? { language } : {}),
+        ...(hasUtterances ? { utterances } : {}),
       }
     } finally {
       await rm(dir, { recursive: true, force: true }).catch(() => {})

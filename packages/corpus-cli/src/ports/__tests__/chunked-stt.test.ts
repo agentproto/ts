@@ -3,7 +3,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ChunkedStt, type AudioSplitter } from "../chunked-stt.adapter.js"
-import type { SttPort } from "../stt.port.js"
+import type { SttPort, Transcript } from "../stt.port.js"
 
 let dir: string
 let smallFile: string
@@ -21,7 +21,7 @@ afterAll(async () => {
   await rm(dir, { recursive: true, force: true })
 })
 
-const fakeStt = (impl: (path: string) => { text: string; language?: string }): SttPort => ({
+const fakeStt = (impl: (path: string) => Transcript): SttPort => ({
   transcribe: vi.fn(async (path: string) => impl(path)),
 })
 
@@ -76,5 +76,40 @@ describe("ChunkedStt", () => {
     const out = await stt.transcribe(bigFile)
     expect(out.text).toBe("fallback")
     expect(base.transcribe).toHaveBeenCalledWith(bigFile)
+  })
+
+  it("shifts each part's utterance offsets by its cumulative segment position", async () => {
+    const parts = [join(dir, "u0.mp3"), join(dir, "u1.mp3")]
+    const split: AudioSplitter = vi.fn(async () => parts)
+    const byPart: Record<string, Transcript> = {
+      [parts[0]!]: {
+        text: "Speaker A: hello",
+        utterances: [{ speaker: "A", text: "hello", start: 0, end: 4 }],
+      },
+      [parts[1]!]: {
+        text: "Speaker B: world",
+        utterances: [{ speaker: "B", text: "world", start: 1, end: 3.5 }],
+      },
+    }
+    const base = fakeStt(p => byPart[p]!)
+    const stt = new ChunkedStt({ base, maxBytes: 50, segmentSeconds: 600, split })
+
+    const out = await stt.transcribe(bigFile)
+
+    expect(out.utterances).toEqual([
+      { speaker: "A", text: "hello", start: 0, end: 4 },
+      { speaker: "B", text: "world", start: 601, end: 603.5 }, // shifted by segmentSeconds (600)
+    ])
+  })
+
+  it("omits utterances entirely when no part reports them (non-regression)", async () => {
+    const parts = [join(dir, "n0.mp3"), join(dir, "n1.mp3")]
+    const split: AudioSplitter = vi.fn(async () => parts)
+    const base = fakeStt(() => ({ text: "plain" }))
+    const stt = new ChunkedStt({ base, maxBytes: 50, split })
+
+    const out = await stt.transcribe(bigFile)
+    expect(out.text).toBe("plain\n\nplain")
+    expect(out.utterances).toBeUndefined()
   })
 })

@@ -126,6 +126,8 @@ export class YtDlpWhisperFetcher implements FetcherPort {
     try {
       const t = await this.stt.transcribe(dl.audioPath)
       if (!t.text.trim()) return null
+      const diarized = t.utterances && t.utterances.length > 0
+      const speakers = diarized ? new Set(t.utterances!.map(u => u.speaker)).size : 0
       return {
         title: dl.title || url,
         text: t.text,
@@ -133,7 +135,10 @@ export class YtDlpWhisperFetcher implements FetcherPort {
         ...(t.language ?? dl.language
           ? { language: t.language ?? dl.language }
           : {}),
-        via: "transcription",
+        via: diarized ? "diarized-transcription" : "transcription",
+        ...(diarized
+          ? { metadata: { speech: { regime: "spoken", diarized: true, engine: "assemblyai", speakers } } }
+          : {}),
       }
     } catch (e) {
       // A transcription failure on ONE video must not abort the whole
