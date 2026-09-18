@@ -1,5 +1,27 @@
 # @agentproto/runtime
 
+## 3.5.0
+
+### Minor Changes
+
+- b8fdbc6: Fix transmit_message/sendOutbound reporting sent:true on a blocked/failed agentpush send; surface message_id, blocked_reason, and suggestion
+
+### Patch Changes
+
+- f6f2d75: Mint per-boot embed tokens so MCP-Apps widgets render in opaque hosts
+- f6f2d75: MCP-Apps hosts with opaque widget origins (e.g. Claude Desktop) can now mount an app's `/ui` page: a per-boot embed token is baked into panel bridge scripts at registration and accepted (alongside `vscode-webview:` and `csp.frameDomains`) as a trusted-embedder proof by `handleAppUiPage`/`applyCors`, layered under the existing bearer-auth and `sec-fetch-dest: iframe` gates.
+- d388a08: Accept a valid per-boot app embed token (`?et=`) as an allowlisted Origin equivalent on the browser-facing gates (`guardBrowserOrigin`, `authorizeMcp`, `checkSessionsToken`), so MCP-Apps widget blob: documents with opaque `Origin: null` can reach the daemon.
+- a373209: Bind agent_start to session-chat widget via self-bootstrapping bridge
+- Updated dependencies [f84c972]
+- Updated dependencies [f6f2d75]
+- Updated dependencies [a169e72]
+- Updated dependencies [f6f2d75]
+- Updated dependencies [a373209]
+- Updated dependencies [54e8f28]
+  - @agentproto/apps@0.12.0
+  - @agentproto/eval-reporters@0.2.14
+  - @agentproto/telemetry-langfuse@0.2.12
+
 ## 3.4.0
 
 ### Minor Changes
