@@ -41,6 +41,7 @@ describe("AssemblyAiStt", () => {
       const stt = new AssemblyAiStt({ apiKey: "k", pollIntervalMs: 0, sleep: async () => {} })
       const out = await stt.transcribe(tmp)
       expect(out.language).toBe("en")
+      expect(out.engine).toBe("assemblyai")
       expect(out.text).toBe(
         "Speaker A: How do you read a job description?\n\nSpeaker B: Start with the must-haves."
       )
@@ -101,6 +102,23 @@ describe("AssemblyAiStt", () => {
       id: "t1",
       status: "completed",
       utterances: [{ speaker: "A", text: "no timestamps here" }],
+    })
+    const dir = await mkdtemp(join(tmpdir(), "aai-test-"))
+    const tmp = join(dir, "audio.mp3")
+    await writeFile(tmp, Buffer.from("x"))
+    try {
+      const out = await new AssemblyAiStt({ apiKey: "k", sleep: async () => {} }).transcribe(tmp)
+      expect(out.utterances).toEqual([{ speaker: "A", text: "no timestamps here" }])
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("parses utterances with explicit null start/end without throwing", async () => {
+    mockAaiSequence({
+      id: "t1",
+      status: "completed",
+      utterances: [{ speaker: "A", text: "no timestamps here", start: null, end: null }],
     })
     const dir = await mkdtemp(join(tmpdir(), "aai-test-"))
     const tmp = join(dir, "audio.mp3")

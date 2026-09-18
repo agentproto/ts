@@ -78,7 +78,7 @@ describe("ChunkedStt", () => {
     expect(base.transcribe).toHaveBeenCalledWith(bigFile)
   })
 
-  it("shifts each part's utterance offsets by its cumulative segment position", async () => {
+  it("prefixes speaker labels by segment and shifts offsets by each part's real span", async () => {
     const parts = [join(dir, "u0.mp3"), join(dir, "u1.mp3")]
     const split: AudioSplitter = vi.fn(async () => parts)
     const byPart: Record<string, Transcript> = {
@@ -96,10 +96,42 @@ describe("ChunkedStt", () => {
 
     const out = await stt.transcribe(bigFile)
 
+    // Labels are segment-local (a base engine re-diarizes each part from
+    // scratch), so they're suffixed by segment index; the offset for part 1
+    // is part 0's REAL max end (4s), not the nominal segmentSeconds (600).
     expect(out.utterances).toEqual([
-      { speaker: "A", text: "hello", start: 0, end: 4 },
-      { speaker: "B", text: "world", start: 601, end: 603.5 }, // shifted by segmentSeconds (600)
+      { speaker: "A#0", text: "hello", start: 0, end: 4 },
+      { speaker: "B#1", text: "world", start: 5, end: 7.5 },
     ])
+    expect(out.speakerLabelsLocalToSegment).toBe(true)
+  })
+
+  it("accumulates offsets from each part's own span, not a fixed segmentSeconds (parts of differing length)", async () => {
+    const parts = [join(dir, "s0.mp3"), join(dir, "s1.mp3"), join(dir, "s2.mp3")]
+    const split: AudioSplitter = vi.fn(async () => parts)
+    const byPart: Record<string, Transcript> = {
+      [parts[0]!]: { text: "a", utterances: [{ speaker: "A", text: "a", start: 0, end: 3 }] },
+      [parts[1]!]: { text: "b", utterances: [{ speaker: "A", text: "b", start: 0, end: 400 }] },
+      [parts[2]!]: { text: "c", utterances: [{ speaker: "A", text: "c", start: 0, end: 2 }] },
+    }
+    const base = fakeStt(p => byPart[p]!)
+    const stt = new ChunkedStt({ base, maxBytes: 50, segmentSeconds: 600, split })
+
+    const out = await stt.transcribe(bigFile)
+
+    expect(out.utterances).toEqual([
+      { speaker: "A#0", text: "a", start: 0, end: 3 },
+      { speaker: "A#1", text: "b", start: 3, end: 403 },
+      { speaker: "A#2", text: "c", start: 403, end: 405 },
+    ])
+  })
+
+  it("propagates the base engine's `engine` field", async () => {
+    const base = fakeStt(() => ({ text: "whole transcript", engine: "assemblyai" }))
+    const stt = new ChunkedStt({ base, maxBytes: 50 })
+
+    const out = await stt.transcribe(smallFile)
+    expect(out.engine).toBe("assemblyai")
   })
 
   it("omits utterances entirely when no part reports them (non-regression)", async () => {
@@ -111,5 +143,7 @@ describe("ChunkedStt", () => {
     const out = await stt.transcribe(bigFile)
     expect(out.text).toBe("plain\n\nplain")
     expect(out.utterances).toBeUndefined()
+    expect(out.speakerLabelsLocalToSegment).toBeUndefined()
+    expect(out.engine).toBeUndefined()
   })
 })
