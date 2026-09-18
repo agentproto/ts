@@ -1,5 +1,19 @@
 # @agentproto/apps
 
+## 0.12.0
+
+### Minor Changes
+
+- a169e72: Add launcher card fallback when host CSP blocks the session-chat iframe
+
+### Patch Changes
+
+- f84c972: Shim history.replaceState/pushState to survive cross-origin blob base href
+- f6f2d75: Mint per-boot embed tokens so MCP-Apps widgets render in opaque hosts
+- f6f2d75: MCP-Apps hosts with opaque widget origins (e.g. Claude Desktop) can now mount an app's `/ui` page: a per-boot embed token is baked into panel bridge scripts at registration and accepted (alongside `vscode-webview:` and `csp.frameDomains`) as a trusted-embedder proof by `handleAppUiPage`/`applyCors`, layered under the existing bearer-auth and `sec-fetch-dest: iframe` gates.
+- a373209: Bind agent_start to session-chat widget via self-bootstrapping bridge
+- 54e8f28: Regen work-board panel bundle after panel-bridge changes
+
 ## 0.11.0
 
 ### Minor Changes

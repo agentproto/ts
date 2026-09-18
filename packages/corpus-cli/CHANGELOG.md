@@ -1,5 +1,15 @@
 # @agentproto/corpus-cli
 
+## 0.10.0
+
+### Minor Changes
+
+- 2bbce06: Add structured speaker utterances from diarized transcription: `SttPort`'s `Transcript` gains an optional `utterances` field (`Utterance[]` with speaker, text, and optional second-based start/end), populated by AssemblyAI and time-shifted to absolute offsets by `ChunkedStt`; `YtDlpWhisperFetcher` now emits `via: "diarized-transcription"` with `metadata.speech` (diarized flag, engine, distinct speaker count) when utterances are present.
+
+### Patch Changes
+
+- 26eb9ab: STT pipeline improvements: add `engine` and `speakerLabelsLocalToSegment` to `Transcript`, suffix speaker labels by segment in `ChunkedStt`, advance chunk offsets by each part's real span, and tolerate explicit null utterance timestamps in the AssemblyAI adapter.
+
 ## 0.9.4
 
 ### Patch Changes

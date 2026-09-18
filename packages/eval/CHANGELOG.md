@@ -1,5 +1,12 @@
 # @agentproto/eval
 
+## 0.3.0
+
+### Minor Changes
+
+- c1a662e: Add style scorers: `eval.text-stats` and `eval.lexicon-hit-rate` (deterministic, bundled into a new `styleScorersProvider` builtin provider) plus model-backed `eval.style-pairwise`, `eval.style-embedding`, and `eval.outline-fidelity`, each built via an injected `make*Driver(judge/embed)` factory. Pure helpers `bulletsRatio`, `firstPersonRatio`, `questionRate`, `meanSentenceLength`, `computeTextStats`, `extractLexicon`, `pairwiseWinRate` (order-debiased win rate + Cohen's kappa), and `cosineToCentroid` are exported.
+- 1ad2f1c: Harden the style scorers: Unicode-safe lexicon matching (lookaround boundaries instead of ASCII `\b`, NFC normalization) and an optional `background` corpus option on `extractLexicon` ranked by an add-one-smoothed log-odds ratio; item-keyed inter-judge Cohen's kappa in `pairwiseWinRate` (new required `item` field on `PairwiseVerdict`, `kappa` widened to `number | null`, new `nNormal`/`nSwapped`/`balanced` result fields, order-group-averaged win rate); `cosineToCentroid` clamped to `[0, 1]` via `max(0, cosine)` (orthogonal candidates score 0, not 0.5) with a new `EmbeddingDimensionError` caught at the driver boundary; malformed judge verdicts now fail the score via a new exported `parseVerdict` helper; French text-stats gains `me`/`m'`/`nous`/`notre`/`nos`/`mien(ne)(s)` first-person markers, whitespace-required bullet markers, and abbreviation-guarded sentence splitting via a new exported `splitSentences` helper.
+
 ## 0.2.11
 
 ### Patch Changes
