@@ -105,6 +105,17 @@ describe("blobEmbedScript / transformChatHtmlForBlob", () => {
       expect(win.__AGENTPROTO_BASEURL__).toBe("http://127.0.0.1:19999")
     })
 
+    it("hands the deep link's query to the app as __AGENTPROTO_BOOT_QUERY__, with the embed token stripped", () => {
+      // A blob document's location has no params — this global is the only
+      // channel for ?session= / ?embed=1 (the app's bootSearchParams()).
+      const { win } = runShim(URL_ + "&et=tok_per_boot")
+      expect(win.__AGENTPROTO_BOOT_QUERY__).toBe("?session=sess_1&embed=1")
+      // Nothing to carry — empty string, never undefined (the app keys on
+      // the global being a string).
+      const { win: bare } = runShim("http://127.0.0.1:18790/apps/@agentik/session-chat/ui")
+      expect(bare.__AGENTPROTO_BOOT_QUERY__).toBe("")
+    })
+
     it("appends et= to absolute daemon-origin requests (the app's /mcp, /sessions, SSE fetches)", async () => {
       const { win, inner } = runShim()
       const fetch = win.fetch as (i: unknown, init?: unknown) => Promise<unknown>

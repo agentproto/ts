@@ -61,10 +61,18 @@ function transformChatHtmlForBlob(html, url, token){
   var origin = new URL(url).origin;
   var tc = new URL('./tool-call', url);
   tc.searchParams.set('et', token);
+  // The app-visible query for the blob doc: the deep link's search minus the
+  // embed token (the token must not ride the app's visible params). The
+  // blob document's own location has no params, so this is the ONLY channel
+  // for ?session= / ?embed=1 — the app reads it via bootSearchParams().
+  var bootUrl = new URL(url);
+  bootUrl.searchParams.delete('et');
+  var bootQuery = bootUrl.search;
   var shim = '<script>(function(){'
     + 'try { window.parent.postMessage({ type: ${JSON.stringify(BLOB_BOOT_MESSAGE_TYPE)} }, "*"); } catch (_) {}'
     + 'var ORIGIN = ' + JSON.stringify(origin) + ', TOKEN = ' + JSON.stringify(token) + ';'
     + 'window.__AGENTPROTO_BASEURL__ = ORIGIN;'
+    + 'window.__AGENTPROTO_BOOT_QUERY__ = ' + JSON.stringify(bootQuery) + ';'
     + 'function withEt(u){'
     +   'try {'
     +     'var x = new URL(String(u), document.baseURI);'
