@@ -198,13 +198,20 @@ function resolveSession(sessionId) {
 // and is removed after a settle window so the card becomes the interactive
 // surface.
 //
-// The anchor itself carries target="_blank" rel="noreferrer", so a plain
-// click always opens the deep link in a new tab without touching this
-// frame — no host-context capability to branch on here (the ext-apps spec
-// has no openLinks / ui/open-link host-context field for this app to
-// check).
+// The anchor carries target="_blank" rel="noreferrer" as the fallback path,
+// but that is a plain no-op in hosts that sandbox the widget iframe without
+// allow-popups (observed in Claude Desktop's side chat) — a normal click
+// on such a host does nothing. Where the host advertises the capability
+// (McpUiInitializeResult.hostCapabilities.openLinks in the ext-apps spec,
+// captured by the bridge's getHostCapabilities()), route through the
+// host-mediated ui/open-link request instead, which is not subject to the
+// iframe's popup sandboxing.
 cardOpenEl.addEventListener('click', function (evt) {
   if (!cardUrl) { evt.preventDefault(); return; }
+  if (getHostCapabilities() && getHostCapabilities().openLinks) {
+    evt.preventDefault();
+    openLink(cardUrl).catch(function () { window.open(cardUrl, '_blank'); });
+  }
 });
 
 function noteSession(id) {

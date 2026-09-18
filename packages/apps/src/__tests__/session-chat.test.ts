@@ -163,11 +163,16 @@ describe("makeSessionChatApp", () => {
     expect(html).toContain('id="card-open"')
     expect(html).toContain("armBlockProbe(frame)")
     expect(html).toContain("frame.contentWindow.location.href === 'about:blank'")
-    // The CTA is a plain new-tab anchor — no host-context field exists to
-    // branch on, so the click handler must not depend on one.
+    // The anchor is the fallback for hosts without the capability; hosts
+    // that advertise hostCapabilities.openLinks route through the bridge's
+    // host-mediated ui/open-link instead (a plain click is a no-op in a
+    // sandboxed widget iframe without allow-popups).
     expect(html).toContain('<a id="card-open" href="#" target="_blank" rel="noreferrer">Open chat</a>')
-    expect(html).not.toContain("ctx.openLinks")
-    expect(html).not.toContain("openLink(cardUrl)")
+    expect(html).toContain("getHostCapabilities().openLinks")
+    expect(html).toContain("openLink(cardUrl)")
+    // The bridge script is embedded inline, so it must expose the getter
+    // the card CTA depends on.
+    expect(html).toContain("getHostCapabilities")
   })
 
   it("re-checks the frame before removing it when the block-probe settle window closes (no false positive on a slow load)", () => {
