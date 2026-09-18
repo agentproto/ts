@@ -98,6 +98,8 @@ export {
   type ToVitestOptions,
 } from "./to-vitest.js"
 
+export * from "./style/index.js"
+
 /**
  * Builtin AIP-30 PROVIDER bundling the four deterministic ref scorers.
  * `kind: "builtin"` — pure in-process functions, no subprocess / network hop.
