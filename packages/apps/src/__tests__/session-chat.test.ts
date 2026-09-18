@@ -154,6 +154,36 @@ describe("makeSessionChatApp", () => {
     expect(baked).toContain("frame.src = withEmbedToken(url)")
   })
 
+  it("degrades to an inline launcher card when the host refuses the frame", () => {
+    const html = sessionChatEmbedHtml({})
+    // The card is the default surface; the iframe mounts OVER it and is
+    // removed by the block probe when a host CSP (Claude Desktop / Codex:
+    // frame-src 'self' blob: data:, csp.frameDomains not yet merged) refuses it.
+    expect(html).toContain('<div id="card">')
+    expect(html).toContain('id="card-open"')
+    expect(html).toContain("armBlockProbe(frame)")
+    expect(html).toContain("frame.contentWindow.location.href === 'about:blank'")
+    // The anchor is the fallback for hosts without the capability; hosts
+    // that advertise hostCapabilities.openLinks route through the bridge's
+    // host-mediated ui/open-link instead (a plain click is a no-op in a
+    // sandboxed widget iframe without allow-popups).
+    expect(html).toContain('<a id="card-open" href="#" target="_blank" rel="noreferrer">Open chat</a>')
+    expect(html).toContain("getHostCapabilities().openLinks")
+    expect(html).toContain("openLink(cardUrl)")
+    // The bridge script is embedded inline, so it must expose the getter
+    // the card CTA depends on.
+    expect(html).toContain("getHostCapabilities")
+  })
+
+  it("re-checks the frame before removing it when the block-probe settle window closes (no false positive on a slow load)", () => {
+    const html = sessionChatEmbedHtml({})
+    // The settle timeout must re-read the frame's location instead of
+    // unconditionally removing it — a legitimately slow (not blocked) load
+    // that lands its `load` event mid-window must not get torn down.
+    expect(html).toContain("settle = setTimeout(function () {")
+    expect(html).toContain("if (isBlank(frame)) frame.remove();")
+  })
+
   it("the not-installed render shows the notice inline and still carries the bridge", () => {
     const html = sessionChatEmbedHtml({ installed: false, url: null })
     expect(html).toContain('id="notice" class="show"')

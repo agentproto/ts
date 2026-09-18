@@ -88,6 +88,7 @@ export function panelBridgeScript(appName: string): string {
 // JSON-RPC 2.0 over window.parent.postMessage · spec 2026-01-26
 var _nextId = 1, _pending = {}, _notifyHandlers = [];
 var _hostContext = null, _hostContextHandlers = [];
+var _hostCaps = null;
 var _standaloneApp = null;
 function _isStandalone(){
   return window.parent === window && !!window.McpApp && typeof window.McpApp.connect === 'function';
@@ -109,6 +110,7 @@ function withEmbedToken(url){
 }
 function post(msg){ window.parent.postMessage(msg, '*'); }
 function getHostContext(){ return _hostContext; }
+function getHostCapabilities(){ return _hostCaps; }
 function onHostContext(cb){
   _hostContextHandlers.push(cb);
   // Replay the last context so a late subscriber isn't stuck blind.
@@ -171,11 +173,19 @@ function initBridge(){
     // The initialize result carries the initial hostContext (displayMode +
     // availableDisplayModes) — capture it before notifying the host.
     if (result && result.hostContext) _setHostContext(result.hostContext);
+    // McpUiInitializeResult.hostCapabilities (ext-apps spec) — e.g. openLinks,
+    // "Host supports opening external URLs". Captured once, read via
+    // getHostCapabilities() by panels that need to branch on it.
+    if (result && result.hostCapabilities) _hostCaps = result.hostCapabilities;
     rpcNotify('ui/notifications/initialized', {});
   });
 }
 function requestDisplayMode(mode){
   return rpcRequest('ui/request-display-mode', {mode: mode});
+}
+function openLink(url){
+  if (_standaloneApp && typeof _standaloneApp.openLink === 'function') return _standaloneApp.openLink(url);
+  return rpcRequest('ui/open-link', {url: url});
 }
 function callTool(name, args){
   var raw = _standaloneApp
