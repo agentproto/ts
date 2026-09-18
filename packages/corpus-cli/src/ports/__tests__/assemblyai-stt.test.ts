@@ -61,6 +61,53 @@ describe("AssemblyAiStt", () => {
     try {
       const out = await new AssemblyAiStt({ apiKey: "k", sleep: async () => {} }).transcribe(tmp)
       expect(out.text).toBe("flat transcript")
+      expect(out.utterances).toBeUndefined()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("returns structured utterances alongside the flattened text", async () => {
+    mockAaiSequence({
+      id: "t1",
+      status: "completed",
+      language_code: "en",
+      utterances: [
+        { speaker: "A", text: "How do you read a job description?", start: 0, end: 5000 },
+        { speaker: "B", text: "Start with the must-haves.", start: 5200, end: 9800 },
+      ],
+    })
+    const dir = await mkdtemp(join(tmpdir(), "aai-test-"))
+    const tmp = join(dir, "audio.mp3")
+    await writeFile(tmp, Buffer.from("fake-audio"))
+    try {
+      const out = await new AssemblyAiStt({ apiKey: "k", pollIntervalMs: 0, sleep: async () => {} }).transcribe(tmp)
+      // structured utterances, timestamps converted ms → s
+      expect(out.utterances).toEqual([
+        { speaker: "A", text: "How do you read a job description?", start: 0, end: 5 },
+        { speaker: "B", text: "Start with the must-haves.", start: 5.2, end: 9.8 },
+      ])
+      // flattened text stays identical to the non-diarized-consumer rendering
+      expect(out.text).toBe(
+        "Speaker A: How do you read a job description?\n\nSpeaker B: Start with the must-haves."
+      )
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("omits start/end on utterances the engine didn't time", async () => {
+    mockAaiSequence({
+      id: "t1",
+      status: "completed",
+      utterances: [{ speaker: "A", text: "no timestamps here" }],
+    })
+    const dir = await mkdtemp(join(tmpdir(), "aai-test-"))
+    const tmp = join(dir, "audio.mp3")
+    await writeFile(tmp, Buffer.from("x"))
+    try {
+      const out = await new AssemblyAiStt({ apiKey: "k", sleep: async () => {} }).transcribe(tmp)
+      expect(out.utterances).toEqual([{ speaker: "A", text: "no timestamps here" }])
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

@@ -17,10 +17,25 @@ const WHISPER_RESPONSE = z
   .object({ text: z.string().optional(), language: z.string().optional() })
   .loose()
 
+/** One speaker turn from a diarizing engine. `start`/`end` are seconds. */
+export interface Utterance {
+  readonly speaker: string
+  readonly text: string
+  readonly start?: number
+  readonly end?: number
+}
+
 export interface Transcript {
   readonly text: string
   /** BCP-47 language, when the engine detects it. */
   readonly language?: string
+  /**
+   * Per-speaker turns, when the engine diarizes (e.g. AssemblyAI). `text`
+   * above stays the flattened `Speaker A: …` rendering for backward
+   * compatibility — this is the structured form consumers can key off of
+   * (speaker counting, per-turn attribution) without re-parsing `text`.
+   */
+  readonly utterances?: ReadonlyArray<Utterance>
 }
 
 export interface SttPort {
