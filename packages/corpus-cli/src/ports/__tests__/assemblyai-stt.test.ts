@@ -145,3 +145,49 @@ describe("AssemblyAiStt", () => {
     }
   })
 })
+
+describe("AssemblyAiStt poll responses with explicit nulls", () => {
+  it("tolerates null text/language_code/error on queued and processing polls", async () => {
+    let polls = 0
+    globalThis.fetch = vi.fn<typeof fetch>(async (url, init) => {
+      const u = String(url)
+      if (u.endsWith("/upload")) return new Response(JSON.stringify({ upload_url: "https://cdn/audio" }))
+      if (u.endsWith("/transcript") && init?.method === "POST")
+        return new Response(
+          JSON.stringify({ id: "t2", status: "queued", text: null, language_code: null, error: null })
+        )
+      if (u.includes("/transcript/t2")) {
+        polls += 1
+        if (polls === 1)
+          return new Response(
+            JSON.stringify({ id: "t2", status: "processing", text: null, language_code: null, error: null })
+          )
+        return new Response(
+          JSON.stringify({
+            id: "t2",
+            status: "completed",
+            text: "Bonjour",
+            language_code: "fr",
+            error: null,
+            utterances: [{ speaker: "A", text: "Bonjour", start: 0, end: 500 }],
+          })
+        )
+      }
+      throw new Error(`unexpected fetch ${u}`)
+    })
+    const dir = await mkdtemp(join(tmpdir(), "aai-null-"))
+    const tmp = join(dir, "audio.mp3")
+    await writeFile(tmp, Buffer.from("fake-audio"))
+    try {
+      const stt = new AssemblyAiStt({ apiKey: "k", pollIntervalMs: 1, sleep: async () => {} })
+      const res = await stt.transcribe(tmp)
+      expect(polls).toBe(2)
+      expect(res.language).toBe("fr")
+      expect(res.utterances?.[0]?.speaker).toBe("A")
+      expect(res.text).toContain("Bonjour")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
