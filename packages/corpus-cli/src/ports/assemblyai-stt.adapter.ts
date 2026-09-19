@@ -31,9 +31,13 @@ const AAI_TRANSCRIPT = z
   .object({
     id: z.string(),
     status: z.enum(["queued", "processing", "completed", "error"]),
-    text: z.string().optional(),
-    language_code: z.string().optional(),
-    error: z.string().optional(),
+    // Nullish, not optional: while a job is `queued`/`processing`
+    // AssemblyAI sends an explicit `null` for these, and the poll loop
+    // parses every intermediate response — an `.optional()` here rejected
+    // the very first poll of every transcript (0/64 on the Werber corpus).
+    text: z.string().nullish(),
+    language_code: z.string().nullish(),
+    error: z.string().nullish(),
     utterances: z
       .array(
         z.object({
