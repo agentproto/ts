@@ -153,6 +153,16 @@ function escapeHtml(text) {
 
 function setMode(text) {
   document.getElementById('mode').textContent = text ? ' \\u00b7 ' + text : '';
+  // The chat app is live inside the frame — the launcher bar (title, deep
+  // link, mount mode) is noise on top of the real surface. Hide it and let
+  // the frame own the full height. Only a failed mount (launcher card /
+  // not-installed notice) shows the bar again.
+  var bar = document.getElementById('bar');
+  var stage = document.getElementById('stage');
+  if (bar && stage) {
+    bar.style.display = text ? 'none' : '';
+    stage.style.height = text ? '100%' : 'calc(100% - 29px)';
+  }
 }
 
 // One fresh #chat frame on the stage (over the card), the previous one gone.
