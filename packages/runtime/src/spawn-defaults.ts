@@ -105,6 +105,14 @@ export interface SpawnDefaultsConfig {
    *  Langfuse (see `@agentproto/redaction`'s registry). Default "secrets"
    *  (deny-list by key + value-scan for secret shapes). */
   traceRedactor?: string
+  /** Default `interrupt` applied when an `agent_prompt` / `message_parent`
+   *  call leaves `interrupt` UNSET. `false` (the default) preserves today's
+   *  behaviour — a mid-turn target queues the prompt behind its in-flight
+   *  turn. `true` flips the unset default to cut: a mid-turn target has its
+   *  turn cancelled and is redirected onto the new prompt immediately. An
+   *  EXPLICIT `interrupt` on the call (true OR false) always wins over this
+   *  default. */
+  agentPromptInterrupt?: boolean
 }
 
 export interface ResolveSpawnDefaultsInput {
