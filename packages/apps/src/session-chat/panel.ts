@@ -300,11 +300,32 @@ function extractToolResultSessionId(params) {
   return null;
 }
 
+// ── Embed-token refresh ──────────────────────────────────────────────────
+// The token baked into this page by registerMcpApps dies with the daemon
+// boot that minted it (runtime embed-tokens.ts), but hosts cache the
+// rendered widget: Claude Desktop keeps a conversation's srcdoc, so after
+// any daemon restart the cached page replays a dead token and every daemon
+// call 403s — the blob fetch fails, the direct frame is refused, and the
+// user is left on the launcher card forever. Every tool result carries a
+// live token (SessionChatOutput.embedToken), so adopt it before mounting.
+//
+// Only a render that WAS baked refreshes. A standalone tab or VS Code
+// HTTP-iframe panel still holds the literal placeholder and passes the
+// daemon's origin checks on its own; handing it a token would switch it
+// onto the blob path for no reason.
+function adoptEmbedToken(body) {
+  var cur = window.__AGENPROTO_EMBED_TOKEN__;
+  if (!cur || cur === '__AGENPROTO_EMBED_TOKEN__') return;
+  if (!body || typeof body.embedToken !== 'string' || !body.embedToken) return;
+  window.__AGENPROTO_EMBED_TOKEN__ = body.embedToken;
+}
+
 // Turn a session id into the installed app's deep link over the bridge.
 function resolveSession(sessionId) {
   noteSession(sessionId);
   return callTool('agentproto_session_chat', sessionId ? { sessionId: sessionId } : {})
     .then(function(out) {
+      adoptEmbedToken(out);
       if (out && out.installed && typeof out.url === 'string' && out.url) mount(out.url);
       else showNotInstalled();
     })
@@ -381,6 +402,7 @@ function armBlockProbe(frame) {
 if (mountedUrl) {
   var bootUrl = mountedUrl;
   mountedUrl = null;
+  adoptEmbedToken(window.__APP_INIT__);
   mount(bootUrl);
 }
 
@@ -392,6 +414,8 @@ onHostNotification(function(method, params) {
   var body = parseToolResultBody(params);
   if (!body) return;
   if (typeof body.url === 'string' && body.url && body.installed !== false) {
+    // Adopt now, not at mount time: the token doesn't depend on the bridge.
+    adoptEmbedToken(body);
     if (bridged) mount(body.url); else pendingUrl = body.url;
     return;
   }

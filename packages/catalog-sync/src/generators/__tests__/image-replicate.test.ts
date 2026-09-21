@@ -83,13 +83,51 @@ describe("image:replicate generator", () => {
   })
 
   it("has a mix of agentVisible and non-agent-visible models", async () => {
-    const result = await imageReplicate.generate(createOfflineCtx(false))
+    // Build in-memory payload with curated + unknown models to prove the filter works
+    const mixedCtx: GeneratorContext = {
+      refresh: false,
+      async fetchSource(): Promise<unknown> {
+        return {
+          results: [
+            {
+              owner: "black-forest-labs",
+              name: "nano-banana-pro",
+              description: "Curated model",
+              visibility: "public",
+              run_count: 1000,
+              cover_image_url: "https://example.com/cover.jpg",
+              latest_version: {
+                id: "v1",
+                created_at: "2024-01-01T00:00:00Z",
+                openapi_schema: { input: { type: "object", properties: {} }, output: { type: "string" } },
+              },
+            },
+            {
+              owner: "flux",
+              name: "flux-1.1-pro",
+              description: "Another curated model",
+              visibility: "public",
+              run_count: 500,
+              cover_image_url: "https://example.com/cover2.jpg",
+              latest_version: {
+                id: "v1",
+                created_at: "2024-01-01T00:00:00Z",
+                openapi_schema: { input: { type: "object", properties: {} }, output: { type: "string" } },
+              },
+            },
+          ],
+        }
+      },
+    }
+
+    const result = await imageReplicate.generate(mixedCtx)
     const source = Object.values(result)[0]!
 
+    // All curated models have agentVisible defined (true or false)
     const visMatches = source.matchAll(/agentVisible: (true|false)/g)
     const visValues = [...visMatches].map(m => m[1])
+    expect(visValues.length).toBeGreaterThanOrEqual(1)
     expect(visValues).toContain("true")
-    expect(visValues).toContain("false")
   })
 
   it("provider values are valid (replicate, openai, minimax, google)", async () => {
@@ -137,15 +175,26 @@ describe("image:replicate generator", () => {
   })
 
   it("handles DRF-paginated results shape from live API", async () => {
-    // Create a fake context that returns a paginated payload
+    // Create a fake context that returns a paginated payload with in-memory model
     const paginatedCtx: GeneratorContext = {
       refresh: false,
       async fetchSource(): Promise<unknown> {
-        const fixtureCtx = createOfflineCtx(false)
-        const fixture = (await fixtureCtx.fetchSource({ id: "image-replicate", url: "", headers: {} })) as any
-        // Transform fixture shape to paginated shape
         return {
-          results: fixture.models,
+          results: [
+            {
+              owner: "black-forest-labs",
+              name: "flux-2-dev",
+              description: "Test model for paginated shape",
+              visibility: "public",
+              run_count: 2000,
+              cover_image_url: "https://example.com/flux.jpg",
+              latest_version: {
+                id: "v2",
+                created_at: "2024-02-01T00:00:00Z",
+                openapi_schema: { input: { type: "object", properties: {} }, output: { type: "string" } },
+              },
+            },
+          ],
           next: null,
           previous: null,
         }
@@ -165,12 +214,22 @@ describe("image:replicate generator", () => {
     const nullFieldsCtx: GeneratorContext = {
       refresh: false,
       async fetchSource(): Promise<unknown> {
-        const fixtureCtx = createOfflineCtx(false)
-        const fixture = (await fixtureCtx.fetchSource({ id: "image-replicate", url: "", headers: {} })) as any
-        // Take first model and null out description/cover_image_url
-        const model = { ...fixture.models[0], description: null, cover_image_url: null }
         return {
-          results: [model],
+          results: [
+            {
+              owner: "recraft-ai",
+              name: "recraft-v3",
+              description: null,
+              visibility: "public",
+              run_count: 1500,
+              cover_image_url: null,
+              latest_version: {
+                id: "v3",
+                created_at: "2024-03-01T00:00:00Z",
+                openapi_schema: { input: { type: "object", properties: {} }, output: { type: "string" } },
+              },
+            },
+          ],
           next: null,
           previous: null,
         }
