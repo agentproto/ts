@@ -160,4 +160,28 @@ describe("image:replicate generator", () => {
     const idCount = (source.match(/\n    id:/g) ?? []).length
     expect(idCount).toBeGreaterThanOrEqual(1)
   })
+
+  it("handles null description and cover_image_url from live API", async () => {
+    const nullFieldsCtx: GeneratorContext = {
+      refresh: false,
+      async fetchSource(): Promise<unknown> {
+        const fixtureCtx = createOfflineCtx(false)
+        const fixture = (await fixtureCtx.fetchSource({ id: "image-replicate", url: "", headers: {} })) as any
+        // Take first model and null out description/cover_image_url
+        const model = { ...fixture.models[0], description: null, cover_image_url: null }
+        return {
+          results: [model],
+          next: null,
+          previous: null,
+        }
+      },
+    }
+
+    const result = await imageReplicate.generate(nullFieldsCtx)
+    const source = Object.values(result)[0]!
+
+    // Should generate valid output with empty string for null description
+    expect(source).toContain("export const REPLICATE_IMAGE_MODELS: Record<string, ImageModelDefinition>")
+    expect(source).toContain('description: ""')
+  })
 })
