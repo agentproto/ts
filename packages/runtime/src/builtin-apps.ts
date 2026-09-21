@@ -54,6 +54,7 @@ import {
   type WorkBoardOutput,
 } from "@agentproto/apps"
 import type { AppHandle } from "@agentproto/app-kit"
+import { stableAppEmbedToken } from "./embed-tokens.js"
 import type { SessionDescriptor } from "./sessions.js"
 import type { TaskRecord } from "./task-ledger.js"
 
@@ -95,6 +96,10 @@ export function makeBuiltinPanelApps(
     makeSessionChatApp({
       httpBaseUrl: ops.httpBaseUrl,
       isSessionChatInstalled: ops.isSessionChatInstalled,
+      // Hand every result a live embed token so a host-cached widget
+      // (Claude Desktop's per-conversation srcdoc) re-arms itself after a
+      // daemon restart instead of 403ing on its dead baked token.
+      mintEmbedToken: () => stableAppEmbedToken("agentproto_session_chat"),
     }),
     // Work-board widget — kanban over the Task ledger (see apps/src/
     // work-board). Read path only; writes go through task_claim/
