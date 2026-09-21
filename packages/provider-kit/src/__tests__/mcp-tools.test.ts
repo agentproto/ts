@@ -81,7 +81,7 @@ describe("makeSetupTool (single-value)", () => {
   })
 
   it("rejects unknown slugs without calling onSetup", async () => {
-    const onSetup = vi.fn(async () => ({ ok: true }))
+    const onSetup = vi.fn(async () => ({ ok: true, hint: "test" }))
     const { tool } = build(onSetup)
     const res = await tool.handler({ slug: "nope", value: "x" })
     expect(res.isError).toBe(true)
@@ -161,7 +161,7 @@ describe("makeSetupTool (multi-field)", () => {
   })
 
   it("rejects unknown slugs without calling onSetup", async () => {
-    const onSetup = vi.fn(async () => ({ ok: true }))
+    const onSetup = vi.fn(async () => ({ ok: true, hint: "test" }))
     const { tool } = build(onSetup)
 
     const res = await tool.handler({ slug: "nope", hostname: "x", tunnelId: "y" })
@@ -170,7 +170,7 @@ describe("makeSetupTool (multi-field)", () => {
   })
 
   it("handles missing optional field (empty string default)", async () => {
-    const onSetup = vi.fn(async () => ({ ok: true }))
+    const onSetup = vi.fn(async () => ({ ok: true, hint: "test" }))
     const { tool } = build(onSetup)
 
     await tool.handler({ slug: "cloudflare-named", hostname: "h", tunnelId: "t" })

@@ -31,7 +31,7 @@ interface ReplicateLatestVersion {
 interface ReplicateModel {
   owner: string
   name: string
-  description: string
+  description: string | null
   visibility: string
   run_count: number
   cover_image_url: string | null
@@ -40,11 +40,12 @@ interface ReplicateModel {
 
 // The live Replicate API returns DRF-paginated `{results, next, previous}`,
 // while the committed snapshot is hand-authored `{_meta, models}`. Accept both.
+// The API can return `description: null` for some models (observed in live run).
 const ReplicateModelSchema = z
   .object({
     owner: z.string(),
     name: z.string(),
-    description: z.string(),
+    description: z.string().nullable(),
     visibility: z.string(),
     run_count: z.number(),
     cover_image_url: z.string().nullable(),
@@ -344,7 +345,7 @@ function mapModel(raw: ReplicateModel): ImageModelEntry {
       ...(pricing.creditCost !== undefined ? { creditCost: pricing.creditCost } : {}),
       ...(pricing.overrideCreditCost !== undefined ? { overrideCreditCost: pricing.overrideCreditCost } : {}),
     },
-    description: raw.description,
+    description: raw.description ?? "",
     agentVisible: AGENT_VISIBLE.has(raw.name),
     ...(spec.triggerWord ? { triggerWord: spec.triggerWord } : {}),
   }
