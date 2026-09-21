@@ -120,9 +120,9 @@ function fakeAgentSession(): AgentSessionLike {
   }
 }
 
-function makeResolver(startSession: ReturnType<typeof vi.fn>): AgentAdapterResolver {
+function makeResolver(startSession: (...args: any[]) => Promise<AgentSessionLike>): AgentAdapterResolver {
   return async () => ({
-    startSession,
+    startSession: startSession as any,
     commandPreview: "mock-adapter",
   })
 }
