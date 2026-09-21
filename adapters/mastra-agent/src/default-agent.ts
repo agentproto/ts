@@ -452,7 +452,7 @@ export function makeAgentFactory(
       // The AGENT.md-built agent backs every mode; parity mode has exactly
       // one mode and layers no mode instructions, so runs behave as the raw
       // agent did.
-      agent: agent as AgentControllerConfig["agent"],
+      agent: agent as unknown as AgentControllerConfig["agent"],
       modes,
       defaultModeId,
       // Thread rows + per-thread settings persist to the same SQLite file the
