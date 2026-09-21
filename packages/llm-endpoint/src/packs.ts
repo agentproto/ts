@@ -483,6 +483,10 @@ export const KNOWN_TRANSPARENT_PROVIDERS = new Set([
   'groq',
   'xai',
   'openai',
+  // Self-hosted fine-tunes (vLLM --enable-lora) — see FORGE_BASE_URL in
+  // src/index.ts. Absent from every committed pack: LoRA adapters are
+  // registered on the forge server itself, not known ahead of time here.
+  'forge',
 ]);
 
 /**

@@ -10,7 +10,8 @@ surfaces from a single port:
 - `POST /v1/responses` — OpenAI Responses API facade for Codex custom providers.
 
 Requests are fanned out to upstream providers — **Moonshot, OpenRouter, ZAI/Zhipu,
-Groq, xAI, and direct OpenAI** — using provider-native model references. The
+Groq, xAI, direct OpenAI, and a self-hosted "forge" server for fine-tunes** —
+using provider-native model references. The
 proxy also handles Anthropic↔OpenAI schema translation, per-provider tool caps,
 orphaned-tool-call repair, and thinking-block stripping where needed.
 
@@ -51,8 +52,35 @@ field is parsed as `provider/model`:
 | Groq | `groq/llama-3.3-70b-versatile` | `api.groq.com/openai/v1/chat/completions` |
 | xAI | `xai/grok-4.5` | `api.x.ai/v1/chat/completions` |
 | OpenAI | `openai/gpt-4.1` | `api.openai.com/v1/chat/completions` |
+| Forge (self-hosted) | `forge/my-lora-v3` | `$FORGE_BASE_URL/chat/completions` |
 
 You can also force the provider with `?p=<provider>` and send a bare model id.
+
+### Forge (self-hosted fine-tunes)
+
+`forge/<model>` routes to **your own** OpenAI-compatible server — typically
+vLLM started with `--enable-lora`, serving one or more fine-tuned LoRA
+adapters. Unlike every other provider above (a fixed https hostname), forge's
+host, port, and path prefix are all read from an env var, so it can point at a
+private/internal server over plain http:
+
+| Env var | Required | Purpose |
+| :--- | :--- | :--- |
+| `FORGE_BASE_URL` | Yes | Full base URL of the upstream, e.g. `http://10.0.10.20:8000/v1`. Both `http://` and `https://` are supported, with any port. Unset or malformed → `forge/...` requests get a clear 400 ("forge provider not configured"), never a crash. |
+| `FORGE_API_KEY` | No | Sent as `Authorization: Bearer <key>` when set. Omit it entirely for a server with no auth (private network) — no `Authorization` header is sent. |
+
+`forge/<model>` works on all three surfaces (`/v1/messages`, `/v1/chat/completions`,
+`/v1/responses`) with the same Anthropic↔OpenAI translation, streaming, and
+tool-cap handling as the other OpenAI-compatible providers. `GET /v1/models`
+also proxies `GET ${FORGE_BASE_URL}/models` and merges the results into the
+default pack's listing, each id prefixed with `forge/` — since LoRA adapters
+are registered on the forge server itself, not in a committed pack.
+
+```sh
+curl http://localhost:18090/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"forge/my-lora-v3","messages":[{"role":"user","content":"hi"}]}'
+```
 
 ### Anthropic Messages surface (`/v1/messages`)
 
