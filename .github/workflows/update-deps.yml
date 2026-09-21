@@ -164,12 +164,15 @@ jobs:
           fi
 
       # Sanity only — full test suite is the PR CI's job. Real exit codes,
-      # redirected, never `tail`'s status (AGENTS.md).
+      # redirected, never `tail`'s status (AGENTS.md). OR-guard prevents errexit
+      # abort before the assignment under GitHub Actions' `bash -e`.
       - name: Sanity build & type-check
         if: steps.apply.outputs.changed == 'true'
         run: |
-          pnpm build > /tmp/update-build.log 2>&1; B=$?
-          pnpm check-types > /tmp/update-ct.log 2>&1; T=$?
+          B=0
+          T=0
+          pnpm build > /tmp/update-build.log 2>&1 || B=$?
+          pnpm check-types > /tmp/update-ct.log 2>&1 || T=$?
           tail -n 60 /tmp/update-build.log
           tail -n 60 /tmp/update-ct.log
           echo "BUILD_EXIT=$B  TYPES_EXIT=$T"
@@ -306,6 +309,14 @@ jobs:
         run: |
           node - <<'NODE'
           const fs=require("fs");
+          // Unpatchable advisories (patched_versions: <0.0.0) — waived but kept visible.
+          // GHSA-jmr9-qjv8-65gv, GHSA-7pqw-9j4j-h8q3: extract-zip advisories blocked by
+          // @wdio/utils@^9 pinning @puppeteer/browsers major that would fix. Tracked in #1189.
+          // Revisit when @puppeteer/browsers drops extract-zip or @wdio bumps major.
+          const UNPATCHABLE_GHSAS = new Set([
+            "GHSA-jmr9-qjv8-65gv",
+            "GHSA-7pqw-9j4j-h8q3",
+          ]);
           function load(p){ try{ return JSON.parse(fs.readFileSync(p,"utf8")); }catch(e){ return null; } }
           const prod=load("/tmp/audit-prod.json");
           const full=load("/tmp/audit-full.json");
@@ -320,8 +331,9 @@ jobs:
           add(prod,"prod"); add(full,"full");
           const list=[...map.values()];
           const SEV={critical:3,high:2,moderate:1,low:0};
+          const waived=list.filter(a=>(a.severity==="critical"||a.severity==="high")&&UNPATCHABLE_GHSAS.has(a.github_advisory_id));
           const blocked=list
-            .filter(a=>a.severity==="critical"||a.severity==="high")
+            .filter(a=>(a.severity==="critical"||a.severity==="high")&&!UNPATCHABLE_GHSAS.has(a.github_advisory_id))
             .sort((a,b)=>SEV[b.severity]-SEV[a.severity]);
           const total=list.length;
           const cnt=(src)=>list.reduce((c,a)=>{ if(!src||a.sources.includes(src)){ if(a.severity in c) c[a.severity]++; } return c; },{critical:0,high:0,moderate:0,low:0});
@@ -341,6 +353,7 @@ jobs:
             r+=`| ${s} | ${pc[s]} | ${fc[s]} |\n`;
           }
           r+=`\n**High/critical (blocking):** ${blocked.length} advisory(ies) across ${total} total.\n`;
+          if(waived.length) r+=`\n**Waived (unpatchable):** ${waived.length} advisory(ies).\n`;
 
           if(blocked.length){
             r+=`\n## High / critical advisories\n`;
@@ -359,6 +372,17 @@ jobs:
             }
           } else {
             r+=`\nNo high/critical advisories; only moderate/low (summarized; non-blocking).\n`;
+          }
+          if(waived.length){
+            r+=`\n## Waived advisories (unpatchable)\n`;
+            waived.forEach((a,i)=>{
+              const path=(a.findings&&a.findings[0]&&a.findings[0].paths&&a.findings[0].paths[0])||"(unknown path)";
+              r+=`\n${i+1}. **${a.module_name}** (${a.github_advisory_id}) — *${a.severity}* — vulnerable \`${a.vulnerable_versions}\` → patched \`${a.patched_versions||"none"}\`\n`;
+              r+=`   - remote: ${a.sources.join(", ")}\n`;
+              r+=`   - advisory: ${a.title||"(untitled)"} — ${a.url||""}\n`;
+              r+=`   - path: \`${path}\`\n`;
+              r+=`   - **Waived:** No patched version exists; revisit when dependency chain updates.\n`;
+            });
           }
           fs.writeFileSync("/tmp/audit-report.md", r);
           console.log(`blocked=${blocked.length}`) ;
