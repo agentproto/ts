@@ -59,6 +59,13 @@ export interface SessionChatOutput {
   installed: boolean
   /** The app's standalone deep-link url when installed, else null. */
   url: string | null
+  /** A live per-boot embed token, when the host daemon supplies one (see
+   *  `SessionChatOps.mintEmbedToken`). The panel adopts it over the token
+   *  baked into its resource HTML, which dies with the daemon boot that
+   *  rendered it — hosts that cache the widget per conversation (Claude
+   *  Desktop) otherwise replay a dead token and 403 forever after a daemon
+   *  restart. Absent when the deep link is unavailable anyway. */
+  embedToken?: string
 }
 
 export interface SessionChatOps {
@@ -69,6 +76,11 @@ export interface SessionChatOps {
    *  block. The runtime supplies this from its AppRegistry; optional so
    *  tests/consumers without a registry can omit it (treated as false). */
   isSessionChatInstalled?: () => boolean
+  /** A live per-boot embed token for the panel to adopt (runtime
+   *  embed-tokens.ts `stableAppEmbedToken`). Optional: consumers without a
+   *  token registry (tests, docs) omit it and the panel keeps whatever was
+   *  baked into its HTML. */
+  mintEmbedToken?: () => string
 }
 
 /**
@@ -113,10 +125,17 @@ export function makeSessionChatApp(
       "shows install instructions. Pass `sessionId` to deep-link straight " +
       "into a known session.",
     inputSchema: sessionChatInputSchema,
-    execute: async input => ({
-      installed,
-      url: installed ? sessionChatAppUrl(ops.httpBaseUrl, input.sessionId) : null,
-    }),
+    execute: async input => {
+      if (!installed) return { installed, url: null }
+      const token = ops.mintEmbedToken?.()
+      return {
+        installed,
+        url: sessionChatAppUrl(ops.httpBaseUrl, input.sessionId),
+        // Re-arms a cached widget whose baked token died with an earlier
+        // daemon boot (see SessionChatOutput.embedToken).
+        ...(token ? { embedToken: token } : {}),
+      }
+    },
     html: (initData: SessionChatOutput) => sessionChatEmbedHtml(initData),
     // Spec-correct either way (ext-apps McpUiResourceMeta). Measured
     // 2026-09-18: Claude Desktop / Codex do NOT merge frameDomains into

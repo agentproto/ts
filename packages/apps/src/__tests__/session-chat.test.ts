@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import {
   makeSessionChatApp,
   sessionChatApp,
@@ -75,6 +75,41 @@ describe("makeSessionChatApp", () => {
   it("treats a missing installed-check as not installed", async () => {
     const app = makeSessionChatApp({ httpBaseUrl: "http://127.0.0.1:18790" })
     expect(await app.execute!({})).toEqual({ installed: false, url: null })
+  })
+
+  // A host-cached widget (Claude Desktop keeps a conversation's srcdoc)
+  // replays the embed token baked in at render time, which dies with that
+  // daemon boot — so every result ships a live one for the panel to adopt.
+  it("ships a live embed token with each installed result", async () => {
+    const app = makeSessionChatApp({
+      httpBaseUrl: "http://127.0.0.1:18790",
+      isSessionChatInstalled: () => true,
+      mintEmbedToken: () => "tok_live",
+    })
+    expect(await app.execute!({ sessionId: "sess_abc" })).toEqual({
+      installed: true,
+      url: "http://127.0.0.1:18790/apps/@agentik/session-chat/ui?session=sess_abc&embed=1",
+      embedToken: "tok_live",
+    })
+  })
+
+  it("mints no token when there is no deep link to authorize", async () => {
+    const mintEmbedToken = vi.fn(() => "tok_live")
+    const app = makeSessionChatApp({
+      httpBaseUrl: "http://127.0.0.1:18790",
+      isSessionChatInstalled: () => false,
+      mintEmbedToken,
+    })
+    expect(await app.execute!({})).toEqual({ installed: false, url: null })
+    expect(mintEmbedToken).not.toHaveBeenCalled()
+  })
+
+  it("omits embedToken entirely when the host supplies no minter", async () => {
+    const app = makeSessionChatApp({
+      httpBaseUrl: "http://127.0.0.1:18790",
+      isSessionChatInstalled: () => true,
+    })
+    expect(await app.execute!({})).not.toHaveProperty("embedToken")
   })
 
   it("renders the thin iframe page with the deep link when installed", () => {
@@ -209,6 +244,21 @@ describe("makeSessionChatApp", () => {
     // that lands its `load` event mid-window must not get torn down.
     expect(html).toContain("settle = setTimeout(function () {")
     expect(html).toContain("if (isBlank(frame)) frame.remove();")
+  })
+
+  it("adopts a result's live embed token before mounting, so a host-cached widget re-arms after a daemon restart", () => {
+    const html = sessionChatEmbedHtml({})
+    // The refresh overwrites the token the bridge script baked in...
+    expect(html).toContain("window.__AGENPROTO_EMBED_TOKEN__ = body.embedToken;")
+    // ...but only for a render that WAS baked: a standalone tab / VS Code
+    // HTTP-iframe panel keeps the literal placeholder (it already passes
+    // the daemon's origin checks, and a token would push it onto the blob
+    // path for nothing).
+    expect(html).toContain("if (!cur || cur === '__AGENPROTO_EMBED_TOKEN__') return;")
+    // Adopted on every path that can carry a token, always before mount().
+    expect(html).toContain("adoptEmbedToken(out);")
+    expect(html).toContain("adoptEmbedToken(body);")
+    expect(html).toContain("adoptEmbedToken(window.__APP_INIT__);")
   })
 
   it("the not-installed render shows the notice inline and still carries the bridge", () => {

@@ -49,6 +49,37 @@ export function mintAppEmbedToken(appId: string): string {
   return token
 }
 
+/** appId -> its boot-stable refresh token (see below). */
+const stableTokens = new Map<string, string>()
+
+/**
+ * The boot-stable embed token for `appId`, minted on first call.
+ *
+ * Baking a token into the resource HTML (above) covers the render, but a
+ * host that CACHES the rendered resource — Claude Desktop keeps a widget's
+ * srcdoc per conversation — keeps replaying a token that died with the
+ * daemon boot that minted it. Every daemon restart therefore turns those
+ * widgets into a permanent 403 (`guardBrowserOrigin`: `Origin: null` + an
+ * unknown `et`), visible to the user only as the launcher-card fallback
+ * after the blob fetch and the direct frame both fail.
+ *
+ * The panel re-resolves its deep link over the bridge on every boot, so the
+ * fix is to hand a LIVE token back with each tool result and let the panel
+ * adopt it (see apps/src/session-chat/panel.ts `adoptEmbedToken`). That path
+ * runs once per tool call, so it memoizes one token per app instead of
+ * minting per call — an unbounded `embedTokens` would otherwise grow for the
+ * daemon's lifetime. Reusing one token adds no exposure: `isValidAppEmbedToken`
+ * is deliberately not app-scoped, so every live token already proves exactly
+ * the same fact, and a baked one lives just as long.
+ */
+export function stableAppEmbedToken(appId: string): string {
+  const existing = stableTokens.get(appId)
+  if (existing) return existing
+  const token = mintAppEmbedToken(appId)
+  stableTokens.set(appId, token)
+  return token
+}
+
 /** True when `token` was minted this boot by registerMcpApps. */
 export function isValidAppEmbedToken(
   token: string | null | undefined,
