@@ -135,4 +135,53 @@ describe("image:replicate generator", () => {
       expect(valid).toContain(m[1])
     }
   })
+
+  it("handles DRF-paginated results shape from live API", async () => {
+    // Create a fake context that returns a paginated payload
+    const paginatedCtx: GeneratorContext = {
+      refresh: false,
+      async fetchSource(): Promise<unknown> {
+        const fixtureCtx = createOfflineCtx(false)
+        const fixture = (await fixtureCtx.fetchSource({ id: "image-replicate", url: "", headers: {} })) as any
+        // Transform fixture shape to paginated shape
+        return {
+          results: fixture.models,
+          next: null,
+          previous: null,
+        }
+      },
+    }
+
+    const result = await imageReplicate.generate(paginatedCtx)
+    const source = Object.values(result)[0]!
+
+    // Should generate valid output from paginated shape
+    expect(source).toContain("export const REPLICATE_IMAGE_MODELS: Record<string, ImageModelDefinition>")
+    const idCount = (source.match(/\n    id:/g) ?? []).length
+    expect(idCount).toBeGreaterThanOrEqual(1)
+  })
+
+  it("handles null description and cover_image_url from live API", async () => {
+    const nullFieldsCtx: GeneratorContext = {
+      refresh: false,
+      async fetchSource(): Promise<unknown> {
+        const fixtureCtx = createOfflineCtx(false)
+        const fixture = (await fixtureCtx.fetchSource({ id: "image-replicate", url: "", headers: {} })) as any
+        // Take first model and null out description/cover_image_url
+        const model = { ...fixture.models[0], description: null, cover_image_url: null }
+        return {
+          results: [model],
+          next: null,
+          previous: null,
+        }
+      },
+    }
+
+    const result = await imageReplicate.generate(nullFieldsCtx)
+    const source = Object.values(result)[0]!
+
+    // Should generate valid output with empty string for null description
+    expect(source).toContain("export const REPLICATE_IMAGE_MODELS: Record<string, ImageModelDefinition>")
+    expect(source).toContain('description: ""')
+  })
 })
