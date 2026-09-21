@@ -74,10 +74,10 @@ function fakeAgentSession(): AgentSessionLike {
  *  a clean endpoint/method match, independent of model→provider derivation. */
 function depsWithProvider(
   provider: CatalogProvider,
-  startSession: ReturnType<typeof vi.fn>,
+  startSession: (...args: any[]) => Promise<AgentSessionLike>,
 ): SpawnAgentSessionDeps {
   const resolveAgentAdapter: AgentAdapterResolver = async () => ({
-    startSession,
+    startSession: startSession as any,
     commandPreview: "mock-adapter",
     authDescriptor: { provider },
   })

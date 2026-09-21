@@ -1704,6 +1704,12 @@ export async function createGateway(
     // can declare `sandbox` and resolve a provider, instead of throwing
     // `sandbox_provider_not_found`.
     resolveSandboxProvider: resolveSandboxProviderResolved,
+    // config.json `defaults.agentPromptInterrupt` — same unset-default the
+    // root /mcp surface uses, so a child driving/reporting through the scoped
+    // orchestrator gateway honours it too.
+    ...(configDefaults?.agentPromptInterrupt != null
+      ? { defaultAgentPromptInterrupt: configDefaults.agentPromptInterrupt }
+      : {}),
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
@@ -1820,6 +1826,11 @@ export async function createGateway(
       webhookNotifier,
       daemonMcpUrl,
       resolveSandboxProvider: resolveSandboxProviderResolved,
+      // config.json `defaults.agentPromptInterrupt` — the unset-default for
+      // `interrupt` on agent_prompt / message_parent. Omitted ⇒ false.
+      ...(configDefaults?.agentPromptInterrupt != null
+        ? { defaultAgentPromptInterrupt: configDefaults.agentPromptInterrupt }
+        : {}),
       ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
       ...(opts.resolveAgentAdapter
         ? { resolveAgentAdapter: opts.resolveAgentAdapter }

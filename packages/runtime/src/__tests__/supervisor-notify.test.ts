@@ -99,7 +99,7 @@ describe("wireSupervisorNotify", () => {
       notifyParentOnCrash: true,
     })
 
-    const enqueueSpy = vi.spyOn(reg, "enqueuePrompt").mockResolvedValue(undefined)
+    const enqueueSpy = vi.spyOn(reg, "enqueuePrompt").mockResolvedValue({ queued: false })
 
     expect(reg.markCrashed(child.id)).toBe(true)
 
@@ -189,7 +189,7 @@ describe("wireSupervisorNotify", () => {
     const bus = createSessionEventBus()
     const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp, sessionEvents: bus })
     wireSupervisorNotify({ registry: reg, sessionEvents: bus })
-    const enqueueSpy = vi.spyOn(reg, "enqueuePrompt").mockResolvedValue(undefined)
+    const enqueueSpy = vi.spyOn(reg, "enqueuePrompt").mockResolvedValue({ queued: false })
 
     const parent = reg.spawnAgent({
       workspaceSlug: "default",
@@ -215,7 +215,7 @@ describe("wireSupervisorNotify", () => {
     const bus = createSessionEventBus()
     const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp, sessionEvents: bus })
     wireSupervisorNotify({ registry: reg, sessionEvents: bus })
-    const enqueueSpy = vi.spyOn(reg, "enqueuePrompt").mockResolvedValue(undefined)
+    const enqueueSpy = vi.spyOn(reg, "enqueuePrompt").mockResolvedValue({ queued: false })
 
     const child = reg.spawnAgent({
       workspaceSlug: "default",
@@ -235,7 +235,7 @@ describe("wireSupervisorNotify", () => {
     const bus = createSessionEventBus()
     const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp, sessionEvents: bus })
     wireSupervisorNotify({ registry: reg, sessionEvents: bus })
-    const enqueueSpy = vi.spyOn(reg, "enqueuePrompt").mockResolvedValue(undefined)
+    const enqueueSpy = vi.spyOn(reg, "enqueuePrompt").mockResolvedValue({ queued: false })
 
     const parent = reg.spawnAgent({
       workspaceSlug: "default",

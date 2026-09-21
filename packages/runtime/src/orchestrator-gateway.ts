@@ -273,6 +273,12 @@ export interface OrchestratorGatewayDeps {
    *  spawn is rejected with `sandbox_provider_not_found`, exactly as the
    *  root gateway would be without it. */
   resolveSandboxProvider?: SandboxProviderResolver
+  /** Forwarded to `registerSessionTools` — config.json
+   *  `defaults.agentPromptInterrupt`, the unset-default for `interrupt` on
+   *  `agent_prompt` / `message_parent`. Threaded here so a child driving its
+   *  parent/peers (or reporting up via `message_parent`) through this scoped
+   *  gateway honours the same daemon default as the root `/mcp` surface. */
+  defaultAgentPromptInterrupt?: boolean
 }
 
 export type OrchestratorMcpServerFactory = (
@@ -323,6 +329,9 @@ export function createOrchestratorMcpServerFactory(
         : {}),
       ...(deps.resolveSandboxProvider
         ? { resolveSandboxProvider: deps.resolveSandboxProvider }
+        : {}),
+      ...(deps.defaultAgentPromptInterrupt != null
+        ? { defaultAgentPromptInterrupt: deps.defaultAgentPromptInterrupt }
         : {}),
       daemonMcpUrl: deps.daemonMcpUrl,
     })

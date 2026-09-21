@@ -714,6 +714,17 @@ export interface QueuedPrompt {
   origin?: string
 }
 
+/** What `enqueuePrompt` resolved to — lets a caller (e.g. MCP `agent_prompt`)
+ *  tell the user whether the prompt was delivered/started now or PARKED behind
+ *  an in-flight turn. `queued: true` fires ONLY on the mid-turn queue arm
+ *  (`opts.queue` true, session busy, no `interrupt`): the prompt sits in
+ *  `promptQueue` and won't run until the current turn ends. Every other path —
+ *  idle dispatch, an interrupt that redirected the live turn, a structured-
+ *  question answer — resolves `queued: false`. */
+export interface EnqueuePromptResult {
+  queued: boolean
+}
+
 /**
  * Short text preview of a queued `QueuedPrompt.message` (raw string OR an
  * ACP content block / array — the same shape `runAgentTurn`'s `message`
@@ -2750,7 +2761,7 @@ export interface SessionsRegistry {
       force?: boolean
       queueId?: string
     }
-  ): Promise<void>
+  ): Promise<EnqueuePromptResult>
   /** Cancel one not-yet-dispatched item in `SessionDescriptor.promptQueue`
    *  by id — the composer's per-item "remove" action. Idempotent: an
    *  unknown session or an id that's already gone (dispatched, already
@@ -6968,7 +6979,9 @@ export function createSessionsRegistry(opts?: {
           ? [item, ...(rtPre.desc.promptQueue ?? [])]
           : [...(rtPre.desc.promptQueue ?? []), item]
         schedulePersist()
-        return
+        // The ONLY path that parks the prompt behind a live turn — signal it
+        // so the caller can surface the "queued, not delivered yet" hint.
+        return { queued: true }
       }
       await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "enqueuePrompt")
@@ -6979,7 +6992,7 @@ export function createSessionsRegistry(opts?: {
       const structuredAnswer = matchStructuredQuestionAnswer(rt, message)
       if (structuredAnswer) {
         await answerStructuredQuestion(rt, structuredAnswer)
-        return
+        return { queued: false }
       }
       // Execution phase — fire-and-forget from here on. Errors during
       // the turn itself (network drop, child died mid-turn) land in
@@ -6993,6 +7006,9 @@ export function createSessionsRegistry(opts?: {
           "stderr"
         )
       })
+      // Admitted + dispatched now (idle session, or an interrupt that already
+      // settled the prior turn) — not parked, so no queued hint.
+      return { queued: false }
     },
     removeQueuedPrompt(id, queueId) {
       const rt = sessions.get(id)
