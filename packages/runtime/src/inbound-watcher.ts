@@ -157,11 +157,13 @@ export function createInboundWatcher(opts: {
    * `"spawn"` behavior for that watcher and logs a warning.
    */
   bindings?: TransmitterBindingStore
+  // Return ignored — `Promise<unknown>` so the full `SessionsRegistry`
+  // (whose `enqueuePrompt` now resolves an `EnqueuePromptResult`) fits.
   enqueuePrompt?: (
     sessionId: string,
     text: string,
     opts?: { interrupt?: boolean; queue?: boolean },
-  ) => Promise<void> | void
+  ) => Promise<unknown> | void
   isSessionAlive?: (sessionId: string) => boolean
   restartSession?: (sessionId: string) => Promise<string>
 }): InboundWatcher {

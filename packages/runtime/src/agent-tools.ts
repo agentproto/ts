@@ -266,6 +266,12 @@ export interface RegisterAgentToolsOptions {
    *  recorded on the session, but nothing auto-evaluates it (a caller can
    *  attach the same gate by hand via `policy_attach`). */
   supervisor?: CompletionPolicySupervisor
+  /** Daemon default for `interrupt` when an `agent_prompt` / `message_parent`
+   *  call leaves it UNSET — resolved from config.json's
+   *  `defaults.agentPromptInterrupt` at the composition root (index.ts). An
+   *  EXPLICIT `interrupt` on the call (true OR false) always wins. Omitted ⇒
+   *  treated as `false` (today's queue-behind-the-turn behaviour). */
+  defaultAgentPromptInterrupt?: boolean
 }
 
 export function registerAgentTools(
@@ -290,7 +296,11 @@ export function registerAgentTools(
     provisionWorktree,
     resolveWorktreeIsolation,
     supervisor,
+    defaultAgentPromptInterrupt,
   } = opts
+  // Effective `interrupt` when a call leaves it unset: config default, else
+  // false. An explicit boolean on the call always wins (checked at each site).
+  const interruptDefault = defaultAgentPromptInterrupt ?? false
 
   // ── agent_start ────────────────────────────────────────
   server.registerTool(
@@ -1143,9 +1153,12 @@ export function registerAgentTools(
         .optional()
         .describe(
           "When true and the session is mid-turn, cancel the in-flight " +
-            "turn and deliver this prompt on the same session instead of " +
-            "rejecting. No-op when the session is already idle. Default false " +
-            "(mid-turn rejects, as today)."
+            "turn and deliver this prompt on the same session immediately " +
+            "instead of queueing it behind the current turn. No-op when the " +
+            "session is already idle. UNSET falls back to the daemon default " +
+            "`defaults.agentPromptInterrupt` in config.json (false unless an " +
+            "operator changed it) — so a mid-turn target queues by default; " +
+            "pass `interrupt: true` explicitly to cut now."
         ),
       queue: z
         .boolean()
@@ -1178,8 +1191,11 @@ export function registerAgentTools(
         // author instead of "you". An unattributed call (a human operator
         // driving the MCP surface directly) stays source-less.
         const promptSource = callerScope?.ownerSessionId ?? callerSessionId
-        await registry.enqueuePrompt(sessionId, input.prompt, {
-          interrupt: input.interrupt,
+        // Explicit `interrupt` (true OR false) wins; UNSET falls back to the
+        // configurable daemon default.
+        const effectiveInterrupt = input.interrupt ?? interruptDefault
+        const { queued } = await registry.enqueuePrompt(sessionId, input.prompt, {
+          interrupt: effectiveInterrupt,
           // Queue by default: a mid-turn session holds the prompt in its
           // FIFO queue and dispatches it at turn end, so callers never
           // lose a prompt to the busy rejection. Explicit `queue: false`
@@ -1187,12 +1203,32 @@ export function registerAgentTools(
           queue: input.queue ?? true,
           ...(promptSource ? { source: `agent:${promptSource}` } : {}),
         })
+        // Self-documenting loop: the prompt actually parked behind an
+        // in-flight turn (mid-turn + not interrupted) AND the caller never
+        // said anything about `interrupt` — surface the option at the exact
+        // moment it's missing, so it won't be delivered until the current
+        // turn ends.
+        const hintQueued = queued && input.interrupt === undefined
         return {
           content: [
             {
               type: "text",
               text: JSON.stringify(
-                { ok: true, sessionId, queued: true },
+                {
+                  ok: true,
+                  sessionId,
+                  queued: true,
+                  ...(hintQueued
+                    ? {
+                        delivery: "queued-mid-turn",
+                        hint:
+                          "Message queued — it will only be delivered when " +
+                          "the target's CURRENT turn ends. If it's urgent, " +
+                          "re-send with interrupt: true (cancels the in-flight " +
+                          "turn and redirects the session onto this prompt now).",
+                      }
+                    : {}),
+                },
                 null,
                 2
               ),
@@ -1241,13 +1277,29 @@ export function registerAgentTools(
       "id needed: the daemon resolves your recorded parent from your own " +
       "session identity (also visible as the AGENTPROTO_PARENT_SESSION_ID " +
       "env var). Delivered as a prompt when the parent is idle, or queued " +
-      "onto its next turn when it's mid-turn (never interrupts). Errors if " +
-      "this session has no recorded parent or the parent is gone.",
+      "onto its next turn when it's mid-turn (never interrupts, by default). " +
+      "Pass `interrupt: true` to CUT a mid-turn parent immediately — cancel " +
+      "its in-flight turn and redirect it onto this message now (same-context " +
+      "cancel, like `agent_prompt`'s `interrupt`) — for a genuinely urgent " +
+      "report the parent must act on before it finishes what it's doing. " +
+      "Errors if this session has no recorded parent or the parent is gone.",
     {
       message: z
         .string()
         .min(1)
         .describe("The message to deliver to your parent session (plain text)."),
+      interrupt: z
+        .boolean()
+        .optional()
+        .describe(
+          "When true and the parent is mid-turn, cancel its in-flight turn " +
+            "and deliver this message immediately instead of queueing it " +
+            "onto the parent's next turn. No-op when the parent is idle " +
+            "(delivered as a normal prompt either way). UNSET falls back to " +
+            "the daemon default `defaults.agentPromptInterrupt` in config.json " +
+            "(false unless an operator changed it) — so a report never " +
+            "interrupts by default; pass `interrupt: true` explicitly to cut.",
+        ),
     },
     async input => {
       const fail = (text: string) => ({
@@ -1289,11 +1341,17 @@ export function registerAgentTools(
       }
       const who = self.label ?? selfId
       const notice = `[child-message] ${who} (${selfId}): ${input.message}`
-      const done = (delivery: "enqueued" | "queued-next-turn") => ({
+      // Explicit `interrupt` (true OR false) wins; UNSET falls back to the
+      // configurable daemon default (symmetric with agent_prompt).
+      const effectiveInterrupt = input.interrupt ?? interruptDefault
+      const done = (
+        delivery: "enqueued" | "queued-next-turn" | "interrupted",
+        extra?: Record<string, unknown>,
+      ) => ({
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ ok: true, parentSessionId: parentId, delivery }),
+            text: JSON.stringify({ ok: true, parentSessionId: parentId, delivery, ...extra }),
           },
         ],
       })
@@ -1311,6 +1369,25 @@ export function registerAgentTools(
           // enqueue — fall through to the pending-notice stamp below.
         }
       }
+      // Urgent report: `interrupt: true` cuts a mid-turn parent instead of
+      // queueing behind its in-flight turn. Reuses `enqueuePrompt`'s own
+      // interrupt arm (cancel + await-settle + dispatch — the SAME helper
+      // `agent_prompt({interrupt: true})` uses), so a child's urgent
+      // message redirects the parent immediately rather than arriving only
+      // after the parent finishes what it was doing. On the (rare) race
+      // where the interrupt/dispatch is rejected, fall through to the
+      // pending-notice stamp below so the message is never lost.
+      if (effectiveInterrupt) {
+        try {
+          await registry.enqueuePrompt(parentId, notice, {
+            interrupt: true,
+            origin: `child:${who}`,
+          })
+          return done("interrupted")
+        } catch {
+          // Fall through to the stamp path — same fail-safe as the idle arm.
+        }
+      }
       // Same mechanism the crash notice uses: stamped notices are flushed
       // ahead of the parent's next outgoing message (see
       // `pendingChildCrashNotices` in sessions.ts — generic despite the
@@ -1320,7 +1397,22 @@ export function registerAgentTools(
           `message_parent: parent session "${parentId}" vanished mid-delivery.`
         )
       }
-      return done("queued-next-turn")
+      // Self-documenting loop (symmetric with agent_prompt): the parent is
+      // mid-turn so this report is parked onto its next turn, and the caller
+      // said nothing about `interrupt` — surface the option at the moment
+      // it's missing.
+      return done(
+        "queued-next-turn",
+        input.interrupt === undefined
+          ? {
+              hint:
+                "Message queued — it will only reach the parent when its " +
+                "CURRENT turn ends. If it's urgent, re-send with " +
+                "interrupt: true (cancels the parent's in-flight turn and " +
+                "redirects it onto this message now).",
+            }
+          : undefined,
+      )
     }
   )
 

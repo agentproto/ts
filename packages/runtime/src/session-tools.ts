@@ -325,6 +325,11 @@ export interface RegisterSessionToolsOptions {
    *  to auto-attach a windowed cost-budget policy for an `agent_start` carrying
    *  `costBudget` (phase 4). See `RegisterAgentToolsOptions.supervisor`. */
   supervisor?: RegisterAgentToolsOptions["supervisor"]
+  /** Forwarded to `registerAgentTools` — config.json
+   *  `defaults.agentPromptInterrupt`, the unset-default for `interrupt` on
+   *  `agent_prompt` / `message_parent`. See
+   *  `RegisterAgentToolsOptions.defaultAgentPromptInterrupt`. */
+  defaultAgentPromptInterrupt?: RegisterAgentToolsOptions["defaultAgentPromptInterrupt"]
   /**
    * Optional git-worktree status lister powering `worktree_status`.
    * Injected here (rather than defaulted inside the runtime) because the join

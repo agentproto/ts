@@ -39,11 +39,14 @@ import type { SessionEventBus, SessionExitedEvent } from "./session-event-bus.js
  *  registry surface — same shape as `crash-reaper.ts`'s `CrashReaperRegistry`. */
 export interface SupervisorNotifyRegistry {
   get(id: string): SessionDescriptor | undefined
+  // Return is ignored here (delivery is fire-and-forget) — kept as
+  // `Promise<unknown>` so the full `SessionsRegistry` (whose `enqueuePrompt`
+  // now resolves an `EnqueuePromptResult`) satisfies this structural slice.
   enqueuePrompt(
     id: string,
     message: unknown,
     opts?: { interrupt?: boolean },
-  ): Promise<void>
+  ): Promise<unknown>
   stampPendingChildCrashNotice(id: string, notice: string): boolean
 }
 
