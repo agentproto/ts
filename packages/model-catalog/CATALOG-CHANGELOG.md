@@ -124,3 +124,24 @@ for that.
 
 ### image:replicate
 - Added: flux, flux-1.1-pro-ultra, flux-2-dev, flux-kontext-max, flux-kontext-pro, gpt-image-1, ideogram-v3, minimax, nano-banana, nano-banana-2, nano-banana-pro, recraft, seedream-4
+
+## 2026-09-21
+
+### llm:openrouter
+- Added: prism-ml/ternary-bonsai-2-27b, unbiased/pareto, x-ai/grok-4.7, xiaomi/mimo-v2.6-flash, xiaomi/mimo-v2.6-pro, xiaomi/mimo-v2.6-pro-ultraspeed, z-ai/glm-5.3-flashx
+- Removed: anthropic/claude-opus-4, minimax/minimax-m3:batch, mistralai/mistral-large-2512, moonshotai/kimi-k3:batch, openai/gpt-oss-120b:batch, qwen/qwen3.5-9b:batch, qwen/qwen3.8-2.4t-a95b:batch, thinkingmachines/inkling:batch
+
+### llm:opencode-go
+- Added: opencode-go/grok-4.7, opencode-go/mimo-v2.6-flash, opencode-go/mimo-v2.6-pro
+- Removed: opencode-go/union-alpha
+
+### llm:opencode-zen
+- Added: opencode/deepseek-v4.1-flash, opencode/mimo-v2.6-flash-free, opencode/qwen3.8-flash
+- Removed: opencode/union-alpha
+
+### llm:huggingface
+- Added: tencent/Hy4-preview
+- Removed: CohereLabs/command-a-plus-05-2026-bf16, CohereLabs/command-a-plus-05-2026-fp8, CohereLabs/command-a-plus-05-2026-w4a4, swiss-ai/Apertus-v1.5-8B, zai-org/GLM-4.5, zai-org/GLM-4.7-FP8, zai-org/GLM-5.1-FP8
+
+### llm:context-windows
+- Added: grok-4.7

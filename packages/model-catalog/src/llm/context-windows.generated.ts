@@ -56,6 +56,7 @@ export const CONTEXT_WINDOWS: Record<string, ContextWindowEntry> = {
   "grok-4.3": { contextWindow: 1000000, provider: "xai" },
   "grok-4.5": { contextWindow: 500000, provider: "xai" },
   "grok-4.6": { contextWindow: 500000, provider: "xai" },
+  "grok-4.7": { contextWindow: 500000, provider: "xai" },
   "grok-build-0.1": { contextWindow: 256000, provider: "xai" },
   "grok-imagine-image": { contextWindow: 16000, provider: "xai" },
   "grok-imagine-image-2.0": { contextWindow: 64000, provider: "xai" },

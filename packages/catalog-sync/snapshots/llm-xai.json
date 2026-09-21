@@ -96,7 +96,17 @@
       "prompt_text_token_price_long_context": 25000,
       "cached_prompt_text_token_price_long_context": 4000,
       "completion_text_token_price_long_context": 50000,
-      "long_context_threshold": 200000
+      "long_context_threshold": 200000,
+      "capabilities": {
+        "reasoning_effort": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "default_reasoning_effort": "low"
+      }
     },
     {
       "id": "grok-4.5",
@@ -115,7 +125,16 @@
       "prompt_text_token_price_long_context": 40000,
       "cached_prompt_text_token_price_long_context": 6000,
       "completion_text_token_price_long_context": 120000,
-      "long_context_threshold": 200000
+      "long_context_threshold": 200000,
+      "capabilities": {
+        "reasoning_effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "default_reasoning_effort": "high"
+      }
     },
     {
       "id": "grok-4.6",
@@ -131,7 +150,41 @@
       "prompt_text_token_price_long_context": 40000,
       "cached_prompt_text_token_price_long_context": 10000,
       "completion_text_token_price_long_context": 120000,
-      "long_context_threshold": 200000
+      "long_context_threshold": 200000,
+      "capabilities": {
+        "reasoning_effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "default_reasoning_effort": "high"
+      }
+    },
+    {
+      "id": "grok-4.7",
+      "aliases": [],
+      "context_length": 500000,
+      "created": 1788307200,
+      "object": "model",
+      "owned_by": "xai",
+      "prompt_text_token_price": 20000,
+      "cached_prompt_text_token_price": 5000,
+      "prompt_image_token_price": 20000,
+      "completion_text_token_price": 60000,
+      "prompt_text_token_price_long_context": 40000,
+      "cached_prompt_text_token_price_long_context": 10000,
+      "completion_text_token_price_long_context": 120000,
+      "long_context_threshold": 200000,
+      "capabilities": {
+        "reasoning_effort": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "default_reasoning_effort": "high"
+      }
     },
     {
       "id": "grok-build-0.1",
@@ -184,6 +237,11 @@
           "price_per_image": 600000000
         },
         {
+          "quality": "low",
+          "resolution": "1.5k",
+          "price_per_image": 500000000
+        },
+        {
           "quality": "medium",
           "resolution": "1k",
           "price_per_image": 600000000
@@ -192,6 +250,11 @@
           "quality": "medium",
           "resolution": "2k",
           "price_per_image": 800000000
+        },
+        {
+          "quality": "medium",
+          "resolution": "1.5k",
+          "price_per_image": 700000000
         }
       ]
     },
