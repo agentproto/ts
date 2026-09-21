@@ -10,7 +10,8 @@ surfaces from a single port:
 - `POST /v1/responses` — OpenAI Responses API facade for Codex custom providers.
 
 Requests are fanned out to upstream providers — **Moonshot, OpenRouter, ZAI/Zhipu,
-Groq, xAI, and direct OpenAI** — using provider-native model references. The
+Groq, xAI, direct OpenAI, Nebius AI Studio, and a self-hosted "forge" server for
+fine-tunes** — using provider-native model references. The
 proxy also handles Anthropic↔OpenAI schema translation, per-provider tool caps,
 orphaned-tool-call repair, and thinking-block stripping where needed.
 
@@ -51,8 +52,50 @@ field is parsed as `provider/model`:
 | Groq | `groq/llama-3.3-70b-versatile` | `api.groq.com/openai/v1/chat/completions` |
 | xAI | `xai/grok-4.5` | `api.x.ai/v1/chat/completions` |
 | OpenAI | `openai/gpt-4.1` | `api.openai.com/v1/chat/completions` |
+| Forge (self-hosted) | `forge/my-lora-v3` | `$FORGE_BASE_URL/chat/completions` |
+| Nebius AI Studio | `nebius/meta-llama/Llama-3.1-8B-Instruct` | `api.studio.nebius.com/v1/chat/completions` (or `$NEBIUS_BASE_URL`) |
 
 You can also force the provider with `?p=<provider>` and send a bare model id.
+
+### Adding an OpenAI-compatible upstream provider
+
+`forge` and `nebius` are both **configurable providers**: any OpenAI-compatible
+upstream wired up from exactly two env vars, `<PROVIDER>_BASE_URL` (scheme,
+host, port, path prefix) and `<PROVIDER>_API_KEY` (sent as `Authorization:
+Bearer <key>`) — no code change needed to point either one at a different
+host. They differ in one way: whether the base URL has a working default.
+
+| Provider | `..._BASE_URL` | Default when unset | `..._API_KEY` |
+| :--- | :--- | :--- | :--- |
+| `forge` (self-hosted) | `FORGE_BASE_URL` | *(none — provider only exists once set)* | `FORGE_API_KEY` — **optional**; omitted entirely, no `Authorization` header sent, for a server with no auth (private network) |
+| `nebius` (Nebius AI Studio) | `NEBIUS_BASE_URL` | `https://api.studio.nebius.com/v1` | `NEBIUS_API_KEY` — **required**, like every other provider (401 when missing) |
+
+Both `http://` and `https://` are supported, with any host/port/path prefix —
+unlike every fixed-hostname provider above, these two read their wire format
+from the env var rather than a hardcoded `https://` + well-known host. An
+unset `FORGE_BASE_URL` (no default) or a malformed override on either
+provider makes `forge/...`/`nebius/...` requests fail with a clear 4xx, never
+a crash.
+
+Both work on all three surfaces (`/v1/messages`, `/v1/chat/completions`,
+`/v1/responses`) with the same Anthropic↔OpenAI translation, streaming, and
+tool-cap handling as every other OpenAI-compatible provider. `GET /v1/models`
+additionally proxies `GET ${FORGE_BASE_URL}/models` and merges the results
+into the default pack's listing (ids prefixed `forge/`) — forge-only, since
+its LoRA adapters are registered on the server itself rather than known ahead
+of time; nebius's catalog is the well-known set of ids you already pass in.
+
+```sh
+# forge — self-hosted vLLM, no auth
+curl http://localhost:18090/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"forge/my-lora-v3","messages":[{"role":"user","content":"hi"}]}'
+
+# nebius — hosted, requires NEBIUS_API_KEY
+curl http://localhost:18090/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"nebius/meta-llama/Llama-3.1-8B-Instruct","messages":[{"role":"user","content":"hi"}]}'
+```
 
 ### Anthropic Messages surface (`/v1/messages`)
 

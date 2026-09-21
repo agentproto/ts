@@ -1,5 +1,5 @@
-import { createServer, IncomingMessage, ServerResponse } from 'http';
-import { request, RequestOptions } from 'https';
+import { createServer, IncomingMessage, ServerResponse, request as httpRequest } from 'http';
+import { request as httpsRequest, RequestOptions } from 'https';
 import { readFileSync } from 'fs';
 import { resolve as resolvePath } from 'path';
 import { fileURLToPath } from 'url';
@@ -266,11 +266,158 @@ function getResolvedKeys(): ProviderKeys {
   return resolveSecretKeys();
 }
 
+/** A resolved OpenAI-compatible upstream — parsed once per call from its base-URL env var. */
+export interface ConfigurableUpstream {
+  hostname: string;
+  port: number;
+  protocol: 'http' | 'https';
+  /** URL pathname with any trailing slash stripped, e.g. "/v1" or "" for root. */
+  pathPrefix: string;
+}
+
+/** Back-compat name — see {@link ConfigurableUpstream}. */
+export type ForgeUpstream = ConfigurableUpstream;
+
+/**
+ * A "configurable" provider is any OpenAI-compatible upstream wired up purely
+ * from two env vars: `<PROVIDER>_BASE_URL` (scheme/host/port/path prefix) and
+ * `<PROVIDER>_API_KEY` (sent as `Authorization: Bearer`, the same header shape
+ * every non-anthropic/moonshot provider already gets by default). `forge`
+ * (self-hosted, no default host — only exists once its base URL is set, key
+ * optional) and `nebius` (hosted, has a default host, key required like every
+ * fixed-hostname provider) are both instances of this — see the README's
+ * "Adding an OpenAI-compatible upstream provider" section.
+ */
+interface ConfigurableProviderSpec {
+  baseUrlEnv: string;
+  apiKeyEnv: string;
+  /**
+   * Present ⇒ the base-URL env var is an override, not a switch — the
+   * provider works out of the box against this default host (nebius).
+   * Absent ⇒ the provider only exists once its base-URL env var is set
+   * (forge — no sensible default for a self-hosted server).
+   */
+  defaultBaseUrl?: string;
+  /**
+   * false (forge) ⇒ a request proceeds with no `Authorization` header when
+   * the key is unset, instead of the usual 401. true (nebius, and implicitly
+   * every fixed-hostname provider) ⇒ a missing key 401s exactly like today.
+   */
+  keyRequired: boolean;
+}
+
+const CONFIGURABLE_PROVIDERS: Record<string, ConfigurableProviderSpec> = {
+  forge: { baseUrlEnv: 'FORGE_BASE_URL', apiKeyEnv: 'FORGE_API_KEY', keyRequired: false },
+  nebius: {
+    baseUrlEnv: 'NEBIUS_BASE_URL',
+    apiKeyEnv: 'NEBIUS_API_KEY',
+    defaultBaseUrl: 'https://api.studio.nebius.com/v1',
+    keyRequired: true,
+  },
+};
+
+/** false only for forge today — every other provider (nebius included) 401s on a missing key. */
+function isUpstreamKeyOptional(provider: string): boolean {
+  return CONFIGURABLE_PROVIDERS[provider]?.keyRequired === false;
+}
+
+/**
+ * Human-readable reason a configurable provider's `<model>` request can't be
+ * routed: unset (forge — no default host) or malformed (either provider,
+ * including a bad override on one that does have a default).
+ */
+function configurableProviderUnavailableMessage(provider: string): string {
+  const spec = CONFIGURABLE_PROVIDERS[provider];
+  if (!spec) return `Provider "${provider}" is not configured.`;
+  if (spec.defaultBaseUrl) {
+    return `"${provider}" upstream is misconfigured — ${spec.baseUrlEnv} is set but invalid (must be a valid http:// or https:// URL).`;
+  }
+  return `${provider} provider not configured — set ${spec.baseUrlEnv} to enable "${provider}/<model>" routing.`;
+}
+
+/** Parse one base-URL value into a routable upstream; shared by every configurable provider. */
+function parseConfigurableUpstreamUrl(value: string, provider: string): ConfigurableUpstream | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    warnUpstreamOnce(`${provider}:bad-url`, `[Proxy][${provider}] "${value}" is not a valid URL; ${provider} provider disabled.`);
+    return null;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    warnUpstreamOnce(`${provider}:bad-scheme`, `[Proxy][${provider}] "${value}" must use http:// or https://; ${provider} provider disabled.`);
+    return null;
+  }
+  const protocol: 'http' | 'https' = parsed.protocol === 'http:' ? 'http' : 'https';
+  const port = parsed.port ? Number(parsed.port) : (protocol === 'https' ? 443 : 80);
+  const pathPrefix = parsed.pathname.replace(/\/+$/, '');
+  return { hostname: parsed.hostname, port, protocol, pathPrefix };
+}
+
+/**
+ * Parse `FORGE_BASE_URL` into a routable upstream. Unlike every other
+ * provider here (fixed https hostname, implicit :443), forge points at a
+ * private, self-hosted OpenAI-compatible server (vLLM `--enable-lora`) so the
+ * scheme, host, port, and path prefix are all env-configured — e.g.
+ * `http://10.0.10.20:8000/v1`. Returns null when unset or malformed, which
+ * callers treat as "forge provider not configured" (a 400, never a crash).
+ */
+export function resolveForgeBaseUrl(raw: string | undefined = process.env.FORGE_BASE_URL): ConfigurableUpstream | null {
+  const value = raw?.trim();
+  if (!value) return null;
+  return parseConfigurableUpstreamUrl(value, 'forge');
+}
+
+/**
+ * Resolve the Nebius AI Studio upstream. Defaults to the public
+ * `https://api.studio.nebius.com/v1` endpoint — nebius works with just
+ * `NEBIUS_API_KEY` set. `NEBIUS_BASE_URL` overrides it, e.g. to point at a
+ * Nebius *dedicated* endpoint on a different host, with no code change.
+ * Returns null only when the override is set but malformed — an unset
+ * `NEBIUS_BASE_URL` is the normal case and resolves to the default.
+ */
+export function resolveNebiusBaseUrl(raw: string | undefined = process.env.NEBIUS_BASE_URL): ConfigurableUpstream | null {
+  const value = raw?.trim() || CONFIGURABLE_PROVIDERS.nebius!.defaultBaseUrl!;
+  return parseConfigurableUpstreamUrl(value, 'nebius');
+}
+
+/** Dispatch to the right per-provider resolver — keeps callers provider-agnostic. */
+function resolveConfigurableUpstream(provider: string): ConfigurableUpstream | null {
+  switch (provider) {
+    case 'forge':
+      return resolveForgeBaseUrl();
+    case 'nebius':
+      return resolveNebiusBaseUrl();
+    default:
+      return null;
+  }
+}
+
+/**
+ * Dispatch an outbound upstream request over plain http or tls, chosen by
+ * `protocol`. Every fixed-hostname provider is https, so this only matters
+ * for a configurable provider like forge (private upstream, http OR https,
+ * non-443 port).
+ */
+function sendUpstreamRequest(
+  protocol: 'http' | 'https',
+  options: RequestOptions,
+  callback: (res: IncomingMessage) => void,
+) {
+  return protocol === 'http' ? httpRequest(options, callback) : httpsRequest(options, callback);
+}
+
 // OpenAI-compatible chat/completions endpoint for the OpenAI surface and the
 // Responses API facade. Returns null for providers that only speak the
 // Anthropic Messages shape (anthropic itself has no /chat/completions
-// endpoint) so callers can fail loud with a 400 instead of misrouting.
-function getChatCompletionsEndpoint(provider: string): { hostname: string; path: string } | null {
+// endpoint) so callers can fail loud with a 400 instead of misrouting. `port`/
+// `protocol` default to 443/https when absent (every fixed-hostname provider).
+function getChatCompletionsEndpoint(provider: string): { hostname: string; path: string; port?: number; protocol?: 'http' | 'https' } | null {
+  if (CONFIGURABLE_PROVIDERS[provider]) {
+    const upstream = resolveConfigurableUpstream(provider);
+    if (!upstream) return null;
+    return { hostname: upstream.hostname, path: `${upstream.pathPrefix}/chat/completions`, port: upstream.port, protocol: upstream.protocol };
+  }
   switch (provider) {
     case 'anthropic':
       return null;
@@ -290,6 +437,56 @@ function getChatCompletionsEndpoint(provider: string): { hostname: string; path:
     default:
       return { hostname: 'api.moonshot.ai', path: '/v1/chat/completions' };
   }
+}
+
+/**
+ * Live GET `${FORGE_BASE_URL}/models`, for merging into GET /v1/models.
+ * Unlike every other provider here (a fixed, committed pack of model ids),
+ * forge's LoRA adapters are registered on the vLLM server itself and unknown
+ * ahead of time — so the id list can only come from asking it. Best-effort:
+ * any failure (unset/invalid URL, network error, bad JSON, timeout) resolves
+ * to an empty list rather than failing the whole /v1/models response.
+ * nebius is not merged this way — its catalog is a well-known, static id
+ * list a client already knows, unlike forge's dynamically-registered LoRAs.
+ */
+async function fetchForgeModelIds(): Promise<string[]> {
+  const forge = resolveForgeBaseUrl();
+  if (!forge) return [];
+  const cred = await resolveUpstreamCredential('forge');
+  const headers: Record<string, string> = {};
+  if (cred?.value) headers['Authorization'] = `Bearer ${cred.value}`;
+  return new Promise((resolvePromise) => {
+    const options: RequestOptions = {
+      hostname: forge.hostname,
+      port: forge.port,
+      path: `${forge.pathPrefix}/models`,
+      method: 'GET',
+      headers,
+    };
+    const req = sendUpstreamRequest(forge.protocol, options, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(body);
+          const data = Array.isArray(parsed?.data) ? parsed.data : [];
+          const ids: string[] = data
+            .map((m: any) => (m && typeof m.id === 'string' ? m.id : null))
+            .filter((id: string | null): id is string => id !== null);
+          resolvePromise(ids);
+        } catch {
+          resolvePromise([]);
+        }
+      });
+    });
+    req.on('error', () => resolvePromise([]));
+    req.setTimeout(4000, () => {
+      req.destroy();
+      resolvePromise([]);
+    });
+    req.end();
+  });
 }
 
 export interface ModelRouteContext {
@@ -454,6 +651,13 @@ function readQueryAndToolOptions(parsedUrl: URL, req: IncomingMessage) {
 }
 
 function getApiKey(provider: string): string {
+  // Configurable providers (forge, nebius) sit outside the fixed 8-provider
+  // ProviderKeys/CANONICAL_UPSTREAMS shape (env-configured URL, one of them
+  // with an optional key) — resolved separately via their own apiKeyEnv
+  // rather than widening that shape for providers that don't fit its
+  // "always-on, fixed hostname" assumptions.
+  const configurable = CONFIGURABLE_PROVIDERS[provider];
+  if (configurable) return process.env[configurable.apiKeyEnv] || '';
   return getResolvedKeys()[provider as keyof ProviderKeys] || '';
 }
 
@@ -814,7 +1018,7 @@ function probeUpstreamHttp(
   timeoutMs: number,
 ): Promise<{ ok: boolean; status: number; detail: string }> {
   return new Promise((resolvePromise) => {
-    const proxyReq = request(
+    const proxyReq = httpsRequest(
       { hostname: probe.hostname, port: 443, path: probe.path, method: 'GET', headers },
       (proxyRes) => {
         const status = proxyRes.statusCode ?? 0;
@@ -957,11 +1161,14 @@ function handleResponsesRequest(
 
       const endpoint = getChatCompletionsEndpoint(resolvedTarget.provider);
       if (!endpoint) {
+        const message = CONFIGURABLE_PROVIDERS[resolvedTarget.provider]
+          ? configurableProviderUnavailableMessage(resolvedTarget.provider)
+          : `Provider "${resolvedTarget.provider}" does not support the OpenAI-compatible /v1/responses surface.`;
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: `Provider "${resolvedTarget.provider}" does not support the OpenAI-compatible /v1/responses surface.` } }));
+        res.end(JSON.stringify({ error: { type: 'invalid_request_error', message } }));
         return;
       }
-      const { hostname, path } = endpoint;
+      const { hostname, path, port = 443, protocol = 'https' } = endpoint;
       const cred = await resolveUpstreamCredential(resolvedTarget.provider);
       const targetApiKey = cred?.value ?? '';
       // Fail closed: this OpenAI-compatible surface is ALWAYS non-anthropic
@@ -974,7 +1181,10 @@ function handleResponsesRequest(
         res.end(JSON.stringify({ error: { type: 'authentication_error', message: `Subscription/oauth credentials cannot be used on this OpenAI-compatible surface for provider "${resolvedTarget.provider}".` } }));
         return;
       }
-      if (!targetApiKey) {
+      // A configurable provider may declare its key optional (forge — a
+      // private/self-hosted server); every other provider (including nebius)
+      // requires one and 401s when absent, exactly as before.
+      if (!targetApiKey && !isUpstreamKeyOptional(resolvedTarget.provider)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { type: 'authentication_error', message: `No API key for provider "${resolvedTarget.provider}"` } }));
         return;
@@ -988,16 +1198,16 @@ function handleResponsesRequest(
       // resolved credential value is (credentialRef-backed profiles included).
       const options: RequestOptions = {
         hostname,
-        port: 443,
+        port,
         path,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${targetApiKey}`,
+          ...(targetApiKey ? { 'Authorization': `Bearer ${targetApiKey}` } : {}),
         },
       };
 
-      const proxyReq = request(options, (proxyRes) => {
+      const proxyReq = sendUpstreamRequest(protocol, options, (proxyRes) => {
         const status = proxyRes.statusCode || 200;
         const contentType = proxyRes.headers['content-type'] as string || '';
         const isStreaming = validated.stream === true && /text\/event-stream/i.test(contentType);
@@ -1107,11 +1317,14 @@ function handleChatCompletionsRequest(
 
       const endpoint = getChatCompletionsEndpoint(resolvedTarget.provider);
       if (!endpoint) {
+        const message = CONFIGURABLE_PROVIDERS[resolvedTarget.provider]
+          ? configurableProviderUnavailableMessage(resolvedTarget.provider)
+          : `Provider "${resolvedTarget.provider}" does not support the OpenAI-compatible /v1/chat/completions surface.`;
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: `Provider "${resolvedTarget.provider}" does not support the OpenAI-compatible /v1/chat/completions surface.` } }));
+        res.end(JSON.stringify({ error: { type: 'invalid_request_error', message } }));
         return;
       }
-      const { hostname, path } = endpoint;
+      const { hostname, path, port = 443, protocol = 'https' } = endpoint;
       const cred = await resolveUpstreamCredential(resolvedTarget.provider);
       const targetApiKey = cred?.value ?? '';
       // Fail closed: this OpenAI-compatible surface is ALWAYS non-anthropic
@@ -1124,7 +1337,10 @@ function handleChatCompletionsRequest(
         res.end(JSON.stringify({ error: { type: 'authentication_error', message: `Subscription/oauth credentials cannot be used on this OpenAI-compatible surface for provider "${resolvedTarget.provider}".` } }));
         return;
       }
-      if (!targetApiKey) {
+      // A configurable provider may declare its key optional (forge — a
+      // private/self-hosted server); every other provider (including nebius)
+      // requires one and 401s when absent, exactly as before.
+      if (!targetApiKey && !isUpstreamKeyOptional(resolvedTarget.provider)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { type: 'authentication_error', message: `No API key for provider "${resolvedTarget.provider}"` } }));
         return;
@@ -1137,16 +1353,16 @@ function handleChatCompletionsRequest(
       // keyed on provider not surface, is deliberately not used here).
       const options: RequestOptions = {
         hostname,
-        port: 443,
+        port,
         path,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${targetApiKey}`,
+          ...(targetApiKey ? { 'Authorization': `Bearer ${targetApiKey}` } : {}),
         },
       };
 
-      const proxyReq = request(options, (proxyRes) => {
+      const proxyReq = sendUpstreamRequest(protocol, options, (proxyRes) => {
         const status = proxyRes.statusCode || 200;
         const respHeaders: Record<string, string | string[] | undefined> = { ...proxyRes.headers };
         delete respHeaders['content-length'];
@@ -2065,12 +2281,24 @@ const server = createServer((req, res) => {
   // 1. Endpoint /v1/models pour la découverte des modèles
   // Supporte aussi /v1/{pack}/models pour la sélection de pack via URL path
   if (req.method === 'GET' && (urlPath === '/v1/models' || urlPath === '/models' || urlPath.endsWith('/models'))) {
+    void (async () => {
     const isAnthropicStyle = req.headers['anthropic-version'] !== undefined || req.headers['x-api-key'] !== undefined;
     const mapping = buildMappingFromPack(activePack);
     const isLocalPack = Boolean(getLocalPacks()[activePack.id]);
     // Alias-bearing: a local pack, or an official pack transformed to Anthropic
     // style for this request — either exposes equivalentClaudeName as the id.
     const isAliasPack = isLocalPack || anthropicFormat;
+
+    // forge's LoRA adapters live on the vLLM server itself, not in any
+    // committed pack — merge them live into the default pack's listing only,
+    // so a curated pack (xai, coding, ...) still returns exactly its own
+    // models. No-op (empty list) when FORGE_BASE_URL is unset.
+    if (activePack.id === DEFAULT_PACK_ID) {
+      const forgeIds = await fetchForgeModelIds();
+      for (const id of forgeIds) {
+        mapping[`forge/${id}`] = { provider: 'forge', model: id };
+      }
+    }
 
     if (isAnthropicStyle) {
       // Format 100% Natif d'Anthropic Claude
@@ -2117,6 +2345,8 @@ const server = createServer((req, res) => {
       res.end(JSON.stringify(openaiModelsResponse));
       return;
     }
+    })();
+    return;
   }
 
   // 1b. /v1/messages/batches* — matched before the generic '/messages' check
@@ -2224,6 +2454,8 @@ const server = createServer((req, res) => {
       // Configuration de la requête sortante selon le provider résolu
       let hostname = '';
       let path = '';
+      let port = 443;
+      let protocol: 'http' | 'https' = 'https';
       let targetApiKey = '';
       let cred: UpstreamCredential | undefined;
       let headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -2398,6 +2630,46 @@ const server = createServer((req, res) => {
           }
           break;
 
+        case 'forge':
+        case 'nebius': {
+          const upstream = resolveConfigurableUpstream(resolvedTarget.provider);
+          if (!upstream) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: configurableProviderUnavailableMessage(resolvedTarget.provider) } }));
+            return;
+          }
+          hostname = upstream.hostname;
+          port = upstream.port;
+          protocol = upstream.protocol;
+          path = `${upstream.pathPrefix}/chat/completions`;
+          cred = await resolveUpstreamCredential(resolvedTarget.provider);
+          targetApiKey = cred?.value ?? '';
+          // An optional-key provider (forge) must never send a bare "Bearer "
+          // header; a required-key one (nebius) 401s below before this
+          // matters if the value is empty.
+          if (cred && cred.value) Object.assign(headers, buildUpstreamAuthHeaders(resolvedTarget.provider, cred));
+          adaptAnthropicToOpenAI(payload);
+
+          // Transformation des tools Anthropic (format OpenAI function) — même forme pour
+          // tout upstream OpenAI-compatible configurable (forge/vLLM, nebius).
+          if (payload.tools && Array.isArray(payload.tools)) {
+            payload.tools = payload.tools.map((t: any) => {
+              if (t.input_schema) {
+                return {
+                  type: 'function',
+                  function: {
+                    name: t.name,
+                    description: t.description,
+                    parameters: t.input_schema
+                  }
+                };
+              }
+              return t;
+            });
+          }
+          break;
+        }
+
         case 'moonshot':
         default:
           hostname = 'api.moonshot.ai';
@@ -2427,7 +2699,10 @@ const server = createServer((req, res) => {
         return;
       }
 
-      if (!targetApiKey) {
+      // A configurable provider may declare its key optional (forge — a
+      // private/self-hosted server); every other provider (including nebius)
+      // requires one and 401s when absent, exactly as before.
+      if (!targetApiKey && !isUpstreamKeyOptional(resolvedTarget.provider)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { type: 'authentication_error', message: `No API key for provider "${resolvedTarget.provider}"` } }));
         return;
@@ -2437,7 +2712,7 @@ const server = createServer((req, res) => {
 
       const options: RequestOptions = {
         hostname,
-        port: 443,
+        port,
         path,
         method: 'POST',
         headers
@@ -2456,7 +2731,7 @@ const server = createServer((req, res) => {
       // pas du bruit de production.
       const upstreamStart = Date.now();
       let upstreamTtfbMs: number | null = null;
-      const proxyReq = request(options, (proxyRes) => {
+      const proxyReq = sendUpstreamRequest(protocol, options, (proxyRes) => {
         const status = proxyRes.statusCode || 200;
         if (upstreamTtfbMs === null) upstreamTtfbMs = Date.now() - upstreamStart;
         proxyRes.on('end', () => {
@@ -2490,8 +2765,8 @@ const server = createServer((req, res) => {
         // où le modèle porte un nom Claude — que le CLI applique ce rejet.
         const needsStrip =
           resolvedTarget.provider === 'openrouter' || resolvedTarget.provider === 'requesty';
-        // Groq/ZAI/xAI/OpenAI parlent OpenAI : convertir la réponse (JSON ou SSE) en Anthropic.
-        const needsConvert = resolvedTarget.provider === 'groq' || resolvedTarget.provider === 'zai' || resolvedTarget.provider === 'xai' || resolvedTarget.provider === 'openai';
+        // Groq/ZAI/xAI/OpenAI/forge/nebius parlent OpenAI : convertir la réponse (JSON ou SSE) en Anthropic.
+        const needsConvert = resolvedTarget.provider === 'groq' || resolvedTarget.provider === 'zai' || resolvedTarget.provider === 'xai' || resolvedTarget.provider === 'openai' || Boolean(CONFIGURABLE_PROVIDERS[resolvedTarget.provider]);
 
         if (needsConvert && !isStreaming) {
           const respHeaders = { ...proxyRes.headers };
