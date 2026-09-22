@@ -145,3 +145,12 @@ for that.
 
 ### llm:context-windows
 - Added: grok-4.7
+
+## 2026-09-22
+
+### llm:huggingface
+- Added: zai-org/GLM-4.7-FP8
+
+### llm:context-windows
+- Added: zai-glm-5, zai-glm-5-3, zai-glm-latest
+- Removed: devstral-2512, devstral-latest, devstral-medium-latest, mistral-code-agent-latest, mistral-medium-2505, mistral-medium-2508
