@@ -3102,8 +3102,8 @@ export const OPENROUTER_ROUTES: Record<string, LLMPricing> = {
     provider: "openrouter",
   },
   "z-ai/glm-5.3": {
-    inputPer1M: 0.84,
-    outputPer1M: 2.64,
+    inputPer1M: 0.784,
+    outputPer1M: 2.464,
     cacheReadMultiplier: 0.185714,
     addedAt: "2026-08-18",
     vendor: "z-ai",
@@ -3202,9 +3202,9 @@ export const OPENROUTER_ROUTES: Record<string, LLMPricing> = {
     provider: "openrouter",
   },
   "~deepseek/deepseek-v4-flash-latest": {
-    inputPer1M: 0.04,
-    outputPer1M: 0.4,
-    cacheReadMultiplier: 0.25,
+    inputPer1M: 0.03,
+    outputPer1M: 1,
+    cacheReadMultiplier: 0.4,
     addedAt: "2026-08-01",
     vendor: "~deepseek",
     provider: "openrouter",
