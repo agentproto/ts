@@ -7021,8 +7021,14 @@ async function handleProviderInbound(
  *  /apps/:appId/ui` (see `resolveBuiltinPanelUi`, builtin-apps.ts) rather
  *  than trusting its static snapshot's baked-in default port. Same "assume
  *  http, trust the Host header" shape the daemon already uses to build its
- *  own default origin (`http://127.0.0.1:${port}`, index.ts) — this is a
- *  loopback-bound daemon, not a public origin behind unknown TLS. */
+ *  own default origin (`http://127.0.0.1:${port}`, index.ts) — BUT the
+ *  daemon is commonly reached through a reverse proxy or tunnel (cloudflared,
+ *  ngrok, a VS Code port-forward, …) that terminates TLS and forwards
+ *  plain HTTP inward, so `req.headers.host` alone would bake in the wrong
+ *  scheme. `AGENTPROTO_PUBLIC_HTTP_ORIGIN` lets the host pin the exact
+ *  public origin when it's known ahead of time (short-circuits everything
+ *  else); otherwise `X-Forwarded-Proto` is sniffed so a proxied `https`
+ *  front door doesn't get rewritten as `http` in the served page. */
 function requestHttpBaseUrl(req: IncomingMessage): string {
   const configured = process.env.AGENTPROTO_PUBLIC_HTTP_ORIGIN
     ?.trim()
