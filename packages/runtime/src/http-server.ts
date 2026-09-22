@@ -48,6 +48,7 @@ import type { AppRegistry } from "./app-registry.js"
 import { performAppToolCall, performBuiltinPanelToolCall, type AppToolCallDeps } from "./app-tools.js"
 import { injectStandaloneAppBridge } from "./app-ui-apps.js"
 import { resolveBuiltinPanelUi } from "./builtin-apps.js"
+import { resolveRequestHttpBaseUrl } from "./public-origins.js"
 import {
   assertExternalPathRealInside,
   isExternalRootGranted,
@@ -7030,16 +7031,7 @@ async function handleProviderInbound(
  *  else); otherwise `X-Forwarded-Proto` is sniffed so a proxied `https`
  *  front door doesn't get rewritten as `http` in the served page. */
 function requestHttpBaseUrl(req: IncomingMessage): string {
-  const configured = process.env.AGENTPROTO_PUBLIC_HTTP_ORIGIN
-    ?.trim()
-    .replace(/\/+$/, "")
-  if (configured) return configured
-  const forwarded = req.headers["x-forwarded-proto"]
-  const forwardedProto = Array.isArray(forwarded)
-    ? forwarded[0]
-    : forwarded?.split(",")[0]?.trim()
-  const protocol = forwardedProto === "https" ? "https" : "http"
-  return `${protocol}://${req.headers.host ?? "127.0.0.1"}`
+  return resolveRequestHttpBaseUrl(req.headers)
 }
 
 /** `GET /apps/:appId/ui` — an installed app's `ui.path` html, or (when

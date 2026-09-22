@@ -205,7 +205,7 @@ export function injectStandaloneAppBridge(
 ): string {
   const hasRunnerSelect = /window\.AgentprotoUI\s*=/.test(html)
   const baseUrlScript = baseUrl
-    ? `<script>window.__AGENTPROTO_BASEURL__=${JSON.stringify(baseUrl)};</script>`
+    ? `<script>window.__AGENTPROTO_BASEURL__=${JSON.stringify(baseUrl).replace(/</g, "\\u003c")};</script>`
     : ""
   const script =
     baseUrlScript +

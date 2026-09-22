@@ -250,6 +250,16 @@ describe("injectStandaloneAppBridge", () => {
     )
   })
 
+  it("escapes a closing script sequence in the injected daemon base URL", () => {
+    const html = "<html><head></head><body>Panel</body></html>"
+    const out = injectStandaloneAppBridge(
+      html,
+      "https://example.test/</script><script>alert(1)</script>",
+    )
+    expect(out).not.toContain("</script><script>alert(1)</script>")
+    expect(out).toContain("\\u003c/script>\\u003cscript>alert(1)\\u003c/script>")
+  })
+
   it("falls back to prepending when there is no structural tag at all", () => {
     const out = injectStandaloneAppBridge("Panel")
     expect(out.indexOf('fetch("./tool-call"')).toBeLessThan(out.indexOf("Panel"))

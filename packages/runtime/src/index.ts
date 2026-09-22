@@ -49,6 +49,7 @@ import { registerWebSearchTools } from "./web-search-tools.js"
 import { registerMcpApps } from "./mcp-apps-adapter.js"
 import { makeBuiltinPanelApps } from "./builtin-apps.js"
 import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
+import { resolvePublicAppOrigins } from "./public-origins.js"
 import { registerSummarizeSessionTool } from "./summarize-session-tool.js"
 import { makeTerminalPanelApp } from "./terminal-panel-app.js"
 import { registerAppPullTools } from "./app-pull-tools.js"
@@ -1104,12 +1105,8 @@ export async function createGateway(
   // endpoint is already reachable on (Quick Tunnel proxies the whole port,
   // including the WS upgrade). No trailing slash expected — it's used as
   // `${origin}/sessions/:id/pty`.
-  const publicHttpOrigin =
-    process.env.AGENTPROTO_PUBLIC_HTTP_ORIGIN?.trim().replace(/\/+$/, "") ||
-    `http://127.0.0.1:${port}`
-  const ptyWsBaseUrl =
-    process.env.AGENTPROTO_PUBLIC_WS_ORIGIN?.trim().replace(/\/+$/, "") ||
-    publicHttpOrigin.replace(/^http/, "ws")
+  const { httpOrigin: publicHttpOrigin, wsOrigin: ptyWsBaseUrl } =
+    resolvePublicAppOrigins(port)
 
   const events = createRuntimeEvents()
   const conversations = fileConversationStore({ workspace })
