@@ -26,6 +26,11 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync, existsSync, renameSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
+import {
+  CONVERSATION_STORES,
+  conversationTerminalSlugFor,
+  isConversationTerminal,
+} from "./conversation-store.js"
 import { readCommandLogEntry, writeCommandLogEntry } from "./command-log.js"
 import { readSandboxLedger } from "./sandbox-ledger.js"
 import { readToolCallRecords as readToolCallRecordLines, writeToolCallRecord } from "./tool-call-log.js"
@@ -1218,8 +1223,12 @@ export interface SessionDescriptor {
    * so a restarted daemon can still show the hand-off / review links. */
   openedPrs?: readonly OpenedPullRequest[]
   /** Adapter slug for agent-cli sessions — restart uses this with
-   *  `/sessions/agent` to spin up a fresh ACP runtime. Undefined for
-   *  pty/command kinds. */
+   *  `/sessions/agent` to spin up a fresh ACP runtime. ALSO stamped on a
+   *  conversation-terminal PTY (`isConversationTerminal` — a native
+   *  provider TUI launch like `claude`, classified at `spawnPty`), so the
+   *  Sessions list, the link probe, and the harness switch know which
+   *  provider the terminal is. Undefined for plain-shell PTYs and command
+   *  kinds. */
   adapterSlug?: string
   /** Manifest-declared `capabilities.resumable` for this session's adapter
    *  (AIP-45), stamped from {@link AgentAdapterResolver}'s resolved
@@ -1426,6 +1435,14 @@ export interface SessionDescriptor {
    *  Keys are adapter-specific so future adapters can add their own
    *  ("hermesResumeId", etc.) without changing this type. */
   resumeMetadata?: Record<string, string>
+  /** Conversation-terminal link probe verdict — `"ambiguous"` when MORE
+   *  than one fresh native transcript matched this PTY's cwd + start time,
+   *  so the daemon refused to bind any of them (never bind a sibling —
+   *  same invariant as the fs-probe's exact-bind rule). Absent while the
+   *  probe is still looking, and cleared once an unambiguous link lands
+   *  (`adapterSessionId` + `resumeMetadata`). Only ever set on
+   *  conversation-terminal rows (`isConversationTerminal`). */
+  linkStatus?: "ambiguous"
   /** Extra env this PTY (`kind: "terminal"`) session was spawned with, on
    *  top of `process.env` — e.g. `{ CLAUDE_CONFIG_DIR: "..." }` for a
    *  `pty-native` restart of a claude-code session (see
@@ -1768,6 +1785,17 @@ export interface SessionSummary {
   origin?: string
   parentSessionId?: string
   depth?: number
+  /**
+   * Server-computed Sessions-panel lane verdict, stamped by `listSummaries`
+   * against the daemon's FULL in-memory session map (archived and dead
+   * parents included) — so a client paging summaries never has to re-derive
+   * lineage from whatever happens to be on its current page, and a row's
+   * lane cannot flip between page 1 and page N. Absent on shell-only rows
+   * (`isShellOnlyRow` — plain-shell PTYs and command rows belong to the
+   * Activity panel, not either lane; a conversation terminal DOES get a
+   * lane) and on rows from older daemons.
+   */
+  lane?: "agents" | "auto"
   priorCommandSessionId?: string
   continuedFrom?: string
   continuedTo?: string
@@ -1785,6 +1813,19 @@ export interface SessionSummary {
    *  `SessionDescriptor.sandboxAlive`. */
   sandboxAlive?: boolean
   sandboxCheckedAt?: string
+}
+
+/**
+ * Rows that belong ONLY to the Activity panel — raw command executions and
+ * plain-shell PTYs. A conversation terminal (`isConversationTerminal`: a
+ * native provider TUI like `claude`/`hermes`/`grok` in a PTY) is NOT
+ * shell-only: it is a trackable session in the Agents/Auto lanes, while
+ * Activity → Terminals keeps listing every PTY regardless.
+ */
+export function isShellOnlyRow(
+  desc: Pick<SessionDescriptor, "kind" | "adapterSlug" | "argv" | "resumeMetadata">,
+): boolean {
+  return desc.kind === "command" || (desc.kind === "terminal" && !isConversationTerminal(desc))
 }
 
 /** Project a full SessionDescriptor down to the panel summary shape. */
@@ -1967,6 +2008,18 @@ interface SessionRuntime {
    *  wrapper. Undefined until the first chunk arrives — treated the
    *  same as `{ mode: "unknown", carry: "" }`. */
   bracketedPaste?: BracketedPasteScanState
+  /** True for a PTY classified as a conversation terminal at spawn
+   *  (`isConversationTerminal`) — gates the per-chunk resume-hint line
+   *  sniffing so plain shells never pay for it. Computed once. */
+  conversationTerminal?: boolean
+  /** Carry for a partial output line across PTY `onData` chunks, so the
+   *  conversation-terminal resume-hint sniffer only ever matches COMPLETE
+   *  lines. Capped — a TUI redraw with no newlines must not grow it. */
+  sniffCarry?: string
+  /** Stops this conversation terminal's link-probe timers. Called from
+   *  `emitExited` (the shared exit funnel) and by the probe itself once a
+   *  link lands. */
+  linkProbeStop?: () => void
 }
 
 /** Bracketed-paste mode as last observed in a PTY's OUTPUT stream.
@@ -3708,6 +3761,11 @@ export function createSessionsRegistry(opts?: {
    *  (manual/scheduled `gc` is still the only way an implicit worktree gets
    *  reclaimed). */
   runWorktreeAutoReclaim?: WorktreeAutoReclaimer
+  /** Conversation-terminal link-probe cadence — how soon after spawn the
+   *  first native-store discover runs, and how often it re-runs while the
+   *  PTY is alive and unlinked. Tests pin tiny values; production default
+   *  is `{ initialMs: 3_000, intervalMs: 15_000 }`. */
+  conversationLinkProbeMs?: { initialMs: number; intervalMs: number }
 }): SessionsRegistry {
   // `persistPath` names one exact file, so passing it means "don't
   // partition" (see its docblock). Absent it, state partitions per
@@ -3974,6 +4032,8 @@ export function createSessionsRegistry(opts?: {
   // Emit session:exited once per session, deduplicated via exitedEmitted flag.
   const emitExited = (rt: SessionRuntime): void => {
     if (rt.exitedEmitted) return
+    // A dead PTY has no transcript left to discover — stop its link probe.
+    rt.linkProbeStop?.()
     // A dying session must never leave a held permission RPC dangling — cancel
     // its parked requests (resolves them as `cancelled`) before anything else.
     // Runs even when no bus is wired, so the driver RPC always settles.
@@ -4282,8 +4342,16 @@ export function createSessionsRegistry(opts?: {
   ): void => {
     if (!persist || !partitioned) return
     const desc = rt.desc
-    if (desc.kind !== "agent-cli") return
-    const adapterSlug = desc.adapterSlug
+    // agent-cli sessions as before, PLUS conversation terminals (a native
+    // provider TUI in a PTY — claude/hermes/…): those hold a real provider
+    // conversation too, discovered by the link probe / exit-hint sniffer
+    // below. Plain shells and command rows still never get an index row.
+    const isConvTerminal = desc.kind === "terminal" && isConversationTerminal(desc)
+    if (desc.kind !== "agent-cli" && !isConvTerminal) return
+    // A bare native launch (argv ["claude"]) may have no stamped
+    // adapterSlug — derive it from the same classifier table.
+    const adapterSlug =
+      desc.adapterSlug ?? (isConvTerminal ? conversationTerminalSlugFor(desc) : undefined)
     const adapterSessionId = adapterSessionIdOverride ?? desc.adapterSessionId
     const cwd = desc.cwd
     if (!adapterSlug || !adapterSessionId || !cwd) return
@@ -4329,6 +4397,101 @@ export function createSessionsRegistry(opts?: {
     persistTimer = setTimeout(() => {
       void persistSnapshot()
     }, PERSIST_DEBOUNCE_MS)
+  }
+
+  /**
+   * Conversation-terminal link probe. A fresh native launch (argv
+   * `["claude"]`, no `CLAUDE_CONFIG_DIR` threaded) writes its transcript to
+   * the provider's GLOBAL store — there is no id to record until the
+   * provider creates the file. This probe watches for it: first shortly
+   * after spawn, then on a debounced interval while the PTY is alive and
+   * unlinked (never per output byte). Exact-bind discipline mirrors the
+   * fs-probe's: exactly ONE fresh transcript since `startedAt` in this cwd
+   * binds; several ⇒ record nothing and mark `linkStatus: "ambiguous"` —
+   * never bind a sibling. On a bind it records `adapterSessionId` +
+   * `resumeMetadata[storeAs]`, derives the title ONCE from the transcript's
+   * own first user message (the discover candidate's `preview` — the
+   * existing scanner, no second parser), and writes the conversations.jsonl
+   * link. Adapters with a launch entry but no conversation store yet
+   * (grok) are classify-only: no probe, title stays the spawn label.
+   */
+  const conversationLinkProbeMs = opts?.conversationLinkProbeMs ?? {
+    initialMs: 3_000,
+    intervalMs: 15_000,
+  }
+  const startConversationTerminalLinkProbe = (rt: SessionRuntime): void => {
+    const desc = rt.desc
+    const slug = desc.adapterSlug ?? conversationTerminalSlugFor(desc)
+    const store = slug ? CONVERSATION_STORES[slug] : undefined
+    const cwd = desc.cwd
+    if (!store || !cwd) return
+    let inFlight = false
+    let stopped = false
+    const timers: Array<ReturnType<typeof setTimeout>> = []
+    const stop = (): void => {
+      stopped = true
+      for (const t of timers) clearTimeout(t)
+      timers.length = 0
+    }
+    rt.linkProbeStop = stop
+    const tick = async (): Promise<void> => {
+      if (stopped || inFlight) return
+      if (desc.status !== "running") {
+        stop()
+        return
+      }
+      // Wait for the provider to have SAID anything before hitting the fs.
+      if (!desc.lastOutputAt) return
+      if (desc.adapterSessionId) {
+        stop()
+        return
+      }
+      inFlight = true
+      try {
+        const candidates = await store.discover({
+          cwd,
+          since: desc.startedAt,
+          // A PTY writes through the provider's native arm, never ACP.
+          attachmentMode: "native",
+          // No configDir on purpose: nothing threaded CLAUDE_CONFIG_DIR
+          // into this PTY, so the global store is where the file is.
+        })
+        if (candidates.length === 1) {
+          const candidate = candidates[0]!
+          desc.adapterSessionId = candidate.conversationId
+          desc.resumeMetadata = {
+            ...(desc.resumeMetadata ?? {}),
+            [store.storeAs]: candidate.conversationId,
+          }
+          delete desc.linkStatus
+          if (!desc.title && candidate.preview) {
+            const derived = deriveSessionTitle(candidate.preview)
+            if (derived) desc.title = derived
+          }
+          schedulePersist()
+          recordConversationLink(rt, candidate.conversationId)
+          stop()
+        } else if (candidates.length > 1) {
+          desc.linkStatus = "ambiguous"
+          schedulePersist()
+        }
+      } catch {
+        // Best-effort, like every other conversation-index write point.
+      } finally {
+        inFlight = false
+      }
+    }
+    const schedule = (delayMs: number): void => {
+      if (stopped) return
+      const t = setTimeout(() => {
+        void tick().finally(() => schedule(conversationLinkProbeMs.intervalMs))
+      }, delayMs)
+      t.unref?.()
+      // Only one pending timer at a time — drop the fired one's handle.
+      timers.length = 0
+      timers.push(t)
+    }
+    schedule(conversationLinkProbeMs.initialMs)
   }
 
   /** Descriptors as they go to disk. Read-time projections are stripped so a
@@ -4507,10 +4670,13 @@ export function createSessionsRegistry(opts?: {
    * outputHint) are skipped — they fall back to ACP-level resume.
    */
   const sniffResumeHints = (rt: SessionRuntime, line: string): void => {
-    if (rt.desc.kind !== "agent-cli") return
-    const strategy = rt.desc.adapterSlug
-      ? RESUME_STRATEGIES[rt.desc.adapterSlug]
-      : undefined
+    // agent-cli lines as before, plus conversation-terminal PTY lines
+    // (fed by `sniffConversationTerminalChunk`) — a native TUI prints the
+    // same `claude --resume <uuid>` hint on graceful exit, and dropping it
+    // used to lose the PTY's only conversation handle.
+    if (rt.desc.kind !== "agent-cli" && rt.conversationTerminal !== true) return
+    const strategySlug = rt.desc.adapterSlug ?? conversationTerminalSlugFor(rt.desc)
+    const strategy = strategySlug ? RESUME_STRATEGIES[strategySlug] : undefined
     if (!strategy?.outputHint) return
     const plain = stripAnsiCodes(line)
     const m = plain.match(strategy.outputHint)
@@ -4535,6 +4701,22 @@ export function createSessionsRegistry(opts?: {
    * never splits within a chunk — Buffer arithmetic on UTF-8 mid-
    * sequence would corrupt multi-byte glyphs.
    */
+  /**
+   * Line-assembly shim between a conversation terminal's raw byte stream
+   * and `sniffResumeHints` (which matches per COMPLETE line). Carries a
+   * partial trailing line across chunks; capped so an alt-screen redraw
+   * that never emits a newline can't grow it unboundedly. Only called for
+   * `rt.conversationTerminal` rows — plain shells skip it entirely.
+   */
+  const sniffConversationTerminalChunk = (rt: SessionRuntime, chunk: Buffer): void => {
+    const text = (rt.sniffCarry ?? "") + chunk.toString("utf8")
+    const lines = text.split(/\r?\n|\r/)
+    rt.sniffCarry = (lines.pop() ?? "").slice(-4096)
+    for (const line of lines) {
+      if (line) sniffResumeHints(rt, line)
+    }
+  }
+
   const appendBytes = (rt: SessionRuntime, chunk: Buffer): void => {
     // Durable copy BEFORE the RAM ring drops anything — same ordering
     // rule transcript-writer.ts follows for agent-cli StreamEvents.
@@ -4549,6 +4731,7 @@ export function createSessionsRegistry(opts?: {
       if (dropped) rt.recentBytesSize -= dropped.byteLength
     }
     rt.desc.lastOutputAt = new Date().toISOString()
+    if (rt.conversationTerminal === true) sniffConversationTerminalChunk(rt, chunk)
     rt.emitter.emit("data", chunk)
   }
 
@@ -6637,6 +6820,41 @@ export function createSessionsRegistry(opts?: {
         rows: input.rows,
       })
       const priorCommandSessionId = findPriorCommandSessionId(sessions, input.cwd)
+      // Conversation-terminal identity (one row, two views): a native
+      // provider TUI launch (harness "Terminal" button, `terminal_start`
+      // with a NATIVE_LAUNCH_ARGV argv) gets its adapter slug stamped from
+      // the shared classifier table, so the Sessions list, the link probe,
+      // and a later harness switch all know WHICH provider this PTY is.
+      // `nativeTerminalResume` mirrors what the resume-strategy table can
+      // actually do for that slug (a declared native TUI resume argv).
+      // Plain shells derive nothing and stay exactly as before. The
+      // adapterSessionId stays UNSET on purpose — it is unknown until the
+      // provider writes a transcript or prints a resume hint.
+      const conversationSlug = conversationTerminalSlugFor({ argv: input.argv })
+      const conversationStore = conversationSlug ? CONVERSATION_STORES[conversationSlug] : undefined
+      // A provider-native RESUME launch (`claude --resume <id|/abs/….jsonl>`,
+      // e.g. session_restart's pty-native branch) already names its
+      // conversation — seed the identity from the argv instead of leaving
+      // the link probe to re-discover (and possibly mis-bind) it. The
+      // path form's uuid is its basename.
+      const resumeArgvId = (() => {
+        if (!conversationStore) return undefined
+        for (let i = 0; i < input.argv.length - 1; i++) {
+          if (input.argv[i] !== "--resume" && input.argv[i] !== "-r") continue
+          const raw = input.argv[i + 1]!
+          const base = raw.slice(raw.lastIndexOf("/") + 1)
+          return base.endsWith(".jsonl") ? base.slice(0, -".jsonl".length) : raw
+        }
+        return undefined
+      })()
+      // The isolated provider config dir, when the caller threaded it into
+      // the PTY's env (`configDirEnvVar` — the pty-native restart path does)
+      // — recorded on the descriptor so a LATER restart / index write / fs
+      // probe resolves the SAME isolated store this PTY actually writes to.
+      const conversationConfigDir =
+        conversationStore?.configDirEnvVar && input.env
+          ? input.env[conversationStore.configDirEnvVar]
+          : undefined
       const desc: SessionDescriptor = {
         id,
         kind: "terminal",
@@ -6651,6 +6869,20 @@ export function createSessionsRegistry(opts?: {
         ...worktreeFields(input.cwd),
         ...(input.name ? { name: input.name } : {}),
         ...(input.label ? { label: input.label } : {}),
+        // Same rule as spawnAgent: a NEW spawn's label is a slug, not a
+        // human rename — let a later derived title outrank it.
+        ...(input.label ? { renamedByUser: false } : {}),
+        ...(conversationSlug ? { adapterSlug: conversationSlug } : {}),
+        ...(conversationSlug && RESUME_STRATEGIES[conversationSlug]?.spawnArgs
+          ? { nativeTerminalResume: true }
+          : {}),
+        ...(conversationConfigDir ? { adapterConfigDir: conversationConfigDir } : {}),
+        ...(resumeArgvId && conversationStore
+          ? {
+              adapterSessionId: resumeArgvId,
+              resumeMetadata: { [conversationStore.storeAs]: resumeArgvId },
+            }
+          : {}),
         ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
         // Parent attribution + depth (orchestrator WP4) — same recording
         // rule as spawnAgent above: depth always set so subtree/depth
@@ -6682,6 +6914,7 @@ export function createSessionsRegistry(opts?: {
         busy: false,
         textBuf: "",
         thoughtBuf: "",
+        ...(isConversationTerminal(desc) ? { conversationTerminal: true } : {}),
       }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
@@ -6694,6 +6927,16 @@ export function createSessionsRegistry(opts?: {
         depth: desc.depth ?? 0,
         ts: new Date().toISOString(),
       })
+      // Watch for the provider's native transcript so this PTY becomes a
+      // LINKED conversation (id + index row + derived title) — see
+      // `startConversationTerminalLinkProbe`'s doc. No-op for plain shells
+      // and for classified-but-storeless TUIs (grok). A resume launch
+      // already knows its conversation (seeded above): record the link
+      // now instead of probing.
+      if (rt.conversationTerminal) {
+        if (desc.adapterSessionId) recordConversationLink(rt)
+        else startConversationTerminalLinkProbe(rt)
+      }
       pty.onData((chunk: string) => {
         // node-pty emits utf-8 strings. Convert once at the boundary
         // so the ring buffer + emitter consumers all see Buffer.
@@ -7415,8 +7658,11 @@ export function createSessionsRegistry(opts?: {
         .filter(rt => includeArchived || !rt.desc.archived)
         .filter(rt => {
           if (!lane) return true
-          // These rows belong to the Activity panel, not either Sessions lane.
-          if (rt.desc.kind === "terminal" || rt.desc.kind === "command") return false
+          // Shells and raw commands belong to the Activity panel, not either
+          // Sessions lane — but a CONVERSATION terminal (a native provider
+          // TUI in a PTY, `isConversationTerminal`) is a trackable session
+          // and stays in. One row, two doors: Activity keeps listing it too.
+          if (isShellOnlyRow(rt.desc)) return false
           // Match the webview's lineage-aware lane classifier before paginating summary rows.
           const machine = hasMachineLineage(rt)
           return lane === "auto" ? machine : !machine
@@ -7431,7 +7677,17 @@ export function createSessionsRegistry(opts?: {
         stampWatchers(desc)
         desc.childrenBusy = childrenBusy.get(desc.id) ?? 0
         desc.queuedPrompts = desc.promptQueue?.length ?? 0
-        return toSessionSummary(desc)
+        const summary = toSessionSummary(desc)
+        // Stamp the lane verdict on EVERY summary row (not only when a lane
+        // filter is set): it's this walk over the full `sessions` map that a
+        // paging client cannot reproduce from its page-local view. Shell
+        // rows carry no lane — they live in the Activity panel. A
+        // conversation terminal is NOT a shell: it gets a lane like any
+        // other session.
+        if (!isShellOnlyRow(desc)) {
+          summary.lane = hasMachineLineage(rt) ? "auto" : "agents"
+        }
+        return summary
       })
       return { summaries, total: all.length }
     },

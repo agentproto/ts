@@ -27,6 +27,7 @@ describe("planHarnessSwitch", () => {
 
     expect(plan.target).toBe("terminal")
     expect(plan.disabledReason).toBeUndefined()
+    expect(plan.overrides).toEqual({ preferNativeTerminal: true })
   })
 
   it("switches a PTY terminal toward conversation when a recoverable id and a safe override exist", () => {
@@ -66,6 +67,7 @@ describe("planHarnessSwitch", () => {
 
     expect(plan.target).toBe("terminal")
     expect(plan.disabledReason).toBeUndefined()
+    expect(plan.overrides).toEqual({ preferNativeTerminal: true })
   })
 
   it("refuses to switch a claude-code agent session with neither resume metadata nor adapterSessionId", () => {
@@ -73,6 +75,31 @@ describe("planHarnessSwitch", () => {
 
     expect(plan.target).toBe("terminal")
     expect(plan.disabledReason).toContain("no native resume id and no adapter session id")
+  })
+
+  it("switches a bare conversation terminal (no config axes) to conversation via a same-value harness override", () => {
+    const plan = planHarnessSwitch(
+      session({
+        kind: "terminal",
+        pty: true,
+        adapterSlug: "claude-code",
+        argv: ["claude"],
+        adapterSessionId: "aaaaaaaa-1111-2222-3333-444444444444",
+      }),
+    )
+
+    expect(plan.target).toBe("conversation")
+    expect(plan.disabledReason).toBeUndefined()
+    expect(plan.overrides).toEqual({ harness: "claude-code" })
+  })
+
+  it("still refuses a conversation terminal whose link has not resolved (no recoverable id)", () => {
+    const plan = planHarnessSwitch(
+      session({ kind: "terminal", pty: true, adapterSlug: "claude-code", argv: ["claude"] }),
+    )
+
+    expect(plan.target).toBe("conversation")
+    expect(plan.disabledReason).toContain("no recoverable resume id")
   })
 
   it("refuses to switch a hermes agent session — no pty-native resume strategy exists", () => {

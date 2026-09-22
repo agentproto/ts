@@ -35,6 +35,7 @@ import {
   decideRestartStrategy,
   augmentWithFsResume,
   describeResumePath,
+  probeNativeTranscript,
   tokenizeCommand,
   RESUME_STRATEGIES,
 } from "./resume-strategies.js"
@@ -2632,12 +2633,31 @@ export function registerSessionTools(
       try {
         if (strategy.kind === "pty-native" || strategy.kind === "pty-plain") {
           if (!ptyEnabled) return ptyNotConfigured("session_restart")
-          const argv =
+          let argv =
             strategy.kind === "pty-native"
               ? strategy.argv
               : Array.isArray(prev.argv) && prev.argv.length > 0
                 ? [...prev.argv]
                 : tokenizeCommand(prev.command)
+          // Prefer resuming by ABSOLUTE transcript path over a bare
+          // conversation id when the provider accepts one
+          // (`claude --resume /abs/….jsonl`): the path form works from any
+          // directory and doesn't depend on the provider re-deriving the
+          // project-slug folder from the spawn cwd. Only when the isolated
+          // file verifiably exists — otherwise keep the bare id, which may
+          // still resolve via the threaded config-dir env below.
+          if (strategy.kind === "pty-native" && prev.adapterSlug) {
+            const probe = await probeNativeTranscript(augmented)
+            if (probe?.exists) {
+              const upgraded = RESUME_STRATEGIES[prev.adapterSlug]?.spawnArgs?.(probe.path)
+              if (upgraded) {
+                argv = upgraded
+                console.log(
+                  `[session_restart] ${prev.id} pty-native resume upgraded to absolute transcript path ${probe.path}`
+                )
+              }
+            }
+          }
           // Thread the adapter's isolated config dir into the resumed PTY's
           // env so the provider's own native resume looks in the SAME store
           // its transcript actually lives in (see
@@ -2658,7 +2678,11 @@ export function registerSessionTools(
             strategy.kind === "pty-native"
               ? envVarName && augmented.adapterConfigDir
                 ? { [envVarName]: augmented.adapterConfigDir }
-                : undefined
+                : // A pty-native restart of a row that is ITSELF a restarted
+                  // PTY (conversation terminal): no adapterConfigDir, but the
+                  // env the earlier hop recorded still names the isolated
+                  // store — replay it rather than dropping to the global one.
+                  prev.ptyResumeEnv
               : prev.ptyResumeEnv
           if (strategy.kind === "pty-native") {
             console.log(
@@ -2772,6 +2796,38 @@ export function registerSessionTools(
             isError: true,
           }
         }
+        // Honest decline diagnostics: the caller explicitly asked for a
+        // native terminal but the decision still landed on ACP resume.
+        // Name the ACTUAL blocker instead of letting the client blame "the
+        // transcript could not be recovered" for every fallback — response-
+        // only, never persisted. Absent entirely when the caller never
+        // opted in (a plain restart's output shape is unchanged).
+        let nativeResumeDecline:
+          | {
+              reason: "capability-missing" | "no-resume-id" | "transcript-not-found"
+              probedDir?: string
+            }
+          | undefined
+        if (
+          input.preferNativeTerminal === true &&
+          prev.adapterSlug &&
+          RESUME_STRATEGIES[prev.adapterSlug]?.spawnArgs
+        ) {
+          if (prev.nativeTerminalResume !== true) {
+            // Legacy/pre-capability row: the adapter never stamped
+            // `nativeTerminalResume` on this descriptor, so the origin gate
+            // was passed but the capability check wasn't.
+            nativeResumeDecline = { reason: "capability-missing" }
+          } else {
+            // A probe result here means an id existed but its exact file
+            // didn't (exact-bind never falls through to a sibling); no
+            // probe at all means there was never an id to look up.
+            const probe = await probeNativeTranscript(augmented)
+            nativeResumeDecline = probe
+              ? { reason: "transcript-not-found", probedDir: probe.dir }
+              : { reason: "no-resume-id" }
+          }
+        }
         // Shared with the cron scheduler's `prompt-session` action —
         // see session-restart-core.ts. Overrides take the forced-agent path
         // handled earlier, so a restart reaching HERE never carries any.
@@ -2788,6 +2844,7 @@ export function registerSessionTools(
                   resumedFrom: restarted.resumedFrom,
                   resumeVia: restarted.resumeVia,
                   ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
+                  ...(nativeResumeDecline ? { nativeResumeDecline } : {}),
                 },
                 null,
                 2

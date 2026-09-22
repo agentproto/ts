@@ -40,6 +40,9 @@
  */
 
 import type { SessionSummary, WorkspacesConfig } from "../client/types.js"
+// Runtime-owned classifier (one table, not a client copy) — same source
+// import precedent as nativeConversation.ts / harnessesWebviewPanel.ts.
+import { isConversationTerminal } from "../../../runtime/src/conversation-store.js"
 import { isLiveSession } from "../commands/sessionActions.logic.js"
 import { adapterLogoFor, type AdapterLogo } from "./adapterIcon.logic.js"
 import { canArchive, canUnarchive } from "../commands/sessionArchive.logic.js"
@@ -354,7 +357,7 @@ export type SessionLane = "agents" | "auto"
 export type AutoGroupKind = "gate" | "cron" | "task"
 
 /** The lineage fields lane classification reads — a subset of SessionSummary. */
-type LaneSubject = Pick<SessionSummary, "id" | "origin" | "kind" | "parentSessionId">
+type LaneSubject = Pick<SessionSummary, "id" | "origin" | "kind" | "parentSessionId" | "lane">
 
 /** Machine tell on the session's OWN fields only (lineage-blind). */
 function ownAutoGroupOf(session: Pick<SessionSummary, "origin" | "kind">): Exclude<AutoGroupKind, "task"> | undefined {
@@ -405,6 +408,12 @@ export function autoGroupOf(session: LaneSubject, byId?: ReadonlyMap<string, Lan
   const own = ownAutoGroupOf(session)
   if (own) return own
   if (session.parentSessionId) {
+    // Server-stamped verdict wins: `listSummaries` resolved this lineage
+    // against the daemon's FULL session map (archived parents included), so
+    // a stamped row can never flip lanes because of what the CLIENT happens
+    // to have paged in. The local walk stays as the fallback for store
+    // descriptors and older daemons that don't stamp it.
+    if (session.lane) return session.lane === "agents" ? undefined : "task"
     return byId && lineageRootIsHuman(session, byId) ? undefined : "task"
   }
   return undefined
@@ -571,6 +580,11 @@ export interface WebviewRow {
    *  only on such roots (the whole tree is rendered there, every status
    *  included, so a child that exited stays findable under its parent). */
   focusable: boolean
+  /** True for an Auto-Tasks child whose `parentSessionId` resolves to
+   *  nothing in the lineage map — the parent is genuinely gone (archived /
+   *  GC'd), not merely unpaged. Renders as an "orphaned" chip so the row
+   *  isn't mistaken for a task the operator started. */
+  orphaned: boolean
 }
 
 /** The five attention sections, in fixed priority order. */
@@ -694,6 +708,28 @@ export interface BuildSessionsWebviewModelOptions {
   /** Locally-watched session ids (WatchedSessions service) — drives the plain
    *  👁 (no count) chip, the same watch glyph the tree renders. */
   watchedIds?: ReadonlySet<string>
+  /**
+   * Lineage-resolution map covering the FULL client-side snapshot (the
+   * SessionStore's non-archived descriptors), not just the paged summaries
+   * passed as `sessions`. Lane classification walks `parentSessionId`
+   * through this — without it, a live child pinned into the pool ahead of
+   * its (recency-sorted, later-page) parent reads as an orphan and lands in
+   * Auto → Tasks until "Load more" happens to fetch the parent. The paged
+   * summaries are always overlaid on top (fresher fields win); omitting
+   * this keeps the old page-local behaviour for lone-call-site users.
+   */
+  lineageById?: ReadonlyMap<string, LaneSubject>
+}
+
+/** The classification map: the full-store lineage snapshot (when given)
+ *  overlaid with the loaded summaries, so paged rows win on freshness. */
+function lineageMap(
+  sessions: readonly SessionSummary[],
+  lineageById: ReadonlyMap<string, LaneSubject> | undefined,
+): ReadonlyMap<string, LaneSubject> {
+  const merged = new Map<string, LaneSubject>(lineageById ?? [])
+  for (const s of sessions) merged.set(s.id, s)
+  return merged
 }
 
 /** Resolve a session's workspace to a stable slug/label, or undefined when unassigned. */
@@ -739,6 +775,11 @@ function toRow(
     session,
     status: webviewRowStatus(session, now, attentionDelaySec),
     lane: laneOf(session, byId),
+    orphaned:
+      autoGroupOf(session, byId) === "task" &&
+      session.parentSessionId !== undefined &&
+      byId !== undefined &&
+      !byId.has(session.parentSessionId),
     name: identity.name,
     idMono: identity.idMono,
     message: previewTextFor(session),
@@ -815,18 +856,23 @@ function buildRowPool(
   // additive merge: OFF shows ONLY active rows, ON shows ONLY archived rows
   // (an archive action slides a row from the active view into the archived
   // one, never both). Resume-chain predecessors collapse to their live tail,
-  // same as the tree. Shell sessions (PTY terminals, raw command executions)
-  // live in the Activity panel now — Sessions stops carrying them.
+  // same as the tree. Shell sessions (plain-shell PTYs, raw command
+  // executions) live in the Activity panel — but a CONVERSATION terminal
+  // (a native provider TUI like claude/hermes in a PTY,
+  // `isConversationTerminal` — the runtime-owned classifier) is a trackable
+  // session and stays in this list. Activity → Terminals still lists every
+  // PTY: two doors to the same row.
   const pool = (opts.includeArchived
     ? sessions.filter(s => s.archived === true)
     : sessions.filter(s => s.archived !== true)
-  ).filter(s => s.kind !== "terminal" && s.kind !== "command")
+  ).filter(s => s.kind !== "command" && (s.kind !== "terminal" || isConversationTerminal(s)))
   const visible = collapseResumeChains(pool)
 
   // Lane identity is intrinsic, so lineage is resolved over EVERY loaded
-  // session (not just the visible survivors): a child whose parent is
-  // archived or collapsed away still knows which lane it belongs to.
-  const byId: ReadonlyMap<string, LaneSubject> = new Map(sessions.map(s => [s.id, s]))
+  // session (not just the visible survivors) PLUS the full-store snapshot
+  // when the caller provides one: a child whose parent is collapsed away —
+  // or simply hasn't been paged in yet — still knows which lane it belongs to.
+  const byId = lineageMap(sessions, opts.lineageById)
 
   // Focus-affordance roots: every id some loaded row names as its parent.
   // A parent whose child has EXITED is still a root — that is exactly the
@@ -872,7 +918,7 @@ export function buildSessionsWebviewModel(
   // 2. Project rail — counts per project within the CURRENT lane, independent
   //    of the current project selection (the rail IS the selector). A chip
   //    lights its ochre dot when it holds a session awaiting the human.
-  const byId: ReadonlyMap<string, LaneSubject> = new Map(sessions.map(s => [s.id, s]))
+  const byId = lineageMap(sessions, opts.lineageById)
   const railScope = searchRows.filter(r => laneOf(r.session, byId) === opts.lane)
   const rail = buildRail(railScope.map(r => r.session), workspaces, opts.now, opts.colorOverrides)
 

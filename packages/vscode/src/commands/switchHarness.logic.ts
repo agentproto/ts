@@ -48,7 +48,7 @@ function recoverableConversationId(
 function forcedAgentOverride(
   session: Pick<
     SessionDescriptor,
-    "mode" | "model" | "effort" | "contextProfile" | "posture" | "route" | "accessProfile"
+    "mode" | "model" | "effort" | "contextProfile" | "posture" | "route" | "accessProfile" | "adapterSlug"
   >,
 ): Record<string, unknown> | undefined {
   if (session.mode) return { mode: session.mode }
@@ -58,6 +58,14 @@ function forcedAgentOverride(
   if (session.posture) return { posture: session.posture }
   if (session.route) return { route: session.route }
   if (session.accessProfile) return { access: { profileRef: session.accessProfile.profileRef } }
+  // A bare conversation terminal (fresh `claude` launch, adapterSlug stamped
+  // at spawn) carries none of the config axes above. A SAME-VALUE harness
+  // override forces the agent path without changing anything: any override
+  // routes `session_restart` through `forceAgentResume` (session-tools.ts),
+  // and restart-core's `effHarness` already defaults to `prev.adapterSlug`,
+  // so restarting with `harness: adapterSlug` is byte-equivalent config-wise
+  // while landing on ACP resume via the linked `adapterSessionId`.
+  if (session.adapterSlug) return { harness: session.adapterSlug }
   return undefined
 }
 
@@ -113,7 +121,10 @@ export function planHarnessSwitch(session: SessionDescriptor): HarnessSwitchPlan
           "this agent session has no native resume id and no adapter session id yet — the switch to a PTY needs a recoverable provider-native resume id.",
       }
     }
-    return { target: "terminal" }
+    // The daemon's origin gate (`decideRestartStrategy`) only picks a
+    // pty-native resume for an ACP-origin session when the caller opts in —
+    // this switch IS that explicit human opt-in.
+    return { target: "terminal", overrides: { preferNativeTerminal: true } }
   }
 
   return {

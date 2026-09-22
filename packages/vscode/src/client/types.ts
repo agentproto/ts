@@ -552,6 +552,11 @@ export interface SessionSummary {
   origin?: string
   parentSessionId?: string
   depth?: number
+  /** Server-computed Sessions-panel lane verdict — mirrors
+   *  `@agentproto/runtime` SessionSummary.lane: `listSummaries` resolves
+   *  lineage against the daemon's FULL session map, so this wins over any
+   *  client-side walk. Absent on shell rows and on older daemons. */
+  lane?: "agents" | "auto"
   priorCommandSessionId?: string
   continuedFrom?: string
   continuedTo?: string
