@@ -183,6 +183,14 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     vendor: "deepseek",
     provider: "opencode",
   },
+  "opencode/deepseek-v4.1-flash": {
+    inputPer1M: 0.3,
+    outputPer1M: 1.2,
+    cacheReadMultiplier: 0.02,
+    addedAt: "2026-09-10",
+    vendor: "deepseek",
+    provider: "opencode",
+  },
   "opencode/gemini-3-flash": {
     inputPer1M: 0.5,
     outputPer1M: 3,
@@ -463,8 +471,8 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     provider: "opencode",
   },
   "opencode/gpt-5.6-sol": {
-    inputPer1M: 2,
-    outputPer1M: 10,
+    inputPer1M: 4,
+    outputPer1M: 20,
     cacheReadMultiplier: 0.1,
     cacheWriteMultiplier: 1.25,
     addedAt: "2026-07-09",
@@ -659,6 +667,13 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     vendor: "xiaomi",
     provider: "opencode",
   },
+  "opencode/mimo-v2.6-flash-free": {
+    inputPer1M: 0,
+    outputPer1M: 0,
+    addedAt: "2026-09-22",
+    vendor: "xiaomi",
+    provider: "opencode",
+  },
   "opencode/minimax-m2.1": {
     inputPer1M: 0.3,
     outputPer1M: 1.2,
@@ -802,6 +817,15 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     vendor: "qwen",
     provider: "opencode",
   },
+  "opencode/qwen3.8-flash": {
+    inputPer1M: 0.15,
+    outputPer1M: 0.47,
+    cacheReadMultiplier: 0.106667,
+    cacheWriteMultiplier: 1.333333,
+    addedAt: "2026-08-26",
+    vendor: "qwen",
+    provider: "opencode",
+  },
   "opencode/ring-2.6-1t-free": {
     inputPer1M: 0,
     outputPer1M: 0,
@@ -814,13 +838,6 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     outputPer1M: 0,
     addedAt: "2026-01-27",
     vendor: "arcee-ai",
-    provider: "opencode",
-  },
-  "opencode/union-alpha": {
-    inputPer1M: 0,
-    outputPer1M: 0,
-    addedAt: "2026-09-16",
-    vendor: "opencode",
     provider: "opencode",
   },
   "opencode/x-preview-f-free": {
@@ -862,5 +879,5 @@ export const OPENCODE_ZEN_ANTHROPIC_MODELS: readonly string[] = [
   "qwen3.5-plus",
   "qwen3.6-plus",
   "qwen3.6-plus-free",
-  "union-alpha",
+  "qwen3.8-flash",
 ]
