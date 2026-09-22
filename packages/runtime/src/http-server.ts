@@ -7030,7 +7030,7 @@ async function handleProviderInbound(
  *  public origin when it's known ahead of time (short-circuits everything
  *  else); otherwise `X-Forwarded-Proto` is sniffed so a proxied `https`
  *  front door doesn't get rewritten as `http` in the served page. */
-function requestHttpBaseUrl(req: IncomingMessage): string {
+export function requestHttpBaseUrl(req: IncomingMessage): string {
   return resolveRequestHttpBaseUrl(req.headers)
 }
 
