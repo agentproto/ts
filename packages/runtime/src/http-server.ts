@@ -7029,7 +7029,7 @@ async function handleProviderInbound(
  *  public origin when it's known ahead of time (short-circuits everything
  *  else); otherwise `X-Forwarded-Proto` is sniffed so a proxied `https`
  *  front door doesn't get rewritten as `http` in the served page. */
-function requestHttpBaseUrl(req: IncomingMessage): string {
+export function requestHttpBaseUrl(req: IncomingMessage): string {
   const configured = process.env.AGENTPROTO_PUBLIC_HTTP_ORIGIN
     ?.trim()
     .replace(/\/+$/, "")
@@ -7040,6 +7040,29 @@ function requestHttpBaseUrl(req: IncomingMessage): string {
     : forwarded?.split(",")[0]?.trim()
   const protocol = forwardedProto === "https" ? "https" : "http"
   return `${protocol}://${req.headers.host ?? "127.0.0.1"}`
+}
+
+/**
+ * Resolve the daemon's own public HTTP + WS origins from env overrides,
+ * given the actual bind port — the boot-time twin of `requestHttpBaseUrl`
+ * above (which derives the per-REQUEST origin from headers). Used by
+ * `createGateway` (index.ts) to compute `publicHttpOrigin` / `ptyWsBaseUrl`
+ * once at startup, and exported here — a pure function, no I/O — so both
+ * env-override paths and the `http→ws` / `https→wss` derivation are
+ * independently testable. `AGENTPROTO_PUBLIC_HTTP_ORIGIN` / `_WS_ORIGIN`
+ * each short-circuit their own half; absent an explicit `AGENTPROTO_
+ * PUBLIC_WS_ORIGIN`, the ws origin is derived from the (possibly
+ * env-overridden) http origin by swapping only the `http`/`https` prefix,
+ * preserving whatever host/port follows it.
+ */
+export function resolvePublicOrigins(port: number): { httpOrigin: string; wsOrigin: string } {
+  const httpOrigin =
+    process.env.AGENTPROTO_PUBLIC_HTTP_ORIGIN?.trim().replace(/\/+$/, "") ||
+    `http://127.0.0.1:${port}`
+  const wsOrigin =
+    process.env.AGENTPROTO_PUBLIC_WS_ORIGIN?.trim().replace(/\/+$/, "") ||
+    httpOrigin.replace(/^http/, "ws")
+  return { httpOrigin, wsOrigin }
 }
 
 /** `GET /apps/:appId/ui` — an installed app's `ui.path` html, or (when
