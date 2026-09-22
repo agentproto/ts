@@ -49,6 +49,7 @@ import { registerWebSearchTools } from "./web-search-tools.js"
 import { registerMcpApps } from "./mcp-apps-adapter.js"
 import { makeBuiltinPanelApps } from "./builtin-apps.js"
 import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
+import { resolvePublicAppOrigins } from "./public-origins.js"
 import { registerSummarizeSessionTool } from "./summarize-session-tool.js"
 import { makeTerminalPanelApp } from "./terminal-panel-app.js"
 import { registerAppPullTools } from "./app-pull-tools.js"
@@ -1104,9 +1105,8 @@ export async function createGateway(
   // endpoint is already reachable on (Quick Tunnel proxies the whole port,
   // including the WS upgrade). No trailing slash expected — it's used as
   // `${origin}/sessions/:id/pty`.
-  const ptyWsBaseUrl =
-    process.env.AGENTPROTO_PUBLIC_WS_ORIGIN?.trim().replace(/\/+$/, "") ||
-    `ws://127.0.0.1:${port}`
+  const { httpOrigin: publicHttpOrigin, wsOrigin: ptyWsBaseUrl } =
+    resolvePublicAppOrigins(port)
 
   const events = createRuntimeEvents()
   const conversations = fileConversationStore({ workspace })
@@ -1446,6 +1446,21 @@ export async function createGateway(
   // Declared here (not inside `registerAppTools`) purely so both consumers
   // share the one instance — same persistence defaults as before this WP.
   const appRegistry = createAppRegistry({ persist })
+
+  // Whether the `@agentik/session-chat` studio app is installed with a `ui`
+  // block — resolved at call time (not boot) so `app_install`/`app_uninstall`
+  // of that app is reflected without a daemon restart. Shared by the
+  // builtin-panel mount (below, decides whether to mount the loopback-HTTP
+  // `agentproto_session_chat` launcher at all) and `registerSessionTools`
+  // (decides what `agent_start`'s launch-card binding points at) so the two
+  // can never disagree about which surface is live.
+  const isSessionChatInstalled = () => {
+    try {
+      return appRegistry.getApp(SESSION_CHAT_APP_ID)?.ui != null
+    } catch {
+      return false
+    }
+  }
 
   // HTML cache for installed apps' `ui.path` panels (app-ui-apps.ts) —
   // gateway-scope singleton so a `/mcp` request doesn't re-read an
@@ -1851,6 +1866,7 @@ export async function createGateway(
         ? { listWorktreeStatuses: opts.listWorktreeStatuses }
         : {}),
       ...(opts.runWorktreeGc ? { runWorktreeGc: opts.runWorktreeGc } : {}),
+      isSessionChatInstalled,
     })
     // Per-workspace brain — query/status/ingest over the shared brain
     // registry declared at gateway boot (workspaceBrains).
@@ -1955,18 +1971,12 @@ export async function createGateway(
         listSessions: listSessionsFiltered,
         // httpBaseUrl = this daemon's own origin (SSE stream + bridge
         // fallback for the live-session widget).
-        httpBaseUrl: `http://127.0.0.1:${port}`,
+        httpBaseUrl: publicHttpOrigin,
         // The session-chat widget is a thin launcher for the installed
-        // `@agentik/session-chat` studio app — resolve installed-ness from
-        // the AppRegistry at call time (not boot) so `app_install`/
-        // `app_uninstall` of that app is reflected without a daemon restart.
-        isSessionChatInstalled: () => {
-          try {
-            return appRegistry.getApp(SESSION_CHAT_APP_ID)?.ui != null
-          } catch {
-            return false
-          }
-        },
+        // `@agentik/session-chat` studio app — same call-time-resolved check
+        // `registerSessionTools` above gets, so the mount decision here and
+        // `agent_start`'s launch-card binding never disagree.
+        isSessionChatInstalled,
         // Work-board widget's read path — the root `/mcp` endpoint has no
         // scope, so this mount is always the operator caller (default
         // board `ws:<slug>`); `canAccessBoard` lets the operator read any

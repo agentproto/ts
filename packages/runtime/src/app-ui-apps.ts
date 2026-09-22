@@ -51,6 +51,7 @@ interface UiHtmlCache {
  */
 const MCP_APP_BRIDGE_SCRIPT = `<script>
 (function () {
+  window.__AGENTPROTO_UI_TRANSPORT__ = "mcp";
   if (window.McpApp) return;
   var nextId = 1, pending = {}, teardownCbs = [];
   function post(m) { window.parent.postMessage(m, "*"); }
@@ -153,6 +154,7 @@ export function injectMcpAppBridge(html: string): string {
  */
 export const STANDALONE_REST_BRIDGE_SCRIPT = `<script>
 (function () {
+  window.__AGENTPROTO_UI_TRANSPORT__ = "http";
   if (window.McpApp) return;
   window.McpApp = {
     connect: function () {
@@ -197,9 +199,18 @@ export const STANDALONE_REST_BRIDGE_SCRIPT = `<script>
  *  itself is always (re-)injected, unguarded at the html level, same as
  *  before this change; the script's own `if (window.McpApp) return;` guard
  *  is the runtime-level idempotency, not this function. */
-export function injectStandaloneAppBridge(html: string): string {
+export function injectStandaloneAppBridge(
+  html: string,
+  baseUrl?: string,
+): string {
   const hasRunnerSelect = /window\.AgentprotoUI\s*=/.test(html)
-  const script = STANDALONE_REST_BRIDGE_SCRIPT + (hasRunnerSelect ? "" : RUNNER_SELECT_SCRIPT)
+  const baseUrlScript = baseUrl
+    ? `<script>window.__AGENTPROTO_BASEURL__=${JSON.stringify(baseUrl).replace(/</g, "\\u003c")};</script>`
+    : ""
+  const script =
+    baseUrlScript +
+    STANDALONE_REST_BRIDGE_SCRIPT +
+    (hasRunnerSelect ? "" : RUNNER_SELECT_SCRIPT)
   return injectAfterStructuralTag(html, script)
 }
 

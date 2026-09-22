@@ -348,6 +348,9 @@ export interface RegisterSessionToolsOptions {
    * enabled" error.
    */
   runWorktreeGc?: WorktreeGcRunner
+  /** Forwarded to `registerAgentTools` — see
+   *  `RegisterAgentToolsOptions.isSessionChatInstalled`. */
+  isSessionChatInstalled?: RegisterAgentToolsOptions["isSessionChatInstalled"]
 }
 
 /** MCP clients commonly stringify scalar arguments ("true"/"false"/"42").

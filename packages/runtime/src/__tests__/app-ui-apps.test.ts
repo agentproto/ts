@@ -146,6 +146,7 @@ describe("injectMcpAppBridge", () => {
     const html = "<html><head><title>t</title></head><body>Panel</body></html>"
     const out = injectMcpAppBridge(html)
     expect(out).toContain("window.McpApp")
+    expect(out).toContain('__AGENTPROTO_UI_TRANSPORT__ = "mcp"')
     expect(out.indexOf("window.McpApp")).toBeLessThan(out.indexOf("<title>"))
   })
 
@@ -230,11 +231,33 @@ describe("injectStandaloneAppBridge", () => {
       "<html><head><title>t</title></head><body><script>window.McpApp.connect();</script></body></html>"
     const out = injectStandaloneAppBridge(html)
     expect(out).toContain('fetch("./tool-call"')
+    expect(out).toContain('__AGENTPROTO_UI_TRANSPORT__ = "http"')
     // The app html referencing window.McpApp must NOT suppress injection
     // (unlike injectMcpAppBridge's idempotence check) — every bundled UI
     // calls window.McpApp.connect(), and standalone serving still needs
     // the bridge defined first.
     expect(out.indexOf('fetch("./tool-call"')).toBeLessThan(out.indexOf("window.McpApp.connect()"))
+  })
+
+  it("injects the daemon base URL before the standalone bridge when supplied", () => {
+    const html = "<html><head></head><body>Panel</body></html>"
+    const out = injectStandaloneAppBridge(html, "https://localhost:18791")
+    expect(out).toContain(
+      'window.__AGENTPROTO_BASEURL__="https://localhost:18791"',
+    )
+    expect(out.indexOf("__AGENTPROTO_BASEURL__")).toBeLessThan(
+      out.indexOf("__AGENTPROTO_UI_TRANSPORT__"),
+    )
+  })
+
+  it("escapes a closing script sequence in the injected daemon base URL", () => {
+    const html = "<html><head></head><body>Panel</body></html>"
+    const out = injectStandaloneAppBridge(
+      html,
+      "https://example.test/</script><script>alert(1)</script>",
+    )
+    expect(out).not.toContain("</script><script>alert(1)</script>")
+    expect(out).toContain("\\u003c/script>\\u003cscript>alert(1)\\u003c/script>")
   })
 
   it("falls back to prepending when there is no structural tag at all", () => {

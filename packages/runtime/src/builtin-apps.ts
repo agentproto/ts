@@ -64,8 +64,15 @@ export interface BuiltinPanelAppsOps {
    *  live-session widget's SSE stream + bridge fallback connect here. */
   httpBaseUrl: string
   /** Whether the `@agentik/session-chat` studio app is installed with a
-   *  `ui` block — the session-chat widget is a thin launcher for it and
-   *  degrades to an install notice when this is false. */
+   *  `ui` block. When false, `makeBuiltinPanelApps` mounts the
+   *  `agentproto_session_chat` widget as a loopback-HTTP launcher that
+   *  degrades to an install notice. When true, the native app's own MCP
+   *  Apps tool (`app_ui_session_chat`, mounted separately from
+   *  `AppRegistry` by `app-ui-apps.ts`) fully replaces it, so the launcher
+   *  is omitted entirely — a strict-CSP host (Codex) can't fetch the
+   *  loopback launcher's HTTP calls, and mounting both would just be a
+   *  redundant, broken path. See `agent-tools.ts`'s matching
+   *  `isSessionChatInstalled`-gated `agent_start` binding. */
   isSessionChatInstalled: () => boolean
   /** Full (unprojected) Task ledger records for a board — the work-board
    *  widget's read path. Omit `boardId` to resolve the operator's default
@@ -81,6 +88,7 @@ export function makeBuiltinPanelApps(
   ops: BuiltinPanelAppsOps,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): AgnoMcpApp<any, any>[] {
+  const sessionChatNativeInstalled = ops.isSessionChatInstalled()
   return [
     makeSessionsPanelApp<SessionDescriptor>({ listSessions: ops.listSessions }),
     makeAgentsOverviewApp<SessionDescriptor>({ listSessions: ops.listSessions }),
@@ -90,17 +98,28 @@ export function makeBuiltinPanelApps(
     // `agent_start` via _meta.ui.resourceUri (agent-tools.ts) so a launch
     // auto-renders it.
     makeLiveSessionApp({ httpBaseUrl: ops.httpBaseUrl }),
-    // Session-chat widget — thin launcher for the installed
+    // Session-chat widget — thin loopback-HTTP launcher for the installed
     // `@agentik/session-chat` app's standalone UI (deep-linked iframe when
     // installed, install notice otherwise; see apps/src/session-chat).
-    makeSessionChatApp({
-      httpBaseUrl: ops.httpBaseUrl,
-      isSessionChatInstalled: ops.isSessionChatInstalled,
-      // Hand every result a live embed token so a host-cached widget
-      // (Claude Desktop's per-conversation srcdoc) re-arms itself after a
-      // daemon restart instead of 403ing on its dead baked token.
-      mintEmbedToken: () => stableAppEmbedToken("agentproto_session_chat"),
-    }),
+    // Mounted ONLY when the native app isn't installed: once it is, its own
+    // MCP Apps tool (`app_ui_session_chat`, app-ui-apps.ts) is the one and
+    // only launch path — a strict-CSP host (Codex) can't fetch this
+    // widget's loopback HTTP calls, so offering both would just add a
+    // broken option next to the working one. `agent_start`'s launch-card
+    // binding (agent-tools.ts) makes the matching choice.
+    ...(sessionChatNativeInstalled
+      ? []
+      : [
+          makeSessionChatApp({
+            httpBaseUrl: ops.httpBaseUrl,
+            isSessionChatInstalled: ops.isSessionChatInstalled,
+            // Hand every result a live embed token so a host-cached widget
+            // (Claude Desktop's per-conversation srcdoc) re-arms itself
+            // after a daemon restart instead of 403ing on its dead baked
+            // token.
+            mintEmbedToken: () => stableAppEmbedToken("agentproto_session_chat"),
+          }),
+        ]),
     // Work-board widget — kanban over the Task ledger (see apps/src/
     // work-board). Read path only; writes go through task_claim/
     // task_update/task_create over the bridge, same as every other caller.

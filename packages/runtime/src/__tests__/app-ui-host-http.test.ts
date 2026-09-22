@@ -60,6 +60,7 @@ describe("standalone app UI host — REST routes", () => {
   })
 
   afterEach(async () => {
+    vi.unstubAllEnvs()
     await rm(dir, { recursive: true, force: true })
   })
 
@@ -105,6 +106,30 @@ describe("standalone app UI host — REST routes", () => {
       // Bridge injected before the app's own script, pointing at ./tool-call.
       expect(html.indexOf('fetch("./tool-call"')).toBeGreaterThan(-1)
       expect(html.indexOf('fetch("./tool-call"')).toBeLessThan(html.indexOf("media-viewer-marker"))
+    })
+  })
+
+  it("injects an https base URL when a reverse proxy forwards https", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${APP_ID}/ui`, {
+        headers: { "x-forwarded-proto": "https, http" },
+      })
+      const expected = base.replace(/^http:/, "https:")
+      expect(await res.text()).toContain(
+        `window.__AGENTPROTO_BASEURL__=${JSON.stringify(expected)}`,
+      )
+    })
+  })
+
+  it("prefers AGENTPROTO_PUBLIC_HTTP_ORIGIN over request headers", async () => {
+    vi.stubEnv("AGENTPROTO_PUBLIC_HTTP_ORIGIN", " https://apps.example.test/// ")
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${APP_ID}/ui`, {
+        headers: { "x-forwarded-proto": "http" },
+      })
+      expect(await res.text()).toContain(
+        'window.__AGENTPROTO_BASEURL__="https://apps.example.test"',
+      )
     })
   })
 

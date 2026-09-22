@@ -48,6 +48,7 @@ import type { AppRegistry } from "./app-registry.js"
 import { performAppToolCall, performBuiltinPanelToolCall, type AppToolCallDeps } from "./app-tools.js"
 import { injectStandaloneAppBridge } from "./app-ui-apps.js"
 import { resolveBuiltinPanelUi } from "./builtin-apps.js"
+import { resolveRequestHttpBaseUrl } from "./public-origins.js"
 import {
   assertExternalPathRealInside,
   isExternalRootGranted,
@@ -7021,10 +7022,16 @@ async function handleProviderInbound(
  *  /apps/:appId/ui` (see `resolveBuiltinPanelUi`, builtin-apps.ts) rather
  *  than trusting its static snapshot's baked-in default port. Same "assume
  *  http, trust the Host header" shape the daemon already uses to build its
- *  own default origin (`http://127.0.0.1:${port}`, index.ts) — this is a
- *  loopback-bound daemon, not a public origin behind unknown TLS. */
-function requestHttpBaseUrl(req: IncomingMessage): string {
-  return `http://${req.headers.host ?? "127.0.0.1"}`
+ *  own default origin (`http://127.0.0.1:${port}`, index.ts) — BUT the
+ *  daemon is commonly reached through a reverse proxy or tunnel (cloudflared,
+ *  ngrok, a VS Code port-forward, …) that terminates TLS and forwards
+ *  plain HTTP inward, so `req.headers.host` alone would bake in the wrong
+ *  scheme. `AGENTPROTO_PUBLIC_HTTP_ORIGIN` lets the host pin the exact
+ *  public origin when it's known ahead of time (short-circuits everything
+ *  else); otherwise `X-Forwarded-Proto` is sniffed so a proxied `https`
+ *  front door doesn't get rewritten as `http` in the served page. */
+export function requestHttpBaseUrl(req: IncomingMessage): string {
+  return resolveRequestHttpBaseUrl(req.headers)
 }
 
 /** `GET /apps/:appId/ui` — an installed app's `ui.path` html, or (when
@@ -7132,7 +7139,7 @@ async function handleAppUiPage(
     }
   }
   res.writeHead(200, headers)
-  res.end(injectStandaloneAppBridge(raw))
+  res.end(injectStandaloneAppBridge(raw, requestHttpBaseUrl(req)))
 }
 
 /** Trusted-embedder proof for the `?embed=1` header flip on
