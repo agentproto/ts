@@ -1,5 +1,12 @@
 # @agentproto/adapter-mastracode-inprocess
 
+## 0.3.13
+
+### Patch Changes
+
+- Updated dependencies [f30c959]
+  - @agentproto/provider-kit@0.4.5
+
 ## 0.3.12
 
 ### Patch Changes

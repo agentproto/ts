@@ -1,5 +1,22 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.7.6
+
+### Patch Changes
+
+- f30c959: Tolerate `description: null` from the live Replicate API in the image:replicate generator, coercing it to an empty string instead of failing validation. Also test-only updates in provider-kit mocks and a type-cast adjustment in the mastra adapter.
+- Updated dependencies [f6f2d75]
+- Updated dependencies [b8fdbc6]
+- Updated dependencies [f6f2d75]
+- Updated dependencies [d388a08]
+- Updated dependencies [fc14c4c]
+- Updated dependencies [bdbe806]
+- Updated dependencies [ec66e92]
+- Updated dependencies [5380278]
+- Updated dependencies [a25a86f]
+- Updated dependencies [a373209]
+  - @agentproto/runtime@3.5.0
+
 ## 0.7.5
 
 ### Patch Changes

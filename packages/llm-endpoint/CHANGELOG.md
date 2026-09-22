@@ -1,5 +1,15 @@
 # @agentproto/llm-endpoint
 
+## 0.7.0
+
+### Minor Changes
+
+- b04da9f: Add self-hosted "forge" provider for OpenAI-compatible fine-tune servers
+
+### Patch Changes
+
+- @agentproto/providers-store@0.3.15
+
 ## 0.6.2
 
 ### Patch Changes

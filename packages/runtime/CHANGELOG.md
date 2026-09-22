@@ -1,5 +1,41 @@
 # @agentproto/runtime
 
+## 3.5.0
+
+### Minor Changes
+
+- b8fdbc6: Fix transmit_message/sendOutbound reporting sent:true on a blocked/failed agentpush send; surface message_id, blocked_reason, and suggestion
+- fc14c4c: Add queued-mid-turn delivery hint + configurable interrupt default for agent_prompt/message_parent
+- ec66e92: Ship a live, boot-stable embed token with each session-chat tool result so host-cached widgets re-arm after a daemon restart: new exported `stableAppEmbedToken()` in runtime, and new optional `SessionChatOutput.embedToken` / `SessionChatOps.mintEmbedToken` in apps.
+
+### Patch Changes
+
+- f6f2d75: Mint per-boot embed tokens so MCP-Apps widgets render in opaque hosts
+- f6f2d75: MCP-Apps hosts with opaque widget origins (e.g. Claude Desktop) can now mount an app's `/ui` page: a per-boot embed token is baked into panel bridge scripts at registration and accepted (alongside `vscode-webview:` and `csp.frameDomains`) as a trusted-embedder proof by `handleAppUiPage`/`applyCors`, layered under the existing bearer-auth and `sec-fetch-dest: iframe` gates.
+- d388a08: Accept a valid per-boot app embed token (`?et=`) as an allowlisted Origin equivalent on the browser-facing gates (`guardBrowserOrigin`, `authorizeMcp`, `checkSessionsToken`), so MCP-Apps widget blob: documents with opaque `Origin: null` can reach the daemon.
+- bdbe806: Type session-resumer test mocks to AgentSessionResumer after vitest bump
+- 5380278: Add regression tests for conversation-terminal linking, ambiguity, and title-once derivation
+- a25a86f: Type agent-start test mocks for bumped vitest mock-widening
+- a373209: Bind agent_start to session-chat widget via self-bootstrapping bridge
+- Updated dependencies [5aad102]
+- Updated dependencies [e3054e1]
+- Updated dependencies [f84c972]
+- Updated dependencies [f6f2d75]
+- Updated dependencies [a169e72]
+- Updated dependencies [f6f2d75]
+- Updated dependencies [f30c959]
+- Updated dependencies [ec66e92]
+- Updated dependencies [a373209]
+- Updated dependencies [54e8f28]
+- Updated dependencies [4b31967]
+  - @agentproto/model-catalog@0.10.1
+  - @agentproto/apps@0.12.0
+  - @agentproto/provider-kit@0.4.5
+  - @agentproto/providers-store@0.3.15
+  - @agentproto/eval-reporters@0.2.14
+  - @agentproto/telemetry-langfuse@0.2.12
+  - @agentproto/workspace-brain@0.4.7
+
 ## 3.4.0
 
 ### Minor Changes

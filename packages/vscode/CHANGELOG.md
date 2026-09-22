@@ -1,5 +1,27 @@
 # agentproto-vscode
 
+## 0.17.1
+
+### Patch Changes
+
+- 7071f7b: image:replicate generator now accepts both DRF-paginated (`results`) and hand-authored snapshot (`models`) shapes via zod validation; restore @types/vscode engines-floor pin (1.90.0).
+- Updated dependencies [f84c972]
+- Updated dependencies [f6f2d75]
+- Updated dependencies [a169e72]
+- Updated dependencies [b8fdbc6]
+- Updated dependencies [f6f2d75]
+- Updated dependencies [d388a08]
+- Updated dependencies [fc14c4c]
+- Updated dependencies [bdbe806]
+- Updated dependencies [ec66e92]
+- Updated dependencies [5380278]
+- Updated dependencies [a25a86f]
+- Updated dependencies [a373209]
+- Updated dependencies [54e8f28]
+- Updated dependencies [4b31967]
+  - @agentproto/apps@0.12.0
+  - @agentproto/runtime@3.5.0
+
 ## 0.17.0
 
 ### Minor Changes

@@ -1,5 +1,13 @@
 # @agentproto/adapter-opencode
 
+## 1.3.1
+
+### Patch Changes
+
+- Updated dependencies [5aad102]
+- Updated dependencies [e3054e1]
+  - @agentproto/model-catalog@0.10.1
+
 ## 1.3.0
 
 ### Minor Changes
