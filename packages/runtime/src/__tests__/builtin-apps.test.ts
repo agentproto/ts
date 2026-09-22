@@ -12,7 +12,6 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { registerMcpApps } from "../mcp-apps-adapter.js"
 import { makeBuiltinPanelApps } from "../builtin-apps.js"
-import { isValidAppEmbedToken } from "../embed-tokens.js"
 
 const EXPECTED = [
   { toolId: "agentproto_sessions", resourceUri: "ui://agentproto_sessions/view" },
@@ -23,6 +22,11 @@ const EXPECTED = [
   { toolId: "agentproto_session_chat", resourceUri: "ui://agentproto_session_chat/view" },
   { toolId: "agentproto_work_board", resourceUri: "ui://agentproto_work_board/view" },
 ]
+
+// Same list, minus the session-chat loopback launcher — the shape once the
+// native `@agentik/session-chat` app (MCP Apps `app_ui_session_chat` tool)
+// is installed and `makeBuiltinPanelApps` stops mounting the fallback.
+const EXPECTED_NATIVE_SESSION_CHAT = EXPECTED.filter(e => e.toolId !== "agentproto_session_chat")
 
 async function setup(sessionChatInstalled = false) {
   const server = new McpServer({ name: "builtin-apps-test", version: "0.0.1" })
@@ -90,19 +94,29 @@ describe("builtin-apps.ts — boot-time mount, no app_install required", () => {
     await client.close()
   })
 
-  it("hands the session-chat result a live embed token the cached widget can adopt", async () => {
-    // The token baked into the resource HTML dies with this daemon boot,
-    // but hosts cache the rendered widget (Claude Desktop keeps a
-    // conversation's srcdoc) — so a restart would leave it replaying a dead
-    // token and 403ing forever. Every tool result carries a live one.
-    const client = await setup(true)
-    const result = await client.callTool({ name: "agentproto_session_chat", arguments: {} })
-    const item = (result.content as { type: string; text: string }[])[0]
-    if (!item || item.type !== "text") throw new Error("expected text content")
-    const out = JSON.parse(item.text) as { installed: boolean; embedToken?: string }
+  it("mounts the loopback launcher when the native app isn't installed", async () => {
+    const client = await setup(false)
+    const { tools } = await client.listTools()
 
-    expect(out.installed).toBe(true)
-    expect(isValidAppEmbedToken(out.embedToken)).toBe(true)
+    expect(tools.some(t => t.name === "agentproto_session_chat")).toBe(true)
+
+    await client.close()
+  })
+
+  it("omits the loopback launcher once the native @agentik/session-chat app is installed", async () => {
+    // Once the native app's own MCP Apps tool (app_ui_session_chat,
+    // mounted separately by app-ui-apps.ts from AppRegistry) exists, the
+    // loopback-HTTP launcher this file mounts is a redundant, CSP-broken
+    // fallback (Codex can't fetch it) — makeBuiltinPanelApps drops it
+    // entirely rather than leaving both paths registered. agent_start's
+    // launch-card binding makes the matching choice (agent-tools.test.ts).
+    const client = await setup(true)
+    const { tools } = await client.listTools()
+
+    expect(tools.some(t => t.name === "agentproto_session_chat")).toBe(false)
+    for (const { toolId } of EXPECTED_NATIVE_SESSION_CHAT) {
+      expect(tools.some(t => t.name === toolId), `expected tool "${toolId}" to still be registered`).toBe(true)
+    }
 
     await client.close()
   })

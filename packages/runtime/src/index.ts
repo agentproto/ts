@@ -1450,6 +1450,21 @@ export async function createGateway(
   // share the one instance — same persistence defaults as before this WP.
   const appRegistry = createAppRegistry({ persist })
 
+  // Whether the `@agentik/session-chat` studio app is installed with a `ui`
+  // block — resolved at call time (not boot) so `app_install`/`app_uninstall`
+  // of that app is reflected without a daemon restart. Shared by the
+  // builtin-panel mount (below, decides whether to mount the loopback-HTTP
+  // `agentproto_session_chat` launcher at all) and `registerSessionTools`
+  // (decides what `agent_start`'s launch-card binding points at) so the two
+  // can never disagree about which surface is live.
+  const isSessionChatInstalled = () => {
+    try {
+      return appRegistry.getApp(SESSION_CHAT_APP_ID)?.ui != null
+    } catch {
+      return false
+    }
+  }
+
   // HTML cache for installed apps' `ui.path` panels (app-ui-apps.ts) —
   // gateway-scope singleton so a `/mcp` request doesn't re-read an
   // unchanged panel's HTML off disk every time `mcpServerFactory` rebuilds
@@ -1854,6 +1869,7 @@ export async function createGateway(
         ? { listWorktreeStatuses: opts.listWorktreeStatuses }
         : {}),
       ...(opts.runWorktreeGc ? { runWorktreeGc: opts.runWorktreeGc } : {}),
+      isSessionChatInstalled,
     })
     // Per-workspace brain — query/status/ingest over the shared brain
     // registry declared at gateway boot (workspaceBrains).
@@ -1960,16 +1976,10 @@ export async function createGateway(
         // fallback for the live-session widget).
         httpBaseUrl: publicHttpOrigin,
         // The session-chat widget is a thin launcher for the installed
-        // `@agentik/session-chat` studio app — resolve installed-ness from
-        // the AppRegistry at call time (not boot) so `app_install`/
-        // `app_uninstall` of that app is reflected without a daemon restart.
-        isSessionChatInstalled: () => {
-          try {
-            return appRegistry.getApp(SESSION_CHAT_APP_ID)?.ui != null
-          } catch {
-            return false
-          }
-        },
+        // `@agentik/session-chat` studio app — same call-time-resolved check
+        // `registerSessionTools` above gets, so the mount decision here and
+        // `agent_start`'s launch-card binding never disagree.
+        isSessionChatInstalled,
         // Work-board widget's read path — the root `/mcp` endpoint has no
         // scope, so this mount is always the operator caller (default
         // board `ws:<slug>`); `canAccessBoard` lets the operator read any

@@ -57,6 +57,8 @@ import type {
   WorktreeIsolationMode,
   WorktreeProvisioner,
 } from "./worktree-isolation.js"
+import { appUiToolId } from "./app-ui-apps.js"
+import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
 
 /** Strip CSI/SGR ANSI escape sequences and bare carriage returns.
  *
@@ -272,6 +274,16 @@ export interface RegisterAgentToolsOptions {
    *  EXPLICIT `interrupt` on the call (true OR false) always wins. Omitted ⇒
    *  treated as `false` (today's queue-behind-the-turn behaviour). */
   defaultAgentPromptInterrupt?: boolean
+  /** Whether the `@agentik/session-chat` studio app is installed with a
+   *  `ui` block — same check `builtin-apps.ts` uses to decide whether to
+   *  mount the loopback-HTTP `agentproto_session_chat` launcher at all.
+   *  Threaded here so `agent_start`'s `_meta.ui.resourceUri` (its
+   *  auto-render binding) can point straight at the native MCP Apps tool
+   *  (`ui://app_ui_session_chat/view`) once it exists, instead of the
+   *  loopback launcher a strict-CSP host (Codex) can't fetch. Omitted →
+   *  binds to the legacy `ui://agentproto_session_chat/view`, today's
+   *  behaviour. */
+  isSessionChatInstalled?: () => boolean
 }
 
 export function registerAgentTools(
@@ -297,10 +309,18 @@ export function registerAgentTools(
     resolveWorktreeIsolation,
     supervisor,
     defaultAgentPromptInterrupt,
+    isSessionChatInstalled,
   } = opts
   // Effective `interrupt` when a call leaves it unset: config default, else
   // false. An explicit boolean on the call always wins (checked at each site).
   const interruptDefault = defaultAgentPromptInterrupt ?? false
+  // agent_start's launch-card binding: the native MCP Apps tool once
+  // `@agentik/session-chat` is installed, else the loopback-HTTP launcher
+  // builtin-apps.ts still mounts as a fallback. See
+  // `RegisterAgentToolsOptions.isSessionChatInstalled`.
+  const sessionChatResourceUri = isSessionChatInstalled?.()
+    ? `ui://${appUiToolId(SESSION_CHAT_APP_ID)}/view`
+    : "ui://agentproto_session_chat/view"
 
   // ── agent_start ────────────────────────────────────────
   server.registerTool(
@@ -1000,10 +1020,15 @@ export function registerAgentTools(
       // `ui://live_session/view` resource stays registered for its own
       // `live_session` tool and other consumers — only this binding moved.
       // `visibility:["model","app"]` keeps agent_start fully usable by the
-      // model AND lets the widget re-call it if needed.
+      // model AND lets the widget re-call it if needed. `resourceUri` binds
+      // to the native `app_ui_session_chat` MCP Apps tool once
+      // `@agentik/session-chat` is installed (`isSessionChatInstalled`
+      // above) — the loopback-HTTP `agentproto_session_chat` launcher this
+      // otherwise binds to is unreachable under a strict-CSP host (Codex),
+      // and builtin-apps.ts stops mounting it once the native tool exists.
       _meta: {
         ui: {
-          resourceUri: "ui://agentproto_session_chat/view",
+          resourceUri: sessionChatResourceUri,
           visibility: ["model", "app"],
         },
       },
