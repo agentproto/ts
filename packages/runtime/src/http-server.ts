@@ -7024,7 +7024,16 @@ async function handleProviderInbound(
  *  own default origin (`http://127.0.0.1:${port}`, index.ts) — this is a
  *  loopback-bound daemon, not a public origin behind unknown TLS. */
 function requestHttpBaseUrl(req: IncomingMessage): string {
-  return `http://${req.headers.host ?? "127.0.0.1"}`
+  const configured = process.env.AGENTPROTO_PUBLIC_HTTP_ORIGIN
+    ?.trim()
+    .replace(/\/+$/, "")
+  if (configured) return configured
+  const forwarded = req.headers["x-forwarded-proto"]
+  const forwardedProto = Array.isArray(forwarded)
+    ? forwarded[0]
+    : forwarded?.split(",")[0]?.trim()
+  const protocol = forwardedProto === "https" ? "https" : "http"
+  return `${protocol}://${req.headers.host ?? "127.0.0.1"}`
 }
 
 /** `GET /apps/:appId/ui` — an installed app's `ui.path` html, or (when
@@ -7132,7 +7141,7 @@ async function handleAppUiPage(
     }
   }
   res.writeHead(200, headers)
-  res.end(injectStandaloneAppBridge(raw))
+  res.end(injectStandaloneAppBridge(raw, requestHttpBaseUrl(req)))
 }
 
 /** Trusted-embedder proof for the `?embed=1` header flip on

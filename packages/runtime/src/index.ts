@@ -1104,9 +1104,12 @@ export async function createGateway(
   // endpoint is already reachable on (Quick Tunnel proxies the whole port,
   // including the WS upgrade). No trailing slash expected — it's used as
   // `${origin}/sessions/:id/pty`.
+  const publicHttpOrigin =
+    process.env.AGENTPROTO_PUBLIC_HTTP_ORIGIN?.trim().replace(/\/+$/, "") ||
+    `http://127.0.0.1:${port}`
   const ptyWsBaseUrl =
     process.env.AGENTPROTO_PUBLIC_WS_ORIGIN?.trim().replace(/\/+$/, "") ||
-    `ws://127.0.0.1:${port}`
+    publicHttpOrigin.replace(/^http/, "ws")
 
   const events = createRuntimeEvents()
   const conversations = fileConversationStore({ workspace })
@@ -1955,7 +1958,7 @@ export async function createGateway(
         listSessions: listSessionsFiltered,
         // httpBaseUrl = this daemon's own origin (SSE stream + bridge
         // fallback for the live-session widget).
-        httpBaseUrl: `http://127.0.0.1:${port}`,
+        httpBaseUrl: publicHttpOrigin,
         // The session-chat widget is a thin launcher for the installed
         // `@agentik/session-chat` studio app — resolve installed-ness from
         // the AppRegistry at call time (not boot) so `app_install`/
