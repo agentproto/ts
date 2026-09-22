@@ -18,7 +18,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
 import { registerAgentTools } from "../agent-tools.js"
-import { createSessionsRegistry } from "../sessions.js"
+import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
 import { saveUserPreset } from "../user-presets.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 
@@ -29,10 +29,12 @@ function parseToolJson(result: unknown): any {
   return JSON.parse(text)
 }
 
-async function setup(startSession: ReturnType<typeof vi.fn>) {
+async function setup(
+  startSession: (...args: any[]) => Promise<AgentSessionLike>,
+) {
   const registry = createSessionsRegistry({ persist: false })
   const resolveAgentAdapter: AgentAdapterResolver = async () => ({
-    startSession,
+    startSession: startSession as any,
     commandPreview: "mock-adapter",
   })
 
