@@ -243,4 +243,43 @@ describe("image:replicate generator", () => {
     expect(source).toContain("export const REPLICATE_IMAGE_MODELS: Record<string, ImageModelDefinition>")
     expect(source).toContain('description: ""')
   })
+
+  it("handles collection payload shape (models array, no _meta)", async () => {
+    // Test the collection endpoint shape: {name, slug, description, models: [...]}
+    const collectionCtx: GeneratorContext = {
+      refresh: false,
+      async fetchSource(): Promise<unknown> {
+        return {
+          name: "Text to Image",
+          slug: "text-to-image",
+          description: "Models for generating images from text prompts",
+          models: [
+            {
+              owner: "black-forest-labs",
+              name: "flux-kontext-pro",
+              description: "Flux Kontext Pro - curated image generation model",
+              visibility: "public",
+              run_count: 3000,
+              cover_image_url: "https://example.com/flux-kontext.jpg",
+              latest_version: {
+                id: "v1",
+                created_at: "2024-04-01T00:00:00Z",
+                openapi_schema: { input: { type: "object", properties: {} }, output: { type: "string" } },
+              },
+            },
+          ],
+        }
+      },
+    }
+
+    const result = await imageReplicate.generate(collectionCtx)
+    const source = Object.values(result)[0]!
+
+    // Should generate valid output from collection shape
+    expect(source).toContain("export const REPLICATE_IMAGE_MODELS: Record<string, ImageModelDefinition>")
+    const idCount = (source.match(/\n    id:/g) ?? []).length
+    expect(idCount).toBeGreaterThanOrEqual(1)
+    // Verify the curated model was included
+    expect(source).toContain("flux-kontext-pro")
+  })
 })
