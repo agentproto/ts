@@ -91,7 +91,20 @@ describe("GET /sessions/summaries", () => {
   async function withServer(
     run: (port: number, registry: ReturnType<typeof createSessionsRegistry>) => Promise<void>,
   ): Promise<void> {
-    const registry = createSessionsRegistry({ persist: false })
+    const registry = createSessionsRegistry({
+      persist: false,
+      spawnPty: () => ({
+        pid: 4242,
+        write: () => {},
+        resize: () => {},
+        kill: () => {},
+        onData: () => {},
+        onExit: () => {},
+      }),
+      // Keep the conversation-terminal link probe inert — these tests only
+      // exercise lane classification, never the provider store on disk.
+      conversationLinkProbeMs: { initialMs: 3_600_000, intervalMs: 3_600_000 },
+    })
     const port = await freePort()
     const http = await startHttpServer({
       port,
@@ -186,6 +199,22 @@ describe("GET /sessions/summaries", () => {
       const cronChild = spawnAgent(undefined, cron.id)
       const orphan = spawnAgent(undefined, "missing-parent")
       const gate = spawnAgent("gate")
+      // A CONVERSATION terminal (native claude TUI in a PTY) is a trackable
+      // Agents-lane session; a plain bash PTY stays Activity-only.
+      const claudePty = registry.spawnPty({
+        workspaceSlug: "default",
+        cwd: process.cwd(),
+        argv: ["claude"],
+        cols: 80,
+        rows: 24,
+      })
+      const bashPty = registry.spawnPty({
+        workspaceSlug: "default",
+        cwd: process.cwd(),
+        argv: ["bash"],
+        cols: 80,
+        rows: 24,
+      })
       const command = registry.recordCommand({
         workspaceSlug: "default",
         cwd: process.cwd(),
@@ -202,8 +231,11 @@ describe("GET /sessions/summaries", () => {
         summaries: Array<{ id: string }>
         total: number
       }
-      expect(agents.total).toBe(1)
-      expect(agents.summaries.map(summary => summary.id)).toEqual([agent.id])
+      expect(agents.total).toBe(2)
+      expect(agents.summaries.map(summary => summary.id)).toEqual(
+        expect.arrayContaining([agent.id, claudePty.id]),
+      )
+      expect(agents.summaries.map(summary => summary.id)).not.toContain(bashPty.id)
       expect(agents.summaries.map(summary => summary.id)).not.toContain(command.id)
 
       const auto = (await getJson(port, "/sessions/summaries?lane=auto&limit=10")) as {
@@ -217,13 +249,29 @@ describe("GET /sessions/summaries", () => {
       expect(auto.summaries.map(summary => summary.id)).not.toContain(command.id)
 
       const unfiltered = (await getJson(port, "/sessions/summaries")) as {
-        summaries: Array<{ id: string }>
+        summaries: Array<{ id: string; lane?: string }>
         total: number
       }
       const invalid = (await getJson(port, "/sessions/summaries?lane=invalid")) as typeof unfiltered
-      expect(unfiltered.total).toBe(6)
+      expect(unfiltered.total).toBe(8)
       expect(unfiltered.summaries.map(summary => summary.id)).toContain(command.id)
       expect(invalid).toEqual(unfiltered)
+
+      // Every summary row carries the server's own lane verdict (computed
+      // against the full session map) — including the orphan, whose stamped
+      // "auto" is the same intentional fallback the lane filter applies.
+      // Shell-only rows carry none: they belong to the Activity panel. A
+      // conversation terminal (the claude PTY) is NOT shell-only — it gets
+      // the Agents lane like any other human-rooted session.
+      const laneById = new Map(unfiltered.summaries.map(summary => [summary.id, summary.lane]))
+      expect(laneById.get(agent.id)).toBe("agents")
+      expect(laneById.get(cron.id)).toBe("auto")
+      expect(laneById.get(cronChild.id)).toBe("auto")
+      expect(laneById.get(orphan.id)).toBe("auto")
+      expect(laneById.get(gate.id)).toBe("auto")
+      expect(laneById.get(claudePty.id)).toBe("agents")
+      expect(laneById.get(bashPty.id)).toBeUndefined()
+      expect(laneById.get(command.id)).toBeUndefined()
     })
   })
 

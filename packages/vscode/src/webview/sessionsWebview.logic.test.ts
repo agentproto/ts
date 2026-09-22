@@ -1037,3 +1037,103 @@ describe("summaryTextFor", () => {
     expect(summaryTextFor({ ...base, shownCount: 3, loadedCount: 50, serverTotal: 283 }, true)).toBe("3 of 50 shown")
   })
 })
+
+describe("buildSessionsWebviewModel — full-store lineage map (opts.lineageById)", () => {
+  it("classifies a child into Agents when its parent exists only in the lineage map (parent not paged in yet)", () => {
+    const child = session({ id: "child", cwd: "/Code/studio", busy: true, parentSessionId: "off-page-parent" })
+    const lineageById = new Map([
+      ["off-page-parent", session({ id: "off-page-parent" })],
+    ])
+
+    // Without the map: the page-local fallback reads the child as an orphan task.
+    const before = buildSessionsWebviewModel([child], studioConfig, opts({ lane: "agents" }))
+    expect(before.laneCounts).toEqual({ agents: 0, auto: 1 })
+
+    const after = buildSessionsWebviewModel([child], studioConfig, opts({ lane: "agents", lineageById }))
+    expect(after.laneCounts).toEqual({ agents: 1, auto: 0 })
+    expect(after.groups.flatMap(g => g.rows.map(r => r.id))).toContain("child")
+  })
+
+  it("a DEAD pre-restart human parent in the lineage map still anchors its child in Agents (the restart-chain case)", () => {
+    const child = session({ id: "child", cwd: "/Code/studio", busy: true, parentSessionId: "old-parent" })
+    const lineageById = new Map([
+      ["old-parent", session({ id: "old-parent", status: "killed" })],
+    ])
+    const model = buildSessionsWebviewModel([child], studioConfig, opts({ lane: "agents", lineageById }))
+    expect(model.laneCounts).toEqual({ agents: 1, auto: 0 })
+  })
+
+  it("flags a genuinely parentless child as an orphaned Auto task — visible, labelled, not a task the operator started", () => {
+    const child = session({ id: "child", cwd: "/Code/studio", busy: true, parentSessionId: "long-gone" })
+    const lineageById = new Map([["unrelated", session({ id: "unrelated" })]])
+    const model = buildSessionsWebviewModel([child], studioConfig, opts({ lane: "auto", lineageById }))
+    const tasks = model.groups.find(g => g.key === "task")!
+    expect(tasks.rows.map(r => r.id)).toEqual(["child"])
+    expect(tasks.rows[0]!.orphaned).toBe(true)
+  })
+
+  it("does NOT flag a machine-lineage task as orphaned when its parent is present", () => {
+    const gateParent = session({ id: "gate-root", cwd: "/Code/studio", origin: "gate", status: "exited" })
+    const child = session({ id: "child", cwd: "/Code/studio", busy: true, parentSessionId: "gate-root" })
+    const model = buildSessionsWebviewModel([gateParent, child], studioConfig, opts({ lane: "auto" }))
+    const tasks = model.groups.find(g => g.key === "task")!
+    expect(tasks.rows.map(r => r.id)).toEqual(["child"])
+    expect(tasks.rows[0]!.orphaned).toBe(false)
+  })
+})
+
+describe("server-stamped lane (SessionSummary.lane) wins over the page-local walk", () => {
+  it("a stamped agents-lane child is never demoted to Auto by a missing page-local parent", () => {
+    expect(laneOf(session({ parentSessionId: "missing", lane: "agents" }))).toBe("agents")
+    expect(autoGroupOf(session({ parentSessionId: "missing", lane: "agents" }))).toBeUndefined()
+  })
+
+  it("a stamped auto-lane child stays a task regardless of the local walk", () => {
+    const byId = new Map([["p", session({ id: "p" })]])
+    expect(laneOf(session({ parentSessionId: "p", lane: "auto" }), byId)).toBe("auto")
+    expect(autoGroupOf(session({ parentSessionId: "p", lane: "auto" }), byId)).toBe("task")
+  })
+
+  it("own machine tells still pick the Auto subgroup ahead of the stamp", () => {
+    expect(autoGroupOf(session({ origin: "gate", lane: "auto" }))).toBe("gate")
+    expect(autoGroupOf(session({ origin: "cron", lane: "auto" }))).toBe("cron")
+  })
+})
+
+describe("conversation terminals in the Sessions list", () => {
+  it("keeps a claude PTY row in the Agents lane, named by its derived title; a bash PTY stays out", () => {
+    const model = buildSessionsWebviewModel(
+      [
+        session({
+          id: "conv",
+          kind: "terminal",
+          pty: true,
+          argv: ["claude"],
+          adapterSlug: "claude-code",
+          title: "Fix the flaky watchdog test",
+          renamedByUser: false,
+          cwd: "/Code/studio",
+          lane: "agents",
+        }),
+        session({ id: "bashpty", kind: "terminal", pty: true, argv: ["bash"], cwd: "/Code/studio" }),
+        session({ id: "human", cwd: "/Code/studio", busy: true }),
+      ],
+      studioConfig,
+      opts({ lane: "agents" }),
+    )
+    const rows = model.groups.flatMap(g => g.rows)
+    expect(rows.map(r => r.id)).toContain("conv")
+    expect(rows.map(r => r.id)).not.toContain("bashpty")
+    expect(rows.find(r => r.id === "conv")!.name).toBe("Fix the flaky watchdog test")
+    expect(model.laneCounts.agents).toBe(2)
+  })
+
+  it("classifies by argv alone when no adapterSlug was stamped (fresh ['claude'] launch)", () => {
+    const model = buildSessionsWebviewModel(
+      [session({ id: "conv2", kind: "terminal", pty: true, argv: ["claude"], cwd: "/Code/studio" })],
+      studioConfig,
+      opts({ lane: "agents" }),
+    )
+    expect(model.groups.flatMap(g => g.rows.map(r => r.id))).toContain("conv2")
+  })
+})

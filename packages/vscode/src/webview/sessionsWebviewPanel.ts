@@ -143,6 +143,8 @@ interface RenderRow {
   /** True when some loaded session names this one as its parent — the
    *  mission-view affordance renders only on such depth-0 roots. */
   focusable: boolean
+  /** Auto-Tasks child whose parent is genuinely gone — see WebviewRow.orphaned. */
+  orphaned: boolean
   /** True when this row has at least one nested descendant in the group's
    *  rendered row list — drives whether a collapse triangle is rendered at
    *  all (a leaf row gets none). */
@@ -277,6 +279,7 @@ function toRenderRow(
       : undefined,
     archived: row.archived,
     focusable: row.focusable,
+    orphaned: row.orphaned,
     hasChildren: rollup.hasChildren,
     subtreeStatus: rollup.status,
     defaultExpanded: defaultExpandedFor(rollup.status),
@@ -683,6 +686,11 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     if (!this.view) return
     const pool = visibleRows(this.store.sessions, this.summaries)
     const modelOpts = {
+      // Lane lineage resolves against the store's FULL non-archived
+      // snapshot, not the paged pool — a live child pinned in ahead of its
+      // later-page parent (e.g. the dead predecessor of a restart chain)
+      // must not read as an Auto-Tasks orphan until "Load more".
+      lineageById: new Map(this.store.sessions.map(s => [s.id, s])),
       lane: this.lane,
       project: this.project,
       search: this.search,
@@ -1244,6 +1252,11 @@ export function buildHtml(nonce: string, cspSource: string): string {
         // rather than the title.
         if (r.originLabel && depth === 0) {
           parts.push('<span class="origin" title="Spawned from ' + escapeHtml(r.originLabel) + '">' + escapeHtml(r.originLabel) + '</span>');
+        }
+        // Orphan chip — an Auto-Tasks child whose parent session is gone,
+        // so it isn't mistaken for a task the operator started.
+        if (r.orphaned) {
+          parts.push('<span class="origin" title="Orphaned subagent — its parent session no longer exists">orphaned</span>');
         }
         return parts.join('');
       }

@@ -11,7 +11,7 @@ import type { DaemonClient } from "../client/daemonClient.js"
 import type { SessionStore } from "../services/sessionStore.js"
 import { resolveSessionArg } from "./sessionActions.js"
 import { describeSession } from "./sessionActions.logic.js"
-import { parseRestartResult, describeRestart } from "./sessionRestart.logic.js"
+import { describeNotATerminal, parseRestartResult, describeRestart } from "./sessionRestart.logic.js"
 import { planHarnessSwitch } from "./switchHarness.logic.js"
 
 export function registerSwitchHarness(
@@ -53,7 +53,7 @@ export function registerSwitchHarness(
         vscode.window.showInformationMessage(describeRestart(session, restarted))
         if (plan.target === "terminal" && restarted.pty !== true && restarted.kind !== "terminal") {
           vscode.window.showWarningMessage(
-            `agentproto: switch of ${describeSession(session)} did not become a terminal — the daemon fell back to ACP resume because the provider transcript could not be recovered.`,
+            `agentproto: switch of ${describeSession(session)} did not become a terminal — ${describeNotATerminal(restarted.nativeResumeDecline)}`,
           )
         }
         await vscode.commands.executeCommand(

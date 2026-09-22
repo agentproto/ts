@@ -22,9 +22,9 @@ describe("defaultOpenTarget", () => {
     expect(defaultOpenTarget(sess({ kind: "terminal", pty: false, argv: ["bash"] }))).toBe("terminal")
   })
 
-  it("keeps a native-conversation PTY (claude/hermes terminal) on the transcript panel", () => {
-    expect(defaultOpenTarget(sess({ kind: "terminal", pty: true, adapterSlug: "claude-code" }))).toBe("transcript")
-    expect(defaultOpenTarget(sess({ kind: "terminal", pty: true, argv: ["claude"] }))).toBe("transcript")
+  it("routes a native-conversation PTY (claude/hermes terminal) to the TERMINAL — the operator asked for one; the conversation panel is the other view", () => {
+    expect(defaultOpenTarget(sess({ kind: "terminal", pty: true, adapterSlug: "claude-code" }))).toBe("terminal")
+    expect(defaultOpenTarget(sess({ kind: "terminal", pty: true, argv: ["claude"] }))).toBe("terminal")
   })
 
   it("routes agent-cli sessions to the transcript panel", () => {

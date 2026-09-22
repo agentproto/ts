@@ -8,6 +8,7 @@ import {
   decideRestartStrategy,
   augmentWithFsResume,
   describeResumePath,
+  probeNativeTranscript,
   tokenizeCommand,
   type FsProbeCandidate,
 } from "../resume-strategies.js"
@@ -772,5 +773,103 @@ describe("augmentWithFsResume with an isolated adapterConfigDir", () => {
       adapterConfigDir: configDir,
     }
     await expect(augmentWithFsResume(prev)).resolves.toBe(prev)
+  })
+})
+
+describe("probeNativeTranscript", () => {
+  let tmp: string | undefined
+
+  afterEach(() => {
+    if (tmp) rmSync(tmp, { recursive: true, force: true })
+    tmp = undefined
+  })
+
+  const CANDIDATE_BASE = { startedAt: "1970-01-01T00:00:00Z" }
+
+  it("undefined for an adapter with no transcriptPath (hermes) or no adapter at all", async () => {
+    await expect(
+      probeNativeTranscript({
+        ...CANDIDATE_BASE,
+        adapterSlug: "hermes",
+        cwd: "/my/proj",
+        resumeMetadata: { hermesResumeId: "abc" },
+      }),
+    ).resolves.toBeUndefined()
+    await expect(
+      probeNativeTranscript({ ...CANDIDATE_BASE, cwd: "/my/proj" }),
+    ).resolves.toBeUndefined()
+  })
+
+  it("undefined without a cwd or without any conversation id", async () => {
+    await expect(
+      probeNativeTranscript({
+        ...CANDIDATE_BASE,
+        adapterSlug: "claude-code",
+        resumeMetadata: { claudeResumeId: "abc" },
+      }),
+    ).resolves.toBeUndefined()
+    await expect(
+      probeNativeTranscript({
+        ...CANDIDATE_BASE,
+        adapterSlug: "claude-code",
+        cwd: "/my/proj",
+      }),
+    ).resolves.toBeUndefined()
+  })
+
+  it("exists: true with the exact absolute path when the isolated transcript is on disk", async () => {
+    tmp = mkdtempSync(join(tmpdir(), "probe-native-transcript-"))
+    const cwd = "/my/.dotted proj"
+    const id = "aaaaaaaa-0000-0000-0000-000000000001"
+    // claude's own slug rule: EVERY non-alnum char becomes exactly one dash
+    // ("/." → "--", the space → "-"); pin it here so a slug regression
+    // surfaces as a path mismatch.
+    const dir = join(tmp, "projects", "-my--dotted-proj")
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, `${id}.jsonl`), "")
+
+    const probe = await probeNativeTranscript({
+      ...CANDIDATE_BASE,
+      adapterSlug: "claude-code",
+      cwd,
+      adapterConfigDir: tmp,
+      resumeMetadata: { claudeResumeId: id },
+    })
+    expect(probe).toEqual({ dir, path: join(dir, `${id}.jsonl`), exists: true })
+  })
+
+  it("exists: false (but still names dir + path) when the id maps to a missing file", async () => {
+    tmp = mkdtempSync(join(tmpdir(), "probe-native-transcript-"))
+    const cwd = "/my/proj"
+    const id = "bbbbbbbb-0000-0000-0000-000000000002"
+
+    const probe = await probeNativeTranscript({
+      ...CANDIDATE_BASE,
+      adapterSlug: "claude-code",
+      cwd,
+      adapterConfigDir: tmp,
+      resumeMetadata: { claudeResumeId: id },
+    })
+    expect(probe?.exists).toBe(false)
+    expect(probe?.dir).toBe(join(tmp, "projects", "-my-proj"))
+    expect(probe?.path).toBe(join(tmp, "projects", "-my-proj", `${id}.jsonl`))
+  })
+
+  it("falls back to adapterSessionId when no resumeMetadata id was captured", async () => {
+    tmp = mkdtempSync(join(tmpdir(), "probe-native-transcript-"))
+    const cwd = "/my/proj"
+    const id = "cccccccc-0000-0000-0000-000000000003"
+    const dir = join(tmp, "projects", "-my-proj")
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, `${id}.jsonl`), "")
+
+    const probe = await probeNativeTranscript({
+      ...CANDIDATE_BASE,
+      adapterSlug: "claude-code",
+      cwd,
+      adapterConfigDir: tmp,
+      adapterSessionId: id,
+    })
+    expect(probe).toEqual({ dir, path: join(dir, `${id}.jsonl`), exists: true })
   })
 })

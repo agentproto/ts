@@ -34,6 +34,9 @@
  * graduate into the adapter packages.
  */
 
+import { promises as fs } from "node:fs"
+import { dirname } from "node:path"
+
 import { CONVERSATION_STORES } from "./conversation-store.js"
 import type { ConversationStore } from "./conversation-store.js"
 
@@ -98,6 +101,10 @@ export interface ResumeStrategy {
    *  why this exists and what silently omitting it breaks. Undefined for
    *  a provider with no config-dir-isolated store. */
   configDirEnvVar?: string
+  /** Absolute transcript path for a conversation id — see
+   *  `ConversationStore.transcriptPath`. Present only when the provider's
+   *  resume command also accepts a path in place of a bare id. */
+  transcriptPath?(cwd: string, conversationId: string, configDir?: string): string
 }
 
 // Project every conversation store that declares a native PTY attach argv
@@ -117,6 +124,7 @@ export const RESUME_STRATEGIES: Record<string, ResumeStrategy> = Object.fromEntr
           outputHint: store.outputHint,
           storeAs: store.storeAs,
           ...(store.configDirEnvVar ? { configDirEnvVar: store.configDirEnvVar } : {}),
+          ...(store.transcriptPath ? { transcriptPath: store.transcriptPath } : {}),
           fsProbe: async (cwd, prevStartedAt, expectedId, configDir) => {
             const candidates = await s.discover({
               cwd,
@@ -362,6 +370,48 @@ export async function augmentWithFsResume<T extends FsProbeCandidate>(
       [strategy.storeAs]: id,
     },
   }
+}
+
+/** What `probeNativeTranscript` found for a candidate's own transcript. */
+export interface NativeTranscriptProbe {
+  /** Directory that was (or would be) probed for the transcript. */
+  dir: string
+  /** Absolute path of the transcript file the id maps to. */
+  path: string
+  /** Whether that exact file exists on disk right now. */
+  exists: boolean
+}
+
+/**
+ * Locate the candidate's own on-disk transcript for a provider whose native
+ * resume command accepts an absolute path (`ResumeStrategy.transcriptPath`).
+ * Returns `undefined` when the adapter declares no `transcriptPath`, or the
+ * candidate has no cwd / no conversation id to map — callers treat that as
+ * "nothing to upgrade, and no directory worth naming in diagnostics".
+ *
+ * The id lookup mirrors `decideRestartStrategy`'s (`resumeMetadata[storeAs]`),
+ * falling back to `adapterSessionId` (for claude-code the ACP session id IS
+ * the on-disk `.jsonl` uuid — acp-host.ts pins them equal) so a probe can
+ * still name the transcript it looked for when the sniffer never fired.
+ * `exists: false` is the honest "transcript not found" answer — never fall
+ * through to a sibling file (cross-session contamination, see fsProbe's doc).
+ */
+export async function probeNativeTranscript(
+  prev: FsProbeCandidate,
+): Promise<NativeTranscriptProbe | undefined> {
+  if (!prev.adapterSlug || !prev.cwd) return undefined
+  const strategy = RESUME_STRATEGIES[prev.adapterSlug]
+  if (!strategy?.transcriptPath) return undefined
+  const id = prev.resumeMetadata?.[strategy.storeAs] ?? prev.adapterSessionId
+  if (!id) return undefined
+  const path = strategy.transcriptPath(prev.cwd, id, prev.adapterConfigDir)
+  let exists = false
+  try {
+    exists = (await fs.stat(path)).isFile()
+  } catch {
+    exists = false
+  }
+  return { dir: dirname(path), path, exists }
 }
 
 /**

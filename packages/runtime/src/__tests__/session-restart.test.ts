@@ -21,6 +21,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { createMcpServer } from "@agentproto/mcp-server"
 
 import { registerSessionTools } from "../session-tools.js"
+import { claudeCodeProjectDir } from "../conversation-store.js"
 import { createSessionsRegistry } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import type {
@@ -776,7 +777,9 @@ describe("session_restart — cross-session resume safety (regression)", () => {
 
     // The fix: resume binds to the dead session's own id, even though the
     // sibling's transcript is the most-recently modified file in the cwd.
-    expect(desc.argv).toEqual(["claude", "--resume", ownId])
+    // The transcript exists on disk, so the resume rides the absolute-path
+    // form (works from any directory, no project-slug re-derivation).
+    expect(desc.argv).toEqual(["claude", "--resume", join(dir, `${ownId}.jsonl`)])
     expect(JSON.stringify(desc.argv)).not.toContain(siblingId)
 
     await close()
@@ -998,6 +1001,52 @@ describe("session_restart — pty-native/pty-plain env threading (CLAUDE_CONFIG_
     registry.shutdown()
   })
 
+  it("pty-native: resumes via the ABSOLUTE transcript path when the jsonl exists under the isolated config dir — and still threads CLAUDE_CONFIG_DIR", async () => {
+    const { factory, calls: ptyCalls } = makeRecordingPtyFactory()
+    const { client, registry, close } = await buildHarness(
+      { nativeTerminalResume: true },
+      undefined,
+      factory,
+    )
+
+    const configDir = mkdtempSync(join(tmpdir(), "session-restart-configdir-"))
+    const resumeId = "c643a525-5d7a-4a45-a9a0-666215eb6e77"
+    const projectDir = claudeCodeProjectDir(process.cwd(), configDir)
+    mkdirSync(projectDir, { recursive: true })
+    const transcript = join(projectDir, `${resumeId}.jsonl`)
+    writeFileSync(transcript, "")
+
+    try {
+      const prev = registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: process.cwd(),
+        agentSession: fakeAgentSession("claude"),
+        adapterSlug: "claude-code",
+        nativeTerminalResume: true,
+        adapterConfigDir: configDir,
+      })
+      prev.resumeMetadata = { claudeResumeId: resumeId }
+      registry.kill(prev.id)
+
+      const result = await client.callTool({
+        name: "session_restart",
+        arguments: { idOrName: prev.id, preferNativeTerminal: true },
+      })
+      expect(result.isError).toBeFalsy()
+
+      expect(ptyCalls).toHaveLength(1)
+      expect(ptyCalls[0]?.argv).toEqual(["claude", "--resume", transcript])
+      // The path form removes the slug dependency, but settings/credentials
+      // still live under the isolated store — the env stays threaded.
+      expect(ptyCalls[0]?.env?.CLAUDE_CONFIG_DIR).toBe(configDir)
+    } finally {
+      rmSync(configDir, { recursive: true, force: true })
+    }
+
+    await close()
+    registry.shutdown()
+  })
+
   it("pty-native: no adapterConfigDir on the descriptor → no CLAUDE_CONFIG_DIR override (legacy row, unchanged behaviour)", async () => {
     const { factory, calls: ptyCalls } = makeRecordingPtyFactory()
     const { client, registry, close } = await buildHarness(
@@ -1029,7 +1078,7 @@ describe("session_restart — pty-native/pty-plain env threading (CLAUDE_CONFIG_
     registry.shutdown()
   })
 
-  it("pty-plain: a restart-of-a-restart replays the SAME env the first pty-native hop recorded", async () => {
+  it("restart-of-a-restart keeps the SAME env the first pty-native hop recorded (the restarted PTY is now a conversation terminal carrying its own identity)", async () => {
     const { factory, calls: ptyCalls } = makeRecordingPtyFactory()
     const { client, registry, close } = await buildHarness(
       { nativeTerminalResume: true },
@@ -1061,15 +1110,20 @@ describe("session_restart — pty-native/pty-plain env threading (CLAUDE_CONFIG_
     expect(ptyCalls[0]?.env?.CLAUDE_CONFIG_DIR).toBe(
       "/fake/agentproto/adapter-config/sess_16c43292",
     )
-    // The bare-PTY row from the first hop has no adapterSlug/adapterConfigDir
-    // (by design — see those fields' docs) — decideRestartStrategy can only
-    // route it through pty-plain from here on.
-    expect(firstDesc.adapterSlug).toBeUndefined()
+    // The PTY row from the first hop is a CONVERSATION TERMINAL now: spawnPty
+    // classifies the `claude --resume <id>` argv, stamps the adapter identity,
+    // seeds the resume id from the argv, and records the threaded
+    // CLAUDE_CONFIG_DIR as adapterConfigDir — so a second restart rides
+    // pty-native with the SAME isolated store instead of degrading to a
+    // blind pty-plain replay.
+    expect(firstDesc.adapterSlug).toBe("claude-code")
+    expect(firstDesc.adapterConfigDir).toBe("/fake/agentproto/adapter-config/sess_16c43292")
+    expect(firstDesc.adapterSessionId).toBe("c643a525-5d7a-4a45-a9a0-666215eb6e77")
     registry.kill(String(firstDesc.id))
 
-    // Second hop: pty-plain restart of the now-bare PTY row. Without the
-    // fix, this silently dropped CLAUDE_CONFIG_DIR and repeated the exact
-    // same "No conversation found" failure forever.
+    // Second hop: restart of the restarted PTY row. Without the env
+    // carry-forward, this silently dropped CLAUDE_CONFIG_DIR and repeated
+    // the exact same "No conversation found" failure forever.
     const secondRestart = await client.callTool({
       name: "session_restart",
       arguments: { idOrName: String(firstDesc.id) },
@@ -1215,6 +1269,133 @@ describe("session_restart — pty-native billing-auth re-resolution", () => {
     // interactive prompt with no one attached to answer it.
     expect(ptyCalls[0]?.env?.ANTHROPIC_API_KEY).toBeUndefined()
     expect(ptyCalls[0]?.env?.CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-freshtoken9999")
+
+    await close()
+    registry.shutdown()
+  })
+})
+
+/**
+ * The split-warning fix: when a caller EXPLICITLY asked for a native
+ * terminal (`preferNativeTerminal: true`) and the restart still landed on
+ * ACP resume, the response names the actual blocker via
+ * `nativeResumeDecline` — instead of clients blaming "the transcript could
+ * not be recovered" for every fallback. Plain restarts (no opt-in) carry no
+ * such field: their output shape is unchanged.
+ */
+describe("session_restart — native-resume decline diagnostics", () => {
+  it("opt-in + id but missing transcript → transcript-not-found, naming the probed directory", async () => {
+    const { client, registry, close } = await buildHarness({ nativeTerminalResume: true })
+    const configDir = mkdtempSync(join(tmpdir(), "session-restart-decline-"))
+
+    try {
+      const prev = registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: process.cwd(),
+        agentSession: fakeAgentSession("claude"),
+        adapterSlug: "claude-code",
+        nativeTerminalResume: true,
+        adapterConfigDir: configDir,
+      })
+      registry.kill(prev.id)
+
+      const result = await client.callTool({
+        name: "session_restart",
+        arguments: { idOrName: prev.id, preferNativeTerminal: true },
+      })
+      expect(result.isError).toBeFalsy()
+      const desc = toolJson(result)
+
+      expect(desc.kind).toBe("agent-cli")
+      expect(desc.nativeResumeDecline).toEqual({
+        reason: "transcript-not-found",
+        probedDir: claudeCodeProjectDir(process.cwd(), configDir),
+      })
+    } finally {
+      rmSync(configDir, { recursive: true, force: true })
+    }
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("opt-in on a row with no nativeTerminalResume capability → capability-missing", async () => {
+    const { client, registry, close } = await buildHarness()
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/fake/decline-capability",
+      agentSession: fakeAgentSession("claude"),
+      adapterSlug: "claude-code",
+    })
+    prev.resumeMetadata = { claudeResumeId: "0e483f81-1a44-4bec-9667-b37158450296" }
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id, preferNativeTerminal: true },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.kind).toBe("agent-cli")
+    expect(desc.nativeResumeDecline).toEqual({ reason: "capability-missing" })
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("opt-in with no conversation id anywhere → no-resume-id (no directory to name)", async () => {
+    const { client, registry, close } = await buildHarness({ nativeTerminalResume: true })
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/fake/decline-no-id",
+      agentSession: fakeAgentSession("claude"),
+      adapterSlug: "claude-code",
+      nativeTerminalResume: true,
+    })
+    // Session died before the ACP handshake ever produced an id, and the
+    // sniffer never fired.
+    prev.adapterSessionId = undefined
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id, preferNativeTerminal: true },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.kind).toBe("agent-cli")
+    expect(desc.nativeResumeDecline).toEqual({ reason: "no-resume-id" })
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("a plain restart (no opt-in) reports NO decline — the origin-gate output shape is unchanged", async () => {
+    const { client, registry, close } = await buildHarness({ nativeTerminalResume: true })
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/fake/decline-plain",
+      agentSession: fakeAgentSession("claude"),
+      adapterSlug: "claude-code",
+      nativeTerminalResume: true,
+    })
+    prev.resumeMetadata = { claudeResumeId: "0e483f81-1a44-4bec-9667-b37158450296" }
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.kind).toBe("agent-cli")
+    expect(desc.nativeResumeDecline).toBeUndefined()
 
     await close()
     registry.shutdown()
