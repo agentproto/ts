@@ -206,6 +206,7 @@ introduced in 0.5.0.
 | `maxGrantableDelegation`  | `number`                                    | Trust-boundary cap on how much delegation a supervisor can grant a child. |
 | `langfuseTracing`         | `boolean`                                   | Opt in to per-session Langfuse tracing by default.                     |
 | `traceRedactor`           | `string`                                    | Redactor slug (e.g. `"secrets"`) applied to traced session content.    |
+| `agentPromptInterrupt`    | `boolean`                                   | Default `interrupt` behaviour for `agent_prompt` / `message_parent` calls that omit the `interrupt` field. `false` (the default) queues the prompt behind any in-flight turn. `true` cancels the in-flight turn and redirects the session onto the new prompt immediately. An explicit `interrupt: true\|false` on a single call always overrides this default. |
 
 Merge precedence (low → high): `defaults.options` < `defaults.adapters.<slug>.options`
 < the explicit `options` passed at spawn time. For `skills`, an explicit
