@@ -365,7 +365,7 @@ function mapModel(raw: ReplicateModel): ImageModelEntry {
 // without the secret. `--check` never fetches, so it is unaffected.
 export const REPLICATE_SOURCE: CatalogSource = {
   id: "image-replicate",
-  url: "https://api.replicate.com/v1/models?query=image+generation",
+  url: "https://api.replicate.com/v1/collections/text-to-image",
   headers: { Authorization: "Bearer env:REPLICATE_API_TOKEN" },
 }
 
