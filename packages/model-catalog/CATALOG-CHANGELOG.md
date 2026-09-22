@@ -154,3 +154,8 @@ for that.
 ### llm:context-windows
 - Added: zai-glm-5, zai-glm-5-3, zai-glm-latest
 - Removed: devstral-2512, devstral-latest, devstral-medium-latest, mistral-code-agent-latest, mistral-medium-2505, mistral-medium-2508
+
+## 2026-09-22
+
+### llm:huggingface
+- Removed: Qwen/Qwen3-4B-Instruct-2507

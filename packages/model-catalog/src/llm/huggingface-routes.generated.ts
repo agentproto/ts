@@ -588,24 +588,6 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
       }
     ],
   },
-  "Qwen/Qwen3-4B-Instruct-2507": {
-    wireId: "Qwen/Qwen3-4B-Instruct-2507",
-    providers: [
-      {
-        provider: "featherless-ai",
-        status: "live",
-      },
-      {
-        provider: "nscale",
-        status: "live",
-        contextLength: 262144,
-        inputPer1M: 0.01,
-        outputPer1M: 0.03,
-        supportsTools: true,
-        supportsStructuredOutput: false,
-      }
-    ],
-  },
   "Qwen/Qwen3-4B-Thinking-2507": {
     wireId: "Qwen/Qwen3-4B-Thinking-2507",
     providers: [
@@ -1034,6 +1016,15 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
   "Qwen/Qwen3.8-27B": {
     wireId: "Qwen/Qwen3.8-27B",
     providers: [
+      {
+        provider: "cerebras",
+        status: "live",
+        contextLength: 65536,
+        inputPer1M: 0.99,
+        outputPer1M: 1.49,
+        supportsTools: true,
+        supportsStructuredOutput: true,
+      },
       {
         provider: "deepinfra",
         status: "live",
@@ -2090,7 +2081,7 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         inputPer1M: 0.07,
         outputPer1M: 0.14,
         supportsTools: false,
-        supportsStructuredOutput: false,
+        supportsStructuredOutput: true,
       },
       {
         provider: "featherless-ai",
