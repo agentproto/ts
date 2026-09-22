@@ -1,5 +1,12 @@
 # @agentproto/adapter-antigravity
 
+## 0.2.10
+
+### Patch Changes
+
+- Updated dependencies [f30c959]
+  - @agentproto/provider-kit@0.4.5
+
 ## 0.2.9
 
 ### Patch Changes

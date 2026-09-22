@@ -1,5 +1,16 @@
 # @agentproto/catalog-sync
 
+## 0.6.1
+
+### Patch Changes
+
+- 7071f7b: image:replicate generator now accepts both DRF-paginated (`results`) and hand-authored snapshot (`models`) shapes via zod validation; restore @types/vscode engines-floor pin (1.90.0).
+- f30c959: Tolerate `description: null` from the live Replicate API in the image:replicate generator, coercing it to an empty string instead of failing validation. Also test-only updates in provider-kit mocks and a type-cast adjustment in the mastra adapter.
+- b87072b: Filter the image:replicate generator to curated models only; fail fast on roster/API-shape drift. Tests are now shape-independent (in-memory payloads instead of fixture round-trips).
+- Updated dependencies [5aad102]
+- Updated dependencies [e3054e1]
+  - @agentproto/model-catalog@0.10.1
+
 ## 0.6.0
 
 ### Minor Changes

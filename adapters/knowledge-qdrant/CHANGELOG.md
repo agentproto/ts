@@ -1,5 +1,12 @@
 # @agentproto/adapter-knowledge-qdrant
 
+## 0.2.5
+
+### Patch Changes
+
+- Updated dependencies [f30c959]
+  - @agentproto/provider-kit@0.4.5
+
 ## 0.2.4
 
 ### Patch Changes
