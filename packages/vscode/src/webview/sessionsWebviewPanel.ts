@@ -962,6 +962,11 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: 0 0 auto; }
     .dot.working { background: var(--ws, var(--working)); animation: agentproto-pulse 2s infinite; }
     .dot.delegating { background: transparent; border: 2px solid var(--ws, var(--working)); }
+    /* Starting — in motion but no agent behind it yet: a hollow dot whose
+       outline pulses outward (an animated ring), visually distinct from the
+       full dot that pulses for a genuinely busy session. */
+    .dot.starting { background: transparent; border: 2px solid var(--ws, var(--working)); animation: agentproto-starting 2s infinite; }
+    @keyframes agentproto-starting { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ws, var(--working)) 45%, transparent); } }
     .dot.awaiting { background: var(--awaiting); }
     /* Awaiting bg — same filled-dot shape as .dot.awaiting, amber instead of
        ochre: distinguishable at a glance from "needs a human" even though the
@@ -977,7 +982,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
        row itself is actively working or needs you (those signals stay put). */
     .dot.bg { background: var(--bg-task); border-color: var(--bg-task); opacity: 1; }
     @keyframes agentproto-pulse { 50% { opacity: 0.4; } }
-    @media (prefers-reduced-motion: reduce) { .dot.working { animation: none; } .spin { animation: none !important; } .bgdot { animation: none; } }
+    @media (prefers-reduced-motion: reduce) { .dot.working { animation: none; } .dot.starting { animation: none; } .spin { animation: none !important; } .bgdot { animation: none; } }
     .mid { flex: 1; min-width: 0; }
     .name { font-weight: 600; font-size: 12.5px; display: flex; gap: 6px; align-items: baseline; min-width: 0; }
     .name .id { font-weight: 400; color: var(--dim); }
@@ -1031,6 +1036,10 @@ export function buildHtml(nonce: string, cspSource: string): string {
        crowding the title. Faint, uppercase-ish tag so lineage attribution
        still reads at a glance without competing with the name. */
     .meta .origin { color: var(--faint); font-weight: 400; letter-spacing: .04em; border: 1px solid var(--faint); border-radius: 4px; padding: 0 4px; opacity: 0.8; max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* Starting chip — a quiet in-line tell on the row itself that the session
+       has no agent behind it yet; the pulsing-outline dot alone didn't say it
+       in words. Styled like the origin chip but in the working color. */
+    .name .chip-starting { color: var(--ws, var(--working)); font-weight: 400; font-size: 10.5px; letter-spacing: .04em; border: 1px solid color-mix(in srgb, var(--ws, var(--working)) 55%, transparent); border-radius: 4px; padding: 0 4px; opacity: 0.85; }
     .ctxbar { display: inline-flex; align-items: center; gap: 5px; }
     .ctxbar .track { width: 22px; height: 2px; background: var(--border); position: relative; }
     .ctxbar .fill { position: absolute; inset: 0 auto 0 0; background: var(--dim); }
@@ -1295,6 +1304,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
           (r.status === 'delegating' ? '<span class="deleg" title="Delegating — waiting on ' + r.childrenBusy + ' child' + (r.childrenBusy === 1 ? '' : 'ren') + '">⟳' + r.childrenBusy + '</span>' : '') +
           (r.watcherCount > 0 ? '<span class="eye" title="' + r.watcherCount + ' waiter' + (r.watcherCount === 1 ? '' : 's') + ' attached via the daemon">👁' + r.watcherCount + '</span>' : '') +
           (r.stallTooltip ? '<span class="stall" title="' + escapeHtml(r.stallTooltip) + '">⚠</span>' : '') +
+          (r.status === 'starting' ? '<span class="chip-starting" title="Starting — the process is up but no agent is attached yet">starting</span>' : '') +
           (r.approved ? '<span class="ok">✓</span>' : '') +
           (r.runs ? '<span class="runs">×' + r.runs + '</span>' : '');
         var acts = (lastFocus ? '' : focusButton(r, depth)) + pinButton(r) + actionButton(r);

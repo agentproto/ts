@@ -18,6 +18,7 @@ import {
   nestByLineage,
   previewTextFor,
   relativeLuminance,
+  ROW_STATUS_RANK,
   rowActionFor,
   sectionFor,
   stallTooltipFor,
@@ -199,7 +200,7 @@ describe("subtreeRollup (row disclosure triangle + collapsed-dot rollup)", () =>
 
 describe("defaultExpandedFor (a live subtree is never folded out of sight)", () => {
   it("opens a subtree that holds live work", () => {
-    for (const status of ["working", "delegating", "awaiting", "stalled"] as const) {
+    for (const status of ["working", "starting", "delegating", "awaiting", "stalled"] as const) {
       expect(defaultExpandedFor(status)).toBe(true)
     }
   })
@@ -212,9 +213,22 @@ describe("defaultExpandedFor (a live subtree is never folded out of sight)", () 
 })
 
 describe("webviewRowStatus", () => {
+  it("presents a status=starting session as its own 'starting' row state, not 'working'", () => {
+    expect(webviewRowStatus(session({ status: "starting" }))).toBe("starting")
+  })
+
+  it("never outranks a busy session: starting only refines the classifier's 'working' fold", () => {
+    // Once the agent is up and a turn is in flight, the row is busy again.
+    expect(webviewRowStatus(session({ status: "running", busy: true }))).toBe("working")
+  })
+
+  it("ranks starting below working but above delegating", () => {
+    expect(ROW_STATUS_RANK.starting).toBeGreaterThan(ROW_STATUS_RANK.delegating)
+    expect(ROW_STATUS_RANK.starting).toBeLessThan(ROW_STATUS_RANK.working)
+  })
   it("maps each tree activity to its own row status", () => {
     expect(webviewRowStatus(session({ awaitingInput: true }))).toBe("awaiting")
-    expect(webviewRowStatus(session({ status: "starting" }))).toBe("working")
+    expect(webviewRowStatus(session({ status: "starting" }))).toBe("starting")
     expect(webviewRowStatus(session({ busy: true }))).toBe("working")
     expect(webviewRowStatus(session({ busy: false }))).toBe("idle")
     expect(webviewRowStatus(session({ status: "exited" }))).toBe("done")
@@ -436,6 +450,13 @@ describe("buildSessionsWebviewModel — attention sections", () => {
   it("omits empty sections", () => {
     const model = buildSessionsWebviewModel([session({ cwd: "/Code/studio", awaitingInput: true })], studioConfig, opts())
     expect(model.groups.map(g => g.key)).toEqual(["needs-you"])
+  })
+
+  it("a starting session with no activity preview shows 'booting…', never a fabricated message", () => {
+    const model = buildSessionsWebviewModel([session({ cwd: "/Code/studio", status: "starting" })], studioConfig, opts())
+    const row = model.groups[0]!.rows[0]! as WebviewRow
+    expect(row.status).toBe("starting")
+    expect(row.message).toBe("booting…")
   })
 
   it("groups stalled and failed together under Attention", () => {
@@ -973,6 +994,7 @@ describe("missionSummaryFor / missionCountsText", () => {
       total: 8,
       byStatus: {
         working: 2,
+        starting: 0,
         delegating: 0,
         awaiting: 0,
         "awaiting-bg": 0,
@@ -989,7 +1011,7 @@ describe("missionSummaryFor / missionCountsText", () => {
 
   it("is undefined for an empty tree and handles the singular", () => {
     expect(missionSummaryFor([])).toBeUndefined()
-    expect(missionCountsText({ rootId: "r", rootLabel: "x", total: 1, byStatus: { working: 1, delegating: 0, awaiting: 0, "awaiting-bg": 0, parked: 0, idle: 0, stalled: 0, failed: 0, stopped: 0, done: 0 } })).toBe(
+    expect(missionCountsText({ rootId: "r", rootLabel: "x", total: 1, byStatus: { working: 1, starting: 0, delegating: 0, awaiting: 0, "awaiting-bg": 0, parked: 0, idle: 0, stalled: 0, failed: 0, stopped: 0, done: 0 } })).toBe(
       "1 session · 1 running",
     )
   })
