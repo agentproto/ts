@@ -174,3 +174,17 @@ for that.
 
 ### llm:context-windows
 - Added: claude-opus-5-5
+
+## 2026-09-23
+
+### llm:openrouter
+- Added: aion-labs/aion-3.5, aion-labs/aion-3.5-mini, upstage/solar-mini4
+
+### llm:opencode-go
+- Added: opencode-go/space-bunny-free
+
+### llm:opencode-zen
+- Added: opencode/space-bunny-free
+
+### llm:huggingface
+- Removed: CohereLabs/c4ai-command-r7b-arabic-02-2025, zai-org/GLM-5.1-FP8

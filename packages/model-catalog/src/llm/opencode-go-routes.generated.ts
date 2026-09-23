@@ -339,6 +339,13 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     vendor: "qwen",
     provider: "opencode-go",
   },
+  "opencode-go/space-bunny-free": {
+    inputPer1M: 0,
+    outputPer1M: 0,
+    addedAt: "2026-09-23",
+    vendor: "opencode",
+    provider: "opencode-go",
+  },
 }
 
 /**

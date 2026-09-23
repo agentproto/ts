@@ -868,6 +868,13 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     vendor: "inclusionai",
     provider: "opencode",
   },
+  "opencode/space-bunny-free": {
+    inputPer1M: 0,
+    outputPer1M: 0,
+    addedAt: "2026-09-23",
+    vendor: "opencode",
+    provider: "opencode",
+  },
   "opencode/trinity-large-preview-free": {
     inputPer1M: 0,
     outputPer1M: 0,
