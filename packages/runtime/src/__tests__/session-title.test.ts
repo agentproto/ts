@@ -2,6 +2,9 @@ import { describe, it, expect } from "vitest"
 import { deriveSessionTitle } from "../session-title.js"
 
 describe("deriveSessionTitle", () => {
+  it("ignores Claude local-command bookkeeping", () => {
+    expect(deriveSessionTitle("<local-command-caveat>Caveat: generated locally</local-command-caveat>")).toBeUndefined()
+  })
   it("collapses a fenced code block to a single bounded line", () => {
     const prompt = "```typescript\nfunction foo() {\n  return 1\n}\n```"
     const title = deriveSessionTitle(prompt)

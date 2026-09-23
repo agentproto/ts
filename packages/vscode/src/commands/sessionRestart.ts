@@ -15,7 +15,7 @@ import type { DaemonClient } from "../client/daemonClient.js"
 import type { SessionStore } from "../services/sessionStore.js"
 import { resolveSessionArg } from "./sessionActions.js"
 import { describeSession } from "./sessionActions.logic.js"
-import { canRestart, describeRestart, parseRestartResult } from "./sessionRestart.logic.js"
+import { canRestart, describeRestart, parseRestartResult, restartedSessionView } from "./sessionRestart.logic.js"
 
 export function registerSessionRestart(
   ctx: vscode.ExtensionContext,
@@ -55,7 +55,10 @@ async function restartSessionCommand(
     }
     await store.refreshAll()
     vscode.window.showInformationMessage(describeRestart(session, result))
-    await vscode.commands.executeCommand("agentproto.openTranscript", result.id)
+    await vscode.commands.executeCommand(
+      restartedSessionView(result) === "terminal" ? "agentproto.openTerminal" : "agentproto.openTranscript",
+      result.id,
+    )
   } catch (err) {
     vscode.window.showErrorMessage(
       `agentproto: restart of ${describeSession(session)} failed — ${describeError(err)}`,

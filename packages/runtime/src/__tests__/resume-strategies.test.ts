@@ -220,6 +220,16 @@ describe("claude-code fsProbe", () => {
  * them (pty-native beats pty-plain beats agent beats unsupported).
  */
 describe("decideRestartStrategy", () => {
+  it("resumes a linked OpenCode PTY, including a legacy row without a capability stamp", () => {
+    const previous = {
+      adapterSlug: "opencode",
+      resumeMetadata: { openCodeResumeId: "ses_own123" },
+      pty: true,
+    }
+    expect(decideRestartStrategy(previous)).toEqual({ kind: "pty-native", argv: ["npx", "-y", "opencode-ai", "-s", "ses_own123"] })
+    expect(decideRestartStrategy({ ...previous, nativeTerminalResume: false })).toEqual({ kind: "pty-plain" })
+    expect(describeResumePath(previous)).toBe("resumed via npx -y opencode-ai -s")
+  })
   it("picks pty-native for a PTY-origin session with a captured resume id + spawnArgs + nativeTerminalResume", () => {
     const strategy = decideRestartStrategy({
       adapterSlug: "claude-code",
@@ -422,10 +432,18 @@ describe("describeResumePath", () => {
         {
           adapterSlug: "claude-code",
           resumeMetadata: { claudeResumeId: "abc-123" },
+          nativeTerminalResume: true,
         },
         { preferNativeTerminal: true },
       ),
     ).toBe("resumed via claude --resume")
+  })
+
+  it("does not claim native continuity for an ACP row without the capability", () => {
+    expect(describeResumePath({
+      adapterSlug: "claude-code",
+      resumeMetadata: { claudeResumeId: "abc-123" },
+    }, { preferNativeTerminal: true })).toBe("")
   })
 
   it("an ACP-origin session with a captured native id but NO opt-in describes ACP resume, not the native label (origin gate)", () => {

@@ -37,7 +37,7 @@ import type { ConversationStore } from "./conversations.js"
 import { isValidAppEmbedToken } from "./embed-tokens.js"
 import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
-import type { SessionsRegistry, AgentSessionLike, RestartPolicy } from "./sessions.js"
+import type { SessionsRegistry, AgentSessionLike, RestartPolicy, SessionDescriptor } from "./sessions.js"
 import { SessionNotAliveError, applyBracketedPasteWrap } from "./sessions.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
@@ -170,6 +170,16 @@ import {
   listAuthProfiles,
   AuthProfileValidationError,
 } from "@agentproto/auth"
+
+/** HTTP-safe descriptor projection. The registry retains resume env for PTY
+ * reattachment; public session responses must not serialize it. Kept local
+ * here because session-tools imports this module. */
+function sessionDescriptorForHttp(
+  session: SessionDescriptor,
+): Omit<SessionDescriptor, "ptyResumeEnv"> {
+  const { ptyResumeEnv: _privateResumeEnv, ...publicDescriptor } = session
+  return publicDescriptor
+}
 
 /**
  * Default Origin allowlist used when `RuntimeHttpServerOptions.allowedOrigins`
@@ -4221,7 +4231,7 @@ async function handleSessions(
     } else if (!includeCommands) {
       rows = rows.filter(s => s.kind !== "command")
     }
-    json(200, { sessions: rows })
+    json(200, { sessions: rows.map(sessionDescriptorForHttp) })
     return true
   }
 
@@ -4354,7 +4364,7 @@ async function handleSessions(
       return true
     }
     json(201, {
-      ...result.descriptor,
+      ...sessionDescriptorForHttp(result.descriptor),
       ...(result.warnings ? { warnings: result.warnings } : {}),
       ...(result.deduped ? { deduped: true } : {}),
       ...(result.dedupeSource ? { dedupeSource: result.dedupeSource } : {}),
@@ -4635,7 +4645,7 @@ async function handleSessions(
         ...(typeof b.name === "string" ? { name: b.name } : {}),
         ...(typeof b.label === "string" ? { label: b.label } : {}),
       })
-      json(201, desc)
+      json(201, sessionDescriptorForHttp(desc))
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       const status = msg.includes("already in use")
@@ -5031,7 +5041,7 @@ async function handleSessions(
         ...(listCatalogModels ? { listCatalogModels } : {}),
       })
       json(200, {
-        ...restarted.desc,
+        ...sessionDescriptorForHttp(restarted.desc),
         resumedFrom: restarted.resumedFrom,
         resumeVia: restarted.resumeVia,
         ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
@@ -5146,7 +5156,7 @@ async function handleSessions(
     }
     try {
       const desc = registry.renameSession(resolved.id, patch)
-      json(200, desc)
+      json(200, sessionDescriptorForHttp(desc))
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       json(msg.includes("no session") ? 404 : 500, { error: "rename_failed", message: msg })
@@ -5221,7 +5231,7 @@ async function handleSessions(
             : undefined,
         label: typeof b.label === "string" ? b.label : undefined,
       })
-      json(201, desc)
+      json(201, sessionDescriptorForHttp(desc))
     } catch (err) {
       json(500, {
         error: "spawn_failed",
@@ -5738,7 +5748,7 @@ async function handleSessions(
       json(404, { error: "session_not_found", id: rawIdOrName })
       return true
     }
-    json(200, resolvedDesc)
+    json(200, sessionDescriptorForHttp(resolvedDesc))
     return true
   }
 

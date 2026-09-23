@@ -127,6 +127,10 @@ describe("opencode store", () => {
   const CWD = "/work/oc"
   const SID = "ses_08d70fae8ffewkfZY75uEJn005"
 
+  it("resumes a native TUI by its exact OpenCode session id", () => {
+    expect(CONVERSATION_STORES["opencode"]!.attachArgv?.(SID)).toEqual(["npx", "-y", "opencode-ai", "-s", SID])
+  })
+
   function buildDb(sessionId: string, directory: string): void {
     const data = mkTmp("oc-data-")
     setEnv("XDG_DATA_HOME", data)
@@ -179,6 +183,35 @@ describe("opencode store", () => {
   it("discover returns [] (not a throw) when opencode.db is absent", async () => {
     setEnv("XDG_DATA_HOME", mkTmp("oc-empty-"))
     await expect(CONVERSATION_STORES["opencode"]!.discover({ cwd: CWD })).resolves.toEqual([])
+  })
+
+  it("since keys on the conversation's START (time_created), never time_updated", async () => {
+    // The observed mis-bind: a fresh PTY launched in a cwd that already had
+    // an OLD conversation whose time_updated moved at/after launch — the
+    // row passed the window on its updated stamp alone and got bound.
+    const data = mkTmp("oc-fresh-")
+    setEnv("XDG_DATA_HOME", data)
+    const dir = join(data, "opencode")
+    mkdirSync(dir, { recursive: true })
+    const db = new DatabaseSync(join(dir, "opencode.db"))
+    db.exec(`
+      CREATE TABLE session (id TEXT PRIMARY KEY, project_id TEXT, directory TEXT, title TEXT,
+        model TEXT, cost REAL, tokens_input INTEGER, tokens_output INTEGER, tokens_reasoning INTEGER,
+        tokens_cache_read INTEGER, tokens_cache_write INTEGER, time_created INTEGER, time_updated INTEGER);
+    `)
+    const sinceMs = 1_784_333_500_000
+    const insert = db.prepare(
+      "INSERT INTO session (id,project_id,directory,title,model,cost,tokens_input,tokens_output,tokens_reasoning,tokens_cache_read,tokens_cache_write,time_created,time_updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    )
+    // OLD conversation, updated stamp moved AFTER the window (the bug shape).
+    insert.run("ses_old", "prj", CWD, "Glyf web console tranche 1 implementation", "{}", 0, 0, 0, 0, 0, 0, sinceMs - 86_400_000, sinceMs + 60_000)
+    // NEW conversation started inside the window (its updated stamp too).
+    insert.run("ses_new", "prj", CWD, "brand new chat", "{}", 0, 0, 0, 0, 0, 0, sinceMs + 2_000, sinceMs + 3_000)
+    // Inside the window only by its updated stamp, start unprovable.
+    insert.run("ses_touch", "prj", CWD, "no start stamp", "{}", 0, 0, 0, 0, 0, 0, null, sinceMs + 2_000)
+    db.close()
+    const found = await CONVERSATION_STORES["opencode"]!.discover({ cwd: CWD, since: new Date(sinceMs).toISOString() })
+    expect(found.map(c => c.conversationId)).toEqual(["ses_new"])
   })
 
   it("read builds messages incl. tool call + separate tool result, plus meta", async () => {

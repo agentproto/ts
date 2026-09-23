@@ -40,6 +40,16 @@ describe("isConversationTerminal / conversationTerminalSlugFor", () => {
     // npx-launched TUI: the FULL launch argv must prefix the session's argv.
     expect(isConversationTerminal({ kind: "terminal", argv: ["npx", "-y", "opencode-ai"] })).toBe(true)
     expect(isConversationTerminal({ kind: "terminal", argv: ["npx", "-y", "some-random-pkg"] })).toBe(false)
+    // Direct-installed (PATH) TUI binaries are the SAME terminal as the
+    // npx arm — the npx spec's installed bin, not the package name.
+    expect(isConversationTerminal({ kind: "terminal", argv: ["opencode"] })).toBe(true)
+    expect(conversationTerminalSlugFor({ argv: ["/usr/local/bin/opencode"] })).toBe("opencode")
+    expect(isConversationTerminal({ kind: "terminal", argv: ["mastracode"] })).toBe(true)
+    expect(conversationTerminalSlugFor({ argv: ["mastracode", "--model", "x"] })).toBe("mastracode")
+    // ...and the npx arms keep matching too.
+    expect(conversationTerminalSlugFor({ argv: ["npx", "-y", "mastracode"] })).toBe("mastracode")
+    // The npx package NAME alone is not a bare bin.
+    expect(isConversationTerminal({ kind: "terminal", argv: ["opencode-ai"] })).toBe(false)
     // A recorded conversation-store resume id is proof by itself.
     expect(
       isConversationTerminal({
@@ -190,6 +200,21 @@ describe("conversation-terminal link probe + index", () => {
     expect((record.native as { kind: string; path: string }).kind).toBe("claude-jsonl")
     expect((record.native as { kind: string; path: string }).path).toBe(transcriptPath)
     expect(record.title).toBe("Fix the flaky watchdog test in CI")
+  })
+
+  it("stamps the exact native id when restarting OpenCode with -s", () => {
+    const { registry } = setup()
+    const desc = registry.spawnPty({
+      workspaceSlug: "default",
+      cwd: "/fake/opencode-resume",
+      argv: ["opencode", "-s", "ses_own123"],
+      cols: 80,
+      rows: 24,
+    })
+    expect(desc.adapterSlug).toBe("opencode")
+    expect(desc.nativeTerminalResume).toBe(true)
+    expect(desc.adapterSessionId).toBe("ses_own123")
+    expect(desc.resumeMetadata?.openCodeResumeId).toBe("ses_own123")
   })
 
   it("the title is read once — a later transcript edit does not retitle the row", async () => {

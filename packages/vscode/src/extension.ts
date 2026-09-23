@@ -76,6 +76,7 @@ import { registerConfigurationLabWebview } from "./webview/configurationLabPanel
 import { registerAuthModelMindmap, type AuthModelFocusTarget } from "./webview/authModelMindmapPanel.js"
 import { registerAuthExplorer } from "./webview/authExplorerPanel.js"
 import { defaultOpenTarget } from "./commands/sessionOpen.logic.js"
+import { isNativeConversationSession } from "./webview/nativeConversation.js"
 import { openSessionInChat, openSessionInChatPanel, openSessionViaChat } from "./commands/sessionView.js"
 import type { AppCatalogEntry } from "./client/types.js"
 // The builtin's own module is the single source of truth for its id and its
@@ -296,6 +297,14 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
             browserPanels.open(session)
             return
           case "transcript":
+            // A dead native PTY's durable transcript is loaded by the builtin
+            // conversation panel. The optional Session Chat app does not read
+            // provider-native stores, so sending this route there would show
+            // an empty history after a daemon restart.
+            if (isNativeConversationSession(session)) {
+              transcriptPanels.open(session)
+              return
+            }
             const route = await openSessionViaChat(
               client,
               session,

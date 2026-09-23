@@ -403,6 +403,15 @@ export interface SessionListCompactItem {
   contextUsed?: number
 }
 
+/** Public MCP descriptor projection. Resume environment is required by the
+ * registry to reattach native PTYs, but must never cross the tool boundary. */
+const publicSessionDescriptor = (
+  session: SessionDescriptor,
+): Omit<SessionDescriptor, "ptyResumeEnv"> => {
+  const { ptyResumeEnv: _privateResumeEnv, ...publicDescriptor } = session
+  return publicDescriptor
+}
+
 export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem => ({
   id: s.id,
   kind: s.kind,
@@ -651,7 +660,7 @@ export function registerSessionTools(
   })
   type SessionListInput = z.infer<typeof sessionListSchema>
 
-  registerBuiltinTool<SessionListInput, SessionDescriptor[]>(server, {
+  registerBuiltinTool<SessionListInput, Array<Omit<SessionDescriptor, "ptyResumeEnv">>>(server, {
     id: "session_list",
     description: "List sessions tracked by the daemon — agent-CLI sessions (claude-code, " +
       "hermes, …) and terminal/PTY sessions (claude TUI, bash, …). Each " +
@@ -701,7 +710,7 @@ export function registerSessionTools(
           s => s.status === "running" || s.status === "starting",
         )
       }
-      return rows
+      return rows.map(publicSessionDescriptor)
     },
     transformers: [
       paginated({
@@ -1244,7 +1253,10 @@ export function registerSessionTools(
       .optional()
       .describe("Filter by exact status (overrides onlyAlive)."),
   })
-  registerPaginatedListTool<z.infer<typeof terminalSessionsListSchema>, SessionDescriptor>({
+  registerPaginatedListTool<
+    z.infer<typeof terminalSessionsListSchema>,
+    Omit<SessionDescriptor, "ptyResumeEnv">
+  >({
     id: "terminal_sessions_list",
     description:
       "List terminal/PTY sessions tracked by the daemon. Equivalent to `session_list({kind: 'terminal'})`. " +
@@ -1274,7 +1286,7 @@ export function registerSessionTools(
           s => s.status === "running" || s.status === "starting",
         )
       }
-      return rows
+      return rows.map(publicSessionDescriptor)
     },
     project: compactSessionItemWithProvenance,
     keyOf: s => s.id,
@@ -1300,7 +1312,10 @@ export function registerSessionTools(
       .optional()
       .describe("Filter by exact status (overrides onlyAlive)."),
   })
-  registerPaginatedListTool<z.infer<typeof commandListSchema>, SessionDescriptor>({
+  registerPaginatedListTool<
+    z.infer<typeof commandListSchema>,
+    Omit<SessionDescriptor, "ptyResumeEnv">
+  >({
     id: "command_list",
     description:
       "List command sessions tracked by the daemon. Equivalent to `session_list({kind: 'command'})`. " +
@@ -1330,7 +1345,7 @@ export function registerSessionTools(
           s => s.status === "running" || s.status === "starting",
         )
       }
-      return rows
+      return rows.map(publicSessionDescriptor)
     },
     project: compactSessionItemWithProvenance,
     keyOf: s => s.id,
@@ -2766,7 +2781,7 @@ export function registerSessionTools(
             content: [
               {
                 type: "text",
-                text: JSON.stringify(desc),
+                text: JSON.stringify(publicSessionDescriptor(desc)),
               },
             ],
           }
@@ -2843,7 +2858,7 @@ export function registerSessionTools(
               type: "text",
               text: JSON.stringify(
                 {
-                  ...restarted.desc,
+                  ...publicSessionDescriptor(restarted.desc),
                   resumedFrom: restarted.resumedFrom,
                   resumeVia: restarted.resumeVia,
                   ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
@@ -2934,7 +2949,7 @@ export function registerSessionTools(
       try {
         const desc = registry.archiveSession(prev.id)
         return {
-          content: [{ type: "text", text: JSON.stringify(desc) }],
+          content: [{ type: "text", text: JSON.stringify(publicSessionDescriptor(desc)) }],
         }
       } catch (err) {
         return {
@@ -3047,7 +3062,7 @@ export function registerSessionTools(
       try {
         const desc = registry.unarchiveSession(prev.id)
         return {
-          content: [{ type: "text", text: JSON.stringify(desc) }],
+          content: [{ type: "text", text: JSON.stringify(publicSessionDescriptor(desc)) }],
         }
       } catch (err) {
         return {
@@ -3182,7 +3197,7 @@ export function registerSessionTools(
           reason: input.reason,
         })
         return {
-          content: [{ type: "text", text: JSON.stringify(desc) }],
+          content: [{ type: "text", text: JSON.stringify(publicSessionDescriptor(desc)) }],
         }
       } catch (err) {
         return {
@@ -3295,7 +3310,7 @@ export function registerSessionTools(
           ...(input.label !== undefined ? { label: input.label } : {}),
         })
         return {
-          content: [{ type: "text", text: JSON.stringify(desc) }],
+          content: [{ type: "text", text: JSON.stringify(publicSessionDescriptor(desc)) }],
         }
       } catch (err) {
         return {
@@ -3378,7 +3393,7 @@ export function registerSessionTools(
       try {
         const desc = registry.setKeepAlive(prev.id, input.keepAlive)
         return {
-          content: [{ type: "text", text: JSON.stringify(desc) }],
+          content: [{ type: "text", text: JSON.stringify(publicSessionDescriptor(desc)) }],
         }
       } catch (err) {
         return {
@@ -3462,7 +3477,7 @@ export function registerSessionTools(
       try {
         const desc = registry.setPinned(prev.id, input.pinned)
         return {
-          content: [{ type: "text", text: JSON.stringify(desc) }],
+          content: [{ type: "text", text: JSON.stringify(publicSessionDescriptor(desc)) }],
         }
       } catch (err) {
         return {
@@ -3638,7 +3653,7 @@ export function registerSessionTools(
             : {}),
         })
         return {
-          content: [{ type: "text", text: JSON.stringify(desc) }],
+          content: [{ type: "text", text: JSON.stringify(publicSessionDescriptor(desc)) }],
         }
       } catch (err) {
         return {

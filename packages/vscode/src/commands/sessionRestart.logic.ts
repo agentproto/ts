@@ -43,6 +43,11 @@ export interface RestartResult {
   nativeResumeDecline?: NativeResumeDecline
 }
 
+/** A resumed PTY is immediately usable in the terminal; ACP resumes in chat. */
+export function restartedSessionView(after: RestartResult): "terminal" | "transcript" {
+  return after.pty === true || after.kind === "terminal" ? "terminal" : "transcript"
+}
+
 /** Why a requested native-terminal resume was declined — see the daemon's
  *  `session_restart` agent branch (runtime/src/session-tools.ts). */
 export interface NativeResumeDecline {
@@ -158,7 +163,7 @@ export function describeRestart(before: SessionDescriptor, after: RestartResult)
 
   if (before.kind === "agent-cli" && after.pty === true) {
     sentences.push(
-      "Resumed as a terminal session (pty-native) — its transcript is raw output, not a conversation.",
+      "Resumed as a terminal session (pty-native). Its provider transcript remains available via Open Transcript.",
     )
   }
 

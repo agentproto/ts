@@ -177,9 +177,10 @@ export interface RestartCandidate {
   resumable?: boolean
   /**
    * Manifest-declared `capabilities.nativeTerminalResume` for `adapterSlug`.
-   * The `pty-native` restart strategy is only chosen when this flag is true
-   * AND a native resume id is available. ACP resumability (`resumable`)
-   * alone does NOT imply a native TUI resume is safe or available.
+   * The `pty-native` strategy requires this flag for ACP-origin sessions.
+   * Legacy PTY rows without the flag can use a newly-added store strategy
+   * when they already carry an exact native resume id; explicit false blocks
+   * that fallback. ACP resumability (`resumable`) does not imply a TUI resume.
    */
   nativeTerminalResume?: boolean
 }
@@ -237,8 +238,8 @@ export function decideRestartStrategy(
   opts: DecideRestartStrategyOptions = {},
 ): RestartStrategy {
   // Provider-native terminal resume takes precedence over ACP-level resume —
-  // but ONLY when the adapter manifest explicitly declares a verified native
-  // TUI resume capability (`nativeTerminalResume`) AND (origin-gate, closing
+  // but ONLY when a verified native TUI resume strategy exists and the
+  // capability/origin gates pass (closing
   // the "restart starts a terminal but it doesn't work" bug) either the prior
   // session was ITSELF a raw PTY (`prev.pty === true` — a real provider TUI a
   // human was already looking at, whose config dir went through the actual
@@ -253,7 +254,12 @@ export function decideRestartStrategy(
   // supports native resume for a real terminal"), not license to mode-switch
   // a headless session into an unattended one.
   const mayPreferNative = prev.pty === true || opts.preferNativeTerminal === true
-  if (prev.adapterSlug && prev.nativeTerminalResume === true && mayPreferNative) {
+  // PTYs created before their store gained attachArgv lack the persisted
+  // capability flag. Their native ID plus today's verified strategy is enough
+  // to continue the same provider conversation; an explicit false still wins.
+  const hasNativeCapability = prev.nativeTerminalResume === true ||
+    (prev.pty === true && prev.nativeTerminalResume === undefined)
+  if (prev.adapterSlug && hasNativeCapability && mayPreferNative) {
     const strategy = RESUME_STRATEGIES[prev.adapterSlug]
     const id = strategy?.storeAs
       ? prev.resumeMetadata?.[strategy.storeAs]
@@ -439,11 +445,14 @@ export function describeResumePath(
   opts: DecideRestartStrategyOptions = {},
 ): string {
   const mayPreferNative = prev.pty === true || opts.preferNativeTerminal === true
-  if (prev.adapterSlug && mayPreferNative) {
+  const hasNativeCapability = prev.nativeTerminalResume === true ||
+    (prev.pty === true && prev.nativeTerminalResume === undefined)
+  if (prev.adapterSlug && hasNativeCapability && mayPreferNative) {
     const s = RESUME_STRATEGIES[prev.adapterSlug]
     if (s?.spawnArgs && s.storeAs && prev.resumeMetadata?.[s.storeAs]) {
-      const sample = s.spawnArgs("…")[0] ?? prev.adapterSlug
-      return `resumed via ${sample} --resume`
+      const sample = s.spawnArgs("…")
+      const idIndex = sample.indexOf("…")
+      return `resumed via ${idIndex > 0 ? sample.slice(0, idIndex).join(" ") : (sample[0] ?? prev.adapterSlug)}`
     }
   }
   if (prev.adapterSlug && prev.adapterSessionId) {

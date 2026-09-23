@@ -1517,8 +1517,13 @@ export async function discoverOpenCodeSessions(
     return rows
       .filter(r => {
         if (!Number.isFinite(sinceMs)) return true
-        const last = r.time_updated ?? r.time_created
-        return last === undefined || last >= sinceMs - 1000
+        // Key off the conversation's START (time_created), never
+        // time_updated — an OLD conversation whose time_updated moves at/
+        // after the window boundary must not pass on that alone (#mis-bind).
+        // A row with no time_created at all has an unprovable start and is
+        // excluded rather than assumed to be in-window.
+        if (r.time_created === undefined) return false
+        return r.time_created >= sinceMs - 1000
       })
       .map(openCodeRowToCandidate)
   } finally {

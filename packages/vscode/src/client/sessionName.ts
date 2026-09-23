@@ -23,6 +23,10 @@ export function shortSessionId(id: string): string {
   return id.length <= 8 ? id : id.slice(-6)
 }
 
+function isInternalDerivedTitle(title: string): boolean {
+  return /^<(?:local-command-caveat|local-command-stdout|command-name|task-notification)>/i.test(title)
+}
+
 /**
  * `user-renamed-label > title > spawn-label > <adapterSlug ?? kind> · <short id>`.
  * Hand-mirror of the runtime's `sessionDisplayName` (packages/runtime/src/
@@ -50,7 +54,7 @@ export function sessionDisplayName(
 ): string {
   const userRenamed = session.renamedByUser ?? session.label !== undefined
   if (userRenamed && session.label !== undefined) return session.label
-  if (session.title !== undefined) return session.title
+  if (session.title !== undefined && !isInternalDerivedTitle(session.title)) return session.title
   if (session.label !== undefined) return session.label
   return `${session.adapterSlug ?? session.kind} · ${shortSessionId(session.id)}`
 }

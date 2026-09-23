@@ -6840,7 +6840,10 @@ export function createSessionsRegistry(opts?: {
       const resumeArgvId = (() => {
         if (!conversationStore) return undefined
         for (let i = 0; i < input.argv.length - 1; i++) {
-          if (input.argv[i] !== "--resume" && input.argv[i] !== "-r") continue
+          if (
+            input.argv[i] !== "--resume" && input.argv[i] !== "-r" &&
+            !(conversationSlug === "opencode" && (input.argv[i] === "--session" || input.argv[i] === "-s"))
+          ) continue
           const raw = input.argv[i + 1]!
           const base = raw.slice(raw.lastIndexOf("/") + 1)
           return base.endsWith(".jsonl") ? base.slice(0, -".jsonl".length) : raw

@@ -2978,7 +2978,7 @@ export function buildHtml(
       function displayName(session) {
         const userRenamed = session.renamedByUser ?? session.label !== undefined;
         if (userRenamed && session.label !== undefined) return session.label;
-        if (session.title !== undefined) return session.title;
+        if (session.title !== undefined && !/^<(?:local-command-caveat|local-command-stdout|command-name|task-notification)>/i.test(session.title)) return session.title;
         if (session.label !== undefined) return session.label;
         return (session.adapterSlug || session.kind) + ' · ' + shortSessionId(session.id);
       }
