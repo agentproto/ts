@@ -116,6 +116,11 @@ describe("isNativeConversationSession", () => {
     ).toBe(true)
   })
 
+  it("recognises direct and npx OpenCode PTYs with a readable native store", () => {
+    expect(isNativeConversationSession({ kind: "terminal", pty: true, argv: ["opencode", "-s", "ses_123"] })).toBe(true)
+    expect(isNativeConversationSession({ kind: "terminal", pty: true, argv: ["npx", "-y", "opencode-ai"] })).toBe(true)
+  })
+
   it("rejects a non-PTY terminal", () => {
     expect(isNativeConversationSession({ kind: "terminal", pty: false, adapterSlug: "claude-code" })).toBe(false)
   })

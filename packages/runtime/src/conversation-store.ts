@@ -193,6 +193,12 @@ function extractFirstText(content: unknown): string | undefined {
   return undefined
 }
 
+/** Claude records local slash-command bookkeeping as user messages. They are
+ * not the user's prompt and must not become the session's title. */
+function isClaudeControlText(text: string): boolean {
+  return /^<(?:local-command-caveat|local-command-stdout|command-name|task-notification)>/i.test(text)
+}
+
 /** Light line-scan for candidate metadata — NOT the full transcript parser
  *  (that's exportClaudeCodeSession). Streams the file so large jsonl files
  *  don't get pulled fully into memory. */
@@ -233,7 +239,7 @@ async function scanClaudeJsonl(filePath: string): Promise<{
       messageCount += 1
       if (preview === undefined && entry.type === "user") {
         const text = extractFirstText(entry.message?.content)
-        if (text !== undefined) {
+        if (text !== undefined && !isClaudeControlText(text)) {
           preview = text.length > 120 ? text.slice(0, 120) : text
         }
       }
@@ -461,6 +467,9 @@ export const CONVERSATION_STORES: Record<string, ConversationStore> = {
   },
   opencode: {
     storeAs: "openCodeResumeId",
+    // Match the adapter's portable npx installation: a direct `opencode`
+    // binary is not guaranteed to be on the daemon's PATH on every host.
+    attachArgv: (conversationId: string) => ["npx", "-y", "opencode-ai", "-s", conversationId],
     discover: discoverOpenCode,
     read: readOpenCode,
   },
@@ -516,6 +525,19 @@ export const NATIVE_LAUNCH_ARGV: Record<string, string[]> = {
   "kimi-cli": ["kimi"],
 }
 
+/**
+ * Direct-installed binaries that ARE the same TUI as an npx launch arm,
+ * keyed by slug. The npm package behind `npx -y <pkg>` often installs a
+ * different bin name (opencode-ai → `opencode`), so a PATH entry appears
+ * inargv as the bare bin, not the npx spec. Keep npx compatibility — the
+ * NATIVE_LAUNCH_ARGV npx forms keep matching the full npx argv; this table
+ * only adds the bare-binary arm.
+ */
+const BARE_LAUNCH_BINS: Record<string, readonly string[]> = {
+  opencode: ["opencode"],
+  mastracode: ["mastracode"],
+}
+
 // ── Conversation-terminal classification ───────────────────────────────
 //
 // A native provider TUI in a PTY (claude, hermes, grok, …) is a
@@ -557,7 +579,9 @@ function argvBasename(path: string): string {
  *     (`claude` → `claude-code`, `grok` → `grok-cli`, …);
  *   - an npx-launched TUI only when the FULL npx launch argv is a prefix
  *     of the session's argv (`npx -y opencode-ai …` → `opencode`) — a bare
- *     `npx` running anything else is not a conversation.
+ *     `npx` running anything else is not a conversation;
+ *   - a direct-installed TUI binary from `BARE_LAUNCH_BINS` (bare
+ *     `opencode` / `mastracode` on PATH) — same terminal as the npx arm.
  * The returned slug may have no `CONVERSATION_STORES` entry yet (grok):
  * classifiable and trackable, but no transcript to link or read.
  */
@@ -573,6 +597,9 @@ export function conversationTerminalSlugFor(
   const argv = subject.argv
   if (!argv || argv.length === 0 || !argv[0]) return undefined
   const bin = argvBasename(argv[0])
+  for (const [slug, bins] of Object.entries(BARE_LAUNCH_BINS)) {
+    if (bins.some(b => argvBasename(b) === bin)) return slug
+  }
   for (const [slug, launch] of Object.entries(NATIVE_LAUNCH_ARGV)) {
     const launchBin = launch[0]
     if (!launchBin || argvBasename(launchBin) !== bin) continue

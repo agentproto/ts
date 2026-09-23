@@ -82,7 +82,8 @@ describe("deadSessionBanner", () => {
     const msg = deadSessionBanner(session({ label: "my-agent", status: "killed" }))
     expect(msg).toContain("my-agent")
     expect(msg).toContain("killed")
-    expect(msg).toContain("read-only history")
+    expect(msg).toContain("Open Transcript")
+    expect(msg).toContain("Restart Session (New Session)")
   })
 })
 

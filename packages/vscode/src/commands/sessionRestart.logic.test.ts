@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import type { SessionDescriptor } from "../client/types.js"
-import { canRestart, describeNotATerminal, describeRestart, parseRestartResult } from "./sessionRestart.logic.js"
+import { canRestart, describeNotATerminal, describeRestart, parseRestartResult, restartedSessionView } from "./sessionRestart.logic.js"
 
 function session(overrides: Partial<SessionDescriptor> = {}): SessionDescriptor {
   return {
@@ -36,6 +36,17 @@ describe("canRestart", () => {
     // Such a row renders as session-interrupted (resume-in-place is the primary
     // action), but restarting it to a NEW id is still a legitimate choice.
     expect(canRestart(session({ status: "killed", endedReason: "daemon-restart" }))).toBe(true)
+  })
+})
+
+describe("restartedSessionView", () => {
+  it("opens native and plain PTY restarts in the usable terminal", () => {
+    expect(restartedSessionView({ id: "s2", kind: "terminal", pty: true })).toBe("terminal")
+    expect(restartedSessionView({ id: "s2", kind: "agent-cli", pty: true })).toBe("terminal")
+  })
+
+  it("keeps ACP restarts in the conversation panel", () => {
+    expect(restartedSessionView({ id: "s2", kind: "agent-cli", pty: false })).toBe("transcript")
   })
 })
 
@@ -141,7 +152,7 @@ describe("describeRestart", () => {
     const before = session({ id: "sess_old1", kind: "agent-cli", status: "exited" })
     const message = describeRestart(before, { id: "sess_new1", pty: true, resumeVia: "pty-native" })
     expect(message).toContain(
-      "Resumed as a terminal session (pty-native) — its transcript is raw output, not a conversation.",
+      "Resumed as a terminal session (pty-native). Its provider transcript remains available via Open Transcript.",
     )
   })
 

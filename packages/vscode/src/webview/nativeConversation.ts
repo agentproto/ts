@@ -10,27 +10,18 @@
 
 import type { SessionDescriptor, SessionEventRecord } from "../client/types.js"
 import type { ExportedSession } from "../../../runtime/src/transcript-export.js"
-import { CONVERSATION_STORES } from "../../../runtime/src/conversation-store.js"
-
-const BINARY_TO_STORE_KEY: Record<string, string> = {
-  claude: "claude-code",
-  hermes: "hermes",
-}
-
-function basename(path: string): string {
-  const idx = path.lastIndexOf("/")
-  return idx === -1 ? path : path.slice(idx + 1)
-}
+import { CONVERSATION_STORES, conversationTerminalSlugFor } from "../../../runtime/src/conversation-store.js"
 
 function knownStoreKey(desc: Pick<SessionDescriptor, "adapterSlug" | "argv">): string | undefined {
-  const key = desc.adapterSlug ?? (desc.argv?.[0] ? BINARY_TO_STORE_KEY[basename(desc.argv[0])] : undefined)
+  const key = desc.adapterSlug ?? conversationTerminalSlugFor({ argv: desc.argv })
   return key !== undefined && CONVERSATION_STORES[key] ? key : undefined
 }
 
-function parseResumeArgv(argv: SessionDescriptor["argv"]): string | undefined {
+function parseResumeArgv(argv: SessionDescriptor["argv"], storeKey: string): string | undefined {
   if (!argv) return undefined
   for (let i = 0; i < argv.length - 1; i++) {
-    if (argv[i] === "--resume" || argv[i] === "-r") return argv[i + 1]
+    if (argv[i] === "--resume" || argv[i] === "-r" ||
+      (storeKey === "opencode" && (argv[i] === "--session" || argv[i] === "-s"))) return argv[i + 1]
   }
   return undefined
 }
@@ -177,7 +168,7 @@ async function readNativeSession(desc: SessionDescriptor): Promise<ExportedSessi
   const store = CONVERSATION_STORES[storeKey]
   if (!store) return null
 
-  const conversationId = desc.adapterSessionId ?? parseResumeArgv(desc.argv) ?? (await discoverNativeConversationId(desc))
+  const conversationId = desc.adapterSessionId ?? parseResumeArgv(desc.argv, storeKey) ?? (await discoverNativeConversationId(desc))
   if (!conversationId) return null
 
   try {

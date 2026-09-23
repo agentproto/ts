@@ -10,6 +10,12 @@
  *  uses, rather than inventing a second limit. */
 export const MAX_LENGTH = 72
 
+/** Old native Claude transcripts can start with local-command bookkeeping.
+ * Some already-persisted descriptors have that text as their derived title. */
+function isInternalDerivedTitle(title: string): boolean {
+  return /^<(?:local-command-caveat|local-command-stdout|command-name|task-notification)>/i.test(title)
+}
+
 /** Structural narrowing for an `unknown` prompt payload — no `as` casts.
  *  `Record<string, unknown>` lets property access type-check without
  *  claiming to know the shape beyond "it's an object". */
@@ -62,6 +68,7 @@ export function deriveSessionTitle(message: unknown): string | undefined {
   if (raw === undefined) return undefined
   const collapsed = raw.replace(/\s+/g, " ").trim()
   if (collapsed === "") return undefined
+  if (isInternalDerivedTitle(collapsed)) return undefined
   // Cut at the first sentence end — precedent: session-story.ts's
   // `classifyRoute` does the same for chapter titles, at 42 chars; a tree
   // row and a tab have more room than a story chapter, so this uses 72
@@ -126,7 +133,7 @@ export interface SessionNameFields {
 export function sessionDisplayName(session: SessionNameFields): string {
   const userRenamed = session.renamedByUser ?? session.label !== undefined
   if (userRenamed && session.label !== undefined) return session.label
-  if (session.title !== undefined) return session.title
+  if (session.title !== undefined && !isInternalDerivedTitle(session.title)) return session.title
   if (session.label !== undefined) return session.label
   return `${session.adapterSlug ?? session.kind} · ${shortSessionId(session.id)}`
 }
