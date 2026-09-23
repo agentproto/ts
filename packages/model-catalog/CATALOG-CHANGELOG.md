@@ -159,3 +159,18 @@ for that.
 
 ### llm:huggingface
 - Removed: Qwen/Qwen3-4B-Instruct-2507
+
+## 2026-09-23
+
+### llm:openrouter
+- Added: anthropic/claude-opus-5.5, anthropic/claude-opus-5.5:batch, cohere/command-a-plus, deepseek/deepseek-v4.1-flash:batch, moonshotai/kimi-k3:batch, nex-agi/nex-n2.5-mini, nex-agi/nex-n2.5-pro, openai/gpt-6-luna, openai/gpt-6-luna-pro, openai/gpt-6-luna-pro:batch, openai/gpt-6-luna:batch, openai/gpt-6-sol, openai/gpt-6-sol-pro, openai/gpt-6-sol-pro:batch, openai/gpt-6-sol:batch, openai/gpt-oss-20b:batch, qwen/qwen3.8-omni-flash
+- Removed: deepseek/deepseek-v4-flash-0731:batch, deepseek/deepseek-v4-flash-vision-exp:batch, deepseek/deepseek-v4-pro-0813:batch, kwaipilot/kat-coder-pro-v2, meta/muse-glimmer-30b:batch, z-ai/glm-5.2:batch
+
+### llm:opencode-zen
+- Added: opencode/claude-opus-5-5, opencode/gpt-6-luna, opencode/gpt-6-sol, opencode/grok-4.7
+
+### llm:huggingface
+- Added: Qwen/Qwen3-4B-Instruct-2507, ibm-granite/granite-4.2-30b, swiss-ai/Apertus-70B-Instruct-2509, zai-org/GLM-4.6-FP8, zai-org/GLM-5.1-FP8
+
+### llm:context-windows
+- Added: claude-opus-5-5

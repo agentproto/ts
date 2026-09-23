@@ -171,6 +171,21 @@
           "cache_write": 6.25
         }
       },
+      "claude-opus-5-5": {
+        "id": "claude-opus-5-5",
+        "name": "Claude Opus 5.5",
+        "family": "claude-opus",
+        "release_date": "2026-09-22",
+        "provider": {
+          "npm": "@ai-sdk/anthropic"
+        },
+        "cost": {
+          "input": 4,
+          "output": 20,
+          "cache_read": 0.2,
+          "cache_write": 5
+        }
+      },
       "claude-sonnet-4": {
         "id": "claude-sonnet-4",
         "name": "Claude Sonnet 4",
@@ -795,6 +810,36 @@
           "cache_write": 12.5
         }
       },
+      "gpt-6-luna": {
+        "id": "gpt-6-luna",
+        "name": "GPT-6 Luna",
+        "family": "gpt-luna",
+        "release_date": "2026-09-22",
+        "provider": {
+          "npm": "@ai-sdk/openai"
+        },
+        "cost": {
+          "input": 0.1,
+          "output": 0.5,
+          "cache_read": 0.01,
+          "cache_write": 0.125
+        }
+      },
+      "gpt-6-sol": {
+        "id": "gpt-6-sol",
+        "name": "GPT-6 Sol",
+        "family": "gpt-sol",
+        "release_date": "2026-09-22",
+        "provider": {
+          "npm": "@ai-sdk/openai"
+        },
+        "cost": {
+          "input": 2,
+          "output": 10,
+          "cache_read": 0.2,
+          "cache_write": 2.5
+        }
+      },
       "grok-4.5": {
         "id": "grok-4.5",
         "name": "Grok 4.5",
@@ -821,6 +866,20 @@
           "input": 2,
           "output": 6,
           "cache_read": 0.5
+        }
+      },
+      "grok-4.7": {
+        "id": "grok-4.7",
+        "name": "Grok 4.7 (30% Off)",
+        "family": "grok",
+        "release_date": "2026-09-21",
+        "provider": {
+          "npm": "@ai-sdk/openai"
+        },
+        "cost": {
+          "input": 1.4,
+          "output": 4.2,
+          "cache_read": 0.35
         }
       },
       "grok-build-0.1": {

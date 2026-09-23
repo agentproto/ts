@@ -432,7 +432,7 @@
       "owner": "ideogram-ai",
       "is_official": true,
       "paper_url": "https://ideogram.ai/",
-      "run_count": 2194113,
+      "run_count": 2194138,
       "url": "https://replicate.com/ideogram-ai/ideogram-v2a",
       "visibility": "public",
       "weights_url": null
@@ -865,7 +865,7 @@
       "owner": "ideogram-ai",
       "is_official": true,
       "paper_url": "https://ideogram.ai/",
-      "run_count": 392441,
+      "run_count": 392446,
       "url": "https://replicate.com/ideogram-ai/ideogram-v2a-turbo",
       "visibility": "public",
       "weights_url": null
@@ -1182,7 +1182,7 @@
       "owner": "minimax",
       "is_official": true,
       "paper_url": null,
-      "run_count": 3220917,
+      "run_count": 3230128,
       "url": "https://replicate.com/minimax/image-01",
       "visibility": "public",
       "weights_url": null
@@ -1526,7 +1526,7 @@
       "owner": "bytedance",
       "is_official": true,
       "paper_url": "https://arxiv.org/pdf/2504.11346",
-      "run_count": 3411349,
+      "run_count": 3411359,
       "url": "https://replicate.com/bytedance/seedream-3",
       "visibility": "public",
       "weights_url": null
@@ -1836,7 +1836,7 @@
       "owner": "luma",
       "is_official": true,
       "paper_url": null,
-      "run_count": 3322810,
+      "run_count": 3322906,
       "url": "https://replicate.com/luma/photon",
       "visibility": "public",
       "weights_url": null
@@ -2184,7 +2184,7 @@
       "owner": "luma",
       "is_official": true,
       "paper_url": null,
-      "run_count": 1222004,
+      "run_count": 1249084,
       "url": "https://replicate.com/luma/photon-flash",
       "visibility": "public",
       "weights_url": null
@@ -2530,7 +2530,7 @@
       "owner": "prunaai",
       "is_official": false,
       "paper_url": null,
-      "run_count": 38202,
+      "run_count": 38203,
       "url": "https://replicate.com/prunaai/hidream-l1-full",
       "visibility": "public",
       "weights_url": null
@@ -2796,7 +2796,7 @@
       "owner": "google",
       "is_official": true,
       "paper_url": null,
-      "run_count": 5989336,
+      "run_count": 5990103,
       "url": "https://replicate.com/google/imagen-4-fast",
       "visibility": "public",
       "weights_url": null
@@ -3081,7 +3081,7 @@
       "owner": "google",
       "is_official": true,
       "paper_url": null,
-      "run_count": 1812390,
+      "run_count": 1812519,
       "url": "https://replicate.com/google/imagen-4-ultra",
       "visibility": "public",
       "weights_url": null
@@ -3408,7 +3408,7 @@
       "owner": "nvidia",
       "is_official": false,
       "paper_url": "https://arxiv.org/abs/2503.09641",
-      "run_count": 1132561,
+      "run_count": 1132675,
       "url": "https://replicate.com/nvidia/sana-sprint-1.6b",
       "visibility": "public",
       "weights_url": "https://huggingface.co/Efficient-Large-Model/Sana_Sprint_1.6B_1024px_diffusers"
@@ -4063,7 +4063,7 @@
       "owner": "prunaai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 8513743,
+      "run_count": 8514784,
       "url": "https://replicate.com/prunaai/hidream-l1-fast",
       "visibility": "public",
       "weights_url": "https://huggingface.co/HiDream-ai/HiDream-I1-Fast"
@@ -4435,7 +4435,7 @@
       "owner": "prunaai",
       "is_official": true,
       "paper_url": "https://bfl.ai/announcements/24-08-01-bfl",
-      "run_count": 44770553,
+      "run_count": 44790354,
       "url": "https://replicate.com/prunaai/flux-fast",
       "visibility": "public",
       "weights_url": "https://huggingface.co/black-forest-labs/FLUX.1-dev"
@@ -4755,7 +4755,7 @@
       "owner": "prunaai",
       "is_official": false,
       "paper_url": null,
-      "run_count": 7357,
+      "run_count": 7358,
       "url": "https://replicate.com/prunaai/sdxl-lightning",
       "visibility": "public",
       "weights_url": null
@@ -5301,7 +5301,7 @@
       "owner": "ideogram-ai",
       "is_official": true,
       "paper_url": "https://about.ideogram.ai/3.0",
-      "run_count": 2375583,
+      "run_count": 2375939,
       "url": "https://replicate.com/ideogram-ai/ideogram-v3-quality",
       "visibility": "public",
       "weights_url": null
@@ -5847,7 +5847,7 @@
       "owner": "ideogram-ai",
       "is_official": true,
       "paper_url": "https://about.ideogram.ai/3.0",
-      "run_count": 497556,
+      "run_count": 497772,
       "url": "https://replicate.com/ideogram-ai/ideogram-v3-balanced",
       "visibility": "public",
       "weights_url": null
@@ -6315,7 +6315,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 6176655,
+      "run_count": 6177681,
       "url": "https://replicate.com/black-forest-labs/flux-dev-lora",
       "visibility": "public",
       "weights_url": "https://huggingface.co/black-forest-labs/FLUX.1-dev"
@@ -6654,7 +6654,7 @@
       "owner": "bria",
       "is_official": true,
       "paper_url": "https://f4e04.share-eu1.hsforms.com/2nS45z_zIQu-3YKtbRbrKPQ?utm_campaign=125033698-3.2%20T2I%20Release&utm_medium=email&_hsmi=112237510&utm_content=112237510&utm_source=hs_automation",
-      "run_count": 172151,
+      "run_count": 172169,
       "url": "https://replicate.com/bria/image-3.2",
       "visibility": "public",
       "weights_url": "https://huggingface.co/briaai/BRIA-3.2"
@@ -7001,7 +7001,7 @@
       "owner": "google",
       "is_official": true,
       "paper_url": null,
-      "run_count": 8210789,
+      "run_count": 8211029,
       "url": "https://replicate.com/google/imagen-4",
       "visibility": "public",
       "weights_url": null
@@ -7346,7 +7346,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 53775993,
+      "run_count": 53793567,
       "url": "https://replicate.com/black-forest-labs/flux-kontext-pro",
       "visibility": "public",
       "weights_url": "https://huggingface.co/black-forest-labs"
@@ -7691,7 +7691,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 12550024,
+      "run_count": 12553801,
       "url": "https://replicate.com/black-forest-labs/flux-kontext-max",
       "visibility": "public",
       "weights_url": "https://huggingface.co/black-forest-labs"
@@ -8022,7 +8022,7 @@
       "owner": "prunaai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 1275954,
+      "run_count": 1276166,
       "url": "https://replicate.com/prunaai/wan-2.2-image",
       "visibility": "public",
       "weights_url": null
@@ -8349,7 +8349,7 @@
       "owner": "google",
       "is_official": true,
       "paper_url": null,
-      "run_count": 119787778,
+      "run_count": 119856210,
       "url": "https://replicate.com/google/nano-banana",
       "visibility": "public",
       "weights_url": null
@@ -8627,7 +8627,7 @@
       "owner": "wan-video",
       "is_official": true,
       "paper_url": null,
-      "run_count": 208736,
+      "run_count": 210190,
       "url": "https://replicate.com/wan-video/wan-2.7-image",
       "visibility": "public",
       "weights_url": null
@@ -8955,7 +8955,7 @@
       "owner": "google",
       "is_official": true,
       "paper_url": "https://deepmind.google/technologies/imagen-3/",
-      "run_count": 2173127,
+      "run_count": 2173149,
       "url": "https://replicate.com/google/imagen-3",
       "visibility": "public",
       "weights_url": null
@@ -9283,7 +9283,7 @@
       "owner": "google",
       "is_official": true,
       "paper_url": "https://deepmind.google/technologies/imagen-3/",
-      "run_count": 637246,
+      "run_count": 637308,
       "url": "https://replicate.com/google/imagen-3-fast",
       "visibility": "public",
       "weights_url": null
@@ -9670,7 +9670,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 32388574,
+      "run_count": 32487362,
       "url": "https://replicate.com/black-forest-labs/flux-2-klein-4b",
       "visibility": "public",
       "weights_url": "https://huggingface.co/black-forest-labs/FLUX.2-klein-4B"
@@ -10002,7 +10002,7 @@
       "owner": "bria",
       "is_official": true,
       "paper_url": null,
-      "run_count": 15362,
+      "run_count": 15366,
       "url": "https://replicate.com/bria/fibo",
       "visibility": "public",
       "weights_url": "https://huggingface.co/briaai/FIBO"
@@ -10353,7 +10353,7 @@
       "owner": "tencent",
       "is_official": true,
       "paper_url": "https://arxiv.org/abs/2509.23951",
-      "run_count": 100484,
+      "run_count": 100498,
       "url": "https://replicate.com/tencent/hunyuan-image-3",
       "visibility": "public",
       "weights_url": "https://huggingface.co/tencent/HunyuanImage-3.0"
@@ -10740,7 +10740,7 @@
       "owner": "bytedance",
       "is_official": true,
       "paper_url": null,
-      "run_count": 39599450,
+      "run_count": 39609016,
       "url": "https://replicate.com/bytedance/seedream-4",
       "visibility": "public",
       "weights_url": null
@@ -11086,7 +11086,7 @@
       "owner": "prunaai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 55249939,
+      "run_count": 55344084,
       "url": "https://replicate.com/prunaai/z-image-turbo",
       "visibility": "public",
       "weights_url": null
@@ -11421,7 +11421,7 @@
       "owner": "leonardoai",
       "is_official": true,
       "paper_url": "https://leonardo.ai/news/lucid-origin-ai-image-model/",
-      "run_count": 294100,
+      "run_count": 294138,
       "url": "https://replicate.com/leonardoai/lucid-origin",
       "visibility": "public",
       "weights_url": null
@@ -11706,7 +11706,7 @@
       "owner": "wan-video",
       "is_official": true,
       "paper_url": null,
-      "run_count": 371441,
+      "run_count": 374038,
       "url": "https://replicate.com/wan-video/wan-2.7-image-pro",
       "visibility": "public",
       "weights_url": null
@@ -12034,7 +12034,7 @@
       "owner": "recraft-ai",
       "is_official": true,
       "paper_url": "https://www.recraft.ai/blog/introducing-recraft-v4-design-taste-meets-image-generation",
-      "run_count": 23764,
+      "run_count": 23776,
       "url": "https://replicate.com/recraft-ai/recraft-v4-pro",
       "visibility": "public",
       "weights_url": null
@@ -12339,7 +12339,7 @@
       "owner": "xai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 5577097,
+      "run_count": 5599697,
       "url": "https://replicate.com/xai/grok-imagine-image",
       "visibility": "public",
       "weights_url": null
@@ -12713,7 +12713,7 @@
       "owner": "bytedance",
       "is_official": true,
       "paper_url": null,
-      "run_count": 3444644,
+      "run_count": 3448542,
       "url": "https://replicate.com/bytedance/seedream-5-lite",
       "visibility": "public",
       "weights_url": null
@@ -13096,7 +13096,7 @@
       "owner": "openai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 28273141,
+      "run_count": 28402258,
       "url": "https://replicate.com/openai/gpt-image-2",
       "visibility": "public",
       "weights_url": null
@@ -13424,7 +13424,7 @@
       "owner": "recraft-ai",
       "is_official": true,
       "paper_url": "https://www.recraft.ai/blog/introducing-recraft-v4-design-taste-meets-image-generation",
-      "run_count": 55077,
+      "run_count": 55195,
       "url": "https://replicate.com/recraft-ai/recraft-v4-svg",
       "visibility": "public",
       "weights_url": null
@@ -13844,7 +13844,7 @@
       "owner": "sourceful",
       "is_official": true,
       "paper_url": null,
-      "run_count": 25398,
+      "run_count": 25414,
       "url": "https://replicate.com/sourceful/riverflow-2.0-pro",
       "visibility": "public",
       "weights_url": null
@@ -14171,7 +14171,7 @@
       "owner": "bytedance",
       "is_official": true,
       "paper_url": null,
-      "run_count": 36596348,
+      "run_count": 36618607,
       "url": "https://replicate.com/bytedance/seedream-4.5",
       "visibility": "public",
       "weights_url": null
@@ -14460,7 +14460,7 @@
       "owner": "recraft-ai",
       "is_official": true,
       "paper_url": "https://www.recraft.ai/blog/introducing-recraft-v4-design-taste-meets-image-generation",
-      "run_count": 97,
+      "run_count": 98,
       "url": "https://replicate.com/recraft-ai/recraft-v4-styles-pro-svg",
       "visibility": "public",
       "weights_url": null
@@ -14788,7 +14788,7 @@
       "owner": "recraft-ai",
       "is_official": true,
       "paper_url": "https://www.recraft.ai/blog/introducing-recraft-v4-design-taste-meets-image-generation",
-      "run_count": 10964,
+      "run_count": 10982,
       "url": "https://replicate.com/recraft-ai/recraft-v4-pro-svg",
       "visibility": "public",
       "weights_url": null
@@ -15099,7 +15099,7 @@
       "owner": "google",
       "is_official": true,
       "paper_url": null,
-      "run_count": 35453615,
+      "run_count": 35495286,
       "url": "https://replicate.com/google/nano-banana-pro",
       "visibility": "public",
       "weights_url": null
@@ -15399,7 +15399,7 @@
       "owner": "prunaai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 319244,
+      "run_count": 319422,
       "url": "https://replicate.com/prunaai/p-image-lora",
       "visibility": "public",
       "weights_url": null
@@ -15646,7 +15646,7 @@
       "owner": "quiverai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 156,
+      "run_count": 157,
       "url": "https://replicate.com/quiverai/arrow-1.1-max",
       "visibility": "public",
       "weights_url": null
@@ -15893,7 +15893,7 @@
       "owner": "quiverai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 121,
+      "run_count": 122,
       "url": "https://replicate.com/quiverai/arrow-1.1",
       "visibility": "public",
       "weights_url": null
@@ -16335,7 +16335,7 @@
       "owner": "openai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 15907618,
+      "run_count": 15925960,
       "url": "https://replicate.com/openai/gpt-image-1.5",
       "visibility": "public",
       "weights_url": null
@@ -16734,7 +16734,7 @@
       "owner": "ai-forever",
       "is_official": false,
       "paper_url": null,
-      "run_count": 6181687,
+      "run_count": 6181688,
       "url": "https://replicate.com/ai-forever/kandinsky-2",
       "visibility": "public",
       "weights_url": null
@@ -17128,7 +17128,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 11243010,
+      "run_count": 11276750,
       "url": "https://replicate.com/black-forest-labs/flux-2-pro",
       "visibility": "public",
       "weights_url": null
@@ -17547,7 +17547,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 484268,
+      "run_count": 484725,
       "url": "https://replicate.com/black-forest-labs/flux-2-flex",
       "visibility": "public",
       "weights_url": null
@@ -18093,7 +18093,7 @@
       "owner": "ideogram-ai",
       "is_official": true,
       "paper_url": "https://about.ideogram.ai/3.0",
-      "run_count": 9518692,
+      "run_count": 9521959,
       "url": "https://replicate.com/ideogram-ai/ideogram-v3-turbo",
       "visibility": "public",
       "weights_url": null
@@ -18391,7 +18391,7 @@
       "owner": "google",
       "is_official": true,
       "paper_url": null,
-      "run_count": 19391597,
+      "run_count": 19461246,
       "url": "https://replicate.com/google/nano-banana-2",
       "visibility": "public",
       "weights_url": null
@@ -19297,7 +19297,7 @@
       "owner": "comfyui",
       "is_official": false,
       "paper_url": "https://github.com/replicate/cog-comfyui",
-      "run_count": 8850649,
+      "run_count": 8855903,
       "url": "https://replicate.com/comfyui/any-comfyui-workflow",
       "visibility": "public",
       "weights_url": null
@@ -19715,7 +19715,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 52510295,
+      "run_count": 52530198,
       "url": "https://replicate.com/black-forest-labs/flux-dev",
       "visibility": "public",
       "weights_url": "https://huggingface.co/black-forest-labs/FLUX.1-dev"
@@ -20163,7 +20163,7 @@
       "owner": "ideogram-ai",
       "is_official": true,
       "paper_url": "https://ideogram.ai/",
-      "run_count": 2929572,
+      "run_count": 2929611,
       "url": "https://replicate.com/ideogram-ai/ideogram-v2-turbo",
       "visibility": "public",
       "weights_url": "https://ideogram.ai/"
@@ -20625,7 +20625,7 @@
       "owner": "qwen",
       "is_official": true,
       "paper_url": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-Image/Qwen_Image.pdf",
-      "run_count": 1995514,
+      "run_count": 1996605,
       "url": "https://replicate.com/qwen/qwen-image",
       "visibility": "public",
       "weights_url": "https://huggingface.co/Qwen/Qwen-Image"
@@ -20921,7 +20921,7 @@
       "owner": "prunaai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 19818660,
+      "run_count": 19901788,
       "url": "https://replicate.com/prunaai/p-image",
       "visibility": "public",
       "weights_url": null
@@ -21288,7 +21288,7 @@
       "owner": "datacte",
       "is_official": false,
       "paper_url": null,
-      "run_count": 6351865,
+      "run_count": 6356640,
       "url": "https://replicate.com/datacte/proteus-v0.3",
       "visibility": "public",
       "weights_url": "https://huggingface.co/dataautogpt3/ProteusV0.3"
@@ -21653,7 +21653,7 @@
       "owner": "ai-forever",
       "is_official": false,
       "paper_url": null,
-      "run_count": 10092887,
+      "run_count": 10092888,
       "url": "https://replicate.com/ai-forever/kandinsky-2.2",
       "visibility": "public",
       "weights_url": null
@@ -22072,7 +22072,7 @@
       "owner": "fofr",
       "is_official": false,
       "paper_url": null,
-      "run_count": 12510375,
+      "run_count": 12510424,
       "url": "https://replicate.com/fofr/sdxl-emoji",
       "visibility": "public",
       "weights_url": null
@@ -22412,7 +22412,7 @@
       "owner": "bytedance",
       "is_official": false,
       "paper_url": "https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_report.pdf",
-      "run_count": 1039359330,
+      "run_count": 1039390889,
       "url": "https://replicate.com/bytedance/sdxl-lightning-4step",
       "visibility": "public",
       "weights_url": "https://huggingface.co/ByteDance/SDXL-Lightning"
@@ -22860,7 +22860,7 @@
       "owner": "ideogram-ai",
       "is_official": true,
       "paper_url": "https://ideogram.ai/",
-      "run_count": 2876560,
+      "run_count": 2876609,
       "url": "https://replicate.com/ideogram-ai/ideogram-v2",
       "visibility": "public",
       "weights_url": "https://ideogram.ai/"
@@ -23489,7 +23489,7 @@
       "owner": "sdxl-based",
       "is_official": false,
       "paper_url": "https://huggingface.co/SG161222/RealVisXL_V3.0",
-      "run_count": 2546755,
+      "run_count": 2547413,
       "url": "https://replicate.com/sdxl-based/realvisxl-v3-multi-controlnet-lora",
       "visibility": "public",
       "weights_url": null
@@ -23878,7 +23878,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 14209865,
+      "run_count": 14210235,
       "url": "https://replicate.com/black-forest-labs/flux-pro",
       "visibility": "public",
       "weights_url": null
@@ -24190,7 +24190,7 @@
       "owner": "tstramer",
       "is_official": false,
       "paper_url": null,
-      "run_count": 2374998,
+      "run_count": 2375000,
       "url": "https://replicate.com/tstramer/material-diffusion",
       "visibility": "public",
       "weights_url": null
@@ -24588,7 +24588,7 @@
       "owner": "fermatresearch",
       "is_official": false,
       "paper_url": null,
-      "run_count": 1022635,
+      "run_count": 1022656,
       "url": "https://replicate.com/fermatresearch/sdxl-controlnet-lora",
       "visibility": "public",
       "weights_url": null
@@ -24898,7 +24898,7 @@
       "owner": "lucataco",
       "is_official": false,
       "paper_url": "https://huggingface.co/SG161222/Realistic_Vision_V5.1_noVAE",
-      "run_count": 4314513,
+      "run_count": 4314520,
       "url": "https://replicate.com/lucataco/realistic-vision-v5.1",
       "visibility": "public",
       "weights_url": "https://huggingface.co/SG161222/Realistic_Vision_V5.1_noVAE"
@@ -25609,7 +25609,7 @@
       "owner": "stability-ai",
       "is_official": false,
       "paper_url": "https://arxiv.org/abs/2307.01952",
-      "run_count": 86361468,
+      "run_count": 86369736,
       "url": "https://replicate.com/stability-ai/sdxl",
       "visibility": "public",
       "weights_url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0"
@@ -25962,7 +25962,7 @@
       "owner": "stability-ai",
       "is_official": true,
       "paper_url": "https://arxiv.org/abs/2403.03206",
-      "run_count": 2138148,
+      "run_count": 2138352,
       "url": "https://replicate.com/stability-ai/stable-diffusion-3.5-large",
       "visibility": "public",
       "weights_url": "https://huggingface.co/stabilityai/stable-diffusion-3.5-large"
@@ -26317,7 +26317,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": "https://blackforestlabs.ai/flux-1-1-ultra/",
-      "run_count": 21328208,
+      "run_count": 21331973,
       "url": "https://replicate.com/black-forest-labs/flux-1.1-pro-ultra",
       "visibility": "public",
       "weights_url": null
@@ -26710,7 +26710,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 4121607,
+      "run_count": 4128218,
       "url": "https://replicate.com/black-forest-labs/flux-2-max",
       "visibility": "public",
       "weights_url": null
@@ -27086,7 +27086,7 @@
       "owner": "stability-ai",
       "is_official": false,
       "paper_url": "https://arxiv.org/abs/2112.10752",
-      "run_count": 111125944,
+      "run_count": 111126170,
       "url": "https://replicate.com/stability-ai/stable-diffusion",
       "visibility": "public",
       "weights_url": null
@@ -27404,7 +27404,7 @@
       "owner": "fofr",
       "is_official": false,
       "paper_url": null,
-      "run_count": 2553729,
+      "run_count": 2555869,
       "url": "https://replicate.com/fofr/sticker-maker",
       "visibility": "public",
       "weights_url": null
@@ -27775,7 +27775,7 @@
       "owner": "playgroundai",
       "is_official": false,
       "paper_url": "https://arxiv.org/abs/2206.00364",
-      "run_count": 3305225,
+      "run_count": 3305445,
       "url": "https://replicate.com/playgroundai/playground-v2.5-1024px-aesthetic",
       "visibility": "public",
       "weights_url": "https://huggingface.co/playgroundai/playground-v2.5-1024px-aesthetic"
@@ -28108,7 +28108,7 @@
       "owner": "jagilley",
       "is_official": false,
       "paper_url": null,
-      "run_count": 38357189,
+      "run_count": 38357195,
       "url": "https://replicate.com/jagilley/controlnet-scribble",
       "visibility": "public",
       "weights_url": null
@@ -28738,7 +28738,7 @@
       "owner": "fofr",
       "is_official": false,
       "paper_url": null,
-      "run_count": 232535,
+      "run_count": 232545,
       "url": "https://replicate.com/fofr/sdxl-multi-controlnet-lora",
       "visibility": "public",
       "weights_url": null
@@ -29151,7 +29151,7 @@
       "owner": "fofr",
       "is_official": false,
       "paper_url": null,
-      "run_count": 1584528,
+      "run_count": 1584552,
       "url": "https://replicate.com/fofr/latent-consistency-model",
       "visibility": "public",
       "weights_url": null
@@ -29493,7 +29493,7 @@
       "owner": "lucataco",
       "is_official": false,
       "paper_url": null,
-      "run_count": 233208,
+      "run_count": 233210,
       "url": "https://replicate.com/lucataco/dreamshaper-xl-turbo",
       "visibility": "public",
       "weights_url": null
@@ -30263,7 +30263,7 @@
       "owner": "adirik",
       "is_official": false,
       "paper_url": null,
-      "run_count": 617679,
+      "run_count": 617684,
       "url": "https://replicate.com/adirik/realvisxl-v3.0-turbo",
       "visibility": "public",
       "weights_url": null
@@ -30628,7 +30628,7 @@
       "owner": "datacte",
       "is_official": false,
       "paper_url": null,
-      "run_count": 12762945,
+      "run_count": 12767184,
       "url": "https://replicate.com/datacte/proteus-v0.2",
       "visibility": "public",
       "weights_url": null
@@ -30981,7 +30981,7 @@
       "owner": "stability-ai",
       "is_official": true,
       "paper_url": "https://arxiv.org/abs/2403.03206",
-      "run_count": 124042,
+      "run_count": 124066,
       "url": "https://replicate.com/stability-ai/stable-diffusion-3.5-medium",
       "visibility": "public",
       "weights_url": "https://huggingface.co/stabilityai/stable-diffusion-3.5-medium"
@@ -31369,7 +31369,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 694504568,
+      "run_count": 694662168,
       "url": "https://replicate.com/black-forest-labs/flux-schnell",
       "visibility": "public",
       "weights_url": "https://huggingface.co/black-forest-labs/FLUX.1-schnell"
@@ -31722,7 +31722,7 @@
       "owner": "stability-ai",
       "is_official": true,
       "paper_url": "https://arxiv.org/abs/2403.03206",
-      "run_count": 1142155,
+      "run_count": 1142342,
       "url": "https://replicate.com/stability-ai/stable-diffusion-3.5-large-turbo",
       "visibility": "public",
       "weights_url": "https://huggingface.co/stabilityai/stable-diffusion-3.5-large-turbo"
@@ -32089,7 +32089,7 @@
       "owner": "recraft-ai",
       "is_official": true,
       "paper_url": "https://recraft.ai",
-      "run_count": 8684397,
+      "run_count": 8686857,
       "url": "https://replicate.com/recraft-ai/recraft-v3",
       "visibility": "public",
       "weights_url": null
@@ -32442,7 +32442,7 @@
       "owner": "recraft-ai",
       "is_official": true,
       "paper_url": "https://recraft.ai",
-      "run_count": 463694,
+      "run_count": 464202,
       "url": "https://replicate.com/recraft-ai/recraft-v3-svg",
       "visibility": "public",
       "weights_url": null
@@ -32761,7 +32761,7 @@
       "owner": "nvidia",
       "is_official": false,
       "paper_url": "https://arxiv.org/abs/2410.10629",
-      "run_count": 264187,
+      "run_count": 264219,
       "url": "https://replicate.com/nvidia/sana",
       "visibility": "public",
       "weights_url": "https://huggingface.co/Efficient-Large-Model/Sana_1600M_1024px"
