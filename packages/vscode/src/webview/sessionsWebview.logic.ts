@@ -153,6 +153,7 @@ export function previewTextFor(session: Pick<SessionSummary, "activitySummary">)
  */
 export type WebviewRowStatus =
   | "working"
+  | "starting" // status "starting" — process is up but no agent behind it yet; in motion, not busy
   | "delegating" // idle itself, but its subtree is mid-turn (#session-visibility)
   | "awaiting"
   | "awaiting-bg" // ended its turn with background tasks still pending — a silent dead end unless re-prompted
@@ -177,11 +178,12 @@ const ACTIVITY_TO_ROW_STATUS: Readonly<Record<SessionActivity, WebviewRowStatus>
 /**
  * Busiest-first rank for the visibility states (#session-visibility), used to
  * roll a collapsed parent up to the busiest state in its subtree and to sort
- * within a section. Precedence: working > delegating > awaiting > stalled >
- * awaiting-bg > parked > idle > terminal.
+ * within a section. Precedence: working > starting > delegating > awaiting >
+ * stalled > awaiting-bg > parked > idle > terminal.
  */
 export const ROW_STATUS_RANK: Readonly<Record<WebviewRowStatus, number>> = {
-  working: 9,
+  working: 10,
+  starting: 9,
   delegating: 8,
   awaiting: 7,
   stalled: 6,
@@ -206,6 +208,7 @@ export function busierRowStatus(a: WebviewRowStatus, b: WebviewRowStatus): Webvi
  */
 const LIVE_SUBTREE_STATUSES: readonly WebviewRowStatus[] = [
   "working",
+  "starting",
   "delegating",
   "awaiting",
   "stalled",
@@ -231,9 +234,12 @@ export function defaultExpandedFor(subtreeStatus: WebviewRowStatus): boolean {
  * `awaiting-bg` row status — see {@link ACTIVITY_TO_ROW_STATUS}), then refines
  * a genuinely-idle (alive, quiet, not-awaiting, no bg tasks) session into
  * "delegating" (its subtree is mid-turn) or "parked" (a supervisor is waiting
- * on it). These refine ONLY `idle` — never override working/awaiting/
- * awaiting-bg/terminal — so the precedence busy > delegating > awaiting >
- * stalled > awaiting-bg > parked > quiet holds.
+ * on it). A `status === "starting"` session the classifier folds into
+ * `working` refines to "starting" — in motion, but no agent behind it yet, so
+ * it must not read as a busy session. These refine ONLY `idle`/`working` —
+ * never override awaiting/awaiting-bg/terminal — so the precedence busy >
+ * starting > delegating > awaiting > stalled > awaiting-bg > parked > quiet
+ * holds.
  */
 export function webviewRowStatus(
   session: SessionSummary,
@@ -252,6 +258,10 @@ export function webviewRowStatus(
     if ((session.childrenBusy ?? 0) > 0) return "delegating"
     if ((session.watchers ?? 0) > 0) return "parked"
   }
+  // A session whose daemon status is still "starting" folds into `working`
+  // upstream (coming up IS in motion), but it has no agent behind it yet —
+  // present it as its own state rather than a busy one.
+  if (base === "working" && session.status === "starting") return "starting"
   return base
 }
 
@@ -611,6 +621,9 @@ const SECTION_HINTS: Readonly<Partial<Record<SectionKey, string>>> = {
 const SECTION_BY_STATUS: Readonly<Record<WebviewRowStatus, SectionKey>> = {
   awaiting: "needs-you",
   working: "running",
+  // A starting session is coming up, not busy — but it is still live, so it
+  // stays in Running rather than sinking into Quiet.
+  starting: "running",
   // A delegating parent is actively working (through its subtree), so it sorts
   // with the live sessions rather than sinking into Quiet.
   delegating: "running",
@@ -766,6 +779,10 @@ function toRow(
   const ws = workspaceFor(config, session)
   const identity = nameIdentityFor(session)
   const isolation = isolationLabelFor(session)
+  const rowStatus = webviewRowStatus(session, now, attentionDelaySec)
+  // A starting session usually has no activity yet — never let it look like it
+  // said something; a quiet "booting…" in the preview slot is truthful.
+  const message = previewTextFor(session) ?? (rowStatus === "starting" ? "booting…" : undefined)
   const inPlace = isolation === "in-place"
   const tagTitleParts = [session.cwd, inPlace ? "runs in-place" : "isolated worktree"].filter(
     (p): p is string => Boolean(p),
@@ -773,7 +790,7 @@ function toRow(
   return {
     id: session.id,
     session,
-    status: webviewRowStatus(session, now, attentionDelaySec),
+    status: rowStatus,
     lane: laneOf(session, byId),
     orphaned:
       autoGroupOf(session, byId) === "task" &&
@@ -782,7 +799,7 @@ function toRow(
       !byId.has(session.parentSessionId),
     name: identity.name,
     idMono: identity.idMono,
-    message: previewTextFor(session),
+    message,
     tag: inPlace ? (ws?.label ?? "") : isolation,
     tagTitle: tagTitleParts.length > 0 ? tagTitleParts.join(" · ") : undefined,
     logo: adapterLogoFor(session.adapterSlug ?? session.kind),
@@ -1144,6 +1161,7 @@ export function missionSummaryFor(tree: readonly WebviewRow[]): MissionSummary |
   if (!root) return undefined
   const byStatus: Record<WebviewRowStatus, number> = {
     working: 0,
+    starting: 0,
     delegating: 0,
     awaiting: 0,
     "awaiting-bg": 0,
@@ -1160,6 +1178,7 @@ export function missionSummaryFor(tree: readonly WebviewRow[]): MissionSummary |
 
 const MISSION_STATUS_LABELS: Readonly<Record<WebviewRowStatus, string>> = {
   working: "running",
+  starting: "starting",
   delegating: "delegating",
   awaiting: "needs you",
   stalled: "stalled",
@@ -1179,6 +1198,7 @@ const MISSION_STATUS_LABELS: Readonly<Record<WebviewRowStatus, string>> = {
 export function missionCountsText(summary: MissionSummary): string {
   const order: readonly WebviewRowStatus[] = [
     "working",
+    "starting",
     "delegating",
     "awaiting",
     "stalled",

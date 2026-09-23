@@ -284,6 +284,18 @@ describe("sessions webview — render", () => {
     expect(row.querySelector(".dot.bg")).toBeTruthy()
   })
 
+  it("renders a starting session with a .dot.starting outline dot and a starting chip, not .dot.working", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage({ groups: [group("running", "Running", [{ ...ROW_A, status: "starting" }])] }))
+    const row = el(panel, "list").querySelector('[data-id="s1"]')!
+    // The dot is the pulsing-outline starting variant, never the busy pulse.
+    expect(row.querySelector(".dot.starting")).toBeTruthy()
+    expect(row.querySelector(".dot.working")).toBeNull()
+    // A short in-line chip says it in words on the row's title line.
+    const chip = row.querySelector(".name .chip-starting")!
+    expect(chip.textContent).toBe("starting")
+  })
+
   it("renders a small pulsing dot (no icon/count) after cost for pending background tasks, dot uses its own awaiting-bg color", () => {
     const panel = renderPanel()
     // awaiting-bg sessions share the same "quiet" list as everything else —
