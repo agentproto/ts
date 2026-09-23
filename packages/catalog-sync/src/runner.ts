@@ -166,6 +166,16 @@ export async function runGenerators(
             : {}),
         })
         if (!res.ok) {
+          // A failing endpoint (e.g. xAI 403 on exhausted credits) must not
+          // crash the whole multi-provider run when a committed snapshot
+          // exists — degrade to offline, like the missing-env branch above.
+          if (existing !== undefined) {
+            process.stderr.write(
+              `catalog-sync: skipping refresh of "${src.id}" — fetch ${src.url} ` +
+                `failed: ${res.status} ${res.statusText}; reusing committed snapshot.\n`
+            )
+            return JSON.parse(existing)
+          }
           throw new Error(
             `catalog-sync: fetch ${src.url} failed: ${res.status} ${res.statusText}`
           )
