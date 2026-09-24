@@ -427,8 +427,10 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
             : " — no agent refs are configured for this compile (not running in an app context?)"),
       )
     }
-    adapter = resolved.adapter
-    options = resolved.options
+    // An explicit step-level declaration is the author's override; the
+    // agent-ref resolution only supplies the DEFAULT.
+    if (adapter === undefined) adapter = resolved.adapter
+    if (options === undefined) options = resolved.options
   }
 
   return buildAgentStep(id, {
