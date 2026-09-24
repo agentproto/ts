@@ -359,6 +359,40 @@ describe("compileWorkflow — declarative agent step", () => {
     expect(step.options).toEqual({ agent: "/apps/my-app/.agentproto/agents/implementer/AGENT.md" })
   })
 
+  it("explicit step.adapter and step.options override the agent-ref resolution", () => {
+    const wf = defineWorkflow({
+      name: "Explicit adapter",
+      id: "explicit-adapter",
+      description: "Author-declared adapter wins over the ref-resolved default.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "s1",
+          kind: "agent",
+          adapter: "opencode",
+          options: { agent: "/explicit/path/AGENT.md" },
+          agent: { ref: "@my-app/implementer" },
+          prompt: "Do the thing.",
+        },
+      ],
+    })
+    const compiled = compileWorkflow(wf, {
+      tools,
+      candidates,
+      agentRefs: {
+        "@my-app/implementer": {
+          adapter: "mastra-agent",
+          options: { agent: "/apps/my-app/.agentproto/agents/implementer/AGENT.md" },
+        },
+      },
+    })
+    const step = compiled.steps[0] as AgentStep
+    expect(step.adapter).toBe("opencode")
+    expect(step.options).toEqual({ agent: "/explicit/path/AGENT.md" })
+  })
+
   it("rejects an empty agent.ref", () => {
     const wf = defineWorkflow({
       name: "Empty ref",
