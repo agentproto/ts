@@ -27,12 +27,17 @@
  *                                        merged on ui/notifications/host-context-changed
  *   requestDisplayMode(mode)           — ui/request-display-mode (inline|fullscreen|pip)
  *
- * Display-mode toggle: the bridge also injects two floating buttons
+ * Display-mode toggle: the bridge also mounts two floating buttons
  * (fullscreen + pip) in the top-right corner of every panel, shown only for
- * the modes the host actually advertises via hostContext.availableDisplayModes
- * — same pattern as guilde's canvas.app.ts canvasShellHtml() (the reference
- * implementation that renders correctly in Claude hosts). No auto-request:
- * panels stay inline until the user clicks.
+ * the modes the host actually advertises via hostContext.availableDisplayModes.
+ * No auto-request: panels stay inline until the user clicks. The buttons
+ * themselves are NOT implemented here — `@agentproto/app-client/display-mode`
+ * is the one implementation, shared with the `window.McpApp` bridge injected
+ * into installed apps (`packages/runtime/src/app-ui-apps.ts`); this module
+ * only hands it `getHostContext`/`onHostContext`/`requestDisplayMode`. It
+ * also leaves `window.AgentprotoUI.installDisplayMode` defined in the panel,
+ * which is what a panel with its own header calls to place the toggle
+ * inline instead (see that module's `mountToggle`).
  *
  * Standalone HTTP mode: `GET /apps/:appId/ui` (packages/runtime
  * http-server.ts) serves this exact script with NO postMessage host on the
@@ -64,7 +69,7 @@
  * depend on which injector happened to run. There is no host in standalone
  * mode, so `initBridge()` seeds a default `hostContext` of `{displayMode:
  * 'inline', availableDisplayModes: []}` — an empty `availableDisplayModes`
- * is what keeps the `#dm`/`#pin` toggle buttons hidden (they only show for
+ * is what keeps the display-mode toggle buttons hidden (they only show for
  * modes `hostContext.availableDisplayModes` lists), rather than rendering
  * two buttons with nothing to switch to.
  *
@@ -82,6 +87,8 @@
  * between the two panel paths and worth a follow-up if this bridge ever
  * grows those methods.
  */
+
+import { DISPLAY_MODE_SCRIPT_BODY } from "@agentproto/app-client/display-mode"
 
 export function panelBridgeScript(appName: string): string {
   return `// ── MCP Apps bridge (shared: panel-bridge.ts) ──
@@ -159,7 +166,7 @@ function initBridge(){
     return window.McpApp.connect().then(function(conn){
       _standaloneApp = conn;
       // No host to advertise a hostContext — default to inline with no
-      // other modes available, which keeps the #dm/#pin toggle buttons
+      // other modes available, which keeps the display-mode toggle buttons
       // hidden (they only show for modes hostContext.availableDisplayModes
       // lists) instead of rendering two buttons with nothing to switch to.
       _setHostContext({displayMode: 'inline', availableDisplayModes: []});
@@ -201,69 +208,15 @@ function callTool(name, args){
   });
 }
 
-// ── Display-mode toggle buttons (NO auto-request) ──────────────────────
-// Injected by the shared bridge so every panel gets them without touching
-// its own markup. Mirrors guilde canvas.app.ts canvasShellHtml(): the
-// panel stays inline by default; the user expands on demand. Buttons only
-// appear for modes the host advertises in hostContext.availableDisplayModes.
-(function(){
-  function mount(){
-    var style = document.createElement('style');
-    style.textContent = '#dm,#pin{display:none;position:fixed;top:8px;z-index:10;'
-      + 'border:1px solid #d0d0d0;background:#fff;color:#1a1a1a;'
-      + 'font:600 13px/1 system-ui,sans-serif;padding:7px 12px;border-radius:6px;'
-      + 'cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.18)}'
-      + '#dm{right:8px}#pin{right:118px}'
-      + '#dm:hover,#pin:hover{background:#f2f2f2;border-color:#b0b0b0}'
-      + '@media (prefers-color-scheme:dark){'
-      + '#dm,#pin{border-color:#555;background:#2a2a2a;color:#f0f0f0;box-shadow:0 1px 4px rgba(0,0,0,.5)}'
-      + '#dm:hover,#pin:hover{background:#333;border-color:#777}}';
-    document.head.appendChild(style);
-
-    var btn = document.createElement('button');
-    btn.id = 'dm'; btn.type = 'button'; btn.title = "Basculer l'affichage";
-    var pin = document.createElement('button');
-    pin.id = 'pin'; pin.type = 'button'; pin.title = 'Épingler sur le côté (pip)';
-    document.body.appendChild(pin);
-    document.body.appendChild(btn);
-
-    function has(avail, m){ return !!avail && avail.indexOf(m) >= 0; }
-
-    // Re-sync button visibility + label from the current host context.
-    function syncBtn(ctx){
-      ctx = ctx || {};
-      var avail = ctx.availableDisplayModes;
-      // Diagnostic: what does THIS host actually advertise? (inline/fullscreen/pip)
-      console.log('[mcp-app] displayMode=', ctx.displayMode,
-                  'availableDisplayModes=', avail);
-
-      // Fullscreen toggle button.
-      if (has(avail, 'fullscreen')){
-        btn.style.display = 'block';
-        btn.textContent = (ctx.displayMode === 'fullscreen') ? '⤡ Réduire' : '⤢ Agrandir';
-      } else { btn.style.display = 'none'; }
-
-      // Dedicated pip ("pinned on side") button — only if the host advertises pip.
-      if (has(avail, 'pip')){
-        pin.style.display = 'block';
-        pin.textContent = (ctx.displayMode === 'pip') ? '⤡ Détacher' : '📌 Épingler';
-      } else { pin.style.display = 'none'; }
-    }
-
-    onHostContext(syncBtn);
-
-    btn.addEventListener('click', function(){
-      var ctx = getHostContext() || {};
-      var inPanel = (ctx.displayMode === 'fullscreen' || ctx.displayMode === 'pip');
-      requestDisplayMode(inPanel ? 'inline' : 'fullscreen').catch(function(){});
-    });
-
-    pin.addEventListener('click', function(){
-      var ctx = getHostContext() || {};
-      requestDisplayMode(ctx.displayMode === 'pip' ? 'inline' : 'pip').catch(function(){});
-    });
-  }
-  if (document.body) mount();
-  else document.addEventListener('DOMContentLoaded', mount);
-})();`
+// ── Display-mode toggle (shared: @agentproto/app-client/display-mode) ──
+// The installer is inlined verbatim (it is self-contained and idempotent),
+// then handed this panel's own JSON-RPC plumbing. NO auto-request: the
+// panel stays inline until the user clicks, and the buttons only appear for
+// the modes the host advertises in hostContext.availableDisplayModes.
+${DISPLAY_MODE_SCRIPT_BODY}
+var displayMode = window.AgentprotoUI.installDisplayMode({
+  getHostContext: getHostContext,
+  onHostContext: onHostContext,
+  requestDisplayMode: requestDisplayMode
+});`
 }

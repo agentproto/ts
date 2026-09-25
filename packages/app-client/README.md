@@ -139,6 +139,61 @@ hardcode a harness/model `<select>` again:
 `getRunner()` never returns `access`/`profileRef` — the daemon's default
 harness preset resolves billing for whichever harness the caller picked.
 
+## Display-mode toggle (⤢ / ⤡)
+
+`@agentproto/app-client/display-mode` exports `DISPLAY_MODE_SCRIPT` (and the
+unwrapped `DISPLAY_MODE_SCRIPT_BODY`), injected next to the bridge the same
+way `RUNNER_SELECT_SCRIPT` is. It defines
+`window.AgentprotoUI.installDisplayMode(api, opts)` — the ONE implementation
+of the floating fullscreen toggle, shared by the built-in daemon panels
+(`@agentproto/apps`' `panelBridgeScript`) and every installed app's UI
+(`window.McpApp`, injected by `@agentproto/runtime`).
+
+An app doesn't install it — the bridge already did. What an app gets is the
+controller, on `window.McpApp.displayMode` (and on the object
+`connect()` resolves to):
+
+```js
+const app = await window.McpApp.connect()
+
+app.displayMode.get()            // "inline" | "fullscreen" | "pip"
+app.displayMode.available()      // what the host advertises, e.g. ["inline","fullscreen"]
+await app.displayMode.request("fullscreen")  // resolves with the mode actually set
+app.displayMode.onChange((mode, hostContext) => { /* … */ })
+app.displayMode.mountToggle(document.getElementById("my-header")) // inline button
+```
+
+Defaults, and how to change them:
+
+| Want | Do |
+|---|---|
+| Floating ⤢ in the top-right, shown only for modes the host advertises | nothing — this is the default |
+| The toggle in your own header instead | `<meta name="agentproto-display-toggle" content="none">`, then `mountToggle(el)` |
+| A toggle against a host that advertises nothing but may still honour the request | `<meta name="agentproto-display-toggle" content="optimistic">` — shown on spec, hidden **permanently** on the first refusal |
+| No toggle at all (the host has its own, e.g. Claude Desktop) | nothing — an unadvertised mode is never offered |
+
+`connect({ displayToggle: "none" | "auto" | "optimistic" })` does the same as
+the meta tag and wins over it.
+
+Placement follows the host: `hostContext.safeAreaInsets` (ext-apps
+`McpUiHostContext`) is re-read on every `host-context-changed` and published
+as `--agentproto-dm-safe-top` / `--agentproto-dm-safe-right`, so the button
+clears host chrome instead of hiding under it. Restyle or reposition it from
+your own CSS — every value reads an overridable custom property first:
+
+```css
+:root {
+  --agentproto-dm-top: 12px;   /* overrides the safe-area offset */
+  --agentproto-dm-right: 12px;
+  --agentproto-dm-bg: #fff;
+  --agentproto-dm-fg: #111;
+  --agentproto-dm-border: #ddd;
+}
+```
+
+Colours otherwise follow `hostContext.theme`, falling back to
+`prefers-color-scheme` for hosts that send none.
+
 ## License
 
 Apache-2.0 — see [LICENSE](./LICENSE).

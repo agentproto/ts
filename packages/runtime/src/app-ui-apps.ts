@@ -14,6 +14,7 @@
 import { readFile } from "node:fs/promises"
 import { z } from "zod"
 import { RUNNER_SELECT_SCRIPT } from "@agentproto/app-client/runner-select"
+import { DISPLAY_MODE_SCRIPT } from "@agentproto/app-client/display-mode"
 import type { AppRegistry } from "./app-registry.js"
 import type { AgnoMcpApp } from "@agentproto/apps"
 
@@ -48,13 +49,40 @@ interface UiHtmlCache {
  * - `onTeardown(cb)` — register a cleanup callback invoked on
  *   `ui/resource-teardown` from the host, at which point the bridge also
  *   replies `{result:{}}` automatically.
+ * - `getHostContext()` / `onHostContext(cb)` — the host context captured
+ *   from the `ui/initialize` result and merged on every
+ *   `ui/notifications/host-context-changed` (the notification carries only
+ *   the changed keys, per the ext-apps spec).
+ * - `displayMode` — `{get, available, request, onChange, mountToggle}`, the
+ *   shared controller from `@agentproto/app-client/display-mode` (also
+ *   published as `window.McpApp.displayMode` once connected). It is what
+ *   mounts the floating ⤢ toggle; an app that wants the control in its own
+ *   header opts the floating one out (`<meta name="agentproto-display-toggle"
+ *   content="none">`, or `connect({displayToggle: "none"})`) and calls
+ *   `displayMode.mountToggle(el)` instead.
  */
-const MCP_APP_BRIDGE_SCRIPT = `<script>
+export const MCP_APP_BRIDGE_SCRIPT = `<script>
 (function () {
   window.__AGENTPROTO_UI_TRANSPORT__ = "mcp";
   if (window.McpApp) return;
   var nextId = 1, pending = {}, teardownCbs = [];
+  var hostContext = null, hostContextCbs = [];
   function post(m) { window.parent.postMessage(m, "*"); }
+  function getHostContext() { return hostContext; }
+  function onHostContext(cb) {
+    hostContextCbs.push(cb);
+    // Replay the last context so a late subscriber isn't stuck blind.
+    if (hostContext) { try { cb(hostContext); } catch (_) {} }
+  }
+  function setHostContext(ctx) {
+    if (!ctx || typeof ctx !== "object") return;
+    // host-context-changed carries only the changed keys — merge, matching
+    // the official ext-apps App behaviour.
+    hostContext = Object.assign({}, hostContext || {}, ctx);
+    for (var i = 0; i < hostContextCbs.length; i++) {
+      try { hostContextCbs[i](hostContext); } catch (_) {}
+    }
+  }
   window.addEventListener("message", function (e) {
     var m = e.data;
     if (typeof m === "string") { try { m = JSON.parse(m); } catch (_) { return; } }
@@ -64,6 +92,7 @@ const MCP_APP_BRIDGE_SCRIPT = `<script>
       post({ jsonrpc: "2.0", id: m.id, result: {} });
       return;
     }
+    if (m.method === "ui/notifications/host-context-changed") { setHostContext(m.params || {}); return; }
     if (m.id != null && pending[m.id]) { var cb = pending[m.id]; delete pending[m.id]; cb(m.result, m.error); }
   });
   function request(method, params) {
@@ -73,15 +102,40 @@ const MCP_APP_BRIDGE_SCRIPT = `<script>
       post({ jsonrpc: "2.0", id: id, method: method, params: params });
     });
   }
+  function requestDisplayMode(mode) { return request("ui/request-display-mode", { mode: mode }); }
+  // The shared toggle (@agentproto/app-client/display-mode), injected right
+  // after this script. Absent only when the app ships its own
+  // window.AgentprotoUI namespace, which suppresses that injection — the
+  // fallback keeps window.McpApp.displayMode callable either way.
+  function installDisplayMode(opts) {
+    var api = { getHostContext: getHostContext, onHostContext: onHostContext, requestDisplayMode: requestDisplayMode };
+    if (window.AgentprotoUI && window.AgentprotoUI.installDisplayMode) {
+      return window.AgentprotoUI.installDisplayMode(api, opts);
+    }
+    return {
+      get: function () { return (hostContext && hostContext.displayMode) || "inline"; },
+      available: function () { return (hostContext && hostContext.availableDisplayModes) || []; },
+      request: requestDisplayMode,
+      onChange: function (cb) { onHostContext(function (c) { cb((c && c.displayMode) || "inline", c); }); return function () {}; },
+      mountToggle: function () { return null; }
+    };
+  }
   window.McpApp = {
-    connect: function () {
+    connect: function (opts) {
       if (window.parent === window) return Promise.reject(new Error("no host (standalone)"));
       return request("ui/initialize", {
         appInfo: { name: "agentproto-app", version: "1.0" },
         appCapabilities: { availableDisplayModes: ["inline", "fullscreen"] },
         protocolVersion: "2026-01-26"
-      }).then(function () {
+      }).then(function (result) {
+        // The initialize result carries the initial hostContext (displayMode,
+        // availableDisplayModes, theme, safeAreaInsets) — capture it before
+        // notifying the host, so the toggle renders in the right place on
+        // its first paint rather than after a host-context-changed.
+        if (result && result.hostContext) setHostContext(result.hostContext);
         post({ jsonrpc: "2.0", method: "ui/notifications/initialized", params: {} });
+        var displayMode = installDisplayMode((opts && opts.displayToggle) ? { toggle: opts.displayToggle } : null);
+        window.McpApp.displayMode = displayMode;
         return {
           callTool: function (name, args) { return request("tools/call", { name: name, arguments: args || {} }); },
           sendMessage: function (p) {
@@ -91,7 +145,10 @@ const MCP_APP_BRIDGE_SCRIPT = `<script>
           },
           updateModelContext: function (p) { return request("ui/update-model-context", p || {}); },
           openLink: function (url) { return request("ui/open-link", { url: url }); },
-          onTeardown: function (cb) { teardownCbs.push(cb); }
+          onTeardown: function (cb) { teardownCbs.push(cb); },
+          getHostContext: getHostContext,
+          onHostContext: onHostContext,
+          displayMode: displayMode
         };
       });
     }
@@ -114,23 +171,30 @@ function injectAfterStructuralTag(html: string, script: string): string {
   return script + html
 }
 
-/** Inject `MCP_APP_BRIDGE_SCRIPT` followed by `RUNNER_SELECT_SCRIPT` — every
- *  installed app UI gets `window.AgentprotoUI.mountRunnerSelect` for free,
- *  same as it gets `window.McpApp` (see `injectAfterStructuralTag` for the
- *  placement rule). Both halves are independently idempotent, so a single
+/** Inject `MCP_APP_BRIDGE_SCRIPT` followed by the two
+ *  `window.AgentprotoUI` scripts (`DISPLAY_MODE_SCRIPT`, then
+ *  `RUNNER_SELECT_SCRIPT`) — every installed app UI gets the shared
+ *  display-mode toggle and `mountRunnerSelect` for free, same as it gets
+ *  `window.McpApp` (see `injectAfterStructuralTag` for the placement rule).
+ *  The halves are independently idempotent, so a single
  *  `injectAfterStructuralTag` call inserts only whichever ones the document
  *  doesn't already define — inserting them one call each would place the
- *  second BEFORE the first (both target "right after the same structural
- *  tag"), which is why they're concatenated first instead. The bridge guard
- *  matches an assignment only — every app panel CONSUMES
- *  `window.McpApp.connect()`, so matching any mention would skip injection
- *  for exactly the documents that need it, leaving `window.McpApp` undefined
- *  in the host iframe. */
+ *  second BEFORE the first (all target "right after the same structural
+ *  tag"), which is why they're concatenated first instead. `window.
+ *  AgentprotoUI` gates BOTH of its scripts as one unit: a document that
+ *  already defines that namespace brings its own, and the bridge's
+ *  `installDisplayMode` falls back to a controller with no button rather
+ *  than fighting it. The bridge guard matches an assignment only — every
+ *  app panel CONSUMES `window.McpApp.connect()`, so matching any mention
+ *  would skip injection for exactly the documents that need it, leaving
+ *  `window.McpApp` undefined in the host iframe. */
 export function injectMcpAppBridge(html: string): string {
   const hasBridge = /window\.McpApp\s*=/.test(html)
-  const hasRunnerSelect = /window\.AgentprotoUI\s*=/.test(html)
-  if (hasBridge && hasRunnerSelect) return html
-  const script = (hasBridge ? "" : MCP_APP_BRIDGE_SCRIPT) + (hasRunnerSelect ? "" : RUNNER_SELECT_SCRIPT)
+  const hasUiNamespace = /window\.AgentprotoUI\s*=/.test(html)
+  if (hasBridge && hasUiNamespace) return html
+  const script =
+    (hasBridge ? "" : MCP_APP_BRIDGE_SCRIPT) +
+    (hasUiNamespace ? "" : DISPLAY_MODE_SCRIPT + RUNNER_SELECT_SCRIPT)
   return injectAfterStructuralTag(html, script)
 }
 
@@ -148,6 +212,13 @@ export function injectMcpAppBridge(html: string): string {
  * no context host either, so `updateModelContext` rejects; `openLink` opens a
  * new tab via `window.open`; `onTeardown` is a no-op.
  *
+ * `displayMode` is the same shared controller the postMessage bridge builds
+ * (`@agentproto/app-client/display-mode`), wired to a host context of
+ * `{displayMode:"inline", availableDisplayModes:[]}` — an empty list is what
+ * keeps the toggle hidden in a plain browser tab, where there is no host to
+ * grant fullscreen, while leaving the API callable so an app doesn't have to
+ * branch on which bridge it got.
+ *
  * Injected INSTEAD OF (not on top of) the postMessage bridge: that bridge's
  * `connect()` rejects when `window.parent === window`, which is exactly the
  * standalone case this one exists for.
@@ -156,8 +227,32 @@ export const STANDALONE_REST_BRIDGE_SCRIPT = `<script>
 (function () {
   window.__AGENTPROTO_UI_TRANSPORT__ = "http";
   if (window.McpApp) return;
+  // No host in a standalone tab: inline, nothing else on offer. Fed to the
+  // shared display-mode controller so its toggle stays hidden here.
+  var hostContext = { displayMode: "inline", availableDisplayModes: [] };
+  function installDisplayMode(opts) {
+    var api = {
+      getHostContext: function () { return hostContext; },
+      onHostContext: function (cb) { try { cb(hostContext); } catch (_) {} },
+      requestDisplayMode: function () {
+        return Promise.reject(new Error("requestDisplayMode: no host (standalone mode)"));
+      }
+    };
+    if (window.AgentprotoUI && window.AgentprotoUI.installDisplayMode) {
+      return window.AgentprotoUI.installDisplayMode(api, opts);
+    }
+    return {
+      get: function () { return "inline"; },
+      available: function () { return []; },
+      request: api.requestDisplayMode,
+      onChange: function (cb) { try { cb("inline", hostContext); } catch (_) {} return function () {}; },
+      mountToggle: function () { return null; }
+    };
+  }
   window.McpApp = {
-    connect: function () {
+    connect: function (opts) {
+      var displayMode = installDisplayMode((opts && opts.displayToggle) ? { toggle: opts.displayToggle } : null);
+      window.McpApp.displayMode = displayMode;
       return Promise.resolve({
         callTool: function (name, args) {
           return fetch("./tool-call", {
@@ -183,7 +278,10 @@ export const STANDALONE_REST_BRIDGE_SCRIPT = `<script>
           window.open(url, "_blank");
           return Promise.resolve({});
         },
-        onTeardown: function () {}
+        onTeardown: function () {},
+        getHostContext: function () { return hostContext; },
+        onHostContext: function (cb) { try { cb(hostContext); } catch (_) {} },
+        displayMode: displayMode
       });
     }
   };
@@ -192,7 +290,9 @@ export const STANDALONE_REST_BRIDGE_SCRIPT = `<script>
 `
 
 /** Inject the standalone REST bridge followed by (idempotently)
- *  `RUNNER_SELECT_SCRIPT` — same pairing `injectMcpAppBridge` does, in one
+ *  `DISPLAY_MODE_SCRIPT` + `RUNNER_SELECT_SCRIPT` — same pairing
+ *  `injectMcpAppBridge` does, gated as one unit on the same
+ *  `window.AgentprotoUI` guard, in one
  *  `injectAfterStructuralTag` call for the same reason (see its doc: two
  *  separate calls targeting the same tag would place the second script
  *  BEFORE the first). Meant for raw `ui.path` html — the bridge script
@@ -203,14 +303,14 @@ export function injectStandaloneAppBridge(
   html: string,
   baseUrl?: string,
 ): string {
-  const hasRunnerSelect = /window\.AgentprotoUI\s*=/.test(html)
+  const hasUiNamespace = /window\.AgentprotoUI\s*=/.test(html)
   const baseUrlScript = baseUrl
     ? `<script>window.__AGENTPROTO_BASEURL__=${JSON.stringify(baseUrl).replace(/</g, "\\u003c")};</script>`
     : ""
   const script =
     baseUrlScript +
     STANDALONE_REST_BRIDGE_SCRIPT +
-    (hasRunnerSelect ? "" : RUNNER_SELECT_SCRIPT)
+    (hasUiNamespace ? "" : DISPLAY_MODE_SCRIPT + RUNNER_SELECT_SCRIPT)
   return injectAfterStructuralTag(html, script)
 }
 

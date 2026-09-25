@@ -169,9 +169,37 @@ serve`) and receives a `window.McpApp` bridge:
 - `openLink(url)` — ask the host to open a URL.
 - `onTeardown(cb)` — register a cleanup callback fired when the host tears down
   the panel.
+- `getHostContext()` / `onHostContext(cb)` — the host context (display mode,
+  theme, safe-area insets, …), merged on every `host-context-changed`.
+- `displayMode` — the fullscreen toggle, also on `window.McpApp.displayMode`.
 
 In a standalone browser tab, `callTool` proxies to the daemon's `/mcp` endpoint,
 while `sendMessage` and `updateModelContext` reject (there is no chat host).
+
+#### Display mode (⤢ Agrandir)
+
+Every `ui` panel gets a floating fullscreen toggle for free, placed clear of
+the host's own chrome (`hostContext.safeAreaInsets`) and themed from
+`hostContext.theme`. It appears **only** for modes the host advertises in
+`hostContext.availableDisplayModes` — a host with its own native control
+(Claude Desktop) advertises none and gets no second button.
+
+To place it yourself, opt the floating one out and mount it where you want:
+
+```html
+<meta name="agentproto-display-toggle" content="none">
+<script>
+  const app = await window.McpApp.connect()
+  app.displayMode.mountToggle(document.querySelector("header"))
+  app.displayMode.onChange(mode => console.log("now", mode))
+</script>
+```
+
+`content="optimistic"` instead shows the button against a host that
+advertises nothing but may still honour `ui/request-display-mode`; the first
+refusal hides it permanently. `connect({ displayToggle: … })` is the
+programmatic equivalent and wins over the meta tag. Full API and the
+`--agentproto-dm-*` CSS variables: `@agentproto/app-client/display-mode`.
 
 ### Skill surface flow
 
