@@ -21,9 +21,8 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { AgnoMcpApp } from "@agentproto/apps"
+import { registerUiResource } from "@agentproto/mcp-server"
 import { mintAppEmbedToken } from "./embed-tokens.js"
-
-const MIME_TYPE = "text/html;profile=mcp-app"
 
 /**
  * Placeholder the panel HTML carries inside its bridge script
@@ -58,39 +57,16 @@ export function registerMcpApps(
         .join(JSON.stringify(mintAppEmbedToken(app.id)))
     }
 
-    // 1. Resource — HTML panel served at ui://<id>/view
-    //
-    // _meta is duplicated onto both the registration options (→ resources/list
-    // entry) AND the read handler's content item (→ resources/read result),
-    // because the ext-apps spec has hosts read csp from resources/read FIRST,
-    // falling back to resources/list only if that's absent. The SDK's
-    // registerResource() only auto-projects the options-level _meta into
-    // resources/list, not into the handler's own return value.
-    const resourceMeta = {
-      ui: {
-        prefersBorder: true,
-        ...(app.csp ? { csp: app.csp } : {}),
-      },
-    }
-    server.registerResource(
-      app.id,
-      resourceUri,
-      {
-        mimeType: MIME_TYPE,
-        description: app.description,
-        _meta: resourceMeta,
-      },
-      async () => ({
-        contents: [
-          {
-            uri: resourceUri,
-            mimeType: MIME_TYPE,
-            text: html,
-            _meta: resourceMeta,
-          },
-        ],
-      }),
-    )
+    // 1. Resource: HTML panel served at ui://<id>/view. registerUiResource
+    //    duplicates _meta.ui onto both resources/list and resources/read
+    //    (hosts read csp from the read result first; see its header).
+    registerUiResource(server, {
+      name: app.id,
+      uri: resourceUri,
+      html,
+      description: app.description,
+      csp: app.csp,
+    })
 
     // 2. Tool — _meta.ui.resourceUri at definition level so the host
     //    can pre-associate the panel before the handler even runs.

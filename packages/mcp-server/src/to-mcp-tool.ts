@@ -11,6 +11,7 @@
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
 import type { ZodRawShape, ZodType } from "zod"
 import { runTool, type DriverHandle, type ResolverContext } from "@agentproto/driver"
 import type {
@@ -48,6 +49,44 @@ export interface ToMcpToolOptions<
   secrets?: Record<string, string>
   /** Override the advertised MCP tool name (default: tool id, `:`/`.`→`_`). */
   name?: string
+  /**
+   * Link the tool to an MCP Apps `ui://` panel (serve it with
+   * `registerUiResource`). Lands on the tool DEFINITION as `_meta.ui`, never
+   * in the call result: the SDK serialises the handler result as MCP content,
+   * so a `_meta` returned there would be invisible to the host.
+   */
+  ui?: {
+    resourceUri: string
+    /** Who may call the tool. Default `["model", "app"]`. */
+    visibility?: readonly McpToolUiVisibility[]
+  }
+  /**
+   * MCP tool annotations. `true` derives them from the contract where that is
+   * unambiguous (`readOnlyHint` when `mutates` is empty, `idempotentHint` when
+   * `idempotent`, `openWorldHint` when `requires.network` is non-empty); an
+   * object is merged over the derived hints. Omitted or `false`: none.
+   */
+  annotations?: boolean | ToolAnnotations
+}
+
+export type McpToolUiVisibility = "model" | "app"
+
+/** Tool-definition `_meta` carrying the MCP Apps panel link. */
+export interface McpToolMeta {
+  ui: {
+    resourceUri: string
+    visibility: readonly McpToolUiVisibility[]
+  }
+}
+
+/** A text MCP call result. `structuredContent` carries the raw tool output
+ *  when it is a plain object (MCP requires a record there). A type alias,
+ *  not an interface, so it stays assignable to the SDK's index-signed
+ *  `CallToolResult`. */
+export type McpToolResult = {
+  content: Array<{ type: "text"; text: string }>
+  structuredContent?: Record<string, unknown>
+  isError?: boolean
 }
 
 /** What `buildMcpTool` produces — registerable on any McpServer, and directly
@@ -56,10 +95,11 @@ export interface McpToolRegistration {
   name: string
   description: string
   inputShape: ZodRawShape
-  handler: (args: Record<string, unknown>) => Promise<{
-    content: Array<{ type: "text"; text: string }>
-    isError?: boolean
-  }>
+  /** Present when the `ui` option was given. */
+  _meta?: McpToolMeta
+  /** Present when the `annotations` option resolved to at least one hint. */
+  annotations?: ToolAnnotations
+  handler: (args: Record<string, unknown>) => Promise<McpToolResult>
 }
 
 /** A ZodObject exposes a `.shape` raw-shape getter; everything else doesn't. */
@@ -74,12 +114,34 @@ function mcpName(id: string): string {
   return id.replace(/[-:.]/g, "_")
 }
 
-function contentText(payload: unknown): {
-  content: Array<{ type: "text"; text: string }>
-} {
+function contentText(payload: unknown): McpToolResult {
   return {
     content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+    ...(isRecord(payload) ? { structuredContent: payload } : {}),
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function resolveAnnotations(
+  tool: Pick<
+    ToolHandle<unknown, unknown, ToolContext>,
+    "mutates" | "idempotent" | "requires"
+  >,
+  opt: boolean | ToolAnnotations | undefined,
+): ToolAnnotations | undefined {
+  if (!opt) return undefined
+  const derived: ToolAnnotations = {
+    ...(tool.mutates.length === 0 ? { readOnlyHint: true } : {}),
+    ...(tool.idempotent ? { idempotentHint: true } : {}),
+    ...((tool.requires.network?.length ?? 0) > 0
+      ? { openWorldHint: true }
+      : {}),
+  }
+  const merged = opt === true ? derived : { ...derived, ...opt }
+  return Object.keys(merged).length > 0 ? merged : undefined
 }
 
 /**
@@ -140,10 +202,22 @@ export function buildMcpTool<TInput, TOutput, TContext extends ToolContext>(
     }
   }
 
+  const annotations = resolveAnnotations(tool, opts.annotations)
   return {
     name: opts.name ? mcpName(opts.name) : mcpName(tool.id),
     description: tool.description,
     inputShape,
+    ...(opts.ui
+      ? {
+          _meta: {
+            ui: {
+              resourceUri: opts.ui.resourceUri,
+              visibility: opts.ui.visibility ?? ["model", "app"],
+            },
+          },
+        }
+      : {}),
+    ...(annotations ? { annotations } : {}),
     handler: async (args) => {
       const input = objectShape ? args : (args.input as unknown)
       const output = await handler(input)
@@ -157,10 +231,7 @@ export function buildMcpTool<TInput, TOutput, TContext extends ToolContext>(
   }
 }
 
-function isMcpTextResult(value: unknown): value is {
-  content: Array<{ type: "text"; text: string }>
-  isError?: boolean
-} {
+function isMcpTextResult(value: unknown): value is McpToolResult {
   return (
     typeof value === "object" &&
     value !== null &&
@@ -179,6 +250,22 @@ export function toMcpTool<TInput, TOutput, TContext extends ToolContext>(
   opts: ToMcpToolOptions<TInput, TOutput, TContext>,
 ): McpToolRegistration {
   const reg = buildMcpTool(opts)
-  server.tool(reg.name, reg.description, reg.inputShape, reg.handler)
+  // Plain tools keep the legacy `server.tool` call so existing hosts (and
+  // `.tool`-only test doubles) see no change; only the definition-level
+  // extras (`_meta.ui`, annotations) need the `registerTool` config form.
+  if (!reg._meta && !reg.annotations) {
+    server.tool(reg.name, reg.description, reg.inputShape, reg.handler)
+    return reg
+  }
+  server.registerTool(
+    reg.name,
+    {
+      description: reg.description,
+      inputSchema: reg.inputShape,
+      ...(reg._meta ? { _meta: { ...reg._meta } } : {}),
+      ...(reg.annotations ? { annotations: reg.annotations } : {}),
+    },
+    reg.handler,
+  )
   return reg
 }
