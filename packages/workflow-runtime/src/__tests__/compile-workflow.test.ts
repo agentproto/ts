@@ -19,6 +19,7 @@ import {
   resolveRefPrefixed,
   evalPredicate,
   type AgentStep,
+  type Bindings,
   type GateStep,
 } from "../index.js"
 
@@ -454,6 +455,159 @@ describe("compileWorkflow — declarative agent step", () => {
     expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(/non-empty 'prompt'/)
   })
 
+  describe("prompt template interpolation ({{…}})", () => {
+  const compileAgentPrompt = (prompt: string): ((b: Bindings) => string) => {
+    const wf = defineWorkflow({
+      name: "P",
+      id: "prompt-ut",
+      description: "prompt under test",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [{ id: "s1", kind: "agent", adapter: "mock", prompt }],
+    })
+    return (compileWorkflow(wf, { tools, candidates }).steps[0] as AgentStep).prompt
+  }
+  const b = (input: unknown, extra: Partial<Bindings> = {}): Bindings => ({
+    input,
+    item: undefined,
+    index: undefined,
+    steps: {},
+    ...extra,
+  })
+
+  it("interpolates a plain {{name}} placeholder from the workflow input", () => {
+    const prompt = compileAgentPrompt("Transcribe the YouTube video at {{url}}.")
+    expect(prompt(b({ url: "https://youtu.be/x" }))).toBe(
+      "Transcribe the YouTube video at https://youtu.be/x.",
+    )
+  })
+
+  it("interpolates dotted paths {{a.b.c}}", () => {
+    const prompt = compileAgentPrompt("Read {{meta.file.name}} on {{meta.host}}.")
+    expect(prompt(b({ meta: { file: { name: "notes.md" }, host: "localhost" } }))).toBe(
+      "Read notes.md on localhost.",
+    )
+  })
+
+  it("leaves a missing placeholder as-is instead of crashing", () => {
+    const prompt = compileAgentPrompt("Use {{url}} and {{nope}} here.")
+    expect(prompt(b({ url: "https://x" }))).toBe("Use https://x and {{nope}} here.")
+  })
+
+  it("renders a conditional {{#name}} section when truthy, trimming the standalone tag lines", () => {
+    const prompt = compileAgentPrompt(
+      "Intro.\n{{#agenda}}\nUse this agenda: {{agenda}}\n{{/agenda}}\nOutro.",
+    )
+    expect(prompt(b({ agenda: "Ship the fix" }))).toBe(
+      "Intro.\nUse this agenda: Ship the fix\nOutro.",
+    )
+  })
+
+  it("drops a falsy {{#name}} section entirely, including its blank lines", () => {
+    const prompt = compileAgentPrompt(
+      "Intro.\n{{#agenda}}\nUse this agenda: {{agenda}}\n{{/agenda}}\nOutro.",
+    )
+    expect(prompt(b({}))).toBe("Intro.\nOutro.")
+  })
+
+  it("renders an inverted {{^name}} section only when the name is falsy", () => {
+    const prompt = compileAgentPrompt(
+      "{{^agenda}}\nNo agenda was provided.\n{{/agenda}}\nBegin.",
+    )
+    expect(prompt(b({}))).toBe("No agenda was provided.\nBegin.")
+    expect(prompt(b({ agenda: "Ship" }))).toBe("Begin.")
+  })
+
+  it("stringifies non-string values (number, boolean) and JSON-encodes objects/arrays", () => {
+    const prompt = compileAgentPrompt("n={{n}} ok={{ok}} obj={{obj}} arr={{arr}}")
+    expect(
+      prompt(b({ n: 5, ok: false, obj: { a: 1 }, arr: [1, "x"] })),
+    ).toBe('n=5 ok=false obj={"a":1} arr=[1,"x"]')
+  })
+
+  it("keeps the $-ref grammar working alongside interpolation", () => {
+    // Whole-string ref: unchanged behavior.
+    expect(
+      compileAgentPrompt("$input.n")(b({ n: 3 })),
+    ).toBe("3")
+    // Ref-prefixed string: token resolved, literal rest kept.
+    expect(
+      compileAgentPrompt("$input.dir/notes.txt")(b({ dir: "/books" })),
+    ).toBe("/books/notes.txt")
+    // Ref token plus {{…}} tags in the remainder.
+    expect(
+      compileAgentPrompt("$input.dir/{{file}}")(b({ dir: "/books", file: "a.md" })),
+    ).toBe("/books/a.md")
+    // steps.<id> paths via {{steps.d.n}}.
+    expect(
+      compileAgentPrompt("Score: {{steps.d.n}}")(
+        b(undefined, { steps: { d: { n: 10 } } }),
+      ),
+    ).toBe("Score: 10")
+    // Ref-prefixed prompt that previously threw "bad reference".
+    expect(
+      compileAgentPrompt("$input.bookDir/knowledge")(b({ bookDir: "/books" })),
+    ).toBe("/books/knowledge")
+  })
+
+  it("interpolates an approval step's prompt the same way", () => {
+    const wf = defineWorkflow({
+      name: "Approve",
+      id: "approve",
+      description: "Approval prompt with a placeholder.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "a1",
+          kind: "approval",
+          prompt: "Approve {{thing}}?",
+          approvers: [{ role: "maintainer" }],
+        },
+      ],
+    })
+    const step = compileWorkflow(wf, { tools, candidates }).steps[0] as AgentStep
+    expect(step.prompt(b({ thing: "the merge" }))).toBe("Approve the merge?")
+  })
+
+  it("end-to-end: a WORKFLOW.md-style prompt reaches the agent fully interpolated", async () => {
+    const wf = defineWorkflow({
+      name: "Transcribe",
+      id: "transcribe",
+      description: "The shipped-app shape from the bug report.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "s1",
+          kind: "agent",
+          adapter: "mock",
+          prompt:
+            "Transcribe the YouTube video at {{url}}.\n{{#agenda}}\nUse this agenda: {{agenda}}\n{{/agenda}}",
+        },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    const host = {
+      spawn: async () => "sess_1",
+      sendPromptAndWait: async (_id: string, prompt: string) => {
+        expect(prompt).toBe(
+          "Transcribe the YouTube video at https://youtu.be/abc.\nUse this agenda: Ship v2",
+        )
+      },
+      resolveByLabel: () => undefined,
+    }
+    await runWorkflow({
+      workflow: compiled,
+      agents: host,
+      input: { url: "https://youtu.be/abc", agenda: "Ship v2" },
+    })
+  })
+})
+
   it("passes an entry-based agent step (function-valued prompt) through unchanged", async () => {
     const handle = {
       id: "entry-agent",
@@ -503,7 +657,7 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
     const { bindings } = await runWorkflow({ workflow: compiled, input: { n: 20 } })
     expect(bindings.steps.big).toEqual({ n: 40 })
   })
-
+  
   it("second branch: the earlier arm is skipped entirely when its `when` is falsy", async () => {
     const wf = defineWorkflow({
       name: "Tiered",
@@ -532,7 +686,7 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
     expect(bindings.steps.medium).toEqual({ n: 17 })
     expect(bindings.steps.big).toBeUndefined()
   })
-
+  
   it("default: no `when` matches, jumps to `default`, skipping the earlier arms", async () => {
     const wf = defineWorkflow({
       name: "Tiered",
@@ -562,7 +716,7 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
     expect(bindings.steps.big).toBeUndefined()
     expect(bindings.steps.medium).toBeUndefined()
   })
-
+  
   it("no default: falls through to the next sibling in document order", async () => {
     const wf = defineWorkflow({
       name: "No default",
@@ -585,7 +739,7 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
     const { bindings } = await runWorkflow({ workflow: compiled, input: { n: 1 } })
     expect(bindings.steps.near).toEqual({ n: 2 })
   })
-
+  
   it("rejects a backward branch target", () => {
     const wf = defineWorkflow({
       name: "Backward",
@@ -607,7 +761,7 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
     expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(WorkflowCompileError)
     expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(/loop/)
   })
-
+  
   it("rejects an unknown branch target", () => {
     const wf = defineWorkflow({
       name: "Unknown target",
@@ -627,7 +781,7 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
     })
     expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(WorkflowCompileError)
   })
-
+  
   it("works nested inside a map's body, branching on $item", async () => {
     // `neg` is the LAST sibling in the body, so the `default` jump to it is
     // exclusive (skips `pos` entirely). `pos` sits earlier, so taking that
@@ -665,7 +819,7 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
     // 5 → pos (double → 10), falls through to neg (add-ten → 15)
     expect((output as Array<{ n: number }>).map((o) => o.n)).toEqual([13, 8, 15])
   })
-
+  
   it("end-to-end: only the chosen arm's steps run, and the shared trailing sibling runs exactly once", async () => {
     let finalizeCalls = 0
     const finalizeTool = defineTool({
@@ -716,7 +870,7 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
     expect(bindings.steps.finalize).toEqual({ n: 500 })
     expect(finalizeCalls).toBe(1)
   })
-})
+  })
 
 describe("compileWorkflow — subworkflow input projection", () => {
   const childDoubles = defineWorkflow({

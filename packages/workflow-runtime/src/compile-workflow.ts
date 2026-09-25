@@ -9,6 +9,10 @@
  *
  *   - data refs:   `$input` · `$input.a.b` · `$steps.<id>` · `$steps.<id>.a`
  *                  · `$item` · `$item.a` · `$index`   (`$$` escapes a literal `$`)
+ *   - prompts:     the above refs PLUS mustache-style `{{name}}` /
+ *                  `{{a.b}}` interpolation, `{{#name}}…{{/name}}` conditional
+ *                  and `{{^name}}…{{/name}}` inverted sections (see
+ *                  {@link interpolateTemplate})
  *   - `step.inputs`: a JSON object whose leaf strings may be refs (resolved
  *                    recursively); non-`$` strings are literals
  *   - `map.over`:    a ref to an array
@@ -121,6 +125,117 @@ export function resolveRefPrefixed(
   if (!m) return undefined
   const token = value.slice(0, m[0].length)
   return { resolved: resolveRef(token, b), rest: value.slice(m[0].length) }
+}
+
+// ── mustache-style prompt interpolation ──────────────────────────────
+
+/** A `{{…}}` tag name: dotted identifier path (`url`, `a.b.c`). */
+const TAG_NAME = "(?:[\\w$-]+)(?:\\.(?:[\\w$-]+))*"
+const TAG_RE = new RegExp(`\\{\\{(${TAG_NAME})\\}\\}`, "g")
+/** `{{#name}}inner{{/name}}` (conditional) or `{{^name}}inner{{/name}}` (inverted). */
+const SECTION_RE = new RegExp(
+  `\\{\\{([#^])(${TAG_NAME})\\}\\}([\\s\\S]*?)\\{\\{/\\2\\}\\}`,
+)
+
+/** Resolve a `{{…}}` tag name against the bindings — the same paths the
+ *  `$…` ref grammar reaches: `input.x`, `item.x`, `steps.<id>.x`, `index`,
+ *  and a bare name as shorthand for a top-level workflow input. */
+function resolveTagName(name: string, b: Bindings): unknown {
+  const segs = name.split(".")
+  const head = segs[0]!
+  if (head === "input") return segs.length === 1 ? b.input : dig(b.input, segs.slice(1))
+  if (head === "item") return segs.length === 1 ? b.item : dig(b.item, segs.slice(1))
+  if (head === "steps" && segs.length > 1)
+    return dig(b.steps[segs[1]!], segs.slice(2))
+  if (head === "index" && segs.length === 1) return b.index
+  return dig(b.input, segs)
+}
+
+/** Stringify an interpolated value: strings verbatim, objects/arrays as
+ *  JSON, everything else (numbers, booleans) via `String()`, null as "" —
+ *  mustache convention. */
+function stringifyValue(v: unknown): string {
+  if (v === null) return ""
+  if (typeof v === "string") return v
+  if (typeof v === "object") return JSON.stringify(v)
+  return String(v)
+}
+
+/**
+ * Interpolate mustache-style `{{…}}` templates against the run bindings.
+ *
+ *   - `{{name}}` / `{{a.b}}` → the resolved value stringified; a MISSING
+ *     value leaves the placeholder as-is (never crashes, never renders
+ *     "undefined" into an agent prompt).
+ *   - `{{#name}}…{{/name}}` renders the inner text only when `name` is
+ *     truthy; `{{^name}}…{{/name}}` only when falsy. When a section tag
+ *     sits alone on its line (only whitespace around it), the whole line
+ *     collapses too — so a dropped section doesn't leave blank lines behind.
+ *   - Sections nest: inner text is interpolated recursively.
+ */
+export function interpolateTemplate(template: string, b: Bindings): string {
+  let out = template
+  for (;;) {
+    const m = out.match(SECTION_RE)
+    if (!m) break
+    const kind = m[1]!
+    const name = m[2]!
+    const inner = m[3]!
+    const value = resolveTagName(name, b)
+    const truthy = kind === "#" ? Boolean(value) : !value
+    const start = m.index!
+    const end = start + m[0].length
+    const before = out.slice(0, start)
+    const after = out.slice(end)
+    // Standalone-line detection: only whitespace between the tag and the
+    // enclosing newlines on both sides.
+    const lineStart = before.lastIndexOf("\n") + 1
+    const nl = after.indexOf("\n")
+    const standalone =
+      before.slice(lineStart).trim() === "" &&
+      (nl === -1 ? after : after.slice(0, nl)).trim() === ""
+    let replacement: string
+    if (!truthy) {
+      replacement = ""
+    } else {
+      replacement = interpolateTemplate(inner, b)
+      if (standalone) {
+        // The newline that terminated the open-tag line and the whitespace +
+        // newline that began the close-tag line belong to the tags, not the
+        // rendered body.
+        replacement = replacement.replace(/^\n/, "").replace(/\n[ \t]*$/, "")
+      }
+    }
+    out =
+      before.slice(0, lineStart) +
+      replacement +
+      (standalone
+        ? (truthy ? (nl === -1 ? after : after.slice(nl)) : after.slice(nl + 1))
+        : after)
+  }
+  return out.replace(TAG_RE, (whole, name: string) => {
+    const v = resolveTagName(name, b)
+    return v === undefined ? whole : stringifyValue(v)
+  })
+}
+
+/**
+ * Render an agent/approval step prompt for a run: `$…` refs first (a whole
+ * string that starts with a ref token resolves exactly as before — a
+ * ref-prefixed string resolves the token and interpolates the literal rest),
+ * then mustache interpolation over the remainder / non-ref strings.
+ */
+function renderPrompt(raw: string, b: Bindings): string {
+  if (raw.startsWith("$$")) return raw.slice(1)
+  if (raw.startsWith("$")) {
+    const pref = resolveRefPrefixed(raw, b)
+    if (pref) {
+      const head =
+        pref.rest === "" ? String(pref.resolved) : stringifyValue(pref.resolved)
+      return head + interpolateTemplate(pref.rest, b)
+    }
+  }
+  return interpolateTemplate(raw, b)
 }
 
 /** Recursively resolve a value node: refs in strings, into arrays/objects. */
@@ -434,7 +549,7 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
   }
 
   return buildAgentStep(id, {
-    prompt: (b: Bindings) => String(resolveValue(prompt, b)),
+    prompt: (b: Bindings) => renderPrompt(prompt, b),
     ...(adapter !== undefined ? { adapter } : {}),
     ...(step.sessionRef !== undefined ? { sessionRef: step.sessionRef } : {}),
     ...(step.model !== undefined ? { model: step.model } : {}),
@@ -575,7 +690,7 @@ function compileStep(step: any, ctx: Ctx): RunStep {
         approvers,
         ...(artifacts !== undefined ? { artifacts } : {}),
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),
-        prompt: (b) => String(resolveValue(prompt, b)),
+        prompt: (b) => renderPrompt(prompt, b),
       }
     }
 
