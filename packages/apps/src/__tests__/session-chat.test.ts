@@ -280,4 +280,22 @@ describe("sessionChatApp (AppHandle / catalog path)", () => {
   it("keeps SESSION_CHAT_APP_ID pointed at the installed studio app", () => {
     expect(SESSION_CHAT_APP_ID).toBe("@agentik/session-chat")
   })
+
+  it("allowlists session_restart, so an ended session is restartable from the chat", () => {
+    // `app_tool_call` refuses anything outside `ui.tools`, so dropping this
+    // entry would silently turn the chat's "Restart session" affordance into
+    // an allowlist error at click time.
+    expect(sessionChatApp.ui?.tools).toContain("session_restart")
+  })
+
+  it("keeps the read path (session list + transcript) and spawn in the allowlist", () => {
+    expect(sessionChatApp.ui?.tools).toEqual(
+      expect.arrayContaining([
+        "session_list",
+        "agent_start",
+        "adapter_list",
+        "conversation_read",
+      ]),
+    )
+  })
 })
