@@ -57,6 +57,10 @@ export interface PaginatedOptions<TItem> {
  * Rows are COMPACT by default (`project`); `full: true` / `compact: false`
  * returns the unprojected records. `fields` is a per-item allowlist
  * applied on the paginated envelope branch (matching existing behavior).
+ * An explicit `fields` list is itself a projection, bounded by what the
+ * caller names, so on that branch it is applied to the FULL record and the
+ * compact projection is skipped (unless `compact: true` is explicit) —
+ * otherwise a requested field outside the compact set is silently dropped.
  */
 export function paginated<TItem extends object>(
   opts: PaginatedOptions<TItem>,
@@ -72,7 +76,8 @@ export function paginated<TItem extends object>(
       const compact = full ? false : params.compact !== false
       if (params.limit !== undefined || params.cursor !== undefined) {
         const page = paginate(items, params, { maxLimit, keyOf })
-        return compact
+        const projectRows = compact && (params.fields === undefined || params.compact === true)
+        return projectRows
           ? textResult(toolText({ ...page, items: page.items.map(project) }, params))
           : textResult(toolText(page, params))
       }
