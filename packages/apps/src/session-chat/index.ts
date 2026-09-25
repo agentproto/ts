@@ -159,6 +159,20 @@ export const sessionChatApp: AppHandle = defineApp({
   ui: {
     html: SESSION_CHAT_FALLBACK_HTML,
     title: "Session Chat",
-    tools: ["session_list", "agent_start", "adapter_list", "conversation_read"],
+    // `session_restart` is what makes an ENDED session (completed / killed /
+    // exited / crashed) recoverable from the chat instead of a dead end: the
+    // UI offers "Restart session" in place of the composer, and the tool
+    // resumes the same conversation (ACP-level resume via the adapter session
+    // id, fresh spawn as fallback) and returns a NEW session id the chat
+    // navigates to. Kept in step with the installed app's own allowlist
+    // (`@agentik/session-chat`'s APP.md `ui.tools`) — a tool missing from
+    // EITHER list is refused for the surface that reads it.
+    tools: [
+      "session_list",
+      "agent_start",
+      "adapter_list",
+      "conversation_read",
+      "session_restart",
+    ],
   },
 })
