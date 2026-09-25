@@ -612,10 +612,22 @@ export interface RuntimeHttpServerOptions {
    * so a bridge client's spawn is attributed to its channel instead of landing
    * as a bare top-level root.
    */
+  /**
+   * `deferred`, when present, is parsed from the request's `?deferred=1|0`
+   * query string (see `handleMcp` below) — the per-mount override for
+   * deferred/lazy `tools/list` loading (harness-parity item 3, see
+   * `deferred-tools.ts`). `true`/`false` wins over the gateway's own
+   * boot-time `CreateGatewayOptions.deferredTools` default either way;
+   * `undefined` (the query param absent) falls through to that default
+   * unchanged. Composes with `denyTools`: deny is applied AFTER deferred
+   * wrapping in `mcpServerFactory` (index.ts), so an excluded name never
+   * reaches registration regardless of deferred status.
+   */
   mcpServerFactory: (
     denyTools?: ReadonlySet<string>,
     callerSessionId?: string,
     origin?: string,
+    deferred?: boolean,
   ) => Promise<McpServer>
   /**
    * Optional scoped orchestrator sub-gateway (WP2). When BOTH this and
@@ -1262,6 +1274,19 @@ export async function startHttpServer(
     }
   }
 
+  /** Mirrors `parseDenyToolsQuery` for the `deferred` query param
+   *  (harness-parity item 3) — see `mcpServerFactory`'s doc for the wire
+   *  contract. `"1"`/`"true"` ⇒ `true`, `"0"`/`"false"` ⇒ `false`, anything
+   *  else (including absent) ⇒ `undefined` (no override). */
+  function parseDeferredQuery(url: string): boolean | undefined {
+    const qIdx = url.indexOf("?")
+    if (qIdx === -1) return undefined
+    const raw = new URLSearchParams(url.slice(qIdx + 1)).get("deferred")
+    if (raw === "1" || raw === "true") return true
+    if (raw === "0" || raw === "false") return false
+    return undefined
+  }
+
   function parseDenyToolsQuery(url: string): Set<string> | undefined {
     const qIdx = url.indexOf("?")
     if (qIdx === -1) return undefined
@@ -1298,7 +1323,8 @@ export async function startHttpServer(
     const denyTools = parseDenyToolsQuery(req.url ?? "")
     const callerSessionId = parseCallerSessionIdQuery(req.url ?? "")
     const origin = parseOriginQuery(req.url ?? "")
-    const server = await opts.mcpServerFactory(denyTools, callerSessionId, origin)
+    const deferred = parseDeferredQuery(req.url ?? "")
+    const server = await opts.mcpServerFactory(denyTools, callerSessionId, origin, deferred)
     await serveMcp(req, res, server)
   }
 

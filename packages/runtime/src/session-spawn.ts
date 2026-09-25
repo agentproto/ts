@@ -1000,6 +1000,16 @@ export interface SpawnAgentSessionInput {
    *  disposition (never replacing it) and prepended to `prompt`. See
    *  `composeRoleContext`. Cannot widen `toolPolicy` — see `role` above. */
   promptAppend?: string
+  /** Per-spawn override for the daemon self-mount's deferred/lazy
+   *  `tools/list` loading (harness-parity item 3 — see `deferred-tools.ts`).
+   *  Wins over the resolved role's own default (`RoleProfile.deferredTools`
+   *  — on for `executor`), which in turn only applies when this is
+   *  omitted. Threaded onto the injected `mcpServers` self-mount ref as
+   *  `?deferred=1|0` (`shouldInjectDaemonSelfMount` path below); has no
+   *  effect on a caller-supplied `mcpServers` (that URL is the caller's to
+   *  compose). Omitted entirely ⇒ no override at all — the gateway's own
+   *  boot-time `defaults.mcp.deferredTools` default applies unchanged. */
+  deferredTools?: boolean
   /** Opt this session into Langfuse tracing (prompt/completion + tool spans +
    *  tokens/cost). Effective opt-in is `trace ?? langfuseTracingDefault ?? false`
    *  — see `SpawnAgentInput.trace` in sessions.ts. */
@@ -1748,6 +1758,13 @@ export async function spawnAgentSession(
     }
   }
   const delegationDenied = role.toolPolicy.delegation === "deny"
+  // Deferred/lazy tool loading override for the self-mount (harness-parity
+  // item 3): explicit per-spawn `input.deferredTools` wins over the
+  // resolved role's own default (`RoleProfile.deferredTools` — on for
+  // `executor`); `undefined` here means neither said anything, so the
+  // self-mount ref carries no `?deferred=` override at all and the
+  // gateway's own boot-time default applies.
+  const deferredToolsOverride = input.deferredTools ?? role.deferredTools
   // Orchestrator role (WP3): when requested, mint a scoped
   // sub-gateway token and MERGE its `mcpServers` entry with any
   // caller-provided ones (WP1) — both coexist on the child's
@@ -1807,6 +1824,14 @@ export async function spawnAgentSession(
     let ref = delegationDenied
       ? `${daemonMcpUrl}${daemonMcpUrl.includes("?") ? "&" : "?"}denyTools=${DELEGATION_TOOL_NAMES.join(",")}`
       : daemonMcpUrl
+    // Deferred-tools per-mount override (harness-parity item 3) — see
+    // `deferredToolsOverride` above. Only appended when SOMETHING (the
+    // explicit call or the resolved role) actually expressed an opinion;
+    // otherwise the ref carries no `?deferred=` at all and the gateway's
+    // own boot-time default decides.
+    if (deferredToolsOverride !== undefined) {
+      ref += `${ref.includes("?") ? "&" : "?"}deferred=${deferredToolsOverride ? "1" : "0"}`
+    }
     ref += `${ref.includes("?") ? "&" : "?"}callerSessionId=${encodeURIComponent(mintedSessionId)}`
     mcpServers = [{ name: "agentproto", transport: "http", ref }]
   }

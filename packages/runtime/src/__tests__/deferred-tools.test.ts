@@ -17,7 +17,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { z } from "zod"
 
-import { withDeferredTools } from "../deferred-tools.js"
+import { withDeferredTools, resolveDeferredToolsGatewayOption } from "../deferred-tools.js"
 
 function parseToolJson(result: unknown): any {
   const content = (result as { content?: Array<{ type: string; text?: string }> }).content
@@ -143,5 +143,25 @@ describe("withDeferredTools — MCP transport e2e", () => {
       await client.callTool({ name: "tool_search", arguments: { query: "e", maxResults: 1 } }),
     )
     expect(result.tools.length).toBeLessThanOrEqual(1)
+  })
+})
+
+describe("resolveDeferredToolsGatewayOption — config.json's defaults.mcp.deferredTools tri-state", () => {
+  it("undefined ⇒ undefined (deferred tools off, createGateway never wraps)", () => {
+    expect(resolveDeferredToolsGatewayOption(undefined)).toBeUndefined()
+  })
+
+  it("false ⇒ undefined — explicit off is the same as absent", () => {
+    expect(resolveDeferredToolsGatewayOption(false)).toBeUndefined()
+  })
+
+  it("true ⇒ {} — on, with the gateway's own DEFAULT_ALWAYS_ON_TOOLS fallback", () => {
+    expect(resolveDeferredToolsGatewayOption(true)).toEqual({})
+  })
+
+  it("{ alwaysOn } ⇒ passed through verbatim — a custom always-on set", () => {
+    expect(resolveDeferredToolsGatewayOption({ alwaysOn: ["file_read", "agent_start"] })).toEqual({
+      alwaysOn: ["file_read", "agent_start"],
+    })
   })
 })

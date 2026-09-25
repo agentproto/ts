@@ -115,6 +115,7 @@ import { createWorkflowRunner } from "./workflow-runner.js"
 import { compileWorkflow } from "@agentproto/workflow-runtime"
 import { createFileStepCache } from "./workflow-step-cache.js"
 import { withDeferredTools } from "./deferred-tools.js"
+export { resolveDeferredToolsGatewayOption, type DeferredToolsConfig } from "./deferred-tools.js"
 import { withToolExclusion } from "./tool-subset.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createPrProvenanceReconciler, type OpenPrResolver } from "./pr-provenance-reconciler.js"
@@ -940,14 +941,6 @@ export interface CreateGatewayOptions {
   llmEndpoint?: boolean
 }
 
-/**
- * Default always-on set when `deferredTools` is enabled without an
- * explicit `alwaysOn` override: the core spawn/drive/observe loop most
- * sessions need immediately. Everything else (fs_*, directory_*,
- * command_*, remote_*, browser_*, terminal_*, mcp_*, routine_*,
- * workflow_*, policy_*, inbound_watcher_*, session_tree, agent_export,
- * adapter_list, ...) starts deferred.
- */
 /** Default crash-detect sweep interval (crash-detect PR-1) when
  *  `crashDetectIntervalMs` is left unset — detection is default-on, so this
  *  is what actually arms the sweep for the common case of a caller never
@@ -963,7 +956,24 @@ const DEFAULT_CRASH_DETECT_INTERVAL_MS = 30_000
  *  stream long before the 36-minute silence that motivated this chantier. */
 const DEFAULT_TURN_STALL_AFTER_MS = 5 * 60_000
 
-const DEFAULT_ALWAYS_ON_TOOLS: readonly string[] = [
+/**
+ * Default always-on set when `deferredTools` is enabled without an
+ * explicit `alwaysOn` override: the core spawn/drive/observe/report loop
+ * most sessions need immediately — including an EXECUTOR (the role
+ * `deferredTools` defaults on for, see `role.ts`), which cannot spawn
+ * (`agent_start`/`agent_prompt` are stripped for it anyway by
+ * `toolPolicy.delegation: "deny"`, so those two names are simply absent
+ * from a deny-role's registry and cost nothing) but still needs to report
+ * back to its parent (`message_parent`), coordinate over the task ledger
+ * (`task_*`), and observe its own session/turn state
+ * (`session_context_status` alongside the pre-existing `session_list` /
+ * `session_monitor` / `session_events_poll`). Everything else (fs_*,
+ * directory_*, command_*, remote_*, browser_*, terminal_*, mcp_*,
+ * routine_*, workflow_*, policy_*, inbound_watcher_*, session_tree,
+ * agent_export, adapter_list, every `app_ui_*` panel tool, ...) starts
+ * deferred — reachable via `tool_search`, never removed from `tools/call`.
+ */
+export const DEFAULT_ALWAYS_ON_TOOLS: readonly string[] = [
   "daemon_health",
   "agent_start",
   "agent_prompt",
@@ -972,9 +982,15 @@ const DEFAULT_ALWAYS_ON_TOOLS: readonly string[] = [
   "session_list",
   "session_monitor",
   "session_events_poll",
+  "session_context_status",
   "permissions_list",
   "permissions_respond",
   "app_tool_call",
+  "message_parent",
+  "task_claim",
+  "task_create",
+  "task_list",
+  "task_update",
 ]
 
 export interface GatewayHandle {
@@ -1766,6 +1782,7 @@ export async function createGateway(
     denyTools?: ReadonlySet<string>,
     callerSessionId?: string,
     origin?: string,
+    deferredOverride?: boolean,
   ) => {
     const { server: rawServer } = await createMcpServer({
       specs: opts.specs,
@@ -1776,10 +1793,25 @@ export async function createGateway(
     // Deferred/lazy tool loading (opt-in — see deferred-tools.ts). Wraps
     // every subsequent `registerXTools(server, ...)` pass below so tools
     // outside `alwaysOn` register but start disabled (hidden from the
-    // first `tools/list`) until `tool_search` pulls them in. Omitted →
+    // first `tools/list`) until `tool_search` pulls them in. Off →
     // `server` is the raw, fully-eager gateway, today's behaviour.
-    let server = opts.deferredTools
-      ? withDeferredTools(rawServer, { alwaysOn: new Set(opts.deferredTools.alwaysOn ?? DEFAULT_ALWAYS_ON_TOOLS) })
+    //
+    // `deferredOverride`, when defined, is the per-request `?deferred=1|0`
+    // query (see `handleMcp` in http-server.ts) — it wins over the
+    // gateway's own boot-time `opts.deferredTools` default either way (a
+    // session-spawn role default or explicit `agent_start.deferredTools`
+    // can force deferred ON for a spawn even when the daemon boots eager,
+    // or force it OFF for one that needs the full surface even when the
+    // daemon boots deferred). Undefined ⇒ fall through to whether the
+    // gateway itself was configured with `deferredTools` at all. The
+    // always-on set always comes from `opts.deferredTools.alwaysOn` (falling
+    // back to `DEFAULT_ALWAYS_ON_TOOLS`) — the per-request query only
+    // toggles deferred mode on/off, it never carries its own custom set.
+    const deferredActive = deferredOverride ?? opts.deferredTools !== undefined
+    let server = deferredActive
+      ? withDeferredTools(rawServer, {
+          alwaysOn: new Set(opts.deferredTools?.alwaysOn ?? DEFAULT_ALWAYS_ON_TOOLS),
+        })
       : rawServer
     // Spawn-role-profiles tool gate (the hard part of the executor/
     // supervisor primitive — see role.ts). Per-request denylist parsed

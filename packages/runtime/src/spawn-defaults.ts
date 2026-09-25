@@ -28,6 +28,24 @@ import { resolveCustomRoute } from "@agentproto/model-catalog/route-identity"
 import { findAnthropicGatewayPreset } from "@agentproto/provider-presets"
 import { providerEnvVar } from "./providers-store.js"
 import type { ContextContinuityPolicy } from "./context-continuity.js"
+import type { DeferredToolsConfig } from "./deferred-tools.js"
+
+/**
+ * `defaults.mcp` block — daemon-wide MCP gateway policy, distinct from the
+ * per-adapter spawn defaults above (it's read once at daemon boot, not
+ * per-spawn — see `serve.ts`'s `createGateway({ deferredTools })` call).
+ */
+export interface McpDefaultsConfig {
+  /** Gateway-wide deferred/lazy `tools/list` loading (harness-parity item
+   *  3 — see `deferred-tools.ts`). Default false/absent: every daemon boot
+   *  stays eager, byte-identical to pre-existing behaviour — turning this
+   *  on is a deliberate operator opt-in. Independent of the per-role
+   *  default (`RoleProfile.deferredTools`, on for `executor`) and the
+   *  per-spawn `agent_start.deferredTools` override, and independent of
+   *  the per-mount `?deferred=1|0` query override on `/mcp` — this is only
+   *  the BOOT-TIME default for connections that specify neither. */
+  deferredTools?: DeferredToolsConfig
+}
 
 /**
  * Deterministic billing-auth config for one adapter slug (today, only
@@ -113,6 +131,8 @@ export interface SpawnDefaultsConfig {
    *  EXPLICIT `interrupt` on the call (true OR false) always wins over this
    *  default. */
   agentPromptInterrupt?: boolean
+  /** Daemon-wide MCP gateway policy. See {@link McpDefaultsConfig}. */
+  mcp?: McpDefaultsConfig
 }
 
 export interface ResolveSpawnDefaultsInput {

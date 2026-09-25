@@ -854,6 +854,20 @@ export function registerAgentTools(
             "tool gate (an executor asked to 'delegate anyway' via this " +
             "field still has no delegation tools)."
         ),
+      deferredTools: z
+        .boolean()
+        .optional()
+        .describe(
+          "Override deferred/lazy MCP tool loading for this spawn's daemon " +
+            "self-mount: `true` hides every tool outside a small always-on " +
+            "set from `tools/list` (still fully callable — use `tool_search` " +
+            "to look up a hidden tool's schema by keyword before calling it), " +
+            "`false` keeps the full eager surface. Omit to use the resolved " +
+            "role's own default ('executor' defaults ON, since it can't " +
+            "delegate anyway and rarely needs the full ~190-tool surface); " +
+            "omit AND spawn a role with no opinion to fall through to the " +
+            "daemon's own boot-time `defaults.mcp.deferredTools` config."
+        ),
       trace: z
         .boolean()
         .optional()
