@@ -19,11 +19,19 @@
  * loads — a malformed manifest still fails the app load — but its execute
  * body refuses clearly instead of silently no-oping or crashing on a
  * dispatch mechanism this host doesn't implement yet.
+ *
+ * A `kind: cli` driver's subprocess `cwd` defaults to the app root (`dir`,
+ * the directory containing `.agentproto/`) rather than the host process's
+ * own cwd — relative paths in an app-bundled cli driver (DRIVER.md argv,
+ * `--out-dir`-style flags, …) resolve against the app root. A DRIVER.md can
+ * override this with `metadata.cli.cwd`; a relative value there is itself
+ * resolved against the app root, and a value that escapes the app root
+ * (`../..`) is a load error, not a silent escape.
  */
 
 import { readdir, readFile } from "node:fs/promises"
 import type { Dirent } from "node:fs"
-import { join } from "node:path"
+import { isAbsolute, join, relative, resolve } from "node:path"
 import {
   parseToolManifest,
   toolFromManifestOnly,
@@ -119,16 +127,42 @@ function wrapExecuteWithSecretCheck(
   return wrapped
 }
 
+/**
+ * Resolve a kind:cli DRIVER.md's working directory. Relative paths in an
+ * app-bundled cli driver resolve against the app root (the dir containing
+ * `.agentproto/`) — not the daemon's own cwd, which is what `runSubprocess`
+ * fell back to before this existed and is almost never what a DRIVER.md
+ * author means (see `@agentproto/driver-cli`'s README). Defaults to the app
+ * root itself when `metadata.cli.cwd` is unset; an explicit value — relative
+ * or absolute — that resolves outside the app root is a load error rather
+ * than silently escaping the bundle.
+ */
+function resolveCliCwd(appRoot: string, driverId: string, cwd: unknown): string {
+  const absoluteAppRoot = resolve(appRoot)
+  if (cwd === undefined) return absoluteAppRoot
+  if (typeof cwd !== "string" || cwd.trim() === "") {
+    throw new Error(`driver '${driverId}': 'metadata.cli.cwd' must be a non-empty string.`)
+  }
+  const resolved = isAbsolute(cwd) ? resolve(cwd) : resolve(absoluteAppRoot, cwd)
+  const rel = relative(absoluteAppRoot, resolved)
+  if (rel !== "" && (rel.startsWith("..") || isAbsolute(rel))) {
+    throw new Error(
+      `driver '${driverId}': 'metadata.cli.cwd' (${cwd}) resolves to '${resolved}', outside the app root '${absoluteAppRoot}'.`,
+    )
+  }
+  return resolved
+}
+
 /** Build a working {@link DriverHandle} from a parsed DRIVER.md, dispatching
  *  on `kind`. Throws a plain `Error` (wrapped in `AppLoadError` by the
  *  caller, which has the file path) on a `cli`/`http` manifest missing its
  *  dispatch config. */
-function driverHandleFromManifest(manifest: DriverManifest): DriverHandle {
+function driverHandleFromManifest(manifest: DriverManifest, appRoot: string): DriverHandle {
   const fm = manifest.frontmatter
   const secretNames = requiredSecretNames(fm)
 
   if (fm.kind === "cli") {
-    const cliMeta = (fm.metadata?.cli ?? {}) as Partial<CliDriverDefinition>
+    const cliMeta = (fm.metadata?.cli ?? {}) as Partial<CliDriverDefinition> & { cwd?: unknown }
     if (typeof cliMeta.bin !== "string" || cliMeta.bin.trim() === "") {
       throw new Error(
         "kind:cli DRIVER.md requires a non-empty 'metadata.cli.bin' frontmatter field naming the binary.",
@@ -141,6 +175,7 @@ function driverHandleFromManifest(manifest: DriverManifest): DriverHandle {
       output: cliMeta.output,
       tty: cliMeta.tty,
       sandbox: cliMeta.sandbox,
+      cwd: resolveCliCwd(appRoot, fm.id, cliMeta.cwd),
     })
     return { ...handle, execute: wrapExecuteWithSecretCheck(fm.id, handle.execute, secretNames) }
   }
@@ -176,7 +211,7 @@ function driverHandleFromManifest(manifest: DriverManifest): DriverHandle {
   return driverFromManifest({ manifest, execute })
 }
 
-async function loadDriverEntry(id: string, driverPath: string): Promise<DriverHandle> {
+async function loadDriverEntry(id: string, driverPath: string, appRoot: string): Promise<DriverHandle> {
   let source: string
   try {
     source = await readFile(driverPath, "utf8")
@@ -184,7 +219,7 @@ async function loadDriverEntry(id: string, driverPath: string): Promise<DriverHa
     throw new AppLoadError(`driver '${id}': cannot read '${driverPath}': ${errMsg(err)}`)
   }
   try {
-    return driverHandleFromManifest(parseDriverManifest(source))
+    return driverHandleFromManifest(parseDriverManifest(source), appRoot)
   } catch (err) {
     throw new AppLoadError(`driver '${id}' at '${driverPath}': ${errMsg(err)}`)
   }
@@ -211,7 +246,7 @@ export async function loadAppBundledTools(
 
   const drivers: DriverHandle[] = []
   for (const id of await listBundleIds(driversDir)) {
-    drivers.push(await loadDriverEntry(id, join(driversDir, id, "DRIVER.md")))
+    drivers.push(await loadDriverEntry(id, join(driversDir, id, "DRIVER.md"), dir))
   }
 
   return { tools, drivers }
