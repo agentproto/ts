@@ -11,16 +11,18 @@
  * fake in-process tools (no network, no real Mastra-hosted infra).
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { z } from "zod"
+import { Mastra } from "@mastra/core"
 import { defineTool } from "@agentproto/tool"
 import { defineDriver, implementTool } from "@agentproto/driver"
 import {
   compileWorkflowManifest,
+  type AgentSessionHost,
   type Bindings,
   type RuntimeWorkflow,
 } from "@agentproto/workflow-runtime"
-import { toMastraWorkflow, WorkflowProjectionError } from "../index.js"
+import { toMastraWorkflow, mapMastraInputError, WorkflowProjectionError } from "../index.js"
 
 const doubleTool = defineTool({
   id: "demo.double",
@@ -279,11 +281,82 @@ describe("toMastraWorkflow — parallel / loop / subworkflow", () => {
   })
 })
 
-describe("toMastraWorkflow — unmapped kinds fail loud", () => {
-  it("throws WorkflowProjectionError for a top-level suspend step, before building anything", () => {
+describe("toMastraWorkflow — suspend / approval (native Mastra suspend/resume)", () => {
+  it("suspend: suspends on first run, resumes with the payload bound under the step's id", async () => {
     const wf: RuntimeWorkflow = {
-      id: "has-suspend",
+      id: "suspend-demo",
       steps: [{ kind: "suspend", id: "wait", on: ["approval.granted"] }],
+    }
+    const mastraWorkflow = toMastraWorkflow(wf)
+    // `run.resume()` looks its run snapshot up from storage — registering
+    // with a `Mastra` instance (default in-memory store) is what any Mastra
+    // caller wanting suspend/resume does; `toMastraWorkflow` builds the
+    // workflow but deliberately doesn't own storage/host wiring.
+    const mastra = new Mastra({ workflows: { "suspend-demo": mastraWorkflow } })
+    const run = await mastra.getWorkflow("suspend-demo").createRun()
+    const started = await run.start({ inputData: {} })
+    expect(started.status).toBe("suspended")
+
+    const resumed = await run.resume({ step: "wait", resumeData: { ok: true } })
+    expect(resumed.status).toBe("success")
+    if (resumed.status !== "success") throw new Error("unreachable")
+    expect(resumed.result).toEqual({ ok: true })
+  })
+
+  it("approval: suspends with the request, resumes onApprove and runs its followups", async () => {
+    const wf: RuntimeWorkflow = {
+      id: "approval-demo",
+      steps: [
+        {
+          kind: "approval",
+          id: "sign-off",
+          prompt: () => "ship it?",
+          approvers: ["ops"],
+          onApprove: [{ kind: "transform", id: "shipped", compute: () => "shipped" }],
+          onReject: [{ kind: "transform", id: "shipped", compute: () => "blocked" }],
+        },
+        // Reads the approval's onApprove followup back out of the shared
+        // `$steps` bindings bag — proving the followup ran and bound under
+        // its OWN id (not just folded into "sign-off"'s own `{approved,...}`
+        // output), the same shared-bindings model `branchArm` uses.
+        { kind: "transform", id: "after", compute: (b: Bindings) => b.steps["shipped"] },
+      ],
+    }
+    const mastraWorkflow = toMastraWorkflow(wf)
+    const mastra = new Mastra({ workflows: { "approval-demo": mastraWorkflow } })
+    const run = await mastra.getWorkflow("approval-demo").createRun()
+    const started = await run.start({ inputData: {} })
+    expect(started.status).toBe("suspended")
+
+    const resumed = await run.resume({ step: "sign-off", resumeData: { approved: true, who: "ops-lead" } })
+    expect(resumed.status).toBe("success")
+    if (resumed.status !== "success") throw new Error("unreachable")
+    expect(resumed.result).toBe("shipped")
+    const steps = resumed.steps as Record<string, { output?: unknown } | undefined>
+    expect(steps["sign-off"]?.output).toEqual({ approved: true, who: "ops-lead" })
+  })
+
+  it("throws for a suspend step nested inside a branch arm — no per-step suspend boundary there", () => {
+    const wf: RuntimeWorkflow = {
+      id: "nested-suspend",
+      steps: [
+        {
+          kind: "branch",
+          id: "gate",
+          cond: () => true,
+          then: [{ kind: "suspend", id: "wait", on: ["x"] }],
+        },
+      ],
+    }
+    expect(() => toMastraWorkflow(wf)).toThrow(/gate\.wait.*suspend/)
+  })
+})
+
+describe("toMastraWorkflow — unmapped kinds fail loud", () => {
+  it("throws for a gate step, before building anything — no public seam to reuse the runtime's ref-string resolution", () => {
+    const wf: RuntimeWorkflow = {
+      id: "has-gate",
+      steps: [{ kind: "gate", id: "check", command: "true" }],
     }
     expect(() => toMastraWorkflow(wf)).toThrow(WorkflowProjectionError)
     expect(() => toMastraWorkflow(wf)).toThrow(/not projectable to Mastra/)
@@ -324,5 +397,104 @@ describe("toMastraWorkflow — unmapped kinds fail loud", () => {
       ],
     }
     expect(() => toMastraWorkflow(wf)).toThrow(/pipeline/)
+  })
+
+  it("throws for a gate step nested inside a loop body too — ALWAYS unprojectable, not just top-level", () => {
+    const wf: RuntimeWorkflow = {
+      id: "nested-gate",
+      steps: [
+        { kind: "loop", id: "retry", while: () => true, maxIterations: 1, body: [{ kind: "gate", id: "check", command: "true" }] },
+      ],
+    }
+    expect(() => toMastraWorkflow(wf)).toThrow(/retry\.check.*gate/)
+  })
+})
+
+describe("toMastraWorkflow — schema projection", () => {
+  it("workflow-level inputSchema: rejects invalid input before any step runs, via mapMastraInputError", async () => {
+    const impl = vi.fn(() => ({ n: 1 }))
+    const tool = defineTool({
+      id: "demo.needs-n",
+      description: "fake",
+      inputSchema: z.object({ n: z.number() }),
+      outputSchema: z.object({ n: z.number() }),
+    })
+    const driver = defineDriver({
+      id: "needs-n-builtin",
+      name: "Needs n",
+      description: "fake",
+      kind: "builtin",
+      implements: [{ tool: tool.id, version: "0.1.0" }],
+      implementations: [implementTool(tool, impl)],
+    })
+    const wf: RuntimeWorkflow = {
+      id: "needs-n",
+      steps: [{ kind: "tool", id: "fetch", tool, candidates: [driver], input: () => ({ n: 1 }) }],
+    }
+    const mastraWorkflow = toMastraWorkflow(wf, {
+      inputsSchema: { productUrl: { type: "string", required: true } },
+    })
+    const run = await mastraWorkflow.createRun()
+    let caught: unknown
+    try {
+      await run.start({ inputData: {} })
+    } catch (err) {
+      caught = err
+    }
+    const mapped = mapMastraInputError(caught)
+    expect(mapped).toBeDefined()
+    expect(mapped?.code).toBe("invalid-input")
+    expect(mapped?.fields).toContain("productUrl")
+    expect(impl).not.toHaveBeenCalled()
+  })
+
+  it("workflow-level inputSchema: passes through fields the manifest's `inputs` block never declared", async () => {
+    const wf: RuntimeWorkflow = {
+      id: "loose-input",
+      steps: [{ kind: "transform", id: "echo", compute: (b: Bindings) => b.input }],
+    }
+    const mastraWorkflow = toMastraWorkflow(wf, {
+      inputsSchema: { productUrl: { type: "string", required: true } },
+    })
+    const run = await mastraWorkflow.createRun()
+    const result = await run.start({ inputData: { productUrl: "https://x", extra: "kept" } })
+    expect(result.status).toBe("success")
+    if (result.status !== "success") throw new Error("unreachable")
+    expect(result.result).toEqual({ productUrl: "https://x", extra: "kept" })
+  })
+
+  it("tool step: projects the TOOL contract's real outputSchema instead of z.any()", () => {
+    const wf: RuntimeWorkflow = {
+      id: "tool-schema",
+      steps: [{ kind: "tool", id: "d", tool: doubleTool, candidates, input: (b: Bindings) => ({ n: (b.input as { n: number }).n }) }],
+    }
+    const mastraWorkflow = toMastraWorkflow(wf)
+    const outputSchema = mastraWorkflow.steps["d"].outputSchema
+    expect(outputSchema.safeParse({ n: 5 }).success).toBe(true)
+    expect(outputSchema.safeParse({ n: "not a number" }).success).toBe(false)
+  })
+
+  it("agent step: outputSchema wraps the declared schema in the real { sessionId, output } return shape", async () => {
+    const outputSchema = z.object({ summary: z.string() })
+    const host: AgentSessionHost = {
+      spawn: vi.fn(async () => "sess_fake"),
+      sendPromptAndWait: vi.fn(async () => {}),
+      resolveByLabel: vi.fn(() => undefined),
+      readFinalMessage: vi.fn(async () => JSON.stringify({ summary: "hi" })),
+    }
+    const wf: RuntimeWorkflow = {
+      id: "agent-schema",
+      steps: [{ kind: "agent", id: "draft", adapter: "mock", prompt: () => "go", outputSchema }],
+    }
+    const mastraWorkflow = toMastraWorkflow(wf, { agents: host })
+    const step = mastraWorkflow.steps["draft"]
+    expect(step.outputSchema.safeParse({ sessionId: "x", output: { summary: "hi" } }).success).toBe(true)
+    expect(step.outputSchema.safeParse({ summary: "hi" }).success).toBe(false) // bare shape, not the real return
+
+    const run = await mastraWorkflow.createRun()
+    const result = await run.start({ inputData: {} })
+    expect(result.status).toBe("success")
+    if (result.status !== "success") throw new Error("unreachable")
+    expect(result.result).toEqual({ sessionId: "sess_fake", output: { summary: "hi" } })
   })
 })
