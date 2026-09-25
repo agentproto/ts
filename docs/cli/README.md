@@ -72,6 +72,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto workflow`](./verbs/workflow.md) — start, inspect, and cancel background workflow runs on the daemon
 - [`agentproto workspace`](./verbs/workspace.md) — register local workspaces
 - [`agentproto worktree`](./verbs/worktree.md) — git worktree lifecycle (provision under `worktrees.root`, status-aware `ls`, guarded/salvage removal, `gc`)
+- [`agentproto branch`](./verbs/branch.md) — branch gc: classify local/remote/orphan refs as reclaim/review/hold, reversible apply, review queue
 
 ### Concepts
 

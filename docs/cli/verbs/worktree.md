@@ -8,7 +8,7 @@ agentproto worktree rm      <path> [--repo <dir>] [--base <ref>] [--keep-branch]
                                    [--discard-untracked] [--discard-modified] [--json]
 agentproto worktree archive <path> [--repo <dir>] [--base <ref>] [--keep-branch] [--json]
 agentproto worktree gc      [--repo <dir>] [--apply] [--salvage-dirty]
-                                   [--include-detached] [--json]
+                                   [--include-detached] [--noise <path,...>] [--json]
 ```
 
 Create, inspect, and tear down git worktrees. A pure local shell over
@@ -96,7 +96,7 @@ nothing is touched without `--apply`.**
 
 | Class | Definition | `--apply` does |
 |-------|-----------|----------------|
-| `reclaim` | `(merged or fresh) + clean + idle`, **or** a clean `unpushed` worktree whose only commits are mechanical dependency bumps (`chore(deps)` / `fix(deps)` subjects and the diff touches only lockfiles + `package.json`) | Removes it (plain, non-force `git worktree remove` — refuses if the tree turned dirty since the plan was made) and deletes its branch. |
+| `reclaim` | `(merged or fresh) + clean + idle`, **or** a clean `unpushed` worktree whose only commits are mechanical dependency bumps (`chore(deps)` / `fix(deps)` subjects and the diff touches only lockfiles + `package.json`), **or** a clean, idle worktree whose branch content is provably in base by the [`branch gc`](./branch.md) ladder (squash-, patch- or content-merged — never for an open PR or an offline forge) | Removes it (plain, non-force `git worktree remove` — refuses if the tree turned dirty since the plan was made) and deletes its branch. |
 | `salvage` | merged + dirty, and not written to in the last 15 minutes | Nothing, unless `--salvage-dirty` — then archives it (snapshot, then remove). |
 | `hold` | everything else, including a fresh or merged branch with uncommitted work | **Never touched**, with or without flags. |
 
@@ -106,6 +106,7 @@ nothing is touched without `--apply`.**
 | `--apply` | `false` | Execute the plan instead of printing it. |
 | `--salvage-dirty` | `false` | Also archive salvage-class worktrees. |
 | `--include-detached` | `false` | Also reclaim clean, idle detached worktrees. |
+| `--noise <path,...>` | `.opencode/package-lock.json` | Worktree-relative paths whose dirt is known noise: a worktree dirty only on these counts as clean, and removal restores them before a plain non-force remove. `--noise ""` disables. |
 | `--json` | `false` | Emit the plan (or the outcomes, with `--apply`) as JSON. |
 
 Between plan and apply, each entry is re-checked: one that reclassified or

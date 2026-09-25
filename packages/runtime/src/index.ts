@@ -62,6 +62,7 @@ import {
   type WorktreeStatusLister,
 } from "./worktree-status.js"
 import type { WorktreeGcRunner } from "./worktree-gc.js"
+import type { BranchGcRunner, BranchGcVerdictRecorder } from "./branch-gc.js"
 import { startHeartbeat, type BuildHeartbeatAgent } from "./heartbeat.js"
 import {
   startHttpServer,
@@ -186,6 +187,25 @@ export type {
   WorktreeGcPlanEntryView,
   WorktreeGcOutcomeView,
 } from "./worktree-gc.js"
+export type {
+  BranchGcRunner,
+  BranchGcRunInput,
+  BranchGcResult,
+  BranchGcKind,
+  BranchGcClass,
+  BranchGcStatus,
+  BranchGcReclaimReason,
+  BranchGcHoldReason,
+  BranchGcTriageVerdict,
+  BranchGcCoverageView,
+  BranchGcPlanEntryView,
+  BranchGcPlanView,
+  BranchGcSummaryView,
+  BranchGcOutcomeView,
+  BranchGcVerdictInput,
+  BranchGcVerdictRecordView,
+  BranchGcVerdictRecorder,
+} from "./branch-gc.js"
 export { createPrProvenanceReconciler } from "./pr-provenance-reconciler.js"
 export type { OpenPrResolver } from "./pr-provenance-reconciler.js"
 export { createActivityProjector } from "./activities.js"
@@ -891,6 +911,14 @@ export interface CreateGatewayOptions {
    * `worktree_gc` returns a clear "not enabled" error.
    */
   runWorktreeGc?: WorktreeGcRunner
+  /**
+   * Optional branch-`gc` runner powering `branch_gc` (+ `POST /branches/gc`).
+   * Injected for the same reason as `runWorktreeGc`. Omitted → `branch_gc`
+   * returns a clear "not enabled" error.
+   */
+  runBranchGc?: BranchGcRunner
+  /** Optional verdict recorder powering `branch_gc_verdict` (+ `POST /branches/gc/verdict`). */
+  recordBranchGcVerdict?: BranchGcVerdictRecorder
   /**
    * Optional best-effort exit-time reclaim of ONE policy-provisioned
    * (implicit) session's own worktree — powers `SessionDescriptor.
@@ -1924,6 +1952,8 @@ export async function createGateway(
         ? { listWorktreeStatuses: opts.listWorktreeStatuses }
         : {}),
       ...(opts.runWorktreeGc ? { runWorktreeGc: opts.runWorktreeGc } : {}),
+      ...(opts.runBranchGc ? { runBranchGc: opts.runBranchGc } : {}),
+      ...(opts.recordBranchGcVerdict ? { recordBranchGcVerdict: opts.recordBranchGcVerdict } : {}),
       isSessionChatInstalled,
     })
     // Per-workspace brain — query/status/ingest over the shared brain
@@ -2335,6 +2365,8 @@ export async function createGateway(
       ? { listWorktreeStatuses: opts.listWorktreeStatuses }
       : {}),
     ...(opts.runWorktreeGc ? { runWorktreeGc: opts.runWorktreeGc } : {}),
+      ...(opts.runBranchGc ? { runBranchGc: opts.runBranchGc } : {}),
+      ...(opts.recordBranchGcVerdict ? { recordBranchGcVerdict: opts.recordBranchGcVerdict } : {}),
     ...(opts.resolveBrowserAdapter
       ? { resolveBrowserAdapter: opts.resolveBrowserAdapter }
       : {}),

@@ -55,6 +55,7 @@ import {
   makeOpenPrResolver,
   makePrStateResolver,
 } from "./worktree.js"
+import { makeBranchGcRunner, makeBranchGcVerdictRecorder } from "./branch.js"
 import { loadConfig } from "@agentproto/runtime/config"
 import {
   loadWorkspacesConfig,
@@ -735,6 +736,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // `planGc` / `applyGc` engine over @agentproto/worktree (defaults to a
         // dry run), same dep reasoning as above.
         runWorktreeGc: makeWorktreeGcRunner(),
+        // Injected ports behind `branch_gc` / `branch_gc_verdict` (+ `POST
+        // /branches/gc[/verdict]`): the branch-gc engine over
+        // @agentproto/worktree (defaults to a dry run), same dep reasoning.
+        runBranchGc: makeBranchGcRunner(),
+        recordBranchGcVerdict: makeBranchGcVerdictRecorder(),
         // Injected port behind `sessions.ts`'s exit-time worktree auto-reclaim
         // (`SessionDescriptor.worktreeAutoProvisioned`): a policy-provisioned
         // (implicit) session's own worktree is reclaimed the moment it exits,

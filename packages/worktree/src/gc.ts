@@ -42,6 +42,7 @@
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { readFile, readdir, realpath, rm, stat } from "node:fs/promises"
 import { runTool } from "@agentproto/driver"
+import { classifyTipAgainstBase } from "./branch-gc.js"
 import { execArgv, execGit } from "./exec.js"
 import { cleanupWorktreeTool } from "./tools/index.js"
 import { worktreeProvider } from "./provider/index.js"
@@ -128,7 +129,29 @@ export function classifyForGc(
  *     only irreversible thing history nearly did to it (deleting the branch)
  *     must not happen either. See "prunable reclaim" below.
  */
-export type GcReclaimReason = "dep-bump" | "orphan" | "prunable"
+export type GcReclaimReason = "dep-bump" | "orphan" | "prunable" | InBaseReclaimReason
+
+/**
+ * `branch gc`'s proof tiers (`classifyTip`, branch-gc.ts) that promote a
+ * clean, idle worktree out of `hold` when the forge can't: its branch's
+ * CONTENT is provably in base even though no merged PR contains its tip (a
+ * squash that went through another PR, a cherry-pick, a later reorg). See
+ * "in-base promotion" below.
+ */
+export type InBaseReclaimReason = "squash-merged" | "patch-merged" | "content-merged"
+
+// ── noise allowlist ─────────────────────────────────────────────────────
+//
+// Some dirt is not work: `.opencode/package-lock.json` churn shows up in
+// almost every agent worktree. A worktree whose ONLY dirt is on this list
+// reads `clean` to gc (`computeTreeState`'s `noisePaths`), so a merged one
+// reclaims instead of sitting in `salvage` forever. Removal stays non-force:
+// `reclaimOne` restores/deletes exactly the noise paths first, then plain
+// `git worktree remove` — if anything else turned dirty in between, git still
+// refuses.
+
+/** gc's default noise allowlist — overridable per call via `noisePaths` (`[]` disables it). */
+export const DEFAULT_GC_NOISE_PATHS: readonly string[] = [".opencode/package-lock.json"]
 
 // ── live-session-cwd protection ─────────────────────────────────────────
 //
@@ -211,6 +234,11 @@ export async function isMechanicalDepBumpRange(repoRoot: string, baseRef: string
 
 export interface ResolveGcClassOptions extends ClassifyForGcOptions {
   repoRoot: string
+  /**
+   * Run `branch gc`'s content ladder for a clean, idle worktree still in
+   * `hold` (see "in-base promotion"). Default true.
+   */
+  inBaseCheck?: boolean
   /** The tip commit of the worktree being classified — `worktree.head`. */
   tipSha: string
   /** Default `"origin/main"` — matches `reconcileIntegration`'s own default. */
@@ -239,12 +267,60 @@ export async function resolveGcClass(
 ): Promise<ResolvedGcClass> {
   const baseClass = classifyForGc(tree, integration, liveness, options)
   if (baseClass !== "hold") return { class: baseClass }
-  if (tree.state !== "clean" || integration.state !== "unpushed") return { class: "hold" }
+  if (tree.state !== "clean") return { class: "hold" }
 
   const baseRef = options.defaultBranchRef ?? "origin/main"
-  const isDepBump = await isMechanicalDepBumpRange(options.repoRoot, baseRef, options.tipSha)
-  if (!isDepBump) return { class: "hold" }
-  return { class: "reclaim", reclaimReason: "dep-bump" }
+  if (integration.state === "unpushed" && (await isMechanicalDepBumpRange(options.repoRoot, baseRef, options.tipSha))) {
+    return { class: "reclaim", reclaimReason: "dep-bump" }
+  }
+  if (options.inBaseCheck !== false) {
+    const inBase = await provenInBase(integration, liveness, options.repoRoot, baseRef, options.tipSha)
+    if (inBase) return { class: "reclaim", reclaimReason: inBase }
+  }
+  return { class: "hold" }
+}
+
+// ── in-base promotion ───────────────────────────────────────────────────
+//
+// `reconcileIntegration` only calls a branch `merged` when a merged PR's head
+// contains its tip. Work that reached base any other way — squashed into a
+// different PR, cherry-picked, moved by a later reorg — stays `diverged` /
+// `local-only` / `pushed-no-pr` / … and holds forever. `branch gc`'s ladder
+// proves those by content instead. Deliberately narrow:
+//   - only a CLEAN tree (so nothing uncommitted can be lost; this never
+//     licenses salvage — only a forge-confirmed `merged` does, see
+//     `classify`'s 2026-07-15 note);
+//   - only an idle/daemon-unreachable liveness (a live session still holds);
+//   - never `open` (an open PR is always hold), never `unknown(offline)`
+//     (can't rule out an open PR), never `detached` (no branch to reason
+//     about).
+
+const IN_BASE_PROMOTABLE: ReadonlySet<IntegrationState["state"]> = new Set([
+  "partial",
+  "diverged",
+  "pushed-no-pr",
+  "unpushed",
+  "local-only",
+  "gone-unexplained",
+])
+
+async function provenInBase(
+  integration: IntegrationState,
+  liveness: LivenessState,
+  repoRoot: string,
+  baseRef: string,
+  tipSha: string,
+): Promise<InBaseReclaimReason | null> {
+  if (!IN_BASE_PROMOTABLE.has(integration.state)) return null
+  if (liveness.state !== "idle" && liveness.state !== "daemon-unreachable") return null
+  try {
+    const tip = await classifyTipAgainstBase(repoRoot, baseRef, tipSha)
+    if (tip.status === "squash-merged" || tip.status === "patch-merged" || tip.status === "content-merged") return tip.status
+    return null
+  } catch {
+    // An unresolvable base or a git error proves nothing — keep holding.
+    return null
+  }
 }
 
 // ── plan ─────────────────────────────────────────────────────────────
@@ -317,6 +393,8 @@ export interface PlanGcInput {
    * protection beyond `classify`'s own snapshot-based liveness axis.
    */
   protectedPaths?: string[]
+  /** Noise allowlist (see "noise allowlist" above). Default `DEFAULT_GC_NOISE_PATHS`; `[]` disables it. */
+  noisePaths?: readonly string[]
 }
 
 /** Every linked worktree of `repoRoot` except the main checkout itself — see the module docblock. */
@@ -666,6 +744,7 @@ export async function planGc(input: PlanGcInput): Promise<GcPlanEntry[]> {
       defaultBranchRef: input.defaultBranchRef,
       sessionsPath: input.sessionsPath,
       now: input.now,
+      noisePaths: input.noisePaths ?? DEFAULT_GC_NOISE_PATHS,
     })
     entries.push(
       await toPlanEntry(
@@ -705,6 +784,8 @@ export interface ApplyGcOptions {
   salvageRoot?: string
   /** See `PlanGcInput.protectedPaths` — re-checked here at apply time (layer 2), independent of what the plan entry says, so a stale plan can never remove a now-protected path. */
   protectedPaths?: string[]
+  /** See `PlanGcInput.noisePaths`. */
+  noisePaths?: readonly string[]
 }
 
 export type GcApplyOutcome =
@@ -725,12 +806,30 @@ async function findWorktree(repoRoot: string, path: string): Promise<GitWorktree
   return worktrees.find((w) => w.path === path) ?? null
 }
 
+/**
+ * Put every noise path back the way git's non-force removal needs it: a
+ * tracked one restored to HEAD (index and working tree), an untracked one
+ * deleted. Only ever the exact paths the fresh re-check reported as noise.
+ */
+async function discardNoise(repoRoot: string, worktreePath: string, noise: readonly string[]): Promise<void> {
+  for (const path of noise) {
+    const tracked = await execArgv("git", ["-C", worktreePath, "ls-files", "--error-unmatch", "--", path], repoRoot)
+    if (tracked.exitCode === 0) {
+      await execGit(repoRoot, ["-C", worktreePath, "checkout", "HEAD", "--", path])
+    } else {
+      await rm(join(worktreePath, path), { force: true })
+    }
+  }
+}
+
 async function reclaimOne(
   options: ApplyGcOptions,
   worktree: GitWorktreeRef,
   reclaimReason?: GcReclaimReason,
+  tree?: TreeState,
 ): Promise<GcApplyOutcome> {
   try {
+    if (tree?.state === "clean" && tree.noise?.length) await discardNoise(options.repoRoot, worktree.path, tree.noise)
     await runTool({
       tool: cleanupWorktreeTool,
       candidates,
@@ -878,6 +977,7 @@ async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<Gc
     defaultBranchRef: options.defaultBranchRef,
     sessionsPath: options.sessionsPath,
     now: options.now,
+    noisePaths: options.noisePaths ?? DEFAULT_GC_NOISE_PATHS,
   })
   // Re-resolved from scratch — including the dep-bump exemption, not just
   // `entry`'s stale plan-time verdict, so a worktree that picked up a real
@@ -900,7 +1000,7 @@ async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<Gc
     }
   }
 
-  if (resolved.class === "reclaim") return reclaimOne(options, fresh, resolved.reclaimReason)
+  if (resolved.class === "reclaim") return reclaimOne(options, fresh, resolved.reclaimReason, status.tree)
   // The only other class that reaches this point is "salvage" with
   // `options.salvageDirty` true (both earlier guards above already returned
   // for "hold" and for "salvage" without the flag).
@@ -965,6 +1065,7 @@ export async function reclaimOneWorktree(
     defaultBranchRef: options.defaultBranchRef,
     sessionsPath: options.sessionsPath,
     now: options.now,
+    noisePaths: options.noisePaths ?? DEFAULT_GC_NOISE_PATHS,
   })
   const entry = await toPlanEntry(
     options.repoRoot,
