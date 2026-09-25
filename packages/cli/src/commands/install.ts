@@ -696,20 +696,24 @@ async function runVersionCheck(
     })
     child.once("error", () => resolve({ ok: false, message: "check failed" }))
     child.once("exit", (code) => {
-      if (code !== 0) {
-        resolve({ ok: false, message: `check exited ${code}` })
-        return
-      }
-      const re = new RegExp(check.parse)
-      const m = buf.match(re)
-      if (!m || !m[1]) {
-        resolve({ ok: false, message: "could not parse version" })
-        return
-      }
-      // semver-range matching is left to a future helper; we report
-      // the captured version and trust it. --force remains the
-      // escape hatch when range gating actually matters.
-      resolve({ ok: true, message: `version ${m[1]}` })
+      resolve(interpretVersionCheck(check, code, buf))
     })
   })
+}
+
+/** Verdict for one `version_check` run: exit code + captured stdout →
+ *  presence. Shared with the read-only `agentproto doctor` probe, which
+ *  runs the same `bash -lc <cmd>` through its own injectable exec. */
+export function interpretVersionCheck(
+  check: Pick<AgentCliHandle["version_check"], "parse">,
+  code: number | null,
+  stdout: string
+): { ok: boolean; message: string } {
+  if (code !== 0) return { ok: false, message: `check exited ${code}` }
+  const m = stdout.match(new RegExp(check.parse))
+  if (!m || !m[1]) return { ok: false, message: "could not parse version" }
+  // semver-range matching is left to a future helper; we report
+  // the captured version and trust it. --force remains the
+  // escape hatch when range gating actually matters.
+  return { ok: true, message: `version ${m[1]}` }
 }

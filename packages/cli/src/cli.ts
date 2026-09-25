@@ -61,6 +61,8 @@ Usage:
   agentproto auth      <login|status|logout> [--host <url>] [--label <name>]
   agentproto config    <show|path|get|set|unset|edit> [args]
   agentproto daemon    <install|uninstall|start|stop|status|logs> [args]
+  agentproto doctor    [--json] [--only <step>...] [--skip <step>...]
+                                           read-only check of this install
   agentproto install   <slug> [--force] [--dry-run] [--skip-setup] [--allow-unverified]
                        <slug> ∈ { <adapter-slug> | runtime-profile/<name> }
                        --allow-unverified: run a curl/download installer that
@@ -186,6 +188,7 @@ Examples:
   agentproto config set daemon.allowedOrigins https://guilde.work
   agentproto daemon install            # write launchd plist + start (macOS)
   agentproto daemon status             # plist? loaded? /health probe?
+  agentproto doctor                    # check the whole install (read-only)
   agentproto onboard --yes                 # wire all detected agents in one pass
 `
 
@@ -193,6 +196,7 @@ const VERBS = new Set([
   "auth",
   "config",
   "daemon",
+  "doctor",
   "install",
   "adapters",
   "setup",
@@ -277,6 +281,12 @@ async function main(argv: readonly string[]): Promise<number> {
       // shell-out helpers) we don't need until the verb fires.
       const { runDaemon } = await import("./commands/daemon.js")
       return runDaemon(rest)
+    }
+    case "doctor": {
+      // Lazy: pulls in every onboarding probe (adapter resolution, skill
+      // fan-out, credential discovery) — only needed when the verb fires.
+      const { runDoctor } = await import("./commands/doctor.js")
+      return runDoctor(rest)
     }
     case "install":
       return runInstall(rest)
