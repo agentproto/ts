@@ -79,7 +79,18 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
     "Anthropic's Claude Code wrapped as an ACP agent via @agentclientprotocol/claude-agent-acp. Spawned via `npx -y @agentclientprotocol/claude-agent-acp` and driven over stdio JSON-RPC.",
   version: "0.1.0",
   bin: "npx",
-  bin_args: ["-y", "@agentclientprotocol/claude-agent-acp@0.75.1"],
+  // Pinned for reproducibility. 0.81.2 bundles @anthropic-ai/claude-agent-sdk
+  // 0.3.280 = Claude Code 2.1.280, the FLOOR for the current Opus generation:
+  // the 0.75.1 pin shipped CC 2.1.257, which rejects `claude-opus-5-5` outright
+  // ("API Error: 400 … does not support this model; version 2.1.280 or newer is
+  // required") — a spawn-time failure, not a silent fallback. Nothing between
+  // 0.75.1 and 0.81.2 breaks this adapter: the one ⚠ BREAKING entry (0.77.0,
+  // `claudeCode.options.agent` no longer forwarded + the agent-picker exports
+  // removed) is library-API surface for in-process consumers, and we drive the
+  // wrapper as a spawned ACP server over stdio and never set that option. The
+  // config options we DO apply (`model`, `effort`, `mode` via
+  // `session/set_config_option`) and `session/new` are unchanged.
+  bin_args: ["-y", "@agentclientprotocol/claude-agent-acp@0.81.2"],
   install: [
     {
       method: "npm",
