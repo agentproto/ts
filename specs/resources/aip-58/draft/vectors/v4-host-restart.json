@@ -1,0 +1,36 @@
+{
+  "id": "V4",
+  "title": "Host restart mid-step -> failed host-interrupted; a durably suspended run survives",
+  "rule": "specs/aip-58.mdx section 2 State machine -- host restart",
+  "scenarios": [
+    {
+      "label": "A -- plain running run, no suspend record",
+      "before": { "status": "running", "steps": [{ "stepId": "parse", "status": "running" }] },
+      "hostEvent": "process restart / reload",
+      "expected": {
+        "terminalState": "failed",
+        "error": { "code": "host-interrupted" },
+        "events": ["run.failed"],
+        "notes": ["No prior suspend record existed for this run, so it is not eligible for the durable-suspend carve-out -- it is marked failed on reload."]
+      }
+    },
+    {
+      "label": "B -- durably suspended run",
+      "before": {
+        "status": "suspended",
+        "steps": [{ "stepId": "draft", "status": "suspended" }],
+        "suspendRecord": { "stepId": "draft", "reason": "input-required", "since": "2026-09-25T10:00:14Z" }
+      },
+      "hostEvent": "process restart / reload",
+      "expected": {
+        "terminalState": null,
+        "statusAfterReload": "suspended",
+        "events": [],
+        "notes": [
+          "The run's durable suspend record survives the restart untouched -- no run.failed event is emitted, and the run stays exactly as it was.",
+          "A subsequent run.resume against the re-registered pending entry still resolves. This MUST hold regardless of which step kind (kind: \"approval\" or kind: \"suspend\") produced the suspension -- AIP-15 rule 7, as amended 2026-09-25, requires durable persistence for both identically; the reference runner already persists and re-registers both (awaitingApproval / awaitingSuspend)."
+        ]
+      }
+    }
+  ]
+}

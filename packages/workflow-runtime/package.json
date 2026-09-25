@@ -50,7 +50,9 @@
     "@agentproto/corpus": "workspace:*",
     "@agentproto/driver": "workspace:*",
     "@agentproto/tool": "workspace:*",
-    "@agentproto/workflow": "workspace:*"
+    "@agentproto/workflow": "workspace:*",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

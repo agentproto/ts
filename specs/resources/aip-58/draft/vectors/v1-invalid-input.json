@@ -1,0 +1,31 @@
+{
+  "id": "V1",
+  "title": "Required input missing → rejected",
+  "rule": "specs/aip-58.mdx §3 Outcome rule — “Invalid or missing required input”",
+  "manifestExcerpt": {
+    "kind": "workflow",
+    "id": "pricing-brief",
+    "inputs": {
+      "type": "object",
+      "properties": { "productUrl": { "type": "string", "format": "uri" } },
+      "required": ["productUrl"]
+    },
+    "steps": [{ "id": "fetch", "kind": "tool", "tool": "pricing-snapshot" }]
+  },
+  "runCreate": {
+    "kind": "workflow",
+    "ref": { "id": "pricing-brief", "version": "1.0.0" },
+    "input": {}
+  },
+  "expected": {
+    "runCreateOutcome": "either rejects the call outright, or persists a terminal run — both conforming",
+    "terminalState": "failed",
+    "error": { "code": "invalid-input" },
+    "stepsExecuted": [],
+    "events": ["run.created", "run.failed"],
+    "notes": [
+      "No step.started event MUST appear anywhere in the log — the host MUST reject before dispatching the first step.",
+      "run.started MUST NOT appear — the run never entered the running state."
+    ]
+  }
+}

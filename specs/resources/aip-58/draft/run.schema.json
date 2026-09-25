@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-58/run.schema.json",
+  "title": "Run (AIP-58)",
+  "description": "The run resource: the single object every AIP that executes something (a WORKFLOW.md step graph, an APP.md invocation, a ROUTINE.md fire, a bare tool call) produces one instance of. See specs/aip-58.mdx §1.",
+  "$ref": "#/$defs/run",
+  "$defs": {
+    "runKind": {
+      "type": "string",
+      "enum": ["workflow", "app", "routine", "tool"]
+    },
+    "runStatus": {
+      "description": "Shared by Run.status and every StepRecord.status. terminal = succeeded|failed|cancelled; suspended is NOT terminal (§2 State machine).",
+      "type": "string",
+      "enum": ["pending", "running", "succeeded", "failed", "suspended", "cancelled"]
+    },
+    "runRef": {
+      "description": "What runs, pinned to exact content so a replay is unambiguous.",
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "version": { "type": "string" },
+        "contentSha": {
+          "description": "sha256 of the referenced manifest's content, when the host loaded it from a file.",
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "runError": {
+      "type": "object",
+      "required": ["code", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string" },
+        "stepId": { "type": "string" },
+        "cause": {}
+      }
+    },
+    "spend": {
+      "type": "object",
+      "required": ["amount", "currency"],
+      "additionalProperties": false,
+      "properties": {
+        "amount": { "type": "number" },
+        "currency": { "type": "string", "minLength": 1 },
+        "unit": { "type": "string" }
+      }
+    },
+    "artifactEntry": {
+      "type": "object",
+      "required": ["key", "path", "sha256", "size", "stepId"],
+      "additionalProperties": false,
+      "properties": {
+        "key": { "type": "string", "minLength": 1 },
+        "path": {
+          "description": "Relative to the run workspace root (§4 Run workspace).",
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "size": { "type": "integer", "minimum": 0 },
+        "contentType": { "type": "string" },
+        "stepId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "stepDriver": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "adapter": { "type": "string" },
+        "model": { "type": "string" },
+        "sessionId": {
+          "description": "The AIP-46 session id, when this step is agent-backed.",
+          "type": "string"
+        }
+      }
+    },
+    "stepRecord": {
+      "type": "object",
+      "required": ["stepId", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "stepId": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/runStatus" },
+        "driver": { "$ref": "#/$defs/stepDriver" },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "endedAt": { "type": "string", "format": "date-time" },
+        "output": {},
+        "suspend": {
+          "description": "Present when status is 'suspended' — set from the explicit signal (run.requestInput's arguments, or the AIP-46 awaiting-input event's payload) that produced it. See spec section 3 Outcome rule.",
+          "type": "object",
+          "required": ["reason"],
+          "additionalProperties": false,
+          "properties": {
+            "reason": { "type": "string", "minLength": 1 },
+            "prompt": { "type": "string" },
+            "schema": {
+              "description": "JSON Schema the eventual resume payload must validate against.",
+              "type": "object"
+            }
+          }
+        },
+        "error": { "$ref": "#/$defs/runError" },
+        "hint": {
+          "description": "Advisory only, never load-bearing — a host's heuristic read of a FAILED step's final message (e.g. 'possible-input-request'). MUST NOT influence status; see spec section 3 Outcome rule.",
+          "type": "string"
+        },
+        "spend": { "$ref": "#/$defs/spend" }
+      }
+    },
+    "run": {
+      "type": "object",
+      "required": [
+        "runId", "kind", "ref", "input", "rootRunId", "status",
+        "steps", "createdAt", "runner", "artifacts"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "runId": { "type": "string", "minLength": 1 },
+        "kind": { "$ref": "#/$defs/runKind" },
+        "ref": { "$ref": "#/$defs/runRef" },
+        "input": {},
+        "parentRunId": { "type": "string" },
+        "rootRunId": {
+          "description": "Self (equal to runId) when this run has no parent.",
+          "type": "string",
+          "minLength": 1
+        },
+        "status": { "$ref": "#/$defs/runStatus" },
+        "steps": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/stepRecord" }
+        },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "endedAt": { "type": "string", "format": "date-time" },
+        "runner": {
+          "type": "object",
+          "required": ["hostId"],
+          "additionalProperties": false,
+          "properties": {
+            "hostId": { "type": "string", "minLength": 1 }
+          }
+        },
+        "spend": { "$ref": "#/$defs/spend" },
+        "output": {},
+        "artifacts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/artifactEntry" }
+        },
+        "error": { "$ref": "#/$defs/runError" }
+      }
+    }
+  }
+}

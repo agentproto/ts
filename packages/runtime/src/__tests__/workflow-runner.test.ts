@@ -671,6 +671,62 @@ steps:
     expect(final?.stages[0]?.steps[0]?.status).toBe("done")
   })
 
+  // AIP-58 §3 Outcome rule: "invalid or missing required input is checked
+  // before any step runs". This is the `startFromFile` half of the P1
+  // validation seam (see `@agentproto/workflow-runtime`'s
+  // `validateWorkflowInput` for the normalizer + ajv unit tests).
+  it("rejects a run with missing required input before dispatching any step or spawning a session", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeMockRegistry()
+    const { tools, candidates } = makeStubTools()
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      compileWorkflow: (handle) => compileWorkflow(handle, { tools, candidates }),
+    })
+
+    const path = writeWorkflowMd(`---
+name: Double then add
+id: double-add-validated
+description: Double the input, then add ten.
+version: 0.1.0
+inputs:
+  type: object
+  properties:
+    n: { type: number }
+  required: ["n"]
+outputs: {}
+steps:
+  - id: d
+    kind: tool
+    tool: demo.double
+    inputs:
+      n: $input.n
+  - id: a
+    kind: tool
+    tool: demo.add-ten
+    inputs:
+      n: $steps.d.n
+---
+
+# Double then add
+`)
+
+    // Missing the required `n` — rejected synchronously, never reaches "running".
+    const run = await runner.startFromFile({ path, input: {} })
+
+    expect(run.status).toBe("failed")
+    expect(run.errorCode).toBe("invalid-input")
+    expect(run.error).toContain("n")
+    expect(run.stages).toEqual([])
+    expect(registry.spawnAgent).not.toHaveBeenCalled()
+
+    // Status stays "failed" — there is no background dispatch to race.
+    await waitNextTick()
+    expect(runner.status(run.runId)?.status).toBe("failed")
+  })
+
   it("parks a run at a kind:\"suspend\" step and resumes it to done (AIP-15 rule 7)", async () => {
     const bus = createSessionEventBus()
     const registry = makeMockRegistry()

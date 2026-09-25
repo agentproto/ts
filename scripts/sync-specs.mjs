@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 /**
- * sync-specs — vendor AgentProto JSON Schemas into `ts/specs/resources/`.
+ * sync-specs — vendor AgentProto JSON Schemas (+ conformance vectors) into
+ * `ts/specs/resources/`.
  *
  * The corpus conformance tests load schemas from `ts/specs/resources/`.
  * Schemas are authored upstream in a sibling spec source tree; this
- * script mirrors only the `*.schema.json` files into the package so the
+ * script mirrors the `*.schema.json` files, plus any `vectors/` directory's
+ * `*.json` fixtures (and the `README.md` describing them) into the package so the
  * `ts/` repo is self-contained (CI / OSS contributors don't need the
  * upstream tree on disk).
  *
@@ -56,15 +58,25 @@ if (!existsSync(source)) {
   process.exit(1)
 }
 
-/** Recursively collect every *.schema.json file relative to `root`. */
-function collectSchemas(root) {
+/** A `*.schema.json` file anywhere, or a `vectors/`-directory's `*.json`
+ *  fixtures and its `README.md` — the two file shapes this script vendors. */
+function isVendoredFile(dir, name) {
+  if (name.endsWith(".schema.json")) return true
+  if (path.basename(dir) === "vectors") {
+    return name.endsWith(".json") || name === "README.md"
+  }
+  return false
+}
+
+/** Recursively collect every vendored file (see {@link isVendoredFile}) relative to `root`. */
+function collectVendoredFiles(root) {
   const out = []
   const walk = dir => {
     for (const ent of readdirSync(dir)) {
       const full = path.join(dir, ent)
       const st = statSync(full)
       if (st.isDirectory()) walk(full)
-      else if (st.isFile() && ent.endsWith(".schema.json")) {
+      else if (st.isFile() && isVendoredFile(dir, ent)) {
         out.push(path.relative(root, full))
       }
     }
@@ -73,8 +85,8 @@ function collectSchemas(root) {
   return out.sort()
 }
 
-const sourceFiles = collectSchemas(source)
-const targetFiles = existsSync(TARGET) ? collectSchemas(TARGET) : []
+const sourceFiles = collectVendoredFiles(source)
+const targetFiles = existsSync(TARGET) ? collectVendoredFiles(TARGET) : []
 
 // Detect drift = source/target file sets or byte contents differ.
 const toCopy = []
@@ -103,19 +115,19 @@ const drift = toCopy.length > 0 || toRemove.length > 0
 if (mode === "check") {
   if (drift) {
     process.stderr.write(
-      `sync-specs --check: vendored schemas drift from ${source}\n` +
+      `sync-specs --check: vendored files drift from ${source}\n` +
         (toCopy.length ? `  changed/added (${toCopy.length}): ${toCopy.slice(0, 5).join(", ")}${toCopy.length > 5 ? ", …" : ""}\n` : "") +
         (toRemove.length ? `  stale (${toRemove.length}): ${toRemove.slice(0, 5).join(", ")}${toRemove.length > 5 ? ", …" : ""}\n` : "") +
         `Re-run scripts/sync-specs.mjs (no --check) to refresh.\n`
     )
     process.exit(1)
   }
-  process.stdout.write(`sync-specs: ${sourceFiles.length} schemas in sync.\n`)
+  process.stdout.write(`sync-specs: ${sourceFiles.length} files in sync.\n`)
   process.exit(0)
 }
 
 if (!drift) {
-  process.stdout.write(`sync-specs: ${sourceFiles.length} schemas already in sync.\n`)
+  process.stdout.write(`sync-specs: ${sourceFiles.length} files already in sync.\n`)
   process.exit(0)
 }
 
@@ -139,6 +151,6 @@ for (const rel of toRemove) {
 }
 
 process.stdout.write(
-  `sync-specs: wrote ${toCopy.length} schema${toCopy.length === 1 ? "" : "s"}, ` +
+  `sync-specs: wrote ${toCopy.length} file${toCopy.length === 1 ? "" : "s"}, ` +
     `removed ${toRemove.length} stale.\n`
 )
