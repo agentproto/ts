@@ -111,9 +111,23 @@ describe("createGateway({ deferredTools }) — a real boot, not just the wrapper
     await client.close()
   })
 
-  it("a custom alwaysOn set replaces the default one — e.g. narrowing to just tool_search + file_read", async () => {
+  it("a custom alwaysOn set replaces the default one — e.g. narrowing to just tool_search + file_read (delegation tools stay on)", async () => {
     const gateway = await bootGateway({ alwaysOn: ["file_read"] })
     const client = await connect(gateway)
+    const { tools } = await client.listTools()
+    const names = tools.map(t => t.name).sort()
+    // agent_start/agent_prompt are forced always-on: a session told to
+    // delegate must see them without a tool_search round-trip.
+    expect(names).toEqual(["agent_prompt", "agent_start", "file_read", "tool_search"])
+    await client.close()
+  })
+
+  it("a deny-role mount still loses the delegation tools under deferred mode", async () => {
+    const gateway = await bootGateway({ alwaysOn: ["file_read"] })
+    const client = new Client({ name: "deferred-gateway-test", version: "0.0.1" })
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`${gateway.url}/mcp?denyTools=agent_start,agent_prompt`)),
+    )
     const { tools } = await client.listTools()
     const names = tools.map(t => t.name).sort()
     expect(names).toEqual(["file_read", "tool_search"])

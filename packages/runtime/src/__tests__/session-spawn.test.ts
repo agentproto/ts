@@ -82,13 +82,14 @@ import {
   cleanAgentLines,
   gcSpawnClaims,
   shouldInjectDaemonSelfMount,
+  delegationReachFor,
   type SpawnAgentSessionDeps,
   type SpawnAgentSessionResult,
   type SpawnClaim,
 } from "../session-spawn.js"
 import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 import { SubscriptionSourceError } from "../spawn-defaults.js"
-import { EXECUTOR_ROLE } from "../role.js"
+import { EXECUTOR_ROLE, SUPERVISOR_ROLE } from "../role.js"
 import { getMcpCredentialDeps, setMcpCredentialDeps } from "../mcp-credential-deps.js"
 import {
   createSessionsRegistry,
@@ -1783,6 +1784,143 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
     )
     expect(result.ok).toBe(true)
     expect(buildOrchestratorMcp).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("spawnAgentSession — role text matches the delegation tools the session can actually reach", () => {
+  // Regression for a depth-0 contestant spawned with no role and no daemon
+  // mount: it was told "Delegate through agent_start … Roles you may spawn:
+  // executor, supervisor." with no agent_start anywhere, went hunting for it
+  // in the CLI, then gave up. The composed text must follow the mounts.
+  const DAEMON = "http://127.0.0.1:18790/mcp"
+
+  async function composedPrompt(
+    input: Partial<Parameters<typeof spawnAgentSession>[1]>,
+    overrides: Partial<SpawnAgentSessionDeps> = {},
+  ): Promise<string> {
+    const { registry, deps } = baseDeps({
+      daemonMcpUrl: DAEMON,
+      loadDefaultsConfig: async () => ({}),
+      ...overrides,
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      prompt: "do the task",
+      wait: true,
+      ...input,
+    })
+    expect(result.ok).toBe(true)
+    const message = sendPrompt.mock.calls[0]?.[1]
+    return typeof message === "string" ? message : ""
+  }
+
+  function expectExecutorText(prompt: string): void {
+    expect(prompt.startsWith(EXECUTOR_ROLE.disposition)).toBe(true)
+    expect(prompt).not.toContain(SUPERVISOR_ROLE.disposition)
+    expect(prompt).not.toContain("Roles you may spawn")
+    expect(prompt).not.toContain("agent_start")
+  }
+
+  it("no daemon mount, no role, depth 0 ⇒ executor text (the default follows reach, not only depth)", async () => {
+    expectExecutorText(await composedPrompt({}))
+  })
+
+  it("no daemon mount, explicit supervisor ⇒ still executor text — never a phantom agent_start", async () => {
+    expectExecutorText(await composedPrompt({ role: "supervisor" }))
+  })
+
+  it("daemon mount with agent_start denied ⇒ executor text", async () => {
+    const prompt = await composedPrompt({
+      role: "supervisor",
+      mcpServers: [
+        { name: "agentproto", transport: "http", ref: `${DAEMON}?denyTools=agent_start,agent_prompt` },
+      ],
+    })
+    expectExecutorText(prompt)
+  })
+
+  it("orchestrator scope narrowed without agent_start ⇒ executor text", async () => {
+    const buildOrchestratorMcp = vi.fn(() => ({
+      entry: { name: "agentproto", transport: "http" as const, ref: "http://127.0.0.1:1/mcp/orchestrator?scope=t" },
+      bindLifecycle: () => () => {},
+      scope: { tools: new Set(["session_list"]) },
+    }))
+    const prompt = await composedPrompt(
+      { orchestrator: { tools: ["session_list"] }, mcpServers: [] },
+      { buildOrchestratorMcp },
+    )
+    expectExecutorText(prompt)
+  })
+
+  it("normal supervisor (eager daemon mount) ⇒ supervisor text naming the MCP tool + CLI, no tool_search", async () => {
+    const prompt = await composedPrompt({
+      mcpServers: [{ name: "agentproto", transport: "http", ref: DAEMON }],
+    })
+    expect(prompt.startsWith(SUPERVISOR_ROLE.disposition)).toBe(true)
+    expect(prompt).toContain("Roles you may spawn: executor, supervisor.")
+    expect(prompt).toContain("MCP tools on the `agentproto` MCP server")
+    expect(prompt).toContain("agentproto sessions start <adapter>")
+    expect(prompt).not.toContain("tool_search")
+  })
+
+  it("orchestrator scope carrying agent_start ⇒ supervisor text", async () => {
+    const buildOrchestratorMcp = vi.fn(() => ({
+      entry: { name: "agentproto", transport: "http" as const, ref: "http://127.0.0.1:1/mcp/orchestrator?scope=t" },
+      bindLifecycle: () => () => {},
+    }))
+    const prompt = await composedPrompt({ orchestrator: true, mcpServers: [] }, { buildOrchestratorMcp })
+    expect(prompt.startsWith(SUPERVISOR_ROLE.disposition)).toBe(true)
+    expect(prompt).toContain("Roles you may spawn")
+  })
+
+  it("deferred supervisor mount (?deferred=1) ⇒ text points at tool_search", async () => {
+    const prompt = await composedPrompt({
+      mcpServers: [{ name: "agentproto", transport: "http", ref: `${DAEMON}?deferred=1` }],
+    })
+    expect(prompt.startsWith(SUPERVISOR_ROLE.disposition)).toBe(true)
+    expect(prompt).toContain("`tool_search`")
+    expect(prompt).toContain("select:agent_start,agent_prompt")
+  })
+
+  it("deferred via the gateway's boot default (defaults.mcp.deferredTools) ⇒ text points at tool_search", async () => {
+    const prompt = await composedPrompt(
+      { mcpServers: [{ name: "agentproto", transport: "http", ref: DAEMON }] },
+      { loadDefaultsConfig: async () => ({ mcp: { deferredTools: true } }) },
+    )
+    expect(prompt).toContain("`tool_search`")
+  })
+})
+
+describe("delegationReachFor", () => {
+  const DAEMON = "http://127.0.0.1:18790/mcp"
+
+  it("no mounts ⇒ unreachable", () => {
+    expect(delegationReachFor(undefined, { daemonMcpUrl: DAEMON })).toEqual({ reachable: false })
+    expect(delegationReachFor([], { daemonMcpUrl: DAEMON })).toEqual({ reachable: false })
+  })
+
+  it("a non-daemon server doesn't count", () => {
+    const servers: AcpMcpServer[] = [{ name: "github", transport: "http", ref: "https://example.com/mcp" }]
+    expect(delegationReachFor(servers, { daemonMcpUrl: DAEMON }).reachable).toBe(false)
+  })
+
+  it("the report-only orchestrator scope doesn't count", () => {
+    const servers: AcpMcpServer[] = [
+      { name: "agentproto", transport: "http", ref: "http://127.0.0.1:1/mcp/orchestrator?scope=r" },
+    ]
+    expect(delegationReachFor(servers, { daemonMcpUrl: DAEMON }).reachable).toBe(false)
+  })
+
+  it("denyTools=agent_start strips it; deferred follows ?deferred= then the gateway default", () => {
+    const at = (ref: string, gatewayDeferred = false) =>
+      delegationReachFor([{ name: "x", transport: "http", ref }], { daemonMcpUrl: DAEMON, gatewayDeferred })
+    expect(at(`${DAEMON}?denyTools=agent_start,agent_prompt&callerSessionId=s`).reachable).toBe(false)
+    expect(at(`${DAEMON}?callerSessionId=s`)).toEqual({ reachable: true, deferred: false })
+    expect(at(`${DAEMON}?deferred=1`)).toEqual({ reachable: true, deferred: true })
+    expect(at(`${DAEMON}?deferred=0`, true)).toEqual({ reachable: true, deferred: false })
+    expect(at(DAEMON, true)).toEqual({ reachable: true, deferred: true })
   })
 })
 
