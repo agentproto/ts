@@ -96,7 +96,7 @@ Usage:
   agentproto worktree archive <path|slug> [--repo <dir>] [--base <ref>]
                                      [--keep-branch] [--json]
   agentproto worktree gc      [--repo <dir>] [--apply] [--salvage-dirty]
-                                     [--include-detached] [--json]
+                                     [--include-detached] [--noise <path,...>] [--json]
   agentproto worktree --help
 
   ls        List the repo's git worktrees (path, branch, HEAD).
@@ -131,6 +131,12 @@ Usage:
             \`archive\`).
             hold-class worktrees are never touched, with or without flags.
             --include-detached also reclaims clean, idle detached worktrees.
+            A clean, idle worktree whose branch no merged PR contains is still
+            reclaimed when its content is provably in base (squash-, patch- or
+            content-merged, the \`branch gc\` ladder). --noise lists worktree-
+            relative paths whose dirt is known noise (default
+            .opencode/package-lock.json; pass --noise "" to disable): a worktree
+            dirty only on those counts as clean.
 `
 
 const candidates = [worktreeProvider]
@@ -510,6 +516,7 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
     salvageDirty,
     includeDetached,
     protectedPaths,
+    noisePaths,
   }): Promise<WorktreeGcResult> => {
     const repoRoot = repoRootOf(resolve(repoRootCandidate))
     if (!repoRoot) {
@@ -535,6 +542,7 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
       includeDetached,
       worktreesRoot: join(worktreesRoot, repoName),
       protectedPaths,
+      ...(noisePaths ? { noisePaths } : {}),
     })
 
     if (!apply) {
@@ -550,6 +558,7 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
       includeDetached,
       salvageDirty,
       protectedPaths,
+      ...(noisePaths ? { noisePaths } : {}),
     })
     return { mode: "apply", outcomes: outcomes.map(toGcOutcomeView) }
   }
@@ -1023,9 +1032,12 @@ async function runGc(args: readonly string[]): Promise<number> {
       apply: { type: "boolean" },
       "salvage-dirty": { type: "boolean" },
       "include-detached": { type: "boolean" },
+      noise: { type: "string" },
       json: { type: "boolean" },
     },
   })
+  const noisePaths =
+    values.noise === undefined ? undefined : values.noise.split(",").map((p) => p.trim()).filter(Boolean)
 
   const repoRoot = repoRootOf(resolve(values.repo ?? process.cwd()))
   if (!repoRoot) {
@@ -1052,6 +1064,7 @@ async function runGc(args: readonly string[]): Promise<number> {
     defaultBranchRef,
     includeDetached,
     worktreesRoot: join(worktreesRoot, repoName),
+    ...(noisePaths ? { noisePaths } : {}),
   })
 
   if (!values.apply) {
@@ -1067,6 +1080,7 @@ async function runGc(args: readonly string[]): Promise<number> {
     defaultBranchRef,
     includeDetached,
     salvageDirty,
+    ...(noisePaths ? { noisePaths } : {}),
   })
   printGcOutcomes(outcomes, Boolean(values.json))
   return outcomes.some((o) => o.result === "failed") ? 1 : 0
@@ -1100,9 +1114,11 @@ function printGcPlan(plan: readonly GcPlanEntry[], salvageDirty: boolean, json: 
 function gcPlanAction(entry: GcPlanEntry, salvageDirty: boolean): string {
   if (entry.orphan) return "reclaim (orphan: git metadata gone, rm -rf)"
   if (entry.class === "reclaim") {
-    return entry.reclaimReason === "dep-bump"
-      ? "reclaim (dep-bump exemption: rm, delete branch)"
-      : "reclaim (rm, delete branch)"
+    if (entry.reclaimReason === "dep-bump") return "reclaim (dep-bump exemption: rm, delete branch)"
+    if (entry.reclaimReason === "squash-merged" || entry.reclaimReason === "patch-merged" || entry.reclaimReason === "content-merged") {
+      return `reclaim (${entry.reclaimReason}: rm, delete branch)`
+    }
+    return "reclaim (rm, delete branch)"
   }
   if (entry.class === "salvage") return salvageDirty ? "salvage (archive)" : "salvage (skip: needs --salvage-dirty)"
   return "hold (never touched)"
@@ -1130,7 +1146,9 @@ function formatGcOutcomeRow(outcome: GcApplyOutcome): string {
           ? "reclaimed (dep-bump exemption)"
           : outcome.reclaimReason === "orphan"
             ? "reclaimed (orphan: git metadata was already gone)"
-            : "reclaimed"
+            : outcome.reclaimReason
+              ? `reclaimed (${outcome.reclaimReason})`
+              : "reclaimed"
       break
     case "salvaged":
       detail = `salvaged (${outcome.salvageDir})`

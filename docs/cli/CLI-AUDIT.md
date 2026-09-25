@@ -46,6 +46,7 @@ All 29 verbs in the dispatcher's `VERBS` set at the time of the audit
 | **tunnel** | create, list, stop, status | --port, --provider, --name, --hostname, --json | Manage public tunnels (Cloudflare, Ngrok) |
 | **workspace** | add, list, remove, use | --slug, --label, --json | Manage workspaces registry |
 | **worktree** | ls, new, rm, archive, gc | --repo, --status, --base, --branch, --root, --no-setup, --keep-branch, --discard-untracked, --discard-modified, --apply, --salvage-dirty, --include-detached, --json | Git worktree lifecycle (provision under `worktrees.root`, guarded/salvage removal, gc) |
+| **branch** | gc, review-queue | --repo, --base, --scopes, --min-age-days, --include-reviewed, --anchor, --apply, --all, --json | Branch gc (reclaim/review/hold over local, remote and orphan refs; restore log; review queue) |
 
 ---
 

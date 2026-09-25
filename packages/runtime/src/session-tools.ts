@@ -93,6 +93,7 @@ import {
   type WorktreeStatusView,
 } from "./worktree-status.js"
 import { livingSessionCwds, type WorktreeGcRunner } from "./worktree-gc.js"
+import type { BranchGcRunner, BranchGcVerdictRecorder } from "./branch-gc.js"
 import { basename, join } from "node:path"
 import {
   ALLOWLIST_REL,
@@ -348,6 +349,14 @@ export interface RegisterSessionToolsOptions {
    * enabled" error.
    */
   runWorktreeGc?: WorktreeGcRunner
+  /**
+   * Optional branch-`gc` runner powering `branch_gc` — same injection reason
+   * as `runWorktreeGc` (the engine lives in `@agentproto/worktree`). Omitted
+   * → `branch_gc` returns a clear "not enabled" error.
+   */
+  runBranchGc?: BranchGcRunner
+  /** Optional verdict recorder powering `branch_gc_verdict`. Same injection reason. */
+  recordBranchGcVerdict?: BranchGcVerdictRecorder
   /** Forwarded to `registerAgentTools` — see
    *  `RegisterAgentToolsOptions.isSessionChatInstalled`. */
   isSessionChatInstalled?: RegisterAgentToolsOptions["isSessionChatInstalled"]
@@ -360,6 +369,10 @@ export interface RegisterSessionToolsOptions {
 const mcpBool = z.preprocess(
   v => (v === "true" ? true : v === "false" ? false : v),
   z.boolean(),
+)
+const mcpNumber = z.preprocess(
+  v => (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : v),
+  z.number(),
 )
 
 // ── session_list COMPACT projection (PR-10) ──────────────────────────────
@@ -578,6 +591,8 @@ export function registerSessionTools(
     resolveAgentAdapter,
     listWorktreeStatuses,
     runWorktreeGc,
+    runBranchGc,
+    recordBranchGcVerdict,
     listCatalogModels,
     loadDefaultsConfig,
   } = opts
@@ -2265,6 +2280,14 @@ export function registerSessionTools(
             "of held. Default false. This is the only flag that can promote " +
             "an entry toward reclaim; no flag ever weakens a hold otherwise."
         ),
+      noisePaths: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Worktree-relative paths whose dirt is known noise (a worktree dirty " +
+            "ONLY on these counts as clean). Default `.opencode/package-lock.json`; " +
+            "pass [] to disable."
+        ),
     },
     async input => {
       if (!runWorktreeGc) {
@@ -2307,6 +2330,7 @@ export function registerSessionTools(
           // The daemon's own live in-memory registry, not a disk re-read —
           // see `livingSessionCwds`'s doc.
           protectedPaths: livingSessionCwds(registry),
+          ...(input.noisePaths ? { noisePaths: input.noisePaths } : {}),
         })
         return {
           content: [
@@ -2324,6 +2348,158 @@ export function registerSessionTools(
               text: `worktree_gc failed: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  // ── branch_gc ────────────────────────────────────────────────────
+  // The sibling of `worktree_gc` for refs: local branches, the base remote's
+  // tracking branches, and orphan tracking refs of removed remotes. Same
+  // contract — a DRY RUN unless `apply` is set, every entry re-classified
+  // right before it is touched, `hold` and `review` never touched — and every
+  // fact and mutation delegated to the injected `runBranchGc` port.
+
+  const branchGcKind = z.enum(["local", "remote", "orphan"])
+  server.tool(
+    "branch_gc",
+    "Garbage-collect a repo's branches. DEFAULTS TO A DRY RUN: returns a plan " +
+      "classifying every local branch, base-remote branch and orphan tracking " +
+      "ref (refs/remotes/<ns>/* of a removed remote) as `reclaim` (work " +
+      "provably in base: merged, squash-merged, patch-merged or " +
+      "content-merged), `review` (unmerged, old enough, not protected — " +
+      "carries coverage + the files not provably in base for a reviewer), or " +
+      "`hold` (base/protected, checked out in a worktree or its remote twin, " +
+      "open PR head, PR check unavailable, or younger than `minAgeDays`). " +
+      "`apply: true` (requires explicit `scopes`) deletes only `reclaim` " +
+      "entries, re-classifying each right before deleting it, and returns " +
+      "the path of a restore log (sha + re-create command per deleted ref).",
+    {
+      repoRoot: z.string().optional().describe("Absolute path to the git repo. Wins over `workspaceSlug`."),
+      workspaceSlug: z
+        .string()
+        .optional()
+        .describe("Workspace slug from `agentproto workspace list`. The active workspace when omitted."),
+      base: z.string().optional().describe("Base ref the work must be in. Default `origin/main`."),
+      scopes: z
+        .array(branchGcKind)
+        .optional()
+        .describe("Ref kinds to consider: local, remote, orphan. Default all three for a plan; REQUIRED for apply."),
+      minAgeDays: mcpNumber
+        .optional()
+        .describe("Unmerged refs younger than this many days are held. Default 3."),
+      includeReviewed: mcpBool
+        .optional()
+        .describe(
+          "When true, a `review` ref whose stored verdict (branch_gc_verdict) has gate.agree=true for the SAME tip sha becomes `reclaim` (`reviewed`). Default false.",
+        ),
+      anchor: z.string().optional().describe("Explicit anchor commit for a re-rooted base. Auto-detected when omitted."),
+      apply: mcpBool.optional().describe("When true, EXECUTE the plan for `scopes`. Default false — a dry run."),
+    },
+    async input => {
+      if (!runBranchGc) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "branch_gc is not enabled — the daemon was started without a " +
+                "branch gc runner. The host must wire `runBranchGc` in createGateway.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      const resolved = await resolveWorktreeQueryRoot({
+        repoRoot: input.repoRoot,
+        workspaceSlug: input.workspaceSlug,
+      })
+      if (!resolved.ok) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }], isError: true }
+      }
+      if (input.apply === true && !input.scopes?.length) {
+        return {
+          content: [{ type: "text", text: "branch_gc: `apply: true` requires explicit `scopes` (any of local, remote, orphan)." }],
+          isError: true,
+        }
+      }
+      try {
+        const result = await runBranchGc({
+          repoRoot: resolved.repoRoot,
+          apply: input.apply === true,
+          includeReviewed: input.includeReviewed === true,
+          ...(input.base ? { base: input.base } : {}),
+          ...(input.scopes?.length ? { scopes: input.scopes } : {}),
+          ...(input.minAgeDays !== undefined ? { minAgeDays: input.minAgeDays } : {}),
+          ...(input.anchor ? { anchor: input.anchor } : {}),
+        })
+        return { content: [{ type: "text", text: JSON.stringify(result) }] }
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `branch_gc failed: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  const branchVerdictEnum = z.enum(["obsolete", "superseded", "salvage", "in-progress", "unclear"])
+  server.tool(
+    "branch_gc_verdict",
+    "Record one reviewer verdict for a branch tip, keyed by repo + tip sha " +
+      "(a verdict for a tip that later moves is ignored). `gate.agree: true` " +
+      "is what lets `branch_gc` with `includeReviewed` reclaim an unmerged " +
+      "ref, and it must cite evidence. This tool only stores verdicts; it " +
+      "never deletes anything.",
+    {
+      repoRoot: z.string().optional().describe("Absolute path to the git repo. Wins over `workspaceSlug`."),
+      workspaceSlug: z.string().optional().describe("Workspace slug. The active workspace when omitted."),
+      name: z.string().describe("Branch name the verdict is about (informational; the key is the sha)."),
+      sha: z.string().describe("Full tip sha that was reviewed."),
+      triage: z.object({
+        verdict: branchVerdictEnum,
+        confidence: mcpNumber.describe("0..1"),
+        reason: z.string(),
+        salvage: z.string().optional().describe("What is worth keeping, if anything."),
+      }),
+      gate: z
+        .object({
+          agree: mcpBool.describe("true only if deleting the branch loses nothing of value"),
+          verdict: branchVerdictEnum,
+          reason: z.string(),
+          evidence: z.array(z.string()).describe("Concrete shas/paths. Required non-empty when agree is true."),
+        })
+        .optional(),
+      reviewer: z.string().describe("Who reviewed, e.g. `claude-sonnet reviewer`."),
+    },
+    async input => {
+      if (!recordBranchGcVerdict) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "branch_gc_verdict is not enabled — the host must wire `recordBranchGcVerdict` in createGateway.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      const resolved = await resolveWorktreeQueryRoot({
+        repoRoot: input.repoRoot,
+        workspaceSlug: input.workspaceSlug,
+      })
+      if (!resolved.ok) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }], isError: true }
+      }
+      try {
+        const { repoRoot: _r, workspaceSlug: _w, ...verdict } = input
+        const record = await recordBranchGcVerdict({ repoRoot: resolved.repoRoot, verdict })
+        return { content: [{ type: "text", text: JSON.stringify({ recorded: true, record }) }] }
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `branch_gc_verdict failed: ${err instanceof Error ? err.message : String(err)}` }],
           isError: true,
         }
       }

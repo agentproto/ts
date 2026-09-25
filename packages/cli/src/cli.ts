@@ -45,6 +45,7 @@ import { runCron } from "./commands/cron.js"
 import { runPack } from "./commands/pack.js"
 import { runApp } from "./commands/app.js"
 import { runWorktree } from "./commands/worktree.js"
+import { runBranch } from "./commands/branch.js"
 import { runPolicy } from "./commands/policy.js"
 import { runWorkflow } from "./commands/workflow.js"
 import { runTask } from "./commands/task.js"
@@ -127,6 +128,8 @@ Usage:
                                                dist/<name>-v<version>/ bundle + .zip
   agentproto worktree  ls      [--repo <dir>] [--json]
   agentproto worktree  archive <path> [--base <ref>] [--keep-branch] [--json]
+  agentproto branch    gc [--repo <dir>] [--scopes local,remote,orphan] [--apply] [--json]
+  agentproto branch    review-queue [--repo <dir>] [--all]
   agentproto policy    attach (--session <id>|--sessions <id,id,…>) [--then emit|commit]
                               [-- <gate-cmd> [args...]] [--wait] [--json]
   agentproto policy    status <policyId> [--json]
@@ -219,6 +222,7 @@ const VERBS = new Set([
   "cron",
   "pack",
   "worktree",
+  "branch",
   "policy",
   "workflow",
   "task",
@@ -333,6 +337,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runApp(rest)
     case "worktree":
       return runWorktree(rest)
+    case "branch":
+      return runBranch(rest)
     case "policy":
       return runPolicy(rest)
     case "workflow":

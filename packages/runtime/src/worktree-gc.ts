@@ -51,7 +51,15 @@ export type WorktreeGcClass = "reclaim" | "salvage" | "hold"
  * registration is still there, but the working directory is gone (see
  * `WorktreeGcPlanEntryView.prunable`).
  */
-export type WorktreeGcReclaimReason = "dep-bump" | "orphan" | "prunable"
+export type WorktreeGcReclaimReason =
+  | "dep-bump"
+  | "orphan"
+  | "prunable"
+  // A clean, idle worktree whose branch content is provably in base by
+  // `branch gc`'s ladder even though no merged PR contains its tip.
+  | "squash-merged"
+  | "patch-merged"
+  | "content-merged"
 
 /**
  * One entry of the dry-run plan — a runtime-local projection of a
@@ -144,6 +152,13 @@ export interface WorktreeGcRunInput {
    * command) omits it and gets exactly today's behavior.
    */
   protectedPaths?: string[]
+  /**
+   * Worktree-relative paths whose dirt is known noise: a worktree dirty ONLY
+   * on these reads clean (and is removed non-force after they are restored).
+   * Omitted → the engine's default (`.opencode/package-lock.json`); `[]`
+   * disables the allowlist.
+   */
+  noisePaths?: string[]
 }
 
 /**

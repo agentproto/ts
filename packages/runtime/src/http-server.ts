@@ -158,6 +158,7 @@ import {
   type WorktreeStatusLister,
 } from "./worktree-status.js"
 import { livingSessionCwds, type WorktreeGcRunner } from "./worktree-gc.js"
+import type { BranchGcKind, BranchGcRunner, BranchGcVerdictRecorder } from "./branch-gc.js"
 import type {
   CatalogModelsQuery,
   CatalogModelsResponse,
@@ -779,6 +780,12 @@ export interface RuntimeHttpServerOptions {
    *  Injected because the plan/apply engine lives in `@agentproto/worktree`,
    *  a dependency the runtime deliberately does NOT take. */
   runWorktreeGc?: WorktreeGcRunner
+  /** Optional — mirrors `RegisterSessionToolsOptions.runBranchGc`. When
+   *  wired, enables `POST /branches/gc` + the `branch_gc` MCP tool. */
+  runBranchGc?: BranchGcRunner
+  /** Optional — mirrors `RegisterSessionToolsOptions.recordBranchGcVerdict`.
+   *  When wired, enables `POST /branches/gc/verdict` + `branch_gc_verdict`. */
+  recordBranchGcVerdict?: BranchGcVerdictRecorder
   /** Optional — when wired, exposes /tunnels/* routes for creating and
    *  managing public tunnels for local ports. Without it the routes 404. */
   tunnels?: TunnelRegistry
@@ -2099,6 +2106,9 @@ export async function startHttpServer(
               // route is only reachable when a SessionsRegistry is wired
               // (`opts.sessions`, e.g. the /sessions family above).
               protectedPaths: opts.sessions ? livingSessionCwds(opts.sessions) : undefined,
+              ...("noisePaths" in obj && Array.isArray(obj.noisePaths)
+                ? { noisePaths: obj.noisePaths.filter((p): p is string => typeof p === "string") }
+                : {}),
             })
             res.writeHead(200, { "content-type": "application/json" })
             res.end(JSON.stringify(result))
@@ -2109,6 +2119,106 @@ export async function startHttpServer(
                 error: "worktree_gc_failed",
                 message: err instanceof Error ? err.message : String(err),
               })
+            )
+          }
+          return
+        }
+
+        if (path === "/branches/gc" && req.method === "POST") {
+          if (guardBrowserOrigin(req, res)) return
+          // Transport twin of the `branch_gc` MCP tool. DEFAULTS TO A DRY
+          // RUN — `apply` must be explicitly true, and then `scopes` too.
+          if (!opts.runBranchGc) {
+            res.writeHead(501, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "branch_gc_not_configured",
+                message:
+                  "POST /branches/gc is not enabled — the daemon was started " +
+                  "without a branch gc runner. The host must wire `runBranchGc` in createGateway.",
+              })
+            )
+            return
+          }
+          const body = await readJsonBody(req)
+          const obj: Record<string, unknown> =
+            typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {}
+          const str = (k: string): string | undefined => (typeof obj[k] === "string" ? (obj[k] as string) : undefined)
+          const bool = (k: string): boolean => obj[k] === true || obj[k] === "true"
+          const scopes = Array.isArray(obj.scopes)
+            ? obj.scopes.filter((x): x is BranchGcKind => x === "local" || x === "remote" || x === "orphan")
+            : undefined
+          const minAgeRaw = obj.minAgeDays
+          const minAgeDays =
+            typeof minAgeRaw === "number" ? minAgeRaw : typeof minAgeRaw === "string" && minAgeRaw.trim() !== "" ? Number(minAgeRaw) : undefined
+          const apply = bool("apply")
+          if (apply && !scopes?.length) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "scopes_required", message: "`apply: true` requires explicit `scopes`." }))
+            return
+          }
+          const resolved = await resolveWorktreeQueryRoot({ repoRoot: str("repoRoot"), workspaceSlug: str("workspaceSlug") })
+          if (!resolved.ok) {
+            res.writeHead(resolved.status, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: resolved.error }))
+            return
+          }
+          try {
+            const base = str("base")
+            const anchor = str("anchor")
+            const result = await opts.runBranchGc({
+              repoRoot: resolved.repoRoot,
+              apply,
+              includeReviewed: bool("includeReviewed"),
+              ...(base ? { base } : {}),
+              ...(scopes?.length ? { scopes } : {}),
+              ...(minAgeDays !== undefined && Number.isFinite(minAgeDays) ? { minAgeDays } : {}),
+              ...(anchor ? { anchor } : {}),
+            })
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify(result))
+          } catch (err) {
+            res.writeHead(500, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({ error: "branch_gc_failed", message: err instanceof Error ? err.message : String(err) })
+            )
+          }
+          return
+        }
+
+        if (path === "/branches/gc/verdict" && req.method === "POST") {
+          if (guardBrowserOrigin(req, res)) return
+          if (!opts.recordBranchGcVerdict) {
+            res.writeHead(501, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "branch_gc_verdict_not_configured",
+                message: "POST /branches/gc/verdict is not enabled — the host must wire `recordBranchGcVerdict`.",
+              })
+            )
+            return
+          }
+          const body = await readJsonBody(req)
+          const obj: Record<string, unknown> =
+            typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {}
+          const { repoRoot, workspaceSlug, ...verdict } = obj
+          const resolved = await resolveWorktreeQueryRoot({
+            repoRoot: typeof repoRoot === "string" ? repoRoot : undefined,
+            workspaceSlug: typeof workspaceSlug === "string" ? workspaceSlug : undefined,
+          })
+          if (!resolved.ok) {
+            res.writeHead(resolved.status, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: resolved.error }))
+            return
+          }
+          try {
+            const record = await opts.recordBranchGcVerdict({ repoRoot: resolved.repoRoot, verdict })
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify({ recorded: true, record }))
+          } catch (err) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({ error: "invalid_branch_verdict", message: err instanceof Error ? err.message : String(err) })
             )
           }
           return

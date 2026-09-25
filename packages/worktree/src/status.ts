@@ -34,7 +34,16 @@ import {
 // ── tree axis ─────────────────────────────────────────────────────────
 
 export type TreeState =
-  | { state: "clean" }
+  | {
+      state: "clean"
+      /**
+       * Set only when the tree is clean BECAUSE every dirty path was on the
+       * caller's noise allowlist (`ComputeTreeStateOptions.noisePaths`) — the
+       * paths a removal must restore/delete first, since git's own
+       * non-`--force` `worktree remove` still sees them as dirt.
+       */
+      noise?: string[]
+    }
   | {
       state: "dirty"
       modified: number
@@ -48,6 +57,26 @@ export type TreeState =
        */
       newestMtimeMs: number | null
     }
+
+export interface ComputeTreeStateOptions {
+  /**
+   * Worktree-relative paths whose dirt is known noise (e.g. a tool's lockfile
+   * churn that shows up in every agent worktree). A tree whose ONLY dirt is
+   * on this list reads `clean` (with `noise` set). Default none — callers
+   * opt in; see `DEFAULT_GC_NOISE_PATHS` in `gc.ts` for gc's default.
+   */
+  noisePaths?: readonly string[]
+}
+
+/** The (current) path of one `status --porcelain=v2` record, `null` for a header/unknown line. */
+function porcelainV2Path(line: string): string | null {
+  const parts = line.split(" ")
+  if (line.startsWith("? ") || line.startsWith("! ")) return line.slice(2)
+  if (line.startsWith("1 ")) return parts.slice(8).join(" ")
+  if (line.startsWith("2 ")) return (parts.slice(9).join(" ").split("\t")[0] ?? "")
+  if (line.startsWith("u ")) return parts.slice(10).join(" ")
+  return null
+}
 
 /**
  * `git status --porcelain=v2` in the worktree itself, via `-C worktreePath`
@@ -63,18 +92,38 @@ export type TreeState =
  * `worktree remove` tolerance for them (PLAN.md §0.5) — the two notions of
  * "clean" agree by construction.
  */
-export async function computeTreeState(repoRoot: string, worktreePath: string): Promise<TreeState> {
-  const res = await execArgv("git", ["-C", worktreePath, "status", "--porcelain=v2"], repoRoot)
+export async function computeTreeState(
+  repoRoot: string,
+  worktreePath: string,
+  options: ComputeTreeStateOptions = {},
+): Promise<TreeState> {
+  // `--no-optional-locks`: a plain `status` opportunistically rewrites the
+  // index to refresh its stat cache — in a live worktree that is both a lock
+  // contender for the session working there and a false "recent activity"
+  // signal for anything reading the index mtime. A read must not write.
+  const noiseSet = new Set(options.noisePaths ?? [])
+  // With an allowlist, untracked files must be listed one by one: by default
+  // git collapses a wholly-untracked directory to `? dir/`, which no noise
+  // path could ever match.
+  const statusArgs = ["--no-optional-locks", "-C", worktreePath, "status", "--porcelain=v2"]
+  if (noiseSet.size > 0) statusArgs.push("--untracked-files=all")
+  const res = await execArgv("git", statusArgs, repoRoot)
   if (res.exitCode !== 0) {
     throw new Error(
       `git status --porcelain=v2 failed in ${worktreePath} (exit ${res.exitCode}): ${res.stderr.trim() || res.stdout.trim()}`,
     )
   }
+  const noise: string[] = []
   let modified = 0
   let staged = 0
   let untracked = 0
   for (const line of res.stdout.split("\n")) {
     if (!line) continue
+    const path = porcelainV2Path(line)
+    if (path !== null && noiseSet.has(path)) {
+      noise.push(path)
+      continue
+    }
     if (line.startsWith("? ")) {
       untracked++
       continue
@@ -85,7 +134,7 @@ export async function computeTreeState(repoRoot: string, worktreePath: string): 
       if (xy[1] !== ".") modified++
     }
   }
-  if (modified === 0 && staged === 0 && untracked === 0) return { state: "clean" }
+  if (modified === 0 && staged === 0 && untracked === 0) return noise.length > 0 ? { state: "clean", noise } : { state: "clean" }
   return {
     state: "dirty",
     modified,
@@ -106,9 +155,9 @@ export async function computeTreeState(repoRoot: string, worktreePath: string): 
  */
 async function newestDirtyMtimeMs(repoRoot: string, worktreePath: string): Promise<number | null> {
   const [unstaged, staged, untracked] = await Promise.all([
-    execArgv("git", ["-C", worktreePath, "diff", "--name-only", "-z"], repoRoot),
-    execArgv("git", ["-C", worktreePath, "diff", "--cached", "--name-only", "-z"], repoRoot),
-    execArgv("git", ["-C", worktreePath, "ls-files", "--others", "--exclude-standard", "-z"], repoRoot),
+    execArgv("git", ["--no-optional-locks", "-C", worktreePath, "diff", "--name-only", "-z"], repoRoot),
+    execArgv("git", ["--no-optional-locks", "-C", worktreePath, "diff", "--cached", "--name-only", "-z"], repoRoot),
+    execArgv("git", ["--no-optional-locks", "-C", worktreePath, "ls-files", "--others", "--exclude-standard", "-z"], repoRoot),
   ])
   const paths = new Set<string>()
   for (const res of [unstaged, staged, untracked]) {
@@ -652,12 +701,14 @@ export interface ComputeWorktreeStatusInput {
    * and therefore always-"recent", delta). Defaults to `Date.now()`.
    */
   nowMs?: number
+  /** See `ComputeTreeStateOptions.noisePaths`. Default none. */
+  noisePaths?: readonly string[]
 }
 
 /** Computes all three axes + provenance + classification for one worktree. */
 export async function computeWorktreeStatus(input: ComputeWorktreeStatusInput): Promise<WorktreeStatusEntry> {
   const [tree, integration, liveness, provenance] = await Promise.all([
-    computeTreeState(input.repoRoot, input.worktree.path),
+    computeTreeState(input.repoRoot, input.worktree.path, input.noisePaths ? { noisePaths: input.noisePaths } : {}),
     reconcileIntegration({
       repoRoot: input.repoRoot,
       repoName: input.repoName,
