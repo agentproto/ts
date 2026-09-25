@@ -73,6 +73,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto workspace`](./verbs/workspace.md) — register local workspaces
 - [`agentproto worktree`](./verbs/worktree.md) — git worktree lifecycle (provision under `worktrees.root`, status-aware `ls`, guarded/salvage removal, `gc`)
 - [`agentproto branch`](./verbs/branch.md) — branch gc: classify local/remote/orphan refs as reclaim/review/hold, reversible apply, review queue
+- [`agentproto maintain`](./verbs/maintain.md) — plan/review (and optionally apply) branch + worktree gc for a repo, via the built-in `repo-maintenance` app's workflow
 
 ### Concepts
 

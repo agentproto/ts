@@ -172,7 +172,7 @@ async function readJsonArg(
  * `{ content: [{ type:"text", text }] }` reply into a parsed JSON payload
  * when the text is JSON, else the raw string. `isError` results reject.
  */
-async function mcpToolCall(
+export async function mcpToolCall(
   endpoint: DaemonEndpoint,
   name: string,
   args: Record<string, unknown>,
@@ -231,7 +231,7 @@ function textOf(result: Record<string, unknown>): string {
   return JSON.stringify(result)
 }
 
-async function withDaemon(
+export async function withDaemon(
   verb: string,
 ): Promise<{ ok: true; endpoint: DaemonEndpoint } | { ok: false; code: number }> {
   const report = await discoverDaemon()
