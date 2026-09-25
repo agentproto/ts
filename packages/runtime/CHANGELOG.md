@@ -1,5 +1,13 @@
 # @agentproto/runtime
 
+## 3.6.1
+
+### Patch Changes
+
+- Updated dependencies [c5b9e2b]
+  - @agentproto/model-catalog@0.10.3
+  - @agentproto/providers-store@0.3.17
+
 ## 3.6.0
 
 ### Minor Changes
