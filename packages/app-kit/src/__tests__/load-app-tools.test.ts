@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import matter from "gray-matter"
@@ -69,6 +69,48 @@ function cliDriverManifest(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function cwdToolManifest(overrides: Record<string, unknown> = {}) {
+  return {
+    schema: "agentproto/tool/v1",
+    id: "report-cwd",
+    name: "Report cwd",
+    description: "Returns process.cwd().",
+    version: "1.0.0",
+    inputs: { type: "object", properties: {} },
+    outputs: {
+      type: "object",
+      required: ["cwd"],
+      properties: { cwd: { type: "string" } },
+    },
+    ...overrides,
+  }
+}
+
+function cwdDriverManifest(overrides: Record<string, unknown> = {}) {
+  return {
+    schema: "agentproto/driver/v1",
+    id: "report-cwd-cli",
+    name: "Report cwd CLI Driver",
+    description: "Reports process.cwd() via node -e.",
+    version: "1.0.0",
+    kind: "cli",
+    implements: [
+      {
+        tool: "report-cwd",
+        version: "*",
+        metadata: {
+          cli: {
+            argv: ["-e", "process.stdout.write(JSON.stringify({cwd: process.cwd()}))"],
+            outputFormat: "json",
+          },
+        },
+      },
+    ],
+    metadata: { cli: { bin: process.execPath } },
+    ...overrides,
+  }
+}
+
 describe("loadAppBundledTools", () => {
   let dir: string
   beforeEach(async () => {
@@ -108,6 +150,52 @@ describe("loadAppBundledTools", () => {
       signal: controller.signal,
     })
     expect(output).toEqual({ greeting: "hello, World" })
+  })
+
+  it("a kind:cli driver's subprocess cwd defaults to the app root", async () => {
+    await writeManifest(join(dir, ".agentproto", "tools", "report-cwd", "TOOL.md"), cwdToolManifest())
+    await writeManifest(
+      join(dir, ".agentproto", "drivers", "report-cwd-cli", "DRIVER.md"),
+      cwdDriverManifest(),
+    )
+
+    const { drivers } = await loadAppBundledTools(dir)
+    const output = await drivers[0]!.execute["report-cwd"]!({
+      input: {},
+      context: {},
+      driverCtx: { secrets: {}, authState: "authed" },
+      signal: new AbortController().signal,
+    })
+    expect(output).toEqual({ cwd: await realpath(dir) })
+  })
+
+  it("metadata.cli.cwd resolves relative to the app root", async () => {
+    await mkdir(join(dir, "sub"), { recursive: true })
+    await writeManifest(join(dir, ".agentproto", "tools", "report-cwd", "TOOL.md"), cwdToolManifest())
+    await writeManifest(
+      join(dir, ".agentproto", "drivers", "report-cwd-cli", "DRIVER.md"),
+      cwdDriverManifest({ metadata: { cli: { bin: process.execPath, cwd: "sub" } } }),
+    )
+
+    const { drivers } = await loadAppBundledTools(dir)
+    const output = await drivers[0]!.execute["report-cwd"]!({
+      input: {},
+      context: {},
+      driverCtx: { secrets: {}, authState: "authed" },
+      signal: new AbortController().signal,
+    })
+    expect(output).toEqual({ cwd: await realpath(join(dir, "sub")) })
+  })
+
+  it("metadata.cli.cwd escaping the app root fails the load, naming the driver", async () => {
+    await writeManifest(join(dir, ".agentproto", "tools", "report-cwd", "TOOL.md"), cwdToolManifest())
+    await writeManifest(
+      join(dir, ".agentproto", "drivers", "report-cwd-cli", "DRIVER.md"),
+      cwdDriverManifest({ metadata: { cli: { bin: process.execPath, cwd: "../.." } } }),
+    )
+
+    await expect(loadAppBundledTools(dir)).rejects.toThrow(AppLoadError)
+    await expect(loadAppBundledTools(dir)).rejects.toThrow(/report-cwd-cli.*outside the app root/s)
   })
 
   it("loads a kind:http DRIVER.md that dispatches via fetch", async () => {
