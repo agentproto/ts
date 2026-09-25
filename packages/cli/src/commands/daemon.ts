@@ -55,6 +55,8 @@ import {
 import { discoverDaemon, httpGetJson } from "./_daemon-helpers.js"
 
 const LABEL = "sh.agentproto"
+/** launchd job label — exported for read-only probes (`agentproto doctor`). */
+export const LAUNCHD_LABEL = LABEL
 const USAGE = `agentproto daemon — run agentproto serve as a background service
 
 Usage:
@@ -120,9 +122,14 @@ interface Paths {
   argv: [string, string]
 }
 
+/** Where `daemon install` writes the launchd plist. */
+export function launchdPlistPath(home: string = homedir()): string {
+  return join(home, "Library", "LaunchAgents", `${LABEL}.plist`)
+}
+
 function paths(): Paths {
   return {
-    plist: join(homedir(), "Library", "LaunchAgents", `${LABEL}.plist`),
+    plist: launchdPlistPath(),
     log: join(homedir(), ".agentproto", "daemon.log"),
     // process.execPath is the Node binary running THIS process (the
     // one running `agentproto daemon install`). Captures fnm / nvm /
@@ -302,14 +309,22 @@ export async function renderReleaseStatus(
  *  unreachable. Injectable so the lifecycle tests never hit the network. */
 export type HealthFetchFn = () => Promise<DaemonHealthInfo | null>
 
-async function fetchHealth(): Promise<DaemonHealthInfo | null> {
-  const cfg = await loadConfig()
+/** Injectable config + fetch for {@link fetchHealth} — the read-only
+ *  `doctor` probe passes its own; defaults are the real ones. */
+export interface FetchHealthDeps {
+  config?: AgentprotoConfig
+  fetchImpl?: typeof fetch
+}
+
+export async function fetchHealth(deps: FetchHealthDeps = {}): Promise<DaemonHealthInfo | null> {
+  const cfg = deps.config ?? (await loadConfig())
+  const doFetch = deps.fetchImpl ?? fetch
   const port = cfg.daemon?.port ?? 18790
   const bind = cfg.daemon?.bind ?? "127.0.0.1"
   const host = bind === "0.0.0.0" || bind === "::" ? "127.0.0.1" : bind
   const url = `http://${host}:${port}`
   try {
-    const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(800) })
+    const res = await doFetch(`${url}/health`, { signal: AbortSignal.timeout(800) })
     if (!res.ok) return null
     const body = (await res.json()) as Omit<DaemonHealthInfo, "url">
     return { ...body, url }
@@ -481,7 +496,7 @@ function xmlUnescape(s: string): string {
 /** Pull the current `EnvironmentVariables.PATH` value back out of a
  *  previously-rendered plist's XML — `null` when the plist has no such key
  *  (shouldn't happen for a plist we wrote, but be defensive). */
-function extractPlistPathValue(xml: string): string | null {
+export function extractPlistPathValue(xml: string): string | null {
   const m = xml.match(/<key>PATH<\/key><string>([^<]*)<\/string>/)
   return m && m[1] !== undefined ? xmlUnescape(m[1]) : null
 }
@@ -875,7 +890,7 @@ function launchctl(args: string[]): Promise<LaunchctlResult> {
   })
 }
 
-function humaniseUptime(ms: number): string {
+export function humaniseUptime(ms: number): string {
   if (ms < 1000) return `${ms}ms`
   const s = Math.floor(ms / 1000)
   if (s < 60) return `${s}s`
