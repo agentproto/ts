@@ -98,6 +98,50 @@ jobs:
           pnpm --filter @agentproto/catalog-sync exec node dist/bin.mjs generate \
             ${{ (github.event_name == 'schedule' || inputs.refresh) && '--refresh' || '' }}
 
+      # The OTHER half of the catalog. `catalog-sync generate` above only runs
+      # the generators in packages/catalog-sync/src/generators/; the per-vendor
+      # `scripts/catalog-sync/sync-*.mjs` scripts — which write the NATIVE
+      # vendor lists (openai/anthropic/google/xai/mistral/moonshot/minimax
+      # `*-pricing.generated.ts`) — were never run by anything. So they only
+      # ever ran when a human remembered, and the native lists drifted:
+      # openai-pricing.generated.ts sat at its 2026-08-31 sync, topping out at
+      # gpt-5.6-*, while the repo's OWN committed OpenRouter snapshot already
+      # carried the whole gpt-6-{luna,sol,astra} family. Running them here is
+      # the fix — this job is the one place that already knows how to turn
+      # generated-data drift into a reviewable PR.
+      #
+      # Gated on the same `--refresh` condition as the step above: these
+      # scripts have no snapshot mode (they always fetch live), so under an
+      # explicit `refresh: false` dispatch — "regenerate from committed
+      # snapshots only" — they must not run at all.
+      #
+      # run-all.mjs owns the exit-code contract: exit 2 from a script whose
+      # optional API key is absent is a SKIP, not a failure (same tolerance the
+      # generators have for a missing secret), while a genuine vendor-API break
+      # still fails the job. MISTRAL_API_KEY is listed here and not above
+      # because sync-mistral.mjs is the only consumer of it.
+      #
+      # `continue-on-error` because this job's product is a REVIEWABLE DIFF,
+      # and one vendor must not be able to withhold the other six. Observed
+      # while wiring this up: sync-xai.mjs answers a *present but rejected*
+      # key with a hard 403 → exit 1 (exit 2 is only the key-absent path), so
+      # a single expired secret would abort the step, skip the snapshot
+      # refresh + drift detection below, and open no PR at all — even though
+      # six vendors had already written their updates to disk. The failure
+      # stays visible as a red step with an annotation; it just doesn't
+      # swallow the run. run-all.mjs already runs every script before
+      # reporting, so the on-disk drift is complete either way.
+      - name: Regenerate native vendor lists
+        if: ${{ github.event_name == 'schedule' || inputs.refresh }}
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
+        run: pnpm catalog:sync-native
+
       # Some synced prices are asserted by snapshot rather than by a hardcoded
       # pin (the OpenRouter-routed Kimi rows — see
       # packages/model-catalog/src/__tests__/catalog.test.ts), precisely so
