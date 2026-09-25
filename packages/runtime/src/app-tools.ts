@@ -134,24 +134,83 @@ async function waitForSessionTerminal(
   }
 }
 
+/** F26 model-based adapter default: a `claude-*` model id (bare, or after a
+ *  `provider/` prefix — AIP-42's `modelRef` allows either shorthand) runs on
+ *  `claude-code`, matching the daemon's own routing rule that Claude models
+ *  run on claude-code. Anything else keeps the pre-F26 blanket default. */
+export const MODEL_ROUTED_ADAPTER = "claude-code"
+
+function defaultAdapterForModel(model: string | undefined): string {
+  if (model === undefined) return DEFAULT_AGENT_ADAPTER
+  const bare = model.includes("/") ? model.slice(model.lastIndexOf("/") + 1) : model
+  return bare.startsWith("claude-") ? MODEL_ROUTED_ADAPTER : DEFAULT_AGENT_ADAPTER
+}
+
+/**
+ * F26 spec gap: AIP-42's AGENT.schema.json (`specs/resources/aip-42/draft/
+ * AGENT.schema.json`) has no `adapter`/`harness` field — its frontmatter is
+ * `.strict()` (`packages/agent/src/schema.ts`), so a bare top-level
+ * `adapter:`/`harness:` key fails `app_install`'s manifest validation before
+ * this ever runs. `metadata` is the only `additionalProperties: true` escape
+ * hatch AIP-42 offers today, so that's where an app author's adapter/harness
+ * override has to live (`metadata.adapter` or `metadata.harness`, either
+ * name). This should probably become a first-class AIP-42 field; flagged
+ * here rather than fixed, since editing the spec is a bigger, separate
+ * change than this bug fix.
+ */
+function agentMetadataAdapter(metadata: { [k: string]: unknown } | undefined): string | undefined {
+  const value = metadata?.adapter ?? metadata?.harness
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined
+}
+
 /**
  * Build `compileWorkflow`'s `agentRefs` map for a workflow bundled by an
- * installed app — every agent id the app bundles resolves to a spawn under
- * `mastra-agent`, pointed at that agent's emitted AGENT.md (WP-B4). Returns
- * undefined when no installed app bundles `workflowId` (a plain
+ * installed app — every agent id the app bundles resolves to a spawn adapter
+ * chosen in order (F26): the agent's OWN AGENT.md `metadata.adapter`/
+ * `metadata.harness` override > a model-based default (see
+ * {@link defaultAdapterForModel}) > the blanket {@link DEFAULT_AGENT_ADAPTER}
+ * fallback (WP-B4's original behaviour). A step's own `adapter:` still wins
+ * over all of this — `compileAgentStep` only applies `resolved.adapter` when
+ * the step itself sets none. AGENT.md's declared `model` is forwarded too
+ * (`AgentRefResolution.model`), so a step that sets no `model` of its own
+ * still gets the agent's.
+ *
+ * The `agent` adapter option (mastra-agent's `--agent <path>`) is only
+ * meaningful for `mastra-agent` itself — any other adapter's manifest
+ * doesn't declare it, and `composeSpawn` rejects an undeclared option id, so
+ * it's included only when that's the resolved adapter.
+ *
+ * Returns undefined when no installed app bundles `workflowId` (a plain
  * `workflow_run_file` outside any app), so a `kind:"agent"` step using
  * `agent.ref` fails compilation naming "no agent refs are configured"
  * rather than a silently-empty map producing the same message either way.
  */
-export function resolveAgentRefsForWorkflow(
+export async function resolveAgentRefsForWorkflow(
   appRegistry: AppRegistry,
   workflowId: string,
-): Record<string, AgentRefResolution> | undefined {
+): Promise<Record<string, AgentRefResolution> | undefined> {
   const app = appRegistry.listApps().find(a => a.workflows.some(w => w.id === workflowId))
   if (!app) return undefined
   const refs: Record<string, AgentRefResolution> = {}
   for (const agent of app.agents) {
-    refs[agent.id] = { adapter: DEFAULT_AGENT_ADAPTER, options: { agent: agent.path } }
+    let model: string | undefined
+    let metadataAdapter: string | undefined
+    try {
+      const { handle } = await loadAgent(agent.path)
+      model = typeof handle.model === "string" ? handle.model : undefined
+      metadataAdapter = agentMetadataAdapter(handle.metadata)
+    } catch {
+      // AGENT.md unreadable/invalid at run time (already validated at
+      // install) — degrade to the pre-F26 blanket default for this one
+      // agent rather than failing agent-ref resolution for the whole
+      // workflow.
+    }
+    const adapter = metadataAdapter ?? defaultAdapterForModel(model)
+    refs[agent.id] = {
+      adapter,
+      ...(adapter === DEFAULT_AGENT_ADAPTER ? { options: { agent: agent.path } } : {}),
+      ...(model !== undefined ? { model } : {}),
+    }
   }
   return refs
 }

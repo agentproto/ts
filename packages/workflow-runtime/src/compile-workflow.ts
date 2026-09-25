@@ -33,7 +33,7 @@ import type { WorkflowHandle } from "@agentproto/workflow"
 import { assertKnownStepRefs } from "@agentproto/workflow"
 import type { DriverHandle } from "@agentproto/driver"
 import type { ToolHandle } from "@agentproto/tool"
-import type { AgentRefResolution, AgentStep, Bindings, GateStep, OutputSchemaLike, RunStep, RuntimeWorkflow } from "./types.js"
+import type { AgentRefResolution, AgentStep, Bindings, GateStep, OutputSchemaLike, RunStep, RuntimeWorkflow, Selector } from "./types.js"
 import { buildAgentStep } from "./build-agent-step.js"
 import { isCompilableJsonSchema, validateAgainstJsonSchema } from "./validate-input.js"
 
@@ -538,6 +538,9 @@ function compileOutputSchema(schema: unknown, stepId: string): OutputSchemaLike 
         ? { success: true as const, data: value }
         : { success: false as const, error: { issues: result.issues } }
     },
+    // F27: lets `describeOutputSchemaForPrompt` (run-workflow.ts) render the
+    // EXACT WORKFLOW.md-authored schema into the agent's prompt.
+    jsonSchema: schema,
   }
 }
 
@@ -561,6 +564,7 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
   let adapter: string | undefined = typeof step.adapter === "string" ? step.adapter : undefined
   let options: Record<string, boolean | number | string> | undefined =
     step.options !== undefined ? step.options : undefined
+  let model: unknown = step.model
 
   const agentRef: unknown = step.agent?.ref
   if (agentRef !== undefined) {
@@ -584,7 +588,14 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     // An explicit step-level declaration is the author's override; the
     // agent-ref resolution only supplies the DEFAULT.
     if (adapter === undefined) adapter = resolved.adapter
-    if (options === undefined) options = resolved.options
+    if (model === undefined) model = resolved.model
+    // `resolved.options` is shaped for `resolved.adapter` specifically (e.g.
+    // mastra-agent's `agent` option) — only apply it when the step ends up
+    // spawning THAT adapter. A step-level `adapter:` override to a
+    // DIFFERENT adapter must not inherit an option id the new adapter's own
+    // manifest never declared (the spawn rejects it loudly — see F26's
+    // `resolveAgentRefsForWorkflow` doc).
+    if (options === undefined && adapter === resolved.adapter) options = resolved.options
   }
 
   // AIP-58 §3 Outcome rule: a step declaring NEITHER an output schema NOR a
@@ -613,7 +624,7 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     prompt: (b: Bindings) => renderPrompt(prompt, b),
     ...(adapter !== undefined ? { adapter } : {}),
     ...(step.sessionRef !== undefined ? { sessionRef: step.sessionRef } : {}),
-    ...(step.model !== undefined ? { model: step.model } : {}),
+    ...(model !== undefined ? { model: model as Selector<string> | string } : {}),
     ...(step.sandbox !== undefined ? { sandbox: step.sandbox } : {}),
     ...(step.cacheable ? { cacheable: true } : {}),
     ...(options !== undefined ? { options } : {}),

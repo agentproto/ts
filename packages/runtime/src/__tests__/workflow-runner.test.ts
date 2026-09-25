@@ -9,6 +9,7 @@ import { defineDriver, implementTool } from "@agentproto/driver"
 import { compileWorkflow } from "@agentproto/workflow-runtime"
 import { createWorkflowRunner } from "../workflow-runner.js"
 import { createSessionEventBus } from "../session-event-bus.js"
+import { createAppRegistry } from "../app-registry.js"
 import type { SessionsRegistry, SessionDescriptor } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 
@@ -978,6 +979,184 @@ steps:
     expect(final?.stages[0]?.steps[0]?.label).toBe("review")
     expect(final?.stages[0]?.steps[0]?.sessionId).toBe("sess_review_001")
     expect(final?.result?.sessionIds).toEqual(["sess_review_001"])
+  })
+
+  // F25: an app-owned workflow run through `startFromFile` with no explicit
+  // `cwd` defaults agent-step spawns to the owning app's root (the same root
+  // #1395's app-bundled cli drivers spawn under) — never the daemon's own
+  // process cwd, which the original bug report saw resolve to "/".
+  it("F25: an app-owned workflow with no explicit cwd defaults the agent step's spawn cwd to the app root", async () => {
+    const bus = createSessionEventBus()
+    const spawnAgent = vi.fn((input: { cwd?: string; label?: string }) => ({
+      id: "sess_review_002",
+      kind: "agent-cli" as const,
+      workspaceSlug: "test",
+      command: "mock",
+      pid: null,
+      status: "running" as const,
+      startedAt: new Date().toISOString(),
+      cwd: input.cwd,
+      label: input.label,
+    }))
+    const registry = makeMockRegistry({
+      spawnAgent,
+      sendPrompt: vi.fn(async (sessionId: string) => {
+        bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" })
+      }),
+      get: vi.fn((id) =>
+        id === "sess_review_002"
+          ? { id, kind: "agent-cli" as const, workspaceSlug: "test", command: "mock", pid: null, status: "running" as const, startedAt: "t" }
+          : undefined
+      ),
+    })
+    const appRegistry = createAppRegistry()
+    // A real, writable directory (not a fake path) — the app ledger bridge
+    // best-effort-writes under `<dir>/data/state/`, which would otherwise
+    // warn-and-skip on a nonexistent root.
+    const appRoot = tmpDir
+    appRegistry.upsertApp({
+      appId: "@test/review-app",
+      dir: appRoot,
+      agents: [],
+      workflows: [{ id: "review-wf-cwd", path: join(tmpDir, ".agentproto", "workflows", "review-wf-cwd", "WORKFLOW.md") }],
+      unvalidatedAgentTools: [],
+    })
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      compileWorkflow: (handle) => compileWorkflow(handle, { tools: {}, candidates: [] }),
+      appRegistry,
+    })
+
+    writeFileSync(
+      join(tmpDir, "entry.mjs"),
+      `export default {
+        name: "Review",
+        id: "review-wf-cwd",
+        description: "Review workflow.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [
+          { id: "review", kind: "agent", adapter: "mock", prompt: () => "review it" },
+        ],
+      }`,
+      "utf8",
+    )
+    const path = writeWorkflowMd(`---
+name: Review
+id: review-wf-cwd
+description: Review workflow.
+version: 0.1.0
+entry: ./entry.mjs
+inputs: {}
+outputs: {}
+steps:
+  - id: review
+    kind: agent
+---
+`)
+
+    const run = await runner.startFromFile({ path })
+    // Recorded on the run immediately, even before the spawn happens — F25's
+    // "never silently invisible" requirement.
+    expect(run.cwd).toBe(appRoot)
+
+    const terminal = new Set(["done", "failed", "cancelled"])
+    let final = runner.status(run.runId)
+    for (let i = 0; i < 100 && final && !terminal.has(final.status); i++) {
+      await new Promise(res => setTimeout(res, 10))
+      final = runner.status(run.runId)
+    }
+
+    expect(final?.status).toBe("done")
+    expect(spawnAgent).toHaveBeenCalledTimes(1)
+    expect(spawnAgent.mock.calls[0]![0].cwd).toBe(appRoot)
+  })
+
+  it("F25: an explicit cwd still wins even when the workflow is app-owned", async () => {
+    const bus = createSessionEventBus()
+    const spawnAgent = vi.fn((input: { cwd?: string; label?: string }) => ({
+      id: "sess_review_003",
+      kind: "agent-cli" as const,
+      workspaceSlug: "test",
+      command: "mock",
+      pid: null,
+      status: "running" as const,
+      startedAt: new Date().toISOString(),
+      cwd: input.cwd,
+      label: input.label,
+    }))
+    const registry = makeMockRegistry({
+      spawnAgent,
+      sendPrompt: vi.fn(async (sessionId: string) => {
+        bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" })
+      }),
+      get: vi.fn((id) =>
+        id === "sess_review_003"
+          ? { id, kind: "agent-cli" as const, workspaceSlug: "test", command: "mock", pid: null, status: "running" as const, startedAt: "t" }
+          : undefined
+      ),
+    })
+    const appRegistry = createAppRegistry()
+    appRegistry.upsertApp({
+      appId: "@test/review-app-explicit",
+      dir: tmpDir,
+      agents: [],
+      workflows: [{ id: "review-wf-explicit-cwd", path: join(tmpDir, ".agentproto", "workflows", "review-wf-explicit-cwd", "WORKFLOW.md") }],
+      unvalidatedAgentTools: [],
+    })
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      compileWorkflow: (handle) => compileWorkflow(handle, { tools: {}, candidates: [] }),
+      appRegistry,
+    })
+
+    writeFileSync(
+      join(tmpDir, "entry.mjs"),
+      `export default {
+        name: "Review",
+        id: "review-wf-explicit-cwd",
+        description: "Review workflow.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [
+          { id: "review", kind: "agent", adapter: "mock", prompt: () => "review it" },
+        ],
+      }`,
+      "utf8",
+    )
+    const path = writeWorkflowMd(`---
+name: Review
+id: review-wf-explicit-cwd
+description: Review workflow.
+version: 0.1.0
+entry: ./entry.mjs
+inputs: {}
+outputs: {}
+steps:
+  - id: review
+    kind: agent
+---
+`)
+
+    const explicitCwd = "/explicit/caller/cwd"
+    const run = await runner.startFromFile({ path, cwd: explicitCwd })
+    expect(run.cwd).toBe(explicitCwd)
+
+    const terminal = new Set(["done", "failed", "cancelled"])
+    let final = runner.status(run.runId)
+    for (let i = 0; i < 100 && final && !terminal.has(final.status); i++) {
+      await new Promise(res => setTimeout(res, 10))
+      final = runner.status(run.runId)
+    }
+
+    expect(final?.status).toBe("done")
+    expect(spawnAgent.mock.calls[0]![0].cwd).toBe(explicitCwd)
   })
 
   it("kind: gate — emits workflow:gate-report on the session bus and records it on the run's step (AIP-15 P3)", async () => {

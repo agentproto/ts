@@ -1172,7 +1172,7 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
     await rm(dir, { recursive: true, force: true })
   })
 
-  it("defineApp → emit → app_install → loadWorkflowHandle → compileWorkflow resolves agent.ref to the app's emitted AGENT.md", async () => {
+  it("defineApp → emit → app_install → loadWorkflowHandle → compileWorkflow resolves agent.ref: a claude-* AGENT.md model with no adapter override defaults to claude-code (F26)", async () => {
     const app = defineApp({
       id: "@test/agent-step-app",
       name: "Agent Step App",
@@ -1222,15 +1222,134 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
     const compiled = compileWorkflow(handle, {
       tools: {},
       candidates: [],
-      agentRefs: resolveAgentRefsForWorkflow(appRegistry, handle.id),
+      agentRefs: await resolveAgentRefsForWorkflow(appRegistry, handle.id),
     })
     const step = compiled.steps[0] as AgentStep
     expect(step.kind).toBe("agent")
-    expect(step.adapter).toBe("mastra-agent")
-    expect(step.options).toEqual({ agent: installed.agents[0].path })
+    // F26: `model: claude-sonnet-5` + no `metadata.adapter`/`harness` on the
+    // AGENT.md ⇒ the model-based default (claude-code), not the old blanket
+    // mastra-agent fallback. The `agent` adapter option is mastra-agent-only
+    // (claude-code's manifest doesn't declare it), so it's dropped too; the
+    // model is forwarded instead.
+    expect(step.adapter).toBe("claude-code")
+    expect(step.options).toBeUndefined()
+    expect(step.model).toBe("claude-sonnet-5")
     expect(step.prompt({ input: undefined, item: undefined, index: undefined, steps: {} })).toBe(
       "Do the thing.",
     )
+  })
+
+  it("agent.ref resolution: no AGENT.md model and no adapter override keeps the blanket mastra-agent default", async () => {
+    const app = defineApp({
+      id: "@test/agent-step-app-no-model",
+      name: "Agent Step App (no model)",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: { ref: "some-non-string-model-ref" },
+            workflows: [{ ref: "do-thing-no-model" }],
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      workflows: [
+        defineWorkflow({
+          id: "do-thing-no-model",
+          name: "Do thing",
+          description: "Does a thing, declaratively, via an agent step.",
+          version: "0.1.0",
+          inputs: {},
+          outputs: {},
+          steps: [
+            { id: "step1", kind: "agent", agent: { ref: "worker" }, prompt: "Do the thing." },
+          ],
+        }),
+      ],
+    })
+    await app.emit(dir)
+
+    const { client, appRegistry } = await setup()
+    const installed = parseToolJson(
+      await client.callTool({ name: "app_install", arguments: { dir } }),
+    )
+    const workflowPath = installed.workflows[0].path as string
+    const handle = await loadWorkflowHandle(workflowPath)
+    const compiled = compileWorkflow(handle, {
+      tools: {},
+      candidates: [],
+      agentRefs: await resolveAgentRefsForWorkflow(appRegistry, handle.id),
+    })
+    const step = compiled.steps[0] as AgentStep
+    expect(step.adapter).toBe("mastra-agent")
+    expect(step.options).toEqual({ agent: installed.agents[0].path })
+  })
+
+  it("agent.ref resolution: a step-level adapter wins over both the AGENT.md metadata override and the model-based default (F26)", async () => {
+    const app = defineApp({
+      id: "@test/agent-step-app-explicit",
+      name: "Agent Step App (explicit step adapter)",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+            metadata: { adapter: "claude-code" },
+            workflows: [{ ref: "do-thing-explicit" }],
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      workflows: [
+        defineWorkflow({
+          id: "do-thing-explicit",
+          name: "Do thing",
+          description: "Does a thing, declaratively, via an agent step.",
+          version: "0.1.0",
+          inputs: {},
+          outputs: {},
+          steps: [
+            {
+              id: "step1",
+              kind: "agent",
+              agent: { ref: "worker" },
+              adapter: "mastra-agent",
+              prompt: "Do the thing.",
+            },
+          ],
+        }),
+      ],
+    })
+    await app.emit(dir)
+
+    const { client, appRegistry } = await setup()
+    const installed = parseToolJson(
+      await client.callTool({ name: "app_install", arguments: { dir } }),
+    )
+    const workflowPath = installed.workflows[0].path as string
+    const handle = await loadWorkflowHandle(workflowPath)
+    const compiled = compileWorkflow(handle, {
+      tools: {},
+      candidates: [],
+      agentRefs: await resolveAgentRefsForWorkflow(appRegistry, handle.id),
+    })
+    const step = compiled.steps[0] as AgentStep
+    // The step's own `adapter:` (mastra-agent) wins over both the AGENT.md
+    // `metadata.adapter` override (claude-code) and F26's model-based
+    // default. `options` does NOT inherit the ref resolution's mastra-agent
+    // `agent` option here — that option was computed for whatever adapter
+    // the REF resolves to on its own (claude-code, since `metadata.adapter`
+    // wins there), and blindly forwarding it to a step-level override would
+    // risk attaching an option id the overridden adapter's manifest never
+    // declared. A step that overrides the ref's adapter must set its own
+    // `options` too.
+    expect(step.adapter).toBe("mastra-agent")
+    expect(step.options).toBeUndefined()
+    expect(step.model).toBe("claude-sonnet-5")
   })
 
   it("compiling a bundled workflow's agent-step against a DIFFERENT app's registry fails naming the ref", async () => {
@@ -1268,11 +1387,12 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
     // `resolveAgentRefsForWorkflow` finds no bundling app for this workflow id.
     const { appRegistry } = await setup()
     const handle = await loadWorkflowHandle(join(dir, ".agentproto", "workflows", "do-thing-2", "WORKFLOW.md"))
+    const agentRefs = await resolveAgentRefsForWorkflow(appRegistry, handle.id)
     expect(() =>
       compileWorkflow(handle, {
         tools: {},
         candidates: [],
-        agentRefs: resolveAgentRefsForWorkflow(appRegistry, handle.id),
+        agentRefs,
       }),
     ).toThrow(/unknown agent ref 'worker'.*not running in an app context/)
   })

@@ -1029,6 +1029,97 @@ describe("runWorkflow — agent step outputSchema", () => {
     expect(host.sendPromptAndWait).toHaveBeenCalledTimes(1)
   })
 
+  // F27: the output contract goes out on the FIRST prompt, not only on a
+  // rejected-reply retry — the model should never have to guess the shape.
+  it("F27: an outputSchema step's FIRST prompt already states the JSON Schema contract", async () => {
+    const host = fakeHost({
+      readFinalMessage: vi.fn(async () => JSON.stringify({ verdict: "pass" })),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "schema-first-prompt",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "judge this",
+          outputSchema: verdictSchema,
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host })
+    expect(host.sendPromptAndWait).toHaveBeenCalledTimes(1)
+    const firstPrompt = (host.sendPromptAndWait as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string
+    expect(firstPrompt).toContain("judge this")
+    expect(firstPrompt).toContain("When done, reply with ONLY a JSON object matching this JSON Schema:")
+    expect(firstPrompt).toContain('"verdict"')
+    expect(firstPrompt).toContain('"pass"')
+    expect(firstPrompt).toContain('"fail"')
+  })
+
+  // F27: a rejected-reply retry restates the schema too, not just a generic
+  // "didn't match" note the model has no way to act on.
+  it("F27: a retry prompt (invalid JSON) also restates the JSON Schema contract", async () => {
+    const host = fakeHost({
+      readFinalMessage: vi.fn(async () => "not json at all"),
+      sendPromptAndWait: vi.fn(async () => {}),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "schema-retry-prompt",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "judge this",
+          outputSchema: verdictSchema,
+          maxRetries: 1,
+        },
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toMatchObject({
+      code: "missing-output",
+    })
+    expect(host.sendPromptAndWait).toHaveBeenCalledTimes(2)
+    const retryPrompt = (host.sendPromptAndWait as ReturnType<typeof vi.fn>).mock.calls[1]![1] as string
+    expect(retryPrompt).toContain("did not match the required schema")
+    expect(retryPrompt).toContain("When done, reply with ONLY a JSON object matching this JSON Schema:")
+  })
+
+  // F27, declarative path: a WORKFLOW.md-authored `outputSchema` compiles
+  // (via `compileOutputSchema`) into an `OutputSchemaLike` carrying the raw
+  // JSON Schema on its `jsonSchema` marker — the prompt note should render
+  // that EXACT schema, not a zod re-derivation.
+  it("F27: a compiled JSON-Schema outputSchema (the WORKFLOW.md path) renders its exact schema into the first prompt", async () => {
+    const host = fakeHost({
+      readFinalMessage: vi.fn(async () => JSON.stringify({ ok: true })),
+    })
+    const rawJsonSchema = { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] }
+    const wf: RuntimeWorkflow = {
+      id: "schema-declarative",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "judge this",
+          outputSchema: {
+            safeParse: (value: unknown) =>
+              typeof value === "object" && value !== null && "ok" in value
+                ? { success: true as const, data: value }
+                : { success: false as const, error: { issues: [] } },
+            jsonSchema: rawJsonSchema,
+          },
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host })
+    const firstPrompt = (host.sendPromptAndWait as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string
+    expect(firstPrompt).toContain(
+      `When done, reply with ONLY a JSON object matching this JSON Schema: ${JSON.stringify(rawJsonSchema)}`,
+    )
+  })
+
   it("invalid then valid on retry 2 → succeeds, correct number of re-prompts", async () => {
     const messages: string[] = [
       JSON.stringify({ verdict: "nope" }),
