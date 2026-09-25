@@ -1473,7 +1473,7 @@ export function createWorkflowRunner(opts: {
       if (schema !== undefined) {
         const validation = validateAgainstJsonSchema(schema, input.payload)
         if (!validation.valid) {
-          return { ok: false, error: "invalid_payload", message: validation.message }
+          return { ok: false, error: "invalid_payload", message: `resume payload ${validation.message}` }
         }
       }
       ps.resolve(input.payload)

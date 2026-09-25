@@ -13,7 +13,6 @@
 
 import type { DriverHandle, ResolverContext } from "@agentproto/driver"
 import type { ToolContext, ToolHandle } from "@agentproto/tool"
-import type { ZodType } from "zod"
 
 /** The run-scoped data every selector reads from. */
 export interface Bindings {
@@ -287,6 +286,23 @@ export interface KnowledgeAppliedRecord {
 export type AgentSandboxRef = string | { provider: string; [k: string]: unknown }
 
 /**
+ * The minimal structural contract {@link AgentStep.outputSchema} must
+ * satisfy — exactly the `safeParse` shape `execAgentStep` consumes (never
+ * `.parse`, `._def`, or any other zod-specific member). A real zod
+ * `ZodType` satisfies this automatically (structural typing — zod's own
+ * `SafeParseReturnType` is a superset of this shape), so a TS-authored step
+ * can still pass a zod schema directly. `compileAgentStep` additionally
+ * builds one of these from a WORKFLOW.md-authored JSON Schema object (ajv
+ * `validateAgainstJsonSchema`-backed) for the declarative manifest path,
+ * where `outputSchema` is plain JSON Schema, not a zod instance.
+ */
+export interface OutputSchemaLike {
+  safeParse(value: unknown):
+    | { success: true; data: unknown }
+    | { success: false; error: { issues: readonly { path: readonly PropertyKey[]; message: string }[] } }
+}
+
+/**
  * Spawn or reuse an agent session and send it a prompt, waiting for the
  * turn to complete. The host injects an {@link AgentSessionHost} — this
  * runtime has no knowledge of concrete session registries or event buses.
@@ -320,8 +336,11 @@ export interface AgentStep {
     | { awaiting: "auto-allow"; prompt: string }
     | { awaiting: "escalate"; webhookUrl?: string; timeoutMs?: number }
     | { awaiting: "fail" }
-  /** Validate the session's final message against this schema; re-prompt on mismatch. */
-  outputSchema?: ZodType<unknown>
+  /** Validate the session's final message against this schema; re-prompt on
+   *  mismatch. A zod `ZodType` (TS-authored steps) or anything else
+   *  satisfying {@link OutputSchemaLike} (a WORKFLOW.md-authored JSON
+   *  Schema object compiles into one of these — see `compileAgentStep`). */
+  outputSchema?: OutputSchemaLike
   /** Re-prompt-and-retry attempts on schema mismatch before failing. Default 2. */
   maxRetries?: number
   /** Cache this step's output under the run's cacheKey; the resolved prompt +

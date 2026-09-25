@@ -125,19 +125,43 @@ export function isCompilableJsonSchema(schema: unknown): schema is Record<string
   }
 }
 
+/** One structural (zod-`ZodIssue`-shaped) validation failure — the common
+ *  currency between ajv's `ErrorObject[]` and zod's `ZodError.issues`, see
+ *  {@link OutputSchemaLikeIssue}. */
+export interface SchemaValidationIssue {
+  path: readonly (string | number)[]
+  message: string
+}
+
+function toIssue(err: ErrorObject): SchemaValidationIssue {
+  const path = err.instancePath.replace(/^\//, "").split("/").filter((seg) => seg.length > 0)
+  if (err.keyword === "required") {
+    const missing = (err.params as { missingProperty?: string }).missingProperty
+    if (missing) path.push(missing)
+  }
+  return { path, message: err.message ?? "invalid" }
+}
+
 /**
- * AIP-58 §3/§9: validate a `run.resume` payload against the suspended
- * step's `StepRecord.suspend.schema` BEFORE the resume transition happens
- * (an invalid payload MUST leave the run suspended, never transition it).
+ * Generic JSON Schema validation, used both by AIP-58 §3/§9 (validate a
+ * `run.resume` payload against the suspended step's `StepRecord.suspend
+ * .schema` BEFORE the resume transition happens — an invalid payload MUST
+ * leave the run suspended, never transition it) and by `compileAgentStep`
+ * (adapt a WORKFLOW.md-authored JSON Schema `outputSchema` into the
+ * {@link OutputSchemaLike} shape `execAgentStep` consumes). `issues` mirrors
+ * zod's `ZodError.issues` shape so both call sites format errors the same
+ * way regardless of which schema language declared the contract.
  */
 export function validateAgainstJsonSchema(
   schema: Record<string, unknown>,
   value: unknown,
-): { valid: true } | { valid: false; message: string } {
+): { valid: true } | { valid: false; message: string; issues: readonly SchemaValidationIssue[] } {
   const validate = compile(schema)
   if (validate(value)) return { valid: true }
-  const detail = (validate.errors ?? []).map((e) => `${e.instancePath || "/"} ${e.message}`).join("; ")
-  return { valid: false, message: `resume payload does not match suspend.schema: ${detail}` }
+  const errors = validate.errors ?? []
+  const issues = errors.map(toIssue)
+  const detail = errors.map((e) => `${e.instancePath || "/"} ${e.message}`).join("; ")
+  return { valid: false, message: `does not match schema: ${detail}`, issues }
 }
 
 /**

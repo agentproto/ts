@@ -31,6 +31,7 @@ export {
   isCompilableJsonSchema,
   validateAgainstJsonSchema,
   type WorkflowInputValidation,
+  type SchemaValidationIssue,
 } from "./validate-input.js"
 export { buildAgentStep, type AgentStepFields } from "./build-agent-step.js"
 export {
@@ -58,6 +59,7 @@ export type {
   SubworkflowStep,
   AgentStep,
   AgentHarness,
+  OutputSchemaLike,
   HarnessKnowledgeSelector,
   KnowledgeAppliedRecord,
   GateStep,

@@ -12,7 +12,6 @@ import { createHash } from "node:crypto"
 import { execFile } from "node:child_process"
 import { readFile } from "node:fs/promises"
 import { isAbsolute, join, resolve } from "node:path"
-import type { ZodError } from "zod"
 import { resolveRefString } from "./ref-string.js"
 import type {
   AgentStep,
@@ -22,6 +21,7 @@ import type {
   GateCommandResult,
   GateStep,
   KnowledgeAppliedRecord,
+  OutputSchemaLike,
   RunStep,
   RunWorkflowArgs,
   RuntimeWorkflow,
@@ -186,7 +186,11 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-function formatZodError(err: ZodError): string {
+/** Formats the failure branch of {@link OutputSchemaLike.safeParse} — a real
+ *  zod `ZodError` satisfies this structurally (its `issues[]` carry `path`/
+ *  `message` plus extra fields TS ignores here), so this reads either a zod
+ *  schema's rejection or the ajv-backed JSON Schema adapter's. */
+function formatSchemaError(err: Extract<ReturnType<OutputSchemaLike["safeParse"]>, { success: false }>["error"]): string {
   return err.issues
     .map((i) => `${i.path.length > 0 ? i.path.join(".") + ": " : ""}${i.message}`)
     .join(", ")
@@ -393,7 +397,7 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
     }
     const res = step.outputSchema.safeParse(value)
     if (res.success) return { sessionId, output: res.data, ...(harnessOut ? { harness: harnessOut } : {}), ...(knowledgeOut ? { knowledgeApplied: knowledgeOut } : {}) }
-    lastErr = formatZodError(res.error)
+    lastErr = formatSchemaError(res.error)
     if (attempt < maxRetries) {
       await sendPromptAndAwaitOutcome(
         ctx,

@@ -38,7 +38,13 @@ import { dirname, join } from "node:path"
 import { z } from "zod"
 import { defineDriver, implementTool } from "@agentproto/driver"
 import { defineTool } from "@agentproto/tool"
-import { runWorkflow, validateWorkflowInput, type AgentSessionHost, type RuntimeWorkflow } from "../index.js"
+import {
+  compileWorkflow,
+  runWorkflow,
+  validateWorkflowInput,
+  type AgentSessionHost,
+  type RuntimeWorkflow,
+} from "../index.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 // Same resolution corpus/conformance.test.ts uses for `<repo>/specs/resources`.
@@ -170,8 +176,8 @@ describe("AIP-58 conformance vectors", () => {
             error: { code: string; stepId: string }
             hint: string
           }
-          const manifestExcerpt = vector["manifestExcerpt"] as { steps: { id: string; prompt: string }[] }
-          const stepId = manifestExcerpt.steps[0]!.id
+          const manifestExcerpt = vector["manifestExcerpt"] as { id: string; steps: Record<string, unknown>[] }
+          const stepId = manifestExcerpt.steps[0]!["id"] as string
 
           expect(agentTurn.toolCall).toBeNull()
           expect(agentTurn.protocolAwaitingInputEvent).toBe(false)
@@ -184,25 +190,27 @@ describe("AIP-58 conformance vectors", () => {
             readFinalMessage: vi.fn(async () => agentTurn.finalMessage),
           })
 
-          // V8's own `manifestExcerpt` declares no `outputSchema` — a vacuous
-          // contract always succeeds per §3, which would make this vector
-          // inapplicable as written (see file header + the spec PR
-          // `aip58-vacuous-contract`, which adds one to the vector itself).
-          // This fixture adapter adds the same schema so the test exercises
-          // the real missing-output path today.
-          const workflow: RuntimeWorkflow = {
-            id: "pricing-brief",
-            steps: [
-              {
-                kind: "agent",
-                id: stepId,
-                adapter: "mock",
-                prompt: () => manifestExcerpt.steps[0]!.prompt,
-                outputSchema: z.object({ brief: z.string() }),
-                maxRetries: 0,
-              },
-            ],
+          // Compiled straight from the vector's own `manifestExcerpt` — its
+          // step's `outputSchema` is plain JSON Schema (YAML frontmatter has
+          // no zod instance to author), exactly what `compileAgentStep`
+          // adapts via ajv into the `{ safeParse }` shape `execAgentStep`
+          // consumes. `manifestExcerpt.steps[0].outputSchema` is added
+          // locally ahead of agentproto/agentproto#39 (branch
+          // `aip58-vacuous-contract`, which makes the same addition upstream
+          // and amends §3 to say a step declaring no contract has a vacuous
+          // contract — see the vendored vector's own `notes[]`). The vector
+          // itself is silent on which adapter spawns the session (that's a
+          // host wiring detail, not part of the abstract vector) — `adapter:
+          // "mock"` is added here for the same reason V1's test supplies a
+          // fake tool/driver around its vector data.
+          const manifestForCompile = {
+            ...manifestExcerpt,
+            steps: manifestExcerpt.steps.map((s) => ({ ...s, adapter: "mock" })),
           }
+          const workflow = compileWorkflow(manifestForCompile as unknown as Parameters<typeof compileWorkflow>[0], {
+            tools: {},
+            candidates: [],
+          })
 
           await expect(runWorkflow({ workflow, agents: host, onInputRequired })).rejects.toMatchObject({
             name: "StepOutcomeError",

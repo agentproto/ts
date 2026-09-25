@@ -360,6 +360,100 @@ describe("compileWorkflow — declarative agent step", () => {
     }
   })
 
+  describe("AIP-58 §3: a WORKFLOW.md-authored outputSchema is plain JSON Schema, not zod", () => {
+    // YAML frontmatter can only express plain JSON Schema — there is no zod
+    // instance to author in a `.md` file. Before this adapter, a compiled
+    // step's `outputSchema` reached `execAgentStep`'s `.safeParse(value)`
+    // call as a bare object with no such method, so the missing-output
+    // check TypeErrored instead of validating for every declarative
+    // WORKFLOW.md. `compileAgentStep` now adapts it via ajv
+    // (`validateAgainstJsonSchema`) into the same `{ safeParse }` shape a
+    // zod schema already has.
+    const jsonSchemaOutputSchema = {
+      type: "object",
+      properties: { verdict: { enum: ["pass", "fail"] } },
+      required: ["verdict"],
+    }
+
+    it("valid JSON final message succeeds with the parsed output", async () => {
+      const wf = defineWorkflow({
+        name: "Judge",
+        id: "judge-json-schema-pass",
+        description: "outputSchema is plain JSON Schema.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [
+          { id: "s1", kind: "agent", adapter: "mock", prompt: "judge this", outputSchema: jsonSchemaOutputSchema },
+        ],
+      })
+      const compiled = compileWorkflow(wf, { tools, candidates })
+      const host = {
+        spawn: async () => "sess_1",
+        sendPromptAndWait: async () => {},
+        resolveByLabel: () => undefined,
+        readFinalMessage: async () => JSON.stringify({ verdict: "pass" }),
+      }
+      const { output } = await runWorkflow({ workflow: compiled, agents: host })
+      expect(output).toEqual({ sessionId: "sess_1", output: { verdict: "pass" } })
+    })
+
+    it("an unsatisfied schema fails missing-output after retries, same as a zod outputSchema", async () => {
+      const wf = defineWorkflow({
+        name: "Judge",
+        id: "judge-json-schema-fail",
+        description: "outputSchema is plain JSON Schema.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [
+          {
+            id: "s1",
+            kind: "agent",
+            adapter: "mock",
+            prompt: "judge this",
+            outputSchema: jsonSchemaOutputSchema,
+            maxRetries: 0,
+          },
+        ],
+      })
+      const compiled = compileWorkflow(wf, { tools, candidates })
+      const host = {
+        spawn: async () => "sess_1",
+        sendPromptAndWait: async () => {},
+        resolveByLabel: () => undefined,
+        readFinalMessage: async () => "not json at all",
+      }
+      await expect(runWorkflow({ workflow: compiled, agents: host })).rejects.toMatchObject({
+        name: "StepOutcomeError",
+        stepId: "s1",
+        code: "missing-output",
+      })
+    })
+
+    it("an uncompilable schema fails at COMPILE time, never the runtime spawn", () => {
+      const wf = defineWorkflow({
+        name: "Judge",
+        id: "judge-json-schema-bad",
+        description: "outputSchema is not a valid JSON Schema.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [
+          {
+            id: "s1",
+            kind: "agent",
+            adapter: "mock",
+            prompt: "judge this",
+            outputSchema: { $ref: "#/definitions/doesNotExist" },
+          },
+        ],
+      })
+      expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(WorkflowCompileError)
+      expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(/s1.*outputSchema/)
+    })
+  })
+
   it("resolves a $steps ref in the prompt through the same grammar as a tool step's inputs", async () => {
     const wf = defineWorkflow({
       name: "Ask with ref",

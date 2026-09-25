@@ -6,7 +6,12 @@
     "kind": "workflow",
     "id": "pricing-brief",
     "steps": [
-      { "id": "draft", "kind": "agent", "prompt": "Write a one-page pricing brief for these tiers: $steps.parse.tiers" }
+      {
+        "id": "draft",
+        "kind": "agent",
+        "prompt": "Write a one-page pricing brief for these tiers: $steps.parse.tiers",
+        "outputSchema": { "type": "object", "properties": { "brief": { "type": "string" } }, "required": ["brief"] }
+      }
     ]
   },
   "runCreate": {
@@ -35,7 +40,8 @@
     "notes": [
       "The final message is textually identical to V2's -- a question about tone. The outcome differs because V2's step made an explicit run.requestInput call and this one didn't; a host is NOT permitted to read the two turns identically just because their prose matches.",
       "A host MAY set StepRecord.hint = 'possible-input-request' after pattern-matching the trailing question mark, purely as a triage aid for a human reading the failed run. The hint MUST NOT change stepStatus/terminalState -- a conformance check that flips this vector's expected terminalState to 'suspended' on the basis of the hint is testing a non-conforming host.",
-      "No step.suspended or run.suspended event may appear anywhere in this run's event log."
+      "No step.suspended or run.suspended event may appear anywhere in this run's event log.",
+      "manifestExcerpt.steps[0] declares an outputSchema (added locally, ahead of agentproto/agentproto#39 / branch aip58-vacuous-contract, which makes the same addition upstream and amends section 3 to say explicitly that a step declaring no contract at all has a vacuous contract and always succeeds on turn end -- which would make this vector inapplicable as written without one). Re-running `pnpm sync-specs` after that PR merges will re-vendor this file from the real source; this edit is expected to become a no-op at that point."
     ]
   }
 }
