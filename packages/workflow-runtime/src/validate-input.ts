@@ -109,6 +109,62 @@ export type WorkflowInputValidation =
     }
 
 /**
+ * AIP-58 §9 `run.requestInput`/`run.resume`: `true` when `schema` is a
+ * usable JSON Schema (ajv can compile it) — a plain object is necessary but
+ * not sufficient (e.g. `{ type: "not-a-type" }` compiles-fails). Used to
+ * reject a malformed `schema` argument before it's ever recorded as a
+ * step's `StepRecord.suspend.schema`.
+ */
+export function isCompilableJsonSchema(schema: unknown): schema is Record<string, unknown> {
+  if (!isPlainObject(schema)) return false
+  try {
+    compile(schema)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** One structural (zod-`ZodIssue`-shaped) validation failure — the common
+ *  currency between ajv's `ErrorObject[]` and zod's `ZodError.issues`, see
+ *  {@link OutputSchemaLikeIssue}. */
+export interface SchemaValidationIssue {
+  path: readonly (string | number)[]
+  message: string
+}
+
+function toIssue(err: ErrorObject): SchemaValidationIssue {
+  const path = err.instancePath.replace(/^\//, "").split("/").filter((seg) => seg.length > 0)
+  if (err.keyword === "required") {
+    const missing = (err.params as { missingProperty?: string }).missingProperty
+    if (missing) path.push(missing)
+  }
+  return { path, message: err.message ?? "invalid" }
+}
+
+/**
+ * Generic JSON Schema validation, used both by AIP-58 §3/§9 (validate a
+ * `run.resume` payload against the suspended step's `StepRecord.suspend
+ * .schema` BEFORE the resume transition happens — an invalid payload MUST
+ * leave the run suspended, never transition it) and by `compileAgentStep`
+ * (adapt a WORKFLOW.md-authored JSON Schema `outputSchema` into the
+ * {@link OutputSchemaLike} shape `execAgentStep` consumes). `issues` mirrors
+ * zod's `ZodError.issues` shape so both call sites format errors the same
+ * way regardless of which schema language declared the contract.
+ */
+export function validateAgainstJsonSchema(
+  schema: Record<string, unknown>,
+  value: unknown,
+): { valid: true } | { valid: false; message: string; issues: readonly SchemaValidationIssue[] } {
+  const validate = compile(schema)
+  if (validate(value)) return { valid: true }
+  const errors = validate.errors ?? []
+  const issues = errors.map(toIssue)
+  const detail = errors.map((e) => `${e.instancePath || "/"} ${e.message}`).join("; ")
+  return { valid: false, message: `does not match schema: ${detail}`, issues }
+}
+
+/**
  * Validate a run's `input` against a WORKFLOW.md's declared `inputs`
  * (shorthand or canonical JSON Schema — see
  * {@link normalizeWorkflowInputsSchema}). The caller is responsible for

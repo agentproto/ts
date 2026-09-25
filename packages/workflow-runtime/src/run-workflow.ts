@@ -12,7 +12,6 @@ import { createHash } from "node:crypto"
 import { execFile } from "node:child_process"
 import { readFile } from "node:fs/promises"
 import { isAbsolute, join, resolve } from "node:path"
-import type { ZodError } from "zod"
 import { resolveRefString } from "./ref-string.js"
 import type {
   AgentStep,
@@ -22,6 +21,7 @@ import type {
   GateCommandResult,
   GateStep,
   KnowledgeAppliedRecord,
+  OutputSchemaLike,
   RunStep,
   RunWorkflowArgs,
   RuntimeWorkflow,
@@ -44,6 +44,46 @@ export class WorkflowSuspendedError extends Error {
   }
 }
 
+/**
+ * AIP-58 §3(a) — thrown when an {@link AgentStep}'s session signals
+ * `run.requestInput` but no host `onInputRequired` hook is provided (the
+ * same "no resume hook supplied" shape {@link WorkflowSuspendedError} uses
+ * for {@link SuspendStep}). A host that wires `onInputRequired` never sees
+ * this thrown — it durably suspends the step instead.
+ */
+export class AgentInputRequiredError extends Error {
+  constructor(
+    readonly stepId: string,
+    readonly prompt: string,
+    readonly schema?: Record<string, unknown>,
+  ) {
+    super(
+      `step '${stepId}' requires input ("${prompt}") — no onInputRequired hook supplied`,
+    )
+    this.name = "AgentInputRequiredError"
+  }
+}
+
+/**
+ * AIP-58 §3 Outcome rule — thrown when an {@link AgentStep} declares an
+ * `outputSchema` and its turn ends (after exhausting retries) without ever
+ * producing output that validates against it, and no explicit
+ * input-required signal (§3(a)/(b)) was observed either. `hint` is set when
+ * the final message matches the "trailing question mark" heuristic — it is
+ * ONLY a triage aid; it never changes the outcome (still `missing-output`).
+ */
+export class StepOutcomeError extends Error {
+  constructor(
+    readonly stepId: string,
+    readonly code: "missing-output",
+    message: string,
+    readonly hint?: "possible-input-request",
+  ) {
+    super(message)
+    this.name = "StepOutcomeError"
+  }
+}
+
 interface RunState {
   readonly input: unknown
   readonly steps: Record<string, unknown>
@@ -58,6 +98,7 @@ interface RunCtx {
   readonly state: RunState
   readonly approve?: RunWorkflowArgs["approve"]
   readonly resume?: RunWorkflowArgs["resume"]
+  readonly onInputRequired?: RunWorkflowArgs["onInputRequired"]
   readonly signal?: AbortSignal
   readonly agents?: RunWorkflowArgs["agents"]
   readonly cwd?: string
@@ -145,7 +186,11 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-function formatZodError(err: ZodError): string {
+/** Formats the failure branch of {@link OutputSchemaLike.safeParse} — a real
+ *  zod `ZodError` satisfies this structurally (its `issues[]` carry `path`/
+ *  `message` plus extra fields TS ignores here), so this reads either a zod
+ *  schema's rejection or the ajv-backed JSON Schema adapter's. */
+function formatSchemaError(err: Extract<ReturnType<OutputSchemaLike["safeParse"]>, { success: false }>["error"]): string {
   return err.issues
     .map((i) => `${i.path.length > 0 ? i.path.join(".") + ": " : ""}${i.message}`)
     .join(", ")
@@ -166,6 +211,34 @@ async function runSequence(
     last = out
   }
   return last
+}
+
+/**
+ * Send a prompt and wait for the turn to end; if the session signals AIP-58
+ * §3(a) (`run.requestInput`) before this returns, durably suspend via
+ * `ctx.onInputRequired` — the promise only resolves once an external event
+ * supplies the resume payload — then forward that payload (JSON) as the
+ * step's NEXT prompt to the SAME session and repeat. So a step may suspend,
+ * resume, and suspend again before this ever returns to its caller. No
+ * signal observed ⇒ an ordinary one-shot send.
+ */
+async function sendPromptAndAwaitOutcome(
+  ctx: RunCtx,
+  step: AgentStep,
+  sessionId: string,
+  prompt: string,
+): Promise<void> {
+  let next = prompt
+  for (;;) {
+    await ctx.agents!.sendPromptAndWait(sessionId, next)
+    const req = ctx.agents!.takeInputRequest?.(sessionId)
+    if (!req) return
+    if (!ctx.onInputRequired) {
+      throw new AgentInputRequiredError(step.id, req.prompt, req.schema)
+    }
+    const payload = await ctx.onInputRequired({ stepId: step.id, prompt: req.prompt, schema: req.schema })
+    next = JSON.stringify(payload)
+  }
 }
 
 /** Execute the full AgentStep body — spawn, prompt, policy, budget, outputSchema retry loop. */
@@ -267,7 +340,14 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
             : {}),
         }
       : undefined
-  await ctx.agents!.sendPromptAndWait(sessionId, step.prompt(b))
+  // AIP-15 P2 prompt affordance: only when the host actually exposes the
+  // `run_request_input` tool (signalled by `takeInputRequest` existing) —
+  // a host without it never suspends on this signal, so telling the model
+  // to call a tool that doesn't exist would be actively misleading.
+  const inputRequestAffordance = ctx.agents!.takeInputRequest
+    ? "\n\nIf you need information you don't have, call the run_request_input tool instead of asking in your reply."
+    : ""
+  await sendPromptAndAwaitOutcome(ctx, step, sessionId, step.prompt(b) + inputRequestAffordance)
   if (step.policy && ctx.agents!.onAwaitingInput) {
     await ctx.agents!.onAwaitingInput(sessionId, step.policy)
   }
@@ -294,8 +374,10 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
   }
   const maxRetries = step.maxRetries ?? 2
   let lastErr = ""
+  let lastRaw = ""
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const raw = await ctx.agents!.readFinalMessage(sessionId)
+    lastRaw = raw
     const candidate = extractJsonCandidate(raw)
     let value: unknown
     try {
@@ -303,7 +385,9 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
     } catch {
       lastErr = "not valid JSON"
       if (attempt < maxRetries) {
-        await ctx.agents!.sendPromptAndWait(
+        await sendPromptAndAwaitOutcome(
+          ctx,
+          step,
           sessionId,
           `Your previous reply did not match the required schema: ${lastErr}. ` +
             `Reply again with ONLY a JSON object that matches. No prose, no code fence needed.`,
@@ -313,16 +397,28 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
     }
     const res = step.outputSchema.safeParse(value)
     if (res.success) return { sessionId, output: res.data, ...(harnessOut ? { harness: harnessOut } : {}), ...(knowledgeOut ? { knowledgeApplied: knowledgeOut } : {}) }
-    lastErr = formatZodError(res.error)
+    lastErr = formatSchemaError(res.error)
     if (attempt < maxRetries) {
-      await ctx.agents!.sendPromptAndWait(
+      await sendPromptAndAwaitOutcome(
+        ctx,
+        step,
         sessionId,
         `Your previous reply did not match the required schema: ${lastErr}. ` +
           `Reply again with ONLY a JSON object that matches. No prose, no code fence needed.`,
       )
     }
   }
-  throw new Error(`step '${step.id}': output_invalid — final message never matched outputSchema (${lastErr})`)
+  // AIP-58 §3 Outcome rule: a turn ending without producing a validated
+  // output is `missing-output`, regardless of how the final message reads.
+  // A trailing "?" is ONLY a triage hint — it never upgrades this to
+  // `suspended` (that requires one of the two explicit signals above).
+  const hint = lastRaw.trim().endsWith("?") ? ("possible-input-request" as const) : undefined
+  throw new StepOutcomeError(
+    step.id,
+    "missing-output",
+    `step '${step.id}': missing-output — final message never matched outputSchema (${lastErr})`,
+    hint,
+  )
 }
 
 /** Best-effort `JSON.parse` — `undefined` (never a throw) on blank/invalid text. */
@@ -651,6 +747,7 @@ async function execStep(
       const child = await runWorkflowInner(step.workflow, childInput, {
         approve: ctx.approve,
         resume: ctx.resume,
+        onInputRequired: ctx.onInputRequired,
         signal,
         agents: ctx.agents,
         cwd: ctx.cwd,
@@ -687,7 +784,7 @@ async function execStep(
 async function runWorkflowInner(
   workflow: RuntimeWorkflow,
   input: unknown,
-  hooks: Pick<RunCtx, "approve" | "resume" | "signal" | "agents" | "cwd" | "workspaceSlug" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete" | "runGateCommand" | "onGateReport">,
+  hooks: Pick<RunCtx, "approve" | "resume" | "onInputRequired" | "signal" | "agents" | "cwd" | "workspaceSlug" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete" | "runGateCommand" | "onGateReport">,
   maxTotalCostUsd?: number,
 ): Promise<WorkflowRunResult> {
   const state: RunState = { input, steps: {}, costBySession: new Map(), maxTotalCostUsd }
@@ -714,6 +811,7 @@ export async function runWorkflow(
   return runWorkflowInner(args.workflow, args.input, {
     approve: args.approve,
     resume: args.resume,
+    onInputRequired: args.onInputRequired,
     signal: args.signal,
     agents: args.agents,
     cwd: args.cwd,

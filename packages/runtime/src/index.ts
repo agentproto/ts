@@ -1942,6 +1942,7 @@ export async function createGateway(
       bindingStore: transmitterBindings,
       endpointStore: inboundEndpointStore,
       telegramCreds: telegramBotCreds,
+      ...(callerSessionId ? { callerSessionId } : {}),
     })
     // @agentproto/app-kit app lifecycle — install/list/run/status/stop
     // (app-tools.ts). `resolveAgentAdapter` gates the adapter-resolves check

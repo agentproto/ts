@@ -105,6 +105,17 @@ describe("workflow orchestration — MCP transport e2e", () => {
     expect(names).toContain("workflow_list")
     expect(names).toContain("workflow_cancel")
     expect(names).toContain("workflow_escalation_resolve")
+    expect(names).toContain("run_request_input")
+  })
+
+  it("run_request_input with no callerSessionId bound on this connection is a clean tool error", async () => {
+    const { client } = await setup()
+    const res = await client.callTool({
+      name: "run_request_input",
+      arguments: { prompt: "what tone?" },
+    })
+    expect(res.isError).toBe(true)
+    expect(parseToolJson(res).error).toBe("no_caller_session")
   })
 
   it("workflow_start → workflow_status reaches done with a 2-stage, multi-step workflow", async () => {
@@ -225,5 +236,118 @@ describe("workflow orchestration — MCP transport e2e", () => {
       await client.callTool({ name: "workflow_cancel", arguments: { runId: started.runId } }),
     )
     expect(["cancelled", "done"]).toContain(cancelled.status)
+  })
+
+  it("AIP-58 §3(a): an agent-backed step calling the real run_request_input tool on itself suspends the run; workflow_escalation_resolve resumes it", async () => {
+    const bus = createSessionEventBus()
+    const eventRing = createEventRing()
+    const SESSION_ID = "sess_e2e_signal"
+    // Set once the session-scoped client (below) is connected — `sendPrompt`
+    // uses it to simulate the spawned session calling `run_request_input`
+    // on ITSELF, mid-turn, exactly the way the daemon's per-connection
+    // `?callerSessionId=` MCP server lets a session call tools about itself.
+    let sessionClient: Client | undefined
+
+    const registry = {
+      spawnAgent: () => {
+        const desc: SessionDescriptor = {
+          id: SESSION_ID,
+          kind: "agent-cli",
+          workspaceSlug: "test",
+          command: "mock",
+          pid: null,
+          status: "running",
+          startedAt: new Date().toISOString(),
+        }
+        return desc
+      },
+      sendPrompt: async (sessionId: string) => {
+        if (sessionClient) {
+          const client = sessionClient
+          sessionClient = undefined // only the FIRST turn signals; the resume turn doesn't.
+          const result = parseToolJson(
+            await client.callTool({
+              name: "run_request_input",
+              arguments: {
+                prompt: "what tone should the brief use — formal or casual?",
+                schema: { type: "object" },
+              },
+            }),
+          )
+          expect(result.ok).toBe(true)
+        }
+        bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" })
+      },
+      get: (id: string) =>
+        id === SESSION_ID
+          ? { id, kind: "agent-cli" as const, workspaceSlug: "test", command: "mock", pid: null, status: "running" as const, startedAt: "t" }
+          : undefined,
+    } as unknown as SessionsRegistry
+
+    const workflowRunner = createWorkflowRunner({ registry, sessionEvents: bus, resolveAgentAdapter: makeMockAdapter() })
+
+    // Main connection — drives workflow_start / workflow_status / workflow_escalation_resolve.
+    const server = new McpServer({ name: "workflow-e2e-server", version: "0.0.0" })
+    registerOrchestrationTools(server, { registry, sessionEvents: bus, eventRing, workflowRunner })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "workflow-e2e-client", version: "0.0.0" })
+    await client.connect(clientTransport)
+
+    // Session-scoped connection — mirrors the daemon binding `callerSessionId`
+    // to the spawned session's own `/mcp` connection.
+    const sessionServer = new McpServer({ name: "workflow-e2e-session-server", version: "0.0.0" })
+    registerOrchestrationTools(sessionServer, {
+      registry,
+      sessionEvents: bus,
+      eventRing,
+      workflowRunner,
+      callerSessionId: SESSION_ID,
+    })
+    const [sessionClientTransport, sessionServerTransport] = InMemoryTransport.createLinkedPair()
+    await sessionServer.connect(sessionServerTransport)
+    sessionClient = new Client({ name: "workflow-e2e-session-client", version: "0.0.0" })
+    await sessionClient.connect(sessionClientTransport)
+
+    const started = parseToolJson(
+      await client.callTool({
+        name: "workflow_start",
+        arguments: {
+          workflowId: "e2e-signal",
+          stages: [{ steps: [{ label: "draft", adapter: "mock", prompt: "write it" }] }],
+        },
+      }),
+    )
+
+    let parked: any
+    for (let i = 0; i < 100; i++) {
+      parked = parseToolJson(await client.callTool({ name: "workflow_status", arguments: { runId: started.runId } }))
+      if (parked.status === "awaiting-input" || parked.status === "failed") break
+      await new Promise(res => setTimeout(res, 10))
+    }
+    expect(parked.status).toBe("awaiting-input")
+    expect(parked.awaitingSuspend).toMatchObject({
+      stepId: "draft",
+      reason: "input-required",
+      prompt: "what tone should the brief use — formal or casual?",
+    })
+    expect(parked.stages[0].steps[0].suspend).toMatchObject({ reason: "input-required" })
+
+    const resumed = parseToolJson(
+      await client.callTool({
+        name: "workflow_escalation_resolve",
+        arguments: { runId: started.runId, payload: { tone: "formal" } },
+      }),
+    )
+    expect(resumed.ok).toBe(true)
+
+    let final: any
+    for (let i = 0; i < 100; i++) {
+      final = parseToolJson(await client.callTool({ name: "workflow_status", arguments: { runId: started.runId } }))
+      if (["done", "failed", "cancelled"].includes(final.status)) break
+      await new Promise(res => setTimeout(res, 10))
+    }
+    expect(final.status).toBe("done")
+    expect(final.awaitingSuspend).toBeUndefined()
   })
 })

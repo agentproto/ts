@@ -748,16 +748,22 @@ export interface WorkflowApprovalResolvedEvent {
 
 /**
  * Emitted by the workflow runner (`workflow-runner.ts`) when a `kind:
- * "suspend"` step parks its run awaiting an external event — the run's
- * status flips to `awaiting-input` with a durable `awaitingSuspend` record
- * (AIP-15 conformance rule 7), and `workflow_escalation_resolve`'s suspend
- * form resumes it. Same bus distribution as every other lifecycle event.
+ * "suspend"` step parks its run awaiting an external event (`on` set, no
+ * `reason`) — OR when an agent-backed step signals AIP-58 §3(a)
+ * `run.requestInput` (`reason: "input-required"` + `prompt`/`schema?`, no
+ * `on`). Either way the run's status flips to `awaiting-input` with a
+ * durable `awaitingSuspend` record, and `workflow_escalation_resolve`'s
+ * suspend form resumes it. Same bus distribution as every other lifecycle
+ * event.
  */
 export interface WorkflowSuspendedEvent {
   type: "workflow:suspended"
   runId: string
   stepId: string
-  on: readonly string[]
+  on?: readonly string[]
+  reason?: "input-required"
+  prompt?: string
+  schema?: Record<string, unknown>
   ts: string
 }
 

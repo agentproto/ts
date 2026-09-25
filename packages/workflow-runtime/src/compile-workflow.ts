@@ -33,8 +33,9 @@ import type { WorkflowHandle } from "@agentproto/workflow"
 import { assertKnownStepRefs } from "@agentproto/workflow"
 import type { DriverHandle } from "@agentproto/driver"
 import type { ToolHandle } from "@agentproto/tool"
-import type { AgentRefResolution, AgentStep, Bindings, GateStep, RunStep, RuntimeWorkflow } from "./types.js"
+import type { AgentRefResolution, AgentStep, Bindings, GateStep, OutputSchemaLike, RunStep, RuntimeWorkflow } from "./types.js"
 import { buildAgentStep } from "./build-agent-step.js"
+import { isCompilableJsonSchema, validateAgainstJsonSchema } from "./validate-input.js"
 
 export interface CompileWorkflowOptions {
   /** TOOL contracts by id — each `tool` step resolves its handle here. */
@@ -502,6 +503,44 @@ function compileBranchChain(steps: any[], i: number, ctx: Ctx): RunStep {
   return otherwise[0]!
 }
 
+/** `true` when `value` already satisfies {@link OutputSchemaLike} — e.g. a
+ *  zod `ZodType` a TS-authored step (`buildAgentStep` callers, `entry.mjs`)
+ *  passed directly. A function-valued `safeParse` member is sufficient,
+ *  since that's the only member `execAgentStep` ever calls. */
+function hasSafeParse(value: unknown): value is OutputSchemaLike {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { safeParse?: unknown }).safeParse === "function"
+  )
+}
+
+/**
+ * Adapt a WORKFLOW.md-authored `outputSchema` — plain JSON Schema, the only
+ * shape YAML frontmatter can express — into the {@link OutputSchemaLike}
+ * `execAgentStep` calls `.safeParse` on, backed by the same ajv instance
+ * `validate-input.ts` already uses for run-input validation. Without this
+ * adapter, a manifest-declared `outputSchema` reaches `execAgentStep` as a
+ * bare object with no `safeParse` method at all, and the AIP-58 §3
+ * missing-output check throws instead of validating. An uncompilable
+ * schema fails HERE, at compile time, never at the runtime spawn.
+ */
+function compileOutputSchema(schema: unknown, stepId: string): OutputSchemaLike {
+  if (!isCompilableJsonSchema(schema)) {
+    throw new WorkflowCompileError(
+      `agent step '${stepId}' has an invalid 'outputSchema' — not a compilable JSON Schema`,
+    )
+  }
+  return {
+    safeParse: (value: unknown) => {
+      const result = validateAgainstJsonSchema(schema, value)
+      return result.valid
+        ? { success: true as const, data: value }
+        : { success: false as const, error: { issues: result.issues } }
+    },
+  }
+}
+
 /**
  * Compile a declarative `kind:"agent"` manifest step — `{ agent: { ref },
  * prompt, adapter?, sessionRef?, sandbox?, cacheable?, policy?, outputSchema?,
@@ -548,6 +587,28 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     if (options === undefined) options = resolved.options
   }
 
+  // AIP-58 §3 Outcome rule: a step declaring NEITHER an output schema NOR a
+  // required artifact (artifacts are P4, not checked here) has a vacuous
+  // contract — its turn ending is unconditional success, and this runtime
+  // can never detect a missing output for it. Warn once per step at compile
+  // time (never at runtime, and never a thrown error — existing manifests
+  // that never declared one keep working exactly as before).
+  let outputSchema: OutputSchemaLike | undefined
+  if (step.outputSchema === undefined) {
+    console.warn(
+      `[workflow-runtime] agent step '${id}' declares no output contract; AIP-58 cannot detect a missing output`,
+    )
+  } else if (hasSafeParse(step.outputSchema)) {
+    // A TS-authored step (or an `entry.mjs` handle) passed a zod schema (or
+    // anything else already `safeParse`-shaped) directly — use it as-is.
+    outputSchema = step.outputSchema
+  } else {
+    // WORKFLOW.md YAML frontmatter can only express plain JSON Schema —
+    // adapt it so `execAgentStep`'s `.safeParse` call works the same way
+    // it does for a TS-authored zod schema.
+    outputSchema = compileOutputSchema(step.outputSchema, id)
+  }
+
   return buildAgentStep(id, {
     prompt: (b: Bindings) => renderPrompt(prompt, b),
     ...(adapter !== undefined ? { adapter } : {}),
@@ -557,7 +618,7 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     ...(step.cacheable ? { cacheable: true } : {}),
     ...(options !== undefined ? { options } : {}),
     policy: step.policy,
-    ...(step.outputSchema !== undefined ? { outputSchema: step.outputSchema } : {}),
+    ...(outputSchema !== undefined ? { outputSchema } : {}),
     ...(step.maxRetries !== undefined ? { maxRetries: step.maxRetries } : {}),
     ...(step.harness !== undefined ? { harness: step.harness } : {}),
   })

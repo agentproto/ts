@@ -303,8 +303,11 @@ export interface StepAgent {
   cacheable?: boolean
   /** Re-prompt-and-retry attempts on `outputSchema` mismatch. Default 2. */
   maxRetries?: number
-  /** A zod `ZodType` (TS-authored) validating the session's final message;
-   *  re-prompts on mismatch. */
+  /** Validates the session's final message; re-prompts on mismatch. A zod
+   *  `ZodType` (TS-authored steps / `entry.mjs`), or plain JSON Schema —
+   *  the only shape WORKFLOW.md YAML frontmatter can express, adapted by
+   *  `@agentproto/workflow-runtime`'s `compileAgentStep` into the same
+   *  `{ safeParse }` contract a zod schema already has. */
   outputSchema?: unknown
   policy?:
     | { awaiting: "auto-allow"; prompt: string }
