@@ -7,7 +7,7 @@ import { describe, it, expect } from "vitest"
 import { preflightStep } from "./steps/preflight.js"
 import { workspaceStep } from "./steps/workspace.js"
 import { daemonStep } from "./steps/daemon.js"
-import { agentsStep } from "./steps/agents.js"
+import { agentsStep, parseNpxPackage } from "./steps/agents.js"
 import { authStep } from "./steps/auth.js"
 import { clientsStep } from "./steps/clients.js"
 import { skillsStep } from "./steps/skills.js"
@@ -174,6 +174,139 @@ describe("agents", () => {
     )
     expect(checks).toHaveLength(1)
     expect(checks[0]).toMatchObject({ id: "agents.none", status: "missing", fix: "agentproto install claude-code" })
+  })
+
+  // The real claude-code/codex/mastracode shape: spawned via `npx -y <pkg>@pin`,
+  // install-presence probe `npm ls -g <pkg>` (fails when nothing is global).
+  const npxHandle = (pkg: string) => async () => ({
+    bin: "npx",
+    bin_args: ["-y", pkg],
+    version_check: { cmd: `npm ls -g ${pkg.replace(/@[^@/]*$/, "")} --depth=0`, parse: "(\\d+\\.\\d+\\.\\d+)", range: "*" },
+  })
+  const only = (...slugs: string[]) => (checks: StepCheck[]) => checks.filter((c) => slugs.some((s) => c.id === `agents.${s}`))
+  function npxExec(opts: { npx?: boolean; claude?: string | null; codex?: string | null } = {}) {
+    return (cmd: string, args: readonly string[]) => {
+      const script = args[1] ?? ""
+      if (script === "command -v npx") return opts.npx === false ? { code: 1, stdout: "", stderr: "" } : { code: 0, stdout: "/usr/bin/npx\n", stderr: "" }
+      if (script === "claude --version") return opts.claude ? { code: 0, stdout: `${opts.claude} (Claude Code)\n`, stderr: "" } : { code: 127, stdout: "", stderr: "" }
+      if (script === "codex --version") return opts.codex ? { code: 0, stdout: `codex-cli ${opts.codex}\n`, stderr: "" } : { code: 127, stdout: "", stderr: "" }
+      // Every `npm ls -g` fails: nothing installed globally. Anything that
+      // still ran the install-presence probe would read as absent.
+      return { code: 1, stdout: "", stderr: "" }
+    }
+  }
+
+  it("claude-code via npx + `claude` on PATH is ok even with nothing installed globally", async () => {
+    const fs = createFakeFs({
+      ...healthyFiles(),
+      [`${HOME}/.npm/_npx/abc/node_modules/@agentclientprotocol/claude-agent-acp/package.json`]: JSON.stringify({ version: "0.81.2" }),
+    })
+    const checks = await agentsStep.detect(
+      createFakeContext({
+        fs,
+        exec: npxExec({ claude: "2.1.282" }),
+        sources: { resolveAdapterHandle: npxHandle("@agentclientprotocol/claude-agent-acp@0.81.2") },
+      }),
+    )
+    expect(byId(checks, "agents.claude-code")).toMatchObject({
+      status: "ok",
+      detail: "claude 2.1.282 · ACP bridge via npx (v0.81.2, cached)",
+      data: { slug: "claude-code", version: "2.1.282" },
+    })
+  })
+
+  it("an uncached pinned bridge is still ok: npx fetches it on first spawn", async () => {
+    const checks = await agentsStep.detect(
+      createFakeContext({
+        exec: npxExec({ codex: "0.157.0" }),
+        sources: { resolveAdapterHandle: npxHandle("@agentclientprotocol/codex-acp@1.13.1") },
+      }),
+    )
+    expect(byId(checks, "agents.codex")).toMatchObject({
+      status: "ok",
+      detail: "codex 0.157.0 · ACP bridge via npx (v1.13.1, fetched on first spawn)",
+    })
+  })
+
+  it("bridge spawnable but the harness CLI missing warns with its install command", async () => {
+    const checks = await agentsStep.detect(
+      createFakeContext({
+        exec: npxExec({ claude: null }),
+        sources: { resolveAdapterHandle: npxHandle("@agentclientprotocol/claude-agent-acp@0.81.2") },
+      }),
+    )
+    expect(byId(checks, "agents.claude-code")).toMatchObject({
+      status: "warn",
+      fix: "npm i -g @anthropic-ai/claude-code",
+    })
+    expect(byId(checks, "agents.claude-code").detail).toContain("`claude` is not on PATH")
+  })
+
+  it("mastracode (no companion CLI) is ok via npx with the package as its label", async () => {
+    const checks = await agentsStep.detect(
+      createFakeContext({ exec: npxExec(), sources: { resolveAdapterHandle: npxHandle("mastracode") } }),
+    )
+    expect(byId(checks, "agents.mastracode")).toMatchObject({
+      status: "ok",
+      detail: "mastracode via npx (fetched on first spawn)",
+    })
+  })
+
+  it("no npx on PATH ⇒ npx adapters are not installed", async () => {
+    const checks = await agentsStep.detect(
+      createFakeContext({
+        exec: npxExec({ npx: false, claude: "2.1.282" }),
+        sources: { resolveAdapterHandle: npxHandle("@agentclientprotocol/claude-agent-acp@0.81.2") },
+      }),
+    )
+    expect(byId(checks, "agents.none").status).toBe("missing")
+  })
+
+  it("a `node --version` presence probe shows 'available', never the Node version", async () => {
+    const checks = await agentsStep.detect(
+      createFakeContext({
+        exec: (_cmd, args) => (args[1] === "node --version" ? { code: 0, stdout: "v22.22.0\n", stderr: "" } : { code: 1, stdout: "", stderr: "" }),
+        sources: {
+          resolveAdapterHandle: async () => ({
+            bin: "node",
+            version_check: { cmd: "node --version", parse: "v(\\d+\\.\\d+\\.\\d+)", range: ">=20" },
+          }),
+        },
+      }),
+    )
+    const shown = only("claude-sdk", "mastra-agent")(checks)
+    expect(shown).toHaveLength(2)
+    for (const c of shown) {
+      expect(c).toMatchObject({ status: "ok", detail: "available", data: { version: null } })
+      expect(JSON.stringify(c)).not.toContain("22.22.0")
+    }
+  })
+
+  it("an in-process adapter is available once its package resolves, without probing", async () => {
+    const ctx = createFakeContext({
+      exec: () => ({ code: 1, stdout: "", stderr: "" }),
+      sources: {
+        resolveAdapterHandle: async () => ({
+          bin: "in-process",
+          version_check: { cmd: "npm view mastracode version", parse: "(\\d+\\.\\d+\\.\\d+)", range: "*" },
+        }),
+      },
+    })
+    const checks = await agentsStep.detect(ctx)
+    expect(byId(checks, "agents.mastracode-inprocess")).toMatchObject({ status: "ok", detail: "available (in-process)" })
+    expect(ctx.execCalls.some((c) => c.includes("npm view"))).toBe(false)
+  })
+})
+
+describe("parseNpxPackage", () => {
+  it("splits scoped/unscoped specs and skips flags", () => {
+    expect(parseNpxPackage(["-y", "@agentclientprotocol/claude-agent-acp@0.81.2"])).toEqual({
+      name: "@agentclientprotocol/claude-agent-acp",
+      version: "0.81.2",
+    })
+    expect(parseNpxPackage(["-y", "mastracode"])).toEqual({ name: "mastracode", version: null })
+    expect(parseNpxPackage(["-y", "opencode-ai", "acp"])).toEqual({ name: "opencode-ai", version: null })
+    expect(parseNpxPackage(["-y"])).toBeNull()
   })
 })
 

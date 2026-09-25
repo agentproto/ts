@@ -92,6 +92,7 @@ export function healthySources(): StepSources {
     latestCliVersion: async () => "1.0.0",
     loginShellPath: async () => "/usr/bin:/bin",
     resolveAdapterHandle: async (slug) => ({
+      bin: slug,
       version_check: { cmd: `probe-${slug}`, parse: "v(\\S+)", range: "*" },
     }),
     listAuthProfiles: async () => [

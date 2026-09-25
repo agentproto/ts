@@ -95,7 +95,7 @@ export interface StepSources {
   loginShellPath(): Promise<string | null>
   /** Resolve an adapter's AIP-45 handle (`resolveAdapter`); throws when the
    *  package isn't resolvable. */
-  resolveAdapterHandle(slug: string): Promise<Pick<AgentCliHandle, "version_check">>
+  resolveAdapterHandle(slug: string): Promise<Pick<AgentCliHandle, "version_check" | "bin" | "bin_args">>
   /** Named auth profiles (what `auth profile list` reads). */
   listAuthProfiles(): Promise<AuthProfile[]>
   /** Local credentials found on this host (what `auth discover` runs). */
