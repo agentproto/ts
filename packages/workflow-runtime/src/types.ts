@@ -300,6 +300,12 @@ export interface OutputSchemaLike {
   safeParse(value: unknown):
     | { success: true; data: unknown }
     | { success: false; error: { issues: readonly { path: readonly PropertyKey[]; message: string }[] } }
+  /** Set by `compileAgentStep`'s declarative (WORKFLOW.md) path to the raw
+   *  JSON Schema object it wrapped — lets F27's prompt-affordance render the
+   *  EXACT schema text instead of re-deriving it from the `safeParse`
+   *  closure. Absent on a TS-authored zod schema (rendered via
+   *  `z.toJSONSchema` instead — see `describeOutputSchemaForPrompt`). */
+  jsonSchema?: unknown
 }
 
 /**
@@ -443,6 +449,10 @@ export interface AgentRefResolution {
   adapter: string
   /** Adapter option id → value merged onto the compiled step's `options`. */
   options?: Record<string, boolean | number | string>
+  /** AGENT.md's declared `model` — the compiled step's DEFAULT when the
+   *  step itself sets none (a step-level `model:` still wins). Forwarded
+   *  through the same `harness.model` channel a step-level `model` uses. */
+  model?: string
 }
 
 /**

@@ -1539,7 +1539,7 @@ export async function createGateway(
           })
           return compileWorkflow(handle, {
             ...merged,
-            agentRefs: resolveAgentRefsForWorkflow(appRegistry, handle.id),
+            agentRefs: await resolveAgentRefsForWorkflow(appRegistry, handle.id),
           })
         },
         // App state ledger bridge: runs whose workflow belongs to an

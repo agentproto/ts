@@ -12,6 +12,7 @@ import { createHash } from "node:crypto"
 import { execFile } from "node:child_process"
 import { readFile } from "node:fs/promises"
 import { isAbsolute, join, resolve } from "node:path"
+import { z } from "zod"
 import { resolveRefString } from "./ref-string.js"
 import type {
   AgentStep,
@@ -216,6 +217,38 @@ function formatSchemaError(err: Extract<ReturnType<OutputSchemaLike["safeParse"]
     .join(", ")
 }
 
+/**
+ * F27: render an agent step's `outputSchema` into a prompt-affordance note —
+ * appended to BOTH the first prompt and every retry, so the model sees the
+ * contract before it ever replies, not just after a rejected first attempt.
+ * Prefers the exact schema: `compileOutputSchema`'s `jsonSchema` marker for a
+ * WORKFLOW.md-authored step, else a live zod schema's own `z.toJSONSchema()`
+ * (a TS-authored `buildAgentStep` caller commonly passes one directly — see
+ * `OutputSchemaLike`'s doc). Degrades to a short field list when neither
+ * conversion is possible (an exotic zod type, or a hand-built
+ * `OutputSchemaLike` with no `jsonSchema` marker) — never throws, since a
+ * step's prompt must never fail to build over an unrelated schema quirk.
+ */
+function describeOutputSchemaForPrompt(schema: OutputSchemaLike): string | undefined {
+  if (schema.jsonSchema !== undefined) {
+    return `When done, reply with ONLY a JSON object matching this JSON Schema: ${JSON.stringify(schema.jsonSchema)}`
+  }
+  try {
+    const jsonSchema = z.toJSONSchema(schema as unknown as z.ZodType)
+    return `When done, reply with ONLY a JSON object matching this JSON Schema: ${JSON.stringify(jsonSchema)}`
+  } catch {
+    // Not a convertible zod schema — fall through to the short field list.
+  }
+  const shape = (schema as { shape?: unknown }).shape
+  if (shape && typeof shape === "object") {
+    const fields = Object.keys(shape)
+    if (fields.length > 0) {
+      return `When done, reply with ONLY a JSON object with these fields: ${fields.join(", ")}`
+    }
+  }
+  return undefined
+}
+
 /** Run an ordered list of steps, binding each output under its id; return last. */
 async function runSequence(
   steps: readonly RunStep[],
@@ -367,7 +400,12 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
   const inputRequestAffordance = ctx.agents!.takeInputRequest
     ? "\n\nIf you need information you don't have, call the run_request_input tool instead of asking in your reply."
     : ""
-  await sendPromptAndAwaitOutcome(ctx, step, sessionId, step.prompt(b) + inputRequestAffordance)
+  // F27: an `outputSchema` step states its contract on the FIRST prompt, not
+  // only on a rejected-reply retry — the model should never have to guess
+  // the shape and then get corrected.
+  const outputSchemaNote = step.outputSchema ? describeOutputSchemaForPrompt(step.outputSchema) : undefined
+  const outputSchemaAffordance = outputSchemaNote ? `\n\n${outputSchemaNote}` : ""
+  await sendPromptAndAwaitOutcome(ctx, step, sessionId, step.prompt(b) + inputRequestAffordance + outputSchemaAffordance)
   if (step.policy && ctx.agents!.onAwaitingInput) {
     await ctx.agents!.onAwaitingInput(sessionId, step.policy)
   }
@@ -410,7 +448,8 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
           step,
           sessionId,
           `Your previous reply did not match the required schema: ${lastErr}. ` +
-            `Reply again with ONLY a JSON object that matches. No prose, no code fence needed.`,
+            `Reply again with ONLY a JSON object that matches. No prose, no code fence needed.` +
+            outputSchemaAffordance,
         )
       }
       continue
@@ -424,7 +463,8 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
         step,
         sessionId,
         `Your previous reply did not match the required schema: ${lastErr}. ` +
-          `Reply again with ONLY a JSON object that matches. No prose, no code fence needed.`,
+          `Reply again with ONLY a JSON object that matches. No prose, no code fence needed.` +
+          outputSchemaAffordance,
       )
     }
   }

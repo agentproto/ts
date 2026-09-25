@@ -40,10 +40,10 @@ import { findInstalledAppDir, readDeclaredCategory, readDeclaredLibraryBookIds }
 
 // ── types ───────────────────────────────────────────────────────────────────
 
-type AgentName = "claude" | "cursor" | "codex" | "claude-desktop" | "aider" | "hermes" | "windsurf"
+export type AgentName = "claude" | "cursor" | "codex" | "claude-desktop" | "aider" | "hermes" | "windsurf"
 type Transport = "http" | "stdio"
 
-interface InstallStateEntry {
+export interface InstallStateEntry {
   agent: string
   configPath: string
   transport: Transport
@@ -54,11 +54,11 @@ interface InstallStateEntry {
   appId?: string
 }
 
-interface InstallState {
+export interface InstallState {
   entries: InstallStateEntry[]
 }
 
-interface AgentDetection {
+export interface AgentDetection {
   name: AgentName
   /** Human-readable label. */
   label: string
@@ -72,8 +72,8 @@ interface AgentDetection {
 
 // ── constants ───────────────────────────────────────────────────────────────
 
-const DEFAULT_PORT = 18790
-const SERVER_NAME = "agentproto"
+export const DEFAULT_PORT = 18790
+export const SERVER_NAME = "agentproto"
 const STATE_FILE = join(homedir(), ".agentproto", "install-state.json")
 
 const USAGE = `agentproto install-mcp — register the daemon's MCP server with coding CLIs
@@ -411,7 +411,7 @@ async function runUpdate(yes: boolean): Promise<number> {
 
 // ── agent detection ─────────────────────────────────────────────────────────
 
-async function detectAgents(): Promise<AgentDetection[]> {
+export async function detectAgents(): Promise<AgentDetection[]> {
   const results: AgentDetection[] = []
   for (const name of ALL_AGENTS) {
     const detection = await detectAgent(name)
@@ -481,6 +481,96 @@ async function detectAgent(name: AgentName): Promise<AgentDetection | null> {
         (await fileExists(configPath)) || (await dirExists(join(home, ".codeium", "windsurf")))
       if (!hasConfig) return null
       return { name, label: "Windsurf", configPath, hasBinary: false, hasConfig }
+    }
+  }
+}
+
+// ── registration inspection (read-only) ─────────────────────────────────────
+
+/** What an agent's config file says about the full-daemon agentproto entry. */
+export interface McpRegistrationInspection {
+  /** The `agentproto` server entry is present in the config. */
+  present: boolean
+  /** The daemon URL the entry points at, when it pins one explicitly — the
+   *  HTTP `url` (claude / hermes) or a stdio entry's `AGENTPROTO_MCP_URL`
+   *  env. Absent ⇒ the bridge follows `daemon.port` from config. */
+  url?: string
+}
+
+function findEnvUrl(text: string): string | undefined {
+  const m = text.match(/AGENTPROTO_MCP_URL["']?\s*[:=]\s*["']?([^"'\s,}]+)/)
+  return m?.[1]
+}
+
+/**
+ * Read-only mirror of the writers below: does `content` (the text of
+ * `agent`'s config file) still hold the `agentproto` entry we register, and
+ * which URL does it pin? Used by `agentproto doctor` to verify
+ * install-state.json against the real config, since users edit configs.
+ */
+export function inspectMcpRegistration(
+  agent: AgentName,
+  content: string,
+): McpRegistrationInspection {
+  switch (agent) {
+    case "claude":
+    case "cursor":
+    case "claude-desktop":
+    case "windsurf": {
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(content)
+      } catch {
+        return { present: false }
+      }
+      if (typeof parsed !== "object" || parsed === null) return { present: false }
+      const servers: unknown = Reflect.get(parsed, "mcpServers")
+      if (typeof servers !== "object" || servers === null) return { present: false }
+      const entry: unknown = Reflect.get(servers, SERVER_NAME)
+      if (typeof entry !== "object" || entry === null) return { present: false }
+      const url: unknown = Reflect.get(entry, "url")
+      if (typeof url === "string") return { present: true, url }
+      const envUrl = findEnvUrl(JSON.stringify(Reflect.get(entry, "env") ?? {}))
+      return envUrl ? { present: true, url: envUrl } : { present: true }
+    }
+    case "codex": {
+      const header = `[mcp_servers.${SERVER_NAME}]`
+      const start = content.indexOf(header)
+      if (start === -1) return { present: false }
+      const rest = content.slice(start + header.length)
+      const next = rest.search(/^\[/m)
+      const block = next === -1 ? rest : rest.slice(0, next)
+      const envUrl = findEnvUrl(block)
+      return envUrl ? { present: true, url: envUrl } : { present: true }
+    }
+    case "aider":
+    case "hermes": {
+      const lines = content.split("\n")
+      const top = lines.findIndex(l => /^mcp_servers:\s*$/.test(l))
+      if (top === -1) return { present: false }
+      let i = top + 1
+      let entryIndent = -1
+      for (; i < lines.length; i++) {
+        const line = lines[i] ?? ""
+        if (/^\S/.test(line)) return { present: false }
+        const m = line.match(/^(\s+)agentproto:\s*$/)
+        if (m?.[1]) {
+          entryIndent = m[1].length
+          break
+        }
+      }
+      if (entryIndent === -1) return { present: false }
+      const body: string[] = []
+      for (i += 1; i < lines.length; i++) {
+        const line = lines[i] ?? ""
+        if (line.trim() === "") continue
+        const indent = line.length - line.trimStart().length
+        if (indent <= entryIndent) break
+        body.push(line)
+      }
+      const text = body.join("\n")
+      const url = text.match(/^\s+url:\s*["']?([^"'\s]+)/m)?.[1] ?? findEnvUrl(text)
+      return url ? { present: true, url } : { present: true }
     }
   }
 }
@@ -934,7 +1024,7 @@ async function waitForHealth(port: number, timeoutMs: number): Promise<boolean> 
 
 // ── install-state ────────────────────────────────────────────────────────────
 
-async function loadInstallState(): Promise<InstallState> {
+export async function loadInstallState(): Promise<InstallState> {
   try {
     const raw = await fs.readFile(STATE_FILE, "utf8")
     const parsed = JSON.parse(raw) as InstallState

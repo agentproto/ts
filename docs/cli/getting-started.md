@@ -20,6 +20,17 @@ agentproto --version
 Requires Node.js ≥ 20.9.0. The binary is named `agentproto`; `--help`
 (no args, or `-h`) prints the full verb list.
 
+### Check your install: `agentproto doctor`
+
+```bash
+agentproto doctor
+```
+
+A read-only checklist of everything below — Node, workspace, daemon, agent
+harnesses, auth, MCP clients, skills — with the exact command to fix each
+gap. Re-run it after any step; attach `agentproto doctor --json` to bug
+reports. See [`verbs/doctor.md`](./verbs/doctor.md).
+
 ## 2. Register your workspace
 
 A workspace is a registered project directory other verbs can target
