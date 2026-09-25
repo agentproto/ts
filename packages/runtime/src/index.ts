@@ -500,6 +500,7 @@ import type { WorktreeProvisioner, WorktreeAutoReclaimer } from "./worktree-isol
 import { registerEvalReporterTools } from "./eval-reporter-tools.js"
 import { registerPresetTools } from "./preset-tools.js"
 import { createWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js"
+import { DELEGATION_TOOL_NAMES } from "./role.js"
 
 export type { ConversationStore, ConversationMeta, ConversationTurn } from "./conversations.js"
 export type { HeartbeatRunner, BuildHeartbeatAgent, HeartbeatAgent } from "./heartbeat.js"
@@ -1835,10 +1836,17 @@ export async function createGateway(
     // always-on set always comes from `opts.deferredTools.alwaysOn` (falling
     // back to `DEFAULT_ALWAYS_ON_TOOLS`) — the per-request query only
     // toggles deferred mode on/off, it never carries its own custom set.
+    // The delegation tools are always-on regardless of a custom set: a
+    // session told to delegate through `agent_start` must see it on its
+    // first `tools/list`, not have to go hunting for it. A deny-role's mount
+    // still loses them — the `denyTools` exclusion below wraps outermost.
     const deferredActive = deferredOverride ?? opts.deferredTools !== undefined
     let server = deferredActive
       ? withDeferredTools(rawServer, {
-          alwaysOn: new Set(opts.deferredTools?.alwaysOn ?? DEFAULT_ALWAYS_ON_TOOLS),
+          alwaysOn: new Set([
+            ...(opts.deferredTools?.alwaysOn ?? DEFAULT_ALWAYS_ON_TOOLS),
+            ...DELEGATION_TOOL_NAMES,
+          ]),
         })
       : rawServer
     // Spawn-role-profiles tool gate (the hard part of the executor/

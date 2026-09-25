@@ -74,7 +74,8 @@ import { resolvePosture } from "./canonical-posture.js"
 import type { UserPreset } from "./user-presets.js"
 import { getDefaultHarnessPreset } from "./harness-preset-store.js"
 import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from "./role.js"
-import type { RoleProfile } from "./role.js"
+import type { DelegationReach, RoleProfile } from "./role.js"
+import { resolveDeferredToolsGatewayOption } from "./deferred-tools.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
 import {
   resolveAgentsMd as realResolveAgentsMd,
@@ -718,6 +719,51 @@ export type BuildOrchestratorMcp = (opts: {
 }) => {
   entry: AcpMcpServer
   bindLifecycle: (sessionId: string) => () => void
+  /** The minted scope — only `tools` (the effective, narrowed allowlist)
+   *  is read here, to tell whether the child can actually reach
+   *  `agent_start` through it (see `delegationReachFor`). Optional so
+   *  minimal injectors (tests) needn't return it. */
+  scope?: { tools: ReadonlySet<string> }
+}
+
+/**
+ * What of the delegation surface a spawn's FINAL `mcpServers` actually
+ * carries — the input to `resolveRole`'s default and `composeRoleContext`
+ * (see `DelegationReach` in role.ts), so a session is never told to
+ * delegate through a tool it doesn't have. Pure.
+ *
+ *  - An entry on the daemon's own `/mcp` (exact `daemonMcpUrl` match, or
+ *    named `agentproto` — how a caller-supplied/stdio mount of the daemon
+ *    is spelled) reaches `agent_start` unless its `denyTools` strips it;
+ *    it's deferred per its own `?deferred=1|0`, else per the gateway's
+ *    boot-time default (`gatewayDeferred`).
+ *  - Orchestrator scope entries (`/mcp/orchestrator?scope=…`) are judged by
+ *    `orchestratorDelegates` — the scope's own tool set, which the URL
+ *    doesn't carry (the report-only `message_parent` scope never delegates).
+ *    That sub-gateway is always eager.
+ */
+export function delegationReachFor(
+  mcpServers: readonly AcpMcpServer[] | undefined,
+  opts: { daemonMcpUrl?: string; gatewayDeferred?: boolean; orchestratorDelegates?: boolean },
+): DelegationReach {
+  if (opts.orchestratorDelegates) return { reachable: true, deferred: false }
+  for (const entry of mcpServers ?? []) {
+    const ref = typeof entry.ref === "string" ? entry.ref : ""
+    if (ref.includes("/mcp/orchestrator")) continue
+    const targetsDaemon =
+      (opts.daemonMcpUrl !== undefined &&
+        (ref === opts.daemonMcpUrl || ref.startsWith(`${opts.daemonMcpUrl}?`))) ||
+      entry.name === "agentproto"
+    if (!targetsDaemon) continue
+    const query = new URLSearchParams(ref.includes("?") ? ref.slice(ref.indexOf("?") + 1) : "")
+    const denied = (query.get("denyTools") ?? "").split(",").map(s => s.trim())
+    if (denied.includes("agent_start")) continue
+    const deferredParam = query.get("deferred")
+    const deferred =
+      deferredParam === "1" ? true : deferredParam === "0" ? false : opts.gatewayDeferred === true
+    return { reachable: true, deferred }
+  }
+  return { reachable: false }
 }
 
 /**
@@ -1838,6 +1884,7 @@ export async function spawnAgentSession(
   let bindOrchestratorLifecycle:
     | ((sessionId: string) => () => void)
     | undefined
+  let orchestratorDelegates = false
   if (!delegationDenied && input.orchestrator !== undefined && input.orchestrator !== false) {
     if (!buildOrchestratorMcp) {
       return {
@@ -1869,6 +1916,12 @@ export async function spawnAgentSession(
     })
     mcpServers = [...(mcpServers ?? []), injection.entry]
     bindOrchestratorLifecycle = injection.bindLifecycle
+    // Mirrors the mint's own narrowing (requested ∩ caller ceiling) when
+    // the injector doesn't hand its scope back.
+    orchestratorDelegates = injection.scope
+      ? injection.scope.tools.has("agent_start")
+      : (requestedTools ? requestedTools.includes("agent_start") : true) &&
+        (callerScope ? callerScope.tools.has("agent_start") : true)
   }
   // ── Identity stamp: decouple attribution from capability ────────
   // Ensure EVERY mcpServers entry that targets THIS daemon's own `/mcp`
@@ -1933,6 +1986,30 @@ export async function spawnAgentSession(
     })
     mcpServers = [injection.entry]
     bindOrchestratorLifecycle = injection.bindLifecycle
+  }
+  // ── Role text must match the tools the session really has ─────────
+  // Only now are the child's MCP mounts final, so only now do we know
+  // whether it can reach `agent_start` at all (no daemon mount, a
+  // `denyTools` strip, an orchestrator scope narrowed without it …). A
+  // DEFAULTED role re-resolves against that — a depth-0 spawn with no way
+  // to delegate is an executor, not a supervisor with a phantom tool. An
+  // explicit `role` is kept; `composeRoleContext` (below) still swaps in
+  // the executor disposition for it when delegation is unreachable. The
+  // mounts built above can't change under the downgrade: reach is false
+  // only when no mount carries `agent_start` in the first place.
+  const delegationReach = delegationReachFor(mcpServers, {
+    ...(daemonMcpUrl !== undefined ? { daemonMcpUrl } : {}),
+    gatewayDeferred: resolveDeferredToolsGatewayOption(configDefaults?.mcp?.deferredTools) !== undefined,
+    orchestratorDelegates,
+  })
+  if (input.role === undefined) {
+    role = resolveRole(
+      undefined,
+      childDepth,
+      configDefaults?.defaultRoleDepthCutoff,
+      roleRegistry,
+      delegationReach,
+    )
   }
   const spawnDefaults = resolveSpawnDefaults(configDefaults, input.adapter, {
     skills: input.skills,
@@ -2446,7 +2523,7 @@ export async function spawnAgentSession(
   if (input.prompt) {
     effectivePrompt = [
       ...rulesMdParts,
-      composeRoleContext(role, input.promptAppend, roleRegistry),
+      composeRoleContext(role, input.promptAppend, roleRegistry, delegationReach),
       ...agentsMdParts,
       parentContextLine,
       input.prompt,
