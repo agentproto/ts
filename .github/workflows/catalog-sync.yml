@@ -139,6 +139,12 @@ jobs:
           MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY }}
           MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
           MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+          # sync-openai.mjs takes its id list from api.openai.com/v1/models
+          # when this is set. Unlike the other keys here its absence is not
+          # even a skip: the script still runs, prices from OpenAI's published
+          # pricing page, and falls back to OpenRouter's openai/* ids — the
+          # behaviour it had before it had a key at all.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
         run: pnpm catalog:sync-native
 

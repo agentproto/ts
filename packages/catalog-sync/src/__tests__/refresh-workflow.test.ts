@@ -4,7 +4,7 @@
  * Coverage:
  *   - offline generation from committed snapshots
  *   - mocked live refresh writes snapshots and reports refreshed sources
- *   - unrefreshable sources (OpenAI) are skipped with an honest note
+ *   - unrefreshable sources are skipped with an honest note
  *   - missing env vars surface as errors, not unauthenticated fetches
  *   - reviewable file diffs (before/after/changed)
  *   - write=false never mutates disk
@@ -134,17 +134,31 @@ describe("refreshSources", () => {
   })
 
   it("skips unrefreshable sources and documents the gap", async () => {
-    const results = await refreshSources([OPENAI_LLM_SOURCE], {
-      refresh: true,
-    })
+    const unrefreshable: RefreshableSource = {
+      source: { id: "llm-unrefreshable", url: "https://example.com/pricing" },
+      refreshable: false,
+      notes: "No machine-readable endpoint; committed by hand.",
+    }
+    const results = await refreshSources([unrefreshable], { refresh: true })
 
     expect(results).toHaveLength(1)
     expect(results[0]).toMatchObject({
-      id: "llm-openai",
+      id: "llm-unrefreshable",
       refreshed: false,
       skipped: true,
     })
-    expect(results[0]?.notes).toContain("no stable machine-readable")
+    expect(results[0]?.notes).toContain("No machine-readable endpoint")
+  })
+
+  // The OpenAI source was `refreshable: false` for exactly the reason the
+  // assertion above covers, and this test used it as the fixture. It is now
+  // refreshable from OpenAI's own `/v1/models` + published pricing page, so
+  // the two concerns are split: a local fixture above proves the skip path,
+  // and this proves OpenAI is no longer on it.
+  it("treats the OpenAI source as refreshable, authed by OPENAI_API_KEY", () => {
+    expect(OPENAI_LLM_SOURCE.refreshable).toBe(true)
+    expect(OPENAI_LLM_SOURCE.source.url).toBe("https://api.openai.com/v1/models")
+    expect(OPENAI_LLM_SOURCE.source.headers?.Authorization).toContain("env:OPENAI_API_KEY")
   })
 
   it("reports an error when env var referenced in headers is missing", async () => {
