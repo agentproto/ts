@@ -15,6 +15,7 @@ export {
   resolveRef,
   resolveRefPrefixed,
   resolveValue,
+  interpolateTemplate,
   evalPredicate,
   type CompileWorkflowOptions,
 } from "./compile-workflow.js"
