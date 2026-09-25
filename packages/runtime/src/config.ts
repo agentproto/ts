@@ -130,6 +130,16 @@ export interface DaemonConfig {
   turnStallAfterMs?: number
 }
 
+export interface TitlerConfig {
+  /** Enable the daemon-side session titler. Default false. */
+  enabled?: boolean
+  /** OpenRouter model id used to generate titles. Default
+   *  `z-ai/glm-5.2@openrouter`. Requires `OPENROUTER_API_KEY` in the
+   *  daemon's environment; without a key the titler falls back to the
+   *  local (first-prompt-line) title. */
+  model?: string
+}
+
 export interface TunnelConfig {
   /** Cloud WS URL. When set + autoconnect=true, `agentproto serve`
    *  bootstraps with `--connect <host>`. */
@@ -479,6 +489,19 @@ export interface AgentprotoConfig {
   provenance?: ProvenanceConfig
   /** Daemon-side AGENTS.md resolution/injection policy. See {@link AgentsMdConfig}. */
   agentsMd?: AgentsMdConfig
+  /** Daemon-side session titler (`session-titler.ts`). DEFAULT OFF — when
+   *  `enabled` is not explicitly true the titler is a complete no-op and
+   *  nothing renames anything. When on, at the end of the FIRST completed
+   *  turn of a `kind:"agent-cli"` session whose label is still a spawn
+   *  default (`chat-starter`, `chat-starter-autoprompt`, `agentproto`, empty,
+   *  or equal to the derived title), the daemon generates a short prosaic
+   *  title (4-8 words) from the first turn's transcript and renames the
+   *  session via the same write path as `session_rename`. Generation tries
+   *  OpenRouter (`model`, default `z-ai/glm-5.2@openrouter`, needs
+   *  `OPENROUTER_API_KEY`) and falls back locally (first line of the first
+   *  user prompt, 6 whole words) on any failure. A user-created label is
+   *  NEVER overwritten, and a session is titled at most once. */
+  titler?: TitlerConfig
   /** Named connection profiles. See `ProfileConfig` for the merge
    *  semantics — a profile's fields shallow-override the top-level
    *  defaults for the selected run. */

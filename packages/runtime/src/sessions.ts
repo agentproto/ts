@@ -67,6 +67,7 @@ import {
 } from "./session-observer.js"
 import { artifactMarkerLines, formatToolCall, formatToolResult } from "./tool-presenter.js"
 import { createTranscriptWriter, sessionEventsPath } from "./transcript-writer.js"
+import { maybeTitleSession } from "./session-titler.js"
 import { buildResumeContextDigest } from "./resume-context-digest.js"
 import {
   appendConversationRecord,
@@ -6163,6 +6164,16 @@ export function createSessionsRegistry(opts?: {
           })
         }
         if (overBudget) emitExited(rt)
+
+        // ── Session titler (opt-in, first completed turn only) ──────
+        // Fire-and-forget: `maybeTitleSession` never throws and never
+        // blocks the turn-end path. Gated on the FIRST turn
+        // (`turnsCompleted` was just bumped, so 1 = first), agent-cli
+        // only; the titler itself re-checks eligibility (config off,
+        // default-label guard, once-only set) and no-ops otherwise.
+        if ((rt.desc.turnsCompleted ?? 0) === 1) {
+          void maybeTitleSession(registry, rt.desc.id)
+        }
       } else {
         // ── Abnormal turn end (error / abort) ────────────────────────
         // The adapter's stream broke before a turn-end. We already
