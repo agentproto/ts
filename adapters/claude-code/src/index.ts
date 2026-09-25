@@ -305,11 +305,41 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
       id: "lean",
       description:
         "Drop Claude Code's bundled skills and workflows from context (built-in slash " +
-        "commands stay typable but are hidden from the model). Plugins, project " +
-        "`.claude/skills/`, and `.claude/commands/` are unaffected. The ACP wrapper has " +
-        "no CLI flag for this — the underlying claude binary reads " +
-        "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS directly, so this mode is env-only.",
-      env: { CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1" },
+        "commands stay typable but are hidden from the model), AND turn on Claude " +
+        "Code's own native MCP tool-search (deferred tool-schema loading) so its " +
+        "turn-0 tools/list payload — including whatever this session's own " +
+        "`mcpServers` mount (e.g. the daemon self-mount) advertises — shrinks the " +
+        "same way `tool_search` does on the daemon's gateway. Plugins, project " +
+        "`.claude/skills/`, and `.claude/commands/` are unaffected. Both knobs are " +
+        "env-only — the ACP wrapper exposes no CLI flag for either, and the " +
+        "underlying claude binary reads them directly.",
+      // CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: unchanged from before this mode existed.
+      //
+      // ENABLE_TOOL_SEARCH: UNDOCUMENTED — there is no public Anthropic reference
+      // for it. Confirmed present and wired (not a guess) by extracting readable
+      // strings from the EXACT pinned binary this adapter spawns
+      // (`~/.local/share/claude/versions/2.1.280`, the build
+      // `@agentclientprotocol/claude-agent-acp@0.81.2` bundles — see the pin
+      // comment on `bin_args` above): `ENABLE_TOOL_SEARCH` appears in the CLI's
+      // own recognized-env-var table (alongside `MCP_TIMEOUT`,
+      // `MAX_MCP_OUTPUT_TOKENS`, etc.) and drives a real decision function
+      // (minified as `Het()` in that build) that resolves to one of three modes:
+      // `"standard"` (today's eager behaviour, the default when unset in most
+      // cohorts), `"tst"` (tool-search-tool: MCP/tool schemas deferred behind a
+      // native search tool — the ACTUAL feature this mirrors), or `"tst-auto"`
+      // (auto-threshold via `auto:<N>`, `0 <= N <= 100`). The value parser
+      // (minified `Co`/`De` in that build) accepts the literal strings
+      // `"1"`/`"true"`/`"yes"`/`"on"` for on and `"0"`/`"false"`/`"no"`/`"off"`
+      // for off — `"1"` here is a valid, intentional value, not a placeholder.
+      // NOT independently verified against a live model turn in this
+      // environment (no authenticated Claude Code login available when this
+      // was investigated) — only that `claude -p` accepts the env var and
+      // proceeds past argument parsing to the auth check without erroring on
+      // it. If Anthropic ever removes or renames this (it is explicitly
+      // unstable — the binary also guards it behind
+      // `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`), the worst case is a no-op:
+      // an unrecognized env var the claude binary already ignores today.
+      env: { CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1", ENABLE_TOOL_SEARCH: "1" },
       kind: "context",
     },
   ],

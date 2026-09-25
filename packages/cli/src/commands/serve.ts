@@ -82,6 +82,7 @@ import {
   unlinkRuntimeMeta,
   injectProviderKeysIntoEnv,
   setMcpCredentialDeps,
+  resolveDeferredToolsGatewayOption,
   type AgentAdapterResolver,
   type AdapterAuthDescriptor,
   type GatewayHandle,
@@ -712,6 +713,13 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // — an unset value here passes `undefined` through so createGateway
         // applies its own sane default rather than reading "unset" as off.
         turnStallAfterMs: resolveTurnStallAfterMs(cfgDaemon.turnStallAfterMs),
+        // Deferred/lazy MCP tool loading (harness-parity item 3). Read ONCE
+        // at boot from `defaults.mcp.deferredTools` — this is the gateway-
+        // wide default a connection with no per-mount `?deferred=` override
+        // and no per-spawn/role override falls through to. Default OFF
+        // (undefined ⇒ `createGateway` never wraps `withDeferredTools` —
+        // today's fully-eager behaviour, unchanged for existing clients).
+        deferredTools: resolveDeferredToolsGatewayOption(cfg.defaults?.mcp?.deferredTools),
         llmEndpoint: cfgFeatures.llmEndpoint === true,
         resolveAgentAdapter,
         // Injected port behind `agent_start.worktree` + the `worktrees.isolation`

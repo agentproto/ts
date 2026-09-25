@@ -1562,7 +1562,7 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
         {
           name: "agentproto",
           transport: "http",
-          ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&callerSessionId=${result.descriptor.id}`,
+          ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&deferred=1&callerSessionId=${result.descriptor.id}`,
         },
       ])
     }
@@ -1585,7 +1585,7 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
         {
           name: "agentproto",
           transport: "http",
-          ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&callerSessionId=${result.descriptor.id}`,
+          ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&deferred=1&callerSessionId=${result.descriptor.id}`,
         },
       ])
     }
@@ -1606,6 +1606,48 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
           name: "agentproto",
           transport: "http",
           ref: `http://127.0.0.1:18790/mcp?callerSessionId=${result.descriptor.id}`,
+        },
+      ])
+    }
+  })
+
+  it("explicit `deferredTools: false` overrides the executor role's ON default on the self-mount ref", async () => {
+    const { deps } = baseDeps({ daemonMcpUrl: "http://127.0.0.1:18790/mcp" })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "hermes",
+      cwd: "/tmp",
+      role: "executor",
+      deferredTools: false,
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.descriptor.mcpServers).toEqual([
+        {
+          name: "agentproto",
+          transport: "http",
+          ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&deferred=0&callerSessionId=${result.descriptor.id}`,
+        },
+      ])
+    }
+  })
+
+  it("explicit `deferredTools: true` on a supervisor (no role-level opinion) forces the override on", async () => {
+    const { deps } = baseDeps({ daemonMcpUrl: "http://127.0.0.1:18790/mcp" })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "hermes",
+      cwd: "/tmp",
+      role: "supervisor",
+      deferredTools: true,
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.descriptor.mcpServers).toEqual([
+        {
+          name: "agentproto",
+          transport: "http",
+          ref: `http://127.0.0.1:18790/mcp?deferred=1&callerSessionId=${result.descriptor.id}`,
         },
       ])
     }

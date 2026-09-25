@@ -148,6 +148,14 @@ describe("built-in role shapes", () => {
     expect(EXECUTOR_ROLE.level).toBe(0)
     expect(SUPERVISOR_ROLE.level).toBe(100)
   })
+
+  it("executor defaults deferred/lazy MCP tool loading ON — it can't delegate and rarely needs the full surface", () => {
+    expect(EXECUTOR_ROLE.deferredTools).toBe(true)
+  })
+
+  it("supervisor has no deferredTools opinion — falls through to the gateway's own default", () => {
+    expect(SUPERVISOR_ROLE.deferredTools).toBeUndefined()
+  })
 })
 
 describe("mergeRoleRegistry", () => {

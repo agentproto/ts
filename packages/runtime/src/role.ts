@@ -52,6 +52,16 @@ export interface RoleProfile {
    * default, open mode) ⇒ non-escalation by `level`.
    */
   spawnableRoles?: string[]
+  /**
+   * Role-level default for the daemon self-mount's deferred/lazy tool
+   * loading (harness-parity item 3 — see `deferred-tools.ts`). Applied to
+   * the injected `mcpServers` entry (`session-spawn.ts`'s
+   * `shouldInjectDaemonSelfMount` path) as `?deferred=1|0` when the spawn
+   * itself didn't pass an explicit `deferredTools` override. Undefined ⇒
+   * no role-level opinion, the gateway's own boot-time default
+   * (`defaults.mcp.deferredTools` in config.json) applies unchanged.
+   */
+  deferredTools?: boolean
 }
 
 /**
@@ -85,6 +95,13 @@ export const EXECUTOR_ROLE: RoleProfile = {
   // Task tool) isn't an MCP tool and can't be gated here at all, which
   // is why the disposition above spells it out explicitly.
   level: 0,
+  // Executors are the primary consumer of the deferred-tools surface: they
+  // never delegate (agent_start/agent_prompt are already stripped above),
+  // so the bulk of the ~190-tool daemon gateway is dead weight at turn 0.
+  // Default ON regardless of the daemon's own global
+  // `defaults.mcp.deferredTools` setting — an operator who hasn't opted the
+  // whole daemon in still gets a lean executor by default.
+  deferredTools: true,
 }
 
 export const SUPERVISOR_ROLE: RoleProfile = {
