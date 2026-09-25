@@ -4,7 +4,7 @@
  *
  * The wrapper bundles its own Codex runtime (Rust binary delivered via
  * npm dependency) so a single
- * `npx -y @agentclientprotocol/codex-acp@1.10.0`
+ * `npx -y @agentclientprotocol/codex-acp@1.13.1`
  * invocation is enough — no separate @openai/codex install needed.
  *
  *   import { codex, codexRuntime } from "@agentproto/adapter-codex"
@@ -34,11 +34,16 @@ export const codex: AgentCliHandle = defineAgentCli({
   // Keep spawn deterministic. An unversioned npx target performs registry
   // resolution at session startup and can silently replace both the bridge
   // and its bundled Codex runtime exactly when either publishes an update.
-  bin_args: ["-y", "@agentclientprotocol/codex-acp@1.10.0"],
+  // 1.13.1 bundles @openai/codex 0.156.1 (1.10.0 shipped 0.153.3). Nothing
+  // between 1.10.0 and 1.13.1 is flagged breaking: ACP protocolVersion stays
+  // 1, `session/new` and `session/set_config_option` are unchanged, and the
+  // additions (recommended model/effort, tool names on tool calls,
+  // experimental compaction updates and session notices) are opt-in extras.
+  bin_args: ["-y", "@agentclientprotocol/codex-acp@1.13.1"],
   install: [
     {
       method: "npm",
-      package: "@agentclientprotocol/codex-acp@1.10.0",
+      package: "@agentclientprotocol/codex-acp@1.13.1",
       global: true,
     },
   ],
@@ -47,7 +52,7 @@ export const codex: AgentCliHandle = defineAgentCli({
     // claude-code's version_check note for the npm-view trap this replaces.
     cmd: "npm ls -g @agentclientprotocol/codex-acp --depth=0",
     parse: "(\\d+\\.\\d+\\.\\d+)",
-    range: "=1.10.0",
+    range: "=1.13.1",
     timeout_ms: 15_000,
   },
   auth: {
