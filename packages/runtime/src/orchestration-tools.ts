@@ -679,6 +679,34 @@ export interface RegisterOrchestrationToolsOptions {
   callerSessionId?: string
 }
 
+/**
+ * AIP-58 §9 `run.get` compact boundary applied to `workflow_status`'s FULL
+ * per-run detail (distinct from `compactWorkflowRun` above, which compacts
+ * a `workflow_list` ROW summary): strips each step's raw `output` and a gate
+ * step's full `report` body (the "big bodies" a UI polling for status
+ * shouldn't pay for on every call) while keeping
+ * status/timestamps/error/sessionId/suspend/hint — everything a caller
+ * needs to know WHAT happened, without the full payload of what a step
+ * produced.
+ */
+function compactWorkflowRunStatus(run: WorkflowRun): WorkflowRun {
+  return {
+    ...run,
+    stages: run.stages.map(stage => ({
+      ...stage,
+      steps: stage.steps.map(step => {
+        const { output: _output, gateReport, ...rest } = step
+        return {
+          ...rest,
+          ...(gateReport !== undefined
+            ? { gateReport: { ok: gateReport.ok, exitCode: gateReport.exitCode, attempt: gateReport.attempt, report: undefined } }
+            : {}),
+        }
+      }),
+    })),
+  }
+}
+
 export function registerOrchestrationTools(
   rawServer: McpServer,
   opts: RegisterOrchestrationToolsOptions,
@@ -1055,11 +1083,16 @@ export function registerOrchestrationTools(
 
     server.tool(
       "workflow_status",
-      "Poll the status of a background workflow run started with `workflow_start`. " +
-        "Each stage reports its steps' status/sessionId so later work can inspect " +
-        "what an earlier stage produced (e.g. via `agent_output` on that sessionId).",
+      "Poll the status of a background workflow run started with `workflow_start` or " +
+        "`workflow_run_file`. Each stage reports its REAL steps (every step that " +
+        "actually ran — tool/gate/agent, map/pipeline items as `<id>[<index>]`), with " +
+        "status/startedAt/endedAt/error/sessionId/suspend, so later work can inspect " +
+        "what an earlier step produced (e.g. via `agent_output` on that sessionId). " +
+        "COMPACT BY DEFAULT (AIP-58 §9): omits each step's raw `output` and a gate " +
+        "step's full `report` body — pass `full: true` for everything.",
       {
         runId: z.string().describe("Run id returned by `workflow_start`."),
+        full: z.boolean().optional().describe("Include step outputs and full gate-report bodies. Defaults to false (compact)."),
       },
       async input => {
         const run = workflowRunner.status(input.runId)
@@ -1068,7 +1101,45 @@ export function registerOrchestrationTools(
             content: [{ type: "text", text: JSON.stringify({ error: "run not found", runId: input.runId }) }],
           }
         }
-        return { content: [{ type: "text", text: JSON.stringify(run) }] }
+        const payload = input.full === true ? run : compactWorkflowRunStatus(run)
+        return { content: [{ type: "text", text: JSON.stringify(payload) }] }
+      },
+    )
+
+    const MAX_EVENTS_PER_PAGE = 500
+
+    server.tool(
+      "run_events",
+      "AIP-58 §5/§9 `run.events` — page a workflow run's append-only event log " +
+        "(the one true status interface: run.created/started/suspended/resumed/" +
+        "succeeded/failed/cancelled, step.started/succeeded/failed/suspended/" +
+        "resumed). Pass `sinceSeq` (the last `seq` you've already seen) to resume " +
+        `from where you left off; omit it for the full log so far. Capped at ${MAX_EVENTS_PER_PAGE} events per call — use the returned \`nextSinceSeq\` to page further.`,
+      {
+        runId: z.string().describe("Run id returned by `workflow_start`/`workflow_run_file`."),
+        sinceSeq: z.number().int().nonnegative().optional().describe("Return only events with seq > sinceSeq."),
+      },
+      async input => {
+        const events = workflowRunner.events(input.runId, input.sinceSeq)
+        if (events === undefined) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ error: "run not found", runId: input.runId }) }],
+          }
+        }
+        const page = events.slice(0, MAX_EVENTS_PER_PAGE)
+        const nextSinceSeq = page.length > 0 ? page[page.length - 1]!.seq : input.sinceSeq
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                events: page,
+                ...(nextSinceSeq !== undefined ? { nextSinceSeq } : {}),
+                ...(events.length > page.length ? { hasMore: true } : {}),
+              }),
+            },
+          ],
+        }
       },
     )
 
