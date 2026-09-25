@@ -507,6 +507,7 @@ export type { HeartbeatRunner, BuildHeartbeatAgent, HeartbeatAgent } from "./hea
 export type { RuntimeEvent, RuntimeEvents } from "./events.js"
 export type { WorkspaceFs } from "./workspace-fs.js"
 export type { TunnelDescriptor, TunnelStatus, TunnelProvider } from "./tunnel-registry.js"
+export type { EnableInput, EnableResult, RemoteStatus } from "./remote-controller.js"
 export {
   decideWorktreeIsolation,
   loadWorktreeIsolation,
@@ -1167,21 +1168,6 @@ export async function createGateway(
   const conversations = fileConversationStore({ workspace })
   const workspaceFs = createWorkspaceFs({ workspace })
 
-  // Singleton controller for "publish to the internet" state. Created
-  // disabled — auth stays `mode: "none"` until `remote_enable` is
-  // called. Tunnel logs flow through the events stream so `/events`
-  // subscribers see cloudflared chatter.
-  const remote = new RemoteController({
-    workspace,
-    port,
-    onLog: line =>
-      events.emit({
-        type: "remote-log",
-        at: new Date().toISOString(),
-        line,
-      }),
-  })
-
   // Multi-tunnel registry — independent from RemoteController. Manages
   // the general "create a public URL for any local port" surface
   // (tunnel_create / tunnel_list / tunnel_stop MCP tools + /tunnels HTTP
@@ -1516,6 +1502,25 @@ export async function createGateway(
       return false
     }
   }
+
+  // Singleton controller for "publish to the internet" state. Created
+  // disabled — auth stays `mode: "none"` until `remote_enable` is
+  // called. Tunnel logs flow through the events stream so `/events`
+  // subscribers see cloudflared chatter. `isSessionChatInstalled` decides
+  // which of `EnableResult.phoneUrl`'s two shapes `enable()` builds
+  // (PHONE-PLAN.md P1.2) — the same call-time check the builtin-panel mount
+  // and `registerSessionTools` already share, so all three surfaces agree.
+  const remote = new RemoteController({
+    workspace,
+    port,
+    onLog: line =>
+      events.emit({
+        type: "remote-log",
+        at: new Date().toISOString(),
+        line,
+      }),
+    isSessionChatInstalled,
+  })
 
   // HTML cache for installed apps' `ui.path` panels (app-ui-apps.ts) —
   // gateway-scope singleton so a `/mcp` request doesn't re-read an
@@ -2307,6 +2312,7 @@ export async function createGateway(
     token,
     ptyEnabled: opts.spawnPty != null,
     tunnels,
+    remote,
     ...(opts.pairingRegistry ? { pairings: opts.pairingRegistry } : {}),
     sessionEvents,
     eventRing,

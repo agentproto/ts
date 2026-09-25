@@ -38,6 +38,7 @@ import { randomBytes, createHash } from "node:crypto"
 import { mkdir, writeFile, readFile, chmod, rm } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { join } from "node:path"
+import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
 
 import type { AuthOptions } from "./http-server.js"
 import { quickTunnelProvider } from "./remote-providers/quick.js"
@@ -102,6 +103,21 @@ export interface EnableResult {
    * gateway.
    */
   mcpConfigSnippet?: string
+  /**
+   * A single link to open on a phone (PHONE-PLAN.md P1.2) — the token rides
+   * in a URL *fragment* (`#token=`), never a `?` query string, since
+   * fragments never reach a server (no Referer, no access/proxy log, no CDN
+   * cache key). Two shapes, chosen by whether this daemon has the
+   * `@agentik/session-chat` app installed with a UI:
+   *   - installed: `<publicUrl>/apps/@agentik/session-chat/ui#token=<t>` —
+   *     the phone lands directly in Control Center.
+   *   - not installed: `https://cli.agentproto.sh/panel#daemon=<publicUrl>&token=<t>`
+   *     — the hosted panel, which speaks the same fragment shape (see
+   *     agentproto/cli-site's `readFragmentConnection`).
+   * Only emitted when exposing the gateway (same condition as `bearerToken`)
+   * — a passthrough tunnel has no daemon UI to link to.
+   */
+  phoneUrl?: string
   provider: "quick"
   target: { host: string; port: number }
   exposesGateway: boolean
@@ -132,6 +148,14 @@ export interface RemoteControllerOptions {
   port: number
   /** Hook for surfacing provider logs through RuntimeEvents. */
   onLog?: (line: string) => void
+  /**
+   * Whether the `@agentik/session-chat` app is installed with a `ui` block
+   * on THIS daemon — decides which of the two `EnableResult.phoneUrl` shapes
+   * `enable()` builds. Resolved at call time (matches `index.ts`'s own
+   * `isSessionChatInstalled`), so installing the app after boot is picked
+   * up without a restart. Omitted ⇒ always the hosted-panel fallback.
+   */
+  isSessionChatInstalled?: () => boolean
 }
 
 const STATE_FILE_REL = ".agentproto/remote.json"
@@ -245,6 +269,9 @@ export class RemoteController {
       result.bearerToken = bearerToken
       result.mcpEndpoint = mcpEndpoint
       result.mcpConfigSnippet = buildMcpConfigSnippet(mcpEndpoint, bearerToken)
+      result.phoneUrl = this.opts.isSessionChatInstalled?.()
+        ? `${started.publicUrl}/apps/${SESSION_CHAT_APP_ID}/ui#token=${bearerToken}`
+        : `https://cli.agentproto.sh/panel#daemon=${encodeURIComponent(started.publicUrl)}&token=${bearerToken}`
     } else {
       // Passthrough tunnel: the daemon gates nothing on this URL. Make the
       // unauthenticated exposure explicit (structured + logged) rather than

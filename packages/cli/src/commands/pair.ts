@@ -34,6 +34,7 @@ import {
   removeClientPairing,
   findClientPairing,
 } from "../util/client-pairings.js"
+import { printQr } from "../util/qr.js"
 
 const USAGE = `agentproto pair — end-to-end daemon pairing over an untrusted rendezvous
 
@@ -405,19 +406,3 @@ function parseTtlMinutes(raw: string): number | null {
   return Math.max(1, Math.round(minutes))
 }
 
-/** Render the offer URL as an in-terminal QR (best-effort — prints nothing extra
- *  if the optional `qrcode-terminal` dep isn't available). */
-async function printQr(url: string): Promise<void> {
-  try {
-    const mod = await import("qrcode-terminal")
-    const qr = mod.default ?? mod
-    await new Promise<void>(resolve => {
-      qr.generate(url, { small: true }, (out: string) => {
-        process.stdout.write(out + "\n")
-        resolve()
-      })
-    })
-  } catch {
-    // qrcode-terminal not installed — the URL above is enough to pair.
-  }
-}
