@@ -1,5 +1,16 @@
 # @agentproto/cli
 
+## 0.21.4
+
+### Patch Changes
+
+- Updated dependencies [2aadecc]
+- Updated dependencies [cbb8743]
+  - @agentproto/model-catalog@0.10.2
+  - @agentproto/worktree@0.8.1
+  - @agentproto/sandbox-box@0.2.13
+  - @agentproto/sandbox-e2b@0.5.3
+
 ## 0.21.3
 
 ### Patch Changes

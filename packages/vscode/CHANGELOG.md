@@ -1,5 +1,15 @@
 # agentproto-vscode
 
+## 0.17.2
+
+### Patch Changes
+
+- 7f9497d: Fix internal-derived titles in session display names and route dead native-conversation PTYs to their durable transcript.
+- Updated dependencies [7f9497d]
+- Updated dependencies [a93da92]
+- Updated dependencies [f26e334]
+  - @agentproto/runtime@3.6.0
+
 ## 0.17.1
 
 ### Patch Changes

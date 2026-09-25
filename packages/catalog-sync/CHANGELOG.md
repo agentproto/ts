@@ -1,5 +1,16 @@
 # @agentproto/catalog-sync
 
+## 0.6.2
+
+### Patch Changes
+
+- 5897ca6: Fix a failing live fetch during `catalog-sync generate --refresh` crashing the whole multi-provider run: a non-ok response now degrades to the committed snapshot (with a stderr note), mirroring the existing missing-env behavior; it still throws when no committed snapshot exists.
+- 2aadecc: Sync generated ledger and snapshot data from the pinned provider sources.
+- cbb8743: Sync generated catalog data from the pinned provider sources
+- Updated dependencies [2aadecc]
+- Updated dependencies [cbb8743]
+  - @agentproto/model-catalog@0.10.2
+
 ## 0.6.1
 
 ### Patch Changes
