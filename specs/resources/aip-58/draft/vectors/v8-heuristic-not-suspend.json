@@ -1,0 +1,41 @@
+{
+  "id": "V8",
+  "title": "Turn ends with a question in plain text, no explicit signal -> failed missing-output, hinted",
+  "rule": "specs/aip-58.mdx section 3 Outcome rule -- a heuristic MAY only annotate a hint, never produce suspended",
+  "manifestExcerpt": {
+    "kind": "workflow",
+    "id": "pricing-brief",
+    "steps": [
+      { "id": "draft", "kind": "agent", "prompt": "Write a one-page pricing brief for these tiers: $steps.parse.tiers" }
+    ]
+  },
+  "runCreate": {
+    "kind": "workflow",
+    "ref": { "id": "pricing-brief", "version": "1.0.0" },
+    "input": { "productUrl": "https://example.com/pricing" }
+  },
+  "agentTurn": {
+    "finalMessage": "What tone should the brief use -- formal or casual?",
+    "toolCall": null,
+    "protocolAwaitingInputEvent": false
+  },
+  "expected": {
+    "terminalState": "failed",
+    "stepId": "draft",
+    "stepStatus": "failed",
+    "error": { "code": "missing-output", "stepId": "draft" },
+    "hint": "possible-input-request",
+    "events": [
+      "run.created",
+      "run.started",
+      "step.started",
+      "step.failed",
+      "run.failed"
+    ],
+    "notes": [
+      "The final message is textually identical to V2's -- a question about tone. The outcome differs because V2's step made an explicit run.requestInput call and this one didn't; a host is NOT permitted to read the two turns identically just because their prose matches.",
+      "A host MAY set StepRecord.hint = 'possible-input-request' after pattern-matching the trailing question mark, purely as a triage aid for a human reading the failed run. The hint MUST NOT change stepStatus/terminalState -- a conformance check that flips this vector's expected terminalState to 'suspended' on the basis of the hint is testing a non-conforming host.",
+      "No step.suspended or run.suspended event may appear anywhere in this run's event log."
+    ]
+  }
+}

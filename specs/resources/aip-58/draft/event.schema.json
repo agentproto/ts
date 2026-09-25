@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-58/event.schema.json",
+  "title": "RunEvent (AIP-58)",
+  "description": "One envelope in a run's append-only event log — the only interface a UI or supervisor needs (§5 Event log). Types extend the AIP-37 vocabulary.",
+  "$ref": "#/$defs/runEvent",
+  "$defs": {
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "run.created",
+        "run.started",
+        "run.suspended",
+        "run.resumed",
+        "run.succeeded",
+        "run.failed",
+        "run.cancelled",
+        "run.published",
+        "step.started",
+        "step.output",
+        "step.artifact",
+        "step.suspended",
+        "step.resumed",
+        "step.succeeded",
+        "step.failed",
+        "step.spend"
+      ]
+    },
+    "runEvent": {
+      "type": "object",
+      "required": ["seq", "ts", "runId", "type", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "seq": {
+          "description": "Monotonic within this run, starting at 1.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "ts": { "type": "string", "format": "date-time" },
+        "runId": { "type": "string", "minLength": 1 },
+        "stepId": {
+          "description": "Present on every step.* event; absent on run.* events.",
+          "type": "string"
+        },
+        "type": { "$ref": "#/$defs/eventType" },
+        "data": {
+          "description": "Per-type payload. Shape is informative and host-specific beyond the fields this AIP names elsewhere (e.g. run.failed's data carries the RunError; step.spend's data carries the Spend). Not further constrained here.",
+          "type": "object"
+        }
+      }
+    }
+  }
+}

@@ -1016,7 +1016,21 @@ export function registerOrchestrationTools(
         try {
           const run = await workflowRunner.startFromFile(input)
           return {
-            content: [{ type: "text", text: JSON.stringify({ runId: run.runId, status: run.status }) }],
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  runId: run.runId,
+                  status: run.status,
+                  ...(run.error !== undefined ? { error: run.error } : {}),
+                  ...(run.errorCode !== undefined ? { errorCode: run.errorCode } : {}),
+                }),
+              },
+            ],
+            // A rejected run (e.g. AIP-58 §3 `invalid-input`) is a
+            // conforming terminal result, not a thrown exception — but it
+            // must still read as a failure to the caller, never as `done`.
+            ...(run.status === "failed" ? { isError: true } : {}),
           }
         } catch (err) {
           return {

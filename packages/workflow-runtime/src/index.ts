@@ -20,6 +20,11 @@ export {
   type CompileWorkflowOptions,
 } from "./compile-workflow.js"
 export { compileWorkflowManifest } from "./load-workflow.js"
+export {
+  normalizeWorkflowInputsSchema,
+  validateWorkflowInput,
+  type WorkflowInputValidation,
+} from "./validate-input.js"
 export { buildAgentStep, type AgentStepFields } from "./build-agent-step.js"
 export {
   materializeKnowledge,

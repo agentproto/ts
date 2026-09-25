@@ -27,7 +27,7 @@ import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { join, dirname } from "node:path"
 import { mkdirSync, readFileSync, existsSync, writeFileSync, renameSync } from "node:fs"
-import { buildAgentStep, runWorkflow } from "@agentproto/workflow-runtime"
+import { buildAgentStep, runWorkflow, validateWorkflowInput } from "@agentproto/workflow-runtime"
 import type { AgentSandboxRef, ApprovalDecision, Bindings, GateReportEvent, RuntimeWorkflow } from "@agentproto/workflow-runtime"
 import type { StepCache } from "@agentproto/workflow-runtime"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
@@ -100,6 +100,10 @@ export interface WorkflowRun {
   stages: WorkflowStageState[]
   notifyUrl?: string
   error?: string
+  /** AIP-58 §10 error code for `error`, when the failure has one — today
+   *  only `startFromFile`'s pre-dispatch input-validation rejection sets
+   *  this (`"invalid-input"`). Absent on every other failure path. */
+  errorCode?: string
   result?: { sessionIds: string[] }
   /** App provenance — set when the run was started on behalf of an
    *  installed app (explicit input, or the workflow id is owned by exactly
@@ -1150,6 +1154,35 @@ export function createWorkflowRunner(opts: {
         )
       }
       const handle = await loadWorkflowHandle(args.path)
+
+      // AIP-58 §3 Outcome rule: invalid/missing required input is rejected
+      // BEFORE any step runs — never a `compileWorkflow` call, never an
+      // `executeRunWorkflow` dispatch, so zero steps execute and zero
+      // sessions spawn on a rejected run.
+      const validation = validateWorkflowInput(handle.inputs, args.input)
+      if (!validation.valid) {
+        const runId = `wfrun_${randomUUID()}`
+        const now = new Date().toISOString()
+        const run: WorkflowRun = {
+          runId,
+          workflowId: handle.id,
+          status: "failed",
+          startedAt: now,
+          endedAt: now,
+          stages: [],
+          error: validation.message,
+          errorCode: validation.code,
+          ...resolveAppProvenance(opts.appRegistry, handle.id, {
+            ...(args.appId !== undefined ? { appId: args.appId } : {}),
+            ...(args.appRunId !== undefined ? { appRunId: args.appRunId } : {}),
+            ...(args.item !== undefined ? { item: args.item } : {}),
+          }),
+        }
+        runs.set(runId, { run, cancelled: false, abort: new AbortController(), stages: [] })
+        persist()
+        return run
+      }
+
       const workflow = await compileWorkflow(handle)
       const fileStages = runtimeWorkflowToStages(workflow)
       const runId = `wfrun_${randomUUID()}`
