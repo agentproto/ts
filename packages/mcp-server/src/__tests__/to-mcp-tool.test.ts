@@ -10,7 +10,10 @@ import { describe, it, expect } from "vitest"
 import { z } from "zod"
 import { defineTool, catchErrors, paginated, type ToolTransformer } from "@agentproto/tool"
 import { defineDriver, implementTool } from "@agentproto/driver"
-import { buildMcpTool } from "../to-mcp-tool.js"
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
+import { buildMcpTool, toMcpTool } from "../to-mcp-tool.js"
 
 const parse = (res: { content: Array<{ text: string }> }) =>
   JSON.parse(res.content[0]!.text)
@@ -224,5 +227,165 @@ describe("toMcpTool transformers", () => {
     expect(Object.keys(reg.inputShape)).toContain("limit")
     const parsed = parse(await reg.handler({})) as { items?: unknown[] }
     expect(parsed.items).toHaveLength(2)
+  })
+})
+
+describe("toMcpTool MCP Apps + structuredContent", () => {
+  const echoTool = defineTool({
+    id: "demo.echo",
+    description: "Echo the message, uppercased by the driver.",
+    inputSchema: z.object({ message: z.string() }),
+    outputSchema: z.object({ shout: z.string() }),
+    idempotent: true,
+    requires: { network: ["api.example.com"] },
+  })
+  const echoDriver = defineDriver({
+    id: "echo-builtin",
+    name: "Echo",
+    description: "Uppercases the message.",
+    kind: "builtin",
+    implements: [{ tool: "demo.echo", version: "0.1.0" }],
+    implementations: [
+      implementTool(echoTool, ({ input }) => ({
+        shout: input.message.toUpperCase(),
+      })),
+    ],
+  })
+
+  async function connect(server: McpServer): Promise<Client> {
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair()
+    const client = new Client({ name: "test", version: "0.0.0" })
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ])
+    return client
+  }
+
+  it("without ui: same text output, plus structuredContent, no _meta", async () => {
+    const reg = buildMcpTool({ tool: echoTool, candidates: [echoDriver] })
+    expect(reg._meta).toBeUndefined()
+    expect(reg.annotations).toBeUndefined()
+    const res = await reg.handler({ message: "hi" })
+    expect(res.content).toEqual([
+      { type: "text", text: JSON.stringify({ shout: "HI" }, null, 2) },
+    ])
+    expect(res.structuredContent).toEqual({ shout: "HI" })
+  })
+
+  it("omits structuredContent for non-record outputs (arrays)", async () => {
+    const rowsTool = defineTool({
+      id: "demo.rows",
+      description: "Rows.",
+      inputSchema: z.object({}),
+    })
+    const rowsDriver = defineDriver({
+      id: "rows-builtin",
+      name: "Rows",
+      description: "Rows.",
+      kind: "builtin",
+      implements: [{ tool: "demo.rows", version: "0.1.0" }],
+      implementations: [implementTool(rowsTool, () => [1, 2])],
+    })
+    const res = await buildMcpTool({
+      tool: rowsTool,
+      candidates: [rowsDriver],
+    }).handler({})
+    expect(parse(res)).toEqual([1, 2])
+    expect(res.structuredContent).toBeUndefined()
+  })
+
+  it("passes a transformer's pre-serialized result through unchanged", async () => {
+    const preSerialized: ToolTransformer = {
+      name: "pre",
+      wrapHandler: () => async () => ({
+        content: [{ type: "text", text: "done" }],
+      }),
+    } as ToolTransformer
+    const res = await buildMcpTool({
+      tool: echoTool,
+      candidates: [echoDriver],
+      transformers: [preSerialized],
+    }).handler({ message: "x" })
+    expect(res).toEqual({ content: [{ type: "text", text: "done" }] })
+  })
+
+  it("derives annotations from the contract only when asked", async () => {
+    const derived = buildMcpTool({
+      tool: echoTool,
+      candidates: [echoDriver],
+      annotations: true,
+    })
+    expect(derived.annotations).toEqual({
+      readOnlyHint: true,
+      idempotentHint: true,
+      openWorldHint: true,
+    })
+    const overridden = buildMcpTool({
+      tool: echoTool,
+      candidates: [echoDriver],
+      annotations: { openWorldHint: false, title: "Echo" },
+    })
+    expect(overridden.annotations).toEqual({
+      readOnlyHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+      title: "Echo",
+    })
+  })
+
+  it("with ui: tools/list exposes _meta.ui and tools/call returns structuredContent", async () => {
+    const server = new McpServer({ name: "t", version: "0.0.0" })
+    const reg = toMcpTool(server, {
+      tool: echoTool,
+      candidates: [echoDriver],
+      ui: { resourceUri: "ui://demo-echo/view" },
+      annotations: true,
+    })
+    expect(reg._meta).toEqual({
+      ui: { resourceUri: "ui://demo-echo/view", visibility: ["model", "app"] },
+    })
+    const client = await connect(server)
+
+    const { tools } = await client.listTools()
+    const listed = tools.find((t) => t.name === "demo_echo")
+    expect(listed?._meta).toEqual({
+      ui: { resourceUri: "ui://demo-echo/view", visibility: ["model", "app"] },
+    })
+    expect(listed?.annotations?.readOnlyHint).toBe(true)
+
+    const res = await client.callTool({
+      name: "demo_echo",
+      arguments: { message: "salut" },
+    })
+    expect(res.structuredContent).toEqual({ shout: "SALUT" })
+    expect(res.content).toEqual([
+      { type: "text", text: JSON.stringify({ shout: "SALUT" }, null, 2) },
+    ])
+    await client.close()
+  })
+
+  it("honours an explicit visibility and registers without ui unchanged", async () => {
+    const server = new McpServer({ name: "t", version: "0.0.0" })
+    toMcpTool(server, {
+      tool: echoTool,
+      candidates: [echoDriver],
+      name: "app_only",
+      ui: { resourceUri: "ui://x/view", visibility: ["app"] },
+    })
+    toMcpTool(server, { tool: echoTool, candidates: [echoDriver] })
+    const client = await connect(server)
+    const { tools } = await client.listTools()
+    expect(tools.find((t) => t.name === "app_only")?._meta).toEqual({
+      ui: { resourceUri: "ui://x/view", visibility: ["app"] },
+    })
+    const plain = tools.find((t) => t.name === "demo_echo")
+    expect(plain?._meta).toBeUndefined()
+    expect(plain?.annotations).toBeUndefined()
+    expect(Object.keys(plain?.inputSchema.properties ?? {})).toEqual([
+      "message",
+    ])
+    await client.close()
   })
 })

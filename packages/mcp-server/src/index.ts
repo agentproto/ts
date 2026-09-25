@@ -128,7 +128,16 @@ export {
   buildMcpTool,
   type ToMcpToolOptions,
   type McpToolRegistration,
+  type McpToolMeta,
+  type McpToolResult,
+  type McpToolUiVisibility,
 } from "./to-mcp-tool.js"
+export {
+  registerUiResource,
+  MCP_APP_MIME_TYPE,
+  type RegisterUiResourceOptions,
+  type UiResourceCsp,
+} from "./register-ui-resource.js"
 export {
   registerSelfInspectTool,
   selfInspect,
