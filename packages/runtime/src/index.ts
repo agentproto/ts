@@ -191,6 +191,11 @@ export type {
   ActivityWorkflowLister,
   PrStateResolver,
 } from "./activities.js"
+// The app-UI injection pipeline (bridge + display-mode toggle +
+// runner-select), exported so a host — or a local harness that stands in for
+// one, `scripts/dev/display-mode-host-harness.mjs` — can serve an app UI
+// through the exact same path the daemon does instead of re-deriving it.
+export { injectMcpAppBridge, MCP_APP_BRIDGE_SCRIPT } from "./app-ui-apps.js"
 export { registerBrainTools } from "./brain-tools.js"
 export {
   registerWebSearchTools,

@@ -39,6 +39,11 @@
       "import": "./dist/runner-select.mjs",
       "default": "./dist/runner-select.mjs"
     },
+    "./display-mode": {
+      "types": "./dist/display-mode.d.ts",
+      "import": "./dist/display-mode.mjs",
+      "default": "./dist/display-mode.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [

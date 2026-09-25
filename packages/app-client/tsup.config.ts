@@ -5,7 +5,12 @@ export default createTsupConfig({
  * @agentproto/app-client v0.1.0
  * Typed window.McpApp bridge client + TanStack Query hooks for app UIs.
  */`,
-  entry: { index: "src/index.ts", react: "src/react.ts", "runner-select": "src/runner-select.ts" },
+  entry: {
+    index: "src/index.ts",
+    react: "src/react.ts",
+    "runner-select": "src/runner-select.ts",
+    "display-mode": "src/display-mode.ts",
+  },
   format: ["esm"],
   splitting: false,
   // dts emitted by `tsc -p tsconfig.build.json` (same split app-kit uses).

@@ -156,6 +156,7 @@
   },
   "dependencies": {
     "@agentproto/agent": "workspace:*",
+    "@agentproto/app-client": "workspace:*",
     "@agentproto/app-kit": "workspace:*",
     "@agentproto/workflow": "workspace:*",
     "zod": "^4.6.5"

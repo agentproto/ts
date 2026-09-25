@@ -59,10 +59,15 @@ export interface RunnerSelectHandle {
 }
 
 declare global {
+  /** The injected-script namespace shared by every `@agentproto/app-client`
+   *  browser module — declared in global scope (not inline on `Window`) so
+   *  sibling modules can merge their own members in: see
+   *  `display-mode.ts`'s `installDisplayMode`. */
+  interface AgentprotoUIGlobal {
+    mountRunnerSelect(container: HTMLElement, opts: RunnerSelectOptions): RunnerSelectHandle
+  }
   interface Window {
-    AgentprotoUI?: {
-      mountRunnerSelect(container: HTMLElement, opts: RunnerSelectOptions): RunnerSelectHandle
-    }
+    AgentprotoUI?: AgentprotoUIGlobal
   }
 }
 
