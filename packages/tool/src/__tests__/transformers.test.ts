@@ -119,6 +119,22 @@ describe("paginated", () => {
     expect(Object.keys(parsed.items[0] ?? {})).toEqual(["id"])
   })
 
+  it("fields reaches past the compact projection (compact by default otherwise)", async () => {
+    const parsed = JSON.parse(
+      textOf((await wrapped({ limit: 1, fields: ["id", "bulky"] })) as McpTextResult),
+    ) as { items: Array<Record<string, unknown>> }
+    expect(parsed.items[0]).toEqual({ id: "a", bulky: "A".repeat(100) })
+  })
+
+  it("fields with explicit compact:true still allowlists the compact row", async () => {
+    const parsed = JSON.parse(
+      textOf(
+        (await wrapped({ limit: 1, compact: true, fields: ["id", "bulky"] })) as McpTextResult,
+      ),
+    ) as { items: Array<Record<string, unknown>> }
+    expect(parsed.items[0]).toEqual({ id: "a" })
+  })
+
   it("cursor walks pages to cover the full list (shared cursor semantics)", async () => {
     const seen: string[] = []
     let cursor: string | undefined
