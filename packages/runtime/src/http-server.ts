@@ -2944,7 +2944,10 @@ export async function startHttpServer(
         // iframeEmbedOriginAllowed), authorize() gates the tunnel path by
         // bearer.
         if (opts.appRegistry && path.startsWith("/apps/")) {
-          const uiMatch = path.match(/^\/apps\/(.+)\/ui$/)
+          // Optional trailing slash: a basepath-mounted @tanstack/react-router
+          // app (session-chat) rewrites the address bar to ".../ui/" on first
+          // render regardless of `trailingSlash`, so a reload requests it.
+          const uiMatch = path.match(/^\/apps\/(.+)\/ui\/?$/)
           if (uiMatch && req.method === "GET") {
             const uiApp = opts.appRegistry.getApp(decodeURIComponent(uiMatch[1]!))
             // Scoped guardBrowserOrigin pass-through for proven trusted

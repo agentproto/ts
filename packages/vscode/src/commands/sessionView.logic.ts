@@ -28,6 +28,14 @@ export function chatUrl(daemonUrl: string, sessionId: string): string {
   return `${appStandaloneUrl(daemonUrl, SESSION_CHAT_APP_ID)}?session=${encodeURIComponent(sessionId)}`
 }
 
+/** VS Code glob (`workbench.action.browser.open`'s `reuseUrlFilter`) matching
+ *  any open session-chat tab on this daemon, whichever session it shows.
+ *  `/ui/**` rather than `/ui`: the app's router rewrites the address bar to
+ *  `/ui/`, and the glob also matches the bare `/ui`. */
+export function chatReuseUrlFilter(daemonUrl: string): string {
+  return `${appStandaloneUrl(daemonUrl, SESSION_CHAT_APP_ID)}/**`
+}
+
 /** The chat url for embedding in an iframe (the `embed=1` param asks the app
  *  to strip its sidebar; it degrades gracefully when the app ignores it). */
 export function chatPanelUrl(daemonUrl: string, sessionId: string): string {
