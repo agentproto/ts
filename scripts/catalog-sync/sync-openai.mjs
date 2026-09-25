@@ -1,23 +1,44 @@
 #!/usr/bin/env node
 /**
- * OpenAI pricing sync — OpenAI publishes NO stable machine-readable models or
- * pricing endpoint (see packages/catalog-sync/src/sources/openai.ts, which is
- * `refreshable: false` for exactly this reason). There is no OpenAI key to
- * look for: this script does not even try.
+ * OpenAI catalog sync — ids from OpenAI, prices from OpenAI, OpenRouter as the
+ * fallback for both.
  *
- * Instead it takes BOTH the id list and the prices from OpenRouter's public
- * `GET https://openrouter.ai/api/v1/models` passthrough, the same fallback
- * mechanism `sync-moonshot.mjs` uses when MOONSHOT_API_KEY is unset —
- * filtered to `openai/*` ids, ids taken as the suffix after the slash, prices
- * from `pricing.prompt` / `pricing.completion` (USD per token, × 1e6 → per 1M).
+ * WHAT CHANGED AND WHY. This script used to take BOTH the id list and the
+ * prices from OpenRouter's `openai/*` passthrough, on the stated grounds that
+ * "OpenAI publishes NO stable machine-readable models or pricing endpoint".
+ * Half of that was never true and the other half stopped being true:
  *
- * ⚠ The result reflects OpenRouter's rates, NOT the official
- * openai.com/api/pricing page — the generated banner says so explicitly.
+ *   - `GET https://api.openai.com/v1/models` has always existed and is the
+ *     authoritative id list. It carries no price and no context window, which
+ *     is why it can't be the ONLY source — not a reason to ignore it.
+ *   - `https://platform.openai.com/docs/pricing.md` is OpenAI's own Markdown
+ *     rendering of the pricing page, served as `text/markdown` and advertised
+ *     on the page itself ("Markdown versions of documentation pages are
+ *     available by appending `.md` to the page URL"). It is GFM pipe tables
+ *     with labelled header rows — parsed here by COLUMN NAME, never by column
+ *     position, and never by walking the HTML page's DOM.
  *
- * cacheReadMultiplier and cacheWriteMultiplier are derived per model from
- * OpenRouter's input_cache_read / input_cache_write fields (ratio to base
- * prompt price), same pattern as sync-anthropic.mjs / sync-google.mjs — 41
- * of the 60 openai/* OpenRouter routes carry a cache-read price.
+ * The merge, the table parser and the id filter are pure functions in
+ * `packages/catalog-sync/src/sources/openai-catalog.mjs`, tested without a
+ * network by `packages/catalog-sync/src/__tests__/openai-catalog.test.ts`.
+ * This file is only the I/O and the console narration.
+ *
+ * DEGRADATION, in the order it is attempted:
+ *   - no `OPENAI_API_KEY`  → ids from OpenRouter only, prices still official
+ *                            where the docs page has them. Exit 0, NOT the
+ *                            exit-2 "skipped" contract: this script still
+ *                            produces a complete, correct file without a key,
+ *                            which is why it never claimed one before.
+ *   - `/v1/models` errors  → same as no key, with a warning.
+ *   - docs page errors, or parses into something that fails
+ *     `checkOfficialPricingUsable` (too few rows, sentinel ids missing)
+ *                            → every price falls back to OpenRouter and the
+ *                            generated banner says so. A page restructure
+ *                            must degrade to the old behaviour, never to a
+ *                            catalog of wrong numbers.
+ *   - OpenRouter errors    → hard failure (exit 1). It is the only fallback;
+ *                            silently shipping an official-only catalog would
+ *                            drop every `:batch` and `gpt-oss-*` row.
  *
  * Regenerates `packages/model-catalog/src/llm/openai-pricing.generated.ts`.
  */
@@ -25,111 +46,142 @@
 import { writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
+import {
+  buildOpenRouterPriceMap,
+  checkOfficialPricingUsable,
+  mergeOpenAiCatalog,
+  parseOpenAiDocsPricing,
+  renderGeneratedFile,
+} from "../../packages/catalog-sync/src/sources/openai-catalog.mjs"
+
 const OUTPUT_PATH = resolve(
   import.meta.dirname,
   "../../packages/model-catalog/src/llm/openai-pricing.generated.ts"
 )
 
-// Non-chat OpenAI families (speech, image gen, embeddings, moderation,
-// realtime voice, ...) — adapted from sync-mistral.mjs's EXCLUDE_REGEX, but
-// token-anchored instead of dash-bounded because OpenAI ids are not
-// dash-segmented (`whisper-1`, `tts-1-hd`, `text-embedding-3-small` have no
-// trailing dash after the family token).
-//
-// `-image-\d` specifically excludes versioned image-output multimodal
-// variants (e.g. `gpt-5.4-image-2`) that OpenRouter carries with standard
-// prompt/completion pricing but this catalog has never treated as
-// first-party-routable products — only the two already-curated exceptions
-// (`gpt-5-image`, `gpt-5-image-mini`, no digit after "image") stay
-// includable; see packages/runtime/src/__tests__/spawn-model-eligibility.test.ts
-// for the route-eligibility assumption this protects.
-const EXCLUDE_REGEX = /embed|moderation|whisper|tts|dall-e|realtime|transcribe|ocr|gpt-image|-image-\d/i
+const OPENAI_MODELS_URL = "https://api.openai.com/v1/models"
+const OPENAI_PRICING_DOCS_URL = "https://platform.openai.com/docs/pricing.md"
+const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 
-/** Round to 6 decimal places (matches sync-anthropic.mjs / sync-google.mjs
- *  precision — cache-multiplier ratios need more than 4 decimals). */
-function round6(num) {
-  return Math.round(num * 1_000_000) / 1_000_000
-}
-
+/** OpenRouter — the one source whose failure is fatal. */
 async function fetchOpenRouterModels() {
-  const res = await fetch("https://openrouter.ai/api/v1/models")
+  const res = await fetch(OPENROUTER_MODELS_URL)
   if (!res.ok) {
-    throw new Error(
-      `OpenRouter Models API returned ${res.status} ${res.statusText}`
-    )
+    throw new Error(`OpenRouter Models API returned ${res.status} ${res.statusText}`)
   }
   const json = await res.json()
   return json.data || []
 }
 
-async function main() {
-  // No OpenAI key to look for: OpenAI has no listable models endpoint with
-  // pricing (packages/catalog-sync/src/sources/openai.ts), so OpenRouter is
-  // the sole id AND pricing source, unconditionally.
-  console.log("→ Fetching OpenRouter model list (ids + pricing passthrough)…")
-  const openRouterModels = await fetchOpenRouterModels()
-  console.log(`  ${openRouterModels.length} models received`)
-
-  const entries = []
-  for (const model of openRouterModels) {
-    if (!model.id?.startsWith("openai/")) continue
-    if (EXCLUDE_REGEX.test(model.id)) continue
-    if (!model.pricing?.prompt || !model.pricing?.completion) continue
-
-    const id = model.id.replace(/^openai\//, "")
-    const promptPerToken = parseFloat(model.pricing.prompt)
-    const completionPerToken = parseFloat(model.pricing.completion)
-    // OpenRouter prices are in USD per token, so multiply by 1e6 to get per 1M
-    const inputPer1M = round6(promptPerToken * 1e6)
-    const outputPer1M = round6(completionPerToken * 1e6)
-
-    const entry = { id, inputPer1M, outputPer1M }
-
-    if (model.pricing.input_cache_read && promptPerToken > 0) {
-      const ratio = parseFloat(model.pricing.input_cache_read) / promptPerToken
-      if (Number.isFinite(ratio)) entry.cacheReadMultiplier = round6(ratio)
-    }
-    if (model.pricing.input_cache_write && promptPerToken > 0) {
-      const ratio = parseFloat(model.pricing.input_cache_write) / promptPerToken
-      if (Number.isFinite(ratio)) entry.cacheWriteMultiplier = round6(ratio)
-    }
-
-    entries.push(entry)
-  }
-  console.log(`  ${entries.length} openai/* chat models with pricing kept`)
-  console.log(`  ${entries.filter((e) => e.cacheReadMultiplier !== undefined).length} with a cache-read multiplier`)
-
-  // Sort alphabetically by id
-  entries.sort((a, b) => a.id.localeCompare(b.id))
-
-  const date = new Date().toISOString()
-  const banner =
-    `// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-openai.mjs ` +
-    `(data: OpenRouter passthrough — OpenAI has NO native models/pricing endpoint, ` +
-    `see packages/catalog-sync/src/sources/openai.ts, synced ${date})\n` +
-    `//\n` +
-    `// ⚠ These prices are OpenRouter's rates, NOT the official\n` +
-    `// openai.com/api/pricing page. OpenAI publishes no stable machine-readable\n` +
-    `// models/pricing endpoint, so OpenRouter passthrough is the only automated\n` +
-    `// source for both ids and prices; OpenRouter rates may differ from\n` +
-    `// OpenAI's first-party pricing.\n\n`
-
-  const body = entries
-    .map((e) => {
-      const pricing = `inputPer1M: ${e.inputPer1M}, outputPer1M: ${e.outputPer1M}`
-      const cacheParts = []
-      if (e.cacheReadMultiplier !== undefined) cacheParts.push(`cacheReadMultiplier: ${e.cacheReadMultiplier}`)
-      if (e.cacheWriteMultiplier !== undefined) cacheParts.push(`cacheWriteMultiplier: ${e.cacheWriteMultiplier}`)
-      const cache = cacheParts.length > 0 ? `, ${cacheParts.join(", ")}` : ""
-      return `  ${JSON.stringify(e.id)}: { ${pricing}${cache}, vendor: "openai", provider: "openai" },`
+/** OpenAI `/v1/models` — returns null (with a warning) on any failure. */
+async function fetchOpenAiModelIds(apiKey) {
+  try {
+    const res = await fetch(OPENAI_MODELS_URL, {
+      headers: { Authorization: `Bearer ${apiKey}` },
     })
-    .join("\n")
+    if (!res.ok) {
+      console.warn(`  ⚠ OpenAI /v1/models returned ${res.status} ${res.statusText}`)
+      return null
+    }
+    const json = await res.json()
+    const ids = (json.data || []).map((model) => model.id).filter((id) => typeof id === "string")
+    if (ids.length === 0) {
+      console.warn("  ⚠ OpenAI /v1/models returned an empty list")
+      return null
+    }
+    return ids
+  } catch (err) {
+    console.warn(`  ⚠ OpenAI /v1/models fetch failed: ${err.message}`)
+    return null
+  }
+}
 
-  const file = `${banner}export const OPENAI_GENERATED_PRICING = {\n${body}\n} as const\n`
+/** Official pricing — returns `{ pricing, note }`, `pricing` null if unusable. */
+async function fetchOfficialPricing() {
+  try {
+    const res = await fetch(OPENAI_PRICING_DOCS_URL, {
+      headers: { Accept: "text/markdown, text/plain;q=0.9, */*;q=0.1" },
+    })
+    if (!res.ok) {
+      return { pricing: null, reason: `docs pricing page returned ${res.status} ${res.statusText}` }
+    }
+    const parsed = parseOpenAiDocsPricing(await res.text())
+    const problem = checkOfficialPricingUsable(parsed)
+    if (problem) return { pricing: null, reason: problem }
+    return { pricing: parsed, reason: null }
+  } catch (err) {
+    return { pricing: null, reason: `docs pricing page fetch failed: ${err.message}` }
+  }
+}
+
+async function main() {
+  const apiKey = process.env.OPENAI_API_KEY
+
+  let openAiIds = null
+  if (apiKey) {
+    console.log("→ Fetching OpenAI /v1/models (authoritative id list)…")
+    openAiIds = await fetchOpenAiModelIds(apiKey)
+    if (openAiIds) console.log(`  ${openAiIds.length} ids received`)
+  } else {
+    console.log("  OPENAI_API_KEY not set — ids from OpenRouter only (unchanged behaviour).")
+  }
+
+  console.log("→ Fetching OpenAI official pricing (platform.openai.com/docs/pricing.md)…")
+  const { pricing: officialPricing, reason: officialProblem } = await fetchOfficialPricing()
+  if (officialPricing) {
+    console.log(
+      `  ${officialPricing.standard.size} standard + ${officialPricing.batch.size} batch rows parsed`
+    )
+  } else {
+    console.warn(`  ⚠ official pricing unusable (${officialProblem}) — falling back to OpenRouter`)
+  }
+
+  console.log("→ Fetching OpenRouter model list (fallback prices + supplementary ids)…")
+  const openRouterModels = await fetchOpenRouterModels()
+  const openRouterPrices = buildOpenRouterPriceMap(openRouterModels)
+  console.log(`  ${openRouterPrices.size} openai/* routes with pricing`)
+
+  const { entries, unpricedIds } = mergeOpenAiCatalog({
+    openAiIds,
+    openRouterPrices,
+    officialPricing,
+  })
+
+  const officialPriced = entries.filter((e) => e.priceSource === "openai").length
+  const openRouterOnlyIds = entries.filter((e) => e.idSource === "openrouter").length
+  console.log(
+    `  ${entries.length} priced rows ` +
+      `(${officialPriced} priced by OpenAI, ${entries.length - officialPriced} by OpenRouter)`
+  )
+  console.log(`  ${openRouterOnlyIds} rows whose id is OpenRouter-only`)
+  console.log(`  ${unpricedIds.length} OpenAI-listed ids with no price from either source`)
+  console.log(
+    `  ${entries.filter((e) => e.cacheReadMultiplier !== undefined).length} with a cache-read multiplier`
+  )
+
+  const idSourceLabel = openAiIds
+    ? "api.openai.com/v1/models, union openrouter.ai/api/v1/models openai/*"
+    : "openrouter.ai/api/v1/models openai/* only (no OPENAI_API_KEY at sync time)"
+  const priceSourceLabel = officialPricing
+    ? "platform.openai.com/docs/pricing.md, OpenRouter fallback per row"
+    : "openrouter.ai/api/v1/models (official pricing unavailable at sync time)"
+  const officialPricingNote = officialPricing
+    ? undefined
+    : `// ⚠ Every price below is OpenRouter's rate, not OpenAI's own: the official\n` +
+      `// pricing source could not be used on this run (${officialProblem}).\n` +
+      `// OpenRouter rates may differ from OpenAI's first-party pricing.\n`
+
+  const file = renderGeneratedFile({
+    entries,
+    unpricedIds,
+    syncedAt: new Date().toISOString(),
+    idSourceLabel,
+    priceSourceLabel,
+    officialPricingNote,
+  })
 
   writeFileSync(OUTPUT_PATH, file, "utf-8")
   console.log(`✓ Wrote ${OUTPUT_PATH}`)
-  console.log(`  ${entries.length} models with pricing written`)
 }
 
 main().catch((err) => {

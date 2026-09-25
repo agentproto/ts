@@ -38,7 +38,12 @@ export type {
   ReviewedRefreshOptions,
   ReviewedRefreshResult,
 } from "./refresh-workflow.js"
-export { OPENAI_LLM_SOURCE, OPENAI_SOURCES } from "./sources/openai.js"
+export {
+  OPENAI_LLM_SOURCE,
+  OPENAI_MODELS_SOURCE,
+  OPENAI_PRICING_SOURCE,
+  OPENAI_SOURCES,
+} from "./sources/openai.js"
 export { CATALOG_CHANGELOG_PATH } from "./runner.js"
 export {
   computeAddedAtLedger,
