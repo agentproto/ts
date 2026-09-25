@@ -1021,6 +1021,87 @@ export async function startHttpServer(
   }
 
   /**
+   * The single gate for the P0 tunnel-auth fix (PHONE-PLAN.md "P0: security
+   * fix"): once `remote_enable` (or a static `auth: {mode: "bearer"}`) puts
+   * the daemon in bearer mode, EVERY non-loopback request must present that
+   * exact bearer — full stop. This runs once, at the very top of the
+   * request/upgrade handler, instead of being sprinkled per route, because
+   * every other per-route mechanism in this file (`checkSessionsToken`'s
+   * Origin-allowlist branch, `guardBrowserOrigin`, `authorizeMcp`,
+   * `embedTokenTrusted`) was designed for a DIFFERENT threat — a hostile
+   * *browser tab* on the user's own machine, where `Origin` is unforgeable.
+   * None of that holds once a request has crossed a public tunnel: `curl`
+   * sets whatever `Origin` it likes, and the widget embed token was minted
+   * for a local MCP-Apps frame, never for a remote caller. So this
+   * predicate runs BEFORE any of those and consults neither Origin nor
+   * `?et=` — they keep doing their original (browser-CSRF / widget) job for
+   * loopback traffic, but neither may stand in for the bearer here.
+   *
+   * Three routes are intentionally exempt (see the plan's P0 section):
+   *   - `/health` — the public liveness probe.
+   *   - `/inbound/:slug` — gated by its own per-endpoint HMAC secret when
+   *     one is configured (`handleProviderInbound` / `verifyInboundSignature`);
+   *     requiring the tunnel bearer ON TOP of that would break every
+   *     provider webhook (Telegram, WhatsApp, …), which can't send it. This
+   *     is `/inbound/:slug` only — the legacy slugless `POST /inbound` has
+   *     no such secret and stays gated by this function.
+   *   - `GET /apps/:appId/ui` (that exact static-shell route only — not
+   *     `/tool-call` or `/external-blob` beneath it) — the phone must be
+   *     able to load the page before it has anywhere to put the token: the
+   *     phone link carries the bearer in a URL *fragment* (`#token=`,
+   *     PHONE-PLAN.md P1), which browsers never send to a server, so
+   *     gating the shell itself would make the link unusable. The APIs the
+   *     loaded page then calls stay fully gated.
+   *
+   * `?et=` (the widget embed token) deliberately does NOT bypass this gate.
+   * It's scoped to a local MCP-Apps host that already has `tools/call` on
+   * THIS daemon (see `embedTokenTrusted`'s doc) — a guarantee that only
+   * holds on loopback. Treating it as tunnel-equivalent would let anyone
+   * who ever captured that value (a screenshot, a stray log line, a
+   * Referer header) reach the daemon over the public internet with no
+   * bearer at all. Loopback traffic is untouched either way — this whole
+   * function is a no-op there — so the widget path keeps working exactly
+   * as before for its real (local) use case.
+   */
+  function tunnelBearerAllowed(
+    req: IncomingMessage,
+    path: string,
+    method: string,
+  ): boolean {
+    if (isLoopback(req)) return true
+    const auth = readAuth()
+    if (auth.mode !== "bearer") return true
+    if (path === "/health") return true
+    if (/^\/inbound\/[^/]+$/.test(path)) return true
+    if (method === "GET" && /^\/apps\/.+\/ui\/?$/.test(path)) return true
+    const header = req.headers.authorization
+    if (header === `Bearer ${auth.token}`) return true
+    const urlStr = req.url ?? ""
+    if (urlStr.includes("?")) {
+      const qsToken = new URLSearchParams(
+        urlStr.slice(urlStr.indexOf("?") + 1),
+      ).get("token")
+      if (qsToken && qsToken === auth.token) return true
+    }
+    return false
+  }
+
+  function rejectTunnelUnauthorized(res: ServerResponse): void {
+    res.writeHead(401, { "content-type": "application/json" })
+    res.end(
+      JSON.stringify({
+        error: "tunnel_unauthorized",
+        message:
+          "This daemon is in bearer mode and the request did not arrive on " +
+          "loopback. Present the tunnel bearer as `Authorization: Bearer " +
+          "<token>` (or `?token=<token>` for SSE/WS) — an allowlisted " +
+          "Origin or the widget embed token is not sufficient once a " +
+          "request has crossed the network boundary.",
+      }),
+    )
+  }
+
+  /**
    * Auth gate for `/mcp`. Unlike `authorize()`, it does NOT let a browser
    * drive-by inherit the loopback bypass: `/mcp` registers `command_execute`,
    * `file_read`/`file_write`, `agent_start`, … (see index.ts's
@@ -1720,6 +1801,15 @@ export async function startHttpServer(
                 "local daemon.",
             }),
           )
+          return
+        }
+
+        // P0 tunnel-auth gate — see `tunnelBearerAllowed`'s doc. Runs once,
+        // before any route dispatch, so no per-route mechanism below (Origin
+        // allowlist, widget embed token) can be mistaken for a substitute
+        // for the bearer once a request has crossed the network boundary.
+        if (!tunnelBearerAllowed(req, path, req.method ?? "GET")) {
+          rejectTunnelUnauthorized(res)
           return
         }
 
@@ -2967,8 +3057,11 @@ export async function startHttpServer(
         // page's drive-by (the served UI itself is same-origin ⇒ loopback
         // ⇒ allowlisted) — except a proven trusted embedder's iframe nav
         // (vscode-webview://, app csp.frameDomains; see
-        // iframeEmbedOriginAllowed), authorize() gates the tunnel path by
-        // bearer.
+        // iframeEmbedOriginAllowed). `/tool-call` and `/external-blob` are
+        // additionally gated by `authorize()` for the tunnel path; the `/ui`
+        // GET itself is NOT — it's the P0 tunnel-auth gate's one static-shell
+        // exemption (`tunnelBearerAllowed`'s doc), so a phone can load the
+        // page before it has anywhere to put the bearer.
         if (opts.appRegistry && path.startsWith("/apps/")) {
           // Optional trailing slash: a basepath-mounted @tanstack/react-router
           // app (session-chat) rewrites the address bar to ".../ui/" on first
@@ -2991,7 +3084,12 @@ export async function startHttpServer(
             ) {
               return
             }
-            if (!authorize(req, res)) return
+            // No `authorize()` call here (unlike /tool-call and
+            // /external-blob below): this exact route is the P0 tunnel-auth
+            // gate's static-shell exemption (`tunnelBearerAllowed`'s doc) —
+            // the phone must be able to load the page before it has
+            // anywhere to put the bearer. `guardBrowserOrigin` above still
+            // blocks a non-allowlisted browser's drive-by.
             await handleAppUiPage(
               req,
               res,
@@ -3090,6 +3188,20 @@ export async function startHttpServer(
     }
     if (!opts.sessions || opts.ptyEnabled !== true) {
       rejectUpgrade(socket, 501, "pty_not_configured")
+      return
+    }
+    // P0 tunnel-auth gate — see `tunnelBearerAllowed`'s doc. A WS upgrade
+    // can't send a normal 401 body, so this writes a raw HTTP rejection via
+    // `rejectUpgrade` (same as every other pre-upgrade check below).
+    if (!tunnelBearerAllowed(req, path, "GET")) {
+      rejectUpgrade(
+        socket,
+        401,
+        "tunnel_unauthorized",
+        "This daemon is in bearer mode and the request did not arrive on " +
+          "loopback. Present the tunnel bearer via ?token=<token> on the " +
+          "WebSocket URL (browsers can't set headers on a WS upgrade).",
+      )
       return
     }
     // Per-boot token gate, no loopback bypass — see comment on
