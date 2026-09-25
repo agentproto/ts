@@ -1,5 +1,12 @@
 # @agentproto/cli
 
+## 0.21.5
+
+### Patch Changes
+
+- Updated dependencies [c5b9e2b]
+  - @agentproto/model-catalog@0.10.3
+
 ## 0.21.4
 
 ### Patch Changes
