@@ -1057,9 +1057,21 @@ importers:
       '@agentproto/agent':
         specifier: workspace:*
         version: link:../agent
+      '@agentproto/driver':
+        specifier: workspace:*
+        version: link:../driver/core
+      '@agentproto/driver-cli':
+        specifier: workspace:*
+        version: link:../driver/cli
+      '@agentproto/driver-http':
+        specifier: workspace:*
+        version: link:../driver/http
       '@agentproto/mastra':
         specifier: workspace:*
         version: link:../mastra
+      '@agentproto/tool':
+        specifier: workspace:*
+        version: link:../tool
       '@agentproto/workflow':
         specifier: workspace:*
         version: link:../workflow

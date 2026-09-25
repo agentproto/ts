@@ -134,3 +134,58 @@ export function createDaemonToolRegistry(
 
   return { tools, candidates: [daemonDriver] }
 }
+
+/** The subset of `loadAppBundledTools`'s (`@agentproto/app-kit`) result
+ *  `createDaemonToolRegistry` needs to merge with — a `tools` map keyed by
+ *  id, matching {@link CompileWorkflowOptions.tools}'s shape. */
+export interface AppToolRegistry {
+  readonly tools: Record<string, ToolHandle>
+  readonly candidates: readonly DriverHandle[]
+}
+
+/**
+ * Merge an app-bundled tool/driver registry (BRIEF-D) into the daemon
+ * passthrough registry `createDaemonToolRegistry` builds for a workflow.
+ *
+ * An app tool id wins over a daemon passthrough tool of the same id: the
+ * app's real `ToolHandle` (with its declared input/output schema) replaces
+ * the schema-less passthrough in `tools`, and the id is stripped out of the
+ * catch-all `daemon-tool-dispatch` driver's `implements`/`execute` so the
+ * AIP-30 resolver never sees two candidates for it — `onOverride` fires
+ * once per overridden id so the caller can log it (see BRIEF-D item 2:
+ * "an app tool id wins ... log it").
+ */
+export function mergeAppAndDaemonToolRegistry(
+  daemon: CompileWorkflowOptions,
+  app: AppToolRegistry | undefined,
+  opts?: { onOverride?: (toolId: string) => void },
+): Pick<CompileWorkflowOptions, "tools" | "candidates"> {
+  const daemonTools = daemon.tools as Record<string, ToolHandle>
+  if (!app || Object.keys(app.tools).length === 0) {
+    return { tools: daemonTools, candidates: daemon.candidates }
+  }
+
+  const appToolIds = new Set(Object.keys(app.tools))
+  for (const id of appToolIds) {
+    if (id in daemonTools) opts?.onOverride?.(id)
+  }
+  const tools: Record<string, ToolHandle> = { ...daemonTools, ...app.tools }
+
+  const daemonCandidates: DriverHandle[] = []
+  for (const driver of daemon.candidates) {
+    const keptImplements = driver.implements.filter(e => !appToolIds.has(normalizeToolId(e.tool)))
+    if (keptImplements.length === 0) continue
+    if (keptImplements.length === driver.implements.length) {
+      daemonCandidates.push(driver)
+      continue
+    }
+    const keptExecute: Record<string, ExecuteFn> = {}
+    for (const entry of keptImplements) {
+      const id = normalizeToolId(entry.tool)
+      keptExecute[id] = driver.execute[id]!
+    }
+    daemonCandidates.push({ ...driver, implements: keptImplements, execute: keptExecute })
+  }
+
+  return { tools, candidates: [...app.candidates, ...daemonCandidates] }
+}

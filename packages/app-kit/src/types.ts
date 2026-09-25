@@ -20,6 +20,8 @@ import type { AgentHandle } from "@agentproto/agent"
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { WorkspaceHandle, WorkspaceDefinition } from "@agentproto/workspace"
 import type { BuildMastraAgentResult, BuildMastraAgentOptions } from "@agentproto/mastra"
+import type { ToolHandle } from "@agentproto/tool"
+import type { DriverHandle } from "@agentproto/driver"
 
 /**
  * An agent paired with the prose that becomes its system prompt. `body`
@@ -165,6 +167,17 @@ export interface AppDataDefinition {
 export interface AppDefinition {
   readonly agents?: readonly (AgentEntry | AgentHandle)[]
   readonly workflows?: readonly WorkflowHandle[]
+  /**
+   * AIP-14 TOOL.md contracts the app bundles. Normally populated by
+   * `loadAppHandle` from `.agentproto/tools/<id>/TOOL.md` (see
+   * `loadAppBundledTools`) rather than set directly by a TS author.
+   */
+  readonly tools?: readonly ToolHandle[]
+  /**
+   * AIP-30 DRIVER.md implementations the app bundles. Normally populated by
+   * `loadAppHandle` from `.agentproto/drivers/<id>/DRIVER.md`.
+   */
+  readonly drivers?: readonly DriverHandle[]
   /** Any other AIP handles to carry with the app (AIP-6/25/47/…). */
   readonly attach?: readonly DoctypeHandle[]
   /**
@@ -253,6 +266,10 @@ export interface EmittedApp {
 export interface AppHandle {
   readonly agents: readonly AgentEntry[]
   readonly workflows: readonly WorkflowHandle[]
+  /** AIP-14 TOOL.md contracts the app bundles (see {@link AppDefinition.tools}). */
+  readonly tools: readonly ToolHandle[]
+  /** AIP-30 DRIVER.md implementations the app bundles (see {@link AppDefinition.drivers}). */
+  readonly drivers: readonly DriverHandle[]
   readonly attachments: readonly DoctypeHandle[]
   /** The app's home workspace (AIP-34), normalized to a handle. Absent if none. */
   readonly workspace?: WorkspaceHandle

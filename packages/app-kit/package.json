@@ -51,7 +51,11 @@
   },
   "dependencies": {
     "@agentproto/agent": "workspace:*",
+    "@agentproto/driver": "workspace:*",
+    "@agentproto/driver-cli": "workspace:*",
+    "@agentproto/driver-http": "workspace:*",
     "@agentproto/mastra": "workspace:*",
+    "@agentproto/tool": "workspace:*",
     "@agentproto/workflow": "workspace:*",
     "@agentproto/workflow-loader": "workspace:*",
     "@agentproto/workspace": "workspace:*",

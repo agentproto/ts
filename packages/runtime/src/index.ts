@@ -97,7 +97,12 @@ import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
 import { makeEvalReporterCredsStore } from "@agentproto/eval-reporters"
 import { McpProxyRegistry } from "./mcp-proxy.js"
 import { registerOrchestrationTools } from "./orchestration-tools.js"
-import { registerAppTools, resolveAgentRefsForWorkflow, performInstall } from "./app-tools.js"
+import {
+  registerAppTools,
+  resolveAgentRefsForWorkflow,
+  resolveAppToolsForWorkflow,
+  performInstall,
+} from "./app-tools.js"
 import { registerAppDataTools } from "./app-data.js"
 import { APP_STATE_APPEND_TOOL_NAME } from "./app-state.js"
 import { registerAppExternalTools } from "./app-external.js"
@@ -119,7 +124,7 @@ import { wireSupervisorNotify } from "./supervisor-notify.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler } from "./cron-scheduler.js"
 import { createRoutineRegistrar } from "./routine-registrar.js"
-import { createDaemonToolRegistry } from "./workflow-tool-registry.js"
+import { createDaemonToolRegistry, mergeAppAndDaemonToolRegistry } from "./workflow-tool-registry.js"
 export type {
   WatcherStartInput,
   WatcherDescriptor,
@@ -1495,11 +1500,27 @@ export async function createGateway(
         // `agentRefs` resolves a declarative agent-step's `agent.ref` against
         // whichever installed app bundles this workflow id (undefined when
         // none does — a plain `workflow_run_file` outside any app).
-        compileWorkflow: handle =>
-          compileWorkflow(handle, {
-            ...createDaemonToolRegistry(handle, dispatchTool),
+        //
+        // BRIEF-D: `resolveAppToolsForWorkflow` loads the owning app's own
+        // AIP-14/30 TOOL.md/DRIVER.md bundles (undefined for a workflow no
+        // installed app bundles, or one whose app bundles neither) and
+        // `mergeAppAndDaemonToolRegistry` merges them over the daemon
+        // passthrough registry — an app tool id wins over a daemon tool of
+        // the same id, logged here.
+        compileWorkflow: async handle => {
+          const daemonRegistry = createDaemonToolRegistry(handle, dispatchTool)
+          const appRegistryEntry = await resolveAppToolsForWorkflow(appRegistry, handle.id)
+          const merged = mergeAppAndDaemonToolRegistry(daemonRegistry, appRegistryEntry, {
+            onOverride: toolId =>
+              console.warn(
+                `[workflow ${handle.id}] app-bundled tool '${toolId}' overrides the daemon tool of the same id`,
+              ),
+          })
+          return compileWorkflow(handle, {
+            ...merged,
             agentRefs: resolveAgentRefsForWorkflow(appRegistry, handle.id),
-          }),
+          })
+        },
         // App state ledger bridge: runs whose workflow belongs to an
         // installed app append stage-started/gate-report/stage-done/blocked
         // events to that app's ledger (see workflow-runner.ts, WP-Q).

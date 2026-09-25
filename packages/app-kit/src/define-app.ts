@@ -85,6 +85,8 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
 
   const agents = (def.agents ?? []).map(normalizeEntry)
   const workflows = def.workflows ?? []
+  const tools = def.tools ?? []
+  const drivers = def.drivers ?? []
   const attachments = def.attach ?? []
   const workspace = def.workspace ? toWorkspaceHandle(def.workspace) : undefined
   const id = def.id
@@ -104,14 +106,20 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
   const category = def.category
 
   validateAttachment(agents, workflows)
+  validateUniqueIds(tools, "tool")
+  validateUniqueIds(drivers, "driver")
 
   const frozenAgents = Object.freeze(agents.map((e) => Object.freeze({ ...e })))
   const frozenWorkflows = Object.freeze([...workflows])
+  const frozenTools = Object.freeze([...tools])
+  const frozenDrivers = Object.freeze([...drivers])
   const frozenAttachments = Object.freeze([...attachments])
 
   const handle: AppHandle = {
     agents: frozenAgents,
     workflows: frozenWorkflows,
+    tools: frozenTools,
+    drivers: frozenDrivers,
     attachments: frozenAttachments,
     ...(workspace ? { workspace } : {}),
     ...(id !== undefined ? { id } : {}),
@@ -291,6 +299,18 @@ function validateAttachment(
 
 function workflowRefs(agent: AgentHandle): readonly AnyRef[] {
   return agent.workflows ?? []
+}
+
+/** Duplicate-id guard for `tools`/`drivers` — mirrors the agent/workflow id
+ *  uniqueness `validateAttachment` already enforces. */
+function validateUniqueIds(items: readonly { id: string }[], kind: string): void {
+  const seen = new Set<string>()
+  for (const item of items) {
+    if (seen.has(item.id)) {
+      throw new AppDefinitionError(`duplicate ${kind} id '${item.id}' in the bundle.`)
+    }
+    seen.add(item.id)
+  }
 }
 
 export type { DoctypeHandle }

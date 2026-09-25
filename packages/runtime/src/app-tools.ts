@@ -25,12 +25,13 @@ import { isAbsolute, join, relative, resolve } from "node:path"
 import matter from "gray-matter"
 import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { loadAppHandle } from "@agentproto/app-kit"
+import { loadAppHandle, loadAppBundledTools } from "@agentproto/app-kit"
 import { loadAgent } from "@agentproto/agent"
 import type { AnyRef } from "@agentproto/agent"
 import type { AgentRefResolution } from "@agentproto/workflow-runtime"
 import { APP_UI_DISCOVERY_TOOLS } from "@agentproto/app-client/runner-select"
-import { createDaemonToolRegistry } from "./workflow-tool-registry.js"
+import type { ToolHandle } from "@agentproto/tool"
+import { createDaemonToolRegistry, type AppToolRegistry } from "./workflow-tool-registry.js"
 import { spawnAgentSession } from "./session-spawn.js"
 import type { SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
@@ -153,6 +154,32 @@ export function resolveAgentRefsForWorkflow(
     refs[agent.id] = { adapter: DEFAULT_AGENT_ADAPTER, options: { agent: agent.path } }
   }
   return refs
+}
+
+/**
+ * Load the AIP-14/AIP-30 tool/driver bundles (BRIEF-D) of the installed app
+ * that owns `workflowId` — same owning-app lookup as
+ * {@link resolveAgentRefsForWorkflow}. Returns undefined when no installed
+ * app bundles the workflow, or the app bundles no tools/drivers, so
+ * `mergeAppAndDaemonToolRegistry` (workflow-tool-registry.ts) can treat
+ * "nothing to merge" uniformly.
+ *
+ * Unlike `resolveAgentRefsForWorkflow` (which only needs a stored path
+ * string), this re-reads `<app.dir>/.agentproto/tools|drivers/*` off disk on
+ * every call — the compiled `ToolHandle`/`DriverHandle` objects (with live
+ * `execute` closures) aren't persisted on the `InstalledApp` record.
+ */
+export async function resolveAppToolsForWorkflow(
+  appRegistry: AppRegistry,
+  workflowId: string,
+): Promise<AppToolRegistry | undefined> {
+  const app = appRegistry.listApps().find(a => a.workflows.some(w => w.id === workflowId))
+  if (!app) return undefined
+  const { tools, drivers } = await loadAppBundledTools(app.dir)
+  if (tools.length === 0 && drivers.length === 0) return undefined
+  const toolsById: Record<string, ToolHandle> = {}
+  for (const tool of tools) toolsById[tool.id] = tool
+  return { tools: toolsById, candidates: drivers }
 }
 
 /**
@@ -533,11 +560,17 @@ export async function performInstall(
     return { ok: false, error: "the app has no `id` — set one in defineApp()/APP.md frontmatter to install it." }
   }
 
+  // A workflow `tool` step id is satisfied by either a registered daemon
+  // tool OR one of the app's OWN bundled TOOL.md ids (BRIEF-D) — the same
+  // id-coverage `mergeAppAndDaemonToolRegistry` applies at compile time
+  // (workflow-tool-registry.ts), checked here with just the id set since
+  // install-time validation doesn't need live driver dispatch.
+  const appToolIds = new Set(handle.tools.map(t => t.id))
   const missingByWorkflow: Record<string, string[]> = {}
   const registeredIds = new Set(await listRegisteredToolIds())
   for (const workflow of handle.workflows) {
     const { tools } = createDaemonToolRegistry(workflow, async () => undefined)
-    const missing = Object.keys(tools).filter(id => !registeredIds.has(id))
+    const missing = Object.keys(tools).filter(id => !registeredIds.has(id) && !appToolIds.has(id))
     if (missing.length > 0) missingByWorkflow[workflow.id] = missing
   }
   if (Object.keys(missingByWorkflow).length > 0) {
