@@ -64,6 +64,11 @@ import { CatalogProviderSchema } from "../schema/base.js"
 // ── Parser ─────────────────────────────────────────────────────────────────
 
 const SEGMENT_RE = /^[a-zA-Z0-9_.-]+$/
+/** The product segment may additionally carry Claude Code's trailing
+ *  context-lane hint (`claude-opus-5-5[1m]`) — part of the wire id the
+ *  claude wrapper accepts, not of the model's identity (see
+ *  `splitContextWindowHint` in ../llm/catalog.ts). */
+const PRODUCT_RE = /^[a-zA-Z0-9_.-]+(?:\[\d+(?:\.\d+)?[kKmM]\])?$/
 
 /**
  * OpenRouter variant suffixes — a CLOSED list. A `:pin` matching one of
@@ -227,7 +232,7 @@ export function parseModelRef(raw: string): ModelRef {
     if (value.length === 0) {
       throw new InvalidModelRefError(raw, `${label} segment is empty`)
     }
-    if (!SEGMENT_RE.test(value)) {
+    if (!(label === "product" ? PRODUCT_RE : SEGMENT_RE).test(value)) {
       throw new InvalidModelRefError(
         raw,
         `${label} "${value}" contains invalid characters (no '/' or '@')`

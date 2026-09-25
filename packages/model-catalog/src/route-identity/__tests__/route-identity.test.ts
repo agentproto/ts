@@ -278,6 +278,14 @@ describe("stripRouteSuffix", () => {
 })
 
 describe("stripAnthropicNativeVendor", () => {
+  it("keeps a [1m] context-lane hint on the bare product", () => {
+    expect(stripAnthropicNativeVendor("anthropic/claude-opus-5-5[1m]")).toBe("claude-opus-5-5[1m]")
+    expect(stripAnthropicNativeVendor("claude-opus-5-5[1m]")).toBe("claude-opus-5-5[1m]")
+    expect(stripAnthropicNativeVendor("anthropic/claude-opus-5-5[1m]@openrouter")).toBe(
+      "anthropic/claude-opus-5-5[1m]",
+    )
+  })
+
   it("collapses a direct-anthropic ref to the bare product (the bug fix)", () => {
     expect(stripAnthropicNativeVendor("anthropic/claude-sonnet-4-5")).toBe(
       "claude-sonnet-4-5",

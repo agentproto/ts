@@ -424,7 +424,9 @@ const ALIAS_BY_ID: Record<string, string> = MODEL_ALIASES
  * partial-prefix match. Used both for cost computation and BYOK shadow
  * accounting; semantics are load-bearing for migration.
  */
-export function resolvePricing(modelId: string): LLMPricing | undefined {
+export function resolvePricing(rawModelId: string): LLMPricing | undefined {
+  // A `[1m]` context-lane hint is not part of the model's identity.
+  const modelId = splitContextWindowHint(rawModelId).id
   // Direct match
   if (PRICING_BY_ID[modelId]) return PRICING_BY_ID[modelId]
   // Alias
@@ -449,7 +451,9 @@ export function resolvePricing(modelId: string): LLMPricing | undefined {
  * `resolvePricing`/`resolveAlias` are intentionally left unchanged for their
  * existing callers.
  */
-export function resolvePricingExact(modelId: string): LLMPricing | undefined {
+export function resolvePricingExact(rawModelId: string): LLMPricing | undefined {
+  // A `[1m]` context-lane hint is not part of the model's identity.
+  const modelId = splitContextWindowHint(rawModelId).id
   // Direct match
   if (PRICING_BY_ID[modelId]) return PRICING_BY_ID[modelId]
   // Alias (exact key only — no substring fallback)
@@ -463,14 +467,16 @@ export function resolvePricingExact(modelId: string): LLMPricing | undefined {
  * match). Public surface for consumers that need the canonical id without
  * the pricing payload.
  */
-export function resolveAlias(modelId: string): string {
+export function resolveAlias(rawModelId: string): string {
+  // A `[1m]` context-lane hint is not part of the model's identity.
+  const modelId = splitContextWindowHint(rawModelId).id
   if (PRICING_BY_ID[modelId]) return modelId
   const alias = ALIAS_BY_ID[modelId]
   if (alias && PRICING_BY_ID[alias]) return alias
   for (const key of Object.keys(PRICING_BY_ID)) {
     if (modelId.includes(key)) return key
   }
-  return modelId
+  return rawModelId
 }
 
 /**
@@ -485,6 +491,33 @@ export function resolveAlias(modelId: string): string {
  * older aliases. Returns undefined for ids no synced provider carries.
  */
 export function resolveContextWindow(modelId: string): ContextWindowEntry | undefined {
+  // A Claude Code context-lane hint ("claude-opus-5-5[1m]") names the SAME
+  // model, so identity is looked up on the bare id — but the hint is the
+  // caller's explicit lane choice, so it wins over the catalog's window.
+  const { id, contextWindow: hinted } = splitContextWindowHint(modelId)
+  const entry = lookupContextWindow(id)
+  if (entry && hinted !== undefined) return { ...entry, contextWindow: hinted }
+  return entry
+}
+
+/**
+ * Split a trailing context-lane hint off a model id: `"claude-opus-5-5[1m]"`
+ * → `{ id: "claude-opus-5-5", contextWindow: 1_000_000 }`. Claude Code (and
+ * claude-agent-acp's model picker) spell the extended-context lane of a
+ * model this way; the bracket is not part of the model's identity (pricing,
+ * provider, catalog key) but IS an authoritative statement of its window.
+ * Ids without a well-formed `[<n>k]` / `[<n>m]` suffix come back unchanged
+ * with no `contextWindow`.
+ */
+export function splitContextWindowHint(modelId: string): { id: string; contextWindow?: number } {
+  const match = /^(.+)\[(\d+(?:\.\d+)?)([km])\]$/i.exec(modelId)
+  if (!match) return { id: modelId }
+  const [, id, amount, unit] = match as unknown as [string, string, string, string]
+  const contextWindow = Math.round(Number(amount) * (unit.toLowerCase() === "m" ? 1_000_000 : 1_000))
+  return contextWindow > 0 ? { id, contextWindow } : { id }
+}
+
+function lookupContextWindow(modelId: string): ContextWindowEntry | undefined {
   if (CONTEXT_WINDOWS[modelId]) return CONTEXT_WINDOWS[modelId]
   const datedMatch = Object.keys(CONTEXT_WINDOWS)
     .filter(key => key.startsWith(`${modelId}-2`))

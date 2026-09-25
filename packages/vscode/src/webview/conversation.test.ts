@@ -356,6 +356,21 @@ describe("reduceConversation", () => {
     expect(conv.turns).toHaveLength(0)
   })
 
+  it("keeps a cost-bearing usage_update's size over later inferred frames", () => {
+    // Recorded claude-code shape (transcripts written before the daemon
+    // corrected sizes at ingestion): in-turn frames guess 200k, only the
+    // cost-bearing end-of-turn frame carries the real 1M.
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "usage_update", size: 200_000, used: 38_000 }),
+      rec({ kind: "usage_update", size: 1_000_000, used: 157_000, cost: { amount: 1.5, currency: "USD" } }),
+      rec({ kind: "usage_snapshot", contextSize: 1_000_000, contextUsed: 157_000, source: "adapter" }),
+      rec({ kind: "usage_update", size: 200_000, used: 158_000 }),
+      rec({ kind: "usage_update", size: 0, used: 0, cost: { amount: 1.6, currency: "USD" } }),
+    ])
+    expect(conv.usage).toMatchObject({ size: 1_000_000, sizeAuthoritative: true, used: 0 })
+  })
+
   it("captures an agent question and an error as segments", () => {
     freshSeq()
     const conv = reduceConversation("s1", [

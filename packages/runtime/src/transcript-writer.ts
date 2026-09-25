@@ -508,6 +508,11 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
             // price/aggregate a session even without a `cost` block.
             ...(evt.tokensIn !== undefined ? { tokensIn: evt.tokensIn } : {}),
             ...(evt.tokensOut !== undefined ? { tokensOut: evt.tokensOut } : {}),
+            // The model the usage belongs to, and — when the daemon corrected
+            // an inferred window (see context-window.ts) — the size the
+            // adapter itself reported, so the correction stays auditable.
+            ...(evt.model ? { model: evt.model } : {}),
+            ...(evt.reportedSize !== undefined ? { reportedSize: evt.reportedSize } : {}),
           })
           break
         case "available-commands":

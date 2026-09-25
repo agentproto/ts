@@ -141,6 +141,9 @@ export interface ConversationTurn {
 /** Latest usage recap — conversation-level metadata, not an inline segment. */
 export interface ConversationUsage {
   size?: number
+  /** True once `size` came from a cost-bearing (authoritative) usage_update —
+   *  later non-authoritative frames no longer overwrite it. */
+  sizeAuthoritative?: boolean
   used?: number
   cost?: { amount: number; currency: string }
   costUsd?: number
@@ -449,7 +452,20 @@ function mergeUsage(
   rec: SessionEventRecord,
 ): ConversationUsage {
   const next: ConversationUsage = { ...(prev ?? {}), seq: rec.seq, ts: rec.ts }
-  if (rec.size !== undefined) next.size = rec.size
+  // Context window: a cost-bearing usage_update is the adapter's
+  // authoritative figure and sticks — later frames without cost may carry an
+  // INFERRED size (claude-agent-acp streams 200k for 1M models until its
+  // first result). Transcripts recorded before the daemon started correcting
+  // `size` at ingestion still carry those guesses, so the fold enforces it
+  // too. A size of 0 means "not reported", never "empty window".
+  if (typeof rec.size === "number" && rec.size > 0) {
+    if (rec.kind === "usage_update" && rec.cost !== undefined) {
+      next.size = rec.size
+      next.sizeAuthoritative = true
+    } else if (prev?.sizeAuthoritative !== true) {
+      next.size = rec.size
+    }
+  }
   if (rec.used !== undefined) next.used = rec.used
   if (rec.cost !== undefined) next.cost = rec.cost
   if (rec.costUsd !== undefined) next.costUsd = rec.costUsd

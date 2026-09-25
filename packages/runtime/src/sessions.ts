@@ -88,6 +88,7 @@ import {
 } from "./workspace-buckets.js"
 import { createTerminalTranscriptWriter } from "./terminal-transcript-writer.js"
 import { deriveSessionUsage, plausibleContextUsed, type SessionUsage } from "./usage.js"
+import { foldUsageFrameWindow, resetContextWindowForModel, type ContextSizeSource } from "./context-window.js"
 import { resolveWorktreeIdentity } from "./worktree-identity.js"
 import type { SessionAppServeInfo } from "./sandbox-app-serve.js"
 import type { WorktreeAutoReclaimer } from "./worktree-isolation.js"
@@ -339,6 +340,16 @@ export interface AgentStreamEvent {
    *  but no `cost`). */
   tokensIn?: number
   tokensOut?: number
+  /** "usage_update" model the usage belongs to, when the adapter reports it
+   *  (claude-agent-acp's `_meta["_claude/model"]`) — see `context-window.ts`. */
+  model?: string
+  /** "usage_update" `size` is the adapter's own guess, corrected later by a
+   *  cost-bearing frame (claude-agent-acp) — see `context-window.ts`. */
+  sizeInferred?: boolean
+  /** "usage_update" size as the adapter reported it, recorded only when the
+   *  daemon corrected `size` (an inferred window superseded by the catalog or
+   *  an earlier authoritative frame) — see `context-window.ts`. */
+  reportedSize?: number
   /** "permission-resolved" outcome for the "agent-prompt" it answers (same
    *  `toolCallId`) — mirrors `session:permission-resolved`'s `decision` so
    *  the durable transcript can tell an answered ask from a still-pending
@@ -1384,6 +1395,11 @@ export interface SessionDescriptor {
    *  usage_update events arrive, not just at turn-end. */
   contextSize?: number
   contextUsed?: number
+  /** Where `contextSize` came from — `"adapter"` (a cost-bearing, authoritative
+   *  usage_update; sticky), `"catalog"` (model-catalog window for the model),
+   *  or `"reported"` (the adapter's own, possibly inferred, frame size). See
+   *  `context-window.ts` for the precedence. */
+  contextSizeSource?: ContextSizeSource
   /** Where `costUsd` came from — `"adapter"` (adapter's own reader or a
    *  usage_update cost block), `"computed"` (tokens × in-repo catalog price),
    *  `"no-pricing"` (tokens present but the model isn't in the catalog — cost
@@ -1767,6 +1783,7 @@ export interface SessionSummary {
   tokensOut?: number
   contextSize?: number
   contextUsed?: number
+  contextSizeSource?: ContextSizeSource
   usageSource?: import("./usage.js").UsageSource
   awaitingInput?: boolean
   awaitingQuestion?: SessionAwaitingQuestion
@@ -1875,6 +1892,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     tokensOut: desc.tokensOut,
     contextSize: desc.contextSize,
     contextUsed: desc.contextUsed,
+    contextSizeSource: desc.contextSizeSource,
     usageSource: desc.usageSource,
     awaitingInput: desc.awaitingInput,
     awaitingQuestion: desc.awaitingQuestion,
@@ -4800,6 +4818,22 @@ export function createSessionsRegistry(opts?: {
    * the line shape simple so the existing /stream SSE consumer
    * (and the xterm panel) just renders them as-is.
    */
+  /**
+   * Rewrite a `usage_update`'s `size` to the session's effective window
+   * (see `context-window.ts`) BEFORE it's recorded, so events.jsonl and every
+   * live consumer of the stream (session UIs, the VS Code transcript, SSE)
+   * see the same corrected figure the descriptor holds, instead of each
+   * re-deriving occupancy from the adapter's inferred size. The adapter's own
+   * value is kept as `reportedSize` whenever it differs.
+   */
+  const normalizeUsageFrame = (rt: SessionRuntime, evt: AgentStreamEvent): AgentStreamEvent => {
+    const size = foldUsageFrameWindow(rt.desc, evt, rt.desc.activeModel ?? rt.desc.model)
+    if (size === undefined || typeof evt.size !== "number" || evt.size <= 0 || size === evt.size) {
+      return evt
+    }
+    return { ...evt, size, reportedSize: evt.size }
+  }
+
   const projectEvent = (rt: SessionRuntime, evt: AgentStreamEvent): void => {
     switch (evt.kind) {
       case "text-delta":
@@ -5045,7 +5079,13 @@ export function createSessionsRegistry(opts?: {
       // the descriptor here so the latest context window + any adapter-
       // reported cost/tokens are available live to session_list / session_usage.
       case "usage_update": {
-        if (typeof evt.size === "number" && evt.size > 0) rt.desc.contextSize = evt.size
+        // Not "latest frame wins": an adapter's in-turn frames can carry an
+        // INFERRED window (claude-agent-acp guesses 200k for a bare 1M model
+        // id until its first result) — `foldUsageFrameWindow` keeps a
+        // cost-bearing frame's size sticky and prefers the catalog over a
+        // guess. Idempotent, so the frame already normalized by
+        // `normalizeUsageFrame` folds to the same state here.
+        foldUsageFrameWindow(rt.desc, evt, rt.desc.activeModel ?? rt.desc.model)
         // `used` claims to be tokens currently in context (see the field's
         // doc comment above) — but at least one adapter's ACP server has
         // been observed sending a cumulative session-lifetime token total
@@ -5793,7 +5833,7 @@ export function createSessionsRegistry(opts?: {
       const switchCandidate =
         typeof message === "string" ? parseModelSwitchCommand(message) : undefined
       let switchLearned = false
-      for await (const evt of rt.agentSession.send(wrapped)) {
+      for await (let evt of rt.agentSession.send(wrapped)) {
         // Hermes may end a turn with nested/parallel tool calls still lacking
         // their terminal `tool_call_update`. Persist synthetic settlements
         // first so durable replay observes result → turn-end, never the
@@ -5803,12 +5843,14 @@ export function createSessionsRegistry(opts?: {
         // projectEvent flattens it into an ANSI ring-buffer line — the
         // only point downstream of the driver where the original
         // shape (tool arguments, plan entries, ...) still exists.
+        if (evt.kind === "usage_update") evt = normalizeUsageFrame(rt, evt)
         transcriptWriter.recordEvent(rt.desc.id, evt)
         projectEvent(rt, evt)
         if (switchCandidate && !switchLearned && isModelSwitchAcknowledgement(evt)) {
           switchLearned = true
           if (rt.desc.activeModel !== switchCandidate) {
             rt.desc.activeModel = switchCandidate
+            resetContextWindowForModel(rt.desc, switchCandidate)
             schedulePersist()
             sessionEvents?.emit({
               type: "session:model-changed",
@@ -6543,6 +6585,10 @@ export function createSessionsRegistry(opts?: {
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
       }
+      // Seed the window from the catalog so the first turn doesn't show the
+      // adapter's inferred size (see context-window.ts) — a no-op for models
+      // the catalog doesn't know.
+      resetContextWindowForModel(desc, desc.model)
       if (input.trace ?? opts?.langfuseTracingDefault ?? false) {
         tracedSessions.add(id)
       }
@@ -6673,6 +6719,10 @@ export function createSessionsRegistry(opts?: {
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
       }
+      // Seed the window from the catalog so the first turn doesn't show the
+      // adapter's inferred size (see context-window.ts) — a no-op for models
+      // the catalog doesn't know.
+      resetContextWindowForModel(desc, desc.model)
       if (input.trace ?? opts?.langfuseTracingDefault ?? false) {
         tracedSessions.add(id)
       }
@@ -7507,6 +7557,8 @@ export function createSessionsRegistry(opts?: {
         // agree — mirror onto `activeModel` too (SessionDescriptor's doc)
         // rather than leaving it stale from a prior divergence.
         rt.desc.activeModel = modelId
+        // The sticky window belonged to the previous model.
+        resetContextWindowForModel(rt.desc, modelId)
         schedulePersist()
         if (sessionEvents) {
           const ts = new Date().toISOString()
