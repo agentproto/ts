@@ -119,6 +119,21 @@ export const codex: AgentCliHandle = defineAgentCli({
       "gpt-5.6-sol-pro",
       "gpt-5.6-terra",
       "gpt-5.6-terra-pro",
+      // GPT-6 family. Exactly the six ids that exist upstream — taken from
+      // the catalog's own synced OpenAI list (`openai-pricing.generated.ts`,
+      // OpenRouter passthrough) and cross-checked against the opencode-zen
+      // snapshot, which carries gpt-6-astra/luna/sol. Deliberately NOT a
+      // symmetric fill of the 5.6 shape: there is no `gpt-6-terra`, and no
+      // `gpt-6-codex` — inventing either would put an id in the menu that
+      // the bridge would reject on selection. The `:batch` variants the
+      // catalog also carries are omitted on purpose; batch is an offline
+      // job surface, not something an interactive ACP session selects.
+      "gpt-6-luna",
+      "gpt-6-luna-pro",
+      "gpt-6-sol",
+      "gpt-6-sol-pro",
+      "gpt-6-astra",
+      "gpt-6-astra-pro",
       // GPT-4.1 / 4o generation.
       "gpt-4.1",
       "gpt-4.1-mini",
