@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/workflow-mastra",
   "version": "0.1.11",
-  "description": "@agentproto/workflow-mastra — project an AIP-15 WORKFLOW.md's compiled RuntimeWorkflow onto a Mastra `createWorkflow`. Runtime projection (same one-level-up relationship `toMastraTool` has to `implementTool`): tool steps dispatch through the same `runTool` resolver the engine itself uses, and control-flow kinds (branch/parallel/map/loop/subworkflow) map onto Mastra's native `.branch()/.parallel()/.foreach()/.dowhile()` combinators. Kinds with no clean Mastra target (`suspend`, `approval`) fail loud instead of silently dropping.",
+  "description": "@agentproto/workflow-mastra — project an AIP-15 WORKFLOW.md's compiled RuntimeWorkflow onto a Mastra `createWorkflow`. Runtime projection (same one-level-up relationship `toMastraTool` has to `implementTool`): tool/agent steps carry their real declared schemas, tool steps dispatch through the same `runTool` resolver the engine itself uses, control-flow kinds (branch/parallel/map/loop/subworkflow) map onto Mastra's native `.branch()/.parallel()/.foreach()/.dowhile()` combinators, and a top-level `suspend`/`approval` projects to native Mastra suspend/resume. Kinds with no clean Mastra target (`gate`, `pipeline`, a NESTED `suspend`/`approval`) fail loud instead of silently dropping.",
   "keywords": [
     "agentproto",
     "aip-15",
