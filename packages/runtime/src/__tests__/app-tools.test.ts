@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { isAbsolute, join } from "node:path"
+import matter from "gray-matter"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
@@ -17,13 +18,15 @@ import { defineApp } from "@agentproto/app-kit"
 import { defineAgent } from "@agentproto/agent"
 import { defineWorkflow } from "@agentproto/workflow"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
-import { compileWorkflow, type AgentStep } from "@agentproto/workflow-runtime"
+import { compileWorkflow, runWorkflow, type AgentStep } from "@agentproto/workflow-runtime"
 import {
   registerAppTools,
   resolveAgentRefsForWorkflow,
+  resolveAppToolsForWorkflow,
   sanitizeOutputBlocks,
   buildAgentRunSpawnConfig,
 } from "../app-tools.js"
+import { createDaemonToolRegistry, mergeAppAndDaemonToolRegistry } from "../workflow-tool-registry.js"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
 import { createSessionsRegistry } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
@@ -1272,6 +1275,201 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
         agentRefs: resolveAgentRefsForWorkflow(appRegistry, handle.id),
       }),
     ).toThrow(/unknown agent ref 'worker'.*not running in an app context/)
+  })
+})
+
+/** Writes a `TOOL.md`/`DRIVER.md` AIP-14/30 manifest (frontmatter + body)
+ *  under `<appDir>/.agentproto/<kind>s/<id>/<FILE>`. */
+async function writeBundledManifest(
+  appDir: string,
+  kind: "tools" | "drivers",
+  id: string,
+  file: "TOOL.md" | "DRIVER.md",
+  data: Record<string, unknown>,
+): Promise<void> {
+  const target = join(appDir, ".agentproto", kind, id, file)
+  await mkdir(join(target, ".."), { recursive: true })
+  await writeFile(target, matter.stringify("", data), "utf8")
+}
+
+describe("BRIEF-D: app-bundled TOOL.md/DRIVER.md tool steps", () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "app-tools-bundled-tools-test-"))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  /** A marker file the CLI driver touches only on a successful (post
+   *  validation) spawn — lets a test prove the process never ran. */
+  function markerPath(): string {
+    return join(dir, "spawned.marker")
+  }
+
+  async function buildBundledApp(): Promise<void> {
+    const app = defineApp({
+      id: "@test/bundled-tools-app",
+      name: "Bundled Tools App",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+            workflows: [{ ref: "greet-flow" }],
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      workflows: [
+        defineWorkflow({
+          id: "greet-flow",
+          name: "Greet flow",
+          description: "One app-bundled tool step, one daemon-only tool step.",
+          version: "0.1.0",
+          inputs: {},
+          outputs: {},
+          steps: [
+            { id: "greet", kind: "tool", tool: "greet", inputs: { name: "$input.name" } },
+            { id: "known", kind: "tool", tool: "known_tool" },
+          ],
+        }),
+      ],
+    })
+    await app.emit(dir)
+
+    await writeBundledManifest(dir, "tools", "greet", "TOOL.md", {
+      schema: "agentproto/tool/v1",
+      id: "greet",
+      name: "Greet",
+      description: "Greets a name.",
+      version: "1.0.0",
+      inputs: {
+        type: "object",
+        required: ["name"],
+        properties: { name: { type: "string" } },
+      },
+      outputs: {
+        type: "object",
+        required: ["greeting"],
+        properties: { greeting: { type: "string" } },
+      },
+    })
+    await writeBundledManifest(dir, "drivers", "greet-cli", "DRIVER.md", {
+      schema: "agentproto/driver/v1",
+      id: "greet-cli",
+      name: "Greet CLI Driver",
+      description: "Greets via a portable node -e invocation.",
+      version: "1.0.0",
+      kind: "cli",
+      implements: [
+        {
+          tool: "greet",
+          version: "*",
+          metadata: {
+            cli: {
+              argv: [
+                "-e",
+                `require('fs').writeFileSync(${JSON.stringify(markerPath())}, 'spawned'); console.log(JSON.stringify({greeting: 'hello, ' + process.argv[1]}))`,
+                "${input.name}",
+              ],
+              outputFormat: "json",
+            },
+          },
+        },
+      ],
+      metadata: { cli: { bin: process.execPath } },
+    })
+  }
+
+  /** Mirrors the real `compileWorkflow` seam in `index.ts` — the same
+   *  `resolveAppToolsForWorkflow` + `mergeAppAndDaemonToolRegistry` +
+   *  `createDaemonToolRegistry` composition, minus the daemon's own
+   *  `console.warn` logging. */
+  async function compileInstalledWorkflow(
+    appRegistry: AppRegistry,
+    handle: Awaited<ReturnType<typeof loadWorkflowHandle>>,
+    dispatchTool: (name: string, inputs: Record<string, unknown>) => Promise<unknown>,
+  ) {
+    const daemonRegistry = createDaemonToolRegistry(handle, dispatchTool)
+    const appRegistryEntry = await resolveAppToolsForWorkflow(appRegistry, handle.id)
+    const merged = mergeAppAndDaemonToolRegistry(daemonRegistry, appRegistryEntry)
+    return compileWorkflow(handle, merged)
+  }
+
+  it("app_install succeeds for a workflow tool step an app-bundled TOOL.md (not a daemon tool) satisfies", async () => {
+    await buildBundledApp()
+    // Default `listRegisteredToolIds` is `["known_tool"]` — 'greet' is NOT
+    // a daemon tool, only the app's own TOOL.md; this must still install.
+    const { client } = await setup()
+    const installed = parseToolJson(await client.callTool({ name: "app_install", arguments: { dir } }))
+    expect(installed.appId).toBe("@test/bundled-tools-app")
+  })
+
+  it("runs the app driver for the app tool step and the daemon passthrough for the other — agent-free", async () => {
+    await buildBundledApp()
+    const { client, appRegistry } = await setup()
+    const installed = parseToolJson(await client.callTool({ name: "app_install", arguments: { dir } }))
+    const handle = await loadWorkflowHandle(installed.workflows[0].path as string)
+
+    const daemonCalls: string[] = []
+    const dispatchTool = async (name: string) => {
+      daemonCalls.push(name)
+      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true }) }] }
+    }
+
+    const compiled = await compileInstalledWorkflow(appRegistry, handle, dispatchTool)
+    const { output } = await runWorkflow({ workflow: compiled, input: { name: "World" } })
+    expect((output as { ok: boolean }).ok).toBe(true)
+    expect(daemonCalls).toEqual(["known_tool"])
+  })
+
+  it("rejects input that fails the TOOL.md contract schema before the process spawns", async () => {
+    await buildBundledApp()
+    const { client, appRegistry } = await setup()
+    const installed = parseToolJson(await client.callTool({ name: "app_install", arguments: { dir } }))
+    const handle = await loadWorkflowHandle(installed.workflows[0].path as string)
+
+    const compiled = await compileInstalledWorkflow(appRegistry, handle, async () => ({
+      content: [{ type: "text" as const, text: JSON.stringify({ ok: true }) }],
+    }))
+    // `name` is required by the TOOL.md `inputs` schema; omitting it must
+    // fail validation before the CLI driver ever spawns `node`.
+    await expect(runWorkflow({ workflow: compiled, input: {} })).rejects.toThrow(/name/)
+    await expect(rm(markerPath())).rejects.toThrow() // never created — the process never ran
+  })
+
+  it("a driver's missing declared secret fails the step, naming the secret — never at app install", async () => {
+    await buildBundledApp()
+    // Overwrite the driver to declare a secret this env will never have.
+    await writeBundledManifest(dir, "drivers", "greet-cli", "DRIVER.md", {
+      schema: "agentproto/driver/v1",
+      id: "greet-cli",
+      name: "Greet CLI Driver",
+      description: "Greets via node -e; requires a secret this test never sets.",
+      version: "1.0.0",
+      kind: "cli",
+      implements: [
+        { tool: "greet", version: "*", metadata: { cli: { argv: ["-e", "0"], outputFormat: "text" } } },
+      ],
+      auth: { state: { env: ["BRIEF_D_APP_TOOLS_TEST_MISSING_SECRET"] } },
+      metadata: { cli: { bin: process.execPath } },
+    })
+    delete process.env.BRIEF_D_APP_TOOLS_TEST_MISSING_SECRET
+
+    const { client, appRegistry } = await setup()
+    const installed = parseToolJson(await client.callTool({ name: "app_install", arguments: { dir } }))
+    expect(installed.appId).toBe("@test/bundled-tools-app") // install itself is unaffected
+
+    const handle = await loadWorkflowHandle(installed.workflows[0].path as string)
+    const compiled = await compileInstalledWorkflow(appRegistry, handle, async () => ({
+      content: [{ type: "text" as const, text: JSON.stringify({ ok: true }) }],
+    }))
+    await expect(runWorkflow({ workflow: compiled, input: { name: "World" } })).rejects.toThrow(
+      /missing required secret 'BRIEF_D_APP_TOOLS_TEST_MISSING_SECRET'/,
+    )
   })
 })
 
