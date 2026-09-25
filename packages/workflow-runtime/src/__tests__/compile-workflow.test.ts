@@ -544,6 +544,46 @@ describe("compileWorkflow — declarative agent step", () => {
     expect(step.options).toEqual({ agent: "/explicit/path/AGENT.md" })
   })
 
+  it("an adapter-only override does NOT inherit the ref's options — they're shaped for a different adapter", () => {
+    const wf = defineWorkflow({
+      name: "Adapter-only override",
+      id: "adapter-only-override",
+      description: "Author overrides just the adapter, not options.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "s1",
+          kind: "agent",
+          adapter: "claude-code",
+          agent: { ref: "@my-app/implementer" },
+          prompt: "Do the thing.",
+        },
+      ],
+    })
+    const compiled = compileWorkflow(wf, {
+      tools,
+      candidates,
+      agentRefs: {
+        "@my-app/implementer": {
+          adapter: "mastra-agent",
+          options: { agent: "/apps/my-app/.agentproto/agents/implementer/AGENT.md" },
+          model: "claude-sonnet-5",
+        },
+      },
+    })
+    const step = compiled.steps[0] as AgentStep
+    // Overriding the ADAPTER to something other than the ref's own resolved
+    // default (mastra-agent) must not carry over `options` shaped for that
+    // other adapter (mastra-agent's `agent` option) — claude-code's manifest
+    // doesn't declare it, and forwarding it would fail the spawn loudly.
+    // `model` has no such adapter coupling, so it still comes through.
+    expect(step.adapter).toBe("claude-code")
+    expect(step.options).toBeUndefined()
+    expect(step.model).toBe("claude-sonnet-5")
+  })
+
   it("rejects an empty agent.ref", () => {
     const wf = defineWorkflow({
       name: "Empty ref",

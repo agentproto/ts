@@ -43,6 +43,7 @@ import { createFileStepCache } from "./workflow-step-cache.js"
 import { appendAppStateEvent } from "./app-state.js"
 import type { AppStateEventInput } from "./app-state.js"
 import type { AppRegistry, InstalledApp } from "./app-registry.js"
+import { loadWorkspacesConfig, getActiveWorkspace } from "./workspaces-config.js"
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -105,6 +106,14 @@ export interface WorkflowRun {
    *  this (`"invalid-input"`). Absent on every other failure path. */
   errorCode?: string
   result?: { sessionIds: string[] }
+  /** F25: the working directory agent steps (and the run itself) spawn
+   *  under — the caller's explicit `cwd` when given, else `startFromFile`'s
+   *  resolved default (owning app's root > daemon's active workspace >
+   *  process cwd, never a bare "/"; see `resolveRunCwd`). Recorded here even
+   *  when defaulted, so a run's actual spawn location is never silently
+   *  invisible. Only set by `startFromFile` today — `start` (the
+   *  `WorkflowStage[]` path) is unaffected by this default. */
+  cwd?: string
   /** App provenance — set when the run was started on behalf of an
    *  installed app (explicit input, or the workflow id is owned by exactly
    *  one installed app per the registry). Drives the app state ledger
@@ -566,6 +575,45 @@ function resolveAppProvenance(
   const owners = appRegistry.listApps().filter(a => a.workflows.some(w => w.id === workflowId))
   if (owners.length !== 1) return explicit
   return { ...explicit, appId: owners[0]!.appId }
+}
+
+/**
+ * F25: `startFromFile`'s `cwd` default. An explicit caller `cwd` always
+ * wins. Otherwise, when the workflow is owned by EXACTLY ONE installed app
+ * (same ambiguity rule as {@link resolveAppProvenance}), agent steps (and
+ * the run itself) default to that app's root — the same root #1395's
+ * app-bundled cli drivers spawn under (`packages/app-kit/src/
+ * load-app-tools.ts`'s `resolveCliCwd`), so a workflow mixing `tool` and
+ * `agent` steps sees one consistent cwd regardless of step kind.
+ *
+ * No owning app (or the workflow id is ambiguous/unowned) falls back to the
+ * daemon's own active workspace (`~/.agentproto/workspaces.json`) — NEVER
+ * straight to `process.cwd()` first, since a daemon started under a service
+ * manager can have that at `/` (the original F25 bug: an agent step spawned
+ * with cwd "/" and ran `find /`). `process.cwd()` is only the very last
+ * resort, when no workspace is registered either, and even then a literal
+ * "/" is swapped for the user's home directory rather than handed to a
+ * spawn.
+ */
+async function resolveRunCwd(
+  appRegistry: Pick<AppRegistry, "getApp" | "listApps"> | undefined,
+  workflowId: string,
+  explicitCwd: string | undefined,
+): Promise<string> {
+  if (explicitCwd !== undefined) return explicitCwd
+  if (appRegistry !== undefined) {
+    const owners = appRegistry.listApps().filter(a => a.workflows.some(w => w.id === workflowId))
+    if (owners.length === 1) return owners[0]!.dir
+  }
+  try {
+    const active = getActiveWorkspace(await loadWorkspacesConfig())
+    if (active) return active.path
+  } catch {
+    // Unreadable/corrupt workspaces.json — fall through to the daemon's own
+    // cwd rather than failing the run over a config-file read.
+  }
+  const daemonCwd = process.cwd()
+  return daemonCwd === "/" ? homedir() : daemonCwd
 }
 
 /** Static step-kind lookup for the `stage-started` payload — walks the
@@ -1313,6 +1361,9 @@ export function createWorkflowRunner(opts: {
       const workflow = await compileWorkflow(handle)
       const fileStages = runtimeWorkflowToStages(workflow)
       const runId = `wfrun_${randomUUID()}`
+      // F25: resolved BEFORE the run record so `cwd` is recorded even when
+      // defaulted (never a silent "/" — see resolveRunCwd).
+      const cwd = await resolveRunCwd(opts.appRegistry, handle.id, args.cwd)
       const run: WorkflowRun = {
         runId,
         workflowId: handle.id,
@@ -1328,6 +1379,7 @@ export function createWorkflowRunner(opts: {
             status: "pending" as const,
           })),
         })),
+        cwd,
         ...resolveAppProvenance(opts.appRegistry, handle.id, {
           ...(args.appId !== undefined ? { appId: args.appId } : {}),
           ...(args.appRunId !== undefined ? { appRunId: args.appRunId } : {}),
@@ -1340,7 +1392,7 @@ export function createWorkflowRunner(opts: {
         cancelled: false,
         abort,
         stages: fileStages,
-        ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
+        cwd,
         ...(args.workspaceSlug !== undefined ? { workspaceSlug: args.workspaceSlug } : {}),
       }
       runs.set(runId, state)
@@ -1352,7 +1404,7 @@ export function createWorkflowRunner(opts: {
         resolveAgentAdapter,
         {
           workspaceSlug: args.workspaceSlug,
-          cwd: args.cwd,
+          cwd,
           onEscalate: createOnEscalate(state, persist),
           onSessionLabeled: (stepId, sessionId) => {
             sessionToRun.set(sessionId, { runId, stepId, host: agents })
