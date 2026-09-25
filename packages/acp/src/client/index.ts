@@ -1138,12 +1138,23 @@ function translateSessionUpdate(
       }
       const tokensIn = numeric("tokensIn", "input_tokens", "inputTokens")
       const tokensOut = numeric("tokensOut", "output_tokens", "outputTokens")
+      // ACP's usage_update has no model field; claude-agent-acp carries the
+      // model the usage belongs to in `_meta["_claude/model"]`. That wrapper
+      // also documents its cost-less frames' `size` as a best-effort seed
+      // (a text heuristic over the model id, 200k unless the id says "1m")
+      // that only its cost-bearing `result` frame makes authoritative — so
+      // flag those as inferred for the daemon to weigh against the catalog.
+      const meta = update._meta as Record<string, unknown> | undefined
+      const model = typeof meta?.["_claude/model"] === "string" ? meta["_claude/model"] : undefined
+      const sizeInferred = model !== undefined && !cost
       return {
         kind: "usage_update",
         sessionId,
         size: (update.size as number) ?? 0,
         used: (update.used as number) ?? 0,
         ...(cost ? { cost } : {}),
+        ...(model ? { model } : {}),
+        ...(sizeInferred ? { sizeInferred } : {}),
         ...(tokensIn !== undefined ? { tokensIn } : {}),
         ...(tokensOut !== undefined ? { tokensOut } : {}),
       }

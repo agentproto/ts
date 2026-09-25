@@ -35,6 +35,9 @@ import {
   resolveModelRoute,
   resolveContextWindow,
   listNativeModelIds,
+  splitContextWindowHint,
+  resolvePricingExact,
+  resolveAlias,
   isKnownLlmId,
   listUnpricedKnownLlmIds,
   LLM_PRICING_CATALOG,
@@ -767,6 +770,43 @@ describe("resolveContextWindow", () => {
   it("returns undefined for a non-synced provider", () => {
     expect(resolveContextWindow("gpt-4o")).toBeUndefined()
     expect(resolveContextWindow("glm-4.6")).toBeUndefined()
+  })
+
+  // claude-agent-acp guesses 200k for these bare ids until the first result;
+  // the daemon seeds from this catalog instead, so it must say 1M.
+  it.each(["claude-opus-5-5", "claude-sonnet-5", "claude-opus-5"])("%s is a 1M model", id => {
+    expect(resolveContextWindow(id)?.contextWindow).toBe(1_000_000)
+  })
+
+  it("strips a [1m] lane hint for identity but keeps it for the window", () => {
+    const entry = resolveContextWindow("claude-haiku-4-5[1m]")
+    expect(entry?.contextWindow).toBe(1_000_000)
+    expect(entry?.displayName).toBe(resolveContextWindow("claude-haiku-4-5")?.displayName)
+    expect(resolveContextWindow("claude-opus-5-5[1m]")?.contextWindow).toBe(1_000_000)
+    expect(resolveContextWindow("not-a-model[1m]")).toBeUndefined()
+  })
+})
+
+describe("splitContextWindowHint", () => {
+  it.each([
+    ["claude-opus-5-5[1m]", "claude-opus-5-5", 1_000_000],
+    ["claude-sonnet-5[1M]", "claude-sonnet-5", 1_000_000],
+    ["opus[1m]", "opus", 1_000_000],
+    ["some-model[200k]", "some-model", 200_000],
+    ["some-model[1.5m]", "some-model", 1_500_000],
+  ])("%s → %s + %d", (raw, id, contextWindow) => {
+    expect(splitContextWindowHint(raw)).toEqual({ id, contextWindow })
+  })
+
+  it.each(["claude-opus-5-5", "model[beta]", "[1m]", "model[1m]x"])("%s carries no hint", raw => {
+    expect(splitContextWindowHint(raw)).toEqual({ id: raw })
+  })
+
+  it("pricing/alias lookups ignore the hint", () => {
+    expect(resolvePricing("claude-sonnet-4-5[1m]")).toEqual(resolvePricing("claude-sonnet-4-5"))
+    expect(resolvePricingExact("claude-sonnet-4-5[1m]")).toEqual(resolvePricingExact("claude-sonnet-4-5"))
+    expect(resolvePricingExact("claude-sonnet-4-5[1m]")).toBeDefined()
+    expect(resolveAlias("claude-sonnet-4-5[1m]")).toBe(resolveAlias("claude-sonnet-4-5"))
   })
 })
 

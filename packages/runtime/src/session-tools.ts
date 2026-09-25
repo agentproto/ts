@@ -400,6 +400,7 @@ export interface SessionListCompactItem {
   tokensIn?: number
   tokensOut?: number
   contextSize?: number
+  contextSizeSource?: SessionDescriptor["contextSizeSource"]
   contextUsed?: number
 }
 
@@ -437,6 +438,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   tokensIn: s.tokensIn,
   tokensOut: s.tokensOut,
   contextSize: s.contextSize,
+  contextSizeSource: s.contextSizeSource,
   contextUsed: s.contextUsed,
 })
 

@@ -231,6 +231,15 @@ export type StreamEvent =
        *  no adapter-reported `cost`. */
       tokensIn?: number
       tokensOut?: number
+      /** The model this usage belongs to, when the agent reports it
+       *  (claude-agent-acp: `_meta["_claude/model"]`). */
+      model?: string
+      /** True when the agent's `size` is a guess it corrects later (the
+       *  claude-agent-acp wrapper's in-turn frames), not a known window. */
+      sizeInferred?: boolean
+      /** The context-window size the agent itself reported, kept by the
+       *  daemon when it corrects `size` (see runtime `context-window.ts`). */
+      reportedSize?: number
     }
   | {
       kind: "available-commands"

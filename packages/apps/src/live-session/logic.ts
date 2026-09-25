@@ -71,6 +71,8 @@ export interface TurnEndRow extends RowBase {
 
 export interface UsageInfo {
   size?: number
+  /** True once `size` came from a cost-bearing (authoritative) usage_update. */
+  sizeAuthoritative?: boolean
   used?: number
   cost?: number
   tokensIn?: number
@@ -213,10 +215,20 @@ export function reduceEvent(state: TimelineState, record: TimelineEventRecord): 
     case "usage_update": {
       // Usage is state, not a row — last-write-wins, no merge with the
       // prior snapshot. `state.rows` is reused as-is (it didn't change).
+      // One exception, the context window: a cost-bearing frame's `size` is
+      // the adapter's authoritative figure and sticks, since later frames
+      // without cost may carry an INFERRED size (claude-agent-acp streams
+      // 200k for 1M models until its first result).
+      const authoritative = record.cost !== undefined && typeof record.size === "number" && record.size > 0
+      const keepSize =
+        !authoritative && (state.usage?.sizeAuthoritative === true || !(typeof record.size === "number" && record.size > 0))
       return {
         rows: state.rows,
         usage: {
-          size: record.size,
+          size: keepSize ? state.usage?.size : record.size,
+          ...(authoritative || (keepSize && state.usage?.sizeAuthoritative)
+            ? { sizeAuthoritative: true }
+            : {}),
           used: record.used,
           cost: record.cost,
           tokensIn: record.tokensIn,

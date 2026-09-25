@@ -1806,6 +1806,7 @@ export function registerAgentTools(
     tokensIn: s.tokensIn,
     tokensOut: s.tokensOut,
     contextSize: s.contextSize,
+    contextSizeSource: s.contextSizeSource,
     contextUsed: s.contextUsed,
   })
   const agentSessionsListSchema = z.object({

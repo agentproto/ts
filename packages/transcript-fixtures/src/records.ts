@@ -122,6 +122,11 @@ export interface AgentprotoRawUsageUpdate extends AgentprotoRawTranscriptBase {
   cost?: { amount: number; currency: string }
   tokensIn?: number
   tokensOut?: number
+  /** Model the usage belongs to, when the adapter reports it. */
+  model?: string
+  /** The adapter's own `size` when the daemon corrected it (an inferred
+   *  window superseded by the catalog or an earlier authoritative frame). */
+  reportedSize?: number
 }
 
 /** Durable usage recap at a turn boundary (`transcript-writer.ts`'s
