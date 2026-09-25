@@ -1,5 +1,13 @@
 # @agentproto/workflow-mastra
 
+## 0.1.11
+
+### Patch Changes
+
+- Updated dependencies [41b8b76]
+- Updated dependencies [854db1f]
+  - @agentproto/workflow-runtime@0.12.0
+
 ## 0.1.10
 
 ### Patch Changes

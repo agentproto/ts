@@ -1,5 +1,15 @@
 # @agentproto/workflow-runtime
 
+## 0.12.0
+
+### Minor Changes
+
+- 854db1f: Add mustache-style {{...}} interpolation and #/^ sections to agent/approval prompts
+
+### Patch Changes
+
+- 41b8b76: Fix explicit step.adapter/options to win over agent-ref resolution
+
 ## 0.11.1
 
 ### Patch Changes

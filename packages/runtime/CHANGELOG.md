@@ -1,5 +1,26 @@
 # @agentproto/runtime
 
+## 3.6.0
+
+### Minor Changes
+
+- a93da92: Support native and proxied app origins: `AGENTPROTO_PUBLIC_HTTP_ORIGIN` env override, `X-Forwarded-Proto` awareness in `requestHttpBaseUrl`, and injection of `window.__AGENTPROTO_BASEURL__` (with `__AGENTPROTO_UI_TRANSPORT__` tags) so standalone app bridges can reach the daemon through proxies.
+- f26e334: Add the opt-in daemon-side session titler (`titler.enabled` in config): after the first completed turn of an `agent-cli` session with a default spawn label, generate a short prosaic title (OpenRouter by default, local first-line fallback) and rename the session. User-created labels are never overwritten; disabled by default.
+
+### Patch Changes
+
+- 7f9497d: Resume native PTY conversations and redact resume env from HTTP
+- Updated dependencies [2aadecc]
+- Updated dependencies [cbb8743]
+- Updated dependencies [41b8b76]
+- Updated dependencies [854db1f]
+  - @agentproto/model-catalog@0.10.2
+  - @agentproto/workflow-runtime@0.12.0
+  - @agentproto/providers-store@0.3.16
+  - @agentproto/sandbox@0.5.3
+  - @agentproto/eval-reporters@0.2.15
+  - @agentproto/telemetry-langfuse@0.2.13
+
 ## 3.5.0
 
 ### Minor Changes

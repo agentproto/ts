@@ -1,5 +1,13 @@
 # @agentproto/adapter-jcode
 
+## 0.2.12
+
+### Patch Changes
+
+- Updated dependencies [2aadecc]
+- Updated dependencies [cbb8743]
+  - @agentproto/model-catalog@0.10.2
+
 ## 0.2.11
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @agentproto/adapter-hermes
 
+## 0.4.17
+
+### Patch Changes
+
+- Updated dependencies [2aadecc]
+- Updated dependencies [cbb8743]
+  - @agentproto/model-catalog@0.10.2
+
 ## 0.4.16
 
 ### Patch Changes
