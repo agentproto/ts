@@ -123,6 +123,21 @@
           "cache_write": 0.25
         }
       },
+      "gpt-6-luna": {
+        "id": "gpt-6-luna",
+        "name": "GPT-6 Luna",
+        "family": "gpt-luna",
+        "release_date": "2026-09-22",
+        "provider": {
+          "npm": "@ai-sdk/openai"
+        },
+        "cost": {
+          "input": 0.1,
+          "output": 0.5,
+          "cache_read": 0.01,
+          "cache_write": 0.125
+        }
+      },
       "grok-4.5": {
         "id": "grok-4.5",
         "name": "Grok 4.5",

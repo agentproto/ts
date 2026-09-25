@@ -100,6 +100,15 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     vendor: "openai",
     provider: "opencode-go",
   },
+  "opencode-go/gpt-6-luna": {
+    inputPer1M: 0.1,
+    outputPer1M: 0.5,
+    cacheReadMultiplier: 0.1,
+    cacheWriteMultiplier: 1.25,
+    addedAt: "2026-09-22",
+    vendor: "openai",
+    provider: "opencode-go",
+  },
   "opencode-go/grok-4.5": {
     inputPer1M: 2,
     outputPer1M: 6,

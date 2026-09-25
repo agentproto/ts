@@ -188,3 +188,16 @@ for that.
 
 ### llm:huggingface
 - Removed: CohereLabs/c4ai-command-r7b-arabic-02-2025, zai-org/GLM-5.1-FP8
+
+## 2026-09-25
+
+### llm:openrouter
+- Added: fireworks/ember-1, mistralai/mistral-large-2512, openai/gpt-oss-120b:batch, qwen/qwen3.8-max-prime, z-ai/glm-5.3-prime
+- Removed: nex-agi/nex-n2.5-mini, nex-agi/nex-n2.5-pro
+
+### llm:opencode-go
+- Added: opencode-go/gpt-6-luna
+
+### llm:huggingface
+- Added: zai-org/GLM-4.5, zai-org/GLM-5.1-FP8
+- Removed: ibm-granite/granite-4.2-30b, zai-org/GLM-4.6-FP8, zai-org/GLM-4.7-FP8
