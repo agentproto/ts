@@ -16,6 +16,10 @@ export interface RoutineStepState {
   startedAt?: string
   endedAt?: string
   error?: string
+  /** The step's own output, when it completed successfully — omitted from
+   *  `workflow_status`'s compact form (AIP-58 §9 `run.get` compact
+   *  boundary), included with `full: true`. */
+  output?: unknown
   /** Last `kind: "gate"` command attempt's outcome, when this step is a
    *  gate (AIP-15 P3) — updated on every attempt, not just the final one. */
   gateReport?: { ok: boolean; exitCode: number; report: unknown; attempt: number }

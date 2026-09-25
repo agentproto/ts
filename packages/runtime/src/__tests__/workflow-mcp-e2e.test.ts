@@ -15,6 +15,9 @@
  */
 
 import { describe, it, expect } from "vitest"
+import { mkdtempSync, rmSync } from "node:fs"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
@@ -75,7 +78,7 @@ function parseToolJson(result: unknown): any {
 }
 
 describe("workflow orchestration — MCP transport e2e", () => {
-  async function setup() {
+  async function setup(runnerOpts?: { persistPath?: string; runsRoot?: string }) {
     const bus = createSessionEventBus()
     const eventRing = createEventRing()
     const registry = makeMockRegistry(bus)
@@ -83,7 +86,10 @@ describe("workflow orchestration — MCP transport e2e", () => {
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
-      // no persist / persistPath → never touches ~/.agentproto
+      // no persist / persistPath → never touches ~/.agentproto (unless a
+      // test explicitly opts in, below, to exercise the AIP-58 event log).
+      ...(runnerOpts?.persistPath !== undefined ? { persist: true, persistPath: runnerOpts.persistPath } : {}),
+      ...(runnerOpts?.runsRoot !== undefined ? { runsRoot: runnerOpts.runsRoot } : {}),
     })
 
     const server = new McpServer({ name: "workflow-e2e-server", version: "0.0.0" })
@@ -160,6 +166,97 @@ describe("workflow orchestration — MCP transport e2e", () => {
     expect(final.stages[0].steps.every((s: { status: string }) => s.status === "done")).toBe(true)
     expect(final.stages[1].steps).toHaveLength(1)
     expect(final.result.sessionIds.length).toBe(3)
+  })
+
+  // ── AIP-58 §9 `run.get` compact boundary ────────────────────────────────
+
+  it("workflow_status is compact by default (no step output) — full:true includes it", async () => {
+    const { client } = await setup()
+
+    const started = parseToolJson(
+      await client.callTool({
+        name: "workflow_start",
+        arguments: { workflowId: "e2e-compact", stages: [{ steps: [{ label: "s1", adapter: "mock", prompt: "go" }] }] } ,
+      }),
+    )
+
+    let final: any
+    for (let i = 0; i < 100; i++) {
+      final = parseToolJson(await client.callTool({ name: "workflow_status", arguments: { runId: started.runId } }))
+      if (["done", "failed", "cancelled"].includes(final.status)) break
+      await new Promise(res => setTimeout(res, 10))
+    }
+    expect(final.status).toBe("done")
+    expect(final.stages[0].steps[0]).not.toHaveProperty("output")
+
+    const full = parseToolJson(
+      await client.callTool({ name: "workflow_status", arguments: { runId: started.runId, full: true } }),
+    )
+    expect(full.stages[0].steps[0]).toHaveProperty("output")
+  })
+
+  // ── AIP-58 §5/§9 run.events (the `run_events` MCP tool) ─────────────────
+
+  describe("run_events", () => {
+    let tmpDir: string
+
+    async function setupWithEventLog() {
+      tmpDir = mkdtempSync(join(tmpdir(), "run-events-e2e-"))
+      return setup({ persistPath: join(tmpDir, "workflow-runs.json"), runsRoot: join(tmpDir, "runs") })
+    }
+
+    function cleanup(): void {
+      if (tmpDir) rmSync(tmpDir, { recursive: true, force: true })
+    }
+
+    it("returns 'run not found' for an unknown runId", async () => {
+      const { client } = await setupWithEventLog()
+      try {
+        const result = parseToolJson(await client.callTool({ name: "run_events", arguments: { runId: "wfrun_nope" } }))
+        expect(result.error).toBe("run not found")
+      } finally {
+        cleanup()
+      }
+    })
+
+    it("pages a finished run's event log in order, resumable via sinceSeq", async () => {
+      const { client } = await setupWithEventLog()
+      try {
+        const started = parseToolJson(
+          await client.callTool({
+            name: "workflow_start",
+            arguments: { workflowId: "e2e-events", stages: [{ steps: [{ label: "s1", adapter: "mock", prompt: "go" }] }] },
+          }),
+        )
+
+        let final: any
+        for (let i = 0; i < 100; i++) {
+          final = parseToolJson(await client.callTool({ name: "workflow_status", arguments: { runId: started.runId } }))
+          if (["done", "failed", "cancelled"].includes(final.status)) break
+          await new Promise(res => setTimeout(res, 10))
+        }
+        expect(final.status).toBe("done")
+
+        const page1 = parseToolJson(await client.callTool({ name: "run_events", arguments: { runId: started.runId } }))
+        expect(page1.events.map((e: { type: string }) => e.type)).toEqual([
+          "run.created",
+          "run.started",
+          "step.started",
+          "step.succeeded",
+          "run.succeeded",
+        ])
+        expect(page1.events.every((e: { runId: string }) => e.runId === started.runId)).toBe(true)
+        expect(page1.events.map((e: { seq: number }) => e.seq)).toEqual([1, 2, 3, 4, 5])
+
+        // Resuming from the 3rd event's seq returns only what's after it.
+        const page2 = parseToolJson(
+          await client.callTool({ name: "run_events", arguments: { runId: started.runId, sinceSeq: page1.events[2].seq } }),
+        )
+        expect(page2.events.map((e: { type: string }) => e.type)).toEqual(["step.succeeded", "run.succeeded"])
+      } finally {
+        cleanup()
+      }
+    })
   })
 
   it("workflow_list reflects the started run over MCP", async () => {

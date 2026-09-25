@@ -115,6 +115,26 @@ function view(state: RunState, item?: unknown, index?: number): Bindings {
   return { input: state.input, steps: state.steps, item, index }
 }
 
+/**
+ * A `map`/`pipeline` fan-out body can't be enumerated at compile time (the
+ * item list is only known at runtime — see `collectStaticSteps` in
+ * `runtime/workflow-runner.ts`), so its per-item steps all share one static
+ * compiled id (e.g. "clean"). Reporting every iteration under that same id
+ * makes the host's step list unable to tell iterations apart (AIP-58 §5 /
+ * F28). Wrapping `onStepStart`/`onStepComplete` for the duration of ONE
+ * item's execution suffixes every step id it reports with `[<index>]`
+ * (e.g. "clean[0]", "clean[1]") — the host discovers these dynamically,
+ * same as any other step it didn't see at compile time.
+ */
+function withIndexedHooks(ctx: RunCtx, index: number): RunCtx {
+  if (!ctx.onStepStart && !ctx.onStepComplete) return ctx
+  return {
+    ...ctx,
+    onStepStart: ctx.onStepStart ? (id: string) => ctx.onStepStart!(`${id}[${index}]`) : undefined,
+    onStepComplete: ctx.onStepComplete ? (id: string, out: unknown) => ctx.onStepComplete!(`${id}[${index}]`, out) : undefined,
+  }
+}
+
 /** Resolve a value that is either a static string or a binding selector. */
 function resolveSel(sel: string | ((bindings: Bindings) => string), b: Bindings): string {
   return typeof sel === "function" ? sel(b) : sel
@@ -612,7 +632,11 @@ async function execStep(
             chunk.map((el, j) => {
               const idx = i + j
               const inner = step.body(el, idx, view(state, el, idx))
-              return execStep(inner, ctx, el, idx)
+              const wrapped = withIndexedHooks(ctx, idx)
+              return execStep(inner, wrapped, el, idx).then((out) => {
+                wrapped.onStepComplete?.(inner.id, out)
+                return out
+              })
             }),
           )
           for (let j = 0; j < outs.length; j++) results[i + j] = outs[j]
@@ -622,7 +646,11 @@ async function execStep(
           chunk.map((el, j) => {
             const idx = i + j
             const inner = step.body(el, idx, view(state, el, idx))
-            return execStep(inner, ctx, el, idx)
+            const wrapped = withIndexedHooks(ctx, idx)
+            return execStep(inner, wrapped, el, idx).then((out) => {
+              wrapped.onStepComplete?.(inner.id, out)
+              return out
+            })
           }),
         )
         settled.forEach((s, j) => {
@@ -651,9 +679,12 @@ async function execStep(
       let next = 0
       const runItem = async (idx: number): Promise<void> => {
         let prev: unknown = undefined
+        const wrapped = withIndexedHooks(ctx, idx)
         try {
           for (const stage of step.stages) {
-            prev = await execStep(stage(items[idx], idx, prev, view(state, items[idx], idx)), ctx, items[idx], idx)
+            const inner = stage(items[idx], idx, prev, view(state, items[idx], idx))
+            prev = await execStep(inner, wrapped, items[idx], idx)
+            wrapped.onStepComplete?.(inner.id, prev)
           }
           results[idx] = tolerant ? { status: "fulfilled", index: idx, value: prev } : prev
         } catch (err) {

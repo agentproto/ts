@@ -1017,11 +1017,6 @@ steps:
     }
 
     expect(final?.status).toBe("done")
-    // `runtimeWorkflowToStages` (workflow-runner.ts) only surfaces AGENT
-    // steps into `run.stages` — a gate-only compiled workflow falls back to
-    // the synthetic single "workflow" stage/step, so there is no `"g"`-labeled
-    // row for `onGateReport`'s best-effort `RoutineStepState.gateReport` sync
-    // to find here. The bus event is the reliable, always-fired signal.
     expect(gateReportEvents).toHaveLength(1)
     expect(gateReportEvents[0]).toMatchObject({
       runId: run.runId,
@@ -1031,6 +1026,12 @@ steps:
       report: { checked: 42 },
       attempt: 1,
     })
+    // AIP-58 §5 / F28: `collectStaticSteps` now surfaces a `gate` step as a
+    // real row too (not just agent steps) — `onGateReport`'s best-effort
+    // `RoutineStepState.gateReport` sync finds it here.
+    expect(final?.stages[0]?.steps).toHaveLength(1)
+    expect(final?.stages[0]?.steps[0]?.label).toBe("g")
+    expect(final?.stages[0]?.steps[0]?.gateReport).toMatchObject({ ok: true, exitCode: 0, report: { checked: 42 } })
   })
 
   it("reports progressive step status updates during execution (not all-pending until done)", async () => {
