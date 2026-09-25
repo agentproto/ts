@@ -82,6 +82,30 @@ export interface LLMPricing {
    * `packages/catalog-sync/README.md` for the full convention.
    */
   addedAt?: string
+  /**
+   * Which source supplied THIS row's numbers. Generator-owned and purely
+   * informational — nothing routes or bills on it; it exists so a reviewer
+   * reading a sync diff can tell a first-party price change from a router's
+   * passthrough rate drifting.
+   *
+   * Currently emitted only by `scripts/catalog-sync/sync-openai.mjs`, where
+   * the two sources genuinely disagree on some rows:
+   *   - `"openai"` — OpenAI's own published pricing
+   *     (`platform.openai.com/docs/pricing.md`).
+   *   - `"openrouter"` — OpenRouter's passthrough rate, used where OpenAI's
+   *     page does not list the id.
+   */
+  priceSource?: "openai" | "openrouter"
+  /**
+   * Which list this row's ID came from. Also generator-owned and
+   * informational. `"openrouter"` marks an id that the provider's own
+   * `/v1/models` does not list — for OpenAI that is mostly ids which
+   * structurally cannot appear there (`<base>:batch` is a separate endpoint,
+   * `gpt-oss-*` is open-weights and not served by OpenAI's API) plus ids the
+   * syncing account has no entitlement to. They are kept rather than dropped
+   * precisely so the catalog is not a function of whose key ran the sync.
+   */
+  idSource?: "openai" | "openrouter"
 }
 
 import { OPENROUTER_ROUTES } from "./openrouter-routes.generated.js"
@@ -91,7 +115,10 @@ import { MISTRAL_GENERATED_PRICING } from "./mistral-pricing.generated.js"
 import { MOONSHOT_GENERATED_PRICING } from "./moonshot-pricing.generated.js"
 import { ANTHROPIC_GENERATED_PRICING } from "./anthropic-pricing.generated.js"
 import { GOOGLE_GENERATED_PRICING } from "./google-pricing.generated.js"
-import { OPENAI_GENERATED_PRICING } from "./openai-pricing.generated.js"
+import {
+  OPENAI_GENERATED_PRICING,
+  OPENAI_GENERATED_UNPRICED_IDS,
+} from "./openai-pricing.generated.js"
 import { MINIMAX_GENERATED_PRICING } from "./minimax-pricing.generated.js"
 import { XAI_GENERATED_PRICING } from "./xai-pricing.generated.js"
 
@@ -212,7 +239,7 @@ export const PRICING_OVERRIDES: Record<string, LLMPricing & { reason: string }> 
 
   "gpt-5-codex": {
     reason:
-      "No generated counterpart -- not present in OpenRouter's openai/* listing under this exact id (OpenAI has no native pricing endpoint at all, see packages/catalog-sync/src/sources/openai.ts, so OpenRouter is the only automated source and it doesn't carry this specific id).",
+      "Priced by neither automated source: absent from OpenRouter's openai/* listing under this exact id, and absent from OpenAI's own pricing page, which now lists only gpt-5.3-codex for the Codex family. OpenAI's /v1/models DOES list the id, so the generator emits it in OPENAI_GENERATED_UNPRICED_IDS (existence) and this row supplies the price (gpt-5 rates, which is what Codex billed at).",
     inputPer1M: 1.25, outputPer1M: 10.0, cacheReadMultiplier: 0.1, vendor: "openai", provider: "openai",
   },
 
@@ -246,10 +273,12 @@ export const LLM_PRICING_CATALOG = {
   // Every provider below is fully generated from that provider's own live
   // sync (`scripts/catalog-sync/sync-*.mjs`) — existence AND price both come
   // from the provider's native id space wherever the provider exposes one
-  // (Anthropic, xAI, MiniMax, Moonshot, Mistral, Google-via-remap); OpenRouter
-  // supplies PRICE only for those, never ids, except for OpenAI, the one
-  // provider with no native id/pricing source of its own at all, where
-  // OpenRouter is the sole source for both. On any id a generator covers,
+  // (Anthropic, xAI, MiniMax, Moonshot, Mistral, Google-via-remap, and — as of
+  // the OpenAI native-source sync — OpenAI, from `api.openai.com/v1/models`
+  // plus its own published pricing page); OpenRouter supplies PRICE only for
+  // those, never ids, apart from the OpenAI ids `/v1/models` structurally
+  // cannot list (`:batch`, `gpt-oss-*`) — each of those carries
+  // `idSource: "openrouter"`. On any id a generator covers,
   // the generated value wins UNCONDITIONALLY — no hand-typed row duplicates
   // an id a generator already prices, even where they used to disagree; see
   // the PR body's divergence table. `PRICING_OVERRIDES` above is the only
@@ -281,18 +310,36 @@ export const LLM_PRICING_CATALOG = {
  * `LlmModelId` now unions the pricing keys with `CONTEXT_WINDOWS` (each
  * provider's own synced `/v1/models` id list — see
  * `packages/catalog-sync/src/generators/llm-context-windows.ts` — carries
- * ids independent of whether a price has synced yet) and `OPENROUTER_ROUTES`
- * (thousands of ids, self-updating). A model can be a member of this type
+ * ids independent of whether a price has synced yet), `OPENROUTER_ROUTES`
+ * (thousands of ids, self-updating), and `OPENAI_GENERATED_UNPRICED_IDS`
+ * (ids `api.openai.com/v1/models` lists that neither OpenAI's pricing page
+ * nor OpenRouter prices — mostly dated snapshots like `gpt-5.4-2026-03-05`.
+ * OpenAI's `/v1/models` publishes no context window, so unlike the other
+ * providers these ids cannot ride in via `CONTEXT_WINDOWS`; they need their
+ * own existence-only list, which is exactly what that export is).
+ * A model can be a member of this type
  * with `resolvePricing` returning `undefined` for it — callers MUST treat
  * that as "price not yet known," never as "doesn't exist" (see
  * `ResolvedModel`'s `pricing?` in `registry/index.ts`, and `isKnownLlmId`
  * below for an existence-only check). Downstream curation/config should
  * still constrain ids to this type so a typo is a build error.
+ *
+ * That last point is why the generator emits `OPENAI_GENERATED_UNPRICED_IDS`
+ * as a literal tuple (`[...] as const`, and `[] as const` when empty) and
+ * never as `readonly string[]`: indexing the latter with `[number]` yields
+ * plain `string`, which would widen this whole union to `string` and turn
+ * every id typo back into a silent runtime miss. Tested at the source, in
+ * catalog-sync's `openai-catalog.test.ts`.
  */
 export type LlmModelId =
   | keyof typeof LLM_PRICING_CATALOG
   | keyof typeof CONTEXT_WINDOWS
   | keyof typeof OPENROUTER_ROUTES
+  | (typeof OPENAI_GENERATED_UNPRICED_IDS)[number]
+
+/** `OPENAI_GENERATED_UNPRICED_IDS` as a membership set (the array is small,
+ *  but `isKnownLlmId` is on hot lookup paths). */
+const OPENAI_UNPRICED_ID_SET: ReadonlySet<string> = new Set(OPENAI_GENERATED_UNPRICED_IDS)
 
 /**
  * True iff `modelId` is a real, known catalog id — regardless of whether it
@@ -305,16 +352,18 @@ export function isKnownLlmId(modelId: string): boolean {
   return (
     modelId in LLM_PRICING_CATALOG ||
     modelId in CONTEXT_WINDOWS ||
-    modelId in OPENROUTER_ROUTES
+    modelId in OPENROUTER_ROUTES ||
+    OPENAI_UNPRICED_ID_SET.has(modelId)
   )
 }
 
 /**
  * Every known LLM id that has NO pricing row (`CONTEXT_WINDOWS` ∪
- * `OPENROUTER_ROUTES`, minus whatever `LLM_PRICING_CATALOG` already prices)
- * — the enumeration `listModels`'s `llm` branch needs to surface a
- * known-but-unpriced model instead of silently dropping it. Each entry
- * carries its provider when derivable (see `getModelProvider`).
+ * `OPENROUTER_ROUTES` ∪ `OPENAI_GENERATED_UNPRICED_IDS`, minus whatever
+ * `LLM_PRICING_CATALOG` already prices) — the enumeration `listModels`'s
+ * `llm` branch needs to surface a known-but-unpriced model instead of
+ * silently dropping it. Each entry carries its provider when derivable (see
+ * `getModelProvider`).
  */
 export function listUnpricedKnownLlmIds(): Array<{
   id: string
@@ -323,6 +372,7 @@ export function listUnpricedKnownLlmIds(): Array<{
   const ids = new Set<string>([
     ...Object.keys(CONTEXT_WINDOWS),
     ...Object.keys(OPENROUTER_ROUTES),
+    ...OPENAI_GENERATED_UNPRICED_IDS,
   ])
   const result: Array<{ id: string; provider: CatalogProvider | undefined }> = []
   for (const id of ids) {
