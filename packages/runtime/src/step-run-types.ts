@@ -19,4 +19,13 @@ export interface RoutineStepState {
   /** Last `kind: "gate"` command attempt's outcome, when this step is a
    *  gate (AIP-15 P3) — updated on every attempt, not just the final one. */
   gateReport?: { ok: boolean; exitCode: number; report: unknown; attempt: number }
+  /** AIP-58 §3 Outcome rule: set while this step is parked awaiting an
+   *  explicit `run.requestInput` signal — cleared on resume (it may be set
+   *  again if the resumed step suspends a second time). Mirrors AIP-58's
+   *  `StepRecord.suspend` exactly, for the transcriber UI contract. */
+  suspend?: { reason: "input-required"; prompt: string; schema?: Record<string, unknown> }
+  /** AIP-58 §3 Outcome rule: set on a `failed { code: "missing-output" }`
+   *  step whose final message matched the "trailing question mark"
+   *  heuristic — a triage aid only, it never changes `status`. */
+  hint?: "possible-input-request"
 }

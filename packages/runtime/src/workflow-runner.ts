@@ -27,7 +27,7 @@ import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { join, dirname } from "node:path"
 import { mkdirSync, readFileSync, existsSync, writeFileSync, renameSync } from "node:fs"
-import { buildAgentStep, runWorkflow, validateWorkflowInput } from "@agentproto/workflow-runtime"
+import { buildAgentStep, runWorkflow, validateWorkflowInput, validateAgainstJsonSchema, StepOutcomeError } from "@agentproto/workflow-runtime"
 import type { AgentSandboxRef, ApprovalDecision, Bindings, GateReportEvent, RuntimeWorkflow } from "@agentproto/workflow-runtime"
 import type { StepCache } from "@agentproto/workflow-runtime"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
@@ -125,14 +125,20 @@ export interface WorkflowRun {
     prompt: string
     since: string
   }
-  /** Set while the run is parked at a `kind: "suspend"` step (status
-   *  "awaiting-input") — the external event the run awaits. Cleared on
-   *  resume; survives a daemon restart (see loadRuns + the reload
-   *  re-registration), per AIP-15 conformance rule 7. */
+  /** Set while the run is parked awaiting EITHER a `kind: "suspend"` step's
+   *  external event (`on` set, per AIP-15 conformance rule 7) OR an
+   *  agent-backed step's AIP-58 §3(a) `run.requestInput` signal (`reason:
+   *  "input-required"` + `prompt`/`schema?`, mirroring AIP-58's
+   *  `StepRecord.suspend` exactly — status "awaiting-input" either way).
+   *  Cleared on resume; survives a daemon restart (see loadRuns + the
+   *  reload re-registration). */
   awaitingSuspend?: {
     stepId: string
-    on: string[]
     since: string
+    on?: string[]
+    reason?: "input-required"
+    prompt?: string
+    schema?: Record<string, unknown>
   }
 }
 
@@ -180,14 +186,37 @@ export interface WorkflowRunner {
     input: { approvalId?: string; approved: boolean; who: string; note?: string },
   ): { ok: true } | { ok: false; error: "run_not_found" | "not_awaiting_approval" | "approval_id_mismatch"; message: string }
 
-  /** Resolve a parked `kind: "suspend"` step (AIP-15 rule 7). Works both
-   *  for a live run and for a run re-registered after a daemon restart (in
+  /** Resolve a parked `kind: "suspend"` step OR an AIP-58 §3(a)
+   *  `run.requestInput` suspend (AIP-15 rule 7 / AIP-58 §3). Works both for
+   *  a live run and for a run re-registered after a daemon restart (in
    *  which case the recorded decision lands but the run's execution cannot
-   *  resume). `stepId`, when given, must match the parked step. */
+   *  resume). `stepId`, when given, must match the parked step. When the
+   *  parked record carries a `schema` (the §3(a) case), `payload` MUST
+   *  validate against it BEFORE the transition happens — an invalid
+   *  payload is rejected and the run stays suspended. */
   resumeSuspend(
     runId: string,
     input: { stepId?: string; payload?: unknown },
-  ): { ok: true } | { ok: false; error: "run_not_found" | "not_awaiting_suspend" | "step_id_mismatch"; message: string }
+  ):
+    | { ok: true }
+    | {
+        ok: false
+        error: "run_not_found" | "not_awaiting_suspend" | "step_id_mismatch" | "invalid_payload"
+        message: string
+      }
+
+  /**
+   * AIP-58 §9 `run.requestInput`, called by the executing step's OWN
+   * session (via the `run_request_input` MCP tool) — records the signal
+   * against whichever run/step spawned `sessionId`, resolved from this
+   * runner's own spawn bookkeeping. Does not end the turn. A session not
+   * owned by any running workflow step is a tool error with no side
+   * effect.
+   */
+  recordInputRequest(
+    sessionId: string,
+    req: { prompt: string; schema?: Record<string, unknown> },
+  ): { ok: true; runId: string; stepId: string } | { ok: false; error: "session_not_in_workflow_step" }
 
   cancel(runId: string): void
 }
@@ -776,6 +805,74 @@ async function executeRunWorkflow(
           state.pendingSuspend = { stepId: req.stepId, resolve: finish }
         }),
 
+      // AIP-58 §3(a) — an agent-backed step's session called
+      // `run.requestInput` (the `run_request_input` MCP tool) before its
+      // turn ended. Reuses the exact same durable-suspend mechanics as the
+      // `resume` hook above (`state.pendingSuspend`/`awaitingSuspend`,
+      // `workflow_escalation_resolve`'s suspend form, daemon-restart
+      // re-registration) — only the STEP's own `suspend` record differs:
+      // `{ reason: "input-required", prompt, schema? }` instead of `on[]`,
+      // taken verbatim from the signal's own payload (never a heuristic
+      // read of the turn's text). On resume, `execAgentStep` sends the
+      // validated payload back to the SAME session as its next prompt and
+      // re-applies the outcome rule — this hook only parks and resolves.
+      onInputRequired: (req) =>
+        new Promise<unknown>((resolve) => {
+          const since = new Date().toISOString()
+          const suspend = {
+            reason: "input-required" as const,
+            prompt: req.prompt,
+            ...(req.schema !== undefined ? { schema: req.schema } : {}),
+          }
+          state.run.status = "awaiting-input"
+          state.run.awaitingSuspend = { stepId: req.stepId, since, ...suspend }
+          for (const stage of state.run.stages) {
+            const step = stage.steps.find((s) => s.label === req.stepId)
+            if (step) {
+              step.suspend = suspend
+              break
+            }
+          }
+          persist?.()
+          sessionEvents.emit({
+            type: "workflow:suspended",
+            runId: state.run.runId,
+            stepId: req.stepId,
+            ...suspend,
+            ts: since,
+          })
+
+          const onAbort = (): void => {
+            finish(undefined)
+          }
+          const finish = (payload: unknown): void => {
+            signal.removeEventListener("abort", onAbort)
+            state.pendingSuspend = undefined
+            if (state.run.awaitingSuspend?.stepId === req.stepId) {
+              state.run.awaitingSuspend = undefined
+            }
+            for (const stage of state.run.stages) {
+              const step = stage.steps.find((s) => s.label === req.stepId)
+              if (step) {
+                step.suspend = undefined
+                break
+              }
+            }
+            if (state.run.status === "awaiting-input") state.run.status = "running"
+            persist?.()
+            const ts = new Date().toISOString()
+            sessionEvents.emit({
+              type: "workflow:suspend-resumed",
+              runId: state.run.runId,
+              stepId: req.stepId,
+              ts,
+            })
+            resolve(payload)
+          }
+          signal.addEventListener("abort", onAbort, { once: true })
+          state.pendingSuspend = { stepId: req.stepId, resolve: finish }
+        }),
+
       onGateReport: (ev: GateReportEvent) => {
         sessionEvents.emit({
           type: "workflow:gate-report",
@@ -913,6 +1010,22 @@ async function executeRunWorkflow(
       state.run.status = "failed"
       state.run.error = errMsg
       state.run.endedAt = new Date().toISOString()
+      // AIP-58 §10: a structured outcome-rule failure carries its own error
+      // code onto the run record, and — when the heuristic matched — a
+      // `hint` onto the specific step that failed (never onto every step in
+      // the stage; the hint is per-step evidence, not a run-wide fact).
+      if (err instanceof StepOutcomeError) {
+        state.run.errorCode = err.code
+        if (err.hint) {
+          for (const stage of state.run.stages) {
+            const step = stage.steps.find((s) => s.label === err.stepId)
+            if (step) {
+              step.hint = err.hint
+              break
+            }
+          }
+        }
+      }
 
       // Mark stage 0 as failed (common case) and the rest as pending.
       for (let i = 0; i < state.run.stages.length; i++) {
@@ -984,6 +1097,14 @@ export function createWorkflowRunner(opts: {
   const persist = (): void => {
     if (shouldPersist) saveRuns(runs, persistPath)
   }
+
+  // AIP-58 §9 `run.requestInput` (the `run_request_input` MCP tool): a
+  // sessionId → (runId, stepId, host) index spanning every run this runner
+  // has ever dispatched an agent step for, populated by each run's
+  // `SessionsRegistryAgentHost`'s `onSessionLabeled` callback and pruned
+  // once that run reaches a terminal state (see the `.then()` after each
+  // `executeRunWorkflow` call below).
+  const sessionToRun = new Map<string, { runId: string; stepId: string; host: SessionsRegistryAgentHost }>()
 
   // ── Reload re-registration (WP-S restart safety) ────────────────────
   //
@@ -1123,7 +1244,7 @@ export function createWorkflowRunner(opts: {
 
       // Translate stages → RuntimeWorkflow and launch.
       const workflow = translateStages(input.stages, input.workflowId)
-      const agents = new SessionsRegistryAgentHost(
+      const agents: SessionsRegistryAgentHost = new SessionsRegistryAgentHost(
         registry,
         sessionEvents,
         resolveAgentAdapter,
@@ -1132,6 +1253,9 @@ export function createWorkflowRunner(opts: {
           cwd: input.cwd,
           notifyUrl: input.notifyUrl,
           onEscalate: createOnEscalate(state, persist),
+          onSessionLabeled: (stepId, sessionId) => {
+            sessionToRun.set(sessionId, { runId, stepId, host: agents })
+          },
           ...(opts.resolveSandboxProvider
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }
             : {}),
@@ -1141,6 +1265,9 @@ export function createWorkflowRunner(opts: {
       const cache = input.cacheKey ? createFileStepCache(input.cacheKey) : undefined
 
       void executeRunWorkflow(state, workflow, agents, abort.signal, sessionEvents, cache, input.cacheKey, undefined, persist, opts.appRegistry).then(() => {
+        for (const [sid, binding] of sessionToRun) {
+          if (binding.runId === runId) sessionToRun.delete(sid)
+        }
         persist()
       })
 
@@ -1219,7 +1346,7 @@ export function createWorkflowRunner(opts: {
       runs.set(runId, state)
       persist()
 
-      const agents = new SessionsRegistryAgentHost(
+      const agents: SessionsRegistryAgentHost = new SessionsRegistryAgentHost(
         registry,
         sessionEvents,
         resolveAgentAdapter,
@@ -1227,6 +1354,9 @@ export function createWorkflowRunner(opts: {
           workspaceSlug: args.workspaceSlug,
           cwd: args.cwd,
           onEscalate: createOnEscalate(state, persist),
+          onSessionLabeled: (stepId, sessionId) => {
+            sessionToRun.set(sessionId, { runId, stepId, host: agents })
+          },
           ...(opts.resolveSandboxProvider
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }
             : {}),
@@ -1247,6 +1377,9 @@ export function createWorkflowRunner(opts: {
         persist,
         opts.appRegistry,
       ).then(() => {
+        for (const [sid, binding] of sessionToRun) {
+          if (binding.runId === runId) sessionToRun.delete(sid)
+        }
         persist()
       })
 
@@ -1331,8 +1464,32 @@ export function createWorkflowRunner(opts: {
           message: `run "${runId}" is suspended at step "${ps.stepId}", not "${input.stepId}"`,
         }
       }
+      // AIP-58 §3/§9: when the parked record carries a `schema` (the
+      // `run.requestInput` case — a plain `kind: "suspend"` step's
+      // `awaitingSuspend` never has one), the resume payload MUST validate
+      // against it BEFORE the transition happens. An invalid payload is
+      // rejected and the run stays suspended — `ps.resolve` is never called.
+      const schema = state.run.awaitingSuspend?.schema
+      if (schema !== undefined) {
+        const validation = validateAgainstJsonSchema(schema, input.payload)
+        if (!validation.valid) {
+          return { ok: false, error: "invalid_payload", message: validation.message }
+        }
+      }
       ps.resolve(input.payload)
       return { ok: true }
+    },
+
+    // AIP-58 §9 `run.requestInput`: resolve `sessionId` (the calling
+    // session) → the run/step that spawned it, via the sessionToRun index
+    // every `SessionsRegistryAgentHost` maintains through `onSessionLabeled`.
+    recordInputRequest: (sessionId, req) => {
+      const binding = sessionToRun.get(sessionId)
+      if (!binding) {
+        return { ok: false, error: "session_not_in_workflow_step" }
+      }
+      binding.host.recordInputRequest(sessionId, req)
+      return { ok: true, runId: binding.runId, stepId: binding.stepId }
     },
 
     cancel: (runId) => {

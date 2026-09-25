@@ -355,6 +355,119 @@ describe("WorkflowRunner", () => {
   })
 })
 
+// ── AIP-58 §3(a) run.requestInput ───────────────────────────────────────
+
+describe("WorkflowRunner — AIP-58 §3(a) run.requestInput", () => {
+  it("recordInputRequest on a session not owned by a running workflow step is a tool error, no side effect", () => {
+    const bus = createSessionEventBus()
+    const registry = makeMockRegistry()
+    const runner = createWorkflowRunner({ registry, sessionEvents: bus, resolveAgentAdapter: makeMockAdapter() })
+    const result = runner.recordInputRequest("sess_unknown", { prompt: "what?" })
+    expect(result).toEqual({ ok: false, error: "session_not_in_workflow_step" })
+  })
+
+  it("suspends an agent step on the signal; an invalid resume payload is rejected (still suspended), a valid one resumes the SAME session and re-evaluates the step", async () => {
+    const bus = createSessionEventBus()
+    const sentPrompts: string[] = []
+    let requestRecorded = false
+    // `runner` is referenced from inside `sendPrompt` below but only ever
+    // CALLED after `runner` is assigned (the run hasn't started yet).
+    let runner!: ReturnType<typeof createWorkflowRunner>
+
+    const registry = makeMockRegistry({
+      spawnAgent: vi.fn((input) => ({
+        id: "sess_draft",
+        kind: "agent-cli" as const,
+        workspaceSlug: "test",
+        command: "mock",
+        pid: null,
+        status: "running" as const,
+        startedAt: new Date().toISOString(),
+        cwd: input.cwd,
+        label: input.label,
+      })),
+      sendPrompt: vi.fn(async (sessionId: string, prompt: string) => {
+        sentPrompts.push(prompt)
+        if (!requestRecorded) {
+          requestRecorded = true
+          // Simulates the agent calling the `run_request_input` MCP tool
+          // mid-turn, before its turn ends.
+          const result = runner.recordInputRequest(sessionId, {
+            prompt: "what tone should the brief use — formal or casual?",
+            schema: {
+              type: "object",
+              properties: { tone: { enum: ["formal", "casual"] } },
+              required: ["tone"],
+            },
+          })
+          expect(result.ok).toBe(true)
+        }
+        bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" })
+      }),
+      get: vi.fn((id) =>
+        id === "sess_draft"
+          ? { id, kind: "agent-cli" as const, workspaceSlug: "test", command: "mock", pid: null, status: "running" as const, startedAt: "t" }
+          : undefined
+      ),
+    })
+
+    runner = createWorkflowRunner({ registry, sessionEvents: bus, resolveAgentAdapter: makeMockAdapter() })
+
+    const run = await runner.start({
+      workflowId: "pricing-brief",
+      stages: [{ steps: [{ label: "draft", adapter: "mock", prompt: "write it" }] }],
+    })
+
+    const suspendedOrFailed = new Set(["awaiting-input", "failed"])
+    let parked = runner.status(run.runId)
+    for (let i = 0; i < 100 && parked && !suspendedOrFailed.has(parked.status); i++) {
+      await new Promise(res => setTimeout(res, 10))
+      parked = runner.status(run.runId)
+    }
+    expect(parked?.status).toBe("awaiting-input")
+    expect(parked?.error).toBeUndefined()
+    expect(parked?.awaitingSuspend).toMatchObject({
+      stepId: "draft",
+      reason: "input-required",
+      prompt: "what tone should the brief use — formal or casual?",
+    })
+    // §3: `StepRecord.suspend` on the STEP itself — the transcriber UI
+    // contract (`stages[].steps[].suspend { reason, prompt, schema }`).
+    expect(parked?.stages[0]?.steps[0]?.suspend).toEqual({
+      reason: "input-required",
+      prompt: "what tone should the brief use — formal or casual?",
+      schema: { type: "object", properties: { tone: { enum: ["formal", "casual"] } }, required: ["tone"] },
+    })
+
+    // §3/§9: a resume payload that fails `suspend.schema` is rejected
+    // WITHOUT transitioning the run — it stays suspended.
+    const invalid = runner.resumeSuspend(run.runId, { payload: { tone: "sarcastic" } })
+    expect(invalid).toMatchObject({ ok: false, error: "invalid_payload" })
+    expect(runner.status(run.runId)?.status).toBe("awaiting-input")
+    expect(runner.status(run.runId)?.awaitingSuspend?.stepId).toBe("draft")
+
+    // A valid payload resumes — sent as the step's NEXT prompt to the SAME
+    // session, then the outcome rule is re-applied (no outputSchema here ⇒
+    // vacuous contract ⇒ succeeds).
+    const valid = runner.resumeSuspend(run.runId, { payload: { tone: "formal" } })
+    expect(valid.ok).toBe(true)
+
+    const terminal = new Set(["done", "failed", "cancelled"])
+    let final = runner.status(run.runId)
+    for (let i = 0; i < 100 && final && !terminal.has(final.status); i++) {
+      await new Promise(res => setTimeout(res, 10))
+      final = runner.status(run.runId)
+    }
+    expect(final?.status).toBe("done")
+    expect(final?.awaitingSuspend).toBeUndefined()
+    expect(final?.stages[0]?.steps[0]?.suspend).toBeUndefined()
+    expect(sentPrompts).toEqual([
+      "write it\n\nIf you need information you don't have, call the run_request_input tool instead of asking in your reply.",
+      JSON.stringify({ tone: "formal" }),
+    ])
+  })
+})
+
 // ── Persistence tests ─────────────────────────────────────────────────
 
 describe("WorkflowRunner persistence", () => {

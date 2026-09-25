@@ -10,6 +10,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
+import { isCompilableJsonSchema } from "@agentproto/workflow-runtime"
 import type { SessionsRegistry, SessionWatcherInfo } from "./sessions.js"
 import type {
   SessionEventBus,
@@ -670,6 +671,12 @@ export interface RegisterOrchestrationToolsOptions {
    * secret for webhook signature verification.
    */
   endpointStore?: InboundEndpointStore
+  /** The calling agent session id (from `?callerSessionId=` on the `/mcp`
+   *  self-ref URL — same trusted per-request identity `registerBrainTools`
+   *  uses). Backs `run_request_input` (AIP-58 §9): the tool is callable
+   *  only from inside a workflow-spawned session's own turn, resolved from
+   *  this id, never a caller-supplied one. */
+  callerSessionId?: string
 }
 
 export function registerOrchestrationTools(
@@ -681,7 +688,7 @@ export function registerOrchestrationTools(
   const server = opts.toolSubset
     ? withToolSubset(rawServer, opts.toolSubset)
     : rawServer
-  const { registry, sessionEvents, eventRing, callerScope, inboundWatcher, mcpProxy, bindingStore, endpointStore, telegramCreds } = opts
+  const { registry, sessionEvents, eventRing, callerScope, inboundWatcher, mcpProxy, bindingStore, endpointStore, telegramCreds, callerSessionId } = opts
 
   /**
    * WP6: check whether ALL watched sessions of a policy fall within the
@@ -1198,6 +1205,74 @@ export function registerOrchestrationTools(
         }
         workflowRunner.resolve(input.runId, input.stageIndex, input.stepIndex, input.response)
         return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] }
+      },
+    )
+
+    server.tool(
+      "run_request_input",
+      "AIP-58 §9 `run.requestInput` — called by an agent-backed workflow " +
+        "step's OWN session, mid-turn, to explicitly signal that it needs " +
+        "input it doesn't have. This is one of only two signals (the other " +
+        "is a protocol-level awaiting-input event) that suspends the step " +
+        "as `input-required`; the turn simply ending, or its final message " +
+        "merely reading like a question, does NOT suspend it (AIP-58 §3 " +
+        "Outcome rule — a heuristic read of the turn's text may only " +
+        "annotate a `hint`, never suspend). Does NOT end the turn — call " +
+        "it, then finish your reply normally. Only callable from inside a " +
+        "session a currently-running workflow step spawned; called from " +
+        "anywhere else, this is a tool error with no side effect. Resumed " +
+        "with `workflow_escalation_resolve { runId, payload }` once " +
+        "`workflow_status` shows the run `awaiting-input`.",
+      {
+        prompt: z.string().min(1).describe("What input is needed, in a form the resuming caller can act on."),
+        schema: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe("JSON Schema the eventual run.resume payload must validate against before the run transitions out of suspended."),
+        stepId: z.string().optional().describe("Informational only — the step is resolved from the calling session itself, never from this field."),
+      },
+      async input => {
+        if (!workflowRunner) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ error: "workflow_runner_unavailable" }) }],
+            isError: true,
+          }
+        }
+        if (!callerSessionId) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "no_caller_session",
+                  message: "run_request_input must be called from inside a session a workflow step spawned",
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+        if (input.schema !== undefined && !isCompilableJsonSchema(input.schema)) {
+          return {
+            content: [
+              { type: "text", text: JSON.stringify({ error: "invalid_schema", message: "schema must be a valid JSON Schema object" }) },
+            ],
+            isError: true,
+          }
+        }
+        const result = workflowRunner.recordInputRequest(callerSessionId, {
+          prompt: input.prompt,
+          ...(input.schema !== undefined ? { schema: input.schema } : {}),
+        })
+        if (!result.ok) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ error: result.error }) }],
+            isError: true,
+          }
+        }
+        return {
+          content: [{ type: "text", text: JSON.stringify({ ok: true, runId: result.runId, stepId: result.stepId }) }],
+        }
       },
     )
 

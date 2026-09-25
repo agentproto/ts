@@ -5,7 +5,7 @@
  * that a non-linear `next` goto is rejected with a clear diagnostic.
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { z } from "zod"
 import { defineTool } from "@agentproto/tool"
 import { defineDriver, implementTool } from "@agentproto/driver"
@@ -302,6 +302,62 @@ describe("compileWorkflow — declarative agent step", () => {
       expected.prompt({ input: undefined, item: undefined, index: undefined, steps: {} }),
     )
     expect(step.policy).toEqual({ awaiting: "fail" })
+  })
+
+  it("AIP-58 §3: a step with no outputSchema (vacuous contract) warns once at compile time and still succeeds", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const wf = defineWorkflow({
+        name: "Ask",
+        id: "ask-no-contract",
+        description: "No outputSchema declared.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [{ id: "s1", kind: "agent", adapter: "mock", prompt: "hello" }],
+      })
+      const compiled = compileWorkflow(wf, { tools, candidates })
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(warn.mock.calls[0]?.[0]).toContain("s1")
+      expect(warn.mock.calls[0]?.[0]).toContain("no output contract")
+
+      const host = {
+        spawn: async () => "sess_1",
+        sendPromptAndWait: async () => {},
+        resolveByLabel: () => undefined,
+      }
+      const { output } = await runWorkflow({ workflow: compiled, agents: host })
+      expect(output).toEqual({ sessionId: "sess_1" })
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it("AIP-58 §3: a step WITH outputSchema never warns", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const wf = defineWorkflow({
+        name: "Ask",
+        id: "ask-with-contract",
+        description: "outputSchema declared.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [
+          {
+            id: "s1",
+            kind: "agent",
+            adapter: "mock",
+            prompt: "hello",
+            outputSchema: z.object({ verdict: z.string() }),
+          },
+        ],
+      })
+      compileWorkflow(wf, { tools, candidates })
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it("resolves a $steps ref in the prompt through the same grammar as a tool step's inputs", async () => {

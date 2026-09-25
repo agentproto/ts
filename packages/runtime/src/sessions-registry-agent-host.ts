@@ -49,8 +49,33 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
         policy: Extract<RoutinePolicy, { awaiting: "escalate" }>,
         stepId: string | undefined,
       ) => Promise<string>
+      /** Notified every time a step's session id is resolved into
+       *  `sessionsByLabel` (both spawn paths) — lets `WorkflowRunner`
+       *  maintain a run-spanning sessionId → (runId, stepId) index for the
+       *  `run_request_input` MCP tool (AIP-58 §9), without this host
+       *  needing to know about runs at all. */
+      onSessionLabeled?: (stepId: string, sessionId: string) => void
     },
   ) {}
+
+  /** AIP-58 §3(a): pending `run.requestInput` signals, keyed by sessionId —
+   *  recorded by `recordInputRequest` (called from the daemon's MCP tool
+   *  handler) and consumed by `takeInputRequest` (called by
+   *  `execAgentStep` right after a turn ends). */
+  private readonly pendingInputRequests = new Map<string, { prompt: string; schema?: Record<string, unknown> }>()
+
+  /** Record an AIP-58 §3(a) `run.requestInput` signal for `sessionId` — does
+   *  NOT end the turn; it's read by `takeInputRequest` on the next check. */
+  recordInputRequest(sessionId: string, req: { prompt: string; schema?: Record<string, unknown> }): void {
+    this.pendingInputRequests.set(sessionId, req)
+  }
+
+  /** Consume (and clear) `sessionId`'s pending input request, if any. */
+  takeInputRequest(sessionId: string): { prompt: string; schema?: Record<string, unknown> } | undefined {
+    const req = this.pendingInputRequests.get(sessionId)
+    if (req) this.pendingInputRequests.delete(sessionId)
+    return req
+  }
 
   async spawn(
     adapter: string,
@@ -117,6 +142,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       }
       if (opts.stepId) {
         this.sessionsByLabel.set(opts.stepId, result.descriptor.id)
+        this.opts?.onSessionLabeled?.(opts.stepId, result.descriptor.id)
       }
       // `harness.tools` has no generic per-spawn allowlist mechanism this
       // runtime can drive — `run-workflow.ts` already records
@@ -191,6 +217,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
     })
     if (opts.stepId) {
       this.sessionsByLabel.set(opts.stepId, desc.id)
+      this.opts?.onSessionLabeled?.(opts.stepId, desc.id)
     }
     if (harnessWarnings.length > 0) {
       this.sessionEvents.emit({

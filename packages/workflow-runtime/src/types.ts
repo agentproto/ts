@@ -482,6 +482,17 @@ export interface ResumeRequest {
   on: readonly string[]
 }
 
+/**
+ * AIP-58 §3(a) explicit signal, recorded by the host when the step's own
+ * session calls `run.requestInput` before its turn ends. Passed to
+ * {@link RunWorkflowArgs.onInputRequired} to durably suspend the step.
+ */
+export interface InputRequiredRequest {
+  stepId: string
+  prompt: string
+  schema?: Record<string, unknown>
+}
+
 export interface AgentSessionHost {
   /** Spawn a new agent session and return its id. A `sandbox` ref asks the
    *  host to run the session inside that sandbox (provider slug or inline
@@ -506,6 +517,16 @@ export interface AgentSessionHost {
   resolveByLabel(stepId: string): string | undefined
   /** Handle an awaiting-input policy for a session. */
   onAwaitingInput?(sessionId: string, policy: AgentStep["policy"]): Promise<void>
+  /**
+   * AIP-58 §3(a) explicit signal: consume (and clear) a pending
+   * `run.requestInput` recorded for this session — checked by
+   * {@link AgentStep} execution right after a turn ends, before the
+   * outputSchema retry loop (and again inside it, after every reprompt).
+   * `undefined` when no request is pending. Optional: a host that omits
+   * this never suspends a step on this signal — the outcome rule's other
+   * branches (missing-output / vacuous success) still apply.
+   */
+  takeInputRequest?(sessionId: string): { prompt: string; schema?: Record<string, unknown> } | undefined
   /** Return the session's final assistant message text (for outputSchema validation). */
   readFinalMessage?(sessionId: string): Promise<string>
   /** Current cumulative cost (USD) of a session, for run-level budgeting. */
@@ -546,6 +567,19 @@ export interface RunWorkflowArgs {
   approve?: (req: ApprovalRequest) => boolean | ApprovalDecision | Promise<boolean | ApprovalDecision>
   /** Supply a {@link SuspendStep}'s resume payload. Default: throw + suspend. */
   resume?: (req: ResumeRequest) => unknown | Promise<unknown>
+  /**
+   * AIP-58 §3(a)/§5 outcome rule: suspend an {@link AgentStep} that
+   * signalled `run.requestInput` (see
+   * {@link AgentSessionHost.takeInputRequest}), resolving with the resume
+   * payload once an external event supplies one. The runtime sends that
+   * payload (JSON) as the step's next prompt to the SAME session and
+   * re-applies the outcome rule — the step may suspend again, fail
+   * `missing-output`, or succeed. Default (undefined) ⇒
+   * {@link AgentInputRequiredError} throws instead, the same
+   * no-hook-supplied shape {@link WorkflowSuspendedError} uses for
+   * {@link SuspendStep}.
+   */
+  onInputRequired?: (req: InputRequiredRequest) => unknown | Promise<unknown>
   /** Host-injected agent session runtime. Undefined ⇒ {@link AgentStep} throws. */
   agents?: AgentSessionHost
   /** Working directory for spawned agent sessions. */

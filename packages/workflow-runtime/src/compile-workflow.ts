@@ -548,6 +548,18 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     if (options === undefined) options = resolved.options
   }
 
+  // AIP-58 §3 Outcome rule: a step declaring NEITHER an output schema NOR a
+  // required artifact (artifacts are P4, not checked here) has a vacuous
+  // contract — its turn ending is unconditional success, and this runtime
+  // can never detect a missing output for it. Warn once per step at compile
+  // time (never at runtime, and never a thrown error — existing manifests
+  // that never declared one keep working exactly as before).
+  if (step.outputSchema === undefined) {
+    console.warn(
+      `[workflow-runtime] agent step '${id}' declares no output contract; AIP-58 cannot detect a missing output`,
+    )
+  }
+
   return buildAgentStep(id, {
     prompt: (b: Bindings) => renderPrompt(prompt, b),
     ...(adapter !== undefined ? { adapter } : {}),

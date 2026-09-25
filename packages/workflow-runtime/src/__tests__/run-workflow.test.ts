@@ -360,6 +360,7 @@ function fakeHost(
     readFinalMessage: AgentSessionHost["readFinalMessage"]
     readCostUsd: AgentSessionHost["readCostUsd"]
     emitHarnessWarning: AgentSessionHost["emitHarnessWarning"]
+    takeInputRequest: AgentSessionHost["takeInputRequest"]
   }> = {},
 ): AgentSessionHost {
   return {
@@ -371,6 +372,7 @@ function fakeHost(
     readFinalMessage: overrides.readFinalMessage,
     readCostUsd: overrides.readCostUsd,
     ...(overrides.emitHarnessWarning ? { emitHarnessWarning: overrides.emitHarnessWarning } : {}),
+    ...(overrides.takeInputRequest ? { takeInputRequest: overrides.takeInputRequest } : {}),
   }
 }
 
@@ -1056,7 +1058,7 @@ describe("runWorkflow — agent step outputSchema", () => {
     expect(host.sendPromptAndWait).toHaveBeenCalledTimes(2)
   })
 
-  it("never valid within maxRetries → rejects with output_invalid", async () => {
+  it("never valid within maxRetries → rejects with StepOutcomeError { code: 'missing-output' }", async () => {
     const host = fakeHost({
       readFinalMessage: vi.fn(async () => JSON.stringify({ verdict: "nope" })),
       sendPromptAndWait: vi.fn(async () => {}),
@@ -1074,9 +1076,39 @@ describe("runWorkflow — agent step outputSchema", () => {
         },
       ],
     }
-    await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toThrow(
-      /output_invalid/,
-    )
+    // AIP-58 §3 Outcome rule: a declared-but-unsatisfied contract is
+    // `failed { code: "missing-output" }` (not a bare Error), and the zod
+    // mismatch message is preserved on `error.message`.
+    await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toMatchObject({
+      name: "StepOutcomeError",
+      stepId: "s3",
+      code: "missing-output",
+      message: expect.stringContaining("missing-output"),
+    })
+  })
+
+  it("missing-output on a final message ending in '?' sets hint 'possible-input-request' without changing the outcome", async () => {
+    const host = fakeHost({
+      readFinalMessage: vi.fn(async () => "What tone should the brief use — formal or casual?"),
+      sendPromptAndWait: vi.fn(async () => {}),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "schema-hint",
+      steps: [
+        {
+          kind: "agent",
+          id: "draft",
+          adapter: "mock",
+          prompt: () => "judge",
+          outputSchema: verdictSchema,
+          maxRetries: 0,
+        },
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toMatchObject({
+      code: "missing-output",
+      hint: "possible-input-request",
+    })
   })
 
   it("outputSchema set but host lacks readFinalMessage → clear throw", async () => {
@@ -1098,6 +1130,124 @@ describe("runWorkflow — agent step outputSchema", () => {
     await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toThrow(
       /outputSchema requires a host with readFinalMessage/,
     )
+  })
+})
+
+// ── AIP-58 §3(a) run.requestInput signal ─────────────────────────────
+
+describe("runWorkflow — agent step AIP-58 §3(a) run.requestInput signal", () => {
+  it("no onInputRequired hook ⇒ throws AgentInputRequiredError (no-hook-supplied shape)", async () => {
+    const host = fakeHost({
+      takeInputRequest: vi.fn(() => ({ prompt: "what tone?", schema: { type: "object" } })),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "input-required-no-hook",
+      steps: [{ kind: "agent", id: "draft", adapter: "mock", prompt: () => "write it" }],
+    }
+    await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toMatchObject({
+      name: "AgentInputRequiredError",
+      stepId: "draft",
+      prompt: "what tone?",
+    })
+  })
+
+  it("signal present ⇒ suspends via onInputRequired, sends the resume payload to the SAME session, re-applies the outcome rule", async () => {
+    const prompts: string[] = []
+    let signalled = false
+    const host = fakeHost({
+      sendPromptAndWait: vi.fn(async (_sid, prompt) => {
+        prompts.push(prompt)
+      }),
+      // First turn signals; the resumed turn (whatever prompt comes next) doesn't.
+      takeInputRequest: vi.fn(() => {
+        if (signalled) return undefined
+        signalled = true
+        return { prompt: "what tone?", schema: { type: "object", properties: { tone: { type: "string" } } } }
+      }),
+    })
+    const onInputRequired = vi.fn(async (req: { stepId: string; prompt: string; schema?: unknown }) => {
+      expect(req).toEqual({
+        stepId: "draft",
+        prompt: "what tone?",
+        schema: { type: "object", properties: { tone: { type: "string" } } },
+      })
+      return { tone: "formal" }
+    })
+    const wf: RuntimeWorkflow = {
+      id: "input-required-resume",
+      steps: [{ kind: "agent", id: "draft", adapter: "mock", prompt: () => "write it" }],
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host, onInputRequired })
+    expect(onInputRequired).toHaveBeenCalledTimes(1)
+    expect(output).toEqual({ sessionId: "sess_fake" })
+    expect(prompts).toEqual([
+      "write it\n\nIf you need information you don't have, call the run_request_input tool instead of asking in your reply.",
+      JSON.stringify({ tone: "formal" }),
+    ])
+  })
+
+  it("a step may suspend again after being resumed (loop, not one-shot)", async () => {
+    let calls = 0
+    const host = fakeHost({
+      takeInputRequest: vi.fn(() => {
+        calls++
+        return calls <= 2 ? { prompt: `question ${calls}` } : undefined
+      }),
+    })
+    const onInputRequired = vi.fn(async (req: { prompt: string }) => ({ answer: req.prompt }))
+    const wf: RuntimeWorkflow = {
+      id: "input-required-twice",
+      steps: [{ kind: "agent", id: "draft", adapter: "mock", prompt: () => "write it" }],
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host, onInputRequired })
+    expect(onInputRequired).toHaveBeenCalledTimes(2)
+    expect(output).toEqual({ sessionId: "sess_fake" })
+  })
+
+  it("checked inside the outputSchema retry loop too — a signal on a reprompt still suspends", async () => {
+    // First readFinalMessage is unparseable JSON (triggers the retry-loop's
+    // reprompt); every call after the resume returns a valid verdict.
+    let readCalls = 0
+    const host = fakeHost({
+      readFinalMessage: vi.fn(async () => (++readCalls === 1 ? "not json" : JSON.stringify({ verdict: "pass" }))),
+      // Signal only on the SECOND sendPromptAndWait (the retry loop's own
+      // reprompt) — the initial send and the post-resume resend see none.
+      takeInputRequest: vi.fn((() => {
+        let n = 0
+        return () => (++n === 2 ? { prompt: "need a value" } : undefined)
+      })()),
+    })
+    const onInputRequired = vi.fn(async () => ({ verdict: "pass" }))
+    const wf: RuntimeWorkflow = {
+      id: "input-required-in-retry",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "judge",
+          outputSchema: verdictSchema,
+        },
+      ],
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host, onInputRequired })
+    expect(onInputRequired).toHaveBeenCalledTimes(1)
+    expect(output).toEqual({ sessionId: "sess_fake", output: { verdict: "pass" } })
+  })
+
+  it("no takeInputRequest on the host ⇒ no prompt affordance appended", async () => {
+    const prompts: string[] = []
+    const host = fakeHost({
+      sendPromptAndWait: vi.fn(async (_sid, prompt) => {
+        prompts.push(prompt)
+      }),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "no-affordance",
+      steps: [{ kind: "agent", id: "s1", adapter: "mock", prompt: () => "write it" }],
+    }
+    await runWorkflow({ workflow: wf, agents: host })
+    expect(prompts).toEqual(["write it"])
   })
 })
 

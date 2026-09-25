@@ -8,7 +8,12 @@
  * are catalogue declarations injected as `candidates`.
  */
 
-export { runWorkflow, WorkflowSuspendedError } from "./run-workflow.js"
+export {
+  runWorkflow,
+  WorkflowSuspendedError,
+  AgentInputRequiredError,
+  StepOutcomeError,
+} from "./run-workflow.js"
 export {
   compileWorkflow,
   WorkflowCompileError,
@@ -23,6 +28,8 @@ export { compileWorkflowManifest } from "./load-workflow.js"
 export {
   normalizeWorkflowInputsSchema,
   validateWorkflowInput,
+  isCompilableJsonSchema,
+  validateAgainstJsonSchema,
   type WorkflowInputValidation,
 } from "./validate-input.js"
 export { buildAgentStep, type AgentStepFields } from "./build-agent-step.js"
@@ -67,5 +74,6 @@ export type {
   ApprovalRequest,
   ApprovalDecision,
   ResumeRequest,
+  InputRequiredRequest,
   WorkflowRunResult,
 } from "./types.js"
