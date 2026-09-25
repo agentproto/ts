@@ -154,6 +154,14 @@ describe("standalone app UI host — REST routes", () => {
     )
   })
 
+  it("GET /apps/:appId/ui/ (trailing slash, e.g. a reload after the SPA router's rewrite) serves the same app", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${APP_ID}/ui/?session=sess_x`)
+      expect(res.status).toBe(200)
+      expect(await res.text()).toContain("media-viewer-marker")
+    })
+  })
+
   it("GET with a %2F-encoded appId serves the same app", async () => {
     await withServer(async base => {
       const res = await fetch(`${base}/apps/${encodeURIComponent(APP_ID)}/ui`)

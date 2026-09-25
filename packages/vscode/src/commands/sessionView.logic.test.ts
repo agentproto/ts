@@ -4,6 +4,7 @@ import type { InstalledAppInfo, InstalledAppUi } from "../client/types.js"
 import {
   SESSION_CHAT_APP_ID,
   chatPanelUrl,
+  chatReuseUrlFilter,
   chatUrl,
   installedSessionChatApp,
   resolveSessionOpen,
@@ -21,6 +22,14 @@ describe("installedSessionChatApp", () => {
     expect(installedSessionChatApp([app(SESSION_CHAT_APP_ID)])).toBe(false)
     expect(installedSessionChatApp([app("@agentik/other", { path: "ui" }), CHAT_APP])).toBe(true)
     expect(installedSessionChatApp([CHAT_APP])).toBe(true)
+  })
+})
+
+describe("chatReuseUrlFilter", () => {
+  it("globs every session-chat tab on the daemon, with or without the router's trailing slash", () => {
+    expect(chatReuseUrlFilter("http://127.0.0.1:18790/")).toBe(
+      "http://127.0.0.1:18790/apps/@agentik/session-chat/ui/**",
+    )
   })
 })
 
