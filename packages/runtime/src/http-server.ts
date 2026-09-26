@@ -64,6 +64,7 @@ import {
   appUiContentType,
   createEncodedRepresentation,
   createRepresentationCache,
+  ifNoneMatchHits,
   isCompressibleContentType,
   isValidAppUiAssetName,
   sendRepresentation,
@@ -4647,18 +4648,68 @@ async function handleSessions(
     const includeArchived = params.get("includeArchived") === "true"
     const kindParam = params.get("kind")
     const includeCommands = params.get("includeCommands") === "true"
+    const sinceParam = params.get("since")
+    const matchesFilter = (s: SessionDescriptor): boolean => {
+      if (kindParam && kindParam !== "all") return s.kind === kindParam
+      return includeCommands || s.kind !== "command"
+    }
     let rows = registry.list({ includeArchived })
     // Same default-view semantics as the `session_list` MCP tool: a
     // `kind:"command"` row is a shell-execution LOG (already reachable via
     // `command_list` / `?kind=command`), not a resumable session, so it's
     // excluded from the default (unfiltered / `?kind=all`) view unless
     // `?includeCommands=true` opts into the union.
-    if (kindParam && kindParam !== "all") {
-      rows = rows.filter(s => s.kind === kindParam)
-    } else if (!includeCommands) {
-      rows = rows.filter(s => s.kind !== "command")
+    rows = rows.filter(matchesFilter)
+
+    let body: unknown
+    if (sinceParam !== null) {
+      const sinceMs = Date.parse(sinceParam)
+      if (Number.isNaN(sinceMs)) {
+        json(400, {
+          error: "invalid_since",
+          message: `?since must be an ISO-8601 timestamp, got ${JSON.stringify(sinceParam)}.`,
+        })
+        return true
+      }
+      // Delta view (deliverable 5): only rows that changed at/after `since`
+      // (by `lastActivityAt`, falling back to `startedAt` for a row that
+      // never bumped it) — the client keeps everything else from its held
+      // list. `removed` covers the one way a row leaves the default
+      // (`includeArchived=false`) view post-creation: `session_archive`.
+      // Descriptors don't carry an archival timestamp, so this reports
+      // every currently-archived id the caller's filter would otherwise
+      // match, on every delta request, rather than only newly-archived
+      // ones — still correct for a client reconciling a held list (removing
+      // an id it doesn't already have is a no-op), just not minimal.
+      const changed = rows.filter(s => {
+        const ts = Date.parse(s.lastActivityAt ?? s.startedAt)
+        return Number.isNaN(ts) || ts >= sinceMs
+      })
+      const removed = includeArchived
+        ? []
+        : registry
+            .list({ includeArchived: true })
+            .filter(s => s.archived && matchesFilter(s))
+            .map(s => s.id)
+      body = { sessions: changed.map(sessionDescriptorForHttp), removed }
+    } else {
+      body = { sessions: rows.map(sessionDescriptorForHttp) }
     }
-    json(200, { sessions: rows.map(sessionDescriptorForHttp) })
+
+    // Strong etag over the exact serialized body (app-ui-delivery.ts
+    // conventions) — changes whenever any listed session's status, busy,
+    // awaitingInput or lastActivityAt changes, since all four are part of
+    // the serialized descriptor. 304 short-circuits the body entirely on a
+    // match, letting a poller that hasn't changed skip re-sending ~173 KB.
+    const serialized = JSON.stringify(body)
+    const etag = strongEtag(serialized)
+    if (ifNoneMatchHits(req.headers["if-none-match"], etag)) {
+      res.writeHead(304, { etag, "content-type": "application/json" })
+      res.end()
+      return true
+    }
+    res.writeHead(200, { etag, "content-type": "application/json" })
+    res.end(serialized)
     return true
   }
 
