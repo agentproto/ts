@@ -53,6 +53,11 @@ import type { CatalogRoute } from "./catalog-models.js"
 import type { SandboxMode } from "@agentproto/command-sandbox"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
+import {
+  attachFieldSchema,
+  commandSandboxSchema,
+  contextContinuityInputSchema,
+} from "./spawn-field-schemas.js"
 import type {
   WorktreeIsolationMode,
   WorktreeProvisioner,
@@ -423,9 +428,7 @@ export function registerAgentTools(
             "call arrives through the scoped orchestrator gateway — that path derives " +
             "the parent from its own token, which always wins over this hint."
         ),
-      attach: jsonTolerant(
-        z.union([z.boolean(), z.object({ parent: z.string().min(1).optional() })]),
-      )
+      attach: jsonTolerant(attachFieldSchema)
         .optional()
         .describe(
           "Parent-attach control, mirroring `worktree`. By DEFAULT (omitted) a " +
@@ -797,26 +800,7 @@ export function registerAgentTools(
             "crash-loop cap. Omit for today's behaviour: a dead session stays dead " +
             "until a human/orchestrator prompts or restarts it."
         ),
-      contextContinuity: jsonTolerant(
-        z.object({
-          mode: z.enum(["manual", "ask", "auto"]).optional(),
-          warnAtPct: z.number().int().min(0).max(100).optional(),
-          compactAtPct: z.number().int().min(0).max(100).optional(),
-          continueFreshAtPct: z.number().int().min(0).max(100).optional(),
-          hardStopAtPct: z.number().int().min(0).max(100).optional(),
-          goal: z.boolean().optional(),
-          plan: z.boolean().optional(),
-          decisions: z.boolean().optional(),
-          changedFiles: z.boolean().optional(),
-          gitStatus: z.boolean().optional(),
-          tests: z.boolean().optional(),
-          errors: z.boolean().optional(),
-          risks: z.boolean().optional(),
-          nextStep: z.boolean().optional(),
-          config: z.boolean().optional(),
-          label: z.string().optional(),
-        }),
-      )
+      contextContinuity: jsonTolerant(contextContinuityInputSchema)
         .optional()
         .describe(
           "Context-continuity policy for this session — controls warning, opportunistic " +
@@ -933,8 +917,7 @@ export function registerAgentTools(
             "provider-resolved public URL for the served UI (the port is also added to the " +
             "spec's `extraPorts` and echoed in `sandboxPorts`)."
         ),
-      commandSandbox: z
-        .enum(["off", "workspace", "strict"])
+      commandSandbox: commandSandboxSchema
         .optional()
         .describe(
           "OS-level process confinement (macOS Seatbelt / Linux bubblewrap) for the " +
