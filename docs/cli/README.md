@@ -52,7 +52,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto mcp-bridge`](./verbs/mcp-bridge.md) — stdio MCP proxy to the daemon `/mcp` endpoint
 - [`agentproto mcp-app`](./verbs/mcp-app.md) — stdio MCP server scoped to one installed app's tools
 - [`agentproto models`](./verbs/models.md) — list runnable models per adapter with provider-key status
-- [`agentproto onboard`](./verbs/onboard.md) — first-run: register MCP + install the skill pack in one pass
+- [`agentproto onboard`](./verbs/onboard.md) — alias of the `setup` wizard
 - [`agentproto pack`](./verbs/pack.md) — generate a versioned skill pack from a manifest
 - [`agentproto pair`](./verbs/pair.md) — end-to-end pairing with a daemon over an untrusted rendezvous
 - [`agentproto permissions`](./verbs/permissions.md) — held tool-permission requests: list, approve/deny, or auto-resolve with `watch` rules
@@ -66,7 +66,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto sandbox`](./verbs/sandbox.md) — attach to an already-existing sandbox (Box/e2b) without tearing it down
 - [`agentproto serve`](./verbs/serve.md) — daemon mode (local-only or tunnelled)
 - [`agentproto sessions`](./verbs/sessions.md) — browse/start/attach/stop daemon sessions
-- [`agentproto setup`](./verbs/setup.md) — re-run an adapter's post-install pipeline
+- [`agentproto setup`](./verbs/setup.md) — onboarding wizard (no slug), or re-run an adapter's post-install pipeline (`setup <slug>`)
 - [`agentproto task`](./verbs/task.md) — create/list/claim/update tasks on the daemon's Task ledger
 - [`agentproto tunnel`](./verbs/tunnel.md) — manage public Cloudflare/Ngrok tunnels
 - [`agentproto usage`](./verbs/usage.md) — local-derived, provider-agnostic spend estimate over a rolling window

@@ -43,6 +43,115 @@ export interface OnboardingStep {
    *  several slow local probes. */
   timeoutMs?: number
   detect(ctx: StepContext): Promise<StepCheck[]>
+  /**
+   * From `detect()` output, what the `setup` wizard proposes. Empty = nothing
+   * to do. `previous` holds the latest checks of the steps that already ran
+   * this wizard pass, keyed by step id. Never called by `doctor`.
+   */
+  plan?(checks: StepCheck[], ctx: StepContext, previous: ReadonlyMap<string, StepCheck[]>): Promise<SetupAction[]>
+  /** A reason the wizard cannot continue past this step (e.g. Node too old),
+   *  or `null`. */
+  stopIf?(checks: StepCheck[]): string | null
+  /** Extra lines the wizard prints after this step's verify. */
+  report?(io: SetupIO): Promise<string[]>
+}
+
+// ── setup (the wizard's side: these DO change things) ─────────────────────
+
+export interface SetupChoice {
+  value: string
+  label: string
+  hint?: string
+  /** Pre-selected in the prompt / applied under --yes. */
+  default?: boolean
+}
+
+export interface ApplyResult {
+  ok: boolean
+  /** One line shown after the action. */
+  detail?: string
+  /** Printed together at the end of the wizard (e.g. Claude Code `/plugin` steps). */
+  notes?: string[]
+}
+
+export interface SetupAction {
+  /** e.g. "daemon.install" */
+  id: string
+  /** e.g. "Install the daemon as a login service" */
+  title: string
+  /** Pre-selected in the prompt / applied under --yes. For a `choices`
+   *  action, applied under --yes with the default choices. */
+  default: boolean
+  /** Multiselect action: `apply` receives the selected values. */
+  choices?: SetupChoice[]
+  /** Needs a secret typed by the user: never applied under --yes. */
+  needsSecret?: boolean
+  /** Runs an interactive verb or streams its own output: the wizard shows
+   *  no spinner around it and never captures its output. */
+  streamsOutput?: boolean
+  apply(io: SetupIO, selected?: string[]): Promise<ApplyResult>
+}
+
+/** Prompts; each resolves `null` when the user cancels. */
+export interface SetupPrompts {
+  confirm(message: string, initial: boolean): Promise<boolean | null>
+  multiselect(message: string, choices: readonly SetupChoice[], initial: readonly string[]): Promise<string[] | null>
+  select(message: string, choices: readonly SetupChoice[]): Promise<string | null>
+  text(message: string, initial: string): Promise<string | null>
+  password(message: string): Promise<string | null>
+}
+
+export interface SetupLog {
+  info(message: string): void
+  success(message: string): void
+  warn(message: string): void
+  error(message: string): void
+  step(message: string): void
+  message(message: string): void
+}
+
+/** Summary of runnable models for one installed harness (`agentproto models`). */
+export interface ModelsSummaryRow {
+  slug: string
+  runnable: number
+  total: number
+}
+
+export interface FirstRunResult {
+  ok: boolean
+  error?: string
+}
+
+/**
+ * The existing verbs/helpers the wizard's actions call. Each real entry is
+ * the verb's own entrypoint (`runWorkspace`, `runDaemon`, `runInstall`, …),
+ * so the wizard never re-implements a change; tests inject fakes.
+ */
+export interface SetupVerbs {
+  workspace(args: readonly string[]): Promise<number>
+  daemon(args: readonly string[]): Promise<number>
+  /** `install-mcp`'s start-or-spawn-`serve` fallback; the port or `null`. */
+  ensureDaemon(): Promise<number | null>
+  install(args: readonly string[]): Promise<number>
+  auth(args: readonly string[]): Promise<number>
+  installMcp(args: readonly string[]): Promise<number>
+  installSkill(slug: string, args: readonly string[]): Promise<number>
+  /** `npm i -g @agentproto/cli@latest`. */
+  updateCli(): Promise<number>
+  modelsSummary(): Promise<ModelsSummaryRow[]>
+  /** Spawn `slug` on the daemon, run one prompt, stream its text lines,
+   *  then stop the session. */
+  firstRun(slug: string, prompt: string, onLine: (line: string) => void): Promise<FirstRunResult>
+  /** Is an app with this id installed (`~/.agentproto/apps.json`)? */
+  appInstalled(appId: string): boolean
+}
+
+export interface SetupIO {
+  /** A human can answer prompts (TTY and not --yes). */
+  interactive: boolean
+  prompts: SetupPrompts
+  log: SetupLog
+  verbs: SetupVerbs
 }
 
 export interface StepReport {

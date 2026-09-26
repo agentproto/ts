@@ -142,4 +142,33 @@ export const skillsStep: OnboardingStep = {
     }
     return checks
   },
+  async plan(checks) {
+    const needed = checks.filter((c) => c.status === "warn" && c.fix?.startsWith(INSTALL_FIX))
+    if (needed.length === 0) return []
+    const pluginPaths = needed.flatMap((c) =>
+      c.data?.format === "claude-plugin" && typeof c.data.path === "string" ? [c.data.path] : [],
+    )
+    return [
+      {
+        id: "skills.install",
+        title: `Install the agentproto skill pack for ${needed.map((c) => c.title).join(", ")}`,
+        default: true,
+        async apply(io) {
+          // --force: overwrite our own previous (stale) copies without a prompt.
+          const code = await io.verbs.installSkill("skill/agentproto-pack", ["--force"])
+          if (code !== 0) return { ok: false, detail: `install skill exited ${code}` }
+          return {
+            ok: true,
+            detail: "installed",
+            notes: pluginPaths.map(
+              (p) =>
+                `Claude Code can't load a plugin headlessly. In Claude Code, run:\n` +
+                `    /plugin marketplace add ${p}\n` +
+                `  then install "agentproto-plugin" from that marketplace (/plugin).`,
+            ),
+          }
+        },
+      },
+    ]
+  },
 }

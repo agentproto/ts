@@ -1,8 +1,9 @@
 # Getting started
 
-One verified path from `npm install` to a project-scoped Claude Code
-integration: install → workspace → daemon → register the MCP server →
-verify → skills.
+From `npm install` to a working install — daemon running, an agent harness
+ready, your coding client wired to agentproto over MCP, skills installed —
+with one command: `agentproto setup`. The manual path is kept below for
+when you want to do (or understand) each step yourself.
 
 > Looking for the other direction — agentproto **driving** Claude Code,
 > Codex, or Hermes as an adapter instead of being called by them — see
@@ -20,18 +21,49 @@ agentproto --version
 Requires Node.js ≥ 20.9.0. The binary is named `agentproto`; `--help`
 (no args, or `-h`) prints the full verb list.
 
+## 2. Run the setup wizard
+
+```bash
+cd /path/to/your/project
+agentproto setup
+```
+
+It checks everything `agentproto doctor` checks, proposes only what's
+missing, and applies your choices with the same verbs you'd run by hand:
+
+| Step | What it offers |
+|------|----------------|
+| preflight | Stops on a too-old Node; offers a CLI update |
+| workspace | Registers the current directory when none is registered |
+| daemon | Installs + starts the background service (macOS), or starts `serve` |
+| agents | Installs agent harnesses (claude-code pre-selected on a fresh machine) |
+| auth | Imports the logins/keys it finds; optionally adds an API key |
+| clients | Registers the MCP server with detected coding clients |
+| skills | Installs / refreshes the agentproto skill pack |
+| first-run | A 20-second test session on your best harness |
+
+Re-running resumes: steps that are already fine are skipped. Useful flags:
+`--dry-run` (show the plan, change nothing), `--yes` (take the defaults,
+unattended — never applies secrets), `--only`/`--skip <step>`. See
+[`verbs/setup.md`](./verbs/setup.md).
+
 ### Check your install: `agentproto doctor`
 
 ```bash
 agentproto doctor
 ```
 
-A read-only checklist of everything below — Node, workspace, daemon, agent
-harnesses, auth, MCP clients, skills — with the exact command to fix each
-gap. Re-run it after any step; attach `agentproto doctor --json` to bug
+The same checklist as the wizard, read-only — Node, workspace, daemon,
+agent harnesses, auth, MCP clients, skills — with the exact command to fix
+each gap. Re-run it anytime; attach `agentproto doctor --json` to bug
 reports. See [`verbs/doctor.md`](./verbs/doctor.md).
 
-## 2. Register your workspace
+## Manual install
+
+The same result, one verb at a time — what `agentproto setup` runs for
+you.
+
+### Register your workspace
 
 A workspace is a registered project directory other verbs can target
 by slug instead of by absolute path.
@@ -44,7 +76,7 @@ agentproto workspace list
 
 See [`verbs/workspace.md`](./verbs/workspace.md).
 
-## 3. Start the daemon
+### Start the daemon
 
 The daemon boots a local HTTP gateway — sessions, MCP, events — bound
 to the workspace you just registered.
@@ -65,7 +97,7 @@ supervised by the OS.
 
 Leave the daemon running and open a second terminal for the next steps.
 
-## 4. Register the MCP server in Claude Code (project-scoped)
+### Register the MCP server in Claude Code (project-scoped)
 
 Claude Code speaks the MCP Streamable HTTP transport natively, so it
 can call the daemon directly at `http://127.0.0.1:18790/mcp` — no
@@ -97,7 +129,7 @@ full guide: [`guides/mcp-in-coding-cli.md`](./guides/mcp-in-coding-cli.md).
 equivalent for every other coding CLI it detects on the machine) if
 you'd rather not hand-write the config.
 
-## 5. Verify — read-only checks
+### Verify — read-only checks
 
 Confirm the daemon is up and the tool surface is reachable before
 trusting an agent to use it. Neither command below mutates anything.
@@ -123,7 +155,7 @@ From inside Claude Code itself: type `/mcp` in the chat input and
 confirm `agentproto` is listed, or just prompt the agent — "List the
 MCP tools available from agentproto."
 
-## 6. Install the skill pack
+### Install the skill pack
 
 Skills teach the agent how to use the tools you just exposed —
 orchestration patterns, session supervision, delegation conventions.
@@ -140,9 +172,8 @@ Without `--target`, this fans out to every installed adapter that
 declares a `metadata.skills` block. See
 [`verbs/install.md`](./verbs/install.md#skill-install).
 
-`agentproto onboard --yes` does steps 4 and 6 together in one
-non-interactive pass, for every coding CLI it detects — reach for it
-once you've done the manual path once and understand what it's doing.
+`agentproto setup` does all of the above in one guided pass
+(`agentproto onboard` is its alias).
 
 ## What's next
 

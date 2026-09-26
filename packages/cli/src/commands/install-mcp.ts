@@ -947,7 +947,7 @@ async function removeFromJsonConfig(configPath: string, serverKey: string = SERV
 
 // ── daemon management ────────────────────────────────────────────────────────
 
-async function ensureDaemon(yes: boolean): Promise<number | null> {
+export async function ensureDaemon(yes: boolean): Promise<number | null> {
   // Probe discovery first — maybe it's already running
   const report = await discoverDaemon()
   if (report.found) {
