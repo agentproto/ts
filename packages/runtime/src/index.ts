@@ -411,6 +411,14 @@ export {
   type SandboxGcProviderHandle,
   type SandboxGcReapResult,
 } from "./sandbox-gc.js"
+export {
+  reconcileSandboxLedger,
+  type SandboxReconcileDeps,
+  type SandboxReconcileProviderHandle,
+  type SandboxReconcileResult,
+  type SandboxReconcileRow,
+  type SandboxReconcileVerdict,
+} from "./sandbox-reconcile.js"
 export type {
   AgentSessionLike,
   AgentStreamEvent,
