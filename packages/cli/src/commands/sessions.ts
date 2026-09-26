@@ -116,6 +116,10 @@ Usage:
                                immediately instead of queuing. --force
                                jumps the queue — only meaningful without
                                --wait.)
+  agentproto sessions show <id-or-name> [--json]
+                              (one session's detail: status, lineage, and —
+                               once it has ended — its derived outcome: last
+                               message, opened PRs, cost, run/parent links.)
   agentproto sessions stop <id-or-name> [--json]
   agentproto sessions pin <id-or-name> [--json]
   agentproto sessions unpin <id-or-name> [--json]
@@ -309,6 +313,7 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   const sub = args[0]
   if (sub === "start") return runStart(args.slice(1))
   if (sub === "prompt") return runPrompt(args.slice(1))
+  if (sub === "show") return runShow(args.slice(1))
   if (sub === "stop") return runStop(args.slice(1))
   if (sub === "pin") return runPin(args.slice(1), true)
   if (sub === "unpin") return runPin(args.slice(1), false)
@@ -944,6 +949,90 @@ async function runPrompt(args: readonly string[]): Promise<number> {
     process.stderr.write(`agentproto sessions prompt: ${msg}\n`)
     return 1
   }
+}
+
+/** Render a session's derived outcome as an indented text block —
+ *  `sessions show`'s OUTCOME section. Pure, for tests. */
+export function formatOutcomeBlock(outcome: NonNullable<SessionDescriptor["outcome"]>): string {
+  const t = outcome.termination
+  const term = [t.status, t.reason, t.midTurn ? "mid-turn" : undefined, t.exitCode !== undefined ? `exit ${t.exitCode}` : undefined]
+    .filter(Boolean)
+    .join(" · ")
+  const lines = [`OUTCOME  ${outcome.status}  (ended: ${term})`]
+  if (outcome.summary) lines.push(`  summary:  ${outcome.summary}`)
+  for (const a of outcome.artifacts ?? []) lines.push(`  ${a.type}:${" ".repeat(Math.max(1, 9 - a.type.length))}${a.ref}${a.title ? `  ${a.title}` : ""}`)
+  for (const l of outcome.links ?? []) lines.push(`  ${l.rel}:${" ".repeat(Math.max(1, 9 - l.rel.length))}${l.ref}${l.title ? `  ${l.title}` : ""}`)
+  const c = outcome.cost
+  if (c) {
+    const parts = [
+      c.usd !== undefined ? `$${c.usd.toFixed(2)}` : undefined,
+      c.tokensIn !== undefined ? `${c.tokensIn} in` : undefined,
+      c.tokensOut !== undefined ? `${c.tokensOut} out` : undefined,
+      c.durationMs !== undefined ? formatDuration(c.durationMs) : undefined,
+    ].filter(Boolean)
+    if (parts.length) lines.push(`  cost:     ${parts.join(" · ")}`)
+  }
+  return lines.join("\n") + "\n"
+}
+
+/**
+ * `agentproto sessions show <id-or-name> [--json]` — one session's detail
+ * (GET /sessions/:id). `--json` prints the full descriptor, `outcome`
+ * included; the text form prints a short header plus the OUTCOME block.
+ */
+async function runShow(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      json: { type: "boolean" },
+    },
+  })
+  const id = positionals[0]
+  if (!id || positionals.length > 1) {
+    process.stderr.write("usage: agentproto sessions show <id-or-name> [--json]\n")
+    return 2
+  }
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto sessions show")
+    return 2
+  }
+  const endpoint = report.found
+  let desc: SessionDescriptor
+  try {
+    desc = await httpGetJson<SessionDescriptor>(
+      `${endpoint.url}/sessions/${encodeURIComponent(id)}`,
+    )
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/HTTP 401/.test(msg)) {
+      process.stderr.write((await explain401(endpoint, "agentproto sessions show")) + "\n")
+      return 1
+    }
+    if (/HTTP 404/.test(msg)) {
+      process.stderr.write(`agentproto sessions show: no session "${id}".\n`)
+      return 2
+    }
+    process.stderr.write(`agentproto sessions show: ${msg}\n`)
+    return 1
+  }
+  if (values.json) {
+    process.stdout.write(JSON.stringify(desc, null, 2) + "\n")
+    return 0
+  }
+  const name = desc.name ?? desc.label ?? desc.title
+  const header = [
+    `${desc.id}${name ? `  ${name}` : ""}`,
+    `  status:   ${desc.status}${desc.endedReason ? ` (${desc.endedReason})` : ""}`,
+    `  kind:     ${desc.kind}${desc.adapterSlug ? ` · ${desc.adapterSlug}` : ""}${desc.model ? ` · ${desc.model}` : ""}`,
+    ...(desc.cwd ? [`  cwd:      ${desc.cwd}`] : []),
+    `  started:  ${desc.startedAt}${desc.endedAt ? `  ended: ${desc.endedAt}` : ""}`,
+  ]
+  process.stdout.write(header.join("\n") + "\n")
+  if (desc.outcome) process.stdout.write("\n" + formatOutcomeBlock(desc.outcome))
+  return 0
 }
 
 async function runStop(args: readonly string[]): Promise<number> {

@@ -1608,6 +1608,9 @@ export function registerAgentTools(
                 // call" without guessing from empty output.
                 ...(desc.blockedOn ? { blockedOn: desc.blockedOn } : {}),
                 ...(activityFallback ? { activityFallback: true } : {}),
+                // An ended session's derived outcome (what it produced) —
+                // the ring above is empty for a row reloaded after a restart.
+                ...(desc.outcome ? { outcome: desc.outcome } : {}),
                 lines: output,
               },
               null,
