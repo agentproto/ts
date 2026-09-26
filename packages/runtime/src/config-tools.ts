@@ -104,6 +104,34 @@ export interface ConfigKeySecretDescriptor {
   last4?: string
 }
 
+/** Every shape `deriveValueType` reports. `"integer"` is a `number` schema
+ *  whose zod checks declare a whole-number format (`.int()`); plain
+ *  `"number"` otherwise. `"string[]"` is specifically an array of strings
+ *  (the only array shape any registry entry uses); any other array, or a
+ *  schema shape not recognized below, falls back to `"unknown"` rather than
+ *  guessing. */
+export type ConfigKeyValueType =
+  | "boolean"
+  | "number"
+  | "integer"
+  | "string"
+  | "enum"
+  | "string[]"
+  | "object"
+  | "unknown"
+
+export interface ConfigKeyValueTypeInfo {
+  valueType: ConfigKeyValueType
+  /** Present only when `valueType` is `"enum"` — the allowed values. */
+  enum?: string[]
+  /** Present only when the (unwrapped) number schema declares a lower bound
+   *  (`.min()`/`.gt()`). */
+  min?: number
+  /** Present only when the (unwrapped) number schema declares an upper
+   *  bound (`.max()`/`.lt()`). */
+  max?: number
+}
+
 export interface ConfigKeyDescriptor {
   path: string
   value: unknown
@@ -121,6 +149,23 @@ export interface ConfigKeyDescriptor {
    *  one `{ set }` per key instead, since there's no single value to
    *  fingerprint. */
   secret?: ConfigKeySecretDescriptor | Record<string, { set: boolean }>
+  /** Registry metadata (`config-schema.ts`'s `ConfigKeyEntry`), copied
+   *  through so a UI (the `@agentproto/config` app's editor, PR-7) can
+   *  render a typed control without keeping its own copy of the registry. */
+  label: string
+  help: string
+  section: ConfigKeySection
+  /** The registry's declared default, when it has one — redacted through
+   *  the same deep redaction as `value`/`effective` (moot for every default
+   *  today, since no secret entry declares one, but kept generic in case a
+   *  future one does). */
+  default?: unknown
+  /** Value-shape hint derived from the registry entry's own zod schema —
+   *  see {@link ConfigKeyValueTypeInfo} and {@link deriveValueType}. */
+  valueType: ConfigKeyValueType
+  enum?: string[]
+  min?: number
+  max?: number
 }
 
 export interface ConfigGetInput {
@@ -350,8 +395,9 @@ function matchesSecretSuffix(pathSegments: readonly string[]): boolean {
  * itself marked `secret` (e.g. `profiles`, a record of per-profile
  * daemon/tunnel overrides) can still nest a REAL secret leaf arbitrarily
  * deep (`profiles.<name>.tunnel.token`, `profiles.<name>.daemon.authToken`) —
- * `GET /config` is ungated for reads, so returning that raw would leak it to
- * any local process. Applied unconditionally to every key's `value`/
+ * without this, a caller with a valid session token (the only gate on
+ * `GET /config`) would get the raw secret back regardless. Applied
+ * unconditionally to every key's `value`/
  * `effective`: a value with no nested secret round-trips unchanged, and an
  * object with no secret-shaped field (`defaults.adapters.*.options`, a plain
  * `acpAgents` field) is walked harmlessly. Arrays are returned as-is — no
@@ -373,6 +419,112 @@ function redactSecretsDeep(pathSegments: readonly string[], value: unknown): unk
 
 function redactValueAtPath(path: string, value: unknown): unknown {
   return redactSecretsDeep(path.split("."), value)
+}
+
+/** Just enough of zod v4's internal `_def` shape to derive a value-type hint
+ *  — deliberately loose (every field optional) since this is read for
+ *  best-effort introspection, never for validation (that's zod's own job via
+ *  `entry.schema.safeParse`). Mirrors `config-schema.ts`'s own `ZodInternalDef`
+ *  (kept local rather than shared/exported, since the two walk different
+ *  shapes: that one only needs `object`/`record`/wrapper discriminants to
+ *  enumerate leaf PATHS; this one also needs `checks`/`entries`/`element`/
+ *  `options` to derive a leaf's own VALUE shape). */
+interface ZodValueTypeDef {
+  type: string
+  innerType?: z.ZodTypeAny
+  valueType?: z.ZodTypeAny
+  element?: z.ZodTypeAny
+  options?: z.ZodTypeAny[]
+  entries?: Record<string, unknown>
+  values?: unknown[]
+  checks?: Array<{ _zod?: { def?: { check?: string; value?: number; format?: string } } }>
+}
+
+function valueTypeDefOf(schema: z.ZodTypeAny): ZodValueTypeDef {
+  return (schema as unknown as { _def: ZodValueTypeDef })._def
+}
+
+/** Unwrap optional/nullable/default wrappers so the switch below sees the
+ *  real leaf discriminant underneath — same unwrap set as `config-schema.ts`'s
+ *  `unwrapForWalk`. */
+function unwrapForValueType(schema: z.ZodTypeAny): z.ZodTypeAny {
+  let current = schema
+  let def = valueTypeDefOf(current)
+  while (def.type === "optional" || def.type === "nullable" || def.type === "default") {
+    current = def.innerType as z.ZodTypeAny
+    def = valueTypeDefOf(current)
+  }
+  return current
+}
+
+/**
+ * Derive a `config_get` row's `valueType` (+ `enum`/`min`/`max`) from the
+ * registry entry's OWN zod schema — so a UI can render a typed control
+ * (checkbox, number input with bounds, select, tag list, JSON blob) without
+ * keeping its own copy of the registry. Best-effort: an unrecognized schema
+ * shape (a `union` that isn't all-literal, a nested object, an array of
+ * non-strings, …) falls back to `"unknown"` rather than guessing, and this
+ * NEVER throws — a schema-introspection bug here must never break
+ * `config_get` itself.
+ */
+export function deriveValueType(schema: z.ZodTypeAny): ConfigKeyValueTypeInfo {
+  try {
+    const def = valueTypeDefOf(unwrapForValueType(schema))
+    switch (def.type) {
+      case "boolean":
+        return { valueType: "boolean" }
+      case "string":
+        return { valueType: "string" }
+      case "enum": {
+        const values = def.entries ? Object.keys(def.entries) : []
+        return { valueType: "enum", enum: values }
+      }
+      case "number": {
+        let isInteger = false
+        let min: number | undefined
+        let max: number | undefined
+        for (const check of def.checks ?? []) {
+          const cdef = check._zod?.def
+          if (!cdef) continue
+          if (cdef.check === "number_format" && cdef.format === "safeint") isInteger = true
+          if (cdef.check === "greater_than" && typeof cdef.value === "number") min = cdef.value
+          if (cdef.check === "less_than" && typeof cdef.value === "number") max = cdef.value
+        }
+        return {
+          valueType: isInteger ? "integer" : "number",
+          ...(min !== undefined ? { min } : {}),
+          ...(max !== undefined ? { max } : {}),
+        }
+      }
+      case "array": {
+        const element = def.element ? valueTypeDefOf(def.element) : undefined
+        return element?.type === "string" ? { valueType: "string[]" } : { valueType: "unknown" }
+      }
+      case "object":
+      case "record":
+        return { valueType: "object" }
+      case "union": {
+        // Best-effort enum: a union where EVERY branch is a single-value
+        // literal (e.g. `z.union([z.literal("headless"), z.literal(false)])`)
+        // is treated as an enum of those (string) values. A mixed union
+        // (`z.union([z.boolean(), z.object({...})])`, `defaults.mcp.
+        // deferredTools`) has no single sensible control shape — "unknown".
+        const options = def.options ?? []
+        const literalValues = options.map(o => {
+          const odef = valueTypeDefOf(o)
+          return odef.type === "literal" ? odef.values?.[0] : undefined
+        })
+        if (options.length > 0 && literalValues.every(v => typeof v === "string")) {
+          return { valueType: "enum", enum: literalValues as string[] }
+        }
+        return { valueType: "unknown" }
+      }
+      default:
+        return { valueType: "unknown" }
+    }
+  } catch {
+    return { valueType: "unknown" }
+  }
 }
 
 async function describeKey(
@@ -420,6 +572,8 @@ async function describeKey(
   // redact round-trips unchanged.
   const displayValue = redactValueAtPath(path, rawValue)
   const displayEffective = redactValueAtPath(path, effective)
+  const displayDefault =
+    entry.default !== undefined ? redactValueAtPath(path, entry.default) : undefined
 
   return {
     path,
@@ -431,6 +585,11 @@ async function describeKey(
     pendingRestart,
     writable: entry.writable,
     ...(isSecret ? { secret: describeSecret(effective) } : {}),
+    label: entry.label,
+    help: entry.help,
+    section: entry.section,
+    ...(displayDefault !== undefined ? { default: displayDefault } : {}),
+    ...deriveValueType(entry.schema),
   }
 }
 
@@ -589,8 +748,15 @@ export function registerConfigTools(server: McpServer, deps: ConfigToolsDeps): v
       "with), `writable` (whether config_set will accept a write here), " +
       "and, for a secret field, `secret: { set, fingerprint?, last4? }` " +
       "computed server-side; the credential itself is NEVER returned, by " +
-      "this tool or any other. Also returns a top-level `revision` (sha256 " +
-      "of the file bytes, for `config_set`'s optimistic-concurrency " +
+      "this tool or any other. Also carries registry metadata for a UI to " +
+      "render a typed control without its own copy of the registry: " +
+      "`label`, `help`, `section`, `default` (when the registry has one), " +
+      "and `valueType` (\"boolean\" | \"number\" | \"integer\" | \"string\" " +
+      "| \"enum\" | \"string[]\" | \"object\" | \"unknown\", derived from " +
+      "the key's own zod schema) plus `enum` (the allowed values, when " +
+      "valueType is \"enum\") and `min`/`max` (when the number schema " +
+      "declares bounds). Also returns a top-level `revision` (sha256 of " +
+      "the file bytes, for `config_set`'s optimistic-concurrency " +
       "`revision`) and `path` (the config file's absolute path).",
     {
       keys: z

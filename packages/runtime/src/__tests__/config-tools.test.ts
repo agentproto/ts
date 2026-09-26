@@ -9,11 +9,12 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { z } from "zod"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
-import { registerConfigTools, type ConfigToolsDeps } from "../config-tools.js"
+import { registerConfigTools, deriveValueType, type ConfigToolsDeps } from "../config-tools.js"
 import { loadConfig, saveConfig, type AgentprotoConfig } from "../config.js"
 import { createRuntimeEvents, type RuntimeEvents } from "../events.js"
 import { WORKTREE_ISOLATION_ENV } from "../worktree-isolation.js"
@@ -247,6 +248,86 @@ describe("config_get", () => {
       verbose: true,
     })
     await client.close()
+  })
+
+  it("carries registry metadata (label/help/section/valueType) on every row", async () => {
+    await writeCfg({})
+    const client = await setupClient(makeDeps({}))
+    const res = parse(await client.callTool({ name: "config_get", arguments: { keys: ["spawn.dedupe"] } }))
+    const row = findKey(res, "spawn.dedupe")
+    expect(row.section).toBe("defaults")
+    expect(typeof row.label).toBe("string")
+    expect(row.label.length).toBeGreaterThan(0)
+    expect(typeof row.help).toBe("string")
+    expect(row.help.length).toBeGreaterThan(0)
+    expect(row.default).toBe("always")
+    await client.close()
+  })
+
+  it("valueType: enum key (spawn.dedupe) reports its allowed values", async () => {
+    await writeCfg({})
+    const client = await setupClient(makeDeps({}))
+    const res = parse(await client.callTool({ name: "config_get", arguments: { keys: ["spawn.dedupe"] } }))
+    const row = findKey(res, "spawn.dedupe")
+    expect(row.valueType).toBe("enum")
+    expect(row.enum).toEqual(["always", "on-request"])
+    await client.close()
+  })
+
+  it("valueType: boolean key reports \"boolean\"", async () => {
+    await writeCfg({})
+    const client = await setupClient(makeDeps({}))
+    const res = parse(
+      await client.callTool({ name: "config_get", arguments: { keys: ["provenance.wrapGh"] } }),
+    )
+    expect(findKey(res, "provenance.wrapGh").valueType).toBe("boolean")
+    await client.close()
+  })
+
+  it("valueType: string[] key (defaults.skills) reports \"string[]\"", async () => {
+    await writeCfg({})
+    const client = await setupClient(makeDeps({}))
+    const res = parse(
+      await client.callTool({ name: "config_get", arguments: { keys: ["defaults.skills"] } }),
+    )
+    expect(findKey(res, "defaults.skills").valueType).toBe("string[]")
+    await client.close()
+  })
+
+  it("valueType: object key (defaults.options) reports \"object\"", async () => {
+    await writeCfg({})
+    const client = await setupClient(makeDeps({}))
+    const res = parse(
+      await client.callTool({ name: "config_get", arguments: { keys: ["defaults.options"] } }),
+    )
+    expect(findKey(res, "defaults.options").valueType).toBe("object")
+    await client.close()
+  })
+
+  it("valueType: an unrecognized schema shape falls back to \"unknown\" and never throws", () => {
+    expect(deriveValueType(z.tuple([z.string(), z.number()]))).toEqual({ valueType: "unknown" })
+  })
+})
+
+describe("deriveValueType (schema introspection)", () => {
+  it("derives an integer with min/max bounds from the zod schema's own checks", () => {
+    expect(deriveValueType(z.number().int().min(0).max(100))).toEqual({
+      valueType: "integer",
+      min: 0,
+      max: 100,
+    })
+  })
+
+  it("derives a plain number with no declared bounds", () => {
+    expect(deriveValueType(z.number())).toEqual({ valueType: "number" })
+  })
+
+  it("unwraps optional/nullable wrappers before inspecting the leaf", () => {
+    expect(deriveValueType(z.number().int().min(0).optional())).toEqual({
+      valueType: "integer",
+      min: 0,
+    })
+    expect(deriveValueType(z.string().nullable())).toEqual({ valueType: "string" })
   })
 })
 
