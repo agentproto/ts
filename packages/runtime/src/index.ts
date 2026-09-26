@@ -427,6 +427,14 @@ export {
   type SandboxReconcileRow,
   type SandboxReconcileVerdict,
 } from "./sandbox-reconcile.js"
+export {
+  compactOutcome,
+  deriveSessionOutcome,
+  type SessionOutcome,
+  type SessionOutcomeArtifact,
+  type SessionOutcomeCompact,
+  type SessionOutcomeLink,
+} from "./session-outcome.js"
 export type {
   AgentSessionLike,
   AgentStreamEvent,

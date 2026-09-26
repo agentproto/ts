@@ -61,6 +61,7 @@ import {
 } from "./context-continuity.js"
 import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
 import { continueAgentSessionFresh } from "./session-continue-fresh.js"
+import { compactOutcome, type SessionOutcomeCompact } from "./session-outcome.js"
 import type { SpawnAgentSessionDeps } from "./session-spawn.js"
 import {
   collectSessionSnapshots,
@@ -447,6 +448,10 @@ export interface SessionListCompactItem {
   contextSize?: number
   contextSizeSource?: SessionDescriptor["contextSizeSource"]
   contextUsed?: number
+  /** What an ENDED agent-cli session produced — the derived outcome's status
+   *  plus the first 120 chars of its summary (`compactOutcome`). The full
+   *  record (`full: true`) carries the whole `outcome`. */
+  outcome?: SessionOutcomeCompact
 }
 
 /** Public MCP descriptor projection. Resume environment is required by the
@@ -488,6 +493,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   contextSize: s.contextSize,
   contextSizeSource: s.contextSizeSource,
   contextUsed: s.contextUsed,
+  ...(s.outcome ? { outcome: compactOutcome(s.outcome) } : {}),
 })
 
 // ── batch compact projections (tool-transformer migration) ───────────────

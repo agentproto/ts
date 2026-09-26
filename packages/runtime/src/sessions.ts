@@ -110,6 +110,12 @@ import {
 } from "./context-continuity.js"
 import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
 import { continueAgentSessionFresh } from "./session-continue-fresh.js"
+import {
+  deriveSessionOutcome,
+  readLastAssistantTextSync,
+  shouldReplaceOutcome,
+  type SessionOutcome,
+} from "./session-outcome.js"
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
@@ -1010,6 +1016,16 @@ export interface SessionDescriptor {
    *  `kill()`, `shutdownImpl`'s force-kill, and `loadHistorySnapshot`'s
    *  wasAlive reclassification; absent for every other terminal path. */
   killedMidTurn?: boolean
+  /** What this session PRODUCED — the derived outcome (Level 1) the daemon
+   *  records once it reaches a terminal status, alongside (never instead of)
+   *  the termination fields above: last assistant message, opened PRs, cost,
+   *  run/parent links. agent-cli only. Recorded from the one exit funnel
+   *  (`emitExited`) and from boot reconcile for rows that died with the
+   *  daemon; first write wins unless a later one is for a new death or is
+   *  richer (see `shouldReplaceOutcome`). Dropped when an in-place resume
+   *  revives the row. Persisted, so it survives restarts and archiving. See
+   *  `session-outcome.ts`. */
+  outcome?: SessionOutcome
   /** Last time anything was written to stdout/stderr. Lets the UI
    *  spot stuck sessions ("running for 2h, last output 12min ago"). */
   lastOutputAt?: string
@@ -2188,6 +2204,13 @@ interface SessionRuntime {
    *  ring buffer unreadable when each token got its own
    *  `[thought]` line — coalesce the same way text-delta does. */
   thoughtBuf: string
+  /** The latest assistant message — the run of text-delta chunks since the
+   *  last tool call, tail-capped at `LAST_ASSISTANT_TEXT_CAP`. Feeds the
+   *  derived outcome's `summary` without re-reading the transcript. Not
+   *  persisted. */
+  lastAssistantText?: string
+  /** Set by a tool call: the next text-delta starts a new message. */
+  lastAssistantTextSealed?: boolean
   /** Set by `interruptInFlightTurn` when the daemon cancels the in-flight
    *  turn; consumed (and cleared) at the top of that turn's `finally`. An
    *  interrupted turn does NOT drain `promptQueue` — queued prompts are
@@ -2359,6 +2382,9 @@ export function applyBracketedPasteWrap(
 
 const RECENT_LINES_CAP = 500
 const RECENT_BYTES_CAP = 64 * 1024
+/** Tail cap on `SessionRuntime.lastAssistantText` — generous next to the
+ *  outcome summary's own 600-char cap, small enough to never matter. */
+const LAST_ASSISTANT_TEXT_CAP = 4 * 1024
 const PERSIST_DEBOUNCE_MS = 1_500
 
 /** Shared, never-mutated empty set — the `heldIdsByBucket` lookup for a
@@ -4290,13 +4316,14 @@ export function createSessionsRegistry(opts?: {
           bucketSessionsFile(bucketsRoot, slug),
           sessions,
           sessionEvents,
+          transcriptBaseDir,
           slug,
           sourceBucketOf,
           heldIdsByBucket,
         )
       }
     } else {
-      loadHistorySnapshot(legacyPath, sessions, sessionEvents)
+      loadHistorySnapshot(legacyPath, sessions, sessionEvents, transcriptBaseDir)
     }
   }
   // Frozen at boot, deliberately never mutated again — distinct from
@@ -4323,9 +4350,29 @@ export function createSessionsRegistry(opts?: {
     process.on("exit", onProcessExit)
   }
 
+  // Record (or refresh) the derived outcome of an ended agent-cli session —
+  // see `SessionDescriptor.outcome`. Idempotent via `shouldReplaceOutcome`,
+  // so every terminal path can call it without coordinating. The summary
+  // falls back to the one already recorded: a ghost row (no live buffer)
+  // refreshed by a late PR must not lose it.
+  const recordOutcome = (rt: SessionRuntime): void => {
+    if (rt.desc.kind !== "agent-cli") return
+    if (rt.desc.status === "running" || rt.desc.status === "starting") return
+    const next = deriveSessionOutcome(rt.desc, {
+      lastAssistantText: rt.lastAssistantText ?? rt.desc.outcome?.summary,
+    })
+    if (!shouldReplaceOutcome(rt.desc.outcome, next)) return
+    rt.desc.outcome = next
+    schedulePersist()
+  }
+
   // Emit session:exited once per session, deduplicated via exitedEmitted flag.
   const emitExited = (rt: SessionRuntime): void => {
     if (rt.exitedEmitted) return
+    // The one exit funnel every terminal path goes through — derive what
+    // the session produced before anything announces its death, so a
+    // `session:exited` consumer reading the descriptor already sees it.
+    recordOutcome(rt)
     // A dead PTY has no transcript left to discover — stop its link probe.
     rt.linkProbeStop?.()
     // A dying session must never leave a held permission RPC dangling — cancel
@@ -5119,6 +5166,11 @@ export function createSessionsRegistry(opts?: {
         releaseBlockedOn(rt.desc)
         rt.activeToolCalls?.clear()
         if (evt.text) {
+          const prior = rt.lastAssistantTextSealed ? "" : (rt.lastAssistantText ?? "")
+          const text = prior + evt.text
+          rt.lastAssistantText =
+            text.length > LAST_ASSISTANT_TEXT_CAP ? text.slice(text.length - LAST_ASSISTANT_TEXT_CAP) : text
+          rt.lastAssistantTextSealed = false
           // text-delta is a stream of chunks — split on newlines so
           // each line lands in the ring buffer separately. Coalesce
           // a trailing fragment via rt.textBuf.
@@ -5148,6 +5200,7 @@ export function createSessionsRegistry(opts?: {
         break
       case "tool-call": {
         trackToolCall(rt, evt)
+        rt.lastAssistantTextSealed = true
         // Surface what the turn is now blocked on (sub-agent / command) when
         // the tool name classifies. The toolCallId is remembered so a nested
         // tool's result can't clear an outer tool's block — but a matching
@@ -5751,6 +5804,8 @@ export function createSessionsRegistry(opts?: {
           rt.desc.status = "running"
           delete rt.desc.endedAt
           delete rt.desc.exitCode
+          // Alive again — the next death records its own outcome.
+          delete rt.desc.outcome
           rt.emitter.emit("status", rt.desc.status)
         }
         // `emitExited` is a once-per-`rt`-lifetime latch (dedup via
@@ -8007,6 +8062,9 @@ export function createSessionsRegistry(opts?: {
           },
         ]
         schedulePersist()
+        // The provenance stamp can land after the session already ended —
+        // fold the PR into its recorded outcome (a richer write replaces).
+        if (rt.desc.outcome) recordOutcome(rt)
       }
       return rt.desc
     },
@@ -9487,7 +9545,11 @@ function clearInFlightFlags(desc: SessionDescriptor): void {
 function loadHistorySnapshot(
   persistPath: string,
   sessions: Map<string, SessionRuntime>,
-  sessionEvents?: SessionEventBus,
+  sessionEvents: SessionEventBus | undefined,
+  /** Where the sessions' `events.jsonl` transcripts live — read (tail only)
+   *  to recover the last assistant message of a row that died with the
+   *  daemon, for its derived outcome. */
+  transcriptBaseDir: string,
   /** The bucket `persistPath` was read from, in partitioned mode. When
    *  given alongside `sourceBucketOf`, every loaded row's id is recorded
    *  against it — see `sourceBucketOf`'s docblock at its declaration in
@@ -9577,6 +9639,14 @@ function loadHistorySnapshot(
       reclassified.contextSize,
       reclassified.contextUsed,
     )
+    // A row that died with the daemon never went through `emitExited`, so
+    // derive its outcome here — the live text buffer died with the old
+    // process, so the summary comes from its transcript's tail instead.
+    if (wasAlive && reclassified.kind === "agent-cli" && !reclassified.outcome) {
+      reclassified.outcome = deriveSessionOutcome(reclassified, {
+        lastAssistantText: readLastAssistantTextSync(sessionEventsPath(reclassified.id, transcriptBaseDir)),
+      })
+    }
     const rt: SessionRuntime = {
       desc: reclassified,
       recentLines: [],
