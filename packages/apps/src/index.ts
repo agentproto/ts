@@ -35,6 +35,7 @@ export { contentTeam } from "./content-team/index.js"
 export { mailTriage } from "./mail-triage/index.js"
 export { mediaViewer } from "./media-viewer/index.js"
 export { opsPanel } from "./ops-panel/index.js"
+export { configApp } from "./config/index.js"
 export { sessionViewer } from "./session-viewer/index.js"
 
 export type { AgnoMcpApp } from "./mcp-app-types.js"

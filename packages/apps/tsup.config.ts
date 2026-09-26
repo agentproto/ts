@@ -12,6 +12,7 @@ export default createTsupConfig({
     "mail-triage": "src/mail-triage/index.ts",
     "media-viewer": "src/media-viewer/index.ts",
     "ops-panel": "src/ops-panel/index.ts",
+    "config": "src/config/index.ts",
     "session-viewer": "src/session-viewer/index.ts",
     "sessions-panel": "src/sessions-panel/index.ts",
     "agents-overview": "src/agents-overview/index.ts",

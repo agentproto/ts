@@ -21,6 +21,7 @@ import { contentTeam } from "../content-team/index.js"
 import { mailTriage } from "../mail-triage/index.js"
 import { mediaViewer } from "../media-viewer/index.js"
 import { opsPanel } from "../ops-panel/index.js"
+import { configApp } from "../config/index.js"
 import { sessionViewer } from "../session-viewer/index.js"
 
 interface CatalogEntry {
@@ -37,6 +38,7 @@ const APPS: readonly { readonly slug: string; readonly category: string; readonl
   { slug: "mail-triage", category: "app", handle: mailTriage },
   { slug: "media-viewer", category: "app", handle: mediaViewer },
   { slug: "ops-panel", category: "app", handle: opsPanel },
+  { slug: "config", category: "app", handle: configApp },
   { slug: "session-viewer", category: "app", handle: sessionViewer },
 ]
 
