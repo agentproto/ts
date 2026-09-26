@@ -4736,7 +4736,8 @@ async function handleSessions(
             : result.code === "invalid_role" ||
                 result.code === "worktree_requires_explicit_repo" ||
                 result.code === "access_profile_not_found" ||
-                result.code === "access_profile_ineligible"
+                result.code === "access_profile_ineligible" ||
+                result.code === "sandbox_cwd_invalid"
                 ? 400
                 : 500
       json(status, {
@@ -4832,7 +4833,8 @@ async function handleSessions(
               : result.code === "invalid_role" ||
                   result.code === "worktree_requires_explicit_repo" ||
                   result.code === "access_profile_not_found" ||
-                  result.code === "access_profile_ineligible"
+                  result.code === "access_profile_ineligible" ||
+                  result.code === "sandbox_cwd_invalid"
                 ? 400
                 : 500
       json(status, {
