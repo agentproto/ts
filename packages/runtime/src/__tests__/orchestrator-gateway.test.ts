@@ -57,6 +57,11 @@ const FORBIDDEN_TOOLS = [
   "mcp_imported_tool_list",
   "terminal_input",
   "self_inspect",
+  // PR-2 (config_get/config_set): root-/mcp-only, same trust level as
+  // auth_profile_create/remote_enable — a scoped child orchestrator must
+  // never be able to reconfigure the daemon it runs on.
+  "config_get",
+  "config_set",
 ]
 
 /** Transcripts are written whether or not `persist` is on, and default to a
@@ -105,6 +110,14 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
     }
     // Spot-check the headline danger tool explicitly.
     expect(names).not.toContain("command_execute")
+  })
+
+  it("DEFAULT_ORCHESTRATOR_TOOLS excludes config_get/config_set (PR-2)", () => {
+    // Registered on the root /mcp server only (index.ts) — never added to
+    // this allowlist, so a scoped child orchestrator can never reconfigure
+    // the daemon it runs on.
+    expect(DEFAULT_ORCHESTRATOR_TOOLS).not.toContain("config_get")
+    expect(DEFAULT_ORCHESTRATOR_TOOLS).not.toContain("config_set")
   })
 
   it("(b) narrows a caller-requested subset to ⊆ default (cannot widen)", async () => {
