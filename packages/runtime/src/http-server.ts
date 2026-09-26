@@ -8116,9 +8116,20 @@ async function handleAppUiAsset(
       compressible: isCompressibleContentType(contentType),
     }),
   )
+  // A service worker (`sw.js`) and a web-app manifest are NOT hashed
+  // build outputs: they must revalidate, and the worker must be allowed to
+  // control the page one level up (`/apps/:appId/ui`), which browsers only
+  // permit when the script's response says so.
+  const isServiceWorker = file === "sw.js"
+  const isManifest = file.endsWith(".webmanifest")
+  const rawPath = (req.url ?? "").split("?")[0] ?? ""
+  const pageScope = rawPath.endsWith(`/assets/${file}`)
+    ? rawPath.slice(0, -`/assets/${file}`.length)
+    : undefined
   sendRepresentation(req, res, rep, {
     "content-type": contentType,
-    "cache-control": IMMUTABLE_CACHE_CONTROL,
+    "cache-control": isServiceWorker || isManifest ? "no-cache" : IMMUTABLE_CACHE_CONTROL,
+    ...(isServiceWorker && pageScope ? { "service-worker-allowed": pageScope } : {}),
   })
 }
 
