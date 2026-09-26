@@ -39,7 +39,7 @@
 
 import { createServer } from "node:http"
 import type { IncomingMessage, ServerResponse } from "node:http"
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises"
+import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises"
 import { extname, join, normalize, resolve, sep, dirname } from "node:path"
 import { parseArgs } from "node:util"
 
@@ -48,6 +48,17 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import matter from "gray-matter"
 
 import { loadConfig } from "@agentproto/runtime/config"
+import {
+  IMMUTABLE_CACHE_CONTROL,
+  appUiContentType,
+  createEncodedRepresentation,
+  createRepresentationCache,
+  isCompressibleContentType,
+  isValidAppUiAssetName,
+  sendRepresentation,
+  type EncodedRepresentation,
+  type RepresentationCache,
+} from "@agentproto/runtime/app-ui-delivery"
 import { resolveAppUIRoot } from "@agentproto/app-kit"
 import { APP_UI_DISCOVERY_TOOLS, RUNNER_SELECT_SCRIPT } from "@agentproto/app-client/runner-select"
 import { pathExists } from "./commands/skill-install/shared.js"
@@ -205,27 +216,6 @@ export const MAX_UPLOAD_BYTES = 200 * 1024 * 1024
  */
 export function resolveListenHost(hostOpt?: string): string {
   return hostOpt ?? "127.0.0.1"
-}
-
-/** Content types for the static surface (extensions ui/ apps actually ship). */
-const MIME_BY_EXT: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".htm": "text/html; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".mjs": "text/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".webp": "image/webp",
-  ".ico": "image/x-icon",
-  ".woff": "font/woff",
-  ".woff2": "font/woff2",
-  ".ttf": "font/ttf",
-  ".map": "application/json; charset=utf-8",
 }
 
 /**
@@ -524,6 +514,8 @@ export function createAppServeRequestHandler(opts: {
   allowedTools: string[] | undefined
   getClient: () => Promise<Client>
 }): (req: IncomingMessage, res: ServerResponse) => void {
+  // Encoded html/asset bodies, stamped by mtime + size (app-ui-delivery.ts).
+  const representations = createRepresentationCache(64)
   return (req, res) => {
     // CORS `*` lets a page from a different origin (e.g. file:// or a Vite
     // dev port) reach the tool-call bridge — without it the browser blocks
@@ -555,7 +547,22 @@ export function createAppServeRequestHandler(opts: {
       void serveStageboard(res, urlPath)
       return
     }
-    void serveStatic(opts.uiRoot, req.url ?? "/", opts.bridgeScript, res)
+    // The daemon's URL shapes (`/apps/:appId/ui`, `/apps/:appId/ui/assets/
+    // :file`), so a build that loads its chunks from the daemon's assets
+    // route runs unchanged here. Single-app server: any appId segment maps
+    // to the one ui root being served.
+    if (req.method === "GET") {
+      const asset = urlPath.match(APP_UI_ASSET_PATH_RE)
+      if (asset) {
+        void serveAppUiAsset(opts.uiRoot, asset[2]!, req, res, representations)
+        return
+      }
+      if (APP_UI_PAGE_PATH_RE.test(urlPath)) {
+        void serveStatic(opts.uiRoot, "/", opts.bridgeScript, req, res, representations)
+        return
+      }
+    }
+    void serveStatic(opts.uiRoot, req.url ?? "/", opts.bridgeScript, req, res, representations)
   }
 }
 
@@ -757,12 +764,60 @@ async function handleUpload(
   })
 }
 
-/** Serve one static file from the ui/ root, injecting the bridge on index.html. */
+/** Same route shapes as the daemon's app-UI page and assets routes. */
+const APP_UI_PAGE_PATH_RE = /^\/apps\/.+\/ui\/?$/
+const APP_UI_ASSET_PATH_RE = /^\/apps\/(.+?)\/ui\/assets\/([^/]*)$/
+
+/** `GET /apps/:appId/ui/assets/:file` — a flat file from `<uiRoot>/assets/`,
+ *  with the daemon's exact rules: `:file` must pass `isValidAppUiAssetName`
+ *  and its real path must stay inside the assets dir, else 404; immutable
+ *  caching and `accept-encoding` negotiation. */
+async function serveAppUiAsset(
+  uiRoot: string,
+  file: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  representations: RepresentationCache,
+): Promise<void> {
+  const notFound = (): void => {
+    res.writeHead(404, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "not_found" }))
+  }
+  if (!isValidAppUiAssetName(file)) return notFound()
+  const assetsDir = join(uiRoot, "assets")
+  let target: string
+  let st
+  try {
+    const [realDir, realTarget] = await Promise.all([realpath(assetsDir), realpath(join(assetsDir, file))])
+    if (!realTarget.startsWith(realDir + sep)) return notFound()
+    target = realTarget
+    st = await stat(target)
+  } catch {
+    return notFound()
+  }
+  if (!st.isFile()) return notFound()
+  const contentType = appUiContentType(extname(target))
+  const rep = await representations.get(`asset\0${target}`, `${st.mtimeMs}:${st.size}`, async () =>
+    createEncodedRepresentation(await readFile(target), {
+      compressible: isCompressibleContentType(contentType),
+    }),
+  )
+  sendRepresentation(req, res, rep, {
+    "content-type": contentType,
+    "cache-control": IMMUTABLE_CACHE_CONTROL,
+  })
+}
+
+/** Serve one static file from the ui/ root, injecting the bridge on index.html.
+ *  Html revalidates (`no-cache` + strong etag, 304 on a match); other files
+ *  keep `no-store`. Both negotiate `accept-encoding`. */
 async function serveStatic(
   uiRoot: string,
   urlPath: string,
   bridgeScript: string,
+  req: IncomingMessage,
   res: ServerResponse,
+  representations: RepresentationCache,
 ): Promise<void> {
   // Resolve against the ui/ root and verify the result stays inside it
   // (defense-in-depth against `..` traversal).
@@ -786,27 +841,41 @@ async function serveStatic(
   if (st.isDirectory()) {
     // Directory listing → the ui/ conventional entry point.
     if (urlPath.endsWith("/") || urlPath === "") {
-      return serveStatic(uiRoot, (safeName.replace(/\/+$/, "") || "") + "/index.html", bridgeScript, res)
+      return serveStatic(
+        uiRoot,
+        (safeName.replace(/\/+$/, "") || "") + "/index.html",
+        bridgeScript,
+        req,
+        res,
+        representations,
+      )
     }
     res.writeHead(404, { "content-type": "application/json" })
     res.end(JSON.stringify({ error: "not_found", path: safeName }))
     return
   }
 
-  const mime =
-    MIME_BY_EXT[extname(target).toLowerCase()] ?? "application/octet-stream"
+  const mime = appUiContentType(extname(target))
   const isHtml = (index as string).endsWith(".html") || (index as string).endsWith(".htm")
+  const stamp = `${st.mtimeMs}:${st.size}`
   if (isHtml) {
-    const html = await readFile(target, "utf8")
-    res.writeHead(200, {
+    const rep = await representations.get(`html\0${target}`, stamp, async () =>
+      htmlRepresentation(injectBridge(await readFile(target, "utf8"), bridgeScript)),
+    )
+    sendRepresentation(req, res, rep, {
       "content-type": "text/html; charset=utf-8",
-      "cache-control": "no-store",
+      "cache-control": "no-cache",
     })
-    res.end(injectBridge(html, bridgeScript))
     return
   }
-  res.writeHead(200, { "content-type": mime, "cache-control": "no-store" })
-  res.end(await readFile(target))
+  const rep = await representations.get(`file\0${target}`, stamp, async () =>
+    createEncodedRepresentation(await readFile(target), { compressible: isCompressibleContentType(mime) }),
+  )
+  sendRepresentation(req, res, rep, { "content-type": mime, "cache-control": "no-store" })
+}
+
+function htmlRepresentation(html: string): EncodedRepresentation {
+  return createEncodedRepresentation(Buffer.from(html, "utf8"), { compressible: true })
 }
 
 /**
@@ -981,6 +1050,8 @@ async function runAppServeRemote(
 
   const bridgeScript = buildBridgeScript(TOOL_CALL_PATH)
   const runJson = values.json === true
+  // Fetched once, so encoded (and etagged) once.
+  const page = htmlRepresentation(injectBridge(html, bridgeScript))
 
   const server = createServer((req, res) => {
     // Same permissive CORS as the local path: the tool-call route exposes no
@@ -1001,8 +1072,10 @@ async function runAppServeRemote(
     // Single-resource serve: every path (/, /index.html, anything) renders
     // the fetched HTML with the bridge injected. `..` segments are flattened
     // by the inner normalize, matching serveStatic's containment check.
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" })
-    res.end(injectBridge(html, bridgeScript))
+    sendRepresentation(req, res, page, {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-cache",
+    })
   })
 
   const bind = (port: number): Promise<{ port: number } | { inUse: boolean }> =>

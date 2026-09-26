@@ -8,10 +8,11 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createServer } from "node:http"
+import { createServer, request as httpRequest, type IncomingHttpHeaders } from "node:http"
+import { brotliDecompressSync, gunzipSync } from "node:zlib"
 import type { AddressInfo } from "node:net"
 import { createMcpServer } from "@agentproto/mcp-server"
 import { workBoardApp, liveSessionApp, sessionChatApp } from "@agentproto/apps"
@@ -712,4 +713,243 @@ function noopHeartbeat(): HeartbeatRunner {
     stop() {},
     async fireNow() {},
   }
+}
+
+/**
+ * Shell delivery — `GET /apps/:appId/ui` and `GET /apps/:appId/ui/assets/:file`
+ * negotiate `accept-encoding` (br, then gzip), validate with a strong etag
+ * (304 on `if-none-match`), and the assets route serves a flat, validated
+ * file name from the ui dir's `assets/` behind the page's exact gate. Raw
+ * `node:http` requests here, not `fetch`: fetch transparently decodes bodies
+ * and normalizes `..` out of URLs, both of which would hide what's tested.
+ */
+describe("standalone app UI host — shell delivery", () => {
+  const SHELL_APP_ID = "@agentproto/shell-app"
+  const BEARER = "shell-bearer-secret"
+  const BIG_SCRIPT = `<script type="module">${"console.log('shell-delivery-padding');\n".repeat(400)}</script>`
+  let dir: string
+  let uiPath: string
+  let appRegistry: AppRegistry
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "agentproto-app-ui-shell-"))
+    uiPath = join(dir, "index.html")
+    await writeFile(uiPath, `<!doctype html><html><head></head><body>shell-marker${BIG_SCRIPT}</body></html>`, "utf8")
+    await mkdir(join(dir, "assets"))
+    await writeFile(join(dir, "assets", "index-abc123.js"), `export const x = "asset-marker";\n`.repeat(200), "utf8")
+    await writeFile(join(dir, "assets", "font-abc123.woff2"), Buffer.from([0x77, 0x4f, 0x46, 0x32, 1, 2, 3]))
+    await writeFile(join(dir, "secret.txt"), "outside-assets", "utf8")
+    appRegistry = createAppRegistry()
+    appRegistry.upsertApp({
+      appId: SHELL_APP_ID,
+      dir,
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: { path: uiPath, title: "Shell App" },
+    })
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  async function withServer(
+    fn: (port: number) => Promise<void>,
+    extra?: Partial<RuntimeHttpServerOptions>,
+  ): Promise<void> {
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory: async () =>
+        (await createMcpServer({ specs: [], name: "main", version: "0" })).server,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      meta: { workspace: process.cwd(), registered: [] },
+      appRegistry,
+      appToolCallDeps: { dispatchTool: async () => "ok" },
+      ...extra,
+    })
+    try {
+      await fn(port)
+    } finally {
+      await http.stop()
+    }
+  }
+
+  const page = `/apps/${SHELL_APP_ID}/ui`
+  const asset = (file: string) => `/apps/${SHELL_APP_ID}/ui/assets/${file}`
+
+  it("page: br preferred, gzip next, identity otherwise — with vary: accept-encoding", async () => {
+    await withServer(async port => {
+      const br = await rawGet(port, page, { "accept-encoding": "gzip, deflate, br" })
+      expect(br.status).toBe(200)
+      expect(br.headers["content-encoding"]).toBe("br")
+      expect(br.headers.vary).toBe("Origin, accept-encoding")
+      expect(Number(br.headers["content-length"])).toBe(br.body.length)
+      const html = brotliDecompressSync(br.body).toString("utf8")
+      expect(html).toContain("shell-marker")
+      expect(html).toContain('fetch("./tool-call"')
+      expect(br.body.length).toBeLessThan(html.length / 4)
+
+      const gz = await rawGet(port, page, { "accept-encoding": "gzip, br;q=0" })
+      expect(gz.headers["content-encoding"]).toBe("gzip")
+      expect(gunzipSync(gz.body).toString("utf8")).toBe(html)
+
+      const plain = await rawGet(port, page, {})
+      expect(plain.headers["content-encoding"]).toBeUndefined()
+      expect(plain.headers.vary).toBe("Origin, accept-encoding")
+      expect(plain.body.toString("utf8")).toBe(html)
+    })
+  })
+
+  it("page: no-cache + strong etag, 304 on if-none-match with the frame headers intact, new etag after a change", async () => {
+    await withServer(async port => {
+      const first = await rawGet(port, page, { "accept-encoding": "br" })
+      expect(first.headers["cache-control"]).toBe("no-cache")
+      const etag = first.headers.etag as string
+      expect(etag).toMatch(/^"[A-Za-z0-9_-]{43}"$/)
+      expect(first.headers["content-security-policy"]).toBe("frame-ancestors 'self' vscode-webview:")
+
+      const again = await rawGet(port, page, { "accept-encoding": "br", "if-none-match": etag })
+      expect(again.status).toBe(304)
+      expect(again.body.length).toBe(0)
+      expect(again.headers.etag).toBe(etag)
+      expect(again.headers["cache-control"]).toBe("no-cache")
+      expect(again.headers["content-security-policy"]).toBe("frame-ancestors 'self' vscode-webview:")
+
+      // Encoding never changes the entity tag: identity revalidates too.
+      expect((await rawGet(port, page, { "if-none-match": etag })).status).toBe(304)
+      expect((await rawGet(port, page, { "if-none-match": '"stale"' })).status).toBe(200)
+
+      await writeFile(uiPath, "<!doctype html><html><head></head><body>shell-marker-v2</body></html>", "utf8")
+      const changed = await rawGet(port, page, { "if-none-match": etag })
+      expect(changed.status).toBe(200)
+      expect(changed.headers.etag).not.toBe(etag)
+      expect(changed.body.toString("utf8")).toContain("shell-marker-v2")
+    })
+  })
+
+  it("page: a granted ?embed=1 carries a different etag, so it never revalidates a framed-headers copy", async () => {
+    await withServer(async port => {
+      const plain = await rawGet(port, page, {})
+      const embed = await rawGet(port, `${page}?embed=1`, {
+        "sec-fetch-dest": "iframe",
+        origin: "vscode-webview://abc123",
+      })
+      expect(embed.status).toBe(200)
+      expect(embed.headers["content-security-policy"]).toBeUndefined()
+      expect(embed.headers.etag).not.toBe(plain.headers.etag)
+      const replay = await rawGet(port, `${page}?embed=1`, {
+        "sec-fetch-dest": "iframe",
+        origin: "vscode-webview://abc123",
+        "if-none-match": plain.headers.etag as string,
+      })
+      expect(replay.status).toBe(200)
+    })
+  })
+
+  it("assets: serves a hashed chunk with its content type, immutable caching, compression and 304", async () => {
+    await withServer(async port => {
+      const js = await rawGet(port, asset("index-abc123.js"), { "accept-encoding": "br" })
+      expect(js.status).toBe(200)
+      expect(js.headers["content-type"]).toBe("text/javascript; charset=utf-8")
+      expect(js.headers["cache-control"]).toBe("public, max-age=31536000, immutable")
+      expect(js.headers["content-encoding"]).toBe("br")
+      expect(js.headers.vary).toBe("Origin, accept-encoding")
+      expect(brotliDecompressSync(js.body).toString("utf8")).toContain("asset-marker")
+      const revalidated = await rawGet(port, asset("index-abc123.js"), {
+        "if-none-match": js.headers.etag as string,
+      })
+      expect(revalidated.status).toBe(304)
+
+      // Already-compressed formats go out as-is.
+      const font = await rawGet(port, asset("font-abc123.woff2"), { "accept-encoding": "br, gzip" })
+      expect(font.status).toBe(200)
+      expect(font.headers["content-type"]).toBe("font/woff2")
+      expect(font.headers["content-encoding"]).toBeUndefined()
+      expect([...font.body]).toEqual([0x77, 0x4f, 0x46, 0x32, 1, 2, 3])
+
+      expect((await rawGet(port, asset("missing-abc.js"), {})).status).toBe(404)
+      // Encoded appId spelling routes the same.
+      expect((await rawGet(port, `/apps/${encodeURIComponent(SHELL_APP_ID)}/ui/assets/index-abc123.js`, {})).status).toBe(200)
+    })
+  })
+
+  it("assets: traversal, separators, dotfiles and symlink escapes are all 404s", async () => {
+    await symlink(join(dir, "secret.txt"), join(dir, "assets", "escape.js"))
+    await withServer(async port => {
+      for (const bad of [
+        "..",
+        ".",
+        ".hidden",
+        "..%2Fsecret.txt",
+        "..%2F..%2Findex.html",
+        "a%2Fb.js",
+        "%2e%2e",
+        "",
+        "escape.js",
+      ]) {
+        const res = await rawGet(port, asset(bad), {})
+        expect(res.status, bad).toBe(404)
+        expect(res.body.toString("utf8"), bad).not.toContain("outside-assets")
+      }
+      const nested = await rawGet(port, `/apps/${SHELL_APP_ID}/ui/assets/../../secret.txt`, {})
+      expect(nested.status).toBe(404)
+      expect(nested.body.toString("utf8")).not.toContain("outside-assets")
+    })
+  })
+
+  it("assets: gated exactly like the page — hostile origin 403s both, a trusted embedder passes both", async () => {
+    await withServer(async port => {
+      for (const path of [page, asset("index-abc123.js")]) {
+        expect((await rawGet(port, path, { origin: "http://evil.example" })).status, path).toBe(403)
+        expect((await rawGet(port, path, { origin: "vscode-webview://abc123" })).status, path).toBe(200)
+        const token = mintAppEmbedToken(SHELL_APP_ID)
+        expect((await rawGet(port, `${path}?et=${token}`, { origin: "null" })).status, path).toBe(200)
+      }
+    })
+  })
+
+  it("assets: share the page's tunnel static-shell exemption, and only for a valid file name", async () => {
+    await withServer(
+      async port => {
+        const tunnel = { "x-forwarded-for": "203.0.113.7" }
+        expect((await rawGet(port, page, tunnel)).status).toBe(200)
+        expect((await rawGet(port, asset("index-abc123.js"), tunnel)).status).toBe(200)
+        // A malformed asset path is not the shell: the bearer gate applies.
+        expect((await rawGet(port, asset(".hidden"), tunnel)).status).toBe(401)
+        expect((await rawGet(port, asset("a%2Fb.js"), tunnel)).status).toBe(401)
+        // The APIs under the shell stay gated.
+        expect((await rawGet(port, `/apps/${SHELL_APP_ID}/external-blob?root=/`, tunnel)).status).toBe(401)
+      },
+      { auth: { mode: "bearer", token: BEARER } },
+    )
+  })
+
+  it("assets: builtin panels and unknown apps have none", async () => {
+    await withServer(async port => {
+      expect((await rawGet(port, `/apps/${encodeURIComponent(workBoardApp.id!)}/ui/assets/index-abc123.js`, {})).status).toBe(404)
+      expect((await rawGet(port, `/apps/@nope/nope/ui/assets/index-abc123.js`, {})).status).toBe(404)
+    })
+  })
+})
+
+function rawGet(
+  port: number,
+  path: string,
+  headers: Record<string, string>,
+): Promise<{ status: number; headers: IncomingHttpHeaders; body: Buffer }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: "127.0.0.1", port, path, method: "GET", headers }, res => {
+      const chunks: Buffer[] = []
+      res.on("data", (c: Buffer) => chunks.push(c))
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }))
+      res.on("error", reject)
+    })
+    req.on("error", reject)
+    req.end()
+  })
 }

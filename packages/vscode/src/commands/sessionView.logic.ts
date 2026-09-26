@@ -23,9 +23,16 @@ export type SessionOpenRoute =
   | { kind: "chat-panel"; url: string }
   | { kind: "builtin" }
 
-/** Deep-link into the session-chat UI with the picker pre-resolved. */
+/** Deep-link into the session-chat UI with the picker pre-resolved. The
+ *  session rides in the fragment (`#session=`), the app's live selection:
+ *  the document URL stays the same for every session, so the shell's
+ *  HTTP cache entry (etag revalidation) is shared across them. */
 export function chatUrl(daemonUrl: string, sessionId: string): string {
-  return `${appStandaloneUrl(daemonUrl, SESSION_CHAT_APP_ID)}?session=${encodeURIComponent(sessionId)}`
+  return `${appStandaloneUrl(daemonUrl, SESSION_CHAT_APP_ID)}${sessionFragment(sessionId)}`
+}
+
+function sessionFragment(sessionId: string): string {
+  return `#session=${encodeURIComponent(sessionId)}`
 }
 
 /** VS Code glob (`workbench.action.browser.open`'s `reuseUrlFilter`) matching
@@ -39,7 +46,7 @@ export function chatReuseUrlFilter(daemonUrl: string): string {
 /** The chat url for embedding in an iframe (the `embed=1` param asks the app
  *  to strip its sidebar; it degrades gracefully when the app ignores it). */
 export function chatPanelUrl(daemonUrl: string, sessionId: string): string {
-  return `${chatUrl(daemonUrl, sessionId)}&embed=1`
+  return `${appStandaloneUrl(daemonUrl, SESSION_CHAT_APP_ID)}?embed=1${sessionFragment(sessionId)}`
 }
 
 /** Whether an installed app record is the Session Chat app with a UI. */

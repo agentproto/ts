@@ -15,8 +15,9 @@ import { tmpdir } from "node:os"
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
-import type { IncomingMessage, ServerResponse } from "node:http"
-import { createServer } from "node:http"
+import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from "node:http"
+import { createServer, request as httpRequest } from "node:http"
+import { brotliDecompressSync, gunzipSync } from "node:zlib"
 import { APP_UI_DISCOVERY_TOOLS, RUNNER_SELECT_SCRIPT } from "@agentproto/app-client/runner-select"
 import {
   applyCors,
@@ -834,3 +835,100 @@ describe("app serve UI-root resolution (regression: ui.path was ignored)", () =>
     }
   })
 })
+
+describe("app serve shell delivery (compression, etag, assets route)", () => {
+  const PAD = `<script type="module">${"console.log('serve-padding');\n".repeat(300)}</script>`
+
+  async function withServe(fn: (port: number, uiRoot: string) => Promise<void>): Promise<void> {
+    const dir = await mktmp()
+    const uiRoot = join(dir, ".agentproto", "ui")
+    await mkdir(join(uiRoot, "assets"), { recursive: true })
+    await writeFile(join(uiRoot, "index.html"), `<html><head></head><body>SERVE-MARKER${PAD}</body></html>`, "utf8")
+    await writeFile(join(uiRoot, "assets", "index-abc123.js"), `export const y = "SERVE-ASSET";\n`.repeat(100), "utf8")
+    await writeFile(join(uiRoot, "secret.txt"), "OUTSIDE-ASSETS", "utf8")
+    const handler = createAppServeRequestHandler({
+      uiRoot,
+      appDir: dir,
+      bridgeScript: buildBridgeScript("/__agentproto/tool-call"),
+      allowedTools: undefined,
+      getClient: async () => {
+        throw new Error("no daemon in this test")
+      },
+    })
+    const server = createServer(handler)
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve))
+    const addr = server.address()
+    const port = addr && typeof addr === "object" ? addr.port : 0
+    try {
+      await fn(port, uiRoot)
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    }
+  }
+
+  it("serves the daemon's /apps/:appId/ui shape, br-encoded, revalidating with a strong etag", async () => {
+    await withServe(async (port, uiRoot) => {
+      for (const path of ["/", "/apps/@agentik/session-chat/ui", "/apps/%40agentik%2Fsession-chat/ui/"]) {
+        const res = await rawGet(port, path, { "accept-encoding": "gzip, br" })
+        expect(res.status, path).toBe(200)
+        expect(res.headers["content-encoding"], path).toBe("br")
+        expect(res.headers.vary, path).toBe("accept-encoding")
+        expect(res.headers["cache-control"], path).toBe("no-cache")
+        const html = brotliDecompressSync(res.body).toString("utf8")
+        expect(html).toContain("SERVE-MARKER")
+        expect(html).toContain("window.McpApp")
+      }
+      const first = await rawGet(port, "/apps/@agentik/session-chat/ui", { "accept-encoding": "gzip" })
+      expect(first.headers["content-encoding"]).toBe("gzip")
+      expect(gunzipSync(first.body).toString("utf8")).toContain("SERVE-MARKER")
+      const etag = first.headers.etag as string
+      expect(etag).toMatch(/^"[A-Za-z0-9_-]{43}"$/)
+      const again = await rawGet(port, "/apps/@agentik/session-chat/ui", { "if-none-match": etag })
+      expect(again.status).toBe(304)
+      expect(again.body.length).toBe(0)
+
+      await writeFile(join(uiRoot, "index.html"), "<html><head></head><body>SERVE-MARKER-V2</body></html>", "utf8")
+      const changed = await rawGet(port, "/apps/@agentik/session-chat/ui", { "if-none-match": etag })
+      expect(changed.status).toBe(200)
+      expect(changed.body.toString("utf8")).toContain("SERVE-MARKER-V2")
+    })
+  })
+
+  it("serves /apps/:appId/ui/assets/:file immutable + compressed, and 404s anything but a flat valid name", async () => {
+    await withServe(async port => {
+      const js = await rawGet(port, "/apps/@agentik/session-chat/ui/assets/index-abc123.js", { "accept-encoding": "br" })
+      expect(js.status).toBe(200)
+      expect(js.headers["content-type"]).toBe("text/javascript; charset=utf-8")
+      expect(js.headers["cache-control"]).toBe("public, max-age=31536000, immutable")
+      expect(js.headers["content-encoding"]).toBe("br")
+      expect(brotliDecompressSync(js.body).toString("utf8")).toContain("SERVE-ASSET")
+      const revalidated = await rawGet(port, "/apps/@agentik/session-chat/ui/assets/index-abc123.js", {
+        "if-none-match": js.headers.etag as string,
+      })
+      expect(revalidated.status).toBe(304)
+
+      for (const bad of ["..", ".hidden", "..%2Fsecret.txt", "a%2Fb.js", "", "missing.js"]) {
+        const res = await rawGet(port, `/apps/@agentik/session-chat/ui/assets/${bad}`, {})
+        expect(res.status, bad).toBe(404)
+        expect(res.body.toString("utf8"), bad).not.toContain("OUTSIDE-ASSETS")
+      }
+    })
+  })
+})
+
+function rawGet(
+  port: number,
+  path: string,
+  headers: Record<string, string>,
+): Promise<{ status: number; headers: IncomingHttpHeaders; body: Buffer }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: "127.0.0.1", port, path, method: "GET", headers }, res => {
+      const chunks: Buffer[] = []
+      res.on("data", (c: Buffer) => chunks.push(c))
+      res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) }))
+      res.on("error", reject)
+    })
+    req.on("error", reject)
+    req.end()
+  })
+}
