@@ -4875,11 +4875,7 @@ async function handleSessions(
       // never bumped it) — the client keeps everything else from its held
       // list. `removed` covers the one way a row leaves the default
       // (`includeArchived=false`) view post-creation: `session_archive`.
-      // Descriptors don't carry an archival timestamp, so this reports
-      // every currently-archived id the caller's filter would otherwise
-      // match, on every delta request, rather than only newly-archived
-      // ones — still correct for a client reconciling a held list (removing
-      // an id it doesn't already have is a no-op), just not minimal.
+      // Rows carry archivedAt (set by archiveSession); only those archived at/after since are reported. Rows archived before the field existed have no timestamp and are always reported.
       const changed = rows.filter(s => {
         const ts = Date.parse(s.lastActivityAt ?? s.startedAt)
         return Number.isNaN(ts) || ts >= sinceMs
@@ -4888,7 +4884,12 @@ async function handleSessions(
         ? []
         : registry
             .list({ includeArchived: true })
-            .filter(s => s.archived && matchesFilter(s))
+            .filter(
+              s =>
+                s.archived &&
+                matchesFilter(s) &&
+                (s.archivedAt === undefined || Date.parse(s.archivedAt) >= sinceMs),
+            )
             .map(s => s.id)
       body = { sessions: changed.map(s => projectSessionForHttp(s, fields)), removed }
     } else {

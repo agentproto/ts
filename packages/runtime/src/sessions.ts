@@ -1305,6 +1305,9 @@ export interface SessionDescriptor {
    *  field is. Absent (not `false`) for every descriptor from before this
    *  field existed — treated the same as `false` everywhere it's read. */
   archived?: boolean
+  /** ISO-8601 instant `archiveSession` set `archived: true`; cleared by
+   *  `unarchiveSession`. Absent on rows archived before this field existed. */
+  archivedAt?: string
   /** When `true`, the idle-reaper (`isReapable`, `idle-reaper.ts`) never
    *  retires this session regardless of how long it's sat idle. For a
    *  supervisor that legitimately parks — waiting on a child, waiting on a
@@ -1968,6 +1971,9 @@ export interface SessionSummary {
   renamedByUser?: boolean
   activitySummary?: SessionActivitySummary
   archived?: boolean
+  /** ISO-8601 instant `archiveSession` set `archived: true`; cleared by
+   *  `unarchiveSession`. Absent on rows archived before this field existed. */
+  archivedAt?: string
   keepAlive?: boolean
   pinned?: boolean
   pty?: boolean
@@ -9246,6 +9252,7 @@ export function createSessionsRegistry(opts?: {
         )
       }
       rt.desc.archived = true
+      rt.desc.archivedAt = new Date().toISOString()
       schedulePersist()
       stampReadLiveness(rt.desc)
       return rt.desc
@@ -9254,6 +9261,7 @@ export function createSessionsRegistry(opts?: {
       const rt = sessions.get(id)
       if (!rt) throw new Error(`unarchiveSession: no session "${id}"`)
       rt.desc.archived = false
+      delete rt.desc.archivedAt
       schedulePersist()
       stampReadLiveness(rt.desc)
       return rt.desc
