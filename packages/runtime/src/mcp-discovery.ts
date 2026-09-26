@@ -17,6 +17,7 @@
  *   - ~/.cursor/mcp.json (cursor) — flat `mcpServers` map.
  *   - ~/.config/goose/config.yaml (goose) — TOML/YAML hybrid; we
  *     only handle the YAML form for now.
+ *   - ~/.codex/config.toml (codex) — `[mcp_servers.<name>]` tables.
  *   - any `.mcp.json` under the user's home that follows the
  *     standard mcpServers shape.
  *
@@ -28,6 +29,7 @@
 import { promises as fs } from "node:fs"
 import { homedir } from "node:os"
 import { resolve as resolvePath } from "node:path"
+import { readCodexMcpServers } from "./codex-config.js"
 import {
   loadWorkspacesConfig,
   type WorkspaceEntry,
@@ -38,7 +40,7 @@ export interface DiscoveredMcp {
    *  cross-call identity (UI treat as React key). */
   id: string
   /** Where we found it. Lets the UI render a source badge. */
-  source: "claude-code" | "cursor" | "goose" | "workspace"
+  source: "claude-code" | "cursor" | "goose" | "codex" | "workspace"
   /** "global" when the entry sits at the top level of the host's
    *  config; "project:<path>" when it's scoped to a single
    *  workspace. claude-code in particular nests per-project. */
@@ -80,6 +82,7 @@ export async function discoverMcps(
     scanClaudeCode(home, out, errors),
     scanCursor(home, out, errors),
     scanGoose(home, out, errors),
+    scanCodex(home, out, errors),
     scanRegisteredWorkspaces(out, errors),
   ])
   // De-dupe identical entries that show up in multiple scopes
@@ -237,6 +240,24 @@ async function scanGoose(
   })
 }
 
+/** codex keeps its servers in `~/.codex/config.toml` as
+ *  `[mcp_servers.<name>]` tables (see codex-config.ts for the mapping). */
+async function scanCodex(
+  home: string,
+  out: DiscoveredMcp[],
+  errors: string[]
+): Promise<void> {
+  const path = resolvePath(home, ".codex", "config.toml")
+  let map: Record<string, unknown>
+  try {
+    map = await readCodexMcpServers(path)
+  } catch (err) {
+    errors.push(`codex: read ${path} — ${(err as Error).message}`)
+    return
+  }
+  pushMcpMap({ out, source: "codex", scope: "global", map })
+}
+
 /**
  * Per-workspace scan — for each registered workspace, look at the
  * common per-project MCP locations (.mcp.json, .cursor/mcp.json,
@@ -307,46 +328,63 @@ function pushMcpMap(args: {
   map: Record<string, unknown>
 }): void {
   for (const [name, raw] of Object.entries(args.map)) {
-    if (!raw || typeof raw !== "object") continue
-    const entry = raw as RawMcpEntry
-    const id = `${args.source}:${args.scope}:${name}`
-    const declared = typeof entry.type === "string" ? entry.type : null
-    const url = typeof entry.url === "string" ? entry.url : undefined
-    const command = typeof entry.command === "string" ? entry.command : undefined
-    let type: DiscoveredMcp["type"]
-    if (declared === "http" || declared === "sse" || declared === "stdio") {
-      type = declared
-    } else if (url) {
-      type = "http"
-    } else if (command) {
-      type = "stdio"
-    } else {
-      type = "unknown"
-    }
-    const m: DiscoveredMcp = {
-      id,
-      source: args.source,
-      scope: args.scope,
-      name,
-      type,
-    }
-    if (command !== undefined) m.command = command
-    if (Array.isArray(entry.args)) {
-      m.args = entry.args.filter((a): a is string => typeof a === "string")
-    }
-    if (entry.env && typeof entry.env === "object") {
-      m.env = stringifyValues(entry.env)
-    }
-    if (url !== undefined) m.url = url
-    if (entry.headers && typeof entry.headers === "object") {
-      m.headers = stringifyValues(entry.headers)
-    }
-    if (type === "unknown") {
-      m.parseNote =
-        "Entry has neither `command` nor `url` — couldn't classify transport."
-    }
-    args.out.push(m)
+    const m = parseMcpServerEntry({ source: args.source, scope: args.scope, name, raw })
+    if (m) args.out.push(m)
   }
+}
+
+/**
+ * Classify one `mcpServers`-shaped entry (`{ type?, command?, args?, env?,
+ * url?, headers? }`) into a `DiscoveredMcp`. Null when `raw` isn't an
+ * object. Shared by the discovery scan and the MCP Apps host's per-session
+ * resolution (mcp-app-resolve.ts), so both read a config file identically.
+ */
+export function parseMcpServerEntry(args: {
+  source: DiscoveredMcp["source"]
+  scope: string
+  name: string
+  raw: unknown
+}): DiscoveredMcp | null {
+  const { name, raw } = args
+  if (!raw || typeof raw !== "object") return null
+  const entry = raw as RawMcpEntry
+  const id = `${args.source}:${args.scope}:${name}`
+  const declared = typeof entry.type === "string" ? entry.type : null
+  const url = typeof entry.url === "string" ? entry.url : undefined
+  const command = typeof entry.command === "string" ? entry.command : undefined
+  let type: DiscoveredMcp["type"]
+  if (declared === "http" || declared === "sse" || declared === "stdio") {
+    type = declared
+  } else if (url) {
+    type = "http"
+  } else if (command) {
+    type = "stdio"
+  } else {
+    type = "unknown"
+  }
+  const m: DiscoveredMcp = {
+    id,
+    source: args.source,
+    scope: args.scope,
+    name,
+    type,
+  }
+  if (command !== undefined) m.command = command
+  if (Array.isArray(entry.args)) {
+    m.args = entry.args.filter((a): a is string => typeof a === "string")
+  }
+  if (entry.env && typeof entry.env === "object") {
+    m.env = stringifyValues(entry.env)
+  }
+  if (url !== undefined) m.url = url
+  if (entry.headers && typeof entry.headers === "object") {
+    m.headers = stringifyValues(entry.headers)
+  }
+  if (type === "unknown") {
+    m.parseNote =
+      "Entry has neither `command` nor `url` — couldn't classify transport."
+  }
+  return m
 }
 
 function stringifyValues(

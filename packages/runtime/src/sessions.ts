@@ -21,6 +21,7 @@
  */
 
 import type { AcpMcpServer, AcpPermissionResolution } from "@agentproto/acp"
+import type { McpAppToolCallRecord } from "./mcp-apps-host.js"
 import type { SessionMode } from "@agentproto/acp/client"
 import { spawn, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
@@ -3375,6 +3376,15 @@ export interface SessionsRegistry {
     id: string,
     onLine: (line: string, stream: "stdout" | "stderr") => void
   ): (() => void) | null
+  /** Append a `kind: "mcp_app_tool_call"` record (an MCP App iframe's
+   *  `tools/call`, proxied by `mcp_app_tool_call`) to the session's
+   *  events.jsonl through the same seq-numbered writer the session's own
+   *  events use. No-op-safe for an unknown id (the writer creates the dir). */
+  recordMcpAppToolCall(sessionId: string, record: McpAppToolCallRecord): void
+  /** Tool name the transcript recorded for `toolCallId` (the latest
+   *  non-empty `toolName` across its `tool-call` records), or undefined
+   *  when the id isn't in the session's events.jsonl. */
+  findToolCallName(sessionId: string, toolCallId: string): Promise<string | undefined>
   /** Subscribe to a session's structured events.jsonl records as they're
    *  written — the live-push half of `GET /sessions/:id/events/stream`'s
    *  replay-then-subscribe handoff. Thin passthrough to the transcript
@@ -8800,6 +8810,31 @@ export function createSessionsRegistry(opts?: {
     },
     subscribeToRecords(id, onRecord) {
       return baseTranscriptWriter.subscribe(id, onRecord)
+    },
+    recordMcpAppToolCall(sessionId, record) {
+      baseTranscriptWriter.recordMcpAppToolCall(sessionId, record)
+    },
+    async findToolCallName(sessionId, toolCallId) {
+      let raw: string
+      try {
+        raw = await fs.readFile(sessionEventsPath(sessionId, transcriptBaseDir), "utf8")
+      } catch {
+        return undefined
+      }
+      let name: string | undefined
+      for (const line of raw.split("\n")) {
+        // Cheap pre-filter: only parse lines that can be the call's record.
+        if (!line.includes(toolCallId)) continue
+        try {
+          const rec = JSON.parse(line) as { kind?: unknown; toolCallId?: unknown; toolName?: unknown }
+          if (rec.kind === "tool-call" && rec.toolCallId === toolCallId && typeof rec.toolName === "string" && rec.toolName) {
+            name = rec.toolName
+          }
+        } catch {
+          // torn / partial line
+        }
+      }
+      return name
     },
     attachPty(id, initial, onData, onExit) {
       const rt = sessions.get(id)

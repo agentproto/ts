@@ -170,6 +170,7 @@
     "@agentproto/workflow-loader": "workspace:*",
     "@agentproto/workflow-runtime": "workspace:*",
     "@agentproto/workspace-brain": "workspace:*",
+    "@modelcontextprotocol/ext-apps": "1.7.5",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "ai": "^6.0.277",
     "croner": "^9.1.0",
