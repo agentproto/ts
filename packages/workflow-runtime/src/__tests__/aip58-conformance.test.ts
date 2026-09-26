@@ -6,12 +6,20 @@
  * vector, so the full V1-V8 set is always visible in the test tree even
  * though P1 only made V1 green.
  *
- * V3-V7 need pieces of the AIP-58 Run resource this runtime doesn't ship
- * yet — `Run.artifacts[]` / `missing-artifact`, a generalized host-restart
- * rule, owner-lease liveness, `run.replay` (see
- * `.plans/agent-apps-dogfood/IMPL-aip58.md`, P2-P5). They stay `it.todo`
- * with a one-line reason each so a later PR flips them without
- * re-discovering which vectors exist or what they need.
+ * V3, V5, V7 need pieces of the AIP-58 Run resource this runtime doesn't
+ * ship yet — `Run.artifacts[]` / `missing-artifact`, the deferred-publish
+ * model, `run.replay` (see `.plans/agent-apps-dogfood/IMPL-aip58.md`,
+ * P2-P5). They stay `it.todo` with a one-line reason each so a later PR
+ * flips them without re-discovering which vectors exist or what they need.
+ *
+ * V4 (host-restart) and V6 (owner-lease liveness) are genuinely green as of
+ * P3b — but at the HOST layer (`packages/runtime`'s `createWorkflowRunner`
+ * owns persistence/reload and the lease/heartbeat, `runWorkflow` here has
+ * neither), so they're conformance-tested in
+ * `packages/runtime/src/__tests__/aip58-events.test.ts` instead of as `it`
+ * cases in this file. They stay `it.todo` here — genuinely inapplicable at
+ * this transport-agnostic layer, not merely unimplemented — pointing at
+ * that file rather than repeating the old "not implemented" reason.
  *
  * V1 (input validation, P1) drives the same validate-before-dispatch seam
  * `runtime/workflow-runner.ts`'s `startFromFile` uses (`validateWorkflowInput`),
@@ -68,9 +76,9 @@ const vectors = loadVectors()
 /** One-line reason each not-yet-green vector is `it.todo` in this PR. */
 const NOT_YET_GREEN: Record<string, string> = {
   V3: "needs Run.artifacts[] + the missing-artifact check on a required outputsFiles key — not implemented (P2/P4 Run workspace).",
-  V4: "needs the generalized host-restart rule across every run kind — workflow-runner.ts only covers its own approval/suspend steps today (P2 State machine).",
+  V4: "green as of P3b, but at the host layer — see packages/runtime/src/__tests__/aip58-events.test.ts (runWorkflow itself has no persistence/reload to restart).",
   V5: "needs the deferred-publish model (run-scoped artifacts/<key> + explicit run.publish) — outputsFiles still syncs straight to its declared path today (P4 Run workspace).",
-  V6: "needs an owner lease/heartbeat liveness check — only host-restart is detected today, not an owner dying independently (P2 State machine).",
+  V6: "green as of P3b, but at the host layer — see packages/runtime/src/__tests__/aip58-events.test.ts (runWorkflow itself has no owner/lease concept).",
   V7: "needs run.replay + journal-sourced step reuse — StepCache exists but has no replay verb (P3 Journal).",
 }
 

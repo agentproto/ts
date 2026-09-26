@@ -356,7 +356,12 @@ describe("app_* verbs", () => {
       await client.callTool({ name: "app_status", arguments: { appRunId: ran.appRunId } }),
     )
     expect(status.status).toBe("running")
-    expect(status.sessions).toEqual([
+    expect(status.sessions).toEqual([{ agentId: "worker", sessionId, status: "running" }])
+
+    const fullStatus = parseToolJson(
+      await client.callTool({ name: "app_status", arguments: { appRunId: ran.appRunId, full: true } }),
+    )
+    expect(fullStatus.sessions).toEqual([
       { agentId: "worker", sessionId, descriptor: expect.objectContaining({ id: sessionId }) },
     ])
 
@@ -364,7 +369,7 @@ describe("app_* verbs", () => {
       await client.callTool({ name: "app_stop", arguments: { appRunId: ran.appRunId } }),
     )
     expect(stopped.killed).toEqual([sessionId])
-    expect(stopped.status).toBe("stopped")
+    expect(stopped.status).toBe("cancelled")
     expect(registry.get(sessionId)?.status).toBe("killed")
   })
 
@@ -864,7 +869,7 @@ describe("app_run runner pass-through + truthful terminal state (agentproto/ts A
     expect(ran.harness).toBe("adapter-y")
   })
 
-  it("app_status reconciles a concurrent run whose sessions are all terminal into ended + endedAt", async () => {
+  it("app_status reconciles a concurrent run whose sessions are all terminal into succeeded + endedAt", async () => {
     await buildFixtureApp(dir, { toolId: "known_tool" })
     const { client, registry } = await setup()
     await client.callTool({ name: "app_install", arguments: { dir } })
@@ -887,11 +892,11 @@ describe("app_run runner pass-through + truthful terminal state (agentproto/ts A
     status = parseToolJson(
       await client.callTool({ name: "app_status", arguments: { appRunId: ran.appRunId } }),
     )
-    expect(status.status).toBe("ended")
+    expect(status.status).toBe("succeeded")
     expect(status.endedAt).toBeTruthy()
   })
 
-  it("app_run with sequence spawns agents in order and reports ended once both are terminal", async () => {
+  it("app_run with sequence spawns agents in order and reports succeeded once both are terminal", async () => {
     await buildTwoAgentApp(dir)
     const startSession = fakeStartSession()
     const resolveAgentAdapter: AgentAdapterResolver = async slug =>
@@ -912,7 +917,7 @@ describe("app_run runner pass-through + truthful terminal state (agentproto/ts A
         },
       }),
     )
-    expect(ran.status).toBe("ended")
+    expect(ran.status).toBe("succeeded")
     expect(ran.endedAt).toBeTruthy()
     expect(ran.sessions.map((s: any) => s.agentId)).toEqual(["job-scout", "job-tailor"])
     // One spawn per agent, in sequence order (run.sessions is built strictly
@@ -926,7 +931,7 @@ describe("app_run runner pass-through + truthful terminal state (agentproto/ts A
     }
 
     const run = appRegistry.getRun(ran.appRunId)!
-    expect(run.status).toBe("ended")
+    expect(run.status).toBe("succeeded")
     expect(run.adapter).toBe("harness-h")
     expect(run.harness).toBe("harness-h")
     expect(run.model).toBe("claude-sonnet-5")
@@ -969,7 +974,7 @@ describe("app_run runner pass-through + truthful terminal state (agentproto/ts A
     ])
 
     releases.shift()?.()
-    await vi.waitFor(() => expect(appRegistry.getRun(ran.appRunId)?.status).toBe("ended"))
+    await vi.waitFor(() => expect(appRegistry.getRun(ran.appRunId)?.status).toBe("succeeded"))
   })
 
   it("empty text blocks don't break sequential completion (sanitized, not an error)", async () => {
@@ -984,9 +989,9 @@ describe("app_run runner pass-through + truthful terminal state (agentproto/ts A
       }),
     )
     // A session whose terminal output is blank still completes; the run lands
-    // on a truthful terminal `ended` rather than surfacing a blank block.
-    expect(ran.status).toBe("ended")
-    expect(appRegistry.getRun(ran.appRunId)!.status).toBe("ended")
+    // on a truthful terminal `succeeded` rather than surfacing a blank block.
+    expect(ran.status).toBe("succeeded")
+    expect(appRegistry.getRun(ran.appRunId)!.status).toBe("succeeded")
 
     // Unit-level guard: blank/whitespace text blocks are dropped; real text
     // and non-text blocks survive.

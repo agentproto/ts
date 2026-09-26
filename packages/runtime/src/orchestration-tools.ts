@@ -689,7 +689,7 @@ export interface RegisterOrchestrationToolsOptions {
  * needs to know WHAT happened, without the full payload of what a step
  * produced.
  */
-function compactWorkflowRunStatus(run: WorkflowRun): WorkflowRun {
+export function compactWorkflowRunStatus(run: WorkflowRun): WorkflowRun {
   return {
     ...run,
     stages: run.stages.map(stage => ({
