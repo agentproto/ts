@@ -6554,7 +6554,11 @@ async function handleSessions(
       json(404, { error: "session_not_found", id: rawIdOrName })
       return true
     }
-    json(200, sessionDescriptorForHttp(resolvedDesc))
+    const reqUrlForFields = req.url ?? ""
+    const qsForFields = reqUrlForFields.includes("?")
+      ? reqUrlForFields.slice(reqUrlForFields.indexOf("?") + 1)
+      : ""
+    json(200, projectSessionForHttp(resolvedDesc, parseSessionFields(new URLSearchParams(qsForFields))))
     return true
   }
 

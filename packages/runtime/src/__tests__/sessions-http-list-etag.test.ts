@@ -285,4 +285,19 @@ describe("GET /sessions — strong etag + if-none-match + ?since delta", () => {
       }
     })
   })
+
+  it("GET /sessions/:id?fields= projects the single descriptor the same way", async () => {
+    await withServer(async (port, registry) => {
+      const desc = registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: process.cwd(),
+        agentSession: fakeAgentSession("agent"),
+        adapterSlug: "fake",
+      })
+      const res = await fetch(`http://127.0.0.1:${port}/sessions/${desc.id}?fields=status`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as Record<string, unknown>
+      expect(Object.keys(body).sort()).toEqual(["id", "status"])
+    })
+  })
 })
