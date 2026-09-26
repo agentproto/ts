@@ -7446,6 +7446,10 @@ export function createSessionsRegistry(opts?: {
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
         ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
+        // Descriptor echo of the hold flag (it also lands on the runtime,
+        // below): what `session_restart` / `session_continue_fresh` read to
+        // keep a held session in hold, and what summaries report.
+        ...(input.permissionHold ? { permissionHold: true } : {}),
         ...(input.appServe ? { appServe: input.appServe } : {}),
         // Restart lineage (see SessionDescriptor.resumedFrom's doc). `resumeVia`
         // can legitimately be "" (a fresh fallback spawn with no continuity),
@@ -7588,6 +7592,10 @@ export function createSessionsRegistry(opts?: {
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
         ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
+        // Descriptor echo of the hold flag (it also lands on the runtime,
+        // below): what `session_restart` / `session_continue_fresh` read to
+        // keep a held session in hold, and what summaries report.
+        ...(input.permissionHold ? { permissionHold: true } : {}),
         ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
         ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
