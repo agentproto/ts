@@ -20,7 +20,7 @@ schedule:
   catchup: skip
 target:
   workflow:
-    file: /Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/projects/agentproto/ts/packages/apps/repo-maintenance/.agentproto/workflows/maintain/WORKFLOW.md
+    file: <absolute-path-to-agentproto-ts>/packages/apps/repo-maintenance/.agentproto/workflows/maintain/WORKFLOW.md
   inputs:
     applyMerged: true
     notify:
