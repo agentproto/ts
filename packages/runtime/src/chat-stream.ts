@@ -96,6 +96,35 @@ export function createTranscriptToUiMapper(
         return closeOpen()
       }
 
+      case "session-message": {
+        // A typed message from ANOTHER session (a child's report, …) opening
+        // this turn. Unlike a user-prompt the client never sent it, so it
+        // travels as a custom data part carrying the daemon-attested sender —
+        // a UI renders it as a "from child X" bubble, never as the human.
+        const chunks = closeOpen()
+        const m = record.message
+        chunks.push({
+          type: "data-session-message",
+          id: m.id,
+          data: {
+            messageId: m.id,
+            from: m.from,
+            kind: m.kind,
+            urgency: m.urgency,
+            text: m.text,
+            ...(m.replyTo ? { replyTo: m.replyTo } : {}),
+            ...(m.correlationId ? { correlationId: m.correlationId } : {}),
+            ...(m.delivered ? { delivered: m.delivered } : {}),
+          },
+        } as UIMessageChunk)
+        return chunks
+      }
+
+      case "session-message-sent": {
+        // Sender-side bookkeeping — the sending tool call already shows it.
+        return []
+      }
+
       case "thought": {
         // A thought only closes a TEXT segment (reasoning succeeds text in
         // the turn); a follow-up thought in the same reasoning run is a pure

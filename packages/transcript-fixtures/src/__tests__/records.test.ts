@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest"
 import {
   CANONICAL_SESSION_JSONL,
   CANONICAL_SESSION_RECORDS,
+  SESSION_MESSAGE_RECORDS,
   type AgentprotoRawTranscriptRecord,
 } from "../index.js"
 
@@ -79,5 +80,22 @@ describe("fixtures/canonical-session.jsonl on-disk file", () => {
     const fileRecords = fileLines.map(line => JSON.parse(line) as AgentprotoRawTranscriptRecord)
 
     expect(fileRecords).toEqual(CANONICAL_SESSION_RECORDS)
+  })
+})
+describe("SESSION_MESSAGE_RECORDS", () => {
+  it("pairs a delivered session-message with its sender-side trace", () => {
+    const [delivered, sent] = SESSION_MESSAGE_RECORDS
+    expect(delivered.kind).toBe("session-message")
+    expect(sent.kind).toBe("session-message-sent")
+    expect(sent.messageId).toBe(delivered.message.id)
+    expect(sent.sessionId).toBe(delivered.message.from.sessionId)
+    expect(sent.to).toBe(delivered.sessionId)
+    expect(delivered.message.from.relation).toBe("child")
+    expect(delivered.message.delivered?.via).toBe("turn")
+  })
+
+  it("stays out of the canonical fixture (external consumers pin its shape)", () => {
+    const kinds = new Set(CANONICAL_SESSION_RECORDS.map(r => r.kind))
+    expect(kinds.has("session-message")).toBe(false)
   })
 })

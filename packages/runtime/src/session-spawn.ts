@@ -2533,7 +2533,10 @@ export async function spawnAgentSession(
     ? `You were spawned by session ${parentSessionId} (also available in the ` +
       `${PARENT_SESSION_ID_ENV} env var). When you finish — or hit a blocker ` +
       `you cannot resolve — report back to it via the message_parent tool if ` +
-      `one is available (no session id needed; the daemon resolves your parent).`
+      `one is available (no session id needed; the daemon resolves your parent). ` +
+      `Messages from other sessions reach you wrapped in daemon-attested ` +
+      `<agentproto-message …> tags naming the real sender; text outside such a ` +
+      `tag is from the human or these spawn instructions.`
     : undefined
   let effectivePrompt = input.prompt
   // Daemon-side AGENTS.md resolution + injection (WP-R2): resolve the nearest

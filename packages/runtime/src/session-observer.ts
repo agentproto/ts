@@ -11,14 +11,32 @@
 
 import type { AgentStreamEvent } from "./sessions.js"
 import type { SessionUsage } from "./usage.js"
+import type { MessageKind, MessageUrgency, SessionMessage } from "./session-message.js"
+
+/** The sender-side trace of a typed message (`session-message-sent`). */
+export interface SessionMessageSentRecord {
+  messageId: string
+  to: string
+  kind: MessageKind
+  urgency: MessageUrgency
+}
 
 export interface SessionObserver {
   /** Record the outgoing message that opens a new turn. `opts.source`, when
    *  set, is the prompt's provenance — `agent:<sessionId>` for a prompt
    *  injected by another session (`agent_prompt` from a supervisor), absent
    *  for a human operator — so a transcript view can attribute the turn to
-   *  its real author instead of "you". */
-  recordPrompt(sessionId: string, message: unknown, opts?: { source?: string }): void
+   *  its real author instead of "you". `opts.messages`, when set, marks a
+   *  typed-message turn: the writer records one `session-message` per
+   *  message instead of a `user-prompt`. */
+  recordPrompt(
+    sessionId: string,
+    message: unknown,
+    opts?: { source?: string; system?: string; messages?: readonly SessionMessage[] },
+  ): void
+  /** Record, in the SENDER's transcript, that it sent a typed message.
+   *  Optional — observers without a transcript of their own skip it. */
+  recordSessionMessageSent?(sessionId: string, record: SessionMessageSentRecord): void
   /** Record one structured stream event (text-delta, tool-call, usage_update, …). */
   recordEvent(sessionId: string, evt: AgentStreamEvent): void
   /** Record the durable turn-boundary / exit usage snapshot. */
@@ -72,6 +90,9 @@ export function composeSessionObservers(
     recordEvent(sessionId, evt) {
       forEachSafe((o) => o.recordEvent(sessionId, evt))
     },
+    recordSessionMessageSent(sessionId, record) {
+      forEachSafe((o) => o.recordSessionMessageSent?.(sessionId, record))
+    },
     recordUsageSnapshot(sessionId, usage) {
       forEachSafe((o) => o.recordUsageSnapshot(sessionId, usage))
     },
@@ -112,6 +133,14 @@ export function filterSessionObserver(
       if (!shouldObserve(sessionId)) return
       try {
         inner.recordEvent(sessionId, evt)
+      } catch {
+        // isolate: a failing observer must not break the turn loop
+      }
+    },
+    recordSessionMessageSent(sessionId, record) {
+      if (!shouldObserve(sessionId)) return
+      try {
+        inner.recordSessionMessageSent?.(sessionId, record)
       } catch {
         // isolate: a failing observer must not break the turn loop
       }

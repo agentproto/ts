@@ -230,6 +230,20 @@ export function describePromptSource(
       tooltip: `Reported by child session ${id} (message_parent / crash notice)`,
     }
   }
+  // `parent:` / `sibling:` — a typed session message's attested sender;
+  // bare `system` — a daemon-originated message.
+  const relMatch = /^(parent|sibling):(.+)$/.exec(source)
+  if (relMatch) {
+    const id = relMatch[2]!
+    const shortId = id.length > 8 ? id.slice(-6) : id
+    return {
+      label: `${relMatch[1] === "parent" ? "↓" : "↔"} ${relMatch[1]} ${shortId}`,
+      tooltip: `Message from ${relMatch[1]} session ${id}`,
+    }
+  }
+  if (source === "system") {
+    return { label: "⚙ daemon", tooltip: "Message from the agentproto daemon" }
+  }
   return {
     label: `⇄ ${source}`,
     tooltip: `Prompt source: ${source}`,

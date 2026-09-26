@@ -892,3 +892,37 @@ describe("clampToLines", () => {
     expect(clampToLines(long, 3)).toEqual({ preview: long, clamped: false, lineCount: 1 })
   })
 })
+
+describe("reduceConversation — session-message (typed inter-session message)", () => {
+  it("opens its own user-role turn attributed to the attested sender, never merged with a prompt", () => {
+    freshSeq()
+    const records: SessionEventRecord[] = [
+      rec({ kind: "user-prompt", text: "human ask" }),
+      rec({ kind: "text-delta", text: "working\n" }),
+      rec({ kind: "turn-end", reason: "completed" }),
+      rec({
+        kind: "session-message",
+        message: {
+          id: "msg_1",
+          text: "PR opened",
+          kind: "done",
+          from: { sessionId: "sess_child01", label: "executor-2", relation: "child" },
+        },
+      }),
+      rec({ kind: "text-delta", text: "thanks\n" }),
+    ]
+    const conv = reduceConversation("sess_p", records)
+    expect(conv.turns.map(t => t.role)).toEqual(["user", "assistant", "user", "assistant"])
+    const msgTurn = conv.turns[2]!
+    expect(msgTurn.promptSource).toBe("child:sess_child01")
+    expect(msgTurn.segments[0]).toMatchObject({ kind: "user", text: "PR opened" })
+    // The human turn stays unattributed.
+    expect(conv.turns[0]!.promptSource).toBeUndefined()
+  })
+
+  it("a record without an envelope is skipped rather than crashing", () => {
+    freshSeq()
+    const conv = reduceConversation("sess_p", [rec({ kind: "session-message" })])
+    expect(conv.turns).toEqual([])
+  })
+})

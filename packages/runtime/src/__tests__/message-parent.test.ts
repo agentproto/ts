@@ -75,6 +75,17 @@ async function harness(opts: {
   return { client, close: async () => client.close() }
 }
 
+/** The daemon-attested envelope `message_parent` hands `enqueuePrompt`. */
+function childEnvelope(childId: string, parentId: string, urgency = "next-turn") {
+  return expect.objectContaining({
+    id: expect.stringMatching(/^msg_/),
+    to: parentId,
+    from: expect.objectContaining({ sessionId: childId, relation: "child" }),
+    kind: "report",
+    urgency,
+  })
+}
+
 function textOf(result: unknown): string {
   return (result as { content: Array<{ text: string }> }).content[0]!.text
 }
@@ -99,13 +110,14 @@ describe("message_parent — delivery", () => {
       expect(JSON.parse(textOf(result))).toEqual({
         ok: true,
         parentSessionId: parent.id,
+        messageId: expect.stringMatching(/^msg_[0-9a-f]{8}$/),
         delivery: "enqueued",
       })
       expect(enqueue).toHaveBeenCalledTimes(1)
       expect(enqueue).toHaveBeenCalledWith(
         parent.id,
-        `[child-message] worker-a (${child.id}): done: 3 files patched`,
-        { queue: true, source: `child:${child.id}`, origin: `child:${child.id}` },
+        "done: 3 files patched",
+        { queue: true, source: `child:${child.id}`, origin: `child:${child.id}`, envelope: childEnvelope(child.id, parent.id) },
       )
     } finally {
       await h.close()
@@ -136,8 +148,8 @@ describe("message_parent — delivery", () => {
       expect(enqueue).toHaveBeenCalledTimes(1)
       expect(enqueue).toHaveBeenCalledWith(
         parent.id,
-        `[child-message] ${child.id} (${child.id}): blocked on missing env var`,
-        { queue: true, source: `child:${child.id}`, origin: `child:${child.id}` },
+        "blocked on missing env var",
+        { queue: true, source: `child:${child.id}`, origin: `child:${child.id}`, envelope: childEnvelope(child.id, parent.id) },
       )
     } finally {
       await h.close()
@@ -160,12 +172,13 @@ describe("message_parent — delivery", () => {
       expect(JSON.parse(textOf(result))).toEqual({
         ok: true,
         parentSessionId: parent.id,
+        messageId: expect.stringMatching(/^msg_[0-9a-f]{8}$/),
         delivery: "interrupted",
       })
       expect(enqueue).toHaveBeenCalledWith(
         parent.id,
-        `[child-message] worker-a (${child.id}): STOP — spec changed`,
-        { interrupt: true, source: `child:${child.id}`, origin: `child:${child.id}` },
+        "STOP — spec changed",
+        { interrupt: true, source: `child:${child.id}`, origin: `child:${child.id}`, envelope: childEnvelope(child.id, parent.id, "interrupt") },
       )
       expect(enqueue).toHaveBeenCalledTimes(1)
     } finally {
@@ -189,12 +202,15 @@ describe("message_parent — delivery", () => {
       expect(JSON.parse(textOf(result))).toEqual({
         ok: true,
         parentSessionId: parent.id,
+        messageId: expect.stringMatching(/^msg_[0-9a-f]{8}$/),
         delivery: "enqueued",
       })
       expect(enqueue).toHaveBeenCalledWith(
         parent.id,
-        `[child-message] worker-a (${child.id}): fyi`,
-        { queue: true, source: `child:${child.id}`, origin: `child:${child.id}` },
+        "fyi",
+        // The envelope keeps the REQUESTED urgency; an idle parent just has
+        // no turn to cut.
+        { queue: true, source: `child:${child.id}`, origin: `child:${child.id}`, envelope: childEnvelope(child.id, parent.id, "interrupt") },
       )
     } finally {
       await h.close()
@@ -224,8 +240,8 @@ describe("message_parent — delivery", () => {
       expect(isError(result)).toBeFalsy()
       expect(enqueue).toHaveBeenCalledWith(
         parent.id,
-        expect.stringContaining(`(${child.id}): hello`),
-        { queue: true, source: `child:${child.id}`, origin: `child:${child.id}` },
+        "hello",
+        { queue: true, source: `child:${child.id}`, origin: `child:${child.id}`, envelope: childEnvelope(child.id, parent.id) },
       )
     } finally {
       await h.close()
@@ -256,8 +272,8 @@ describe("message_parent — configurable interrupt default", () => {
       expect(body.hint).toBeUndefined()
       expect(enqueue).toHaveBeenCalledWith(
         parent.id,
-        `[child-message] worker-a (${child.id}): urgent`,
-        { interrupt: true, source: `child:${child.id}`, origin: `child:${child.id}` },
+        "urgent",
+        { interrupt: true, source: `child:${child.id}`, origin: `child:${child.id}`, envelope: childEnvelope(child.id, parent.id, "interrupt") },
       )
       expect(enqueue).toHaveBeenCalledTimes(1)
     } finally {

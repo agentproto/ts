@@ -37,6 +37,7 @@ export type SessionEventType =
   | "session:config-changed"
   | "session:renamed"
   | "session:pinned-changed"
+  | "session:message"
   | "policy:passed"
   | "policy:failed"
   | "policy:commit-ready"
@@ -574,6 +575,24 @@ export interface SessionRenamedEvent {
 }
 
 /**
+ * A typed inter-session message (`session-message.ts`) was accepted for
+ * `sessionId` (the RECIPIENT) — once at send (no `delivered`) and again when
+ * it's delivered into the recipient's context (`delivered` set). Lets
+ * `session_monitor` / SSE / the VS Code panel react without polling.
+ */
+export interface SessionMessageEvent {
+  type: "session:message"
+  sessionId: string
+  messageId: string
+  fromSessionId?: string
+  relation: "child" | "parent" | "sibling" | "human" | "system"
+  kind: "report" | "question" | "blocker" | "done" | "notice"
+  urgency: "fyi" | "next-turn" | "steer" | "interrupt"
+  delivered?: { via: "wait" | "steer" | "turn" | "interrupt" | "inbox"; at: string; turnSeq?: number }
+  ts: string
+}
+
+/**
  * Emitted when an operator pins or unpins a session for list visibility
  * (`POST /sessions/:id/pin`, the `session_set_pinned` MCP verb). Like
  * `session:renamed`, this is NOT a `SessionConfig` axis — pinning never
@@ -849,6 +868,7 @@ export type SessionEvent =
   | SessionConfigChangedEvent
   | SessionRenamedEvent
   | SessionPinnedEvent
+  | SessionMessageEvent
   | PolicyPassedEvent
   | PolicyFailedEvent
   | PolicyCommitReadyEvent

@@ -1128,6 +1128,14 @@ export interface SessionEventRecord {
   reason?: string
   error?: { message: string; code?: number; data?: unknown }
   options?: unknown
+  /** `session-message` records: the daemon-attested envelope of a typed
+   *  message from another session (AIP-46 §Session messages). */
+  message?: {
+    id: string
+    text?: string
+    kind?: string
+    from?: { sessionId?: string; label?: string; relation?: string }
+  }
   /** "permission-resolved" outcome for the "agent-prompt" (same toolCallId)
    *  it answers — see @agentproto/runtime's transcript-writer.ts. */
   decision?: "approve" | "deny" | "cancelled"
