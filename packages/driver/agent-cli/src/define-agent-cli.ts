@@ -764,6 +764,16 @@ export function createAgentCliRuntime(
               },
             }
           : {}),
+        ...(arm.steer
+          ? {
+              // Snapshotted after `arm.connect()` resolved, like the
+              // config/mode read surfaces above.
+              steeringSupported: arm.steeringSupported === true,
+              steer(content: unknown) {
+                return arm.steer!(content)
+              },
+            }
+          : {}),
         async close() {
           await arm.close()
           // The whole tree, not just `child`: that is usually an npx/npm-exec

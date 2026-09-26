@@ -1848,6 +1848,7 @@ export function registerAgentTools(
     busy: s.busy,
     awaitingInput: s.awaitingInput,
     blockedOn: s.blockedOn,
+    ...(s.capabilities?.steering ? { steering: true } : {}),
     lastActivityAt: s.lastActivityAt,
     startedAt: s.startedAt,
     exitCode: s.exitCode,

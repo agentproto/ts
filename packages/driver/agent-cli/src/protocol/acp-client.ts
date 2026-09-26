@@ -310,6 +310,15 @@ export function createAcpProtocolArm(
       if (!session) return () => {}
       return session.onOutOfTurnEvent(listener)
     },
+    get steeringSupported() {
+      return session?.steeringSupported ?? false
+    },
+    async steer(content) {
+      // Nothing to steer before connect — same not-connected shape as the
+      // other session controls, reported as "promptRequired" (no turn).
+      if (!session) return "promptRequired"
+      return session.steer(content)
+    },
     respondPermission(
       requestId: string,
       resolution: AcpPermissionResolution,
