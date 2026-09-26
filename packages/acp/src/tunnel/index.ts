@@ -20,6 +20,8 @@ export { decodeData } from "./node-data.js"
 
 export {
   TUNNEL_VERSION,
+  MAX_FRAME_PAYLOAD_BYTES,
+  splitPayload,
   encodeFrame,
   parseFrame,
   encodeData,

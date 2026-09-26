@@ -18,8 +18,10 @@ import { Readable, Writable } from "node:stream"
 import { randomUUID } from "node:crypto"
 import { decodeData } from "./node-data.js"
 import {
+  MAX_FRAME_PAYLOAD_BYTES,
   TUNNEL_VERSION,
   encodeData,
+  splitPayload,
   type ExitFrame,
   type HelloFrame,
   type HttpRequestFrame,
@@ -266,6 +268,36 @@ export function createTunnelClient(opts: TunnelClientOptions): TunnelClient {
   }
   const wsOpenPending = new Map<string, WsPending>()
   const wsByReq = new Map<string, TunnelWebSocketDuck>()
+  // Daemon→host WS messages still arriving as fragments (`more`), by reqId.
+  const wsFragments = new Map<string, Buffer[]>()
+
+  /** Send an `http_request`. A body above MAX_FRAME_PAYLOAD_BYTES goes out as
+   *  `http_request_chunk` frames when the daemon accepts them — one frame that
+   *  size would exceed a rendezvous' message cap once E2E-wrapped. Older
+   *  daemons get it inline, as before. */
+  function sendHttpRequest(
+    base: Omit<HttpRequestFrame, "body" | "bodyChunked">,
+    body: Buffer | undefined,
+  ): void {
+    if (
+      body !== undefined &&
+      body.length > MAX_FRAME_PAYLOAD_BYTES &&
+      hello?.capabilities.httpRequestChunks === true
+    ) {
+      opts.sink.send({ ...base, bodyChunked: true })
+      const pieces = splitPayload(body)
+      pieces.forEach((piece, i) => {
+        opts.sink.send({
+          t: "http_request_chunk",
+          reqId: base.reqId,
+          data: encodeData(piece),
+          ...(i === pieces.length - 1 ? { end: true } : {}),
+        })
+      })
+      return
+    }
+    opts.sink.send({ ...base, ...(body !== undefined ? { body: encodeData(body) } : {}) })
+  }
 
   const offFrame = opts.sink.onFrame((frame) => routeIncoming(frame))
   const offClose = opts.sink.onClose(() => {
@@ -529,7 +561,11 @@ export function createTunnelClient(opts: TunnelClientOptions): TunnelClient {
           frame.reqId,
           frame.protocol ?? null,
           opts.sink,
-          () => wsByReq.delete(frame.reqId)
+          () => {
+            wsByReq.delete(frame.reqId)
+            wsFragments.delete(frame.reqId)
+          },
+          hello?.capabilities.wsFragments === true
         )
         wsByReq.set(frame.reqId, duck)
         pending.resolve(duck)
@@ -538,7 +574,16 @@ export function createTunnelClient(opts: TunnelClientOptions): TunnelClient {
       case "ws_message": {
         const duck = wsByReq.get(frame.reqId)
         if (!duck) return // stale frame after close — drop
-        duck.__handleMessage(decodeData(frame.data), frame.binary === true)
+        const piece = decodeData(frame.data)
+        if (frame.more) {
+          const parts = wsFragments.get(frame.reqId) ?? []
+          parts.push(piece)
+          wsFragments.set(frame.reqId, parts)
+          return
+        }
+        const held = wsFragments.get(frame.reqId)
+        wsFragments.delete(frame.reqId)
+        duck.__handleMessage(held ? Buffer.concat([...held, piece]) : piece, frame.binary === true)
         return
       }
       case "ws_close": {
@@ -642,19 +687,13 @@ export function createTunnelClient(opts: TunnelClientOptions): TunnelClient {
       if (!hello) await this.ready()
       const reqId = randomUUID()
       const timeoutMs = req.timeoutMs ?? 30_000
-      const body =
-        req.body === undefined
-          ? undefined
-          : encodeData(
-              typeof req.body === "string" ? req.body : Buffer.from(req.body)
-            )
-      const frame: HttpRequestFrame = {
+      const body = req.body === undefined ? undefined : Buffer.from(req.body)
+      const frame: Omit<HttpRequestFrame, "body" | "bodyChunked"> = {
         t: "http_request",
         reqId,
         method: req.method,
         path: req.path,
         ...(req.headers ? { headers: req.headers } : {}),
-        ...(body !== undefined ? { body } : {}),
         timeoutMs,
       }
       return new Promise<TunnelHttpResponse>((resolve, reject) => {
@@ -677,7 +716,7 @@ export function createTunnelClient(opts: TunnelClientOptions): TunnelClient {
           streamHead: null,
           streamChunks: [],
         })
-        opts.sink.send(frame)
+        sendHttpRequest(frame, body)
       })
     },
 
@@ -692,24 +731,18 @@ export function createTunnelClient(opts: TunnelClientOptions): TunnelClient {
       // silently drops the request still surfaces an error rather
       // than hanging forever; once head arrives, the timer is cleared.
       const headTimeoutMs = req.timeoutMs ?? 30_000
-      const body =
-        req.body === undefined
-          ? undefined
-          : encodeData(
-              typeof req.body === "string" ? req.body : Buffer.from(req.body)
-            )
+      const body = req.body === undefined ? undefined : Buffer.from(req.body)
       // Daemon-side request timeout: pass a very large number so the
       // daemon doesn't kill its own fetch before the stream completes.
       // Daemon detects SSE content-type and disarms its timer anyway,
       // but for non-SSE callers using forwardHttpStream this keeps
       // things safe.
-      const frame: HttpRequestFrame = {
+      const frame: Omit<HttpRequestFrame, "body" | "bodyChunked"> = {
         t: "http_request",
         reqId,
         method: req.method,
         path: req.path,
         ...(req.headers ? { headers: req.headers } : {}),
-        ...(body !== undefined ? { body } : {}),
         timeoutMs: 24 * 60 * 60 * 1000, // 24h — effectively "forever"
       }
       return new Promise<TunnelHttpStreamResponse>((resolveHead, reject) => {
@@ -733,7 +766,7 @@ export function createTunnelClient(opts: TunnelClientOptions): TunnelClient {
           headEmitted: false,
           ended: false,
         })
-        opts.sink.send(frame)
+        sendHttpRequest(frame, body)
       })
     },
 
@@ -757,6 +790,8 @@ export function createTunnelClient(opts: TunnelClientOptions): TunnelClient {
         ...(req.protocols && req.protocols.length > 0
           ? { protocols: req.protocols }
           : {}),
+        // We reassemble `more` fragments, so the daemon may split big messages.
+        fragments: true,
       }
       return new Promise<TunnelWebSocket>((resolve, reject) => {
         const timer = setTimeout(() => {
@@ -891,6 +926,8 @@ class TunnelWebSocketDuck implements TunnelWebSocket {
   private readonly reqId: string
   private readonly sink: FrameSink
   private readonly onCleanup: () => void
+  /** The daemon reassembles `more` fragments (hello `wsFragments`). */
+  private readonly fragment: boolean
   private readonly messageListeners = new Set<
     (data: Buffer, isBinary: boolean) => void
   >()
@@ -903,12 +940,14 @@ class TunnelWebSocketDuck implements TunnelWebSocket {
     reqId: string,
     protocol: string | null,
     sink: FrameSink,
-    onCleanup: () => void
+    onCleanup: () => void,
+    fragment = false
   ) {
     this.reqId = reqId
     this.protocol = protocol
     this.sink = sink
     this.onCleanup = onCleanup
+    this.fragment = fragment
   }
 
   get readyState(): "open" | "closing" | "closed" {
@@ -919,11 +958,17 @@ class TunnelWebSocketDuck implements TunnelWebSocket {
     if (this._readyState !== "open") return
     const bytes =
       typeof data === "string" ? Buffer.from(data, "utf8") : Buffer.from(data)
-    this.sink.send({
-      t: "ws_message",
-      reqId: this.reqId,
-      data: encodeData(bytes),
-      binary: typeof data !== "string",
+    // Split a large message only for a daemon that reassembles; older
+    // daemons get it whole (as before).
+    const pieces = this.fragment ? splitPayload(bytes) : [bytes]
+    pieces.forEach((piece, i) => {
+      this.sink.send({
+        t: "ws_message",
+        reqId: this.reqId,
+        data: encodeData(piece),
+        binary: typeof data !== "string",
+        ...(i < pieces.length - 1 ? { more: true } : {}),
+      })
     })
   }
 

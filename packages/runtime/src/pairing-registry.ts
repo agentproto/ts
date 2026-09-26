@@ -26,8 +26,20 @@
  *     UTC day. The daemon parks on BOTH the current and previous
  *     epoch tokens so a client whose clock straddles midnight still finds it;
  *     reconnect-with-backoff keeps the standing connection alive.
- *   - **Revocation** — removing a pairing drops its rendezvous connections and
- *     stops the daemon parking on its tokens, so it can no longer be reached.
+ *   - **Revocation** — removing a pairing drops its rendezvous connections, so
+ *     it can no longer be served. For a grace period (`revokedGraceMs`, default
+ *     14 days) the daemon keeps a *tombstone*: it still parks on the pairing's
+ *     epoch ROUTES, completes the (daemon-signed) handshake only for a hello
+ *     carrying that epoch's AUTH token, and answers with a single E2E-encrypted
+ *     `error{code:"pairing_revoked"}` frame before closing — never serving the
+ *     channel. That is what lets a client tell "unpaired" from "daemon
+ *     offline" (which both otherwise look like a park timeout at the broker)
+ *     and stop retrying. The signal is authenticated like every tunnel frame:
+ *     it arrives inside the AEAD channel of a handshake whose transcript the
+ *     client verified against the pinned daemon key, so the broker can't forge
+ *     it; and the broker, which knows the routes, can't elicit it either (no
+ *     auth token). A tombstone keeps only the per-epoch route + auth tokens for
+ *     its window — the pair root is dropped at revoke.
  *
  * ## Reconnect authentication (why no stable client key)
  *
@@ -60,6 +72,7 @@ import { homedir } from "node:os"
 import { dirname, join, basename } from "node:path"
 import {
   daemonHandshakeOverSink,
+  type ErrorFrame,
   type FrameSink,
   type E2eFrameSink,
 } from "@agentproto/acp/tunnel"
@@ -113,9 +126,43 @@ export interface PairingRecord {
   legacy?: true
 }
 
+/** A revoked pairing still answered with `pairing_revoked` until `expiresAt`
+ *  (see "Revocation" above). Persisted in `pairings.json` under `revoked`. */
+export interface RevokedPairingRecord {
+  /** The revoked pairing's fingerprint. */
+  fingerprint: string
+  /** Its client label. */
+  name: string
+  /** Rendezvous endpoint its client reconnects through. */
+  rendezvousUrl: string
+  /** ISO-8601 revocation time. */
+  revokedAt: string
+  /** ISO-8601 end of the grace window; the tombstone is dropped after it. */
+  expiresAt: string
+  /** The epoch route (parked on) + auth (verified) tokens covering the window
+   *  (previous epoch at revoke time through the epoch of `expiresAt`) —
+   *  derived from the pair root at revoke time so the root itself need not be
+   *  kept. */
+  routes: ({ epoch: number } & RouteAuthTokens)[]
+}
+
 interface PairingsFile {
   v: typeof PAIRINGS_VERSION | typeof LEGACY_PAIRINGS_VERSION
   pairings: PairingRecord[]
+  /** Tombstones of revoked pairings (absent in files written before them;
+   *  ignored by daemons that predate them). */
+  revoked?: RevokedPairingRecord[]
+}
+
+/** The tunnel `error` code a revoked pairing's client receives. */
+export const PAIRING_REVOKED_CODE = "pairing_revoked" as const
+
+function revokedFrame(): ErrorFrame {
+  return {
+    t: "error",
+    code: PAIRING_REVOKED_CODE,
+    message: "this device was unpaired from the daemon (agentproto pair revoke); pair again with a new offer",
+  }
 }
 
 /** Mode of a served channel — first-contact offer vs. an established reconnect. */
@@ -194,6 +241,10 @@ export interface PairingRegistryDeps {
   /** How long a parked daemon socket waits for a client hello before recycling
    *  the connection. Kept just under the broker's park timeout. Default 110s. */
   handshakeTimeoutMs?: number
+  /** How long a revoked pairing is still answered with `pairing_revoked` (see
+   *  "Revocation" above). Default 14 days; `0` disables tombstones, so a
+   *  revoked client just stops finding the daemon. */
+  revokedGraceMs?: number
 }
 
 export interface PairingRegistry {
@@ -215,6 +266,7 @@ const DEFAULT_TTL_MS = 10 * 60_000
 const DEFAULT_RECONNECT_MIN_MS = 1_000
 const DEFAULT_RECONNECT_MAX_MS = 30_000
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 110_000
+const DEFAULT_REVOKED_GRACE_MS = 14 * 86_400_000
 
 function defaultPairingsPath(): string {
   return join(homedir(), ".agentproto", "pairings.json")
@@ -263,6 +315,7 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
   const reconnectMinMs = deps.reconnectMinMs ?? DEFAULT_RECONNECT_MIN_MS
   const reconnectMaxMs = deps.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS
   const handshakeTimeoutMs = deps.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS
+  const revokedGraceMs = deps.revokedGraceMs ?? DEFAULT_REVOKED_GRACE_MS
 
   // Rate-limit dial-failure logging per loop key. A revoked/offline peer's
   // standing reconnect re-dials forever; without this a single dead pairing
@@ -273,6 +326,8 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
 
   /** fingerprint → record. Source of truth in memory; disk is the mirror. */
   const pairings = new Map<string, PairingRecord>()
+  /** fingerprint → tombstone of a revoked pairing (see "Revocation"). */
+  const revoked = new Map<string, RevokedPairingRecord>()
   /** route → offer. */
   const offers = new Map<string, OfferEntry>()
   /** Loops keyed for lifecycle: `offer:<route>` and `pair:<fp>:<slot>`. Keys
@@ -297,6 +352,9 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
         for (const rec of parsed.pairings) {
           pairings.set(rec.fingerprint, fromV1 ? { ...rec, legacy: true } : rec)
         }
+        for (const rec of parsed.revoked ?? []) {
+          if (isRevokedRecord(rec) && tombstoneLive(rec)) revoked.set(rec.fingerprint, rec)
+        }
         const legacy = Array.from(pairings.values()).filter(r => r.legacy)
         if (legacy.length > 0) {
           log(
@@ -317,9 +375,11 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
   }
 
   async function persist(): Promise<void> {
+    for (const [fp, rec] of revoked) if (!tombstoneLive(rec)) revoked.delete(fp)
     const file: PairingsFile = {
       v: PAIRINGS_VERSION,
       pairings: Array.from(pairings.values()),
+      ...(revoked.size > 0 ? { revoked: Array.from(revoked.values()) } : {}),
     }
     const dir = dirname(pairingsPath)
     await mkdir(dir, { recursive: true })
@@ -346,6 +406,9 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
     /** Should the loop keep running? (e.g. offer not yet expired/spent, or the
      *  pairing still exists). Checked at the top of each iteration. */
     shouldContinue: () => boolean
+    /** Set for a revoked pairing's tombstone: after the handshake, send this
+     *  frame and close instead of serving (`onPaired` is not called). */
+    reject?: ErrorFrame
     /** Build the serve context + persist side-effects on a successful pair. */
     onPaired: (
       session: import("@agentproto/secrets/pairing").PairingSession,
@@ -362,11 +425,11 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
     loops.set(spec.key, { abort, done })
   }
 
-  async function stopLoop(key: string): Promise<void> {
+  async function stopLoop(key: string, reason?: typeof REVOKED): Promise<void> {
     const loop = loops.get(key)
     if (!loop) return
     loops.delete(key)
-    loop.abort.abort()
+    loop.abort.abort(reason)
     await loop.done.catch(() => {})
   }
 
@@ -388,6 +451,16 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
         backoff = Math.min(backoff * 2, reconnectMaxMs)
         continue
       }
+      // A socket the broker refused on arrival (e.g. `token_in_use` while the
+      // previous splice on this route is still tearing down) can come back
+      // already closed: its close event fired before we could subscribe, so the
+      // handshake would sit out its whole timeout. Treat it as a failed dial.
+      if (!sink.isOpen) {
+        if (signal.aborted) break
+        await sleep(backoff, signal)
+        backoff = Math.min(backoff * 2, reconnectMaxMs)
+        continue
+      }
       // Dial succeeded — clear any accumulated suppression for this key so the
       // next outage logs its first failure promptly.
       dialFailureGate.onSuccess(spec.key)
@@ -395,7 +468,11 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
       // Make the in-flight handshake abortable: closing the sink on shutdown
       // makes `daemonHandshakeOverSink` reject promptly (transport closed),
       // instead of blocking on its own timeout for up to handshakeTimeoutMs.
+      let serving = false
       const onAbort = (): void => {
+        // A revoke of a live channel is handled by waitClosed, which tells the
+        // client before closing — closing the raw socket here would drop that.
+        if (serving && signal.reason === REVOKED) return
         try {
           sink.close("registry shutdown")
         } catch {
@@ -461,6 +538,17 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
           continue
         }
 
+        if (spec.reject) {
+          // Tombstone: the client proved possession of a revoked pairing's
+          // epoch AUTH token and verified our signature — tell it, inside the
+          // AEAD channel, that it is unpaired. Never served. `close` flushes
+          // the frame first.
+          wrapped.send(spec.reject)
+          wrapped.close(spec.reject.code)
+          log(`[pairing] refused revoked pairing via ${spec.key}`)
+          continue
+        }
+
         let ctx: PairingChannelContext
         try {
           ctx = await spec.onPaired(capturedSession, capturedHello)
@@ -470,6 +558,7 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
           continue
         }
 
+        serving = true
         const handle = deps.serve(wrapped, ctx)
         channels.add(handle)
         log(`[pairing] channel up (${ctx.mode}) for ${ctx.fingerprint} via ${spec.key}`)
@@ -573,6 +662,7 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
           rendezvousUrl,
         }
         pairings.set(fingerprint, record)
+        revoked.delete(fingerprint)
         await persist()
         // Start standing reconnect connections so the client can come back.
         startReconnectLoops(record)
@@ -616,10 +706,39 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
     }
   }
 
+  function startTombstoneLoops(rec: RevokedPairingRecord): void {
+    for (const slot of ["cur", "prev"] as const) {
+      const epochOf = () => (slot === "cur" ? currentEpoch(now()) : currentEpoch(now()) - 1)
+      const tokensFor = () => rec.routes.find(r => r.epoch === epochOf())
+      startLoop({
+        key: `revoked:${rec.fingerprint}:${slot}`,
+        rendezvousUrl: rec.rendezvousUrl,
+        tokens: () => tokensFor() ?? { route: "", auth: "" },
+        shouldContinue: () =>
+          revoked.get(rec.fingerprint) === rec && tombstoneLive(rec) && tokensFor() !== undefined,
+        singleUse: false,
+        // The AUTH token, never the route: the broker knows every route, and a
+        // tombstone must not become a way for it to probe revocation state.
+        verify: (presented, expected) => expected.auth !== "" && constantTimeEqual(presented, expected.auth),
+        reject: revokedFrame(),
+        onPaired: async () => {
+          throw new Error("unreachable: a tombstone never serves")
+        },
+      })
+    }
+  }
+
+  function tombstoneLive(rec: RevokedPairingRecord): boolean {
+    return Date.parse(rec.expiresAt) > now()
+  }
+
   async function startAutoconnect(): Promise<void> {
     await ensureLoaded()
     for (const record of pairings.values()) {
       startReconnectLoops(record)
+    }
+    for (const rec of revoked.values()) {
+      startTombstoneLoops(rec)
     }
     if (pairings.size > 0) {
       log(`[pairing] autoconnect: standing connections for ${pairings.size} pairing(s)`)
@@ -641,10 +760,32 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
     }
     if (!target) return false
     pairings.delete(target.fingerprint)
+    let tombstone: RevokedPairingRecord | null = null
+    // No tombstone for a legacy (v1) pairing: its client can only be told to
+    // re-pair (see "Legacy"), which a v1 client can't act on as "revoked".
+    if (revokedGraceMs > 0 && !target.legacy) {
+      const at = now()
+      const expiresAt = at + revokedGraceMs
+      const routes: RevokedPairingRecord["routes"] = []
+      for (let e = currentEpoch(at) - 1; e <= currentEpoch(expiresAt); e++) {
+        routes.push({ epoch: e, ...(await deriveEpochTokens(target.pairRoot, e)) })
+      }
+      tombstone = {
+        fingerprint: target.fingerprint,
+        name: target.name,
+        rendezvousUrl: target.rendezvousUrl,
+        revokedAt: new Date(at).toISOString(),
+        expiresAt: new Date(expiresAt).toISOString(),
+        routes,
+      }
+      revoked.set(target.fingerprint, tombstone)
+    }
     await persist()
-    // Stop parking on this pairing's tokens so it can no longer be reached.
-    await stopLoop(`pair:${target.fingerprint}:cur`)
-    await stopLoop(`pair:${target.fingerprint}:prev`)
+    // Stop serving/parking on this pairing's tokens. A live channel is told
+    // `pairing_revoked` before it closes (see waitClosed).
+    await stopLoop(`pair:${target.fingerprint}:cur`, REVOKED)
+    await stopLoop(`pair:${target.fingerprint}:prev`, REVOKED)
+    if (tombstone) startTombstoneLoops(tombstone)
     log(`[pairing] revoked ${target.fingerprint} (${target.name})`)
     return true
   }
@@ -692,6 +833,10 @@ function sendOutdatedNotice(sink: E2eFrameSink): void {
   sink.close("pairing_protocol_outdated")
 }
 
+/** Abort reason for a loop stopped by `revoke` — its live channel, if any, is
+ *  told `pairing_revoked` before it closes. */
+const REVOKED = Symbol("pairing revoked")
+
 function waitClosed(sink: E2eFrameSink, signal: AbortSignal): Promise<void> {
   return new Promise(resolve => {
     if (!sink.isOpen) {
@@ -706,7 +851,12 @@ function waitClosed(sink: E2eFrameSink, signal: AbortSignal): Promise<void> {
     }
     sink.onClose(() => finish())
     signal.addEventListener("abort", () => {
-      sink.close("registry shutdown")
+      if (signal.reason === REVOKED) {
+        sink.send(revokedFrame())
+        sink.close(PAIRING_REVOKED_CODE)
+      } else {
+        sink.close("registry shutdown")
+      }
       finish()
     })
   })
@@ -743,6 +893,24 @@ function isPairingRecord(v: unknown): v is PairingRecord {
     typeof r["lastSeen"] === "string" &&
     typeof r["pairRoot"] === "string" &&
     typeof r["rendezvousUrl"] === "string"
+  )
+}
+
+function isRevokedRecord(v: unknown): v is RevokedPairingRecord {
+  if (typeof v !== "object" || v === null) return false
+  const r = v as Record<string, unknown>
+  return (
+    typeof r["fingerprint"] === "string" &&
+    typeof r["name"] === "string" &&
+    typeof r["rendezvousUrl"] === "string" &&
+    typeof r["revokedAt"] === "string" &&
+    typeof r["expiresAt"] === "string" &&
+    Array.isArray(r["routes"]) &&
+    r["routes"].every(x => {
+      if (typeof x !== "object" || x === null) return false
+      const t = x as Record<string, unknown>
+      return typeof t["epoch"] === "number" && typeof t["route"] === "string" && typeof t["auth"] === "string"
+    })
   )
 }
 

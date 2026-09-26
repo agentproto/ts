@@ -4,8 +4,10 @@ import {
   currentEpoch,
   deriveEpochRoutingToken,
   deriveEpochAuthToken,
+  deriveEpochTokens,
   deriveOfferTokens,
   epochRoutingTokens,
+  importPairRootKey,
 } from "../derive.js"
 import {
   startClientHandshake,
@@ -134,5 +136,32 @@ describe.each([
     // Deterministic per secret, and different secrets never share a route.
     expect(await deriveOfferTokens(secret, c)).toEqual({ route, auth })
     expect((await deriveOfferTokens("AAAABBBBCCCCDDDDEEEEFG", c)).route).not.toBe(route)
+  })
+})
+
+describe("non-extractable pair-root CryptoKey", () => {
+  it("derives the same epoch tokens as the base64 root, through either provider", async () => {
+    const root = await derivePairRoot((await handshake()).clientSession, nodeCryptoProvider)
+    const key = await importPairRootKey(root)
+    expect(key.extractable).toBe(false)
+    expect(key.algorithm.name).toBe("HKDF")
+    for (const epoch of [0, 20_000, currentEpoch()]) {
+      const expected = await deriveEpochRoutingToken(root, epoch, nodeCryptoProvider)
+      expect(await deriveEpochRoutingToken(key, epoch)).toBe(expected)
+      expect(await deriveEpochRoutingToken(key, epoch, nodeCryptoProvider)).toBe(expected)
+      // The auth token (and the route+auth pair) too, byte-identical.
+      const auth = await deriveEpochAuthToken(root, epoch, nodeCryptoProvider)
+      expect(await deriveEpochAuthToken(key, epoch)).toBe(auth)
+      expect(await deriveEpochTokens(key, epoch)).toEqual({ route: expected, auth })
+      expect(await deriveEpochTokens(key, epoch)).toEqual(await deriveEpochTokens(root, epoch, webCryptoProvider))
+    }
+    expect(await epochRoutingTokens(key, MS_PER_DAY * 7)).toEqual(
+      await epochRoutingTokens(root, MS_PER_DAY * 7, nodeCryptoProvider),
+    )
+  })
+
+  it("cannot be exported", async () => {
+    const key = await importPairRootKey(await derivePairRoot((await handshake()).clientSession))
+    await expect(globalThis.crypto.subtle.exportKey("raw", key)).rejects.toThrow()
   })
 })

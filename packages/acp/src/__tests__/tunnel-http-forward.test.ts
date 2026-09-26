@@ -221,4 +221,58 @@ describe("tunnel HTTP forward bounds", () => {
     expect(end).toBeDefined()
     expect(end?.error).toBeUndefined() // clean end, not an idle timeout
   })
+
+  it("http_cancel stops a stream: the upstream is aborted and read no further", async () => {
+    const { sink, sent, push } = pairedSink()
+    let fetchSignal: AbortSignal | undefined
+    let cancelled = 0
+    const upstream = streamingResponse(["a", "b", "c", "d", "e", "f"], 15, true)
+    const reader = upstream.body.getReader()
+    upstream.body.getReader = () => ({ ...reader, cancel: async () => void cancelled++ })
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init?: RequestInit) => {
+        fetchSignal = init?.signal ?? undefined
+        return upstream
+      }),
+    )
+    createTunnelServer({ sink, authorize: r => r, httpUpstream: "http://127.0.0.1:18790" })
+
+    push({ t: "http_request", reqId: "c1", method: "GET", path: "/sse" })
+    await vi.waitFor(() => expect(chunksOf(sent).length).toBeGreaterThanOrEqual(1))
+    push({ t: "http_cancel", reqId: "c1" })
+    await wait(60)
+
+    expect(fetchSignal?.aborted).toBe(true)
+    expect(cancelled).toBeGreaterThanOrEqual(1)
+    const after = chunksOf(sent).length
+    await wait(60)
+    // Nothing further for the cancelled reqId — no data, no end/error chunk.
+    expect(chunksOf(sent).length).toBe(after)
+    expect(chunksOf(sent).some(c => c.end || c.error)).toBe(false)
+    expect(after).toBeLessThan(6)
+  })
+
+  it("http_cancel before the upstream answers sends no response at all", async () => {
+    const { sink, sent, push } = pairedSink()
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () =>
+              reject(Object.assign(new Error("aborted"), { name: "AbortError" })),
+            )
+          }),
+      ),
+    )
+    createTunnelServer({ sink, authorize: r => r, httpUpstream: "http://127.0.0.1:18790" })
+    push({ t: "http_request", reqId: "c2", method: "GET", path: "/slow" })
+    push({ t: "http_cancel", reqId: "c2" })
+    // An unknown / finished reqId is ignored.
+    push({ t: "http_cancel", reqId: "nope" })
+    await wait(30)
+    expect(sent.filter(f => f.t === "http_response" || f.t === "error")).toEqual([])
+  })
 })
+

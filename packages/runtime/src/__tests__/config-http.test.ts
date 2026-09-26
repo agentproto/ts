@@ -185,6 +185,27 @@ describe("PATCH /config", () => {
     }
   })
 
+  it("pairing.pairPage: 200 for a {fp} template, rejected with {fp} outside the host", async () => {
+    await writeCfg({})
+    const { port, http } = await startServer(makeConfigToolsDeps({}))
+    const patch = (value: string) =>
+      fetch(`http://127.0.0.1:${port}/config`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify({ key: "pairing.pairPage", value }),
+      })
+    try {
+      expect((await patch("https://{fp}.agentproto.cloud/pair")).status).toBe(200)
+      expect((await loadConfig(configPath)).pairing?.pairPage).toBe("https://{fp}.agentproto.cloud/pair")
+      const bad = await patch("https://agentproto.cloud/pair?d={fp}")
+      expect(bad.status).toBeGreaterThanOrEqual(400)
+      expect(bad.status).toBeLessThan(500)
+      expect((await loadConfig(configPath)).pairing?.pairPage).toBe("https://{fp}.agentproto.cloud/pair")
+    } finally {
+      await http.stop()
+    }
+  })
+
   it("400s on an unknown key", async () => {
     await writeCfg({})
     const { port, http } = await startServer(makeConfigToolsDeps({}))

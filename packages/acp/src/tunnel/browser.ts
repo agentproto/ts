@@ -16,6 +16,8 @@
 
 export {
   TUNNEL_VERSION,
+  MAX_FRAME_PAYLOAD_BYTES,
+  splitPayload,
   encodeFrame,
   parseFrame,
   encodeData,
@@ -25,6 +27,8 @@ export {
   type KillFrame,
   type ResizeFrame,
   type HttpRequestFrame,
+  type HttpCancelFrame,
+  type HttpRequestChunkFrame,
   type HttpResponseFrame,
   type HttpResponseHeadFrame,
   type HttpResponseChunkFrame,

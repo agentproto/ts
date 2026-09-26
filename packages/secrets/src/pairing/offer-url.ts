@@ -30,6 +30,20 @@
  * (the daemon builds it, the client parses it). It lives in `@agentproto/secrets`
  * beside the handshake so both sides share one authority on the format.
  *
+ * ## The web form (phone QR)
+ *
+ * A phone camera opens `https://` links, not `agentproto://`. For a browser
+ * client the same parameters ride in the **fragment** of a web URL:
+ *
+ * ```
+ *   https://cli.agentproto.sh/pair#v=2&rv=…&id=…&pk=…&sk=…&s=…&exp=…
+ * ```
+ *
+ * i.e. the query string of the `agentproto://` URL, verbatim, after the `#`.
+ * A fragment is never sent to a server (not in the request line, not in
+ * `Referer`), so the page host never sees the token. `encodeOfferWebUrl` builds
+ * it; `parseOfferUrl` accepts both forms and validates them identically.
+ *
  * Key material travels **base64url** in the URL (no `+`/`/`/`=` to percent-
  * escape). The handshake, however, speaks standard base64 SPKI DER, so
  * `parseOfferUrl` returns `daemonX25519Pub`/`daemonEd25519Pub` already converted
@@ -47,6 +61,19 @@ export const OFFER_URL_HOST = "pair" as const
 /** Offer-format version. Bumped if the param set changes. v2: `s` (a secret
  *  that never goes on the wire) replaces v1's `t` (route-and-proof). */
 export const OFFER_VERSION = 2 as const
+/** Default page for the web form of an offer (the offer rides in its fragment). */
+export const PAIR_WEB_URL = "https://cli.agentproto.sh/pair" as const
+/** Placeholder for the daemon fingerprint in a pair-page template. Allowed in
+ *  the hostname only. */
+export const PAIR_PAGE_FP_PLACEHOLDER = "{fp}" as const
+/**
+ * The planned per-daemon pair page: one origin per daemon
+ * (`<fingerprint>.agentproto.cloud`), so each daemon's page, service worker
+ * and stored credential are isolated from every other pairing's by the
+ * browser's same-origin policy. NOT the default yet (its DNS isn't live):
+ * select it with `pairing.pairPage` / `--pair-page`.
+ */
+export const PAIR_WEB_URL_TEMPLATE_CLOUD = "https://{fp}.agentproto.cloud/pair" as const
 
 /**
  * A parsed, structurally-valid pairing offer. `daemonX25519Pub` /
@@ -108,6 +135,99 @@ export function encodeOfferUrl(offer: PairingOffer): string {
   return `${OFFER_URL_SCHEME}//${OFFER_URL_HOST}?${params.toString()}`
 }
 
+/** One DNS label: 1–63 of [a-z0-9-], not starting or ending with `-`. */
+const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
+
+function badPage(message: string): PairingError {
+  return new PairingError("malformed_offer", `pair page: ${message}`)
+}
+
+/**
+ * Resolve a pair-page setting for one daemon. `templateOrUrl` is either a plain
+ * http(s) URL (returned unchanged) or a template with `{fp}` in its HOSTNAME,
+ * e.g. `https://{fp}.agentproto.cloud/pair`, where `{fp}` becomes the daemon
+ * identity `fingerprint` (lowercase hex, which must be a valid DNS label).
+ * Throws `PairingError("malformed_offer")` for a template with `{fp}` outside
+ * the hostname (userinfo, port, path, query, fragment), for any other brace
+ * left in the URL, for a non-http(s) URL, or for a URL with a fragment (the
+ * offer goes there).
+ */
+export function resolvePairPageUrl(templateOrUrl: string, fingerprint: string): string {
+  let resolved = templateOrUrl
+  if (templateOrUrl.includes(PAIR_PAGE_FP_PLACEHOLDER)) {
+    const m = /^(https?:\/\/)([^/?#]*)(.*)$/i.exec(templateOrUrl)
+    if (!m) throw badPage("a {fp} template must be an http(s) URL")
+    const [, scheme, authority, rest] = m as unknown as [string, string, string, string]
+    if (rest.includes(PAIR_PAGE_FP_PLACEHOLDER)) {
+      throw badPage("{fp} is only allowed in the hostname")
+    }
+    if (authority.includes("@")) throw badPage("userinfo is not allowed in a pair page URL")
+    // Everything after the host's last ":" is a port, unless it's inside an
+    // IPv6 literal (no placeholder can be there anyway).
+    const colon = authority.lastIndexOf(":")
+    const port = colon >= 0 && !authority.includes("]") ? authority.slice(colon) : ""
+    if (port.includes(PAIR_PAGE_FP_PLACEHOLDER)) throw badPage("{fp} is only allowed in the hostname")
+    const fp = fingerprint.toLowerCase()
+    if (!/^[0-9a-f]+$/.test(fp) || !DNS_LABEL.test(fp)) {
+      throw badPage(`daemon fingerprint "${fingerprint}" is not a valid DNS label`)
+    }
+    resolved = `${scheme}${authority.split(PAIR_PAGE_FP_PLACEHOLDER).join(fp)}${rest}`
+  }
+  if (/[{}]/.test(resolved)) {
+    throw badPage("unknown placeholder (only {fp}, in the hostname, is supported)")
+  }
+  let page: URL
+  try {
+    page = new URL(resolved)
+  } catch {
+    throw badPage("not a valid URL")
+  }
+  if ((page.protocol !== "https:" && page.protocol !== "http:") || page.hash !== "" || resolved.includes("#")) {
+    throw badPage("must be an http(s) URL without a fragment")
+  }
+  return resolved
+}
+
+/**
+ * The `host` (hostname[:port]) a pair page for `fingerprint` must be served
+ * from under `templateOrUrl`. The page compares it with its own
+ * `location.host` to refuse an offer meant for another daemon's origin.
+ */
+export function expectedPairHost(templateOrUrl: string, fingerprint: string): string {
+  return new URL(resolvePairPageUrl(templateOrUrl, fingerprint)).host
+}
+
+/**
+ * Re-wrap an `agentproto://pair?…` offer URL as its web form
+ * `<pageUrl>#<query>` (see "The web form" above). The parameters are carried
+ * byte-for-byte. `pageUrl` is a plain http(s) URL without a fragment, or a
+ * `{fp}` template (see `resolvePairPageUrl`) filled in with the offer's daemon
+ * fingerprint (`id`).
+ */
+export function encodeOfferWebUrl(offerUrl: string, pageUrl: string = PAIR_WEB_URL): string {
+  const q = offerUrl.indexOf("?")
+  if (!offerUrl.startsWith(`${OFFER_URL_SCHEME}//${OFFER_URL_HOST}?`) || q < 0) {
+    throw new PairingError("malformed_offer", `expected an ${OFFER_URL_SCHEME}//${OFFER_URL_HOST}?… offer URL`)
+  }
+  const query = offerUrl.slice(q + 1)
+  const fingerprint = new URLSearchParams(query).get("id") ?? ""
+  if (pageUrl.includes(PAIR_PAGE_FP_PLACEHOLDER) && !fingerprint) {
+    throw new PairingError("malformed_offer", "offer has no daemon fingerprint (`id`) for the {fp} pair page")
+  }
+  return `${resolvePairPageUrl(pageUrl, fingerprint)}#${query}`
+}
+
+/** Map the web form (`http(s)://…#<query>`) onto the `agentproto://pair?`
+ *  form; anything else is returned unchanged for the strict parser below. */
+function fromWebForm(url: string): string {
+  if (!/^https?:\/\//i.test(url)) return url
+  const hash = url.indexOf("#")
+  if (hash < 0 || hash === url.length - 1) {
+    throw new PairingError("malformed_offer", "web offer URL carries no offer in its fragment")
+  }
+  return `${OFFER_URL_SCHEME}//${OFFER_URL_HOST}?${url.slice(hash + 1)}`
+}
+
 // ─── parse ───────────────────────────────────────────────────────
 
 export interface ParseOfferOptions {
@@ -131,6 +251,9 @@ export interface ParseOfferOptions {
  *     link-mangler that swaps the daemon key can't keep `id` consistent).
  *   - `offer_expired`: only when `opts.now` is supplied and `exp` has passed.
  *
+ * Accepts the `agentproto://pair?…` form and the web form
+ * (`https://…/pair#<query>`, see `encodeOfferWebUrl`).
+ *
  * Async because the `id` ↔ `fingerprint(pk)` check hashes the key, and
  * WebCrypto's SHA-256 is async; `crypto` selects the provider.
  */
@@ -141,7 +264,7 @@ export async function parseOfferUrl(
 ): Promise<PairingOffer> {
   let parsed: URL
   try {
-    parsed = new URL(url)
+    parsed = new URL(fromWebForm(url))
   } catch {
     throw new PairingError("malformed_offer", "offer is not a valid URL")
   }

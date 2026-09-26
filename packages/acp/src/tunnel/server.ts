@@ -21,7 +21,9 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { hostname, platform } from "node:os"
 import { decodeData } from "./node-data.js"
 import {
+  MAX_FRAME_PAYLOAD_BYTES,
   TUNNEL_VERSION,
+  splitPayload,
   encodeData,
   encodeFrame,
   parseFrame,
@@ -189,6 +191,19 @@ export interface TunnelServerOptions {
    */
   wsDialTimeoutMs?: number
   /**
+   * Largest raw payload (bytes) one outgoing frame carries; bigger response
+   * bodies and (negotiated) WS messages are split. Defaults to
+   * `MAX_FRAME_PAYLOAD_BYTES`, sized for the rendezvous' 1 MiB message cap
+   * after E2E wrapping. Also bounds an assembled chunked request body at
+   * `maxRequestBodyBytes`.
+   */
+  maxFramePayloadBytes?: number
+  /**
+   * Ceiling for a chunked (`bodyChunked`) request body the daemon assembles
+   * before forwarding. Default 64 MiB; over it the request is answered 413.
+   */
+  maxRequestBodyBytes?: number
+  /**
    * Resolve a named upstream (a `ws_open` frame's `upstream` field) to an
    * HTTP base URL the daemon should dial instead of `httpUpstream`. Lets a
    * host reach an imported local service by alias (e.g. a browser capability
@@ -238,6 +253,29 @@ export interface TunnelServer {
   close(): Promise<void>
 }
 
+/** Default ceiling for an assembled `bodyChunked` request body. */
+const DEFAULT_MAX_REQUEST_BODY_BYTES = 64 * 1024 * 1024
+
+function concatBytes(parts: readonly Uint8Array[], size?: number): Uint8Array {
+  const out = new Uint8Array(size ?? parts.reduce((n, p) => n + p.length, 0))
+  let off = 0
+  for (const p of parts) {
+    out.set(p, off)
+    off += p.length
+  }
+  return out
+}
+
+/** One in-flight `http_request` forward (see `http_cancel`). */
+interface HttpInflight {
+  abort: AbortController
+  cancelled: boolean
+  /** The streamed body's reader, once a stream response is being relayed —
+   *  cancelled directly too, since an upstream body need not honour the
+   *  fetch signal. */
+  reader?: ReadableStreamDefaultReader<Uint8Array>
+}
+
 export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
   const children = new Map<string, ChildProcess>()
   // PTY-backed processes keyed by execId (separate from pipe-based children).
@@ -246,6 +284,15 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
   // lifecycle starts at ws_open (we send open_ack on success) and ends
   // at ws_close (either direction). On tunnel teardown we close all.
   const upstreamWs = new Map<string, UpstreamWebSocket>()
+  // In-flight `http_request` forwards by reqId, so an `http_cancel` (or the
+  // tunnel closing) can abort the upstream call and stop a streamed body.
+  const httpInflight = new Map<string, HttpInflight>()
+  // Requests whose body is still arriving as `http_request_chunk` frames.
+  const httpBodies = new Map<string, { frame: HttpRequestFrame; parts: Uint8Array[]; size: number }>()
+  // Host→daemon WS messages still arriving as fragments (`more`), by reqId.
+  const wsInbound = new Map<string, Buffer[]>()
+  const maxPayload = opts.maxFramePayloadBytes ?? MAX_FRAME_PAYLOAD_BYTES
+  const maxRequestBody = opts.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES
   let closed = false
 
   // Greet the host immediately so it can fail fast on version
@@ -256,6 +303,8 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
     capabilities: {
       pty: opts.pty === true,
       wsForward: opts.dialUpstreamWs !== undefined && !!opts.httpUpstream,
+      httpRequestChunks: true,
+      ...(opts.dialUpstreamWs !== undefined && !!opts.httpUpstream ? { wsFragments: true } : {}),
       ...(opts.tools && opts.tools.length ? { tools: opts.tools } : {}),
       ...(opts.e2e === true ? { e2e: true } : {}),
     },
@@ -289,6 +338,13 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
       }
     }
     upstreamWs.clear()
+    for (const [, inflight] of httpInflight) {
+      inflight.abort.abort()
+      inflight.reader?.cancel().catch(() => {})
+    }
+    httpBodies.clear()
+    wsInbound.clear()
+    httpInflight.clear()
     offFrame()
     offClose()
   })
@@ -341,6 +397,11 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
         return
       }
       case "http_request":
+        if (frame.bodyChunked) {
+          // The body follows as http_request_chunk frames; forward at `end`.
+          httpBodies.set(frame.reqId, { frame, parts: [], size: 0 })
+          return
+        }
         // Fire-and-forget — the handler emits its own http_response
         // frame (or error). Errors that escape handleHttpRequest
         // bubble to the outer .catch and become a generic `error`
@@ -349,6 +410,43 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
         // the host's forwardHttp expects.
         await handleHttpRequest(frame)
         return
+      case "http_request_chunk": {
+        const pending = httpBodies.get(frame.reqId)
+        if (!pending) return // cancelled / unknown — drop
+        if (frame.data) {
+          const piece = decodeData(frame.data)
+          pending.size += piece.length
+          pending.parts.push(piece)
+        }
+        if (pending.size > maxRequestBody) {
+          httpBodies.delete(frame.reqId)
+          opts.sink.send({
+            t: "http_response",
+            reqId: frame.reqId,
+            status: 413,
+            error: {
+              code: "request_body_too_large",
+              message: `Request body exceeds ${maxRequestBody} bytes.`,
+            },
+          })
+          return
+        }
+        if (!frame.end) return
+        httpBodies.delete(frame.reqId)
+        await handleHttpRequest(pending.frame, concatBytes(pending.parts, pending.size))
+        return
+      }
+      case "http_cancel": {
+        httpBodies.delete(frame.reqId)
+        // The host gave up on this request — stop the upstream call. Nothing
+        // more is sent for the reqId (the host has already dropped it).
+        const inflight = httpInflight.get(frame.reqId)
+        if (!inflight) return
+        inflight.cancelled = true
+        inflight.abort.abort()
+        inflight.reader?.cancel().catch(() => {})
+        return
+      }
       case "ws_open":
         await handleWsOpen(frame)
         return
@@ -360,8 +458,22 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
           // teardown path.
           return
         }
+        let payload = decodeData(frame.data)
+        if (frame.more) {
+          // A fragment: hold it until the message's last piece arrives.
+          const parts = wsInbound.get(frame.reqId) ?? []
+          parts.push(payload)
+          wsInbound.set(frame.reqId, parts)
+          return
+        }
+        const held = wsInbound.get(frame.reqId)
+        if (held) {
+          wsInbound.delete(frame.reqId)
+          held.push(payload)
+          payload = Buffer.concat(held)
+        }
         try {
-          ws.send(decodeData(frame.data), { binary: frame.binary === true })
+          ws.send(payload, { binary: frame.binary === true })
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
           opts.sink.send({
@@ -380,6 +492,7 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
         return
       }
       case "ws_close": {
+        wsInbound.delete(frame.reqId)
         const ws = upstreamWs.get(frame.reqId)
         if (!ws) return
         upstreamWs.delete(frame.reqId)
@@ -737,11 +850,17 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
 
     upstream.onMessage((data, isBinary) => {
       if (!opts.sink.isOpen) return
-      opts.sink.send({
-        t: "ws_message",
-        reqId: req.reqId,
-        data: encodeData(data),
-        binary: isBinary,
+      // Split a large message only for a host that said it reassembles;
+      // older hosts get it whole (as before).
+      const pieces = req.fragments === true ? splitPayload(data, maxPayload) : [data]
+      pieces.forEach((piece, i) => {
+        opts.sink.send({
+          t: "ws_message",
+          reqId: req.reqId,
+          data: encodeData(piece),
+          binary: isBinary,
+          ...(i < pieces.length - 1 ? { more: true } : {}),
+        })
       })
     })
     upstream.onClose((code, reason) => {
@@ -777,7 +896,7 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
     })
   }
 
-  async function handleHttpRequest(req: HttpRequestFrame): Promise<void> {
+  async function handleHttpRequest(req: HttpRequestFrame, chunkedBody?: Uint8Array): Promise<void> {
     if (closed) return
     const respond = (
       partial:
@@ -857,6 +976,8 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
 
     const url = `${opts.httpUpstream.replace(/\/$/, "")}${req.path}`
     const controller = new AbortController()
+    const inflight: HttpInflight = { abort: controller, cancelled: false }
+    httpInflight.set(req.reqId, inflight)
     const timeoutMs =
       req.timeoutMs ??
       opts.httpForwardTimeoutMs ??
@@ -882,7 +1003,11 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
         method: req.method,
         headers,
         body:
-          req.body === undefined ? undefined : decodeData(req.body),
+          chunkedBody !== undefined
+            ? chunkedBody
+            : req.body === undefined
+              ? undefined
+              : decodeData(req.body),
         signal: controller.signal,
         // node fetch follows redirects by default — fine for MCP, the
         // upstream gateway doesn't redirect anyway.
@@ -915,6 +1040,7 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
           headers: outHeaders,
         })
         const reader = upstreamRes.body.getReader()
+        inflight.reader = reader
         // Inter-chunk idle bound: the request timeout is disarmed for streams,
         // so without this a stalled upstream (headers sent, then silence) hangs
         // forever. The timer resets per chunk, so a heartbeating stream is never
@@ -938,6 +1064,10 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
         try {
           while (true) {
             const chunk = await readChunk()
+            if (inflight.cancelled) {
+              await reader.cancel().catch(() => {})
+              return
+            }
             if (chunk === IDLE) {
               try {
                 await reader.cancel()
@@ -965,11 +1095,15 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
               return
             }
             if (value && value.byteLength > 0) {
-              opts.sink.send({
-                t: "http_response_chunk",
-                reqId: req.reqId,
-                data: encodeData(Buffer.from(value)),
-              })
+              // An upstream read can be arbitrarily large; keep every frame
+              // under the transport's message cap.
+              for (const piece of splitPayload(value, maxPayload)) {
+                opts.sink.send({
+                  t: "http_response_chunk",
+                  reqId: req.reqId,
+                  data: encodeData(piece),
+                })
+              }
             }
             // Stop streaming if the tunnel sink closed under us — no
             // point feeding chunks into the void.
@@ -983,6 +1117,7 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
             }
           }
         } catch (err) {
+          if (inflight.cancelled) return
           const message = err instanceof Error ? err.message : String(err)
           opts.sink.send({
             t: "http_response_chunk",
@@ -994,14 +1129,38 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
         return
       }
 
-      // Buffered path (unchanged): small responses + non-SSE traffic.
+      // Buffered path: small responses + non-SSE traffic.
       const buf = Buffer.from(await upstreamRes.arrayBuffer())
+      if (buf.length > maxPayload) {
+        // Too big for one frame: a single frame this size would exceed the
+        // rendezvous' message cap once E2E-wrapped and kill the channel. Send
+        // it as head + bounded chunks — both tunnel clients reassemble that
+        // (buffered mode concatenates; a stream consumer reads it).
+        if (inflight.cancelled) return
+        opts.sink.send({
+          t: "http_response_head",
+          reqId: req.reqId,
+          status: upstreamRes.status,
+          headers: outHeaders,
+        })
+        const pieces = splitPayload(buf, maxPayload)
+        pieces.forEach((piece, i) => {
+          opts.sink.send({
+            t: "http_response_chunk",
+            reqId: req.reqId,
+            data: encodeData(piece),
+            ...(i === pieces.length - 1 ? { end: true } : {}),
+          })
+        })
+        return
+      }
       respond({
         status: upstreamRes.status,
         headers: outHeaders,
         body: buf.length > 0 ? encodeData(buf) : "",
       })
     } catch (err) {
+      if (inflight.cancelled) return
       const message = err instanceof Error ? err.message : String(err)
       const aborted = err instanceof Error && err.name === "AbortError"
       respond({
@@ -1013,6 +1172,7 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
       })
     } finally {
       clearTimer()
+      if (httpInflight.get(req.reqId) === inflight) httpInflight.delete(req.reqId)
     }
   }
 
