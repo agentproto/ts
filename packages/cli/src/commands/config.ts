@@ -27,6 +27,7 @@ import {
   setConfigKey,
   CONFIG_FILE_PATH,
 } from "@agentproto/runtime/config"
+import { findConfigKey, validateConfigKeyValue } from "@agentproto/runtime/config-schema"
 
 const USAGE = `agentproto config — manage ~/.agentproto/config.json
 
@@ -123,6 +124,19 @@ async function runSet(args: readonly string[]): Promise<number> {
   // "1 2 3" as a string — caller can quote at the shell to control.
   const raw = valueParts.join(" ")
   const parsed = parseValue(raw)
+
+  const known = findConfigKey(key) !== undefined
+  const validation = validateConfigKeyValue(key, parsed)
+  if (!validation.ok) {
+    process.stderr.write(`agentproto config set: ${validation.error}\n`)
+    return 2
+  }
+  if (!known) {
+    process.stderr.write(
+      `agentproto config set: "${key}" is not a known config key — writing it anyway.\n`,
+    )
+  }
+
   const cfg = await loadConfig()
   const next = setConfigKey(cfg, key, parsed)
   await saveConfig(next)
@@ -141,6 +155,16 @@ async function runUnset(args: readonly string[]): Promise<number> {
     )
     return 2
   }
+  const entry = findConfigKey(key)
+  if (entry && !entry.writable) {
+    process.stderr.write(
+      `agentproto config unset: "${key}" is not writable (${
+        entry.secret ? "secret — set it via the CLI/auth profiles" : "lockout — edit ~/.agentproto/config.json by hand"
+      }).\n`,
+    )
+    return 2
+  }
+
   const cfg = await loadConfig()
   if (getConfigKey(cfg, key) === undefined) {
     process.stderr.write(`agentproto config unset: "${key}" not set\n`)

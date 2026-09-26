@@ -29,6 +29,7 @@ import { promises as fs } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
+import { validateConfig } from "./config-schema.js"
 
 export const CONFIG_VERSION = 1 as const
 
@@ -588,6 +589,14 @@ export async function loadConfig(path?: string): Promise<AgentprotoConfig> {
       // `acpHandleFromSpec` time, with precise field-level messages.
       if (cfg.acpAgents !== undefined) {
         cfg.acpAgents = sanitizeAcpAgents(cfg.acpAgents, target)
+      }
+      const validation = validateConfig(cfg)
+      if (!validation.ok) {
+        const shown = validation.issues.slice(0, 5)
+        const more = validation.issues.length > shown.length ? ` (+${validation.issues.length - shown.length} more)` : ""
+        console.warn(
+          `[runtime/config] ${target}: ${validation.issues.length} schema issue(s) — ${shown.join("; ")}${more}`,
+        )
       }
       return cfg
     }

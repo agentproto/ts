@@ -71,6 +71,11 @@
       "import": "./dist/config.mjs",
       "default": "./dist/config.mjs"
     },
+    "./config-schema": {
+      "types": "./dist/config-schema.d.ts",
+      "import": "./dist/config-schema.mjs",
+      "default": "./dist/config-schema.mjs"
+    },
     "./providers-store": {
       "types": "./dist/providers-store.d.ts",
       "import": "./dist/providers-store.mjs",
