@@ -335,13 +335,13 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
     if (!this.unreleased.delete(sessionId)) return
     const desc = this.registry.get(sessionId)
     if (!desc) return
-    if (desc.status === "running" || desc.status === "starting") this.registry.kill(sessionId)
-    if (!desc.archived) {
-      try {
-        this.registry.archiveSession(sessionId)
-      } catch {
-        // Still live (kill refused) — leave it visible rather than hide it.
-      }
+    // Best-effort: a failed kill/archive must never fail the step or the
+    // cancel that triggered it.
+    try {
+      if (desc.status === "running" || desc.status === "starting") this.registry.kill(sessionId)
+      if (!desc.archived) this.registry.archiveSession(sessionId)
+    } catch {
+      // Still live (kill refused) — leave it visible rather than hide it.
     }
   }
 

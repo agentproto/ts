@@ -1965,7 +1965,9 @@ export function createWorkflowRunner(opts: {
       state.abort.abort()
       // The engine doesn't observe the abort mid-turn: end + archive the
       // run's open step sessions now (which also ends any in-flight wait).
-      void state.agents?.releaseAll()
+      state.agents?.releaseAll().catch(err => {
+        console.warn(`[workflow-runner] releasing step sessions for cancelled run ${runId} failed:`, err)
+      })
       if (state.run.status === "running" || state.run.status === "awaiting-input" || state.run.status === "awaiting-approval") {
         state.run.status = "cancelled"
         state.run.endedAt = new Date().toISOString()

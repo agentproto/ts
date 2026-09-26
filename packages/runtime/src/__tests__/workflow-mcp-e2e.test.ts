@@ -54,6 +54,16 @@ function makeMockRegistry(bus: SessionEventBus): SessionsRegistry {
       bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" })
     },
     get: (id: string) => descs.get(id),
+    kill: (id: string) => {
+      const desc = descs.get(id)
+      if (!desc) return false
+      desc.status = "killed"
+      return true
+    },
+    archiveSession: (id: string) => {
+      const desc = descs.get(id)
+      if (desc) desc.archived = true
+    },
   } as unknown as SessionsRegistry
 }
 
