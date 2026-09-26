@@ -213,10 +213,10 @@ export async function main(): Promise<number> {
 
   switch (cmd) {
     case "keygen": {
-      const kp = generateSealKeyPair()
+      const kp = await generateSealKeyPair()
       process.stdout.write(
         JSON.stringify(
-          { keyId: sealKeyId(kp.publicKey), publicKey: kp.publicKey, privateKey: kp.privateKey },
+          { keyId: await sealKeyId(kp.publicKey), publicKey: kp.publicKey, privateKey: kp.privateKey },
           null,
           2
         ) + "\n"
@@ -228,7 +228,7 @@ export async function main(): Promise<number> {
       const pubkey = args.flags.pubkey
       if (!pubkey) return fail("seal: --pubkey <b64> required")
       const value = await readValue(args)
-      process.stdout.write(seal(value, pubkey))
+      process.stdout.write(await seal(value, pubkey))
       return 0
     }
 
@@ -237,7 +237,7 @@ export async function main(): Promise<number> {
       if (!privkey) return fail("unseal: --privkey <b64> required")
       const blob =
         args.positionals[0] ?? (await resolveCredential(credentialSource(args)))
-      process.stdout.write(unseal(blob, privkey))
+      process.stdout.write(await unseal(blob, privkey))
       return 0
     }
 

@@ -29,7 +29,9 @@
  * back to standard base64 — feed them straight into `startClientHandshake`.
  */
 
-import { identityFingerprint } from "../identity/index.js"
+import type { CryptoProvider } from "../crypto/types.js"
+import { webCryptoProvider } from "../crypto/webcrypto.js"
+import { identityFingerprint } from "../identity/core.js"
 import { PairingError } from "./handshake.js"
 
 /** URL scheme + host for offer URLs. */
@@ -109,16 +111,23 @@ export interface ParseOfferOptions {
 }
 
 /**
- * Parse + strictly validate an offer URL. Throws `PairingError` — never returns
- * a partial object — on any structural problem:
+ * Parse + strictly validate an offer URL. Rejects with `PairingError` — never
+ * resolves a partial object — on any structural problem:
  *
  *   - `malformed_offer`: wrong scheme/host, unknown version, missing/blank
  *     params, non-base64url keys/token, non-integer `exp`, or a `fingerprint`
  *     that does not match `fingerprint(pk)` (tamper detection: a rendezvous or
  *     link-mangler that swaps the daemon key can't keep `id` consistent).
  *   - `offer_expired`: only when `opts.now` is supplied and `exp` has passed.
+ *
+ * Async because the `id` ↔ `fingerprint(pk)` check hashes the key, and
+ * WebCrypto's SHA-256 is async; `crypto` selects the provider.
  */
-export function parseOfferUrl(url: string, opts: ParseOfferOptions = {}): PairingOffer {
+export async function parseOfferUrl(
+  url: string,
+  opts: ParseOfferOptions = {},
+  crypto: CryptoProvider = webCryptoProvider,
+): Promise<PairingOffer> {
   let parsed: URL
   try {
     parsed = new URL(url)
@@ -186,7 +195,7 @@ export function parseOfferUrl(url: string, opts: ParseOfferOptions = {}): Pairin
   // what turns the URL into a self-authenticating bootstrap secret — a party
   // that swaps `pk` for their own key can't also produce a matching `id` without
   // it being obviously a different fingerprint the human never saw.
-  if (identityFingerprint(daemonX25519Pub) !== fingerprint) {
+  if ((await identityFingerprint(daemonX25519Pub, crypto)) !== fingerprint) {
     throw new PairingError(
       "malformed_offer",
       "offer `id` does not match fingerprint(pk) — tampered or corrupt offer",

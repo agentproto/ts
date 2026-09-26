@@ -9,7 +9,7 @@ import { generateSealKeyPair, unseal } from "../../seal/index.js"
 
 describe("@agentproto/secrets/provision", () => {
   it("provisionSealed seals the credential to the target's key (server unseals it)", async () => {
-    const kp = generateSealKeyPair()
+    const kp = await generateSealKeyPair()
     const keyId = "test-key-1"
     let received: { value: string; keyId: string; provider: string } | null =
       null
@@ -38,12 +38,12 @@ describe("@agentproto/secrets/provision", () => {
     // The installed value is ciphertext, not the plaintext…
     expect(received!.value).not.toContain(secret)
     // …and it unseals back to the original with the target's private key.
-    expect(unseal(received!.value, kp.privateKey)).toBe(secret)
+    expect(await unseal(received!.value, kp.privateKey)).toBe(secret)
     expect(received!.provider).toBe("claude-code-oauth")
   })
 
   it("httpTarget fetches the seal-key and POSTs sealed:true", async () => {
-    const kp = generateSealKeyPair()
+    const kp = await generateSealKeyPair()
     const calls: Array<{ url: string; init?: RequestInit }> = []
     const fakeFetch = (async (url: unknown, init?: RequestInit) => {
       calls.push({ url: String(url), init })
@@ -76,7 +76,7 @@ describe("@agentproto/secrets/provision", () => {
     expect(body.keyId).toBe("k1")
     expect(body.value).not.toContain("secret-value")
     // unseal proves the sealed blob carries the original
-    expect(unseal(body.value, kp.privateKey)).toBe("secret-value")
+    expect(await unseal(body.value, kp.privateKey)).toBe("secret-value")
   })
 
   it("httpTarget surfaces a 404 seal-key as 'no sealing key configured'", async () => {

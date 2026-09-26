@@ -30,6 +30,10 @@
  *     makes either the signature or the derived keys disagree — the session
  *     fails closed, never continuing with attacker-chosen material.
  *
+ * The primitives come from a `CryptoProvider` (node:crypto or WebCrypto), so this
+ * one implementation runs in Node and in a browser; every entry point that does
+ * crypto is async and takes an optional trailing `crypto` argument.
+ *
  * This module is deliberately **transport-agnostic**: it produces and consumes
  * plain messages (`encode*`/`decode*` give byte arrays). The code that pumps
  * those bytes over a `FrameSink` lives in `@agentproto/acp/tunnel`, which stays
@@ -39,21 +43,21 @@
  */
 
 import {
-  createPublicKey,
-  createPrivateKey,
-  createHash,
-  diffieHellman,
-  hkdfSync,
-  generateKeyPairSync,
-  type KeyObject,
-} from "node:crypto"
-import { seal, unseal, SealError } from "../seal/index.js"
+  base64Decode,
+  base64Encode,
+  concatBytes,
+  utf8Decode,
+  utf8Encode,
+} from "../crypto/bytes.js"
+import type { CryptoProvider } from "../crypto/types.js"
+import { webCryptoProvider } from "../crypto/webcrypto.js"
+import { seal, unseal, SealError } from "../seal/core.js"
 import {
   identityFingerprint,
   signTranscript,
   verifyTranscript,
   type DaemonIdentity,
-} from "../identity/index.js"
+} from "../identity/core.js"
 
 /** Wire version of the handshake. Bumped if the message shape or key schedule
  *  changes; both sides refuse a version they don't recognise. */
@@ -61,7 +65,7 @@ export const PAIR_VERSION = 1 as const
 
 /** HKDF `info` — domain-separates this key schedule from every other HKDF use
  *  in the codebase (seal boxes, future rendezvous-token derivation). */
-const HKDF_INFO = "agentproto/pair/v1"
+const HKDF_INFO = utf8Encode("agentproto/pair/v1")
 
 /** Length of each direction key: AES-256 → 32 bytes, two of them → 64. */
 const KEY_LEN = 32
@@ -149,28 +153,16 @@ export interface PairingSession {
 
 // ─── key helpers ────────────────────────────────────────────────
 
-function x25519PublicKey(b64Der: string, what: string): KeyObject {
+/** Decode a base64 SPKI X25519 public key, rejecting anything the provider
+ *  can't import with `invalid_key`. */
+async function x25519PublicKey(crypto: CryptoProvider, b64Der: string, what: string): Promise<Uint8Array> {
+  const der = base64Decode(b64Der)
   try {
-    return createPublicKey({
-      key: Buffer.from(b64Der, "base64"),
-      format: "der",
-      type: "spki",
-    })
+    await crypto.x25519ValidatePublicKey(der)
   } catch {
     throw new PairingError("invalid_key", `invalid ${what} X25519 public key`)
   }
-}
-
-function x25519PrivateKey(b64Der: string, what: string): KeyObject {
-  try {
-    return createPrivateKey({
-      key: Buffer.from(b64Der, "base64"),
-      format: "der",
-      type: "pkcs8",
-    })
-  } catch {
-    throw new PairingError("invalid_key", `invalid ${what} X25519 private key`)
-  }
+  return der
 }
 
 /**
@@ -178,24 +170,26 @@ function x25519PrivateKey(b64Der: string, what: string): KeyObject {
  * Using the wire bytes (not a re-export of the parsed key) guarantees both
  * sides hash identical bytes regardless of any DER canonicalisation.
  */
-function transcriptHash(ePubB64: string, ct0: string, dePubB64: string): Buffer {
-  return createHash("sha256")
-    .update(Buffer.from(ePubB64, "base64"))
-    .update(Buffer.from(ct0, "utf8"))
-    .update(Buffer.from(dePubB64, "base64"))
-    .digest()
+function transcriptHash(
+  crypto: CryptoProvider,
+  ePubB64: string,
+  ct0: string,
+  dePubB64: string,
+): Promise<Uint8Array> {
+  return crypto.sha256(concatBytes(base64Decode(ePubB64), utf8Encode(ct0), base64Decode(dePubB64)))
 }
 
 /** Derive the two direction keys from the two ECDH outputs, salted by the
  *  transcript. Concatenation order (ECDH(e,d_e) then ECDH(e,static)) and the
  *  key split (c2d then d2c) are identical on both sides. */
-function deriveDirectionKeys(
-  ecdhEphemeral: Buffer,
-  ecdhStatic: Buffer,
-  transcript: Buffer
-): { kc2d: Buffer; kd2c: Buffer } {
-  const ikm = Buffer.concat([ecdhEphemeral, ecdhStatic])
-  const okm = Buffer.from(hkdfSync("sha256", ikm, transcript, HKDF_INFO, KEY_LEN * 2))
+async function deriveDirectionKeys(
+  crypto: CryptoProvider,
+  ecdhEphemeral: Uint8Array,
+  ecdhStatic: Uint8Array,
+  transcript: Uint8Array,
+): Promise<{ kc2d: Uint8Array; kd2c: Uint8Array }> {
+  const ikm = concatBytes(ecdhEphemeral, ecdhStatic)
+  const okm = await crypto.hkdfSha256(ikm, transcript, HKDF_INFO, KEY_LEN * 2)
   return {
     kc2d: okm.subarray(0, KEY_LEN),
     kd2c: okm.subarray(KEY_LEN, KEY_LEN * 2),
@@ -222,58 +216,61 @@ export interface ClientHandshakeParams {
  *  `complete` to derive the session. */
 export interface StartedClientHandshake {
   hello: PairingHello
-  /** Verify the daemon reply and derive the session. Throws `PairingError` on
-   *  a bad signature, malformed reply, or invalid key — never returns partial
-   *  state. */
-  complete(reply: PairingReply): PairingSession
+  /** Verify the daemon reply and derive the session. Rejects with
+   *  `PairingError` on a bad signature, malformed reply, or invalid key —
+   *  never resolves partial state. */
+  complete(reply: PairingReply): Promise<PairingSession>
 }
 
 /**
  * Begin a client handshake. Generates the client ephemeral keypair, seals the
- * hello payload to the daemon's static key, and returns the `hello` to send
+ * hello payload to the daemon's static key, and resolves to the `hello` to send
  * plus a `complete` to run once the daemon replies.
+ *
+ * `crypto` selects the primitive implementation (default: WebCrypto here,
+ * `node:crypto` through the `@agentproto/secrets/pairing` Node entry). The
+ * provider is captured for `complete` as well.
  */
-export function startClientHandshake(
-  params: ClientHandshakeParams
-): StartedClientHandshake {
+export async function startClientHandshake(
+  params: ClientHandshakeParams,
+  crypto: CryptoProvider = webCryptoProvider,
+): Promise<StartedClientHandshake> {
   // Validate the daemon keys up front so a bad offer fails before we transmit.
-  const daemonStatic = x25519PublicKey(params.daemonX25519Pub, "daemon")
+  const daemonStatic = await x25519PublicKey(crypto, params.daemonX25519Pub, "daemon")
 
-  const ephemeral = generateKeyPairSync("x25519")
-  const ePubB64 = ephemeral.publicKey
-    .export({ type: "spki", format: "der" })
-    .toString("base64")
+  const ephemeral = await crypto.x25519GenerateKeyPair()
+  const ePubB64 = base64Encode(ephemeral.publicKey)
 
   const payload: HelloPayload = {
     clientPub: ePubB64,
     clientName: params.clientName,
     offerToken: params.offerToken,
   }
-  const ct0 = seal(JSON.stringify(payload), params.daemonX25519Pub)
+  const ct0 = await seal(JSON.stringify(payload), params.daemonX25519Pub, crypto)
   const hello: PairingHello = { v: PAIR_VERSION, ePub: ePubB64, ct0 }
 
-  const complete = (reply: PairingReply): PairingSession => {
+  const complete = async (reply: PairingReply): Promise<PairingSession> => {
     if (reply.v !== PAIR_VERSION) {
       throw new PairingError("malformed_reply", `unsupported reply version ${reply.v}`)
     }
-    const dePub = x25519PublicKey(reply.dePub, "daemon ephemeral")
-    const transcript = transcriptHash(ePubB64, ct0, reply.dePub)
+    const dePub = await x25519PublicKey(crypto, reply.dePub, "daemon ephemeral")
+    const transcript = await transcriptHash(crypto, ePubB64, ct0, reply.dePub)
 
-    if (!verifyTranscript(params.daemonEd25519Pub, transcript, reply.sig)) {
+    if (!(await verifyTranscript(params.daemonEd25519Pub, transcript, reply.sig, crypto))) {
       throw new PairingError(
         "bad_signature",
         "daemon transcript signature did not verify against the offered key"
       )
     }
 
-    const ecdhEphemeral = diffieHellman({ privateKey: ephemeral.privateKey, publicKey: dePub })
-    const ecdhStatic = diffieHellman({ privateKey: ephemeral.privateKey, publicKey: daemonStatic })
-    const { kc2d, kd2c } = deriveDirectionKeys(ecdhEphemeral, ecdhStatic, transcript)
+    const ecdhEphemeral = await crypto.x25519(ephemeral.privateKey, dePub)
+    const ecdhStatic = await crypto.x25519(ephemeral.privateKey, daemonStatic)
+    const { kc2d, kd2c } = await deriveDirectionKeys(crypto, ecdhEphemeral, ecdhStatic, transcript)
 
     return {
       sendKey: kc2d,
       recvKey: kd2c,
-      peerFingerprint: identityFingerprint(params.daemonX25519Pub),
+      peerFingerprint: await identityFingerprint(params.daemonX25519Pub, crypto),
       transcriptHash: transcript,
       clientName: params.clientName,
     }
@@ -292,9 +289,9 @@ export interface DaemonHandshakeParams {
    * Validate the presented offer token. Returning false rejects the handshake
    * with `offer_rejected`. The daemon owns single-use + expiry policy here so
    * this module never needs to know about the offer store — a stale or already
-   * spent token simply returns false.
+   * spent token simply returns false. May be async.
    */
-  verifyOfferToken: (token: string) => boolean
+  verifyOfferToken: (token: string) => boolean | Promise<boolean>
 }
 
 /** A completed daemon handshake: send `reply`, keep `session`. */
@@ -306,22 +303,23 @@ export interface DaemonHandshakeResult {
 /**
  * Respond to a client hello. Opens the sealed payload with the daemon's X25519
  * private key, checks the offer token and the ephemeral-key binding, signs the
- * transcript, and derives the session. Throws `PairingError` on any failure —
- * a tampered `ct₀`, a swapped `ePub`, a rejected token — before producing any
- * reply, so a rejected client learns nothing and gets no session.
+ * transcript, and derives the session. Rejects with `PairingError` on any
+ * failure — a tampered `ct₀`, a swapped `ePub`, a rejected token — before
+ * producing any reply, so a rejected client learns nothing and gets no session.
  */
-export function respondToHandshake(
+export async function respondToHandshake(
   hello: PairingHello,
-  params: DaemonHandshakeParams
-): DaemonHandshakeResult {
+  params: DaemonHandshakeParams,
+  crypto: CryptoProvider = webCryptoProvider,
+): Promise<DaemonHandshakeResult> {
   if (hello.v !== PAIR_VERSION) {
     throw new PairingError("malformed_hello", `unsupported hello version ${hello.v}`)
   }
-  const clientEphemeral = x25519PublicKey(hello.ePub, "client ephemeral")
+  const clientEphemeral = await x25519PublicKey(crypto, hello.ePub, "client ephemeral")
 
   let payloadJson: string
   try {
-    payloadJson = unseal(hello.ct0, params.identity.x25519.priv)
+    payloadJson = await unseal(hello.ct0, params.identity.x25519.priv, crypto)
   } catch (err) {
     if (err instanceof SealError) {
       throw new PairingError(
@@ -344,22 +342,25 @@ export function respondToHandshake(
     )
   }
 
-  if (!params.verifyOfferToken(payload.offerToken)) {
+  if (!(await params.verifyOfferToken(payload.offerToken))) {
     throw new PairingError("offer_rejected", "offer token was rejected (unknown, expired, or spent)")
   }
 
-  const daemonEphemeral = generateKeyPairSync("x25519")
-  const dePubB64 = daemonEphemeral.publicKey
-    .export({ type: "spki", format: "der" })
-    .toString("base64")
+  const daemonEphemeral = await crypto.x25519GenerateKeyPair()
+  const dePubB64 = base64Encode(daemonEphemeral.publicKey)
 
-  const transcript = transcriptHash(hello.ePub, hello.ct0, dePubB64)
-  const sig = signTranscript(params.identity.ed25519.priv, transcript)
+  const transcript = await transcriptHash(crypto, hello.ePub, hello.ct0, dePubB64)
+  const sig = await signTranscript(params.identity.ed25519.priv, transcript, crypto)
 
-  const daemonStaticPriv = x25519PrivateKey(params.identity.x25519.priv, "daemon static")
-  const ecdhEphemeral = diffieHellman({ privateKey: daemonEphemeral.privateKey, publicKey: clientEphemeral })
-  const ecdhStatic = diffieHellman({ privateKey: daemonStaticPriv, publicKey: clientEphemeral })
-  const { kc2d, kd2c } = deriveDirectionKeys(ecdhEphemeral, ecdhStatic, transcript)
+  const daemonStaticPriv = base64Decode(params.identity.x25519.priv)
+  const ecdhEphemeral = await crypto.x25519(daemonEphemeral.privateKey, clientEphemeral)
+  let ecdhStatic: Uint8Array
+  try {
+    ecdhStatic = await crypto.x25519(daemonStaticPriv, clientEphemeral)
+  } catch {
+    throw new PairingError("invalid_key", "invalid daemon static X25519 private key")
+  }
+  const { kc2d, kd2c } = await deriveDirectionKeys(crypto, ecdhEphemeral, ecdhStatic, transcript)
 
   return {
     reply: { v: PAIR_VERSION, dePub: dePubB64, sig },
@@ -368,7 +369,7 @@ export function respondToHandshake(
       // and SENDS daemon→client (kd2c).
       sendKey: kd2c,
       recvKey: kc2d,
-      peerFingerprint: identityFingerprint(payload.clientPub),
+      peerFingerprint: await identityFingerprint(payload.clientPub, crypto),
       transcriptHash: transcript,
       clientName: payload.clientName,
     },
@@ -405,7 +406,7 @@ function parseHelloPayload(json: string): HelloPayload {
 
 /** Serialize a handshake message to bytes for transport. */
 export function encodePairingMessage(message: PairingHello | PairingReply): Uint8Array {
-  return Buffer.from(JSON.stringify(message), "utf8")
+  return utf8Encode(JSON.stringify(message))
 }
 
 /** Parse + validate a client hello from raw bytes. Truncated or malformed
@@ -440,7 +441,7 @@ export function decodePairingReply(bytes: Uint8Array): PairingReply {
 
 function parseJson(bytes: Uint8Array, code: PairingErrorCode): unknown {
   try {
-    return JSON.parse(Buffer.from(bytes).toString("utf8"))
+    return JSON.parse(utf8Decode(bytes))
   } catch {
     throw new PairingError(code, "message was not valid JSON (truncated or corrupt)")
   }
