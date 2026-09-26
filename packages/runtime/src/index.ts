@@ -2357,6 +2357,9 @@ export async function createGateway(
     daemonMcpUrl,
     ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
     resolveSandboxProvider: resolveSandboxProviderResolved,
+    // Same notifier `agent_start` registers `notifyUrl` with, so an HTTP
+    // spawn's per-session webhook fires too.
+    webhookNotifier,
     ...(opts.listAgentAdapters
       ? { listAgentAdapters: opts.listAgentAdapters }
       : {}),

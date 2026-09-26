@@ -30,7 +30,7 @@ import type { SandboxMode } from "@agentproto/command-sandbox"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import { WebSocketServer, type WebSocket } from "ws"
-import { ZodError } from "zod"
+import { ZodError, type ZodType } from "zod"
 import type { UIMessageChunk } from "ai"
 import type { AgentprotoRawTranscriptRecord } from "@agentproto/transcript-fixtures"
 import type { ConversationStore } from "./conversations.js"
@@ -149,6 +149,11 @@ import {
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
+import {
+  attachFieldSchema,
+  commandSandboxSchema,
+  contextContinuityInputSchema,
+} from "./spawn-field-schemas.js"
 import { makeSandboxCredsStore, makeSandboxResolver } from "./sandbox-adapters.js"
 import { readSandboxLedger, recordSandboxLiveness } from "./sandbox-ledger.js"
 import { parseJsonRecordText, DEFAULT_APP_SERVE_PORT, type SandboxAppServeSpec } from "./sandbox-app-serve.js"
@@ -682,6 +687,11 @@ export interface RuntimeHttpServerOptions {
    *  `agent_start` tool does (both share `spawnAgentSession`). Omitted →
    *  a sandbox spawn fails with `sandbox_provider_not_found`. */
   resolveSandboxProvider?: SpawnAgentSessionDeps["resolveSandboxProvider"]
+  /** Optional — the daemon's per-session webhook notifier, so a
+   *  `POST /sessions/agent` spawn's `notifyUrl` is registered exactly as the
+   *  MCP `agent_start` tool's is. Omitted → `notifyUrl` is accepted but
+   *  never fires (nothing to register it with). */
+  webhookNotifier?: SpawnAgentSessionDeps["webhookNotifier"]
   /** Optional — mirrors `RegisterAgentToolsOptions.provisionWorktree`. When
    *  wired, a `POST /sessions/agent` spawn honours `agent_start.worktree` and
    *  the daemon's `worktrees.isolation` policy, exactly as the MCP tool does
@@ -1902,6 +1912,7 @@ export async function startHttpServer(
             opts.provisionWorktree,
             opts.listCatalogModels,
             opts.resolveSandboxProvider,
+            opts.webhookNotifier,
           )
           if (handled) return
         }
@@ -3806,6 +3817,35 @@ export function buildSpawnSessionHttpArgs(
     ...(maxCostUsdCap !== undefined ? maxCostUsdCap : {}),
     ...(costBudgetCap !== undefined ? { costBudget: costBudgetCap } : {}),
   }
+  // HTTP twins of the `agent_start` fields this mapper used to drop
+  // silently — built as a typed `Pick` for the same TS2590 reason as
+  // `spendCaps`. `commandSandbox` is pre-validated by the route
+  // (`invalidSpawnHttpField` → 400): a confinement request must never
+  // degrade to an unconfined spawn. Deliberately NOT mapped: `wait` (would
+  // hold the HTTP request open for the child's whole first turn; use
+  // `agentproto sessions wait`), and the daemon-derived `appId` /
+  // `autoParentSessionId`, which no caller may set.
+  const commandSandbox = parseCommandSandboxField(b.commandSandbox)
+  const skills = b.skills !== undefined ? parseSkillsField(b.skills) : undefined
+  const contextContinuity =
+    b.contextContinuity !== undefined
+      ? parseWithJsonTolerance(contextContinuityInputSchema, b.contextContinuity)
+      : undefined
+  const deferredTools = parseBooleanField(b.deferredTools)
+  const attach =
+    b.attach !== undefined ? parseWithJsonTolerance(attachFieldSchema, b.attach) : undefined
+  const notifyUrl = parseNotifyUrlField(b.notifyUrl)
+  const agentStartParity: Pick<
+    SpawnAgentSessionInput,
+    "commandSandbox" | "skills" | "contextContinuity" | "deferredTools" | "attach" | "notifyUrl"
+  > = {
+    ...(commandSandbox !== undefined ? { commandSandbox } : {}),
+    ...(skills !== undefined ? { skills } : {}),
+    ...(contextContinuity !== undefined ? { contextContinuity } : {}),
+    ...(deferredTools !== undefined ? { deferredTools } : {}),
+    ...(attach !== undefined ? { attach } : {}),
+    ...(notifyUrl !== undefined ? { notifyUrl } : {}),
+  }
   return {
     adapter,
     ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
@@ -3853,6 +3893,9 @@ export function buildSpawnSessionHttpArgs(
       : {}),
     // Spend caps (parsed above) — see `spendCaps`.
     ...spendCaps,
+    // commandSandbox / skills / contextContinuity / deferredTools / attach /
+    // notifyUrl (parsed above) — see `agentStartParity`.
+    ...agentStartParity,
     ...(typeof b.prompt === "string" ? { prompt: b.prompt } : {}),
     ...(typeof b.label === "string" ? { label: b.label } : {}),
     // Explicit title override (SPEC-3 FIX C, `--title`) — wins over the
@@ -4343,6 +4386,67 @@ function parseAppServeField(raw: unknown): SandboxAppServeSpec | undefined {
   return { dir, port: typeof port === "number" ? port : DEFAULT_APP_SERVE_PORT }
 }
 
+/** The `commandSandbox` body field — `"off" | "workspace" | "strict"`, the
+ *  same enum as `agent_start`. Anything else ⇒ undefined; the route rejects
+ *  that case first (`invalidSpawnHttpField`), so it never reaches a spawn. */
+function parseCommandSandboxField(raw: unknown): SandboxMode | undefined {
+  const parsed = commandSandboxSchema.safeParse(raw)
+  return parsed.success ? parsed.data : undefined
+}
+
+/** Body-level rejections for `POST /sessions/agent` / `POST /sessions/chat`,
+ *  checked before spawning. Only fields where silently dropping a bad value
+ *  would be unsafe land here — today just `commandSandbox`: a typo'd mode
+ *  would otherwise spawn the adapter unconfined while the caller believes
+ *  it's confined. Returns the 400 body, or undefined when the body is fine. */
+function invalidSpawnHttpField(
+  b: Record<string, unknown>,
+): { error: string; message: string } | undefined {
+  if (b.commandSandbox !== undefined && parseCommandSandboxField(b.commandSandbox) === undefined) {
+    return {
+      error: "invalid_command_sandbox",
+      message: `commandSandbox must be one of "off", "workspace", "strict" (got ${JSON.stringify(b.commandSandbox)}).`,
+    }
+  }
+  return undefined
+}
+
+/** Validate a body field against the SAME zod shape `agent_start` uses,
+ *  tolerating a JSON-stringified value like this route's other object
+ *  fields. A value that fails validation ⇒ undefined (dropped). */
+function parseWithJsonTolerance<T>(schema: ZodType<T>, raw: unknown): T | undefined {
+  const value = typeof raw === "string" ? tryParseJson(raw) ?? raw : raw
+  const parsed = schema.safeParse(value)
+  return parsed.success ? parsed.data : undefined
+}
+
+/** The `skills` body field — a string array, or a JSON-stringified one. */
+function parseSkillsField(raw: unknown): string[] | undefined {
+  const value = typeof raw === "string" ? tryParseJson(raw) : raw
+  if (!Array.isArray(value) || !value.every(s => typeof s === "string")) return undefined
+  return value
+}
+
+/** A boolean body field, tolerating `"true"`/`"false"` like `trace`. */
+function parseBooleanField(raw: unknown): boolean | undefined {
+  if (typeof raw === "boolean") return raw
+  if (raw === "true") return true
+  if (raw === "false") return false
+  return undefined
+}
+
+/** The `notifyUrl` body field — an absolute http(s) URL, as `agent_start`'s
+ *  `z.string().url()` requires. Anything else ⇒ undefined (dropped). */
+function parseNotifyUrlField(raw: unknown): string | undefined {
+  if (typeof raw !== "string" || raw.length === 0) return undefined
+  try {
+    const url = new URL(raw)
+    return url.protocol === "http:" || url.protocol === "https:" ? raw : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Reverse-map a cwd onto a registered workspace slug — the same rule
  * spawnAgentSession applies (session-spawn.ts), hoisted here so the terminal
@@ -4456,6 +4560,7 @@ async function handleSessions(
   provisionWorktree?: WorktreeProvisioner,
   listCatalogModels?: CatalogModelsLister,
   resolveSandboxProvider?: SpawnAgentSessionDeps["resolveSandboxProvider"],
+  webhookNotifier?: SpawnAgentSessionDeps["webhookNotifier"],
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -4579,6 +4684,12 @@ async function handleSessions(
       json(400, { error: "missing_adapter" })
       return true
     }
+    const invalidSpawnField = invalidSpawnHttpField(b)
+    if (invalidSpawnField) {
+      json(400, invalidSpawnField)
+      return true
+    }
+    const spawnArgs = buildSpawnSessionHttpArgs(b, adapter, preset)
     const result = await spawnAgentSession(
       {
         registry,
@@ -4588,8 +4699,9 @@ async function handleSessions(
         ...(provisionWorktree ? { provisionWorktree } : {}),
         ...(listCatalogModels ? { listCatalogModels } : {}),
         ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
+        ...(webhookNotifier ? { webhookNotifier } : {}),
       },
-      buildSpawnSessionHttpArgs(b, adapter, preset),
+      spawnArgs,
     )
     if (!result.ok) {
       const status =
@@ -4668,6 +4780,12 @@ async function handleSessions(
       json(400, { error: "missing_adapter" })
       return true
     }
+    const invalidSpawnField = invalidSpawnHttpField(b)
+    if (invalidSpawnField) {
+      json(400, invalidSpawnField)
+      return true
+    }
+    const spawnArgs = buildSpawnSessionHttpArgs(b, adapter, preset)
     const result = await spawnAgentSession(
       {
         registry,
@@ -4677,8 +4795,9 @@ async function handleSessions(
         ...(provisionWorktree ? { provisionWorktree } : {}),
         ...(listCatalogModels ? { listCatalogModels } : {}),
         ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
+        ...(webhookNotifier ? { webhookNotifier } : {}),
       },
-      buildSpawnSessionHttpArgs(b, adapter, preset),
+      spawnArgs,
     )
     if (!result.ok) {
       const status =

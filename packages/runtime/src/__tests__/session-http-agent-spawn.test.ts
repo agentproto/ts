@@ -427,3 +427,115 @@ describe("POST /sessions/agent — sandbox field forwarding", () => {
     expect(minimal.config).toEqual({})
   })
 })
+
+describe("POST /sessions/agent — agent_start fields the mapper used to drop", () => {
+  it("commandSandbox reaches the adapter's startSession; an invalid mode is a 400, never an unconfined spawn", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const startSession = vi.fn(async (_opts: Record<string, unknown>) => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+    })
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      resolveAgentAdapter,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      const spawn = (path: string, extra: Record<string, unknown>) =>
+        fetch(`http://127.0.0.1:${port}${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ adapter: "mock", cwd: "/tmp", ...extra }),
+        })
+
+      expect((await spawn("/sessions/agent", { commandSandbox: "workspace" })).status).toBe(201)
+      expect(startSession).toHaveBeenLastCalledWith(
+        expect.objectContaining({ commandSandbox: "workspace" }),
+      )
+
+      const calls = startSession.mock.calls.length
+      for (const path of ["/sessions/agent", "/sessions/chat"]) {
+        const res = await spawn(path, { commandSandbox: "workspce", prompt: "hi" })
+        expect(res.status).toBe(400)
+        expect(await res.json()).toMatchObject({ error: "invalid_command_sandbox" })
+      }
+      expect(startSession.mock.calls.length).toBe(calls)
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("maps commandSandbox, skills, contextContinuity, deferredTools, attach and notifyUrl like agent_start", () => {
+    const args = buildSpawnSessionHttpArgs(
+      {
+        commandSandbox: "strict",
+        skills: ["agentproto", "review"],
+        contextContinuity: { mode: "auto", warnAtPct: 70, hardStopAtPct: 95 },
+        deferredTools: false,
+        attach: { parent: "sess_parent" },
+        notifyUrl: "https://example.test/hook",
+      },
+      "claude-code",
+    )
+    expect(args).toMatchObject({
+      commandSandbox: "strict",
+      skills: ["agentproto", "review"],
+      contextContinuity: { mode: "auto", warnAtPct: 70, hardStopAtPct: 95 },
+      deferredTools: false,
+      attach: { parent: "sess_parent" },
+      notifyUrl: "https://example.test/hook",
+    })
+  })
+
+  it("tolerates JSON-stringified / string-boolean forms, as the route's other fields do", () => {
+    const args = buildSpawnSessionHttpArgs(
+      {
+        skills: JSON.stringify(["agentproto"]),
+        contextContinuity: JSON.stringify({ mode: "ask" }),
+        deferredTools: "true",
+        attach: "false",
+      },
+      "hermes",
+    )
+    expect(args.skills).toEqual(["agentproto"])
+    expect(args.contextContinuity).toEqual({ mode: "ask" })
+    expect(args.deferredTools).toBe(true)
+    expect(args.attach).toBe(false)
+  })
+
+  it("drops malformed values instead of forwarding them, and never maps wait / daemon-derived fields", () => {
+    const args = buildSpawnSessionHttpArgs(
+      {
+        skills: ["ok", 3],
+        contextContinuity: { warnAtPct: 150 },
+        deferredTools: "yes",
+        attach: { parent: "" },
+        notifyUrl: "file:///etc/passwd",
+        wait: true,
+        appId: "app_x",
+        autoParentSessionId: "sess_forged",
+      },
+      "claude-code",
+    )
+    for (const key of [
+      "skills",
+      "contextContinuity",
+      "deferredTools",
+      "attach",
+      "notifyUrl",
+      "wait",
+      "appId",
+      "autoParentSessionId",
+    ]) {
+      expect(key in args).toBe(false)
+    }
+  })
+})
