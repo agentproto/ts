@@ -106,7 +106,9 @@ export interface TunnelClient {
   fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>
   /** Skip the current backoff wait and retry now (e.g. on `online`). */
   reconnect(): void
-  /** Close the channel and stop reconnecting. Pending requests fail `closed`. */
+  /** Close the channel and stop reconnecting. Pending requests fail `closed`.
+   *  The state becomes `closed`, except that a terminal `revoked` / `outdated`
+   *  is kept (with its `lastError`). */
   close(): void
 }
 
@@ -158,11 +160,7 @@ export function connect(credential: PairCredential, opts: ConnectOptions = {}): 
   /** Wakes the backoff sleep early (reconnect() / close()). */
   let wake: (() => void) | null = null
 
-  const setState = (next: ConnectionState, error?: TunnelClientError): void => {
-    if (error) lastError = error
-    if (next === state && !error) return
-    state = next
-    const change: StateChange = error ? { state, error } : { state }
+  const notify = (change: StateChange): void => {
     for (const l of [...listeners]) {
       try {
         l(change)
@@ -170,6 +168,13 @@ export function connect(credential: PairCredential, opts: ConnectOptions = {}): 
         /* a listener must not break the client */
       }
     }
+  }
+
+  const setState = (next: ConnectionState, error?: TunnelClientError): void => {
+    if (error) lastError = error
+    if (next === state && !error) return
+    state = next
+    notify(error ? { state, error } : { state })
   }
 
   const failPending = (l: Live, err: TunnelClientError): void => {
@@ -552,6 +557,11 @@ export function connect(credential: PairCredential, opts: ConnectOptions = {}): 
   // it, and a v2 hello can't even reach its re-pair notice.
   if (credential.protocol !== PAIR_VERSION) {
     setState("outdated", outdatedError(`this device's pairing with ${credential.name}`))
+    // That happened inside connect(), before anyone could subscribe: replay it
+    // to the listeners attached in the same tick, so onStateChange fires.
+    queueMicrotask(() => {
+      if (state === "outdated" && lastError) notify({ state, error: lastError })
+    })
   } else void run().catch(err => {
     setState("offline", new TunnelClientError("offline", errMsg(err), { cause: err }))
   })
@@ -585,7 +595,9 @@ export function connect(credential: PairCredential, opts: ConnectOptions = {}): 
         failPending(l, new TunnelClientError("closed", "the tunnel client was closed"))
         l.sink.close("client closed")
       }
-      setState("closed")
+      // `revoked` / `outdated` are terminal verdicts a UI must keep showing
+      // (with lastError): closing the client doesn't turn them into "closed".
+      if (state !== "revoked" && state !== "outdated") setState("closed")
     },
   }
 }

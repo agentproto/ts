@@ -110,7 +110,16 @@ export interface Daemon {
   teardown(): Promise<void>
 }
 
-export async function startDaemon(opts: { label?: string } = {}): Promise<Daemon> {
+export async function startDaemon(
+  opts: {
+    label?: string
+    /** Serve reconnects by greeting with this tunnel `error` code and closing,
+     *  instead of a tunnel server (e.g. `pairing_protocol_outdated`, which a
+     *  daemon sends a client it will no longer serve). The offer channel is
+     *  served normally, so pairing still works. */
+    reconnectGreeting?: string
+  } = {},
+): Promise<Daemon> {
   const tmp = await mkdtemp(join(tmpdir(), "agentproto-pair-client-"))
   const identity = await generateIdentity()
   const upstream = stubUpstream()
@@ -142,7 +151,12 @@ export async function startDaemon(opts: { label?: string } = {}): Promise<Daemon
     pairingsPath: join(tmp, "pairings.json"),
     defaultRendezvousUrl: rvUrl,
     dial,
-    serve: sink => {
+    serve: (sink, ctx) => {
+      if (opts.reconnectGreeting && ctx.mode === "reconnect") {
+        sink.send({ t: "error", code: opts.reconnectGreeting, message: "re-pair: run `agentproto pair offer`" })
+        sink.close(opts.reconnectGreeting)
+        return { close: async () => {} }
+      }
       const server = createTunnelServer({
         sink,
         authorize: r => r,

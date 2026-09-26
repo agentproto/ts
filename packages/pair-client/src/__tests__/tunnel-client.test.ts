@@ -161,12 +161,47 @@ describe("pair/v2 route/auth split", () => {
     const { protocol: _v, ...legacy } = credential
     const c = connect(legacy, { WebSocket, ...FAST })
     clients.push(c)
+    const changes: StateChange[] = []
+    c.onStateChange(change => changes.push(change)) // attached right after connect()
     expect(c.state).toBe("outdated")
     expect(c.lastError?.code).toBe("protocol_outdated")
     await expect(c.ready()).rejects.toMatchObject({ code: "protocol_outdated" })
     await expect(c.fetch("/x")).rejects.toMatchObject({ code: "protocol_outdated" })
+    // The listener heard it, once, with the typed error.
+    expect(changes.map(x => x.state)).toEqual(["outdated"])
+    expect(changes[0]!.error?.code).toBe("protocol_outdated")
+    // Terminal: closing the client (page/SW cleanup) keeps the verdict.
+    c.close()
+    expect(c.state).toBe("outdated")
+    expect(c.lastError?.code).toBe("protocol_outdated")
     await new Promise(r => setTimeout(r, 200))
     expect(sockets).toHaveLength(0)
+  }, 30_000)
+
+  it("a daemon greeting of pairing_protocol_outdated ends in the terminal 'outdated' state", async () => {
+    const d = await startDaemon({ reconnectGreeting: "pairing_protocol_outdated" })
+    daemon = d
+    const { WebSocket, sockets } = countingWebSocket()
+    const credential = await (await pairFromOffer(await d.offer(), { WebSocket })).confirm()
+    await vi.waitFor(() => expect(d.rendezvous.stats.parked).toBeGreaterThanOrEqual(1))
+    const c = connect(credential, { WebSocket, ...FAST })
+    clients.push(c)
+    const changes: StateChange[] = []
+    c.onStateChange(change => changes.push(change))
+
+    await expect(c.ready()).rejects.toMatchObject({ code: "protocol_outdated" })
+    expect(c.state).toBe("outdated")
+    expect(c.lastError?.code).toBe("protocol_outdated")
+    expect(c.lastError?.message).toMatch(/scan a new pairing QR/)
+    expect(changes.at(-1)).toMatchObject({ state: "outdated", error: { code: "protocol_outdated" } })
+    await expect(c.fetch("/x")).rejects.toMatchObject({ code: "protocol_outdated" })
+
+    // No retry loop, and close() keeps the verdict.
+    const dials = sockets.length
+    await new Promise(r => setTimeout(r, 400))
+    expect(sockets.length).toBe(dials)
+    c.close()
+    expect(c.state).toBe("outdated")
   }, 30_000)
 })
 
@@ -341,6 +376,8 @@ describe("TunnelClient connection lifecycle", () => {
     await new Promise(r => setTimeout(r, 600))
     expect(sockets.length).toBe(dials)
     expect(states.map(s => s.state)).toEqual(["revoked"])
+    client.close()
+    expect(client.state).toBe("revoked")
 
     // A later connect with the stored credential fails the same way, at once.
     await new Promise(r => setTimeout(r, 150))
