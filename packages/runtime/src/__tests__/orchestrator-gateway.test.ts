@@ -657,6 +657,11 @@ describe("orphan reaping (WP-B) — parent death terminates live children", () =
     expect(byId.get(t.childA.id)!.status).toBe("killed")
     expect(byId.get(t.childB.id)!.status).toBe("killed")
     expect(byId.get(t.grandchild.id)!.status).toBe("killed")
+    // Tagged as an orphan reap, not an operator kill or another automatic
+    // teardown — lets a UI say WHY the row died instead of a bare "killed".
+    expect(byId.get(t.childA.id)!.endedReason).toBe("parent-exited")
+    expect(byId.get(t.childB.id)!.endedReason).toBe("parent-exited")
+    expect(byId.get(t.grandchild.id)!.endedReason).toBe("parent-exited")
 
     // The parent itself is skipped (it's the one already exiting) and the
     // unrelated root is NEVER touched.

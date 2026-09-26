@@ -6461,7 +6461,19 @@ async function handleSessions(
   }
 
   if (suffix === "/kill" && req.method === "POST") {
-    const ok = registry.kill(id)
+    // Optional `{ reason: "completed" | "stopped" }` body — an operator's
+    // intent for WHY it's stopping this session, not just that it is. Omitted
+    // (or an unrecognized value) still tags the kill as `operator-stopped`:
+    // this call only ever fires from a deliberate operator action (this
+    // route, or the `agent_kill` MCP tool), so it must never be mistaken for
+    // one of the daemon's own automatic teardowns (idle-reap, crash, cost
+    // cap, …) — see `parseOperatorKillReason`'s doc. On an ALREADY-ENDED
+    // session, `{ reason: "completed" }` is the UI's "mark as completed"
+    // affordance — see `registry.kill`'s doc — and still returns 200; every
+    // other reason on a dead row stays today's 404 no-op.
+    const body = await readJsonBody(req)
+    const reason = parseOperatorKillReason(body)
+    const ok = registry.kill(id, undefined, reason)
     json(ok ? 200 : 404, { ok, sessionId: id })
     return true
   }
@@ -6533,7 +6545,10 @@ async function handleSessions(
   if (!suffix && req.method === "DELETE") {
     // A live session is killed first (the agent_kill teardown — whole
     // adapter tree, browser sweep), then dropped; `killed` says which.
-    const killed = registry.kill(id)
+    // Tagged `"forgotten"` rather than an operator-stopped/-completed
+    // label: the operator asked to DROP the row, not just stop the turn, so
+    // its cause of death should read as "deleted", not "stopped".
+    const killed = registry.kill(id, undefined, "forgotten")
     const ok = registry.forget(id)
     json(ok ? 200 : 404, { ok, id, killed })
     return true
@@ -8475,6 +8490,21 @@ async function handleApps(
   }
 
   return false
+}
+
+/**
+ * Map a `POST /sessions/:id/kill` body's optional `reason` field (the HTTP
+ * twin of `agent_kill`'s `reason` MCP arg) onto the `SessionEndReason` the
+ * kill should carry. `"completed"` / `"stopped"` map onto
+ * `operator-completed` / `operator-stopped`; anything else (missing body,
+ * wrong type, unrecognized string) falls back to `operator-stopped` — the
+ * kill is still tagged as a deliberate operator action, just without a
+ * stated outcome.
+ */
+function parseOperatorKillReason(body: unknown): "operator-completed" | "operator-stopped" {
+  const raw =
+    body && typeof body === "object" ? (body as Record<string, unknown>).reason : undefined
+  return raw === "completed" ? "operator-completed" : "operator-stopped"
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {

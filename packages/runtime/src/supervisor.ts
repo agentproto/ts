@@ -1320,7 +1320,7 @@ export function createCompletionPolicySupervisor(opts: {
       } finally {
         // Always kill the judge session — success or failure.
         try {
-          registry.kill(judgeId)
+          registry.kill(judgeId, undefined, "policy-cleanup")
         } catch {
           // best-effort
         }

@@ -13,6 +13,7 @@ import { EventEmitter } from "node:events"
 import type { ActivityRecord } from "./activity-projection.js"
 import type { SessionConfig } from "./session-config.js"
 import type { TaskStatus } from "./task-ledger.js"
+import type { SessionEndReason } from "./session-end-reason.js"
 
 export type SessionEventType =
   | "session:turn-end"
@@ -238,15 +239,14 @@ export interface SessionExitedEvent {
   status: "exited" | "killed" | "error"
   label?: string
   ts: string
-  /** Mirrors `SessionDescriptor.endedReason` — set when this exit was NOT an
-   *  operator targeting the session: `"daemon-restart"` (the daemon dying
-   *  underneath it — crash-discovered-at-boot or a forced shutdown kill) or
-   *  `"idle-reaped"` (the idle-session reaper retiring a long-idle row to free
-   *  the adapter process, PR-6), or `"crashed"` (the crash-detect sweep found
-   *  the adapter's OS process gone between turns). Lets a watcher
-   *  (completion-policy supervisor, `session_monitor`) tell an automatic
-   *  teardown apart from a deliberate kill. Absent otherwise. */
-  reason?: "daemon-restart" | "idle-reaped" | "crashed"
+  /** Mirrors `SessionDescriptor.endedReason` — see {@link SessionEndReason}
+   *  for the full, single-source enum (automatic teardowns like
+   *  `"daemon-restart"` / `"idle-reaped"` / `"crashed"` / `"cost-cap-exceeded"`
+   *  / `"provider-limit"`, and operator-issued `"operator-completed"` /
+   *  `"operator-stopped"`). Lets a watcher (completion-policy supervisor,
+   *  `session_monitor`) tell WHY this exit happened rather than just that it
+   *  did. Absent for a plain natural exit or an ordinary turn error. */
+  reason?: SessionEndReason
 }
 
 /**
