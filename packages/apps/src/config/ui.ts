@@ -31,10 +31,15 @@
  * Deep-link contract (plan section 3.4): `#<section>[/<id>[/<sub>]]`, parsed
  * by `parseConfigFragment` (`fragment.ts`) — embedded here via
  * `.toString()` so the exact function tested in `fragment.test.ts` is the
- * one that runs in the browser, not a second hand-copied version.
+ * one that runs in the browser, not a second hand-copied version. A browser
+ * tab resolves this from `location.hash`; an MCP host has no URL bar, so it
+ * opens `app_ui_config { view }` instead — `handleToolInput` below turns
+ * that into the same fragment via the bridge's `onToolInput` (app-ui-apps.ts).
+ * `location.hash` wins when the panel first loads with one already set;
+ * every tool-input notification after that re-routes unconditionally.
  */
 
-import { parseConfigFragment, buildConfigFragment } from "./fragment.js"
+import { parseConfigFragment, buildConfigFragment, shouldApplyIncomingView } from "./fragment.js"
 
 export const CONFIG_TOOLS = [
   "auth_profile_list",
@@ -240,6 +245,7 @@ var SECTIONS = ${JSON.stringify(SECTIONS)};
 // browser runs the exact function fragment.test.ts exercises) ──
 ${parseConfigFragment.toString()}
 ${buildConfigFragment.toString()}
+${shouldApplyIncomingView.toString()}
 
 // app_tool_call wraps its dispatch result at least once (its own text-result
 // body is the JSON-stringified inner MCP tool result); peel back through
@@ -827,6 +833,34 @@ function route(pushBack) {
 }
 
 window.addEventListener("hashchange", function () { route(false); });
+
+// ── MCP-hosted deep links ──
+// A browser tab navigates via location.hash directly; an MCP host (Claude
+// Desktop, Codex, VS Code) has no URL bar for this panel, so it opens
+// app_ui_config with a view argument instead (plan section 3.4). The bridge
+// (app-ui-apps.ts) surfaces that as tool input; this turns it into the same
+// #<section>/<id>/<sub> fragment a browser deep link would use.
+//
+// location.hash still wins on the very first route — an actual browser deep
+// link must not be overridden by a stale/default tool call. Every
+// subsequent tool-input notification (a fresh app_ui_config invocation while
+// the panel is already open) is a live "go to this view" command and always
+// re-routes.
+var toolInputCount = 0;
+var hashPresentAtLoad = !!(location.hash && location.hash !== "#");
+
+function routeToView(view) {
+  if (typeof view !== "string" || !view) return;
+  var parsed = parseConfigFragment(view);
+  var frag = buildConfigFragment(parsed.section, parsed.id, parsed.sub);
+  if (location.hash === frag) { route(false); } else { location.hash = frag; }
+}
+
+function handleToolInput(input) {
+  toolInputCount += 1;
+  if (!shouldApplyIncomingView(toolInputCount, hashPresentAtLoad)) return;
+  routeToView(input && input.view);
+}
 
 // ============================================================
 // section data + render dispatch
@@ -2307,6 +2341,7 @@ window.McpApp.connect()
     }
     renderNav();
     loadHealthChip();
+    if (bridge.onToolInput) bridge.onToolInput(handleToolInput);
     route(true);
   })
   .catch(function (err) {

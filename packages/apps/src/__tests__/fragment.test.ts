@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest"
-import { parseConfigFragment, buildConfigFragment, CONFIG_SECTIONS } from "../config/fragment.js"
+import {
+  parseConfigFragment,
+  buildConfigFragment,
+  shouldApplyIncomingView,
+  CONFIG_SECTIONS,
+} from "../config/fragment.js"
 
 describe("config app deep-link fragment", () => {
   it("parses a bare section", () => {
@@ -59,5 +64,31 @@ describe("config app deep-link fragment", () => {
   it("builds section-only and section/id/sub fragments", () => {
     expect(buildConfigFragment("wallets")).toBe("#wallets")
     expect(buildConfigFragment("remote", "pairing", "ab12cd34")).toBe("#remote/pairing/ab12cd34")
+  })
+
+  it("parses a raw view the same with or without a leading '#'", () => {
+    // ui.ts's routeToView feeds an MCP-hosted `view` argument straight through
+    // parseConfigFragment — this is the "accept with or without a leading #"
+    // contract PR-5 adds, and it falls out of parseConfigFragment's existing
+    // `replace(/^#/, "")` with no extra code.
+    expect(parseConfigFragment("wallets/my-profile")).toEqual(parseConfigFragment("#wallets/my-profile"))
+    expect(buildConfigFragment("harnesses")).toBe("#harnesses")
+    expect(parseConfigFragment("harnesses")).toEqual(parseConfigFragment(buildConfigFragment("harnesses")))
+  })
+})
+
+describe("shouldApplyIncomingView", () => {
+  it("ignores the first arrival when the browser already had a non-empty hash at load", () => {
+    expect(shouldApplyIncomingView(1, true)).toBe(false)
+  })
+
+  it("applies the first arrival when there was no browser hash at load", () => {
+    expect(shouldApplyIncomingView(1, false)).toBe(true)
+  })
+
+  it("always applies every arrival after the first, hash or no hash", () => {
+    expect(shouldApplyIncomingView(2, true)).toBe(true)
+    expect(shouldApplyIncomingView(3, true)).toBe(true)
+    expect(shouldApplyIncomingView(2, false)).toBe(true)
   })
 })
