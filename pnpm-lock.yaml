@@ -3792,6 +3792,9 @@ importers:
       '@agentproto/apps':
         specifier: workspace:*
         version: link:../apps
+      '@agentproto/mcp-app-host':
+        specifier: workspace:*
+        version: link:../mcp-app-host
       '@agentproto/runtime':
         specifier: workspace:*
         version: link:../runtime
