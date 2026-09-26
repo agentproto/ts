@@ -57,7 +57,14 @@ export function startStatusPage(root: HTMLElement, id: string, deep: boolean): v
     window.location.replace("/pair")
   }
 
+  // The worker answers every POLL_MS with the same state most of the time.
+  // Rebuilding the view on each answer would swap the buttons out from under
+  // a tap, so draw only when what's shown changes.
+  let shown = ""
   const draw = (view: View): void => {
+    const key = JSON.stringify([view.state, view.error?.message ?? "", name, fp])
+    if (key === shown) return
+    shown = key
     const daemon = name ?? "your daemon"
     switch (view.state) {
       case "loading":
