@@ -13,6 +13,12 @@ import type {
   StreamEvent,
 } from "@agentproto/acp"
 import type { SessionConfigOption, SessionMode } from "@agentproto/acp/client"
+
+/** Outcome of a steer attempt — mirrors `@agentproto/acp/client`'s
+ *  `SteerOutcome`: `"steered"` (injected into the running turn),
+ *  `"promptRequired"` (no host turn in flight — deliver as a prompt),
+ *  `"unsupported"` (the agent can't / refused to steer). */
+export type SteerOutcome = "steered" | "promptRequired" | "unsupported"
 import type { SandboxMode } from "@agentproto/command-sandbox"
 
 export type {
@@ -1060,6 +1066,19 @@ export interface AgentCliClient {
    * unsubscribe function. Only the ACP arm implements this.
    */
   onOutOfTurnEvent?(listener: (event: StreamEvent) => void): () => void
+  /**
+   * Whether the agent accepts ACP steering (`_session/steering`,
+   * advertised as `InitializeResponse._meta.steering.supported`). Read
+   * after `connect()`. Only the ACP arm populates this.
+   */
+  readonly steeringSupported?: boolean
+  /**
+   * Inject `content` into the turn in flight — see `@agentproto/acp/client`'s
+   * `AcpClientSession.steer` for the full contract (host-turn gate,
+   * `idleBehavior:"promptRequired"`, never throws). Only the ACP arm
+   * implements this.
+   */
+  steer?(content: unknown): Promise<SteerOutcome>
   close(): Promise<void>
   /**
    * The session id the protocol arm holds. Populated after `connect()`
@@ -1350,6 +1369,12 @@ export interface AgentCliRuntimeSession {
    * Returns an unsubscribe function.
    */
   onOutOfTurnEvent?(listener: (event: StreamEvent) => void): () => void
+  /** Whether this session's agent accepts steering — delegates to the
+   *  protocol arm; absent for arms that can't steer. */
+  readonly steeringSupported?: boolean
+  /** Steer the turn in flight — delegates to the protocol arm's `steer`
+   *  (see {@link SteerOutcome}); absent for arms that can't steer. */
+  steer?(content: unknown): Promise<SteerOutcome>
   /**
    * Switch the active model on this LIVE, already-running session,
    * honoring the manifest's `models.apply` strategy:

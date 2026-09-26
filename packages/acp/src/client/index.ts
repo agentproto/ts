@@ -206,10 +206,29 @@ const AUTONOMOUS_RESULT_ORIGINS = new Set([
   "observer-activity",
 ])
 
+/** The ACP steering extension request (claude-agent-acp, codex-acp):
+ *  inject a follow-up into the turn that is currently running. */
+export const ACP_STEER_METHOD = "_session/steering"
+
+/** What `AcpClientSession.steer` did:
+ *  - `"steered"` — injected into the running turn;
+ *  - `"promptRequired"` — no turn in flight (checked here first: we only
+ *    steer while OUR `prompt()` is in flight, never during an agent's
+ *    autonomous cycle), so nothing was sent — deliver it as a normal prompt;
+ *  - `"unsupported"` — the agent doesn't advertise steering, or refused. */
+export type SteerOutcome = "steered" | "promptRequired" | "unsupported"
+
 export interface AcpClient {
   readonly connection: ClientSideConnection
   /** Negotiated agent capabilities returned from `initialize`. */
   readonly agentCapabilities: Record<string, unknown> | undefined
+  /** The TOP-LEVEL `_meta` of the `initialize` response (sibling of
+   *  `agentCapabilities`) — where extension capabilities such as
+   *  `steering.supported` are advertised. `undefined` when absent. */
+  readonly initMeta: Record<string, unknown> | undefined
+  /** True when the agent advertised `_meta.steering.supported` at
+   *  initialize — i.e. it accepts `_session/steering`. */
+  readonly steeringSupported: boolean
   newSession(params: {
     cwd: string
     mcpServers?: unknown[]
@@ -372,6 +391,18 @@ export interface AcpClientSession {
    * out-of-turn event is dropped, as before.
    */
   onOutOfTurnEvent(listener: (event: StreamEvent) => void): () => void
+  /** Whether this session's agent accepts `_session/steering` (see
+   *  `AcpClient.steeringSupported`). */
+  readonly steeringSupported: boolean
+  /**
+   * Steer the turn in flight: inject `content` into it (ACP steering
+   * extension, `_session/steering`) instead of queueing a new prompt.
+   * Always sends `idleBehavior:"promptRequired"`, and never sends at all
+   * unless OUR `prompt()` is in flight — so it can't start a detached turn
+   * the host never sees, or fold into an agent's autonomous cycle. Never
+   * throws; see {@link SteerOutcome}.
+   */
+  steer(content: unknown): Promise<SteerOutcome>
   close(): Promise<void>
 }
 
@@ -480,10 +511,15 @@ export async function createAcpClient(
       : undefined,
   } as never)
 
+  const initMeta = (initResponse as { _meta?: Record<string, unknown> | null })._meta ?? undefined
+  const steeringSupported = isSteeringAdvertised(initMeta)
+
   return {
     connection,
     agentCapabilities: (initResponse as { agentCapabilities?: Record<string, unknown> })
       .agentCapabilities,
+    initMeta,
+    steeringSupported,
     async newSession(params) {
       const response = await connection.newSession({
         cwd: params.cwd,
@@ -593,6 +629,7 @@ export async function createAcpClient(
         options.turnIdleTimeoutMs,
         cancelPermissionsForSession,
         modelApplyRejection,
+        steeringSupported,
       )
     },
     async loadSession(params) {
@@ -628,6 +665,8 @@ export async function createAcpClient(
         options.onActivity,
         options.turnIdleTimeoutMs,
         cancelPermissionsForSession,
+        undefined,
+        steeringSupported,
       )
     },
     respondPermission,
@@ -675,6 +714,24 @@ function clientCapabilitiesFromOptions(
   }
 }
 
+/** `InitializeResponse._meta.steering.supported === true`. */
+export function isSteeringAdvertised(initMeta: Record<string, unknown> | undefined): boolean {
+  const steering = initMeta?.steering
+  return (
+    typeof steering === "object" &&
+    steering !== null &&
+    (steering as { supported?: unknown }).supported === true
+  )
+}
+
+/** A raw string, one ContentBlock, or a block array → ContentBlock[]. */
+function toContentBlocks(content: unknown): unknown[] {
+  if (typeof content === "string") return content ? [{ type: "text", text: content }] : []
+  if (Array.isArray(content)) return content
+  if (content && typeof content === "object") return [content]
+  return []
+}
+
 function buildSession(
   connection: ClientSideConnection,
   sessionId: string,
@@ -684,9 +741,11 @@ function buildSession(
   turnIdleTimeoutMs: number | undefined,
   cancelPermissionsForSession: (sessionId: string) => void,
   modelApplyRejection?: { requested: string; reason: string },
+  steeringSupported = false,
 ): AcpClientSession {
   return {
     sessionId,
+    steeringSupported,
     ...(modelApplyRejection ? { modelApplyRejection } : {}),
     availableConfigOptions: state.configOptions,
     availableModes: state.modes,
@@ -850,6 +909,49 @@ function buildSession(
       if (!state.active) return
       await connection.cancel({ sessionId } as never)
       onActivity?.()
+    },
+    async steer(content) {
+      if (!steeringSupported) return "unsupported"
+      // Host-turn gate: steer only into a turn WE started. With no prompt()
+      // in flight there's nothing to inject into from the host's point of
+      // view (an agent-autonomous cycle doesn't count), so hand the content
+      // back for a normal prompt without touching the wire.
+      if (!state.active) return "promptRequired"
+      const prompt = toContentBlocks(content)
+      if (!prompt.length) return "unsupported"
+      try {
+        const res = (await connection.extMethod(ACP_STEER_METHOD, {
+          sessionId,
+          prompt,
+          _meta: { steering: { idleBehavior: "promptRequired" } },
+        })) as { outcome?: unknown }
+        onActivity?.()
+        switch (res?.outcome) {
+          case "injected":
+            return "steered"
+          case "promptRequired":
+            return "promptRequired"
+          case "startedNewTurn":
+            // The agent ignored the opt-in and started a detached turn — the
+            // content WAS delivered, so report it (a caller must not re-send).
+            console.warn(
+              `[acp] session ${sessionId}: steering ignored idleBehavior:"promptRequired" ` +
+                `and started a new turn`,
+            )
+            return "steered"
+          default:
+            console.warn(
+              `[acp] session ${sessionId}: unexpected steering outcome ${JSON.stringify(res?.outcome)}`,
+            )
+            return "unsupported"
+        }
+      } catch (err) {
+        console.warn(
+          `[acp] session ${sessionId}: ${ACP_STEER_METHOD} rejected — ` +
+            (err instanceof Error ? err.message : String(err)),
+        )
+        return "unsupported"
+      }
     },
     async setConfigOption(configId, value) {
       try {

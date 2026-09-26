@@ -414,6 +414,9 @@ export interface SessionListCompactItem {
   busy?: boolean
   awaitingInput?: boolean
   blockedOn?: SessionDescriptor["blockedOn"]
+  /** True when the agent accepts steering (`SessionDescriptor.capabilities`)
+   *  — a `steer` message can reach its running turn. Absent when not. */
+  steering?: boolean
   /** How many background tasks the agent still has running — the
    *  "idle, but waiting on N background tasks" signal. Absent when none;
    *  the task list itself is on the full record (`backgroundTasks`). */
@@ -465,6 +468,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   busy: s.busy,
   awaitingInput: s.awaitingInput,
   blockedOn: s.blockedOn,
+  ...(s.capabilities?.steering ? { steering: true } : {}),
   ...(s.backgroundTasks?.length ? { backgroundTaskCount: s.backgroundTasks.length } : {}),
   lastActivityAt: s.lastActivityAt,
   startedAt: s.startedAt,

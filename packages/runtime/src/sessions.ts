@@ -205,6 +205,15 @@ export interface AgentSessionLike {
    * routes to restart.
    */
   readonly availableModes?: readonly SessionMode[]
+  /** Whether the agent accepts steering — mirrors
+   *  `@agentproto/driver-agent-cli`'s `AgentCliRuntimeSession.steeringSupported`
+   *  (ACP `_session/steering`, advertised at initialize). */
+  readonly steeringSupported?: boolean
+  /** Inject content into the turn in flight — mirrors
+   *  `AgentCliRuntimeSession.steer`: `"steered"` (injected), `"promptRequired"`
+   *  (no host turn in flight — deliver as a normal prompt), `"unsupported"`.
+   *  Never throws. Absent for sessions that can't steer. */
+  steer?(content: unknown): Promise<"steered" | "promptRequired" | "unsupported">
   close(): Promise<void>
 }
 
@@ -1699,6 +1708,12 @@ export interface SessionDescriptor {
    *  (`[inbox] dropped`). Full history lives in the transcript, not here.
    *  New array on every mutation, like `promptQueue`. */
   inbox?: SessionMessage[]
+  /** What the live agent session can do, read from its driver at attach
+   *  time (spawn / resume) — shown in `session_list` so a sender can predict
+   *  a message's delivery tier. `steering`: the agent accepts ACP steering
+   *  (`_session/steering`) — a `steer` message can be injected into its
+   *  running turn instead of waiting for it to end. */
+  capabilities?: { steering: boolean }
   /** FIFO of prompts that arrived while this session was mid-turn and
    *  asked to be QUEUED rather than rejected (`enqueuePrompt`'s
    *  `opts.queue` arm — see its doc comment). Index 0 is next to
@@ -5699,6 +5714,7 @@ export function createSessionsRegistry(opts?: {
         }
         rt.agentSession = fresh
         bindOutOfTurnEvents(rt)
+        stampCapabilities(rt)
         rt.adapterSlug = adapterSlug
         rt.desc.adapterSessionId = fresh.sessionId
         // The resumed session is a fresh child process — refresh pid so
@@ -6981,6 +6997,14 @@ export function createSessionsRegistry(opts?: {
    * process owns none of the old one's background tasks or cycle, so both
    * are reset.
    */
+  /** Stamp `desc.capabilities` from the agent session just attached. */
+  const stampCapabilities = (rt: SessionRuntime): void => {
+    const steering = rt.agentSession?.steer !== undefined && rt.agentSession.steeringSupported === true
+    if (rt.desc.capabilities?.steering === steering) return
+    rt.desc.capabilities = { steering }
+    schedulePersist()
+  }
+
   const bindOutOfTurnEvents = (rt: SessionRuntime): void => {
     releaseOutOfTurnEvents(rt)
     delete rt.desc.backgroundTasks
@@ -7369,6 +7393,7 @@ export function createSessionsRegistry(opts?: {
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
       bindOutOfTurnEvents(rt)
+      stampCapabilities(rt)
       // Lineage-attribution signal (WP-R3): announce the new session's parent
       // + depth the moment it's registered, so a live tree can nest it under
       // `parentSessionId` without waiting for its next snapshot poll. Rides the
@@ -7543,6 +7568,7 @@ export function createSessionsRegistry(opts?: {
       }
       rt.agentSession = outcome.agentSession
       bindOutOfTurnEvents(rt)
+      stampCapabilities(rt)
       rt.readUsage = outcome.readUsage
       rt.desc.cwd = outcome.cwd
       Object.assign(rt.desc, worktreeFields(outcome.cwd))
