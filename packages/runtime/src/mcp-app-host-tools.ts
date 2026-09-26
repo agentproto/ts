@@ -40,9 +40,10 @@ export function registerMcpAppHostTools(
       "names it, e.g. `guilde` in `mcp__guilde__…`) declare a UI " +
       "(`_meta.ui.resourceUri`), plus every app-only tool. The server is " +
       "resolved in the session's scope (session config → project → user → " +
-      "imports). Returns `{ server, status, tools, appOnlyTools, error?, " +
-      "source? }`; status is ok | unresolved | unreachable | auth_required. " +
-      "Cached; failures are retried at most once a minute.",
+      "imports). Returns `{ server, status, tools, appOnlyTools, " +
+      "allToolNames, notAppVisibleTools, error?, source? }`; status is " +
+      "ok | unresolved | unreachable | auth_required. Cached; failures are " +
+      "retried at most once a minute.",
     {
       sessionId: z.string().min(1).describe("Session whose transcript mentions the server."),
       server: z.string().min(1).describe("Server alias as the harness names it."),
@@ -68,9 +69,11 @@ export function registerMcpAppHostTools(
   server.tool(
     "mcp_app_tool_call",
     "MCP Apps host: a `tools/call` made by an app UI iframe (not by the " +
-      "model). `tool` must be one of the server's UI tools, its app-only " +
-      "tools, or the tool whose transcript card hosts the iframe; anything " +
-      "else is refused. The call is recorded on the session as " +
+      "model). `tool` must be a tool of this server whose `_meta.ui." +
+      "visibility` doesn't exclude \"app\" (the spec default `[\"model\", " +
+      "\"app\"]` applies when unset), or the tool whose transcript card " +
+      "hosts the iframe; anything else is refused. The call is recorded " +
+      "on the session as " +
       "`kind: \"mcp_app_tool_call\"`. Returns the upstream `CallToolResult` " +
       "verbatim, or `{ isError: true, content: [{ type: \"text\", text }] }`.",
     {

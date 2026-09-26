@@ -47,14 +47,21 @@ function buildFixtureServer(): McpServer {
       return { content: [{ type: "text", text: "refreshed" }] }
     }
   )
-  server.registerTool("plain_tool", { description: "model-only, no UI" }, async () => {
+  // No `_meta` at all: per the MCP Apps spec, the default visibility is
+  // `["model", "app"]`, so this is callable by both — not model-only.
+  server.registerTool("plain_tool", { description: "no _meta, default visibility" }, async () => {
     upstreamCalls.push("plain_tool")
     return { content: [{ type: "text", text: "plain" }] }
   })
-  server.registerTool("admin_delete_all", { description: "must never be reachable from an app" }, async () => {
-    upstreamCalls.push("admin_delete_all")
-    return { content: [{ type: "text", text: "deleted" }] }
-  })
+  // Explicit `visibility: ["model"]`: the one shape that excludes "app".
+  server.registerTool(
+    "admin_delete_all",
+    { description: "model-only, must never be reachable from an app", _meta: { ui: { visibility: ["model"] } } },
+    async () => {
+      upstreamCalls.push("admin_delete_all")
+      return { content: [{ type: "text", text: "deleted" }] }
+    }
+  )
   // A ui:// resource that exists on the server but no tool declares.
   registerUiResource(server, { name: "hidden", uri: "ui://hidden/view", html: "<html>secret</html>" })
   if (malformedCspTools) {
@@ -329,24 +336,52 @@ describe("McpAppsHostService.callTool", () => {
     expect(records.every(r => typeof r.durationMs === "number")).toBe(true)
   })
 
-  it("refuses a tool outside the allowlist without calling upstream or recording", async () => {
+  it("allows a plain tool with no _meta — the spec default visibility includes \"app\"", async () => {
+    const { host, records } = makeHost()
+    const r = await host.callTool({ sessionId: "s1", server: "fixture", tool: "plain_tool", originToolCallId: "tc-1" })
+    expect(r.isError).toBeFalsy()
+    expect(text(r)).toBe("plain")
+    expect(records).toHaveLength(1)
+  })
+
+  it("refuses a tool whose visibility excludes \"app\", without calling upstream or recording", async () => {
     const { host, records } = makeHost()
     const r = await host.callTool({ sessionId: "s1", server: "fixture", tool: "admin_delete_all", originToolCallId: "tc-1" })
     expect(r.isError).toBe(true)
     expect(text(r)).toMatch(/not callable from an app UI/)
+    expect(text(r)).toMatch(/visibility excludes "app"/)
     expect(upstreamCalls).toEqual([])
     expect(records).toEqual([])
   })
 
-  it("allows the tool whose transcript card hosts the iframe", async () => {
+  it("refuses a tool that doesn't exist on the server", async () => {
+    const { host, records } = makeHost()
+    const r = await host.callTool({ sessionId: "s1", server: "fixture", tool: "nonexistent_tool", originToolCallId: "tc-1" })
+    expect(r.isError).toBe(true)
+    expect(text(r)).toMatch(/does not exist on server "fixture"/)
+    expect(upstreamCalls).toEqual([])
+    expect(records).toEqual([])
+  })
+
+  it("allows the tool whose transcript card hosts the iframe, even when visibility excludes app", async () => {
     const { host } = makeHost({
-      lookupToolCallName: async (_s, id) => (id === "tc-plain" ? "mcp__fixture__plain_tool" : undefined),
+      lookupToolCallName: async (_s, id) => (id === "tc-model-only" ? "mcp__fixture__admin_delete_all" : undefined),
     })
-    const ok = await host.callTool({ sessionId: "s1", server: "fixture", tool: "plain_tool", originToolCallId: "tc-plain" })
-    expect(text(ok)).toBe("plain")
-    const other = await host.callTool({ sessionId: "s1", server: "fixture", tool: "plain_tool", originToolCallId: "tc-other" })
+    const ok = await host.callTool({
+      sessionId: "s1",
+      server: "fixture",
+      tool: "admin_delete_all",
+      originToolCallId: "tc-model-only",
+    })
+    expect(text(ok)).toBe("deleted")
+    const other = await host.callTool({
+      sessionId: "s1",
+      server: "fixture",
+      tool: "admin_delete_all",
+      originToolCallId: "tc-other",
+    })
     expect(other.isError).toBe(true)
-    expect(upstreamCalls).toEqual(["plain_tool"])
+    expect(upstreamCalls).toEqual(["admin_delete_all"])
   })
 
   it("returns an isError result when the server is not ok", async () => {

@@ -198,18 +198,45 @@ export interface McpUiToolIndex {
   tools: McpUiToolEntry[]
   /** Every app-only tool, UI or not. */
   appOnlyTools: string[]
+  /** Every tool name the server declared in `tools/list`, UI or not. */
+  allToolNames: string[]
+  /** Tools whose `_meta.ui.visibility` is an array that omits `"app"` — per
+   *  the MCP Apps spec (ext-apps `_meta.ui.visibility`), the default
+   *  `["model", "app"]` applies whenever the array is absent, so only an
+   *  explicit array without `"app"` lands here. */
+  notAppVisibleTools: string[]
+}
+
+/** ext-apps only exports `isToolVisibilityAppOnly` / `isToolVisibilityModelOnly`
+ *  (each true only for the exact single-element array); the gate needs the
+ *  general spec rule instead — visible to the app unless `visibility` is an
+ *  array that omits `"app"`. */
+function isToolAppVisible(tool: Tool): boolean {
+  const meta = tool._meta
+  const ui = isRecord(meta?.ui) ? meta.ui : undefined
+  const visibility = ui?.visibility
+  if (!Array.isArray(visibility)) return true
+  return visibility.includes("app")
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v)
 }
 
 export function buildUiToolIndex(tools: readonly Tool[]): McpUiToolIndex {
   const ui: McpUiToolEntry[] = []
   const appOnlyTools: string[] = []
+  const allToolNames: string[] = []
+  const notAppVisibleTools: string[] = []
   for (const tool of tools) {
+    allToolNames.push(tool.name)
     const appOnly = isToolVisibilityAppOnly(tool)
     if (appOnly) appOnlyTools.push(tool.name)
+    if (!isToolAppVisible(tool)) notAppVisibleTools.push(tool.name)
     const resourceUri = getToolUiResourceUri(tool)
     if (resourceUri) ui.push({ name: tool.name, resourceUri, appOnly })
   }
-  return { tools: ui, appOnlyTools }
+  return { tools: ui, appOnlyTools, allToolNames, notAppVisibleTools }
 }
 
 /** The capability a host advertises so servers that gate their UI tools on
