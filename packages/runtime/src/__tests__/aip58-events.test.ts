@@ -750,6 +750,74 @@ steps:
     expect(pdfEvents).not.toContain("step.started:skip-pdf")
   })
 
+  it("a tolerant fan-out: a failed item's step is `failed` with its error (step.failed), and a spawn circuit breaker skips the rest with the reason", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const runner = createWorkflowRunner({
+        registry: makeMockRegistry(),
+        sessionEvents: createSessionEventBus(),
+        // Every spawn fails: the adapter doesn't resolve.
+        resolveAgentAdapter: (async () => null) as unknown as AgentAdapterResolver,
+        persist: true,
+        persistPath: join(tmpDir, "workflow-runs.json"),
+        runsRoot: join(tmpDir, "runs"),
+        compileWorkflow: (handle) => compileWorkflow(handle, { tools: {}, candidates: [] }),
+      })
+      const path = join(tmpDir, "WORKFLOW.md")
+      writeFileSync(
+        path,
+        `---
+name: Review all
+id: review-all
+description: One agent turn per item, failures collected.
+version: 0.1.0
+inputs:
+  type: object
+  properties:
+    items: { type: array }
+outputs: {}
+steps:
+  - id: review
+    kind: map
+    over: $input.items
+    onError: collect
+    steps:
+      - id: rev
+        kind: agent
+        adapter: nope
+        prompt: review it
+---
+`,
+        "utf8",
+      )
+      const run = await runner.startFromFile({ path, input: { items: [1, 2, 3, 4, 5, 6] } })
+      const final = await waitTerminal(runner, run.runId)
+      // Tolerant: the run itself still succeeds.
+      expect(final?.status).toBe("done")
+      const firstError = "step 'rev': agent spawn failed — adapter 'nope' not found"
+      const rows = new Map(final!.stages[0]!.steps.map(s => [s.label, s]))
+      for (const id of ["rev[0]", "rev[1]", "rev[2]"]) {
+        expect(rows.get(id)).toMatchObject({ status: "failed", error: firstError })
+      }
+      for (const id of ["rev[3]", "rev[4]", "rev[5]"]) {
+        expect(rows.get(id)).toMatchObject({ status: "skipped", skipReason: `circuit-open: ${firstError}` })
+        expect(rows.get(id)?.error).toBeUndefined()
+      }
+      const events = runner.events(run.runId) ?? []
+      expect(events.filter(e => e.type === "step.failed").map(e => [e.stepId, e.data])).toEqual([
+        ["rev[0]", { message: firstError }],
+        ["rev[1]", { message: firstError }],
+        ["rev[2]", { message: firstError }],
+      ])
+      expect(events.filter(e => e.type === "step.skipped").map(e => [e.stepId, e.data])).toEqual(
+        ["rev[3]", "rev[4]", "rev[5]"].map(id => [id, { reason: "circuit-open", branchId: "review", message: firstError }]),
+      )
+      expect(events.at(-1)?.type).toBe("run.succeeded")
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   it("#1421 cache hits — a replayed step gets ONE step.started/step.succeeded (cached), done with timestamps, in execution order", async () => {
     vi.stubEnv("HOME", tmpDir) // createFileStepCache's default dir is under homedir()
     try {

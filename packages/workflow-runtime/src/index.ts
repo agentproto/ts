@@ -13,7 +13,9 @@ export {
   WorkflowSuspendedError,
   AgentInputRequiredError,
   StepOutcomeError,
+  AgentSpawnError,
 } from "./run-workflow.js"
+export { DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES } from "./types.js"
 export {
   compileWorkflow,
   WorkflowCompileError,
@@ -73,6 +75,7 @@ export type {
   StepCacheEntry,
   StepHookInfo,
   StepSkippedInfo,
+  StepFailedInfo,
   RuntimeWorkflow,
   RunWorkflowArgs,
   ApprovalRequest,

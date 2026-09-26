@@ -32,9 +32,13 @@ you say `agree: true` in your verdict, so be conservative and cite evidence.
   `git cat-file`, `git merge-base`, `git rev-list`, `git branch --contains`,
   `git ls-tree`. Forbidden: anything that changes refs, the index, or the
   working tree (no checkout, switch, branch -d, reset, stash, commit, fetch,
-  push, worktree). Do not edit any repo file.
-- Always pass `-C <repo root>` to git — the repo root is given to you in the
-  prompt; the cwd may not match it.
+  push, worktree). Do not edit any repo file. The repo path in your prompt
+  is a disposable detached worktree made for this review — the live checkout
+  is elsewhere and off limits — but the stash list and refs are shared with
+  every checkout of the repo, so the rule still holds there. Read a branch
+  through its sha: `git show <sha>:<path>`, `git ls-tree -r <sha>`.
+- Always pass `-C <repo path from the prompt>` to git, and use that same path
+  as `repoRoot` for `branch_gc_verdict`.
 - Cap output: pipe big diffs through `head -300`, or use `--stat` first.
 - Never write temp files (no `git show … > /tmp/x && diff …`). Git compares
   revisions directly: `git diff <a>:<path> <b>:<path>` for one file across

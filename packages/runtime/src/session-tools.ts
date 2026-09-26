@@ -13,6 +13,7 @@
  * for fs/exec.
  */
 
+import { addReviewWorktree, ownerRepoOfReviewWorktree, removeReviewWorktrees } from "./review-worktree.js"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type {
@@ -2626,7 +2627,9 @@ export function registerSessionTools(
       }
       try {
         const { repoRoot: _r, workspaceSlug: _w, ...verdict } = input
-        const record = await recordBranchGcVerdict({ repoRoot: resolved.repoRoot, verdict })
+        // A reviewer names its review worktree; the verdict keys on the repo.
+        const repoRoot = await ownerRepoOfReviewWorktree(resolved.repoRoot)
+        const record = await recordBranchGcVerdict({ repoRoot, verdict })
         return { content: [{ type: "text", text: JSON.stringify({ recorded: true, record }) }] }
       } catch (err) {
         return {
@@ -2664,7 +2667,8 @@ export function registerSessionTools(
         return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }], isError: true }
       }
       try {
-        const record = await readBranchGcVerdict({ repoRoot: resolved.repoRoot, sha: input.sha })
+        const repoRoot = await ownerRepoOfReviewWorktree(resolved.repoRoot)
+        const record = await readBranchGcVerdict({ repoRoot, sha: input.sha })
         // `missing` is the plain-truthy mirror of `!found`, so a workflow
         // `branch` step's bare-ref `when` can test it directly.
         return {
@@ -2675,6 +2679,45 @@ export function registerSessionTools(
       } catch (err) {
         return {
           content: [{ type: "text", text: `branch_gc_verdict_get failed: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  server.tool(
+    "branch_gc_review_worktree",
+    "Create or remove disposable DETACHED review worktrees for branch review " +
+      "(the maintain workflow gives every reviewer its own, so nothing a " +
+      "reviewer does can touch the live checkout). `add` checks out `sha` at " +
+      "`path`; `remove` force-removes every path in `paths` (missing ones are " +
+      "fine) and prunes. Every path must be a direct child of the review root " +
+      "under the OS tmp dir — this tool can never remove the repo itself or a " +
+      "human's worktree.",
+    {
+      repoRoot: z.string().optional().describe("Absolute path to the git repo. Wins over `workspaceSlug`."),
+      workspaceSlug: z.string().optional().describe("Workspace slug. The active workspace when omitted."),
+      action: z.enum(["add", "remove"]),
+      path: z.string().optional().describe("`add`: where to create the worktree."),
+      sha: z.string().optional().describe("`add`: the commit to check out (detached)."),
+      paths: z.array(z.string()).optional().describe("`remove`: worktrees to remove."),
+    },
+    async input => {
+      const resolved = await resolveWorktreeQueryRoot({ repoRoot: input.repoRoot, workspaceSlug: input.workspaceSlug })
+      if (!resolved.ok) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }], isError: true }
+      }
+      try {
+        if (input.action === "add") {
+          if (!input.path || !input.sha) throw new Error("`add` needs `path` and `sha`")
+          const out = await addReviewWorktree({ repoRoot: resolved.repoRoot, path: input.path, sha: input.sha })
+          return { content: [{ type: "text", text: JSON.stringify(out) }] }
+        }
+        const out = await removeReviewWorktrees({ repoRoot: resolved.repoRoot, paths: input.paths ?? [] })
+        return { content: [{ type: "text", text: JSON.stringify(out) }] }
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `branch_gc_review_worktree failed: ${err instanceof Error ? err.message : String(err)}` }],
           isError: true,
         }
       }

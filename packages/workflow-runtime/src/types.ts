@@ -71,6 +71,15 @@ export type FanOutOutcome<T = unknown> =
       /** `err.message` if the throw was an `Error`, else `String(err)`. */
       readonly error: string
     }
+  | {
+      /** Never started: the fan-out's spawn circuit breaker opened first
+       *  (see {@link MapStep.maxConsecutiveSpawnFailures}). */
+      readonly status: "skipped"
+      readonly index: number
+      readonly item: unknown
+      /** `circuit-open: <first error of the failure streak>`. */
+      readonly reason: string
+    }
 
 /**
  * The bound output of a `map`/`pipeline` step run with `onError: "collect"`:
@@ -81,7 +90,16 @@ export interface TolerantFanOutResult<T = unknown> {
   readonly results: readonly FanOutOutcome<T>[]
   readonly succeeded: number
   readonly failed: number
+  /** Items never started because the spawn circuit breaker opened. */
+  readonly skipped: number
+  /** Set when the breaker opened: the first error of the spawn-failure
+   *  streak that tripped it. */
+  readonly circuitOpen?: { readonly error: string }
 }
+
+/** Default for {@link MapStep.maxConsecutiveSpawnFailures} /
+ *  {@link PipelineStep.maxConsecutiveSpawnFailures}. */
+export const DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES = 3
 
 /**
  * Run a sub-step once per element of an array, optionally with bounded
@@ -104,6 +122,17 @@ export interface MapStep {
    * silently dropped.
    */
   onError?: "throw" | "collect"
+  /**
+   * `"collect"` only: once this many items IN A ROW fail because an agent
+   * step's session could not be spawned ({@link AgentSpawnError}), stop
+   * starting new items — the failure is systemic, not per-item. In-flight
+   * items finish; every item not yet started is reported skipped
+   * (`circuit-open: <first error>`) and the map returns normally. A settled
+   * item that isn't a spawn failure resets the streak. Default
+   * {@link DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES}; `0` disables the breaker.
+   * (`"throw"` already stops at the first failure of any kind.)
+   */
+  maxConsecutiveSpawnFailures?: number
 }
 
 /**
@@ -131,6 +160,8 @@ export interface PipelineStep {
    *  `"collect"` runs every item's chain to completion and binds a
    *  {@link TolerantFanOutResult} instead of a bare array. */
   onError?: "throw" | "collect"
+  /** Same semantics as {@link MapStep.maxConsecutiveSpawnFailures}. */
+  maxConsecutiveSpawnFailures?: number
 }
 
 /** Run one of two branches based on a predicate over the bindings. */
@@ -503,6 +534,14 @@ export interface RuntimeWorkflow {
   id: string
   description?: string
   steps: readonly RunStep[]
+  /**
+   * Cleanup steps that ALWAYS run once `steps` ends — succeeded, failed, or
+   * cancelled (they run without the abort signal). They see the same
+   * bindings (a step that never ran is simply absent). A failing `finally`
+   * step fails an otherwise-successful run; after a failed or cancelled run
+   * the original outcome wins and the cleanup error is only reported.
+   */
+  finally?: readonly RunStep[]
   /** Pick the run's final output (default: the last top-level step's output). */
   output?: Selector<unknown>
 }
@@ -628,9 +667,23 @@ export interface StepHookInfo {
 
 /** Why `onStepSkipped` fired. */
 export interface StepSkippedInfo {
-  reason: "branch-not-taken"
-  /** Id of the authored `branch` step whose decision skipped the step. */
+  /** `"branch-not-taken"`: the step sits in an untaken `branch` arm.
+   *  `"circuit-open"`: a `map`/`pipeline` item never started because the
+   *  fan-out's spawn circuit breaker opened
+   *  ({@link MapStep.maxConsecutiveSpawnFailures}). */
+  reason: "branch-not-taken" | "circuit-open"
+  /** Id of the authored step whose decision skipped the step — the `branch`
+   *  step, or (circuit-open) the `map`/`pipeline` step. */
   branchId: string
+  /** `"circuit-open"` only: the first error of the spawn-failure streak
+   *  that tripped the breaker. */
+  message?: string
+}
+
+/** What `onStepFailed` reports. */
+export interface StepFailedInfo {
+  /** `err.message` if the throw was an `Error`, else `String(err)`. */
+  error: string
 }
 
 export interface RunWorkflowArgs {
@@ -682,6 +735,12 @@ export interface RunWorkflowArgs {
    *  reports its own id, not its body's); a step id that also sits in the
    *  taken path is never reported. */
   onStepSkipped?: (stepId: string, info: StepSkippedInfo) => void
+  /** Called when a step inside a tolerant (`onError: "collect"`) `map`/
+   *  `pipeline` item throws — the item is recorded as rejected and the run
+   *  goes on, so this is the only signal the failing step gets. `stepId` is
+   *  the innermost step that threw, indexed like `onStepStart`'s. A throw
+   *  that fails the run is NOT reported here (the run's own failure is). */
+  onStepFailed?: (stepId: string, info: StepFailedInfo) => void
   /** Host-injectable subprocess runner for `kind: "gate"` steps. Undefined ⇒
    *  the runtime's own `node:child_process`-backed default. */
   runGateCommand?: GateCommandRunner

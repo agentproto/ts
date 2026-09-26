@@ -13,9 +13,11 @@ review step spawns real agent sessions.
 One run:
 
 1. Plans `worktree_gc` and `branch_gc` (dry run — nothing is touched).
-2. Fans a reviewer agent out over every unmerged branch candidate, one turn
-   per unique tip sha: a small model when the candidate's residual is 3
-   files or fewer, a large model otherwise. Each turn records a verdict via
+2. Fans a reviewer agent out over the unmerged branch candidates with no
+   stored verdict yet — at most `maxReviews` (default 40) per run, newest
+   tip first, so daily runs walk a large backlog — one turn per unique tip
+   sha: a small model when the candidate's residual is 3 files or fewer, a
+   large model otherwise. Each turn records a verdict via
    `branch_gc_verdict` — recording a verdict never deletes anything. A turn
    that ends without a stored verdict gets one same-session re-prompt, then
    one large-model retry.
