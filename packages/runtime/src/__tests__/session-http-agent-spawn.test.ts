@@ -245,6 +245,14 @@ describe("POST /sessions/agent — orchestrator/mcpServers parity with agent_sta
     }
   })
 
+  it("buildSpawnSessionHttpArgs forwards `browser` (true is sugar for headless; junk dropped)", () => {
+    expect(buildSpawnSessionHttpArgs({ browser: "headless" }, "mock").browser).toBe("headless")
+    expect(buildSpawnSessionHttpArgs({ browser: true }, "mock").browser).toBe("headless")
+    expect(buildSpawnSessionHttpArgs({ browser: false }, "mock").browser).toBe(false)
+    expect(buildSpawnSessionHttpArgs({ browser: "firefox" }, "mock")).not.toHaveProperty("browser")
+    expect(buildSpawnSessionHttpArgs({}, "mock")).not.toHaveProperty("browser")
+  })
+
   it("trace:true (and stringified \"true\") forwards to registry.spawnAgent; omitted stays absent", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const spawnSpy = vi.spyOn(registry, "spawnAgent")

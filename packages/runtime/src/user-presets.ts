@@ -17,6 +17,7 @@ import type {
   RouteSpec,
   SessionConfig,
 } from "./session-config.js"
+import type { SpawnBrowserMode } from "./browser-mount.js"
 
 const effortSchema = z.enum(["low", "medium", "high", "xhigh", "max", "ultracode"])
 const postureSchema = z.union([
@@ -53,6 +54,9 @@ export interface UserPreset extends Partial<SessionConfig> {
    *  `SpawnAgentSessionInput.skills`. Omitted means the adapter/defaults
    *  decide. */
   skills?: string[]
+  /** `agent_start.browser` for spawns from this preset. Ranks below the
+   *  role's own default (see `resolveBrowserMode`). */
+  browser?: SpawnBrowserMode
 }
 
 const userPresetSchema = z.object({
@@ -68,6 +72,7 @@ const userPresetSchema = z.object({
   contextProfile: z.string().min(1).optional(),
   cwd: z.string().min(1).optional(),
   skills: z.array(z.string().min(1)).optional(),
+  browser: z.union([z.literal("headless"), z.literal(false)]).optional(),
 }) satisfies z.ZodType<UserPreset>
 
 const userPresetsFileSchema = z.object({

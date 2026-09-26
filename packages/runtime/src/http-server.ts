@@ -20,6 +20,7 @@
  * tool calls become a real use case.
  */
 
+import { parseBrowserMode } from "./browser-mount.js"
 import { randomUUID } from "node:crypto"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import type { Duplex } from "node:stream"
@@ -3806,6 +3807,12 @@ export function buildSpawnSessionHttpArgs(
     ...(maxCostUsdCap !== undefined ? maxCostUsdCap : {}),
     ...(costBudgetCap !== undefined ? { costBudget: costBudgetCap } : {}),
   }
+  // Per-session headless browser — the HTTP twin of the MCP `agent_start`
+  // tool's `browser` field (`true` is sugar for "headless"). Hoisted into a
+  // typed `Pick` for the same TS2590 reason as `spendCaps`.
+  const browser = parseBrowserMode(b.browser === true || b.browser === "true" ? "headless" : b.browser)
+  const browserField: Pick<SpawnAgentSessionInput, "browser"> =
+    browser !== undefined ? { browser } : {}
   return {
     adapter,
     ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
@@ -3892,6 +3899,7 @@ export function buildSpawnSessionHttpArgs(
       : {}),
     ...(typeof b.role === "string" && b.role.length > 0 ? { role: b.role } : {}),
     ...(typeof b.promptAppend === "string" ? { promptAppend: b.promptAppend } : {}),
+    ...browserField,
     ...(b.orchestrator !== undefined
       ? (() => {
           const parsed = parseOrchestratorField(b.orchestrator)
@@ -4607,6 +4615,7 @@ async function handleSessions(
                 result.code === "role_spawn_denied"
               ? 409
             : result.code === "invalid_role" ||
+                result.code === "browser_unsupported" ||
                 result.code === "worktree_requires_explicit_repo" ||
                 result.code === "access_profile_not_found" ||
                 result.code === "access_profile_ineligible"
@@ -4696,6 +4705,7 @@ async function handleSessions(
                 result.code === "role_spawn_denied"
               ? 409
               : result.code === "invalid_role" ||
+                  result.code === "browser_unsupported" ||
                   result.code === "worktree_requires_explicit_repo" ||
                   result.code === "access_profile_not_found" ||
                   result.code === "access_profile_ineligible"
