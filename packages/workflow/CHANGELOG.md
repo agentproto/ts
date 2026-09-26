@@ -1,5 +1,12 @@
 # @agentproto/workflow
 
+## 0.7.0
+
+### Minor Changes
+
+- 6c68009: Cache tool steps, key map items by index, surface cache hits as steps
+- 9a5d311: Fix branch arms to be exclusive with an explicit join (F22); untaken arms surface as step.skipped
+
 ## 0.6.1
 
 ### Patch Changes

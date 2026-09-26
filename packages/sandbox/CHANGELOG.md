@@ -1,5 +1,26 @@
 # @agentproto/sandbox
 
+## 0.6.0
+
+### Minor Changes
+
+- e412bd8: Sandbox spawn defaults cwd to the box's home, kills by default on close, and reconciles the ledger against the real provider
+
+### Patch Changes
+
+- Updated dependencies [eaa50f8]
+- Updated dependencies [c3314bd]
+- Updated dependencies [7c059bc]
+- Updated dependencies [582b79c]
+- Updated dependencies [579227e]
+- Updated dependencies [6c68009]
+- Updated dependencies [1e871ec]
+- Updated dependencies [5a466d6]
+- Updated dependencies [9a5d311]
+- Updated dependencies [bdb5830]
+  - @agentproto/worktree@0.9.0
+  - @agentproto/workflow-runtime@0.13.0
+
 ## 0.5.3
 
 ### Patch Changes

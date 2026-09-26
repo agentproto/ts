@@ -1,5 +1,29 @@
 # @agentproto/acp
 
+## 0.9.0
+
+### Minor Changes
+
+- 65777ee: Keep the reported context window sticky: a cost-bearing usage_update's size is authoritative and no longer downgraded by later inferred frames (claude-agent-acp guesses 200k for 1M models until its first result). The daemon seeds the window from the model catalog at spawn, carries the adapter's `_claude/model` and `sizeInferred` on usage_update events, records `reportedSize` when it corrects a size, and treats a trailing `[1m]` lane hint (`claude-opus-5-5[1m]`) as an explicit window choice — not part of model identity for pricing/alias lookups.
+- 8c74864: stdio MCP-server entries now carry `args` and `env` end to end: the ACP schema, runtime tool/HTTP parsing, spawn and restart mount builders, the file-based config converter, and the VS Code client type all forward them instead of silently dropping them. The local-browser plugin additionally exports headless per-session browser helpers (`ensureChromeDevtoolsMcp`, `resolveChrome`, `buildHeadlessBrowserMcpEntry`, …) and `installChromeMcp` gains generic `pkg`/`binName` options.
+- dc87d79: Track claude-code's background-task wake instead of dropping it
+- 7d825ff: Add orphaned-prompt recovery: a `session/prompt` folded into an agent's autonomous cycle (autonomous-origin result frame followed by silence) is cancelled after `orphanedPromptTimeoutMs` (default 60s, `0` disables) and reported `completed` instead of leaving the session busy forever.
+- 535779b: Add ACP steering support to the client: `_session/steering` extension detection from `InitializeResponse._meta.steering.supported`, new `initMeta`/`steeringSupported` surfaces, and a non-throwing `AcpClientSession.steer()` gated to host-initiated turns.
+
+  ***
+
+  "@agentproto/driver-agent-cli": minor
+  ---
+
+  Expose optional `steer`/`steeringSupported` on `AgentCliClient` and `AgentCliRuntimeSession` (ACP arm passthrough) and export the `SteerOutcome` type.
+
+  ***
+
+  "@agentproto/runtime": minor
+  ---
+
+  Add `AgentSessionLike.steer`/`steeringSupported` and a `capabilities.steering` stamp on `SessionDescriptor`, surfaced in `session_list` compact rows.
+
 ## 0.8.2
 
 ### Patch Changes

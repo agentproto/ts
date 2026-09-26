@@ -1,5 +1,19 @@
 # @agentproto/adapter-claude-sdk
 
+## 0.7.4
+
+### Patch Changes
+
+- 8835dc3: Bump pinned ACP wrapper `@agentclientprotocol/claude-agent-acp` to 0.81.2 and `@anthropic-ai/claude-agent-sdk` to ^0.3.282 so `claude-opus-5-5` can spawn (requires Claude Code >= 2.1.280); sync `CLAUDE-CODE.md` manifest with the new pin.
+- Updated dependencies [ab7970c]
+- Updated dependencies [0179144]
+- Updated dependencies [65777ee]
+- Updated dependencies [8c74864]
+- Updated dependencies [dc87d79]
+- Updated dependencies [583ee19]
+  - @agentproto/model-catalog@0.11.0
+  - @agentproto/driver-agent-cli@2.5.0
+
 ## 0.7.3
 
 ### Patch Changes

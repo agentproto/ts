@@ -1,5 +1,61 @@
 # agentproto-vscode
 
+## 0.18.0
+
+### Minor Changes
+
+- 8c74864: stdio MCP-server entries now carry `args` and `env` end to end: the ACP schema, runtime tool/HTTP parsing, spawn and restart mount builders, the file-based config converter, and the VS Code client type all forward them instead of silently dropping them. The local-browser plugin additionally exports headless per-session browser helpers (`ensureChromeDevtoolsMcp`, `resolveChrome`, `buildHeadlessBrowserMcpEntry`, …) and `installChromeMcp` gains generic `pkg`/`binName` options.
+
+### Patch Changes
+
+- 4bcb241: Open session chat in the Integrated Browser with `reuseUrlFilter`, reusing the already-open session-chat tab instead of opening a new tab per session click.
+- 65777ee: Keep the reported context window sticky: a cost-bearing usage_update's size is authoritative and no longer downgraded by later inferred frames (claude-agent-acp guesses 200k for 1M models until its first result). The daemon seeds the window from the model catalog at spawn, carries the adapter's `_claude/model` and `sizeInferred` on usage_update events, records `reportedSize` when it corrects a size, and treats a trailing `[1m]` lane hint (`claude-opus-5-5[1m]`) as an explicit window choice — not part of model identity for pricing/alias lookups.
+- 4e398a9: Unify the display-mode toggle into `@agentproto/app-client/display-mode`: the panel bridge and the `window.McpApp` bridges now share one installer with host-aware placement (`safeAreaInsets`), theme support, an `optimistic` mode, and `mountToggle` for inline placement. Runtime exports `injectMcpAppBridge` / `MCP_APP_BRIDGE_SCRIPT`; the bridges expose `getHostContext` / `onHostContext` / `displayMode`.
+- Updated dependencies [eaa50f8]
+- Updated dependencies [4bcb241]
+- Updated dependencies [556ebef]
+- Updated dependencies [8dc2478]
+- Updated dependencies [65777ee]
+- Updated dependencies [4e398a9]
+- Updated dependencies [54983df]
+- Updated dependencies [c3314bd]
+- Updated dependencies [cd00daa]
+- Updated dependencies [7c059bc]
+- Updated dependencies [24467af]
+- Updated dependencies [582b79c]
+- Updated dependencies [965e84d]
+- Updated dependencies [579227e]
+- Updated dependencies [dc2a7c7]
+- Updated dependencies [48da1d4]
+- Updated dependencies [8fe9f81]
+- Updated dependencies [8c74864]
+- Updated dependencies [8514ac6]
+- Updated dependencies [ebbb00c]
+- Updated dependencies [dc87d79]
+- Updated dependencies [e7a2958]
+- Updated dependencies [f12f006]
+- Updated dependencies [b50e61c]
+- Updated dependencies [e412bd8]
+- Updated dependencies [a16be06]
+- Updated dependencies [add6813]
+- Updated dependencies [6c68009]
+- Updated dependencies [1e871ec]
+- Updated dependencies [5a466d6]
+- Updated dependencies [583ee19]
+- Updated dependencies [ea5e30d]
+- Updated dependencies [5f923bb]
+- Updated dependencies [3ad0b83]
+- Updated dependencies [6a1dd7a]
+- Updated dependencies [dd5bf7d]
+- Updated dependencies [9a5d311]
+- Updated dependencies [e03a69f]
+- Updated dependencies [525f8e8]
+- Updated dependencies [bdb5830]
+- Updated dependencies [54abf58]
+  - @agentproto/runtime@3.7.0
+  - @agentproto/apps@0.13.0
+  - @agentproto/mcp-app-host@0.1.0
+
 ## 0.17.3
 
 ### Patch Changes

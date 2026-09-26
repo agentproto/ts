@@ -1,5 +1,16 @@
 # @agentproto/adapter-codex
 
+## 2.0.12
+
+### Patch Changes
+
+- ab7970c: Sync native OpenAI pricing table and codex model menu to GPT-6; automate native-vendor catalog sync
+- c5b35b0: Bump pinned ACP wrapper `@agentclientprotocol/codex-acp` from 1.10.0 to 1.13.1 (bundles Codex 0.156.1); sync the stale `CODEX.md` manifest (was 1.1.14) with the new pin and the `npm ls -g` presence probe.
+- Updated dependencies [8c74864]
+- Updated dependencies [dc87d79]
+- Updated dependencies [583ee19]
+  - @agentproto/driver-agent-cli@2.5.0
+
 ## 2.0.11
 
 ### Patch Changes
