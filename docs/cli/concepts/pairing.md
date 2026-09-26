@@ -12,8 +12,8 @@ layer (Phase 1), plus the rendezvous broker, the `pair` CLI/MCP verbs, on-disk
 persistence, reconnect epochs, and autoconnect on boot. Pairing also works with
 no config — `pair offer` defaults to the **hosted broker**
 `wss://rdv.agentproto.sh/v1`, which relays only ciphertext (see [The hosted
-default](#the-hosted-default)). The mobile deep-link page and the AIP-53 spec
-remain Phase 3 — see *Status* at the bottom.
+default](#the-hosted-default)). The mobile deep-link page and the pairing spec
+(AIP-59 (draft, agentproto/agentproto#41)) remain Phase 3 — see *Status* at the bottom.
 
 Jump to the commands: [`pair`](../verbs/pair.md) (offer / accept / ls / revoke /
 exec) and [`rendezvous`](../verbs/rendezvous.md) (self-host the broker).
@@ -274,4 +274,4 @@ offer` then requires an explicit `--rendezvous`.
 - **Phase 3 (in progress):** the hosted broker is deployed and is now the
   default meeting point for `pair offer` (see [The hosted
   default](#the-hosted-default)). Still to come: the mobile deep-link page and
-  the AIP-53 `PAIRING.md` spec.
+  the pairing spec, AIP-59 (draft, agentproto/agentproto#41).
