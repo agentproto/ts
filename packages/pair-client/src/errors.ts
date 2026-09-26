@@ -7,6 +7,9 @@ export type TunnelClientErrorCode =
   /** The daemon told us (authenticated, inside the E2E channel) that this
    *  pairing was revoked. Terminal: pair again from a new offer. */
   | "revoked"
+  /** The offer or stored credential predates pairing protocol v2 (or the
+   *  daemon says so). Terminal: upgrade agentproto and pair again. */
+  | "protocol_outdated"
   /** The daemon could not be reached (rendezvous dial, handshake or greeting
    *  failed, or no connection came up within the wait). Retried with backoff. */
   | "offline"
@@ -38,6 +41,16 @@ export function revokedError(daemonName: string): TunnelClientError {
   return new TunnelClientError(
     "revoked",
     `this device was unpaired from ${daemonName}; scan a new pairing QR`,
+  )
+}
+
+/** The actionable message for an offer / credential from before pair/v2. */
+export function outdatedError(what: string, options?: { cause?: unknown }): TunnelClientError {
+  return new TunnelClientError(
+    "protocol_outdated",
+    `${what} uses the retired pair/v1 protocol; upgrade agentproto on the daemon ` +
+      "and scan a new pairing QR (`agentproto pair offer --qr`)",
+    options,
   )
 }
 

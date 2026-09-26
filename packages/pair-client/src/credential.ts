@@ -21,6 +21,10 @@
  */
 
 export interface PairCredential {
+  /** Pairing protocol the credential was made under (`PAIR_VERSION`, 2). A
+   *  credential without it predates pair/v2: `connect` refuses it with
+   *  `protocol_outdated` instead of dialing (the daemon would never serve it). */
+  protocol?: number
   /** Store key: the daemon fingerprint (one credential per daemon, as the CLI
    *  keys its pairings). */
   id: string

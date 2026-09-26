@@ -3,10 +3,12 @@
  * the `pair/v1` client handshake, and read the daemon's greeting.
  *
  * This is the Node client's `acceptOffer` / `openPairChannel` sequence
- * (`packages/cli/src/util/pair-transport.ts`) — same upgrade URL, same hello
- * (static keys pinned, the offer or epoch token in the offer-token field, the
- * client name), same verification — built only from the browser-safe entries,
- * so the daemon can't tell the two clients apart.
+ * (`packages/cli/src/util/pair-transport.ts`) — same upgrade URL, same pair/v2
+ * hello (static keys pinned, the client name, and the AUTH token sealed to the
+ * daemon's key), same verification — built only from the browser-safe
+ * entries, so the daemon can't tell the two clients apart. The ROUTE token is
+ * the only thing on the broker URL; the auth token never leaves the sealed
+ * hello.
  */
 
 import {
@@ -30,6 +32,8 @@ import { TunnelClientError } from "./errors.js"
 /** The tunnel `error` code the daemon answers a revoked pairing with
  *  (`PAIRING_REVOKED_CODE` in `@agentproto/runtime`'s pairing registry). */
 export const PAIRING_REVOKED_CODE = "pairing_revoked"
+/** The tunnel `error` code (and `PairingError` code) for a pre-v2 pairing. */
+export const PAIRING_PROTOCOL_OUTDATED_CODE = "pairing_protocol_outdated"
 
 /** A WHATWG `WebSocket` constructor (the global one by default). */
 export type WebSocketConstructor = new (url: string) => WebSocket
@@ -106,15 +110,21 @@ export function dialRendezvous(
 
 export interface OpenChannelParams extends ChannelTimeouts {
   rendezvousUrl: string
-  /** The offer token (first contact) or an epoch routing token (reconnect). */
-  token: string
+  /** The ROUTE token: the only value that goes on the broker URL. From the
+   *  offer secret (first contact) or the pair root + epoch (reconnect). */
+  route: string
+  /** The AUTH token: sealed into the hello, never on a URL. */
+  auth: string
   daemonX25519Pub: string
   daemonEd25519Pub: string
   clientName: string
   WebSocket: WebSocketConstructor
 }
 
-export type Greeting = { kind: "hello"; hello: HelloFrame } | { kind: "revoked"; frame: ErrorFrame }
+export type Greeting =
+  | { kind: "hello"; hello: HelloFrame }
+  | { kind: "revoked"; frame: ErrorFrame }
+  | { kind: "outdated"; frame: ErrorFrame }
 
 export interface OpenedChannel {
   sink: E2eFrameSink
@@ -136,7 +146,7 @@ export interface OpenedChannel {
 export async function openChannel(params: OpenChannelParams): Promise<OpenedChannel> {
   const raw = await dialRendezvous(
     params.rendezvousUrl,
-    params.token,
+    params.route,
     params.WebSocket,
     params.dialTimeoutMs ?? DEFAULT_DIAL_TIMEOUT_MS,
   )
@@ -146,7 +156,7 @@ export async function openChannel(params: OpenChannelParams): Promise<OpenedChan
     const started = await startClientHandshake({
       daemonX25519Pub: params.daemonX25519Pub,
       daemonEd25519Pub: params.daemonEd25519Pub,
-      offerToken: params.token,
+      authToken: params.auth,
       clientName: params.clientName,
     })
     sink = await clientHandshakeOverSink(
@@ -199,6 +209,8 @@ export async function openChannel(params: OpenChannelParams): Promise<OpenedChan
         if (frame.t === "hello") resolve({ kind: "hello", hello: frame })
         else if (frame.t === "error" && frame.code === PAIRING_REVOKED_CODE)
           resolve({ kind: "revoked", frame })
+        else if (frame.t === "error" && frame.code === PAIRING_PROTOCOL_OUTDATED_CODE)
+          resolve({ kind: "outdated", frame })
         else reject(new Error(`unexpected first frame from the daemon: "${frame.t}"`))
       }
     })

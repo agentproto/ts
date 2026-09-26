@@ -17,8 +17,10 @@
 
 import {
   derivePairRoot,
+  deriveOfferTokens,
   importPairRootKey,
   parseOfferUrl,
+  PAIR_VERSION,
   PairingError,
   type PairingOffer,
 } from "@agentproto/secrets/pairing/browser"
@@ -30,7 +32,7 @@ import {
   type WebSocketConstructor,
 } from "./channel.js"
 import type { CredentialStore, PairCredential } from "./credential.js"
-import { errMsg, TunnelClientError } from "./errors.js"
+import { errMsg, outdatedError, TunnelClientError } from "./errors.js"
 
 export interface OfferInfo {
   /** Daemon identity fingerprint (16 hex) the offer pins — show it to the user. */
@@ -45,6 +47,9 @@ async function parse(offerUrl: string, now: number): Promise<PairingOffer> {
   try {
     return await parseOfferUrl(offerUrl, { now })
   } catch (err) {
+    if (err instanceof PairingError && err.code === "pairing_protocol_outdated") {
+      throw outdatedError("this pairing QR", { cause: err })
+    }
     const expired = err instanceof PairingError && err.code === "offer_expired"
     throw new TunnelClientError(
       "invalid_offer",
@@ -121,9 +126,13 @@ export async function pairFromOffer(
 
   let channel: Awaited<ReturnType<typeof openChannel>>
   try {
+    // The offer secret never goes on the wire: the broker gets its route, the
+    // daemon (sealed) its auth.
+    const { route, auth } = await deriveOfferTokens(offer.secret)
     channel = await openChannel({
       rendezvousUrl: offer.rendezvousUrl,
-      token: offer.token,
+      route,
+      auth,
       daemonX25519Pub: offer.daemonX25519Pub,
       daemonEd25519Pub: offer.daemonEd25519Pub,
       clientName,
@@ -148,6 +157,10 @@ export async function pairFromOffer(
       `daemon fingerprint ${session.peerFingerprint} does not match the offer's ${offer.fingerprint}`,
     )
   }
+  if (greeting.kind === "outdated") {
+    sink.close("outdated")
+    throw outdatedError("this daemon")
+  }
   let pairRoot: string | null = await derivePairRoot(session)
   // The first-contact channel is one-shot, as with `pair accept`.
   sink.close("pair complete")
@@ -169,6 +182,7 @@ export async function pairFromOffer(
       pairRoot = null
       const nowIso = new Date(now()).toISOString()
       const credential: PairCredential = {
+        protocol: PAIR_VERSION,
         id: offer.fingerprint,
         fingerprint: offer.fingerprint,
         name: daemon.name,

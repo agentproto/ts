@@ -5,7 +5,13 @@
  */
 
 import { describe, it, expect, afterEach, vi } from "vitest"
-import { encodeOfferWebUrl } from "@agentproto/secrets/pairing"
+import {
+  currentEpoch,
+  deriveEpochTokens,
+  deriveOfferTokens,
+  encodeOfferWebUrl,
+  parseOfferUrl,
+} from "@agentproto/secrets/pairing"
 import { connect, type TunnelClient, type StateChange } from "../client.js"
 import { createMemoryCredentialStore, type PairCredential } from "../credential.js"
 import { TunnelClientError } from "../errors.js"
@@ -95,6 +101,72 @@ describe("pairFromOffer", () => {
       code: "invalid_offer",
     })
     await expect(inspectOffer("https://cli.agentproto.sh/pair#v=1&t=nope")).rejects.toBeInstanceOf(TunnelClientError)
+  }, 30_000)
+})
+
+describe("pair/v2 route/auth split", () => {
+  it("dials only the ROUTE token; the AUTH token never appears in any URL", async () => {
+    const d = await startDaemon()
+    daemon = d
+    const offerUrl = await d.offer()
+    const offer = await parseOfferUrl(offerUrl)
+    const offerTokens = await deriveOfferTokens(offer.secret)
+    const { WebSocket, sockets } = countingWebSocket()
+
+    const credential = await (await pairFromOffer(offerUrl, { WebSocket, clientName: "phone@test" })).confirm()
+    await vi.waitFor(() => expect(d.rendezvous.stats.parked).toBeGreaterThanOrEqual(1))
+    const client = connect(credential, { WebSocket, ...FAST })
+    clients.push(client)
+    await client.ready()
+    // Drop the channel once so a reconnect's URL is covered too.
+    const states: string[] = []
+    client.onStateChange(c => states.push(c.state))
+    const dialsBefore = sockets.length
+    sockets.at(-1)!.close()
+    await vi.waitFor(() => expect(states.at(-1)).toBe("open"))
+    expect(states).toContain("offline")
+    expect(sockets.length).toBeGreaterThan(dialsBefore)
+    expect((await client.fetch("/ping")).status).toBe(200)
+
+    // The pair root never left the key; recompute the tokens daemon-side.
+    const pairRoot = (await d.registry.list())[0]!.pairRoot
+    const e = currentEpoch()
+    const epochTokens = [await deriveEpochTokens(pairRoot, e), await deriveEpochTokens(pairRoot, e - 1)]
+    const urls = sockets.map(ws => decodeURIComponent(ws.url))
+    expect(urls.length).toBeGreaterThanOrEqual(3)
+    const secrets = [offer.secret, offerTokens.auth, ...epochTokens.map(t => t.auth)]
+    for (const url of urls) for (const secret of secrets) expect(url).not.toContain(secret)
+    // …and every dial carried a route: the offer's first, then an epoch's.
+    expect(new URL(urls[0]!).searchParams.get("t")).toBe(offerTokens.route)
+    for (const url of urls.slice(1)) {
+      expect(epochTokens.map(t => t.route)).toContain(new URL(url).searchParams.get("t"))
+    }
+  }, 30_000)
+
+  it("a pre-v2 offer or stored credential is a typed protocol_outdated error, never dialed", async () => {
+    const d = await startDaemon()
+    daemon = d
+    const v1Offer = (await d.offer()).replace("v=2", "v=1").replace("&s=", "&t=")
+    const { WebSocket, sockets } = countingWebSocket()
+    for (const url of [v1Offer, encodeOfferWebUrl(v1Offer)]) {
+      const err = await pairFromOffer(url, { WebSocket }).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(TunnelClientError)
+      expect((err as TunnelClientError).code).toBe("protocol_outdated")
+      expect((err as TunnelClientError).message).toMatch(/scan a new pairing QR/)
+      await expect(inspectOffer(url)).rejects.toMatchObject({ code: "protocol_outdated" })
+    }
+
+    // A credential stored before pair/v2 (no `protocol` stamp).
+    const { credential } = await pairedClient()
+    const { protocol: _v, ...legacy } = credential
+    const c = connect(legacy, { WebSocket, ...FAST })
+    clients.push(c)
+    expect(c.state).toBe("outdated")
+    expect(c.lastError?.code).toBe("protocol_outdated")
+    await expect(c.ready()).rejects.toMatchObject({ code: "protocol_outdated" })
+    await expect(c.fetch("/x")).rejects.toMatchObject({ code: "protocol_outdated" })
+    await new Promise(r => setTimeout(r, 200))
+    expect(sockets).toHaveLength(0)
   }, 30_000)
 })
 

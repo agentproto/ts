@@ -44,7 +44,7 @@ import { connect } from "@agentproto/pair-client"
 
 const client = connect(credential, { store })
 client.onStateChange(({ state, error }) => render(state, error?.message))
-// state: "connecting" | "open" | "offline" | "revoked" | "closed"
+// state: "connecting" | "open" | "offline" | "revoked" | "outdated" | "closed"
 
 const res = await client.fetch("/sessions")          // a real Response
 const events = await client.fetch("/events", { signal }) // res.body streams chunk by chunk
@@ -64,6 +64,13 @@ const events = await client.fetch("/events", { signal }) // res.body streams chu
   The client goes to `revoked`, stops retrying, and every call rejects with
   `TunnelClientError{code:"revoked"}`: "this device was unpaired from
   &lt;daemon&gt;; scan a new pairing QR". The broker can't forge that signal.
+
+- **Protocol:** pair/v2. Each connection derives a *route* token and an *auth*
+  token (from the offer secret, or from the pair root and the day). Only the
+  route goes on the broker URL; the auth is sealed into the hello. A v1 offer,
+  or a credential stored before v2, gives `TunnelClientError{code:
+  "protocol_outdated"}` (state `outdated`) and is never dialed: upgrade the
+  daemon and scan a new QR.
 
 The daemon keeps one standing channel per epoch slot for each pairing, so
 share one `TunnelClient` per credential. Don't connect twice.

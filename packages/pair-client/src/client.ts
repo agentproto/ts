@@ -8,10 +8,16 @@
  * with ping/pong so a half-open socket is noticed.
  *
  * State (for a UI): `connecting` → `open`; on failure or drop → `offline`
- * (while waiting to retry) → `connecting` …; `revoked` and `closed` are
- * terminal. `revoked` is only ever entered on the daemon's authenticated
- * `pairing_revoked` frame — never on anything the broker could fake — and
- * stops all retries.
+ * (while waiting to retry) → `connecting` …; `revoked`, `outdated` and
+ * `closed` are terminal. `revoked` is only ever entered on the daemon's
+ * authenticated `pairing_revoked` frame — never on anything the broker could
+ * fake — and stops all retries. `outdated` means the credential predates
+ * pair/v2 (it is never dialed) or the daemon said so, authenticated, the same
+ * way.
+ *
+ * Tokens (pair/v2): each attempt derives the epoch ROUTE — the only value on
+ * the broker URL — and the epoch AUTH, which is sealed into the hello and
+ * never leaves it.
  *
  * Requests: `http_request` frames multiplexed over the one channel by `reqId`.
  * The response resolves at the daemon's `http_response` (buffered) or
@@ -31,7 +37,7 @@ import {
   type HelloFrame,
   type TunnelFrame,
 } from "@agentproto/acp/tunnel/browser"
-import { currentEpoch, deriveEpochRoutingToken } from "@agentproto/secrets/pairing/browser"
+import { currentEpoch, deriveEpochTokens, PAIR_VERSION } from "@agentproto/secrets/pairing/browser"
 import {
   defaultWebSocket,
   openChannel,
@@ -40,9 +46,9 @@ import {
   type WebSocketConstructor,
 } from "./channel.js"
 import type { CredentialStore, PairCredential } from "./credential.js"
-import { errMsg, revokedError, TunnelClientError } from "./errors.js"
+import { errMsg, outdatedError, revokedError, TunnelClientError } from "./errors.js"
 
-export type ConnectionState = "connecting" | "open" | "offline" | "revoked" | "closed"
+export type ConnectionState = "connecting" | "open" | "offline" | "revoked" | "outdated" | "closed"
 
 export interface ConnectOptions extends ChannelTimeouts {
   /** WebSocket constructor. Default: the global `WebSocket`. */
@@ -74,7 +80,7 @@ export interface ConnectOptions extends ChannelTimeouts {
 
 export interface StateChange {
   state: ConnectionState
-  /** Why we're `offline` / `revoked` / `closed` (the last failure). */
+  /** Why we're `offline` / `revoked` / `outdated` / `closed` (the last failure). */
   error?: TunnelClientError
 }
 
@@ -88,12 +94,14 @@ export interface TunnelClient {
   readonly lastError: TunnelClientError | null
   /** Subscribe to state changes. Returns an unsubscribe function. */
   onStateChange(listener: (change: StateChange) => void): () => void
-  /** Resolves once connected; rejects with `revoked` / `closed`, or `offline`
+  /** Resolves once connected; rejects with `revoked` / `protocol_outdated` /
+   *  `closed`, or `offline`
    *  when no connection came up within `requestWaitMs`. */
   ready(): Promise<void>
   /** A WHATWG `fetch` through the daemon. Relative URLs are fine: only the
    *  path + query (see `mapPath`) is sent. Rejects with `TunnelClientError`
-   *  (`offline` / `disconnected` / `revoked` / `closed`) where `fetch` would
+   *  (`offline` / `disconnected` / `revoked` / `protocol_outdated` / `closed`)
+   *  where `fetch` would
    *  reject with a network error, or with the signal's reason on abort. */
   fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>
   /** Skip the current backoff wait and retry now (e.g. on `online`). */
@@ -201,10 +209,11 @@ export function connect(credential: PairCredential, opts: ConnectOptions = {}): 
     for (const e of [epoch, epoch - 1]) {
       if (stopped) break
       try {
-        const token = await deriveEpochRoutingToken(credential.pairRoot, e)
+        const { route, auth } = await deriveEpochTokens(credential.pairRoot, e)
         const ch = await openChannel({
           rendezvousUrl: credential.rendezvousUrl,
-          token,
+          route,
+          auth,
           daemonX25519Pub: credential.daemonX25519Pub,
           daemonEd25519Pub: credential.daemonEd25519Pub,
           clientName: credential.clientName,
@@ -217,9 +226,13 @@ export function connect(credential: PairCredential, opts: ConnectOptions = {}): 
           ch.sink.close("revoked")
           throw revokedError(credential.name)
         }
+        if (ch.greeting.kind === "outdated") {
+          ch.sink.close("outdated")
+          throw outdatedError(`this device's pairing with ${credential.name}`)
+        }
         return { sink: ch.sink, hello: ch.greeting.hello, route: ch.route }
       } catch (err) {
-        if (err instanceof TunnelClientError && err.code === "revoked") throw err
+        if (err instanceof TunnelClientError && (err.code === "revoked" || err.code === "protocol_outdated")) throw err
         lastErr = err
       }
     }
@@ -306,6 +319,10 @@ export function connect(credential: PairCredential, opts: ConnectOptions = {}): 
         const e = err instanceof TunnelClientError ? err : new TunnelClientError("offline", errMsg(err), { cause: err })
         if (e.code === "revoked") {
           setState("revoked", e)
+          return
+        }
+        if (e.code === "protocol_outdated") {
+          setState("outdated", e)
           return
         }
         setState("offline", e)
@@ -402,6 +419,7 @@ export function connect(credential: PairCredential, opts: ConnectOptions = {}): 
   function waitForLive(signal: AbortSignal): Promise<Live> {
     if (state === "open" && live) return Promise.resolve(live)
     if (state === "revoked") return Promise.reject(lastError ?? revokedError(credential.name))
+    if (state === "outdated") return Promise.reject(lastError ?? outdatedError(`this device's pairing with ${credential.name}`))
     if (state === "closed") return Promise.reject(new TunnelClientError("closed", "the tunnel client was closed"))
     return new Promise((resolve, reject) => {
       const done = (fn: () => void): void => {
@@ -430,8 +448,13 @@ export function connect(credential: PairCredential, opts: ConnectOptions = {}): 
         if (s === "open" && live) {
           const l = live
           done(() => resolve(l))
-        } else if (s === "revoked" || s === "closed") {
-          done(() => reject(error ?? new TunnelClientError(s, `the tunnel client is ${s}`)))
+        } else if (s === "revoked" || s === "outdated" || s === "closed") {
+          done(() =>
+            reject(
+              error ??
+                new TunnelClientError(s === "outdated" ? "protocol_outdated" : s, `the tunnel client is ${s}`),
+            ),
+          )
         }
       })
     })
@@ -525,7 +548,11 @@ export function connect(credential: PairCredential, opts: ConnectOptions = {}): 
     return () => listeners.delete(listener)
   }
 
-  void run().catch(err => {
+  // A credential from before pair/v2 is never dialed: the daemon won't serve
+  // it, and a v2 hello can't even reach its re-pair notice.
+  if (credential.protocol !== PAIR_VERSION) {
+    setState("outdated", outdatedError(`this device's pairing with ${credential.name}`))
+  } else void run().catch(err => {
     setState("offline", new TunnelClientError("offline", errMsg(err), { cause: err }))
   })
 
