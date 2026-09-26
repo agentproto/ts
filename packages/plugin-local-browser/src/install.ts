@@ -36,12 +36,17 @@ export interface InstallOptions {
   /** Progress callback fired on each non-empty stderr/stdout chunk so
    *  the CLI can stream "Downloading chrome-devtools-mcp..." etc. */
   onProgress?: (line: string) => void
+  /** npm package to install. Default `chrome-devtools-mcp`; the headless
+   *  Chrome fallback reuses this for `@puppeteer/browsers`. */
+  pkg?: string
+  /** Bin name expected in `<prefix>/node_modules/.bin/`. Default `pkg`. */
+  binName?: string
 }
 
 export interface InstallResult {
   /** Where the install landed. */
   prefix: string
-  /** Absolute path to the `chrome-devtools-mcp` binary symlink in
+  /** Absolute path to the installed binary symlink in
    *  `<prefix>/node_modules/.bin/`. */
   binPath: string
   /** Version actually installed, read back from the package lockfile. */
@@ -58,6 +63,8 @@ export async function installChromeMcp(
   const prefix = opts.prefix ?? DEFAULT_CHROME_MCP_PREFIX()
   const version = opts.version ?? "latest"
   const npm = opts.npm ?? "npm"
+  const pkg = opts.pkg ?? "chrome-devtools-mcp"
+  const binName = opts.binName ?? pkg
 
   await fs.mkdir(prefix, { recursive: true })
   // npm install --prefix requires a package.json at the target.
@@ -82,28 +89,23 @@ export async function installChromeMcp(
 
   await runNpm(
     npm,
-    ["install", `chrome-devtools-mcp@${version}`, "--no-fund", "--no-audit"],
+    ["install", `${pkg}@${version}`, "--no-fund", "--no-audit"],
     prefix,
     opts.onProgress
   )
 
-  const binPath = join(prefix, "node_modules", ".bin", "chrome-devtools-mcp")
+  const binPath = join(prefix, "node_modules", ".bin", binName)
   await fs.access(binPath).catch(() => {
     throw new Error(
       `install: npm install finished but no bin at ${binPath}. ` +
-        `Did chrome-devtools-mcp change its package layout?`
+        `Did ${pkg} change its package layout?`
     )
   })
 
   // Read the installed version back from the package's own
   // package.json — more reliable than re-parsing the npm-install
   // output which has 5+ format variants across npm versions.
-  const installedPkgPath = join(
-    prefix,
-    "node_modules",
-    "chrome-devtools-mcp",
-    "package.json"
-  )
+  const installedPkgPath = join(prefix, "node_modules", pkg, "package.json")
   let installedVersion = "(unknown)"
   try {
     const raw = await fs.readFile(installedPkgPath, "utf8")
