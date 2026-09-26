@@ -369,39 +369,64 @@ interface CollectedStep {
   id: string
   adapter?: string
   sessionRef?: string
+  /** Inside a `branch` arm — only runs if that arm is taken. */
+  conditional: boolean
 }
 
-function collectStaticSteps(steps: readonly RuntimeStep[]): CollectedStep[] {
+function collectStaticSteps(steps: readonly RuntimeStep[], conditional = false): CollectedStep[] {
   const collected: CollectedStep[] = []
   for (const step of steps) {
     if (step.kind === "agent") {
       const adapter = typeof step.adapter === "string" ? step.adapter : undefined
-      collected.push({ id: step.id, adapter, sessionRef: step.sessionRef })
+      collected.push({ id: step.id, adapter, sessionRef: step.sessionRef, conditional })
     } else if (step.kind === "parallel") {
-      for (const branch of step.branches) collected.push(...collectStaticSteps(branch.steps))
+      for (const branch of step.branches) collected.push(...collectStaticSteps(branch.steps, conditional))
     } else if (step.kind === "group") {
-      collected.push(...collectStaticSteps(step.steps))
+      collected.push(...collectStaticSteps(step.steps, conditional))
     } else if (step.kind === "map" || step.kind === "pipeline") {
       // Dynamic — the item list (and so the per-item step ids) is only known
       // once this step actually runs. See the module comment above.
     } else if (step.kind === "branch") {
-      collected.push(...collectStaticSteps(step.then))
-      if (step.otherwise) collected.push(...collectStaticSteps(step.otherwise))
+      collected.push(...collectStaticSteps(step.then, true))
+      if (step.otherwise) collected.push(...collectStaticSteps(step.otherwise, true))
     } else if (step.kind === "loop") {
-      collected.push(...collectStaticSteps(step.body))
+      collected.push(...collectStaticSteps(step.body, conditional))
     } else if (step.kind === "subworkflow") {
-      collected.push(...collectStaticSteps(step.workflow.steps))
+      collected.push(...collectStaticSteps(step.workflow.steps, conditional))
     } else {
       // tool / gate / transform / approval / suspend — real, statically-known
       // leaf steps with no agent session of their own.
-      collected.push({ id: step.id })
+      collected.push({ id: step.id, conditional })
     }
   }
   return collected
 }
 
-function runtimeWorkflowToStages(workflow: RuntimeWorkflow): WorkflowStage[] {
-  const steps = collectStaticSteps(workflow.steps)
+/**
+ * One synthetic stage whose steps are the workflow's statically-known leaf
+ * steps, deduplicated by id (F31: the branch compiler copies a shared tail
+ * into every arm, so the same id can appear once per arm).
+ *
+ * `includeConditional: false` (the `run.stages` projection) leaves out steps
+ * that live only inside a `branch` arm — an arm that's never taken must not
+ * show up as a step at all (F31: `skip-pdf` listed twice, never ran). Those
+ * are discovered when they actually start, exactly like map items.
+ * `includeConditional: true` (the step DEFS used for sessionId resolution)
+ * keeps them, so a branch-arm step's `sessionRef` still resolves.
+ */
+function runtimeWorkflowToStages(
+  workflow: RuntimeWorkflow,
+  opts: { includeConditional?: boolean } = {},
+): WorkflowStage[] {
+  const all = collectStaticSteps(workflow.steps)
+  const unconditional = new Set(all.filter(s => !s.conditional).map(s => s.id))
+  const seen = new Set<string>()
+  const steps = all.filter((s) => {
+    if (seen.has(s.id)) return false
+    if (opts.includeConditional !== true && !unconditional.has(s.id)) return false
+    seen.add(s.id)
+    return true
+  })
   return [
     {
       steps: steps.map((a) => ({
@@ -571,18 +596,67 @@ function fireNotifyUrl(run: WorkflowRun): void {
 
 /** Locate a step by label across a run's stages — `-1, -1` when not found
  *  (e.g. `stepId` is undefined because the session wasn't spawned by a
- *  labelled step). */
+ *  labelled step). `stepIndex` is the step's stable `index` field, not its
+ *  array position: `markStepStarted` reorders steps into execution order
+ *  (F31), so the two can differ. */
 function findStepPosition(
   stages: readonly WorkflowStageState[],
   label: string | undefined,
 ): { stageIndex: number; stepIndex: number } {
   if (label !== undefined) {
     for (let si = 0; si < stages.length; si++) {
-      const stepIndex = stages[si]!.steps.findIndex(s => s.label === label)
-      if (stepIndex !== -1) return { stageIndex: si, stepIndex }
+      const step = stages[si]!.steps.find(s => s.label === label)
+      if (step) return { stageIndex: si, stepIndex: step.index }
     }
   }
   return { stageIndex: -1, stepIndex: -1 }
+}
+
+/**
+ * F31: a step that starts moves ahead of every still-pending step, so the
+ * steps array reads in EXECUTION order (started steps in start order, then
+ * the not-yet-started ones in declaration order) — not declaration order
+ * with dynamically-discovered map items tacked on at the end. The step's
+ * `index` stays what it was (its stable handle, see `findStepPosition`).
+ */
+function moveToExecutionOrder(stage: WorkflowStageState, step: RoutineStepState): void {
+  const from = stage.steps.indexOf(step)
+  if (from === -1) return
+  const firstPending = stage.steps.findIndex(s => s !== step && s.status === "pending")
+  if (firstPending === -1 || firstPending > from) return
+  stage.steps.splice(from, 1)
+  stage.steps.splice(firstPending, 0, step)
+}
+
+/**
+ * F34: attach a spawned agent session to its step row the moment the host
+ * labels it, so a RUNNING agent step exposes its sessionId (previously only
+ * filled once the whole run ended). A map/pipeline item spawns under its
+ * body step's plain id (`clean`), while its row is indexed (`clean[0]`) —
+ * the first running item row without a session yet takes it (items start
+ * before they spawn, in order).
+ */
+function attachStepSession(run: WorkflowRun, stepId: string, sessionId: string): boolean {
+  for (const stage of run.stages) {
+    const exact = stage.steps.find(s => s.label === stepId)
+    if (exact) {
+      exact.sessionId = sessionId
+      return true
+    }
+  }
+  for (const stage of run.stages) {
+    const item = stage.steps.find(
+      s =>
+        s.status === "running" &&
+        s.sessionId === undefined &&
+        MAP_ITEM_ID_RE.exec(s.label)?.[1] === stepId,
+    )
+    if (item) {
+      item.sessionId = sessionId
+      return true
+    }
+  }
+  return false
 }
 
 /**
@@ -658,7 +732,10 @@ function fillStepStates(
   for (const stage of stages) {
     for (const stepState of stage.steps) {
       const stepDef = findStepDef(defs, stepState.label)
-      stepState.sessionId = stepDef ? resolveStepSessionId(stepDef, agents) : agents.resolveByLabel(stepState.label)
+      const resolved = stepDef ? resolveStepSessionId(stepDef, agents) : agents.resolveByLabel(stepState.label)
+      // Keep a session `attachStepSession` already recorded at spawn time
+      // (F34) — a map item's indexed label never resolves here on its own.
+      if (resolved !== undefined) stepState.sessionId = resolved
       if (stepState.sessionId) sessionIds.push(stepState.sessionId)
     }
   }
@@ -1115,6 +1192,7 @@ async function executeRunWorkflow(
             if (step.status === "pending") {
               step.status = "running"
               step.startedAt = new Date().toISOString()
+              moveToExecutionOrder(stage, step)
             }
             if (cached) step.cached = true
             // Update stage status if it's still pending
@@ -1127,13 +1205,15 @@ async function executeRunWorkflow(
         if (!found) {
           const stage = state.run.stages[state.run.stages.length - 1]
           if (stage) {
-            stage.steps.push({
-              index: stage.steps.length,
+            const step: RoutineStepState = {
+              index: stage.steps.reduce((max, s) => Math.max(max, s.index + 1), 0),
               label: stepId,
               status: "running",
               startedAt: new Date().toISOString(),
               ...(cached ? { cached: true } : {}),
-            })
+            }
+            stage.steps.push(step)
+            moveToExecutionOrder(stage, step)
             if (stage.status === "pending") stage.status = "running"
           }
         }
@@ -1186,11 +1266,16 @@ async function executeRunWorkflow(
       },
     })
 
-    // Success — mark all stages/steps done (fallback for any missed).
+    // Success — close out every stage/step. A step that started but whose
+    // completion was never observed is done (fallback for any missed hook);
+    // one that never started at all (an untaken branch arm, F31) is
+    // `skipped`, never a fabricated `done`.
     for (const stage of state.run.stages) {
       if (stage.status !== "done") stage.status = "done"
       for (const step of stage.steps) {
-        if (step.status !== "done") {
+        if (step.status === "pending") {
+          step.status = "skipped"
+        } else if (step.status !== "done") {
           step.status = "done"
           step.endedAt = new Date().toISOString()
         }
@@ -1241,18 +1326,38 @@ async function executeRunWorkflow(
         }
       }
 
-      // Mark stage 0 as failed (common case) and the rest as pending.
-      for (let i = 0; i < state.run.stages.length; i++) {
-        const stage = state.run.stages[i]!
-        if (i === 0) {
-          stage.status = "failed"
-          for (const step of stage.steps) {
+      // A structured outcome failure (StepOutcomeError) names exactly which
+      // step failed; any other error fails every step that was still
+      // running when it landed (`runningSteps`, captured above).
+      const failedStepIds = err instanceof StepOutcomeError ? [err.stepId] : [...runningSteps]
+
+      // F29: project the failure onto the steps it actually hit — the SAME
+      // steps the event log records `step.failed` for below. A step that
+      // already succeeded stays `done`; one that never started stays
+      // `pending` (a later stage never reached is untouched). Only a failed
+      // step carries the error; an in-flight sibling of a structured
+      // outcome failure is failed WITHOUT a copy of someone else's error.
+      const failedSet = new Set(failedStepIds)
+      const endedAt = new Date().toISOString()
+      for (const stage of state.run.stages) {
+        let stageFailed = false
+        for (const step of stage.steps) {
+          const itemBase = MAP_ITEM_ID_RE.exec(step.label)?.[1]
+          const hit =
+            failedSet.has(step.label) ||
+            (step.status === "running" && itemBase !== undefined && failedSet.has(itemBase))
+          if (hit) {
             step.status = "failed"
-            step.endedAt = new Date().toISOString()
+            step.endedAt = endedAt
             step.error = errMsg
+            stageFailed = true
+          } else if (step.status === "running") {
+            step.status = "failed"
+            step.endedAt = endedAt
+            stageFailed = true
           }
         }
-        // else: remaining stages stay "pending"
+        if (stageFailed || stage.status === "running") stage.status = "failed"
       }
 
       // Resolve step sessionIds on FAILURE too — previously only the success
@@ -1264,10 +1369,6 @@ async function executeRunWorkflow(
       const sessionIds = fillStepStates(state.run.stages, state.stages, agents)
       if (sessionIds.length > 0) state.run.result = { sessionIds }
 
-      // A structured outcome failure (StepOutcomeError) names exactly which
-      // step failed; any other error fails every step that was still
-      // running when it landed (`runningSteps`, captured above).
-      const failedStepIds = err instanceof StepOutcomeError ? [err.stepId] : [...runningSteps]
       for (const stepId of failedStepIds) {
         eventLog?.append({
           stepId,
@@ -1538,6 +1639,7 @@ export function createWorkflowRunner(opts: {
           onEscalate: createOnEscalate(state, persist),
           onSessionLabeled: (stepId, sessionId) => {
             sessionToRun.set(sessionId, { runId, stepId, host: agents })
+            if (attachStepSession(state.run, stepId, sessionId)) persist()
           },
           ...(opts.resolveSandboxProvider
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }
@@ -1600,7 +1702,10 @@ export function createWorkflowRunner(opts: {
       }
 
       const workflow = await compileWorkflow(handle)
+      // Visible rows leave out untaken-until-proven branch-arm steps (F31);
+      // the defs keep them for sessionId resolution.
       const fileStages = runtimeWorkflowToStages(workflow)
+      const fileStepDefs = runtimeWorkflowToStages(workflow, { includeConditional: true })
       const runId = `wfrun_${randomUUID()}`
       // F25: resolved BEFORE the run record so `cwd` is recorded even when
       // defaulted (never a silent "/" — see resolveRunCwd).
@@ -1633,7 +1738,7 @@ export function createWorkflowRunner(opts: {
         run,
         cancelled: false,
         abort,
-        stages: fileStages,
+        stages: fileStepDefs,
         ...(eventLog !== undefined ? { eventLog } : {}),
         // ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
         cwd,
@@ -1654,6 +1759,7 @@ export function createWorkflowRunner(opts: {
           onEscalate: createOnEscalate(state, persist),
           onSessionLabeled: (stepId, sessionId) => {
             sessionToRun.set(sessionId, { runId, stepId, host: agents })
+            if (attachStepSession(state.run, stepId, sessionId)) persist()
           },
           ...(opts.resolveSandboxProvider
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }

@@ -679,25 +679,37 @@ export interface RegisterOrchestrationToolsOptions {
   callerSessionId?: string
 }
 
+/** F30: a compact error is capped here — a tool step's full stderr (KBs)
+ *  stays available through `full: true` / `run_events`. */
+export const COMPACT_ERROR_MAX_CHARS = 300
+
+function truncateCompactError(error: string): string {
+  if (error.length <= COMPACT_ERROR_MAX_CHARS) return error
+  const dropped = error.length - COMPACT_ERROR_MAX_CHARS
+  return `${error.slice(0, COMPACT_ERROR_MAX_CHARS)}… [${dropped} more chars — pass full: true]`
+}
+
 /**
  * AIP-58 §9 `run.get` compact boundary applied to `workflow_status`'s FULL
  * per-run detail (distinct from `compactWorkflowRun` above, which compacts
  * a `workflow_list` ROW summary): strips each step's raw `output` and a gate
  * step's full `report` body (the "big bodies" a UI polling for status
  * shouldn't pay for on every call) while keeping
- * status/timestamps/error/sessionId/suspend/hint — everything a caller
+ * status/timestamps/error (capped, F30)/sessionId/suspend/hint — everything a caller
  * needs to know WHAT happened, without the full payload of what a step
  * produced.
  */
 export function compactWorkflowRunStatus(run: WorkflowRun): WorkflowRun {
   return {
     ...run,
+    ...(run.error !== undefined ? { error: truncateCompactError(run.error) } : {}),
     stages: run.stages.map(stage => ({
       ...stage,
       steps: stage.steps.map(step => {
         const { output: _output, gateReport, ...rest } = step
         return {
           ...rest,
+          ...(rest.error !== undefined ? { error: truncateCompactError(rest.error) } : {}),
           ...(gateReport !== undefined
             ? { gateReport: { ok: gateReport.ok, exitCode: gateReport.exitCode, attempt: gateReport.attempt, report: undefined } }
             : {}),
