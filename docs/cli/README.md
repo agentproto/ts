@@ -93,6 +93,7 @@ Pick whichever matches what you're trying to do:
 - [Agent tools inside your app's agent](./guides/app-agent-tools.md) — the daemon MCP tools an app's spawned agents get, and how AGENT.md shapes the spawn
 - [Create an agentproto app](./guides/create-agentproto-app.md) — scaffold, build, and serve an app bundle end to end
 - [Sandboxes and rendezvous: boot-and-drive vs. attach](./guides/sandbox-rendezvous.md) — connection models, keeping a box reachable, and the cost tradeoffs
+- [Use agentproto from your phone](./guides/phone-pairing.md) — pair a phone with `pair offer --qr` and get the Control Center, end-to-end encrypted
 
 ### File reference
 
