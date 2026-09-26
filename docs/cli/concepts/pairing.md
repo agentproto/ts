@@ -47,8 +47,14 @@ only), multi-device sync, and broker federation.
 
 ## What Phase 1 ships (the library layer)
 
-Three pieces, all built on `node:crypto` (X25519, Ed25519, HKDF-SHA256,
-AES-256-GCM) with zero native dependencies:
+Three pieces, all built on X25519, Ed25519, HKDF-SHA256 and AES-256-GCM with
+zero native dependencies. The primitives sit behind a small async crypto
+interface with two implementations — `node:crypto` (the default in Node) and
+WebCrypto (the default in a browser) — so one implementation of the protocol
+runs in both, byte-for-byte identically. The browser-safe entry points are
+`@agentproto/secrets/pairing/browser` (handshake, offer codec, seal, identity
+signatures) and `@agentproto/acp/tunnel/browser` (frame codec, `wrapE2E`,
+handshake-over-sink); nothing reachable from them imports a `node:` builtin.
 
 ### 1. Daemon identity — `@agentproto/secrets/identity`
 
@@ -100,8 +106,12 @@ There is **no new wire protocol**. The existing `agentproto/tunnel/v1` frames
 incoming envelope is decrypted and counter-checked before it reaches the tunnel:
 
 ```ts
-wrapE2E(sink: FrameSink, keys: { sendKey, recvKey }): FrameSink
+wrapE2E(sink: FrameSink, keys: { sendKey, recvKey }, opts?: { aead? }): FrameSink
 ```
+
+Encryption is async (WebCrypto is), but `send` stays fire-and-forget: each frame
+gets its counter when `send` is called, and ciphertexts go out — and decrypted
+frames come in — strictly in counter order.
 
 It is transparent — `createTunnelClient` / `createTunnelServer` work unchanged
 over a wrapped sink, so the whole daemon HTTP surface (MCP, sessions,

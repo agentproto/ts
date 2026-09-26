@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/model-routing",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "@agentproto/model-routing — AIP-57 MODEL-ROUTING reference implementation. A pure primitive for resolving an AIP-42 ModelRef to a concrete served model: packs over a declared keyspace, ordered override>env>pack layers that report which one won, null as a non-overridable capability gate, and deterministic sticky selection over a chain. No I/O, no clock, no randomness.",
   "keywords": [
     "agentproto",

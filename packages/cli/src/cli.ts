@@ -34,6 +34,7 @@ import { runConversation } from "./commands/conversation.js"
 import { runUsage } from "./commands/usage.js"
 import { runBrain } from "./commands/brain.js"
 import { runTunnel } from "./commands/tunnel.js"
+import { runRemote } from "./commands/remote.js"
 import { runProviderPresets } from "./commands/presets.js"
 import { runPreset } from "./commands/preset.js"
 import { runBrowser } from "./commands/browser.js"
@@ -45,14 +46,17 @@ import { runCron } from "./commands/cron.js"
 import { runPack } from "./commands/pack.js"
 import { runApp } from "./commands/app.js"
 import { runWorktree } from "./commands/worktree.js"
+import { runBranch } from "./commands/branch.js"
 import { runPolicy } from "./commands/policy.js"
 import { runWorkflow } from "./commands/workflow.js"
+import { runMaintain } from "./commands/maintain.js"
 import { runTask } from "./commands/task.js"
 import { runPermissions } from "./commands/permissions.js"
 import { runAcp } from "./commands/acp.js"
 import { runPair } from "./commands/pair.js"
 import { runRendezvous } from "./commands/rendezvous.js"
 import { runSandbox } from "./commands/sandbox.js"
+import { runLlm } from "./commands/llm.js"
 import { cliFreshnessLine } from "./registry/freshness.js"
 
 const USAGE = `agentproto — AIP-45 agent CLI host
@@ -61,12 +65,16 @@ Usage:
   agentproto auth      <login|status|logout> [--host <url>] [--label <name>]
   agentproto config    <show|path|get|set|unset|edit> [args]
   agentproto daemon    <install|uninstall|start|stop|status|logs> [args]
+  agentproto doctor    [--json] [--only <step>...] [--skip <step>...]
+                                           read-only check of this install
   agentproto install   <slug> [--force] [--dry-run] [--skip-setup] [--allow-unverified]
                        <slug> ∈ { <adapter-slug> | runtime-profile/<name> }
                        --allow-unverified: run a curl/download installer that
                        declares no verify_sha256 (refused by default in
                        non-interactive contexts)
   agentproto adapters  <list|show|outdated|install|uninstall|enable|disable> [args]
+  agentproto setup     [--yes] [--dry-run] [--json] [--only <step>...] [--skip <step>...]
+                                           onboarding wizard: zero to a working install
   agentproto setup     <slug> [--force] [--dry-run] [--only <stepId>...]
   agentproto run       <slug> [--cwd <dir>] [--prompt <text>] [--resume <session-id>]
   agentproto chat      <adapter> [--model <id>] [--cwd <dir>] [--keep] [--no-color]
@@ -106,6 +114,9 @@ Usage:
   agentproto tunnel    list   [--active] [--json]
   agentproto tunnel    stop   <id-or-name> [--json]
   agentproto tunnel    status <id-or-name> [--json]
+  agentproto remote    enable [--qr] [--target-port <n>] [--json]
+                                           publish this gateway (or another local port) to the internet
+  agentproto remote    disable | status [--json]
   agentproto provider-preset list [--json]   provider gateway definitions + key-env status
   agentproto presets  list [--json]          deprecated alias for provider-preset
   agentproto preset   <list|show|add|delete> saved user spawn configurations
@@ -115,7 +126,7 @@ Usage:
                                            register the daemon's MCP server with coding CLIs
                          [--app <appId>]  write a scoped mcp-app entry instead (book apps only)
   agentproto onboard     [--yes] [--no-skills] [--skills <slug>] [--agent <name>...]
-                                           first-run: register MCP + install the skill pack
+                                           alias of \`agentproto setup\` (the wizard)
   agentproto cron      add --schedule <cron> (--command <cmd> | --adapter <slug> --prompt <text>) [--once]
   agentproto cron      list [--json]
   agentproto cron      remove <id>
@@ -127,6 +138,8 @@ Usage:
                                                dist/<name>-v<version>/ bundle + .zip
   agentproto worktree  ls      [--repo <dir>] [--json]
   agentproto worktree  archive <path> [--base <ref>] [--keep-branch] [--json]
+  agentproto branch    gc [--repo <dir>] [--scopes local,remote,orphan] [--apply] [--json]
+  agentproto branch    review-queue [--repo <dir>] [--all]
   agentproto policy    attach (--session <id>|--sessions <id,id,…>) [--then emit|commit]
                               [-- <gate-cmd> [args...]] [--wait] [--json]
   agentproto policy    status <policyId> [--json]
@@ -140,6 +153,8 @@ Usage:
   agentproto workflow  list [--json]
   agentproto workflow  cancel <runId>
   agentproto workflow  resolve <runId> (--approve|--reject) [--who <name>] [--note <text>]
+  agentproto maintain  [--repo <dir>] [--apply-merged] [--json]
+                       plan/review (and optionally apply) branch + worktree gc for a repo
   agentproto task      create <title> [--description <text>] [--board-id <id>] [--json]
   agentproto task      list [--board-id <id>] [--status <s>] [--include-closed] [--json]
   agentproto task      claim <taskId> --rev <n>
@@ -162,6 +177,9 @@ Usage:
   agentproto app       list
   agentproto app       serve [appDir] [--port <n>] [--app <appId>] [--json]
                      serve an app's .agentproto/ui/ with an MCP bridge
+  agentproto llm       endpoints <list|test> [--json]
+                     the LLM gateway's named local/LAN model endpoints
+                     (~/.agentproto/llm-endpoints.json)
   agentproto --help
   agentproto --version
   agentproto --version --check-updates
@@ -186,13 +204,15 @@ Examples:
   agentproto config set daemon.allowedOrigins https://guilde.work
   agentproto daemon install            # write launchd plist + start (macOS)
   agentproto daemon status             # plist? loaded? /health probe?
-  agentproto onboard --yes                 # wire all detected agents in one pass
+  agentproto doctor                    # check the whole install (read-only)
+  agentproto setup                         # guided first run (wizard)
 `
 
 const VERBS = new Set([
   "auth",
   "config",
   "daemon",
+  "doctor",
   "install",
   "adapters",
   "setup",
@@ -208,6 +228,7 @@ const VERBS = new Set([
   "usage",
   "brain",
   "tunnel",
+  "remote",
   "presets",
   "provider-preset",
   "preset",
@@ -219,8 +240,10 @@ const VERBS = new Set([
   "cron",
   "pack",
   "worktree",
+  "branch",
   "policy",
   "workflow",
+  "maintain",
   "task",
   "permissions",
   "app",
@@ -228,6 +251,7 @@ const VERBS = new Set([
   "pair",
   "rendezvous",
   "sandbox",
+  "llm",
 ])
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -278,6 +302,12 @@ async function main(argv: readonly string[]): Promise<number> {
       const { runDaemon } = await import("./commands/daemon.js")
       return runDaemon(rest)
     }
+    case "doctor": {
+      // Lazy: pulls in every onboarding probe (adapter resolution, skill
+      // fan-out, credential discovery) — only needed when the verb fires.
+      const { runDoctor } = await import("./commands/doctor.js")
+      return runDoctor(rest)
+    }
     case "install":
       return runInstall(rest)
     case "adapters":
@@ -308,6 +338,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runBrain(rest)
     case "tunnel":
       return runTunnel(rest)
+    case "remote":
+      return runRemote(rest)
     case "presets":
       process.stderr.write("agentproto presets is deprecated; use `agentproto provider-preset list`.\n")
       return runProviderPresets(rest)
@@ -333,10 +365,14 @@ async function main(argv: readonly string[]): Promise<number> {
       return runApp(rest)
     case "worktree":
       return runWorktree(rest)
+    case "branch":
+      return runBranch(rest)
     case "policy":
       return runPolicy(rest)
     case "workflow":
       return runWorkflow(rest)
+    case "maintain":
+      return runMaintain(rest)
     case "task":
       return runTask(rest)
     case "permissions":
@@ -349,6 +385,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runRendezvous(rest)
     case "sandbox":
       return runSandbox(rest)
+    case "llm":
+      return runLlm(rest)
     default:
       // Unreachable — VERBS membership checked above.
       process.stderr.write(`agentproto: unknown verb '${verb}'\n\n${USAGE}`)

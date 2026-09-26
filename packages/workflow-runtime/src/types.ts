@@ -13,7 +13,6 @@
 
 import type { DriverHandle, ResolverContext } from "@agentproto/driver"
 import type { ToolContext, ToolHandle } from "@agentproto/tool"
-import type { ZodType } from "zod"
 
 /** The run-scoped data every selector reads from. */
 export interface Bindings {
@@ -72,6 +71,15 @@ export type FanOutOutcome<T = unknown> =
       /** `err.message` if the throw was an `Error`, else `String(err)`. */
       readonly error: string
     }
+  | {
+      /** Never started: the fan-out's spawn circuit breaker opened first
+       *  (see {@link MapStep.maxConsecutiveSpawnFailures}). */
+      readonly status: "skipped"
+      readonly index: number
+      readonly item: unknown
+      /** `circuit-open: <first error of the failure streak>`. */
+      readonly reason: string
+    }
 
 /**
  * The bound output of a `map`/`pipeline` step run with `onError: "collect"`:
@@ -82,7 +90,16 @@ export interface TolerantFanOutResult<T = unknown> {
   readonly results: readonly FanOutOutcome<T>[]
   readonly succeeded: number
   readonly failed: number
+  /** Items never started because the spawn circuit breaker opened. */
+  readonly skipped: number
+  /** Set when the breaker opened: the first error of the spawn-failure
+   *  streak that tripped it. */
+  readonly circuitOpen?: { readonly error: string }
 }
+
+/** Default for {@link MapStep.maxConsecutiveSpawnFailures} /
+ *  {@link PipelineStep.maxConsecutiveSpawnFailures}. */
+export const DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES = 3
 
 /**
  * Run a sub-step once per element of an array, optionally with bounded
@@ -105,6 +122,17 @@ export interface MapStep {
    * silently dropped.
    */
   onError?: "throw" | "collect"
+  /**
+   * `"collect"` only: once this many items IN A ROW fail because an agent
+   * step's session could not be spawned ({@link AgentSpawnError}), stop
+   * starting new items — the failure is systemic, not per-item. In-flight
+   * items finish; every item not yet started is reported skipped
+   * (`circuit-open: <first error>`) and the map returns normally. A settled
+   * item that isn't a spawn failure resets the streak. Default
+   * {@link DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES}; `0` disables the breaker.
+   * (`"throw"` already stops at the first failure of any kind.)
+   */
+  maxConsecutiveSpawnFailures?: number
 }
 
 /**
@@ -132,6 +160,8 @@ export interface PipelineStep {
    *  `"collect"` runs every item's chain to completion and binds a
    *  {@link TolerantFanOutResult} instead of a bare array. */
   onError?: "throw" | "collect"
+  /** Same semantics as {@link MapStep.maxConsecutiveSpawnFailures}. */
+  maxConsecutiveSpawnFailures?: number
 }
 
 /** Run one of two branches based on a predicate over the bindings. */
@@ -141,6 +171,10 @@ export interface BranchStep {
   cond: Selector<boolean>
   then: readonly RunStep[]
   otherwise?: readonly RunStep[]
+  /** The authored step this node was compiled from, when it differs from
+   *  `id` — a multi-arm manifest `kind: branch` compiles to a chain of
+   *  nodes (`<id>`, `<id>__branch1`, …); skip reports name `<id>`. */
+  sourceId?: string
 }
 
 /** Repeat a body while a predicate holds, up to a hard iteration ceiling. */
@@ -287,6 +321,29 @@ export interface KnowledgeAppliedRecord {
 export type AgentSandboxRef = string | { provider: string; [k: string]: unknown }
 
 /**
+ * The minimal structural contract {@link AgentStep.outputSchema} must
+ * satisfy — exactly the `safeParse` shape `execAgentStep` consumes (never
+ * `.parse`, `._def`, or any other zod-specific member). A real zod
+ * `ZodType` satisfies this automatically (structural typing — zod's own
+ * `SafeParseReturnType` is a superset of this shape), so a TS-authored step
+ * can still pass a zod schema directly. `compileAgentStep` additionally
+ * builds one of these from a WORKFLOW.md-authored JSON Schema object (ajv
+ * `validateAgainstJsonSchema`-backed) for the declarative manifest path,
+ * where `outputSchema` is plain JSON Schema, not a zod instance.
+ */
+export interface OutputSchemaLike {
+  safeParse(value: unknown):
+    | { success: true; data: unknown }
+    | { success: false; error: { issues: readonly { path: readonly PropertyKey[]; message: string }[] } }
+  /** Set by `compileAgentStep`'s declarative (WORKFLOW.md) path to the raw
+   *  JSON Schema object it wrapped — lets F27's prompt-affordance render the
+   *  EXACT schema text instead of re-deriving it from the `safeParse`
+   *  closure. Absent on a TS-authored zod schema (rendered via
+   *  `z.toJSONSchema` instead — see `describeOutputSchemaForPrompt`). */
+  jsonSchema?: unknown
+}
+
+/**
  * Spawn or reuse an agent session and send it a prompt, waiting for the
  * turn to complete. The host injects an {@link AgentSessionHost} — this
  * runtime has no knowledge of concrete session registries or event buses.
@@ -296,7 +353,12 @@ export interface AgentStep {
   id: string
   /** Adapter slug to spawn a NEW session. Omit to reuse via sessionRef. */
   adapter?: Selector<string> | string
-  /** Reuse an earlier AgentStep's spawned session, by that step's id. */
+  /** Reuse an earlier AgentStep's spawned session, by that step's id. Inside
+   *  a `map`/`pipeline` body, a `{{index}}` placeholder resolves to the
+   *  current item index — `"review[{{index}}]"` names the session THIS item's
+   *  `review` step spawned (the host indexes every fan-out spawn under its
+   *  `stepKey`, `<stepId>[<index>]`), where a bare `"review"` would resolve to
+   *  whichever item spawned last. */
   sessionRef?: string
   /** Model id override for this spawn — same semantics as `agent_start.model`
    *  (a literal string or a per-run selector resolving to one; `undefined` ⇒
@@ -320,8 +382,11 @@ export interface AgentStep {
     | { awaiting: "auto-allow"; prompt: string }
     | { awaiting: "escalate"; webhookUrl?: string; timeoutMs?: number }
     | { awaiting: "fail" }
-  /** Validate the session's final message against this schema; re-prompt on mismatch. */
-  outputSchema?: ZodType<unknown>
+  /** Validate the session's final message against this schema; re-prompt on
+   *  mismatch. A zod `ZodType` (TS-authored steps) or anything else
+   *  satisfying {@link OutputSchemaLike} (a WORKFLOW.md-authored JSON
+   *  Schema object compiles into one of these — see `compileAgentStep`). */
+  outputSchema?: OutputSchemaLike
   /** Re-prompt-and-retry attempts on schema mismatch before failing. Default 2. */
   maxRetries?: number
   /** Cache this step's output under the run's cacheKey; the resolved prompt +
@@ -336,6 +401,13 @@ export interface AgentStep {
   options?: Record<string, boolean | number | string>
   /** Harness pinning for this step's spawn. See {@link AgentHarness}. */
   harness?: AgentHarness
+  /** The resolved agent manifest's declared `tools` (AGENT.md `tools:`), set
+   *  by {@link CompileWorkflowOptions.agentRefs} resolution. Forwarded to the
+   *  host's `spawn` so it can mount its own tool gateway scoped to this list
+   *  (names the gateway doesn't serve — harness-native tools — match
+   *  nothing). Unset ⇒ the agent declared no tools list. Only meaningful
+   *  with `adapter`; ignored on a `sessionRef` reuse. */
+  agentTools?: readonly string[]
 }
 
 /**
@@ -424,6 +496,13 @@ export interface AgentRefResolution {
   adapter: string
   /** Adapter option id → value merged onto the compiled step's `options`. */
   options?: Record<string, boolean | number | string>
+  /** AGENT.md's declared `model` — the compiled step's DEFAULT when the
+   *  step itself sets none (a step-level `model:` still wins). Forwarded
+   *  through the same `harness.model` channel a step-level `model` uses. */
+  model?: string
+  /** AGENT.md's declared `tools` (string ids only) — becomes the compiled
+   *  step's {@link AgentStep.agentTools}. */
+  tools?: readonly string[]
 }
 
 /**
@@ -455,6 +534,14 @@ export interface RuntimeWorkflow {
   id: string
   description?: string
   steps: readonly RunStep[]
+  /**
+   * Cleanup steps that ALWAYS run once `steps` ends — succeeded, failed, or
+   * cancelled (they run without the abort signal). They see the same
+   * bindings (a step that never ran is simply absent). A failing `finally`
+   * step fails an otherwise-successful run; after a failed or cancelled run
+   * the original outcome wins and the cleanup error is only reported.
+   */
+  finally?: readonly RunStep[]
   /** Pick the run's final output (default: the last top-level step's output). */
   output?: Selector<unknown>
 }
@@ -482,6 +569,17 @@ export interface ResumeRequest {
   on: readonly string[]
 }
 
+/**
+ * AIP-58 §3(a) explicit signal, recorded by the host when the step's own
+ * session calls `run.requestInput` before its turn ends. Passed to
+ * {@link RunWorkflowArgs.onInputRequired} to durably suspend the step.
+ */
+export interface InputRequiredRequest {
+  stepId: string
+  prompt: string
+  schema?: Record<string, unknown>
+}
+
 export interface AgentSessionHost {
   /** Spawn a new agent session and return its id. A `sandbox` ref asks the
    *  host to run the session inside that sandbox (provider slug or inline
@@ -498,14 +596,38 @@ export interface AgentSessionHost {
       options?: Record<string, boolean | number | string>
       /** Harness pinning for this spawn (see {@link AgentStep.harness}). */
       harness?: AgentHarness
+      /** The agent manifest's declared tools (see {@link AgentStep.agentTools}). */
+      agentTools?: readonly string[]
+      /** Run-unique key of the spawning step when it runs inside a
+       *  `map`/`pipeline` item: `stepId[<index>]`, the same key the run's step
+       *  hooks report. Absent outside a fan-out (the key is then `stepId`). */
+      stepKey?: string
     },
   ): Promise<string>
+  /**
+   * The run is done with a session it spawned: end it (if still live) and
+   * archive it. Called once per spawned session — when its `map`/`pipeline`
+   * item settles, else when the run itself ends (ok or error) — never
+   * earlier, so a later step's `sessionRef` can still reuse it. The session's
+   * id stays on the step's output. Best-effort: a throw is swallowed.
+   */
+  releaseSession?(sessionId: string): Promise<void>
   /** Send a prompt to an existing session and wait for its turn to end. */
   sendPromptAndWait(sessionId: string, prompt: string): Promise<void>
   /** Look up a session by the step id that spawned it (for sessionRef reuse). */
   resolveByLabel(stepId: string): string | undefined
   /** Handle an awaiting-input policy for a session. */
   onAwaitingInput?(sessionId: string, policy: AgentStep["policy"]): Promise<void>
+  /**
+   * AIP-58 §3(a) explicit signal: consume (and clear) a pending
+   * `run.requestInput` recorded for this session — checked by
+   * {@link AgentStep} execution right after a turn ends, before the
+   * outputSchema retry loop (and again inside it, after every reprompt).
+   * `undefined` when no request is pending. Optional: a host that omits
+   * this never suspends a step on this signal — the outcome rule's other
+   * branches (missing-output / vacuous success) still apply.
+   */
+  takeInputRequest?(sessionId: string): { prompt: string; schema?: Record<string, unknown> } | undefined
   /** Return the session's final assistant message text (for outputSchema validation). */
   readFinalMessage?(sessionId: string): Promise<string>
   /** Current cumulative cost (USD) of a session, for run-level budgeting. */
@@ -536,6 +658,34 @@ export interface StepCache {
   set(stepCacheKey: string, entry: StepCacheEntry): Promise<void>
 }
 
+/** Extra context passed to `onStepStart`/`onStepComplete`. */
+export interface StepHookInfo {
+  /** The step's output was replayed from the {@link StepCache} journal —
+   *  it was not executed (no spawn, no tool dispatch) this run. */
+  cached?: boolean
+}
+
+/** Why `onStepSkipped` fired. */
+export interface StepSkippedInfo {
+  /** `"branch-not-taken"`: the step sits in an untaken `branch` arm.
+   *  `"circuit-open"`: a `map`/`pipeline` item never started because the
+   *  fan-out's spawn circuit breaker opened
+   *  ({@link MapStep.maxConsecutiveSpawnFailures}). */
+  reason: "branch-not-taken" | "circuit-open"
+  /** Id of the authored step whose decision skipped the step — the `branch`
+   *  step, or (circuit-open) the `map`/`pipeline` step. */
+  branchId: string
+  /** `"circuit-open"` only: the first error of the spawn-failure streak
+   *  that tripped the breaker. */
+  message?: string
+}
+
+/** What `onStepFailed` reports. */
+export interface StepFailedInfo {
+  /** `err.message` if the throw was an `Error`, else `String(err)`. */
+  error: string
+}
+
 export interface RunWorkflowArgs {
   workflow: RuntimeWorkflow
   input?: unknown
@@ -546,6 +696,19 @@ export interface RunWorkflowArgs {
   approve?: (req: ApprovalRequest) => boolean | ApprovalDecision | Promise<boolean | ApprovalDecision>
   /** Supply a {@link SuspendStep}'s resume payload. Default: throw + suspend. */
   resume?: (req: ResumeRequest) => unknown | Promise<unknown>
+  /**
+   * AIP-58 §3(a)/§5 outcome rule: suspend an {@link AgentStep} that
+   * signalled `run.requestInput` (see
+   * {@link AgentSessionHost.takeInputRequest}), resolving with the resume
+   * payload once an external event supplies one. The runtime sends that
+   * payload (JSON) as the step's next prompt to the SAME session and
+   * re-applies the outcome rule — the step may suspend again, fail
+   * `missing-output`, or succeed. Default (undefined) ⇒
+   * {@link AgentInputRequiredError} throws instead, the same
+   * no-hook-supplied shape {@link WorkflowSuspendedError} uses for
+   * {@link SuspendStep}.
+   */
+  onInputRequired?: (req: InputRequiredRequest) => unknown | Promise<unknown>
   /** Host-injected agent session runtime. Undefined ⇒ {@link AgentStep} throws. */
   agents?: AgentSessionHost
   /** Working directory for spawned agent sessions. */
@@ -560,10 +723,24 @@ export interface RunWorkflowArgs {
   /** Namespacing label for this run's cache lookups (the workflow_start cacheKey).
    *  Both `cache` and `cacheKey` must be set for any caching to happen. */
   cacheKey?: string
-  /** Called when a step begins execution (before spawn/prompt). */
-  onStepStart?: (stepId: string) => void
-  /** Called when a step completes execution, with its output. */
-  onStepComplete?: (stepId: string, output: unknown) => void
+  /** Called when a step begins execution (before spawn/prompt). A cacheable
+   *  step replayed from the journal still fires this, with `info.cached`. */
+  onStepStart?: (stepId: string, info?: StepHookInfo) => void
+  /** Called when a step completes execution, with its output — `info.cached`
+   *  when the output was replayed from the journal instead of executed. */
+  onStepComplete?: (stepId: string, output: unknown, info?: StepHookInfo) => void
+  /** Called for every step in a `branch` arm that was NOT taken, once the
+   *  branch decides — the step will not run this time. Only statically-known
+   *  steps are reported (a `map`/`pipeline`/`subworkflow` step under the arm
+   *  reports its own id, not its body's); a step id that also sits in the
+   *  taken path is never reported. */
+  onStepSkipped?: (stepId: string, info: StepSkippedInfo) => void
+  /** Called when a step inside a tolerant (`onError: "collect"`) `map`/
+   *  `pipeline` item throws — the item is recorded as rejected and the run
+   *  goes on, so this is the only signal the failing step gets. `stepId` is
+   *  the innermost step that threw, indexed like `onStepStart`'s. A throw
+   *  that fails the run is NOT reported here (the run's own failure is). */
+  onStepFailed?: (stepId: string, info: StepFailedInfo) => void
   /** Host-injectable subprocess runner for `kind: "gate"` steps. Undefined ⇒
    *  the runtime's own `node:child_process`-backed default. */
   runGateCommand?: GateCommandRunner

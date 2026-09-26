@@ -82,13 +82,14 @@ import {
   cleanAgentLines,
   gcSpawnClaims,
   shouldInjectDaemonSelfMount,
+  delegationReachFor,
   type SpawnAgentSessionDeps,
   type SpawnAgentSessionResult,
   type SpawnClaim,
 } from "../session-spawn.js"
 import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 import { SubscriptionSourceError } from "../spawn-defaults.js"
-import { EXECUTOR_ROLE } from "../role.js"
+import { EXECUTOR_ROLE, SUPERVISOR_ROLE } from "../role.js"
 import { getMcpCredentialDeps, setMcpCredentialDeps } from "../mcp-credential-deps.js"
 import {
   createSessionsRegistry,
@@ -120,9 +121,9 @@ function fakeAgentSession(): AgentSessionLike {
   }
 }
 
-function makeResolver(startSession: ReturnType<typeof vi.fn>): AgentAdapterResolver {
+function makeResolver(startSession: (...args: any[]) => Promise<AgentSessionLike>): AgentAdapterResolver {
   return async () => ({
-    startSession,
+    startSession: startSession as any,
     commandPreview: "mock-adapter",
   })
 }
@@ -1562,7 +1563,7 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
         {
           name: "agentproto",
           transport: "http",
-          ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&callerSessionId=${result.descriptor.id}`,
+          ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&deferred=1&callerSessionId=${result.descriptor.id}`,
         },
       ])
     }
@@ -1585,7 +1586,7 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
         {
           name: "agentproto",
           transport: "http",
-          ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&callerSessionId=${result.descriptor.id}`,
+          ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&deferred=1&callerSessionId=${result.descriptor.id}`,
         },
       ])
     }
@@ -1606,6 +1607,48 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
           name: "agentproto",
           transport: "http",
           ref: `http://127.0.0.1:18790/mcp?callerSessionId=${result.descriptor.id}`,
+        },
+      ])
+    }
+  })
+
+  it("explicit `deferredTools: false` overrides the executor role's ON default on the self-mount ref", async () => {
+    const { deps } = baseDeps({ daemonMcpUrl: "http://127.0.0.1:18790/mcp" })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "hermes",
+      cwd: "/tmp",
+      role: "executor",
+      deferredTools: false,
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.descriptor.mcpServers).toEqual([
+        {
+          name: "agentproto",
+          transport: "http",
+          ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&deferred=0&callerSessionId=${result.descriptor.id}`,
+        },
+      ])
+    }
+  })
+
+  it("explicit `deferredTools: true` on a supervisor (no role-level opinion) forces the override on", async () => {
+    const { deps } = baseDeps({ daemonMcpUrl: "http://127.0.0.1:18790/mcp" })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "hermes",
+      cwd: "/tmp",
+      role: "supervisor",
+      deferredTools: true,
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.descriptor.mcpServers).toEqual([
+        {
+          name: "agentproto",
+          transport: "http",
+          ref: `http://127.0.0.1:18790/mcp?deferred=1&callerSessionId=${result.descriptor.id}`,
         },
       ])
     }
@@ -1741,6 +1784,143 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
     )
     expect(result.ok).toBe(true)
     expect(buildOrchestratorMcp).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("spawnAgentSession — role text matches the delegation tools the session can actually reach", () => {
+  // Regression for a depth-0 contestant spawned with no role and no daemon
+  // mount: it was told "Delegate through agent_start … Roles you may spawn:
+  // executor, supervisor." with no agent_start anywhere, went hunting for it
+  // in the CLI, then gave up. The composed text must follow the mounts.
+  const DAEMON = "http://127.0.0.1:18790/mcp"
+
+  async function composedPrompt(
+    input: Partial<Parameters<typeof spawnAgentSession>[1]>,
+    overrides: Partial<SpawnAgentSessionDeps> = {},
+  ): Promise<string> {
+    const { registry, deps } = baseDeps({
+      daemonMcpUrl: DAEMON,
+      loadDefaultsConfig: async () => ({}),
+      ...overrides,
+    })
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      prompt: "do the task",
+      wait: true,
+      ...input,
+    })
+    expect(result.ok).toBe(true)
+    const message = sendPrompt.mock.calls[0]?.[1]
+    return typeof message === "string" ? message : ""
+  }
+
+  function expectExecutorText(prompt: string): void {
+    expect(prompt.startsWith(EXECUTOR_ROLE.disposition)).toBe(true)
+    expect(prompt).not.toContain(SUPERVISOR_ROLE.disposition)
+    expect(prompt).not.toContain("Roles you may spawn")
+    expect(prompt).not.toContain("agent_start")
+  }
+
+  it("no daemon mount, no role, depth 0 ⇒ executor text (the default follows reach, not only depth)", async () => {
+    expectExecutorText(await composedPrompt({}))
+  })
+
+  it("no daemon mount, explicit supervisor ⇒ still executor text — never a phantom agent_start", async () => {
+    expectExecutorText(await composedPrompt({ role: "supervisor" }))
+  })
+
+  it("daemon mount with agent_start denied ⇒ executor text", async () => {
+    const prompt = await composedPrompt({
+      role: "supervisor",
+      mcpServers: [
+        { name: "agentproto", transport: "http", ref: `${DAEMON}?denyTools=agent_start,agent_prompt` },
+      ],
+    })
+    expectExecutorText(prompt)
+  })
+
+  it("orchestrator scope narrowed without agent_start ⇒ executor text", async () => {
+    const buildOrchestratorMcp = vi.fn(() => ({
+      entry: { name: "agentproto", transport: "http" as const, ref: "http://127.0.0.1:1/mcp/orchestrator?scope=t" },
+      bindLifecycle: () => () => {},
+      scope: { tools: new Set(["session_list"]) },
+    }))
+    const prompt = await composedPrompt(
+      { orchestrator: { tools: ["session_list"] }, mcpServers: [] },
+      { buildOrchestratorMcp },
+    )
+    expectExecutorText(prompt)
+  })
+
+  it("normal supervisor (eager daemon mount) ⇒ supervisor text naming the MCP tool + CLI, no tool_search", async () => {
+    const prompt = await composedPrompt({
+      mcpServers: [{ name: "agentproto", transport: "http", ref: DAEMON }],
+    })
+    expect(prompt.startsWith(SUPERVISOR_ROLE.disposition)).toBe(true)
+    expect(prompt).toContain("Roles you may spawn: executor, supervisor.")
+    expect(prompt).toContain("MCP tools on the `agentproto` MCP server")
+    expect(prompt).toContain("agentproto sessions start <adapter>")
+    expect(prompt).not.toContain("tool_search")
+  })
+
+  it("orchestrator scope carrying agent_start ⇒ supervisor text", async () => {
+    const buildOrchestratorMcp = vi.fn(() => ({
+      entry: { name: "agentproto", transport: "http" as const, ref: "http://127.0.0.1:1/mcp/orchestrator?scope=t" },
+      bindLifecycle: () => () => {},
+    }))
+    const prompt = await composedPrompt({ orchestrator: true, mcpServers: [] }, { buildOrchestratorMcp })
+    expect(prompt.startsWith(SUPERVISOR_ROLE.disposition)).toBe(true)
+    expect(prompt).toContain("Roles you may spawn")
+  })
+
+  it("deferred supervisor mount (?deferred=1) ⇒ text points at tool_search", async () => {
+    const prompt = await composedPrompt({
+      mcpServers: [{ name: "agentproto", transport: "http", ref: `${DAEMON}?deferred=1` }],
+    })
+    expect(prompt.startsWith(SUPERVISOR_ROLE.disposition)).toBe(true)
+    expect(prompt).toContain("`tool_search`")
+    expect(prompt).toContain("select:agent_start,agent_prompt")
+  })
+
+  it("deferred via the gateway's boot default (defaults.mcp.deferredTools) ⇒ text points at tool_search", async () => {
+    const prompt = await composedPrompt(
+      { mcpServers: [{ name: "agentproto", transport: "http", ref: DAEMON }] },
+      { loadDefaultsConfig: async () => ({ mcp: { deferredTools: true } }) },
+    )
+    expect(prompt).toContain("`tool_search`")
+  })
+})
+
+describe("delegationReachFor", () => {
+  const DAEMON = "http://127.0.0.1:18790/mcp"
+
+  it("no mounts ⇒ unreachable", () => {
+    expect(delegationReachFor(undefined, { daemonMcpUrl: DAEMON })).toEqual({ reachable: false })
+    expect(delegationReachFor([], { daemonMcpUrl: DAEMON })).toEqual({ reachable: false })
+  })
+
+  it("a non-daemon server doesn't count", () => {
+    const servers: AcpMcpServer[] = [{ name: "github", transport: "http", ref: "https://example.com/mcp" }]
+    expect(delegationReachFor(servers, { daemonMcpUrl: DAEMON }).reachable).toBe(false)
+  })
+
+  it("the report-only orchestrator scope doesn't count", () => {
+    const servers: AcpMcpServer[] = [
+      { name: "agentproto", transport: "http", ref: "http://127.0.0.1:1/mcp/orchestrator?scope=r" },
+    ]
+    expect(delegationReachFor(servers, { daemonMcpUrl: DAEMON }).reachable).toBe(false)
+  })
+
+  it("denyTools=agent_start strips it; deferred follows ?deferred= then the gateway default", () => {
+    const at = (ref: string, gatewayDeferred = false) =>
+      delegationReachFor([{ name: "x", transport: "http", ref }], { daemonMcpUrl: DAEMON, gatewayDeferred })
+    expect(at(`${DAEMON}?denyTools=agent_start,agent_prompt&callerSessionId=s`).reachable).toBe(false)
+    expect(at(`${DAEMON}?callerSessionId=s`)).toEqual({ reachable: true, deferred: false })
+    expect(at(`${DAEMON}?deferred=1`)).toEqual({ reachable: true, deferred: true })
+    expect(at(`${DAEMON}?deferred=0`, true)).toEqual({ reachable: true, deferred: false })
+    expect(at(DAEMON, true)).toEqual({ reachable: true, deferred: true })
   })
 })
 
@@ -4797,7 +4977,7 @@ describe("spawnAgentSession — child→parent report-back plumbing", () => {
     expect(startSession.mock.calls[1]?.[0]?.env).not.toHaveProperty(PARENT_SESSION_ID_ENV)
   })
 
-  it("a gateway-less child with a parent gets a minimal message_parent-only scope (role-independent, no delegation)", async () => {
+  it("a gateway-less child with a parent gets a minimal report-back + receive scope (role-independent, no delegation)", async () => {
     const { entry, build } = makeBuildOrchestratorMcp()
     const { deps } = baseDeps({ buildOrchestratorMcp: build })
 
@@ -4809,7 +4989,10 @@ describe("spawnAgentSession — child→parent report-back plumbing", () => {
     )
     expect(result.ok).toBe(true)
     expect(build).toHaveBeenCalledTimes(1)
-    expect(build).toHaveBeenCalledWith({ tools: ["message_parent"], role: "executor" })
+    expect(build).toHaveBeenCalledWith({
+      tools: ["message_parent", "message_send", "message_reply", "inbox_wait", "inbox_list", "inbox_ack"],
+      role: "executor",
+    })
     if (result.ok) {
       expect(result.descriptor.mcpServers).toEqual([entry])
     }
@@ -5244,5 +5427,144 @@ describe("spawnAgentSession — workspace RULES.md injection (WP-R4)", () => {
     // RULES.md — because composedPreamble() recovers it automatically.
     expect(opts?.system).toContain(RULES_MD_BLOCK)
     expect(opts?.system).toContain(EXECUTOR_ROLE.disposition)
+  })
+})
+
+describe("spawnAgentSession — browser: \"headless\"", () => {
+  const browserEntry: AcpMcpServer = {
+    name: "browser",
+    transport: "stdio",
+    ref: "/usr/bin/node",
+    args: ["/p/chrome-devtools-mcp.js", "--headless", "--isolated"],
+    env: { CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: "1" },
+  }
+  function browserDeps(overrides: Partial<SpawnAgentSessionDeps> = {}) {
+    const startSession = vi.fn(async (_opts: Record<string, unknown>) => fakeAgentSession())
+    const resolveHeadlessBrowser = vi.fn(async () => ({
+      entry: browserEntry,
+      readPaths: ["/home/u/.agentproto/chrome-mcp", "/Applications/Google Chrome.app"],
+    }))
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveHeadlessBrowser,
+      loadDefaultsConfig: async () => ({}),
+      ...overrides,
+    })
+    return { registry, deps, startSession, resolveHeadlessBrowser }
+  }
+
+  it("appends the browser mount AFTER the default self-mount, without suppressing it", async () => {
+    const { deps, resolveHeadlessBrowser } = browserDeps({ daemonMcpUrl: "http://127.0.0.1:18790/mcp" })
+    const result = await spawnAgentSession(deps, {
+      adapter: "hermes",
+      cwd: "/tmp",
+      role: "supervisor",
+      browser: "headless",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.descriptor.mcpServers?.map(e => e.name)).toEqual(["agentproto", "browser"])
+    expect(result.descriptor.mcpServers?.[1]).toEqual(browserEntry)
+    expect(resolveHeadlessBrowser).toHaveBeenCalledWith({ sessionId: result.descriptor.id, cwd: "/tmp" })
+  })
+
+  it("merges with a caller mcpServers list and threads the read grants to the adapter", async () => {
+    const { deps, startSession } = browserDeps()
+    const caller: AcpMcpServer = { name: "room", transport: "http", ref: "http://x/mcp" }
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      mcpServers: [caller],
+      browser: "headless",
+      commandSandbox: "workspace",
+    })
+    expect(result.ok).toBe(true)
+    const opts = startSession.mock.calls[0]?.[0] as { mcpServers?: AcpMcpServer[]; additionalReadPaths?: string[] }
+    expect(opts.mcpServers?.map(e => e.name)).toEqual(["room", "browser"])
+    expect(opts.additionalReadPaths).toEqual(["/home/u/.agentproto/chrome-mcp", "/Applications/Google Chrome.app"])
+  })
+
+  it("an explicit `mcpServers: []` still opts out of the self-mount but gets the requested browser", async () => {
+    const { deps } = browserDeps({ daemonMcpUrl: "http://127.0.0.1:18790/mcp" })
+    const result = await spawnAgentSession(deps, {
+      adapter: "hermes",
+      cwd: "/tmp",
+      mcpServers: [],
+      browser: "headless",
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.descriptor.mcpServers?.map(e => e.name)).toEqual(["browser"])
+  })
+
+  it("a caller entry already named `browser` wins; no second server is added", async () => {
+    const { deps } = browserDeps()
+    const mine: AcpMcpServer = { name: "browser", transport: "stdio", ref: "/my/browser-mcp" }
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", mcpServers: [mine], browser: "headless" })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.descriptor.mcpServers).toEqual([mine])
+  })
+
+  it("adds the tool hint to the composed prompt", async () => {
+    const { registry, deps } = browserDeps()
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+    await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", role: "executor", browser: "headless", prompt: "check the page", wait: true })
+    const prompt = String(sendPrompt.mock.calls[0]?.[1] ?? "")
+    expect(prompt).toContain("mcp__browser__")
+    expect(prompt).toContain("take_screenshot")
+    expect(prompt.indexOf("mcp__browser__")).toBeLessThan(prompt.indexOf("check the page"))
+  })
+
+  it("off by default: no resolver call, no mount, no hint", async () => {
+    const { registry, deps, resolveHeadlessBrowser } = browserDeps()
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", prompt: "hi", wait: true })
+    expect(result.ok).toBe(true)
+    expect(resolveHeadlessBrowser).not.toHaveBeenCalled()
+    if (result.ok) expect(result.descriptor.mcpServers ?? []).not.toContainEqual(browserEntry)
+    expect(String(sendPrompt.mock.calls[0]?.[1] ?? "")).not.toContain("mcp__browser__")
+  })
+
+  it("resolves the mode explicit > role > preset > defaults.spawn.browser", async () => {
+    const headlessRole = { ...EXECUTOR_ROLE, name: "browsing-executor", browser: "headless" as const }
+    // role default ON, explicit false wins
+    let d = browserDeps({ loadRoleRegistry: async () => ({ "browsing-executor": headlessRole }) })
+    await spawnAgentSession(d.deps, { adapter: "mock", cwd: "/tmp", role: "browsing-executor", browser: false })
+    expect(d.resolveHeadlessBrowser).not.toHaveBeenCalled()
+    // role default ON applies
+    d = browserDeps({ loadRoleRegistry: async () => ({ "browsing-executor": headlessRole }) })
+    await spawnAgentSession(d.deps, { adapter: "mock", cwd: "/tmp", role: "browsing-executor" })
+    expect(d.resolveHeadlessBrowser).toHaveBeenCalledTimes(1)
+    // preset ON applies when role has no opinion
+    d = browserDeps()
+    await spawnAgentSession(d.deps, { adapter: "mock", cwd: "/tmp", preset: { id: "p", label: "P", browser: "headless" } })
+    expect(d.resolveHeadlessBrowser).toHaveBeenCalledTimes(1)
+    // config default ON applies last
+    d = browserDeps({ loadDefaultsConfig: async () => ({ spawn: { browser: "headless" } }) })
+    await spawnAgentSession(d.deps, { adapter: "mock", cwd: "/tmp" })
+    expect(d.resolveHeadlessBrowser).toHaveBeenCalledTimes(1)
+  })
+
+  it("rejects an explicit browser on a sandbox spawn, before anything boots", async () => {
+    const { registry, deps, resolveHeadlessBrowser } = browserDeps()
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", sandbox: "e2b", browser: "headless" })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.code).toBe("browser_unsupported")
+    expect(resolveHeadlessBrowser).not.toHaveBeenCalled()
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("fails the spawn loudly when the browser can't be set up", async () => {
+    const { registry, deps } = browserDeps({
+      resolveHeadlessBrowser: async () => {
+        throw new Error("No Chrome found.")
+      },
+    })
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", browser: "headless" })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.code).toBe("browser_unavailable")
+      expect(result.message).toContain("No Chrome found.")
+    }
+    expect(registry.list()).toHaveLength(0)
   })
 })

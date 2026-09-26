@@ -1,5 +1,11 @@
 # @agentproto/governance
 
+## 0.1.4
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+
 ## 0.1.3
 
 ### Patch Changes

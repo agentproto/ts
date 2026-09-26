@@ -32,6 +32,16 @@ export interface CliDriverDefinition
   bin: string
   /** Default argv prefix injected before per-tool argv. */
   binArgs?: readonly string[]
+  /**
+   * Absolute working directory for the spawned subprocess. Unset means
+   * "inherit the host process's cwd" — the historical (and, for a
+   * standalone TS-authored driver, still correct) behaviour. App-bundled
+   * drivers loaded via `@agentproto/app-kit`'s `loadAppBundledTools` get
+   * this set to the app root so argv/DRIVER.md-relative paths resolve
+   * predictably instead of against whatever directory happens to be
+   * running the host.
+   */
+  cwd?: string
   /** Output parsing convention. */
   output?: {
     defaultFormat?: "text" | "json" | "yaml" | "binary"
@@ -66,6 +76,7 @@ export function defineCliDriver(definition: CliDriverDefinition): DriverHandle {
       binArgs: definition.binArgs ?? [],
       output: definition.output ?? {},
       sandbox: definition.sandbox,
+      cwd: definition.cwd,
     })
   }
 
@@ -81,6 +92,7 @@ export function defineCliDriver(definition: CliDriverDefinition): DriverHandle {
         output: definition.output,
         tty: definition.tty,
         sandbox: definition.sandbox,
+        cwd: definition.cwd,
       },
     },
   })
@@ -93,6 +105,7 @@ function createExecuteFn(args: {
   binArgs: readonly string[]
   output: NonNullable<CliDriverDefinition["output"]>
   sandbox: CliDriverDefinition["sandbox"]
+  cwd?: string
 }): ExecuteFn {
   const meta = (args.entry.metadata ?? {}) as { cli?: PerToolCli }
   const cliMeta = meta.cli ?? {}
@@ -113,6 +126,7 @@ function createExecuteFn(args: {
       bin: args.bin,
       argv: [...args.binArgs, ...argv],
       env: buildEnv(args.sandbox?.env, provCtx.secrets ?? {}),
+      cwd: args.cwd,
       signal,
     })
 
@@ -142,11 +156,13 @@ async function runSubprocess(args: {
   bin: string
   argv: readonly string[]
   env: Record<string, string>
+  cwd?: string
   signal: AbortSignal
 }): Promise<SubprocessResult> {
   return await new Promise((resolve, reject) => {
     const child = spawn(args.bin, [...args.argv], {
       env: args.env,
+      cwd: args.cwd,
       stdio: ["ignore", "pipe", "pipe"],
     })
 

@@ -15,6 +15,10 @@
 export {
   CANONICAL_SESSION_ID,
   CANONICAL_SESSION_RECORDS,
+  SESSION_MESSAGE_RECORDS,
+  type AgentprotoRawSessionMessage,
+  type AgentprotoRawSessionMessageEnvelope,
+  type AgentprotoRawSessionMessageSent,
   type AgentprotoRawTranscriptRecord,
   type AgentprotoRawTranscriptBase,
   type AgentprotoRawUserPrompt,

@@ -1,5 +1,21 @@
 # @agentproto/adapter-knowledge-gbrain-doc
 
+## 0.2.5
+
+### Patch Changes
+
+- Updated dependencies [f30c959]
+  - @agentproto/provider-kit@0.4.5
+
+## 0.2.4
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [c27f0b8]
+  - @agentproto/knowledge-engine@0.2.3
+  - @agentproto/provider-kit@0.4.4
+
 ## 0.2.3
 
 ### Patch Changes

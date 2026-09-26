@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
+import { createSessionsRegistry, type AgentSessionLike, type AgentSessionResumer } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 
 /**
@@ -51,7 +51,7 @@ function seedRow(
   return id
 }
 
-function makeResumer(): ReturnType<typeof vi.fn> {
+function makeResumer(): AgentSessionResumer {
   return vi.fn(async () => {
     const fresh: AgentSessionLike = {
       sessionId: "conv-honesty",

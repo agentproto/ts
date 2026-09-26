@@ -120,6 +120,7 @@ export {
   type ReleaseOutcome,
 } from "./continuation/types.js"
 export type {
+  SteerOutcome,
   AgentCliDefinition,
   AgentCliHandle,
   AgentCliProtocol,

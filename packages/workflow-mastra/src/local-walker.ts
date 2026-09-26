@@ -162,7 +162,10 @@ export async function runLocalStep(
     case "suspend":
     case "approval":
     case "pipeline":
-      // Unreachable: assertProjectable rejects these before the walker ever runs.
+    case "gate":
+      // Unreachable: assertProjectable rejects `gate`/`pipeline` everywhere,
+      // and `suspend`/`approval` everywhere EXCEPT top-level (where they get
+      // their own Mastra step in index.ts and never reach this walker at all).
       throw new WorkflowProjectionError(
         `step '${step.id}' (kind '${step.kind}') reached the local walker — ` +
           `this should have been rejected by assertProjectable first`,

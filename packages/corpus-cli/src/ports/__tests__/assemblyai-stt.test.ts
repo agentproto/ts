@@ -41,6 +41,7 @@ describe("AssemblyAiStt", () => {
       const stt = new AssemblyAiStt({ apiKey: "k", pollIntervalMs: 0, sleep: async () => {} })
       const out = await stt.transcribe(tmp)
       expect(out.language).toBe("en")
+      expect(out.engine).toBe("assemblyai")
       expect(out.text).toBe(
         "Speaker A: How do you read a job description?\n\nSpeaker B: Start with the must-haves."
       )
@@ -61,6 +62,70 @@ describe("AssemblyAiStt", () => {
     try {
       const out = await new AssemblyAiStt({ apiKey: "k", sleep: async () => {} }).transcribe(tmp)
       expect(out.text).toBe("flat transcript")
+      expect(out.utterances).toBeUndefined()
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("returns structured utterances alongside the flattened text", async () => {
+    mockAaiSequence({
+      id: "t1",
+      status: "completed",
+      language_code: "en",
+      utterances: [
+        { speaker: "A", text: "How do you read a job description?", start: 0, end: 5000 },
+        { speaker: "B", text: "Start with the must-haves.", start: 5200, end: 9800 },
+      ],
+    })
+    const dir = await mkdtemp(join(tmpdir(), "aai-test-"))
+    const tmp = join(dir, "audio.mp3")
+    await writeFile(tmp, Buffer.from("fake-audio"))
+    try {
+      const out = await new AssemblyAiStt({ apiKey: "k", pollIntervalMs: 0, sleep: async () => {} }).transcribe(tmp)
+      // structured utterances, timestamps converted ms → s
+      expect(out.utterances).toEqual([
+        { speaker: "A", text: "How do you read a job description?", start: 0, end: 5 },
+        { speaker: "B", text: "Start with the must-haves.", start: 5.2, end: 9.8 },
+      ])
+      // flattened text stays identical to the non-diarized-consumer rendering
+      expect(out.text).toBe(
+        "Speaker A: How do you read a job description?\n\nSpeaker B: Start with the must-haves."
+      )
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("omits start/end on utterances the engine didn't time", async () => {
+    mockAaiSequence({
+      id: "t1",
+      status: "completed",
+      utterances: [{ speaker: "A", text: "no timestamps here" }],
+    })
+    const dir = await mkdtemp(join(tmpdir(), "aai-test-"))
+    const tmp = join(dir, "audio.mp3")
+    await writeFile(tmp, Buffer.from("x"))
+    try {
+      const out = await new AssemblyAiStt({ apiKey: "k", sleep: async () => {} }).transcribe(tmp)
+      expect(out.utterances).toEqual([{ speaker: "A", text: "no timestamps here" }])
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("parses utterances with explicit null start/end without throwing", async () => {
+    mockAaiSequence({
+      id: "t1",
+      status: "completed",
+      utterances: [{ speaker: "A", text: "no timestamps here", start: null, end: null }],
+    })
+    const dir = await mkdtemp(join(tmpdir(), "aai-test-"))
+    const tmp = join(dir, "audio.mp3")
+    await writeFile(tmp, Buffer.from("x"))
+    try {
+      const out = await new AssemblyAiStt({ apiKey: "k", sleep: async () => {} }).transcribe(tmp)
+      expect(out.utterances).toEqual([{ speaker: "A", text: "no timestamps here" }])
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
@@ -80,3 +145,49 @@ describe("AssemblyAiStt", () => {
     }
   })
 })
+
+describe("AssemblyAiStt poll responses with explicit nulls", () => {
+  it("tolerates null text/language_code/error on queued and processing polls", async () => {
+    let polls = 0
+    globalThis.fetch = vi.fn<typeof fetch>(async (url, init) => {
+      const u = String(url)
+      if (u.endsWith("/upload")) return new Response(JSON.stringify({ upload_url: "https://cdn/audio" }))
+      if (u.endsWith("/transcript") && init?.method === "POST")
+        return new Response(
+          JSON.stringify({ id: "t2", status: "queued", text: null, language_code: null, error: null })
+        )
+      if (u.includes("/transcript/t2")) {
+        polls += 1
+        if (polls === 1)
+          return new Response(
+            JSON.stringify({ id: "t2", status: "processing", text: null, language_code: null, error: null })
+          )
+        return new Response(
+          JSON.stringify({
+            id: "t2",
+            status: "completed",
+            text: "Bonjour",
+            language_code: "fr",
+            error: null,
+            utterances: [{ speaker: "A", text: "Bonjour", start: 0, end: 500 }],
+          })
+        )
+      }
+      throw new Error(`unexpected fetch ${u}`)
+    })
+    const dir = await mkdtemp(join(tmpdir(), "aai-null-"))
+    const tmp = join(dir, "audio.mp3")
+    await writeFile(tmp, Buffer.from("fake-audio"))
+    try {
+      const stt = new AssemblyAiStt({ apiKey: "k", pollIntervalMs: 1, sleep: async () => {} })
+      const res = await stt.transcribe(tmp)
+      expect(polls).toBe(2)
+      expect(res.language).toBe("fr")
+      expect(res.utterances?.[0]?.speaker).toBe("A")
+      expect(res.text).toContain("Bonjour")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+

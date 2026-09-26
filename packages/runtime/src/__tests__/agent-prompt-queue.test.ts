@@ -63,9 +63,53 @@ function busyThenCompletesAgentSession(): {
   return { agent, events, release: releaseFirstTurn }
 }
 
-async function makeMcpClient(registry: ReturnType<typeof createSessionsRegistry>) {
+/** Like `busyThenCompletesAgentSession`, but `cancel()` releases the gated
+ *  first turn (yielding a `cancelled` turn-end) — so an `interrupt` actually
+ *  settles instead of hanging. Mirrors `interruptibleAgentSession` in
+ *  prompt-interrupt.test.ts. */
+function interruptibleAgentSession(): {
+  agent: AgentSessionLike
+  events: string[]
+} {
+  const events: string[] = []
+  let releaseFirstTurn!: () => void
+  const firstTurnGate = new Promise<void>(resolve => {
+    releaseFirstTurn = resolve
+  })
+  let turnCount = 0
+  const agent: AgentSessionLike = {
+    sessionId: "interruptible-queue-session",
+    async *send(message: unknown) {
+      turnCount++
+      if (turnCount === 1) {
+        events.push(`turn1-started:${JSON.stringify(message)}`)
+        await firstTurnGate
+        yield { kind: "turn-end", reason: "cancelled" }
+        return
+      }
+      events.push(`turn${turnCount}-started:${JSON.stringify(message)}`)
+      yield { kind: "turn-end", reason: "completed" }
+    },
+    async cancel() {
+      await Promise.resolve()
+      releaseFirstTurn()
+    },
+    async close() {},
+  }
+  return { agent, events }
+}
+
+async function makeMcpClient(
+  registry: ReturnType<typeof createSessionsRegistry>,
+  opts?: { defaultAgentPromptInterrupt?: boolean },
+) {
   const server = new McpServer({ name: "agent-prompt-queue-server", version: "0.0.0" })
-  registerAgentTools(server, { registry })
+  registerAgentTools(server, {
+    registry,
+    ...(opts?.defaultAgentPromptInterrupt != null
+      ? { defaultAgentPromptInterrupt: opts.defaultAgentPromptInterrupt }
+      : {}),
+  })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
   const client = new Client({ name: "agent-prompt-queue-client", version: "0.0.0" })
@@ -229,6 +273,160 @@ describe("agent_prompt (MCP): queue by default", () => {
       "turn1-ended",
     ])
 
+    client.close()
+    registry.shutdown()
+  })
+})
+
+describe("agent_prompt (MCP): queued-mid-turn hint", () => {
+  it("emits the interrupt hint ONLY when a prompt is parked behind a live turn (interrupt unset)", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const { agent, release } = busyThenCompletesAgentSession()
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: agent,
+      adapterSlug: "fake",
+    })
+    const client = await makeMcpClient(registry)
+
+    // First prompt starts the (gated) turn — delivered immediately, NO hint.
+    const first = (await client.callTool({
+      name: "agent_prompt",
+      arguments: { sessionId: desc.id, prompt: "first" },
+    })) as { content?: { text: string }[] }
+    const firstBody = JSON.parse(String(first.content?.[0]?.text))
+    expect(firstBody.hint).toBeUndefined()
+    expect(firstBody.delivery).toBeUndefined()
+    expect(registry.get(desc.id)?.busy).toBe(true)
+
+    // Second prompt lands mid-turn with no interrupt → parked → hint present.
+    const second = (await client.callTool({
+      name: "agent_prompt",
+      arguments: { sessionId: desc.id, prompt: "second" },
+    })) as { content?: { text: string }[] }
+    const secondBody = JSON.parse(String(second.content?.[0]?.text))
+    expect(secondBody.delivery).toBe("queued-mid-turn")
+    expect(secondBody.hint).toContain("interrupt: true")
+
+    release()
+    await vi.waitFor(() => expect(registry.get(desc.id)?.busy).toBe(false))
+    client.close()
+    registry.shutdown()
+  })
+
+  it("no hint when the mid-turn caller passed interrupt explicitly (even interrupt: false)", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const { agent, release } = busyThenCompletesAgentSession()
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: agent,
+      adapterSlug: "fake",
+    })
+    const client = await makeMcpClient(registry)
+
+    void (await client.callTool({
+      name: "agent_prompt",
+      arguments: { sessionId: desc.id, prompt: "first" },
+    }))
+    expect(registry.get(desc.id)?.busy).toBe(true)
+
+    // interrupt: false explicitly — the caller already knows the option, so
+    // it still queues but WITHOUT the discovery hint.
+    const second = (await client.callTool({
+      name: "agent_prompt",
+      arguments: { sessionId: desc.id, prompt: "second", interrupt: false },
+    })) as { content?: { text: string }[] }
+    const body = JSON.parse(String(second.content?.[0]?.text))
+    expect(body.queued).toBe(true)
+    expect(body.hint).toBeUndefined()
+    expect(body.delivery).toBeUndefined()
+
+    release()
+    await vi.waitFor(() => expect(registry.get(desc.id)?.busy).toBe(false))
+    client.close()
+    registry.shutdown()
+  })
+})
+
+describe("agent_prompt (MCP): configurable interrupt default", () => {
+  it("unset interrupt + config default true → cuts the mid-turn session (no queue, no hint)", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const { agent } = interruptibleAgentSession()
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: agent,
+      adapterSlug: "fake",
+    })
+    const client = await makeMcpClient(registry, { defaultAgentPromptInterrupt: true })
+    const spy = vi.spyOn(registry, "enqueuePrompt")
+
+    void (await client.callTool({
+      name: "agent_prompt",
+      arguments: { sessionId: desc.id, prompt: "first" },
+    }))
+    await vi.waitFor(() => expect(registry.get(desc.id)?.busy).toBe(true))
+
+    const second = (await client.callTool({
+      name: "agent_prompt",
+      arguments: { sessionId: desc.id, prompt: "second" },
+    })) as { content?: { text: string }[] }
+    // Config default flipped the unset behaviour to interrupt → the second
+    // call reached enqueuePrompt with interrupt: true, so nothing parked and
+    // no discovery hint is emitted.
+    expect(spy).toHaveBeenLastCalledWith(
+      desc.id,
+      "second",
+      expect.objectContaining({ interrupt: true }),
+    )
+    // Nothing sat in the FIFO queue — the interrupt redirected the live turn.
+    expect(registry.get(desc.id)?.promptQueue ?? []).toHaveLength(0)
+    const body = JSON.parse(String(second.content?.[0]?.text))
+    expect(body.hint).toBeUndefined()
+    expect(body.delivery).toBeUndefined()
+
+    await vi.waitFor(() => expect(registry.get(desc.id)?.busy).toBe(false))
+    client.close()
+    registry.shutdown()
+  })
+
+  it("explicit interrupt: false overrides a config default of true (queues + hint suppressed)", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const { agent, release } = busyThenCompletesAgentSession()
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: agent,
+      adapterSlug: "fake",
+    })
+    const client = await makeMcpClient(registry, { defaultAgentPromptInterrupt: true })
+    const spy = vi.spyOn(registry, "enqueuePrompt")
+
+    void (await client.callTool({
+      name: "agent_prompt",
+      arguments: { sessionId: desc.id, prompt: "first" },
+    }))
+    expect(registry.get(desc.id)?.busy).toBe(true)
+
+    const second = (await client.callTool({
+      name: "agent_prompt",
+      arguments: { sessionId: desc.id, prompt: "second", interrupt: false },
+    })) as { content?: { text: string }[] }
+    // Explicit false beats the config default of true → interrupt: false
+    // reached the registry and the prompt parked in the FIFO queue.
+    expect(spy).toHaveBeenLastCalledWith(
+      desc.id,
+      "second",
+      expect.objectContaining({ interrupt: false }),
+    )
+    expect(registry.get(desc.id)?.promptQueue).toHaveLength(1)
+    const body = JSON.parse(String(second.content?.[0]?.text))
+    expect(body.hint).toBeUndefined()
+
+    release()
+    await vi.waitFor(() => expect(registry.get(desc.id)?.busy).toBe(false))
     client.close()
     registry.shutdown()
   })

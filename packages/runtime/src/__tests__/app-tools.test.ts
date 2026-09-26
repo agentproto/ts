@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { isAbsolute, join } from "node:path"
+import matter from "gray-matter"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
@@ -17,13 +18,15 @@ import { defineApp } from "@agentproto/app-kit"
 import { defineAgent } from "@agentproto/agent"
 import { defineWorkflow } from "@agentproto/workflow"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
-import { compileWorkflow, type AgentStep } from "@agentproto/workflow-runtime"
+import { compileWorkflow, runWorkflow, type AgentStep } from "@agentproto/workflow-runtime"
 import {
   registerAppTools,
   resolveAgentRefsForWorkflow,
+  resolveAppToolsForWorkflow,
   sanitizeOutputBlocks,
   buildAgentRunSpawnConfig,
 } from "../app-tools.js"
+import { createDaemonToolRegistry, mergeAppAndDaemonToolRegistry } from "../workflow-tool-registry.js"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
 import { createSessionsRegistry } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
@@ -353,7 +356,12 @@ describe("app_* verbs", () => {
       await client.callTool({ name: "app_status", arguments: { appRunId: ran.appRunId } }),
     )
     expect(status.status).toBe("running")
-    expect(status.sessions).toEqual([
+    expect(status.sessions).toEqual([{ agentId: "worker", sessionId, status: "running" }])
+
+    const fullStatus = parseToolJson(
+      await client.callTool({ name: "app_status", arguments: { appRunId: ran.appRunId, full: true } }),
+    )
+    expect(fullStatus.sessions).toEqual([
       { agentId: "worker", sessionId, descriptor: expect.objectContaining({ id: sessionId }) },
     ])
 
@@ -361,7 +369,7 @@ describe("app_* verbs", () => {
       await client.callTool({ name: "app_stop", arguments: { appRunId: ran.appRunId } }),
     )
     expect(stopped.killed).toEqual([sessionId])
-    expect(stopped.status).toBe("stopped")
+    expect(stopped.status).toBe("cancelled")
     expect(registry.get(sessionId)?.status).toBe("killed")
   })
 
@@ -861,7 +869,7 @@ describe("app_run runner pass-through + truthful terminal state (agentproto/ts A
     expect(ran.harness).toBe("adapter-y")
   })
 
-  it("app_status reconciles a concurrent run whose sessions are all terminal into ended + endedAt", async () => {
+  it("app_status reconciles a concurrent run whose sessions are all terminal into succeeded + endedAt", async () => {
     await buildFixtureApp(dir, { toolId: "known_tool" })
     const { client, registry } = await setup()
     await client.callTool({ name: "app_install", arguments: { dir } })
@@ -884,11 +892,11 @@ describe("app_run runner pass-through + truthful terminal state (agentproto/ts A
     status = parseToolJson(
       await client.callTool({ name: "app_status", arguments: { appRunId: ran.appRunId } }),
     )
-    expect(status.status).toBe("ended")
+    expect(status.status).toBe("succeeded")
     expect(status.endedAt).toBeTruthy()
   })
 
-  it("app_run with sequence spawns agents in order and reports ended once both are terminal", async () => {
+  it("app_run with sequence spawns agents in order and reports succeeded once both are terminal", async () => {
     await buildTwoAgentApp(dir)
     const startSession = fakeStartSession()
     const resolveAgentAdapter: AgentAdapterResolver = async slug =>
@@ -909,7 +917,7 @@ describe("app_run runner pass-through + truthful terminal state (agentproto/ts A
         },
       }),
     )
-    expect(ran.status).toBe("ended")
+    expect(ran.status).toBe("succeeded")
     expect(ran.endedAt).toBeTruthy()
     expect(ran.sessions.map((s: any) => s.agentId)).toEqual(["job-scout", "job-tailor"])
     // One spawn per agent, in sequence order (run.sessions is built strictly
@@ -923,7 +931,7 @@ describe("app_run runner pass-through + truthful terminal state (agentproto/ts A
     }
 
     const run = appRegistry.getRun(ran.appRunId)!
-    expect(run.status).toBe("ended")
+    expect(run.status).toBe("succeeded")
     expect(run.adapter).toBe("harness-h")
     expect(run.harness).toBe("harness-h")
     expect(run.model).toBe("claude-sonnet-5")
@@ -966,7 +974,7 @@ describe("app_run runner pass-through + truthful terminal state (agentproto/ts A
     ])
 
     releases.shift()?.()
-    await vi.waitFor(() => expect(appRegistry.getRun(ran.appRunId)?.status).toBe("ended"))
+    await vi.waitFor(() => expect(appRegistry.getRun(ran.appRunId)?.status).toBe("succeeded"))
   })
 
   it("empty text blocks don't break sequential completion (sanitized, not an error)", async () => {
@@ -981,9 +989,9 @@ describe("app_run runner pass-through + truthful terminal state (agentproto/ts A
       }),
     )
     // A session whose terminal output is blank still completes; the run lands
-    // on a truthful terminal `ended` rather than surfacing a blank block.
-    expect(ran.status).toBe("ended")
-    expect(appRegistry.getRun(ran.appRunId)!.status).toBe("ended")
+    // on a truthful terminal `succeeded` rather than surfacing a blank block.
+    expect(ran.status).toBe("succeeded")
+    expect(appRegistry.getRun(ran.appRunId)!.status).toBe("succeeded")
 
     // Unit-level guard: blank/whitespace text blocks are dropped; real text
     // and non-text blocks survive.
@@ -1169,7 +1177,7 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
     await rm(dir, { recursive: true, force: true })
   })
 
-  it("defineApp → emit → app_install → loadWorkflowHandle → compileWorkflow resolves agent.ref to the app's emitted AGENT.md", async () => {
+  it("defineApp → emit → app_install → loadWorkflowHandle → compileWorkflow resolves agent.ref: a claude-* AGENT.md model with no adapter override defaults to claude-code (F26)", async () => {
     const app = defineApp({
       id: "@test/agent-step-app",
       name: "Agent Step App",
@@ -1180,6 +1188,7 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
             id: "worker",
             description: "A worker agent.",
             model: "claude-sonnet-5",
+            tools: ["read_file", "branch_gc_verdict"],
             workflows: [{ ref: "do-thing" }],
           }),
           body: "You do the thing.",
@@ -1219,15 +1228,136 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
     const compiled = compileWorkflow(handle, {
       tools: {},
       candidates: [],
-      agentRefs: resolveAgentRefsForWorkflow(appRegistry, handle.id),
+      agentRefs: await resolveAgentRefsForWorkflow(appRegistry, handle.id),
     })
     const step = compiled.steps[0] as AgentStep
     expect(step.kind).toBe("agent")
-    expect(step.adapter).toBe("mastra-agent")
-    expect(step.options).toEqual({ agent: installed.agents[0].path })
+    // F26: `model: claude-sonnet-5` + no `metadata.adapter`/`harness` on the
+    // AGENT.md ⇒ the model-based default (claude-code), not the old blanket
+    // mastra-agent fallback. The `agent` adapter option is mastra-agent-only
+    // (claude-code's manifest doesn't declare it), so it's dropped too; the
+    // model is forwarded instead.
+    expect(step.adapter).toBe("claude-code")
+    expect(step.options).toBeUndefined()
+    expect(step.model).toBe("claude-sonnet-5")
     expect(step.prompt({ input: undefined, item: undefined, index: undefined, steps: {} })).toBe(
       "Do the thing.",
     )
+    // AGENT.md's declared tools ride along to scope the step's daemon mount.
+    expect(step.agentTools).toEqual(["read_file", "branch_gc_verdict"])
+  })
+
+  it("agent.ref resolution: no AGENT.md model and no adapter override keeps the blanket mastra-agent default", async () => {
+    const app = defineApp({
+      id: "@test/agent-step-app-no-model",
+      name: "Agent Step App (no model)",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: { ref: "some-non-string-model-ref" },
+            workflows: [{ ref: "do-thing-no-model" }],
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      workflows: [
+        defineWorkflow({
+          id: "do-thing-no-model",
+          name: "Do thing",
+          description: "Does a thing, declaratively, via an agent step.",
+          version: "0.1.0",
+          inputs: {},
+          outputs: {},
+          steps: [
+            { id: "step1", kind: "agent", agent: { ref: "worker" }, prompt: "Do the thing." },
+          ],
+        }),
+      ],
+    })
+    await app.emit(dir)
+
+    const { client, appRegistry } = await setup()
+    const installed = parseToolJson(
+      await client.callTool({ name: "app_install", arguments: { dir } }),
+    )
+    const workflowPath = installed.workflows[0].path as string
+    const handle = await loadWorkflowHandle(workflowPath)
+    const compiled = compileWorkflow(handle, {
+      tools: {},
+      candidates: [],
+      agentRefs: await resolveAgentRefsForWorkflow(appRegistry, handle.id),
+    })
+    const step = compiled.steps[0] as AgentStep
+    expect(step.adapter).toBe("mastra-agent")
+    expect(step.options).toEqual({ agent: installed.agents[0].path })
+  })
+
+  it("agent.ref resolution: a step-level adapter wins over both the AGENT.md metadata override and the model-based default (F26)", async () => {
+    const app = defineApp({
+      id: "@test/agent-step-app-explicit",
+      name: "Agent Step App (explicit step adapter)",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+            metadata: { adapter: "claude-code" },
+            workflows: [{ ref: "do-thing-explicit" }],
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      workflows: [
+        defineWorkflow({
+          id: "do-thing-explicit",
+          name: "Do thing",
+          description: "Does a thing, declaratively, via an agent step.",
+          version: "0.1.0",
+          inputs: {},
+          outputs: {},
+          steps: [
+            {
+              id: "step1",
+              kind: "agent",
+              agent: { ref: "worker" },
+              adapter: "mastra-agent",
+              prompt: "Do the thing.",
+            },
+          ],
+        }),
+      ],
+    })
+    await app.emit(dir)
+
+    const { client, appRegistry } = await setup()
+    const installed = parseToolJson(
+      await client.callTool({ name: "app_install", arguments: { dir } }),
+    )
+    const workflowPath = installed.workflows[0].path as string
+    const handle = await loadWorkflowHandle(workflowPath)
+    const compiled = compileWorkflow(handle, {
+      tools: {},
+      candidates: [],
+      agentRefs: await resolveAgentRefsForWorkflow(appRegistry, handle.id),
+    })
+    const step = compiled.steps[0] as AgentStep
+    // The step's own `adapter:` (mastra-agent) wins over both the AGENT.md
+    // `metadata.adapter` override (claude-code) and F26's model-based
+    // default. `options` does NOT inherit the ref resolution's mastra-agent
+    // `agent` option here — that option was computed for whatever adapter
+    // the REF resolves to on its own (claude-code, since `metadata.adapter`
+    // wins there), and blindly forwarding it to a step-level override would
+    // risk attaching an option id the overridden adapter's manifest never
+    // declared. A step that overrides the ref's adapter must set its own
+    // `options` too.
+    expect(step.adapter).toBe("mastra-agent")
+    expect(step.options).toBeUndefined()
+    expect(step.model).toBe("claude-sonnet-5")
   })
 
   it("compiling a bundled workflow's agent-step against a DIFFERENT app's registry fails naming the ref", async () => {
@@ -1265,13 +1395,209 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
     // `resolveAgentRefsForWorkflow` finds no bundling app for this workflow id.
     const { appRegistry } = await setup()
     const handle = await loadWorkflowHandle(join(dir, ".agentproto", "workflows", "do-thing-2", "WORKFLOW.md"))
+    const agentRefs = await resolveAgentRefsForWorkflow(appRegistry, handle.id)
     expect(() =>
       compileWorkflow(handle, {
         tools: {},
         candidates: [],
-        agentRefs: resolveAgentRefsForWorkflow(appRegistry, handle.id),
+        agentRefs,
       }),
     ).toThrow(/unknown agent ref 'worker'.*not running in an app context/)
+  })
+})
+
+/** Writes a `TOOL.md`/`DRIVER.md` AIP-14/30 manifest (frontmatter + body)
+ *  under `<appDir>/.agentproto/<kind>s/<id>/<FILE>`. */
+async function writeBundledManifest(
+  appDir: string,
+  kind: "tools" | "drivers",
+  id: string,
+  file: "TOOL.md" | "DRIVER.md",
+  data: Record<string, unknown>,
+): Promise<void> {
+  const target = join(appDir, ".agentproto", kind, id, file)
+  await mkdir(join(target, ".."), { recursive: true })
+  await writeFile(target, matter.stringify("", data), "utf8")
+}
+
+describe("BRIEF-D: app-bundled TOOL.md/DRIVER.md tool steps", () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "app-tools-bundled-tools-test-"))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  /** A marker file the CLI driver touches only on a successful (post
+   *  validation) spawn — lets a test prove the process never ran. */
+  function markerPath(): string {
+    return join(dir, "spawned.marker")
+  }
+
+  async function buildBundledApp(): Promise<void> {
+    const app = defineApp({
+      id: "@test/bundled-tools-app",
+      name: "Bundled Tools App",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "claude-sonnet-5",
+            workflows: [{ ref: "greet-flow" }],
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      workflows: [
+        defineWorkflow({
+          id: "greet-flow",
+          name: "Greet flow",
+          description: "One app-bundled tool step, one daemon-only tool step.",
+          version: "0.1.0",
+          inputs: {},
+          outputs: {},
+          steps: [
+            { id: "greet", kind: "tool", tool: "greet", inputs: { name: "$input.name" } },
+            { id: "known", kind: "tool", tool: "known_tool" },
+          ],
+        }),
+      ],
+    })
+    await app.emit(dir)
+
+    await writeBundledManifest(dir, "tools", "greet", "TOOL.md", {
+      schema: "agentproto/tool/v1",
+      id: "greet",
+      name: "Greet",
+      description: "Greets a name.",
+      version: "1.0.0",
+      inputs: {
+        type: "object",
+        required: ["name"],
+        properties: { name: { type: "string" } },
+      },
+      outputs: {
+        type: "object",
+        required: ["greeting"],
+        properties: { greeting: { type: "string" } },
+      },
+    })
+    await writeBundledManifest(dir, "drivers", "greet-cli", "DRIVER.md", {
+      schema: "agentproto/driver/v1",
+      id: "greet-cli",
+      name: "Greet CLI Driver",
+      description: "Greets via a portable node -e invocation.",
+      version: "1.0.0",
+      kind: "cli",
+      implements: [
+        {
+          tool: "greet",
+          version: "*",
+          metadata: {
+            cli: {
+              argv: [
+                "-e",
+                `require('fs').writeFileSync(${JSON.stringify(markerPath())}, 'spawned'); console.log(JSON.stringify({greeting: 'hello, ' + process.argv[1]}))`,
+                "${input.name}",
+              ],
+              outputFormat: "json",
+            },
+          },
+        },
+      ],
+      metadata: { cli: { bin: process.execPath } },
+    })
+  }
+
+  /** Mirrors the real `compileWorkflow` seam in `index.ts` — the same
+   *  `resolveAppToolsForWorkflow` + `mergeAppAndDaemonToolRegistry` +
+   *  `createDaemonToolRegistry` composition, minus the daemon's own
+   *  `console.warn` logging. */
+  async function compileInstalledWorkflow(
+    appRegistry: AppRegistry,
+    handle: Awaited<ReturnType<typeof loadWorkflowHandle>>,
+    dispatchTool: (name: string, inputs: Record<string, unknown>) => Promise<unknown>,
+  ) {
+    const daemonRegistry = createDaemonToolRegistry(handle, dispatchTool)
+    const appRegistryEntry = await resolveAppToolsForWorkflow(appRegistry, handle.id)
+    const merged = mergeAppAndDaemonToolRegistry(daemonRegistry, appRegistryEntry)
+    return compileWorkflow(handle, merged)
+  }
+
+  it("app_install succeeds for a workflow tool step an app-bundled TOOL.md (not a daemon tool) satisfies", async () => {
+    await buildBundledApp()
+    // Default `listRegisteredToolIds` is `["known_tool"]` — 'greet' is NOT
+    // a daemon tool, only the app's own TOOL.md; this must still install.
+    const { client } = await setup()
+    const installed = parseToolJson(await client.callTool({ name: "app_install", arguments: { dir } }))
+    expect(installed.appId).toBe("@test/bundled-tools-app")
+  })
+
+  it("runs the app driver for the app tool step and the daemon passthrough for the other — agent-free", async () => {
+    await buildBundledApp()
+    const { client, appRegistry } = await setup()
+    const installed = parseToolJson(await client.callTool({ name: "app_install", arguments: { dir } }))
+    const handle = await loadWorkflowHandle(installed.workflows[0].path as string)
+
+    const daemonCalls: string[] = []
+    const dispatchTool = async (name: string) => {
+      daemonCalls.push(name)
+      return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true }) }] }
+    }
+
+    const compiled = await compileInstalledWorkflow(appRegistry, handle, dispatchTool)
+    const { output } = await runWorkflow({ workflow: compiled, input: { name: "World" } })
+    expect((output as { ok: boolean }).ok).toBe(true)
+    expect(daemonCalls).toEqual(["known_tool"])
+  })
+
+  it("rejects input that fails the TOOL.md contract schema before the process spawns", async () => {
+    await buildBundledApp()
+    const { client, appRegistry } = await setup()
+    const installed = parseToolJson(await client.callTool({ name: "app_install", arguments: { dir } }))
+    const handle = await loadWorkflowHandle(installed.workflows[0].path as string)
+
+    const compiled = await compileInstalledWorkflow(appRegistry, handle, async () => ({
+      content: [{ type: "text" as const, text: JSON.stringify({ ok: true }) }],
+    }))
+    // `name` is required by the TOOL.md `inputs` schema; omitting it must
+    // fail validation before the CLI driver ever spawns `node`.
+    await expect(runWorkflow({ workflow: compiled, input: {} })).rejects.toThrow(/name/)
+    await expect(rm(markerPath())).rejects.toThrow() // never created — the process never ran
+  })
+
+  it("a driver's missing declared secret fails the step, naming the secret — never at app install", async () => {
+    await buildBundledApp()
+    // Overwrite the driver to declare a secret this env will never have.
+    await writeBundledManifest(dir, "drivers", "greet-cli", "DRIVER.md", {
+      schema: "agentproto/driver/v1",
+      id: "greet-cli",
+      name: "Greet CLI Driver",
+      description: "Greets via node -e; requires a secret this test never sets.",
+      version: "1.0.0",
+      kind: "cli",
+      implements: [
+        { tool: "greet", version: "*", metadata: { cli: { argv: ["-e", "0"], outputFormat: "text" } } },
+      ],
+      auth: { state: { env: ["BRIEF_D_APP_TOOLS_TEST_MISSING_SECRET"] } },
+      metadata: { cli: { bin: process.execPath } },
+    })
+    delete process.env.BRIEF_D_APP_TOOLS_TEST_MISSING_SECRET
+
+    const { client, appRegistry } = await setup()
+    const installed = parseToolJson(await client.callTool({ name: "app_install", arguments: { dir } }))
+    expect(installed.appId).toBe("@test/bundled-tools-app") // install itself is unaffected
+
+    const handle = await loadWorkflowHandle(installed.workflows[0].path as string)
+    const compiled = await compileInstalledWorkflow(appRegistry, handle, async () => ({
+      content: [{ type: "text" as const, text: JSON.stringify({ ok: true }) }],
+    }))
+    await expect(runWorkflow({ workflow: compiled, input: { name: "World" } })).rejects.toThrow(
+      /missing required secret 'BRIEF_D_APP_TOOLS_TEST_MISSING_SECRET'/,
+    )
   })
 })
 

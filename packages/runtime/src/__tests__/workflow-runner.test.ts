@@ -9,6 +9,7 @@ import { defineDriver, implementTool } from "@agentproto/driver"
 import { compileWorkflow } from "@agentproto/workflow-runtime"
 import { createWorkflowRunner } from "../workflow-runner.js"
 import { createSessionEventBus } from "../session-event-bus.js"
+import { createAppRegistry } from "../app-registry.js"
 import type { SessionsRegistry, SessionDescriptor } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 
@@ -355,6 +356,119 @@ describe("WorkflowRunner", () => {
   })
 })
 
+// ── AIP-58 §3(a) run.requestInput ───────────────────────────────────────
+
+describe("WorkflowRunner — AIP-58 §3(a) run.requestInput", () => {
+  it("recordInputRequest on a session not owned by a running workflow step is a tool error, no side effect", () => {
+    const bus = createSessionEventBus()
+    const registry = makeMockRegistry()
+    const runner = createWorkflowRunner({ registry, sessionEvents: bus, resolveAgentAdapter: makeMockAdapter() })
+    const result = runner.recordInputRequest("sess_unknown", { prompt: "what?" })
+    expect(result).toEqual({ ok: false, error: "session_not_in_workflow_step" })
+  })
+
+  it("suspends an agent step on the signal; an invalid resume payload is rejected (still suspended), a valid one resumes the SAME session and re-evaluates the step", async () => {
+    const bus = createSessionEventBus()
+    const sentPrompts: string[] = []
+    let requestRecorded = false
+    // `runner` is referenced from inside `sendPrompt` below but only ever
+    // CALLED after `runner` is assigned (the run hasn't started yet).
+    let runner!: ReturnType<typeof createWorkflowRunner>
+
+    const registry = makeMockRegistry({
+      spawnAgent: vi.fn((input) => ({
+        id: "sess_draft",
+        kind: "agent-cli" as const,
+        workspaceSlug: "test",
+        command: "mock",
+        pid: null,
+        status: "running" as const,
+        startedAt: new Date().toISOString(),
+        cwd: input.cwd,
+        label: input.label,
+      })),
+      sendPrompt: vi.fn(async (sessionId: string, prompt: string) => {
+        sentPrompts.push(prompt)
+        if (!requestRecorded) {
+          requestRecorded = true
+          // Simulates the agent calling the `run_request_input` MCP tool
+          // mid-turn, before its turn ends.
+          const result = runner.recordInputRequest(sessionId, {
+            prompt: "what tone should the brief use — formal or casual?",
+            schema: {
+              type: "object",
+              properties: { tone: { enum: ["formal", "casual"] } },
+              required: ["tone"],
+            },
+          })
+          expect(result.ok).toBe(true)
+        }
+        bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" })
+      }),
+      get: vi.fn((id) =>
+        id === "sess_draft"
+          ? { id, kind: "agent-cli" as const, workspaceSlug: "test", command: "mock", pid: null, status: "running" as const, startedAt: "t" }
+          : undefined
+      ),
+    })
+
+    runner = createWorkflowRunner({ registry, sessionEvents: bus, resolveAgentAdapter: makeMockAdapter() })
+
+    const run = await runner.start({
+      workflowId: "pricing-brief",
+      stages: [{ steps: [{ label: "draft", adapter: "mock", prompt: "write it" }] }],
+    })
+
+    const suspendedOrFailed = new Set(["awaiting-input", "failed"])
+    let parked = runner.status(run.runId)
+    for (let i = 0; i < 100 && parked && !suspendedOrFailed.has(parked.status); i++) {
+      await new Promise(res => setTimeout(res, 10))
+      parked = runner.status(run.runId)
+    }
+    expect(parked?.status).toBe("awaiting-input")
+    expect(parked?.error).toBeUndefined()
+    expect(parked?.awaitingSuspend).toMatchObject({
+      stepId: "draft",
+      reason: "input-required",
+      prompt: "what tone should the brief use — formal or casual?",
+    })
+    // §3: `StepRecord.suspend` on the STEP itself — the transcriber UI
+    // contract (`stages[].steps[].suspend { reason, prompt, schema }`).
+    expect(parked?.stages[0]?.steps[0]?.suspend).toEqual({
+      reason: "input-required",
+      prompt: "what tone should the brief use — formal or casual?",
+      schema: { type: "object", properties: { tone: { enum: ["formal", "casual"] } }, required: ["tone"] },
+    })
+
+    // §3/§9: a resume payload that fails `suspend.schema` is rejected
+    // WITHOUT transitioning the run — it stays suspended.
+    const invalid = runner.resumeSuspend(run.runId, { payload: { tone: "sarcastic" } })
+    expect(invalid).toMatchObject({ ok: false, error: "invalid_payload" })
+    expect(runner.status(run.runId)?.status).toBe("awaiting-input")
+    expect(runner.status(run.runId)?.awaitingSuspend?.stepId).toBe("draft")
+
+    // A valid payload resumes — sent as the step's NEXT prompt to the SAME
+    // session, then the outcome rule is re-applied (no outputSchema here ⇒
+    // vacuous contract ⇒ succeeds).
+    const valid = runner.resumeSuspend(run.runId, { payload: { tone: "formal" } })
+    expect(valid.ok).toBe(true)
+
+    const terminal = new Set(["done", "failed", "cancelled"])
+    let final = runner.status(run.runId)
+    for (let i = 0; i < 100 && final && !terminal.has(final.status); i++) {
+      await new Promise(res => setTimeout(res, 10))
+      final = runner.status(run.runId)
+    }
+    expect(final?.status).toBe("done")
+    expect(final?.awaitingSuspend).toBeUndefined()
+    expect(final?.stages[0]?.steps[0]?.suspend).toBeUndefined()
+    expect(sentPrompts).toEqual([
+      "write it\n\nIf you need information you don't have, call the run_request_input tool instead of asking in your reply.",
+      JSON.stringify({ tone: "formal" }),
+    ])
+  })
+})
+
 // ── Persistence tests ─────────────────────────────────────────────────
 
 describe("WorkflowRunner persistence", () => {
@@ -669,6 +783,134 @@ steps:
     expect(final?.status).toBe("done")
     expect(final?.stages[0]?.status).toBe("done")
     expect(final?.stages[0]?.steps[0]?.status).toBe("done")
+    // The workflow's own final output is kept on the run record (persisted
+    // with it) — not only buried in the last step's `output`.
+    expect(final?.output).toEqual({ n: 20 })
+  })
+
+  // F35: a replay whose map items all hit the step cache used to list no
+  // item step at all — the item is only discovered via onStepStart.
+  it("a cache-hit map item still surfaces as a done step, marked cached, on a replay with the same cacheKey", async () => {
+    vi.stubEnv("HOME", tmpDir) // createFileStepCache's default dir is under homedir()
+    try {
+      const bus = createSessionEventBus()
+      const registry = makeMockRegistry()
+      const { tools, candidates } = makeStubTools()
+      const runner = createWorkflowRunner({
+        registry,
+        sessionEvents: bus,
+        resolveAgentAdapter: makeMockAdapter(),
+        compileWorkflow: (handle) => compileWorkflow(handle, { tools, candidates }),
+      })
+      const path = writeWorkflowMd(`---
+name: Cached map
+id: cached-map
+description: Doubles each item; the item step is cacheable.
+version: 0.1.0
+inputs: {}
+outputs: {}
+steps:
+  - id: chunks
+    kind: map
+    over: $input.xs
+    steps:
+      - id: clean-chunk
+        kind: tool
+        tool: demo.double
+        cacheable: true
+        inputs:
+          n: $item
+---
+
+# Cached map
+`)
+      const runToEnd = async () => {
+        const run = await runner.startFromFile({ path, input: { xs: [1, 2] }, cacheKey: "f35-replay" })
+        const terminal = new Set(["done", "failed", "cancelled"])
+        let final = runner.status(run.runId)
+        for (let i = 0; i < 100 && final && !terminal.has(final.status); i++) {
+          await new Promise(res => setTimeout(res, 10))
+          final = runner.status(run.runId)
+        }
+        return final
+      }
+
+      const first = await runToEnd()
+      expect(first?.status).toBe("done")
+      const firstItems = first?.stages[0]?.steps.filter(s => s.label.startsWith("clean-chunk")) ?? []
+      expect(firstItems.map(s => s.label).sort()).toEqual(["clean-chunk[0]", "clean-chunk[1]"])
+      expect(firstItems.every(s => s.cached === undefined)).toBe(true)
+
+      const replay = await runToEnd()
+      expect(replay?.status).toBe("done")
+      const items = replay?.stages[0]?.steps.filter(s => s.label.startsWith("clean-chunk")) ?? []
+      expect(items.map(s => s.label).sort()).toEqual(["clean-chunk[0]", "clean-chunk[1]"])
+      for (const s of items) {
+        expect(s.status).toBe("done")
+        expect(s.cached).toBe(true)
+        expect(s.startedAt).toBeDefined()
+        expect(s.endedAt).toBeDefined()
+        expect(s.output).toEqual({ n: s.label === "clean-chunk[0]" ? 2 : 4 })
+      }
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  // AIP-58 §3 Outcome rule: "invalid or missing required input is checked
+  // before any step runs". This is the `startFromFile` half of the P1
+  // validation seam (see `@agentproto/workflow-runtime`'s
+  // `validateWorkflowInput` for the normalizer + ajv unit tests).
+  it("rejects a run with missing required input before dispatching any step or spawning a session", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeMockRegistry()
+    const { tools, candidates } = makeStubTools()
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      compileWorkflow: (handle) => compileWorkflow(handle, { tools, candidates }),
+    })
+
+    const path = writeWorkflowMd(`---
+name: Double then add
+id: double-add-validated
+description: Double the input, then add ten.
+version: 0.1.0
+inputs:
+  type: object
+  properties:
+    n: { type: number }
+  required: ["n"]
+outputs: {}
+steps:
+  - id: d
+    kind: tool
+    tool: demo.double
+    inputs:
+      n: $input.n
+  - id: a
+    kind: tool
+    tool: demo.add-ten
+    inputs:
+      n: $steps.d.n
+---
+
+# Double then add
+`)
+
+    // Missing the required `n` — rejected synchronously, never reaches "running".
+    const run = await runner.startFromFile({ path, input: {} })
+
+    expect(run.status).toBe("failed")
+    expect(run.errorCode).toBe("invalid-input")
+    expect(run.error).toContain("n")
+    expect(run.stages).toEqual([])
+    expect(registry.spawnAgent).not.toHaveBeenCalled()
+
+    // Status stays "failed" — there is no background dispatch to race.
+    await waitNextTick()
+    expect(runner.status(run.runId)?.status).toBe("failed")
   })
 
   it("parks a run at a kind:\"suspend\" step and resumes it to done (AIP-15 rule 7)", async () => {
@@ -811,6 +1053,184 @@ steps:
     expect(final?.result?.sessionIds).toEqual(["sess_review_001"])
   })
 
+  // F25: an app-owned workflow run through `startFromFile` with no explicit
+  // `cwd` defaults agent-step spawns to the owning app's root (the same root
+  // #1395's app-bundled cli drivers spawn under) — never the daemon's own
+  // process cwd, which the original bug report saw resolve to "/".
+  it("F25: an app-owned workflow with no explicit cwd defaults the agent step's spawn cwd to the app root", async () => {
+    const bus = createSessionEventBus()
+    const spawnAgent = vi.fn((input: { cwd?: string; label?: string }) => ({
+      id: "sess_review_002",
+      kind: "agent-cli" as const,
+      workspaceSlug: "test",
+      command: "mock",
+      pid: null,
+      status: "running" as const,
+      startedAt: new Date().toISOString(),
+      cwd: input.cwd,
+      label: input.label,
+    }))
+    const registry = makeMockRegistry({
+      spawnAgent,
+      sendPrompt: vi.fn(async (sessionId: string) => {
+        bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" })
+      }),
+      get: vi.fn((id) =>
+        id === "sess_review_002"
+          ? { id, kind: "agent-cli" as const, workspaceSlug: "test", command: "mock", pid: null, status: "running" as const, startedAt: "t" }
+          : undefined
+      ),
+    })
+    const appRegistry = createAppRegistry()
+    // A real, writable directory (not a fake path) — the app ledger bridge
+    // best-effort-writes under `<dir>/data/state/`, which would otherwise
+    // warn-and-skip on a nonexistent root.
+    const appRoot = tmpDir
+    appRegistry.upsertApp({
+      appId: "@test/review-app",
+      dir: appRoot,
+      agents: [],
+      workflows: [{ id: "review-wf-cwd", path: join(tmpDir, ".agentproto", "workflows", "review-wf-cwd", "WORKFLOW.md") }],
+      unvalidatedAgentTools: [],
+    })
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      compileWorkflow: (handle) => compileWorkflow(handle, { tools: {}, candidates: [] }),
+      appRegistry,
+    })
+
+    writeFileSync(
+      join(tmpDir, "entry.mjs"),
+      `export default {
+        name: "Review",
+        id: "review-wf-cwd",
+        description: "Review workflow.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [
+          { id: "review", kind: "agent", adapter: "mock", prompt: () => "review it" },
+        ],
+      }`,
+      "utf8",
+    )
+    const path = writeWorkflowMd(`---
+name: Review
+id: review-wf-cwd
+description: Review workflow.
+version: 0.1.0
+entry: ./entry.mjs
+inputs: {}
+outputs: {}
+steps:
+  - id: review
+    kind: agent
+---
+`)
+
+    const run = await runner.startFromFile({ path })
+    // Recorded on the run immediately, even before the spawn happens — F25's
+    // "never silently invisible" requirement.
+    expect(run.cwd).toBe(appRoot)
+
+    const terminal = new Set(["done", "failed", "cancelled"])
+    let final = runner.status(run.runId)
+    for (let i = 0; i < 100 && final && !terminal.has(final.status); i++) {
+      await new Promise(res => setTimeout(res, 10))
+      final = runner.status(run.runId)
+    }
+
+    expect(final?.status).toBe("done")
+    expect(spawnAgent).toHaveBeenCalledTimes(1)
+    expect(spawnAgent.mock.calls[0]![0].cwd).toBe(appRoot)
+  })
+
+  it("F25: an explicit cwd still wins even when the workflow is app-owned", async () => {
+    const bus = createSessionEventBus()
+    const spawnAgent = vi.fn((input: { cwd?: string; label?: string }) => ({
+      id: "sess_review_003",
+      kind: "agent-cli" as const,
+      workspaceSlug: "test",
+      command: "mock",
+      pid: null,
+      status: "running" as const,
+      startedAt: new Date().toISOString(),
+      cwd: input.cwd,
+      label: input.label,
+    }))
+    const registry = makeMockRegistry({
+      spawnAgent,
+      sendPrompt: vi.fn(async (sessionId: string) => {
+        bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" })
+      }),
+      get: vi.fn((id) =>
+        id === "sess_review_003"
+          ? { id, kind: "agent-cli" as const, workspaceSlug: "test", command: "mock", pid: null, status: "running" as const, startedAt: "t" }
+          : undefined
+      ),
+    })
+    const appRegistry = createAppRegistry()
+    appRegistry.upsertApp({
+      appId: "@test/review-app-explicit",
+      dir: tmpDir,
+      agents: [],
+      workflows: [{ id: "review-wf-explicit-cwd", path: join(tmpDir, ".agentproto", "workflows", "review-wf-explicit-cwd", "WORKFLOW.md") }],
+      unvalidatedAgentTools: [],
+    })
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      compileWorkflow: (handle) => compileWorkflow(handle, { tools: {}, candidates: [] }),
+      appRegistry,
+    })
+
+    writeFileSync(
+      join(tmpDir, "entry.mjs"),
+      `export default {
+        name: "Review",
+        id: "review-wf-explicit-cwd",
+        description: "Review workflow.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [
+          { id: "review", kind: "agent", adapter: "mock", prompt: () => "review it" },
+        ],
+      }`,
+      "utf8",
+    )
+    const path = writeWorkflowMd(`---
+name: Review
+id: review-wf-explicit-cwd
+description: Review workflow.
+version: 0.1.0
+entry: ./entry.mjs
+inputs: {}
+outputs: {}
+steps:
+  - id: review
+    kind: agent
+---
+`)
+
+    const explicitCwd = "/explicit/caller/cwd"
+    const run = await runner.startFromFile({ path, cwd: explicitCwd })
+    expect(run.cwd).toBe(explicitCwd)
+
+    const terminal = new Set(["done", "failed", "cancelled"])
+    let final = runner.status(run.runId)
+    for (let i = 0; i < 100 && final && !terminal.has(final.status); i++) {
+      await new Promise(res => setTimeout(res, 10))
+      final = runner.status(run.runId)
+    }
+
+    expect(final?.status).toBe("done")
+    expect(spawnAgent.mock.calls[0]![0].cwd).toBe(explicitCwd)
+  })
+
   it("kind: gate — emits workflow:gate-report on the session bus and records it on the run's step (AIP-15 P3)", async () => {
     const bus = createSessionEventBus()
     const gateReportEvents: unknown[] = []
@@ -848,11 +1268,6 @@ steps:
     }
 
     expect(final?.status).toBe("done")
-    // `runtimeWorkflowToStages` (workflow-runner.ts) only surfaces AGENT
-    // steps into `run.stages` — a gate-only compiled workflow falls back to
-    // the synthetic single "workflow" stage/step, so there is no `"g"`-labeled
-    // row for `onGateReport`'s best-effort `RoutineStepState.gateReport` sync
-    // to find here. The bus event is the reliable, always-fired signal.
     expect(gateReportEvents).toHaveLength(1)
     expect(gateReportEvents[0]).toMatchObject({
       runId: run.runId,
@@ -862,6 +1277,12 @@ steps:
       report: { checked: 42 },
       attempt: 1,
     })
+    // AIP-58 §5 / F28: `collectStaticSteps` now surfaces a `gate` step as a
+    // real row too (not just agent steps) — `onGateReport`'s best-effort
+    // `RoutineStepState.gateReport` sync finds it here.
+    expect(final?.stages[0]?.steps).toHaveLength(1)
+    expect(final?.stages[0]?.steps[0]?.label).toBe("g")
+    expect(final?.stages[0]?.steps[0]?.gateReport).toMatchObject({ ok: true, exitCode: 0, report: { checked: 42 } })
   })
 
   it("reports progressive step status updates during execution (not all-pending until done)", async () => {

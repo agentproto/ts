@@ -64,12 +64,13 @@ describe("buildCatalogProviderModels", () => {
     expect(first?.pricing?.inPer1M).toBeGreaterThan(0)
   })
 
-  it("enumerates OpenCode Go's 36 models (OPENCODE_GO_ROUTES, not LLM_PRICING_CATALOG)", () => {
+  it("enumerates OpenCode Go's roster (OPENCODE_GO_ROUTES, not LLM_PRICING_CATALOG)", () => {
     const res = buildCatalogProviderModels({ endpoint: "opencode-go" })
-    // The verified Go lineup. This is the enumeration the launch-menu picker
-    // browses, and it is what makes an `opencode-go` auth profile's models
-    // visible at all.
-    expect(res.models).toHaveLength(36)
+    // This is the enumeration the launch-menu picker browses, and it is what
+    // makes an `opencode-go` auth profile's models visible at all. Bounds,
+    // not exact counts: the roster is catalog-synced and moves weekly (cf.
+    // #1324/#1328 — union-alpha moved Go from 36 to 37).
+    expect(res.models.length).toBeGreaterThan(30)
     expect(res.models.every(m => m.kind === "llm")).toBe(true)
     expect(res.models.every(m => m.route === "opencode-go")).toBe(true)
     // Ids are the bare `<provider>/<bare-id>` form a caller spawns — NOT a
@@ -83,9 +84,9 @@ describe("buildCatalogProviderModels", () => {
     expect(glm?.addedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/)
   })
 
-  it("enumerates OpenCode Zen's 102 models, including the whole Claude family", () => {
+  it("enumerates OpenCode Zen's roster, including the whole Claude family", () => {
     const res = buildCatalogProviderModels({ endpoint: "opencode" })
-    expect(res.models).toHaveLength(102)
+    expect(res.models.length).toBeGreaterThan(90)
     expect(res.models.every(m => m.route === "opencode")).toBe(true)
     expect(res.models.every(m => m.id.startsWith("opencode/"))).toBe(true)
     const sonnet = res.models.find(m => m.id === "opencode/claude-sonnet-4-6")

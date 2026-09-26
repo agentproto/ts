@@ -53,10 +53,26 @@ import type { CatalogRoute } from "./catalog-models.js"
 import type { SandboxMode } from "@agentproto/command-sandbox"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
+import {
+  attachFieldSchema,
+  commandSandboxSchema,
+  contextContinuityInputSchema,
+} from "./spawn-field-schemas.js"
 import type {
   WorktreeIsolationMode,
   WorktreeProvisioner,
 } from "./worktree-isolation.js"
+import { appUiToolId } from "./app-ui-apps.js"
+import {
+  createSessionMessage,
+  messageFrom,
+  MESSAGE_KINDS,
+  MESSAGE_URGENCIES,
+  type MessageKind,
+  type MessageUrgency,
+} from "./session-message.js"
+import { defaultUrgencyForKind, registerMessageTools } from "./message-tools.js"
+import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
 
 /** Strip CSI/SGR ANSI escape sequences and bare carriage returns.
  *
@@ -266,6 +282,30 @@ export interface RegisterAgentToolsOptions {
    *  recorded on the session, but nothing auto-evaluates it (a caller can
    *  attach the same gate by hand via `policy_attach`). */
   supervisor?: CompletionPolicySupervisor
+  /** Daemon default for `interrupt` when an `agent_prompt` / `message_parent`
+   *  call leaves it UNSET — resolved from config.json's
+   *  `defaults.agentPromptInterrupt` at the composition root (index.ts). An
+   *  EXPLICIT `interrupt` on the call (true OR false) always wins. Omitted ⇒
+   *  treated as `false` (today's queue-behind-the-turn behaviour). */
+  defaultAgentPromptInterrupt?: boolean
+  /** Whether the `@agentik/session-chat` studio app is installed with a
+   *  `ui` block — same check `builtin-apps.ts` uses to decide whether to
+   *  mount the loopback-HTTP `agentproto_session_chat` launcher at all.
+   *  Threaded here so `agent_start`'s `_meta.ui.resourceUri` (its
+   *  auto-render binding) can point straight at the native MCP Apps tool
+   *  (`ui://app_ui_session_chat/view`) once it exists, instead of the
+   *  loopback launcher a strict-CSP host (Codex) can't fetch. Omitted →
+   *  binds to the legacy `ui://agentproto_session_chat/view`, today's
+   *  behaviour. */
+  isSessionChatInstalled?: () => boolean
+  /** config.json `defaults.messaging.allowSiblings` — lets `message_send` /
+   *  `message_reply` reach a sibling (same parent). Default false. */
+  messagingAllowSiblings?: boolean
+  /** config.json `defaults.messaging.agentInterrupt` — whether a SESSION
+   *  sender's `urgency: "interrupt"` (or `message_parent`'s `interrupt:
+   *  true`) may cancel the recipient's turn. Default "deny": downgraded to
+   *  `steer`. Human (HTTP/CLI) senders always keep interrupt. */
+  messagingAgentInterrupt?: "allow" | "deny"
 }
 
 export function registerAgentTools(
@@ -290,7 +330,21 @@ export function registerAgentTools(
     provisionWorktree,
     resolveWorktreeIsolation,
     supervisor,
+    defaultAgentPromptInterrupt,
+    isSessionChatInstalled,
+    messagingAllowSiblings,
+    messagingAgentInterrupt,
   } = opts
+  // Effective `interrupt` when a call leaves it unset: config default, else
+  // false. An explicit boolean on the call always wins (checked at each site).
+  const interruptDefault = defaultAgentPromptInterrupt ?? false
+  // agent_start's launch-card binding: the native MCP Apps tool once
+  // `@agentik/session-chat` is installed, else the loopback-HTTP launcher
+  // builtin-apps.ts still mounts as a fallback. See
+  // `RegisterAgentToolsOptions.isSessionChatInstalled`.
+  const sessionChatResourceUri = isSessionChatInstalled?.()
+    ? `ui://${appUiToolId(SESSION_CHAT_APP_ID)}/view`
+    : "ui://agentproto_session_chat/view"
 
   // ── agent_start ────────────────────────────────────────
   server.registerTool(
@@ -393,9 +447,7 @@ export function registerAgentTools(
             "call arrives through the scoped orchestrator gateway — that path derives " +
             "the parent from its own token, which always wins over this hint."
         ),
-      attach: jsonTolerant(
-        z.union([z.boolean(), z.object({ parent: z.string().min(1).optional() })]),
-      )
+      attach: jsonTolerant(attachFieldSchema)
         .optional()
         .describe(
           "Parent-attach control, mirroring `worktree`. By DEFAULT (omitted) a " +
@@ -613,6 +665,14 @@ export function registerAgentTools(
                   "`headers` (typically `Authorization`). The actual secret never lives " +
                   "in env or config; brokered headers win on collision with `headers`."
               ),
+            args: z
+              .array(z.string())
+              .optional()
+              .describe("`stdio` only: argv passed to the `ref` command. Ignored for `http`/`sse`."),
+            env: z
+              .record(z.string(), z.string())
+              .optional()
+              .describe("`stdio` only: extra environment for the launched server. Ignored for `http`/`sse`."),
           })
         )
       )
@@ -767,26 +827,7 @@ export function registerAgentTools(
             "crash-loop cap. Omit for today's behaviour: a dead session stays dead " +
             "until a human/orchestrator prompts or restarts it."
         ),
-      contextContinuity: jsonTolerant(
-        z.object({
-          mode: z.enum(["manual", "ask", "auto"]).optional(),
-          warnAtPct: z.number().int().min(0).max(100).optional(),
-          compactAtPct: z.number().int().min(0).max(100).optional(),
-          continueFreshAtPct: z.number().int().min(0).max(100).optional(),
-          hardStopAtPct: z.number().int().min(0).max(100).optional(),
-          goal: z.boolean().optional(),
-          plan: z.boolean().optional(),
-          decisions: z.boolean().optional(),
-          changedFiles: z.boolean().optional(),
-          gitStatus: z.boolean().optional(),
-          tests: z.boolean().optional(),
-          errors: z.boolean().optional(),
-          risks: z.boolean().optional(),
-          nextStep: z.boolean().optional(),
-          config: z.boolean().optional(),
-          label: z.string().optional(),
-        }),
-      )
+      contextContinuity: jsonTolerant(contextContinuityInputSchema)
         .optional()
         .describe(
           "Context-continuity policy for this session — controls warning, opportunistic " +
@@ -823,6 +864,37 @@ export function registerAgentTools(
             "disposition, it cannot replace it, and it cannot re-open the " +
             "tool gate (an executor asked to 'delegate anyway' via this " +
             "field still has no delegation tools)."
+        ),
+      deferredTools: z
+        .boolean()
+        .optional()
+        .describe(
+          "Override deferred/lazy MCP tool loading for this spawn's daemon " +
+            "self-mount: `true` hides every tool outside a small always-on " +
+            "set from `tools/list` (still fully callable — use `tool_search` " +
+            "to look up a hidden tool's schema by keyword before calling it), " +
+            "`false` keeps the full eager surface. Omit to use the resolved " +
+            "role's own default ('executor' defaults ON, since it can't " +
+            "delegate anyway and rarely needs the full ~190-tool surface); " +
+            "omit AND spawn a role with no opinion to fall through to the " +
+            "daemon's own boot-time `defaults.mcp.deferredTools` config."
+        ),
+      browser: z
+        .preprocess(
+          // `true` is sugar for the only mode; stringified booleans tolerated.
+          v => (v === true || v === "true" ? "headless" : v === "false" ? false : v),
+          z.union([z.literal("headless"), z.literal(false)]),
+        )
+        .optional()
+        .describe(
+          "`\"headless\"` gives the spawned agent its own isolated headless Chrome " +
+            "(1440x900, temporary profile) as a per-session `browser` MCP server " +
+            "(chrome-devtools-mcp: navigate_page, take_screenshot, evaluate_script, click, " +
+            "list_console_messages, …), torn down with the session (`true` = `\"headless\"`). " +
+            "Works for any adapter " +
+            "that mounts stdio MCP servers; runs inside the session's `commandSandbox` " +
+            "(`strict` ⇒ file:// only). `false` = none. Omit to use the role / preset / " +
+            "`defaults.spawn.browser` default (off). Not supported with `sandbox`."
         ),
       trace: z
         .boolean()
@@ -889,8 +961,7 @@ export function registerAgentTools(
             "provider-resolved public URL for the served UI (the port is also added to the " +
             "spec's `extraPorts` and echoed in `sandboxPorts`)."
         ),
-      commandSandbox: z
-        .enum(["off", "workspace", "strict"])
+      commandSandbox: commandSandboxSchema
         .optional()
         .describe(
           "OS-level process confinement (macOS Seatbelt / Linux bubblewrap) for the " +
@@ -980,14 +1051,25 @@ export function registerAgentTools(
             "rm|archive|gc`."
         ),
       },
-      // Live-session widget: rendering agent_start's result auto-mounts the
-      // live widget for the new session (ext-apps `_meta.ui.resourceUri` at
-      // the tool-definition level — same mechanism as the panel apps in
-      // mcp-apps-adapter.ts). `visibility:["model","app"]` keeps agent_start
-      // fully usable by the model AND lets the widget re-call it if needed.
+      // Session-chat widget: rendering agent_start's result auto-mounts the
+      // session-chat launcher for the new session (ext-apps
+      // `_meta.ui.resourceUri` at the tool-definition level — same mechanism
+      // as the panel apps in mcp-apps-adapter.ts). The widget reads the
+      // spawned `{ id: "sess_…" }` off the host's tool-result notification
+      // and deep-links the installed `@agentik/session-chat` app straight
+      // into that session (apps/src/session-chat/panel.ts). The older
+      // `ui://live_session/view` resource stays registered for its own
+      // `live_session` tool and other consumers — only this binding moved.
+      // `visibility:["model","app"]` keeps agent_start fully usable by the
+      // model AND lets the widget re-call it if needed. `resourceUri` binds
+      // to the native `app_ui_session_chat` MCP Apps tool once
+      // `@agentik/session-chat` is installed (`isSessionChatInstalled`
+      // above) — the loopback-HTTP `agentproto_session_chat` launcher this
+      // otherwise binds to is unreachable under a strict-CSP host (Codex),
+      // and builtin-apps.ts stops mounting it once the native tool exists.
       _meta: {
         ui: {
-          resourceUri: "ui://live_session/view",
+          resourceUri: sessionChatResourceUri,
           visibility: ["model", "app"],
         },
       },
@@ -1122,8 +1204,10 @@ export function registerAgentTools(
       "(or `agent_sessions_list`). Returns immediately; tail output via " +
       "`agent_output` or the SSE /sessions/:id/stream endpoint. If the " +
       "session is mid-turn, the prompt is queued (FIFO) and dispatched " +
-      "automatically when the current turn ends — so fan-in bursts are " +
-      "delivered in order instead of rejected. Pass `interrupt: true` to " +
+      "automatically when the current turn ends on its own — so fan-in " +
+      "bursts are delivered in order instead of rejected. A turn that is " +
+      "interrupted instead leaves the queue parked until the next natural " +
+      "turn-end. Pass `interrupt: true` to " +
       "cancel the in-flight turn and redirect the SAME session onto this " +
       "prompt instead, without losing its context (unlike `agent_kill`, " +
       "which ends the session entirely). `interrupt` is a no-op on an " +
@@ -1137,9 +1221,12 @@ export function registerAgentTools(
         .optional()
         .describe(
           "When true and the session is mid-turn, cancel the in-flight " +
-            "turn and deliver this prompt on the same session instead of " +
-            "rejecting. No-op when the session is already idle. Default false " +
-            "(mid-turn rejects, as today)."
+            "turn and deliver this prompt on the same session immediately " +
+            "instead of queueing it behind the current turn. No-op when the " +
+            "session is already idle. UNSET falls back to the daemon default " +
+            "`defaults.agentPromptInterrupt` in config.json (false unless an " +
+            "operator changed it) — so a mid-turn target queues by default; " +
+            "pass `interrupt: true` explicitly to cut now."
         ),
       queue: z
         .boolean()
@@ -1172,8 +1259,11 @@ export function registerAgentTools(
         // author instead of "you". An unattributed call (a human operator
         // driving the MCP surface directly) stays source-less.
         const promptSource = callerScope?.ownerSessionId ?? callerSessionId
-        await registry.enqueuePrompt(sessionId, input.prompt, {
-          interrupt: input.interrupt,
+        // Explicit `interrupt` (true OR false) wins; UNSET falls back to the
+        // configurable daemon default.
+        const effectiveInterrupt = input.interrupt ?? interruptDefault
+        const { queued } = await registry.enqueuePrompt(sessionId, input.prompt, {
+          interrupt: effectiveInterrupt,
           // Queue by default: a mid-turn session holds the prompt in its
           // FIFO queue and dispatches it at turn end, so callers never
           // lose a prompt to the busy rejection. Explicit `queue: false`
@@ -1181,12 +1271,32 @@ export function registerAgentTools(
           queue: input.queue ?? true,
           ...(promptSource ? { source: `agent:${promptSource}` } : {}),
         })
+        // Self-documenting loop: the prompt actually parked behind an
+        // in-flight turn (mid-turn + not interrupted) AND the caller never
+        // said anything about `interrupt` — surface the option at the exact
+        // moment it's missing, so it won't be delivered until the current
+        // turn ends.
+        const hintQueued = queued && input.interrupt === undefined
         return {
           content: [
             {
               type: "text",
               text: JSON.stringify(
-                { ok: true, sessionId, queued: true },
+                {
+                  ok: true,
+                  sessionId,
+                  queued: true,
+                  ...(hintQueued
+                    ? {
+                        delivery: "queued-mid-turn",
+                        hint:
+                          "Message queued — it will only be delivered when " +
+                          "the target's CURRENT turn ends. If it's urgent, " +
+                          "re-send with interrupt: true (cancels the in-flight " +
+                          "turn and redirects the session onto this prompt now).",
+                      }
+                    : {}),
+                },
                 null,
                 2
               ),
@@ -1224,24 +1334,59 @@ export function registerAgentTools(
   // daemon resolves the caller's own recorded `parentSessionId`, and it can
   // reach nothing else — which is why it stays out of
   // `DELEGATION_TOOL_NAMES` and is granted role-independently. Delivery
-  // mirrors `supervisor-notify.ts` (the crash-notice path): enqueue as a
-  // normal prompt on an idle parent, stamp onto the parent's pending-notice
-  // queue when it's mid-turn — a child's report never interrupts the
-  // parent's in-flight turn.
+  // goes through `registry.sendMessage` like every typed message: routed by
+  // urgency (fyi / next-turn / steer / interrupt), never concatenated with
+  // another prompt, and a child can't cut its parent's turn unless the
+  // operator granted it (`defaults.messaging.agentInterrupt: "allow"`).
   server.tool(
     "message_parent",
     "Report a message UP to the session that spawned you (your parent/" +
       "supervisor) — a result, a progress update, or a blocker. No session " +
       "id needed: the daemon resolves your recorded parent from your own " +
       "session identity (also visible as the AGENTPROTO_PARENT_SESSION_ID " +
-      "env var). Delivered as a prompt when the parent is idle, or queued " +
-      "onto its next turn when it's mid-turn (never interrupts). Errors if " +
-      "this session has no recorded parent or the parent is gone.",
+      "env var). An idle parent gets it as its own turn right away. A busy " +
+      "parent gets it by `urgency`: `next-turn` (default for report/done/" +
+      "notice) waits for its current turn to end; `steer` (default for " +
+      "blocker/question) is injected INTO its running turn when its agent " +
+      "supports that, else next-turn; `fyi` only lands in its inbox. " +
+      "`interrupt: true` asks to cancel the parent's turn — honoured only when " +
+      "the operator allows it, otherwise delivered as `steer`. The result " +
+      "reports the tier actually applied. Errors if this session has no " +
+      "recorded parent or the parent is gone.",
     {
       message: z
         .string()
         .min(1)
         .describe("The message to deliver to your parent session (plain text)."),
+      interrupt: z
+        .boolean()
+        .optional()
+        .describe(
+          "Ask to cancel the parent's in-flight turn and deliver this now " +
+            "(urgency `interrupt`). Honoured only when config.json " +
+            "`defaults.messaging.agentInterrupt` is \"allow\"; otherwise it's " +
+            "delivered as `steer` (injected into the running turn when " +
+            "possible) and the result says so. UNSET falls back to " +
+            "`defaults.agentPromptInterrupt` (false by default).",
+        ),
+      urgency: z
+        .enum(MESSAGE_URGENCIES as [MessageUrgency, ...MessageUrgency[]])
+        .optional()
+        .describe(
+          "fyi | next-turn | steer | interrupt — see the tool description. " +
+            "Default: steer for blocker/question, next-turn otherwise. " +
+            "`interrupt: true` wins over this.",
+        ),
+      replyTo: z.string().optional().describe("Id of a parent message this answers (msg_…)."),
+      kind: z
+        .enum(MESSAGE_KINDS as [MessageKind, ...MessageKind[]])
+        .optional()
+        .describe(
+          "What this message is: `report` (default — a result or progress), " +
+            "`question` (you need an answer), `blocker` (you cannot proceed), " +
+            "`done` (your task is complete), `notice` (informational). Shown " +
+            "to the parent in the daemon-attested message header.",
+        ),
     },
     async input => {
       const fail = (text: string) => ({
@@ -1281,42 +1426,100 @@ export function registerAgentTools(
             `(status: ${parent.status}) — the message cannot be delivered.`
         )
       }
-      const who = self.label ?? selfId
-      const notice = `[child-message] ${who} (${selfId}): ${input.message}`
-      const done = (delivery: "enqueued" | "queued-next-turn") => ({
+      // The daemon-attested envelope: `from` comes from the verified caller
+      // identity + the tree, never from the input. The parent sees it as an
+      // `<agentproto-message from="child" session=…>` tag and its transcript
+      // records a `session-message`, not a user prompt.
+      // Explicit `interrupt` (true OR false) wins; UNSET falls back to the
+      // configurable daemon default (symmetric with agent_prompt).
+      const effectiveInterrupt = input.interrupt ?? interruptDefault
+      const kind = input.kind ?? "report"
+      const urgency: MessageUrgency = effectiveInterrupt
+        ? "interrupt"
+        : (input.urgency ?? defaultUrgencyForKind(kind))
+      const envelope = createSessionMessage({
+        to: parentId,
+        from: messageFrom(self, "child"),
+        text: input.message,
+        kind,
+        urgency,
+        ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+      })
+      const done = (
+        delivery: "enqueued" | "queued-next-turn" | "interrupted" | "waited" | "steered",
+        extra?: Record<string, unknown>,
+      ) => ({
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ ok: true, parentSessionId: parentId, delivery }),
+            text: JSON.stringify({
+              ok: true,
+              parentSessionId: parentId,
+              messageId: envelope.id,
+              delivery,
+              ...extra,
+            }),
           },
         ],
       })
-      if (!parent.busy) {
-        try {
-          // `origin: "child:…"` (not a `source`) labels a queued item's
-          // after-the-fact origin as a child's report — distinct from a
-          // human operator ("user") and another session's `agent_prompt`
-          // ("agent:…"). Provenance-agnostic: transcript `source` stays
-          // unset, as before.
-          await registry.enqueuePrompt(parentId, notice, { origin: `child:${who}` })
-          return done("enqueued")
-        } catch {
-          // Raced into busy/admission-rejected between the check and the
-          // enqueue — fall through to the pending-notice stamp below.
-        }
-      }
-      // Same mechanism the crash notice uses: stamped notices are flushed
-      // ahead of the parent's next outgoing message (see
-      // `pendingChildCrashNotices` in sessions.ts — generic despite the
-      // crash-flavored name).
-      if (!registry.stampPendingChildCrashNotice(parentId, notice)) {
+      // `source` AND `origin` both carry `child:<sessionId>` — the turn's
+      // provenance and the queue UI's label. Keyed on the session id, not the
+      // child-settable label.
+      const provenance = `child:${selfId}`
+      // One delivery path for every typed message (`registry.sendMessage`):
+      // a parent parked in `inbox_wait` gets the report as that call's
+      // result (waiter-first); otherwise it's kept in the parent's inbox and
+      // dispatched now (idle), steered into its running turn, or parked as
+      // its OWN queued turn (busy) — never string-glued onto another prompt.
+      let result: Awaited<ReturnType<SessionsRegistry["sendMessage"]>>
+      try {
+        result = await registry.sendMessage(envelope, {
+          source: provenance,
+          origin: provenance,
+          allowInterrupt: messagingAgentInterrupt === "allow",
+        })
+      } catch (err) {
         return fail(
-          `message_parent: parent session "${parentId}" vanished mid-delivery.`
+          `message_parent: could not deliver to parent session "${parentId}" — ` +
+            (err instanceof Error ? err.message : String(err))
         )
       }
-      return done("queued-next-turn")
+      const applied = {
+        urgencyApplied: result.urgencyApplied,
+        ...(result.urgencyApplied !== urgency && result.delivered?.via !== "wait"
+          ? { note: `requested urgency "${urgency}" was delivered as "${result.urgencyApplied}"` }
+          : {}),
+      }
+      if (result.delivered?.via === "wait") return done("waited", applied)
+      if (result.delivered?.via === "steer") return done("steered", applied)
+      if (result.delivered?.via === "interrupt") return done("interrupted", applied)
+      if (!result.queued) return done("enqueued", applied)
+      // Self-documenting loop: the parent is mid-turn, so this report waits
+      // for its CURRENT turn to end — surface the faster tier when the
+      // caller didn't ask for one.
+      return done("queued-next-turn", {
+        ...applied,
+        ...(input.urgency === undefined && input.interrupt === undefined && urgency === "next-turn"
+          ? {
+              hint:
+                "Message queued — it will only reach the parent when its " +
+                "CURRENT turn ends. If it needs attention now, re-send with " +
+                "urgency: \"steer\" (or kind: \"blocker\") to inject it into " +
+                "the parent's running turn.",
+            }
+          : {}),
+      })
     }
   )
+
+  // ── message_send / message_reply / inbox_* ─────────
+  registerMessageTools(server, {
+    registry,
+    ...(callerScope ? { callerScope } : {}),
+    ...(callerSessionId ? { callerSessionId } : {}),
+    ...(messagingAllowSiblings ? { allowSiblings: true } : {}),
+    ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
+  })
 
   // ── agent_output ───────────────────────────────────
   server.tool(
@@ -1405,6 +1608,9 @@ export function registerAgentTools(
                 // call" without guessing from empty output.
                 ...(desc.blockedOn ? { blockedOn: desc.blockedOn } : {}),
                 ...(activityFallback ? { activityFallback: true } : {}),
+                // An ended session's derived outcome (what it produced) —
+                // the ring above is empty for a row reloaded after a restart.
+                ...(desc.outcome ? { outcome: desc.outcome } : {}),
                 lines: output,
               },
               null,
@@ -1482,8 +1688,10 @@ export function registerAgentTools(
       "alive and idle. Unlike `agent_kill` (ends the session entirely), the " +
       "session stays alive and ready for the next `agent_prompt`. Unlike " +
       "`agent_prompt({interrupt: true})` (which requires a next prompt to " +
-      "redirect onto), this takes no prompt — it's just stop. No-op " +
-      "(`wasBusy: false`) on an already-idle or terminal session.",
+      "redirect onto), this takes no prompt — it's just stop. Prompts " +
+      "already queued behind the cancelled turn are NOT dispatched by the " +
+      "stop: they stay queued and run after the next turn that ends on its " +
+      "own. No-op (`wasBusy: false`) on an already-idle or terminal session.",
     {
       sessionId: sessionIdField,
       id: sessionIdAliasField,
@@ -1673,6 +1881,7 @@ export function registerAgentTools(
     busy: s.busy,
     awaitingInput: s.awaitingInput,
     blockedOn: s.blockedOn,
+    ...(s.capabilities?.steering ? { steering: true } : {}),
     lastActivityAt: s.lastActivityAt,
     startedAt: s.startedAt,
     exitCode: s.exitCode,
@@ -1683,6 +1892,7 @@ export function registerAgentTools(
     tokensIn: s.tokensIn,
     tokensOut: s.tokensOut,
     contextSize: s.contextSize,
+    contextSizeSource: s.contextSizeSource,
     contextUsed: s.contextUsed,
   })
   const agentSessionsListSchema = z.object({

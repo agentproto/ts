@@ -687,6 +687,15 @@ export class TranscriptPanelController {
     // transient complement.
     if (added) {
       for (const rec of records) {
+        if (rec.kind === "session-message" && rec.message?.from?.sessionId) {
+          const f = rec.message.from
+          this.postInfoBanner(
+            `session-msg:${rec.seq}`,
+            `Message from ${f.relation ?? "session"} ${f.label ?? f.sessionId}`,
+            { autoDismiss: true },
+          )
+          continue
+        }
         if (rec.kind !== "user-prompt" || !rec.source) continue
         const match = /^agent:(.+)$/.exec(rec.source)
         if (match) {

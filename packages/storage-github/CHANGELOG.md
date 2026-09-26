@@ -1,5 +1,12 @@
 # @agentproto/storage-github
 
+## 0.1.4
+
+### Patch Changes
+
+- Updated dependencies [c27f0b8]
+  - @agentproto/storage@0.1.3
+
 ## 0.1.3
 
 ### Patch Changes

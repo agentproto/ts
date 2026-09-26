@@ -31,10 +31,8 @@
  */
 
 import { promises as fs } from "node:fs"
-import { Client } from "@modelcontextprotocol/sdk/client/index.js"
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { openMcpClient, safeClose } from "./mcp-client-pool.js"
 import {
   loadImportedMcps,
   IMPORTED_MCPS_PATH,
@@ -316,113 +314,10 @@ function toDescriptor(tool: {
 }
 
 /**
- * Replace `${VAR}` and `${VAR:-default}` placeholders in env values
- * with the corresponding `process.env` entry (or default), the same
- * way claude-code / cursor expand mcp-server env. When the variable
- * is unset and no default is given, the placeholder is dropped — the
- * upstream then sees the env var as absent rather than as the
- * literal `${MISSING_VAR}`, which it usually treats as "use default
- * config" rather than "explicit empty token".
- */
-function expandEnvPlaceholders(
-  raw: Record<string, string>
-): Record<string, string> {
-  const out: Record<string, string> = {}
-  for (const [k, v] of Object.entries(raw)) {
-    const expanded = v.replace(
-      /\$\{([A-Z_][A-Z0-9_]*)(?::-([^}]*))?\}/gi,
-      (_match, name: string, fallback: string | undefined) => {
-        const fromEnv = process.env[name]
-        if (fromEnv !== undefined) return fromEnv
-        if (fallback !== undefined) return fallback
-        return ""
-      }
-    )
-    // Drop the var entirely if it expanded to empty — keeps the
-    // upstream from receiving an empty-string token + treating it as
-    // a real (but invalid) credential.
-    if (expanded.length === 0) continue
-    out[k] = expanded
-  }
-  return out
-}
-
-async function safeClose(client: Client | null): Promise<void> {
-  if (!client) return
-  try {
-    await client.close()
-  } catch {
-    // best-effort
-  }
-}
-
-/**
  * Open a transport for a discovered MCP. stdio spawns the command;
  * http/sse open over the network. Returns a connected `Client` on
  * success; throws with a useful message on failure.
  */
-async function openClient(entry: ImportedMcpEntry): Promise<Client> {
-  const snap = entry.snapshot
-  const client = new Client(
-    { name: "agentproto-daemon-proxy", version: "0.1.0" },
-    { capabilities: {} }
-  )
-  if (snap.type === "stdio") {
-    if (!snap.command) {
-      throw new Error(
-        `import "${entry.alias}" is stdio but has no command field`
-      )
-    }
-    // claude-code / cursor / vscode all support `${VAR}` placeholders
-    // in the env map (and the more permissive `${VAR:-default}`
-    // form). Our scanner stores the snapshot verbatim — expand at
-    // spawn time so live env changes work without a re-import, and
-    // tokens like REPLICATE_API_TOKEN don't end up forwarded as the
-    // literal string `${REPLICATE_API_TOKEN}`.
-    const expandedEnv = expandEnvPlaceholders(snap.env ?? {})
-    const transport = new StdioClientTransport({
-      command: snap.command,
-      args: snap.args ?? [],
-      env: { ...process.env, ...expandedEnv } as Record<string, string>,
-      // Pipe stderr so we can include it in the error message instead of
-      // surfacing the opaque "Connection closed" MCP error code.
-      stderr: "pipe",
-    })
-    const stderrBuf: string[] = []
-    transport.stderr?.on("data", (chunk: Buffer | string) => {
-      stderrBuf.push(typeof chunk === "string" ? chunk : chunk.toString("utf8"))
-      if (stderrBuf.length > 40) stderrBuf.shift()
-    })
-    try {
-      await client.connect(transport)
-    } catch (err) {
-      const stderrText = stderrBuf.join("").trim()
-      const msg = err instanceof Error ? err.message : String(err)
-      throw new Error(stderrText ? `${msg}\nstderr: ${stderrText.slice(-600)}` : msg)
-    }
-    return client
-  }
-  if (snap.type === "http") {
-    if (!snap.url) throw new Error(`import "${entry.alias}" has no url`)
-    const transport = new StreamableHTTPClientTransport(new URL(snap.url), {
-      requestInit: {
-        headers: snap.headers ?? {},
-      },
-    })
-    await client.connect(transport)
-    return client
-  }
-  if (snap.type === "sse") {
-    if (!snap.url) throw new Error(`import "${entry.alias}" has no url`)
-    const transport = new SSEClientTransport(new URL(snap.url), {
-      requestInit: {
-        headers: snap.headers ?? {},
-      },
-    })
-    await client.connect(transport)
-    return client
-  }
-  throw new Error(
-    `import "${entry.alias}" has unsupported transport type "${snap.type}"`
-  )
+function openClient(entry: ImportedMcpEntry): Promise<Client> {
+  return openMcpClient(entry.snapshot, { label: `import "${entry.alias}"` })
 }

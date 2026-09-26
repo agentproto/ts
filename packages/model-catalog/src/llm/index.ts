@@ -12,6 +12,7 @@ export {
   resolvePricingExact,
   resolveAlias,
   resolveContextWindow,
+  splitContextWindowHint,
   listNativeModelIds,
   isKnownLlmId,
   listUnpricedKnownLlmIds,

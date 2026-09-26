@@ -17,6 +17,11 @@
  * APP.md that drifted from its AGENT.md/WORKFLOW.md refs fails the same
  * way a bad `defineApp({...})` call would.
  *
+ * The app may also ship AIP-14 TOOL.md / AIP-30 DRIVER.md bundles under
+ * `.agentproto/tools/<id>/TOOL.md` and `.agentproto/drivers/<id>/DRIVER.md`
+ * — discovered by directory convention (see `loadAppBundledTools`), not
+ * declared as APP.md frontmatter refs like agents/workflows are.
+ *
  * Frontmatter validation here is deliberately minimal, and that is now an
  * AIP-53 conformance decision, not an accident of app having "no AIP yet":
  * AIP-53 (Draft) freezes the loader contract at the checks below — schema
@@ -37,13 +42,10 @@ import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import { parseWorkspaceManifest, workspaceFromManifest } from "@agentproto/workspace/manifest"
 import type { AgentEntry, AppArtifactDecl, AppDataDefinition, AppDevDefinition, AppHandle } from "./types.js"
 import { defineApp } from "./define-app.js"
+import { AppLoadError } from "./errors.js"
+import { loadAppBundledTools } from "./load-app-tools.js"
 
-export class AppLoadError extends Error {
-  constructor(message: string) {
-    super(`loadAppHandle: ${message}`)
-    this.name = "AppLoadError"
-  }
-}
+export { AppLoadError }
 
 interface AppRef {
   readonly id: string
@@ -263,6 +265,15 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
     workflows.push(await loadWorkflowRef(dir, ref))
   }
 
+  // AIP-14/AIP-30 tool + driver bundles — not enumerated in APP.md
+  // frontmatter like agents/workflows are; discovered by convention under
+  // `.agentproto/tools/<id>/TOOL.md` and `.agentproto/drivers/<id>/DRIVER.md`.
+  // No declared bundle location exists yet in AIP-53/14/30 (spec gap) — see
+  // `loadAppBundledTools` for the loader and its error-handling contract
+  // (a parse/read failure fails the whole app load, naming the file path;
+  // an absent `tools`/`drivers` directory is not an error).
+  const { tools, drivers } = await loadAppBundledTools(dir)
+
   let workspace
   if (fm.workspace) {
     const workspacePath = join(dir, "WORKSPACE.md")
@@ -307,6 +318,8 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
   return defineApp({
     agents,
     workflows,
+    tools,
+    drivers,
     ...(workspace ? { workspace } : {}),
     ...(fm.id !== undefined ? { id: fm.id } : {}),
     ...(fm.name !== undefined ? { name: fm.name } : {}),

@@ -16,9 +16,9 @@
 import { EventEmitter } from "node:events"
 import { Readable, Writable } from "node:stream"
 import { randomUUID } from "node:crypto"
+import { decodeData } from "./node-data.js"
 import {
   TUNNEL_VERSION,
-  decodeData,
   encodeData,
   type ExitFrame,
   type HelloFrame,

@@ -11,6 +11,7 @@
  * (Bun, Deno, browser) that ship native WebSocket.
  */
 
+import { utf8Decode } from "./bytes.js"
 import { encodeFrame, parseFrame, type TunnelFrame } from "./frames.js"
 import type { FrameSink } from "./transport.js"
 
@@ -20,7 +21,7 @@ export interface WebSocketLike {
   readyState: number
   addEventListener(
     event: "message",
-    handler: (ev: { data: string | ArrayBuffer | Buffer }) => void
+    handler: (ev: { data: string | ArrayBuffer | Uint8Array }) => void
   ): void
   addEventListener(event: "close", handler: () => void): void
   addEventListener(event: "error", handler: (ev: { message?: string }) => void): void
@@ -34,15 +35,15 @@ export function wrapWebSocket(ws: WebSocketLike): FrameSink {
   const closeHandlers = new Set<(reason?: string) => void>()
   let isOpen = ws.readyState === READY_OPEN
 
-  // The `ws` library delivers Buffer; the browser delivers string or
-  // ArrayBuffer. We coerce to string and parse — everything we send is
-  // JSON text, so non-text payloads are protocol violations and get
+  // The `ws` library delivers Buffer (a Uint8Array); the browser delivers
+  // string or ArrayBuffer. We coerce to string and parse — everything we send
+  // is JSON text, so non-text payloads are protocol violations and get
   // dropped.
-  const onMessage = (ev: { data: string | ArrayBuffer | Buffer }): void => {
+  const onMessage = (ev: { data: string | ArrayBuffer | Uint8Array }): void => {
     let text: string
     if (typeof ev.data === "string") text = ev.data
-    else if (ev.data instanceof ArrayBuffer) text = Buffer.from(ev.data).toString("utf8")
-    else text = (ev.data as Buffer).toString("utf8")
+    else if (ev.data instanceof ArrayBuffer) text = utf8Decode(new Uint8Array(ev.data))
+    else text = utf8Decode(ev.data)
     const frame = parseFrame(text)
     if (!frame) return
     for (const h of frameHandlers) h(frame)

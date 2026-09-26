@@ -18,7 +18,11 @@ export const provisionWorktreeTool = defineTool({
     "path. If `linkPaths` is given, each is symlinked from `repoRoot` into " +
     "the worktree before `depsCmd` runs — for gitignored, expensive-to-" +
     "recreate trees a fresh worktree lacks (node_modules, sibling workspace " +
-    "repos) so the workspace graph resolves without a full reinstall. If " +
+    "repos) so the workspace graph resolves without a full reinstall. When " +
+    "`depsCmd`/`linkPaths` are omitted, they fall back to `worktree.depsCmd`/" +
+    "`worktree.linkPaths` declared in the base tree's agentproto.json (same " +
+    "`runSetup` gate as the setup hooks below) — an explicit input always " +
+    "wins over the declarative default. If " +
     "`writeFiles` is given, each entry's `content` is written into the " +
     "worktree at `path` before `depsCmd` runs — for generated, worktree-" +
     "specific config a tool invoked by `depsCmd` needs to see (e.g. a " +
@@ -81,7 +85,7 @@ export const provisionWorktreeTool = defineTool({
     runSetup: z
       .boolean()
       .optional()
-      .describe("Run the `worktree.setup` hooks from the base tree's agentproto.json after creation. Default true; a failing setup hook fails provisioning."),
+      .describe("Read the base tree's agentproto.json and apply its declarative worktree lifecycle: `worktree.depsCmd`/`worktree.linkPaths` as fallbacks for the inputs above, then the `worktree.setup` hooks after creation. Default true; a failing setup hook fails provisioning."),
   }),
   outputSchema: z.object({
     cwd: z.string().describe("Absolute path to the created worktree."),

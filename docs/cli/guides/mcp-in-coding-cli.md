@@ -242,6 +242,50 @@ or check `GET /health` → `registered[]`.
 
 ---
 
+## Deferred/lazy tool loading (shrink the turn-0 payload)
+
+The full surface above is ~190 tools with full JSON schemas — real tokens
+paid on every session's very first turn, whether or not it ever touches
+most of them. Deferred mode hides everything except a small always-on set
+(the core spawn/drive/observe/report loop, plus the `tool_search` meta-tool
+itself) from `tools/list`; every tool stays fully callable via `tools/call`
+regardless — `tool_search` just returns a hidden tool's full schema by
+keyword (or `select:name1,name2`) so the model can look it up on demand
+instead of loading all ~190 upfront. Measured on a real daemon boot: 191
+tools / ~238 KB / ~60K tokens (chars/4) eager vs. 18 tools / ~58 KB / ~14K
+tokens deferred — a ~76% smaller `tools/list` payload.
+
+Three independent knobs turn it on, checked in this order (first one that
+has an opinion wins):
+
+1. **Per-mount query** — append `?deferred=1` (or `0` to force it off) to
+   any `/mcp` connection URL: `http://127.0.0.1:18790/mcp?deferred=1`.
+   Composes with `?denyTools=` (used for the executor tool gate — see
+   [Roles](../concepts/roles.md#role-level-default-for-deferred-tool-loading)):
+   `denyTools` always wins for an excluded name, regardless of deferred
+   status.
+2. **Per-spawn / per-role** — `agent_start`'s `deferredTools: true|false`
+   overrides the resolved role's own default; the built-in `executor` role
+   defaults it ON (it can't delegate anyway, so the daemon's full surface is
+   mostly dead weight), `supervisor` has no opinion.
+3. **Daemon-wide default** — `~/.agentproto/config.json`'s
+   `defaults.mcp.deferredTools` (`false` | `true` | `{ "alwaysOn": [...] }`).
+   Read once at boot; **off by default** — an existing client sees no
+   behaviour change unless it opts in via one of the two overrides above or
+   this config key.
+
+```json
+{
+  "defaults": {
+    "mcp": {
+      "deferredTools": true
+    }
+  }
+}
+```
+
+---
+
 ## Scoped gateway (restrict tool access)
 
 To give the coding CLI a narrower tool surface — session management only,

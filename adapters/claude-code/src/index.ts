@@ -79,7 +79,18 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
     "Anthropic's Claude Code wrapped as an ACP agent via @agentclientprotocol/claude-agent-acp. Spawned via `npx -y @agentclientprotocol/claude-agent-acp` and driven over stdio JSON-RPC.",
   version: "0.1.0",
   bin: "npx",
-  bin_args: ["-y", "@agentclientprotocol/claude-agent-acp@0.75.1"],
+  // Pinned for reproducibility. 0.81.2 bundles @anthropic-ai/claude-agent-sdk
+  // 0.3.280 = Claude Code 2.1.280, the FLOOR for the current Opus generation:
+  // the 0.75.1 pin shipped CC 2.1.257, which rejects `claude-opus-5-5` outright
+  // ("API Error: 400 … does not support this model; version 2.1.280 or newer is
+  // required") — a spawn-time failure, not a silent fallback. Nothing between
+  // 0.75.1 and 0.81.2 breaks this adapter: the one ⚠ BREAKING entry (0.77.0,
+  // `claudeCode.options.agent` no longer forwarded + the agent-picker exports
+  // removed) is library-API surface for in-process consumers, and we drive the
+  // wrapper as a spawned ACP server over stdio and never set that option. The
+  // config options we DO apply (`model`, `effort`, `mode` via
+  // `session/set_config_option`) and `session/new` are unchanged.
+  bin_args: ["-y", "@agentclientprotocol/claude-agent-acp@0.81.2"],
   install: [
     {
       method: "npm",
@@ -294,11 +305,41 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
       id: "lean",
       description:
         "Drop Claude Code's bundled skills and workflows from context (built-in slash " +
-        "commands stay typable but are hidden from the model). Plugins, project " +
-        "`.claude/skills/`, and `.claude/commands/` are unaffected. The ACP wrapper has " +
-        "no CLI flag for this — the underlying claude binary reads " +
-        "CLAUDE_CODE_DISABLE_BUNDLED_SKILLS directly, so this mode is env-only.",
-      env: { CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1" },
+        "commands stay typable but are hidden from the model), AND turn on Claude " +
+        "Code's own native MCP tool-search (deferred tool-schema loading) so its " +
+        "turn-0 tools/list payload — including whatever this session's own " +
+        "`mcpServers` mount (e.g. the daemon self-mount) advertises — shrinks the " +
+        "same way `tool_search` does on the daemon's gateway. Plugins, project " +
+        "`.claude/skills/`, and `.claude/commands/` are unaffected. Both knobs are " +
+        "env-only — the ACP wrapper exposes no CLI flag for either, and the " +
+        "underlying claude binary reads them directly.",
+      // CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: unchanged from before this mode existed.
+      //
+      // ENABLE_TOOL_SEARCH: UNDOCUMENTED — there is no public Anthropic reference
+      // for it. Confirmed present and wired (not a guess) by extracting readable
+      // strings from the EXACT pinned binary this adapter spawns
+      // (`~/.local/share/claude/versions/2.1.280`, the build
+      // `@agentclientprotocol/claude-agent-acp@0.81.2` bundles — see the pin
+      // comment on `bin_args` above): `ENABLE_TOOL_SEARCH` appears in the CLI's
+      // own recognized-env-var table (alongside `MCP_TIMEOUT`,
+      // `MAX_MCP_OUTPUT_TOKENS`, etc.) and drives a real decision function
+      // (minified as `Het()` in that build) that resolves to one of three modes:
+      // `"standard"` (today's eager behaviour, the default when unset in most
+      // cohorts), `"tst"` (tool-search-tool: MCP/tool schemas deferred behind a
+      // native search tool — the ACTUAL feature this mirrors), or `"tst-auto"`
+      // (auto-threshold via `auto:<N>`, `0 <= N <= 100`). The value parser
+      // (minified `Co`/`De` in that build) accepts the literal strings
+      // `"1"`/`"true"`/`"yes"`/`"on"` for on and `"0"`/`"false"`/`"no"`/`"off"`
+      // for off — `"1"` here is a valid, intentional value, not a placeholder.
+      // NOT independently verified against a live model turn in this
+      // environment (no authenticated Claude Code login available when this
+      // was investigated) — only that `claude -p` accepts the env var and
+      // proceeds past argument parsing to the auth check without erroring on
+      // it. If Anthropic ever removes or renames this (it is explicitly
+      // unstable — the binary also guards it behind
+      // `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`), the worst case is a no-op:
+      // an unrecognized env var the claude binary already ignores today.
+      env: { CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: "1", ENABLE_TOOL_SEARCH: "1" },
       kind: "context",
     },
   ],
@@ -341,6 +382,24 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
       description:
         "Hard cap on tool-use turns within a single send. Claude Code stops after this many cycles.",
       bin_args_template: ["--max-turns", "{value}"],
+    },
+    {
+      id: "tool_search",
+      // Same `ENABLE_TOOL_SEARCH` env var the `lean` mode sets (see the long
+      // note there for where it's read and which values the binary accepts).
+      // "false" is the one a workflow agent step with a declared `tools`
+      // allowlist gets (sessions-registry-agent-host.ts): its gateway mount
+      // is already scoped to a handful of tools, so deferring them behind
+      // Claude Code's own search only costs the model ToolSearch round-trips
+      // before it can call the tool it was told to call.
+      type: "enum" as const,
+      enum: ["true", "false", "auto"],
+      description:
+        "Claude Code's own MCP tool search (deferred tool-schema loading), via " +
+        "ENABLE_TOOL_SEARCH. 'false' loads every mounted MCP tool eagerly; 'true' " +
+        "always defers; 'auto' defers past a size threshold. Omit to keep Claude " +
+        "Code's default.",
+      env: { ENABLE_TOOL_SEARCH: "{value}" },
     },
     {
       id: "base_url",

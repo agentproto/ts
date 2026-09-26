@@ -9,6 +9,7 @@ import {
   MAX_RESUME_ATTEMPTS,
   ResumeDisabledError,
   type AgentSessionLike,
+  type AgentSessionResumer,
   type SessionDescriptor,
 } from "../sessions.js"
 
@@ -57,14 +58,14 @@ function seedRow(
 }
 
 /** A resumer that always fails (rejects) — the broken-adapter case. */
-function makeFailingResumer(): ReturnType<typeof vi.fn> {
+function makeFailingResumer(): AgentSessionResumer {
   return vi.fn(async () => {
     throw new Error("adapter refused resume: session not found")
   })
 }
 
 /** A healthy resumer whose fresh session completes one turn. */
-function makeHealthyResumer(): ReturnType<typeof vi.fn> {
+function makeHealthyResumer(): AgentSessionResumer {
   return vi.fn(async () => {
     const fresh: AgentSessionLike = {
       sessionId: "acp-cap-me",

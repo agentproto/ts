@@ -10,6 +10,7 @@ import { createPrintSession } from "./protocol/print-arm.js"
 import { createProprietaryProtocolArm } from "./protocol/proprietary.js"
 import { composeSpawn, RuntimeConfigError } from "./manifest/compose.js"
 import { wrapAgentCliSpawn } from "./command-sandbox-wrap.js"
+import { terminateChildTree } from "./process-tree.js"
 import {
   applyModelCommand,
   createArmSessionControls,
@@ -756,9 +757,29 @@ export function createAgentCliRuntime(
               },
             }
           : {}),
+        ...(arm.onOutOfTurnEvent
+          ? {
+              onOutOfTurnEvent(listener) {
+                return arm.onOutOfTurnEvent!(listener)
+              },
+            }
+          : {}),
+        ...(arm.steer
+          ? {
+              // Snapshotted after `arm.connect()` resolved, like the
+              // config/mode read surfaces above.
+              steeringSupported: arm.steeringSupported === true,
+              steer(content: unknown) {
+                return arm.steer!(content)
+              },
+            }
+          : {}),
         async close() {
           await arm.close()
-          if (child && !child.killed) child.kill("SIGTERM")
+          // The whole tree, not just `child`: that is usually an npx/npm-exec
+          // wrapper that may ignore SIGTERM, with the real adapter (and its
+          // MCP servers / headless Chrome) running underneath it.
+          if (child) await terminateChildTree(child)
         },
       }
     },

@@ -33,10 +33,23 @@ export const provisionWorktreeBuiltin = implementTool(
       createdAt: new Date().toISOString(),
     })
 
+    // Declarative lifecycle config, read once from the base tree's committed
+    // agentproto.json (never the working tree — see config.ts's SECURITY
+    // note). Gated on `runSetup` since that flag is the opt-out for the whole
+    // agentproto.json-driven lifecycle, not just the setup/teardown hooks.
+    // Loaded here (rather than at each call site) so every caller of this
+    // tool — the CLI's `worktree new` and the daemon's spawn-time provisioner
+    // alike — picks up a repo's declared `depsCmd`/`linkPaths` automatically,
+    // without duplicating the config-load-and-merge logic per call site. An
+    // explicit tool input still wins over the declarative default.
+    const config = input.runSetup !== false ? await loadConfigFromBase(input.repoRoot, base) : null
+    const linkPaths = input.linkPaths ?? config?.worktree?.linkPaths ?? []
+    const depsCmd = input.depsCmd ?? config?.worktree?.depsCmd
+
     // Symlink gitignored, expensive-to-recreate trees from the host repo into
     // the worktree BEFORE depsCmd, so a workspace whose graph spans gitignored
     // dirs (sibling repos, node_modules) resolves without a full reinstall.
-    for (const rel of input.linkPaths ?? []) {
+    for (const rel of linkPaths) {
       const target = resolve(input.repoRoot, rel)
       const dest = join(cwd, rel)
       // A fresh worktree shouldn't already carry a gitignored path; if it does
@@ -67,12 +80,12 @@ export const provisionWorktreeBuiltin = implementTool(
       }
     }
 
-    if (input.depsCmd) {
-      const result = await execShell(input.depsCmd, cwd)
+    if (depsCmd) {
+      const result = await execShell(depsCmd, cwd)
       if (result.exitCode !== 0) {
         throw new ToolError({
           code: "execution_failed",
-          message: `depsCmd '${input.depsCmd}' failed (exit ${result.exitCode}): ${result.stderr || result.stdout}`,
+          message: `depsCmd '${depsCmd}' failed (exit ${result.exitCode}): ${result.stderr || result.stdout}`,
         })
       }
     }
@@ -87,24 +100,20 @@ export const provisionWorktreeBuiltin = implementTool(
     }
 
     // Declarative lifecycle: run the repo's committed `agentproto.json` setup
-    // hooks in the fresh worktree. Read from the base tree (never the working
-    // tree) so a branch/agent can't inject host-side commands. A failing setup
-    // hook fails provisioning, carrying the captured output.
-    if (input.runSetup !== false) {
-      const config = await loadConfigFromBase(input.repoRoot, base)
-      if (config) {
-        try {
-          await runSetup(config, {
-            sourceCheckoutPath: input.repoRoot,
-            worktreePath: cwd,
-            branchName: branch,
-          })
-        } catch (err) {
-          if (err instanceof HookError) {
-            throw new ToolError({ code: "execution_failed", message: err.message })
-          }
-          throw err
+    // hooks in the fresh worktree. `config` was already loaded above (same
+    // `runSetup` gate) — reused here rather than re-reading the base tree.
+    if (config) {
+      try {
+        await runSetup(config, {
+          sourceCheckoutPath: input.repoRoot,
+          worktreePath: cwd,
+          branchName: branch,
+        })
+      } catch (err) {
+        if (err instanceof HookError) {
+          throw new ToolError({ code: "execution_failed", message: err.message })
         }
+        throw err
       }
     }
 

@@ -26,7 +26,7 @@ import { mkdtemp, readdir, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { extname, join } from "node:path"
 import { promisify } from "node:util"
-import type { SttPort, Transcript } from "./stt.port.js"
+import type { SttPort, Transcript, Utterance } from "./stt.port.js"
 
 const execFileAsync = promisify(execFile)
 
@@ -86,19 +86,57 @@ export class ChunkedStt implements SttPort {
         return this.base.transcribe(audioPath)
       }
       const texts: string[] = []
+      const utterances: Utterance[] = []
+      let hasUtterances = false
       let language: string | undefined
+      let engine: string | undefined
+      let offset = 0
       let failed = 0
       let firstErr: unknown
-      for (const part of parts) {
+      for (const [i, part] of parts.entries()) {
         try {
           const t = await this.base.transcribe(part)
           if (t.text.trim()) texts.push(t.text.trim())
           language ??= t.language
+          engine ??= t.engine
+          let span: number | undefined
+          if (t.utterances && t.utterances.length > 0) {
+            hasUtterances = true
+            const partOffset = offset
+            // Each part is diarized independently by the base engine, so
+            // "Speaker A" in part 0 and "Speaker A" in part 1 are almost
+            // certainly different people who just happen to share a label
+            // — the label is only stable WITHIN one segment. Suffix by
+            // segment index so identities never collide across parts;
+            // `speakerLabelsLocalToSegment` on the returned Transcript
+            // tells consumers these prefixed labels are already
+            // disambiguated (a distinct-label count is a real speaker
+            // count), not raw per-segment labels to re-merge.
+            for (const u of t.utterances) {
+              utterances.push({
+                speaker: `${u.speaker}#${i}`,
+                text: u.text,
+                ...(u.start !== undefined ? { start: u.start + partOffset } : {}),
+                ...(u.end !== undefined ? { end: u.end + partOffset } : {}),
+              })
+            }
+            const ends = t.utterances
+              .map(u => u.end)
+              .filter((e): e is number => e !== undefined)
+            if (ends.length > 0) span = Math.max(...ends)
+          }
+          // The splitter's contract is "≤segmentSeconds per part", not
+          // "exactly segmentSeconds" — the last part especially can be
+          // shorter. Advance by the part's own real span when the base
+          // engine reported timestamps, and only fall back to the nominal
+          // segmentSeconds when it didn't (or the part failed outright).
+          offset += span ?? this.segmentSeconds
         } catch (e) {
           // One segment failing (after the base engine's own retries) must
           // not discard the whole multi-hour transcript — keep the rest.
           failed++
           firstErr ??= e
+          offset += this.segmentSeconds
         }
       }
       // Every segment failing usually means a systemic error (auth, quota) —
@@ -115,6 +153,8 @@ export class ChunkedStt implements SttPort {
       return {
         text: texts.join("\n\n"),
         ...(language ? { language } : {}),
+        ...(engine ? { engine } : {}),
+        ...(hasUtterances ? { utterances, speakerLabelsLocalToSegment: true } : {}),
       }
     } finally {
       await rm(dir, { recursive: true, force: true }).catch(() => {})

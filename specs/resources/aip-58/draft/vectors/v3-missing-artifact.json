@@ -1,0 +1,39 @@
+{
+  "id": "V3",
+  "title": "Agent turn ends, required artifact absent -> failed missing-artifact",
+  "rule": "specs/aip-58.mdx section 3 Outcome rule + section 4 Run workspace",
+  "manifestExcerpt": {
+    "kind": "workflow",
+    "id": "pricing-brief",
+    "outputsFiles": {
+      "brief": { "path": "./briefs/<runId>.md", "required": true }
+    },
+    "steps": [
+      { "id": "draft", "kind": "agent", "prompt": "Write the brief and save it to the declared output path." }
+    ]
+  },
+  "runCreate": {
+    "kind": "workflow",
+    "ref": { "id": "pricing-brief", "version": "1.0.0" },
+    "input": { "productUrl": "https://example.com/pricing" }
+  },
+  "agentTurnResult": {
+    "finalMessage": "Done -- I've drafted the brief in my response above.",
+    "outputsFilesProduced": []
+  },
+  "expected": {
+    "terminalState": "failed",
+    "error": { "code": "missing-artifact", "stepId": "draft" },
+    "events": [
+      "run.created",
+      "run.started",
+      "step.started",
+      "step.failed",
+      "run.failed"
+    ],
+    "notes": [
+      "The agent's turn ended with a plausible-sounding final message, but the declared-required 'brief' outputsFiles key never materialized under scratch/ -- the outcome rule fails the step regardless of how the turn read.",
+      "This is the vector for AIP-16's outputsFiles.<key>.required amendment: with required absent or false, the same scenario would be a warning and the step would still be evaluated on structured output alone."
+    ]
+  }
+}

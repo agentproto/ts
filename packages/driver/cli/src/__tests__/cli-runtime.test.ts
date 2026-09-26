@@ -1,8 +1,41 @@
 import { describe, it, expect } from "vitest"
+import { mkdtempSync, realpathSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { z } from "zod"
 import { defineTool } from "@agentproto/tool"
 import { runTool } from "@agentproto/driver"
 import { defineCliDriver, expandArgv } from "../index.js"
+
+function cwdTool() {
+  return defineTool({
+    id: "cwd-tool",
+    description: "returns process.cwd() as JSON",
+    inputSchema: z.object({}),
+    outputSchema: z.object({ cwd: z.string() }),
+  })
+}
+
+function cwdDriver(cwd?: string) {
+  return defineCliDriver({
+    id: "cwd-cli",
+    name: "cwd",
+    description: "x",
+    kind: "cli",
+    bin: process.execPath,
+    output: { defaultFormat: "json", exitCodes: { 0: "ok" } },
+    cwd,
+    implements: [
+      {
+        tool: "./tools/cwd-tool/TOOL.md",
+        version: "^1",
+        metadata: {
+          cli: { argv: ["-e", "process.stdout.write(JSON.stringify({cwd: process.cwd()}))"] },
+        },
+      },
+    ],
+  })
+}
 
 describe("expandArgv", () => {
   it("substitutes ${input.X}", () => {
@@ -124,5 +157,22 @@ describe("defineCliDriver — end-to-end via runTool", () => {
     await expect(
       runTool({ tool, candidates: [provider], input: {} })
     ).rejects.toMatchObject({ code: "auth_required" })
+  })
+})
+
+describe("defineCliDriver — cwd", () => {
+  it("without cwd, the subprocess inherits the host process's cwd (unchanged behaviour)", async () => {
+    const out = await runTool({ tool: cwdTool(), candidates: [cwdDriver()], input: {} })
+    expect(out).toEqual({ cwd: realpathSync(process.cwd()) })
+  })
+
+  it("with cwd set, the subprocess spawns in that directory", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "cli-driver-cwd-")))
+    try {
+      const out = await runTool({ tool: cwdTool(), candidates: [cwdDriver(dir)], input: {} })
+      expect(out).toEqual({ cwd: dir })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

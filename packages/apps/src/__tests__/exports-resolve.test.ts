@@ -32,6 +32,7 @@ describe("@agentproto/apps package exports", () => {
         "./mail-triage",
         "./media-viewer",
         "./ops-panel",
+        "./config",
         "./session-viewer",
       ]),
     )

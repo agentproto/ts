@@ -25,18 +25,21 @@ import { isAbsolute, join, relative, resolve } from "node:path"
 import matter from "gray-matter"
 import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { loadAppHandle } from "@agentproto/app-kit"
+import { loadAppHandle, loadAppBundledTools } from "@agentproto/app-kit"
 import { loadAgent } from "@agentproto/agent"
 import type { AnyRef } from "@agentproto/agent"
 import type { AgentRefResolution } from "@agentproto/workflow-runtime"
 import { APP_UI_DISCOVERY_TOOLS } from "@agentproto/app-client/runner-select"
-import { createDaemonToolRegistry } from "./workflow-tool-registry.js"
+import type { ToolHandle } from "@agentproto/tool"
+import { createDaemonToolRegistry, type AppToolRegistry } from "./workflow-tool-registry.js"
 import { spawnAgentSession } from "./session-spawn.js"
 import type { SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
 import { createAppRegistry, type AppRegistry, type InstalledApp, type InstalledAppRef } from "./app-registry.js"
 import { appDataDir, DEFAULT_APP_DATA_SUBDIR } from "./app-data.js"
+import { reconcileAppRunStatus } from "./app-run-liveness.js"
+import { compactWorkflowRunStatus } from "./orchestration-tools.js"
 import { appStateLedgerExists, appStateSnapshot } from "./app-state.js"
 import { loadAppCatalogFile } from "./app-catalog.js"
 import { builtinPanelCatalogEntries } from "./builtin-apps.js"
@@ -133,26 +136,118 @@ async function waitForSessionTerminal(
   }
 }
 
+/** F26 model-based adapter default: a `claude-*` model id (bare, or after a
+ *  `provider/` prefix — AIP-42's `modelRef` allows either shorthand) runs on
+ *  `claude-code`, matching the daemon's own routing rule that Claude models
+ *  run on claude-code. Anything else keeps the pre-F26 blanket default. */
+export const MODEL_ROUTED_ADAPTER = "claude-code"
+
+function defaultAdapterForModel(model: string | undefined): string {
+  if (model === undefined) return DEFAULT_AGENT_ADAPTER
+  const bare = model.includes("/") ? model.slice(model.lastIndexOf("/") + 1) : model
+  return bare.startsWith("claude-") ? MODEL_ROUTED_ADAPTER : DEFAULT_AGENT_ADAPTER
+}
+
+/**
+ * F26 spec gap: AIP-42's AGENT.schema.json (`specs/resources/aip-42/draft/
+ * AGENT.schema.json`) has no `adapter`/`harness` field — its frontmatter is
+ * `.strict()` (`packages/agent/src/schema.ts`), so a bare top-level
+ * `adapter:`/`harness:` key fails `app_install`'s manifest validation before
+ * this ever runs. `metadata` is the only `additionalProperties: true` escape
+ * hatch AIP-42 offers today, so that's where an app author's adapter/harness
+ * override has to live (`metadata.adapter` or `metadata.harness`, either
+ * name). This should probably become a first-class AIP-42 field; flagged
+ * here rather than fixed, since editing the spec is a bigger, separate
+ * change than this bug fix.
+ */
+function agentMetadataAdapter(metadata: { [k: string]: unknown } | undefined): string | undefined {
+  const value = metadata?.adapter ?? metadata?.harness
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined
+}
+
 /**
  * Build `compileWorkflow`'s `agentRefs` map for a workflow bundled by an
- * installed app — every agent id the app bundles resolves to a spawn under
- * `mastra-agent`, pointed at that agent's emitted AGENT.md (WP-B4). Returns
- * undefined when no installed app bundles `workflowId` (a plain
+ * installed app — every agent id the app bundles resolves to a spawn adapter
+ * chosen in order (F26): the agent's OWN AGENT.md `metadata.adapter`/
+ * `metadata.harness` override > a model-based default (see
+ * {@link defaultAdapterForModel}) > the blanket {@link DEFAULT_AGENT_ADAPTER}
+ * fallback (WP-B4's original behaviour). A step's own `adapter:` still wins
+ * over all of this — `compileAgentStep` only applies `resolved.adapter` when
+ * the step itself sets none. AGENT.md's declared `model` is forwarded too
+ * (`AgentRefResolution.model`), so a step that sets no `model` of its own
+ * still gets the agent's.
+ *
+ * The `agent` adapter option (mastra-agent's `--agent <path>`) is only
+ * meaningful for `mastra-agent` itself — any other adapter's manifest
+ * doesn't declare it, and `composeSpawn` rejects an undeclared option id, so
+ * it's included only when that's the resolved adapter.
+ *
+ * Returns undefined when no installed app bundles `workflowId` (a plain
  * `workflow_run_file` outside any app), so a `kind:"agent"` step using
  * `agent.ref` fails compilation naming "no agent refs are configured"
  * rather than a silently-empty map producing the same message either way.
  */
-export function resolveAgentRefsForWorkflow(
+export async function resolveAgentRefsForWorkflow(
   appRegistry: AppRegistry,
   workflowId: string,
-): Record<string, AgentRefResolution> | undefined {
+): Promise<Record<string, AgentRefResolution> | undefined> {
   const app = appRegistry.listApps().find(a => a.workflows.some(w => w.id === workflowId))
   if (!app) return undefined
   const refs: Record<string, AgentRefResolution> = {}
   for (const agent of app.agents) {
-    refs[agent.id] = { adapter: DEFAULT_AGENT_ADAPTER, options: { agent: agent.path } }
+    let model: string | undefined
+    let metadataAdapter: string | undefined
+    let tools: string[] | undefined
+    try {
+      const { handle } = await loadAgent(agent.path)
+      model = typeof handle.model === "string" ? handle.model : undefined
+      metadataAdapter = agentMetadataAdapter(handle.metadata)
+      // String tool ids only — they scope the daemon gateway an agent step's
+      // session gets (sessions-registry-agent-host.ts). A structured ref has
+      // no gateway tool name to match.
+      const declared = (handle.tools ?? []).filter((t): t is string => typeof t === "string")
+      if (declared.length > 0) tools = declared
+    } catch {
+      // AGENT.md unreadable/invalid at run time (already validated at
+      // install) — degrade to the pre-F26 blanket default for this one
+      // agent rather than failing agent-ref resolution for the whole
+      // workflow.
+    }
+    const adapter = metadataAdapter ?? defaultAdapterForModel(model)
+    refs[agent.id] = {
+      adapter,
+      ...(adapter === DEFAULT_AGENT_ADAPTER ? { options: { agent: agent.path } } : {}),
+      ...(model !== undefined ? { model } : {}),
+      ...(tools !== undefined ? { tools } : {}),
+    }
   }
   return refs
+}
+
+/**
+ * Load the AIP-14/AIP-30 tool/driver bundles (BRIEF-D) of the installed app
+ * that owns `workflowId` — same owning-app lookup as
+ * {@link resolveAgentRefsForWorkflow}. Returns undefined when no installed
+ * app bundles the workflow, or the app bundles no tools/drivers, so
+ * `mergeAppAndDaemonToolRegistry` (workflow-tool-registry.ts) can treat
+ * "nothing to merge" uniformly.
+ *
+ * Unlike `resolveAgentRefsForWorkflow` (which only needs a stored path
+ * string), this re-reads `<app.dir>/.agentproto/tools|drivers/*` off disk on
+ * every call — the compiled `ToolHandle`/`DriverHandle` objects (with live
+ * `execute` closures) aren't persisted on the `InstalledApp` record.
+ */
+export async function resolveAppToolsForWorkflow(
+  appRegistry: AppRegistry,
+  workflowId: string,
+): Promise<AppToolRegistry | undefined> {
+  const app = appRegistry.listApps().find(a => a.workflows.some(w => w.id === workflowId))
+  if (!app) return undefined
+  const { tools, drivers } = await loadAppBundledTools(app.dir)
+  if (tools.length === 0 && drivers.length === 0) return undefined
+  const toolsById: Record<string, ToolHandle> = {}
+  for (const tool of tools) toolsById[tool.id] = tool
+  return { tools: toolsById, candidates: drivers }
 }
 
 /**
@@ -533,11 +628,17 @@ export async function performInstall(
     return { ok: false, error: "the app has no `id` — set one in defineApp()/APP.md frontmatter to install it." }
   }
 
+  // A workflow `tool` step id is satisfied by either a registered daemon
+  // tool OR one of the app's OWN bundled TOOL.md ids (BRIEF-D) — the same
+  // id-coverage `mergeAppAndDaemonToolRegistry` applies at compile time
+  // (workflow-tool-registry.ts), checked here with just the id set since
+  // install-time validation doesn't need live driver dispatch.
+  const appToolIds = new Set(handle.tools.map(t => t.id))
   const missingByWorkflow: Record<string, string[]> = {}
   const registeredIds = new Set(await listRegisteredToolIds())
   for (const workflow of handle.workflows) {
     const { tools } = createDaemonToolRegistry(workflow, async () => undefined)
-    const missing = Object.keys(tools).filter(id => !registeredIds.has(id))
+    const missing = Object.keys(tools).filter(id => !registeredIds.has(id) && !appToolIds.has(id))
     if (missing.length > 0) missingByWorkflow[workflow.id] = missing
   }
   if (Object.keys(missingByWorkflow).length > 0) {
@@ -1010,7 +1111,10 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
               await waitForTerminal(spawned.sessionId)
             }
             if (run.status === "running") {
-              appRegistry.endRun(run.appRunId, { status: "ended" })
+              appRegistry.endRun(run.appRunId, {
+                status: errors.length > 0 ? "failed" : "succeeded",
+                ...(errors.length > 0 ? { error: errors.map(e => `${e.agentId}: ${e.error}`).join("; ") } : {}),
+              })
             }
           }
           void continueSequence().catch(err => {
@@ -1018,7 +1122,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
               `app_run: background sequence "${run.appRunId}" failed: ${err instanceof Error ? err.message : String(err)}`,
             )
             if (run.status === "running") {
-              appRegistry.endRun(run.appRunId, { status: "failed" })
+              appRegistry.endRun(run.appRunId, { status: "failed", error: err instanceof Error ? err.message : String(err) })
             }
           })
 
@@ -1045,7 +1149,10 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           harness,
           ...(model !== undefined ? { model } : {}),
         })
-        appRegistry.endRun(run.appRunId, { status: "ended" })
+        appRegistry.endRun(run.appRunId, {
+          status: errors.length > 0 ? "failed" : "succeeded",
+          ...(errors.length > 0 ? { error: errors.map(e => `${e.agentId}: ${e.error}`).join("; ") } : {}),
+        })
         return textResult({
           appRunId: run.appRunId,
           status: run.status,
@@ -1082,39 +1189,45 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     "app_status",
     "Status of an app_run: its sessions' live descriptors, plus any workflow runs " +
       "belonging to the app (any run of one of its bundled WORKFLOW.md files, " +
-      "however it was started).",
-    { appRunId: z.string() },
+      "however it was started). COMPACT BY DEFAULT (AIP-58 §9): sessions carry a " +
+      "slim {agentId, sessionId, status} instead of the full session descriptor, " +
+      "and each workflowRuns entry omits step outputs / gate-report bodies — pass " +
+      "`full: true` for everything.",
+    { appRunId: z.string(), full: z.boolean().optional().describe("Include full session descriptors and workflow-run step outputs. Defaults to false (compact).") },
     async input => {
       const run = appRegistry.getRun(input.appRunId)
       if (!run) return errorResult(`app_status: no app run "${input.appRunId}".`)
       const app = appRegistry.getApp(run.appId)
-      const sessions = run.sessions.map(s => ({
-        agentId: s.agentId,
-        sessionId: s.sessionId,
-        descriptor: registry.get(s.sessionId),
-      }))
-      // C — truthful terminal state: a concurrent run's stored status is only
-      // ever flipped by app_stop, so a run whose underlying sessions have all
-      // ended would otherwise report "running" forever. Reconcile lazily (and
-      // non-mutating) against the live session descriptors: once every session
-      // is terminal, report `ended` with an `endedAt` even if the persisted
-      // status is still "running". A run already terminal keeps its stored
-      // status; a run with at least one live session reports "running".
-      const allSessionsTerminal =
-        sessions.length > 0 && sessions.every(s => isSessionTerminal(s.descriptor?.status))
-      const storedTerminal = run.status !== "running"
-      const reconciledStatus = storedTerminal
-        ? run.status
-        : allSessionsTerminal
-          ? ("ended" as const)
-          : ("running" as const)
-      const workflowRuns =
+      const descriptors = run.sessions.map(s => ({ ...s, descriptor: registry.get(s.sessionId) }))
+      const sessions = input.full === true
+        ? descriptors
+        : descriptors.map(s => ({ agentId: s.agentId, sessionId: s.sessionId, status: s.descriptor?.status }))
+      const allWorkflowRuns =
         workflowRunner && app
           ? workflowRunner.list().filter(r => app.workflows.some(w => w.id === r.workflowId))
           : []
+      // AIP-58 §2 terminal-state reconciliation (F8/F14): a concurrent run's
+      // STORED status is only ever flipped by `app_stop` or the liveness
+      // sweep (see `sweepAppRuns`), so a run whose sessions (and any
+      // workflow runs it owns) have all reached a terminal fate would
+      // otherwise report "running" forever. Reconcile lazily here (never
+      // persisted — the sweep is the sole writer) so a poll between sweep
+      // ticks still reads truthfully.
+      const ownWorkflowRunStatuses = allWorkflowRuns
+        .filter(r => r.appRunId === run.appRunId)
+        .map(r => r.status)
+      const reconciled =
+        run.status !== "running"
+          ? { status: run.status }
+          : reconcileAppRunStatus({
+              sessions: descriptors.map(s => ({ status: s.descriptor?.status })),
+              workflowRunStatuses: ownWorkflowRunStatuses,
+            })
+      const reconciledStatus = reconciled.status
+      const workflowRuns = input.full === true ? allWorkflowRuns : allWorkflowRuns.map(compactWorkflowRunStatus)
       // WP-S: parked human approvals across the app's workflow runs — what a
       // UI renders as the permissions inbox for this app.
-      const awaitingApprovals = workflowRuns
+      const awaitingApprovals = allWorkflowRuns
         .filter(r => r.awaitingApproval !== undefined)
         .map(r => {
           const aa = r.awaitingApproval!
@@ -1144,6 +1257,8 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           : reconciledStatus !== "running"
             ? { endedAt: new Date().toISOString() }
             : {}),
+        ...("errorCode" in reconciled && reconciled.errorCode !== undefined ? { errorCode: reconciled.errorCode } : run.errorCode !== undefined ? { errorCode: run.errorCode } : {}),
+        ...(run.error !== undefined ? { error: run.error } : {}),
         ...(run.adapter !== undefined ? { adapter: run.adapter } : {}),
         ...(run.harness !== undefined ? { harness: run.harness } : {}),
         ...(run.model !== undefined ? { model: run.model } : {}),
@@ -1157,7 +1272,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
 
   server.tool(
     "app_stop",
-    "Kill every session in an app_run (existing kill path) and mark the run ended.",
+    "Kill every session in an app_run (existing kill path) and mark the run cancelled.",
     { appRunId: z.string() },
     async input => {
       const run = appRegistry.getRun(input.appRunId)
@@ -1168,7 +1283,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         if (registry.kill(s.sessionId)) killed.push(s.sessionId)
         else notFound.push(s.sessionId)
       }
-      const ended = appRegistry.endRun(input.appRunId)
+      const ended = appRegistry.endRun(input.appRunId, { status: "cancelled" })
       return textResult({
         appRunId: input.appRunId,
         killed,

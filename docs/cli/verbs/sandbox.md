@@ -1,7 +1,7 @@
 # `agentproto sandbox`
 
 ```text
-agentproto sandbox list   [--no-probe] [--json]
+agentproto sandbox list   [--no-probe] [--reconcile] [--json]
 agentproto sandbox attach <provider> <sandboxId> [--config-json <json>] [--keep-alive] [--json]
 agentproto sandbox rm     <sandboxId|label|id-prefix> [--box] [--yes] [--json]
 agentproto sandbox gc     [--apply] [--pause] [--json]
@@ -24,6 +24,7 @@ environment.
 agentproto sandbox list
 agentproto sandbox list --json
 agentproto sandbox list --no-probe
+agentproto sandbox list --json --reconcile
 ```
 
 Prints the sandbox ledger — every box the daemon has booted, reconnected
@@ -38,9 +39,21 @@ daemon last did and may lag reality (a provider-reaped box still shows
 `paused` until probed). Probes are network calls; pass `--no-probe` to
 skip them.
 
+This same probe pass is a **reconcile**: any row the provider confirms
+gone is flipped to `state: "gone"` in the ledger (never deleted, and the
+box itself is never touched — this is read-only against the provider).
+Table mode reconciles by default; `--json` does not (a plain `--json` is a
+raw, unprobed dump) unless `--reconcile` is also passed, which forces the
+same pass and adds a `reconciled: {checked,alive,gone,unknown,skipped}`
+summary to the JSON output. The daemon also runs this same reconcile
+once at boot (best-effort, logged to stderr) so a stale ledger — dozens of
+`paused` rows the provider actually reaped long ago — self-heals without
+anyone running `sandbox list` first.
+
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--no-probe` | `false` | Skip the per-row provider liveness probes (no network calls). The LIVE column shows `—` for every row. |
+| `--no-probe` | `false` | Skip the per-row provider liveness probes (no network calls). The LIVE column shows `—` for every row. Table mode only — `--json` never probes unless `--reconcile` is passed. |
+| `--reconcile` | `false` | Force the provider-liveness/reconcile pass even under `--json` (table mode already does this by default), and include the `reconciled` summary in JSON output. |
 | `--json` | `false` | Print the raw `{ sandboxes: […] }` JSON instead of the human table. |
 
 ### `rm <sandboxId|label|id-prefix>`

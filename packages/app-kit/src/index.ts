@@ -40,6 +40,7 @@
 export { defineApp, AppDefinitionError } from "./define-app.js"
 export { emitApp } from "./emit.js"
 export { loadAppHandle, AppLoadError, resolveAppUIRoot } from "./load-app.js"
+export { loadAppBundledTools } from "./load-app-tools.js"
 export { refKey, stripOwner } from "./refs.js"
 export type {
   AppDefinition,

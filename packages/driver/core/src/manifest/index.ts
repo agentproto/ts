@@ -117,6 +117,48 @@ export function parseDriverManifest(source: string): DriverManifest {
 }
 
 /**
+ * Build the shared, non-execute part of a {@link DriverDefinition} from a
+ * parsed `DRIVER.md` manifest — the snake_case → camelCase mapping every
+ * `defineX` sugar over `defineDriver` (e.g. `defineCliDriver`,
+ * `defineHttpDriver`) needs to accept a manifest-loaded driver alongside its
+ * own kind-specific fields (`bin`, `baseUrl`, …). `driverFromManifest`
+ * below is the `kind`-agnostic caller of this; kind-specific loaders add
+ * `kind` back plus their own dispatch config.
+ */
+export function driverDefinitionFromManifest(
+  manifest: DriverManifest,
+): Omit<DriverDefinition, "kind" | "execute" | "implementations"> {
+  const fm = manifest.frontmatter
+  return {
+    id: fm.id,
+    name: fm.name,
+    description: fm.description,
+    version: fm.version,
+    implements: fm.implements.map((entry) => ({
+      tool: entry.tool,
+      version: entry.version,
+      schemaNarrowing: entry.schema_narrowing
+        ? {
+            dropInputs: entry.schema_narrowing.drop_inputs,
+            dropOutputs: entry.schema_narrowing.drop_outputs,
+          }
+        : undefined,
+      mapping: entry.mapping,
+      costOverride: entry.cost_override as DriverDefinition["costOverride"],
+      timeoutOverrideMs: entry.timeout_override_ms,
+      retryOverride: entry.retry_override as DriverDefinition["retryOverride"],
+      metadata: entry.metadata,
+    })),
+    network: fm.network,
+    region: fm.region,
+    policyTags: fm.policy_tags,
+    timeoutOverrideMs: fm.timeout_override_ms,
+    tags: fm.tags,
+    metadata: fm.metadata,
+  }
+}
+
+/**
  * Build a {@link DriverHandle} from a parsed `DRIVER.md` manifest +
  * caller-supplied execute bodies. The .md is the source of truth for
  * dispatch metadata (`implements[]`, install, auth, network, …); the
@@ -143,37 +185,11 @@ export function driverFromManifest(args: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   implementations?: readonly ToolImplementation<any, any, any>[]
 }): DriverHandle {
-  const fm = args.manifest.frontmatter
-
   const definition: DriverDefinition = {
-    id: fm.id,
-    name: fm.name,
-    description: fm.description,
-    version: fm.version,
-    kind: fm.kind,
-    implements: fm.implements.map((entry) => ({
-      tool: entry.tool,
-      version: entry.version,
-      schemaNarrowing: entry.schema_narrowing
-        ? {
-            dropInputs: entry.schema_narrowing.drop_inputs,
-            dropOutputs: entry.schema_narrowing.drop_outputs,
-          }
-        : undefined,
-      mapping: entry.mapping,
-      costOverride: entry.cost_override as DriverDefinition["costOverride"],
-      timeoutOverrideMs: entry.timeout_override_ms,
-      retryOverride: entry.retry_override as DriverDefinition["retryOverride"],
-      metadata: entry.metadata,
-    })),
+    ...driverDefinitionFromManifest(args.manifest),
+    kind: args.manifest.frontmatter.kind,
     execute: args.execute,
     implementations: args.implementations,
-    network: fm.network,
-    region: fm.region,
-    policyTags: fm.policy_tags,
-    timeoutOverrideMs: fm.timeout_override_ms,
-    tags: fm.tags,
-    metadata: fm.metadata,
   }
 
   return defineDriver(definition)

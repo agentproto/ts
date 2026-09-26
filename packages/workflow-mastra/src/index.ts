@@ -16,6 +16,8 @@ import { createStep, createWorkflow } from "@mastra/core/workflows"
 import { z } from "zod"
 import type {
   AgentSessionHost,
+  ApprovalDecision,
+  ApprovalStep,
   BranchStep,
   Bindings,
   LoopStep,
@@ -23,12 +25,15 @@ import type {
   ParallelStep,
   RunStep,
   RuntimeWorkflow,
+  SuspendStep,
 } from "@agentproto/workflow-runtime"
+import { normalizeWorkflowInputsSchema } from "@agentproto/workflow-runtime"
 
 import { assertProjectable } from "./assert-projectable.js"
 import { runLocalStep, runLocalSteps, type LocalWalkerCtx } from "./local-walker.js"
+import { jsonSchemaToZod } from "./json-schema-to-zod.js"
 
-export { WorkflowProjectionError } from "./errors.js"
+export { WorkflowProjectionError, mapMastraInputError, type MastraInputValidationError } from "./errors.js"
 
 export interface ToMastraWorkflowOptions {
   /** Host-injected agent session runtime. Required only if the workflow has `agent` steps. */
@@ -37,6 +42,16 @@ export interface ToMastraWorkflowOptions {
   cwd?: string
   /** Workspace slug for spawned agent sessions. */
   workspaceSlug?: string
+  /**
+   * The AIP-16 `inputs` block off the source WORKFLOW.md's frontmatter
+   * (shorthand flat map or canonical JSON Schema — same shape
+   * `normalizeWorkflowInputsSchema` accepts). A compiled {@link RuntimeWorkflow}
+   * doesn't carry this forward on its own (`compileWorkflowManifest` discards
+   * the manifest once it's compiled the step graph), so the caller re-supplies
+   * it here to get real `invalid-input` rejection at the Mastra layer instead
+   * of `z.any()`. Omit for a workflow that accepts anything.
+   */
+  inputsSchema?: unknown
 }
 
 // Mastra's step/workflow generics are deeply parameterized on schema shape
@@ -63,16 +78,135 @@ async function mergeStateSteps(params: AnyStepParams, patch: Record<string, unkn
   await params.setState({ steps: { ...prior, ...patch } })
 }
 
+/**
+ * The Mastra `outputSchema` an atomic step should declare for a `RunStep` —
+ * real, when the schema exists AND the wrapper's `execute` genuinely returns
+ * a value of that shape; `z.any()` otherwise. Never set from a schema the
+ * wrapper doesn't actually satisfy: `inputSchema` stays `z.any()` for every
+ * atomic step regardless of kind (see the module doc), because Mastra
+ * validates a step's `inputSchema` against `params.inputData` — the
+ * MECHANICALLY preceding Mastra step's raw output — not against this step's
+ * real, selector-computed input; the two are unrelated once a workflow has
+ * more than one step; `runTool` already validates a tool's real input at the
+ * correct layer.
+ */
+function atomicOutputSchema(step: RunStep) {
+  switch (step.kind) {
+    case "tool": {
+      const tool = step.tool
+      if (tool.outputSchema) return tool.outputSchema
+      if (tool.outputs) return jsonSchemaToZod(tool.outputs)
+      return z.any()
+    }
+    case "agent":
+      // `execAgentStep`'s actual return is `{ sessionId, output, ... }`, not
+      // the bare declared schema — wrap it so the declared shape matches what
+      // `execute()` really produces (Mastra doesn't enforce `outputSchema` at
+      // runtime today, but a projected step's schema should still describe
+      // its real output, not just echo the contract).
+      return step.outputSchema ? z.object({ sessionId: z.string(), output: step.outputSchema }) : z.any()
+    default:
+      return z.any()
+  }
+}
+
 /** Atomic Mastra step for a `tool` / `transform` / `agent` / `group` / `subworkflow` RunStep. */
 function atomicWrapper(step: RunStep, ctx: LocalWalkerCtx): AnyWorkflowBuilder {
   return createStep({
     id: step.id,
     inputSchema: z.any(),
-    outputSchema: z.any(),
+    outputSchema: atomicOutputSchema(step),
     execute: async (params: AnyStepParams) => {
       const bindings = bindingsFromParams(params)
       const acc: Record<string, unknown> = { ...bindings.steps }
       const output = await runLocalSteps([step], bindings, acc, ctx)
+      await mergeStateSteps(params, acc)
+      return output
+    },
+  })
+}
+
+/**
+ * Top-level `SuspendStep` — native Mastra suspend/resume. First entry (no
+ * `resumeData` yet): suspend with `{ reason, prompt, on }`, the same `on`
+ * signal names `WorkflowSuspendedError` carries in the plain runtime. Resume
+ * re-enters this SAME step's `execute` with `resumeData` populated — its
+ * value binds under this step's id, matching `run-workflow.ts`'s own
+ * `ctx.resume({stepId, on})` contract (the resume payload IS the step's
+ * output). No declared schema exists on `SuspendStep` to narrow `resumeSchema`
+ * with (unlike `ApprovalStep`'s well-known `{approved,who,note}` shape) — stays
+ * `z.any()` per the "keep z.any() only where nothing is declared" rule.
+ */
+function suspendWrapper(step: SuspendStep): AnyWorkflowBuilder {
+  return createStep({
+    id: step.id,
+    inputSchema: z.any(),
+    outputSchema: z.any(),
+    resumeSchema: z.any(),
+    suspendSchema: z.object({ reason: z.literal("suspend"), prompt: z.string(), on: z.array(z.string()) }),
+    execute: async (params: AnyStepParams) => {
+      if (params.resumeData !== undefined) {
+        await mergeStateSteps(params, { [step.id]: params.resumeData })
+        return params.resumeData
+      }
+      return params.suspend({
+        reason: "suspend" as const,
+        prompt: `workflow suspended at step '${step.id}' awaiting [${step.on.join(", ")}]`,
+        on: step.on,
+      })
+    },
+  })
+}
+
+const approvalResumeSchema = z.object({
+  approved: z.boolean(),
+  who: z.string(),
+  note: z.string().optional(),
+})
+
+/**
+ * Top-level `ApprovalStep` — suspends with the approval request, then resumes
+ * with an {@link ApprovalDecision}, running `onApprove`/`onReject` through the
+ * local walker exactly like `run-workflow.ts`'s own `"approval"` case (same
+ * shared-bindings merge as `branchArm`). Unlike the plain runtime (which
+ * auto-approves when no `approve` hook is given), this ALWAYS suspends —
+ * Mastra has no per-projection equivalent of a per-run `approve` callback, so
+ * there's no default to fall back to; a caller wanting auto-approve resumes
+ * immediately with `{approved: true, who: "host"}` itself. Documented in the
+ * README, not silently changed behavior.
+ */
+function approvalWrapper(step: ApprovalStep, ctx: LocalWalkerCtx): AnyWorkflowBuilder {
+  return createStep({
+    id: step.id,
+    inputSchema: z.any(),
+    outputSchema: z.any(),
+    resumeSchema: approvalResumeSchema,
+    suspendSchema: z.object({
+      reason: z.literal("approval"),
+      prompt: z.string(),
+      approvers: z.array(z.string()),
+      artifacts: z.array(z.string()).optional(),
+    }),
+    execute: async (params: AnyStepParams) => {
+      const bindings = bindingsFromParams(params)
+      if (params.resumeData === undefined) {
+        return params.suspend({
+          reason: "approval" as const,
+          prompt: step.prompt(bindings),
+          approvers: step.approvers ?? [],
+          ...(step.artifacts !== undefined ? { artifacts: step.artifacts } : {}),
+        })
+      }
+      const decision = params.resumeData as ApprovalDecision
+      const followups = decision.approved ? (step.onApprove ?? []) : (step.onReject ?? [])
+      const acc: Record<string, unknown> = { ...bindings.steps }
+      await runLocalSteps(followups, bindings, acc, ctx)
+      const output = {
+        approved: decision.approved,
+        who: decision.who,
+        ...(decision.note !== undefined ? { note: decision.note } : {}),
+      }
+      acc[step.id] = output
       await mergeStateSteps(params, acc)
       return output
     },
@@ -245,6 +379,12 @@ function attachStep(wf: AnyWorkflowBuilder, step: RunStep, ctx: LocalWalkerCtx):
       return attachMap(wf, step, ctx)
     case "loop":
       return attachLoop(wf, step, ctx)
+    // Only reachable at the TOP level — assertProjectable already rejected a
+    // nested suspend/approval before attachStep ever sees one.
+    case "suspend":
+      return wf.then(suspendWrapper(step))
+    case "approval":
+      return wf.then(approvalWrapper(step, ctx))
     default:
       // tool / transform / agent / group / subworkflow: one opaque step.
       return wf.then(atomicWrapper(step, ctx))
@@ -255,7 +395,9 @@ function attachStep(wf: AnyWorkflowBuilder, step: RunStep, ctx: LocalWalkerCtx):
  * Project a compiled {@link RuntimeWorkflow} onto a Mastra `createWorkflow`.
  * Throws {@link WorkflowProjectionError} eagerly — before building any Mastra
  * primitive — if the step graph (including nested `subworkflow` children)
- * contains a `suspend`, `approval`, or `pipeline` step; see the README for why.
+ * contains a `gate`, `pipeline`, or a NESTED `suspend`/`approval`; see the
+ * README for why. A top-level `suspend`/`approval` now projects to native
+ * Mastra suspend/resume instead.
  */
 export function toMastraWorkflow(
   compiled: RuntimeWorkflow,
@@ -267,7 +409,7 @@ export function toMastraWorkflow(
   let wf: AnyWorkflowBuilder = createWorkflow({
     id: compiled.id,
     description: compiled.description,
-    inputSchema: z.any(),
+    inputSchema: jsonSchemaToZod(normalizeWorkflowInputsSchema(opts.inputsSchema)),
     outputSchema: z.any(),
   })
   for (const step of compiled.steps) {

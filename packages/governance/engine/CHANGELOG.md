@@ -1,5 +1,16 @@
 # @agentproto/governance-engine
 
+## 0.1.7
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [c27f0b8]
+  - @agentproto/driver@0.2.3
+  - @agentproto/governance@0.1.4
+  - @agentproto/ref@0.2.1
+  - @agentproto/tool@0.3.1
+
 ## 0.1.6
 
 ### Patch Changes

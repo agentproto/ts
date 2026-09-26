@@ -19,9 +19,9 @@
 
 import { spawn, type ChildProcess } from "node:child_process"
 import { hostname, platform } from "node:os"
+import { decodeData } from "./node-data.js"
 import {
   TUNNEL_VERSION,
-  decodeData,
   encodeData,
   encodeFrame,
   parseFrame,

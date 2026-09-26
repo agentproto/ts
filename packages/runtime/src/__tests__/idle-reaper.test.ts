@@ -7,6 +7,7 @@ import {
   createSessionsRegistry,
   isResumable,
   type AgentSessionLike,
+  type AgentSessionResumer,
   type SessionDescriptor,
 } from "../sessions.js"
 import {
@@ -211,7 +212,7 @@ function liveAgentSession(sessionId: string, closed: { value: boolean }): AgentS
 
 /** A resumer that hands back a fresh live session (the lazy resume-on-prompt
  *  path), recording each descriptor id it was asked to resume. */
-function makeResumer(calls: string[]): ReturnType<typeof vi.fn> {
+function makeResumer(calls: string[]): AgentSessionResumer {
   return vi.fn(async (input: { descriptor: SessionDescriptor }) => {
     calls.push(input.descriptor.id)
     const fresh: AgentSessionLike = {

@@ -1467,3 +1467,123 @@ describe("gc — protectedPaths: live-session-cwd protection", () => {
     expect(wtList.stdout).toContain(wtPath)
   })
 })
+
+// ── lessons folded in from the branch-hygiene maintenance pass ──────────
+
+describe("gc — noise allowlist, lock-free status, in-base promotion", () => {
+  async function wt(repo: string, name: string, commitish: string, opts: readonly string[] = []): Promise<string> {
+    const wtPath = join(repo, "..", `${name}-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(wtPath)
+    await addWorktree(repo, wtPath, opts, commitish)
+    return wtPath
+  }
+
+  it("a merged worktree whose only dirt is noise reclaims, removed WITHOUT --force", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    await mkdir(join(repo, ".opencode"), { recursive: true })
+    await writeFile(join(repo, ".opencode", "package-lock.json"), "{}\n")
+    await execGit(repo, ["add", ".opencode/package-lock.json"])
+    await execGit(repo, ["commit", "-m", "tracked tool lockfile"])
+    const wtPath = await wt(repo, "noise", "main", ["-b", "wt/noise"])
+    await writeFile(join(wtPath, ".opencode", "package-lock.json"), '{"churn":true}\n') // tracked, modified
+    await writeFile(join(wtPath, "scratch.log"), "x\n") // untracked noise, via an explicit list below
+    await new Promise((r) => setTimeout(r, 5))
+
+    const forge = new UnreachableForgeClient("offline")
+    const memo = new InMemoryVerdictMemoStore()
+    const noisePaths = [".opencode/package-lock.json", "scratch.log"]
+    const plan = await planGc({ repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW, noisePaths })
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.tree).toEqual({ state: "clean", noise: [".opencode/package-lock.json", "scratch.log"] })
+    expect(entry?.class).toBe("reclaim")
+
+    // Without the allowlist the same tree is dirty and never reclaims.
+    const strict = await planGc({ repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW, noisePaths: [] })
+    expect(strict.find((e) => e.path === wtPath)?.class).toBe("hold")
+
+    const outcomes = await applyGc(plan, { repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW, noisePaths })
+    expect(outcomes.find((o) => o.path === wtPath)?.result).toBe("reclaimed")
+    const removes = worktreeRemoveCalls()
+    expect(removes.length).toBeGreaterThan(0)
+    for (const call of removes) expect(call[1]).not.toContain("--force")
+  })
+
+  it("the default allowlist covers .opencode/package-lock.json only", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    const wtPath = await wt(repo, "noise-default", "main", ["-b", "wt/noise-default"])
+    await mkdir(join(wtPath, ".opencode"), { recursive: true })
+    await writeFile(join(wtPath, ".opencode", "package-lock.json"), "{}\n") // untracked noise
+    const plan = await planGc({
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge: new UnreachableForgeClient("offline"),
+      memo: new InMemoryVerdictMemoStore(),
+      defaultBranchRef: "main",
+      now: FROZEN_NOW,
+    })
+    expect(plan.find((e) => e.path === wtPath)).toMatchObject({ class: "reclaim", tree: { state: "clean" } })
+  })
+
+  it("status reads never take optional locks (a read must not rewrite a live worktree's index)", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    await wt(repo, "locks", "main", ["-b", "wt/locks"])
+    spawnSpy.mockClear()
+    await planGc({ repoRoot: repo, repoName: "test-repo", forge: new UnreachableForgeClient("x"), memo: new InMemoryVerdictMemoStore(), defaultBranchRef: "main" })
+    const statusCalls = spawnSpy.mock.calls.filter((c) => c[0] === "git" && Array.isArray(c[1]) && c[1].includes("status"))
+    expect(statusCalls.length).toBeGreaterThan(0)
+    for (const call of statusCalls) expect(call[1][0]).toBe("--no-optional-locks")
+  })
+
+  it("a clean worktree whose branch is squash-merged by content (no merged PR) reclaims as squash-merged", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    await execGit(repo, ["checkout", "-b", "feat/landed-elsewhere"])
+    await writeFile(join(repo, "a.txt"), "a\n")
+    await execGit(repo, ["add", "a.txt"])
+    await execGit(repo, ["commit", "-m", "feat"])
+    await execGit(repo, ["checkout", "main"])
+    await writeFile(join(repo, "a.txt"), "a\n")
+    await execGit(repo, ["add", "a.txt"])
+    await execGit(repo, ["commit", "-m", "landed via another PR"])
+    const wtPath = await wt(repo, "landed", "feat/landed-elsewhere")
+
+    const forge = new FakeForgeClient() // forge knows no PR for it → local-only
+    const memo = new InMemoryVerdictMemoStore()
+    const plan = await planGc({ repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW })
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.integration?.state).toBe("local-only")
+    expect(entry).toMatchObject({ class: "reclaim", reclaimReason: "squash-merged" })
+
+    const outcomes = await applyGc(plan, { repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW })
+    expect(outcomes.find((o) => o.path === wtPath)).toMatchObject({ result: "reclaimed", reclaimReason: "squash-merged" })
+  })
+
+  it("real unlanded work still holds, and an open PR is never promoted", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    await execGit(repo, ["checkout", "-b", "feat/real-work"])
+    await writeFile(join(repo, "unique.ts"), "export {}\n")
+    await execGit(repo, ["add", "unique.ts"])
+    await execGit(repo, ["commit", "-m", "real work"])
+    const tip = await headSha(repo)
+    await execGit(repo, ["checkout", "main"])
+    const wtPath = await wt(repo, "real", "feat/real-work")
+
+    const memo = new InMemoryVerdictMemoStore()
+    const plan = await planGc({ repoRoot: repo, repoName: "test-repo", forge: new FakeForgeClient(), memo, defaultBranchRef: "main", now: FROZEN_NOW })
+    expect(plan.find((e) => e.path === wtPath)?.class).toBe("hold")
+
+    // Same branch, content fully in base, but an open PR: still hold.
+    await writeFile(join(repo, "unique.ts"), "export {}\n")
+    await execGit(repo, ["add", "unique.ts"])
+    await execGit(repo, ["commit", "-m", "base has it too"])
+    const openForge = new FakeForgeClient([pr({ number: 9, headRefOid: tip, state: "open", merged: false, mergedAt: null })])
+    const plan2 = await planGc({ repoRoot: repo, repoName: "test-repo", forge: openForge, memo, defaultBranchRef: "main", now: FROZEN_NOW })
+    const e2 = plan2.find((e) => e.path === wtPath)
+    expect(e2?.integration?.state).toBe("open")
+    expect(e2?.class).toBe("hold")
+  })
+})

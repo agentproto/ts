@@ -304,6 +304,21 @@ export function createAcpProtocolArm(
       if (!session) return { applied: false, reason: "not-connected" }
       return session.setSessionMode(modeId)
     },
+    onOutOfTurnEvent(listener) {
+      // Subscribed after `connect()` resolved (the runtime binds it to the
+      // session it just started) — before that there is nothing to hear.
+      if (!session) return () => {}
+      return session.onOutOfTurnEvent(listener)
+    },
+    get steeringSupported() {
+      return session?.steeringSupported ?? false
+    },
+    async steer(content) {
+      // Nothing to steer before connect — same not-connected shape as the
+      // other session controls, reported as "promptRequired" (no turn).
+      if (!session) return "promptRequired"
+      return session.steer(content)
+    },
     respondPermission(
       requestId: string,
       resolution: AcpPermissionResolution,

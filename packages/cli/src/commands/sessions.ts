@@ -94,7 +94,8 @@ Usage:
                                       [--max-cost-usd <n>] [--cost-budget <spec>]
                                       [--worktree | --no-worktree]
                                       [--sandbox <provider-or-json>]
-                                      [--hold-permissions] [--no-color]
+                                      [--hold-permissions] [--browser headless]
+                                      [--no-color]
   agentproto sessions terminal [--preset <name>] [-- <argv...>] [--cwd <dir>]
                                             [--workspace <slug>] [--name <slug>]
                                             [--label <text>] [--cols <n>] [--rows <n>]
@@ -115,6 +116,10 @@ Usage:
                                immediately instead of queuing. --force
                                jumps the queue — only meaningful without
                                --wait.)
+  agentproto sessions show <id-or-name> [--json]
+                              (one session's detail: status, lineage, and —
+                               once it has ended — its derived outcome: last
+                               message, opened PRs, cost, run/parent links.)
   agentproto sessions stop <id-or-name> [--json]
   agentproto sessions pin <id-or-name> [--json]
   agentproto sessions unpin <id-or-name> [--json]
@@ -144,6 +149,17 @@ Usage:
                                without delivering. Positions are 1-indexed here,
                                matching 'sessions prompt' output. After any
                                action the queue is re-listed to show the result.)
+  agentproto sessions inbox <id-or-name> [--ack <msgId,...|all>] [--json]
+                              (list the session's un-consumed typed messages —
+                               sender (relation + session), kind, urgency, text.
+                               --ack removes them from the inbox, and from the
+                               prompt queue if not yet delivered.)
+  agentproto sessions message <id-or-name> "<text>" [--kind <kind>]
+                              [--urgency <fyi|next-turn|steer|interrupt>] [--json]
+                              (send a typed message to the session as the human
+                               operator — recorded as a session-message from
+                               "human", distinct from a prompt. kind: report
+                               (default) | question | blocker | done | notice.)
   agentproto sessions restart <id-or-name> [--attach] [--json] [--no-color]
                               [--prefer-native-terminal]
                               (respawn from history — clones the old
@@ -246,6 +262,9 @@ sessions start flags:
   --hold-permissions            park each tool-permission request in the inbox
                                  (approve/deny with \`agentproto permissions\`)
                                  instead of auto-answering it
+  --browser headless|off         give the agent its own isolated headless Chrome
+                                 (per-session chrome-devtools-mcp, closed with the
+                                 session). Mirrors MCP agent_start.browser.
 
 sessions terminal flags:
   --preset <name>              use a named 'terminalPresets' entry from
@@ -294,6 +313,7 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   const sub = args[0]
   if (sub === "start") return runStart(args.slice(1))
   if (sub === "prompt") return runPrompt(args.slice(1))
+  if (sub === "show") return runShow(args.slice(1))
   if (sub === "stop") return runStop(args.slice(1))
   if (sub === "pin") return runPin(args.slice(1), true)
   if (sub === "unpin") return runPin(args.slice(1), false)
@@ -305,6 +325,8 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   if (sub === "restart") return runRestart(args.slice(1))
   if (sub === "wait") return runWait(args.slice(1))
   if (sub === "queue") return runQueue(args.slice(1))
+  if (sub === "inbox") return runInbox(args.slice(1))
+  if (sub === "message") return runMessage(args.slice(1))
 
   const { values } = parseArgs({
     args: [...args],
@@ -408,6 +430,7 @@ async function runStart(args: readonly string[]): Promise<number> {
       mode: { type: "string" },
       effort: { type: "string" },
       sandbox: { type: "string" },
+      browser: { type: "string" },
     },
   })
   const slug = positionals[0]
@@ -646,6 +669,18 @@ async function runStart(args: readonly string[]): Promise<number> {
     }
   }
 
+  let browser: "headless" | false | undefined
+  if (values.browser !== undefined) {
+    if (values.browser === "headless") browser = "headless"
+    else if (["off", "false", "none"].includes(values.browser)) browser = false
+    else {
+      process.stderr.write(
+        `agentproto sessions start: invalid --browser "${values.browser}" (expected headless|off).\n`
+      )
+      return 2
+    }
+  }
+
   const report = await discoverDaemon()
   if (!report.found) {
     printNoDaemonError(report, "agentproto sessions start")
@@ -717,6 +752,7 @@ async function runStart(args: readonly string[]): Promise<number> {
   if (orchestrator !== undefined) body.orchestrator = orchestrator
   if (mcpServers !== undefined) body.mcpServers = mcpServers
   if (values["hold-permissions"]) body.permissionHold = true
+  if (browser !== undefined) body.browser = browser
   // Source label: this spawn came from the agentproto CLI (#575).
   body.origin = "cli"
 
@@ -913,6 +949,90 @@ async function runPrompt(args: readonly string[]): Promise<number> {
     process.stderr.write(`agentproto sessions prompt: ${msg}\n`)
     return 1
   }
+}
+
+/** Render a session's derived outcome as an indented text block —
+ *  `sessions show`'s OUTCOME section. Pure, for tests. */
+export function formatOutcomeBlock(outcome: NonNullable<SessionDescriptor["outcome"]>): string {
+  const t = outcome.termination
+  const term = [t.status, t.reason, t.midTurn ? "mid-turn" : undefined, t.exitCode !== undefined ? `exit ${t.exitCode}` : undefined]
+    .filter(Boolean)
+    .join(" · ")
+  const lines = [`OUTCOME  ${outcome.status}  (ended: ${term})`]
+  if (outcome.summary) lines.push(`  summary:  ${outcome.summary}`)
+  for (const a of outcome.artifacts ?? []) lines.push(`  ${a.type}:${" ".repeat(Math.max(1, 9 - a.type.length))}${a.ref}${a.title ? `  ${a.title}` : ""}`)
+  for (const l of outcome.links ?? []) lines.push(`  ${l.rel}:${" ".repeat(Math.max(1, 9 - l.rel.length))}${l.ref}${l.title ? `  ${l.title}` : ""}`)
+  const c = outcome.cost
+  if (c) {
+    const parts = [
+      c.usd !== undefined ? `$${c.usd.toFixed(2)}` : undefined,
+      c.tokensIn !== undefined ? `${c.tokensIn} in` : undefined,
+      c.tokensOut !== undefined ? `${c.tokensOut} out` : undefined,
+      c.durationMs !== undefined ? formatDuration(c.durationMs) : undefined,
+    ].filter(Boolean)
+    if (parts.length) lines.push(`  cost:     ${parts.join(" · ")}`)
+  }
+  return lines.join("\n") + "\n"
+}
+
+/**
+ * `agentproto sessions show <id-or-name> [--json]` — one session's detail
+ * (GET /sessions/:id). `--json` prints the full descriptor, `outcome`
+ * included; the text form prints a short header plus the OUTCOME block.
+ */
+async function runShow(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      json: { type: "boolean" },
+    },
+  })
+  const id = positionals[0]
+  if (!id || positionals.length > 1) {
+    process.stderr.write("usage: agentproto sessions show <id-or-name> [--json]\n")
+    return 2
+  }
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto sessions show")
+    return 2
+  }
+  const endpoint = report.found
+  let desc: SessionDescriptor
+  try {
+    desc = await httpGetJson<SessionDescriptor>(
+      `${endpoint.url}/sessions/${encodeURIComponent(id)}`,
+    )
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/HTTP 401/.test(msg)) {
+      process.stderr.write((await explain401(endpoint, "agentproto sessions show")) + "\n")
+      return 1
+    }
+    if (/HTTP 404/.test(msg)) {
+      process.stderr.write(`agentproto sessions show: no session "${id}".\n`)
+      return 2
+    }
+    process.stderr.write(`agentproto sessions show: ${msg}\n`)
+    return 1
+  }
+  if (values.json) {
+    process.stdout.write(JSON.stringify(desc, null, 2) + "\n")
+    return 0
+  }
+  const name = desc.name ?? desc.label ?? desc.title
+  const header = [
+    `${desc.id}${name ? `  ${name}` : ""}`,
+    `  status:   ${desc.status}${desc.endedReason ? ` (${desc.endedReason})` : ""}`,
+    `  kind:     ${desc.kind}${desc.adapterSlug ? ` · ${desc.adapterSlug}` : ""}${desc.model ? ` · ${desc.model}` : ""}`,
+    ...(desc.cwd ? [`  cwd:      ${desc.cwd}`] : []),
+    `  started:  ${desc.startedAt}${desc.endedAt ? `  ended: ${desc.endedAt}` : ""}`,
+  ]
+  process.stdout.write(header.join("\n") + "\n")
+  if (desc.outcome) process.stdout.write("\n" + formatOutcomeBlock(desc.outcome))
+  return 0
 }
 
 async function runStop(args: readonly string[]): Promise<number> {
@@ -1307,6 +1427,132 @@ async function runQueue(args: readonly string[]): Promise<number> {
   return 0
 }
 
+/** One message in `GET /sessions/:id/inbox` (a `SessionMessage`). */
+interface InboxViewItem {
+  id: string
+  ts: string
+  from: { sessionId?: string; label?: string; relation: string }
+  kind: string
+  urgency: string
+  text: string
+  delivered?: { via: string }
+}
+
+/**
+ * `agentproto sessions inbox <id-or-name> [--ack <ids|all>] [--json]` —
+ * the typed-message inbox (AIP-46 §Session messages).
+ */
+async function runInbox(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: { ack: { type: "string" }, json: { type: "boolean" } },
+  })
+  const id = positionals[0]
+  if (!id || positionals.length > 1) {
+    process.stderr.write(
+      "agentproto sessions inbox: expected exactly one session id.\n" +
+        "  Try: agentproto sessions inbox <id-or-name> [--ack <msgId,...|all>]\n",
+    )
+    return 2
+  }
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto sessions inbox")
+    return 2
+  }
+  const endpoint = report.found
+  const base = `${endpoint.url}/sessions/${encodeURIComponent(id)}`
+  if (values.ack !== undefined) {
+    const ids = values.ack === "all" ? "all" : values.ack.split(",").map(x => x.trim()).filter(Boolean)
+    try {
+      const r = await httpPostJson<{ acked: string[] }>(`${base}/inbox/ack`, { ids }, endpoint.token)
+      if (!values.json) process.stdout.write(`agentproto sessions inbox: acked ${r.acked.length} on ${id}.\n`)
+    } catch (err) {
+      process.stderr.write(`agentproto sessions inbox: ${err instanceof Error ? err.message : String(err)}\n`)
+      return 1
+    }
+  }
+  const res = await httpGetJson<{ ok: boolean; inbox: InboxViewItem[] }>(`${base}/inbox`)
+  if (!res || !Array.isArray(res.inbox)) {
+    process.stderr.write(`agentproto sessions inbox: no session "${id}".\n`)
+    return 2
+  }
+  if (values.json) {
+    process.stdout.write(JSON.stringify({ ok: true, id, inbox: res.inbox }, null, 2) + "\n")
+    return 0
+  }
+  if (res.inbox.length === 0) {
+    process.stdout.write(`${id}: inbox empty.\n`)
+    return 0
+  }
+  process.stdout.write(`${id}: ${res.inbox.length} message(s)\n`)
+  for (const m of res.inbox) {
+    const who = m.from.sessionId
+      ? `${m.from.relation} ${m.from.label ?? m.from.sessionId}`
+      : m.from.relation
+    const text = m.text.replace(/\s+/g, " ")
+    process.stdout.write(
+      `  ${m.id}  ${who}  [${m.kind}/${m.urgency}${m.delivered ? ` · ${m.delivered.via}` : ""}]  ` +
+        `${text.length > 80 ? `${text.slice(0, 79)}…` : text}\n`,
+    )
+  }
+  return 0
+}
+
+/**
+ * `agentproto sessions message <id-or-name> "<text>" [--kind] [--urgency]` —
+ * send a typed message as the human operator.
+ */
+async function runMessage(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: { kind: { type: "string" }, urgency: { type: "string" }, json: { type: "boolean" } },
+  })
+  const [id, text, ...extra] = positionals
+  if (!id || !text || extra.length) {
+    process.stderr.write(
+      "agentproto sessions message: expected <id-or-name> \"<text>\".\n" +
+        '  Try: agentproto sessions message <id-or-name> "status?" --kind question\n',
+    )
+    return 2
+  }
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto sessions message")
+    return 2
+  }
+  const endpoint = report.found
+  try {
+    const r = await httpPostJson<Record<string, unknown>>(
+      `${endpoint.url}/sessions/${encodeURIComponent(id)}/messages`,
+      {
+        text,
+        ...(values.kind ? { kind: values.kind } : {}),
+        ...(values.urgency ? { urgency: values.urgency } : {}),
+      },
+      endpoint.token,
+    )
+    if (values.json) {
+      process.stdout.write(JSON.stringify(r, null, 2) + "\n")
+    } else {
+      const delivered = r.delivered as { via?: string } | null | undefined
+      process.stdout.write(
+        `agentproto sessions message: ${String(r.messageId)} → ${id} ` +
+          `(${delivered?.via ? `delivered via ${delivered.via}` : "queued behind the current turn"}, ` +
+          `urgency ${String(r.urgencyApplied)}).\n`,
+      )
+    }
+    return 0
+  } catch (err) {
+    process.stderr.write(`agentproto sessions message: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 1
+  }
+}
+
 /** Shape of one item in `GET /sessions/:id/queue` — see `QueuedPromptView`. */
 export interface QueueViewItem {
   id: string
@@ -1373,6 +1619,17 @@ function printQueueTable(id: string, queue: QueueViewItem[]): void {
  *      precedent (sessions-registry-agent-host.ts) so a caller can't
  *      mistake a bare "turn-end: success" for one that actually did
  *      something.
+ *   5  the session is IDLE right now — no turn in flight, not awaiting
+ *      input, nothing queued to run — for an `--until turn-end` /
+ *      `awaiting-input` / `any` wait. Distinct from a timeout: this is a
+ *      pre-flight read of the session's current descriptor, decided BEFORE
+ *      ever blocking, because the daemon's own already-finished-turn check
+ *      (`monitorSessionWait`) requires a `since` cursor a fresh CLI process
+ *      never has — without this short-circuit an idle session burns the
+ *      whole `--timeout` budget waiting for a turn-end that will never come
+ *      (nothing new is running) and then reports a lying "timed out...
+ *      still running?" message. Exit 5 tells the caller the truth instead:
+ *      there's nothing to wait for.
  *
  * Timeout used to share exit code 1 with hard CLI failures, so a caller
  * couldn't tell "just needs a bigger --timeout" from "something broke" —
@@ -1508,6 +1765,51 @@ async function runWaitSession(opts: {
   json: boolean
 }): Promise<number> {
   const { endpoint, idOrName, untilEvent, totalTimeout, json } = opts
+
+  // Pre-flight: read the session's current descriptor before blocking at
+  // all. `monitorSessionWait`'s already-finished-turn check deliberately
+  // requires a `since` cursor to fire (see its doc) — a fresh CLI process
+  // never has one, so a session that is simply idle (turn already ended,
+  // nothing new coming) falls through to the real long-poll, which then has
+  // nothing to ever resolve on and burns the entire --timeout budget before
+  // reporting a timeout that lies about why. `--until exited` is exempt:
+  // the daemon's terminal-status check already fires without `since`, so
+  // there's nothing to pre-empt here.
+  if (untilEvent !== "exited") {
+    let desc: SessionDescriptor
+    try {
+      desc = await httpGetJson<SessionDescriptor>(
+        `${endpoint.url}/sessions/${encodeURIComponent(idOrName)}`,
+      )
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/HTTP 404/.test(msg)) {
+        process.stderr.write(`agentproto sessions wait: no session "${idOrName}".\n`)
+        return 3
+      }
+      process.stderr.write(`agentproto sessions wait: ${msg}\n`)
+      return 3
+    }
+    // Nothing this wait could ever resolve on by blocking: no turn in
+    // flight, not awaiting input (that would be a real match, not idleness —
+    // left to the loop below), nothing queued to run next, and not still
+    // spinning up.
+    const idle =
+      desc.busy !== true &&
+      desc.awaitingInput !== true &&
+      !desc.queuedPrompts &&
+      desc.status !== "starting"
+    if (idle) {
+      return emitWaitIdle(json, {
+        sessionId: desc.id,
+        idOrName,
+        status: desc.status,
+        busy: desc.busy === true,
+        awaitingInput: desc.awaitingInput === true,
+      })
+    }
+  }
+
   const deadline = Date.now() + totalTimeout
   // Per-call server cap is 55s; pick a slice that leaves headroom.
   const sliceMs = 50_000
@@ -1630,6 +1932,48 @@ async function runWaitPolicy(opts: {
     json: opts.json,
     verb: "agentproto sessions wait",
   })
+}
+
+/**
+ * Reports exit code 5 (see `runWait`'s doc) — the session is idle right now
+ * (no turn in flight, not awaiting input, nothing queued) so there is
+ * nothing for this wait to ever resolve on. Distinct shape from
+ * `emitWaitTimeout`: no `timedOut`, and the prose deliberately does NOT
+ * suggest a longer `--timeout` — that suggestion is the exact lie this exit
+ * code exists to avoid.
+ */
+function emitWaitIdle(
+  json: boolean,
+  ctx: {
+    sessionId: string
+    idOrName: string
+    status: string
+    busy: boolean
+    awaitingInput: boolean
+  },
+): number {
+  if (json) {
+    process.stdout.write(
+      JSON.stringify(
+        {
+          idle: true,
+          sessionId: ctx.sessionId,
+          status: ctx.status,
+          busy: ctx.busy,
+          awaitingInput: ctx.awaitingInput,
+        },
+        null,
+        2,
+      ) + "\n",
+    )
+  } else {
+    process.stdout.write(
+      `agentproto sessions wait: session "${ctx.idOrName}" is idle right now — no turn is ` +
+        `in flight and nothing is queued to run (status: ${ctx.status}). There is nothing to ` +
+        `wait for.\n`,
+    )
+  }
+  return 5
 }
 
 function emitWaitTimeout(

@@ -15,6 +15,7 @@ import { describe, it, expect, vi, afterEach } from "vitest"
 import {
   CANONICAL_SESSION_ID,
   CANONICAL_SESSION_RECORDS,
+  SESSION_MESSAGE_RECORDS,
 } from "@agentproto/transcript-fixtures"
 import { createTranscriptToUiMapper } from "../chat-stream.js"
 
@@ -185,5 +186,29 @@ describe("transcript → UIMessageChunk mapping against CANONICAL_SESSION_RECORD
     ).toEqual([])
 
     expect(spy).not.toHaveBeenCalled()
+  })
+})
+describe("transcript → UIMessageChunk: session-message", () => {
+  it("surfaces a typed message as a data part carrying the attested sender; the sent-trace is silent", () => {
+    const logger = vi.fn()
+    const map = createTranscriptToUiMapper(CANONICAL_SESSION_ID, logger)
+    const [delivered, sent] = SESSION_MESSAGE_RECORDS
+    expect(map(delivered)).toEqual([
+      {
+        type: "data-session-message",
+        id: "msg_3f2a91c0",
+        data: {
+          messageId: "msg_3f2a91c0",
+          from: { sessionId: "sess_child_fixture", label: "executor-2", adapter: "claude-code", relation: "child" },
+          kind: "done",
+          urgency: "next-turn",
+          text: "PR opened: https://github.com/agentproto/ts/pull/124",
+          correlationId: "msg_3f2a91c0",
+          delivered: { via: "turn", at: "2026-08-17T09:00:07.000Z", turnSeq: 2 },
+        },
+      },
+    ])
+    expect(map(sent)).toEqual([])
+    expect(logger).not.toHaveBeenCalled()
   })
 })

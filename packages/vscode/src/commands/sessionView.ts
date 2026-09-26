@@ -1,8 +1,7 @@
 /**
  * VS Code wiring for the Session Chat app routing — the impure half of
- * sessionView.logic.ts. Owns the browser-opener ladder (Simple Browser →
- * env.openExternal, same as apps.ts openAppInBrowser) used for every
- * chat-route open.
+ * sessionView.logic.ts. Owns the browser-opener ladder (Integrated Browser →
+ * Simple Browser → env.openExternal) used for every chat-route open.
  */
 
 import * as vscode from "vscode"
@@ -10,7 +9,12 @@ import * as vscode from "vscode"
 import type { DaemonClient } from "../client/daemonClient.js"
 import type { SessionDescriptor } from "../client/types.js"
 import { getConfig } from "../config.js"
-import { chatUrl, installedSessionChatApp, resolveSessionOpen } from "./sessionView.logic.js"
+import {
+  chatReuseUrlFilter,
+  chatUrl,
+  installedSessionChatApp,
+  resolveSessionOpen,
+} from "./sessionView.logic.js"
 
 /** Read the per-open setting — deliberately NOT part of getConfig()/
  *  RELOAD_REQUIRED_KEYS: switching it doesn't invalidate the daemon client. */
@@ -19,25 +23,36 @@ export function getSessionView(): "chat" | "builtin" | "chat-panel" {
   return v === "builtin" || v === "chat-panel" ? v : "chat"
 }
 
-/** The Simple Browser → OS browser ladder (apps.ts openAppInBrowser's
- *  pattern): Simple Browser keeps the tab inside VS Code, env.openExternal is
- *  the fallback when the built-in extension isn't available. */
+/** VS Code's Integrated Browser. `simpleBrowser.api.open` forwards here when
+ *  it exists, but without a `reuseUrlFilter` — so going through it opens a
+ *  new browser tab on every session click. */
+const INTEGRATED_BROWSER_OPEN = "workbench.action.browser.open"
+
+/** Integrated Browser (reusing the open session-chat tab: navigated to the
+ *  clicked session, then focused) → Simple Browser (older VS Code; a single
+ *  view that navigates in place) → OS browser. */
 export async function openChatUrl(url: string, sessionId: string): Promise<void> {
-  let opened = false
   try {
-    await vscode.commands.executeCommand("simpleBrowser.api.open", url)
-    opened = true
-  } catch {
-    opened = false
-  }
-  if (!opened) {
-    try {
-      await vscode.env.openExternal(vscode.Uri.parse(url))
-    } catch (err) {
-      void vscode.window.showErrorMessage(
-        `Open session '${sessionId}' in the chat UI failed: ${err instanceof Error ? err.message : String(err)}`,
-      )
+    const commands = await vscode.commands.getCommands(true)
+    if (commands.includes(INTEGRATED_BROWSER_OPEN)) {
+      await vscode.commands.executeCommand(INTEGRATED_BROWSER_OPEN, {
+        url,
+        reuseUrlFilter: chatReuseUrlFilter(getConfig().daemonUrl),
+      })
+      return
     }
+    let opened = false
+    try {
+      await vscode.commands.executeCommand("simpleBrowser.api.open", url)
+      opened = true
+    } catch {
+      opened = false
+    }
+    if (!opened) await vscode.env.openExternal(vscode.Uri.parse(url))
+  } catch (err) {
+    void vscode.window.showErrorMessage(
+      `Open session '${sessionId}' in the chat UI failed: ${err instanceof Error ? err.message : String(err)}`,
+    )
   }
 }
 

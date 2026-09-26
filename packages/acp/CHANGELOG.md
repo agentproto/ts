@@ -1,5 +1,11 @@
 # @agentproto/acp
 
+## 0.8.2
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+
 ## 0.8.1
 
 ### Patch Changes

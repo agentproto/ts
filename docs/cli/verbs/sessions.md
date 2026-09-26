@@ -44,6 +44,9 @@ agentproto sessions wait     <id-or-name> [--until <event>] [--timeout <duration
 agentproto sessions gc       [--older-than-days <n>] [--forget] [--json]
 agentproto sessions queue    <id-or-name> [--force <n>] [--deliver <n>]
                                            [--drop <n>] [--json]
+agentproto sessions inbox    <id-or-name> [--ack <msgId,...|all>] [--json]
+agentproto sessions message  <id-or-name> "<text>" [--kind <kind>]
+                                           [--urgency <tier>] [--json]
 ```
 
 Browse and control the daemon's live sessions — terminals, agent CLIs,
@@ -221,7 +224,7 @@ added only for agent-CLI children that resolved a `parentSessionId`:
 |---|---|
 | `AGENTPROTO_SESSION_ID` | The spawned session's own id (`sess_…`) — the same id `session_list`/`agent_sessions_list` show for it. |
 | `AGENTPROTO_WORKSPACE_SLUG` | The workspace slug the session resolved to (`"default"` when none). |
-| `AGENTPROTO_PARENT_SESSION_ID` | The id of the session that spawned this one. Present only for nested agent-CLI children; lets a child report back via the `message_parent` MCP tool without a registry round-trip. |
+| `AGENTPROTO_PARENT_SESSION_ID` | The id of the session that spawned this one. Present only for nested agent-CLI children; lets a child report back via the `message_parent` MCP tool without a registry round-trip (see [Messages between sessions](#messages-between-sessions)). |
 
 A hook, script, or tool a session shells out to can read these to report
 back, tag telemetry, or spawn a further child with `parentSessionId` set to
@@ -652,6 +655,102 @@ dispatch), origin (`user`/`agent`/`child`), preview, and `queuedAt`.
 
 Positions are 1-indexed, matching `sessions prompt` output. After any
 action the queue is re-listed to show the result.
+
+### `inbox <id-or-name>`
+
+```bash
+agentproto sessions inbox ses_abc12
+agentproto sessions inbox ses_abc12 --ack msg_3f2a91c0,msg_77e00000
+agentproto sessions inbox ses_abc12 --ack all --json
+```
+
+Lists the session's **inbox** — typed messages from other sessions (or
+from you, see `message` below) that it hasn't consumed yet: sender
+(relation + session), kind, urgency, how it was delivered, and a text
+preview. A message leaves the inbox when it's delivered into a turn, when
+the session receives it through `inbox_wait`, or when it's acked. `--ack`
+removes messages by id (or `all`); an acked message that's still waiting
+in the prompt queue is dropped from the queue too. The full history stays
+in the transcript either way. See [Messages between sessions](#messages-between-sessions).
+
+### `message <id-or-name> "<text>"`
+
+```bash
+agentproto sessions message ses_abc12 "status?" --kind question
+agentproto sessions message ses_abc12 "FYI: main was force-pushed" --urgency fyi
+agentproto sessions message ses_abc12 "stop, the spec changed" --urgency interrupt
+```
+
+Sends a typed message to the session **as the human operator**. It's
+recorded as a `session-message` from `human` (never a `user-prompt`),
+rendered to the agent inside a daemon-attested `<agentproto-message>`
+tag, and routed by `--urgency` like any other message (see the tier
+table below). A human sender keeps `interrupt`. `--kind` is one of
+`report` (default), `question`, `blocker`, `done`, `notice`.
+
+## Messages between sessions
+
+Sessions in the same tree talk through **typed messages**, separate from
+prompts. A prompt is an instruction from whoever drives a session; a
+message is a report between sessions whose sender the daemon **attests**:
+the `from` block (session id, relation, label) is computed from the
+caller's verified identity and the session tree, and no send request can
+set it. The recipient's agent sees each message as its own
+`<agentproto-message id=… from="child" session=… kind=…><body>…</body></agentproto-message>`
+block. It's never glued onto another prompt, and its body is escaped so
+it can't forge a header. The recipient's transcript records a
+`session-message` record, never a `user-prompt`.
+
+Who may message whom: child → parent, parent → direct child, human/daemon
+→ anyone. Siblings only with `defaults.messaging.allowSiblings: true`.
+
+### Tools (MCP)
+
+| Tool | Inputs | Use |
+|---|---|---|
+| `message_parent` | `{message, kind?, urgency?, interrupt?, replyTo?}` | Report up to the session that spawned you. |
+| `message_send` | `{to: "parent" \| sessionId, text, kind?, urgency?, replyTo?, correlationId?, data?}` | Message a tree neighbour. |
+| `message_reply` | `{replyTo, text, kind?, urgency?}` | Answer a message you received — routed to its sender, same thread. |
+| `inbox_list` | `{from?, kind?, correlationId?, limit?}` | Read your un-consumed messages. |
+| `inbox_ack` | `{ids \| "all"}` | Acknowledge (remove) them. |
+| `inbox_wait` | `{from?: ids \| "children", kind?, correlationId?, timeoutMs? (1–49 s), ack?}` | Block until a matching message arrives; returns `{messages, timedOut, pendingChildren}`. |
+
+HTTP: `POST /sessions/:id/messages` (human sender, or a session via the
+trusted `?callerSessionId=`), `GET /sessions/:id/inbox`,
+`POST /sessions/:id/inbox/ack`. Bus/SSE: `session:message` (at send and
+again at delivery).
+
+### Delivery tiers
+
+| urgency | recipient in `inbox_wait` | idle | busy (its prompted turn) | busy (autonomous turn) |
+|---|---|---|---|---|
+| `fyi` | returned by the wait | inbox only — no wake; a one-line digest opens its next turn | inbox only | inbox only |
+| `next-turn` | returned by the wait | its own turn now | queued; delivered when the turn ends | queued |
+| `steer` | returned by the wait | its own turn now | **injected into the running turn** if the agent supports ACP steering (`steering: true` in `session_list`), at most once per 10 s — else next-turn | next-turn (never steered) |
+| `interrupt` | returned by the wait | its own turn now | cancels the turn and delivers — only when granted (humans always; sessions only with `defaults.messaging.agentInterrupt: "allow"`), otherwise delivered as `steer` | same |
+
+Default urgency by kind: `blocker`/`question` → `steer`, the rest →
+`next-turn`. Every send result reports the tier actually used
+(`urgencyApplied`), so a sender is never told a message interrupted when
+it didn't.
+
+### Supervising without ending your turn
+
+A supervisor that fans out children should **not** end its turn to wait
+for them — nothing wakes an idle parent on a timer. Loop on `inbox_wait`
+instead; it returns as soon as a child reports, and `pendingChildren`
+tells you when to stop:
+
+```text
+agent_start {…child A…}   agent_start {…child B…}
+loop:
+  inbox_wait { from: "children", kind: ["done", "blocker"], timeoutMs: 45000 }
+  → handle each returned message (message_reply to answer a blocker)
+  until both are done, or pendingChildren is empty
+```
+
+Children report with `message_parent` (or `message_send {to: "parent"}`)
+using `kind: "done"` when finished and `kind: "blocker"` when stuck.
 
 ## Interrupting a live session
 

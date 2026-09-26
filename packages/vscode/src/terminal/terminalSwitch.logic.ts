@@ -48,7 +48,11 @@ export function notPtyMessage(session: SessionDescriptor): string {
 
 /** Shown for a terminal on a session that has already exited/killed/errored. */
 export function deadSessionBanner(session: SessionDescriptor): string {
-  return dim(`─ session ${formatTitle(session)} has ${session.status} — this terminal is read-only history. ─`)
+  return dim(
+    `─ session ${formatTitle(session)} has ${session.status} — the PTY has ended. ` +
+      `Run "agentproto: Open Transcript" to inspect saved history. ` +
+      `"agentproto: Restart Session (New Session)" opens a new PTY and resumes the provider conversation when available. ─`,
+  )
 }
 
 /** The opening banner for an agent-cli terminal: dead-session framing if it's already over, otherwise the not-PTY explainer. */

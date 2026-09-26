@@ -270,14 +270,20 @@ function reduceEvent(state, record) {
     case 'usage_update': {
       // Usage is state, not a row (SPEC §1) — last-write-wins, no merge with
       // the prior snapshot. state.rows is reused as-is (it didn't change).
-      return {
-        rows: state.rows,
-        usage: {
-          size: record.size, used: record.used, cost: record.cost,
-          tokensIn: record.tokensIn, tokensOut: record.tokensOut,
-          seq: record.seq, ts: record.ts,
-        },
+      // Except the context window: a cost-bearing frame's size sticks (see
+      // the TS module's usage_update arm).
+      var sizeReported = typeof record.size === 'number' && record.size > 0;
+      var authoritative = record.cost !== undefined && sizeReported;
+      var prevAuth = !!(state.usage && state.usage.sizeAuthoritative);
+      var keepSize = !authoritative && (prevAuth || !sizeReported);
+      var usage = {
+        size: keepSize ? (state.usage ? state.usage.size : undefined) : record.size,
+        used: record.used, cost: record.cost,
+        tokensIn: record.tokensIn, tokensOut: record.tokensOut,
+        seq: record.seq, ts: record.ts,
       };
+      if (authoritative || (keepSize && prevAuth)) usage.sizeAuthoritative = true;
+      return { rows: state.rows, usage: usage };
     }
     default:
       return state;

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import type { SessionDescriptor } from "../client/types.js"
-import { canRestart, describeRestart, parseRestartResult } from "./sessionRestart.logic.js"
+import { canRestart, describeNotATerminal, describeRestart, parseRestartResult, restartedSessionView } from "./sessionRestart.logic.js"
 
 function session(overrides: Partial<SessionDescriptor> = {}): SessionDescriptor {
   return {
@@ -36,6 +36,17 @@ describe("canRestart", () => {
     // Such a row renders as session-interrupted (resume-in-place is the primary
     // action), but restarting it to a NEW id is still a legitimate choice.
     expect(canRestart(session({ status: "killed", endedReason: "daemon-restart" }))).toBe(true)
+  })
+})
+
+describe("restartedSessionView", () => {
+  it("opens native and plain PTY restarts in the usable terminal", () => {
+    expect(restartedSessionView({ id: "s2", kind: "terminal", pty: true })).toBe("terminal")
+    expect(restartedSessionView({ id: "s2", kind: "agent-cli", pty: true })).toBe("terminal")
+  })
+
+  it("keeps ACP restarts in the conversation panel", () => {
+    expect(restartedSessionView({ id: "s2", kind: "agent-cli", pty: false })).toBe("transcript")
   })
 })
 
@@ -141,7 +152,7 @@ describe("describeRestart", () => {
     const before = session({ id: "sess_old1", kind: "agent-cli", status: "exited" })
     const message = describeRestart(before, { id: "sess_new1", pty: true, resumeVia: "pty-native" })
     expect(message).toContain(
-      "Resumed as a terminal session (pty-native) — its transcript is raw output, not a conversation.",
+      "Resumed as a terminal session (pty-native). Its provider transcript remains available via Open Transcript.",
     )
   })
 
@@ -169,5 +180,50 @@ describe("describeRestart", () => {
     })
     expect(message).toContain("terminal session (pty-native)")
     expect(message).toContain("Continuity was not achieved: adapter rejected resume id.")
+  })
+})
+
+describe("nativeResumeDecline parsing + describeNotATerminal", () => {
+  it("round-trips a well-formed decline, with and without probedDir", () => {
+    expect(
+      parseRestartResult({
+        id: "sess_new1",
+        nativeResumeDecline: { reason: "transcript-not-found", probedDir: "/iso/projects/-my-proj" },
+      })?.nativeResumeDecline,
+    ).toEqual({ reason: "transcript-not-found", probedDir: "/iso/projects/-my-proj" })
+
+    expect(
+      parseRestartResult({ id: "sess_new1", nativeResumeDecline: { reason: "no-resume-id" } })
+        ?.nativeResumeDecline,
+    ).toEqual({ reason: "no-resume-id" })
+  })
+
+  it("drops a malformed or unknown-reason decline instead of throwing", () => {
+    expect(
+      parseRestartResult({ id: "sess_new1", nativeResumeDecline: { reason: "weird-new-reason" } })
+        ?.nativeResumeDecline,
+    ).toBeUndefined()
+    expect(
+      parseRestartResult({ id: "sess_new1", nativeResumeDecline: "transcript-not-found" })
+        ?.nativeResumeDecline,
+    ).toBeUndefined()
+  })
+
+  it("transcript-not-found / no-resume-id name the probed directory when known", () => {
+    expect(
+      describeNotATerminal({ reason: "transcript-not-found", probedDir: "/iso/projects/-my-proj" }),
+    ).toBe("the provider transcript was not found (probed /iso/projects/-my-proj) — the daemon fell back to ACP resume.")
+    expect(describeNotATerminal({ reason: "no-resume-id" })).toBe(
+      "the provider transcript was not found — the daemon fell back to ACP resume.",
+    )
+  })
+
+  it("capability-missing and no-decline-info get their own honest messages", () => {
+    expect(describeNotATerminal({ reason: "capability-missing" })).toContain(
+      "no nativeTerminalResume capability",
+    )
+    expect(describeNotATerminal(undefined)).toBe(
+      "the restart did not request (or the daemon did not report) a native terminal — it resumed via ACP instead.",
+    )
   })
 })

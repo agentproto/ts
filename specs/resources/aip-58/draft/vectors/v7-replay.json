@@ -1,0 +1,46 @@
+{
+  "id": "V7",
+  "title": "Replay from step 3 -> new run, steps 1-2 reused from journal",
+  "rule": "specs/aip-58.mdx section 6 Journal -- run.replay",
+  "originalRun": {
+    "runId": "run_orig",
+    "status": "succeeded",
+    "steps": [
+      { "stepId": "fetch", "status": "succeeded" },
+      { "stepId": "parse", "status": "succeeded" },
+      { "stepId": "draft", "status": "succeeded" },
+      { "stepId": "save", "status": "succeeded" }
+    ],
+    "journal": [
+      { "stepId": "fetch", "attempt": 1, "inputHash": "h1", "status": "succeeded" },
+      { "stepId": "parse", "attempt": 1, "inputHash": "h2", "status": "succeeded" },
+      { "stepId": "draft", "attempt": 1, "inputHash": "h3", "status": "succeeded" },
+      { "stepId": "save", "attempt": 1, "inputHash": "h4", "status": "succeeded" }
+    ]
+  },
+  "runReplay": { "of": "run_orig", "fromStep": "draft" },
+  "expected": {
+    "newRunId": "run_replay (!= run_orig)",
+    "rootRunId": "run_replay",
+    "parentRunId": null,
+    "steps": [
+      { "stepId": "fetch", "status": "succeeded", "sourcedFrom": "journal:run_orig attempt 1", "reExecuted": false },
+      { "stepId": "parse", "status": "succeeded", "sourcedFrom": "journal:run_orig attempt 1", "reExecuted": false },
+      { "stepId": "draft", "status": "pending", "reExecuted": true },
+      { "stepId": "save", "status": "pending", "reExecuted": true }
+    ],
+    "events": [
+      "run.created",
+      "run.started",
+      "step.succeeded",
+      "step.succeeded",
+      "step.started",
+      "..."
+    ],
+    "notes": [
+      "run_orig is untouched -- still 'succeeded', still immutable. run_replay is a new, independent run whose run.created event's data names { replayOf: { runId: 'run_orig', fromStep: 'draft' } } -- there is no 'replayOf' field on the Run resource itself.",
+      "'fetch' and 'parse' report status succeeded with no corresponding step.started/step.output pair re-executed in run_replay's own event log for those two steps -- their journaled output from run_orig is copied forward instead.",
+      "'draft' onward re-executes fresh against the new run's own workspace."
+    ]
+  }
+}

@@ -237,6 +237,73 @@ describe("runWorkflow — map onError", () => {
   })
 })
 
+describe("runWorkflow — map parallelism is a sliding window", () => {
+  it("starts the next item as soon as ANY slot frees, not when the whole batch finishes", async () => {
+    const release = new Map<number, () => void>()
+    const started: number[] = []
+    const wf: RuntimeWorkflow = {
+      id: "map-window",
+      steps: [
+        {
+          kind: "map",
+          id: "m",
+          parallelism: 2,
+          over: () => [0, 1, 2, 3],
+          body: (item) => ({
+            kind: "transform",
+            id: "t",
+            compute: () => {
+              started.push(item as number)
+              return new Promise<number>((resolve) => release.set(item as number, () => resolve(item as number)))
+            },
+          }),
+        },
+      ],
+      output: (b) => b.steps.m,
+    }
+    const done = runWorkflow({ workflow: wf })
+    const tick = () => new Promise((r) => setTimeout(r, 0))
+    await tick()
+    expect(started).toEqual([0, 1])
+    // Item 0 is slow; item 1 finishing must free its slot for item 2 now.
+    release.get(1)!()
+    await tick()
+    expect(started).toEqual([0, 1, 2])
+    release.get(2)!()
+    await tick()
+    expect(started).toEqual([0, 1, 2, 3])
+    release.get(3)!()
+    release.get(0)!()
+    expect((await done).output).toEqual([0, 1, 2, 3])
+  })
+
+  it("non-tolerant: no new item starts after the first failure", async () => {
+    const started: number[] = []
+    const wf: RuntimeWorkflow = {
+      id: "map-window-fail",
+      steps: [
+        {
+          kind: "map",
+          id: "m",
+          parallelism: 1,
+          over: () => [0, 1, 2],
+          body: (item) => ({
+            kind: "transform",
+            id: "t",
+            compute: () => {
+              started.push(item as number)
+              if (item === 1) throw new Error("boom")
+              return item
+            },
+          }),
+        },
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf })).rejects.toThrow("boom")
+    expect(started).toEqual([0, 1])
+  })
+})
+
 describe("runWorkflow — parallel / approval / suspend / subworkflow", () => {
   it("parallel runs branches concurrently and binds outputs by branch id", async () => {
     const wf: RuntimeWorkflow = {
@@ -360,6 +427,7 @@ function fakeHost(
     readFinalMessage: AgentSessionHost["readFinalMessage"]
     readCostUsd: AgentSessionHost["readCostUsd"]
     emitHarnessWarning: AgentSessionHost["emitHarnessWarning"]
+    takeInputRequest: AgentSessionHost["takeInputRequest"]
   }> = {},
 ): AgentSessionHost {
   return {
@@ -371,6 +439,7 @@ function fakeHost(
     readFinalMessage: overrides.readFinalMessage,
     readCostUsd: overrides.readCostUsd,
     ...(overrides.emitHarnessWarning ? { emitHarnessWarning: overrides.emitHarnessWarning } : {}),
+    ...(overrides.takeInputRequest ? { takeInputRequest: overrides.takeInputRequest } : {}),
   }
 }
 
@@ -414,6 +483,46 @@ describe("runWorkflow — agent step", () => {
     expect(host.resolveByLabel).toHaveBeenCalledWith("s1")
     expect(host.spawn).not.toHaveBeenCalled()
     expect(host.sendPromptAndWait).toHaveBeenCalledWith("sess_prior", "verify")
+  })
+
+  it("resolves `{{index}}` in a map-body sessionRef to the item's own spawn (stepKey), not the last one", async () => {
+    const byLabel = new Map<string, string>()
+    let n = 0
+    const host = fakeHost({
+      spawn: vi.fn(async (_adapter: string, opts: { stepKey?: string }) => {
+        const id = `sess_${n++}`
+        if (opts.stepKey) byLabel.set(opts.stepKey, id)
+        return id
+      }),
+      resolveByLabel: vi.fn((label: string) => byLabel.get(label)),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "agent-reuse-indexed",
+      steps: [
+        {
+          kind: "map",
+          id: "fan",
+          over: () => ["a", "b"],
+          parallelism: 2,
+          body: () => ({
+            kind: "group",
+            id: "fan__body",
+            steps: [
+              { kind: "agent", id: "first", adapter: "mock-adapter", prompt: b => `first ${String(b.item)}` },
+              { kind: "agent", id: "again", sessionRef: "first[{{index}}]", prompt: b => `again ${String(b.item)}` },
+            ],
+          }),
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host })
+    expect(host.resolveByLabel).toHaveBeenCalledWith("first[0]")
+    expect(host.resolveByLabel).toHaveBeenCalledWith("first[1]")
+    const sends = vi.mocked(host.sendPromptAndWait).mock.calls
+    const sessionFor = (prompt: string) => sends.find(([, p]) => p === prompt)?.[0]
+    expect(sessionFor("again a")).toBe(sessionFor("first a"))
+    expect(sessionFor("again b")).toBe(sessionFor("first b"))
+    expect(sessionFor("first a")).not.toBe(sessionFor("first b"))
   })
 
   it("passes a literal sandbox ref (slug) through to host.spawn", async () => {
@@ -1027,6 +1136,97 @@ describe("runWorkflow — agent step outputSchema", () => {
     expect(host.sendPromptAndWait).toHaveBeenCalledTimes(1)
   })
 
+  // F27: the output contract goes out on the FIRST prompt, not only on a
+  // rejected-reply retry — the model should never have to guess the shape.
+  it("F27: an outputSchema step's FIRST prompt already states the JSON Schema contract", async () => {
+    const host = fakeHost({
+      readFinalMessage: vi.fn(async () => JSON.stringify({ verdict: "pass" })),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "schema-first-prompt",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "judge this",
+          outputSchema: verdictSchema,
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host })
+    expect(host.sendPromptAndWait).toHaveBeenCalledTimes(1)
+    const firstPrompt = (host.sendPromptAndWait as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string
+    expect(firstPrompt).toContain("judge this")
+    expect(firstPrompt).toContain("When done, reply with ONLY a JSON object matching this JSON Schema:")
+    expect(firstPrompt).toContain('"verdict"')
+    expect(firstPrompt).toContain('"pass"')
+    expect(firstPrompt).toContain('"fail"')
+  })
+
+  // F27: a rejected-reply retry restates the schema too, not just a generic
+  // "didn't match" note the model has no way to act on.
+  it("F27: a retry prompt (invalid JSON) also restates the JSON Schema contract", async () => {
+    const host = fakeHost({
+      readFinalMessage: vi.fn(async () => "not json at all"),
+      sendPromptAndWait: vi.fn(async () => {}),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "schema-retry-prompt",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "judge this",
+          outputSchema: verdictSchema,
+          maxRetries: 1,
+        },
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toMatchObject({
+      code: "missing-output",
+    })
+    expect(host.sendPromptAndWait).toHaveBeenCalledTimes(2)
+    const retryPrompt = (host.sendPromptAndWait as ReturnType<typeof vi.fn>).mock.calls[1]![1] as string
+    expect(retryPrompt).toContain("did not match the required schema")
+    expect(retryPrompt).toContain("When done, reply with ONLY a JSON object matching this JSON Schema:")
+  })
+
+  // F27, declarative path: a WORKFLOW.md-authored `outputSchema` compiles
+  // (via `compileOutputSchema`) into an `OutputSchemaLike` carrying the raw
+  // JSON Schema on its `jsonSchema` marker — the prompt note should render
+  // that EXACT schema, not a zod re-derivation.
+  it("F27: a compiled JSON-Schema outputSchema (the WORKFLOW.md path) renders its exact schema into the first prompt", async () => {
+    const host = fakeHost({
+      readFinalMessage: vi.fn(async () => JSON.stringify({ ok: true })),
+    })
+    const rawJsonSchema = { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] }
+    const wf: RuntimeWorkflow = {
+      id: "schema-declarative",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "judge this",
+          outputSchema: {
+            safeParse: (value: unknown) =>
+              typeof value === "object" && value !== null && "ok" in value
+                ? { success: true as const, data: value }
+                : { success: false as const, error: { issues: [] } },
+            jsonSchema: rawJsonSchema,
+          },
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host })
+    const firstPrompt = (host.sendPromptAndWait as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string
+    expect(firstPrompt).toContain(
+      `When done, reply with ONLY a JSON object matching this JSON Schema: ${JSON.stringify(rawJsonSchema)}`,
+    )
+  })
+
   it("invalid then valid on retry 2 → succeeds, correct number of re-prompts", async () => {
     const messages: string[] = [
       JSON.stringify({ verdict: "nope" }),
@@ -1056,7 +1256,7 @@ describe("runWorkflow — agent step outputSchema", () => {
     expect(host.sendPromptAndWait).toHaveBeenCalledTimes(2)
   })
 
-  it("never valid within maxRetries → rejects with output_invalid", async () => {
+  it("never valid within maxRetries → rejects with StepOutcomeError { code: 'missing-output' }", async () => {
     const host = fakeHost({
       readFinalMessage: vi.fn(async () => JSON.stringify({ verdict: "nope" })),
       sendPromptAndWait: vi.fn(async () => {}),
@@ -1074,9 +1274,39 @@ describe("runWorkflow — agent step outputSchema", () => {
         },
       ],
     }
-    await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toThrow(
-      /output_invalid/,
-    )
+    // AIP-58 §3 Outcome rule: a declared-but-unsatisfied contract is
+    // `failed { code: "missing-output" }` (not a bare Error), and the zod
+    // mismatch message is preserved on `error.message`.
+    await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toMatchObject({
+      name: "StepOutcomeError",
+      stepId: "s3",
+      code: "missing-output",
+      message: expect.stringContaining("missing-output"),
+    })
+  })
+
+  it("missing-output on a final message ending in '?' sets hint 'possible-input-request' without changing the outcome", async () => {
+    const host = fakeHost({
+      readFinalMessage: vi.fn(async () => "What tone should the brief use — formal or casual?"),
+      sendPromptAndWait: vi.fn(async () => {}),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "schema-hint",
+      steps: [
+        {
+          kind: "agent",
+          id: "draft",
+          adapter: "mock",
+          prompt: () => "judge",
+          outputSchema: verdictSchema,
+          maxRetries: 0,
+        },
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toMatchObject({
+      code: "missing-output",
+      hint: "possible-input-request",
+    })
   })
 
   it("outputSchema set but host lacks readFinalMessage → clear throw", async () => {
@@ -1098,6 +1328,124 @@ describe("runWorkflow — agent step outputSchema", () => {
     await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toThrow(
       /outputSchema requires a host with readFinalMessage/,
     )
+  })
+})
+
+// ── AIP-58 §3(a) run.requestInput signal ─────────────────────────────
+
+describe("runWorkflow — agent step AIP-58 §3(a) run.requestInput signal", () => {
+  it("no onInputRequired hook ⇒ throws AgentInputRequiredError (no-hook-supplied shape)", async () => {
+    const host = fakeHost({
+      takeInputRequest: vi.fn(() => ({ prompt: "what tone?", schema: { type: "object" } })),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "input-required-no-hook",
+      steps: [{ kind: "agent", id: "draft", adapter: "mock", prompt: () => "write it" }],
+    }
+    await expect(runWorkflow({ workflow: wf, agents: host })).rejects.toMatchObject({
+      name: "AgentInputRequiredError",
+      stepId: "draft",
+      prompt: "what tone?",
+    })
+  })
+
+  it("signal present ⇒ suspends via onInputRequired, sends the resume payload to the SAME session, re-applies the outcome rule", async () => {
+    const prompts: string[] = []
+    let signalled = false
+    const host = fakeHost({
+      sendPromptAndWait: vi.fn(async (_sid, prompt) => {
+        prompts.push(prompt)
+      }),
+      // First turn signals; the resumed turn (whatever prompt comes next) doesn't.
+      takeInputRequest: vi.fn(() => {
+        if (signalled) return undefined
+        signalled = true
+        return { prompt: "what tone?", schema: { type: "object", properties: { tone: { type: "string" } } } }
+      }),
+    })
+    const onInputRequired = vi.fn(async (req: { stepId: string; prompt: string; schema?: unknown }) => {
+      expect(req).toEqual({
+        stepId: "draft",
+        prompt: "what tone?",
+        schema: { type: "object", properties: { tone: { type: "string" } } },
+      })
+      return { tone: "formal" }
+    })
+    const wf: RuntimeWorkflow = {
+      id: "input-required-resume",
+      steps: [{ kind: "agent", id: "draft", adapter: "mock", prompt: () => "write it" }],
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host, onInputRequired })
+    expect(onInputRequired).toHaveBeenCalledTimes(1)
+    expect(output).toEqual({ sessionId: "sess_fake" })
+    expect(prompts).toEqual([
+      "write it\n\nIf you need information you don't have, call the run_request_input tool instead of asking in your reply.",
+      JSON.stringify({ tone: "formal" }),
+    ])
+  })
+
+  it("a step may suspend again after being resumed (loop, not one-shot)", async () => {
+    let calls = 0
+    const host = fakeHost({
+      takeInputRequest: vi.fn(() => {
+        calls++
+        return calls <= 2 ? { prompt: `question ${calls}` } : undefined
+      }),
+    })
+    const onInputRequired = vi.fn(async (req: { prompt: string }) => ({ answer: req.prompt }))
+    const wf: RuntimeWorkflow = {
+      id: "input-required-twice",
+      steps: [{ kind: "agent", id: "draft", adapter: "mock", prompt: () => "write it" }],
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host, onInputRequired })
+    expect(onInputRequired).toHaveBeenCalledTimes(2)
+    expect(output).toEqual({ sessionId: "sess_fake" })
+  })
+
+  it("checked inside the outputSchema retry loop too — a signal on a reprompt still suspends", async () => {
+    // First readFinalMessage is unparseable JSON (triggers the retry-loop's
+    // reprompt); every call after the resume returns a valid verdict.
+    let readCalls = 0
+    const host = fakeHost({
+      readFinalMessage: vi.fn(async () => (++readCalls === 1 ? "not json" : JSON.stringify({ verdict: "pass" }))),
+      // Signal only on the SECOND sendPromptAndWait (the retry loop's own
+      // reprompt) — the initial send and the post-resume resend see none.
+      takeInputRequest: vi.fn((() => {
+        let n = 0
+        return () => (++n === 2 ? { prompt: "need a value" } : undefined)
+      })()),
+    })
+    const onInputRequired = vi.fn(async () => ({ verdict: "pass" }))
+    const wf: RuntimeWorkflow = {
+      id: "input-required-in-retry",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock",
+          prompt: () => "judge",
+          outputSchema: verdictSchema,
+        },
+      ],
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host, onInputRequired })
+    expect(onInputRequired).toHaveBeenCalledTimes(1)
+    expect(output).toEqual({ sessionId: "sess_fake", output: { verdict: "pass" } })
+  })
+
+  it("no takeInputRequest on the host ⇒ no prompt affordance appended", async () => {
+    const prompts: string[] = []
+    const host = fakeHost({
+      sendPromptAndWait: vi.fn(async (_sid, prompt) => {
+        prompts.push(prompt)
+      }),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "no-affordance",
+      steps: [{ kind: "agent", id: "s1", adapter: "mock", prompt: () => "write it" }],
+    }
+    await runWorkflow({ workflow: wf, agents: host })
+    expect(prompts).toEqual(["write it"])
   })
 })
 
@@ -1415,7 +1763,7 @@ describe("runWorkflow — pipeline onError", () => {
       ],
     }
     const result = await runWorkflow({ workflow: wf })
-    expect(result.bindings.steps.p1).toEqual({ results: [], succeeded: 0, failed: 0 })
+    expect(result.bindings.steps.p1).toEqual({ results: [], succeeded: 0, failed: 0, skipped: 0 })
   })
 })
 
@@ -1692,6 +2040,204 @@ describe("step cache", () => {
     const r2 = await runWorkflow({ workflow: wf, cache, cacheKey: "run-tool" })
     expect(toolRuns).toBe(1)
     expect(r2.output).toEqual(r1.output)
+  })
+
+  it("map of cacheable tool items — each item caches independently (F33)", async () => {
+    const runsByN: number[] = []
+    const countingProvider = defineDriver({
+      id: "counting-map",
+      name: "Counting",
+      description: "Counts runs, tagged by input n.",
+      kind: "builtin",
+      implements: [{ tool: "demo.double", version: "0.1.0" }],
+      implementations: [
+        implementTool(doubleTool, ({ input }) => {
+          runsByN.push(input.n)
+          return { n: input.n * 2 }
+        }),
+      ],
+    })
+    const mapWf = (xs: number[]): RuntimeWorkflow => ({
+      id: "cache-map",
+      steps: [
+        {
+          kind: "map",
+          id: "doubled",
+          parallelism: 2,
+          over: () => xs,
+          body: () => ({
+            kind: "tool",
+            id: "d",
+            tool: doubleTool,
+            candidates: [countingProvider],
+            cacheable: true,
+            input: (b) => ({ n: b.item as number }),
+          }),
+        },
+      ],
+      output: (b) => b.steps.doubled,
+    })
+    const { cache } = memCache()
+
+    const r1 = await runWorkflow({ workflow: mapWf([1, 2, 3]), cache, cacheKey: "run-map" })
+    expect(runsByN.sort()).toEqual([1, 2, 3])
+    expect(r1.output).toEqual([{ n: 2 }, { n: 4 }, { n: 6 }])
+
+    // Second run, same items, same cacheKey ⇒ every item is a cache hit —
+    // before the F33 fix all three items shared ONE journal key (same
+    // step id + kind) and stomped each other, so this never hit for >1 item.
+    runsByN.length = 0
+    const r2 = await runWorkflow({ workflow: mapWf([1, 2, 3]), cache, cacheKey: "run-map" })
+    expect(runsByN).toEqual([])
+    expect(r2.output).toEqual(r1.output)
+
+    // Change only the middle item's input ⇒ only that item re-runs; the
+    // other two stay cache hits.
+    runsByN.length = 0
+    const r3 = await runWorkflow({ workflow: mapWf([1, 20, 3]), cache, cacheKey: "run-map" })
+    expect(runsByN).toEqual([20])
+    expect(r3.output).toEqual([{ n: 2 }, { n: 40 }, { n: 6 }])
+  })
+
+  it("a failing later step doesn't stop an earlier cacheable step from replaying on re-run with the same cacheKey", async () => {
+    let doubleRuns = 0
+    let addTenAttempts = 0
+    const doubleProvider = defineDriver({
+      id: "counting-double",
+      name: "Counting double",
+      description: "Counts invocations of demo.double.",
+      kind: "builtin",
+      implements: [{ tool: "demo.double", version: "0.1.0" }],
+      implementations: [
+        implementTool(doubleTool, ({ input }) => {
+          doubleRuns++
+          return { n: input.n * 2 }
+        }),
+      ],
+    })
+    // Fails on the first attempt (simulating a transient failure), succeeds
+    // on any retry — the re-run-from-failure scenario the cacheKey is for.
+    const flakyAddTenProvider = defineDriver({
+      id: "flaky-add-ten",
+      name: "Flaky add ten",
+      description: "Throws on the first attempt, succeeds after.",
+      kind: "builtin",
+      implements: [{ tool: "demo.add-ten", version: "0.1.0" }],
+      implementations: [
+        implementTool(addTenTool, ({ input }) => {
+          addTenAttempts++
+          if (addTenAttempts === 1) throw new Error("transient failure")
+          return { n: input.n + 10 }
+        }),
+      ],
+    })
+    const wf: RuntimeWorkflow = {
+      id: "cache-replay-on-failure",
+      steps: [
+        {
+          kind: "tool",
+          id: "d",
+          tool: doubleTool,
+          candidates: [doubleProvider],
+          cacheable: true,
+          input: (b) => ({ n: (b.input as { n: number }).n }),
+        },
+        {
+          kind: "tool",
+          id: "a",
+          tool: addTenTool,
+          candidates: [flakyAddTenProvider],
+          cacheable: true,
+          input: (b) => ({ n: (b.steps.d as { n: number }).n }),
+        },
+      ],
+    }
+    const { cache } = memCache()
+    await expect(
+      runWorkflow({ workflow: wf, input: { n: 5 }, cache, cacheKey: "run-retry" }),
+    ).rejects.toThrow("transient failure")
+    expect(doubleRuns).toBe(1)
+    expect(addTenAttempts).toBe(1)
+
+    // Re-run with the SAME cacheKey: the already-succeeded "d" step replays
+    // from the journal (no second dispatch); only the failed "a" step
+    // re-executes, and this time succeeds.
+    const { output } = await runWorkflow({ workflow: wf, input: { n: 5 }, cache, cacheKey: "run-retry" })
+    expect(doubleRuns).toBe(1)
+    expect(addTenAttempts).toBe(2)
+    expect(output).toEqual({ n: 20 })
+  })
+
+  it("a cache-hit step still fires onStepStart/onStepComplete, tagged cached (F35) — agent, tool, and map items", async () => {
+    let spawns = 0
+    const host = fakeHost({
+      spawn: vi.fn(async () => `sess_${spawns++}`),
+      readFinalMessage: vi.fn(async () => JSON.stringify({ ok: true })),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "cache-hooks",
+      steps: [
+        {
+          kind: "agent",
+          id: "research",
+          adapter: "claude",
+          cacheable: true,
+          prompt: () => "do research",
+          outputSchema: z.object({ ok: z.boolean() }),
+        },
+        {
+          kind: "tool",
+          id: "d",
+          tool: doubleTool,
+          candidates,
+          cacheable: true,
+          input: () => ({ n: 1 }),
+        },
+        {
+          kind: "map",
+          id: "chunks",
+          over: () => [1, 2],
+          body: () => ({
+            kind: "agent",
+            id: "clean-chunk",
+            adapter: "claude",
+            cacheable: true,
+            prompt: (b) => `clean ${String(b.item)}`,
+            outputSchema: z.object({ ok: z.boolean() }),
+          }),
+        },
+      ],
+    }
+    const { cache } = memCache()
+    const record = () => {
+      const starts: Array<[string, unknown]> = []
+      const completes: Array<[string, unknown]> = []
+      return {
+        starts,
+        completes,
+        onStepStart: (id: string, info?: { cached?: boolean }) => { starts.push([id, info]) },
+        onStepComplete: (id: string, _out: unknown, info?: { cached?: boolean }) => { completes.push([id, info]) },
+      }
+    }
+
+    const first = record()
+    await runWorkflow({ workflow: wf, agents: host, cache, cacheKey: "run-hooks", ...first })
+    expect(spawns).toBe(3)
+    // First run executes everything — no cached tag anywhere.
+    expect(first.starts.every(([, info]) => info === undefined)).toBe(true)
+    expect(first.completes.every(([, info]) => info === undefined)).toBe(true)
+
+    const second = record()
+    await runWorkflow({ workflow: wf, agents: host, cache, cacheKey: "run-hooks", ...second })
+    expect(spawns).toBe(3)
+    const leafIds = ["research", "d", "clean-chunk[0]", "clean-chunk[1]"]
+    for (const id of leafIds) {
+      expect(second.starts).toContainEqual([id, { cached: true }])
+      expect(second.completes).toContainEqual([id, { cached: true }])
+    }
+    // The map container itself executed (it isn't cacheable) — not tagged.
+    expect(second.starts).toContainEqual(["chunks", undefined])
+    expect(second.completes).toContainEqual(["chunks", undefined])
   })
 })
 
@@ -2016,4 +2562,295 @@ describe("runWorkflow — agent step harness.knowledge materialization (AIP-15 P
       readFileSync(join(stepCwd, ".knowledge", relName, "alpha.md"), "utf8"),
     ).toContain("Body of alpha.")
   })
+})
+
+// ── Tolerant fan-out: failed items are reported, spawn circuit breaker ──
+
+describe("runWorkflow — tolerant fan-out failures", () => {
+  it("fails the step that threw via onStepFailed (indexed), not a silent running→done", async () => {
+    const host = fakeHost({
+      sendPromptAndWait: vi.fn(async (_sid: string, prompt: string) => {
+        if (prompt === "second b") throw new Error("turn failed for b")
+      }),
+    })
+    const failed: Array<[string, string]> = []
+    const completed: string[] = []
+    const wf: RuntimeWorkflow = {
+      id: "fan-fail",
+      steps: [
+        {
+          kind: "map",
+          id: "fan",
+          over: () => ["a", "b", "c"],
+          onError: "collect",
+          body: () => ({
+            kind: "group",
+            id: "fan__body",
+            steps: [
+              { kind: "agent", id: "first", adapter: "mock", prompt: (b) => `first ${String(b.item)}` },
+              { kind: "agent", id: "second", sessionRef: "first", prompt: (b) => `second ${String(b.item)}` },
+            ],
+          }),
+        },
+      ],
+      output: (b) => b.steps.fan,
+    }
+    const { output } = await runWorkflow({
+      workflow: wf,
+      agents: host,
+      onStepFailed: (id, info) => failed.push([id, info.error]),
+      onStepComplete: (id) => completed.push(id),
+    })
+    expect(failed).toEqual([["second[1]", "turn failed for b"]])
+    expect(completed).not.toContain("second[1]")
+    expect(completed).toContain("second[0]")
+    expect(output).toMatchObject({ succeeded: 2, failed: 1, skipped: 0 })
+  })
+
+  it("attributes each item's failure to its own step even when the host rejects with one shared error object", async () => {
+    const shared = new Error("boom")
+    const host = fakeHost({ spawn: vi.fn(async () => { throw shared }) })
+    const failed: Array<[string, string]> = []
+    const wf: RuntimeWorkflow = {
+      id: "fan-shared-error",
+      steps: [
+        {
+          kind: "map",
+          id: "fan",
+          over: () => [1, 2, 3],
+          onError: "collect",
+          maxConsecutiveSpawnFailures: 0,
+          body: () => ({ kind: "agent", id: "s", adapter: "mock", prompt: () => "x" }),
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host, onStepFailed: (id, info) => failed.push([id, info.error]) })
+    expect(failed.map(([id]) => id)).toEqual(["s[0]", "s[1]", "s[2]"])
+    expect(failed[0]?.[1]).toBe("step 's': agent spawn failed — boom")
+  })
+
+  it("opens the spawn circuit after 3 consecutive spawn failures: remaining items are skipped, the run goes on", async () => {
+    let n = 0
+    const host = fakeHost({
+      spawn: vi.fn(async () => {
+        throw new Error(`spawn ENOENT #${n++}`)
+      }),
+    })
+    const skipped: Array<[string, string, string | undefined, string]> = []
+    const wf: RuntimeWorkflow = {
+      id: "fan-breaker",
+      steps: [
+        {
+          kind: "map",
+          id: "fan",
+          over: () => Array.from({ length: 10 }, (_, i) => i),
+          onError: "collect",
+          body: () => ({ kind: "agent", id: "s", adapter: "mock", prompt: () => "x" }),
+        },
+        { kind: "transform", id: "after", compute: () => "ran" },
+      ],
+      output: (b) => ({ fan: b.steps.fan, after: b.steps.after }),
+    }
+    const { output } = await runWorkflow({
+      workflow: wf,
+      agents: host,
+      onStepSkipped: (id, info) => skipped.push([id, info.reason, info.message, info.branchId]),
+    })
+    const { fan, after } = output as { fan: { results: Array<{ status: string; reason?: string }>; succeeded: number; failed: number; skipped: number; circuitOpen?: { error: string } }; after: string }
+    expect(host.spawn).toHaveBeenCalledTimes(3)
+    expect(fan).toMatchObject({ succeeded: 0, failed: 3, skipped: 7 })
+    expect(fan.circuitOpen).toEqual({ error: "step 's': agent spawn failed — spawn ENOENT #0" })
+    expect(fan.results[3]).toMatchObject({
+      status: "skipped",
+      index: 3,
+      item: 3,
+      reason: "circuit-open: step 's': agent spawn failed — spawn ENOENT #0",
+    })
+    expect(skipped.map(([id]) => id)).toEqual(["s[3]", "s[4]", "s[5]", "s[6]", "s[7]", "s[8]", "s[9]"])
+    expect(skipped[0]).toEqual(["s[3]", "circuit-open", "step 's': agent spawn failed — spawn ENOENT #0", "fan"])
+    expect(after).toBe("ran")
+  })
+
+  it("a success resets the streak; a turn failure (session spawned) never counts toward it", async () => {
+    // spawn fails for items 0,1,3,4 — never 3 in a row; turns fail for 6..9.
+    const host = fakeHost({
+      spawn: vi.fn(async (_a: string, opts: { stepKey?: string }) => {
+        if (/\[(0|1|3|4)\]$/.test(opts.stepKey ?? "")) throw new Error("spawn failed")
+        return `sess_${opts.stepKey}`
+      }),
+      sendPromptAndWait: vi.fn(async (sid: string) => {
+        if (/\[[6-9]\]$/.test(sid)) throw new Error("turn failed")
+      }),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "fan-breaker-reset",
+      steps: [
+        {
+          kind: "map",
+          id: "fan",
+          over: () => Array.from({ length: 10 }, (_, i) => i),
+          onError: "collect",
+          body: () => ({ kind: "agent", id: "s", adapter: "mock", prompt: () => "x" }),
+        },
+      ],
+      output: (b) => b.steps.fan,
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host })
+    expect(host.spawn).toHaveBeenCalledTimes(10)
+    expect(output).toMatchObject({ succeeded: 2, failed: 8, skipped: 0 })
+    expect((output as { circuitOpen?: unknown }).circuitOpen).toBeUndefined()
+  })
+
+  it("maxConsecutiveSpawnFailures: 0 disables the breaker", async () => {
+    const host = fakeHost({ spawn: vi.fn(async () => { throw new Error("nope") }) })
+    const wf: RuntimeWorkflow = {
+      id: "fan-breaker-off",
+      steps: [
+        {
+          kind: "map",
+          id: "fan",
+          over: () => [1, 2, 3, 4, 5],
+          onError: "collect",
+          maxConsecutiveSpawnFailures: 0,
+          body: () => ({ kind: "agent", id: "s", adapter: "mock", prompt: () => "x" }),
+        },
+      ],
+      output: (b) => b.steps.fan,
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host })
+    expect(host.spawn).toHaveBeenCalledTimes(5)
+    expect(output).toMatchObject({ failed: 5, skipped: 0 })
+  })
+
+  it("a pipeline trips the same breaker (configurable threshold)", async () => {
+    const host = fakeHost({ spawn: vi.fn(async () => { throw new Error("nope") }) })
+    const wf: RuntimeWorkflow = {
+      id: "pipe-breaker",
+      steps: [
+        {
+          kind: "pipeline",
+          id: "p",
+          over: () => [1, 2, 3, 4, 5, 6],
+          concurrency: 1,
+          onError: "collect",
+          maxConsecutiveSpawnFailures: 2,
+          stages: [() => ({ kind: "agent", id: "s", adapter: "mock", prompt: () => "x" })],
+        },
+      ],
+      output: (b) => b.steps.p,
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host })
+    expect(host.spawn).toHaveBeenCalledTimes(2)
+    expect(output).toMatchObject({ failed: 2, skipped: 4, circuitOpen: { error: "step 's': agent spawn failed — nope" } })
+  })
+
+  it("a relative agent-step cwd resolves against the run cwd", async () => {
+    const host = fakeHost()
+    const wf: RuntimeWorkflow = {
+      id: "agent-rel-cwd",
+      steps: [{ kind: "agent", id: "s", adapter: "mock", cwd: () => "sub/dir", prompt: () => "x" }],
+    }
+    await runWorkflow({ workflow: wf, agents: host, cwd: "/base" })
+    expect(vi.mocked(host.spawn).mock.calls[0]?.[1]).toMatchObject({ cwd: "/base/sub/dir" })
+  })
+})
+
+// ── finally: cleanup that always runs ───────────────────────────────────
+
+describe("runWorkflow — finally", () => {
+  const cleanup = (log: string[], id = "cleanup"): RuntimeWorkflow["steps"][number] => ({
+    kind: "transform",
+    id,
+    compute: (b) => {
+      log.push(`${id}:${JSON.stringify(b.steps.made ?? null)}`)
+      return "cleaned"
+    },
+  })
+
+  it("runs after a successful body, sees its bindings, and doesn't change the output", async () => {
+    const log: string[] = []
+    const wf: RuntimeWorkflow = {
+      id: "fin-ok",
+      steps: [{ kind: "transform", id: "made", compute: () => "wt-1" }],
+      finally: [cleanup(log)],
+      output: (b) => b.steps.made,
+    }
+    const { output } = await runWorkflow({ workflow: wf })
+    expect(output).toBe("wt-1")
+    expect(log).toEqual(['cleanup:"wt-1"'])
+  })
+
+  it("runs after a failed body, and the body's error wins over a cleanup error", async () => {
+    const log: string[] = []
+    const failed: string[] = []
+    const wf: RuntimeWorkflow = {
+      id: "fin-fail",
+      steps: [
+        { kind: "transform", id: "made", compute: () => "wt-1" },
+        { kind: "transform", id: "boom", compute: () => { throw new Error("body broke") } },
+      ],
+      finally: [
+        { kind: "transform", id: "cleanupA", compute: () => { throw new Error("cleanup broke") } },
+        cleanup(log, "cleanupB"),
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf, onStepFailed: (id) => failed.push(id) })).rejects.toThrow("body broke")
+    expect(log).toEqual(['cleanupB:"wt-1"'])
+    expect(failed).toEqual(["cleanupA"])
+  })
+
+  it("a failing cleanup fails an otherwise-successful run — after every cleanup step ran", async () => {
+    const log: string[] = []
+    const wf: RuntimeWorkflow = {
+      id: "fin-cleanup-fails",
+      steps: [{ kind: "transform", id: "made", compute: () => "wt-1" }],
+      finally: [
+        { kind: "transform", id: "cleanupA", compute: () => { throw new Error("cleanup broke") } },
+        cleanup(log, "cleanupB"),
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf })).rejects.toThrow("cleanup broke")
+    expect(log).toEqual(['cleanupB:"wt-1"'])
+  })
+
+  it("on cancel: no new agent session is spawned, the run winds down, and finally still runs (without the aborted signal)", async () => {
+    const log: string[] = []
+    const ac = new AbortController()
+    const host = fakeHost({
+      sendPromptAndWait: vi.fn(async (_sid: string, prompt: string) => {
+        if (prompt === "1") ac.abort()
+      }),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "fin-cancel",
+      steps: [
+        { kind: "transform", id: "made", compute: () => "wt-1" },
+        {
+          kind: "map",
+          id: "fan",
+          over: () => [0, 1, 2, 3, 4],
+          onError: "collect",
+          maxConsecutiveSpawnFailures: 0,
+          body: () => ({ kind: "agent", id: "s", adapter: "mock", prompt: (b) => String(b.item) }),
+        },
+      ],
+      finally: [
+        {
+          kind: "transform",
+          id: "cleanup",
+          compute: (b) => {
+            log.push(`cleanup:${JSON.stringify(b.steps.made)}`)
+            return "cleaned"
+          },
+        },
+      ],
+      output: (b) => b.steps.fan,
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host, signal: ac.signal })
+    expect(host.spawn).toHaveBeenCalledTimes(2)
+    expect(output).toMatchObject({ succeeded: 2, failed: 3 })
+    expect((output as { results: Array<{ error?: string }> }).results[2]!.error).toBe("step 's': run cancelled — not spawning")
+    expect(log).toEqual(['cleanup:"wt-1"'])
+  })
+
 })

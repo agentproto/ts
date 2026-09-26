@@ -12,10 +12,15 @@ vi.mock("vscode", () => ({
     onDidCloseTerminal: vi.fn(() => ({ dispose: vi.fn() })),
     onDidChangeActiveTerminal: vi.fn(() => ({ dispose: vi.fn() })),
     showInformationMessage: vi.fn(),
+    showWarningMessage: vi.fn(),
+    showErrorMessage: vi.fn(),
   },
   commands: {
     executeCommand: vi.fn(),
     registerCommand: vi.fn(() => ({ dispose: vi.fn() })),
+  },
+  workspace: {
+    workspaceFolders: [{ uri: { fsPath: "/ws" } }],
   },
   ViewColumn: {
     Beside: -2,
@@ -58,10 +63,16 @@ function createMocks() {
 
   const store = {
     focusOutput: vi.fn(() => ({ dispose: vi.fn() })),
+    refreshAll: vi.fn().mockResolvedValue(undefined),
+    sessions: [] as SessionDescriptor[],
   } as unknown as SessionStore
 
+  const mcpCall = vi.fn()
+  const spawnTerminal = vi.fn()
   const client = {
     url: "http://127.0.0.1:18790",
+    mcpCall,
+    spawnTerminal,
   } as unknown as DaemonClient
 
   const ctx = {
@@ -81,8 +92,19 @@ function createMocks() {
     subscriptions,
     store,
     client,
+    mcpCall,
+    spawnTerminal,
     ctx,
   }
+}
+
+/** The handler `registerTerminalSwitch` registered for the given command. */
+function commandHandler(command: string): (...args: unknown[]) => Promise<void> {
+  const call = vi
+    .mocked(vscode.commands.registerCommand)
+    .mock.calls.find(c => c[0] === command)
+  if (!call) throw new Error(`command ${command} was not registered`)
+  return call[1] as (...args: unknown[]) => Promise<void>
 }
 
 describe("registerTerminalSwitch", () => {
@@ -164,6 +186,69 @@ describe("registerTerminalSwitch", () => {
       await terminalSwitch.moveLocation()
       expect(mocks.executeCommand).not.toHaveBeenCalled()
       expect(mocks.showInformationMessage).toHaveBeenCalledWith(expect.stringContaining("no active terminal"))
+    })
+  })
+
+  describe("agentproto.restartAsTerminal", () => {
+    it("opts into the native terminal: session_restart is called with preferNativeTerminal: true", async () => {
+      vi.mocked(vscode.window.showWarningMessage).mockResolvedValue("Restart as Terminal" as never)
+      mocks.mcpCall.mockResolvedValue({ id: "s2", kind: "terminal", pty: true })
+
+      await commandHandler("agentproto.restartAsTerminal")(session())
+
+      expect(mocks.mcpCall).toHaveBeenCalledWith("session_restart", {
+        idOrName: "s1",
+        preferNativeTerminal: true,
+      })
+      expect(mocks.executeCommand).toHaveBeenCalledWith("agentproto.openTerminal", "s2")
+    })
+
+    it("split warning: an ACP fallback with decline info names the probed directory instead of a generic transcript claim", async () => {
+      vi.mocked(vscode.window.showWarningMessage).mockResolvedValue("Restart as Terminal" as never)
+      mocks.mcpCall.mockResolvedValue({
+        id: "s2",
+        kind: "agent-cli",
+        nativeResumeDecline: { reason: "transcript-not-found", probedDir: "/iso/projects/-my-proj" },
+      })
+
+      await commandHandler("agentproto.restartAsTerminal")(session())
+
+      const warnings = vi.mocked(vscode.window.showWarningMessage).mock.calls.map(c => String(c[0]))
+      expect(warnings.some(w => w.includes("was not found (probed /iso/projects/-my-proj)"))).toBe(true)
+      expect(mocks.executeCommand).toHaveBeenCalledWith("agentproto.openTranscript", "s2")
+    })
+
+    it("split warning: an ACP fallback WITHOUT decline info says the native terminal was not requested/reported, not that the transcript is gone", async () => {
+      vi.mocked(vscode.window.showWarningMessage).mockResolvedValue("Restart as Terminal" as never)
+      mocks.mcpCall.mockResolvedValue({ id: "s2", kind: "agent-cli" })
+
+      await commandHandler("agentproto.restartAsTerminal")(session())
+
+      const warnings = vi.mocked(vscode.window.showWarningMessage).mock.calls.map(c => String(c[0]))
+      expect(warnings.some(w => w.includes("did not request (or the daemon did not report) a native terminal"))).toBe(true)
+      expect(warnings.some(w => w.includes("could not be recovered"))).toBe(false)
+    })
+  })
+
+  describe("agentproto.spawnHarnessTerminal", () => {
+    it("spawns the native PTY and opens it as a TERMINAL — never the transcript", async () => {
+      const spawned = session({ id: "s9", kind: "terminal", pty: true, argv: ["claude"] })
+      mocks.spawnTerminal.mockResolvedValue(spawned)
+
+      await commandHandler("agentproto.spawnHarnessTerminal")("claude-code", ["claude"])
+
+      expect(mocks.spawnTerminal).toHaveBeenCalledWith({
+        argv: ["claude"],
+        cwd: "/ws",
+        label: "claude-code",
+      })
+      // terminalSwitch.open() → a real VS Code terminal, and nothing
+      // reroutes the native PTY to the transcript panel afterwards.
+      expect(mocks.createTerminal).toHaveBeenCalledTimes(1)
+      expect(mocks.executeCommand).not.toHaveBeenCalledWith(
+        "agentproto.openTranscript",
+        expect.anything(),
+      )
     })
   })
 })

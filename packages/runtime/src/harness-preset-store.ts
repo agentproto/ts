@@ -32,6 +32,7 @@ import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { z } from "zod"
 import { getAuthProfile, type AuthProfile } from "@agentproto/auth"
+import { splitContextWindowHint } from "@agentproto/model-catalog/llm"
 
 /**
  * A persisted harness→profile binding: for one adapter harness, which auth
@@ -152,7 +153,10 @@ export async function getDefaultHarnessPreset(
 function profileServicesModel(profile: AuthProfile, model: string): boolean {
   const models = profile.models
   if (!models || models.mode === "all") return true
-  return models.ids.includes(model)
+  // A `[1m]` context-lane hint selects a lane of a listed model, not a
+  // different model — `claude-opus-5-5` in the curation covers
+  // `claude-opus-5-5[1m]`.
+  return models.ids.includes(model) || models.ids.includes(splitContextWindowHint(model).id)
 }
 
 /** Validate a preset's `profileRef`/`defaultModel` against the live auth

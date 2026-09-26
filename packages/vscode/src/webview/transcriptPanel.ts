@@ -37,6 +37,7 @@ import {
 import { mentionQueryAt } from "./mentions.logic.js"
 import { commandQueryAt, filterCommands, leadingCommandEnd } from "./commands.logic.js"
 import { recallHistory, pushHistoryEntry } from "./history.logic.js"
+import { outcomeCardFor } from "./sessionOutcome.logic.js"
 import { accessIdentity, contextGauge, contextRingLevel, defaultPostureLabel, formatCostShort, harnessGlyph, postureLabel, projectPlan, sandboxGlyph, titleStatusState } from "./panelChrome.logic.js"
 import { TOOL_IO_MAX_LINES } from "./conversation.js"
 import {
@@ -362,6 +363,10 @@ export async function handleWebviewMessage(
       // is dropped quietly rather than thrown.
       await openLinkTarget(msg.kind, msg.target, msg.line, controller)
       return
+    case "openSession":
+      // The outcome card's parent link — open the parent's transcript.
+      await vscode.commands.executeCommand("agentproto.openTranscript", msg.sessionId)
+      return
     case "resolveQuestion": {
       // A permission-ask chip was clicked in the transcript. Resolve the
       // daemon's pending permission by toolCallId, then respond.
@@ -632,6 +637,8 @@ export function buildHtml(
     sandboxGlyph,
     titleStatusState,
     projectPlan,
+    // Session outcome card (L1 derived outcome) — same by-value injection.
+    outcomeCardFor,
     // Book (chapter) segmentation — injected by value so the webview runs the
     // SAME tested pure functions the logic module's unit tests pin. buildBook
     // calls the rest by name, so every one it touches must ride along as a
@@ -1417,6 +1424,73 @@ export function buildHtml(
       position: relative;
       z-index: 2;
     }
+    /* Session outcome card — what an ENDED session produced (the daemon's
+       derived outcome), shown atop the composer on the same ink/paper
+       palette. Header = termination · duration · cost; then the last-message
+       summary (clamped to 3 lines, expandable), artifacts and links as chips.
+       An "empty" outcome is muted, not an error. */
+    #outcome-card {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px 10px;
+      border: 1px solid var(--edge);
+      border-radius: 6px;
+      background: var(--ink-2);
+      font-size: 0.9em;
+    }
+    #outcome-card[hidden] { display: none; }
+    #outcome-card .oc-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+      font-size: 0.9em;
+      color: var(--paper-45);
+    }
+    #outcome-card .oc-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--phosphor); flex: 0 0 auto; }
+    #outcome-card.tone-warn .oc-dot { background: #b5854b; }
+    #outcome-card.tone-error .oc-dot { background: #d0605e; }
+    #outcome-card.tone-muted .oc-dot { background: var(--paper-28); }
+    #outcome-card .oc-term { color: var(--paper); }
+    #outcome-card .oc-summary {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      line-height: 1.45;
+    }
+    #outcome-card .oc-summary.clamped {
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    #outcome-card .oc-empty { color: var(--paper-45); font-style: italic; }
+    #outcome-card .oc-toggle {
+      align-self: flex-start;
+      background: none;
+      border: none;
+      padding: 0;
+      color: var(--paper-45);
+      font: inherit;
+      font-size: 0.9em;
+      cursor: pointer;
+    }
+    #outcome-card .oc-toggle:hover { color: var(--paper); }
+    #outcome-card .oc-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    #outcome-card .oc-chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 1px 8px;
+      border: 1px solid var(--edge);
+      border-radius: 10px;
+      color: var(--paper-45);
+      font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+      font-size: 0.82em;
+      text-decoration: none;
+    }
+    #outcome-card a.oc-chip { color: var(--phosphor); border-color: rgba(47,158,99,0.45); cursor: pointer; }
+    #outcome-card a.oc-chip:hover { background: rgba(47,158,99,0.14); }
     /* ── Error banner ─────────────────────────────────────────────────
        Errors used to be one line of red text wedged under the buttons,
        clipped mid-sentence — the daemon's actual reason was unreadable. A
@@ -2223,6 +2297,7 @@ export function buildHtml(
     <span id="working-text"></span>
   </div>
   <div id="input-area">
+    <div id="outcome-card" hidden></div>
     <div id="error-banner" hidden>
       <span id="eb-icon">&#9888;</span>
       <div id="eb-body">
@@ -2309,6 +2384,9 @@ export function buildHtml(
       const watchersPopover = document.getElementById('watchers-popover');
       const watchersList = document.getElementById('watchers-list');
       const blockedNote = document.getElementById('blocked-note');
+      const outcomeCard = document.getElementById('outcome-card');
+      // Survives re-renders so a sessionUpdate doesn't re-collapse an expanded summary.
+      let outcomeExpanded = false;
       const bgChips = document.getElementById('bg-chips');
       const transcript = document.getElementById('transcript');
       const book = document.getElementById('book');
@@ -2752,9 +2830,90 @@ export function buildHtml(
         refreshComposer();
         refreshWorking();
         refreshBlockedNote();
+        renderOutcomeCard(session);
         // The book's live chapter, pause card, and "$ now:" line derive from
         // session state, so repaint them on any descriptor change.
         renderBook();
+      }
+
+      // The outcome card: what an ENDED session produced (the daemon's derived
+      // outcome). No outcome (live, or older than the feature) ⇒ hidden.
+      // Built with DOM APIs only — every string is textContent, never HTML.
+      function renderOutcomeCard(session) {
+        const card = outcomeCardFor(session);
+        outcomeCard.hidden = !card;
+        outcomeCard.textContent = '';
+        if (!card) return;
+        outcomeCard.className = 'tone-' + card.tone;
+        const head = document.createElement('div');
+        head.className = 'oc-head';
+        const dot = document.createElement('span');
+        dot.className = 'oc-dot';
+        head.appendChild(dot);
+        const term = document.createElement('span');
+        term.className = 'oc-term';
+        term.textContent = card.termination;
+        head.appendChild(term);
+        [card.duration, card.cost, card.tokens].forEach(function(part) {
+          if (!part) return;
+          const span = document.createElement('span');
+          span.textContent = '· ' + part;
+          head.appendChild(span);
+        });
+        outcomeCard.appendChild(head);
+        if (card.summary) {
+          const summary = document.createElement('div');
+          summary.className = 'oc-summary' + (card.collapsible && !outcomeExpanded ? ' clamped' : '');
+          summary.textContent = card.summary;
+          outcomeCard.appendChild(summary);
+          if (card.collapsible) {
+            const toggle = document.createElement('button');
+            toggle.type = 'button';
+            toggle.className = 'oc-toggle';
+            toggle.textContent = outcomeExpanded ? 'Show less' : 'Show more';
+            toggle.addEventListener('click', function() {
+              outcomeExpanded = !outcomeExpanded;
+              summary.classList.toggle('clamped', !outcomeExpanded);
+              toggle.textContent = outcomeExpanded ? 'Show less' : 'Show more';
+            });
+            outcomeCard.appendChild(toggle);
+          }
+        } else if (card.empty) {
+          const none = document.createElement('div');
+          none.className = 'oc-empty';
+          none.textContent = 'No output';
+          outcomeCard.appendChild(none);
+        }
+        const items = card.artifacts.concat(card.links);
+        if (items.length === 0) return;
+        const chips = document.createElement('div');
+        chips.className = 'oc-chips';
+        items.forEach(function(item) {
+          let chip;
+          if (item.open === 'external') {
+            // Rides the delegated .tlink handler → openLink (browser).
+            chip = document.createElement('a');
+            chip.className = 'oc-chip tlink';
+            chip.href = '#';
+            chip.setAttribute('data-open', 'external');
+            chip.setAttribute('data-target', item.target);
+          } else if (item.open === 'session') {
+            chip = document.createElement('a');
+            chip.className = 'oc-chip';
+            chip.href = '#';
+            chip.addEventListener('click', function(e) {
+              e.preventDefault();
+              vscode.postMessage({ type: 'openSession', sessionId: item.target });
+            });
+          } else {
+            chip = document.createElement('span');
+            chip.className = 'oc-chip';
+          }
+          chip.textContent = item.label;
+          chip.title = item.title;
+          chips.appendChild(chip);
+        });
+        outcomeCard.appendChild(chips);
       }
 
       function setSending(sending, note) {
@@ -2978,7 +3137,7 @@ export function buildHtml(
       function displayName(session) {
         const userRenamed = session.renamedByUser ?? session.label !== undefined;
         if (userRenamed && session.label !== undefined) return session.label;
-        if (session.title !== undefined) return session.title;
+        if (session.title !== undefined && !/^<(?:local-command-caveat|local-command-stdout|command-name|task-notification)>/i.test(session.title)) return session.title;
         if (session.label !== undefined) return session.label;
         return (session.adapterSlug || session.kind) + ' · ' + shortSessionId(session.id);
       }

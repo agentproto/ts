@@ -11,9 +11,15 @@
 import type { Memento } from "vscode"
 import { describe, expect, it } from "vitest"
 
-import { UNASSIGNED_COLOR_INDEX, workspaceColorFor, WORKSPACE_PALETTE } from "./sessionsWebview.logic.js"
+import { buildSessionsWebviewModel, UNASSIGNED_COLOR_INDEX, workspaceColorFor, WORKSPACE_PALETTE } from "./sessionsWebview.logic.js"
 import type { SessionDescriptor, SessionSummary } from "../client/types.js"
-import { COLOR_OVERRIDES_KEY, nextColorOverrides, readColorOverrides, visibleRows } from "./sessionsWebviewPanel.js"
+import {
+  COLOR_OVERRIDES_KEY,
+  nextColorOverrides,
+  readColorOverrides,
+  shouldApplySummaryPage,
+  visibleRows,
+} from "./sessionsWebviewPanel.js"
 
 /** Minimal in-memory stand-in for `vscode.ExtensionContext.globalState`. */
 function fakeMemento(initial: Record<string, unknown> = {}): Memento {
@@ -116,5 +122,46 @@ describe("visibleRows — render pool == action pool", () => {
     const loaded: SessionSummary[] = [summary("sess_other", "exited")]
     expect(visibleRows(store, loaded).find(r => r.id === "sess_child")).toBeDefined()
     expect(loaded.find(r => r.id === "sess_child")).toBeUndefined()
+  })
+})
+
+describe("summary-page lane consistency", () => {
+  it("applies a response only while its requested lane is still selected", () => {
+    expect(shouldApplySummaryPage("agents", "agents")).toBe(true)
+    expect(shouldApplySummaryPage("auto", "auto")).toBe(true)
+    expect(shouldApplySummaryPage("agents", "auto")).toBe(false)
+    expect(shouldApplySummaryPage("auto", "agents")).toBe(false)
+  })
+})
+
+describe("live extras classify against the full store, not the page (post()'s lineageById contract)", () => {
+  const summary = (id: string, status: SessionSummary["status"], over: Partial<SessionSummary> = {}): SessionSummary =>
+    ({ id, kind: "agent-cli", workspaceSlug: "ws", command: "claude", pid: 1, status, startedAt: "2026-01-01T00:00:00Z", ...over }) as SessionSummary
+  const descriptor = (id: string, status: SessionDescriptor["status"], over: Partial<SessionSummary> = {}): SessionDescriptor =>
+    summary(id, status, over) as unknown as SessionDescriptor
+
+  it("a live child pinned by visibleRows lands in Agents when its dead parent is only in the store snapshot", () => {
+    // The restart-chain shape: the child's parentSessionId points at the
+    // dead pre-restart parent, which sorts past the first Agents page but
+    // IS in the store's full snapshot.
+    const store = [
+      descriptor("sess_child", "running", { parentSessionId: "sess_old_parent" }),
+      descriptor("sess_old_parent", "killed"),
+    ]
+    const loaded: SessionSummary[] = [summary("sess_other", "exited")]
+    const pool = visibleRows(store, loaded)
+    expect(pool.map(r => r.id)).toContain("sess_child")
+
+    // Exactly what post() passes: a lineage map over the store's sessions.
+    const lineageById = new Map(store.map(s => [s.id, s]))
+    const model = buildSessionsWebviewModel(pool, { version: 1, workspaces: [] }, {
+      lane: "agents",
+      project: null,
+      search: "",
+      now: Date.parse("2026-01-02T00:00:00Z"),
+      lineageById,
+    })
+    expect(model.laneCounts.agents).toBe(2)
+    expect(model.laneCounts.auto).toBe(0)
   })
 })

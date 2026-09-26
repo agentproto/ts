@@ -64,6 +64,15 @@ export interface ForgeClient {
    * (PLAN.md §1.3 step 2, verified for #273/#312/#325/#271).
    */
   ensurePullHeadFetched(prNumber: number, oid: string): Promise<void>
+  /**
+   * Every OPEN PR/MR in the repo, in one round-trip — the bulk twin of
+   * `pullRequestsForBranch` for callers that must protect hundreds of refs at
+   * once (`branch-gc.ts`: one call per ref would be a forge request per
+   * branch). Optional so existing test doubles keep compiling; a client that
+   * doesn't implement it is treated as "open-PR detection unavailable" by
+   * those callers, never as "no open PRs".
+   */
+  listOpenPullRequests?(): Promise<ForgePullRequestRef[]>
 }
 
 /** A client that always reports itself unreachable — the "no gh, no token" case. */
@@ -76,6 +85,9 @@ export class UnreachableForgeClient implements ForgeClient {
     throw new ForgeUnavailableError(this.reason)
   }
   async ensurePullHeadFetched(): Promise<void> {
+    throw new ForgeUnavailableError(this.reason)
+  }
+  async listOpenPullRequests(): Promise<ForgePullRequestRef[]> {
     throw new ForgeUnavailableError(this.reason)
   }
 }
@@ -205,6 +217,12 @@ export class GhCliForgeClient implements ForgeClient {
     return this.parseOutput(result.stdout, ghApiCommitPullListSchema, args).map(normalizeGhApiCommitPull)
   }
 
+  async listOpenPullRequests(): Promise<ForgePullRequestRef[]> {
+    const args = ["pr", "list", "--state", "open", "--limit", "1000", "--json", "number,state,headRefName,headRefOid,mergedAt"]
+    const stdout = await this.run(args)
+    return this.parseOutput(stdout, ghPrListSchema, args).map(normalizeGhPrListItem)
+  }
+
   async ensurePullHeadFetched(prNumber: number, oid: string): Promise<void> {
     const check = await execArgv("git", ["-C", this.repoRoot, "cat-file", "-e", `${oid}^{commit}`], this.repoRoot)
     if (check.exitCode === 0) return
@@ -243,9 +261,15 @@ function normalizeRestPr(item: RestPullRequest): ForgePullRequestRef {
   }
 }
 
-/** Parse `owner/repo` out of a `git remote get-url origin` value (ssh or https form). */
+/**
+ * Parse `owner/repo` out of a `git remote get-url origin` value (ssh or https
+ * form). The ssh form also accepts the multi-account `~/.ssh/config` alias
+ * convention, `git@github.com-<alias>:owner/repo` (a `Host github.com-work`
+ * entry that picks a key but still points at github.com), which is what a
+ * machine juggling two GitHub identities has as its origin.
+ */
 export function parseGithubOwnerRepo(remoteUrl: string): { owner: string; repo: string } | null {
-  const ssh = remoteUrl.match(/^git@github\.com:([^/]+)\/(.+?)(\.git)?$/)
+  const ssh = remoteUrl.match(/^git@github\.com(?:-[\w.-]+)?:([^/]+)\/(.+?)(\.git)?$/)
   if (ssh?.[1] && ssh[2]) return { owner: ssh[1], repo: ssh[2] }
   const https = remoteUrl.match(/^https:\/\/github\.com\/([^/]+)\/(.+?)(\.git)?\/?$/)
   if (https?.[1] && https[2]) return { owner: https[1], repo: https[2] }
@@ -310,6 +334,20 @@ export class RestForgeClient implements ForgeClient {
       throw new ForgeUnavailableError(`GitHub REST commits/:sha/pulls failed: ${res.status} ${res.statusText}`)
     }
     return this.pullRequestList(res)
+  }
+
+  async listOpenPullRequests(): Promise<ForgePullRequestRef[]> {
+    const all: ForgePullRequestRef[] = []
+    for (let page = 1; page <= 10; page++) {
+      const res = await this.get(`/repos/${this.owner}/${this.repo}/pulls?state=open&per_page=100&page=${page}`)
+      if (!res.ok) {
+        throw new ForgeUnavailableError(`GitHub REST pulls?state=open failed: ${res.status} ${res.statusText}`)
+      }
+      const batch = await this.pullRequestList(res)
+      all.push(...batch)
+      if (batch.length < 100) break
+    }
+    return all
   }
 
   async ensurePullHeadFetched(prNumber: number, oid: string): Promise<void> {

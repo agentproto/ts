@@ -36,6 +36,7 @@ import type { AgnoMcpApp } from "../mcp-app-types.js"
 import { SESSION_CHAT_FALLBACK_HTML, sessionChatEmbedHtml } from "./panel.js"
 
 export { SESSION_CHAT_FALLBACK_HTML, sessionChatEmbedHtml }
+export { BLOB_BOOT_MESSAGE_TYPE, blobEmbedScript } from "./blob-embed.js"
 
 /** The installed studio app this builtin widget is a launcher for. */
 export const SESSION_CHAT_APP_ID = "@agentik/session-chat"
@@ -58,6 +59,13 @@ export interface SessionChatOutput {
   installed: boolean
   /** The app's standalone deep-link url when installed, else null. */
   url: string | null
+  /** A live per-boot embed token, when the host daemon supplies one (see
+   *  `SessionChatOps.mintEmbedToken`). The panel adopts it over the token
+   *  baked into its resource HTML, which dies with the daemon boot that
+   *  rendered it — hosts that cache the widget per conversation (Claude
+   *  Desktop) otherwise replay a dead token and 403 forever after a daemon
+   *  restart. Absent when the deep link is unavailable anyway. */
+  embedToken?: string
 }
 
 export interface SessionChatOps {
@@ -68,6 +76,11 @@ export interface SessionChatOps {
    *  block. The runtime supplies this from its AppRegistry; optional so
    *  tests/consumers without a registry can omit it (treated as false). */
   isSessionChatInstalled?: () => boolean
+  /** A live per-boot embed token for the panel to adopt (runtime
+   *  embed-tokens.ts `stableAppEmbedToken`). Optional: consumers without a
+   *  token registry (tests, docs) omit it and the panel keeps whatever was
+   *  baked into its HTML. */
+  mintEmbedToken?: () => string
 }
 
 /**
@@ -83,9 +96,12 @@ export function sessionChatAppUrl(httpBaseUrl: string, sessionId?: string): stri
   return `${base}?${params.toString()}`
 }
 
-/** The daemon origin the widget's host-iframe CSP must allow as a frame
- *  target (same derivation as live-session's connectDomains entry). */
-function frameOrigin(httpBaseUrl: string): string {
+/** The daemon origin the widget's host-iframe CSP must allow both as a
+ *  frame target (the direct-src mount) AND as a connect target (the blob
+ *  pass-through fetches the chat html, and the blob document's own daemon
+ *  calls inherit the widget CSP — see ./blob-embed.ts). Same derivation as
+ *  live-session's connectDomains entry. */
+function daemonOrigin(httpBaseUrl: string): string {
   return new URL(httpBaseUrl).origin
 }
 
@@ -109,12 +125,27 @@ export function makeSessionChatApp(
       "shows install instructions. Pass `sessionId` to deep-link straight " +
       "into a known session.",
     inputSchema: sessionChatInputSchema,
-    execute: async input => ({
-      installed,
-      url: installed ? sessionChatAppUrl(ops.httpBaseUrl, input.sessionId) : null,
-    }),
+    execute: async input => {
+      if (!installed) return { installed, url: null }
+      const token = ops.mintEmbedToken?.()
+      return {
+        installed,
+        url: sessionChatAppUrl(ops.httpBaseUrl, input.sessionId),
+        // Re-arms a cached widget whose baked token died with an earlier
+        // daemon boot (see SessionChatOutput.embedToken).
+        ...(token ? { embedToken: token } : {}),
+      }
+    },
     html: (initData: SessionChatOutput) => sessionChatEmbedHtml(initData),
-    csp: { frameDomains: [frameOrigin(ops.httpBaseUrl)] },
+    // Spec-correct either way (ext-apps McpUiResourceMeta). Measured
+    // 2026-09-18: Claude Desktop / Codex do NOT merge frameDomains into
+    // their widget frame-src; whether they merge connectDomains is unknown,
+    // so the panel probes it at runtime (blob fetch → fallback) rather than
+    // assuming either way.
+    csp: {
+      frameDomains: [daemonOrigin(ops.httpBaseUrl)],
+      connectDomains: [daemonOrigin(ops.httpBaseUrl)],
+    },
   }
 }
 
@@ -128,6 +159,20 @@ export const sessionChatApp: AppHandle = defineApp({
   ui: {
     html: SESSION_CHAT_FALLBACK_HTML,
     title: "Session Chat",
-    tools: ["session_list", "agent_start", "adapter_list", "conversation_read"],
+    // `session_restart` is what makes an ENDED session (completed / killed /
+    // exited / crashed) recoverable from the chat instead of a dead end: the
+    // UI offers "Restart session" in place of the composer, and the tool
+    // resumes the same conversation (ACP-level resume via the adapter session
+    // id, fresh spawn as fallback) and returns a NEW session id the chat
+    // navigates to. Kept in step with the installed app's own allowlist
+    // (`@agentik/session-chat`'s APP.md `ui.tools`) — a tool missing from
+    // EITHER list is refused for the surface that reads it.
+    tools: [
+      "session_list",
+      "agent_start",
+      "adapter_list",
+      "conversation_read",
+      "session_restart",
+    ],
   },
 })

@@ -41,6 +41,7 @@ import { createSessionEventBus } from "../session-event-bus.js"
 import { createEventRing } from "../event-ring.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { SandboxProviderHandle } from "../sandbox-providers/types.js"
+import type { SandboxProviderResolver } from "../sandbox-adapters.js"
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -107,7 +108,7 @@ describe("orchestrator sub-gateway — child sandbox resolution", () => {
   let box: Awaited<ReturnType<typeof bootFakeBox>>
   let registry: SessionsRegistry
   let hostWorkspace: string
-  let resolveSandboxProviderSpy: ReturnType<typeof vi.fn>
+  let resolveSandboxProviderSpy: SandboxProviderResolver
 
   beforeEach(async () => {
     box = await bootFakeBox()

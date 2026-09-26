@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest"
-import { mkdtemp, rm, writeFile, mkdir, readFile, lstat } from "node:fs/promises"
+import { mkdtemp, rm, writeFile, mkdir, readFile, lstat, access } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 import { runTool } from "@agentproto/driver"
@@ -163,6 +163,129 @@ describe("worktree.provision + worktree.cleanup (real git, disposable repo)", ()
       tool: cleanupWorktreeTool,
       candidates,
       input: { repoRoot, cwd: provisioned.cwd, discardUntracked: true },
+    })
+  })
+
+  it("falls back to agentproto.json's declarative depsCmd when the tool input omits it", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+    await writeFile(
+      join(repoRoot, "agentproto.json"),
+      JSON.stringify({
+        worktree: {
+          depsCmd: "node -e \"require('fs').writeFileSync('deps-ran.txt','from-config')\"",
+        },
+      }),
+    )
+    await execGit(repoRoot, ["add", "agentproto.json"])
+    await execGit(repoRoot, ["commit", "-m", "declare depsCmd"])
+
+    const provisioned = await runTool({
+      tool: provisionWorktreeTool,
+      candidates,
+      input: { repoRoot, base: "main", slug: "config-deps" },
+    })
+    cleanupPaths.push(provisioned.cwd)
+    const marker = await readFile(join(provisioned.cwd, "deps-ran.txt"), "utf8")
+    expect(marker).toBe("from-config")
+
+    await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: { repoRoot, cwd: provisioned.cwd, discardUntracked: true },
+    })
+  })
+
+  it("an explicit depsCmd input wins over agentproto.json's declared default", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+    await writeFile(
+      join(repoRoot, "agentproto.json"),
+      JSON.stringify({
+        worktree: {
+          depsCmd: "node -e \"require('fs').writeFileSync('from-config.txt','x')\"",
+        },
+      }),
+    )
+    await execGit(repoRoot, ["add", "agentproto.json"])
+    await execGit(repoRoot, ["commit", "-m", "declare depsCmd"])
+
+    const provisioned = await runTool({
+      tool: provisionWorktreeTool,
+      candidates,
+      input: {
+        repoRoot,
+        base: "main",
+        slug: "explicit-wins",
+        depsCmd: "node -e \"require('fs').writeFileSync('from-input.txt','y')\"",
+      },
+    })
+    cleanupPaths.push(provisioned.cwd)
+    const marker = await readFile(join(provisioned.cwd, "from-input.txt"), "utf8")
+    expect(marker).toBe("y")
+    await expect(access(join(provisioned.cwd, "from-config.txt"))).rejects.toThrow()
+
+    await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: { repoRoot, cwd: provisioned.cwd, discardUntracked: true },
+    })
+  })
+
+  it("falls back to agentproto.json's declarative linkPaths when the tool input omits it", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+
+    await mkdir(join(repoRoot, "node_modules", "dep"), { recursive: true })
+    await writeFile(join(repoRoot, "node_modules", "dep", "index.js"), "module.exports = 1\n")
+    await writeFile(join(repoRoot, ".gitignore"), "node_modules\n")
+    await writeFile(
+      join(repoRoot, "agentproto.json"),
+      JSON.stringify({ worktree: { linkPaths: ["node_modules"] } }),
+    )
+    await execGit(repoRoot, ["add", "agentproto.json", ".gitignore"])
+    await execGit(repoRoot, ["commit", "-m", "declare linkPaths"])
+
+    const provisioned = await runTool({
+      tool: provisionWorktreeTool,
+      candidates,
+      input: { repoRoot, base: "main", slug: "config-links" },
+    })
+    cleanupPaths.push(provisioned.cwd)
+    const linkStat = await lstat(join(provisioned.cwd, "node_modules"))
+    expect(linkStat.isSymbolicLink()).toBe(true)
+
+    await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: { repoRoot, cwd: provisioned.cwd, discardUntracked: true },
+    })
+  })
+
+  it("runSetup: false also skips the agentproto.json depsCmd/linkPaths fallback", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+    await writeFile(
+      join(repoRoot, "agentproto.json"),
+      JSON.stringify({
+        worktree: { depsCmd: "node -e \"require('fs').writeFileSync('deps-ran.txt','x')\"" },
+      }),
+    )
+    await execGit(repoRoot, ["add", "agentproto.json"])
+    await execGit(repoRoot, ["commit", "-m", "declare depsCmd"])
+
+    const provisioned = await runTool({
+      tool: provisionWorktreeTool,
+      candidates,
+      input: { repoRoot, base: "main", slug: "no-setup-skips-deps", runSetup: false },
+    })
+    cleanupPaths.push(provisioned.cwd)
+    await expect(access(join(provisioned.cwd, "deps-ran.txt"))).rejects.toThrow()
+
+    await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: { repoRoot, cwd: provisioned.cwd },
     })
   })
 

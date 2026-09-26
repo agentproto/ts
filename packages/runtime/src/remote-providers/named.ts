@@ -174,7 +174,7 @@ export function namedTunnelProvider(
         `  - service: http_status:404`,
         ``,
       ].join("\n")
-      await writeFile(configPath, configBody, "utf8")
+      await writeFile(configPath, configBody, { encoding: "utf8", mode: 0o600 })
 
       // cloudflared's stdout+stderr are redirected to this file rather than
       // a pipe — see cloudflared-spawn.ts for why (stdio back-pressure

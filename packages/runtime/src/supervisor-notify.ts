@@ -19,11 +19,17 @@
  * `sendPrompt` reject a busy session unless `interrupt:true`, and
  * `interrupt` cancels the parent's in-flight turn — an automatic crash
  * notice earns neither. So:
- *   - parent alive (`running`/`starting`) AND idle (`!busy`) → the notice is
- *     enqueued as a normal prompt (no `interrupt`).
- *   - parent alive AND busy → the notice is queued on the parent's
- *     descriptor (`registry.stampPendingChildCrashNotice`) and flushed onto
- *     its next turn's outgoing message by `runAgentTurn` (sessions.ts).
+ *   The notice travels as a daemon-attested typed message
+ *   (`relation:"system"`, `kind:"blocker"`, `urgency:"next-turn"`) through
+ *   `registry.sendMessage`:
+ *   - parent alive (`running`/`starting`) AND idle (`!busy`) → delivered as
+ *     its own turn now (no `interrupt`).
+ *   - parent alive AND busy → the notice is parked as its own item in the
+ *     parent's prompt queue (`enqueuePrompt({queue:true})`) and drained as a
+ *     SEPARATE turn when the current one ends — never concatenated onto the
+ *     parent's next prompt, and never stranded until one arrives.
+ *   Either way the parent's transcript records a `session-message` from
+ *   `system`, never a user prompt.
  *   - parent missing/dead, no `parentSessionId`, or the child didn't opt in
  *     → no-op. The free external webhook path (`webhookNotifier`, gated on
  *     `notifyUrl` alone) already covers external notification regardless of
@@ -32,6 +38,7 @@
  */
 
 import type { SessionDescriptor } from "./sessions.js"
+import { createSessionMessage, type SessionMessage } from "./session-message.js"
 import type { SessionEventBus, SessionExitedEvent } from "./session-event-bus.js"
 
 /** The slice of the sessions registry this subscriber needs. Structural so
@@ -39,12 +46,13 @@ import type { SessionEventBus, SessionExitedEvent } from "./session-event-bus.js
  *  registry surface — same shape as `crash-reaper.ts`'s `CrashReaperRegistry`. */
 export interface SupervisorNotifyRegistry {
   get(id: string): SessionDescriptor | undefined
-  enqueuePrompt(
-    id: string,
-    message: unknown,
-    opts?: { interrupt?: boolean },
-  ): Promise<void>
-  stampPendingChildCrashNotice(id: string, notice: string): boolean
+  // Return is ignored here (delivery is fire-and-forget) — kept as
+  // `Promise<unknown>` so the full `SessionsRegistry` (whose `sendMessage`
+  // resolves a `SendMessageResult`) satisfies this structural slice.
+  sendMessage(
+    msg: SessionMessage,
+    opts?: { source?: string; origin?: string },
+  ): Promise<unknown>
 }
 
 /** True iff this exit is the unexpected-death set this module reacts to —
@@ -85,14 +93,30 @@ export function wireSupervisorNotify(opts: {
     const parentAlive = parent.status === "running" || parent.status === "starting"
     if (!parentAlive) return
     const notice = formatCrashNotice(child, ev)
-    if (!parent.busy) {
-      // Fire-and-forget, same as every other automatic bus-driven prompt
-      // (task-ledger's owner-death release, the reaper) — admission errors
-      // here would only mean the parent died in the race since the alive
-      // check above; nothing left to report them to.
-      void registry.enqueuePrompt(parentId, notice, {})
-      return
-    }
-    registry.stampPendingChildCrashNotice(parentId, notice)
+    // Idempotent across a duplicate event for the same crash: the exact
+    // notice already waiting (queued, or parked in the inbox) is never sent
+    // twice.
+    if (parent.promptQueue?.some(p => p.message === notice)) return
+    if (parent.inbox?.some(m => m.text === notice)) return
+    const provenance = `child:${child.id}`
+    // A daemon-attested `system` message (the child is dead — it isn't the
+    // sender): kind `blocker`, urgency `next-turn` — delivered as its own
+    // turn now on an idle parent, or after the busy parent's current turn.
+    // Never `interrupt`/`steer`: a crash notice never cuts into a turn.
+    // Fire-and-forget, same as every other automatic bus-driven delivery —
+    // an error here would only mean the parent died in the race since the
+    // alive check above; nothing left to report it to.
+    void registry
+      .sendMessage(
+        createSessionMessage({
+          to: parentId,
+          from: { relation: "system" },
+          text: notice,
+          kind: "blocker",
+          urgency: "next-turn",
+        }),
+        { source: provenance, origin: provenance },
+      )
+      .catch(() => {})
   })
 }

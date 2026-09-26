@@ -35,11 +35,14 @@ export interface InboundMessage {
 /** Deliver `text` as a new user turn on a live session. Same shape as
  *  `SessionsRegistry.enqueuePrompt` (sessions.ts) — the daemon wires that
  *  method in directly. */
+// Return is ignored (the router only awaits admission) — `Promise<unknown>`
+// so the full `SessionsRegistry.enqueuePrompt` (now resolving an
+// `EnqueuePromptResult`) satisfies this structural slice.
 export type InboundEnqueuePrompt = (
   sessionId: string,
   text: string,
   opts?: { interrupt?: boolean; queue?: boolean },
-) => Promise<void> | void
+) => Promise<unknown> | void
 
 /** Whether `sessionId` is currently live enough to route into without a
  *  restart first. */

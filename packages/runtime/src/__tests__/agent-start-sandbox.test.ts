@@ -129,7 +129,7 @@ describe("agent_start sandbox — boot box + proxy session", () => {
   let box: Awaited<ReturnType<typeof bootFakeBox>>
   let registry: SessionsRegistry
   let workspace: string
-  let resolveSandboxProviderSpy: ReturnType<typeof vi.fn>
+  let resolveSandboxProviderSpy: (slug: string) => Promise<SandboxProviderHandle | null>
   let deps: SpawnAgentSessionDeps
 
   beforeEach(async () => {

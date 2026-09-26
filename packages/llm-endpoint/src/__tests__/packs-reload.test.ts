@@ -17,7 +17,7 @@ import { join } from 'node:path';
 const ACCESS_TOKEN = 'reload-test-token';
 process.env.LLM_ENDPOINT_ACCESS_TOKENS = ACCESS_TOKEN;
 
-const { server } = await import('../index.js');
+const { server, resetConfiguredEndpointsCache } = await import('../index.js');
 
 function httpRequest(
   port: number,
@@ -58,6 +58,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
   process.chdir(prevCwd);
+  delete process.env.LLM_ENDPOINT_ENDPOINTS_FILE;
+  resetConfiguredEndpointsCache();
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -130,6 +132,67 @@ describe('POST /v1/packs/reload', () => {
       expect(res.body.error.type).toBe('invalid_request_error');
       expect(Array.isArray(res.body.error.errors)).toBe(true);
       expect(res.body.error.errors.some((e: string) => e.includes('packs.broken.models.z.provider'))).toBe(true);
+    } finally {
+      srv.close();
+    }
+  });
+
+  it('400s a local pack route whose provider is not a canonical upstream, forge/nebius, or a configured endpoint', async () => {
+    await writeFile(
+      join(dir, 'packs.local.json'),
+      JSON.stringify({
+        packs: {
+          mine: {
+            id: 'mine',
+            label: 'Mine',
+            description: 'unknown provider',
+            models: { a: { provider: 'not-a-real-provider', model: 'm' } },
+          },
+        },
+      }),
+    );
+    const srv = server.listen(0);
+    const port = (srv.address() as { port: number }).port;
+    try {
+      const res = await reload(port);
+      expect(res.status).toBe(400);
+      expect(
+        res.body.error.errors.some(
+          (e: string) => e.includes('packs.mine.models.a.provider') && e.includes('unknown provider "not-a-real-provider"'),
+        ),
+      ).toBe(true);
+    } finally {
+      srv.close();
+    }
+  });
+
+  it('accepts a local pack route whose provider is a configured named endpoint id', async () => {
+    const endpointsPath = join(dir, 'llm-endpoints.json');
+    await writeFile(
+      endpointsPath,
+      JSON.stringify({ endpoints: [{ id: 'bonsai', kind: 'openai', baseUrl: 'http://192.168.1.20:8081/v1' }] }),
+    );
+    process.env.LLM_ENDPOINT_ENDPOINTS_FILE = endpointsPath;
+    resetConfiguredEndpointsCache();
+    await writeFile(
+      join(dir, 'packs.local.json'),
+      JSON.stringify({
+        packs: {
+          mine: {
+            id: 'mine',
+            label: 'Mine',
+            description: 'targets a named endpoint',
+            models: { a: { provider: 'bonsai', model: 'bonsai-27b' } },
+          },
+        },
+      }),
+    );
+    const srv = server.listen(0);
+    const port = (srv.address() as { port: number }).port;
+    try {
+      const res = await reload(port);
+      expect(res.status).toBe(200);
+      expect(res.body.local_pack_ids).toContain('mine');
     } finally {
       srv.close();
     }

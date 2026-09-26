@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-58/journal-entry.schema.json",
+  "title": "JournalEntry (AIP-58)",
+  "description": "One step attempt in a run's per-step journal (§6 Journal). Enables crash-resume, run.replay, and cache hits for pure/idempotent contracts.",
+  "$ref": "#/$defs/journalEntry",
+  "$defs": {
+    "runStatus": {
+      "type": "string",
+      "enum": ["pending", "running", "succeeded", "failed", "suspended", "cancelled"]
+    },
+    "spend": {
+      "type": "object",
+      "required": ["amount", "currency"],
+      "additionalProperties": false,
+      "properties": {
+        "amount": { "type": "number" },
+        "currency": { "type": "string", "minLength": 1 },
+        "unit": { "type": "string" }
+      }
+    },
+    "journalEntry": {
+      "type": "object",
+      "required": ["stepId", "attempt", "inputHash", "input", "output", "status", "startedAt"],
+      "additionalProperties": false,
+      "properties": {
+        "stepId": { "type": "string", "minLength": 1 },
+        "attempt": {
+          "description": "1-based — a step retried under a retry policy has one entry per attempt.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "inputHash": {
+          "description": "Hash of the resolved step input, used as the cache-hit key alongside contract id + version + driver.",
+          "type": "string",
+          "minLength": 1
+        },
+        "input": {},
+        "output": {},
+        "status": { "$ref": "#/$defs/runStatus" },
+        "startedAt": { "type": "string", "format": "date-time" },
+        "endedAt": { "type": "string", "format": "date-time" },
+        "spend": { "$ref": "#/$defs/spend" }
+      }
+    }
+  }
+}

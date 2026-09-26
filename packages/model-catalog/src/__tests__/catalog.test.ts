@@ -35,7 +35,17 @@ import {
   resolveModelRoute,
   resolveContextWindow,
   listNativeModelIds,
+  splitContextWindowHint,
+  resolvePricingExact,
+  resolveAlias,
+  isKnownLlmId,
+  listUnpricedKnownLlmIds,
+  LLM_PRICING_CATALOG,
 } from "../llm/catalog.js"
+import {
+  OPENAI_GENERATED_PRICING,
+  OPENAI_GENERATED_UNPRICED_IDS,
+} from "../llm/openai-pricing.generated.js"
 import { PROVIDER_KEY_ENV } from "../schema/base.js"
 import { ANTHROPIC_GATEWAY_PRESETS } from "@agentproto/provider-presets"
 
@@ -761,6 +771,43 @@ describe("resolveContextWindow", () => {
     expect(resolveContextWindow("gpt-4o")).toBeUndefined()
     expect(resolveContextWindow("glm-4.6")).toBeUndefined()
   })
+
+  // claude-agent-acp guesses 200k for these bare ids until the first result;
+  // the daemon seeds from this catalog instead, so it must say 1M.
+  it.each(["claude-opus-5-5", "claude-sonnet-5", "claude-opus-5"])("%s is a 1M model", id => {
+    expect(resolveContextWindow(id)?.contextWindow).toBe(1_000_000)
+  })
+
+  it("strips a [1m] lane hint for identity but keeps it for the window", () => {
+    const entry = resolveContextWindow("claude-haiku-4-5[1m]")
+    expect(entry?.contextWindow).toBe(1_000_000)
+    expect(entry?.displayName).toBe(resolveContextWindow("claude-haiku-4-5")?.displayName)
+    expect(resolveContextWindow("claude-opus-5-5[1m]")?.contextWindow).toBe(1_000_000)
+    expect(resolveContextWindow("not-a-model[1m]")).toBeUndefined()
+  })
+})
+
+describe("splitContextWindowHint", () => {
+  it.each([
+    ["claude-opus-5-5[1m]", "claude-opus-5-5", 1_000_000],
+    ["claude-sonnet-5[1M]", "claude-sonnet-5", 1_000_000],
+    ["opus[1m]", "opus", 1_000_000],
+    ["some-model[200k]", "some-model", 200_000],
+    ["some-model[1.5m]", "some-model", 1_500_000],
+  ])("%s → %s + %d", (raw, id, contextWindow) => {
+    expect(splitContextWindowHint(raw)).toEqual({ id, contextWindow })
+  })
+
+  it.each(["claude-opus-5-5", "model[beta]", "[1m]", "model[1m]x"])("%s carries no hint", raw => {
+    expect(splitContextWindowHint(raw)).toEqual({ id: raw })
+  })
+
+  it("pricing/alias lookups ignore the hint", () => {
+    expect(resolvePricing("claude-sonnet-4-5[1m]")).toEqual(resolvePricing("claude-sonnet-4-5"))
+    expect(resolvePricingExact("claude-sonnet-4-5[1m]")).toEqual(resolvePricingExact("claude-sonnet-4-5"))
+    expect(resolvePricingExact("claude-sonnet-4-5[1m]")).toBeDefined()
+    expect(resolveAlias("claude-sonnet-4-5[1m]")).toBe(resolveAlias("claude-sonnet-4-5"))
+  })
 })
 
 describe("listNativeModelIds", () => {
@@ -800,5 +847,87 @@ describe("listNativeModelIds", () => {
       expect(id).not.toContain("/")
       expect(resolveContextWindow(id)?.provider).toBe("xai")
     }
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 10. OpenAI native catalog source — ids from OpenAI, prices official-first
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("OPENAI_GENERATED_PRICING — native id + official price source", () => {
+  it("prices the flagship ids from OpenAI's own published pricing", () => {
+    // The whole point of the native source: these are OpenAI's numbers, not
+    // OpenRouter's passthrough of them.
+    for (const id of ["gpt-5", "gpt-5-mini", "gpt-4o", "gpt-4.1", "o3"]) {
+      const pricing = resolvePricing(id)
+      expect(pricing?.provider, id).toBe("openai")
+      expect(pricing?.priceSource, id).toBe("openai")
+      expect(pricing?.idSource, id).toBe("openai")
+    }
+  })
+
+  it("keeps OpenRouter-only ids, flagged rather than dropped", () => {
+    // `:batch` is a separate OpenAI endpoint and `gpt-oss-*` is open-weights;
+    // neither can appear in `/v1/models`, so neither may be culled by making
+    // that endpoint the id source.
+    for (const id of ["gpt-5:batch", "gpt-oss-120b"]) {
+      const pricing = OPENAI_GENERATED_PRICING[id as keyof typeof OPENAI_GENERATED_PRICING]
+      expect(pricing, id).toBeDefined()
+      expect((pricing as { idSource: string }).idSource, id).toBe("openrouter")
+    }
+  })
+
+  it("never emits a zero price as a stand-in for an unknown one", () => {
+    for (const [id, pricing] of Object.entries(OPENAI_GENERATED_PRICING)) {
+      expect(pricing.inputPer1M, id).toBeGreaterThan(0)
+      expect(pricing.outputPer1M, id).toBeGreaterThan(0)
+    }
+  })
+
+  it("tags every row with both provenance fields", () => {
+    for (const [id, pricing] of Object.entries(OPENAI_GENERATED_PRICING)) {
+      expect(["openai", "openrouter"], id).toContain(pricing.priceSource)
+      expect(["openai", "openrouter"], id).toContain(pricing.idSource)
+    }
+  })
+})
+
+describe("OPENAI_GENERATED_UNPRICED_IDS", () => {
+  it("makes every listed id exist, whether or not anything prices it", () => {
+    // `gpt-5.4-2026-03-05` is a dated snapshot OpenAI lists but neither its
+    // pricing page nor OpenRouter quotes. Before this list it would simply
+    // not have existed anywhere downstream.
+    expect(OPENAI_GENERATED_UNPRICED_IDS.length).toBeGreaterThan(0)
+    expect(OPENAI_GENERATED_UNPRICED_IDS).toContain("gpt-5.4-2026-03-05")
+    for (const id of OPENAI_GENERATED_UNPRICED_IDS) {
+      expect(isKnownLlmId(id), id).toBe(true)
+    }
+    // None of them was smuggled into the generated PRICING map.
+    for (const id of OPENAI_GENERATED_UNPRICED_IDS) {
+      expect(id in OPENAI_GENERATED_PRICING, id).toBe(false)
+    }
+  })
+
+  it("surfaces the ones nothing else prices through listUnpricedKnownLlmIds", () => {
+    // `PRICING_OVERRIDES` may still hand-price an id the generator could not
+    // (today: `gpt-5-codex`). Those are priced, so they are correctly absent
+    // from the unpriced enumeration — the generator supplies existence, the
+    // override supplies the number, and neither needs to know about the other.
+    const listed = new Set(listUnpricedKnownLlmIds().map(e => e.id))
+    for (const id of OPENAI_GENERATED_UNPRICED_IDS) {
+      const priced = id in LLM_PRICING_CATALOG
+      expect(listed.has(id), `${id} (priced=${priced})`).toBe(!priced)
+    }
+    expect(listed.has("gpt-5.4-2026-03-05")).toBe(true)
+    expect(resolvePricing("gpt-5-codex")?.inputPer1M).toBe(1.25)
+  })
+
+  it("holds back `chat-latest`, whose bare key would hijack resolvePricing", () => {
+    // `resolvePricing` falls back to `modelId.includes(key)`, so a bare
+    // `chat-latest` pricing row would win for every `*-chat-latest` id and
+    // reprice them. It stays known-but-unpriced instead.
+    expect(OPENAI_GENERATED_UNPRICED_IDS).toContain("chat-latest")
+    expect(isKnownLlmId("chat-latest")).toBe(true)
+    expect(resolvePricing("gpt-5-chat-latest")?.inputPer1M).not.toBe(5.0)
   })
 })

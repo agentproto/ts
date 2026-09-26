@@ -1,5 +1,21 @@
 # @agentproto/workflow-ai-sdk
 
+## 0.1.9
+
+### Patch Changes
+
+- Updated dependencies [41b8b76]
+- Updated dependencies [854db1f]
+  - @agentproto/workflow-runtime@0.12.0
+
+## 0.1.8
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [c27f0b8]
+  - @agentproto/workflow-runtime@0.11.1
+
 ## 0.1.7
 
 ### Patch Changes

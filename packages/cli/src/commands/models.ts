@@ -76,6 +76,30 @@ function pricingOf(modelId: string): PricingEntry | undefined {
   return cat[last]
 }
 
+/** A provider has a key if it's in this env OR the stored providers file. */
+async function loadKeyChecker(): Promise<(provider: string) => boolean> {
+  const store = await loadProviders()
+  return (provider: string): boolean => {
+    if (provider === "unknown") return false
+    if (process.env[providerEnvVar(provider)]) return true
+    return Boolean(store.providers[provider]?.apiKey)
+  }
+}
+
+/** Per installed adapter with a model list: how many of its models are
+ *  runnable with the provider keys available here — the one-line version of
+ *  `agentproto models` (used by `agentproto setup`). */
+export async function modelsSummary(): Promise<{ slug: string; runnable: number; total: number }[]> {
+  const [all, hasKey] = await Promise.all([listAdaptersWithCatalog(CATALOG), loadKeyChecker()])
+  return all
+    .filter(a => a.models.length > 0 && a.status !== "supported")
+    .map(a => ({
+      slug: a.slug,
+      total: a.models.length,
+      runnable: a.models.filter(id => hasKey(providerOf(id, pricingOf(id)))).length,
+    }))
+}
+
 export async function runModels(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: [...args],
@@ -110,13 +134,7 @@ export async function runModels(args: readonly string[]): Promise<number> {
     return 0
   }
 
-  // A provider has a key if it's in this env OR the stored providers file.
-  const store = await loadProviders()
-  const hasKey = (provider: string): boolean => {
-    if (provider === "unknown") return false
-    if (process.env[providerEnvVar(provider)]) return true
-    return Boolean(store.providers[provider]?.apiKey)
-  }
+  const hasKey = await loadKeyChecker()
 
   if (values.json) {
     process.stdout.write(

@@ -52,7 +52,7 @@ export interface SessionDescriptor {
   awaitingPermission?: boolean
   turnsCompleted?: number
   busy?: boolean
-  blockedOn?: "subagent" | "command"
+  blockedOn?: "subagent" | "command" | "inbox"
   pendingToolCallId?: string
   parentSessionId?: string
   depth?: number
@@ -102,6 +102,14 @@ export interface SessionEventRecord {
   contextSize?: number
   contextUsed?: number
   source?: string
+  /** `session-message` records: the daemon-attested envelope of a typed
+   *  message from another session (AIP-46 §Session messages). */
+  message?: {
+    id: string
+    text?: string
+    kind?: string
+    from?: { sessionId?: string; label?: string; relation?: string }
+  }
 }
 
 /** GET /sessions/:id/events response envelope. */

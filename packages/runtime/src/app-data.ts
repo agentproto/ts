@@ -628,7 +628,7 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
   server.tool(
     APP_STATE_APPEND_TOOL_NAME,
     "Append one event to an installed app's append-only state ledger " +
-      "(`<dataDir>/state/events.jsonl`). The envelope is zod-validated, " +
+      "(`<stateDir>/events.jsonl`, in the daemon's state dir). The envelope is zod-validated, " +
       "including the per-kind payload (gate-report needs `{ok, exitCode}`, " +
       "approval needs `{approved, who}`, blocked needs `{reason}`); `id` and " +
       "`ts` are daemon-assigned. Writes are single-line O_APPEND appends — " +

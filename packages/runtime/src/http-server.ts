@@ -20,33 +20,59 @@
  * tool calls become a real use case.
  */
 
+import { parseBrowserMode } from "./browser-mount.js"
 import { randomUUID } from "node:crypto"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import type { Duplex } from "node:stream"
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises"
-import { basename, extname, isAbsolute, join, resolve as resolvePath } from "node:path"
+import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises"
+import { basename, dirname, extname, isAbsolute, join, resolve as resolvePath, sep } from "node:path"
 import type { AcpMcpServer } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import { WebSocketServer, type WebSocket } from "ws"
-import { ZodError } from "zod"
+import { ZodError, type ZodType } from "zod"
 import type { UIMessageChunk } from "ai"
 import type { AgentprotoRawTranscriptRecord } from "@agentproto/transcript-fixtures"
 import type { ConversationStore } from "./conversations.js"
+import { isValidAppEmbedToken } from "./embed-tokens.js"
 import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
-import type { SessionsRegistry, AgentSessionLike, RestartPolicy } from "./sessions.js"
+import type { SessionsRegistry, AgentSessionLike, RestartPolicy, SessionDescriptor } from "./sessions.js"
 import { SessionNotAliveError, applyBracketedPasteWrap } from "./sessions.js"
+import {
+  createSessionMessage,
+  isMessageAllowed,
+  messageFrom,
+  resolveRelation,
+  MESSAGE_KINDS,
+  MESSAGE_URGENCIES,
+  type MessageKind,
+  type MessageUrgency,
+} from "./session-message.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
+import type { RemoteController, EnableInput } from "./remote-controller.js"
 import type { PairingRegistry } from "./pairing-registry.js"
 import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import type { AppRegistry } from "./app-registry.js"
 import { performAppToolCall, performBuiltinPanelToolCall, type AppToolCallDeps } from "./app-tools.js"
 import { injectStandaloneAppBridge } from "./app-ui-apps.js"
+import {
+  IMMUTABLE_CACHE_CONTROL,
+  appUiContentType,
+  createEncodedRepresentation,
+  createRepresentationCache,
+  ifNoneMatchHits,
+  isCompressibleContentType,
+  isValidAppUiAssetName,
+  sendRepresentation,
+  strongEtag,
+  type EncodedRepresentation,
+} from "./app-ui-delivery.js"
 import { resolveBuiltinPanelUi } from "./builtin-apps.js"
+import { resolveRequestHttpBaseUrl } from "./public-origins.js"
 import {
   assertExternalPathRealInside,
   isExternalRootGranted,
@@ -147,27 +173,47 @@ import {
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
+import {
+  attachFieldSchema,
+  commandSandboxSchema,
+  contextContinuityInputSchema,
+} from "./spawn-field-schemas.js"
 import { makeSandboxCredsStore, makeSandboxResolver } from "./sandbox-adapters.js"
 import { readSandboxLedger, recordSandboxLiveness } from "./sandbox-ledger.js"
 import { parseJsonRecordText, DEFAULT_APP_SERVE_PORT, type SandboxAppServeSpec } from "./sandbox-app-serve.js"
 import { listPresets } from "./preset-tools.js"
 import {
   resolveWorktreeQueryRoot,
+  sessionWorktreeScope,
   type WorktreeStatusLister,
 } from "./worktree-status.js"
 import { livingSessionCwds, type WorktreeGcRunner } from "./worktree-gc.js"
+import type { BranchGcKind, BranchGcRunner, BranchGcVerdictRecorder } from "./branch-gc.js"
 import type {
   CatalogModelsQuery,
   CatalogModelsResponse,
 } from "./catalog-models.js"
 import { defaultProfileProvisionDeps } from "./auth-profile-tools.js"
 import { readRegisteredSlugs, DEFAULT_BUCKET } from "./workspace-buckets.js"
+import { writeSseHead } from "./sse-headers.js"
 import {
   createAuthProfile,
   deleteAuthProfile,
   listAuthProfiles,
+  updateAuthProfile,
   AuthProfileValidationError,
+  type CostBudget,
 } from "@agentproto/auth"
+
+/** HTTP-safe descriptor projection. The registry retains resume env for PTY
+ * reattachment; public session responses must not serialize it. Kept local
+ * here because session-tools imports this module. */
+function sessionDescriptorForHttp(
+  session: SessionDescriptor,
+): Omit<SessionDescriptor, "ptyResumeEnv"> {
+  const { ptyResumeEnv: _privateResumeEnv, ...publicDescriptor } = session
+  return publicDescriptor
+}
 
 /**
  * Default Origin allowlist used when `RuntimeHttpServerOptions.allowedOrigins`
@@ -600,10 +646,31 @@ export interface RuntimeHttpServerOptions {
    * so a bridge client's spawn is attributed to its channel instead of landing
    * as a bare top-level root.
    */
+  /**
+   * `deferred`, when present, is parsed from the request's `?deferred=1|0`
+   * query string (see `handleMcp` below) — the per-mount override for
+   * deferred/lazy `tools/list` loading (harness-parity item 3, see
+   * `deferred-tools.ts`). `true`/`false` wins over the gateway's own
+   * boot-time `CreateGatewayOptions.deferredTools` default either way;
+   * `undefined` (the query param absent) falls through to that default
+   * unchanged. Composes with `denyTools`: deny is applied AFTER deferred
+   * wrapping in `mcpServerFactory` (index.ts), so an excluded name never
+   * reaches registration regardless of deferred status.
+   */
+  /**
+   * `allowTools`, when non-empty, is parsed from the request's
+   * `?allowTools=a,b` query string (see `handleMcp` below) — an ALLOWLIST
+   * for this one request: only the named tools register. A workflow agent
+   * step's session carries it, scoped to its AGENT.md `tools:` list (see
+   * `agentStepMcpServers` in sessions-registry-agent-host.ts). Composes with
+   * `denyTools` (a name on both is excluded).
+   */
   mcpServerFactory: (
     denyTools?: ReadonlySet<string>,
     callerSessionId?: string,
     origin?: string,
+    deferred?: boolean,
+    allowTools?: ReadonlySet<string>,
   ) => Promise<McpServer>
   /**
    * Optional scoped orchestrator sub-gateway (WP2). When BOTH this and
@@ -657,6 +724,11 @@ export interface RuntimeHttpServerOptions {
    *  `agent_start` tool does (both share `spawnAgentSession`). Omitted →
    *  a sandbox spawn fails with `sandbox_provider_not_found`. */
   resolveSandboxProvider?: SpawnAgentSessionDeps["resolveSandboxProvider"]
+  /** Optional — the daemon's per-session webhook notifier, so a
+   *  `POST /sessions/agent` spawn's `notifyUrl` is registered exactly as the
+   *  MCP `agent_start` tool's is. Omitted → `notifyUrl` is accepted but
+   *  never fires (nothing to register it with). */
+  webhookNotifier?: SpawnAgentSessionDeps["webhookNotifier"]
   /** Optional — mirrors `RegisterAgentToolsOptions.provisionWorktree`. When
    *  wired, a `POST /sessions/agent` spawn honours `agent_start.worktree` and
    *  the daemon's `worktrees.isolation` policy, exactly as the MCP tool does
@@ -755,9 +827,20 @@ export interface RuntimeHttpServerOptions {
    *  Injected because the plan/apply engine lives in `@agentproto/worktree`,
    *  a dependency the runtime deliberately does NOT take. */
   runWorktreeGc?: WorktreeGcRunner
+  /** Optional — mirrors `RegisterSessionToolsOptions.runBranchGc`. When
+   *  wired, enables `POST /branches/gc` + the `branch_gc` MCP tool. */
+  runBranchGc?: BranchGcRunner
+  /** Optional — mirrors `RegisterSessionToolsOptions.recordBranchGcVerdict`.
+   *  When wired, enables `POST /branches/gc/verdict` + `branch_gc_verdict`. */
+  recordBranchGcVerdict?: BranchGcVerdictRecorder
   /** Optional — when wired, exposes /tunnels/* routes for creating and
    *  managing public tunnels for local ports. Without it the routes 404. */
   tunnels?: TunnelRegistry
+  /** Optional — when wired, exposes POST /remote/enable, POST /remote/disable,
+   *  GET /remote/status — the REST twin of the MCP `remote_enable` /
+   *  `remote_disable` / `remote_status` tools (remote-tools.ts), for
+   *  `agentproto remote enable/disable/status`. Without it the routes 404. */
+  remote?: RemoteController
   /** Optional — when wired, exposes /pairings/* routes for minting offers,
    *  listing pairings, and revoking them (E2E daemon pairing). Same service the
    *  MCP `pair_offer` / `pair_list` / `pair_revoke` tools call. Without it the
@@ -997,6 +1080,90 @@ export async function startHttpServer(
   }
 
   /**
+   * The single gate for the P0 tunnel-auth fix (PHONE-PLAN.md "P0: security
+   * fix"): once `remote_enable` (or a static `auth: {mode: "bearer"}`) puts
+   * the daemon in bearer mode, EVERY non-loopback request must present that
+   * exact bearer — full stop. This runs once, at the very top of the
+   * request/upgrade handler, instead of being sprinkled per route, because
+   * every other per-route mechanism in this file (`checkSessionsToken`'s
+   * Origin-allowlist branch, `guardBrowserOrigin`, `authorizeMcp`,
+   * `embedTokenTrusted`) was designed for a DIFFERENT threat — a hostile
+   * *browser tab* on the user's own machine, where `Origin` is unforgeable.
+   * None of that holds once a request has crossed a public tunnel: `curl`
+   * sets whatever `Origin` it likes, and the widget embed token was minted
+   * for a local MCP-Apps frame, never for a remote caller. So this
+   * predicate runs BEFORE any of those and consults neither Origin nor
+   * `?et=` — they keep doing their original (browser-CSRF / widget) job for
+   * loopback traffic, but neither may stand in for the bearer here.
+   *
+   * Three routes are intentionally exempt (see the plan's P0 section):
+   *   - `/health` — the public liveness probe.
+   *   - `/inbound/:slug` — gated by its own per-endpoint HMAC secret when
+   *     one is configured (`handleProviderInbound` / `verifyInboundSignature`);
+   *     requiring the tunnel bearer ON TOP of that would break every
+   *     provider webhook (Telegram, WhatsApp, …), which can't send it. This
+   *     is `/inbound/:slug` only — the legacy slugless `POST /inbound` has
+   *     no such secret and stays gated by this function.
+   *   - `GET /apps/:appId/ui` (that exact static-shell route only — not
+   *     `/tool-call` or `/external-blob` beneath it) — the phone must be
+   *     able to load the page before it has anywhere to put the token: the
+   *     phone link carries the bearer in a URL *fragment* (`#token=`,
+   *     PHONE-PLAN.md P1), which browsers never send to a server, so
+   *     gating the shell itself would make the link unusable. The APIs the
+   *     loaded page then calls stay fully gated. The shell's own static
+   *     assets (`GET /apps/:appId/ui/assets/:file`, a validated flat file
+   *     name only — `isAppUiShellRequest`) share the exemption: the page's
+   *     `<script src>`/`<link href>` loads can't carry the bearer either.
+   *
+   * `?et=` (the widget embed token) deliberately does NOT bypass this gate.
+   * It's scoped to a local MCP-Apps host that already has `tools/call` on
+   * THIS daemon (see `embedTokenTrusted`'s doc) — a guarantee that only
+   * holds on loopback. Treating it as tunnel-equivalent would let anyone
+   * who ever captured that value (a screenshot, a stray log line, a
+   * Referer header) reach the daemon over the public internet with no
+   * bearer at all. Loopback traffic is untouched either way — this whole
+   * function is a no-op there — so the widget path keeps working exactly
+   * as before for its real (local) use case.
+   */
+  function tunnelBearerAllowed(
+    req: IncomingMessage,
+    path: string,
+    method: string,
+  ): boolean {
+    if (isLoopback(req)) return true
+    const auth = readAuth()
+    if (auth.mode !== "bearer") return true
+    if (path === "/health") return true
+    if (/^\/inbound\/[^/]+$/.test(path)) return true
+    if (isAppUiShellRequest(method, path)) return true
+    const header = req.headers.authorization
+    if (header === `Bearer ${auth.token}`) return true
+    const urlStr = req.url ?? ""
+    if (urlStr.includes("?")) {
+      const qsToken = new URLSearchParams(
+        urlStr.slice(urlStr.indexOf("?") + 1),
+      ).get("token")
+      if (qsToken && qsToken === auth.token) return true
+    }
+    return false
+  }
+
+  function rejectTunnelUnauthorized(res: ServerResponse): void {
+    res.writeHead(401, { "content-type": "application/json" })
+    res.end(
+      JSON.stringify({
+        error: "tunnel_unauthorized",
+        message:
+          "This daemon is in bearer mode and the request did not arrive on " +
+          "loopback. Present the tunnel bearer as `Authorization: Bearer " +
+          "<token>` (or `?token=<token>` for SSE/WS) — an allowlisted " +
+          "Origin or the widget embed token is not sufficient once a " +
+          "request has crossed the network boundary.",
+      }),
+    )
+  }
+
+  /**
    * Auth gate for `/mcp`. Unlike `authorize()`, it does NOT let a browser
    * drive-by inherit the loopback bypass: `/mcp` registers `command_execute`,
    * `file_read`/`file_write`, `agent_start`, … (see index.ts's
@@ -1024,7 +1191,8 @@ export async function startHttpServer(
     if (
       typeof origin === "string" &&
       origin.length > 0 &&
-      !originAllowed(origin)
+      !originAllowed(origin) &&
+      !embedTokenTrusted(req)
     ) {
       const auth = readAuth()
       const header = req.headers.authorization
@@ -1089,7 +1257,33 @@ export async function startHttpServer(
     const origin = req.headers.origin
     if (typeof origin === "string" && originAllowed(origin)) return "ok"
 
+    // 4. A valid per-boot widget embed token (`?et=`, see
+    //    `embedTokenTrusted`) — the MCP-Apps widget path, whose blob:
+    //    document has an opaque origin no allowlist can name.
+    if (embedTokenTrusted(req)) return "ok"
+
     return header ? "bad" : "missing"
+  }
+
+  /**
+   * A valid per-boot widget embed token (`?et=`, embed-tokens.ts) rides on
+   * the request url. Treated as the equivalent of an allowlisted `Origin`
+   * by every browser-facing gate (`guardBrowserOrigin`, `authorizeMcp`,
+   * `checkSessionsToken`, `applyCors`): the token is minted only into the
+   * daemon's own MCP-Apps panel resources, so its holder is by construction
+   * an MCP-authenticated host that already has `tools/call` — no new
+   * privilege is granted, only the ability to reach the same surface from a
+   * context whose `Origin` is opaque (`null`). That is exactly the
+   * session-chat widget's blob-frame path (packages/apps session-chat
+   * panel.ts): Claude Desktop / Codex widget frames run `frame-src 'self'
+   * blob: data:`, so the chat UI is fetched, re-based, and mounted as a
+   * `blob:` document whose every daemon request carries `Origin: null`
+   * plus this token. A hostile web page can never obtain the token (no MCP
+   * access to read the resource; can't read the host's cross-origin widget
+   * frame), and it dies with the daemon process.
+   */
+  function embedTokenTrusted(req: IncomingMessage): boolean {
+    return isValidAppEmbedToken(requestEmbedToken(req))
   }
 
   function originAllowed(origin: string): boolean {
@@ -1223,16 +1417,29 @@ export async function startHttpServer(
     }
   }
 
-  function parseDenyToolsQuery(url: string): Set<string> | undefined {
+  /** Mirrors `parseToolListQuery` for the `deferred` query param
+   *  (harness-parity item 3) — see `mcpServerFactory`'s doc for the wire
+   *  contract. `"1"`/`"true"` ⇒ `true`, `"0"`/`"false"` ⇒ `false`, anything
+   *  else (including absent) ⇒ `undefined` (no override). */
+  function parseDeferredQuery(url: string): boolean | undefined {
     const qIdx = url.indexOf("?")
     if (qIdx === -1) return undefined
-    const raw = new URLSearchParams(url.slice(qIdx + 1)).get("denyTools")
+    const raw = new URLSearchParams(url.slice(qIdx + 1)).get("deferred")
+    if (raw === "1" || raw === "true") return true
+    if (raw === "0" || raw === "false") return false
+    return undefined
+  }
+
+  function parseToolListQuery(url: string, param: "denyTools" | "allowTools"): Set<string> | undefined {
+    const qIdx = url.indexOf("?")
+    if (qIdx === -1) return undefined
+    const raw = new URLSearchParams(url.slice(qIdx + 1)).get(param)
     if (!raw) return undefined
     const names = raw.split(",").map(s => s.trim()).filter(Boolean)
     return names.length > 0 ? new Set(names) : undefined
   }
 
-  /** Mirrors `parseDenyToolsQuery` for the `callerSessionId` query param
+  /** Mirrors `parseToolListQuery` for the `callerSessionId` query param
    *  (PR 7 / Gap 7) — see `mcpServerFactory`'s doc for the wire contract. */
   function parseCallerSessionIdQuery(url: string): string | undefined {
     const qIdx = url.indexOf("?")
@@ -1256,10 +1463,12 @@ export async function startHttpServer(
 
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!authorizeMcp(req, res)) return
-    const denyTools = parseDenyToolsQuery(req.url ?? "")
+    const denyTools = parseToolListQuery(req.url ?? "", "denyTools")
+    const allowTools = parseToolListQuery(req.url ?? "", "allowTools")
     const callerSessionId = parseCallerSessionIdQuery(req.url ?? "")
     const origin = parseOriginQuery(req.url ?? "")
-    const server = await opts.mcpServerFactory(denyTools, callerSessionId, origin)
+    const deferred = parseDeferredQuery(req.url ?? "")
+    const server = await opts.mcpServerFactory(denyTools, callerSessionId, origin, deferred, allowTools)
     await serveMcp(req, res, server)
   }
 
@@ -1347,11 +1556,7 @@ export async function startHttpServer(
   function handleEvents(req: IncomingMessage, res: ServerResponse): void {
     if (guardBrowserOrigin(req, res)) return
     if (!authorize(req, res)) return
-    res.writeHead(200, {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive",
-    })
+    writeSseHead(res)
     res.write(`: connected\n\n`)
     const off = opts.events.onAny((ev: RuntimeEvent) => {
       res.write(`data: ${JSON.stringify(ev)}\n\n`)
@@ -1524,7 +1729,8 @@ export async function startHttpServer(
    *
    * Returns `true` when it has REJECTED the request (wrote a 403) — the caller
    * must stop. Returns `false` when the request may proceed to its normal
-   * auth path (no Origin, an allowlisted Origin, or a valid bearer token).
+   * auth path (no Origin, an allowlisted Origin, a valid per-boot widget
+   * embed token — see `embedTokenTrusted` — or a valid bearer token).
    */
   function guardBrowserOrigin(
     req: IncomingMessage,
@@ -1534,7 +1740,8 @@ export async function startHttpServer(
     if (
       typeof origin === "string" &&
       origin.length > 0 &&
-      !originAllowed(origin)
+      !originAllowed(origin) &&
+      !embedTokenTrusted(req)
     ) {
       const auth = readAuth()
       const header = req.headers.authorization
@@ -1572,11 +1779,24 @@ export async function startHttpServer(
   // origins — an untrusted page shouldn't be waved through the PNA gate.
   function applyCors(req: IncomingMessage, res: ServerResponse): void {
     const origin = req.headers.origin
-    const trusted =
+    // A valid widget embed token (embed-tokens.ts) rides in the URL — an
+    // unforgeable per-boot proof that the caller chain includes a legitimate
+    // MCP-Apps host rendering this daemon's own panel resource. MCP-Apps
+    // widget contexts are sandboxed/opaque origins no allowlist can name, so
+    // the token — not the origin — is what unlocks the PNA preflight for
+    // them. (Frame DISPLAY stays governed by the route's own CSP; this only
+    // keeps the preflight from failing before that CSP is ever consulted.)
+    const tokenTrusted = embedTokenTrusted(req)
+    const originTrusted =
       typeof origin === "string" && origin.length > 0 && originAllowed(origin)
-    if (trusted) {
+    const trusted = originTrusted || tokenTrusted
+    if (originTrusted) {
       res.setHeader("Access-Control-Allow-Origin", origin as string)
       res.setHeader("Access-Control-Allow-Credentials", "true")
+    } else if (tokenTrusted && origin && origin !== "null") {
+      // Reflect without credentials — enough for the widget preflight, and
+      // never pairs Allow-Credentials with a non-allowlisted origin.
+      res.setHeader("Access-Control-Allow-Origin", origin)
     } else {
       res.setHeader("Access-Control-Allow-Origin", "*")
     }
@@ -1640,6 +1860,15 @@ export async function startHttpServer(
                 "local daemon.",
             }),
           )
+          return
+        }
+
+        // P0 tunnel-auth gate — see `tunnelBearerAllowed`'s doc. Runs once,
+        // before any route dispatch, so no per-route mechanism below (Origin
+        // allowlist, widget embed token) can be mistaken for a substitute
+        // for the bearer once a request has crossed the network boundary.
+        if (!tunnelBearerAllowed(req, path, req.method ?? "GET")) {
+          rejectTunnelUnauthorized(res)
           return
         }
 
@@ -1725,6 +1954,7 @@ export async function startHttpServer(
             opts.provisionWorktree,
             opts.listCatalogModels,
             opts.resolveSandboxProvider,
+            opts.webhookNotifier,
           )
           if (handled) return
         }
@@ -1931,6 +2161,36 @@ export async function startHttpServer(
           const workspaceSlug = qs.get("workspaceSlug") ?? undefined
           const openOnly =
             qs.get("openOnly") === "1" || qs.get("openOnly") === "true"
+          // Transport twin of the tool's `sessionId`: just that session's
+          // worktree, computed alone.
+          const sessionRef = qs.get("sessionId")
+          if (sessionRef) {
+            const desc = opts.sessions?.findByIdOrName(sessionRef)
+            if (!desc) {
+              res.writeHead(404, { "content-type": "application/json" })
+              res.end(JSON.stringify({ error: "session_not_found" }))
+              return
+            }
+            const scope = sessionWorktreeScope(desc)
+            try {
+              const worktrees = scope
+                ? await opts.listWorktreeStatuses(scope.repoRoot, {
+                    paths: [scope.worktreePath],
+                  })
+                : []
+              res.writeHead(200, { "content-type": "application/json" })
+              res.end(JSON.stringify({ worktrees }))
+            } catch (err) {
+              res.writeHead(500, { "content-type": "application/json" })
+              res.end(
+                JSON.stringify({
+                  error: "worktree_status_failed",
+                  message: err instanceof Error ? err.message : String(err),
+                })
+              )
+            }
+            return
+          }
           const resolved = await resolveWorktreeQueryRoot({
             repoRoot: repoRoot ?? undefined,
             workspaceSlug: workspaceSlug ?? undefined,
@@ -2019,6 +2279,9 @@ export async function startHttpServer(
               // route is only reachable when a SessionsRegistry is wired
               // (`opts.sessions`, e.g. the /sessions family above).
               protectedPaths: opts.sessions ? livingSessionCwds(opts.sessions) : undefined,
+              ...("noisePaths" in obj && Array.isArray(obj.noisePaths)
+                ? { noisePaths: obj.noisePaths.filter((p): p is string => typeof p === "string") }
+                : {}),
             })
             res.writeHead(200, { "content-type": "application/json" })
             res.end(JSON.stringify(result))
@@ -2029,6 +2292,106 @@ export async function startHttpServer(
                 error: "worktree_gc_failed",
                 message: err instanceof Error ? err.message : String(err),
               })
+            )
+          }
+          return
+        }
+
+        if (path === "/branches/gc" && req.method === "POST") {
+          if (guardBrowserOrigin(req, res)) return
+          // Transport twin of the `branch_gc` MCP tool. DEFAULTS TO A DRY
+          // RUN — `apply` must be explicitly true, and then `scopes` too.
+          if (!opts.runBranchGc) {
+            res.writeHead(501, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "branch_gc_not_configured",
+                message:
+                  "POST /branches/gc is not enabled — the daemon was started " +
+                  "without a branch gc runner. The host must wire `runBranchGc` in createGateway.",
+              })
+            )
+            return
+          }
+          const body = await readJsonBody(req)
+          const obj: Record<string, unknown> =
+            typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {}
+          const str = (k: string): string | undefined => (typeof obj[k] === "string" ? (obj[k] as string) : undefined)
+          const bool = (k: string): boolean => obj[k] === true || obj[k] === "true"
+          const scopes = Array.isArray(obj.scopes)
+            ? obj.scopes.filter((x): x is BranchGcKind => x === "local" || x === "remote" || x === "orphan")
+            : undefined
+          const minAgeRaw = obj.minAgeDays
+          const minAgeDays =
+            typeof minAgeRaw === "number" ? minAgeRaw : typeof minAgeRaw === "string" && minAgeRaw.trim() !== "" ? Number(minAgeRaw) : undefined
+          const apply = bool("apply")
+          if (apply && !scopes?.length) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "scopes_required", message: "`apply: true` requires explicit `scopes`." }))
+            return
+          }
+          const resolved = await resolveWorktreeQueryRoot({ repoRoot: str("repoRoot"), workspaceSlug: str("workspaceSlug") })
+          if (!resolved.ok) {
+            res.writeHead(resolved.status, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: resolved.error }))
+            return
+          }
+          try {
+            const base = str("base")
+            const anchor = str("anchor")
+            const result = await opts.runBranchGc({
+              repoRoot: resolved.repoRoot,
+              apply,
+              includeReviewed: bool("includeReviewed"),
+              ...(base ? { base } : {}),
+              ...(scopes?.length ? { scopes } : {}),
+              ...(minAgeDays !== undefined && Number.isFinite(minAgeDays) ? { minAgeDays } : {}),
+              ...(anchor ? { anchor } : {}),
+            })
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify(result))
+          } catch (err) {
+            res.writeHead(500, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({ error: "branch_gc_failed", message: err instanceof Error ? err.message : String(err) })
+            )
+          }
+          return
+        }
+
+        if (path === "/branches/gc/verdict" && req.method === "POST") {
+          if (guardBrowserOrigin(req, res)) return
+          if (!opts.recordBranchGcVerdict) {
+            res.writeHead(501, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "branch_gc_verdict_not_configured",
+                message: "POST /branches/gc/verdict is not enabled — the host must wire `recordBranchGcVerdict`.",
+              })
+            )
+            return
+          }
+          const body = await readJsonBody(req)
+          const obj: Record<string, unknown> =
+            typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {}
+          const { repoRoot, workspaceSlug, ...verdict } = obj
+          const resolved = await resolveWorktreeQueryRoot({
+            repoRoot: typeof repoRoot === "string" ? repoRoot : undefined,
+            workspaceSlug: typeof workspaceSlug === "string" ? workspaceSlug : undefined,
+          })
+          if (!resolved.ok) {
+            res.writeHead(resolved.status, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: resolved.error }))
+            return
+          }
+          try {
+            const record = await opts.recordBranchGcVerdict({ repoRoot: resolved.repoRoot, verdict })
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify({ recorded: true, record }))
+          } catch (err) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({ error: "invalid_branch_verdict", message: err instanceof Error ? err.message : String(err) })
             )
           }
           return
@@ -2678,6 +3041,44 @@ export async function startHttpServer(
           }
           return
         }
+        if (authProfileMatch && req.method === "PATCH") {
+          const id = decodeURIComponent(authProfileMatch[1] ?? "")
+          const body = (await readJsonBody(req)) as {
+            label?: unknown
+            costBudget?: unknown
+          } | null
+          try {
+            const patch = {
+              ...(body && "label" in body ? { label: body.label as string | null } : {}),
+              ...(body && "costBudget" in body
+                ? { costBudget: body.costBudget as CostBudget | null }
+                : {}),
+            }
+            const updated = await updateAuthProfile(id, patch, defaultProfileProvisionDeps())
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify({ profile: updated }))
+          } catch (err) {
+            // updateAuthProfile throws the same AuthProfileValidationError
+            // for "unknown id" as for a bad field — split 404 from 400 on
+            // the message, same disambiguation used elsewhere in this file
+            // (e.g. the session-lookup routes above).
+            const message = err instanceof Error ? err.message : String(err)
+            const notFound = err instanceof AuthProfileValidationError && message.startsWith("no profile with id")
+            const status = notFound ? 404 : err instanceof AuthProfileValidationError ? 400 : 500
+            res.writeHead(status, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: notFound
+                  ? "not_found"
+                  : err instanceof AuthProfileValidationError
+                    ? "invalid_input"
+                    : "update_failed",
+                message,
+              }),
+            )
+          }
+          return
+        }
 
         // User presets are private saved spawn configurations. Keep this
         // deliberately distinct from `/presets` below, which is the static
@@ -2747,6 +3148,15 @@ export async function startHttpServer(
         // a TunnelRegistry. /tunnels, /tunnels/:id.
         if (opts.tunnels && path.startsWith("/tunnels")) {
           const handled = await handleTunnels(req, res, path, opts.tunnels)
+          if (handled) return
+        }
+
+        // Remote-control routes — the REST twin of the MCP remote_enable/
+        // remote_disable/remote_status tools, for `agentproto remote
+        // enable/disable/status`. Only registered when the gateway was
+        // built with a RemoteController.
+        if (opts.remote && path.startsWith("/remote")) {
+          const handled = await handleRemoteControl(req, res, path, opts.remote)
           if (handled) return
         }
 
@@ -2887,19 +3297,46 @@ export async function startHttpServer(
         // page's drive-by (the served UI itself is same-origin ⇒ loopback
         // ⇒ allowlisted) — except a proven trusted embedder's iframe nav
         // (vscode-webview://, app csp.frameDomains; see
-        // iframeEmbedOriginAllowed), authorize() gates the tunnel path by
-        // bearer.
+        // iframeEmbedOriginAllowed). `/tool-call` and `/external-blob` are
+        // additionally gated by `authorize()` for the tunnel path; the `/ui`
+        // GET itself is NOT — it's the P0 tunnel-auth gate's one static-shell
+        // exemption (`tunnelBearerAllowed`'s doc), so a phone can load the
+        // page before it has anywhere to put the bearer.
         if (opts.appRegistry && path.startsWith("/apps/")) {
-          const uiMatch = path.match(/^\/apps\/(.+)\/ui$/)
+          // Optional trailing slash: a basepath-mounted @tanstack/react-router
+          // app (session-chat) rewrites the address bar to ".../ui/" on first
+          // render regardless of `trailingSlash`, so a reload requests it.
+          // Scoped guardBrowserOrigin pass-through for proven trusted
+          // embedders (vscode-webview:// scheme, app-declared
+          // csp.frameDomains — origins a hostile web page cannot hold;
+          // see iframeEmbedOriginAllowed) and for holders of a valid
+          // per-boot widget embed token (`?et=` — an MCP-Apps host's
+          // opaque widget context passes no origin check; see
+          // iframeEmbedAllowed). Every other cross-origin browser request
+          // keeps taking the guard's 403, unchanged. Shared by the page
+          // and its assets route so the two can never drift apart.
+          const appUiShellBlocked = (appId: string): boolean =>
+            !iframeEmbedOriginAllowed(req, opts.appRegistry!.getApp(appId) ?? {}) &&
+            !isValidAppEmbedToken(requestEmbedToken(req)) &&
+            guardBrowserOrigin(req, res)
+          // Checked before the page route: its greedy appId group would
+          // otherwise swallow `…/ui/assets` as part of an appId.
+          const assetMatch = path.match(APP_UI_ASSET_RE)
+          if (assetMatch && req.method === "GET") {
+            const assetAppId = decodeURIComponent(assetMatch[1]!)
+            if (appUiShellBlocked(assetAppId)) return
+            await handleAppUiAsset(req, res, assetAppId, assetMatch[2]!, opts.appRegistry)
+            return
+          }
+          const uiMatch = path.match(APP_UI_PAGE_RE)
           if (uiMatch && req.method === "GET") {
-            const uiApp = opts.appRegistry.getApp(decodeURIComponent(uiMatch[1]!))
-            // Scoped guardBrowserOrigin pass-through for proven trusted
-            // embedders (vscode-webview:// scheme, app-declared
-            // csp.frameDomains — origins a hostile web page cannot hold;
-            // see iframeEmbedOriginAllowed). Every other cross-origin
-            // browser request keeps taking the guard's 403, unchanged.
-            if (!iframeEmbedOriginAllowed(req, uiApp ?? {}) && guardBrowserOrigin(req, res)) return
-            if (!authorize(req, res)) return
+            if (appUiShellBlocked(decodeURIComponent(uiMatch[1]!))) return
+            // No `authorize()` call here (unlike /tool-call and
+            // /external-blob below): this exact route is the P0 tunnel-auth
+            // gate's static-shell exemption (`tunnelBearerAllowed`'s doc) —
+            // the phone must be able to load the page before it has
+            // anywhere to put the bearer. `guardBrowserOrigin` above still
+            // blocks a non-allowlisted browser's drive-by.
             await handleAppUiPage(
               req,
               res,
@@ -2911,6 +3348,9 @@ export async function startHttpServer(
           }
           const toolCallMatch = path.match(/^\/apps\/(.+)\/tool-call$/)
           if (toolCallMatch && req.method === "POST") {
+            // The blob-frame widget path POSTs here from an opaque origin
+            // (`Origin: null`) with `?et=` — guardBrowserOrigin itself
+            // honours the token (embedTokenTrusted), no scoped bypass needed.
             if (guardBrowserOrigin(req, res)) return
             if (!authorize(req, res)) return
             await handleAppUiToolCall(
@@ -2995,6 +3435,20 @@ export async function startHttpServer(
     }
     if (!opts.sessions || opts.ptyEnabled !== true) {
       rejectUpgrade(socket, 501, "pty_not_configured")
+      return
+    }
+    // P0 tunnel-auth gate — see `tunnelBearerAllowed`'s doc. A WS upgrade
+    // can't send a normal 401 body, so this writes a raw HTTP rejection via
+    // `rejectUpgrade` (same as every other pre-upgrade check below).
+    if (!tunnelBearerAllowed(req, path, "GET")) {
+      rejectUpgrade(
+        socket,
+        401,
+        "tunnel_unauthorized",
+        "This daemon is in bearer mode and the request did not arrive on " +
+          "loopback. Present the tunnel bearer via ?token=<token> on the " +
+          "WebSocket URL (browsers can't set headers on a WS upgrade).",
+      )
       return
     }
     // Per-boot token gate, no loopback bypass — see comment on
@@ -3329,13 +3783,7 @@ function startAiUiMessageStream(opts: {
   map: (record: AgentprotoRawTranscriptRecord) => UIMessageChunk[]
 }): { finalize: () => void; disconnect: () => void; done: Promise<void> } {
   const { res } = opts
-  res.writeHead(200, {
-    "content-type": "text/event-stream",
-    "cache-control": "no-cache",
-    connection: "keep-alive",
-    "x-vercel-ai-ui-message-stream": "v1",
-    "x-accel-buffering": "no",
-  })
+  writeSseHead(res, { "x-vercel-ai-ui-message-stream": "v1" })
   // Unblocks `writeHead` (Node buffers it until the first write) so a session
   // with nothing new to replay doesn't hang the client — same `: connected`
   // convention `/events/stream` uses.
@@ -3489,6 +3937,41 @@ export function buildSpawnSessionHttpArgs(
     ...(maxCostUsdCap !== undefined ? maxCostUsdCap : {}),
     ...(costBudgetCap !== undefined ? { costBudget: costBudgetCap } : {}),
   }
+  // HTTP twins of the `agent_start` fields this mapper used to drop
+  // silently — built as a typed `Pick` for the same TS2590 reason as
+  // `spendCaps`. `commandSandbox` is pre-validated by the route
+  // (`invalidSpawnHttpField` → 400): a confinement request must never
+  // degrade to an unconfined spawn. Deliberately NOT mapped: `wait` (would
+  // hold the HTTP request open for the child's whole first turn; use
+  // `agentproto sessions wait`), and the daemon-derived `appId` /
+  // `autoParentSessionId`, which no caller may set.
+  const commandSandbox = parseCommandSandboxField(b.commandSandbox)
+  const skills = b.skills !== undefined ? parseSkillsField(b.skills) : undefined
+  const contextContinuity =
+    b.contextContinuity !== undefined
+      ? parseWithJsonTolerance(contextContinuityInputSchema, b.contextContinuity)
+      : undefined
+  const deferredTools = parseBooleanField(b.deferredTools)
+  const attach =
+    b.attach !== undefined ? parseWithJsonTolerance(attachFieldSchema, b.attach) : undefined
+  const notifyUrl = parseNotifyUrlField(b.notifyUrl)
+  const agentStartParity: Pick<
+    SpawnAgentSessionInput,
+    "commandSandbox" | "skills" | "contextContinuity" | "deferredTools" | "attach" | "notifyUrl"
+  > = {
+    ...(commandSandbox !== undefined ? { commandSandbox } : {}),
+    ...(skills !== undefined ? { skills } : {}),
+    ...(contextContinuity !== undefined ? { contextContinuity } : {}),
+    ...(deferredTools !== undefined ? { deferredTools } : {}),
+    ...(attach !== undefined ? { attach } : {}),
+    ...(notifyUrl !== undefined ? { notifyUrl } : {}),
+  }
+  // Per-session headless browser — the HTTP twin of the MCP `agent_start`
+  // tool's `browser` field (`true` is sugar for "headless"). Hoisted into a
+  // typed `Pick` for the same TS2590 reason as `spendCaps`.
+  const browser = parseBrowserMode(b.browser === true || b.browser === "true" ? "headless" : b.browser)
+  const browserField: Pick<SpawnAgentSessionInput, "browser"> =
+    browser !== undefined ? { browser } : {}
   return {
     adapter,
     ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
@@ -3536,6 +4019,9 @@ export function buildSpawnSessionHttpArgs(
       : {}),
     // Spend caps (parsed above) — see `spendCaps`.
     ...spendCaps,
+    // commandSandbox / skills / contextContinuity / deferredTools / attach /
+    // notifyUrl (parsed above) — see `agentStartParity`.
+    ...agentStartParity,
     ...(typeof b.prompt === "string" ? { prompt: b.prompt } : {}),
     ...(typeof b.label === "string" ? { label: b.label } : {}),
     // Explicit title override (SPEC-3 FIX C, `--title`) — wins over the
@@ -3575,6 +4061,7 @@ export function buildSpawnSessionHttpArgs(
       : {}),
     ...(typeof b.role === "string" && b.role.length > 0 ? { role: b.role } : {}),
     ...(typeof b.promptAppend === "string" ? { promptAppend: b.promptAppend } : {}),
+    ...browserField,
     ...(b.orchestrator !== undefined
       ? (() => {
           const parsed = parseOrchestratorField(b.orchestrator)
@@ -3764,8 +4251,10 @@ export function buildSpawnSessionHttpArgs(
  *                                    the MCP `terminal_input` verb. Body:
  *                                    { text, enter? (default true) }. 404 no
  *                                    session, 400 not a live PTY.
- *   DELETE /sessions/:id          → forget (drop from registry; only
- *                                    valid for exited/killed/error)
+ *   DELETE /sessions/:id          → forget (drop from registry); a live
+ *                                    session is killed first, same
+ *                                    teardown as /kill; returns
+ *                                    { ok, id, killed }
  *   POST   /sessions/gc           → bulk GC terminal sessions (session_gc's
  *                                    HTTP twin); body { olderThanDays?,
  *                                    forget? }; returns { mode, ids, count }
@@ -3836,7 +4325,8 @@ function parseWorktreeField(raw: unknown): WorktreeField | undefined {
  *  live 2026-09-13: every `POST /sessions/agent` mcpServers entry lost
  *  its Authorization header here, while the same payload through the MCP
  *  `agent_start` tool — whose zod schema keeps both fields — reached the
- *  agent authenticated). */
+ *  agent authenticated). Same rule for a `stdio` entry's `args`/`env`:
+ *  dropping them launches the bare command without its flags. */
 function parseMcpServersField(raw: unknown): AcpMcpServer[] | undefined {
   const value = typeof raw === "string" ? tryParseJson(raw) : raw
   if (!Array.isArray(value)) return undefined
@@ -3852,6 +4342,10 @@ function parseMcpServersField(raw: unknown): AcpMcpServer[] | undefined {
       ...(typeof o.ref === "string" ? { ref: o.ref } : {}),
       ...(isStringRecord(o.headers) ? { headers: o.headers } : {}),
       ...(typeof o.credentialRef === "string" ? { credentialRef: o.credentialRef } : {}),
+      ...(Array.isArray(o.args) && o.args.every(a => typeof a === "string")
+        ? { args: o.args as string[] }
+        : {}),
+      ...(isStringRecord(o.env) ? { env: o.env } : {}),
     })
   }
   return servers
@@ -4026,6 +4520,67 @@ function parseAppServeField(raw: unknown): SandboxAppServeSpec | undefined {
   return { dir, port: typeof port === "number" ? port : DEFAULT_APP_SERVE_PORT }
 }
 
+/** The `commandSandbox` body field — `"off" | "workspace" | "strict"`, the
+ *  same enum as `agent_start`. Anything else ⇒ undefined; the route rejects
+ *  that case first (`invalidSpawnHttpField`), so it never reaches a spawn. */
+function parseCommandSandboxField(raw: unknown): SandboxMode | undefined {
+  const parsed = commandSandboxSchema.safeParse(raw)
+  return parsed.success ? parsed.data : undefined
+}
+
+/** Body-level rejections for `POST /sessions/agent` / `POST /sessions/chat`,
+ *  checked before spawning. Only fields where silently dropping a bad value
+ *  would be unsafe land here — today just `commandSandbox`: a typo'd mode
+ *  would otherwise spawn the adapter unconfined while the caller believes
+ *  it's confined. Returns the 400 body, or undefined when the body is fine. */
+function invalidSpawnHttpField(
+  b: Record<string, unknown>,
+): { error: string; message: string } | undefined {
+  if (b.commandSandbox !== undefined && parseCommandSandboxField(b.commandSandbox) === undefined) {
+    return {
+      error: "invalid_command_sandbox",
+      message: `commandSandbox must be one of "off", "workspace", "strict" (got ${JSON.stringify(b.commandSandbox)}).`,
+    }
+  }
+  return undefined
+}
+
+/** Validate a body field against the SAME zod shape `agent_start` uses,
+ *  tolerating a JSON-stringified value like this route's other object
+ *  fields. A value that fails validation ⇒ undefined (dropped). */
+function parseWithJsonTolerance<T>(schema: ZodType<T>, raw: unknown): T | undefined {
+  const value = typeof raw === "string" ? tryParseJson(raw) ?? raw : raw
+  const parsed = schema.safeParse(value)
+  return parsed.success ? parsed.data : undefined
+}
+
+/** The `skills` body field — a string array, or a JSON-stringified one. */
+function parseSkillsField(raw: unknown): string[] | undefined {
+  const value = typeof raw === "string" ? tryParseJson(raw) : raw
+  if (!Array.isArray(value) || !value.every(s => typeof s === "string")) return undefined
+  return value
+}
+
+/** A boolean body field, tolerating `"true"`/`"false"` like `trace`. */
+function parseBooleanField(raw: unknown): boolean | undefined {
+  if (typeof raw === "boolean") return raw
+  if (raw === "true") return true
+  if (raw === "false") return false
+  return undefined
+}
+
+/** The `notifyUrl` body field — an absolute http(s) URL, as `agent_start`'s
+ *  `z.string().url()` requires. Anything else ⇒ undefined (dropped). */
+function parseNotifyUrlField(raw: unknown): string | undefined {
+  if (typeof raw !== "string" || raw.length === 0) return undefined
+  try {
+    const url = new URL(raw)
+    return url.protocol === "http:" || url.protocol === "https:" ? raw : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Reverse-map a cwd onto a registered workspace slug — the same rule
  * spawnAgentSession applies (session-spawn.ts), hoisted here so the terminal
@@ -4139,6 +4694,7 @@ async function handleSessions(
   provisionWorktree?: WorktreeProvisioner,
   listCatalogModels?: CatalogModelsLister,
   resolveSandboxProvider?: SpawnAgentSessionDeps["resolveSandboxProvider"],
+  webhookNotifier?: SpawnAgentSessionDeps["webhookNotifier"],
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -4154,34 +4710,88 @@ async function handleSessions(
     const includeArchived = params.get("includeArchived") === "true"
     const kindParam = params.get("kind")
     const includeCommands = params.get("includeCommands") === "true"
+    const sinceParam = params.get("since")
+    const matchesFilter = (s: SessionDescriptor): boolean => {
+      if (kindParam && kindParam !== "all") return s.kind === kindParam
+      return includeCommands || s.kind !== "command"
+    }
     let rows = registry.list({ includeArchived })
     // Same default-view semantics as the `session_list` MCP tool: a
     // `kind:"command"` row is a shell-execution LOG (already reachable via
     // `command_list` / `?kind=command`), not a resumable session, so it's
     // excluded from the default (unfiltered / `?kind=all`) view unless
     // `?includeCommands=true` opts into the union.
-    if (kindParam && kindParam !== "all") {
-      rows = rows.filter(s => s.kind === kindParam)
-    } else if (!includeCommands) {
-      rows = rows.filter(s => s.kind !== "command")
+    rows = rows.filter(matchesFilter)
+
+    let body: unknown
+    if (sinceParam !== null) {
+      const sinceMs = Date.parse(sinceParam)
+      if (Number.isNaN(sinceMs)) {
+        json(400, {
+          error: "invalid_since",
+          message: `?since must be an ISO-8601 timestamp, got ${JSON.stringify(sinceParam)}.`,
+        })
+        return true
+      }
+      // Delta view (deliverable 5): only rows that changed at/after `since`
+      // (by `lastActivityAt`, falling back to `startedAt` for a row that
+      // never bumped it) — the client keeps everything else from its held
+      // list. `removed` covers the one way a row leaves the default
+      // (`includeArchived=false`) view post-creation: `session_archive`.
+      // Descriptors don't carry an archival timestamp, so this reports
+      // every currently-archived id the caller's filter would otherwise
+      // match, on every delta request, rather than only newly-archived
+      // ones — still correct for a client reconciling a held list (removing
+      // an id it doesn't already have is a no-op), just not minimal.
+      const changed = rows.filter(s => {
+        const ts = Date.parse(s.lastActivityAt ?? s.startedAt)
+        return Number.isNaN(ts) || ts >= sinceMs
+      })
+      const removed = includeArchived
+        ? []
+        : registry
+            .list({ includeArchived: true })
+            .filter(s => s.archived && matchesFilter(s))
+            .map(s => s.id)
+      body = { sessions: changed.map(sessionDescriptorForHttp), removed }
+    } else {
+      body = { sessions: rows.map(sessionDescriptorForHttp) }
     }
-    json(200, { sessions: rows })
+
+    // Strong etag over the exact serialized body (app-ui-delivery.ts
+    // conventions) — changes whenever any listed session's status, busy,
+    // awaitingInput or lastActivityAt changes, since all four are part of
+    // the serialized descriptor. 304 short-circuits the body entirely on a
+    // match, letting a poller that hasn't changed skip re-sending ~173 KB.
+    const serialized = JSON.stringify(body)
+    const etag = strongEtag(serialized)
+    if (ifNoneMatchHits(req.headers["if-none-match"], etag)) {
+      res.writeHead(304, { etag, "content-type": "application/json" })
+      res.end()
+      return true
+    }
+    res.writeHead(200, { etag, "content-type": "application/json" })
+    res.end(serialized)
     return true
   }
 
   if (path === "/sessions/summaries" && req.method === "GET") {
     // Lightweight, paginated panel projection of list(). Query params:
     //   includeArchived=true  (default false)
+    //   lane=agents|auto      (default unfiltered)
     //   limit=N               (default 50, clamped to [1,200])
     //   offset=N              (default 0, min 0)
     const reqUrl = req.url ?? ""
     const queryString = reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : ""
     const params = new URLSearchParams(queryString)
     const includeArchived = params.get("includeArchived") === "true"
+    const laneParam = params.get("lane")
+    const lane = laneParam === "agents" || laneParam === "auto" ? laneParam : undefined
     const limit = Number.parseInt(params.get("limit") ?? "", 10)
     const offset = Number.parseInt(params.get("offset") ?? "", 10)
     const result = registry.listSummaries({
       includeArchived,
+      lane,
       limit: Number.isNaN(limit) ? undefined : limit,
       offset: Number.isNaN(offset) ? undefined : offset,
     })
@@ -4258,6 +4868,12 @@ async function handleSessions(
       json(400, { error: "missing_adapter" })
       return true
     }
+    const invalidSpawnField = invalidSpawnHttpField(b)
+    if (invalidSpawnField) {
+      json(400, invalidSpawnField)
+      return true
+    }
+    const spawnArgs = buildSpawnSessionHttpArgs(b, adapter, preset)
     const result = await spawnAgentSession(
       {
         registry,
@@ -4267,8 +4883,9 @@ async function handleSessions(
         ...(provisionWorktree ? { provisionWorktree } : {}),
         ...(listCatalogModels ? { listCatalogModels } : {}),
         ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
+        ...(webhookNotifier ? { webhookNotifier } : {}),
       },
-      buildSpawnSessionHttpArgs(b, adapter, preset),
+      spawnArgs,
     )
     if (!result.ok) {
       const status =
@@ -4281,9 +4898,11 @@ async function handleSessions(
                 result.code === "role_spawn_denied"
               ? 409
             : result.code === "invalid_role" ||
+                result.code === "browser_unsupported" ||
                 result.code === "worktree_requires_explicit_repo" ||
                 result.code === "access_profile_not_found" ||
-                result.code === "access_profile_ineligible"
+                result.code === "access_profile_ineligible" ||
+                result.code === "sandbox_cwd_invalid"
                 ? 400
                 : 500
       json(status, {
@@ -4294,7 +4913,7 @@ async function handleSessions(
       return true
     }
     json(201, {
-      ...result.descriptor,
+      ...sessionDescriptorForHttp(result.descriptor),
       ...(result.warnings ? { warnings: result.warnings } : {}),
       ...(result.deduped ? { deduped: true } : {}),
       ...(result.dedupeSource ? { dedupeSource: result.dedupeSource } : {}),
@@ -4347,6 +4966,12 @@ async function handleSessions(
       json(400, { error: "missing_adapter" })
       return true
     }
+    const invalidSpawnField = invalidSpawnHttpField(b)
+    if (invalidSpawnField) {
+      json(400, invalidSpawnField)
+      return true
+    }
+    const spawnArgs = buildSpawnSessionHttpArgs(b, adapter, preset)
     const result = await spawnAgentSession(
       {
         registry,
@@ -4356,8 +4981,9 @@ async function handleSessions(
         ...(provisionWorktree ? { provisionWorktree } : {}),
         ...(listCatalogModels ? { listCatalogModels } : {}),
         ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
+        ...(webhookNotifier ? { webhookNotifier } : {}),
       },
-      buildSpawnSessionHttpArgs(b, adapter, preset),
+      spawnArgs,
     )
     if (!result.ok) {
       const status =
@@ -4370,9 +4996,11 @@ async function handleSessions(
                 result.code === "role_spawn_denied"
               ? 409
               : result.code === "invalid_role" ||
+                  result.code === "browser_unsupported" ||
                   result.code === "worktree_requires_explicit_repo" ||
                   result.code === "access_profile_not_found" ||
-                  result.code === "access_profile_ineligible"
+                  result.code === "access_profile_ineligible" ||
+                  result.code === "sandbox_cwd_invalid"
                 ? 400
                 : 500
       json(status, {
@@ -4575,7 +5203,7 @@ async function handleSessions(
         ...(typeof b.name === "string" ? { name: b.name } : {}),
         ...(typeof b.label === "string" ? { label: b.label } : {}),
       })
-      json(201, desc)
+      json(201, sessionDescriptorForHttp(desc))
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       const status = msg.includes("already in use")
@@ -4768,6 +5396,125 @@ async function handleSessions(
     }
     return true
   }
+  // ── Typed session messages (AIP-46 §Session messages) ─────────────
+  // POST /sessions/:id/messages — send a message TO :id. The sender is the
+  // human operator (relation `human`) unless the trusted loopback
+  // `?callerSessionId=<id>` names a session, in which case the tree ACL
+  // applies exactly as for the `message_send` tool. The body can never set
+  // the sender.
+  const messagesMatch = path.match(/^\/sessions\/([^/]+)\/messages$/)
+  if (messagesMatch && req.method === "POST") {
+    const id = messagesMatch[1]
+    if (!id) return false
+    const recipient = registry.get(id)
+    if (!recipient) {
+      json(404, { error: "no_such_session", id })
+      return true
+    }
+    const b = ((await readJsonBody(req)) ?? {}) as Record<string, unknown>
+    if (b.from !== undefined) {
+      json(400, { error: "from_not_settable", message: "the daemon attests the sender" })
+      return true
+    }
+    if (typeof b.text !== "string" || b.text.length === 0) {
+      json(400, { error: "text_required" })
+      return true
+    }
+    if (b.kind !== undefined && !MESSAGE_KINDS.includes(b.kind as MessageKind)) {
+      json(400, { error: "invalid_kind", allowed: MESSAGE_KINDS })
+      return true
+    }
+    if (b.urgency !== undefined && !MESSAGE_URGENCIES.includes(b.urgency as MessageUrgency)) {
+      json(400, { error: "invalid_urgency", allowed: MESSAGE_URGENCIES })
+      return true
+    }
+    const reqUrl = req.url ?? ""
+    const callerId =
+      new URLSearchParams(reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "").get(
+        "callerSessionId",
+      ) ?? undefined
+    const sender = callerId ? registry.get(callerId) : undefined
+    if (callerId && !sender) {
+      json(404, { error: "no_such_caller", callerSessionId: callerId })
+      return true
+    }
+    const relation = resolveRelation(sender, recipient)
+    if (!isMessageAllowed(relation)) {
+      json(403, { error: "forbidden_recipient", id, callerSessionId: callerId })
+      return true
+    }
+    let msg
+    try {
+      msg = createSessionMessage({
+        to: id,
+        from: messageFrom(sender, relation),
+        text: b.text,
+        ...(b.kind !== undefined ? { kind: b.kind as MessageKind } : {}),
+        ...(b.urgency !== undefined ? { urgency: b.urgency as MessageUrgency } : {}),
+        ...(typeof b.replyTo === "string" ? { replyTo: b.replyTo } : {}),
+        ...(typeof b.correlationId === "string" ? { correlationId: b.correlationId } : {}),
+        ...(b.data && typeof b.data === "object" ? { data: b.data as Record<string, unknown> } : {}),
+      })
+    } catch (err) {
+      json(400, { error: "invalid_message", message: err instanceof Error ? err.message : String(err) })
+      return true
+    }
+    const provenance = sender ? `${relation}:${sender.id}` : "user"
+    try {
+      const r = await registry.sendMessage(msg, {
+        source: sender ? provenance : "user",
+        origin: provenance,
+        // A human operator keeps `interrupt` (AIP-46: hosts SHOULD NOT grant
+        // it to session senders by default — they get `steer` instead).
+        ...(!sender ? { allowInterrupt: true } : {}),
+      })
+      json(200, { ok: true, id, relation, ...r })
+    } catch (err) {
+      if (err instanceof SessionNotAliveError) {
+        json(409, { error: "session_not_alive", status: err.status })
+        return true
+      }
+      json(500, { error: "send_message_failed", message: err instanceof Error ? err.message : String(err) })
+    }
+    return true
+  }
+  // GET /sessions/:id/inbox — un-consumed messages, oldest first.
+  const inboxMatch = path.match(/^\/sessions\/([^/]+)\/inbox$/)
+  if (inboxMatch && req.method === "GET") {
+    const id = inboxMatch[1]
+    if (!id) return false
+    const inbox = registry.listInbox(id)
+    if (inbox === null) {
+      json(404, { error: "no_such_session", id })
+      return true
+    }
+    json(200, { ok: true, id, inbox })
+    return true
+  }
+  // POST /sessions/:id/inbox/ack — body `{ ids: string[] | "all" }`.
+  const inboxAckMatch = path.match(/^\/sessions\/([^/]+)\/inbox\/ack$/)
+  if (inboxAckMatch && req.method === "POST") {
+    const id = inboxAckMatch[1]
+    if (!id) return false
+    if (!registry.get(id)) {
+      json(404, { error: "no_such_session", id })
+      return true
+    }
+    const b = ((await readJsonBody(req)) ?? {}) as { ids?: unknown }
+    const ids =
+      b.ids === "all"
+        ? ("all" as const)
+        : Array.isArray(b.ids) && b.ids.every(x => typeof x === "string")
+          ? (b.ids as string[])
+          : undefined
+    if (!ids) {
+      json(400, { error: "ids_required", message: 'ids must be a string[] or "all"' })
+      return true
+    }
+    json(200, { ok: true, id, ...registry.ackInbox(id, ids) })
+    return true
+  }
+
   // Inspect the queue after the fact — GET /sessions/:id/queue returns the
   // ordered list (origin, preview, queuedAt, position). 0 = next to dispatch.
   const queueListMatch = path.match(/^\/sessions\/([^/]+)\/queue$/)
@@ -4971,7 +5718,7 @@ async function handleSessions(
         ...(listCatalogModels ? { listCatalogModels } : {}),
       })
       json(200, {
-        ...restarted.desc,
+        ...sessionDescriptorForHttp(restarted.desc),
         resumedFrom: restarted.resumedFrom,
         resumeVia: restarted.resumeVia,
         ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
@@ -5086,7 +5833,7 @@ async function handleSessions(
     }
     try {
       const desc = registry.renameSession(resolved.id, patch)
-      json(200, desc)
+      json(200, sessionDescriptorForHttp(desc))
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       json(msg.includes("no session") ? 404 : 500, { error: "rename_failed", message: msg })
@@ -5161,7 +5908,7 @@ async function handleSessions(
             : undefined,
         label: typeof b.label === "string" ? b.label : undefined,
       })
-      json(201, desc)
+      json(201, sessionDescriptorForHttp(desc))
     } catch (err) {
       json(500, {
         error: "spawn_failed",
@@ -5365,11 +6112,7 @@ async function handleSessions(
       throw err
     }
 
-    res.writeHead(200, {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache",
-      connection: "keep-alive",
-    })
+    writeSseHead(res)
     // Node buffers `writeHead` until the first `res.write` — without this,
     // a session with nothing new to replay would leave the client's
     // connection attempt hanging (no bytes at all) until the first live
@@ -5575,11 +6318,7 @@ async function handleSessions(
       json(404, { error: "session_not_found", id: rawIdOrName })
       return true
     }
-    res.writeHead(200, {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache",
-      connection: "keep-alive",
-    })
+    writeSseHead(res)
     // Keep-alive ping every 25s — proxies / browsers eventually
     // close idle SSE connections; the comment line keeps the pipe
     // warm without confusing the EventSource parser (it ignores
@@ -5678,13 +6417,16 @@ async function handleSessions(
       json(404, { error: "session_not_found", id: rawIdOrName })
       return true
     }
-    json(200, resolvedDesc)
+    json(200, sessionDescriptorForHttp(resolvedDesc))
     return true
   }
 
   if (!suffix && req.method === "DELETE") {
+    // A live session is killed first (the agent_kill teardown — whole
+    // adapter tree, browser sweep), then dropped; `killed` says which.
+    const killed = registry.kill(id)
     const ok = registry.forget(id)
-    json(ok ? 200 : 404, { ok, id })
+    json(ok ? 200 : 404, { ok, id, killed })
     return true
   }
 
@@ -5822,6 +6564,66 @@ async function handleTunnels(
       return true
     }
     json(200, { ok, tunnelId: rawIdOrName })
+    return true
+  }
+
+  return false
+}
+
+/**
+ * REST twin of the MCP `remote_enable` / `remote_disable` / `remote_status`
+ * tools (remote-tools.ts) — same `RemoteController` singleton, so the two
+ * surfaces can never disagree about whether a tunnel is up. Exists for
+ * `agentproto remote enable/disable/status`: unlike an MCP tool call, a CLI
+ * subcommand talking to an already-running daemon goes over REST, the same
+ * way `agentproto tunnel` / `agentproto sessions` do (see
+ * `_daemon-helpers.ts`'s `discoverDaemon`).
+ *
+ * No gate beyond what already applies to every route (the P0 tunnel-bearer
+ * gate for non-loopback traffic, `tunnelBearerAllowed`) — same trust model
+ * as `/tunnels`, which has none either: a loopback CLI caller is trusted,
+ * exactly as it is for `agent_start`/`file_write`/every other MCP tool.
+ */
+async function handleRemoteControl(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  controller: RemoteController,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (path === "/remote/status" && req.method === "GET") {
+    json(200, controller.status())
+    return true
+  }
+
+  if (path === "/remote/enable" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    const b: Record<string, unknown> =
+      typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {}
+    const input: EnableInput = {
+      ...(b.provider === "quick" ? { provider: "quick" as const } : {}),
+      ...(typeof b.targetPort === "number" ? { targetPort: b.targetPort } : {}),
+      ...(typeof b.targetHost === "string" ? { targetHost: b.targetHost } : {}),
+    }
+    try {
+      const result = await controller.enable(input)
+      json(200, result)
+    } catch (err) {
+      json(409, {
+        error: "remote_enable_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+    return true
+  }
+
+  if (path === "/remote/disable" && req.method === "POST") {
+    const result = await controller.disable()
+    json(200, result)
     return true
   }
 
@@ -6962,10 +7764,16 @@ async function handleProviderInbound(
  *  /apps/:appId/ui` (see `resolveBuiltinPanelUi`, builtin-apps.ts) rather
  *  than trusting its static snapshot's baked-in default port. Same "assume
  *  http, trust the Host header" shape the daemon already uses to build its
- *  own default origin (`http://127.0.0.1:${port}`, index.ts) — this is a
- *  loopback-bound daemon, not a public origin behind unknown TLS. */
-function requestHttpBaseUrl(req: IncomingMessage): string {
-  return `http://${req.headers.host ?? "127.0.0.1"}`
+ *  own default origin (`http://127.0.0.1:${port}`, index.ts) — BUT the
+ *  daemon is commonly reached through a reverse proxy or tunnel (cloudflared,
+ *  ngrok, a VS Code port-forward, …) that terminates TLS and forwards
+ *  plain HTTP inward, so `req.headers.host` alone would bake in the wrong
+ *  scheme. `AGENTPROTO_PUBLIC_HTTP_ORIGIN` lets the host pin the exact
+ *  public origin when it's known ahead of time (short-circuits everything
+ *  else); otherwise `X-Forwarded-Proto` is sniffed so a proxied `https`
+ *  front door doesn't get rewritten as `http` in the served page. */
+export function requestHttpBaseUrl(req: IncomingMessage): string {
+  return resolveRequestHttpBaseUrl(req.headers)
 }
 
 /** `GET /apps/:appId/ui` — an installed app's `ui.path` html, or (when
@@ -7014,44 +7822,161 @@ async function handleAppUiPage(
     res.end(JSON.stringify({ error: `app "${appId}" is not installed or has no UI.` }))
     return
   }
-  let raw: string
-  if (app?.ui) {
-    try {
-      raw = await readFile(app.ui.path, "utf8")
-    } catch (err) {
-      res.writeHead(500, { "content-type": "application/json" })
-      res.end(
-        JSON.stringify({
-          error: `could not read app "${appId}"'s ui html at "${app.ui.path}": ${err instanceof Error ? err.message : String(err)}`,
-        }),
-      )
-      return
-    }
-  } else {
-    raw = builtin!.html
-  }
+  const baseUrl = requestHttpBaseUrl(req)
   // `?embed=1` — the trusted-embedder opt-out (see doc above + the
   // `iframeEmbedAllowed` contract): the flag alone is attacker-controlled,
   // so the header flip additionally requires proof of a trusted embedder.
   const embedRequested =
     new URL(req.url ?? "/", "http://localhost").searchParams.get("embed") === "1"
+  const embedGranted = embedRequested && iframeEmbedAllowed(req, app ?? {})
+  // The served bytes are the file PLUS the injected bridge and base URL, so
+  // the cache key folds in the base URL and the etag hashes the final body.
+  // The frame-header decision rides in the etag's variant suffix: a 304 only
+  // revalidates a stored copy whose frame headers were decided the same way.
+  const variant = embedGranted ? "embed" : undefined
+  let rep: EncodedRepresentation
+  try {
+    if (app?.ui) {
+      const uiPath = app.ui.path
+      const st = await stat(uiPath)
+      rep = await appUiRepresentations.get(
+        `page\0${uiPath}\0${baseUrl}\0${variant ?? ""}`,
+        `${st.mtimeMs}:${st.size}`,
+        async () => appUiPageRepresentation(await readFile(uiPath, "utf8"), baseUrl, variant),
+      )
+    } else {
+      const html = builtin!.html
+      rep = await appUiRepresentations.get(
+        `builtin\0${appId}\0${baseUrl}\0${variant ?? ""}`,
+        html,
+        () => appUiPageRepresentation(html, baseUrl, variant),
+      )
+    }
+  } catch (err) {
+    res.writeHead(500, { "content-type": "application/json" })
+    res.end(
+      JSON.stringify({
+        error: `could not read app "${appId}"'s ui html at "${app?.ui?.path}": ${err instanceof Error ? err.message : String(err)}`,
+      }),
+    )
+    return
+  }
+  // `no-cache` + the strong etag: every open revalidates, an unchanged
+  // shell answers 304 instead of re-sending the whole document.
   const headers: Record<string, string> = {
     "content-type": "text/html; charset=utf-8",
-    "cache-control": "no-store",
+    "cache-control": "no-cache",
   }
   // No builtin covered here declares `csp.frameDomains` (only the
   // session-chat widget does, and it's excluded from `resolveBuiltinPanelUi`
   // — see that function's doc), so `app ?? {}` degrades a builtin to
   // "embeddable only from the daemon's own origin / a proven vscode-webview",
-  // same as an installed app with no `csp.frameDomains` declared.
-  if (!(embedRequested && iframeEmbedAllowed(req, app ?? {}))) {
+  // same as an installed app with no `csp.frameDomains` declared. MCP-Apps
+  // widget contexts (Claude Desktop's sandboxed opaque iframe, …) can pass
+  // NO origin check — the per-boot embed token (`?et=`, iframeEmbedAllowed)
+  // is their proof, and a refusal now says which gate fired.
+  if (!embedGranted) {
     headers["content-security-policy"] = `frame-ancestors 'self' ${frameAncestors.join(" ")}`.trimEnd()
     if (frameAncestors.length === 0) {
       headers["x-frame-options"] = "SAMEORIGIN"
     }
+    // A valid token with a non-iframe sec-fetch-dest is the session-chat
+    // widget's blob pass-through FETCHING the html to re-mount it as a
+    // blob: document (panel.ts mountBlob) — frame headers are moot for a
+    // fetched body, so that isn't a refusal worth logging.
+    if (embedRequested && !isValidAppEmbedToken(requestEmbedToken(req))) {
+      // Observability: a widget embed that still gets refused names the
+      // blocking gate right where the operator can see it — missing
+      // Origin/Referer (opaque widget context with no/stale token), or a
+      // sec-fetch-dest that isn't an iframe at all.
+      console.warn(
+        `[app-ui] embed refused for "${appId}": ` +
+          JSON.stringify({
+            secFetchDest: req.headers["sec-fetch-dest"] ?? null,
+            origin: req.headers.origin ?? null,
+            referer: req.headers.referer ?? null,
+            embedToken: requestEmbedToken(req) != null,
+          }),
+      )
+    }
   }
-  res.writeHead(200, headers)
-  res.end(injectStandaloneAppBridge(raw))
+  sendRepresentation(req, res, rep, headers)
+}
+
+/** `GET /apps/:appId/ui` — the page route. `(.+)` (not `[^/]+`): appIds are
+ *  `@scope/name`, so both the literal-slash and the %2F-encoded spelling
+ *  route; optional trailing slash for a basepath-mounted SPA's reload. */
+const APP_UI_PAGE_RE = /^\/apps\/(.+)\/ui\/?$/
+/** `GET /apps/:appId/ui/assets/:file` — `:file` is captured raw and
+ *  validated by `isValidAppUiAssetName` (a bad name is a 404, never a path). */
+const APP_UI_ASSET_RE = /^\/apps\/(.+?)\/ui\/assets\/([^/]*)$/
+
+/** The app-UI static shell: the page, and its assets with a valid flat file
+ *  name. The ONE predicate the tunnel-auth exemption consults
+ *  (`tunnelBearerAllowed`) — everything under it (tool-call, external-blob,
+ *  a malformed asset path) stays gated. */
+function isAppUiShellRequest(method: string, path: string): boolean {
+  if (method !== "GET") return false
+  if (APP_UI_PAGE_RE.test(path)) return true
+  const asset = path.match(APP_UI_ASSET_RE)
+  return asset !== null && isValidAppUiAssetName(asset[2]!)
+}
+
+/** Encoded page representations and asset bodies, keyed per path (+ base
+ *  URL for pages) and stamped by mtime + size — see app-ui-delivery.ts. */
+const appUiRepresentations = createRepresentationCache(64)
+
+function appUiPageRepresentation(
+  raw: string,
+  baseUrl: string,
+  variant: string | undefined,
+): EncodedRepresentation {
+  const body = Buffer.from(injectStandaloneAppBridge(raw, baseUrl), "utf8")
+  return createEncodedRepresentation(body, { compressible: true, etag: strongEtag(body, variant) })
+}
+
+/** `GET /apps/:appId/ui/assets/:file` — a flat file from the directory
+ *  holding the app's `ui.path` html (`<app>/.agentproto/ui/assets/` for the
+ *  conventional layout), for a split Vite build's hashed chunks. Gated
+ *  exactly like the page (same guard, same tunnel exemption). `:file` must
+ *  pass `isValidAppUiAssetName` and the resolved real path must stay inside
+ *  the assets dir (symlink escape); anything else is a 404. Builtin panels
+ *  ship single-file html, so they have no assets. */
+async function handleAppUiAsset(
+  req: IncomingMessage,
+  res: ServerResponse,
+  appId: string,
+  file: string,
+  appRegistry: AppRegistry,
+): Promise<void> {
+  const notFound = (): void => {
+    res.writeHead(404, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "not_found" }))
+  }
+  const app = appRegistry.getApp(appId)
+  if (!app?.ui || !isValidAppUiAssetName(file)) return notFound()
+  const assetsDir = join(dirname(app.ui.path), "assets")
+  let target: string
+  let st: Awaited<ReturnType<typeof stat>>
+  try {
+    const [realDir, realTarget] = await Promise.all([realpath(assetsDir), realpath(join(assetsDir, file))])
+    if (!realTarget.startsWith(realDir + sep)) return notFound()
+    target = realTarget
+    st = await stat(target)
+  } catch {
+    return notFound()
+  }
+  if (!st.isFile()) return notFound()
+  const contentType = appUiContentType(extname(target))
+  const rep = await appUiRepresentations.get(`asset\0${target}`, `${st.mtimeMs}:${st.size}`, async () =>
+    createEncodedRepresentation(await readFile(target), {
+      compressible: isCompressibleContentType(contentType),
+    }),
+  )
+  sendRepresentation(req, res, rep, {
+    "content-type": contentType,
+    "cache-control": IMMUTABLE_CACHE_CONTROL,
+  })
 }
 
 /** Trusted-embedder proof for the `?embed=1` header flip on
@@ -7078,6 +8003,12 @@ function iframeEmbedAllowed(
   const secFetchDest = req.headers["sec-fetch-dest"]
   if (secFetchDest !== undefined && secFetchDest !== "iframe") return false
 
+  // MCP-Apps widget contexts (Claude Desktop's sandboxed opaque iframe, …)
+  // can pass NO origin check — the per-boot embed token (embed-tokens.ts),
+  // baked into the panel's own resource and appended to the frame URL by the
+  // panel bridge, is the third proof alongside the origin checks below.
+  if (isValidAppEmbedToken(requestEmbedToken(req))) return true
+
   const origin = typeof req.headers.origin === "string" && req.headers.origin.length > 0 ? req.headers.origin : null
   const referer = typeof req.headers.referer === "string" && req.headers.referer.length > 0 ? req.headers.referer : null
   if (!origin && !referer) return false
@@ -7100,6 +8031,15 @@ function iframeEmbedAllowed(
     if ((app.ui?.csp?.frameDomains ?? []).includes(candidate)) return true
   }
   return false
+}
+
+/** The `et` embed token carried by a request url, or null. */
+function requestEmbedToken(req: IncomingMessage): string | null {
+  try {
+    return new URL(req.url ?? "/", "http://localhost").searchParams.get("et")
+  } catch {
+    return null
+  }
 }
 
 /** The origin half of `iframeEmbedAllowed`, WITHOUT the `sec-fetch-dest`

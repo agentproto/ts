@@ -12,8 +12,13 @@ import {
   IDENTITY_VERSION,
 } from "../index.js"
 import { sealKeyId } from "../../seal/index.js"
+import { nodeCryptoProvider } from "../../crypto/node.js"
+import { webCryptoProvider } from "../../crypto/webcrypto.js"
 
-describe("@agentproto/secrets/identity", () => {
+describe.each([
+  ["node", nodeCryptoProvider],
+  ["webcrypto", webCryptoProvider],
+])("@agentproto/secrets/identity (%s)", (_name, c) => {
   let dir: string
   beforeEach(async () => {
     dir = await mkdtemp(join(tmpdir(), "agentproto-identity-"))
@@ -22,8 +27,8 @@ describe("@agentproto/secrets/identity", () => {
     await rm(dir, { recursive: true, force: true })
   })
 
-  it("generates a versioned identity with both keypairs", () => {
-    const id = generateIdentity()
+  it("generates a versioned identity with both keypairs", async () => {
+    const id = await generateIdentity(c)
     expect(id.v).toBe(IDENTITY_VERSION)
     expect(typeof id.x25519.pub).toBe("string")
     expect(typeof id.x25519.priv).toBe("string")
@@ -34,23 +39,23 @@ describe("@agentproto/secrets/identity", () => {
     expect(id.x25519.pub).not.toBe(id.ed25519.pub)
   })
 
-  it("each generated identity is unique", () => {
-    const a = generateIdentity()
-    const b = generateIdentity()
+  it("each generated identity is unique", async () => {
+    const a = await generateIdentity(c)
+    const b = await generateIdentity(c)
     expect(a.x25519.priv).not.toBe(b.x25519.priv)
     expect(a.ed25519.priv).not.toBe(b.ed25519.priv)
   })
 
-  it("fingerprint matches the sealKeyId construction and is stable", () => {
-    const id = generateIdentity()
-    const fp = identityFingerprint(id.x25519.pub)
+  it("fingerprint matches the sealKeyId construction and is stable", async () => {
+    const id = await generateIdentity(c)
+    const fp = await identityFingerprint(id.x25519.pub, c)
     expect(fp).toHaveLength(16)
     expect(fp).toMatch(/^[0-9a-f]{16}$/)
     // Same construction as the seal key id — a daemon's fingerprint is its
     // x25519 seal-key id.
-    expect(fp).toBe(sealKeyId(id.x25519.pub))
+    expect(fp).toBe(await sealKeyId(id.x25519.pub, c))
     // Deterministic in the public key.
-    expect(identityFingerprint(id.x25519.pub)).toBe(fp)
+    expect(await identityFingerprint(id.x25519.pub, c)).toBe(fp)
   })
 
   it("loadOrCreateIdentity creates, persists 0600, and reloads identically", async () => {
@@ -91,36 +96,36 @@ describe("@agentproto/secrets/identity", () => {
     await expect(loadOrCreateIdentity(file)).rejects.toBeInstanceOf(IdentityError)
   })
 
-  it("sign/verify round-trips a transcript", () => {
-    const id = generateIdentity()
+  it("sign/verify round-trips a transcript", async () => {
+    const id = await generateIdentity(c)
     const transcript = new Uint8Array([1, 2, 3, 4, 5])
-    const sig = signTranscript(id.ed25519.priv, transcript)
-    expect(verifyTranscript(id.ed25519.pub, transcript, sig)).toBe(true)
+    const sig = await signTranscript(id.ed25519.priv, transcript, c)
+    expect(await verifyTranscript(id.ed25519.pub, transcript, sig, c)).toBe(true)
   })
 
-  it("verify rejects a tampered transcript", () => {
-    const id = generateIdentity()
+  it("verify rejects a tampered transcript", async () => {
+    const id = await generateIdentity(c)
     const transcript = new Uint8Array([1, 2, 3, 4, 5])
-    const sig = signTranscript(id.ed25519.priv, transcript)
+    const sig = await signTranscript(id.ed25519.priv, transcript, c)
     const tampered = new Uint8Array([1, 2, 3, 4, 6])
-    expect(verifyTranscript(id.ed25519.pub, tampered, sig)).toBe(false)
+    expect(await verifyTranscript(id.ed25519.pub, tampered, sig, c)).toBe(false)
   })
 
-  it("verify rejects a signature from a different key", () => {
-    const a = generateIdentity()
-    const b = generateIdentity()
+  it("verify rejects a signature from a different key", async () => {
+    const a = await generateIdentity(c)
+    const b = await generateIdentity(c)
     const transcript = new Uint8Array([9, 9, 9])
-    const sig = signTranscript(a.ed25519.priv, transcript)
-    expect(verifyTranscript(b.ed25519.pub, transcript, sig)).toBe(false)
+    const sig = await signTranscript(a.ed25519.priv, transcript, c)
+    expect(await verifyTranscript(b.ed25519.pub, transcript, sig, c)).toBe(false)
   })
 
-  it("verify returns false (not throw) on a garbage signature", () => {
-    const id = generateIdentity()
+  it("verify returns false (not throw) on a garbage signature", async () => {
+    const id = await generateIdentity(c)
     const transcript = new Uint8Array([1, 2, 3])
-    expect(verifyTranscript(id.ed25519.pub, transcript, "not-base64-sig!!")).toBe(false)
+    expect(await verifyTranscript(id.ed25519.pub, transcript, "not-base64-sig!!", c)).toBe(false)
   })
 
-  it("sign throws IdentityError on an invalid private key", () => {
-    expect(() => signTranscript("not-a-key", new Uint8Array([1]))).toThrow(IdentityError)
+  it("sign throws IdentityError on an invalid private key", async () => {
+    await expect(signTranscript("not-a-key", new Uint8Array([1]), c)).rejects.toThrow(IdentityError)
   })
 })

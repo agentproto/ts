@@ -42,6 +42,7 @@ import { discoverAdapterPackages } from "@agentproto/provider-kit"
 import { resolveAdapter } from "../registry/resolve.js"
 
 import {
+  type AdapterSkillsTarget,
   type InstallAction,
   type InstallOpts,
   type SkillInfo,
@@ -289,29 +290,50 @@ async function installOne(
 
 // ── fan-out path (new default when no --target is given) ────────────────
 
-async function runFanOut(skills: SkillInfo[], runOpts: RunOpts): Promise<number> {
+/** One installed adapter that opts into skill fan-out via `metadata.skills`. */
+export interface SkillFanOutTarget {
+  slug: string
+  target: AdapterSkillsTarget
+}
+
+/**
+ * The fan-out target resolution: every installed adapter package whose
+ * `metadata.skills` declares a skills target. Read-only (discovers + imports
+ * adapter packages, touches nothing) — shared by the install fan-out and the
+ * `agentproto doctor` skills check.
+ */
+export async function resolveSkillFanOutTargets(): Promise<{
+  targets: SkillFanOutTarget[]
+  skipped: string[]
+}> {
   const discovered = await discoverAdapterPackages()
-
-  const actions: InstallAction[] = []
-  const skippedNotes: string[] = []
-  let installedAnywhere = false
-
+  const targets: SkillFanOutTarget[] = []
+  const skipped: string[] = []
   for (const { slug } of discovered) {
     let skillsTarget: unknown
     try {
       const resolved = await resolveAdapter(slug)
       skillsTarget = resolved.handle.metadata?.skills
     } catch {
-      skippedNotes.push(`  (skip) ${slug}: adapter package not importable`)
+      skipped.push(`  (skip) ${slug}: adapter package not importable`)
       continue
     }
-
     if (!isAdapterSkillsTarget(skillsTarget)) {
-      skippedNotes.push(`  (skip) ${slug}: no skills metadata declared`)
+      skipped.push(`  (skip) ${slug}: no skills metadata declared`)
       continue
     }
+    targets.push({ slug, target: skillsTarget })
+  }
+  return { targets, skipped }
+}
 
-    installedAnywhere = true
+async function runFanOut(skills: SkillInfo[], runOpts: RunOpts): Promise<number> {
+  const { targets, skipped: skippedNotes } = await resolveSkillFanOutTargets()
+
+  const actions: InstallAction[] = []
+  const installedAnywhere = targets.length > 0
+
+  for (const { slug, target: skillsTarget } of targets) {
 
     if (skillsTarget.format === "flat-dir") {
       const dir = expandHome(skillsTarget.dir ?? "")

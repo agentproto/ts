@@ -427,6 +427,11 @@ export type WebviewMessage =
    */
   | { type: "openLink"; kind: "external" | "file"; target: string; line?: number }
   /**
+   * The user clicked the outcome card's "parent" link — open that session's
+   * transcript. Only the id crosses; the host resolves it.
+   */
+  | { type: "openSession"; sessionId: string }
+  /**
    * The user clicked an option in a permission-ask (clarify / agent-question)
    * block. Carries `toolCallId` (to correlate with the pending permission),
    * `decision` and the chosen `optionId` so the host can call
@@ -486,6 +491,8 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
         typeof m.target === "string" &&
         (m.line === undefined || typeof m.line === "number")
       )
+    case "openSession":
+      return typeof m.sessionId === "string" && m.sessionId.length > 0
     case "resolveQuestion":
       return (
         (m.decision === "approve" || m.decision === "deny") &&

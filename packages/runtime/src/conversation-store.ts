@@ -77,6 +77,14 @@ export interface ConversationStore {
   /** argv that attaches a NATIVE PTY to an existing conversation.
    *  Omitted ⇒ this provider has no native attach path. */
   attachArgv?(conversationId: string): string[]
+  /** Absolute path of the conversation's on-disk transcript, when the
+   *  provider's own resume command also accepts a path in place of a bare
+   *  id (claude-code: `claude --resume /abs/….jsonl`, which works from any
+   *  directory and does not depend on the project-slug folder). Pure path
+   *  arithmetic — never stats the file; callers check existence. Omitted
+   *  for providers whose resume takes ids only (hermes). `configDir` has
+   *  the same semantics as `DiscoverInput.configDir`. */
+  transcriptPath?(cwd: string, conversationId: string, configDir?: string): string
   /** The env var `attachArgv`'s spawned PTY reads to find its conversation
    *  store, when the store is keyed off a per-session isolated config dir
    *  (`DiscoverInput.configDir`'s doc — today only claude-code's
@@ -185,6 +193,12 @@ function extractFirstText(content: unknown): string | undefined {
   return undefined
 }
 
+/** Claude records local slash-command bookkeeping as user messages. They are
+ * not the user's prompt and must not become the session's title. */
+function isClaudeControlText(text: string): boolean {
+  return /^<(?:local-command-caveat|local-command-stdout|command-name|task-notification)>/i.test(text)
+}
+
 /** Light line-scan for candidate metadata — NOT the full transcript parser
  *  (that's exportClaudeCodeSession). Streams the file so large jsonl files
  *  don't get pulled fully into memory. */
@@ -225,7 +239,7 @@ async function scanClaudeJsonl(filePath: string): Promise<{
       messageCount += 1
       if (preview === undefined && entry.type === "user") {
         const text = extractFirstText(entry.message?.content)
-        if (text !== undefined) {
+        if (text !== undefined && !isClaudeControlText(text)) {
           preview = text.length > 120 ? text.slice(0, 120) : text
         }
       }
@@ -427,6 +441,8 @@ export const CONVERSATION_STORES: Record<string, ConversationStore> = {
     // (default). Example: `claude --resume 0e483f81-1a44-4bec-9667-b37158450296`
     outputHint: /claude\s+--resume\s+([0-9a-f-]{8,})/i,
     attachArgv: (conversationId: string) => ["claude", "--resume", conversationId],
+    transcriptPath: (cwd: string, conversationId: string, configDir?: string) =>
+      join(claudeCodeProjectDir(cwd, configDir), `${conversationId}.jsonl`),
     configDirEnvVar: "CLAUDE_CONFIG_DIR",
     discover: discoverClaudeCode,
     read: readClaudeCode,
@@ -451,6 +467,9 @@ export const CONVERSATION_STORES: Record<string, ConversationStore> = {
   },
   opencode: {
     storeAs: "openCodeResumeId",
+    // Match the adapter's portable npx installation: a direct `opencode`
+    // binary is not guaranteed to be on the daemon's PATH on every host.
+    attachArgv: (conversationId: string) => ["npx", "-y", "opencode-ai", "-s", conversationId],
     discover: discoverOpenCode,
     read: readOpenCode,
   },
@@ -504,4 +523,109 @@ export const NATIVE_LAUNCH_ARGV: Record<string, string[]> = {
   "qwen-code": ["qwen"],
   "mistral-vibe": ["vibe"],
   "kimi-cli": ["kimi"],
+}
+
+/**
+ * Direct-installed binaries that ARE the same TUI as an npx launch arm,
+ * keyed by slug. The npm package behind `npx -y <pkg>` often installs a
+ * different bin name (opencode-ai → `opencode`), so a PATH entry appears
+ * inargv as the bare bin, not the npx spec. Keep npx compatibility — the
+ * NATIVE_LAUNCH_ARGV npx forms keep matching the full npx argv; this table
+ * only adds the bare-binary arm.
+ */
+const BARE_LAUNCH_BINS: Record<string, readonly string[]> = {
+  opencode: ["opencode"],
+  mastracode: ["mastracode"],
+}
+
+// ── Conversation-terminal classification ───────────────────────────────
+//
+// A native provider TUI in a PTY (claude, hermes, grok, …) is a
+// CONVERSATION the operator happens to be driving through a terminal —
+// trackable in the Sessions list, linkable to its native transcript,
+// switchable to the ACP harness. A plain shell (`bash`, `zsh`, one-shot
+// `bash -lc …`) is none of those and stays Activity-only. This is the ONE
+// shared classifier for that split — the runtime owns it (sessions.ts's
+// list/lane/link paths) and the VS Code extension imports it; do not copy
+// the table client-side.
+
+/** The descriptor fields classification reads. A full `SessionDescriptor`
+ *  or `SessionSummary` satisfies this structurally. */
+export interface ConversationTerminalSubject {
+  kind?: string
+  adapterSlug?: string
+  argv?: readonly string[]
+  resumeMetadata?: Record<string, string>
+}
+
+/** Every `resumeMetadata` key any conversation store records under —
+ *  presence of one on a PTY row is proof it holds a provider conversation
+ *  (the graceful-exit sniffer or the link probe put it there). */
+const CONVERSATION_RESUME_KEYS: ReadonlySet<string> = new Set(
+  Object.values(CONVERSATION_STORES).map(s => s.storeAs),
+)
+
+function argvBasename(path: string): string {
+  const idx = path.lastIndexOf("/")
+  return idx === -1 ? path : path.slice(idx + 1)
+}
+
+/**
+ * The adapter/store slug a terminal's argv (or stamped `adapterSlug`) maps
+ * to, or `undefined` for anything that isn't a known provider TUI. Matches:
+ *   - a stamped `adapterSlug` that is a `CONVERSATION_STORES` /
+ *     `NATIVE_LAUNCH_ARGV` key;
+ *   - argv[0]'s basename against each launch table entry's own binary
+ *     (`claude` → `claude-code`, `grok` → `grok-cli`, …);
+ *   - an npx-launched TUI only when the FULL npx launch argv is a prefix
+ *     of the session's argv (`npx -y opencode-ai …` → `opencode`) — a bare
+ *     `npx` running anything else is not a conversation;
+ *   - a direct-installed TUI binary from `BARE_LAUNCH_BINS` (bare
+ *     `opencode` / `mastracode` on PATH) — same terminal as the npx arm.
+ * The returned slug may have no `CONVERSATION_STORES` entry yet (grok):
+ * classifiable and trackable, but no transcript to link or read.
+ */
+export function conversationTerminalSlugFor(
+  subject: Pick<ConversationTerminalSubject, "adapterSlug" | "argv">,
+): string | undefined {
+  if (
+    subject.adapterSlug &&
+    (CONVERSATION_STORES[subject.adapterSlug] || NATIVE_LAUNCH_ARGV[subject.adapterSlug])
+  ) {
+    return subject.adapterSlug
+  }
+  const argv = subject.argv
+  if (!argv || argv.length === 0 || !argv[0]) return undefined
+  const bin = argvBasename(argv[0])
+  for (const [slug, bins] of Object.entries(BARE_LAUNCH_BINS)) {
+    if (bins.some(b => argvBasename(b) === bin)) return slug
+  }
+  for (const [slug, launch] of Object.entries(NATIVE_LAUNCH_ARGV)) {
+    const launchBin = launch[0]
+    if (!launchBin || argvBasename(launchBin) !== bin) continue
+    if (launchBin === "npx") {
+      if (launch.every((arg, i) => argv[i] === arg)) return slug
+      continue
+    }
+    return slug
+  }
+  return undefined
+}
+
+/**
+ * True when this PTY row is a provider TUI we can treat as a conversation:
+ * a known native launch/store binary or slug, OR a resume id one of the
+ * conversation stores already recorded on it. False for plain shells and
+ * for `kind === "command"` — those stay in the Activity panel only.
+ */
+export function isConversationTerminal(subject: ConversationTerminalSubject): boolean {
+  if (subject.kind !== "terminal") return false
+  if (conversationTerminalSlugFor(subject) !== undefined) return true
+  const meta = subject.resumeMetadata
+  if (meta) {
+    for (const key of CONVERSATION_RESUME_KEYS) {
+      if (meta[key]) return true
+    }
+  }
+  return false
 }

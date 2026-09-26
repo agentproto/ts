@@ -20,13 +20,18 @@ beforeEach(() => {
   vi.mocked(readFile).mockReset()
 })
 
+/** Wraps a payload the way a real MCP `tools/call` result does — a JSON text
+ *  content block, no `structuredContent` — matching what agentpush's server
+ *  actually returns (confirmed against the live `send_message` response). */
+function mcpTextResult(payload: unknown): ProxyCallOutcome {
+  return { ok: true, result: { content: [{ type: "text", text: JSON.stringify(payload) }] } }
+}
+
 describe("sendOutbound", () => {
-  it("agentpush calls send_message and returns providerMessageId", async () => {
+  it("agentpush calls send_message and returns providerMessageId from a sent status", async () => {
     const callTool = vi.fn(
-      async (): Promise<ProxyCallOutcome> => ({
-        ok: true,
-        result: { messageId: "msg-123" },
-      }),
+      async (): Promise<ProxyCallOutcome> =>
+        mcpTextResult({ status: "sent", message_id: "msg-123" }),
     )
     const mcpProxy = { callTool } as unknown as McpProxyRegistry
 
@@ -41,6 +46,51 @@ describe("sendOutbound", () => {
       content: { text: "hello" },
     })
     expect(result).toEqual({ ok: true, providerMessageId: "msg-123" })
+  })
+
+  it("agentpush surfaces a blocked status as a failure with blocked_reason/suggestion, not sent:true", async () => {
+    // The exact body agentpush returned (HTTP 200) for a WhatsApp send outside
+    // the 24h session window — proven in prod 2026-09-17.
+    const callTool = vi.fn(
+      async (): Promise<ProxyCallOutcome> =>
+        mcpTextResult({
+          status: "blocked",
+          blocked_reason: "session_expired",
+          suggestion:
+            "La fenêtre de session WhatsApp 24h est expirée ou absente. Utilisez un template approuvé pour initier la conversation.",
+        }),
+    )
+    const mcpProxy = { callTool } as unknown as McpProxyRegistry
+
+    const result = await sendOutbound(
+      "agentpush",
+      { alias: "agentpush-prod", source: "whatsapp", contactRef: "+33679942048", text: "hello" },
+      { mcpProxy },
+    )
+
+    expect(result).toEqual({
+      ok: false,
+      error: "session_expired",
+      blockedReason: "session_expired",
+      suggestion:
+        "La fenêtre de session WhatsApp 24h est expirée ou absente. Utilisez un template approuvé pour initier la conversation.",
+    })
+  })
+
+  it("agentpush surfaces a failed status as a failure, not sent:true", async () => {
+    const callTool = vi.fn(
+      async (): Promise<ProxyCallOutcome> =>
+        mcpTextResult({ status: "failed", error: "provider_rejected" }),
+    )
+    const mcpProxy = { callTool } as unknown as McpProxyRegistry
+
+    const result = await sendOutbound(
+      "agentpush",
+      { alias: "agentpush", source: "whatsapp", contactRef: "alice", text: "hello" },
+      { mcpProxy },
+    )
+
+    expect(result).toEqual({ ok: false, error: "provider_rejected" })
   })
 
   it("agentpush returns error when alias is missing", async () => {
@@ -167,6 +217,32 @@ describe("sendOutbound", () => {
     vi.unstubAllGlobals()
   })
 
+  it("telegram returns error when the API replies HTTP 200 with ok:false", async () => {
+    // Telegram's own docs: for backward compatibility some errors are
+    // returned with HTTP 200 and `ok: false` in the body rather than a
+    // non-2xx status — the same false-positive class as agentpush's
+    // `status: "blocked"`. A 200 alone must not be read as sent:true.
+    const globalFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: false, error_code: 400, description: "Bad Request: chat not found" }),
+    } as unknown as Response)
+    vi.stubGlobal("fetch", globalFetch)
+
+    const telegramCreds = makeMockTelegramCreds({ token: "bot-token-123" })
+    const mcpProxy = { callTool: vi.fn() } as unknown as McpProxyRegistry
+
+    const result = await sendOutbound(
+      "telegram",
+      { alias: "mybot", source: "telegram", contactRef: "000", text: "hi" },
+      { mcpProxy, telegramCreds },
+    )
+
+    expect(result.ok).toBe(false)
+    expect((result as { ok: false; error: string }).error).toContain("Bad Request: chat not found")
+
+    vi.unstubAllGlobals()
+  })
+
   it("agentpush uploads local attachments and sends media", async () => {
     const mockedReadFile = vi.mocked(readFile)
     mockedReadFile.mockResolvedValue(Buffer.from("fake-image-bytes"))
@@ -174,10 +250,10 @@ describe("sendOutbound", () => {
     const callTool = vi.fn(
       async (_alias: string, tool: string): Promise<ProxyCallOutcome> => {
         if (tool === "upload_media") {
-          return { ok: true, result: { media_id: "media-123", url: "https://example.com/media" } }
+          return mcpTextResult({ media_id: "media-123", url: "https://example.com/media" })
         }
         if (tool === "send_message") {
-          return { ok: true, result: { messageId: "msg-456" } }
+          return mcpTextResult({ status: "sent", message_id: "msg-456" })
         }
         return { ok: false, error: "unexpected tool" }
       },

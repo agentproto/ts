@@ -367,6 +367,62 @@ describe("session list pagination (PR-2, additive)", () => {
     }
   })
 
+  it("fields can request keys outside the compact projection without full:true", async () => {
+    const { client, registry, close } = await buildHarness()
+    registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: workspace,
+      agentSession: fakeAgentSession("agent"),
+      adapterSlug: "fake",
+    })
+    try {
+      const result = await client.callTool({
+        name: "session_list",
+        arguments: { limit: 1, fields: ["id", "workspaceSlug", "cwd"] },
+      })
+      const page = JSON.parse(textOf(result)) as {
+        items: Array<Record<string, unknown>>
+      }
+      // `workspaceSlug` is NOT in compactSessionItem: an explicit allowlist
+      // must reach the full public record, not the compact row.
+      expect(page.items[0]).toEqual({ id: expect.any(String), workspaceSlug: "default", cwd: workspace })
+    } finally {
+      await close()
+      registry.shutdown()
+    }
+  })
+
+  it("compact projection (default) exposes continuedFrom so UIs can draw the checkpoint-handoff link", async () => {
+    const { client, registry, close } = await buildHarness()
+    const source = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: workspace,
+      agentSession: fakeAgentSession("agent"),
+      adapterSlug: "fake",
+    })
+    const fresh = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: workspace,
+      agentSession: fakeAgentSession("agent"),
+      adapterSlug: "fake",
+    })
+    registry.get(fresh.id)!.continuedFrom = source.id
+    try {
+      const result = await client.callTool({
+        name: "session_list",
+        arguments: {},
+      })
+      const page = JSON.parse(textOf(result)) as { sessions: Array<Record<string, unknown>> }
+      const freshRow = page.sessions.find(s => s.id === fresh.id)
+      expect(freshRow?.continuedFrom).toBe(source.id)
+      const sourceRow = page.sessions.find(s => s.id === source.id)
+      expect(sourceRow?.continuedFrom).toBeUndefined()
+    } finally {
+      await close()
+      registry.shutdown()
+    }
+  })
+
   it("full:true is accepted and does not change the paginated envelope", async () => {
     const { client, registry, close } = await buildHarness()
     for (let i = 0; i < 3; i++) {

@@ -12,7 +12,7 @@ import { createHash } from "node:crypto"
 import { execFile } from "node:child_process"
 import { readFile } from "node:fs/promises"
 import { isAbsolute, join, resolve } from "node:path"
-import type { ZodError } from "zod"
+import { z } from "zod"
 import { resolveRefString } from "./ref-string.js"
 import type {
   AgentStep,
@@ -22,12 +22,17 @@ import type {
   GateCommandResult,
   GateStep,
   KnowledgeAppliedRecord,
+  OutputSchemaLike,
   RunStep,
   RunWorkflowArgs,
   RuntimeWorkflow,
+  StepFailedInfo,
+  StepHookInfo,
+  StepSkippedInfo,
   TolerantFanOutResult,
   WorkflowRunResult,
 } from "./types.js"
+import { DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES } from "./types.js"
 import { materializeKnowledge, resolveKnowledgeSelectors } from "./knowledge.js"
 
 /** Thrown by a `suspend` step when no host `resume` hook is provided. */
@@ -44,6 +49,64 @@ export class WorkflowSuspendedError extends Error {
   }
 }
 
+/**
+ * AIP-58 §3(a) — thrown when an {@link AgentStep}'s session signals
+ * `run.requestInput` but no host `onInputRequired` hook is provided (the
+ * same "no resume hook supplied" shape {@link WorkflowSuspendedError} uses
+ * for {@link SuspendStep}). A host that wires `onInputRequired` never sees
+ * this thrown — it durably suspends the step instead.
+ */
+export class AgentInputRequiredError extends Error {
+  constructor(
+    readonly stepId: string,
+    readonly prompt: string,
+    readonly schema?: Record<string, unknown>,
+  ) {
+    super(
+      `step '${stepId}' requires input ("${prompt}") — no onInputRequired hook supplied`,
+    )
+    this.name = "AgentInputRequiredError"
+  }
+}
+
+/**
+ * AIP-58 §3 Outcome rule — thrown when an {@link AgentStep} declares an
+ * `outputSchema` and its turn ends (after exhausting retries) without ever
+ * producing output that validates against it, and no explicit
+ * input-required signal (§3(a)/(b)) was observed either. `hint` is set when
+ * the final message matches the "trailing question mark" heuristic — it is
+ * ONLY a triage aid; it never changes the outcome (still `missing-output`).
+ */
+export class StepOutcomeError extends Error {
+  constructor(
+    readonly stepId: string,
+    readonly code: "missing-output",
+    message: string,
+    readonly hint?: "possible-input-request",
+  ) {
+    super(message)
+    this.name = "StepOutcomeError"
+  }
+}
+
+/**
+ * Thrown when an {@link AgentStep}'s session could not be spawned at all
+ * (`AgentSessionHost.spawn` rejected) — distinct from a session that spawned
+ * and then failed its turn. A tolerant fan-out counts these toward its spawn
+ * circuit breaker ({@link MapStep.maxConsecutiveSpawnFailures}): a spawn that
+ * fails for one item usually fails for every item (missing cwd, adapter
+ * gone, process limits), so burning through the rest is pure noise.
+ */
+export class AgentSpawnError extends Error {
+  constructor(
+    readonly stepId: string,
+    readonly cause: unknown,
+  ) {
+    super(`step '${stepId}': agent spawn failed — ${errorMessage(cause)}`)
+    this.name = "AgentSpawnError"
+  }
+}
+
 interface RunState {
   readonly input: unknown
   readonly steps: Record<string, unknown>
@@ -52,31 +115,196 @@ interface RunState {
    *  A Map (not a running delta) so a session reused across steps via
    *  sessionRef is counted once, not double-counted. */
   readonly costBySession: Map<string, number>
+  /** Journal keys ({@link cachedHitKey}) of steps whose output was replayed
+   *  from the cache this run and whose completion hasn't been reported yet —
+   *  consumed by {@link completeStep} to tag `onStepComplete` with
+   *  `{ cached: true }` (F35). */
+  readonly cachedHits: Set<string>
 }
 
 interface RunCtx {
   readonly state: RunState
   readonly approve?: RunWorkflowArgs["approve"]
   readonly resume?: RunWorkflowArgs["resume"]
+  readonly onInputRequired?: RunWorkflowArgs["onInputRequired"]
   readonly signal?: AbortSignal
   readonly agents?: RunWorkflowArgs["agents"]
   readonly cwd?: string
   readonly workspaceSlug?: string
   readonly cache?: RunWorkflowArgs["cache"]
   readonly cacheKey?: RunWorkflowArgs["cacheKey"]
+  /** Set inside a `map`/`pipeline` fan-out body — the `[<index>]` path
+   *  (nested maps append their own `[<index>]`) appended to every cache
+   *  journal key computed under this ctx, so each item of a shared-id
+   *  body caches independently instead of overwriting one shared entry
+   *  (F33). Mirrors the id-suffixing {@link withIndexedHooks} already does
+   *  for `onStepStart`/`onStepComplete`. */
+  readonly cacheKeySuffix?: string
   readonly onStepStart?: RunWorkflowArgs["onStepStart"]
   readonly onStepComplete?: RunWorkflowArgs["onStepComplete"]
+  readonly onStepSkipped?: RunWorkflowArgs["onStepSkipped"]
+  readonly onStepFailed?: RunWorkflowArgs["onStepFailed"]
   readonly runGateCommand?: RunWorkflowArgs["runGateCommand"]
   readonly onGateReport?: RunWorkflowArgs["onGateReport"]
+  /** Sessions spawned in the current release scope (the run, or one
+   *  `map`/`pipeline` item) — released when that scope settles. */
+  readonly spawned?: string[]
+}
+
+/** Open a release scope for one fan-out item: sessions its steps spawn are
+ *  released as soon as the item settles, not held until the run ends. */
+function withReleaseScope(ctx: RunCtx): RunCtx {
+  return { ...ctx, spawned: [] }
+}
+
+/** Release every session collected in `ctx`'s scope (see
+ *  `AgentSessionHost.releaseSession`). Never throws. */
+async function releaseScope(ctx: RunCtx): Promise<void> {
+  const release = ctx.agents?.releaseSession
+  if (!release || !ctx.spawned || ctx.spawned.length === 0) return
+  const ids = ctx.spawned.splice(0)
+  const agents = ctx.agents
+  await Promise.all(ids.map((id) => Promise.resolve().then(() => release.call(agents, id)).catch(() => undefined)))
 }
 
 function view(state: RunState, item?: unknown, index?: number): Bindings {
   return { input: state.input, steps: state.steps, item, index }
 }
 
+/**
+ * A `map`/`pipeline` fan-out body can't be enumerated at compile time (the
+ * item list is only known at runtime — see `collectStaticSteps` in
+ * `runtime/workflow-runner.ts`), so its per-item steps all share one static
+ * compiled id (e.g. "clean"). Reporting every iteration under that same id
+ * makes the host's step list unable to tell iterations apart (AIP-58 §5 /
+ * F28). Wrapping `onStepStart`/`onStepComplete` for the duration of ONE
+ * item's execution suffixes every step id it reports with `[<index>]`
+ * (e.g. "clean[0]", "clean[1]") — the host discovers these dynamically,
+ * same as any other step it didn't see at compile time.
+ */
+function withIndexedHooks(ctx: RunCtx, index: number): RunCtx {
+  const cacheKeySuffix = `${ctx.cacheKeySuffix ?? ""}[${index}]`
+  if (!ctx.onStepStart && !ctx.onStepComplete && !ctx.onStepSkipped && !ctx.onStepFailed) {
+    return { ...ctx, cacheKeySuffix }
+  }
+  return {
+    ...ctx,
+    cacheKeySuffix,
+    onStepStart: ctx.onStepStart
+      ? (id: string, info?: StepHookInfo) => ctx.onStepStart!(`${id}[${index}]`, info)
+      : undefined,
+    onStepComplete: ctx.onStepComplete
+      ? (id: string, out: unknown, info?: StepHookInfo) => ctx.onStepComplete!(`${id}[${index}]`, out, info)
+      : undefined,
+    onStepSkipped: ctx.onStepSkipped
+      ? (id: string, info: StepSkippedInfo) => ctx.onStepSkipped!(`${id}[${index}]`, info)
+      : undefined,
+    onStepFailed: ctx.onStepFailed
+      ? (id: string, info: StepFailedInfo) => ctx.onStepFailed!(`${id}[${index}]`, info)
+      : undefined,
+  }
+}
+
+/**
+ * The innermost step an in-flight error came from, as a reporter bound to
+ * that step's own (indexed) hooks — set by the first {@link execStep} frame
+ * the error unwinds through, so a tolerant fan-out that swallows the error
+ * can still fail the step that actually threw (not its item's wrapper).
+ */
+const failureOrigin = new WeakMap<object, (info: StepFailedInfo) => void>()
+
+/** A tolerant fan-out item threw: report it via `onStepFailed` on the step
+ *  that threw (see {@link failureOrigin}), else on the item's body step. */
+function reportItemFailure(err: unknown, itemCtx: RunCtx, bodyId: string): void {
+  const info = { error: errorMessage(err) }
+  const origin = typeof err === "object" && err !== null ? failureOrigin.get(err) : undefined
+  if (origin) {
+    // Consume it: a host may reject every item with the SAME error object.
+    failureOrigin.delete(err as object)
+    origin(info)
+  } else {
+    itemCtx.onStepFailed?.(bodyId, info)
+  }
+}
+
+/**
+ * Spawn circuit breaker for one tolerant fan-out — see
+ * {@link MapStep.maxConsecutiveSpawnFailures}. `settle` is fed every
+ * item's outcome in completion order; `open` is the first error of the
+ * streak that tripped it (undefined while closed). Once open it stays open.
+ */
+function spawnBreaker(threshold: number): { settle: (err?: unknown) => void; readonly open: string | undefined } {
+  let streak = 0
+  let streakFirst: string | undefined
+  let open: string | undefined
+  return {
+    settle(err?: unknown): void {
+      if (open !== undefined) return
+      if (!(err instanceof AgentSpawnError)) {
+        streak = 0
+        streakFirst = undefined
+        return
+      }
+      if (streak === 0) streakFirst = err.message
+      streak++
+      if (threshold > 0 && streak >= threshold) open = streakFirst
+    },
+    get open() {
+      return open
+    },
+  }
+}
+
+/** Report every item a tripped breaker never started as `skipped` (each of
+ *  its body's statically-known steps, indexed like a started item's). */
+function skipUnstartedItems(
+  ctx: RunCtx,
+  fanOutId: string,
+  from: number,
+  items: readonly unknown[],
+  bodiesOf: (item: unknown, idx: number) => readonly RunStep[],
+  reason: string,
+  results: unknown[],
+): void {
+  for (let idx = from; idx < items.length; idx++) {
+    results[idx] = { status: "skipped", index: idx, item: items[idx], reason: `circuit-open: ${reason}` }
+    const itemCtx = withIndexedHooks(ctx, idx)
+    if (!itemCtx.onStepSkipped) continue
+    let bodies: readonly RunStep[]
+    try {
+      bodies = bodiesOf(items[idx], idx)
+    } catch {
+      // A body builder that needs a started item's state (a pipeline stage
+      // reading its prevOutput) — the item's outcome above still records it.
+      continue
+    }
+    for (const id of new Set(skippableStepIds(bodies))) {
+      itemCtx.onStepSkipped(id, { reason: "circuit-open", branchId: fanOutId, message: reason })
+    }
+  }
+}
+
+/** The bound output of a tolerant fan-out. */
+function tolerantResult(results: unknown[], circuitOpen: string | undefined): TolerantFanOutResult {
+  const outcomes = results as FanOutOutcome[]
+  return {
+    results: outcomes,
+    succeeded: outcomes.filter((r) => r.status === "fulfilled").length,
+    failed: outcomes.filter((r) => r.status === "rejected").length,
+    skipped: outcomes.filter((r) => r.status === "skipped").length,
+    ...(circuitOpen !== undefined ? { circuitOpen: { error: circuitOpen } } : {}),
+  }
+}
+
 /** Resolve a value that is either a static string or a binding selector. */
 function resolveSel(sel: string | ((bindings: Bindings) => string), b: Bindings): string {
   return typeof sel === "function" ? sel(b) : sel
+}
+
+/** An AgentStep's `sessionRef` with `{{index}}` bound to the current fan-out
+ *  item (see `AgentStep.sessionRef`). Outside a fan-out it stays literal. */
+function resolveSessionRef(ref: string, b: Bindings): string {
+  return b.index === undefined ? ref : ref.replace(/\{\{\s*index\s*\}\}/g, String(b.index))
 }
 
 /** Extract a JSON candidate from raw assistant text:
@@ -115,14 +343,32 @@ function hashResolvedInputs(kind: string, resolved: unknown): string {
     .digest("hex")
 }
 
-/** Namespaced journal key for a step under a run's cacheKey. */
-function stepJournalKey(cacheKey: string, step: RunStep): string {
-  return `${cacheKey}\u0000${step.id}\u0000${step.kind}`
+/** Namespaced journal key for a step under a run's cacheKey. A step inside a
+ *  `map`/`pipeline` body shares its static compiled id (and kind) across
+ *  every item — `ctx.cacheKeySuffix` (the item's `[<index>]` path, set by
+ *  {@link withIndexedHooks}) disambiguates them so each item's cache entry
+ *  is independent instead of every item overwriting one shared key (F33). */
+function stepJournalKey(ctx: RunCtx, step: RunStep): string {
+  return `${ctx.cacheKey}\u0000${step.id}\u0000${step.kind}${ctx.cacheKeySuffix ?? ""}`
 }
 
 /** True when this step should consult/populate the journal. */
 function isCacheEnabled(ctx: RunCtx, step: { cacheable?: boolean }): boolean {
   return step.cacheable === true && ctx.cache !== undefined && ctx.cacheKey !== undefined
+}
+
+/** Identity of one step execution under `ctx` for {@link RunState.cachedHits}
+ *  — the step id plus the map/pipeline item path, so concurrent items of a
+ *  shared-id body don't see each other's hits. */
+function cachedHitKey(ctx: RunCtx, stepId: string): string {
+  return `${stepId}${ctx.cacheKeySuffix ?? ""}`
+}
+
+/** Report a step's completion — `{ cached: true }` when {@link execStep}
+ *  replayed it from the journal (F35: a cache hit still surfaces as a step). */
+function completeStep(ctx: RunCtx, stepId: string, out: unknown): void {
+  const cached = ctx.state.cachedHits.delete(cachedHitKey(ctx, stepId))
+  ctx.onStepComplete?.(stepId, out, cached ? { cached: true } : undefined)
 }
 
 /** Read the journal; on a hit return the output, else the key+hash to write on miss. */
@@ -131,7 +377,7 @@ async function readStepCache(
   step: RunStep,
   resolvedInputs: unknown,
 ): Promise<{ hit: true; output: unknown } | { hit: false; key: string; hash: string }> {
-  const key = stepJournalKey(ctx.cacheKey!, step)
+  const key = stepJournalKey(ctx, step)
   const hash = hashResolvedInputs(step.kind, resolvedInputs)
   const entry = await ctx.cache!.get(key)
   if (entry !== undefined && entry.resolvedInputHash === hash) {
@@ -145,10 +391,76 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-function formatZodError(err: ZodError): string {
+/** Formats the failure branch of {@link OutputSchemaLike.safeParse} — a real
+ *  zod `ZodError` satisfies this structurally (its `issues[]` carry `path`/
+ *  `message` plus extra fields TS ignores here), so this reads either a zod
+ *  schema's rejection or the ajv-backed JSON Schema adapter's. */
+function formatSchemaError(err: Extract<ReturnType<OutputSchemaLike["safeParse"]>, { success: false }>["error"]): string {
   return err.issues
     .map((i) => `${i.path.length > 0 ? i.path.join(".") + ": " : ""}${i.message}`)
     .join(", ")
+}
+
+/**
+ * F27: render an agent step's `outputSchema` into a prompt-affordance note —
+ * appended to BOTH the first prompt and every retry, so the model sees the
+ * contract before it ever replies, not just after a rejected first attempt.
+ * Prefers the exact schema: `compileOutputSchema`'s `jsonSchema` marker for a
+ * WORKFLOW.md-authored step, else a live zod schema's own `z.toJSONSchema()`
+ * (a TS-authored `buildAgentStep` caller commonly passes one directly — see
+ * `OutputSchemaLike`'s doc). Degrades to a short field list when neither
+ * conversion is possible (an exotic zod type, or a hand-built
+ * `OutputSchemaLike` with no `jsonSchema` marker) — never throws, since a
+ * step's prompt must never fail to build over an unrelated schema quirk.
+ */
+function describeOutputSchemaForPrompt(schema: OutputSchemaLike): string | undefined {
+  if (schema.jsonSchema !== undefined) {
+    return `When done, reply with ONLY a JSON object matching this JSON Schema: ${JSON.stringify(schema.jsonSchema)}`
+  }
+  try {
+    const jsonSchema = z.toJSONSchema(schema as unknown as z.ZodType)
+    return `When done, reply with ONLY a JSON object matching this JSON Schema: ${JSON.stringify(jsonSchema)}`
+  } catch {
+    // Not a convertible zod schema — fall through to the short field list.
+  }
+  const shape = (schema as { shape?: unknown }).shape
+  if (shape && typeof shape === "object") {
+    const fields = Object.keys(shape)
+    if (fields.length > 0) {
+      return `When done, reply with ONLY a JSON object with these fields: ${fields.join(", ")}`
+    }
+  }
+  return undefined
+}
+
+/**
+ * The statically-known steps under `steps` that a skipped `branch` arm
+ * reports via `onStepSkipped`: leaf steps, plus `map`/`pipeline`/
+ * `subworkflow` steps by their own id (their bodies aren't enumerable here or
+ * don't report through this run's hooks). Structural wrappers (group,
+ * parallel, branch, loop) are walked, never reported themselves.
+ */
+function skippableStepIds(steps: readonly RunStep[], acc: string[] = []): string[] {
+  for (const s of steps) {
+    switch (s.kind) {
+      case "group":
+        skippableStepIds(s.steps, acc)
+        break
+      case "parallel":
+        for (const br of s.branches) skippableStepIds(br.steps, acc)
+        break
+      case "branch":
+        skippableStepIds(s.then, acc)
+        if (s.otherwise) skippableStepIds(s.otherwise, acc)
+        break
+      case "loop":
+        skippableStepIds(s.body, acc)
+        break
+      default:
+        acc.push(s.id)
+    }
+  }
+  return acc
 }
 
 /** Run an ordered list of steps, binding each output under its id; return last. */
@@ -162,10 +474,38 @@ async function runSequence(
   for (const s of steps) {
     const out = await execStep(s, ctx, item, index)
     ctx.state.steps[s.id] = out
-    ctx.onStepComplete?.(s.id, out)
+    completeStep(ctx, s.id, out)
     last = out
   }
   return last
+}
+
+/**
+ * Send a prompt and wait for the turn to end; if the session signals AIP-58
+ * §3(a) (`run.requestInput`) before this returns, durably suspend via
+ * `ctx.onInputRequired` — the promise only resolves once an external event
+ * supplies the resume payload — then forward that payload (JSON) as the
+ * step's NEXT prompt to the SAME session and repeat. So a step may suspend,
+ * resume, and suspend again before this ever returns to its caller. No
+ * signal observed ⇒ an ordinary one-shot send.
+ */
+async function sendPromptAndAwaitOutcome(
+  ctx: RunCtx,
+  step: AgentStep,
+  sessionId: string,
+  prompt: string,
+): Promise<void> {
+  let next = prompt
+  for (;;) {
+    await ctx.agents!.sendPromptAndWait(sessionId, next)
+    const req = ctx.agents!.takeInputRequest?.(sessionId)
+    if (!req) return
+    if (!ctx.onInputRequired) {
+      throw new AgentInputRequiredError(step.id, req.prompt, req.schema)
+    }
+    const payload = await ctx.onInputRequired({ stepId: step.id, prompt: req.prompt, schema: req.schema })
+    next = JSON.stringify(payload)
+  }
 }
 
 /** Execute the full AgentStep body — spawn, prompt, policy, budget, outputSchema retry loop. */
@@ -187,7 +527,11 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
   // `ctx.cwd` — see `AgentHarness`'s doc for the full chain (AGENT.md
   // frontmatter / app_run args / adapter default are resolved upstream of
   // this runtime, by the host's spawn implementation).
-  const cwd = step.harness?.cwd ?? (step.cwd ? resolveSel(step.cwd, b) : ctx.cwd)
+  // A relative step cwd resolves against the run cwd, never the daemon's own.
+  const stepCwd = step.cwd ? resolveSel(step.cwd, b) : undefined
+  const cwd =
+    step.harness?.cwd ??
+    (stepCwd !== undefined ? (ctx.cwd !== undefined ? resolve(ctx.cwd, stepCwd) : stepCwd) : ctx.cwd)
   // AIP-15 P2 `harness.knowledge`: materialize matched corpus entries into
   // the step cwd's `.knowledge/` BEFORE the spawn, and prepend the prompt
   // note pointing the session at the INDEX. An empty match is not an error —
@@ -237,17 +581,31 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
           ...(model !== undefined && step.harness?.model === undefined ? { model } : {}),
         }
       : undefined
-  const sessionId = step.adapter
-    ? await ctx.agents!.spawn(resolveSel(step.adapter, b), {
+  let sessionId: string | undefined
+  if (step.adapter) {
+    // A cancelled run winds down (its `finally` still runs) — it must not
+    // start new agent sessions on the way (a fan-out would otherwise keep
+    // spawning reviewers after the cancel killed the running ones).
+    if (ctx.signal?.aborted) throw new Error(`step '${step.id}': run cancelled — not spawning`)
+    try {
+      sessionId = await ctx.agents!.spawn(resolveSel(step.adapter, b), {
         cwd,
         workspaceSlug: ctx.workspaceSlug,
         stepId: step.id,
         ...(sandbox !== undefined ? { sandbox } : {}),
         ...(step.options !== undefined ? { options: step.options } : {}),
         ...(harness !== undefined ? { harness } : {}),
+        ...(step.agentTools !== undefined ? { agentTools: step.agentTools } : {}),
+        ...(b.index !== undefined ? { stepKey: `${step.id}[${b.index}]` } : {}),
       })
-    : ctx.agents!.resolveByLabel(step.sessionRef!)
+    } catch (err) {
+      throw new AgentSpawnError(step.id, err)
+    }
+  } else {
+    sessionId = ctx.agents!.resolveByLabel(resolveSessionRef(step.sessionRef!, b))
+  }
   if (!sessionId) throw new Error(`step '${step.id}': no session (adapter and sessionRef both unresolved)`)
+  if (step.adapter) ctx.spawned?.push(sessionId)
   if (knowledgeWarnings.length > 0 && ctx.agents!.emitHarnessWarning) {
     ctx.agents!.emitHarnessWarning({
       sessionId,
@@ -267,7 +625,19 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
             : {}),
         }
       : undefined
-  await ctx.agents!.sendPromptAndWait(sessionId, step.prompt(b))
+  // AIP-15 P2 prompt affordance: only when the host actually exposes the
+  // `run_request_input` tool (signalled by `takeInputRequest` existing) —
+  // a host without it never suspends on this signal, so telling the model
+  // to call a tool that doesn't exist would be actively misleading.
+  const inputRequestAffordance = ctx.agents!.takeInputRequest
+    ? "\n\nIf you need information you don't have, call the run_request_input tool instead of asking in your reply."
+    : ""
+  // F27: an `outputSchema` step states its contract on the FIRST prompt, not
+  // only on a rejected-reply retry — the model should never have to guess
+  // the shape and then get corrected.
+  const outputSchemaNote = step.outputSchema ? describeOutputSchemaForPrompt(step.outputSchema) : undefined
+  const outputSchemaAffordance = outputSchemaNote ? `\n\n${outputSchemaNote}` : ""
+  await sendPromptAndAwaitOutcome(ctx, step, sessionId, step.prompt(b) + inputRequestAffordance + outputSchemaAffordance)
   if (step.policy && ctx.agents!.onAwaitingInput) {
     await ctx.agents!.onAwaitingInput(sessionId, step.policy)
   }
@@ -294,8 +664,10 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
   }
   const maxRetries = step.maxRetries ?? 2
   let lastErr = ""
+  let lastRaw = ""
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const raw = await ctx.agents!.readFinalMessage(sessionId)
+    lastRaw = raw
     const candidate = extractJsonCandidate(raw)
     let value: unknown
     try {
@@ -303,26 +675,42 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
     } catch {
       lastErr = "not valid JSON"
       if (attempt < maxRetries) {
-        await ctx.agents!.sendPromptAndWait(
+        await sendPromptAndAwaitOutcome(
+          ctx,
+          step,
           sessionId,
           `Your previous reply did not match the required schema: ${lastErr}. ` +
-            `Reply again with ONLY a JSON object that matches. No prose, no code fence needed.`,
+            `Reply again with ONLY a JSON object that matches. No prose, no code fence needed.` +
+            outputSchemaAffordance,
         )
       }
       continue
     }
     const res = step.outputSchema.safeParse(value)
     if (res.success) return { sessionId, output: res.data, ...(harnessOut ? { harness: harnessOut } : {}), ...(knowledgeOut ? { knowledgeApplied: knowledgeOut } : {}) }
-    lastErr = formatZodError(res.error)
+    lastErr = formatSchemaError(res.error)
     if (attempt < maxRetries) {
-      await ctx.agents!.sendPromptAndWait(
+      await sendPromptAndAwaitOutcome(
+        ctx,
+        step,
         sessionId,
         `Your previous reply did not match the required schema: ${lastErr}. ` +
-          `Reply again with ONLY a JSON object that matches. No prose, no code fence needed.`,
+          `Reply again with ONLY a JSON object that matches. No prose, no code fence needed.` +
+          outputSchemaAffordance,
       )
     }
   }
-  throw new Error(`step '${step.id}': output_invalid — final message never matched outputSchema (${lastErr})`)
+  // AIP-58 §3 Outcome rule: a turn ending without producing a validated
+  // output is `missing-output`, regardless of how the final message reads.
+  // A trailing "?" is ONLY a triage hint — it never upgrades this to
+  // `suspended` (that requires one of the two explicit signals above).
+  const hint = lastRaw.trim().endsWith("?") ? ("possible-input-request" as const) : undefined
+  throw new StepOutcomeError(
+    step.id,
+    "missing-output",
+    `step '${step.id}': missing-output — final message never matched outputSchema (${lastErr})`,
+    hint,
+  )
 }
 
 /** Best-effort `JSON.parse` — `undefined` (never a throw) on blank/invalid text. */
@@ -466,7 +854,32 @@ async function execGateStep(step: GateStep, ctx: RunCtx, b: Bindings): Promise<u
   return last
 }
 
+/** A cache hit still surfaces as a step (F35): fire `onStepStart` with
+ *  `{ cached: true }` and flag it so its completion is tagged too. */
+function cacheHit(ctx: RunCtx, step: RunStep, output: unknown): unknown {
+  ctx.state.cachedHits.add(cachedHitKey(ctx, step.id))
+  ctx.onStepStart?.(step.id, { cached: true })
+  return output
+}
+
 async function execStep(
+  step: RunStep,
+  ctx: RunCtx,
+  item: unknown,
+  index: number | undefined,
+): Promise<unknown> {
+  try {
+    return await execStepBody(step, ctx, item, index)
+  } catch (err) {
+    // Innermost frame wins: an outer (composite) frame sees it already set.
+    if (typeof err === "object" && err !== null && !failureOrigin.has(err)) {
+      failureOrigin.set(err, (info) => ctx.onStepFailed?.(step.id, info))
+    }
+    throw err
+  }
+}
+
+async function execStepBody(
   step: RunStep,
   ctx: RunCtx,
   item: unknown,
@@ -475,8 +888,10 @@ async function execStep(
   const { state, signal } = ctx
   const b = view(state, item, index)
 
-  // Notify step start for non-agent steps (agent steps notify in execAgentStep)
-  if (step.kind !== "agent") {
+  // Notify step start for non-agent steps (agent steps notify in
+  // execAgentStep; a tool step notifies in its case, once it knows whether
+  // it's a cache hit).
+  if (step.kind !== "agent" && step.kind !== "tool") {
     ctx.onStepStart?.(step.id)
   }
 
@@ -493,9 +908,13 @@ async function execStep(
           secrets: step.secrets,
           signal,
         })
-      if (!isCacheEnabled(ctx, step)) return runIt()
+      if (!isCacheEnabled(ctx, step)) {
+        ctx.onStepStart?.(step.id)
+        return runIt()
+      }
       const c = await readStepCache(ctx, step, input)
-      if (c.hit) return c.output
+      if (c.hit) return cacheHit(ctx, step, c.output)
+      ctx.onStepStart?.(step.id)
       const out = await runIt()
       await ctx.cache!.set(c.key, { output: out, resolvedInputHash: c.hash })
       return out
@@ -509,80 +928,116 @@ async function execStep(
       const parallelism = Math.max(1, step.parallelism ?? 1)
       const tolerant = step.onError === "collect"
       const results: unknown[] = new Array(arr.length)
-      for (let i = 0; i < arr.length; i += parallelism) {
-        const chunk = arr.slice(i, i + parallelism)
-        if (!tolerant) {
-          const outs = await Promise.all(
-            chunk.map((el, j) => {
-              const idx = i + j
-              const inner = step.body(el, idx, view(state, el, idx))
-              return execStep(inner, ctx, el, idx)
-            }),
-          )
-          for (let j = 0; j < outs.length; j++) results[i + j] = outs[j]
-          continue
+      // Sliding window, not fixed batches: each of `parallelism` workers
+      // pulls the next item as soon as its current one settles, so one slow
+      // item never holds idle slots hostage. Same pool shape as `pipeline`.
+      // Non-tolerant: after the first failure no NEW item starts (in-flight
+      // ones finish), and the map rethrows that first error. Tolerant: a
+      // failed item is reported on the step that threw, and the spawn
+      // circuit breaker stops new items once spawning is systemically broken.
+      let next = 0
+      let failed = false
+      const breaker = spawnBreaker(step.maxConsecutiveSpawnFailures ?? DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES)
+      const runItem = async (idx: number): Promise<void> => {
+        const el = arr[idx]
+        const inner = step.body(el, idx, view(state, el, idx))
+        const wrapped = withReleaseScope(withIndexedHooks(ctx, idx))
+        try {
+          const out = await execStep(inner, wrapped, el, idx)
+          completeStep(wrapped, inner.id, out)
+          results[idx] = tolerant ? { status: "fulfilled", index: idx, value: out } : out
+          breaker.settle()
+        } catch (err) {
+          if (!tolerant) {
+            failed = true
+            throw err
+          }
+          results[idx] = { status: "rejected", index: idx, item: el, error: errorMessage(err) }
+          reportItemFailure(err, wrapped, inner.id)
+          breaker.settle(err)
+        } finally {
+          await releaseScope(wrapped)
         }
-        const settled = await Promise.allSettled(
-          chunk.map((el, j) => {
-            const idx = i + j
-            const inner = step.body(el, idx, view(state, el, idx))
-            return execStep(inner, ctx, el, idx)
-          }),
-        )
-        settled.forEach((s, j) => {
-          const idx = i + j
-          results[idx] =
-            s.status === "fulfilled"
-              ? { status: "fulfilled", index: idx, value: s.value }
-              : { status: "rejected", index: idx, item: chunk[j], error: errorMessage(s.reason) }
-        })
       }
+      const worker = async (): Promise<void> => {
+        while (!failed && breaker.open === undefined && next < arr.length) {
+          const idx = next++
+          await runItem(idx)
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(parallelism, arr.length) }, () => worker()))
       if (!tolerant) return results
-      const outcomes = results as FanOutOutcome[]
-      return {
-        results: outcomes,
-        succeeded: outcomes.filter((r) => r.status === "fulfilled").length,
-        failed: outcomes.filter((r) => r.status === "rejected").length,
-      } satisfies TolerantFanOutResult
+      if (breaker.open !== undefined) {
+        skipUnstartedItems(ctx, step.id, next, arr, (el, idx) => [step.body(el, idx, view(state, el, idx))], breaker.open, results)
+      }
+      return tolerantResult(results, breaker.open)
     }
 
     case "pipeline": {
       const items = [...step.over(b)]
       const tolerant = step.onError === "collect"
-      if (items.length === 0) return tolerant ? { results: [], succeeded: 0, failed: 0 } : []
+      if (items.length === 0) return tolerant ? tolerantResult([], undefined) : []
       const cap = Math.max(1, step.concurrency ?? items.length)
       const results: unknown[] = new Array(items.length)
       let next = 0
+      const breaker = spawnBreaker(step.maxConsecutiveSpawnFailures ?? DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES)
       const runItem = async (idx: number): Promise<void> => {
         let prev: unknown = undefined
+        let stageId = step.id
+        const wrapped = withReleaseScope(withIndexedHooks(ctx, idx))
         try {
           for (const stage of step.stages) {
-            prev = await execStep(stage(items[idx], idx, prev, view(state, items[idx], idx)), ctx, items[idx], idx)
+            const inner = stage(items[idx], idx, prev, view(state, items[idx], idx))
+            stageId = inner.id
+            prev = await execStep(inner, wrapped, items[idx], idx)
+            completeStep(wrapped, inner.id, prev)
           }
           results[idx] = tolerant ? { status: "fulfilled", index: idx, value: prev } : prev
+          breaker.settle()
         } catch (err) {
           if (!tolerant) throw err
           results[idx] = { status: "rejected", index: idx, item: items[idx], error: errorMessage(err) }
+          reportItemFailure(err, wrapped, stageId)
+          breaker.settle(err)
+        } finally {
+          await releaseScope(wrapped)
         }
       }
       const worker = async (): Promise<void> => {
-        while (next < items.length) {
+        while ((!tolerant || breaker.open === undefined) && next < items.length) {
           const idx = next++
           await runItem(idx)
         }
       }
       await Promise.all(Array.from({ length: Math.min(cap, items.length) }, () => worker()))
       if (!tolerant) return results
-      const outcomes = results as FanOutOutcome[]
-      return {
-        results: outcomes,
-        succeeded: outcomes.filter((r) => r.status === "fulfilled").length,
-        failed: outcomes.filter((r) => r.status === "rejected").length,
-      } satisfies TolerantFanOutResult
+      if (breaker.open !== undefined) {
+        skipUnstartedItems(
+          ctx,
+          step.id,
+          next,
+          items,
+          (el, idx) => step.stages.map((stage) => stage(el, idx, undefined, view(state, el, idx))),
+          breaker.open,
+          results,
+        )
+      }
+      return tolerantResult(results, breaker.open)
     }
 
     case "branch": {
-      const chosen = step.cond(b) ? step.then : (step.otherwise ?? [])
+      const taken = step.cond(b)
+      const chosen = taken ? step.then : (step.otherwise ?? [])
+      if (ctx.onStepSkipped) {
+        // Report the untaken arm's steps as skipped (AIP-58 `step.skipped`)
+        // — minus any id that also sits on the chosen path (arms sharing a
+        // body, or a nested branch node that still has to decide).
+        const onChosenPath = new Set(skippableStepIds(chosen))
+        const untaken = taken ? (step.otherwise ?? []) : step.then
+        for (const id of new Set(skippableStepIds(untaken))) {
+          if (!onChosenPath.has(id)) ctx.onStepSkipped(id, { reason: "branch-not-taken", branchId: step.sourceId ?? step.id })
+        }
+      }
       return runSequence(chosen, ctx, item, index)
     }
 
@@ -651,6 +1106,7 @@ async function execStep(
       const child = await runWorkflowInner(step.workflow, childInput, {
         approve: ctx.approve,
         resume: ctx.resume,
+        onInputRequired: ctx.onInputRequired,
         signal,
         agents: ctx.agents,
         cwd: ctx.cwd,
@@ -659,6 +1115,7 @@ async function execStep(
         cacheKey: ctx.cacheKey,
         runGateCommand: ctx.runGateCommand,
         onGateReport: ctx.onGateReport,
+        spawned: ctx.spawned,
       })
       return child.output
     }
@@ -670,10 +1127,10 @@ async function execStep(
         prompt: step.prompt(b),
         adapter: step.adapter ? resolveSel(step.adapter, b) : undefined,
         model: step.model ? resolveSel(step.model, b) : undefined,
-        sessionRef: step.sessionRef,
+        sessionRef: step.sessionRef !== undefined ? resolveSessionRef(step.sessionRef, b) : undefined,
       }
       const c = await readStepCache(ctx, step, resolved)
-      if (c.hit) return c.output // cache hit ⇒ NO spawn, NO budget spend
+      if (c.hit) return cacheHit(ctx, step, c.output) // cache hit ⇒ NO spawn, NO budget spend
       const out = await execAgentStep(step, ctx, b)
       await ctx.cache!.set(c.key, { output: out, resolvedInputHash: c.hash })
       return out
@@ -684,20 +1141,58 @@ async function execStep(
   }
 }
 
+/**
+ * A workflow's `finally` steps ({@link RuntimeWorkflow.finally}): every one
+ * runs, in order, without the run's abort signal (cleanup must survive a
+ * cancel). After a failed body, a cleanup error is reported on its step and
+ * swallowed so the original error wins; after a successful body the first
+ * cleanup error is rethrown once every cleanup step has had its turn.
+ */
+async function runFinally(steps: readonly RunStep[], ctx: RunCtx, bodyFailed: boolean): Promise<void> {
+  const cleanupCtx: RunCtx = { ...ctx, signal: undefined }
+  let firstError: unknown
+  for (const step of steps) {
+    try {
+      const out = await execStep(step, cleanupCtx, undefined, undefined)
+      cleanupCtx.state.steps[step.id] = out
+      completeStep(cleanupCtx, step.id, out)
+    } catch (err) {
+      cleanupCtx.onStepFailed?.(step.id, { error: errorMessage(err) })
+      if (firstError === undefined) firstError = err
+    }
+  }
+  if (!bodyFailed && firstError !== undefined) throw firstError
+}
+
 async function runWorkflowInner(
   workflow: RuntimeWorkflow,
   input: unknown,
-  hooks: Pick<RunCtx, "approve" | "resume" | "signal" | "agents" | "cwd" | "workspaceSlug" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete" | "runGateCommand" | "onGateReport">,
+  hooks: Pick<RunCtx, "approve" | "resume" | "onInputRequired" | "signal" | "agents" | "cwd" | "workspaceSlug" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete" | "onStepSkipped" | "onStepFailed" | "runGateCommand" | "onGateReport" | "spawned">,
   maxTotalCostUsd?: number,
 ): Promise<WorkflowRunResult> {
-  const state: RunState = { input, steps: {}, costBySession: new Map(), maxTotalCostUsd }
-  const ctx: RunCtx = { state, ...hooks }
+  const state: RunState = { input, steps: {}, costBySession: new Map(), maxTotalCostUsd, cachedHits: new Set() }
+  // A subworkflow shares its parent's release scope (a parent step may
+  // `sessionRef` a child's session); only the outermost run owns one.
+  const ownsScope = hooks.spawned === undefined
+  const ctx: RunCtx = { state, ...hooks, ...(ownsScope ? { spawned: [] } : {}) }
   let lastId: string | undefined
-  for (const step of workflow.steps) {
-    const out = await execStep(step, ctx, undefined, undefined)
-    state.steps[step.id] = out
-    ctx.onStepComplete?.(step.id, out)
-    lastId = step.id
+  let bodyFailed = false
+  try {
+    for (const step of workflow.steps) {
+      const out = await execStep(step, ctx, undefined, undefined)
+      state.steps[step.id] = out
+      completeStep(ctx, step.id, out)
+      lastId = step.id
+    }
+  } catch (err) {
+    bodyFailed = true
+    throw err
+  } finally {
+    try {
+      if (workflow.finally && workflow.finally.length > 0) await runFinally(workflow.finally, ctx, bodyFailed)
+    } finally {
+      if (ownsScope) await releaseScope(ctx)
+    }
   }
   const bindings = view(state)
   const output = workflow.output
@@ -714,6 +1209,7 @@ export async function runWorkflow(
   return runWorkflowInner(args.workflow, args.input, {
     approve: args.approve,
     resume: args.resume,
+    onInputRequired: args.onInputRequired,
     signal: args.signal,
     agents: args.agents,
     cwd: args.cwd,
@@ -722,6 +1218,8 @@ export async function runWorkflow(
     cacheKey: args.cacheKey,
     onStepStart: args.onStepStart,
     onStepComplete: args.onStepComplete,
+    onStepSkipped: args.onStepSkipped,
+    onStepFailed: args.onStepFailed,
     runGateCommand: args.runGateCommand,
     onGateReport: args.onGateReport,
   }, args.maxTotalCostUsd)

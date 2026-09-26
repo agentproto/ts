@@ -8,17 +8,33 @@
  * are catalogue declarations injected as `candidates`.
  */
 
-export { runWorkflow, WorkflowSuspendedError } from "./run-workflow.js"
+export {
+  runWorkflow,
+  WorkflowSuspendedError,
+  AgentInputRequiredError,
+  StepOutcomeError,
+  AgentSpawnError,
+} from "./run-workflow.js"
+export { DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES } from "./types.js"
 export {
   compileWorkflow,
   WorkflowCompileError,
   resolveRef,
   resolveRefPrefixed,
   resolveValue,
+  interpolateTemplate,
   evalPredicate,
   type CompileWorkflowOptions,
 } from "./compile-workflow.js"
 export { compileWorkflowManifest } from "./load-workflow.js"
+export {
+  normalizeWorkflowInputsSchema,
+  validateWorkflowInput,
+  isCompilableJsonSchema,
+  validateAgainstJsonSchema,
+  type WorkflowInputValidation,
+  type SchemaValidationIssue,
+} from "./validate-input.js"
 export { buildAgentStep, type AgentStepFields } from "./build-agent-step.js"
 export {
   materializeKnowledge,
@@ -45,6 +61,7 @@ export type {
   SubworkflowStep,
   AgentStep,
   AgentHarness,
+  OutputSchemaLike,
   HarnessKnowledgeSelector,
   KnowledgeAppliedRecord,
   GateStep,
@@ -56,10 +73,14 @@ export type {
   AgentSessionHost,
   StepCache,
   StepCacheEntry,
+  StepHookInfo,
+  StepSkippedInfo,
+  StepFailedInfo,
   RuntimeWorkflow,
   RunWorkflowArgs,
   ApprovalRequest,
   ApprovalDecision,
   ResumeRequest,
+  InputRequiredRequest,
   WorkflowRunResult,
 } from "./types.js"

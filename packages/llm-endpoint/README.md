@@ -10,9 +10,12 @@ surfaces from a single port:
 - `POST /v1/responses` — OpenAI Responses API facade for Codex custom providers.
 
 Requests are fanned out to upstream providers — **Moonshot, OpenRouter, ZAI/Zhipu,
-Groq, xAI, and direct OpenAI** — using provider-native model references. The
-proxy also handles Anthropic↔OpenAI schema translation, per-provider tool caps,
-orphaned-tool-call repair, and thinking-block stripping where needed.
+Groq, xAI, direct OpenAI, Nebius AI Studio, a self-hosted "forge" server for
+fine-tunes, and any number of named local/LAN model servers** (Ollama,
+llama-server, vLLM, …, configured from `~/.agentproto/llm-endpoints.json`) —
+using provider-native model references. The proxy also handles
+Anthropic↔OpenAI schema translation, per-provider tool caps, orphaned-tool-call
+repair, and thinking-block stripping where needed.
 
 - **Package:** `@agentproto/llm-endpoint`
 - **Entry:** `src/cli.ts` → `start()` in `src/index.ts`
@@ -83,8 +86,136 @@ field is parsed as `provider/model`:
 | Groq | `groq/llama-3.3-70b-versatile` | `api.groq.com/openai/v1/chat/completions` |
 | xAI | `xai/grok-4.5` | `api.x.ai/v1/chat/completions` |
 | OpenAI | `openai/gpt-4.1` | `api.openai.com/v1/chat/completions` |
+| Forge (self-hosted) | `forge/my-lora-v3` | `$FORGE_BASE_URL/chat/completions` |
+| Nebius AI Studio | `nebius/meta-llama/Llama-3.1-8B-Instruct` | `api.studio.nebius.com/v1/chat/completions` (or `$NEBIUS_BASE_URL`) |
 
 You can also force the provider with `?p=<provider>` and send a bare model id.
+
+### Adding an OpenAI-compatible upstream provider
+
+`forge` and `nebius` are both **configurable providers**: any OpenAI-compatible
+upstream wired up from exactly two env vars, `<PROVIDER>_BASE_URL` (scheme,
+host, port, path prefix) and `<PROVIDER>_API_KEY` (sent as `Authorization:
+Bearer <key>`) — no code change needed to point either one at a different
+host. They differ in one way: whether the base URL has a working default.
+
+| Provider | `..._BASE_URL` | Default when unset | `..._API_KEY` |
+| :--- | :--- | :--- | :--- |
+| `forge` (self-hosted) | `FORGE_BASE_URL` | *(none — provider only exists once set)* | `FORGE_API_KEY` — **optional**; omitted entirely, no `Authorization` header sent, for a server with no auth (private network) |
+| `nebius` (Nebius AI Studio) | `NEBIUS_BASE_URL` | `https://api.studio.nebius.com/v1` | `NEBIUS_API_KEY` — **required**, like every other provider (401 when missing) |
+
+Both `http://` and `https://` are supported, with any host/port/path prefix —
+unlike every fixed-hostname provider above, these two read their wire format
+from the env var rather than a hardcoded `https://` + well-known host. An
+unset `FORGE_BASE_URL` (no default) or a malformed override on either
+provider makes `forge/...`/`nebius/...` requests fail with a clear 4xx, never
+a crash.
+
+Both work on all three surfaces (`/v1/messages`, `/v1/chat/completions`,
+`/v1/responses`) with the same Anthropic↔OpenAI translation, streaming, and
+tool-cap handling as every other OpenAI-compatible provider. `GET /v1/models`
+additionally proxies `GET ${FORGE_BASE_URL}/models` and merges the results
+into the default pack's listing (ids prefixed `forge/`) — forge-only, since
+its LoRA adapters are registered on the server itself rather than known ahead
+of time; nebius's catalog is the well-known set of ids you already pass in.
+
+```sh
+# forge — self-hosted vLLM, no auth
+curl http://localhost:18090/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"forge/my-lora-v3","messages":[{"role":"user","content":"hi"}]}'
+
+# nebius — hosted, requires NEBIUS_API_KEY
+curl http://localhost:18090/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"nebius/meta-llama/Llama-3.1-8B-Instruct","messages":[{"role":"user","content":"hi"}]}'
+```
+
+### Named endpoints — N local/LAN model servers (`~/.agentproto/llm-endpoints.json`)
+
+`forge` is one keyless self-hosted server. Real setups often have several —
+Ollama, llama-server, vLLM — each on its own host/port, possibly on another
+LAN machine. Named endpoints generalize `forge`'s mechanism to N of them,
+configured from a JSON file instead of a pair of env vars per server:
+
+```jsonc
+// ~/.agentproto/llm-endpoints.json (path overridable via LLM_ENDPOINT_ENDPOINTS_FILE)
+{
+  "endpoints": [
+    {
+      "id": "bonsai",
+      "kind": "openai",
+      "baseUrl": "http://192.168.1.20:8081/v1",
+      "apiKeyEnv": "BONSAI_API_KEY",
+      "defaultRequestFields": { "chat_template_kwargs": { "enable_thinking": false } },
+      "timeoutMs": { "firstTokenMs": 180000 }
+    },
+    { "id": "ollama", "kind": "openai", "baseUrl": "http://192.168.1.20:11434/v1" },
+    {
+      "id": "lmstudio",
+      "kind": "openai",
+      "baseUrl": "http://127.0.0.1:1234/v1",
+      "defaultRequestFields": { "reasoning_effort": "none" }
+    }
+  ]
+}
+```
+
+The field names deliberately mirror `openagentik/router`'s `providers[]`
+schema (`kind`, `baseUrl`, `apiKeyEnv`, `defaultRequestFields`, `timeoutMs`) so
+a config is portable between the two. Each entry becomes a routable provider
+`<id>/<model>` — `bonsai/bonsai-27b`, `ollama/qwen2.5-coder` — going through
+the exact same dispatch path as `forge`/`nebius` above: all three surfaces,
+Anthropic↔OpenAI translation, streaming, tool-cap handling, and `GET
+/v1/models` merging (an unreachable endpoint is skipped with a warning, never
+a 500 for the whole listing). `forge` itself keeps working unchanged — it's
+the implicit endpoint that `FORGE_BASE_URL`/`FORGE_API_KEY` configure; a file
+entry may not reuse the id `"forge"`.
+
+- **`apiKeyEnv`** names an env var (never the key itself). Absent, or the env
+  var unset, means the endpoint is always keyless — no `Authorization` header
+  sent, same as `forge` with no `FORGE_API_KEY`.
+- **`defaultRequestFields`** is any set of top-level OpenAI-compatible request
+  fields, merged UNDER the client's own request (a client-supplied top-level
+  key always wins; for an object-valued key present on both sides — e.g.
+  `chat_template_kwargs` — the merge goes one level deep, client sub-keys
+  winning). It cannot set `model`, `messages`, `stream`, `tools`, or `input`
+  — those would override routing/auth, not just default a parameter.
+  - `chat_template_kwargs` is the vLLM OpenAI-compatible extension `forge`
+    already documents above. Needed in practice: Qwen3.6-based models (e.g. a
+    Bonsai-served 27B) default to a "thinking" chat template and, on a tight
+    `max_tokens` budget, can spend the whole budget reasoning and return
+    empty content — `enable_thinking: false` avoids that unless the caller
+    explicitly opts back in.
+  - A plain top-level field works the same way for a server that doesn't
+    honour `chat_template_kwargs` or Anthropic's `thinking`/OpenAI's
+    `reasoning` params at all: LM Studio serving `prism-ml/bonsai-27b`
+    ignores both and only respects a top-level `reasoning_effort: "none"` to
+    cut reasoning to 0 tokens. On the Anthropic `/v1/messages` surface, an
+    explicit client `thinking: {type: "enabled"}` withholds a default
+    `reasoning_effort` rather than forcing it off.
+- When the upstream *still* returns only `reasoning_content` (no visible
+  `content`) — a model-level defect, not a config one — set
+  `LLM_ENDPOINT_PASSTHROUGH_THINKING=1` to surface it as an Anthropic
+  `thinking` block instead of an empty message.
+- **`GET /v1/endpoints`** (and `/endpoints`) reports live health per endpoint —
+  forge (if configured) plus every named endpoint, never nebius (a hosted
+  provider with a well-known catalog, not a local/LAN server): `{id, baseUrl
+  (no credential), reachable, models, latencyMs}`. Gated by the same
+  access-token check as `/v1/upstreams` (not the `/v1/models` public
+  exemption).
+- A `packs.local.json` route may target a named endpoint id as its
+  `provider` — an id that resolves to neither a canonical upstream, `forge`,
+  `nebius`, nor a configured endpoint is a clear load-time error instead of a
+  confusing 400 the first time a client hits that code.
+
+```sh
+curl http://localhost:18090/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"bonsai/bonsai-27b","messages":[{"role":"user","content":"hi"}]}'
+
+curl http://localhost:18090/v1/endpoints
+```
 
 ### Anthropic Messages surface (`/v1/messages`)
 

@@ -55,6 +55,7 @@ import {
   makeOpenPrResolver,
   makePrStateResolver,
 } from "./worktree.js"
+import { makeBranchGcRunner, makeBranchGcVerdictReader, makeBranchGcVerdictRecorder } from "./branch.js"
 import { loadConfig } from "@agentproto/runtime/config"
 import {
   loadWorkspacesConfig,
@@ -82,6 +83,10 @@ import {
   unlinkRuntimeMeta,
   injectProviderKeysIntoEnv,
   setMcpCredentialDeps,
+  resolveDeferredToolsGatewayOption,
+  reconcileSandboxLedger,
+  makeSandboxResolver,
+  makeSandboxCredsStore,
   type AgentAdapterResolver,
   type AdapterAuthDescriptor,
   type GatewayHandle,
@@ -456,7 +461,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(Object.keys(modelProviders).length > 0 ? { modelProviders } : {}),
       }
       return {
-        async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, onActivity, permissionHold, auth, commandSandbox, env }) {
+        async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, onActivity, permissionHold, auth, commandSandbox, additionalReadPaths, env }) {
           // Build config.options only when there's something to set — an
           // empty object would pass undefined validation but trips the
           // "no declared options" early-return in composeSpawn. Caller-
@@ -492,6 +497,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
             ...(typeof posture === "string" ? { posture } : {}),
             ...(contextProfile ? { contextProfile } : {}),
             ...(commandSandbox ? { commandSandbox } : {}),
+            // Read grants for a confined adapter tree (the AGENTS.md pointer
+            // file, the headless browser's install + Chrome bundle).
+            ...(additionalReadPaths?.length ? { additionalReadPaths } : {}),
             ...(env ? { env } : {}),
           })
         },
@@ -712,6 +720,13 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // — an unset value here passes `undefined` through so createGateway
         // applies its own sane default rather than reading "unset" as off.
         turnStallAfterMs: resolveTurnStallAfterMs(cfgDaemon.turnStallAfterMs),
+        // Deferred/lazy MCP tool loading (harness-parity item 3). Read ONCE
+        // at boot from `defaults.mcp.deferredTools` — this is the gateway-
+        // wide default a connection with no per-mount `?deferred=` override
+        // and no per-spawn/role override falls through to. Default OFF
+        // (undefined ⇒ `createGateway` never wraps `withDeferredTools` —
+        // today's fully-eager behaviour, unchanged for existing clients).
+        deferredTools: resolveDeferredToolsGatewayOption(cfg.defaults?.mcp?.deferredTools),
         llmEndpoint: cfgFeatures.llmEndpoint === true,
         resolveAgentAdapter,
         // Injected port behind `agent_start.worktree` + the `worktrees.isolation`
@@ -727,6 +742,12 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // `planGc` / `applyGc` engine over @agentproto/worktree (defaults to a
         // dry run), same dep reasoning as above.
         runWorktreeGc: makeWorktreeGcRunner(),
+        // Injected ports behind `branch_gc` / `branch_gc_verdict` (+ `POST
+        // /branches/gc[/verdict]`): the branch-gc engine over
+        // @agentproto/worktree (defaults to a dry run), same dep reasoning.
+        runBranchGc: makeBranchGcRunner(),
+        recordBranchGcVerdict: makeBranchGcVerdictRecorder(),
+        readBranchGcVerdict: makeBranchGcVerdictReader(),
         // Injected port behind `sessions.ts`'s exit-time worktree auto-reclaim
         // (`SessionDescriptor.worktreeAutoProvisioned`): a policy-provisioned
         // (implicit) session's own worktree is reclaimed the moment it exits,
@@ -879,6 +900,36 @@ export async function runServe(args: readonly string[]): Promise<number> {
   } catch (err) {
     process.stderr.write(
       `${color.dim}eager resume-on-boot skipped — ${
+        err instanceof Error ? err.message : String(err)
+      }${color.reset}\n`,
+    )
+  }
+
+  // ── sandbox ledger reconcile ──
+  // The ledger (~/.agentproto/sandboxes.json) can drift from what a
+  // provider actually still has running — a failed teardown, a daemon that
+  // crashed mid-close, a provider-side idle-reap the daemon never heard
+  // about. Probing every row still claiming to be booted/connected/paused
+  // catches that drift at boot, same primitive `agentproto sandbox list`
+  // and `GET /sandboxes/:id/alive` already use per-row. Read-only against
+  // the provider and never tears a box down — a row it confirms gone is
+  // only ever marked "gone" in the ledger. Best-effort: a broken provider
+  // credential must never gate the daemon being up.
+  try {
+    const reconciled = await reconcileSandboxLedger({
+      resolveProvider: makeSandboxResolver(makeSandboxCredsStore()),
+    })
+    if (reconciled.checked > 0) {
+      process.stderr.write(
+        `${color.dim}sandbox ledger reconciled: ${reconciled.checked} checked, ` +
+          `${reconciled.gone} gone, ${reconciled.alive} alive` +
+          `${reconciled.unknown > 0 ? `, ${reconciled.unknown} unknown` : ""}` +
+          `${color.reset}\n`,
+      )
+    }
+  } catch (err) {
+    process.stderr.write(
+      `${color.dim}sandbox ledger reconcile skipped — ${
         err instanceof Error ? err.message : String(err)
       }${color.reset}\n`,
     )
@@ -1109,12 +1160,12 @@ async function runOneTunnel(
   let sink: FrameSink = rawSink
   let e2eActive = false
   if (opts.e2e && opts.token) {
-    const started = startTunnelHandshake(opts.token)
+    const started = await startTunnelHandshake(opts.token)
     const wrapped = await connectSinkE2E(
       rawSink,
       encodeTunnelMessage(started.offer),
-      reply => {
-        const session = started.complete(decodeTunnelAccept(reply))
+      async reply => {
+        const session = await started.complete(decodeTunnelAccept(reply))
         return { sendKey: session.sendKey, recvKey: session.recvKey }
       },
     )

@@ -200,7 +200,7 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
       {
         name: "agentproto",
         transport: "http",
-        ref: `${daemonMcpUrl}?denyTools=agent_start,agent_prompt&callerSessionId=${desc.id}`,
+        ref: `${daemonMcpUrl}?denyTools=agent_start,agent_prompt&deferred=1&callerSessionId=${desc.id}`,
       },
     ]
     expect(startSession).toHaveBeenCalledWith(

@@ -65,7 +65,7 @@ import {
 import {
   resolveSpawnDefaults,
   resolveAuthSpec,
-  subscriptionSurfaceFor,
+  modelIdPrefixProvider,
   type SpawnDefaultsConfig,
   type DefaultsAdapterAuthConfig,
   type ResolvedAuthSpec,
@@ -77,6 +77,7 @@ import {
   type RouteAwareLaunchConfig,
 } from "./launch-config.js"
 import { buildResumeContextDigest } from "./resume-context-digest.js"
+import { spawnEligibilityManifest } from "./session-spawn.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import {
@@ -96,7 +97,6 @@ import {
   KeychainStore,
   type AuthProfile,
   type AuthMethod,
-  type AdapterAuthManifest,
 } from "@agentproto/auth"
 import {
   createSandboxAgentSessionHost,
@@ -185,64 +185,6 @@ export async function resolveAccessProfileFromStore(
  *  mapping). */
 function methodToMode(method: AuthMethod): "subscription" | "api-key" {
   return method === "oauth-bearer" ? "subscription" : "api-key"
-}
-
-/** Which auth methods `descriptor` can present on its DIRECT route, derived
- *  from the same projection `resolveAuthSpec` reads (`authSubscription` ⇒
- *  oauth-bearer, `provider` ⇒ api-key) — the method-side of the eligibility
- *  predicate (SPEC §3.4). Mirrors `catalog-models.ts`'s `methodsForDirect`. */
-function directMethods(
-  descriptor: AdapterAuthDescriptor | undefined,
-  endpoint?: string,
-): AuthMethod[] {
-  const methods: AuthMethod[] = []
-  // oauth-bearer requires an explicit, provider-matching subscription
-  // surface — see `subscriptionSurfaceFor`'s doc in spawn-defaults.ts.
-  if (subscriptionSurfaceFor(descriptor?.authSubscription, endpoint) !== undefined) {
-    methods.push("oauth-bearer")
-  }
-  if (descriptor?.provider || descriptor?.modelDerivedApiKey) methods.push("api-key")
-  return methods
-}
-
-/**
- * Project the resolved adapter + effective route into the single-route
- * {@link AdapterAuthManifest} the #470 eligibility predicate needs, mirroring
- * `catalog-models.ts`'s `billedVendor`/`methodsForDirect` split: a DIRECT route
- * (no gateway override, or a gateway equal to the model's own vendor) bills the
- * model's vendor and presents whatever the descriptor declares; a gateway route
- * bills the gateway's own id and is always api-key only (SPEC §1c — "a moonshot
- * profile, not the Claude sub"). Returns `undefined` when no vendor resolves at
- * all (an adapter with no provider + a free-form model) — the caller treats
- * that as "cannot confirm eligibility" and rejects, never guessing a wallet.
- */
-function eligibilityManifest(
-  adapterSlug: string,
-  descriptor: AdapterAuthDescriptor | undefined,
-  route: RouteSpec | undefined,
-  model: string | undefined,
-): { manifest: AdapterAuthManifest; routeId: string } | undefined {
-  const baseVendor =
-    descriptor?.provider ?? (model ? getModelProvider(model) : undefined)
-  const gateway = route?.gateway
-  const routeId = gateway ?? baseVendor
-  if (routeId === undefined) return undefined
-  // A gateway that differs from the model's own vendor is a redirection —
-  // billed against the gateway id, api-key only (no third-party gateway has an
-  // oauth-bearer path). Otherwise it's the direct route.
-  const isDirect = baseVendor !== undefined && routeId === baseVendor
-  const billedVendor = isDirect ? baseVendor : routeId
-  const methods: readonly AuthMethod[] = isDirect
-    ? directMethods(descriptor, billedVendor)
-    : ["api-key"]
-  return {
-    manifest: {
-      id: adapterSlug,
-      endpointByRoute: { [routeId]: billedVendor },
-      methodsByRoute: { [routeId]: methods },
-    },
-    routeId,
-  }
 }
 
 /** Resolved billing-auth for a resume — the pair {@link resolveResumeAuth}
@@ -344,7 +286,7 @@ export async function resolveResumeAuth(
     }
     if (found) {
       const { profile, credential } = found
-      const projected = eligibilityManifest(
+      const projected = spawnEligibilityManifest(
         adapterSlug,
         resolved.authDescriptor,
         effRoute,
@@ -409,6 +351,9 @@ export async function resolveResumeAuth(
   const resolvedProvider =
     pinnedProvider ??
     resolved.authDescriptor.provider ??
+    (authModel && resolved.authDescriptor.modelDerivedApiKey
+      ? modelIdPrefixProvider(authModel)
+      : undefined) ??
     (authModel ? getModelProvider(authModel) : undefined)
   // With an explicit gateway route the provider-store key is looked up under
   // the gateway id (e.g. "moonshot") rather than the model-derived vendor.
@@ -702,7 +647,7 @@ export async function restartAgentSession(
           `so profile "${profile.id}" cannot be attached.`,
       )
     }
-    const projected = eligibilityManifest(
+    const projected = spawnEligibilityManifest(
       adapterSlug,
       resolved.authDescriptor,
       effRoute,
@@ -834,6 +779,14 @@ export async function restartAgentSession(
       ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
       ...(authSpec ? { auth: authSpec } : {}),
       ...(launchConfig.options ? { options: launchConfig.options } : {}),
+      // Spawn-time guarantees survive a restart: the adapter runs under the
+      // same OS confinement it had (the EFFECTIVE mode `session-spawn.ts`
+      // recorded, re-applied explicitly so a since-edited workspace config
+      // can't silently loosen a running session's lineage), and a session
+      // spawned in permission-hold keeps routing its permission requests to
+      // the human inbox instead of auto-answering them.
+      ...(prev.commandSandbox ? { commandSandbox: prev.commandSandbox } : {}),
+      ...(prev.permissionHold ? { permissionHold: true } : {}),
       env: {
         [SESSION_ID_ENV]: restartedSessionId,
         [WORKSPACE_SLUG_ENV]: prev.workspaceSlug,
@@ -898,6 +851,9 @@ export async function restartAgentSession(
       ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
       ...(effMode ? { mode: effMode } : {}),
       ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
+      // Echoed so the NEXT restart (and every reader) still sees them.
+      ...(prev.commandSandbox ? { commandSandbox: prev.commandSandbox } : {}),
+      ...(prev.permissionHold ? { permissionHold: true } : {}),
       // Lineage carry-forward (#session-visibility). A restart is a NEW
       // descriptor, but it is the same logical session continued — so its
       // origin (which channel spawned it: cowork/vscode/codex/cron) and its
@@ -1164,12 +1120,16 @@ function toBoxMcpServerMounts(entries: readonly AcpMcpServer[]): Array<{
   transport: "stdio" | "http" | "sse"
   ref?: string
   headers?: Record<string, string>
+  args?: string[]
+  env?: Record<string, string>
 }> {
   return entries.map(e => ({
     name: e.name,
     transport: e.transport,
     ...(e.ref !== undefined ? { ref: e.ref } : {}),
     ...(e.headers !== undefined ? { headers: e.headers } : {}),
+    ...(e.args !== undefined ? { args: e.args } : {}),
+    ...(e.env !== undefined ? { env: e.env } : {}),
   }))
 }
 

@@ -28,6 +28,7 @@ import { createInterface } from "node:readline"
 import { join } from "node:path"
 import type { SandboxMode } from "@agentproto/command-sandbox"
 import { toFileBasedMcpServers } from "../mcp-servers.js"
+import { terminateChildTree } from "../process-tree.js"
 import { wrapAgentCliSpawn } from "../command-sandbox-wrap.js"
 import type {
   AcpMcpServer,
@@ -384,8 +385,11 @@ export function createPrintSession(
     },
 
     async close(): Promise<void> {
-      activeChild?.kill("SIGTERM")
+      // Whole tree — the print CLI's own subprocesses (MCP servers, tools)
+      // must not outlive the session. Restore runs regardless.
+      const closing = activeChild ? terminateChildTree(activeChild) : undefined
       mcpRestore?.()
+      await closing
     },
   }
 }

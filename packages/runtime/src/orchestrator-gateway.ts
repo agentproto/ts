@@ -71,6 +71,13 @@ export const DEFAULT_ORCHESTRATOR_TOOLS: readonly string[] = [
   // nothing else) — it's also the sole tool of the minimal report-only
   // scope `session-spawn.ts` mints for a gateway-less child with a parent.
   "message_parent",
+  // Typed messaging (AIP-46 §Session messages) — like `message_parent`, NOT
+  // delegation: each reaches only tree neighbours.
+  "message_send",
+  "message_reply",
+  "inbox_list",
+  "inbox_ack",
+  "inbox_wait",
   "session_monitor",
   "session_events_poll",
   "session_list",
@@ -273,6 +280,18 @@ export interface OrchestratorGatewayDeps {
    *  spawn is rejected with `sandbox_provider_not_found`, exactly as the
    *  root gateway would be without it. */
   resolveSandboxProvider?: SandboxProviderResolver
+  /** Forwarded to `registerSessionTools` — config.json
+   *  `defaults.agentPromptInterrupt`, the unset-default for `interrupt` on
+   *  `agent_prompt` / `message_parent`. Threaded here so a child driving its
+   *  parent/peers (or reporting up via `message_parent`) through this scoped
+   *  gateway honours the same daemon default as the root `/mcp` surface. */
+  defaultAgentPromptInterrupt?: boolean
+  /** config.json `defaults.messaging.allowSiblings`, forwarded to
+   *  `registerAgentTools`. */
+  messagingAllowSiblings?: boolean
+  /** config.json `defaults.messaging.agentInterrupt`, forwarded to
+   *  `registerAgentTools`. */
+  messagingAgentInterrupt?: "allow" | "deny"
 }
 
 export type OrchestratorMcpServerFactory = (
@@ -324,6 +343,11 @@ export function createOrchestratorMcpServerFactory(
       ...(deps.resolveSandboxProvider
         ? { resolveSandboxProvider: deps.resolveSandboxProvider }
         : {}),
+      ...(deps.defaultAgentPromptInterrupt != null
+        ? { defaultAgentPromptInterrupt: deps.defaultAgentPromptInterrupt }
+        : {}),
+      ...(deps.messagingAllowSiblings ? { messagingAllowSiblings: true } : {}),
+      ...(deps.messagingAgentInterrupt ? { messagingAgentInterrupt: deps.messagingAgentInterrupt } : {}),
       daemonMcpUrl: deps.daemonMcpUrl,
     })
     registerOrchestrationTools(server, {

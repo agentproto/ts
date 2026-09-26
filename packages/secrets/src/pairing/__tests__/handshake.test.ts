@@ -12,11 +12,14 @@ import {
   type PairingHello,
 } from "../handshake.js"
 import { generateIdentity, identityFingerprint } from "../../identity/index.js"
+import { nodeCryptoProvider } from "../../crypto/node.js"
+import { webCryptoProvider } from "../../crypto/webcrypto.js"
+import type { CryptoProvider } from "../../crypto/types.js"
 
 const OFFER_TOKEN = "one-time-offer-token-abc123"
 
-function setup() {
-  const identity = generateIdentity()
+async function setup() {
+  const identity = await generateIdentity()
   const clientParams: ClientHandshakeParams = {
     daemonX25519Pub: identity.x25519.pub,
     daemonEd25519Pub: identity.ed25519.pub,
@@ -30,11 +33,11 @@ function setup() {
   return { identity, clientParams, daemonParams }
 }
 
-/** Assert `fn` throws a `PairingError` with exactly `code` — no `as` casts. */
-function expectPairingError(fn: () => unknown, code: PairingErrorCode): void {
+/** Assert `fn` rejects with a `PairingError` with exactly `code` — no `as` casts. */
+async function expectPairingError(fn: () => unknown, code: PairingErrorCode): Promise<void> {
   let thrown: unknown
   try {
-    fn()
+    await fn()
   } catch (err) {
     thrown = err
   }
@@ -58,12 +61,22 @@ function tamperSeal(ct0: string): string {
 const eq = (a: Uint8Array, b: Uint8Array): boolean =>
   Buffer.from(a).equals(Buffer.from(b))
 
-describe("@agentproto/secrets/pairing — pair/v1 handshake", () => {
-  it("happy path derives matching, direction-crossed keys on both sides", () => {
-    const { clientParams, daemonParams, identity } = setup()
-    const client = startClientHandshake(clientParams)
-    const { reply, session: daemonSession } = respondToHandshake(client.hello, daemonParams)
-    const clientSession = client.complete(reply)
+// Every client/daemon provider pairing: same-provider runs pin each
+// implementation; the cross runs prove a WebCrypto client and a node:crypto
+// daemon (and vice versa) interoperate.
+const PROVIDERS: [string, CryptoProvider, CryptoProvider][] = [
+  ["node client ↔ node daemon", nodeCryptoProvider, nodeCryptoProvider],
+  ["webcrypto client ↔ webcrypto daemon", webCryptoProvider, webCryptoProvider],
+  ["webcrypto client ↔ node daemon", webCryptoProvider, nodeCryptoProvider],
+  ["node client ↔ webcrypto daemon", nodeCryptoProvider, webCryptoProvider],
+]
+
+describe.each(PROVIDERS)("@agentproto/secrets/pairing — pair/v1 handshake (%s)", (_name, cc, dc) => {
+  it("happy path derives matching, direction-crossed keys on both sides", async () => {
+    const { clientParams, daemonParams, identity } = await setup()
+    const client = await startClientHandshake(clientParams, cc)
+    const { reply, session: daemonSession } = await respondToHandshake(client.hello, daemonParams, dc)
+    const clientSession = await client.complete(reply)
 
     // Direction keys cross: what the client sends, the daemon receives.
     expect(eq(clientSession.sendKey, daemonSession.recvKey)).toBe(true)
@@ -79,52 +92,52 @@ describe("@agentproto/secrets/pairing — pair/v1 handshake", () => {
 
     // Fingerprints: the client pins the daemon's static identity; the daemon
     // (in P1) sees the client's ephemeral key.
-    expect(clientSession.peerFingerprint).toBe(identityFingerprint(identity.x25519.pub))
-    expect(daemonSession.peerFingerprint).toBe(identityFingerprint(client.hello.ePub))
+    expect(clientSession.peerFingerprint).toBe(await identityFingerprint(identity.x25519.pub))
+    expect(daemonSession.peerFingerprint).toBe(await identityFingerprint(client.hello.ePub))
   })
 
-  it("hello and reply survive an encode → decode round-trip", () => {
-    const { clientParams, daemonParams } = setup()
-    const client = startClientHandshake(clientParams)
+  it("hello and reply survive an encode → decode round-trip", async () => {
+    const { clientParams, daemonParams } = await setup()
+    const client = await startClientHandshake(clientParams, cc)
     const decodedHello = decodePairingHello(encodePairingMessage(client.hello))
     expect(decodedHello).toEqual(client.hello)
 
-    const { reply } = respondToHandshake(decodedHello, daemonParams)
+    const { reply } = await respondToHandshake(decodedHello, daemonParams, dc)
     const decodedReply = decodePairingReply(encodePairingMessage(reply))
     expect(decodedReply).toEqual(reply)
     // And the full path still completes off the round-tripped messages.
-    expect(() => client.complete(decodedReply)).not.toThrow()
+    await expect(client.complete(decodedReply)).resolves.toBeDefined()
   })
 
-  it("daemon rejects a tampered ct₀ (unseal_failed), no reply, no session", () => {
-    const { clientParams, daemonParams } = setup()
-    const client = startClientHandshake(clientParams)
+  it("daemon rejects a tampered ct₀ (unseal_failed), no reply, no session", async () => {
+    const { clientParams, daemonParams } = await setup()
+    const client = await startClientHandshake(clientParams, cc)
     const tampered: PairingHello = { ...client.hello, ct0: tamperSeal(client.hello.ct0) }
-    expectPairingError(() => respondToHandshake(tampered, daemonParams), "unseal_failed")
+    await expectPairingError(async () => (await respondToHandshake(tampered, daemonParams, dc)), "unseal_failed")
   })
 
-  it("daemon rejects a swapped ephemeral key (ephemeral_mismatch)", () => {
-    const { clientParams, daemonParams } = setup()
-    const client = startClientHandshake(clientParams)
+  it("daemon rejects a swapped ephemeral key (ephemeral_mismatch)", async () => {
+    const { clientParams, daemonParams } = await setup()
+    const client = await startClientHandshake(clientParams, cc)
     // A broker relays the intact (opaque) seal but substitutes a different
     // cleartext ephemeral key.
-    const attacker = startClientHandshake(clientParams)
+    const attacker = await startClientHandshake(clientParams, cc)
     const swapped: PairingHello = { ...client.hello, ePub: attacker.hello.ePub }
-    expectPairingError(() => respondToHandshake(swapped, daemonParams), "ephemeral_mismatch")
+    await expectPairingError(async () => (await respondToHandshake(swapped, daemonParams, dc)), "ephemeral_mismatch")
   })
 
-  it("daemon rejects a stale / unknown offer token (offer_rejected)", () => {
-    const { clientParams, identity } = setup()
-    const client = startClientHandshake(clientParams)
+  it("daemon rejects a stale / unknown offer token (offer_rejected)", async () => {
+    const { clientParams, identity } = await setup()
+    const client = await startClientHandshake(clientParams, cc)
     const strictDaemon: DaemonHandshakeParams = {
       identity,
       verifyOfferToken: () => false, // token unknown/expired/spent
     }
-    expectPairingError(() => respondToHandshake(client.hello, strictDaemon), "offer_rejected")
+    await expectPairingError(async () => (await respondToHandshake(client.hello, strictDaemon, dc)), "offer_rejected")
   })
 
-  it("a single-use token is accepted once, then a replay is rejected", () => {
-    const { clientParams, identity } = setup()
+  it("a single-use token is accepted once, then a replay is rejected", async () => {
+    const { clientParams, identity } = await setup()
     let spent = false
     const singleUse: DaemonHandshakeParams = {
       identity,
@@ -135,83 +148,83 @@ describe("@agentproto/secrets/pairing — pair/v1 handshake", () => {
       },
     }
     // First pairing consumes the token.
-    expect(() => respondToHandshake(startClientHandshake(clientParams).hello, singleUse)).not.toThrow()
+    await expect(respondToHandshake((await startClientHandshake(clientParams, cc)).hello, singleUse, dc)).resolves.toBeDefined()
     // A replay of a fresh hello carrying the same (now spent) token is refused.
-    expectPairingError(
-      () => respondToHandshake(startClientHandshake(clientParams).hello, singleUse),
+    await expectPairingError(
+      async () => respondToHandshake((await startClientHandshake(clientParams, cc)).hello, singleUse, dc),
       "offer_rejected"
     )
   })
 
-  it("client rejects a reply signed by the wrong daemon key (bad_signature)", () => {
-    const { clientParams, daemonParams } = setup()
+  it("client rejects a reply signed by the wrong daemon key (bad_signature)", async () => {
+    const { clientParams, daemonParams } = await setup()
     // The client pins a DIFFERENT Ed25519 key than the daemon actually holds —
     // models an evil rendezvous re-signing with its own key.
     const wrongKeyParams: ClientHandshakeParams = {
       ...clientParams,
-      daemonEd25519Pub: generateIdentity().ed25519.pub,
+      daemonEd25519Pub: (await generateIdentity()).ed25519.pub,
     }
-    const client = startClientHandshake(wrongKeyParams)
-    const { reply } = respondToHandshake(client.hello, daemonParams)
-    expectPairingError(() => client.complete(reply), "bad_signature")
+    const client = await startClientHandshake(wrongKeyParams, cc)
+    const { reply } = await respondToHandshake(client.hello, daemonParams, dc)
+    await expectPairingError(async () => (await client.complete(reply)), "bad_signature")
   })
 
-  it("client rejects a reply whose daemon ephemeral was flipped in flight", () => {
-    const { clientParams, daemonParams } = setup()
-    const client = startClientHandshake(clientParams)
-    const { reply } = respondToHandshake(client.hello, daemonParams)
+  it("client rejects a reply whose daemon ephemeral was flipped in flight", async () => {
+    const { clientParams, daemonParams } = await setup()
+    const client = await startClientHandshake(clientParams, cc)
+    const { reply } = await respondToHandshake(client.hello, daemonParams, dc)
     // A broker swaps the daemon ephemeral — the transcript no longer matches
     // the one the signature covers.
-    const attacker = respondToHandshake(startClientHandshake(clientParams).hello, daemonParams)
+    const attacker = await respondToHandshake((await startClientHandshake(clientParams, cc)).hello, daemonParams, dc)
     const forged = { ...reply, dePub: attacker.reply.dePub }
-    expectPairingError(() => client.complete(forged), "bad_signature")
+    await expectPairingError(async () => (await client.complete(forged)), "bad_signature")
   })
 
-  it("daemon with the wrong static key cannot open the hello (unseal_failed)", () => {
-    const { clientParams } = setup()
-    const client = startClientHandshake(clientParams)
+  it("daemon with the wrong static key cannot open the hello (unseal_failed)", async () => {
+    const { clientParams } = await setup()
+    const client = await startClientHandshake(clientParams, cc)
     const otherDaemon: DaemonHandshakeParams = {
-      identity: generateIdentity(), // different x25519 → cannot unseal
+      identity: (await generateIdentity()), // different x25519 → cannot unseal
       verifyOfferToken: () => true,
     }
-    expectPairingError(() => respondToHandshake(client.hello, otherDaemon), "unseal_failed")
+    await expectPairingError(async () => (await respondToHandshake(client.hello, otherDaemon, dc)), "unseal_failed")
   })
 
-  it("rejects truncated / malformed handshake messages", () => {
-    const { clientParams, daemonParams } = setup()
-    const client = startClientHandshake(clientParams)
+  it("rejects truncated / malformed handshake messages", async () => {
+    const { clientParams, daemonParams } = await setup()
+    const client = await startClientHandshake(clientParams, cc)
     const helloBytes = encodePairingMessage(client.hello)
 
     // Truncated hello → not valid JSON.
-    expectPairingError(
+    await expectPairingError(
       () => decodePairingHello(helloBytes.subarray(0, helloBytes.length - 10)),
       "malformed_hello"
     )
 
     // A reply decoded as a hello (missing fields) → malformed_hello.
-    const { reply } = respondToHandshake(client.hello, daemonParams)
+    const { reply } = await respondToHandshake(client.hello, daemonParams, dc)
     const replyBytes = encodePairingMessage(reply)
-    expectPairingError(() => decodePairingHello(replyBytes), "malformed_hello")
+    await expectPairingError(() => decodePairingHello(replyBytes), "malformed_hello")
 
     // Truncated reply → malformed_reply.
-    expectPairingError(() => decodePairingReply(replyBytes.subarray(0, 5)), "malformed_reply")
+    await expectPairingError(() => decodePairingReply(replyBytes.subarray(0, 5)), "malformed_reply")
   })
 
-  it("decode rejects an unsupported protocol version at the wire boundary", () => {
-    const { clientParams } = setup()
-    const client = startClientHandshake(clientParams)
+  it("decode rejects an unsupported protocol version at the wire boundary", async () => {
+    const { clientParams } = await setup()
+    const client = await startClientHandshake(clientParams, cc)
     // Untyped bytes on the wire claim a future version — the decode boundary
     // is where this is caught (the typed API can't express a bad version).
     const wrongVersion = Buffer.from(
       JSON.stringify({ v: 999, ePub: client.hello.ePub, ct0: client.hello.ct0 }),
       "utf8"
     )
-    expectPairingError(() => decodePairingHello(wrongVersion), "malformed_hello")
+    await expectPairingError(() => decodePairingHello(wrongVersion), "malformed_hello")
   })
 
-  it("the sealed hello leaks neither the offer token nor the client name", () => {
-    const { clientParams } = setup()
-    const client = startClientHandshake(clientParams)
+  it("the sealed hello leaks neither the offer token nor the client name", async () => {
+    const { clientParams } = await setup()
+    const client = await startClientHandshake(clientParams, cc)
     const wire = JSON.stringify(client.hello)
     expect(wire).not.toContain(OFFER_TOKEN)
     expect(wire).not.toContain("jeremy@laptop")

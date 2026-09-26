@@ -21,11 +21,17 @@
  */
 
 import type { AcpMcpServer, AcpPermissionResolution } from "@agentproto/acp"
+import type { McpAppToolCallRecord } from "./mcp-apps-host.js"
 import type { SessionMode } from "@agentproto/acp/client"
 import { spawn, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync, existsSync, renameSync } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
+import {
+  CONVERSATION_STORES,
+  conversationTerminalSlugFor,
+  isConversationTerminal,
+} from "./conversation-store.js"
 import { readCommandLogEntry, writeCommandLogEntry } from "./command-log.js"
 import { readSandboxLedger } from "./sandbox-ledger.js"
 import { readToolCallRecords as readToolCallRecordLines, writeToolCallRecord } from "./tool-call-log.js"
@@ -53,6 +59,11 @@ import type {
   SessionConfigChangedEvent,
 } from "./session-event-bus.js"
 import { resolvePosture } from "./canonical-posture.js"
+import {
+  buildBackgroundTaskWakePrompt,
+  DEFAULT_BG_TASK_WAKE_GRACE_MS,
+  type SessionBackgroundTask,
+} from "./background-task-wake.js"
 import { resolveEffectiveRoute } from "./catalog-models.js"
 import { normalizeModelForWire } from "./model-wire.js"
 import {
@@ -62,6 +73,7 @@ import {
 } from "./session-observer.js"
 import { artifactMarkerLines, formatToolCall, formatToolResult } from "./tool-presenter.js"
 import { createTranscriptWriter, sessionEventsPath } from "./transcript-writer.js"
+import { maybeTitleSession } from "./session-titler.js"
 import { buildResumeContextDigest } from "./resume-context-digest.js"
 import {
   appendConversationRecord,
@@ -82,6 +94,7 @@ import {
 } from "./workspace-buckets.js"
 import { createTerminalTranscriptWriter } from "./terminal-transcript-writer.js"
 import { deriveSessionUsage, plausibleContextUsed, type SessionUsage } from "./usage.js"
+import { foldUsageFrameWindow, resetContextWindowForModel, type ContextSizeSource } from "./context-window.js"
 import { resolveWorktreeIdentity } from "./worktree-identity.js"
 import type { SessionAppServeInfo } from "./sandbox-app-serve.js"
 import type { WorktreeAutoReclaimer } from "./worktree-isolation.js"
@@ -97,9 +110,28 @@ import {
 } from "./context-continuity.js"
 import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
 import { continueAgentSessionFresh } from "./session-continue-fresh.js"
+import {
+  compactOutcome,
+  deriveSessionOutcome,
+  readLastAssistantTextSync,
+  shouldReplaceOutcome,
+  type SessionOutcome,
+  type SessionOutcomeCompact,
+} from "./session-outcome.js"
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
+import {
+  escapeHumanPrompt,
+  matchesMessageFilter,
+  MESSAGE_PREAMBLE,
+  renderInboxDigest,
+  renderSessionMessages,
+  type MessageDeliveryVia,
+  type MessageFilter,
+  type MessageUrgency,
+  type SessionMessage,
+} from "./session-message.js"
 // Reused, not reimplemented — same parser `applyModelCommand`'s dedicated
 // control turn uses, branched onto the ORDINARY prompt flow below so a
 // `/model <id>` typed as a plain turn (never routed through
@@ -140,6 +172,12 @@ export interface AgentSessionLike {
     requestId: string,
     resolution: AcpPermissionResolution,
   ): boolean | Promise<boolean>
+  /** Subscribe to events the agent emits while no turn is in flight — its
+   *  own wake-up when a background task settles, and the task lifecycle
+   *  itself. Mirrors `@agentproto/driver-agent-cli`'s
+   *  `AgentCliRuntimeSession.onOutOfTurnEvent`. Returns an unsubscribe
+   *  function. Absent for drivers that can't produce such events. */
+  onOutOfTurnEvent?(listener: (event: AgentStreamEvent) => void): () => void
   /**
    * Switch the active model on this LIVE session — mirrors
    * `@agentproto/driver-agent-cli`'s `AgentCliRuntimeSession.setModel`
@@ -176,6 +214,15 @@ export interface AgentSessionLike {
    * routes to restart.
    */
   readonly availableModes?: readonly SessionMode[]
+  /** Whether the agent accepts steering — mirrors
+   *  `@agentproto/driver-agent-cli`'s `AgentCliRuntimeSession.steeringSupported`
+   *  (ACP `_session/steering`, advertised at initialize). */
+  readonly steeringSupported?: boolean
+  /** Inject content into the turn in flight — mirrors
+   *  `AgentCliRuntimeSession.steer`: `"steered"` (injected), `"promptRequired"`
+   *  (no host turn in flight — deliver as a normal prompt), `"unsupported"`.
+   *  Never throws. Absent for sessions that can't steer. */
+  steer?(content: unknown): Promise<"steered" | "promptRequired" | "unsupported">
   close(): Promise<void>
 }
 
@@ -333,6 +380,16 @@ export interface AgentStreamEvent {
    *  but no `cost`). */
   tokensIn?: number
   tokensOut?: number
+  /** "usage_update" model the usage belongs to, when the adapter reports it
+   *  (claude-agent-acp's `_meta["_claude/model"]`) — see `context-window.ts`. */
+  model?: string
+  /** "usage_update" `size` is the adapter's own guess, corrected later by a
+   *  cost-bearing frame (claude-agent-acp) — see `context-window.ts`. */
+  sizeInferred?: boolean
+  /** "usage_update" size as the adapter reported it, recorded only when the
+   *  daemon corrected `size` (an inferred window superseded by the catalog or
+   *  an earlier authoritative frame) — see `context-window.ts`. */
+  reportedSize?: number
   /** "permission-resolved" outcome for the "agent-prompt" it answers (same
    *  `toolCallId`) — mirrors `session:permission-resolved`'s `decision` so
    *  the durable transcript can tell an answered ask from a still-pending
@@ -352,6 +409,24 @@ export interface AgentStreamEvent {
     input?: { hint?: string } | null
     _meta?: { scope?: string; path?: string; bareName?: string; qualifiedName?: string }
   }>
+  /** "background-task" lifecycle edge — see @agentproto/acp's `StreamEvent`'s
+   *  `background-task` kind. */
+  phase?: "started" | "updated" | "settled"
+  /** "background-task" task snapshot — see @agentproto/acp's
+   *  `BackgroundTaskInfo`. Only `taskId` is guaranteed. */
+  task?: {
+    taskId: string
+    taskKind?: string
+    description?: string
+    outputFile?: string
+    status?: SessionBackgroundTask["status"]
+    summary?: string
+    toolCallId?: string
+  }
+  /** "usage_update" origin of the cycle it closes (claude-agent-acp's
+   *  `_meta["_claude/origin"].kind`, e.g. `"task-notification"` for an
+   *  autonomous wake) — see @agentproto/acp's `StreamEvent`. */
+  origin?: string
 }
 
 /**
@@ -466,10 +541,14 @@ function selectPermissionOptionId(
  * substrings) so adapter-native tool names (e.g. claude-code's "Bash")
  * classify without a per-adapter table.
  */
-function classifyBlockedOn(toolName?: string): "subagent" | "command" | undefined {
+function classifyBlockedOn(toolName?: string): "subagent" | "command" | "inbox" | undefined {
   if (!toolName) return undefined
   const n = toolName.toLowerCase()
   if (n === "agent_start") return "subagent"
+  // A supervisor parked in `inbox_wait` is legitimately waiting on its
+  // children's messages (MCP-prefixed names like `mcp__agentproto__inbox_wait`
+  // included), not stalled.
+  if (/(^|_)inbox_wait$/.test(n)) return "inbox"
   if (/^(command_execute|terminal_start)$|bash|terminal|command/.test(n)) return "command"
   return undefined
 }
@@ -712,6 +791,24 @@ export interface QueuedPrompt {
    *  daemon restart. Absent for legacy queued items — `promptOriginLabel`
    *  falls back to `source`, then `"user"`. */
   origin?: string
+  /** Set when this item is a typed inter-session message (`message_parent`,
+   *  …) rather than a prompt: the daemon-attested envelope. `message` then
+   *  only carries `envelope.text` (for `previewPrompt`); the turn is built
+   *  from the envelope — rendered as an `<agentproto-message>` tag, recorded
+   *  as a `session-message` transcript record, and coalesced with any
+   *  envelope items queued right behind it (never with a plain prompt). */
+  envelope?: SessionMessage
+}
+
+/** What `enqueuePrompt` resolved to — lets a caller (e.g. MCP `agent_prompt`)
+ *  tell the user whether the prompt was delivered/started now or PARKED behind
+ *  an in-flight turn. `queued: true` fires ONLY on the mid-turn queue arm
+ *  (`opts.queue` true, session busy, no `interrupt`): the prompt sits in
+ *  `promptQueue` and won't run until the current turn ends. Every other path —
+ *  idle dispatch, an interrupt that redirected the live turn, a structured-
+ *  question answer — resolves `queued: false`. */
+export interface EnqueuePromptResult {
+  queued: boolean
 }
 
 /**
@@ -768,6 +865,70 @@ export function promptOriginLabel(item: { source?: string; origin?: string }): s
   return code
 }
 
+/** True for a turn a CHILD session authored (`message_parent` report or a
+ *  `[child-crashed]` notice — `source:"child:<sessionId>"`). Such a turn is
+ *  never matched as the answer to a structured question (only the human
+ *  answers those) — a child whose report happens to read `keep-going` must
+ *  not decide the parent's context-continuity prompt. */
+export function isChildPromptSource(source: string | undefined): boolean {
+  return source?.startsWith("child:") === true
+}
+
+/** Source/origin stamped on notices migrated out of the retired
+ *  `pendingChildCrashNotices` field — the sending child's id wasn't
+ *  recorded there, only baked into the notice text. */
+export const LEGACY_CHILD_NOTICE_SOURCE = "child:legacy"
+
+/** Bound on `SessionDescriptor.inbox` (un-consumed messages). */
+export const INBOX_CAP = 200
+
+/** R3 — a burst of `steer` messages must not thrash a recipient: at most
+ *  one steer per recipient per this window; the excess is delivered as
+ *  `next-turn` (and coalesces with its neighbours at turn-end). */
+export const STEER_MIN_INTERVAL_MS = 10_000
+
+/** What `sendMessage` did with a message — truthful, per AIP-46. */
+export interface SendMessageResult {
+  messageId: string
+  /** Set when the message already reached the recipient's context (a
+   *  waiter, a dispatched turn, an interrupt) or was parked as `fyi`
+   *  (`via: "inbox"`); `null` while it's queued behind a busy turn. */
+  delivered: { via: MessageDeliveryVia } | null
+  queued: boolean
+  urgencyApplied: MessageUrgency
+}
+
+export interface WaitForMessagesResult {
+  messages: SessionMessage[]
+  timedOut: boolean
+}
+
+/**
+ * Boot migration for the retired `SessionDescriptor.pendingChildCrashNotices`
+ * field: a snapshot written by an older daemon can still carry notices that
+ * were waiting to be string-prepended onto the next prompt. Move each onto
+ * the END of `promptQueue` as its own child-sourced item (so it's delivered
+ * as a separate turn like every live report now is) and drop the field.
+ * Mutates `desc` in place; no-op when there's nothing to migrate.
+ */
+export function migratePendingChildNotices(desc: SessionDescriptor): void {
+  const pending = desc.pendingChildCrashNotices
+  if (pending === undefined) return
+  delete desc.pendingChildCrashNotices
+  if (!pending.length) return
+  const queuedAt = new Date().toISOString()
+  const migrated: QueuedPrompt[] = pending
+    .filter((n): n is string => typeof n === "string" && n.length > 0)
+    .map(message => ({
+      id: `q_${randomUUID().slice(0, 8)}`,
+      message,
+      queuedAt,
+      source: LEGACY_CHILD_NOTICE_SOURCE,
+      origin: LEGACY_CHILD_NOTICE_SOURCE,
+    }))
+  desc.promptQueue = [...(desc.promptQueue ?? []), ...migrated]
+}
+
 /** One entry in the after-the-fact queue listing (`listQueuedPrompts` /
  *  `session_queue_list` / `GET /sessions/:id/queue`). `position` is the
  *  array index (0 = next to dispatch). */
@@ -780,6 +941,18 @@ export interface QueuedPromptView {
   /** ISO 8601 timestamp the item was queued. */
   queuedAt: string
   position: number
+}
+
+/** Provenance stamped onto a `session_continue_fresh` target by
+ *  {@link SessionDescriptor.handoff} — which harness the checkpoint moved
+ *  from/to and when. `fromHarness === toHarness` for a same-harness
+ *  continuation; they differ for a genuine cross-harness handoff
+ *  (claude-code -> opencode, etc). */
+export interface SessionHandoff {
+  fromHarness: string
+  toHarness: string
+  /** ISO 8601 timestamp the handoff spawn completed. */
+  at: string
 }
 
 export interface SessionDescriptor {
@@ -845,6 +1018,16 @@ export interface SessionDescriptor {
    *  `kill()`, `shutdownImpl`'s force-kill, and `loadHistorySnapshot`'s
    *  wasAlive reclassification; absent for every other terminal path. */
   killedMidTurn?: boolean
+  /** What this session PRODUCED — the derived outcome (Level 1) the daemon
+   *  records once it reaches a terminal status, alongside (never instead of)
+   *  the termination fields above: last assistant message, opened PRs, cost,
+   *  run/parent links. agent-cli only. Recorded from the one exit funnel
+   *  (`emitExited`) and from boot reconcile for rows that died with the
+   *  daemon; first write wins unless a later one is for a new death or is
+   *  richer (see `shouldReplaceOutcome`). Dropped when an in-place resume
+   *  revives the row. Persisted, so it survives restarts and archiving. See
+   *  `session-outcome.ts`. */
+  outcome?: SessionOutcome
   /** Last time anything was written to stdout/stderr. Lets the UI
    *  spot stuck sessions ("running for 2h, last output 12min ago"). */
   lastOutputAt?: string
@@ -952,10 +1135,23 @@ export interface SessionDescriptor {
    *  session sits `busy:false`, `awaitingInput:false`, background tasks
    *  pending — a silent dead end. Detection + signal ONLY (same doctrine
    *  as `stalledSinceMs`): nothing here re-prompts or wakes the session.
+   *  Not stamped for an agent that reports its background-task lifecycle
+   *  (see `backgroundTasks`) — that one is tracked and woken for real.
    *  Cleared (deleted, never a stale value) on the next turn start and on
    *  session exit. Emits `session:bg-tasks-parked` /
    *  `session:bg-tasks-cleared`. */
   pendingBgTasks?: number
+  /** The agent's background tasks that are still running (a backgrounded
+   *  Bash command, a monitor, ...), as the agent itself reports them — over
+   *  ACP, the AIR `asyncTasks` lifecycle. Unlike `pendingBgTasks` (a
+   *  turn-end heuristic) this is the real set: a task is added when it
+   *  starts and removed when it settles, so an idle session with a
+   *  non-empty list is "waiting on N background tasks", not parked. When
+   *  one settles while the session is idle the registry makes sure the
+   *  agent is woken (see `SessionsRegistryOptions.backgroundTaskWake`).
+   *  Absent when none are running; dropped on exit and on respawn (a new
+   *  process owns none of the old one's tasks). */
+  backgroundTasks?: SessionBackgroundTask[]
   /** ISO 8601 timestamp of the last turn that ended because the ADAPTER
    *  ITSELF reported a failure — `runAgentTurn` observed a `turn-end` event
    *  with `reason:"error"` (session-event-bus.ts's `SessionTurnEndEvent`,
@@ -1163,6 +1359,12 @@ export interface SessionDescriptor {
    *  `worktreePath` without an id identifies a PATH, which a later worktree
    *  may reuse; the pair identifies one specific worktree. */
   worktreeId?: string
+  /** Absolute path of the PRIMARY checkout `worktreePath` was cut from (the
+   *  repo root a `worktree_status` query targets), read at spawn from the
+   *  worktree admin dir's `commondir` file (`resolveWorktreeIdentity`).
+   *  Absent whenever `worktreePath` is, when `commondir` was unreadable, and
+   *  for every session persisted before this field existed. */
+  mainRepoPath?: string
   /** `true` only when `worktreePath` was provisioned by the `worktrees.isolation`
    *  policy WITHOUT an explicit `worktree` request from the caller (see
    *  `decideWorktreeIsolation`'s `WorktreeDecision.provision.implicit` in
@@ -1207,8 +1409,12 @@ export interface SessionDescriptor {
    * so a restarted daemon can still show the hand-off / review links. */
   openedPrs?: readonly OpenedPullRequest[]
   /** Adapter slug for agent-cli sessions — restart uses this with
-   *  `/sessions/agent` to spin up a fresh ACP runtime. Undefined for
-   *  pty/command kinds. */
+   *  `/sessions/agent` to spin up a fresh ACP runtime. ALSO stamped on a
+   *  conversation-terminal PTY (`isConversationTerminal` — a native
+   *  provider TUI launch like `claude`, classified at `spawnPty`), so the
+   *  Sessions list, the link probe, and the harness switch know which
+   *  provider the terminal is. Undefined for plain-shell PTYs and command
+   *  kinds. */
   adapterSlug?: string
   /** Manifest-declared `capabilities.resumable` for this session's adapter
    *  (AIP-45), stamped from {@link AgentAdapterResolver}'s resolved
@@ -1312,6 +1518,15 @@ export interface SessionDescriptor {
    *  posture or a raw `{ harnessModeId }` sourced from the harness's ACP mode
    *  registry (SPEC §3.4a). */
   posture?: Posture
+  /**
+   * Read-surface echo of the live harness's advertised ACP session modes
+   * (`SessionModeState.availableModes`, #482) — stamped at READ TIME from the
+   * live agent session by `list()`/`get()`, never persisted. A client posture
+   * picker resolves the native (enforced, live-switchable) rows from this;
+   * absent for arms with no native mode registry (print/proprietary) and for a
+   * session whose live runtime handle is gone.
+   */
+  availableModes?: SessionMode[]
   /** Endpoint / gateway rail (SPEC §3.1 axis 4). `baseUrl` is carried only
    *  for a custom gateway the catalog can't resolve; `access` is downstream
    *  of this axis (SPEC §1c). */
@@ -1354,6 +1569,11 @@ export interface SessionDescriptor {
    *  usage_update events arrive, not just at turn-end. */
   contextSize?: number
   contextUsed?: number
+  /** Where `contextSize` came from — `"adapter"` (a cost-bearing, authoritative
+   *  usage_update; sticky), `"catalog"` (model-catalog window for the model),
+   *  or `"reported"` (the adapter's own, possibly inferred, frame size). See
+   *  `context-window.ts` for the precedence. */
+  contextSizeSource?: ContextSizeSource
   /** Where `costUsd` came from — `"adapter"` (adapter's own reader or a
    *  usage_update cost block), `"computed"` (tokens × in-repo catalog price),
    *  `"no-pricing"` (tokens present but the model isn't in the catalog — cost
@@ -1406,6 +1626,14 @@ export interface SessionDescriptor {
    *  Keys are adapter-specific so future adapters can add their own
    *  ("hermesResumeId", etc.) without changing this type. */
   resumeMetadata?: Record<string, string>
+  /** Conversation-terminal link probe verdict — `"ambiguous"` when MORE
+   *  than one fresh native transcript matched this PTY's cwd + start time,
+   *  so the daemon refused to bind any of them (never bind a sibling —
+   *  same invariant as the fs-probe's exact-bind rule). Absent while the
+   *  probe is still looking, and cleared once an unambiguous link lands
+   *  (`adapterSessionId` + `resumeMetadata`). Only ever set on
+   *  conversation-terminal rows (`isConversationTerminal`). */
+  linkStatus?: "ambiguous"
   /** Extra env this PTY (`kind: "terminal"`) session was spawned with, on
    *  top of `process.env` — e.g. `{ CLAUDE_CONFIG_DIR: "..." }` for a
    *  `pty-native` restart of a claude-code session (see
@@ -1464,7 +1692,7 @@ export interface SessionDescriptor {
    *  next assistant `text-delta` (the model has the floor, so nothing is
    *  pending), at turn start, and in the turn's finally. A claim about the
    *  present tense — anything that disproves it must clear it. */
-  blockedOn?: "subagent" | "command"
+  blockedOn?: "subagent" | "command" | "inbox"
   /** toolCallId of the tool-call that set `blockedOn`. A tool-result only
    *  clears `blockedOn` when its toolCallId matches — so a nested or
    *  interleaved tool finishing first can't clear the flag early. */
@@ -1480,9 +1708,9 @@ export interface SessionDescriptor {
    *  (`markCrashed` → `session:exited` with `status:"error"`/
    *  `reason:"crashed"`), the supervisor-notify subscriber
    *  (`supervisor-notify.ts`) delivers a `[child-crashed]` notice to its
-   *  `parentSessionId`, if any — directly (enqueued prompt) when the parent
-   *  is alive and idle, or stamped onto `pendingChildCrashNotices` and
-   *  flushed at the parent's next turn when it's busy. The free external
+   *  `parentSessionId`, if any — dispatched now when the parent is alive
+   *  and idle, or parked in its `promptQueue` and drained as its own turn
+   *  when the parent's current turn ends. The free external
    *  webhook path (`notifyUrl`) already fires regardless of this flag; this
    *  only gates the additional IN-BAND signal into the parent's own
    *  session, which a caller that isn't a delegating supervisor doesn't
@@ -1491,14 +1719,40 @@ export interface SessionDescriptor {
   notifyParentOnCrash?: boolean
   /** True when the session was spawned in permission-hold mode. */
   permissionHold?: boolean
-  /** Queued `[child-crashed] …` notices from crashed children, stamped by
-   *  the supervisor-notify subscriber when THIS session was busy at the
-   *  time a child it should be told about crashed (mid-turn is never
-   *  interrupted for this — see `notifyParentOnCrash`). Flushed and cleared
-   *  by prepending the joined notices onto the next dispatched turn's
-   *  message (`runAgentTurn`) — so delivery survives a busy parent without
-   *  ever cancelling its in-flight work. Absent when nothing is queued. */
+  /** Effective OS-level confinement of the adapter's own process
+   *  (`agent_start.commandSandbox`, else the workspace's
+   *  `.agentproto/command-sandbox.json` `adapterSpawn.mode`), resolved at
+   *  spawn with the same precedence the driver applies
+   *  (`wrapAgentCliSpawn`). Absent when neither engaged the axis (the spawn
+   *  ran unconfined without anyone choosing a mode), for a `sandbox` spawn
+   *  (confinement is the box's business), and for sessions persisted before
+   *  this field existed. Set at spawn time, immutable thereafter. */
+  commandSandbox?: "off" | "workspace" | "strict"
+  /** @deprecated Retired — child reports and `[child-crashed]` notices for a
+   *  busy session are now queued as their own `promptQueue` items
+   *  (`source:"child:<id>"`) instead of being string-prepended onto the next
+   *  prompt. Only read once, at boot, by `migratePendingChildNotices`, which
+   *  moves any notices a pre-upgrade daemon persisted into `promptQueue` and
+   *  deletes this field. Never written. */
   pendingChildCrashNotices?: string[]
+  /** True once this session has been taught the `<agentproto-message>`
+   *  invariant (`MESSAGE_PREAMBLE`) — sent as a `system-prompt` slice ahead
+   *  of the FIRST message turn it receives, never again. */
+  messagePreambleSent?: boolean
+  /** Durable, bounded inbox of typed messages NOT yet consumed (AIP-46
+   *  §Session messages): every accepted message lands here until it's
+   *  delivered into a turn (auto-acked), returned by `inbox_wait` with
+   *  `ack`, or acked via `inbox_ack`. `fyi` messages only ever live here
+   *  (surfaced as a digest). Capped at `INBOX_CAP`, oldest dropped first
+   *  (`[inbox] dropped`). Full history lives in the transcript, not here.
+   *  New array on every mutation, like `promptQueue`. */
+  inbox?: SessionMessage[]
+  /** What the live agent session can do, read from its driver at attach
+   *  time (spawn / resume) — shown in `session_list` so a sender can predict
+   *  a message's delivery tier. `steering`: the agent accepts ACP steering
+   *  (`_session/steering`) — a `steer` message can be injected into its
+   *  running turn instead of waiting for it to end. */
+  capabilities?: { steering: boolean }
   /** FIFO of prompts that arrived while this session was mid-turn and
    *  asked to be QUEUED rather than rejected (`enqueuePrompt`'s
    *  `opts.queue` arm — see its doc comment). Index 0 is next to
@@ -1513,8 +1767,7 @@ export interface SessionDescriptor {
    *  `sessionDescriptorsEqual` diff is a shallow `!==` per field, so an
    *  in-place `.shift()` here would silently stop propagating queue
    *  changes to the transcript panel. `[]` (not absent) once anything
-   *  has ever been queued, matching `pendingChildCrashNotices`'s
-   *  convention above. */
+   *  has ever been queued. */
   promptQueue?: QueuedPrompt[]
   /** Best-effort context-handoff digest (Fix D), stashed on a descriptor
    *  whose resume degraded to a BLANK spawn — the adapter's own
@@ -1522,8 +1775,7 @@ export interface SessionDescriptor {
    *  false` — built by `buildResumeContextDigest` from the daemon's own
    *  `events.jsonl` transcript, which survives both cases. Flushed and
    *  cleared by prepending it onto the first dispatched turn's message
-   *  (`runAgentTurn`), exactly once, same shape as
-   *  `pendingChildCrashNotices` above. Gated strictly on the blank-fallback
+   *  (`runAgentTurn`), exactly once. Gated strictly on the blank-fallback
    *  flags at the two sites that set it (`session-restart-core.ts`,
    *  `maybeResumeAgent` here) — never set for a resume that actually
    *  restored context, so a real continuation is never double-fed its own
@@ -1555,6 +1807,12 @@ export interface SessionDescriptor {
   /** When this session was continued fresh into a new session, the target
    *  session id. */
   continuedTo?: string
+  /** Set alongside `continuedFrom` on the NEW session — the harness the
+   *  checkpoint moved from/to and when. Present on every `continue_fresh`
+   *  spawn, not just a cross-harness one, so a same-harness continuation
+   *  and a genuine handoff are both traceable the same way. See
+   *  {@link SessionHandoff}. */
+  handoff?: SessionHandoff
   /** Source label — the channel/harness this session was spawned from
    *  ("codex", "cowork", "vscode", "cron", …). Descriptor-only; groups the
    *  session under a source node in the tree. */
@@ -1688,6 +1946,9 @@ export interface SessionSummary {
   endedAt?: string
   exitCode?: number
   killedMidTurn?: boolean
+  /** Compact derived outcome (status + 120-char summary preview) — see
+   *  `SessionDescriptor.outcome`; the full record is on GET /sessions/:id. */
+  outcome?: SessionOutcomeCompact
   lastOutputAt?: string
   lastActivityAt?: string
   currentPhase?: SessionCurrentPhase
@@ -1715,6 +1976,7 @@ export interface SessionSummary {
   cwd?: string
   worktreePath?: string
   worktreeId?: string
+  mainRepoPath?: string
   /** Resolved AGENTS.md path — see `SessionDescriptor.agentsMd`. */
   agentsMd?: string
   /** Injection mode — see `SessionDescriptor.agentsMdMode`. */
@@ -1729,18 +1991,21 @@ export interface SessionSummary {
   tokensOut?: number
   contextSize?: number
   contextUsed?: number
+  contextSizeSource?: ContextSizeSource
   usageSource?: import("./usage.js").UsageSource
   awaitingInput?: boolean
   awaitingQuestion?: SessionAwaitingQuestion
   awaitingPermission?: boolean
   turnsCompleted?: number
   busy?: boolean
-  blockedOn?: "subagent" | "command"
+  blockedOn?: "subagent" | "command" | "inbox"
   stalledSinceMs?: number
   /** Parked-with-background-tasks marker — see
    *  `SessionDescriptor.pendingBgTasks`. Stamped at turn-end, cleared on the
    *  next turn start / exit. */
   pendingBgTasks?: number
+  /** Running background tasks — see `SessionDescriptor.backgroundTasks`. */
+  backgroundTasks?: SessionBackgroundTask[]
   /** Adapter-reported turn-error marker — see
    *  `SessionDescriptor.lastTurnErroredAt`. Stamped at turn-end, cleared on
    *  the next turn that completes without one. */
@@ -1748,6 +2013,17 @@ export interface SessionSummary {
   origin?: string
   parentSessionId?: string
   depth?: number
+  /**
+   * Server-computed Sessions-panel lane verdict, stamped by `listSummaries`
+   * against the daemon's FULL in-memory session map (archived and dead
+   * parents included) — so a client paging summaries never has to re-derive
+   * lineage from whatever happens to be on its current page, and a row's
+   * lane cannot flip between page 1 and page N. Absent on shell-only rows
+   * (`isShellOnlyRow` — plain-shell PTYs and command rows belong to the
+   * Activity panel, not either lane; a conversation terminal DOES get a
+   * lane) and on rows from older daemons.
+   */
+  lane?: "agents" | "auto"
   priorCommandSessionId?: string
   continuedFrom?: string
   continuedTo?: string
@@ -1761,10 +2037,25 @@ export interface SessionSummary {
   sandboxTeardown?: "kill" | "pause"
   sandboxPorts?: Record<number, string>
   appServe?: SessionAppServeInfo
+  /** Effective adapter confinement — see `SessionDescriptor.commandSandbox`. */
+  commandSandbox?: "off" | "workspace" | "strict"
   /** Read-time projection of the box's ledger liveness verdict — see
    *  `SessionDescriptor.sandboxAlive`. */
   sandboxAlive?: boolean
   sandboxCheckedAt?: string
+}
+
+/**
+ * Rows that belong ONLY to the Activity panel — raw command executions and
+ * plain-shell PTYs. A conversation terminal (`isConversationTerminal`: a
+ * native provider TUI like `claude`/`hermes`/`grok` in a PTY) is NOT
+ * shell-only: it is a trackable session in the Agents/Auto lanes, while
+ * Activity → Terminals keeps listing every PTY regardless.
+ */
+export function isShellOnlyRow(
+  desc: Pick<SessionDescriptor, "kind" | "adapterSlug" | "argv" | "resumeMetadata">,
+): boolean {
+  return desc.kind === "command" || (desc.kind === "terminal" && !isConversationTerminal(desc))
 }
 
 /** Project a full SessionDescriptor down to the panel summary shape. */
@@ -1780,6 +2071,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     endedAt: desc.endedAt,
     exitCode: desc.exitCode,
     killedMidTurn: desc.killedMidTurn,
+    ...(desc.outcome ? { outcome: compactOutcome(desc.outcome) } : {}),
     lastOutputAt: desc.lastOutputAt,
     lastActivityAt: desc.lastActivityAt,
     currentPhase: desc.currentPhase,
@@ -1802,6 +2094,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     cwd: desc.cwd,
     worktreePath: desc.worktreePath,
     worktreeId: desc.worktreeId,
+    mainRepoPath: desc.mainRepoPath,
     agentsMd: desc.agentsMd,
     agentsMdMode: desc.agentsMdMode,
     rulesMd: desc.rulesMd,
@@ -1813,6 +2106,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     tokensOut: desc.tokensOut,
     contextSize: desc.contextSize,
     contextUsed: desc.contextUsed,
+    contextSizeSource: desc.contextSizeSource,
     usageSource: desc.usageSource,
     awaitingInput: desc.awaitingInput,
     awaitingQuestion: desc.awaitingQuestion,
@@ -1822,6 +2116,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     blockedOn: desc.blockedOn,
     stalledSinceMs: desc.stalledSinceMs,
     pendingBgTasks: desc.pendingBgTasks,
+    backgroundTasks: desc.backgroundTasks,
     lastTurnErroredAt: desc.lastTurnErroredAt,
     origin: desc.origin,
     parentSessionId: desc.parentSessionId,
@@ -1839,6 +2134,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     sandboxTeardown: desc.sandboxTeardown,
     sandboxPorts: desc.sandboxPorts,
     appServe: desc.appServe,
+    commandSandbox: desc.commandSandbox,
     sandboxAlive: desc.sandboxAlive,
     sandboxCheckedAt: desc.sandboxCheckedAt,
   }
@@ -1869,6 +2165,33 @@ interface SessionRuntime {
    *  arguments (enrichment deduped by id) and announce-then-enrich (counted
    *  when the arguments finally show the flag). Reset with the counter. */
   bgTaskCountedIds?: Set<string>
+  /** Unsubscribes the registry from the live agent session's out-of-turn
+   *  events — see `bindOutOfTurnEvents`. Replaced on every (re)bind. */
+  outOfTurnUnsubscribe?: () => void
+  /** Set while the agent works WITHOUT a prompt (an autonomous
+   *  task-notification cycle) — the registry tracks that stretch as a turn:
+   *  `busy` is true, events are recorded, and it closes with a turn-end. */
+  /** When this session last had a message steered into it — the R3 rate
+   *  limit (`STEER_MIN_INTERVAL_MS`). In-memory only. */
+  lastSteerAt?: number
+  autonomousTurn?: {
+    /** Tool calls announced and not yet resulted — synthesized at close,
+     *  and the silence-close fallback holds off while any are open. */
+    pendingToolCallIds: Set<string>
+    silenceTimer?: ReturnType<typeof setTimeout>
+  }
+  /** Background tasks that settled while the session was idle, awaiting
+   *  either the agent's own wake-up or the registry's wake prompt when
+   *  `timer` fires — see `SessionsRegistryOptions.backgroundTaskWake`. */
+  bgWake?: {
+    settled: SessionBackgroundTask[]
+    timer?: ReturnType<typeof setTimeout>
+  }
+  /** True once the agent has reported any background-task lifecycle event:
+   *  its tasks are tracked for real (and woken on), so the turn-end
+   *  `pendingBgTasks` heuristic — "parked, no wake-up path" — no longer
+   *  applies to it. */
+  reportsBackgroundTasks?: boolean
   /** Set when the session is a raw spawn (`kind: "command"|"terminal"`).
    *  Agent sessions don't expose the underlying process — the
    *  driver-agent-cli runtime owns it. */
@@ -1907,6 +2230,19 @@ interface SessionRuntime {
    *  ring buffer unreadable when each token got its own
    *  `[thought]` line — coalesce the same way text-delta does. */
   thoughtBuf: string
+  /** The latest assistant message — the run of text-delta chunks since the
+   *  last tool call, tail-capped at `LAST_ASSISTANT_TEXT_CAP`. Feeds the
+   *  derived outcome's `summary` without re-reading the transcript. Not
+   *  persisted. */
+  lastAssistantText?: string
+  /** Set by a tool call: the next text-delta starts a new message. */
+  lastAssistantTextSealed?: boolean
+  /** Set by `interruptInFlightTurn` when the daemon cancels the in-flight
+   *  turn; consumed (and cleared) at the top of that turn's `finally`. An
+   *  interrupted turn does NOT drain `promptQueue` — queued prompts are
+   *  delivered only after a turn that ends on its own — except the one item
+   *  `deliverQueuedPrompt` interrupted for (`deliverQueueId`). */
+  interruptRequested?: { by: string; deliverQueueId?: string }
   /** In-flight resume promise. Deduplicates concurrent prompt
    *  attempts on a dead agent session — only one resume call hits
    *  the adapter, the rest await this promise. Cleared once
@@ -1947,6 +2283,18 @@ interface SessionRuntime {
    *  wrapper. Undefined until the first chunk arrives — treated the
    *  same as `{ mode: "unknown", carry: "" }`. */
   bracketedPaste?: BracketedPasteScanState
+  /** True for a PTY classified as a conversation terminal at spawn
+   *  (`isConversationTerminal`) — gates the per-chunk resume-hint line
+   *  sniffing so plain shells never pay for it. Computed once. */
+  conversationTerminal?: boolean
+  /** Carry for a partial output line across PTY `onData` chunks, so the
+   *  conversation-terminal resume-hint sniffer only ever matches COMPLETE
+   *  lines. Capped — a TUI redraw with no newlines must not grow it. */
+  sniffCarry?: string
+  /** Stops this conversation terminal's link-probe timers. Called from
+   *  `emitExited` (the shared exit funnel) and by the probe itself once a
+   *  link lands. */
+  linkProbeStop?: () => void
 }
 
 /** Bracketed-paste mode as last observed in a PTY's OUTPUT stream.
@@ -2060,6 +2408,9 @@ export function applyBracketedPasteWrap(
 
 const RECENT_LINES_CAP = 500
 const RECENT_BYTES_CAP = 64 * 1024
+/** Tail cap on `SessionRuntime.lastAssistantText` — generous next to the
+ *  outcome summary's own 600-char cap, small enough to never matter. */
+const LAST_ASSISTANT_TEXT_CAP = 4 * 1024
 const PERSIST_DEBOUNCE_MS = 1_500
 
 /** Shared, never-mutated empty set — the `heldIdsByBucket` lookup for a
@@ -2115,6 +2466,16 @@ const HISTORY_CAP = 200
  *  round-trip to actually yield. Exported so tests assert against the
  *  real value instead of a hardcoded duplicate. */
 export const INTERRUPT_SETTLE_TIMEOUT_MS = 60_000
+
+/** Human-readable names for `interruptInFlightTurn`'s `caller`, used in the
+ *  transcript notice so a `cancelled` turn-end can be traced to the surface
+ *  that asked for it. */
+const INTERRUPT_CALLER_LABELS: Record<string, string> = {
+  interruptSession: "a stop request (agent_interrupt / POST /sessions/:id/interrupt)",
+  enqueuePrompt: "a prompt sent with interrupt: true",
+  sendPrompt: "a prompt sent with interrupt: true",
+  deliverQueuedPrompt: "a queue deliver-now (session_queue_deliver)",
+}
 
 /** Stamp the derived `desc.alive` liveness signal (§SessionDescriptor.alive):
  *  true iff the row's status counts as alive — the same "running" or
@@ -2215,6 +2576,26 @@ function stampInterrupted(desc: SessionDescriptor): void {
     desc.interrupted = true
   } else {
     delete desc.interrupted
+  }
+}
+
+/**
+ * Read-time projection of the LIVE agent session's advertised ACP mode registry
+ * onto the descriptor (`availableModes`). Same convention as
+ * the other read-time stampers (`processAlive`, `watchers`): ephemeral, never
+ * persisted — `availableModes` is a connect-time snapshot held on the runtime
+ * handle, not a descriptor field. Deleted (not left stale) when the handle is
+ * gone or advertises no registry, so a client never reads a mode list off a
+ * dead/print-arm session (SPEC §3.4a, #482 read-surface). This is the daemon
+ * half of the VS Code posture picker's native-vs-advisory resolution: without
+ * it the client can only offer prompt-injected advisory postures.
+ */
+function stampLiveModes(desc: SessionDescriptor, rt: SessionRuntime): void {
+  const modes = rt.agentSession?.availableModes
+  if (modes && modes.length > 0) {
+    desc.availableModes = [...modes]
+  } else {
+    delete desc.availableModes
   }
 }
 
@@ -2407,12 +2788,14 @@ function currentRouteOf(desc: SessionDescriptor): string | undefined {
  *  sessions.json. */
 function worktreeFields(
   cwd: string,
-): Pick<SessionDescriptor, "worktreePath" | "worktreeId"> {
+): Pick<SessionDescriptor, "worktreePath" | "worktreeId" | "mainRepoPath"> {
   const identity = resolveWorktreeIdentity(cwd)
   if (!identity) return {}
-  return identity.worktreeId === undefined
-    ? { worktreePath: identity.worktreePath }
-    : { worktreePath: identity.worktreePath, worktreeId: identity.worktreeId }
+  return {
+    worktreePath: identity.worktreePath,
+    ...(identity.worktreeId === undefined ? {} : { worktreeId: identity.worktreeId }),
+    ...(identity.mainRepoPath === undefined ? {} : { mainRepoPath: identity.mainRepoPath }),
+  }
 }
 
 /** Strip CSI / SGR ANSI sequences so resume-pattern matching works
@@ -2720,8 +3103,15 @@ export interface SessionsRegistry {
       queue?: boolean
       force?: boolean
       queueId?: string
+      /** A typed inter-session message (see `QueuedPrompt.envelope`). When
+       *  set, the turn is built from the envelope and `message` is ignored:
+       *  rendered as an `<agentproto-message>` tag, recorded as
+       *  `session-message` (never `user-prompt`), never matched as a
+       *  structured-question answer, and noted in the SENDER's transcript
+       *  as `session-message-sent`. */
+      envelope?: SessionMessage
     }
-  ): Promise<void>
+  ): Promise<EnqueuePromptResult>
   /** Cancel one not-yet-dispatched item in `SessionDescriptor.promptQueue`
    *  by id — the composer's per-item "remove" action. Idempotent: an
    *  unknown session or an id that's already gone (dispatched, already
@@ -2729,6 +3119,45 @@ export interface SessionsRegistry {
    *  throwing, same shape as `interruptSession`'s no-op-is-not-an-error
    *  contract. */
   removeQueuedPrompt(id: string, queueId: string): { removed: boolean }
+  /** Deliver a daemon-attested typed message (`msg.to` is the recipient;
+   *  `from` must already be computed from the verified caller), routed by
+   *  `msg.urgency` (AIP-46 §Delivery tiers):
+   *   - a matching pending `waitForMessages` wins over every tier (waiter
+   *     first — returned as that call's result, never also injected);
+   *   - `fyi` — durable inbox only, no wake;
+   *   - idle recipient — any other tier starts its own turn now;
+   *   - busy + `next-turn` — queued behind the current turn;
+   *   - busy + `steer` — injected into the running turn when the daemon's
+   *     OWN prompt is in flight (never an autonomous cycle), the agent can
+   *     steer, and the per-recipient rate limit allows; else `next-turn`;
+   *   - busy + `interrupt` — cancels the turn and delivers — only when
+   *     `allowInterrupt` (the caller's grant); otherwise downgraded to
+   *     `steer`.
+   *  `urgencyApplied` reports the tier actually used. Throws when the
+   *  recipient is missing or not alive. */
+  sendMessage(
+    msg: SessionMessage,
+    opts?: { source?: string; origin?: string; allowInterrupt?: boolean },
+  ): Promise<SendMessageResult>
+  /** Block until a message matching `filter` is in `id`'s inbox (returns at
+   *  once when one already is), or `timeoutMs` elapses. Matched messages are
+   *  consumed: stamped `delivered.via:"wait"`, removed from the prompt queue
+   *  (so they're never also injected as a turn), and — when `ack` (default)
+   *  — removed from the inbox. Sets `blockedOn:"inbox"` while parked. */
+  waitForMessages(
+    id: string,
+    filter: MessageFilter,
+    opts: { timeoutMs: number; ack?: boolean; signal?: AbortSignal },
+  ): Promise<WaitForMessagesResult>
+  /** Read `id`'s inbox (un-consumed messages), newest last. */
+  listInbox(id: string, filter?: MessageFilter & { limit?: number }): SessionMessage[] | null
+  /** Find a message `id` RECEIVED (still in its inbox, or already consumed
+   *  and only in its transcript) — how `message_reply` routes to the
+   *  original sender. `undefined` when `id` never received `messageId`. */
+  findReceivedMessage(id: string, messageId: string): SessionMessage | undefined
+  /** Ack (remove) messages from `id`'s inbox — and from its prompt queue, so
+   *  an acked-but-still-queued message is never delivered afterwards. */
+  ackInbox(id: string, ids: readonly string[] | "all"): { acked: string[] }
   /** Snapshot a session's prompt queue for inspection — the after-the-fact
    *  view of what's sitting in `SessionDescriptor.promptQueue` right now.
    *  Runs the shared preview + origin-label derivation so every consumer
@@ -2754,7 +3183,8 @@ export interface SessionsRegistry {
    *
    *  Implemented as promote-to-front + interrupt: the cancelled turn's
    *  own `dispatchQueuedPrompt` (in its finally) then drains the promoted
-   *  item into a fresh turn. On an idle session (nothing to interrupt) the
+   *  item — and only that item; the rest wait for a natural turn-end —
+   *  into a fresh turn. On an idle session (nothing to interrupt) the
    *  promoted item is dispatched directly. Returns:
    *    `{ delivered: false, reason }` — `"no-session"` / `"not-in-queue"`;
    *    `{ delivered: true, interrupted: boolean }` otherwise. */
@@ -2890,6 +3320,7 @@ export interface SessionsRegistry {
    */
   listSummaries(opts?: {
     includeArchived?: boolean
+    lane?: "agents" | "auto"
     limit?: number
     offset?: number
   }): { summaries: SessionSummary[]; total: number }
@@ -2999,6 +3430,15 @@ export interface SessionsRegistry {
     id: string,
     onLine: (line: string, stream: "stdout" | "stderr") => void
   ): (() => void) | null
+  /** Append a `kind: "mcp_app_tool_call"` record (an MCP App iframe's
+   *  `tools/call`, proxied by `mcp_app_tool_call`) to the session's
+   *  events.jsonl through the same seq-numbered writer the session's own
+   *  events use. No-op-safe for an unknown id (the writer creates the dir). */
+  recordMcpAppToolCall(sessionId: string, record: McpAppToolCallRecord): void
+  /** Tool name the transcript recorded for `toolCallId` (the latest
+   *  non-empty `toolName` across its `tool-call` records), or undefined
+   *  when the id isn't in the session's events.jsonl. */
+  findToolCallName(sessionId: string, toolCallId: string): Promise<string | undefined>
   /** Subscribe to a session's structured events.jsonl records as they're
    *  written — the live-push half of `GET /sessions/:id/events/stream`'s
    *  replay-then-subscribe handoff. Thin passthrough to the transcript
@@ -3155,17 +3595,6 @@ export interface SessionsRegistry {
    *  window keeps aging out naturally rather than being wiped by the
    *  give-up itself. Returns false (no-op) for an unknown id. */
   giveUpRestart(id: string, message: string): boolean
-  /** Queue a `[child-crashed] …` notice on a BUSY parent's descriptor
-   *  (`SessionDescriptor.pendingChildCrashNotices`) for delivery at its next
-   *  turn (`runAgentTurn`'s flush) — the never-interrupt path
-   *  `supervisor-notify.ts` takes when the parent can't be prompted
-   *  directly right now (it's mid-turn). Idempotent: the exact same notice
-   *  string is never queued twice, so a duplicate event for the same crash
-   *  can't double-deliver. No-op (returns false) on an unknown id, a
-   *  non-agent-cli row, or a row that isn't alive (`running`/`starting`) —
-   *  nothing to flush a notice INTO. Returns true iff the notice was newly
-   *  queued. */
-  stampPendingChildCrashNotice(id: string, notice: string): boolean
   /** List permission requests currently parked in the pending-permissions
    *  inbox across all permission-hold sessions, newest last. Optionally
    *  filtered to one session. */
@@ -3178,8 +3607,9 @@ export interface SessionsRegistry {
     id: string,
     input: PermissionRespondInput,
   ): Promise<PermissionRespondResult>
-  /** Stop tracking a session (after it exited and the user clicked
-   *  "clear"). Doesn't kill — use `kill` first. */
+  /** Stop tracking a session. A still-live session is torn down through
+   *  `kill` first (same teardown as `agent_kill`), so forgetting never
+   *  orphans a running process tree. */
   forget(id: string): boolean
   /** Await every best-effort fire-and-forget per-session write currently in
    *  flight — today the `CommandLogEntry` → `ToolCallRecord` chain
@@ -3383,6 +3813,9 @@ export interface SpawnAgentInput {
   /** What session close does to the box, when `remote` is true — see
    *  `SessionDescriptor.sandboxTeardown`. */
   sandboxTeardown?: "kill" | "pause"
+  /** Effective adapter confinement, resolved by the caller — see
+   *  `SessionDescriptor.commandSandbox`. */
+  commandSandbox?: "off" | "workspace" | "strict"
   /** Port-to-URL map from the booted sandbox — see
    *  `SessionDescriptor.sandboxPorts`. */
   sandboxPorts?: Record<number, string>
@@ -3656,6 +4089,18 @@ export function createSessionsRegistry(opts?: {
   /** Default per-session tracing opt-in when `SpawnAgentInput.trace` is
    *  omitted. Defaults to false (tracing off). */
   langfuseTracingDefault?: boolean
+  /**
+   * Background-task wake (config `defaults.backgroundTaskWake`). When an
+   * agent's background task settles while the session is idle, Claude Code
+   * wakes the model itself (an autonomous task-notification cycle, which the
+   * registry now tracks as a turn). If no such self-wake shows up within
+   * `graceMs` (default {@link DEFAULT_BG_TASK_WAKE_GRACE_MS}), the registry
+   * sends the wake prompt itself — so an agent that ended its turn "waiting
+   * for the notification" is never left parked. `enabled` defaults to true.
+   * A task that settles mid-turn is left to the agent (it gets the
+   * notification in-turn); settles are coalesced into one wake.
+   */
+  backgroundTaskWake?: { enabled?: boolean; graceMs?: number }
   /** Adapter resolver used for context-continuity "continue fresh" spawns.
    *  When omitted, auto-continuation degrades to a hard-stop instead of
    *  spawning a replacement session. */
@@ -3667,6 +4112,11 @@ export function createSessionsRegistry(opts?: {
    *  (manual/scheduled `gc` is still the only way an implicit worktree gets
    *  reclaimed). */
   runWorktreeAutoReclaim?: WorktreeAutoReclaimer
+  /** Conversation-terminal link-probe cadence — how soon after spawn the
+   *  first native-store discover runs, and how often it re-runs while the
+   *  PTY is alive and unlinked. Tests pin tiny values; production default
+   *  is `{ initialMs: 3_000, intervalMs: 15_000 }`. */
+  conversationLinkProbeMs?: { initialMs: number; intervalMs: number }
 }): SessionsRegistry {
   // `persistPath` names one exact file, so passing it means "don't
   // partition" (see its docblock). Absent it, state partitions per
@@ -3897,13 +4347,14 @@ export function createSessionsRegistry(opts?: {
           bucketSessionsFile(bucketsRoot, slug),
           sessions,
           sessionEvents,
+          transcriptBaseDir,
           slug,
           sourceBucketOf,
           heldIdsByBucket,
         )
       }
     } else {
-      loadHistorySnapshot(legacyPath, sessions, sessionEvents)
+      loadHistorySnapshot(legacyPath, sessions, sessionEvents, transcriptBaseDir)
     }
   }
   // Frozen at boot, deliberately never mutated again — distinct from
@@ -3930,9 +4381,31 @@ export function createSessionsRegistry(opts?: {
     process.on("exit", onProcessExit)
   }
 
+  // Record (or refresh) the derived outcome of an ended agent-cli session —
+  // see `SessionDescriptor.outcome`. Idempotent via `shouldReplaceOutcome`,
+  // so every terminal path can call it without coordinating. The summary
+  // falls back to the one already recorded: a ghost row (no live buffer)
+  // refreshed by a late PR must not lose it.
+  const recordOutcome = (rt: SessionRuntime): void => {
+    if (rt.desc.kind !== "agent-cli") return
+    if (rt.desc.status === "running" || rt.desc.status === "starting") return
+    const next = deriveSessionOutcome(rt.desc, {
+      lastAssistantText: rt.lastAssistantText ?? rt.desc.outcome?.summary,
+    })
+    if (!shouldReplaceOutcome(rt.desc.outcome, next)) return
+    rt.desc.outcome = next
+    schedulePersist()
+  }
+
   // Emit session:exited once per session, deduplicated via exitedEmitted flag.
   const emitExited = (rt: SessionRuntime): void => {
     if (rt.exitedEmitted) return
+    // The one exit funnel every terminal path goes through — derive what
+    // the session produced before anything announces its death, so a
+    // `session:exited` consumer reading the descriptor already sees it.
+    recordOutcome(rt)
+    // A dead PTY has no transcript left to discover — stop its link probe.
+    rt.linkProbeStop?.()
     // A dying session must never leave a held permission RPC dangling — cancel
     // its parked requests (resolves them as `cancelled`) before anything else.
     // Runs even when no bus is wired, so the driver RPC always settles.
@@ -4241,8 +4714,16 @@ export function createSessionsRegistry(opts?: {
   ): void => {
     if (!persist || !partitioned) return
     const desc = rt.desc
-    if (desc.kind !== "agent-cli") return
-    const adapterSlug = desc.adapterSlug
+    // agent-cli sessions as before, PLUS conversation terminals (a native
+    // provider TUI in a PTY — claude/hermes/…): those hold a real provider
+    // conversation too, discovered by the link probe / exit-hint sniffer
+    // below. Plain shells and command rows still never get an index row.
+    const isConvTerminal = desc.kind === "terminal" && isConversationTerminal(desc)
+    if (desc.kind !== "agent-cli" && !isConvTerminal) return
+    // A bare native launch (argv ["claude"]) may have no stamped
+    // adapterSlug — derive it from the same classifier table.
+    const adapterSlug =
+      desc.adapterSlug ?? (isConvTerminal ? conversationTerminalSlugFor(desc) : undefined)
     const adapterSessionId = adapterSessionIdOverride ?? desc.adapterSessionId
     const cwd = desc.cwd
     if (!adapterSlug || !adapterSessionId || !cwd) return
@@ -4290,6 +4771,101 @@ export function createSessionsRegistry(opts?: {
     }, PERSIST_DEBOUNCE_MS)
   }
 
+  /**
+   * Conversation-terminal link probe. A fresh native launch (argv
+   * `["claude"]`, no `CLAUDE_CONFIG_DIR` threaded) writes its transcript to
+   * the provider's GLOBAL store — there is no id to record until the
+   * provider creates the file. This probe watches for it: first shortly
+   * after spawn, then on a debounced interval while the PTY is alive and
+   * unlinked (never per output byte). Exact-bind discipline mirrors the
+   * fs-probe's: exactly ONE fresh transcript since `startedAt` in this cwd
+   * binds; several ⇒ record nothing and mark `linkStatus: "ambiguous"` —
+   * never bind a sibling. On a bind it records `adapterSessionId` +
+   * `resumeMetadata[storeAs]`, derives the title ONCE from the transcript's
+   * own first user message (the discover candidate's `preview` — the
+   * existing scanner, no second parser), and writes the conversations.jsonl
+   * link. Adapters with a launch entry but no conversation store yet
+   * (grok) are classify-only: no probe, title stays the spawn label.
+   */
+  const conversationLinkProbeMs = opts?.conversationLinkProbeMs ?? {
+    initialMs: 3_000,
+    intervalMs: 15_000,
+  }
+  const startConversationTerminalLinkProbe = (rt: SessionRuntime): void => {
+    const desc = rt.desc
+    const slug = desc.adapterSlug ?? conversationTerminalSlugFor(desc)
+    const store = slug ? CONVERSATION_STORES[slug] : undefined
+    const cwd = desc.cwd
+    if (!store || !cwd) return
+    let inFlight = false
+    let stopped = false
+    const timers: Array<ReturnType<typeof setTimeout>> = []
+    const stop = (): void => {
+      stopped = true
+      for (const t of timers) clearTimeout(t)
+      timers.length = 0
+    }
+    rt.linkProbeStop = stop
+    const tick = async (): Promise<void> => {
+      if (stopped || inFlight) return
+      if (desc.status !== "running") {
+        stop()
+        return
+      }
+      // Wait for the provider to have SAID anything before hitting the fs.
+      if (!desc.lastOutputAt) return
+      if (desc.adapterSessionId) {
+        stop()
+        return
+      }
+      inFlight = true
+      try {
+        const candidates = await store.discover({
+          cwd,
+          since: desc.startedAt,
+          // A PTY writes through the provider's native arm, never ACP.
+          attachmentMode: "native",
+          // No configDir on purpose: nothing threaded CLAUDE_CONFIG_DIR
+          // into this PTY, so the global store is where the file is.
+        })
+        if (candidates.length === 1) {
+          const candidate = candidates[0]!
+          desc.adapterSessionId = candidate.conversationId
+          desc.resumeMetadata = {
+            ...(desc.resumeMetadata ?? {}),
+            [store.storeAs]: candidate.conversationId,
+          }
+          delete desc.linkStatus
+          if (!desc.title && candidate.preview) {
+            const derived = deriveSessionTitle(candidate.preview)
+            if (derived) desc.title = derived
+          }
+          schedulePersist()
+          recordConversationLink(rt, candidate.conversationId)
+          stop()
+        } else if (candidates.length > 1) {
+          desc.linkStatus = "ambiguous"
+          schedulePersist()
+        }
+      } catch {
+        // Best-effort, like every other conversation-index write point.
+      } finally {
+        inFlight = false
+      }
+    }
+    const schedule = (delayMs: number): void => {
+      if (stopped) return
+      const t = setTimeout(() => {
+        void tick().finally(() => schedule(conversationLinkProbeMs.intervalMs))
+      }, delayMs)
+      t.unref?.()
+      // Only one pending timer at a time — drop the fired one's handle.
+      timers.length = 0
+      timers.push(t)
+    }
+    schedule(conversationLinkProbeMs.initialMs)
+  }
+
   /** Descriptors as they go to disk. Read-time projections are stripped so a
    *  restored descriptor is never seen with a stale value before the next
    *  list()/get() recomputes it. */
@@ -4302,6 +4878,7 @@ export function createSessionsRegistry(opts?: {
         secondsSinceLastActivity: _secondsSinceLastActivity,
         toolCallsThisTurn: _toolCallsThisTurn,
         eventsPath: _eventsPath,
+        availableModes: _availableModes,
         ...rest
       } = s.desc
       return rest
@@ -4465,10 +5042,13 @@ export function createSessionsRegistry(opts?: {
    * outputHint) are skipped — they fall back to ACP-level resume.
    */
   const sniffResumeHints = (rt: SessionRuntime, line: string): void => {
-    if (rt.desc.kind !== "agent-cli") return
-    const strategy = rt.desc.adapterSlug
-      ? RESUME_STRATEGIES[rt.desc.adapterSlug]
-      : undefined
+    // agent-cli lines as before, plus conversation-terminal PTY lines
+    // (fed by `sniffConversationTerminalChunk`) — a native TUI prints the
+    // same `claude --resume <uuid>` hint on graceful exit, and dropping it
+    // used to lose the PTY's only conversation handle.
+    if (rt.desc.kind !== "agent-cli" && rt.conversationTerminal !== true) return
+    const strategySlug = rt.desc.adapterSlug ?? conversationTerminalSlugFor(rt.desc)
+    const strategy = strategySlug ? RESUME_STRATEGIES[strategySlug] : undefined
     if (!strategy?.outputHint) return
     const plain = stripAnsiCodes(line)
     const m = plain.match(strategy.outputHint)
@@ -4493,6 +5073,22 @@ export function createSessionsRegistry(opts?: {
    * never splits within a chunk — Buffer arithmetic on UTF-8 mid-
    * sequence would corrupt multi-byte glyphs.
    */
+  /**
+   * Line-assembly shim between a conversation terminal's raw byte stream
+   * and `sniffResumeHints` (which matches per COMPLETE line). Carries a
+   * partial trailing line across chunks; capped so an alt-screen redraw
+   * that never emits a newline can't grow it unboundedly. Only called for
+   * `rt.conversationTerminal` rows — plain shells skip it entirely.
+   */
+  const sniffConversationTerminalChunk = (rt: SessionRuntime, chunk: Buffer): void => {
+    const text = (rt.sniffCarry ?? "") + chunk.toString("utf8")
+    const lines = text.split(/\r?\n|\r/)
+    rt.sniffCarry = (lines.pop() ?? "").slice(-4096)
+    for (const line of lines) {
+      if (line) sniffResumeHints(rt, line)
+    }
+  }
+
   const appendBytes = (rt: SessionRuntime, chunk: Buffer): void => {
     // Durable copy BEFORE the RAM ring drops anything — same ordering
     // rule transcript-writer.ts follows for agent-cli StreamEvents.
@@ -4507,6 +5103,7 @@ export function createSessionsRegistry(opts?: {
       if (dropped) rt.recentBytesSize -= dropped.byteLength
     }
     rt.desc.lastOutputAt = new Date().toISOString()
+    if (rt.conversationTerminal === true) sniffConversationTerminalChunk(rt, chunk)
     rt.emitter.emit("data", chunk)
   }
 
@@ -4574,6 +5171,22 @@ export function createSessionsRegistry(opts?: {
    * the line shape simple so the existing /stream SSE consumer
    * (and the xterm panel) just renders them as-is.
    */
+  /**
+   * Rewrite a `usage_update`'s `size` to the session's effective window
+   * (see `context-window.ts`) BEFORE it's recorded, so events.jsonl and every
+   * live consumer of the stream (session UIs, the VS Code transcript, SSE)
+   * see the same corrected figure the descriptor holds, instead of each
+   * re-deriving occupancy from the adapter's inferred size. The adapter's own
+   * value is kept as `reportedSize` whenever it differs.
+   */
+  const normalizeUsageFrame = (rt: SessionRuntime, evt: AgentStreamEvent): AgentStreamEvent => {
+    const size = foldUsageFrameWindow(rt.desc, evt, rt.desc.activeModel ?? rt.desc.model)
+    if (size === undefined || typeof evt.size !== "number" || evt.size <= 0 || size === evt.size) {
+      return evt
+    }
+    return { ...evt, size, reportedSize: evt.size }
+  }
+
   const projectEvent = (rt: SessionRuntime, evt: AgentStreamEvent): void => {
     switch (evt.kind) {
       case "text-delta":
@@ -4584,6 +5197,11 @@ export function createSessionsRegistry(opts?: {
         releaseBlockedOn(rt.desc)
         rt.activeToolCalls?.clear()
         if (evt.text) {
+          const prior = rt.lastAssistantTextSealed ? "" : (rt.lastAssistantText ?? "")
+          const text = prior + evt.text
+          rt.lastAssistantText =
+            text.length > LAST_ASSISTANT_TEXT_CAP ? text.slice(text.length - LAST_ASSISTANT_TEXT_CAP) : text
+          rt.lastAssistantTextSealed = false
           // text-delta is a stream of chunks — split on newlines so
           // each line lands in the ring buffer separately. Coalesce
           // a trailing fragment via rt.textBuf.
@@ -4613,6 +5231,7 @@ export function createSessionsRegistry(opts?: {
         break
       case "tool-call": {
         trackToolCall(rt, evt)
+        rt.lastAssistantTextSealed = true
         // Surface what the turn is now blocked on (sub-agent / command) when
         // the tool name classifies. The toolCallId is remembered so a nested
         // tool's result can't clear an outer tool's block — but a matching
@@ -4819,7 +5438,13 @@ export function createSessionsRegistry(opts?: {
       // the descriptor here so the latest context window + any adapter-
       // reported cost/tokens are available live to session_list / session_usage.
       case "usage_update": {
-        if (typeof evt.size === "number" && evt.size > 0) rt.desc.contextSize = evt.size
+        // Not "latest frame wins": an adapter's in-turn frames can carry an
+        // INFERRED window (claude-agent-acp guesses 200k for a bare 1M model
+        // id until its first result) — `foldUsageFrameWindow` keeps a
+        // cost-bearing frame's size sticky and prefers the catalog over a
+        // guess. Idempotent, so the frame already normalized by
+        // `normalizeUsageFrame` folds to the same state here.
+        foldUsageFrameWindow(rt.desc, evt, rt.desc.activeModel ?? rt.desc.model)
         // `used` claims to be tokens currently in context (see the field's
         // doc comment above) — but at least one adapter's ACP server has
         // been observed sending a cumulative session-lifetime token total
@@ -4845,6 +5470,9 @@ export function createSessionsRegistry(opts?: {
       // metadata that changes rarely and isn't part of the conversation).
       case "available-commands":
         rt.desc.availableCommands = evt.commands ?? []
+        break
+      case "background-task":
+        noteBackgroundTask(rt, evt)
         break
     }
   }
@@ -4957,14 +5585,31 @@ export function createSessionsRegistry(opts?: {
    * admission itself — the caller still goes through `validateAgentTurn`
    * afterward, now finding the session idle.
    *
-   * `caller` only shapes error messages; both entry points reach the same
-   * logic, so a message naming the wrong one would misdirect debugging.
+   * `caller` shapes error messages and the transcript notice; every entry
+   * point reaches the same logic, so a message naming the wrong one would
+   * misdirect debugging.
+   *
+   * Marks the turn as daemon-interrupted (`rt.interruptRequested`) so its
+   * `finally` holds `promptQueue` instead of draining it — pass
+   * `deliverQueueId` to drain exactly that item. Also writes a `notice`
+   * into the session's events log: an adapter-side `cancelled` turn-end
+   * is otherwise indistinguishable from the agent stopping on its own.
    */
   const interruptInFlightTurn = async (
     rt: SessionRuntime,
     id: string,
-    caller: string
+    caller: string,
+    deliverQueueId?: string
   ): Promise<void> => {
+    // An autonomous turn has no `session/prompt` to cancel (cancelling with
+    // none in flight would mark the adapter's session cancelled and swallow
+    // the NEXT prompt's result). Close the daemon-side turn; the agent folds
+    // the incoming prompt into the cycle it is running.
+    if (rt.autonomousTurn) {
+      endAutonomousTurn(rt, "cancelled")
+      autonomousReopenHoldUntil.set(rt.desc.id, Date.now() + AUTONOMOUS_REOPEN_HOLD_MS)
+      return
+    }
     const session = rt.agentSession
     if (!session) {
       // Invariant: `runAgentTurn` requires `agentSession` before it
@@ -4975,9 +5620,23 @@ export function createSessionsRegistry(opts?: {
         `${caller}: session "${id}" is mid-turn but has no live agent session to cancel`
       )
     }
+    if (rt.busy) {
+      rt.interruptRequested = { by: caller, ...(deliverQueueId ? { deliverQueueId } : {}) }
+      const held = (rt.desc.promptQueue ?? []).filter(p => p.id !== deliverQueueId).length
+      const banner =
+        `── turn interrupted by ${INTERRUPT_CALLER_LABELS[caller] ?? caller}` +
+        (held > 0
+          ? `; ${held} queued prompt(s) held until the next turn ends on its own ──`
+          : " ──")
+      appendLine(rt, banner, "stdout")
+      transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: banner })
+    }
     try {
       await session.cancel()
     } catch (err) {
+      // Nothing was cancelled — the turn will end on its own, so its
+      // `finally` must drain the queue as usual.
+      rt.interruptRequested = undefined
       throw new Error(
         `${caller}: session "${id}" does not support interrupt — cancelling the in-flight turn failed: ${
           err instanceof Error ? err.message : String(err)
@@ -5000,18 +5659,47 @@ export function createSessionsRegistry(opts?: {
    * time, in order, without unbounded call-stack growth (each dispatch
    * is a fresh microtask via the `void (async () => ...)()` below, not
    * a direct recursive call).
+   *
+   * `onlyId` dispatches that item instead of the head (deliver-now).
+   * No-op while another turn is already running — a prompt admitted during
+   * the ending turn's awaited `finally` took the slot, and ITS `finally`
+   * drains next. Slicing the item off here anyway would only have it
+   * rejected as mid-turn and dropped.
    */
-  const dispatchQueuedPrompt = (rt: SessionRuntime): void => {
+  const dispatchQueuedPrompt = (rt: SessionRuntime, onlyId?: string): void => {
     const queue = rt.desc.promptQueue
-    const next = queue?.[0]
-    if (!queue || !next) return
-    rt.desc.promptQueue = queue.slice(1)
+    if (!queue?.length || rt.busy) return
+    const next = onlyId ? queue.find(p => p.id === onlyId) : queue[0]
+    if (!next) return
+    // A typed message at the head drains together with every envelope item
+    // queued right behind it — one turn, N sibling tags — but a plain
+    // prompt always stops the run: a message batch and a human prompt are
+    // never one turn.
+    const batch: QueuedPrompt[] = [next]
+    if (next.envelope && !onlyId) {
+      for (const item of queue.slice(1)) {
+        if (!item.envelope) break
+        batch.push(item)
+      }
+    }
+    rt.desc.promptQueue = queue.filter(p => !batch.includes(p))
     schedulePersist()
     void (async () => {
       try {
         await maybeResumeAgent(rt)
         const liveRt = validateAgentTurn(rt.desc.id, "queue-drain")
-        const answer = matchStructuredQuestionAnswer(liveRt, next.message)
+        if (next.envelope) {
+          await runMessageTurn(
+            liveRt,
+            batch.map(p => p.envelope!),
+            "turn",
+            next.source,
+          )
+          return
+        }
+        const answer = isChildPromptSource(next.source)
+          ? undefined
+          : matchStructuredQuestionAnswer(liveRt, next.message)
         if (answer) {
           await answerStructuredQuestion(liveRt, answer)
           return
@@ -5135,6 +5823,8 @@ export function createSessionsRegistry(opts?: {
           return
         }
         rt.agentSession = fresh
+        bindOutOfTurnEvents(rt)
+        stampCapabilities(rt)
         rt.adapterSlug = adapterSlug
         rt.desc.adapterSessionId = fresh.sessionId
         // The resumed session is a fresh child process — refresh pid so
@@ -5145,6 +5835,8 @@ export function createSessionsRegistry(opts?: {
           rt.desc.status = "running"
           delete rt.desc.endedAt
           delete rt.desc.exitCode
+          // Alive again — the next death records its own outcome.
+          delete rt.desc.outcome
           rt.emitter.emit("status", rt.desc.status)
         }
         // `emitExited` is a once-per-`rt`-lifetime latch (dedup via
@@ -5423,6 +6115,152 @@ export function createSessionsRegistry(opts?: {
     }
   }
 
+  // ── Inbox + waiters (AIP-46 §Session messages) ────────────────────────
+  interface InboxWaiter {
+    filter: MessageFilter
+    ack: boolean
+    resolve: (messages: SessionMessage[]) => void
+  }
+  const inboxWaiters = new Map<string, InboxWaiter[]>()
+  /** Ids already surfaced in an fyi digest (per daemon lifetime — a restart
+   *  re-surfaces them once, which is harmless). */
+  const digestedFyi = new Set<string>()
+
+  const setInbox = (rt: SessionRuntime, next: SessionMessage[]): void => {
+    rt.desc.inbox = next
+    schedulePersist()
+  }
+  const addToInbox = (rt: SessionRuntime, msg: SessionMessage): void => {
+    let next = [...(rt.desc.inbox ?? []).filter(m => m.id !== msg.id), msg]
+    while (next.length > INBOX_CAP) {
+      const [dropped, ...rest] = next
+      next = rest
+      appendLine(rt, `[inbox] dropped ${dropped!.id} (inbox full, cap ${INBOX_CAP})`, "stderr")
+    }
+    setInbox(rt, next)
+  }
+  const removeFromInbox = (rt: SessionRuntime, ids: ReadonlySet<string>): void => {
+    if (!rt.desc.inbox?.some(m => ids.has(m.id))) return
+    setInbox(rt, rt.desc.inbox.filter(m => !ids.has(m.id)))
+  }
+  const dropQueuedEnvelopes = (rt: SessionRuntime, ids: ReadonlySet<string>): void => {
+    const queue = rt.desc.promptQueue
+    if (!queue?.some(p => p.envelope && ids.has(p.envelope.id))) return
+    rt.desc.promptQueue = queue.filter(p => !(p.envelope && ids.has(p.envelope.id)))
+    schedulePersist()
+  }
+  /** Consume matched messages for a waiter: stamp `via:"wait"` (recording a
+   *  `session-message` for any not already surfaced into a turn), pull them
+   *  out of the prompt queue, and ack them off the inbox when asked. */
+  const consumeForWait = (
+    rt: SessionRuntime,
+    msgs: readonly SessionMessage[],
+    ack: boolean,
+  ): SessionMessage[] => {
+    const at = new Date().toISOString()
+    const ids = new Set(msgs.map(m => m.id))
+    const out = msgs.map(m => {
+      if (m.delivered && m.delivered.via !== "inbox") return m
+      const stamped: SessionMessage = { ...m, delivered: { via: "wait", at } }
+      transcriptWriter.recordSessionMessage?.(rt.desc.id, stamped)
+      emitSessionMessage(stamped)
+      return stamped
+    })
+    dropQueuedEnvelopes(rt, ids)
+    if (ack) {
+      removeFromInbox(rt, ids)
+    } else {
+      const byId = new Map(out.map(m => [m.id, m]))
+      setInbox(rt, (rt.desc.inbox ?? []).map(m => byId.get(m.id) ?? m))
+    }
+    return out
+  }
+  /** Try to steer `msg` into `rt`'s running turn. True only when it was
+   *  injected (then it's consumed: recorded as `session-message` via
+   *  `steer`, never queued, never in the inbox). False — nothing sent, or
+   *  the agent said no turn is running — means "deliver as next-turn". */
+  const trySteer = async (rt: SessionRuntime, msg: SessionMessage): Promise<boolean> => {
+    const agent = rt.agentSession
+    // Host-turn gate: only while OUR prompt is in flight, never during an
+    // agent-autonomous cycle (#1410/#1412 — a steer there folds into a
+    // result the daemon never sees), and only for an agent that steers.
+    if (!agent?.steer || agent.steeringSupported !== true) return false
+    if (!rt.busy || rt.autonomousTurn) return false
+    const now = Date.now()
+    if (rt.lastSteerAt !== undefined && now - rt.lastSteerAt < STEER_MIN_INTERVAL_MS) return false
+    const at = new Date().toISOString()
+    const stamped: SessionMessage = {
+      ...msg,
+      delivered: { via: "steer", at, turnSeq: (rt.desc.turnsCompleted ?? 0) + 1 },
+    }
+    let content = renderSessionMessages([stamped])
+    const teach = !rt.desc.messagePreambleSent
+    if (teach) content = `${MESSAGE_PREAMBLE}\n\n${content}`
+    rt.lastSteerAt = now
+    const outcome = await agent.steer(content)
+    if (outcome !== "steered") {
+      rt.lastSteerAt = undefined
+      return false
+    }
+    if (teach) {
+      rt.desc.messagePreambleSent = true
+      schedulePersist()
+    }
+    recordSent(stamped)
+    transcriptWriter.recordSessionMessage?.(rt.desc.id, stamped)
+    emitSessionMessage(stamped)
+    appendLine(rt, `[message] ${stamped.id} from ${stamped.from.relation} steered into the running turn`, "stdout")
+    return true
+  }
+
+  const recordSent = (msg: SessionMessage): void => {
+    if (!msg.from.sessionId) return
+    transcriptWriter.recordSessionMessageSent?.(msg.from.sessionId, {
+      messageId: msg.id,
+      to: msg.to,
+      kind: msg.kind,
+      urgency: msg.urgency,
+    })
+  }
+
+  /** Emit the bus `session:message` edge for one message — at send (no
+   *  `delivered`) and again at delivery. */
+  const emitSessionMessage = (msg: SessionMessage): void => {
+    sessionEvents?.emit({
+      type: "session:message",
+      sessionId: msg.to,
+      messageId: msg.id,
+      ...(msg.from.sessionId ? { fromSessionId: msg.from.sessionId } : {}),
+      relation: msg.from.relation,
+      kind: msg.kind,
+      urgency: msg.urgency,
+      ...(msg.delivered ? { delivered: msg.delivered } : {}),
+      ts: new Date().toISOString(),
+    })
+  }
+
+  /** Deliver a batch of typed messages as ONE turn: stamp `delivered`,
+   *  render the envelope tags, and run it — recorded as `session-message`
+   *  records, never a `user-prompt`, and never matched as a structured-
+   *  question answer. */
+  const runMessageTurn = async (
+    rt: SessionRuntime,
+    envelopes: readonly SessionMessage[],
+    via: MessageDeliveryVia,
+    promptSource?: string,
+  ): Promise<void> => {
+    const at = new Date().toISOString()
+    const turnSeq = (rt.desc.turnsCompleted ?? 0) + 1
+    const delivered = envelopes.map(m => ({ ...m, delivered: { via, at, turnSeq } }))
+    for (const m of delivered) emitSessionMessage(m)
+    // Surfaced into a turn ⇒ consumed: auto-ack off the durable inbox.
+    removeFromInbox(rt, new Set(delivered.map(m => m.id)))
+    await runAgentTurn(rt, renderSessionMessages(delivered), {
+      ...(promptSource ? { promptSource } : {}),
+      messages: delivered,
+    })
+  }
+
   const runAgentTurn = async (
     rt: SessionRuntime,
     message: unknown,
@@ -5430,10 +6268,39 @@ export function createSessionsRegistry(opts?: {
     // `agent:<sessionId>` when another session injected this turn
     // (agent_prompt from a supervisor, a parent's spawn prompt), absent for
     // a human operator. Recording-only: never alters turn behavior.
-    turnOpts?: { promptSource?: string; system?: string }
+    // `messages` marks a typed-message turn (`runMessageTurn`): `message`
+    // is then the rendered envelope tags.
+    turnOpts?: { promptSource?: string; system?: string; messages?: readonly SessionMessage[] }
   ): Promise<void> => {
     if (!rt.agentSession) {
       throw new Error("runAgentTurn: session has no agentSession")
+    }
+    const messageTurn = turnOpts?.messages !== undefined && turnOpts.messages.length > 0
+    if (messageTurn) {
+      // Teach the envelope invariant once, the first time this session
+      // receives a message — as a `system-prompt` slice, not a user bubble.
+      if (!rt.desc.messagePreambleSent && typeof message === "string") {
+        message = `${MESSAGE_PREAMBLE}\n\n${message}`
+        turnOpts = { ...turnOpts, system: MESSAGE_PREAMBLE }
+        rt.desc.messagePreambleSent = true
+        schedulePersist()
+      }
+    } else if (typeof message === "string") {
+      // A human line opening with the envelope sentinel is escaped, so text
+      // outside an `<agentproto-message>` tag is always the human's.
+      message = escapeHumanPrompt(message)
+    }
+    // `fyi` messages never wake a session; the next turn it runs anyway
+    // opens with a one-line typed digest of them (a `system-prompt` slice,
+    // never glued into the human's text), once per message.
+    if (typeof message === "string") {
+      const fresh = (rt.desc.inbox ?? []).filter(m => m.urgency === "fyi" && !digestedFyi.has(m.id))
+      if (fresh.length) {
+        for (const m of fresh) digestedFyi.add(m.id)
+        const digest = renderInboxDigest(fresh)
+        message = `${digest}\n\n${message}`
+        turnOpts = { ...turnOpts, system: turnOpts?.system ? `${digest}\n\n${turnOpts.system}` : digest }
+      }
     }
     // `if (!title)`, not "on turn 1": every session already running when this
     // shipped has already had its first prompt, so a turn-1-only check would
@@ -5447,23 +6314,14 @@ export function createSessionsRegistry(opts?: {
     // role disposition ahead of the caller's ask); the spawn path forecloses
     // that by stamping `SpawnAgentInput.title` from `input.prompt` up-front, so
     // `rt.desc.title` is already set and this line is skipped for that turn.
-    if (!rt.desc.title) rt.desc.title = deriveSessionTitle(message)
-    // Flush any `[child-crashed]` notices the supervisor-notify subscriber
-    // queued while this session was busy (`SessionDescriptor
-    // .pendingChildCrashNotices` — see that field's doc) onto THIS turn's
-    // outgoing message, then clear the queue so delivery happens exactly
-    // once. String messages only — a non-string turn (a raw ACP
-    // ContentBlock) has no text slot to prepend into; the notice stays
-    // queued for the next turn that does.
-    if (rt.desc.pendingChildCrashNotices?.length && typeof message === "string") {
-      message = `${rt.desc.pendingChildCrashNotices.join("\n")}\n\n${message}`
-      rt.desc.pendingChildCrashNotices = []
-    }
+    if (!rt.desc.title && !messageTurn) rt.desc.title = deriveSessionTitle(message)
     // Flush a queued best-effort resume-context digest (Fix D — see
-    // `SessionDescriptor.pendingResumeContext`'s doc), same string-turn-
-    // only, fire-once shape as the crash notices above. Ordered after them
-    // so a session that resumed blank AND has a queued crash notice reads
-    // its own context digest first, then the notice.
+    // `SessionDescriptor.pendingResumeContext`'s doc) onto THIS turn's
+    // outgoing message, exactly once. String messages only — a non-string
+    // turn (a raw ACP ContentBlock) has no text slot to prepend into; the
+    // digest stays queued for the next turn that does. (Child reports and
+    // crash notices are NOT flushed this way any more — they're their own
+    // `promptQueue` turns, see `isChildPromptSource`.)
     if (rt.desc.pendingResumeContext && typeof message === "string") {
       message = `${rt.desc.pendingResumeContext}\n\n${message}`
       rt.desc.pendingResumeContext = undefined
@@ -5486,6 +6344,9 @@ export function createSessionsRegistry(opts?: {
     // no-op-when-clean shape).
     rt.bgTaskStarts = 0
     rt.bgTaskCountedIds = new Set()
+    // A prompt reaches the agent anyway — it will see any task that settled
+    // meanwhile, so the fallback wake would only repeat the news.
+    takeBackgroundTaskWake(rt)
     if (rt.desc.pendingBgTasks !== undefined) {
       delete rt.desc.pendingBgTasks
       sessionEvents?.emit({
@@ -5545,10 +6406,11 @@ export function createSessionsRegistry(opts?: {
       transcriptWriter.recordPrompt(
         rt.desc.id,
         message,
-        turnOpts?.promptSource || turnOpts?.system
+        turnOpts?.promptSource || turnOpts?.system || messageTurn
           ? {
               ...(turnOpts?.promptSource ? { source: turnOpts.promptSource } : {}),
               ...(turnOpts?.system ? { system: turnOpts.system } : {}),
+              ...(messageTurn ? { messages: turnOpts!.messages } : {}),
             }
           : undefined
       )
@@ -5567,7 +6429,7 @@ export function createSessionsRegistry(opts?: {
       const switchCandidate =
         typeof message === "string" ? parseModelSwitchCommand(message) : undefined
       let switchLearned = false
-      for await (const evt of rt.agentSession.send(wrapped)) {
+      for await (let evt of rt.agentSession.send(wrapped)) {
         // Hermes may end a turn with nested/parallel tool calls still lacking
         // their terminal `tool_call_update`. Persist synthetic settlements
         // first so durable replay observes result → turn-end, never the
@@ -5577,12 +6439,14 @@ export function createSessionsRegistry(opts?: {
         // projectEvent flattens it into an ANSI ring-buffer line — the
         // only point downstream of the driver where the original
         // shape (tool arguments, plan entries, ...) still exists.
+        if (evt.kind === "usage_update") evt = normalizeUsageFrame(rt, evt)
         transcriptWriter.recordEvent(rt.desc.id, evt)
         projectEvent(rt, evt)
         if (switchCandidate && !switchLearned && isModelSwitchAcknowledgement(evt)) {
           switchLearned = true
           if (rt.desc.activeModel !== switchCandidate) {
             rt.desc.activeModel = switchCandidate
+            resetContextWindowForModel(rt.desc, switchCandidate)
             schedulePersist()
             sessionEvents?.emit({
               type: "session:model-changed",
@@ -5657,6 +6521,12 @@ export function createSessionsRegistry(opts?: {
         emitExited(rt)
       }
     } finally {
+      // Captured BEFORE `busy` flips: the awaits further down this block let
+      // the interrupting caller start its own turn (and that turn could be
+      // interrupted in turn), so reading the flag at the drain would see
+      // someone else's.
+      const interruptedBy = rt.interruptRequested
+      rt.interruptRequested = undefined
       rt.busy = false
       rt.desc.busy = false           // mirror onto the public descriptor for session_monitor
       rt.emitter.emit("busy", false)
@@ -5926,7 +6796,9 @@ export function createSessionsRegistry(opts?: {
         // no bus wired) and announce on the bus. Detection + signal ONLY —
         // no auto-wake (what to say is the supervisor's call, not the
         // daemon's). Cleared on the next turn start / on session exit.
-        if ((rt.bgTaskStarts ?? 0) > 0 && !rt.desc.awaitingInput) {
+        // Only for an agent that does NOT report its task lifecycle: one that
+        // does is tracked in `backgroundTasks` and woken when a task settles.
+        if ((rt.bgTaskStarts ?? 0) > 0 && !rt.desc.awaitingInput && !rt.reportsBackgroundTasks) {
           rt.desc.pendingBgTasks = rt.bgTaskStarts
           schedulePersist()
           sessionEvents?.emit({
@@ -5938,6 +6810,16 @@ export function createSessionsRegistry(opts?: {
           })
         }
         if (overBudget) emitExited(rt)
+
+        // ── Session titler (opt-in, first completed turn only) ──────
+        // Fire-and-forget: `maybeTitleSession` never throws and never
+        // blocks the turn-end path. Gated on the FIRST turn
+        // (`turnsCompleted` was just bumped, so 1 = first), agent-cli
+        // only; the titler itself re-checks eligibility (config off,
+        // default-label guard, once-only set) and no-ops otherwise.
+        if ((rt.desc.turnsCompleted ?? 0) === 1) {
+          void maybeTitleSession(registry, rt.desc.id)
+        }
       } else {
         // ── Abnormal turn end (error / abort) ────────────────────────
         // The adapter's stream broke before a turn-end. We already
@@ -5969,12 +6851,340 @@ export function createSessionsRegistry(opts?: {
       }
 
       // ── FIFO queue drain (session-queue-ux) ──────────────────────
-      // Runs after every turn, normal or abnormal — see
-      // `dispatchQueuedPrompt`'s doc for why re-dispatching into a
+      // Runs after every turn that ended on its own, normal or abnormal —
+      // see `dispatchQueuedPrompt`'s doc for why re-dispatching into a
       // no-longer-alive session is safe (it re-validates and drops with
       // a logged error rather than throwing here).
-      dispatchQueuedPrompt(rt)
+      //
+      // A turn the DAEMON interrupted drains nothing: queued means "after
+      // the current turn ends", not "the moment anyone cuts it". Draining
+      // here made a Stop start the next queued prompt immediately, made an
+      // unrelated queued prompt look like the cause of the cancel, and
+      // raced an `interrupt: true` prompt for the freed slot. The parked
+      // items drain after the next turn that ends naturally. The one
+      // exception is deliver-now, which interrupted precisely to run its
+      // item.
+      if (!interruptedBy) dispatchQueuedPrompt(rt)
+      else if (interruptedBy.deliverQueueId) {
+        dispatchQueuedPrompt(rt, interruptedBy.deliverQueueId)
+      }
     }
+  }
+
+  // ── Background tasks + autonomous turns ───────────────────────────────
+  // An agent can keep working with no prompt in flight: Claude Code wakes
+  // the model itself when a `run_in_background` task settles (a
+  // "task-notification" cycle) and streams that work as ordinary ACP
+  // updates. The ACP client hands those to `handleOutOfTurnEvent` (they used
+  // to be dropped — the session looked idle, "waiting on the notification",
+  // while the agent worked invisibly and a supervisor re-prompted or reaped
+  // it). The registry now tracks such a stretch as an AUTONOMOUS turn (busy,
+  // recorded, closed with a turn-end), mirrors the task lifecycle onto
+  // `SessionDescriptor.backgroundTasks`, and — for an agent that does NOT
+  // wake itself — sends the wake prompt when a task settles on an idle
+  // session (`backgroundTaskWake`, on by default).
+  const bgWakeEnabled = opts?.backgroundTaskWake?.enabled ?? true
+  const bgWakeGraceMs = opts?.backgroundTaskWake?.graceMs ?? DEFAULT_BG_TASK_WAKE_GRACE_MS
+  /** Silence after which an autonomous turn with no open tool call is closed
+   *  even though its closing cost frame never arrived. */
+  const AUTONOMOUS_SILENCE_CLOSE_MS = 120_000
+  /** The same fallback while a tool call is still open — generous, since a
+   *  foreground command inside the cycle can legitimately run for minutes. */
+  const AUTONOMOUS_SILENCE_CLOSE_WITH_TOOLS_MS = 30 * 60_000
+  /** After an interrupt closes an autonomous turn, the agent's in-progress
+   *  cycle keeps streaming until the new prompt lands on the wire; don't
+   *  re-open a turn (which would make the prompt's admission see `busy`)
+   *  for this long. */
+  const AUTONOMOUS_REOPEN_HOLD_MS = 5_000
+  /** Out-of-turn event kinds that mean the model is actually working. Task
+   *  lifecycle, usage and capability metadata alone do not open a turn. */
+  const AUTONOMOUS_WORK_KINDS = new Set([
+    "text-delta",
+    "thought",
+    "tool-call",
+    "tool-result",
+    "plan",
+    "agent-prompt",
+  ])
+  const autonomousReopenHoldUntil = new Map<string, number>()
+
+  /** Mirror one `background-task` lifecycle edge onto the descriptor, the
+   *  ring buffer and the bus; a settle on an idle session arms the wake. */
+  const noteBackgroundTask = (rt: SessionRuntime, evt: AgentStreamEvent): void => {
+    const info = evt.task
+    if (!info?.taskId) return
+    rt.reportsBackgroundTasks = true
+    const tasks = rt.desc.backgroundTasks ?? []
+    // A task that already settled can settle AGAIN: claude-agent-acp closes a
+    // task best-effort as "stopped" when its replace-level drops it, then
+    // corrects that with the authoritative "completed"/"failed" edge. Merge
+    // the correction onto the settled record (still held for the wake).
+    const settledBefore = rt.bgWake?.settled.find(t => t.taskId === info.taskId)
+    const prior = tasks.find(t => t.taskId === info.taskId) ?? settledBefore
+    const taskKind = info.taskKind ?? prior?.taskKind
+    const description = info.description ?? prior?.description
+    const outputFile = info.outputFile ?? prior?.outputFile
+    const summary = info.summary ?? prior?.summary
+    const toolCallId = info.toolCallId ?? prior?.toolCallId
+    const task: SessionBackgroundTask = {
+      taskId: info.taskId,
+      status: info.status ?? prior?.status ?? "running",
+      startedAt: prior?.startedAt ?? new Date().toISOString(),
+      ...(taskKind ? { taskKind } : {}),
+      ...(description ? { description } : {}),
+      ...(outputFile ? { outputFile } : {}),
+      ...(summary ? { summary } : {}),
+      ...(toolCallId ? { toolCallId } : {}),
+    }
+    const busEvent = (phase: "started" | "settled") =>
+      sessionEvents?.emit({
+        type: "session:bg-task",
+        sessionId: rt.desc.id,
+        phase,
+        taskId: task.taskId,
+        ...(task.taskKind ? { taskKind: task.taskKind } : {}),
+        ...(task.description ? { description: task.description } : {}),
+        ...(task.outputFile ? { outputFile: task.outputFile } : {}),
+        status: task.status,
+        ...(task.summary ? { summary: task.summary } : {}),
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts: new Date().toISOString(),
+      })
+    if (evt.phase === "settled") {
+      const rest = tasks.filter(t => t.taskId !== task.taskId)
+      if (rest.length > 0) rt.desc.backgroundTasks = rest
+      else delete rt.desc.backgroundTasks
+      // A repeated settle is only news when it corrects the status.
+      if (settledBefore?.status !== task.status) {
+        appendLine(
+          rt,
+          `\x1b[2m[bg-task] ${task.taskId} ${task.status}` +
+            `${task.description ? ` — ${task.description}` : ""}\x1b[0m`,
+          "stdout"
+        )
+        busEvent("settled")
+      }
+      // Mid-turn the agent hears about it in-turn; only an idle session
+      // can be left parked.
+      if (!rt.busy) queueBackgroundTaskWake(rt, task)
+    } else {
+      rt.desc.backgroundTasks = prior
+        ? tasks.map(t => (t.taskId === task.taskId ? task : t))
+        : [...tasks, task]
+      if (!prior) {
+        appendLine(
+          rt,
+          `\x1b[2m[bg-task] ${task.taskId} started` +
+            `${task.description ? ` — ${task.description}` : ""}\x1b[0m`,
+          "stdout"
+        )
+        busEvent("started")
+      }
+    }
+    schedulePersist()
+  }
+
+  /** Remember a settled task and arm the (coalescing) wake timer: every
+   *  settle inside one grace window rides the same wake. */
+  const queueBackgroundTaskWake = (rt: SessionRuntime, task: SessionBackgroundTask): void => {
+    if (!bgWakeEnabled || rt.desc.status !== "running") return
+    const wake = (rt.bgWake ??= { settled: [] })
+    // Latest edge wins — a corrected settle replaces the provisional one.
+    wake.settled = [...wake.settled.filter(t => t.taskId !== task.taskId), task]
+    if (wake.timer) return
+    wake.timer = setTimeout(() => {
+      void fireBackgroundTaskWake(rt)
+    }, bgWakeGraceMs)
+    wake.timer.unref?.()
+  }
+
+  /** Disarm the wake and hand back what it would have announced. */
+  const takeBackgroundTaskWake = (rt: SessionRuntime): SessionBackgroundTask[] => {
+    const wake = rt.bgWake
+    if (!wake) return []
+    if (wake.timer) clearTimeout(wake.timer)
+    rt.bgWake = undefined
+    return wake.settled
+  }
+
+  /** The grace window elapsed without the agent waking itself: prompt it. */
+  const fireBackgroundTaskWake = async (rt: SessionRuntime): Promise<void> => {
+    const settled = takeBackgroundTaskWake(rt)
+    if (settled.length === 0) return
+    // Working again (its own wake, or a prompt landed) — it hears the
+    // notification itself; a dead session has nobody to wake.
+    if (rt.busy || rt.desc.status !== "running" || !rt.agentSession) return
+    const message = buildBackgroundTaskWakePrompt(settled)
+    try {
+      const live = validateAgentTurn(rt.desc.id, "background-task-wake")
+      await runAgentTurn(live, message, { promptSource: "background-task" })
+    } catch (err) {
+      appendLine(
+        rt,
+        `[error] background-task wake dropped — ${err instanceof Error ? err.message : String(err)}`,
+        "stderr"
+      )
+    }
+  }
+
+  /** Open an autonomous turn: the agent started working with no prompt. */
+  const beginAutonomousTurn = (rt: SessionRuntime): void => {
+    // It woke itself — the registry's fallback wake is moot.
+    const settled = takeBackgroundTaskWake(rt)
+    rt.autonomousTurn = { pendingToolCallIds: new Set() }
+    rt.busy = true
+    rt.desc.busy = true
+    rt.emitter.emit("busy", true)
+    rt.desc.awaitingInput = false
+    rt.desc.awaitingQuestion = undefined
+    releaseBlockedOn(rt.desc)
+    clearStalledFlag(rt)
+    rt.activeToolCalls = new Map()
+    rt.toolCallIdsThisTurn = new Set()
+    rt.toolCallsThisTurn = 0
+    // No longer parked — same as a prompted turn start.
+    if (rt.desc.pendingBgTasks !== undefined) {
+      delete rt.desc.pendingBgTasks
+      sessionEvents?.emit({
+        type: "session:bg-tasks-cleared",
+        sessionId: rt.desc.id,
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts: new Date().toISOString(),
+      })
+    }
+    // Record WHY the agent is talking with nobody having prompted it — the
+    // transcript would otherwise show assistant output out of nowhere.
+    const note =
+      settled.length > 0
+        ? buildBackgroundTaskWakePrompt(settled, () => undefined)
+        : "(the agent resumed on its own)"
+    appendLine(rt, `\x1b[2m── ▶ [autonomous] ${note.split("\n")[0]} ──\x1b[0m`, "stdout")
+    transcriptWriter.recordPrompt(rt.desc.id, note, { source: "autonomous" })
+    schedulePersist()
+  }
+
+  /** Close the autonomous turn the same way a prompted one ends. */
+  const endAutonomousTurn = (rt: SessionRuntime, reason: string): void => {
+    const auto = rt.autonomousTurn
+    if (!auto) return
+    if (auto.silenceTimer) clearTimeout(auto.silenceTimer)
+    rt.autonomousTurn = undefined
+    for (const toolCallId of auto.pendingToolCallIds) {
+      const synthetic: AgentStreamEvent = { kind: "tool-result", toolCallId, result: null, isError: false }
+      transcriptWriter.recordEvent(rt.desc.id, synthetic)
+      projectEvent(rt, synthetic)
+    }
+    const turnEnd: AgentStreamEvent = { kind: "turn-end", reason }
+    transcriptWriter.recordEvent(rt.desc.id, turnEnd)
+    projectEvent(rt, turnEnd)
+    rt.busy = false
+    rt.desc.busy = false
+    rt.emitter.emit("busy", false)
+    releaseBlockedOn(rt.desc)
+    rt.activeToolCalls?.clear()
+    clearStalledFlag(rt)
+    rt.desc.turnsCompleted = (rt.desc.turnsCompleted ?? 0) + 1
+    rt.desc.lastTurnReason = reason
+    if (rt.desc.lastTurnEmpty !== undefined) delete rt.desc.lastTurnEmpty
+    const usage = buildUsageSnapshot(rt)
+    rt.desc.usageSource = usage.source
+    rt.desc.costUsd = usage.costUsd
+    transcriptWriter.recordUsageSnapshot(rt.desc.id, usage)
+    schedulePersist()
+    sessionEvents?.emit({
+      type: "session:turn-end",
+      sessionId: rt.desc.id,
+      awaitingInput: rt.desc.awaitingInput ?? false,
+      label: rt.desc.label,
+      ts: new Date().toISOString(),
+      reason,
+      autonomous: true,
+    })
+    dispatchQueuedPrompt(rt)
+  }
+
+  const armAutonomousSilenceClose = (rt: SessionRuntime): void => {
+    const auto = rt.autonomousTurn
+    if (!auto) return
+    if (auto.silenceTimer) clearTimeout(auto.silenceTimer)
+    auto.silenceTimer = setTimeout(
+      () => endAutonomousTurn(rt, "watchdog-timeout"),
+      auto.pendingToolCallIds.size > 0
+        ? AUTONOMOUS_SILENCE_CLOSE_WITH_TOOLS_MS
+        : AUTONOMOUS_SILENCE_CLOSE_MS
+    )
+    auto.silenceTimer.unref?.()
+  }
+
+  /** One event the agent emitted with no prompt in flight. */
+  const handleOutOfTurnEvent = (rt: SessionRuntime, evt: AgentStreamEvent): void => {
+    if (rt.desc.status !== "running") return
+    if (evt.kind === "usage_update") evt = normalizeUsageFrame(rt, evt)
+    if (
+      AUTONOMOUS_WORK_KINDS.has(evt.kind) &&
+      !rt.busy &&
+      (autonomousReopenHoldUntil.get(rt.desc.id) ?? 0) <= Date.now()
+    ) {
+      beginAutonomousTurn(rt)
+    }
+    const auto = rt.autonomousTurn
+    if (auto && evt.toolCallId) {
+      if (evt.kind === "tool-call") auto.pendingToolCallIds.add(evt.toolCallId)
+      else if (evt.kind === "tool-result") auto.pendingToolCallIds.delete(evt.toolCallId)
+    }
+    transcriptWriter.recordEvent(rt.desc.id, evt)
+    projectEvent(rt, evt)
+    if (!auto) return
+    // The cycle's closing result frame: claude-agent-acp reports every
+    // result's cost (tagged `origin: task-notification` for this lane).
+    if (evt.kind === "usage_update" && evt.cost) endAutonomousTurn(rt, "completed")
+    else armAutonomousSilenceClose(rt)
+  }
+
+  /** Stamp `desc.capabilities` from the agent session just attached. */
+  const stampCapabilities = (rt: SessionRuntime): void => {
+    const steering = rt.agentSession?.steer !== undefined && rt.agentSession.steeringSupported === true
+    if (rt.desc.capabilities?.steering === steering) return
+    rt.desc.capabilities = { steering }
+    schedulePersist()
+  }
+
+  /**
+   * (Re)subscribe the registry to the live agent session's out-of-turn
+   * events. Called wherever `rt.agentSession` is (re)bound. A new agent
+   * process owns none of the old one's background tasks or cycle, so both
+   * are reset.
+   */
+  const bindOutOfTurnEvents = (rt: SessionRuntime): void => {
+    releaseOutOfTurnEvents(rt)
+    delete rt.desc.backgroundTasks
+    const session = rt.agentSession
+    if (!session?.onOutOfTurnEvent) return
+    rt.outOfTurnUnsubscribe = session.onOutOfTurnEvent(evt => {
+      if (rt.agentSession !== session) return
+      try {
+        handleOutOfTurnEvent(rt, evt)
+      } catch (err) {
+        console.warn(
+          `[sessions] ${rt.desc.id}: out-of-turn event (${evt.kind}) failed:`,
+          err instanceof Error ? err.message : err
+        )
+      }
+    })
+  }
+
+  /** Drop the subscription, the pending wake and any open autonomous
+   *  turn's timer — for a session whose agent process is going away. */
+  const releaseOutOfTurnEvents = (rt: SessionRuntime): void => {
+    rt.outOfTurnUnsubscribe?.()
+    rt.outOfTurnUnsubscribe = undefined
+    takeBackgroundTaskWake(rt)
+    if (rt.autonomousTurn?.silenceTimer) clearTimeout(rt.autonomousTurn.silenceTimer)
+    if (rt.autonomousTurn) {
+      rt.autonomousTurn = undefined
+      rt.busy = false
+    }
+    autonomousReopenHoldUntil.delete(rt.desc.id)
   }
 
   /**
@@ -6296,6 +7506,11 @@ export function createSessionsRegistry(opts?: {
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
+        ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
+        // Descriptor echo of the hold flag (it also lands on the runtime,
+        // below): what `session_restart` / `session_continue_fresh` read to
+        // keep a held session in hold, and what summaries report.
+        ...(input.permissionHold ? { permissionHold: true } : {}),
         ...(input.appServe ? { appServe: input.appServe } : {}),
         // Restart lineage (see SessionDescriptor.resumedFrom's doc). `resumeVia`
         // can legitimately be "" (a fresh fallback spawn with no continuity),
@@ -6307,6 +7522,10 @@ export function createSessionsRegistry(opts?: {
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
       }
+      // Seed the window from the catalog so the first turn doesn't show the
+      // adapter's inferred size (see context-window.ts) — a no-op for models
+      // the catalog doesn't know.
+      resetContextWindowForModel(desc, desc.model)
       if (input.trace ?? opts?.langfuseTracingDefault ?? false) {
         tracedSessions.add(id)
       }
@@ -6328,6 +7547,8 @@ export function createSessionsRegistry(opts?: {
       }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
+      bindOutOfTurnEvents(rt)
+      stampCapabilities(rt)
       // Lineage-attribution signal (WP-R3): announce the new session's parent
       // + depth the moment it's registered, so a live tree can nest it under
       // `parentSessionId` without waiting for its next snapshot poll. Rides the
@@ -6431,12 +7652,21 @@ export function createSessionsRegistry(opts?: {
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
+        ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
+        // Descriptor echo of the hold flag (it also lands on the runtime,
+        // below): what `session_restart` / `session_continue_fresh` read to
+        // keep a held session in hold, and what summaries report.
+        ...(input.permissionHold ? { permissionHold: true } : {}),
         ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
         ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
       }
+      // Seed the window from the catalog so the first turn doesn't show the
+      // adapter's inferred size (see context-window.ts) — a no-op for models
+      // the catalog doesn't know.
+      resetContextWindowForModel(desc, desc.model)
       if (input.trace ?? opts?.langfuseTracingDefault ?? false) {
         tracedSessions.add(id)
       }
@@ -6497,6 +7727,8 @@ export function createSessionsRegistry(opts?: {
         return
       }
       rt.agentSession = outcome.agentSession
+      bindOutOfTurnEvents(rt)
+      stampCapabilities(rt)
       rt.readUsage = outcome.readUsage
       rt.desc.cwd = outcome.cwd
       Object.assign(rt.desc, worktreeFields(outcome.cwd))
@@ -6595,6 +7827,44 @@ export function createSessionsRegistry(opts?: {
         rows: input.rows,
       })
       const priorCommandSessionId = findPriorCommandSessionId(sessions, input.cwd)
+      // Conversation-terminal identity (one row, two views): a native
+      // provider TUI launch (harness "Terminal" button, `terminal_start`
+      // with a NATIVE_LAUNCH_ARGV argv) gets its adapter slug stamped from
+      // the shared classifier table, so the Sessions list, the link probe,
+      // and a later harness switch all know WHICH provider this PTY is.
+      // `nativeTerminalResume` mirrors what the resume-strategy table can
+      // actually do for that slug (a declared native TUI resume argv).
+      // Plain shells derive nothing and stay exactly as before. The
+      // adapterSessionId stays UNSET on purpose — it is unknown until the
+      // provider writes a transcript or prints a resume hint.
+      const conversationSlug = conversationTerminalSlugFor({ argv: input.argv })
+      const conversationStore = conversationSlug ? CONVERSATION_STORES[conversationSlug] : undefined
+      // A provider-native RESUME launch (`claude --resume <id|/abs/….jsonl>`,
+      // e.g. session_restart's pty-native branch) already names its
+      // conversation — seed the identity from the argv instead of leaving
+      // the link probe to re-discover (and possibly mis-bind) it. The
+      // path form's uuid is its basename.
+      const resumeArgvId = (() => {
+        if (!conversationStore) return undefined
+        for (let i = 0; i < input.argv.length - 1; i++) {
+          if (
+            input.argv[i] !== "--resume" && input.argv[i] !== "-r" &&
+            !(conversationSlug === "opencode" && (input.argv[i] === "--session" || input.argv[i] === "-s"))
+          ) continue
+          const raw = input.argv[i + 1]!
+          const base = raw.slice(raw.lastIndexOf("/") + 1)
+          return base.endsWith(".jsonl") ? base.slice(0, -".jsonl".length) : raw
+        }
+        return undefined
+      })()
+      // The isolated provider config dir, when the caller threaded it into
+      // the PTY's env (`configDirEnvVar` — the pty-native restart path does)
+      // — recorded on the descriptor so a LATER restart / index write / fs
+      // probe resolves the SAME isolated store this PTY actually writes to.
+      const conversationConfigDir =
+        conversationStore?.configDirEnvVar && input.env
+          ? input.env[conversationStore.configDirEnvVar]
+          : undefined
       const desc: SessionDescriptor = {
         id,
         kind: "terminal",
@@ -6609,6 +7879,20 @@ export function createSessionsRegistry(opts?: {
         ...worktreeFields(input.cwd),
         ...(input.name ? { name: input.name } : {}),
         ...(input.label ? { label: input.label } : {}),
+        // Same rule as spawnAgent: a NEW spawn's label is a slug, not a
+        // human rename — let a later derived title outrank it.
+        ...(input.label ? { renamedByUser: false } : {}),
+        ...(conversationSlug ? { adapterSlug: conversationSlug } : {}),
+        ...(conversationSlug && RESUME_STRATEGIES[conversationSlug]?.spawnArgs
+          ? { nativeTerminalResume: true }
+          : {}),
+        ...(conversationConfigDir ? { adapterConfigDir: conversationConfigDir } : {}),
+        ...(resumeArgvId && conversationStore
+          ? {
+              adapterSessionId: resumeArgvId,
+              resumeMetadata: { [conversationStore.storeAs]: resumeArgvId },
+            }
+          : {}),
         ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
         // Parent attribution + depth (orchestrator WP4) — same recording
         // rule as spawnAgent above: depth always set so subtree/depth
@@ -6640,6 +7924,7 @@ export function createSessionsRegistry(opts?: {
         busy: false,
         textBuf: "",
         thoughtBuf: "",
+        ...(isConversationTerminal(desc) ? { conversationTerminal: true } : {}),
       }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
@@ -6652,6 +7937,16 @@ export function createSessionsRegistry(opts?: {
         depth: desc.depth ?? 0,
         ts: new Date().toISOString(),
       })
+      // Watch for the provider's native transcript so this PTY becomes a
+      // LINKED conversation (id + index row + derived title) — see
+      // `startConversationTerminalLinkProbe`'s doc. No-op for plain shells
+      // and for classified-but-storeless TUIs (grok). A resume launch
+      // already knows its conversation (seeded above): record the link
+      // now instead of probing.
+      if (rt.conversationTerminal) {
+        if (desc.adapterSessionId) recordConversationLink(rt)
+        else startConversationTerminalLinkProbe(rt)
+      }
       pty.onData((chunk: string) => {
         // node-pty emits utf-8 strings. Convert once at the boundary
         // so the ring buffer + emitter consumers all see Buffer.
@@ -6808,6 +8103,9 @@ export function createSessionsRegistry(opts?: {
           },
         ]
         schedulePersist()
+        // The provenance stamp can land after the session already ended —
+        // fold the PR into its recorded outcome (a richer write replaces).
+        if (rt.desc.outcome) recordOutcome(rt)
       }
       return rt.desc
     },
@@ -6886,7 +8184,9 @@ export function createSessionsRegistry(opts?: {
       }
       if (rtPre) await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "sendPrompt")
-      const structuredAnswer = matchStructuredQuestionAnswer(rt, message)
+      const structuredAnswer = isChildPromptSource(opts?.source)
+        ? undefined
+        : matchStructuredQuestionAnswer(rt, message)
       if (structuredAnswer) {
         await answerStructuredQuestion(rt, structuredAnswer)
         return
@@ -6914,7 +8214,8 @@ export function createSessionsRegistry(opts?: {
       // THEN await the turn actually settling (busy → false) BEFORE
       // `validateAgentTurn` runs, so admission is never bypassed — it's
       // only ever reached once the prior turn is genuinely over.
-      if (opts?.interrupt && rtPre.busy) {
+      const interrupted = opts?.interrupt === true && rtPre.busy
+      if (interrupted) {
         await interruptInFlightTurn(rtPre, id, "enqueuePrompt")
       }
       // Queue arm (additive, opt-in — see this method's doc comment):
@@ -6925,30 +8226,55 @@ export function createSessionsRegistry(opts?: {
       // wins). Resolves immediately without touching admission or
       // dispatch; `dispatchQueuedPrompt` (in `runAgentTurn`'s finally)
       // is what eventually fires it.
+      const envelope = opts?.envelope
+      if (envelope) {
+        // Sender-side trace, once, at acceptance — whichever arm delivers it.
+        if (envelope.from.sessionId) {
+          transcriptWriter.recordSessionMessageSent?.(envelope.from.sessionId, {
+            messageId: envelope.id,
+            to: envelope.to,
+            kind: envelope.kind,
+            urgency: envelope.urgency,
+          })
+        }
+      }
       if (opts?.queue && rtPre.busy) {
         const item: QueuedPrompt = {
           id: opts.queueId ?? `q_${randomUUID().slice(0, 8)}`,
-          message,
+          message: envelope ? envelope.text : message,
           queuedAt: new Date().toISOString(),
           ...(opts.source ? { source: opts.source } : {}),
           ...(opts.origin ? { origin: opts.origin } : {}),
+          ...(envelope ? { envelope } : {}),
         }
+        if (envelope) emitSessionMessage(envelope)
         rtPre.desc.promptQueue = opts.force
           ? [item, ...(rtPre.desc.promptQueue ?? [])]
           : [...(rtPre.desc.promptQueue ?? []), item]
         schedulePersist()
-        return
+        // The ONLY path that parks the prompt behind a live turn — signal it
+        // so the caller can surface the "queued, not delivered yet" hint.
+        return { queued: true }
       }
       await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "enqueuePrompt")
+      if (envelope) {
+        void runMessageTurn(rt, [envelope], interrupted ? "interrupt" : "turn", opts?.source).catch(err => {
+          appendLine(rtPre, `[error] ${err instanceof Error ? err.message : String(err)}`, "stderr")
+        })
+        return { queued: false }
+      }
       // A structured-question answer is resolved synchronously (it never
       // starts a turn — it's a flag flip, or a hand-off to a fresh session)
       // so it's awaited here even though the rest of this method is
-      // fire-and-forget below.
-      const structuredAnswer = matchStructuredQuestionAnswer(rt, message)
+      // fire-and-forget below. A child's report is never an answer — only
+      // the human decides a structured question.
+      const structuredAnswer = isChildPromptSource(opts?.source)
+        ? undefined
+        : matchStructuredQuestionAnswer(rt, message)
       if (structuredAnswer) {
         await answerStructuredQuestion(rt, structuredAnswer)
-        return
+        return { queued: false }
       }
       // Execution phase — fire-and-forget from here on. Errors during
       // the turn itself (network drop, child died mid-turn) land in
@@ -6962,6 +8288,136 @@ export function createSessionsRegistry(opts?: {
           "stderr"
         )
       })
+      // Admitted + dispatched now (idle session, or an interrupt that already
+      // settled the prior turn) — not parked, so no queued hint.
+      return { queued: false }
+    },
+    async sendMessage(msg, opts) {
+      const rt = sessions.get(msg.to)
+      if (!rt) throw new Error(`sendMessage: no session "${msg.to}"`)
+      if (rt.desc.status !== "running" && rt.desc.status !== "starting") {
+        throw new SessionNotAliveError(msg.to, rt.desc.status, "sendMessage")
+      }
+      // Waiter first — the recipient is parked in `inbox_wait` for exactly
+      // this: hand it over as the tool's result, never also as a turn.
+      const waiters = inboxWaiters.get(msg.to)
+      const waiter = waiters?.find(w => matchesMessageFilter(msg, w.filter))
+      if (waiter) {
+        inboxWaiters.set(msg.to, waiters!.filter(w => w !== waiter))
+        recordSent(msg)
+        emitSessionMessage(msg)
+        addToInbox(rt, msg)
+        const [stamped] = consumeForWait(rt, [msg], waiter.ack)
+        waiter.resolve([stamped!])
+        return { messageId: msg.id, delivered: { via: "wait" }, queued: false, urgencyApplied: msg.urgency }
+      }
+      if (msg.urgency === "fyi") {
+        const parked: SessionMessage = { ...msg, delivered: { via: "inbox", at: new Date().toISOString() } }
+        recordSent(parked)
+        addToInbox(rt, parked)
+        emitSessionMessage(parked)
+        return { messageId: msg.id, delivered: { via: "inbox" }, queued: false, urgencyApplied: "fyi" }
+      }
+      // An un-granted interrupt never cuts a turn: the fastest thing short
+      // of that is steering it in.
+      const requested: MessageUrgency =
+        msg.urgency === "interrupt" && opts?.allowInterrupt !== true ? "steer" : msg.urgency
+      const busy = rt.busy || rt.desc.busy === true
+      if (busy && requested === "steer") {
+        const steered = await trySteer(rt, msg)
+        if (steered) {
+          return { messageId: msg.id, delivered: { via: "steer" }, queued: false, urgencyApplied: "steer" }
+        }
+      }
+      addToInbox(rt, msg)
+      const interrupt = busy && requested === "interrupt"
+      const { queued } = await registry.enqueuePrompt(msg.to, msg.text, {
+        envelope: msg,
+        queue: true,
+        ...(interrupt ? { interrupt: true } : {}),
+        ...(opts?.source ? { source: opts.source } : {}),
+        ...(opts?.origin ? { origin: opts.origin } : {}),
+      })
+      return {
+        messageId: msg.id,
+        delivered: queued ? null : { via: interrupt ? "interrupt" : "turn" },
+        queued,
+        // Idle: whatever was asked for, it simply started a turn. Busy: the
+        // tier that actually ran (a steer that couldn't inject is next-turn).
+        urgencyApplied: !busy ? requested : interrupt ? "interrupt" : "next-turn",
+      }
+    },
+    async waitForMessages(id, filter, opts) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`waitForMessages: no session "${id}"`)
+      const ack = opts.ack !== false
+      const pending = (rt.desc.inbox ?? []).filter(m => matchesMessageFilter(m, filter))
+      if (pending.length) return { messages: consumeForWait(rt, pending, ack), timedOut: false }
+      if (opts.signal?.aborted) return { messages: [], timedOut: false }
+      const prevBlocked = rt.desc.blockedOn
+      if (!prevBlocked) rt.desc.blockedOn = "inbox"
+      return await new Promise<WaitForMessagesResult>(resolveWait => {
+        let settled = false
+        const waiter: InboxWaiter = {
+          filter,
+          ack,
+          resolve: messages => finish({ messages, timedOut: false }),
+        }
+        const finish = (result: WaitForMessagesResult): void => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          opts.signal?.removeEventListener("abort", onAbort)
+          const list = inboxWaiters.get(id)
+          if (list) inboxWaiters.set(id, list.filter(w => w !== waiter))
+          if (rt.desc.blockedOn === "inbox" && !prevBlocked) rt.desc.blockedOn = undefined
+          resolveWait(result)
+        }
+        const timer = setTimeout(() => finish({ messages: [], timedOut: true }), opts.timeoutMs)
+        const onAbort = (): void => finish({ messages: [], timedOut: false })
+        opts.signal?.addEventListener("abort", onAbort, { once: true })
+        inboxWaiters.set(id, [...(inboxWaiters.get(id) ?? []), waiter])
+      })
+    },
+    listInbox(id, filter) {
+      const rt = sessions.get(id)
+      if (!rt) return null
+      const matched = (rt.desc.inbox ?? []).filter(m => !filter || matchesMessageFilter(m, filter))
+      return filter?.limit !== undefined ? matched.slice(-filter.limit) : matched
+    },
+    findReceivedMessage(id, messageId) {
+      const rt = sessions.get(id)
+      if (!rt) return undefined
+      const inInbox = rt.desc.inbox?.find(m => m.id === messageId)
+      if (inInbox) return inInbox
+      let raw: string
+      try {
+        raw = readFileSync(sessionEventsPath(id, transcriptBaseDir), "utf8")
+      } catch {
+        return undefined
+      }
+      // Cheap pre-filter before parsing: only lines naming the id.
+      for (const line of raw.split("\n")) {
+        if (!line.includes(messageId) || !line.includes('"session-message"')) continue
+        try {
+          const rec = JSON.parse(line) as { kind?: string; message?: SessionMessage }
+          if (rec.kind === "session-message" && rec.message?.id === messageId) return rec.message
+        } catch {
+          // torn line — skip
+        }
+      }
+      return undefined
+    },
+    ackInbox(id, ids) {
+      const rt = sessions.get(id)
+      if (!rt) return { acked: [] }
+      const inbox = rt.desc.inbox ?? []
+      const target = new Set(ids === "all" ? inbox.map(m => m.id) : ids)
+      const acked = inbox.filter(m => target.has(m.id)).map(m => m.id)
+      const ackedSet = new Set(acked)
+      removeFromInbox(rt, ackedSet)
+      dropQueuedEnvelopes(rt, ackedSet)
+      return { acked }
     },
     removeQueuedPrompt(id, queueId) {
       const rt = sessions.get(id)
@@ -7019,7 +8475,7 @@ export function createSessionsRegistry(opts?: {
       if (wasBusy) {
         // Await the cancelled turn actually settling — the interruption is
         // real and delivery is imminent (its finally dispatches the target).
-        await interruptInFlightTurn(rt, id, "deliverQueuedPrompt")
+        await interruptInFlightTurn(rt, id, "deliverQueuedPrompt", queueId)
         return { delivered: true, interrupted: true }
       }
       dispatchQueuedPrompt(rt)
@@ -7203,6 +8659,8 @@ export function createSessionsRegistry(opts?: {
         // agree — mirror onto `activeModel` too (SessionDescriptor's doc)
         // rather than leaving it stale from a prior divergence.
         rt.desc.activeModel = modelId
+        // The sticky window belonged to the previous model.
+        resetContextWindowForModel(rt.desc, modelId)
         schedulePersist()
         if (sessionEvents) {
           const ts = new Date().toISOString()
@@ -7334,6 +8792,7 @@ export function createSessionsRegistry(opts?: {
           stampInterrupted(desc)
           stampCurrentStatus(rt)
           stampWatchers(desc)
+          stampLiveModes(desc, rt)
           desc.childrenBusy = childrenBusy.get(desc.id) ?? 0
           desc.queuedPrompts = desc.promptQueue?.length ?? 0
           return desc
@@ -7341,11 +8800,41 @@ export function createSessionsRegistry(opts?: {
     },
     listSummaries(opts) {
       const includeArchived = opts?.includeArchived ?? false
+      const lane = opts?.lane
       const limit = Math.max(1, Math.min(200, opts?.limit ?? 50))
       const offset = Math.max(0, opts?.offset ?? 0)
       const childrenBusy = childrenBusyCounts()
+      const hasMachineLineage = (rt: SessionRuntime): boolean => {
+        const ownMachine = (desc: SessionDescriptor): boolean =>
+          desc.origin === "cron" || desc.origin === "gate"
+        if (ownMachine(rt.desc)) return true
+
+        const seen = new Set<string>([rt.desc.id])
+        let current = rt.desc
+        while (current.parentSessionId) {
+          const parent = sessions.get(current.parentSessionId)?.desc
+          // Unreachable or cyclic ancestry is an Auto task, matching the webview's fallback.
+          if (!parent || seen.has(parent.id)) return true
+          // Shell roots are not shown in the Sessions panel; their descendants are Auto tasks.
+          if (parent.kind === "terminal" || parent.kind === "command") return true
+          seen.add(parent.id)
+          current = parent
+        }
+        return ownMachine(current)
+      }
       const all = Array.from(sessions.values())
         .filter(rt => includeArchived || !rt.desc.archived)
+        .filter(rt => {
+          if (!lane) return true
+          // Shells and raw commands belong to the Activity panel, not either
+          // Sessions lane — but a CONVERSATION terminal (a native provider
+          // TUI in a PTY, `isConversationTerminal`) is a trackable session
+          // and stays in. One row, two doors: Activity keeps listing it too.
+          if (isShellOnlyRow(rt.desc)) return false
+          // Match the webview's lineage-aware lane classifier before paginating summary rows.
+          const machine = hasMachineLineage(rt)
+          return lane === "auto" ? machine : !machine
+        })
         .sort((a, b) => b.desc.startedAt.localeCompare(a.desc.startedAt))
       const slice = all.slice(offset, offset + limit)
       const summaries = slice.map(rt => {
@@ -7356,7 +8845,17 @@ export function createSessionsRegistry(opts?: {
         stampWatchers(desc)
         desc.childrenBusy = childrenBusy.get(desc.id) ?? 0
         desc.queuedPrompts = desc.promptQueue?.length ?? 0
-        return toSessionSummary(desc)
+        const summary = toSessionSummary(desc)
+        // Stamp the lane verdict on EVERY summary row (not only when a lane
+        // filter is set): it's this walk over the full `sessions` map that a
+        // paging client cannot reproduce from its page-local view. Shell
+        // rows carry no lane — they live in the Activity panel. A
+        // conversation terminal is NOT a shell: it gets a lane like any
+        // other session.
+        if (!isShellOnlyRow(desc)) {
+          summary.lane = hasMachineLineage(rt) ? "auto" : "agents"
+        }
+        return summary
       })
       return { summaries, total: all.length }
     },
@@ -7368,6 +8867,7 @@ export function createSessionsRegistry(opts?: {
         stampInterrupted(desc)
         stampCurrentStatus(rt)
         stampWatchers(desc)
+        stampLiveModes(desc, rt)
         desc.childrenBusy = childrenBusyCounts().get(desc.id) ?? 0
         desc.queuedPrompts = desc.promptQueue?.length ?? 0
       }
@@ -7409,6 +8909,31 @@ export function createSessionsRegistry(opts?: {
     },
     subscribeToRecords(id, onRecord) {
       return baseTranscriptWriter.subscribe(id, onRecord)
+    },
+    recordMcpAppToolCall(sessionId, record) {
+      baseTranscriptWriter.recordMcpAppToolCall(sessionId, record)
+    },
+    async findToolCallName(sessionId, toolCallId) {
+      let raw: string
+      try {
+        raw = await fs.readFile(sessionEventsPath(sessionId, transcriptBaseDir), "utf8")
+      } catch {
+        return undefined
+      }
+      let name: string | undefined
+      for (const line of raw.split("\n")) {
+        // Cheap pre-filter: only parse lines that can be the call's record.
+        if (!line.includes(toolCallId)) continue
+        try {
+          const rec = JSON.parse(line) as { kind?: unknown; toolCallId?: unknown; toolName?: unknown }
+          if (rec.kind === "tool-call" && rec.toolCallId === toolCallId && typeof rec.toolName === "string" && rec.toolName) {
+            name = rec.toolName
+          }
+        } catch {
+          // torn / partial line
+        }
+      }
+      return name
     },
     attachPty(id, initial, onData, onExit) {
       const rt = sessions.get(id)
@@ -7517,6 +9042,8 @@ export function createSessionsRegistry(opts?: {
       // SIGTERM the underlying child/pty if any. Either branch is a
       // best-effort — the descriptor flip is what the UI surfaces.
       if (rt.agentSession) {
+        releaseOutOfTurnEvents(rt)
+        delete rt.desc.backgroundTasks
         // Durable usage recap on exit — before close() flushes the stream.
         recordExitUsageSnapshot(rt)
         void rt.agentSession.close().catch(() => undefined)
@@ -7566,6 +9093,8 @@ export function createSessionsRegistry(opts?: {
       // never join a boot-time resume-storm of dead work.
       rt.desc.endedReason = "idle-reaped"
       if (rt.agentSession) {
+        releaseOutOfTurnEvents(rt)
+        delete rt.desc.backgroundTasks
         // Durable usage recap on exit — before close() flushes the stream.
         recordExitUsageSnapshot(rt)
         void rt.agentSession.close().catch(() => undefined)
@@ -7620,6 +9149,8 @@ export function createSessionsRegistry(opts?: {
       rt.desc.crashedAt = rt.desc.endedAt
       rt.desc.lastError = `adapter process gone (pid ${pid}) — session crashed`
       if (rt.agentSession) {
+        releaseOutOfTurnEvents(rt)
+        delete rt.desc.backgroundTasks
         // Durable usage recap on exit — before close() flushes the stream.
         recordExitUsageSnapshot(rt)
         void rt.agentSession.close().catch(() => undefined)
@@ -7699,18 +9230,6 @@ export function createSessionsRegistry(opts?: {
       delete rt.desc.nextRestartAt
       appendLine(rt, message, "stderr")
       transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: message })
-      return true
-    },
-    stampPendingChildCrashNotice(id, notice) {
-      const rt = sessions.get(id)
-      if (!rt) return false
-      if (rt.desc.kind !== "agent-cli") return false
-      const isAlive = rt.desc.status === "running" || rt.desc.status === "starting"
-      if (!isAlive) return false
-      const pending = rt.desc.pendingChildCrashNotices ?? []
-      if (pending.includes(notice)) return false
-      rt.desc.pendingChildCrashNotices = [...pending, notice]
-      schedulePersist()
       return true
     },
     archiveSession(id) {
@@ -7877,6 +9396,15 @@ export function createSessionsRegistry(opts?: {
     forget(id) {
       const rt = sessions.get(id)
       if (!rt) return false
+      // A live row gets the full kill() teardown first — close the adapter
+      // (whole process tree), SIGTERM any PTY/child, stop an attached
+      // browser, and emit session:exited so the exit subscribers (headless
+      // browser sweep, webhooks, brain ingest) run. Dropping it from the map
+      // alone left the adapter tree — and any headless Chrome — running with
+      // nothing left to track it.
+      if (rt.desc.status === "running" || rt.desc.status === "starting") {
+        registry.kill(id)
+      }
       // Don't leak: tear down the emitter so backfill listeners stop.
       rt.emitter.removeAllListeners()
       void transcriptWriter.close(id)
@@ -8024,6 +9552,8 @@ function clearInFlightFlags(desc: SessionDescriptor): void {
   // paths (kill/shutdown/boot-reclassify) where session:exited is the
   // signal consumers key on; a bg-tasks-cleared would be noise.
   delete desc.pendingBgTasks
+  // Nor any live background task: its process is gone with the session.
+  delete desc.backgroundTasks
 }
 
 /**
@@ -8056,7 +9586,11 @@ function clearInFlightFlags(desc: SessionDescriptor): void {
 function loadHistorySnapshot(
   persistPath: string,
   sessions: Map<string, SessionRuntime>,
-  sessionEvents?: SessionEventBus,
+  sessionEvents: SessionEventBus | undefined,
+  /** Where the sessions' `events.jsonl` transcripts live — read (tail only)
+   *  to recover the last assistant message of a row that died with the
+   *  daemon, for its derived outcome. */
+  transcriptBaseDir: string,
   /** The bucket `persistPath` was read from, in partitioned mode. When
    *  given alongside `sourceBucketOf`, every loaded row's id is recorded
    *  against it — see `sourceBucketOf`'s docblock at its declaration in
@@ -8136,6 +9670,7 @@ function loadHistorySnapshot(
     // survives every future boot. Clearing idle flags on an idle session is a
     // no-op, so there is nothing to lose by not asking how it got there.
     clearInFlightFlags(reclassified)
+    migratePendingChildNotices(reclassified)
     // Same reasoning as the in-flight flags above, for `contextUsed`: a
     // snapshot written before `plausibleContextUsed` existed can carry an
     // out-of-window value on disk, and a dead/historical ghost never gets
@@ -8145,6 +9680,14 @@ function loadHistorySnapshot(
       reclassified.contextSize,
       reclassified.contextUsed,
     )
+    // A row that died with the daemon never went through `emitExited`, so
+    // derive its outcome here — the live text buffer died with the old
+    // process, so the summary comes from its transcript's tail instead.
+    if (wasAlive && reclassified.kind === "agent-cli" && !reclassified.outcome) {
+      reclassified.outcome = deriveSessionOutcome(reclassified, {
+        lastAssistantText: readLastAssistantTextSync(sessionEventsPath(reclassified.id, transcriptBaseDir)),
+      })
+    }
     const rt: SessionRuntime = {
       desc: reclassified,
       recentLines: [],

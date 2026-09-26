@@ -21,11 +21,13 @@
 import { createWriteStream, mkdirSync, readFileSync, type WriteStream } from "node:fs"
 import { homedir } from "node:os"
 import { isAbsolute, join } from "node:path"
-import type { SessionObserver } from "./session-observer.js"
+import type { SessionMessageSentRecord, SessionObserver } from "./session-observer.js"
+import type { SessionMessage } from "./session-message.js"
 import type { AgentStreamEvent } from "./sessions.js"
 import { extractCommandArgs } from "./tool-call-record.js"
 import { detectShellPrCreate } from "./pr-provenance.js"
 import type { SessionUsage } from "./usage.js"
+import type { McpAppToolCallRecord } from "./mcp-apps-host.js"
 
 /** Debounce window for flushing a buffered text-delta/thought fragment
  *  that hasn't hit a newline yet. Keeps a long no-newline stream from
@@ -118,8 +120,13 @@ export interface TranscriptWriter extends SessionObserver {
   recordPrompt(
     sessionId: string,
     message: unknown,
-    opts?: { source?: string; system?: string }
+    opts?: { source?: string; system?: string; messages?: readonly SessionMessage[] }
   ): void
+  /** Sender-side `session-message-sent` record — see SessionObserver. */
+  recordSessionMessageSent(sessionId: string, record: SessionMessageSentRecord): void
+  /** Standalone `session-message` record (a message surfaced outside a turn
+   *  prompt, e.g. as an `inbox_wait` result) — see SessionObserver. */
+  recordSessionMessage(sessionId: string, message: SessionMessage): void
   /** Record one structured stream event, ahead of `projectEvent`'s
    *  flattening. Coalesces consecutive text-delta/thought chunks the same
    *  way the ring buffer does. */
@@ -130,6 +137,12 @@ export interface TranscriptWriter extends SessionObserver {
    *  stream: this is the aggregable turn-boundary durable record, so a
    *  daemon restart doesn't lose the session's accumulated usage. */
   recordUsageSnapshot(sessionId: string, usage: SessionUsage): void
+  /** Record a `tools/call` an MCP App iframe made through the daemon
+   *  (`mcp_app_tool_call`, mcp-apps-host.ts) — a side-channel call the
+   *  model didn't make, so it gets its own `kind: "mcp_app_tool_call"`
+   *  record ("called from app UI") rather than a harness `tool-call`.
+   *  Carries no args and no result. */
+  recordMcpAppToolCall(sessionId: string, record: McpAppToolCallRecord): void
   /** Flush buffers and close the session's append stream. Safe to call
    *  more than once (subsequent calls are no-ops) and safe to call for a
    *  session that never wrote anything (also a no-op). Production call
@@ -323,11 +336,38 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
           )
         }
       }
+      // A typed-message turn is recorded as one `session-message` record per
+      // delivered message — the daemon-attested envelope — and NEVER as a
+      // `user-prompt`, so no reader can mistake it for the human.
+      if (opts?.messages?.length) {
+        for (const message of opts.messages) {
+          writeRecord(sessionId, state, { kind: "session-message", sessionId, message })
+        }
+        return
+      }
       writeRecord(sessionId, state, {
         kind: "user-prompt",
         sessionId,
         text: userText,
         ...(opts?.source ? { source: opts.source } : {}),
+      })
+    },
+    recordSessionMessage(sessionId, message) {
+      const state = getState(sessionId)
+      flushBuffers(sessionId, state)
+      writeRecord(sessionId, state, { kind: "session-message", sessionId, message })
+    },
+    recordSessionMessageSent(sessionId, record) {
+      const state = getState(sessionId)
+      flushBuffers(sessionId, state)
+      // `messageKind`, not `kind` — the record's own `kind` is the record type.
+      writeRecord(sessionId, state, {
+        kind: "session-message-sent",
+        sessionId,
+        messageId: record.messageId,
+        to: record.to,
+        messageKind: record.kind,
+        urgency: record.urgency,
       })
     },
     recordEvent(sessionId, evt) {
@@ -508,6 +548,24 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
             // price/aggregate a session even without a `cost` block.
             ...(evt.tokensIn !== undefined ? { tokensIn: evt.tokensIn } : {}),
             ...(evt.tokensOut !== undefined ? { tokensOut: evt.tokensOut } : {}),
+            // The model the usage belongs to, and — when the daemon corrected
+            // an inferred window (see context-window.ts) — the size the
+            // adapter itself reported, so the correction stays auditable.
+            ...(evt.model ? { model: evt.model } : {}),
+            ...(evt.reportedSize !== undefined ? { reportedSize: evt.reportedSize } : {}),
+          })
+          break
+        case "background-task":
+          // The agent's background-task lifecycle (started / updated /
+          // settled) — durable so a reader can tell "idle, waiting on a
+          // task" from "idle, done", and what a later wake was about.
+          if (!evt.task) break
+          flushBuffers(sessionId, state)
+          writeRecord(sessionId, state, {
+            kind: "background-task",
+            sessionId,
+            phase: evt.phase,
+            task: evt.task,
           })
           break
         case "available-commands":
@@ -540,6 +598,19 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
         ...(usage.contextSize !== undefined ? { contextSize: usage.contextSize } : {}),
         ...(usage.contextUsed !== undefined ? { contextUsed: usage.contextUsed } : {}),
         source: usage.source,
+      })
+    },
+    recordMcpAppToolCall(sessionId, record) {
+      const state = getState(sessionId)
+      flushBuffers(sessionId, state)
+      writeRecord(sessionId, state, {
+        kind: "mcp_app_tool_call",
+        sessionId,
+        server: record.server,
+        tool: record.tool,
+        originToolCallId: record.originToolCallId,
+        isError: record.isError,
+        durationMs: record.durationMs,
       })
     },
     close(sessionId) {

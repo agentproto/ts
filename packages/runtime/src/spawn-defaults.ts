@@ -22,12 +22,31 @@
  *     store — never read from the ambient shell env.
  */
 
+import type { SpawnBrowserMode } from "./browser-mount.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import { resolveCustomRoute } from "@agentproto/model-catalog/route-identity"
 import { findAnthropicGatewayPreset } from "@agentproto/provider-presets"
 import { providerEnvVar } from "./providers-store.js"
 import type { ContextContinuityPolicy } from "./context-continuity.js"
+import type { DeferredToolsConfig } from "./deferred-tools.js"
+
+/**
+ * `defaults.mcp` block — daemon-wide MCP gateway policy, distinct from the
+ * per-adapter spawn defaults above (it's read once at daemon boot, not
+ * per-spawn — see `serve.ts`'s `createGateway({ deferredTools })` call).
+ */
+export interface McpDefaultsConfig {
+  /** Gateway-wide deferred/lazy `tools/list` loading (harness-parity item
+   *  3 — see `deferred-tools.ts`). Default false/absent: every daemon boot
+   *  stays eager, byte-identical to pre-existing behaviour — turning this
+   *  on is a deliberate operator opt-in. Independent of the per-role
+   *  default (`RoleProfile.deferredTools`, on for `executor`) and the
+   *  per-spawn `agent_start.deferredTools` override, and independent of
+   *  the per-mount `?deferred=1|0` query override on `/mcp` — this is only
+   *  the BOOT-TIME default for connections that specify neither. */
+  deferredTools?: DeferredToolsConfig
+}
 
 /**
  * Deterministic billing-auth config for one adapter slug (today, only
@@ -101,10 +120,41 @@ export interface SpawnDefaultsConfig {
    *  omits `trace`. Default false — sessions trace only when they opt in or
    *  this is on. See `filterSessionObserver` / `SpawnAgentInput.trace`. */
   langfuseTracing?: boolean
+  /** Wake an idle agent session when one of its background tasks settles
+   *  (see `SessionsRegistryOptions.backgroundTaskWake`). On by default;
+   *  `{ enabled: false }` opts out. `graceMs` is how long the daemon waits
+   *  for the agent to wake ITSELF (Claude Code does) before prompting it. */
+  backgroundTaskWake?: { enabled?: boolean; graceMs?: number }
   /** Redactor slug applied to traced session content before it's sent to
    *  Langfuse (see `@agentproto/redaction`'s registry). Default "secrets"
    *  (deny-list by key + value-scan for secret shapes). */
   traceRedactor?: string
+  /** Default `interrupt` applied when an `agent_prompt` / `message_parent`
+   *  call leaves `interrupt` UNSET. `false` (the default) preserves today's
+   *  behaviour — a mid-turn target queues the prompt behind its in-flight
+   *  turn. `true` flips the unset default to cut: a mid-turn target has its
+   *  turn cancelled and is redirected onto the new prompt immediately. An
+   *  EXPLICIT `interrupt` on the call (true OR false) always wins over this
+   *  default. */
+  agentPromptInterrupt?: boolean
+  /** Inter-session messaging policy (AIP-46 §Session messages). */
+  messaging?: {
+    /** Let `message_send` / `message_reply` reach a sibling session (same
+     *  parent). Default false — only child↔parent. */
+    allowSiblings?: boolean
+    /** Whether a SESSION sender may use urgency `interrupt` (cancel the
+     *  recipient's in-flight turn). Default "deny": downgraded to `steer`
+     *  and reported as such. Human (HTTP/CLI) senders always may. */
+    agentInterrupt?: "allow" | "deny"
+  }
+  /** Daemon-wide MCP gateway policy. See {@link McpDefaultsConfig}. */
+  mcp?: McpDefaultsConfig
+  /** Spawn-shape defaults applied when neither the `agent_start` call, its
+   *  role nor its user preset says otherwise. */
+  spawn?: {
+    /** Default `agent_start.browser` (`"headless"` | `false`). Default off. */
+    browser?: SpawnBrowserMode
+  }
 }
 
 export interface ResolveSpawnDefaultsInput {

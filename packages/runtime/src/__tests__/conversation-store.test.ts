@@ -206,6 +206,27 @@ describe("claude-code discover", () => {
     expect(found).toEqual([])
   })
 
+  it("uses the first real user message for a Claude transcript preview", async () => {
+    const cwd = "/my/proj"
+    const { sessionsDir } = setupFakeHome(cwd)
+    const id = "cccccccc-0000-0000-0000-000000000009"
+    const user = (text: string) => ({
+      type: "user",
+      timestamp: "2026-05-13T10:00:00.000Z",
+      entrypoint: "cli",
+      message: { role: "user", content: [{ type: "text", text }] },
+    })
+    writeJsonl(sessionsDir, id, [
+      user("<local-command-caveat>Caveat: generated while running local commands</local-command-caveat>"),
+      user("<command-name>/model</command-name>"),
+      user("<local-command-stdout>Set model to Opus</local-command-stdout>"),
+      user("Continue the migration audit"),
+    ], new Date("2026-05-13T10:00:00Z"))
+
+    const found = await CONVERSATION_STORES["claude-code"]!.discover({ cwd, expectedId: id })
+    expect(found[0]?.preview).toBe("Continue the migration audit")
+  })
+
   // ── candidate enrichment (no expectedId) ───────────────────────────
 
   it("without expectedId, returns ALL candidates active at-or-after `since`, each enriched", async () => {

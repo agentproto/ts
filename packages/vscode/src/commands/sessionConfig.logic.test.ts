@@ -549,6 +549,39 @@ describe("posture chip — mixes live native + restart advisory rows", () => {
     expect(bypass?.enforcement).toBe("advisory")
     expect(bypass?.restartRequired).toBe(true)
   })
+
+  it("offers every advertised native mode as an enforced, live row (no advisory duplicate)", () => {
+    const chips = buildSessionConfigChips(
+      descriptor({ model: "claude-opus-4-8" }),
+      baseInput({
+        availableModes: [
+          { id: "default", name: "Default" },
+          { id: "plan", name: "Plan" },
+          { id: "acceptEdits", name: "Accept Edits" },
+          { id: "bypassPermissions", name: "Bypass" },
+        ],
+      }),
+    )
+    const posture = chips.find(c => c.axis === "posture")!
+    // Native modes are offered once, canonicalized; only the uncovered
+    // read-only posture falls back to advisory.
+    expect(posture.rows.map(r => r.value)).toEqual([
+      "default",
+      "plan",
+      "accept-edits",
+      "bypass",
+      "read-only",
+    ])
+    for (const value of ["default", "plan", "accept-edits", "bypass"]) {
+      const row = posture.rows.find(r => r.value === value)!
+      expect(row.enforcement).toBe("enforced")
+      expect(row.restartRequired).toBe(false)
+    }
+    const readOnly = posture.rows.find(r => r.value === "read-only")!
+    expect(readOnly.enforcement).toBe("advisory")
+    expect(readOnly.restartRequired).toBe(true)
+  })
+
 })
 
 describe("access chip — surfaces the ineligible-attached-profile re-pick", () => {

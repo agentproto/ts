@@ -71,7 +71,7 @@ async function clientAccept(
   offerToken: string,
   name: string,
 ): Promise<{ client: TunnelClient; session: PairingSession }> {
-  const started = startClientHandshake({
+  const started = await startClientHandshake({
     daemonX25519Pub,
     daemonEd25519Pub,
     offerToken,
@@ -81,8 +81,8 @@ async function clientAccept(
   const wrapped = await clientHandshakeOverSink(
     rawSink,
     encodePairingMessage(started.hello),
-    replyBytes => {
-      session = started.complete(decodePairingReply(replyBytes))
+    async replyBytes => {
+      session = await started.complete(decodePairingReply(replyBytes))
       return session
     },
   )
@@ -99,7 +99,7 @@ describe("paired channel over an untrusted broker (in-process)", () => {
 
   beforeEach(async () => {
     tmp = await mkdtemp(join(tmpdir(), "agentproto-pair-"))
-    identity = generateIdentity()
+    identity = await generateIdentity()
     stubUpstream()
   })
   afterEach(async () => {
@@ -138,7 +138,7 @@ describe("paired channel over an untrusted broker (in-process)", () => {
     // Let the daemon loop dial (populating clientSink).
     await vi.waitFor(() => expect(clientSink).not.toBeNull())
 
-    const parsed = parseOfferUrl(offer.url)
+    const parsed = await parseOfferUrl(offer.url)
     const { client } = await clientAccept(
       clientSink!,
       parsed.daemonX25519Pub,
@@ -220,8 +220,8 @@ describe("paired channel over an untrusted broker (in-process)", () => {
     const offer = await registry.createOffer({ ttlMs: 60_000 })
     await vi.waitFor(() => expect(clientSink).not.toBeNull())
 
-    const parsed = parseOfferUrl(offer.url)
-    const started = startClientHandshake({
+    const parsed = await parseOfferUrl(offer.url)
+    const started = await startClientHandshake({
       daemonX25519Pub: parsed.daemonX25519Pub,
       daemonEd25519Pub: parsed.daemonEd25519Pub,
       offerToken: parsed.token,
@@ -278,7 +278,7 @@ describe("paired channel over the real rendezvous broker", () => {
 
   beforeEach(async () => {
     tmp = await mkdtemp(join(tmpdir(), "agentproto-pair-rv-"))
-    identity = generateIdentity()
+    identity = await generateIdentity()
     stubUpstream()
     rendezvous = createRendezvousServer({ parkTimeoutMs: 5_000 })
     const { port } = await rendezvous.listen(0, "127.0.0.1")
@@ -317,7 +317,7 @@ describe("paired channel over the real rendezvous broker", () => {
     // The daemon dials + parks; wait until it's waiting at the broker.
     await vi.waitFor(() => expect(rendezvous.stats.parked).toBeGreaterThanOrEqual(1))
 
-    const parsed = parseOfferUrl(offer.url)
+    const parsed = await parseOfferUrl(offer.url)
     const clientRaw = await dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(parsed.token)}`)
     const { client, session } = await clientAccept(
       clientRaw,
@@ -330,8 +330,8 @@ describe("paired channel over the real rendezvous broker", () => {
     const res1 = await client.forwardHttp({ method: "GET", path: "/health" })
     expect(res1.status).toBe(200)
 
-    const pairRoot = derivePairRoot(session)
-    expect(pairRoot).toBe(derivePairRoot(session))
+    const pairRoot = await derivePairRoot(session)
+    expect(pairRoot).toBe(await derivePairRoot(session))
 
     // Persisted.
     await vi.waitFor(async () => {
@@ -343,7 +343,7 @@ describe("paired channel over the real rendezvous broker", () => {
     await client.close()
 
     // ── reconnect via the epoch routing token ──
-    const epochToken = deriveEpochRoutingToken(pairRoot, currentEpoch())
+    const epochToken = await deriveEpochRoutingToken(pairRoot, currentEpoch())
     await vi.waitFor(() => expect(rendezvous.stats.parked).toBeGreaterThanOrEqual(1))
     const clientRaw2 = await dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(epochToken)}`)
     const { client: client2 } = await clientAccept(
@@ -366,9 +366,9 @@ describe("paired channel over the real rendezvous broker", () => {
     // client dialing the epoch token parks alone and no splice happens. It gets
     // no daemon hello → the handshake times out / never readies.
     await new Promise(r => setTimeout(r, 100))
-    const epochToken2 = deriveEpochRoutingToken(pairRoot, currentEpoch())
+    const epochToken2 = await deriveEpochRoutingToken(pairRoot, currentEpoch())
     const clientRaw3 = await dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(epochToken2)}`)
-    const started = startClientHandshake({
+    const started = await startClientHandshake({
       daemonX25519Pub: parsed.daemonX25519Pub,
       daemonEd25519Pub: parsed.daemonEd25519Pub,
       offerToken: epochToken2,

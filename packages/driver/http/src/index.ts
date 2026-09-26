@@ -180,16 +180,24 @@ function createExecuteFn(args: {
     }
 
     if (response.status === 401 || response.status === 403) {
-      throw new HttpDriverError("auth_required", `HTTP ${response.status}`, false)
+      throw new HttpDriverError("auth_required", `HTTP ${response.status}${bodyExcerpt(responseBody)}`, false)
     }
     if (response.status === 429) {
-      throw new HttpDriverError("rate_limited", "HTTP 429", true)
+      throw new HttpDriverError("rate_limited", `HTTP 429${bodyExcerpt(responseBody)}`, true)
     }
     if (response.status >= 500) {
-      throw new HttpDriverError("upstream_error", `HTTP ${response.status}`, true)
+      throw new HttpDriverError(
+        "upstream_error",
+        `HTTP ${response.status}${bodyExcerpt(responseBody)}`,
+        true,
+      )
     }
     if (response.status >= 400) {
-      throw new HttpDriverError("upstream_error", `HTTP ${response.status}`, false)
+      throw new HttpDriverError(
+        "upstream_error",
+        `HTTP ${response.status}${bodyExcerpt(responseBody)}`,
+        false,
+      )
     }
 
     const path = httpMeta.responseExtract ?? "$"
@@ -335,6 +343,19 @@ async function parseResponseBody(response: Response): Promise<unknown> {
   const ct = response.headers.get("content-type") ?? ""
   if (ct.includes("application/json")) return await response.json()
   return await response.text()
+}
+
+/** Trailing ` — <excerpt>` appended to a non-2xx error message — the body
+ *  text (JSON stringified when parsed as JSON), capped so a large error
+ *  page/payload doesn't blow up the step error. Empty body → no suffix. */
+const BODY_EXCERPT_MAX_CHARS = 500
+
+function bodyExcerpt(body: unknown): string {
+  if (body == null || body === "") return ""
+  const text = typeof body === "string" ? body : JSON.stringify(body)
+  if (!text) return ""
+  const truncated = text.length > BODY_EXCERPT_MAX_CHARS ? `${text.slice(0, BODY_EXCERPT_MAX_CHARS)}…` : text
+  return ` — ${truncated}`
 }
 
 function headersToObject(h: Headers): Record<string, string> {

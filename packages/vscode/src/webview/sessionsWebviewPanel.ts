@@ -118,6 +118,7 @@ interface RenderRow {
   name: string
   idMono: string | undefined
   message: string | undefined
+  messageMuted: boolean
   tag: string
   tagTitle: string | undefined
   logo: RenderLogo
@@ -143,6 +144,8 @@ interface RenderRow {
   /** True when some loaded session names this one as its parent — the
    *  mission-view affordance renders only on such depth-0 roots. */
   focusable: boolean
+  /** Auto-Tasks child whose parent is genuinely gone — see WebviewRow.orphaned. */
+  orphaned: boolean
   /** True when this row has at least one nested descendant in the group's
    *  rendered row list — drives whether a collapse triangle is rendered at
    *  all (a leaf row gets none). */
@@ -252,6 +255,7 @@ function toRenderRow(
     name: row.name,
     idMono: row.idMono,
     message: row.message,
+    messageMuted: row.messageMuted,
     tag: row.tag,
     tagTitle: row.tagTitle,
     logo: toRenderLogo(row.logo, webview, extensionUri),
@@ -277,6 +281,7 @@ function toRenderRow(
       : undefined,
     archived: row.archived,
     focusable: row.focusable,
+    orphaned: row.orphaned,
     hasChildren: rollup.hasChildren,
     subtreeStatus: rollup.status,
     defaultExpanded: defaultExpandedFor(rollup.status),
@@ -325,6 +330,10 @@ export function visibleRows(
   return [...pendingRows, ...liveExtras, ...summaries]
 }
 
+export function shouldApplySummaryPage(requestLane: SessionLane, currentLane: SessionLane): boolean {
+  return requestLane === currentLane
+}
+
 class SessionsWebviewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined
   private lane: SessionLane = "agents"
@@ -339,6 +348,7 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
   private summaries: SessionSummary[] = []
   private serverTotal = 0
   private loading = false
+  private reloadAfterCurrentRequest = false
   private loadError: string | undefined
   /** "Show archived" toggle — switches the view between active-only (off,
    *  the default) and archived-only (on): the summary fetch and the model
@@ -439,8 +449,10 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
         this.post()
         return
       case "lane":
+        if (this.lane === msg.lane) return
         this.lane = msg.lane
-        this.post()
+        if (this.loading) this.reloadAfterCurrentRequest = true
+        void this.loadInitial()
         return
       case "project":
         this.project = msg.slug
@@ -609,20 +621,30 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     if (this.loading) return
     this.loading = true
     this.loadError = undefined
+    const requestLane = this.lane
     this.post()
     try {
       const result = await this.client.listSessionSummaries({
         includeArchived: this.showArchived,
+        lane: requestLane,
         limit: PAGE_SIZE,
         offset,
       })
-      this.summaries = offset === 0 ? result.summaries : [...this.summaries, ...result.summaries]
-      this.serverTotal = result.total
+      if (shouldApplySummaryPage(requestLane, this.lane)) {
+        this.summaries = offset === 0 ? result.summaries : [...this.summaries, ...result.summaries]
+        this.serverTotal = result.total
+      }
     } catch (err) {
-      this.loadError = err instanceof Error ? err.message : String(err)
+      if (shouldApplySummaryPage(requestLane, this.lane)) {
+        this.loadError = err instanceof Error ? err.message : String(err)
+      }
     } finally {
       this.loading = false
       this.post()
+      if (this.reloadAfterCurrentRequest) {
+        this.reloadAfterCurrentRequest = false
+        void this.fetchPage(0)
+      }
     }
   }
 
@@ -635,20 +657,30 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
   private async refreshSummaries(): Promise<void> {
     if (this.loading || this.summaries.length === 0) return
     this.loading = true
+    const requestLane = this.lane
     try {
       const result = await this.client.listSessionSummaries({
         includeArchived: this.showArchived,
+        lane: requestLane,
         limit: this.summaries.length,
         offset: 0,
       })
-      this.summaries = result.summaries
-      this.serverTotal = result.total
-      this.loadError = undefined
+      if (shouldApplySummaryPage(requestLane, this.lane)) {
+        this.summaries = result.summaries
+        this.serverTotal = result.total
+        this.loadError = undefined
+      }
     } catch (err) {
-      this.loadError = err instanceof Error ? err.message : String(err)
+      if (shouldApplySummaryPage(requestLane, this.lane)) {
+        this.loadError = err instanceof Error ? err.message : String(err)
+      }
     } finally {
       this.loading = false
       this.post()
+      if (this.reloadAfterCurrentRequest) {
+        this.reloadAfterCurrentRequest = false
+        void this.fetchPage(0)
+      }
     }
   }
 
@@ -656,6 +688,11 @@ class SessionsWebviewProvider implements vscode.WebviewViewProvider {
     if (!this.view) return
     const pool = visibleRows(this.store.sessions, this.summaries)
     const modelOpts = {
+      // Lane lineage resolves against the store's FULL non-archived
+      // snapshot, not the paged pool — a live child pinned in ahead of its
+      // later-page parent (e.g. the dead predecessor of a restart chain)
+      // must not read as an Auto-Tasks orphan until "Load more".
+      lineageById: new Map(this.store.sessions.map(s => [s.id, s])),
       lane: this.lane,
       project: this.project,
       search: this.search,
@@ -927,6 +964,11 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: 0 0 auto; }
     .dot.working { background: var(--ws, var(--working)); animation: agentproto-pulse 2s infinite; }
     .dot.delegating { background: transparent; border: 2px solid var(--ws, var(--working)); }
+    /* Starting — in motion but no agent behind it yet: a hollow dot whose
+       outline pulses outward (an animated ring), visually distinct from the
+       full dot that pulses for a genuinely busy session. */
+    .dot.starting { background: transparent; border: 2px solid var(--ws, var(--working)); animation: agentproto-starting 2s infinite; }
+    @keyframes agentproto-starting { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ws, var(--working)) 45%, transparent); } }
     .dot.awaiting { background: var(--awaiting); }
     /* Awaiting bg — same filled-dot shape as .dot.awaiting, amber instead of
        ochre: distinguishable at a glance from "needs a human" even though the
@@ -942,7 +984,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
        row itself is actively working or needs you (those signals stay put). */
     .dot.bg { background: var(--bg-task); border-color: var(--bg-task); opacity: 1; }
     @keyframes agentproto-pulse { 50% { opacity: 0.4; } }
-    @media (prefers-reduced-motion: reduce) { .dot.working { animation: none; } .spin { animation: none !important; } .bgdot { animation: none; } }
+    @media (prefers-reduced-motion: reduce) { .dot.working { animation: none; } .dot.starting { animation: none; } .spin { animation: none !important; } .bgdot { animation: none; } }
     .mid { flex: 1; min-width: 0; }
     .name { font-weight: 600; font-size: 12.5px; display: flex; gap: 6px; align-items: baseline; min-width: 0; }
     .name .id { font-weight: 400; color: var(--dim); }
@@ -977,6 +1019,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .name .rtw { display: inline-flex; font-size: 8px; color: var(--faint); transition: transform 0.12s; cursor: pointer; }
     .name .rtw.closed { transform: rotate(-90deg); }
     .msg { color: var(--dim); font-size: 12px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .msg.muted { font-style: italic; opacity: 0.75; }
     .meta-loc { margin-top: 3px; font-size: 11px; color: var(--faint); }
     .meta { display: flex; gap: 8px; margin-top: 1px; align-items: center; font-size: 11px; color: var(--faint); flex-wrap: wrap; }
     .meta .harness { display: inline-flex; align-items: center; gap: 4px; }
@@ -996,6 +1039,10 @@ export function buildHtml(nonce: string, cspSource: string): string {
        crowding the title. Faint, uppercase-ish tag so lineage attribution
        still reads at a glance without competing with the name. */
     .meta .origin { color: var(--faint); font-weight: 400; letter-spacing: .04em; border: 1px solid var(--faint); border-radius: 4px; padding: 0 4px; opacity: 0.8; max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* Starting chip — a quiet in-line tell on the row itself that the session
+       has no agent behind it yet; the pulsing-outline dot alone didn't say it
+       in words. Styled like the origin chip but in the working color. */
+    .name .chip-starting { color: var(--ws, var(--working)); font-weight: 400; font-size: 10.5px; letter-spacing: .04em; border: 1px solid color-mix(in srgb, var(--ws, var(--working)) 55%, transparent); border-radius: 4px; padding: 0 4px; opacity: 0.85; }
     .ctxbar { display: inline-flex; align-items: center; gap: 5px; }
     .ctxbar .track { width: 22px; height: 2px; background: var(--border); position: relative; }
     .ctxbar .fill { position: absolute; inset: 0 auto 0 0; background: var(--dim); }
@@ -1218,6 +1265,11 @@ export function buildHtml(nonce: string, cspSource: string): string {
         if (r.originLabel && depth === 0) {
           parts.push('<span class="origin" title="Spawned from ' + escapeHtml(r.originLabel) + '">' + escapeHtml(r.originLabel) + '</span>');
         }
+        // Orphan chip — an Auto-Tasks child whose parent session is gone,
+        // so it isn't mistaken for a task the operator started.
+        if (r.orphaned) {
+          parts.push('<span class="origin" title="Orphaned subagent — its parent session no longer exists">orphaned</span>');
+        }
         return parts.join('');
       }
 
@@ -1255,6 +1307,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
           (r.status === 'delegating' ? '<span class="deleg" title="Delegating — waiting on ' + r.childrenBusy + ' child' + (r.childrenBusy === 1 ? '' : 'ren') + '">⟳' + r.childrenBusy + '</span>' : '') +
           (r.watcherCount > 0 ? '<span class="eye" title="' + r.watcherCount + ' waiter' + (r.watcherCount === 1 ? '' : 's') + ' attached via the daemon">👁' + r.watcherCount + '</span>' : '') +
           (r.stallTooltip ? '<span class="stall" title="' + escapeHtml(r.stallTooltip) + '">⚠</span>' : '') +
+          (r.status === 'starting' ? '<span class="chip-starting" title="Starting — the process is up but no agent is attached yet">starting</span>' : '') +
           (r.approved ? '<span class="ok">✓</span>' : '') +
           (r.runs ? '<span class="runs">×' + r.runs + '</span>' : '');
         var acts = (lastFocus ? '' : focusButton(r, depth)) + pinButton(r) + actionButton(r);
@@ -1265,7 +1318,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
           '<span class="' + dotClasses + '"' + wsStyle + '></span>' +
           '<div class="mid">' +
             '<div class="name">' + nameLine + '</div>' +
-            (r.message ? '<div class="msg">' + escapeHtml(r.message) + '</div>' : '') +
+            (r.message ? '<div class="msg' + (r.messageMuted ? ' muted' : '') + '">' + escapeHtml(r.message) + '</div>' : '') +
             (metaLocHTML(r) ? '<div class="meta-loc">' + metaLocHTML(r) + '</div>' : '') +
             '<div class="meta">' + metaHTML(r, depth) + '</div>' +
           '</div>' +

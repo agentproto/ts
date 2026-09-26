@@ -93,6 +93,34 @@ export interface DeferredToolGatewayOptions {
   alwaysOn: ReadonlySet<string>
 }
 
+/**
+ * `~/.agentproto/config.json`'s `defaults.mcp.deferredTools` shape —
+ * `false`/absent (the default) keeps every daemon boot eager, byte-identical
+ * to pre-existing behaviour. `true` turns deferred tools on gateway-wide
+ * using the daemon's own default always-on set (see `DEFAULT_ALWAYS_ON_TOOLS`
+ * in index.ts). `{ alwaysOn }` turns it on with a custom always-on set
+ * instead of the default one.
+ */
+export type DeferredToolsConfig = boolean | { alwaysOn: string[] }
+
+/**
+ * Convert the config-file value (tri-state: off / on-with-default /
+ * on-with-custom-set) into the shape `CreateGatewayOptions.deferredTools`
+ * expects. Pure — no fs, easy to unit test independent of `loadConfig`.
+ * `undefined`/`false` ⇒ `undefined` (omit the key entirely, so
+ * `createGateway` never wraps `withDeferredTools` — today's eager
+ * behaviour). `true` ⇒ `{}` (deferred, `alwaysOn` left for the gateway's
+ * own `DEFAULT_ALWAYS_ON_TOOLS` fallback). `{ alwaysOn }` ⇒ passed through
+ * verbatim.
+ */
+export function resolveDeferredToolsGatewayOption(
+  config: DeferredToolsConfig | undefined,
+): { alwaysOn?: readonly string[] } | undefined {
+  if (config === undefined || config === false) return undefined
+  if (config === true) return {}
+  return { alwaysOn: config.alwaysOn }
+}
+
 /** Best-effort JSON Schema for a tool's Zod input object — `undefined`
  *  when the tool takes no arguments, or on any conversion failure (a
  *  malformed/incompatible schema shouldn't break the response, just omit

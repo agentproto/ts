@@ -164,6 +164,9 @@ export interface StepTool {
     | {
         entry: string
       }
+  /** Cache this step's output under the run's cacheKey; only its resolved
+   *  `inputs` are hashed (not `context`/secrets). Default false. */
+  cacheable?: boolean
 }
 export interface StepBranch {
   kind: "branch"
@@ -181,6 +184,12 @@ export interface StepBranch {
     }[]
   ]
   default?: string
+  /** Sibling id where execution resumes after the chosen arm (must follow
+   *  every arm target). Omitted ⇒ the step right after the last arm target. */
+  join?: string
+  /** Legacy: `true` ⇒ the chosen target AND every later sibling run
+   *  (pre-exclusive semantics). Incompatible with `join`. */
+  fallthrough?: boolean
 }
 export interface StepParallel {
   kind: "parallel"
@@ -303,8 +312,11 @@ export interface StepAgent {
   cacheable?: boolean
   /** Re-prompt-and-retry attempts on `outputSchema` mismatch. Default 2. */
   maxRetries?: number
-  /** A zod `ZodType` (TS-authored) validating the session's final message;
-   *  re-prompts on mismatch. */
+  /** Validates the session's final message; re-prompts on mismatch. A zod
+   *  `ZodType` (TS-authored steps / `entry.mjs`), or plain JSON Schema —
+   *  the only shape WORKFLOW.md YAML frontmatter can express, adapted by
+   *  `@agentproto/workflow-runtime`'s `compileAgentStep` into the same
+   *  `{ safeParse }` contract a zod schema already has. */
   outputSchema?: unknown
   policy?:
     | { awaiting: "auto-allow"; prompt: string }

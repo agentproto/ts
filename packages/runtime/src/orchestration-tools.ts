@@ -10,6 +10,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
+import { isCompilableJsonSchema } from "@agentproto/workflow-runtime"
 import type { SessionsRegistry, SessionWatcherInfo } from "./sessions.js"
 import type {
   SessionEventBus,
@@ -670,6 +671,53 @@ export interface RegisterOrchestrationToolsOptions {
    * secret for webhook signature verification.
    */
   endpointStore?: InboundEndpointStore
+  /** The calling agent session id (from `?callerSessionId=` on the `/mcp`
+   *  self-ref URL — same trusted per-request identity `registerBrainTools`
+   *  uses). Backs `run_request_input` (AIP-58 §9): the tool is callable
+   *  only from inside a workflow-spawned session's own turn, resolved from
+   *  this id, never a caller-supplied one. */
+  callerSessionId?: string
+}
+
+/** F30: a compact error is capped here — a tool step's full stderr (KBs)
+ *  stays available through `full: true` / `run_events`. */
+export const COMPACT_ERROR_MAX_CHARS = 300
+
+function truncateCompactError(error: string): string {
+  if (error.length <= COMPACT_ERROR_MAX_CHARS) return error
+  const dropped = error.length - COMPACT_ERROR_MAX_CHARS
+  return `${error.slice(0, COMPACT_ERROR_MAX_CHARS)}… [${dropped} more chars — pass full: true]`
+}
+
+/**
+ * AIP-58 §9 `run.get` compact boundary applied to `workflow_status`'s FULL
+ * per-run detail (distinct from `compactWorkflowRun` above, which compacts
+ * a `workflow_list` ROW summary): strips each step's raw `output` and a gate
+ * step's full `report` body (the "big bodies" a UI polling for status
+ * shouldn't pay for on every call) while keeping
+ * status/timestamps/error (capped, F30)/sessionId/suspend/hint — everything a caller
+ * needs to know WHAT happened, without the full payload of what a step
+ * produced.
+ */
+export function compactWorkflowRunStatus(run: WorkflowRun): WorkflowRun {
+  return {
+    ...run,
+    ...(run.error !== undefined ? { error: truncateCompactError(run.error) } : {}),
+    stages: run.stages.map(stage => ({
+      ...stage,
+      steps: stage.steps.map(step => {
+        const { output: _output, gateReport, ...rest } = step
+        return {
+          ...rest,
+          ...(rest.error !== undefined ? { error: truncateCompactError(rest.error) } : {}),
+          ...(rest.skipReason !== undefined ? { skipReason: truncateCompactError(rest.skipReason) } : {}),
+          ...(gateReport !== undefined
+            ? { gateReport: { ok: gateReport.ok, exitCode: gateReport.exitCode, attempt: gateReport.attempt, report: undefined } }
+            : {}),
+        }
+      }),
+    })),
+  }
 }
 
 export function registerOrchestrationTools(
@@ -681,7 +729,7 @@ export function registerOrchestrationTools(
   const server = opts.toolSubset
     ? withToolSubset(rawServer, opts.toolSubset)
     : rawServer
-  const { registry, sessionEvents, eventRing, callerScope, inboundWatcher, mcpProxy, bindingStore, endpointStore, telegramCreds } = opts
+  const { registry, sessionEvents, eventRing, callerScope, inboundWatcher, mcpProxy, bindingStore, endpointStore, telegramCreds, callerSessionId } = opts
 
   /**
    * WP6: check whether ALL watched sessions of a policy fall within the
@@ -1016,7 +1064,21 @@ export function registerOrchestrationTools(
         try {
           const run = await workflowRunner.startFromFile(input)
           return {
-            content: [{ type: "text", text: JSON.stringify({ runId: run.runId, status: run.status }) }],
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  runId: run.runId,
+                  status: run.status,
+                  ...(run.error !== undefined ? { error: run.error } : {}),
+                  ...(run.errorCode !== undefined ? { errorCode: run.errorCode } : {}),
+                }),
+              },
+            ],
+            // A rejected run (e.g. AIP-58 §3 `invalid-input`) is a
+            // conforming terminal result, not a thrown exception — but it
+            // must still read as a failure to the caller, never as `done`.
+            ...(run.status === "failed" ? { isError: true } : {}),
           }
         } catch (err) {
           return {
@@ -1034,11 +1096,17 @@ export function registerOrchestrationTools(
 
     server.tool(
       "workflow_status",
-      "Poll the status of a background workflow run started with `workflow_start`. " +
-        "Each stage reports its steps' status/sessionId so later work can inspect " +
-        "what an earlier stage produced (e.g. via `agent_output` on that sessionId).",
+      "Poll the status of a background workflow run started with `workflow_start` or " +
+        "`workflow_run_file`. Each stage reports its REAL steps (every step that " +
+        "actually ran — tool/gate/agent, map/pipeline items as `<id>[<index>]`), with " +
+        "status/startedAt/endedAt/error/sessionId/suspend, so later work can inspect " +
+        "what an earlier step produced (e.g. via `agent_output` on that sessionId). " +
+        "COMPACT BY DEFAULT (AIP-58 §9): omits each step's raw `output` and a gate " +
+        "step's full `report` body — pass `full: true` for everything. A `done` run's " +
+        "own final `output` (the workflow's declared result) is always included.",
       {
         runId: z.string().describe("Run id returned by `workflow_start`."),
+        full: z.boolean().optional().describe("Include step outputs and full gate-report bodies. Defaults to false (compact)."),
       },
       async input => {
         const run = workflowRunner.status(input.runId)
@@ -1047,7 +1115,45 @@ export function registerOrchestrationTools(
             content: [{ type: "text", text: JSON.stringify({ error: "run not found", runId: input.runId }) }],
           }
         }
-        return { content: [{ type: "text", text: JSON.stringify(run) }] }
+        const payload = input.full === true ? run : compactWorkflowRunStatus(run)
+        return { content: [{ type: "text", text: JSON.stringify(payload) }] }
+      },
+    )
+
+    const MAX_EVENTS_PER_PAGE = 500
+
+    server.tool(
+      "run_events",
+      "AIP-58 §5/§9 `run.events` — page a workflow run's append-only event log " +
+        "(the one true status interface: run.created/started/suspended/resumed/" +
+        "succeeded/failed/cancelled, step.started/succeeded/failed/skipped/suspended/" +
+        "resumed). Pass `sinceSeq` (the last `seq` you've already seen) to resume " +
+        `from where you left off; omit it for the full log so far. Capped at ${MAX_EVENTS_PER_PAGE} events per call — use the returned \`nextSinceSeq\` to page further.`,
+      {
+        runId: z.string().describe("Run id returned by `workflow_start`/`workflow_run_file`."),
+        sinceSeq: z.number().int().nonnegative().optional().describe("Return only events with seq > sinceSeq."),
+      },
+      async input => {
+        const events = workflowRunner.events(input.runId, input.sinceSeq)
+        if (events === undefined) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ error: "run not found", runId: input.runId }) }],
+          }
+        }
+        const page = events.slice(0, MAX_EVENTS_PER_PAGE)
+        const nextSinceSeq = page.length > 0 ? page[page.length - 1]!.seq : input.sinceSeq
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                events: page,
+                ...(nextSinceSeq !== undefined ? { nextSinceSeq } : {}),
+                ...(events.length > page.length ? { hasMore: true } : {}),
+              }),
+            },
+          ],
+        }
       },
     )
 
@@ -1184,6 +1290,74 @@ export function registerOrchestrationTools(
         }
         workflowRunner.resolve(input.runId, input.stageIndex, input.stepIndex, input.response)
         return { content: [{ type: "text", text: JSON.stringify({ ok: true }) }] }
+      },
+    )
+
+    server.tool(
+      "run_request_input",
+      "AIP-58 §9 `run.requestInput` — called by an agent-backed workflow " +
+        "step's OWN session, mid-turn, to explicitly signal that it needs " +
+        "input it doesn't have. This is one of only two signals (the other " +
+        "is a protocol-level awaiting-input event) that suspends the step " +
+        "as `input-required`; the turn simply ending, or its final message " +
+        "merely reading like a question, does NOT suspend it (AIP-58 §3 " +
+        "Outcome rule — a heuristic read of the turn's text may only " +
+        "annotate a `hint`, never suspend). Does NOT end the turn — call " +
+        "it, then finish your reply normally. Only callable from inside a " +
+        "session a currently-running workflow step spawned; called from " +
+        "anywhere else, this is a tool error with no side effect. Resumed " +
+        "with `workflow_escalation_resolve { runId, payload }` once " +
+        "`workflow_status` shows the run `awaiting-input`.",
+      {
+        prompt: z.string().min(1).describe("What input is needed, in a form the resuming caller can act on."),
+        schema: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe("JSON Schema the eventual run.resume payload must validate against before the run transitions out of suspended."),
+        stepId: z.string().optional().describe("Informational only — the step is resolved from the calling session itself, never from this field."),
+      },
+      async input => {
+        if (!workflowRunner) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ error: "workflow_runner_unavailable" }) }],
+            isError: true,
+          }
+        }
+        if (!callerSessionId) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "no_caller_session",
+                  message: "run_request_input must be called from inside a session a workflow step spawned",
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+        if (input.schema !== undefined && !isCompilableJsonSchema(input.schema)) {
+          return {
+            content: [
+              { type: "text", text: JSON.stringify({ error: "invalid_schema", message: "schema must be a valid JSON Schema object" }) },
+            ],
+            isError: true,
+          }
+        }
+        const result = workflowRunner.recordInputRequest(callerSessionId, {
+          prompt: input.prompt,
+          ...(input.schema !== undefined ? { schema: input.schema } : {}),
+        })
+        if (!result.ok) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ error: result.error }) }],
+            isError: true,
+          }
+        }
+        return {
+          content: [{ type: "text", text: JSON.stringify({ ok: true, runId: result.runId, stepId: result.stepId }) }],
+        }
       },
     )
 
@@ -2120,7 +2294,16 @@ export function registerOrchestrationTools(
         if (!out.ok) {
           return {
             content: [
-              { type: "text", text: JSON.stringify({ sent: false, bound: false, error: out.error }) },
+              {
+                type: "text",
+                text: JSON.stringify({
+                  sent: false,
+                  bound: false,
+                  error: out.error,
+                  ...(out.blockedReason ? { blocked_reason: out.blockedReason } : {}),
+                  ...(out.suggestion ? { suggestion: out.suggestion } : {}),
+                }),
+              },
             ],
             isError: true,
           }
@@ -2138,7 +2321,18 @@ export function registerOrchestrationTools(
           })
         }
 
-        return { content: [{ type: "text", text: JSON.stringify({ sent: true, bound }) }] }
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                sent: true,
+                bound,
+                ...(out.providerMessageId ? { message_id: out.providerMessageId } : {}),
+              }),
+            },
+          ],
+        }
       },
     )
   }

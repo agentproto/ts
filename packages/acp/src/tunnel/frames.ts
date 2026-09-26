@@ -52,6 +52,8 @@
  *      this tunnel (host can re-spawn after reconnect).
  */
 
+import { base64Decode, base64Encode, utf8Encode } from "./bytes.js"
+
 export const TUNNEL_VERSION = "agentproto/tunnel/v1" as const
 
 // ─── host → daemon ──────────────────────────────────────────────
@@ -567,11 +569,14 @@ export function encodeFrame(frame: TunnelFrame): string {
  * field. Centralised so both sides agree on the encoding.
  */
 export function encodeData(bytes: Uint8Array | string): string {
-  const buf =
-    typeof bytes === "string" ? Buffer.from(bytes, "utf8") : Buffer.from(bytes)
-  return buf.toString("base64")
+  return base64Encode(typeof bytes === "string" ? utf8Encode(bytes) : bytes)
 }
 
-export function decodeData(data: string): Buffer {
-  return Buffer.from(data, "base64")
+/**
+ * Decode a frame's base64 `data` field. Returns a `Uint8Array` (at runtime a
+ * `Buffer` under Node); the `@agentproto/acp/tunnel` Node entry re-exports a
+ * `Buffer`-typed wrapper for existing callers.
+ */
+export function decodeData(data: string): Uint8Array {
+  return base64Decode(data)
 }

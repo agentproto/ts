@@ -189,6 +189,7 @@ describe("reduceEvent", () => {
     // usage is populated from the record
     expect(state.usage).toEqual({
       size: 1000,
+      sizeAuthoritative: true,
       used: 200,
       cost: 0.05,
       tokensIn: 150,
@@ -196,6 +197,22 @@ describe("reduceEvent", () => {
       seq: 1,
       ts: undefined,
     })
+  })
+
+  it("keeps a cost-bearing usage_update's size over later inferred frames", () => {
+    // Recorded claude-code shape: in-turn frames guess 200k, the cost-bearing
+    // end-of-turn frame carries the real 1M, then a fresh wrapper guesses again.
+    let state = initialTimelineState()
+    const frame = (seq: number, size: number, used: number, cost?: number) =>
+      reduceEvent(state, { seq, kind: "usage_update", sessionId: "s1", size, used, ...(cost !== undefined ? { cost } : {}) })
+    state = frame(1, 200_000, 38_000)
+    expect(state.usage?.size).toBe(200_000)
+    state = frame(2, 1_000_000, 157_000, 1.5)
+    expect(state.usage?.size).toBe(1_000_000)
+    state = frame(3, 200_000, 158_000)
+    expect(state.usage).toMatchObject({ size: 1_000_000, sizeAuthoritative: true, used: 158_000 })
+    state = frame(4, 0, 159_000)
+    expect(state.usage?.size).toBe(1_000_000)
   })
 
   it("reduces a full mixed sequence deterministically (usage is state, not a row)", () => {
@@ -261,7 +278,9 @@ describe("reduceEvent", () => {
     // Fields absent on the second record are absent on the snapshot (ts
     // is set to undefined here because the 2nd record has no ts field,
     // but we assert that cost/tokensIn/tokensOut are absent).
-    expect(state.usage!.size).toBe(500)
+    // …except the context window: the first record is cost-bearing
+    // (authoritative), so a later cost-less frame can't downgrade its size.
+    expect(state.usage!.size).toBe(1000)
     expect(state.usage!.used).toBe(100)
     expect(state.usage!.seq).toBe(2)
     // cost, tokensIn, tokensOut are absent on the new record — not carried over

@@ -1,5 +1,52 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.7.8
+
+### Patch Changes
+
+- @agentproto/runtime@3.6.1
+
+## 0.7.7
+
+### Patch Changes
+
+- Updated dependencies [7f9497d]
+- Updated dependencies [a93da92]
+- Updated dependencies [f26e334]
+  - @agentproto/runtime@3.6.0
+
+## 0.7.6
+
+### Patch Changes
+
+- f30c959: Tolerate `description: null` from the live Replicate API in the image:replicate generator, coercing it to an empty string instead of failing validation. Also test-only updates in provider-kit mocks and a type-cast adjustment in the mastra adapter.
+- Updated dependencies [f6f2d75]
+- Updated dependencies [b8fdbc6]
+- Updated dependencies [f6f2d75]
+- Updated dependencies [d388a08]
+- Updated dependencies [fc14c4c]
+- Updated dependencies [bdbe806]
+- Updated dependencies [ec66e92]
+- Updated dependencies [5380278]
+- Updated dependencies [a25a86f]
+- Updated dependencies [a373209]
+  - @agentproto/runtime@3.5.0
+
+## 0.7.5
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [ea6757f]
+- Updated dependencies [c27f0b8]
+- Updated dependencies [42fffb9]
+- Updated dependencies [9a59225]
+- Updated dependencies [ef59d39]
+  - @agentproto/runtime@3.4.0
+  - @agentproto/agent@0.2.4
+  - @agentproto/driver-agent-cli@2.4.4
+  - @agentproto/mastra@0.2.14
+
 ## 0.7.4
 
 ### Patch Changes

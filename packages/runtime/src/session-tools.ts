@@ -13,6 +13,7 @@
  * for fs/exec.
  */
 
+import { addReviewWorktree, ownerRepoOfReviewWorktree, removeReviewWorktrees } from "./review-worktree.js"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type {
@@ -35,6 +36,7 @@ import {
   decideRestartStrategy,
   augmentWithFsResume,
   describeResumePath,
+  probeNativeTranscript,
   tokenizeCommand,
   RESUME_STRATEGIES,
 } from "./resume-strategies.js"
@@ -60,6 +62,7 @@ import {
 } from "./context-continuity.js"
 import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
 import { continueAgentSessionFresh } from "./session-continue-fresh.js"
+import { compactOutcome, type SessionOutcomeCompact } from "./session-outcome.js"
 import type { SpawnAgentSessionDeps } from "./session-spawn.js"
 import {
   collectSessionSnapshots,
@@ -88,10 +91,12 @@ import {
 } from "./workspaces-config.js"
 import {
   resolveWorktreeQueryRoot,
+  sessionWorktreeScope,
   type WorktreeStatusLister,
   type WorktreeStatusView,
 } from "./worktree-status.js"
 import { livingSessionCwds, type WorktreeGcRunner } from "./worktree-gc.js"
+import type { BranchGcRunner, BranchGcVerdictRecorder, BranchGcVerdictReader } from "./branch-gc.js"
 import { basename, join } from "node:path"
 import {
   ALLOWLIST_REL,
@@ -127,6 +132,15 @@ export interface SessionTreeNode {
    *  the ROOT nodes (client-launched sessions) whose origin is the meaningful
    *  grouping key; see `groupRootsByOrigin`. */
   origin?: string
+  /** Set when this session was spawned by `session_continue_fresh` — the
+   *  source session's id. A DIFFERENT lineage edge than `parentSessionId`/
+   *  the tree nesting itself (a continue-fresh spawn nests under the
+   *  source's own parent, as a sibling, not a child of the source), so a
+   *  consumer wanting to draw the checkpoint-handoff link needs this field
+   *  in addition to the tree shape. See `SessionDescriptor.continuedFrom`
+   *  and its `handoff` field (full record only, via `session_list full:true`)
+   *  for the harness the checkpoint moved from/to. */
+  continuedFrom?: string
   isOrchestrator: boolean
   children: SessionTreeNode[]
 }
@@ -210,6 +224,7 @@ export function buildSessionTree(
     ...(s.adapterSlug ? { adapterSlug: s.adapterSlug } : {}),
     ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
     ...(s.origin ? { origin: s.origin } : {}),
+    ...(s.continuedFrom ? { continuedFrom: s.continuedFrom } : {}),
     isOrchestrator: orchestratorIds.has(s.id),
     children: (childrenOf.get(s.id) ?? [])
       .sort((a, b) => (a.depth ?? 0) - (b.depth ?? 0))
@@ -325,6 +340,17 @@ export interface RegisterSessionToolsOptions {
    *  to auto-attach a windowed cost-budget policy for an `agent_start` carrying
    *  `costBudget` (phase 4). See `RegisterAgentToolsOptions.supervisor`. */
   supervisor?: RegisterAgentToolsOptions["supervisor"]
+  /** Forwarded to `registerAgentTools` — config.json
+   *  `defaults.agentPromptInterrupt`, the unset-default for `interrupt` on
+   *  `agent_prompt` / `message_parent`. See
+   *  `RegisterAgentToolsOptions.defaultAgentPromptInterrupt`. */
+  defaultAgentPromptInterrupt?: RegisterAgentToolsOptions["defaultAgentPromptInterrupt"]
+  /** Forwarded to `registerAgentTools` — config.json
+   *  `defaults.messaging.allowSiblings`. */
+  messagingAllowSiblings?: RegisterAgentToolsOptions["messagingAllowSiblings"]
+  /** Forwarded to `registerAgentTools` — config.json
+   *  `defaults.messaging.agentInterrupt`. */
+  messagingAgentInterrupt?: RegisterAgentToolsOptions["messagingAgentInterrupt"]
   /**
    * Optional git-worktree status lister powering `worktree_status`.
    * Injected here (rather than defaulted inside the runtime) because the join
@@ -342,6 +368,19 @@ export interface RegisterSessionToolsOptions {
    * enabled" error.
    */
   runWorktreeGc?: WorktreeGcRunner
+  /**
+   * Optional branch-`gc` runner powering `branch_gc` — same injection reason
+   * as `runWorktreeGc` (the engine lives in `@agentproto/worktree`). Omitted
+   * → `branch_gc` returns a clear "not enabled" error.
+   */
+  runBranchGc?: BranchGcRunner
+  /** Optional verdict recorder powering `branch_gc_verdict`. Same injection reason. */
+  recordBranchGcVerdict?: BranchGcVerdictRecorder
+  /** Optional verdict reader powering `branch_gc_verdict_get`. Same injection reason. */
+  readBranchGcVerdict?: BranchGcVerdictReader
+  /** Forwarded to `registerAgentTools` — see
+   *  `RegisterAgentToolsOptions.isSessionChatInstalled`. */
+  isSessionChatInstalled?: RegisterAgentToolsOptions["isSessionChatInstalled"]
 }
 
 /** MCP clients commonly stringify scalar arguments ("true"/"false"/"42").
@@ -351,6 +390,10 @@ export interface RegisterSessionToolsOptions {
 const mcpBool = z.preprocess(
   v => (v === "true" ? true : v === "false" ? false : v),
   z.boolean(),
+)
+const mcpNumber = z.preprocess(
+  v => (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : v),
+  z.number(),
 )
 
 // ── session_list COMPACT projection (PR-10) ──────────────────────────────
@@ -379,11 +422,25 @@ export interface SessionListCompactItem {
   busy?: boolean
   awaitingInput?: boolean
   blockedOn?: SessionDescriptor["blockedOn"]
+  /** True when the agent accepts steering (`SessionDescriptor.capabilities`)
+   *  — a `steer` message can reach its running turn. Absent when not. */
+  steering?: boolean
+  /** How many background tasks the agent still has running — the
+   *  "idle, but waiting on N background tasks" signal. Absent when none;
+   *  the task list itself is on the full record (`backgroundTasks`). */
+  backgroundTaskCount?: number
   lastActivityAt?: string
   startedAt: string
   exitCode?: number
   depth?: number
   parentSessionId?: string
+  /** Set when this session was spawned by `session_continue_fresh` — the
+   *  source session's id. A DIFFERENT lineage edge than `parentSessionId`
+   *  (a continue-fresh spawn nests under the source's own parent, as a
+   *  sibling, not a child of the source) — see `SessionDescriptor.continuedFrom`
+   *  and its `handoff` field (full record only) for the harness the
+   *  checkpoint moved from/to. */
+  continuedFrom?: string
   // Usage scalars (small, and codified as session_list output by
   // session-usage-mcp.test.ts): cheap badge signals for list views.
   usageSource?: SessionDescriptor["usageSource"]
@@ -391,7 +448,21 @@ export interface SessionListCompactItem {
   tokensIn?: number
   tokensOut?: number
   contextSize?: number
+  contextSizeSource?: SessionDescriptor["contextSizeSource"]
   contextUsed?: number
+  /** What an ENDED agent-cli session produced — the derived outcome's status
+   *  plus the first 120 chars of its summary (`compactOutcome`). The full
+   *  record (`full: true`) carries the whole `outcome`. */
+  outcome?: SessionOutcomeCompact
+}
+
+/** Public MCP descriptor projection. Resume environment is required by the
+ * registry to reattach native PTYs, but must never cross the tool boundary. */
+const publicSessionDescriptor = (
+  session: SessionDescriptor,
+): Omit<SessionDescriptor, "ptyResumeEnv"> => {
+  const { ptyResumeEnv: _privateResumeEnv, ...publicDescriptor } = session
+  return publicDescriptor
 }
 
 export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem => ({
@@ -409,17 +480,22 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   busy: s.busy,
   awaitingInput: s.awaitingInput,
   blockedOn: s.blockedOn,
+  ...(s.capabilities?.steering ? { steering: true } : {}),
+  ...(s.backgroundTasks?.length ? { backgroundTaskCount: s.backgroundTasks.length } : {}),
   lastActivityAt: s.lastActivityAt,
   startedAt: s.startedAt,
   exitCode: s.exitCode,
   depth: s.depth,
   parentSessionId: s.parentSessionId,
+  continuedFrom: s.continuedFrom,
   usageSource: s.usageSource,
   costUsd: s.costUsd,
   tokensIn: s.tokensIn,
   tokensOut: s.tokensOut,
   contextSize: s.contextSize,
+  contextSizeSource: s.contextSizeSource,
   contextUsed: s.contextUsed,
+  ...(s.outcome ? { outcome: compactOutcome(s.outcome) } : {}),
 })
 
 // ── batch compact projections (tool-transformer migration) ───────────────
@@ -509,6 +585,9 @@ export interface WorktreeStatusCompactItem {
   branch: string | null
   class: WorktreeStatusView["class"]
   reclaimable: boolean
+  dirty: WorktreeStatusView["dirty"]
+  changes?: WorktreeStatusView["changes"]
+  base: WorktreeStatusView["base"]
   pr: WorktreeStatusView["pr"]
   liveness: WorktreeStatusView["liveness"]
 }
@@ -520,6 +599,9 @@ export const compactWorktreeStatus = (
   branch: w.branch,
   class: w.class,
   reclaimable: w.reclaimable,
+  dirty: w.dirty,
+  ...(w.changes ? { changes: w.changes } : {}),
+  base: w.base,
   pr: w.pr,
   liveness: w.liveness,
 })
@@ -558,6 +640,9 @@ export function registerSessionTools(
     resolveAgentAdapter,
     listWorktreeStatuses,
     runWorktreeGc,
+    runBranchGc,
+    recordBranchGcVerdict,
+    readBranchGcVerdict,
     listCatalogModels,
     loadDefaultsConfig,
   } = opts
@@ -604,6 +689,13 @@ export function registerSessionTools(
   // the pagination/compact/fields concerns are now applied by the
   // `paginated()` transformer at registration instead of hand-rolled in
   // the handler. Observable behavior is unchanged.
+  //
+  // No conditional-GET / strong-etag support here, unlike `GET /sessions`
+  // (http-server.ts) — `registerBuiltinTool`'s handler only ever receives
+  // the validated input (see register-builtin-tool.ts), with no access to
+  // the underlying request/response, and MCP's `tools/call` has no 304
+  // concept: every call is a fresh JSON-RPC result. A poller that wants the
+  // byte savings has to go through the REST route instead.
   const sessionListSchema = z.object({
     kind: z
       .enum(["terminal", "agent-cli", "command", "all"])
@@ -642,7 +734,7 @@ export function registerSessionTools(
   })
   type SessionListInput = z.infer<typeof sessionListSchema>
 
-  registerBuiltinTool<SessionListInput, SessionDescriptor[]>(server, {
+  registerBuiltinTool<SessionListInput, Array<Omit<SessionDescriptor, "ptyResumeEnv">>>(server, {
     id: "session_list",
     description: "List sessions tracked by the daemon — agent-CLI sessions (claude-code, " +
       "hermes, …) and terminal/PTY sessions (claude TUI, bash, …). Each " +
@@ -651,7 +743,8 @@ export function registerSessionTools(
       "need to know what's already running before spawning anything new, " +
       "or to discover a session id by name. COMPACT BY DEFAULT: each entry " +
       "is a slim projection (id/kind/name/label/status/command/cwd/model/" +
-      "busy/awaitingInput/blockedOn/lastActivityAt/depth/parentSessionId); " +
+      "busy/awaitingInput/blockedOn/lastActivityAt/depth/parentSessionId/" +
+      "continuedFrom); " +
       "pass `full: true` (or `compact: false`) for the complete, unprojected " +
       "per-session record. Raw shell-command runs " +
       "(`kind:'command'`) are a log, not a resumable session, so they're " +
@@ -692,7 +785,7 @@ export function registerSessionTools(
           s => s.status === "running" || s.status === "starting",
         )
       }
-      return rows
+      return rows.map(publicSessionDescriptor)
     },
     transformers: [
       paginated({
@@ -928,15 +1021,59 @@ export function registerSessionTools(
   server.tool(
     "session_continue_fresh",
     "Spawn a NEW agent session that continues the work of an existing " +
-      "session with a structured checkpoint as its initial prompt. The new " +
-      "session uses the same adapter, harness, model, route, access profile, " +
-      "posture, effort, and cwd. The original session is linked via " +
-      "`continuedFrom`/`continuedTo` and its transcript is preserved.",
+      "session with a structured checkpoint as its initial prompt. By " +
+      "default the new session uses the same adapter, harness, model, " +
+      "route, access profile, posture, effort, and cwd — pass `harness`/" +
+      "`adapter`, `model`, and/or `access.profileRef` to override any of " +
+      "those three axes, enabling a CROSS-harness handoff (e.g. claude-code " +
+      "-> opencode). An overridden axis is validated for model x profile " +
+      "eligibility the same way `agent_start` validates it — an ineligible " +
+      "profile or an adapter that can't reach the model fails the spawn " +
+      "instead of silently landing on a wrong wallet or a 404. The original " +
+      "session is linked via `continuedFrom`/`continuedTo`, its transcript " +
+      "is preserved, and the new descriptor carries `handoff: { fromHarness, " +
+      "toHarness, at }` recording which harness the checkpoint moved from/to.",
     {
       idOrName: z
         .string()
         .min(1)
         .describe("Session id or name — from `session_list`."),
+      harness: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Override the canonical harness slug for the fresh session — the " +
+            "cross-harness handoff axis (e.g. 'opencode'). Alias of `adapter`; " +
+            "set either or both. Omitted -> carried forward from the prior " +
+            "session, unchanged."
+        ),
+      adapter: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Override the adapter slug for the fresh session — alias of " +
+            "`harness`. Set either or both. Omitted -> carried forward from " +
+            "the prior session, unchanged."
+        ),
+      model: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Override the model for the fresh session (route-identity ref)."),
+      access: z
+        .object({
+          profileRef: z
+            .string()
+            .min(1)
+            .describe(
+              "Attach this NAMED auth profile to the fresh session. Rejected " +
+                "400 if it's not eligible for the resolved (adapter x route)."
+            ),
+        })
+        .optional()
+        .describe("Switch the fresh session's billing wallet to a named auth profile."),
     },
     async input => {
       if (!resolveAgentAdapter) {
@@ -990,7 +1127,12 @@ export function registerSessionTools(
         ...(listCatalogModels ? { listCatalogModels } : {}),
       }
       try {
-        const result = await continueAgentSessionFresh(spawnDeps, desc)
+        const result = await continueAgentSessionFresh(spawnDeps, desc, {
+          ...(input.harness !== undefined ? { harness: input.harness } : {}),
+          ...(input.adapter !== undefined ? { adapter: input.adapter } : {}),
+          ...(input.model !== undefined ? { model: input.model } : {}),
+          ...(input.access !== undefined ? { access: input.access } : {}),
+        })
         return {
           content: [
             {
@@ -1001,6 +1143,7 @@ export function registerSessionTools(
                   continuedTo: result.descriptor.id,
                   checkpointId: result.checkpoint.checkpointId,
                   checkpointPath: result.checkpoint.checkpointPath,
+                  handoff: result.descriptor.handoff,
                 },
                 null,
                 2,
@@ -1235,7 +1378,10 @@ export function registerSessionTools(
       .optional()
       .describe("Filter by exact status (overrides onlyAlive)."),
   })
-  registerPaginatedListTool<z.infer<typeof terminalSessionsListSchema>, SessionDescriptor>({
+  registerPaginatedListTool<
+    z.infer<typeof terminalSessionsListSchema>,
+    Omit<SessionDescriptor, "ptyResumeEnv">
+  >({
     id: "terminal_sessions_list",
     description:
       "List terminal/PTY sessions tracked by the daemon. Equivalent to `session_list({kind: 'terminal'})`. " +
@@ -1265,7 +1411,7 @@ export function registerSessionTools(
           s => s.status === "running" || s.status === "starting",
         )
       }
-      return rows
+      return rows.map(publicSessionDescriptor)
     },
     project: compactSessionItemWithProvenance,
     keyOf: s => s.id,
@@ -1291,7 +1437,10 @@ export function registerSessionTools(
       .optional()
       .describe("Filter by exact status (overrides onlyAlive)."),
   })
-  registerPaginatedListTool<z.infer<typeof commandListSchema>, SessionDescriptor>({
+  registerPaginatedListTool<
+    z.infer<typeof commandListSchema>,
+    Omit<SessionDescriptor, "ptyResumeEnv">
+  >({
     id: "command_list",
     description:
       "List command sessions tracked by the daemon. Equivalent to `session_list({kind: 'command'})`. " +
@@ -1321,7 +1470,7 @@ export function registerSessionTools(
           s => s.status === "running" || s.status === "starting",
         )
       }
-      return rows
+      return rows.map(publicSessionDescriptor)
     },
     project: compactSessionItemWithProvenance,
     keyOf: s => s.id,
@@ -1652,7 +1801,11 @@ export function registerSessionTools(
       "is a session with no parent (or whose parent is outside the visible scope); " +
       "its `children` array holds direct sub-sessions, recursively. Each node " +
       "carries `id`, `label`, `status`, `depth`, `adapterSlug`, `parentSessionId`, " +
-      "and `isOrchestrator` (true when the session itself spawned sub-agents). " +
+      "`continuedFrom` (set when the node was spawned by `session_continue_fresh` " +
+      "— a checkpoint-handoff edge distinct from tree nesting: the node is the " +
+      "SOURCE session's sibling, not its child; the full record's `handoff` " +
+      "field names which harness the checkpoint moved from/to), and " +
+      "`isOrchestrator` (true when the session itself spawned sub-agents). " +
       "Via a scoped orchestrator token only the caller's subtree is returned; " +
       "from the root `/mcp` endpoint the full daemon tree is visible. " +
       "NAVIGATION (additive): pass `nodeId` + `direction` together to fetch a " +
@@ -1789,6 +1942,7 @@ export function registerSessionTools(
           ...(s.adapterSlug ? { adapterSlug: s.adapterSlug } : {}),
           ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
           ...(s.origin ? { origin: s.origin } : {}),
+          ...(s.continuedFrom ? { continuedFrom: s.continuedFrom } : {}),
           isOrchestrator: orchestratorIds.has(s.id),
           children: [],
         })
@@ -2140,17 +2294,28 @@ export function registerSessionTools(
         "When true, only return worktrees whose `pr.state` is `open`. " +
           "Default false."
       ),
+    sessionId: z
+      .string()
+      .optional()
+      .describe(
+        "Session id or name: return ONLY the worktree that session runs in " +
+          "(its `worktreePath`), computed alone instead of scanning every " +
+          "worktree of the repo. Wins over `repoRoot`/`workspaceSlug`. An " +
+          "empty list means the session isn't in a linked worktree."
+      ),
   })
   registerPaginatedListTool<z.infer<typeof worktreeStatusSchema>, WorktreeStatusView>({
     id: "worktree_status",
     description:
       "List the linked git worktrees for a repo and their live PR/session " +
       "linkage. Each entry includes path, branch, class, reclaimability, " +
-      "PR state/number, the sessions whose cwd sits in the worktree, and " +
-      "liveness. Use this to power a 'PRs in progress + linked sub-agents' " +
-      "panel. Pass `openOnly: true` to surface only worktrees whose PR is " +
-      "still open. COMPACT BY DEFAULT: each entry carries path/branch/" +
-      "class/reclaimable/pr/liveness; pass `full: true` to also get the " +
+      "dirty flag, ahead/behind vs the base branch, PR state/number/url, " +
+      "the sessions whose cwd sits in the worktree, and liveness. Use this " +
+      "to power a 'PRs in progress + linked sub-agents' panel. Pass " +
+      "`openOnly: true` to surface only worktrees whose PR is still open, " +
+      "or `sessionId` to read just the one worktree a session runs in. " +
+      "COMPACT BY DEFAULT: each entry carries path/branch/class/reclaimable/" +
+      "dirty/changes/base/pr/liveness; pass `full: true` to also get the " +
       "per-session roster (`sessions[]`).",
     schema: worktreeStatusSchema,
     body: async input => {
@@ -2160,6 +2325,14 @@ export function registerSessionTools(
             "a worktree status lister. The host must wire `listWorktreeStatuses` " +
             "in createGateway.",
         )
+      }
+
+      if (input.sessionId !== undefined) {
+        const desc = registry.findByIdOrName(input.sessionId)
+        if (!desc) throw new Error(`worktree_status: no session "${input.sessionId}"`)
+        const scope = sessionWorktreeScope(desc)
+        if (!scope) return []
+        return listWorktreeStatuses(scope.repoRoot, { paths: [scope.worktreePath] })
       }
 
       const resolved = await resolveWorktreeQueryRoot({
@@ -2239,6 +2412,14 @@ export function registerSessionTools(
             "of held. Default false. This is the only flag that can promote " +
             "an entry toward reclaim; no flag ever weakens a hold otherwise."
         ),
+      noisePaths: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Worktree-relative paths whose dirt is known noise (a worktree dirty " +
+            "ONLY on these counts as clean). Default `.opencode/package-lock.json`; " +
+            "pass [] to disable."
+        ),
     },
     async input => {
       if (!runWorktreeGc) {
@@ -2281,6 +2462,7 @@ export function registerSessionTools(
           // The daemon's own live in-memory registry, not a disk re-read —
           // see `livingSessionCwds`'s doc.
           protectedPaths: livingSessionCwds(registry),
+          ...(input.noisePaths ? { noisePaths: input.noisePaths } : {}),
         })
         return {
           content: [
@@ -2298,6 +2480,244 @@ export function registerSessionTools(
               text: `worktree_gc failed: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  // ── branch_gc ────────────────────────────────────────────────────
+  // The sibling of `worktree_gc` for refs: local branches, the base remote's
+  // tracking branches, and orphan tracking refs of removed remotes. Same
+  // contract — a DRY RUN unless `apply` is set, every entry re-classified
+  // right before it is touched, `hold` and `review` never touched — and every
+  // fact and mutation delegated to the injected `runBranchGc` port.
+
+  const branchGcKind = z.enum(["local", "remote", "orphan"])
+  server.tool(
+    "branch_gc",
+    "Garbage-collect a repo's branches. DEFAULTS TO A DRY RUN: returns a plan " +
+      "classifying every local branch, base-remote branch and orphan tracking " +
+      "ref (refs/remotes/<ns>/* of a removed remote) as `reclaim` (work " +
+      "provably in base: merged, squash-merged, patch-merged or " +
+      "content-merged), `review` (unmerged, old enough, not protected — " +
+      "carries coverage + the files not provably in base for a reviewer), or " +
+      "`hold` (base/protected, checked out in a worktree or its remote twin, " +
+      "open PR head, PR check unavailable, or younger than `minAgeDays`). " +
+      "`apply: true` (requires explicit `scopes`) deletes only `reclaim` " +
+      "entries, re-classifying each right before deleting it, and returns " +
+      "the path of a restore log (sha + re-create command per deleted ref).",
+    {
+      repoRoot: z.string().optional().describe("Absolute path to the git repo. Wins over `workspaceSlug`."),
+      workspaceSlug: z
+        .string()
+        .optional()
+        .describe("Workspace slug from `agentproto workspace list`. The active workspace when omitted."),
+      base: z.string().optional().describe("Base ref the work must be in. Default `origin/main`."),
+      scopes: z
+        .array(branchGcKind)
+        .optional()
+        .describe("Ref kinds to consider: local, remote, orphan. Default all three for a plan; REQUIRED for apply."),
+      minAgeDays: mcpNumber
+        .optional()
+        .describe("Unmerged refs younger than this many days are held. Default 3."),
+      includeReviewed: mcpBool
+        .optional()
+        .describe(
+          "When true, a `review` ref whose stored verdict (branch_gc_verdict) has gate.agree=true for the SAME tip sha becomes `reclaim` (`reviewed`). Default false.",
+        ),
+      anchor: z.string().optional().describe("Explicit anchor commit for a re-rooted base. Auto-detected when omitted."),
+      apply: mcpBool.optional().describe("When true, EXECUTE the plan for `scopes`. Default false — a dry run."),
+    },
+    async input => {
+      if (!runBranchGc) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "branch_gc is not enabled — the daemon was started without a " +
+                "branch gc runner. The host must wire `runBranchGc` in createGateway.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      const resolved = await resolveWorktreeQueryRoot({
+        repoRoot: input.repoRoot,
+        workspaceSlug: input.workspaceSlug,
+      })
+      if (!resolved.ok) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }], isError: true }
+      }
+      if (input.apply === true && !input.scopes?.length) {
+        return {
+          content: [{ type: "text", text: "branch_gc: `apply: true` requires explicit `scopes` (any of local, remote, orphan)." }],
+          isError: true,
+        }
+      }
+      try {
+        const result = await runBranchGc({
+          repoRoot: resolved.repoRoot,
+          apply: input.apply === true,
+          includeReviewed: input.includeReviewed === true,
+          ...(input.base ? { base: input.base } : {}),
+          ...(input.scopes?.length ? { scopes: input.scopes } : {}),
+          ...(input.minAgeDays !== undefined ? { minAgeDays: input.minAgeDays } : {}),
+          ...(input.anchor ? { anchor: input.anchor } : {}),
+        })
+        return { content: [{ type: "text", text: JSON.stringify(result) }] }
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `branch_gc failed: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  const branchVerdictEnum = z.enum(["obsolete", "superseded", "salvage", "in-progress", "unclear"])
+  server.tool(
+    "branch_gc_verdict",
+    "Record one reviewer verdict for a branch tip, keyed by repo + tip sha " +
+      "(a verdict for a tip that later moves is ignored). `gate.agree: true` " +
+      "is what lets `branch_gc` with `includeReviewed` reclaim an unmerged " +
+      "ref, and it must cite evidence. This tool only stores verdicts; it " +
+      "never deletes anything.",
+    {
+      repoRoot: z.string().optional().describe("Absolute path to the git repo. Wins over `workspaceSlug`."),
+      workspaceSlug: z.string().optional().describe("Workspace slug. The active workspace when omitted."),
+      name: z.string().describe("Branch name the verdict is about (informational; the key is the sha)."),
+      sha: z.string().describe("Full tip sha that was reviewed."),
+      triage: z.object({
+        verdict: branchVerdictEnum,
+        confidence: mcpNumber.describe("0..1"),
+        reason: z.string(),
+        salvage: z.string().optional().describe("What is worth keeping, if anything."),
+      }),
+      gate: z
+        .object({
+          agree: mcpBool.describe("true only if deleting the branch loses nothing of value"),
+          verdict: branchVerdictEnum,
+          reason: z.string(),
+          evidence: z.array(z.string()).describe("Concrete shas/paths. Required non-empty when agree is true."),
+        })
+        .optional(),
+      reviewer: z.string().describe("Who reviewed, e.g. `claude-sonnet reviewer`."),
+    },
+    async input => {
+      if (!recordBranchGcVerdict) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "branch_gc_verdict is not enabled — the host must wire `recordBranchGcVerdict` in createGateway.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      const resolved = await resolveWorktreeQueryRoot({
+        repoRoot: input.repoRoot,
+        workspaceSlug: input.workspaceSlug,
+      })
+      if (!resolved.ok) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }], isError: true }
+      }
+      try {
+        const { repoRoot: _r, workspaceSlug: _w, ...verdict } = input
+        // A reviewer names its review worktree; the verdict keys on the repo.
+        const repoRoot = await ownerRepoOfReviewWorktree(resolved.repoRoot)
+        const record = await recordBranchGcVerdict({ repoRoot, verdict })
+        return { content: [{ type: "text", text: JSON.stringify({ recorded: true, record }) }] }
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `branch_gc_verdict failed: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  server.tool(
+    "branch_gc_verdict_get",
+    "Read the stored reviewer verdict (branch_gc_verdict) for one branch tip, " +
+      "keyed by repo + tip sha. Returns `{ sha, found, missing, record }` — " +
+      "`record` is null when no verdict exists for that exact sha. Read-only.",
+    {
+      repoRoot: z.string().optional().describe("Absolute path to the git repo. Wins over `workspaceSlug`."),
+      workspaceSlug: z.string().optional().describe("Workspace slug. The active workspace when omitted."),
+      sha: z.string().describe("Full tip sha to look up."),
+    },
+    async input => {
+      if (!readBranchGcVerdict) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "branch_gc_verdict_get is not enabled — the host must wire `readBranchGcVerdict` in createGateway.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      const resolved = await resolveWorktreeQueryRoot({ repoRoot: input.repoRoot, workspaceSlug: input.workspaceSlug })
+      if (!resolved.ok) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }], isError: true }
+      }
+      try {
+        const repoRoot = await ownerRepoOfReviewWorktree(resolved.repoRoot)
+        const record = await readBranchGcVerdict({ repoRoot, sha: input.sha })
+        // `missing` is the plain-truthy mirror of `!found`, so a workflow
+        // `branch` step's bare-ref `when` can test it directly.
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ sha: input.sha, found: record !== null, missing: record === null, record }) },
+          ],
+        }
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `branch_gc_verdict_get failed: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  server.tool(
+    "branch_gc_review_worktree",
+    "Create or remove disposable DETACHED review worktrees for branch review " +
+      "(the maintain workflow gives every reviewer its own, so nothing a " +
+      "reviewer does can touch the live checkout). `add` checks out `sha` at " +
+      "`path`; `remove` force-removes every path in `paths` (missing ones are " +
+      "fine) and prunes. Every path must be a direct child of the review root " +
+      "under the OS tmp dir — this tool can never remove the repo itself or a " +
+      "human's worktree.",
+    {
+      repoRoot: z.string().optional().describe("Absolute path to the git repo. Wins over `workspaceSlug`."),
+      workspaceSlug: z.string().optional().describe("Workspace slug. The active workspace when omitted."),
+      action: z.enum(["add", "remove"]),
+      path: z.string().optional().describe("`add`: where to create the worktree."),
+      sha: z.string().optional().describe("`add`: the commit to check out (detached)."),
+      paths: z.array(z.string()).optional().describe("`remove`: worktrees to remove."),
+    },
+    async input => {
+      const resolved = await resolveWorktreeQueryRoot({ repoRoot: input.repoRoot, workspaceSlug: input.workspaceSlug })
+      if (!resolved.ok) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }], isError: true }
+      }
+      try {
+        if (input.action === "add") {
+          if (!input.path || !input.sha) throw new Error("`add` needs `path` and `sha`")
+          const out = await addReviewWorktree({ repoRoot: resolved.repoRoot, path: input.path, sha: input.sha })
+          return { content: [{ type: "text", text: JSON.stringify(out) }] }
+        }
+        const out = await removeReviewWorktrees({ repoRoot: resolved.repoRoot, paths: input.paths ?? [] })
+        return { content: [{ type: "text", text: JSON.stringify(out) }] }
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `branch_gc_review_worktree failed: ${err instanceof Error ? err.message : String(err)}` }],
           isError: true,
         }
       }
@@ -2627,12 +3047,31 @@ export function registerSessionTools(
       try {
         if (strategy.kind === "pty-native" || strategy.kind === "pty-plain") {
           if (!ptyEnabled) return ptyNotConfigured("session_restart")
-          const argv =
+          let argv =
             strategy.kind === "pty-native"
               ? strategy.argv
               : Array.isArray(prev.argv) && prev.argv.length > 0
                 ? [...prev.argv]
                 : tokenizeCommand(prev.command)
+          // Prefer resuming by ABSOLUTE transcript path over a bare
+          // conversation id when the provider accepts one
+          // (`claude --resume /abs/….jsonl`): the path form works from any
+          // directory and doesn't depend on the provider re-deriving the
+          // project-slug folder from the spawn cwd. Only when the isolated
+          // file verifiably exists — otherwise keep the bare id, which may
+          // still resolve via the threaded config-dir env below.
+          if (strategy.kind === "pty-native" && prev.adapterSlug) {
+            const probe = await probeNativeTranscript(augmented)
+            if (probe?.exists) {
+              const upgraded = RESUME_STRATEGIES[prev.adapterSlug]?.spawnArgs?.(probe.path)
+              if (upgraded) {
+                argv = upgraded
+                console.log(
+                  `[session_restart] ${prev.id} pty-native resume upgraded to absolute transcript path ${probe.path}`
+                )
+              }
+            }
+          }
           // Thread the adapter's isolated config dir into the resumed PTY's
           // env so the provider's own native resume looks in the SAME store
           // its transcript actually lives in (see
@@ -2653,7 +3092,11 @@ export function registerSessionTools(
             strategy.kind === "pty-native"
               ? envVarName && augmented.adapterConfigDir
                 ? { [envVarName]: augmented.adapterConfigDir }
-                : undefined
+                : // A pty-native restart of a row that is ITSELF a restarted
+                  // PTY (conversation terminal): no adapterConfigDir, but the
+                  // env the earlier hop recorded still names the isolated
+                  // store — replay it rather than dropping to the global one.
+                  prev.ptyResumeEnv
               : prev.ptyResumeEnv
           if (strategy.kind === "pty-native") {
             console.log(
@@ -2734,7 +3177,7 @@ export function registerSessionTools(
             content: [
               {
                 type: "text",
-                text: JSON.stringify(desc),
+                text: JSON.stringify(publicSessionDescriptor(desc)),
               },
             ],
           }
@@ -2767,6 +3210,38 @@ export function registerSessionTools(
             isError: true,
           }
         }
+        // Honest decline diagnostics: the caller explicitly asked for a
+        // native terminal but the decision still landed on ACP resume.
+        // Name the ACTUAL blocker instead of letting the client blame "the
+        // transcript could not be recovered" for every fallback — response-
+        // only, never persisted. Absent entirely when the caller never
+        // opted in (a plain restart's output shape is unchanged).
+        let nativeResumeDecline:
+          | {
+              reason: "capability-missing" | "no-resume-id" | "transcript-not-found"
+              probedDir?: string
+            }
+          | undefined
+        if (
+          input.preferNativeTerminal === true &&
+          prev.adapterSlug &&
+          RESUME_STRATEGIES[prev.adapterSlug]?.spawnArgs
+        ) {
+          if (prev.nativeTerminalResume !== true) {
+            // Legacy/pre-capability row: the adapter never stamped
+            // `nativeTerminalResume` on this descriptor, so the origin gate
+            // was passed but the capability check wasn't.
+            nativeResumeDecline = { reason: "capability-missing" }
+          } else {
+            // A probe result here means an id existed but its exact file
+            // didn't (exact-bind never falls through to a sibling); no
+            // probe at all means there was never an id to look up.
+            const probe = await probeNativeTranscript(augmented)
+            nativeResumeDecline = probe
+              ? { reason: "transcript-not-found", probedDir: probe.dir }
+              : { reason: "no-resume-id" }
+          }
+        }
         // Shared with the cron scheduler's `prompt-session` action —
         // see session-restart-core.ts. Overrides take the forced-agent path
         // handled earlier, so a restart reaching HERE never carries any.
@@ -2779,10 +3254,11 @@ export function registerSessionTools(
               type: "text",
               text: JSON.stringify(
                 {
-                  ...restarted.desc,
+                  ...publicSessionDescriptor(restarted.desc),
                   resumedFrom: restarted.resumedFrom,
                   resumeVia: restarted.resumeVia,
                   ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
+                  ...(nativeResumeDecline ? { nativeResumeDecline } : {}),
                 },
                 null,
                 2
@@ -2869,7 +3345,7 @@ export function registerSessionTools(
       try {
         const desc = registry.archiveSession(prev.id)
         return {
-          content: [{ type: "text", text: JSON.stringify(desc) }],
+          content: [{ type: "text", text: JSON.stringify(publicSessionDescriptor(desc)) }],
         }
       } catch (err) {
         return {
@@ -2982,7 +3458,7 @@ export function registerSessionTools(
       try {
         const desc = registry.unarchiveSession(prev.id)
         return {
-          content: [{ type: "text", text: JSON.stringify(desc) }],
+          content: [{ type: "text", text: JSON.stringify(publicSessionDescriptor(desc)) }],
         }
       } catch (err) {
         return {
@@ -3117,7 +3593,7 @@ export function registerSessionTools(
           reason: input.reason,
         })
         return {
-          content: [{ type: "text", text: JSON.stringify(desc) }],
+          content: [{ type: "text", text: JSON.stringify(publicSessionDescriptor(desc)) }],
         }
       } catch (err) {
         return {
@@ -3230,7 +3706,7 @@ export function registerSessionTools(
           ...(input.label !== undefined ? { label: input.label } : {}),
         })
         return {
-          content: [{ type: "text", text: JSON.stringify(desc) }],
+          content: [{ type: "text", text: JSON.stringify(publicSessionDescriptor(desc)) }],
         }
       } catch (err) {
         return {
@@ -3313,7 +3789,7 @@ export function registerSessionTools(
       try {
         const desc = registry.setKeepAlive(prev.id, input.keepAlive)
         return {
-          content: [{ type: "text", text: JSON.stringify(desc) }],
+          content: [{ type: "text", text: JSON.stringify(publicSessionDescriptor(desc)) }],
         }
       } catch (err) {
         return {
@@ -3397,7 +3873,7 @@ export function registerSessionTools(
       try {
         const desc = registry.setPinned(prev.id, input.pinned)
         return {
-          content: [{ type: "text", text: JSON.stringify(desc) }],
+          content: [{ type: "text", text: JSON.stringify(publicSessionDescriptor(desc)) }],
         }
       } catch (err) {
         return {
@@ -3573,7 +4049,7 @@ export function registerSessionTools(
             : {}),
         })
         return {
-          content: [{ type: "text", text: JSON.stringify(desc) }],
+          content: [{ type: "text", text: JSON.stringify(publicSessionDescriptor(desc)) }],
         }
       } catch (err) {
         return {

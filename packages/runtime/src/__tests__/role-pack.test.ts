@@ -45,6 +45,13 @@ describe("parseRolePack", () => {
     expect(role.spawnableRoles).toEqual(["executor", "reviewer"])
   })
 
+  it("parses a `browser` default and ignores an unknown value", () => {
+    const base = { role: "qa", level: "0", "toolPolicy.delegation": "deny" }
+    expect(parseRolePack(rolePackMd({ ...base, browser: "headless" }, "x")).browser).toBe("headless")
+    expect(parseRolePack(rolePackMd({ ...base, browser: "off" }, "x")).browser).toBe(false)
+    expect(parseRolePack(rolePackMd({ ...base, browser: "firefox" }, "x"))).not.toHaveProperty("browser")
+  })
+
   it("the markdown body (after the closing fence) becomes disposition, trimmed", () => {
     const md = rolePackMd(
       { role: "planner", level: "10", "toolPolicy.delegation": "deny" },

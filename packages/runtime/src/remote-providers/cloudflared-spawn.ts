@@ -31,7 +31,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process"
-import { closeSync, openSync, readFileSync } from "node:fs"
+import { chmodSync, closeSync, openSync, readFileSync } from "node:fs"
 
 export interface CloudflaredSpawnOptions {
   /**
@@ -87,7 +87,11 @@ export async function spawnCloudflaredUntil(
   argv: string[],
   opts: CloudflaredSpawnOptions,
 ): Promise<CloudflaredSpawnResult> {
-  const logFd = openSync(opts.logPath, "a")
+  // Owner-only: cloudflared logs can carry request metadata (URLs with a
+  // `?token=`, headers at debug level). The mode only applies on create, so
+  // chmod too in case the file already existed.
+  const logFd = openSync(opts.logPath, "a", 0o600)
+  chmodSync(opts.logPath, 0o600)
   let proc: ChildProcess
   try {
     proc = spawn(opts.binary ?? "cloudflared", argv, {

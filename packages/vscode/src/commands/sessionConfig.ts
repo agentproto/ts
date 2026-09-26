@@ -8,9 +8,12 @@
  * access chip's "+ add profile" row hands off to the create/login flow.
  *
  * Only chips whose option-set could be resolved from the daemon render; today
- * that is model, route, and access (effort/posture/contextProfile need
- * capability read-surfaces not yet plumbed to the client, so they hide until
- * then — SPEC §6 rule: an empty chip is omitted, never a dead affordance).
+ * that is model, route, access, and posture (the session's advertised native
+ * modes are read from `SessionDescriptor.availableModes`, the daemon's
+ * read-surface echo of the live harness's ACP mode registry). Effort/
+ * contextProfile still need capability read-surfaces not yet plumbed to the
+ * client, so they hide until then — SPEC §6 rule: an empty chip is omitted,
+ * never a dead affordance).
  *
  * All decisions are pure (`sessionConfig.logic.ts` builds the chips;
  * `sessionConfigDispatch.logic.ts` plans each pick); this file is the shell.
@@ -151,6 +154,7 @@ async function runSessionConfigFlow(
     ...(session.model ? { model: session.model } : {}),
     ...(catalog ? { catalog } : {}),
     profiles,
+    ...(session.availableModes ? { availableModes: session.availableModes } : {}),
   })
   if (chips.length === 0) {
     vscode.window.showInformationMessage(

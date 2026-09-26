@@ -1,5 +1,124 @@
 # @agentproto/runtime
 
+## 3.6.1
+
+### Patch Changes
+
+- Updated dependencies [c5b9e2b]
+  - @agentproto/model-catalog@0.10.3
+  - @agentproto/providers-store@0.3.17
+
+## 3.6.0
+
+### Minor Changes
+
+- a93da92: Support native and proxied app origins: `AGENTPROTO_PUBLIC_HTTP_ORIGIN` env override, `X-Forwarded-Proto` awareness in `requestHttpBaseUrl`, and injection of `window.__AGENTPROTO_BASEURL__` (with `__AGENTPROTO_UI_TRANSPORT__` tags) so standalone app bridges can reach the daemon through proxies.
+- f26e334: Add the opt-in daemon-side session titler (`titler.enabled` in config): after the first completed turn of an `agent-cli` session with a default spawn label, generate a short prosaic title (OpenRouter by default, local first-line fallback) and rename the session. User-created labels are never overwritten; disabled by default.
+
+### Patch Changes
+
+- 7f9497d: Resume native PTY conversations and redact resume env from HTTP
+- Updated dependencies [2aadecc]
+- Updated dependencies [cbb8743]
+- Updated dependencies [41b8b76]
+- Updated dependencies [854db1f]
+  - @agentproto/model-catalog@0.10.2
+  - @agentproto/workflow-runtime@0.12.0
+  - @agentproto/providers-store@0.3.16
+  - @agentproto/sandbox@0.5.3
+  - @agentproto/eval-reporters@0.2.15
+  - @agentproto/telemetry-langfuse@0.2.13
+
+## 3.5.0
+
+### Minor Changes
+
+- b8fdbc6: Fix transmit_message/sendOutbound reporting sent:true on a blocked/failed agentpush send; surface message_id, blocked_reason, and suggestion
+- fc14c4c: Add queued-mid-turn delivery hint + configurable interrupt default for agent_prompt/message_parent
+- ec66e92: Ship a live, boot-stable embed token with each session-chat tool result so host-cached widgets re-arm after a daemon restart: new exported `stableAppEmbedToken()` in runtime, and new optional `SessionChatOutput.embedToken` / `SessionChatOps.mintEmbedToken` in apps.
+
+### Patch Changes
+
+- f6f2d75: Mint per-boot embed tokens so MCP-Apps widgets render in opaque hosts
+- f6f2d75: MCP-Apps hosts with opaque widget origins (e.g. Claude Desktop) can now mount an app's `/ui` page: a per-boot embed token is baked into panel bridge scripts at registration and accepted (alongside `vscode-webview:` and `csp.frameDomains`) as a trusted-embedder proof by `handleAppUiPage`/`applyCors`, layered under the existing bearer-auth and `sec-fetch-dest: iframe` gates.
+- d388a08: Accept a valid per-boot app embed token (`?et=`) as an allowlisted Origin equivalent on the browser-facing gates (`guardBrowserOrigin`, `authorizeMcp`, `checkSessionsToken`), so MCP-Apps widget blob: documents with opaque `Origin: null` can reach the daemon.
+- bdbe806: Type session-resumer test mocks to AgentSessionResumer after vitest bump
+- 5380278: Add regression tests for conversation-terminal linking, ambiguity, and title-once derivation
+- a25a86f: Type agent-start test mocks for bumped vitest mock-widening
+- a373209: Bind agent_start to session-chat widget via self-bootstrapping bridge
+- Updated dependencies [5aad102]
+- Updated dependencies [e3054e1]
+- Updated dependencies [f84c972]
+- Updated dependencies [f6f2d75]
+- Updated dependencies [a169e72]
+- Updated dependencies [f6f2d75]
+- Updated dependencies [f30c959]
+- Updated dependencies [ec66e92]
+- Updated dependencies [a373209]
+- Updated dependencies [54e8f28]
+- Updated dependencies [4b31967]
+  - @agentproto/model-catalog@0.10.1
+  - @agentproto/apps@0.12.0
+  - @agentproto/provider-kit@0.4.5
+  - @agentproto/providers-store@0.3.15
+  - @agentproto/eval-reporters@0.2.14
+  - @agentproto/telemetry-langfuse@0.2.12
+  - @agentproto/workspace-brain@0.4.7
+
+## 3.4.0
+
+### Minor Changes
+
+- 42fffb9: Surface the tool-call route's human-readable `message` (not the machine `error` slug) in both UI bridge scripts on non-ok responses, and reword the `daemon_unreachable` advice so it does not assume the target is the local daemon. Exports `STANDALONE_REST_BRIDGE_SCRIPT` from `@agentproto/runtime`.
+- 9a59225: Add a `lane` filter (`agents` | `auto`) to `listSummaries` and `GET /sessions/summaries`, and make the sessions webview lane-aware (server-side lane filtering, stale-lane response discard, and reload-after-lane-switch handling).
+- ef59d39: Echo the harness's currently-active native ACP mode id (currentModeId) alongside availableModes on session read
+
+### Patch Changes
+
+- ea6757f: Add OpenCode's two hosted endpoints as first-class billing providers: `opencode-go` (OpenCode Go, the flat subscription, 36 models) and `opencode` (OpenCode Zen, pay-as-you-go, 102 models). Two new catalog-sync generators (`llm:opencode-go`, `llm:opencode-zen`) source both from models.dev and emit `OPENCODE_GO_ROUTES` / `OPENCODE_ZEN_ROUTES`, each with a pruned per-provider snapshot rather than the 4.6 MB whole-ecosystem payload. Prices are used verbatim (models.dev already publishes USD per 1M tokens); zero-priced `-free` variants are kept, and cache multipliers are omitted where the base input price is 0.
+
+  Route tables are keyed `<provider>/<bare-id>` (`opencode-go/glm-5.3`) — opencode's own config spelling, and the same string the runtime derives the billing endpoint from — so `resolveLlmModelRoute` resolves the OpenCode branch ahead of the direct-vendor branch. Neither table is spread into `LLM_PRICING_CATALOG`, so a bare `claude-sonnet-5` keeps meaning direct Anthropic rather than Zen pricing.
+
+  Two Anthropic gateway presets (`opencode-go`, `opencode`) put each endpoint's Anthropic-surface models behind claude-code / claude-sdk — Zen's subset is the whole Claude family. Preset ids deliberately match the catalog route ids, since `resolveAuthSpec` resolves a spawn's base URL by route id. The opencode adapter now offers both endpoints in full in its generated model menu.
+
+  Fixes two spillovers found along the way: `serviceableModelRoutes` no longer reports a spurious direct-vendor route for a self-routed id (`opencode/claude-sonnet-4-6` had picked up `anthropic` via `resolvePricing`'s substring fallback, loosening the money-safety guard and mis-routing the Configuration Lab), and `injectProviderKeysIntoEnv` now visits providers in sorted order so two providers sharing one env name (both OpenCode endpoints read `OPENCODE_API_KEY`) resolve deterministically instead of by `providers.json` write order.
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [9c31c86]
+- Updated dependencies [4ade388]
+- Updated dependencies [f89414a]
+- Updated dependencies [7941fc7]
+- Updated dependencies [13858b8]
+- Updated dependencies [bced1de]
+- Updated dependencies [7473ccd]
+- Updated dependencies [ea6757f]
+- Updated dependencies [c27f0b8]
+- Updated dependencies [9c31c86]
+  - @agentproto/model-catalog@0.10.0
+  - @agentproto/apps@0.11.0
+  - @agentproto/auth@1.0.3
+  - @agentproto/provider-presets@0.7.0
+  - @agentproto/providers-store@0.3.14
+  - @agentproto/acp@0.8.2
+  - @agentproto/agent@0.2.4
+  - @agentproto/app-client@0.3.3
+  - @agentproto/app-kit@1.2.1
+  - @agentproto/driver@0.2.3
+  - @agentproto/driver-agent-cli@2.4.4
+  - @agentproto/driver-http@0.1.7
+  - @agentproto/eval-reporters@0.2.13
+  - @agentproto/mcp-server@0.3.1
+  - @agentproto/provider-kit@0.4.4
+  - @agentproto/routine@0.2.3
+  - @agentproto/sandbox@0.5.2
+  - @agentproto/secrets@0.2.6
+  - @agentproto/tool@0.3.1
+  - @agentproto/workflow@0.6.1
+  - @agentproto/workflow-loader@0.2.3
+  - @agentproto/workflow-runtime@0.11.1
+  - @agentproto/workspace-brain@0.4.6
+  - @agentproto/telemetry-langfuse@0.2.11
+
 ## 3.3.0
 
 ### Minor Changes

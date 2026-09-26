@@ -14,6 +14,8 @@ export interface AgentStepFields {
    *  steps resolve `$steps.*` refs into one before calling this). */
   prompt: string | Selector<string>
   adapter?: string
+  /** See {@link AgentStep.cwd}. */
+  cwd?: Selector<string>
   model?: Selector<string> | string
   sessionRef?: string
   sandbox?: AgentSandboxRef
@@ -23,6 +25,7 @@ export interface AgentStepFields {
   maxRetries?: number
   options?: Record<string, boolean | number | string>
   harness?: AgentHarness
+  agentTools?: readonly string[]
 }
 
 /** Build a runtime {@link AgentStep} from field values, applying the same
@@ -33,6 +36,7 @@ export function buildAgentStep(id: string, fields: AgentStepFields): AgentStep {
     kind: "agent",
     id,
     ...(fields.adapter !== undefined ? { adapter: fields.adapter } : {}),
+    ...(fields.cwd !== undefined ? { cwd: fields.cwd } : {}),
     ...(fields.model !== undefined ? { model: fields.model } : {}),
     ...(fields.sessionRef !== undefined ? { sessionRef: fields.sessionRef } : {}),
     ...(fields.sandbox !== undefined ? { sandbox: fields.sandbox } : {}),
@@ -43,5 +47,6 @@ export function buildAgentStep(id: string, fields: AgentStepFields): AgentStep {
     ...(fields.outputSchema !== undefined ? { outputSchema: fields.outputSchema } : {}),
     ...(fields.maxRetries !== undefined ? { maxRetries: fields.maxRetries } : {}),
     ...(fields.harness !== undefined ? { harness: fields.harness } : {}),
+    ...(fields.agentTools !== undefined ? { agentTools: fields.agentTools } : {}),
   }
 }

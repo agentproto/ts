@@ -152,8 +152,7 @@ describe("handshake-over-sink helpers", () => {
     const atD: TunnelFrame[] = []
     d.onFrame(f => atD.push(f))
     c.send({ t: "ping", nonce: "after-handshake" })
-    await flush()
-    expect(atD).toEqual([{ t: "ping", nonce: "after-handshake" }])
+    await vi.waitFor(() => expect(atD).toEqual([{ t: "ping", nonce: "after-handshake" }]))
   })
 
   it("rejects and closes the sink when the daemon driver refuses the hello", async () => {

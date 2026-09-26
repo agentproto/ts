@@ -34,11 +34,11 @@ import { connect, flush, type Middleware } from "./e2e-harness.js"
 const TOKEN = "apt_shared_tunnel_secret_abc123"
 
 /** Daemon (initiator): negotiate e2e over `sink` using the real handshake. */
-function daemonConnect(sink: FrameSink, token: string, timeoutMs = 8_000) {
-  const started = startTunnelHandshake(token)
-  const deriveKeys = (reply: Uint8Array): E2eKeys => {
+async function daemonConnect(sink: FrameSink, token: string, timeoutMs = 8_000) {
+  const started = await startTunnelHandshake(token)
+  const deriveKeys = async (reply: Uint8Array): Promise<E2eKeys> => {
     const accept = decodeTunnelAccept(reply)
-    const session = started.complete(accept)
+    const session = await started.complete(accept)
     return { sendKey: session.sendKey, recvKey: session.recvKey }
   }
   return connectSinkE2E(sink, encodeTunnelMessage(started.offer), deriveKeys, { timeoutMs })
@@ -46,9 +46,9 @@ function daemonConnect(sink: FrameSink, token: string, timeoutMs = 8_000) {
 
 /** Host (responder): accept e2e over `sink` using the real handshake. */
 function hostAccept(sink: FrameSink, token: string, timeoutMs = 8_000) {
-  const respond = (offerBytes: Uint8Array): { reply: Uint8Array; keys: E2eKeys } => {
+  const respond = async (offerBytes: Uint8Array): Promise<{ reply: Uint8Array; keys: E2eKeys }> => {
     const offer = decodeTunnelOffer(offerBytes)
-    const { accept, session } = respondToTunnelHandshake(offer, token)
+    const { accept, session } = await respondToTunnelHandshake(offer, token)
     return {
       reply: encodeTunnelMessage(accept),
       keys: { sendKey: session.sendKey, recvKey: session.recvKey },

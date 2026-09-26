@@ -279,6 +279,9 @@ describe("GET /sessions/:id/events/stream", () => {
       )
       expect(res.status).toBe(200)
       expect(res.headers.get("content-type")).toBe("text/event-stream")
+      // Shared anti-buffering headers (sse-headers.ts) reach this route.
+      expect(res.headers.get("cache-control")).toBe("no-cache, no-transform")
+      expect(res.headers.get("x-accel-buffering")).toBe("no")
 
       const frames = await readSseFrames(res, 2)
       expect(frames.map(f => f.seq)).toEqual([2, 3])

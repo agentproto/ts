@@ -143,6 +143,52 @@ describe("createAcpClient — plan / usage_update translation", () => {
     })
   })
 
+  it("surfaces claude-agent-acp's _claude/model and flags its cost-less size as inferred", async () => {
+    const client = await createAcpClient({ ...fakeStreams() })
+    const session = await client.newSession({ cwd: "/tmp" })
+    const iter = session.prompt({ messages: [{ type: "text", text: "go" }] })[Symbol.asyncIterator]()
+
+    const handlers = capturedHandlersFactory!()
+    // In-turn frame: the wrapper's heuristic 200k for a bare 1M model id.
+    await handlers.sessionUpdate({
+      sessionId: "sess-plan",
+      update: {
+        sessionUpdate: "usage_update",
+        size: 200_000,
+        used: 38_242,
+        _meta: { "_claude/model": "claude-opus-5-5" },
+      },
+    })
+    // End-of-turn frame: authoritative, from result.modelUsage.
+    await handlers.sessionUpdate({
+      sessionId: "sess-plan",
+      update: {
+        sessionUpdate: "usage_update",
+        size: 1_000_000,
+        used: 157_053,
+        cost: { amount: 1.5, currency: "USD" },
+        _meta: { "_claude/model": "claude-opus-5-5" },
+      },
+    })
+
+    expect((await iter.next()).value).toEqual({
+      kind: "usage_update",
+      sessionId: "sess-plan",
+      size: 200_000,
+      used: 38_242,
+      model: "claude-opus-5-5",
+      sizeInferred: true,
+    })
+    expect((await iter.next()).value).toEqual({
+      kind: "usage_update",
+      sessionId: "sess-plan",
+      size: 1_000_000,
+      used: 157_053,
+      cost: { amount: 1.5, currency: "USD" },
+      model: "claude-opus-5-5",
+    })
+  })
+
   it("translates an available_commands_update into a StreamEvent with the full command list", async () => {
     const client = await createAcpClient({ ...fakeStreams() })
     const session = await client.newSession({ cwd: "/tmp" })

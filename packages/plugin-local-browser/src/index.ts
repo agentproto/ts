@@ -40,6 +40,32 @@ export {
 } from "./install.js"
 export type { InstallOptions, InstallResult } from "./install.js"
 export {
+  buildHeadlessBrowserMcpEntry,
+  CHROME_DEVTOOLS_MCP_VERSION,
+  CHROME_PATH_ENV,
+  DEFAULT_CHROME_HEADLESS_SHELL_DIR,
+  DEFAULT_HEADLESS_VIEWPORT,
+  ensureChromeDevtoolsMcp,
+  findChrome,
+  findHeadlessShell,
+  HEADLESS_BROWSER_MCP_NAME,
+  headlessBrowserReadPaths,
+  readChromeDevtoolsMcp,
+  resetChromeDevtoolsMcpCache,
+  resolveChrome,
+  systemChromeCandidates,
+} from "./headless.js"
+export type {
+  BuildHeadlessBrowserMcpEntryOptions,
+  ChromeDevtoolsMcp,
+  ChromeExecutable,
+  ChromeSource,
+  EnsureChromeDevtoolsMcpOptions,
+  FindChromeOptions,
+  HeadlessBrowserMcpEntry,
+  ResolveChromeOptions,
+} from "./headless.js"
+export {
   registerLocalBrowser,
   unregisterLocalBrowser,
   IMPORTED_MCPS_PATH,

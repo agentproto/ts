@@ -12,6 +12,7 @@ export default createTsupConfig({
     "seal/index": "src/seal/index.ts",
     "identity/index": "src/identity/index.ts",
     "pairing/index": "src/pairing/index.ts",
+    "pairing/browser": "src/pairing/browser.ts",
     "provision/index": "src/provision/index.ts",
     "provision/recipe/index": "src/provision/recipe/index.ts",
     cli: "src/cli.ts",

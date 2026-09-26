@@ -10,6 +10,7 @@
  */
 
 import { describe, it, expect } from "vitest"
+import { DISPLAY_MODE_SCRIPT_BODY } from "@agentproto/app-client/display-mode"
 import { panelBridgeScript } from "../panel-bridge.js"
 
 const js = panelBridgeScript("agentproto-test-panel")
@@ -29,7 +30,7 @@ describe("panelBridgeScript standalone detection", () => {
     const initFn = js.slice(js.indexOf("function initBridge"), js.indexOf("function requestDisplayMode"))
     expect(initFn).toContain("_isStandalone()")
     expect(initFn).toContain("window.McpApp.connect()")
-    // Default hostContext with no advertised modes — keeps #dm/#pin hidden.
+    // Default hostContext with no advertised modes — keeps the toggle hidden.
     expect(initFn).toContain("availableDisplayModes: []")
     expect(initFn).toContain("displayMode: 'inline'")
   })
@@ -52,5 +53,30 @@ describe("panelBridgeScript standalone detection", () => {
 
   it("compiles as valid JavaScript", () => {
     expect(() => new Function(js)).not.toThrow()
+  })
+})
+
+describe("panelBridgeScript display-mode toggle", () => {
+  it("inlines the shared installer rather than a per-panel copy of the button", () => {
+    // The behaviour itself is covered where it can actually be executed:
+    // @agentproto/app-client's display-mode.test.ts runs the same emitted
+    // script under happy-dom. This guards the wiring — that panels get the
+    // SHARED implementation, once, with their own plumbing handed to it.
+    expect(js).toContain(DISPLAY_MODE_SCRIPT_BODY)
+    expect(js.match(/installDisplayMode = function/g)).toHaveLength(1)
+  })
+
+  it("hands it this panel's host-context and request plumbing", () => {
+    const wiring = js.slice(js.indexOf("window.AgentprotoUI.installDisplayMode({"))
+    expect(wiring).toContain("getHostContext: getHostContext")
+    expect(wiring).toContain("onHostContext: onHostContext")
+    expect(wiring).toContain("requestDisplayMode: requestDisplayMode")
+  })
+
+  it("leaves installDisplayMode on window.AgentprotoUI for a panel with its own header", () => {
+    // A panel that wants the toggle inline calls mountToggle(el) on the
+    // controller instead of taking the floating one.
+    expect(js).toContain("window.AgentprotoUI.installDisplayMode =")
+    expect(js).toContain("mountToggle: mountToggle")
   })
 })

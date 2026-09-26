@@ -1,5 +1,17 @@
 # @agentproto/provider-kit
 
+## 0.4.5
+
+### Patch Changes
+
+- f30c959: Tolerate `description: null` from the live Replicate API in the image:replicate generator, coercing it to an empty string instead of failing validation. Also test-only updates in provider-kit mocks and a type-cast adjustment in the mastra adapter.
+
+## 0.4.4
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+
 ## 0.4.3
 
 ### Patch Changes

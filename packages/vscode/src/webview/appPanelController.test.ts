@@ -42,13 +42,36 @@ describe("AppPanelController", () => {
     const host = createHost()
     const ctrl = controller(stubDaemon(), host.post)
 
-    await ctrl.handleMessage({ jsonrpc: "2.0", id: 1, method: "ui/initialize", params: {} })
+    // A real ui/initialize request (packages/apps panel-bridge.ts's
+    // initBridge()) carries appInfo/appCapabilities/protocolVersion —
+    // AppBridge's own request schema requires all three and rejects a bare
+    // `{}`, unlike the pre-port hand-rolled dispatcher this controller used
+    // to run, which never validated its params at all.
+    await ctrl.handleMessage({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ui/initialize",
+      params: {
+        appInfo: { name: "test-panel", version: "0.1.0" },
+        appCapabilities: {},
+        protocolVersion: "2026-01-26",
+      },
+    })
 
+    // AppBridge answers the real MCP-Apps handshake result, not just the
+    // hostContext the pre-port dispatcher hand-rolled — protocolVersion,
+    // hostCapabilities and hostInfo come along for free from wrapping the
+    // official implementation instead of reimplementing it.
     expect(host.posts).toEqual([
       {
         jsonrpc: "2.0",
         id: 1,
-        result: { hostContext: { displayMode: "inline", availableDisplayModes: ["inline"] } },
+        result: {
+          protocolVersion: "2026-01-26",
+          hostCapabilities: { serverTools: {} },
+          hostInfo: { name: "agentproto-vscode", version: "1.0.0" },
+          hostContext: { displayMode: "inline", availableDisplayModes: ["inline"] },
+        },
       },
     ])
   })

@@ -18,7 +18,7 @@ import * as vscode from "vscode"
 
 import { resolveSessionArg } from "../commands/sessionActions.js"
 import { describeSession } from "../commands/sessionActions.logic.js"
-import { describeRestart, parseRestartResult } from "../commands/sessionRestart.logic.js"
+import { describeNotATerminal, describeRestart, parseRestartResult } from "../commands/sessionRestart.logic.js"
 import type { DaemonClient } from "../client/daemonClient.js"
 import type { SessionDescriptor } from "../client/types.js"
 import type { SessionStore } from "../services/sessionStore.js"
@@ -158,7 +158,10 @@ export function registerTerminalSwitch(
       if (choice !== "Restart as Terminal") return
 
       try {
-        const raw = await client.mcpCall("session_restart", { idOrName: session.id })
+        const raw = await client.mcpCall("session_restart", {
+          idOrName: session.id,
+          preferNativeTerminal: true,
+        })
         const result = parseRestartResult(raw)
         if (!result) {
           vscode.window.showErrorMessage(
@@ -170,7 +173,7 @@ export function registerTerminalSwitch(
         vscode.window.showInformationMessage(describeRestart(session, result))
         if (result.pty !== true && result.kind !== "terminal") {
           vscode.window.showWarningMessage(
-            `agentproto: restart of ${describeSession(session)} did not become a terminal — the daemon fell back to ACP resume because the provider transcript could not be recovered.`,
+            `agentproto: restart of ${describeSession(session)} did not become a terminal — ${describeNotATerminal(result.nativeResumeDecline)}`,
           )
           await vscode.commands.executeCommand("agentproto.openTranscript", result.id)
           return

@@ -36,6 +36,13 @@ packages/catalog-sync/generated/
 # agentproto daemon runtime state (workspace-local, never commit)
 .agentproto/
 
+# Exception: the repo-maintenance app's checked-in bundled-app source
+# (APP.md + agents/ + workflows/) — a hand-authored bundle, not daemon
+# runtime state. `loadAppHandle`'s contract hardcodes `<dir>/.agentproto/
+# APP.md`, so this directory name can't be avoided for a real app bundle.
+!packages/apps/repo-maintenance/.agentproto/
+!packages/apps/repo-maintenance/.agentproto/**
+
 # git worktrees for parallel agent WPs (orchestration-local, never commit).
 # Kept inside the repo root so the cowork sandbox can reach them; ignored here
 # so they never pollute git status. gcloud auto-inherits .gitignore when no

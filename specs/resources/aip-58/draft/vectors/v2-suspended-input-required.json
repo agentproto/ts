@@ -1,0 +1,51 @@
+{
+  "id": "V2",
+  "title": "Agent step invokes run.requestInput -> suspended input-required",
+  "rule": "specs/aip-58.mdx section 3 Outcome rule -- explicit signal only",
+  "manifestExcerpt": {
+    "kind": "workflow",
+    "id": "pricing-brief",
+    "steps": [
+      { "id": "draft", "kind": "agent", "prompt": "Write a one-page pricing brief for these tiers: $steps.parse.tiers" }
+    ]
+  },
+  "runCreate": {
+    "kind": "workflow",
+    "ref": { "id": "pricing-brief", "version": "1.0.0" },
+    "input": { "productUrl": "https://example.com/pricing" }
+  },
+  "agentTurn": {
+    "toolCall": {
+      "operation": "run.requestInput",
+      "args": {
+        "stepId": "draft",
+        "prompt": "What tone should the brief use -- formal or casual?",
+        "schema": { "type": "object", "properties": { "tone": { "enum": ["formal", "casual"] } }, "required": ["tone"] }
+      }
+    },
+    "turnEndsAfterToolCall": true
+  },
+  "expected": {
+    "terminalState": "suspended",
+    "stepId": "draft",
+    "stepStatus": "suspended",
+    "stepSuspend": {
+      "reason": "input-required",
+      "prompt": "What tone should the brief use -- formal or casual?",
+      "schema": { "type": "object", "properties": { "tone": { "enum": ["formal", "casual"] } }, "required": ["tone"] }
+    },
+    "events": [
+      "run.created",
+      "run.started",
+      "step.started",
+      "step.suspended",
+      "run.suspended"
+    ],
+    "notes": [
+      "The suspend outcome exists BECAUSE the step explicitly called run.requestInput -- not because the turn's final text happened to read as a question. Contrast with V8, where the text alone is not enough.",
+      "run.status MUST be 'suspended', never 'succeeded' -- the turn ending is not itself success.",
+      "A subsequent run.resume { runId, stepId: 'draft', payload: { tone: 'formal' } } re-enters the step; payload MUST validate against stepSuspend.schema before the transition happens, and may still reach 'succeeded'.",
+      "A resume payload that fails schema validation (e.g. { tone: 'sarcastic' }) MUST be rejected without transitioning the run out of 'suspended'."
+    ]
+  }
+}

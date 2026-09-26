@@ -26,9 +26,11 @@
  */
 
 import { promises as fs } from "node:fs"
+import { createHash } from "node:crypto"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
+import { validateConfig } from "./config-schema.js"
 
 export const CONFIG_VERSION = 1 as const
 
@@ -128,6 +130,16 @@ export interface DaemonConfig {
    *  daemon.turnStallAfterMs <ms>`. Surfaced in `daemon_health` /
    *  `GET /health`. */
   turnStallAfterMs?: number
+}
+
+export interface TitlerConfig {
+  /** Enable the daemon-side session titler. Default false. */
+  enabled?: boolean
+  /** OpenRouter model id used to generate titles. Default
+   *  `z-ai/glm-5.2@openrouter`. Requires `OPENROUTER_API_KEY` in the
+   *  daemon's environment; without a key the titler falls back to the
+   *  local (first-prompt-line) title. */
+  model?: string
 }
 
 export interface TunnelConfig {
@@ -479,6 +491,19 @@ export interface AgentprotoConfig {
   provenance?: ProvenanceConfig
   /** Daemon-side AGENTS.md resolution/injection policy. See {@link AgentsMdConfig}. */
   agentsMd?: AgentsMdConfig
+  /** Daemon-side session titler (`session-titler.ts`). DEFAULT OFF — when
+   *  `enabled` is not explicitly true the titler is a complete no-op and
+   *  nothing renames anything. When on, at the end of the FIRST completed
+   *  turn of a `kind:"agent-cli"` session whose label is still a spawn
+   *  default (`chat-starter`, `chat-starter-autoprompt`, `agentproto`, empty,
+   *  or equal to the derived title), the daemon generates a short prosaic
+   *  title (4-8 words) from the first turn's transcript and renames the
+   *  session via the same write path as `session_rename`. Generation tries
+   *  OpenRouter (`model`, default `z-ai/glm-5.2@openrouter`, needs
+   *  `OPENROUTER_API_KEY`) and falls back locally (first line of the first
+   *  user prompt, 6 whole words) on any failure. A user-created label is
+   *  NEVER overwritten, and a session is titled at most once. */
+  titler?: TitlerConfig
   /** Named connection profiles. See `ProfileConfig` for the merge
    *  semantics — a profile's fields shallow-override the top-level
    *  defaults for the selected run. */
@@ -545,6 +570,22 @@ function sanitizeAcpAgents(
 }
 
 /**
+ * Tracks, per config file path, the content hash of the last invalid read we
+ * already warned about — `loadConfig` is called on every spawn and by
+ * several per-call resolvers (`worktree-isolation.ts`, `spawn-attach.ts`,
+ * `spawn-dedupe.ts`, `session-presence.ts`, …), so without this a single bad
+ * hand-edit would re-warn on every single call. Warn once per (path,
+ * content) pair: the same invalid content warns exactly once per process;
+ * editing the file (even back to a previously-seen invalid state) warns
+ * again, since the hash is the only memory kept, not a boolean per path.
+ */
+const warnedInvalidConfigHashes = new Map<string, string>()
+
+function hashConfigContent(raw: string): string {
+  return createHash("sha256").update(raw, "utf8").digest("hex")
+}
+
+/**
  * Load config.json. Returns an empty object (NOT null) when the file
  * is missing, malformed, or unreadable — callers can `cfg.daemon?.port`
  * safely without null-guards. Errors during a malformed-read are
@@ -565,6 +606,18 @@ export async function loadConfig(path?: string): Promise<AgentprotoConfig> {
       // `acpHandleFromSpec` time, with precise field-level messages.
       if (cfg.acpAgents !== undefined) {
         cfg.acpAgents = sanitizeAcpAgents(cfg.acpAgents, target)
+      }
+      const validation = validateConfig(cfg)
+      if (!validation.ok) {
+        const contentHash = hashConfigContent(raw)
+        if (warnedInvalidConfigHashes.get(target) !== contentHash) {
+          warnedInvalidConfigHashes.set(target, contentHash)
+          const shown = validation.issues.slice(0, 5)
+          const more = validation.issues.length > shown.length ? ` (+${validation.issues.length - shown.length} more)` : ""
+          console.warn(
+            `[runtime/config] ${target}: ${validation.issues.length} schema issue(s): ${shown.join("; ")}${more}`,
+          )
+        }
       }
       return cfg
     }

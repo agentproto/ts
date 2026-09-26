@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/llm-endpoint",
-  "version": "0.6.1",
+  "version": "0.7.2",
   "description": "@agentproto/llm-endpoint — a multi-surface LLM proxy gateway. Exposes Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses API surfaces with transparent provider/model routing to Moonshot, OpenRouter, ZAI/Zhipu, Groq, xAI, and OpenAI. Handles Anthropic↔OpenAI schema translation, per-provider tool caps, orphaned-tool-call repair, and thinking-block stripping.",
   "keywords": [
     "agentproto",
@@ -56,7 +56,7 @@
     "@agentproto/auth": "workspace:*",
     "@agentproto/batch": "workspace:*",
     "@agentproto/providers-store": "workspace:*",
-    "zod": "^4.5.4"
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

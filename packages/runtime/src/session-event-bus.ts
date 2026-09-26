@@ -29,6 +29,7 @@ export type SessionEventType =
   | "session:watcher-detached"
   | "session:bg-tasks-parked"
   | "session:bg-tasks-cleared"
+  | "session:bg-task"
   | "session:resumed"
   | "session:spawned"
   | "session:command-done"
@@ -36,6 +37,7 @@ export type SessionEventType =
   | "session:config-changed"
   | "session:renamed"
   | "session:pinned-changed"
+  | "session:message"
   | "policy:passed"
   | "policy:failed"
   | "policy:commit-ready"
@@ -127,6 +129,13 @@ export interface SessionTurnEndEvent {
    * a normal, productive turn.
    */
   empty?: boolean
+  /**
+   * True when the turn was not started by a prompt: the agent woke on its
+   * own (Claude Code's task-notification cycle after a background task
+   * settled) and the registry tracked that work as a turn. Absent on an
+   * ordinary prompted turn.
+   */
+  autonomous?: boolean
 }
 
 export interface SessionAwaitingInputEvent {
@@ -397,6 +406,30 @@ export interface SessionBgTasksClearedEvent {
 }
 
 /**
+ * One lifecycle edge of an agent's background task (a backgrounded Bash
+ * command, a monitor, ...) as the agent itself reported it — over ACP, the
+ * AIR `asyncTasks` extension (see @agentproto/acp's `background-task`
+ * StreamEvent). Unlike {@link SessionBgTasksParkedEvent} (a turn-end
+ * heuristic) this is the real lifecycle: `"started"` when the task is
+ * announced, `"settled"` when it reaches a terminal `status`. Mid-life
+ * progress updates only refresh `SessionDescriptor.backgroundTasks` and are
+ * not emitted. Same bus distribution as every other lifecycle event.
+ */
+export interface SessionBgTaskEvent {
+  type: "session:bg-task"
+  sessionId: string
+  phase: "started" | "settled"
+  taskId: string
+  taskKind?: string
+  description?: string
+  outputFile?: string
+  status?: string
+  summary?: string
+  label?: string
+  ts: string
+}
+
+/**
  * Emitted when a dead agent-cli row is brought back IN PLACE — same session
  * id, same descriptor — by the lazy resume-on-prompt path (`maybeResumeAgent`)
  * today, and by the future eager resume-on-boot pass (PR-4). Distinct from
@@ -538,6 +571,24 @@ export interface SessionRenamedEvent {
    *  write-path. Lets a live client update `renamedByUser` on its cached
    *  descriptor so the label wins the display chain without a full re-poll. */
   renamedByUser?: boolean
+  ts: string
+}
+
+/**
+ * A typed inter-session message (`session-message.ts`) was accepted for
+ * `sessionId` (the RECIPIENT) — once at send (no `delivered`) and again when
+ * it's delivered into the recipient's context (`delivered` set). Lets
+ * `session_monitor` / SSE / the VS Code panel react without polling.
+ */
+export interface SessionMessageEvent {
+  type: "session:message"
+  sessionId: string
+  messageId: string
+  fromSessionId?: string
+  relation: "child" | "parent" | "sibling" | "human" | "system"
+  kind: "report" | "question" | "blocker" | "done" | "notice"
+  urgency: "fyi" | "next-turn" | "steer" | "interrupt"
+  delivered?: { via: "wait" | "steer" | "turn" | "interrupt" | "inbox"; at: string; turnSeq?: number }
   ts: string
 }
 
@@ -748,16 +799,22 @@ export interface WorkflowApprovalResolvedEvent {
 
 /**
  * Emitted by the workflow runner (`workflow-runner.ts`) when a `kind:
- * "suspend"` step parks its run awaiting an external event — the run's
- * status flips to `awaiting-input` with a durable `awaitingSuspend` record
- * (AIP-15 conformance rule 7), and `workflow_escalation_resolve`'s suspend
- * form resumes it. Same bus distribution as every other lifecycle event.
+ * "suspend"` step parks its run awaiting an external event (`on` set, no
+ * `reason`) — OR when an agent-backed step signals AIP-58 §3(a)
+ * `run.requestInput` (`reason: "input-required"` + `prompt`/`schema?`, no
+ * `on`). Either way the run's status flips to `awaiting-input` with a
+ * durable `awaitingSuspend` record, and `workflow_escalation_resolve`'s
+ * suspend form resumes it. Same bus distribution as every other lifecycle
+ * event.
  */
 export interface WorkflowSuspendedEvent {
   type: "workflow:suspended"
   runId: string
   stepId: string
-  on: readonly string[]
+  on?: readonly string[]
+  reason?: "input-required"
+  prompt?: string
+  schema?: Record<string, unknown>
   ts: string
 }
 
@@ -803,6 +860,7 @@ export type SessionEvent =
   | SessionWatcherDetachedEvent
   | SessionBgTasksParkedEvent
   | SessionBgTasksClearedEvent
+  | SessionBgTaskEvent
   | SessionResumedEvent
   | SessionSpawnedEvent
   | SessionCommandDoneEvent
@@ -810,6 +868,7 @@ export type SessionEvent =
   | SessionConfigChangedEvent
   | SessionRenamedEvent
   | SessionPinnedEvent
+  | SessionMessageEvent
   | PolicyPassedEvent
   | PolicyFailedEvent
   | PolicyCommitReadyEvent

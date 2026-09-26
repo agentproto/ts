@@ -16,7 +16,12 @@ describe("parseConfig", () => {
   it("parses a full valid config", () => {
     const config = parseConfig(
       JSON.stringify({
-        worktree: { setup: ["pnpm install"], teardown: "rm -rf .cache" },
+        worktree: {
+          setup: ["pnpm install"],
+          teardown: "rm -rf .cache",
+          depsCmd: "pnpm install --prefer-offline",
+          linkPaths: ["node_modules", "../sibling-repo"],
+        },
         scripts: {
           test: { command: "pnpm test" },
           web: { command: "pnpm dev --port $AGENTPROTO_PORT", type: "service", port: 3000 },
@@ -26,6 +31,8 @@ describe("parseConfig", () => {
     )
     expect(config.worktree?.setup).toEqual(["pnpm install"])
     expect(config.worktree?.teardown).toBe("rm -rf .cache")
+    expect(config.worktree?.depsCmd).toBe("pnpm install --prefer-offline")
+    expect(config.worktree?.linkPaths).toEqual(["node_modules", "../sibling-repo"])
     expect(listServices(config).map((s) => s.name).sort()).toEqual(["api", "web"])
     expect(getScript(config, "web")?.port).toBe(3000)
     expect(getScript(config, "test")?.type).toBeUndefined()
@@ -33,6 +40,24 @@ describe("parseConfig", () => {
 
   it("accepts an empty object", () => {
     expect(parseConfig("{}")).toEqual({})
+  })
+
+  it("accepts worktree.depsCmd/linkPaths on their own, with no setup/teardown", () => {
+    const config = parseConfig(
+      JSON.stringify({ worktree: { depsCmd: "pnpm install", linkPaths: ["node_modules"] } }),
+    )
+    expect(config.worktree?.depsCmd).toBe("pnpm install")
+    expect(config.worktree?.linkPaths).toEqual(["node_modules"])
+  })
+
+  it("rejects a non-string worktree.depsCmd", () => {
+    expect(() => parseConfig(JSON.stringify({ worktree: { depsCmd: 42 } }))).toThrow(ConfigError)
+  })
+
+  it("rejects a non-array worktree.linkPaths", () => {
+    expect(() =>
+      parseConfig(JSON.stringify({ worktree: { linkPaths: "node_modules" } })),
+    ).toThrow(ConfigError)
   })
 
   it("rejects malformed JSON", () => {

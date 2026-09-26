@@ -14,10 +14,13 @@ import { makeLiveSessionApp } from "@agentproto/apps"
 import { registerMcpApps } from "../mcp-apps-adapter.js"
 import { createSessionsRegistry } from "../sessions.js"
 
-async function setup() {
+async function setup(isSessionChatInstalled?: () => boolean) {
   const registry = createSessionsRegistry({ persist: false })
   const server = new McpServer({ name: "live-session-test", version: "0.0.1" })
-  registerAgentTools(server, { registry })
+  registerAgentTools(server, {
+    registry,
+    ...(isSessionChatInstalled ? { isSessionChatInstalled } : {}),
+  })
   registerAppPullTools(server, { registry })
   registerMcpApps(server, [
     makeLiveSessionApp({ httpBaseUrl: "http://127.0.0.1:19999" }),
@@ -37,7 +40,7 @@ function uiMeta(tool: { _meta?: Record<string, unknown> } | undefined) {
 }
 
 describe("live-session app — MCP protocol", () => {
-  it("exposes the app resource and binds agent_start to it", async () => {
+  it("exposes the app resource; agent_start binds to the session-chat widget instead", async () => {
     const client = await setup()
     const { tools } = await client.listTools()
 
@@ -45,8 +48,11 @@ describe("live-session app — MCP protocol", () => {
       resourceUri: "ui://live_session/view",
       visibility: ["model", "app"],
     })
+    // The launch card is the session-chat launcher (deep-links the installed
+    // @agentik/session-chat app into the spawned session); live_session's
+    // own resource stays registered for its own tool + other consumers.
     expect(uiMeta(tools.find(tool => tool.name === "agent_start"))).toEqual({
-      resourceUri: "ui://live_session/view",
+      resourceUri: "ui://agentproto_session_chat/view",
       visibility: ["model", "app"],
     })
     expect(uiMeta(tools.find(tool => tool.name === "app_session_tree"))).toEqual({
@@ -54,6 +60,23 @@ describe("live-session app — MCP protocol", () => {
     })
     expect(uiMeta(tools.find(tool => tool.name === "app_session_events"))).toEqual({
       visibility: ["app"],
+    })
+
+    await client.close()
+  })
+
+  it("binds agent_start to the native app_ui_session_chat tool once @agentik/session-chat is installed", async () => {
+    // Mirrors builtin-apps.ts's own isSessionChatInstalled-gated decision
+    // (makeBuiltinPanelApps drops the loopback launcher once this is true) —
+    // agent_start's launch-card binding must point at the SAME surface, the
+    // native MCP Apps tool app-ui-apps.ts mounts from AppRegistry, not the
+    // now-unmounted loopback-HTTP `agentproto_session_chat`.
+    const client = await setup(() => true)
+    const { tools } = await client.listTools()
+
+    expect(uiMeta(tools.find(tool => tool.name === "agent_start"))).toEqual({
+      resourceUri: "ui://app_ui_session_chat/view",
+      visibility: ["model", "app"],
     })
 
     await client.close()

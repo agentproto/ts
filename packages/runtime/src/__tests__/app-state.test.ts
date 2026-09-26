@@ -18,6 +18,7 @@ import {
   appStateSnapshot,
   appendAppStateEvent,
   foldAppStateEvents,
+  legacyAppStateEventsPath,
   readAppStateEvents,
   ulid,
 } from "../app-state.js"
@@ -185,6 +186,55 @@ describe("readAppStateEvents tolerance", () => {
     expect(events).toHaveLength(1)
     expect(malformedLines).toBe(1)
     expect(raw).toContain("stage-started")
+  })
+})
+
+describe("ledger location (stateDir)", () => {
+  it("a stateDir app writes the ledger there, never under the app's source dir", async () => {
+    const stateDir = join(dir, "daemon-state", "app-state", "x")
+    const app = { dir: join(dir, "src-app"), stateDir }
+    await appendAppStateEvent(app, stageStarted("s"))
+    expect(appStateEventsPath(app)).toBe(join(stateDir, "events.jsonl"))
+    expect(await readFile(join(stateDir, "events.jsonl"), "utf8")).toContain("stage-started")
+    const { stat } = await import("node:fs/promises")
+    await expect(stat(join(dir, "src-app", "data"))).rejects.toThrow()
+    expect(await appStateLedgerExists(app)).toBe(true)
+  })
+
+  it("reads a legacy <dataDir>/state ledger until the first append moves it into stateDir", async () => {
+    const srcDir = join(dir, "src-app")
+    await appendAppStateEvent({ dir: srcDir }, stageStarted("old"))
+    const legacy = legacyAppStateEventsPath({ dir: srcDir })
+    expect(legacy).toBe(join(srcDir, "data", "state", "events.jsonl"))
+
+    const app = { dir: srcDir, stateDir: join(dir, "daemon-state", "x") }
+    expect(await appStateLedgerExists(app)).toBe(true)
+    expect((await readAppStateEvents(app)).events.map(e => e.stage)).toEqual(["old"])
+
+    await appendAppStateEvent(app, stageStarted("new"))
+    expect((await readAppStateEvents(app)).events.map(e => e.stage)).toEqual(["old", "new"])
+    const { stat } = await import("node:fs/promises")
+    await expect(stat(legacy)).rejects.toThrow()
+  })
+
+  it("a persisting registry assigns stateDir next to its apps.json (backfilling old records); a test registry doesn't", async () => {
+    const { writeFile } = await import("node:fs/promises")
+    const persistPath = join(dir, "home", "apps.json")
+    const reg = createAppRegistry({ persist: true, persistPath })
+    const rec = reg.upsertApp({ appId: "@scope/app", dir: "/src/app", agents: [], workflows: [], unvalidatedAgentTools: [] })
+    expect(rec.stateDir).toBe(join(dir, "home", "app-state", encodeURIComponent("@scope/app")))
+    // re-install keeps it
+    expect(reg.upsertApp({ appId: "@scope/app", dir: "/src/app2", agents: [], workflows: [], unvalidatedAgentTools: [] }).stateDir).toBe(rec.stateDir)
+
+    // a record persisted before the field existed is backfilled on load
+    await writeFile(persistPath, JSON.stringify({
+      apps: [{ appId: "old", dir: "/src/old", agents: [], workflows: [], unvalidatedAgentTools: [], installedAt: "x", updatedAt: "x" }],
+      runs: [], applied: [],
+    }))
+    expect(createAppRegistry({ persist: true, persistPath }).getApp("old")?.stateDir).toBe(join(dir, "home", "app-state", "old"))
+
+    const mem = createAppRegistry()
+    expect(mem.upsertApp({ appId: "m", dir: "/src/m", agents: [], workflows: [], unvalidatedAgentTools: [] }).stateDir).toBeUndefined()
   })
 })
 

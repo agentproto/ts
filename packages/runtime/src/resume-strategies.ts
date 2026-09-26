@@ -34,6 +34,9 @@
  * graduate into the adapter packages.
  */
 
+import { promises as fs } from "node:fs"
+import { dirname } from "node:path"
+
 import { CONVERSATION_STORES } from "./conversation-store.js"
 import type { ConversationStore } from "./conversation-store.js"
 
@@ -98,6 +101,10 @@ export interface ResumeStrategy {
    *  why this exists and what silently omitting it breaks. Undefined for
    *  a provider with no config-dir-isolated store. */
   configDirEnvVar?: string
+  /** Absolute transcript path for a conversation id — see
+   *  `ConversationStore.transcriptPath`. Present only when the provider's
+   *  resume command also accepts a path in place of a bare id. */
+  transcriptPath?(cwd: string, conversationId: string, configDir?: string): string
 }
 
 // Project every conversation store that declares a native PTY attach argv
@@ -117,6 +124,7 @@ export const RESUME_STRATEGIES: Record<string, ResumeStrategy> = Object.fromEntr
           outputHint: store.outputHint,
           storeAs: store.storeAs,
           ...(store.configDirEnvVar ? { configDirEnvVar: store.configDirEnvVar } : {}),
+          ...(store.transcriptPath ? { transcriptPath: store.transcriptPath } : {}),
           fsProbe: async (cwd, prevStartedAt, expectedId, configDir) => {
             const candidates = await s.discover({
               cwd,
@@ -169,9 +177,10 @@ export interface RestartCandidate {
   resumable?: boolean
   /**
    * Manifest-declared `capabilities.nativeTerminalResume` for `adapterSlug`.
-   * The `pty-native` restart strategy is only chosen when this flag is true
-   * AND a native resume id is available. ACP resumability (`resumable`)
-   * alone does NOT imply a native TUI resume is safe or available.
+   * The `pty-native` strategy requires this flag for ACP-origin sessions.
+   * Legacy PTY rows without the flag can use a newly-added store strategy
+   * when they already carry an exact native resume id; explicit false blocks
+   * that fallback. ACP resumability (`resumable`) does not imply a TUI resume.
    */
   nativeTerminalResume?: boolean
 }
@@ -229,8 +238,8 @@ export function decideRestartStrategy(
   opts: DecideRestartStrategyOptions = {},
 ): RestartStrategy {
   // Provider-native terminal resume takes precedence over ACP-level resume —
-  // but ONLY when the adapter manifest explicitly declares a verified native
-  // TUI resume capability (`nativeTerminalResume`) AND (origin-gate, closing
+  // but ONLY when a verified native TUI resume strategy exists and the
+  // capability/origin gates pass (closing
   // the "restart starts a terminal but it doesn't work" bug) either the prior
   // session was ITSELF a raw PTY (`prev.pty === true` — a real provider TUI a
   // human was already looking at, whose config dir went through the actual
@@ -245,7 +254,12 @@ export function decideRestartStrategy(
   // supports native resume for a real terminal"), not license to mode-switch
   // a headless session into an unattended one.
   const mayPreferNative = prev.pty === true || opts.preferNativeTerminal === true
-  if (prev.adapterSlug && prev.nativeTerminalResume === true && mayPreferNative) {
+  // PTYs created before their store gained attachArgv lack the persisted
+  // capability flag. Their native ID plus today's verified strategy is enough
+  // to continue the same provider conversation; an explicit false still wins.
+  const hasNativeCapability = prev.nativeTerminalResume === true ||
+    (prev.pty === true && prev.nativeTerminalResume === undefined)
+  if (prev.adapterSlug && hasNativeCapability && mayPreferNative) {
     const strategy = RESUME_STRATEGIES[prev.adapterSlug]
     const id = strategy?.storeAs
       ? prev.resumeMetadata?.[strategy.storeAs]
@@ -364,6 +378,48 @@ export async function augmentWithFsResume<T extends FsProbeCandidate>(
   }
 }
 
+/** What `probeNativeTranscript` found for a candidate's own transcript. */
+export interface NativeTranscriptProbe {
+  /** Directory that was (or would be) probed for the transcript. */
+  dir: string
+  /** Absolute path of the transcript file the id maps to. */
+  path: string
+  /** Whether that exact file exists on disk right now. */
+  exists: boolean
+}
+
+/**
+ * Locate the candidate's own on-disk transcript for a provider whose native
+ * resume command accepts an absolute path (`ResumeStrategy.transcriptPath`).
+ * Returns `undefined` when the adapter declares no `transcriptPath`, or the
+ * candidate has no cwd / no conversation id to map — callers treat that as
+ * "nothing to upgrade, and no directory worth naming in diagnostics".
+ *
+ * The id lookup mirrors `decideRestartStrategy`'s (`resumeMetadata[storeAs]`),
+ * falling back to `adapterSessionId` (for claude-code the ACP session id IS
+ * the on-disk `.jsonl` uuid — acp-host.ts pins them equal) so a probe can
+ * still name the transcript it looked for when the sniffer never fired.
+ * `exists: false` is the honest "transcript not found" answer — never fall
+ * through to a sibling file (cross-session contamination, see fsProbe's doc).
+ */
+export async function probeNativeTranscript(
+  prev: FsProbeCandidate,
+): Promise<NativeTranscriptProbe | undefined> {
+  if (!prev.adapterSlug || !prev.cwd) return undefined
+  const strategy = RESUME_STRATEGIES[prev.adapterSlug]
+  if (!strategy?.transcriptPath) return undefined
+  const id = prev.resumeMetadata?.[strategy.storeAs] ?? prev.adapterSessionId
+  if (!id) return undefined
+  const path = strategy.transcriptPath(prev.cwd, id, prev.adapterConfigDir)
+  let exists = false
+  try {
+    exists = (await fs.stat(path)).isFile()
+  } catch {
+    exists = false
+  }
+  return { dir: dirname(path), path, exists }
+}
+
 /**
  * Describe which resume path a restart used, for CLI banners / MCP
  * responses. Returns a short phrase like "resumed via claude --resume",
@@ -389,11 +445,14 @@ export function describeResumePath(
   opts: DecideRestartStrategyOptions = {},
 ): string {
   const mayPreferNative = prev.pty === true || opts.preferNativeTerminal === true
-  if (prev.adapterSlug && mayPreferNative) {
+  const hasNativeCapability = prev.nativeTerminalResume === true ||
+    (prev.pty === true && prev.nativeTerminalResume === undefined)
+  if (prev.adapterSlug && hasNativeCapability && mayPreferNative) {
     const s = RESUME_STRATEGIES[prev.adapterSlug]
     if (s?.spawnArgs && s.storeAs && prev.resumeMetadata?.[s.storeAs]) {
-      const sample = s.spawnArgs("…")[0] ?? prev.adapterSlug
-      return `resumed via ${sample} --resume`
+      const sample = s.spawnArgs("…")
+      const idIndex = sample.indexOf("…")
+      return `resumed via ${idIndex > 0 ? sample.slice(0, idIndex).join(" ") : (sample[0] ?? prev.adapterSlug)}`
     }
   }
   if (prev.adapterSlug && prev.adapterSessionId) {

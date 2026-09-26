@@ -1,5 +1,65 @@
 # agentproto-vscode
 
+## 0.17.3
+
+### Patch Changes
+
+- @agentproto/runtime@3.6.1
+
+## 0.17.2
+
+### Patch Changes
+
+- 7f9497d: Fix internal-derived titles in session display names and route dead native-conversation PTYs to their durable transcript.
+- Updated dependencies [7f9497d]
+- Updated dependencies [a93da92]
+- Updated dependencies [f26e334]
+  - @agentproto/runtime@3.6.0
+
+## 0.17.1
+
+### Patch Changes
+
+- 7071f7b: image:replicate generator now accepts both DRF-paginated (`results`) and hand-authored snapshot (`models`) shapes via zod validation; restore @types/vscode engines-floor pin (1.90.0).
+- Updated dependencies [f84c972]
+- Updated dependencies [f6f2d75]
+- Updated dependencies [a169e72]
+- Updated dependencies [b8fdbc6]
+- Updated dependencies [f6f2d75]
+- Updated dependencies [d388a08]
+- Updated dependencies [fc14c4c]
+- Updated dependencies [bdbe806]
+- Updated dependencies [ec66e92]
+- Updated dependencies [5380278]
+- Updated dependencies [a25a86f]
+- Updated dependencies [a373209]
+- Updated dependencies [54e8f28]
+- Updated dependencies [4b31967]
+  - @agentproto/apps@0.12.0
+  - @agentproto/runtime@3.5.0
+
+## 0.17.0
+
+### Minor Changes
+
+- 9a59225: Add a `lane` filter (`agents` | `auto`) to `listSummaries` and `GET /sessions/summaries`, and make the sessions webview lane-aware (server-side lane filtering, stale-lane response discard, and reload-after-lane-switch handling).
+
+### Patch Changes
+
+- 974c4dd: Fix standalone app URL encoding: encode scoped appIds per path segment and keep `@` and `/` literal, so deep links read `/apps/@scope/name/ui` while still escaping characters that genuinely need it.
+- 13858b8: Fix builtin panels served standalone (`GET /apps/:appId/ui`) hanging on "Connecting to bridge…": `panelBridgeScript` now detects the standalone shape (`window.parent === window` plus a working `window.McpApp.connect`), short-circuits `initBridge()` with a default inline hostContext, and routes `callTool` through the injected standalone app bridge. The postMessage-host path is unchanged. Adds static script assertions in `@agentproto/apps` and real-jsdom coverage in `agentproto-vscode`.
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [7941fc7]
+- Updated dependencies [13858b8]
+- Updated dependencies [7473ccd]
+- Updated dependencies [ea6757f]
+- Updated dependencies [c27f0b8]
+- Updated dependencies [42fffb9]
+- Updated dependencies [9a59225]
+- Updated dependencies [ef59d39]
+  - @agentproto/apps@0.11.0
+  - @agentproto/runtime@3.4.0
+
 ## 0.16.0
 
 ### Minor Changes

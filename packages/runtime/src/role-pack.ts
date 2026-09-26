@@ -11,6 +11,7 @@
  * after the closing fence) becomes `disposition` verbatim.
  */
 
+import { parseBrowserMode } from "./browser-mount.js"
 import type { DelegationPolicy, RoleProfile } from "./role.js"
 
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n?/
@@ -83,6 +84,7 @@ export function parseRolePack(md: string): RoleProfile {
 
   const skills = parseList(fields.skills)
   const spawnableRoles = parseList(fields.spawnableRoles)
+  const browser = parseBrowserMode(fields.browser)
 
   const profile: RoleProfile = {
     name,
@@ -91,6 +93,7 @@ export function parseRolePack(md: string): RoleProfile {
     level,
     ...(skills ? { skills } : {}),
     ...(spawnableRoles ? { spawnableRoles } : {}),
+    ...(browser !== undefined ? { browser } : {}),
   }
   return profile
 }

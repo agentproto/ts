@@ -330,12 +330,12 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
   })
 
   it("GET /sessions/summaries returns paginated summaries + total", async () => {
-    const result = await client().listSessionSummaries({ includeArchived: true, limit: 25, offset: 5 })
+    const result = await client().listSessionSummaries({ includeArchived: true, lane: "auto", limit: 25, offset: 5 })
     expect(result.summaries).toHaveLength(1)
     expect(result.summaries[0]?.id).toBe("s1")
     expect(result.total).toBe(1)
     const last = daemon.requests[daemon.requests.length - 1]!
-    expect(last.url).toBe("/sessions/summaries?includeArchived=true&limit=25&offset=5")
+    expect(last.url).toBe("/sessions/summaries?includeArchived=true&lane=auto&limit=25&offset=5")
   })
 
   it("GET /sessions/:id returns a single descriptor", async () => {

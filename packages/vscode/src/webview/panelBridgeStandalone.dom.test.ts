@@ -121,9 +121,9 @@ describe("builtin panel over standalone HTTP (window.McpApp, no postMessage host
     const panel = renderStandalonePanel([])
     await settle()
 
-    const dm = panel.document.getElementById("dm")
-    const pin = panel.document.getElementById("pin")
-    if (!dm || !pin) throw new Error("#dm/#pin toggle buttons missing from WORK_BOARD_HTML")
+    const dm = panel.document.getElementById("agentproto-display-mode")
+    const pin = panel.document.getElementById("agentproto-display-mode-pip")
+    if (!dm || !pin) throw new Error("display-mode toggle buttons missing from WORK_BOARD_HTML")
     expect(dm.getAttribute("style")).toMatch(/display:\s*none/)
     expect(pin.getAttribute("style")).toMatch(/display:\s*none/)
   })

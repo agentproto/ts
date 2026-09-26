@@ -52,6 +52,31 @@ describe("toAcpMcpServers — AcpMcpServer → ACP session/new wire shape", () =
     expect(wire).not.toHaveProperty("type")
   })
 
+  it("carries stdio args/env through to the wire shape (env as [{ name, value }])", () => {
+    const [wire] = toAcpMcpServers([
+      {
+        name: "browser",
+        transport: "stdio",
+        ref: "/opt/chrome-devtools-mcp",
+        args: ["--headless", "--viewport", "1440x900"],
+        env: { CHROME_LOG: "1" },
+      } satisfies AcpMcpServer,
+    ])
+    expect(wire).toEqual({
+      name: "browser",
+      command: "/opt/chrome-devtools-mcp",
+      args: ["--headless", "--viewport", "1440x900"],
+      env: [{ name: "CHROME_LOG", value: "1" }],
+    })
+  })
+
+  it("ignores stdio-only args/env on http entries", () => {
+    const [wire] = toAcpMcpServers([
+      { name: "h", transport: "http", ref: "http://h/mcp", args: ["x"], env: { A: "1" } },
+    ])
+    expect(wire).toEqual({ type: "http", name: "h", url: "http://h/mcp", headers: [] })
+  })
+
   it("passes ACP-native entries through untouched (retro-compat)", () => {
     const native = {
       type: "http",

@@ -5,7 +5,7 @@
  * that a non-linear `next` goto is rejected with a clear diagnostic.
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { z } from "zod"
 import { defineTool } from "@agentproto/tool"
 import { defineDriver, implementTool } from "@agentproto/driver"
@@ -19,7 +19,9 @@ import {
   resolveRefPrefixed,
   evalPredicate,
   type AgentStep,
+  type Bindings,
   type GateStep,
+  type StepCache,
 } from "../index.js"
 
 const doubleTool = defineTool({
@@ -235,6 +237,42 @@ describe("compileWorkflow", () => {
     expect(output).toBe("n=10")
   })
 
+  it("an agent step's `cwd` ref resolves per run, and a map's `maxConsecutiveSpawnFailures` passes through", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const handle = {
+        id: "cwd-demo",
+        description: "demo",
+        steps: [
+          {
+            id: "fan",
+            kind: "map",
+            over: "$input.xs",
+            onError: "collect",
+            maxConsecutiveSpawnFailures: 5,
+            steps: [{ id: "a", kind: "agent", adapter: "mock", cwd: "$input.root", prompt: "hi" }],
+          },
+        ],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any
+      const compiled = compileWorkflow(handle, { tools, candidates })
+      expect((compiled.steps[0] as { maxConsecutiveSpawnFailures?: number }).maxConsecutiveSpawnFailures).toBe(5)
+      const cwds: Array<string | undefined> = []
+      const host = {
+        spawn: async (_adapter: string, opts: { cwd?: string }) => {
+          cwds.push(opts.cwd)
+          return "sess_1"
+        },
+        sendPromptAndWait: async () => {},
+        resolveByLabel: () => undefined,
+      }
+      await runWorkflow({ workflow: compiled, agents: host, cwd: "/run/cwd", input: { xs: [1], root: "/repo/root" } })
+      expect(cwds).toEqual(["/repo/root"])
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   it("maps the workflow output from a declarative `result` expression", async () => {
     const wf = defineWorkflow({
       name: "Double, report both",
@@ -278,6 +316,54 @@ describe("compileWorkflow", () => {
   })
 })
 
+describe("compileWorkflow — tool step cacheable (F32)", () => {
+  it("carries a declarative tool step's cacheable through to the compiled ToolStep — replays on the second run with the same cacheKey", async () => {
+    let toolRuns = 0
+    const countingProvider = defineDriver({
+      id: "counting-math",
+      name: "Counting Math",
+      description: "Counts invocations of demo.double.",
+      kind: "builtin",
+      implements: [{ tool: "demo.double", version: "0.1.0" }],
+      implementations: [
+        implementTool(doubleTool, ({ input }) => {
+          toolRuns++
+          return { n: input.n * 2 }
+        }),
+      ],
+    })
+    const wf = defineWorkflow({
+      name: "Cacheable double",
+      id: "cacheable-double",
+      description: "Doubles the input; the step is cacheable.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "d",
+          kind: "tool",
+          tool: "demo.double",
+          inputs: { n: "$input.n" },
+          cacheable: true,
+        },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates: [countingProvider] })
+    const store = new Map<string, { output: unknown; resolvedInputHash: string }>()
+    const cache: StepCache = {
+      get: async (k) => store.get(k),
+      set: async (k, e) => {
+        store.set(k, e)
+      },
+    }
+    const r1 = await runWorkflow({ workflow: compiled, input: { n: 5 }, cache, cacheKey: "run-f32" })
+    const r2 = await runWorkflow({ workflow: compiled, input: { n: 5 }, cache, cacheKey: "run-f32" })
+    expect(toolRuns).toBe(1)
+    expect(r2.output).toEqual(r1.output)
+  })
+})
+
 describe("compileWorkflow — declarative agent step", () => {
   it("compiles a plain-adapter agent step field-for-field with translateStages's construction", () => {
     const wf = defineWorkflow({
@@ -301,6 +387,156 @@ describe("compileWorkflow — declarative agent step", () => {
       expected.prompt({ input: undefined, item: undefined, index: undefined, steps: {} }),
     )
     expect(step.policy).toEqual({ awaiting: "fail" })
+  })
+
+  it("AIP-58 §3: a step with no outputSchema (vacuous contract) warns once at compile time and still succeeds", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const wf = defineWorkflow({
+        name: "Ask",
+        id: "ask-no-contract",
+        description: "No outputSchema declared.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [{ id: "s1", kind: "agent", adapter: "mock", prompt: "hello" }],
+      })
+      const compiled = compileWorkflow(wf, { tools, candidates })
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(warn.mock.calls[0]?.[0]).toContain("s1")
+      expect(warn.mock.calls[0]?.[0]).toContain("no output contract")
+
+      const host = {
+        spawn: async () => "sess_1",
+        sendPromptAndWait: async () => {},
+        resolveByLabel: () => undefined,
+      }
+      const { output } = await runWorkflow({ workflow: compiled, agents: host })
+      expect(output).toEqual({ sessionId: "sess_1" })
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it("AIP-58 §3: a step WITH outputSchema never warns", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const wf = defineWorkflow({
+        name: "Ask",
+        id: "ask-with-contract",
+        description: "outputSchema declared.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [
+          {
+            id: "s1",
+            kind: "agent",
+            adapter: "mock",
+            prompt: "hello",
+            outputSchema: z.object({ verdict: z.string() }),
+          },
+        ],
+      })
+      compileWorkflow(wf, { tools, candidates })
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  describe("AIP-58 §3: a WORKFLOW.md-authored outputSchema is plain JSON Schema, not zod", () => {
+    // YAML frontmatter can only express plain JSON Schema — there is no zod
+    // instance to author in a `.md` file. Before this adapter, a compiled
+    // step's `outputSchema` reached `execAgentStep`'s `.safeParse(value)`
+    // call as a bare object with no such method, so the missing-output
+    // check TypeErrored instead of validating for every declarative
+    // WORKFLOW.md. `compileAgentStep` now adapts it via ajv
+    // (`validateAgainstJsonSchema`) into the same `{ safeParse }` shape a
+    // zod schema already has.
+    const jsonSchemaOutputSchema = {
+      type: "object",
+      properties: { verdict: { enum: ["pass", "fail"] } },
+      required: ["verdict"],
+    }
+
+    it("valid JSON final message succeeds with the parsed output", async () => {
+      const wf = defineWorkflow({
+        name: "Judge",
+        id: "judge-json-schema-pass",
+        description: "outputSchema is plain JSON Schema.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [
+          { id: "s1", kind: "agent", adapter: "mock", prompt: "judge this", outputSchema: jsonSchemaOutputSchema },
+        ],
+      })
+      const compiled = compileWorkflow(wf, { tools, candidates })
+      const host = {
+        spawn: async () => "sess_1",
+        sendPromptAndWait: async () => {},
+        resolveByLabel: () => undefined,
+        readFinalMessage: async () => JSON.stringify({ verdict: "pass" }),
+      }
+      const { output } = await runWorkflow({ workflow: compiled, agents: host })
+      expect(output).toEqual({ sessionId: "sess_1", output: { verdict: "pass" } })
+    })
+
+    it("an unsatisfied schema fails missing-output after retries, same as a zod outputSchema", async () => {
+      const wf = defineWorkflow({
+        name: "Judge",
+        id: "judge-json-schema-fail",
+        description: "outputSchema is plain JSON Schema.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [
+          {
+            id: "s1",
+            kind: "agent",
+            adapter: "mock",
+            prompt: "judge this",
+            outputSchema: jsonSchemaOutputSchema,
+            maxRetries: 0,
+          },
+        ],
+      })
+      const compiled = compileWorkflow(wf, { tools, candidates })
+      const host = {
+        spawn: async () => "sess_1",
+        sendPromptAndWait: async () => {},
+        resolveByLabel: () => undefined,
+        readFinalMessage: async () => "not json at all",
+      }
+      await expect(runWorkflow({ workflow: compiled, agents: host })).rejects.toMatchObject({
+        name: "StepOutcomeError",
+        stepId: "s1",
+        code: "missing-output",
+      })
+    })
+
+    it("an uncompilable schema fails at COMPILE time, never the runtime spawn", () => {
+      const wf = defineWorkflow({
+        name: "Judge",
+        id: "judge-json-schema-bad",
+        description: "outputSchema is not a valid JSON Schema.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [
+          {
+            id: "s1",
+            kind: "agent",
+            adapter: "mock",
+            prompt: "judge this",
+            outputSchema: { $ref: "#/definitions/doesNotExist" },
+          },
+        ],
+      })
+      expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(WorkflowCompileError)
+      expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(/s1.*outputSchema/)
+    })
   })
 
   it("resolves a $steps ref in the prompt through the same grammar as a tool step's inputs", async () => {
@@ -357,6 +593,82 @@ describe("compileWorkflow — declarative agent step", () => {
     const step = compiled.steps[0] as AgentStep
     expect(step.adapter).toBe("mastra-agent")
     expect(step.options).toEqual({ agent: "/apps/my-app/.agentproto/agents/implementer/AGENT.md" })
+    // No declared tools on the ref ⇒ none on the step.
+    expect(step.agentTools).toBeUndefined()
+  })
+
+  it("explicit step.adapter and step.options override the agent-ref resolution", () => {
+    const wf = defineWorkflow({
+      name: "Explicit adapter",
+      id: "explicit-adapter",
+      description: "Author-declared adapter wins over the ref-resolved default.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "s1",
+          kind: "agent",
+          adapter: "opencode",
+          options: { agent: "/explicit/path/AGENT.md" },
+          agent: { ref: "@my-app/implementer" },
+          prompt: "Do the thing.",
+        },
+      ],
+    })
+    const compiled = compileWorkflow(wf, {
+      tools,
+      candidates,
+      agentRefs: {
+        "@my-app/implementer": {
+          adapter: "mastra-agent",
+          options: { agent: "/apps/my-app/.agentproto/agents/implementer/AGENT.md" },
+        },
+      },
+    })
+    const step = compiled.steps[0] as AgentStep
+    expect(step.adapter).toBe("opencode")
+    expect(step.options).toEqual({ agent: "/explicit/path/AGENT.md" })
+  })
+
+  it("an adapter-only override does NOT inherit the ref's options — they're shaped for a different adapter", () => {
+    const wf = defineWorkflow({
+      name: "Adapter-only override",
+      id: "adapter-only-override",
+      description: "Author overrides just the adapter, not options.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "s1",
+          kind: "agent",
+          adapter: "claude-code",
+          agent: { ref: "@my-app/implementer" },
+          prompt: "Do the thing.",
+        },
+      ],
+    })
+    const compiled = compileWorkflow(wf, {
+      tools,
+      candidates,
+      agentRefs: {
+        "@my-app/implementer": {
+          adapter: "mastra-agent",
+          options: { agent: "/apps/my-app/.agentproto/agents/implementer/AGENT.md" },
+          model: "claude-sonnet-5",
+        },
+      },
+    })
+    const step = compiled.steps[0] as AgentStep
+    // Overriding the ADAPTER to something other than the ref's own resolved
+    // default (mastra-agent) must not carry over `options` shaped for that
+    // other adapter (mastra-agent's `agent` option) — claude-code's manifest
+    // doesn't declare it, and forwarding it would fail the spawn loudly.
+    // `model` has no such adapter coupling, so it still comes through.
+    expect(step.adapter).toBe("claude-code")
+    expect(step.options).toBeUndefined()
+    expect(step.model).toBe("claude-sonnet-5")
   })
 
   it("rejects an empty agent.ref", () => {
@@ -394,6 +706,28 @@ describe("compileWorkflow — declarative agent step", () => {
     ).toThrow(/unknown agent ref '@my-app\/ghost'.*@my-app\/reviewer/)
   })
 
+  it("carries the agent ref's declared tools onto the step as agentTools, whatever adapter runs it", () => {
+    const wf = defineWorkflow({
+      name: "Review",
+      id: "review-tools",
+      description: "Agent ref declaring tools.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        { id: "review", kind: "agent", agent: { ref: "@my-app/reviewer" }, adapter: "codex", prompt: "Review." },
+      ],
+    })
+    const compiled = compileWorkflow(wf, {
+      tools,
+      candidates,
+      agentRefs: { "@my-app/reviewer": { adapter: "claude-code", tools: ["read_file", "branch_gc_verdict"] } },
+    })
+    const step = compiled.steps[0] as AgentStep
+    expect(step.adapter).toBe("codex")
+    expect(step.agentTools).toEqual(["read_file", "branch_gc_verdict"])
+  })
+
   it("rejects agent.ref when no agentRefs are configured for the compile", () => {
     const wf = defineWorkflow({
       name: "No app context",
@@ -419,6 +753,175 @@ describe("compileWorkflow — declarative agent step", () => {
     })
     expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(/non-empty 'prompt'/)
   })
+
+  describe("prompt template interpolation ({{…}})", () => {
+  const compileAgentPrompt = (prompt: string): ((b: Bindings) => string) => {
+    const wf = defineWorkflow({
+      name: "P",
+      id: "prompt-ut",
+      description: "prompt under test",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [{ id: "s1", kind: "agent", adapter: "mock", prompt }],
+    })
+    return (compileWorkflow(wf, { tools, candidates }).steps[0] as AgentStep).prompt
+  }
+  const b = (input: unknown, extra: Partial<Bindings> = {}): Bindings => ({
+    input,
+    item: undefined,
+    index: undefined,
+    steps: {},
+    ...extra,
+  })
+
+  it("interpolates a plain {{name}} placeholder from the workflow input", () => {
+    const prompt = compileAgentPrompt("Transcribe the YouTube video at {{url}}.")
+    expect(prompt(b({ url: "https://youtu.be/x" }))).toBe(
+      "Transcribe the YouTube video at https://youtu.be/x.",
+    )
+  })
+
+  it("interpolates dotted paths {{a.b.c}}", () => {
+    const prompt = compileAgentPrompt("Read {{meta.file.name}} on {{meta.host}}.")
+    expect(prompt(b({ meta: { file: { name: "notes.md" }, host: "localhost" } }))).toBe(
+      "Read notes.md on localhost.",
+    )
+  })
+
+  it("leaves a missing placeholder as-is instead of crashing", () => {
+    const prompt = compileAgentPrompt("Use {{url}} and {{nope}} here.")
+    expect(prompt(b({ url: "https://x" }))).toBe("Use https://x and {{nope}} here.")
+  })
+
+  it("renders a conditional {{#name}} section when truthy, trimming the standalone tag lines", () => {
+    const prompt = compileAgentPrompt(
+      "Intro.\n{{#agenda}}\nUse this agenda: {{agenda}}\n{{/agenda}}\nOutro.",
+    )
+    expect(prompt(b({ agenda: "Ship the fix" }))).toBe(
+      "Intro.\nUse this agenda: Ship the fix\nOutro.",
+    )
+  })
+
+  it("drops a falsy {{#name}} section entirely, including its blank lines", () => {
+    const prompt = compileAgentPrompt(
+      "Intro.\n{{#agenda}}\nUse this agenda: {{agenda}}\n{{/agenda}}\nOutro.",
+    )
+    expect(prompt(b({}))).toBe("Intro.\nOutro.")
+  })
+
+  it("keeps the text before an INLINE section on the same line (truthy and falsy)", () => {
+    const prompt = compileAgentPrompt(
+      "Review `{{name}}` (tip {{sha}}){{#note}}, note {{note}}{{/note}}. Then stop.",
+    )
+    expect(prompt(b({ name: "wt/x", sha: "abc", note: "n1" }))).toBe(
+      "Review `wt/x` (tip abc), note n1. Then stop.",
+    )
+    expect(prompt(b({ name: "wt/x", sha: "abc" }))).toBe("Review `wt/x` (tip abc). Then stop.")
+  })
+
+  it("an inline {{^name}} fallback renders null explicitly when the value is null", () => {
+    const prompt = compileAgentPrompt("tree: {{#t}}{{t}}{{/t}}{{^t}}null{{/t}}.")
+    expect(prompt(b({ t: null }))).toBe("tree: null.")
+    expect(prompt(b({ t: "deadbeef" }))).toBe("tree: deadbeef.")
+  })
+
+  it("renders an inverted {{^name}} section only when the name is falsy", () => {
+    const prompt = compileAgentPrompt(
+      "{{^agenda}}\nNo agenda was provided.\n{{/agenda}}\nBegin.",
+    )
+    expect(prompt(b({}))).toBe("No agenda was provided.\nBegin.")
+    expect(prompt(b({ agenda: "Ship" }))).toBe("Begin.")
+  })
+
+  it("stringifies non-string values (number, boolean) and JSON-encodes objects/arrays", () => {
+    const prompt = compileAgentPrompt("n={{n}} ok={{ok}} obj={{obj}} arr={{arr}}")
+    expect(
+      prompt(b({ n: 5, ok: false, obj: { a: 1 }, arr: [1, "x"] })),
+    ).toBe('n=5 ok=false obj={"a":1} arr=[1,"x"]')
+  })
+
+  it("keeps the $-ref grammar working alongside interpolation", () => {
+    // Whole-string ref: unchanged behavior.
+    expect(
+      compileAgentPrompt("$input.n")(b({ n: 3 })),
+    ).toBe("3")
+    // Ref-prefixed string: token resolved, literal rest kept.
+    expect(
+      compileAgentPrompt("$input.dir/notes.txt")(b({ dir: "/books" })),
+    ).toBe("/books/notes.txt")
+    // Ref token plus {{…}} tags in the remainder.
+    expect(
+      compileAgentPrompt("$input.dir/{{file}}")(b({ dir: "/books", file: "a.md" })),
+    ).toBe("/books/a.md")
+    // steps.<id> paths via {{steps.d.n}}.
+    expect(
+      compileAgentPrompt("Score: {{steps.d.n}}")(
+        b(undefined, { steps: { d: { n: 10 } } }),
+      ),
+    ).toBe("Score: 10")
+    // Ref-prefixed prompt that previously threw "bad reference".
+    expect(
+      compileAgentPrompt("$input.bookDir/knowledge")(b({ bookDir: "/books" })),
+    ).toBe("/books/knowledge")
+  })
+
+  it("interpolates an approval step's prompt the same way", () => {
+    const wf = defineWorkflow({
+      name: "Approve",
+      id: "approve",
+      description: "Approval prompt with a placeholder.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "a1",
+          kind: "approval",
+          prompt: "Approve {{thing}}?",
+          approvers: [{ role: "maintainer" }],
+        },
+      ],
+    })
+    const step = compileWorkflow(wf, { tools, candidates }).steps[0] as AgentStep
+    expect(step.prompt(b({ thing: "the merge" }))).toBe("Approve the merge?")
+  })
+
+  it("end-to-end: a WORKFLOW.md-style prompt reaches the agent fully interpolated", async () => {
+    const wf = defineWorkflow({
+      name: "Transcribe",
+      id: "transcribe",
+      description: "The shipped-app shape from the bug report.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "s1",
+          kind: "agent",
+          adapter: "mock",
+          prompt:
+            "Transcribe the YouTube video at {{url}}.\n{{#agenda}}\nUse this agenda: {{agenda}}\n{{/agenda}}",
+        },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    const host = {
+      spawn: async () => "sess_1",
+      sendPromptAndWait: async (_id: string, prompt: string) => {
+        expect(prompt).toBe(
+          "Transcribe the YouTube video at https://youtu.be/abc.\nUse this agenda: Ship v2",
+        )
+      },
+      resolveByLabel: () => undefined,
+    }
+    await runWorkflow({
+      workflow: compiled,
+      agents: host,
+      input: { url: "https://youtu.be/abc", agenda: "Ship v2" },
+    })
+  })
+})
 
   it("passes an entry-based agent step (function-valued prompt) through unchanged", async () => {
     const handle = {
@@ -469,7 +972,7 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
     const { bindings } = await runWorkflow({ workflow: compiled, input: { n: 20 } })
     expect(bindings.steps.big).toEqual({ n: 40 })
   })
-
+  
   it("second branch: the earlier arm is skipped entirely when its `when` is falsy", async () => {
     const wf = defineWorkflow({
       name: "Tiered",
@@ -498,7 +1001,7 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
     expect(bindings.steps.medium).toEqual({ n: 17 })
     expect(bindings.steps.big).toBeUndefined()
   })
-
+  
   it("default: no `when` matches, jumps to `default`, skipping the earlier arms", async () => {
     const wf = defineWorkflow({
       name: "Tiered",
@@ -528,8 +1031,8 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
     expect(bindings.steps.big).toBeUndefined()
     expect(bindings.steps.medium).toBeUndefined()
   })
-
-  it("no default: falls through to the next sibling in document order", async () => {
+  
+  it("no default: a no-match runs the siblings before the first arm target, never the arm", async () => {
     const wf = defineWorkflow({
       name: "No default",
       id: "no-default",
@@ -550,8 +1053,9 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
     const compiled = compileWorkflow(wf, { tools, candidates })
     const { bindings } = await runWorkflow({ workflow: compiled, input: { n: 1 } })
     expect(bindings.steps.near).toEqual({ n: 2 })
+    expect(bindings.steps.far).toBeUndefined()
   })
-
+  
   it("rejects a backward branch target", () => {
     const wf = defineWorkflow({
       name: "Backward",
@@ -573,7 +1077,7 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
     expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(WorkflowCompileError)
     expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(/loop/)
   })
-
+  
   it("rejects an unknown branch target", () => {
     const wf = defineWorkflow({
       name: "Unknown target",
@@ -593,12 +1097,10 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
     })
     expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(WorkflowCompileError)
   })
-
+  
   it("works nested inside a map's body, branching on $item", async () => {
-    // `neg` is the LAST sibling in the body, so the `default` jump to it is
-    // exclusive (skips `pos` entirely). `pos` sits earlier, so taking that
-    // arm falls through into `neg` too — the same forward-fallthrough
-    // semantics proven at the top level, just nested inside a map body.
+    // Exclusive arms, nested inside a map body: each item runs exactly one
+    // of `pos` / `neg`.
     const wf = defineWorkflow({
       name: "Branch in map",
       id: "branch-in-map",
@@ -625,13 +1127,18 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
       ],
     })
     const compiled = compileWorkflow(wf, { tools, candidates })
-    const { output } = await runWorkflow({ workflow: compiled, input: { xs: [3, -2, 5] } })
-    // 3 → pos (double → 6), falls through to neg (add-ten → 13)
-    // -2 → default (neg only, exclusive) → add-ten → 8
-    // 5 → pos (double → 10), falls through to neg (add-ten → 15)
-    expect((output as Array<{ n: number }>).map((o) => o.n)).toEqual([13, 8, 15])
+    const skipped: string[] = []
+    const { output } = await runWorkflow({
+      workflow: compiled,
+      input: { xs: [3, -2, 5] },
+      onStepSkipped: (id) => skipped.push(id),
+    })
+    // 3 → pos (double → 6); -2 → neg (add-ten → 8); 5 → pos (double → 10)
+    expect((output as Array<{ n: number }>).map((o) => o.n)).toEqual([6, 8, 10])
+    // The untaken arm of each item is reported under that item's index.
+    expect(skipped.sort()).toEqual(["neg[0]", "neg[2]", "pos[1]"])
   })
-
+  
   it("end-to-end: only the chosen arm's steps run, and the shared trailing sibling runs exactly once", async () => {
     let finalizeCalls = 0
     const finalizeTool = defineTool({
@@ -681,6 +1188,288 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
     expect(bindings.steps.small).toBeUndefined()
     expect(bindings.steps.finalize).toEqual({ n: 500 })
     expect(finalizeCalls).toBe(1)
+  })
+  })
+
+describe("compileWorkflow — branch: exclusive arms + join (F22)", () => {
+  // Every executed step, in order, plus every step reported skipped.
+  const trace = () => {
+    const ran: string[] = []
+    const skipped: Array<{ id: string; branchId: string }> = []
+    return {
+      ran,
+      skipped,
+      hooks: {
+        onStepComplete: (id: string) => {
+          ran.push(id)
+        },
+        onStepSkipped: (id: string, info: { branchId: string }) => {
+          skipped.push({ id, branchId: info.branchId })
+        },
+      },
+    }
+  }
+  const leafRan = (ran: string[]) => ran.filter((id) => !id.startsWith("route"))
+
+  // The youtube-transcriber `transcribe` shape: an optional PDF export with a
+  // no-op landing arm. Before F22, exportPdf=true ran BOTH pdf-render and
+  // skip-pdf (a matched arm = its target + every later sibling).
+  const transcriber = defineWorkflow({
+    name: "Transcriber shape",
+    id: "transcriber-shape",
+    description: "apply-toc, then an optional pdf-render.",
+    version: "0.1.0",
+    inputs: {},
+    outputs: {},
+    steps: [
+      { id: "apply-toc", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      {
+        id: "route",
+        kind: "branch",
+        branches: [{ when: "$input.exportPdf", next: "pdf-render" }],
+        default: "skip-pdf",
+      },
+      { id: "pdf-render", kind: "tool", tool: "demo.add-ten", inputs: { n: "$steps.apply-toc.n" } },
+      { id: "skip-pdf", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+    ],
+    result: { transcript: "$steps.apply-toc.n", pdf: "$steps.pdf-render.n" },
+  })
+
+  it("transcriber shape, taken arm: pdf-render runs, skip-pdf does NOT and is reported skipped", async () => {
+    const t = trace()
+    const { output, bindings } = await runWorkflow({
+      workflow: compileWorkflow(transcriber, { tools, candidates }),
+      input: { n: 1, exportPdf: true },
+      ...t.hooks,
+    })
+    expect(leafRan(t.ran)).toEqual(["apply-toc", "pdf-render"])
+    expect(bindings.steps["skip-pdf"]).toBeUndefined()
+    expect(t.skipped).toEqual([{ id: "skip-pdf", branchId: "route" }])
+    expect(output).toEqual({ transcript: 2, pdf: 12 })
+  })
+
+  it("transcriber shape, default arm: skip-pdf runs, pdf-render is reported skipped", async () => {
+    const t = trace()
+    const { output } = await runWorkflow({
+      workflow: compileWorkflow(transcriber, { tools, candidates }),
+      input: { n: 1, exportPdf: false },
+      ...t.hooks,
+    })
+    expect(leafRan(t.ran)).toEqual(["apply-toc", "skip-pdf"])
+    expect(t.skipped).toEqual([{ id: "pdf-render", branchId: "route" }])
+    expect(output).toEqual({ transcript: 2, pdf: undefined })
+  })
+
+  it("transcriber shape without the workaround: a single arm, no default, no landing step", async () => {
+    const wf = defineWorkflow({
+      name: "Optional pdf",
+      id: "optional-pdf",
+      description: "pdf-render only when exportPdf; then a shared finalize.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        { id: "apply-toc", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "route", kind: "branch", branches: [{ when: "$input.exportPdf", next: "pdf-render" }] },
+        { id: "pdf-render", kind: "tool", tool: "demo.add-ten", inputs: { n: "$input.n" } },
+        { id: "finalize", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    const on = trace()
+    await runWorkflow({ workflow: compiled, input: { n: 1, exportPdf: true }, ...on.hooks })
+    expect(leafRan(on.ran)).toEqual(["apply-toc", "pdf-render", "finalize"])
+    expect(on.skipped).toEqual([])
+    const off = trace()
+    await runWorkflow({ workflow: compiled, input: { n: 1, exportPdf: false }, ...off.hooks })
+    expect(leafRan(off.ran)).toEqual(["apply-toc", "finalize"])
+    expect(off.skipped).toEqual([{ id: "pdf-render", branchId: "route" }])
+  })
+
+  // Three arms, the first two multi-step, an explicit join, and a shared tail.
+  const threeWay = defineWorkflow({
+    name: "Three way",
+    id: "three-way",
+    description: "Multi-step arms, explicit join, shared tail.",
+    version: "0.1.0",
+    inputs: {},
+    outputs: {},
+    steps: [
+      {
+        id: "route",
+        kind: "branch",
+        branches: [
+          { when: "$input.n >= 100", next: "big-1" },
+          { when: "$input.n >= 10", next: "mid-1" },
+        ],
+        default: "small-1",
+        join: "tail-1",
+      },
+      { id: "big-1", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      { id: "big-2", kind: "tool", tool: "demo.double", inputs: { n: "$steps.big-1.n" } },
+      { id: "mid-1", kind: "tool", tool: "demo.add-ten", inputs: { n: "$input.n" } },
+      { id: "mid-2", kind: "tool", tool: "demo.add-ten", inputs: { n: "$steps.mid-1.n" } },
+      { id: "small-1", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      { id: "small-2", kind: "tool", tool: "demo.add-ten", inputs: { n: "$steps.small-1.n" } },
+      { id: "tail-1", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      { id: "tail-2", kind: "tool", tool: "demo.add-ten", inputs: { n: "$steps.tail-1.n" } },
+    ],
+  })
+
+  it.each([
+    [500, ["big-1", "big-2"], ["mid-1", "mid-2", "small-1", "small-2"]],
+    [50, ["mid-1", "mid-2"], ["big-1", "big-2", "small-1", "small-2"]],
+    [5, ["small-1", "small-2"], ["big-1", "big-2", "mid-1", "mid-2"]],
+  ])("n=%i: exactly one multi-step arm body runs, then the join continuation runs once", async (n, arm, skipped) => {
+    const t = trace()
+    await runWorkflow({ workflow: compileWorkflow(threeWay, { tools, candidates }), input: { n }, ...t.hooks })
+    expect(leafRan(t.ran)).toEqual([...arm, "tail-1", "tail-2"])
+    expect(t.skipped.map((s) => s.id).sort()).toEqual([...skipped].sort())
+    // Never reported skipped AND run.
+    for (const s of t.skipped) expect(t.ran).not.toContain(s.id)
+  })
+
+  it("the runtime shape: one branch node, then the join steps as plain siblings", () => {
+    const compiled = compileWorkflow(threeWay, { tools, candidates })
+    expect(compiled.steps.map((s) => `${s.kind}:${s.id}`)).toEqual([
+      "branch:route",
+      "tool:tail-1",
+      "tool:tail-2",
+    ])
+  })
+
+  it("arms sharing a target share one body — it is never reported skipped when it runs", async () => {
+    const wf = defineWorkflow({
+      name: "Shared",
+      id: "shared-target",
+      description: "Two arms land on the same step.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "route",
+          kind: "branch",
+          branches: [
+            { when: "$input.a", next: "shared" },
+            { when: "$input.b", next: "shared" },
+          ],
+          default: "other",
+        },
+        { id: "shared", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "other", kind: "tool", tool: "demo.add-ten", inputs: { n: "$input.n" } },
+      ],
+    })
+    const t = trace()
+    await runWorkflow({
+      workflow: compileWorkflow(wf, { tools, candidates }),
+      input: { n: 1, a: false, b: true },
+      ...t.hooks,
+    })
+    expect(leafRan(t.ran)).toEqual(["shared"])
+    expect(t.skipped).toEqual([{ id: "other", branchId: "route" }])
+  })
+
+  it("a branch nested in an arm body resolves within that body", async () => {
+    const wf = defineWorkflow({
+      name: "Nested",
+      id: "nested-branch",
+      description: "An arm whose body branches again.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        { id: "outer", kind: "branch", branches: [{ when: "$input.a", next: "inner" }], default: "no-a", join: "end" },
+        { id: "inner", kind: "branch", branches: [{ when: "$input.b", next: "ab" }], default: "a-only" },
+        { id: "ab", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "a-only", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "no-a", kind: "tool", tool: "demo.add-ten", inputs: { n: "$input.n" } },
+        { id: "end", kind: "tool", tool: "demo.add-ten", inputs: { n: "$input.n" } },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    const t = trace()
+    await runWorkflow({ workflow: compiled, input: { n: 1, a: true, b: false }, ...t.hooks })
+    expect(t.ran.filter((id) => !["outer", "inner"].includes(id))).toEqual(["a-only", "end"])
+    expect(t.skipped.map((s) => `${s.branchId}>${s.id}`).sort()).toEqual(["inner>ab", "outer>no-a"])
+  })
+
+  it("rejects a join that does not come after every arm target", () => {
+    const wf = defineWorkflow({
+      name: "Bad join",
+      id: "bad-join",
+      description: "join before the last arm target.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        { id: "route", kind: "branch", branches: [{ when: "$input.a", next: "x" }], default: "y", join: "x" },
+        { id: "x", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "y", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      ],
+    })
+    expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(/join 'x' must come after every arm target/)
+  })
+
+  it("rejects a step stranded between the branch and its first target when `default` is explicit", () => {
+    const wf = defineWorkflow({
+      name: "Stranded",
+      id: "stranded",
+      description: "unreachable step.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        { id: "route", kind: "branch", branches: [{ when: "$input.a", next: "x" }], default: "y" },
+        { id: "orphan", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "x", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "y", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      ],
+    })
+    expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(/'orphan' sits between the branch/)
+  })
+
+  it("fallthrough: true keeps the legacy semantics (target + every later sibling)", async () => {
+    const wf = defineWorkflow({
+      name: "Legacy",
+      id: "legacy-fallthrough",
+      description: "pre-F22 semantics, opted into.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "route",
+          kind: "branch",
+          fallthrough: true,
+          branches: [{ when: "$input.exportPdf", next: "pdf-render" }],
+          default: "skip-pdf",
+        },
+        { id: "pdf-render", kind: "tool", tool: "demo.add-ten", inputs: { n: "$input.n" } },
+        { id: "skip-pdf", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      ],
+    })
+    const t = trace()
+    await runWorkflow({ workflow: compileWorkflow(wf, { tools, candidates }), input: { n: 1, exportPdf: true }, ...t.hooks })
+    expect(leafRan(t.ran)).toEqual(["pdf-render", "skip-pdf"])
+    expect(t.skipped).toEqual([])
+  })
+
+  it("rejects fallthrough: true combined with join", () => {
+    const wf = defineWorkflow({
+      name: "Legacy join",
+      id: "legacy-join",
+      description: "contradictory.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        { id: "route", kind: "branch", fallthrough: true, branches: [{ when: "$input.a", next: "x" }], join: "y" },
+        { id: "x", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "y", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      ],
+    })
+    expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(/'fallthrough: true' and 'join'/)
   })
 })
 

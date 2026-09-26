@@ -1,9 +1,9 @@
 /**
- * PLAN-D2 — pause is the DEFAULT teardown. A closed box with no lifecycle
- * declaration at all is paused (still reattachable via `reuse` /
- * `agentproto sandbox attach`), not killed. Explicit declarations remain
- * authoritative: `destroy_on` always kills; `pause_after_idle` pauses (with
- * its idle window parsed) and now merely agrees with the default.
+ * Kill is the DEFAULT teardown. A closed box with no lifecycle declaration
+ * and no `reuse` is destroyed, not left paused (and billed) with nothing
+ * pointed at it. Pause is an explicit opt-in: `lifecycle.pause_after_idle`
+ * declares an idle-out schedule, and `reuse` means this boot is itself a
+ * reconnect to an existing box. `destroy_on` stays authoritative over both.
  */
 
 import { describe, it, expect } from "vitest"
@@ -14,9 +14,12 @@ function handle(lifecycle?: SandboxHandle["lifecycle"]): SandboxHandle {
   return { provider: "e2b", config: {}, lifecycle } as unknown as SandboxHandle
 }
 
-describe("resolveLifecyclePolicy — pause is the default teardown", () => {
-  it("a plain spawn (no lifecycle, no reuse) PAUSES on close", () => {
-    expect(resolveLifecyclePolicy(handle(), false)).toEqual({ teardown: "pause" })
+describe("resolveLifecyclePolicy — kill is the default teardown", () => {
+  it("a plain spawn (no lifecycle, no reuse) KILLS on close", () => {
+    expect(resolveLifecyclePolicy(handle(), false)).toEqual({ teardown: "kill" })
+  })
+
+  it("reuse (reconnecting to an existing box) PAUSES on close, even with no lifecycle declared", () => {
     expect(resolveLifecyclePolicy(handle(), true)).toEqual({ teardown: "pause" })
   })
 
@@ -39,8 +42,14 @@ describe("resolveLifecyclePolicy — pause is the default teardown", () => {
     })
   })
 
-  it("a malformed pause_after_idle event is ignored (still the pause default, no window)", () => {
+  it("a malformed pause_after_idle event is ignored (falls back to the kill default, no window)", () => {
     expect(resolveLifecyclePolicy(handle({ pause_after_idle: "bogus" }), false)).toEqual({
+      teardown: "kill",
+    })
+  })
+
+  it("a malformed pause_after_idle event still pauses when reuse is set (reuse alone opts in)", () => {
+    expect(resolveLifecyclePolicy(handle({ pause_after_idle: "bogus" }), true)).toEqual({
       teardown: "pause",
     })
   })

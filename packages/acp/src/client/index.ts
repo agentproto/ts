@@ -19,6 +19,7 @@ import {
 import type {
   AcpMcpServer,
   AcpPermissionResolution,
+  BackgroundTaskInfo,
   StreamEvent,
 } from "../types.js"
 import { ACP_META_FEEDBACK } from "../types.js"
@@ -46,7 +47,7 @@ interface HeldPermission {
 }
 
 /**
- * Map our internal `AcpMcpServer` (`{ name, transport, ref, headers, credentialRef }`)
+ * Map our internal `AcpMcpServer` (`{ name, transport, ref, headers, credentialRef, args, env }`)
  * onto the `@agentclientprotocol/sdk` wire shape expected by
  * `session/new.mcpServers` (and `session/load.mcpServers`).
  *
@@ -54,7 +55,7 @@ interface HeldPermission {
  * differently from our compact internal form:
  *   - http → `{ type: "http", name, url, headers: [{ name, value }, …] }`
  *   - sse  → `{ type: "sse",  name, url, headers: [{ name, value }, …] }`
- *   - stdio → `{ name, command, args: [], env: [] }` (untagged variant)
+ *   - stdio → `{ name, command, args, env: [{ name, value }, …] }` (untagged variant)
  *
  * Without this mapping the raw `{ transport, ref }` entry reaches the
  * agent verbatim and `session/new` rejects with `Invalid params` — the
@@ -86,19 +87,25 @@ function toAcpMcpServer(server: unknown): unknown {
 
   switch (transport) {
     case "http":
-      return { type: "http", name, url: ref ?? "", headers: toAcpHeaders(headers) }
+      return { type: "http", name, url: ref ?? "", headers: toAcpNameValues(headers) }
     case "sse":
-      return { type: "sse", name, url: ref ?? "", headers: toAcpHeaders(headers) }
+      return { type: "sse", name, url: ref ?? "", headers: toAcpNameValues(headers) }
     case "stdio":
-      return { name, command: ref ?? "", args: [], env: [] }
+      return { name, command: ref ?? "", args: toAcpArgs(entry.args), env: toAcpNameValues(entry.env) }
     default:
       return entry
   }
 }
 
-function toAcpHeaders(headers: unknown): Array<{ name: string; value: string }> {
-  if (!headers || typeof headers !== "object") return []
-  return Object.entries(headers).map(([name, value]) => ({
+function toAcpArgs(args: unknown): string[] {
+  if (!Array.isArray(args)) return []
+  return args.map(a => (typeof a === "string" ? a : String(a)))
+}
+
+/** `Record<string,string>` → ACP's `[{ name, value }]` (http headers, stdio env). */
+function toAcpNameValues(record: unknown): Array<{ name: string; value: string }> {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return []
+  return Object.entries(record).map(([name, value]) => ({
     name,
     value: typeof value === "string" ? value : String(value),
   }))
@@ -119,6 +126,13 @@ export interface AcpClientOptions {
   capabilities?: {
     fs?: { readTextFile?: boolean; writeTextFile?: boolean }
     terminal?: boolean
+    /**
+     * Advertise the AIR `asyncTasks` extension (default true), so an agent
+     * that implements it (claude-agent-acp) publishes its background tasks'
+     * lifecycle — surfaced as `background-task` StreamEvents. Pass `false`
+     * to opt out; an agent that doesn't know the extension ignores it.
+     */
+    asyncTasks?: boolean
   }
   /** Optional handlers for agent-initiated requests beyond fs / terminal. */
   handlers?: Partial<AcpClientHandlers>
@@ -164,12 +178,57 @@ export interface AcpClientOptions {
    * turn-end for the same logical turn).
    */
   turnIdleTimeoutMs?: number
+  /**
+   * Orphaned-prompt recovery (default {@link DEFAULT_ORPHANED_PROMPT_TIMEOUT_MS};
+   * `0` disables). A prompt sent while the agent is mid-way through an
+   * AUTONOMOUS cycle (Claude Code's task-notification wake) can be folded
+   * into that cycle as a queued command: the model answers it, but the
+   * cycle's only result carries the autonomous origin, which claude-agent-acp
+   * keeps off the user-turn lane — so `session/prompt` never resolves (seen
+   * live: a finished session stayed "busy" ~50 min until a manual cancel).
+   * When an in-flight prompt sees an autonomous-origin result frame followed
+   * by this many ms of silence, the client cancels it — a real active turn
+   * on the agent side, so the cancel settles it — and reports the turn
+   * `completed`: its work was done inside the cycle.
+   */
+  orphanedPromptTimeoutMs?: number
 }
+
+export const DEFAULT_ORPHANED_PROMPT_TIMEOUT_MS = 60_000
+
+/** Result origins claude-agent-acp routes to its autonomous lane
+ *  (`AUTONOMOUS_RESULT_ORIGINS` in its acp-agent.js). */
+const AUTONOMOUS_RESULT_ORIGINS = new Set([
+  "task-notification",
+  "peer",
+  "coordinator",
+  "observer",
+  "observer-activity",
+])
+
+/** The ACP steering extension request (claude-agent-acp, codex-acp):
+ *  inject a follow-up into the turn that is currently running. */
+export const ACP_STEER_METHOD = "_session/steering"
+
+/** What `AcpClientSession.steer` did:
+ *  - `"steered"` — injected into the running turn;
+ *  - `"promptRequired"` — no turn in flight (checked here first: we only
+ *    steer while OUR `prompt()` is in flight, never during an agent's
+ *    autonomous cycle), so nothing was sent — deliver it as a normal prompt;
+ *  - `"unsupported"` — the agent doesn't advertise steering, or refused. */
+export type SteerOutcome = "steered" | "promptRequired" | "unsupported"
 
 export interface AcpClient {
   readonly connection: ClientSideConnection
   /** Negotiated agent capabilities returned from `initialize`. */
   readonly agentCapabilities: Record<string, unknown> | undefined
+  /** The TOP-LEVEL `_meta` of the `initialize` response (sibling of
+   *  `agentCapabilities`) — where extension capabilities such as
+   *  `steering.supported` are advertised. `undefined` when absent. */
+  readonly initMeta: Record<string, unknown> | undefined
+  /** True when the agent advertised `_meta.steering.supported` at
+   *  initialize — i.e. it accepts `_session/steering`. */
+  readonly steeringSupported: boolean
   newSession(params: {
     cwd: string
     mcpServers?: unknown[]
@@ -319,6 +378,31 @@ export interface AcpClientSession {
    * exactly.
    */
   setSessionMode(modeId: string): Promise<SetConfigOptionResult>
+  /**
+   * Receive the events the agent emits while NO `prompt()` is in flight.
+   *
+   * An agent can work without being prompted: Claude Code wakes the model on
+   * its own when a background task settles (an "autonomous" task-notification
+   * cycle) and streams that work as ordinary `session/update`s. With no turn
+   * iterator to land in, those events used to be dropped on the floor — the
+   * host saw an idle session while the agent kept working. They are delivered
+   * here instead (in-turn events keep flowing through `prompt()`'s iterator
+   * only). Returns an unsubscribe function. With no listener registered, an
+   * out-of-turn event is dropped, as before.
+   */
+  onOutOfTurnEvent(listener: (event: StreamEvent) => void): () => void
+  /** Whether this session's agent accepts `_session/steering` (see
+   *  `AcpClient.steeringSupported`). */
+  readonly steeringSupported: boolean
+  /**
+   * Steer the turn in flight: inject `content` into it (ACP steering
+   * extension, `_session/steering`) instead of queueing a new prompt.
+   * Always sends `idleBehavior:"promptRequired"`, and never sends at all
+   * unless OUR `prompt()` is in flight — so it can't start a detached turn
+   * the host never sees, or fold into an agent's autonomous cycle. Never
+   * throws; see {@link SteerOutcome}.
+   */
+  steer(content: unknown): Promise<SteerOutcome>
   close(): Promise<void>
 }
 
@@ -341,6 +425,13 @@ interface SessionState {
   modes: SessionMode[]
   /** Snapshot of `AcpClientSession.currentModeId` — see there. */
   currentModeId: string | undefined
+  /** Listeners registered via `AcpClientSession.onOutOfTurnEvent`. */
+  outOfTurnListeners: Set<(event: StreamEvent) => void>
+  /** See `AcpClientOptions.orphanedPromptTimeoutMs`. */
+  orphanedPromptTimeoutMs: number
+  /** Set by `prompt()` for the in-flight turn: sees every incoming update
+   *  (translated, or null) to drive orphaned-prompt recovery. */
+  observeTurnUpdate?: (event: StreamEvent | null) => void
 }
 
 export async function createAcpClient(
@@ -394,7 +485,9 @@ export async function createAcpClient(
     }
   }
 
-  const stream: Stream = ndJsonStream(options.output, options.input)
+  const stream: Stream = withAirTaskUpdatesRerouted(
+    ndJsonStream(options.output, options.input),
+  )
 
   const connection: ClientSideConnection = new ClientSideConnection(
     () =>
@@ -418,10 +511,15 @@ export async function createAcpClient(
       : undefined,
   } as never)
 
+  const initMeta = (initResponse as { _meta?: Record<string, unknown> | null })._meta ?? undefined
+  const steeringSupported = isSteeringAdvertised(initMeta)
+
   return {
     connection,
     agentCapabilities: (initResponse as { agentCapabilities?: Record<string, unknown> })
       .agentCapabilities,
+    initMeta,
+    steeringSupported,
     async newSession(params) {
       const response = await connection.newSession({
         cwd: params.cwd,
@@ -437,6 +535,9 @@ export async function createAcpClient(
         configOptions: response.configOptions ?? [],
         modes: response.modes?.availableModes ?? [],
         currentModeId: response.modes?.currentModeId,
+        outOfTurnListeners: new Set(),
+        orphanedPromptTimeoutMs:
+          options.orphanedPromptTimeoutMs ?? DEFAULT_ORPHANED_PROMPT_TIMEOUT_MS,
       }
       sessions.set(sessionId, state)
       // Apply model + effort via session/set_config_option immediately
@@ -528,6 +629,7 @@ export async function createAcpClient(
         options.turnIdleTimeoutMs,
         cancelPermissionsForSession,
         modelApplyRejection,
+        steeringSupported,
       )
     },
     async loadSession(params) {
@@ -550,6 +652,9 @@ export async function createAcpClient(
         configOptions: response.configOptions ?? [],
         modes: response.modes?.availableModes ?? [],
         currentModeId: response.modes?.currentModeId,
+        outOfTurnListeners: new Set(),
+        orphanedPromptTimeoutMs:
+          options.orphanedPromptTimeoutMs ?? DEFAULT_ORPHANED_PROMPT_TIMEOUT_MS,
       }
       sessions.set(params.sessionId, state)
       return buildSession(
@@ -560,6 +665,8 @@ export async function createAcpClient(
         options.onActivity,
         options.turnIdleTimeoutMs,
         cancelPermissionsForSession,
+        undefined,
+        steeringSupported,
       )
     },
     respondPermission,
@@ -574,6 +681,14 @@ export async function createAcpClient(
   }
 }
 
+/**
+ * The AIR extension's `_meta` shape, as claude-agent-acp reads it
+ * (`air-extension.js` `clientSupportsAirCapability`): an integer `version`
+ * >= 1 and a `capabilities` list, under `_meta.jetbrains.air`.
+ */
+export const AIR_ASYNC_TASKS_CAPABILITY = "asyncTasks"
+const AIR_EXTENSION_VERSION = 1
+
 function clientCapabilitiesFromOptions(
   options: AcpClientOptions,
 ): Record<string, unknown> {
@@ -584,7 +699,37 @@ function clientCapabilitiesFromOptions(
       writeTextFile: caps.fs?.writeTextFile ?? false,
     },
     terminal: caps.terminal ?? false,
+    ...(caps.asyncTasks === false
+      ? {}
+      : {
+          _meta: {
+            jetbrains: {
+              air: {
+                version: AIR_EXTENSION_VERSION,
+                capabilities: [AIR_ASYNC_TASKS_CAPABILITY],
+              },
+            },
+          },
+        }),
   }
+}
+
+/** `InitializeResponse._meta.steering.supported === true`. */
+export function isSteeringAdvertised(initMeta: Record<string, unknown> | undefined): boolean {
+  const steering = initMeta?.steering
+  return (
+    typeof steering === "object" &&
+    steering !== null &&
+    (steering as { supported?: unknown }).supported === true
+  )
+}
+
+/** A raw string, one ContentBlock, or a block array → ContentBlock[]. */
+function toContentBlocks(content: unknown): unknown[] {
+  if (typeof content === "string") return content ? [{ type: "text", text: content }] : []
+  if (Array.isArray(content)) return content
+  if (content && typeof content === "object") return [content]
+  return []
 }
 
 function buildSession(
@@ -596,9 +741,11 @@ function buildSession(
   turnIdleTimeoutMs: number | undefined,
   cancelPermissionsForSession: (sessionId: string) => void,
   modelApplyRejection?: { requested: string; reason: string },
+  steeringSupported = false,
 ): AcpClientSession {
   return {
     sessionId,
+    steeringSupported,
     ...(modelApplyRejection ? { modelApplyRejection } : {}),
     availableConfigOptions: state.configOptions,
     availableModes: state.modes,
@@ -637,6 +784,36 @@ function buildSession(
       }
       state.resetWatchdogTimer = armWatchdogTimer
 
+      // Orphaned-prompt recovery — see `AcpClientOptions.orphanedPromptTimeoutMs`.
+      // Armed by an autonomous-origin result frame, disarmed by ANY later
+      // update (the agent went on to run this prompt after all).
+      let orphanTimer: ReturnType<typeof setTimeout> | undefined
+      let orphanCancelled = false
+      const clearOrphanTimer = () => {
+        if (orphanTimer) clearTimeout(orphanTimer)
+        orphanTimer = undefined
+      }
+      state.observeTurnUpdate = event => {
+        clearOrphanTimer()
+        if (
+          state.orphanedPromptTimeoutMs > 0 &&
+          event?.kind === "usage_update" &&
+          event.cost &&
+          event.origin !== undefined &&
+          AUTONOMOUS_RESULT_ORIGINS.has(event.origin)
+        ) {
+          orphanTimer = setTimeout(() => {
+            orphanCancelled = true
+            console.warn(
+              `[acp] session ${sessionId}: prompt still unresolved ` +
+                `${state.orphanedPromptTimeoutMs}ms after an autonomous (${event.origin}) ` +
+                `result — it was folded into that cycle; cancelling to settle it.`,
+            )
+            void connection.cancel({ sessionId } as never)
+          }, state.orphanedPromptTimeoutMs)
+        }
+      }
+
       // Outbound send — proves the daemon is still driving this turn,
       // independent of whatever StreamEvents come back. Also the initial
       // arm of the watchdog timer, so the timeout is measured from "we
@@ -671,6 +848,11 @@ function buildSession(
           // false-green "completed" that let an un-authenticated reviewer
           // report success without posting a review.
           const stopReason = (response as { stopReason?: string }).stopReason
+          // Our own orphan cancel: the prompt's work was done in the cycle.
+          if (orphanCancelled && stopReason === "cancelled") {
+            enqueue(state, { kind: "turn-end", sessionId, reason: "completed" })
+            return
+          }
           enqueue(state, {
             kind: "turn-end",
             sessionId,
@@ -704,7 +886,9 @@ function buildSession(
           state.active = false
           state.done = true
           state.resetWatchdogTimer = undefined
+          state.observeTurnUpdate = undefined
           clearWatchdogTimer()
+          clearOrphanTimer()
           flush(state)
         })
 
@@ -725,6 +909,49 @@ function buildSession(
       if (!state.active) return
       await connection.cancel({ sessionId } as never)
       onActivity?.()
+    },
+    async steer(content) {
+      if (!steeringSupported) return "unsupported"
+      // Host-turn gate: steer only into a turn WE started. With no prompt()
+      // in flight there's nothing to inject into from the host's point of
+      // view (an agent-autonomous cycle doesn't count), so hand the content
+      // back for a normal prompt without touching the wire.
+      if (!state.active) return "promptRequired"
+      const prompt = toContentBlocks(content)
+      if (!prompt.length) return "unsupported"
+      try {
+        const res = (await connection.extMethod(ACP_STEER_METHOD, {
+          sessionId,
+          prompt,
+          _meta: { steering: { idleBehavior: "promptRequired" } },
+        })) as { outcome?: unknown }
+        onActivity?.()
+        switch (res?.outcome) {
+          case "injected":
+            return "steered"
+          case "promptRequired":
+            return "promptRequired"
+          case "startedNewTurn":
+            // The agent ignored the opt-in and started a detached turn — the
+            // content WAS delivered, so report it (a caller must not re-send).
+            console.warn(
+              `[acp] session ${sessionId}: steering ignored idleBehavior:"promptRequired" ` +
+                `and started a new turn`,
+            )
+            return "steered"
+          default:
+            console.warn(
+              `[acp] session ${sessionId}: unexpected steering outcome ${JSON.stringify(res?.outcome)}`,
+            )
+            return "unsupported"
+        }
+      } catch (err) {
+        console.warn(
+          `[acp] session ${sessionId}: ${ACP_STEER_METHOD} rejected — ` +
+            (err instanceof Error ? err.message : String(err)),
+        )
+        return "unsupported"
+      }
     },
     async setConfigOption(configId, value) {
       try {
@@ -770,6 +997,12 @@ function buildSession(
         return { applied: false, reason }
       }
     },
+    onOutOfTurnEvent(listener) {
+      state.outOfTurnListeners.add(listener)
+      return () => {
+        state.outOfTurnListeners.delete(listener)
+      }
+    },
     async close() {
       // Cancel any permission requests this session parked before dropping it,
       // so the agent's held RPCs settle rather than hang.
@@ -799,6 +1032,29 @@ function makeIterator(state: SessionState): AsyncIterable<StreamEvent> {
         },
       }
     },
+  }
+}
+
+/**
+ * Route an agent-originated event: into the in-flight turn's iterator, or —
+ * when no `prompt()` is in flight — to the session's out-of-turn listeners
+ * (see `AcpClientSession.onOutOfTurnEvent`). Never buffered while idle: the
+ * next `prompt()` clears the buffer, so buffering only ever lost them.
+ */
+function deliver(state: SessionState, event: StreamEvent) {
+  if (state.active) {
+    enqueue(state, event)
+    return
+  }
+  for (const listener of state.outOfTurnListeners) {
+    try {
+      listener(event)
+    } catch (err) {
+      console.warn(
+        `[acp] out-of-turn listener threw:`,
+        err instanceof Error ? err.message : err,
+      )
+    }
   }
 }
 
@@ -885,7 +1141,10 @@ function holdPermissionRequest(
 
   const state = sessions.get(sessionId)
   if (state) {
-    enqueue(state, {
+    // `deliver`, not `enqueue`: an autonomous cycle (no prompt in flight)
+    // can ask permission too, and a request parked where nobody reads it
+    // would hang that cycle forever.
+    deliver(state, {
       kind: "agent-prompt",
       sessionId,
       toolCallId: requestId,
@@ -912,12 +1171,81 @@ function holdPermissionRequest(
   })
 }
 
+/**
+ * Internal extension method that carries an AIR `async_task_*` session update
+ * past the SDK — see {@link withAirTaskUpdatesRerouted}.
+ */
+const AIR_TASK_UPDATE_METHOD = "_agentproto/air_task_update"
+
+/**
+ * The ACP SDK validates every `session/update` against the core schema and
+ * rejects (logs + drops, `-32602 Invalid params`) any `sessionUpdate` kind it
+ * doesn't know — which includes the AIR extension's `async_task_spawned` /
+ * `async_task_progress` / `async_task_state_update`. Rewrite exactly those
+ * frames, in place in the inbound message stream, into an extension
+ * notification the SDK routes to `extNotification` unvalidated. Staying in
+ * the stream (rather than handling them on the side) keeps them in wire
+ * order with every other notification and the prompt response.
+ */
+function withAirTaskUpdatesRerouted(stream: Stream): Stream {
+  type Message = Stream["readable"] extends ReadableStream<infer M> ? M : never
+  // A stand-in transport without a real readable (unit tests mock the SDK
+  // stream as `{}`) has nothing to reroute.
+  if (typeof stream.readable?.pipeThrough !== "function") return stream
+  return {
+    writable: stream.writable,
+    readable: stream.readable.pipeThrough(
+      new TransformStream<Message, Message>({
+        transform(message, controller) {
+          const frame = message as { method?: unknown; params?: unknown; id?: unknown }
+          const update = (frame.params as { update?: { sessionUpdate?: unknown } } | undefined)
+            ?.update
+          if (
+            frame.method === "session/update" &&
+            frame.id === undefined &&
+            typeof update?.sessionUpdate === "string" &&
+            update.sessionUpdate.startsWith("async_task_")
+          ) {
+            controller.enqueue({ ...frame, method: AIR_TASK_UPDATE_METHOD } as Message)
+            return
+          }
+          controller.enqueue(message)
+        },
+      }),
+    ),
+  }
+}
+
 function buildClientHandlers(
   partial: Partial<AcpClientHandlers>,
   sessions: Map<string, SessionState>,
   onActivity: (() => void) | undefined,
   hold: PermissionHoldContext,
 ): AcpClientHandlers {
+  /** Shared body of `sessionUpdate` and the rerouted AIR task updates. */
+  const routeSessionUpdate = (params: unknown): void => {
+    // Every notification is a liveness signal, even ones that don't
+    // translate into a StreamEvent below (e.g. an in-progress
+    // tool_call_update) — this is the gap that leaves lastOutputAt
+    // stale during a long internal tool-call chain.
+    onActivity?.()
+
+    const sid = (params as { sessionId?: string }).sessionId
+    if (!sid) return
+    const state = sessions.get(sid)
+    if (!state) return
+
+    // Reset this session's in-flight turn watchdog (if any) — an
+    // incoming notification is exactly the "not silent" signal the
+    // watchdog exists to detect the absence of.
+    state.resetWatchdogTimer?.()
+
+    const update = (params as { update?: Record<string, unknown> }).update
+    if (!update) return
+    const event = translateSessionUpdate(sid, update)
+    state.observeTurnUpdate?.(event)
+    if (event) deliver(state, event)
+  }
   return {
     // Spread the caller-supplied handlers FIRST so the named methods defined
     // below always win. This matters for `requestPermission`: the arm always
@@ -927,28 +1255,15 @@ function buildClientHandlers(
     // through to `partial.requestPermission` when hold mode is OFF.
     ...(partial as object),
     async sessionUpdate(params) {
-      // Every notification is a liveness signal, even ones that don't
-      // translate into a StreamEvent below (e.g. an in-progress
-      // tool_call_update) — this is the gap that leaves lastOutputAt
-      // stale during a long internal tool-call chain.
-      onActivity?.()
-
-      const sid = (params as { sessionId?: string }).sessionId
-      if (!sid) return
-      const state = sessions.get(sid)
-      if (!state) return
-
-      // Reset this session's in-flight turn watchdog (if any) — an
-      // incoming notification is exactly the "not silent" signal the
-      // watchdog exists to detect the absence of.
-      state.resetWatchdogTimer?.()
-
-      const update = (params as { update?: Record<string, unknown> }).update
-      if (!update) return
-      const event = translateSessionUpdate(sid, update)
-      if (event) enqueue(state, event)
-
+      routeSessionUpdate(params)
       if (partial.sessionUpdate) await partial.sessionUpdate(params)
+    },
+    async extNotification(method, params) {
+      if (method === AIR_TASK_UPDATE_METHOD) {
+        routeSessionUpdate(params)
+        return
+      }
+      if (partial.extNotification) await partial.extNotification(method, params)
     },
     async requestPermission(params) {
       // Every incoming request is a liveness signal.
@@ -1138,14 +1453,32 @@ function translateSessionUpdate(
       }
       const tokensIn = numeric("tokensIn", "input_tokens", "inputTokens")
       const tokensOut = numeric("tokensOut", "output_tokens", "outputTokens")
+      // ACP's usage_update has no model field; claude-agent-acp carries the
+      // model the usage belongs to in `_meta["_claude/model"]`. That wrapper
+      // also documents its cost-less frames' `size` as a best-effort seed
+      // (a text heuristic over the model id, 200k unless the id says "1m")
+      // that only its cost-bearing `result` frame makes authoritative — so
+      // flag those as inferred for the daemon to weigh against the catalog.
+      const meta = update._meta as Record<string, unknown> | undefined
+      const model = typeof meta?.["_claude/model"] === "string" ? meta["_claude/model"] : undefined
+      const sizeInferred = model !== undefined && !cost
+      const originMeta = meta?.["_claude/origin"]
+      const origin =
+        originMeta && typeof originMeta === "object" &&
+        typeof (originMeta as { kind?: unknown }).kind === "string"
+          ? (originMeta as { kind: string }).kind
+          : undefined
       return {
         kind: "usage_update",
         sessionId,
         size: (update.size as number) ?? 0,
         used: (update.used as number) ?? 0,
         ...(cost ? { cost } : {}),
+        ...(model ? { model } : {}),
+        ...(sizeInferred ? { sizeInferred } : {}),
         ...(tokensIn !== undefined ? { tokensIn } : {}),
         ...(tokensOut !== undefined ? { tokensOut } : {}),
+        ...(origin ? { origin } : {}),
       }
     }
     case "available_commands_update": {
@@ -1172,11 +1505,65 @@ function translateSessionUpdate(
         })),
       }
     }
+    case "async_task_spawned":
+    case "async_task_progress":
+    case "async_task_state_update":
+      return translateAsyncTaskUpdate(sessionId, update)
     case "user_message_chunk":
       return null
     default:
       return null
   }
+}
+
+const BACKGROUND_TASK_STATUSES = new Set([
+  "running",
+  "paused",
+  "completed",
+  "failed",
+  "stopped",
+])
+
+/**
+ * AIR `asyncTasks` lifecycle → `background-task` StreamEvent. Wire shapes
+ * (claude-agent-acp `async-tasks.js`):
+ *   async_task_spawned      {asyncTaskId, name, taskType, description, outputFilePath?, toolCallId?}
+ *   async_task_progress     {asyncTaskId, description?, summary?, outputFilePath?, ...}
+ *   async_task_state_update {asyncTaskId, state, summary?, outputFilePath?, toolCallId?}
+ * A `state_update` to running/paused is a mid-life update, not a settle.
+ */
+function translateAsyncTaskUpdate(
+  sessionId: string,
+  update: Record<string, unknown>,
+): StreamEvent | null {
+  const str = (key: string): string | undefined => {
+    const value = update[key]
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined
+  }
+  const taskId = str("asyncTaskId")
+  if (!taskId) return null
+  const state = str("state")
+  const status =
+    state && BACKGROUND_TASK_STATUSES.has(state)
+      ? (state as BackgroundTaskInfo["status"])
+      : undefined
+  const phase =
+    update.sessionUpdate === "async_task_spawned"
+      ? "started"
+      : status === "completed" || status === "failed" || status === "stopped"
+        ? "settled"
+        : "updated"
+  const description = str("description") ?? str("name")
+  const task: BackgroundTaskInfo = {
+    taskId,
+    ...(str("taskType") ? { taskKind: str("taskType") } : {}),
+    ...(description ? { description } : {}),
+    ...(str("outputFilePath") ? { outputFile: str("outputFilePath") } : {}),
+    ...(phase === "started" ? { status: "running" as const } : status ? { status } : {}),
+    ...(str("summary") ? { summary: str("summary") } : {}),
+    ...(str("toolCallId") ? { toolCallId: str("toolCallId") } : {}),
+  }
+  return { kind: "background-task", sessionId, phase, task }
 }
 
 /**

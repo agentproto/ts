@@ -32,7 +32,9 @@ export function WorkingRow({ session }: { session: SessionDescriptor }) {
       ? "waiting on subagent"
       : session.blockedOn === "command"
         ? "waiting on command"
-        : null
+        : session.blockedOn === "inbox"
+          ? "waiting on messages"
+          : null
   return (
     <div className="working">
       <span className="spin" />

@@ -68,12 +68,14 @@ describe.each(Object.entries(PANELS))("panel %s", (_name, html) => {
     // The app must advertise all three modes, else the host never offers them.
     expect(js).toContain("['inline', 'fullscreen', 'pip']")
     expect(js).toContain("ui/request-display-mode")
-    // Host context plumbing feeding syncBtn.
+    // Host context plumbing feeding the toggle.
     expect(js).toContain("ui/notifications/host-context-changed")
     expect(js).toContain("availableDisplayModes")
-    // The two injected buttons (same ids as guilde's canvas reference).
-    expect(js).toContain("'dm'")
-    expect(js).toContain("'pin'")
+    // One shared implementation (@agentproto/app-client/display-mode), handed
+    // this panel's plumbing — not a per-panel copy of the button.
+    expect(js.match(/installDisplayMode = function/g)).toHaveLength(1)
+    expect(js).toContain("window.AgentprotoUI.installDisplayMode({")
+    expect(js).toContain("agentproto-display-mode-bar")
   })
 
   if (_name === "session-story-panel") {

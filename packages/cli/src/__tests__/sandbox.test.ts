@@ -5,6 +5,7 @@ const readSandboxLedgerMock = vi.fn()
 const removeSandboxLedgerEntryMock = vi.fn()
 const makeSandboxResolverMock = vi.fn()
 const makeSandboxCredsStoreMock = vi.fn()
+const recordSandboxLivenessMock = vi.fn()
 
 vi.mock("@agentproto/runtime", async importOriginal => {
   const actual = await importOriginal<typeof import("@agentproto/runtime")>()
@@ -15,6 +16,7 @@ vi.mock("@agentproto/runtime", async importOriginal => {
     removeSandboxLedgerEntry: removeSandboxLedgerEntryMock,
     makeSandboxResolver: makeSandboxResolverMock,
     makeSandboxCredsStore: makeSandboxCredsStoreMock,
+    recordSandboxLiveness: recordSandboxLivenessMock,
   }
 })
 
@@ -52,6 +54,7 @@ afterEach(() => {
   removeSandboxLedgerEntryMock.mockReset()
   makeSandboxResolverMock.mockReset()
   makeSandboxCredsStoreMock.mockReset()
+  recordSandboxLivenessMock.mockReset()
 })
 
 describe("agentproto sandbox attach", () => {
@@ -250,13 +253,70 @@ describe("agentproto sandbox list", () => {
     expect(out).toContain("sess_1")
   })
 
-  it("--json prints the raw rows", async () => {
+  it("--json prints the raw rows without probing (no reconcile by default)", async () => {
     readSandboxLedgerMock.mockReturnValue([LEDGER_ROW])
     const capture = captureOutput()
     const code = await runSandbox(["list", "--json"])
     capture.restore()
     expect(code).toBe(0)
-    expect(JSON.parse(capture.stdout.join("")).sandboxes[0].sandboxId).toBe("bx_abc123")
+    const payload = JSON.parse(capture.stdout.join(""))
+    expect(payload.sandboxes[0].sandboxId).toBe("bx_abc123")
+    expect(payload.reconciled).toBeUndefined()
+    expect(makeSandboxResolverMock).not.toHaveBeenCalled()
+    expect(recordSandboxLivenessMock).not.toHaveBeenCalled()
+  })
+
+  it("--json --reconcile probes providers, flips a gone box, and includes a reconciled summary", async () => {
+    readSandboxLedgerMock.mockReturnValue([LEDGER_ROW])
+    const probe = vi.fn(async () => ({ alive: false }))
+    makeSandboxResolverMock.mockReturnValue(async () => ({
+      slug: "box",
+      name: "Box",
+      version: "installed",
+      description: "fake",
+      requiresSetup: false,
+      capabilities: {},
+      provider: { boot: vi.fn(), probe },
+    }))
+    const capture = captureOutput()
+    const code = await runSandbox(["list", "--json", "--reconcile"])
+    capture.restore()
+    expect(code).toBe(0)
+    expect(probe).toHaveBeenCalledWith("bx_abc123")
+    expect(recordSandboxLivenessMock).toHaveBeenCalledWith("bx_abc123", false, undefined)
+    const payload = JSON.parse(capture.stdout.join(""))
+    expect(payload.reconciled).toEqual({ checked: 1, alive: 0, gone: 1, unknown: 0, skipped: 0 })
+  })
+
+  it("table mode reconciles by default (no flag needed) and shows the LIVE verdict", async () => {
+    readSandboxLedgerMock.mockReturnValue([LEDGER_ROW])
+    const probe = vi.fn(async () => ({ alive: true }))
+    makeSandboxResolverMock.mockReturnValue(async () => ({
+      slug: "box",
+      name: "Box",
+      version: "installed",
+      description: "fake",
+      requiresSetup: false,
+      capabilities: {},
+      provider: { boot: vi.fn(), probe },
+    }))
+    const capture = captureOutput()
+    const code = await runSandbox(["list"])
+    capture.restore()
+    expect(code).toBe(0)
+    expect(probe).toHaveBeenCalledWith("bx_abc123")
+    expect(recordSandboxLivenessMock).toHaveBeenCalledWith("bx_abc123", true, undefined)
+    expect(capture.stdout.join("")).toContain("yes")
+  })
+
+  it("--no-probe skips the reconcile pass in table mode", async () => {
+    readSandboxLedgerMock.mockReturnValue([LEDGER_ROW])
+    const capture = captureOutput()
+    const code = await runSandbox(["list", "--no-probe"])
+    capture.restore()
+    expect(code).toBe(0)
+    expect(makeSandboxResolverMock).not.toHaveBeenCalled()
+    expect(recordSandboxLivenessMock).not.toHaveBeenCalled()
   })
 })
 

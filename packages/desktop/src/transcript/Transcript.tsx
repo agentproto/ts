@@ -253,11 +253,17 @@ export function Transcript({ sessionId, records }: TranscriptProps) {
     <div className="transcript" ref={scrollRef}>
       {presented.turns.map((turn, ti) => (
         <div className="turn" key={turn.id}>
-          <div className={`avatar ${turn.role === "user" ? "user" : "agent"}`}>
-            {turn.role === "user" ? "JA" : "◇"}
+          <div className={`avatar ${turn.from ? "agent" : turn.role === "user" ? "user" : "agent"}`}>
+            {turn.from ? "↑" : turn.role === "user" ? "JA" : "◇"}
           </div>
           <div className="bubble">
-            <div className="who">{turn.role === "user" ? "you" : "agent"}</div>
+            <div className="who">
+              {turn.from
+                ? `from ${turn.from.relation} ${turn.from.label ?? turn.from.sessionId ?? ""} · ${turn.from.kind}`
+                : turn.role === "user"
+                  ? "you"
+                  : "agent"}
+            </div>
             {turn.segments.map((seg) => (
               <SegmentView key={seg.id} seg={seg} isLast={ti === presented.turns.length - 1} />
             ))}

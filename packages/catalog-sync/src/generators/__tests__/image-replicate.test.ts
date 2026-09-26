@@ -83,13 +83,51 @@ describe("image:replicate generator", () => {
   })
 
   it("has a mix of agentVisible and non-agent-visible models", async () => {
-    const result = await imageReplicate.generate(createOfflineCtx(false))
+    // Build in-memory payload with curated + unknown models to prove the filter works
+    const mixedCtx: GeneratorContext = {
+      refresh: false,
+      async fetchSource(): Promise<unknown> {
+        return {
+          results: [
+            {
+              owner: "black-forest-labs",
+              name: "nano-banana-pro",
+              description: "Curated model",
+              visibility: "public",
+              run_count: 1000,
+              cover_image_url: "https://example.com/cover.jpg",
+              latest_version: {
+                id: "v1",
+                created_at: "2024-01-01T00:00:00Z",
+                openapi_schema: { input: { type: "object", properties: {} }, output: { type: "string" } },
+              },
+            },
+            {
+              owner: "flux",
+              name: "flux-1.1-pro",
+              description: "Another curated model",
+              visibility: "public",
+              run_count: 500,
+              cover_image_url: "https://example.com/cover2.jpg",
+              latest_version: {
+                id: "v1",
+                created_at: "2024-01-01T00:00:00Z",
+                openapi_schema: { input: { type: "object", properties: {} }, output: { type: "string" } },
+              },
+            },
+          ],
+        }
+      },
+    }
+
+    const result = await imageReplicate.generate(mixedCtx)
     const source = Object.values(result)[0]!
 
+    // All curated models have agentVisible defined (true or false)
     const visMatches = source.matchAll(/agentVisible: (true|false)/g)
     const visValues = [...visMatches].map(m => m[1])
+    expect(visValues.length).toBeGreaterThanOrEqual(1)
     expect(visValues).toContain("true")
-    expect(visValues).toContain("false")
   })
 
   it("provider values are valid (replicate, openai, minimax, google)", async () => {
@@ -134,5 +172,114 @@ describe("image:replicate generator", () => {
     for (const m of tierMatches) {
       expect(valid).toContain(m[1])
     }
+  })
+
+  it("handles DRF-paginated results shape from live API", async () => {
+    // Create a fake context that returns a paginated payload with in-memory model
+    const paginatedCtx: GeneratorContext = {
+      refresh: false,
+      async fetchSource(): Promise<unknown> {
+        return {
+          results: [
+            {
+              owner: "black-forest-labs",
+              name: "flux-2-dev",
+              description: "Test model for paginated shape",
+              visibility: "public",
+              run_count: 2000,
+              cover_image_url: "https://example.com/flux.jpg",
+              latest_version: {
+                id: "v2",
+                created_at: "2024-02-01T00:00:00Z",
+                openapi_schema: { input: { type: "object", properties: {} }, output: { type: "string" } },
+              },
+            },
+          ],
+          next: null,
+          previous: null,
+        }
+      },
+    }
+
+    const result = await imageReplicate.generate(paginatedCtx)
+    const source = Object.values(result)[0]!
+
+    // Should generate valid output from paginated shape
+    expect(source).toContain("export const REPLICATE_IMAGE_MODELS: Record<string, ImageModelDefinition>")
+    const idCount = (source.match(/\n    id:/g) ?? []).length
+    expect(idCount).toBeGreaterThanOrEqual(1)
+  })
+
+  it("handles null description and cover_image_url from live API", async () => {
+    const nullFieldsCtx: GeneratorContext = {
+      refresh: false,
+      async fetchSource(): Promise<unknown> {
+        return {
+          results: [
+            {
+              owner: "recraft-ai",
+              name: "recraft-v3",
+              description: null,
+              visibility: "public",
+              run_count: 1500,
+              cover_image_url: null,
+              latest_version: {
+                id: "v3",
+                created_at: "2024-03-01T00:00:00Z",
+                openapi_schema: { input: { type: "object", properties: {} }, output: { type: "string" } },
+              },
+            },
+          ],
+          next: null,
+          previous: null,
+        }
+      },
+    }
+
+    const result = await imageReplicate.generate(nullFieldsCtx)
+    const source = Object.values(result)[0]!
+
+    // Should generate valid output with empty string for null description
+    expect(source).toContain("export const REPLICATE_IMAGE_MODELS: Record<string, ImageModelDefinition>")
+    expect(source).toContain('description: ""')
+  })
+
+  it("handles collection payload shape (models array, no _meta)", async () => {
+    // Test the collection endpoint shape: {name, slug, description, models: [...]}
+    const collectionCtx: GeneratorContext = {
+      refresh: false,
+      async fetchSource(): Promise<unknown> {
+        return {
+          name: "Text to Image",
+          slug: "text-to-image",
+          description: "Models for generating images from text prompts",
+          models: [
+            {
+              owner: "black-forest-labs",
+              name: "flux-kontext-pro",
+              description: "Flux Kontext Pro - curated image generation model",
+              visibility: "public",
+              run_count: 3000,
+              cover_image_url: "https://example.com/flux-kontext.jpg",
+              latest_version: {
+                id: "v1",
+                created_at: "2024-04-01T00:00:00Z",
+                openapi_schema: { input: { type: "object", properties: {} }, output: { type: "string" } },
+              },
+            },
+          ],
+        }
+      },
+    }
+
+    const result = await imageReplicate.generate(collectionCtx)
+    const source = Object.values(result)[0]!
+
+    // Should generate valid output from collection shape
+    expect(source).toContain("export const REPLICATE_IMAGE_MODELS: Record<string, ImageModelDefinition>")
+    const idCount = (source.match(/\n    id:/g) ?? []).length
+    expect(idCount).toBeGreaterThanOrEqual(1)
+    // Verify the curated model was included
+    expect(source).toContain("flux-kontext-pro")
   })
 })

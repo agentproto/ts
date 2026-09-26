@@ -26,7 +26,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { createMcpServer } from "@agentproto/mcp-server"
 import { registerSessionTools } from "../session-tools.js"
-import { createSessionsRegistry, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
+import { createSessionsRegistry, type AgentSessionLike, type AgentSessionResumer, type AgentStreamEvent } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 
@@ -85,7 +85,7 @@ function sentText(message: unknown): string {
   throw new Error(`sentText: unexpected message shape: ${JSON.stringify(message)}`)
 }
 
-function makeResumer(sent: unknown[]): ReturnType<typeof vi.fn> {
+function makeResumer(sent: unknown[]): AgentSessionResumer {
   return vi.fn(async () => {
     const fresh: AgentSessionLike = {
       sessionId: "conv-digest",

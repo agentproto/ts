@@ -1,7 +1,8 @@
 /**
  * The "chat-panel" session view — a VS Code webview panel embedding an IFRAME
- * of the session-chat standalone URL (`chatUrl(daemonUrl, sessionId)` with
- * `&embed=1` so the app strips its sidebar when it supports the param).
+ * of the session-chat standalone URL (`chatPanelUrl(daemonUrl, sessionId)`:
+ * `?embed=1#session=<id>`, `embed=1` so the app strips its sidebar when it
+ * supports the param).
  *
  * Unlike appPanel.ts there is NO McpApp bridge: session-chat talks REST/SSE
  * directly to the daemon, so the outer webview document is just a

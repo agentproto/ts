@@ -2,7 +2,7 @@
   "name": "agentproto-vscode",
   "displayName": "agentproto",
   "description": "Live operational views for the agentproto daemon — sessions, permissions, cost — plus spawn/drive/stop from the editor.",
-  "version": "0.16.0",
+  "version": "0.17.3",
   "publisher": "agentproto",
   "icon": "media/icon.png",
   "license": "Apache-2.0",
@@ -34,6 +34,7 @@
   },
   "dependencies": {
     "@agentproto/apps": "workspace:*",
+    "@agentproto/mcp-app-host": "workspace:*",
     "@agentproto/runtime": "workspace:*",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^5.5.0",

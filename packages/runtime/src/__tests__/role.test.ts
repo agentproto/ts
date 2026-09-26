@@ -128,6 +128,49 @@ describe("composeRoleContext", () => {
   })
 })
 
+describe("composeRoleContext — reach (text follows the tools the session really has)", () => {
+  it("delegation unreachable ⇒ executor disposition, no spawn line, no agent_start promise", () => {
+    const composed = composeRoleContext(SUPERVISOR_ROLE, "extra", undefined, { reachable: false })
+    expect(composed).toBe(`${EXECUTOR_ROLE.disposition}\n\nextra`)
+    expect(composed).not.toContain("Roles you may spawn")
+  })
+
+  it("reachable + eager ⇒ supervisor disposition, spawn line, MCP tool + CLI naming, no tool_search", () => {
+    const composed = composeRoleContext(SUPERVISOR_ROLE, undefined, undefined, { reachable: true, deferred: false })
+    expect(composed.startsWith(SUPERVISOR_ROLE.disposition)).toBe(true)
+    expect(composed).toContain("Roles you may spawn: executor, supervisor.")
+    expect(composed).toContain("MCP tools on the `agentproto` MCP server")
+    expect(composed).toContain('agentproto sessions start <adapter> --prompt "<task>"')
+    expect(composed).not.toContain("tool_search")
+  })
+
+  it("reachable + deferred ⇒ also points at tool_search", () => {
+    const composed = composeRoleContext(SUPERVISOR_ROLE, undefined, undefined, { reachable: true, deferred: true })
+    expect(composed).toContain("`tool_search`")
+    expect(composed).toContain("select:agent_start,agent_prompt")
+  })
+
+  it("an executor is unaffected by reach either way", () => {
+    expect(composeRoleContext(EXECUTOR_ROLE, undefined, undefined, { reachable: true })).toBe(EXECUTOR_ROLE.disposition)
+    expect(composeRoleContext(EXECUTOR_ROLE, undefined, undefined, { reachable: false })).toBe(EXECUTOR_ROLE.disposition)
+  })
+
+  it("the supervisor disposition names agent_start as an MCP tool on the agentproto server", () => {
+    expect(SUPERVISOR_ROLE.disposition).toContain("`agent_start` MCP tool (on the `agentproto` MCP server)")
+  })
+})
+
+describe("resolveRole — default follows reach", () => {
+  it("depth 0 with delegation unreachable defaults to executor", () => {
+    expect(resolveRole(undefined, 0, undefined, undefined, { reachable: false })).toBe(EXECUTOR_ROLE)
+    expect(resolveRole(undefined, 0, undefined, undefined, { reachable: true })).toBe(SUPERVISOR_ROLE)
+  })
+
+  it("an explicit role is honoured regardless of reach", () => {
+    expect(resolveRole("supervisor", 0, undefined, undefined, { reachable: false })).toBe(SUPERVISOR_ROLE)
+  })
+})
+
 describe("DELEGATION_TOOL_NAMES", () => {
   it("includes at minimum the spawn + drive surface", () => {
     expect(DELEGATION_TOOL_NAMES).toContain("agent_start")
@@ -147,6 +190,14 @@ describe("built-in role shapes", () => {
   it("executor is the floor (level 0), supervisor is the ceiling (level 100)", () => {
     expect(EXECUTOR_ROLE.level).toBe(0)
     expect(SUPERVISOR_ROLE.level).toBe(100)
+  })
+
+  it("executor defaults deferred/lazy MCP tool loading ON — it can't delegate and rarely needs the full surface", () => {
+    expect(EXECUTOR_ROLE.deferredTools).toBe(true)
+  })
+
+  it("supervisor has no deferredTools opinion — falls through to the gateway's own default", () => {
+    expect(SUPERVISOR_ROLE.deferredTools).toBeUndefined()
   })
 })
 

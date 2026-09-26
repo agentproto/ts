@@ -99,7 +99,7 @@ describe("wireSupervisorNotify", () => {
       notifyParentOnCrash: true,
     })
 
-    const enqueueSpy = vi.spyOn(reg, "enqueuePrompt").mockResolvedValue(undefined)
+    const enqueueSpy = vi.spyOn(reg, "enqueuePrompt").mockResolvedValue({ queued: false })
 
     expect(reg.markCrashed(child.id)).toBe(true)
 
@@ -110,13 +110,24 @@ describe("wireSupervisorNotify", () => {
     expect(calledMessage).toContain("child-1")
     expect(calledMessage).toContain("crashed")
     expect(calledMessage).toContain("adapter process gone")
-    // NEVER interrupt — the direct signal only ever reaches an idle parent.
-    expect(calledOpts).toEqual({})
+    // NEVER interrupt; a daemon-attested system/blocker message.
+    expect(calledOpts).toEqual({
+      queue: true,
+      source: `child:${child.id}`,
+      origin: `child:${child.id}`,
+      envelope: expect.objectContaining({
+        to: parent.id,
+        from: { relation: "system" },
+        kind: "blocker",
+        urgency: "next-turn",
+        text: calledMessage,
+      }),
+    })
 
     reg.shutdown()
   })
 
-  it("busy parent: NOT interrupted; a pending marker is stamped and flushed at the next turn", async () => {
+  it("busy parent: NOT interrupted; the notice is queued and drains as its OWN turn at turn-end", async () => {
     const bus = createSessionEventBus()
     const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp, sessionEvents: bus })
     wireSupervisorNotify({ registry: reg, sessionEvents: bus })
@@ -150,12 +161,26 @@ describe("wireSupervisorNotify", () => {
     // the session is still busy on the SAME first turn.
     expect(parentSession.cancel).not.toHaveBeenCalled()
     expect(reg.get(parent.id)?.busy).toBe(true)
-    expect(reg.get(parent.id)?.pendingChildCrashNotices).toEqual([
-      expect.stringContaining("[child-crashed]"),
+    expect(reg.get(parent.id)?.promptQueue).toEqual([
+      expect.objectContaining({
+        message: expect.stringContaining("[child-crashed]"),
+        source: `child:${child.id}`,
+      }),
     ])
 
-    // Let the first turn settle, then send a second, real turn — the
-    // queued notice must flush onto it (and only it) automatically.
+    // A duplicate exit event for the same crash never double-queues.
+    bus.emit({
+      type: "session:exited",
+      sessionId: child.id,
+      exitCode: undefined,
+      status: "error",
+      reason: "crashed",
+      ts: new Date().toISOString(),
+    })
+    expect(reg.get(parent.id)?.promptQueue).toHaveLength(1)
+
+    // Let the first turn settle — the queued notice dispatches BY ITSELF as
+    // the next turn (no other prompt needed to carry it).
     const turnEnded = () =>
       new Promise<void>(resolve => {
         const off = bus.on("session:turn-end", () => {
@@ -168,14 +193,18 @@ describe("wireSupervisorNotify", () => {
     await firstTurnEnd
     expect(reg.get(parent.id)?.busy).toBe(false)
 
-    await reg.enqueuePrompt(parent.id, "second turn", {})
+    const deadline = Date.now() + 2000
+    while (parentSession.messages.length < 2 && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 10))
+    }
     // The turn dispatches as an ACP content block ({type:"text", text}) —
     // runAgentTurn wraps a plain string message before calling send().
     const secondTurnText = (parentSession.messages[1] as { text: string }).text
-    expect(secondTurnText).toContain("[child-crashed]")
-    expect(secondTurnText).toContain("second turn")
-    // Flushed exactly once — cleared after being folded into the turn.
-    expect(reg.get(parent.id)?.pendingChildCrashNotices).toEqual([])
+    // A daemon-attested system/blocker envelope — no human text in it.
+    expect(secondTurnText).toContain('<agentproto-message id="msg_')
+    expect(secondTurnText).toContain('from="system" kind="blocker">')
+    expect(secondTurnText).toMatch(/<body>\n\[child-crashed\] child-1: crashed/)
+    expect(reg.get(parent.id)?.promptQueue).toEqual([])
 
     const secondTurnEnd = turnEnded()
     parentSession.finishTurn()
@@ -189,7 +218,7 @@ describe("wireSupervisorNotify", () => {
     const bus = createSessionEventBus()
     const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp, sessionEvents: bus })
     wireSupervisorNotify({ registry: reg, sessionEvents: bus })
-    const enqueueSpy = vi.spyOn(reg, "enqueuePrompt").mockResolvedValue(undefined)
+    const enqueueSpy = vi.spyOn(reg, "enqueuePrompt").mockResolvedValue({ queued: false })
 
     const parent = reg.spawnAgent({
       workspaceSlug: "default",
@@ -215,7 +244,7 @@ describe("wireSupervisorNotify", () => {
     const bus = createSessionEventBus()
     const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp, sessionEvents: bus })
     wireSupervisorNotify({ registry: reg, sessionEvents: bus })
-    const enqueueSpy = vi.spyOn(reg, "enqueuePrompt").mockResolvedValue(undefined)
+    const enqueueSpy = vi.spyOn(reg, "enqueuePrompt").mockResolvedValue({ queued: false })
 
     const child = reg.spawnAgent({
       workspaceSlug: "default",
@@ -235,7 +264,7 @@ describe("wireSupervisorNotify", () => {
     const bus = createSessionEventBus()
     const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp, sessionEvents: bus })
     wireSupervisorNotify({ registry: reg, sessionEvents: bus })
-    const enqueueSpy = vi.spyOn(reg, "enqueuePrompt").mockResolvedValue(undefined)
+    const enqueueSpy = vi.spyOn(reg, "enqueuePrompt").mockResolvedValue({ queued: false })
 
     const parent = reg.spawnAgent({
       workspaceSlug: "default",

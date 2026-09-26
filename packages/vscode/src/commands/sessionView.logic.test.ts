@@ -4,6 +4,7 @@ import type { InstalledAppInfo, InstalledAppUi } from "../client/types.js"
 import {
   SESSION_CHAT_APP_ID,
   chatPanelUrl,
+  chatReuseUrlFilter,
   chatUrl,
   installedSessionChatApp,
   resolveSessionOpen,
@@ -24,24 +25,32 @@ describe("installedSessionChatApp", () => {
   })
 })
 
+describe("chatReuseUrlFilter", () => {
+  it("globs every session-chat tab on the daemon, with or without the router's trailing slash", () => {
+    expect(chatReuseUrlFilter("http://127.0.0.1:18790/")).toBe(
+      "http://127.0.0.1:18790/apps/@agentik/session-chat/ui/**",
+    )
+  })
+})
+
 describe("chatUrl", () => {
   it("builds the standalone app-host deep link", () => {
     expect(chatUrl("http://127.0.0.1:18790", "sess_abc")).toBe(
-      "http://127.0.0.1:18790/apps/@agentik/session-chat/ui?session=sess_abc",
+      "http://127.0.0.1:18790/apps/@agentik/session-chat/ui#session=sess_abc",
     )
   })
 
   it("encodes the session id and tolerates a trailing slash on daemonUrl", () => {
     expect(chatUrl("http://127.0.0.1:18790/", "sess_a b")).toBe(
-      "http://127.0.0.1:18790/apps/@agentik/session-chat/ui?session=sess_a%20b",
+      "http://127.0.0.1:18790/apps/@agentik/session-chat/ui#session=sess_a%20b",
     )
   })
 })
 
 describe("chatPanelUrl", () => {
-  it("appends embed=1 to the chat deep link", () => {
+  it("puts embed=1 in the query and the session in the fragment", () => {
     expect(chatPanelUrl("http://127.0.0.1:18790", "sess_abc")).toBe(
-      "http://127.0.0.1:18790/apps/@agentik/session-chat/ui?session=sess_abc&embed=1",
+      "http://127.0.0.1:18790/apps/@agentik/session-chat/ui?embed=1#session=sess_abc",
     )
   })
 })

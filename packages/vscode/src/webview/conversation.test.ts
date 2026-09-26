@@ -356,6 +356,21 @@ describe("reduceConversation", () => {
     expect(conv.turns).toHaveLength(0)
   })
 
+  it("keeps a cost-bearing usage_update's size over later inferred frames", () => {
+    // Recorded claude-code shape (transcripts written before the daemon
+    // corrected sizes at ingestion): in-turn frames guess 200k, only the
+    // cost-bearing end-of-turn frame carries the real 1M.
+    freshSeq()
+    const conv = reduceConversation("s1", [
+      rec({ kind: "usage_update", size: 200_000, used: 38_000 }),
+      rec({ kind: "usage_update", size: 1_000_000, used: 157_000, cost: { amount: 1.5, currency: "USD" } }),
+      rec({ kind: "usage_snapshot", contextSize: 1_000_000, contextUsed: 157_000, source: "adapter" }),
+      rec({ kind: "usage_update", size: 200_000, used: 158_000 }),
+      rec({ kind: "usage_update", size: 0, used: 0, cost: { amount: 1.6, currency: "USD" } }),
+    ])
+    expect(conv.usage).toMatchObject({ size: 1_000_000, sizeAuthoritative: true, used: 0 })
+  })
+
   it("captures an agent question and an error as segments", () => {
     freshSeq()
     const conv = reduceConversation("s1", [
@@ -875,5 +890,39 @@ describe("clampToLines", () => {
   it("treats one very long line as one line — CSS clips it, the count stays honest", () => {
     const long = "x".repeat(5000)
     expect(clampToLines(long, 3)).toEqual({ preview: long, clamped: false, lineCount: 1 })
+  })
+})
+
+describe("reduceConversation — session-message (typed inter-session message)", () => {
+  it("opens its own user-role turn attributed to the attested sender, never merged with a prompt", () => {
+    freshSeq()
+    const records: SessionEventRecord[] = [
+      rec({ kind: "user-prompt", text: "human ask" }),
+      rec({ kind: "text-delta", text: "working\n" }),
+      rec({ kind: "turn-end", reason: "completed" }),
+      rec({
+        kind: "session-message",
+        message: {
+          id: "msg_1",
+          text: "PR opened",
+          kind: "done",
+          from: { sessionId: "sess_child01", label: "executor-2", relation: "child" },
+        },
+      }),
+      rec({ kind: "text-delta", text: "thanks\n" }),
+    ]
+    const conv = reduceConversation("sess_p", records)
+    expect(conv.turns.map(t => t.role)).toEqual(["user", "assistant", "user", "assistant"])
+    const msgTurn = conv.turns[2]!
+    expect(msgTurn.promptSource).toBe("child:sess_child01")
+    expect(msgTurn.segments[0]).toMatchObject({ kind: "user", text: "PR opened" })
+    // The human turn stays unattributed.
+    expect(conv.turns[0]!.promptSource).toBeUndefined()
+  })
+
+  it("a record without an envelope is skipped rather than crashing", () => {
+    freshSeq()
+    const conv = reduceConversation("sess_p", [rec({ kind: "session-message" })])
+    expect(conv.turns).toEqual([])
   })
 })

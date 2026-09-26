@@ -154,6 +154,87 @@ describe("continueAgentSessionFresh", () => {
     expect(newDesc.checkpointId).toBeDefined()
   })
 
+  it("stamps handoff with matching from/to harness on a same-harness continuation", async () => {
+    const prev = makePrev()
+    const newDesc = { id: "sess_new", harness: "claude-code", adapterSlug: "claude-code" } as SessionDescriptor
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: newDesc,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      prev,
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    expect(newDesc.handoff).toEqual({
+      fromHarness: "claude-code",
+      toHarness: "claude-code",
+      at: expect.any(String),
+    })
+  })
+
+  it("overrides adapter/harness/model/access for a cross-harness handoff and stamps the swap onto handoff", async () => {
+    const prev = makePrev()
+    const newDesc = { id: "sess_new", harness: "opencode", adapterSlug: "opencode" } as SessionDescriptor
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: newDesc,
+    })
+
+    const result = await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      prev,
+      {
+        baseDir: "/tmp/checkpoints",
+        harness: "opencode",
+        adapter: "opencode",
+        model: "gpt-5-nano",
+        access: { profileRef: "opencode-wallet" },
+      },
+    )
+
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.adapter).toBe("opencode")
+    expect(input.harness).toBe("opencode")
+    expect(input.model).toBe("gpt-5-nano")
+    expect(input.access).toEqual({ profileRef: "opencode-wallet" })
+    // prev's route ({gateway: "anthropic"}) was resolved for the OLD adapter
+    // and must NOT ride along into a different one — carrying it forward
+    // would also silently skip spawnAgentSession's adapter-capability guard
+    // (it only runs when route.gateway is undefined).
+    expect(input.route).toBeUndefined()
+    // The prompt (checkpoint handoff text) is unaffected by the axis overrides.
+    expect(input.prompt).toContain("[continued session")
+
+    expect(result.descriptor.handoff).toEqual({
+      fromHarness: "claude-code",
+      toHarness: "opencode",
+      at: expect.any(String),
+    })
+  })
+
+  it("leaves adapter/harness/model/access unset when no override is passed (same-harness default)", async () => {
+    const prev = makePrev()
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      prev,
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.adapter).toBe("claude-code")
+    expect(input.harness).toBe("claude-code")
+    expect(input.model).toBe("claude-sonnet-5")
+    expect(input.access).toEqual({ profileRef: "anthropic-main" })
+  })
+
   it("throws when spawn fails", async () => {
     const prev = makePrev()
     vi.mocked(spawnAgentSession).mockResolvedValue({

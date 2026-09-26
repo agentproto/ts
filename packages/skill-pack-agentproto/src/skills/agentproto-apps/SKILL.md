@@ -153,6 +153,34 @@ the `ui.tools` allowlist), so every tool the UI uses must be allowlisted in
 APP.md. If the bridge is absent the UI should fall back to a standalone/mock
 mode instead of crashing.
 
+### Display mode (the ⤢ toggle)
+
+The injected bridge also mounts a floating fullscreen toggle, placed clear of
+the host's chrome (`hostContext.safeAreaInsets`) and themed from
+`hostContext.theme`. It shows **only** for modes the host advertises in
+`hostContext.availableDisplayModes` — Claude Desktop advertises none and has
+its own native control, so nothing is drawn there; Codex advertises
+`fullscreen`. The bridge logs `[mcp-app] displayMode= … availableDisplayModes= …`
+plus the host-context key names, which is the first thing to read when a
+toggle doesn't appear.
+
+The controller is `window.McpApp.displayMode` (also on the object `connect()`
+resolves to): `get()`, `available()`, `request(mode)`, `onChange(cb)`,
+`mountToggle(el?)`. An app with its own header opts the floating button out
+and places it itself:
+
+```html
+<meta name="agentproto-display-toggle" content="none">   <!-- or "optimistic" -->
+<script>
+  const app = await window.McpApp.connect()   // connect({displayToggle:"none"}) also works
+  app.displayMode.mountToggle(document.querySelector("header"))
+</script>
+```
+
+`optimistic` shows the button against a host that advertises nothing but may
+still honour the request, and hides it permanently on the first refusal.
+Restyle via `--agentproto-dm-bg/-fg/-border/-top/-right`.
+
 ## Recipe — build/wire an app UI against durable data (minimal)
 
 1. Author the app bundle under `<appDir>/.agentproto/` (APP.md + agents +

@@ -1,5 +1,12 @@
 # @agentproto/product
 
+## 1.0.1
+
+### Patch Changes
+
+- Updated dependencies [c27f0b8]
+  - @agentproto/ref@0.2.1
+
 ## 1.0.0
 
 ### Major Changes

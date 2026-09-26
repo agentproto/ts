@@ -102,13 +102,18 @@ describe("claude-sdk model routing", () => {
     // Zen's Anthropic subset is the whole Claude family — the point of the route.
     expect(ids("opencode")).toContain("opencode/claude-sonnet-4-6")
     expect(ids("opencode")).toContain("opencode/claude-opus-5")
-    // Go's is four ids, and the OpenAI-flavored majority must stay out.
-    expect(ids("opencode-go")).toEqual([
+    // Membership, not an exact list: the roster is catalog-synced, and the
+    // derived-menu equality above already pins the exact shape. union-alpha
+    // joined Go's Anthropic surface after #1309 verified the original four
+    // (same disease as #1328/#1331/#1332 — this is the last literal).
+    for (const id of [
       "opencode-go/minimax-m2.5",
       "opencode-go/minimax-m2.7",
       "opencode-go/minimax-m3",
       "opencode-go/qwen3.8-flash",
-    ])
+    ]) {
+      expect(ids("opencode-go")).toContain(id)
+    }
     expect(ids("opencode-go")).not.toContain("opencode-go/glm-5.3")
 
     // No `@route` suffix: for these endpoints the route IS the leading segment.

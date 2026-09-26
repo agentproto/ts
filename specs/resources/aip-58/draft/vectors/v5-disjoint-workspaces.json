@@ -1,0 +1,60 @@
+{
+  "id": "V5",
+  "title": "Two concurrent runs of the same workflow -> disjoint workspaces, no shared-path write before publish",
+  "rule": "specs/aip-58.mdx section 4 Run workspace -- \"Two runs MUST NEVER share a workspace\" + the deferred-publish model",
+  "manifestExcerpt": {
+    "kind": "workflow",
+    "id": "pricing-brief",
+    "outputsFiles": {
+      "brief": { "path": "./briefs/latest.md", "required": true }
+    }
+  },
+  "runCreate": [
+    {
+      "kind": "workflow",
+      "ref": { "id": "pricing-brief", "version": "1.0.0" },
+      "input": { "productUrl": "https://example.com/pricing-a" }
+    },
+    {
+      "kind": "workflow",
+      "ref": { "id": "pricing-brief", "version": "1.0.0" },
+      "input": { "productUrl": "https://example.com/pricing-b" }
+    }
+  ],
+  "note_on_manifest": "outputsFiles.brief.path is deliberately a FIXED path with no <runId>/<isoDate> interpolation -- './briefs/latest.md' -- the exact shape that raced under plain AIP-16. This is the case the deferred-publish model exists for; V5 under interpolated paths would not exercise the bug at all.",
+  "expected": {
+    "runIds": ["run_A", "run_B"],
+    "workspaces": {
+      "run_A": "<runsRoot>/run_A/",
+      "run_B": "<runsRoot>/run_B/"
+    },
+    "duringExecution": {
+      "sharedPathWritten": false,
+      "notes": [
+        "At no point while either run is 'running' does the file at the shared workspace path './briefs/latest.md' get created, truncated, or modified by either run -- outputsFiles.brief syncs ONLY to each run's own <runsRoot>/<runId>/artifacts/brief per section 4's sync-target override.",
+        "Reading './briefs/latest.md' at any timestamp strictly between both runs' startedAt and both runs' endedAt MUST show either its pre-existing content or absence -- never partial or run-attributable content from run_A or run_B."
+      ]
+    },
+    "artifactsAfterBothSucceed": {
+      "run_A.artifacts": [
+        { "key": "brief", "path": "artifacts/brief", "stepId": "save" }
+      ],
+      "run_B.artifacts": [
+        { "key": "brief", "path": "artifacts/brief", "stepId": "save" }
+      ],
+      "invariant": "run_A.artifacts[0]'s absolute location (<runsRoot>/run_A/artifacts/brief) and run_B.artifacts[0]'s (<runsRoot>/run_B/artifacts/brief) are disjoint paths, even though both entries carry the identical relative key/path/stepId -- disjointness is a property of the run-scoped root, not of the ArtifactEntry fields themselves."
+    },
+    "terminalStates": { "run_A": "succeeded", "run_B": "succeeded" },
+    "afterExplicitPublish": {
+      "scenario": "run.publish { runId: run_B, artifactKey: 'brief' } called after run_B succeeds, no explicit 'to' given",
+      "result": "./briefs/latest.md now holds run_B's brief content; a run.published event appears in run_B's event log naming { artifactKey: 'brief', to: './briefs/latest.md' }",
+      "notes": [
+        "run_A's own artifacts/brief is untouched by run_B's publish -- publish only ever writes to the shared destination, never to another run's workspace.",
+        "Had run_A also published to the same default destination (before or after run_B), the shared path reflects whichever publish happened last -- last-publish-wins is an explicit, observable act attributable to a specific run.publish call, never an accidental race between two runs finishing."
+      ]
+    },
+    "notes": [
+      "This is the exact failure the Motivation cites: two runs overwriting each other's files. Before this vector's extension, a naive reading of AIP-16 alone could still let both runs' outputsFiles.brief sync to './briefs/latest.md' unconditionally at run end, racing on whichever finished last -- the deferred-publish model (section 4) is what actually closes it, not merely giving each run its own <runId>."
+    ]
+  }
+}

@@ -15,7 +15,7 @@
 
 import { readFile } from "node:fs/promises"
 import { z } from "zod"
-import type { SttPort, Transcript } from "./stt.port.js"
+import type { SttPort, Transcript, Utterance } from "./stt.port.js"
 
 export interface AssemblyAiSttOptions {
   readonly apiKey: string
@@ -31,11 +31,25 @@ const AAI_TRANSCRIPT = z
   .object({
     id: z.string(),
     status: z.enum(["queued", "processing", "completed", "error"]),
-    text: z.string().optional(),
-    language_code: z.string().optional(),
-    error: z.string().optional(),
+    // Nullish, not optional: while a job is `queued`/`processing`
+    // AssemblyAI sends an explicit `null` for these, and the poll loop
+    // parses every intermediate response — an `.optional()` here rejected
+    // the very first poll of every transcript (0/64 on the Werber corpus).
+    text: z.string().nullish(),
+    language_code: z.string().nullish(),
+    error: z.string().nullish(),
     utterances: z
-      .array(z.object({ speaker: z.string(), text: z.string() }))
+      .array(
+        z.object({
+          speaker: z.string(),
+          text: z.string(),
+          // AssemblyAI reports these in milliseconds. Nullish, not just
+          // optional: an explicit `null` from the API must parse cleanly
+          // rather than failing the whole video's transcript.
+          start: z.number().nullish(),
+          end: z.number().nullish(),
+        })
+      )
       .nullish(),
   })
   .loose()
@@ -89,9 +103,12 @@ export class AssemblyAiStt implements SttPort {
     }
     if (job.status === "error") throw new Error(`AssemblyAI transcript failed: ${job.error ?? "unknown"}`)
 
+    const utterances = toUtterances(job)
     return {
       text: formatDiarized(job),
+      engine: "assemblyai",
       ...(job.language_code ? { language: job.language_code } : {}),
+      ...(utterances ? { utterances } : {}),
     }
   }
 
@@ -110,6 +127,17 @@ export class AssemblyAiStt implements SttPort {
     if (!r.ok) throw new Error(`AssemblyAI GET ${path} ${r.status}: ${(await r.text()).slice(0, 200)}`)
     return AAI_TRANSCRIPT.parse(await r.json())
   }
+}
+
+/** Structured utterances (ms → s), or `undefined` when AssemblyAI didn't diarize. */
+function toUtterances(job: AaiTranscript): ReadonlyArray<Utterance> | undefined {
+  if (!job.utterances || job.utterances.length === 0) return undefined
+  return job.utterances.map(u => ({
+    speaker: u.speaker,
+    text: u.text.trim(),
+    ...(u.start != null ? { start: u.start / 1000 } : {}),
+    ...(u.end != null ? { end: u.end / 1000 } : {}),
+  }))
 }
 
 /** Join utterances as `Speaker A: …` blocks; fall back to flat text. */

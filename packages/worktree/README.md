@@ -35,7 +35,9 @@ set up, torn down, and what dev services it runs:
 {
   "worktree": {
     "setup": ["pnpm install", "cp \"$AGENTPROTO_SOURCE_CHECKOUT_PATH/.env\" .env"],
-    "teardown": "rm -rf .cache"
+    "teardown": "rm -rf .cache",
+    "depsCmd": "pnpm install --prefer-offline",
+    "linkPaths": ["node_modules"]
   },
   "scripts": {
     "test": { "command": "pnpm test" },
@@ -49,6 +51,13 @@ set up, torn down, and what dev services it runs:
   string or an array of commands, run sequentially with the worktree as cwd.
   A failing setup command **fails provisioning** with its captured output; a
   failing teardown command is logged but never blocks cleanup.
+- **`worktree.depsCmd` / `worktree.linkPaths`** — declarative defaults for
+  `worktree.provision`'s own `depsCmd`/`linkPaths` inputs (see above): a
+  caller that provisions a worktree WITHOUT passing those inputs explicitly —
+  e.g. `agentproto worktree new`, or a spawn-time worktree from
+  `agent_start.worktree` — still gets them applied, sourced from here. An
+  explicit tool input always wins over this default. Same `runSetup` gate,
+  same trust model as `setup`/`teardown` — see the Security section below.
 - **`scripts.<name>`** — `{ command, type?: "service", port? }`. Plain scripts
   run once (`worktree.run-script`); `type: "service"` scripts are supervised
   long-running processes (`worktree.start-service`).

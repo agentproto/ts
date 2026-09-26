@@ -1,0 +1,29 @@
+{
+  "id": "V6",
+  "title": "Run whose owner died -> failed orphaned",
+  "rule": "specs/aip-58.mdx section 2 State machine -- \"A running run MUST have a live owner\"",
+  "manifestExcerpt": {
+    "kind": "app",
+    "id": "youtube-transcriber"
+  },
+  "runCreate": {
+    "kind": "app",
+    "ref": { "id": "youtube-transcriber", "version": "0.1.0" },
+    "input": { "videoUrl": "https://example.com/watch?v=abc123" }
+  },
+  "timeline": [
+    { "t": "T0", "event": "run.create", "status": "running", "leaseHeldBy": "worker-7", "leaseExpiresAt": "T0+30s" },
+    { "t": "T0+5s", "event": "worker-7 process killed (no clean shutdown, no host restart)" },
+    { "t": "T0+30s", "event": "lease expires, no renewal observed" },
+    { "t": "T0+31s", "event": "host liveness check detects expired lease with no live owner" }
+  ],
+  "expected": {
+    "terminalState": "failed",
+    "error": { "code": "orphaned" },
+    "events": ["run.failed"],
+    "notes": [
+      "No host restart occurred in this scenario -- only worker-7 died. A host that only marks running runs failed on its OWN restart (the reference implementation's current behaviour) does not catch this case; the lease/heartbeat check is what does.",
+      "This is the vector for the '~25 app runs stuck running for weeks, several with 0 sessions' evidence in the Motivation."
+    ]
+  }
+}

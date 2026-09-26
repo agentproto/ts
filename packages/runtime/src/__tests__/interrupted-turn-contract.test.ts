@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
+import { createSessionsRegistry, type AgentSessionLike, type AgentSessionResumer } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 
 /**
@@ -43,7 +43,7 @@ function seedRow(persistPath: string, busy: boolean): string {
 }
 
 /** A resumer that returns a fresh session which completes one turn. */
-function makeResumer(): ReturnType<typeof vi.fn> {
+function makeResumer(): AgentSessionResumer {
   return vi.fn(async () => {
     const fresh: AgentSessionLike = {
       sessionId: "acp-resume-me",

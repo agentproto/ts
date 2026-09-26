@@ -76,6 +76,13 @@ export interface AcpMcpServer {
    *  in env or config. Mutually usable with `headers`; brokered headers
    *  win on collision. */
   credentialRef?: string
+  /** Extra argv for a `stdio` server (the command itself is `ref`).
+   *  Ignored for `http` / `sse`. */
+  args?: string[]
+  /** Extra environment for a `stdio` server, merged over the agent's own
+   *  env by the ACP agent when it launches the process. Ignored for
+   *  `http` / `sse`. */
+  env?: Record<string, string>
 }
 
 /** AIP-44 extensions on the agentskills.io baseline. Lives under `metadata.aip44`. */
@@ -130,6 +137,24 @@ export interface AcpDefinition {
 }
 
 export type AcpHandle = Readonly<AcpDefinition>
+
+/**
+ * One background task as reported by the agent — see the `background-task`
+ * {@link StreamEvent}. Only `taskId` is guaranteed; a `"settled"` edge carries
+ * the terminal `status` and usually a `summary`.
+ */
+export interface BackgroundTaskInfo {
+  taskId: string
+  /** Friendly task type (`"shell"`, `"monitor"`, `"workflow"`, ...). */
+  taskKind?: string
+  description?: string
+  /** Where the task writes its output, when the agent says. */
+  outputFile?: string
+  status?: "running" | "paused" | "completed" | "failed" | "stopped"
+  summary?: string
+  /** The tool call that started the task, when the agent says. */
+  toolCallId?: string
+}
 
 /**
  * Canonical stream-event taxonomy emitted from `createAcpClient`. The
@@ -231,6 +256,35 @@ export type StreamEvent =
        *  no adapter-reported `cost`. */
       tokensIn?: number
       tokensOut?: number
+      /** The model this usage belongs to, when the agent reports it
+       *  (claude-agent-acp: `_meta["_claude/model"]`). */
+      model?: string
+      /** True when the agent's `size` is a guess it corrects later (the
+       *  claude-agent-acp wrapper's in-turn frames), not a known window. */
+      sizeInferred?: boolean
+      /** The context-window size the agent itself reported, kept by the
+       *  daemon when it corrects `size` (see runtime `context-window.ts`). */
+      reportedSize?: number
+      /**
+       * Who started the cycle this usage closes, when the agent says
+       * (claude-agent-acp: `_meta["_claude/origin"].kind`). `"task-notification"`
+       * marks the end of an AUTONOMOUS cycle — the model woke on its own
+       * because a background task settled, with no `session/prompt` in flight.
+       */
+      origin?: string
+    }
+  | {
+      kind: "background-task"
+      sessionId: string
+      /**
+       * Lifecycle edge of a non-agent background task (a backgrounded Bash
+       * command, a monitor, ...), published over the AIR `asyncTasks`
+       * extension (`async_task_spawned` / `async_task_progress` /
+       * `async_task_state_update`). `"started"` announces the task,
+       * `"updated"` carries progress/metadata, `"settled"` is terminal.
+       */
+      phase: "started" | "updated" | "settled"
+      task: BackgroundTaskInfo
     }
   | {
       kind: "available-commands"

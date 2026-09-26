@@ -20,6 +20,8 @@
  * prompt instruction the model could rationalize past.
  */
 
+import type { SpawnBrowserMode } from "./browser-mount.js"
+
 export type DelegationPolicy = "allow" | "deny"
 
 export interface RoleToolPolicy {
@@ -52,6 +54,23 @@ export interface RoleProfile {
    * default, open mode) ⇒ non-escalation by `level`.
    */
   spawnableRoles?: string[]
+  /**
+   * Role-level default for the daemon self-mount's deferred/lazy tool
+   * loading (harness-parity item 3 — see `deferred-tools.ts`). Applied to
+   * the injected `mcpServers` entry (`session-spawn.ts`'s
+   * `shouldInjectDaemonSelfMount` path) as `?deferred=1|0` when the spawn
+   * itself didn't pass an explicit `deferredTools` override. Undefined ⇒
+   * no role-level opinion, the gateway's own boot-time default
+   * (`defaults.mcp.deferredTools` in config.json) applies unchanged.
+   */
+  deferredTools?: boolean
+  /**
+   * Role-level default for `agent_start.browser` (see `browser-mount.ts`):
+   * `"headless"` gives every spawn of this role its own isolated headless
+   * Chrome. An explicit spawn `browser` wins; undefined ⇒ no opinion (the
+   * user preset, then `defaults.spawn.browser`, decide).
+   */
+  browser?: SpawnBrowserMode
 }
 
 /**
@@ -85,6 +104,13 @@ export const EXECUTOR_ROLE: RoleProfile = {
   // Task tool) isn't an MCP tool and can't be gated here at all, which
   // is why the disposition above spells it out explicitly.
   level: 0,
+  // Executors are the primary consumer of the deferred-tools surface: they
+  // never delegate (agent_start/agent_prompt are already stripped above),
+  // so the bulk of the ~190-tool daemon gateway is dead weight at turn 0.
+  // Default ON regardless of the daemon's own global
+  // `defaults.mcp.deferredTools` setting — an operator who hasn't opted the
+  // whole daemon in still gets a lean executor by default.
+  deferredTools: true,
 }
 
 export const SUPERVISOR_ROLE: RoleProfile = {
@@ -92,11 +118,12 @@ export const SUPERVISOR_ROLE: RoleProfile = {
   disposition:
     "You are the supervisor. Decompose the work and delegate the parts " +
     "that genuinely benefit from a separate agent, then verify each " +
-    "result before relying on it. Delegate through agent_start, not " +
-    "your CLI's native subagent/Task tool — a native subagent is " +
-    "invisible to this daemon (no session id, no tracking, no kill " +
-    "switch), whereas agent_start gives you a session you can observe " +
-    "and supervise. Prefer doing small work inline.",
+    "result before relying on it. Delegate through the `agent_start` " +
+    "MCP tool (on the `agentproto` MCP server), not your CLI's native " +
+    "subagent/Task tool — a native subagent is invisible to this daemon " +
+    "(no session id, no tracking, no kill switch), whereas agent_start " +
+    "gives you a session you can observe and supervise. Prefer doing " +
+    "small work inline.",
   toolPolicy: { delegation: "allow" },
   level: 100,
 }
@@ -129,8 +156,33 @@ export function mergeRoleRegistry(
 export const DEFAULT_ROLE_DEPTH_CUTOFF = 1
 
 /**
+ * What a spawned session can ACTUALLY reach of the delegation surface
+ * (`agent_start`/`agent_prompt`), computed from the MCP mounts it ends up
+ * with (see `delegationReachFor` in `session-spawn.ts`) — as opposed to
+ * what its role merely permits. A role can allow delegation while the
+ * session has no daemon mount at all (an adapter outside the self-mount
+ * set, an explicit `mcpServers: []`, a mount carrying `denyTools=
+ * agent_start`); promising it `agent_start` then sends it hunting for a
+ * tool that isn't there.
+ */
+export interface DelegationReach {
+  /** `agent_start` is registered on at least one of the session's MCP
+   *  mounts (the daemon's `/mcp` without a deny, or an orchestrator scope
+   *  that carries it). */
+  reachable: boolean
+  /** The mount that carries it lists tools lazily (deferred tools on), so
+   *  the session may have to `tool_search` for it. */
+  deferred?: boolean
+}
+
+/**
  * Resolve a role by name, or — when `name` is omitted — derive one
  * from spawn depth against `cutoff`. Pure; no fs, no adapter I/O.
+ *
+ * `reach`, when given, only affects the DEFAULT (no `name`): a session
+ * that can't reach `agent_start` defaults to executor at any depth. An
+ * explicit `name` is always honoured — `composeRoleContext` is what keeps
+ * its text honest then.
  *
  * `registry`, when given, is a custom (pack-carried) registry merged
  * with the two built-ins (built-ins win — see `mergeRoleRegistry`).
@@ -144,6 +196,7 @@ export function resolveRole(
   depth: number,
   cutoff: number = DEFAULT_ROLE_DEPTH_CUTOFF,
   registry?: Readonly<Record<string, RoleProfile>>,
+  reach?: DelegationReach,
 ): RoleProfile {
   if (name !== undefined) {
     const roles = registry ? mergeRoleRegistry(registry) : BUILTIN_ROLES
@@ -154,6 +207,11 @@ export function resolveRole(
     }
     return role
   }
+  // A defaulted supervisor that won't actually be able to reach
+  // `agent_start` is a supervisor in name only — default it to executor
+  // instead, so the role (and the disposition composed from it) matches
+  // the tools the session really has.
+  if (reach && !reach.reachable) return EXECUTOR_ROLE
   return depth < cutoff ? SUPERVISOR_ROLE : EXECUTOR_ROLE
 }
 
@@ -215,16 +273,52 @@ export function spawnableRolesFor(
  * The spawn-line lets a delegating role KNOW its options at runtime
  * instead of guessing — omitted entirely when `spawnableRolesFor`
  * returns empty (a leaf/executor sees nothing extra).
+ *
+ * `reach` (see `DelegationReach`) keeps the text true to the session's
+ * real tools: a role that allows delegation but can't reach `agent_start`
+ * gets the EXECUTOR disposition and no spawn line — never a promise of a
+ * tool it doesn't have. When it can reach it and the mount is deferred,
+ * the where-to-find-it line also points at `tool_search`. Omitted ⇒
+ * delegation assumed reachable and eager (the pre-reach behaviour).
  */
 export function composeRoleContext(
   role: RoleProfile,
   promptAppend?: string,
   registry?: Readonly<Record<string, RoleProfile>>,
+  reach?: DelegationReach,
 ): string {
+  if (role.toolPolicy.delegation === "allow" && reach && !reach.reachable) {
+    return [EXECUTOR_ROLE.disposition, promptAppend].filter((p): p is string => !!p).join("\n\n")
+  }
   const spawnable = spawnableRolesFor(role, registry)
   const spawnLine =
     spawnable.length > 0
       ? `Roles you may spawn: ${spawnable.map(r => r.name).join(", ")}.`
       : undefined
-  return [role.disposition, spawnLine, promptAppend].filter((p): p is string => !!p).join("\n\n")
+  const toolLine = spawnable.length > 0 ? delegationToolLine(reach?.deferred === true) : undefined
+  return [role.disposition, spawnLine, toolLine, promptAppend]
+    .filter((p): p is string => !!p)
+    .join("\n\n")
+}
+
+/**
+ * Where a delegating session finds its delegation tools — named exactly
+ * (MCP tool + server), with the deferred-mount `tool_search` hint when it
+ * applies and the CLI equivalents (`packages/cli/src/commands/sessions.ts`)
+ * for a session that only has a shell.
+ */
+function delegationToolLine(deferred: boolean): string {
+  return [
+    "`agent_start` (spawn a child) and `agent_prompt` (send a child a " +
+      "follow-up) are MCP tools on the `agentproto` MCP server.",
+    deferred
+      ? "That server loads tools lazily: if they aren't in your tool list, " +
+        "find them with its `tool_search` tool (`select:agent_start,agent_prompt`)."
+      : undefined,
+    "With only a shell, the CLI equivalents are " +
+      '`agentproto sessions start <adapter> --prompt "<task>"` and ' +
+      '`agentproto sessions prompt <id> --prompt "<text>"`.',
+  ]
+    .filter((p): p is string => !!p)
+    .join(" ")
 }

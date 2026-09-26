@@ -6,6 +6,7 @@ import {
   createSessionsRegistry,
   MAX_RESUME_ATTEMPTS,
   type AgentSessionLike,
+  type AgentSessionResumer,
   type SessionDescriptor,
 } from "../sessions.js"
 import { runEagerResumePass } from "../eager-resume.js"
@@ -59,7 +60,7 @@ function writeSessions(persistPath: string, rows: Row[]): void {
 
 /** A resumer that returns a fresh live session and records, in call order, the
  *  descriptor id it was asked to resume (for ordering assertions). */
-function makeRecordingResumer(calls: string[]): ReturnType<typeof vi.fn> {
+function makeRecordingResumer(calls: string[]): AgentSessionResumer {
   return vi.fn(async (input: { descriptor: SessionDescriptor }) => {
     calls.push(input.descriptor.id)
     const fresh: AgentSessionLike = {
@@ -77,7 +78,7 @@ function makeRecordingResumer(calls: string[]): ReturnType<typeof vi.fn> {
 /** A resumer that tracks peak concurrency: each call holds a slot for ~25ms so
  *  the pool's cap is observable. */
 function makeConcurrencyResumer(): {
-  resumer: ReturnType<typeof vi.fn>
+  resumer: AgentSessionResumer
   maxConcurrent: () => number
 } {
   let active = 0

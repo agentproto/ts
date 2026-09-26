@@ -34,4 +34,26 @@ describe("toFileBasedMcpServers", () => {
       tool: { command: "some-bin" },
     })
   })
+
+  it("stdio entries carry their args/env into the file-based config", () => {
+    const servers: AcpMcpServer[] = [
+      {
+        name: "tool",
+        transport: "stdio",
+        ref: "some-bin",
+        args: ["--flag", "value"],
+        env: { TOKEN: "secret" },
+      },
+    ]
+    expect(toFileBasedMcpServers(servers)).toEqual({
+      tool: { command: "some-bin", args: ["--flag", "value"], env: { TOKEN: "secret" } },
+    })
+  })
+
+  it("stdio entries without args/env stay minimal (no undefined keys)", () => {
+    const servers: AcpMcpServer[] = [{ name: "tool", transport: "stdio", ref: "some-bin" }]
+    expect(toFileBasedMcpServers(servers)).toEqual({
+      tool: { command: "some-bin" },
+    })
+  })
 })

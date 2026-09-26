@@ -23,14 +23,19 @@ const EXPECTED = [
   { toolId: "agentproto_work_board", resourceUri: "ui://agentproto_work_board/view" },
 ]
 
-async function setup() {
+// Same list, minus the session-chat loopback launcher — the shape once the
+// native `@agentik/session-chat` app (MCP Apps `app_ui_session_chat` tool)
+// is installed and `makeBuiltinPanelApps` stops mounting the fallback.
+const EXPECTED_NATIVE_SESSION_CHAT = EXPECTED.filter(e => e.toolId !== "agentproto_session_chat")
+
+async function setup(sessionChatInstalled = false) {
   const server = new McpServer({ name: "builtin-apps-test", version: "0.0.1" })
   registerMcpApps(
     server,
     makeBuiltinPanelApps({
       listSessions: () => [],
       httpBaseUrl: "http://127.0.0.1:18790",
-      isSessionChatInstalled: () => false,
+      isSessionChatInstalled: () => sessionChatInstalled,
       listTasks: (boardId) => ({ boardId: boardId ?? "ws:default", tasks: [] }),
     }),
   )
@@ -65,6 +70,52 @@ describe("builtin-apps.ts — boot-time mount, no app_install required", () => {
       const resource = resources.find(r => r.uri === resourceUri)
       expect(resource, `expected resource "${resourceUri}" to be listed`).toBeDefined()
       expect(resource?.mimeType).toBe("text/html;profile=mcp-app")
+    }
+
+    await client.close()
+  })
+
+  it("serves the session-chat widget as a self-bootstrapping bridge page (agent_start's launch card)", async () => {
+    // agent_start binds to ui://agentproto_session_chat/view (agent-tools.ts);
+    // the resource is rendered once with empty initData, so the page must
+    // resolve the deep link at runtime from the host's tool-result push.
+    const client = await setup()
+    const result = await client.readResource({ uri: "ui://agentproto_session_chat/view" })
+    const content = result.contents[0]
+    if (!content || !("text" in content)) throw new Error("expected text resource")
+
+    expect(content.mimeType).toBe("text/html;profile=mcp-app")
+    expect(content.text).toContain("appInfo")
+    expect(content.text).toContain("ui/notifications/tool-result")
+    expect(content.text).toContain("extractToolResultSessionId")
+    expect(content.text).toContain("callTool('agentproto_session_chat'")
+    expect(content.text).not.toContain("<iframe")
+
+    await client.close()
+  })
+
+  it("mounts the loopback launcher when the native app isn't installed", async () => {
+    const client = await setup(false)
+    const { tools } = await client.listTools()
+
+    expect(tools.some(t => t.name === "agentproto_session_chat")).toBe(true)
+
+    await client.close()
+  })
+
+  it("omits the loopback launcher once the native @agentik/session-chat app is installed", async () => {
+    // Once the native app's own MCP Apps tool (app_ui_session_chat,
+    // mounted separately by app-ui-apps.ts from AppRegistry) exists, the
+    // loopback-HTTP launcher this file mounts is a redundant, CSP-broken
+    // fallback (Codex can't fetch it) — makeBuiltinPanelApps drops it
+    // entirely rather than leaving both paths registered. agent_start's
+    // launch-card binding makes the matching choice (agent-tools.test.ts).
+    const client = await setup(true)
+    const { tools } = await client.listTools()
+
+    expect(tools.some(t => t.name === "agentproto_session_chat")).toBe(false)
+    for (const { toolId } of EXPECTED_NATIVE_SESSION_CHAT) {
+      expect(tools.some(t => t.name === toolId), `expected tool "${toolId}" to still be registered`).toBe(true)
     }
 
     await client.close()

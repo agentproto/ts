@@ -29,6 +29,15 @@ export interface InstalledApp {
    *  from `dir` is what lets multi-GB generated output live outside the
    *  app's source tree. */
   readonly dataDir?: string
+  /** Absolute dir of the app's daemon-owned state ledger
+   *  (`<stateDir>/events.jsonl`, app-state.ts). Assigned by a PERSISTING
+   *  registry to `<daemon state dir>/app-state/<encoded appId>` (next to
+   *  `apps.json`), so a runner-written ledger never lands in the app's
+   *  source tree — a workflow-only app installed from a checkout has no
+   *  business growing a `data/` folder there. Absent on a non-persisting
+   *  (test) registry; `appStateEventsPath()` then falls back to
+   *  `<dataDir>/state/events.jsonl`, the pre-`stateDir` location. */
+  readonly stateDir?: string
   readonly version?: string
   readonly name?: string
   readonly description?: string
@@ -94,12 +103,23 @@ export interface AppRun {
   readonly appId: string
   readonly sessions: AppRunSession[]
   readonly startedAt: string
-  /** Runner selected for this run — mirrored from `app_run`'s adapter/harness
-   *  pass-through (A) so it stays observable through app_status/app_list even
-   *  after the run's sessions have all ended. `running` is a stored default;
-   *  sequential runs are flipped to `ended`/`failed` on completion. */
-  status: "running" | "stopped" | "ended" | "failed"
+  /**
+   * AIP-58 §2 state machine, applied to an app run: `running` is the stored
+   * default; `succeeded` once every session's turn ended without error AND
+   * every workflow run this app run owns is itself terminal, `failed` on a
+   * session/workflow-run error (or an unresolvable "0 live sessions, no
+   * clean signal" zombie — see `errorCode: "orphaned"`), `cancelled` on
+   * `app_stop`. Mirrored from `app_run`'s adapter/harness pass-through (A)
+   * so it stays observable through `app_status`/`app_list` even after the
+   * run's sessions have all ended.
+   */
+  status: "running" | "succeeded" | "failed" | "cancelled"
   endedAt?: string
+  /** Set when `status === "failed"` — mirrors `WorkflowRun.error`. */
+  error?: string
+  /** AIP-58 §10 error code for `error`, when the failure has one — today
+   *  only the orphan sweep sets this (`"orphaned"`). */
+  errorCode?: string
   /** Adapter slug the run's sessions were spawned under. Defaults to
    *  `DEFAULT_AGENT_ADAPTER` when unset. */
   readonly adapter?: string
@@ -146,12 +166,12 @@ export interface AppRegistry {
   getRun(appRunId: string): AppRun | undefined
   listRuns(): AppRun[]
   /** Mark a run terminal (`endedAt` now, status `opts.status` defaulting to
-   *  "stopped") — the explicit kill path (`app_stop`) and the sequential
-   *  completion path both route through here. No-op (returns undefined) for
-   *  an unknown appRunId. */
+   *  "cancelled") — the explicit kill path (`app_stop`), the sequential
+   *  completion path, and the liveness sweep all route through here. No-op
+   *  (returns undefined) for an unknown appRunId. */
   endRun(
     appRunId: string,
-    opts?: { status?: "stopped" | "ended" | "failed" },
+    opts?: { status?: "succeeded" | "failed" | "cancelled"; error?: string; errorCode?: string },
   ): AppRun | undefined
   /** Apply an app to a scope (idempotent upsert per scopeId+appId pair). */
   applyApp(input: { scopeId: string; appId: string }): AppliedMount
@@ -162,6 +182,25 @@ export interface AppRegistry {
 }
 
 const DEFAULT_PERSIST_PATH = (): string => join(homedir(), ".agentproto", "apps.json")
+
+/** Runs persisted before the AIP-58 §2 status set carry `ended`/`stopped` —
+ *  map them onto `succeeded`/`cancelled` so every reader sees one vocabulary. */
+function normalizeLegacyRunStatus(run: AppRun): AppRun {
+  const status = run.status as string
+  if (status === "ended") run.status = "succeeded"
+  else if (status === "stopped") run.status = "cancelled"
+  return run
+}
+
+/** Sub-directory (next to the registry's own `apps.json`) holding every
+ *  installed app's state ledger — see `InstalledApp.stateDir`. */
+export const APP_STATE_ROOT_SUBDIR = "app-state"
+
+/** Default `stateDir` for `appId` under `stateRoot` — the id is
+ *  URI-encoded so a scoped id (`@scope/name`) stays one path segment. */
+export function defaultAppStateDir(stateRoot: string, appId: string): string {
+  return join(stateRoot, encodeURIComponent(appId))
+}
 
 function loadState(persistPath: string): AppRegistryState {
   const empty: AppRegistryState = { apps: [], runs: [], applied: [] }
@@ -176,7 +215,7 @@ function loadState(persistPath: string): AppRegistryState {
     const parsed = JSON.parse(raw) as Partial<AppRegistryState>
     return {
       apps: Array.isArray(parsed.apps) ? parsed.apps : [],
-      runs: Array.isArray(parsed.runs) ? parsed.runs : [],
+      runs: Array.isArray(parsed.runs) ? parsed.runs.map(normalizeLegacyRunStatus) : [],
       applied: Array.isArray(parsed.applied) ? parsed.applied : [],
     }
   } catch {
@@ -204,6 +243,16 @@ export function createAppRegistry(opts?: {
   const state: AppRegistryState = shouldPersist
     ? loadState(persistPath)
     : { apps: [], runs: [], applied: [] }
+  // Only a persisting registry owns an on-disk state root; a test registry
+  // leaves `stateDir` unset so its ledgers stay under the app's dataDir.
+  const stateRoot = shouldPersist ? join(dirname(persistPath), APP_STATE_ROOT_SUBDIR) : undefined
+  // Backfill records installed before `stateDir` existed (persisted on the
+  // next write) — the ledger moves on its first append (app-state.ts).
+  if (stateRoot !== undefined) {
+    state.apps = state.apps.map(a =>
+      a.stateDir !== undefined ? a : { ...a, stateDir: defaultAppStateDir(stateRoot, a.appId) },
+    )
+  }
 
   const persist = (): void => {
     if (shouldPersist) saveState(state, persistPath)
@@ -213,8 +262,13 @@ export function createAppRegistry(opts?: {
     upsertApp(input) {
       const now = new Date().toISOString()
       const idx = state.apps.findIndex(a => a.appId === input.appId)
+      const stateDir =
+        input.stateDir ??
+        (idx === -1 ? undefined : state.apps[idx]!.stateDir) ??
+        (stateRoot !== undefined ? defaultAppStateDir(stateRoot, input.appId) : undefined)
       const record: InstalledApp = {
         ...input,
+        ...(stateDir !== undefined ? { stateDir } : {}),
         installedAt: idx === -1 ? now : state.apps[idx]!.installedAt,
         updatedAt: now,
       }
@@ -267,8 +321,10 @@ export function createAppRegistry(opts?: {
     endRun(appRunId, opts) {
       const run = state.runs.find(r => r.appRunId === appRunId)
       if (!run) return undefined
-      run.status = opts?.status ?? "stopped"
+      run.status = opts?.status ?? "cancelled"
       run.endedAt = new Date().toISOString()
+      if (opts?.error !== undefined) run.error = opts.error
+      if (opts?.errorCode !== undefined) run.errorCode = opts.errorCode
       persist()
       return run
     },

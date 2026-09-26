@@ -1,5 +1,17 @@
 # @agentproto/mcp-server
 
+## 0.3.1
+
+### Patch Changes
+
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+- Updated dependencies [c27f0b8]
+  - @agentproto/agent@0.2.4
+  - @agentproto/driver@0.2.3
+  - @agentproto/extension@0.2.2
+  - @agentproto/routine@0.2.3
+  - @agentproto/tool@0.3.1
+
 ## 0.3.0
 
 ### Minor Changes

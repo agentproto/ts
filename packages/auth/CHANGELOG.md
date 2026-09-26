@@ -1,5 +1,12 @@
 # @agentproto/auth
 
+## 1.0.3
+
+### Patch Changes
+
+- bced1de: Document the full model-identity match set for `mode: "allow"` curation in `AuthProfile.models` JSDoc.
+- c27f0b8: Weekly minor/patch dependency bumps across workspaces (zod, @mastra/*, react, yaml, claude-agent-sdk, etc.).
+
 ## 1.0.2
 
 ### Patch Changes

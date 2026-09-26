@@ -53,8 +53,10 @@ export function registerRemoteTools(
       "tunnel a different local service (Supabase, dev server, …); in that mode " +
       "the daemon does not gate the proxied traffic — the upstream service " +
       "handles its own auth. Returns the public URL plus a paste-ready " +
-      "`.mcp.json` snippet (gateway mode only). Re-running while a tunnel is " +
-      "already up errors; call `remote_disable` first to rotate.",
+      "`.mcp.json` snippet and a `phoneUrl` — a single link to open on a " +
+      "phone, with the token in a URL fragment (gateway mode only). " +
+      "Re-running while a tunnel is already up errors; call `remote_disable` " +
+      "first to rotate.",
     {
       provider: z
         .enum(["quick"])
