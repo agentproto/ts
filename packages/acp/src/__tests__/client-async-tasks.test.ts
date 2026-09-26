@@ -193,3 +193,81 @@ describe("createAcpClient — AIR asyncTasks + out-of-turn events", () => {
     expect(next.some(e => e.kind === "text-delta" && e.text.includes("printed: done"))).toBe(false)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Orphaned prompt: a prompt that lands mid-way through an autonomous cycle is
+// folded into it (a queued command) — the cycle's ONLY result carries the
+// autonomous origin, so claude-agent-acp never resolves `session/prompt`
+// until it is cancelled (sess_c350164c: busy ~50 min after its final text).
+// ---------------------------------------------------------------------------
+
+function startFoldingAgent(opts: { continueAfterAutonomousResult: boolean }) {
+  const toAgent = new TransformStream<Uint8Array, Uint8Array>()
+  const toClient = new TransformStream<Uint8Array, Uint8Array>()
+  const calls = { cancel: 0 }
+  let settle: ((r: { stopReason: "end_turn" | "cancelled" }) => void) | undefined
+  new AgentSideConnection(
+    client => {
+      const update = (u: Record<string, unknown>) =>
+        client.sessionUpdate({ sessionId: SESSION_ID, update: u as never })
+      return {
+        async initialize() {
+          return { protocolVersion: 1, agentCapabilities: {} }
+        },
+        async newSession() {
+          return { sessionId: SESSION_ID }
+        },
+        async authenticate() {
+          return {}
+        },
+        async prompt() {
+          await update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "final report" } })
+          await update({
+            sessionUpdate: "usage_update",
+            size: 200_000,
+            used: 1_000,
+            cost: { amount: 8.3, currency: "USD" },
+            _meta: { "_claude/origin": { kind: "task-notification" } },
+          })
+          if (opts.continueAfterAutonomousResult) {
+            // Not folded: the agent goes on to run this prompt for real.
+            await new Promise(r => setTimeout(r, 30))
+            await update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "answer" } })
+            await new Promise(r => setTimeout(r, 120))
+            return { stopReason: "end_turn" }
+          }
+          return new Promise(resolve => {
+            settle = resolve
+          })
+        },
+        async cancel() {
+          calls.cancel++
+          settle?.({ stopReason: "cancelled" })
+        },
+      }
+    },
+    ndJsonStream(toClient.writable, toAgent.readable),
+  )
+  return { calls, clientStreams: { output: toAgent.writable, input: toClient.readable } }
+}
+
+describe("createAcpClient — orphaned prompt after an autonomous result", () => {
+  it("cancels a prompt left unresolved after an autonomous-origin result and reports it completed", async () => {
+    const { calls, clientStreams } = startFoldingAgent({ continueAfterAutonomousResult: false })
+    const client = await createAcpClient({ ...clientStreams, orphanedPromptTimeoutMs: 60 })
+    const session = await client.newSession({ cwd: "/tmp" })
+    const events = await drain(session.prompt({ messages: [{ type: "text", text: "go" }] }))
+    expect(calls.cancel).toBe(1)
+    expect(events.at(-1)).toEqual({ kind: "turn-end", sessionId: SESSION_ID, reason: "completed" })
+  })
+
+  it("leaves the prompt alone when the agent keeps going after the autonomous result", async () => {
+    const { calls, clientStreams } = startFoldingAgent({ continueAfterAutonomousResult: true })
+    const client = await createAcpClient({ ...clientStreams, orphanedPromptTimeoutMs: 60 })
+    const session = await client.newSession({ cwd: "/tmp" })
+    const events = await drain(session.prompt({ messages: [{ type: "text", text: "go" }] }))
+    expect(calls.cancel).toBe(0)
+    expect(events.at(-1)).toEqual({ kind: "turn-end", sessionId: SESSION_ID, reason: "completed" })
+    expect(events.some(e => e.kind === "text-delta" && e.text === "answer")).toBe(true)
+  })
+})

@@ -172,7 +172,33 @@ export interface AcpClientOptions {
    * turn-end for the same logical turn).
    */
   turnIdleTimeoutMs?: number
+  /**
+   * Orphaned-prompt recovery (default {@link DEFAULT_ORPHANED_PROMPT_TIMEOUT_MS};
+   * `0` disables). A prompt sent while the agent is mid-way through an
+   * AUTONOMOUS cycle (Claude Code's task-notification wake) can be folded
+   * into that cycle as a queued command: the model answers it, but the
+   * cycle's only result carries the autonomous origin, which claude-agent-acp
+   * keeps off the user-turn lane — so `session/prompt` never resolves (seen
+   * live: a finished session stayed "busy" ~50 min until a manual cancel).
+   * When an in-flight prompt sees an autonomous-origin result frame followed
+   * by this many ms of silence, the client cancels it — a real active turn
+   * on the agent side, so the cancel settles it — and reports the turn
+   * `completed`: its work was done inside the cycle.
+   */
+  orphanedPromptTimeoutMs?: number
 }
+
+export const DEFAULT_ORPHANED_PROMPT_TIMEOUT_MS = 60_000
+
+/** Result origins claude-agent-acp routes to its autonomous lane
+ *  (`AUTONOMOUS_RESULT_ORIGINS` in its acp-agent.js). */
+const AUTONOMOUS_RESULT_ORIGINS = new Set([
+  "task-notification",
+  "peer",
+  "coordinator",
+  "observer",
+  "observer-activity",
+])
 
 export interface AcpClient {
   readonly connection: ClientSideConnection
@@ -364,6 +390,11 @@ interface SessionState {
   currentModeId: string | undefined
   /** Listeners registered via `AcpClientSession.onOutOfTurnEvent`. */
   outOfTurnListeners: Set<(event: StreamEvent) => void>
+  /** See `AcpClientOptions.orphanedPromptTimeoutMs`. */
+  orphanedPromptTimeoutMs: number
+  /** Set by `prompt()` for the in-flight turn: sees every incoming update
+   *  (translated, or null) to drive orphaned-prompt recovery. */
+  observeTurnUpdate?: (event: StreamEvent | null) => void
 }
 
 export async function createAcpClient(
@@ -463,6 +494,8 @@ export async function createAcpClient(
         modes: response.modes?.availableModes ?? [],
         currentModeId: response.modes?.currentModeId,
         outOfTurnListeners: new Set(),
+        orphanedPromptTimeoutMs:
+          options.orphanedPromptTimeoutMs ?? DEFAULT_ORPHANED_PROMPT_TIMEOUT_MS,
       }
       sessions.set(sessionId, state)
       // Apply model + effort via session/set_config_option immediately
@@ -577,6 +610,8 @@ export async function createAcpClient(
         modes: response.modes?.availableModes ?? [],
         currentModeId: response.modes?.currentModeId,
         outOfTurnListeners: new Set(),
+        orphanedPromptTimeoutMs:
+          options.orphanedPromptTimeoutMs ?? DEFAULT_ORPHANED_PROMPT_TIMEOUT_MS,
       }
       sessions.set(params.sessionId, state)
       return buildSession(
@@ -684,6 +719,36 @@ function buildSession(
       }
       state.resetWatchdogTimer = armWatchdogTimer
 
+      // Orphaned-prompt recovery — see `AcpClientOptions.orphanedPromptTimeoutMs`.
+      // Armed by an autonomous-origin result frame, disarmed by ANY later
+      // update (the agent went on to run this prompt after all).
+      let orphanTimer: ReturnType<typeof setTimeout> | undefined
+      let orphanCancelled = false
+      const clearOrphanTimer = () => {
+        if (orphanTimer) clearTimeout(orphanTimer)
+        orphanTimer = undefined
+      }
+      state.observeTurnUpdate = event => {
+        clearOrphanTimer()
+        if (
+          state.orphanedPromptTimeoutMs > 0 &&
+          event?.kind === "usage_update" &&
+          event.cost &&
+          event.origin !== undefined &&
+          AUTONOMOUS_RESULT_ORIGINS.has(event.origin)
+        ) {
+          orphanTimer = setTimeout(() => {
+            orphanCancelled = true
+            console.warn(
+              `[acp] session ${sessionId}: prompt still unresolved ` +
+                `${state.orphanedPromptTimeoutMs}ms after an autonomous (${event.origin}) ` +
+                `result — it was folded into that cycle; cancelling to settle it.`,
+            )
+            void connection.cancel({ sessionId } as never)
+          }, state.orphanedPromptTimeoutMs)
+        }
+      }
+
       // Outbound send — proves the daemon is still driving this turn,
       // independent of whatever StreamEvents come back. Also the initial
       // arm of the watchdog timer, so the timeout is measured from "we
@@ -718,6 +783,11 @@ function buildSession(
           // false-green "completed" that let an un-authenticated reviewer
           // report success without posting a review.
           const stopReason = (response as { stopReason?: string }).stopReason
+          // Our own orphan cancel: the prompt's work was done in the cycle.
+          if (orphanCancelled && stopReason === "cancelled") {
+            enqueue(state, { kind: "turn-end", sessionId, reason: "completed" })
+            return
+          }
           enqueue(state, {
             kind: "turn-end",
             sessionId,
@@ -751,7 +821,9 @@ function buildSession(
           state.active = false
           state.done = true
           state.resetWatchdogTimer = undefined
+          state.observeTurnUpdate = undefined
           clearWatchdogTimer()
+          clearOrphanTimer()
           flush(state)
         })
 
@@ -1063,6 +1135,7 @@ function buildClientHandlers(
     const update = (params as { update?: Record<string, unknown> }).update
     if (!update) return
     const event = translateSessionUpdate(sid, update)
+    state.observeTurnUpdate?.(event)
     if (event) deliver(state, event)
   }
   return {
