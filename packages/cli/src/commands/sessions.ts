@@ -1373,6 +1373,17 @@ function printQueueTable(id: string, queue: QueueViewItem[]): void {
  *      precedent (sessions-registry-agent-host.ts) so a caller can't
  *      mistake a bare "turn-end: success" for one that actually did
  *      something.
+ *   5  the session is IDLE right now — no turn in flight, not awaiting
+ *      input, nothing queued to run — for an `--until turn-end` /
+ *      `awaiting-input` / `any` wait. Distinct from a timeout: this is a
+ *      pre-flight read of the session's current descriptor, decided BEFORE
+ *      ever blocking, because the daemon's own already-finished-turn check
+ *      (`monitorSessionWait`) requires a `since` cursor a fresh CLI process
+ *      never has — without this short-circuit an idle session burns the
+ *      whole `--timeout` budget waiting for a turn-end that will never come
+ *      (nothing new is running) and then reports a lying "timed out...
+ *      still running?" message. Exit 5 tells the caller the truth instead:
+ *      there's nothing to wait for.
  *
  * Timeout used to share exit code 1 with hard CLI failures, so a caller
  * couldn't tell "just needs a bigger --timeout" from "something broke" —
@@ -1508,6 +1519,51 @@ async function runWaitSession(opts: {
   json: boolean
 }): Promise<number> {
   const { endpoint, idOrName, untilEvent, totalTimeout, json } = opts
+
+  // Pre-flight: read the session's current descriptor before blocking at
+  // all. `monitorSessionWait`'s already-finished-turn check deliberately
+  // requires a `since` cursor to fire (see its doc) — a fresh CLI process
+  // never has one, so a session that is simply idle (turn already ended,
+  // nothing new coming) falls through to the real long-poll, which then has
+  // nothing to ever resolve on and burns the entire --timeout budget before
+  // reporting a timeout that lies about why. `--until exited` is exempt:
+  // the daemon's terminal-status check already fires without `since`, so
+  // there's nothing to pre-empt here.
+  if (untilEvent !== "exited") {
+    let desc: SessionDescriptor
+    try {
+      desc = await httpGetJson<SessionDescriptor>(
+        `${endpoint.url}/sessions/${encodeURIComponent(idOrName)}`,
+      )
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/HTTP 404/.test(msg)) {
+        process.stderr.write(`agentproto sessions wait: no session "${idOrName}".\n`)
+        return 3
+      }
+      process.stderr.write(`agentproto sessions wait: ${msg}\n`)
+      return 3
+    }
+    // Nothing this wait could ever resolve on by blocking: no turn in
+    // flight, not awaiting input (that would be a real match, not idleness —
+    // left to the loop below), nothing queued to run next, and not still
+    // spinning up.
+    const idle =
+      desc.busy !== true &&
+      desc.awaitingInput !== true &&
+      !desc.queuedPrompts &&
+      desc.status !== "starting"
+    if (idle) {
+      return emitWaitIdle(json, {
+        sessionId: desc.id,
+        idOrName,
+        status: desc.status,
+        busy: desc.busy === true,
+        awaitingInput: desc.awaitingInput === true,
+      })
+    }
+  }
+
   const deadline = Date.now() + totalTimeout
   // Per-call server cap is 55s; pick a slice that leaves headroom.
   const sliceMs = 50_000
@@ -1630,6 +1686,48 @@ async function runWaitPolicy(opts: {
     json: opts.json,
     verb: "agentproto sessions wait",
   })
+}
+
+/**
+ * Reports exit code 5 (see `runWait`'s doc) — the session is idle right now
+ * (no turn in flight, not awaiting input, nothing queued) so there is
+ * nothing for this wait to ever resolve on. Distinct shape from
+ * `emitWaitTimeout`: no `timedOut`, and the prose deliberately does NOT
+ * suggest a longer `--timeout` — that suggestion is the exact lie this exit
+ * code exists to avoid.
+ */
+function emitWaitIdle(
+  json: boolean,
+  ctx: {
+    sessionId: string
+    idOrName: string
+    status: string
+    busy: boolean
+    awaitingInput: boolean
+  },
+): number {
+  if (json) {
+    process.stdout.write(
+      JSON.stringify(
+        {
+          idle: true,
+          sessionId: ctx.sessionId,
+          status: ctx.status,
+          busy: ctx.busy,
+          awaitingInput: ctx.awaitingInput,
+        },
+        null,
+        2,
+      ) + "\n",
+    )
+  } else {
+    process.stdout.write(
+      `agentproto sessions wait: session "${ctx.idOrName}" is idle right now — no turn is ` +
+        `in flight and nothing is queued to run (status: ${ctx.status}). There is nothing to ` +
+        `wait for.\n`,
+    )
+  }
+  return 5
 }
 
 function emitWaitTimeout(
