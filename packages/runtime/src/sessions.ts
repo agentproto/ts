@@ -3395,8 +3395,9 @@ export interface SessionsRegistry {
     id: string,
     input: PermissionRespondInput,
   ): Promise<PermissionRespondResult>
-  /** Stop tracking a session (after it exited and the user clicked
-   *  "clear"). Doesn't kill — use `kill` first. */
+  /** Stop tracking a session. A still-live session is torn down through
+   *  `kill` first (same teardown as `agent_kill`), so forgetting never
+   *  orphans a running process tree. */
   forget(id: string): boolean
   /** Await every best-effort fire-and-forget per-session write currently in
    *  flight — today the `CommandLogEntry` → `ToolCallRecord` chain
@@ -8772,6 +8773,15 @@ export function createSessionsRegistry(opts?: {
     forget(id) {
       const rt = sessions.get(id)
       if (!rt) return false
+      // A live row gets the full kill() teardown first — close the adapter
+      // (whole process tree), SIGTERM any PTY/child, stop an attached
+      // browser, and emit session:exited so the exit subscribers (headless
+      // browser sweep, webhooks, brain ingest) run. Dropping it from the map
+      // alone left the adapter tree — and any headless Chrome — running with
+      // nothing left to track it.
+      if (rt.desc.status === "running" || rt.desc.status === "starting") {
+        registry.kill(id)
+      }
       // Don't leak: tear down the emitter so backfill listeners stop.
       rt.emitter.removeAllListeners()
       void transcriptWriter.close(id)

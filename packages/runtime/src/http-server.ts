@@ -4147,8 +4147,10 @@ export function buildSpawnSessionHttpArgs(
  *                                    the MCP `terminal_input` verb. Body:
  *                                    { text, enter? (default true) }. 404 no
  *                                    session, 400 not a live PTY.
- *   DELETE /sessions/:id          → forget (drop from registry; only
- *                                    valid for exited/killed/error)
+ *   DELETE /sessions/:id          → forget (drop from registry); a live
+ *                                    session is killed first, same
+ *                                    teardown as /kill; returns
+ *                                    { ok, id, killed }
  *   POST   /sessions/gc           → bulk GC terminal sessions (session_gc's
  *                                    HTTP twin); body { olderThanDays?,
  *                                    forget? }; returns { mode, ids, count }
@@ -6155,8 +6157,11 @@ async function handleSessions(
   }
 
   if (!suffix && req.method === "DELETE") {
+    // A live session is killed first (the agent_kill teardown — whole
+    // adapter tree, browser sweep), then dropped; `killed` says which.
+    const killed = registry.kill(id)
     const ok = registry.forget(id)
-    json(ok ? 200 : 404, { ok, id })
+    json(ok ? 200 : 404, { ok, id, killed })
     return true
   }
 
