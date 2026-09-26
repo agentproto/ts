@@ -651,6 +651,39 @@ describe("daemon-events exporter", () => {
     } as unknown as SessionsRegistry
   }
 
+  it("a session-message becomes a user-role message tagged with its attested sender, never the human", async () => {
+    writeEvents([
+      { kind: "user-prompt", sessionId: SESSION_ID, text: "Delegate it." },
+      { kind: "turn-end", sessionId: SESSION_ID, reason: "completed" },
+      {
+        kind: "session-message",
+        sessionId: SESSION_ID,
+        message: {
+          id: "msg_1",
+          text: "done: PR #124",
+          kind: "done",
+          from: { sessionId: "sess_child01", label: "executor-2", relation: "child" },
+        },
+      },
+      { kind: "session-message-sent", sessionId: SESSION_ID, messageId: "msg_0", to: "sess_other" },
+      { kind: "text-delta", sessionId: SESSION_ID, text: "Great." },
+    ])
+    const json = await exportAgentSession({ sessionId: SESSION_ID, registry: makeRegistry(), source: "daemon", format: "json" })
+    const parsed = JSON.parse(json.content) as ExportedSession
+    const FIXTURE_TS = Date.parse("2026-06-01T00:00:00.000Z")
+    expect(parsed.messages.slice(0, 2)).toEqual([
+      { role: "user", text: "Delegate it.", ts: FIXTURE_TS },
+      {
+        role: "user",
+        text: "done: PR #124",
+        from: { sessionId: "sess_child01", label: "executor-2", relation: "child", kind: "done", messageId: "msg_1" },
+        ts: FIXTURE_TS,
+      },
+    ])
+    const md = await exportAgentSession({ sessionId: SESSION_ID, registry: makeRegistry(), source: "daemon", format: "markdown" })
+    expect(md.content).toContain("from child `executor-2` (done)")
+  })
+
   it("reconstructs a user -> assistant+tool_call -> tool_result -> assistant flow", async () => {
     writeEvents([
       { kind: "user-prompt", sessionId: SESSION_ID, text: "List files." },

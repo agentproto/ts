@@ -73,9 +73,11 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sa
 .msg.role-user{align-self:flex-end;align-items:flex-end}
 .msg.role-assistant,.msg.role-tool{align-self:flex-start;align-items:flex-start}
 .msg.role-system{align-self:center;max-width:90%}
+.msg.role-message{align-self:flex-start;align-items:flex-start}
 .bubble{border-radius:10px;padding:9px 12px;font-size:13px;line-height:1.55;white-space:pre-wrap;word-break:break-word}
 .role-user .bubble{background:var(--blue);color:#04101c;border-bottom-right-radius:3px}
 .role-assistant .bubble{background:var(--bg2);border:1px solid var(--border);border-bottom-left-radius:3px}
+.role-message .bubble{background:var(--bg2);border:1px dashed var(--blue);border-bottom-left-radius:3px}
 .role-system .bubble{background:transparent;border:1px dashed var(--border);color:var(--text2);font-size:11.5px;text-align:center}
 .mrow{display:flex;align-items:center;gap:6px;margin-bottom:3px}
 .mrole{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--text3)}
@@ -338,6 +340,14 @@ function renderMessage(m) {
   }
   if (m.role === "tool") {
     return '<div class="msg role-tool">' + renderToolResultChip(m) + "</div>";
+  }
+  if (m.role === "user" && m.from) {
+    // A typed message from another session (session-message record) — never
+    // the human: name the daemon-attested sender instead of "You".
+    var who = m.from.label || (m.from.sessionId ? m.from.sessionId.slice(-6) : m.from.relation);
+    return '<div class="msg role-message"><div class="mrow"><span class="mrole">from ' + escHtml(m.from.relation)
+      + " " + escHtml(who) + " · " + escHtml(m.from.kind) + "</span>" + time + "</div>"
+      + '<div class="bubble">' + escHtml(m.text || "") + "</div></div>";
   }
   if (m.role === "user") {
     return '<div class="msg role-user"><div class="mrow"><span class="mrole">You</span>' + time + "</div>"

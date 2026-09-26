@@ -38,6 +38,16 @@ import type { ConversationCandidate } from "./conversation-store.js"
 export interface ExportedMessage {
   role: "user" | "assistant" | "tool" | "system"
   text?: string
+  /** Set on a `user`-role message that is a typed inter-session message
+   *  (a `session-message` record) rather than the human: the daemon-attested
+   *  sender. Absent for a human prompt. */
+  from?: {
+    sessionId?: string
+    label?: string
+    relation: "child" | "parent" | "sibling" | "human" | "system"
+    kind: string
+    messageId: string
+  }
   reasoning?: string
   toolName?: string
   toolCalls?: { name: string; args: string }[]
@@ -139,7 +149,11 @@ export function renderMarkdown(
 
   for (const m of messages) {
     const icon = ROLE_ICON[m.role] ?? m.role
-    const nameSuffix = m.toolName ? ` · \`${m.toolName}\`` : ""
+    const nameSuffix = m.toolName
+      ? ` · \`${m.toolName}\``
+      : m.from
+        ? ` · from ${m.from.relation} \`${m.from.label ?? m.from.sessionId ?? ""}\` (${m.from.kind})`
+        : ""
     out.push(`### ${icon}${nameSuffix}`)
 
     if (m.reasoning?.trim()) {
@@ -817,6 +831,13 @@ interface TranscriptRecord {
   entries?: Array<{ content: string; priority: string; status: string }>
   size?: number
   used?: number
+  /** `session-message` records: the delivered envelope. */
+  message?: {
+    id: string
+    text?: string
+    kind?: string
+    from?: { sessionId?: string; label?: string; relation?: string }
+  }
   cost?: { amount: number; currency: string }
   // Kind-less CommandLogEntry fields (written by recordCommand — the line
   // has NO `kind` of its own). All optional so every other record shape
@@ -942,6 +963,28 @@ export async function exportDaemonEventsSession(
         flushAssistant()
         messages.push({ role: "user", text: rec.text ?? "", ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}) })
         break
+      case "session-message": {
+        // A typed message from another session — a user-role turn (that's
+        // what the model received), but tagged with its attested sender so
+        // a reader never attributes it to the human.
+        flushAssistant()
+        const m = rec.message
+        if (!m) break
+        const relation = (m.from?.relation ?? "system") as NonNullable<ExportedMessage["from"]>["relation"]
+        messages.push({
+          role: "user",
+          text: m.text ?? "",
+          from: {
+            ...(m.from?.sessionId ? { sessionId: m.from.sessionId } : {}),
+            ...(m.from?.label ? { label: m.from.label } : {}),
+            relation,
+            kind: m.kind ?? "report",
+            messageId: m.id,
+          },
+          ...(tsOrUndefined !== undefined ? { ts: tsOrUndefined } : {}),
+        })
+        break
+      }
       case "system-prompt":
         // The daemon-composed SYSTEM slice of a spawned child's initial
         // prompt (role disposition + AGENTS.md + lineage). Recorded apart

@@ -216,6 +216,26 @@ export function reduceConversation(
         })
         break
       }
+      case "session-message": {
+        // A typed message from another session: its own user-role turn whose
+        // provenance is the daemon-attested sender (`<relation>:<sessionId>`,
+        // e.g. `child:sess_…`) — the turn badge names the sender, so it never
+        // reads as the human. Never merged with a neighbouring prompt.
+        const m = rec.message
+        if (!m) break
+        assistant = undefined
+        const relation = m.from?.relation ?? "system"
+        turns.push({
+          id: `turn-${rec.seq}`,
+          role: "user",
+          startedAt: rec.ts,
+          segments: [
+            { kind: "user", id: `seg-${rec.seq}`, seq: rec.seq, ts: rec.ts, text: m.text ?? "" },
+          ],
+          promptSource: m.from?.sessionId ? `${relation}:${m.from.sessionId}` : relation,
+        })
+        break
+      }
       case "text-delta": {
         if (!rec.text) break
         const turn = openAssistant(rec)

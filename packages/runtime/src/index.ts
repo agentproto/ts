@@ -469,7 +469,9 @@ export { deriveSessionUsage, projectSessionUsage } from "./usage.js"
 export {
   composeSessionObservers,
   type SessionObserver,
+  type SessionMessageSentRecord,
 } from "./session-observer.js"
+export * from "./session-message.js"
 export {
   getMcpCredentialDeps,
   setMcpCredentialDeps,

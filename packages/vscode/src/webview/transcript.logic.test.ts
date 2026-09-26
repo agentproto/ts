@@ -269,6 +269,12 @@ describe("describePromptSource", () => {
     expect(d?.tooltip).toContain("child session sess_c0ffee12")
   })
 
+  it("describes parent:/sibling:/system message senders", () => {
+    expect(describePromptSource("parent:sess_aabbccdd")?.label).toBe("↓ parent bbccdd")
+    expect(describePromptSource("sibling:sess_aabbccdd")?.label).toBe("↔ sibling bbccdd")
+    expect(describePromptSource("system")?.label).toBe("⚙ daemon")
+  })
+
   it("renders any OTHER non-empty source raw rather than dropping it", () => {
     const d = describePromptSource("cron:daily-digest")
     expect(d?.label).toBe("⇄ cron:daily-digest")

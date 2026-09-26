@@ -112,6 +112,13 @@ import { continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
+import {
+  escapeHumanPrompt,
+  MESSAGE_PREAMBLE,
+  renderSessionMessages,
+  type MessageDeliveryVia,
+  type SessionMessage,
+} from "./session-message.js"
 // Reused, not reimplemented — same parser `applyModelCommand`'s dedicated
 // control turn uses, branched onto the ORDINARY prompt flow below so a
 // `/model <id>` typed as a plain turn (never routed through
@@ -758,6 +765,13 @@ export interface QueuedPrompt {
    *  daemon restart. Absent for legacy queued items — `promptOriginLabel`
    *  falls back to `source`, then `"user"`. */
   origin?: string
+  /** Set when this item is a typed inter-session message (`message_parent`,
+   *  …) rather than a prompt: the daemon-attested envelope. `message` then
+   *  only carries `envelope.text` (for `previewPrompt`); the turn is built
+   *  from the envelope — rendered as an `<agentproto-message>` tag, recorded
+   *  as a `session-message` transcript record, and coalesced with any
+   *  envelope items queued right behind it (never with a plain prompt). */
+  envelope?: SessionMessage
 }
 
 /** What `enqueuePrompt` resolved to — lets a caller (e.g. MCP `agent_prompt`)
@@ -1646,6 +1660,10 @@ export interface SessionDescriptor {
    *  moves any notices a pre-upgrade daemon persisted into `promptQueue` and
    *  deletes this field. Never written. */
   pendingChildCrashNotices?: string[]
+  /** True once this session has been taught the `<agentproto-message>`
+   *  invariant (`MESSAGE_PREAMBLE`) — sent as a `system-prompt` slice ahead
+   *  of the FIRST message turn it receives, never again. */
+  messagePreambleSent?: boolean
   /** FIFO of prompts that arrived while this session was mid-turn and
    *  asked to be QUEUED rather than rejected (`enqueuePrompt`'s
    *  `opts.queue` arm — see its doc comment). Index 0 is next to
@@ -2972,6 +2990,13 @@ export interface SessionsRegistry {
       queue?: boolean
       force?: boolean
       queueId?: string
+      /** A typed inter-session message (see `QueuedPrompt.envelope`). When
+       *  set, the turn is built from the envelope and `message` is ignored:
+       *  rendered as an `<agentproto-message>` tag, recorded as
+       *  `session-message` (never `user-prompt`), never matched as a
+       *  structured-question answer, and noted in the SENDER's transcript
+       *  as `session-message-sent`. */
+      envelope?: SessionMessage
     }
   ): Promise<EnqueuePromptResult>
   /** Cancel one not-yet-dispatched item in `SessionDescriptor.promptQueue`
@@ -5455,12 +5480,32 @@ export function createSessionsRegistry(opts?: {
     if (!queue?.length || rt.busy) return
     const next = onlyId ? queue.find(p => p.id === onlyId) : queue[0]
     if (!next) return
-    rt.desc.promptQueue = queue.filter(p => p !== next)
+    // A typed message at the head drains together with every envelope item
+    // queued right behind it — one turn, N sibling tags — but a plain
+    // prompt always stops the run: a message batch and a human prompt are
+    // never one turn.
+    const batch: QueuedPrompt[] = [next]
+    if (next.envelope && !onlyId) {
+      for (const item of queue.slice(1)) {
+        if (!item.envelope) break
+        batch.push(item)
+      }
+    }
+    rt.desc.promptQueue = queue.filter(p => !batch.includes(p))
     schedulePersist()
     void (async () => {
       try {
         await maybeResumeAgent(rt)
         const liveRt = validateAgentTurn(rt.desc.id, "queue-drain")
+        if (next.envelope) {
+          await runMessageTurn(
+            liveRt,
+            batch.map(p => p.envelope!),
+            "turn",
+            next.source,
+          )
+          return
+        }
         const answer = isChildPromptSource(next.source)
           ? undefined
           : matchStructuredQuestionAnswer(liveRt, next.message)
@@ -5876,6 +5921,42 @@ export function createSessionsRegistry(opts?: {
     }
   }
 
+  /** Emit the bus `session:message` edge for one message — at send (no
+   *  `delivered`) and again at delivery. */
+  const emitSessionMessage = (msg: SessionMessage): void => {
+    sessionEvents?.emit({
+      type: "session:message",
+      sessionId: msg.to,
+      messageId: msg.id,
+      ...(msg.from.sessionId ? { fromSessionId: msg.from.sessionId } : {}),
+      relation: msg.from.relation,
+      kind: msg.kind,
+      urgency: msg.urgency,
+      ...(msg.delivered ? { delivered: msg.delivered } : {}),
+      ts: new Date().toISOString(),
+    })
+  }
+
+  /** Deliver a batch of typed messages as ONE turn: stamp `delivered`,
+   *  render the envelope tags, and run it — recorded as `session-message`
+   *  records, never a `user-prompt`, and never matched as a structured-
+   *  question answer. */
+  const runMessageTurn = async (
+    rt: SessionRuntime,
+    envelopes: readonly SessionMessage[],
+    via: MessageDeliveryVia,
+    promptSource?: string,
+  ): Promise<void> => {
+    const at = new Date().toISOString()
+    const turnSeq = (rt.desc.turnsCompleted ?? 0) + 1
+    const delivered = envelopes.map(m => ({ ...m, delivered: { via, at, turnSeq } }))
+    for (const m of delivered) emitSessionMessage(m)
+    await runAgentTurn(rt, renderSessionMessages(delivered), {
+      ...(promptSource ? { promptSource } : {}),
+      messages: delivered,
+    })
+  }
+
   const runAgentTurn = async (
     rt: SessionRuntime,
     message: unknown,
@@ -5883,10 +5964,27 @@ export function createSessionsRegistry(opts?: {
     // `agent:<sessionId>` when another session injected this turn
     // (agent_prompt from a supervisor, a parent's spawn prompt), absent for
     // a human operator. Recording-only: never alters turn behavior.
-    turnOpts?: { promptSource?: string; system?: string }
+    // `messages` marks a typed-message turn (`runMessageTurn`): `message`
+    // is then the rendered envelope tags.
+    turnOpts?: { promptSource?: string; system?: string; messages?: readonly SessionMessage[] }
   ): Promise<void> => {
     if (!rt.agentSession) {
       throw new Error("runAgentTurn: session has no agentSession")
+    }
+    const messageTurn = turnOpts?.messages !== undefined && turnOpts.messages.length > 0
+    if (messageTurn) {
+      // Teach the envelope invariant once, the first time this session
+      // receives a message — as a `system-prompt` slice, not a user bubble.
+      if (!rt.desc.messagePreambleSent && typeof message === "string") {
+        message = `${MESSAGE_PREAMBLE}\n\n${message}`
+        turnOpts = { ...turnOpts, system: MESSAGE_PREAMBLE }
+        rt.desc.messagePreambleSent = true
+        schedulePersist()
+      }
+    } else if (typeof message === "string") {
+      // A human line opening with the envelope sentinel is escaped, so text
+      // outside an `<agentproto-message>` tag is always the human's.
+      message = escapeHumanPrompt(message)
     }
     // `if (!title)`, not "on turn 1": every session already running when this
     // shipped has already had its first prompt, so a turn-1-only check would
@@ -5900,7 +5998,7 @@ export function createSessionsRegistry(opts?: {
     // role disposition ahead of the caller's ask); the spawn path forecloses
     // that by stamping `SpawnAgentInput.title` from `input.prompt` up-front, so
     // `rt.desc.title` is already set and this line is skipped for that turn.
-    if (!rt.desc.title) rt.desc.title = deriveSessionTitle(message)
+    if (!rt.desc.title && !messageTurn) rt.desc.title = deriveSessionTitle(message)
     // Flush a queued best-effort resume-context digest (Fix D — see
     // `SessionDescriptor.pendingResumeContext`'s doc) onto THIS turn's
     // outgoing message, exactly once. String messages only — a non-string
@@ -5992,10 +6090,11 @@ export function createSessionsRegistry(opts?: {
       transcriptWriter.recordPrompt(
         rt.desc.id,
         message,
-        turnOpts?.promptSource || turnOpts?.system
+        turnOpts?.promptSource || turnOpts?.system || messageTurn
           ? {
               ...(turnOpts?.promptSource ? { source: turnOpts.promptSource } : {}),
               ...(turnOpts?.system ? { system: turnOpts.system } : {}),
+              ...(messageTurn ? { messages: turnOpts!.messages } : {}),
             }
           : undefined
       )
@@ -7776,7 +7875,8 @@ export function createSessionsRegistry(opts?: {
       // THEN await the turn actually settling (busy → false) BEFORE
       // `validateAgentTurn` runs, so admission is never bypassed — it's
       // only ever reached once the prior turn is genuinely over.
-      if (opts?.interrupt && rtPre.busy) {
+      const interrupted = opts?.interrupt === true && rtPre.busy
+      if (interrupted) {
         await interruptInFlightTurn(rtPre, id, "enqueuePrompt")
       }
       // Queue arm (additive, opt-in — see this method's doc comment):
@@ -7787,14 +7887,28 @@ export function createSessionsRegistry(opts?: {
       // wins). Resolves immediately without touching admission or
       // dispatch; `dispatchQueuedPrompt` (in `runAgentTurn`'s finally)
       // is what eventually fires it.
+      const envelope = opts?.envelope
+      if (envelope) {
+        // Sender-side trace, once, at acceptance — whichever arm delivers it.
+        if (envelope.from.sessionId) {
+          transcriptWriter.recordSessionMessageSent?.(envelope.from.sessionId, {
+            messageId: envelope.id,
+            to: envelope.to,
+            kind: envelope.kind,
+            urgency: envelope.urgency,
+          })
+        }
+      }
       if (opts?.queue && rtPre.busy) {
         const item: QueuedPrompt = {
           id: opts.queueId ?? `q_${randomUUID().slice(0, 8)}`,
-          message,
+          message: envelope ? envelope.text : message,
           queuedAt: new Date().toISOString(),
           ...(opts.source ? { source: opts.source } : {}),
           ...(opts.origin ? { origin: opts.origin } : {}),
+          ...(envelope ? { envelope } : {}),
         }
+        if (envelope) emitSessionMessage(envelope)
         rtPre.desc.promptQueue = opts.force
           ? [item, ...(rtPre.desc.promptQueue ?? [])]
           : [...(rtPre.desc.promptQueue ?? []), item]
@@ -7805,6 +7919,12 @@ export function createSessionsRegistry(opts?: {
       }
       await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "enqueuePrompt")
+      if (envelope) {
+        void runMessageTurn(rt, [envelope], interrupted ? "interrupt" : "turn", opts?.source).catch(err => {
+          appendLine(rtPre, `[error] ${err instanceof Error ? err.message : String(err)}`, "stderr")
+        })
+        return { queued: false }
+      }
       // A structured-question answer is resolved synchronously (it never
       // starts a turn — it's a flag flip, or a hand-off to a fresh session)
       // so it's awaited here even though the rest of this method is

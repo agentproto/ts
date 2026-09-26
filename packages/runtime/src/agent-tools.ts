@@ -63,6 +63,7 @@ import type {
   WorktreeProvisioner,
 } from "./worktree-isolation.js"
 import { appUiToolId } from "./app-ui-apps.js"
+import { createSessionMessage, messageFrom, MESSAGE_KINDS, type MessageKind } from "./session-message.js"
 import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
 
 /** Strip CSI/SGR ANSI escape sequences and bare carriage returns.
@@ -1350,6 +1351,15 @@ export function registerAgentTools(
             "(false unless an operator changed it) — so a report never " +
             "interrupts by default; pass `interrupt: true` explicitly to cut.",
         ),
+      kind: z
+        .enum(MESSAGE_KINDS as [MessageKind, ...MessageKind[]])
+        .optional()
+        .describe(
+          "What this message is: `report` (default — a result or progress), " +
+            "`question` (you need an answer), `blocker` (you cannot proceed), " +
+            "`done` (your task is complete), `notice` (informational). Shown " +
+            "to the parent in the daemon-attested message header.",
+        ),
     },
     async input => {
       const fail = (text: string) => ({
@@ -1389,11 +1399,21 @@ export function registerAgentTools(
             `(status: ${parent.status}) — the message cannot be delivered.`
         )
       }
-      const who = self.label ?? selfId
-      const notice = `[child-message] ${who} (${selfId}): ${input.message}`
+      // The daemon-attested envelope: `from` comes from the verified caller
+      // identity + the tree, never from the input. The parent sees it as an
+      // `<agentproto-message from="child" session=…>` tag and its transcript
+      // records a `session-message`, not a user prompt.
       // Explicit `interrupt` (true OR false) wins; UNSET falls back to the
       // configurable daemon default (symmetric with agent_prompt).
       const effectiveInterrupt = input.interrupt ?? interruptDefault
+      const envelope = createSessionMessage({
+        to: parentId,
+        from: messageFrom(self, "child"),
+        text: input.message,
+        kind: input.kind ?? "report",
+        urgency: effectiveInterrupt ? "interrupt" : "next-turn",
+      })
+      const notice = envelope.text
       const done = (
         delivery: "enqueued" | "queued-next-turn" | "interrupted",
         extra?: Record<string, unknown>,
@@ -1401,14 +1421,19 @@ export function registerAgentTools(
         content: [
           {
             type: "text" as const,
-            text: JSON.stringify({ ok: true, parentSessionId: parentId, delivery, ...extra }),
+            text: JSON.stringify({
+              ok: true,
+              parentSessionId: parentId,
+              messageId: envelope.id,
+              delivery,
+              ...extra,
+            }),
           },
         ],
       })
-      // `source` AND `origin` both carry `child:<sessionId>`: `source` is the
-      // transcript provenance (the parent's `user-prompt` record names the
-      // child instead of reading as the human), `origin` the queue UI's
-      // label. Keyed on the session id, not the child-settable label.
+      // `source` AND `origin` both carry `child:<sessionId>` — the turn's
+      // provenance and the queue UI's label. Keyed on the session id, not the
+      // child-settable label.
       const provenance = `child:${selfId}`
       // Urgent report: `interrupt: true` cuts a mid-turn parent instead of
       // queueing behind its in-flight turn. Reuses `enqueuePrompt`'s own
@@ -1425,6 +1450,7 @@ export function registerAgentTools(
             interrupt: true,
             source: provenance,
             origin: provenance,
+            envelope,
           })
           return done("interrupted")
         } catch {
@@ -1443,6 +1469,7 @@ export function registerAgentTools(
           queue: true,
           source: provenance,
           origin: provenance,
+          envelope,
         })
         queued = result.queued
       } catch (err) {

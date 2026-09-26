@@ -84,11 +84,23 @@ export type ConversationSegment =
   | QuestionSegment
   | ErrorSegment
 
+/** The attested sender of a user-role turn that is a typed inter-session
+ *  message (`session-message` record) — absent for a human prompt. */
+export interface TurnMessageFrom {
+  sessionId?: string
+  label?: string
+  relation: string
+  kind: string
+  messageId: string
+}
+
 export interface ConversationTurn {
   id: string
   role: "user" | "assistant"
   startedAt?: string
   segments: ConversationSegment[]
+  /** Set when this user-role turn is a message from another session. */
+  from?: TurnMessageFrom
 }
 
 export interface ConversationUsage {
@@ -157,6 +169,30 @@ export function reduceConversation(
           segments: [
             { kind: "user", id: `seg-${rec.seq}`, seq: rec.seq, ts: rec.ts, text: rec.text ?? "" },
           ],
+        })
+        break
+      }
+      case "session-message": {
+        // A typed message from another session opens a turn like a prompt,
+        // but carries its attested sender — rendered "from child X", never
+        // as the human.
+        const m = rec.message
+        if (!m) break
+        assistant = undefined
+        turns.push({
+          id: `turn-${rec.seq}`,
+          role: "user",
+          startedAt: rec.ts,
+          segments: [
+            { kind: "user", id: `seg-${rec.seq}`, seq: rec.seq, ts: rec.ts, text: m.text ?? "" },
+          ],
+          from: {
+            ...(m.from?.sessionId ? { sessionId: m.from.sessionId } : {}),
+            ...(m.from?.label ? { label: m.from.label } : {}),
+            relation: m.from?.relation ?? "system",
+            kind: m.kind ?? "report",
+            messageId: m.id,
+          },
         })
         break
       }
@@ -463,6 +499,7 @@ export interface PresentedTurn {
   id: string
   role: "user" | "assistant"
   segments: PresentedSegment[]
+  from?: TurnMessageFrom
 }
 
 export interface PresentedConversation {
@@ -492,6 +529,7 @@ export function presentConversation(
       id: turn.id,
       role: turn.role,
       segments: groupActivity(turn.segments.map((seg) => presentSegment(seg, renderers))),
+      ...(turn.from ? { from: turn.from } : {}),
     })),
   }
 }

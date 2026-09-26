@@ -21,7 +21,8 @@
 import { createWriteStream, mkdirSync, readFileSync, type WriteStream } from "node:fs"
 import { homedir } from "node:os"
 import { isAbsolute, join } from "node:path"
-import type { SessionObserver } from "./session-observer.js"
+import type { SessionMessageSentRecord, SessionObserver } from "./session-observer.js"
+import type { SessionMessage } from "./session-message.js"
 import type { AgentStreamEvent } from "./sessions.js"
 import { extractCommandArgs } from "./tool-call-record.js"
 import { detectShellPrCreate } from "./pr-provenance.js"
@@ -118,8 +119,10 @@ export interface TranscriptWriter extends SessionObserver {
   recordPrompt(
     sessionId: string,
     message: unknown,
-    opts?: { source?: string; system?: string }
+    opts?: { source?: string; system?: string; messages?: readonly SessionMessage[] }
   ): void
+  /** Sender-side `session-message-sent` record — see SessionObserver. */
+  recordSessionMessageSent(sessionId: string, record: SessionMessageSentRecord): void
   /** Record one structured stream event, ahead of `projectEvent`'s
    *  flattening. Coalesces consecutive text-delta/thought chunks the same
    *  way the ring buffer does. */
@@ -323,11 +326,33 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
           )
         }
       }
+      // A typed-message turn is recorded as one `session-message` record per
+      // delivered message — the daemon-attested envelope — and NEVER as a
+      // `user-prompt`, so no reader can mistake it for the human.
+      if (opts?.messages?.length) {
+        for (const message of opts.messages) {
+          writeRecord(sessionId, state, { kind: "session-message", sessionId, message })
+        }
+        return
+      }
       writeRecord(sessionId, state, {
         kind: "user-prompt",
         sessionId,
         text: userText,
         ...(opts?.source ? { source: opts.source } : {}),
+      })
+    },
+    recordSessionMessageSent(sessionId, record) {
+      const state = getState(sessionId)
+      flushBuffers(sessionId, state)
+      // `messageKind`, not `kind` — the record's own `kind` is the record type.
+      writeRecord(sessionId, state, {
+        kind: "session-message-sent",
+        sessionId,
+        messageId: record.messageId,
+        to: record.to,
+        messageKind: record.kind,
+        urgency: record.urgency,
       })
     },
     recordEvent(sessionId, evt) {

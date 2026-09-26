@@ -144,6 +144,54 @@ export interface AgentprotoRawUsageSnapshot extends AgentprotoRawTranscriptBase 
   source: string
 }
 
+/** The daemon-attested envelope a `session-message` record carries — mirrors
+ *  `SessionMessage` in `@agentproto/runtime`'s `session-message.ts`
+ *  (AIP-46 §Session messages). Duplicated structurally so this package keeps
+ *  zero dependencies. */
+export interface AgentprotoRawSessionMessageEnvelope {
+  id: string
+  ts: string
+  to: string
+  from: {
+    sessionId?: string
+    label?: string
+    role?: string
+    adapter?: string
+    relation: "child" | "parent" | "sibling" | "human" | "system"
+  }
+  kind: "report" | "question" | "blocker" | "done" | "notice"
+  urgency: "fyi" | "next-turn" | "steer" | "interrupt"
+  delivered?: { via: "wait" | "steer" | "turn" | "interrupt" | "inbox"; at: string; turnSeq?: number }
+  correlationId?: string
+  replyTo?: string
+  text: string
+  data?: Record<string, unknown>
+  ackedAt?: string
+}
+
+/** A typed inter-session message DELIVERED into this session's context
+ *  (`transcript-writer.ts`'s `recordPrompt` with `messages`). Opens a turn
+ *  the way a `user-prompt` does, but is never the human — consumers MUST
+ *  render it distinctly ("from child X"). Excluded from
+ *  `CANONICAL_SESSION_RECORDS` (added after external consumers pinned that
+ *  fixture's shape); see `SESSION_MESSAGE_RECORDS` instead. */
+export interface AgentprotoRawSessionMessage extends AgentprotoRawTranscriptBase {
+  kind: "session-message"
+  sessionId: string
+  message: AgentprotoRawSessionMessageEnvelope
+}
+
+/** Sender-side trace: THIS session sent a typed message to `to`. Bookkeeping
+ *  only — no bubble of its own (the sender's tool call already shows it). */
+export interface AgentprotoRawSessionMessageSent extends AgentprotoRawTranscriptBase {
+  kind: "session-message-sent"
+  sessionId: string
+  messageId: string
+  to: string
+  messageKind: AgentprotoRawSessionMessageEnvelope["kind"]
+  urgency: AgentprotoRawSessionMessageEnvelope["urgency"]
+}
+
 /** The union of every RAW record kind the daemon transcript writer emits —
  *  see each member's doc comment for whether it's covered by
  *  `CANONICAL_SESSION_RECORDS`. */
@@ -159,6 +207,8 @@ export type AgentprotoRawTranscriptRecord =
   | AgentprotoRawNotice
   | AgentprotoRawUsageUpdate
   | AgentprotoRawUsageSnapshot
+  | AgentprotoRawSessionMessage
+  | AgentprotoRawSessionMessageSent
 
 /** `CANONICAL_SESSION` — the shared session id for every record in the
  *  canonical fixture. */
@@ -318,3 +368,36 @@ export const CANONICAL_SESSION_RECORDS: AgentprotoRawTranscriptRecord[] = [
     reason: "turn-complete",
   },
 ] satisfies AgentprotoRawTranscriptRecord[]
+/** Example `session-message` / `session-message-sent` pair — a child's
+ *  report delivered to a parent (recipient transcript) and its sender-side
+ *  trace (child transcript). Kept apart from `CANONICAL_SESSION_RECORDS` (see
+ *  `AgentprotoRawSessionMessage`) and unit-tested per consumer. */
+export const SESSION_MESSAGE_RECORDS: [AgentprotoRawSessionMessage, AgentprotoRawSessionMessageSent] = [
+  {
+    seq: 16,
+    ts: "2026-08-17T09:00:07.000Z",
+    kind: "session-message",
+    sessionId: CANONICAL_SESSION_ID,
+    message: {
+      id: "msg_3f2a91c0",
+      ts: "2026-08-17T09:00:06.900Z",
+      to: CANONICAL_SESSION_ID,
+      from: { sessionId: "sess_child_fixture", label: "executor-2", adapter: "claude-code", relation: "child" },
+      kind: "done",
+      urgency: "next-turn",
+      delivered: { via: "turn", at: "2026-08-17T09:00:07.000Z", turnSeq: 2 },
+      correlationId: "msg_3f2a91c0",
+      text: "PR opened: https://github.com/agentproto/ts/pull/124",
+    },
+  },
+  {
+    seq: 4,
+    ts: "2026-08-17T09:00:06.900Z",
+    kind: "session-message-sent",
+    sessionId: "sess_child_fixture",
+    messageId: "msg_3f2a91c0",
+    to: CANONICAL_SESSION_ID,
+    messageKind: "done",
+    urgency: "next-turn",
+  },
+]

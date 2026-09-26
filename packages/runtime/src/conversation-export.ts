@@ -106,9 +106,15 @@ function appendMessage(
   lastAssistant: ClaudeAssistantLine | undefined,
 ): ClaudeAssistantLine | undefined {
   switch (msg.role) {
-    case "user":
-      lines.push({ type: "user", message: { role: "user", content: msg.text ?? "" } })
+    case "user": {
+      // A typed inter-session message keeps its attested sender in the text
+      // so a re-imported conversation never reads it as the human.
+      const content = msg.from
+        ? `[message from ${msg.from.relation} ${msg.from.sessionId ?? ""}${msg.from.label ? ` (${msg.from.label})` : ""} · ${msg.from.kind}] ${msg.text ?? ""}`
+        : (msg.text ?? "")
+      lines.push({ type: "user", message: { role: "user", content } })
       return undefined
+    }
 
     case "assistant": {
       const assistant: ClaudeAssistantLine = {
