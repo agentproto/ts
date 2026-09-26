@@ -1241,6 +1241,7 @@ export type SpawnAgentSessionResult =
         | "sandbox_proxy_failed"
         | "sandbox_reuse_ambiguous"
         | "sandbox_app_serve_failed"
+        | "sandbox_cwd_invalid"
         | "worktree_disabled"
         | "worktree_provisioner_not_enabled"
         | "worktree_provision_failed"
@@ -2982,14 +2983,16 @@ export async function spawnAgentSession(
         resolveSandboxProvider,
         adapter: input.adapter,
         // The host's own resolved `cwd` — valid as-is for a same-machine
-        // provider (`local`); a genuinely remote box (e2b) needs its own
-        // filesystem story (AIP-36 `mounts`, out of scope here — see the
+        // provider (`local`); a genuinely remote box (e2b/Box) has its own,
+        // disjoint filesystem (AIP-36 `mounts`, out of scope here — see the
         // plan's "local MCP servers unreachable from sandbox" risk, which
-        // applies equally to bare filesystem paths). Forwarding it is
-        // still strictly better than omitting it: the box's OWN
-        // `agent_start` needs SOME cwd to resolve, and a bad path fails
-        // no worse than no path at all.
+        // applies equally to bare filesystem paths). `bootSandboxAgentSession`
+        // uses `explicitCwd` below to tell "the caller asked for THIS path"
+        // apart from "cwd resolution defaulted to the host's active
+        // workspace" — only the latter gets silently replaced by the
+        // provider's own `defaultCwd` (e.g. e2b/Box's `/home/user`).
         cwd,
+        explicitCwd,
         ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
@@ -3013,6 +3016,11 @@ export async function spawnAgentSession(
       sandboxTeardown = booted.sandboxTeardown
       sandboxPorts = booted.sandboxPorts
       appServe = booted.appServe
+      // The box may have gotten a DIFFERENT cwd than the host resolved
+      // above (the provider's own `defaultCwd`, when the caller passed no
+      // explicit `cwd` — see `bootSandboxAgentSession`) — reflect that on
+      // the descriptor below, not the host path nothing actually used.
+      cwd = booted.cwd
     } else {
       // `resolved` is guaranteed non-null here — the `input.sandbox ===
       // undefined` branch above already returned `adapter_not_found`
@@ -3424,6 +3432,12 @@ type SandboxBootResult =
       agentSession: AgentSessionLike
       commandPreview: string
       sandboxId: string
+      /** The cwd actually sent to the box's own `agent_start` — `opts.cwd`
+       *  unchanged, UNLESS the caller passed no explicit cwd and the
+       *  provider declared a `defaultCwd`, in which case this is that
+       *  default. The caller stamps this (not `opts.cwd`) onto the host
+       *  descriptor's own `cwd` so it reflects what the box actually got. */
+      cwd: string
       /** Provider slug (e.g. `"e2b"`, `"local"`) — stamped onto the
        *  descriptor's `sandboxProvider` by the caller. */
       provider: string
@@ -3442,6 +3456,7 @@ type SandboxBootResult =
         | "sandbox_reuse_ambiguous"
         | "sandbox_proxy_failed"
         | "sandbox_app_serve_failed"
+        | "sandbox_cwd_invalid"
       message: string
     }
 
@@ -3594,6 +3609,22 @@ function withSandboxInstallAdapters(spec: SandboxSpec): SandboxSpec {
   }
 }
 
+/** Host-only absolute-path shapes that can never resolve inside a remote
+ *  sandbox's own (Linux) filesystem: macOS's `/Volumes/…` (external/network
+ *  volumes) and `/Users/…` (user homes), and a Windows drive letter
+ *  (`C:\…`/`C:/…`). Deliberately narrow — a generic-looking absolute path
+ *  (`/home/user`, `/workspace`, `/root/…`) is left alone since it might be
+ *  exactly the box path the caller meant. */
+const HOST_ONLY_PATH_PATTERNS: readonly RegExp[] = [
+  /^\/Volumes\//,
+  /^\/Users\//,
+  /^[A-Za-z]:[\\/]/,
+]
+
+function looksLikeHostOnlyPath(p: string): boolean {
+  return HOST_ONLY_PATH_PATTERNS.some(re => re.test(p))
+}
+
 /**
  * Resolve `opts.sandbox`, boot the box, spawn `adapter` on the box's OWN
  * `agent_start`, and wrap the result in a `SandboxAgentSessionProxy`. Called
@@ -3609,7 +3640,17 @@ async function bootSandboxAgentSession(opts: {
   sandbox: string | SandboxSpecInput
   resolveSandboxProvider?: SandboxProviderResolver
   adapter: string
+  /** The HOST's resolved cwd for this spawn — see `explicitCwd` for whether
+   *  the caller actually asked for this path, or it's just where cwd
+   *  resolution fell through to (active workspace / worktree). */
   cwd: string
+  /** True when the CALLER passed `agent_start.cwd` explicitly, false when
+   *  it's a host-side fallback (active workspace, parent session's cwd,
+   *  …). Distinguishes "the caller wants exactly this path" (forwarded
+   *  as-is, or rejected if it can't possibly exist in the box) from "cwd
+   *  resolution defaulted to something host-shaped" (silently replaced by
+   *  the provider's own `defaultCwd` instead of forwarded verbatim). */
+  explicitCwd: boolean
   mcpServers?: AcpMcpServer[]
   model?: string
   route?: RouteSpec
@@ -3646,6 +3687,37 @@ async function bootSandboxAgentSession(opts: {
       message:
         `agent_start: sandbox provider "${providerSlug}" not found. Check ` +
         "`list_sandbox_providers`, then `setup_sandbox_provider` if it needs credentials.",
+    }
+  }
+  // The cwd the BOX's own `agent_start` actually gets. `handle.defaultCwd`
+  // (only declared by providers whose filesystem is disjoint from the
+  // host's, e.g. e2b/Box's `/home/user`) is the signal this is such a
+  // provider at all:
+  //   - no explicit cwd ⇒ the host's cwd-resolution fallback (active
+  //     workspace / worktree / parent session) produced a HOST path that
+  //     can never exist in the box — silently swap in the provider's own
+  //     default instead of forwarding a path guaranteed to ENOENT.
+  //   - an explicit cwd that's shaped like a HOST-only path (macOS
+  //     `/Volumes/…`/`/Users/…`, a Windows drive letter) is almost
+  //     certainly the same mistake made on purpose — refuse it with a
+  //     clear 400 rather than let it surface as a `sandbox_proxy_failed`
+  //     500 three hops away, inside the box's own `agent_start`. Anything
+  //     else (`/home/user`, `/workspace`, a relative-looking path, …) is
+  //     forwarded as-is: it might be exactly the box path the caller meant.
+  let boxCwd = opts.cwd
+  if (handle.defaultCwd) {
+    if (!opts.explicitCwd) {
+      boxCwd = handle.defaultCwd
+    } else if (looksLikeHostOnlyPath(opts.cwd)) {
+      return {
+        ok: false,
+        code: "sandbox_cwd_invalid",
+        message:
+          `agent_start: cwd "${opts.cwd}" looks like a HOST-machine path — it cannot exist ` +
+          `inside the "${providerSlug}" sandbox, which has its own, separate filesystem. ` +
+          `Omit \`cwd\` to use the box's default (${handle.defaultCwd}), or pass a path that ` +
+          "exists inside the box.",
+      }
     }
   }
   const spec: SandboxSpec = await withSandboxAuthAutoPassthrough(
@@ -3748,7 +3820,7 @@ async function bootSandboxAgentSession(opts: {
         provider: providerSlug,
         state: err.cleanedUp,
         ...(opts.label ? { label: opts.label } : {}),
-        ...(opts.cwd ? { cwd: opts.cwd } : {}),
+        ...(boxCwd ? { cwd: boxCwd } : {}),
       })
     }
     return reuseSandboxId !== undefined
@@ -3778,7 +3850,7 @@ async function bootSandboxAgentSession(opts: {
     provider: providerSlug,
     state: reuseSandboxId !== undefined ? "connected" : "booted",
     ...(opts.label ? { label: opts.label } : {}),
-    ...(opts.cwd ? { cwd: opts.cwd } : {}),
+    ...(boxCwd ? { cwd: boxCwd } : {}),
     ...(lifecyclePolicy.pauseAfterIdleMs !== undefined
       ? { expiresAt: new Date(Date.now() + lifecyclePolicy.pauseAfterIdleMs).toISOString() }
       : {}),
@@ -3788,7 +3860,7 @@ async function bootSandboxAgentSession(opts: {
   try {
     const remoteDesc = await host.start({
       adapter: opts.adapter,
-      cwd: opts.cwd,
+      cwd: boxCwd,
       ...(opts.mcpServers ? { mcpServers: toMcpServerMounts(opts.mcpServers) } : {}),
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.route ? { route: opts.route } : {}),
@@ -3839,6 +3911,7 @@ async function bootSandboxAgentSession(opts: {
     }),
     commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
     sandboxId: host.sandboxId,
+    cwd: boxCwd,
     provider: providerSlug,
     sandboxTeardown: lifecyclePolicy.teardown,
     ...(host.ports && Object.keys(host.ports).length > 0 ? { sandboxPorts: host.ports } : {}),

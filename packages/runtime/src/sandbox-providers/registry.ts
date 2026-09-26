@@ -86,7 +86,19 @@ interface ThirdPartySandboxDescriptor {
    *  so `setup_sandbox_provider` actually authenticates `boot()` — see
    *  `importThirdPartyProvider`. */
   credEnvVar?: string
+  /** Forwarded onto the resolved handle as `SandboxProviderHandle.defaultCwd`
+   *  — see that field's doc. Both e2b and Box boot their workstation image
+   *  logged in as `user` with home `/home/user` (`DEFAULT_WORKSPACE` in each
+   *  package's own provider.ts). */
+  defaultCwd?: string
 }
+
+/** Login home both e2b and Box's workstation images boot into — mirrors
+ *  each provider package's own `DEFAULT_WORKSPACE` constant (used for their
+ *  `--workspace` boot flag). Kept as a registry-local literal rather than an
+ *  import so this package never depends on the third-party provider
+ *  packages beyond the existing dynamic `import()`. */
+const REMOTE_WORKSTATION_HOME = "/home/user"
 
 const THIRD_PARTY_SANDBOX_PROVIDERS: Record<string, ThirdPartySandboxDescriptor> = {
   e2b: {
@@ -99,6 +111,7 @@ const THIRD_PARTY_SANDBOX_PROVIDERS: Record<string, ThirdPartySandboxDescriptor>
       /* sync-templates:end */
     capabilities: E2B_CAPABILITIES,
     credEnvVar: "E2B_API_KEY",
+    defaultCwd: REMOTE_WORKSTATION_HOME,
     setupFields: [
       {
         name: "apiKey",
@@ -116,6 +129,7 @@ const THIRD_PARTY_SANDBOX_PROVIDERS: Record<string, ThirdPartySandboxDescriptor>
       "Runs the agentproto daemon on an ascii.dev Box cloud computer, behind an always-on systemd unit.",
     capabilities: BOX_CAPABILITIES,
     credEnvVar: "BOX_API_KEY",
+    defaultCwd: REMOTE_WORKSTATION_HOME,
     setupFields: [
       {
         name: "apiKey",
@@ -195,6 +209,7 @@ async function importThirdPartyProvider(
     requiresSetup: descriptor.setupFields.length > 0,
     capabilities: descriptor.capabilities,
     setupFields: descriptor.setupFields,
+    ...(descriptor.defaultCwd ? { defaultCwd: descriptor.defaultCwd } : {}),
     async check(): Promise<boolean> {
       return creds !== null
     },

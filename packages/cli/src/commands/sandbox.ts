@@ -31,6 +31,7 @@ import {
   makeSandboxResolver,
   readSandboxLedger,
   recordSandboxLiveness,
+  reconcileSandboxLedger,
   removeSandboxLedgerEntry,
   reapGcEntry,
   type SandboxLedgerEntry,
@@ -40,7 +41,7 @@ import { discoverDaemon, httpGetJson } from "./_daemon-helpers.js"
 const USAGE = `agentproto sandbox — connect to sandbox providers
 
 Usage:
-  agentproto sandbox list [--json]
+  agentproto sandbox list [--json] [--no-probe] [--reconcile]
   agentproto sandbox attach <provider> <sandboxId> [--config-json <json>] [--keep-alive] [--json]
   agentproto sandbox rm <sandboxId|label|id-prefix> [--box] [--yes] [--json]
   agentproto sandbox gc [--apply] [--pause] [--json]
@@ -54,7 +55,13 @@ list   Show the sandbox ledger — every box the daemon booted, reconnected
                box still shows paused/connected (and its app URL) until
                probed. "—" when the provider can't probe, "?" when the
                probe errored. Pass --no-probe to skip the network calls.
-       --json prints the raw ledger rows.
+       --json prints the raw ledger rows (plus a "reconciled" summary when
+              a reconcile pass ran). Unlike table mode, --json does NOT
+              probe by default — pass --reconcile to force it.
+       --reconcile  Force the provider-liveness pass (same as table mode's
+                    default) even under --json, and print a summary of what
+                    it found. Never tears a box down — a row the provider
+                    confirms gone is only ever marked "gone" in the ledger.
 
 attach Connects to an ALREADY-EXISTING sandbox (e.g. a Box or e2b sandbox
        booted by a prior \`agent_start\` sandbox spawn) without tearing it
@@ -202,18 +209,55 @@ async function runList(args: readonly string[]): Promise<number> {
     options: {
       json: { type: "boolean" },
       "no-probe": { type: "boolean" },
+      reconcile: { type: "boolean" },
     },
   })
+  // Table mode probes (reconciles) by default — `--no-probe` opts out.
+  // `--json` used to never probe at all (a raw ledger dump); `--reconcile`
+  // asks for the exact same provider-liveness pass either way, so a script
+  // reading `--json` output can force a fresh reconcile instead of reading
+  // whatever the ledger last happened to record.
+  const shouldReconcile = values.reconcile === true || (!values.json && !values["no-probe"])
+  let reconciled: Awaited<ReturnType<typeof reconcileLedger>> | undefined
+  if (shouldReconcile) {
+    reconciled = await reconcileLedger()
+  }
+  // Re-read AFTER reconciling so a row the probe just found gone shows its
+  // fresh "gone" state, not the stale one read before the pass ran.
   const entries = readSandboxLedger()
   if (values.json) {
-    process.stdout.write(JSON.stringify({ sandboxes: entries }, null, 2) + "\n")
+    process.stdout.write(
+      JSON.stringify(
+        {
+          sandboxes: entries,
+          ...(reconciled
+            ? {
+                reconciled: {
+                  checked: reconciled.checked,
+                  alive: reconciled.alive,
+                  gone: reconciled.gone,
+                  unknown: reconciled.unknown,
+                  skipped: reconciled.skipped,
+                },
+              }
+            : {}),
+        },
+        null,
+        2,
+      ) + "\n",
+    )
     return 0
   }
   if (entries.length === 0) {
     process.stdout.write("no sandboxes in the ledger (~/.agentproto/sandboxes.json)\n")
     return 0
   }
-  const live = values["no-probe"] ? [] : await probeLedgerLiveness(entries)
+  const liveById = new Map(
+    (reconciled?.rows ?? []).map(r => [
+      r.sandboxId,
+      r.verdict === "alive" ? "yes" : r.verdict === "gone" ? "no" : r.verdict === "unknown" ? "?" : "—",
+    ]),
+  )
   const rows: Array<string[]> = [
     ["ID", "PROVIDER", "LABEL", "STATE", "LIVE", "AGE", "EXPIRES", "ORIGIN SESSION"],
   ]
@@ -227,7 +271,7 @@ async function runList(args: readonly string[]): Promise<number> {
       e.provider,
       e.label ?? "—",
       e.state,
-      live.find(r => r.sandboxId === e.sandboxId)?.verdict ?? "—",
+      liveById.get(e.sandboxId) ?? "—",
       relative(e.updatedAt),
       expires,
       e.originSessionId ?? "—",
@@ -244,32 +288,20 @@ async function runList(args: readonly string[]): Promise<number> {
 }
 
 /**
- * Probe each ledger row's provider for box liveness (`SandboxProvider.probe`
- * — the provider control plane, not the box) and stamp the verdict back into
- * the ledger (`recordSandboxLiveness`, which flips a dead row to "gone").
- * Verdicts: "yes" alive · "no" gone · "?" probe failed · "—" provider can't
- * probe. Best-effort per row — one broken box never fails the listing.
+ * Reconcile the ledger against the real providers — probes every row still
+ * claiming to be booted/connected/paused (`SandboxProvider.probe`, the
+ * provider control plane, not the box) and stamps the verdict back
+ * (`reconcileSandboxLedger`, which flips a dead row to "gone" via
+ * `recordSandboxLiveness`). Never tears a box down. Best-effort per row —
+ * one broken provider never fails the listing.
  */
-async function probeLedgerLiveness(
-  entries: readonly SandboxLedgerEntry[],
-): Promise<Array<{ sandboxId: string; verdict: string }>> {
+async function reconcileLedger() {
   const resolver = makeSandboxResolver(makeSandboxCredsStore())
-  const out: Array<{ sandboxId: string; verdict: string }> = []
-  for (const e of entries) {
-    let verdict = "—"
-    try {
-      const handle = await resolver(e.provider)
-      if (handle?.provider?.probe) {
-        const probe = await handle.provider.probe(e.sandboxId)
-        verdict = probe.alive ? "yes" : "no"
-        recordSandboxLiveness(e.sandboxId, probe.alive)
-      }
-    } catch {
-      verdict = "?"
-    }
-    out.push({ sandboxId: e.sandboxId, verdict })
-  }
-  return out
+  return reconcileSandboxLedger({
+    resolveProvider: resolver,
+    readLedger: readSandboxLedger,
+    recordLiveness: recordSandboxLiveness,
+  })
 }
 
 async function runRm(args: readonly string[]): Promise<number> {

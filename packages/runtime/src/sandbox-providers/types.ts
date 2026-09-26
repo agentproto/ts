@@ -45,4 +45,15 @@ export interface SandboxProviderHandle extends AdapterHandle {
    * credentials (e.g. `local`).
    */
   readonly setupFields?: readonly SetupField[]
+  /**
+   * The directory INSIDE the box a spawned agent session should default to
+   * when the caller passed no explicit `cwd` — e.g. e2b/Box's login home
+   * `/home/user`. Absent for a same-machine passthrough provider (`local`),
+   * where the HOST's own resolved cwd is already a valid path in the box
+   * (they're the same filesystem) and forwarding it as-is is correct.
+   * Presence of this field is also the signal `bootSandboxAgentSession`
+   * uses to reject an explicit HOST-only path (e.g. `/Volumes/...`) instead
+   * of forwarding it into a box where it can never resolve.
+   */
+  readonly defaultCwd?: string
 }
