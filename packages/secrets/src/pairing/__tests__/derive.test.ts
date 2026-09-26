@@ -3,6 +3,8 @@ import {
   derivePairRoot,
   currentEpoch,
   deriveEpochRoutingToken,
+  deriveEpochAuthToken,
+  deriveOfferTokens,
   epochRoutingTokens,
 } from "../derive.js"
 import {
@@ -23,12 +25,12 @@ async function handshake() {
   const clientParams: ClientHandshakeParams = {
     daemonX25519Pub: identity.x25519.pub,
     daemonEd25519Pub: identity.ed25519.pub,
-    offerToken: OFFER_TOKEN,
+    authToken: OFFER_TOKEN,
     clientName: "jeremy@laptop",
   }
   const daemonParams: DaemonHandshakeParams = {
     identity,
-    verifyOfferToken: t => t === OFFER_TOKEN,
+    verifyAuthToken: t => t === OFFER_TOKEN,
   }
   const client = await startClientHandshake(clientParams)
   const { reply, session: daemonSession } = await respondToHandshake(client.hello, daemonParams)
@@ -98,7 +100,39 @@ describe.each([
     expect(set).toHaveLength(2)
     expect(set[0]?.epoch).toBe(100)
     expect(set[1]?.epoch).toBe(99)
-    expect(set[0]?.token).toBe(await deriveEpochRoutingToken(root, 100, c))
-    expect(set[1]?.token).toBe(await deriveEpochRoutingToken(root, 99, c))
+    expect(set[0]?.route).toBe(await deriveEpochRoutingToken(root, 100, c))
+    expect(set[1]?.route).toBe(await deriveEpochRoutingToken(root, 99, c))
+    expect(set[0]?.auth).toBe(await deriveEpochAuthToken(root, 100, c))
+    expect(set[1]?.auth).toBe(await deriveEpochAuthToken(root, 99, c))
+  })
+
+  it("the epoch auth token is distinct from the route, 32 bytes, and agrees on both sides", async () => {
+    const { clientSession, daemonSession } = await handshake()
+    const cRoot = await derivePairRoot(clientSession, c)
+    const dRoot = await derivePairRoot(daemonSession, c)
+    const e = currentEpoch()
+    const auth = await deriveEpochAuthToken(cRoot, e, c)
+    expect(auth).toBe(await deriveEpochAuthToken(dRoot, e, c))
+    expect(auth).not.toBe(await deriveEpochRoutingToken(cRoot, e, c))
+    expect(auth).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(auth).not.toBe(await deriveEpochAuthToken(cRoot, e + 1, c))
+  })
+})
+
+describe.each([
+  ["node", nodeCryptoProvider],
+  ["webcrypto", webCryptoProvider],
+])("offer route/auth tokens (%s)", (_name, c) => {
+  it("splits the offer secret into a broker-width route and a distinct auth", async () => {
+    const secret = "AAAABBBBCCCCDDDDEEEEFF"
+    const { route, auth } = await deriveOfferTokens(secret, c)
+    expect(route).toMatch(/^[A-Za-z0-9_-]{22}$/)
+    expect(auth).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    expect(route).not.toBe(secret)
+    expect(auth).not.toBe(secret)
+    expect(auth).not.toContain(route)
+    // Deterministic per secret, and different secrets never share a route.
+    expect(await deriveOfferTokens(secret, c)).toEqual({ route, auth })
+    expect((await deriveOfferTokens("AAAABBBBCCCCDDDDEEEEFG", c)).route).not.toBe(route)
   })
 })

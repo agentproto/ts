@@ -12,6 +12,11 @@
  * DESIGN §4 names `credentials.json`; we split it out to avoid entangling the
  * auth-token store's shape/validation with pairing records — a deliberate,
  * documented deviation. `pair ls` reads this file when no daemon is reachable.
+ *
+ * File `version` 2 = pairings made under pair/v2 (route/auth split). A version-1
+ * file still loads, every record flagged `legacy`: listed, but `openPairChannel`
+ * refuses it with the re-pair instruction instead of dialing. A fresh `pair
+ * accept` against the same daemon replaces the legacy record (same fingerprint).
  */
 
 import { mkdir, readFile, writeFile, chmod, unlink } from "node:fs/promises"
@@ -37,14 +42,18 @@ export interface ClientPairing {
   createdAt: string
   /** ISO-8601 of the most recent (re)connect. */
   lastSeen: string
+  /** Set on a pairing made under the retired pair/v1 protocol. Never dialed —
+   *  re-pair with `agentproto pair offer` / `pair accept`. */
+  legacy?: true
 }
 
 interface ClientPairingsFile {
-  version: 1
+  version: typeof FILE_VERSION
   pairings: ClientPairing[]
 }
 
-const FILE_VERSION = 1 as const
+const FILE_VERSION = 2 as const
+const LEGACY_FILE_VERSION = 1
 
 export function clientPairingsPath(): string {
   const base = process.env["AGENTPROTO_HOME"] ?? join(homedir(), ".agentproto")
@@ -55,14 +64,20 @@ export async function loadClientPairings(): Promise<ClientPairingsFile> {
   const path = clientPairingsPath()
   try {
     const raw = await readFile(path, "utf8")
-    const parsed = JSON.parse(raw) as ClientPairingsFile
+    const parsed = JSON.parse(raw) as { version?: unknown; pairings?: ClientPairing[] }
+    if (parsed.version === LEGACY_FILE_VERSION && Array.isArray(parsed.pairings)) {
+      return {
+        version: FILE_VERSION,
+        pairings: parsed.pairings.map(p => ({ ...p, legacy: true as const })),
+      }
+    }
     if (parsed.version !== FILE_VERSION || !Array.isArray(parsed.pairings)) {
       throw new Error(
         `${path}: unexpected shape (version ${parsed.version}). ` +
           `Move it aside and re-run \`agentproto pair accept\`.`,
       )
     }
-    return parsed
+    return parsed as ClientPairingsFile
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       return { version: FILE_VERSION, pairings: [] }

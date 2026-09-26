@@ -22,6 +22,7 @@ import {
   decodePairingHello,
   encodePairingMessage,
   derivePairRoot,
+  deriveOfferTokens,
   encodeOfferUrl,
 } from "../pairing/index.js"
 import { generateIdentity, identityFingerprint } from "../identity/index.js"
@@ -96,12 +97,12 @@ describe("@agentproto/secrets/pairing/browser is browser-safe", () => {
 
     const identity = await generateIdentity() // daemon side: node:crypto, this realm
     const offerUrl = encodeOfferUrl({
-      v: 1,
+      v: 2,
       rendezvousUrl: "wss://rdv.example/v1",
       fingerprint: await identityFingerprint(identity.x25519.pub),
       daemonX25519Pub: identity.x25519.pub,
       daemonEd25519Pub: identity.ed25519.pub,
-      token: "AAAABBBBCCCCDDDDEEEEFF",
+      secret: "AAAABBBBCCCCDDDDEEEEFF",
       exp: Math.floor(Date.now() / 1000) + 600,
     })
 
@@ -114,7 +115,7 @@ describe("@agentproto/secrets/pairing/browser is browser-safe", () => {
         const started = await p.startClientHandshake({
           daemonX25519Pub: offer.daemonX25519Pub,
           daemonEd25519Pub: offer.daemonEd25519Pub,
-          offerToken: offer.token,
+          authToken: (await p.deriveOfferTokens(offer.secret)).auth,
           clientName: "browser@vm",
         })
         globalThis.__complete = async replyB64 => {
@@ -134,7 +135,12 @@ describe("@agentproto/secrets/pairing/browser is browser-safe", () => {
 
     const { reply, session } = await respondToHandshake(
       decodePairingHello(Buffer.from(helloB64, "base64")),
-      { identity, verifyOfferToken: t => t === "AAAABBBBCCCCDDDDEEEEFF" },
+      {
+        identity,
+        // The browser realm derived `auth` with WebCrypto; this realm derives it
+        // with node:crypto — equality proves the derivation is portable.
+        verifyAuthToken: async t => t === (await deriveOfferTokens("AAAABBBBCCCCDDDDEEEEFF")).auth,
+      },
     )
     ctx.replyB64 = Buffer.from(encodePairingMessage(reply)).toString("base64")
     const client = (await vm.runInContext("__complete(replyB64)", ctx)) as {

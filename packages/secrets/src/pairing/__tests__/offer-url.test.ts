@@ -10,12 +10,12 @@ import { generateIdentity, identityFingerprint } from "../../identity/index.js"
 async function makeOffer(overrides: Partial<PairingOffer> = {}): Promise<PairingOffer> {
   const identity = await generateIdentity()
   return {
-    v: 1,
+    v: 2,
     rendezvousUrl: "wss://rendezvous.example/v1",
     fingerprint: await identityFingerprint(identity.x25519.pub),
     daemonX25519Pub: identity.x25519.pub,
     daemonEd25519Pub: identity.ed25519.pub,
-    token: "AAAABBBBCCCCDDDDEEEEFF",
+    secret: "AAAABBBBCCCCDDDDEEEEFF",
     exp: Math.floor(Date.now() / 1000) + 600,
     ...overrides,
   }
@@ -66,7 +66,7 @@ describe("offer URL codec", async () => {
 
   it("rejects a missing param", async () => {
     const url = encodeOfferUrl(await makeOffer())
-    const stripped = url.replace(/&t=[^&]+/, "")
+    const stripped = url.replace(/&s=[^&]+/, "")
     await expectPairingError(() => parseOfferUrl(stripped), "malformed_offer")
   })
 
@@ -76,8 +76,16 @@ describe("offer URL codec", async () => {
   })
 
   it("rejects an unknown version", async () => {
-    const url = encodeOfferUrl(await makeOffer()).replace("v=1", "v=2")
+    const url = encodeOfferUrl(await makeOffer()).replace("v=2", "v=3")
     await expectPairingError(() => parseOfferUrl(url), "malformed_offer")
+  })
+
+  it("refuses a pair/v1 offer with an actionable re-pair error", async () => {
+    const url = encodeOfferUrl(await makeOffer())
+      .replace("v=2", "v=1")
+      .replace("&s=", "&t=")
+    await expectPairingError(() => parseOfferUrl(url), "pairing_protocol_outdated")
+    await expect(parseOfferUrl(url)).rejects.toThrow(/agentproto pair offer/)
   })
 
   it("rejects a non-ws rendezvous URL", async () => {

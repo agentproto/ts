@@ -1,7 +1,7 @@
 /**
  * @agentproto/secrets/pairing/browser — the browser-safe pairing entry.
  *
- * The same `pair/v1` handshake, `tunnel-e2e/v1` handshake, offer-URL codec,
+ * The same `pair/v2` handshake, `tunnel-e2e/v1` handshake, offer-URL codec,
  * pair-root / epoch-token derivation, seal box and transcript signatures as
  * the Node entries (`@agentproto/secrets/pairing`, `/seal`, `/identity`) — the
  * same source files, not a port — with WebCrypto (`globalThis.crypto.subtle`)
@@ -15,9 +15,12 @@
 
 export {
   PAIR_VERSION,
+  LEGACY_PAIR_VERSION,
+  PAIRING_PROTOCOL_OUTDATED_MESSAGE,
   PairingError,
   startClientHandshake,
   respondToHandshake,
+  respondToLegacyHandshake,
   encodePairingMessage,
   decodePairingHello,
   decodePairingReply,
@@ -47,7 +50,11 @@ export {
   derivePairRoot,
   currentEpoch,
   deriveEpochRoutingToken,
+  deriveEpochAuthToken,
+  deriveEpochTokens,
+  deriveOfferTokens,
   epochRoutingTokens,
+  type RouteAuthTokens,
 } from "./derive.js"
 
 export {

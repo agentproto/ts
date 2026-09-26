@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import { mkdtemp, rm, stat, access } from "node:fs/promises"
+import { mkdtemp, rm, stat, access, writeFile, mkdir, readFile } from "node:fs/promises"
+import { dirname } from "node:path"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -43,7 +44,7 @@ describe("client pairings store", () => {
 
   it("returns an empty file when nothing is persisted", async () => {
     const file = await loadClientPairings()
-    expect(file.version).toBe(1)
+    expect(file.version).toBe(2)
     expect(file.pairings).toEqual([])
   })
 
@@ -92,5 +93,23 @@ describe("client pairings store", () => {
 
   it("returns null removing an unknown pairing", async () => {
     expect(await removeClientPairing("ghost")).toBeNull()
+  })
+
+  it("loads a pair/v1 credentials file with every record flagged legacy, and re-pairing replaces it", async () => {
+    const path = clientPairingsPath()
+    await mkdir(dirname(path), { recursive: true })
+    await writeFile(path, JSON.stringify({ version: 1, pairings: [sample()] }), { mode: 0o600 })
+
+    const file = await loadClientPairings()
+    expect(file.version).toBe(2)
+    expect(file.pairings).toEqual([{ ...sample(), legacy: true }])
+    expect((await findClientPairing("my-laptop"))?.legacy).toBe(true)
+
+    // `pair accept` against the same daemon (same fingerprint) supersedes it.
+    await upsertClientPairing(sample({ pairRoot: "bmV3LXJvb3Q=" }))
+    const after = JSON.parse(await readFile(path, "utf8"))
+    expect(after.version).toBe(2)
+    expect(after.pairings).toHaveLength(1)
+    expect(after.pairings[0].legacy).toBeUndefined()
   })
 })

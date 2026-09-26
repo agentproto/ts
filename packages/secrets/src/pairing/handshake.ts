@@ -1,5 +1,5 @@
 /**
- * @agentproto/secrets/pairing — the `pair/v1` session handshake
+ * @agentproto/secrets/pairing — the `pair/v2` session handshake
  * (design: DESIGN §4).
  *
  * A Noise-flavoured, two-message handshake that lets a client and a daemon —
@@ -10,11 +10,11 @@
  * ```
  *   client → daemon:  e_pub                       // ephemeral X25519
  *                     ct₀ = Seal(to = daemon_x25519,
- *                            {clientPub: e_pub, clientName, offerToken})
+ *                            {clientPub: e_pub, clientName, auth})
  *   daemon → client:  d_e_pub, sig = Ed25519(daemon_ed25519,
  *                            transcript = sha256(e_pub ‖ ct₀ ‖ d_e_pub))
  *   both:             K  = HKDF-SHA256(ECDH(e, d_e) ‖ ECDH(e, daemon_x25519),
- *                            salt = transcript, info = "agentproto/pair/v1")
+ *                            salt = transcript, info = "agentproto/pair/v2")
  *                     → K_c2d ‖ K_d2c  (two AES-256-GCM keys)
  * ```
  *
@@ -24,7 +24,13 @@
  *     is the daemon the human scanned, not a rendezvous impersonating it — MITM
  *     protection without a CA.
  *   - The daemon proves the client is authorised by opening `ct₀` (only the
- *     daemon's X25519 private key can) and checking the one-time `offerToken`.
+ *     daemon's X25519 private key can) and checking the sealed `auth` token in
+ *     constant time. `auth` is derived from the pairing secret under a label
+ *     distinct from the broker ROUTE token (./derive.ts), so the one value the
+ *     broker sees in clear — the route on the upgrade URL — never authenticates.
+ *     pair/v1 sealed the route itself as the proof, which let a broker that
+ *     knew the route (all of them) seal its own hello and pair; v1 is retired
+ *     (see `respondToLegacyHandshake`).
  *   - `sig` covers the whole transcript and the transcript salts the key
  *     schedule, so any tampering with `e_pub`, `ct₀`, or `d_e_pub` in flight
  *     makes either the signature or the derived keys disagree — the session
@@ -60,12 +66,26 @@ import {
 } from "../identity/core.js"
 
 /** Wire version of the handshake. Bumped if the message shape or key schedule
- *  changes; both sides refuse a version they don't recognise. */
-export const PAIR_VERSION = 1 as const
+ *  changes; both sides refuse a version they don't recognise. v2: the sealed
+ *  hello carries a dedicated auth token, never the broker route (./derive.ts). */
+export const PAIR_VERSION = 2 as const
 
-/** HKDF `info` — domain-separates this key schedule from every other HKDF use
- *  in the codebase (seal boxes, future rendezvous-token derivation). */
-const HKDF_INFO = utf8Encode("agentproto/pair/v1")
+/** The retired pair/v1 wire version. Recognised only to answer it with a
+ *  re-pair notice (`respondToLegacyHandshake`); never served. */
+export const LEGACY_PAIR_VERSION = 1 as const
+
+/** What a peer is told when it speaks the retired protocol: pairings made
+ *  under pair/v1 can't be upgraded in place, so the fix is a fresh pairing. */
+export const PAIRING_PROTOCOL_OUTDATED_MESSAGE =
+  "this pairing uses the retired pair/v1 protocol, which let the rendezvous broker " +
+  "authenticate as a client. Upgrade agentproto on both machines and re-pair: run " +
+  "`agentproto pair offer` on the daemon, then `agentproto pair accept` on the client"
+
+/** HKDF `info` for a version's key schedule — domain-separates it from every
+ *  other HKDF use in the codebase, and v2 session keys from v1's. */
+function hkdfInfo(version: number): Uint8Array {
+  return utf8Encode(`agentproto/pair/v${version}`)
+}
 
 /** Length of each direction key: AES-256 → 32 bytes, two of them → 64. */
 const KEY_LEN = 32
@@ -83,6 +103,9 @@ export type PairingErrorCode =
   // P2: offer-URL codec (offer-url.ts) rejection vectors.
   | "malformed_offer"
   | "offer_expired"
+  // The peer (or an offer URL / stored pairing) speaks the retired pair/v1
+  // protocol. Actionable: re-pair with `agentproto pair offer`.
+  | "pairing_protocol_outdated"
 
 /** Raised for every handshake failure. Never carries key material or
  *  plaintext; the `code` is the contract, the message is for humans. */
@@ -118,9 +141,10 @@ interface HelloPayload {
   clientPub: string
   /** Human-facing client label the daemon shows on `pair accept`. */
   clientName: string
-  /** One-time offer token from the offer URL — the daemon's proof the client
-   *  holds a fresh, unspent offer. */
-  offerToken: string
+  /** The auth token (./derive.ts: offer auth, or the epoch auth on a
+   *  reconnect) — the daemon's proof the client holds the pairing secret.
+   *  Distinct from, and not derivable from, the route the broker sees. */
+  auth: string
 }
 
 /**
@@ -184,12 +208,13 @@ function transcriptHash(
  *  key split (c2d then d2c) are identical on both sides. */
 async function deriveDirectionKeys(
   crypto: CryptoProvider,
+  version: number,
   ecdhEphemeral: Uint8Array,
   ecdhStatic: Uint8Array,
   transcript: Uint8Array,
 ): Promise<{ kc2d: Uint8Array; kd2c: Uint8Array }> {
   const ikm = concatBytes(ecdhEphemeral, ecdhStatic)
-  const okm = await crypto.hkdfSha256(ikm, transcript, HKDF_INFO, KEY_LEN * 2)
+  const okm = await crypto.hkdfSha256(ikm, transcript, hkdfInfo(version), KEY_LEN * 2)
   return {
     kc2d: okm.subarray(0, KEY_LEN),
     kd2c: okm.subarray(KEY_LEN, KEY_LEN * 2),
@@ -206,8 +231,10 @@ export interface ClientHandshakeParams {
   /** Daemon static Ed25519 public key (base64 SPKI DER) — verifies `sig`.
    *  From the offer's `sk`. */
   daemonEd25519Pub: string
-  /** One-time offer token. From the offer's `t`. */
-  offerToken: string
+  /** Auth token sealed into the hello: `deriveOfferTokens(offer.secret).auth`
+   *  on first contact, `deriveEpochAuthToken(pairRoot, epoch)` on reconnect.
+   *  NEVER the route token the broker sees. */
+  authToken: string
   /** Human-facing client label the daemon displays on accept. */
   clientName: string
 }
@@ -244,7 +271,7 @@ export async function startClientHandshake(
   const payload: HelloPayload = {
     clientPub: ePubB64,
     clientName: params.clientName,
-    offerToken: params.offerToken,
+    auth: params.authToken,
   }
   const ct0 = await seal(JSON.stringify(payload), params.daemonX25519Pub, crypto)
   const hello: PairingHello = { v: PAIR_VERSION, ePub: ePubB64, ct0 }
@@ -265,7 +292,7 @@ export async function startClientHandshake(
 
     const ecdhEphemeral = await crypto.x25519(ephemeral.privateKey, dePub)
     const ecdhStatic = await crypto.x25519(ephemeral.privateKey, daemonStatic)
-    const { kc2d, kd2c } = await deriveDirectionKeys(crypto, ecdhEphemeral, ecdhStatic, transcript)
+    const { kc2d, kd2c } = await deriveDirectionKeys(crypto, PAIR_VERSION, ecdhEphemeral, ecdhStatic, transcript)
 
     return {
       sendKey: kc2d,
@@ -282,16 +309,16 @@ export async function startClientHandshake(
 // ─── daemon side ────────────────────────────────────────────────
 
 /** What the daemon brings to the handshake: its identity, and a predicate that
- *  validates (and, in P2, spends) the one-time offer token. */
+ *  validates (and, for an offer, spends) the sealed auth token. */
 export interface DaemonHandshakeParams {
   identity: DaemonIdentity
   /**
-   * Validate the presented offer token. Returning false rejects the handshake
-   * with `offer_rejected`. The daemon owns single-use + expiry policy here so
-   * this module never needs to know about the offer store — a stale or already
-   * spent token simply returns false. May be async.
+   * Validate the presented auth token (constant time). Returning false
+   * rejects the handshake with `offer_rejected`. The daemon owns single-use +
+   * expiry policy here so this module never needs to know about the offer
+   * store — a stale, spent, or wrong token simply returns false. May be async.
    */
-  verifyOfferToken: (token: string) => boolean | Promise<boolean>
+  verifyAuthToken: (token: string) => boolean | Promise<boolean>
 }
 
 /** A completed daemon handshake: send `reply`, keep `session`. */
@@ -301,8 +328,83 @@ export interface DaemonHandshakeResult {
 }
 
 /**
+ * Open a hello's sealed payload and check its ephemeral binding. Shared by the
+ * v2 responder and the legacy-notice responder.
+ */
+async function openHello(
+  crypto: CryptoProvider,
+  ePub: string,
+  ct0: string,
+  identity: DaemonIdentity,
+): Promise<{ clientEphemeral: Uint8Array; payload: Record<string, unknown> }> {
+  const clientEphemeral = await x25519PublicKey(crypto, ePub, "client ephemeral")
+
+  let payloadJson: string
+  try {
+    payloadJson = await unseal(ct0, identity.x25519.priv, crypto)
+  } catch (err) {
+    if (err instanceof SealError) {
+      throw new PairingError(
+        "unseal_failed",
+        "could not open sealed hello — wrong daemon key or tampered ct₀"
+      )
+    }
+    throw err
+  }
+  let payload: unknown
+  try {
+    payload = JSON.parse(payloadJson)
+  } catch {
+    throw new PairingError("malformed_hello", "sealed hello payload was not valid JSON")
+  }
+  if (!isRecord(payload) || typeof payload["clientPub"] !== "string") {
+    throw new PairingError("malformed_hello", "sealed hello payload is missing required fields")
+  }
+  // The sealed payload echoes the client ephemeral key; it must match the
+  // cleartext ePub, or a rendezvous swapped ePub while relaying the intact
+  // (opaque) seal. Binds the ephemeral to the sealed proof.
+  if (payload["clientPub"] !== ePub) {
+    throw new PairingError(
+      "ephemeral_mismatch",
+      "sealed clientPub does not match the hello ephemeral key"
+    )
+  }
+  return { clientEphemeral, payload }
+}
+
+/** The daemon half of the key schedule: ephemeral, transcript signature, the
+ *  two ECDHs, and the role-adjusted direction keys. */
+async function completeDaemonSide(
+  crypto: CryptoProvider,
+  version: number,
+  identity: DaemonIdentity,
+  ePub: string,
+  ct0: string,
+  clientEphemeral: Uint8Array,
+): Promise<{ dePub: string; sig: string; sendKey: Uint8Array; recvKey: Uint8Array; transcript: Uint8Array }> {
+  const daemonEphemeral = await crypto.x25519GenerateKeyPair()
+  const dePubB64 = base64Encode(daemonEphemeral.publicKey)
+
+  const transcript = await transcriptHash(crypto, ePub, ct0, dePubB64)
+  const sig = await signTranscript(identity.ed25519.priv, transcript, crypto)
+
+  const daemonStaticPriv = base64Decode(identity.x25519.priv)
+  const ecdhEphemeral = await crypto.x25519(daemonEphemeral.privateKey, clientEphemeral)
+  let ecdhStatic: Uint8Array
+  try {
+    ecdhStatic = await crypto.x25519(daemonStaticPriv, clientEphemeral)
+  } catch {
+    throw new PairingError("invalid_key", "invalid daemon static X25519 private key")
+  }
+  const { kc2d, kd2c } = await deriveDirectionKeys(crypto, version, ecdhEphemeral, ecdhStatic, transcript)
+  // Daemon sends on c2d's counterpart: it RECEIVES client→daemon (kc2d) and
+  // SENDS daemon→client (kd2c).
+  return { dePub: dePubB64, sig, sendKey: kd2c, recvKey: kc2d, transcript }
+}
+
+/**
  * Respond to a client hello. Opens the sealed payload with the daemon's X25519
- * private key, checks the offer token and the ephemeral-key binding, signs the
+ * private key, checks the ephemeral-key binding and the auth token, signs the
  * transcript, and derives the session. Rejects with `PairingError` on any
  * failure — a tampered `ct₀`, a swapped `ePub`, a rejected token — before
  * producing any reply, so a rejected client learns nothing and gets no session.
@@ -315,64 +417,68 @@ export async function respondToHandshake(
   if (hello.v !== PAIR_VERSION) {
     throw new PairingError("malformed_hello", `unsupported hello version ${hello.v}`)
   }
-  const clientEphemeral = await x25519PublicKey(crypto, hello.ePub, "client ephemeral")
+  const { clientEphemeral, payload: raw } = await openHello(crypto, hello.ePub, hello.ct0, params.identity)
+  const payload = parseHelloPayload(raw)
 
-  let payloadJson: string
-  try {
-    payloadJson = await unseal(hello.ct0, params.identity.x25519.priv, crypto)
-  } catch (err) {
-    if (err instanceof SealError) {
-      throw new PairingError(
-        "unseal_failed",
-        "could not open sealed hello — wrong daemon key or tampered ct₀"
-      )
-    }
-    throw err
+  if (!(await params.verifyAuthToken(payload.auth))) {
+    throw new PairingError("offer_rejected", "auth token was rejected (unknown, expired, spent, or wrong)")
   }
 
-  const payload = parseHelloPayload(payloadJson)
-
-  // The sealed payload echoes the client ephemeral key; it must match the
-  // cleartext ePub, or a rendezvous swapped ePub while relaying the intact
-  // (opaque) seal. Binds the ephemeral to the sealed offer proof.
-  if (payload.clientPub !== hello.ePub) {
-    throw new PairingError(
-      "ephemeral_mismatch",
-      "sealed clientPub does not match the hello ephemeral key"
-    )
-  }
-
-  if (!(await params.verifyOfferToken(payload.offerToken))) {
-    throw new PairingError("offer_rejected", "offer token was rejected (unknown, expired, or spent)")
-  }
-
-  const daemonEphemeral = await crypto.x25519GenerateKeyPair()
-  const dePubB64 = base64Encode(daemonEphemeral.publicKey)
-
-  const transcript = await transcriptHash(crypto, hello.ePub, hello.ct0, dePubB64)
-  const sig = await signTranscript(params.identity.ed25519.priv, transcript, crypto)
-
-  const daemonStaticPriv = base64Decode(params.identity.x25519.priv)
-  const ecdhEphemeral = await crypto.x25519(daemonEphemeral.privateKey, clientEphemeral)
-  let ecdhStatic: Uint8Array
-  try {
-    ecdhStatic = await crypto.x25519(daemonStaticPriv, clientEphemeral)
-  } catch {
-    throw new PairingError("invalid_key", "invalid daemon static X25519 private key")
-  }
-  const { kc2d, kd2c } = await deriveDirectionKeys(crypto, ecdhEphemeral, ecdhStatic, transcript)
-
+  const d = await completeDaemonSide(crypto, PAIR_VERSION, params.identity, hello.ePub, hello.ct0, clientEphemeral)
   return {
-    reply: { v: PAIR_VERSION, dePub: dePubB64, sig },
+    reply: { v: PAIR_VERSION, dePub: d.dePub, sig: d.sig },
     session: {
-      // Daemon sends on c2d's counterpart: it RECEIVES client→daemon (kc2d)
-      // and SENDS daemon→client (kd2c).
-      sendKey: kd2c,
-      recvKey: kc2d,
+      sendKey: d.sendKey,
+      recvKey: d.recvKey,
       peerFingerprint: await identityFingerprint(payload.clientPub, crypto),
-      transcriptHash: transcript,
+      transcriptHash: d.transcript,
       clientName: payload.clientName,
     },
+  }
+}
+
+/**
+ * Answer a retired pair/v1 hello so its client can be TOLD to re-pair.
+ *
+ * An unmodified v1 client only surfaces what arrives inside a completed v1
+ * channel — anything short of that (a closed socket, a WS close reason, which
+ * its transport drops) reads as a timeout. So the daemon completes the v1 key
+ * schedule (`agentproto/pair/v1`) and hands back the reply + keys; the caller
+ * sends ONLY the outdated notice over them and closes.
+ *
+ * Deliberately performs NO authorisation: the v1 token proves nothing (it's
+ * the broker-visible route), so it isn't even read. The result must never be
+ * served — it is a one-way notice channel, and a party that gets one (the
+ * broker included) gains nothing but that notice. Rejects with `PairingError`
+ * for anything that isn't a well-formed v1 hello sealed to this daemon.
+ */
+export async function respondToLegacyHandshake(
+  helloBytes: Uint8Array,
+  identity: DaemonIdentity,
+  crypto: CryptoProvider = webCryptoProvider,
+): Promise<{ reply: Uint8Array; keys: { sendKey: Uint8Array; recvKey: Uint8Array } }> {
+  const parsed = parseJson(helloBytes, "malformed_hello")
+  if (
+    !isRecord(parsed) ||
+    parsed["v"] !== LEGACY_PAIR_VERSION ||
+    typeof parsed["ePub"] !== "string" ||
+    typeof parsed["ct0"] !== "string"
+  ) {
+    throw new PairingError("malformed_hello", "not a pair/v1 hello")
+  }
+  const ePub = parsed["ePub"]
+  const ct0 = parsed["ct0"]
+  const { clientEphemeral, payload } = await openHello(crypto, ePub, ct0, identity)
+  // A v1 payload names its proof `offerToken`; a v2 payload relabelled v1 in
+  // flight names it `auth` and is refused here, so a v2 hello can't be
+  // steered onto this unauthenticated path.
+  if (typeof payload["offerToken"] !== "string") {
+    throw new PairingError("malformed_hello", "not a pair/v1 hello payload")
+  }
+  const d = await completeDaemonSide(crypto, LEGACY_PAIR_VERSION, identity, ePub, ct0, clientEphemeral)
+  return {
+    reply: utf8Encode(JSON.stringify({ v: LEGACY_PAIR_VERSION, dePub: d.dePub, sig: d.sig })),
+    keys: { sendKey: d.sendKey, recvKey: d.recvKey },
   }
 }
 
@@ -382,25 +488,18 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null
 }
 
-function parseHelloPayload(json: string): HelloPayload {
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(json)
-  } catch {
-    throw new PairingError("malformed_hello", "sealed hello payload was not valid JSON")
-  }
+function parseHelloPayload(parsed: Record<string, unknown>): HelloPayload {
   if (
-    !isRecord(parsed) ||
     typeof parsed["clientPub"] !== "string" ||
     typeof parsed["clientName"] !== "string" ||
-    typeof parsed["offerToken"] !== "string"
+    typeof parsed["auth"] !== "string"
   ) {
     throw new PairingError("malformed_hello", "sealed hello payload is missing required fields")
   }
   return {
     clientPub: parsed["clientPub"],
     clientName: parsed["clientName"],
-    offerToken: parsed["offerToken"],
+    auth: parsed["auth"],
   }
 }
 
@@ -410,9 +509,14 @@ export function encodePairingMessage(message: PairingHello | PairingReply): Uint
 }
 
 /** Parse + validate a client hello from raw bytes. Truncated or malformed
- *  input throws `PairingError("malformed_hello")` — never a partial object. */
+ *  input throws `PairingError("malformed_hello")` — never a partial object. A
+ *  retired pair/v1 hello throws `PairingError("pairing_protocol_outdated")` so
+ *  the daemon can answer it with `respondToLegacyHandshake`. */
 export function decodePairingHello(bytes: Uint8Array): PairingHello {
   const parsed = parseJson(bytes, "malformed_hello")
+  if (isRecord(parsed) && parsed["v"] === LEGACY_PAIR_VERSION) {
+    throw new PairingError("pairing_protocol_outdated", PAIRING_PROTOCOL_OUTDATED_MESSAGE)
+  }
   if (
     !isRecord(parsed) ||
     parsed["v"] !== PAIR_VERSION ||
@@ -428,6 +532,9 @@ export function decodePairingHello(bytes: Uint8Array): PairingHello {
  *  input throws `PairingError("malformed_reply")`. */
 export function decodePairingReply(bytes: Uint8Array): PairingReply {
   const parsed = parseJson(bytes, "malformed_reply")
+  if (isRecord(parsed) && parsed["v"] === LEGACY_PAIR_VERSION) {
+    throw new PairingError("pairing_protocol_outdated", PAIRING_PROTOCOL_OUTDATED_MESSAGE)
+  }
   if (
     !isRecord(parsed) ||
     parsed["v"] !== PAIR_VERSION ||

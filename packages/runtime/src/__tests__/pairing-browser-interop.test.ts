@@ -41,7 +41,8 @@ import {
   decodePairingReply,
   parseOfferUrl,
   derivePairRoot,
-  deriveEpochRoutingToken,
+  deriveEpochTokens,
+  deriveOfferTokens,
   currentEpoch,
   webCryptoProvider,
   type PairingSession,
@@ -135,10 +136,10 @@ async function browserPair(
   raw: FrameSink,
   daemonX25519Pub: string,
   daemonEd25519Pub: string,
-  offerToken: string,
+  authToken: string,
 ): Promise<{ sink: E2eFrameSink; session: PairingSession }> {
   const started = await startClientHandshake(
-    { daemonX25519Pub, daemonEd25519Pub, offerToken, clientName: "phone@browser" },
+    { daemonX25519Pub, daemonEd25519Pub, authToken, clientName: "phone@browser" },
     webCryptoProvider,
   )
   let session: PairingSession | null = null
@@ -220,15 +221,16 @@ describe("browser-mode (WebCrypto) client ↔ node:crypto daemon over a real ren
 
     // ── pair, browser mode ──
     const parsed = await parseOfferUrl(offer.url, { now: Date.now() }, webCryptoProvider)
+    const offerTokens = await deriveOfferTokens(parsed.secret, webCryptoProvider)
     const raw = await dialBrowserWs(
-      `${rvUrl}?side=client&t=${encodeURIComponent(parsed.token)}`,
+      `${rvUrl}?side=client&t=${encodeURIComponent(offerTokens.route)}`,
       browserSockets,
     )
     const { sink, session } = await browserPair(
       raw,
       parsed.daemonX25519Pub,
       parsed.daemonEd25519Pub,
-      parsed.token,
+      offerTokens.auth,
     )
     expect(session.peerFingerprint).toBe(parsed.fingerprint)
     const client = frameClient(sink)
@@ -297,17 +299,17 @@ describe("browser-mode (WebCrypto) client ↔ node:crypto daemon over a real ren
     sink.close("done")
 
     // ── reconnect over the epoch routing token, still browser mode ──
-    const epochToken = await deriveEpochRoutingToken(pairRoot, currentEpoch(), webCryptoProvider)
+    const epoch = await deriveEpochTokens(pairRoot, currentEpoch(), webCryptoProvider)
     await vi.waitFor(() => expect(rendezvous.stats.parked).toBeGreaterThanOrEqual(1))
     const raw2 = await dialBrowserWs(
-      `${rvUrl}?side=client&t=${encodeURIComponent(epochToken)}`,
+      `${rvUrl}?side=client&t=${encodeURIComponent(epoch.route)}`,
       browserSockets,
     )
     const { sink: sink2 } = await browserPair(
       raw2,
       parsed.daemonX25519Pub,
       parsed.daemonEd25519Pub,
-      epochToken,
+      epoch.auth,
     )
     const client2 = frameClient(sink2)
     await client2.next(f => f.t === "hello")

@@ -4,24 +4,26 @@
  * Owns everything the daemon needs to be *paired with* over an untrusted
  * rendezvous:
  *
- *   - **Offer store** — in-memory, single-use, expiry-checked one-time tokens
- *     minted by `pair offer`. A daemon restart voids outstanding offers
- *     (acceptable + documented). The P1 `verifyOfferToken` predicate plugs in
- *     here and SPENDS the token on the first successful handshake.
+ *   - **Offer store** — in-memory, single-use, expiry-checked one-time offer
+ *     secrets minted by `pair offer`. A daemon restart voids outstanding offers
+ *     (acceptable + documented). The daemon parks on the offer's ROUTE token and
+ *     the handshake's `verifyAuthToken` predicate checks the sealed AUTH token,
+ *     SPENDING the offer on the first successful handshake (a wrong token spends
+ *     nothing).
  *   - **Pairings store** — `~/.agentproto/pairings.json` (0600, atomic write),
  *     one record per paired client: `{clientPub, name, fingerprint, createdAt,
  *     lastSeen, pairRoot, rendezvousUrl}`. `pairRoot` is the long-term shared
  *     secret (`derivePairRoot`) from which reconnect routing tokens derive.
  *   - **Rendezvous connections** — for a fresh offer, and for every persisted
  *     pairing on boot (autoconnect), the daemon dials the rendezvous *outbound*
- *     (`side=daemon&t=<token>`), runs `daemonHandshakeOverSink` with the P1
+ *     (`side=daemon&t=<route>`), runs `daemonHandshakeOverSink` with the P1
  *     crypto, and — on success — serves the spliced, E2E-wrapped channel exactly
  *     like `serve --connect` serves a tunnel host. The serving path itself is
  *     injected (`serve`) so this module stays free of pty/adapter concerns and
  *     the CLI can reuse its `createTunnelServer` config verbatim.
- *   - **Reconnect epochs** — a persisted pairing's standing connection uses the
- *     pairing-derived routing token `t' = HKDF(pairRoot, "rv-route"‖epoch)`,
- *     rotated per UTC day. The daemon parks on BOTH the current and previous
+ *   - **Reconnect epochs** — a persisted pairing's standing connection parks on
+ *     the pairing-derived route `HKDF(pairRoot, "rv-route"‖epoch)`, rotated per
+ *     UTC day. The daemon parks on BOTH the current and previous
  *     epoch tokens so a client whose clock straddles midnight still finds it;
  *     reconnect-with-backoff keeps the standing connection alive.
  *   - **Revocation** — removing a pairing drops its rendezvous connections and
@@ -29,16 +31,27 @@
  *
  * ## Reconnect authentication (why no stable client key)
  *
- * P1's handshake carries only a client *ephemeral* key (regenerated per
- * handshake) — there is no persistent client identity key, and the PLAN forbids
- * changing the handshake. So a reconnect authenticates the client by
- * **possession of the epoch routing token**, which derives from `pairRoot` — a
- * secret only the paired client and daemon share (it fell out of the original
- * ECDH). The daemon dials a pairing's epoch token, and on that connection the
- * `verifyOfferToken` predicate accepts a hello whose offer-token field equals
- * that same epoch token (constant-time). Token possession ⇒ paired party. The
- * stored `fingerprint` (of the first handshake's ephemeral key) is a stable
- * display/revocation handle, not an authentication input.
+ * The handshake carries only a client *ephemeral* key (regenerated per
+ * handshake) — there is no persistent client identity key. So a reconnect
+ * authenticates the client by **possession of the epoch AUTH token**
+ * `HKDF(pairRoot, "rv-auth"‖epoch)`, which derives from `pairRoot` — a secret
+ * only the paired client and daemon share (it fell out of the original ECDH).
+ * The daemon parks on the pairing's epoch ROUTE, and on that connection the
+ * `verifyAuthToken` predicate accepts a hello whose sealed auth equals the same
+ * epoch's auth token (constant-time). The route and auth are separate one-way
+ * HKDF outputs: the broker sees every route and can't compute an auth from it.
+ * (pair/v1 used ONE value for both, so a broker could replay a logged route as
+ * the proof and be served.) The stored `fingerprint` (of the first handshake's
+ * ephemeral key) is a stable display/revocation handle, not an auth input.
+ *
+ * ## Legacy (pair/v1) pairings
+ *
+ * A v1 `pairings.json` is loaded with every record flagged `legacy`: listed and
+ * revocable, never served. The daemon still parks on a legacy pairing's routes
+ * (the epoch route is unchanged from v1) so that pairing's not-yet-upgraded
+ * client reaches it and is told to re-pair — see `respondToLegacyHandshake` —
+ * rather than timing out. v1 records are not upgraded in place: v1 let the
+ * broker pair as a client, so any v1 record may be the broker's own.
  */
 
 import { randomBytes, createHmac, timingSafeEqual } from "node:crypto"
@@ -54,12 +67,17 @@ import {
   decodePairingHello,
   encodePairingMessage,
   respondToHandshake,
+  respondToLegacyHandshake,
   derivePairRoot,
-  deriveEpochRoutingToken,
+  deriveEpochTokens,
+  deriveOfferTokens,
   currentEpoch,
   encodeOfferUrl,
   HOSTED_RENDEZVOUS_URL,
+  OFFER_VERSION,
+  PAIRING_PROTOCOL_OUTDATED_MESSAGE,
   PairingError,
+  type RouteAuthTokens,
 } from "@agentproto/secrets/pairing"
 import {
   identityFingerprint,
@@ -67,7 +85,10 @@ import {
 } from "@agentproto/secrets/identity"
 import { createReconnectLogGate } from "./reconnect-log-gate.js"
 
-export const PAIRINGS_VERSION = 1 as const
+/** `pairings.json` format. v2 = pairings made under pair/v2 (route/auth
+ *  split). A v1 file still loads, every record flagged `legacy`. */
+export const PAIRINGS_VERSION = 2 as const
+const LEGACY_PAIRINGS_VERSION = 1
 
 /** One persisted pairing. Written verbatim to `pairings.json`. */
 export interface PairingRecord {
@@ -87,10 +108,13 @@ export interface PairingRecord {
   pairRoot: string
   /** Rendezvous endpoint to reconnect through. */
   rendezvousUrl: string
+  /** Set on a pairing made under the retired pair/v1 protocol: listed and
+   *  revocable, never served — its client is told to re-pair. */
+  legacy?: true
 }
 
 interface PairingsFile {
-  v: typeof PAIRINGS_VERSION
+  v: typeof PAIRINGS_VERSION | typeof LEGACY_PAIRINGS_VERSION
   pairings: PairingRecord[]
 }
 
@@ -113,8 +137,9 @@ export interface PairingChannelHandle {
 }
 
 export interface CreatedOffer {
-  /** The one-time offer token (base64url). */
-  token: string
+  /** The one-time offer secret (base64url) — the URL's `s`. Never on the wire:
+   *  the broker only ever sees its derived route. */
+  secret: string
   /** Offer expiry, unix seconds. */
   exp: number
   /** The full `agentproto://pair?…` offer URL. */
@@ -209,11 +234,20 @@ function constantTimeEqual(a: string, b: string): boolean {
 }
 
 interface OfferEntry {
-  token: string
+  /** Broker route derived from the offer secret (the map key). */
+  route: string
+  /** Auth token derived from the offer secret; the sealed hello must carry it. */
+  auth: string
   exp: number // unix seconds
   spent: boolean
   rendezvousUrl: string
 }
+
+/** Re-pair notice sent (E2E, inside a completed v1 channel) to a pair/v1
+ *  client. A v1 client drops tunnel-level `error` frames and only surfaces a
+ *  `hello` whose `version` it doesn't speak — as "Tunnel daemon speaks
+ *  <version>; client speaks …" — so the notice rides in that field too. */
+const OUTDATED_HELLO_VERSION = `pair/v2 required — ${PAIRING_PROTOCOL_OUTDATED_MESSAGE}`
 
 /** One managed rendezvous connection loop (offer or a single epoch). */
 interface ConnectionLoop {
@@ -239,9 +273,10 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
 
   /** fingerprint → record. Source of truth in memory; disk is the mirror. */
   const pairings = new Map<string, PairingRecord>()
-  /** token → offer. */
+  /** route → offer. */
   const offers = new Map<string, OfferEntry>()
-  /** Loops keyed for lifecycle: `offer:<token>` and `pair:<fp>:<slot>`. */
+  /** Loops keyed for lifecycle: `offer:<route>` and `pair:<fp>:<slot>`. Keys
+   *  reach the log, so they carry the (public) route, never a secret. */
   const loops = new Map<string, ConnectionLoop>()
   /** Live served channels, so shutdown/revoke can close them. */
   const channels = new Set<PairingChannelHandle>()
@@ -258,7 +293,21 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
       const raw = await readFile(pairingsPath, "utf8")
       const parsed: unknown = JSON.parse(raw)
       if (isPairingsFile(parsed)) {
-        for (const rec of parsed.pairings) pairings.set(rec.fingerprint, rec)
+        const fromV1 = parsed.v === LEGACY_PAIRINGS_VERSION
+        for (const rec of parsed.pairings) {
+          pairings.set(rec.fingerprint, fromV1 ? { ...rec, legacy: true } : rec)
+        }
+        const legacy = Array.from(pairings.values()).filter(r => r.legacy)
+        if (legacy.length > 0) {
+          log(
+            `[pairing] ${legacy.length} pairing(s) in ${pairingsPath} use the retired pair/v1 ` +
+              `protocol and will not be served (${legacy.map(r => r.name).join(", ")}). ` +
+              "Re-pair each client — run `agentproto pair offer` — then " +
+              "`agentproto pair revoke <name>` the legacy entry.",
+          )
+        }
+      } else {
+        log(`[pairing] ignoring ${pairingsPath}: unrecognised format`)
       }
     } catch (err) {
       if (!isEnoent(err)) {
@@ -285,12 +334,12 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
   interface LoopSpec {
     key: string
     rendezvousUrl: string
-    /** Token to dial this iteration (recomputed for epoch loops; the epoch
-     *  token derivation is async). */
-    token: () => string | Promise<string>
-    /** Verify the presented offer-token against the expected token for this
-     *  connection. `expected` is what `token()` returned this iteration. */
-    verify: (presented: string, expected: string) => boolean
+    /** Route (dialled) + auth (verified) tokens for this iteration —
+     *  recomputed for epoch loops; the derivation is async. */
+    tokens: () => RouteAuthTokens | Promise<RouteAuthTokens>
+    /** Verify the auth token presented in the sealed hello against this
+     *  iteration's `tokens()`. Must be constant-time. */
+    verify: (presented: string, expected: RouteAuthTokens) => boolean
     /** Whether to stop after the first successful serve (offers) vs. loop
      *  forever re-parking (reconnect). */
     singleUse: boolean
@@ -324,10 +373,10 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
   async function runLoop(spec: LoopSpec, signal: AbortSignal): Promise<void> {
     let backoff = reconnectMinMs
     while (!signal.aborted && spec.shouldContinue()) {
-      const expected = await spec.token()
+      const expected = await spec.tokens()
       let sink: FrameSink
       try {
-        sink = await deps.dial(dialUrl(spec.rendezvousUrl, expected), signal)
+        sink = await deps.dial(dialUrl(spec.rendezvousUrl, expected.route), signal)
       } catch (err) {
         if (signal.aborted) break
         const line = dialFailureGate.onFailure(
@@ -358,16 +407,26 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
       try {
         let capturedSession: import("@agentproto/secrets/pairing").PairingSession | null = null
         let capturedHello: import("@agentproto/secrets/pairing").PairingHello | null = null
+        let legacyPeer = false
         let wrapped: E2eFrameSink
         try {
           const identity = await deps.loadIdentity()
           wrapped = await daemonHandshakeOverSink(
             sink,
             async helloBytes => {
-              const hello = decodePairingHello(helloBytes)
+              let hello: import("@agentproto/secrets/pairing").PairingHello
+              try {
+                hello = decodePairingHello(helloBytes)
+              } catch (err) {
+                if (!(err instanceof PairingError) || err.code !== "pairing_protocol_outdated") throw err
+                // A pair/v1 client: complete ITS handshake only to tell it to
+                // re-pair. No auth is checked and nothing is served.
+                legacyPeer = true
+                return respondToLegacyHandshake(helloBytes, identity)
+              }
               const result = await respondToHandshake(hello, {
                 identity,
-                verifyOfferToken: presented => spec.verify(presented, expected),
+                verifyAuthToken: presented => spec.verify(presented, expected),
               })
               capturedSession = result.session
               capturedHello = hello
@@ -380,6 +439,16 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
           // A park timeout, a rejected offer, or a tampered hello. Fail closed
           // and re-dial after a short backoff (park timeouts are common + benign).
           void err
+          await sleep(backoff, signal)
+          backoff = Math.min(backoff * 2, reconnectMaxMs)
+          continue
+        }
+
+        if (legacyPeer) {
+          sendOutdatedNotice(wrapped)
+          log(`[pairing] told a pair/v1 client on ${spec.key} to re-pair`)
+          // Not a success: keep backing off so a v1 client (or anyone replaying
+          // a v1 hello) can't spin this loop.
           await sleep(backoff, signal)
           backoff = Math.min(backoff * 2, reconnectMaxMs)
           continue
@@ -444,47 +513,50 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
       rendezvousIsHostedDefault = true
     }
     const identity = await deps.loadIdentity()
-    const token = b64url(randomBytes(16))
+    const secret = b64url(randomBytes(16))
+    const { route, auth } = await deriveOfferTokens(secret)
     const ttlMs = input.ttlMs ?? DEFAULT_TTL_MS
     const exp = Math.floor((now() + ttlMs) / 1000)
-    offers.set(token, { token, exp, spent: false, rendezvousUrl })
+    offers.set(route, { route, auth, exp, spent: false, rendezvousUrl })
 
     const fingerprint = await identityFingerprint(identity.x25519.pub)
     const url = encodeOfferUrl({
-      v: 1,
+      v: OFFER_VERSION,
       rendezvousUrl,
       fingerprint,
       daemonX25519Pub: identity.x25519.pub,
       daemonEd25519Pub: identity.ed25519.pub,
-      token,
+      secret,
       exp,
     })
 
-    startOfferLoop(token, rendezvousUrl)
+    startOfferLoop({ route, auth }, rendezvousUrl)
     log(
       `[pairing] offer minted (exp ${new Date(exp * 1000).toISOString()}) via ${rendezvousUrl}` +
         (rendezvousIsHostedDefault ? " (hosted default)" : ""),
     )
-    return { token, exp, url, fingerprint, rendezvousUrl, rendezvousIsHostedDefault }
+    return { secret, exp, url, fingerprint, rendezvousUrl, rendezvousIsHostedDefault }
   }
 
-  function offerValid(token: string): boolean {
-    const entry = offers.get(token)
+  function offerValid(route: string): boolean {
+    const entry = offers.get(route)
     return !!entry && !entry.spent && entry.exp * 1000 > now()
   }
 
-  function startOfferLoop(token: string, rendezvousUrl: string): void {
+  function startOfferLoop(tokens: RouteAuthTokens, rendezvousUrl: string): void {
+    const { route } = tokens
     startLoop({
-      key: `offer:${token}`,
+      key: `offer:${route}`,
       rendezvousUrl,
-      token: () => token,
-      shouldContinue: () => offerValid(token),
+      tokens: () => tokens,
+      shouldContinue: () => offerValid(route),
       singleUse: true,
-      verify: (presented, expected) => {
-        const entry = offers.get(expected)
+      verify: presented => {
+        const entry = offers.get(route)
         if (!entry || entry.spent || entry.exp * 1000 <= now()) return false
-        if (!constantTimeEqual(presented, expected)) return false
-        entry.spent = true // SPEND — single use
+        // The AUTH token, never the route: the broker knows the route.
+        if (!constantTimeEqual(presented, entry.auth)) return false
+        entry.spent = true // SPEND — single use, and only on a correct auth
         return true
       },
       onPaired: async (session, hello) => {
@@ -519,10 +591,13 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
       startLoop({
         key: `pair:${record.fingerprint}:${slot}`,
         rendezvousUrl: record.rendezvousUrl,
-        token: () => deriveEpochRoutingToken(record.pairRoot, epochOf()),
+        tokens: () => deriveEpochTokens(record.pairRoot, epochOf()),
         shouldContinue: () => pairings.has(record.fingerprint),
         singleUse: false,
-        verify: (presented, expected) => constantTimeEqual(presented, expected),
+        // A legacy (v1) pairing is parked on only so its client can be told to
+        // re-pair; it never authenticates, whatever it presents.
+        verify: (presented, expected) =>
+          !record.legacy && constantTimeEqual(presented, expected.auth),
         onPaired: async (session, _hello) => {
           const existing = pairings.get(record.fingerprint)
           if (existing) {
@@ -601,6 +676,22 @@ function dialUrl(rendezvousUrl: string, token: string): string {
   return `${rendezvousUrl}${sep}side=daemon&t=${encodeURIComponent(token)}`
 }
 
+/** Tell a pair/v1 peer to re-pair, over the notice-only channel, then close. */
+function sendOutdatedNotice(sink: E2eFrameSink): void {
+  sink.send({ t: "error", code: "pairing_protocol_outdated", message: PAIRING_PROTOCOL_OUTDATED_MESSAGE })
+  sink.send({
+    t: "hello",
+    // Deliberately not TUNNEL_VERSION: a v1 client reports an unknown version
+    // verbatim, which is how the notice reaches its user (see
+    // OUTDATED_HELLO_VERSION).
+    version: OUTDATED_HELLO_VERSION as "agentproto/tunnel/v1",
+    capabilities: { pty: false },
+    label: "pairing_protocol_outdated",
+  })
+  // close() flushes already-queued frames before closing the transport.
+  sink.close("pairing_protocol_outdated")
+}
+
 function waitClosed(sink: E2eFrameSink, signal: AbortSignal): Promise<void> {
   return new Promise(resolve => {
     if (!sink.isOpen) {
@@ -636,7 +727,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 function isPairingsFile(v: unknown): v is PairingsFile {
   if (typeof v !== "object" || v === null) return false
   const rec = v as Record<string, unknown>
-  if (rec["v"] !== PAIRINGS_VERSION) return false
+  if (rec["v"] !== PAIRINGS_VERSION && rec["v"] !== LEGACY_PAIRINGS_VERSION) return false
   if (!Array.isArray(rec["pairings"])) return false
   return rec["pairings"].every(isPairingRecord)
 }

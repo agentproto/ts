@@ -193,4 +193,30 @@ describe("CLI pairing transport (accept → reconnect → bridge)", () => {
     // The client store is untouched by a failed reconnect.
     expect((await loadClientPairings()).pairings).toHaveLength(1)
   }, 15_000)
+  it("a legacy (pair/v1) credential is refused with the re-pair instruction, without dialing", async () => {
+    const pairing = {
+      fingerprint: "0123456789abcdef",
+      name: "old-daemon",
+      daemonX25519Pub: identity.x25519.pub,
+      daemonEd25519Pub: identity.ed25519.pub,
+      rendezvousUrl: rvUrl,
+      pairRoot: Buffer.alloc(32, 7).toString("base64"),
+      createdAt: "2026-07-01T00:00:00.000Z",
+      lastSeen: "2026-07-01T00:00:00.000Z",
+      legacy: true as const,
+    }
+    await expect(openPairChannel(pairing)).rejects.toMatchObject({
+      code: "pairing_protocol_outdated",
+      message: expect.stringMatching(/re-pair: run `agentproto pair offer`/),
+    })
+    expect(rendezvous.stats.parked).toBe(0) // never reached the broker
+  })
+
+  it("a pair/v1 offer URL fails fast with the actionable error", async () => {
+    registry = startDaemon()
+    const offer = await registry.createOffer({ ttlMs: 60_000 })
+    const v1Url = offer.url.replace("v=2", "v=1").replace("&s=", "&t=")
+    await expect(acceptOffer(v1Url, "x")).rejects.toThrow(/agentproto pair offer/)
+    expect((await loadClientPairings()).pairings).toHaveLength(0)
+  })
 })

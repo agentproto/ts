@@ -4,19 +4,26 @@
  * `agentproto pair offer` prints a single URL (also renderable as a QR):
  *
  * ```
- *   agentproto://pair?v=1
+ *   agentproto://pair?v=2
  *     &rv=<rendezvous ws/wss url>          // where both sides meet
  *     &id=<fingerprint>                    // daemon identity fingerprint (16 hex)
  *     &pk=<b64url x25519 SPKI DER>         // daemon static encryption key
  *     &sk=<b64url ed25519 SPKI DER>        // daemon signing key
- *     &t=<one-time offer token>            // rendezvous routing + first-contact proof
+ *     &s=<one-time offer secret>           // derives the route + auth tokens
  *     &exp=<unix seconds>                  // offer expiry
  * ```
  *
  * The URL **is** the bootstrap secret. It carries the daemon's public keys, so
  * a client that scans it can pin the daemon and detect a man-in-the-middle
  * rendezvous (verifying the handshake signature against `sk`); and it carries a
- * one-time, short-TTL token so a stranger who never saw the URL can't pair.
+ * one-time, short-TTL secret so a stranger who never saw the URL can't pair.
+ * The secret itself never goes on the wire: both sides derive from it a ROUTE
+ * token for the broker and an AUTH token for the sealed hello
+ * (`deriveOfferTokens`, ./derive.ts), so the broker — which sees the route —
+ * can't pair.
+ *
+ * v=1 offers (pair/v1) used their `t` token as both route and proof; they are
+ * refused with `pairing_protocol_outdated`.
  *
  * This module is a **pure codec** — it validates structure and echoes bytes; it
  * performs no I/O and no network calls, so it is safe to run on either side
@@ -37,14 +44,16 @@ import { PairingError } from "./handshake.js"
 /** URL scheme + host for offer URLs. */
 export const OFFER_URL_SCHEME = "agentproto:" as const
 export const OFFER_URL_HOST = "pair" as const
-/** Offer-format version. Bumped if the param set changes. */
-export const OFFER_VERSION = 1 as const
+/** Offer-format version. Bumped if the param set changes. v2: `s` (a secret
+ *  that never goes on the wire) replaces v1's `t` (route-and-proof). */
+export const OFFER_VERSION = 2 as const
 
 /**
  * A parsed, structurally-valid pairing offer. `daemonX25519Pub` /
- * `daemonEd25519Pub` are standard-base64 SPKI DER (handshake-ready). `token` is
- * the opaque one-time offer token verbatim (the daemon checks it against its
- * offer store). `exp` is unix **seconds**.
+ * `daemonEd25519Pub` are standard-base64 SPKI DER (handshake-ready). `secret` is
+ * the opaque one-time offer secret verbatim — derive the route + auth tokens
+ * from it with `deriveOfferTokens`; never send it anywhere. `exp` is unix
+ * **seconds**.
  */
 export interface PairingOffer {
   v: typeof OFFER_VERSION
@@ -56,8 +65,9 @@ export interface PairingOffer {
   daemonX25519Pub: string
   /** Daemon static Ed25519 public key, standard base64 SPKI DER. */
   daemonEd25519Pub: string
-  /** One-time offer token (routing + first-contact proof). */
-  token: string
+  /** One-time offer secret — derives the broker route and the sealed auth
+   *  token (`deriveOfferTokens`). Never sent on its own. */
+  secret: string
   /** Offer expiry, unix seconds. */
   exp: number
 }
@@ -84,7 +94,7 @@ function isB64url(s: string): boolean {
 /**
  * Build the offer URL from an offer. The public keys come in as standard
  * base64 (the shape the identity file + handshake use) and are emitted as
- * base64url. `token` is emitted verbatim (callers mint it as base64url).
+ * base64url. `secret` is emitted verbatim (callers mint it as base64url).
  */
 export function encodeOfferUrl(offer: PairingOffer): string {
   const params = new URLSearchParams()
@@ -93,7 +103,7 @@ export function encodeOfferUrl(offer: PairingOffer): string {
   params.set("id", offer.fingerprint)
   params.set("pk", b64ToB64url(offer.daemonX25519Pub))
   params.set("sk", b64ToB64url(offer.daemonEd25519Pub))
-  params.set("t", offer.token)
+  params.set("s", offer.secret)
   params.set("exp", String(offer.exp))
   return `${OFFER_URL_SCHEME}//${OFFER_URL_HOST}?${params.toString()}`
 }
@@ -114,6 +124,7 @@ export interface ParseOfferOptions {
  * Parse + strictly validate an offer URL. Rejects with `PairingError` — never
  * resolves a partial object — on any structural problem:
  *
+ *   - `pairing_protocol_outdated`: a v=1 (pair/v1) offer from an older daemon.
  *   - `malformed_offer`: wrong scheme/host, unknown version, missing/blank
  *     params, non-base64url keys/token, non-integer `exp`, or a `fingerprint`
  *     that does not match `fingerprint(pk)` (tamper detection: a rendezvous or
@@ -150,6 +161,14 @@ export async function parseOfferUrl(
 
   const q = parsed.searchParams
   const v = q.get("v")
+  if (v === "1") {
+    throw new PairingError(
+      "pairing_protocol_outdated",
+      "this offer uses the retired pair/v1 protocol, which let the rendezvous broker " +
+        "authenticate as a client. Upgrade agentproto on the daemon and mint a new " +
+        "offer: run `agentproto pair offer`",
+    )
+  }
   if (v !== String(OFFER_VERSION)) {
     throw new PairingError("malformed_offer", `unsupported offer version "${v ?? "(absent)"}"`)
   }
@@ -180,9 +199,9 @@ export async function parseOfferUrl(
   const daemonX25519Pub = b64urlToB64(pkUrl)
   const daemonEd25519Pub = b64urlToB64(skUrl)
 
-  const token = req(q, "t")
-  if (!isB64url(token)) {
-    throw new PairingError("malformed_offer", "offer `t` (token) must be base64url")
+  const secret = req(q, "s")
+  if (!isB64url(secret)) {
+    throw new PairingError("malformed_offer", "offer `s` (secret) must be base64url")
   }
 
   const expRaw = req(q, "exp")
@@ -212,7 +231,7 @@ export async function parseOfferUrl(
     fingerprint,
     daemonX25519Pub,
     daemonEd25519Pub,
-    token,
+    secret,
     exp,
   }
 }

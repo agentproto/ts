@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { mkdtemp, rm, stat, readFile } from "node:fs/promises"
+import { mkdtemp, rm, stat, readFile, writeFile } from "node:fs/promises"
+import {
+  createHash,
+  createPublicKey,
+  diffieHellman,
+  generateKeyPairSync,
+  hkdfSync,
+  randomBytes,
+} from "node:crypto"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import WebSocket from "ws"
@@ -11,6 +19,7 @@ import {
   type FrameSink,
   type E2eFrameSink,
   type TunnelClient,
+  type TunnelFrame,
 } from "@agentproto/acp/tunnel"
 import {
   startClientHandshake,
@@ -18,14 +27,21 @@ import {
   decodePairingReply,
   parseOfferUrl,
   derivePairRoot,
-  deriveEpochRoutingToken,
+  deriveEpochTokens,
+  deriveOfferTokens,
   currentEpoch,
   type PairingSession,
 } from "@agentproto/secrets/pairing"
-import { generateIdentity, type DaemonIdentity } from "@agentproto/secrets/identity"
+import { seal } from "@agentproto/secrets/seal"
+import {
+  generateIdentity,
+  verifyTranscript,
+  type DaemonIdentity,
+} from "@agentproto/secrets/identity"
 import { createRendezvousServer, type RendezvousServer } from "@agentproto/rendezvous"
 import {
   createPairingRegistry,
+  type PairingChannelContext,
   type PairingChannelHandle,
   type PairingRegistry,
 } from "../pairing-registry.js"
@@ -68,13 +84,13 @@ async function clientAccept(
   rawSink: FrameSink,
   daemonX25519Pub: string,
   daemonEd25519Pub: string,
-  offerToken: string,
+  authToken: string,
   name: string,
 ): Promise<{ client: TunnelClient; session: PairingSession }> {
   const started = await startClientHandshake({
     daemonX25519Pub,
     daemonEd25519Pub,
-    offerToken,
+    authToken,
     clientName: name,
   })
   let session: PairingSession | null = null
@@ -88,6 +104,106 @@ async function clientAccept(
   )
   if (!session) throw new Error("handshake did not derive a session")
   return { client: createTunnelClient({ sink: wrapped }), session }
+}
+
+/**
+ * A pair/v1 client, hand-rolled from the shipped v1 wire format (the code is
+ * gone from `@agentproto/secrets`): seals `{clientPub, clientName, offerToken}`
+ * with `v: 1`, verifies the daemon's transcript signature, and derives keys
+ * under the v1 schedule (`agentproto/pair/v1`). Returns the wrapped sink.
+ */
+async function v1ClientHandshake(
+  raw: FrameSink,
+  daemonX25519Pub: string,
+  daemonEd25519Pub: string,
+  offerToken: string,
+): Promise<E2eFrameSink> {
+  const e = generateKeyPairSync("x25519")
+  const ePubDer = e.publicKey.export({ type: "spki", format: "der" })
+  const ePub = ePubDer.toString("base64")
+  const ct0 = await seal(
+    JSON.stringify({ clientPub: ePub, clientName: "old@client", offerToken }),
+    daemonX25519Pub,
+  )
+  const spki = (der: Buffer) => createPublicKey({ key: der, format: "der", type: "spki" })
+  return clientHandshakeOverSink(
+    raw,
+    Buffer.from(JSON.stringify({ v: 1, ePub, ct0 }), "utf8"),
+    async replyBytes => {
+      const reply = JSON.parse(Buffer.from(replyBytes).toString("utf8"))
+      if (reply.v !== 1) throw new Error(`v1 client got a v${reply.v} reply`)
+      const dePubDer = Buffer.from(reply.dePub, "base64")
+      const transcript = createHash("sha256").update(ePubDer).update(ct0, "utf8").update(dePubDer).digest()
+      if (!(await verifyTranscript(daemonEd25519Pub, transcript, reply.sig))) {
+        throw new Error("v1 client: bad daemon signature")
+      }
+      const ecdhE = diffieHellman({ privateKey: e.privateKey, publicKey: spki(dePubDer) })
+      const ecdhS = diffieHellman({
+        privateKey: e.privateKey,
+        publicKey: spki(Buffer.from(daemonX25519Pub, "base64")),
+      })
+      const okm = Buffer.from(
+        hkdfSync("sha256", Buffer.concat([ecdhE, ecdhS]), transcript, "agentproto/pair/v1", 64),
+      )
+      return { sendKey: okm.subarray(0, 32), recvKey: okm.subarray(32, 64) }
+    },
+    { timeoutMs: 3_000 },
+  )
+}
+
+/** Every frame a wrapped sink delivers until it closes. */
+function framesUntilClosed(sink: E2eFrameSink): Promise<TunnelFrame[]> {
+  const frames: TunnelFrame[] = []
+  return new Promise(resolve => {
+    sink.onFrame(f => frames.push(f))
+    sink.onClose(() => resolve(frames))
+    if (!sink.isOpen) resolve(frames)
+  })
+}
+
+/** What the rendezvous broker can attempt: dial the route it saw, then seal a
+ *  well-formed pair/v2 hello to the daemon's PUBLIC key carrying `token` as the
+ *  proof. Resolves "served" only if the daemon completed the handshake, and
+ *  "refused" only if the daemon actively hung up — a timeout (nobody answered)
+ *  proves nothing, so it throws. */
+async function brokerAttempt(
+  dial: () => Promise<FrameSink>,
+  daemonX25519Pub: string,
+  daemonEd25519Pub: string,
+  token: string,
+): Promise<"refused" | "served"> {
+  const raw = await dial()
+  const started = await startClientHandshake({
+    daemonX25519Pub,
+    daemonEd25519Pub,
+    authToken: token,
+    clientName: "broker",
+  })
+  try {
+    const sink = await clientHandshakeOverSink(
+      raw,
+      encodePairingMessage(started.hello),
+      reply => started.complete(decodePairingReply(reply)),
+      { timeoutMs: 3_000 },
+    )
+    sink.close("adversary done")
+    return "served"
+  } catch (err) {
+    if (err instanceof Error && /timed out/.test(err.message)) throw err
+    return "refused"
+  }
+}
+
+/** Resolve once at least `n` sockets are parked at `rv` — i.e. the daemon has
+ *  (re-)parked. The broker drops what a client sends before its splice, so a
+ *  client must not dial ahead of the daemon. */
+async function daemonParked(rv: RendezvousServer, n: number): Promise<void> {
+  await vi.waitFor(() => expect(rv.stats.parked).toBeGreaterThanOrEqual(n))
+}
+
+/** A base64url string the width of an auth token — a blind guess. */
+function guessToken(): string {
+  return randomBytes(32).toString("base64url")
 }
 
 // ── in-process (malicious/untrusted broker) tests ────────────────
@@ -119,11 +235,13 @@ describe("paired channel over an untrusted broker (in-process)", () => {
     // The daemon's injected `dial` hands back one end of a recorded in-process
     // splice; the other end is the client's raw sink.
     let clientSink: FrameSink | null = null
+    const dialedUrls: string[] = []
     registry = createPairingRegistry({
       loadIdentity: async () => identity,
       pairingsPath: join(tmp, "pairings.json"),
       defaultRendezvousUrl: "ws://broker.invalid/v1",
-      dial: async () => {
+      dial: async url => {
+        dialedUrls.push(url)
         const { a, b } = connect(record, record)
         clientSink = a
         return b
@@ -139,11 +257,12 @@ describe("paired channel over an untrusted broker (in-process)", () => {
     await vi.waitFor(() => expect(clientSink).not.toBeNull())
 
     const parsed = await parseOfferUrl(offer.url)
+    const offerTokens = await deriveOfferTokens(parsed.secret)
     const { client } = await clientAccept(
       clientSink!,
       parsed.daemonX25519Pub,
       parsed.daemonEd25519Pub,
-      parsed.token,
+      offerTokens.auth,
       "jeremy@laptop",
     )
 
@@ -179,6 +298,17 @@ describe("paired channel over an untrusted broker (in-process)", () => {
     for (const marker of ["http_request", "http_response", "spawned", "capabilities", '{"ok":true']) {
       expect(cipher).not.toContain(marker)
     }
+
+    // The broker's upgrade URL carries only the route: never the offer secret,
+    // never the auth token. And no relayed frame carries either in clear.
+    expect(dialedUrls[0]).toContain(`t=${offerTokens.route}`)
+    for (const url of dialedUrls) {
+      expect(url).not.toContain(parsed.secret)
+      expect(url).not.toContain(offerTokens.auth)
+    }
+    const relayed = JSON.stringify(wire)
+    expect(relayed).not.toContain(parsed.secret)
+    expect(relayed).not.toContain(offerTokens.auth)
   })
 
   it("fails closed when the broker tampers with an e2e frame (cannot forge)", async () => {
@@ -224,7 +354,7 @@ describe("paired channel over an untrusted broker (in-process)", () => {
     const started = await startClientHandshake({
       daemonX25519Pub: parsed.daemonX25519Pub,
       daemonEd25519Pub: parsed.daemonEd25519Pub,
-      offerToken: parsed.token,
+      authToken: (await deriveOfferTokens(parsed.secret)).auth,
       clientName: "tamper-test",
     })
     const wrapped = await clientHandshakeOverSink(
@@ -318,12 +448,13 @@ describe("paired channel over the real rendezvous broker", () => {
     await vi.waitFor(() => expect(rendezvous.stats.parked).toBeGreaterThanOrEqual(1))
 
     const parsed = await parseOfferUrl(offer.url)
-    const clientRaw = await dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(parsed.token)}`)
+    const offerTokens = await deriveOfferTokens(parsed.secret)
+    const clientRaw = await dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(offerTokens.route)}`)
     const { client, session } = await clientAccept(
       clientRaw,
       parsed.daemonX25519Pub,
       parsed.daemonEd25519Pub,
-      parsed.token,
+      offerTokens.auth,
       "jeremy@laptop",
     )
     await client.ready()
@@ -342,15 +473,15 @@ describe("paired channel over the real rendezvous broker", () => {
     // Close the first channel; the daemon's standing reconnect loops remain.
     await client.close()
 
-    // ── reconnect via the epoch routing token ──
-    const epochToken = await deriveEpochRoutingToken(pairRoot, currentEpoch())
+    // ── reconnect: dial the epoch route, prove the epoch auth ──
+    const epoch = await deriveEpochTokens(pairRoot, currentEpoch())
     await vi.waitFor(() => expect(rendezvous.stats.parked).toBeGreaterThanOrEqual(1))
-    const clientRaw2 = await dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(epochToken)}`)
+    const clientRaw2 = await dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(epoch.route)}`)
     const { client: client2 } = await clientAccept(
       clientRaw2,
       parsed.daemonX25519Pub,
       parsed.daemonEd25519Pub,
-      epochToken, // reconnect: the offer-token field carries the epoch routing token
+      epoch.auth, // sealed; the broker only ever saw epoch.route
       "jeremy@laptop",
     )
     await client2.ready()
@@ -366,12 +497,12 @@ describe("paired channel over the real rendezvous broker", () => {
     // client dialing the epoch token parks alone and no splice happens. It gets
     // no daemon hello → the handshake times out / never readies.
     await new Promise(r => setTimeout(r, 100))
-    const epochToken2 = await deriveEpochRoutingToken(pairRoot, currentEpoch())
-    const clientRaw3 = await dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(epochToken2)}`)
+    const epoch2 = await deriveEpochTokens(pairRoot, currentEpoch())
+    const clientRaw3 = await dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(epoch2.route)}`)
     const started = await startClientHandshake({
       daemonX25519Pub: parsed.daemonX25519Pub,
       daemonEd25519Pub: parsed.daemonEd25519Pub,
-      offerToken: epochToken2,
+      authToken: epoch2.auth,
       clientName: "revoked",
     })
     const reconnectAttempt = clientHandshakeOverSink(
@@ -382,4 +513,229 @@ describe("paired channel over the real rendezvous broker", () => {
     )
     await expect(reconnectAttempt).rejects.toBeTruthy()
   })
+
+  it("the broker's view (route + public offer data) can't spend an offer or get a reconnect served", async () => {
+    const served: PairingChannelContext[] = []
+    const serveReal = makeServe()
+    registry = createPairingRegistry({
+      loadIdentity: async () => identity,
+      pairingsPath: join(tmp, "pairings.json"),
+      defaultRendezvousUrl: rvUrl,
+      dial: (url, signal) => dialRv(url, signal),
+      serve: (sink, ctx) => {
+        served.push(ctx)
+        return serveReal(sink)
+      },
+      handshakeTimeoutMs: 4_000,
+      reconnectMinMs: 50,
+      reconnectMaxMs: 200,
+    })
+
+    const offer = await registry.createOffer({ ttlMs: 60_000 })
+    const parsed = await parseOfferUrl(offer.url)
+    // The adversary knows: the route (it's on the daemon's upgrade URL), the rv
+    // URL, and the daemon's public keys. It does NOT know parsed.secret.
+    const { route } = await deriveOfferTokens(parsed.secret)
+    // The broker drops what a client sends before its splice, so (like a real
+    // client) each attempt waits until the daemon has re-parked after the last.
+    let parkedDaemons = 1
+    const dialRoute = (r: string) => async () => {
+      await daemonParked(rendezvous, parkedDaemons)
+      return dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(r)}`)
+    }
+    const pk = parsed.daemonX25519Pub
+    const sk = parsed.daemonEd25519Pub
+
+    // pair/v2 hello proving the route (the pre-fix attack, re-tried) or a guess.
+    expect(await brokerAttempt(dialRoute(route), pk, sk, route)).toBe("refused")
+    expect(await brokerAttempt(dialRoute(route), pk, sk, guessToken())).toBe("refused")
+    // The exact pair/v1 attack — offerToken = the route. Answered with the
+    // re-pair notice and nothing else.
+    const v1 = await v1ClientHandshake(await dialRoute(route)(), pk, sk, route)
+    const v1Frames = await framesUntilClosed(v1)
+    expect(v1Frames.map(f => f.t)).toEqual(["error", "hello"])
+
+    expect(served).toHaveLength(0)
+    expect(await registry.list()).toHaveLength(0)
+
+    // The offer survived all of it: the legitimate client still pairs.
+    const offerTokens = await deriveOfferTokens(parsed.secret)
+    const { client, session } = await clientAccept(
+      await dialRoute(route)(),
+      pk,
+      sk,
+      offerTokens.auth,
+      "legit",
+    )
+    await client.ready()
+    expect((await client.forwardHttp({ method: "GET", path: "/health" })).status).toBe(200)
+    expect(served.map(c => c.mode)).toEqual(["offer"])
+    await client.close()
+
+    // ── reconnect: the broker logged today's epoch route ──
+    parkedDaemons = 2 // current + previous epoch
+    const pairRoot = await derivePairRoot(session)
+    const epoch = await deriveEpochTokens(pairRoot, currentEpoch())
+    expect(await brokerAttempt(dialRoute(epoch.route), pk, sk, epoch.route)).toBe("refused")
+    expect(await brokerAttempt(dialRoute(epoch.route), pk, sk, guessToken())).toBe("refused")
+    // Replaying the route as a v1 proof (the pre-fix reconnect replay).
+    const v1r = await v1ClientHandshake(await dialRoute(epoch.route)(), pk, sk, epoch.route)
+    expect((await framesUntilClosed(v1r)).map(f => f.t)).toEqual(["error", "hello"])
+    expect(served.map(c => c.mode)).toEqual(["offer"])
+
+    // …while the paired client, proving the sealed epoch auth, is served.
+    const { client: again } = await clientAccept(
+      await dialRoute(epoch.route)(),
+      pk,
+      sk,
+      epoch.auth,
+      "legit",
+    )
+    await again.ready()
+    expect(served.map(c => c.mode)).toEqual(["offer", "reconnect"])
+    await again.close()
+  }, 30_000)
+
+  it("round trip: pair, then reconnect after the UTC day rolls over (current + previous epoch)", async () => {
+    const DAY = 86_400_000
+    let clock = DAY * 20_000 + DAY - 5_000 // five seconds before midnight
+    const mk = () =>
+      createPairingRegistry({
+        loadIdentity: async () => identity,
+        pairingsPath: join(tmp, "pairings.json"),
+        defaultRendezvousUrl: rvUrl,
+        dial: (url, signal) => dialRv(url, signal),
+        serve: makeServe(),
+        now: () => clock,
+        handshakeTimeoutMs: 4_000,
+        reconnectMinMs: 50,
+        reconnectMaxMs: 200,
+      })
+    registry = mk()
+    const offer = await registry.createOffer({ ttlMs: 60_000 })
+    const parsed = await parseOfferUrl(offer.url)
+    const offerTokens = await deriveOfferTokens(parsed.secret)
+    await daemonParked(rendezvous, 1)
+    const { client, session } = await clientAccept(
+      await dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(offerTokens.route)}`),
+      parsed.daemonX25519Pub,
+      parsed.daemonEd25519Pub,
+      offerTokens.auth,
+      "roller",
+    )
+    await client.ready()
+    await client.close()
+    const pairRoot = await derivePairRoot(session)
+    const day0 = currentEpoch(clock)
+
+    // Midnight passes; the daemon restarts on the new day and autoconnects.
+    await registry.shutdown()
+    clock += 10_000
+    registry = mk()
+    await registry.startAutoconnect()
+    expect(currentEpoch(clock)).toBe(day0 + 1)
+
+    // A client already on the new day, and one whose clock still lags on the
+    // old day: both are served, each proving that epoch's sealed auth.
+    for (const e of [day0 + 1, day0]) {
+      const t = await deriveEpochTokens(pairRoot, e)
+      await daemonParked(rendezvous, 2)
+      const { client: c } = await clientAccept(
+        await dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(t.route)}`),
+        parsed.daemonX25519Pub,
+        parsed.daemonEd25519Pub,
+        t.auth,
+        "roller",
+      )
+      await c.ready()
+      expect((await c.forwardHttp({ method: "GET", path: "/health" })).status).toBe(200)
+      await c.close()
+    }
+
+    // An epoch's auth only opens that epoch's route.
+    const today = await deriveEpochTokens(pairRoot, day0 + 1)
+    const yesterday = await deriveEpochTokens(pairRoot, day0)
+    await daemonParked(rendezvous, 2)
+    expect(
+      await brokerAttempt(
+        () => dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(today.route)}`),
+        parsed.daemonX25519Pub,
+        parsed.daemonEd25519Pub,
+        yesterday.auth,
+      ),
+    ).toBe("refused")
+  }, 30_000)
+
+  it("a legacy pair/v1 pairings.json is reported, never served, and its v1 client is told to re-pair", async () => {
+    const pairRoot = randomBytes(32).toString("base64")
+    const legacyRecord = {
+      clientPub: "legacy-client-pub",
+      name: "old-laptop",
+      fingerprint: "0123456789abcdef",
+      createdAt: "2026-07-01T00:00:00.000Z",
+      lastSeen: "2026-07-01T00:00:00.000Z",
+      pairRoot,
+      rendezvousUrl: rvUrl,
+    }
+    const pairingsPath = join(tmp, "pairings.json")
+    await writeFile(pairingsPath, JSON.stringify({ v: 1, pairings: [legacyRecord] }), { mode: 0o600 })
+
+    const logs: string[] = []
+    const served: PairingChannelContext[] = []
+    const serveReal = makeServe()
+    registry = createPairingRegistry({
+      loadIdentity: async () => identity,
+      pairingsPath,
+      defaultRendezvousUrl: rvUrl,
+      dial: (url, signal) => dialRv(url, signal),
+      serve: (sink, ctx) => {
+        served.push(ctx)
+        return serveReal(sink)
+      },
+      log: line => logs.push(line),
+      handshakeTimeoutMs: 4_000,
+      reconnectMinMs: 50,
+      reconnectMaxMs: 200,
+    })
+    await registry.startAutoconnect()
+
+    // Reported on load, listed as legacy — not silently kept.
+    expect(logs.join("\n")).toMatch(/pair\/v1.*agentproto pair offer/)
+    expect(await registry.list()).toEqual([{ ...legacyRecord, legacy: true }])
+
+    // The pairing's un-upgraded v1 client reconnects as it always did — its
+    // epoch token as both route and proof — and gets the re-pair notice
+    // inside a channel it can read, not a silent timeout.
+    const epoch = await deriveEpochTokens(pairRoot, currentEpoch())
+    await daemonParked(rendezvous, 2)
+    const v1 = await v1ClientHandshake(
+      await dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(epoch.route)}`),
+      identity.x25519.pub,
+      identity.ed25519.pub,
+      epoch.route,
+    )
+    const frames = await framesUntilClosed(v1)
+    expect(frames).toHaveLength(2)
+    const [err, hello] = frames
+    expect(err).toMatchObject({ t: "error", code: "pairing_protocol_outdated" })
+    expect(err?.t === "error" && err.message).toMatch(/agentproto pair offer/)
+    // A v1 TunnelClient surfaces only an unknown hello version (verbatim).
+    expect(hello?.t === "hello" && hello.version).toMatch(/re-pair: run `agentproto pair offer`/)
+
+    // Even a v2 hello with the right epoch auth isn't served on a v1 record.
+    await daemonParked(rendezvous, 2)
+    expect(
+      await brokerAttempt(
+        () => dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(epoch.route)}`),
+        identity.x25519.pub,
+        identity.ed25519.pub,
+        epoch.auth,
+      ),
+    ).toBe("refused")
+    expect(served).toHaveLength(0)
+
+    // Revocable like any pairing; the rewritten file is v2.
+    expect(await registry.revoke("old-laptop")).toBe(true)
+    expect(JSON.parse(await readFile(pairingsPath, "utf8"))).toEqual({ v: 2, pairings: [] })
+  }, 30_000)
 })

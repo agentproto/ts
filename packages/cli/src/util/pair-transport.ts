@@ -4,9 +4,13 @@
  *   - `dialRendezvous`   open a ws to the broker, adapt to a FrameSink.
  *   - `acceptOffer`      parse an offer URL, run the client handshake, verify the
  *                        daemon fingerprint, persist the pairing.
- *   - `openPairChannel`  reconnect an established pairing over the epoch routing
- *                        token (current → previous, to bridge clock skew) and
- *                        return a live `TunnelClient`.
+ *   - `openPairChannel`  reconnect an established pairing over the epoch route
+ *                        (current → previous, to bridge clock skew), proving the
+ *                        epoch auth token, and return a live `TunnelClient`.
+ *
+ * Only ROUTE tokens go on a broker URL; AUTH tokens only ever travel sealed in
+ * the hello (see `@agentproto/secrets/pairing` derive.ts). The broker sees the
+ * route and can't derive the auth from it.
  *   - `createLoopbackBridge`  a throwaway loopback HTTP server that forwards to
  *                        the pairing's E2E channel via `forwardHttp` /
  *                        `forwardHttpStream`, so ANY existing verb can run
@@ -32,8 +36,11 @@ import {
   decodePairingReply,
   parseOfferUrl,
   derivePairRoot,
-  deriveEpochRoutingToken,
+  deriveEpochTokens,
+  deriveOfferTokens,
   currentEpoch,
+  PAIRING_PROTOCOL_OUTDATED_MESSAGE,
+  PairingError,
   type PairingSession,
 } from "@agentproto/secrets/pairing"
 import {
@@ -68,9 +75,11 @@ export function dialRendezvous(url: string, timeoutMs = DIAL_TIMEOUT_MS): Promis
   })
 }
 
-function rvUrl(base: string, side: "client", token: string): string {
+/** Broker upgrade URL. `route` must be a ROUTE token — never an auth token or
+ *  the offer secret: everything here is visible to the broker. */
+function rvUrl(base: string, side: "client", route: string): string {
   const sep = base.includes("?") ? "&" : "?"
-  return `${base}${sep}side=${side}&t=${encodeURIComponent(token)}`
+  return `${base}${sep}side=${side}&t=${encodeURIComponent(route)}`
 }
 
 export interface AcceptResult {
@@ -88,12 +97,13 @@ export interface AcceptResult {
  */
 export async function acceptOffer(offerUrl: string, name?: string): Promise<AcceptResult> {
   const offer = await parseOfferUrl(offerUrl, { now: Date.now() })
-  const raw = await dialRendezvous(rvUrl(offer.rendezvousUrl, "client", offer.token))
+  const { route, auth } = await deriveOfferTokens(offer.secret)
+  const raw = await dialRendezvous(rvUrl(offer.rendezvousUrl, "client", route))
 
   const started = await startClientHandshake({
     daemonX25519Pub: offer.daemonX25519Pub,
     daemonEd25519Pub: offer.daemonEd25519Pub,
-    offerToken: offer.token,
+    authToken: auth,
     clientName: name ?? defaultClientName(),
   })
   let session: PairingSession | null = null
@@ -153,26 +163,34 @@ export interface OpenPairChannelOptions {
 }
 
 /**
- * Reconnect an established pairing. Tries the current epoch routing token, then
- * the previous one (bridging clock skew), running a fresh handshake each time
- * (new ephemeral; the offer-token field carries the epoch token the daemon
+ * Reconnect an established pairing. Tries the current epoch route, then the
+ * previous one (bridging clock skew), running a fresh handshake each time (new
+ * ephemeral; the sealed hello carries that epoch's auth token, which the daemon
  * verifies). Returns a live tunnel client once the daemon's hello arrives.
+ * Refuses a legacy (pair/v1) pairing outright with the re-pair instruction.
  */
 export async function openPairChannel(
   pairing: ClientPairing,
   opts: OpenPairChannelOptions = {},
 ): Promise<PairChannel> {
+  if (pairing.legacy) {
+    throw new PairingError(
+      "pairing_protocol_outdated",
+      `pairing "${pairing.name}" (daemon ${pairing.fingerprint}): ${PAIRING_PROTOCOL_OUTDATED_MESSAGE}`,
+    )
+  }
   const now = opts.now ?? Date.now()
   const dialTimeoutMs = opts.dialTimeoutMs ?? DIAL_TIMEOUT_MS
   const handshakeTimeoutMs = opts.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS
   const epoch = currentEpoch(now)
   const attempts = [epoch, epoch - 1]
   let lastErr: unknown
+  let hungUpOnHello = 0
   for (const e of attempts) {
-    const token = await deriveEpochRoutingToken(pairing.pairRoot, e)
+    const { route, auth } = await deriveEpochTokens(pairing.pairRoot, e)
     let raw: FrameSink
     try {
-      raw = await dialRendezvous(rvUrl(pairing.rendezvousUrl, "client", token), dialTimeoutMs)
+      raw = await dialRendezvous(rvUrl(pairing.rendezvousUrl, "client", route), dialTimeoutMs)
     } catch (err) {
       lastErr = err
       continue
@@ -181,7 +199,7 @@ export async function openPairChannel(
       const started = await startClientHandshake({
         daemonX25519Pub: pairing.daemonX25519Pub,
         daemonEd25519Pub: pairing.daemonEd25519Pub,
-        offerToken: token,
+        authToken: auth,
         clientName: pairing.name,
       })
       const wrapped = await clientHandshakeOverSink(
@@ -197,6 +215,9 @@ export async function openPairChannel(
       return { client, close: () => client.close() }
     } catch (err) {
       lastErr = err
+      if (err instanceof Error && /transport closed during handshake/.test(err.message)) {
+        hungUpOnHello++
+      }
       try {
         raw.close("handshake failed")
       } catch {
@@ -204,10 +225,19 @@ export async function openPairChannel(
       }
     }
   }
+  // Every attempt reached a daemon that hung up on our hello: the likeliest
+  // cause is a daemon still on pair/v1, which refuses a v2 hello without a
+  // word. Say so rather than leave a bare "transport closed".
+  const hint =
+    hungUpOnHello === attempts.length
+      ? " — the daemon hung up on the pair/v2 hello; if it runs an older agentproto " +
+        "(pair/v1), upgrade it and re-pair: run `agentproto pair offer` on the daemon, " +
+        "then `agentproto pair accept` here"
+      : ""
   throw new Error(
     `could not reach daemon ${pairing.fingerprint} via ${pairing.rendezvousUrl}: ${
       lastErr instanceof Error ? lastErr.message : String(lastErr)
-    }`,
+    }${hint}`,
   )
 }
 

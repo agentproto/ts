@@ -1,5 +1,5 @@
 /**
- * @agentproto/secrets/pairing — the `pair/v1` E2E session handshake (Node entry).
+ * @agentproto/secrets/pairing — the `pair/v2` E2E session handshake (Node entry).
  *
  * See ./handshake.ts for the protocol. This barrel re-exports the public
  * surface: the two entry points (`startClientHandshake`, `respondToHandshake`),
@@ -21,6 +21,8 @@ import * as tunnel from "./tunnel-handshake.js"
 
 export {
   PAIR_VERSION,
+  LEGACY_PAIR_VERSION,
+  PAIRING_PROTOCOL_OUTDATED_MESSAGE,
   PairingError,
   encodePairingMessage,
   decodePairingHello,
@@ -62,6 +64,16 @@ export {
   type ParseOfferOptions,
 } from "./offer-url.js"
 
+/** Answer a retired pair/v1 hello with a notice-only channel (see
+ *  ./handshake.ts). Never serve over the result. */
+export function respondToLegacyHandshake(
+  helloBytes: Uint8Array,
+  identity: Parameters<typeof handshake.respondToLegacyHandshake>[1],
+  crypto: CryptoProvider = nodeCryptoProvider,
+): ReturnType<typeof handshake.respondToLegacyHandshake> {
+  return handshake.respondToLegacyHandshake(helloBytes, identity, crypto)
+}
+
 /** Parse + strictly validate an offer URL (see ./offer-url.ts). */
 export function parseOfferUrl(
   url: string,
@@ -74,8 +86,8 @@ export function parseOfferUrl(
 // The hosted rendezvous broker `pair offer` defaults to (no flag, no config).
 export { HOSTED_RENDEZVOUS_URL } from "./rendezvous.js"
 
-// P2 — pairing-derived key material (pair root + epoch routing tokens).
-export { currentEpoch } from "./derive.js"
+// P2 — pairing-derived key material (pair root + route/auth tokens).
+export { currentEpoch, type RouteAuthTokens } from "./derive.js"
 
 /** Derive the long-term pair root from a completed session (see ./derive.ts). */
 export function derivePairRoot(
@@ -85,7 +97,7 @@ export function derivePairRoot(
   return derive.derivePairRoot(session, crypto)
 }
 
-/** Derive the rendezvous routing token for an epoch (see ./derive.ts). */
+/** Derive the broker ROUTE token for an epoch (see ./derive.ts). */
 export function deriveEpochRoutingToken(
   pairRoot: string,
   epoch: number,
@@ -94,12 +106,38 @@ export function deriveEpochRoutingToken(
   return derive.deriveEpochRoutingToken(pairRoot, epoch, crypto)
 }
 
-/** Current + previous epoch routing tokens (see ./derive.ts). */
+/** Derive the sealed-hello AUTH token for an epoch (see ./derive.ts). */
+export function deriveEpochAuthToken(
+  pairRoot: string,
+  epoch: number,
+  crypto: CryptoProvider = nodeCryptoProvider,
+): Promise<string> {
+  return derive.deriveEpochAuthToken(pairRoot, epoch, crypto)
+}
+
+/** Route + auth tokens for an epoch (see ./derive.ts). */
+export function deriveEpochTokens(
+  pairRoot: string,
+  epoch: number,
+  crypto: CryptoProvider = nodeCryptoProvider,
+): Promise<derive.RouteAuthTokens> {
+  return derive.deriveEpochTokens(pairRoot, epoch, crypto)
+}
+
+/** Route + auth tokens for an offer secret (see ./derive.ts). */
+export function deriveOfferTokens(
+  offerSecret: string,
+  crypto: CryptoProvider = nodeCryptoProvider,
+): Promise<derive.RouteAuthTokens> {
+  return derive.deriveOfferTokens(offerSecret, crypto)
+}
+
+/** Current + previous epoch route/auth tokens (see ./derive.ts). */
 export function epochRoutingTokens(
   pairRoot: string,
   now: number = Date.now(),
   crypto: CryptoProvider = nodeCryptoProvider,
-): Promise<{ epoch: number; token: string }[]> {
+): Promise<({ epoch: number } & derive.RouteAuthTokens)[]> {
   return derive.epochRoutingTokens(pairRoot, now, crypto)
 }
 

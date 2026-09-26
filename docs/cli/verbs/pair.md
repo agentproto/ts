@@ -16,7 +16,10 @@ sees plaintext and cannot forge frames. See
 
 The bootstrap secret is a single **offer URL** (optionally a QR code): it
 carries the daemon's public keys (so a malicious broker can't MITM) and a
-short-lived, single-use token (so strangers can't pair).
+short-lived, single-use secret (so strangers can't pair). The secret never goes
+on the wire: both sides derive from it a route the broker sees and a separate
+auth token that travels only inside the encrypted hello, so the broker can't
+pair either.
 
 ## `offer` — daemon side
 
@@ -28,7 +31,8 @@ the daemon is discovered).
 Works with no config: when neither `--rendezvous` nor `pairing.rendezvous` is
 set, the offer routes through the **hosted broker**
 `wss://rdv.agentproto.sh/v1`. The broker only ever relays ciphertext — the
-routing token, peer IPs, ciphertext sizes, and timing, never your traffic (see
+route token (opaque, non-authenticating), peer IPs, ciphertext sizes, and
+timing, never your traffic (see
 [concepts/pairing.md](../concepts/pairing.md#threat-model)). `pair offer` names
 the broker it used and flags the hosted default, so a daemon never relays
 through it silently.
@@ -40,13 +44,13 @@ agentproto pair offer
 ```text
 Pairing offer (daemon a1b2c3d4e5f60718) — expires 2026-07-13T19:20:00.000Z
 
-  agentproto://pair?v=1&rv=…&id=a1b2c3d4e5f60718&pk=…&sk=…&t=…&exp=…
+  agentproto://pair?v=2&rv=…&id=a1b2c3d4e5f60718&pk=…&sk=…&s=…&exp=…
 
   █▀▀▀▀▀█ ▀▀ █ █▀▀▀▀▀█        (QR of the URL — omit with --no-qr)
   …
 
 On the other machine:
-  agentproto pair accept "agentproto://pair?v=1&…"
+  agentproto pair accept "agentproto://pair?v=2&…"
 
 The daemon is now relaying through wss://rdv.agentproto.sh/v1
   (hosted default — the broker sees only ciphertext, never your traffic.
@@ -71,7 +75,7 @@ endpoint is named — set `pairing.rendezvous: ""` in config; `pair offer` then
 requires an explicit `--rendezvous`.
 
 The daemon dials the broker outbound and parks until the client arrives, then
-runs the `pair/v1` handshake and persists the pairing to
+runs the `pair/v2` handshake and persists the pairing to
 `~/.agentproto/pairings.json` (mode `0600`).
 
 ## `accept` — client side
@@ -82,7 +86,7 @@ derived fingerprint matches the URL's `id`, and persist the pairing to
 `~/.agentproto/pair-credentials.json` (mode `0600`).
 
 ```bash
-agentproto pair accept "agentproto://pair?v=1&…" --name my-laptop
+agentproto pair accept "agentproto://pair?v=2&…" --name my-laptop
 ```
 
 ```text
@@ -110,10 +114,15 @@ agentproto pair ls
 agentproto pair ls --json
 ```
 
+Pairings made under the retired `pair/v1` protocol are listed with
+`[legacy: re-pair]` (`"legacy": true` in `--json`). They can't connect: re-pair
+with `pair offer` / `pair accept`, then `pair revoke` the legacy entry (see
+[concepts/pairing.md](../concepts/pairing.md#protocol-v2-and-re-pairing)).
+
 ## `revoke` — daemon side
 
 Drop a pairing by fingerprint or name so its client can no longer reconnect —
-the daemon stops parking on the pairing's routing tokens and refuses future
+the daemon stops parking on the pairing's route tokens and refuses future
 hellos from that client. Also drops the local client-side record if it lives on
 this machine. With no daemon reachable, only the client-side record is removed
 (and a note says so).
@@ -133,8 +142,10 @@ agentproto pair exec my-laptop -- sessions ls
 agentproto pair exec my-laptop -- permissions ls
 ```
 
-`exec` reconnects the pairing using the current epoch routing token (falling
-back to the previous epoch to bridge clock skew), stands up a throwaway
+`exec` reconnects the pairing on the current epoch route, proving that epoch's
+sealed auth token (falling back to the previous epoch to bridge clock skew). A
+legacy (`pair/v1`) pairing is refused up front with the re-pair instruction.
+It then stands up a throwaway
 loopback HTTP bridge that forwards every request over the pairing, and spawns
 `agentproto <verb>` with `AGENTPROTO_DAEMON_URL` pointed at the bridge — so the
 child discovers and drives the paired daemon transparently, and the whole daemon

@@ -7285,6 +7285,7 @@ async function handlePairings(
       createdAt: p.createdAt,
       lastSeen: p.lastSeen,
       rendezvous: p.rendezvousUrl,
+      ...(p.legacy ? { legacy: true } : {}),
     }))
     json(200, { pairings })
     return true
