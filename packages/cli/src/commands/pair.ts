@@ -48,7 +48,7 @@ Usage:
 
   offer   Daemon side: mint a single-use offer URL (+ QR) and start listening on
           the rendezvous. Share the URL with the client; it carries the daemon's
-          public keys (MITM-proof) and a short-lived token.
+          public keys (MITM-proof) and a short-lived secret.
   accept  Client side: verify the daemon's identity from the URL and persist the
           pairing to ~/.agentproto/pair-credentials.json.
   ls      List pairings. Uses the daemon's REST route when reachable; otherwise
@@ -213,6 +213,8 @@ interface PairingRow {
   createdAt: string
   lastSeen: string
   rendezvous: string
+  /** A pair/v1 pairing: can't connect until re-paired. */
+  legacy?: boolean
 }
 
 async function runLs(args: readonly string[]): Promise<number> {
@@ -256,7 +258,15 @@ async function runLs(args: readonly string[]): Promise<number> {
   )
   for (const p of rows) {
     process.stdout.write(
-      `${(p.name ?? "").slice(0, 20).padEnd(20)}  ${p.fingerprint.padEnd(18)}  ${(p.lastSeen ?? "").padEnd(22)}  ${p.rendezvous ?? ""}\n`,
+      `${(p.name ?? "").slice(0, 20).padEnd(20)}  ${p.fingerprint.padEnd(18)}  ${(p.lastSeen ?? "").padEnd(22)}  ${p.rendezvous ?? ""}${p.legacy ? "  [legacy: re-pair]" : ""}\n`,
+    )
+  }
+  if (rows.some(p => p.legacy)) {
+    process.stdout.write(
+      `\n[legacy] pairings use the retired pair/v1 protocol, which let the rendezvous\n` +
+        `broker authenticate as a client; they can't connect. Re-pair: run\n` +
+        `\`agentproto pair offer\` on the daemon and \`agentproto pair accept\` on the\n` +
+        `client, then \`agentproto pair revoke <name>\` the legacy entry.\n`,
     )
   }
   return 0
@@ -270,6 +280,7 @@ async function clientRows(): Promise<PairingRow[]> {
     createdAt: p.createdAt,
     lastSeen: p.lastSeen,
     rendezvous: p.rendezvousUrl,
+    ...(p.legacy ? { legacy: true } : {}),
   }))
 }
 

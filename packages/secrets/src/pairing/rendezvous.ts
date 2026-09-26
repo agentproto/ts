@@ -14,9 +14,10 @@
  *
  * ## What the broker sees
  *
- * The hosted broker only ever relays **ciphertext** — it learns the routing
- * token, the peers' IPs, ciphertext sizes, and timing; never plaintext, and it
- * cannot inject or alter frames (the pairing handshake is transcript-bound and
+ * The hosted broker only ever relays **ciphertext** — it learns the route
+ * token (opaque; it authenticates nothing — see ./derive.ts), the peers' IPs,
+ * ciphertext sizes, and timing; never plaintext or an auth token, and it
+ * cannot pair, inject, or alter frames (the pairing handshake is transcript-bound and
  * every frame is AEAD-sealed). See `docs/cli/concepts/pairing.md` for the full
  * threat model.
  *

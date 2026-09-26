@@ -12,8 +12,8 @@ layer (Phase 1), plus the rendezvous broker, the `pair` CLI/MCP verbs, on-disk
 persistence, reconnect epochs, and autoconnect on boot. Pairing also works with
 no config — `pair offer` defaults to the **hosted broker**
 `wss://rdv.agentproto.sh/v1`, which relays only ciphertext (see [The hosted
-default](#the-hosted-default)). The mobile deep-link page and the AIP-53 spec
-remain Phase 3 — see *Status* at the bottom.
+default](#the-hosted-default)). The mobile deep-link page and the pairing spec
+(AIP-59 (draft, agentproto/agentproto#41)) remain Phase 3 — see *Status* at the bottom.
 
 Jump to the commands: [`pair`](../verbs/pair.md) (offer / accept / ls / revoke /
 exec) and [`rendezvous`](../verbs/rendezvous.md) (self-host the broker).
@@ -29,15 +29,17 @@ Every remote path into a daemon today trusts an intermediary with plaintext:
 | `serve --connect` reverse tunnel | everything (host terminates the WS, frames are plaintext) | `apt_` token at upgrade |
 
 Pairing removes the trusted middle: the broker splices two sockets and relays
-ciphertext byte-for-byte. It learns the routing token, the peers' IPs, timing,
-and ciphertext sizes — never the content, and it cannot inject or alter frames.
+ciphertext byte-for-byte. It learns the **route token** each peer dials, the
+peers' IPs, timing, and ciphertext sizes — never the content, and it cannot
+inject or alter frames. A route token is an opaque meeting-point name that
+authenticates nothing (see [Route and auth tokens](#route-and-auth-tokens)).
 
 ## Threat model
 
 | Adversary | Capability | Mitigation |
 | --- | --- | --- |
-| Rendezvous operator | read / modify / replay bytes | E2E AEAD + transcript-bound signature; sees only sizes + timing |
-| Offer-URL thief (pre-expiry) | pair as a new client | short TTL + single-use token; daemon shows name + fingerprint on accept; `pair revoke` |
+| Rendezvous operator (or anyone logging its upgrade URLs) | read / modify / replay bytes; learns every route token; can connect to any route as a client and send a well-formed hello sealed to the daemon's public key | E2E AEAD + transcript-bound signature; the daemon authorises only a sealed **auth** token that is a separate one-way HKDF output, not derivable from the route — a hello presenting the route (or any guess) is refused, spends no offer, and is never served |
+| Offer-URL thief (pre-expiry) | pair as a new client | short TTL + single-use offer secret; daemon shows name + fingerprint on accept; `pair revoke` |
 | Evil "daemon" (wrong QR) | impersonate the daemon | fingerprint shown at offer and accept; keys pinned after first pair |
 | Stolen client credstore | act as that client | per-client revocation; `pairings.json` audit (`lastSeen`) |
 | Broker DoS | drop / delay traffic | reconnect-with-backoff; self-host escape hatch |
@@ -69,25 +71,26 @@ A daemon's persistent identity, stored `~/.agentproto/identity.json` (mode
 The **fingerprint** is `sha256(x25519 pub)[:16]` — the same construction as a
 seal key id — and is what a human confirms at offer and accept time.
 
-### 2. Handshake — `pair/v1` (`@agentproto/secrets/pairing`)
+### 2. Handshake — `pair/v2` (`@agentproto/secrets/pairing`)
 
 A minimal, Noise-flavoured, two-message handshake:
 
 ```
 client → daemon:  e_pub                        // ephemeral X25519
                   ct₀ = Seal(to = daemon_x25519,
-                        {clientPub: e_pub, clientName, offerToken})
+                        {clientPub: e_pub, clientName, auth})
 daemon → client:  d_e_pub, sig = Ed25519(daemon_ed25519,
                         transcript = sha256(e_pub ‖ ct₀ ‖ d_e_pub))
 both:             K  = HKDF-SHA256(ECDH(e, d_e) ‖ ECDH(e, daemon_x25519),
-                        salt = transcript, info = "agentproto/pair/v1")
+                        salt = transcript, info = "agentproto/pair/v2")
                   → K_c2d, K_d2c   (two AES-256-GCM keys)
 ```
 
 - The client verifies `sig` against the Ed25519 key it learned out-of-band (the
   offer URL) → daemon authenticity, no CA.
 - The daemon opens `ct₀` (only its X25519 private key can) and checks the
-  one-time `offerToken` → client authenticity.
+  sealed `auth` token in constant time → client authenticity. `auth` is never
+  the value the broker saw on the upgrade URL (see below).
 - Everything is transcript-bound: `sig` covers the whole transcript and the
   transcript salts the key schedule, so any tampering with `e_pub`, `ct₀`, or
   `d_e_pub` in flight makes the signature or the derived keys disagree. The
@@ -164,16 +167,73 @@ REST routes: `POST /pairings/offer`, `GET /pairings`, `DELETE /pairings/:fp`.
 - Daemon pairings live in `~/.agentproto/pairings.json` (`0600`); the client
   half (pinned daemon keys + the `pairRoot` secret) in
   `~/.agentproto/pair-credentials.json` (`0600`).
-- After the first pairing there is no live offer, so reconnects route on a
-  **pairing-derived epoch token** `t' = HKDF(pairRoot, "rv-route" ‖ epoch)`
-  (epoch = UTC day number). Both sides derive it; the daemon accepts the current
-  and previous epoch to bridge clock skew, and rotating it per day keeps the
-  broker from linking sessions across days.
+- After the first pairing there is no live offer, so reconnects use
+  **pairing-derived epoch tokens** (epoch = UTC day number): the client dials
+  the epoch **route** and proves the epoch **auth** inside the sealed hello (see
+  [Route and auth tokens](#route-and-auth-tokens)). Both sides derive them; the
+  daemon accepts the current and previous epoch to bridge clock skew, and
+  rotating them per day keeps the broker from linking sessions across days.
+- A pairing made under the retired `pair/v1` protocol can't reconnect — see
+  [Protocol v2 and re-pairing](#protocol-v2-and-re-pairing).
 - With `pairing.autoconnect` on (default when a rendezvous is set), the daemon
   opens a standing rendezvous connection for every persisted pairing on boot —
   the same pattern as `tunnel.autoconnect` — so a paired client can reconnect
   anytime. Config keys: `pairing.rendezvous`, `pairing.autoconnect` (see
   [config-schema.md](../reference/config-schema.md)).
+
+### Route and auth tokens
+
+Every pairing secret is split into two HKDF-SHA256 outputs with distinct labels.
+The **route** is the only value that ever goes on a broker upgrade URL
+(`?side=…&t=<route>`); the **auth** token travels only inside the sealed hello,
+which only the daemon's X25519 key can open, and the daemon compares it in
+constant time. HKDF is one-way, so knowing a route — which the broker always
+does — doesn't give you its auth token.
+
+| Token | IKM | salt | info | Bytes |
+| --- | --- | --- | --- | --- |
+| offer route | offer secret (URL `s`, UTF-8) | `agentproto/pair-offer` | `agentproto/rv-route` | 16 (22 b64url chars) |
+| offer auth | offer secret (URL `s`, UTF-8) | `agentproto/pair-offer` | `agentproto/rv-auth` | 32 |
+| epoch route | `pairRoot` | `agentproto/rv-route-salt` | `agentproto/rv-route` ‖ u64be(epoch) | 16 (22 b64url chars) |
+| epoch auth | `pairRoot` | `agentproto/rv-auth-salt` | `agentproto/rv-auth` ‖ u64be(epoch) | 32 |
+
+- **Offer:** the daemon parks on the offer route and the client dials it; the
+  hello carries the offer auth. The offer stays single-use and is spent only by
+  a hello with the correct auth — a wrong one spends nothing, so the legitimate
+  client can still pair until the offer expires.
+- **Reconnect:** the daemon parks on the current and previous epoch routes; the
+  hello carries that epoch's auth.
+- **What the broker learns:** route tokens only. They are opaque (a random-
+  looking 22-char string), rotate daily for reconnects, and authenticate
+  nothing — the broker can meet a daemon on one, but it can't get past the
+  handshake. The offer secret and every auth token never touch the broker.
+
+### Protocol v2 and re-pairing
+
+`pair/v1` used one token for both jobs: the offer token (and, on reconnect, the
+epoch token) was both the broker route and the proof inside the sealed hello.
+A broker — or anyone logging its upgrade URLs — could therefore connect to the
+route as a client, seal a hello to the daemon's public key carrying the route
+it had just seen, and pair (first contact) or be served a full channel
+(reconnect replay). `pair/v2` fixes this with the route/auth split above.
+
+There is no compatibility window, and v1 pairings aren't upgraded in place
+(under v1 any stored pairing might be the broker's own). Re-pair once: run
+`agentproto pair offer` on the daemon and `agentproto pair accept` on the
+client, then `agentproto pair revoke <name>` the old entry. Mismatches fail
+with that instruction, not a timeout:
+
+- A v1 offer URL (`v=1`) is refused by a v2 client (`pairing_protocol_outdated`);
+  a v1 client refuses a v2 URL (`unsupported offer version "2"` — upgrade it).
+- A v1 `pairings.json` / `pair-credentials.json` loads with every entry flagged
+  **legacy**: `pair ls` marks them, the daemon logs them, and they are never
+  served or dialed.
+- An un-upgraded v1 client that reconnects to a v2 daemon still meets it (the
+  epoch route is unchanged from v1). The daemon completes that client's v1
+  handshake only to send the re-pair notice inside the encrypted channel, then
+  closes. It checks no token and serves nothing.
+- A v2 client whose daemon hangs up on its hello (a v1 daemon) gets an error
+  that names the likely cause and the fix.
 
 ## The hosted default
 
@@ -184,10 +244,10 @@ defaults to a hosted broker when none is configured:
 the hosted default `wss://rdv.agentproto.sh/v1`.
 
 What the hosted broker can see is exactly what any rendezvous can see, and no
-more: it splices two sockets by routing token and relays **ciphertext**
-byte-for-byte. It learns the token, the peers' IPs, ciphertext sizes, and
-timing — never plaintext — and it cannot inject, alter, or replay frames (the
-`pair/v1` handshake is transcript-bound and every frame is AEAD-sealed with a
+more: it splices two sockets by route token and relays **ciphertext**
+byte-for-byte. It learns the route tokens, the peers' IPs, ciphertext sizes, and
+timing — never plaintext, never an auth token — and it cannot pair, inject,
+alter, or replay frames (the `pair/v2` handshake is transcript-bound and every frame is AEAD-sealed with a
 monotonic nonce; see [Threat model](#threat-model)). This is the same guarantee
 as a self-hosted broker; the only thing that changes by default is *who runs
 the box*.
@@ -214,4 +274,4 @@ offer` then requires an explicit `--rendezvous`.
 - **Phase 3 (in progress):** the hosted broker is deployed and is now the
   default meeting point for `pair offer` (see [The hosted
   default](#the-hosted-default)). Still to come: the mobile deep-link page and
-  the AIP-53 `PAIRING.md` spec.
+  the pairing spec, AIP-59 (draft, agentproto/agentproto#41).

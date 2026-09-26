@@ -96,6 +96,7 @@ export function registerPairingTools(
           createdAt: p.createdAt,
           lastSeen: p.lastSeen,
           rendezvous: p.rendezvousUrl,
+          ...(p.legacy ? { legacy: true } : {}),
         })),
       })
     },

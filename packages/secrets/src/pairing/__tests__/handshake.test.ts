@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest"
 import {
   startClientHandshake,
   respondToHandshake,
+  respondToLegacyHandshake,
   encodePairingMessage,
   decodePairingHello,
   decodePairingReply,
@@ -15,6 +16,7 @@ import { generateIdentity, identityFingerprint } from "../../identity/index.js"
 import { nodeCryptoProvider } from "../../crypto/node.js"
 import { webCryptoProvider } from "../../crypto/webcrypto.js"
 import type { CryptoProvider } from "../../crypto/types.js"
+import { seal } from "../../seal/core.js"
 
 const OFFER_TOKEN = "one-time-offer-token-abc123"
 
@@ -23,12 +25,12 @@ async function setup() {
   const clientParams: ClientHandshakeParams = {
     daemonX25519Pub: identity.x25519.pub,
     daemonEd25519Pub: identity.ed25519.pub,
-    offerToken: OFFER_TOKEN,
+    authToken: OFFER_TOKEN,
     clientName: "jeremy@laptop",
   }
   const daemonParams: DaemonHandshakeParams = {
     identity,
-    verifyOfferToken: t => t === OFFER_TOKEN,
+    verifyAuthToken: t => t === OFFER_TOKEN,
   }
   return { identity, clientParams, daemonParams }
 }
@@ -71,7 +73,7 @@ const PROVIDERS: [string, CryptoProvider, CryptoProvider][] = [
   ["node client ↔ webcrypto daemon", nodeCryptoProvider, webCryptoProvider],
 ]
 
-describe.each(PROVIDERS)("@agentproto/secrets/pairing — pair/v1 handshake (%s)", (_name, cc, dc) => {
+describe.each(PROVIDERS)("@agentproto/secrets/pairing — pair/v2 handshake (%s)", (_name, cc, dc) => {
   it("happy path derives matching, direction-crossed keys on both sides", async () => {
     const { clientParams, daemonParams, identity } = await setup()
     const client = await startClientHandshake(clientParams, cc)
@@ -131,7 +133,7 @@ describe.each(PROVIDERS)("@agentproto/secrets/pairing — pair/v1 handshake (%s)
     const client = await startClientHandshake(clientParams, cc)
     const strictDaemon: DaemonHandshakeParams = {
       identity,
-      verifyOfferToken: () => false, // token unknown/expired/spent
+      verifyAuthToken: () => false, // token unknown/expired/spent
     }
     await expectPairingError(async () => (await respondToHandshake(client.hello, strictDaemon, dc)), "offer_rejected")
   })
@@ -141,7 +143,7 @@ describe.each(PROVIDERS)("@agentproto/secrets/pairing — pair/v1 handshake (%s)
     let spent = false
     const singleUse: DaemonHandshakeParams = {
       identity,
-      verifyOfferToken: t => {
+      verifyAuthToken: t => {
         if (spent || t !== OFFER_TOKEN) return false
         spent = true
         return true
@@ -185,7 +187,7 @@ describe.each(PROVIDERS)("@agentproto/secrets/pairing — pair/v1 handshake (%s)
     const client = await startClientHandshake(clientParams, cc)
     const otherDaemon: DaemonHandshakeParams = {
       identity: (await generateIdentity()), // different x25519 → cannot unseal
-      verifyOfferToken: () => true,
+      verifyAuthToken: () => true,
     }
     await expectPairingError(async () => (await respondToHandshake(client.hello, otherDaemon, dc)), "unseal_failed")
   })
@@ -228,5 +230,43 @@ describe.each(PROVIDERS)("@agentproto/secrets/pairing — pair/v1 handshake (%s)
     const wire = JSON.stringify(client.hello)
     expect(wire).not.toContain(OFFER_TOKEN)
     expect(wire).not.toContain("jeremy@laptop")
+  })
+
+  it("decode flags a retired pair/v1 hello or reply as pairing_protocol_outdated", async () => {
+    const { clientParams, daemonParams } = await setup()
+    const client = await startClientHandshake(clientParams, cc)
+    const v1Hello = Buffer.from(JSON.stringify({ ...client.hello, v: 1 }), "utf8")
+    await expectPairingError(() => decodePairingHello(v1Hello), "pairing_protocol_outdated")
+    const { reply } = await respondToHandshake(client.hello, daemonParams, dc)
+    const v1Reply = Buffer.from(JSON.stringify({ ...reply, v: 1 }), "utf8")
+    await expectPairingError(() => decodePairingReply(v1Reply), "pairing_protocol_outdated")
+    expect(() => decodePairingReply(v1Reply)).toThrow(/agentproto pair offer/)
+  })
+
+  it("legacy responder answers a v1 hello, but refuses a v2 hello relabelled v1", async () => {
+    const { identity, clientParams } = await setup()
+    // A v1-shaped hello: the payload names its proof `offerToken`.
+    const ePair = await cc.x25519GenerateKeyPair()
+    const ePub = Buffer.from(ePair.publicKey).toString("base64")
+    const ct0 = await seal(
+      JSON.stringify({ clientPub: ePub, clientName: "old@client", offerToken: "anything" }),
+      identity.x25519.pub,
+      cc,
+    )
+    const v1 = Buffer.from(JSON.stringify({ v: 1, ePub, ct0 }), "utf8")
+    const { reply, keys } = await respondToLegacyHandshake(v1, identity, dc)
+    expect(JSON.parse(Buffer.from(reply).toString("utf8")).v).toBe(1)
+    expect(keys.sendKey).toHaveLength(32)
+
+    // A broker can't steer a real v2 hello onto the unauthenticated notice
+    // path by flipping its cleartext version: the sealed payload gives it away.
+    const client = await startClientHandshake(clientParams, cc)
+    const relabelled = Buffer.from(JSON.stringify({ ...client.hello, v: 1 }), "utf8")
+    await expectPairingError(() => respondToLegacyHandshake(relabelled, identity, dc), "malformed_hello")
+    // …and a v2 hello isn't a v1 hello at all.
+    await expectPairingError(
+      () => respondToLegacyHandshake(encodePairingMessage(client.hello), identity, dc),
+      "malformed_hello",
+    )
   })
 })

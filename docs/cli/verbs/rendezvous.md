@@ -13,7 +13,11 @@ Run your own **rendezvous broker** — the untrusted ciphertext splicer that
 sharing a one-time token and pipes their bytes verbatim; it never parses
 payloads and, because pairing traffic is end-to-end encrypted, it **cannot read
 or forge** anything. It learns only the token, the peers' IPs, message sizes,
-and timing.
+and timing. That token is a *route*: an opaque meeting-point name derived from
+the pairing secret that authenticates nothing. Proof of authorisation is a
+separate auth token sealed inside the encrypted hello, so a broker that logs
+every route still can't pair or reconnect as a client (see
+[concepts/pairing.md](../concepts/pairing.md#route-and-auth-tokens)).
 
 Self-hosting is defence in depth (the crypto already protects you against a
 malicious broker) plus an escape hatch: no third party — not even the [hosted
