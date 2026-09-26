@@ -1,6 +1,8 @@
 /**
  * App-scoped state ledger — an append-only JSONL event log per installed
- * app at `<dataDir>/state/events.jsonl`, plus a fold to a stage-board
+ * app at `<stateDir>/events.jsonl` (the daemon's own state dir, see
+ * `InstalledApp.stateDir`; `<dataDir>/state/events.jsonl` for a record
+ * without one), plus a fold to a stage-board
  * snapshot. Complements the `app_data_*` plane (app-data.ts): data files
  * are app-writable records; the state ledger is the daemon-owned,
  * agent-UNwritable source of truth for "where is this app in its work"
@@ -62,7 +64,7 @@
  * it, and an agent's copy of the toolset never contains it.
  */
 
-import { mkdir, open, readFile, stat } from "node:fs/promises"
+import { copyFile, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { randomBytes } from "node:crypto"
 import { z } from "zod"
@@ -145,15 +147,56 @@ export type AppStateEvent = z.infer<typeof appStateEventSchema>
 export const appStateEventInputSchema = appStateEventSchema.omit({ id: true, ts: true })
 export type AppStateEventInput = z.infer<typeof appStateEventInputSchema>
 
-/** Sub-directory (under the app's data dir) the ledger lives in. */
+/** Sub-directory (under the app's data dir) the LEGACY ledger lives in —
+ *  only used for a record without a `stateDir`. */
 export const APP_STATE_DIR = "state"
 export const APP_STATE_EVENTS_FILE = "events.jsonl"
 
-/** Absolute path of an installed app's ledger. Always under the app's
- *  `dataDir` (never a caller-supplied path), so a hostile `appId` cannot
+type LedgerApp = Pick<InstalledApp, "dir" | "dataDir" | "stateDir">
+
+/** Absolute path of an installed app's ledger: `<stateDir>/events.jsonl`,
+ *  else `<dataDir>/state/events.jsonl`. Always derived from the registry
+ *  record (never a caller-supplied path), so a hostile `appId` cannot
  *  relocate it — the id only ever selects the registry record. */
-export function appStateEventsPath(app: Pick<InstalledApp, "dir" | "dataDir">): string {
+export function appStateEventsPath(app: LedgerApp): string {
+  if (app.stateDir !== undefined) return join(app.stateDir, APP_STATE_EVENTS_FILE)
+  return legacyAppStateEventsPath(app)
+}
+
+/** Where the ledger lived before `stateDir` existed — inside the app's data
+ *  dir, which for an app installed from a checkout is its SOURCE tree. */
+export function legacyAppStateEventsPath(app: LedgerApp): string {
   return join(appDataDir(app), APP_STATE_DIR, APP_STATE_EVENTS_FILE)
+}
+
+async function fileExists(p: string): Promise<boolean> {
+  try {
+    await stat(p)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** The legacy ledger to fall back to / migrate from: set only when the app
+ *  has a `stateDir`, nothing is there yet, and a legacy file exists. */
+async function pendingLegacyLedger(app: LedgerApp): Promise<string | undefined> {
+  if (app.stateDir === undefined) return undefined
+  if (await fileExists(appStateEventsPath(app))) return undefined
+  const legacy = legacyAppStateEventsPath(app)
+  return (await fileExists(legacy)) ? legacy : undefined
+}
+
+/** Move a legacy ledger to `to` (rename; copy + unlink across devices). */
+async function moveLedger(from: string, to: string): Promise<void> {
+  await mkdir(dirname(to), { recursive: true })
+  try {
+    await rename(from, to)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err
+    await copyFile(from, to)
+    await unlink(from)
+  }
 }
 
 export class AppAppStateError extends Error {
@@ -169,7 +212,7 @@ export class AppAppStateError extends Error {
  *  stored event. fsync's the fd before close (durable across a crash,
  *  cheap at ledger scale). */
 export async function appendAppStateEvent(
-  app: Pick<InstalledApp, "dir" | "dataDir">,
+  app: LedgerApp,
   input: AppStateEventInput,
 ): Promise<AppStateEvent> {
   const parsed = appStateEventInputSchema.safeParse(input)
@@ -193,6 +236,10 @@ export async function appendAppStateEvent(
   if (!checked.success) throw new AppAppStateError(`app_state_append: envelope rejected — ${checked.error.message}`)
 
   const path = appStateEventsPath(app)
+  // First append after `stateDir` was assigned: carry the old ledger over so
+  // history survives the move (and the source tree stops being written).
+  const legacy = await pendingLegacyLedger(app)
+  if (legacy !== undefined) await moveLedger(legacy, path)
   await mkdir(dirname(path), { recursive: true })
   // Flag "a" → O_APPEND: every write is atomic-append at the OS level, so
   // two overlapping appends produce two intact lines, not interleaved bytes.
@@ -210,9 +257,11 @@ export async function appendAppStateEvent(
  *  crash, hand-edited file) are SKIPPED and counted, never thrown — the
  *  fold stays usable over a damaged tail. Missing file → empty ledger. */
 export async function readAppStateEvents(
-  app: Pick<InstalledApp, "dir" | "dataDir">,
+  app: LedgerApp,
 ): Promise<{ events: AppStateEvent[]; malformedLines: number }> {
-  const path = appStateEventsPath(app)
+  // Not yet migrated (no append since `stateDir` was assigned) ⇒ the legacy
+  // file is still the ledger.
+  const path = (await pendingLegacyLedger(app)) ?? appStateEventsPath(app)
   let raw: string
   try {
     raw = await readFile(path, "utf8")
@@ -237,13 +286,8 @@ export async function readAppStateEvents(
 
 /** True when the app has a ledger file on disk (the `app_status` projection
  *  only appears for apps that actually use the ledger). */
-export async function appStateLedgerExists(app: Pick<InstalledApp, "dir" | "dataDir">): Promise<boolean> {
-  try {
-    await stat(appStateEventsPath(app))
-    return true
-  } catch {
-    return false
-  }
+export async function appStateLedgerExists(app: LedgerApp): Promise<boolean> {
+  return (await fileExists(appStateEventsPath(app))) || (await pendingLegacyLedger(app)) !== undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -355,7 +399,7 @@ export function foldAppStateEvents(events: AppStateEvent[]): AppStateSnapshot {
 
 /** Convenience: read + fold the app's current ledger. */
 export async function appStateSnapshot(
-  app: Pick<InstalledApp, "dir" | "dataDir">,
+  app: LedgerApp,
 ): Promise<AppStateSnapshot> {
   const { events } = await readAppStateEvents(app)
   return foldAppStateEvents(events)

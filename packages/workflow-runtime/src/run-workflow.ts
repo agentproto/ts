@@ -123,6 +123,25 @@ interface RunCtx {
   readonly onStepComplete?: RunWorkflowArgs["onStepComplete"]
   readonly runGateCommand?: RunWorkflowArgs["runGateCommand"]
   readonly onGateReport?: RunWorkflowArgs["onGateReport"]
+  /** Sessions spawned in the current release scope (the run, or one
+   *  `map`/`pipeline` item) — released when that scope settles. */
+  readonly spawned?: string[]
+}
+
+/** Open a release scope for one fan-out item: sessions its steps spawn are
+ *  released as soon as the item settles, not held until the run ends. */
+function withReleaseScope(ctx: RunCtx): RunCtx {
+  return { ...ctx, spawned: [] }
+}
+
+/** Release every session collected in `ctx`'s scope (see
+ *  `AgentSessionHost.releaseSession`). Never throws. */
+async function releaseScope(ctx: RunCtx): Promise<void> {
+  const release = ctx.agents?.releaseSession
+  if (!release || !ctx.spawned || ctx.spawned.length === 0) return
+  const ids = ctx.spawned.splice(0)
+  const agents = ctx.agents
+  await Promise.all(ids.map((id) => Promise.resolve().then(() => release.call(agents, id)).catch(() => undefined)))
 }
 
 function view(state: RunState, item?: unknown, index?: number): Bindings {
@@ -409,9 +428,11 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
         ...(step.options !== undefined ? { options: step.options } : {}),
         ...(harness !== undefined ? { harness } : {}),
         ...(step.agentTools !== undefined ? { agentTools: step.agentTools } : {}),
+        ...(b.index !== undefined ? { stepKey: `${step.id}[${b.index}]` } : {}),
       })
     : ctx.agents!.resolveByLabel(step.sessionRef!)
   if (!sessionId) throw new Error(`step '${step.id}': no session (adapter and sessionRef both unresolved)`)
+  if (step.adapter) ctx.spawned?.push(sessionId)
   if (knowledgeWarnings.length > 0 && ctx.agents!.emitHarnessWarning) {
     ctx.agents!.emitHarnessWarning({
       sessionId,
@@ -727,7 +748,7 @@ async function execStep(
       const runItem = async (idx: number): Promise<void> => {
         const el = arr[idx]
         const inner = step.body(el, idx, view(state, el, idx))
-        const wrapped = withIndexedHooks(ctx, idx)
+        const wrapped = withReleaseScope(withIndexedHooks(ctx, idx))
         try {
           const out = await execStep(inner, wrapped, el, idx)
           completeStep(wrapped, inner.id, out)
@@ -738,6 +759,8 @@ async function execStep(
             throw err
           }
           results[idx] = { status: "rejected", index: idx, item: el, error: errorMessage(err) }
+        } finally {
+          await releaseScope(wrapped)
         }
       }
       const worker = async (): Promise<void> => {
@@ -765,7 +788,7 @@ async function execStep(
       let next = 0
       const runItem = async (idx: number): Promise<void> => {
         let prev: unknown = undefined
-        const wrapped = withIndexedHooks(ctx, idx)
+        const wrapped = withReleaseScope(withIndexedHooks(ctx, idx))
         try {
           for (const stage of step.stages) {
             const inner = stage(items[idx], idx, prev, view(state, items[idx], idx))
@@ -776,6 +799,8 @@ async function execStep(
         } catch (err) {
           if (!tolerant) throw err
           results[idx] = { status: "rejected", index: idx, item: items[idx], error: errorMessage(err) }
+        } finally {
+          await releaseScope(wrapped)
         }
       }
       const worker = async (): Promise<void> => {
@@ -873,6 +898,7 @@ async function execStep(
         cacheKey: ctx.cacheKey,
         runGateCommand: ctx.runGateCommand,
         onGateReport: ctx.onGateReport,
+        spawned: ctx.spawned,
       })
       return child.output
     }
@@ -901,17 +927,24 @@ async function execStep(
 async function runWorkflowInner(
   workflow: RuntimeWorkflow,
   input: unknown,
-  hooks: Pick<RunCtx, "approve" | "resume" | "onInputRequired" | "signal" | "agents" | "cwd" | "workspaceSlug" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete" | "runGateCommand" | "onGateReport">,
+  hooks: Pick<RunCtx, "approve" | "resume" | "onInputRequired" | "signal" | "agents" | "cwd" | "workspaceSlug" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete" | "runGateCommand" | "onGateReport" | "spawned">,
   maxTotalCostUsd?: number,
 ): Promise<WorkflowRunResult> {
   const state: RunState = { input, steps: {}, costBySession: new Map(), maxTotalCostUsd, cachedHits: new Set() }
-  const ctx: RunCtx = { state, ...hooks }
+  // A subworkflow shares its parent's release scope (a parent step may
+  // `sessionRef` a child's session); only the outermost run owns one.
+  const ownsScope = hooks.spawned === undefined
+  const ctx: RunCtx = { state, ...hooks, ...(ownsScope ? { spawned: [] } : {}) }
   let lastId: string | undefined
-  for (const step of workflow.steps) {
-    const out = await execStep(step, ctx, undefined, undefined)
-    state.steps[step.id] = out
-    completeStep(ctx, step.id, out)
-    lastId = step.id
+  try {
+    for (const step of workflow.steps) {
+      const out = await execStep(step, ctx, undefined, undefined)
+      state.steps[step.id] = out
+      completeStep(ctx, step.id, out)
+      lastId = step.id
+    }
+  } finally {
+    if (ownsScope) await releaseScope(ctx)
   }
   const bindings = view(state)
   const output = workflow.output

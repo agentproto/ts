@@ -550,8 +550,20 @@ export interface AgentSessionHost {
       harness?: AgentHarness
       /** The agent manifest's declared tools (see {@link AgentStep.agentTools}). */
       agentTools?: readonly string[]
+      /** Run-unique key of the spawning step when it runs inside a
+       *  `map`/`pipeline` item: `stepId[<index>]`, the same key the run's step
+       *  hooks report. Absent outside a fan-out (the key is then `stepId`). */
+      stepKey?: string
     },
   ): Promise<string>
+  /**
+   * The run is done with a session it spawned: end it (if still live) and
+   * archive it. Called once per spawned session — when its `map`/`pipeline`
+   * item settles, else when the run itself ends (ok or error) — never
+   * earlier, so a later step's `sessionRef` can still reuse it. The session's
+   * id stays on the step's output. Best-effort: a throw is swallowed.
+   */
+  releaseSession?(sessionId: string): Promise<void>
   /** Send a prompt to an existing session and wait for its turn to end. */
   sendPromptAndWait(sessionId: string, prompt: string): Promise<void>
   /** Look up a session by the step id that spawned it (for sessionRef reuse). */

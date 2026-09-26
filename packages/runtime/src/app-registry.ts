@@ -29,6 +29,15 @@ export interface InstalledApp {
    *  from `dir` is what lets multi-GB generated output live outside the
    *  app's source tree. */
   readonly dataDir?: string
+  /** Absolute dir of the app's daemon-owned state ledger
+   *  (`<stateDir>/events.jsonl`, app-state.ts). Assigned by a PERSISTING
+   *  registry to `<daemon state dir>/app-state/<encoded appId>` (next to
+   *  `apps.json`), so a runner-written ledger never lands in the app's
+   *  source tree — a workflow-only app installed from a checkout has no
+   *  business growing a `data/` folder there. Absent on a non-persisting
+   *  (test) registry; `appStateEventsPath()` then falls back to
+   *  `<dataDir>/state/events.jsonl`, the pre-`stateDir` location. */
+  readonly stateDir?: string
   readonly version?: string
   readonly name?: string
   readonly description?: string
@@ -183,6 +192,16 @@ function normalizeLegacyRunStatus(run: AppRun): AppRun {
   return run
 }
 
+/** Sub-directory (next to the registry's own `apps.json`) holding every
+ *  installed app's state ledger — see `InstalledApp.stateDir`. */
+export const APP_STATE_ROOT_SUBDIR = "app-state"
+
+/** Default `stateDir` for `appId` under `stateRoot` — the id is
+ *  URI-encoded so a scoped id (`@scope/name`) stays one path segment. */
+export function defaultAppStateDir(stateRoot: string, appId: string): string {
+  return join(stateRoot, encodeURIComponent(appId))
+}
+
 function loadState(persistPath: string): AppRegistryState {
   const empty: AppRegistryState = { apps: [], runs: [], applied: [] }
   if (!existsSync(persistPath)) return empty
@@ -224,6 +243,16 @@ export function createAppRegistry(opts?: {
   const state: AppRegistryState = shouldPersist
     ? loadState(persistPath)
     : { apps: [], runs: [], applied: [] }
+  // Only a persisting registry owns an on-disk state root; a test registry
+  // leaves `stateDir` unset so its ledgers stay under the app's dataDir.
+  const stateRoot = shouldPersist ? join(dirname(persistPath), APP_STATE_ROOT_SUBDIR) : undefined
+  // Backfill records installed before `stateDir` existed (persisted on the
+  // next write) — the ledger moves on its first append (app-state.ts).
+  if (stateRoot !== undefined) {
+    state.apps = state.apps.map(a =>
+      a.stateDir !== undefined ? a : { ...a, stateDir: defaultAppStateDir(stateRoot, a.appId) },
+    )
+  }
 
   const persist = (): void => {
     if (shouldPersist) saveState(state, persistPath)
@@ -233,8 +262,13 @@ export function createAppRegistry(opts?: {
     upsertApp(input) {
       const now = new Date().toISOString()
       const idx = state.apps.findIndex(a => a.appId === input.appId)
+      const stateDir =
+        input.stateDir ??
+        (idx === -1 ? undefined : state.apps[idx]!.stateDir) ??
+        (stateRoot !== undefined ? defaultAppStateDir(stateRoot, input.appId) : undefined)
       const record: InstalledApp = {
         ...input,
+        ...(stateDir !== undefined ? { stateDir } : {}),
         installedAt: idx === -1 ? now : state.apps[idx]!.installedAt,
         updatedAt: now,
       }

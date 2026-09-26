@@ -276,6 +276,9 @@ interface RunState {
   abort: AbortController
   /** Original stages — retained so sessionRef lookups can resolve step labels. */
   stages: WorkflowStage[]
+  /** The run's agent host, while it executes — `cancel()` releases its
+   *  still-open step sessions through it. */
+  agents?: SessionsRegistryAgentHost
   /**
    * Set while a step's `escalate` policy is suspended (`run.status ===
    * "awaiting-input"`), waiting for an external `resolve()` call —
@@ -849,7 +852,7 @@ function findStepKind(steps: readonly RuntimeStep[], id: string): string | undef
  * warning and never fails the run.
  */
 function createLedgerAppender(
-  app: Pick<InstalledApp, "dir" | "dataDir">,
+  app: Pick<InstalledApp, "dir" | "dataDir" | "stateDir">,
   appRunId: string | undefined,
   runId: string,
   item: string | undefined,
@@ -1441,7 +1444,7 @@ export function createWorkflowRunner(opts: {
    * Installed-app registry — enables the app state ledger bridge: when a
    * run's workflow id is owned by exactly one installed app (or `appId` is
    * passed explicitly), the runner mirrors stage progress onto that app's
-   * ledger (`<dataDir>/state/events.jsonl`, `by: "runner"`). Omitted ⇒ no
+   * ledger (`<stateDir>/events.jsonl`, `by: "runner"`). Omitted ⇒ no
    * ledger writes, behaviour unchanged.
    */
   appRegistry?: Pick<AppRegistry, "getApp" | "listApps">
@@ -1648,6 +1651,7 @@ export function createWorkflowRunner(opts: {
           workspaceSlug: input.workspaceSlug,
           cwd: input.cwd,
           notifyUrl: input.notifyUrl,
+          run: { runId, workflowId: input.workflowId },
           onEscalate: createOnEscalate(state, persist),
           onSessionLabeled: (stepId, sessionId) => {
             sessionToRun.set(sessionId, { runId, stepId, host: agents })
@@ -1659,6 +1663,7 @@ export function createWorkflowRunner(opts: {
           ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
         },
       )
+      state.agents = agents
 
       const cache = input.cacheKey ? createFileStepCache(input.cacheKey) : undefined
 
@@ -1666,6 +1671,7 @@ export function createWorkflowRunner(opts: {
         for (const [sid, binding] of sessionToRun) {
           if (binding.runId === runId) sessionToRun.delete(sid)
         }
+        delete state.agents
         persist()
       })
 
@@ -1769,6 +1775,7 @@ export function createWorkflowRunner(opts: {
         {
           workspaceSlug: args.workspaceSlug,
           cwd,
+          run: { runId, workflowId: handle.id },
           onEscalate: createOnEscalate(state, persist),
           onSessionLabeled: (stepId, sessionId) => {
             sessionToRun.set(sessionId, { runId, stepId, host: agents })
@@ -1780,6 +1787,7 @@ export function createWorkflowRunner(opts: {
           ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
         },
       )
+      state.agents = agents
 
       const cache = args.cacheKey ? createFileStepCache(args.cacheKey) : undefined
 
@@ -1800,6 +1808,7 @@ export function createWorkflowRunner(opts: {
         for (const [sid, binding] of sessionToRun) {
           if (binding.runId === runId) sessionToRun.delete(sid)
         }
+        delete state.agents
         persist()
       })
 
@@ -1954,6 +1963,9 @@ export function createWorkflowRunner(opts: {
       if (!state) return
       state.cancelled = true
       state.abort.abort()
+      // The engine doesn't observe the abort mid-turn: end + archive the
+      // run's open step sessions now (which also ends any in-flight wait).
+      void state.agents?.releaseAll()
       if (state.run.status === "running" || state.run.status === "awaiting-input" || state.run.status === "awaiting-approval") {
         state.run.status = "cancelled"
         state.run.endedAt = new Date().toISOString()
