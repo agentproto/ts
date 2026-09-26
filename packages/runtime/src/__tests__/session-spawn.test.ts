@@ -4977,7 +4977,7 @@ describe("spawnAgentSession — child→parent report-back plumbing", () => {
     expect(startSession.mock.calls[1]?.[0]?.env).not.toHaveProperty(PARENT_SESSION_ID_ENV)
   })
 
-  it("a gateway-less child with a parent gets a minimal message_parent-only scope (role-independent, no delegation)", async () => {
+  it("a gateway-less child with a parent gets a minimal report-back + receive scope (role-independent, no delegation)", async () => {
     const { entry, build } = makeBuildOrchestratorMcp()
     const { deps } = baseDeps({ buildOrchestratorMcp: build })
 
@@ -4989,7 +4989,10 @@ describe("spawnAgentSession — child→parent report-back plumbing", () => {
     )
     expect(result.ok).toBe(true)
     expect(build).toHaveBeenCalledTimes(1)
-    expect(build).toHaveBeenCalledWith({ tools: ["message_parent"], role: "executor" })
+    expect(build).toHaveBeenCalledWith({
+      tools: ["message_parent", "message_send", "message_reply", "inbox_wait", "inbox_list", "inbox_ack"],
+      role: "executor",
+    })
     if (result.ok) {
       expect(result.descriptor.mcpServers).toEqual([entry])
     }

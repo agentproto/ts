@@ -2005,8 +2005,10 @@ export async function spawnAgentSession(
     // re-grant — a parent whose own scope lacks `message_parent` must not
     // strip its children of the ability to report up. The scope can spawn
     // nothing (no delegation tools), so depth bookkeeping is moot.
+    // Report-back plus the RECEIVE side, so an executor can get and answer
+    // its parent's replies: still no delegation.
     const injection = buildOrchestratorMcp({
-      tools: ["message_parent"],
+      tools: ["message_parent", "message_send", "message_reply", "inbox_wait", "inbox_list", "inbox_ack"],
       role: role.name,
     })
     mcpServers = [injection.entry]

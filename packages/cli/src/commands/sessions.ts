@@ -145,6 +145,17 @@ Usage:
                                without delivering. Positions are 1-indexed here,
                                matching 'sessions prompt' output. After any
                                action the queue is re-listed to show the result.)
+  agentproto sessions inbox <id-or-name> [--ack <msgId,...|all>] [--json]
+                              (list the session's un-consumed typed messages —
+                               sender (relation + session), kind, urgency, text.
+                               --ack removes them from the inbox, and from the
+                               prompt queue if not yet delivered.)
+  agentproto sessions message <id-or-name> "<text>" [--kind <kind>]
+                              [--urgency <fyi|next-turn|steer|interrupt>] [--json]
+                              (send a typed message to the session as the human
+                               operator — recorded as a session-message from
+                               "human", distinct from a prompt. kind: report
+                               (default) | question | blocker | done | notice.)
   agentproto sessions restart <id-or-name> [--attach] [--json] [--no-color]
                               [--prefer-native-terminal]
                               (respawn from history — clones the old
@@ -309,6 +320,8 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   if (sub === "restart") return runRestart(args.slice(1))
   if (sub === "wait") return runWait(args.slice(1))
   if (sub === "queue") return runQueue(args.slice(1))
+  if (sub === "inbox") return runInbox(args.slice(1))
+  if (sub === "message") return runMessage(args.slice(1))
 
   const { values } = parseArgs({
     args: [...args],
@@ -1323,6 +1336,132 @@ async function runQueue(args: readonly string[]): Promise<number> {
     printQueueTable(id, queue)
   }
   return 0
+}
+
+/** One message in `GET /sessions/:id/inbox` (a `SessionMessage`). */
+interface InboxViewItem {
+  id: string
+  ts: string
+  from: { sessionId?: string; label?: string; relation: string }
+  kind: string
+  urgency: string
+  text: string
+  delivered?: { via: string }
+}
+
+/**
+ * `agentproto sessions inbox <id-or-name> [--ack <ids|all>] [--json]` —
+ * the typed-message inbox (AIP-46 §Session messages).
+ */
+async function runInbox(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: { ack: { type: "string" }, json: { type: "boolean" } },
+  })
+  const id = positionals[0]
+  if (!id || positionals.length > 1) {
+    process.stderr.write(
+      "agentproto sessions inbox: expected exactly one session id.\n" +
+        "  Try: agentproto sessions inbox <id-or-name> [--ack <msgId,...|all>]\n",
+    )
+    return 2
+  }
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto sessions inbox")
+    return 2
+  }
+  const endpoint = report.found
+  const base = `${endpoint.url}/sessions/${encodeURIComponent(id)}`
+  if (values.ack !== undefined) {
+    const ids = values.ack === "all" ? "all" : values.ack.split(",").map(x => x.trim()).filter(Boolean)
+    try {
+      const r = await httpPostJson<{ acked: string[] }>(`${base}/inbox/ack`, { ids }, endpoint.token)
+      if (!values.json) process.stdout.write(`agentproto sessions inbox: acked ${r.acked.length} on ${id}.\n`)
+    } catch (err) {
+      process.stderr.write(`agentproto sessions inbox: ${err instanceof Error ? err.message : String(err)}\n`)
+      return 1
+    }
+  }
+  const res = await httpGetJson<{ ok: boolean; inbox: InboxViewItem[] }>(`${base}/inbox`)
+  if (!res || !Array.isArray(res.inbox)) {
+    process.stderr.write(`agentproto sessions inbox: no session "${id}".\n`)
+    return 2
+  }
+  if (values.json) {
+    process.stdout.write(JSON.stringify({ ok: true, id, inbox: res.inbox }, null, 2) + "\n")
+    return 0
+  }
+  if (res.inbox.length === 0) {
+    process.stdout.write(`${id}: inbox empty.\n`)
+    return 0
+  }
+  process.stdout.write(`${id}: ${res.inbox.length} message(s)\n`)
+  for (const m of res.inbox) {
+    const who = m.from.sessionId
+      ? `${m.from.relation} ${m.from.label ?? m.from.sessionId}`
+      : m.from.relation
+    const text = m.text.replace(/\s+/g, " ")
+    process.stdout.write(
+      `  ${m.id}  ${who}  [${m.kind}/${m.urgency}${m.delivered ? ` · ${m.delivered.via}` : ""}]  ` +
+        `${text.length > 80 ? `${text.slice(0, 79)}…` : text}\n`,
+    )
+  }
+  return 0
+}
+
+/**
+ * `agentproto sessions message <id-or-name> "<text>" [--kind] [--urgency]` —
+ * send a typed message as the human operator.
+ */
+async function runMessage(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: { kind: { type: "string" }, urgency: { type: "string" }, json: { type: "boolean" } },
+  })
+  const [id, text, ...extra] = positionals
+  if (!id || !text || extra.length) {
+    process.stderr.write(
+      "agentproto sessions message: expected <id-or-name> \"<text>\".\n" +
+        '  Try: agentproto sessions message <id-or-name> "status?" --kind question\n',
+    )
+    return 2
+  }
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto sessions message")
+    return 2
+  }
+  const endpoint = report.found
+  try {
+    const r = await httpPostJson<Record<string, unknown>>(
+      `${endpoint.url}/sessions/${encodeURIComponent(id)}/messages`,
+      {
+        text,
+        ...(values.kind ? { kind: values.kind } : {}),
+        ...(values.urgency ? { urgency: values.urgency } : {}),
+      },
+      endpoint.token,
+    )
+    if (values.json) {
+      process.stdout.write(JSON.stringify(r, null, 2) + "\n")
+    } else {
+      const delivered = r.delivered as { via?: string } | null | undefined
+      process.stdout.write(
+        `agentproto sessions message: ${String(r.messageId)} → ${id} ` +
+          `(${delivered?.via ? `delivered via ${delivered.via}` : "queued behind the current turn"}, ` +
+          `urgency ${String(r.urgencyApplied)}).\n`,
+      )
+    }
+    return 0
+  } catch (err) {
+    process.stderr.write(`agentproto sessions message: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 1
+  }
 }
 
 /** Shape of one item in `GET /sessions/:id/queue` — see `QueuedPromptView`. */

@@ -114,9 +114,13 @@ import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
 import {
   escapeHumanPrompt,
+  matchesMessageFilter,
   MESSAGE_PREAMBLE,
+  renderInboxDigest,
   renderSessionMessages,
   type MessageDeliveryVia,
+  type MessageFilter,
+  type MessageUrgency,
   type SessionMessage,
 } from "./session-message.js"
 // Reused, not reimplemented — same parser `applyModelCommand`'s dedicated
@@ -519,10 +523,14 @@ function selectPermissionOptionId(
  * substrings) so adapter-native tool names (e.g. claude-code's "Bash")
  * classify without a per-adapter table.
  */
-function classifyBlockedOn(toolName?: string): "subagent" | "command" | undefined {
+function classifyBlockedOn(toolName?: string): "subagent" | "command" | "inbox" | undefined {
   if (!toolName) return undefined
   const n = toolName.toLowerCase()
   if (n === "agent_start") return "subagent"
+  // A supervisor parked in `inbox_wait` is legitimately waiting on its
+  // children's messages (MCP-prefixed names like `mcp__agentproto__inbox_wait`
+  // included), not stalled.
+  if (/(^|_)inbox_wait$/.test(n)) return "inbox"
   if (/^(command_execute|terminal_start)$|bash|terminal|command/.test(n)) return "command"
   return undefined
 }
@@ -852,6 +860,25 @@ export function isChildPromptSource(source: string | undefined): boolean {
  *  `pendingChildCrashNotices` field — the sending child's id wasn't
  *  recorded there, only baked into the notice text. */
 export const LEGACY_CHILD_NOTICE_SOURCE = "child:legacy"
+
+/** Bound on `SessionDescriptor.inbox` (un-consumed messages). */
+export const INBOX_CAP = 200
+
+/** What `sendMessage` did with a message — truthful, per AIP-46. */
+export interface SendMessageResult {
+  messageId: string
+  /** Set when the message already reached the recipient's context (a
+   *  waiter, a dispatched turn, an interrupt) or was parked as `fyi`
+   *  (`via: "inbox"`); `null` while it's queued behind a busy turn. */
+  delivered: { via: MessageDeliveryVia } | null
+  queued: boolean
+  urgencyApplied: MessageUrgency
+}
+
+export interface WaitForMessagesResult {
+  messages: SessionMessage[]
+  timedOut: boolean
+}
 
 /**
  * Boot migration for the retired `SessionDescriptor.pendingChildCrashNotices`
@@ -1626,7 +1653,7 @@ export interface SessionDescriptor {
    *  next assistant `text-delta` (the model has the floor, so nothing is
    *  pending), at turn start, and in the turn's finally. A claim about the
    *  present tense — anything that disproves it must clear it. */
-  blockedOn?: "subagent" | "command"
+  blockedOn?: "subagent" | "command" | "inbox"
   /** toolCallId of the tool-call that set `blockedOn`. A tool-result only
    *  clears `blockedOn` when its toolCallId matches — so a nested or
    *  interleaved tool finishing first can't clear the flag early. */
@@ -1664,6 +1691,14 @@ export interface SessionDescriptor {
    *  invariant (`MESSAGE_PREAMBLE`) — sent as a `system-prompt` slice ahead
    *  of the FIRST message turn it receives, never again. */
   messagePreambleSent?: boolean
+  /** Durable, bounded inbox of typed messages NOT yet consumed (AIP-46
+   *  §Session messages): every accepted message lands here until it's
+   *  delivered into a turn (auto-acked), returned by `inbox_wait` with
+   *  `ack`, or acked via `inbox_ack`. `fyi` messages only ever live here
+   *  (surfaced as a digest). Capped at `INBOX_CAP`, oldest dropped first
+   *  (`[inbox] dropped`). Full history lives in the transcript, not here.
+   *  New array on every mutation, like `promptQueue`. */
+  inbox?: SessionMessage[]
   /** FIFO of prompts that arrived while this session was mid-turn and
    *  asked to be QUEUED rather than rejected (`enqueuePrompt`'s
    *  `opts.queue` arm — see its doc comment). Index 0 is next to
@@ -1905,7 +1940,7 @@ export interface SessionSummary {
   awaitingPermission?: boolean
   turnsCompleted?: number
   busy?: boolean
-  blockedOn?: "subagent" | "command"
+  blockedOn?: "subagent" | "command" | "inbox"
   stalledSinceMs?: number
   /** Parked-with-background-tasks marker — see
    *  `SessionDescriptor.pendingBgTasks`. Stamped at turn-end, cleared on the
@@ -3006,6 +3041,37 @@ export interface SessionsRegistry {
    *  throwing, same shape as `interruptSession`'s no-op-is-not-an-error
    *  contract. */
   removeQueuedPrompt(id: string, queueId: string): { removed: boolean }
+  /** Deliver a daemon-attested typed message (`msg.to` is the recipient;
+   *  `from` must already be computed from the verified caller). Waiter
+   *  first: a matching pending `waitForMessages` on the recipient gets it as
+   *  its result and it's never also injected. Otherwise it's kept in the
+   *  durable inbox, and — unless `fyi` (inbox only, no wake) — delivered as
+   *  its own turn now (idle) or queued behind the current turn (busy).
+   *  `interrupt` cuts a busy recipient's turn (the caller decides whether
+   *  that's allowed). Throws when the recipient is missing or not alive. */
+  sendMessage(
+    msg: SessionMessage,
+    opts?: { source?: string; origin?: string; interrupt?: boolean },
+  ): Promise<SendMessageResult>
+  /** Block until a message matching `filter` is in `id`'s inbox (returns at
+   *  once when one already is), or `timeoutMs` elapses. Matched messages are
+   *  consumed: stamped `delivered.via:"wait"`, removed from the prompt queue
+   *  (so they're never also injected as a turn), and — when `ack` (default)
+   *  — removed from the inbox. Sets `blockedOn:"inbox"` while parked. */
+  waitForMessages(
+    id: string,
+    filter: MessageFilter,
+    opts: { timeoutMs: number; ack?: boolean; signal?: AbortSignal },
+  ): Promise<WaitForMessagesResult>
+  /** Read `id`'s inbox (un-consumed messages), newest last. */
+  listInbox(id: string, filter?: MessageFilter & { limit?: number }): SessionMessage[] | null
+  /** Find a message `id` RECEIVED (still in its inbox, or already consumed
+   *  and only in its transcript) — how `message_reply` routes to the
+   *  original sender. `undefined` when `id` never received `messageId`. */
+  findReceivedMessage(id: string, messageId: string): SessionMessage | undefined
+  /** Ack (remove) messages from `id`'s inbox — and from its prompt queue, so
+   *  an acked-but-still-queued message is never delivered afterwards. */
+  ackInbox(id: string, ids: readonly string[] | "all"): { acked: string[] }
   /** Snapshot a session's prompt queue for inspection — the after-the-fact
    *  view of what's sitting in `SessionDescriptor.promptQueue` right now.
    *  Runs the shared preview + origin-label derivation so every consumer
@@ -5921,6 +5987,76 @@ export function createSessionsRegistry(opts?: {
     }
   }
 
+  // ── Inbox + waiters (AIP-46 §Session messages) ────────────────────────
+  interface InboxWaiter {
+    filter: MessageFilter
+    ack: boolean
+    resolve: (messages: SessionMessage[]) => void
+  }
+  const inboxWaiters = new Map<string, InboxWaiter[]>()
+  /** Ids already surfaced in an fyi digest (per daemon lifetime — a restart
+   *  re-surfaces them once, which is harmless). */
+  const digestedFyi = new Set<string>()
+
+  const setInbox = (rt: SessionRuntime, next: SessionMessage[]): void => {
+    rt.desc.inbox = next
+    schedulePersist()
+  }
+  const addToInbox = (rt: SessionRuntime, msg: SessionMessage): void => {
+    let next = [...(rt.desc.inbox ?? []).filter(m => m.id !== msg.id), msg]
+    while (next.length > INBOX_CAP) {
+      const [dropped, ...rest] = next
+      next = rest
+      appendLine(rt, `[inbox] dropped ${dropped!.id} (inbox full, cap ${INBOX_CAP})`, "stderr")
+    }
+    setInbox(rt, next)
+  }
+  const removeFromInbox = (rt: SessionRuntime, ids: ReadonlySet<string>): void => {
+    if (!rt.desc.inbox?.some(m => ids.has(m.id))) return
+    setInbox(rt, rt.desc.inbox.filter(m => !ids.has(m.id)))
+  }
+  const dropQueuedEnvelopes = (rt: SessionRuntime, ids: ReadonlySet<string>): void => {
+    const queue = rt.desc.promptQueue
+    if (!queue?.some(p => p.envelope && ids.has(p.envelope.id))) return
+    rt.desc.promptQueue = queue.filter(p => !(p.envelope && ids.has(p.envelope.id)))
+    schedulePersist()
+  }
+  /** Consume matched messages for a waiter: stamp `via:"wait"` (recording a
+   *  `session-message` for any not already surfaced into a turn), pull them
+   *  out of the prompt queue, and ack them off the inbox when asked. */
+  const consumeForWait = (
+    rt: SessionRuntime,
+    msgs: readonly SessionMessage[],
+    ack: boolean,
+  ): SessionMessage[] => {
+    const at = new Date().toISOString()
+    const ids = new Set(msgs.map(m => m.id))
+    const out = msgs.map(m => {
+      if (m.delivered && m.delivered.via !== "inbox") return m
+      const stamped: SessionMessage = { ...m, delivered: { via: "wait", at } }
+      transcriptWriter.recordSessionMessage?.(rt.desc.id, stamped)
+      emitSessionMessage(stamped)
+      return stamped
+    })
+    dropQueuedEnvelopes(rt, ids)
+    if (ack) {
+      removeFromInbox(rt, ids)
+    } else {
+      const byId = new Map(out.map(m => [m.id, m]))
+      setInbox(rt, (rt.desc.inbox ?? []).map(m => byId.get(m.id) ?? m))
+    }
+    return out
+  }
+  const recordSent = (msg: SessionMessage): void => {
+    if (!msg.from.sessionId) return
+    transcriptWriter.recordSessionMessageSent?.(msg.from.sessionId, {
+      messageId: msg.id,
+      to: msg.to,
+      kind: msg.kind,
+      urgency: msg.urgency,
+    })
+  }
+
   /** Emit the bus `session:message` edge for one message — at send (no
    *  `delivered`) and again at delivery. */
   const emitSessionMessage = (msg: SessionMessage): void => {
@@ -5951,6 +6087,8 @@ export function createSessionsRegistry(opts?: {
     const turnSeq = (rt.desc.turnsCompleted ?? 0) + 1
     const delivered = envelopes.map(m => ({ ...m, delivered: { via, at, turnSeq } }))
     for (const m of delivered) emitSessionMessage(m)
+    // Surfaced into a turn ⇒ consumed: auto-ack off the durable inbox.
+    removeFromInbox(rt, new Set(delivered.map(m => m.id)))
     await runAgentTurn(rt, renderSessionMessages(delivered), {
       ...(promptSource ? { promptSource } : {}),
       messages: delivered,
@@ -5985,6 +6123,18 @@ export function createSessionsRegistry(opts?: {
       // A human line opening with the envelope sentinel is escaped, so text
       // outside an `<agentproto-message>` tag is always the human's.
       message = escapeHumanPrompt(message)
+    }
+    // `fyi` messages never wake a session; the next turn it runs anyway
+    // opens with a one-line typed digest of them (a `system-prompt` slice,
+    // never glued into the human's text), once per message.
+    if (typeof message === "string") {
+      const fresh = (rt.desc.inbox ?? []).filter(m => m.urgency === "fyi" && !digestedFyi.has(m.id))
+      if (fresh.length) {
+        for (const m of fresh) digestedFyi.add(m.id)
+        const digest = renderInboxDigest(fresh)
+        message = `${digest}\n\n${message}`
+        turnOpts = { ...turnOpts, system: turnOpts?.system ? `${digest}\n\n${turnOpts.system}` : digest }
+      }
     }
     // `if (!title)`, not "on turn 1": every session already running when this
     // shipped has already had its first prompt, so a turn-1-only check would
@@ -7952,6 +8102,123 @@ export function createSessionsRegistry(opts?: {
       // Admitted + dispatched now (idle session, or an interrupt that already
       // settled the prior turn) — not parked, so no queued hint.
       return { queued: false }
+    },
+    async sendMessage(msg, opts) {
+      const rt = sessions.get(msg.to)
+      if (!rt) throw new Error(`sendMessage: no session "${msg.to}"`)
+      if (rt.desc.status !== "running" && rt.desc.status !== "starting") {
+        throw new SessionNotAliveError(msg.to, rt.desc.status, "sendMessage")
+      }
+      // Waiter first — the recipient is parked in `inbox_wait` for exactly
+      // this: hand it over as the tool's result, never also as a turn.
+      const waiters = inboxWaiters.get(msg.to)
+      const waiter = waiters?.find(w => matchesMessageFilter(msg, w.filter))
+      if (waiter) {
+        inboxWaiters.set(msg.to, waiters!.filter(w => w !== waiter))
+        recordSent(msg)
+        emitSessionMessage(msg)
+        addToInbox(rt, msg)
+        const [stamped] = consumeForWait(rt, [msg], waiter.ack)
+        waiter.resolve([stamped!])
+        return { messageId: msg.id, delivered: { via: "wait" }, queued: false, urgencyApplied: msg.urgency }
+      }
+      if (msg.urgency === "fyi") {
+        const parked: SessionMessage = { ...msg, delivered: { via: "inbox", at: new Date().toISOString() } }
+        recordSent(parked)
+        addToInbox(rt, parked)
+        emitSessionMessage(parked)
+        return { messageId: msg.id, delivered: { via: "inbox" }, queued: false, urgencyApplied: "fyi" }
+      }
+      addToInbox(rt, msg)
+      const wasBusy = rt.busy || rt.desc.busy === true
+      const interrupt = opts?.interrupt === true && wasBusy
+      const { queued } = await registry.enqueuePrompt(msg.to, msg.text, {
+        envelope: msg,
+        queue: true,
+        ...(interrupt ? { interrupt: true } : {}),
+        ...(opts?.source ? { source: opts.source } : {}),
+        ...(opts?.origin ? { origin: opts.origin } : {}),
+      })
+      return {
+        messageId: msg.id,
+        delivered: queued ? null : { via: interrupt ? "interrupt" : "turn" },
+        queued,
+        // Tiers beyond fyi/next-turn/interrupt land later: `steer` (and an
+        // un-granted `interrupt`) are delivered as next-turn for now.
+        urgencyApplied: interrupt ? "interrupt" : "next-turn",
+      }
+    },
+    async waitForMessages(id, filter, opts) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`waitForMessages: no session "${id}"`)
+      const ack = opts.ack !== false
+      const pending = (rt.desc.inbox ?? []).filter(m => matchesMessageFilter(m, filter))
+      if (pending.length) return { messages: consumeForWait(rt, pending, ack), timedOut: false }
+      if (opts.signal?.aborted) return { messages: [], timedOut: false }
+      const prevBlocked = rt.desc.blockedOn
+      if (!prevBlocked) rt.desc.blockedOn = "inbox"
+      return await new Promise<WaitForMessagesResult>(resolveWait => {
+        let settled = false
+        const waiter: InboxWaiter = {
+          filter,
+          ack,
+          resolve: messages => finish({ messages, timedOut: false }),
+        }
+        const finish = (result: WaitForMessagesResult): void => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          opts.signal?.removeEventListener("abort", onAbort)
+          const list = inboxWaiters.get(id)
+          if (list) inboxWaiters.set(id, list.filter(w => w !== waiter))
+          if (rt.desc.blockedOn === "inbox" && !prevBlocked) rt.desc.blockedOn = undefined
+          resolveWait(result)
+        }
+        const timer = setTimeout(() => finish({ messages: [], timedOut: true }), opts.timeoutMs)
+        const onAbort = (): void => finish({ messages: [], timedOut: false })
+        opts.signal?.addEventListener("abort", onAbort, { once: true })
+        inboxWaiters.set(id, [...(inboxWaiters.get(id) ?? []), waiter])
+      })
+    },
+    listInbox(id, filter) {
+      const rt = sessions.get(id)
+      if (!rt) return null
+      const matched = (rt.desc.inbox ?? []).filter(m => !filter || matchesMessageFilter(m, filter))
+      return filter?.limit !== undefined ? matched.slice(-filter.limit) : matched
+    },
+    findReceivedMessage(id, messageId) {
+      const rt = sessions.get(id)
+      if (!rt) return undefined
+      const inInbox = rt.desc.inbox?.find(m => m.id === messageId)
+      if (inInbox) return inInbox
+      let raw: string
+      try {
+        raw = readFileSync(sessionEventsPath(id, transcriptBaseDir), "utf8")
+      } catch {
+        return undefined
+      }
+      // Cheap pre-filter before parsing: only lines naming the id.
+      for (const line of raw.split("\n")) {
+        if (!line.includes(messageId) || !line.includes('"session-message"')) continue
+        try {
+          const rec = JSON.parse(line) as { kind?: string; message?: SessionMessage }
+          if (rec.kind === "session-message" && rec.message?.id === messageId) return rec.message
+        } catch {
+          // torn line — skip
+        }
+      }
+      return undefined
+    },
+    ackInbox(id, ids) {
+      const rt = sessions.get(id)
+      if (!rt) return { acked: [] }
+      const inbox = rt.desc.inbox ?? []
+      const target = new Set(ids === "all" ? inbox.map(m => m.id) : ids)
+      const acked = inbox.filter(m => target.has(m.id)).map(m => m.id)
+      const ackedSet = new Set(acked)
+      removeFromInbox(rt, ackedSet)
+      dropQueuedEnvelopes(rt, ackedSet)
+      return { acked }
     },
     removeQueuedPrompt(id, queueId) {
       const rt = sessions.get(id)

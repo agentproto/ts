@@ -71,6 +71,13 @@ export const DEFAULT_ORCHESTRATOR_TOOLS: readonly string[] = [
   // nothing else) — it's also the sole tool of the minimal report-only
   // scope `session-spawn.ts` mints for a gateway-less child with a parent.
   "message_parent",
+  // Typed messaging (AIP-46 §Session messages) — like `message_parent`, NOT
+  // delegation: each reaches only tree neighbours.
+  "message_send",
+  "message_reply",
+  "inbox_list",
+  "inbox_ack",
+  "inbox_wait",
   "session_monitor",
   "session_events_poll",
   "session_list",
@@ -279,6 +286,9 @@ export interface OrchestratorGatewayDeps {
    *  parent/peers (or reporting up via `message_parent`) through this scoped
    *  gateway honours the same daemon default as the root `/mcp` surface. */
   defaultAgentPromptInterrupt?: boolean
+  /** config.json `defaults.messaging.allowSiblings`, forwarded to
+   *  `registerAgentTools`. */
+  messagingAllowSiblings?: boolean
 }
 
 export type OrchestratorMcpServerFactory = (
@@ -333,6 +343,7 @@ export function createOrchestratorMcpServerFactory(
       ...(deps.defaultAgentPromptInterrupt != null
         ? { defaultAgentPromptInterrupt: deps.defaultAgentPromptInterrupt }
         : {}),
+      ...(deps.messagingAllowSiblings ? { messagingAllowSiblings: true } : {}),
       daemonMcpUrl: deps.daemonMcpUrl,
     })
     registerOrchestrationTools(server, {

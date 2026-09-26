@@ -64,6 +64,7 @@ import type {
 } from "./worktree-isolation.js"
 import { appUiToolId } from "./app-ui-apps.js"
 import { createSessionMessage, messageFrom, MESSAGE_KINDS, type MessageKind } from "./session-message.js"
+import { registerMessageTools } from "./message-tools.js"
 import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
 
 /** Strip CSI/SGR ANSI escape sequences and bare carriage returns.
@@ -290,6 +291,9 @@ export interface RegisterAgentToolsOptions {
    *  binds to the legacy `ui://agentproto_session_chat/view`, today's
    *  behaviour. */
   isSessionChatInstalled?: () => boolean
+  /** config.json `defaults.messaging.allowSiblings` — lets `message_send` /
+   *  `message_reply` reach a sibling (same parent). Default false. */
+  messagingAllowSiblings?: boolean
 }
 
 export function registerAgentTools(
@@ -316,6 +320,7 @@ export function registerAgentTools(
     supervisor,
     defaultAgentPromptInterrupt,
     isSessionChatInstalled,
+    messagingAllowSiblings,
   } = opts
   // Effective `interrupt` when a call leaves it unset: config default, else
   // false. An explicit boolean on the call always wins (checked at each site).
@@ -1415,7 +1420,7 @@ export function registerAgentTools(
       })
       const notice = envelope.text
       const done = (
-        delivery: "enqueued" | "queued-next-turn" | "interrupted",
+        delivery: "enqueued" | "queued-next-turn" | "interrupted" | "waited",
         extra?: Record<string, unknown>,
       ) => ({
         content: [
@@ -1435,49 +1440,29 @@ export function registerAgentTools(
       // provenance and the queue UI's label. Keyed on the session id, not the
       // child-settable label.
       const provenance = `child:${selfId}`
-      // Urgent report: `interrupt: true` cuts a mid-turn parent instead of
-      // queueing behind its in-flight turn. Reuses `enqueuePrompt`'s own
-      // interrupt arm (cancel + await-settle + dispatch — the SAME helper
-      // `agent_prompt({interrupt: true})` uses), so a child's urgent
-      // message redirects the parent immediately rather than arriving only
-      // after the parent finishes what it was doing. On the (rare) race
-      // where the interrupt/dispatch is rejected, fall through to the
-      // queue arm below so the message is never lost. An idle parent skips
-      // this entirely — there is no turn to cut.
-      if (effectiveInterrupt && parent.busy) {
-        try {
-          await registry.enqueuePrompt(parentId, notice, {
-            interrupt: true,
-            source: provenance,
-            origin: provenance,
-            envelope,
-          })
-          return done("interrupted")
-        } catch {
-          // Fall through to the queue arm below.
-        }
-      }
-      // `queue: true` is a no-op on an idle parent (dispatched now as its own
-      // turn). On a busy one it parks the report as its OWN item in the
-      // prompt queue, drained as a separate turn when the current one ends
-      // naturally (`dispatchQueuedPrompt`) — never string-glued onto
-      // whatever prompt comes next (a human's included), and never stranded
-      // waiting for an unrelated prompt to arrive.
-      let queued: boolean
+      // One delivery path for every typed message (`registry.sendMessage`):
+      // a parent parked in `inbox_wait` gets the report as that call's
+      // result (waiter-first); otherwise it's kept in the parent's inbox and
+      // dispatched now (idle) or parked as its OWN queued turn (busy) — never
+      // string-glued onto another prompt. `interrupt: true` cuts a mid-turn
+      // parent (cancel + settle + dispatch, the same arm
+      // `agent_prompt({interrupt: true})` uses).
+      let result: Awaited<ReturnType<SessionsRegistry["sendMessage"]>>
       try {
-        const result = await registry.enqueuePrompt(parentId, notice, {
-          queue: true,
+        result = await registry.sendMessage(envelope, {
           source: provenance,
           origin: provenance,
-          envelope,
+          interrupt: effectiveInterrupt,
         })
-        queued = result.queued
       } catch (err) {
         return fail(
           `message_parent: could not deliver to parent session "${parentId}" — ` +
             (err instanceof Error ? err.message : String(err))
         )
       }
+      if (result.delivered?.via === "wait") return done("waited")
+      if (result.delivered?.via === "interrupt") return done("interrupted")
+      const queued = result.queued
       if (!queued) return done("enqueued")
       // Self-documenting loop (symmetric with agent_prompt): the parent is
       // mid-turn so this report is parked onto its next turn, and the caller
@@ -1497,6 +1482,14 @@ export function registerAgentTools(
       )
     }
   )
+
+  // ── message_send / message_reply / inbox_* ─────────
+  registerMessageTools(server, {
+    registry,
+    ...(callerScope ? { callerScope } : {}),
+    ...(callerSessionId ? { callerSessionId } : {}),
+    ...(messagingAllowSiblings ? { allowSiblings: true } : {}),
+  })
 
   // ── agent_output ───────────────────────────────────
   server.tool(

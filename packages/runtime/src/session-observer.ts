@@ -37,6 +37,10 @@ export interface SessionObserver {
   /** Record, in the SENDER's transcript, that it sent a typed message.
    *  Optional — observers without a transcript of their own skip it. */
   recordSessionMessageSent?(sessionId: string, record: SessionMessageSentRecord): void
+  /** Record a typed message delivered into `sessionId`'s context OUTSIDE a
+   *  turn prompt (e.g. as an `inbox_wait` result) — a standalone
+   *  `session-message` record. Optional, like `recordSessionMessageSent`. */
+  recordSessionMessage?(sessionId: string, message: SessionMessage): void
   /** Record one structured stream event (text-delta, tool-call, usage_update, …). */
   recordEvent(sessionId: string, evt: AgentStreamEvent): void
   /** Record the durable turn-boundary / exit usage snapshot. */
@@ -93,6 +97,9 @@ export function composeSessionObservers(
     recordSessionMessageSent(sessionId, record) {
       forEachSafe((o) => o.recordSessionMessageSent?.(sessionId, record))
     },
+    recordSessionMessage(sessionId, message) {
+      forEachSafe((o) => o.recordSessionMessage?.(sessionId, message))
+    },
     recordUsageSnapshot(sessionId, usage) {
       forEachSafe((o) => o.recordUsageSnapshot(sessionId, usage))
     },
@@ -141,6 +148,14 @@ export function filterSessionObserver(
       if (!shouldObserve(sessionId)) return
       try {
         inner.recordSessionMessageSent?.(sessionId, record)
+      } catch {
+        // isolate: a failing observer must not break the turn loop
+      }
+    },
+    recordSessionMessage(sessionId, message) {
+      if (!shouldObserve(sessionId)) return
+      try {
+        inner.recordSessionMessage?.(sessionId, message)
       } catch {
         // isolate: a failing observer must not break the turn loop
       }
