@@ -1,0 +1,65 @@
+{
+  "name": "@agentproto/review",
+  "version": "0.1.0",
+  "description": "@agentproto/review — the review primitive. A REVIEW.md manifest (checks + named bindings) compiled into an ordinary AIP-15 workflow (prepare → freeze range → parallel lanes → fan-in verdict), plus the verdict contract (pass | block | incomplete, per-lane findings) and a content-bound attestation (manifest sha + git range) a CI verifier can check. Pure: parses strings, builds handles, folds verdicts — no filesystem, git, or session I/O.",
+  "keywords": [
+    "agentproto",
+    "review",
+    "verdict",
+    "attestation",
+    "workflow",
+    "open-standard",
+    "agentic"
+  ],
+  "homepage": "https://agentproto.sh",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/review"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@agentproto/workflow": "workspace:*",
+    "gray-matter": "^4.0.3",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@agentproto/workflow-runtime": "workspace:*",
+    "@types/node": "^25.9.5",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}

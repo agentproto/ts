@@ -18,6 +18,7 @@
 import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
 import { readFile } from "node:fs/promises"
+import { hostname, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { createMcpServer } from "@agentproto/mcp-server"
 import type { DoctypeSpec } from "@agentproto/manifest"
@@ -113,6 +114,10 @@ import { createSessionEventBus } from "./session-event-bus.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
 import { createWorkflowRunner } from "./workflow-runner.js"
+import { createReviewRunner } from "./review-runner.js"
+import { createReviewLedger } from "./review-ledger.js"
+import { createDaemonReviewerHost } from "./review-reviewer-host.js"
+import { registerReviewTools } from "./review-tools.js"
 import { compileWorkflow } from "@agentproto/workflow-runtime"
 import { createFileStepCache } from "./workflow-step-cache.js"
 import { withDeferredTools } from "./deferred-tools.js"
@@ -262,6 +267,28 @@ export type {
   ActivityListFilter,
   PrResolvedState,
 } from "./activity-projection.js"
+export {
+  createReviewRunner,
+  createReviewLaneExecutor,
+  hostPlaceholders,
+  normalizeRemote,
+  runShellLane,
+} from "./review-runner.js"
+export type {
+  ReviewRun,
+  ReviewRunInput,
+  ReviewRunner,
+  ReviewRunStatus,
+  ReviewerRunResult,
+  ReviewerSessionHost,
+  CreateReviewRunnerOptions,
+} from "./review-runner.js"
+export { createReviewLedger, defaultReviewLedgerRoot, repoSlug } from "./review-ledger.js"
+export type { ReviewLedger, LedgerEntry, LedgerHostMeta, ReviewLedgerFilter } from "./review-ledger.js"
+export { createDaemonReviewerHost, resolveReviewerPreset } from "./review-reviewer-host.js"
+export type { DaemonReviewerHostDeps } from "./review-reviewer-host.js"
+export { registerReviewTools } from "./review-tools.js"
+export type { RegisterReviewToolsOptions } from "./review-tools.js"
 export {
   createTaskLedger,
   createSupervisorTaskGateRunner,
@@ -1578,6 +1605,33 @@ export async function createGateway(
       })
     : undefined
 
+  // Review runner — singleton per daemon (review-runner.ts), shared across
+  // all MCP connections like `workflowRunner`. Attestations persist to the
+  // review ledger under ~/.agentproto/reviews (a throwaway temp root when
+  // `persist` is off, so test gateways never touch the real state dir).
+  // Agent lanes spawn child reviewer sessions only when an adapter resolver
+  // is wired; without one they report `skipped` (verdict `incomplete`).
+  const reviewRunner = createReviewRunner({
+    ledger: createReviewLedger(
+      persist ? {} : { root: join(tmpdir(), `agentproto-reviews-${process.pid}-${randomUUID()}`) },
+    ),
+    daemonId: `agentproto-runtime@${hostname()}:${port}`,
+    ...(opts.resolveAgentAdapter
+      ? {
+          reviewers: createDaemonReviewerHost({
+            registry: sessions,
+            sessionEvents,
+            eventRing,
+            resolveAgentAdapter: opts.resolveAgentAdapter,
+            spawnDeps: {
+              resolveSandboxProvider: resolveSandboxProviderResolved,
+              ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
+            },
+          }),
+        }
+      : {}),
+  })
+
   // Task ledger — the multi-party write-model over declared intent
   // (task-ledger.ts). Declared after `sessions` (board resolution walks
   // lineage) and `supervisor` (Tier-1 done runs its gate through the real
@@ -2012,6 +2066,13 @@ export async function createGateway(
       bindingStore: transmitterBindings,
       endpointStore: inboundEndpointStore,
       telegramCreds: telegramBotCreds,
+      ...(callerSessionId ? { callerSessionId } : {}),
+    })
+    // Review primitive (@agentproto/review) — review_run/status/cancel/
+    // ledger/export over the gateway-singleton runner + ledger above. The
+    // calling session (if any) parents the agent lanes' reviewer sessions.
+    registerReviewTools(server, {
+      runner: reviewRunner,
       ...(callerSessionId ? { callerSessionId } : {}),
     })
     // @agentproto/app-kit app lifecycle — install/list/run/status/stop
