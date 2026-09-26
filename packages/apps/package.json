@@ -138,6 +138,7 @@
   },
   "files": [
     "dist",
+    "repo-maintenance",
     "README.md",
     "LICENSE"
   ],
