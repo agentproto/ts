@@ -88,6 +88,7 @@ import { runIdleReapPass, type IdleReapSummary } from "./idle-reaper.js"
 import { runCrashDetectPass } from "./crash-reaper.js"
 import { runStallWatchdogPass } from "./stall-watchdog.js"
 import { createRestartScheduler, runRestartSweepPass } from "./restart-scheduler.js"
+import { sweepAppRuns } from "./app-run-liveness.js"
 import { loadConfig } from "./config.js"
 import { defaultTranscriptBaseDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
 import { resolveResumeAuth, restartAgentSession } from "./session-restart-core.js"
@@ -2623,6 +2624,39 @@ export async function createGateway(
     restartSweepTimer.unref?.()
   }
 
+  // AIP-58 §2 owner-liveness sweep (P3b): catches the case the boot-time
+  // `loadRuns` restart check doesn't — an owner that died WITHOUT the
+  // daemon itself restarting (`workflowRunner.sweep()`, `WorkflowRun.lease`)
+  // — and the app-run equivalent, a zombie `app_run` whose sessions have
+  // all vanished with no owned workflow run left running
+  // (`sweepAppRuns`/`reconcileAppRunStatus`, `app-run-liveness.ts`). Both
+  // are cheap and idempotent; DEFAULT ON, every 30s — half the runner's own
+  // 60s lease TTL (`DEFAULT_LEASE_TTL_MS`), so an orphaned run is caught
+  // within one or two ticks of going stale rather than sitting "running"
+  // indefinitely (the "~25 app runs stuck for weeks" evidence this exists
+  // for). `.unref()` so the ticker never keeps the process alive on its own.
+  const livenessSweepIntervalMs = 30_000
+  const livenessSweepTimer: ReturnType<typeof setInterval> = setInterval(() => {
+    try {
+      const orphanedRuns = workflowRunner?.sweep().orphaned ?? []
+      if (orphanedRuns.length > 0) {
+        console.log(`[liveness-sweep] orphaned ${orphanedRuns.length} workflow run(s): ${orphanedRuns.join(", ")}`)
+      }
+      const { swept } = sweepAppRuns({
+        appRegistry,
+        registry: sessions,
+        ...(workflowRunner ? { workflowRuns: workflowRunner.list() } : {}),
+      })
+      if (swept.length > 0) {
+        console.log(`[liveness-sweep] settled ${swept.length} app run(s): ${swept.join(", ")}`)
+      }
+    } catch (err) {
+      // A sweep must never crash the daemon — log and let the next tick retry.
+      console.warn(`[liveness-sweep] sweep failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }, livenessSweepIntervalMs)
+  livenessSweepTimer.unref?.()
+
   events.emit({
     type: "boot",
     at: new Date().toISOString(),
@@ -2684,6 +2718,8 @@ export async function createGateway(
       if (turnStallTimer) clearInterval(turnStallTimer)
       // Stop the restart-sweep tick before sessions shut down (restart-scheduler PR-2).
       if (restartSweepTimer) clearInterval(restartSweepTimer)
+      // Stop the AIP-58 liveness sweep before sessions shut down (P3b).
+      clearInterval(livenessSweepTimer)
       // Detach the restart-scheduler's session:exited subscription.
       restartScheduler.dispose()
       // Flush inbound-watcher cursor state before sessions shut down.

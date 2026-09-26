@@ -38,6 +38,8 @@ import type { AgentAdapterResolver } from "./http-server.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
 import { createAppRegistry, type AppRegistry, type InstalledApp, type InstalledAppRef } from "./app-registry.js"
 import { appDataDir, DEFAULT_APP_DATA_SUBDIR } from "./app-data.js"
+import { reconcileAppRunStatus } from "./app-run-liveness.js"
+import { compactWorkflowRunStatus } from "./orchestration-tools.js"
 import { appStateLedgerExists, appStateSnapshot } from "./app-state.js"
 import { loadAppCatalogFile } from "./app-catalog.js"
 import { builtinPanelCatalogEntries } from "./builtin-apps.js"
@@ -1102,7 +1104,10 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
               await waitForTerminal(spawned.sessionId)
             }
             if (run.status === "running") {
-              appRegistry.endRun(run.appRunId, { status: "ended" })
+              appRegistry.endRun(run.appRunId, {
+                status: errors.length > 0 ? "failed" : "succeeded",
+                ...(errors.length > 0 ? { error: errors.map(e => `${e.agentId}: ${e.error}`).join("; ") } : {}),
+              })
             }
           }
           void continueSequence().catch(err => {
@@ -1110,7 +1115,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
               `app_run: background sequence "${run.appRunId}" failed: ${err instanceof Error ? err.message : String(err)}`,
             )
             if (run.status === "running") {
-              appRegistry.endRun(run.appRunId, { status: "failed" })
+              appRegistry.endRun(run.appRunId, { status: "failed", error: err instanceof Error ? err.message : String(err) })
             }
           })
 
@@ -1137,7 +1142,10 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           harness,
           ...(model !== undefined ? { model } : {}),
         })
-        appRegistry.endRun(run.appRunId, { status: "ended" })
+        appRegistry.endRun(run.appRunId, {
+          status: errors.length > 0 ? "failed" : "succeeded",
+          ...(errors.length > 0 ? { error: errors.map(e => `${e.agentId}: ${e.error}`).join("; ") } : {}),
+        })
         return textResult({
           appRunId: run.appRunId,
           status: run.status,
@@ -1174,39 +1182,45 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     "app_status",
     "Status of an app_run: its sessions' live descriptors, plus any workflow runs " +
       "belonging to the app (any run of one of its bundled WORKFLOW.md files, " +
-      "however it was started).",
-    { appRunId: z.string() },
+      "however it was started). COMPACT BY DEFAULT (AIP-58 §9): sessions carry a " +
+      "slim {agentId, sessionId, status} instead of the full session descriptor, " +
+      "and each workflowRuns entry omits step outputs / gate-report bodies — pass " +
+      "`full: true` for everything.",
+    { appRunId: z.string(), full: z.boolean().optional().describe("Include full session descriptors and workflow-run step outputs. Defaults to false (compact).") },
     async input => {
       const run = appRegistry.getRun(input.appRunId)
       if (!run) return errorResult(`app_status: no app run "${input.appRunId}".`)
       const app = appRegistry.getApp(run.appId)
-      const sessions = run.sessions.map(s => ({
-        agentId: s.agentId,
-        sessionId: s.sessionId,
-        descriptor: registry.get(s.sessionId),
-      }))
-      // C — truthful terminal state: a concurrent run's stored status is only
-      // ever flipped by app_stop, so a run whose underlying sessions have all
-      // ended would otherwise report "running" forever. Reconcile lazily (and
-      // non-mutating) against the live session descriptors: once every session
-      // is terminal, report `ended` with an `endedAt` even if the persisted
-      // status is still "running". A run already terminal keeps its stored
-      // status; a run with at least one live session reports "running".
-      const allSessionsTerminal =
-        sessions.length > 0 && sessions.every(s => isSessionTerminal(s.descriptor?.status))
-      const storedTerminal = run.status !== "running"
-      const reconciledStatus = storedTerminal
-        ? run.status
-        : allSessionsTerminal
-          ? ("ended" as const)
-          : ("running" as const)
-      const workflowRuns =
+      const descriptors = run.sessions.map(s => ({ ...s, descriptor: registry.get(s.sessionId) }))
+      const sessions = input.full === true
+        ? descriptors
+        : descriptors.map(s => ({ agentId: s.agentId, sessionId: s.sessionId, status: s.descriptor?.status }))
+      const allWorkflowRuns =
         workflowRunner && app
           ? workflowRunner.list().filter(r => app.workflows.some(w => w.id === r.workflowId))
           : []
+      // AIP-58 §2 terminal-state reconciliation (F8/F14): a concurrent run's
+      // STORED status is only ever flipped by `app_stop` or the liveness
+      // sweep (see `sweepAppRuns`), so a run whose sessions (and any
+      // workflow runs it owns) have all reached a terminal fate would
+      // otherwise report "running" forever. Reconcile lazily here (never
+      // persisted — the sweep is the sole writer) so a poll between sweep
+      // ticks still reads truthfully.
+      const ownWorkflowRunStatuses = allWorkflowRuns
+        .filter(r => r.appRunId === run.appRunId)
+        .map(r => r.status)
+      const reconciled =
+        run.status !== "running"
+          ? { status: run.status }
+          : reconcileAppRunStatus({
+              sessions: descriptors.map(s => ({ status: s.descriptor?.status })),
+              workflowRunStatuses: ownWorkflowRunStatuses,
+            })
+      const reconciledStatus = reconciled.status
+      const workflowRuns = input.full === true ? allWorkflowRuns : allWorkflowRuns.map(compactWorkflowRunStatus)
       // WP-S: parked human approvals across the app's workflow runs — what a
       // UI renders as the permissions inbox for this app.
-      const awaitingApprovals = workflowRuns
+      const awaitingApprovals = allWorkflowRuns
         .filter(r => r.awaitingApproval !== undefined)
         .map(r => {
           const aa = r.awaitingApproval!
@@ -1236,6 +1250,8 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           : reconciledStatus !== "running"
             ? { endedAt: new Date().toISOString() }
             : {}),
+        ...("errorCode" in reconciled && reconciled.errorCode !== undefined ? { errorCode: reconciled.errorCode } : run.errorCode !== undefined ? { errorCode: run.errorCode } : {}),
+        ...(run.error !== undefined ? { error: run.error } : {}),
         ...(run.adapter !== undefined ? { adapter: run.adapter } : {}),
         ...(run.harness !== undefined ? { harness: run.harness } : {}),
         ...(run.model !== undefined ? { model: run.model } : {}),
@@ -1249,7 +1265,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
 
   server.tool(
     "app_stop",
-    "Kill every session in an app_run (existing kill path) and mark the run ended.",
+    "Kill every session in an app_run (existing kill path) and mark the run cancelled.",
     { appRunId: z.string() },
     async input => {
       const run = appRegistry.getRun(input.appRunId)
@@ -1260,7 +1276,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         if (registry.kill(s.sessionId)) killed.push(s.sessionId)
         else notFound.push(s.sessionId)
       }
-      const ended = appRegistry.endRun(input.appRunId)
+      const ended = appRegistry.endRun(input.appRunId, { status: "cancelled" })
       return textResult({
         appRunId: input.appRunId,
         killed,

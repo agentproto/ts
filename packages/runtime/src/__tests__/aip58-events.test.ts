@@ -1,5 +1,5 @@
 /**
- * AIP-58 §5 event log — host-level harness (P3a).
+ * AIP-58 §5 event log — host-level harness (P3a), plus §2 liveness (P3b).
  *
  * The lower-level conformance harness
  * (`@agentproto/workflow-runtime`'s `aip58-conformance.test.ts`) drives V1/
@@ -14,9 +14,18 @@
  * Also covers F28 (`workflow_status` showing one opaque "workflow" step
  * instead of the real ones) — every leaf step kind, and map fan-out items
  * (`<id>[<index>]`), now show up in `run.stages`.
+ *
+ * V4/V6 (P3b, added below) drive the two liveness rules `createWorkflowRunner`
+ * itself owns: V4 is `loadRuns`'s host-restart check (a fresh runner
+ * instance IS a restart, by construction — the test writes each scenario's
+ * "before" state straight to `persistPath` and constructs a new runner on
+ * top of it) and V6 is `sweep()`'s independent owner-lease check (an owner
+ * dying WITHOUT a daemon restart — the test keeps ONE runner instance alive
+ * across a fake-clock jump, since a fresh instance would trip the V4 rule
+ * instead of the one V6 is actually testing).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { tmpdir } from "node:os"
@@ -25,7 +34,8 @@ import { z } from "zod"
 import { defineTool } from "@agentproto/tool"
 import { defineDriver, implementTool } from "@agentproto/driver"
 import { compileWorkflow, StepOutcomeError } from "@agentproto/workflow-runtime"
-import { createWorkflowRunner } from "../workflow-runner.js"
+import { createWorkflowRunner, type WorkflowRun } from "../workflow-runner.js"
+import { compactWorkflowRunStatus, COMPACT_ERROR_MAX_CHARS } from "../orchestration-tools.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import type { SessionsRegistry, SessionDescriptor } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
@@ -274,6 +284,160 @@ steps:
   })
 })
 
+describe("AIP-58 §2 liveness (host-level, vectors V4/V6)", () => {
+  let tmpDir: string
+  let persistPath: string
+  let runsRoot: string
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "aip58-liveness-"))
+    persistPath = join(tmpDir, "workflow-runs.json")
+    runsRoot = join(tmpDir, "runs")
+  })
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  interface V4Scenario {
+    label: string
+    before: { status: string; suspendRecord?: { stepId: string; reason: string; since: string } }
+    expected: {
+      terminalState: string | null
+      statusAfterReload?: string
+      error?: { code: string }
+      events: string[]
+    }
+  }
+
+  function loadV4(): { scenarios: V4Scenario[] } {
+    return JSON.parse(readFileSync(join(VECTORS_DIR, "v4-host-restart.json"), "utf8")) as {
+      scenarios: V4Scenario[]
+    }
+  }
+
+  it("V4 scenario A — a plain running run with no suspend record is failed host-interrupted on reload", () => {
+    const scenarioA = loadV4().scenarios[0]!
+    expect(scenarioA.label).toContain("no suspend record")
+
+    // The "before" state, written straight to disk — constructing a runner
+    // on top of it IS the reload/restart this vector is about.
+    writeFileSync(
+      persistPath,
+      JSON.stringify([
+        { runId: "run_a", workflowId: "wf", status: "running", startedAt: new Date().toISOString(), stages: [] },
+      ]),
+      "utf8",
+    )
+
+    const runner = createWorkflowRunner({
+      registry: makeMockRegistry(),
+      sessionEvents: createSessionEventBus(),
+      resolveAgentAdapter: makeMockAdapter(),
+      persist: true,
+      persistPath,
+      runsRoot,
+    })
+
+    const run = runner.status("run_a")
+    expect(run?.status).toBe(scenarioA.expected.terminalState)
+    expect(run?.errorCode).toBe(scenarioA.expected.error!.code)
+
+    const events = runner.events("run_a")
+    expect(events?.map(e => e.type)).toEqual(scenarioA.expected.events)
+  })
+
+  it("V4 scenario B — a durably suspended run survives reload untouched, no run.failed event", () => {
+    const scenarioB = loadV4().scenarios[1]!
+    expect(scenarioB.label).toContain("suspended")
+
+    writeFileSync(
+      persistPath,
+      JSON.stringify([
+        {
+          runId: "run_b",
+          workflowId: "wf",
+          status: "awaiting-input",
+          startedAt: new Date().toISOString(),
+          stages: [],
+          awaitingSuspend: { stepId: "draft", since: new Date().toISOString(), reason: "input-required" },
+        },
+      ]),
+      "utf8",
+    )
+
+    const runner = createWorkflowRunner({
+      registry: makeMockRegistry(),
+      sessionEvents: createSessionEventBus(),
+      resolveAgentAdapter: makeMockAdapter(),
+      persist: true,
+      persistPath,
+      runsRoot,
+    })
+
+    // `scenarioB.expected.statusAfterReload` ("suspended") is the AIP-58 §5
+    // event vocabulary; the runner's own internal status stays
+    // "awaiting-input" (see run-event-log.ts's doc comment on the mapping) —
+    // the vector's actual, checkable assertion is "unchanged from `before`".
+    const run = runner.status("run_b")
+    expect(run?.status).toBe("awaiting-input")
+    expect(run?.awaitingSuspend).toEqual({ stepId: "draft", since: expect.any(String), reason: "input-required" })
+
+    const events = runner.events("run_b")
+    expect(events?.map(e => e.type)).toEqual(scenarioB.expected.events)
+  })
+
+  it("V6 — a run whose owner died (lease expired, no renewal, no host restart) is swept to failed orphaned", async () => {
+    const vector = JSON.parse(readFileSync(join(VECTORS_DIR, "v6-orphaned.json"), "utf8")) as {
+      expected: { terminalState: string; error: { code: string }; events: string[] }
+    }
+
+    let clock = new Date("2026-09-25T10:00:00.000Z")
+    const runner = createWorkflowRunner({
+      registry: makeMockRegistry(),
+      sessionEvents: createSessionEventBus(),
+      resolveAgentAdapter: makeMockAdapter(),
+      persist: true,
+      persistPath,
+      runsRoot,
+      ownerId: "worker-7",
+      leaseTtlMs: 30_000,
+      now: () => clock,
+    })
+
+    // No `takeInputRequest`/turn-end override — the step's session never
+    // signals completion, so the run stays genuinely "running" (mirrors the
+    // vector's T0: `run.create`, `leaseHeldBy: "worker-7"`).
+    const run = await runner.start({
+      workflowId: "youtube-transcriber",
+      stages: [{ steps: [{ label: "transcribe", adapter: "mock", prompt: "go" }] }],
+    })
+    expect(runner.status(run.runId)?.status).toBe("running")
+    expect(runner.status(run.runId)?.lease?.ownerId).toBe("worker-7")
+
+    // T0+5s: worker-7 is killed (no clean shutdown) — nothing to simulate,
+    // the lease simply stops renewing from here. T0+31s: the 30s TTL has
+    // expired with no renewal observed and the daemon never restarted (a
+    // fresh `createWorkflowRunner` is deliberately NOT constructed here —
+    // that would trip V4's host-restart rule instead of this one).
+    clock = new Date(clock.getTime() + 31_000)
+    const { orphaned } = runner.sweep()
+    expect(orphaned).toEqual([run.runId])
+
+    const final = runner.status(run.runId)
+    expect(final?.status).toBe(vector.expected.terminalState)
+    expect(final?.errorCode).toBe(vector.expected.error.code)
+    expect(final?.lease).toBeUndefined()
+
+    // Unlike V4's isolated single-event log, this run's log carries its
+    // full history (run.created/run.started/step.started preceded the
+    // sweep) — the vector's own `events: ["run.failed"]` names the event
+    // THIS action adds, so the assertion checks the tail, not the whole log.
+    const events = runner.events(run.runId)
+    expect(events?.map(e => e.type).slice(-1)).toEqual(vector.expected.events)
+  })
+})
+
 describe("AIP-58 §5 / F28 — workflow_status shows the REAL steps", () => {
   let tmpDir: string
 
@@ -407,5 +571,258 @@ steps:
     // synthetic multi-step-body wrapper — inapplicable here, single-step
     // body) row alongside the real per-item ones.
     expect(final?.stages[0]?.steps.some(s => s.label === "clean")).toBe(false)
+  })
+
+  async function waitTerminal(runner: ReturnType<typeof createWorkflowRunner>, runId: string): Promise<WorkflowRun | undefined> {
+    const terminal = new Set(["done", "failed", "cancelled"])
+    let final = runner.status(runId)
+    for (let i = 0; i < 200 && final && !terminal.has(final.status); i++) {
+      await new Promise(res => setTimeout(res, 10))
+      final = runner.status(runId)
+    }
+    return final
+  }
+
+  it("F29/F30 — a failed run fails ONLY the step that failed, and compact caps the error", async () => {
+    const { tool, driver } = makeIdentityTool()
+    const boomTool = defineTool({
+      id: "demo.boom",
+      description: "Always throws a long stderr-like error.",
+      inputSchema: z.unknown(),
+      outputSchema: z.unknown(),
+    })
+    const stderr = `chrome exited 2: ${"x".repeat(2000)}`
+    const boomDriver = defineDriver({
+      id: "demo-boom-driver",
+      name: "Boom",
+      description: "Throws.",
+      kind: "builtin",
+      implements: [{ tool: boomTool.id, version: "0.1.0" }],
+      implementations: [
+        implementTool(boomTool, () => {
+          throw new Error(stderr)
+        }),
+      ],
+    })
+    const runner = createWorkflowRunner({
+      registry: makeMockRegistry(),
+      sessionEvents: createSessionEventBus(),
+      resolveAgentAdapter: makeMockAdapter(),
+      compileWorkflow: (handle) =>
+        compileWorkflow(handle, {
+          tools: { "demo.identity": tool, "demo.boom": boomTool },
+          candidates: [driver, boomDriver],
+        }),
+    })
+
+    const path = join(tmpDir, "WORKFLOW.md")
+    writeFileSync(
+      path,
+      `---
+name: Fetch then render
+id: fetch-render
+description: The middle step fails.
+version: 0.1.0
+inputs: {}
+outputs: {}
+steps:
+  - id: fetch
+    kind: tool
+    tool: demo.identity
+  - id: render
+    kind: tool
+    tool: demo.boom
+  - id: publish
+    kind: tool
+    tool: demo.identity
+---
+`,
+      "utf8",
+    )
+
+    const run = await runner.startFromFile({ path, input: {} })
+    const final = await waitTerminal(runner, run.runId)
+    expect(final?.status).toBe("failed")
+    const byLabel = new Map(final!.stages[0]!.steps.map(s => [s.label, s]))
+    // F29: the step that succeeded stays succeeded, with no error copied on.
+    expect(byLabel.get("fetch")).toMatchObject({ status: "done" })
+    expect(byLabel.get("fetch")?.error).toBeUndefined()
+    expect(byLabel.get("render")).toMatchObject({ status: "failed" })
+    expect(byLabel.get("render")?.error).toContain("chrome exited 2")
+    // Never reached — not failed, not done.
+    expect(byLabel.get("publish")?.status).toBe("pending")
+    expect(byLabel.get("publish")?.error).toBeUndefined()
+
+    // F30: compact never repeats the full stderr — run and step errors capped.
+    const compact = compactWorkflowRunStatus(final!)
+    const cap = COMPACT_ERROR_MAX_CHARS + 60
+    expect(compact.error!.length).toBeLessThan(cap)
+    expect(compact.error).toMatch(/pass full: true/)
+    const compactSteps = compact.stages[0]!.steps
+    expect(compactSteps.filter(s => s.error !== undefined).map(s => s.label)).toEqual(["render"])
+    expect(compactSteps.find(s => s.label === "render")!.error!.length).toBeLessThan(cap)
+    expect(JSON.stringify(compact).length).toBeLessThan(2_000)
+    // Full status still carries everything.
+    expect(final!.error).toContain("x".repeat(2000))
+  })
+
+  it("F31 — untaken branch arms aren't listed, shared tails aren't duplicated, and steps read in execution order", async () => {
+    const { tool, driver } = makeIdentityTool()
+    const runner = createWorkflowRunner({
+      registry: makeMockRegistry(),
+      sessionEvents: createSessionEventBus(),
+      resolveAgentAdapter: makeMockAdapter(),
+      compileWorkflow: (handle) => compileWorkflow(handle, { tools: { "demo.identity": tool }, candidates: [driver] }),
+    })
+
+    const path = join(tmpDir, "WORKFLOW.md")
+    writeFileSync(
+      path,
+      `---
+name: Transcribe
+id: transcribe
+description: fetch, map clean, then an optional pdf.
+version: 0.1.0
+inputs:
+  type: object
+  properties:
+    items: { type: array }
+    pdf: { type: boolean }
+outputs: {}
+steps:
+  - id: fetch
+    kind: tool
+    tool: demo.identity
+  - id: clean
+    kind: map
+    over: $input.items
+    steps:
+      - id: clean
+        kind: tool
+        tool: demo.identity
+  - id: route
+    kind: branch
+    branches:
+      - when: $input.pdf
+        next: pdf-render
+    default: skip-pdf
+  - id: pdf-render
+    kind: tool
+    tool: demo.identity
+  - id: skip-pdf
+    kind: tool
+    tool: demo.identity
+---
+`,
+      "utf8",
+    )
+
+    const run = await runner.startFromFile({ path, input: { items: ["a", "b"], pdf: false } })
+    // Up front: only the unconditional static step — no branch-arm rows.
+    expect(run.stages[0]?.steps.map(s => s.label)).toEqual(["fetch"])
+
+    const final = await waitTerminal(runner, run.runId)
+    expect(final?.status).toBe("done")
+    expect(final?.stages[0]?.steps.map(s => s.label)).toEqual(["fetch", "clean[0]", "clean[1]", "skip-pdf"])
+    expect(final?.stages[0]?.steps.every(s => s.status === "done")).toBe(true)
+  })
+
+  it("#1421 cache hits — a replayed step gets ONE step.started/step.succeeded (cached), done with timestamps, in execution order", async () => {
+    vi.stubEnv("HOME", tmpDir) // createFileStepCache's default dir is under homedir()
+    try {
+      const { tool, driver } = makeIdentityTool()
+      const runner = createWorkflowRunner({
+        registry: makeMockRegistry(),
+        sessionEvents: createSessionEventBus(),
+        resolveAgentAdapter: makeMockAdapter(),
+        persist: true,
+        persistPath: join(tmpDir, "workflow-runs.json"),
+        runsRoot: join(tmpDir, "runs"),
+        compileWorkflow: (handle) => compileWorkflow(handle, { tools: { "demo.identity": tool }, candidates: [driver] }),
+      })
+      const path = join(tmpDir, "WORKFLOW.md")
+      writeFileSync(
+        path,
+        `---
+name: Cached fetch and clean
+id: cached-fetch-clean
+description: A cacheable fetch, then a cacheable map.
+version: 0.1.0
+inputs:
+  type: object
+  properties:
+    items: { type: array }
+outputs: {}
+steps:
+  - id: fetch
+    kind: tool
+    tool: demo.identity
+    cacheable: true
+  - id: clean
+    kind: map
+    over: $input.items
+    steps:
+      - id: clean
+        kind: tool
+        tool: demo.identity
+        cacheable: true
+---
+`,
+        "utf8",
+      )
+      const runToEnd = async () => {
+        const run = await runner.startFromFile({ path, input: { items: ["a", "b"] }, cacheKey: "p3b-cache-replay" })
+        return { runId: run.runId, final: await waitTerminal(runner, run.runId) }
+      }
+
+      const first = await runToEnd()
+      expect(first.final?.status).toBe("done")
+      expect(first.final?.stages[0]?.steps.every(s => s.cached === undefined)).toBe(true)
+
+      const replay = await runToEnd()
+      const steps = replay.final!.stages[0]!.steps
+      expect(replay.final?.status).toBe("done")
+      expect(steps.map(s => s.label)).toEqual(["fetch", "clean[0]", "clean[1]"])
+      for (const s of steps) {
+        expect(s).toMatchObject({ status: "done", cached: true })
+        expect(s.startedAt).toBeTruthy()
+        expect(s.endedAt).toBeTruthy()
+        expect(Date.parse(s.endedAt!)).toBeGreaterThanOrEqual(Date.parse(s.startedAt!))
+      }
+
+      const events = runner.events(replay.runId) ?? []
+      for (const label of ["fetch", "clean[0]", "clean[1]"]) {
+        const mine = events.filter(e => e.stepId === label)
+        expect(mine.map(e => e.type)).toEqual(["step.started", "step.succeeded"])
+        expect(mine.every(e => (e.data as { cached?: boolean }).cached === true)).toBe(true)
+      }
+      expect(events.at(-1)?.type).toBe("run.succeeded")
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  it("F34 — a RUNNING agent step exposes its sessionId as soon as the session is spawned", async () => {
+    const registry = makeMockRegistry()
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: createSessionEventBus(),
+      resolveAgentAdapter: makeMockAdapter(),
+    })
+    // The step's session never signals turn-end — the run stays running.
+    const run = await runner.start({
+      workflowId: "wf",
+      stages: [{ steps: [{ label: "clean", adapter: "mock", prompt: "go" }] }],
+    })
+    let step = runner.status(run.runId)?.stages[0]?.steps[0]
+    for (let i = 0; i < 100 && step?.sessionId === undefined; i++) {
+      await new Promise(res => setTimeout(res, 10))
+      step = runner.status(run.runId)?.stages[0]?.steps[0]
+    }
+    expect(runner.status(run.runId)?.status).toBe("running")
+    expect(step?.status).toBe("running")
+    expect(step?.sessionId).toMatch(/^sess_/)
+    expect(registry.get(step!.sessionId!)).toBeDefined()
+    runner.cancel(run.runId)
   })
 })

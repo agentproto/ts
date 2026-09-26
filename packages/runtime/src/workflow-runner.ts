@@ -150,6 +150,18 @@ export interface WorkflowRun {
     prompt?: string
     schema?: Record<string, unknown>
   }
+  /** AIP-58 §2 "a `running` run MUST have a live owner" — a lease with a
+   *  heartbeat. Set at dispatch, renewed on a timer while `executeRunWorkflow`
+   *  is in flight, persisted with every renewal. `sweep()` marks the run
+   *  `failed { code: "orphaned" }` once `heartbeatAt` is older than the
+   *  runner's `leaseTtlMs` — the case a host restart doesn't catch (the
+   *  owning process/worker died without the DAEMON itself restarting). Only
+   *  meaningful while `status === "running"`; cleared on every terminal
+   *  transition and on reload (a fresh process is a fresh owner). */
+  lease?: {
+    ownerId: string
+    heartbeatAt: string
+  }
 }
 
 export interface WorkflowRunner {
@@ -191,6 +203,17 @@ export interface WorkflowRunner {
    *  with nothing new to report. Reads straight from the on-disk log, so it
    *  works for a run from a prior daemon process too. */
   events(runId: string, sinceSeq?: number): RunEventEnvelope[] | undefined
+
+  /** AIP-58 §2 owner-liveness sweep: marks every `running` run whose lease
+   *  has expired (`now - lease.heartbeatAt > leaseTtlMs`, no live renewal —
+   *  see `WorkflowRun.lease`) `failed { code: "orphaned" }`. A conservative
+   *  TTL, not a restart check (that's `loadRuns`'s job) — this is what
+   *  catches an owner that died WITHOUT the daemon itself restarting.
+   *  `now` defaults to the real clock; a caller (or a test) MAY pass a fixed
+   *  one instead of waiting on a real timer. Callable directly (tests) or on
+   *  a caller-owned interval (the daemon composition root); this runner
+   *  does not schedule it on its own. */
+  sweep(now?: Date): { orphaned: string[] }
 
   resolve(runId: string, stageIndex: number, stepIndex: number, response: string): void
 
@@ -270,6 +293,11 @@ interface RunState {
   pendingSuspend?: { stepId: string; resolve: (payload: unknown) => void }
   /** AIP-58 §5 per-run event log — undefined when persistence is off (tests). */
   eventLog?: RunEventLog
+  /** AIP-58 §2 lease renewal timer, alive for as long as this process is
+   *  actively driving the run (see `executeRunWorkflow`). `sweep()` clears
+   *  it when orphaning a run so a heartbeat that fires just afterwards can't
+   *  resurrect a fresh `lease` on an already-`failed` record. */
+  heartbeatTimer?: ReturnType<typeof setInterval>
 }
 
 // ── Translation: WorkflowStage[] → RuntimeWorkflow ──────────────────
@@ -341,39 +369,64 @@ interface CollectedStep {
   id: string
   adapter?: string
   sessionRef?: string
+  /** Inside a `branch` arm — only runs if that arm is taken. */
+  conditional: boolean
 }
 
-function collectStaticSteps(steps: readonly RuntimeStep[]): CollectedStep[] {
+function collectStaticSteps(steps: readonly RuntimeStep[], conditional = false): CollectedStep[] {
   const collected: CollectedStep[] = []
   for (const step of steps) {
     if (step.kind === "agent") {
       const adapter = typeof step.adapter === "string" ? step.adapter : undefined
-      collected.push({ id: step.id, adapter, sessionRef: step.sessionRef })
+      collected.push({ id: step.id, adapter, sessionRef: step.sessionRef, conditional })
     } else if (step.kind === "parallel") {
-      for (const branch of step.branches) collected.push(...collectStaticSteps(branch.steps))
+      for (const branch of step.branches) collected.push(...collectStaticSteps(branch.steps, conditional))
     } else if (step.kind === "group") {
-      collected.push(...collectStaticSteps(step.steps))
+      collected.push(...collectStaticSteps(step.steps, conditional))
     } else if (step.kind === "map" || step.kind === "pipeline") {
       // Dynamic — the item list (and so the per-item step ids) is only known
       // once this step actually runs. See the module comment above.
     } else if (step.kind === "branch") {
-      collected.push(...collectStaticSteps(step.then))
-      if (step.otherwise) collected.push(...collectStaticSteps(step.otherwise))
+      collected.push(...collectStaticSteps(step.then, true))
+      if (step.otherwise) collected.push(...collectStaticSteps(step.otherwise, true))
     } else if (step.kind === "loop") {
-      collected.push(...collectStaticSteps(step.body))
+      collected.push(...collectStaticSteps(step.body, conditional))
     } else if (step.kind === "subworkflow") {
-      collected.push(...collectStaticSteps(step.workflow.steps))
+      collected.push(...collectStaticSteps(step.workflow.steps, conditional))
     } else {
       // tool / gate / transform / approval / suspend — real, statically-known
       // leaf steps with no agent session of their own.
-      collected.push({ id: step.id })
+      collected.push({ id: step.id, conditional })
     }
   }
   return collected
 }
 
-function runtimeWorkflowToStages(workflow: RuntimeWorkflow): WorkflowStage[] {
-  const steps = collectStaticSteps(workflow.steps)
+/**
+ * One synthetic stage whose steps are the workflow's statically-known leaf
+ * steps, deduplicated by id (F31: the branch compiler copies a shared tail
+ * into every arm, so the same id can appear once per arm).
+ *
+ * `includeConditional: false` (the `run.stages` projection) leaves out steps
+ * that live only inside a `branch` arm — an arm that's never taken must not
+ * show up as a step at all (F31: `skip-pdf` listed twice, never ran). Those
+ * are discovered when they actually start, exactly like map items.
+ * `includeConditional: true` (the step DEFS used for sessionId resolution)
+ * keeps them, so a branch-arm step's `sessionRef` still resolves.
+ */
+function runtimeWorkflowToStages(
+  workflow: RuntimeWorkflow,
+  opts: { includeConditional?: boolean } = {},
+): WorkflowStage[] {
+  const all = collectStaticSteps(workflow.steps)
+  const unconditional = new Set(all.filter(s => !s.conditional).map(s => s.id))
+  const seen = new Set<string>()
+  const steps = all.filter((s) => {
+    if (seen.has(s.id)) return false
+    if (opts.includeConditional !== true && !unconditional.has(s.id)) return false
+    seen.add(s.id)
+    return true
+  })
   return [
     {
       steps: steps.map((a) => ({
@@ -450,9 +503,14 @@ function findStepDef(defs: readonly WorkflowStage[], stepId: string): WorkflowSt
 const DEFAULT_PERSIST_PATH = (): string =>
   join(homedir(), ".agentproto", "workflow-runs.json")
 
+// AIP-58 §2 owner-liveness — see `createWorkflowRunner`'s `leaseTtlMs`/
+// `heartbeatIntervalMs` doc comments for the rationale behind these values.
+const DEFAULT_LEASE_TTL_MS = 60_000
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000
+
 // ── Persistence helpers (mirrors routine-runner.ts exactly) ──────────
 
-function loadRuns(persistPath: string): Map<string, RunState> {
+function loadRuns(persistPath: string, runsRoot: string): Map<string, RunState> {
   const result = new Map<string, RunState>()
   if (!existsSync(persistPath)) return result
   let raw: string
@@ -468,19 +526,29 @@ function loadRuns(persistPath: string): Map<string, RunState> {
     return result
   }
   if (!Array.isArray(parsed)) return result
+  let anyMarkedInterrupted = false
   for (const item of parsed) {
     if (!item || typeof item !== "object" || typeof (item as WorkflowRun).runId !== "string") continue
     const run = item as WorkflowRun
-    // AIP-15 conformance rule 7: a run parked at a `kind: "suspend"` step
-    // carries a durable `awaitingSuspend` record — keep it suspended so a
-    // matching resume can still land (the pending entry is re-registered
-    // below). Any other in-flight run (running / awaiting-input without a
-    // suspend record) is dead with the old process.
+    // AIP-15 conformance rule 7 / AIP-58 §2 host-restart rule: a run parked
+    // at a `kind: "suspend"` step carries a durable `awaitingSuspend` record
+    // — keep it suspended so a matching resume can still land (the pending
+    // entry is re-registered below). Any other in-flight run (running /
+    // awaiting-input without a suspend record) is `failed { code:
+    // "host-interrupted" }` — the daemon restarted while it was running and
+    // it was not durably parked.
     const parkedAtSuspend = run.status === "awaiting-input" && run.awaitingSuspend !== undefined
     if (!parkedAtSuspend && (run.status === "running" || run.status === "awaiting-input")) {
       run.status = "failed"
       run.error = "interrupted by daemon restart"
+      run.errorCode = "host-interrupted"
       run.endedAt = run.endedAt ?? new Date().toISOString()
+      run.lease = undefined
+      anyMarkedInterrupted = true
+      createRunEventLog(run.runId, runsRoot).append({
+        type: "run.failed",
+        data: { code: "host-interrupted", message: run.error },
+      })
     }
     // WP-S: a run parked awaiting a human approval is NOT failed on reload —
     // its `awaitingApproval` record is durable. The runner re-registers the
@@ -488,6 +556,9 @@ function loadRuns(persistPath: string): Map<string, RunState> {
     // run's in-flight execution itself can't resume; see the reload resolver).
     result.set(run.runId, { run, cancelled: false, abort: new AbortController(), stages: [] })
   }
+  // Persist the host-interrupted corrections immediately — a second restart
+  // before anything else calls `persist()` must not re-derive/re-emit them.
+  if (anyMarkedInterrupted) saveRuns(result, persistPath)
   return result
 }
 
@@ -525,18 +596,67 @@ function fireNotifyUrl(run: WorkflowRun): void {
 
 /** Locate a step by label across a run's stages — `-1, -1` when not found
  *  (e.g. `stepId` is undefined because the session wasn't spawned by a
- *  labelled step). */
+ *  labelled step). `stepIndex` is the step's stable `index` field, not its
+ *  array position: `markStepStarted` reorders steps into execution order
+ *  (F31), so the two can differ. */
 function findStepPosition(
   stages: readonly WorkflowStageState[],
   label: string | undefined,
 ): { stageIndex: number; stepIndex: number } {
   if (label !== undefined) {
     for (let si = 0; si < stages.length; si++) {
-      const stepIndex = stages[si]!.steps.findIndex(s => s.label === label)
-      if (stepIndex !== -1) return { stageIndex: si, stepIndex }
+      const step = stages[si]!.steps.find(s => s.label === label)
+      if (step) return { stageIndex: si, stepIndex: step.index }
     }
   }
   return { stageIndex: -1, stepIndex: -1 }
+}
+
+/**
+ * F31: a step that starts moves ahead of every still-pending step, so the
+ * steps array reads in EXECUTION order (started steps in start order, then
+ * the not-yet-started ones in declaration order) — not declaration order
+ * with dynamically-discovered map items tacked on at the end. The step's
+ * `index` stays what it was (its stable handle, see `findStepPosition`).
+ */
+function moveToExecutionOrder(stage: WorkflowStageState, step: RoutineStepState): void {
+  const from = stage.steps.indexOf(step)
+  if (from === -1) return
+  const firstPending = stage.steps.findIndex(s => s !== step && s.status === "pending")
+  if (firstPending === -1 || firstPending > from) return
+  stage.steps.splice(from, 1)
+  stage.steps.splice(firstPending, 0, step)
+}
+
+/**
+ * F34: attach a spawned agent session to its step row the moment the host
+ * labels it, so a RUNNING agent step exposes its sessionId (previously only
+ * filled once the whole run ended). A map/pipeline item spawns under its
+ * body step's plain id (`clean`), while its row is indexed (`clean[0]`) —
+ * the first running item row without a session yet takes it (items start
+ * before they spawn, in order).
+ */
+function attachStepSession(run: WorkflowRun, stepId: string, sessionId: string): boolean {
+  for (const stage of run.stages) {
+    const exact = stage.steps.find(s => s.label === stepId)
+    if (exact) {
+      exact.sessionId = sessionId
+      return true
+    }
+  }
+  for (const stage of run.stages) {
+    const item = stage.steps.find(
+      s =>
+        s.status === "running" &&
+        s.sessionId === undefined &&
+        MAP_ITEM_ID_RE.exec(s.label)?.[1] === stepId,
+    )
+    if (item) {
+      item.sessionId = sessionId
+      return true
+    }
+  }
+  return false
 }
 
 /**
@@ -612,7 +732,10 @@ function fillStepStates(
   for (const stage of stages) {
     for (const stepState of stage.steps) {
       const stepDef = findStepDef(defs, stepState.label)
-      stepState.sessionId = stepDef ? resolveStepSessionId(stepDef, agents) : agents.resolveByLabel(stepState.label)
+      const resolved = stepDef ? resolveStepSessionId(stepDef, agents) : agents.resolveByLabel(stepState.label)
+      // Keep a session `attachStepSession` already recorded at spawn time
+      // (F34) — a map item's indexed label never resolves here on its own.
+      if (resolved !== undefined) stepState.sessionId = resolved
       if (stepState.sessionId) sessionIds.push(stepState.sessionId)
     }
   }
@@ -764,7 +887,22 @@ async function executeRunWorkflow(
   persist?: () => void,
   appRegistry?: Pick<AppRegistry, "getApp" | "listApps">,
   eventLog?: RunEventLog,
+  lease?: { ownerId: string; heartbeatIntervalMs: number; now: () => Date },
 ): Promise<void> {
+  // AIP-58 §2 owner liveness: renew this run's lease on a timer for as long
+  // as THIS process is actually driving it — `sweep()` orphans a run once
+  // its lease goes stale, which (for a single in-process runner) only
+  // happens once this interval stops firing, i.e. execution ended one way
+  // or another. Cleared unconditionally below once execution is done.
+  if (lease) {
+    const renew = (): void => {
+      state.run.lease = { ownerId: lease.ownerId, heartbeatAt: lease.now().toISOString() }
+      persist?.()
+    }
+    renew()
+    state.heartbeatTimer = setInterval(renew, lease.heartbeatIntervalMs)
+  }
+
   // App state ledger bridge (WP-Q): when the run belongs to an installed
   // app, mirror the run's progress onto the app's ledger with `by: "runner"`
   // — stage-started / gate-report / stage-done / blocked — so the app's
@@ -1054,6 +1192,7 @@ async function executeRunWorkflow(
             if (step.status === "pending") {
               step.status = "running"
               step.startedAt = new Date().toISOString()
+              moveToExecutionOrder(stage, step)
             }
             if (cached) step.cached = true
             // Update stage status if it's still pending
@@ -1066,13 +1205,15 @@ async function executeRunWorkflow(
         if (!found) {
           const stage = state.run.stages[state.run.stages.length - 1]
           if (stage) {
-            stage.steps.push({
-              index: stage.steps.length,
+            const step: RoutineStepState = {
+              index: stage.steps.reduce((max, s) => Math.max(max, s.index + 1), 0),
               label: stepId,
               status: "running",
               startedAt: new Date().toISOString(),
               ...(cached ? { cached: true } : {}),
-            })
+            }
+            stage.steps.push(step)
+            moveToExecutionOrder(stage, step)
             if (stage.status === "pending") stage.status = "running"
           }
         }
@@ -1125,11 +1266,16 @@ async function executeRunWorkflow(
       },
     })
 
-    // Success — mark all stages/steps done (fallback for any missed).
+    // Success — close out every stage/step. A step that started but whose
+    // completion was never observed is done (fallback for any missed hook);
+    // one that never started at all (an untaken branch arm, F31) is
+    // `skipped`, never a fabricated `done`.
     for (const stage of state.run.stages) {
       if (stage.status !== "done") stage.status = "done"
       for (const step of stage.steps) {
-        if (step.status !== "done") {
+        if (step.status === "pending") {
+          step.status = "skipped"
+        } else if (step.status !== "done") {
           step.status = "done"
           step.endedAt = new Date().toISOString()
         }
@@ -1180,18 +1326,38 @@ async function executeRunWorkflow(
         }
       }
 
-      // Mark stage 0 as failed (common case) and the rest as pending.
-      for (let i = 0; i < state.run.stages.length; i++) {
-        const stage = state.run.stages[i]!
-        if (i === 0) {
-          stage.status = "failed"
-          for (const step of stage.steps) {
+      // A structured outcome failure (StepOutcomeError) names exactly which
+      // step failed; any other error fails every step that was still
+      // running when it landed (`runningSteps`, captured above).
+      const failedStepIds = err instanceof StepOutcomeError ? [err.stepId] : [...runningSteps]
+
+      // F29: project the failure onto the steps it actually hit — the SAME
+      // steps the event log records `step.failed` for below. A step that
+      // already succeeded stays `done`; one that never started stays
+      // `pending` (a later stage never reached is untouched). Only a failed
+      // step carries the error; an in-flight sibling of a structured
+      // outcome failure is failed WITHOUT a copy of someone else's error.
+      const failedSet = new Set(failedStepIds)
+      const endedAt = new Date().toISOString()
+      for (const stage of state.run.stages) {
+        let stageFailed = false
+        for (const step of stage.steps) {
+          const itemBase = MAP_ITEM_ID_RE.exec(step.label)?.[1]
+          const hit =
+            failedSet.has(step.label) ||
+            (step.status === "running" && itemBase !== undefined && failedSet.has(itemBase))
+          if (hit) {
             step.status = "failed"
-            step.endedAt = new Date().toISOString()
+            step.endedAt = endedAt
             step.error = errMsg
+            stageFailed = true
+          } else if (step.status === "running") {
+            step.status = "failed"
+            step.endedAt = endedAt
+            stageFailed = true
           }
         }
-        // else: remaining stages stay "pending"
+        if (stageFailed || stage.status === "running") stage.status = "failed"
       }
 
       // Resolve step sessionIds on FAILURE too — previously only the success
@@ -1203,10 +1369,6 @@ async function executeRunWorkflow(
       const sessionIds = fillStepStates(state.run.stages, state.stages, agents)
       if (sessionIds.length > 0) state.run.result = { sessionIds }
 
-      // A structured outcome failure (StepOutcomeError) names exactly which
-      // step failed; any other error fails every step that was still
-      // running when it landed (`runningSteps`, captured above).
-      const failedStepIds = err instanceof StepOutcomeError ? [err.stepId] : [...runningSteps]
       for (const stepId of failedStepIds) {
         eventLog?.append({
           stepId,
@@ -1221,6 +1383,15 @@ async function executeRunWorkflow(
       })
     }
   }
+
+  // Execution is over one way or another — the lease is no longer this
+  // process's to renew (a terminal run has no owner; §2 only requires one
+  // for `running`).
+  if (state.heartbeatTimer) {
+    clearInterval(state.heartbeatTimer)
+    state.heartbeatTimer = undefined
+  }
+  state.run.lease = undefined
 
   // Drain the ledger append queue before the run's terminal state is
   // persisted, so the file reflects the run by the time status() flips.
@@ -1262,13 +1433,37 @@ export function createWorkflowRunner(opts: {
    * ledger writes, behaviour unchanged.
    */
   appRegistry?: Pick<AppRegistry, "getApp" | "listApps">
+  /** Stable id for THIS process/instance, stamped onto every lease this
+   *  runner takes out (`WorkflowRun.lease.ownerId`). Defaults to a fresh
+   *  `randomUUID()` per runner — override only to simulate a specific owner
+   *  in a test. */
+  ownerId?: string
+  /** AIP-58 §2 lease TTL — a `running` run's lease older than this with no
+   *  renewal is `orphaned` by `sweep()`. Defaults to 60s: long enough that a
+   *  couple of missed heartbeats (see `heartbeatIntervalMs`) don't
+   *  false-positive on ordinary scheduling jitter, short enough that a
+   *  genuinely dead owner doesn't stay "running" for hours (open question in
+   *  the spec itself — this is the reference implementation's deliberate
+   *  choice, not a normative value). */
+  leaseTtlMs?: number
+  /** How often an in-flight run's lease is renewed. Defaults to 15s — a
+   *  quarter of the default TTL, so a run survives one or two missed
+   *  renewals before `sweep()` would call it orphaned. */
+  heartbeatIntervalMs?: number
+  /** Clock override for lease timestamps AND `sweep()`'s "now" — tests only;
+   *  defaults to `() => new Date()`. */
+  now?: () => Date
 }): WorkflowRunner {
   const { registry, sessionEvents, resolveAgentAdapter, compileWorkflow } = opts
   const persistPath = opts.persistPath ?? DEFAULT_PERSIST_PATH()
   const shouldPersist = opts.persist ?? (opts.persistPath !== undefined)
   const runsRoot = opts.runsRoot ?? DEFAULT_RUNS_ROOT()
+  const ownerId = opts.ownerId ?? randomUUID()
+  const leaseTtlMs = opts.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS
+  const heartbeatIntervalMs = opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS
+  const now = opts.now ?? (() => new Date())
 
-  const runs = shouldPersist ? loadRuns(persistPath) : new Map<string, RunState>()
+  const runs = shouldPersist ? loadRuns(persistPath, runsRoot) : new Map<string, RunState>()
 
   const persist = (): void => {
     if (shouldPersist) saveRuns(runs, persistPath)
@@ -1276,6 +1471,12 @@ export function createWorkflowRunner(opts: {
 
   const newEventLog = (runId: string): RunEventLog | undefined =>
     shouldPersist ? createRunEventLog(runId, runsRoot) : undefined
+
+  // Gated on persistence like the event log above — without it there's no
+  // other process that could ever observe a lease, and skipping the
+  // heartbeat timer entirely keeps a non-persisting caller (most unit
+  // tests) free of a recurring interval it never asked for.
+  const leaseOpts = shouldPersist ? { ownerId, heartbeatIntervalMs, now } : undefined
 
   // AIP-58 §9 `run.requestInput` (the `run_request_input` MCP tool): a
   // sessionId → (runId, stepId, host) index spanning every run this runner
@@ -1438,6 +1639,7 @@ export function createWorkflowRunner(opts: {
           onEscalate: createOnEscalate(state, persist),
           onSessionLabeled: (stepId, sessionId) => {
             sessionToRun.set(sessionId, { runId, stepId, host: agents })
+            if (attachStepSession(state.run, stepId, sessionId)) persist()
           },
           ...(opts.resolveSandboxProvider
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }
@@ -1447,7 +1649,7 @@ export function createWorkflowRunner(opts: {
 
       const cache = input.cacheKey ? createFileStepCache(input.cacheKey) : undefined
 
-      void executeRunWorkflow(state, workflow, agents, abort.signal, sessionEvents, cache, input.cacheKey, undefined, persist, opts.appRegistry, eventLog).then(() => {
+      void executeRunWorkflow(state, workflow, agents, abort.signal, sessionEvents, cache, input.cacheKey, undefined, persist, opts.appRegistry, eventLog, leaseOpts).then(() => {
         for (const [sid, binding] of sessionToRun) {
           if (binding.runId === runId) sessionToRun.delete(sid)
         }
@@ -1500,7 +1702,10 @@ export function createWorkflowRunner(opts: {
       }
 
       const workflow = await compileWorkflow(handle)
+      // Visible rows leave out untaken-until-proven branch-arm steps (F31);
+      // the defs keep them for sessionId resolution.
       const fileStages = runtimeWorkflowToStages(workflow)
+      const fileStepDefs = runtimeWorkflowToStages(workflow, { includeConditional: true })
       const runId = `wfrun_${randomUUID()}`
       // F25: resolved BEFORE the run record so `cwd` is recorded even when
       // defaulted (never a silent "/" — see resolveRunCwd).
@@ -1533,7 +1738,7 @@ export function createWorkflowRunner(opts: {
         run,
         cancelled: false,
         abort,
-        stages: fileStages,
+        stages: fileStepDefs,
         ...(eventLog !== undefined ? { eventLog } : {}),
         // ...(args.cwd !== undefined ? { cwd: args.cwd } : {}),
         cwd,
@@ -1554,6 +1759,7 @@ export function createWorkflowRunner(opts: {
           onEscalate: createOnEscalate(state, persist),
           onSessionLabeled: (stepId, sessionId) => {
             sessionToRun.set(sessionId, { runId, stepId, host: agents })
+            if (attachStepSession(state.run, stepId, sessionId)) persist()
           },
           ...(opts.resolveSandboxProvider
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }
@@ -1575,6 +1781,7 @@ export function createWorkflowRunner(opts: {
         persist,
         opts.appRegistry,
         eventLog,
+        leaseOpts,
       ).then(() => {
         for (const [sid, binding] of sessionToRun) {
           if (binding.runId === runId) sessionToRun.delete(sid)
@@ -1590,6 +1797,41 @@ export function createWorkflowRunner(opts: {
     list: () => Array.from(runs.values()).map(s => s.run),
 
     events: (runId, sinceSeq) => (runs.has(runId) ? readRunEvents(runId, runsRoot, sinceSeq) : undefined),
+
+    // AIP-58 §2 owner liveness — see the interface doc comment. A run this
+    // SAME process is actively driving always has a fresh lease (the
+    // heartbeat interval in `executeRunWorkflow` keeps renewing it), so
+    // staleness alone is sufficient to identify one whose owner is gone —
+    // no separate ownerId comparison needed for a single-process runner.
+    sweep: (sweepNow) => {
+      const nowMs = (sweepNow ?? now()).getTime()
+      const orphaned: string[] = []
+      for (const state of runs.values()) {
+        const run = state.run
+        if (run.status !== "running" || !run.lease) continue
+        const staleMs = nowMs - Date.parse(run.lease.heartbeatAt)
+        if (!(staleMs > leaseTtlMs)) continue
+        // Not `state.abort.abort()`: an in-flight `executeRunWorkflow` for
+        // THIS run would race this write with its own catch block's
+        // `status = "cancelled"`, clobbering the "orphaned" verdict moments
+        // later. Marking the record and killing the renewal timer is
+        // sufficient — a genuinely orphaned owner (the premise this exists
+        // for) isn't running in THIS process to race with anyway.
+        if (state.heartbeatTimer) {
+          clearInterval(state.heartbeatTimer)
+          state.heartbeatTimer = undefined
+        }
+        run.status = "failed"
+        run.error = `run orphaned — owner "${run.lease.ownerId}"'s lease expired ${staleMs}ms ago (ttl ${leaseTtlMs}ms)`
+        run.errorCode = "orphaned"
+        run.endedAt = new Date(nowMs).toISOString()
+        run.lease = undefined
+        persist()
+        state.eventLog?.append({ type: "run.failed", data: { code: "orphaned", message: run.error } })
+        orphaned.push(run.runId)
+      }
+      return { orphaned }
+    },
 
     // Fulfils the promise `onEscalate` (createOnEscalate) is awaiting for a
     // suspended `escalate`-policy step — a no-op if no step at
