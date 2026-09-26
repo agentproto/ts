@@ -41,6 +41,7 @@ import type { SessionsRegistry, AgentSessionLike, RestartPolicy, SessionDescript
 import { SessionNotAliveError, applyBracketedPasteWrap } from "./sessions.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
+import type { RemoteController, EnableInput } from "./remote-controller.js"
 import type { PairingRegistry } from "./pairing-registry.js"
 import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
@@ -799,6 +800,11 @@ export interface RuntimeHttpServerOptions {
   /** Optional — when wired, exposes /tunnels/* routes for creating and
    *  managing public tunnels for local ports. Without it the routes 404. */
   tunnels?: TunnelRegistry
+  /** Optional — when wired, exposes POST /remote/enable, POST /remote/disable,
+   *  GET /remote/status — the REST twin of the MCP `remote_enable` /
+   *  `remote_disable` / `remote_status` tools (remote-tools.ts), for
+   *  `agentproto remote enable/disable/status`. Without it the routes 404. */
+  remote?: RemoteController
   /** Optional — when wired, exposes /pairings/* routes for minting offers,
    *  listing pairings, and revoking them (E2E daemon pairing). Same service the
    *  MCP `pair_offer` / `pair_list` / `pair_revoke` tools call. Without it the
@@ -3038,6 +3044,15 @@ export async function startHttpServer(
         // a TunnelRegistry. /tunnels, /tunnels/:id.
         if (opts.tunnels && path.startsWith("/tunnels")) {
           const handled = await handleTunnels(req, res, path, opts.tunnels)
+          if (handled) return
+        }
+
+        // Remote-control routes — the REST twin of the MCP remote_enable/
+        // remote_disable/remote_status tools, for `agentproto remote
+        // enable/disable/status`. Only registered when the gateway was
+        // built with a RemoteController.
+        if (opts.remote && path.startsWith("/remote")) {
+          const handled = await handleRemoteControl(req, res, path, opts.remote)
           if (handled) return
         }
 
@@ -6262,6 +6277,66 @@ async function handleTunnels(
       return true
     }
     json(200, { ok, tunnelId: rawIdOrName })
+    return true
+  }
+
+  return false
+}
+
+/**
+ * REST twin of the MCP `remote_enable` / `remote_disable` / `remote_status`
+ * tools (remote-tools.ts) — same `RemoteController` singleton, so the two
+ * surfaces can never disagree about whether a tunnel is up. Exists for
+ * `agentproto remote enable/disable/status`: unlike an MCP tool call, a CLI
+ * subcommand talking to an already-running daemon goes over REST, the same
+ * way `agentproto tunnel` / `agentproto sessions` do (see
+ * `_daemon-helpers.ts`'s `discoverDaemon`).
+ *
+ * No gate beyond what already applies to every route (the P0 tunnel-bearer
+ * gate for non-loopback traffic, `tunnelBearerAllowed`) — same trust model
+ * as `/tunnels`, which has none either: a loopback CLI caller is trusted,
+ * exactly as it is for `agent_start`/`file_write`/every other MCP tool.
+ */
+async function handleRemoteControl(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  controller: RemoteController,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (path === "/remote/status" && req.method === "GET") {
+    json(200, controller.status())
+    return true
+  }
+
+  if (path === "/remote/enable" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    const b: Record<string, unknown> =
+      typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {}
+    const input: EnableInput = {
+      ...(b.provider === "quick" ? { provider: "quick" as const } : {}),
+      ...(typeof b.targetPort === "number" ? { targetPort: b.targetPort } : {}),
+      ...(typeof b.targetHost === "string" ? { targetHost: b.targetHost } : {}),
+    }
+    try {
+      const result = await controller.enable(input)
+      json(200, result)
+    } catch (err) {
+      json(409, {
+        error: "remote_enable_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+    return true
+  }
+
+  if (path === "/remote/disable" && req.method === "POST") {
+    const result = await controller.disable()
+    json(200, result)
     return true
   }
 

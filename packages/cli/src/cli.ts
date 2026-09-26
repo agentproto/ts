@@ -34,6 +34,7 @@ import { runConversation } from "./commands/conversation.js"
 import { runUsage } from "./commands/usage.js"
 import { runBrain } from "./commands/brain.js"
 import { runTunnel } from "./commands/tunnel.js"
+import { runRemote } from "./commands/remote.js"
 import { runProviderPresets } from "./commands/presets.js"
 import { runPreset } from "./commands/preset.js"
 import { runBrowser } from "./commands/browser.js"
@@ -110,6 +111,9 @@ Usage:
   agentproto tunnel    list   [--active] [--json]
   agentproto tunnel    stop   <id-or-name> [--json]
   agentproto tunnel    status <id-or-name> [--json]
+  agentproto remote    enable [--qr] [--target-port <n>] [--json]
+                                           publish this gateway (or another local port) to the internet
+  agentproto remote    disable | status [--json]
   agentproto provider-preset list [--json]   provider gateway definitions + key-env status
   agentproto presets  list [--json]          deprecated alias for provider-preset
   agentproto preset   <list|show|add|delete> saved user spawn configurations
@@ -218,6 +222,7 @@ const VERBS = new Set([
   "usage",
   "brain",
   "tunnel",
+  "remote",
   "presets",
   "provider-preset",
   "preset",
@@ -326,6 +331,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runBrain(rest)
     case "tunnel":
       return runTunnel(rest)
+    case "remote":
+      return runRemote(rest)
     case "presets":
       process.stderr.write("agentproto presets is deprecated; use `agentproto provider-preset list`.\n")
       return runProviderPresets(rest)
