@@ -1,0 +1,13 @@
+{
+  "extends": "@agentproto/tooling/typescript/bundler.json",
+  "compilerOptions": {
+    "skipLibCheck": true,
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "include": ["src/main.ts", "src/pages/**/*", "src/ui/**/*", "src/lib/**/*"],
+  "exclude": ["dist", "node_modules"]
+}
