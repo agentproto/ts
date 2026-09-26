@@ -80,6 +80,14 @@ steps:
     name: Take this run's share of the queue
     description: Entry-based — the first `maxReviews` of reviewQueue.
 
+  - id: reviewWorktreePaths
+    kind: transform
+    name: Name each candidate's disposable review worktree
+    description: >-
+      Entry-based. Every candidate carries `reviewWorktree`, a detached
+      worktree path under the OS tmp dir (`agentproto-maintain-review/`),
+      never the live checkout. This step lists them for the cleanups.
+
   - id: review
     kind: map
     name: Review every unmerged candidate
@@ -90,8 +98,10 @@ steps:
       step never applies anything. After the turn, branch_gc_verdict_get
       checks the store for that tip; with no verdict, the SAME session is
       re-prompted once, then one fresh large-model reviewer retries, and
-      only then is the tip left as a gap. Reviewer sessions run at the repo
-      root (a checkout inside the repo can't delete their cwd). Three spawn
+      only then is the tip left as a gap. Each item first creates its own
+      detached review worktree of the tip (`branch_gc_review_worktree`),
+      runs its reviewers there — never in the live checkout — and removes it
+      last. Three spawn
       failures in a row open the engine's circuit breaker: the remaining
       candidates are not started and are reported as not reviewed. See
       entry.mjs for the body.
@@ -104,6 +114,19 @@ steps:
         agent:
           ref: "@agentproto/repo-maintenance-reviewer"
         prompt: See entry.mjs — mustache-templated over $item + branchGcPlan.
+
+  - id: reviewCleanup
+    kind: tool
+    name: Remove every review worktree
+    description: >-
+      An item that failed never reached its own removal — clear them all
+      before anything re-plans or gc's worktrees. The entry's `finally`
+      block runs the same removal again whatever happens (failure, cancel).
+    tool: branch_gc_review_worktree
+    inputs:
+      repoRoot: $steps.branchGcPlan.plan.repoRoot
+      action: remove
+      paths: $steps.reviewWorktreePaths
 
   - id: branchGcVerify
     kind: tool
@@ -209,6 +232,15 @@ verify every candidate got a verdict → optionally apply (reclaim-class only)
 Entry-based (`entry.mjs`) for one reason: `review`'s per-candidate `model`
 selector is a real run-time function, which only the entry-loader path can
 carry (see the description above and entry.mjs's own docblock).
+
+## Review worktrees
+
+Reviewers never run in the live checkout. Each review item creates a
+disposable DETACHED worktree of the tip under review under the OS tmp dir
+(`branch_gc_review_worktree`, which refuses any other location) and removes
+it when the item ends; `reviewCleanup` removes them all after the map, and
+entry.mjs's `finally` block removes them once more on failure or cancel — a
+`finally` step always runs.
 
 ## Out of scope, on purpose
 

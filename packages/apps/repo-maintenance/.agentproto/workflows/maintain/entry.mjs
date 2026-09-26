@@ -16,6 +16,9 @@
 // (and, since `compileAgentStep` never type-checks `model`, its `model` too)
 // straight through.
 
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
 const DEFAULT_REVIEW_MODEL_SMALL = "claude-haiku-4-5-20251001"
 const DEFAULT_REVIEW_MODEL_LARGE = "claude-sonnet-5"
 /** Reviews per run — 500+ candidates in one run is hours of agent turns;
@@ -27,16 +30,38 @@ const REPORT_LIST_CAP = 20
 
 const REVIEWER_REF = "@agentproto/repo-maintenance-reviewer"
 
-/** Reviewer sessions run AT the repo root, not the app's own directory: the
- *  app may live inside the very repo under review (dogfooding agentproto/ts),
- *  and a reviewer that checked out an older branch there once deleted the
- *  app directory out from under every later spawn (spawn ENOENT on the
- *  cwd). The repo root survives any checkout. */
-const REVIEWER_CWD = "$steps.branchGcPlan.plan.repoRoot"
+/** Where review worktrees live — must match `reviewWorktreeRoot()` in
+ *  `@agentproto/runtime` (review-worktree.ts), which refuses any other path. */
+const REVIEW_WORKTREE_ROOT = join(tmpdir(), "agentproto-maintain-review")
+
+/** Every reviewer works in its OWN disposable detached worktree of the tip
+ *  under review (`item.reviewWorktree`), never in the live checkout. A
+ *  reviewer once ran `git stash && git checkout <old branch>` in the user's
+ *  main checkout — stashing their WIP and deleting the directory every later
+ *  reviewer was spawned in. In its own worktree a checkout or reset harms
+ *  nothing; the worktree is removed when the item ends, again right after
+ *  the review map, and once more in `finally` (failure / cancel). */
+const REVIEWER_CWD = "$item.reviewWorktree"
+
+/** `<root>/<repoName>-<tip sha>` — deterministic per item, so every step of
+ *  an item (and the cleanup) names the same path without sharing state. */
+function reviewWorktreePath(repoName, sha) {
+  return join(REVIEW_WORKTREE_ROOT, `${String(repoName ?? "repo").replace(/[^A-Za-z0-9._-]/g, "_")}-${sha}`)
+}
+
+const REVIEW_WORKTREE = (id, action) => ({
+  id,
+  kind: "tool",
+  tool: "branch_gc_review_worktree",
+  inputs:
+    action === "add"
+      ? { repoRoot: "$steps.branchGcPlan.plan.repoRoot", action: "add", path: "$item.reviewWorktree", sha: "$item.sha" }
+      : { repoRoot: "$steps.branchGcPlan.plan.repoRoot", action: "remove", paths: ["$item.reviewWorktree"] },
+})
 
 const REVIEW_PROMPT =
   "Review the {{item.kind}} branch `{{item.name}}` (tip {{item.sha}}) in the repo at " +
-  "{{steps.branchGcPlan.plan.repoRoot}}. It is unmerged relative to base " +
+  "{{item.reviewWorktree}}. It is unmerged relative to base " +
   "{{steps.branchGcPlan.plan.base}} (base sha {{item.base}})" +
   "{{#item.compareBase}}, compare base {{item.compareBase}} (pre-rewrite history — commit " +
   "shas from that history do not exist on the current base; compare CONTENT, not shas){{/item.compareBase}}. " +
@@ -45,19 +70,19 @@ const REVIEW_PROMPT =
   "(the tree base would have if this branch merged cleanly, or null when the merge conflicts): " +
   "{{#item.mergedTree}}{{item.mergedTree}}{{/item.mergedTree}}{{^item.mergedTree}}null{{/item.mergedTree}}. Ahead {{item.ahead}}, behind {{item.behind}}. Push state: {{item.pushed}}. " +
   "Every ref sharing this tip: {{item.refs}}." +
-  "\n\nThe repo at {{steps.branchGcPlan.plan.repoRoot}} is a LIVE checkout other people and " +
-  "agents are working in: read the branch through its sha only (git log/show/diff/ls-tree, " +
-  "`git show <sha>:<path>` for a file). Never checkout, switch, stash, reset or otherwise " +
-  "touch its working tree or index." +
+  "\n\n{{item.reviewWorktree}} (your working directory) is a disposable detached worktree made " +
+  "for this review alone and deleted afterwards. Read the branch through its sha (git log/show/" +
+  "diff/ls-tree, `git show <sha>:<path>` for a file); never checkout, switch, stash, reset or " +
+  "modify files — the stash list and refs are shared with every other checkout of this repo." +
   "\n\nRecord your verdict by calling branch_gc_verdict with repoRoot=" +
-  "\"{{steps.branchGcPlan.plan.repoRoot}}\", name=\"{{item.name}}\", sha=\"{{item.sha}}\", " +
+  "\"{{item.reviewWorktree}}\", name=\"{{item.name}}\", sha=\"{{item.sha}}\", " +
   "a triage block, and — ONLY when you agree deleting this branch loses nothing of value — a " +
   "gate block with agree:true and non-empty evidence. Call branch_gc_verdict exactly once for " +
   "this branch, then stop."
 
 const NUDGE_PROMPT =
   "You did not call branch_gc_verdict for `{{item.name}}` (tip {{item.sha}}) — no verdict is " +
-  "stored for that sha. Call it now with your verdict: repoRoot=\"{{steps.branchGcPlan.plan.repoRoot}}\", " +
+  "stored for that sha. Call it now with your verdict: repoRoot=\"{{item.reviewWorktree}}\", " +
   "name=\"{{item.name}}\", sha=\"{{item.sha}}\", a triage block, and a gate block only if you agree " +
   "deletion loses nothing. Do not re-review; just record it, then stop."
 
@@ -372,7 +397,15 @@ export default {
     {
       id: "reviewCandidates",
       kind: "transform",
-      compute: b => (b.steps.reviewQueue?.queue ?? []).slice(0, reviewCap(b.input)),
+      compute: b =>
+        (b.steps.reviewQueue?.queue ?? [])
+          .slice(0, reviewCap(b.input))
+          .map(c => ({ ...c, reviewWorktree: reviewWorktreePath(b.steps.branchGcPlan?.plan?.repoName, c.sha) })),
+    },
+    {
+      id: "reviewWorktreePaths",
+      kind: "transform",
+      compute: b => (b.steps.reviewCandidates ?? []).map(c => c.reviewWorktree),
     },
     {
       id: "review",
@@ -381,6 +414,7 @@ export default {
       parallelism: 4,
       onError: "collect",
       steps: [
+        REVIEW_WORKTREE("reviewWorktreeAdd", "add"),
         {
           id: "reviewOne",
           kind: "agent",
@@ -435,7 +469,16 @@ export default {
           kind: "transform",
           compute: b => ({ name: b.item?.name, sha: b.item?.sha }),
         },
+        REVIEW_WORKTREE("reviewWorktreeRemove", "remove"),
       ],
+    },
+    {
+      // A failed item never reached its own remove — clear every review
+      // worktree before anything re-plans or gc's worktrees.
+      id: "reviewCleanup",
+      kind: "tool",
+      tool: "branch_gc_review_worktree",
+      inputs: { repoRoot: "$steps.branchGcPlan.plan.repoRoot", action: "remove", paths: "$steps.reviewWorktreePaths" },
     },
     {
       id: "branchGcVerify",
@@ -522,6 +565,15 @@ export default {
       id: "skip-notify",
       kind: "gate",
       command: "true",
+    },
+  ],
+  // Always runs — success, failure or cancel: no review worktree outlives the run.
+  finally: [
+    {
+      id: "reviewWorktreesFinally",
+      kind: "tool",
+      tool: "branch_gc_review_worktree",
+      inputs: { repoRoot: "$steps.branchGcPlan.plan.repoRoot", action: "remove", paths: "$steps.reviewWorktreePaths" },
     },
   ],
   result: {

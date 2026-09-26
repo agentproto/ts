@@ -42,7 +42,9 @@ describe("repo-maintenance app", () => {
       "branchGcPlan:tool",
       "reviewQueue:transform",
       "reviewCandidates:transform",
+      "reviewWorktreePaths:transform",
       "review:map",
+      "reviewCleanup:tool",
       "branchGcVerify:tool",
       "gaps:transform",
       "branchGcApply:tool",
@@ -60,6 +62,7 @@ describe("repo-maintenance app", () => {
     // reviewOne, then the missing-verdict retry: check → same-session nudge
     // → check → large-model retry.
     expect(reviewStep.steps.map(s => `${s.id}:${s.kind}`)).toEqual([
+      "reviewWorktreeAdd:tool",
       "reviewOne:agent",
       "verdictCheck:tool",
       "needsNudge:branch",
@@ -68,8 +71,9 @@ describe("repo-maintenance app", () => {
       "needsLargeRetry:branch",
       "reviewRetryLarge:agent",
       "reviewSettled:transform",
+      "reviewWorktreeRemove:tool",
     ])
-    expect(reviewStep.steps[0]!.agent?.ref).toBe("@agentproto/repo-maintenance-reviewer")
+    expect(reviewStep.steps.find(s => s.id === "reviewOne")!.agent?.ref).toBe("@agentproto/repo-maintenance-reviewer")
     expect(reviewStep.steps.find(s => s.id === "nudge")!.sessionRef).toBe("reviewOne[{{index}}]")
     expect(reviewStep.steps.find(s => s.id === "reviewRetryLarge")!.agent?.ref).toBe("@agentproto/repo-maintenance-reviewer")
   })

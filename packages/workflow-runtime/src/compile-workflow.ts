@@ -418,10 +418,18 @@ export function compileWorkflow(
   const result = (handle as { result?: unknown }).result
   const output =
     result !== undefined ? (b: Bindings) => resolveValue(result, b) : undefined
+  // `finally`: entry-authored cleanup steps that always run (see
+  // `RuntimeWorkflow.finally`). They may read any main step's output.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const finallySteps = (handle as { finally?: any[] }).finally
+  const finallyCtx: Ctx = finallySteps?.length
+    ? { opts, knownStepIds: new Set([...ctx.knownStepIds, ...collectStepIds(finallySteps)]) }
+    : ctx
   return {
     id: handle.id,
     description: handle.description,
     steps: compileSiblingsToSteps(steps, ctx),
+    ...(finallySteps?.length ? { finally: compileSiblingsToSteps(finallySteps, finallyCtx) } : {}),
     ...(output ? { output } : {}),
   }
 }

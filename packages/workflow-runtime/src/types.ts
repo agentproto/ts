@@ -534,6 +534,14 @@ export interface RuntimeWorkflow {
   id: string
   description?: string
   steps: readonly RunStep[]
+  /**
+   * Cleanup steps that ALWAYS run once `steps` ends — succeeded, failed, or
+   * cancelled (they run without the abort signal). They see the same
+   * bindings (a step that never ran is simply absent). A failing `finally`
+   * step fails an otherwise-successful run; after a failed or cancelled run
+   * the original outcome wins and the cleanup error is only reported.
+   */
+  finally?: readonly RunStep[]
   /** Pick the run's final output (default: the last top-level step's output). */
   output?: Selector<unknown>
 }

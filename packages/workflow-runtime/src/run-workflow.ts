@@ -583,6 +583,10 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
       : undefined
   let sessionId: string | undefined
   if (step.adapter) {
+    // A cancelled run winds down (its `finally` still runs) — it must not
+    // start new agent sessions on the way (a fan-out would otherwise keep
+    // spawning reviewers after the cancel killed the running ones).
+    if (ctx.signal?.aborted) throw new Error(`step '${step.id}': run cancelled — not spawning`)
     try {
       sessionId = await ctx.agents!.spawn(resolveSel(step.adapter, b), {
         cwd,
@@ -1137,6 +1141,29 @@ async function execStepBody(
   }
 }
 
+/**
+ * A workflow's `finally` steps ({@link RuntimeWorkflow.finally}): every one
+ * runs, in order, without the run's abort signal (cleanup must survive a
+ * cancel). After a failed body, a cleanup error is reported on its step and
+ * swallowed so the original error wins; after a successful body the first
+ * cleanup error is rethrown once every cleanup step has had its turn.
+ */
+async function runFinally(steps: readonly RunStep[], ctx: RunCtx, bodyFailed: boolean): Promise<void> {
+  const cleanupCtx: RunCtx = { ...ctx, signal: undefined }
+  let firstError: unknown
+  for (const step of steps) {
+    try {
+      const out = await execStep(step, cleanupCtx, undefined, undefined)
+      cleanupCtx.state.steps[step.id] = out
+      completeStep(cleanupCtx, step.id, out)
+    } catch (err) {
+      cleanupCtx.onStepFailed?.(step.id, { error: errorMessage(err) })
+      if (firstError === undefined) firstError = err
+    }
+  }
+  if (!bodyFailed && firstError !== undefined) throw firstError
+}
+
 async function runWorkflowInner(
   workflow: RuntimeWorkflow,
   input: unknown,
@@ -1149,6 +1176,7 @@ async function runWorkflowInner(
   const ownsScope = hooks.spawned === undefined
   const ctx: RunCtx = { state, ...hooks, ...(ownsScope ? { spawned: [] } : {}) }
   let lastId: string | undefined
+  let bodyFailed = false
   try {
     for (const step of workflow.steps) {
       const out = await execStep(step, ctx, undefined, undefined)
@@ -1156,8 +1184,15 @@ async function runWorkflowInner(
       completeStep(ctx, step.id, out)
       lastId = step.id
     }
+  } catch (err) {
+    bodyFailed = true
+    throw err
   } finally {
-    if (ownsScope) await releaseScope(ctx)
+    try {
+      if (workflow.finally && workflow.finally.length > 0) await runFinally(workflow.finally, ctx, bodyFailed)
+    } finally {
+      if (ownsScope) await releaseScope(ctx)
+    }
   }
   const bindings = view(state)
   const output = workflow.output

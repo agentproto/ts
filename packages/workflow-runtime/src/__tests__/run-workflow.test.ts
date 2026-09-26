@@ -2754,3 +2754,103 @@ describe("runWorkflow — tolerant fan-out failures", () => {
     expect(vi.mocked(host.spawn).mock.calls[0]?.[1]).toMatchObject({ cwd: "/base/sub/dir" })
   })
 })
+
+// ── finally: cleanup that always runs ───────────────────────────────────
+
+describe("runWorkflow — finally", () => {
+  const cleanup = (log: string[], id = "cleanup"): RuntimeWorkflow["steps"][number] => ({
+    kind: "transform",
+    id,
+    compute: (b) => {
+      log.push(`${id}:${JSON.stringify(b.steps.made ?? null)}`)
+      return "cleaned"
+    },
+  })
+
+  it("runs after a successful body, sees its bindings, and doesn't change the output", async () => {
+    const log: string[] = []
+    const wf: RuntimeWorkflow = {
+      id: "fin-ok",
+      steps: [{ kind: "transform", id: "made", compute: () => "wt-1" }],
+      finally: [cleanup(log)],
+      output: (b) => b.steps.made,
+    }
+    const { output } = await runWorkflow({ workflow: wf })
+    expect(output).toBe("wt-1")
+    expect(log).toEqual(['cleanup:"wt-1"'])
+  })
+
+  it("runs after a failed body, and the body's error wins over a cleanup error", async () => {
+    const log: string[] = []
+    const failed: string[] = []
+    const wf: RuntimeWorkflow = {
+      id: "fin-fail",
+      steps: [
+        { kind: "transform", id: "made", compute: () => "wt-1" },
+        { kind: "transform", id: "boom", compute: () => { throw new Error("body broke") } },
+      ],
+      finally: [
+        { kind: "transform", id: "cleanupA", compute: () => { throw new Error("cleanup broke") } },
+        cleanup(log, "cleanupB"),
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf, onStepFailed: (id) => failed.push(id) })).rejects.toThrow("body broke")
+    expect(log).toEqual(['cleanupB:"wt-1"'])
+    expect(failed).toEqual(["cleanupA"])
+  })
+
+  it("a failing cleanup fails an otherwise-successful run — after every cleanup step ran", async () => {
+    const log: string[] = []
+    const wf: RuntimeWorkflow = {
+      id: "fin-cleanup-fails",
+      steps: [{ kind: "transform", id: "made", compute: () => "wt-1" }],
+      finally: [
+        { kind: "transform", id: "cleanupA", compute: () => { throw new Error("cleanup broke") } },
+        cleanup(log, "cleanupB"),
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf })).rejects.toThrow("cleanup broke")
+    expect(log).toEqual(['cleanupB:"wt-1"'])
+  })
+
+  it("on cancel: no new agent session is spawned, the run winds down, and finally still runs (without the aborted signal)", async () => {
+    const log: string[] = []
+    const ac = new AbortController()
+    const host = fakeHost({
+      sendPromptAndWait: vi.fn(async (_sid: string, prompt: string) => {
+        if (prompt === "1") ac.abort()
+      }),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "fin-cancel",
+      steps: [
+        { kind: "transform", id: "made", compute: () => "wt-1" },
+        {
+          kind: "map",
+          id: "fan",
+          over: () => [0, 1, 2, 3, 4],
+          onError: "collect",
+          maxConsecutiveSpawnFailures: 0,
+          body: () => ({ kind: "agent", id: "s", adapter: "mock", prompt: (b) => String(b.item) }),
+        },
+      ],
+      finally: [
+        {
+          kind: "transform",
+          id: "cleanup",
+          compute: (b) => {
+            log.push(`cleanup:${JSON.stringify(b.steps.made)}`)
+            return "cleaned"
+          },
+        },
+      ],
+      output: (b) => b.steps.fan,
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host, signal: ac.signal })
+    expect(host.spawn).toHaveBeenCalledTimes(2)
+    expect(output).toMatchObject({ succeeded: 2, failed: 3 })
+    expect((output as { results: Array<{ error?: string }> }).results[2]!.error).toBe("step 's': run cancelled — not spawning")
+    expect(log).toEqual(['cleanup:"wt-1"'])
+  })
+
+})

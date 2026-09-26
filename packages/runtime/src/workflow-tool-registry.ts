@@ -105,6 +105,10 @@ export function createDaemonToolRegistry(
 ): CompileWorkflowOptions {
   const toolIds = new Set<string>()
   collectToolIds(handle.steps, toolIds)
+  // An entry-authored `finally` block (cleanup that always runs) dispatches
+  // tools too.
+  const finallySteps = (handle as { finally?: readonly AnyStep[] }).finally
+  if (finallySteps) collectToolIds(finallySteps, toolIds)
 
   const tools: Record<string, ToolHandle> = {}
   const execute: Record<string, ExecuteFn> = {}

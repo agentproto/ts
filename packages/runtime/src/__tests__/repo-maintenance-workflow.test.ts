@@ -137,6 +137,11 @@ function mcpResult(value: unknown): { content: Array<{ type: "text"; text: strin
   return { content: [{ type: "text", text: JSON.stringify(value) }] }
 }
 
+/** What `branch_gc_review_worktree` answers (no real git here). */
+function reviewWorktreeResult(inputs: Record<string, unknown>) {
+  return mcpResult(inputs.action === "add" ? { path: inputs.path, sha: inputs.sha } : { removed: inputs.paths ?? [] })
+}
+
 function fakeAgentHost(spawn: AgentSessionHost["spawn"]): AgentSessionHost {
   return {
     spawn,
@@ -197,7 +202,9 @@ describe("repo-maintenance maintain workflow — shape", () => {
       "branchGcPlan:tool",
       "reviewQueue:transform",
       "reviewCandidates:transform",
+      "reviewWorktreePaths:transform",
       "review:map",
+      "reviewCleanup:tool",
       "branchGcVerify:tool",
       "gaps:transform",
       "branchGcApply:tool",
@@ -239,6 +246,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
         const missing = inputs.sha !== SHA_A
         return mcpResult({ sha: inputs.sha, found: !missing, missing, record: missing ? null : { sha: inputs.sha } })
       }
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
       throw new Error(`unexpected tool '${name}'`)
     })
 
@@ -331,6 +339,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
       if (name === "command_execute") {
         return mcpResult({ exitCode: 0, stdout: "", stderr: "" })
       }
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
       throw new Error(`unexpected tool '${name}'`)
     })
 
@@ -387,6 +396,7 @@ describe("repo-maintenance maintain workflow — missing-verdict retry", () => {
         if (inputs.sha === SHA_B) missing = checksOfB.n++ < landsAfter
         return mcpResult({ sha: inputs.sha, found: !missing, missing, record: missing ? null : { sha: inputs.sha } })
       }
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
       throw new Error(`unexpected tool '${name}'`)
     })
     const { host, spawns, sends } = recordingAgentHost()
@@ -479,10 +489,11 @@ describe("repo-maintenance maintain workflow — rendered reviewer prompt", () =
       },
       summary: { byClass: { local: { reclaim: 0, review: 2, hold: 0 } }, byStatus: {} },
     }
-    const dispatchTool: DispatchTool = vi.fn(async name => {
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
       if (name === "worktree_gc") return mcpResult({ mode: "plan", outcomes: [] })
       if (name === "branch_gc") return mcpResult(plan)
       if (name === "branch_gc_verdict_get") return mcpResult({ found: true, missing: false })
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
       throw new Error(`unexpected tool '${name}'`)
     })
     const sessionToSha = new Map<string, string>()
@@ -509,7 +520,7 @@ describe("repo-maintenance maintain workflow — rendered reviewer prompt", () =
   it("keeps the opening sentence (branch, tip, repo, base) and omits the pre-rewrite note for a current-history branch", async () => {
     const prompt = (await renderPrompts()).get(SHA_A)!
     expect(prompt.startsWith(
-      `Review the local branch \`wt/current\` (tip ${SHA_A}) in the repo at /repo. ` +
+      `Review the local branch \`wt/current\` (tip ${SHA_A}) in the repo at ${join(tmpdir(), "agentproto-maintain-review", `repo-${SHA_A}`)}. ` +
         `It is unmerged relative to base origin/main (base sha ${BASE_SHA}). `,
     )).toBe(true)
     expect(prompt).not.toMatch(/pre-rewrite/)
@@ -520,7 +531,7 @@ describe("repo-maintenance maintain workflow — rendered reviewer prompt", () =
 
   it("adds the compare base + pre-rewrite note only for a pre-rewrite branch", async () => {
     const prompt = (await renderPrompts()).get(SHA_B)!
-    expect(prompt.startsWith(`Review the local branch \`wt/old\` (tip ${SHA_B}) in the repo at /repo.`)).toBe(true)
+    expect(prompt.startsWith(`Review the local branch \`wt/old\` (tip ${SHA_B}) in the repo at ${join(tmpdir(), "agentproto-maintain-review", `repo-${SHA_B}`)}.`)).toBe(true)
     expect(prompt).toContain(
       `(base sha ${BASE_SHA}), compare base ${ANCHOR_SHA} (pre-rewrite history — commit shas`,
     )
@@ -529,10 +540,12 @@ describe("repo-maintenance maintain workflow — rendered reviewer prompt", () =
 })
 
 describe("repo-maintenance maintain workflow — at scale (FIX-3 dogfood)", () => {
+  const sha = (i: number) => i.toString(16).padStart(40, "0")
+  /** Every tool call of the most recent `run` (also when it rejected). */
+  let lastCalls: Array<{ name: string; inputs: Record<string, unknown> }> = []
   /** `n` unreviewed review candidates `wt/c<i>` (ageDays = `ages[i]`,
    *  residualFileCount = `residuals[i]`), plus one tip already reviewed. */
   function scalePlan(n: number, ages: (i: number) => number, residuals: (i: number) => number) {
-    const sha = (i: number) => i.toString(16).padStart(40, "0")
     const entries: Array<Record<string, unknown>> = Array.from({ length: n }, (_, i) => ({
       kind: "local",
       name: `wt/c${i}`,
@@ -574,14 +587,22 @@ describe("repo-maintenance maintain workflow — at scale (FIX-3 dogfood)", () =
     input?: Record<string, unknown>
     spawn?: AgentSessionHost["spawn"]
     verdictLands?: boolean
+    onBranchGc?: () => void
   }) {
+    const calls: Array<{ name: string; inputs: Record<string, unknown> }> = []
+    lastCalls = calls
     const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      calls.push({ name, inputs })
       if (name === "worktree_gc") return mcpResult(inputs.apply ? { mode: "apply", outcomes: [] } : worktreeGcPlanFixture())
-      if (name === "branch_gc") return mcpResult(opts.plan)
+      if (name === "branch_gc") {
+        opts.onBranchGc?.()
+        return mcpResult(opts.plan)
+      }
       if (name === "branch_gc_verdict_get") {
         const missing = opts.verdictLands !== true
         return mcpResult({ sha: inputs.sha, found: !missing, missing, record: null })
       }
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
       throw new Error(`unexpected tool '${name}'`)
     })
     const spawns: Array<{ stepId?: string; stepKey?: string; cwd?: string }> = []
@@ -613,16 +634,70 @@ describe("repo-maintenance maintain workflow — at scale (FIX-3 dogfood)", () =
       cwd: tmpdir(),
       input: { repoRoot: "/repo", ...opts.input },
     })
-    return { spawns, sends, output: output as { report: string; gaps: Array<{ name: string }> } }
+    return { spawns, sends, calls, output: output as { report: string; gaps: Array<{ name: string }> } }
   }
 
-  it("P0-1: reviewer sessions spawn at the repo root (never the app dir), and the prompt forbids touching the live checkout", async () => {
-    const { spawns, sends } = await run({ plan: scalePlan(1, () => 1, () => 9) })
+  it("P0-1: every reviewer runs in its own detached review worktree — never the repo's main worktree — and the prompt names that worktree, not the live repo", async () => {
+    const { spawns, sends, calls } = await run({ plan: scalePlan(2, i => i, () => 9) })
     const reviewerSpawns = spawns.filter(s => s.stepId === "reviewOne" || s.stepId === "reviewRetryLarge")
-    expect(reviewerSpawns.map(s => s.stepId)).toEqual(["reviewOne", "reviewRetryLarge"])
-    expect(reviewerSpawns.every(s => s.cwd === "/repo")).toBe(true)
-    expect(sends[0]!.prompt).toContain("is a LIVE checkout")
-    expect(sends[0]!.prompt).toContain("Never checkout, switch, stash, reset")
+    expect(reviewerSpawns.length).toBeGreaterThanOrEqual(2)
+    const adds = calls.filter(c => c.name === "branch_gc_review_worktree" && c.inputs.action === "add")
+    expect(adds.map(c => c.inputs.sha).sort()).toEqual([sha(1), sha(2)].sort())
+    const addedPaths = new Set(adds.map(c => c.inputs.path as string))
+    for (const s of reviewerSpawns) {
+      expect(s.cwd).not.toBe("/repo")
+      expect(s.cwd!.startsWith(join(tmpdir(), "agentproto-maintain-review", "repo-"))).toBe(true)
+      expect(addedPaths.has(s.cwd!)).toBe(true)
+    }
+    for (const send of sends) expect(send.prompt).not.toContain("/repo\"")
+    expect(sends[0]!.prompt).toContain(`in the repo at ${join(tmpdir(), "agentproto-maintain-review")}`)
+    expect(sends[0]!.prompt).toContain("disposable detached worktree")
+  })
+
+  it("review worktrees are removed on success: per item, after the map, and in finally", async () => {
+    const { calls } = await run({ plan: scalePlan(2, i => i, () => 1), verdictLands: true })
+    const wt = calls.filter(c => c.name === "branch_gc_review_worktree")
+    const adds = wt.filter(c => c.inputs.action === "add").map(c => c.inputs.path as string)
+    const removes = wt.filter(c => c.inputs.action === "remove").map(c => c.inputs.paths as string[])
+    expect(adds).toHaveLength(2)
+    // one per item, then reviewCleanup and the finally sweep over all of them
+    expect(removes.filter(p => p.length === 1).flat().sort()).toEqual([...adds].sort())
+    const sweeps = removes.filter(p => p.length === 2)
+    expect(sweeps).toHaveLength(2)
+    for (const sw of sweeps) expect([...sw].sort()).toEqual([...adds].sort())
+    // finally is the very last tool call of the run
+    expect(calls.at(-1)).toMatchObject({ name: "branch_gc_review_worktree", inputs: { action: "remove" } })
+  })
+
+  it("review worktrees are removed on failure: a reviewer that dies leaves its item's worktree to the sweep, and a run that fails still cleans up in finally", async () => {
+    // Reviewers can't spawn: items fail before their own remove step.
+    const failedItems = await run({
+      plan: scalePlan(2, i => i, () => 1),
+      spawn: async () => {
+        throw new Error("spawn failed")
+      },
+    })
+    const wt1 = failedItems.calls.filter(c => c.name === "branch_gc_review_worktree")
+    const added1 = wt1.filter(c => c.inputs.action === "add").map(c => c.inputs.path as string).sort()
+    expect(added1).toHaveLength(2)
+    expect(wt1.filter(c => c.inputs.action === "remove" && (c.inputs.paths as string[]).length === 1)).toHaveLength(0)
+    const sweeps1 = wt1.filter(c => c.inputs.action === "remove").map(c => [...(c.inputs.paths as string[])].sort())
+    expect(sweeps1).toEqual([added1, added1])
+
+    // The whole run fails after the map (branchGcVerify throws): finally still sweeps.
+    let branchGcCalls = 0
+    const failedRun = run({
+      plan: scalePlan(2, i => i, () => 1),
+      verdictLands: true,
+      onBranchGc: () => {
+        if (++branchGcCalls === 2) throw new Error("verify exploded")
+      },
+    })
+    await expect(failedRun).rejects.toThrow("verify exploded")
+    const calls2 = lastCalls
+    const added2 = calls2.filter(c => c.name === "branch_gc_review_worktree" && c.inputs.action === "add").map(c => c.inputs.path as string).sort()
+    expect(calls2.at(-1)).toMatchObject({ name: "branch_gc_review_worktree", inputs: { action: "remove" } })
+    expect([...(calls2.at(-1)!.inputs.paths as string[])].sort()).toEqual(added2)
   })
 
   it("P1-5: reviews at most maxReviews (default 40), newest tip first then larger residual; the backlog is 'not reviewed this run', never a gap; a reviewed tip is skipped", async () => {

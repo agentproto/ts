@@ -17,7 +17,8 @@ The `maintain` workflow, one run:
    unmerged branch candidates with no stored verdict yet — at most
    `maxReviews` (default 40) per run, newest tip first, then the larger
    residual; the rest wait for the next run (one turn per unique tip sha,
-   parallelism 4, sessions run at the repo root): haiku when the
+   parallelism 4, each reviewer in its own disposable detached worktree
+   under the OS tmp dir, never the live checkout): haiku when the
    candidate's residual is 3 files or fewer, sonnet otherwise. Three spawn
    failures in a row stop the fan-out (the engine's circuit breaker) and
    the report lists every distinct failure reason. Each turn records a verdict via `branch_gc_verdict` —
