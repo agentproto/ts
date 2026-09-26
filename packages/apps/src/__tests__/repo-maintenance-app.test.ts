@@ -40,6 +40,7 @@ describe("repo-maintenance app", () => {
     expect(stepIds).toEqual([
       "worktreeGcPlan:tool",
       "branchGcPlan:tool",
+      "reviewQueue:transform",
       "reviewCandidates:transform",
       "review:map",
       "branchGcVerify:tool",
