@@ -10,7 +10,7 @@ import { createServer, type Server } from "node:http"
 import type { AddressInfo } from "node:net"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
+import { ListToolsRequestSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 import { makeSessionsPanelApp, makeWorkBoardApp } from "@agentproto/apps"
 import { registerUiResource } from "@agentproto/mcp-server"
 import { registerMcpApps } from "../mcp-apps-adapter.js"
@@ -30,6 +30,8 @@ let baseUrl: string
 let extraUiTool = false
 /** Adds UI tools whose resources carry malformed `_meta.ui.csp`. */
 let malformedCspTools = false
+/** Splits `tools/list` over two pages (a real `nextCursor` round trip). */
+let paginatedTools = false
 const upstreamCalls: string[] = []
 
 function buildFixtureServer(): McpServer {
@@ -95,6 +97,28 @@ function buildFixtureServer(): McpServer {
       async () => ({ content: [{ type: "text", text: "{}" }] })
     )
   }
+  if (paginatedTools) {
+    // Real handlers, so tools/call works normally — only tools/list below
+    // is artificially split into two pages via `nextCursor`.
+    server.registerTool("page1_tool", { description: "page 1" }, async () => {
+      upstreamCalls.push("page1_tool")
+      return { content: [{ type: "text", text: "page1" }] }
+    })
+    server.registerTool("page2_tool", { description: "page 2" }, async () => {
+      upstreamCalls.push("page2_tool")
+      return { content: [{ type: "text", text: "page2" }] }
+    })
+    server.server.setRequestHandler(ListToolsRequestSchema, request => {
+      const cursor = request.params?.cursor
+      if (cursor === undefined) {
+        return { tools: [{ name: "page1_tool", inputSchema: { type: "object" } }], nextCursor: "page2" }
+      }
+      if (cursor === "page2") {
+        return { tools: [{ name: "page2_tool", inputSchema: { type: "object" } }] }
+      }
+      return { tools: [] }
+    })
+  }
   return server
 }
 
@@ -126,6 +150,7 @@ const pools: McpClientPool[] = []
 afterEach(async () => {
   extraUiTool = false
   malformedCspTools = false
+  paginatedTools = false
   upstreamCalls.length = 0
   await Promise.all(pools.splice(0).map(p => p.closeAll()))
 })
@@ -197,6 +222,14 @@ describe("McpAppsHostService.uiIndex", () => {
     await pool.get(fixtureConfig(), "x").reset()
     const after = await host.uiIndex("s1", "fixture")
     expect(after.tools.map(t => t.name)).toContain("late_panel")
+  })
+
+  it("collects every tools/list page, not just the first", async () => {
+    paginatedTools = true
+    const { host } = makeHost()
+    const index = await host.uiIndex("s1", "fixture")
+    expect(index.status).toBe("ok")
+    expect(index.allToolNames).toEqual(expect.arrayContaining(["page1_tool", "page2_tool"]))
   })
 })
 
@@ -382,6 +415,15 @@ describe("McpAppsHostService.callTool", () => {
     })
     expect(other.isError).toBe(true)
     expect(upstreamCalls).toEqual(["admin_delete_all"])
+  })
+
+  it("allows a tool that only appears on the second tools/list page", async () => {
+    paginatedTools = true
+    const { host } = makeHost()
+    const r = await host.callTool({ sessionId: "s1", server: "fixture", tool: "page2_tool", originToolCallId: "tc-1" })
+    expect(r.isError).toBeFalsy()
+    expect(text(r)).toBe("page2")
+    expect(upstreamCalls).toEqual(["page2_tool"])
   })
 
   it("returns an isError result when the server is not ok", async () => {

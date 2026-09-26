@@ -262,6 +262,26 @@ const defaultOpener: McpClientOpener = (config, label) =>
  *  same set `McpProxyRegistry.callTool` treats as "reconnect next time". */
 const DEAD_CONNECTION_RE = /closed|disconnect|EPIPE|ECONNRESET/i
 
+/** `tools/list` is a paginated MCP result (`nextCursor`); a server with
+ *  enough tools may spread them over several pages. The UI index needs
+ *  every tool the server has — a first-page-only read would make page-2+
+ *  tools read as nonexistent to `mcp-apps-host.ts`'s app-UI `callTool`
+ *  gate. Capped so a server whose cursor never terminates can't hang a
+ *  connect forever. */
+const MAX_TOOL_LIST_PAGES = 50
+
+async function listAllTools(client: Client): Promise<Tool[]> {
+  const tools: Tool[] = []
+  let cursor: string | undefined
+  for (let page = 0; page < MAX_TOOL_LIST_PAGES; page++) {
+    const result = await client.listTools(cursor !== undefined ? { cursor } : undefined)
+    tools.push(...result.tools)
+    if (!result.nextCursor) break
+    cursor = result.nextCursor
+  }
+  return tools
+}
+
 /**
  * A lazily-connected client for one config. Caches `tools/list` and the UI
  * index derived from it; both are dropped whenever the connection is, so a
@@ -288,8 +308,7 @@ export class PooledMcpClient {
       this.connecting = (async () => {
         const client = await this.opener(this.config, this.label)
         try {
-          const listed = await client.listTools()
-          this.tools = listed.tools
+          this.tools = await listAllTools(client)
           this.index = null
           this.client = client
           return client
