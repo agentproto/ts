@@ -1,5 +1,4 @@
 ---
-"@agentproto/llm-endpoint": minor
 "@agentproto/cli": minor
 ---
 
