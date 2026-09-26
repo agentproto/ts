@@ -56,6 +56,29 @@ import { base64Decode, base64Encode, utf8Encode } from "./bytes.js"
 
 export const TUNNEL_VERSION = "agentproto/tunnel/v1" as const
 
+/**
+ * The most raw bytes one frame may carry in its base64 payload (`body`,
+ * `data`). Anything larger is split across frames (see `http_response_head` /
+ * `http_response_chunk`, `http_request.bodyChunked` / `http_request_chunk`,
+ * and `ws_message.more`).
+ *
+ * Why: the rendezvous closes any WebSocket message above its
+ * `maxMessageBytes` (1 MiB by default, including the hosted broker). Over a
+ * pairing, a payload is base64'd into the frame, and that frame is sealed
+ * and base64'd again into the `e2e` envelope, so wire size ≈ 16/9 × raw. At
+ * 256 KiB that is ~466 KiB per message: under 1 MiB with room for headers.
+ */
+export const MAX_FRAME_PAYLOAD_BYTES = 256 * 1024
+
+/** Split `bytes` into pieces of at most `max` bytes (views, no copies). One
+ *  empty piece for an empty input. */
+export function splitPayload(bytes: Uint8Array, max: number = MAX_FRAME_PAYLOAD_BYTES): Uint8Array[] {
+  if (bytes.length <= max) return [bytes]
+  const out: Uint8Array[] = []
+  for (let off = 0; off < bytes.length; off += max) out.push(bytes.subarray(off, off + max))
+  return out
+}
+
 // ─── host → daemon ──────────────────────────────────────────────
 
 export interface SpawnFrame {
@@ -134,9 +157,28 @@ export interface HttpRequestFrame {
   headers?: Readonly<Record<string, string>>
   /** Base64-encoded request body. Omitted when no body. */
   body?: string
+  /** The body follows as `http_request_chunk` frames (the last with
+   *  `end: true`) instead of inline — for bodies above
+   *  `MAX_FRAME_PAYLOAD_BYTES`. `body` is then omitted. Only sent to a daemon
+   *  whose hello advertises `capabilities.httpRequestChunks`. */
+  bodyChunked?: boolean
   /** Per-request timeout in ms. Daemon SHOULD enforce + reply with
    *  `error: { code: "timeout" }` when exceeded. Default 30_000. */
   timeoutMs?: number
+}
+
+/**
+ * One piece of a chunked request body (HOST → DAEMON), after an
+ * `http_request` with `bodyChunked: true` for the same `reqId`. The daemon
+ * buffers the pieces and forwards the request upstream at `end: true`.
+ */
+export interface HttpRequestChunkFrame {
+  t: "http_request_chunk"
+  reqId: string
+  /** Base64 bytes (at most `MAX_FRAME_PAYLOAD_BYTES` raw). */
+  data?: string
+  /** Set on the last piece. */
+  end?: boolean
 }
 
 /**
@@ -242,6 +284,12 @@ export interface HelloFrame {
      *  `ws_open` / `ws_message` / `ws_close`. Hosts MUST gate
      *  `forwardWebSocket()` on this — older daemons ignore the frames. */
     wsForward?: boolean
+    /** Daemon accepts `http_request.bodyChunked` + `http_request_chunk`.
+     *  Hosts send large bodies inline to daemons without it. */
+    httpRequestChunks?: boolean
+    /** Daemon reassembles fragmented host→daemon `ws_message`s (`more`).
+     *  Hosts send large WS messages whole to daemons without it. */
+    wsFragments?: boolean
     /**
      * Identifiers of the capabilities the daemon serves — its registered
      * agent adapters / tool surfaces. Lets a host that fronts several
@@ -389,6 +437,10 @@ export interface WsOpenFrame {
   headers?: Readonly<Record<string, string>>
   /** Subprotocols requested by the browser; forwarded to upstream. */
   protocols?: readonly string[]
+  /** The host reassembles fragmented `ws_message`s (`more`), so the daemon may
+   *  split large upstream messages for this connection. Older hosts omit it
+   *  and get every message whole. */
+  fragments?: boolean
 }
 
 /**
@@ -426,6 +478,11 @@ export interface WsMessageFrame {
   data: string
   /** True for binary frames; false (or omitted) for text. */
   binary?: boolean
+  /** Not the last fragment of this WS message: the receiver buffers until a
+   *  frame without `more`, then delivers the whole message (with the last
+   *  fragment's `binary`). Only sent to a peer that negotiated fragments
+   *  (`ws_open.fragments` / `hello.capabilities.wsFragments`). */
+  more?: boolean
 }
 
 /**
@@ -493,6 +550,7 @@ export type HostToDaemonFrame =
   | KillFrame
   | ResizeFrame
   | HttpRequestFrame
+  | HttpRequestChunkFrame
   | HttpCancelFrame
   | WsOpenFrame
   | WsMessageFrame
@@ -530,6 +588,7 @@ const KNOWN_TYPES = new Set<TunnelFrame["t"]>([
   "kill",
   "resize",
   "http_request",
+  "http_request_chunk",
   "http_cancel",
   "http_response",
   "http_response_head",

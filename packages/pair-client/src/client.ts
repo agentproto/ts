@@ -23,8 +23,10 @@
  */
 
 import {
+  MAX_FRAME_PAYLOAD_BYTES,
   decodeData,
   encodeData,
+  splitPayload,
   type E2eFrameSink,
   type HelloFrame,
   type TunnelFrame,
@@ -490,14 +492,29 @@ export function connect(credential: PairCredential, opts: ConnectOptions = {}): 
       }
       l.pending.set(reqId, pending)
       signal.addEventListener("abort", onAbort)
-      l.sink.send({
-        t: "http_request",
+      const base = {
+        t: "http_request" as const,
         reqId,
         method,
         path,
         ...(Object.keys(headers).length ? { headers } : {}),
-        ...(body && body.length ? { body: encodeData(body) } : {}),
-      })
+      }
+      if (body && body.length > MAX_FRAME_PAYLOAD_BYTES && hello?.capabilities.httpRequestChunks === true) {
+        // One frame this size would exceed the rendezvous' message cap once
+        // E2E-wrapped (and kill the channel): stream it in bounded chunks.
+        l.sink.send({ ...base, bodyChunked: true })
+        const pieces = splitPayload(body)
+        pieces.forEach((piece, i) => {
+          l.sink.send({
+            t: "http_request_chunk",
+            reqId,
+            data: encodeData(piece),
+            ...(i === pieces.length - 1 ? { end: true } : {}),
+          })
+        })
+      } else {
+        l.sink.send({ ...base, ...(body && body.length ? { body: encodeData(body) } : {}) })
+      }
     })
   }
 
