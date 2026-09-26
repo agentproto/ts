@@ -4,13 +4,18 @@
 # this directory. The account comes from the environment
 # (CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN), never from this file.
 #
-# No routes yet: the `*.agentproto.cloud/*` route (plus a proxied wildcard
-# `*` DNS record) is added once the workers.dev preview is verified.
+# Production serves every `<fp>.agentproto.cloud` through the route below; the
+# zone also needs a proxied wildcard `*` DNS record (AAAA 100::, no origin).
+# The workers.dev host 404s unless deployed with
+# `--var PREVIEW_HOSTS:agentproto-pair-page.<account-subdomain>.workers.dev`.
 
 name = "agentproto-pair-page"
 main = "src/worker.ts"
 compatibility_date = "2026-09-01"
 workers_dev = true
+routes = [
+  { pattern = "*.agentproto.cloud/*", zone_name = "agentproto.cloud" },
+]
 
 [assets]
 directory = "./dist"
