@@ -93,7 +93,7 @@ import {
   type WorktreeStatusView,
 } from "./worktree-status.js"
 import { livingSessionCwds, type WorktreeGcRunner } from "./worktree-gc.js"
-import type { BranchGcRunner, BranchGcVerdictRecorder } from "./branch-gc.js"
+import type { BranchGcRunner, BranchGcVerdictRecorder, BranchGcVerdictReader } from "./branch-gc.js"
 import { basename, join } from "node:path"
 import {
   ALLOWLIST_REL,
@@ -373,6 +373,8 @@ export interface RegisterSessionToolsOptions {
   runBranchGc?: BranchGcRunner
   /** Optional verdict recorder powering `branch_gc_verdict`. Same injection reason. */
   recordBranchGcVerdict?: BranchGcVerdictRecorder
+  /** Optional verdict reader powering `branch_gc_verdict_get`. Same injection reason. */
+  readBranchGcVerdict?: BranchGcVerdictReader
   /** Forwarded to `registerAgentTools` — see
    *  `RegisterAgentToolsOptions.isSessionChatInstalled`. */
   isSessionChatInstalled?: RegisterAgentToolsOptions["isSessionChatInstalled"]
@@ -626,6 +628,7 @@ export function registerSessionTools(
     runWorktreeGc,
     runBranchGc,
     recordBranchGcVerdict,
+    readBranchGcVerdict,
     listCatalogModels,
     loadDefaultsConfig,
   } = opts
@@ -2596,6 +2599,50 @@ export function registerSessionTools(
       } catch (err) {
         return {
           content: [{ type: "text", text: `branch_gc_verdict failed: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  server.tool(
+    "branch_gc_verdict_get",
+    "Read the stored reviewer verdict (branch_gc_verdict) for one branch tip, " +
+      "keyed by repo + tip sha. Returns `{ sha, found, missing, record }` — " +
+      "`record` is null when no verdict exists for that exact sha. Read-only.",
+    {
+      repoRoot: z.string().optional().describe("Absolute path to the git repo. Wins over `workspaceSlug`."),
+      workspaceSlug: z.string().optional().describe("Workspace slug. The active workspace when omitted."),
+      sha: z.string().describe("Full tip sha to look up."),
+    },
+    async input => {
+      if (!readBranchGcVerdict) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "branch_gc_verdict_get is not enabled — the host must wire `readBranchGcVerdict` in createGateway.",
+            },
+          ],
+          isError: true,
+        }
+      }
+      const resolved = await resolveWorktreeQueryRoot({ repoRoot: input.repoRoot, workspaceSlug: input.workspaceSlug })
+      if (!resolved.ok) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }], isError: true }
+      }
+      try {
+        const record = await readBranchGcVerdict({ repoRoot: resolved.repoRoot, sha: input.sha })
+        // `missing` is the plain-truthy mirror of `!found`, so a workflow
+        // `branch` step's bare-ref `when` can test it directly.
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ sha: input.sha, found: record !== null, missing: record === null, record }) },
+          ],
+        }
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `branch_gc_verdict_get failed: ${err instanceof Error ? err.message : String(err)}` }],
           isError: true,
         }
       }

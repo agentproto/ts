@@ -322,7 +322,12 @@ export interface AgentStep {
   id: string
   /** Adapter slug to spawn a NEW session. Omit to reuse via sessionRef. */
   adapter?: Selector<string> | string
-  /** Reuse an earlier AgentStep's spawned session, by that step's id. */
+  /** Reuse an earlier AgentStep's spawned session, by that step's id. Inside
+   *  a `map`/`pipeline` body, a `{{index}}` placeholder resolves to the
+   *  current item index — `"review[{{index}}]"` names the session THIS item's
+   *  `review` step spawned (the host indexes every fan-out spawn under its
+   *  `stepKey`, `<stepId>[<index>]`), where a bare `"review"` would resolve to
+   *  whichever item spawned last. */
   sessionRef?: string
   /** Model id override for this spawn — same semantics as `agent_start.model`
    *  (a literal string or a per-run selector resolving to one; `undefined` ⇒

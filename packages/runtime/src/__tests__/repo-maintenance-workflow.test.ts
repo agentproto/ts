@@ -33,10 +33,11 @@ const SHA_A = "a".repeat(40) // small residual — reviewed twice (local + remot
 const SHA_B = "b".repeat(40) // large residual — never gets a verdict (the "gap")
 const BASE_SHA = "c".repeat(40)
 
-function branchGcPlanFixture(withVerdictOnA: boolean) {
+function branchGcPlanFixture(withVerdictOnA: boolean, verdictOnB?: { triage: string; agree: boolean | null }) {
   const verdictA = withVerdictOnA
     ? { verdict: { triage: "obsolete", agree: true, reviewer: "repo-maintenance-reviewer" } }
     : {}
+  const verdictB = verdictOnB ? { verdict: { ...verdictOnB, reviewer: "repo-maintenance-reviewer" } } : {}
   return {
     mode: "plan",
     plan: {
@@ -100,6 +101,7 @@ function branchGcPlanFixture(withVerdictOnA: boolean) {
           behind: 0,
           residualFiles: ["b1.txt", "b2.txt", "b3.txt", "b4.txt"],
           residualFileCount: 4,
+          ...verdictB,
         },
         {
           kind: "local",
@@ -142,6 +144,47 @@ function fakeAgentHost(spawn: AgentSessionHost["spawn"]): AgentSessionHost {
   }
 }
 
+/** What `worktree_gc` really returns for a dry run (`makeWorktreeGcRunner`,
+ *  cli/src/commands/worktree.ts): `plan` IS the entry array. */
+function worktreeGcPlanFixture() {
+  const wt = (path: string, cls: "reclaim" | "salvage" | "hold") => ({
+    path,
+    branch: `wt/${path}`,
+    head: "1".repeat(40),
+    class: cls,
+    tree: "clean",
+    integration: { state: "merged" },
+    liveness: { state: "idle", sessionCount: 0 },
+  })
+  return { mode: "plan", plan: [wt("a", "reclaim"), wt("b", "reclaim"), wt("c", "salvage"), wt("d", "hold")] }
+}
+
+/**
+ * A mock host that behaves like `SessionsRegistryAgentHost` where the retry
+ * path cares: every spawn is indexed under its `stepKey` (`reviewOne[0]`), so
+ * a `sessionRef: "reviewOne[{{index}}]"` step resolves to that item's own
+ * session. Records every spawn and every prompt sent.
+ */
+function recordingAgentHost() {
+  const byLabel = new Map<string, string>()
+  const spawns: Array<{ id: string; stepId?: string; stepKey?: string; model?: string }> = []
+  const sends: Array<{ sessionId: string; prompt: string }> = []
+  const host: AgentSessionHost = {
+    spawn: vi.fn(async (_adapter, opts) => {
+      const o = opts as { stepId?: string; stepKey?: string; harness?: { model?: string } }
+      const id = `sess_${spawns.length + 1}`
+      spawns.push({ id, stepId: o.stepId, stepKey: o.stepKey, model: o.harness?.model })
+      if (o.stepKey) byLabel.set(o.stepKey, id)
+      return id
+    }),
+    sendPromptAndWait: vi.fn(async (sessionId: string, prompt: string) => {
+      sends.push({ sessionId, prompt })
+    }),
+    resolveByLabel: vi.fn((label: string) => byLabel.get(label)),
+  }
+  return { host, spawns, sends }
+}
+
 describe("repo-maintenance maintain workflow — shape", () => {
   it("loads and compiles with the expected top-level step sequence", async () => {
     const dispatchTool: DispatchTool = vi.fn(async () => mcpResult({}))
@@ -179,7 +222,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
       calls.push({ name, inputs })
       if (name === "worktree_gc") {
-        return mcpResult({ mode: inputs.apply ? "apply" : "plan", outcomes: [] })
+        return mcpResult(inputs.apply ? { mode: "apply", outcomes: [] } : worktreeGcPlanFixture())
       }
       if (name === "branch_gc") {
         branchGcCallCount++
@@ -188,15 +231,16 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
         // branchGcApply.
         return mcpResult(branchGcPlanFixture(branchGcCallCount >= 2))
       }
+      if (name === "branch_gc_verdict_get") {
+        // SHA_A's reviewer recorded a verdict; SHA_B's never does, whatever
+        // the workflow tries.
+        const missing = inputs.sha !== SHA_A
+        return mcpResult({ sha: inputs.sha, found: !missing, missing, record: missing ? null : { sha: inputs.sha } })
+      }
       throw new Error(`unexpected tool '${name}'`)
     })
 
-    const spawnCalls: Array<{ adapter: string; opts: Record<string, unknown> }> = []
-    const spawn: AgentSessionHost["spawn"] = vi.fn(async (adapter, opts) => {
-      spawnCalls.push({ adapter, opts: opts as Record<string, unknown> })
-      return `sess_${spawnCalls.length}`
-    })
-
+    const { host, spawns, sends } = recordingAgentHost()
     const handle = await loadWorkflowHandle(WORKFLOW_PATH)
     const compiled = compileWorkflow(handle, {
       ...createDaemonToolRegistry(handle, dispatchTool),
@@ -204,16 +248,32 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     })
     const { output } = await runWorkflow({
       workflow: compiled,
-      agents: fakeAgentHost(spawn),
+      agents: host,
       input: { repoRoot: "/repo", applyMerged: false },
     })
 
-    // Exactly one spawn per UNIQUE tip sha, not per ref — the local+remote
+    // One reviewOne spawn per UNIQUE tip sha, not per ref — the local+remote
     // twin of SHA_A must collapse into one reviewer turn.
-    expect(spawnCalls).toHaveLength(2)
-    const bySha = new Map(spawnCalls.map(c => [(c.opts.harness as { model?: string })?.model, c]))
-    expect(bySha.get("claude-haiku-4-5-20251001")).toBeDefined() // SHA_A: residualFileCount 2 <= 3
-    expect(bySha.get("claude-sonnet-5")).toBeDefined() // SHA_B: residualFileCount 4 > 3
+    const reviewSpawns = spawns.filter(s => s.stepId === "reviewOne")
+    expect(reviewSpawns).toHaveLength(2)
+    const byModel = new Map(reviewSpawns.map(s => [s.model, s]))
+    expect(byModel.get("claude-haiku-4-5-20251001")).toBeDefined() // SHA_A: residualFileCount 2 <= 3
+    expect(byModel.get("claude-sonnet-5")).toBeDefined() // SHA_B: residualFileCount 4 > 3
+
+    // SHA_B (no verdict): nudged in its OWN session, then one fresh
+    // large-model retry — and still a gap. SHA_A: neither.
+    const reviewerOfB = sends.find(s => s.prompt.includes(`(tip ${SHA_B})`))!.sessionId
+    const nudges = sends.filter(s => s.prompt.startsWith("You did not call branch_gc_verdict"))
+    expect(nudges).toHaveLength(1)
+    expect(nudges[0]!.sessionId).toBe(reviewerOfB)
+    expect(nudges[0]!.prompt).toContain(SHA_B)
+    const retries = spawns.filter(s => s.stepId === "reviewRetryLarge")
+    expect(retries).toHaveLength(1)
+    expect(retries[0]!.model).toBe("claude-sonnet-5")
+    expect(sends.find(s => s.sessionId === retries[0]!.id)!.prompt).toContain(`(tip ${SHA_B})`)
+    const checkedShas = calls.filter(c => c.name === "branch_gc_verdict_get").map(c => c.inputs.sha)
+    expect(checkedShas.filter(sha => sha === SHA_A)).toHaveLength(1)
+    expect(checkedShas.filter(sha => sha === SHA_B)).toHaveLength(2)
 
     // branch_gc plan called once up front, once again to verify verdicts,
     // once more as the (dry-run, since applyMerged is false) apply step.
@@ -235,6 +295,12 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(result.gaps).toEqual([{ name: "wt/large-residual", sha: SHA_B, refs: ["refs/heads/wt/large-residual"] }])
     expect(result.report).toMatch(/wt\/large-residual/)
     expect(result.report).toMatch(/applyMerged.*is false|dry run only/i)
+    // Worktrees: per-class counts off the real plan shape (P0-1).
+    expect(result.report).toContain("4 worktree(s) classified")
+    expect(result.report).toContain("reclaim=2 salvage=1 hold=1")
+    // Review: the verdict tally, and no stale PLAN.md pointer.
+    expect(result.report).toContain("verdicts: obsolete=1 (deletion agreed on 1)")
+    expect(result.report).not.toContain("PLAN.md")
   })
 
   it("applies (apply:true) when applyMerged is true, and notifies when notify is set and there's something to report", async () => {
@@ -256,6 +322,9 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
           })
         }
         return mcpResult(branchGcPlanFixture(branchGcCallCount >= 2))
+      }
+      if (name === "branch_gc_verdict_get") {
+        return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
       }
       if (name === "command_execute") {
         return mcpResult({ exitCode: 0, stdout: "", stderr: "" })
@@ -294,6 +363,63 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
 
     const result = output as { applyMerged: boolean }
     expect(result.applyMerged).toBe(true)
+  })
+})
+
+describe("repo-maintenance maintain workflow — missing-verdict retry", () => {
+  /** Run the workflow with SHA_A always reviewed, and SHA_B's verdict landing
+   *  only once `landsAfter` verdict checks for it have come back missing. */
+  async function runWithVerdictLandingAfter(landsAfter: number) {
+    const checksOfB = { n: 0 }
+    let branchGcCallCount = 0
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      if (name === "worktree_gc") return mcpResult(inputs.apply ? { mode: "apply", outcomes: [] } : worktreeGcPlanFixture())
+      if (name === "branch_gc") {
+        branchGcCallCount++
+        return mcpResult(
+          branchGcPlanFixture(branchGcCallCount >= 2, branchGcCallCount >= 2 ? { triage: "salvage", agree: false } : undefined),
+        )
+      }
+      if (name === "branch_gc_verdict_get") {
+        let missing = false
+        if (inputs.sha === SHA_B) missing = checksOfB.n++ < landsAfter
+        return mcpResult({ sha: inputs.sha, found: !missing, missing, record: missing ? null : { sha: inputs.sha } })
+      }
+      throw new Error(`unexpected tool '${name}'`)
+    })
+    const { host, spawns, sends } = recordingAgentHost()
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    const { output } = await runWorkflow({ workflow: compiled, agents: host, input: { repoRoot: "/repo" } })
+    return { spawns, sends, output: output as { report: string; gaps: unknown[] } }
+  }
+
+  it("a verdict already stored after the first turn: no nudge, no retry", async () => {
+    const { spawns, sends } = await runWithVerdictLandingAfter(0)
+    expect(sends.some(s => s.prompt.startsWith("You did not call branch_gc_verdict"))).toBe(false)
+    expect(spawns.map(s => s.stepId)).toEqual(["reviewOne", "reviewOne"])
+  })
+
+  it("the same-session nudge recovers it: no large-model retry", async () => {
+    const { spawns, sends, output } = await runWithVerdictLandingAfter(1)
+    const nudges = sends.filter(s => s.prompt.startsWith("You did not call branch_gc_verdict"))
+    expect(nudges).toHaveLength(1)
+    const reviewerOfB = sends.find(s => s.prompt.includes(`(tip ${SHA_B})`))!.sessionId
+    expect(nudges[0]!.sessionId).toBe(reviewerOfB)
+    expect(spawns.some(s => s.stepId === "reviewRetryLarge")).toBe(false)
+    expect(output.gaps).toEqual([])
+  })
+
+  it("the large-model retry recovers it: not a gap, and a salvage verdict is named in the report", async () => {
+    const { spawns, output } = await runWithVerdictLandingAfter(2)
+    expect(spawns.filter(s => s.stepId === "reviewRetryLarge")).toHaveLength(1)
+    expect(output.gaps).toEqual([])
+    expect(output.report).toContain("every review candidate has a recorded verdict")
+    expect(output.report).toContain("verdicts: obsolete=1 salvage=1 (deletion agreed on 1)")
+    expect(output.report).toContain("**salvage — needs a human**: `wt/large-residual`")
   })
 })
 
@@ -354,6 +480,7 @@ describe("repo-maintenance maintain workflow — rendered reviewer prompt", () =
     const dispatchTool: DispatchTool = vi.fn(async name => {
       if (name === "worktree_gc") return mcpResult({ mode: "plan", outcomes: [] })
       if (name === "branch_gc") return mcpResult(plan)
+      if (name === "branch_gc_verdict_get") return mcpResult({ found: true, missing: false })
       throw new Error(`unexpected tool '${name}'`)
     })
     const sessionToSha = new Map<string, string>()

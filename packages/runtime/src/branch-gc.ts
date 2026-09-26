@@ -141,3 +141,13 @@ export interface BranchGcVerdictRecordView {
 
 /** Injected port: validate + store one reviewer verdict, keyed by repo + tip sha. Throws on an invalid verdict. */
 export type BranchGcVerdictRecorder = (input: BranchGcVerdictInput) => Promise<BranchGcVerdictRecordView>
+
+export interface BranchGcVerdictLookupInput {
+  repoRoot: string
+  /** Full tip sha — the store's key, together with the repo. */
+  sha: string
+}
+
+/** Injected port: the stored verdict for this exact tip, or `null` — a read-only
+ *  lookup, so a caller can check one tip without re-running a whole `branch_gc` plan. */
+export type BranchGcVerdictReader = (input: BranchGcVerdictLookupInput) => Promise<BranchGcVerdictRecordView | null>

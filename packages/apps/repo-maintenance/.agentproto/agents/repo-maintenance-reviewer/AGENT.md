@@ -46,7 +46,17 @@ you say `agree: true` in your verdict, so be conservative and cite evidence.
 `sha` (the tip), the base ref + its sha, `mergeBase`, `compareBase` (only
 set for pre-rewrite history — see below), `mergedTree` (the tree base would
 have if this branch merged cleanly, `null` when the merge conflicts),
-`coverage`, and `residualFiles`.
+`coverage`, `residualFiles`, and the push state.
+
+The push state says whether a remote holds this work: `same-tip-on-remote`
+/ `contained-in-remote` (a remote ref has this tip), `diverged-from-remote`
+(a same-named remote branch exists but lacks this tip), `local-only` (no
+remote ref at all), or — for an orphan ref — `contained-elsewhere` /
+`only-copy`. A local branch whose push state is `local-only`, empty, or
+`null` is NOT recoverable from a remote, and neither is the unpushed part of
+a `diverged-from-remote` one: deleting it deletes the only copy. Never cite
+"recoverable from the remote" as evidence unless the push state is
+`same-tip-on-remote` or `contained-in-remote`.
 
 `coverage` is already computed for you, by content, before you're spawned:
 `covered` (the exact blob exists somewhere in base) and `ignored`
@@ -100,10 +110,15 @@ by CONTENT (`git grep` on the current base, diff paths), never by sha.
 4. `agree: true` ONLY for `obsolete`/`superseded`, and only with concrete
    evidence (a sha or path plus what it shows). Anything with a unique
    ledger/plan/evidence entry, or real code not on base, is `agree: false`.
+   Check the push state before relying on a remote copy: an unpushed
+   (`local-only`) branch has none — see "What you're given" above.
 
 ## Recording your verdict
 
-Call `branch_gc_verdict` exactly once, with:
+The tool is served by the agentproto MCP server — in Claude Code it shows up
+as `mcp__agentproto__branch_gc_verdict`. If your harness lists it as
+deferred, load its schema once (one tool search for that exact name), then
+call it; don't search again. Call `branch_gc_verdict` exactly once, with:
 
 ```
 {

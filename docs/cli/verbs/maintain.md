@@ -16,9 +16,11 @@ One run:
 2. Fans a reviewer agent out over every unmerged branch candidate, one turn
    per unique tip sha: a small model when the candidate's residual is 3
    files or fewer, a large model otherwise. Each turn records a verdict via
-   `branch_gc_verdict` — recording a verdict never deletes anything.
+   `branch_gc_verdict` — recording a verdict never deletes anything. A turn
+   that ends without a stored verdict gets one same-session re-prompt, then
+   one large-model retry.
 3. Re-plans `branch_gc` to confirm every candidate got a verdict, and
-   reports any gap.
+   reports any gap, the verdict tally, and the `salvage` branches by name.
 4. With `--apply-merged`: applies `branch_gc` (reclaim-class only,
    `includeReviewed: false`) and `worktree_gc`. **A `review`-class branch is
    never reclaimed, agreed verdict or not** — see the app's README,

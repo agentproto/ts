@@ -19,6 +19,40 @@
 const DEFAULT_REVIEW_MODEL_SMALL = "claude-haiku-4-5-20251001"
 const DEFAULT_REVIEW_MODEL_LARGE = "claude-sonnet-5"
 
+const REVIEWER_REF = "@agentproto/repo-maintenance-reviewer"
+
+const REVIEW_PROMPT =
+  "Review the {{item.kind}} branch `{{item.name}}` (tip {{item.sha}}) in the repo at " +
+  "{{steps.branchGcPlan.plan.repoRoot}}. It is unmerged relative to base " +
+  "{{steps.branchGcPlan.plan.base}} (base sha {{item.base}})" +
+  "{{#item.compareBase}}, compare base {{item.compareBase}} (pre-rewrite history — commit " +
+  "shas from that history do not exist on the current base; compare CONTENT, not shas){{/item.compareBase}}. " +
+  "\n\nCoverage already proved what's in base by content: {{item.coverage}}. The residual files " +
+  "NOT provably in base are: {{item.residualFiles}}. Merge base: {{item.mergeBase}}. Merged tree " +
+  "(the tree base would have if this branch merged cleanly, or null when the merge conflicts): " +
+  "{{#item.mergedTree}}{{item.mergedTree}}{{/item.mergedTree}}{{^item.mergedTree}}null{{/item.mergedTree}}. Ahead {{item.ahead}}, behind {{item.behind}}. Push state: {{item.pushed}}. " +
+  "Every ref sharing this tip: {{item.refs}}." +
+  "\n\nRecord your verdict by calling branch_gc_verdict with repoRoot=" +
+  "\"{{steps.branchGcPlan.plan.repoRoot}}\", name=\"{{item.name}}\", sha=\"{{item.sha}}\", " +
+  "a triage block, and — ONLY when you agree deleting this branch loses nothing of value — a " +
+  "gate block with agree:true and non-empty evidence. Call branch_gc_verdict exactly once for " +
+  "this branch, then stop."
+
+const NUDGE_PROMPT =
+  "You did not call branch_gc_verdict for `{{item.name}}` (tip {{item.sha}}) — no verdict is " +
+  "stored for that sha. Call it now with your verdict: repoRoot=\"{{steps.branchGcPlan.plan.repoRoot}}\", " +
+  "name=\"{{item.name}}\", sha=\"{{item.sha}}\", a triage block, and a gate block only if you agree " +
+  "deletion loses nothing. Do not re-review; just record it, then stop."
+
+/** Read-only store lookup for the current item's tip — `branch_gc_verdict_get`
+ *  answers `{ found, missing, record }` without re-running a whole plan. */
+const VERDICT_CHECK = id => ({
+  id,
+  kind: "tool",
+  tool: "branch_gc_verdict_get",
+  inputs: { repoRoot: "$steps.branchGcPlan.plan.repoRoot", sha: "$item.sha" },
+})
+
 /** One `review`-class branch_gc plan entry per unique tip sha — a local
  *  branch and its remote twin share a tip, so they share one review instead
  *  of costing the reviewer two turns. Mirrors `branchReviewQueue()`
@@ -87,7 +121,46 @@ function countOutcomes(outcomes, result) {
   return (Array.isArray(outcomes) ? outcomes : []).filter(o => o.result === result).length
 }
 
-function buildReport(b) {
+/** `{ key: count }` over `values`, in first-seen order. */
+function tally(values) {
+  const counts = {}
+  for (const v of values) counts[v] = (counts[v] ?? 0) + 1
+  return counts
+}
+
+function formatTally(counts) {
+  return Object.entries(counts).map(([k, n]) => `${k}=${n}`).join(" ")
+}
+
+/** Per-class counts of a `worktree_gc` DRY RUN. The tool returns
+ *  `{ mode: "plan", plan: GcPlanEntry[] }` — `plan` is the entry array itself
+ *  (`makeWorktreeGcRunner`, packages/cli/src/commands/worktree.ts), NOT a
+ *  branch_gc-style `{ plan: { entries } }` object. */
+export function summarizeWorktreePlan(worktreeGcPlanResult) {
+  const entries = Array.isArray(worktreeGcPlanResult?.plan) ? worktreeGcPlanResult.plan : []
+  const byClass = { reclaim: 0, salvage: 0, hold: 0 }
+  for (const e of entries) byClass[e.class] = (byClass[e.class] ?? 0) + 1
+  return { total: entries.length, byClass }
+}
+
+/** The stored verdict of every review candidate, read off the verify plan
+ *  (`classifyRef` stamps `entry.verdict` for any unmerged ref with a verdict
+ *  for its exact tip) — one per candidate sha, so a local+remote twin counts
+ *  once. */
+export function collectCandidateVerdicts(reviewCandidates, branchGcVerifyResult) {
+  const bySha = new Map()
+  for (const e of branchGcVerifyResult?.plan?.entries ?? []) {
+    if (e.verdict && !bySha.has(e.sha)) bySha.set(e.sha, e.verdict)
+  }
+  const out = []
+  for (const c of reviewCandidates ?? []) {
+    const v = bySha.get(c.sha)
+    if (v) out.push({ name: c.name, sha: c.sha, triage: v.triage, agree: v.agree ?? null })
+  }
+  return out
+}
+
+export function buildReport(b) {
   const wtPlan = b.steps.worktreeGcPlan
   const bgPlan = b.steps.branchGcPlan
   const plan = bgPlan?.plan
@@ -98,6 +171,7 @@ function buildReport(b) {
     ? { succeeded: review.length, failed: 0 }
     : review ?? { succeeded: 0, failed: 0 }
   const gaps = b.steps.gaps ?? []
+  const verdicts = collectCandidateVerdicts(reviewCandidates, b.steps.branchGcVerify)
   const applyMerged = b.input?.applyMerged === true
   const branchGcApply = b.steps.branchGcApply
   const worktreeGcApply = b.steps.worktreeGcApply
@@ -108,8 +182,9 @@ function buildReport(b) {
   lines.push(`Base \`${plan?.base ?? "?"}\` @ \`${(plan?.baseSha ?? "").slice(0, 10)}\`${plan?.anchor ? ` (anchor \`${plan.anchor.slice(0, 10)}\`)` : ""}`)
   lines.push("")
   lines.push("## Worktrees")
-  const wtOutcomes = Array.isArray(wtPlan?.outcomes) ? wtPlan.outcomes : wtPlan?.plan?.worktrees ?? []
-  lines.push(`- mode: \`${wtPlan?.mode ?? "plan"}\` — ${Array.isArray(wtOutcomes) ? wtOutcomes.length : 0} worktree(s) classified`)
+  const wt = summarizeWorktreePlan(wtPlan)
+  lines.push(`- mode: \`${wtPlan?.mode ?? "plan"}\` — ${wt.total} worktree(s) classified`)
+  lines.push(`- reclaim=${wt.byClass.reclaim} salvage=${wt.byClass.salvage} hold=${wt.byClass.hold}`)
   lines.push("")
   lines.push("## Branches")
   for (const kind of plan?.scopes ?? []) {
@@ -121,8 +196,15 @@ function buildReport(b) {
   lines.push("")
   lines.push(`## Review (${reviewCandidates.length} candidate(s))`)
   lines.push(`- reviewer agent turns: ${reviewOutcome.succeeded} ok, ${reviewOutcome.failed} failed`)
+  if (verdicts.length > 0) {
+    lines.push(`- verdicts: ${formatTally(tally(verdicts.map(v => v.triage)))} (deletion agreed on ${verdicts.filter(v => v.agree === true).length})`)
+  }
+  const salvage = verdicts.filter(v => v.triage === "salvage")
+  if (salvage.length > 0) {
+    lines.push(`- **salvage — needs a human**: ${salvage.map(v => `\`${v.name}\``).join(", ")}`)
+  }
   if (gaps.length > 0) {
-    lines.push(`- **${gaps.length} branch(es) with no recorded verdict**: ${gaps.map(g => g.name).join(", ")}`)
+    lines.push(`- **${gaps.length} branch(es) with no recorded verdict** (after a same-session re-prompt and a large-model retry): ${gaps.map(g => g.name).join(", ")}`)
   } else if (reviewCandidates.length > 0) {
     lines.push("- every review candidate has a recorded verdict")
   }
@@ -136,7 +218,8 @@ function buildReport(b) {
         `${countOutcomes(branchGcApply?.outcomes, "failed")} failed` +
         `${branchGcApply?.restoreLog ? ` — restore log: ${branchGcApply.restoreLog}` : ""}`,
     )
-    lines.push(`- worktree_gc: ${Array.isArray(worktreeGcApply?.outcomes) ? worktreeGcApply.outcomes.length : 0} outcome(s)`)
+    const wtOutcomes = Array.isArray(worktreeGcApply?.outcomes) ? worktreeGcApply.outcomes : []
+    lines.push(`- worktree_gc: ${wtOutcomes.length} outcome(s)${wtOutcomes.length > 0 ? ` — ${formatTally(tally(wtOutcomes.map(o => o.result)))}` : ""}`)
     lines.push("- only `reclaim`-class refs were touched — `includeReviewed` was false, so no reviewed-but-agreed branch was reclaimed by this run.")
   }
   lines.push("")
@@ -145,7 +228,8 @@ function buildReport(b) {
     "Recording a verdict via `branch_gc_verdict` never reclaims a branch by itself. " +
       "A human-in-the-loop gate that reclaims `review`-class branches whose stored " +
       "verdict agreed (`branch_gc`'s `includeReviewed: true`) is a deliberate, " +
-      "documented seam — not built here. See PLAN.md's \"OUT OF SCOPE: the approval gate\".",
+      "documented seam — not built here. See the repo-maintenance app README, " +
+      "\"Out of scope: the approval gate\".",
   )
   return lines.join("\n")
 }
@@ -200,26 +284,54 @@ export default {
         {
           id: "reviewOne",
           kind: "agent",
-          agent: { ref: "@agentproto/repo-maintenance-reviewer" },
-          prompt:
-            "Review the {{item.kind}} branch `{{item.name}}` (tip {{item.sha}}) in the repo at " +
-            "{{steps.branchGcPlan.plan.repoRoot}}. It is unmerged relative to base " +
-            "{{steps.branchGcPlan.plan.base}} (base sha {{item.base}})" +
-            "{{#item.compareBase}}, compare base {{item.compareBase}} (pre-rewrite history — commit " +
-            "shas from that history do not exist on the current base; compare CONTENT, not shas){{/item.compareBase}}. " +
-            "\n\nCoverage already proved what's in base by content: {{item.coverage}}. The residual files " +
-            "NOT provably in base are: {{item.residualFiles}}. Merge base: {{item.mergeBase}}. Merged tree " +
-            "(the tree base would have if this branch merged cleanly, or null when the merge conflicts): " +
-            "{{#item.mergedTree}}{{item.mergedTree}}{{/item.mergedTree}}{{^item.mergedTree}}null{{/item.mergedTree}}. Ahead {{item.ahead}}, behind {{item.behind}}. Push state: {{item.pushed}}. " +
-            "Every ref sharing this tip: {{item.refs}}." +
-            "\n\nRecord your verdict by calling branch_gc_verdict with repoRoot=" +
-            "\"{{steps.branchGcPlan.plan.repoRoot}}\", name=\"{{item.name}}\", sha=\"{{item.sha}}\", " +
-            "a triage block, and — ONLY when you agree deleting this branch loses nothing of value — a " +
-            "gate block with agree:true and non-empty evidence. Call branch_gc_verdict exactly once for " +
-            "this branch, then stop.",
+          agent: { ref: REVIEWER_REF },
+          prompt: REVIEW_PROMPT,
           model: b => ((b.item?.residualFileCount ?? 0) <= 3
             ? (b.input?.reviewModelSmall || DEFAULT_REVIEW_MODEL_SMALL)
             : (b.input?.reviewModelLarge || DEFAULT_REVIEW_MODEL_LARGE)),
+        },
+        // A reviewer can end its turn announcing a call it never made. Check
+        // the store for THIS tip; if nothing landed, re-prompt the same
+        // session once, then retry once with a fresh large-model reviewer.
+        // Only a tip still missing after that is a gap (see `gaps`). Every
+        // `when` below reads the step right before it — map items share one
+        // `$steps` namespace, and only the immediate predecessor's value is
+        // guaranteed to be this item's.
+        VERDICT_CHECK("verdictCheck"),
+        {
+          id: "needsNudge",
+          kind: "branch",
+          branches: [{ when: "$steps.verdictCheck.missing", next: "nudge" }],
+          join: "reviewSettled",
+        },
+        {
+          id: "nudge",
+          kind: "agent",
+          // The session THIS item's `reviewOne` spawned (the host labels a
+          // fan-out spawn `<stepId>[<index>]`).
+          sessionRef: "reviewOne[{{index}}]",
+          prompt: NUDGE_PROMPT,
+        },
+        VERDICT_CHECK("verdictCheckAfterNudge"),
+        {
+          id: "needsLargeRetry",
+          kind: "branch",
+          branches: [{ when: "$steps.verdictCheckAfterNudge.missing", next: "reviewRetryLarge" }],
+        },
+        {
+          id: "reviewRetryLarge",
+          kind: "agent",
+          agent: { ref: REVIEWER_REF },
+          prompt:
+            REVIEW_PROMPT +
+            "\n\nA previous reviewer of this branch ended its turn without recording a verdict. " +
+            "Recording the verdict with branch_gc_verdict IS the deliverable — do not end your turn without it.",
+          model: b => b.input?.reviewModelLarge || DEFAULT_REVIEW_MODEL_LARGE,
+        },
+        {
+          id: "reviewSettled",
+          kind: "transform",
+          compute: b => ({ name: b.item?.name, sha: b.item?.sha }),
         },
       ],
     },

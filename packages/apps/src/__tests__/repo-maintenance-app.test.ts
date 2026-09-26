@@ -53,9 +53,24 @@ describe("repo-maintenance app", () => {
       "notify:tool",
       "skip-notify:gate",
     ])
-    const reviewStep = workflow!.steps.find(s => s.id === "review") as { steps: Array<{ id: string; agent?: { ref: string } }> }
-    expect(reviewStep.steps.map(s => s.id)).toEqual(["reviewOne"])
+    const reviewStep = workflow!.steps.find(s => s.id === "review") as {
+      steps: Array<{ id: string; kind: string; agent?: { ref: string }; sessionRef?: string }>
+    }
+    // reviewOne, then the missing-verdict retry: check → same-session nudge
+    // → check → large-model retry.
+    expect(reviewStep.steps.map(s => `${s.id}:${s.kind}`)).toEqual([
+      "reviewOne:agent",
+      "verdictCheck:tool",
+      "needsNudge:branch",
+      "nudge:agent",
+      "verdictCheckAfterNudge:tool",
+      "needsLargeRetry:branch",
+      "reviewRetryLarge:agent",
+      "reviewSettled:transform",
+    ])
     expect(reviewStep.steps[0]!.agent?.ref).toBe("@agentproto/repo-maintenance-reviewer")
+    expect(reviewStep.steps.find(s => s.id === "nudge")!.sessionRef).toBe("reviewOne[{{index}}]")
+    expect(reviewStep.steps.find(s => s.id === "reviewRetryLarge")!.agent?.ref).toBe("@agentproto/repo-maintenance-reviewer")
   })
 
   it("never reclaims a reviewed branch on apply — includeReviewed stays false on branchGcApply", async () => {

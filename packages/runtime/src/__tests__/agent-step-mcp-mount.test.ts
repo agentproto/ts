@@ -28,7 +28,7 @@ import { withToolSubset } from "../tool-subset.js"
 import { createRuntimeEvents } from "../events.js"
 import { createSessionsRegistry, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
-import { SessionsRegistryAgentHost, agentStepMcpServers } from "../sessions-registry-agent-host.js"
+import { SessionsRegistryAgentHost, agentStepMcpServers, withAllowlistToolSearchOff } from "../sessions-registry-agent-host.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
@@ -103,10 +103,24 @@ function reviewWorkflow(): WorkflowHandle {
 /** Compile + run the one-step workflow through the real host; return the
  *  `mcpServers` the step's session was started with. */
 async function spawnStep(ref: AgentRefResolution, daemonMcpUrl: string): Promise<AcpMcpServer[] | undefined> {
+  return (await spawnStepOptions(ref, daemonMcpUrl)).mcpServers as AcpMcpServer[] | undefined
+}
+
+/** {@link spawnStep}, returning every `startSession` option; `declaredOptions`
+ *  stands in for the adapter manifest's option ids. */
+async function spawnStepOptions(
+  ref: AgentRefResolution,
+  daemonMcpUrl: string,
+  declaredOptions?: Array<{ id: string; type: "string" }>,
+): Promise<Record<string, unknown>> {
   const sessionEvents = createSessionEventBus()
   const registry = createSessionsRegistry({ sessionEvents, persist: false })
   const startSession = vi.fn(async (_opts: Record<string, unknown>) => fakeAgentSession())
-  const resolveAgentAdapter: AgentAdapterResolver = vi.fn(async () => ({ startSession, commandPreview: "fake" }))
+  const resolveAgentAdapter: AgentAdapterResolver = vi.fn(async () => ({
+    startSession,
+    commandPreview: "fake",
+    ...(declaredOptions ? { declaredOptions } : {}),
+  }))
   const host = new SessionsRegistryAgentHost(registry, sessionEvents, resolveAgentAdapter, { daemonMcpUrl })
   // The turn itself is irrelevant here — only the spawn options are under test.
   host.sendPromptAndWait = vi.fn(async () => {})
@@ -117,7 +131,7 @@ async function spawnStep(ref: AgentRefResolution, daemonMcpUrl: string): Promise
   })
   await runWorkflow({ workflow: compiled, agents: host, input: {} })
   expect(startSession).toHaveBeenCalledTimes(1)
-  return startSession.mock.calls[0]![0].mcpServers as AcpMcpServer[] | undefined
+  return startSession.mock.calls[0]![0]
 }
 
 async function toolsReachableAt(ref: string): Promise<string[]> {
@@ -222,5 +236,61 @@ describe("agentStepMcpServers", () => {
     expect(
       agentStepMcpServers({ adapter: "claude-code", daemonMcpUrl: undefined, sessionId: "s", agentTools: ["a"] }),
     ).toBeUndefined()
+  })
+})
+
+describe("claude-code's client-side tool search is off for an allowlisted agent step", () => {
+  const url = "http://127.0.0.1:1/mcp"
+
+  it("sets tool_search=false when the step declares tools and the adapter declares the option", async () => {
+    const opts = await spawnStepOptions(
+      { adapter: "claude-code", tools: ["branch_gc_verdict"] },
+      url,
+      [{ id: "tool_search", type: "string" }],
+    )
+    expect(opts.options).toEqual({ tool_search: "false" })
+  })
+
+  it("leaves options alone without a tools list, or for an adapter without the option", async () => {
+    const noTools = await spawnStepOptions({ adapter: "claude-code" }, url, [{ id: "tool_search", type: "string" }])
+    expect((noTools.options as Record<string, unknown> | undefined)?.tool_search).toBeUndefined()
+    const noOption = await spawnStepOptions({ adapter: "codex", tools: ["branch_gc_verdict"] }, url, [{ id: "model", type: "string" }])
+    expect((noOption.options as Record<string, unknown> | undefined)?.tool_search).toBeUndefined()
+  })
+
+  it("never overrides an explicit tool_search the caller set", () => {
+    expect(withAllowlistToolSearchOff({ tool_search: "auto", x: 1 }, ["t"], [{ id: "tool_search" }])).toEqual({
+      tool_search: "auto",
+      x: 1,
+    })
+    expect(withAllowlistToolSearchOff({ x: 1 }, ["t"], [{ id: "tool_search" }])).toEqual({ x: 1, tool_search: "false" })
+    expect(withAllowlistToolSearchOff(undefined, [], [{ id: "tool_search" }])).toBeUndefined()
+  })
+})
+
+describe("workflow step session descriptor", () => {
+  it("records the step's harness model + effort on the descriptor, like agent_start", async () => {
+    const sessionEvents = createSessionEventBus()
+    const registry = createSessionsRegistry({ sessionEvents, persist: false })
+    const startSession = vi.fn(async (_opts: Record<string, unknown>) => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = vi.fn(async () => ({ startSession, commandPreview: "fake" }))
+    const host = new SessionsRegistryAgentHost(registry, sessionEvents, resolveAgentAdapter)
+    const id = await host.spawn("claude-code", { stepId: "review", harness: { model: "claude-haiku-4-5-20251001", effort: "low" } })
+    // Applied to the adapter …
+    expect(startSession.mock.calls[0]![0]).toMatchObject({ model: "claude-haiku-4-5-20251001", effort: "low" })
+    // … and echoed on the descriptor the UI reads.
+    expect(registry.get(id)).toMatchObject({ model: "claude-haiku-4-5-20251001", effort: "low" })
+  })
+
+  it("leaves the descriptor's model unset when the step pins none", async () => {
+    const sessionEvents = createSessionEventBus()
+    const registry = createSessionsRegistry({ sessionEvents, persist: false })
+    const resolveAgentAdapter: AgentAdapterResolver = vi.fn(async () => ({
+      startSession: async () => fakeAgentSession(),
+      commandPreview: "fake",
+    }))
+    const host = new SessionsRegistryAgentHost(registry, sessionEvents, resolveAgentAdapter)
+    const id = await host.spawn("claude-code", { stepId: "review" })
+    expect(registry.get(id)?.model).toBeUndefined()
   })
 })

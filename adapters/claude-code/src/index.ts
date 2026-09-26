@@ -384,6 +384,24 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
       bin_args_template: ["--max-turns", "{value}"],
     },
     {
+      id: "tool_search",
+      // Same `ENABLE_TOOL_SEARCH` env var the `lean` mode sets (see the long
+      // note there for where it's read and which values the binary accepts).
+      // "false" is the one a workflow agent step with a declared `tools`
+      // allowlist gets (sessions-registry-agent-host.ts): its gateway mount
+      // is already scoped to a handful of tools, so deferring them behind
+      // Claude Code's own search only costs the model ToolSearch round-trips
+      // before it can call the tool it was told to call.
+      type: "enum" as const,
+      enum: ["true", "false", "auto"],
+      description:
+        "Claude Code's own MCP tool search (deferred tool-schema loading), via " +
+        "ENABLE_TOOL_SEARCH. 'false' loads every mounted MCP tool eagerly; 'true' " +
+        "always defers; 'auto' defers past a size threshold. Omit to keep Claude " +
+        "Code's default.",
+      env: { ENABLE_TOOL_SEARCH: "{value}" },
+    },
+    {
       id: "base_url",
       // Injected into the child env as ANTHROPIC_BASE_URL — the claude binary
       // honors it, so this fronts real Anthropic, Bedrock/Vertex/Azure, or an

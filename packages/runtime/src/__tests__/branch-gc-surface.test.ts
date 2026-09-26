@@ -27,6 +27,7 @@ import type {
   BranchGcRunner,
   BranchGcVerdictInput,
   BranchGcVerdictRecorder,
+  BranchGcVerdictReader,
   BranchGcPlanView,
 } from "../branch-gc.js"
 
@@ -241,7 +242,9 @@ describe("POST /branches/gc + /branches/gc/verdict — HTTP routes", () => {
 })
 
 describe("branch_gc + branch_gc_verdict — MCP tools", () => {
-  async function harness(opts: { runBranchGc?: BranchGcRunner; recordBranchGcVerdict?: BranchGcVerdictRecorder } = {}) {
+  async function harness(
+    opts: { runBranchGc?: BranchGcRunner; recordBranchGcVerdict?: BranchGcVerdictRecorder; readBranchGcVerdict?: BranchGcVerdictReader } = {},
+  ) {
     const { server } = await createMcpServer({ specs: [], name: "main", version: "0" })
     registerSessionTools(server, { workspace: process.cwd(), registry: createSessionsRegistry({ persist: false }), ...opts })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
@@ -319,6 +322,39 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
       expect(text(r)).toContain("gate.evidence")
     } finally {
       await failing.close()
+    }
+  })
+
+  it("branch_gc_verdict_get reports found/missing for one tip sha", async () => {
+    // VERDICT's literals widen to `string`; the reader returns the typed view.
+    const stored = { ...VERDICT, repo: "repo", recordedAt: "2026-01-01T00:00:00Z" } as NonNullable<
+      Awaited<ReturnType<BranchGcVerdictReader>>
+    >
+    const seen: Array<{ repoRoot: string; sha: string }> = []
+    const reader: BranchGcVerdictReader = async input => {
+      seen.push(input)
+      return input.sha === VERDICT.sha ? stored : null
+    }
+    const client = await harness({ readBranchGcVerdict: reader })
+    try {
+      const hit = await client.callTool({ name: "branch_gc_verdict_get", arguments: { repoRoot: "/repo", sha: VERDICT.sha } })
+      expect(JSON.parse(text(hit))).toEqual({ sha: VERDICT.sha, found: true, missing: false, record: stored })
+      const miss = await client.callTool({ name: "branch_gc_verdict_get", arguments: { repoRoot: "/repo", sha: "f".repeat(40) } })
+      expect(JSON.parse(text(miss))).toEqual({ sha: "f".repeat(40), found: false, missing: true, record: null })
+      expect(seen).toEqual([
+        { repoRoot: "/repo", sha: VERDICT.sha },
+        { repoRoot: "/repo", sha: "f".repeat(40) },
+      ])
+    } finally {
+      await client.close()
+    }
+    const unwired = await harness()
+    try {
+      const r = await unwired.callTool({ name: "branch_gc_verdict_get", arguments: { repoRoot: "/repo", sha: VERDICT.sha } })
+      expect(isError(r)).toBe(true)
+      expect(text(r)).toContain("branch_gc_verdict_get is not enabled")
+    } finally {
+      await unwired.close()
     }
   })
 })
