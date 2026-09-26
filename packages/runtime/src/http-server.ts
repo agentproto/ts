@@ -23,8 +23,8 @@
 import { randomUUID } from "node:crypto"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import type { Duplex } from "node:stream"
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises"
-import { basename, extname, isAbsolute, join, resolve as resolvePath } from "node:path"
+import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises"
+import { basename, dirname, extname, isAbsolute, join, resolve as resolvePath, sep } from "node:path"
 import type { AcpMcpServer } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -48,6 +48,17 @@ import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import type { AppRegistry } from "./app-registry.js"
 import { performAppToolCall, performBuiltinPanelToolCall, type AppToolCallDeps } from "./app-tools.js"
 import { injectStandaloneAppBridge } from "./app-ui-apps.js"
+import {
+  IMMUTABLE_CACHE_CONTROL,
+  appUiContentType,
+  createEncodedRepresentation,
+  createRepresentationCache,
+  isCompressibleContentType,
+  isValidAppUiAssetName,
+  sendRepresentation,
+  strongEtag,
+  type EncodedRepresentation,
+} from "./app-ui-delivery.js"
 import { resolveBuiltinPanelUi } from "./builtin-apps.js"
 import { resolveRequestHttpBaseUrl } from "./public-origins.js"
 import {
@@ -1074,7 +1085,10 @@ export async function startHttpServer(
    *     phone link carries the bearer in a URL *fragment* (`#token=`,
    *     PHONE-PLAN.md P1), which browsers never send to a server, so
    *     gating the shell itself would make the link unusable. The APIs the
-   *     loaded page then calls stay fully gated.
+   *     loaded page then calls stay fully gated. The shell's own static
+   *     assets (`GET /apps/:appId/ui/assets/:file`, a validated flat file
+   *     name only — `isAppUiShellRequest`) share the exemption: the page's
+   *     `<script src>`/`<link href>` loads can't carry the bearer either.
    *
    * `?et=` (the widget embed token) deliberately does NOT bypass this gate.
    * It's scoped to a local MCP-Apps host that already has `tools/call` on
@@ -1096,7 +1110,7 @@ export async function startHttpServer(
     if (auth.mode !== "bearer") return true
     if (path === "/health") return true
     if (/^\/inbound\/[^/]+$/.test(path)) return true
-    if (method === "GET" && /^\/apps\/.+\/ui\/?$/.test(path)) return true
+    if (isAppUiShellRequest(method, path)) return true
     const header = req.headers.authorization
     if (header === `Bearer ${auth.token}`) return true
     const urlStr = req.url ?? ""
@@ -3202,24 +3216,31 @@ export async function startHttpServer(
           // Optional trailing slash: a basepath-mounted @tanstack/react-router
           // app (session-chat) rewrites the address bar to ".../ui/" on first
           // render regardless of `trailingSlash`, so a reload requests it.
-          const uiMatch = path.match(/^\/apps\/(.+)\/ui\/?$/)
+          // Scoped guardBrowserOrigin pass-through for proven trusted
+          // embedders (vscode-webview:// scheme, app-declared
+          // csp.frameDomains — origins a hostile web page cannot hold;
+          // see iframeEmbedOriginAllowed) and for holders of a valid
+          // per-boot widget embed token (`?et=` — an MCP-Apps host's
+          // opaque widget context passes no origin check; see
+          // iframeEmbedAllowed). Every other cross-origin browser request
+          // keeps taking the guard's 403, unchanged. Shared by the page
+          // and its assets route so the two can never drift apart.
+          const appUiShellBlocked = (appId: string): boolean =>
+            !iframeEmbedOriginAllowed(req, opts.appRegistry!.getApp(appId) ?? {}) &&
+            !isValidAppEmbedToken(requestEmbedToken(req)) &&
+            guardBrowserOrigin(req, res)
+          // Checked before the page route: its greedy appId group would
+          // otherwise swallow `…/ui/assets` as part of an appId.
+          const assetMatch = path.match(APP_UI_ASSET_RE)
+          if (assetMatch && req.method === "GET") {
+            const assetAppId = decodeURIComponent(assetMatch[1]!)
+            if (appUiShellBlocked(assetAppId)) return
+            await handleAppUiAsset(req, res, assetAppId, assetMatch[2]!, opts.appRegistry)
+            return
+          }
+          const uiMatch = path.match(APP_UI_PAGE_RE)
           if (uiMatch && req.method === "GET") {
-            const uiApp = opts.appRegistry.getApp(decodeURIComponent(uiMatch[1]!))
-            // Scoped guardBrowserOrigin pass-through for proven trusted
-            // embedders (vscode-webview:// scheme, app-declared
-            // csp.frameDomains — origins a hostile web page cannot hold;
-            // see iframeEmbedOriginAllowed) and for holders of a valid
-            // per-boot widget embed token (`?et=` — an MCP-Apps host's
-            // opaque widget context passes no origin check; see
-            // iframeEmbedAllowed). Every other cross-origin browser request
-            // keeps taking the guard's 403, unchanged.
-            if (
-              !iframeEmbedOriginAllowed(req, uiApp ?? {}) &&
-              !isValidAppEmbedToken(requestEmbedToken(req)) &&
-              guardBrowserOrigin(req, res)
-            ) {
-              return
-            }
+            if (appUiShellBlocked(decodeURIComponent(uiMatch[1]!))) return
             // No `authorize()` call here (unlike /tool-call and
             // /external-blob below): this exact route is the P0 tunnel-auth
             // gate's static-shell exemption (`tunnelBearerAllowed`'s doc) —
@@ -7540,30 +7561,50 @@ async function handleAppUiPage(
     res.end(JSON.stringify({ error: `app "${appId}" is not installed or has no UI.` }))
     return
   }
-  let raw: string
-  if (app?.ui) {
-    try {
-      raw = await readFile(app.ui.path, "utf8")
-    } catch (err) {
-      res.writeHead(500, { "content-type": "application/json" })
-      res.end(
-        JSON.stringify({
-          error: `could not read app "${appId}"'s ui html at "${app.ui.path}": ${err instanceof Error ? err.message : String(err)}`,
-        }),
-      )
-      return
-    }
-  } else {
-    raw = builtin!.html
-  }
+  const baseUrl = requestHttpBaseUrl(req)
   // `?embed=1` — the trusted-embedder opt-out (see doc above + the
   // `iframeEmbedAllowed` contract): the flag alone is attacker-controlled,
   // so the header flip additionally requires proof of a trusted embedder.
   const embedRequested =
     new URL(req.url ?? "/", "http://localhost").searchParams.get("embed") === "1"
+  const embedGranted = embedRequested && iframeEmbedAllowed(req, app ?? {})
+  // The served bytes are the file PLUS the injected bridge and base URL, so
+  // the cache key folds in the base URL and the etag hashes the final body.
+  // The frame-header decision rides in the etag's variant suffix: a 304 only
+  // revalidates a stored copy whose frame headers were decided the same way.
+  const variant = embedGranted ? "embed" : undefined
+  let rep: EncodedRepresentation
+  try {
+    if (app?.ui) {
+      const uiPath = app.ui.path
+      const st = await stat(uiPath)
+      rep = await appUiRepresentations.get(
+        `page\0${uiPath}\0${baseUrl}\0${variant ?? ""}`,
+        `${st.mtimeMs}:${st.size}`,
+        async () => appUiPageRepresentation(await readFile(uiPath, "utf8"), baseUrl, variant),
+      )
+    } else {
+      const html = builtin!.html
+      rep = await appUiRepresentations.get(
+        `builtin\0${appId}\0${baseUrl}\0${variant ?? ""}`,
+        html,
+        () => appUiPageRepresentation(html, baseUrl, variant),
+      )
+    }
+  } catch (err) {
+    res.writeHead(500, { "content-type": "application/json" })
+    res.end(
+      JSON.stringify({
+        error: `could not read app "${appId}"'s ui html at "${app?.ui?.path}": ${err instanceof Error ? err.message : String(err)}`,
+      }),
+    )
+    return
+  }
+  // `no-cache` + the strong etag: every open revalidates, an unchanged
+  // shell answers 304 instead of re-sending the whole document.
   const headers: Record<string, string> = {
     "content-type": "text/html; charset=utf-8",
-    "cache-control": "no-store",
+    "cache-control": "no-cache",
   }
   // No builtin covered here declares `csp.frameDomains` (only the
   // session-chat widget does, and it's excluded from `resolveBuiltinPanelUi`
@@ -7573,7 +7614,7 @@ async function handleAppUiPage(
   // widget contexts (Claude Desktop's sandboxed opaque iframe, …) can pass
   // NO origin check — the per-boot embed token (`?et=`, iframeEmbedAllowed)
   // is their proof, and a refusal now says which gate fired.
-  if (!(embedRequested && iframeEmbedAllowed(req, app ?? {}))) {
+  if (!embedGranted) {
     headers["content-security-policy"] = `frame-ancestors 'self' ${frameAncestors.join(" ")}`.trimEnd()
     if (frameAncestors.length === 0) {
       headers["x-frame-options"] = "SAMEORIGIN"
@@ -7598,8 +7639,83 @@ async function handleAppUiPage(
       )
     }
   }
-  res.writeHead(200, headers)
-  res.end(injectStandaloneAppBridge(raw, requestHttpBaseUrl(req)))
+  sendRepresentation(req, res, rep, headers)
+}
+
+/** `GET /apps/:appId/ui` — the page route. `(.+)` (not `[^/]+`): appIds are
+ *  `@scope/name`, so both the literal-slash and the %2F-encoded spelling
+ *  route; optional trailing slash for a basepath-mounted SPA's reload. */
+const APP_UI_PAGE_RE = /^\/apps\/(.+)\/ui\/?$/
+/** `GET /apps/:appId/ui/assets/:file` — `:file` is captured raw and
+ *  validated by `isValidAppUiAssetName` (a bad name is a 404, never a path). */
+const APP_UI_ASSET_RE = /^\/apps\/(.+?)\/ui\/assets\/([^/]*)$/
+
+/** The app-UI static shell: the page, and its assets with a valid flat file
+ *  name. The ONE predicate the tunnel-auth exemption consults
+ *  (`tunnelBearerAllowed`) — everything under it (tool-call, external-blob,
+ *  a malformed asset path) stays gated. */
+function isAppUiShellRequest(method: string, path: string): boolean {
+  if (method !== "GET") return false
+  if (APP_UI_PAGE_RE.test(path)) return true
+  const asset = path.match(APP_UI_ASSET_RE)
+  return asset !== null && isValidAppUiAssetName(asset[2]!)
+}
+
+/** Encoded page representations and asset bodies, keyed per path (+ base
+ *  URL for pages) and stamped by mtime + size — see app-ui-delivery.ts. */
+const appUiRepresentations = createRepresentationCache(64)
+
+function appUiPageRepresentation(
+  raw: string,
+  baseUrl: string,
+  variant: string | undefined,
+): EncodedRepresentation {
+  const body = Buffer.from(injectStandaloneAppBridge(raw, baseUrl), "utf8")
+  return createEncodedRepresentation(body, { compressible: true, etag: strongEtag(body, variant) })
+}
+
+/** `GET /apps/:appId/ui/assets/:file` — a flat file from the directory
+ *  holding the app's `ui.path` html (`<app>/.agentproto/ui/assets/` for the
+ *  conventional layout), for a split Vite build's hashed chunks. Gated
+ *  exactly like the page (same guard, same tunnel exemption). `:file` must
+ *  pass `isValidAppUiAssetName` and the resolved real path must stay inside
+ *  the assets dir (symlink escape); anything else is a 404. Builtin panels
+ *  ship single-file html, so they have no assets. */
+async function handleAppUiAsset(
+  req: IncomingMessage,
+  res: ServerResponse,
+  appId: string,
+  file: string,
+  appRegistry: AppRegistry,
+): Promise<void> {
+  const notFound = (): void => {
+    res.writeHead(404, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "not_found" }))
+  }
+  const app = appRegistry.getApp(appId)
+  if (!app?.ui || !isValidAppUiAssetName(file)) return notFound()
+  const assetsDir = join(dirname(app.ui.path), "assets")
+  let target: string
+  let st: Awaited<ReturnType<typeof stat>>
+  try {
+    const [realDir, realTarget] = await Promise.all([realpath(assetsDir), realpath(join(assetsDir, file))])
+    if (!realTarget.startsWith(realDir + sep)) return notFound()
+    target = realTarget
+    st = await stat(target)
+  } catch {
+    return notFound()
+  }
+  if (!st.isFile()) return notFound()
+  const contentType = appUiContentType(extname(target))
+  const rep = await appUiRepresentations.get(`asset\0${target}`, `${st.mtimeMs}:${st.size}`, async () =>
+    createEncodedRepresentation(await readFile(target), {
+      compressible: isCompressibleContentType(contentType),
+    }),
+  )
+  sendRepresentation(req, res, rep, {
+    "content-type": contentType,
+    "cache-control": IMMUTABLE_CACHE_CONTROL,
+  })
 }
 
 /** Trusted-embedder proof for the `?embed=1` header flip on

@@ -115,6 +115,11 @@
       "types": "./dist/tool-envelope.d.ts",
       "import": "./dist/tool-envelope.mjs",
       "default": "./dist/tool-envelope.mjs"
+    },
+    "./app-ui-delivery": {
+      "types": "./dist/app-ui-delivery.d.ts",
+      "import": "./dist/app-ui-delivery.mjs",
+      "default": "./dist/app-ui-delivery.mjs"
     }
   },
   "files": [
