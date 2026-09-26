@@ -35,7 +35,9 @@ export {
   OFFER_URL_SCHEME,
   OFFER_URL_HOST,
   OFFER_VERSION,
+  PAIR_WEB_URL,
   encodeOfferUrl,
+  encodeOfferWebUrl,
   parseOfferUrl,
   type PairingOffer,
   type ParseOfferOptions,
@@ -45,6 +47,7 @@ export { HOSTED_RENDEZVOUS_URL } from "./rendezvous.js"
 
 export {
   derivePairRoot,
+  importPairRootKey,
   currentEpoch,
   deriveEpochRoutingToken,
   epochRoutingTokens,

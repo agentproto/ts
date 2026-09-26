@@ -4,6 +4,7 @@ import {
   currentEpoch,
   deriveEpochRoutingToken,
   epochRoutingTokens,
+  importPairRootKey,
 } from "../derive.js"
 import {
   startClientHandshake,
@@ -100,5 +101,27 @@ describe.each([
     expect(set[1]?.epoch).toBe(99)
     expect(set[0]?.token).toBe(await deriveEpochRoutingToken(root, 100, c))
     expect(set[1]?.token).toBe(await deriveEpochRoutingToken(root, 99, c))
+  })
+})
+
+describe("non-extractable pair-root CryptoKey", () => {
+  it("derives the same epoch tokens as the base64 root, through either provider", async () => {
+    const root = await derivePairRoot((await handshake()).clientSession, nodeCryptoProvider)
+    const key = await importPairRootKey(root)
+    expect(key.extractable).toBe(false)
+    expect(key.algorithm.name).toBe("HKDF")
+    for (const epoch of [0, 20_000, currentEpoch()]) {
+      const expected = await deriveEpochRoutingToken(root, epoch, nodeCryptoProvider)
+      expect(await deriveEpochRoutingToken(key, epoch)).toBe(expected)
+      expect(await deriveEpochRoutingToken(key, epoch, nodeCryptoProvider)).toBe(expected)
+    }
+    expect(await epochRoutingTokens(key, MS_PER_DAY * 7)).toEqual(
+      await epochRoutingTokens(root, MS_PER_DAY * 7, nodeCryptoProvider),
+    )
+  })
+
+  it("cannot be exported", async () => {
+    const key = await importPairRootKey(await derivePairRoot((await handshake()).clientSession))
+    await expect(globalThis.crypto.subtle.exportKey("raw", key)).rejects.toThrow()
   })
 })

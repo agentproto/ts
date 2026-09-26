@@ -83,21 +83,59 @@ export function currentEpoch(now: number = Date.now()): number {
 }
 
 /**
+ * Import a base64 pair root as a **non-extractable** WebCrypto HKDF key.
+ *
+ * A browser client can persist that `CryptoKey` (e.g. in IndexedDB, which
+ * structured-clones it) instead of the raw secret: script can then derive epoch
+ * routing tokens with it but never read the root back out. The derivation is
+ * unchanged — `deriveEpochRoutingToken` accepts either form and yields the same
+ * token for the same root.
+ */
+export async function importPairRootKey(pairRoot: string): Promise<CryptoKey> {
+  return globalThis.crypto.subtle.importKey(
+    "raw",
+    Uint8Array.from(base64Decode(pairRoot)),
+    "HKDF",
+    false,
+    ["deriveBits"],
+  )
+}
+
+/** The per-epoch HKDF salt + info (shared by both pair-root forms). */
+function routeParams(epoch: number): { salt: Uint8Array; info: Uint8Array } {
+  // 8-byte big-endian epoch appended to the info prefix, so a bit-flip in the
+  // epoch can never collide two epochs' tokens.
+  return {
+    salt: utf8Encode(RV_ROUTE_SALT),
+    info: concatBytes(utf8Encode(RV_ROUTE_INFO_PREFIX), u64be(epoch)),
+  }
+}
+
+/**
  * Derive the rendezvous routing token for a pairing at a given epoch:
  * `t' = HKDF(pairRoot, "rv-route" ‖ epoch)`. Returned as base64url so it drops
  * straight into a `?t=` upgrade param. Deterministic — both sides derive the
  * same token for the same `(pairRoot, epoch)`.
+ *
+ * `pairRoot` is the base64 root, or an HKDF `CryptoKey` from
+ * `importPairRootKey` — the latter always derives through WebCrypto, since a
+ * `CryptoKey` only exists there (`crypto` is then unused).
  */
 export async function deriveEpochRoutingToken(
-  pairRoot: string,
+  pairRoot: string | CryptoKey,
   epoch: number,
   crypto: CryptoProvider = webCryptoProvider,
 ): Promise<string> {
-  const ikm = base64Decode(pairRoot)
-  // 8-byte big-endian epoch appended to the info prefix, so a bit-flip in the
-  // epoch can never collide two epochs' tokens.
-  const info = concatBytes(utf8Encode(RV_ROUTE_INFO_PREFIX), u64be(epoch))
-  const okm = await crypto.hkdfSha256(ikm, utf8Encode(RV_ROUTE_SALT), info, ROUTE_TOKEN_LEN)
+  const { salt, info } = routeParams(epoch)
+  if (typeof pairRoot !== "string") {
+    const bits = await globalThis.crypto.subtle.deriveBits(
+      { name: "HKDF", hash: "SHA-256", salt: Uint8Array.from(salt), info: Uint8Array.from(info) },
+      pairRoot,
+      ROUTE_TOKEN_LEN * 8,
+    )
+    return base64UrlEncode(new Uint8Array(bits))
+  }
+  const okm = await crypto.hkdfSha256(base64Decode(pairRoot), salt, info, ROUTE_TOKEN_LEN)
   return base64UrlEncode(okm)
 }
 
@@ -109,7 +147,7 @@ export async function deriveEpochRoutingToken(
  * likewise tries both when reconnecting.
  */
 export async function epochRoutingTokens(
-  pairRoot: string,
+  pairRoot: string | CryptoKey,
   now: number = Date.now(),
   crypto: CryptoProvider = webCryptoProvider,
 ): Promise<{ epoch: number; token: string }[]> {
