@@ -22,6 +22,7 @@
  *     store — never read from the ambient shell env.
  */
 
+import type { SpawnBrowserMode } from "./browser-mount.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import { resolveCustomRoute } from "@agentproto/model-catalog/route-identity"
@@ -133,6 +134,12 @@ export interface SpawnDefaultsConfig {
   agentPromptInterrupt?: boolean
   /** Daemon-wide MCP gateway policy. See {@link McpDefaultsConfig}. */
   mcp?: McpDefaultsConfig
+  /** Spawn-shape defaults applied when neither the `agent_start` call, its
+   *  role nor its user preset says otherwise. */
+  spawn?: {
+    /** Default `agent_start.browser` (`"headless"` | `false`). Default off. */
+    browser?: SpawnBrowserMode
+  }
 }
 
 export interface ResolveSpawnDefaultsInput {
