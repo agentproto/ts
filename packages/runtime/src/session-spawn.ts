@@ -432,11 +432,14 @@ function subscriptionOauthMethodId(
   return `${provider}-oauth`
 }
 
-/** Build the one-route eligibility projection used for an initial spawn.
- * Keep this deliberately identical to restart's projection: a gateway bills
- * the gateway endpoint and accepts only its API key; a direct route uses the
- * adapter's native auth vocabulary. */
-function spawnEligibilityManifest(
+/** Build the one-route eligibility projection used for an initial spawn AND
+ * for a restart / resume (`session-restart-core.ts` imports this rather than
+ * keeping a mirror — its old copy drifted and lost the `modelProviders` /
+ * `modelIdPrefixProvider` tiers, so an `opencode-go/<id>` session with no
+ * persisted route could spawn but never restart). A gateway bills the gateway
+ * endpoint and accepts only its API key; a direct route uses the adapter's
+ * native auth vocabulary. */
+export function spawnEligibilityManifest(
   adapter: string,
   descriptor: AdapterAuthDescriptor | undefined,
   route: RouteSpec | undefined,

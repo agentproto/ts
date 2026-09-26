@@ -135,6 +135,27 @@ describe("resolveResumeAuth — shared billing-auth re-resolution", () => {
     ).rejects.toThrow(/not eligible/)
   })
 
+  it("(b'') a model-derived adapter pinned to a profile resolves the vendor from the model prefix when no route was persisted", async () => {
+    // opencode shape: no fixed provider, the billing endpoint is the model
+    // ref's own prefix. Gate-spawned sessions persist `route: undefined`, and
+    // `opencode-go/<id>` isn't in the global catalog — the restart projection
+    // used to lack the `modelIdPrefixProvider` tier spawn has, so it threw
+    // "cannot resolve a billing vendor" for a session spawn had accepted.
+    const profile: AuthProfile = {
+      id: "opencode-go-api",
+      endpoint: "opencode-go",
+      method: "api-key",
+      credentialRef: "agentproto.auth.opencode-go.key",
+    }
+    const res = await resolveResumeAuth(descWith(), { authDescriptor: { modelDerivedApiKey: true } }, {
+      adapterSlug: "opencode",
+      model: "opencode-go/glm-5.3-flash",
+      accessProfileRef: "opencode-go-api",
+      resolveAccessProfile: async () => ({ profile, credential: "sk-opencode-go" }),
+    })
+    expect(res.authSpec).toMatchObject({ mode: "api-key", credential: "sk-opencode-go", explicit: true })
+  })
+
   it("source-backed profile (spawn-only) falls back to the base mode path", async () => {
     const res = await resolveResumeAuth(
       descWith({
