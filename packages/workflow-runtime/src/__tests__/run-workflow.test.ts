@@ -1763,7 +1763,7 @@ describe("runWorkflow — pipeline onError", () => {
       ],
     }
     const result = await runWorkflow({ workflow: wf })
-    expect(result.bindings.steps.p1).toEqual({ results: [], succeeded: 0, failed: 0 })
+    expect(result.bindings.steps.p1).toEqual({ results: [], succeeded: 0, failed: 0, skipped: 0 })
   })
 })
 
@@ -2561,5 +2561,196 @@ describe("runWorkflow — agent step harness.knowledge materialization (AIP-15 P
     expect(
       readFileSync(join(stepCwd, ".knowledge", relName, "alpha.md"), "utf8"),
     ).toContain("Body of alpha.")
+  })
+})
+
+// ── Tolerant fan-out: failed items are reported, spawn circuit breaker ──
+
+describe("runWorkflow — tolerant fan-out failures", () => {
+  it("fails the step that threw via onStepFailed (indexed), not a silent running→done", async () => {
+    const host = fakeHost({
+      sendPromptAndWait: vi.fn(async (_sid: string, prompt: string) => {
+        if (prompt === "second b") throw new Error("turn failed for b")
+      }),
+    })
+    const failed: Array<[string, string]> = []
+    const completed: string[] = []
+    const wf: RuntimeWorkflow = {
+      id: "fan-fail",
+      steps: [
+        {
+          kind: "map",
+          id: "fan",
+          over: () => ["a", "b", "c"],
+          onError: "collect",
+          body: () => ({
+            kind: "group",
+            id: "fan__body",
+            steps: [
+              { kind: "agent", id: "first", adapter: "mock", prompt: (b) => `first ${String(b.item)}` },
+              { kind: "agent", id: "second", sessionRef: "first", prompt: (b) => `second ${String(b.item)}` },
+            ],
+          }),
+        },
+      ],
+      output: (b) => b.steps.fan,
+    }
+    const { output } = await runWorkflow({
+      workflow: wf,
+      agents: host,
+      onStepFailed: (id, info) => failed.push([id, info.error]),
+      onStepComplete: (id) => completed.push(id),
+    })
+    expect(failed).toEqual([["second[1]", "turn failed for b"]])
+    expect(completed).not.toContain("second[1]")
+    expect(completed).toContain("second[0]")
+    expect(output).toMatchObject({ succeeded: 2, failed: 1, skipped: 0 })
+  })
+
+  it("attributes each item's failure to its own step even when the host rejects with one shared error object", async () => {
+    const shared = new Error("boom")
+    const host = fakeHost({ spawn: vi.fn(async () => { throw shared }) })
+    const failed: Array<[string, string]> = []
+    const wf: RuntimeWorkflow = {
+      id: "fan-shared-error",
+      steps: [
+        {
+          kind: "map",
+          id: "fan",
+          over: () => [1, 2, 3],
+          onError: "collect",
+          maxConsecutiveSpawnFailures: 0,
+          body: () => ({ kind: "agent", id: "s", adapter: "mock", prompt: () => "x" }),
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host, onStepFailed: (id, info) => failed.push([id, info.error]) })
+    expect(failed.map(([id]) => id)).toEqual(["s[0]", "s[1]", "s[2]"])
+    expect(failed[0]?.[1]).toBe("step 's': agent spawn failed — boom")
+  })
+
+  it("opens the spawn circuit after 3 consecutive spawn failures: remaining items are skipped, the run goes on", async () => {
+    let n = 0
+    const host = fakeHost({
+      spawn: vi.fn(async () => {
+        throw new Error(`spawn ENOENT #${n++}`)
+      }),
+    })
+    const skipped: Array<[string, string, string | undefined, string]> = []
+    const wf: RuntimeWorkflow = {
+      id: "fan-breaker",
+      steps: [
+        {
+          kind: "map",
+          id: "fan",
+          over: () => Array.from({ length: 10 }, (_, i) => i),
+          onError: "collect",
+          body: () => ({ kind: "agent", id: "s", adapter: "mock", prompt: () => "x" }),
+        },
+        { kind: "transform", id: "after", compute: () => "ran" },
+      ],
+      output: (b) => ({ fan: b.steps.fan, after: b.steps.after }),
+    }
+    const { output } = await runWorkflow({
+      workflow: wf,
+      agents: host,
+      onStepSkipped: (id, info) => skipped.push([id, info.reason, info.message, info.branchId]),
+    })
+    const { fan, after } = output as { fan: { results: Array<{ status: string; reason?: string }>; succeeded: number; failed: number; skipped: number; circuitOpen?: { error: string } }; after: string }
+    expect(host.spawn).toHaveBeenCalledTimes(3)
+    expect(fan).toMatchObject({ succeeded: 0, failed: 3, skipped: 7 })
+    expect(fan.circuitOpen).toEqual({ error: "step 's': agent spawn failed — spawn ENOENT #0" })
+    expect(fan.results[3]).toMatchObject({
+      status: "skipped",
+      index: 3,
+      item: 3,
+      reason: "circuit-open: step 's': agent spawn failed — spawn ENOENT #0",
+    })
+    expect(skipped.map(([id]) => id)).toEqual(["s[3]", "s[4]", "s[5]", "s[6]", "s[7]", "s[8]", "s[9]"])
+    expect(skipped[0]).toEqual(["s[3]", "circuit-open", "step 's': agent spawn failed — spawn ENOENT #0", "fan"])
+    expect(after).toBe("ran")
+  })
+
+  it("a success resets the streak; a turn failure (session spawned) never counts toward it", async () => {
+    // spawn fails for items 0,1,3,4 — never 3 in a row; turns fail for 6..9.
+    const host = fakeHost({
+      spawn: vi.fn(async (_a: string, opts: { stepKey?: string }) => {
+        if (/\[(0|1|3|4)\]$/.test(opts.stepKey ?? "")) throw new Error("spawn failed")
+        return `sess_${opts.stepKey}`
+      }),
+      sendPromptAndWait: vi.fn(async (sid: string) => {
+        if (/\[[6-9]\]$/.test(sid)) throw new Error("turn failed")
+      }),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "fan-breaker-reset",
+      steps: [
+        {
+          kind: "map",
+          id: "fan",
+          over: () => Array.from({ length: 10 }, (_, i) => i),
+          onError: "collect",
+          body: () => ({ kind: "agent", id: "s", adapter: "mock", prompt: () => "x" }),
+        },
+      ],
+      output: (b) => b.steps.fan,
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host })
+    expect(host.spawn).toHaveBeenCalledTimes(10)
+    expect(output).toMatchObject({ succeeded: 2, failed: 8, skipped: 0 })
+    expect((output as { circuitOpen?: unknown }).circuitOpen).toBeUndefined()
+  })
+
+  it("maxConsecutiveSpawnFailures: 0 disables the breaker", async () => {
+    const host = fakeHost({ spawn: vi.fn(async () => { throw new Error("nope") }) })
+    const wf: RuntimeWorkflow = {
+      id: "fan-breaker-off",
+      steps: [
+        {
+          kind: "map",
+          id: "fan",
+          over: () => [1, 2, 3, 4, 5],
+          onError: "collect",
+          maxConsecutiveSpawnFailures: 0,
+          body: () => ({ kind: "agent", id: "s", adapter: "mock", prompt: () => "x" }),
+        },
+      ],
+      output: (b) => b.steps.fan,
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host })
+    expect(host.spawn).toHaveBeenCalledTimes(5)
+    expect(output).toMatchObject({ failed: 5, skipped: 0 })
+  })
+
+  it("a pipeline trips the same breaker (configurable threshold)", async () => {
+    const host = fakeHost({ spawn: vi.fn(async () => { throw new Error("nope") }) })
+    const wf: RuntimeWorkflow = {
+      id: "pipe-breaker",
+      steps: [
+        {
+          kind: "pipeline",
+          id: "p",
+          over: () => [1, 2, 3, 4, 5, 6],
+          concurrency: 1,
+          onError: "collect",
+          maxConsecutiveSpawnFailures: 2,
+          stages: [() => ({ kind: "agent", id: "s", adapter: "mock", prompt: () => "x" })],
+        },
+      ],
+      output: (b) => b.steps.p,
+    }
+    const { output } = await runWorkflow({ workflow: wf, agents: host })
+    expect(host.spawn).toHaveBeenCalledTimes(2)
+    expect(output).toMatchObject({ failed: 2, skipped: 4, circuitOpen: { error: "step 's': agent spawn failed — nope" } })
+  })
+
+  it("a relative agent-step cwd resolves against the run cwd", async () => {
+    const host = fakeHost()
+    const wf: RuntimeWorkflow = {
+      id: "agent-rel-cwd",
+      steps: [{ kind: "agent", id: "s", adapter: "mock", cwd: () => "sub/dir", prompt: () => "x" }],
+    }
+    await runWorkflow({ workflow: wf, agents: host, cwd: "/base" })
+    expect(vi.mocked(host.spawn).mock.calls[0]?.[1]).toMatchObject({ cwd: "/base/sub/dir" })
   })
 })

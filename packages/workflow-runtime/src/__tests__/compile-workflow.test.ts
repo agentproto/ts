@@ -237,6 +237,42 @@ describe("compileWorkflow", () => {
     expect(output).toBe("n=10")
   })
 
+  it("an agent step's `cwd` ref resolves per run, and a map's `maxConsecutiveSpawnFailures` passes through", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const handle = {
+        id: "cwd-demo",
+        description: "demo",
+        steps: [
+          {
+            id: "fan",
+            kind: "map",
+            over: "$input.xs",
+            onError: "collect",
+            maxConsecutiveSpawnFailures: 5,
+            steps: [{ id: "a", kind: "agent", adapter: "mock", cwd: "$input.root", prompt: "hi" }],
+          },
+        ],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } as any
+      const compiled = compileWorkflow(handle, { tools, candidates })
+      expect((compiled.steps[0] as { maxConsecutiveSpawnFailures?: number }).maxConsecutiveSpawnFailures).toBe(5)
+      const cwds: Array<string | undefined> = []
+      const host = {
+        spawn: async (_adapter: string, opts: { cwd?: string }) => {
+          cwds.push(opts.cwd)
+          return "sess_1"
+        },
+        sendPromptAndWait: async () => {},
+        resolveByLabel: () => undefined,
+      }
+      await runWorkflow({ workflow: compiled, agents: host, cwd: "/run/cwd", input: { xs: [1], root: "/repo/root" } })
+      expect(cwds).toEqual(["/repo/root"])
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   it("maps the workflow output from a declarative `result` expression", async () => {
     const wf = defineWorkflow({
       name: "Double, report both",

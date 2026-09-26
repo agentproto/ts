@@ -254,9 +254,18 @@ export interface LadderContext {
   anchor: string | null
   /** Built lazily: only content coverage needs it. */
   index: () => Promise<TreeIndex>
+  /** Tip sha → "shares history with `baseSha`", when already known (the
+   *  plan's anchor detection asks the same question of every tip) — saves
+   *  the ladder's first `merge-base` per tip. */
+  related?: ReadonlyMap<string, boolean>
 }
 
-export async function createLadderContext(repoRoot: string, baseRef: string, anchor: string | null): Promise<LadderContext> {
+export async function createLadderContext(
+  repoRoot: string,
+  baseRef: string,
+  anchor: string | null,
+  related?: ReadonlyMap<string, boolean>,
+): Promise<LadderContext> {
   const baseSha = (await gitOk(repoRoot, ["rev-parse", "--verify", `${baseRef}^{commit}`])).trim()
   const baseTree = (await gitOk(repoRoot, ["rev-parse", `${baseSha}^{tree}`])).trim()
   let idx: Promise<TreeIndex> | null = null
@@ -266,7 +275,13 @@ export async function createLadderContext(repoRoot: string, baseRef: string, anc
     baseTree,
     anchor,
     index: () => (idx ??= indexTree(repoRoot, baseSha)),
+    ...(related ? { related } : {}),
   }
+}
+
+/** Does `tip` share history with `baseSha`? (`git merge-base` exits 0.) */
+async function sharesHistory(repoRoot: string, baseSha: string, tip: string): Promise<boolean> {
+  return (await git(repoRoot, ["merge-base", baseSha, tip])).exitCode === 0
 }
 
 const NULL_SHA_RE = /^0+$/
@@ -347,7 +362,7 @@ async function coverage(ctx: LadderContext, tip: string, mergeBase: string): Pro
  */
 export async function classifyTip(ctx: LadderContext, tip: string): Promise<TipClassification> {
   const { repoRoot, baseSha, baseTree, anchor } = ctx
-  const related = (await git(repoRoot, ["merge-base", baseSha, tip])).exitCode === 0
+  const related = ctx.related?.get(tip) ?? (await sharesHistory(repoRoot, baseSha, tip))
   if (!related && !anchor) return { status: "unmerged", history: "unrelated", conflicts: true, ahead: null, behind: null }
   const history: BranchHistory = related ? "current" : "pre-rewrite"
   const cmp = related ? baseSha : (anchor as string)
@@ -425,14 +440,23 @@ export async function classifyTipAgainstBase(repoRoot: string, baseRef: string, 
  * unrelated tips' history within 3 days before the root's date, closest tree
  * to the root wins, accepted only when fewer than 200 files apart.
  */
-export async function detectAnchor(repoRoot: string, baseSha: string, tips: readonly string[]): Promise<string | null> {
+export async function detectAnchor(
+  repoRoot: string,
+  baseSha: string,
+  tips: readonly string[],
+  /** Filled with every tip's answer (`true` = shares history with base) for
+   *  the ladder to reuse — see {@link LadderContext.related}. */
+  related?: Map<string, boolean>,
+): Promise<string | null> {
   const roots = (await gitOk(repoRoot, ["rev-list", "--max-parents=0", baseSha])).trim().split("\n").filter(Boolean)
   if (roots.length !== 1) return null
   const root = roots[0] as string
-  const unrelated: string[] = []
-  for (const sha of new Set(tips)) {
-    if ((await git(repoRoot, ["merge-base", baseSha, sha])).exitCode !== 0) unrelated.push(sha)
-  }
+  // One `merge-base` per unique tip — pure reads, so run them in parallel
+  // (sequential, this alone was ~2 min of a ~900-ref plan).
+  const unique = [...new Set(tips)]
+  const shares = await pool(unique, 8, (sha) => sharesHistory(repoRoot, baseSha, sha))
+  const unrelated = unique.filter((_, i) => !shares[i])
+  if (related) unique.forEach((sha, i) => related.set(sha, shares[i] as boolean))
   if (!unrelated.length) return null
   const rootDate = (await gitOk(repoRoot, ["log", "-1", "--format=%cI", root])).trim()
   const since = new Date(new Date(rootDate).getTime() - 3 * 86_400_000).toISOString()
@@ -531,6 +555,9 @@ async function openPrHeads(forge: ForgeClient | undefined): Promise<OpenPrHeads>
 
 interface ClassifyEnv {
   ctx: LadderContext
+  /** The ladder is a pure function of (ctx, tip sha): run it once per tip,
+   *  not once per ref — a local branch and its remote twin share one. */
+  tips: Map<string, Promise<TipClassification>>
   remote: string | null
   baseName: string
   worktrees: Map<string, string>
@@ -574,7 +601,12 @@ async function pushStateOf(b: BranchRef, env: ClassifyEnv): Promise<BranchPushSt
 }
 
 async function classifyRef(b: BranchRef, env: ClassifyEnv): Promise<BranchGcPlanEntry> {
-  const tip = await classifyTip(env.ctx, b.sha)
+  let pending = env.tips.get(b.sha)
+  if (!pending) {
+    pending = classifyTip(env.ctx, b.sha)
+    env.tips.set(b.sha, pending)
+  }
+  const tip = await pending
   const ageDays = Math.floor((env.nowMs - new Date(b.date).getTime()) / 86_400_000)
   const entry: BranchGcPlanEntry = { ...b, ...tip, ageDays, class: "hold" }
   if (tip.status === "unmerged") {
@@ -636,16 +668,18 @@ async function snapshot(input: {
   ])
   const baseSha = (await gitOk(input.repoRoot, ["rev-parse", "--verify", `${input.base}^{commit}`])).trim()
   let anchor: string | null
-  if (input.anchor === "auto") anchor = await detectAnchor(input.repoRoot, baseSha, refs.map((r) => r.sha))
+  const related = new Map<string, boolean>()
+  if (input.anchor === "auto") anchor = await detectAnchor(input.repoRoot, baseSha, refs.map((r) => r.sha), related)
   else if (input.anchor) anchor = (await gitOk(input.repoRoot, ["rev-parse", "--verify", `${input.anchor}^{commit}`])).trim()
   else anchor = null
-  const ctx = await createLadderContext(input.repoRoot, baseSha, anchor)
+  const ctx = await createLadderContext(input.repoRoot, baseSha, anchor, related)
   const remoteRefs = refs.filter((r) => r.kind === "remote")
   return {
     refs,
     otherRemoteRefs,
     env: {
       ctx,
+      tips: new Map(),
       remote,
       baseName: remote && input.base.startsWith(`${remote}/`) ? input.base.slice(remote.length + 1) : input.base,
       worktrees,

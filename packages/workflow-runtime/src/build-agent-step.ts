@@ -14,6 +14,8 @@ export interface AgentStepFields {
    *  steps resolve `$steps.*` refs into one before calling this). */
   prompt: string | Selector<string>
   adapter?: string
+  /** See {@link AgentStep.cwd}. */
+  cwd?: Selector<string>
   model?: Selector<string> | string
   sessionRef?: string
   sandbox?: AgentSandboxRef
@@ -34,6 +36,7 @@ export function buildAgentStep(id: string, fields: AgentStepFields): AgentStep {
     kind: "agent",
     id,
     ...(fields.adapter !== undefined ? { adapter: fields.adapter } : {}),
+    ...(fields.cwd !== undefined ? { cwd: fields.cwd } : {}),
     ...(fields.model !== undefined ? { model: fields.model } : {}),
     ...(fields.sessionRef !== undefined ? { sessionRef: fields.sessionRef } : {}),
     ...(fields.sandbox !== undefined ? { sandbox: fields.sandbox } : {}),

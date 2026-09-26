@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, vi } from "vitest"
+import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
@@ -194,6 +195,7 @@ describe("repo-maintenance maintain workflow — shape", () => {
     expect(stepIds).toEqual([
       "worktreeGcPlan:tool",
       "branchGcPlan:tool",
+      "reviewQueue:transform",
       "reviewCandidates:transform",
       "review:map",
       "branchGcVerify:tool",
@@ -523,5 +525,159 @@ describe("repo-maintenance maintain workflow — rendered reviewer prompt", () =
       `(base sha ${BASE_SHA}), compare base ${ANCHOR_SHA} (pre-rewrite history — commit shas`,
     )
     expect(prompt).toContain(`or null when the merge conflicts): ${TREE_SHA}. Ahead`)
+  })
+})
+
+describe("repo-maintenance maintain workflow — at scale (FIX-3 dogfood)", () => {
+  /** `n` unreviewed review candidates `wt/c<i>` (ageDays = `ages[i]`,
+   *  residualFileCount = `residuals[i]`), plus one tip already reviewed. */
+  function scalePlan(n: number, ages: (i: number) => number, residuals: (i: number) => number) {
+    const sha = (i: number) => i.toString(16).padStart(40, "0")
+    const entries: Array<Record<string, unknown>> = Array.from({ length: n }, (_, i) => ({
+      kind: "local",
+      name: `wt/c${i}`,
+      ref: `refs/heads/wt/c${i}`,
+      sha: sha(i + 1),
+      date: "2026-01-01T00:00:00Z",
+      author: "a",
+      subject: "s",
+      ageDays: ages(i),
+      class: "review",
+      status: "unmerged",
+      history: "current",
+      ahead: 1,
+      behind: 0,
+      residualFiles: [],
+      residualFileCount: residuals(i),
+    }))
+    entries.push({
+      kind: "local",
+      name: "wt/already-reviewed",
+      ref: "refs/heads/wt/already-reviewed",
+      sha: "f".repeat(40),
+      ageDays: 0,
+      class: "review",
+      status: "unmerged",
+      history: "current",
+      residualFileCount: 9,
+      verdict: { triage: "obsolete", agree: true, reviewer: "repo-maintenance-reviewer" },
+    })
+    return {
+      mode: "plan",
+      plan: { repoRoot: "/repo", repoName: "repo", base: "origin/main", baseSha: BASE_SHA, scopes: ["local"], entries },
+      summary: { byClass: { local: { reclaim: 0, review: n + 1, hold: 0 } }, byStatus: {} },
+    }
+  }
+
+  async function run(opts: {
+    plan: unknown
+    input?: Record<string, unknown>
+    spawn?: AgentSessionHost["spawn"]
+    verdictLands?: boolean
+  }) {
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      if (name === "worktree_gc") return mcpResult(inputs.apply ? { mode: "apply", outcomes: [] } : worktreeGcPlanFixture())
+      if (name === "branch_gc") return mcpResult(opts.plan)
+      if (name === "branch_gc_verdict_get") {
+        const missing = opts.verdictLands !== true
+        return mcpResult({ sha: inputs.sha, found: !missing, missing, record: null })
+      }
+      throw new Error(`unexpected tool '${name}'`)
+    })
+    const spawns: Array<{ stepId?: string; stepKey?: string; cwd?: string }> = []
+    const sends: Array<{ sessionId: string; prompt: string }> = []
+    const byLabel = new Map<string, string>()
+    const host: AgentSessionHost = {
+      spawn: vi.fn(async (adapter, o) => {
+        spawns.push({ stepId: o.stepId, stepKey: o.stepKey, cwd: o.cwd })
+        if (opts.spawn) return opts.spawn(adapter, o)
+        const id = `sess_${spawns.length}`
+        if (o.stepKey) byLabel.set(o.stepKey, id)
+        return id
+      }),
+      sendPromptAndWait: vi.fn(async (sessionId: string, prompt: string) => {
+        sends.push({ sessionId, prompt })
+      }),
+      resolveByLabel: vi.fn((label: string) => byLabel.get(label)),
+    }
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    const { output } = await runWorkflow({
+      workflow: compiled,
+      agents: host,
+      // The run cwd (the app's own directory in the daemon) — NOT where
+      // reviewers run.
+      cwd: tmpdir(),
+      input: { repoRoot: "/repo", ...opts.input },
+    })
+    return { spawns, sends, output: output as { report: string; gaps: Array<{ name: string }> } }
+  }
+
+  it("P0-1: reviewer sessions spawn at the repo root (never the app dir), and the prompt forbids touching the live checkout", async () => {
+    const { spawns, sends } = await run({ plan: scalePlan(1, () => 1, () => 9) })
+    const reviewerSpawns = spawns.filter(s => s.stepId === "reviewOne" || s.stepId === "reviewRetryLarge")
+    expect(reviewerSpawns.map(s => s.stepId)).toEqual(["reviewOne", "reviewRetryLarge"])
+    expect(reviewerSpawns.every(s => s.cwd === "/repo")).toBe(true)
+    expect(sends[0]!.prompt).toContain("is a LIVE checkout")
+    expect(sends[0]!.prompt).toContain("Never checkout, switch, stash, reset")
+  })
+
+  it("P1-5: reviews at most maxReviews (default 40), newest tip first then larger residual; the backlog is 'not reviewed this run', never a gap; a reviewed tip is skipped", async () => {
+    // 45 candidates: ages 0..44 reversed so index order != priority order.
+    const { spawns, output } = await run({
+      plan: scalePlan(45, i => 44 - i, () => 1),
+      verdictLands: true,
+    })
+    const reviewed = spawns.filter(s => s.stepId === "reviewOne")
+    expect(reviewed).toHaveLength(40)
+    expect(output.report).toContain("queue: 45 unreviewed tip(s)")
+    expect(output.report).toContain("not reviewed this run (5)")
+    expect(output.report).toContain("1 tip(s) already carry a verdict from an earlier run")
+    // The verify plan (same fixture) has no verdict for any c<i>: the 40
+    // reviewed ones are gaps, the 5 backlog ones are not.
+    expect(output.gaps).toHaveLength(40)
+    const gapNames = new Set(output.gaps.map(g => g.name))
+    // Newest first: ages 0..39 are c44..c5 — c0..c4 (oldest) wait.
+    for (const i of [0, 1, 2, 3, 4]) expect(gapNames.has(`wt/c${i}`)).toBe(false)
+    expect(gapNames.has("wt/already-reviewed")).toBe(false)
+
+    // Ties on age: the larger residual goes first.
+    const tie = await run({
+      plan: scalePlan(3, () => 5, i => [1, 7, 3][i]!),
+      input: { maxReviews: 2 },
+      verdictLands: true,
+    })
+    const reviewedSends = tie.sends.filter(s => s.prompt.startsWith("Review the"))
+    expect(reviewedSends.map(s => /branch `([^`]+)`/.exec(s.prompt)![1])).toEqual(["wt/c1", "wt/c2"])
+    expect(tie.output.report).toContain("not reviewed this run (1)")
+  })
+
+  it("P1-6: the report inlines at most 20 names per list, the run output keeps them all", async () => {
+    const { output } = await run({ plan: scalePlan(25, i => i, () => 1), verdictLands: true })
+    expect(output.gaps).toHaveLength(25)
+    const gapsLine = output.report.split("\n").find(l => l.includes("with no recorded verdict"))!
+    expect(gapsLine).toContain("… and 5 more")
+    expect(gapsLine.match(/`wt\/c\d+`/g)).toHaveLength(20)
+  })
+
+  it("P0-3/P0-4: a systemic spawn failure opens the circuit — the report lists each distinct error with its count, and unstarted candidates aren't gaps", async () => {
+    const { spawns, output } = await run({
+      plan: scalePlan(10, i => i, () => 1),
+      spawn: async () => {
+        throw new Error("spawn node ENOENT")
+      },
+    })
+    // parallelism 4: all four workers are already spawning when the third
+    // failure opens the breaker — in-flight items finish, nothing new starts.
+    expect(spawns.filter(s => s.stepId === "reviewOne")).toHaveLength(4)
+    expect(output.report).toContain("0 ok, 4 failed, 6 not started")
+    expect(output.report).toContain("spawn circuit open")
+    expect(output.report).toContain("failure reasons (1 distinct):")
+    expect(output.report).toContain("  - 4× step 'reviewOne': agent spawn failed — spawn node ENOENT")
+    expect(output.gaps).toHaveLength(4)
+    expect(output.report).not.toContain("every review candidate has a recorded verdict")
   })
 })

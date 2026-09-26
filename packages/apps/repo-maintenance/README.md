@@ -13,10 +13,14 @@ that requires the `entry:` loader path.
 The `maintain` workflow, one run:
 
 1. `worktree_gc` + `branch_gc` plan (dry run — nothing is touched).
-2. Fans the `@agentproto/repo-maintenance-reviewer` agent out over every
-   unmerged branch candidate (one turn per unique tip sha, parallelism 4):
-   haiku when the candidate's residual is 3 files or fewer, sonnet
-   otherwise. Each turn records a verdict via `branch_gc_verdict` —
+2. Fans the `@agentproto/repo-maintenance-reviewer` agent out over the
+   unmerged branch candidates with no stored verdict yet — at most
+   `maxReviews` (default 40) per run, newest tip first, then the larger
+   residual; the rest wait for the next run (one turn per unique tip sha,
+   parallelism 4, sessions run at the repo root): haiku when the
+   candidate's residual is 3 files or fewer, sonnet otherwise. Three spawn
+   failures in a row stop the fan-out (the engine's circuit breaker) and
+   the report lists every distinct failure reason. Each turn records a verdict via `branch_gc_verdict` —
    recording a verdict never deletes anything. A turn that ends without a
    stored verdict for its tip (checked via `branch_gc_verdict_get`) gets
    one re-prompt in the same session, then one retry on the large model.

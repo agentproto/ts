@@ -16,6 +16,10 @@ export interface RoutineStepState {
   startedAt?: string
   endedAt?: string
   error?: string
+  /** Why a `skipped` step didn't run, when it's more than "its branch arm
+   *  wasn't taken" — e.g. `circuit-open: <error>` for a fan-out item the
+   *  spawn circuit breaker never started. */
+  skipReason?: string
   /** The step's own output, when it completed successfully — omitted from
    *  `workflow_status`'s compact form (AIP-58 §9 `run.get` compact
    *  boundary), included with `full: true`. */

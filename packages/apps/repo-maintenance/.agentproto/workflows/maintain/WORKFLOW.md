@@ -2,9 +2,9 @@
 name: Repo Maintenance
 id: maintain
 description: >-
-  Plan worktree_gc + branch_gc, fan a review agent out over every unmerged
-  branch candidate (small model for a small residual, large model
-  otherwise), verify every candidate got a verdict, optionally apply
+  Plan worktree_gc + branch_gc, fan a review agent out over up to
+  `maxReviews` unreviewed branch candidates, newest first (small model for a
+  small residual, large model otherwise), verify every candidate got a verdict, optionally apply
   (reclaim-only) worktree/branch gc, and report — plus an agentpush
   notification when `notify` is set. Entry-based (see entry.mjs): the
   `review` map step's per-candidate model selector is a real run-time
@@ -32,6 +32,14 @@ inputs:
     type: string
     description: Model for a review candidate with residualFileCount > 3.
     default: claude-sonnet-5
+  maxReviews:
+    type: number
+    description: >-
+      Most review candidates to review this run — newest tip first, then the
+      larger residual. The rest are reported as not reviewed this run; tips
+      with a stored verdict are never re-reviewed, so daily runs walk the
+      backlog.
+    default: 40
   notify:
     type: object
     description: >-
@@ -58,12 +66,19 @@ steps:
       apply: false
       includeReviewed: false
 
-  - id: reviewCandidates
+  - id: reviewQueue
     kind: transform
-    name: Dedupe review candidates by tip sha
+    name: Queue unreviewed review candidates, one per tip sha
     description: >-
       Entry-based — no string expression language for `compute` in the
-      declarative manifest. See entry.mjs's dedupeReviewCandidates.
+      declarative manifest. See entry.mjs's buildReviewQueue: dedupes by tip
+      sha, skips tips that already carry a stored verdict, and orders newest
+      tip first, then the larger residual.
+
+  - id: reviewCandidates
+    kind: transform
+    name: Take this run's share of the queue
+    description: Entry-based — the first `maxReviews` of reviewQueue.
 
   - id: review
     kind: map
@@ -75,7 +90,11 @@ steps:
       step never applies anything. After the turn, branch_gc_verdict_get
       checks the store for that tip; with no verdict, the SAME session is
       re-prompted once, then one fresh large-model reviewer retries, and
-      only then is the tip left as a gap. See entry.mjs for the body.
+      only then is the tip left as a gap. Reviewer sessions run at the repo
+      root (a checkout inside the repo can't delete their cwd). Three spawn
+      failures in a row open the engine's circuit breaker: the remaining
+      candidates are not started and are reported as not reviewed. See
+      entry.mjs for the body.
     over: $steps.reviewCandidates
     parallelism: 4
     onError: collect

@@ -38,6 +38,7 @@ import type { DriverHandle } from "@agentproto/driver"
 import type { ToolHandle } from "@agentproto/tool"
 import type { AgentRefResolution, AgentStep, Bindings, GateStep, OutputSchemaLike, RunStep, RuntimeWorkflow, Selector } from "./types.js"
 import { buildAgentStep } from "./build-agent-step.js"
+import { resolveRefString } from "./ref-string.js"
 import { isCompilableJsonSchema, validateAgainstJsonSchema } from "./validate-input.js"
 
 export interface CompileWorkflowOptions {
@@ -731,9 +732,21 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     outputSchema = compileOutputSchema(step.outputSchema, id)
   }
 
+  // `cwd`: a selector function (entry handles) passes through; a string
+  // resolves through the same `$input`/`$steps.<id>` ref grammar as a gate
+  // step's cwd (a literal path passes through unchanged).
+  const rawCwd: unknown = step.cwd
+  const cwd: Selector<string> | undefined =
+    typeof rawCwd === "function"
+      ? (rawCwd as Selector<string>)
+      : typeof rawCwd === "string"
+        ? (b: Bindings) => resolveRefString(id, "cwd", rawCwd, b, "error")
+        : undefined
+
   return buildAgentStep(id, {
     prompt: (b: Bindings) => renderPrompt(prompt, b),
     ...(adapter !== undefined ? { adapter } : {}),
+    ...(cwd !== undefined ? { cwd } : {}),
     ...(step.sessionRef !== undefined ? { sessionRef: step.sessionRef } : {}),
     ...(model !== undefined ? { model: model as Selector<string> | string } : {}),
     ...(step.sandbox !== undefined ? { sandbox: step.sandbox } : {}),
@@ -827,6 +840,7 @@ function compileStep(step: any, ctx: Ctx): RunStep {
       const over = f<string>(step, "over")
       const inner = compileStepList(f(step, "steps"), `${id}__body`, ctx)
       const onError = f<"throw" | "collect" | undefined>(step, "onError")
+      const maxConsecutiveSpawnFailures = f<number | undefined>(step, "maxConsecutiveSpawnFailures")
       return {
         kind: "map",
         id,
@@ -834,6 +848,7 @@ function compileStep(step: any, ctx: Ctx): RunStep {
         over: (b) => resolveRef(over, b) as readonly unknown[],
         body: () => inner,
         ...(onError !== undefined ? { onError } : {}),
+        ...(maxConsecutiveSpawnFailures !== undefined ? { maxConsecutiveSpawnFailures } : {}),
       }
     }
 

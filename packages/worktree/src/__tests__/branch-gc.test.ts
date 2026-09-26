@@ -246,6 +246,17 @@ describe("branch gc — re-rooted base + anchor", () => {
     const ctx = await createLadderContext(repo, "main", null)
     expect(await classifyTip(ctx, island)).toMatchObject({ status: "unmerged", history: "unrelated", ahead: null })
   })
+
+  it("the ladder trusts a known shared-history answer (the plan's anchor sweep) instead of re-asking git", async () => {
+    const repo = await makeRepo()
+    const tip = await branchWith(repo, "feat/x", { "x.txt": "x\n" })
+    // Deliberately wrong answer: proves the map, not `git merge-base`, decided.
+    const ctx = await createLadderContext(repo, "main", null, new Map([[tip, false]]))
+    expect(await classifyTip(ctx, tip)).toMatchObject({ status: "unmerged", history: "unrelated", ahead: null })
+    // Without the map, git answers: it shares history.
+    const plain = await createLadderContext(repo, "main", null)
+    expect(await classifyTip(plain, tip)).toMatchObject({ history: "current" })
+  })
 })
 
 // ── ref kinds + holds ───────────────────────────────────────────────────

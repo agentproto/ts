@@ -710,6 +710,7 @@ export function compactWorkflowRunStatus(run: WorkflowRun): WorkflowRun {
         return {
           ...rest,
           ...(rest.error !== undefined ? { error: truncateCompactError(rest.error) } : {}),
+          ...(rest.skipReason !== undefined ? { skipReason: truncateCompactError(rest.skipReason) } : {}),
           ...(gateReport !== undefined
             ? { gateReport: { ok: gateReport.ok, exitCode: gateReport.exitCode, attempt: gateReport.attempt, report: undefined } }
             : {}),

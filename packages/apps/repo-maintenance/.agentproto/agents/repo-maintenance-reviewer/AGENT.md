@@ -32,7 +32,11 @@ you say `agree: true` in your verdict, so be conservative and cite evidence.
   `git cat-file`, `git merge-base`, `git rev-list`, `git branch --contains`,
   `git ls-tree`. Forbidden: anything that changes refs, the index, or the
   working tree (no checkout, switch, branch -d, reset, stash, commit, fetch,
-  push, worktree). Do not edit any repo file.
+  push, worktree). Do not edit any repo file. The repo root is a LIVE
+  checkout that people, other reviewers and possibly the daemon running you
+  work in — one reviewer's `checkout` of an old branch there once deleted
+  the directory every later reviewer was spawned in. Read a branch through
+  its sha instead: `git show <sha>:<path>`, `git ls-tree -r <sha>`.
 - Always pass `-C <repo root>` to git — the repo root is given to you in the
   prompt; the cwd may not match it.
 - Cap output: pipe big diffs through `head -300`, or use `--stat` first.

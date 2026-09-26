@@ -26,11 +26,13 @@ import type {
   RunStep,
   RunWorkflowArgs,
   RuntimeWorkflow,
+  StepFailedInfo,
   StepHookInfo,
   StepSkippedInfo,
   TolerantFanOutResult,
   WorkflowRunResult,
 } from "./types.js"
+import { DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES } from "./types.js"
 import { materializeKnowledge, resolveKnowledgeSelectors } from "./knowledge.js"
 
 /** Thrown by a `suspend` step when no host `resume` hook is provided. */
@@ -87,6 +89,24 @@ export class StepOutcomeError extends Error {
   }
 }
 
+/**
+ * Thrown when an {@link AgentStep}'s session could not be spawned at all
+ * (`AgentSessionHost.spawn` rejected) — distinct from a session that spawned
+ * and then failed its turn. A tolerant fan-out counts these toward its spawn
+ * circuit breaker ({@link MapStep.maxConsecutiveSpawnFailures}): a spawn that
+ * fails for one item usually fails for every item (missing cwd, adapter
+ * gone, process limits), so burning through the rest is pure noise.
+ */
+export class AgentSpawnError extends Error {
+  constructor(
+    readonly stepId: string,
+    readonly cause: unknown,
+  ) {
+    super(`step '${stepId}': agent spawn failed — ${errorMessage(cause)}`)
+    this.name = "AgentSpawnError"
+  }
+}
+
 interface RunState {
   readonly input: unknown
   readonly steps: Record<string, unknown>
@@ -123,6 +143,7 @@ interface RunCtx {
   readonly onStepStart?: RunWorkflowArgs["onStepStart"]
   readonly onStepComplete?: RunWorkflowArgs["onStepComplete"]
   readonly onStepSkipped?: RunWorkflowArgs["onStepSkipped"]
+  readonly onStepFailed?: RunWorkflowArgs["onStepFailed"]
   readonly runGateCommand?: RunWorkflowArgs["runGateCommand"]
   readonly onGateReport?: RunWorkflowArgs["onGateReport"]
   /** Sessions spawned in the current release scope (the run, or one
@@ -163,7 +184,9 @@ function view(state: RunState, item?: unknown, index?: number): Bindings {
  */
 function withIndexedHooks(ctx: RunCtx, index: number): RunCtx {
   const cacheKeySuffix = `${ctx.cacheKeySuffix ?? ""}[${index}]`
-  if (!ctx.onStepStart && !ctx.onStepComplete && !ctx.onStepSkipped) return { ...ctx, cacheKeySuffix }
+  if (!ctx.onStepStart && !ctx.onStepComplete && !ctx.onStepSkipped && !ctx.onStepFailed) {
+    return { ...ctx, cacheKeySuffix }
+  }
   return {
     ...ctx,
     cacheKeySuffix,
@@ -176,6 +199,100 @@ function withIndexedHooks(ctx: RunCtx, index: number): RunCtx {
     onStepSkipped: ctx.onStepSkipped
       ? (id: string, info: StepSkippedInfo) => ctx.onStepSkipped!(`${id}[${index}]`, info)
       : undefined,
+    onStepFailed: ctx.onStepFailed
+      ? (id: string, info: StepFailedInfo) => ctx.onStepFailed!(`${id}[${index}]`, info)
+      : undefined,
+  }
+}
+
+/**
+ * The innermost step an in-flight error came from, as a reporter bound to
+ * that step's own (indexed) hooks — set by the first {@link execStep} frame
+ * the error unwinds through, so a tolerant fan-out that swallows the error
+ * can still fail the step that actually threw (not its item's wrapper).
+ */
+const failureOrigin = new WeakMap<object, (info: StepFailedInfo) => void>()
+
+/** A tolerant fan-out item threw: report it via `onStepFailed` on the step
+ *  that threw (see {@link failureOrigin}), else on the item's body step. */
+function reportItemFailure(err: unknown, itemCtx: RunCtx, bodyId: string): void {
+  const info = { error: errorMessage(err) }
+  const origin = typeof err === "object" && err !== null ? failureOrigin.get(err) : undefined
+  if (origin) {
+    // Consume it: a host may reject every item with the SAME error object.
+    failureOrigin.delete(err as object)
+    origin(info)
+  } else {
+    itemCtx.onStepFailed?.(bodyId, info)
+  }
+}
+
+/**
+ * Spawn circuit breaker for one tolerant fan-out — see
+ * {@link MapStep.maxConsecutiveSpawnFailures}. `settle` is fed every
+ * item's outcome in completion order; `open` is the first error of the
+ * streak that tripped it (undefined while closed). Once open it stays open.
+ */
+function spawnBreaker(threshold: number): { settle: (err?: unknown) => void; readonly open: string | undefined } {
+  let streak = 0
+  let streakFirst: string | undefined
+  let open: string | undefined
+  return {
+    settle(err?: unknown): void {
+      if (open !== undefined) return
+      if (!(err instanceof AgentSpawnError)) {
+        streak = 0
+        streakFirst = undefined
+        return
+      }
+      if (streak === 0) streakFirst = err.message
+      streak++
+      if (threshold > 0 && streak >= threshold) open = streakFirst
+    },
+    get open() {
+      return open
+    },
+  }
+}
+
+/** Report every item a tripped breaker never started as `skipped` (each of
+ *  its body's statically-known steps, indexed like a started item's). */
+function skipUnstartedItems(
+  ctx: RunCtx,
+  fanOutId: string,
+  from: number,
+  items: readonly unknown[],
+  bodiesOf: (item: unknown, idx: number) => readonly RunStep[],
+  reason: string,
+  results: unknown[],
+): void {
+  for (let idx = from; idx < items.length; idx++) {
+    results[idx] = { status: "skipped", index: idx, item: items[idx], reason: `circuit-open: ${reason}` }
+    const itemCtx = withIndexedHooks(ctx, idx)
+    if (!itemCtx.onStepSkipped) continue
+    let bodies: readonly RunStep[]
+    try {
+      bodies = bodiesOf(items[idx], idx)
+    } catch {
+      // A body builder that needs a started item's state (a pipeline stage
+      // reading its prevOutput) — the item's outcome above still records it.
+      continue
+    }
+    for (const id of new Set(skippableStepIds(bodies))) {
+      itemCtx.onStepSkipped(id, { reason: "circuit-open", branchId: fanOutId, message: reason })
+    }
+  }
+}
+
+/** The bound output of a tolerant fan-out. */
+function tolerantResult(results: unknown[], circuitOpen: string | undefined): TolerantFanOutResult {
+  const outcomes = results as FanOutOutcome[]
+  return {
+    results: outcomes,
+    succeeded: outcomes.filter((r) => r.status === "fulfilled").length,
+    failed: outcomes.filter((r) => r.status === "rejected").length,
+    skipped: outcomes.filter((r) => r.status === "skipped").length,
+    ...(circuitOpen !== undefined ? { circuitOpen: { error: circuitOpen } } : {}),
   }
 }
 
@@ -410,7 +527,11 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
   // `ctx.cwd` — see `AgentHarness`'s doc for the full chain (AGENT.md
   // frontmatter / app_run args / adapter default are resolved upstream of
   // this runtime, by the host's spawn implementation).
-  const cwd = step.harness?.cwd ?? (step.cwd ? resolveSel(step.cwd, b) : ctx.cwd)
+  // A relative step cwd resolves against the run cwd, never the daemon's own.
+  const stepCwd = step.cwd ? resolveSel(step.cwd, b) : undefined
+  const cwd =
+    step.harness?.cwd ??
+    (stepCwd !== undefined ? (ctx.cwd !== undefined ? resolve(ctx.cwd, stepCwd) : stepCwd) : ctx.cwd)
   // AIP-15 P2 `harness.knowledge`: materialize matched corpus entries into
   // the step cwd's `.knowledge/` BEFORE the spawn, and prepend the prompt
   // note pointing the session at the INDEX. An empty match is not an error —
@@ -460,8 +581,10 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
           ...(model !== undefined && step.harness?.model === undefined ? { model } : {}),
         }
       : undefined
-  const sessionId = step.adapter
-    ? await ctx.agents!.spawn(resolveSel(step.adapter, b), {
+  let sessionId: string | undefined
+  if (step.adapter) {
+    try {
+      sessionId = await ctx.agents!.spawn(resolveSel(step.adapter, b), {
         cwd,
         workspaceSlug: ctx.workspaceSlug,
         stepId: step.id,
@@ -471,7 +594,12 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
         ...(step.agentTools !== undefined ? { agentTools: step.agentTools } : {}),
         ...(b.index !== undefined ? { stepKey: `${step.id}[${b.index}]` } : {}),
       })
-    : ctx.agents!.resolveByLabel(resolveSessionRef(step.sessionRef!, b))
+    } catch (err) {
+      throw new AgentSpawnError(step.id, err)
+    }
+  } else {
+    sessionId = ctx.agents!.resolveByLabel(resolveSessionRef(step.sessionRef!, b))
+  }
   if (!sessionId) throw new Error(`step '${step.id}': no session (adapter and sessionRef both unresolved)`)
   if (step.adapter) ctx.spawned?.push(sessionId)
   if (knowledgeWarnings.length > 0 && ctx.agents!.emitHarnessWarning) {
@@ -736,6 +864,23 @@ async function execStep(
   item: unknown,
   index: number | undefined,
 ): Promise<unknown> {
+  try {
+    return await execStepBody(step, ctx, item, index)
+  } catch (err) {
+    // Innermost frame wins: an outer (composite) frame sees it already set.
+    if (typeof err === "object" && err !== null && !failureOrigin.has(err)) {
+      failureOrigin.set(err, (info) => ctx.onStepFailed?.(step.id, info))
+    }
+    throw err
+  }
+}
+
+async function execStepBody(
+  step: RunStep,
+  ctx: RunCtx,
+  item: unknown,
+  index: number | undefined,
+): Promise<unknown> {
   const { state, signal } = ctx
   const b = view(state, item, index)
 
@@ -783,9 +928,12 @@ async function execStep(
       // pulls the next item as soon as its current one settles, so one slow
       // item never holds idle slots hostage. Same pool shape as `pipeline`.
       // Non-tolerant: after the first failure no NEW item starts (in-flight
-      // ones finish), and the map rethrows that first error.
+      // ones finish), and the map rethrows that first error. Tolerant: a
+      // failed item is reported on the step that threw, and the spawn
+      // circuit breaker stops new items once spawning is systemically broken.
       let next = 0
       let failed = false
+      const breaker = spawnBreaker(step.maxConsecutiveSpawnFailures ?? DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES)
       const runItem = async (idx: number): Promise<void> => {
         const el = arr[idx]
         const inner = step.body(el, idx, view(state, el, idx))
@@ -794,70 +942,83 @@ async function execStep(
           const out = await execStep(inner, wrapped, el, idx)
           completeStep(wrapped, inner.id, out)
           results[idx] = tolerant ? { status: "fulfilled", index: idx, value: out } : out
+          breaker.settle()
         } catch (err) {
           if (!tolerant) {
             failed = true
             throw err
           }
           results[idx] = { status: "rejected", index: idx, item: el, error: errorMessage(err) }
+          reportItemFailure(err, wrapped, inner.id)
+          breaker.settle(err)
         } finally {
           await releaseScope(wrapped)
         }
       }
       const worker = async (): Promise<void> => {
-        while (!failed && next < arr.length) {
+        while (!failed && breaker.open === undefined && next < arr.length) {
           const idx = next++
           await runItem(idx)
         }
       }
       await Promise.all(Array.from({ length: Math.min(parallelism, arr.length) }, () => worker()))
       if (!tolerant) return results
-      const outcomes = results as FanOutOutcome[]
-      return {
-        results: outcomes,
-        succeeded: outcomes.filter((r) => r.status === "fulfilled").length,
-        failed: outcomes.filter((r) => r.status === "rejected").length,
-      } satisfies TolerantFanOutResult
+      if (breaker.open !== undefined) {
+        skipUnstartedItems(ctx, step.id, next, arr, (el, idx) => [step.body(el, idx, view(state, el, idx))], breaker.open, results)
+      }
+      return tolerantResult(results, breaker.open)
     }
 
     case "pipeline": {
       const items = [...step.over(b)]
       const tolerant = step.onError === "collect"
-      if (items.length === 0) return tolerant ? { results: [], succeeded: 0, failed: 0 } : []
+      if (items.length === 0) return tolerant ? tolerantResult([], undefined) : []
       const cap = Math.max(1, step.concurrency ?? items.length)
       const results: unknown[] = new Array(items.length)
       let next = 0
+      const breaker = spawnBreaker(step.maxConsecutiveSpawnFailures ?? DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES)
       const runItem = async (idx: number): Promise<void> => {
         let prev: unknown = undefined
+        let stageId = step.id
         const wrapped = withReleaseScope(withIndexedHooks(ctx, idx))
         try {
           for (const stage of step.stages) {
             const inner = stage(items[idx], idx, prev, view(state, items[idx], idx))
+            stageId = inner.id
             prev = await execStep(inner, wrapped, items[idx], idx)
             completeStep(wrapped, inner.id, prev)
           }
           results[idx] = tolerant ? { status: "fulfilled", index: idx, value: prev } : prev
+          breaker.settle()
         } catch (err) {
           if (!tolerant) throw err
           results[idx] = { status: "rejected", index: idx, item: items[idx], error: errorMessage(err) }
+          reportItemFailure(err, wrapped, stageId)
+          breaker.settle(err)
         } finally {
           await releaseScope(wrapped)
         }
       }
       const worker = async (): Promise<void> => {
-        while (next < items.length) {
+        while ((!tolerant || breaker.open === undefined) && next < items.length) {
           const idx = next++
           await runItem(idx)
         }
       }
       await Promise.all(Array.from({ length: Math.min(cap, items.length) }, () => worker()))
       if (!tolerant) return results
-      const outcomes = results as FanOutOutcome[]
-      return {
-        results: outcomes,
-        succeeded: outcomes.filter((r) => r.status === "fulfilled").length,
-        failed: outcomes.filter((r) => r.status === "rejected").length,
-      } satisfies TolerantFanOutResult
+      if (breaker.open !== undefined) {
+        skipUnstartedItems(
+          ctx,
+          step.id,
+          next,
+          items,
+          (el, idx) => step.stages.map((stage) => stage(el, idx, undefined, view(state, el, idx))),
+          breaker.open,
+          results,
+        )
+      }
+      return tolerantResult(results, breaker.open)
     }
 
     case "branch": {
@@ -979,7 +1140,7 @@ async function execStep(
 async function runWorkflowInner(
   workflow: RuntimeWorkflow,
   input: unknown,
-  hooks: Pick<RunCtx, "approve" | "resume" | "onInputRequired" | "signal" | "agents" | "cwd" | "workspaceSlug" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete" | "onStepSkipped" | "runGateCommand" | "onGateReport" | "spawned">,
+  hooks: Pick<RunCtx, "approve" | "resume" | "onInputRequired" | "signal" | "agents" | "cwd" | "workspaceSlug" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete" | "onStepSkipped" | "onStepFailed" | "runGateCommand" | "onGateReport" | "spawned">,
   maxTotalCostUsd?: number,
 ): Promise<WorkflowRunResult> {
   const state: RunState = { input, steps: {}, costBySession: new Map(), maxTotalCostUsd, cachedHits: new Set() }
@@ -1023,6 +1184,7 @@ export async function runWorkflow(
     onStepStart: args.onStepStart,
     onStepComplete: args.onStepComplete,
     onStepSkipped: args.onStepSkipped,
+    onStepFailed: args.onStepFailed,
     runGateCommand: args.runGateCommand,
     onGateReport: args.onGateReport,
   }, args.maxTotalCostUsd)
