@@ -175,8 +175,8 @@ For 14 days after the revoke, the daemon keeps parking on the pairing's route
 tokens. A client that proves that day's **auth** token in its sealed hello
 completes the handshake, which proves to it that this is the real daemon. It
 then gets one encrypted `pairing_revoked` frame, and the channel closes; it is
-never served. So a revoked browser client stops with "this device was unpaired
-from <daemon>; scan a new pairing QR" instead of retrying as if the daemon were
+never served. So a revoked browser client stops with `this device was unpaired
+from <daemon>; scan a new pairing QR` instead of retrying as if the daemon were
 offline. The broker can't forge that signal, since it travels inside the E2E
 channel. The broker can't trigger it either: it knows the routes, but a route is
 never accepted as proof. For that window the daemon keeps only the route and
