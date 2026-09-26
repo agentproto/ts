@@ -213,12 +213,23 @@ beforeEach(async () => {
   })
 })
 
-afterEach(() => {
+afterEach(async () => {
+  // `command_list`'s page-walk test drives `recordCommand`, which kicks off
+  // a fire-and-forget CommandLogEntry -> ToolCallRecord write under
+  // HOME/.agentproto/sessions/<id>/ (registerSessionTools resolves the
+  // transcript base dir off `process.env.HOME`, redirected to `home` in
+  // beforeEach). Drain it before removing `home`, or the write races the
+  // removal: mkdir(recursive) re-creates a dir the rm just emptied
+  // (ENOTEMPTY on the parent rmdir) or appendFile hits a dir already gone
+  // (ENOENT) — see settlePendingWrites's doc comment in sessions.ts. Same
+  // fix as command-tools.test.ts, which hit this exact flake in CI.
+  // maxRetries covers any straggler the drain can't see.
+  await registry.settlePendingWrites()
   registry.shutdown()
-  rmSync(workspace, { recursive: true, force: true })
+  rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
   if (prevHome === undefined) delete process.env.HOME
   else process.env.HOME = prevHome
-  return rm(home, { recursive: true, force: true })
+  await rm(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
 })
 
 describe("terminal_sessions_list — compact default / full / fields / pagination", () => {

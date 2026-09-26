@@ -672,6 +672,13 @@ export function registerSessionTools(
   // the pagination/compact/fields concerns are now applied by the
   // `paginated()` transformer at registration instead of hand-rolled in
   // the handler. Observable behavior is unchanged.
+  //
+  // No conditional-GET / strong-etag support here, unlike `GET /sessions`
+  // (http-server.ts) — `registerBuiltinTool`'s handler only ever receives
+  // the validated input (see register-builtin-tool.ts), with no access to
+  // the underlying request/response, and MCP's `tools/call` has no 304
+  // concept: every call is a fresh JSON-RPC result. A poller that wants the
+  // byte savings has to go through the REST route instead.
   const sessionListSchema = z.object({
     kind: z
       .enum(["terminal", "agent-cli", "command", "all"])
