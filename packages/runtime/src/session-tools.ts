@@ -129,6 +129,15 @@ export interface SessionTreeNode {
    *  the ROOT nodes (client-launched sessions) whose origin is the meaningful
    *  grouping key; see `groupRootsByOrigin`. */
   origin?: string
+  /** Set when this session was spawned by `session_continue_fresh` — the
+   *  source session's id. A DIFFERENT lineage edge than `parentSessionId`/
+   *  the tree nesting itself (a continue-fresh spawn nests under the
+   *  source's own parent, as a sibling, not a child of the source), so a
+   *  consumer wanting to draw the checkpoint-handoff link needs this field
+   *  in addition to the tree shape. See `SessionDescriptor.continuedFrom`
+   *  and its `handoff` field (full record only, via `session_list full:true`)
+   *  for the harness the checkpoint moved from/to. */
+  continuedFrom?: string
   isOrchestrator: boolean
   children: SessionTreeNode[]
 }
@@ -212,6 +221,7 @@ export function buildSessionTree(
     ...(s.adapterSlug ? { adapterSlug: s.adapterSlug } : {}),
     ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
     ...(s.origin ? { origin: s.origin } : {}),
+    ...(s.continuedFrom ? { continuedFrom: s.continuedFrom } : {}),
     isOrchestrator: orchestratorIds.has(s.id),
     children: (childrenOf.get(s.id) ?? [])
       .sort((a, b) => (a.depth ?? 0) - (b.depth ?? 0))
@@ -410,6 +420,13 @@ export interface SessionListCompactItem {
   exitCode?: number
   depth?: number
   parentSessionId?: string
+  /** Set when this session was spawned by `session_continue_fresh` — the
+   *  source session's id. A DIFFERENT lineage edge than `parentSessionId`
+   *  (a continue-fresh spawn nests under the source's own parent, as a
+   *  sibling, not a child of the source) — see `SessionDescriptor.continuedFrom`
+   *  and its `handoff` field (full record only) for the harness the
+   *  checkpoint moved from/to. */
+  continuedFrom?: string
   // Usage scalars (small, and codified as session_list output by
   // session-usage-mcp.test.ts): cheap badge signals for list views.
   usageSource?: SessionDescriptor["usageSource"]
@@ -451,6 +468,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   exitCode: s.exitCode,
   depth: s.depth,
   parentSessionId: s.parentSessionId,
+  continuedFrom: s.continuedFrom,
   usageSource: s.usageSource,
   costUsd: s.costUsd,
   tokensIn: s.tokensIn,
@@ -691,7 +709,8 @@ export function registerSessionTools(
       "need to know what's already running before spawning anything new, " +
       "or to discover a session id by name. COMPACT BY DEFAULT: each entry " +
       "is a slim projection (id/kind/name/label/status/command/cwd/model/" +
-      "busy/awaitingInput/blockedOn/lastActivityAt/depth/parentSessionId); " +
+      "busy/awaitingInput/blockedOn/lastActivityAt/depth/parentSessionId/" +
+      "continuedFrom); " +
       "pass `full: true` (or `compact: false`) for the complete, unprojected " +
       "per-session record. Raw shell-command runs " +
       "(`kind:'command'`) are a log, not a resumable session, so they're " +
@@ -968,15 +987,59 @@ export function registerSessionTools(
   server.tool(
     "session_continue_fresh",
     "Spawn a NEW agent session that continues the work of an existing " +
-      "session with a structured checkpoint as its initial prompt. The new " +
-      "session uses the same adapter, harness, model, route, access profile, " +
-      "posture, effort, and cwd. The original session is linked via " +
-      "`continuedFrom`/`continuedTo` and its transcript is preserved.",
+      "session with a structured checkpoint as its initial prompt. By " +
+      "default the new session uses the same adapter, harness, model, " +
+      "route, access profile, posture, effort, and cwd — pass `harness`/" +
+      "`adapter`, `model`, and/or `access.profileRef` to override any of " +
+      "those three axes, enabling a CROSS-harness handoff (e.g. claude-code " +
+      "-> opencode). An overridden axis is validated for model x profile " +
+      "eligibility the same way `agent_start` validates it — an ineligible " +
+      "profile or an adapter that can't reach the model fails the spawn " +
+      "instead of silently landing on a wrong wallet or a 404. The original " +
+      "session is linked via `continuedFrom`/`continuedTo`, its transcript " +
+      "is preserved, and the new descriptor carries `handoff: { fromHarness, " +
+      "toHarness, at }` recording which harness the checkpoint moved from/to.",
     {
       idOrName: z
         .string()
         .min(1)
         .describe("Session id or name — from `session_list`."),
+      harness: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Override the canonical harness slug for the fresh session — the " +
+            "cross-harness handoff axis (e.g. 'opencode'). Alias of `adapter`; " +
+            "set either or both. Omitted -> carried forward from the prior " +
+            "session, unchanged."
+        ),
+      adapter: z
+        .string()
+        .min(1)
+        .optional()
+        .describe(
+          "Override the adapter slug for the fresh session — alias of " +
+            "`harness`. Set either or both. Omitted -> carried forward from " +
+            "the prior session, unchanged."
+        ),
+      model: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Override the model for the fresh session (route-identity ref)."),
+      access: z
+        .object({
+          profileRef: z
+            .string()
+            .min(1)
+            .describe(
+              "Attach this NAMED auth profile to the fresh session. Rejected " +
+                "400 if it's not eligible for the resolved (adapter x route)."
+            ),
+        })
+        .optional()
+        .describe("Switch the fresh session's billing wallet to a named auth profile."),
     },
     async input => {
       if (!resolveAgentAdapter) {
@@ -1030,7 +1093,12 @@ export function registerSessionTools(
         ...(listCatalogModels ? { listCatalogModels } : {}),
       }
       try {
-        const result = await continueAgentSessionFresh(spawnDeps, desc)
+        const result = await continueAgentSessionFresh(spawnDeps, desc, {
+          ...(input.harness !== undefined ? { harness: input.harness } : {}),
+          ...(input.adapter !== undefined ? { adapter: input.adapter } : {}),
+          ...(input.model !== undefined ? { model: input.model } : {}),
+          ...(input.access !== undefined ? { access: input.access } : {}),
+        })
         return {
           content: [
             {
@@ -1041,6 +1109,7 @@ export function registerSessionTools(
                   continuedTo: result.descriptor.id,
                   checkpointId: result.checkpoint.checkpointId,
                   checkpointPath: result.checkpoint.checkpointPath,
+                  handoff: result.descriptor.handoff,
                 },
                 null,
                 2,
@@ -1698,7 +1767,11 @@ export function registerSessionTools(
       "is a session with no parent (or whose parent is outside the visible scope); " +
       "its `children` array holds direct sub-sessions, recursively. Each node " +
       "carries `id`, `label`, `status`, `depth`, `adapterSlug`, `parentSessionId`, " +
-      "and `isOrchestrator` (true when the session itself spawned sub-agents). " +
+      "`continuedFrom` (set when the node was spawned by `session_continue_fresh` " +
+      "— a checkpoint-handoff edge distinct from tree nesting: the node is the " +
+      "SOURCE session's sibling, not its child; the full record's `handoff` " +
+      "field names which harness the checkpoint moved from/to), and " +
+      "`isOrchestrator` (true when the session itself spawned sub-agents). " +
       "Via a scoped orchestrator token only the caller's subtree is returned; " +
       "from the root `/mcp` endpoint the full daemon tree is visible. " +
       "NAVIGATION (additive): pass `nodeId` + `direction` together to fetch a " +
@@ -1835,6 +1908,7 @@ export function registerSessionTools(
           ...(s.adapterSlug ? { adapterSlug: s.adapterSlug } : {}),
           ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
           ...(s.origin ? { origin: s.origin } : {}),
+          ...(s.continuedFrom ? { continuedFrom: s.continuedFrom } : {}),
           isOrchestrator: orchestratorIds.has(s.id),
           children: [],
         })

@@ -233,6 +233,26 @@ describe("buildSessionTree", () => {
     const tree = buildSessionTree(registry.list())
     expect(tree[0]!.origin).toBe("vscode")
   })
+
+  it("carries the descriptor's continuedFrom onto the node — a checkpoint-handoff edge, not tree nesting", () => {
+    // session_continue_fresh nests the fresh session under the SOURCE's own
+    // parent (a sibling, not a child of the source) — continuedFrom is a
+    // separate lineage edge from parentSessionId/tree shape, so a consumer
+    // drawing the handoff link needs this field regardless of where the
+    // node sits in the tree.
+    const sessionEvents = createSessionEventBus()
+    const registry = createSessionsRegistry({ sessionEvents, persist: false })
+    const source = spawnNode(registry, undefined, 0, "source")
+    const fresh = spawnNode(registry, undefined, 0, "fresh")
+    const stored = registry.get(fresh.id)!
+    stored.continuedFrom = source.id
+
+    const tree = buildSessionTree(registry.list())
+    const freshNode = tree.find(n => n.id === fresh.id)!
+    expect(freshNode.continuedFrom).toBe(source.id)
+    const sourceNode = tree.find(n => n.id === source.id)!
+    expect(sourceNode.continuedFrom).toBeUndefined()
+  })
 })
 
 // ── (a2) groupRootsByOrigin — origin bucketing of roots ──────────────────────
