@@ -36,6 +36,10 @@ export interface McpAppUiIndex {
   status: McpAppServerStatus
   tools: Array<{ name: string; resourceUri: string; appOnly: boolean }>
   appOnlyTools: string[]
+  /** Every tool name the server declared in `tools/list`, UI or not. */
+  allToolNames: string[]
+  /** Tools whose `_meta.ui.visibility` excludes `"app"` — refused to app UIs. */
+  notAppVisibleTools: string[]
   error?: string
   source?: McpServerConfigSource
 }
@@ -163,14 +167,17 @@ export class McpAppsHostService {
           (index.error ? `: ${index.error}` : "")
       )
     }
+    const exists = index.allToolNames.includes(tool)
+    const appVisible = exists && !index.notAppVisibleTools.includes(tool)
     const allowed =
-      index.tools.some(t => t.name === tool) ||
-      index.appOnlyTools.includes(tool) ||
-      (await this.isOriginTool(sessionId, originToolCallId, server, tool))
+      appVisible || (await this.isOriginTool(sessionId, originToolCallId, server, tool))
     if (!allowed) {
       return errorResult(
-        `mcp_app_tool_call: tool "${tool}" is not callable from an app UI on server "${server}" ` +
-          `(allowed: its UI tools, its app-only tools, or the tool whose card hosts the app)`
+        exists
+          ? `mcp_app_tool_call: tool "${tool}" is not callable from an app UI on server "${server}" ` +
+              `(its _meta.ui.visibility excludes "app"; allowed: app-visible tools, or the tool ` +
+              `whose card hosts the app)`
+          : `mcp_app_tool_call: tool "${tool}" does not exist on server "${server}"`
       )
     }
     const startedAt = this.now()
@@ -214,6 +221,8 @@ export class McpAppsHostService {
         status,
         tools: [],
         appOnlyTools: [],
+        allToolNames: [],
+        notAppVisibleTools: [],
         error,
         ...(source ? { source } : {}),
       }
@@ -248,6 +257,8 @@ export class McpAppsHostService {
           status: "ok",
           tools: ui.tools.map(t => ({ ...t })),
           appOnlyTools: [...ui.appOnlyTools],
+          allToolNames: [...ui.allToolNames],
+          notAppVisibleTools: [...ui.notAppVisibleTools],
           source: resolved.source,
         },
         client,
