@@ -783,6 +783,9 @@ steps:
     expect(final?.status).toBe("done")
     expect(final?.stages[0]?.status).toBe("done")
     expect(final?.stages[0]?.steps[0]?.status).toBe("done")
+    // The workflow's own final output is kept on the run record (persisted
+    // with it) — not only buried in the last step's `output`.
+    expect(final?.output).toEqual({ n: 20 })
   })
 
   // F35: a replay whose map items all hit the step cache used to list no

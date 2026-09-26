@@ -14,13 +14,57 @@ import type { AgentAdapterResolver } from "./http-server.js"
 import type { AgentHarness, AgentSandboxRef, AgentSessionHost, AgentStep } from "@agentproto/workflow-runtime"
 import { SandboxSpecSchema } from "@agentproto/sandbox"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
-import { spawnAgentSession, type SandboxSpecInput } from "./session-spawn.js"
+import type { AcpMcpServer } from "@agentproto/acp"
+import { shouldInjectDaemonSelfMount, spawnAgentSession, type SandboxSpecInput } from "./session-spawn.js"
 import { exportAgentSession } from "./transcript-export.js"
 import type { RoutinePolicy } from "./step-run-types.js"
 import { normalizeSkillsOption } from "./spawn-defaults.js"
 
+/**
+ * The daemon-gateway mount a workflow agent step's (host) session gets —
+ * what `agent_start` gives an equivalent spawn, so a `kind:"agent"` step's
+ * session can reach daemon tools (e.g. `branch_gc_verdict`) at all.
+ *
+ *  - The agent declared a `tools` list (AGENT.md `tools:`, carried as
+ *    `agentTools`): mount the gateway for ANY adapter, scoped to exactly
+ *    that list via `?allowTools=` — the declaration is the capability ask.
+ *    Names the gateway doesn't serve (harness-native `run_command`, …)
+ *    match nothing; the harness keeps its own tools for those. Deferred
+ *    loading is forced off: `tool_search` isn't on the list, so a deferred
+ *    tool would be unreachable.
+ *  - No list declared: the same default `agent_start` applies
+ *    (`shouldInjectDaemonSelfMount` — hermes and on-host claude-code get the
+ *    full gateway, other adapters none).
+ *
+ * Every mount carries `callerSessionId` so calls attribute to the step's
+ * session. `undefined` ⇒ mount nothing (no gateway URL wired, or an adapter
+ * outside the default set with no declared tools).
+ */
+export function agentStepMcpServers(input: {
+  adapter: string
+  daemonMcpUrl: string | undefined
+  sessionId: string
+  agentTools?: readonly string[]
+}): AcpMcpServer[] | undefined {
+  const { adapter, daemonMcpUrl, sessionId, agentTools } = input
+  if (!daemonMcpUrl) return undefined
+  const params = new URLSearchParams()
+  if (agentTools !== undefined && agentTools.length > 0) {
+    params.set("allowTools", agentTools.join(","))
+    params.set("deferred", "0")
+  } else if (!shouldInjectDaemonSelfMount(adapter, undefined)) {
+    return undefined
+  }
+  params.set("callerSessionId", sessionId)
+  const sep = daemonMcpUrl.includes("?") ? "&" : "?"
+  return [{ name: "agentproto", transport: "http", ref: `${daemonMcpUrl}${sep}${params.toString()}` }]
+}
+
 export class SessionsRegistryAgentHost implements AgentSessionHost {
   private readonly sessionsByLabel = new Map<string, string>()
+  /** Sessions this host spawned and hasn't released yet (see
+   *  {@link releaseSession} / {@link releaseAll}). */
+  private readonly unreleased = new Set<string>()
 
   constructor(
     private readonly registry: SessionsRegistry,
@@ -36,6 +80,16 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
        *  step fails loudly (`sandbox_provider_not_found`), never silently
        *  spawns on the host. */
       resolveSandboxProvider?: SandboxProviderResolver
+      /** The daemon's own plain `/mcp` gateway URL — mounted into host
+       *  step sessions per {@link agentStepMcpServers}. Omitted ⇒ step
+       *  sessions get no daemon gateway. */
+      daemonMcpUrl?: string
+      /** The run this host spawns for — step sessions are labelled
+       *  `wf:<workflowId>/<stepKey>` and carry `meta.workflowRunId` /
+       *  `meta.workflowId` / `meta.workflowStepId`, so they read as the run's
+       *  steps instead of anonymous depth-0 roots. Omitted ⇒ the bare
+       *  `agent-step:<adapter>` label. */
+      run?: { runId: string; workflowId: string }
       /**
        * Durable-suspend handler for an `escalate` policy: awaited instead of
        * throwing immediately, so the caller (WorkflowRunner) can pause the
@@ -86,6 +140,8 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       sandbox?: AgentSandboxRef
       options?: Record<string, boolean | number | string>
       harness?: AgentHarness
+      agentTools?: readonly string[]
+      stepKey?: string
     },
   ): Promise<string> {
     const workspaceSlug = opts.workspaceSlug ?? this.opts?.workspaceSlug ?? "default"
@@ -125,7 +181,8 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
           cwd,
           workspaceSlug,
           sandbox,
-          label: `agent-step:${adapter}`,
+          label: this.stepLabel(adapter, opts),
+          origin: "workflow",
           ...(opts.options !== undefined ? { options: opts.options } : {}),
           // AIP-15 P2 harness pinning: model/effort/role/skills all map onto
           // `spawnAgentSession`'s own top-level fields, which already resolve
@@ -140,10 +197,8 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       if (!result.ok) {
         throw new Error(`agent step sandbox spawn failed (${result.code}): ${result.message}`)
       }
-      if (opts.stepId) {
-        this.sessionsByLabel.set(opts.stepId, result.descriptor.id)
-        this.opts?.onSessionLabeled?.(opts.stepId, result.descriptor.id)
-      }
+      this.unreleased.add(result.descriptor.id)
+      this.recordStepSession(opts, result.descriptor.id)
       // `harness.tools` has no generic per-spawn allowlist mechanism this
       // runtime can drive — `run-workflow.ts` already records
       // `toolsApplied: false` on the step's own output; this is the
@@ -194,6 +249,12 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
         `harness.role ("${harness.role}"): this spawn path applies no role-based tool policy — not applied`,
       )
     }
+    const mcpServers = agentStepMcpServers({
+      adapter,
+      daemonMcpUrl: this.opts?.daemonMcpUrl,
+      sessionId: stepSessionId,
+      ...(opts.agentTools !== undefined ? { agentTools: opts.agentTools } : {}),
+    })
     const agentSession = await resolved.startSession({
       cwd,
       configDir: adapterConfigDirFor(stepSessionId),
@@ -204,6 +265,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       ...(harnessOptions !== undefined ? { options: harnessOptions } : {}),
       ...(harness?.model !== undefined ? { model: harness.model } : {}),
       ...(harness?.effort !== undefined ? { effort: harness.effort } : {}),
+      ...(mcpServers ? { mcpServers } : {}),
     })
     const desc = this.registry.spawnAgent({
       id: stepSessionId,
@@ -212,13 +274,22 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       agentSession,
       adapterSlug: adapter,
       adapterConfigDir: adapterConfigDirFor(stepSessionId),
-      label: `agent-step:${adapter}`,
+      label: this.stepLabel(adapter, opts),
+      origin: "workflow",
+      ...(this.opts?.run
+        ? {
+            meta: {
+              workflowRunId: this.opts.run.runId,
+              workflowId: this.opts.run.workflowId,
+              ...(opts.stepKey ?? opts.stepId ? { workflowStepId: (opts.stepKey ?? opts.stepId)! } : {}),
+            },
+          }
+        : {}),
+      ...(mcpServers ? { mcpServers } : {}),
       ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
     })
-    if (opts.stepId) {
-      this.sessionsByLabel.set(opts.stepId, desc.id)
-      this.opts?.onSessionLabeled?.(opts.stepId, desc.id)
-    }
+    this.unreleased.add(desc.id)
+    this.recordStepSession(opts, desc.id)
     if (harnessWarnings.length > 0) {
       this.sessionEvents.emit({
         type: "session:harness-warning",
@@ -229,6 +300,57 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       })
     }
     return desc.id
+  }
+
+  /** `wf:<workflowId>/<stepKey>` for a run-bound host, else the legacy
+   *  `agent-step:<adapter>`. */
+  private stepLabel(adapter: string, opts: { stepId?: string; stepKey?: string }): string {
+    const key = opts.stepKey ?? opts.stepId
+    if (this.opts?.run && key) return `wf:${this.opts.run.workflowId}/${key}`
+    return `agent-step:${adapter}`
+  }
+
+  /** Index a freshly spawned session under its step id (for `sessionRef`
+   *  reuse — last spawn wins, as before) AND its indexed step key, so a
+   *  `map` item's step record (`review[3]`) resolves to its own session. */
+  private recordStepSession(opts: { stepId?: string; stepKey?: string }, sessionId: string): void {
+    if (opts.stepId) {
+      this.sessionsByLabel.set(opts.stepId, sessionId)
+      this.opts?.onSessionLabeled?.(opts.stepId, sessionId)
+    }
+    if (opts.stepKey && opts.stepKey !== opts.stepId) {
+      this.sessionsByLabel.set(opts.stepKey, sessionId)
+      this.opts?.onSessionLabeled?.(opts.stepKey, sessionId)
+    }
+  }
+
+  /**
+   * The run is done with `sessionId`: end it if it's still live (the same
+   * graceful close `agent_kill` does) and archive it, so finished steps
+   * don't linger as idle adapter processes / open rows. The id stays on the
+   * step record and the transcript stays readable. Only sessions this host
+   * spawned are touched; a second call is a no-op.
+   */
+  async releaseSession(sessionId: string): Promise<void> {
+    if (!this.unreleased.delete(sessionId)) return
+    const desc = this.registry.get(sessionId)
+    if (!desc) return
+    // Best-effort: a failed kill/archive must never fail the step or the
+    // cancel that triggered it.
+    try {
+      if (desc.status === "running" || desc.status === "starting") this.registry.kill(sessionId)
+      if (!desc.archived) this.registry.archiveSession(sessionId)
+    } catch {
+      // Still live (kill refused) — leave it visible rather than hide it.
+    }
+  }
+
+  /** Release every session this host spawned and hasn't released yet — the
+   *  run was cancelled (the engine never sees an abort mid-turn, so its own
+   *  scope release would only fire once each turn happened to end). Killing
+   *  an in-flight step's session also ends that step's wait. */
+  async releaseAll(): Promise<void> {
+    await Promise.all([...this.unreleased].map(id => this.releaseSession(id)))
   }
 
   async sendPromptAndWait(sessionId: string, prompt: string): Promise<void> {

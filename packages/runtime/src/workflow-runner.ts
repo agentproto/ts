@@ -107,6 +107,12 @@ export interface WorkflowRun {
    *  this (`"invalid-input"`). Absent on every other failure path. */
   errorCode?: string
   result?: { sessionIds: string[] }
+  /** The workflow's own final output (its declared `result` block, else the
+   *  last step's output) — set when the run completes `done`. Persisted with
+   *  the run and returned by `workflow_status` (compact form included), so a
+   *  run's report outlives the run without the caller digging it out of one
+   *  step's `output`. */
+  output?: unknown
   /** F25: the working directory agent steps (and the run itself) spawn
    *  under — the caller's explicit `cwd` when given, else `startFromFile`'s
    *  resolved default (owning app's root > daemon's active workspace >
@@ -270,6 +276,9 @@ interface RunState {
   abort: AbortController
   /** Original stages — retained so sessionRef lookups can resolve step labels. */
   stages: WorkflowStage[]
+  /** The run's agent host, while it executes — `cancel()` releases its
+   *  still-open step sessions through it. */
+  agents?: SessionsRegistryAgentHost
   /**
    * Set while a step's `escalate` policy is suspended (`run.status ===
    * "awaiting-input"`), waiting for an external `resolve()` call —
@@ -843,7 +852,7 @@ function findStepKind(steps: readonly RuntimeStep[], id: string): string | undef
  * warning and never fails the run.
  */
 function createLedgerAppender(
-  app: Pick<InstalledApp, "dir" | "dataDir">,
+  app: Pick<InstalledApp, "dir" | "dataDir" | "stateDir">,
   appRunId: string | undefined,
   runId: string,
   item: string | undefined,
@@ -919,7 +928,7 @@ async function executeRunWorkflow(
   const nonLeafStepIds = collectNonLeafStepIds(runtimeWf.steps)
 
   try {
-    await runWorkflow({
+    const { output: runOutput } = await runWorkflow({
       workflow: runtimeWf,
       agents,
       signal,
@@ -1283,6 +1292,7 @@ async function executeRunWorkflow(
     }
     state.run.status = "done"
     state.run.endedAt = new Date().toISOString()
+    if (runOutput !== undefined) state.run.output = runOutput
 
     const sessionIds = fillStepStates(state.run.stages, state.stages, agents)
     if (sessionIds.length > 0) state.run.result = { sessionIds }
@@ -1409,6 +1419,11 @@ export function createWorkflowRunner(opts: {
    *  resolver `agent_start.sandbox` uses. Omitted ⇒ a sandbox step fails
    *  loudly (never a silent host spawn). */
   resolveSandboxProvider?: SandboxProviderResolver
+  /** The daemon's own plain `/mcp` gateway URL — agent-step sessions get it
+   *  mounted (scoped to the agent's declared tools when it declares any), so
+   *  a step can call daemon tools the same way an `agent_start` child can.
+   *  See `agentStepMcpServers`. Omitted ⇒ no gateway mount. */
+  daemonMcpUrl?: string
   /** Absolute path for the persistence file. Defaults to ~/.agentproto/workflow-runs.json */
   persistPath?: string
   /** Enable filesystem persistence. Defaults to `true` when `persistPath` is
@@ -1429,7 +1444,7 @@ export function createWorkflowRunner(opts: {
    * Installed-app registry — enables the app state ledger bridge: when a
    * run's workflow id is owned by exactly one installed app (or `appId` is
    * passed explicitly), the runner mirrors stage progress onto that app's
-   * ledger (`<dataDir>/state/events.jsonl`, `by: "runner"`). Omitted ⇒ no
+   * ledger (`<stateDir>/events.jsonl`, `by: "runner"`). Omitted ⇒ no
    * ledger writes, behaviour unchanged.
    */
   appRegistry?: Pick<AppRegistry, "getApp" | "listApps">
@@ -1636,6 +1651,7 @@ export function createWorkflowRunner(opts: {
           workspaceSlug: input.workspaceSlug,
           cwd: input.cwd,
           notifyUrl: input.notifyUrl,
+          run: { runId, workflowId: input.workflowId },
           onEscalate: createOnEscalate(state, persist),
           onSessionLabeled: (stepId, sessionId) => {
             sessionToRun.set(sessionId, { runId, stepId, host: agents })
@@ -1644,8 +1660,10 @@ export function createWorkflowRunner(opts: {
           ...(opts.resolveSandboxProvider
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }
             : {}),
+          ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
         },
       )
+      state.agents = agents
 
       const cache = input.cacheKey ? createFileStepCache(input.cacheKey) : undefined
 
@@ -1653,6 +1671,7 @@ export function createWorkflowRunner(opts: {
         for (const [sid, binding] of sessionToRun) {
           if (binding.runId === runId) sessionToRun.delete(sid)
         }
+        delete state.agents
         persist()
       })
 
@@ -1756,6 +1775,7 @@ export function createWorkflowRunner(opts: {
         {
           workspaceSlug: args.workspaceSlug,
           cwd,
+          run: { runId, workflowId: handle.id },
           onEscalate: createOnEscalate(state, persist),
           onSessionLabeled: (stepId, sessionId) => {
             sessionToRun.set(sessionId, { runId, stepId, host: agents })
@@ -1764,8 +1784,10 @@ export function createWorkflowRunner(opts: {
           ...(opts.resolveSandboxProvider
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }
             : {}),
+          ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
         },
       )
+      state.agents = agents
 
       const cache = args.cacheKey ? createFileStepCache(args.cacheKey) : undefined
 
@@ -1786,6 +1808,7 @@ export function createWorkflowRunner(opts: {
         for (const [sid, binding] of sessionToRun) {
           if (binding.runId === runId) sessionToRun.delete(sid)
         }
+        delete state.agents
         persist()
       })
 
@@ -1940,6 +1963,11 @@ export function createWorkflowRunner(opts: {
       if (!state) return
       state.cancelled = true
       state.abort.abort()
+      // The engine doesn't observe the abort mid-turn: end + archive the
+      // run's open step sessions now (which also ends any in-flight wait).
+      state.agents?.releaseAll().catch(err => {
+        console.warn(`[workflow-runner] releasing step sessions for cancelled run ${runId} failed:`, err)
+      })
       if (state.run.status === "running" || state.run.status === "awaiting-input" || state.run.status === "awaiting-approval") {
         state.run.status = "cancelled"
         state.run.endedAt = new Date().toISOString()

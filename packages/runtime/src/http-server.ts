@@ -652,11 +652,20 @@ export interface RuntimeHttpServerOptions {
    * wrapping in `mcpServerFactory` (index.ts), so an excluded name never
    * reaches registration regardless of deferred status.
    */
+  /**
+   * `allowTools`, when non-empty, is parsed from the request's
+   * `?allowTools=a,b` query string (see `handleMcp` below) — an ALLOWLIST
+   * for this one request: only the named tools register. A workflow agent
+   * step's session carries it, scoped to its AGENT.md `tools:` list (see
+   * `agentStepMcpServers` in sessions-registry-agent-host.ts). Composes with
+   * `denyTools` (a name on both is excluded).
+   */
   mcpServerFactory: (
     denyTools?: ReadonlySet<string>,
     callerSessionId?: string,
     origin?: string,
     deferred?: boolean,
+    allowTools?: ReadonlySet<string>,
   ) => Promise<McpServer>
   /**
    * Optional scoped orchestrator sub-gateway (WP2). When BOTH this and
@@ -1403,7 +1412,7 @@ export async function startHttpServer(
     }
   }
 
-  /** Mirrors `parseDenyToolsQuery` for the `deferred` query param
+  /** Mirrors `parseToolListQuery` for the `deferred` query param
    *  (harness-parity item 3) — see `mcpServerFactory`'s doc for the wire
    *  contract. `"1"`/`"true"` ⇒ `true`, `"0"`/`"false"` ⇒ `false`, anything
    *  else (including absent) ⇒ `undefined` (no override). */
@@ -1416,16 +1425,16 @@ export async function startHttpServer(
     return undefined
   }
 
-  function parseDenyToolsQuery(url: string): Set<string> | undefined {
+  function parseToolListQuery(url: string, param: "denyTools" | "allowTools"): Set<string> | undefined {
     const qIdx = url.indexOf("?")
     if (qIdx === -1) return undefined
-    const raw = new URLSearchParams(url.slice(qIdx + 1)).get("denyTools")
+    const raw = new URLSearchParams(url.slice(qIdx + 1)).get(param)
     if (!raw) return undefined
     const names = raw.split(",").map(s => s.trim()).filter(Boolean)
     return names.length > 0 ? new Set(names) : undefined
   }
 
-  /** Mirrors `parseDenyToolsQuery` for the `callerSessionId` query param
+  /** Mirrors `parseToolListQuery` for the `callerSessionId` query param
    *  (PR 7 / Gap 7) — see `mcpServerFactory`'s doc for the wire contract. */
   function parseCallerSessionIdQuery(url: string): string | undefined {
     const qIdx = url.indexOf("?")
@@ -1449,11 +1458,12 @@ export async function startHttpServer(
 
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!authorizeMcp(req, res)) return
-    const denyTools = parseDenyToolsQuery(req.url ?? "")
+    const denyTools = parseToolListQuery(req.url ?? "", "denyTools")
+    const allowTools = parseToolListQuery(req.url ?? "", "allowTools")
     const callerSessionId = parseCallerSessionIdQuery(req.url ?? "")
     const origin = parseOriginQuery(req.url ?? "")
     const deferred = parseDeferredQuery(req.url ?? "")
-    const server = await opts.mcpServerFactory(denyTools, callerSessionId, origin, deferred)
+    const server = await opts.mcpServerFactory(denyTools, callerSessionId, origin, deferred, allowTools)
     await serveMcp(req, res, server)
   }
 

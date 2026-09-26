@@ -3,7 +3,8 @@
 The app owns a durable, app-scoped store reached from the UI and the
 `__APP_SLUG__-agent` agent via `app_data_read` / `app_data_write` /
 `app_data_list`. Keys are path-safe strings; values are JSON. The run-state
-ledger (`data/state/events.jsonl`, written by the runner) lives beside them
+ledger (written by the runner into the daemon's state dir,
+`~/.agentproto/app-state/<appId>/events.jsonl`) sits alongside this plane
 and is READ-ONLY to agents and the UI — never hand-edit it.
 
 ## Keys

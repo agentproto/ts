@@ -1101,7 +1101,8 @@ export function registerOrchestrationTools(
         "status/startedAt/endedAt/error/sessionId/suspend, so later work can inspect " +
         "what an earlier step produced (e.g. via `agent_output` on that sessionId). " +
         "COMPACT BY DEFAULT (AIP-58 §9): omits each step's raw `output` and a gate " +
-        "step's full `report` body — pass `full: true` for everything.",
+        "step's full `report` body — pass `full: true` for everything. A `done` run's " +
+        "own final `output` (the workflow's declared result) is always included.",
       {
         runId: z.string().describe("Run id returned by `workflow_start`."),
         full: z.boolean().optional().describe("Include step outputs and full gate-report bodies. Defaults to false (compact)."),

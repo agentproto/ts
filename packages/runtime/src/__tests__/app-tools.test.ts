@@ -1188,6 +1188,7 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
             id: "worker",
             description: "A worker agent.",
             model: "claude-sonnet-5",
+            tools: ["read_file", "branch_gc_verdict"],
             workflows: [{ ref: "do-thing" }],
           }),
           body: "You do the thing.",
@@ -1242,6 +1243,8 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
     expect(step.prompt({ input: undefined, item: undefined, index: undefined, steps: {} })).toBe(
       "Do the thing.",
     )
+    // AGENT.md's declared tools ride along to scope the step's daemon mount.
+    expect(step.agentTools).toEqual(["read_file", "branch_gc_verdict"])
   })
 
   it("agent.ref resolution: no AGENT.md model and no adapter override keeps the blanket mastra-agent default", async () => {

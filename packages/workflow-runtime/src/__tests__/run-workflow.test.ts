@@ -237,6 +237,73 @@ describe("runWorkflow — map onError", () => {
   })
 })
 
+describe("runWorkflow — map parallelism is a sliding window", () => {
+  it("starts the next item as soon as ANY slot frees, not when the whole batch finishes", async () => {
+    const release = new Map<number, () => void>()
+    const started: number[] = []
+    const wf: RuntimeWorkflow = {
+      id: "map-window",
+      steps: [
+        {
+          kind: "map",
+          id: "m",
+          parallelism: 2,
+          over: () => [0, 1, 2, 3],
+          body: (item) => ({
+            kind: "transform",
+            id: "t",
+            compute: () => {
+              started.push(item as number)
+              return new Promise<number>((resolve) => release.set(item as number, () => resolve(item as number)))
+            },
+          }),
+        },
+      ],
+      output: (b) => b.steps.m,
+    }
+    const done = runWorkflow({ workflow: wf })
+    const tick = () => new Promise((r) => setTimeout(r, 0))
+    await tick()
+    expect(started).toEqual([0, 1])
+    // Item 0 is slow; item 1 finishing must free its slot for item 2 now.
+    release.get(1)!()
+    await tick()
+    expect(started).toEqual([0, 1, 2])
+    release.get(2)!()
+    await tick()
+    expect(started).toEqual([0, 1, 2, 3])
+    release.get(3)!()
+    release.get(0)!()
+    expect((await done).output).toEqual([0, 1, 2, 3])
+  })
+
+  it("non-tolerant: no new item starts after the first failure", async () => {
+    const started: number[] = []
+    const wf: RuntimeWorkflow = {
+      id: "map-window-fail",
+      steps: [
+        {
+          kind: "map",
+          id: "m",
+          parallelism: 1,
+          over: () => [0, 1, 2],
+          body: (item) => ({
+            kind: "transform",
+            id: "t",
+            compute: () => {
+              started.push(item as number)
+              if (item === 1) throw new Error("boom")
+              return item
+            },
+          }),
+        },
+      ],
+    }
+    await expect(runWorkflow({ workflow: wf })).rejects.toThrow("boom")
+    expect(started).toEqual([0, 1])
+  })
+})
+
 describe("runWorkflow — parallel / approval / suspend / subworkflow", () => {
   it("parallel runs branches concurrently and binds outputs by branch id", async () => {
     const wf: RuntimeWorkflow = {

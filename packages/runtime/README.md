@@ -66,7 +66,7 @@ The `/mcp` endpoint exposes the core toolset plus several opt-in / feature-gated
 | `session_list` / `session_tree` / `session_usage` / `session_restart` / `session_rename` | Session management |
 | `app_install` / `app_run` / `app_list` / `app_status` / `app_stop` / `app_apply` / `app_unapply` / `app_list_applied` | App-kit apps |
 | `app_data_read` / `app_data_write` / `app_data_list` / `app_data_migrate` | App-scoped durable data plane, anchored at the app's `dataDir` (default `<dir>/data`; `app_install {dataDir}`) |
-| `app_state_append` / `app_state_get` / `app_state_list` | App-scoped **state ledger** (`<dataDir>/state/events.jsonl`) — append-only, zod-validated event envelope, fold to a stage snapshot; see below |
+| `app_state_append` / `app_state_get` / `app_state_list` | App-scoped **state ledger** (`<stateDir>/events.jsonl`, under `~/.agentproto/app-state/`) — append-only, zod-validated event envelope, fold to a stage snapshot; see below |
 | `harness_preset_list` / `harness_preset_create` / `harness_preset_delete` / `harness_preset_set_default` | Persisted harness→auth-profile presets (new) |
 | `review_run` / `review_status` / `review_cancel` / `review_ledger` / `review_export` | [`@agentproto/review`](../review) host: run a REVIEW.md binding over a git range (command lanes as subprocesses, agent lanes as child reviewer sessions), fold a `pass`/`block`/`incomplete` verdict, and record the attestation in the review ledger (`~/.agentproto/reviews`) (new) |
 | `workspace_brain_query` / `workspace_brain_status` / `workspace_brain_ingest` | Per-workspace transcript recall (new) |
@@ -75,8 +75,11 @@ The `/mcp` endpoint exposes the core toolset plus several opt-in / feature-gated
 
 ### App state ledger (`app_state_*`)
 
-Per installed app, an append-only JSONL event log lives at
-`<dataDir>/state/events.jsonl` (`src/app-state.ts`). One JSON object per
+Per installed app, an append-only JSONL event log lives in the daemon's own
+state dir, `~/.agentproto/app-state/<encoded appId>/events.jsonl`
+(`InstalledApp.stateDir`, `src/app-state.ts`) — never in the app's source
+tree. A ledger left at the old `<dataDir>/state/events.jsonl` is still read,
+and moved over on the next append. One JSON object per
 line: `{ id (ULID), ts, appRunId?, stage, item?, kind, by, payload }` with
 `kind ∈ stage-started | gate-report | approval | stage-done | blocked | note`
 and `by ∈ runner | human | policy | system`. Payloads are validated per kind
