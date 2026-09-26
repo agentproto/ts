@@ -292,12 +292,31 @@ export function classifyMcpError(err: unknown): {
 function uiMetaOf(meta: unknown): Pick<McpAppUi, "csp" | "permissions" | "prefersBorder" | "domain"> {
   if (!isRecord(meta) || !isRecord(meta.ui)) return {}
   const ui = meta.ui
+  const csp = cspOf(ui.csp)
   return {
-    ...(isRecord(ui.csp) ? { csp: ui.csp as McpAppUiCsp } : {}),
+    ...(csp ? { csp } : {}),
     ...(isRecord(ui.permissions) ? { permissions: ui.permissions } : {}),
     ...(typeof ui.prefersBorder === "boolean" ? { prefersBorder: ui.prefersBorder } : {}),
     ...(typeof ui.domain === "string" ? { domain: ui.domain } : {}),
   }
+}
+
+const CSP_DOMAIN_KEYS = ["connectDomains", "resourceDomains", "frameDomains", "baseUriDomains"] as const
+
+/** Narrow a server's `_meta.ui.csp`: each domain list is kept only when it
+ *  is an array, and only its string elements survive — a server sending
+ *  `connectDomains: "https://x"` must not reach the host's CSP builder,
+ *  which maps over these as arrays. Undefined when no list survives. */
+function cspOf(raw: unknown): McpAppUiCsp | undefined {
+  if (!isRecord(raw)) return undefined
+  const csp: McpAppUiCsp = {}
+  for (const key of CSP_DOMAIN_KEYS) {
+    const value = raw[key]
+    if (Array.isArray(value)) {
+      csp[key] = value.filter((d): d is string => typeof d === "string")
+    }
+  }
+  return Object.keys(csp).length > 0 ? csp : undefined
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

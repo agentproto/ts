@@ -28,6 +28,8 @@ let httpServer: Server
 let baseUrl: string
 /** Extra tool registered on the next connect — proves a reconnect re-lists. */
 let extraUiTool = false
+/** Adds UI tools whose resources carry malformed `_meta.ui.csp`. */
+let malformedCspTools = false
 const upstreamCalls: string[] = []
 
 function buildFixtureServer(): McpServer {
@@ -55,6 +57,29 @@ function buildFixtureServer(): McpServer {
   })
   // A ui:// resource that exists on the server but no tool declares.
   registerUiResource(server, { name: "hidden", uri: "ui://hidden/view", html: "<html>secret</html>" })
+  if (malformedCspTools) {
+    const badCsp = {
+      // string, not an array
+      connectDomains: "https://x.example",
+      // mixed array: only the string survives
+      resourceDomains: ["https://ok.example", 42, null, { d: "x" }],
+      // number
+      frameDomains: 7,
+      baseUriDomains: ["https://base.example"],
+    }
+    const noValidList = { connectDomains: "https://x.example", frameDomains: 7, resourceDomains: 3 }
+    for (const [name, csp] of [["bad_csp", badCsp], ["no_valid_csp", noValidList]] as const) {
+      const uri = `ui://${name}/view`
+      server.registerResource(name, uri, { mimeType: "text/html;profile=mcp-app" }, async () => ({
+        contents: [{ uri, mimeType: "text/html;profile=mcp-app", text: "<html></html>", _meta: { ui: { csp } } }],
+      }))
+      server.registerTool(
+        name,
+        { description: name, _meta: { ui: { resourceUri: uri } } },
+        async () => ({ content: [{ type: "text", text: "{}" }] })
+      )
+    }
+  }
   if (extraUiTool) {
     registerUiResource(server, { name: "late", uri: "ui://late/view", html: "<html>late</html>" })
     server.registerTool(
@@ -93,6 +118,7 @@ afterAll(async () => {
 const pools: McpClientPool[] = []
 afterEach(async () => {
   extraUiTool = false
+  malformedCspTools = false
   upstreamCalls.length = 0
   await Promise.all(pools.splice(0).map(p => p.closeAll()))
 })
@@ -259,6 +285,20 @@ describe("McpAppsHostService.readUi", () => {
     expect(hidden.status).toBe("ok")
     expect(hidden.error).toMatch(/not declared by any tool/)
     expect("html" in hidden).toBe(false)
+  })
+
+  it("narrows a malformed _meta.ui.csp to string-only domain arrays", async () => {
+    malformedCspTools = true
+    const { host } = makeHost()
+    const bad = (await host.readUi("s1", "fixture", "ui://bad_csp/view")) as McpAppUi
+    expect(bad.html).toBe("<html></html>")
+    expect(bad.csp).toEqual({
+      resourceDomains: ["https://ok.example"],
+      baseUriDomains: ["https://base.example"],
+    })
+    const none = (await host.readUi("s1", "fixture", "ui://no_valid_csp/view")) as McpAppUi
+    expect(none.html).toBe("<html></html>")
+    expect("csp" in none).toBe(false)
   })
 
   it("passes a non-ok index status through as { error, status }", async () => {
