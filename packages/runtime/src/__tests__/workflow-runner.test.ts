@@ -785,6 +785,75 @@ steps:
     expect(final?.stages[0]?.steps[0]?.status).toBe("done")
   })
 
+  // F35: a replay whose map items all hit the step cache used to list no
+  // item step at all — the item is only discovered via onStepStart.
+  it("a cache-hit map item still surfaces as a done step, marked cached, on a replay with the same cacheKey", async () => {
+    vi.stubEnv("HOME", tmpDir) // createFileStepCache's default dir is under homedir()
+    try {
+      const bus = createSessionEventBus()
+      const registry = makeMockRegistry()
+      const { tools, candidates } = makeStubTools()
+      const runner = createWorkflowRunner({
+        registry,
+        sessionEvents: bus,
+        resolveAgentAdapter: makeMockAdapter(),
+        compileWorkflow: (handle) => compileWorkflow(handle, { tools, candidates }),
+      })
+      const path = writeWorkflowMd(`---
+name: Cached map
+id: cached-map
+description: Doubles each item; the item step is cacheable.
+version: 0.1.0
+inputs: {}
+outputs: {}
+steps:
+  - id: chunks
+    kind: map
+    over: $input.xs
+    steps:
+      - id: clean-chunk
+        kind: tool
+        tool: demo.double
+        cacheable: true
+        inputs:
+          n: $item
+---
+
+# Cached map
+`)
+      const runToEnd = async () => {
+        const run = await runner.startFromFile({ path, input: { xs: [1, 2] }, cacheKey: "f35-replay" })
+        const terminal = new Set(["done", "failed", "cancelled"])
+        let final = runner.status(run.runId)
+        for (let i = 0; i < 100 && final && !terminal.has(final.status); i++) {
+          await new Promise(res => setTimeout(res, 10))
+          final = runner.status(run.runId)
+        }
+        return final
+      }
+
+      const first = await runToEnd()
+      expect(first?.status).toBe("done")
+      const firstItems = first?.stages[0]?.steps.filter(s => s.label.startsWith("clean-chunk")) ?? []
+      expect(firstItems.map(s => s.label).sort()).toEqual(["clean-chunk[0]", "clean-chunk[1]"])
+      expect(firstItems.every(s => s.cached === undefined)).toBe(true)
+
+      const replay = await runToEnd()
+      expect(replay?.status).toBe("done")
+      const items = replay?.stages[0]?.steps.filter(s => s.label.startsWith("clean-chunk")) ?? []
+      expect(items.map(s => s.label).sort()).toEqual(["clean-chunk[0]", "clean-chunk[1]"])
+      for (const s of items) {
+        expect(s.status).toBe("done")
+        expect(s.cached).toBe(true)
+        expect(s.startedAt).toBeDefined()
+        expect(s.endedAt).toBeDefined()
+        expect(s.output).toEqual({ n: s.label === "clean-chunk[0]" ? 2 : 4 })
+      }
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   // AIP-58 §3 Outcome rule: "invalid or missing required input is checked
   // before any step runs". This is the `startFromFile` half of the P1
   // validation seam (see `@agentproto/workflow-runtime`'s

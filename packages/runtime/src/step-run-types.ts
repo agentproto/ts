@@ -32,4 +32,7 @@ export interface RoutineStepState {
    *  step whose final message matched the "trailing question mark"
    *  heuristic — a triage aid only, it never changes `status`. */
   hint?: "possible-input-request"
+  /** True when this step's output was replayed from the run's step-cache
+   *  journal (`cacheable: true` + `cacheKey`) instead of being executed. */
+  cached?: boolean
 }

@@ -1934,6 +1934,204 @@ describe("step cache", () => {
     expect(toolRuns).toBe(1)
     expect(r2.output).toEqual(r1.output)
   })
+
+  it("map of cacheable tool items — each item caches independently (F33)", async () => {
+    const runsByN: number[] = []
+    const countingProvider = defineDriver({
+      id: "counting-map",
+      name: "Counting",
+      description: "Counts runs, tagged by input n.",
+      kind: "builtin",
+      implements: [{ tool: "demo.double", version: "0.1.0" }],
+      implementations: [
+        implementTool(doubleTool, ({ input }) => {
+          runsByN.push(input.n)
+          return { n: input.n * 2 }
+        }),
+      ],
+    })
+    const mapWf = (xs: number[]): RuntimeWorkflow => ({
+      id: "cache-map",
+      steps: [
+        {
+          kind: "map",
+          id: "doubled",
+          parallelism: 2,
+          over: () => xs,
+          body: () => ({
+            kind: "tool",
+            id: "d",
+            tool: doubleTool,
+            candidates: [countingProvider],
+            cacheable: true,
+            input: (b) => ({ n: b.item as number }),
+          }),
+        },
+      ],
+      output: (b) => b.steps.doubled,
+    })
+    const { cache } = memCache()
+
+    const r1 = await runWorkflow({ workflow: mapWf([1, 2, 3]), cache, cacheKey: "run-map" })
+    expect(runsByN.sort()).toEqual([1, 2, 3])
+    expect(r1.output).toEqual([{ n: 2 }, { n: 4 }, { n: 6 }])
+
+    // Second run, same items, same cacheKey ⇒ every item is a cache hit —
+    // before the F33 fix all three items shared ONE journal key (same
+    // step id + kind) and stomped each other, so this never hit for >1 item.
+    runsByN.length = 0
+    const r2 = await runWorkflow({ workflow: mapWf([1, 2, 3]), cache, cacheKey: "run-map" })
+    expect(runsByN).toEqual([])
+    expect(r2.output).toEqual(r1.output)
+
+    // Change only the middle item's input ⇒ only that item re-runs; the
+    // other two stay cache hits.
+    runsByN.length = 0
+    const r3 = await runWorkflow({ workflow: mapWf([1, 20, 3]), cache, cacheKey: "run-map" })
+    expect(runsByN).toEqual([20])
+    expect(r3.output).toEqual([{ n: 2 }, { n: 40 }, { n: 6 }])
+  })
+
+  it("a failing later step doesn't stop an earlier cacheable step from replaying on re-run with the same cacheKey", async () => {
+    let doubleRuns = 0
+    let addTenAttempts = 0
+    const doubleProvider = defineDriver({
+      id: "counting-double",
+      name: "Counting double",
+      description: "Counts invocations of demo.double.",
+      kind: "builtin",
+      implements: [{ tool: "demo.double", version: "0.1.0" }],
+      implementations: [
+        implementTool(doubleTool, ({ input }) => {
+          doubleRuns++
+          return { n: input.n * 2 }
+        }),
+      ],
+    })
+    // Fails on the first attempt (simulating a transient failure), succeeds
+    // on any retry — the re-run-from-failure scenario the cacheKey is for.
+    const flakyAddTenProvider = defineDriver({
+      id: "flaky-add-ten",
+      name: "Flaky add ten",
+      description: "Throws on the first attempt, succeeds after.",
+      kind: "builtin",
+      implements: [{ tool: "demo.add-ten", version: "0.1.0" }],
+      implementations: [
+        implementTool(addTenTool, ({ input }) => {
+          addTenAttempts++
+          if (addTenAttempts === 1) throw new Error("transient failure")
+          return { n: input.n + 10 }
+        }),
+      ],
+    })
+    const wf: RuntimeWorkflow = {
+      id: "cache-replay-on-failure",
+      steps: [
+        {
+          kind: "tool",
+          id: "d",
+          tool: doubleTool,
+          candidates: [doubleProvider],
+          cacheable: true,
+          input: (b) => ({ n: (b.input as { n: number }).n }),
+        },
+        {
+          kind: "tool",
+          id: "a",
+          tool: addTenTool,
+          candidates: [flakyAddTenProvider],
+          cacheable: true,
+          input: (b) => ({ n: (b.steps.d as { n: number }).n }),
+        },
+      ],
+    }
+    const { cache } = memCache()
+    await expect(
+      runWorkflow({ workflow: wf, input: { n: 5 }, cache, cacheKey: "run-retry" }),
+    ).rejects.toThrow("transient failure")
+    expect(doubleRuns).toBe(1)
+    expect(addTenAttempts).toBe(1)
+
+    // Re-run with the SAME cacheKey: the already-succeeded "d" step replays
+    // from the journal (no second dispatch); only the failed "a" step
+    // re-executes, and this time succeeds.
+    const { output } = await runWorkflow({ workflow: wf, input: { n: 5 }, cache, cacheKey: "run-retry" })
+    expect(doubleRuns).toBe(1)
+    expect(addTenAttempts).toBe(2)
+    expect(output).toEqual({ n: 20 })
+  })
+
+  it("a cache-hit step still fires onStepStart/onStepComplete, tagged cached (F35) — agent, tool, and map items", async () => {
+    let spawns = 0
+    const host = fakeHost({
+      spawn: vi.fn(async () => `sess_${spawns++}`),
+      readFinalMessage: vi.fn(async () => JSON.stringify({ ok: true })),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "cache-hooks",
+      steps: [
+        {
+          kind: "agent",
+          id: "research",
+          adapter: "claude",
+          cacheable: true,
+          prompt: () => "do research",
+          outputSchema: z.object({ ok: z.boolean() }),
+        },
+        {
+          kind: "tool",
+          id: "d",
+          tool: doubleTool,
+          candidates,
+          cacheable: true,
+          input: () => ({ n: 1 }),
+        },
+        {
+          kind: "map",
+          id: "chunks",
+          over: () => [1, 2],
+          body: () => ({
+            kind: "agent",
+            id: "clean-chunk",
+            adapter: "claude",
+            cacheable: true,
+            prompt: (b) => `clean ${String(b.item)}`,
+            outputSchema: z.object({ ok: z.boolean() }),
+          }),
+        },
+      ],
+    }
+    const { cache } = memCache()
+    const record = () => {
+      const starts: Array<[string, unknown]> = []
+      const completes: Array<[string, unknown]> = []
+      return {
+        starts,
+        completes,
+        onStepStart: (id: string, info?: { cached?: boolean }) => { starts.push([id, info]) },
+        onStepComplete: (id: string, _out: unknown, info?: { cached?: boolean }) => { completes.push([id, info]) },
+      }
+    }
+
+    const first = record()
+    await runWorkflow({ workflow: wf, agents: host, cache, cacheKey: "run-hooks", ...first })
+    expect(spawns).toBe(3)
+    // First run executes everything — no cached tag anywhere.
+    expect(first.starts.every(([, info]) => info === undefined)).toBe(true)
+    expect(first.completes.every(([, info]) => info === undefined)).toBe(true)
+
+    const second = record()
+    await runWorkflow({ workflow: wf, agents: host, cache, cacheKey: "run-hooks", ...second })
+    expect(spawns).toBe(3)
+    const leafIds = ["research", "d", "clean-chunk[0]", "clean-chunk[1]"]
+    for (const id of leafIds) {
+      expect(second.starts).toContainEqual([id, { cached: true }])
+      expect(second.completes).toContainEqual([id, { cached: true }])
+    }
+    // The map container itself executed (it isn't cacheable) — not tagged.
+    expect(second.starts).toContainEqual(["chunks", undefined])
+    expect(second.completes).toContainEqual(["chunks", undefined])
+  })
 })
 
 describe("runWorkflow — agent step harness.knowledge materialization (AIP-15 P2)", () => {

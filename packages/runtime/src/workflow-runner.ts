@@ -1026,7 +1026,8 @@ async function executeRunWorkflow(
           }
         }
       },
-      onStepStart: (stepId) => {
+      onStepStart: (stepId, info) => {
+        const cached = info?.cached === true
         if (nonLeafStepIds.has(stepId)) return
         runningSteps.add(stepId)
         ledgerAppend?.({
@@ -1054,6 +1055,7 @@ async function executeRunWorkflow(
               step.status = "running"
               step.startedAt = new Date().toISOString()
             }
+            if (cached) step.cached = true
             // Update stage status if it's still pending
             if (stage.status === "pending") {
               stage.status = "running"
@@ -1069,14 +1071,16 @@ async function executeRunWorkflow(
               label: stepId,
               status: "running",
               startedAt: new Date().toISOString(),
+              ...(cached ? { cached: true } : {}),
             })
             if (stage.status === "pending") stage.status = "running"
           }
         }
         persist?.()
-        eventLog?.append({ stepId, type: "step.started", data: {} })
+        eventLog?.append({ stepId, type: "step.started", data: cached ? { cached: true } : {} })
       },
-      onStepComplete: (stepId, output) => {
+      onStepComplete: (stepId, output, info) => {
+        const cached = info?.cached === true
         if (nonLeafStepIds.has(stepId)) return
         runningSteps.delete(stepId)
         // Find and mark the step as done
@@ -1088,6 +1092,7 @@ async function executeRunWorkflow(
             step.status = "done"
             step.endedAt = new Date().toISOString()
             step.output = output
+            if (cached) step.cached = true
             // Extract sessionId from output if present
             if (output && typeof output === "object" && "sessionId" in output) {
               step.sessionId = (output as { sessionId: string }).sessionId
@@ -1116,7 +1121,7 @@ async function executeRunWorkflow(
             })(),
           },
         })
-        eventLog?.append({ stepId, type: "step.succeeded", data: {} })
+        eventLog?.append({ stepId, type: "step.succeeded", data: cached ? { cached: true } : {} })
       },
     })
 

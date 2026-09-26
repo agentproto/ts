@@ -707,6 +707,7 @@ function compileStep(step: any, ctx: Ctx): RunStep {
         context: opts.contextFor
           ? (b) => opts.contextFor!(toolId, b)
           : undefined,
+        ...(step.cacheable ? { cacheable: true } : {}),
       }
     }
 

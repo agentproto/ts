@@ -224,6 +224,41 @@ await runWorkflow({ workflow: wf, cache, cacheKey: "nightly-review" }) // run 2:
 Both `cache` and `cacheKey` must be set for any caching to happen. Supply your
 own `StepCache` (`{ get, set }`) for an in-memory or custom-backed journal.
 
+Both a declarative `kind: "tool"` step and a `kind: "agent"` step accept
+`cacheable: true` — in WORKFLOW.md frontmatter as well as a TS-authored step.
+
+Inside a `map`, each item caches **independently**: the journal key includes
+the item's `[<index>]` path (nested maps append their own index), so item 1
+changing doesn't invalidate items 0 and 2, and every item of a >1-item map
+gets its own cache entry instead of all items sharing (and stomping) one key.
+
+#### Re-running a failed run from the same cacheKey
+
+Because the journal is written per step as the run progresses — not only at
+the end — a run that throws partway through still leaves every already-
+succeeded cacheable step's output in the journal. Re-invoking `runWorkflow`
+with the SAME `workflow`, `input`, `cache`, and `cacheKey` after a failure
+replays every step whose resolved inputs are unchanged and only re-executes
+the step(s) that failed (or whose resolved inputs changed since the failed
+run):
+
+```ts
+try {
+  await runWorkflow({ workflow: wf, input, cache, cacheKey: "run-42" })
+} catch {
+  // fix the underlying issue, then re-run with the SAME cacheKey —
+  // every cacheable step that already succeeded replays; only the
+  // step that failed (and anything downstream of it) re-executes.
+  await runWorkflow({ workflow: wf, input, cache, cacheKey: "run-42" })
+}
+```
+
+This is a manual retry, not a resumable run object — `runWorkflow` has no
+notion of "the run that failed"; the cacheKey is just a namespace the caller
+re-supplies. A first-class `run.retry`/`run.replay` verb that resumes a named
+run without the caller re-threading `workflow`/`input`/`cacheKey` by hand is
+AIP-58 P5, not implemented here.
+
 ### Step lifecycle callbacks
 
 Pass `onStepStart` and `onStepComplete` to `runWorkflow` to observe progress in
@@ -231,11 +266,17 @@ real time. The callbacks fire for every step kind; for `agent` steps, start fire
 before spawn and complete fires after the turn (and any output-schema retry loop)
 finishes.
 
+A cacheable step replayed from the journal still fires both callbacks (it
+doesn't vanish from progress), with a third `info` argument of
+`{ cached: true }`; an executed step gets `info === undefined`. The daemon's
+`workflow_status` surfaces this as `cached: true` on the step row, and on the
+AIP-58 `step.started`/`step.succeeded` events' `data`.
+
 ```ts
 await runWorkflow({
   workflow: wf,
-  onStepStart: (stepId) => console.log("starting", stepId),
-  onStepComplete: (stepId, output) => console.log("done", stepId, output),
+  onStepStart: (stepId, info) => console.log("starting", stepId, info?.cached ? "(cached)" : ""),
+  onStepComplete: (stepId, output, info) => console.log("done", stepId, output, info?.cached ? "(cached)" : ""),
 })
 ```
 

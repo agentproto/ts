@@ -21,6 +21,7 @@ import {
   type AgentStep,
   type Bindings,
   type GateStep,
+  type StepCache,
 } from "../index.js"
 
 const doubleTool = defineTool({
@@ -276,6 +277,54 @@ describe("compileWorkflow", () => {
     expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(
       WorkflowCompileError,
     )
+  })
+})
+
+describe("compileWorkflow — tool step cacheable (F32)", () => {
+  it("carries a declarative tool step's cacheable through to the compiled ToolStep — replays on the second run with the same cacheKey", async () => {
+    let toolRuns = 0
+    const countingProvider = defineDriver({
+      id: "counting-math",
+      name: "Counting Math",
+      description: "Counts invocations of demo.double.",
+      kind: "builtin",
+      implements: [{ tool: "demo.double", version: "0.1.0" }],
+      implementations: [
+        implementTool(doubleTool, ({ input }) => {
+          toolRuns++
+          return { n: input.n * 2 }
+        }),
+      ],
+    })
+    const wf = defineWorkflow({
+      name: "Cacheable double",
+      id: "cacheable-double",
+      description: "Doubles the input; the step is cacheable.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "d",
+          kind: "tool",
+          tool: "demo.double",
+          inputs: { n: "$input.n" },
+          cacheable: true,
+        },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates: [countingProvider] })
+    const store = new Map<string, { output: unknown; resolvedInputHash: string }>()
+    const cache: StepCache = {
+      get: async (k) => store.get(k),
+      set: async (k, e) => {
+        store.set(k, e)
+      },
+    }
+    const r1 = await runWorkflow({ workflow: compiled, input: { n: 5 }, cache, cacheKey: "run-f32" })
+    const r2 = await runWorkflow({ workflow: compiled, input: { n: 5 }, cache, cacheKey: "run-f32" })
+    expect(toolRuns).toBe(1)
+    expect(r2.output).toEqual(r1.output)
   })
 })
 

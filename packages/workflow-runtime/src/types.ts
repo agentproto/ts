@@ -586,6 +586,13 @@ export interface StepCache {
   set(stepCacheKey: string, entry: StepCacheEntry): Promise<void>
 }
 
+/** Extra context passed to `onStepStart`/`onStepComplete`. */
+export interface StepHookInfo {
+  /** The step's output was replayed from the {@link StepCache} journal —
+   *  it was not executed (no spawn, no tool dispatch) this run. */
+  cached?: boolean
+}
+
 export interface RunWorkflowArgs {
   workflow: RuntimeWorkflow
   input?: unknown
@@ -623,10 +630,12 @@ export interface RunWorkflowArgs {
   /** Namespacing label for this run's cache lookups (the workflow_start cacheKey).
    *  Both `cache` and `cacheKey` must be set for any caching to happen. */
   cacheKey?: string
-  /** Called when a step begins execution (before spawn/prompt). */
-  onStepStart?: (stepId: string) => void
-  /** Called when a step completes execution, with its output. */
-  onStepComplete?: (stepId: string, output: unknown) => void
+  /** Called when a step begins execution (before spawn/prompt). A cacheable
+   *  step replayed from the journal still fires this, with `info.cached`. */
+  onStepStart?: (stepId: string, info?: StepHookInfo) => void
+  /** Called when a step completes execution, with its output — `info.cached`
+   *  when the output was replayed from the journal instead of executed. */
+  onStepComplete?: (stepId: string, output: unknown, info?: StepHookInfo) => void
   /** Host-injectable subprocess runner for `kind: "gate"` steps. Undefined ⇒
    *  the runtime's own `node:child_process`-backed default. */
   runGateCommand?: GateCommandRunner
