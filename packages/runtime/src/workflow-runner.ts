@@ -1248,7 +1248,7 @@ async function executeRunWorkflow(
               step.sessionId = (output as { sessionId: string }).sessionId
             }
             // Check if all steps in stage are done
-            const allDone = stage.steps.every((s) => s.status === "done")
+            const allDone = stage.steps.every((s) => s.status === "done" || s.status === "skipped")
             if (allDone) {
               stage.status = "done"
             }
@@ -1273,18 +1273,48 @@ async function executeRunWorkflow(
         })
         eventLog?.append({ stepId, type: "step.succeeded", data: cached ? { cached: true } : {} })
       },
+      onStepSkipped: (stepId, info) => {
+        // An untaken branch arm's step: surface it as `skipped` right when
+        // the branch decides — never invisible, never a fabricated `done`.
+        // Arm steps aren't listed up front (`collectStaticSteps` leaves
+        // conditional steps out), so this usually appends a new row.
+        let row: RoutineStepState | undefined
+        for (const stage of state.run.stages) {
+          row = stage.steps.find((s) => s.label === stepId)
+          if (row) break
+        }
+        if (row) {
+          if (row.status === "pending") row.status = "skipped"
+        } else {
+          const stage = state.run.stages[state.run.stages.length - 1]
+          if (stage) {
+            row = {
+              index: stage.steps.reduce((max, s) => Math.max(max, s.index + 1), 0),
+              label: stepId,
+              status: "skipped",
+            }
+            // Ahead of the still-pending steps, so the list keeps reading in
+            // execution order (same placement a starting step gets).
+            const firstPending = stage.steps.findIndex((s) => s.status === "pending")
+            if (firstPending === -1) stage.steps.push(row)
+            else stage.steps.splice(firstPending, 0, row)
+          }
+        }
+        persist?.()
+        eventLog?.append({ stepId, type: "step.skipped", data: { reason: info.reason, branchId: info.branchId } })
+      },
     })
 
     // Success — close out every stage/step. A step that started but whose
     // completion was never observed is done (fallback for any missed hook);
-    // one that never started at all (an untaken branch arm, F31) is
+    // one that never started at all (an untaken branch arm, F31/F22) is
     // `skipped`, never a fabricated `done`.
     for (const stage of state.run.stages) {
       if (stage.status !== "done") stage.status = "done"
       for (const step of stage.steps) {
         if (step.status === "pending") {
           step.status = "skipped"
-        } else if (step.status !== "done") {
+        } else if (step.status !== "done" && step.status !== "skipped") {
           step.status = "done"
           step.endedAt = new Date().toISOString()
         }

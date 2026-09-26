@@ -666,12 +666,15 @@ steps:
     expect(final!.error).toContain("x".repeat(2000))
   })
 
-  it("F31 — untaken branch arms aren't listed, shared tails aren't duplicated, and steps read in execution order", async () => {
+  it("F31/F22 — branch arms aren't pre-listed, the untaken arm surfaces as skipped (row + step.skipped), steps read in execution order", async () => {
     const { tool, driver } = makeIdentityTool()
     const runner = createWorkflowRunner({
       registry: makeMockRegistry(),
       sessionEvents: createSessionEventBus(),
       resolveAgentAdapter: makeMockAdapter(),
+      persist: true,
+      persistPath: join(tmpDir, "workflow-runs.json"),
+      runsRoot: join(tmpDir, "runs"),
       compileWorkflow: (handle) => compileWorkflow(handle, { tools: { "demo.identity": tool }, candidates: [driver] }),
     })
 
@@ -723,8 +726,28 @@ steps:
 
     const final = await waitTerminal(runner, run.runId)
     expect(final?.status).toBe("done")
-    expect(final?.stages[0]?.steps.map(s => s.label)).toEqual(["fetch", "clean[0]", "clean[1]", "skip-pdf"])
-    expect(final?.stages[0]?.steps.every(s => s.status === "done")).toBe(true)
+    const rows = final?.stages[0]?.steps.map(s => `${s.label}:${s.status}`)
+    expect(rows).toEqual(["fetch:done", "clean[0]:done", "clean[1]:done", "pdf-render:skipped", "skip-pdf:done"])
+    const skippedEvents = runner.events(run.runId)?.filter(e => e.type === "step.skipped")
+    expect(skippedEvents?.map(e => [e.stepId, e.data])).toEqual([
+      ["pdf-render", { reason: "branch-not-taken", branchId: "route" }],
+    ])
+
+    // F22: the taken arm is exclusive — skip-pdf no longer runs after pdf-render.
+    const pdfRun = await runner.startFromFile({ path, input: { items: ["a"], pdf: true } })
+    const pdfFinal = await waitTerminal(runner, pdfRun.runId)
+    expect(pdfFinal?.status).toBe("done")
+    // Execution order: the untaken arm is marked skipped the moment the
+    // branch decides — before the taken arm's step starts.
+    expect(pdfFinal?.stages[0]?.steps.map(s => `${s.label}:${s.status}`)).toEqual([
+      "fetch:done",
+      "clean[0]:done",
+      "skip-pdf:skipped",
+      "pdf-render:done",
+    ])
+    const pdfEvents = runner.events(pdfRun.runId)?.map(e => (e.stepId ? `${e.type}:${e.stepId}` : e.type))
+    expect(pdfEvents).toContain("step.skipped:skip-pdf")
+    expect(pdfEvents).not.toContain("step.started:skip-pdf")
   })
 
   it("#1421 cache hits — a replayed step gets ONE step.started/step.succeeded (cached), done with timestamps, in execution order", async () => {

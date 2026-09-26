@@ -996,7 +996,7 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
     expect(bindings.steps.medium).toBeUndefined()
   })
   
-  it("no default: falls through to the next sibling in document order", async () => {
+  it("no default: a no-match runs the siblings before the first arm target, never the arm", async () => {
     const wf = defineWorkflow({
       name: "No default",
       id: "no-default",
@@ -1017,6 +1017,7 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
     const compiled = compileWorkflow(wf, { tools, candidates })
     const { bindings } = await runWorkflow({ workflow: compiled, input: { n: 1 } })
     expect(bindings.steps.near).toEqual({ n: 2 })
+    expect(bindings.steps.far).toBeUndefined()
   })
   
   it("rejects a backward branch target", () => {
@@ -1062,10 +1063,8 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
   })
   
   it("works nested inside a map's body, branching on $item", async () => {
-    // `neg` is the LAST sibling in the body, so the `default` jump to it is
-    // exclusive (skips `pos` entirely). `pos` sits earlier, so taking that
-    // arm falls through into `neg` too — the same forward-fallthrough
-    // semantics proven at the top level, just nested inside a map body.
+    // Exclusive arms, nested inside a map body: each item runs exactly one
+    // of `pos` / `neg`.
     const wf = defineWorkflow({
       name: "Branch in map",
       id: "branch-in-map",
@@ -1092,11 +1091,16 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
       ],
     })
     const compiled = compileWorkflow(wf, { tools, candidates })
-    const { output } = await runWorkflow({ workflow: compiled, input: { xs: [3, -2, 5] } })
-    // 3 → pos (double → 6), falls through to neg (add-ten → 13)
-    // -2 → default (neg only, exclusive) → add-ten → 8
-    // 5 → pos (double → 10), falls through to neg (add-ten → 15)
-    expect((output as Array<{ n: number }>).map((o) => o.n)).toEqual([13, 8, 15])
+    const skipped: string[] = []
+    const { output } = await runWorkflow({
+      workflow: compiled,
+      input: { xs: [3, -2, 5] },
+      onStepSkipped: (id) => skipped.push(id),
+    })
+    // 3 → pos (double → 6); -2 → neg (add-ten → 8); 5 → pos (double → 10)
+    expect((output as Array<{ n: number }>).map((o) => o.n)).toEqual([6, 8, 10])
+    // The untaken arm of each item is reported under that item's index.
+    expect(skipped.sort()).toEqual(["neg[0]", "neg[2]", "pos[1]"])
   })
   
   it("end-to-end: only the chosen arm's steps run, and the shared trailing sibling runs exactly once", async () => {
@@ -1150,6 +1154,288 @@ describe("compileWorkflow — branch (forward-only goto)", () => {
     expect(finalizeCalls).toBe(1)
   })
   })
+
+describe("compileWorkflow — branch: exclusive arms + join (F22)", () => {
+  // Every executed step, in order, plus every step reported skipped.
+  const trace = () => {
+    const ran: string[] = []
+    const skipped: Array<{ id: string; branchId: string }> = []
+    return {
+      ran,
+      skipped,
+      hooks: {
+        onStepComplete: (id: string) => {
+          ran.push(id)
+        },
+        onStepSkipped: (id: string, info: { branchId: string }) => {
+          skipped.push({ id, branchId: info.branchId })
+        },
+      },
+    }
+  }
+  const leafRan = (ran: string[]) => ran.filter((id) => !id.startsWith("route"))
+
+  // The youtube-transcriber `transcribe` shape: an optional PDF export with a
+  // no-op landing arm. Before F22, exportPdf=true ran BOTH pdf-render and
+  // skip-pdf (a matched arm = its target + every later sibling).
+  const transcriber = defineWorkflow({
+    name: "Transcriber shape",
+    id: "transcriber-shape",
+    description: "apply-toc, then an optional pdf-render.",
+    version: "0.1.0",
+    inputs: {},
+    outputs: {},
+    steps: [
+      { id: "apply-toc", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      {
+        id: "route",
+        kind: "branch",
+        branches: [{ when: "$input.exportPdf", next: "pdf-render" }],
+        default: "skip-pdf",
+      },
+      { id: "pdf-render", kind: "tool", tool: "demo.add-ten", inputs: { n: "$steps.apply-toc.n" } },
+      { id: "skip-pdf", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+    ],
+    result: { transcript: "$steps.apply-toc.n", pdf: "$steps.pdf-render.n" },
+  })
+
+  it("transcriber shape, taken arm: pdf-render runs, skip-pdf does NOT and is reported skipped", async () => {
+    const t = trace()
+    const { output, bindings } = await runWorkflow({
+      workflow: compileWorkflow(transcriber, { tools, candidates }),
+      input: { n: 1, exportPdf: true },
+      ...t.hooks,
+    })
+    expect(leafRan(t.ran)).toEqual(["apply-toc", "pdf-render"])
+    expect(bindings.steps["skip-pdf"]).toBeUndefined()
+    expect(t.skipped).toEqual([{ id: "skip-pdf", branchId: "route" }])
+    expect(output).toEqual({ transcript: 2, pdf: 12 })
+  })
+
+  it("transcriber shape, default arm: skip-pdf runs, pdf-render is reported skipped", async () => {
+    const t = trace()
+    const { output } = await runWorkflow({
+      workflow: compileWorkflow(transcriber, { tools, candidates }),
+      input: { n: 1, exportPdf: false },
+      ...t.hooks,
+    })
+    expect(leafRan(t.ran)).toEqual(["apply-toc", "skip-pdf"])
+    expect(t.skipped).toEqual([{ id: "pdf-render", branchId: "route" }])
+    expect(output).toEqual({ transcript: 2, pdf: undefined })
+  })
+
+  it("transcriber shape without the workaround: a single arm, no default, no landing step", async () => {
+    const wf = defineWorkflow({
+      name: "Optional pdf",
+      id: "optional-pdf",
+      description: "pdf-render only when exportPdf; then a shared finalize.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        { id: "apply-toc", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "route", kind: "branch", branches: [{ when: "$input.exportPdf", next: "pdf-render" }] },
+        { id: "pdf-render", kind: "tool", tool: "demo.add-ten", inputs: { n: "$input.n" } },
+        { id: "finalize", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    const on = trace()
+    await runWorkflow({ workflow: compiled, input: { n: 1, exportPdf: true }, ...on.hooks })
+    expect(leafRan(on.ran)).toEqual(["apply-toc", "pdf-render", "finalize"])
+    expect(on.skipped).toEqual([])
+    const off = trace()
+    await runWorkflow({ workflow: compiled, input: { n: 1, exportPdf: false }, ...off.hooks })
+    expect(leafRan(off.ran)).toEqual(["apply-toc", "finalize"])
+    expect(off.skipped).toEqual([{ id: "pdf-render", branchId: "route" }])
+  })
+
+  // Three arms, the first two multi-step, an explicit join, and a shared tail.
+  const threeWay = defineWorkflow({
+    name: "Three way",
+    id: "three-way",
+    description: "Multi-step arms, explicit join, shared tail.",
+    version: "0.1.0",
+    inputs: {},
+    outputs: {},
+    steps: [
+      {
+        id: "route",
+        kind: "branch",
+        branches: [
+          { when: "$input.n >= 100", next: "big-1" },
+          { when: "$input.n >= 10", next: "mid-1" },
+        ],
+        default: "small-1",
+        join: "tail-1",
+      },
+      { id: "big-1", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      { id: "big-2", kind: "tool", tool: "demo.double", inputs: { n: "$steps.big-1.n" } },
+      { id: "mid-1", kind: "tool", tool: "demo.add-ten", inputs: { n: "$input.n" } },
+      { id: "mid-2", kind: "tool", tool: "demo.add-ten", inputs: { n: "$steps.mid-1.n" } },
+      { id: "small-1", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      { id: "small-2", kind: "tool", tool: "demo.add-ten", inputs: { n: "$steps.small-1.n" } },
+      { id: "tail-1", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      { id: "tail-2", kind: "tool", tool: "demo.add-ten", inputs: { n: "$steps.tail-1.n" } },
+    ],
+  })
+
+  it.each([
+    [500, ["big-1", "big-2"], ["mid-1", "mid-2", "small-1", "small-2"]],
+    [50, ["mid-1", "mid-2"], ["big-1", "big-2", "small-1", "small-2"]],
+    [5, ["small-1", "small-2"], ["big-1", "big-2", "mid-1", "mid-2"]],
+  ])("n=%i: exactly one multi-step arm body runs, then the join continuation runs once", async (n, arm, skipped) => {
+    const t = trace()
+    await runWorkflow({ workflow: compileWorkflow(threeWay, { tools, candidates }), input: { n }, ...t.hooks })
+    expect(leafRan(t.ran)).toEqual([...arm, "tail-1", "tail-2"])
+    expect(t.skipped.map((s) => s.id).sort()).toEqual([...skipped].sort())
+    // Never reported skipped AND run.
+    for (const s of t.skipped) expect(t.ran).not.toContain(s.id)
+  })
+
+  it("the runtime shape: one branch node, then the join steps as plain siblings", () => {
+    const compiled = compileWorkflow(threeWay, { tools, candidates })
+    expect(compiled.steps.map((s) => `${s.kind}:${s.id}`)).toEqual([
+      "branch:route",
+      "tool:tail-1",
+      "tool:tail-2",
+    ])
+  })
+
+  it("arms sharing a target share one body — it is never reported skipped when it runs", async () => {
+    const wf = defineWorkflow({
+      name: "Shared",
+      id: "shared-target",
+      description: "Two arms land on the same step.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "route",
+          kind: "branch",
+          branches: [
+            { when: "$input.a", next: "shared" },
+            { when: "$input.b", next: "shared" },
+          ],
+          default: "other",
+        },
+        { id: "shared", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "other", kind: "tool", tool: "demo.add-ten", inputs: { n: "$input.n" } },
+      ],
+    })
+    const t = trace()
+    await runWorkflow({
+      workflow: compileWorkflow(wf, { tools, candidates }),
+      input: { n: 1, a: false, b: true },
+      ...t.hooks,
+    })
+    expect(leafRan(t.ran)).toEqual(["shared"])
+    expect(t.skipped).toEqual([{ id: "other", branchId: "route" }])
+  })
+
+  it("a branch nested in an arm body resolves within that body", async () => {
+    const wf = defineWorkflow({
+      name: "Nested",
+      id: "nested-branch",
+      description: "An arm whose body branches again.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        { id: "outer", kind: "branch", branches: [{ when: "$input.a", next: "inner" }], default: "no-a", join: "end" },
+        { id: "inner", kind: "branch", branches: [{ when: "$input.b", next: "ab" }], default: "a-only" },
+        { id: "ab", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "a-only", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "no-a", kind: "tool", tool: "demo.add-ten", inputs: { n: "$input.n" } },
+        { id: "end", kind: "tool", tool: "demo.add-ten", inputs: { n: "$input.n" } },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    const t = trace()
+    await runWorkflow({ workflow: compiled, input: { n: 1, a: true, b: false }, ...t.hooks })
+    expect(t.ran.filter((id) => !["outer", "inner"].includes(id))).toEqual(["a-only", "end"])
+    expect(t.skipped.map((s) => `${s.branchId}>${s.id}`).sort()).toEqual(["inner>ab", "outer>no-a"])
+  })
+
+  it("rejects a join that does not come after every arm target", () => {
+    const wf = defineWorkflow({
+      name: "Bad join",
+      id: "bad-join",
+      description: "join before the last arm target.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        { id: "route", kind: "branch", branches: [{ when: "$input.a", next: "x" }], default: "y", join: "x" },
+        { id: "x", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "y", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      ],
+    })
+    expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(/join 'x' must come after every arm target/)
+  })
+
+  it("rejects a step stranded between the branch and its first target when `default` is explicit", () => {
+    const wf = defineWorkflow({
+      name: "Stranded",
+      id: "stranded",
+      description: "unreachable step.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        { id: "route", kind: "branch", branches: [{ when: "$input.a", next: "x" }], default: "y" },
+        { id: "orphan", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "x", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "y", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      ],
+    })
+    expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(/'orphan' sits between the branch/)
+  })
+
+  it("fallthrough: true keeps the legacy semantics (target + every later sibling)", async () => {
+    const wf = defineWorkflow({
+      name: "Legacy",
+      id: "legacy-fallthrough",
+      description: "pre-F22 semantics, opted into.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        {
+          id: "route",
+          kind: "branch",
+          fallthrough: true,
+          branches: [{ when: "$input.exportPdf", next: "pdf-render" }],
+          default: "skip-pdf",
+        },
+        { id: "pdf-render", kind: "tool", tool: "demo.add-ten", inputs: { n: "$input.n" } },
+        { id: "skip-pdf", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      ],
+    })
+    const t = trace()
+    await runWorkflow({ workflow: compileWorkflow(wf, { tools, candidates }), input: { n: 1, exportPdf: true }, ...t.hooks })
+    expect(leafRan(t.ran)).toEqual(["pdf-render", "skip-pdf"])
+    expect(t.skipped).toEqual([])
+  })
+
+  it("rejects fallthrough: true combined with join", () => {
+    const wf = defineWorkflow({
+      name: "Legacy join",
+      id: "legacy-join",
+      description: "contradictory.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        { id: "route", kind: "branch", fallthrough: true, branches: [{ when: "$input.a", next: "x" }], join: "y" },
+        { id: "x", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+        { id: "y", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } },
+      ],
+    })
+    expect(() => compileWorkflow(wf, { tools, candidates })).toThrow(/'fallthrough: true' and 'join'/)
+  })
+})
 
 describe("compileWorkflow — subworkflow input projection", () => {
   const childDoubles = defineWorkflow({

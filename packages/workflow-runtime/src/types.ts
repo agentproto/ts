@@ -140,6 +140,10 @@ export interface BranchStep {
   cond: Selector<boolean>
   then: readonly RunStep[]
   otherwise?: readonly RunStep[]
+  /** The authored step this node was compiled from, when it differs from
+   *  `id` — a multi-arm manifest `kind: branch` compiles to a chain of
+   *  nodes (`<id>`, `<id>__branch1`, …); skip reports name `<id>`. */
+  sourceId?: string
 }
 
 /** Repeat a body while a predicate holds, up to a hard iteration ceiling. */
@@ -617,6 +621,13 @@ export interface StepHookInfo {
   cached?: boolean
 }
 
+/** Why `onStepSkipped` fired. */
+export interface StepSkippedInfo {
+  reason: "branch-not-taken"
+  /** Id of the authored `branch` step whose decision skipped the step. */
+  branchId: string
+}
+
 export interface RunWorkflowArgs {
   workflow: RuntimeWorkflow
   input?: unknown
@@ -660,6 +671,12 @@ export interface RunWorkflowArgs {
   /** Called when a step completes execution, with its output — `info.cached`
    *  when the output was replayed from the journal instead of executed. */
   onStepComplete?: (stepId: string, output: unknown, info?: StepHookInfo) => void
+  /** Called for every step in a `branch` arm that was NOT taken, once the
+   *  branch decides — the step will not run this time. Only statically-known
+   *  steps are reported (a `map`/`pipeline`/`subworkflow` step under the arm
+   *  reports its own id, not its body's); a step id that also sits in the
+   *  taken path is never reported. */
+  onStepSkipped?: (stepId: string, info: StepSkippedInfo) => void
   /** Host-injectable subprocess runner for `kind: "gate"` steps. Undefined ⇒
    *  the runtime's own `node:child_process`-backed default. */
   runGateCommand?: GateCommandRunner
