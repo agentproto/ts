@@ -57,10 +57,16 @@ declare module "jsdom" {
   /** The MCP-Apps standalone/postMessage bridge's resolved shape (`window.
    *  McpApp.connect()`'s result) — just enough of it for config-edit.test.ts
    *  to stand a fake in for the daemon: tool calls, updateModelContext (the
-   *  secret-leak guard this suite exists to enforce), and onTeardown. */
+   *  secret-leak guard this suite exists to enforce), and onTeardown.
+   *  `onToolInput` (PR-5) is what config-view-input.dom.test.ts uses to
+   *  simulate an MCP host's `ui/notifications/tool-input` arrival. */
   export interface DomMcpAppTool {
     content?: { type: string; text: string }[]
     isError?: boolean
+  }
+
+  export interface DomMcpAppToolInput {
+    view?: string
   }
 
   export interface DomMcpApp {
@@ -69,6 +75,7 @@ declare module "jsdom" {
       updateModelContext: (ctx: unknown) => Promise<void>
       openLink?: (url: string) => void
       onTeardown: (cb: () => void) => void
+      onToolInput?: (cb: (input: DomMcpAppToolInput) => void) => void
     }>
   }
 

@@ -78,4 +78,11 @@ describe("config app", () => {
     expect(configApp.ui!.html).toContain("app_tool_call")
     expect(configApp.ui!.html).not.toMatch(/\bfetch\(/)
   })
+
+  it("wires the bridge's onToolInput to route an MCP-hosted deep link, gated by the shared precedence rule", () => {
+    expect(configApp.ui!.html).toContain("function shouldApplyIncomingView")
+    expect(configApp.ui!.html).toContain("function handleToolInput")
+    expect(configApp.ui!.html).toContain("function routeToView")
+    expect(configApp.ui!.html).toContain("bridge.onToolInput(handleToolInput)")
+  })
 })

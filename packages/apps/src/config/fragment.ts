@@ -64,3 +64,25 @@ export function buildConfigFragment(section: string, id?: string, sub?: string):
   if (sub !== undefined && sub !== null && sub !== "") out += "/" + encodeURIComponent(sub)
   return out
 }
+
+/**
+ * MCP-hosted deep links (plan §3.4, PR-5): a browser tab resolves
+ * `location.hash` directly, but an MCP host has no URL bar for this panel —
+ * it opens `app_ui_config { view }` instead, and the bridge surfaces that as
+ * a `ui/notifications/tool-input` (or `-result`) arrival (see `ui.ts`'s
+ * `handleToolInput`).
+ *
+ * Precedence: `location.hash` wins on the panel's very first route — an
+ * actual browser deep link must not be overridden by a stale/default tool
+ * call. Every arrival after the first is a live "go to this view" command
+ * from the host and always applies, regardless of the current hash.
+ *
+ * `arrivalIndex` is 1-based (the 1st, 2nd, ... tool-input notification this
+ * boot has seen); `hashPresentAtLoad` is whether `location.hash` was
+ * non-empty when the panel's script started running, captured once before
+ * any routing happens. Pure — no DOM — so it is unit-testable without a
+ * browser or jsdom, same as {@link parseConfigFragment}.
+ */
+export function shouldApplyIncomingView(arrivalIndex: number, hashPresentAtLoad: boolean): boolean {
+  return !(arrivalIndex === 1 && hashPresentAtLoad)
+}

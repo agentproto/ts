@@ -140,6 +140,40 @@ describe("makeInstalledAppUiApps", () => {
     expect(second).toContain("v2")
     expect(second).toContain("window.McpApp")
   })
+
+  it("accepts an optional view up to 200 chars, rejects longer, and echoes it from execute", async () => {
+    const uiPath = join(dir, "index.html")
+    await writeFile(uiPath, "<html><body>Panel</body></html>", "utf8")
+    appRegistry.upsertApp({
+      appId: "@test/view-app",
+      dir,
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: { path: uiPath, tools: ["read_file"] },
+    })
+
+    const cache = createUiHtmlCache()
+    const apps = await makeInstalledAppUiApps(appRegistry, cache, new Set())
+    expect(apps).toHaveLength(1)
+    const app = apps[0]!
+
+    expect(app.inputSchema.safeParse({}).success).toBe(true)
+    expect(app.inputSchema.safeParse({ view: "wallets/my-profile" }).success).toBe(true)
+    expect(app.inputSchema.safeParse({ view: "x".repeat(200) }).success).toBe(true)
+    expect(app.inputSchema.safeParse({ view: "x".repeat(201) }).success).toBe(false)
+
+    expect(await app.execute!({})).toEqual({
+      appId: "@test/view-app",
+      tools: ["read_file"],
+      view: undefined,
+    })
+    expect(await app.execute!({ view: "wallets/my-profile" })).toEqual({
+      appId: "@test/view-app",
+      tools: ["read_file"],
+      view: "wallets/my-profile",
+    })
+  })
 })
 
 describe("injectMcpAppBridge", () => {
@@ -379,6 +413,20 @@ describe("STANDALONE_REST_BRIDGE_SCRIPT callTool error precedence", () => {
   }
 })
 
+describe("STANDALONE_REST_BRIDGE_SCRIPT tool input", () => {
+  it("has no host to deliver tool input, so getToolInput is always null and onToolInput never fires", async () => {
+    const bridge = loadStandaloneBridge(() => Promise.resolve(response(200, {})))
+    const conn = (await bridge.connect()) as unknown as {
+      getToolInput: () => unknown
+      onToolInput: (cb: (i: unknown) => void) => void
+    }
+    expect(conn.getToolInput()).toBeNull()
+    const seen: unknown[] = []
+    conn.onToolInput(i => seen.push(i))
+    expect(seen).toHaveLength(0)
+  })
+})
+
 /**
  * The display-mode surface of the injected postMessage bridge
  * (`MCP_APP_BRIDGE_SCRIPT`). Installed apps had NO toggle at all before this
@@ -550,6 +598,100 @@ describe("MCP_APP_BRIDGE_SCRIPT display mode", () => {
     expect(dm.get()).toBe("inline")
     expect(dm.available()).toEqual([])
     expect(dm.mountToggle()).toBeNull()
+  })
+})
+
+/**
+ * The `view`-input surface of the injected postMessage bridge
+ * (PR-5): an installed app's panel tool now accepts a `view` deep-link
+ * argument, and the bridge exposes what it was invoked with —
+ * `ui/notifications/tool-input` primarily, falling back to
+ * `ui/notifications/tool-result` (the tool's own echoed return value) for a
+ * host that forwards results but not inputs.
+ */
+describe("MCP_APP_BRIDGE_SCRIPT tool input", () => {
+  it("getToolInput is null and a subscriber isn't called before any notification arrives", async () => {
+    const bridge = loadPostMessageBridge()
+    const conn = await connectWith(bridge, {})
+    expect((conn.getToolInput as () => unknown)()).toBeNull()
+
+    const seen: unknown[] = []
+    ;(conn.onToolInput as (cb: (i: unknown) => void) => void)(i => seen.push(i))
+    expect(seen).toHaveLength(0)
+  })
+
+  it("delivers ui/notifications/tool-input to onToolInput, and replays it to a late subscriber", async () => {
+    const bridge = loadPostMessageBridge()
+    const conn = await connectWith(bridge, {})
+
+    bridge.deliver({
+      jsonrpc: "2.0",
+      method: "ui/notifications/tool-input",
+      params: { arguments: { view: "wallets/my-profile" } },
+    })
+
+    expect((conn.getToolInput as () => unknown)()).toEqual({ view: "wallets/my-profile" })
+    const seen: unknown[] = []
+    ;(conn.onToolInput as (cb: (i: unknown) => void) => void)(i => seen.push(i))
+    expect(seen).toEqual([{ view: "wallets/my-profile" }])
+  })
+
+  it("falls back to a ui/notifications/tool-result text envelope when no tool-input arrived", async () => {
+    const bridge = loadPostMessageBridge()
+    const conn = await connectWith(bridge, {})
+
+    bridge.deliver({
+      jsonrpc: "2.0",
+      method: "ui/notifications/tool-result",
+      params: {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ appId: "@agentproto/config", tools: [], view: "harnesses/x" }),
+          },
+        ],
+      },
+    })
+
+    expect((conn.getToolInput as () => unknown)()).toEqual({
+      appId: "@agentproto/config",
+      tools: [],
+      view: "harnesses/x",
+    })
+  })
+
+  it("reads structuredContent directly off a tool-result when present", async () => {
+    const bridge = loadPostMessageBridge()
+    const conn = await connectWith(bridge, {})
+
+    bridge.deliver({
+      jsonrpc: "2.0",
+      method: "ui/notifications/tool-result",
+      params: { structuredContent: { view: "models/x" }, content: [] },
+    })
+
+    expect((conn.getToolInput as () => unknown)()).toEqual({ view: "models/x" })
+  })
+
+  it("a later tool-input notification replaces the earlier value for every subscriber", async () => {
+    const bridge = loadPostMessageBridge()
+    const conn = await connectWith(bridge, {})
+    const seen: unknown[] = []
+    ;(conn.onToolInput as (cb: (i: unknown) => void) => void)(i => seen.push(i))
+
+    bridge.deliver({
+      jsonrpc: "2.0",
+      method: "ui/notifications/tool-input",
+      params: { arguments: { view: "wallets/a" } },
+    })
+    bridge.deliver({
+      jsonrpc: "2.0",
+      method: "ui/notifications/tool-input",
+      params: { arguments: { view: "wallets/b" } },
+    })
+
+    expect(seen).toEqual([{ view: "wallets/a" }, { view: "wallets/b" }])
+    expect((conn.getToolInput as () => unknown)()).toEqual({ view: "wallets/b" })
   })
 })
 

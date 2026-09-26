@@ -53,6 +53,14 @@ interface UiHtmlCache {
  *   from the `ui/initialize` result and merged on every
  *   `ui/notifications/host-context-changed` (the notification carries only
  *   the changed keys, per the ext-apps spec).
+ * - `getToolInput()` / `onToolInput(cb)` — the arguments the panel's own tool
+ *   (`app_ui_<slug>`) was invoked with, from `ui/notifications/tool-input`,
+ *   falling back to the tool's own result (`ui/notifications/tool-result`,
+ *   which `registerMcpApps` fills with `execute()`'s return value) for a host
+ *   that forwards results but not inputs. A late subscriber is replayed the
+ *   last value, same as `onHostContext`. Lets an MCP-hosted panel resolve a
+ *   deep link (e.g. `{view: "wallets/my-profile"}`) the way the browser-served
+ *   panel resolves `location.hash`.
  * - `displayMode` — `{get, available, request, onChange, mountToggle}`, the
  *   shared controller from `@agentproto/app-client/display-mode` (also
  *   published as `window.McpApp.displayMode` once connected). It is what
@@ -67,6 +75,7 @@ export const MCP_APP_BRIDGE_SCRIPT = `<script>
   if (window.McpApp) return;
   var nextId = 1, pending = {}, teardownCbs = [];
   var hostContext = null, hostContextCbs = [];
+  var toolInput = null, toolInputCbs = [];
   function post(m) { window.parent.postMessage(m, "*"); }
   function getHostContext() { return hostContext; }
   function onHostContext(cb) {
@@ -83,6 +92,35 @@ export const MCP_APP_BRIDGE_SCRIPT = `<script>
       try { hostContextCbs[i](hostContext); } catch (_) {}
     }
   }
+  function getToolInput() { return toolInput; }
+  function onToolInput(cb) {
+    toolInputCbs.push(cb);
+    // Replay the last known input so a late subscriber isn't stuck blind —
+    // same convention as onHostContext.
+    if (toolInput) { try { cb(toolInput); } catch (_) {} }
+  }
+  function setToolInput(input) {
+    if (!input || typeof input !== "object") return;
+    toolInput = input;
+    for (var i = 0; i < toolInputCbs.length; i++) {
+      try { toolInputCbs[i](toolInput); } catch (_) {}
+    }
+  }
+  // A ui/notifications/tool-result carries the full CallToolResult of the
+  // tool call that opened this view (spec 2026-01-26) — the same envelope
+  // registerMcpApps wraps execute()'s return value in (JSON text content, or
+  // structuredContent). Read as a fallback source of the tool's arguments
+  // for a host that forwards results but not tool-input.
+  function extractToolResultInput(result) {
+    try {
+      if (result && result.structuredContent && typeof result.structuredContent === "object") {
+        return result.structuredContent;
+      }
+      var c = result && Array.isArray(result.content) ? result.content[0] : null;
+      if (c && c.type === "text" && typeof c.text === "string") return JSON.parse(c.text);
+    } catch (_) {}
+    return null;
+  }
   window.addEventListener("message", function (e) {
     var m = e.data;
     if (typeof m === "string") { try { m = JSON.parse(m); } catch (_) { return; } }
@@ -93,6 +131,8 @@ export const MCP_APP_BRIDGE_SCRIPT = `<script>
       return;
     }
     if (m.method === "ui/notifications/host-context-changed") { setHostContext(m.params || {}); return; }
+    if (m.method === "ui/notifications/tool-input") { setToolInput((m.params || {}).arguments); return; }
+    if (m.method === "ui/notifications/tool-result") { setToolInput(extractToolResultInput(m.params)); return; }
     if (m.id != null && pending[m.id]) { var cb = pending[m.id]; delete pending[m.id]; cb(m.result, m.error); }
   });
   function request(method, params) {
@@ -148,6 +188,8 @@ export const MCP_APP_BRIDGE_SCRIPT = `<script>
           onTeardown: function (cb) { teardownCbs.push(cb); },
           getHostContext: getHostContext,
           onHostContext: onHostContext,
+          getToolInput: getToolInput,
+          onToolInput: onToolInput,
           displayMode: displayMode
         };
       });
@@ -281,6 +323,10 @@ export const STANDALONE_REST_BRIDGE_SCRIPT = `<script>
         onTeardown: function () {},
         getHostContext: function () { return hostContext; },
         onHostContext: function (cb) { try { cb(hostContext); } catch (_) {} },
+        // No host to notify tool input in standalone mode — a browser tab
+        // navigates via location.hash instead (see @agentproto/config's ui.ts).
+        getToolInput: function () { return null; },
+        onToolInput: function () {},
         displayMode: displayMode
       });
     }
@@ -381,8 +427,18 @@ export async function makeInstalledAppUiApps(
       id: toolId,
       title: ui.title ?? app.name ?? app.appId,
       ...(ui.description ? { description: ui.description } : {}),
-      inputSchema: z.object({}),
-      execute: async () => ({ appId: app.appId, tools: ui.tools ?? [] }),
+      inputSchema: z.object({
+        view: z
+          .string()
+          .max(200)
+          .optional()
+          .describe(
+            "Deep-link fragment to open the panel at (e.g. \"wallets/my-profile\"), for an " +
+              "MCP host that cannot express a URL hash. Ignored by the browser-served panel, " +
+              "which reads location.hash instead.",
+          ),
+      }),
+      execute: async (args) => ({ appId: app.appId, tools: ui.tools ?? [], view: args?.view }),
       html,
       ...(ui.csp
         ? {
