@@ -278,6 +278,13 @@ export interface SessionDescriptor {
    *  timestamp of the crash-detect sweep that flipped this row to
    *  `endedReason:"crashed"`. */
   crashedAt?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.outcome — the derived
+   *  outcome (Level 1) the daemon records once an agent-cli session ends:
+   *  what it PRODUCED, alongside (never instead of) the termination fields.
+   *  Absent while running and on sessions older than the feature. Drives the
+   *  transcript panel's outcome card (see sessionOutcome.logic.ts). A list
+   *  route may carry only the compact projection — hence the union. */
+  outcome?: SessionOutcome | SessionOutcomeCompact
   /** Mirrors `@agentproto/runtime` SessionDescriptor.restartPolicy — the
    *  opt-in auto-restart policy (restart-scheduler PR-2). Absent for the
    *  overwhelming majority of sessions (today's lazy-resume-only default). */
@@ -570,6 +577,43 @@ export interface SessionSummary {
   remote?: boolean
   sandboxId?: string
   sandboxTeardown?: "kill" | "pause"
+  /** The daemon's compact list projection of `SessionDescriptor.outcome`
+   *  (status + first 120 chars of the summary); a full outcome also fits. */
+  outcome?: SessionOutcomeCompact
+}
+
+/**
+ * Mirrors `@agentproto/runtime` SessionOutcome (session-outcome.ts) — what an
+ * ended session produced. Kept here, in one place, so a daemon-side rename is
+ * one edit.
+ */
+export interface SessionOutcome {
+  source: "derived"
+  /** `produced` — said something or left an artifact; `empty` — neither. */
+  status: "produced" | "empty"
+  /** Last assistant message, trimmed (~600 chars, tail kept). */
+  summary?: string
+  /** Copy of the end state — the termination axis. */
+  termination: {
+    status: string
+    /** `daemon-restart` / `idle-reaped` / `crashed`; absent otherwise. */
+    reason?: string
+    exitCode?: number
+    /** Killed with a turn in flight. */
+    midTurn?: boolean
+  }
+  cost?: { usd?: number; tokensIn?: number; tokensOut?: number; durationMs?: number }
+  artifacts?: Array<{ type: "pr" | "commit" | "url"; ref: string; title?: string }>
+  /** `run` — ref = workflow run id, title = `<workflowId>/<stepId>`;
+   *  `parent` — ref = parent session id; `review` — review ledger ref. */
+  links?: Array<{ rel: "run" | "parent" | "review"; ref: string; title?: string }>
+  recordedAt: string
+}
+
+/** The compact list projection of {@link SessionOutcome}. */
+export interface SessionOutcomeCompact {
+  status: SessionOutcome["status"]
+  summary?: string
 }
 
 /** A pending ACP permission request held in the cross-session inbox. */

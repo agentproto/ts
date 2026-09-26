@@ -3528,3 +3528,89 @@ describe("transcriptPanel webview — background task chips (#background-tasks-u
     expect(labels.sort()).toEqual(["bash #1", "bash #2"])
   })
 })
+
+describe("outcome card (derived session outcome)", () => {
+  const el = (panel: Panel, id: string): DomElement => {
+    const node = panel.document.getElementById(id)
+    if (!node) throw new Error(id + " missing from buildHtml output")
+    return node
+  }
+  const killed: Partial<SessionDescriptor> = {
+    status: "killed",
+    outcome: {
+      source: "derived",
+      status: "produced",
+      summary: "Opened the PR and ran the gate; two tests still flaky.",
+      termination: { status: "killed", midTurn: true },
+      cost: { usd: 0.42, durationMs: 7_500_000 },
+      artifacts: [{ type: "pr", ref: "https://github.com/agentproto/ts/pull/1440", title: "#1440" }],
+      links: [
+        { rel: "run", ref: "run_abc", title: "maintain/reviewOne" },
+        { rel: "parent", ref: "sess_parent1" },
+      ],
+      recordedAt: "2026-09-26T10:00:00Z",
+    },
+  }
+
+  it("stays hidden for a session without an outcome", () => {
+    const panel = renderPanel()
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: { version: 1, sessionId: "s1", turns: [] } })
+    expect(el(panel, "outcome-card").hidden).toBe(true)
+    panel.send({ type: "sessionUpdate", session: session({ status: "exited" }) })
+    expect(el(panel, "outcome-card").hidden).toBe(true)
+  })
+
+  it("renders termination, duration, cost, summary and clickable chips for an ended session", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: { version: 1, sessionId: "s1", turns: [] } })
+    panel.send({ type: "sessionUpdate", session: session(killed) })
+    const card = el(panel, "outcome-card")
+    expect(card.hidden).toBe(false)
+    expect(card.className).toBe("tone-warn")
+    expect(card.querySelector(".oc-head")?.textContent).toBe("killed · mid-turn· 2h 5m· $0.42")
+    expect(card.querySelector(".oc-summary")?.textContent).toContain("two tests still flaky")
+    const chips = [...card.querySelectorAll(".oc-chip")]
+    expect(chips.map(c => c.textContent)).toEqual(["PR #1440", "wf:maintain/reviewOne → run_abc", "parent sess_parent1"])
+    chips[0]!.dispatchEvent(new panel.window.Event("click", { bubbles: true }))
+    chips[2]!.dispatchEvent(new panel.window.Event("click", { bubbles: true }))
+    expect(posted).toContainEqual({ type: "openLink", kind: "external", target: "https://github.com/agentproto/ts/pull/1440", line: undefined })
+    expect(posted).toContainEqual({ type: "openSession", sessionId: "sess_parent1" })
+  })
+
+  it("shows a muted 'No output' state for an empty outcome", () => {
+    const panel = renderPanel()
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: { version: 1, sessionId: "s1", turns: [] } })
+    panel.send({
+      type: "sessionUpdate",
+      session: session({
+        status: "killed",
+        outcome: {
+          source: "derived",
+          status: "empty",
+          termination: { status: "killed", reason: "idle-reaped" },
+          recordedAt: "2026-09-26T10:00:00Z",
+        },
+      }),
+    })
+    const card = el(panel, "outcome-card")
+    expect(card.className).toBe("tone-muted")
+    expect(card.querySelector(".oc-term")?.textContent).toBe("idle-reaped")
+    expect(card.querySelector(".oc-empty")?.textContent).toBe("No output")
+  })
+
+  it("clamps a long summary and toggles it open", () => {
+    const panel = renderPanel()
+    panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: { version: 1, sessionId: "s1", turns: [] } })
+    const outcome = { ...killed.outcome!, summary: "x".repeat(400) }
+    panel.send({ type: "sessionUpdate", session: session({ status: "killed", outcome }) })
+    const card = el(panel, "outcome-card")
+    const summary = card.querySelector(".oc-summary")!
+    expect(summary.classList.contains("clamped")).toBe(true)
+    card.querySelector(".oc-toggle")!.dispatchEvent(new panel.window.Event("click"))
+    expect(summary.classList.contains("clamped")).toBe(false)
+    // A later descriptor push keeps the reader's expanded choice.
+    panel.send({ type: "sessionUpdate", session: session({ status: "killed", outcome }) })
+    expect(card.querySelector(".oc-summary")!.classList.contains("clamped")).toBe(false)
+  })
+})

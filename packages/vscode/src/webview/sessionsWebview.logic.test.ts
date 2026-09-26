@@ -459,6 +459,21 @@ describe("buildSessionsWebviewModel — attention sections", () => {
     expect(row.message).toBe("booting…")
   })
 
+  it("an ended session with an outcome shows its outcome hint instead of its last activity line", () => {
+    const rowOf = (over: Partial<SessionSummary>): WebviewRow => {
+      const model = buildSessionsWebviewModel([session({ cwd: "/Code/studio", ...over })], studioConfig, opts())
+      return model.groups[0]!.rows[0]! as WebviewRow
+    }
+    const activitySummary = { text: "Running the gate", state: "terminé", at: "2026-01-01T23:00:00Z" }
+    const produced = rowOf({ status: "killed", activitySummary, outcome: { status: "produced", summary: "Opened PR #12." } })
+    expect([produced.message, produced.messageMuted]).toEqual(["Opened PR #12.", false])
+    const empty = rowOf({ status: "exited", activitySummary, outcome: { status: "empty" } })
+    expect([empty.message, empty.messageMuted]).toEqual(["no output", true])
+    // No outcome (older than the feature) ⇒ the row is unchanged.
+    const legacy = rowOf({ status: "exited", activitySummary })
+    expect([legacy.message, legacy.messageMuted]).toEqual(["Running the gate", false])
+  })
+
   it("groups stalled and failed together under Attention", () => {
     const sessions = [
       session({ id: "stalled", cwd: "/Code/studio", busy: true, lastActivityAt: "2026-01-01T23:00:00Z" }),
