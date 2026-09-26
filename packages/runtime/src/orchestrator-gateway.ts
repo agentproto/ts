@@ -28,6 +28,7 @@ import { registerSessionTools } from "./session-tools.js"
 import { registerOrchestrationTools } from "./orchestration-tools.js"
 import { withToolSubset } from "./tool-subset.js"
 import { collectSubtree } from "./agent-tools.js"
+import { resolveMessagingDefaults } from "./messaging-defaults.js"
 import type { SessionsRegistry, SessionDescriptor } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
@@ -280,17 +281,20 @@ export interface OrchestratorGatewayDeps {
    *  spawn is rejected with `sandbox_provider_not_found`, exactly as the
    *  root gateway would be without it. */
   resolveSandboxProvider?: SandboxProviderResolver
-  /** Forwarded to `registerSessionTools` — config.json
-   *  `defaults.agentPromptInterrupt`, the unset-default for `interrupt` on
-   *  `agent_prompt` / `message_parent`. Threaded here so a child driving its
-   *  parent/peers (or reporting up via `message_parent`) through this scoped
-   *  gateway honours the same daemon default as the root `/mcp` surface. */
+  /** EXPLICIT override for config.json `defaults.agentPromptInterrupt` —
+   *  wins over the fresh per-call resolve (`resolveMessagingDefaults`,
+   *  see the factory body below). Tests inject this to pin a value without
+   *  touching the filesystem; production leaves it unset so every request
+   *  reads the live config, hot-applying a `config_set` change with no
+   *  restart. Forwarded to `registerSessionTools`. */
   defaultAgentPromptInterrupt?: boolean
-  /** config.json `defaults.messaging.allowSiblings`, forwarded to
-   *  `registerAgentTools`. */
+  /** EXPLICIT override for config.json `defaults.messaging.allowSiblings` —
+   *  see `defaultAgentPromptInterrupt` above for the override/resolve
+   *  precedence. Forwarded to `registerAgentTools`. */
   messagingAllowSiblings?: boolean
-  /** config.json `defaults.messaging.agentInterrupt`, forwarded to
-   *  `registerAgentTools`. */
+  /** EXPLICIT override for config.json `defaults.messaging.agentInterrupt` —
+   *  see `defaultAgentPromptInterrupt` above for the override/resolve
+   *  precedence. Forwarded to `registerAgentTools`. */
   messagingAgentInterrupt?: "allow" | "deny"
 }
 
@@ -316,6 +320,13 @@ export function createOrchestratorMcpServerFactory(
       name: `${deps.name ?? "agentproto-runtime"}-orchestrator`,
       version: deps.version ?? "0.1.0-alpha",
     })
+    // Read fresh on every call (this factory runs once per `/mcp/orchestrator`
+    // request — the SDK's stateless pattern, see `serveMcp` in
+    // `http-server.ts`) rather than a boot-time snapshot, so a `config_set`
+    // change to `defaults.agentPromptInterrupt` / `defaults.messaging.*`
+    // takes effect on the very next call. An explicit `deps` override (tests
+    // pinning a value without touching the filesystem) still wins.
+    const messagingDefaults = await resolveMessagingDefaults()
     registerSessionTools(server, {
       registry: deps.registry,
       workspace: deps.workspace,
@@ -343,11 +354,10 @@ export function createOrchestratorMcpServerFactory(
       ...(deps.resolveSandboxProvider
         ? { resolveSandboxProvider: deps.resolveSandboxProvider }
         : {}),
-      ...(deps.defaultAgentPromptInterrupt != null
-        ? { defaultAgentPromptInterrupt: deps.defaultAgentPromptInterrupt }
-        : {}),
-      ...(deps.messagingAllowSiblings ? { messagingAllowSiblings: true } : {}),
-      ...(deps.messagingAgentInterrupt ? { messagingAgentInterrupt: deps.messagingAgentInterrupt } : {}),
+      defaultAgentPromptInterrupt:
+        deps.defaultAgentPromptInterrupt ?? messagingDefaults.agentPromptInterrupt,
+      messagingAllowSiblings: deps.messagingAllowSiblings ?? messagingDefaults.allowSiblings,
+      messagingAgentInterrupt: deps.messagingAgentInterrupt ?? messagingDefaults.agentInterrupt,
       daemonMcpUrl: deps.daemonMcpUrl,
     })
     registerOrchestrationTools(server, {
