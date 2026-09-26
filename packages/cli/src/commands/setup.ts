@@ -42,6 +42,10 @@ import {
   applyPersist,
   type Ledger,
 } from "../lib/setup-prompts.js"
+// Type-only: the onboarding modules import `install.ts`, which imports this
+// file — they are loaded lazily inside the wizard branch to keep that cycle
+// out of module evaluation.
+import type { WizardDeps } from "../onboarding/wizard.js"
 
 // ── Handle wrapper ────────────────────────────────────────────────────────────
 
@@ -329,24 +333,181 @@ export async function runSetup(opts: RunSetupOptions): Promise<number> {
   return code
 }
 
-const USAGE = `agentproto setup <slug> — re-run an adapter's setup pipeline (AIP-29)
+const USAGE = `agentproto setup — set up agentproto on this machine, or re-run one adapter's setup
 
 Usage:
-  agentproto setup     <slug> [--force] [--dry-run] [--only <stepId>...]
+  agentproto setup [--yes] [--dry-run] [--json] [--only <step>...] [--skip <step>...]
+      the onboarding wizard: detect (same checks as \`agentproto doctor\`), propose,
+      apply through the existing verbs, verify. Re-running resumes: done steps are skipped.
+      Steps: preflight, workspace, daemon, agents, auth, clients, skills, first-run, local-model
+
+  agentproto setup <slug> [--force] [--dry-run] [--only <stepId>...]
+      re-run an adapter's AIP-29 setup pipeline (idempotent via skip_if + ledger)
+
+Wizard flags:
+  --yes           apply the defaults without prompting (never applies secrets)
+  --dry-run       show what would be proposed, change nothing
+  --json          print the final report (doctor JSON + applied actions) on stdout
+  --only <step>   run only this step (repeatable)
+  --skip <step>   skip this step (repeatable)
 
 Examples:
-  agentproto setup openclaw                # re-run setup (idempotent via skip_if + ledger)
+  agentproto setup                         # guided first run
+  agentproto setup --yes --skip first-run  # unattended, no test session
+  agentproto setup openclaw                # re-run openclaw's adapter setup
 `
 
+/** Injected for tests; real ones build the clack UI + real verbs. */
+export interface SetupWizardCommandDeps {
+  /** stdin and stdout are both terminals. */
+  isTTY: boolean
+  build(opts: { interactive: boolean; json: boolean }): Promise<WizardDeps>
+  stderr: { write(chunk: string): unknown }
+}
+
+async function realWizardDeps(opts: { interactive: boolean; json: boolean }): Promise<WizardDeps> {
+  const [{ createSetupIO }, { createStepContext }, { ONBOARDING_STEPS, SETUP_STEPS }] = await Promise.all([
+    import("../onboarding/setup-io.js"),
+    import("../onboarding/context.js"),
+    import("../onboarding/registry.js"),
+  ])
+  const cwd = process.cwd()
+  const { io, ui, runtime } = createSetupIO({ ...opts, cwd })
+  const version = typeof __CLI_VERSION__ === "string" ? __CLI_VERSION__ : "0.0.0-dev"
+  return { ctx: createStepContext(version), io, ui, steps: SETUP_STEPS, doctorSteps: ONBOARDING_STEPS, ...runtime }
+}
+
+const REAL_WIZARD_DEPS: SetupWizardCommandDeps = {
+  isTTY: process.stdin.isTTY === true && process.stdout.isTTY === true,
+  build: realWizardDeps,
+  stderr: process.stderr,
+}
+
 /**
- * `agentproto setup <slug>` — re-run the setup pipeline for an
- * already-installed bundle.
+ * `agentproto setup` with no slug — the onboarding wizard. Also the target of
+ * the `agentproto onboard` alias, whose `--skills <slug>` / `--agent <name>`
+ * narrow the skill and MCP-registration actions.
+ */
+export async function runSetupWizardCommand(
+  args: readonly string[],
+  deps: SetupWizardCommandDeps = REAL_WIZARD_DEPS,
+): Promise<number> {
+  let values: {
+    yes?: boolean
+    "dry-run"?: boolean
+    json?: boolean
+    only?: string[]
+    skip?: string[]
+    skills?: string
+    agent?: string[]
+  }
+  try {
+    ;({ values } = parseArgs({
+      args: [...args],
+      allowPositionals: false,
+      strict: true,
+      options: {
+        yes: { type: "boolean", short: "y" },
+        "dry-run": { type: "boolean" },
+        json: { type: "boolean" },
+        only: { type: "string", multiple: true },
+        skip: { type: "string", multiple: true },
+        skills: { type: "string" },
+        agent: { type: "string", multiple: true },
+      },
+    }))
+  } catch (err) {
+    deps.stderr.write(`agentproto setup: ${err instanceof Error ? err.message : String(err)}\n  See: agentproto setup --help\n`)
+    return 2
+  }
+  const { SETUP_STEPS } = await import("../onboarding/registry.js")
+  const known = new Set(SETUP_STEPS.map((s) => s.id))
+  const unknown = [...(values.only ?? []), ...(values.skip ?? [])].filter((id) => !known.has(id))
+  if (unknown.length > 0) {
+    deps.stderr.write(`agentproto setup: unknown step(s): ${unknown.join(", ")}. Known: ${[...known].join(", ")}\n`)
+    return 2
+  }
+  const yes = values.yes === true
+  const dryRun = values["dry-run"] === true
+  if (!yes && !dryRun && !deps.isTTY) {
+    deps.stderr.write(
+      "agentproto setup: no interactive terminal. Re-run with --yes to apply the defaults " +
+        "(secrets are never applied unattended), or --dry-run to see the plan.\n",
+    )
+    return EXIT_SETUP_NEEDS_TTY
+  }
+
+  const wizardDeps = await deps.build({ interactive: !yes && !dryRun && deps.isTTY, json: values.json === true })
+  const verbs = wizardDeps.io.verbs
+  const skillSlug = values.skills
+  const agents = values.agent
+  const io = {
+    ...wizardDeps.io,
+    verbs: {
+      ...verbs,
+      // onboard --skills <slug>: install that skill instead of the pack.
+      ...(skillSlug
+        ? { installSkill: (_slug: string, a: readonly string[]) => verbs.installSkill(skillSlug.startsWith("skill/") ? skillSlug : `skill/${skillSlug}`, a) }
+        : {}),
+      // onboard --agent <name>…: register the MCP server with these clients only.
+      ...(agents && agents.length > 0
+        ? {
+            installMcp: (a: readonly string[]) => {
+              const kept: string[] = []
+              for (let i = 0; i < a.length; i++) {
+                const arg = a[i] ?? ""
+                if (arg === "--agent") {
+                  const name = a[i + 1] ?? ""
+                  i++
+                  if (agents.includes(name)) kept.push("--agent", name)
+                } else kept.push(arg)
+              }
+              return a.includes("--agent") && !kept.includes("--agent") ? Promise.resolve(0) : verbs.installMcp(kept)
+            },
+          }
+        : {}),
+    },
+  }
+  const { runSetupWizard } = await import("../onboarding/wizard.js")
+  const { code } = await runSetupWizard(
+    {
+      yes,
+      dryRun,
+      json: values.json === true,
+      ...(values.only ? { only: values.only } : {}),
+      ...(values.skip ? { skip: values.skip } : {}),
+    },
+    { ...wizardDeps, io },
+  )
+  return code
+}
+
+/** `setup` with a positional ⇒ adapter mode; without ⇒ the wizard. */
+function hasSlugArg(args: readonly string[]): boolean {
+  const { positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: false,
+    options: {
+      only: { type: "string", multiple: true },
+      skip: { type: "string", multiple: true },
+      skills: { type: "string" },
+      agent: { type: "string", multiple: true },
+    },
+  })
+  return positionals.length > 0
+}
+
+/**
+ * `agentproto setup` — no slug: the onboarding wizard; `setup <slug>`:
+ * re-run the setup pipeline for an already-installed bundle.
  */
 export async function runSetupCommand(args: readonly string[]): Promise<number> {
   if (args.includes("--help") || args.includes("-h")) {
     process.stdout.write(USAGE)
     return 0
   }
+  if (!hasSlugArg(args)) return runSetupWizardCommand(args)
   let values: {
     force?: boolean
     "dry-run"?: boolean

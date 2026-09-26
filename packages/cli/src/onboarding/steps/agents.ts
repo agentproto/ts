@@ -187,4 +187,44 @@ export const agentsStep: OnboardingStep = {
     }
     return checks
   },
+  async plan(checks) {
+    const summary = checks.find((c) => c.id === "agents.not-installed" || c.id === "agents.none")
+    const notInstalled = stringList(summary?.data?.notInstalled)
+    const unresolvable = new Set(stringList(summary?.data?.unresolvable))
+    const candidates = catalogByType("agent-cli").filter(
+      (e) => notInstalled.includes(e.slug) && !unresolvable.has(e.slug),
+    )
+    if (candidates.length === 0) return []
+    const working = checks.some(
+      (c) => c.id !== "agents.none" && c.id !== "agents.not-installed" && (c.status === "ok" || c.status === "warn"),
+    )
+    const choices = candidates.map((e) => ({
+      value: e.slug,
+      label: e.name,
+      ...(e.hint ? { hint: e.hint } : {}),
+      default: !working && e.slug === "claude-code",
+    }))
+    return [
+      {
+        id: "agents.install",
+        title: "Install agent harnesses",
+        default: choices.some((c) => c.default),
+        choices,
+        streamsOutput: true,
+        async apply(io, selected = []) {
+          const failed: string[] = []
+          for (const slug of selected) {
+            if ((await io.verbs.install([slug])) !== 0) failed.push(slug)
+          }
+          return failed.length === 0
+            ? { ok: true, detail: `installed ${selected.join(", ")}` }
+            : { ok: false, detail: `failed: ${failed.join(", ")}` }
+        },
+      },
+    ]
+  },
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : []
 }
