@@ -55,6 +55,30 @@ workflow_run_file({
 
 Loads the AIP-15 file via the workflow-loader and runs it through the same runner as `workflow_start`, in the background. With a `cacheKey`, cacheable steps replay unchanged output on re-invocation instead of re-spawning.
 
+### Conditional steps: `kind: branch`
+
+Arms are **exclusive** with a join — exactly one arm's steps run, then the run continues after the arms:
+
+```yaml
+  - id: maybe-render-pdf
+    kind: branch
+    branches:
+      - when: $input.exportPdf   # bare ref = truthiness; or `<ref> <op> <literal>`
+        next: pdf-render
+    # default: <id>             # optional arm for "no when matched"
+    # join: <id>                # optional: where execution resumes
+  - id: pdf-render               # the arm body: its target up to the next arm target / the join
+    kind: tool
+    tool: pdf.render
+  - id: next-step                # the join (step after the last arm target): runs either way
+```
+
+- Every `next`/`default`/`join` must be a LATER sibling in the same step list.
+- Arm body = its target step up to (not including) the next arm's target; the last arm runs up to `join` (default: the step right after its target, so give a multi-step last arm an explicit `join:`).
+- No `default` and nothing matched ⇒ only the steps between the branch and its first arm target run (none when the first target is the very next step), then the join. So an optional step needs no no-op "skip" sibling.
+- Untaken arms' steps show as `skipped` in `workflow_status` (AIP-58 `step.skipped` event) — not missing, not `done`.
+- `fallthrough: true` is the legacy mode (target + every later sibling runs); don't use it for new workflows.
+
 ## Escalations
 
 When a step's `policy` is `escalate` and its session asks for human input mid-stage, the run parks until answered:

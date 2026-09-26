@@ -1125,7 +1125,7 @@ export function registerOrchestrationTools(
       "run_events",
       "AIP-58 §5/§9 `run.events` — page a workflow run's append-only event log " +
         "(the one true status interface: run.created/started/suspended/resumed/" +
-        "succeeded/failed/cancelled, step.started/succeeded/failed/suspended/" +
+        "succeeded/failed/cancelled, step.started/succeeded/failed/skipped/suspended/" +
         "resumed). Pass `sinceSeq` (the last `seq` you've already seen) to resume " +
         `from where you left off; omit it for the full log so far. Capped at ${MAX_EVENTS_PER_PAGE} events per call — use the returned \`nextSinceSeq\` to page further.`,
       {

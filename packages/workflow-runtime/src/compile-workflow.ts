@@ -22,9 +22,12 @@
  * Scope: the **linear / structured subset** of AIP-15 — steps run in document
  * order; `map`/`loop`/`parallel` nest their child step lists. Non-linear `next`
  * gotos are rejected with a clear diagnostic. `kind:"branch"` compiles in its
- * **forward-only** form: every `branches[].next`/`default` must name a later
- * sibling in the SAME step list (not backward, not into a nested map/loop/
- * parallel body) — see `compileBranchChain` below. Compiling a full goto graph
+ * **forward-only** form: every `branches[].next`/`default`/`join` must name a
+ * later sibling in the SAME step list (not backward, not into a nested map/
+ * loop/parallel body). Arms are EXCLUSIVE by default — exactly one arm body
+ * runs, then execution continues at the join (see `compileExclusiveBranch`);
+ * `fallthrough: true` opts into the legacy "target + everything after it"
+ * semantics (see `compileBranchChain`). Compiling a full goto graph
  * (backward jumps, cross-scope targets) is a separable follow-up; hand-author
  * a `loop` step for retry-style control flow instead.
  */
@@ -424,9 +427,11 @@ export function compileWorkflow(
 
 /**
  * Compile a sibling step list in document order. A `kind:"branch"` step
- * swallows every sibling after it at this level (they're reachable only
- * through its arms — see {@link compileBranchChain}), so this stops emitting
- * as soon as it hits one.
+ * owns the siblings that form its arm bodies: an exclusive branch (the
+ * default — see {@link compileExclusiveBranch}) compiles to one runtime node
+ * and the walk resumes at its join point; a legacy `fallthrough: true`
+ * branch swallows every sibling after it (see {@link compileBranchChain}),
+ * so the walk stops there.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function compileSiblingsToSteps(steps: any[], ctx: Ctx): RunStep[] {
@@ -435,8 +440,14 @@ function compileSiblingsToSteps(steps: any[], ctx: Ctx): RunStep[] {
   for (let i = 0; i < steps.length; i++) {
     const s = steps[i]
     if (s.kind === "branch") {
-      out.push(compileBranchChain(steps, i, ctx))
-      return out
+      if (s.fallthrough === true) {
+        out.push(compileBranchChain(steps, i, ctx))
+        return out
+      }
+      const { node, joinIdx } = compileExclusiveBranch(steps, i, ctx)
+      out.push(node)
+      i = joinIdx - 1
+      continue
     }
     out.push(compileStep(s, ctx))
   }
@@ -454,34 +465,127 @@ function compileStepList(
   return { kind: "group", id, steps: compiled }
 }
 
+/** Resolve a branch `next`/`default`/`join` id to its index in `steps`,
+ *  which MUST be a later sibling of the branch at index `i`. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function resolveBranchTarget(steps: any[], i: number, targetId: string, label: string): number {
+  const idx = steps.findIndex((s) => s.id === targetId)
+  if (idx === -1 || idx <= i) {
+    throw new WorkflowCompileError(
+      `branch '${steps[i].id}' ${label} targets '${targetId}', which is not a sibling later in this ` +
+        `step list — the forward-only branch compiler only supports jumping to a later sibling in the ` +
+        `SAME list (not backward, and not into a nested map/loop/parallel body). Hand-author a 'loop' ` +
+        `step for retry-style control flow instead.`,
+    )
+  }
+  return idx
+}
+
 /**
- * Compile a forward-only goto `kind:"branch"` step (index `i` in `steps`)
- * into a nested runtime {@link BranchStep} chain: `branches[]` evaluate in
- * order, the first truthy `when` jumps to its `next` sibling and falls
- * through in document order from there; no match jumps to `default` (or
- * falls through to `i + 1`). Every target MUST be a later sibling in this
- * SAME list — an unknown id, a backward target, or a target inside a nested
- * map/loop/parallel body all fail compilation here.
+ * Compile an exclusive `kind:"branch"` step (index `i` in `steps`) — the
+ * default branch semantics. Every arm target (`branches[].next`, `default`)
+ * MUST be a later sibling in this SAME list. Sorted by position, the targets
+ * partition the siblings after the branch into arm BODIES:
+ *
+ *   - an arm's body is its target sibling up to (not including) the next
+ *     arm's target — or, for the last arm, up to the JOIN;
+ *   - the join is the explicit `join:` sibling id if declared, else the
+ *     sibling right after the last arm's target (so without `join:` the
+ *     last arm's body is exactly its target step);
+ *   - with no `default`, a no-match runs the siblings between the branch
+ *     and the first arm target (the implicit default body — empty when the
+ *     first target is the very next sibling). An explicit `default` makes
+ *     those siblings unreachable, which fails compilation.
+ *
+ * Exactly one arm body runs (first truthy `when`, else the default body);
+ * the caller resumes the walk at the join, so every sibling from the join on
+ * runs once, whichever arm was taken. Arms sharing a target share a body.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function compileExclusiveBranch(steps: any[], i: number, ctx: Ctx): { node: RunStep; joinIdx: number } {
+  const branchStep = steps[i]
+  const branches = f<{ when: string; next: string }[]>(branchStep, "branches")
+  const defaultTarget = f<string | undefined>(branchStep, "default")
+  const joinTarget = f<string | undefined>(branchStep, "join")
+
+  const armIdx = branches.map((br, k) => resolveBranchTarget(steps, i, br.next, `branches[${k}].next`))
+  const defaultIdx =
+    defaultTarget !== undefined ? resolveBranchTarget(steps, i, defaultTarget, "default") : undefined
+  const starts = [...new Set([...armIdx, ...(defaultIdx !== undefined ? [defaultIdx] : [])])].sort(
+    (a, b) => a - b,
+  )
+  const lastStart = starts[starts.length - 1]!
+  const joinIdx =
+    joinTarget !== undefined ? resolveBranchTarget(steps, i, joinTarget, "join") : lastStart + 1
+  if (joinIdx <= lastStart) {
+    throw new WorkflowCompileError(
+      `branch '${branchStep.id}' join '${joinTarget}' must come after every arm target — ` +
+        `'${steps[lastStart].id}' is an arm target at or after it`,
+    )
+  }
+  if (defaultIdx !== undefined && starts[0]! > i + 1) {
+    throw new WorkflowCompileError(
+      `branch '${branchStep.id}': step '${steps[i + 1].id}' sits between the branch and its first arm ` +
+        `target and belongs to no arm — with an explicit 'default' it can never run. Move it after the ` +
+        `join, or make it an arm target.`,
+    )
+  }
+
+  // One compiled body per distinct start index, so arms sharing a target
+  // share the exact same RunStep objects.
+  const bodies = new Map<number, RunStep[]>()
+  const bodyAt = (start: number): RunStep[] => {
+    let body = bodies.get(start)
+    if (!body) {
+      const pos = starts.indexOf(start)
+      const end = pos + 1 < starts.length ? starts[pos + 1]! : joinIdx
+      body = compileSiblingsToSteps(steps.slice(start, end), ctx)
+      bodies.set(start, body)
+    }
+    return body
+  }
+
+  let otherwise: RunStep[] =
+    defaultIdx !== undefined
+      ? bodyAt(defaultIdx)
+      : compileSiblingsToSteps(steps.slice(i + 1, starts[0]), ctx)
+  for (let k = branches.length - 1; k >= 0; k--) {
+    const condExpr = branches[k]!.when
+    otherwise = [
+      {
+        kind: "branch",
+        id: k === 0 ? branchStep.id : `${branchStep.id}__branch${k}`,
+        ...(k === 0 ? {} : { sourceId: branchStep.id }),
+        cond: (b: Bindings) => evalPredicate(condExpr, b),
+        then: bodyAt(armIdx[k]!),
+        ...(otherwise.length > 0 ? { otherwise } : {}),
+      },
+    ]
+  }
+  return { node: otherwise[0]!, joinIdx }
+}
+
+/**
+ * Compile a legacy `fallthrough: true` `kind:"branch"` step (index `i` in
+ * `steps`) into a nested runtime {@link BranchStep} chain: `branches[]`
+ * evaluate in order, the first truthy `when` jumps to its `next` sibling and
+ * falls through in document order from there (running every later arm's
+ * steps too); no match jumps to `default` (or falls through to `i + 1`).
+ * Every target MUST be a later sibling in this SAME list.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function compileBranchChain(steps: any[], i: number, ctx: Ctx): RunStep {
   const branchStep = steps[i]
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const branches = f<{ when: string; next: string }[]>(branchStep, "branches")
   const defaultTarget = f<string | undefined>(branchStep, "default")
-
-  const resolveTarget = (targetId: string, label: string): number => {
-    const idx = steps.findIndex((s) => s.id === targetId)
-    if (idx === -1 || idx <= i) {
-      throw new WorkflowCompileError(
-        `branch '${branchStep.id}' ${label} targets '${targetId}', which is not a sibling later in this ` +
-          `step list — the forward-only branch compiler only supports jumping to a later sibling in the ` +
-          `SAME list (not backward, and not into a nested map/loop/parallel body). Hand-author a 'loop' ` +
-          `step for retry-style control flow instead.`,
-      )
-    }
-    return idx
+  if (f<string | undefined>(branchStep, "join") !== undefined) {
+    throw new WorkflowCompileError(
+      `branch '${branchStep.id}' declares both 'fallthrough: true' and 'join' — a fall-through ` +
+        `branch runs every later sibling, so it has no join point`,
+    )
   }
+  const resolveTarget = (targetId: string, label: string): number =>
+    resolveBranchTarget(steps, i, targetId, label)
 
   const defaultIdx = defaultTarget !== undefined ? resolveTarget(defaultTarget, "default") : i + 1
   let otherwise: RunStep[] = compileSiblingsToSteps(steps.slice(defaultIdx), ctx)
@@ -496,6 +600,7 @@ function compileBranchChain(steps: any[], i: number, ctx: Ctx): RunStep {
       {
         kind: "branch",
         id: nodeId,
+        ...(k === 0 ? {} : { sourceId: branchStep.id }),
         cond: (b: Bindings) => evalPredicate(condExpr, b),
         then: thenSteps,
         ...(otherwise.length > 0 ? { otherwise } : {}),
@@ -846,10 +951,10 @@ function compileStep(step: any, ctx: Ctx): RunStep {
 
     case "branch":
       // Unreachable through the normal entry points: `compileSiblingsToSteps`
-      // intercepts every `branch` step and routes it to `compileBranchChain`
-      // before it would ever reach here (that's what makes the forward-only
-      // swallow-the-rest-of-the-list semantics work). A direct call would be
-      // an internal invariant violation, not a manifest problem.
+      // intercepts every `branch` step (a branch owns its arm-body siblings,
+      // so it can only be compiled with the whole sibling list in view). A
+      // direct call would be an internal invariant violation, not a
+      // manifest problem.
       throw new WorkflowCompileError(
         `internal: branch step '${id}' reached compileStep directly — branch ` +
           `steps must be compiled via the sibling-list walker`,

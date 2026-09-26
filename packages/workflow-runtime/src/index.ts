@@ -72,6 +72,7 @@ export type {
   StepCache,
   StepCacheEntry,
   StepHookInfo,
+  StepSkippedInfo,
   RuntimeWorkflow,
   RunWorkflowArgs,
   ApprovalRequest,

@@ -87,7 +87,10 @@
       "additionalProperties": false,
       "properties": {
         "stepId": { "type": "string", "minLength": 1 },
-        "status": { "$ref": "#/$defs/runStatus" },
+        "status": {
+          "description": "A run status, or — for a step only — 'skipped': the step sits in an untaken AIP-15 branch arm and will not run in this run (terminal; announced by a step.skipped event).",
+          "anyOf": [{ "$ref": "#/$defs/runStatus" }, { "const": "skipped" }]
+        },
         "driver": { "$ref": "#/$defs/stepDriver" },
         "startedAt": { "type": "string", "format": "date-time" },
         "endedAt": { "type": "string", "format": "date-time" },

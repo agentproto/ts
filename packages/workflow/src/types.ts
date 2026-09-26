@@ -184,6 +184,12 @@ export interface StepBranch {
     }[]
   ]
   default?: string
+  /** Sibling id where execution resumes after the chosen arm (must follow
+   *  every arm target). Omitted ⇒ the step right after the last arm target. */
+  join?: string
+  /** Legacy: `true` ⇒ the chosen target AND every later sibling run
+   *  (pre-exclusive semantics). Incompatible with `join`. */
+  fallthrough?: boolean
 }
 export interface StepParallel {
   kind: "parallel"

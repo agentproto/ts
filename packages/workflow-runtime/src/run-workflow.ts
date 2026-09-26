@@ -27,6 +27,7 @@ import type {
   RunWorkflowArgs,
   RuntimeWorkflow,
   StepHookInfo,
+  StepSkippedInfo,
   TolerantFanOutResult,
   WorkflowRunResult,
 } from "./types.js"
@@ -121,6 +122,7 @@ interface RunCtx {
   readonly cacheKeySuffix?: string
   readonly onStepStart?: RunWorkflowArgs["onStepStart"]
   readonly onStepComplete?: RunWorkflowArgs["onStepComplete"]
+  readonly onStepSkipped?: RunWorkflowArgs["onStepSkipped"]
   readonly runGateCommand?: RunWorkflowArgs["runGateCommand"]
   readonly onGateReport?: RunWorkflowArgs["onGateReport"]
   /** Sessions spawned in the current release scope (the run, or one
@@ -161,7 +163,7 @@ function view(state: RunState, item?: unknown, index?: number): Bindings {
  */
 function withIndexedHooks(ctx: RunCtx, index: number): RunCtx {
   const cacheKeySuffix = `${ctx.cacheKeySuffix ?? ""}[${index}]`
-  if (!ctx.onStepStart && !ctx.onStepComplete) return { ...ctx, cacheKeySuffix }
+  if (!ctx.onStepStart && !ctx.onStepComplete && !ctx.onStepSkipped) return { ...ctx, cacheKeySuffix }
   return {
     ...ctx,
     cacheKeySuffix,
@@ -170,6 +172,9 @@ function withIndexedHooks(ctx: RunCtx, index: number): RunCtx {
       : undefined,
     onStepComplete: ctx.onStepComplete
       ? (id: string, out: unknown, info?: StepHookInfo) => ctx.onStepComplete!(`${id}[${index}]`, out, info)
+      : undefined,
+    onStepSkipped: ctx.onStepSkipped
+      ? (id: string, info: StepSkippedInfo) => ctx.onStepSkipped!(`${id}[${index}]`, info)
       : undefined,
   }
 }
@@ -303,6 +308,36 @@ function describeOutputSchemaForPrompt(schema: OutputSchemaLike): string | undef
     }
   }
   return undefined
+}
+
+/**
+ * The statically-known steps under `steps` that a skipped `branch` arm
+ * reports via `onStepSkipped`: leaf steps, plus `map`/`pipeline`/
+ * `subworkflow` steps by their own id (their bodies aren't enumerable here or
+ * don't report through this run's hooks). Structural wrappers (group,
+ * parallel, branch, loop) are walked, never reported themselves.
+ */
+function skippableStepIds(steps: readonly RunStep[], acc: string[] = []): string[] {
+  for (const s of steps) {
+    switch (s.kind) {
+      case "group":
+        skippableStepIds(s.steps, acc)
+        break
+      case "parallel":
+        for (const br of s.branches) skippableStepIds(br.steps, acc)
+        break
+      case "branch":
+        skippableStepIds(s.then, acc)
+        if (s.otherwise) skippableStepIds(s.otherwise, acc)
+        break
+      case "loop":
+        skippableStepIds(s.body, acc)
+        break
+      default:
+        acc.push(s.id)
+    }
+  }
+  return acc
 }
 
 /** Run an ordered list of steps, binding each output under its id; return last. */
@@ -820,7 +855,18 @@ async function execStep(
     }
 
     case "branch": {
-      const chosen = step.cond(b) ? step.then : (step.otherwise ?? [])
+      const taken = step.cond(b)
+      const chosen = taken ? step.then : (step.otherwise ?? [])
+      if (ctx.onStepSkipped) {
+        // Report the untaken arm's steps as skipped (AIP-58 `step.skipped`)
+        // — minus any id that also sits on the chosen path (arms sharing a
+        // body, or a nested branch node that still has to decide).
+        const onChosenPath = new Set(skippableStepIds(chosen))
+        const untaken = taken ? (step.otherwise ?? []) : step.then
+        for (const id of new Set(skippableStepIds(untaken))) {
+          if (!onChosenPath.has(id)) ctx.onStepSkipped(id, { reason: "branch-not-taken", branchId: step.sourceId ?? step.id })
+        }
+      }
       return runSequence(chosen, ctx, item, index)
     }
 
@@ -927,7 +973,7 @@ async function execStep(
 async function runWorkflowInner(
   workflow: RuntimeWorkflow,
   input: unknown,
-  hooks: Pick<RunCtx, "approve" | "resume" | "onInputRequired" | "signal" | "agents" | "cwd" | "workspaceSlug" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete" | "runGateCommand" | "onGateReport" | "spawned">,
+  hooks: Pick<RunCtx, "approve" | "resume" | "onInputRequired" | "signal" | "agents" | "cwd" | "workspaceSlug" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete" | "onStepSkipped" | "runGateCommand" | "onGateReport" | "spawned">,
   maxTotalCostUsd?: number,
 ): Promise<WorkflowRunResult> {
   const state: RunState = { input, steps: {}, costBySession: new Map(), maxTotalCostUsd, cachedHits: new Set() }
@@ -970,6 +1016,7 @@ export async function runWorkflow(
     cacheKey: args.cacheKey,
     onStepStart: args.onStepStart,
     onStepComplete: args.onStepComplete,
+    onStepSkipped: args.onStepSkipped,
     runGateCommand: args.runGateCommand,
     onGateReport: args.onGateReport,
   }, args.maxTotalCostUsd)

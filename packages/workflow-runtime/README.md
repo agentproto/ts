@@ -73,6 +73,49 @@ and binds its output under `id`.
 | `group` | Run a list of steps as one unit; output is the last step's. |
 | `subworkflow` | Run a nested workflow with its own isolated bindings. |
 
+### WORKFLOW.md `kind: branch` — exclusive arms + join
+
+`compileWorkflow` compiles a declarative AIP-15 `kind: branch` step (goto-style
+`branches[].next` / `default`, forward-only: every target is a LATER sibling in
+the same step list) into nested runtime `branch` nodes. Arms are **exclusive**:
+
+- sorted by position, the arm targets split the siblings after the branch into
+  arm bodies — an arm's body is its target step up to (not including) the next
+  arm's target; the last arm's body runs up to the **join**;
+- the join is the `join:` sibling if declared, else the step right after the
+  last arm's target (so without `join:` the last arm is exactly one step);
+- exactly one body runs (first truthy `when`, else `default`'s), then
+  execution continues at the join — every step from the join on runs once,
+  whichever arm was taken;
+- no `default` ⇒ a no-match runs the steps between the branch and its first
+  arm target (usually none) and continues at the join;
+- the untaken arms' steps are reported through `onStepSkipped` (the daemon
+  surfaces them as `skipped` in `workflow_status` and as AIP-58 `step.skipped`
+  events).
+
+```yaml
+steps:
+  - id: maybe-render-pdf
+    kind: branch
+    branches:
+      - when: $input.exportPdf
+        next: pdf-render          # arm 1 body: pdf-render, pdf-upload
+    join: publish                 # optional — omit and the join is the step after the last arm
+  - id: pdf-render
+    kind: tool
+    tool: pdf.render
+  - id: pdf-upload
+    kind: tool
+    tool: pdf.upload
+  - id: publish                   # runs once, whether or not the PDF arm ran
+    kind: tool
+    tool: site.publish
+```
+
+`fallthrough: true` restores the legacy (pre-exclusive) semantics — the chosen
+target and EVERY sibling after it run, so an earlier arm also runs every later
+arm. It is incompatible with `join`; prefer the exclusive form.
+
 ## Harness-parity capabilities
 
 The engine reaches parity with a code-first agent harness across five axes.
@@ -261,7 +304,7 @@ AIP-58 P5, not implemented here.
 
 ### Step lifecycle callbacks
 
-Pass `onStepStart` and `onStepComplete` to `runWorkflow` to observe progress in
+Pass `onStepStart`, `onStepComplete` and `onStepSkipped` to `runWorkflow` to observe progress in
 real time. The callbacks fire for every step kind; for `agent` steps, start fires
 before spawn and complete fires after the turn (and any output-schema retry loop)
 finishes.
@@ -272,11 +315,18 @@ doesn't vanish from progress), with a third `info` argument of
 `workflow_status` surfaces this as `cached: true` on the step row, and on the
 AIP-58 `step.started`/`step.succeeded` events' `data`.
 
+`onStepSkipped(stepId, { reason: "branch-not-taken", branchId })` fires, once a
+`branch` decides, for every statically-known step in the arms it did NOT take
+(a `map`/`pipeline`/`subworkflow` step reports its own id; a step id that also
+sits on the taken path is never reported). Inside a `map` item the id is
+indexed (`<id>[<index>]`) like the other two callbacks.
+
 ```ts
 await runWorkflow({
   workflow: wf,
   onStepStart: (stepId, info) => console.log("starting", stepId, info?.cached ? "(cached)" : ""),
   onStepComplete: (stepId, output, info) => console.log("done", stepId, output, info?.cached ? "(cached)" : ""),
+  onStepSkipped: (stepId, info) => console.log("skipped", stepId, "by", info.branchId),
 })
 ```
 

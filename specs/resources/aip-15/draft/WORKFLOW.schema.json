@@ -283,6 +283,7 @@
     },
     "stepBranch": {
       "type": "object",
+      "description": "Conditional routing over LATER SIBLINGS of this step (forward-only: every `next`/`default`/`join` names a later step in the same list). Arms are EXCLUSIVE: sorted by position, the arm targets partition the siblings after the branch into arm bodies — an arm's body is its target step up to (not including) the next arm's target, and the last arm's body runs up to the join. Exactly one body runs (the first arm whose `when` holds, else `default`'s), then execution continues at the join; every step from the join on runs once whichever arm was taken. Steps of the arms not taken are reported `skipped` (AIP-58 `step.skipped`), never silently absent and never `done`.",
       "required": ["kind", "branches"],
       "properties": {
         "kind": { "const": "branch" },
@@ -294,11 +295,23 @@
             "required": ["when", "next"],
             "properties": {
               "when": { "type": "string" },
-              "next": { "type": "string" }
+              "next": { "type": "string", "description": "Id of the later sibling that starts this arm's body." }
             }
           }
         },
-        "default": { "type": "string" }
+        "default": {
+          "type": "string",
+          "description": "Id of the later sibling that starts the arm taken when no `when` holds. Omitted ⇒ a no-match runs the siblings between the branch and its first arm target (none when the first target is the very next step), then continues at the join."
+        },
+        "join": {
+          "type": "string",
+          "description": "Id of the later sibling where execution resumes after the chosen arm — it MUST come after every arm target. Omitted ⇒ the step right after the last arm's target (so the last arm's body is exactly its target step); declare `join` to give the last arm several steps."
+        },
+        "fallthrough": {
+          "type": "boolean",
+          "default": false,
+          "description": "Legacy, discouraged. `true` restores the pre-exclusive semantics: the chosen target runs AND every sibling after it in document order (so taking an earlier arm also runs every later arm), and a no-match without `default` continues at the next sibling. Incompatible with `join`."
+        }
       }
     },
     "stepParallel": {
