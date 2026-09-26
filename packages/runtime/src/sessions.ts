@@ -839,6 +839,18 @@ export interface QueuedPromptView {
   position: number
 }
 
+/** Provenance stamped onto a `session_continue_fresh` target by
+ *  {@link SessionDescriptor.handoff} — which harness the checkpoint moved
+ *  from/to and when. `fromHarness === toHarness` for a same-harness
+ *  continuation; they differ for a genuine cross-harness handoff
+ *  (claude-code -> opencode, etc). */
+export interface SessionHandoff {
+  fromHarness: string
+  toHarness: string
+  /** ISO 8601 timestamp the handoff spawn completed. */
+  at: string
+}
+
 export interface SessionDescriptor {
   id: string
   kind: SessionKind
@@ -1651,6 +1663,12 @@ export interface SessionDescriptor {
   /** When this session was continued fresh into a new session, the target
    *  session id. */
   continuedTo?: string
+  /** Set alongside `continuedFrom` on the NEW session — the harness the
+   *  checkpoint moved from/to and when. Present on every `continue_fresh`
+   *  spawn, not just a cross-harness one, so a same-harness continuation
+   *  and a genuine handoff are both traceable the same way. See
+   *  {@link SessionHandoff}. */
+  handoff?: SessionHandoff
   /** Source label — the channel/harness this session was spawned from
    *  ("codex", "cowork", "vscode", "cron", …). Descriptor-only; groups the
    *  session under a source node in the tree. */
