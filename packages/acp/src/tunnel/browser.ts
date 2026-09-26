@@ -25,6 +25,7 @@ export {
   type KillFrame,
   type ResizeFrame,
   type HttpRequestFrame,
+  type HttpCancelFrame,
   type HttpResponseFrame,
   type HttpResponseHeadFrame,
   type HttpResponseChunkFrame,
