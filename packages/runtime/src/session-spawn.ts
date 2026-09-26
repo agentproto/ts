@@ -444,7 +444,7 @@ export function spawnEligibilityManifest(
   descriptor: AdapterAuthDescriptor | undefined,
   route: RouteSpec | undefined,
   model: string | undefined,
-): { manifest: AdapterAuthManifest; routeId: string } | undefined {
+): { manifest: AdapterAuthManifest; routeId: string; direct: boolean } | undefined {
   // Endpoint precedence: adapter's FIXED provider (single-provider adapters)
   // > the adapter's OWN declared per-model provider (`modelProviders`, a
   // model-derived-api-key adapter's `models.allowed[].provider` — the
@@ -475,6 +475,7 @@ export function spawnEligibilityManifest(
       },
     },
     routeId,
+    direct,
   }
 }
 
@@ -496,11 +497,14 @@ function resolveProfileAwareRoute(
   authDescriptor: AdapterAuthDescriptor,
   profile: AuthProfile,
   model: string | undefined,
-): { manifest: AdapterAuthManifest; routeId: string } | undefined {
+): { manifest: AdapterAuthManifest; routeId: string; direct: boolean } | undefined {
   if (!model) return undefined
   const eligibleCandidates = serviceableModelRoutes(model)
     .map(gateway => spawnEligibilityManifest(adapter, authDescriptor, { gateway }, model))
-    .filter((candidate): candidate is { manifest: AdapterAuthManifest; routeId: string } => candidate !== undefined)
+    .filter(
+      (candidate): candidate is { manifest: AdapterAuthManifest; routeId: string; direct: boolean } =>
+        candidate !== undefined,
+    )
     .filter(candidate => eligibleProfiles([profile], candidate.manifest, candidate.routeId).length > 0)
   return eligibleCandidates.length === 1 ? eligibleCandidates[0] : undefined
 }
@@ -511,6 +515,15 @@ export interface AccessProfileAuthResult {
   ok: true
   authSpec?: ResolvedAuthSpec
   authEcho?: AuthEcho
+  /** GATEWAY route resolved by the profile-aware fallback (the caller named
+   *  no `route.gateway`; `resolveProfileAwareRoute` found the single gateway
+   *  route that makes the profile eligible). Already threaded into
+   *  `authSpec` above (`resolveAuthSpec`'s `routeGateway` — gatewayAuth
+   *  setEnv + preset base_url); surfaced so the caller can ALSO thread it
+   *  into the launch config and the descriptor's `route` echo, exactly as an
+   *  explicit `route: {gateway}` would be. Absent when the caller pinned a
+   *  route themselves or the profile resolved on a direct endpoint. */
+  resolvedRouteGateway?: string
   accessProfileEcho: { profileRef: string; label?: string; endpoint: string; method: AuthMethod }
 }
 
@@ -578,12 +591,29 @@ export async function resolveAccessProfileAuth(input: {
   // caller didn't pin one explicitly (`route?.gateway` still wins outright,
   // untouched, above); when the guess leaves the named profile ineligible,
   // fall back to searching the model's real candidate routes before failing.
+  let resolvedRouteGateway: string | undefined
   if (
     route?.gateway === undefined &&
     (!projected || eligibleProfiles([profile], projected.manifest, projected.routeId).length === 0)
   ) {
     const resolved = resolveProfileAwareRoute(adapter, authDescriptor, profile, model ?? defaultModel)
-    if (resolved) projected = resolved
+    if (resolved) {
+      projected = resolved
+      // A GATEWAY resolution (routeId ≠ the adapter's direct endpoint) must
+      // thread through the REST of the spawn exactly as an explicit
+      // `route: {gateway}` would — auth spec, launch-config base_url,
+      // descriptor `route` echo. Using it only for the eligibility check
+      // above and then resolving auth against the profile's endpoint as a
+      // DIRECT provider was the claude-sdk/moonshot bug: the spawn cleared
+      // eligibility on the moonshot gateway but launched with the provider
+      // preset's keyEnv (MOONSHOT_API_KEY) and no ANTHROPIC_BASE_URL, so
+      // the session hit Anthropic direct and 404'd on the model. Skipped
+      // when the caller pinned a custom `route.baseUrl` (their transport
+      // choice must not be overridden by a preset's base_url).
+      if (!resolved.direct && route?.baseUrl === undefined) {
+        resolvedRouteGateway = resolved.routeId
+      }
+    }
   }
   if (!projected || eligibleProfiles([profile], projected.manifest, projected.routeId).length === 0) {
     const endpoint = projected?.manifest.endpointByRoute[projected.routeId] ?? "an unknown endpoint"
@@ -675,10 +705,16 @@ export async function resolveAccessProfileAuth(input: {
   let authSpec: ResolvedAuthSpec | undefined
   let authEcho: AuthEcho | undefined
   try {
+    // The gateway handed to the resolver: the caller's explicit pin, else the
+    // profile-aware fallback's resolution above. `requestedProvider` is still
+    // passed alongside the FALLBACK gateway (never an explicit one) so a
+    // resolved route that matches no gateway preset / custom route keeps
+    // resolving against the profile's endpoint exactly as before.
+    const effectiveRouteGateway = route?.gateway ?? resolvedRouteGateway
     const result = resolveAuthSpec({
       descriptor: authDescriptor,
       ...(model ? { model } : {}),
-      ...(route?.gateway ? { routeGateway: route.gateway } : {}),
+      ...(effectiveRouteGateway ? { routeGateway: effectiveRouteGateway } : {}),
       ...(!route?.gateway ? { requestedProvider: profile.endpoint as CatalogProvider } : {}),
       requestedMode: authMode,
       // A profile reference is an explicit billing choice. Never consult the
@@ -708,6 +744,7 @@ export async function resolveAccessProfileAuth(input: {
     ok: true,
     authSpec,
     authEcho,
+    ...(resolvedRouteGateway !== undefined ? { resolvedRouteGateway } : {}),
     accessProfileEcho: {
       profileRef: profile.id,
       ...(profile.label !== undefined ? { label: profile.label } : {}),
@@ -2207,8 +2244,18 @@ export async function spawnAgentSession(
   // required" the moment the operator picks a row with an explicit
   // `@route` suffix that happens to match the SAME gateway the session is
   // already on. A fixed-provider adapter (claude-code) needs none of this:
-  // its `route` stays reserved for an operator-named gateway override.
+  // its `route` stays reserved for an operator-named gateway override —
+  // EXCEPT when the access-profile path's profile-aware fallback resolved a
+  // gateway route (see `AccessProfileAuthResult.resolvedRouteGateway`):
+  // that resolution IS the spawn's billing rail and is echoed + threaded
+  // into the launch config below, exactly as an explicit `route: {gateway}`
+  // would be.
   let resolvedRouteGateway: string | undefined
+  // The profile-aware fallback's gateway as a `RouteSpec` for the launch
+  // config — kept SEPARATE from `resolvedRouteGateway` so the by-model
+  // router echo (hermes/pi/opencode, above) keeps its echo-only behaviour
+  // unchanged while the profile-resolved gateway also drives wire routing.
+  let profileResolvedRoute: RouteSpec | undefined
   if (resolved && input.access?.profileRef) {
     const result = await resolveAccessProfileAuth({
       adapter: input.adapter,
@@ -2229,6 +2276,10 @@ export async function spawnAgentSession(
     authSpec = result.authSpec
     authEcho = result.authEcho
     accessProfileEcho = result.accessProfileEcho
+    if (result.resolvedRouteGateway !== undefined) {
+      resolvedRouteGateway = result.resolvedRouteGateway
+      profileResolvedRoute = { gateway: result.resolvedRouteGateway }
+    }
   } else if (
     resolved &&
     resolved.authDescriptor &&
@@ -2503,7 +2554,11 @@ export async function spawnAgentSession(
     launchConfig = buildRouteAwareLaunchConfig({
       adapter: input.adapter,
       model: input.model,
-      route: input.route,
+      // The caller's explicit route, else the access-profile fallback's
+      // resolved gateway — so a profile-resolved gateway spawn builds the
+      // SAME launch config an explicit `route: {gateway}` spawn would
+      // (base_url injection eligibility, wire-model normalization).
+      route: input.route ?? profileResolvedRoute,
       authSpec,
       options: spawnDefaults.options,
       declaredOptions: resolved?.declaredOptions,
@@ -2515,7 +2570,7 @@ export async function spawnAgentSession(
     })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    const gateway = input.route?.gateway
+    const gateway = input.route?.gateway ?? profileResolvedRoute?.gateway
     return {
       ok: false,
       code: "gateway_base_url_unsupported",
