@@ -164,6 +164,9 @@ export interface StepTool {
     | {
         entry: string
       }
+  /** Cache this step's output under the run's cacheKey; only its resolved
+   *  `inputs` are hashed (not `context`/secrets). Default false. */
+  cacheable?: boolean
 }
 export interface StepBranch {
   kind: "branch"

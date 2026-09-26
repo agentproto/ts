@@ -71,6 +71,7 @@ export type {
   AgentSessionHost,
   StepCache,
   StepCacheEntry,
+  StepHookInfo,
   RuntimeWorkflow,
   RunWorkflowArgs,
   ApprovalRequest,

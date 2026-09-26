@@ -274,6 +274,10 @@
               }
             }
           ]
+        },
+        "cacheable": {
+          "type": "boolean",
+          "description": "Cache this step's output under the run's cacheKey; only its resolved `inputs` are hashed (not `context`/secrets). Default false."
         }
       }
     },

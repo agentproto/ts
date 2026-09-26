@@ -26,6 +26,7 @@ import type {
   RunStep,
   RunWorkflowArgs,
   RuntimeWorkflow,
+  StepHookInfo,
   TolerantFanOutResult,
   WorkflowRunResult,
 } from "./types.js"
@@ -93,6 +94,11 @@ interface RunState {
    *  A Map (not a running delta) so a session reused across steps via
    *  sessionRef is counted once, not double-counted. */
   readonly costBySession: Map<string, number>
+  /** Journal keys ({@link cachedHitKey}) of steps whose output was replayed
+   *  from the cache this run and whose completion hasn't been reported yet —
+   *  consumed by {@link completeStep} to tag `onStepComplete` with
+   *  `{ cached: true }` (F35). */
+  readonly cachedHits: Set<string>
 }
 
 interface RunCtx {
@@ -106,6 +112,13 @@ interface RunCtx {
   readonly workspaceSlug?: string
   readonly cache?: RunWorkflowArgs["cache"]
   readonly cacheKey?: RunWorkflowArgs["cacheKey"]
+  /** Set inside a `map`/`pipeline` fan-out body — the `[<index>]` path
+   *  (nested maps append their own `[<index>]`) appended to every cache
+   *  journal key computed under this ctx, so each item of a shared-id
+   *  body caches independently instead of overwriting one shared entry
+   *  (F33). Mirrors the id-suffixing {@link withIndexedHooks} already does
+   *  for `onStepStart`/`onStepComplete`. */
+  readonly cacheKeySuffix?: string
   readonly onStepStart?: RunWorkflowArgs["onStepStart"]
   readonly onStepComplete?: RunWorkflowArgs["onStepComplete"]
   readonly runGateCommand?: RunWorkflowArgs["runGateCommand"]
@@ -128,11 +141,17 @@ function view(state: RunState, item?: unknown, index?: number): Bindings {
  * same as any other step it didn't see at compile time.
  */
 function withIndexedHooks(ctx: RunCtx, index: number): RunCtx {
-  if (!ctx.onStepStart && !ctx.onStepComplete) return ctx
+  const cacheKeySuffix = `${ctx.cacheKeySuffix ?? ""}[${index}]`
+  if (!ctx.onStepStart && !ctx.onStepComplete) return { ...ctx, cacheKeySuffix }
   return {
     ...ctx,
-    onStepStart: ctx.onStepStart ? (id: string) => ctx.onStepStart!(`${id}[${index}]`) : undefined,
-    onStepComplete: ctx.onStepComplete ? (id: string, out: unknown) => ctx.onStepComplete!(`${id}[${index}]`, out) : undefined,
+    cacheKeySuffix,
+    onStepStart: ctx.onStepStart
+      ? (id: string, info?: StepHookInfo) => ctx.onStepStart!(`${id}[${index}]`, info)
+      : undefined,
+    onStepComplete: ctx.onStepComplete
+      ? (id: string, out: unknown, info?: StepHookInfo) => ctx.onStepComplete!(`${id}[${index}]`, out, info)
+      : undefined,
   }
 }
 
@@ -177,14 +196,32 @@ function hashResolvedInputs(kind: string, resolved: unknown): string {
     .digest("hex")
 }
 
-/** Namespaced journal key for a step under a run's cacheKey. */
-function stepJournalKey(cacheKey: string, step: RunStep): string {
-  return `${cacheKey}\u0000${step.id}\u0000${step.kind}`
+/** Namespaced journal key for a step under a run's cacheKey. A step inside a
+ *  `map`/`pipeline` body shares its static compiled id (and kind) across
+ *  every item — `ctx.cacheKeySuffix` (the item's `[<index>]` path, set by
+ *  {@link withIndexedHooks}) disambiguates them so each item's cache entry
+ *  is independent instead of every item overwriting one shared key (F33). */
+function stepJournalKey(ctx: RunCtx, step: RunStep): string {
+  return `${ctx.cacheKey}\u0000${step.id}\u0000${step.kind}${ctx.cacheKeySuffix ?? ""}`
 }
 
 /** True when this step should consult/populate the journal. */
 function isCacheEnabled(ctx: RunCtx, step: { cacheable?: boolean }): boolean {
   return step.cacheable === true && ctx.cache !== undefined && ctx.cacheKey !== undefined
+}
+
+/** Identity of one step execution under `ctx` for {@link RunState.cachedHits}
+ *  — the step id plus the map/pipeline item path, so concurrent items of a
+ *  shared-id body don't see each other's hits. */
+function cachedHitKey(ctx: RunCtx, stepId: string): string {
+  return `${stepId}${ctx.cacheKeySuffix ?? ""}`
+}
+
+/** Report a step's completion — `{ cached: true }` when {@link execStep}
+ *  replayed it from the journal (F35: a cache hit still surfaces as a step). */
+function completeStep(ctx: RunCtx, stepId: string, out: unknown): void {
+  const cached = ctx.state.cachedHits.delete(cachedHitKey(ctx, stepId))
+  ctx.onStepComplete?.(stepId, out, cached ? { cached: true } : undefined)
 }
 
 /** Read the journal; on a hit return the output, else the key+hash to write on miss. */
@@ -193,7 +230,7 @@ async function readStepCache(
   step: RunStep,
   resolvedInputs: unknown,
 ): Promise<{ hit: true; output: unknown } | { hit: false; key: string; hash: string }> {
-  const key = stepJournalKey(ctx.cacheKey!, step)
+  const key = stepJournalKey(ctx, step)
   const hash = hashResolvedInputs(step.kind, resolvedInputs)
   const entry = await ctx.cache!.get(key)
   if (entry !== undefined && entry.resolvedInputHash === hash) {
@@ -260,7 +297,7 @@ async function runSequence(
   for (const s of steps) {
     const out = await execStep(s, ctx, item, index)
     ctx.state.steps[s.id] = out
-    ctx.onStepComplete?.(s.id, out)
+    completeStep(ctx, s.id, out)
     last = out
   }
   return last
@@ -622,6 +659,14 @@ async function execGateStep(step: GateStep, ctx: RunCtx, b: Bindings): Promise<u
   return last
 }
 
+/** A cache hit still surfaces as a step (F35): fire `onStepStart` with
+ *  `{ cached: true }` and flag it so its completion is tagged too. */
+function cacheHit(ctx: RunCtx, step: RunStep, output: unknown): unknown {
+  ctx.state.cachedHits.add(cachedHitKey(ctx, step.id))
+  ctx.onStepStart?.(step.id, { cached: true })
+  return output
+}
+
 async function execStep(
   step: RunStep,
   ctx: RunCtx,
@@ -631,8 +676,10 @@ async function execStep(
   const { state, signal } = ctx
   const b = view(state, item, index)
 
-  // Notify step start for non-agent steps (agent steps notify in execAgentStep)
-  if (step.kind !== "agent") {
+  // Notify step start for non-agent steps (agent steps notify in
+  // execAgentStep; a tool step notifies in its case, once it knows whether
+  // it's a cache hit).
+  if (step.kind !== "agent" && step.kind !== "tool") {
     ctx.onStepStart?.(step.id)
   }
 
@@ -649,9 +696,13 @@ async function execStep(
           secrets: step.secrets,
           signal,
         })
-      if (!isCacheEnabled(ctx, step)) return runIt()
+      if (!isCacheEnabled(ctx, step)) {
+        ctx.onStepStart?.(step.id)
+        return runIt()
+      }
       const c = await readStepCache(ctx, step, input)
-      if (c.hit) return c.output
+      if (c.hit) return cacheHit(ctx, step, c.output)
+      ctx.onStepStart?.(step.id)
       const out = await runIt()
       await ctx.cache!.set(c.key, { output: out, resolvedInputHash: c.hash })
       return out
@@ -674,7 +725,7 @@ async function execStep(
               const inner = step.body(el, idx, view(state, el, idx))
               const wrapped = withIndexedHooks(ctx, idx)
               return execStep(inner, wrapped, el, idx).then((out) => {
-                wrapped.onStepComplete?.(inner.id, out)
+                completeStep(wrapped, inner.id, out)
                 return out
               })
             }),
@@ -688,7 +739,7 @@ async function execStep(
             const inner = step.body(el, idx, view(state, el, idx))
             const wrapped = withIndexedHooks(ctx, idx)
             return execStep(inner, wrapped, el, idx).then((out) => {
-              wrapped.onStepComplete?.(inner.id, out)
+              completeStep(wrapped, inner.id, out)
               return out
             })
           }),
@@ -724,7 +775,7 @@ async function execStep(
           for (const stage of step.stages) {
             const inner = stage(items[idx], idx, prev, view(state, items[idx], idx))
             prev = await execStep(inner, wrapped, items[idx], idx)
-            wrapped.onStepComplete?.(inner.id, prev)
+            completeStep(wrapped, inner.id, prev)
           }
           results[idx] = tolerant ? { status: "fulfilled", index: idx, value: prev } : prev
         } catch (err) {
@@ -841,7 +892,7 @@ async function execStep(
         sessionRef: step.sessionRef,
       }
       const c = await readStepCache(ctx, step, resolved)
-      if (c.hit) return c.output // cache hit ⇒ NO spawn, NO budget spend
+      if (c.hit) return cacheHit(ctx, step, c.output) // cache hit ⇒ NO spawn, NO budget spend
       const out = await execAgentStep(step, ctx, b)
       await ctx.cache!.set(c.key, { output: out, resolvedInputHash: c.hash })
       return out
@@ -858,13 +909,13 @@ async function runWorkflowInner(
   hooks: Pick<RunCtx, "approve" | "resume" | "onInputRequired" | "signal" | "agents" | "cwd" | "workspaceSlug" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete" | "runGateCommand" | "onGateReport">,
   maxTotalCostUsd?: number,
 ): Promise<WorkflowRunResult> {
-  const state: RunState = { input, steps: {}, costBySession: new Map(), maxTotalCostUsd }
+  const state: RunState = { input, steps: {}, costBySession: new Map(), maxTotalCostUsd, cachedHits: new Set() }
   const ctx: RunCtx = { state, ...hooks }
   let lastId: string | undefined
   for (const step of workflow.steps) {
     const out = await execStep(step, ctx, undefined, undefined)
     state.steps[step.id] = out
-    ctx.onStepComplete?.(step.id, out)
+    completeStep(ctx, step.id, out)
     lastId = step.id
   }
   const bindings = view(state)
