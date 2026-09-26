@@ -394,6 +394,24 @@ describe("config_set", () => {
     await client.close()
   })
 
+  it("pairing.pairPage: accepts a URL or a {fp}-in-host template, rejects {fp} elsewhere", async () => {
+    await writeCfg({})
+    const client = await setupClient(makeDeps({}))
+    const set = (value: unknown) => client.callTool({ name: "config_set", arguments: { key: "pairing.pairPage", value } })
+
+    const ok = parse(await set("https://{fp}.agentproto.cloud/pair"))
+    expect(ok).toMatchObject({ ok: true, key: "pairing.pairPage", applied: "hot" })
+    expect((await loadConfig(configPath)).pairing?.pairPage).toBe("https://{fp}.agentproto.cloud/pair")
+    expect(parse(await set("https://pair.example.com/pair"))).toMatchObject({ ok: true })
+
+    for (const bad of ["https://agentproto.cloud/{fp}/pair", "https://{nope}.x/pair", "ftp://x/pair", "not a url", 42]) {
+      const res = await set(bad)
+      expect((res as { isError?: boolean }).isError, String(bad)).toBe(true)
+    }
+    expect((await loadConfig(configPath)).pairing?.pairPage).toBe("https://pair.example.com/pair")
+    await client.close()
+  })
+
   it("rejects a bad type for a writable key", async () => {
     await writeCfg({})
     const client = await setupClient(makeDeps({}))

@@ -121,6 +121,30 @@ describe("validateConfig", () => {
   })
 })
 
+describe("pairing.pairPage", () => {
+  it("is registered next to pairing.rendezvous, hot, writable, defaulting to the shared page", () => {
+    expect(findConfigKey("pairing.pairPage")).toMatchObject({
+      apply: "hot",
+      writable: true,
+      section: "remote",
+      default: "https://cli.agentproto.sh/pair",
+    })
+  })
+
+  it("validates as a URL or {fp}-in-hostname template, in the key and the whole-file schema", () => {
+    for (const ok of ["https://cli.agentproto.sh/pair", "https://{fp}.agentproto.cloud/pair", "http://{fp}.localhost:3000/pair"]) {
+      expect(validateConfigKeyType("pairing.pairPage", ok), ok).toEqual({ ok: true })
+      expect(validateConfig({ pairing: { pairPage: ok } }).ok, ok).toBe(true)
+    }
+    for (const bad of ["https://agentproto.cloud/{fp}", "https://{FP}.x/pair", "https://x/pair#frag", "nope"]) {
+      const r = validateConfigKeyType("pairing.pairPage", bad)
+      expect(r.ok, bad).toBe(false)
+      expect(r.error, bad).toMatch(/pair page/)
+      expect(validateConfig({ pairing: { pairPage: bad } }).issues.join("\n"), bad).toMatch(/pairing\.pairPage: pair page/)
+    }
+  })
+})
+
 describe("findConfigKey — wildcard lookup", () => {
   it("resolves a concrete adapter slug against the wildcard entry", () => {
     const entry = findConfigKey("defaults.adapters.claude-code.skills")

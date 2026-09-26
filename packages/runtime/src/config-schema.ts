@@ -15,6 +15,8 @@
 
 import { z } from "zod"
 import { CatalogProviderSchema } from "@agentproto/model-catalog"
+// The browser entry: the same pure URL helpers, without pulling node:crypto in.
+import { resolvePairPageUrl, PAIR_WEB_URL } from "@agentproto/secrets/pairing/browser"
 import type {
   AgentprotoConfig,
   AcpAgentConfigEntry,
@@ -207,10 +209,23 @@ const agentsMdConfigSchema: z.ZodType<AgentsMdConfig> = z
   .object({ inlineMaxKb: z.number().optional() })
   .passthrough()
 
+/** `pairing.pairPage`: a plain http(s) URL, or a template with `{fp}` in the
+ *  hostname — the exact check `pair offer --qr` applies (`resolvePairPageUrl`),
+ *  run against a sample fingerprint so a bad template is refused at write
+ *  time, not at the next offer. */
+const pairPageSchema = z.string().superRefine((value, ctx) => {
+  try {
+    resolvePairPageUrl(value, "0123456789abcdef")
+  } catch (err) {
+    ctx.addIssue({ code: "custom", message: err instanceof Error ? err.message : String(err) })
+  }
+})
+
 const pairingConfigSchema: z.ZodType<PairingConfig> = z
   .object({
     rendezvous: z.string().optional(),
     autoconnect: z.boolean().optional(),
+    pairPage: pairPageSchema.optional(),
   })
   .passthrough()
 
@@ -600,6 +615,20 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Pairing autoconnect",
     help: "Open standing rendezvous connections for every persisted pairing on boot.",
     default: true,
+  },
+  {
+    path: "pairing.pairPage",
+    schema: pairPageSchema,
+    // Read by `pair offer --qr` on every run, not at daemon boot.
+    apply: "hot",
+    writable: true,
+    section: "remote",
+    label: "Phone pair page",
+    help:
+      "Web page the `pair offer --qr` link opens (the offer rides in its URL fragment). A plain " +
+      "http(s) URL, or a template with {fp} in the hostname for one origin per daemon, e.g. " +
+      "https://{fp}.agentproto.cloud/pair. `--pair-page` overrides it.",
+    default: PAIR_WEB_URL,
   },
 
   // ── models ──
