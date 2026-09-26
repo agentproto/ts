@@ -12,7 +12,6 @@ import { authStep } from "./steps/auth.js"
 import { clientsStep } from "./steps/clients.js"
 import { skillsStep } from "./steps/skills.js"
 import { firstRunStep, pickHarness } from "./steps/first-run.js"
-import { localModelStep } from "./steps/local-model.js"
 import type { OnboardingStep, SetupAction, StepCheck } from "./types.js"
 import { HOME, createFakeContext, createFakeFs, healthyFiles } from "./__fixtures__/fake-context.js"
 import { createFakeSetup } from "./__fixtures__/fake-setup.js"
@@ -261,21 +260,5 @@ describe("first-run", () => {
     })
     const checks = await firstRunStep.detect(withLedger)
     expect(checks[0]?.status).toBe("ok")
-  })
-})
-
-describe("local-model (extra)", () => {
-  it("unconfigured ⇒ a skipped hint, never an action", async () => {
-    const checks = await localModelStep.detect(ctx)
-    expect(checks[0]).toMatchObject({ status: "skipped" })
-    expect(checks[0]?.detail).toContain("FORGE_BASE_URL")
-    expect(localModelStep.plan).toBeUndefined()
-  })
-
-  it("llm-endpoints.json or FORGE_BASE_URL ⇒ ok", async () => {
-    const file = createFakeContext({ fs: createFakeFs({ ...healthyFiles(), [`${HOME}/.agentproto/llm-endpoints.json`]: "{}" }) })
-    expect((await localModelStep.detect(file))[0]?.status).toBe("ok")
-    const env = { ...createFakeContext(), env: { FORGE_BASE_URL: "http://127.0.0.1:8000/v1" } }
-    expect((await localModelStep.detect(env))[0]?.detail).toContain("http://127.0.0.1:8000/v1")
   })
 })
