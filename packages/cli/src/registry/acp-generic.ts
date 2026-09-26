@@ -96,6 +96,13 @@ export function acpHandleFromSpec(spec: AcpAgentSpec): AgentCliHandle {
     sandbox: GENERIC_ACP_REF,
     protocol: "acp",
     acp: GENERIC_ACP_REF,
+    // The spec-level billing provider (the endpoint this CLI's own auth
+    // bills — kimi-cli → "moonshot") becomes the manifest's FIXED provider.
+    // Without it the host's `AdapterAuthDescriptor` projection
+    // (`toAuthDescriptor` / serve.ts) carries no provider at all, so
+    // `directAuthMethods` presents NO auth method on the direct route and
+    // no api-key auth profile is ever eligible for a generic ACP adapter.
+    ...(spec.provider ? { provider: spec.provider } : {}),
     session: {
       mode: resumable ? "resumable" : "persistent",
       context_carryover: true,
@@ -104,12 +111,42 @@ export function acpHandleFromSpec(spec: AcpAgentSpec): AgentCliHandle {
       ? {
           models: {
             ...(spec.models.default ? { default: spec.models.default } : {}),
+            // With a spec-level provider, each allowed id becomes a
+            // `{ id, provider }` binding — the adapter's own authoritative
+            // statement of who bills it for that model. That is what the
+            // catalog join (`listCatalogModelsFromInstalled`) and the
+            // descriptor's `modelProviders` tier read; bare strings would
+            // leave both to the global catalog's possibly-different routing.
             ...(spec.models.allowed && spec.models.allowed.length > 0
-              ? { allowed: [...spec.models.allowed] }
+              ? {
+                  allowed: spec.provider
+                    ? spec.models.allowed.map((id) => ({
+                        id,
+                        provider: spec.provider!,
+                      }))
+                    : [...spec.models.allowed],
+                }
               : {}),
           },
         }
       : {}),
+    // Every ACP agent shares the standard `session/set_config_option`
+    // surface, which is exactly how the default model-apply strategy
+    // (`models.apply: "config"`) delivers a requested model at connect.
+    // Declaring `model` here (free-form string, no argv/env patch) lets an
+    // explicit `agent_start({model})` pass compose-time option validation
+    // instead of failing `unknown_option`; the agent's own selector still
+    // decides whether to honor it.
+    options: [
+      {
+        id: "model",
+        type: "string" as const,
+        description:
+          "Model id, applied over the ACP wire (session config) at connect. " +
+          "The agent's own model selector decides whether the id is accepted; " +
+          "omit to keep the CLI's default.",
+      },
+    ],
     capabilities: {
       streaming: true,
       tool_calls: true,
