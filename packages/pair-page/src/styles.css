@@ -1,0 +1,234 @@
+/* agentproto pair page — "Paper & Phosphor" terminal palette. No web fonts
+   (nothing is loaded from outside the bundle); system stacks only. */
+
+:root {
+  color-scheme: dark;
+  --bg: #0d1512;
+  --card: #111c18;
+  --line: #21302a;
+  --text: #e3ece6;
+  --muted: #9fb0a6;
+  --dim: #6d7f76;
+  --phos: #3edc81;
+  --amber: #f0b429;
+  --danger: #fa4d56;
+  --primary: #4589ff;
+  --primary-text: #0c1420;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 var(--sans);
+}
+
+main {
+  display: flex;
+  min-height: 100vh;
+  justify-content: center;
+  align-items: center;
+  padding: max(24px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom));
+}
+
+.page {
+  width: 100%;
+  max-width: 28rem;
+}
+
+.preview-banner {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--amber);
+  border-radius: 8px;
+  color: var(--amber);
+  font: 12px/1.4 var(--mono);
+}
+
+.card {
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card);
+}
+
+.eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font: 12px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dim);
+}
+
+.dot-ok {
+  background: var(--phos);
+  box-shadow: 0 0 6px var(--phos);
+}
+
+.dot-warn {
+  background: var(--amber);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.dot-danger {
+  background: var(--danger);
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+h1 {
+  margin: 0 0 16px;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.body p {
+  margin: 0;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  color: var(--text);
+}
+
+.fingerprint {
+  display: block;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #0a110e;
+  text-align: center;
+  font-size: 17px;
+  line-height: 1.6;
+}
+
+.fingerprint span {
+  display: inline-block;
+  margin: 0 0.3em;
+}
+
+.command {
+  display: block;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #0a110e;
+  color: #c9d6ce;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.prompt {
+  color: var(--phos);
+  user-select: none;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+}
+
+.btn {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 8px 16px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font: 500 14px/1.3 var(--sans);
+  text-align: center;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: var(--primary-text);
+}
+
+.btn-secondary {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--text);
+}
+
+.btn-danger {
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  background: transparent;
+  color: var(--danger);
+}
+
+.error-text {
+  font: 12px/1.5 var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.list li {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.list .name {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.list .fp {
+  margin-bottom: 10px;
+  font: 12px/1.5 var(--mono);
+}
+
+.notice {
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}

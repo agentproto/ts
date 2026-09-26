@@ -39,4 +39,5 @@ export {
   PAIR_PAGE_FP_PLACEHOLDER,
   PAIR_WEB_URL,
   PAIR_WEB_URL_TEMPLATE_CLOUD,
+  DEFAULT_PAIR_PAGE,
 } from "@agentproto/secrets/pairing/browser"

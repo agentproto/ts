@@ -24,7 +24,7 @@ import { encodeOfferUrl, parseOfferUrl } from "../../pairing/offer-url.js"
 import { seal, unseal } from "../../seal/core.js"
 import { identityFingerprint } from "../../identity/core.js"
 import type { DaemonIdentity } from "../../identity/core.js"
-import { GOLDEN, GOLDEN_V2, KEYS } from "./golden-vectors.js"
+import { CAPTURED_FINGERPRINTS_64, GOLDEN, GOLDEN_V2, KEYS } from "./golden-vectors.js"
 
 type KeyName = keyof typeof KEYS
 
@@ -83,8 +83,20 @@ describe.each([
     expect(toHex(ds.recvKey)).toBe(GOLDEN_V2.clientSendKey)
     expect(toHex(cs.transcriptHash)).toBe(GOLDEN_V2.transcriptHash)
     expect(cs.peerFingerprint).toBe(GOLDEN.clientPeerFingerprint)
+    expect(ds.peerFingerprint).toBe(GOLDEN.daemonPeerFingerprint)
     expect(await derivePairRoot(cs, c)).toBe(GOLDEN_V2.pairRoot)
     expect(await derivePairRoot(ds, c)).toBe(GOLDEN_V2.pairRoot)
+  })
+
+  it("identity fingerprint: 128 bits, whose 16-hex prefix is the captured 64-bit value (KAT)", async () => {
+    const daemonFp = await identityFingerprint(KEYS.daemonX.pub, base)
+    const clientFp = await identityFingerprint(KEYS.clientEph.pub, base)
+    expect(daemonFp).toBe(GOLDEN.clientPeerFingerprint)
+    expect(clientFp).toBe(GOLDEN.daemonPeerFingerprint)
+    for (const fp of [daemonFp, clientFp]) expect(fp).toMatch(/^[0-9a-f]{32}$/)
+    // Only the length changed: the old 64-bit fingerprint is the prefix.
+    expect(daemonFp.slice(0, 16)).toBe(CAPTURED_FINGERPRINTS_64.clientPeerFingerprint)
+    expect(clientFp.slice(0, 16)).toBe(CAPTURED_FINGERPRINTS_64.daemonPeerFingerprint)
   })
 
   it("pair/v2 route/auth derivations (KAT)", async () => {

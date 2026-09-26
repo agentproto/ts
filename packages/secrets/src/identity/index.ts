@@ -45,10 +45,12 @@ export function generateIdentity(crypto: CryptoProvider = nodeCryptoProvider): P
 }
 
 /**
- * Stable short identifier for a daemon, derived from its X25519 public key —
- * the same construction as `sealKeyId` in `@agentproto/secrets/seal` (first 16
- * hex of `sha256(pub DER)`). Displayed everywhere a human confirms identity
- * (offer QR, `pair accept`, `pair ls`). Not a secret.
+ * Stable identifier for a daemon, derived from its X25519 public key: the
+ * first 32 hex (128 bits) of `sha256(pub DER)`. It names the daemon's browser
+ * origin (`<fingerprint>.agentproto.cloud`), so it is long enough to resist a
+ * grind for a colliding key. `sealKeyId` in `@agentproto/secrets/seal` is its
+ * 16-hex prefix. Displayed everywhere a human confirms identity (offer QR,
+ * `pair accept`, `pair ls`). Not a secret.
  */
 export function identityFingerprint(x25519Pub: string, crypto: CryptoProvider = nodeCryptoProvider): Promise<string> {
   return core.identityFingerprint(x25519Pub, crypto)

@@ -122,12 +122,12 @@ describe("validateConfig", () => {
 })
 
 describe("pairing.pairPage", () => {
-  it("is registered next to pairing.rendezvous, hot, writable, defaulting to the shared page", () => {
+  it("is registered next to pairing.rendezvous, hot, writable, defaulting to one origin per daemon", () => {
     expect(findConfigKey("pairing.pairPage")).toMatchObject({
       apply: "hot",
       writable: true,
       section: "remote",
-      default: "https://cli.agentproto.sh/pair",
+      default: "https://{fp}.agentproto.cloud/pair",
     })
   })
 

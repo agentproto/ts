@@ -1,0 +1,33 @@
+# Cloudflare Worker for the per-daemon pair page (AIP-59 §5.8).
+#
+# Build first (`pnpm --filter @agentproto/pair-page build`), then deploy from
+# this directory. The account comes from the environment
+# (CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN), never from this file.
+#
+# Production serves every `<fp>.agentproto.cloud` through the route below; the
+# zone also needs a proxied wildcard `*` DNS record (AAAA 100::, no origin).
+# The workers.dev host 404s unless deployed with
+# `--var PREVIEW_HOSTS:agentproto-pair-page.<account-subdomain>.workers.dev`.
+
+name = "agentproto-pair-page"
+main = "src/worker.ts"
+compatibility_date = "2026-09-01"
+workers_dev = true
+routes = [
+  { pattern = "*.agentproto.cloud/*", zone_name = "agentproto.cloud" },
+]
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+# Every request goes through the Worker first: host check + security headers.
+run_worker_first = true
+# The Worker picks the document itself; serve files exactly as named.
+html_handling = "none"
+not_found_handling = "none"
+
+[vars]
+PAIR_DOMAIN = "agentproto.cloud"
+# Set to the workers.dev host for the preview, e.g.
+# "agentproto-pair-page.<account-subdomain>.workers.dev". Empty = production.
+PREVIEW_HOSTS = ""

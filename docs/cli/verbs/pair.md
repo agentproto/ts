@@ -42,9 +42,9 @@ agentproto pair offer
 ```
 
 ```text
-Pairing offer (daemon a1b2c3d4e5f60718) — expires 2026-07-13T19:20:00.000Z
+Pairing offer (daemon a1b2c3d4e5f607189c3e5d7f1a2b4c6d) — expires 2026-07-13T19:20:00.000Z
 
-  agentproto://pair?v=2&rv=…&id=a1b2c3d4e5f60718&pk=…&sk=…&s=…&exp=…
+  agentproto://pair?v=2&rv=…&id=a1b2c3d4e5f607189c3e5d7f1a2b4c6d&pk=…&sk=…&s=…&exp=…
 
   █▀▀▀▀▀█ ▀▀ █ █▀▀▀▀▀█        (QR of the URL — omit with --no-qr)
   …
@@ -65,27 +65,29 @@ This window can close.
 - `--no-qr` prints the URL only (also the fallback when the optional
   `qrcode-terminal` renderer isn't installed).
 - `--qr` pairs a **phone browser** instead of another CLI: it prints, and draws
-  as the QR, the web pair page with the offer in its fragment —
-  `https://cli.agentproto.sh/pair#v=2&rv=…&id=…&pk=…&sk=…&s=…&exp=…` (the query
-  string of the `agentproto://` URL, verbatim, after the `#`). A URL fragment
+  as the QR, the web pair page with the offer in its fragment. By default
+  that page is the daemon's own origin,
+  `https://<fingerprint>.agentproto.cloud/pair#v=2&rv=…&id=…&pk=…&sk=…&s=…&exp=…`
+  (the query string of the `agentproto://` URL, verbatim, after the `#`). A URL fragment
   is never sent to a server, so the page's host never sees the token. The page
   runs the same handshake in the browser (`@agentproto/pair-client`) and shows
   the daemon's name and fingerprint to confirm. The `agentproto://` URL is still
   printed for `pair accept`, and either form is accepted by both clients.
 - `--pair-page <url|template>` (with `--qr`) picks the pair page for this
   offer. It overrides `pairing.pairPage` in config, and the default is
-  `https://cli.agentproto.sh/pair`. It accepts two forms:
-  - A **plain URL**, used as is, e.g. a local `http://localhost:3000/pair`.
+  `https://{fp}.agentproto.cloud/pair`. It accepts two forms:
   - A **template** with `{fp}` in the **hostname**, filled with the daemon's
-    identity fingerprint (lowercase hex):
+    identity fingerprint (lowercase hex), e.g. a self-hosted page:
 
     ```bash
-    agentproto pair offer --qr --pair-page 'https://{fp}.agentproto.cloud/pair'
-    # → https://a1b2c3d4e5f60718.agentproto.cloud/pair#v=2&…
+    agentproto pair offer --qr --pair-page 'https://{fp}.pair.example.com/pair'
+    # → https://a1b2c3d4e5f607189c3e5d7f1a2b4c6d.pair.example.com/pair#v=2&…
     ```
 
-    That gives each daemon its own browser origin (see
+    That gives each daemon its own browser origin, like the default (see
     [concepts/pairing.md](../concepts/pairing.md#the-phone-pair-page-one-origin-per-daemon)).
+  - A **plain URL**, used as is, e.g. a local `http://localhost:3000/pair`.
+    Every daemon paired through it shares one origin.
     `{fp}` anywhere else (path, query, port, userinfo) is rejected, as is any
     other `{…}`. The page setting is checked before the offer is minted.
 - `--json` emits `{ url, fingerprint, rendezvous, rendezvousIsHostedDefault,
@@ -97,18 +99,18 @@ agentproto pair offer --qr
 ```
 
 ```text
-Pairing offer (daemon a1b2c3d4e5f60718) — expires 2026-07-13T19:20:00.000Z
+Pairing offer (daemon a1b2c3d4e5f607189c3e5d7f1a2b4c6d) — expires 2026-07-13T19:20:00.000Z
 
-  agentproto://pair?v=2&rv=…&id=a1b2c3d4e5f60718&pk=…&sk=…&s=…&exp=…
+  agentproto://pair?v=2&rv=…&id=a1b2c3d4e5f607189c3e5d7f1a2b4c6d&pk=…&sk=…&s=…&exp=…
 
 Scan with a phone (opens the pair page in the browser):
 
-  https://cli.agentproto.sh/pair#v=2&rv=…&id=a1b2c3d4e5f60718&pk=…&sk=…&s=…&exp=…
+  https://a1b2c3d4e5f607189c3e5d7f1a2b4c6d.agentproto.cloud/pair#v=2&rv=…&id=a1b2c3d4e5f607189c3e5d7f1a2b4c6d&pk=…&sk=…&s=…&exp=…
 
   █▀▀▀▀▀█ ▀▀ █ █▀▀▀▀▀█        (QR of the pair-page link)
   …
 
-Confirm the page shows daemon a1b2c3d4e5f60718 before you accept.
+Confirm the page shows daemon a1b2c3d4e5f607189c3e5d7f1a2b4c6d before you accept.
 
 **Routing precedence:** `--rendezvous` → `pairing.rendezvous` in config → the
 hosted default. To point elsewhere, self-host the broker
@@ -133,7 +135,7 @@ agentproto pair accept "agentproto://pair?v=2&…" --name my-laptop
 ```
 
 ```text
-✓ Paired with daemon a1b2c3d4e5f60718
+✓ Paired with daemon a1b2c3d4e5f607189c3e5d7f1a2b4c6d
   name:       my-laptop
   rendezvous: wss://rendezvous.example/v1
 

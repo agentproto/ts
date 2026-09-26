@@ -61,6 +61,7 @@ export {
   OFFER_VERSION,
   PAIR_WEB_URL,
   PAIR_WEB_URL_TEMPLATE_CLOUD,
+  DEFAULT_PAIR_PAGE,
   PAIR_PAGE_FP_PLACEHOLDER,
   encodeOfferUrl,
   encodeOfferWebUrl,

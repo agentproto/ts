@@ -23,7 +23,7 @@ const { loadConfig } = await import("@agentproto/runtime/config")
 const config = vi.mocked(loadConfig)
 
 const OFFER =
-  "agentproto://pair?v=2&rv=wss%3A%2F%2Frdv.agentproto.sh%2Fv1&id=a1b2c3d4e5f60718&pk=AAA&sk=BBB&s=sec_ret-1&exp=1900000000"
+  "agentproto://pair?v=2&rv=wss%3A%2F%2Frdv.agentproto.sh%2Fv1&id=a1b2c3d4e5f607189c3e5d7f1a2b4c6d&pk=AAA&sk=BBB&s=sec_ret-1&exp=1900000000"
 const QUERY = OFFER.slice(OFFER.indexOf("?") + 1)
 
 describe("agentproto pair offer --qr", () => {
@@ -47,7 +47,7 @@ describe("agentproto pair offer --qr", () => {
     discoverDaemon.mockResolvedValue({ found: { url: "http://127.0.0.1:18790", token: "tok" }, stale: [] })
     httpPostJson.mockResolvedValue({
       url: OFFER,
-      fingerprint: "a1b2c3d4e5f60718",
+      fingerprint: "a1b2c3d4e5f607189c3e5d7f1a2b4c6d",
       rendezvous: "wss://rdv.agentproto.sh/v1",
       rendezvousIsHostedDefault: true,
       expiresAt: "2030-03-17T17:46:40.000Z",
@@ -59,13 +59,14 @@ describe("agentproto pair offer --qr", () => {
 
   it("renders the web pair page with the offer in the fragment", async () => {
     expect(await runPair(["offer", "--qr"])).toBe(0)
-    const web = `https://cli.agentproto.sh/pair#${QUERY}`
+    // Default: the daemon's own origin on agentproto.cloud (AIP-59 §5.8).
+    const web = `https://a1b2c3d4e5f607189c3e5d7f1a2b4c6d.agentproto.cloud/pair#${QUERY}`
     expect(qr).toHaveBeenCalledTimes(1)
     expect(qr).toHaveBeenCalledWith(web)
     const text = out.join("")
     expect(text).toContain(web)
     expect(text).toContain(OFFER) // the CLI form is still printed
-    expect(text).toContain("a1b2c3d4e5f60718")
+    expect(text).toContain("a1b2c3d4e5f607189c3e5d7f1a2b4c6d")
   })
 
   it("--pair-page points the link at another page; --json adds webUrl", async () => {
@@ -79,7 +80,7 @@ describe("agentproto pair offer --qr", () => {
   it("without --qr, the offer and its QR are unchanged", async () => {
     expect(await runPair(["offer"])).toBe(0)
     expect(qr).toHaveBeenCalledWith(OFFER)
-    expect(out.join("")).not.toContain("cli.agentproto.sh")
+    expect(out.join("")).not.toContain("/pair#")
 
     out.length = 0
     expect(await runPair(["offer", "--json"])).toBe(0)
@@ -95,13 +96,13 @@ describe("agentproto pair offer --qr", () => {
 
   it("--pair-page takes a {fp} template: one origin per daemon", async () => {
     expect(await runPair(["offer", "--qr", "--pair-page", "https://{fp}.agentproto.cloud/pair", "--json"])).toBe(0)
-    expect(JSON.parse(out.join("")).webUrl).toBe(`https://a1b2c3d4e5f60718.agentproto.cloud/pair#${QUERY}`)
+    expect(JSON.parse(out.join("")).webUrl).toBe(`https://a1b2c3d4e5f607189c3e5d7f1a2b4c6d.agentproto.cloud/pair#${QUERY}`)
   })
 
   it("config pairing.pairPage is used with --qr, and --pair-page overrides it", async () => {
     config.mockResolvedValue({ pairing: { pairPage: "https://{fp}.agentproto.cloud/pair" } })
     expect(await runPair(["offer", "--qr"])).toBe(0)
-    expect(qr).toHaveBeenCalledWith(`https://a1b2c3d4e5f60718.agentproto.cloud/pair#${QUERY}`)
+    expect(qr).toHaveBeenCalledWith(`https://a1b2c3d4e5f607189c3e5d7f1a2b4c6d.agentproto.cloud/pair#${QUERY}`)
 
     qr.mockClear()
     expect(await runPair(["offer", "--qr", "--pair-page", "https://pair.example.com/pair"])).toBe(0)
@@ -128,8 +129,12 @@ describe("agentproto pair offer --qr", () => {
     expect(httpPostJson).not.toHaveBeenCalled()
   })
 
-  it("the default page is unchanged", async () => {
+  it("defaults to the per-daemon page; a plain URL still selects one shared page", async () => {
     expect(await runPair(["offer", "--qr", "--json"])).toBe(0)
+    expect(JSON.parse(out.join("")).webUrl).toBe(`https://a1b2c3d4e5f607189c3e5d7f1a2b4c6d.agentproto.cloud/pair#${QUERY}`)
+
+    out.length = 0
+    expect(await runPair(["offer", "--qr", "--json", "--pair-page", "https://cli.agentproto.sh/pair"])).toBe(0)
     expect(JSON.parse(out.join("")).webUrl).toBe(`https://cli.agentproto.sh/pair#${QUERY}`)
   })
 })

@@ -16,7 +16,7 @@
 import { z } from "zod"
 import { CatalogProviderSchema } from "@agentproto/model-catalog"
 // The browser entry: the same pure URL helpers, without pulling node:crypto in.
-import { resolvePairPageUrl, PAIR_WEB_URL } from "@agentproto/secrets/pairing/browser"
+import { resolvePairPageUrl, DEFAULT_PAIR_PAGE } from "@agentproto/secrets/pairing/browser"
 import type {
   AgentprotoConfig,
   AcpAgentConfigEntry,
@@ -625,10 +625,11 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "remote",
     label: "Phone pair page",
     help:
-      "Web page the `pair offer --qr` link opens (the offer rides in its URL fragment). A plain " +
-      "http(s) URL, or a template with {fp} in the hostname for one origin per daemon, e.g. " +
-      "https://{fp}.agentproto.cloud/pair. `--pair-page` overrides it.",
-    default: PAIR_WEB_URL,
+      "Web page the `pair offer --qr` link opens (the offer rides in its URL fragment). A template " +
+      "with {fp} in the hostname gives one browser origin per daemon (the default, " +
+      "https://{fp}.agentproto.cloud/pair); a plain http(s) URL is one shared origin. " +
+      "`--pair-page` overrides it.",
+    default: DEFAULT_PAIR_PAGE,
   },
 
   // ── models ──

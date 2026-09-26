@@ -28,7 +28,7 @@ export interface PairCredential {
   /** Store key: the daemon fingerprint (one credential per daemon, as the CLI
    *  keys its pairings). */
   id: string
-  /** Daemon identity fingerprint (16 hex): the pin. */
+  /** Daemon identity fingerprint (32 hex): the pin. */
   fingerprint: string
   /** Daemon display name: its tunnel `hello` label, else its host name, else
    *  the fingerprint. */
