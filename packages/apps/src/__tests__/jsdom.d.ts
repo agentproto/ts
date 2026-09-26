@@ -4,11 +4,18 @@
  * packages/apps's tsconfig extends node-library.json, which deliberately
  * narrows `lib` to `["ES2022"]` (no "DOM"), so lib.dom.d.ts's Window/
  * Document/HTMLInputElement aren't available here, and jsdom itself ships
- * no types (and @types/jsdom trails the pinned major). Same approach as
- * packages/vscode/src/webview/jsdom.d.ts: hand-declare exactly the surface
- * this one test file touches, scoped inside a "jsdom" module augmentation,
- * rather than widening the whole package's ambient globals via tsconfig or
- * pulling in another dependency.
+ * no types. `@types/jsdom` was checked (npm registry, 2026-09-26) and does
+ * not fit either: its published versions jump straight from 28.0.3 to
+ * 30.0.0 — there is no 29.x release to match this repo's pinned
+ * `jsdom: "^29.1.1"` (packages/apps/package.json), so installing either
+ * neighbor would type-check this file against a jsdom API surface that
+ * isn't the one actually running. Same conclusion, and same fix, as
+ * packages/vscode/src/webview/jsdom.d.ts and
+ * packages/mcp-app-host/src/__tests__/jsdom.d.ts already reached for the
+ * same pinned major: hand-declare exactly the surface this one test file
+ * touches, scoped inside a "jsdom" module augmentation, rather than
+ * widening the whole package's ambient globals via tsconfig or pulling in
+ * a types package that would silently drift from the real API.
  */
 declare module "jsdom" {
   export interface DomEvent {

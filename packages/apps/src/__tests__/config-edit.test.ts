@@ -262,6 +262,77 @@ describe("config app edit flows (real panel script, fake McpApp bridge)", () => 
     expect(input!.getAttribute("title")).toBeTruthy()
   })
 
+  it("renders a select from row.enum, a bounded number input for an integer, and the row's label/help — all from config_get's own registry metadata", async () => {
+    const panel = renderPanel({
+      config_get: args => {
+        if (args.section === "defaults") {
+          return ok({
+            revision: "rev-1",
+            path: "/tmp/config.json",
+            keys: [
+              {
+                path: "some.enum.field",
+                value: "beta",
+                effective: "beta",
+                source: "config",
+                apply: "hot",
+                pendingRestart: false,
+                writable: true,
+                label: "Some enum field",
+                help: "Pick one of three made-up modes.",
+                section: "defaults",
+                valueType: "enum",
+                enum: ["alpha", "beta", "gamma"],
+              },
+              {
+                path: "some.integer.field",
+                value: 4,
+                effective: 4,
+                source: "config",
+                apply: "hot",
+                pendingRestart: false,
+                writable: true,
+                label: "Some integer field",
+                help: "A bounded whole number.",
+                section: "defaults",
+                valueType: "integer",
+                min: 0,
+                max: 10,
+              },
+            ],
+          })
+        }
+        return ok({ revision: "rev-1", path: "/tmp/config.json", keys: [] })
+      },
+    })
+    await settle(50)
+    navigate(panel.window, "#defaults")
+    await settle(50)
+
+    const sectionHtml = el(panel.window, "sec-defaults").innerHTML
+    // label/help come straight off the row, not a humanized-path guess.
+    expect(sectionHtml).toContain("Some enum field")
+    expect(sectionHtml).toContain("Pick one of three made-up modes.")
+    expect(sectionHtml).toContain("Some integer field")
+    expect(sectionHtml).toContain("A bounded whole number.")
+
+    // The select's options come from row.enum, not a hand-maintained table —
+    // "gamma" was never hardcoded anywhere in the panel.
+    const select = panel.window.document.querySelector('[data-cfg-auto="some.enum.field"]')
+    expect(select).toBeTruthy()
+    expect(select!.tagName).toBe("SELECT")
+    expect(select!.innerHTML).toContain('value="alpha"')
+    expect(select!.innerHTML).toContain('value="beta"')
+    expect(select!.innerHTML).toContain('value="gamma"')
+
+    // The integer control carries row.min/row.max as real HTML constraints.
+    const numberInput = panel.window.document.querySelector('[data-cfg-auto="some.integer.field"]')
+    expect(numberInput).toBeTruthy()
+    expect(numberInput!.getAttribute("min")).toBe("0")
+    expect(numberInput!.getAttribute("max")).toBe("10")
+    expect(numberInput!.getAttribute("step")).toBe("1")
+  })
+
   it("clears the credential field (DOM and JS variable) right after auth_profile_create submits, and never echoes it", async () => {
     const secret = "sk-super-secret-value"
     const panel = renderPanel({

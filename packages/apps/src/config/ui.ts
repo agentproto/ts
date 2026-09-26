@@ -464,11 +464,15 @@ function renderPendingBanner() {
   el.textContent = "Restart the daemon yourself to apply: " + keys.join(", ") + ". This app never restarts it for you.";
 }
 
-// Best-effort type inference for a config_get row: the wire shape today
-// (config-tools.ts) does not yet carry valueType/enum/min/max, only the raw
-// value/effective — so the control type is inferred from the JS type of
-// whichever of effective/value/default is present. Forward-compatible: a
-// row that DOES carry an explicit valueType (a future daemon) wins outright.
+// Type inference for a config_get row: config-tools.ts's describeKey
+// spreads deriveValueType(entry.schema) onto every row, so row.valueType
+// ("boolean" | "number" | "integer" | "string" | "enum" | "string[]" |
+// "object" | "unknown") plus row.enum / row.min / row.max are the registry's
+// OWN answer and win outright. The JS-type inference below is only a
+// fallback for a daemon old enough to predate that field entirely (absent,
+// not merely "unknown" — "unknown" is itself a real, present answer for a
+// schema deriveValueType can't type, e.g. a mixed union, and must NOT be
+// re-guessed from the current value).
 function inferValueType(row) {
   if (row.valueType) return row.valueType;
   var v = row.effective !== undefined ? row.effective : row.value;
@@ -485,25 +489,14 @@ function inferValueType(row) {
   return "unknown";
 }
 
-// A handful of keys are known (from config-schema.ts) to be fixed enums;
-// the wire doesn't say so yet, so this is a small hand-maintained hint
-// table rather than an invented protocol field. Everything else with
-// valueType "string" gets a plain text input — never a guessed dropdown.
-function enumHintFor(path) {
-  if (path === "worktrees.isolation") return ["always", "on-request", "never"];
-  if (path === "spawn.attach") return ["always", "on-request"];
-  if (path === "spawn.dedupe") return ["always", "on-request"];
-  if (path === "defaults.messaging.agentInterrupt") return ["allow", "deny"];
-  var parts = path.split(".");
-  if (parts.length === 5 && parts[0] === "defaults" && parts[1] === "adapters" && parts[3] === "auth" && parts[4] === "mode") {
-    return ["subscription", "api-key"];
-  }
-  return null;
-}
-
-// defaults.spawn.browser is "headless" or false, a checkbox whose two
-// states are not plain true/false. A tiny special case rather than a
-// general boolean-like-enum mechanism nothing else needs.
+// defaults.spawn.browser is a union of the literals "headless" and false
+// (config-schema.ts) - deriveValueType's enum-from-union heuristic requires
+// EVERY literal to be a string, and false isn't one, so this one specific
+// key comes back "unknown" rather than "enum" (verified against
+// packages/runtime/src/config-tools.ts's deriveValueType). A checkbox whose
+// two states are not plain true/false is still the right control for it, so
+// it keeps its own tiny special case rather than a general boolean-like-enum
+// mechanism nothing else needs.
 var BOOL_LIKE_FIELDS = {
   "defaults.spawn.browser": { on: "headless", off: false, onLabel: "headless" },
 };
@@ -535,10 +528,16 @@ function configDisplayValue(row) {
   return row.effective !== undefined ? row.effective : row.value;
 }
 
+function numberBoundAttrs(row) {
+  var attrs = "";
+  if (typeof row.min === "number") attrs += ' min="' + row.min + '"';
+  if (typeof row.max === "number") attrs += ' max="' + row.max + '"';
+  return attrs;
+}
+
 function configControlHtml(row) {
   var vt = inferValueType(row);
   var val = row.effective !== undefined ? row.effective : (row.value !== undefined ? row.value : row.default);
-  var enumOpts = enumHintFor(row.path);
   var boolLike = BOOL_LIKE_FIELDS[row.path];
   var disabledAttr = row.writable ? "" : " disabled";
   var titleAttr = row.writable ? "" : ' title="' + escHtml(writableReasonText(row)) + '"';
@@ -549,22 +548,27 @@ function configControlHtml(row) {
   if (vt === "boolean") {
     return '<input type="checkbox" data-cfg-auto="' + escHtml(row.path) + '"' + (val ? " checked" : "") + disabledAttr + titleAttr + '>';
   }
-  if (enumOpts) {
+  if (vt === "enum") {
+    var enumOpts = row.enum || [];
     var out = '<select data-cfg-auto="' + escHtml(row.path) + '"' + disabledAttr + titleAttr + '>';
     for (var i = 0; i < enumOpts.length; i++) {
       out += '<option value="' + escHtml(enumOpts[i]) + '"' + (enumOpts[i] === val ? " selected" : "") + '>' + escHtml(enumOpts[i]) + '</option>';
     }
     return out + '</select>';
   }
-  if (vt === "number") {
-    return '<input type="number" data-cfg-auto="' + escHtml(row.path) + '" value="' + escHtml(val == null ? "" : String(val)) + '"' + disabledAttr + titleAttr + '>';
+  if (vt === "number" || vt === "integer") {
+    return '<input type="number" data-cfg-auto="' + escHtml(row.path) + '" value="' + escHtml(val == null ? "" : String(val)) + '"'
+      + (vt === "integer" ? ' step="1"' : "") + numberBoundAttrs(row) + disabledAttr + titleAttr + '>';
   }
   if (vt === "string[]") {
     return '<input type="text" data-cfg-input="' + escHtml(row.path) + '" value="' + escHtml((val || []).join(", ")) + '" placeholder="comma, separated, list"' + disabledAttr + titleAttr + '>'
       + ' <button type="button" class="btn-sm" data-cfg-save="' + escHtml(row.path) + '"' + disabledAttr + '>save</button>';
   }
-  if (vt === "object") {
-    return '<div><textarea data-cfg-input="' + escHtml(row.path) + '" rows="4" style="width:100%;font-family:Menlo,Monaco,monospace;font-size:11px"' + disabledAttr + titleAttr + '>' + escHtml(JSON.stringify(val === undefined ? {} : val, null, 2)) + '</textarea>'
+  if (vt === "object" || vt === "unknown") {
+    // "unknown" is a real, present answer (a schema deriveValueType can't
+    // type, e.g. a mixed boolean/object union) — a raw JSON editor is the
+    // one control that can represent any of those shapes without guessing.
+    return '<div><textarea data-cfg-input="' + escHtml(row.path) + '" rows="4" style="width:100%;font-family:Menlo,Monaco,monospace;font-size:11px"' + disabledAttr + titleAttr + '>' + escHtml(JSON.stringify(val === undefined ? null : val, null, 2)) + '</textarea>'
       + ' <button type="button" class="btn-sm" data-cfg-save="' + escHtml(row.path) + '"' + disabledAttr + '>save</button></div>';
   }
   return '<input type="text" data-cfg-auto="' + escHtml(row.path) + '" value="' + escHtml(val == null ? "" : String(val)) + '"' + disabledAttr + titleAttr + '>';
@@ -690,7 +694,7 @@ function wireConfigRows(container, rowsByPath, onSaved, onStale) {
         var value;
         if (vt === "string[]") {
           value = input.value.split(",").map(function (x) { return x.trim(); }).filter(function (x) { return x.length > 0; });
-        } else if (vt === "object") {
+        } else if (vt === "object" || vt === "unknown") {
           try {
             value = JSON.parse(input.value);
           } catch (e) {
