@@ -60,6 +60,8 @@ const FAKE_VIEWS: WorktreeStatusView[] = [
     branch: "wt/one",
     class: "hold",
     reclaimable: false,
+    dirty: false,
+    base: null,
     pr: { state: "open", number: 7 },
     sessions: [
       {
@@ -77,6 +79,8 @@ const FAKE_VIEWS: WorktreeStatusView[] = [
     branch: "wt/two",
     class: "reclaim",
     reclaimable: true,
+    dirty: false,
+    base: null,
     pr: { state: "merged" },
     sessions: [],
     liveness: { state: "idle", sessionCount: 0 },

@@ -8,7 +8,9 @@ import {
   reconcileIntegration,
   computeWorktreeStatus,
   computeLiveness,
+  computeBaseDivergence,
   listGitWorktrees,
+  listWorktreeStatuses,
   classify,
   InMemoryVerdictMemoStore,
   FileVerdictMemoStore,
@@ -613,6 +615,96 @@ describe("listGitWorktrees + computeWorktreeStatus orchestration", () => {
     expect(status.gate).toEqual({ state: "none" })
     expect(status.reclaimable).toBe(true)
     expect(status.class).toBe("reclaim")
+    // Branched from main with nothing of its own: level with the base.
+    expect(status.base).toEqual({ ref: "main", ahead: 0, behind: 0 })
+  })
+})
+
+describe("computeBaseDivergence", () => {
+  const cleanupPaths: string[] = []
+  afterEach(async () => {
+    while (cleanupPaths.length) await rm(cleanupPaths.pop()!, { recursive: true, force: true })
+  })
+
+  it("counts commits ahead of and behind the base, both sides", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    const linked = join(repo, "..", `div-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(linked)
+    await addWorktree(repo, linked, ["-b", "feat/div"], "main")
+    // Two commits on the branch, one more on main after it forked.
+    for (const n of [1, 2]) {
+      await writeFile(join(linked, `f${n}.txt`), `${n}\n`)
+      await execGit(linked, ["add", "."])
+      await execGit(linked, ["commit", "-m", `feat ${n}`])
+    }
+    await writeFile(join(repo, "main.txt"), "m\n")
+    await execGit(repo, ["add", "."])
+    await execGit(repo, ["commit", "-m", "main moves"])
+
+    expect(await computeBaseDivergence(repo, await headSha(linked), "main")).toEqual({
+      ref: "main",
+      ahead: 2,
+      behind: 1,
+    })
+  })
+
+  it("is null for a detached/unborn tip or a base git can't resolve", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    expect(await computeBaseDivergence(repo, "", "main")).toBeNull()
+    expect(await computeBaseDivergence(repo, await headSha(repo), "origin/nope")).toBeNull()
+  })
+})
+
+describe("listWorktreeStatuses — paths", () => {
+  const cleanupPaths: string[] = []
+  afterEach(async () => {
+    while (cleanupPaths.length) await rm(cleanupPaths.pop()!, { recursive: true, force: true })
+  })
+
+  it("computes only the requested worktree (one forge lookup, not one per worktree)", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    const wanted = join(repo, "..", `want-${Math.random().toString(36).slice(2)}`)
+    const other = join(repo, "..", `other-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(wanted, other)
+    await addWorktree(repo, wanted, ["-b", "feat/want"], "main")
+    await addWorktree(repo, other, ["-b", "feat/other"], "main")
+    // A commit of its own, so the rule reaches the forge for this one.
+    await writeFile(join(wanted, "w.txt"), "w\n")
+    await execGit(wanted, ["add", "."])
+    await execGit(wanted, ["commit", "-m", "w"])
+
+    const branchLookups: string[] = []
+    const forge: ForgeClient = {
+      async pullRequestsForBranch(branch: string) {
+        branchLookups.push(branch)
+        return []
+      },
+      async pullRequestsForCommit() {
+        return []
+      },
+      async ensurePullHeadFetched() {},
+    }
+    const common = {
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo: new InMemoryVerdictMemoStore(),
+      defaultBranchRef: "main",
+      sessionsPath: join(repo, "no-such-sessions.json"),
+      now: FROZEN_NOW,
+    }
+
+    // A trailing slash still matches: paths compare resolved.
+    const only = await listWorktreeStatuses({ ...common, paths: [`${wanted}/`] })
+    expect(only.map((e) => e.path)).toEqual([wanted])
+    expect(only[0]!.base).toEqual({ ref: "main", ahead: 1, behind: 0 })
+    expect(branchLookups).toEqual(["feat/want"])
+
+    const all = await listWorktreeStatuses(common)
+    expect(all.map((e) => e.path).sort()).toEqual([repo, wanted, other].sort())
   })
 })
 

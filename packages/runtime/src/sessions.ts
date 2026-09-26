@@ -1341,6 +1341,12 @@ export interface SessionDescriptor {
    *  `worktreePath` without an id identifies a PATH, which a later worktree
    *  may reuse; the pair identifies one specific worktree. */
   worktreeId?: string
+  /** Absolute path of the PRIMARY checkout `worktreePath` was cut from (the
+   *  repo root a `worktree_status` query targets), read at spawn from the
+   *  worktree admin dir's `commondir` file (`resolveWorktreeIdentity`).
+   *  Absent whenever `worktreePath` is, when `commondir` was unreadable, and
+   *  for every session persisted before this field existed. */
+  mainRepoPath?: string
   /** `true` only when `worktreePath` was provisioned by the `worktrees.isolation`
    *  policy WITHOUT an explicit `worktree` request from the caller (see
    *  `decideWorktreeIsolation`'s `WorktreeDecision.provision.implicit` in
@@ -1695,6 +1701,15 @@ export interface SessionDescriptor {
   notifyParentOnCrash?: boolean
   /** True when the session was spawned in permission-hold mode. */
   permissionHold?: boolean
+  /** Effective OS-level confinement of the adapter's own process
+   *  (`agent_start.commandSandbox`, else the workspace's
+   *  `.agentproto/command-sandbox.json` `adapterSpawn.mode`), resolved at
+   *  spawn with the same precedence the driver applies
+   *  (`wrapAgentCliSpawn`). Absent when neither engaged the axis (the spawn
+   *  ran unconfined without anyone choosing a mode), for a `sandbox` spawn
+   *  (confinement is the box's business), and for sessions persisted before
+   *  this field existed. Set at spawn time, immutable thereafter. */
+  commandSandbox?: "off" | "workspace" | "strict"
   /** @deprecated Retired — child reports and `[child-crashed]` notices for a
    *  busy session are now queued as their own `promptQueue` items
    *  (`source:"child:<id>"`) instead of being string-prepended onto the next
@@ -1940,6 +1955,7 @@ export interface SessionSummary {
   cwd?: string
   worktreePath?: string
   worktreeId?: string
+  mainRepoPath?: string
   /** Resolved AGENTS.md path — see `SessionDescriptor.agentsMd`. */
   agentsMd?: string
   /** Injection mode — see `SessionDescriptor.agentsMdMode`. */
@@ -2000,6 +2016,8 @@ export interface SessionSummary {
   sandboxTeardown?: "kill" | "pause"
   sandboxPorts?: Record<number, string>
   appServe?: SessionAppServeInfo
+  /** Effective adapter confinement — see `SessionDescriptor.commandSandbox`. */
+  commandSandbox?: "off" | "workspace" | "strict"
   /** Read-time projection of the box's ledger liveness verdict — see
    *  `SessionDescriptor.sandboxAlive`. */
   sandboxAlive?: boolean
@@ -2054,6 +2072,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     cwd: desc.cwd,
     worktreePath: desc.worktreePath,
     worktreeId: desc.worktreeId,
+    mainRepoPath: desc.mainRepoPath,
     agentsMd: desc.agentsMd,
     agentsMdMode: desc.agentsMdMode,
     rulesMd: desc.rulesMd,
@@ -2093,6 +2112,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     sandboxTeardown: desc.sandboxTeardown,
     sandboxPorts: desc.sandboxPorts,
     appServe: desc.appServe,
+    commandSandbox: desc.commandSandbox,
     sandboxAlive: desc.sandboxAlive,
     sandboxCheckedAt: desc.sandboxCheckedAt,
   }
@@ -2736,12 +2756,14 @@ function currentRouteOf(desc: SessionDescriptor): string | undefined {
  *  sessions.json. */
 function worktreeFields(
   cwd: string,
-): Pick<SessionDescriptor, "worktreePath" | "worktreeId"> {
+): Pick<SessionDescriptor, "worktreePath" | "worktreeId" | "mainRepoPath"> {
   const identity = resolveWorktreeIdentity(cwd)
   if (!identity) return {}
-  return identity.worktreeId === undefined
-    ? { worktreePath: identity.worktreePath }
-    : { worktreePath: identity.worktreePath, worktreeId: identity.worktreeId }
+  return {
+    worktreePath: identity.worktreePath,
+    ...(identity.worktreeId === undefined ? {} : { worktreeId: identity.worktreeId }),
+    ...(identity.mainRepoPath === undefined ? {} : { mainRepoPath: identity.mainRepoPath }),
+  }
 }
 
 /** Strip CSI / SGR ANSI sequences so resume-pattern matching works
@@ -3759,6 +3781,9 @@ export interface SpawnAgentInput {
   /** What session close does to the box, when `remote` is true — see
    *  `SessionDescriptor.sandboxTeardown`. */
   sandboxTeardown?: "kill" | "pause"
+  /** Effective adapter confinement, resolved by the caller — see
+   *  `SessionDescriptor.commandSandbox`. */
+  commandSandbox?: "off" | "workspace" | "strict"
   /** Port-to-URL map from the booted sandbox — see
    *  `SessionDescriptor.sandboxPorts`. */
   sandboxPorts?: Record<number, string>
@@ -7420,6 +7445,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
+        ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
         ...(input.appServe ? { appServe: input.appServe } : {}),
         // Restart lineage (see SessionDescriptor.resumedFrom's doc). `resumeVia`
         // can legitimately be "" (a fresh fallback spawn with no continuity),
@@ -7561,6 +7587,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
+        ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
         ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
         ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),

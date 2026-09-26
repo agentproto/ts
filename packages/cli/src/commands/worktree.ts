@@ -404,7 +404,7 @@ export function makeWorktreeProvisioner(): WorktreeProvisioner {
  * projects the raw entries through `toWorktreeStatusView`.
  */
 export function makeWorktreeStatusLister(): WorktreeStatusLister {
-  return async (repoRootCandidate: string): Promise<WorktreeStatusView[]> => {
+  return async (repoRootCandidate, options = {}): Promise<WorktreeStatusView[]> => {
     const repoRoot = repoRootOf(resolve(repoRootCandidate))
     if (!repoRoot) {
       throw new Error(
@@ -421,9 +421,29 @@ export function makeWorktreeStatusLister(): WorktreeStatusLister {
       forge,
       memo: new FileVerdictMemoStore(),
       defaultBranchRef: `origin/${defaultBranch}`,
+      ...(options.paths ? { paths: options.paths } : {}),
     })
-    return entries.map(toWorktreeStatusView)
+    const prUrl = githubPrUrlBuilder(repoRoot)
+    return entries.map(entry =>
+      toWorktreeStatusView(entry, prUrl ? { prUrl } : {})
+    )
   }
+}
+
+/**
+ * `n => https://github.com/<owner>/<repo>/pull/<n>` for a repo whose
+ * `origin` is a GitHub remote, else `undefined` (no URL is better than a
+ * guessed one). Same construction as `makeOpenPrResolver`.
+ */
+export function githubPrUrlBuilder(
+  repoRoot: string
+): ((number: number) => string) | undefined {
+  const remote = spawnSync("git", ["-C", repoRoot, "remote", "get-url", "origin"], {
+    encoding: "utf8",
+  })
+  const parsed = remote.status === 0 ? parseGithubOwnerRepo(remote.stdout.trim()) : null
+  if (!parsed) return undefined
+  return number => `https://github.com/${parsed.owner}/${parsed.repo}/pull/${number}`
 }
 
 /** Runtime-local projection of one `GcPlanEntry` — flattens the engine's rich

@@ -261,9 +261,15 @@ function normalizeRestPr(item: RestPullRequest): ForgePullRequestRef {
   }
 }
 
-/** Parse `owner/repo` out of a `git remote get-url origin` value (ssh or https form). */
+/**
+ * Parse `owner/repo` out of a `git remote get-url origin` value (ssh or https
+ * form). The ssh form also accepts the multi-account `~/.ssh/config` alias
+ * convention, `git@github.com-<alias>:owner/repo` (a `Host github.com-work`
+ * entry that picks a key but still points at github.com), which is what a
+ * machine juggling two GitHub identities has as its origin.
+ */
 export function parseGithubOwnerRepo(remoteUrl: string): { owner: string; repo: string } | null {
-  const ssh = remoteUrl.match(/^git@github\.com:([^/]+)\/(.+?)(\.git)?$/)
+  const ssh = remoteUrl.match(/^git@github\.com(?:-[\w.-]+)?:([^/]+)\/(.+?)(\.git)?$/)
   if (ssh?.[1] && ssh[2]) return { owner: ssh[1], repo: ssh[2] }
   const https = remoteUrl.match(/^https:\/\/github\.com\/([^/]+)\/(.+?)(\.git)?\/?$/)
   if (https?.[1] && https[2]) return { owner: https[1], repo: https[2] }

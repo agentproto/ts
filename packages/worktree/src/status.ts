@@ -668,12 +668,50 @@ export function classify(
   return { reclaimable: false, class: "hold" }
 }
 
+// ── base divergence ──────────────────────────────────────────────────
+
+/** How far a worktree's tip has moved from the base it is compared against. */
+export interface BaseDivergence {
+  /** The ref the tip is compared against (`defaultBranchRef`, e.g. `origin/main`). */
+  ref: string
+  /** Commits on the tip that the base doesn't have. */
+  ahead: number
+  /** Commits on the base that the tip doesn't have. */
+  behind: number
+}
+
+/**
+ * `git rev-list --left-right --count <base>...<head>`: one read, both sides
+ * of the symmetric difference. `null` for a detached/unborn tip, or when git
+ * can't resolve either side (base ref never fetched, object gone) — a
+ * best-effort display fact, never a reason to fail a status sweep. Spawn
+ * `cwd` is `repoRoot`, like every other read here (see `computeTreeState`).
+ */
+export async function computeBaseDivergence(
+  repoRoot: string,
+  head: string,
+  baseRef: string,
+): Promise<BaseDivergence | null> {
+  if (!head) return null
+  const res = await execArgv(
+    "git",
+    ["-C", repoRoot, "rev-list", "--left-right", "--count", `${baseRef}...${head}`],
+    repoRoot,
+  )
+  if (res.exitCode !== 0) return null
+  const [behind, ahead] = res.stdout.trim().split(/\s+/).map((n) => Number.parseInt(n, 10))
+  if (!Number.isFinite(ahead) || !Number.isFinite(behind)) return null
+  return { ref: baseRef, ahead: ahead as number, behind: behind as number }
+}
+
 // ── orchestration ────────────────────────────────────────────────────
 
 export interface WorktreeStatusEntry {
   path: string
   branch: string | null
   head: string
+  /** Ahead/behind vs `defaultBranchRef` — see `computeBaseDivergence`. */
+  base: BaseDivergence | null
   tree: TreeState
   integration: IntegrationState
   liveness: LivenessState
@@ -707,7 +745,7 @@ export interface ComputeWorktreeStatusInput {
 
 /** Computes all three axes + provenance + classification for one worktree. */
 export async function computeWorktreeStatus(input: ComputeWorktreeStatusInput): Promise<WorktreeStatusEntry> {
-  const [tree, integration, liveness, provenance] = await Promise.all([
+  const [tree, integration, liveness, provenance, base] = await Promise.all([
     computeTreeState(input.repoRoot, input.worktree.path, input.noisePaths ? { noisePaths: input.noisePaths } : {}),
     reconcileIntegration({
       repoRoot: input.repoRoot,
@@ -721,12 +759,14 @@ export async function computeWorktreeStatus(input: ComputeWorktreeStatusInput): 
     }),
     computeLiveness(input.worktree.path, { sessionsPath: input.sessionsPath }),
     computeProvenance(input.repoRoot, input.worktree.path, { sessionsPath: input.sessionsPath }),
+    computeBaseDivergence(input.repoRoot, input.worktree.head, input.defaultBranchRef ?? "origin/main"),
   ])
   const { reclaimable, class: cls } = classify(tree, integration, liveness, input.nowMs)
   return {
     path: input.worktree.path,
     branch: input.worktree.branch,
     head: input.worktree.head,
+    base,
     tree,
     integration,
     liveness,
@@ -745,11 +785,19 @@ export interface ListWorktreeStatusesInput {
   defaultBranchRef?: string
   sessionsPath?: string
   now?: () => string
+  /**
+   * Compute only the worktrees at these paths (compared resolved) — a
+   * single-worktree read (the per-session `worktree_status` lookup) costs one
+   * forge round-trip instead of one per worktree in the repo. Omitted = all.
+   */
+  paths?: readonly string[]
 }
 
 /** Enumerates every linked worktree of `repoRoot` (`git worktree list`) and computes its status. */
 export async function listWorktreeStatuses(input: ListWorktreeStatusesInput): Promise<WorktreeStatusEntry[]> {
-  const worktrees = await listGitWorktrees(input.repoRoot)
+  const all = await listGitWorktrees(input.repoRoot)
+  const only = input.paths ? new Set(input.paths.map((p) => resolve(p))) : null
+  const worktrees = only ? all.filter((w) => only.has(resolve(w.path))) : all
   const results: WorktreeStatusEntry[] = []
   for (const worktree of worktrees) {
     results.push(

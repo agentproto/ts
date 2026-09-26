@@ -7,7 +7,7 @@
  */
 
 import type { AcpMcpServer } from "@agentproto/acp"
-import type { SandboxMode } from "@agentproto/command-sandbox"
+import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/command-sandbox"
 import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
 import type { AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
@@ -2866,6 +2866,11 @@ export async function spawnAgentSession(
           }
         }
         try {
+          const effectiveCommandSandbox = await resolveEffectiveCommandSandbox(
+            input.commandSandbox,
+            finalCwd,
+          )
+          if (effectiveCommandSandbox) pendingDesc.commandSandbox = effectiveCommandSandbox
           const agentSession = await resolved!.startSession({
             cwd: finalCwd,
             ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
@@ -2984,6 +2989,7 @@ export async function spawnAgentSession(
     let sandboxTeardown: SandboxLifecyclePolicy["teardown"] | undefined
     let sandboxPorts: Record<number, string> | undefined
     let appServe: SessionAppServeInfo | undefined
+    let commandSandbox: SandboxMode | undefined
 
     if (input.sandbox !== undefined) {
       const booted = await bootSandboxAgentSession({
@@ -3059,6 +3065,7 @@ export async function spawnAgentSession(
         // spawn. Fall through with no PATH shim (unchanged behaviour).
         ghProvenanceEnv = {}
       }
+      commandSandbox = await resolveEffectiveCommandSandbox(input.commandSandbox, cwd)
       agentSession = await resolved!.startSession({
         cwd,
         ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
@@ -3227,6 +3234,7 @@ export async function spawnAgentSession(
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
       ...(sandboxPorts ? { sandboxPorts } : {}),
       ...(appServe ? { appServe } : {}),
+      ...(commandSandbox ? { commandSandbox } : {}),
       // Hold mode is a local-driver capability; a sandbox spawn proxies to the
       // box's own daemon, which handles permissions there.
       ...(input.permissionHold && input.sandbox === undefined ? { permissionHold: true } : {}),
@@ -4021,5 +4029,26 @@ async function resolveSandboxSecret(slug: string): Promise<string | null> {
         `${err instanceof Error ? err.message : String(err)}`,
     )
     return null
+  }
+}
+
+/**
+ * The adapter confinement the driver will actually apply to a LOCAL spawn at
+ * `cwd`, for the descriptor's `commandSandbox` echo: an explicit
+ * `agent_start.commandSandbox` wins, else the workspace's
+ * `.agentproto/command-sandbox.json` `adapterSpawn.mode` (the same
+ * precedence `wrapAgentCliSpawn` applies, same reader). `undefined` means
+ * nobody engaged the axis. A config-read failure is not a spawn failure: the
+ * echo is informational, the driver re-reads the file itself.
+ */
+export async function resolveEffectiveCommandSandbox(
+  requested: SandboxMode | undefined,
+  cwd: string,
+): Promise<SandboxMode | undefined> {
+  if (requested !== undefined) return requested
+  try {
+    return (await loadAdapterSpawnSandboxConfig(cwd)).mode
+  } catch {
+    return undefined
   }
 }
