@@ -34,5 +34,6 @@ export type {
   AcpMcpServer,
   AcpPermissionResolution,
   Aip44Extensions,
+  BackgroundTaskInfo,
   StreamEvent,
 } from "./types.js"

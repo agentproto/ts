@@ -119,6 +119,11 @@ export interface SpawnDefaultsConfig {
    *  omits `trace`. Default false — sessions trace only when they opt in or
    *  this is on. See `filterSessionObserver` / `SpawnAgentInput.trace`. */
   langfuseTracing?: boolean
+  /** Wake an idle agent session when one of its background tasks settles
+   *  (see `SessionsRegistryOptions.backgroundTaskWake`). On by default;
+   *  `{ enabled: false }` opts out. `graceMs` is how long the daemon waits
+   *  for the agent to wake ITSELF (Claude Code does) before prompting it. */
+  backgroundTaskWake?: { enabled?: boolean; graceMs?: number }
   /** Redactor slug applied to traced session content before it's sent to
    *  Langfuse (see `@agentproto/redaction`'s registry). Default "secrets"
    *  (deny-list by key + value-scan for secret shapes). */

@@ -139,6 +139,24 @@ export interface AcpDefinition {
 export type AcpHandle = Readonly<AcpDefinition>
 
 /**
+ * One background task as reported by the agent — see the `background-task`
+ * {@link StreamEvent}. Only `taskId` is guaranteed; a `"settled"` edge carries
+ * the terminal `status` and usually a `summary`.
+ */
+export interface BackgroundTaskInfo {
+  taskId: string
+  /** Friendly task type (`"shell"`, `"monitor"`, `"workflow"`, ...). */
+  taskKind?: string
+  description?: string
+  /** Where the task writes its output, when the agent says. */
+  outputFile?: string
+  status?: "running" | "paused" | "completed" | "failed" | "stopped"
+  summary?: string
+  /** The tool call that started the task, when the agent says. */
+  toolCallId?: string
+}
+
+/**
  * Canonical stream-event taxonomy emitted from `createAcpClient`. The
  * client maps upstream ACP `session/update` notifications and
  * `requestPermission` callbacks into this closed set so consumers
@@ -247,6 +265,26 @@ export type StreamEvent =
       /** The context-window size the agent itself reported, kept by the
        *  daemon when it corrects `size` (see runtime `context-window.ts`). */
       reportedSize?: number
+      /**
+       * Who started the cycle this usage closes, when the agent says
+       * (claude-agent-acp: `_meta["_claude/origin"].kind`). `"task-notification"`
+       * marks the end of an AUTONOMOUS cycle — the model woke on its own
+       * because a background task settled, with no `session/prompt` in flight.
+       */
+      origin?: string
+    }
+  | {
+      kind: "background-task"
+      sessionId: string
+      /**
+       * Lifecycle edge of a non-agent background task (a backgrounded Bash
+       * command, a monitor, ...), published over the AIR `asyncTasks`
+       * extension (`async_task_spawned` / `async_task_progress` /
+       * `async_task_state_update`). `"started"` announces the task,
+       * `"updated"` carries progress/metadata, `"settled"` is terminal.
+       */
+      phase: "started" | "updated" | "settled"
+      task: BackgroundTaskInfo
     }
   | {
       kind: "available-commands"

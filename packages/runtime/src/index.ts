@@ -1324,6 +1324,9 @@ export async function createGateway(
     ...(opts.runWorktreeAutoReclaim ? { runWorktreeAutoReclaim: opts.runWorktreeAutoReclaim } : {}),
     ...(langfuseTracer ? { langfuseTracer } : {}),
     langfuseTracingDefault: configDefaults?.langfuseTracing ?? false,
+    ...(configDefaults?.backgroundTaskWake
+      ? { backgroundTaskWake: configDefaults.backgroundTaskWake }
+      : {}),
     // Resume hook: when a prompt arrives for a dead agent-cli row
     // (typical after daemon restart), the registry calls back into
     // the adapter resolver to re-create the AgentSession with
