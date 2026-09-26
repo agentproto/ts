@@ -1,5 +1,106 @@
 # @agentproto/runtime
 
+## 3.7.0
+
+### Minor Changes
+
+- eaa50f8: Add `branch_gc`, the sibling of `worktree_gc` for refs. It classifies local branches, the base remote's branches and orphan tracking refs (from removed remotes) as `reclaim` (provably in base: merged, squash-merged, patch-merged or content-merged), `review` or `hold` (protected, worktree plus its remote twin, open PR, PR check unavailable, too young). It's a dry run unless you pass `apply` with explicit `scopes`. Each ref is re-classified right before it's deleted, and every apply writes a restore log. `branch_gc_verdict` stores reviewer verdicts by tip sha, so `includeReviewed` can reclaim a ref once a gate has agreed. New CLI commands: `agentproto branch gc` and `agentproto branch review-queue`; new HTTP routes: `POST /branches/gc[/verdict]`. `worktree_gc` also changes: a noise allowlist (`noisePaths`, default `.opencode/package-lock.json`), status reads that take no optional locks, and clean idle worktrees whose branch content is squash/patch/content-merged now reclaim.
+- 65777ee: Keep the reported context window sticky: a cost-bearing usage_update's size is authoritative and no longer downgraded by later inferred frames (claude-agent-acp guesses 200k for 1M models until its first result). The daemon seeds the window from the model catalog at spawn, carries the adapter's `_claude/model` and `sizeInferred` on usage_update events, records `reportedSize` when it corrects a size, and treats a trailing `[1m]` lane hint (`claude-opus-5-5[1m]`) as an explicit window choice — not part of model identity for pricing/alias lookups.
+- 4e398a9: Unify the display-mode toggle into `@agentproto/app-client/display-mode`: the panel bridge and the `window.McpApp` bridges now share one installer with host-aware placement (`safeAreaInsets`), theme support, an `optimistic` mode, and `mountToggle` for inline placement. Runtime exports `injectMcpAppBridge` / `MCP_APP_BRIDGE_SCRIPT`; the bridges expose `getHostContext` / `onHostContext` / `displayMode`.
+- c3314bd: AIP-58 conformance harness (V1 green, V2-V8 tracked as `it.todo`) plus workflow input validation: a `WORKFLOW.md`'s shorthand `inputs` map now normalizes to JSON Schema, and a run with missing/invalid required input is rejected as `error.code = "invalid-input"` before any step runs.
+- cd00daa: Apps may now bundle their own AIP-14 `TOOL.md` contracts and AIP-30 `DRIVER.md` implementations (`kind: cli`/`http`) under `.agentproto/tools/<id>/TOOL.md` and `.agentproto/drivers/<id>/DRIVER.md`. `loadAppHandle` (app-kit) discovers and loads them; the runtime's `compileWorkflow` seam merges an app's own tools/drivers over the daemon passthrough registry for every `WORKFLOW.md` `tool` step it owns, with an app tool id winning over a daemon tool of the same id. `driver` gains `driverDefinitionFromManifest`, factored out of `driverFromManifest` so kind-specific sugars can build from a DRIVER.md manifest directly. `driver-http`'s non-2xx errors now include a body excerpt, not just the status code.
+- 7c059bc: AIP-58 §3 Outcome rule (P2): an agent step's session can now call the `run_request_input` MCP tool to explicitly suspend the step as `input-required` — the turn simply ending, or its final message reading like a question, never suspends it. A declared-but-unsatisfied `outputSchema` now fails as `error.code = "missing-output"` (replacing a bare thrown error) with a `hint: "possible-input-request"` triage aid when the final message looked like a question; a step declaring no contract at all still succeeds unconditionally, with one load-time warning per step. Suspended workflow runs resume via the existing `workflow_escalation_resolve { runId, payload }`, validated against the suspend's own JSON Schema before the transition.
+- 24467af: Deferred/lazy MCP tool loading: add per-mount `?deferred=1|0` query override, per-spawn/role `deferredTools` (executor defaults ON), and daemon-wide `defaults.mcp.deferredTools` config; extend the claude-code `lean` mode with native `ENABLE_TOOL_SEARCH`.
+- 579227e: AIP-58 §5/§9: per-run append-only event logs (`run_events` MCP tool with `sinceSeq` paging), real step visibility in `workflow_status` (tool/gate/map-item steps, compact by default with `full: true`), and indexed `<id>[<index>]` map/pipeline step hooks.
+- dc2a7c7: `remote_enable` (MCP tool and the new `POST /remote/enable` REST route) now returns a `phoneUrl` — the installed `@agentik/session-chat` app's UI, or the hosted panel fallback — with the token in a URL fragment; adds `GET/POST /remote/*` REST twins of the remote tools and a new `agentproto remote enable|disable|status [--qr]` CLI verb; `printQr` is extracted from `pair.ts` into a shared `util/qr.ts`.
+- 8fe9f81: Add @agentproto/review primitive + review_* daemon tools (run/status/cancel/ledger/export)
+- 8c74864: stdio MCP-server entries now carry `args` and `env` end to end: the ACP schema, runtime tool/HTTP parsing, spawn and restart mount builders, the file-based config converter, and the VS Code client type all forward them instead of silently dropping them. The local-browser plugin additionally exports headless per-session browser helpers (`ensureChromeDevtoolsMcp`, `resolveChrome`, `buildHeadlessBrowserMcpEntry`, …) and `installChromeMcp` gains generic `pkg`/`binName` options.
+- dc87d79: Track claude-code's background-task wake instead of dropping it
+- e7a2958: Per-session headless browser: `agent_start`/HTTP/CLI spawns accept `browser: "headless"` (off by default), mounting an isolated chrome-devtools-mcp stdio server with a per-session Chrome profile that is swept on session exit; `buildHeadlessBrowserMcpEntry` gains an optional `userDataDir`.
+- b50e61c: Support cross-harness handoff overrides on session_continue_fresh
+- e412bd8: Sandbox spawn defaults cwd to the box's home, kills by default on close, and reconciles the ledger against the real provider
+- a16be06: Compress + etag the app-UI shell/assets via a shared delivery module
+- 6c68009: Cache tool steps, key map items by index, surface cache hits as steps
+- 1e871ec: AIP-58 §2 run liveness: workflow runs interrupted by a daemon restart now fail with `host-interrupted`, and a periodic sweep fails runs whose owner lease expired with `orphaned`. App runs now report `succeeded`/`failed`/`cancelled` instead of `ended`/`stopped`, zombie app runs are swept to `failed` (`orphaned`), and `app_status` is compact by default (`full: true` for everything). `workflow_status` now fails only the step that actually failed (F29), caps errors in compact output (F30), lists branch-arm steps only once they run and in execution order (F31), and shows a running agent step's `sessionId` as soon as its session spawns (F34).
+- 5a466d6: Mount daemon /mcp gateway on workflow agent steps; fix prompt sections, map scheduling, run output persistence, maintain --wait
+- 583ee19: Live-session teardown fixes: `DELETE /sessions/:id` (and `registry.forget`) now tears a still-running session down through the full kill teardown (adapter close, PTY/child SIGTERM, `session:exited` emit) before dropping the row, returning an additive `killed` field; adapter closes in the agent CLI now terminate the whole child process tree (SIGTERM → grace period → SIGKILL) so `npx` wrappers, MCP servers, and headless Chrome can no longer outlive the session.
+- ea5e30d: Add typed SessionMessage envelope + session-message transcript record for inter-session reports
+- 5f923bb: Durable inter-session messaging inbox (AIP-46 §Session messages): new `message_send`, `message_reply`, `inbox_list`, `inbox_ack`, `inbox_wait` tools, `POST /sessions/:id/messages` / `GET /sessions/:id/inbox` / `POST /sessions/:id/inbox/ack` HTTP routes, `sessions inbox` / `sessions message` CLI commands, and a re-routed `message_parent` through `registry.sendMessage`.
+- 3ad0b83: Add urgency-tier delivery routing (fyi/next-turn/steer/interrupt) to session messaging with gated interrupt-grant
+- 6a1dd7a: Add strong ETag / if-none-match conditional-GET (304) and an optional ?since= delta view to GET /sessions
+- dd5bf7d: Add an MCP Apps host service with three daemon tools (`mcp_app_ui_index`, `mcp_app_ui_read`, `mcp_app_tool_call`) that resolve a session's server alias (session → project → user → imports) and proxy app-UI resources and iframe-initiated tool calls through a new config-keyed MCP client pool. Also adds codex `config.toml` MCP discovery (`~/.codex/config.toml`, `<cwd>/.codex/config.toml`) and exports the shared client-pool / codex-config / resolver helpers.
+- bdb5830: repo-maintenance: missing-verdict retry ladder (same-session nudge + large-model retry) via the new read-only `branch_gc_verdict_get` tool (`BranchGcVerdictReader` port); fixed the maintain report's worktree classification counts; `tool_search` option for the claude-code adapter, auto-disabled for allowlisted agent steps; `{{index}}` support in agent-step `sessionRef` for fan-out session reuse; step session descriptors now echo the pinned model/effort.
+- 54abf58: Role text now matches the delegation tools a session can actually reach. A spawn with no daemon/orchestrator mount, or whose mount strips `agent_start` (`denyTools`), gets the executor disposition and no "Roles you may spawn" line instead of a supervisor promise of a tool it doesn't have — and a depth-0 spawn with no `role` defaults to executor in that case. The supervisor text now names `agent_start`/`agent_prompt` as MCP tools on the `agentproto` server, points at `tool_search` when that mount is deferred, and gives the `agentproto sessions start`/`prompt` CLI equivalents. `agent_start`/`agent_prompt` are always-on under deferred tools even with a custom `alwaysOn` set (a deny-role mount still strips them).
+
+### Patch Changes
+
+- 4bcb241: Serve `GET /apps/:appId/ui/` (trailing slash) in the app UI host so a reload after the SPA router rewrites the address bar no longer 404s.
+- 556ebef: "@agentproto/tool": patch
+  ---
+
+  `paginated` now applies an explicit `fields` allowlist to the full record on the paginated branch instead of the compact projection (unless `compact: true` is explicit), so requested fields outside the compact set are no longer silently dropped.
+
+- 8dc2478: feat(mcp-server): `toMcpTool` / `buildMcpTool` gain a `ui` option (definition-level `_meta.ui.resourceUri`) and opt-in `annotations` derived from the contract; call results carry `structuredContent`; new `registerUiResource` helper and `MCP_APP_MIME_TYPE` for MCP Apps `ui://` panels.
+
+  refactor(runtime): reuse `@agentproto/mcp-server`'s `registerUiResource` in the mcp-apps adapter instead of duplicating resource registration.
+
+- 582b79c: App workflow agent steps get three defaults they were missing (F25-F27 from the agent-apps-dogfood friction log). `workflow_run_file`/`startFromFile` without an explicit `cwd` now defaults agent-step (and run-level) spawns to the owning app's root, falling back to the daemon's active workspace — never a bare `/` — and records the resolved cwd on the run. `resolveAgentRefsForWorkflow` now honours, in order, a step's own `adapter:`, the AGENT.md's `metadata.adapter`/`metadata.harness` override, a model-based default (`claude-*` models run on `claude-code`), then the old blanket `mastra-agent` default, and forwards the AGENT.md's `model` to the spawn when the step sets none; a step-level adapter override no longer leaks `options` shaped for a different adapter. A declared `outputSchema` is now announced on an agent step's FIRST prompt (compact JSON Schema, or a short field list when unconvertible), not only on a rejected-reply retry.
+- 965e84d: fix(runtime): require the tunnel bearer on every non-loopback route — a forged `Origin` no longer grants tunnel access; `/health`, `/inbound/:slug` (HMAC), and `GET /apps/:appId/ui` remain exempt.
+- 48da1d4: Add repo-maintenance app (maintain workflow + reviewer agent) and agentproto maintain CLI shortcut
+- 8514ac6: Stop draining the prompt queue when a turn is daemon-interrupted
+- ebbb00c: Forward commandSandbox/skills/contextContinuity/deferredTools/attach/notifyUrl on POST /sessions/agent + /sessions/chat
+- add6813: Deliver child message_parent reports and crash notices as their own queued turn instead of gluing onto the parent's next prompt
+- 9a5d311: Fix branch arms to be exclusive with an explicit join (F22); untaken arms surface as step.skipped
+- e03a69f: Harden remote-provider file permissions (tunnel config and cloudflared log files are now owner-only, 0o600) and lower quick-tunnel log level from debug to info to avoid leaking Authorization headers and token query params into logs. Also deduplicate SSE response headers into a shared helper that adds `x-accel-buffering: no` to all SSE routes.
+- 525f8e8: Fix restart eligibility projection drift so prefix-routed model adapters resume
+- Updated dependencies [ab7970c]
+- Updated dependencies [8dc2478]
+- Updated dependencies [0179144]
+- Updated dependencies [65777ee]
+- Updated dependencies [4e398a9]
+- Updated dependencies [54983df]
+- Updated dependencies [c3314bd]
+- Updated dependencies [cd00daa]
+- Updated dependencies [7c059bc]
+- Updated dependencies [d6d86b6]
+- Updated dependencies [582b79c]
+- Updated dependencies [579227e]
+- Updated dependencies [48da1d4]
+- Updated dependencies [8fe9f81]
+- Updated dependencies [8c74864]
+- Updated dependencies [dc87d79]
+- Updated dependencies [7d825ff]
+- Updated dependencies [e7a2958]
+- Updated dependencies [e412bd8]
+- Updated dependencies [6c68009]
+- Updated dependencies [1e871ec]
+- Updated dependencies [5a466d6]
+- Updated dependencies [583ee19]
+- Updated dependencies [ea5e30d]
+- Updated dependencies [5f923bb]
+- Updated dependencies [535779b]
+- Updated dependencies [9a5d311]
+- Updated dependencies [bdb5830]
+  - @agentproto/model-catalog@0.11.0
+  - @agentproto/mcp-server@0.4.0
+  - @agentproto/acp@0.9.0
+  - @agentproto/apps@0.13.0
+  - @agentproto/app-client@0.4.0
+  - @agentproto/app-kit@1.3.0
+  - @agentproto/workflow-runtime@0.13.0
+  - @agentproto/driver@0.2.4
+  - @agentproto/driver-http@0.1.8
+  - @agentproto/review@0.2.0
+  - @agentproto/driver-agent-cli@2.5.0
+  - @agentproto/plugin-local-browser@0.3.0
+  - @agentproto/sandbox@0.6.0
+  - @agentproto/workflow@0.7.0
+  - @agentproto/providers-store@0.3.18
+  - @agentproto/workflow-loader@0.2.4
+  - @agentproto/eval-reporters@0.2.16
+  - @agentproto/telemetry-langfuse@0.2.14
+  - @agentproto/workspace-brain@0.4.8
+
 ## 3.6.1
 
 ### Patch Changes

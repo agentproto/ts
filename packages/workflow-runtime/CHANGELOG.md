@@ -1,5 +1,28 @@
 # @agentproto/workflow-runtime
 
+## 0.13.0
+
+### Minor Changes
+
+- c3314bd: AIP-58 conformance harness (V1 green, V2-V8 tracked as `it.todo`) plus workflow input validation: a `WORKFLOW.md`'s shorthand `inputs` map now normalizes to JSON Schema, and a run with missing/invalid required input is rejected as `error.code = "invalid-input"` before any step runs.
+- 7c059bc: AIP-58 §3 Outcome rule (P2): an agent step's session can now call the `run_request_input` MCP tool to explicitly suspend the step as `input-required` — the turn simply ending, or its final message reading like a question, never suspends it. A declared-but-unsatisfied `outputSchema` now fails as `error.code = "missing-output"` (replacing a bare thrown error) with a `hint: "possible-input-request"` triage aid when the final message looked like a question; a step declaring no contract at all still succeeds unconditionally, with one load-time warning per step. Suspended workflow runs resume via the existing `workflow_escalation_resolve { runId, payload }`, validated against the suspend's own JSON Schema before the transition.
+- 579227e: AIP-58 §5/§9: per-run append-only event logs (`run_events` MCP tool with `sinceSeq` paging), real step visibility in `workflow_status` (tool/gate/map-item steps, compact by default with `full: true`), and indexed `<id>[<index>]` map/pipeline step hooks.
+- 6c68009: Cache tool steps, key map items by index, surface cache hits as steps
+- 9a5d311: Fix branch arms to be exclusive with an explicit join (F22); untaken arms surface as step.skipped
+- bdb5830: repo-maintenance: missing-verdict retry ladder (same-session nudge + large-model retry) via the new read-only `branch_gc_verdict_get` tool (`BranchGcVerdictReader` port); fixed the maintain report's worktree classification counts; `tool_search` option for the claude-code adapter, auto-disabled for allowlisted agent steps; `{{index}}` support in agent-step `sessionRef` for fan-out session reuse; step session descriptors now echo the pinned model/effort.
+
+### Patch Changes
+
+- 582b79c: App workflow agent steps get three defaults they were missing (F25-F27 from the agent-apps-dogfood friction log). `workflow_run_file`/`startFromFile` without an explicit `cwd` now defaults agent-step (and run-level) spawns to the owning app's root, falling back to the daemon's active workspace — never a bare `/` — and records the resolved cwd on the run. `resolveAgentRefsForWorkflow` now honours, in order, a step's own `adapter:`, the AGENT.md's `metadata.adapter`/`metadata.harness` override, a model-based default (`claude-*` models run on `claude-code`), then the old blanket `mastra-agent` default, and forwards the AGENT.md's `model` to the spawn when the step sets none; a step-level adapter override no longer leaks `options` shaped for a different adapter. A declared `outputSchema` is now announced on an agent step's FIRST prompt (compact JSON Schema, or a short field list when unconvertible), not only on a rejected-reply retry.
+- 1e871ec: Update the AIP-58 conformance harness to point V4/V6 at the host-layer tests (test-only; no export change).
+- 5a466d6: Mount daemon /mcp gateway on workflow agent steps; fix prompt sections, map scheduling, run output persistence, maintain --wait
+- Updated dependencies [cd00daa]
+- Updated dependencies [6c68009]
+- Updated dependencies [9a5d311]
+  - @agentproto/driver@0.2.4
+  - @agentproto/workflow@0.7.0
+  - @agentproto/corpus@0.8.1
+
 ## 0.12.0
 
 ### Minor Changes

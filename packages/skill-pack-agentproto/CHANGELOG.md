@@ -1,5 +1,14 @@
 # @agentproto/skill-pack-agentproto
 
+## 0.8.4
+
+### Patch Changes
+
+- 4e398a9: Unify the display-mode toggle into `@agentproto/app-client/display-mode`: the panel bridge and the `window.McpApp` bridges now share one installer with host-aware placement (`safeAreaInsets`), theme support, an `optimistic` mode, and `mountToggle` for inline placement. Runtime exports `injectMcpAppBridge` / `MCP_APP_BRIDGE_SCRIPT`; the bridges expose `getHostContext` / `onHostContext` / `displayMode`.
+- 6c68009: Cache tool steps, key map items by index, surface cache hits as steps
+- db9b586: Docs: document inter-session messaging (`inbox_wait` supervision loop, `message_send`/`message_reply`/`inbox_*` tools, `messaging` config block) in `ap-prompt-agent` and `pb-supervise-parallel-mission` skills.
+- 9a5d311: Fix branch arms to be exclusive with an explicit join (F22); untaken arms surface as step.skipped
+
 ## 0.8.3
 
 ### Patch Changes

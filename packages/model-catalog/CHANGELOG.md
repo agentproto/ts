@@ -1,5 +1,16 @@
 # @agentproto/model-catalog
 
+## 0.11.0
+
+### Minor Changes
+
+- 0179144: OpenAI catalog now syncs from OpenAI's own sources: ids from `GET /v1/models` (authed via `OPENAI_API_KEY`, falling back to OpenRouter ids without a key) and prices from OpenAI's published pricing Markdown (`platform.openai.com/docs/pricing.md`), parsed by column name and sanity-checked, with OpenRouter as the per-row fallback. New exports `OPENAI_MODELS_SOURCE` and `OPENAI_PRICING_SOURCE` (with `OPENAI_LLM_SOURCE` kept as a back-compat alias); `LLMPricing` gains optional `priceSource`/`idSource` provenance fields, and a new generated `OPENAI_GENERATED_UNPRICED_IDS` list keeps OpenAI-listed but unpriced ids as known members of `LlmModelId`.
+- 65777ee: Keep the reported context window sticky: a cost-bearing usage_update's size is authoritative and no longer downgraded by later inferred frames (claude-agent-acp guesses 200k for 1M models until its first result). The daemon seeds the window from the model catalog at spawn, carries the adapter's `_claude/model` and `sizeInferred` on usage_update events, records `reportedSize` when it corrects a size, and treats a trailing `[1m]` lane hint (`claude-opus-5-5[1m]`) as an explicit window choice — not part of model identity for pricing/alias lookups.
+
+### Patch Changes
+
+- ab7970c: Sync native OpenAI pricing table and codex model menu to GPT-6; automate native-vendor catalog sync
+
 ## 0.10.3
 
 ### Patch Changes

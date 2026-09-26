@@ -1,5 +1,26 @@
 # @agentproto/app-kit
 
+## 1.3.0
+
+### Minor Changes
+
+- cd00daa: Apps may now bundle their own AIP-14 `TOOL.md` contracts and AIP-30 `DRIVER.md` implementations (`kind: cli`/`http`) under `.agentproto/tools/<id>/TOOL.md` and `.agentproto/drivers/<id>/DRIVER.md`. `loadAppHandle` (app-kit) discovers and loads them; the runtime's `compileWorkflow` seam merges an app's own tools/drivers over the daemon passthrough registry for every `WORKFLOW.md` `tool` step it owns, with an app tool id winning over a daemon tool of the same id. `driver` gains `driverDefinitionFromManifest`, factored out of `driverFromManifest` so kind-specific sugars can build from a DRIVER.md manifest directly. `driver-http`'s non-2xx errors now include a body excerpt, not just the status code.
+- d6d86b6: App-bundled kind:cli drivers spawn subprocesses with the app root as cwd, with metadata.cli.cwd override
+
+### Patch Changes
+
+- 4e398a9: Unify the display-mode toggle into `@agentproto/app-client/display-mode`: the panel bridge and the `window.McpApp` bridges now share one installer with host-aware placement (`safeAreaInsets`), theme support, an `optimistic` mode, and `mountToggle` for inline placement. Runtime exports `injectMcpAppBridge` / `MCP_APP_BRIDGE_SCRIPT`; the bridges expose `getHostContext` / `onHostContext` / `displayMode`.
+- Updated dependencies [cd00daa]
+- Updated dependencies [d6d86b6]
+- Updated dependencies [6c68009]
+- Updated dependencies [9a5d311]
+  - @agentproto/driver@0.2.4
+  - @agentproto/driver-http@0.1.8
+  - @agentproto/driver-cli@0.2.0
+  - @agentproto/workflow@0.7.0
+  - @agentproto/workflow-loader@0.2.4
+  - @agentproto/mastra@0.2.15
+
 ## 1.2.1
 
 ### Patch Changes

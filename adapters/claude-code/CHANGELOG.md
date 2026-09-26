@@ -1,5 +1,24 @@
 # @agentproto/adapter-claude-code
 
+## 2.3.0
+
+### Minor Changes
+
+- bdb5830: repo-maintenance: missing-verdict retry ladder (same-session nudge + large-model retry) via the new read-only `branch_gc_verdict_get` tool (`BranchGcVerdictReader` port); fixed the maintain report's worktree classification counts; `tool_search` option for the claude-code adapter, auto-disabled for allowlisted agent steps; `{{index}}` support in agent-step `sessionRef` for fan-out session reuse; step session descriptors now echo the pinned model/effort.
+
+### Patch Changes
+
+- 8835dc3: Bump pinned ACP wrapper `@agentclientprotocol/claude-agent-acp` to 0.81.2 and `@anthropic-ai/claude-agent-sdk` to ^0.3.282 so `claude-opus-5-5` can spawn (requires Claude Code >= 2.1.280); sync `CLAUDE-CODE.md` manifest with the new pin.
+- 24467af: Deferred/lazy MCP tool loading: add per-mount `?deferred=1|0` query override, per-spawn/role `deferredTools` (executor defaults ON), and daemon-wide `defaults.mcp.deferredTools` config; extend the claude-code `lean` mode with native `ENABLE_TOOL_SEARCH`.
+- Updated dependencies [ab7970c]
+- Updated dependencies [0179144]
+- Updated dependencies [65777ee]
+- Updated dependencies [8c74864]
+- Updated dependencies [dc87d79]
+- Updated dependencies [583ee19]
+  - @agentproto/model-catalog@0.11.0
+  - @agentproto/driver-agent-cli@2.5.0
+
 ## 2.2.3
 
 ### Patch Changes

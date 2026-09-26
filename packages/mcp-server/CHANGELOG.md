@@ -1,5 +1,18 @@
 # @agentproto/mcp-server
 
+## 0.4.0
+
+### Minor Changes
+
+- 8dc2478: feat(mcp-server): `toMcpTool` / `buildMcpTool` gain a `ui` option (definition-level `_meta.ui.resourceUri`) and opt-in `annotations` derived from the contract; call results carry `structuredContent`; new `registerUiResource` helper and `MCP_APP_MIME_TYPE` for MCP Apps `ui://` panels.
+
+  refactor(runtime): reuse `@agentproto/mcp-server`'s `registerUiResource` in the mcp-apps adapter instead of duplicating resource registration.
+
+### Patch Changes
+
+- Updated dependencies [cd00daa]
+  - @agentproto/driver@0.2.4
+
 ## 0.3.1
 
 ### Patch Changes

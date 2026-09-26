@@ -1,5 +1,26 @@
 # @agentproto/workflow-mastra
 
+## 0.2.0
+
+### Minor Changes
+
+- 67c5ee5: Projected workflows now carry real schemas instead of `z.any()` everywhere: the workflow's own `inputSchema` is built from the declared AIP-16 `inputs` block (rejecting invalid input before any step runs), and tool/agent steps project their real declared `outputSchema`. A top-level `suspend`/`approval` step now projects to native Mastra `suspend()`/`resume()` instead of failing loud (still refused when nested inside a branch/parallel/loop/map/group, where there's no per-step suspend boundary). `gate` is now refused explicitly with a stated reason instead of silently reaching an unhandled case in the local step-walker. Adds an AIP-58 conformance harness (`aip58-conformance.mastra.test.ts`) driving the same vendored vectors through `toMastraWorkflow` — V1 green, V2-V8 tracked as `it.todo`.
+
+### Patch Changes
+
+- Updated dependencies [c3314bd]
+- Updated dependencies [cd00daa]
+- Updated dependencies [7c059bc]
+- Updated dependencies [582b79c]
+- Updated dependencies [579227e]
+- Updated dependencies [6c68009]
+- Updated dependencies [1e871ec]
+- Updated dependencies [5a466d6]
+- Updated dependencies [9a5d311]
+- Updated dependencies [bdb5830]
+  - @agentproto/workflow-runtime@0.13.0
+  - @agentproto/driver@0.2.4
+
 ## 0.1.11
 
 ### Patch Changes

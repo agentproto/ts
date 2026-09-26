@@ -1,5 +1,13 @@
 # @agentproto/corpus
 
+## 0.8.1
+
+### Patch Changes
+
+- Updated dependencies [6c68009]
+- Updated dependencies [9a5d311]
+  - @agentproto/workflow@0.7.0
+
 ## 0.8.0
 
 ### Minor Changes

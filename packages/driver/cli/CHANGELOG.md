@@ -1,5 +1,16 @@
 # @agentproto/driver-cli
 
+## 0.2.0
+
+### Minor Changes
+
+- d6d86b6: App-bundled kind:cli drivers spawn subprocesses with the app root as cwd, with metadata.cli.cwd override
+
+### Patch Changes
+
+- Updated dependencies [cd00daa]
+  - @agentproto/driver@0.2.4
+
 ## 0.1.7
 
 ### Patch Changes
