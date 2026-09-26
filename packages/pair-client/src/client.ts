@@ -456,6 +456,11 @@ export function connect(credential: PairCredential, opts: ConnectOptions = {}): 
 
     const l = await waitForLive(signal)
     if (signal.aborted) throw signal.reason
+    // Closed in the gap since it was handed to us: the close sweep may already
+    // have run, so a request registered now would never be failed.
+    if (!l.sink.isOpen) {
+      throw new TunnelClientError("disconnected", `lost the connection to ${credential.name}`)
+    }
     const reqId = `${reqPrefix}-${(++seq).toString(36)}`
 
     return new Promise<Response>((resolve, reject) => {
