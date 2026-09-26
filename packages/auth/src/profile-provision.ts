@@ -488,9 +488,15 @@ export async function updateAuthProfile(
 
   let nextLabel: string | undefined
   if (hasLabel && patch.label !== null) {
-    nextLabel = (patch.label ?? "").trim()
+    // patch is caller-declared as UpdateAuthProfileInput, but an HTTP body
+    // reaches here with no such guarantee — validate the runtime type
+    // before .trim() rather than let a non-string throw a raw TypeError.
+    if (typeof patch.label !== "string") {
+      throw new AuthProfileValidationError("label must be a string or null")
+    }
+    nextLabel = patch.label.trim()
     if (!nextLabel) {
-      throw new AuthProfileValidationError("label must not be blank — pass null to clear it")
+      throw new AuthProfileValidationError("label must not be blank; pass null to clear it")
     }
     if (nextLabel.length > MAX_LABEL_LENGTH) {
       throw new AuthProfileValidationError(

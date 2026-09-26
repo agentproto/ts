@@ -15,8 +15,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
-import { addAuthProfile } from "@agentproto/auth"
-import { registerAuthProfileTools } from "../auth-profile-tools.js"
+import { addAuthProfile, updateAuthProfile } from "@agentproto/auth"
+import { registerAuthProfileTools, defaultProfileProvisionDeps } from "../auth-profile-tools.js"
 
 // authProfilesPath() resolves under os.homedir() → $HOME on POSIX (same
 // isolation profile-store.test.ts uses) — a temp HOME keeps this off the
@@ -152,5 +152,22 @@ describe("auth_profile_update", () => {
     expect(result.isError).toBe(true)
     const text = (result.content as Array<{ type: string; text: string }>)[0]!.text
     expect(text).toMatch(/at least one of label or costBudget/)
+  })
+
+  it("function-level: a non-string label forwarded the way PATCH /auth/profiles/:id would (an HTTP body has no zod guarantee) is rejected with AuthProfileValidationError, not a raw TypeError", async () => {
+    await addAuthProfile({ id: "p", endpoint: "openrouter", method: "api-key" })
+
+    // Simulates the HTTP route's `body.label as string | null` cast on a
+    // body that actually carried a number — exercises the same
+    // defaultProfileProvisionDeps() wiring http-server.ts uses, without
+    // spinning up a full HTTP server.
+    const untypedBody: { label: unknown } = { label: 42 }
+    await expect(
+      updateAuthProfile(
+        "p",
+        { label: untypedBody.label as string | null },
+        defaultProfileProvisionDeps(),
+      ),
+    ).rejects.toThrow(/label must be a string or null/)
   })
 })

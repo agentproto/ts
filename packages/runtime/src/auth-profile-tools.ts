@@ -379,14 +379,14 @@ export function registerAuthProfileTools(server: McpServer): void {
   server.tool(
     "auth_profile_update",
     "Update a named auth profile's `label` and/or `costBudget` (never the " +
-      "credential, credentialRef, source, disabled, or models fields — use " +
+      "credential, credentialRef, source, disabled, or models fields; use " +
       "auth_profile_set_enabled / auth_profile_set_models for those). Each " +
       "field is tri-state: OMIT it to leave the current value untouched, " +
       "pass `null` to clear it, or pass a value to set it. At least one of " +
       "`label` / `costBudget` must be given. `label` is trimmed and must be " +
       "non-blank (up to 200 characters) once set. Returns the updated row " +
       "with the same KEY IDENTITY auth_profile_list computes (`keyStatus`, " +
-      "`fingerprint`, `last4`) — never the secret. The row is FULL by " +
+      "`fingerprint`, `last4`); never the secret. The row is FULL by " +
       "default (includes `costBudget`, since this is the tool that sets it); " +
       "pass `full: false` for the compact projection auth_profile_list uses " +
       "by default.",

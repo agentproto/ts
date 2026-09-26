@@ -295,6 +295,18 @@ describe("updateAuthProfile (WS-G5)", () => {
     )
   })
 
+  it("rejects a non-string, non-null label (e.g. a number) with a clear 400-mappable error rather than a raw TypeError", async () => {
+    const { deps } = makeDeps([
+      { id: "p", endpoint: "anthropic", method: "api-key", credentialRef: "ref" },
+    ])
+    await expect(
+      updateAuthProfile("p", { label: 42 as never }, deps),
+    ).rejects.toThrow(AuthProfileValidationError)
+    await expect(
+      updateAuthProfile("p", { label: 42 as never }, deps),
+    ).rejects.toThrow(/label must be a string or null/)
+  })
+
   it("rejects an overlong label", async () => {
     const { deps } = makeDeps([
       { id: "p", endpoint: "anthropic", method: "api-key", credentialRef: "ref" },
