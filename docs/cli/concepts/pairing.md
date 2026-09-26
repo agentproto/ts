@@ -41,8 +41,9 @@ authenticates nothing (see [Route and auth tokens](#route-and-auth-tokens)).
 | Rendezvous operator (or anyone logging its upgrade URLs) | read / modify / replay bytes; learns every route token; can connect to any route as a client and send a well-formed hello sealed to the daemon's public key | E2E AEAD + transcript-bound signature; the daemon authorises only a sealed **auth** token that is a separate one-way HKDF output, not derivable from the route — a hello presenting the route (or any guess) is refused, spends no offer, and is never served |
 | Offer-URL thief (pre-expiry) | pair as a new client | short TTL + single-use offer secret; daemon shows name + fingerprint on accept; `pair revoke` |
 | Evil "daemon" (wrong QR) | impersonate the daemon | fingerprint shown at offer and accept; keys pinned after first pair |
-| Stolen client credstore | act as that client | per-client revocation; `pairings.json` audit (`lastSeen`) |
+| Stolen client credstore | act as that client | per-client revocation; `pairings.json` audit (`lastSeen`); browser pair root is a non-extractable `CryptoKey` |
 | Broker DoS | drop / delay traffic | reconnect-with-backoff; self-host escape hatch |
+| Broker fakes "revoked" | make a client give up / forget its pairing | the `pairing_revoked` signal only counts inside the E2E channel, after the daemon's signature verified; a broker close code or reason never does |
 
 Out of scope for v1: post-compromise security (no ratchet — rekey on reconnect
 only), multi-device sync, and broker federation.
@@ -153,8 +154,29 @@ rate limiting, single-use tokens, constant-time token compare. Self-hostable via
 - `pair offer` (daemon) mints a single-use offer URL + QR, dials the broker
   outbound, and parks. `pair accept` (client) validates the URL, runs the client
   handshake, pins the daemon's keys, and persists the pairing.
+- `pair offer --qr` shows the same offer as a phone link: the web pair page
+  with the offer in its URL fragment
+  (`https://cli.agentproto.sh/pair#v=2&rv=…`). A fragment never reaches a
+  server. The page runs the client handshake in the browser with
+  `@agentproto/pair-client` (WebCrypto, WebSocket, IndexedDB), which speaks
+  the same wire protocol as `pair accept`, so the daemon can't tell the two
+  apart. `parseOfferUrl` accepts both forms.
 - `pair ls` lists pairings (daemon REST, or the client store when offline);
   `pair revoke` drops one so its client can no longer reconnect.
+- **Revocation is announced.** Otherwise a revoked client and an offline
+  daemon look the same: the client parks at the broker and gets a park
+  timeout. So for a grace window (14 days) the daemon keeps a *tombstone* of
+  the revoked pairing: the epoch route and auth tokens for the window only,
+  not the pair root. It still parks on the routes. For a hello that carries
+  that epoch's auth token, it completes the handshake, which authenticates it
+  to the client. It then sends a single E2E `error{code:"pairing_revoked"}`
+  and closes. A client that sees it stops retrying and asks the user to pair
+  again. A live channel gets the same frame at revoke time.
+  - The broker learns nothing new: it sees the same parking and a short splice.
+  - It can't forge the signal, which is authenticated like every tunnel frame.
+  - It can't elicit the signal either: a route is never accepted as proof.
+  - A revoked legacy (`pair/v1`) pairing gets no tombstone; its client can
+    only be told to re-pair.
 - `pair exec <name> -- <verb>` routes any verb over the pairing (the P2 client
   routing seam — a loopback bridge that a child `agentproto <verb>` drives via
   `AGENTPROTO_DAEMON_URL`).
@@ -166,7 +188,9 @@ REST routes: `POST /pairings/offer`, `GET /pairings`, `DELETE /pairings/:fp`.
 
 - Daemon pairings live in `~/.agentproto/pairings.json` (`0600`); the client
   half (pinned daemon keys + the `pairRoot` secret) in
-  `~/.agentproto/pair-credentials.json` (`0600`).
+  `~/.agentproto/pair-credentials.json` (`0600`). A browser client keeps the
+  same record in IndexedDB, with the pair root imported as a non-extractable
+  WebCrypto HKDF key. It never uses localStorage.
 - After the first pairing there is no live offer, so reconnects use
   **pairing-derived epoch tokens** (epoch = UTC day number): the client dials
   the epoch **route** and proves the epoch **auth** inside the sealed hello (see
