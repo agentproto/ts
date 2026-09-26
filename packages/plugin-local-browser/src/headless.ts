@@ -426,6 +426,14 @@ export interface BuildHeadlessBrowserMcpEntryOptions {
   /** chrome-devtools-mcp debug log file. */
   logFile?: string
   /**
+   * Explicit Chrome profile dir, used instead of `--isolated`. `--isolated`
+   * only deletes its temp profile on a graceful `browser.close()`; when the
+   * MCP server dies with its agent, Chrome exits on the broken pipe and the
+   * profile is left behind. A caller-owned dir can always be deleted on
+   * session exit.
+   */
+  userDataDir?: string
+  /**
    * Directories the file-writing tools (`take_screenshot({ filePath })`, …)
    * may write to (`--workspace`, chrome-devtools-mcp ≥1.10). Omitted ⇒ its
    * default, the OS temp dir. Older versions ignore the flag.
@@ -462,7 +470,7 @@ export function buildHeadlessBrowserMcpEntry(
     args: [
       opts.mcp.entryScript,
       "--headless",
-      "--isolated",
+      ...(opts.userDataDir ? ["--userDataDir", opts.userDataDir] : ["--isolated"]),
       "--viewport",
       viewport,
       "--no-category-performance",

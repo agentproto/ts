@@ -89,7 +89,10 @@ const entry = buildHeadlessBrowserMcpEntry({ mcp, executablePath: chrome.path })
 ```
 
 `--isolated` gives each server its own temporary profile. That profile is
-deleted when the server exits.
+deleted only when the browser closes gracefully. If the server dies along
+with its agent, Chrome exits on the broken pipe and the profile stays behind.
+Pass `userDataDir` to use a directory you own and delete on exit instead
+(the daemon uses `$TMPDIR/agentproto-browser/<sessionId>`).
 
 ### Validation under `commandSandbox` (macOS Seatbelt, 2026-09-26)
 
