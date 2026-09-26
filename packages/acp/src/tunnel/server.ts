@@ -238,6 +238,16 @@ export interface TunnelServer {
   close(): Promise<void>
 }
 
+/** One in-flight `http_request` forward (see `http_cancel`). */
+interface HttpInflight {
+  abort: AbortController
+  cancelled: boolean
+  /** The streamed body's reader, once a stream response is being relayed —
+   *  cancelled directly too, since an upstream body need not honour the
+   *  fetch signal. */
+  reader?: ReadableStreamDefaultReader<Uint8Array>
+}
+
 export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
   const children = new Map<string, ChildProcess>()
   // PTY-backed processes keyed by execId (separate from pipe-based children).
@@ -246,6 +256,9 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
   // lifecycle starts at ws_open (we send open_ack on success) and ends
   // at ws_close (either direction). On tunnel teardown we close all.
   const upstreamWs = new Map<string, UpstreamWebSocket>()
+  // In-flight `http_request` forwards by reqId, so an `http_cancel` (or the
+  // tunnel closing) can abort the upstream call and stop a streamed body.
+  const httpInflight = new Map<string, HttpInflight>()
   let closed = false
 
   // Greet the host immediately so it can fail fast on version
@@ -289,6 +302,11 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
       }
     }
     upstreamWs.clear()
+    for (const [, inflight] of httpInflight) {
+      inflight.abort.abort()
+      inflight.reader?.cancel().catch(() => {})
+    }
+    httpInflight.clear()
     offFrame()
     offClose()
   })
@@ -349,6 +367,16 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
         // the host's forwardHttp expects.
         await handleHttpRequest(frame)
         return
+      case "http_cancel": {
+        // The host gave up on this request — stop the upstream call. Nothing
+        // more is sent for the reqId (the host has already dropped it).
+        const inflight = httpInflight.get(frame.reqId)
+        if (!inflight) return
+        inflight.cancelled = true
+        inflight.abort.abort()
+        inflight.reader?.cancel().catch(() => {})
+        return
+      }
       case "ws_open":
         await handleWsOpen(frame)
         return
@@ -857,6 +885,8 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
 
     const url = `${opts.httpUpstream.replace(/\/$/, "")}${req.path}`
     const controller = new AbortController()
+    const inflight: HttpInflight = { abort: controller, cancelled: false }
+    httpInflight.set(req.reqId, inflight)
     const timeoutMs =
       req.timeoutMs ??
       opts.httpForwardTimeoutMs ??
@@ -915,6 +945,7 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
           headers: outHeaders,
         })
         const reader = upstreamRes.body.getReader()
+        inflight.reader = reader
         // Inter-chunk idle bound: the request timeout is disarmed for streams,
         // so without this a stalled upstream (headers sent, then silence) hangs
         // forever. The timer resets per chunk, so a heartbeating stream is never
@@ -938,6 +969,10 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
         try {
           while (true) {
             const chunk = await readChunk()
+            if (inflight.cancelled) {
+              await reader.cancel().catch(() => {})
+              return
+            }
             if (chunk === IDLE) {
               try {
                 await reader.cancel()
@@ -983,6 +1018,7 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
             }
           }
         } catch (err) {
+          if (inflight.cancelled) return
           const message = err instanceof Error ? err.message : String(err)
           opts.sink.send({
             t: "http_response_chunk",
@@ -1002,6 +1038,7 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
         body: buf.length > 0 ? encodeData(buf) : "",
       })
     } catch (err) {
+      if (inflight.cancelled) return
       const message = err instanceof Error ? err.message : String(err)
       const aborted = err instanceof Error && err.name === "AbortError"
       respond({
@@ -1013,6 +1050,7 @@ export function createTunnelServer(opts: TunnelServerOptions): TunnelServer {
       })
     } finally {
       clearTimer()
+      if (httpInflight.get(req.reqId) === inflight) httpInflight.delete(req.reqId)
     }
   }
 

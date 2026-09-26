@@ -140,6 +140,21 @@ export interface HttpRequestFrame {
 }
 
 /**
+ * Cancel an in-flight `http_request` (HOST → DAEMON) — the host's consumer
+ * aborted (an `AbortSignal`, a cancelled response stream, a closed
+ * EventSource). The daemon aborts its upstream call (and stops reading a
+ * streamed body) and sends nothing further for `reqId`; the host has already
+ * forgotten it, so any frame still in flight for it is dropped there.
+ *
+ * Backward-compatible: a daemon that predates it drops the unknown frame
+ * (`parseFrame` → null), and the request simply runs to completion as before.
+ */
+export interface HttpCancelFrame {
+  t: "http_cancel"
+  reqId: string
+}
+
+/**
  * Generic HTTP-over-tunnel response (DAEMON → HOST). Mirrors
  * `HttpRequestFrame` — see its docs.
  *
@@ -478,6 +493,7 @@ export type HostToDaemonFrame =
   | KillFrame
   | ResizeFrame
   | HttpRequestFrame
+  | HttpCancelFrame
   | WsOpenFrame
   | WsMessageFrame
   | WsCloseFrame
@@ -514,6 +530,7 @@ const KNOWN_TYPES = new Set<TunnelFrame["t"]>([
   "kill",
   "resize",
   "http_request",
+  "http_cancel",
   "http_response",
   "http_response_head",
   "http_response_chunk",
