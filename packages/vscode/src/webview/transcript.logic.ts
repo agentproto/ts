@@ -218,6 +218,18 @@ export function describePromptSource(
       tooltip: `Injected by session ${id} via agent_prompt`,
     }
   }
+  // `child:<sessionId>` — a child's `message_parent` report or a
+  // `[child-crashed]` notice, delivered as its own turn (never glued onto a
+  // human prompt).
+  const childMatch = /^child:(.+)$/.exec(source)
+  if (childMatch) {
+    const id = childMatch[1]!
+    const shortId = id.length > 8 ? id.slice(-6) : id
+    return {
+      label: `↑ child ${shortId}`,
+      tooltip: `Reported by child session ${id} (message_parent / crash notice)`,
+    }
+  }
   return {
     label: `⇄ ${source}`,
     tooltip: `Prompt source: ${source}`,

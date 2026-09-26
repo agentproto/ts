@@ -825,6 +825,46 @@ export function promptOriginLabel(item: { source?: string; origin?: string }): s
   return code
 }
 
+/** True for a turn a CHILD session authored (`message_parent` report or a
+ *  `[child-crashed]` notice — `source:"child:<sessionId>"`). Such a turn is
+ *  never matched as the answer to a structured question (only the human
+ *  answers those) — a child whose report happens to read `keep-going` must
+ *  not decide the parent's context-continuity prompt. */
+export function isChildPromptSource(source: string | undefined): boolean {
+  return source?.startsWith("child:") === true
+}
+
+/** Source/origin stamped on notices migrated out of the retired
+ *  `pendingChildCrashNotices` field — the sending child's id wasn't
+ *  recorded there, only baked into the notice text. */
+export const LEGACY_CHILD_NOTICE_SOURCE = "child:legacy"
+
+/**
+ * Boot migration for the retired `SessionDescriptor.pendingChildCrashNotices`
+ * field: a snapshot written by an older daemon can still carry notices that
+ * were waiting to be string-prepended onto the next prompt. Move each onto
+ * the END of `promptQueue` as its own child-sourced item (so it's delivered
+ * as a separate turn like every live report now is) and drop the field.
+ * Mutates `desc` in place; no-op when there's nothing to migrate.
+ */
+export function migratePendingChildNotices(desc: SessionDescriptor): void {
+  const pending = desc.pendingChildCrashNotices
+  if (pending === undefined) return
+  delete desc.pendingChildCrashNotices
+  if (!pending.length) return
+  const queuedAt = new Date().toISOString()
+  const migrated: QueuedPrompt[] = pending
+    .filter((n): n is string => typeof n === "string" && n.length > 0)
+    .map(message => ({
+      id: `q_${randomUUID().slice(0, 8)}`,
+      message,
+      queuedAt,
+      source: LEGACY_CHILD_NOTICE_SOURCE,
+      origin: LEGACY_CHILD_NOTICE_SOURCE,
+    }))
+  desc.promptQueue = [...(desc.promptQueue ?? []), ...migrated]
+}
+
 /** One entry in the after-the-fact queue listing (`listQueuedPrompts` /
  *  `session_queue_list` / `GET /sessions/:id/queue`). `position` is the
  *  array index (0 = next to dispatch). */
@@ -1588,9 +1628,9 @@ export interface SessionDescriptor {
    *  (`markCrashed` → `session:exited` with `status:"error"`/
    *  `reason:"crashed"`), the supervisor-notify subscriber
    *  (`supervisor-notify.ts`) delivers a `[child-crashed]` notice to its
-   *  `parentSessionId`, if any — directly (enqueued prompt) when the parent
-   *  is alive and idle, or stamped onto `pendingChildCrashNotices` and
-   *  flushed at the parent's next turn when it's busy. The free external
+   *  `parentSessionId`, if any — dispatched now when the parent is alive
+   *  and idle, or parked in its `promptQueue` and drained as its own turn
+   *  when the parent's current turn ends. The free external
    *  webhook path (`notifyUrl`) already fires regardless of this flag; this
    *  only gates the additional IN-BAND signal into the parent's own
    *  session, which a caller that isn't a delegating supervisor doesn't
@@ -1599,13 +1639,12 @@ export interface SessionDescriptor {
   notifyParentOnCrash?: boolean
   /** True when the session was spawned in permission-hold mode. */
   permissionHold?: boolean
-  /** Queued `[child-crashed] …` notices from crashed children, stamped by
-   *  the supervisor-notify subscriber when THIS session was busy at the
-   *  time a child it should be told about crashed (mid-turn is never
-   *  interrupted for this — see `notifyParentOnCrash`). Flushed and cleared
-   *  by prepending the joined notices onto the next dispatched turn's
-   *  message (`runAgentTurn`) — so delivery survives a busy parent without
-   *  ever cancelling its in-flight work. Absent when nothing is queued. */
+  /** @deprecated Retired — child reports and `[child-crashed]` notices for a
+   *  busy session are now queued as their own `promptQueue` items
+   *  (`source:"child:<id>"`) instead of being string-prepended onto the next
+   *  prompt. Only read once, at boot, by `migratePendingChildNotices`, which
+   *  moves any notices a pre-upgrade daemon persisted into `promptQueue` and
+   *  deletes this field. Never written. */
   pendingChildCrashNotices?: string[]
   /** FIFO of prompts that arrived while this session was mid-turn and
    *  asked to be QUEUED rather than rejected (`enqueuePrompt`'s
@@ -1621,8 +1660,7 @@ export interface SessionDescriptor {
    *  `sessionDescriptorsEqual` diff is a shallow `!==` per field, so an
    *  in-place `.shift()` here would silently stop propagating queue
    *  changes to the transcript panel. `[]` (not absent) once anything
-   *  has ever been queued, matching `pendingChildCrashNotices`'s
-   *  convention above. */
+   *  has ever been queued. */
   promptQueue?: QueuedPrompt[]
   /** Best-effort context-handoff digest (Fix D), stashed on a descriptor
    *  whose resume degraded to a BLANK spawn — the adapter's own
@@ -1630,8 +1668,7 @@ export interface SessionDescriptor {
    *  false` — built by `buildResumeContextDigest` from the daemon's own
    *  `events.jsonl` transcript, which survives both cases. Flushed and
    *  cleared by prepending it onto the first dispatched turn's message
-   *  (`runAgentTurn`), exactly once, same shape as
-   *  `pendingChildCrashNotices` above. Gated strictly on the blank-fallback
+   *  (`runAgentTurn`), exactly once. Gated strictly on the blank-fallback
    *  flags at the two sites that set it (`session-restart-core.ts`,
    *  `maybeResumeAgent` here) — never set for a resume that actually
    *  restored context, so a real continuation is never double-fed its own
@@ -3372,17 +3409,6 @@ export interface SessionsRegistry {
    *  window keeps aging out naturally rather than being wiped by the
    *  give-up itself. Returns false (no-op) for an unknown id. */
   giveUpRestart(id: string, message: string): boolean
-  /** Queue a `[child-crashed] …` notice on a BUSY parent's descriptor
-   *  (`SessionDescriptor.pendingChildCrashNotices`) for delivery at its next
-   *  turn (`runAgentTurn`'s flush) — the never-interrupt path
-   *  `supervisor-notify.ts` takes when the parent can't be prompted
-   *  directly right now (it's mid-turn). Idempotent: the exact same notice
-   *  string is never queued twice, so a duplicate event for the same crash
-   *  can't double-deliver. No-op (returns false) on an unknown id, a
-   *  non-agent-cli row, or a row that isn't alive (`running`/`starting`) —
-   *  nothing to flush a notice INTO. Returns true iff the notice was newly
-   *  queued. */
-  stampPendingChildCrashNotice(id: string, notice: string): boolean
   /** List permission requests currently parked in the pending-permissions
    *  inbox across all permission-hold sessions, newest last. Optionally
    *  filtered to one session. */
@@ -5434,7 +5460,9 @@ export function createSessionsRegistry(opts?: {
       try {
         await maybeResumeAgent(rt)
         const liveRt = validateAgentTurn(rt.desc.id, "queue-drain")
-        const answer = matchStructuredQuestionAnswer(liveRt, next.message)
+        const answer = isChildPromptSource(next.source)
+          ? undefined
+          : matchStructuredQuestionAnswer(liveRt, next.message)
         if (answer) {
           await answerStructuredQuestion(liveRt, answer)
           return
@@ -5872,22 +5900,13 @@ export function createSessionsRegistry(opts?: {
     // that by stamping `SpawnAgentInput.title` from `input.prompt` up-front, so
     // `rt.desc.title` is already set and this line is skipped for that turn.
     if (!rt.desc.title) rt.desc.title = deriveSessionTitle(message)
-    // Flush any `[child-crashed]` notices the supervisor-notify subscriber
-    // queued while this session was busy (`SessionDescriptor
-    // .pendingChildCrashNotices` — see that field's doc) onto THIS turn's
-    // outgoing message, then clear the queue so delivery happens exactly
-    // once. String messages only — a non-string turn (a raw ACP
-    // ContentBlock) has no text slot to prepend into; the notice stays
-    // queued for the next turn that does.
-    if (rt.desc.pendingChildCrashNotices?.length && typeof message === "string") {
-      message = `${rt.desc.pendingChildCrashNotices.join("\n")}\n\n${message}`
-      rt.desc.pendingChildCrashNotices = []
-    }
     // Flush a queued best-effort resume-context digest (Fix D — see
-    // `SessionDescriptor.pendingResumeContext`'s doc), same string-turn-
-    // only, fire-once shape as the crash notices above. Ordered after them
-    // so a session that resumed blank AND has a queued crash notice reads
-    // its own context digest first, then the notice.
+    // `SessionDescriptor.pendingResumeContext`'s doc) onto THIS turn's
+    // outgoing message, exactly once. String messages only — a non-string
+    // turn (a raw ACP ContentBlock) has no text slot to prepend into; the
+    // digest stays queued for the next turn that does. (Child reports and
+    // crash notices are NOT flushed this way any more — they're their own
+    // `promptQueue` turns, see `isChildPromptSource`.)
     if (rt.desc.pendingResumeContext && typeof message === "string") {
       message = `${rt.desc.pendingResumeContext}\n\n${message}`
       rt.desc.pendingResumeContext = undefined
@@ -7726,7 +7745,9 @@ export function createSessionsRegistry(opts?: {
       }
       if (rtPre) await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "sendPrompt")
-      const structuredAnswer = matchStructuredQuestionAnswer(rt, message)
+      const structuredAnswer = isChildPromptSource(opts?.source)
+        ? undefined
+        : matchStructuredQuestionAnswer(rt, message)
       if (structuredAnswer) {
         await answerStructuredQuestion(rt, structuredAnswer)
         return
@@ -7786,8 +7807,11 @@ export function createSessionsRegistry(opts?: {
       // A structured-question answer is resolved synchronously (it never
       // starts a turn — it's a flag flip, or a hand-off to a fresh session)
       // so it's awaited here even though the rest of this method is
-      // fire-and-forget below.
-      const structuredAnswer = matchStructuredQuestionAnswer(rt, message)
+      // fire-and-forget below. A child's report is never an answer — only
+      // the human decides a structured question.
+      const structuredAnswer = isChildPromptSource(opts?.source)
+        ? undefined
+        : matchStructuredQuestionAnswer(rt, message)
       if (structuredAnswer) {
         await answerStructuredQuestion(rt, structuredAnswer)
         return { queued: false }
@@ -8596,18 +8620,6 @@ export function createSessionsRegistry(opts?: {
       transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: message })
       return true
     },
-    stampPendingChildCrashNotice(id, notice) {
-      const rt = sessions.get(id)
-      if (!rt) return false
-      if (rt.desc.kind !== "agent-cli") return false
-      const isAlive = rt.desc.status === "running" || rt.desc.status === "starting"
-      if (!isAlive) return false
-      const pending = rt.desc.pendingChildCrashNotices ?? []
-      if (pending.includes(notice)) return false
-      rt.desc.pendingChildCrashNotices = [...pending, notice]
-      schedulePersist()
-      return true
-    },
     archiveSession(id) {
       const rt = sessions.get(id)
       if (!rt) throw new Error(`archiveSession: no session "${id}"`)
@@ -9033,6 +9045,7 @@ function loadHistorySnapshot(
     // survives every future boot. Clearing idle flags on an idle session is a
     // no-op, so there is nothing to lose by not asking how it got there.
     clearInFlightFlags(reclassified)
+    migratePendingChildNotices(reclassified)
     // Same reasoning as the in-flight flags above, for `contextUsed`: a
     // snapshot written before `plausibleContextUsed` existed can carry an
     // out-of-window value on disk, and a dead/historical ghost never gets

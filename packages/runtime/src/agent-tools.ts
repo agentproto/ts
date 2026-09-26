@@ -1316,9 +1316,10 @@ export function registerAgentTools(
   // reach nothing else — which is why it stays out of
   // `DELEGATION_TOOL_NAMES` and is granted role-independently. Delivery
   // mirrors `supervisor-notify.ts` (the crash-notice path): enqueue as a
-  // normal prompt on an idle parent, stamp onto the parent's pending-notice
-  // queue when it's mid-turn — a child's report never interrupts the
-  // parent's in-flight turn.
+  // normal prompt on an idle parent, park as its own item in the parent's
+  // prompt queue when it's mid-turn (drained as a separate turn at
+  // turn-end) — a child's report never interrupts the parent's in-flight
+  // turn by default, and is never concatenated with another prompt.
   server.tool(
     "message_parent",
     "Report a message UP to the session that spawned you (your parent/" +
@@ -1326,7 +1327,7 @@ export function registerAgentTools(
       "id needed: the daemon resolves your recorded parent from your own " +
       "session identity (also visible as the AGENTPROTO_PARENT_SESSION_ID " +
       "env var). Delivered as a prompt when the parent is idle, or queued " +
-      "onto its next turn when it's mid-turn (never interrupts, by default). " +
+      "as its own next turn when it's mid-turn (never interrupts, by default). " +
       "Pass `interrupt: true` to CUT a mid-turn parent immediately — cancel " +
       "its in-flight turn and redirect it onto this message now (same-context " +
       "cancel, like `agent_prompt`'s `interrupt`) — for a genuinely urgent " +
@@ -1404,20 +1405,11 @@ export function registerAgentTools(
           },
         ],
       })
-      if (!parent.busy) {
-        try {
-          // `origin: "child:…"` (not a `source`) labels a queued item's
-          // after-the-fact origin as a child's report — distinct from a
-          // human operator ("user") and another session's `agent_prompt`
-          // ("agent:…"). Provenance-agnostic: transcript `source` stays
-          // unset, as before.
-          await registry.enqueuePrompt(parentId, notice, { origin: `child:${who}` })
-          return done("enqueued")
-        } catch {
-          // Raced into busy/admission-rejected between the check and the
-          // enqueue — fall through to the pending-notice stamp below.
-        }
-      }
+      // `source` AND `origin` both carry `child:<sessionId>`: `source` is the
+      // transcript provenance (the parent's `user-prompt` record names the
+      // child instead of reading as the human), `origin` the queue UI's
+      // label. Keyed on the session id, not the child-settable label.
+      const provenance = `child:${selfId}`
       // Urgent report: `interrupt: true` cuts a mid-turn parent instead of
       // queueing behind its in-flight turn. Reuses `enqueuePrompt`'s own
       // interrupt arm (cancel + await-settle + dispatch — the SAME helper
@@ -1425,27 +1417,41 @@ export function registerAgentTools(
       // message redirects the parent immediately rather than arriving only
       // after the parent finishes what it was doing. On the (rare) race
       // where the interrupt/dispatch is rejected, fall through to the
-      // pending-notice stamp below so the message is never lost.
-      if (effectiveInterrupt) {
+      // queue arm below so the message is never lost. An idle parent skips
+      // this entirely — there is no turn to cut.
+      if (effectiveInterrupt && parent.busy) {
         try {
           await registry.enqueuePrompt(parentId, notice, {
             interrupt: true,
-            origin: `child:${who}`,
+            source: provenance,
+            origin: provenance,
           })
           return done("interrupted")
         } catch {
-          // Fall through to the stamp path — same fail-safe as the idle arm.
+          // Fall through to the queue arm below.
         }
       }
-      // Same mechanism the crash notice uses: stamped notices are flushed
-      // ahead of the parent's next outgoing message (see
-      // `pendingChildCrashNotices` in sessions.ts — generic despite the
-      // crash-flavored name).
-      if (!registry.stampPendingChildCrashNotice(parentId, notice)) {
+      // `queue: true` is a no-op on an idle parent (dispatched now as its own
+      // turn). On a busy one it parks the report as its OWN item in the
+      // prompt queue, drained as a separate turn when the current one ends
+      // naturally (`dispatchQueuedPrompt`) — never string-glued onto
+      // whatever prompt comes next (a human's included), and never stranded
+      // waiting for an unrelated prompt to arrive.
+      let queued: boolean
+      try {
+        const result = await registry.enqueuePrompt(parentId, notice, {
+          queue: true,
+          source: provenance,
+          origin: provenance,
+        })
+        queued = result.queued
+      } catch (err) {
         return fail(
-          `message_parent: parent session "${parentId}" vanished mid-delivery.`
+          `message_parent: could not deliver to parent session "${parentId}" — ` +
+            (err instanceof Error ? err.message : String(err))
         )
       }
+      if (!queued) return done("enqueued")
       // Self-documenting loop (symmetric with agent_prompt): the parent is
       // mid-turn so this report is parked onto its next turn, and the caller
       // said nothing about `interrupt` — surface the option at the moment
