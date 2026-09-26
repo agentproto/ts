@@ -45,6 +45,7 @@ import {
   type BrowserAdapterLister,
 } from "./browser-tools.js"
 import { registerAuthProfileTools } from "./auth-profile-tools.js"
+import { registerProviderKeyTools } from "./provider-key-tools.js"
 import { registerHarnessPresetTools } from "./harness-preset-tools.js"
 import { registerCredentialDiscoveryTools } from "./credential-discovery.js"
 import { registerWebSearchTools } from "./web-search-tools.js"
@@ -2105,6 +2106,11 @@ export async function createGateway(
     // `~/.agentproto/auth-profiles.json` + keychain slots directly, same as
     // the profile readers already mounted in session-spawn.ts.
     registerAuthProfileTools(server)
+    // Read-only view of the legacy `~/.agentproto/providers.json` key store
+    // (`provider_key_list`), never returning a secret — fingerprint/last4
+    // only. No host wiring — reads the fixed providers.json path + this
+    // process's own env directly.
+    registerProviderKeyTools(server)
     // Persisted harness→profile bindings (harness_preset_list/create/delete/
     // set_default). Same no-host-wiring stance as the auth-profile tools —
     // the store reads/writes the fixed `~/.agentproto/harness-presets.json`.
