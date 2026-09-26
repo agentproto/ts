@@ -90,4 +90,28 @@ export const preflightStep: OnboardingStep = {
   async detect(ctx) {
     return [checkNode(ctx), checkPlatform(ctx), await checkCliVersion(ctx), await checkHomeDir(ctx)]
   },
+  stopIf(checks) {
+    const blocker = checks.find(
+      (c) => (c.id === "preflight.node" || c.id === "preflight.home") && c.status === "broken",
+    )
+    return blocker ? `${blocker.title}: ${blocker.detail ?? "broken"}${blocker.fix ? ` — ${blocker.fix}` : ""}` : null
+  },
+  async plan(checks) {
+    const cli = checks.find((c) => c.id === "preflight.cli-version")
+    if (cli?.status !== "warn" || !cli.fix) return []
+    return [
+      {
+        id: "preflight.update-cli",
+        title: "Update the CLI (npm i -g @agentproto/cli@latest)",
+        default: false,
+        streamsOutput: true,
+        async apply(io) {
+          const code = await io.verbs.updateCli()
+          return code === 0
+            ? { ok: true, detail: "updated — re-run `agentproto setup` to continue on the new version" }
+            : { ok: false, detail: `npm exited ${code}` }
+        },
+      },
+    ]
+  },
 }

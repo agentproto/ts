@@ -73,6 +73,14 @@ import {
 import { resolvePosture } from "./canonical-posture.js"
 import type { UserPreset } from "./user-presets.js"
 import { getDefaultHarnessPreset } from "./harness-preset-store.js"
+import {
+  HEADLESS_BROWSER_PROMPT_HINT,
+  resolveBrowserMode,
+  resolveHeadlessBrowser as realResolveHeadlessBrowser,
+  trackBrowserSession,
+  type ResolveHeadlessBrowser,
+  type SpawnBrowserMode,
+} from "./browser-mount.js"
 import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from "./role.js"
 import type { DelegationReach, RoleProfile } from "./role.js"
 import { resolveDeferredToolsGatewayOption } from "./deferred-tools.js"
@@ -841,6 +849,10 @@ export interface SpawnAgentSessionDeps {
    *  `loadConfig` when omitted; tests inject a stub to avoid touching
    *  the real file. */
   loadDefaultsConfig?: () => Promise<SpawnDefaultsConfig | undefined>
+  /** Builds the per-session headless-browser mount for `browser:
+   *  "headless"` (see `browser-mount.ts`). Defaults to the real resolver
+   *  (installs chrome-devtools-mcp on first use); tests inject a stub. */
+  resolveHeadlessBrowser?: ResolveHeadlessBrowser
   /** Loads the custom (pack-carried) role registry, merged with the
    *  two built-ins by `resolveRole`/`canSpawn` — see `role.ts`'s
    *  `mergeRoleRegistry`. Defaults to `loadDefaultRoleRegistry()`
@@ -1056,6 +1068,13 @@ export interface SpawnAgentSessionInput {
    *  compose). Omitted entirely ⇒ no override at all — the gateway's own
    *  boot-time `defaults.mcp.deferredTools` default applies unchanged. */
   deferredTools?: boolean
+  /** Give the agent its own isolated headless Chrome: a per-session
+   *  chrome-devtools-mcp stdio server appended to `mcpServers` (named
+   *  `browser`), plus a short prompt hint naming its tools. Wins over the
+   *  resolved role's `browser`, then the user preset's, then config
+   *  `defaults.spawn.browser`; all unset ⇒ off. Explicit `true` with a
+   *  `sandbox` spawn is rejected (no Chrome in the box image yet). */
+  browser?: SpawnBrowserMode
   /** Opt this session into Langfuse tracing (prompt/completion + tool spans +
    *  tokens/cost). Effective opt-in is `trace ?? langfuseTracingDefault ?? false`
    *  — see `SpawnAgentInput.trace` in sessions.ts. */
@@ -1210,6 +1229,8 @@ export type SpawnAgentSessionResult =
         | "access_profile_not_found"
         | "access_profile_ineligible"
         | "harness_preset_profile_unavailable"
+        | "browser_unsupported"
+        | "browser_unavailable"
         | "model_wallet_ineligible"
         | "model_adapter_incompatible"
         | "gateway_base_url_unsupported"
@@ -1220,6 +1241,7 @@ export type SpawnAgentSessionResult =
         | "sandbox_proxy_failed"
         | "sandbox_reuse_ambiguous"
         | "sandbox_app_serve_failed"
+        | "sandbox_cwd_invalid"
         | "worktree_disabled"
         | "worktree_provisioner_not_enabled"
         | "worktree_provision_failed"
@@ -1262,6 +1284,9 @@ export async function spawnAgentSession(
   // Presets are a lower-precedence layer than an explicit spawn request. Do
   // this once, at the common core, so HTTP, MCP and future clients have the
   // same semantics rather than each expanding a preset slightly differently.
+  // The preset's `browser` sits BELOW the role default (see
+  // `resolveBrowserMode`), so it is kept aside instead of folded into input.
+  const presetBrowser = input.preset?.browser
   if (input.preset) {
     const { preset, ...explicit } = input
     input = {
@@ -2011,6 +2036,58 @@ export async function spawnAgentSession(
       delegationReach,
     )
   }
+  // ── Per-session headless browser (`browser: "headless"`) ──────────
+  // Appended AFTER every `mcpServers === undefined` default above, so asking
+  // for a browser never suppresses the self-mount / report-back channel,
+  // and an explicit `mcpServers: []` opt-out still only opts out of those.
+  // A caller entry already named like the browser mount wins as-is.
+  const browserMode = resolveBrowserMode({
+    explicit: input.browser,
+    role: role.browser,
+    preset: presetBrowser,
+    defaults: configDefaults?.spawn?.browser,
+  })
+  let browserReadPaths: string[] = []
+  let browserPromptHint: string | undefined
+  if (browserMode === "headless") {
+    if (input.sandbox !== undefined) {
+      if (input.browser === "headless") {
+        return {
+          ok: false,
+          code: "browser_unsupported",
+          message:
+            "agent_start: browser \"headless\" is not supported for a `sandbox` spawn yet " +
+            "(the box image ships no Chrome). Drop `browser` or spawn on this host.",
+        }
+      }
+      // A role/preset/config default must not break every sandbox spawn.
+      spawnWarnings.push("agent_start: browser default ignored for a sandbox spawn (no Chrome in the box image).")
+    } else {
+      let mount
+      try {
+        mount = await (deps.resolveHeadlessBrowser ?? realResolveHeadlessBrowser)({
+          sessionId: mintedSessionId,
+          cwd,
+          ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
+        })
+      } catch (err) {
+        return {
+          ok: false,
+          code: "browser_unavailable",
+          message:
+            `agent_start: could not set up the headless browser — ${
+              err instanceof Error ? err.message : String(err)
+            }. Install Google Chrome or set AGENTPROTO_CHROME_PATH, or spawn without \`browser\`.`,
+        }
+      }
+      if (!(mcpServers ?? []).some(e => e.name === mount.entry.name)) {
+        mcpServers = [...(mcpServers ?? []), mount.entry]
+      }
+      browserReadPaths = mount.readPaths
+      browserPromptHint = HEADLESS_BROWSER_PROMPT_HINT
+      trackBrowserSession(mintedSessionId)
+    }
+  }
   const spawnDefaults = resolveSpawnDefaults(configDefaults, input.adapter, {
     skills: input.skills,
     options: input.options,
@@ -2496,6 +2573,9 @@ export async function spawnAgentSession(
   // (startSession opts + env) so the pointer contract is actually readable
   // through the session's own workspace tools.
   const agentsMdReadPaths = additionalReadPathsForAgentsMd(agentsMdResolution, cwd)
+  // Plus the headless browser's install + Chrome bundle, so a
+  // `commandSandbox`-confined adapter tree can still launch them.
+  const additionalReadPaths = [...(agentsMdReadPaths ?? []), ...browserReadPaths]
   // Per-workspace RULES.md injection (WP-R4): resolve the workspace's
   // `RULES.md` (from its state bucket — see `workspace-rules.ts`) and, when
   // present, inline it in full into the composed prompt. Unlike AGENTS.md
@@ -2523,7 +2603,13 @@ export async function spawnAgentSession(
   if (input.prompt) {
     effectivePrompt = [
       ...rulesMdParts,
-      composeRoleContext(role, input.promptAppend, roleRegistry, delegationReach),
+      composeRoleContext(
+        role,
+        [input.promptAppend, browserPromptHint].filter((p): p is string => !!p).join("\n\n") ||
+          undefined,
+        roleRegistry,
+        delegationReach,
+      ),
       ...agentsMdParts,
       parentContextLine,
       input.prompt,
@@ -2790,7 +2876,7 @@ export async function spawnAgentSession(
             ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
             ...(input.permissionHold ? { permissionHold: true } : {}),
             ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
-            ...(agentsMdReadPaths ? { additionalReadPaths: agentsMdReadPaths } : {}),
+            ...(additionalReadPaths.length > 0 ? { additionalReadPaths } : {}),
             onActivity: () => registry.pulseActivity(pendingDesc.id),
           })
           let asyncPrompt = effectivePrompt
@@ -2897,14 +2983,16 @@ export async function spawnAgentSession(
         resolveSandboxProvider,
         adapter: input.adapter,
         // The host's own resolved `cwd` — valid as-is for a same-machine
-        // provider (`local`); a genuinely remote box (e2b) needs its own
-        // filesystem story (AIP-36 `mounts`, out of scope here — see the
+        // provider (`local`); a genuinely remote box (e2b/Box) has its own,
+        // disjoint filesystem (AIP-36 `mounts`, out of scope here — see the
         // plan's "local MCP servers unreachable from sandbox" risk, which
-        // applies equally to bare filesystem paths). Forwarding it is
-        // still strictly better than omitting it: the box's OWN
-        // `agent_start` needs SOME cwd to resolve, and a bad path fails
-        // no worse than no path at all.
+        // applies equally to bare filesystem paths). `bootSandboxAgentSession`
+        // uses `explicitCwd` below to tell "the caller asked for THIS path"
+        // apart from "cwd resolution defaulted to the host's active
+        // workspace" — only the latter gets silently replaced by the
+        // provider's own `defaultCwd` (e.g. e2b/Box's `/home/user`).
         cwd,
+        explicitCwd,
         ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
@@ -2928,6 +3016,11 @@ export async function spawnAgentSession(
       sandboxTeardown = booted.sandboxTeardown
       sandboxPorts = booted.sandboxPorts
       appServe = booted.appServe
+      // The box may have gotten a DIFFERENT cwd than the host resolved
+      // above (the provider's own `defaultCwd`, when the caller passed no
+      // explicit `cwd` — see `bootSandboxAgentSession`) — reflect that on
+      // the descriptor below, not the host path nothing actually used.
+      cwd = booted.cwd
     } else {
       // `resolved` is guaranteed non-null here — the `input.sandbox ===
       // undefined` branch above already returned `adapter_not_found`
@@ -3002,7 +3095,7 @@ export async function spawnAgentSession(
         // AGENTPROTO_ADDITIONAL_READ_PATHS env var (and the confinement
         // extra read paths) from this option itself, so the option is the
         // single authority. See additionalReadPathsForAgentsMd above.
-        ...(agentsMdReadPaths ? { additionalReadPaths: agentsMdReadPaths } : {}),
+        ...(additionalReadPaths.length > 0 ? { additionalReadPaths } : {}),
         onActivity: () => {
           if (liveSessionId) registry.pulseActivity(liveSessionId)
         },
@@ -3339,6 +3432,12 @@ type SandboxBootResult =
       agentSession: AgentSessionLike
       commandPreview: string
       sandboxId: string
+      /** The cwd actually sent to the box's own `agent_start` — `opts.cwd`
+       *  unchanged, UNLESS the caller passed no explicit cwd and the
+       *  provider declared a `defaultCwd`, in which case this is that
+       *  default. The caller stamps this (not `opts.cwd`) onto the host
+       *  descriptor's own `cwd` so it reflects what the box actually got. */
+      cwd: string
       /** Provider slug (e.g. `"e2b"`, `"local"`) — stamped onto the
        *  descriptor's `sandboxProvider` by the caller. */
       provider: string
@@ -3357,6 +3456,7 @@ type SandboxBootResult =
         | "sandbox_reuse_ambiguous"
         | "sandbox_proxy_failed"
         | "sandbox_app_serve_failed"
+        | "sandbox_cwd_invalid"
       message: string
     }
 
@@ -3509,6 +3609,22 @@ function withSandboxInstallAdapters(spec: SandboxSpec): SandboxSpec {
   }
 }
 
+/** Host-only absolute-path shapes that can never resolve inside a remote
+ *  sandbox's own (Linux) filesystem: macOS's `/Volumes/…` (external/network
+ *  volumes) and `/Users/…` (user homes), and a Windows drive letter
+ *  (`C:\…`/`C:/…`). Deliberately narrow — a generic-looking absolute path
+ *  (`/home/user`, `/workspace`, `/root/…`) is left alone since it might be
+ *  exactly the box path the caller meant. */
+const HOST_ONLY_PATH_PATTERNS: readonly RegExp[] = [
+  /^\/Volumes\//,
+  /^\/Users\//,
+  /^[A-Za-z]:[\\/]/,
+]
+
+function looksLikeHostOnlyPath(p: string): boolean {
+  return HOST_ONLY_PATH_PATTERNS.some(re => re.test(p))
+}
+
 /**
  * Resolve `opts.sandbox`, boot the box, spawn `adapter` on the box's OWN
  * `agent_start`, and wrap the result in a `SandboxAgentSessionProxy`. Called
@@ -3524,7 +3640,17 @@ async function bootSandboxAgentSession(opts: {
   sandbox: string | SandboxSpecInput
   resolveSandboxProvider?: SandboxProviderResolver
   adapter: string
+  /** The HOST's resolved cwd for this spawn — see `explicitCwd` for whether
+   *  the caller actually asked for this path, or it's just where cwd
+   *  resolution fell through to (active workspace / worktree). */
   cwd: string
+  /** True when the CALLER passed `agent_start.cwd` explicitly, false when
+   *  it's a host-side fallback (active workspace, parent session's cwd,
+   *  …). Distinguishes "the caller wants exactly this path" (forwarded
+   *  as-is, or rejected if it can't possibly exist in the box) from "cwd
+   *  resolution defaulted to something host-shaped" (silently replaced by
+   *  the provider's own `defaultCwd` instead of forwarded verbatim). */
+  explicitCwd: boolean
   mcpServers?: AcpMcpServer[]
   model?: string
   route?: RouteSpec
@@ -3561,6 +3687,37 @@ async function bootSandboxAgentSession(opts: {
       message:
         `agent_start: sandbox provider "${providerSlug}" not found. Check ` +
         "`list_sandbox_providers`, then `setup_sandbox_provider` if it needs credentials.",
+    }
+  }
+  // The cwd the BOX's own `agent_start` actually gets. `handle.defaultCwd`
+  // (only declared by providers whose filesystem is disjoint from the
+  // host's, e.g. e2b/Box's `/home/user`) is the signal this is such a
+  // provider at all:
+  //   - no explicit cwd ⇒ the host's cwd-resolution fallback (active
+  //     workspace / worktree / parent session) produced a HOST path that
+  //     can never exist in the box — silently swap in the provider's own
+  //     default instead of forwarding a path guaranteed to ENOENT.
+  //   - an explicit cwd that's shaped like a HOST-only path (macOS
+  //     `/Volumes/…`/`/Users/…`, a Windows drive letter) is almost
+  //     certainly the same mistake made on purpose — refuse it with a
+  //     clear 400 rather than let it surface as a `sandbox_proxy_failed`
+  //     500 three hops away, inside the box's own `agent_start`. Anything
+  //     else (`/home/user`, `/workspace`, a relative-looking path, …) is
+  //     forwarded as-is: it might be exactly the box path the caller meant.
+  let boxCwd = opts.cwd
+  if (handle.defaultCwd) {
+    if (!opts.explicitCwd) {
+      boxCwd = handle.defaultCwd
+    } else if (looksLikeHostOnlyPath(opts.cwd)) {
+      return {
+        ok: false,
+        code: "sandbox_cwd_invalid",
+        message:
+          `agent_start: cwd "${opts.cwd}" looks like a HOST-machine path — it cannot exist ` +
+          `inside the "${providerSlug}" sandbox, which has its own, separate filesystem. ` +
+          `Omit \`cwd\` to use the box's default (${handle.defaultCwd}), or pass a path that ` +
+          "exists inside the box.",
+      }
     }
   }
   const spec: SandboxSpec = await withSandboxAuthAutoPassthrough(
@@ -3663,7 +3820,7 @@ async function bootSandboxAgentSession(opts: {
         provider: providerSlug,
         state: err.cleanedUp,
         ...(opts.label ? { label: opts.label } : {}),
-        ...(opts.cwd ? { cwd: opts.cwd } : {}),
+        ...(boxCwd ? { cwd: boxCwd } : {}),
       })
     }
     return reuseSandboxId !== undefined
@@ -3693,7 +3850,7 @@ async function bootSandboxAgentSession(opts: {
     provider: providerSlug,
     state: reuseSandboxId !== undefined ? "connected" : "booted",
     ...(opts.label ? { label: opts.label } : {}),
-    ...(opts.cwd ? { cwd: opts.cwd } : {}),
+    ...(boxCwd ? { cwd: boxCwd } : {}),
     ...(lifecyclePolicy.pauseAfterIdleMs !== undefined
       ? { expiresAt: new Date(Date.now() + lifecyclePolicy.pauseAfterIdleMs).toISOString() }
       : {}),
@@ -3703,7 +3860,7 @@ async function bootSandboxAgentSession(opts: {
   try {
     const remoteDesc = await host.start({
       adapter: opts.adapter,
-      cwd: opts.cwd,
+      cwd: boxCwd,
       ...(opts.mcpServers ? { mcpServers: toMcpServerMounts(opts.mcpServers) } : {}),
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.route ? { route: opts.route } : {}),
@@ -3754,6 +3911,7 @@ async function bootSandboxAgentSession(opts: {
     }),
     commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
     sandboxId: host.sandboxId,
+    cwd: boxCwd,
     provider: providerSlug,
     sandboxTeardown: lifecyclePolicy.teardown,
     ...(host.ports && Object.keys(host.ports).length > 0 ? { sandboxPorts: host.ports } : {}),

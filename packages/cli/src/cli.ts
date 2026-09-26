@@ -73,6 +73,8 @@ Usage:
                        declares no verify_sha256 (refused by default in
                        non-interactive contexts)
   agentproto adapters  <list|show|outdated|install|uninstall|enable|disable> [args]
+  agentproto setup     [--yes] [--dry-run] [--json] [--only <step>...] [--skip <step>...]
+                                           onboarding wizard: zero to a working install
   agentproto setup     <slug> [--force] [--dry-run] [--only <stepId>...]
   agentproto run       <slug> [--cwd <dir>] [--prompt <text>] [--resume <session-id>]
   agentproto chat      <adapter> [--model <id>] [--cwd <dir>] [--keep] [--no-color]
@@ -124,7 +126,7 @@ Usage:
                                            register the daemon's MCP server with coding CLIs
                          [--app <appId>]  write a scoped mcp-app entry instead (book apps only)
   agentproto onboard     [--yes] [--no-skills] [--skills <slug>] [--agent <name>...]
-                                           first-run: register MCP + install the skill pack
+                                           alias of \`agentproto setup\` (the wizard)
   agentproto cron      add --schedule <cron> (--command <cmd> | --adapter <slug> --prompt <text>) [--once]
   agentproto cron      list [--json]
   agentproto cron      remove <id>
@@ -203,7 +205,7 @@ Examples:
   agentproto daemon install            # write launchd plist + start (macOS)
   agentproto daemon status             # plist? loaded? /health probe?
   agentproto doctor                    # check the whole install (read-only)
-  agentproto onboard --yes                 # wire all detected agents in one pass
+  agentproto setup                         # guided first run (wizard)
 `
 
 const VERBS = new Set([

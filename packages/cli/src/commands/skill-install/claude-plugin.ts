@@ -14,7 +14,8 @@
  * exactly once per adapter, not once per skill.
  */
 
-import { cp, mkdir } from "node:fs/promises"
+import { cp, mkdir, realpath } from "node:fs/promises"
+import { relative } from "node:path"
 import { pathExists, promptOverwrite } from "./shared.js"
 import { zipPackDir } from "./zip-pack.js"
 import type { SkillInstallHandler } from "./types.js"
@@ -56,7 +57,19 @@ export const installClaudePlugin: SkillInstallHandler = async (skill, opts, targ
 
   // Copy the whole plugin bundle
   await mkdir(outDir, { recursive: true })
-  await cp(packDir, outDir, { recursive: true, force: true })
+  // Copy from the real path: a node_modules-resolved pack is usually a
+  // (pnpm) symlink, and `fs.cp` copies a symlink source as a link — which
+  // can't overwrite an existing plugin dir (ENOTDIR on every re-install).
+  // A workspace pack also carries its own node_modules/.turbo (symlinks into
+  // the monorepo that `zip -r` then follows): never part of a plugin bundle.
+  // Matched relative to the pack root, so a pack that itself lives under a
+  // global node_modules still copies.
+  const source = await realpath(packDir)
+  await cp(source, outDir, {
+    recursive: true,
+    force: true,
+    filter: (src) => !/(^|[\\/])(node_modules|\.turbo)([\\/]|$)/.test(relative(source, src)),
+  })
 
   // Create a .zip of the plugin (best-effort — the plugin dir is the
   // canonical artifact; the archive is a convenience, and `zip` may be

@@ -15,6 +15,7 @@
  * server.
  */
 
+import { sweepSessionBrowser } from "./browser-mount.js"
 import { randomUUID } from "node:crypto"
 import { existsSync } from "node:fs"
 import { readFile } from "node:fs/promises"
@@ -411,6 +412,14 @@ export {
   type SandboxGcProviderHandle,
   type SandboxGcReapResult,
 } from "./sandbox-gc.js"
+export {
+  reconcileSandboxLedger,
+  type SandboxReconcileDeps,
+  type SandboxReconcileProviderHandle,
+  type SandboxReconcileResult,
+  type SandboxReconcileRow,
+  type SandboxReconcileVerdict,
+} from "./sandbox-reconcile.js"
 export type {
   AgentSessionLike,
   AgentStreamEvent,
@@ -1263,6 +1272,13 @@ export async function createGateway(
   // leak memory across sessions.
   sessionEvents.on("session:exited", ev => {
     webhookNotifier.unregister(ev.sessionId)
+  })
+  // Headless-browser backstop (`browser-mount.ts`): once a `browser:
+  // "headless"` session exits, kill anything still carrying its Chrome
+  // marker (an adapter that died without closing its MCP children). No-op
+  // for sessions spawned without a browser.
+  sessionEvents.on("session:exited", ev => {
+    void sweepSessionBrowser(ev.sessionId).catch(() => {})
   })
 
   // Per-workspace brain: auto-ingest a workspace's conversations when its

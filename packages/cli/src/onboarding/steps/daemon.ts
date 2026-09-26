@@ -13,7 +13,7 @@ import {
   launchdPlistPath,
   pathNeedsRefresh,
 } from "../../commands/daemon.js"
-import type { OnboardingStep, StepCheck, StepContext } from "../types.js"
+import type { OnboardingStep, SetupAction, StepCheck, StepContext } from "../types.js"
 import { readText, tildify } from "./_util.js"
 
 const DEFAULT_PORT = 18790
@@ -136,5 +136,66 @@ export const daemonStep: OnboardingStep = {
     const checks = [await checkHealth(ctx, plistXml !== null), await checkService(ctx, plistXml, plistPath)]
     if (plistXml !== null) checks.push(await checkPlistPath(ctx, plistXml))
     return checks
+  },
+  async plan(checks, ctx) {
+    const health = checks.find((c) => c.id === "daemon.health")
+    const service = checks.find((c) => c.id === "daemon.service")
+    const path = checks.find((c) => c.id === "daemon.path")
+    const actions: SetupAction[] = []
+    if (ctx.platform !== "darwin") {
+      if (health?.status === "missing") {
+        actions.push({
+          id: "daemon.serve",
+          title: "Start `agentproto serve` in the background (service support for this OS is coming)",
+          default: true,
+          async apply(io) {
+            const port = await io.verbs.ensureDaemon()
+            return port === null
+              ? { ok: false, detail: "the daemon did not answer /health — run `agentproto serve` in a terminal" }
+              : { ok: true, detail: `daemon up on port ${port}` }
+          },
+        })
+      }
+      return actions
+    }
+    if (service?.status === "warn" && service.fix === "agentproto daemon install") {
+      actions.push({
+        id: "daemon.install",
+        title: "Install the daemon as a login service (launchd) and start it",
+        default: true,
+        async apply(io) {
+          const installed = await io.verbs.daemon(["install"])
+          if (installed !== 0) return { ok: false, detail: `daemon install exited ${installed}` }
+          const started = await io.verbs.daemon(["start"])
+          return started === 0 ? { ok: true, detail: "installed and started" } : { ok: false, detail: `daemon start exited ${started}` }
+        },
+      })
+    } else if (health?.status === "missing") {
+      actions.push({
+        id: "daemon.start",
+        title: "Start the daemon",
+        default: true,
+        async apply(io) {
+          const code = await io.verbs.daemon(["start"])
+          return code === 0 ? { ok: true, detail: "started" } : { ok: false, detail: `daemon start exited ${code}` }
+        },
+      })
+    }
+    const stale = [
+      health?.status === "warn" ? "it runs a different version than this CLI" : null,
+      path?.status === "warn" ? "its PATH is stale" : null,
+    ].filter((r): r is string => r !== null)
+    if (stale.length > 0 && actions.length === 0) {
+      actions.push({
+        id: "daemon.restart",
+        title: `Restart the daemon (${stale.join(", ")}; running sessions are stopped)`,
+        default: false,
+        async apply(io) {
+          const code = await io.verbs.daemon(["restart"])
+          return code === 0 ? { ok: true, detail: "restarted" } : { ok: false, detail: `daemon restart exited ${code}` }
+        },
+      })
+    }
+    return actions
   },
 }

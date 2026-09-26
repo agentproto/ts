@@ -84,6 +84,9 @@ import {
   injectProviderKeysIntoEnv,
   setMcpCredentialDeps,
   resolveDeferredToolsGatewayOption,
+  reconcileSandboxLedger,
+  makeSandboxResolver,
+  makeSandboxCredsStore,
   type AgentAdapterResolver,
   type AdapterAuthDescriptor,
   type GatewayHandle,
@@ -458,7 +461,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(Object.keys(modelProviders).length > 0 ? { modelProviders } : {}),
       }
       return {
-        async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, onActivity, permissionHold, auth, commandSandbox, env }) {
+        async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, onActivity, permissionHold, auth, commandSandbox, additionalReadPaths, env }) {
           // Build config.options only when there's something to set — an
           // empty object would pass undefined validation but trips the
           // "no declared options" early-return in composeSpawn. Caller-
@@ -494,6 +497,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
             ...(typeof posture === "string" ? { posture } : {}),
             ...(contextProfile ? { contextProfile } : {}),
             ...(commandSandbox ? { commandSandbox } : {}),
+            // Read grants for a confined adapter tree (the AGENTS.md pointer
+            // file, the headless browser's install + Chrome bundle).
+            ...(additionalReadPaths?.length ? { additionalReadPaths } : {}),
             ...(env ? { env } : {}),
           })
         },
@@ -893,6 +899,36 @@ export async function runServe(args: readonly string[]): Promise<number> {
   } catch (err) {
     process.stderr.write(
       `${color.dim}eager resume-on-boot skipped — ${
+        err instanceof Error ? err.message : String(err)
+      }${color.reset}\n`,
+    )
+  }
+
+  // ── sandbox ledger reconcile ──
+  // The ledger (~/.agentproto/sandboxes.json) can drift from what a
+  // provider actually still has running — a failed teardown, a daemon that
+  // crashed mid-close, a provider-side idle-reap the daemon never heard
+  // about. Probing every row still claiming to be booted/connected/paused
+  // catches that drift at boot, same primitive `agentproto sandbox list`
+  // and `GET /sandboxes/:id/alive` already use per-row. Read-only against
+  // the provider and never tears a box down — a row it confirms gone is
+  // only ever marked "gone" in the ledger. Best-effort: a broken provider
+  // credential must never gate the daemon being up.
+  try {
+    const reconciled = await reconcileSandboxLedger({
+      resolveProvider: makeSandboxResolver(makeSandboxCredsStore()),
+    })
+    if (reconciled.checked > 0) {
+      process.stderr.write(
+        `${color.dim}sandbox ledger reconciled: ${reconciled.checked} checked, ` +
+          `${reconciled.gone} gone, ${reconciled.alive} alive` +
+          `${reconciled.unknown > 0 ? `, ${reconciled.unknown} unknown` : ""}` +
+          `${color.reset}\n`,
+      )
+    }
+  } catch (err) {
+    process.stderr.write(
+      `${color.dim}sandbox ledger reconcile skipped — ${
         err instanceof Error ? err.message : String(err)
       }${color.reset}\n`,
     )

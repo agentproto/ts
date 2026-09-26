@@ -12,8 +12,10 @@ import type { SandboxHandle } from "./types.js"
 export interface SandboxLifecyclePolicy {
   /** What session close should do to the box: pause it (keeps it
    *  reconnectable via `SandboxProvider.connect`) or kill it (ephemeral).
-   *  Pause is the default: absent any explicit lifecycle declaration the
-   *  box is paused on close, and dies at its own `timeoutMs` anyway. */
+   *  Kill is the default: absent any explicit lifecycle declaration (or a
+   *  reconnect target), the box is destroyed on close rather than left
+   *  paused-and-billed. Pause is an explicit opt-in — see
+   *  `resolveLifecyclePolicy`'s doc. */
   teardown: "kill" | "pause"
   /** Idle window in milliseconds, parsed from the AIP-37 `idle-<seconds>`
    *  event name. Undefined when the spec doesn't declare
@@ -24,19 +26,23 @@ export interface SandboxLifecyclePolicy {
 const IDLE_EVENT_PATTERN = /^idle-(\d+)$/
 
 /**
- * Pause is the default teardown: absent `destroy_on`, `pause_after_idle`
- * AND `reuse`, a closed box is paused (`SandboxProvider.connect`-able)
- * rather than killed — it still dies at its own `timeoutMs`, so pausing
- * never accumulates boxes indefinitely. The explicit declarations stay
- * authoritative: an `destroy_on` always kills (the spec states outright
- * the box must not survive session close), and `pause_after_idle` /
- * `reuse` pause (which the default now agrees with).
+ * Kill is the default teardown: absent `destroy_on`, `pause_after_idle`,
+ * AND `reuse`, a closed box is destroyed rather than left paused (and
+ * billed) with nothing pointed at it — a fleet of daemons defaulting to
+ * "leave it running" is exactly how a provider account accumulates
+ * dozens of forgotten paused boxes (see the 2026-09 sandbox-ledger
+ * reconcile finding). Pause is the explicit opt-in: `pause_after_idle`
+ * declares the box should idle out on its own schedule rather than die
+ * immediately, and `reuse` means THIS boot is itself a reconnect to an
+ * existing box — killing it on close would undo the very reason it was
+ * reused. `destroy_on` stays authoritative over both (the spec states
+ * outright the box must not survive session close).
  */
 export function resolveLifecyclePolicy(spec: SandboxHandle, reuse: boolean): SandboxLifecyclePolicy {
   if (spec.lifecycle?.destroy_on) return { teardown: "kill" }
 
   const pauseAfterIdleMs = parseIdleAfterMs(spec.lifecycle?.pause_after_idle)
-  const teardown: "kill" | "pause" = "pause"
+  const teardown: "kill" | "pause" = pauseAfterIdleMs !== undefined || reuse ? "pause" : "kill"
   return { teardown, ...(pauseAfterIdleMs !== undefined ? { pauseAfterIdleMs } : {}) }
 }
 

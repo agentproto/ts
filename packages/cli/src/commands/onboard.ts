@@ -1,113 +1,31 @@
 /**
- * `agentproto onboard` — first-run umbrella that wires your coding agents
- * to the daemon in one pass: register the daemon MCP server, then install
- * the agentproto skill pack.
+ * `agentproto onboard` — alias of the `agentproto setup` wizard (no slug).
  *
- * Wraps the two existing standalone verbs:
- *   - `agentproto install-mcp`        (runInstallMcp)
- *   - `agentproto install skill/<name>` (runInstallSkill)
- *
- * Both remain independently usable and unchanged.
+ * Its original flags keep working, mapped onto the wizard:
+ *   --yes              → --yes
+ *   --no-skills        → --skip skills
+ *   --skills <slug>    → the skills action installs that skill instead of the pack
+ *   --agent <name>...  → MCP registration limited to these clients
  */
 
 import { parseArgs } from "node:util"
-import { runInstallMcp } from "./install-mcp.js"
-import { runInstallSkill } from "./install-skill.js"
+import { runSetupWizardCommand } from "./setup.js"
 
-// ── types ───────────────────────────────────────────────────────────────────
-
-/** Injected runners — real ones in prod, fakes in tests. */
-export interface OnboardDeps {
-  installMcp: (args: readonly string[]) => Promise<number>
-  installSkill: (slug: string, args: readonly string[]) => Promise<number>
-}
-
-export interface OnboardOptions {
-  /** Non-interactive: forward `--yes` to install-mcp. */
-  yes: boolean
-  /** Run the skill-install step (false ⇒ skip it). */
-  skills: boolean
-  /** Skill slug for the skill step (default "skill/agentproto-pack"). */
-  skillSlug: string
-  /** Explicit MCP agent list; empty ⇒ install-mcp `--all`. */
-  agents: readonly string[]
-}
-
-export interface OnboardReport {
-  /** Exit code from the MCP step. */
-  mcpCode: number
-  /** Exit code from the skill step, or null when skipped. */
-  skillCode: number | null
-}
-
-// ── constants ───────────────────────────────────────────────────────────────
-
-const DEFAULT_SKILL_SLUG = "skill/agentproto-pack"
-
-const REAL_DEPS: OnboardDeps = { installMcp: runInstallMcp, installSkill: runInstallSkill }
-
-const USAGE = `agentproto onboard — first-run: wire your coding agents to the daemon
+const USAGE = `agentproto onboard — alias of \`agentproto setup\` (the onboarding wizard)
 
 Usage:
   agentproto onboard [--yes] [--no-skills] [--skills <slug>] [--agent <name>...]
 
-Steps (both are also runnable standalone at any time):
-  ① register the daemon MCP server with detected agents   (see: agentproto install-mcp)
-  ② install the agentproto skill pack into skill-capable agents (see: agentproto install skill/<name>)
-
-Options:
-  --yes              non-interactive (forward to install-mcp)
-  --no-skills        skip the skill-install step
+  --yes              apply the wizard's defaults without prompting
+  --no-skills        skip the skills step
   --skills <slug>    install this skill instead of the full pack (e.g. ap-spawn-agent)
-  --agent <name>...  limit MCP registration to these agents (default: all detected)
+  --agent <name>...  register the MCP server with these clients only
+
+See \`agentproto setup --help\` for the full wizard.
 `
 
-// ── primitive ───────────────────────────────────────────────────────────────
-
-export async function onboardFlow(opts: OnboardOptions, deps: OnboardDeps): Promise<OnboardReport> {
-  process.stdout.write("agentproto onboarding — wiring your coding agents to the daemon\n\n")
-
-  // ① MCP
-  process.stdout.write("① Registering the daemon MCP server\n")
-  const mcpArgs: string[] = [
-    ...(opts.agents.length > 0 ? opts.agents.flatMap((a) => ["--agent", a]) : ["--all"]),
-    ...(opts.yes ? ["--yes"] : []),
-  ]
-  const mcpCode = await deps.installMcp(mcpArgs)
-
-  // ② Skills
-  let skillCode: number | null = null
-  if (opts.skills) {
-    process.stdout.write("\n② Installing the agentproto skill pack\n")
-    skillCode = await deps.installSkill(opts.skillSlug, [])
-  } else {
-    process.stdout.write("\n② Skills — skipped (--no-skills)\n")
-  }
-
-  // Summary
-  const ok = (c: number | null): string => (c === null ? "skipped" : c === 0 ? "ok" : `failed (exit ${c})`)
-  process.stdout.write(
-    `\nonboarding summary\n` +
-      `  MCP registration : ${ok(mcpCode)}\n` +
-      `  skill pack       : ${ok(skillCode)}\n`,
-  )
-  if (mcpCode === 0 && (skillCode === null || skillCode === 0)) {
-    process.stdout.write("\nNext: `agentproto daemon install` then `agentproto serve`.\n")
-  }
-
-  return { mcpCode, skillCode }
-}
-
-// ── verb ────────────────────────────────────────────────────────────────────
-
-export async function runOnboard(
-  args: readonly string[],
-  deps: OnboardDeps = REAL_DEPS,
-): Promise<number> {
-  if (args.includes("--help") || args.includes("-h")) {
-    process.stdout.write(USAGE)
-    return 0
-  }
+/** Translate `onboard` flags into `setup` wizard args. */
+export function mapOnboardArgs(args: readonly string[]): string[] {
   const { values } = parseArgs({
     args: [...args],
     allowPositionals: false,
@@ -115,26 +33,32 @@ export async function runOnboard(
     options: {
       yes: { type: "boolean" },
       "no-skills": { type: "boolean" },
-      skills: { type: "string" }, // override the skill slug
+      skills: { type: "string" },
       agent: { type: "string", multiple: true },
     },
   })
+  return [
+    ...(values.yes ? ["--yes"] : []),
+    ...(values["no-skills"] ? ["--skip", "skills"] : []),
+    ...(values.skills ? ["--skills", values.skills] : []),
+    ...(values.agent ?? []).flatMap((a) => ["--agent", a]),
+  ]
+}
 
-  const rawSlug = values.skills
-  const skillSlug =
-    rawSlug === undefined
-      ? DEFAULT_SKILL_SLUG
-      : rawSlug.startsWith("skill/")
-        ? rawSlug
-        : `skill/${rawSlug}`
-
-  const opts: OnboardOptions = {
-    yes: values.yes === true,
-    skills: values["no-skills"] !== true,
-    skillSlug,
-    agents: values.agent ?? [],
+export async function runOnboard(
+  args: readonly string[],
+  run: (args: readonly string[]) => Promise<number> = runSetupWizardCommand,
+): Promise<number> {
+  if (args.includes("--help") || args.includes("-h")) {
+    process.stdout.write(USAGE)
+    return 0
   }
-
-  const report = await onboardFlow(opts, deps)
-  return report.mcpCode !== 0 ? report.mcpCode : (report.skillCode ?? 0)
+  let mapped: string[]
+  try {
+    mapped = mapOnboardArgs(args)
+  } catch (err) {
+    process.stderr.write(`agentproto onboard: ${err instanceof Error ? err.message : String(err)}\n\n${USAGE}`)
+    return 2
+  }
+  return run(mapped)
 }

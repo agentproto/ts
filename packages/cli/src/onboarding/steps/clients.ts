@@ -11,7 +11,7 @@ import {
   type AgentDetection,
   type McpRegistrationInspection,
 } from "../../commands/install-mcp.js"
-import type { OnboardingStep, StepCheck, StepContext } from "../types.js"
+import type { OnboardingStep, SetupAction, StepCheck, StepContext } from "../types.js"
 import { errorMessage, readText, tildify } from "./_util.js"
 
 function portOf(url: string): number | null {
@@ -97,5 +97,40 @@ export const clientsStep: OnboardingStep = {
       checks.push({ id, title: client.label, status: "ok", detail: `registered in ${tildify(ctx, found.path)}`, data })
     }
     return checks
+  },
+  async plan(checks) {
+    const unregistered = checks.filter((c) => c.status === "warn" && c.fix?.startsWith("agentproto install-mcp --agent "))
+    const mismatched = checks.some((c) => c.status === "broken" && c.fix === "agentproto install-mcp --update")
+    const actions: SetupAction[] = []
+    if (unregistered.length > 0) {
+      actions.push({
+        id: "clients.register",
+        title: "Register the agentproto MCP server with your coding clients",
+        default: true,
+        choices: unregistered.map((c) => ({
+          value: c.id.slice("clients.".length),
+          label: c.title,
+          default: true,
+        })),
+        async apply(io, selected = []) {
+          const code = await io.verbs.installMcp([...selected.flatMap((a) => ["--agent", a]), "--yes"])
+          return code === 0
+            ? { ok: true, detail: `registered with ${selected.join(", ")} — restart those clients to pick it up` }
+            : { ok: false, detail: `install-mcp exited ${code}` }
+        },
+      })
+    }
+    if (mismatched) {
+      actions.push({
+        id: "clients.update",
+        title: "Point existing registrations at the daemon's current port",
+        default: true,
+        async apply(io) {
+          const code = await io.verbs.installMcp(["--update", "--yes"])
+          return code === 0 ? { ok: true, detail: "updated" } : { ok: false, detail: `install-mcp --update exited ${code}` }
+        },
+      })
+    }
+    return actions
   },
 }

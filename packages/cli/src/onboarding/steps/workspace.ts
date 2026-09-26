@@ -79,4 +79,23 @@ export const workspaceStep: OnboardingStep = {
         }
     return [registered, cwd]
   },
+  async plan(checks, ctx) {
+    if (checks.find((c) => c.id === "workspace.registered")?.status !== "missing") return []
+    const slug = sanitizeSlug(basename(ctx.cwd))
+    return [
+      {
+        id: "workspace.register",
+        title: `Register ${ctx.cwd} as workspace "${slug}"`,
+        default: true,
+        streamsOutput: true,
+        async apply(io) {
+          const chosen = io.interactive ? await io.prompts.text("Workspace slug", slug) : slug
+          if (chosen === null) return { ok: false, detail: "cancelled" }
+          const final = sanitizeSlug(chosen || slug)
+          const code = await io.verbs.workspace(["add", ctx.cwd, "--slug", final])
+          return code === 0 ? { ok: true, detail: `registered "${final}"` } : { ok: false, detail: `workspace add exited ${code}` }
+        },
+      },
+    ]
+  },
 }
