@@ -91,6 +91,7 @@ import { runStallWatchdogPass } from "./stall-watchdog.js"
 import { createRestartScheduler, runRestartSweepPass } from "./restart-scheduler.js"
 import { sweepAppRuns } from "./app-run-liveness.js"
 import { loadConfig } from "./config.js"
+import { resolveMessagingDefaults } from "./messaging-defaults.js"
 import { defaultTranscriptBaseDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
 import { resolveResumeAuth, restartAgentSession } from "./session-restart-core.js"
 import { createTransmitterBindingStore } from "./transmitter-bindings.js"
@@ -1930,16 +1931,12 @@ export async function createGateway(
     // can declare `sandbox` and resolve a provider, instead of throwing
     // `sandbox_provider_not_found`.
     resolveSandboxProvider: resolveSandboxProviderResolved,
-    // config.json `defaults.agentPromptInterrupt` — same unset-default the
-    // root /mcp surface uses, so a child driving/reporting through the scoped
-    // orchestrator gateway honours it too.
-    ...(configDefaults?.agentPromptInterrupt != null
-      ? { defaultAgentPromptInterrupt: configDefaults.agentPromptInterrupt }
-      : {}),
-    ...(configDefaults?.messaging?.allowSiblings ? { messagingAllowSiblings: true } : {}),
-    ...(configDefaults?.messaging?.agentInterrupt
-      ? { messagingAgentInterrupt: configDefaults.messaging.agentInterrupt }
-      : {}),
+    // No `defaultAgentPromptInterrupt` / `messagingAllowSiblings` /
+    // `messagingAgentInterrupt` override here: the factory's own per-call
+    // closure (orchestrator-gateway.ts) reads `defaults.agentPromptInterrupt`
+    // / `defaults.messaging.*` fresh via `resolveMessagingDefaults` on every
+    // `/mcp/orchestrator` request, so a `config_set` change hot-applies with
+    // no restart. Passing a static value here would re-freeze it at boot.
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
@@ -1964,6 +1961,13 @@ export async function createGateway(
       name: opts.name ?? "agentproto-runtime",
       version: opts.version ?? "0.1.0-alpha",
     })
+    // Read `defaults.agentPromptInterrupt` / `defaults.messaging.*` fresh on
+    // every call (this factory runs once per `/mcp` request — the SDK's
+    // stateless pattern, see `serveMcp` in http-server.ts) instead of the
+    // gateway-boot-time `configDefaults` snapshot, so a `config_set` change
+    // takes effect on the very next `agent_prompt` / `message_parent` /
+    // `message_send` / `message_reply` call, no daemon restart.
+    const messagingDefaults = await resolveMessagingDefaults()
     // Deferred/lazy tool loading (opt-in — see deferred-tools.ts). Wraps
     // every subsequent `registerXTools(server, ...)` pass below so tools
     // outside `alwaysOn` register but start disabled (hidden from the
@@ -2086,15 +2090,12 @@ export async function createGateway(
       webhookNotifier,
       daemonMcpUrl,
       resolveSandboxProvider: resolveSandboxProviderResolved,
-      // config.json `defaults.agentPromptInterrupt` — the unset-default for
-      // `interrupt` on agent_prompt / message_parent. Omitted ⇒ false.
-      ...(configDefaults?.agentPromptInterrupt != null
-        ? { defaultAgentPromptInterrupt: configDefaults.agentPromptInterrupt }
-        : {}),
-      ...(configDefaults?.messaging?.allowSiblings ? { messagingAllowSiblings: true } : {}),
-      ...(configDefaults?.messaging?.agentInterrupt
-        ? { messagingAgentInterrupt: configDefaults.messaging.agentInterrupt }
-        : {}),
+      // `messagingDefaults` (resolved fresh above, per call) — the
+      // unset-defaults for `interrupt` on agent_prompt/message_parent and
+      // for message_send/message_reply's sibling/interrupt gates.
+      defaultAgentPromptInterrupt: messagingDefaults.agentPromptInterrupt,
+      messagingAllowSiblings: messagingDefaults.allowSiblings,
+      messagingAgentInterrupt: messagingDefaults.agentInterrupt,
       ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
       ...(opts.resolveAgentAdapter
         ? { resolveAgentAdapter: opts.resolveAgentAdapter }
