@@ -118,7 +118,13 @@ configured from a JSON file instead of a pair of env vars per server:
       "defaultRequestFields": { "chat_template_kwargs": { "enable_thinking": false } },
       "timeoutMs": { "firstTokenMs": 180000 }
     },
-    { "id": "ollama", "kind": "openai", "baseUrl": "http://192.168.1.20:11434/v1" }
+    { "id": "ollama", "kind": "openai", "baseUrl": "http://192.168.1.20:11434/v1" },
+    {
+      "id": "lmstudio",
+      "kind": "openai",
+      "baseUrl": "http://127.0.0.1:1234/v1",
+      "defaultRequestFields": { "reasoning_effort": "none" }
+    }
   ]
 }
 ```
@@ -137,13 +143,25 @@ entry may not reuse the id `"forge"`.
 - **`apiKeyEnv`** names an env var (never the key itself). Absent, or the env
   var unset, means the endpoint is always keyless — no `Authorization` header
   sent, same as `forge` with no `FORGE_API_KEY`.
-- **`defaultRequestFields.chat_template_kwargs`** is merged UNDER the client's
-  own request value (a client-supplied key always wins) — the vLLM
-  OpenAI-compatible extension `forge` already documents above. Needed in
-  practice: Qwen3.6-based models (e.g. a Bonsai-served 27B) default to a
-  "thinking" chat template and, on a tight `max_tokens` budget, can spend the
-  whole budget reasoning and return empty content — `enable_thinking: false`
-  avoids that unless the caller explicitly opts back in.
+- **`defaultRequestFields`** is any set of top-level OpenAI-compatible request
+  fields, merged UNDER the client's own request (a client-supplied top-level
+  key always wins; for an object-valued key present on both sides — e.g.
+  `chat_template_kwargs` — the merge goes one level deep, client sub-keys
+  winning). It cannot set `model`, `messages`, `stream`, `tools`, or `input`
+  — those would override routing/auth, not just default a parameter.
+  - `chat_template_kwargs` is the vLLM OpenAI-compatible extension `forge`
+    already documents above. Needed in practice: Qwen3.6-based models (e.g. a
+    Bonsai-served 27B) default to a "thinking" chat template and, on a tight
+    `max_tokens` budget, can spend the whole budget reasoning and return
+    empty content — `enable_thinking: false` avoids that unless the caller
+    explicitly opts back in.
+  - A plain top-level field works the same way for a server that doesn't
+    honour `chat_template_kwargs` or Anthropic's `thinking`/OpenAI's
+    `reasoning` params at all: LM Studio serving `prism-ml/bonsai-27b`
+    ignores both and only respects a top-level `reasoning_effort: "none"` to
+    cut reasoning to 0 tokens. On the Anthropic `/v1/messages` surface, an
+    explicit client `thinking: {type: "enabled"}` withholds a default
+    `reasoning_effort` rather than forcing it off.
 - When the upstream *still* returns only `reasoning_content` (no visible
   `content`) — a model-level defect, not a config one — set
   `LLM_ENDPOINT_PASSTHROUGH_THINKING=1` to surface it as an Anthropic

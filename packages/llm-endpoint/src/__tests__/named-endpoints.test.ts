@@ -220,6 +220,100 @@ describe('named endpoints — routing', () => {
     }
   });
 
+  it('an arbitrary top-level defaultRequestFields field (not just chat_template_kwargs) merges UNDER the client, client wins', async () => {
+    const { fake, captured } = startFakeUpstream(() => ({
+      status: 200,
+      body: { id: 'chatcmpl-1', choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }], usage: {} },
+    }));
+    const fakeSrv = fake.listen(0);
+    const fakePort = (fakeSrv.address() as any).port;
+    await configureEndpoints([
+      { id: 'ep-lmstudio', kind: 'openai', baseUrl: `http://127.0.0.1:${fakePort}/v1`, defaultRequestFields: { reasoning_effort: 'none' } },
+    ]);
+
+    const srv = server.listen(0);
+    const port = (srv.address() as any).port;
+    try {
+      const res = await httpJson(port, '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: { model: 'ep-lmstudio/some-model', messages: [{ role: 'user', content: 'hi' }] },
+      });
+      expect(res.status).toBe(200);
+      expect(JSON.parse(captured.body!).reasoning_effort).toBe('none');
+
+      const res2 = await httpJson(port, '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: { model: 'ep-lmstudio/some-model', messages: [{ role: 'user', content: 'hi' }], reasoning_effort: 'high' },
+      });
+      expect(res2.status).toBe(200);
+      expect(JSON.parse(captured.body!).reasoning_effort).toBe('high');
+    } finally {
+      srv.close();
+      fakeSrv.close();
+    }
+  });
+
+  it('Anthropic /v1/messages: a defaultRequestFields.reasoning_effort applies when the client sends no thinking config', async () => {
+    const { fake, captured } = startFakeUpstream(() => ({
+      status: 200,
+      body: { id: 'chatcmpl-1', choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }], usage: {} },
+    }));
+    const fakeSrv = fake.listen(0);
+    const fakePort = (fakeSrv.address() as any).port;
+    await configureEndpoints([
+      { id: 'ep-lmstudio2', kind: 'openai', baseUrl: `http://127.0.0.1:${fakePort}/v1`, defaultRequestFields: { reasoning_effort: 'none' } },
+    ]);
+
+    const srv = server.listen(0);
+    const port = (srv.address() as any).port;
+    try {
+      const res = await httpJson(port, '/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: { model: 'ep-lmstudio2/some-model', max_tokens: 32, messages: [{ role: 'user', content: 'hi' }] },
+      });
+      expect(res.status).toBe(200);
+      expect(JSON.parse(captured.body!).reasoning_effort).toBe('none');
+    } finally {
+      srv.close();
+      fakeSrv.close();
+    }
+  });
+
+  it('Anthropic /v1/messages: an explicit thinking:{type:"enabled"} withholds the defaultRequestFields.reasoning_effort', async () => {
+    const { fake, captured } = startFakeUpstream(() => ({
+      status: 200,
+      body: { id: 'chatcmpl-1', choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }], usage: {} },
+    }));
+    const fakeSrv = fake.listen(0);
+    const fakePort = (fakeSrv.address() as any).port;
+    await configureEndpoints([
+      { id: 'ep-lmstudio3', kind: 'openai', baseUrl: `http://127.0.0.1:${fakePort}/v1`, defaultRequestFields: { reasoning_effort: 'none' } },
+    ]);
+
+    const srv = server.listen(0);
+    const port = (srv.address() as any).port;
+    try {
+      const res = await httpJson(port, '/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: {
+          model: 'ep-lmstudio3/some-model',
+          max_tokens: 32,
+          messages: [{ role: 'user', content: 'hi' }],
+          thinking: { type: 'enabled', budget_tokens: 1024 },
+        },
+      });
+      expect(res.status).toBe(200);
+      expect(JSON.parse(captured.body!).reasoning_effort).toBeUndefined();
+    } finally {
+      srv.close();
+      fakeSrv.close();
+    }
+  });
+
   it('GET /v1/models merges each configured endpoint\'s live models, one endpoint down does not fail the listing', async () => {
     const { fake: fakeUp } = startFakeUpstream((req) => {
       expect(req.url).toBe('/v1/models');

@@ -25,7 +25,13 @@ Endpoints are configured in `~/.agentproto/llm-endpoints.json`
       "defaultRequestFields": { "chat_template_kwargs": { "enable_thinking": false } },
       "timeoutMs": { "firstTokenMs": 180000 }
     },
-    { "id": "ollama", "kind": "openai", "baseUrl": "http://192.168.1.20:11434/v1" }
+    { "id": "ollama", "kind": "openai", "baseUrl": "http://192.168.1.20:11434/v1" },
+    {
+      "id": "lmstudio",
+      "kind": "openai",
+      "baseUrl": "http://127.0.0.1:1234/v1",
+      "defaultRequestFields": { "reasoning_effort": "none" }
+    }
   ]
 }
 ```

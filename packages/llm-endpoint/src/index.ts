@@ -473,16 +473,36 @@ function getConfigurableProviderSpec(provider: string): ResolvedConfigurableProv
   return undefined;
 }
 
-/** Merged UNDER the client's own request value (client keys win per-key) —
- *  openai-kind dispatch only, mirrors openagentik/router's `defaultRequestFields`.
- *  Today scoped to `chat_template_kwargs` (see endpoints.ts). The narrow
- *  structural parameter type (rather than `Record<string, unknown>`) lets
- *  this apply to both the untyped Anthropic/chat-completions payload and the
- *  strongly-typed Responses-facade ChatCompletionsRequestBody with no cast. */
-function applyDefaultRequestFields(payload: { chat_template_kwargs?: Record<string, unknown> }, defaults: EndpointDefaultRequestFields | undefined): void {
-  if (!defaults?.chat_template_kwargs) return;
-  const clientFields = isRecord(payload.chat_template_kwargs) ? payload.chat_template_kwargs : {};
-  payload.chat_template_kwargs = { ...defaults.chat_template_kwargs, ...clientFields };
+/**
+ * Merges an endpoint's `defaultRequestFields` UNDER the client's own request
+ * — openai-kind dispatch only, mirrors openagentik/router's
+ * `defaultRequestFields` (see endpoints.ts). Arbitrary top-level fields: the
+ * client wins per top-level key; for an object-valued key (e.g. vLLM's
+ * `chat_template_kwargs`) present on both sides, they merge one level deep
+ * with the client's sub-keys winning.
+ *
+ * `skipKeys` lets a caller withhold specific default keys for reasons the
+ * generic client-wins rule can't see on its own — e.g. the Anthropic
+ * `/v1/messages` path, where a client's `thinking: {type:"enabled"}` is
+ * consumed (and discarded) by `adaptAnthropicToOpenAI` before this runs, so
+ * there is no `reasoning_effort` on `payload` for "client wins" to protect.
+ */
+function applyDefaultRequestFields(
+  payload: Record<string, unknown>,
+  defaults: EndpointDefaultRequestFields | undefined,
+  skipKeys?: ReadonlySet<string>,
+): void {
+  if (!defaults) return;
+  for (const [key, value] of Object.entries(defaults)) {
+    if (skipKeys?.has(key)) continue;
+    const existing = payload[key];
+    if (existing === undefined) {
+      payload[key] = value;
+    } else if (isRecord(existing) && isRecord(value)) {
+      payload[key] = { ...value, ...existing };
+    }
+    // else: client already sent a non-mergeable value for this key — client wins, leave as-is.
+  }
 }
 
 /**
@@ -1374,7 +1394,11 @@ function handleResponsesRequest(
         res.end(JSON.stringify({ error: { type: 'invalid_request_error', message } }));
         return;
       }
-      if (responsesConfigurableSpec) applyDefaultRequestFields(chatPayload, responsesConfigurableSpec.defaultRequestFields);
+      // chatPayload is the strongly-typed ChatCompletionsRequestBody (no index
+      // signature); defaultRequestFields may carry arbitrary vendor fields
+      // (e.g. LM Studio's reasoning_effort) that aren't part of that type but
+      // still belong on the outbound wire payload.
+      if (responsesConfigurableSpec) applyDefaultRequestFields(chatPayload as unknown as Record<string, unknown>, responsesConfigurableSpec.defaultRequestFields);
       const { hostname, path, port = 443, protocol = 'https' } = endpoint;
       const cred = await resolveUpstreamCredential(resolvedTarget.provider);
       const targetApiKey = cred?.value ?? '';
@@ -2756,8 +2780,18 @@ const server = createServer((req, res) => {
         // send a bare "Bearer " header; a required-key one (nebius) 401s below
         // before this matters if the value is empty.
         if (cred && cred.value) Object.assign(headers, buildUpstreamAuthHeaders(resolvedTarget.provider, cred));
+        // adaptAnthropicToOpenAI drops `thinking` outright (OpenAI has no such
+        // field) — capture it first so an explicit client `thinking:
+        // {type:"enabled"}` can withhold a default `reasoning_effort` (e.g.
+        // LM Studio's "none", which would otherwise cut reasoning to 0 tokens
+        // even when the client asked for it).
+        const clientThinkingEnabled = isRecord(payload.thinking) && payload.thinking.type === 'enabled';
         adaptAnthropicToOpenAI(payload);
-        applyDefaultRequestFields(payload, messagesConfigurableSpec.defaultRequestFields);
+        applyDefaultRequestFields(
+          payload,
+          messagesConfigurableSpec.defaultRequestFields,
+          clientThinkingEnabled ? new Set(['reasoning_effort']) : undefined,
+        );
 
         // Transformation des tools Anthropic (format OpenAI function) — même forme pour
         // tout upstream OpenAI-compatible configurable (forge/vLLM, nebius, endpoints file).
