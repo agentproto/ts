@@ -1886,6 +1886,9 @@ export async function createGateway(
       ? { defaultAgentPromptInterrupt: configDefaults.agentPromptInterrupt }
       : {}),
     ...(configDefaults?.messaging?.allowSiblings ? { messagingAllowSiblings: true } : {}),
+    ...(configDefaults?.messaging?.agentInterrupt
+      ? { messagingAgentInterrupt: configDefaults.messaging.agentInterrupt }
+      : {}),
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
@@ -2038,6 +2041,9 @@ export async function createGateway(
         ? { defaultAgentPromptInterrupt: configDefaults.agentPromptInterrupt }
         : {}),
       ...(configDefaults?.messaging?.allowSiblings ? { messagingAllowSiblings: true } : {}),
+      ...(configDefaults?.messaging?.agentInterrupt
+        ? { messagingAgentInterrupt: configDefaults.messaging.agentInterrupt }
+        : {}),
       ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
       ...(opts.resolveAgentAdapter
         ? { resolveAgentAdapter: opts.resolveAgentAdapter }

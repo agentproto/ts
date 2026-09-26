@@ -48,6 +48,9 @@ export interface RegisterMessageToolsOptions {
   /** `defaults.messaging.allowSiblings` — sibling↔sibling messages. Off by
    *  default. */
   allowSiblings?: boolean
+  /** `defaults.messaging.agentInterrupt: "allow"` — let a session sender's
+   *  `interrupt` cancel the recipient's turn. Off by default (→ `steer`). */
+  allowInterrupt?: boolean
 }
 
 type ToolResult = {
@@ -91,7 +94,7 @@ function view(m: SessionMessage): Record<string, unknown> {
 }
 
 export function registerMessageTools(server: McpServer, opts: RegisterMessageToolsOptions): void {
-  const { registry, callerScope, callerSessionId, allowSiblings } = opts
+  const { registry, callerScope, callerSessionId, allowSiblings, allowInterrupt } = opts
 
   /** The verified caller, or a tool error explaining why there's none. */
   const resolveCaller = (tool: string): SessionDescriptor | ToolResult => {
@@ -159,7 +162,11 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     }
     const provenance = `${relation}:${self.id}`
     try {
-      const r = await registry.sendMessage(msg, { source: provenance, origin: provenance })
+      const r = await registry.sendMessage(msg, {
+        source: provenance,
+        origin: provenance,
+        ...(allowInterrupt ? { allowInterrupt: true } : {}),
+      })
       return ok({
         messageId: r.messageId,
         to: recipient.id,
@@ -185,7 +192,9 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
       .optional()
       .describe(
         "fyi (inbox only, never wakes the recipient) | next-turn (queued behind its " +
-          "current turn) | steer | interrupt. Default: steer for blocker/question, " +
+          "current turn) | steer (injected into its running turn when its agent " +
+          "supports that, else next-turn) | interrupt (cancels its turn — only if the " +
+          "operator allows it, else steer). Default: steer for blocker/question, " +
           "next-turn otherwise. The result reports the tier actually applied.",
       ),
     data: z.record(z.string(), z.unknown()).optional().describe("Optional structured payload (≤ 16 KB JSON)."),

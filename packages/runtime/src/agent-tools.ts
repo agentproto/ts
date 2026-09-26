@@ -63,8 +63,15 @@ import type {
   WorktreeProvisioner,
 } from "./worktree-isolation.js"
 import { appUiToolId } from "./app-ui-apps.js"
-import { createSessionMessage, messageFrom, MESSAGE_KINDS, type MessageKind } from "./session-message.js"
-import { registerMessageTools } from "./message-tools.js"
+import {
+  createSessionMessage,
+  messageFrom,
+  MESSAGE_KINDS,
+  MESSAGE_URGENCIES,
+  type MessageKind,
+  type MessageUrgency,
+} from "./session-message.js"
+import { defaultUrgencyForKind, registerMessageTools } from "./message-tools.js"
 import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
 
 /** Strip CSI/SGR ANSI escape sequences and bare carriage returns.
@@ -294,6 +301,11 @@ export interface RegisterAgentToolsOptions {
   /** config.json `defaults.messaging.allowSiblings` — lets `message_send` /
    *  `message_reply` reach a sibling (same parent). Default false. */
   messagingAllowSiblings?: boolean
+  /** config.json `defaults.messaging.agentInterrupt` — whether a SESSION
+   *  sender's `urgency: "interrupt"` (or `message_parent`'s `interrupt:
+   *  true`) may cancel the recipient's turn. Default "deny": downgraded to
+   *  `steer`. Human (HTTP/CLI) senders always keep interrupt. */
+  messagingAgentInterrupt?: "allow" | "deny"
 }
 
 export function registerAgentTools(
@@ -321,6 +333,7 @@ export function registerAgentTools(
     defaultAgentPromptInterrupt,
     isSessionChatInstalled,
     messagingAllowSiblings,
+    messagingAgentInterrupt,
   } = opts
   // Effective `interrupt` when a call leaves it unset: config default, else
   // false. An explicit boolean on the call always wins (checked at each site).
@@ -1321,24 +1334,25 @@ export function registerAgentTools(
   // daemon resolves the caller's own recorded `parentSessionId`, and it can
   // reach nothing else — which is why it stays out of
   // `DELEGATION_TOOL_NAMES` and is granted role-independently. Delivery
-  // mirrors `supervisor-notify.ts` (the crash-notice path): enqueue as a
-  // normal prompt on an idle parent, park as its own item in the parent's
-  // prompt queue when it's mid-turn (drained as a separate turn at
-  // turn-end) — a child's report never interrupts the parent's in-flight
-  // turn by default, and is never concatenated with another prompt.
+  // goes through `registry.sendMessage` like every typed message: routed by
+  // urgency (fyi / next-turn / steer / interrupt), never concatenated with
+  // another prompt, and a child can't cut its parent's turn unless the
+  // operator granted it (`defaults.messaging.agentInterrupt: "allow"`).
   server.tool(
     "message_parent",
     "Report a message UP to the session that spawned you (your parent/" +
       "supervisor) — a result, a progress update, or a blocker. No session " +
       "id needed: the daemon resolves your recorded parent from your own " +
       "session identity (also visible as the AGENTPROTO_PARENT_SESSION_ID " +
-      "env var). Delivered as a prompt when the parent is idle, or queued " +
-      "as its own next turn when it's mid-turn (never interrupts, by default). " +
-      "Pass `interrupt: true` to CUT a mid-turn parent immediately — cancel " +
-      "its in-flight turn and redirect it onto this message now (same-context " +
-      "cancel, like `agent_prompt`'s `interrupt`) — for a genuinely urgent " +
-      "report the parent must act on before it finishes what it's doing. " +
-      "Errors if this session has no recorded parent or the parent is gone.",
+      "env var). An idle parent gets it as its own turn right away. A busy " +
+      "parent gets it by `urgency`: `next-turn` (default for report/done/" +
+      "notice) waits for its current turn to end; `steer` (default for " +
+      "blocker/question) is injected INTO its running turn when its agent " +
+      "supports that, else next-turn; `fyi` only lands in its inbox. " +
+      "`interrupt: true` asks to cancel the parent's turn — honoured only when " +
+      "the operator allows it, otherwise delivered as `steer`. The result " +
+      "reports the tier actually applied. Errors if this session has no " +
+      "recorded parent or the parent is gone.",
     {
       message: z
         .string()
@@ -1348,14 +1362,22 @@ export function registerAgentTools(
         .boolean()
         .optional()
         .describe(
-          "When true and the parent is mid-turn, cancel its in-flight turn " +
-            "and deliver this message immediately instead of queueing it " +
-            "onto the parent's next turn. No-op when the parent is idle " +
-            "(delivered as a normal prompt either way). UNSET falls back to " +
-            "the daemon default `defaults.agentPromptInterrupt` in config.json " +
-            "(false unless an operator changed it) — so a report never " +
-            "interrupts by default; pass `interrupt: true` explicitly to cut.",
+          "Ask to cancel the parent's in-flight turn and deliver this now " +
+            "(urgency `interrupt`). Honoured only when config.json " +
+            "`defaults.messaging.agentInterrupt` is \"allow\"; otherwise it's " +
+            "delivered as `steer` (injected into the running turn when " +
+            "possible) and the result says so. UNSET falls back to " +
+            "`defaults.agentPromptInterrupt` (false by default).",
         ),
+      urgency: z
+        .enum(MESSAGE_URGENCIES as [MessageUrgency, ...MessageUrgency[]])
+        .optional()
+        .describe(
+          "fyi | next-turn | steer | interrupt — see the tool description. " +
+            "Default: steer for blocker/question, next-turn otherwise. " +
+            "`interrupt: true` wins over this.",
+        ),
+      replyTo: z.string().optional().describe("Id of a parent message this answers (msg_…)."),
       kind: z
         .enum(MESSAGE_KINDS as [MessageKind, ...MessageKind[]])
         .optional()
@@ -1411,16 +1433,20 @@ export function registerAgentTools(
       // Explicit `interrupt` (true OR false) wins; UNSET falls back to the
       // configurable daemon default (symmetric with agent_prompt).
       const effectiveInterrupt = input.interrupt ?? interruptDefault
+      const kind = input.kind ?? "report"
+      const urgency: MessageUrgency = effectiveInterrupt
+        ? "interrupt"
+        : (input.urgency ?? defaultUrgencyForKind(kind))
       const envelope = createSessionMessage({
         to: parentId,
         from: messageFrom(self, "child"),
         text: input.message,
-        kind: input.kind ?? "report",
-        urgency: effectiveInterrupt ? "interrupt" : "next-turn",
+        kind,
+        urgency,
+        ...(input.replyTo ? { replyTo: input.replyTo } : {}),
       })
-      const notice = envelope.text
       const done = (
-        delivery: "enqueued" | "queued-next-turn" | "interrupted" | "waited",
+        delivery: "enqueued" | "queued-next-turn" | "interrupted" | "waited" | "steered",
         extra?: Record<string, unknown>,
       ) => ({
         content: [
@@ -1443,16 +1469,14 @@ export function registerAgentTools(
       // One delivery path for every typed message (`registry.sendMessage`):
       // a parent parked in `inbox_wait` gets the report as that call's
       // result (waiter-first); otherwise it's kept in the parent's inbox and
-      // dispatched now (idle) or parked as its OWN queued turn (busy) — never
-      // string-glued onto another prompt. `interrupt: true` cuts a mid-turn
-      // parent (cancel + settle + dispatch, the same arm
-      // `agent_prompt({interrupt: true})` uses).
+      // dispatched now (idle), steered into its running turn, or parked as
+      // its OWN queued turn (busy) — never string-glued onto another prompt.
       let result: Awaited<ReturnType<SessionsRegistry["sendMessage"]>>
       try {
         result = await registry.sendMessage(envelope, {
           source: provenance,
           origin: provenance,
-          interrupt: effectiveInterrupt,
+          allowInterrupt: messagingAgentInterrupt === "allow",
         })
       } catch (err) {
         return fail(
@@ -1460,26 +1484,31 @@ export function registerAgentTools(
             (err instanceof Error ? err.message : String(err))
         )
       }
-      if (result.delivered?.via === "wait") return done("waited")
-      if (result.delivered?.via === "interrupt") return done("interrupted")
-      const queued = result.queued
-      if (!queued) return done("enqueued")
-      // Self-documenting loop (symmetric with agent_prompt): the parent is
-      // mid-turn so this report is parked onto its next turn, and the caller
-      // said nothing about `interrupt` — surface the option at the moment
-      // it's missing.
-      return done(
-        "queued-next-turn",
-        input.interrupt === undefined
+      const applied = {
+        urgencyApplied: result.urgencyApplied,
+        ...(result.urgencyApplied !== urgency && result.delivered?.via !== "wait"
+          ? { note: `requested urgency "${urgency}" was delivered as "${result.urgencyApplied}"` }
+          : {}),
+      }
+      if (result.delivered?.via === "wait") return done("waited", applied)
+      if (result.delivered?.via === "steer") return done("steered", applied)
+      if (result.delivered?.via === "interrupt") return done("interrupted", applied)
+      if (!result.queued) return done("enqueued", applied)
+      // Self-documenting loop: the parent is mid-turn, so this report waits
+      // for its CURRENT turn to end — surface the faster tier when the
+      // caller didn't ask for one.
+      return done("queued-next-turn", {
+        ...applied,
+        ...(input.urgency === undefined && input.interrupt === undefined && urgency === "next-turn"
           ? {
               hint:
                 "Message queued — it will only reach the parent when its " +
-                "CURRENT turn ends. If it's urgent, re-send with " +
-                "interrupt: true (cancels the parent's in-flight turn and " +
-                "redirects it onto this message now).",
+                "CURRENT turn ends. If it needs attention now, re-send with " +
+                "urgency: \"steer\" (or kind: \"blocker\") to inject it into " +
+                "the parent's running turn.",
             }
-          : undefined,
-      )
+          : {}),
+      })
     }
   )
 
@@ -1489,6 +1518,7 @@ export function registerAgentTools(
     ...(callerScope ? { callerScope } : {}),
     ...(callerSessionId ? { callerSessionId } : {}),
     ...(messagingAllowSiblings ? { allowSiblings: true } : {}),
+    ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
   })
 
   // ── agent_output ───────────────────────────────────
