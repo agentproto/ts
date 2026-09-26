@@ -1177,8 +1177,10 @@ export function registerAgentTools(
       "(or `agent_sessions_list`). Returns immediately; tail output via " +
       "`agent_output` or the SSE /sessions/:id/stream endpoint. If the " +
       "session is mid-turn, the prompt is queued (FIFO) and dispatched " +
-      "automatically when the current turn ends — so fan-in bursts are " +
-      "delivered in order instead of rejected. Pass `interrupt: true` to " +
+      "automatically when the current turn ends on its own — so fan-in " +
+      "bursts are delivered in order instead of rejected. A turn that is " +
+      "interrupted instead leaves the queue parked until the next natural " +
+      "turn-end. Pass `interrupt: true` to " +
       "cancel the in-flight turn and redirect the SAME session onto this " +
       "prompt instead, without losing its context (unlike `agent_kill`, " +
       "which ends the session entirely). `interrupt` is a no-op on an " +
@@ -1619,8 +1621,10 @@ export function registerAgentTools(
       "alive and idle. Unlike `agent_kill` (ends the session entirely), the " +
       "session stays alive and ready for the next `agent_prompt`. Unlike " +
       "`agent_prompt({interrupt: true})` (which requires a next prompt to " +
-      "redirect onto), this takes no prompt — it's just stop. No-op " +
-      "(`wasBusy: false`) on an already-idle or terminal session.",
+      "redirect onto), this takes no prompt — it's just stop. Prompts " +
+      "already queued behind the cancelled turn are NOT dispatched by the " +
+      "stop: they stay queued and run after the next turn that ends on its " +
+      "own. No-op (`wasBusy: false`) on an already-idle or terminal session.",
     {
       sessionId: sessionIdField,
       id: sessionIdAliasField,
