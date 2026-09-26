@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest"
 import {
   encodeOfferUrl,
+  encodeOfferWebUrl,
   parseOfferUrl,
+  PAIR_WEB_URL,
   type PairingOffer,
 } from "../offer-url.js"
 import { PairingError, type PairingErrorCode } from "../handshake.js"
@@ -118,5 +120,42 @@ describe("offer URL codec", async () => {
     // Standard base64 (may contain +/= after padding) — equals the identity form.
     expect(parsed.daemonX25519Pub).toBe(offer.daemonX25519Pub)
     expect(parsed.daemonEd25519Pub).toBe(offer.daemonEd25519Pub)
+  })
+
+  it("wraps the offer in the fragment of the web pair page, and parses it back", async () => {
+    const offer = await makeOffer()
+    const url = encodeOfferUrl(offer)
+    const web = encodeOfferWebUrl(url)
+    expect(web.startsWith(`${PAIR_WEB_URL}#v=2&`)).toBe(true)
+    expect(new URLSearchParams(web.slice(web.indexOf("#") + 1)).get("s")).toBe(offer.secret)
+    // Nothing of the offer is in the part a browser sends to the server.
+    const asUrl = new URL(web)
+    expect(asUrl.search).toBe("")
+    expect(`${asUrl.origin}${asUrl.pathname}`).toBe(PAIR_WEB_URL)
+    expect(asUrl.hash.slice(1)).toBe(url.slice(url.indexOf("?") + 1))
+    expect(await parseOfferUrl(web)).toEqual(offer)
+    // A custom page (self-hosted / dev) round-trips too.
+    expect(await parseOfferUrl(encodeOfferWebUrl(url, "http://localhost:3000/pair"))).toEqual(offer)
+  })
+
+  it("validates the web form exactly like the agentproto:// form", async () => {
+    const offer = await makeOffer()
+    const other = await generateIdentity()
+    const tampered = encodeOfferWebUrl(encodeOfferUrl({ ...offer, daemonX25519Pub: other.x25519.pub }))
+    await expectPairingError(() => parseOfferUrl(tampered), "malformed_offer")
+    await expectPairingError(() => parseOfferUrl(`${PAIR_WEB_URL}`), "malformed_offer")
+    await expectPairingError(() => parseOfferUrl(`${PAIR_WEB_URL}#`), "malformed_offer")
+    // A pre-v2 offer in the fragment is refused as outdated, like the plain form.
+    const v1 = encodeOfferWebUrl(encodeOfferUrl(offer).replace("v=2", "v=1").replace("&s=", "&t="))
+    await expectPairingError(() => parseOfferUrl(v1), "pairing_protocol_outdated")
+    const expired = encodeOfferWebUrl(encodeOfferUrl({ ...offer, exp: 10 }))
+    await expectPairingError(() => parseOfferUrl(expired, { now: Date.now() }), "offer_expired")
+  })
+
+  it("encodeOfferWebUrl refuses a non-offer URL or a page with a fragment", async () => {
+    const url = encodeOfferUrl(await makeOffer())
+    await expectPairingError(() => encodeOfferWebUrl("https://example.com/?v=1"), "malformed_offer")
+    await expectPairingError(() => encodeOfferWebUrl(url, "https://x.example/pair#a"), "malformed_offer")
+    await expectPairingError(() => encodeOfferWebUrl(url, "ftp://x.example/pair"), "malformed_offer")
   })
 })

@@ -30,6 +30,20 @@
  * (the daemon builds it, the client parses it). It lives in `@agentproto/secrets`
  * beside the handshake so both sides share one authority on the format.
  *
+ * ## The web form (phone QR)
+ *
+ * A phone camera opens `https://` links, not `agentproto://`. For a browser
+ * client the same parameters ride in the **fragment** of a web URL:
+ *
+ * ```
+ *   https://cli.agentproto.sh/pair#v=2&rv=…&id=…&pk=…&sk=…&s=…&exp=…
+ * ```
+ *
+ * i.e. the query string of the `agentproto://` URL, verbatim, after the `#`.
+ * A fragment is never sent to a server (not in the request line, not in
+ * `Referer`), so the page host never sees the token. `encodeOfferWebUrl` builds
+ * it; `parseOfferUrl` accepts both forms and validates them identically.
+ *
  * Key material travels **base64url** in the URL (no `+`/`/`/`=` to percent-
  * escape). The handshake, however, speaks standard base64 SPKI DER, so
  * `parseOfferUrl` returns `daemonX25519Pub`/`daemonEd25519Pub` already converted
@@ -47,6 +61,8 @@ export const OFFER_URL_HOST = "pair" as const
 /** Offer-format version. Bumped if the param set changes. v2: `s` (a secret
  *  that never goes on the wire) replaces v1's `t` (route-and-proof). */
 export const OFFER_VERSION = 2 as const
+/** Default page for the web form of an offer (the offer rides in its fragment). */
+export const PAIR_WEB_URL = "https://cli.agentproto.sh/pair" as const
 
 /**
  * A parsed, structurally-valid pairing offer. `daemonX25519Pub` /
@@ -108,6 +124,39 @@ export function encodeOfferUrl(offer: PairingOffer): string {
   return `${OFFER_URL_SCHEME}//${OFFER_URL_HOST}?${params.toString()}`
 }
 
+/**
+ * Re-wrap an `agentproto://pair?…` offer URL as its web form
+ * `<pageUrl>#<query>` (see "The web form" above). The parameters are carried
+ * byte-for-byte; `pageUrl` must be an http(s) URL without a fragment.
+ */
+export function encodeOfferWebUrl(offerUrl: string, pageUrl: string = PAIR_WEB_URL): string {
+  const q = offerUrl.indexOf("?")
+  if (!offerUrl.startsWith(`${OFFER_URL_SCHEME}//${OFFER_URL_HOST}?`) || q < 0) {
+    throw new PairingError("malformed_offer", `expected an ${OFFER_URL_SCHEME}//${OFFER_URL_HOST}?… offer URL`)
+  }
+  let page: URL
+  try {
+    page = new URL(pageUrl)
+  } catch {
+    throw new PairingError("malformed_offer", "pair page is not a valid URL")
+  }
+  if ((page.protocol !== "https:" && page.protocol !== "http:") || page.hash !== "") {
+    throw new PairingError("malformed_offer", "pair page must be an http(s) URL without a fragment")
+  }
+  return `${pageUrl}#${offerUrl.slice(q + 1)}`
+}
+
+/** Map the web form (`http(s)://…#<query>`) onto the `agentproto://pair?`
+ *  form; anything else is returned unchanged for the strict parser below. */
+function fromWebForm(url: string): string {
+  if (!/^https?:\/\//i.test(url)) return url
+  const hash = url.indexOf("#")
+  if (hash < 0 || hash === url.length - 1) {
+    throw new PairingError("malformed_offer", "web offer URL carries no offer in its fragment")
+  }
+  return `${OFFER_URL_SCHEME}//${OFFER_URL_HOST}?${url.slice(hash + 1)}`
+}
+
 // ─── parse ───────────────────────────────────────────────────────
 
 export interface ParseOfferOptions {
@@ -131,6 +180,9 @@ export interface ParseOfferOptions {
  *     link-mangler that swaps the daemon key can't keep `id` consistent).
  *   - `offer_expired`: only when `opts.now` is supplied and `exp` has passed.
  *
+ * Accepts the `agentproto://pair?…` form and the web form
+ * (`https://…/pair#<query>`, see `encodeOfferWebUrl`).
+ *
  * Async because the `id` ↔ `fingerprint(pk)` check hashes the key, and
  * WebCrypto's SHA-256 is async; `crypto` selects the provider.
  */
@@ -141,7 +193,7 @@ export async function parseOfferUrl(
 ): Promise<PairingOffer> {
   let parsed: URL
   try {
-    parsed = new URL(url)
+    parsed = new URL(fromWebForm(url))
   } catch {
     throw new PairingError("malformed_offer", "offer is not a valid URL")
   }

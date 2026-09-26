@@ -47,6 +47,14 @@
  *
  * Every derivation is async (WebCrypto HKDF is) and takes an optional trailing
  * `crypto` provider.
+ *
+ * ## The pair root as a non-extractable key
+ *
+ * The epoch derivations accept the pair root either as base64 or as a
+ * **non-extractable** WebCrypto HKDF `CryptoKey` (`importPairRootKey`). A
+ * browser client can keep that key in IndexedDB, and script can derive tokens
+ * with it but never read the root back out. The salts, infos and lengths are
+ * the same either way, so the tokens are byte-identical.
  */
 
 import {
@@ -114,6 +122,41 @@ export interface RouteAuthTokens {
   auth: string
 }
 
+/**
+ * Import a base64 pair root as a **non-extractable** WebCrypto HKDF key (see
+ * "The pair root as a non-extractable key" above). IndexedDB stores it by
+ * structured clone, so it stays non-extractable at rest.
+ */
+export async function importPairRootKey(pairRoot: string): Promise<CryptoKey> {
+  return globalThis.crypto.subtle.importKey(
+    "raw",
+    Uint8Array.from(base64Decode(pairRoot)),
+    "HKDF",
+    false,
+    ["deriveBits"],
+  )
+}
+
+/** HKDF-SHA256 with the pair root as IKM, in either form. A `CryptoKey` only
+ *  exists in WebCrypto, so it always derives there (`crypto` is then unused). */
+async function pairRootHkdf(
+  pairRoot: string | CryptoKey,
+  salt: Uint8Array,
+  info: Uint8Array,
+  length: number,
+  crypto: CryptoProvider,
+): Promise<Uint8Array> {
+  if (typeof pairRoot === "string") {
+    return crypto.hkdfSha256(base64Decode(pairRoot), salt, info, length)
+  }
+  const bits = await globalThis.crypto.subtle.deriveBits(
+    { name: "HKDF", hash: "SHA-256", salt: Uint8Array.from(salt), info: Uint8Array.from(info) },
+    pairRoot,
+    length * 8,
+  )
+  return new Uint8Array(bits)
+}
+
 /** 8-byte big-endian epoch appended to an info label, so a bit-flip in the
  *  epoch can never collide two epochs' tokens. */
 function epochInfo(label: string, epoch: number): Uint8Array {
@@ -128,15 +171,16 @@ function epochInfo(label: string, epoch: number): Uint8Array {
  * both sides derive the same token for the same `(pairRoot, epoch)`.
  */
 export async function deriveEpochRoutingToken(
-  pairRoot: string,
+  pairRoot: string | CryptoKey,
   epoch: number,
   crypto: CryptoProvider = webCryptoProvider,
 ): Promise<string> {
-  const okm = await crypto.hkdfSha256(
-    base64Decode(pairRoot),
+  const okm = await pairRootHkdf(
+    pairRoot,
     utf8Encode(RV_ROUTE_SALT),
     epochInfo(RV_ROUTE_INFO, epoch),
     ROUTE_TOKEN_LEN,
+    crypto,
   )
   return base64UrlEncode(okm)
 }
@@ -148,22 +192,23 @@ export async function deriveEpochRoutingToken(
  * time. Never put it on a URL.
  */
 export async function deriveEpochAuthToken(
-  pairRoot: string,
+  pairRoot: string | CryptoKey,
   epoch: number,
   crypto: CryptoProvider = webCryptoProvider,
 ): Promise<string> {
-  const okm = await crypto.hkdfSha256(
-    base64Decode(pairRoot),
+  const okm = await pairRootHkdf(
+    pairRoot,
     utf8Encode(RV_AUTH_SALT),
     epochInfo(RV_AUTH_INFO, epoch),
     AUTH_TOKEN_LEN,
+    crypto,
   )
   return base64UrlEncode(okm)
 }
 
 /** Route + auth tokens for a pairing at one epoch. */
 export async function deriveEpochTokens(
-  pairRoot: string,
+  pairRoot: string | CryptoKey,
   epoch: number,
   crypto: CryptoProvider = webCryptoProvider,
 ): Promise<RouteAuthTokens> {
@@ -198,7 +243,7 @@ export async function deriveOfferTokens(
  * client likewise tries both when reconnecting.
  */
 export async function epochRoutingTokens(
-  pairRoot: string,
+  pairRoot: string | CryptoKey,
   now: number = Date.now(),
   crypto: CryptoProvider = webCryptoProvider,
 ): Promise<({ epoch: number } & RouteAuthTokens)[]> {

@@ -59,7 +59,9 @@ export {
   OFFER_URL_SCHEME,
   OFFER_URL_HOST,
   OFFER_VERSION,
+  PAIR_WEB_URL,
   encodeOfferUrl,
+  encodeOfferWebUrl,
   type PairingOffer,
   type ParseOfferOptions,
 } from "./offer-url.js"
@@ -87,7 +89,7 @@ export function parseOfferUrl(
 export { HOSTED_RENDEZVOUS_URL } from "./rendezvous.js"
 
 // P2 — pairing-derived key material (pair root + route/auth tokens).
-export { currentEpoch, type RouteAuthTokens } from "./derive.js"
+export { currentEpoch, importPairRootKey, type RouteAuthTokens } from "./derive.js"
 
 /** Derive the long-term pair root from a completed session (see ./derive.ts). */
 export function derivePairRoot(
@@ -99,7 +101,7 @@ export function derivePairRoot(
 
 /** Derive the broker ROUTE token for an epoch (see ./derive.ts). */
 export function deriveEpochRoutingToken(
-  pairRoot: string,
+  pairRoot: string | CryptoKey,
   epoch: number,
   crypto: CryptoProvider = nodeCryptoProvider,
 ): Promise<string> {
@@ -108,7 +110,7 @@ export function deriveEpochRoutingToken(
 
 /** Derive the sealed-hello AUTH token for an epoch (see ./derive.ts). */
 export function deriveEpochAuthToken(
-  pairRoot: string,
+  pairRoot: string | CryptoKey,
   epoch: number,
   crypto: CryptoProvider = nodeCryptoProvider,
 ): Promise<string> {
@@ -117,7 +119,7 @@ export function deriveEpochAuthToken(
 
 /** Route + auth tokens for an epoch (see ./derive.ts). */
 export function deriveEpochTokens(
-  pairRoot: string,
+  pairRoot: string | CryptoKey,
   epoch: number,
   crypto: CryptoProvider = nodeCryptoProvider,
 ): Promise<derive.RouteAuthTokens> {
@@ -134,7 +136,7 @@ export function deriveOfferTokens(
 
 /** Current + previous epoch route/auth tokens (see ./derive.ts). */
 export function epochRoutingTokens(
-  pairRoot: string,
+  pairRoot: string | CryptoKey,
   now: number = Date.now(),
   crypto: CryptoProvider = nodeCryptoProvider,
 ): Promise<({ epoch: number } & derive.RouteAuthTokens)[]> {
