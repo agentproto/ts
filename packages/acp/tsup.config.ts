@@ -11,6 +11,7 @@ export default createTsupConfig({
     "client/index": "src/client/index.ts",
     "server/index": "src/server/index.ts",
     "tunnel/index": "src/tunnel/index.ts",
+    "tunnel/browser": "src/tunnel/browser.ts",
   },
   format: ["esm"],
   splitting: true,

@@ -48,7 +48,15 @@
  * package — exactly as the pairing handshake-over-sink helpers do.
  */
 
-import { wrapE2E, E2eError, type E2eKeys, type E2eFrameSink, type WrapE2EOptions } from "./e2e.js"
+import { base64Decode, base64Encode } from "./bytes.js"
+import {
+  wrapE2E,
+  holdFrames,
+  E2eError,
+  type E2eKeys,
+  type E2eFrameSink,
+  type WrapE2EOptions,
+} from "./e2e.js"
 import type { FrameSink } from "./transport.js"
 import type { TunnelFrame } from "./frames.js"
 
@@ -62,10 +70,6 @@ export interface TunnelE2EOptions {
   timeoutMs?: number
   /** Forwarded to `wrapE2E`. */
   wrap?: WrapE2EOptions
-}
-
-function b64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("base64")
 }
 
 /**
@@ -101,7 +105,7 @@ function awaitFirstFrame(sink: FrameSink, timeoutMs: number): Promise<TunnelFram
  * `e2e_handshake` frame, awaits the host's single reply, and:
  *
  *   - **reply arrives** → runs `deriveKeys` (which verifies the reply and yields
- *     the session keys) and returns a `wrapE2E`-wrapped sink. If `deriveKeys`
+ *     the session keys; it may be async) and returns a `wrapE2E`-wrapped sink. If `deriveKeys`
  *     throws — a wrong `tunnel.token`, a tampered accept — this CLOSES the sink
  *     and rethrows: a security failure must NOT silently downgrade to plaintext.
  *   - **timeout (peer silent)** → returns `null`. The peer is an old/plaintext
@@ -113,12 +117,12 @@ function awaitFirstFrame(sink: FrameSink, timeoutMs: number): Promise<TunnelFram
 export async function connectSinkE2E(
   sink: FrameSink,
   offer: Uint8Array,
-  deriveKeys: (reply: Uint8Array) => E2eKeys,
+  deriveKeys: (reply: Uint8Array) => E2eKeys | Promise<E2eKeys>,
   opts: TunnelE2EOptions = {},
 ): Promise<E2eFrameSink | null> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TUNNEL_E2E_TIMEOUT_MS
   const firstPromise = awaitFirstFrame(sink, timeoutMs)
-  sink.send({ t: "e2e_handshake", d: b64(offer) })
+  sink.send({ t: "e2e_handshake", d: base64Encode(offer) })
   const first = await firstPromise
   if (first === null) {
     // Peer never answered — treat as "does not support e2e" and fall back.
@@ -131,15 +135,17 @@ export async function connectSinkE2E(
       `expected an e2e_handshake accept, received "${first.t}"`,
     )
   }
+  // Hold anything the host sends while the keys are derived (async).
+  const view = holdFrames(sink)
   let keys: E2eKeys
   try {
-    keys = deriveKeys(Buffer.from(first.d, "base64"))
+    keys = await deriveKeys(base64Decode(first.d))
   } catch (err) {
     // Wrong token / tampered accept → fail closed, never downgrade.
     sink.close("e2e handshake failed")
     throw err
   }
-  return wrapE2E(sink, keys, opts.wrap)
+  return wrapE2E(view, keys, opts.wrap)
 }
 
 // ─── host (responder) side ──────────────────────────────────────
@@ -156,7 +162,7 @@ export type AcceptSinkE2EResult =
  * Host side of the tunnel-e2e negotiation. Awaits the daemon's first frame:
  *
  *   - **`e2e_handshake` offer** → runs `respond` (which verifies the offer and
- *     yields the reply bytes + session keys), sends the reply, and returns a
+ *     yields the reply bytes + session keys; it may be async), sends the reply, and returns a
  *     `wrapE2E`-wrapped sink. A `respond` throw — wrong token, tampered offer —
  *     closes the sink and rethrows (fail closed).
  *   - **any other frame** (the daemon emitted a plaintext `hello` — it isn't
@@ -166,7 +172,9 @@ export type AcceptSinkE2EResult =
  */
 export async function acceptSinkE2E(
   sink: FrameSink,
-  respond: (offer: Uint8Array) => { reply: Uint8Array; keys: E2eKeys },
+  respond: (
+    offer: Uint8Array,
+  ) => { reply: Uint8Array; keys: E2eKeys } | Promise<{ reply: Uint8Array; keys: E2eKeys }>,
   opts: TunnelE2EOptions = {},
 ): Promise<AcceptSinkE2EResult> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TUNNEL_E2E_TIMEOUT_MS
@@ -178,15 +186,16 @@ export async function acceptSinkE2E(
     // Daemon isn't offering e2e — hand back a sink that re-delivers this frame.
     return { e2e: false, sink: prependFrame(sink, first) }
   }
+  const view = holdFrames(sink)
   let result: { reply: Uint8Array; keys: E2eKeys }
   try {
-    result = respond(Buffer.from(first.d, "base64"))
+    result = await respond(base64Decode(first.d))
   } catch (err) {
     sink.close("e2e handshake failed")
     throw err
   }
-  sink.send({ t: "e2e_handshake", d: b64(result.reply) })
-  return { e2e: true, sink: wrapE2E(sink, result.keys, opts.wrap) }
+  sink.send({ t: "e2e_handshake", d: base64Encode(result.reply) })
+  return { e2e: true, sink: wrapE2E(view, result.keys, opts.wrap) }
 }
 
 /**

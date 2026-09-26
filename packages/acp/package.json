@@ -51,6 +51,11 @@
       "import": "./dist/tunnel/index.mjs",
       "default": "./dist/tunnel/index.mjs"
     },
+    "./tunnel/browser": {
+      "types": "./dist/tunnel/browser.d.ts",
+      "import": "./dist/tunnel/browser.mjs",
+      "default": "./dist/tunnel/browser.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -79,6 +84,7 @@
     "@agentproto/secrets": "workspace:*",
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.9.5",
+    "esbuild": "^0.28.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7"

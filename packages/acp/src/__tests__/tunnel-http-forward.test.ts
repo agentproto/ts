@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
 import { createTunnelServer } from "../tunnel/server.js"
-import { decodeData } from "../tunnel/frames.js"
+import { decodeData } from "../tunnel/node-data.js"
 import type { FrameSink } from "../tunnel/transport.js"
 import type { TunnelFrame } from "../tunnel/frames.js"
 
