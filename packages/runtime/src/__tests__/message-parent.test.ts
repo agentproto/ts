@@ -4,7 +4,7 @@
  * delegation tool: drive ANY session by id), this tool takes no session id:
  * the daemon resolves the caller's own recorded `parentSessionId` and can
  * reach nothing else. Delivery mirrors supervisor-notify.ts: enqueue on an
- * idle parent, stamp onto the pending-notice queue on a busy one — never
+ * idle parent, park as its own prompt-queue item on a busy one — never
  * interrupt an in-flight turn UNLESS the caller passes `interrupt: true`,
  * which cuts a mid-turn parent via `enqueuePrompt`'s interrupt arm (the same
  * cancel+settle+dispatch path `agent_prompt({interrupt: true})` uses).
@@ -105,20 +105,19 @@ describe("message_parent — delivery", () => {
       expect(enqueue).toHaveBeenCalledWith(
         parent.id,
         `[child-message] worker-a (${child.id}): done: 3 files patched`,
-        { origin: "child:worker-a" },
+        { queue: true, source: `child:${child.id}`, origin: `child:${child.id}` },
       )
     } finally {
       await h.close()
     }
   })
 
-  it("busy parent: stamps the pending-notice queue instead — a report never interrupts an in-flight turn", async () => {
+  it("busy parent: parks the report as its own queue item — a report never interrupts an in-flight turn", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const parent = spawnNode(registry)
     const child = spawnNode(registry, parent.id)
     registry.get(parent.id)!.busy = true
-    const enqueue = vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
-    const stamp = vi.spyOn(registry, "stampPendingChildCrashNotice")
+    const enqueue = vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: true })
     const h = await harness({ registry, callerSessionId: child.id })
     try {
       const result = await h.client.callTool({
@@ -134,23 +133,23 @@ describe("message_parent — delivery", () => {
       })
       // interrupt unset + busy parent → the discovery hint is surfaced.
       expect(body.hint).toContain("interrupt: true")
-      expect(enqueue).not.toHaveBeenCalled()
-      expect(stamp).toHaveBeenCalledWith(
+      expect(enqueue).toHaveBeenCalledTimes(1)
+      expect(enqueue).toHaveBeenCalledWith(
         parent.id,
         `[child-message] ${child.id} (${child.id}): blocked on missing env var`,
+        { queue: true, source: `child:${child.id}`, origin: `child:${child.id}` },
       )
     } finally {
       await h.close()
     }
   })
 
-  it("busy parent + interrupt:true: cuts the in-flight turn (enqueuePrompt interrupt arm) instead of stamping", async () => {
+  it("busy parent + interrupt:true: cuts the in-flight turn (enqueuePrompt interrupt arm) instead of queueing", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const parent = spawnNode(registry)
     const child = spawnNode(registry, parent.id, "worker-a")
     registry.get(parent.id)!.busy = true
     const enqueue = vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
-    const stamp = vi.spyOn(registry, "stampPendingChildCrashNotice")
     const h = await harness({ registry, callerSessionId: child.id })
     try {
       const result = await h.client.callTool({
@@ -166,9 +165,9 @@ describe("message_parent — delivery", () => {
       expect(enqueue).toHaveBeenCalledWith(
         parent.id,
         `[child-message] worker-a (${child.id}): STOP — spec changed`,
-        { interrupt: true, origin: "child:worker-a" },
+        { interrupt: true, source: `child:${child.id}`, origin: `child:${child.id}` },
       )
-      expect(stamp).not.toHaveBeenCalled()
+      expect(enqueue).toHaveBeenCalledTimes(1)
     } finally {
       await h.close()
     }
@@ -186,7 +185,7 @@ describe("message_parent — delivery", () => {
         arguments: { message: "fyi", interrupt: true },
       })
       expect(isError(result)).toBeFalsy()
-      // Idle parent takes the `!parent.busy` arm — plain enqueue, no interrupt flag.
+      // Idle parent skips the interrupt arm — plain enqueue, no interrupt flag.
       expect(JSON.parse(textOf(result))).toEqual({
         ok: true,
         parentSessionId: parent.id,
@@ -195,7 +194,7 @@ describe("message_parent — delivery", () => {
       expect(enqueue).toHaveBeenCalledWith(
         parent.id,
         `[child-message] worker-a (${child.id}): fyi`,
-        { origin: "child:worker-a" },
+        { queue: true, source: `child:${child.id}`, origin: `child:${child.id}` },
       )
     } finally {
       await h.close()
@@ -226,7 +225,7 @@ describe("message_parent — delivery", () => {
       expect(enqueue).toHaveBeenCalledWith(
         parent.id,
         expect.stringContaining(`(${child.id}): hello`),
-        { origin: `child:${child.id}` },
+        { queue: true, source: `child:${child.id}`, origin: `child:${child.id}` },
       )
     } finally {
       await h.close()
@@ -241,7 +240,6 @@ describe("message_parent — configurable interrupt default", () => {
     const child = spawnNode(registry, parent.id, "worker-a")
     registry.get(parent.id)!.busy = true
     const enqueue = vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
-    const stamp = vi.spyOn(registry, "stampPendingChildCrashNotice")
     const h = await harness({
       registry,
       callerSessionId: child.id,
@@ -259,21 +257,20 @@ describe("message_parent — configurable interrupt default", () => {
       expect(enqueue).toHaveBeenCalledWith(
         parent.id,
         `[child-message] worker-a (${child.id}): urgent`,
-        { interrupt: true, origin: "child:worker-a" },
+        { interrupt: true, source: `child:${child.id}`, origin: `child:${child.id}` },
       )
-      expect(stamp).not.toHaveBeenCalled()
+      expect(enqueue).toHaveBeenCalledTimes(1)
     } finally {
       await h.close()
     }
   })
 
-  it("explicit interrupt:false overrides config default true → stamps (queued-next-turn), no hint", async () => {
+  it("explicit interrupt:false overrides config default true → queued (queued-next-turn), no hint", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const parent = spawnNode(registry)
     const child = spawnNode(registry, parent.id, "worker-a")
     registry.get(parent.id)!.busy = true
-    const enqueue = vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
-    const stamp = vi.spyOn(registry, "stampPendingChildCrashNotice")
+    const enqueue = vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: true })
     const h = await harness({
       registry,
       callerSessionId: child.id,
@@ -289,8 +286,9 @@ describe("message_parent — configurable interrupt default", () => {
       expect(body).toMatchObject({ ok: true, delivery: "queued-next-turn" })
       // Explicit interrupt (even false) suppresses the discovery hint.
       expect(body.hint).toBeUndefined()
-      expect(enqueue).not.toHaveBeenCalled()
-      expect(stamp).toHaveBeenCalled()
+      expect(enqueue).toHaveBeenCalledTimes(1)
+      expect(enqueue.mock.calls[0]![2]).toMatchObject({ queue: true })
+      expect(enqueue.mock.calls[0]![2]).not.toHaveProperty("interrupt")
     } finally {
       await h.close()
     }

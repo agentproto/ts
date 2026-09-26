@@ -21,9 +21,12 @@
  * notice earns neither. So:
  *   - parent alive (`running`/`starting`) AND idle (`!busy`) → the notice is
  *     enqueued as a normal prompt (no `interrupt`).
- *   - parent alive AND busy → the notice is queued on the parent's
- *     descriptor (`registry.stampPendingChildCrashNotice`) and flushed onto
- *     its next turn's outgoing message by `runAgentTurn` (sessions.ts).
+ *   - parent alive AND busy → the notice is parked as its own item in the
+ *     parent's prompt queue (`enqueuePrompt({queue:true})`) and drained as a
+ *     SEPARATE turn when the current one ends — never concatenated onto the
+ *     parent's next prompt, and never stranded until one arrives.
+ *   Either way the turn is recorded with `source:"child:<childId>"`, so the
+ *   parent's transcript attributes it to the child, not the human.
  *   - parent missing/dead, no `parentSessionId`, or the child didn't opt in
  *     → no-op. The free external webhook path (`webhookNotifier`, gated on
  *     `notifyUrl` alone) already covers external notification regardless of
@@ -45,9 +48,8 @@ export interface SupervisorNotifyRegistry {
   enqueuePrompt(
     id: string,
     message: unknown,
-    opts?: { interrupt?: boolean },
+    opts?: { interrupt?: boolean; queue?: boolean; source?: string; origin?: string },
   ): Promise<unknown>
-  stampPendingChildCrashNotice(id: string, notice: string): boolean
 }
 
 /** True iff this exit is the unexpected-death set this module reacts to —
@@ -88,14 +90,23 @@ export function wireSupervisorNotify(opts: {
     const parentAlive = parent.status === "running" || parent.status === "starting"
     if (!parentAlive) return
     const notice = formatCrashNotice(child, ev)
-    if (!parent.busy) {
-      // Fire-and-forget, same as every other automatic bus-driven prompt
-      // (task-ledger's owner-death release, the reaper) — admission errors
-      // here would only mean the parent died in the race since the alive
-      // check above; nothing left to report them to.
-      void registry.enqueuePrompt(parentId, notice, {})
-      return
-    }
-    registry.stampPendingChildCrashNotice(parentId, notice)
+    // Idempotent across a duplicate event for the same crash: the exact
+    // notice already waiting in the parent's queue is never queued twice.
+    if (parent.promptQueue?.some(p => p.message === notice)) return
+    const provenance = `child:${child.id}`
+    // Fire-and-forget, same as every other automatic bus-driven prompt
+    // (task-ledger's owner-death release, the reaper) — admission errors
+    // here would only mean the parent died in the race since the alive
+    // check above; nothing left to report them to. `queue` is a no-op on an
+    // idle parent (dispatches now) and parks behind a busy one — also
+    // covering an idle→busy race. Never `interrupt`: a crash notice never
+    // cuts a turn.
+    void registry
+      .enqueuePrompt(parentId, notice, {
+        queue: true,
+        source: provenance,
+        origin: provenance,
+      })
+      .catch(() => {})
   })
 }
