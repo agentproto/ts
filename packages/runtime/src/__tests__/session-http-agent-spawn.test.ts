@@ -197,6 +197,54 @@ describe("POST /sessions/agent — orchestrator/mcpServers parity with agent_sta
     }
   })
 
+  it("caller stdio mcpServers entry keeps args/env through the HTTP body parse", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+    })
+    const port = await freePort()
+
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      resolveAgentAdapter,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      const callerEntry = {
+        name: "browser",
+        transport: "stdio",
+        ref: "/usr/local/bin/chrome-devtools-mcp",
+        args: ["--headless", "--isolated"],
+        env: { DEBUG: "1" },
+      } satisfies AcpMcpServer
+      const res = await fetch(`http://127.0.0.1:${port}/sessions/agent`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ adapter: "mock", cwd: "/tmp", mcpServers: [callerEntry] }),
+      })
+      expect(res.status).toBe(201)
+      expect(startSession).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mcpServers: [expect.objectContaining({
+            name: "browser",
+            args: ["--headless", "--isolated"],
+            env: { DEBUG: "1" },
+          })],
+        }),
+      )
+    } finally {
+      await http.stop()
+    }
+  })
+
   it("trace:true (and stringified \"true\") forwards to registry.spawnAgent; omitted stays absent", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const spawnSpy = vi.spyOn(registry, "spawnAgent")

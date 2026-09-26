@@ -4153,7 +4153,8 @@ function parseWorktreeField(raw: unknown): WorktreeField | undefined {
  *  live 2026-09-13: every `POST /sessions/agent` mcpServers entry lost
  *  its Authorization header here, while the same payload through the MCP
  *  `agent_start` tool — whose zod schema keeps both fields — reached the
- *  agent authenticated). */
+ *  agent authenticated). Same rule for a `stdio` entry's `args`/`env`:
+ *  dropping them launches the bare command without its flags. */
 function parseMcpServersField(raw: unknown): AcpMcpServer[] | undefined {
   const value = typeof raw === "string" ? tryParseJson(raw) : raw
   if (!Array.isArray(value)) return undefined
@@ -4169,6 +4170,10 @@ function parseMcpServersField(raw: unknown): AcpMcpServer[] | undefined {
       ...(typeof o.ref === "string" ? { ref: o.ref } : {}),
       ...(isStringRecord(o.headers) ? { headers: o.headers } : {}),
       ...(typeof o.credentialRef === "string" ? { credentialRef: o.credentialRef } : {}),
+      ...(Array.isArray(o.args) && o.args.every(a => typeof a === "string")
+        ? { args: o.args as string[] }
+        : {}),
+      ...(isStringRecord(o.env) ? { env: o.env } : {}),
     })
   }
   return servers

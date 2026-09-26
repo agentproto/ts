@@ -3298,12 +3298,16 @@ function toMcpServerMounts(entries: readonly AcpMcpServer[]): Array<{
   transport: "stdio" | "http" | "sse"
   ref?: string
   headers?: Record<string, string>
+  args?: string[]
+  env?: Record<string, string>
 }> {
   return entries.map(e => ({
     name: e.name,
     transport: e.transport,
     ...(e.ref !== undefined ? { ref: e.ref } : {}),
     ...(e.headers !== undefined ? { headers: e.headers } : {}),
+    ...(e.args !== undefined ? { args: e.args } : {}),
+    ...(e.env !== undefined ? { env: e.env } : {}),
   }))
 }
 

@@ -643,6 +643,14 @@ export function registerAgentTools(
                   "`headers` (typically `Authorization`). The actual secret never lives " +
                   "in env or config; brokered headers win on collision with `headers`."
               ),
+            args: z
+              .array(z.string())
+              .optional()
+              .describe("`stdio` only: argv passed to the `ref` command. Ignored for `http`/`sse`."),
+            env: z
+              .record(z.string(), z.string())
+              .optional()
+              .describe("`stdio` only: extra environment for the launched server. Ignored for `http`/`sse`."),
           })
         )
       )

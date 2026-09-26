@@ -76,6 +76,13 @@ export interface AcpMcpServer {
    *  in env or config. Mutually usable with `headers`; brokered headers
    *  win on collision. */
   credentialRef?: string
+  /** Extra argv for a `stdio` server (the command itself is `ref`).
+   *  Ignored for `http` / `sse`. */
+  args?: string[]
+  /** Extra environment for a `stdio` server, merged over the agent's own
+   *  env by the ACP agent when it launches the process. Ignored for
+   *  `http` / `sse`. */
+  env?: Record<string, string>
 }
 
 /** AIP-44 extensions on the agentskills.io baseline. Lives under `metadata.aip44`. */
