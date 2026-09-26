@@ -266,4 +266,23 @@ describe("GET /sessions — strong etag + if-none-match + ?since delta", () => {
       expect(body.sessions.map(s => s.id)).not.toContain(desc.id)
     })
   })
+
+  it("?fields= projects each row to the allowlist, always keeping id", async () => {
+    await withServer(async (port, registry) => {
+      registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: process.cwd(),
+        agentSession: fakeAgentSession("agent"),
+        adapterSlug: "fake",
+      })
+
+      const res = await fetch(`http://127.0.0.1:${port}/sessions?fields=status,kind,nope`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { sessions: Record<string, unknown>[] }
+      expect(body.sessions.length).toBeGreaterThan(0)
+      for (const row of body.sessions) {
+        expect(Object.keys(row).sort()).toEqual(["id", "kind", "status"])
+      }
+    })
+  })
 })

@@ -217,6 +217,33 @@ function sessionDescriptorForHttp(
   return publicDescriptor
 }
 
+/** `?fields=a,b,c` allowlist for the sessions routes — the HTTP twin of the
+ *  `session_list` MCP tool's `fields`. Unknown names are ignored; `id` is
+ *  always kept so a caller can never lose the row's identity. No `fields`
+ *  ⇒ the untouched public descriptor. */
+function parseSessionFields(params: URLSearchParams): ReadonlySet<string> | undefined {
+  const raw = params.get("fields")
+  if (raw === null) return undefined
+  const names = raw
+    .split(",")
+    .map(s => s.trim())
+    .filter(s => s.length > 0)
+  return new Set(["id", ...names])
+}
+
+function projectSessionForHttp(
+  session: SessionDescriptor,
+  fields: ReadonlySet<string> | undefined,
+): Record<string, unknown> {
+  const pub = sessionDescriptorForHttp(session) as unknown as Record<string, unknown>
+  if (!fields) return pub
+  const out: Record<string, unknown> = {}
+  for (const key of fields) {
+    if (key in pub && pub[key] !== undefined) out[key] = pub[key]
+  }
+  return out
+}
+
 /**
  * Default Origin allowlist used when `RuntimeHttpServerOptions.allowedOrigins`
  * is undefined. Localhost on any port covers the user's own dev environments
@@ -4820,6 +4847,7 @@ async function handleSessions(
     const kindParam = params.get("kind")
     const includeCommands = params.get("includeCommands") === "true"
     const sinceParam = params.get("since")
+    const fields = parseSessionFields(params)
     const matchesFilter = (s: SessionDescriptor): boolean => {
       if (kindParam && kindParam !== "all") return s.kind === kindParam
       return includeCommands || s.kind !== "command"
@@ -4862,9 +4890,9 @@ async function handleSessions(
             .list({ includeArchived: true })
             .filter(s => s.archived && matchesFilter(s))
             .map(s => s.id)
-      body = { sessions: changed.map(sessionDescriptorForHttp), removed }
+      body = { sessions: changed.map(s => projectSessionForHttp(s, fields)), removed }
     } else {
-      body = { sessions: rows.map(sessionDescriptorForHttp) }
+      body = { sessions: rows.map(s => projectSessionForHttp(s, fields)) }
     }
 
     // Strong etag over the exact serialized body (app-ui-delivery.ts
