@@ -35,6 +35,7 @@ import {
   removeAuthProfile,
   setAuthProfileEnabled,
   setAuthProfileModels,
+  updateAuthProfile,
   AuthProfileValidationError,
   type AuthProfile,
   type CredentialStore,
@@ -363,6 +364,75 @@ export function registerAuthProfileTools(server: McpServer): void {
         }
         return errorText(
           `auth_profile_set_models failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    },
+  )
+
+  // ── auth_profile_update ───────────────────────────────────────
+  // Input is tri-state per field (absent = leave, null = clear, value = set)
+  // rather than the sibling set_enabled/set_models's separate booleans/flags:
+  // label and costBudget are independent optional patches on the SAME call,
+  // so a single flag-per-field shape (clearLabel/clearCostBudget) would need
+  // two extra params for no benefit — null already means "clear" everywhere
+  // else a profile field is nullable (see CreateAuthProfileInput's source).
+  server.tool(
+    "auth_profile_update",
+    "Update a named auth profile's `label` and/or `costBudget` (never the " +
+      "credential, credentialRef, source, disabled, or models fields — use " +
+      "auth_profile_set_enabled / auth_profile_set_models for those). Each " +
+      "field is tri-state: OMIT it to leave the current value untouched, " +
+      "pass `null` to clear it, or pass a value to set it. At least one of " +
+      "`label` / `costBudget` must be given. `label` is trimmed and must be " +
+      "non-blank (up to 200 characters) once set. Returns the updated row " +
+      "with the same KEY IDENTITY auth_profile_list computes (`keyStatus`, " +
+      "`fingerprint`, `last4`) — never the secret. The row is FULL by " +
+      "default (includes `costBudget`, since this is the tool that sets it); " +
+      "pass `full: false` for the compact projection auth_profile_list uses " +
+      "by default.",
+    {
+      id: z.string().describe("The profile id to update."),
+      label: z
+        .string()
+        .nullable()
+        .optional()
+        .describe(
+          "New human-readable name, or null to clear it. Omit to leave the current label unchanged.",
+        ),
+      costBudget: z
+        .object({
+          maxCostUsd: z.number().describe("Windowed spend ceiling in USD."),
+          window: z.string().describe('Rolling window spec ("5h", "7d", or ISO-8601 "P7D").'),
+          scope: z
+            .enum(["session", "profile"])
+            .describe("Which spend surface the window is summed over."),
+        })
+        .nullable()
+        .optional()
+        .describe(
+          "New windowed spend cap, or null to clear it. Omit to leave the current costBudget unchanged.",
+        ),
+      full: z
+        .boolean()
+        .optional()
+        .describe("Include costBudget in the returned row (default true)."),
+    },
+    async (input) => {
+      try {
+        const patch = {
+          ...("label" in input ? { label: input.label } : {}),
+          ...("costBudget" in input ? { costBudget: input.costBudget } : {}),
+        }
+        const profile = await updateAuthProfile(input.id, patch, defaultProfileProvisionDeps())
+        const store = new KeychainStore()
+        const row = await describeProfileKey(profile, store)
+        return text({ profile: input.full === false ? compactAuthProfileRow(row) : row })
+      } catch (err) {
+        if (err instanceof AuthProfileValidationError) {
+          return errorText(`auth_profile_update rejected: ${err.message}`)
+        }
+        return errorText(
+          `auth_profile_update failed: ${err instanceof Error ? err.message : String(err)}`,
         )
       }
     },
