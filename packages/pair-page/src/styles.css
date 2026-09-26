@@ -130,9 +130,13 @@ code {
   border-radius: 8px;
   background: #0a110e;
   text-align: center;
-  font-size: 18px;
-  letter-spacing: 0.18em;
-  overflow-wrap: anywhere;
+  font-size: 17px;
+  line-height: 1.6;
+}
+
+.fingerprint span {
+  display: inline-block;
+  margin: 0 0.3em;
 }
 
 .command {

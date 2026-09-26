@@ -64,8 +64,11 @@ export function code(text: string): HTMLElement {
   return h("code", {}, text)
 }
 
+/** A fingerprint in groups of 4 (easier to compare with the terminal). The
+ *  gaps are CSS margins, so copying it yields the raw hex. */
 export function fingerprint(value: string): HTMLElement {
-  return h("code", { class: "fingerprint" }, value)
+  const groups = value.match(/.{1,4}/g) ?? [value]
+  return h("code", { class: "fingerprint" }, ...groups.map(g => h("span", {}, g)))
 }
 
 export function button(
