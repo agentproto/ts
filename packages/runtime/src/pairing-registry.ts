@@ -285,8 +285,9 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
   interface LoopSpec {
     key: string
     rendezvousUrl: string
-    /** Token to dial this iteration (recomputed for epoch loops). */
-    token: () => string
+    /** Token to dial this iteration (recomputed for epoch loops; the epoch
+     *  token derivation is async). */
+    token: () => string | Promise<string>
     /** Verify the presented offer-token against the expected token for this
      *  connection. `expected` is what `token()` returned this iteration. */
     verify: (presented: string, expected: string) => boolean
@@ -323,7 +324,7 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
   async function runLoop(spec: LoopSpec, signal: AbortSignal): Promise<void> {
     let backoff = reconnectMinMs
     while (!signal.aborted && spec.shouldContinue()) {
-      const expected = spec.token()
+      const expected = await spec.token()
       let sink: FrameSink
       try {
         sink = await deps.dial(dialUrl(spec.rendezvousUrl, expected), signal)
@@ -362,9 +363,9 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
           const identity = await deps.loadIdentity()
           wrapped = await daemonHandshakeOverSink(
             sink,
-            helloBytes => {
+            async helloBytes => {
               const hello = decodePairingHello(helloBytes)
-              const result = respondToHandshake(hello, {
+              const result = await respondToHandshake(hello, {
                 identity,
                 verifyOfferToken: presented => spec.verify(presented, expected),
               })
@@ -448,7 +449,7 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
     const exp = Math.floor((now() + ttlMs) / 1000)
     offers.set(token, { token, exp, spent: false, rendezvousUrl })
 
-    const fingerprint = identityFingerprint(identity.x25519.pub)
+    const fingerprint = await identityFingerprint(identity.x25519.pub)
     const url = encodeOfferUrl({
       v: 1,
       rendezvousUrl,
@@ -487,7 +488,7 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
         return true
       },
       onPaired: async (session, hello) => {
-        const pairRoot = derivePairRoot(session)
+        const pairRoot = await derivePairRoot(session)
         const fingerprint = session.peerFingerprint
         const nowIso = new Date(now()).toISOString()
         const record: PairingRecord = {

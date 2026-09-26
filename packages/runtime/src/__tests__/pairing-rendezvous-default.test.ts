@@ -28,7 +28,7 @@ describe("hosted rendezvous default", () => {
 
   beforeEach(async () => {
     tmp = await mkdtemp(join(tmpdir(), "agentproto-rvdefault-"))
-    identity = generateIdentity()
+    identity = await generateIdentity()
   })
   afterEach(async () => {
     if (registry) await registry.shutdown().catch(() => {})
@@ -65,7 +65,7 @@ describe("hosted rendezvous default", () => {
     expect(offer.rendezvousUrl).toBe(HOSTED_RENDEZVOUS_URL)
     expect(offer.rendezvousIsHostedDefault).toBe(true)
     // The default is baked into the offer URL's `rv=`, so the client dials it too.
-    expect(parseOfferUrl(offer.url).rendezvousUrl).toBe(HOSTED_RENDEZVOUS_URL)
+    expect((await parseOfferUrl(offer.url)).rendezvousUrl).toBe(HOSTED_RENDEZVOUS_URL)
   })
 
   it("lets `pairing.rendezvous` in config beat the hosted default", async () => {
@@ -75,7 +75,7 @@ describe("hosted rendezvous default", () => {
 
     expect(offer.rendezvousUrl).toBe(configured)
     expect(offer.rendezvousIsHostedDefault).toBe(false)
-    expect(parseOfferUrl(offer.url).rendezvousUrl).toBe(configured)
+    expect((await parseOfferUrl(offer.url)).rendezvousUrl).toBe(configured)
   })
 
   it("lets an explicit `--rendezvous` beat config (and the default)", async () => {
