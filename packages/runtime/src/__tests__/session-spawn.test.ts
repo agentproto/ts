@@ -4290,6 +4290,112 @@ describe("spawnAgentSession — access.profileRef profile-aware route fallback (
   })
 })
 
+// The claude-sdk/moonshot gateway-propagation bug (2026-09-26): a
+// FIXED-provider adapter (claude-sdk, provider "anthropic") spawned with a
+// gateway profile (`access: {profileRef: "moonshot-api"}`), a gateway-billed
+// model (kimi-k2.7-code → moonshot) and NO explicit `route.gateway`. The
+// profile-aware fallback resolved the moonshot gateway for the ELIGIBILITY
+// check, but the resolution stopped there: `resolveAuthSpec` ran with
+// `requestedProvider: "moonshot"` as a DIRECT endpoint (→ MOONSHOT_API_KEY,
+// no base_url) and the descriptor carried no `route` — so the session hit
+// Anthropic direct and errored on the model. The fallback's gateway must
+// thread through auth spec (gatewayAuth setEnv + preset base_url), launch
+// config and descriptor `route` echo exactly as an explicit `route:
+// {gateway: "moonshot"}` does. This is also what makes a gateway-billed
+// harness preset (claude-sdk-moonshot) viable at all: `HarnessPreset` carries
+// only `access.profileRef` + `model` (no route field), and the model-ref
+// grammar rejects an unscoped `kimi-k2.7-code@moonshot`, so profile-aware
+// propagation is the ONLY path to the gateway.
+describe("spawnAgentSession — access.profileRef gateway propagation (claude-sdk/moonshot)", () => {
+  const CLAUDE_SDK_LIKE_DESCRIPTOR: AdapterAuthDescriptor = {
+    provider: "anthropic",
+    authSubscription: {
+      setEnv: "ANTHROPIC_AUTH_TOKEN",
+      conflictEnv: ["CLAUDE_CODE_OAUTH_TOKEN"],
+    },
+    gatewayAuth: { setEnv: "ANTHROPIC_AUTH_TOKEN" },
+  }
+
+  beforeEach(() => {
+    authProfileState.profiles = {}
+    authProfileState.keychain = {}
+    authProfileState.profiles["moonshot-api"] = {
+      id: "moonshot-api",
+      endpoint: "moonshot",
+      method: "api-key",
+      credentialRef: "agentproto.auth.moonshot.api",
+    }
+    authProfileState.keychain["agentproto.auth.moonshot.api"] = "sk-moonshot-profile-key"
+  })
+
+  it("no explicit route: the profile-resolved moonshot gateway drives gatewayAuth setEnv, base_url and the descriptor route echo", async () => {
+    const { resolver, captured } = makeAuthResolver(CLAUDE_SDK_LIKE_DESCRIPTOR, {
+      routeSelection: "free",
+    })
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      {
+        adapter: "claude-sdk",
+        cwd: "/tmp",
+        model: "kimi-k2.7-code",
+        access: { profileRef: "moonshot-api" },
+      },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    // Gateway auth, not the provider preset's direct keyEnv: the credential
+    // lands in the var the SDK actually reads a bearer from.
+    expect(captured[0]?.auth).toMatchObject({
+      mode: "api-key",
+      setEnv: "ANTHROPIC_AUTH_TOKEN",
+      credential: "sk-moonshot-profile-key",
+    })
+    expect(captured[0]?.auth?.setEnv).not.toBe("MOONSHOT_API_KEY")
+    expect(captured[0]?.auth?.unsetEnv).toContain("ANTHROPIC_API_KEY")
+    expect(captured[0]?.auth?.unsetEnv).toContain("MOONSHOT_API_KEY")
+    // The wire actually goes to the gateway.
+    expect(captured[0]?.options?.base_url).toBe("https://api.moonshot.ai/anthropic")
+    // Observable echoes: billing rail + route, same as an explicit
+    // `route: {gateway: "moonshot"}` spawn.
+    expect(result.descriptor.auth?.provider).toBe("moonshot")
+    expect(result.descriptor.route).toEqual({ gateway: "moonshot" })
+    expect(result.descriptor.accessProfile).toMatchObject({
+      profileRef: "moonshot-api",
+      endpoint: "moonshot",
+      method: "api-key",
+    })
+  })
+
+  it("parity: the explicit route:{gateway:'moonshot'} spawn produces the same auth spec, base_url and route echo", async () => {
+    const { resolver, captured } = makeAuthResolver(CLAUDE_SDK_LIKE_DESCRIPTOR, {
+      routeSelection: "free",
+    })
+    const { registry } = baseDeps()
+    const result = await spawnAgentSession(
+      { registry, resolveAgentAdapter: resolver, loadDefaultsConfig: async () => undefined },
+      {
+        adapter: "claude-sdk",
+        cwd: "/tmp",
+        model: "kimi-k2.7-code",
+        route: { gateway: "moonshot" },
+        access: { profileRef: "moonshot-api" },
+      },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(captured[0]?.auth).toMatchObject({
+      mode: "api-key",
+      setEnv: "ANTHROPIC_AUTH_TOKEN",
+      credential: "sk-moonshot-profile-key",
+    })
+    expect(captured[0]?.options?.base_url).toBe("https://api.moonshot.ai/anthropic")
+    expect(result.descriptor.auth?.provider).toBe("moonshot")
+    expect(result.descriptor.route).toEqual({ gateway: "moonshot" })
+  })
+
+})
+
 // "Use my existing Codex login" — a FILE-BASED (external) subscription. The
 // codex adapter declares `authSubscription: { external: true }`: the CLI reads
 // its own ~/.codex/auth.json, so the daemon injects NOTHING — it verifies the
