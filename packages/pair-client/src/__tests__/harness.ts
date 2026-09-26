@@ -5,6 +5,7 @@
  * upstream behind it. The client under test only ever sees the broker URL.
  */
 
+import { createHash } from "node:crypto"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -31,6 +32,8 @@ export interface Upstream {
  *   /forever    text/event-stream that never ends (observes cancellation)
  *   /slow/<ms>  JSON after <ms>
  *   /status/<n> empty body with status n
+ *   /big/<n>    a buffered text/html body of n deterministic bytes (bigBody)
+ *   /digest     JSON {length, sha256} of the request body
  *   anything    JSON echo of method, path, headers, body
  */
 export function stubUpstream(): Upstream {
@@ -48,7 +51,13 @@ export function stubUpstream(): Upstream {
       const path = u.pathname.replace(/^\/upstream/, "") + u.search
       const headers: Record<string, string> = {}
       new Headers(init?.headers).forEach((v, k) => (headers[k] = v))
-      const body = init?.body ? new TextDecoder().decode(init.body as Uint8Array) : ""
+      const raw = init?.body ? (init.body as Uint8Array) : new Uint8Array()
+      if (u.pathname.endsWith("/digest")) {
+        return Response.json({ length: raw.length, sha256: createHash("sha256").update(raw).digest("hex") })
+      }
+      const big = /\/big\/(\d+)$/.exec(u.pathname)
+      if (big) return new Response(bigBody(Number(big[1])), { headers: { "content-type": "text/html" } })
+      const body = new TextDecoder().decode(raw)
       requests.push({ method: init?.method ?? "GET", path, headers, body })
 
       if (u.pathname.endsWith("/sse")) {
@@ -186,4 +195,19 @@ export function countingWebSocket(): { WebSocket: WebSocketConstructor; sockets:
 
 export async function readAll(res: Response): Promise<string> {
   return new TextDecoder().decode(new Uint8Array(await res.arrayBuffer()))
+}
+
+/** n deterministic, incompressible-looking bytes. */
+export function bigBody(n: number, seed = 1): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(n)
+  let x = seed
+  for (let i = 0; i < n; i++) {
+    x = (x * 1103515245 + 12345) & 0x7fffffff
+    out[i] = x & 0xff
+  }
+  return out
+}
+
+export function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex")
 }

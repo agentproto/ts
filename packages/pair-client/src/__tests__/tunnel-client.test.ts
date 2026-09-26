@@ -10,7 +10,7 @@ import { connect, type TunnelClient, type StateChange } from "../client.js"
 import { createMemoryCredentialStore, type PairCredential } from "../credential.js"
 import { TunnelClientError } from "../errors.js"
 import { inspectOffer, pairFromOffer } from "../pair.js"
-import { countingWebSocket, readAll, startDaemon, type Daemon } from "./harness.js"
+import { bigBody, countingWebSocket, readAll, sha256, startDaemon, type Daemon } from "./harness.js"
 
 const FAST = { reconnectMinMs: 50, reconnectMaxMs: 200, handshakeTimeoutMs: 3_000, greetingTimeoutMs: 3_000 }
 
@@ -189,6 +189,38 @@ describe("TunnelClient.fetch", () => {
     await res2.body!.cancel()
     expect((await client.fetch("/ping")).status).toBe(200)
   }, 30_000)
+})
+
+describe("TunnelClient over a rendezvous with its default 1 MiB message cap", () => {
+  it("round-trips a multi-MB response and a multi-MB POST body intact, on one channel", async () => {
+    // The harness broker keeps the default maxMessageBytes (1 MiB), like the
+    // hosted rdv.agentproto.sh. One frame per body would be ~1.78x the body
+    // on the wire and get the channel closed.
+    const { client, d, sockets } = await pairedClient()
+    const dials = sockets.length
+
+    // A 1.4 MB single-file page (the session-chat UI case) and a larger one.
+    for (const n of [1_400_000, 5 * 1024 * 1024 + 17]) {
+      const res = await client.fetch(`/apps/x/ui/big/${n}`)
+      expect(res.status).toBe(200)
+      expect(res.headers.get("content-type")).toBe("text/html")
+      const got = new Uint8Array(await res.arrayBuffer())
+      expect(got.length).toBe(n)
+      expect(sha256(got)).toBe(sha256(bigBody(n)))
+    }
+
+    const upload = bigBody(4 * 1024 * 1024 + 3, 42)
+    const posted = await client.fetch("/digest", { method: "POST", body: upload })
+    expect(await posted.json()).toEqual({ length: upload.length, sha256: sha256(upload) })
+
+    // Interleaved with a small request, and still the same live channel.
+    const [a, b] = await Promise.all([client.fetch("/big/2000000"), client.fetch("/ping")])
+    expect((await a.arrayBuffer()).byteLength).toBe(2_000_000)
+    expect(b.status).toBe(200)
+    expect(client.state).toBe("open")
+    expect(sockets.length).toBe(dials)
+    expect(d.rendezvous.stats.active).toBeGreaterThanOrEqual(1)
+  }, 60_000)
 })
 
 describe("TunnelClient connection lifecycle", () => {
