@@ -59,6 +59,11 @@
       "import": "./dist/ops-panel.mjs",
       "default": "./dist/ops-panel.mjs"
     },
+    "./config": {
+      "types": "./dist/config/index.d.ts",
+      "import": "./dist/config.mjs",
+      "default": "./dist/config.mjs"
+    },
     "./session-viewer": {
       "types": "./dist/session-viewer/index.d.ts",
       "import": "./dist/session-viewer.mjs",
