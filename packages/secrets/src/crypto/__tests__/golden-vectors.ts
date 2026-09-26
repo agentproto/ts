@@ -35,6 +35,18 @@ export const KEYS = {
   }
 } as const
 
+/**
+ * The 64-bit identity fingerprints (16 hex) of the pre-refactor capture.
+ * `identityFingerprint` is now 128 bits (32 hex, re-derived in `GOLDEN`
+ * below); these must stay its 16-char prefix, proving the widening changed
+ * only the length. `GOLDEN.offerUrl` (v1, refused as outdated) keeps its
+ * captured 16-hex `id`.
+ */
+export const CAPTURED_FINGERPRINTS_64 = {
+  "clientPeerFingerprint": "3618963fe733bf15",
+  "daemonPeerFingerprint": "0930400eedbcdaf8"
+} as const
+
 export const GOLDEN = {
   "helloWire": "{\"v\":1,\"ePub\":\"MCowBQYDK2VuAyEAo9dEfjHKYJvYKfiEreVUWGHdjkU+vh57Gp3GWsMJKDw=\",\"ct0\":\"eyJ2IjoxLCJhbGciOiJ4MjU1MTktaGtkZi1zaGEyNTYtYWVzMjU2Z2NtIiwiZXBrIjoiTUNvd0JRWURLMlZ1QXlFQWxIS2Uzd2FXTXg4OEpTd2MwQTR0TGZseFB1RGl2RU80alg4K1d1Q3BWaFU9IiwiaXYiOiJXbHBhV2xwYVdscGFXbHBhIiwiY3QiOiJQMGJ5N3pRdTRkRWhmSjNQNUtzYW5FVTBCcWc1ZGhyMmxDSDQwVGIwNmlKeWZEWDNBbHFCMDdha3FXNmVJV05CNnpuNFlIWmJ4UXk5bHVDY3ZPdTFXK216ZlNuNGNnR2xqWTY1ZGZHUXZQVTlpd3ZBS3N5Zm1oNnVyR3E0eWc3TG1BSzNNdlRJRGlhekdOMGljOHU3NXVwKzQ3QitESzBKdGMyMlVyaHFDRU13NE1STkZiUk1NVTYxUHlreWtNRT0iLCJ0YWciOiJ2Z0ZiUjZLZ0FGdlZoNG5YSmpqa1ZBPT0ifQ==\"}",
   "replyWire": "{\"v\":1,\"dePub\":\"MCowBQYDK2VuAyEAx1GZFWBLMBqdB1P+ZP2xke5jyW3rzu8PyCHqY/M4fSM=\",\"sig\":\"K3RR3iQArALVFvAvfRw5EeQYDUiviAjkiWozyKHbMlihiZ4iBplsD05RF+aWXvl096xpBPZqZFwutSpRdXT3Dg==\"}",
@@ -43,8 +55,8 @@ export const GOLDEN = {
   "daemonSendKey": "7d5f598bfc729afc83809ac891562b6fc8ebfbdc455c98197adc5db79b9d3ff2",
   "daemonRecvKey": "e53b251d2c6c89c08bf77ba5c0f8902a6f017afa0d959f920eea91145813df12",
   "transcriptHash": "abc9c0349676f8e79f744528c31e13404396f9db87a31bd0895709a4d9b61121",
-  "clientPeerFingerprint": "3618963fe733bf15",
-  "daemonPeerFingerprint": "0930400eedbcdaf8",
+  "clientPeerFingerprint": "3618963fe733bf15774a717f5231f46a",
+  "daemonPeerFingerprint": "0930400eedbcdaf8ed718830313331a4",
   "pairRoot": "KKf8y+HzsKOPnW+2t7hY0r0V5Q/d7VIxzO+lKgx8IXw=",
   "epochToken20000": "_qxhZWUGUgTzFsNsbv1Alw",
   "sealed": "eyJ2IjoxLCJhbGciOiJ4MjU1MTktaGtkZi1zaGEyNTYtYWVzMjU2Z2NtIiwiZXBrIjoiTUNvd0JRWURLMlZ1QXlFQWxIS2Uzd2FXTXg4OEpTd2MwQTR0TGZseFB1RGl2RU80alg4K1d1Q3BWaFU9IiwiaXYiOiJXbHBhV2xwYVdscGFXbHBhIiwiY3QiOiJJd3Y5NXpnbHI5VWRhSmFEcXV3dnF3cWgyR289IiwidGFnIjoiRjdmRGI5MEZPR3dlL09rcXVBMzczQT09In0=",
@@ -76,5 +88,5 @@ export const GOLDEN_V2 = {
   "offerAuth": "UOMhljizs5DtoS-V-DYVQjA16RFxSEjLIvoWrBTw7ZI",
   "epochRoute20000": "_qxhZWUGUgTzFsNsbv1Alw",
   "epochAuth20000": "uXAlKAr1zp4L0hDl1VzXDdc9QsOh0rIYK4ijWsZaocQ",
-  "offerUrl": "agentproto://pair?v=2&rv=wss%3A%2F%2Frdv.example%2Fv1&id=3618963fe733bf15&pk=MCowBQYDK2VuAyEA9g736kFg03Iq76wRWkotIp2nMvizVOFK8CJUNqNqSX8&sk=MCowBQYDK2VwAyEABT4L-Suyw4ZE23lVR_j5EEccBI_UG0umjd8vrdIMmm0&s=AAAABBBBCCCCDDDDEEEEFF&exp=1900000000"
+  "offerUrl": "agentproto://pair?v=2&rv=wss%3A%2F%2Frdv.example%2Fv1&id=3618963fe733bf15774a717f5231f46a&pk=MCowBQYDK2VuAyEA9g736kFg03Iq76wRWkotIp2nMvizVOFK8CJUNqNqSX8&sk=MCowBQYDK2VwAyEABT4L-Suyw4ZE23lVR_j5EEccBI_UG0umjd8vrdIMmm0&s=AAAABBBBCCCCDDDDEEEEFF&exp=1900000000"
 } as const

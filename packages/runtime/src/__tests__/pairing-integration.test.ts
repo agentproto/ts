@@ -280,7 +280,7 @@ describe("paired channel over an untrusted broker (in-process)", () => {
     const file = JSON.parse(await readFile(pairingsPath, "utf8"))
     expect(file.pairings).toHaveLength(1)
     expect(file.pairings[0].name).toBe("jeremy@laptop")
-    expect(file.pairings[0].fingerprint).toMatch(/^[0-9a-f]{16}$/)
+    expect(file.pairings[0].fingerprint).toMatch(/^[0-9a-f]{32}$/)
     expect(typeof file.pairings[0].pairRoot).toBe("string")
 
     await client.close()
@@ -814,7 +814,7 @@ describe("paired channel over the real rendezvous broker", () => {
     const legacyRecord = {
       clientPub: "legacy-client-pub",
       name: "old-laptop",
-      fingerprint: "0123456789abcdef",
+      fingerprint: "0123456789abcdef0123456789abcdef",
       createdAt: "2026-07-01T00:00:00.000Z",
       lastSeen: "2026-07-01T00:00:00.000Z",
       pairRoot,

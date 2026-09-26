@@ -6,7 +6,7 @@
  * ```
  *   agentproto://pair?v=2
  *     &rv=<rendezvous ws/wss url>          // where both sides meet
- *     &id=<fingerprint>                    // daemon identity fingerprint (16 hex)
+ *     &id=<fingerprint>                    // daemon identity fingerprint (32 hex)
  *     &pk=<b64url x25519 SPKI DER>         // daemon static encryption key
  *     &sk=<b64url ed25519 SPKI DER>        // daemon signing key
  *     &s=<one-time offer secret>           // derives the route + auth tokens
@@ -91,7 +91,7 @@ export interface PairingOffer {
   v: typeof OFFER_VERSION
   /** Rendezvous endpoint both sides dial (ws:// or wss://). */
   rendezvousUrl: string
-  /** Daemon identity fingerprint (16 hex) — must equal fingerprint(pk). */
+  /** Daemon identity fingerprint (32 lowercase hex) — must equal fingerprint(pk). */
   fingerprint: string
   /** Daemon static X25519 public key, standard base64 SPKI DER. */
   daemonX25519Pub: string
@@ -315,8 +315,8 @@ export async function parseOfferUrl(
   }
 
   const fingerprint = req(q, "id")
-  if (!/^[0-9a-f]{16}$/.test(fingerprint)) {
-    throw new PairingError("malformed_offer", "offer `id` is not a 16-hex fingerprint")
+  if (!/^[0-9a-f]{32}$/.test(fingerprint)) {
+    throw new PairingError("malformed_offer", "offer `id` is not a 32-hex fingerprint")
   }
 
   const pkUrl = req(q, "pk")

@@ -94,6 +94,15 @@ describe("offer URL codec", async () => {
     await expect(parseOfferUrl(url)).rejects.toThrow(/agentproto pair offer/)
   })
 
+  it("requires `id` to be exactly 32 lowercase hex (a 128-bit fingerprint)", async () => {
+    const offer = await makeOffer()
+    expect(offer.fingerprint).toMatch(/^[0-9a-f]{32}$/)
+    for (const id of [offer.fingerprint.slice(0, 16), `${offer.fingerprint}0`, offer.fingerprint.toUpperCase()]) {
+      const url = encodeOfferUrl(offer).replace(`id=${offer.fingerprint}`, `id=${id}`)
+      await expect(parseOfferUrl(url), id).rejects.toThrow(/32-hex fingerprint/)
+    }
+  })
+
   it("rejects a non-ws rendezvous URL", async () => {
     const offer = await makeOffer({ rendezvousUrl: "http://evil.example/v1" })
     await expectPairingError(() => parseOfferUrl(encodeOfferUrl(offer)), "malformed_offer")
@@ -164,7 +173,7 @@ describe("offer URL codec", async () => {
   })
 
   describe("per-daemon pair page templates ({fp} in the hostname)", () => {
-    const FP = "a1b2c3d4e5f60718"
+    const FP = "a1b2c3d4e5f607189c3e5d7f1a2b4c6d"
 
     it("substitutes the daemon fingerprint into the host", async () => {
       expect(resolvePairPageUrl("https://{fp}.agentproto.cloud/pair", FP)).toBe(

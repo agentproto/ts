@@ -35,7 +35,7 @@ import type { CredentialStore, PairCredential } from "./credential.js"
 import { errMsg, outdatedError, TunnelClientError } from "./errors.js"
 
 export interface OfferInfo {
-  /** Daemon identity fingerprint (16 hex) the offer pins — show it to the user. */
+  /** Daemon identity fingerprint (32 hex) the offer pins — show it to the user. */
   fingerprint: string
   /** The rendezvous the handshake will go through. */
   rendezvousUrl: string

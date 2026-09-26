@@ -50,7 +50,7 @@ page runs in a clearly labelled preview mode, with one shared origin.
 
 `src/worker.ts` (logic in `src/edge.ts`) runs before every static asset:
 
-- **Hosts:** `<fp>.<PAIR_DOMAIN>` with `fp` = `identityFingerprint` (16
+- **Hosts:** `<fp>.<PAIR_DOMAIN>` with `fp` = `identityFingerprint` (32
   lowercase hex) is served. The apex, any other first label and deeper names get
   a 404. Extra hosts only through `PREVIEW_HOSTS` (comma-separated), for the
   workers.dev preview.

@@ -7,7 +7,7 @@
  * the browser origin: there is no per-daemon logic here beyond refusing hosts
  * that aren't a daemon origin.
  *
- *   - Host: `<fp>.<PAIR_DOMAIN>` with `fp` = `identityFingerprint` (16
+ *   - Host: `<fp>.<PAIR_DOMAIN>` with `fp` = `identityFingerprint` (32
  *     lowercase hex). The apex, any other first label, and deeper names get a
  *     404. Extra hosts are allowed only through `PREVIEW_HOSTS` (the
  *     workers.dev preview, a local run), where the page labels itself as a
@@ -24,8 +24,9 @@
 
 export const DEFAULT_PAIR_DOMAIN = "agentproto.cloud"
 
-/** `identityFingerprint`: the first 16 hex chars of sha256(X25519 pub), lowercase. */
-const FINGERPRINT_RE = /^[0-9a-f]{16}$/
+/** `identityFingerprint`: the first 32 hex chars (128 bits) of sha256(X25519
+ *  pub), lowercase. */
+const FINGERPRINT_RE = /^[0-9a-f]{32}$/
 
 export interface EdgeEnv {
   /** Static assets binding (`[assets] binding = "ASSETS"` in wrangler.toml). */
@@ -62,7 +63,7 @@ export function classifyHost(hostname: string, opts: { pairDomain: string; previ
   if (!host.endsWith(`.${domain}`)) return { kind: "reject" }
   const label = host.slice(0, -domain.length - 1)
   // One label, exactly a fingerprint: rejects the apex (no label), deeper
-  // names (a dot in `label`), and anything that isn't 16 lowercase hex.
+  // names (a dot in `label`), and anything that isn't 32 lowercase hex.
   return FINGERPRINT_RE.test(label) ? { kind: "daemon", fingerprint: label, loopback } : { kind: "reject" }
 }
 

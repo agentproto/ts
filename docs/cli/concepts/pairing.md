@@ -69,8 +69,11 @@ A daemon's persistent identity, stored `~/.agentproto/identity.json` (mode
 - an **Ed25519** keypair for authenticity (the daemon signs the handshake
   transcript so the client can prove it reached the daemon it scanned).
 
-The **fingerprint** is `sha256(x25519 pub)[:16]` — the same construction as a
-seal key id — and is what a human confirms at offer and accept time.
+The **fingerprint** is the first 32 lowercase hex chars (128 bits) of
+`sha256(x25519 pub)`, and is what a human confirms at offer and accept time.
+It also names the daemon's browser origin (`<fingerprint>.agentproto.cloud`),
+so it is sized so nobody can grind a key whose fingerprint lands on another
+daemon's origin. A seal key id is its first 16 hex chars.
 
 ### 2. Handshake — `pair/v2` (`@agentproto/secrets/pairing`)
 
@@ -274,14 +277,14 @@ So the pair page is a template with `{fp}` in the hostname, filled with the
 daemon's identity fingerprint. The default is:
 
 ```text
-https://{fp}.agentproto.cloud/pair   →   https://a1b2c3d4e5f60718.agentproto.cloud/pair#v=2&…
+https://{fp}.agentproto.cloud/pair   →   https://a1b2c3d4e5f607189c3e5d7f1a2b4c6d.agentproto.cloud/pair#v=2&…
 ```
 
 Each daemon then gets its own origin. The browser keeps its credential,
 storage, service worker and UI apart from every other pairing, with no shared
 state to leak.
 - Rules: `{fp}` is only allowed in the hostname. The fingerprint must be a
-  valid DNS label (it's 16 lowercase hex chars).
+  valid DNS label (it's 32 lowercase hex chars).
 - The page refuses an offer whose daemon fingerprint isn't its own origin's
   first label, before any network I/O, and stores only that daemon's
   credential (AIP-59 §5.8). `expectedPairHost(template, fingerprint)` gives a

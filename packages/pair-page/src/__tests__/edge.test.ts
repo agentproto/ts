@@ -10,7 +10,7 @@ import {
   type EdgeEnv,
 } from "../edge"
 
-const FP = "ae5be03faa146dd7"
+const FP = "ae5be03faa146dd70123456789abcdef"
 const prod = { pairDomain: "agentproto.cloud", previewHosts: [] as string[] }
 
 describe("classifyHost", () => {
@@ -26,9 +26,10 @@ describe("classifyHost", () => {
     for (const host of [
       "agentproto.cloud",
       "www.agentproto.cloud",
-      "ae5be03faa146dd.agentproto.cloud", // 15 hex
-      "ae5be03faa146dd70.agentproto.cloud", // 17 hex
-      "ae5be03faa146ddz.agentproto.cloud", // not hex
+      "ae5be03faa146dd7.agentproto.cloud", // 16 hex: a 64-bit fingerprint
+      `${FP.slice(0, 31)}.agentproto.cloud`, // 31 hex
+      `${FP}0.agentproto.cloud`, // 33 hex
+      `${FP.slice(0, 31)}z.agentproto.cloud`, // not hex
       `x.${FP}.agentproto.cloud`,
       `${FP}.x.agentproto.cloud`,
       `${FP}.agentproto.cloud.evil.com`,

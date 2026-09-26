@@ -24,7 +24,7 @@ import { homedir } from "node:os"
 import { join, dirname } from "node:path"
 
 export interface ClientPairing {
-  /** Daemon identity fingerprint (16 hex) — the pin. */
+  /** Daemon identity fingerprint (32 hex) — the pin. */
   fingerprint: string
   /** Human label the user gave this pairing (defaults to the daemon fingerprint). */
   name: string

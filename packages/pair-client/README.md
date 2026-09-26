@@ -114,7 +114,7 @@ async function clientFor(id: string) {
 }
 
 self.addEventListener("fetch", (event: FetchEvent) => {
-  const m = new URL(event.request.url).pathname.match(/^\/d\/([0-9a-f]{16})\//)
+  const m = new URL(event.request.url).pathname.match(/^\/d\/([0-9a-f]{32})\//)
   if (!m) return
   event.respondWith(clientFor(m[1]!).then(c => c.fetch(event.request)))
 })

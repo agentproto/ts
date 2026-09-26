@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest"
 import { createMemoryCredentialStore, type PairCredential } from "@agentproto/pair-client"
 import { daemonOrigin, ForeignDaemonError, pageMode, scopeCredentialStore } from "../lib/host"
 
-const A = "ae5be03faa146dd7"
-const B = "0123456789abcdef"
+const A = "ae5be03faa146dd70123456789abcdef"
+const B = "0123456789abcdef0123456789abcdef"
 
 function cred(fp: string): PairCredential {
   return {

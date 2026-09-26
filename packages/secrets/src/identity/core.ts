@@ -60,10 +60,17 @@ export async function generateIdentity(crypto: CryptoProvider = webCryptoProvide
   }
 }
 
-/** First 16 hex of `sha256(x25519 pub DER)` — the same construction as
- *  `sealKeyId`. Not a secret. */
+/** Hex length of an identity fingerprint: 128 bits. */
+export const IDENTITY_FINGERPRINT_HEX_LENGTH = 32
+
+/** First 32 lowercase hex (128 bits) of `sha256(x25519 pub DER)`. Not a
+ *  secret. It names the daemon's browser origin
+ *  (`<fingerprint>.agentproto.cloud`, AIP-59 §5.8), so it must resist a
+ *  second-preimage grind: at 64 bits a well-resourced attacker could mint a
+ *  daemon key whose fingerprint lands on a victim daemon's origin. It is still
+ *  one DNS label (≤ 63 chars). */
 export async function identityFingerprint(x25519Pub: string, crypto: CryptoProvider = webCryptoProvider): Promise<string> {
-  return toHex(await crypto.sha256(base64Decode(x25519Pub))).slice(0, 16)
+  return toHex(await crypto.sha256(base64Decode(x25519Pub))).slice(0, IDENTITY_FINGERPRINT_HEX_LENGTH)
 }
 
 /** Sign a handshake transcript with an Ed25519 private key → base64 signature. */

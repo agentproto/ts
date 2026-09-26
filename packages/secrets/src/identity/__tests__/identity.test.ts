@@ -46,14 +46,14 @@ describe.each([
     expect(a.ed25519.priv).not.toBe(b.ed25519.priv)
   })
 
-  it("fingerprint matches the sealKeyId construction and is stable", async () => {
+  it("fingerprint is 128 bits, extends the sealKeyId construction, and is stable", async () => {
     const id = await generateIdentity(c)
     const fp = await identityFingerprint(id.x25519.pub, c)
-    expect(fp).toHaveLength(16)
-    expect(fp).toMatch(/^[0-9a-f]{16}$/)
-    // Same construction as the seal key id — a daemon's fingerprint is its
-    // x25519 seal-key id.
-    expect(fp).toBe(await sealKeyId(id.x25519.pub, c))
+    expect(fp).toHaveLength(32)
+    expect(fp).toMatch(/^[0-9a-f]{32}$/)
+    // Same construction as the seal key id, twice as long: the x25519
+    // seal-key id (64 bits) is the fingerprint's prefix.
+    expect(fp.slice(0, 16)).toBe(await sealKeyId(id.x25519.pub, c))
     // Deterministic in the public key.
     expect(await identityFingerprint(id.x25519.pub, c)).toBe(fp)
   })

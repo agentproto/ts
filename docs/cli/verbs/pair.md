@@ -42,9 +42,9 @@ agentproto pair offer
 ```
 
 ```text
-Pairing offer (daemon a1b2c3d4e5f60718) — expires 2026-07-13T19:20:00.000Z
+Pairing offer (daemon a1b2c3d4e5f607189c3e5d7f1a2b4c6d) — expires 2026-07-13T19:20:00.000Z
 
-  agentproto://pair?v=2&rv=…&id=a1b2c3d4e5f60718&pk=…&sk=…&s=…&exp=…
+  agentproto://pair?v=2&rv=…&id=a1b2c3d4e5f607189c3e5d7f1a2b4c6d&pk=…&sk=…&s=…&exp=…
 
   █▀▀▀▀▀█ ▀▀ █ █▀▀▀▀▀█        (QR of the URL — omit with --no-qr)
   …
@@ -81,7 +81,7 @@ This window can close.
 
     ```bash
     agentproto pair offer --qr --pair-page 'https://{fp}.pair.example.com/pair'
-    # → https://a1b2c3d4e5f60718.pair.example.com/pair#v=2&…
+    # → https://a1b2c3d4e5f607189c3e5d7f1a2b4c6d.pair.example.com/pair#v=2&…
     ```
 
     That gives each daemon its own browser origin, like the default (see
@@ -99,18 +99,18 @@ agentproto pair offer --qr
 ```
 
 ```text
-Pairing offer (daemon a1b2c3d4e5f60718) — expires 2026-07-13T19:20:00.000Z
+Pairing offer (daemon a1b2c3d4e5f607189c3e5d7f1a2b4c6d) — expires 2026-07-13T19:20:00.000Z
 
-  agentproto://pair?v=2&rv=…&id=a1b2c3d4e5f60718&pk=…&sk=…&s=…&exp=…
+  agentproto://pair?v=2&rv=…&id=a1b2c3d4e5f607189c3e5d7f1a2b4c6d&pk=…&sk=…&s=…&exp=…
 
 Scan with a phone (opens the pair page in the browser):
 
-  https://a1b2c3d4e5f60718.agentproto.cloud/pair#v=2&rv=…&id=a1b2c3d4e5f60718&pk=…&sk=…&s=…&exp=…
+  https://a1b2c3d4e5f607189c3e5d7f1a2b4c6d.agentproto.cloud/pair#v=2&rv=…&id=a1b2c3d4e5f607189c3e5d7f1a2b4c6d&pk=…&sk=…&s=…&exp=…
 
   █▀▀▀▀▀█ ▀▀ █ █▀▀▀▀▀█        (QR of the pair-page link)
   …
 
-Confirm the page shows daemon a1b2c3d4e5f60718 before you accept.
+Confirm the page shows daemon a1b2c3d4e5f607189c3e5d7f1a2b4c6d before you accept.
 
 **Routing precedence:** `--rendezvous` → `pairing.rendezvous` in config → the
 hosted default. To point elsewhere, self-host the broker
@@ -135,7 +135,7 @@ agentproto pair accept "agentproto://pair?v=2&…" --name my-laptop
 ```
 
 ```text
-✓ Paired with daemon a1b2c3d4e5f60718
+✓ Paired with daemon a1b2c3d4e5f607189c3e5d7f1a2b4c6d
   name:       my-laptop
   rendezvous: wss://rendezvous.example/v1
 

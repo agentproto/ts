@@ -127,7 +127,7 @@ async function runOffer(args: readonly string[]): Promise<number> {
   if (values.qr) {
     try {
       pairPage = values["pair-page"] ?? (await loadConfig()).pairing?.pairPage ?? DEFAULT_PAIR_PAGE
-      resolvePairPageUrl(pairPage, "0".repeat(16))
+      resolvePairPageUrl(pairPage, "0".repeat(32))
     } catch (err) {
       process.stderr.write(
         `agentproto pair offer: ${values["pair-page"] ? "--pair-page" : "pairing.pairPage"}: ` +
@@ -309,11 +309,11 @@ async function runLs(args: readonly string[]): Promise<number> {
   }
   process.stdout.write(
     `${source === "client" ? "(client-side — no daemon reachable)\n" : ""}` +
-      `${"NAME".padEnd(20)}  ${"FINGERPRINT".padEnd(18)}  ${"LAST SEEN".padEnd(22)}  RENDEZVOUS\n`,
+      `${"NAME".padEnd(20)}  ${"FINGERPRINT".padEnd(32)}  ${"LAST SEEN".padEnd(22)}  RENDEZVOUS\n`,
   )
   for (const p of rows) {
     process.stdout.write(
-      `${(p.name ?? "").slice(0, 20).padEnd(20)}  ${p.fingerprint.padEnd(18)}  ${(p.lastSeen ?? "").padEnd(22)}  ${p.rendezvous ?? ""}${p.legacy ? "  [legacy: re-pair]" : ""}\n`,
+      `${(p.name ?? "").slice(0, 20).padEnd(20)}  ${p.fingerprint.padEnd(32)}  ${(p.lastSeen ?? "").padEnd(22)}  ${p.rendezvous ?? ""}${p.legacy ? "  [legacy: re-pair]" : ""}\n`,
     )
   }
   if (rows.some(p => p.legacy)) {

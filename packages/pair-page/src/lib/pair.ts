@@ -3,7 +3,7 @@
  * free of DOM-only imports.
  *
  * Layout (AIP-59 §5): one service worker registration per paired daemon,
- * scoped to `/d/<id>/` where `<id>` is the daemon fingerprint (16 hex).
+ * scoped to `/d/<id>/` where `<id>` is the daemon fingerprint (32 hex).
  * Everything under that scope is proxied to the daemon through the E2E
  * rendezvous tunnel, so the Control Center loads from the daemon itself at
  * `/d/<id>/apps/@agentik/session-chat/ui/`. `/d/<id>` (no trailing slash) is
@@ -17,9 +17,9 @@ export const PAIR_SW_URL = "/pair-sw.js"
 /** Daemon path of the Control Center UI. */
 export const CONTROL_CENTER_PATH = "/apps/@agentik/session-chat/ui/"
 
-/** A daemon identity fingerprint (`identityFingerprint`): the first 16 hex
- *  chars of sha256 over the daemon's X25519 public key, lowercase. */
-export const FINGERPRINT_RE = /^[0-9a-f]{16}$/
+/** A daemon identity fingerprint (`identityFingerprint`): the first 32 hex
+ *  chars (128 bits) of sha256 over the daemon's X25519 public key, lowercase. */
+export const FINGERPRINT_RE = /^[0-9a-f]{32}$/
 
 export function isPairingId(id: string | undefined | null): id is string {
   return typeof id === "string" && FINGERPRINT_RE.test(id)
