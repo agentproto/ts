@@ -8,17 +8,22 @@
  * webview (see appPanel.ts), and THIS controller is the host half: it sits on
  * `@agentproto/mcp-app-host`'s `createMcpAppHost` (the same host core
  * session-chat and the DOM adapter use, wrapping the official `AppBridge`
- * from `@modelcontextprotocol/ext-apps`) for `tools/call` /
- * `ui/request-display-mode` / `ui/message` / `ui/update-model-context`. The
- * one exception is `ui/initialize`, answered directly by
- * {@link WebviewRelayTransport.receive} — see the comment there for why.
+ * from `@modelcontextprotocol/ext-apps`) rather than hand-rolling the
+ * JSON-RPC handshake.
  *
  * `WebviewRelayTransport` is the MCP SDK `Transport` this controller feeds
  * `createMcpAppHost`: outbound messages go through the panel's `post`
  * callback (relayed into the webview by appPanel.ts's `buildAppHostHtml`
  * relay script), and inbound webview messages arrive via {@link
  * AppPanelController.handleMessage} and are fed back in through {@link
- * WebviewRelayTransport.receive}.
+ * WebviewRelayTransport.receive}. It only imports `Transport`/`CallToolResult`
+ * from `@agentproto/mcp-app-host` (which already depends on
+ * `@modelcontextprotocol/sdk`) rather than adding that dependency directly to
+ * this package — the JSON-RPC envelope check in {@link parseJsonRpcMessage}
+ * is hand-rolled the same way the pre-port dispatcher's was, since it's
+ * sniffing "is this plausibly JSON-RPC at all", not validating the MCP-Apps
+ * protocol itself — `AppBridge` still owns that once a message reaches
+ * `onmessage`.
  *
  * The bridge routes every app tool through the daemon's `app_tool_call`
  * itself (`callTool("app_tool_call", { appId, tool, args })` — see e.g.
@@ -39,13 +44,14 @@ import {
   type McpAppHostHandlers,
   type Transport,
 } from "@agentproto/mcp-app-host"
-import {
-  isJSONRPCErrorResponse,
-  isJSONRPCRequest,
-  isJSONRPCResultResponse,
-  JSONRPCMessageSchema,
-  type JSONRPCMessage,
-} from "@modelcontextprotocol/sdk/types.js"
+
+/** The MCP SDK's JSON-RPC message union. Derived from `Transport["send"]`
+ *  instead of importing `@modelcontextprotocol/sdk` directly — `Transport` is
+ *  already re-exported by `@agentproto/mcp-app-host`, which carries that
+ *  dependency, so this package doesn't need its own copy just for the type. */
+type JSONRPCMessage = Parameters<Transport["send"]>[0]
+
+type RequestId = string | number
 
 /** The daemon surface an app panel needs. Satisfied by `DaemonClient`. */
 export interface AppDaemon {
@@ -86,17 +92,17 @@ const HOST_CONTEXT = { displayMode: "inline" as const, availableDisplayModes: ["
 
 /**
  * The request methods `createMcpAppHost`/`AppBridge` answer for this host.
+ * `ui/initialize` is handled internally by `AppBridge` itself (the handshake);
  * `ui/request-display-mode`/`ui/message`/`ui/update-model-context` fall back
  * to its documented no-handler defaults (see host.ts); `tools/call` goes to
- * our `callTool` handler. `ui/initialize` is NOT in this set — it's answered
- * directly by {@link WebviewRelayTransport.receive} instead of being
- * delegated to `AppBridge`, see the comment there. Anything else — including
- * `ui/open-link`, since we pass no `openLink` handler — is refused by
- * `receive` before it ever reaches the bridge, so the refusal reads
- * "unsupported method: X" instead of AppBridge's generic "Method not found",
- * matching this panel's pre-port behaviour.
+ * our `callTool` handler. Anything else — including `ui/open-link`, since we
+ * pass no `openLink` handler — is refused by
+ * {@link WebviewRelayTransport.receive} before it ever reaches the bridge, so
+ * the refusal reads "unsupported method: X" instead of AppBridge's generic
+ * "Method not found", matching this panel's pre-port behaviour.
  */
 const KNOWN_REQUEST_METHODS = new Set<string>([
+  "ui/initialize",
   "ui/request-display-mode",
   "ui/message",
   "ui/update-model-context",
@@ -113,6 +119,40 @@ class RpcError extends Error {
   ) {
     super(message)
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function isRequestId(value: unknown): value is RequestId {
+  return typeof value === "string" || typeof value === "number"
+}
+
+/**
+ * Envelope sniffing only: "is this plausibly a JSON-RPC 2.0 message" — not
+ * full protocol validation. `AppBridge` validates each method's actual
+ * params schema once a message reaches `onmessage`; this is just enough to
+ * drop non-JSON-RPC window traffic (or garbage) before it gets there.
+ */
+function parseJsonRpcMessage(raw: unknown): JSONRPCMessage | undefined {
+  if (!isRecord(raw) || raw.jsonrpc !== "2.0") return undefined
+  const hasMethod = typeof raw.method === "string"
+  const hasResult = "result" in raw && raw.result !== undefined
+  const hasError = "error" in raw && raw.error !== undefined
+  if (!hasMethod && !hasResult && !hasError) return undefined
+  return raw as JSONRPCMessage
+}
+
+/** A request carries a `method` and a non-null `id`; a notification has a
+ *  `method` and no `id`. */
+function isRequest(message: JSONRPCMessage): message is JSONRPCMessage & { id: RequestId; method: string } {
+  return "method" in message && typeof message.method === "string" && "id" in message && isRequestId(message.id)
+}
+
+/** A response (result or error) carries an `id` and no `method`. */
+function isResponse(message: JSONRPCMessage): message is JSONRPCMessage & { id: RequestId } {
+  return !("method" in message) && "id" in message && isRequestId(message.id)
 }
 
 /**
@@ -142,7 +182,7 @@ class WebviewRelayTransport implements Transport {
   onerror?: (error: Error) => void
   onmessage?: (message: JSONRPCMessage) => void
 
-  private readonly pending = new Map<string | number, () => void>()
+  private readonly pending = new Map<RequestId, () => void>()
 
   constructor(private readonly post: (msg: unknown) => void) {}
 
@@ -150,9 +190,7 @@ class WebviewRelayTransport implements Transport {
 
   async send(message: JSONRPCMessage): Promise<void> {
     this.post(message)
-    if ((isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) && message.id != null) {
-      this.pending.get(message.id)?.()
-    }
+    if (isResponse(message)) this.pending.get(message.id)?.()
   }
 
   async close(): Promise<void> {
@@ -162,22 +200,10 @@ class WebviewRelayTransport implements Transport {
   /** Feed one inbound webview message in, resolving once its reply (if any)
    *  has been posted back. */
   async receive(raw: unknown): Promise<void> {
-    const parsed = JSONRPCMessageSchema.safeParse(raw)
-    if (!parsed.success) return
-    const message = parsed.data
-    if (!isJSONRPCRequest(message)) {
+    const message = parseJsonRpcMessage(raw)
+    if (!message) return
+    if (!isRequest(message)) {
       this.onmessage?.(message)
-      return
-    }
-    if (message.method === "ui/initialize") {
-      // Answered directly rather than delegated to AppBridge: a real
-      // `ui/initialize` request (packages/apps panel-bridge.ts's
-      // initBridge()) carries appInfo/appCapabilities/protocolVersion, which
-      // AppBridge's own handshake schema requires and its result echoes back
-      // alongside protocolVersion/hostCapabilities/hostInfo — more than this
-      // panel has ever answered with. A VS Code webview panel has no
-      // fullscreen/pip display modes, so hostContext is all a view needs.
-      this.post({ jsonrpc: "2.0", id: message.id, result: { hostContext: HOST_CONTEXT } })
       return
     }
     if (!KNOWN_REQUEST_METHODS.has(message.method)) {
@@ -264,8 +290,4 @@ async function callTool(
  *  `unwrapText` peels (`content[0].text`, JSON-parsed). */
 function jsonContent(value: unknown): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(value ?? null) }] }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
 }
