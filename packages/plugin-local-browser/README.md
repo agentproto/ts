@@ -67,6 +67,64 @@ plugin's browser-family siblings:
 agentproto install skill/local-browser --pack bureau-plugin
 ```
 
+## Headless mode (per-session browser for spawned agents)
+
+Separate from the authed-profile bridge above, the package also exports
+building blocks for a throwaway headless browser that a daemon-spawned agent
+gets through its own `mcpServers`. It uses no user profile and no shared
+proxy:
+
+```ts
+import {
+  ensureChromeDevtoolsMcp,   // install once into ~/.agentproto/chrome-mcp, cached + concurrency-safe
+  resolveChrome,             // AGENTPROTO_CHROME_PATH → system Chrome → chrome-headless-shell (downloaded if missing)
+  buildHeadlessBrowserMcpEntry,
+} from "@agentproto/plugin-local-browser"
+
+const mcp = await ensureChromeDevtoolsMcp()
+const chrome = await resolveChrome()
+const entry = buildHeadlessBrowserMcpEntry({ mcp, executablePath: chrome.path })
+// → { name: "browser", transport: "stdio", ref: <node>, args: [<chrome-devtools-mcp>,
+//     "--headless", "--isolated", "--viewport", "1440x900", …], env: {…} }
+```
+
+`--isolated` gives each server its own temporary profile. That profile is
+deleted when the server exits.
+
+### Validation under `commandSandbox` (macOS Seatbelt, 2026-09-26)
+
+Setup:
+- Chrome 154 and chrome-headless-shell 154.0.8037.57.
+- chrome-devtools-mcp 1.0.1 and 1.10.1.
+- The whole driver + MCP + Chrome tree ran under
+  `buildSeatbeltProfile({ workspace, network })`, as it would under an
+  adapter spawn.
+
+The check: `navigate_page file://…/page.html`, `evaluate_script` returns
+`document.title` and a 1440x900 viewport, `take_screenshot` returns a
+1440x900 PNG, then a `navigate_page https://example.com`.
+
+| sandbox | Chrome | Chrome sandbox | file:// + screenshot | https:// |
+|---|---|---|---|---|
+| off | system | on | ✅ | ✅ |
+| off | headless-shell | on | ✅ | ✅ |
+| workspace | system / headless-shell | on | ❌ `sandbox initialization failed: Operation not permitted`, navigate times out | — |
+| workspace | system / headless-shell | `--no-sandbox` | ✅ | ✅ |
+| strict | system | `--no-sandbox` | ❌ "browser is already running": `deny network*` blocks Chrome's ProcessSingleton unix socket | — |
+| strict | system + allow only `$TMPDIR/com.google.Chrome.*/SingletonSocket` | `--no-sandbox` | ✅ | ❌ `ERR_NAME_NOT_RESOLVED` |
+| strict | headless-shell | `--no-sandbox` | ✅ | ❌ `ERR_NAME_NOT_RESOLVED` |
+
+What this means:
+- Under any Seatbelt confinement, pass `chromeSandbox: false`. A nested
+  `sandbox_init` is refused, and the outer profile still confines the tree.
+- Under `strict`, use chrome-headless-shell
+  (`resolveChrome({ sources: ["env", "headless-shell"] })`). It works with
+  the strict profile unchanged. System Chrome would need a unix-socket
+  exception.
+- chrome-devtools-mcp 1.10 turned `pageIdRouting` on by default, so every page
+  tool then demands a `pageId`. The entry passes `--no-page-id-routing`
+  because the browser belongs to a single session. 1.0.1 ignores the flag.
+
 ## Security
 
 Chrome's remote debugging protocol has no authentication — anything
