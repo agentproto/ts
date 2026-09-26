@@ -64,7 +64,7 @@ import {
   type WorktreeStatusLister,
 } from "./worktree-status.js"
 import type { WorktreeGcRunner } from "./worktree-gc.js"
-import type { BranchGcRunner, BranchGcVerdictRecorder } from "./branch-gc.js"
+import type { BranchGcRunner, BranchGcVerdictRecorder, BranchGcVerdictReader } from "./branch-gc.js"
 import { startHeartbeat, type BuildHeartbeatAgent } from "./heartbeat.js"
 import {
   startHttpServer,
@@ -216,6 +216,8 @@ export type {
   BranchGcVerdictInput,
   BranchGcVerdictRecordView,
   BranchGcVerdictRecorder,
+  BranchGcVerdictLookupInput,
+  BranchGcVerdictReader,
 } from "./branch-gc.js"
 export { createPrProvenanceReconciler } from "./pr-provenance-reconciler.js"
 export type { OpenPrResolver } from "./pr-provenance-reconciler.js"
@@ -964,6 +966,8 @@ export interface CreateGatewayOptions {
   runBranchGc?: BranchGcRunner
   /** Optional verdict recorder powering `branch_gc_verdict` (+ `POST /branches/gc/verdict`). */
   recordBranchGcVerdict?: BranchGcVerdictRecorder
+  /** Optional verdict reader powering `branch_gc_verdict_get`. */
+  readBranchGcVerdict?: BranchGcVerdictReader
   /**
    * Optional best-effort exit-time reclaim of ONE policy-provisioned
    * (implicit) session's own worktree — powers `SessionDescriptor.
@@ -2086,6 +2090,7 @@ export async function createGateway(
       ...(opts.runWorktreeGc ? { runWorktreeGc: opts.runWorktreeGc } : {}),
       ...(opts.runBranchGc ? { runBranchGc: opts.runBranchGc } : {}),
       ...(opts.recordBranchGcVerdict ? { recordBranchGcVerdict: opts.recordBranchGcVerdict } : {}),
+      ...(opts.readBranchGcVerdict ? { readBranchGcVerdict: opts.readBranchGcVerdict } : {}),
       isSessionChatInstalled,
     })
     // Per-workspace brain — query/status/ingest over the shared brain

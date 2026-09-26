@@ -184,6 +184,12 @@ function resolveSel(sel: string | ((bindings: Bindings) => string), b: Bindings)
   return typeof sel === "function" ? sel(b) : sel
 }
 
+/** An AgentStep's `sessionRef` with `{{index}}` bound to the current fan-out
+ *  item (see `AgentStep.sessionRef`). Outside a fan-out it stays literal. */
+function resolveSessionRef(ref: string, b: Bindings): string {
+  return b.index === undefined ? ref : ref.replace(/\{\{\s*index\s*\}\}/g, String(b.index))
+}
+
 /** Extract a JSON candidate from raw assistant text:
  *  1. last ```json fenced block if present, else
  *  2. last generic ``` fenced block if present, else
@@ -465,7 +471,7 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
         ...(step.agentTools !== undefined ? { agentTools: step.agentTools } : {}),
         ...(b.index !== undefined ? { stepKey: `${step.id}[${b.index}]` } : {}),
       })
-    : ctx.agents!.resolveByLabel(step.sessionRef!)
+    : ctx.agents!.resolveByLabel(resolveSessionRef(step.sessionRef!, b))
   if (!sessionId) throw new Error(`step '${step.id}': no session (adapter and sessionRef both unresolved)`)
   if (step.adapter) ctx.spawned?.push(sessionId)
   if (knowledgeWarnings.length > 0 && ctx.agents!.emitHarnessWarning) {
@@ -956,7 +962,7 @@ async function execStep(
         prompt: step.prompt(b),
         adapter: step.adapter ? resolveSel(step.adapter, b) : undefined,
         model: step.model ? resolveSel(step.model, b) : undefined,
-        sessionRef: step.sessionRef,
+        sessionRef: step.sessionRef !== undefined ? resolveSessionRef(step.sessionRef, b) : undefined,
       }
       const c = await readStepCache(ctx, step, resolved)
       if (c.hit) return cacheHit(ctx, step, c.output) // cache hit ⇒ NO spawn, NO budget spend

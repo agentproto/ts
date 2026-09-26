@@ -19,6 +19,7 @@ import { shouldInjectDaemonSelfMount, spawnAgentSession, type SandboxSpecInput }
 import { exportAgentSession } from "./transcript-export.js"
 import type { RoutinePolicy } from "./step-run-types.js"
 import { normalizeSkillsOption } from "./spawn-defaults.js"
+import type { EffortLevel } from "./session-config.js"
 
 /**
  * The daemon-gateway mount a workflow agent step's (host) session gets —
@@ -58,6 +59,26 @@ export function agentStepMcpServers(input: {
   params.set("callerSessionId", sessionId)
   const sep = daemonMcpUrl.includes("?") ? "&" : "?"
   return [{ name: "agentproto", transport: "http", ref: `${daemonMcpUrl}${sep}${params.toString()}` }]
+}
+
+/**
+ * A step with a declared `tools` allowlist gets a gateway mount scoped to
+ * exactly those tools, with the daemon's own deferral already off
+ * ({@link agentStepMcpServers}). A harness that ALSO defers MCP tools
+ * client-side (claude-code's tool search) would still hide them behind its
+ * own search tool — so when the adapter declares a `tool_search` option and
+ * the caller didn't set one, turn it off. Adapters without the option are
+ * untouched.
+ */
+export function withAllowlistToolSearchOff(
+  options: Record<string, boolean | number | string> | undefined,
+  agentTools: readonly string[] | undefined,
+  declaredOptions: readonly { id: string }[] | undefined,
+): Record<string, boolean | number | string> | undefined {
+  if (!agentTools || agentTools.length === 0) return options
+  if (!declaredOptions?.some(o => o.id === "tool_search")) return options
+  if (options?.tool_search !== undefined) return options
+  return { ...(options ?? {}), tool_search: "false" }
 }
 
 export class SessionsRegistryAgentHost implements AgentSessionHost {
@@ -229,10 +250,13 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
     // just isn't wired through that richer pipeline at all, so it's applied
     // directly here instead of duplicating role/orchestrator machinery this
     // simplified host has never composed for any step, harness or not.
-    const harnessOptions =
+    const harnessOptions = withAllowlistToolSearchOff(
       harness?.skills && harness.skills.length > 0
         ? normalizeSkillsOption([...harness.skills], opts.options ?? {}, resolved.declaredOptions)
-        : opts.options
+        : opts.options,
+      opts.agentTools,
+      resolved.declaredOptions,
+    )
     const harnessWarnings: string[] = []
     if (harness?.tools && harness.tools.length > 0) {
       harnessWarnings.push(
@@ -287,6 +311,11 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
         : {}),
       ...(mcpServers ? { mcpServers } : {}),
       ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
+      // Echo the pinned model/effort onto the descriptor the way agent_start
+      // does (session-spawn.ts), so a `wf:*` step session shows its model —
+      // `startSession` above already applied them; this is the display echo.
+      ...(harness?.model !== undefined ? { model: harness.model } : {}),
+      ...(harness?.effort !== undefined ? { effort: harness.effort as EffortLevel } : {}),
     })
     this.unreleased.add(desc.id)
     this.recordStepSession(opts, desc.id)

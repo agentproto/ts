@@ -17,9 +17,11 @@ The `maintain` workflow, one run:
    unmerged branch candidate (one turn per unique tip sha, parallelism 4):
    haiku when the candidate's residual is 3 files or fewer, sonnet
    otherwise. Each turn records a verdict via `branch_gc_verdict` —
-   recording a verdict never deletes anything.
+   recording a verdict never deletes anything. A turn that ends without a
+   stored verdict for its tip (checked via `branch_gc_verdict_get`) gets
+   one re-prompt in the same session, then one retry on the large model.
 3. Re-plans `branch_gc` to confirm every candidate got a verdict, and
-   reports any gap.
+   reports any gap, the verdict tally, and the `salvage` branches by name.
 4. If `applyMerged` is true: `branch_gc` applies with `includeReviewed:
    false` (reclaim-class refs only — merged / squash-merged / patch-merged /
    content-merged) and `worktree_gc` applies (`salvageDirty: false`).

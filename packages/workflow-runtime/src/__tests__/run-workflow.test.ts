@@ -485,6 +485,46 @@ describe("runWorkflow — agent step", () => {
     expect(host.sendPromptAndWait).toHaveBeenCalledWith("sess_prior", "verify")
   })
 
+  it("resolves `{{index}}` in a map-body sessionRef to the item's own spawn (stepKey), not the last one", async () => {
+    const byLabel = new Map<string, string>()
+    let n = 0
+    const host = fakeHost({
+      spawn: vi.fn(async (_adapter: string, opts: { stepKey?: string }) => {
+        const id = `sess_${n++}`
+        if (opts.stepKey) byLabel.set(opts.stepKey, id)
+        return id
+      }),
+      resolveByLabel: vi.fn((label: string) => byLabel.get(label)),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "agent-reuse-indexed",
+      steps: [
+        {
+          kind: "map",
+          id: "fan",
+          over: () => ["a", "b"],
+          parallelism: 2,
+          body: () => ({
+            kind: "group",
+            id: "fan__body",
+            steps: [
+              { kind: "agent", id: "first", adapter: "mock-adapter", prompt: b => `first ${String(b.item)}` },
+              { kind: "agent", id: "again", sessionRef: "first[{{index}}]", prompt: b => `again ${String(b.item)}` },
+            ],
+          }),
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host })
+    expect(host.resolveByLabel).toHaveBeenCalledWith("first[0]")
+    expect(host.resolveByLabel).toHaveBeenCalledWith("first[1]")
+    const sends = vi.mocked(host.sendPromptAndWait).mock.calls
+    const sessionFor = (prompt: string) => sends.find(([, p]) => p === prompt)?.[0]
+    expect(sessionFor("again a")).toBe(sessionFor("first a"))
+    expect(sessionFor("again b")).toBe(sessionFor("first b"))
+    expect(sessionFor("first a")).not.toBe(sessionFor("first b"))
+  })
+
   it("passes a literal sandbox ref (slug) through to host.spawn", async () => {
     const host = fakeHost()
     const wf: RuntimeWorkflow = {

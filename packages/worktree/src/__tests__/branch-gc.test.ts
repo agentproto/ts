@@ -435,6 +435,50 @@ describe("branch gc — apply", () => {
     expect(await refExists(repo, "refs/heads/feat/gets-worktree")).toBe(true)
   })
 
+  it("never advertises or deletes a branch checked out in any linked worktree — merged, prunable, or reviewed-and-agreed", async () => {
+    const repo = await makeRepo()
+    const pool = await tmp("branch-gc-wt-")
+    // Merged into base: the ladder alone would say reclaim.
+    await branchWith(repo, "wt/merged-live", { "a.txt": "a\n" })
+    await execGit(repo, ["merge", "-q", "--no-ff", "-m", "m", "wt/merged-live"])
+    await execGit(repo, ["worktree", "add", "-q", join(pool, "live"), "wt/merged-live"])
+    // Merged, and its worktree directory is gone (git marks it prunable) —
+    // git still counts the branch as checked out until the entry is pruned.
+    await branchWith(repo, "wt/merged-prunable", { "b.txt": "b\n" })
+    await execGit(repo, ["merge", "-q", "--no-ff", "-m", "m2", "wt/merged-prunable"])
+    await execGit(repo, ["worktree", "add", "-q", join(pool, "gone"), "wt/merged-prunable"])
+    await rm(join(pool, "gone"), { recursive: true, force: true })
+    // Unmerged with an agreeing verdict — includeReviewed would reclaim it.
+    const tip = await branchWith(repo, "wt/reviewed-live", { "c.txt": "c\n" })
+    await execGit(repo, ["worktree", "add", "-q", join(pool, "reviewed"), "wt/reviewed-live"])
+    const verdicts = new InMemoryBranchVerdictStore()
+    await recordBranchVerdict({
+      repoRoot: repo,
+      repoName: "fixture",
+      store: verdicts,
+      verdict: {
+        name: "wt/reviewed-live",
+        sha: tip,
+        reviewer: "test",
+        triage: { verdict: "obsolete", confidence: 1, reason: "dead" },
+        gate: { agree: true, verdict: "obsolete", reason: "nothing unique", evidence: ["c.txt: throwaway"] },
+      },
+    })
+
+    const p = await plan(repo, { includeReviewed: true, verdicts })
+    for (const name of ["wt/merged-live", "wt/merged-prunable", "wt/reviewed-live"]) {
+      expect(entry(p, name)).toMatchObject({ class: "hold", holdReason: "worktree" })
+    }
+    expect(summarizeBranchGcPlan(p).byClass.local.reclaim).toBe(0)
+
+    const stateDir = await tmp("branch-gc-state-")
+    const { outcomes } = await applyBranchGc(p, { scopes: ["local"], forge: new FakeForge(), verdicts, stateDir })
+    for (const name of ["wt/merged-live", "wt/merged-prunable", "wt/reviewed-live"]) {
+      expect(outcomes.find((o) => o.name === name)).toMatchObject({ result: "held", holdReason: "worktree" })
+      expect(await refExists(repo, `refs/heads/${name}`)).toBe(true)
+    }
+  })
+
   it("never touches review or hold, and leaves kinds outside scopes alone", async () => {
     const repo = await makeRepo()
     await branchWith(repo, "feat/unmerged", { "u.txt": "u\n" })

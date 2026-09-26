@@ -32,7 +32,7 @@ import {
   type BranchGcApplyOutcome,
   type BranchGcSummary,
 } from "@agentproto/worktree"
-import type { BranchGcRunner, BranchGcVerdictRecorder } from "@agentproto/runtime"
+import type { BranchGcRunner, BranchGcVerdictReader, BranchGcVerdictRecorder } from "@agentproto/runtime"
 import { repoRootOf } from "./worktree.js"
 
 const USAGE = `agentproto branch — classify and clean up a repo's branches
@@ -283,5 +283,16 @@ export function makeBranchGcVerdictRecorder(): BranchGcVerdictRecorder {
     const repoRoot = repoRootOf(resolve(candidate))
     if (!repoRoot) throw new Error(`branch_gc_verdict: "${candidate}" is not inside a git repository.`)
     return recordBranchVerdict({ repoRoot, repoName: repoLabel(repoRoot), verdict, store: new FileBranchVerdictStore() })
+  }
+}
+
+/** Concrete `BranchGcVerdictReader` — the injected port behind `branch_gc_verdict_get`.
+ *  A fresh store per call: `FileBranchVerdictStore` caches its first load, and
+ *  the recorder writes through a different instance. */
+export function makeBranchGcVerdictReader(): BranchGcVerdictReader {
+  return async ({ repoRoot: candidate, sha }) => {
+    const repoRoot = repoRootOf(resolve(candidate))
+    if (!repoRoot) throw new Error(`branch_gc_verdict_get: "${candidate}" is not inside a git repository.`)
+    return new FileBranchVerdictStore().get(repoLabel(repoRoot), sha)
   }
 }

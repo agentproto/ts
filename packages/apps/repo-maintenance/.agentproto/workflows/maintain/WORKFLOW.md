@@ -72,7 +72,10 @@ steps:
       One reviewer-agent turn per unique tip sha, parallelism 4. Model is
       picked per item by entry.mjs: haiku when residualFileCount <= 3, else
       sonnet. The agent records its verdict via branch_gc_verdict — this
-      step never applies anything.
+      step never applies anything. After the turn, branch_gc_verdict_get
+      checks the store for that tip; with no verdict, the SAME session is
+      re-prompted once, then one fresh large-model reviewer retries, and
+      only then is the tip left as a gap. See entry.mjs for the body.
     over: $steps.reviewCandidates
     parallelism: 4
     onError: collect
@@ -194,8 +197,7 @@ Recording a verdict via `branch_gc_verdict` never reclaims a branch by
 itself — `branchGcApply` always runs with `includeReviewed: false`. A
 human-in-the-loop gate that reclaims `review`-class branches whose stored
 verdict agreed is a documented, unwired seam (`approve-reviewed`), not built
-here — see the reviewing/supervising session's PLAN.md, "OUT OF SCOPE: the
-approval gate".
+here — see the app README, "Out of scope: the approval gate".
 
 ## Enabling
 
