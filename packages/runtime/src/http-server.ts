@@ -263,6 +263,10 @@ const DEFAULT_FRAME_ANCESTORS: readonly string[] = ["vscode-webview:"]
  * Cloudflared sets X-Forwarded-For; other proxies set X-Real-IP / Forwarded /
  * CF-* even when they strip XFF, so the bypass keys on the whole family.
  */
+/** Keep-alive comment interval on the `/events` bus SSE (as the other SSE
+ *  routes: well under every relay's idle cut, e.g. the tunnel's 120s). */
+const EVENTS_KEEPALIVE_MS = 25_000
+
 const PROXY_FORWARDING_HEADERS: readonly string[] = [
   "x-forwarded-for",
   "forwarded",
@@ -1567,7 +1571,21 @@ export async function startHttpServer(
     const off = opts.events.onAny((ev: RuntimeEvent) => {
       res.write(`data: ${JSON.stringify(ev)}\n\n`)
     })
-    req.on("close", off)
+    // Same 25s keep-alive comment as the other SSE routes. The bus can be
+    // silent for minutes, and relays cut a quiet stream: the tunnel server's
+    // inter-chunk idle bound (120s on `serve --connect` and pairing channels),
+    // proxies, and the rendezvous idle timeout.
+    const ping = setInterval(() => {
+      try {
+        res.write(`: keep-alive\n\n`)
+      } catch {
+        clearInterval(ping)
+      }
+    }, EVENTS_KEEPALIVE_MS)
+    req.on("close", () => {
+      clearInterval(ping)
+      off()
+    })
   }
 
   async function handleListConversations(
