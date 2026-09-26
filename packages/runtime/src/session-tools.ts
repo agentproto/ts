@@ -345,6 +345,9 @@ export interface RegisterSessionToolsOptions {
   /** Forwarded to `registerAgentTools` — config.json
    *  `defaults.messaging.allowSiblings`. */
   messagingAllowSiblings?: RegisterAgentToolsOptions["messagingAllowSiblings"]
+  /** Forwarded to `registerAgentTools` — config.json
+   *  `defaults.messaging.agentInterrupt`. */
+  messagingAgentInterrupt?: RegisterAgentToolsOptions["messagingAgentInterrupt"]
   /**
    * Optional git-worktree status lister powering `worktree_status`.
    * Injected here (rather than defaulted inside the runtime) because the join

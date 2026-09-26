@@ -289,6 +289,9 @@ export interface OrchestratorGatewayDeps {
   /** config.json `defaults.messaging.allowSiblings`, forwarded to
    *  `registerAgentTools`. */
   messagingAllowSiblings?: boolean
+  /** config.json `defaults.messaging.agentInterrupt`, forwarded to
+   *  `registerAgentTools`. */
+  messagingAgentInterrupt?: "allow" | "deny"
 }
 
 export type OrchestratorMcpServerFactory = (
@@ -344,6 +347,7 @@ export function createOrchestratorMcpServerFactory(
         ? { defaultAgentPromptInterrupt: deps.defaultAgentPromptInterrupt }
         : {}),
       ...(deps.messagingAllowSiblings ? { messagingAllowSiblings: true } : {}),
+      ...(deps.messagingAgentInterrupt ? { messagingAgentInterrupt: deps.messagingAgentInterrupt } : {}),
       daemonMcpUrl: deps.daemonMcpUrl,
     })
     registerOrchestrationTools(server, {

@@ -873,6 +873,11 @@ export const LEGACY_CHILD_NOTICE_SOURCE = "child:legacy"
 /** Bound on `SessionDescriptor.inbox` (un-consumed messages). */
 export const INBOX_CAP = 200
 
+/** R3 — a burst of `steer` messages must not thrash a recipient: at most
+ *  one steer per recipient per this window; the excess is delivered as
+ *  `next-turn` (and coalesces with its neighbours at turn-end). */
+export const STEER_MIN_INTERVAL_MS = 10_000
+
 /** What `sendMessage` did with a message — truthful, per AIP-46. */
 export interface SendMessageResult {
   messageId: string
@@ -2123,6 +2128,9 @@ interface SessionRuntime {
   /** Set while the agent works WITHOUT a prompt (an autonomous
    *  task-notification cycle) — the registry tracks that stretch as a turn:
    *  `busy` is true, events are recorded, and it closes with a turn-end. */
+  /** When this session last had a message steered into it — the R3 rate
+   *  limit (`STEER_MIN_INTERVAL_MS`). In-memory only. */
+  lastSteerAt?: number
   autonomousTurn?: {
     /** Tool calls announced and not yet resulted — synthesized at close,
      *  and the silence-close fallback holds off while any are open. */
@@ -3057,16 +3065,24 @@ export interface SessionsRegistry {
    *  contract. */
   removeQueuedPrompt(id: string, queueId: string): { removed: boolean }
   /** Deliver a daemon-attested typed message (`msg.to` is the recipient;
-   *  `from` must already be computed from the verified caller). Waiter
-   *  first: a matching pending `waitForMessages` on the recipient gets it as
-   *  its result and it's never also injected. Otherwise it's kept in the
-   *  durable inbox, and — unless `fyi` (inbox only, no wake) — delivered as
-   *  its own turn now (idle) or queued behind the current turn (busy).
-   *  `interrupt` cuts a busy recipient's turn (the caller decides whether
-   *  that's allowed). Throws when the recipient is missing or not alive. */
+   *  `from` must already be computed from the verified caller), routed by
+   *  `msg.urgency` (AIP-46 §Delivery tiers):
+   *   - a matching pending `waitForMessages` wins over every tier (waiter
+   *     first — returned as that call's result, never also injected);
+   *   - `fyi` — durable inbox only, no wake;
+   *   - idle recipient — any other tier starts its own turn now;
+   *   - busy + `next-turn` — queued behind the current turn;
+   *   - busy + `steer` — injected into the running turn when the daemon's
+   *     OWN prompt is in flight (never an autonomous cycle), the agent can
+   *     steer, and the per-recipient rate limit allows; else `next-turn`;
+   *   - busy + `interrupt` — cancels the turn and delivers — only when
+   *     `allowInterrupt` (the caller's grant); otherwise downgraded to
+   *     `steer`.
+   *  `urgencyApplied` reports the tier actually used. Throws when the
+   *  recipient is missing or not alive. */
   sendMessage(
     msg: SessionMessage,
-    opts?: { source?: string; origin?: string; interrupt?: boolean },
+    opts?: { source?: string; origin?: string; allowInterrupt?: boolean },
   ): Promise<SendMessageResult>
   /** Block until a message matching `filter` is in `id`'s inbox (returns at
    *  once when one already is), or `timeoutMs` elapses. Matched messages are
@@ -6063,6 +6079,44 @@ export function createSessionsRegistry(opts?: {
     }
     return out
   }
+  /** Try to steer `msg` into `rt`'s running turn. True only when it was
+   *  injected (then it's consumed: recorded as `session-message` via
+   *  `steer`, never queued, never in the inbox). False — nothing sent, or
+   *  the agent said no turn is running — means "deliver as next-turn". */
+  const trySteer = async (rt: SessionRuntime, msg: SessionMessage): Promise<boolean> => {
+    const agent = rt.agentSession
+    // Host-turn gate: only while OUR prompt is in flight, never during an
+    // agent-autonomous cycle (#1410/#1412 — a steer there folds into a
+    // result the daemon never sees), and only for an agent that steers.
+    if (!agent?.steer || agent.steeringSupported !== true) return false
+    if (!rt.busy || rt.autonomousTurn) return false
+    const now = Date.now()
+    if (rt.lastSteerAt !== undefined && now - rt.lastSteerAt < STEER_MIN_INTERVAL_MS) return false
+    const at = new Date().toISOString()
+    const stamped: SessionMessage = {
+      ...msg,
+      delivered: { via: "steer", at, turnSeq: (rt.desc.turnsCompleted ?? 0) + 1 },
+    }
+    let content = renderSessionMessages([stamped])
+    const teach = !rt.desc.messagePreambleSent
+    if (teach) content = `${MESSAGE_PREAMBLE}\n\n${content}`
+    rt.lastSteerAt = now
+    const outcome = await agent.steer(content)
+    if (outcome !== "steered") {
+      rt.lastSteerAt = undefined
+      return false
+    }
+    if (teach) {
+      rt.desc.messagePreambleSent = true
+      schedulePersist()
+    }
+    recordSent(stamped)
+    transcriptWriter.recordSessionMessage?.(rt.desc.id, stamped)
+    emitSessionMessage(stamped)
+    appendLine(rt, `[message] ${stamped.id} from ${stamped.from.relation} steered into the running turn`, "stdout")
+    return true
+  }
+
   const recordSent = (msg: SessionMessage): void => {
     if (!msg.from.sessionId) return
     transcriptWriter.recordSessionMessageSent?.(msg.from.sessionId, {
@@ -6991,12 +7045,6 @@ export function createSessionsRegistry(opts?: {
     else armAutonomousSilenceClose(rt)
   }
 
-  /**
-   * (Re)subscribe the registry to the live agent session's out-of-turn
-   * events. Called wherever `rt.agentSession` is (re)bound. A new agent
-   * process owns none of the old one's background tasks or cycle, so both
-   * are reset.
-   */
   /** Stamp `desc.capabilities` from the agent session just attached. */
   const stampCapabilities = (rt: SessionRuntime): void => {
     const steering = rt.agentSession?.steer !== undefined && rt.agentSession.steeringSupported === true
@@ -7005,6 +7053,12 @@ export function createSessionsRegistry(opts?: {
     schedulePersist()
   }
 
+  /**
+   * (Re)subscribe the registry to the live agent session's out-of-turn
+   * events. Called wherever `rt.agentSession` is (re)bound. A new agent
+   * process owns none of the old one's background tasks or cycle, so both
+   * are reset.
+   */
   const bindOutOfTurnEvents = (rt: SessionRuntime): void => {
     releaseOutOfTurnEvents(rt)
     delete rt.desc.backgroundTasks
@@ -8155,9 +8209,19 @@ export function createSessionsRegistry(opts?: {
         emitSessionMessage(parked)
         return { messageId: msg.id, delivered: { via: "inbox" }, queued: false, urgencyApplied: "fyi" }
       }
+      // An un-granted interrupt never cuts a turn: the fastest thing short
+      // of that is steering it in.
+      const requested: MessageUrgency =
+        msg.urgency === "interrupt" && opts?.allowInterrupt !== true ? "steer" : msg.urgency
+      const busy = rt.busy || rt.desc.busy === true
+      if (busy && requested === "steer") {
+        const steered = await trySteer(rt, msg)
+        if (steered) {
+          return { messageId: msg.id, delivered: { via: "steer" }, queued: false, urgencyApplied: "steer" }
+        }
+      }
       addToInbox(rt, msg)
-      const wasBusy = rt.busy || rt.desc.busy === true
-      const interrupt = opts?.interrupt === true && wasBusy
+      const interrupt = busy && requested === "interrupt"
       const { queued } = await registry.enqueuePrompt(msg.to, msg.text, {
         envelope: msg,
         queue: true,
@@ -8169,9 +8233,9 @@ export function createSessionsRegistry(opts?: {
         messageId: msg.id,
         delivered: queued ? null : { via: interrupt ? "interrupt" : "turn" },
         queued,
-        // Tiers beyond fyi/next-turn/interrupt land later: `steer` (and an
-        // un-granted `interrupt`) are delivered as next-turn for now.
-        urgencyApplied: interrupt ? "interrupt" : "next-turn",
+        // Idle: whatever was asked for, it simply started a turn. Busy: the
+        // tier that actually ran (a steer that couldn't inject is next-turn).
+        urgencyApplied: !busy ? requested : interrupt ? "interrupt" : "next-turn",
       }
     },
     async waitForMessages(id, filter, opts) {

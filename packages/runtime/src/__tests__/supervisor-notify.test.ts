@@ -110,11 +110,18 @@ describe("wireSupervisorNotify", () => {
     expect(calledMessage).toContain("child-1")
     expect(calledMessage).toContain("crashed")
     expect(calledMessage).toContain("adapter process gone")
-    // NEVER interrupt; attributed to the child, not the human.
+    // NEVER interrupt; a daemon-attested system/blocker message.
     expect(calledOpts).toEqual({
       queue: true,
       source: `child:${child.id}`,
       origin: `child:${child.id}`,
+      envelope: expect.objectContaining({
+        to: parent.id,
+        from: { relation: "system" },
+        kind: "blocker",
+        urgency: "next-turn",
+        text: calledMessage,
+      }),
     })
 
     reg.shutdown()
@@ -193,7 +200,10 @@ describe("wireSupervisorNotify", () => {
     // The turn dispatches as an ACP content block ({type:"text", text}) —
     // runAgentTurn wraps a plain string message before calling send().
     const secondTurnText = (parentSession.messages[1] as { text: string }).text
-    expect(secondTurnText).toMatch(/^\[child-crashed\] child-1: crashed/)
+    // A daemon-attested system/blocker envelope — no human text in it.
+    expect(secondTurnText).toContain('<agentproto-message id="msg_')
+    expect(secondTurnText).toContain('from="system" kind="blocker">')
+    expect(secondTurnText).toMatch(/<body>\n\[child-crashed\] child-1: crashed/)
     expect(reg.get(parent.id)?.promptQueue).toEqual([])
 
     const secondTurnEnd = turnEnded()

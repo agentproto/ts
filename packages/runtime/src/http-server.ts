@@ -5352,8 +5352,8 @@ async function handleSessions(
         source: sender ? provenance : "user",
         origin: provenance,
         // A human operator keeps `interrupt` (AIP-46: hosts SHOULD NOT grant
-        // it to session senders by default).
-        ...(!sender && msg.urgency === "interrupt" ? { interrupt: true } : {}),
+        // it to session senders by default — they get `steer` instead).
+        ...(!sender ? { allowInterrupt: true } : {}),
       })
       json(200, { ok: true, id, relation, ...r })
     } catch (err) {

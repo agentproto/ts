@@ -142,6 +142,10 @@ export interface SpawnDefaultsConfig {
     /** Let `message_send` / `message_reply` reach a sibling session (same
      *  parent). Default false — only child↔parent. */
     allowSiblings?: boolean
+    /** Whether a SESSION sender may use urgency `interrupt` (cancel the
+     *  recipient's in-flight turn). Default "deny": downgraded to `steer`
+     *  and reported as such. Human (HTTP/CLI) senders always may. */
+    agentInterrupt?: "allow" | "deny"
   }
   /** Daemon-wide MCP gateway policy. See {@link McpDefaultsConfig}. */
   mcp?: McpDefaultsConfig
