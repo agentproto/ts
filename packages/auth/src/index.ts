@@ -86,6 +86,7 @@ export {
   deleteAuthProfile,
   setAuthProfileEnabled,
   setAuthProfileModels,
+  updateAuthProfile,
   refreshAuthProfileModels,
   validateCreateInput,
   deriveCredentialRef,
@@ -98,6 +99,7 @@ export {
   type CredentialIdentity,
   type ProfileProvisionDeps,
   type ValidatedCreateInput,
+  type UpdateAuthProfileInput,
   type RefreshAuthProfileModelsResult,
 } from "./profile-provision.js"
 export {

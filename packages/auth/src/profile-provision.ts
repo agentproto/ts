@@ -21,7 +21,8 @@
  */
 
 import { createHash } from "node:crypto"
-import type { AuthMethod, AuthProfile, ModelCuration } from "./profile-types.js"
+import type { AuthMethod, AuthProfile, CostBudget, ModelCuration } from "./profile-types.js"
+import { costBudgetSchema } from "./profile-store.js"
 import type { CredentialStore } from "./store/types.js"
 
 /** Input to {@link createAuthProfile}. `credential` is the raw secret — it is
@@ -436,6 +437,103 @@ export async function setAuthProfileModels(
 
   const ids = [...new Set((curation.ids ?? []).map(s => s.trim()).filter(Boolean))]
   const updated: AuthProfile = { ...rest, models: { mode: "allow", ids } }
+  await deps.addProfile(updated)
+  return updated
+}
+
+/** Above this length a label is almost certainly a paste gone wrong rather
+ *  than a deliberate name — reject rather than silently truncate. */
+const MAX_LABEL_LENGTH = 200
+
+/** Patch input for {@link updateAuthProfile}. Each field is tri-state:
+ *  ABSENT leaves the current value untouched, `null` clears it, and a
+ *  concrete value replaces it. At least one of `label` / `costBudget` must
+ *  be present (absent from both is a no-op input, rejected rather than
+ *  silently doing nothing). */
+export interface UpdateAuthProfileInput {
+  /** New display label, or `null` to clear it. */
+  label?: string | null
+  /** New windowed spend cap, or `null` to clear it. */
+  costBudget?: CostBudget | null
+}
+
+/**
+ * Update a profile's `label` and/or `costBudget` (WS-G5) — the two fields
+ * `profile-store.ts`'s schema already carries but never had a setter for.
+ * Metadata-only, mirroring {@link setAuthProfileEnabled} / {@link
+ * setAuthProfileModels}: NEVER touches `credentialRef`, `source`, or the
+ * credential store. `null` clears a field entirely (byte-identical to a
+ * profile that never had it); ABSENT leaves the current value untouched. A
+ * given `label` is trimmed and rejected if it becomes empty or exceeds
+ * {@link MAX_LABEL_LENGTH}; a given `costBudget` is validated against the
+ * same `costBudgetSchema` the on-disk file itself is parsed with. Throws
+ * {@link AuthProfileValidationError} for an unknown id, an empty patch, or a
+ * field that fails validation. Returns the updated (non-secret) profile.
+ */
+export async function updateAuthProfile(
+  id: string,
+  patch: UpdateAuthProfileInput,
+  deps: ProfileProvisionDeps,
+): Promise<AuthProfile> {
+  const trimmed = (id ?? "").trim()
+  if (!trimmed) throw new AuthProfileValidationError("id is required")
+
+  const hasLabel = Object.prototype.hasOwnProperty.call(patch, "label")
+  const hasCostBudget = Object.prototype.hasOwnProperty.call(patch, "costBudget")
+  if (!hasLabel && !hasCostBudget) {
+    throw new AuthProfileValidationError(
+      "at least one of label or costBudget is required",
+    )
+  }
+
+  let nextLabel: string | undefined
+  if (hasLabel && patch.label !== null) {
+    // patch is caller-declared as UpdateAuthProfileInput, but an HTTP body
+    // reaches here with no such guarantee — validate the runtime type
+    // before .trim() rather than let a non-string throw a raw TypeError.
+    if (typeof patch.label !== "string") {
+      throw new AuthProfileValidationError("label must be a string or null")
+    }
+    nextLabel = patch.label.trim()
+    if (!nextLabel) {
+      throw new AuthProfileValidationError("label must not be blank; pass null to clear it")
+    }
+    if (nextLabel.length > MAX_LABEL_LENGTH) {
+      throw new AuthProfileValidationError(
+        `label must be at most ${MAX_LABEL_LENGTH} characters`,
+      )
+    }
+  }
+
+  let nextCostBudget: CostBudget | undefined
+  if (hasCostBudget && patch.costBudget !== null) {
+    const parsed = costBudgetSchema.safeParse(patch.costBudget)
+    if (!parsed.success) {
+      throw new AuthProfileValidationError(
+        `costBudget is invalid: ${parsed.error.issues.map(i => i.message).join(", ")}`,
+      )
+    }
+    nextCostBudget = parsed.data
+  }
+
+  const profile = await deps.getProfile(trimmed)
+  if (!profile) {
+    throw new AuthProfileValidationError(`no profile with id "${trimmed}"`)
+  }
+
+  const { label: _dropLabel, costBudget: _dropCostBudget, ...rest } = profile
+  const updated: AuthProfile = { ...rest }
+  if (hasLabel) {
+    if (nextLabel !== undefined) updated.label = nextLabel
+  } else if (profile.label !== undefined) {
+    updated.label = profile.label
+  }
+  if (hasCostBudget) {
+    if (nextCostBudget !== undefined) updated.costBudget = nextCostBudget
+  } else if (profile.costBudget !== undefined) {
+    updated.costBudget = profile.costBudget
+  }
+
   await deps.addProfile(updated)
   return updated
 }

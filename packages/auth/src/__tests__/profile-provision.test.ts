@@ -11,6 +11,7 @@ import {
   refreshAuthProfileModels,
   setAuthProfileEnabled,
   setAuthProfileModels,
+  updateAuthProfile,
   validateCreateInput,
   type ProfileProvisionDeps,
 } from "../profile-provision.js"
@@ -251,6 +252,150 @@ describe("setAuthProfileModels (WS3)", () => {
     await expect(
       setAuthProfileModels("nope", { mode: "allow", ids: [] }, deps),
     ).rejects.toThrow(AuthProfileValidationError)
+  })
+})
+
+describe("updateAuthProfile (WS-G5)", () => {
+  it("sets a label, leaving everything else — including credentialRef — untouched", async () => {
+    const { deps, profiles } = makeDeps([
+      { id: "p", endpoint: "anthropic", method: "api-key", credentialRef: "ref" },
+    ])
+    const updated = await updateAuthProfile("p", { label: " Jeremy Max " }, deps)
+    expect(updated.label).toBe("Jeremy Max")
+    expect(updated.credentialRef).toBe("ref")
+    expect(profiles.get("p")).toEqual({
+      id: "p",
+      endpoint: "anthropic",
+      method: "api-key",
+      credentialRef: "ref",
+      label: "Jeremy Max",
+    })
+  })
+
+  it("clears a label with null, dropping the field entirely", async () => {
+    const { deps, profiles } = makeDeps([
+      { id: "p", endpoint: "anthropic", method: "api-key", credentialRef: "ref", label: "old" },
+    ])
+    const updated = await updateAuthProfile("p", { label: null }, deps)
+    expect(updated).not.toHaveProperty("label")
+    expect(profiles.get("p")).toEqual({
+      id: "p",
+      endpoint: "anthropic",
+      method: "api-key",
+      credentialRef: "ref",
+    })
+  })
+
+  it("rejects a blank label", async () => {
+    const { deps } = makeDeps([
+      { id: "p", endpoint: "anthropic", method: "api-key", credentialRef: "ref" },
+    ])
+    await expect(updateAuthProfile("p", { label: "   " }, deps)).rejects.toThrow(
+      /must not be blank/,
+    )
+  })
+
+  it("rejects a non-string, non-null label (e.g. a number) with a clear 400-mappable error rather than a raw TypeError", async () => {
+    const { deps } = makeDeps([
+      { id: "p", endpoint: "anthropic", method: "api-key", credentialRef: "ref" },
+    ])
+    await expect(
+      updateAuthProfile("p", { label: 42 as never }, deps),
+    ).rejects.toThrow(AuthProfileValidationError)
+    await expect(
+      updateAuthProfile("p", { label: 42 as never }, deps),
+    ).rejects.toThrow(/label must be a string or null/)
+  })
+
+  it("rejects an overlong label", async () => {
+    const { deps } = makeDeps([
+      { id: "p", endpoint: "anthropic", method: "api-key", credentialRef: "ref" },
+    ])
+    await expect(
+      updateAuthProfile("p", { label: "x".repeat(201) }, deps),
+    ).rejects.toThrow(/at most 200 characters/)
+  })
+
+  it("sets a costBudget, preserving an existing label", async () => {
+    const { deps, profiles } = makeDeps([
+      { id: "p", endpoint: "anthropic", method: "api-key", credentialRef: "ref", label: "kept" },
+    ])
+    const budget = { maxCostUsd: 25, window: "7d", scope: "profile" as const }
+    const updated = await updateAuthProfile("p", { costBudget: budget }, deps)
+    expect(updated.costBudget).toEqual(budget)
+    expect(updated.label).toBe("kept")
+    expect(profiles.get("p")?.costBudget).toEqual(budget)
+  })
+
+  it("clears a costBudget with null", async () => {
+    const { deps, profiles } = makeDeps([
+      {
+        id: "p",
+        endpoint: "anthropic",
+        method: "api-key",
+        credentialRef: "ref",
+        costBudget: { maxCostUsd: 5, window: "5h", scope: "session" },
+      },
+    ])
+    const updated = await updateAuthProfile("p", { costBudget: null }, deps)
+    expect(updated).not.toHaveProperty("costBudget")
+    expect(profiles.get("p")).not.toHaveProperty("costBudget")
+  })
+
+  it("rejects an invalid costBudget", async () => {
+    const { deps } = makeDeps([
+      { id: "p", endpoint: "anthropic", method: "api-key", credentialRef: "ref" },
+    ])
+    await expect(
+      updateAuthProfile(
+        "p",
+        { costBudget: { maxCostUsd: "lots", window: "5h", scope: "session" } as never },
+        deps,
+      ),
+    ).rejects.toThrow(AuthProfileValidationError)
+  })
+
+  it("rejects an empty patch", async () => {
+    const { deps } = makeDeps([
+      { id: "p", endpoint: "anthropic", method: "api-key", credentialRef: "ref" },
+    ])
+    await expect(updateAuthProfile("p", {}, deps)).rejects.toThrow(
+      /at least one of label or costBudget/,
+    )
+  })
+
+  it("rejects an unknown id", async () => {
+    const { deps } = makeDeps()
+    await expect(updateAuthProfile("nope", { label: "x" }, deps)).rejects.toThrow(
+      AuthProfileValidationError,
+    )
+  })
+
+  it("never touches credentialRef, source, disabled, models, or origin", async () => {
+    const { deps, profiles } = makeDeps([
+      {
+        id: "p",
+        endpoint: "anthropic",
+        method: "api-key",
+        credentialRef: "ref",
+        disabled: true,
+        models: { mode: "allow", ids: ["a/b"] },
+        origin: "env",
+      },
+    ])
+    const updated = await updateAuthProfile("p", { label: "new" }, deps)
+    expect(updated).toMatchObject({
+      credentialRef: "ref",
+      disabled: true,
+      models: { mode: "allow", ids: ["a/b"] },
+      origin: "env",
+    })
+    expect(profiles.get("p")).toMatchObject({
+      credentialRef: "ref",
+      disabled: true,
+      models: { mode: "allow", ids: ["a/b"] },
+      origin: "env",
+    })
   })
 })
 

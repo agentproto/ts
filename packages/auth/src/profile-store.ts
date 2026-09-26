@@ -29,7 +29,7 @@ const modelCurationSchema = z.object({
   ids: z.array(z.string()),
 })
 
-const costBudgetSchema = z.object({
+export const costBudgetSchema = z.object({
   maxCostUsd: z.number(),
   window: z.string(),
   scope: z.enum(["session", "profile"]),
