@@ -199,7 +199,9 @@ import {
   createAuthProfile,
   deleteAuthProfile,
   listAuthProfiles,
+  updateAuthProfile,
   AuthProfileValidationError,
+  type CostBudget,
 } from "@agentproto/auth"
 
 /** HTTP-safe descriptor projection. The registry retains resume env for PTY
@@ -3003,6 +3005,44 @@ export async function startHttpServer(
                     ? "invalid_input"
                     : "delete_failed",
                 message: err instanceof Error ? err.message : String(err),
+              }),
+            )
+          }
+          return
+        }
+        if (authProfileMatch && req.method === "PATCH") {
+          const id = decodeURIComponent(authProfileMatch[1] ?? "")
+          const body = (await readJsonBody(req)) as {
+            label?: unknown
+            costBudget?: unknown
+          } | null
+          try {
+            const patch = {
+              ...(body && "label" in body ? { label: body.label as string | null } : {}),
+              ...(body && "costBudget" in body
+                ? { costBudget: body.costBudget as CostBudget | null }
+                : {}),
+            }
+            const updated = await updateAuthProfile(id, patch, defaultProfileProvisionDeps())
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify({ profile: updated }))
+          } catch (err) {
+            // updateAuthProfile throws the same AuthProfileValidationError
+            // for "unknown id" as for a bad field — split 404 from 400 on
+            // the message, same disambiguation used elsewhere in this file
+            // (e.g. the session-lookup routes above).
+            const message = err instanceof Error ? err.message : String(err)
+            const notFound = err instanceof AuthProfileValidationError && message.startsWith("no profile with id")
+            const status = notFound ? 404 : err instanceof AuthProfileValidationError ? 400 : 500
+            res.writeHead(status, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: notFound
+                  ? "not_found"
+                  : err instanceof AuthProfileValidationError
+                    ? "invalid_input"
+                    : "update_failed",
+                message,
               }),
             )
           }
