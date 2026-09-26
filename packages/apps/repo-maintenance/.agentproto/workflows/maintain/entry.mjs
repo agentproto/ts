@@ -45,7 +45,11 @@ function dedupeReviewCandidates(branchGcPlanResult) {
       subject: e.subject,
       history: e.history,
       base: plan?.baseSha ?? null,
-      compareBase: e.compareBase ?? null,
+      // branch_gc sets `compareBase` on EVERY unmerged entry (base itself for
+      // a current-history tip, the anchor for a pre-rewrite one) — only the
+      // pre-rewrite anchor is news to the reviewer, and the prompt's
+      // "pre-rewrite history" note keys off this field.
+      compareBase: e.history === "pre-rewrite" ? (e.compareBase ?? null) : null,
       mergeBase: e.mergeBase ?? null,
       mergedTree: e.mergedTree ?? null,
       conflicts: e.conflicts ?? null,
@@ -206,7 +210,7 @@ export default {
             "\n\nCoverage already proved what's in base by content: {{item.coverage}}. The residual files " +
             "NOT provably in base are: {{item.residualFiles}}. Merge base: {{item.mergeBase}}. Merged tree " +
             "(the tree base would have if this branch merged cleanly, or null when the merge conflicts): " +
-            "{{item.mergedTree}}. Ahead {{item.ahead}}, behind {{item.behind}}. Push state: {{item.pushed}}. " +
+            "{{#item.mergedTree}}{{item.mergedTree}}{{/item.mergedTree}}{{^item.mergedTree}}null{{/item.mergedTree}}. Ahead {{item.ahead}}, behind {{item.behind}}. Push state: {{item.pushed}}. " +
             "Every ref sharing this tip: {{item.refs}}." +
             "\n\nRecord your verdict by calling branch_gc_verdict with repoRoot=" +
             "\"{{steps.branchGcPlan.plan.repoRoot}}\", name=\"{{item.name}}\", sha=\"{{item.sha}}\", " +

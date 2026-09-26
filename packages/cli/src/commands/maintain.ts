@@ -1,5 +1,5 @@
 /**
- * `agentproto maintain [--repo <dir>] [--apply-merged] [--json]`
+ * `agentproto maintain [--repo <dir>] [--apply-merged] [--wait] [--json]`
  *
  * Convenience shortcut over `agentproto workflow run-file` for the built-in
  * `repo-maintenance` app's `maintain` workflow (`@agentproto/apps`'s
@@ -18,27 +18,33 @@ import { createRequire } from "node:module"
 import { dirname, join, resolve } from "node:path"
 import { mcpToolCall, withDaemon } from "./workflow.js"
 import { repoRootOf } from "./worktree.js"
+import { httpGetJson } from "./_daemon-helpers.js"
 
 const USAGE = `agentproto maintain — plan/review (and optionally apply) branch + worktree gc for a repo
 
 Usage:
-  agentproto maintain [--repo <dir>] [--apply-merged] [--json]
+  agentproto maintain [--repo <dir>] [--apply-merged] [--wait] [--json]
   agentproto maintain --help
 
   --repo <dir>     Any dir inside the repo. Default: cwd's git toplevel.
   --apply-merged   After review, apply branch_gc (reclaim-class only,
                    includeReviewed false) and worktree_gc. Default: dry run
                    (plan + review only, nothing is deleted).
-  --json           Print the raw workflow_run_file reply.
+  --wait           Block until the run ends, then print its markdown report
+                   (exit 0 when done, 1 when it failed/was cancelled).
+  --json           Print the raw workflow_run_file reply (with --wait: the
+                   finished run record, whose \`output\` holds report + gaps).
 
 Runs the built-in repo-maintenance app's \`maintain\` workflow via the
 daemon's workflow_run_file — needs a running daemon (\`agentproto serve\`),
 since the review step spawns real agent sessions. Poll the run with
-\`agentproto workflow status <runId>\`.
+\`agentproto workflow status <runId>\`, or pass --wait. The report is kept
+on the run record (\`output.report\`) after the run ends.
 
 Examples:
   agentproto maintain --repo ~/code/my-app
   agentproto maintain --repo ~/code/my-app --apply-merged
+  agentproto maintain --wait
 `
 
 /** Resolve the bundled repo-maintenance app's dir + its maintain WORKFLOW.md
@@ -64,6 +70,7 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
     options: {
       repo: { type: "string" },
       "apply-merged": { type: "boolean" },
+      wait: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
     },
   })
@@ -121,6 +128,31 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
     process.stderr.write(`agentproto maintain: ${String(result["error"])}\n`)
     return 1
   }
+  if (values.wait) {
+    const runId = String(result["runId"])
+    process.stderr.write(`agentproto maintain: waiting for run ${runId}…\n`)
+    let run: MaintainRunShape
+    try {
+      run = await waitForRunEnd(() =>
+        httpGetJson<MaintainRunShape>(`${daemon.endpoint.url}/workflows/${encodeURIComponent(runId)}`),
+      )
+    } catch (err) {
+      process.stderr.write(`agentproto maintain: ${err instanceof Error ? err.message : String(err)}\n`)
+      return 1
+    }
+    if (values.json) {
+      process.stdout.write(JSON.stringify(run, null, 2) + "\n")
+    } else {
+      const report = run.output?.report
+      if (typeof report === "string") process.stdout.write(report + "\n")
+      if (run.status !== "done") {
+        process.stderr.write(
+          `agentproto maintain: run ${runId} ended ${run.status}${run.error ? ` — ${run.error}` : ""}\n`,
+        )
+      }
+    }
+    return run.status === "done" ? 0 : 1
+  }
   if (values.json) {
     process.stdout.write(JSON.stringify(result, null, 2) + "\n")
     return 0
@@ -130,4 +162,31 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
       `  Poll: agentproto workflow status ${String(result["runId"])}\n`,
   )
   return 0
+}
+
+/** The slice of a `GET /workflows/:id` run record `--wait` reads. */
+export interface MaintainRunShape {
+  runId: string
+  status: string
+  error?: string
+  output?: { report?: unknown; gaps?: unknown }
+}
+
+/** A run status past which polling is pointless: finished, or parked on a
+ *  human (the maintain workflow has no approval/suspend step, but a parked
+ *  run would otherwise block `--wait` forever). */
+const RUN_END_STATUSES = new Set(["done", "failed", "cancelled", "awaiting-approval", "awaiting-input"])
+
+/** Poll `fetchRun` until the run reaches an end status; returns that record. */
+export async function waitForRunEnd(
+  fetchRun: () => Promise<MaintainRunShape>,
+  opts: { intervalMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<MaintainRunShape> {
+  const intervalMs = opts.intervalMs ?? 5_000
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)))
+  for (;;) {
+    const run = await fetchRun()
+    if (RUN_END_STATUSES.has(run.status)) return run
+    await sleep(intervalMs)
+  }
 }

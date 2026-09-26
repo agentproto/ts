@@ -197,10 +197,16 @@ export async function resolveAgentRefsForWorkflow(
   for (const agent of app.agents) {
     let model: string | undefined
     let metadataAdapter: string | undefined
+    let tools: string[] | undefined
     try {
       const { handle } = await loadAgent(agent.path)
       model = typeof handle.model === "string" ? handle.model : undefined
       metadataAdapter = agentMetadataAdapter(handle.metadata)
+      // String tool ids only — they scope the daemon gateway an agent step's
+      // session gets (sessions-registry-agent-host.ts). A structured ref has
+      // no gateway tool name to match.
+      const declared = (handle.tools ?? []).filter((t): t is string => typeof t === "string")
+      if (declared.length > 0) tools = declared
     } catch {
       // AGENT.md unreadable/invalid at run time (already validated at
       // install) — degrade to the pre-F26 blanket default for this one
@@ -212,6 +218,7 @@ export async function resolveAgentRefsForWorkflow(
       adapter,
       ...(adapter === DEFAULT_AGENT_ADAPTER ? { options: { agent: agent.path } } : {}),
       ...(model !== undefined ? { model } : {}),
+      ...(tools !== undefined ? { tools } : {}),
     }
   }
   return refs

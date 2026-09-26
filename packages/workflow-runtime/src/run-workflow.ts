@@ -408,6 +408,7 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
         ...(sandbox !== undefined ? { sandbox } : {}),
         ...(step.options !== undefined ? { options: step.options } : {}),
         ...(harness !== undefined ? { harness } : {}),
+        ...(step.agentTools !== undefined ? { agentTools: step.agentTools } : {}),
       })
     : ctx.agents!.resolveByLabel(step.sessionRef!)
   if (!sessionId) throw new Error(`step '${step.id}': no session (adapter and sessionRef both unresolved)`)
@@ -716,42 +717,36 @@ async function execStep(
       const parallelism = Math.max(1, step.parallelism ?? 1)
       const tolerant = step.onError === "collect"
       const results: unknown[] = new Array(arr.length)
-      for (let i = 0; i < arr.length; i += parallelism) {
-        const chunk = arr.slice(i, i + parallelism)
-        if (!tolerant) {
-          const outs = await Promise.all(
-            chunk.map((el, j) => {
-              const idx = i + j
-              const inner = step.body(el, idx, view(state, el, idx))
-              const wrapped = withIndexedHooks(ctx, idx)
-              return execStep(inner, wrapped, el, idx).then((out) => {
-                completeStep(wrapped, inner.id, out)
-                return out
-              })
-            }),
-          )
-          for (let j = 0; j < outs.length; j++) results[i + j] = outs[j]
-          continue
+      // Sliding window, not fixed batches: each of `parallelism` workers
+      // pulls the next item as soon as its current one settles, so one slow
+      // item never holds idle slots hostage. Same pool shape as `pipeline`.
+      // Non-tolerant: after the first failure no NEW item starts (in-flight
+      // ones finish), and the map rethrows that first error.
+      let next = 0
+      let failed = false
+      const runItem = async (idx: number): Promise<void> => {
+        const el = arr[idx]
+        const inner = step.body(el, idx, view(state, el, idx))
+        const wrapped = withIndexedHooks(ctx, idx)
+        try {
+          const out = await execStep(inner, wrapped, el, idx)
+          completeStep(wrapped, inner.id, out)
+          results[idx] = tolerant ? { status: "fulfilled", index: idx, value: out } : out
+        } catch (err) {
+          if (!tolerant) {
+            failed = true
+            throw err
+          }
+          results[idx] = { status: "rejected", index: idx, item: el, error: errorMessage(err) }
         }
-        const settled = await Promise.allSettled(
-          chunk.map((el, j) => {
-            const idx = i + j
-            const inner = step.body(el, idx, view(state, el, idx))
-            const wrapped = withIndexedHooks(ctx, idx)
-            return execStep(inner, wrapped, el, idx).then((out) => {
-              completeStep(wrapped, inner.id, out)
-              return out
-            })
-          }),
-        )
-        settled.forEach((s, j) => {
-          const idx = i + j
-          results[idx] =
-            s.status === "fulfilled"
-              ? { status: "fulfilled", index: idx, value: s.value }
-              : { status: "rejected", index: idx, item: chunk[j], error: errorMessage(s.reason) }
-        })
       }
+      const worker = async (): Promise<void> => {
+        while (!failed && next < arr.length) {
+          const idx = next++
+          await runItem(idx)
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(parallelism, arr.length) }, () => worker()))
       if (!tolerant) return results
       const outcomes = results as FanOutOutcome[]
       return {

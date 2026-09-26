@@ -207,8 +207,10 @@ export function interpolateTemplate(template: string, b: Bindings): string {
         replacement = replacement.replace(/^\n/, "").replace(/\n[ \t]*$/, "")
       }
     }
+    // Only a standalone section swallows its own line's leading whitespace;
+    // an inline one keeps everything before it on the line.
     out =
-      before.slice(0, lineStart) +
+      (standalone ? before.slice(0, lineStart) : before) +
       replacement +
       (standalone
         ? (truthy ? (nl === -1 ? after : after.slice(nl)) : after.slice(nl + 1))
@@ -565,6 +567,7 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
   let options: Record<string, boolean | number | string> | undefined =
     step.options !== undefined ? step.options : undefined
   let model: unknown = step.model
+  let agentTools: readonly string[] | undefined
 
   const agentRef: unknown = step.agent?.ref
   if (agentRef !== undefined) {
@@ -596,6 +599,9 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     // manifest never declared (the spawn rejects it loudly — see F26's
     // `resolveAgentRefsForWorkflow` doc).
     if (options === undefined && adapter === resolved.adapter) options = resolved.options
+    // The agent's declared tools travel with it whatever adapter runs it —
+    // they scope the host's tool gateway, not an adapter option.
+    agentTools = resolved.tools
   }
 
   // AIP-58 §3 Outcome rule: a step declaring NEITHER an output schema NOR a
@@ -632,6 +638,7 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     ...(outputSchema !== undefined ? { outputSchema } : {}),
     ...(step.maxRetries !== undefined ? { maxRetries: step.maxRetries } : {}),
     ...(step.harness !== undefined ? { harness: step.harness } : {}),
+    ...(agentTools !== undefined ? { agentTools } : {}),
   })
 }
 

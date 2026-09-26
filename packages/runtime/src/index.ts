@@ -124,7 +124,7 @@ import { compileWorkflow } from "@agentproto/workflow-runtime"
 import { createFileStepCache } from "./workflow-step-cache.js"
 import { withDeferredTools } from "./deferred-tools.js"
 export { resolveDeferredToolsGatewayOption, type DeferredToolsConfig } from "./deferred-tools.js"
-import { withToolExclusion } from "./tool-subset.js"
+import { withToolExclusion, withToolSubset } from "./tool-subset.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createPrProvenanceReconciler, type OpenPrResolver } from "./pr-provenance-reconciler.js"
 import { createActivityProjector, type PrStateResolver } from "./activities.js"
@@ -1599,6 +1599,9 @@ export async function createGateway(
         // step `sandbox`) resolve providers through the same resolver
         // `agent_start.sandbox` uses.
         resolveSandboxProvider: resolveSandboxProviderResolved,
+        // Agent-step sessions get this gateway mounted (scoped to the agent's
+        // declared tools) — same default `agent_start` applies.
+        daemonMcpUrl,
         // Compile a loaded WORKFLOW.md handle into a runnable RuntimeWorkflow
         // for `workflow_run_file` / `startFromFile`. `tool` steps resolve
         // through `createDaemonToolRegistry` — a per-handle registry scanning
@@ -1899,6 +1902,7 @@ export async function createGateway(
     callerSessionId?: string,
     origin?: string,
     deferredOverride?: boolean,
+    allowTools?: ReadonlySet<string>,
   ) => {
     const { server: rawServer } = await createMcpServer({
       specs: opts.specs,
@@ -1944,6 +1948,12 @@ export async function createGateway(
     // all, regardless of `alwaysOn`.
     if (denyTools && denyTools.size > 0) {
       server = withToolExclusion(server, denyTools)
+    }
+    // Per-request ALLOWLIST from `?allowTools=a,b` — a workflow agent step's
+    // mount, scoped to its AGENT.md `tools:` (sessions-registry-agent-host.ts
+    // `agentStepMcpServers`). Only the named tools register at all.
+    if (allowTools && allowTools.size > 0) {
+      server = withToolSubset(server, allowTools)
     }
     // App state ledger write gate (app-state.ts's access rule): a request
     // identified as coming from a daemon-spawned agent session

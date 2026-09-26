@@ -14,10 +14,51 @@ import type { AgentAdapterResolver } from "./http-server.js"
 import type { AgentHarness, AgentSandboxRef, AgentSessionHost, AgentStep } from "@agentproto/workflow-runtime"
 import { SandboxSpecSchema } from "@agentproto/sandbox"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
-import { spawnAgentSession, type SandboxSpecInput } from "./session-spawn.js"
+import type { AcpMcpServer } from "@agentproto/acp"
+import { shouldInjectDaemonSelfMount, spawnAgentSession, type SandboxSpecInput } from "./session-spawn.js"
 import { exportAgentSession } from "./transcript-export.js"
 import type { RoutinePolicy } from "./step-run-types.js"
 import { normalizeSkillsOption } from "./spawn-defaults.js"
+
+/**
+ * The daemon-gateway mount a workflow agent step's (host) session gets —
+ * what `agent_start` gives an equivalent spawn, so a `kind:"agent"` step's
+ * session can reach daemon tools (e.g. `branch_gc_verdict`) at all.
+ *
+ *  - The agent declared a `tools` list (AGENT.md `tools:`, carried as
+ *    `agentTools`): mount the gateway for ANY adapter, scoped to exactly
+ *    that list via `?allowTools=` — the declaration is the capability ask.
+ *    Names the gateway doesn't serve (harness-native `run_command`, …)
+ *    match nothing; the harness keeps its own tools for those. Deferred
+ *    loading is forced off: `tool_search` isn't on the list, so a deferred
+ *    tool would be unreachable.
+ *  - No list declared: the same default `agent_start` applies
+ *    (`shouldInjectDaemonSelfMount` — hermes and on-host claude-code get the
+ *    full gateway, other adapters none).
+ *
+ * Every mount carries `callerSessionId` so calls attribute to the step's
+ * session. `undefined` ⇒ mount nothing (no gateway URL wired, or an adapter
+ * outside the default set with no declared tools).
+ */
+export function agentStepMcpServers(input: {
+  adapter: string
+  daemonMcpUrl: string | undefined
+  sessionId: string
+  agentTools?: readonly string[]
+}): AcpMcpServer[] | undefined {
+  const { adapter, daemonMcpUrl, sessionId, agentTools } = input
+  if (!daemonMcpUrl) return undefined
+  const params = new URLSearchParams()
+  if (agentTools !== undefined && agentTools.length > 0) {
+    params.set("allowTools", agentTools.join(","))
+    params.set("deferred", "0")
+  } else if (!shouldInjectDaemonSelfMount(adapter, undefined)) {
+    return undefined
+  }
+  params.set("callerSessionId", sessionId)
+  const sep = daemonMcpUrl.includes("?") ? "&" : "?"
+  return [{ name: "agentproto", transport: "http", ref: `${daemonMcpUrl}${sep}${params.toString()}` }]
+}
 
 export class SessionsRegistryAgentHost implements AgentSessionHost {
   private readonly sessionsByLabel = new Map<string, string>()
@@ -36,6 +77,10 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
        *  step fails loudly (`sandbox_provider_not_found`), never silently
        *  spawns on the host. */
       resolveSandboxProvider?: SandboxProviderResolver
+      /** The daemon's own plain `/mcp` gateway URL — mounted into host
+       *  step sessions per {@link agentStepMcpServers}. Omitted ⇒ step
+       *  sessions get no daemon gateway. */
+      daemonMcpUrl?: string
       /**
        * Durable-suspend handler for an `escalate` policy: awaited instead of
        * throwing immediately, so the caller (WorkflowRunner) can pause the
@@ -86,6 +131,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       sandbox?: AgentSandboxRef
       options?: Record<string, boolean | number | string>
       harness?: AgentHarness
+      agentTools?: readonly string[]
     },
   ): Promise<string> {
     const workspaceSlug = opts.workspaceSlug ?? this.opts?.workspaceSlug ?? "default"
@@ -194,6 +240,12 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
         `harness.role ("${harness.role}"): this spawn path applies no role-based tool policy — not applied`,
       )
     }
+    const mcpServers = agentStepMcpServers({
+      adapter,
+      daemonMcpUrl: this.opts?.daemonMcpUrl,
+      sessionId: stepSessionId,
+      ...(opts.agentTools !== undefined ? { agentTools: opts.agentTools } : {}),
+    })
     const agentSession = await resolved.startSession({
       cwd,
       configDir: adapterConfigDirFor(stepSessionId),
@@ -204,6 +256,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       ...(harnessOptions !== undefined ? { options: harnessOptions } : {}),
       ...(harness?.model !== undefined ? { model: harness.model } : {}),
       ...(harness?.effort !== undefined ? { effort: harness.effort } : {}),
+      ...(mcpServers ? { mcpServers } : {}),
     })
     const desc = this.registry.spawnAgent({
       id: stepSessionId,
@@ -213,6 +266,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       adapterSlug: adapter,
       adapterConfigDir: adapterConfigDirFor(stepSessionId),
       label: `agent-step:${adapter}`,
+      ...(mcpServers ? { mcpServers } : {}),
       ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
     })
     if (opts.stepId) {

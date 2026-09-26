@@ -296,3 +296,105 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(result.applyMerged).toBe(true)
   })
 })
+
+describe("repo-maintenance maintain workflow — rendered reviewer prompt", () => {
+  const ANCHOR_SHA = "e".repeat(40)
+  const TREE_SHA = "f".repeat(40)
+
+  function reviewEntry(over: Record<string, unknown>) {
+    return {
+      kind: "local",
+      date: "2026-01-01T00:00:00Z",
+      author: "a",
+      subject: "s",
+      ageDays: 10,
+      class: "review",
+      status: "unmerged",
+      ahead: 1,
+      behind: 0,
+      mergeBase: "9".repeat(40),
+      residualFiles: ["a.txt"],
+      residualFileCount: 1,
+      ...over,
+    }
+  }
+
+  async function renderPrompts(): Promise<Map<string, string>> {
+    const plan = {
+      mode: "plan",
+      plan: {
+        repoRoot: "/repo",
+        repoName: "repo",
+        base: "origin/main",
+        baseSha: BASE_SHA,
+        scopes: ["local"],
+        entries: [
+          // What branch_gc really emits for a current-history tip: compareBase
+          // is base itself — NOT pre-rewrite. Merge conflicts ⇒ mergedTree null.
+          reviewEntry({
+            name: "wt/current",
+            ref: "refs/heads/wt/current",
+            sha: SHA_A,
+            history: "current",
+            compareBase: BASE_SHA,
+            mergedTree: null,
+          }),
+          reviewEntry({
+            name: "wt/old",
+            ref: "refs/heads/wt/old",
+            sha: SHA_B,
+            history: "pre-rewrite",
+            compareBase: ANCHOR_SHA,
+            mergedTree: TREE_SHA,
+          }),
+        ],
+      },
+      summary: { byClass: { local: { reclaim: 0, review: 2, hold: 0 } }, byStatus: {} },
+    }
+    const dispatchTool: DispatchTool = vi.fn(async name => {
+      if (name === "worktree_gc") return mcpResult({ mode: "plan", outcomes: [] })
+      if (name === "branch_gc") return mcpResult(plan)
+      throw new Error(`unexpected tool '${name}'`)
+    })
+    const sessionToSha = new Map<string, string>()
+    const prompts = new Map<string, string>()
+    let n = 0
+    const host: AgentSessionHost = {
+      spawn: vi.fn(async () => `sess_${++n}`),
+      sendPromptAndWait: vi.fn(async (sessionId: string, prompt: string) => {
+        const sha = prompt.includes(SHA_A) ? SHA_A : SHA_B
+        sessionToSha.set(sessionId, sha)
+        prompts.set(sha, prompt)
+      }),
+      resolveByLabel: vi.fn(() => undefined),
+    }
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    await runWorkflow({ workflow: compiled, agents: host, input: { repoRoot: "/repo" } })
+    return prompts
+  }
+
+  it("keeps the opening sentence (branch, tip, repo, base) and omits the pre-rewrite note for a current-history branch", async () => {
+    const prompt = (await renderPrompts()).get(SHA_A)!
+    expect(prompt.startsWith(
+      `Review the local branch \`wt/current\` (tip ${SHA_A}) in the repo at /repo. ` +
+        `It is unmerged relative to base origin/main (base sha ${BASE_SHA}). `,
+    )).toBe(true)
+    expect(prompt).not.toMatch(/pre-rewrite/)
+    expect(prompt).not.toMatch(/compare base/)
+    // A conflicting merge renders `null` explicitly, not an empty string.
+    expect(prompt).toContain("or null when the merge conflicts): null. Ahead")
+  })
+
+  it("adds the compare base + pre-rewrite note only for a pre-rewrite branch", async () => {
+    const prompt = (await renderPrompts()).get(SHA_B)!
+    expect(prompt.startsWith(`Review the local branch \`wt/old\` (tip ${SHA_B}) in the repo at /repo.`)).toBe(true)
+    expect(prompt).toContain(
+      `(base sha ${BASE_SHA}), compare base ${ANCHOR_SHA} (pre-rewrite history — commit shas`,
+    )
+    expect(prompt).toContain(`or null when the merge conflicts): ${TREE_SHA}. Ahead`)
+  })
+})

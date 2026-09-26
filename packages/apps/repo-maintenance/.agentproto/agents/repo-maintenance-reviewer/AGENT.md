@@ -36,6 +36,10 @@ you say `agree: true` in your verdict, so be conservative and cite evidence.
 - Always pass `-C <repo root>` to git — the repo root is given to you in the
   prompt; the cwd may not match it.
 - Cap output: pipe big diffs through `head -300`, or use `--stat` first.
+- Never write temp files (no `git show … > /tmp/x && diff …`). Git compares
+  revisions directly: `git diff <a>:<path> <b>:<path>` for one file across
+  two revisions (paths may differ, e.g. after a move), or
+  `git diff <a> <b> -- <path>` when the path is the same on both.
 
 ## What you're given per branch
 
@@ -79,7 +83,10 @@ by CONTENT (`git grep` on the current base, diff paths), never by sha.
 2. For each meaningful residual file, check whether base already has the
    same intent under a different form: `git log --oneline -n 15 <base> --
    <path>`, `git grep -n '<distinctive string>' <base> -- <path>`, look for
-   a squash-merge commit whose subject matches this branch's commits.
+   a squash-merge commit whose subject matches this branch's commits. To
+   compare a residual file against its counterpart on base, diff the blobs
+   in place — `git diff <base>:<path> <sha>:<path>` (or
+   `<base>:<other-path>` when base moved it) — never via a temp file.
 3. Classify:
    - `obsolete`: dead work (abandoned experiment, reverted approach,
      generated snapshots, lockfile-only churn, deleted-on-base files this

@@ -557,6 +557,8 @@ describe("compileWorkflow — declarative agent step", () => {
     const step = compiled.steps[0] as AgentStep
     expect(step.adapter).toBe("mastra-agent")
     expect(step.options).toEqual({ agent: "/apps/my-app/.agentproto/agents/implementer/AGENT.md" })
+    // No declared tools on the ref ⇒ none on the step.
+    expect(step.agentTools).toBeUndefined()
   })
 
   it("explicit step.adapter and step.options override the agent-ref resolution", () => {
@@ -668,6 +670,28 @@ describe("compileWorkflow — declarative agent step", () => {
     ).toThrow(/unknown agent ref '@my-app\/ghost'.*@my-app\/reviewer/)
   })
 
+  it("carries the agent ref's declared tools onto the step as agentTools, whatever adapter runs it", () => {
+    const wf = defineWorkflow({
+      name: "Review",
+      id: "review-tools",
+      description: "Agent ref declaring tools.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        { id: "review", kind: "agent", agent: { ref: "@my-app/reviewer" }, adapter: "codex", prompt: "Review." },
+      ],
+    })
+    const compiled = compileWorkflow(wf, {
+      tools,
+      candidates,
+      agentRefs: { "@my-app/reviewer": { adapter: "claude-code", tools: ["read_file", "branch_gc_verdict"] } },
+    })
+    const step = compiled.steps[0] as AgentStep
+    expect(step.adapter).toBe("codex")
+    expect(step.agentTools).toEqual(["read_file", "branch_gc_verdict"])
+  })
+
   it("rejects agent.ref when no agentRefs are configured for the compile", () => {
     const wf = defineWorkflow({
       name: "No app context",
@@ -748,6 +772,22 @@ describe("compileWorkflow — declarative agent step", () => {
       "Intro.\n{{#agenda}}\nUse this agenda: {{agenda}}\n{{/agenda}}\nOutro.",
     )
     expect(prompt(b({}))).toBe("Intro.\nOutro.")
+  })
+
+  it("keeps the text before an INLINE section on the same line (truthy and falsy)", () => {
+    const prompt = compileAgentPrompt(
+      "Review `{{name}}` (tip {{sha}}){{#note}}, note {{note}}{{/note}}. Then stop.",
+    )
+    expect(prompt(b({ name: "wt/x", sha: "abc", note: "n1" }))).toBe(
+      "Review `wt/x` (tip abc), note n1. Then stop.",
+    )
+    expect(prompt(b({ name: "wt/x", sha: "abc" }))).toBe("Review `wt/x` (tip abc). Then stop.")
+  })
+
+  it("an inline {{^name}} fallback renders null explicitly when the value is null", () => {
+    const prompt = compileAgentPrompt("tree: {{#t}}{{t}}{{/t}}{{^t}}null{{/t}}.")
+    expect(prompt(b({ t: null }))).toBe("tree: null.")
+    expect(prompt(b({ t: "deadbeef" }))).toBe("tree: deadbeef.")
   })
 
   it("renders an inverted {{^name}} section only when the name is falsy", () => {

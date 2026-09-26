@@ -361,6 +361,13 @@ export interface AgentStep {
   options?: Record<string, boolean | number | string>
   /** Harness pinning for this step's spawn. See {@link AgentHarness}. */
   harness?: AgentHarness
+  /** The resolved agent manifest's declared `tools` (AGENT.md `tools:`), set
+   *  by {@link CompileWorkflowOptions.agentRefs} resolution. Forwarded to the
+   *  host's `spawn` so it can mount its own tool gateway scoped to this list
+   *  (names the gateway doesn't serve — harness-native tools — match
+   *  nothing). Unset ⇒ the agent declared no tools list. Only meaningful
+   *  with `adapter`; ignored on a `sessionRef` reuse. */
+  agentTools?: readonly string[]
 }
 
 /**
@@ -453,6 +460,9 @@ export interface AgentRefResolution {
    *  step itself sets none (a step-level `model:` still wins). Forwarded
    *  through the same `harness.model` channel a step-level `model` uses. */
   model?: string
+  /** AGENT.md's declared `tools` (string ids only) — becomes the compiled
+   *  step's {@link AgentStep.agentTools}. */
+  tools?: readonly string[]
 }
 
 /**
@@ -538,6 +548,8 @@ export interface AgentSessionHost {
       options?: Record<string, boolean | number | string>
       /** Harness pinning for this spawn (see {@link AgentStep.harness}). */
       harness?: AgentHarness
+      /** The agent manifest's declared tools (see {@link AgentStep.agentTools}). */
+      agentTools?: readonly string[]
     },
   ): Promise<string>
   /** Send a prompt to an existing session and wait for its turn to end. */

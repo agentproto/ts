@@ -107,6 +107,12 @@ export interface WorkflowRun {
    *  this (`"invalid-input"`). Absent on every other failure path. */
   errorCode?: string
   result?: { sessionIds: string[] }
+  /** The workflow's own final output (its declared `result` block, else the
+   *  last step's output) — set when the run completes `done`. Persisted with
+   *  the run and returned by `workflow_status` (compact form included), so a
+   *  run's report outlives the run without the caller digging it out of one
+   *  step's `output`. */
+  output?: unknown
   /** F25: the working directory agent steps (and the run itself) spawn
    *  under — the caller's explicit `cwd` when given, else `startFromFile`'s
    *  resolved default (owning app's root > daemon's active workspace >
@@ -919,7 +925,7 @@ async function executeRunWorkflow(
   const nonLeafStepIds = collectNonLeafStepIds(runtimeWf.steps)
 
   try {
-    await runWorkflow({
+    const { output: runOutput } = await runWorkflow({
       workflow: runtimeWf,
       agents,
       signal,
@@ -1283,6 +1289,7 @@ async function executeRunWorkflow(
     }
     state.run.status = "done"
     state.run.endedAt = new Date().toISOString()
+    if (runOutput !== undefined) state.run.output = runOutput
 
     const sessionIds = fillStepStates(state.run.stages, state.stages, agents)
     if (sessionIds.length > 0) state.run.result = { sessionIds }
@@ -1409,6 +1416,11 @@ export function createWorkflowRunner(opts: {
    *  resolver `agent_start.sandbox` uses. Omitted ⇒ a sandbox step fails
    *  loudly (never a silent host spawn). */
   resolveSandboxProvider?: SandboxProviderResolver
+  /** The daemon's own plain `/mcp` gateway URL — agent-step sessions get it
+   *  mounted (scoped to the agent's declared tools when it declares any), so
+   *  a step can call daemon tools the same way an `agent_start` child can.
+   *  See `agentStepMcpServers`. Omitted ⇒ no gateway mount. */
+  daemonMcpUrl?: string
   /** Absolute path for the persistence file. Defaults to ~/.agentproto/workflow-runs.json */
   persistPath?: string
   /** Enable filesystem persistence. Defaults to `true` when `persistPath` is
@@ -1644,6 +1656,7 @@ export function createWorkflowRunner(opts: {
           ...(opts.resolveSandboxProvider
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }
             : {}),
+          ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
         },
       )
 
@@ -1764,6 +1777,7 @@ export function createWorkflowRunner(opts: {
           ...(opts.resolveSandboxProvider
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }
             : {}),
+          ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
         },
       )
 
