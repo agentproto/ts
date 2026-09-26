@@ -5426,3 +5426,142 @@ describe("spawnAgentSession — workspace RULES.md injection (WP-R4)", () => {
     expect(opts?.system).toContain(EXECUTOR_ROLE.disposition)
   })
 })
+
+describe("spawnAgentSession — browser: \"headless\"", () => {
+  const browserEntry: AcpMcpServer = {
+    name: "browser",
+    transport: "stdio",
+    ref: "/usr/bin/node",
+    args: ["/p/chrome-devtools-mcp.js", "--headless", "--isolated"],
+    env: { CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS: "1" },
+  }
+  function browserDeps(overrides: Partial<SpawnAgentSessionDeps> = {}) {
+    const startSession = vi.fn(async (_opts: Record<string, unknown>) => fakeAgentSession())
+    const resolveHeadlessBrowser = vi.fn(async () => ({
+      entry: browserEntry,
+      readPaths: ["/home/u/.agentproto/chrome-mcp", "/Applications/Google Chrome.app"],
+    }))
+    const { registry, deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      resolveHeadlessBrowser,
+      loadDefaultsConfig: async () => ({}),
+      ...overrides,
+    })
+    return { registry, deps, startSession, resolveHeadlessBrowser }
+  }
+
+  it("appends the browser mount AFTER the default self-mount, without suppressing it", async () => {
+    const { deps, resolveHeadlessBrowser } = browserDeps({ daemonMcpUrl: "http://127.0.0.1:18790/mcp" })
+    const result = await spawnAgentSession(deps, {
+      adapter: "hermes",
+      cwd: "/tmp",
+      role: "supervisor",
+      browser: "headless",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.descriptor.mcpServers?.map(e => e.name)).toEqual(["agentproto", "browser"])
+    expect(result.descriptor.mcpServers?.[1]).toEqual(browserEntry)
+    expect(resolveHeadlessBrowser).toHaveBeenCalledWith({ sessionId: result.descriptor.id, cwd: "/tmp" })
+  })
+
+  it("merges with a caller mcpServers list and threads the read grants to the adapter", async () => {
+    const { deps, startSession } = browserDeps()
+    const caller: AcpMcpServer = { name: "room", transport: "http", ref: "http://x/mcp" }
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      mcpServers: [caller],
+      browser: "headless",
+      commandSandbox: "workspace",
+    })
+    expect(result.ok).toBe(true)
+    const opts = startSession.mock.calls[0]?.[0] as { mcpServers?: AcpMcpServer[]; additionalReadPaths?: string[] }
+    expect(opts.mcpServers?.map(e => e.name)).toEqual(["room", "browser"])
+    expect(opts.additionalReadPaths).toEqual(["/home/u/.agentproto/chrome-mcp", "/Applications/Google Chrome.app"])
+  })
+
+  it("an explicit `mcpServers: []` still opts out of the self-mount but gets the requested browser", async () => {
+    const { deps } = browserDeps({ daemonMcpUrl: "http://127.0.0.1:18790/mcp" })
+    const result = await spawnAgentSession(deps, {
+      adapter: "hermes",
+      cwd: "/tmp",
+      mcpServers: [],
+      browser: "headless",
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.descriptor.mcpServers?.map(e => e.name)).toEqual(["browser"])
+  })
+
+  it("a caller entry already named `browser` wins; no second server is added", async () => {
+    const { deps } = browserDeps()
+    const mine: AcpMcpServer = { name: "browser", transport: "stdio", ref: "/my/browser-mcp" }
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", mcpServers: [mine], browser: "headless" })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.descriptor.mcpServers).toEqual([mine])
+  })
+
+  it("adds the tool hint to the composed prompt", async () => {
+    const { registry, deps } = browserDeps()
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+    await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", role: "executor", browser: "headless", prompt: "check the page", wait: true })
+    const prompt = String(sendPrompt.mock.calls[0]?.[1] ?? "")
+    expect(prompt).toContain("mcp__browser__")
+    expect(prompt).toContain("take_screenshot")
+    expect(prompt.indexOf("mcp__browser__")).toBeLessThan(prompt.indexOf("check the page"))
+  })
+
+  it("off by default: no resolver call, no mount, no hint", async () => {
+    const { registry, deps, resolveHeadlessBrowser } = browserDeps()
+    const sendPrompt = vi.spyOn(registry, "sendPrompt").mockResolvedValue(undefined)
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", prompt: "hi", wait: true })
+    expect(result.ok).toBe(true)
+    expect(resolveHeadlessBrowser).not.toHaveBeenCalled()
+    if (result.ok) expect(result.descriptor.mcpServers ?? []).not.toContainEqual(browserEntry)
+    expect(String(sendPrompt.mock.calls[0]?.[1] ?? "")).not.toContain("mcp__browser__")
+  })
+
+  it("resolves the mode explicit > role > preset > defaults.spawn.browser", async () => {
+    const headlessRole = { ...EXECUTOR_ROLE, name: "browsing-executor", browser: "headless" as const }
+    // role default ON, explicit false wins
+    let d = browserDeps({ loadRoleRegistry: async () => ({ "browsing-executor": headlessRole }) })
+    await spawnAgentSession(d.deps, { adapter: "mock", cwd: "/tmp", role: "browsing-executor", browser: false })
+    expect(d.resolveHeadlessBrowser).not.toHaveBeenCalled()
+    // role default ON applies
+    d = browserDeps({ loadRoleRegistry: async () => ({ "browsing-executor": headlessRole }) })
+    await spawnAgentSession(d.deps, { adapter: "mock", cwd: "/tmp", role: "browsing-executor" })
+    expect(d.resolveHeadlessBrowser).toHaveBeenCalledTimes(1)
+    // preset ON applies when role has no opinion
+    d = browserDeps()
+    await spawnAgentSession(d.deps, { adapter: "mock", cwd: "/tmp", preset: { id: "p", label: "P", browser: "headless" } })
+    expect(d.resolveHeadlessBrowser).toHaveBeenCalledTimes(1)
+    // config default ON applies last
+    d = browserDeps({ loadDefaultsConfig: async () => ({ spawn: { browser: "headless" } }) })
+    await spawnAgentSession(d.deps, { adapter: "mock", cwd: "/tmp" })
+    expect(d.resolveHeadlessBrowser).toHaveBeenCalledTimes(1)
+  })
+
+  it("rejects an explicit browser on a sandbox spawn, before anything boots", async () => {
+    const { registry, deps, resolveHeadlessBrowser } = browserDeps()
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", sandbox: "e2b", browser: "headless" })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.code).toBe("browser_unsupported")
+    expect(resolveHeadlessBrowser).not.toHaveBeenCalled()
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("fails the spawn loudly when the browser can't be set up", async () => {
+    const { registry, deps } = browserDeps({
+      resolveHeadlessBrowser: async () => {
+        throw new Error("No Chrome found.")
+      },
+    })
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", browser: "headless" })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.code).toBe("browser_unavailable")
+      expect(result.message).toContain("No Chrome found.")
+    }
+    expect(registry.list()).toHaveLength(0)
+  })
+})

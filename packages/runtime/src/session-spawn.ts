@@ -73,6 +73,14 @@ import {
 import { resolvePosture } from "./canonical-posture.js"
 import type { UserPreset } from "./user-presets.js"
 import { getDefaultHarnessPreset } from "./harness-preset-store.js"
+import {
+  HEADLESS_BROWSER_PROMPT_HINT,
+  resolveBrowserMode,
+  resolveHeadlessBrowser as realResolveHeadlessBrowser,
+  trackBrowserSession,
+  type ResolveHeadlessBrowser,
+  type SpawnBrowserMode,
+} from "./browser-mount.js"
 import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from "./role.js"
 import type { DelegationReach, RoleProfile } from "./role.js"
 import { resolveDeferredToolsGatewayOption } from "./deferred-tools.js"
@@ -841,6 +849,10 @@ export interface SpawnAgentSessionDeps {
    *  `loadConfig` when omitted; tests inject a stub to avoid touching
    *  the real file. */
   loadDefaultsConfig?: () => Promise<SpawnDefaultsConfig | undefined>
+  /** Builds the per-session headless-browser mount for `browser:
+   *  "headless"` (see `browser-mount.ts`). Defaults to the real resolver
+   *  (installs chrome-devtools-mcp on first use); tests inject a stub. */
+  resolveHeadlessBrowser?: ResolveHeadlessBrowser
   /** Loads the custom (pack-carried) role registry, merged with the
    *  two built-ins by `resolveRole`/`canSpawn` — see `role.ts`'s
    *  `mergeRoleRegistry`. Defaults to `loadDefaultRoleRegistry()`
@@ -1056,6 +1068,13 @@ export interface SpawnAgentSessionInput {
    *  compose). Omitted entirely ⇒ no override at all — the gateway's own
    *  boot-time `defaults.mcp.deferredTools` default applies unchanged. */
   deferredTools?: boolean
+  /** Give the agent its own isolated headless Chrome: a per-session
+   *  chrome-devtools-mcp stdio server appended to `mcpServers` (named
+   *  `browser`), plus a short prompt hint naming its tools. Wins over the
+   *  resolved role's `browser`, then the user preset's, then config
+   *  `defaults.spawn.browser`; all unset ⇒ off. Explicit `true` with a
+   *  `sandbox` spawn is rejected (no Chrome in the box image yet). */
+  browser?: SpawnBrowserMode
   /** Opt this session into Langfuse tracing (prompt/completion + tool spans +
    *  tokens/cost). Effective opt-in is `trace ?? langfuseTracingDefault ?? false`
    *  — see `SpawnAgentInput.trace` in sessions.ts. */
@@ -1210,6 +1229,8 @@ export type SpawnAgentSessionResult =
         | "access_profile_not_found"
         | "access_profile_ineligible"
         | "harness_preset_profile_unavailable"
+        | "browser_unsupported"
+        | "browser_unavailable"
         | "model_wallet_ineligible"
         | "model_adapter_incompatible"
         | "gateway_base_url_unsupported"
@@ -1262,6 +1283,9 @@ export async function spawnAgentSession(
   // Presets are a lower-precedence layer than an explicit spawn request. Do
   // this once, at the common core, so HTTP, MCP and future clients have the
   // same semantics rather than each expanding a preset slightly differently.
+  // The preset's `browser` sits BELOW the role default (see
+  // `resolveBrowserMode`), so it is kept aside instead of folded into input.
+  const presetBrowser = input.preset?.browser
   if (input.preset) {
     const { preset, ...explicit } = input
     input = {
@@ -2011,6 +2035,58 @@ export async function spawnAgentSession(
       delegationReach,
     )
   }
+  // ── Per-session headless browser (`browser: "headless"`) ──────────
+  // Appended AFTER every `mcpServers === undefined` default above, so asking
+  // for a browser never suppresses the self-mount / report-back channel,
+  // and an explicit `mcpServers: []` opt-out still only opts out of those.
+  // A caller entry already named like the browser mount wins as-is.
+  const browserMode = resolveBrowserMode({
+    explicit: input.browser,
+    role: role.browser,
+    preset: presetBrowser,
+    defaults: configDefaults?.spawn?.browser,
+  })
+  let browserReadPaths: string[] = []
+  let browserPromptHint: string | undefined
+  if (browserMode === "headless") {
+    if (input.sandbox !== undefined) {
+      if (input.browser === "headless") {
+        return {
+          ok: false,
+          code: "browser_unsupported",
+          message:
+            "agent_start: browser \"headless\" is not supported for a `sandbox` spawn yet " +
+            "(the box image ships no Chrome). Drop `browser` or spawn on this host.",
+        }
+      }
+      // A role/preset/config default must not break every sandbox spawn.
+      spawnWarnings.push("agent_start: browser default ignored for a sandbox spawn (no Chrome in the box image).")
+    } else {
+      let mount
+      try {
+        mount = await (deps.resolveHeadlessBrowser ?? realResolveHeadlessBrowser)({
+          sessionId: mintedSessionId,
+          cwd,
+          ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
+        })
+      } catch (err) {
+        return {
+          ok: false,
+          code: "browser_unavailable",
+          message:
+            `agent_start: could not set up the headless browser — ${
+              err instanceof Error ? err.message : String(err)
+            }. Install Google Chrome or set AGENTPROTO_CHROME_PATH, or spawn without \`browser\`.`,
+        }
+      }
+      if (!(mcpServers ?? []).some(e => e.name === mount.entry.name)) {
+        mcpServers = [...(mcpServers ?? []), mount.entry]
+      }
+      browserReadPaths = mount.readPaths
+      browserPromptHint = HEADLESS_BROWSER_PROMPT_HINT
+      trackBrowserSession(mintedSessionId)
+    }
+  }
   const spawnDefaults = resolveSpawnDefaults(configDefaults, input.adapter, {
     skills: input.skills,
     options: input.options,
@@ -2496,6 +2572,9 @@ export async function spawnAgentSession(
   // (startSession opts + env) so the pointer contract is actually readable
   // through the session's own workspace tools.
   const agentsMdReadPaths = additionalReadPathsForAgentsMd(agentsMdResolution, cwd)
+  // Plus the headless browser's install + Chrome bundle, so a
+  // `commandSandbox`-confined adapter tree can still launch them.
+  const additionalReadPaths = [...(agentsMdReadPaths ?? []), ...browserReadPaths]
   // Per-workspace RULES.md injection (WP-R4): resolve the workspace's
   // `RULES.md` (from its state bucket — see `workspace-rules.ts`) and, when
   // present, inline it in full into the composed prompt. Unlike AGENTS.md
@@ -2523,7 +2602,13 @@ export async function spawnAgentSession(
   if (input.prompt) {
     effectivePrompt = [
       ...rulesMdParts,
-      composeRoleContext(role, input.promptAppend, roleRegistry, delegationReach),
+      composeRoleContext(
+        role,
+        [input.promptAppend, browserPromptHint].filter((p): p is string => !!p).join("\n\n") ||
+          undefined,
+        roleRegistry,
+        delegationReach,
+      ),
       ...agentsMdParts,
       parentContextLine,
       input.prompt,
@@ -2790,7 +2875,7 @@ export async function spawnAgentSession(
             ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
             ...(input.permissionHold ? { permissionHold: true } : {}),
             ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
-            ...(agentsMdReadPaths ? { additionalReadPaths: agentsMdReadPaths } : {}),
+            ...(additionalReadPaths.length > 0 ? { additionalReadPaths } : {}),
             onActivity: () => registry.pulseActivity(pendingDesc.id),
           })
           let asyncPrompt = effectivePrompt
@@ -3002,7 +3087,7 @@ export async function spawnAgentSession(
         // AGENTPROTO_ADDITIONAL_READ_PATHS env var (and the confinement
         // extra read paths) from this option itself, so the option is the
         // single authority. See additionalReadPathsForAgentsMd above.
-        ...(agentsMdReadPaths ? { additionalReadPaths: agentsMdReadPaths } : {}),
+        ...(additionalReadPaths.length > 0 ? { additionalReadPaths } : {}),
         onActivity: () => {
           if (liveSessionId) registry.pulseActivity(liveSessionId)
         },
