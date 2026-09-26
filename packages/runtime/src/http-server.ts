@@ -194,6 +194,7 @@ import type {
 } from "./catalog-models.js"
 import { defaultProfileProvisionDeps } from "./auth-profile-tools.js"
 import { readRegisteredSlugs, DEFAULT_BUCKET } from "./workspace-buckets.js"
+import { writeSseHead } from "./sse-headers.js"
 import {
   createAuthProfile,
   deleteAuthProfile,
@@ -1552,11 +1553,7 @@ export async function startHttpServer(
   function handleEvents(req: IncomingMessage, res: ServerResponse): void {
     if (guardBrowserOrigin(req, res)) return
     if (!authorize(req, res)) return
-    res.writeHead(200, {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive",
-    })
+    writeSseHead(res)
     res.write(`: connected\n\n`)
     const off = opts.events.onAny((ev: RuntimeEvent) => {
       res.write(`data: ${JSON.stringify(ev)}\n\n`)
@@ -3715,13 +3712,7 @@ function startAiUiMessageStream(opts: {
   map: (record: AgentprotoRawTranscriptRecord) => UIMessageChunk[]
 }): { finalize: () => void; disconnect: () => void; done: Promise<void> } {
   const { res } = opts
-  res.writeHead(200, {
-    "content-type": "text/event-stream",
-    "cache-control": "no-cache",
-    connection: "keep-alive",
-    "x-vercel-ai-ui-message-stream": "v1",
-    "x-accel-buffering": "no",
-  })
+  writeSseHead(res, { "x-vercel-ai-ui-message-stream": "v1" })
   // Unblocks `writeHead` (Node buffers it until the first write) so a session
   // with nothing new to replay doesn't hang the client — same `: connected`
   // convention `/events/stream` uses.
@@ -6050,11 +6041,7 @@ async function handleSessions(
       throw err
     }
 
-    res.writeHead(200, {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache",
-      connection: "keep-alive",
-    })
+    writeSseHead(res)
     // Node buffers `writeHead` until the first `res.write` — without this,
     // a session with nothing new to replay would leave the client's
     // connection attempt hanging (no bytes at all) until the first live
@@ -6260,11 +6247,7 @@ async function handleSessions(
       json(404, { error: "session_not_found", id: rawIdOrName })
       return true
     }
-    res.writeHead(200, {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache",
-      connection: "keep-alive",
-    })
+    writeSseHead(res)
     // Keep-alive ping every 25s — proxies / browsers eventually
     // close idle SSE connections; the comment line keeps the pipe
     // warm without confusing the EventSource parser (it ignores

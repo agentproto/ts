@@ -109,10 +109,13 @@ export function quickTunnelProvider(): RemoteProvider & TunnelProviderHandle {
         `# don't shadow the inline --url rule. Safe to delete when the`,
         `# tunnel is down.`,
         `no-autoupdate: true`,
-        `loglevel: debug`,
+        // Not `debug`: at debug level cloudflared logs every proxied
+        // request's headers — the gateway bearer (`Authorization`) and
+        // `?token=` query included — into the workspace log file.
+        `loglevel: info`,
         ``,
       ].join("\n")
-      await writeFile(configPath, configBody, "utf8")
+      await writeFile(configPath, configBody, { encoding: "utf8", mode: 0o600 })
 
       // cloudflared's stdout+stderr are redirected to this file rather than
       // a pipe — see cloudflared-spawn.ts for why (stdio back-pressure

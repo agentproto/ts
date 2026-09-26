@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ChildProcess } from "node:child_process"
@@ -57,6 +57,25 @@ describe("spawnCloudflaredUntil", () => {
 
     res.stopTail()
     res.proc.kill("SIGKILL")
+  })
+
+  it("keeps the log file owner-only, even when it already existed", async () => {
+    dir = mkdtempSync(join(tmpdir(), "cfd-spawn-"))
+    const logPath = join(dir, "mode.log")
+    writeFileSync(logPath, "stale\n", { mode: 0o644 })
+    const { argv, binary } = node(`process.stdout.write("READY\\n"); ${stayAlive}`)
+
+    const res = await spawnCloudflaredUntil(argv, {
+      binary,
+      logPath,
+      readyRegex: /READY/,
+      timeoutMs: 5_000,
+      timeoutMessage: "should not time out",
+    })
+    alive.push(res.proc)
+
+    expect(statSync(logPath).mode & 0o777).toBe(0o600)
+    res.stopTail()
   })
 
   it("rejects with the captured output tail on timeout", async () => {
