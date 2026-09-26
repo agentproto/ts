@@ -27,8 +27,9 @@ import {
   setConfigKey,
   CONFIG_FILE_PATH,
 } from "@agentproto/runtime/config"
+import { findConfigKey, validateConfigKeyType } from "@agentproto/runtime/config-schema"
 
-const USAGE = `agentproto config — manage ~/.agentproto/config.json
+const USAGE = `agentproto config: manage ~/.agentproto/config.json
 
 Usage:
   agentproto config show                 dump the full config as JSON
@@ -123,6 +124,26 @@ async function runSet(args: readonly string[]): Promise<number> {
   // "1 2 3" as a string — caller can quote at the shell to control.
   const raw = valueParts.join(" ")
   const parsed = parseValue(raw)
+
+  // Type-only validation. `writable` (secret / lockout) is a policy for the
+  // future MCP/app config_set surface — the CLI is the owner's own escape
+  // hatch and is exempt from it entirely; see `validateConfigKeyType`'s doc.
+  const entry = findConfigKey(key)
+  const validation = validateConfigKeyType(key, parsed)
+  if (!validation.ok) {
+    process.stderr.write(`agentproto config set: ${validation.error}\n`)
+    return 2
+  }
+  if (!entry) {
+    process.stderr.write(
+      `agentproto config set: "${key}" is not a known config key; writing it anyway.\n`,
+    )
+  } else if (entry.secret) {
+    process.stderr.write(
+      `agentproto config set: note: "${key}" is a secret field; consider an auth profile instead of config.json.\n`,
+    )
+  }
+
   const cfg = await loadConfig()
   const next = setConfigKey(cfg, key, parsed)
   await saveConfig(next)
@@ -141,6 +162,13 @@ async function runUnset(args: readonly string[]): Promise<number> {
     )
     return 2
   }
+  // No writability gate here either (see `runSet`'s comment) — `writable`
+  // is a future MCP/app config_set policy, not a CLI one.
+  const entry = findConfigKey(key)
+  if (entry?.secret) {
+    process.stderr.write(`agentproto config unset: note: "${key}" is a secret field.\n`)
+  }
+
   const cfg = await loadConfig()
   if (getConfigKey(cfg, key) === undefined) {
     process.stderr.write(`agentproto config unset: "${key}" not set\n`)
