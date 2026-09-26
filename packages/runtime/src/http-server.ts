@@ -90,6 +90,8 @@ import {
   findWorkspaceByPath,
   getActiveWorkspace,
 } from "./workspaces-config.js"
+import { configGet, configSet, type ConfigToolsDeps } from "./config-tools.js"
+import type { ConfigKeySection } from "./config-schema.js"
 import { discoverMcps } from "./mcp-discovery.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
 import type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
@@ -690,6 +692,10 @@ export interface RuntimeHttpServerOptions {
   ) => OrchestratorScope | null
   conversations: ConversationStore
   events: RuntimeEvents
+  /** Optional — when wired, enables `GET /config` / `PATCH /config`, the
+   *  REST twin of the MCP `config_get`/`config_set` tools
+   *  (`config-tools.ts`). Without it both routes 404. */
+  configTools?: ConfigToolsDeps
   heartbeat: HeartbeatRunner
   /** Optional — when wired, exposes /sessions routes for the CLI
    *  TUI and the guilde-web Active tab to navigate live child
@@ -2649,6 +2655,82 @@ export async function startHttpServer(
           await saveWorkspacesConfig(next)
           res.writeHead(200, { "content-type": "application/json" })
           res.end(JSON.stringify(next))
+          return
+        }
+
+        // REST twin of the MCP `config_get`/`config_set` tools
+        // (config-tools.ts) — `~/.agentproto/config.json` over the
+        // `config-schema.ts` key registry. Read-only GET mirrors
+        // `GET /workspaces` (browser-origin guard, no bearer token
+        // required — nothing here ever returns a raw secret). The
+        // mutating PATCH mirrors `DELETE /workspaces/:slug`'s per-boot
+        // token gate, since it writes the same class of local file.
+        if (path === "/config" && req.method === "GET" && opts.configTools) {
+          if (guardBrowserOrigin(req, res)) return
+          const reqUrl = new URL(req.url ?? "/", "http://localhost")
+          const keysParam = reqUrl.searchParams.get("keys")
+          const sectionParam = reqUrl.searchParams.get("section")
+          try {
+            const result = await configGet(
+              {
+                ...(keysParam ? { keys: keysParam.split(",").map(k => k.trim()).filter(Boolean) } : {}),
+                ...(sectionParam ? { section: sectionParam as ConfigKeySection } : {}),
+              },
+              opts.configTools,
+            )
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify(result))
+          } catch (err) {
+            res.writeHead(500, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "config_get_failed",
+                message: err instanceof Error ? err.message : String(err),
+              })
+            )
+          }
+          return
+        }
+
+        if (path === "/config" && req.method === "PATCH" && opts.configTools) {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          const body = (await readJsonBody(req)) as {
+            key?: unknown
+            value?: unknown
+            unset?: unknown
+            revision?: unknown
+          } | null
+          if (!body || typeof body.key !== "string" || !body.key) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "invalid_input", message: "missing `key`" }))
+            return
+          }
+          const result = await configSet(
+            {
+              key: body.key,
+              value: body.value,
+              ...(typeof body.unset === "boolean" ? { unset: body.unset } : {}),
+              ...(typeof body.revision === "string" ? { revision: body.revision } : {}),
+            },
+            opts.configTools,
+          )
+          if (!result.ok) {
+            const status =
+              result.error === "not_writable"
+                ? 403
+                : result.error === "stale_revision"
+                  ? 409
+                  : 400
+            res.writeHead(status, { "content-type": "application/json" })
+            res.end(JSON.stringify(result))
+            return
+          }
+          res.writeHead(200, { "content-type": "application/json" })
+          res.end(JSON.stringify(result))
           return
         }
 

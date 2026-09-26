@@ -53,12 +53,26 @@ export interface RemoteLogEvent {
   line: string
 }
 
+/**
+ * Fired once per successful `config_set` / `PATCH /config` write to
+ * `~/.agentproto/config.json` (config-tools.ts). Never carries a secret
+ * key's value — only the dotted path(s) touched and whether the change
+ * takes effect immediately or needs a restart.
+ */
+export interface ConfigChangedEvent {
+  type: "config:changed"
+  at: string
+  keys: string[]
+  applied: "hot" | "restart-required"
+}
+
 export type RuntimeEvent =
   | BootEvent
   | HeartbeatFiredEvent
   | HeartbeatErrorEvent
   | ConvTurnEvent
   | RemoteLogEvent
+  | ConfigChangedEvent
 
 export interface RuntimeEvents {
   on<E extends RuntimeEvent["type"]>(

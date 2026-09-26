@@ -45,6 +45,7 @@ import {
   type BrowserAdapterLister,
 } from "./browser-tools.js"
 import { registerAuthProfileTools } from "./auth-profile-tools.js"
+import { registerConfigTools, type ConfigToolsDeps } from "./config-tools.js"
 import { registerHarnessPresetTools } from "./harness-preset-tools.js"
 import { registerCredentialDiscoveryTools } from "./credential-discovery.js"
 import { registerWebSearchTools } from "./web-search-tools.js"
@@ -1323,6 +1324,24 @@ export async function createGateway(
   // unchanged from before this existed.
   const daemonConfig = await loadConfig()
   const configDefaults = daemonConfig.defaults
+  // `config_get`/`config_set` (PR-2) need the config the daemon actually
+  // BOOTED with, captured exactly once here — never re-read at call time —
+  // so a `restart`-class key's `pendingRestart` compares the live file
+  // against what's really running, not against itself. `bootDaemonKnobs`
+  // carries the four idle-reap/crash-detect/restart-sweep/turn-stall
+  // numbers already resolved (env > config > default) CLI-side before this
+  // function ever ran — the same values `daemon_health` reports below —
+  // rather than re-implementing that resolution here.
+  const configToolsDeps: ConfigToolsDeps = {
+    bootConfig: daemonConfig,
+    events,
+    bootDaemonKnobs: {
+      "daemon.idleReapAfterMs": idleReapAfterMs,
+      "daemon.crashDetectIntervalMs": crashDetectIntervalMs,
+      "daemon.restartSweepIntervalMs": restartSweepIntervalMs,
+      "daemon.turnStallAfterMs": turnStallAfterMs,
+    },
+  }
   // Per-session transcript root from config (`sessions.eventsDir`). Applied
   // BEFORE the registry is built so the writers AND every no-`baseDir`
   // reader (http-server routes, exports, tool-call/usage logs) resolve off
@@ -2113,6 +2132,12 @@ export async function createGateway(
     // `~/.agentproto/auth-profiles.json` + keychain slots directly, same as
     // the profile readers already mounted in session-spawn.ts.
     registerAuthProfileTools(server)
+    // `config_get`/`config_set` (PR-2) — the one MCP surface for
+    // `~/.agentproto/config.json`, over the `config-schema.ts` key
+    // registry. Root /mcp only: deliberately NOT added to
+    // `DEFAULT_ORCHESTRATOR_TOOLS` (orchestrator-gateway.ts), so a scoped
+    // child orchestrator can never reconfigure the daemon it runs on.
+    registerConfigTools(server, configToolsDeps)
     // Persisted harness→profile bindings (harness_preset_list/create/delete/
     // set_default). Same no-host-wiring stance as the auth-profile tools —
     // the store reads/writes the fixed `~/.agentproto/harness-presets.json`.
@@ -2446,6 +2471,9 @@ export async function createGateway(
     verifyOrchestratorScope: scopeTokens.verify,
     conversations,
     events,
+    // REST twin of `config_get`/`config_set` (PR-2) — `GET /config` /
+    // `PATCH /config`, same deps and same underlying handlers.
+    configTools: configToolsDeps,
     heartbeat,
     sessions,
     brains: workspaceBrains,
