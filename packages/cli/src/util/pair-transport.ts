@@ -87,10 +87,10 @@ export interface AcceptResult {
  * offer, a bad daemon signature, or a fingerprint mismatch.
  */
 export async function acceptOffer(offerUrl: string, name?: string): Promise<AcceptResult> {
-  const offer = parseOfferUrl(offerUrl, { now: Date.now() })
+  const offer = await parseOfferUrl(offerUrl, { now: Date.now() })
   const raw = await dialRendezvous(rvUrl(offer.rendezvousUrl, "client", offer.token))
 
-  const started = startClientHandshake({
+  const started = await startClientHandshake({
     daemonX25519Pub: offer.daemonX25519Pub,
     daemonEd25519Pub: offer.daemonEd25519Pub,
     offerToken: offer.token,
@@ -100,8 +100,8 @@ export async function acceptOffer(offerUrl: string, name?: string): Promise<Acce
   const wrapped = await clientHandshakeOverSink(
     raw,
     encodePairingMessage(started.hello),
-    replyBytes => {
-      session = started.complete(decodePairingReply(replyBytes))
+    async replyBytes => {
+      session = await started.complete(decodePairingReply(replyBytes))
       return session
     },
     { timeoutMs: HANDSHAKE_TIMEOUT_MS },
@@ -126,7 +126,7 @@ export async function acceptOffer(offerUrl: string, name?: string): Promise<Acce
     daemonX25519Pub: offer.daemonX25519Pub,
     daemonEd25519Pub: offer.daemonEd25519Pub,
     rendezvousUrl: offer.rendezvousUrl,
-    pairRoot: derivePairRoot(derived),
+    pairRoot: await derivePairRoot(derived),
     createdAt: nowIso,
     lastSeen: nowIso,
   }
@@ -169,7 +169,7 @@ export async function openPairChannel(
   const attempts = [epoch, epoch - 1]
   let lastErr: unknown
   for (const e of attempts) {
-    const token = deriveEpochRoutingToken(pairing.pairRoot, e)
+    const token = await deriveEpochRoutingToken(pairing.pairRoot, e)
     let raw: FrameSink
     try {
       raw = await dialRendezvous(rvUrl(pairing.rendezvousUrl, "client", token), dialTimeoutMs)
@@ -178,7 +178,7 @@ export async function openPairChannel(
       continue
     }
     try {
-      const started = startClientHandshake({
+      const started = await startClientHandshake({
         daemonX25519Pub: pairing.daemonX25519Pub,
         daemonEd25519Pub: pairing.daemonEd25519Pub,
         offerToken: token,

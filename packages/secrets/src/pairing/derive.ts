@@ -23,11 +23,24 @@
  * the HKDF output — is identical. Both keys are secret ECDH-derived material the
  * rendezvous never sees, so the root (and every epoch token) stays secret.
  *
+ * Both derivations are async (WebCrypto HKDF is) and take an optional trailing
+ * `crypto` provider.
+ *
  * This uses the shipped P1 `PairingSession` verbatim (no change to the key
  * schedule) — it only reads the two direction keys and the transcript hash.
  */
 
-import { hkdfSync } from "node:crypto"
+import {
+  base64Decode,
+  base64Encode,
+  base64UrlEncode,
+  compareBytes,
+  concatBytes,
+  u64be,
+  utf8Encode,
+} from "../crypto/bytes.js"
+import type { CryptoProvider } from "../crypto/types.js"
+import { webCryptoProvider } from "../crypto/webcrypto.js"
 import type { PairingSession } from "./handshake.js"
 
 const PAIR_ROOT_INFO = "agentproto/pair-root"
@@ -44,28 +57,23 @@ const PAIR_ROOT_LEN = 32
 
 const MS_PER_DAY = 86_400_000
 
-function toBuf(u8: Uint8Array): Buffer {
-  return Buffer.isBuffer(u8) ? u8 : Buffer.from(u8)
-}
-
-function b64url(bytes: Buffer): string {
-  return bytes.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
-}
-
 /**
  * Derive the long-term pair root from a completed handshake session. Returns
  * standard base64 (persisted in `pairings.json` / `credentials.json`). Both
  * peers, despite role-swapped direction keys, produce the identical root.
  */
-export function derivePairRoot(session: PairingSession): string {
-  const k1 = toBuf(session.sendKey)
-  const k2 = toBuf(session.recvKey)
+export async function derivePairRoot(
+  session: Pick<PairingSession, "sendKey" | "recvKey" | "transcriptHash">,
+  crypto: CryptoProvider = webCryptoProvider,
+): Promise<string> {
+  const k1 = session.sendKey
+  const k2 = session.recvKey
   // Order-independent: sort the two keys so client and daemon mix them the same
   // way regardless of which is "send" for them.
-  const [lo, hi] = Buffer.compare(k1, k2) <= 0 ? [k1, k2] : [k2, k1]
-  const ikm = Buffer.concat([lo, hi])
-  const okm = hkdfSync("sha256", ikm, toBuf(session.transcriptHash), PAIR_ROOT_INFO, PAIR_ROOT_LEN)
-  return Buffer.from(okm).toString("base64")
+  const [lo, hi] = compareBytes(k1, k2) <= 0 ? [k1, k2] : [k2, k1]
+  const ikm = concatBytes(lo, hi)
+  const okm = await crypto.hkdfSha256(ikm, session.transcriptHash, utf8Encode(PAIR_ROOT_INFO), PAIR_ROOT_LEN)
+  return base64Encode(okm)
 }
 
 /** The current pairing epoch — the UTC day number. Injectable `now` (ms) for
@@ -80,15 +88,17 @@ export function currentEpoch(now: number = Date.now()): number {
  * straight into a `?t=` upgrade param. Deterministic — both sides derive the
  * same token for the same `(pairRoot, epoch)`.
  */
-export function deriveEpochRoutingToken(pairRoot: string, epoch: number): string {
-  const ikm = Buffer.from(pairRoot, "base64")
+export async function deriveEpochRoutingToken(
+  pairRoot: string,
+  epoch: number,
+  crypto: CryptoProvider = webCryptoProvider,
+): Promise<string> {
+  const ikm = base64Decode(pairRoot)
   // 8-byte big-endian epoch appended to the info prefix, so a bit-flip in the
   // epoch can never collide two epochs' tokens.
-  const epochBytes = Buffer.alloc(8)
-  epochBytes.writeBigUInt64BE(BigInt(epoch))
-  const info = Buffer.concat([Buffer.from(RV_ROUTE_INFO_PREFIX, "utf8"), epochBytes])
-  const okm = hkdfSync("sha256", ikm, Buffer.from(RV_ROUTE_SALT, "utf8"), info, ROUTE_TOKEN_LEN)
-  return b64url(Buffer.from(okm))
+  const info = concatBytes(utf8Encode(RV_ROUTE_INFO_PREFIX), u64be(epoch))
+  const okm = await crypto.hkdfSha256(ikm, utf8Encode(RV_ROUTE_SALT), info, ROUTE_TOKEN_LEN)
+  return base64UrlEncode(okm)
 }
 
 /**
@@ -98,13 +108,14 @@ export function deriveEpochRoutingToken(pairRoot: string, epoch: number): string
  * client whose clock sits on either side of midnight still finds it; the client
  * likewise tries both when reconnecting.
  */
-export function epochRoutingTokens(
+export async function epochRoutingTokens(
   pairRoot: string,
   now: number = Date.now(),
-): { epoch: number; token: string }[] {
+  crypto: CryptoProvider = webCryptoProvider,
+): Promise<{ epoch: number; token: string }[]> {
   const epoch = currentEpoch(now)
   return [
-    { epoch, token: deriveEpochRoutingToken(pairRoot, epoch) },
-    { epoch: epoch - 1, token: deriveEpochRoutingToken(pairRoot, epoch - 1) },
+    { epoch, token: await deriveEpochRoutingToken(pairRoot, epoch, crypto) },
+    { epoch: epoch - 1, token: await deriveEpochRoutingToken(pairRoot, epoch - 1, crypto) },
   ]
 }

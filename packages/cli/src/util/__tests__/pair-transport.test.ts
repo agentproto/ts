@@ -78,7 +78,7 @@ describe("CLI pairing transport (accept → reconnect → bridge)", () => {
     tmp = await mkdtemp(join(tmpdir(), "agentproto-cli-pair-"))
     prevHome = process.env["AGENTPROTO_HOME"]
     process.env["AGENTPROTO_HOME"] = tmp
-    identity = generateIdentity()
+    identity = await generateIdentity()
 
     // A real upstream that echoes the requested path, so the whole path — the
     // test's real `fetch` → loopback bridge → E2E channel → daemon tunnel →

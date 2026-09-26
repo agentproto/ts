@@ -64,7 +64,7 @@ export async function provisionSealed(
   input: ProvisionSealedInput
 ): Promise<{ secretId?: string; keyId: string }> {
   const key = await input.target.fetchSealKey()
-  const sealedValue = seal(input.credential, key.publicKey)
+  const sealedValue = await seal(input.credential, key.publicKey)
   const result = await input.target.installSealed({
     provider: input.provider,
     methodId: input.methodId,

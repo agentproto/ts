@@ -1160,12 +1160,12 @@ async function runOneTunnel(
   let sink: FrameSink = rawSink
   let e2eActive = false
   if (opts.e2e && opts.token) {
-    const started = startTunnelHandshake(opts.token)
+    const started = await startTunnelHandshake(opts.token)
     const wrapped = await connectSinkE2E(
       rawSink,
       encodeTunnelMessage(started.offer),
-      reply => {
-        const session = started.complete(decodeTunnelAccept(reply))
+      async reply => {
+        const session = await started.complete(decodeTunnelAccept(reply))
         return { sendKey: session.sendKey, recvKey: session.recvKey }
       },
     )

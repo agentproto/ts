@@ -1,8 +1,17 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { randomBytes } from "node:crypto"
-import { wrapE2E, E2eError, type E2eKeys, type E2eErrorCode } from "../tunnel/e2e.js"
+import {
+  wrapE2E as wrapE2ECore,
+  E2eError,
+  type E2eKeys,
+  type E2eErrorCode,
+  type WrapE2EOptions,
+} from "../tunnel/e2e.js"
+import { nodeAead } from "../tunnel/aead-node.js"
+import { webCryptoAead, type E2eAead } from "../tunnel/aead.js"
+import type { FrameSink } from "../tunnel/transport.js"
 import type { TunnelFrame } from "../tunnel/frames.js"
-import { connect, flush, passthrough, type Middleware } from "./e2e-harness.js"
+import { connect, passthrough, type Middleware } from "./e2e-harness.js"
 
 /** A pair of role-crossed key sets, exactly as the handshake would yield. */
 function sessionKeys(): { client: E2eKeys; daemon: E2eKeys } {
@@ -26,7 +35,15 @@ const collect = (sink: { onFrame: (h: (f: TunnelFrame) => void) => void }) => {
   return got
 }
 
-describe("wrapE2E — AEAD FrameSink channel", () => {
+// Crypto is async now (WebCrypto is), so every assertion waits for the state it
+// checks instead of a fixed number of ticks. Each case runs over both AEADs.
+describe.each([
+  ["node:crypto", nodeAead],
+  ["WebCrypto", webCryptoAead],
+] as [string, E2eAead][])("wrapE2E — AEAD FrameSink channel (%s)", (_name, aead) => {
+  const wrapE2E = (inner: FrameSink, keys: E2eKeys, opts: WrapE2EOptions = {}) =>
+    wrapE2ECore(inner, keys, { aead, ...opts })
+
   it("round-trips frames in both directions, transparently", async () => {
     const { client, daemon } = sessionKeys()
     const { a, b } = connect()
@@ -38,7 +55,10 @@ describe("wrapE2E — AEAD FrameSink channel", () => {
     c.send({ t: "ping", nonce: "n1" })
     c.send({ t: "http_request", reqId: "r1", method: "GET", path: "/x" })
     d.send({ t: "pong", nonce: "n1" })
-    await flush()
+    await vi.waitFor(() => {
+      expect(atD).toHaveLength(2)
+      expect(atC).toHaveLength(1)
+    })
 
     expect(atD).toEqual([
       { t: "ping", nonce: "n1" },
@@ -62,7 +82,7 @@ describe("wrapE2E — AEAD FrameSink channel", () => {
     collect(d)
 
     c.send({ t: "spawn", execId: "e1", command: "claude", args: ["--secret-flag"] })
-    await flush()
+    await vi.waitFor(() => expect(wire.length).toBeGreaterThan(0))
 
     expect(wire.length).toBeGreaterThan(0)
     for (const f of wire) expect(f.t).toBe("e2e")
@@ -93,7 +113,7 @@ describe("wrapE2E — AEAD FrameSink channel", () => {
     const atD = collect(d)
 
     c.send({ t: "ping", nonce: "n1" })
-    await flush()
+    await vi.waitFor(() => expect(d.isOpen).toBe(false))
 
     expect(atD).toEqual([])
     expect(err.errors.map(e => e.code)).toContain("auth")
@@ -113,7 +133,7 @@ describe("wrapE2E — AEAD FrameSink channel", () => {
     const atD = collect(d)
 
     c.send({ t: "ping", nonce: "n1" })
-    await flush()
+    await vi.waitFor(() => expect(d.isOpen).toBe(false))
 
     expect(atD).toEqual([])
     // n was pushed ahead of the expected counter → a gap.
@@ -139,7 +159,7 @@ describe("wrapE2E — AEAD FrameSink channel", () => {
 
     c.send({ t: "ping", nonce: "n0" })
     c.send({ t: "ping", nonce: "n1" })
-    await flush()
+    await vi.waitFor(() => expect(d.isOpen).toBe(false))
 
     expect(atD).toEqual([]) // n=1 arrives while n=0 is expected → refused
     expect(err.errors.map(e => e.code)).toContain("reorder")
@@ -168,7 +188,7 @@ describe("wrapE2E — AEAD FrameSink channel", () => {
 
     c.send({ t: "ping", nonce: "n0" })
     c.send({ t: "ping", nonce: "n1" })
-    await flush()
+    await vi.waitFor(() => expect(d.isOpen).toBe(false))
 
     expect(atD).toEqual([])
     expect(err.errors.map(e => e.code)).toContain("reorder")
@@ -192,7 +212,7 @@ describe("wrapE2E — AEAD FrameSink channel", () => {
     const atD = collect(d)
 
     c.send({ t: "ping", nonce: "n0" })
-    await flush()
+    await vi.waitFor(() => expect(d.isOpen).toBe(false))
 
     // The first copy is delivered; the replay is refused and closes the channel.
     expect(atD).toEqual([{ t: "ping", nonce: "n0" }])
@@ -209,7 +229,7 @@ describe("wrapE2E — AEAD FrameSink channel", () => {
 
     // `a` is an unwrapped peer speaking plaintext — a downgrade attempt.
     a.send({ t: "ping", nonce: "plain" })
-    await flush()
+    await vi.waitFor(() => expect(d.isOpen).toBe(false))
 
     expect(atD).toEqual([])
     expect(err.errors.map(e => e.code)).toContain("not_e2e")
@@ -225,7 +245,7 @@ describe("wrapE2E — AEAD FrameSink channel", () => {
 
     const N = 50
     for (let i = 0; i < N; i++) c.send({ t: "stdout", execId: "e", data: String(i) })
-    await flush()
+    await vi.waitFor(() => expect(atD).toHaveLength(N))
 
     expect(atD).toHaveLength(N)
     expect(atD.map(f => (f.t === "stdout" ? f.data : ""))).toEqual(
@@ -251,7 +271,7 @@ describe("wrapE2E — AEAD FrameSink channel", () => {
     c.send({ t: "ping", nonce: "0" })
     c.send({ t: "ping", nonce: "1" })
     c.send({ t: "ping", nonce: "2" }) // exceeds the limit — must not go out
-    await flush()
+    await vi.waitFor(() => expect(c.isOpen).toBe(false))
 
     expect(wire).toHaveLength(2)
     expect(err.errors.map(e => e.code)).toContain("overflow")

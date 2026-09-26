@@ -14,78 +14,34 @@
  * shape `@agentproto/secrets/seal` already uses, so the identity file travels
  * as plain JSON and the seal box can consume the X25519 public half verbatim.
  *
- * Everything here is `node:crypto` — X25519, Ed25519, SHA-256 — so the package
- * keeps its zero-native-dependency footprint. The private halves never leave
+ * The crypto (X25519, Ed25519, SHA-256) lives once in ./core.ts against a
+ * `CryptoProvider`; this Node entry defaults to `node:crypto` and adds the
+ * file-backed store. Everything is async (WebCrypto is) and takes an optional
+ * trailing `crypto` to override the provider. The private halves never leave
  * the identity file (mode 0600) and are never logged.
  */
 
-import {
-  generateKeyPairSync,
-  createPublicKey,
-  createPrivateKey,
-  createHash,
-  sign as edSign,
-  verify as edVerify,
-} from "node:crypto"
 import { mkdir, readFile, writeFile, chmod, rename } from "node:fs/promises"
 import { dirname, join, basename } from "node:path"
+import { nodeCryptoProvider } from "../crypto/node.js"
+import type { CryptoProvider } from "../crypto/types.js"
+import * as core from "./core.js"
+import { IDENTITY_VERSION, IdentityError, type DaemonIdentity } from "./core.js"
 
-/** Current identity-file schema version. */
-export const IDENTITY_VERSION = 1 as const
-
-/** Raised for every identity load/generate/sign/verify failure. The message
- *  is safe to surface — it never contains private key material. */
-export class IdentityError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = "IdentityError"
-  }
-}
-
-/** One keypair, both halves base64-DER. Public = SPKI, private = PKCS8. */
-export interface IdentityKeyPair {
-  /** base64 DER (SPKI) public key — publishable. */
-  pub: string
-  /** base64 DER (PKCS8) private key — secret. */
-  priv: string
-}
-
-/**
- * A daemon's persistent identity. Serialized verbatim to
- * `~/.agentproto/identity.json` (0600). The `x25519` public half is the key a
- * client seals its hello to; the `ed25519` public half is the key a client
- * verifies the daemon's transcript signature against. Both public halves are
- * carried in the offer URL.
- */
-export interface DaemonIdentity {
-  v: typeof IDENTITY_VERSION
-  /** Encryption / key-agreement keypair. */
-  x25519: IdentityKeyPair
-  /** Signing / authenticity keypair. */
-  ed25519: IdentityKeyPair
-  /** ISO-8601 creation timestamp. */
-  createdAt: string
-}
+export {
+  IDENTITY_VERSION,
+  IdentityError,
+  type IdentityKeyPair,
+  type DaemonIdentity,
+} from "./core.js"
+export type { CryptoProvider } from "../crypto/types.js"
 
 /**
  * Mint a fresh daemon identity: one X25519 keypair (encryption) and one
  * Ed25519 keypair (signing). Called lazily on first `pair offer`.
  */
-export function generateIdentity(): DaemonIdentity {
-  const x = generateKeyPairSync("x25519")
-  const ed = generateKeyPairSync("ed25519")
-  return {
-    v: IDENTITY_VERSION,
-    x25519: {
-      pub: x.publicKey.export({ type: "spki", format: "der" }).toString("base64"),
-      priv: x.privateKey.export({ type: "pkcs8", format: "der" }).toString("base64"),
-    },
-    ed25519: {
-      pub: ed.publicKey.export({ type: "spki", format: "der" }).toString("base64"),
-      priv: ed.privateKey.export({ type: "pkcs8", format: "der" }).toString("base64"),
-    },
-    createdAt: new Date().toISOString(),
-  }
+export function generateIdentity(crypto: CryptoProvider = nodeCryptoProvider): Promise<DaemonIdentity> {
+  return core.generateIdentity(crypto)
 }
 
 /**
@@ -94,11 +50,8 @@ export function generateIdentity(): DaemonIdentity {
  * hex of `sha256(pub DER)`). Displayed everywhere a human confirms identity
  * (offer QR, `pair accept`, `pair ls`). Not a secret.
  */
-export function identityFingerprint(x25519Pub: string): string {
-  return createHash("sha256")
-    .update(Buffer.from(x25519Pub, "base64"))
-    .digest("hex")
-    .slice(0, 16)
+export function identityFingerprint(x25519Pub: string, crypto: CryptoProvider = nodeCryptoProvider): Promise<string> {
+  return core.identityFingerprint(x25519Pub, crypto)
 }
 
 /** True for a filesystem "no such file" error, without an unchecked cast. */
@@ -163,7 +116,7 @@ export async function loadOrCreateIdentity(
     // ENOENT → first run; fall through to lazy creation below.
   }
 
-  const identity = generateIdentity()
+  const identity = await generateIdentity()
   await persistIdentity(filePath, identity)
   return identity
 }
@@ -190,58 +143,29 @@ async function persistIdentity(
 }
 
 /**
- * Sign a handshake transcript with the daemon's Ed25519 private key. Returns a
- * base64 signature. `transcript` is the exact bytes both sides agree on
+ * Sign a handshake transcript with the daemon's Ed25519 private key. Resolves
+ * to a base64 signature. `transcript` is the exact bytes both sides agree on
  * (`sha256(e_pub ‖ ct₀ ‖ d_e_pub)`); signing it — not the raw messages — is
  * what binds the daemon's authenticity to the whole exchange.
  */
 export function signTranscript(
   ed25519Priv: string,
-  transcript: Uint8Array
-): string {
-  let priv
-  try {
-    priv = createPrivateKey({
-      key: Buffer.from(ed25519Priv, "base64"),
-      format: "der",
-      type: "pkcs8",
-    })
-  } catch {
-    throw new IdentityError("invalid ed25519 private key")
-  }
-  // Ed25519 takes a null digest algorithm — it hashes internally.
-  return edSign(null, Buffer.from(transcript), priv).toString("base64")
+  transcript: Uint8Array,
+  crypto: CryptoProvider = nodeCryptoProvider,
+): Promise<string> {
+  return core.signTranscript(ed25519Priv, transcript, crypto)
 }
 
 /**
- * Verify a transcript signature against a daemon's Ed25519 public key. Returns
- * a boolean — never throws on a bad signature (only on a structurally invalid
- * key), so callers branch on the result rather than a control-flow exception.
+ * Verify a transcript signature against a daemon's Ed25519 public key. Resolves
+ * to a boolean — never rejects on a bad signature (only on a structurally
+ * invalid key), so callers branch on the result rather than an exception.
  */
 export function verifyTranscript(
   ed25519Pub: string,
   transcript: Uint8Array,
-  signature: string
-): boolean {
-  let pub
-  try {
-    pub = createPublicKey({
-      key: Buffer.from(ed25519Pub, "base64"),
-      format: "der",
-      type: "spki",
-    })
-  } catch {
-    throw new IdentityError("invalid ed25519 public key")
-  }
-  let sig: Buffer
-  try {
-    sig = Buffer.from(signature, "base64")
-  } catch {
-    return false
-  }
-  try {
-    return edVerify(null, Buffer.from(transcript), pub, sig)
-  } catch {
-    return false
-  }
+  signature: string,
+  crypto: CryptoProvider = nodeCryptoProvider,
+): Promise<boolean> {
+  return core.verifyTranscript(ed25519Pub, transcript, signature, crypto)
 }

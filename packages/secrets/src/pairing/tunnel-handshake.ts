@@ -37,7 +37,9 @@
  *     HKDF too, even if the MACs were somehow bypassed the derived AEAD keys
  *     still disagree under a mismatched token → the channel fails closed.
  *
- * Like ./handshake.ts, this module is deliberately **transport-agnostic**: it
+ * Like ./handshake.ts, the primitives come from a `CryptoProvider` (node:crypto
+ * or WebCrypto) and every crypto entry point is async with an optional trailing
+ * `crypto` argument. Like ./handshake.ts, this module is also deliberately **transport-agnostic**: it
  * produces and consumes plain byte messages (`encode*`/`decode*`). The code that
  * pumps those bytes over a `FrameSink` and wraps the channel lives in
  * `@agentproto/acp/tunnel`, which never depends on this package — it receives
@@ -45,15 +47,15 @@
  */
 
 import {
-  createHash,
-  createHmac,
-  diffieHellman,
-  hkdfSync,
-  generateKeyPairSync,
-  createPublicKey,
-  timingSafeEqual,
-  type KeyObject,
-} from "node:crypto"
+  base64Decode,
+  base64Encode,
+  concatBytes,
+  timingSafeEqualBytes,
+  utf8Decode,
+  utf8Encode,
+} from "../crypto/bytes.js"
+import type { CryptoProvider } from "../crypto/types.js"
+import { webCryptoProvider } from "../crypto/webcrypto.js"
 
 /** Wire version. Bumped if the message shape or key schedule changes; both
  *  sides refuse a version they don't recognise. */
@@ -131,75 +133,69 @@ export interface TunnelE2ESession {
  *  Binding it here is what authenticates the two ends — a peer without the
  *  token derives a different salt, so both the MAC key and the session keys
  *  disagree and the channel fails closed. */
-function tokenSalt(token: string): Buffer {
-  return createHash("sha256").update(Buffer.from(token, "utf8")).digest()
+function tokenSalt(crypto: CryptoProvider, token: string): Promise<Uint8Array> {
+  return crypto.sha256(utf8Encode(token))
 }
 
 /** The token-only MAC key. Derived solely from the token (no ephemeral), so
  *  each side can compute it independently before/without the peer's ephemeral. */
-function deriveAuthKey(token: string): Buffer {
-  return Buffer.from(
-    hkdfSync("sha256", Buffer.from(token, "utf8"), tokenSalt(token), AUTH_INFO, AUTH_KEY_LEN),
-  )
+function deriveAuthKey(crypto: CryptoProvider, token: string, salt: Uint8Array): Promise<Uint8Array> {
+  return crypto.hkdfSha256(utf8Encode(token), salt, utf8Encode(AUTH_INFO), AUTH_KEY_LEN)
 }
 
 /** HMAC-SHA256 over `label ‖ <raw parts>` under the token-only auth key. The
  *  parts are the raw DER bytes of the ephemeral public keys, so both sides MAC
  *  identical bytes regardless of any base64 re-encoding. */
-function computeMac(authKey: Buffer, label: string, ...parts: Buffer[]): Buffer {
-  const h = createHmac("sha256", authKey)
-  h.update(Buffer.from(label, "utf8"))
-  for (const p of parts) h.update(p)
-  return h.digest()
+function computeMac(
+  crypto: CryptoProvider,
+  authKey: Uint8Array,
+  label: string,
+  ...parts: Uint8Array[]
+): Promise<Uint8Array> {
+  return crypto.hmacSha256(authKey, concatBytes(utf8Encode(label), ...parts))
 }
 
 /** Constant-time compare of a received MAC (base64) against the expected MAC.
- *  Length-guards first so `timingSafeEqual` never throws on a truncated MAC. */
-function macMatches(expected: Buffer, receivedB64: string): boolean {
-  let received: Buffer
-  try {
-    received = Buffer.from(receivedB64, "base64")
-  } catch {
-    return false
-  }
-  if (received.length !== expected.length) return false
-  return timingSafeEqual(received, expected)
+ *  Length-guards first (inside `timingSafeEqualBytes`) so a truncated MAC is
+ *  simply a mismatch. */
+function macMatches(expected: Uint8Array, receivedB64: string): boolean {
+  return timingSafeEqualBytes(base64Decode(receivedB64), expected)
 }
 
-function x25519PublicKey(b64Der: string): KeyObject {
+async function x25519PublicKey(crypto: CryptoProvider, b64Der: string): Promise<Uint8Array> {
+  const der = base64Decode(b64Der)
   try {
-    return createPublicKey({ key: Buffer.from(b64Der, "base64"), format: "der", type: "spki" })
+    await crypto.x25519ValidatePublicKey(der)
   } catch {
     throw new TunnelHandshakeError("invalid_key", "peer ephemeral X25519 public key is invalid")
   }
+  return der
 }
 
 /** The transcript hash: `sha256(SESSION_INFO ‖ ePub_d_raw ‖ ePub_h_raw)`. */
-function transcriptHash(ePubDRaw: Buffer, ePubHRaw: Buffer): Buffer {
-  return createHash("sha256")
-    .update(Buffer.from(SESSION_INFO, "utf8"))
-    .update(ePubDRaw)
-    .update(ePubHRaw)
-    .digest()
+function transcriptHash(crypto: CryptoProvider, ePubDRaw: Uint8Array, ePubHRaw: Uint8Array): Promise<Uint8Array> {
+  return crypto.sha256(concatBytes(utf8Encode(SESSION_INFO), ePubDRaw, ePubHRaw))
 }
 
 /** Derive the two direction keys from the ephemeral ECDH output, salted by the
  *  token. The key split (d2h then h2d) is identical on both sides. */
-function deriveDirectionKeys(
-  ecdh: Buffer,
-  salt: Buffer,
-): { kd2h: Buffer; kh2d: Buffer } {
-  const okm = Buffer.from(hkdfSync("sha256", ecdh, salt, SESSION_INFO, KEY_LEN * 2))
+async function deriveDirectionKeys(
+  crypto: CryptoProvider,
+  ecdh: Uint8Array,
+  salt: Uint8Array,
+): Promise<{ kd2h: Uint8Array; kh2d: Uint8Array }> {
+  const okm = await crypto.hkdfSha256(ecdh, salt, utf8Encode(SESSION_INFO), KEY_LEN * 2)
   return { kd2h: okm.subarray(0, KEY_LEN), kh2d: okm.subarray(KEY_LEN, KEY_LEN * 2) }
 }
 
-/** Generate an ephemeral X25519 keypair and return the private KeyObject plus
- *  its public half as base64 SPKI DER (the wire form) and raw DER bytes (the
+/** Generate an ephemeral X25519 keypair: the private PKCS#8, plus the public
+ *  half as base64 SPKI DER (the wire form) and raw DER bytes (the
  *  MAC/transcript form). */
-function generateEphemeral(): { priv: KeyObject; pubB64: string; pubRaw: Buffer } {
-  const kp = generateKeyPairSync("x25519")
-  const pubRaw = kp.publicKey.export({ type: "spki", format: "der" })
-  return { priv: kp.privateKey, pubB64: pubRaw.toString("base64"), pubRaw }
+async function generateEphemeral(
+  crypto: CryptoProvider,
+): Promise<{ priv: Uint8Array; pubB64: string; pubRaw: Uint8Array }> {
+  const kp = await crypto.x25519GenerateKeyPair()
+  return { priv: kp.privateKey, pubB64: base64Encode(kp.publicKey), pubRaw: kp.publicKey }
 }
 
 // ─── daemon (initiator) side ────────────────────────────────────
@@ -213,36 +209,39 @@ export interface StartedTunnelHandshake {
    * on a bad MAC (`bad_auth` — the host holds a different token), a malformed
    * accept, or an invalid key — never returns partial state.
    */
-  complete(accept: TunnelAccept): TunnelE2ESession
+  complete(accept: TunnelAccept): Promise<TunnelE2ESession>
 }
 
 /**
  * Begin the daemon (initiator) side. Generates the daemon ephemeral keypair,
- * MACs it under the token, and returns the `offer` to send plus a `complete` to
- * run once the host replies with its `accept`.
+ * MACs it under the token, and resolves to the `offer` to send plus a
+ * `complete` to run once the host replies with its `accept`. `crypto` selects
+ * the primitive implementation (captured for `complete` too).
  */
-export function startTunnelHandshake(token: string): StartedTunnelHandshake {
-  const authKey = deriveAuthKey(token)
-  const salt = tokenSalt(token)
-  const eph = generateEphemeral()
+export async function startTunnelHandshake(
+  token: string,
+  crypto: CryptoProvider = webCryptoProvider,
+): Promise<StartedTunnelHandshake> {
+  const salt = await tokenSalt(crypto, token)
+  const authKey = await deriveAuthKey(crypto, token, salt)
+  const eph = await generateEphemeral(crypto)
 
   const offer: TunnelOffer = {
     v: TUNNEL_E2E_VERSION,
     ePub: eph.pubB64,
-    mac: computeMac(authKey, OFFER_MAC_LABEL, eph.pubRaw).toString("base64"),
+    mac: base64Encode(await computeMac(crypto, authKey, OFFER_MAC_LABEL, eph.pubRaw)),
   }
 
-  const complete = (accept: TunnelAccept): TunnelE2ESession => {
+  const complete = async (accept: TunnelAccept): Promise<TunnelE2ESession> => {
     if (accept.v !== TUNNEL_E2E_VERSION) {
       throw new TunnelHandshakeError(
         "unsupported_version",
         `unsupported accept version ${String(accept.v)}`,
       )
     }
-    const hostPub = x25519PublicKey(accept.ePub)
-    const hostPubRaw = Buffer.from(accept.ePub, "base64")
+    const hostPubRaw = await x25519PublicKey(crypto, accept.ePub)
 
-    const expected = computeMac(authKey, ACCEPT_MAC_LABEL, eph.pubRaw, hostPubRaw)
+    const expected = await computeMac(crypto, authKey, ACCEPT_MAC_LABEL, eph.pubRaw, hostPubRaw)
     if (!macMatches(expected, accept.mac)) {
       throw new TunnelHandshakeError(
         "bad_auth",
@@ -250,13 +249,13 @@ export function startTunnelHandshake(token: string): StartedTunnelHandshake {
       )
     }
 
-    const ecdh = diffieHellman({ privateKey: eph.priv, publicKey: hostPub })
-    const { kd2h, kh2d } = deriveDirectionKeys(ecdh, salt)
+    const ecdh = await crypto.x25519(eph.priv, hostPubRaw)
+    const { kd2h, kh2d } = await deriveDirectionKeys(crypto, ecdh, salt)
     return {
       // Daemon SENDS daemon→host (kd2h) and RECEIVES host→daemon (kh2d).
       sendKey: kd2h,
       recvKey: kh2d,
-      transcriptHash: transcriptHash(eph.pubRaw, hostPubRaw),
+      transcriptHash: await transcriptHash(crypto, eph.pubRaw, hostPubRaw),
     }
   }
 
@@ -274,27 +273,27 @@ export interface TunnelHandshakeResult {
 /**
  * Respond to a daemon offer (host side). Verifies the offer MAC under the shared
  * token, generates the host ephemeral, MACs both ephemerals, and derives the
- * session. Throws `TunnelHandshakeError` on a bad MAC (`bad_auth`), malformed
- * offer, or invalid key BEFORE producing any accept — so a mismatched token
- * yields no session and no reply, failing closed at handshake time.
+ * session. Rejects with `TunnelHandshakeError` on a bad MAC (`bad_auth`),
+ * malformed offer, or invalid key BEFORE producing any accept — so a mismatched
+ * token yields no session and no reply, failing closed at handshake time.
  */
-export function respondToTunnelHandshake(
+export async function respondToTunnelHandshake(
   offer: TunnelOffer,
   token: string,
-): TunnelHandshakeResult {
+  crypto: CryptoProvider = webCryptoProvider,
+): Promise<TunnelHandshakeResult> {
   if (offer.v !== TUNNEL_E2E_VERSION) {
     throw new TunnelHandshakeError(
       "unsupported_version",
       `unsupported offer version ${String(offer.v)}`,
     )
   }
-  const authKey = deriveAuthKey(token)
-  const salt = tokenSalt(token)
+  const salt = await tokenSalt(crypto, token)
+  const authKey = await deriveAuthKey(crypto, token, salt)
 
-  const daemonPub = x25519PublicKey(offer.ePub)
-  const daemonPubRaw = Buffer.from(offer.ePub, "base64")
+  const daemonPubRaw = await x25519PublicKey(crypto, offer.ePub)
 
-  const expected = computeMac(authKey, OFFER_MAC_LABEL, daemonPubRaw)
+  const expected = await computeMac(crypto, authKey, OFFER_MAC_LABEL, daemonPubRaw)
   if (!macMatches(expected, offer.mac)) {
     throw new TunnelHandshakeError(
       "bad_auth",
@@ -302,22 +301,22 @@ export function respondToTunnelHandshake(
     )
   }
 
-  const eph = generateEphemeral()
+  const eph = await generateEphemeral(crypto)
   const accept: TunnelAccept = {
     v: TUNNEL_E2E_VERSION,
     ePub: eph.pubB64,
-    mac: computeMac(authKey, ACCEPT_MAC_LABEL, daemonPubRaw, eph.pubRaw).toString("base64"),
+    mac: base64Encode(await computeMac(crypto, authKey, ACCEPT_MAC_LABEL, daemonPubRaw, eph.pubRaw)),
   }
 
-  const ecdh = diffieHellman({ privateKey: eph.priv, publicKey: daemonPub })
-  const { kd2h, kh2d } = deriveDirectionKeys(ecdh, salt)
+  const ecdh = await crypto.x25519(eph.priv, daemonPubRaw)
+  const { kd2h, kh2d } = await deriveDirectionKeys(crypto, ecdh, salt)
   return {
     accept,
     session: {
       // Host SENDS host→daemon (kh2d) and RECEIVES daemon→host (kd2h).
       sendKey: kh2d,
       recvKey: kd2h,
-      transcriptHash: transcriptHash(daemonPubRaw, eph.pubRaw),
+      transcriptHash: await transcriptHash(crypto, daemonPubRaw, eph.pubRaw),
     },
   }
 }
@@ -330,12 +329,12 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 
 /** Serialize a handshake message to bytes for transport. */
 export function encodeTunnelMessage(message: TunnelOffer | TunnelAccept): Uint8Array {
-  return Buffer.from(JSON.stringify(message), "utf8")
+  return utf8Encode(JSON.stringify(message))
 }
 
 function parseJson(bytes: Uint8Array, code: TunnelHandshakeErrorCode): unknown {
   try {
-    return JSON.parse(Buffer.from(bytes).toString("utf8"))
+    return JSON.parse(utf8Decode(bytes))
   } catch {
     throw new TunnelHandshakeError(code, "message was not valid JSON (truncated or corrupt)")
   }
