@@ -9,8 +9,11 @@
  * mechanics (`defineApp`, self-contained panel HTML, `app_tool_call` gated
  * by a `ui.tools` allowlist) — see `ui.ts`.
  *
- * READ-ONLY v1: `agents: []` (UI only, no durable sessions to launch), and
- * every `ui.tools` entry is a read tool — no write flow ships in this PR.
+ * `agents: []`: UI only, no durable sessions to launch. Edit flows live
+ * behind explicit confirm/save actions in `ui.ts`; every mutating tool is
+ * feature-detected the same way the read tools already are, so this app
+ * works against a daemon that predates a given write tool (it just shows a
+ * muted "needs a newer agentproto daemon" note for that one control).
  */
 
 import { defineApp, type AppHandle } from "@agentproto/app-kit"
@@ -21,7 +24,7 @@ export const configApp: AppHandle = defineApp({
   name: "agentproto config",
   version: "0.1.0",
   description:
-    "Daemon-wide configuration, read-only: wallets (auth profiles + spend), harnesses, " +
+    "Daemon-wide configuration: wallets (auth profiles + spend), harnesses, " +
     "the model catalog, defaults & messaging knobs, remote & pairing, and a raw config dump.",
   agents: [],
   ui: {

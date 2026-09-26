@@ -175,6 +175,7 @@
     "@agentproto/tooling": "workspace:*",
     "@mastra/core": "1.66.0",
     "@types/node": "^25.9.5",
+    "jsdom": "^29.1.1",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vite": "^7.3.6",
