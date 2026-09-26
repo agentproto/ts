@@ -27,9 +27,9 @@ import {
   setConfigKey,
   CONFIG_FILE_PATH,
 } from "@agentproto/runtime/config"
-import { findConfigKey, validateConfigKeyValue } from "@agentproto/runtime/config-schema"
+import { findConfigKey, validateConfigKeyType } from "@agentproto/runtime/config-schema"
 
-const USAGE = `agentproto config — manage ~/.agentproto/config.json
+const USAGE = `agentproto config: manage ~/.agentproto/config.json
 
 Usage:
   agentproto config show                 dump the full config as JSON
@@ -125,15 +125,22 @@ async function runSet(args: readonly string[]): Promise<number> {
   const raw = valueParts.join(" ")
   const parsed = parseValue(raw)
 
-  const known = findConfigKey(key) !== undefined
-  const validation = validateConfigKeyValue(key, parsed)
+  // Type-only validation. `writable` (secret / lockout) is a policy for the
+  // future MCP/app config_set surface — the CLI is the owner's own escape
+  // hatch and is exempt from it entirely; see `validateConfigKeyType`'s doc.
+  const entry = findConfigKey(key)
+  const validation = validateConfigKeyType(key, parsed)
   if (!validation.ok) {
     process.stderr.write(`agentproto config set: ${validation.error}\n`)
     return 2
   }
-  if (!known) {
+  if (!entry) {
     process.stderr.write(
-      `agentproto config set: "${key}" is not a known config key — writing it anyway.\n`,
+      `agentproto config set: "${key}" is not a known config key; writing it anyway.\n`,
+    )
+  } else if (entry.secret) {
+    process.stderr.write(
+      `agentproto config set: note: "${key}" is a secret field; consider an auth profile instead of config.json.\n`,
     )
   }
 
@@ -155,14 +162,11 @@ async function runUnset(args: readonly string[]): Promise<number> {
     )
     return 2
   }
+  // No writability gate here either (see `runSet`'s comment) — `writable`
+  // is a future MCP/app config_set policy, not a CLI one.
   const entry = findConfigKey(key)
-  if (entry && !entry.writable) {
-    process.stderr.write(
-      `agentproto config unset: "${key}" is not writable (${
-        entry.secret ? "secret — set it via the CLI/auth profiles" : "lockout — edit ~/.agentproto/config.json by hand"
-      }).\n`,
-    )
-    return 2
+  if (entry?.secret) {
+    process.stderr.write(`agentproto config unset: note: "${key}" is a secret field.\n`)
   }
 
   const cfg = await loadConfig()

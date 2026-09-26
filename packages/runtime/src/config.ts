@@ -26,6 +26,7 @@
  */
 
 import { promises as fs } from "node:fs"
+import { createHash } from "node:crypto"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
@@ -569,6 +570,22 @@ function sanitizeAcpAgents(
 }
 
 /**
+ * Tracks, per config file path, the content hash of the last invalid read we
+ * already warned about — `loadConfig` is called on every spawn and by
+ * several per-call resolvers (`worktree-isolation.ts`, `spawn-attach.ts`,
+ * `spawn-dedupe.ts`, `session-presence.ts`, …), so without this a single bad
+ * hand-edit would re-warn on every single call. Warn once per (path,
+ * content) pair: the same invalid content warns exactly once per process;
+ * editing the file (even back to a previously-seen invalid state) warns
+ * again, since the hash is the only memory kept, not a boolean per path.
+ */
+const warnedInvalidConfigHashes = new Map<string, string>()
+
+function hashConfigContent(raw: string): string {
+  return createHash("sha256").update(raw, "utf8").digest("hex")
+}
+
+/**
  * Load config.json. Returns an empty object (NOT null) when the file
  * is missing, malformed, or unreadable — callers can `cfg.daemon?.port`
  * safely without null-guards. Errors during a malformed-read are
@@ -592,11 +609,15 @@ export async function loadConfig(path?: string): Promise<AgentprotoConfig> {
       }
       const validation = validateConfig(cfg)
       if (!validation.ok) {
-        const shown = validation.issues.slice(0, 5)
-        const more = validation.issues.length > shown.length ? ` (+${validation.issues.length - shown.length} more)` : ""
-        console.warn(
-          `[runtime/config] ${target}: ${validation.issues.length} schema issue(s) — ${shown.join("; ")}${more}`,
-        )
+        const contentHash = hashConfigContent(raw)
+        if (warnedInvalidConfigHashes.get(target) !== contentHash) {
+          warnedInvalidConfigHashes.set(target, contentHash)
+          const shown = validation.issues.slice(0, 5)
+          const more = validation.issues.length > shown.length ? ` (+${validation.issues.length - shown.length} more)` : ""
+          console.warn(
+            `[runtime/config] ${target}: ${validation.issues.length} schema issue(s): ${shown.join("; ")}${more}`,
+          )
+        }
       }
       return cfg
     }

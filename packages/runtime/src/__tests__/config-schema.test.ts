@@ -10,8 +10,10 @@ import {
   findUnclassifiedConfigPaths,
   redactConfigValue,
   validateConfig,
+  validateConfigKeyType,
   validateConfigKeyValue,
   CONFIG_KEYS,
+  CONFIG_KEYS_NOT_EXPOSED,
 } from "../config-schema.js"
 
 describe("agentprotoConfigSchema", () => {
@@ -172,14 +174,61 @@ describe("secret and lockout classification", () => {
     }
   })
 
-  it("marks acpAgents.*.env and terminalPresets.*.env secret (for redaction) but writable", () => {
-    expect(findConfigKey("acpAgents.x.env")).toMatchObject({ secret: true, writable: true })
-    expect(findConfigKey("terminalPresets.x.env")).toMatchObject({ secret: true, writable: true })
+  it("marks acpAgents.*.env and terminalPresets.*.env secret (for redaction) AND not writable", () => {
+    // Decision: no secret writes from the app in v1 — these hold env vars
+    // that may carry credentials, so they're locked out like any other
+    // secret field, not just flagged for redaction.
+    expect(findConfigKey("acpAgents.x.env")).toMatchObject({ secret: true, writable: false })
+    expect(findConfigKey("terminalPresets.x.env")).toMatchObject({ secret: true, writable: false })
+  })
+
+  it("marks every acpAgents.*.* and terminalPresets.*.* entry not writable", () => {
+    // These name a binary/argv/env that runs on the host, the same
+    // reasoning that keeps adapter_install off the app surface. The write
+    // path in v1 is `agentproto acp add/rm` or a hand edit, never a future
+    // config_set — and the CLI is exempt from `writable` entirely, so this
+    // only locks out the future MCP/app surface.
+    const acpAndPresetEntries = CONFIG_KEYS.filter(
+      e => e.path.startsWith("acpAgents.*.") || e.path.startsWith("terminalPresets.*."),
+    )
+    expect(acpAndPresetEntries.length).toBeGreaterThan(0)
+    for (const entry of acpAndPresetEntries) {
+      expect(entry.writable, `${entry.path} should not be writable`).toBe(false)
+    }
   })
 })
 
-describe("validateConfigKeyValue", () => {
+describe("validateConfigKeyType — type only, no writability check", () => {
   it("accepts a valid value for a known key", () => {
+    expect(validateConfigKeyType("daemon.idleReapAfterMs", 5000)).toEqual({ ok: true })
+  })
+
+  it("rejects a badly-typed value for a known key", () => {
+    const result = validateConfigKeyType("daemon.idleReapAfterMs", "soon")
+    expect(result.ok).toBe(false)
+    expect(result.error).toBeTruthy()
+  })
+
+  it("accepts a well-typed value for a non-writable (lockout) key — the CLI's use case", () => {
+    expect(validateConfigKeyType("daemon.port", 4000)).toEqual({ ok: true })
+  })
+
+  it("accepts a well-typed value for a non-writable (secret) key — the CLI's use case", () => {
+    expect(validateConfigKeyType("daemon.authToken", "sk-whatever")).toEqual({ ok: true })
+  })
+
+  it("still rejects a badly-typed value for a non-writable key", () => {
+    const result = validateConfigKeyType("daemon.port", "not-a-number")
+    expect(result.ok).toBe(false)
+  })
+
+  it("accepts any value for an unregistered key", () => {
+    expect(validateConfigKeyType("someBrandNewKey", { anything: true })).toEqual({ ok: true })
+  })
+})
+
+describe("validateConfigKeyValue — type AND writability (the future MCP/app surface)", () => {
+  it("accepts a valid value for a known writable key", () => {
     expect(validateConfigKeyValue("daemon.idleReapAfterMs", 5000)).toEqual({ ok: true })
   })
 
@@ -233,6 +282,21 @@ describe("drift: every schema leaf is classified", () => {
   it("every CONFIG_KEYS entry's schema is a real zod schema", () => {
     for (const entry of CONFIG_KEYS) {
       expect(typeof entry.schema.safeParse).toBe("function")
+    }
+  })
+})
+
+describe("user-facing metadata never uses an em dash", () => {
+  it("CONFIG_KEYS label/help strings have no em dash", () => {
+    for (const entry of CONFIG_KEYS) {
+      expect(entry.label, `${entry.path} label`).not.toContain("—")
+      expect(entry.help, `${entry.path} help`).not.toContain("—")
+    }
+  })
+
+  it("CONFIG_KEYS_NOT_EXPOSED reason strings have no em dash", () => {
+    for (const entry of CONFIG_KEYS_NOT_EXPOSED) {
+      expect(entry.reason, `${entry.path} reason`).not.toContain("—")
     }
   })
 })

@@ -407,7 +407,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: false,
     section: "daemon",
     label: "Port",
-    help: "Local HTTP port. Changing this from a UI served BY the daemon can cut the UI off — hand-edit only.",
+    help: "Local HTTP port. Changing this from a UI served BY the daemon can cut the UI off; hand-edit only.",
     default: 18790,
   },
   {
@@ -889,7 +889,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: false,
     section: "harnesses",
     label: "Adapter subscription token",
-    help: "Subscription bearer token. Wallet secrets belong in auth profiles — this field is not writable through config_set.",
+    help: "Subscription bearer token. Wallet secrets belong in auth profiles; this field is not writable through config_set.",
   },
   {
     path: "defaults.adapters.*.auth.source",
@@ -908,7 +908,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: false,
     section: "harnesses",
     label: "Adapter API key",
-    help: "Explicit API key for \"api-key\" mode. Wallet secrets belong in auth profiles — this field is not writable through config_set.",
+    help: "Explicit API key for \"api-key\" mode. Wallet secrets belong in auth profiles; this field is not writable through config_set.",
   },
   {
     path: "defaults.adapters.*.auth.provider",
@@ -921,162 +921,173 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
   },
 
   // ── harnesses: user ACP agents ──
+  //
+  // Every leaf here is `writable: false`: these fields name a BINARY, argv,
+  // and environment that the daemon executes on the host, the same reasoning
+  // that keeps `adapter_install` off the app surface (PLAN.md Q6). The write
+  // path in v1 is the CLI (`agentproto acp add/rm`, which is exempt from this
+  // flag entirely) or a hand edit, never a future config_set.
   {
     path: "acpAgents.*.name",
     schema: str,
     apply: "hot",
-    writable: true,
+    writable: false,
     section: "harnesses",
     label: "ACP agent display name",
-    help: "Display name. Defaults to the slug when omitted.",
+    help: "Display name. Defaults to the slug when omitted. Set via `agentproto acp add`.",
   },
   {
     path: "acpAgents.*.description",
     schema: str,
     apply: "hot",
-    writable: true,
+    writable: false,
     section: "harnesses",
     label: "ACP agent description",
-    help: "One-line description surfaced in `acp ls`.",
+    help: "One-line description surfaced in `acp ls`. Set via `agentproto acp add`.",
   },
   {
     path: "acpAgents.*.bin",
     schema: str,
     apply: "hot",
-    writable: true,
+    writable: false,
     section: "harnesses",
     label: "ACP agent executable",
-    help: "Executable to spawn.",
+    help: "Executable the daemon spawns on the host. Set via `agentproto acp add`; not writable through config_set.",
   },
   {
     path: "acpAgents.*.bin_args",
     schema: strArray,
     apply: "hot",
-    writable: true,
+    writable: false,
     section: "harnesses",
     label: "ACP agent argv",
-    help: "Extra argv appended after `bin`.",
+    help: "Extra argv appended after `bin`. Set via `agentproto acp add`; not writable through config_set.",
   },
   {
     path: "acpAgents.*.env",
     schema: z.record(str, str),
     apply: "hot",
     secret: true,
-    writable: true,
+    writable: false,
     section: "harnesses",
     label: "ACP agent environment",
-    help: "Extra environment variables for the spawned process — values may hold secrets, so a reader redacts them.",
+    help: "Extra environment variables for the spawned process; values may hold secrets, so a reader redacts them. Set via `agentproto acp add`; not writable through config_set.",
   },
   {
     path: "acpAgents.*.cwd_flag",
     schema: str,
     apply: "hot",
-    writable: true,
+    writable: false,
     section: "harnesses",
     label: "ACP agent cwd flag",
-    help: "Flag the CLI uses to receive the working directory, if it needs one passed explicitly.",
+    help: "Flag the CLI uses to receive the working directory, if it needs one passed explicitly. Set via `agentproto acp add`.",
   },
   {
     path: "acpAgents.*.resumable",
     schema: bool,
     apply: "hot",
-    writable: true,
+    writable: false,
     section: "harnesses",
     label: "ACP agent resumable",
-    help: "Advertise resumable + native-resume continuation.",
+    help: "Advertise resumable + native-resume continuation. Set via `agentproto acp add`.",
   },
   {
     path: "acpAgents.*.models.default",
     schema: str,
     apply: "hot",
-    writable: true,
+    writable: false,
     section: "harnesses",
     label: "ACP agent default model",
-    help: "Known default model id (informational + validation hint).",
+    help: "Known default model id (informational + validation hint). Set via `agentproto acp add`.",
   },
   {
     path: "acpAgents.*.models.allowed",
     schema: strArray,
     apply: "hot",
-    writable: true,
+    writable: false,
     section: "harnesses",
     label: "ACP agent allowed models",
-    help: "Known allowed model ids (informational + validation hint).",
+    help: "Known allowed model ids (informational + validation hint). Set via `agentproto acp add`.",
   },
   {
     path: "acpAgents.*.provider",
     schema: str,
     apply: "hot",
-    writable: true,
+    writable: false,
     section: "harnesses",
     label: "ACP agent billing provider",
-    help: "Billing endpoint this CLI's own auth bills, if a single known one applies.",
+    help: "Billing endpoint this CLI's own auth bills, if a single known one applies. Set via `agentproto acp add`.",
   },
   {
     path: "acpAgents.*.install_hint",
     schema: str,
     apply: "hot",
-    writable: true,
+    writable: false,
     section: "harnesses",
     label: "ACP agent install hint",
-    help: "Shown when `bin` is missing from PATH.",
+    help: "Shown when `bin` is missing from PATH. Set via `agentproto acp add`.",
   },
 
   // ── advanced: terminal/TUI presets ──
+  //
+  // Same reasoning as the ACP agents above: `writable: false` on every leaf,
+  // since these name a command, argv, and environment run on the host. The
+  // write path in v1 is `agentproto config set` (exempt from this flag) or a
+  // hand edit, never a future config_set.
   {
     path: "terminalPresets.*.argv",
     schema: strArray,
     apply: "hot",
-    writable: true,
+    writable: false,
     section: "advanced",
     label: "Terminal preset argv",
-    help: "Command + args to spawn.",
+    help: "Command + args to spawn. Not writable through config_set; set via `agentproto config set` or a hand edit.",
   },
   {
     path: "terminalPresets.*.env",
     schema: z.record(str, str),
     apply: "hot",
     secret: true,
-    writable: true,
+    writable: false,
     section: "advanced",
     label: "Terminal preset environment",
-    help: "Extra environment variables layered on the daemon's inherited env — values may hold secrets, so a reader redacts them.",
+    help: "Extra environment variables layered on the daemon's inherited env; values may hold secrets, so a reader redacts them. Not writable through config_set.",
   },
   {
     path: "terminalPresets.*.cwd",
     schema: str,
     apply: "hot",
-    writable: true,
+    writable: false,
     section: "advanced",
     label: "Terminal preset cwd",
-    help: "Working directory for the PTY session.",
+    help: "Working directory for the PTY session. Not writable through config_set.",
   },
   {
     path: "terminalPresets.*.workspace",
     schema: str,
     apply: "hot",
-    writable: true,
+    writable: false,
     section: "advanced",
     label: "Terminal preset workspace",
-    help: "Workspace slug used for cwd fallback when `cwd` is omitted.",
+    help: "Workspace slug used for cwd fallback when `cwd` is omitted. Not writable through config_set.",
   },
   {
     path: "terminalPresets.*.name",
     schema: str,
     apply: "hot",
-    writable: true,
+    writable: false,
     section: "advanced",
     label: "Terminal preset session name",
-    help: "Stable session name passed to the registry.",
+    help: "Stable session name passed to the registry. Not writable through config_set.",
   },
   {
     path: "terminalPresets.*.label",
     schema: str,
     apply: "hot",
-    writable: true,
+    writable: false,
     section: "advanced",
     label: "Terminal preset label",
-    help: "Human-readable label surfaced in session listings.",
+    help: "Human-readable label surfaced in session listings. Not writable through config_set.",
   },
 
   // ── daemon-adjacent (no dedicated UI section yet — features toggles) ──
@@ -1087,7 +1098,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: true,
     section: "daemon",
     label: "PTY feature hint",
-    help: "Informational hint that PTY is desired — the daemon still detects node-pty's presence at runtime.",
+    help: "Informational hint that PTY is desired; the daemon still detects node-pty's presence at runtime.",
   },
   {
     path: "features.llmEndpoint",
@@ -1112,7 +1123,7 @@ export const CONFIG_KEYS_NOT_EXPOSED: readonly ConfigKeyNotExposedEntry[] = [
   {
     path: "version",
     reason:
-      "internal schema-version stamp — saveConfig() always overwrites it with CONFIG_VERSION on every write, never a user knob.",
+      "internal schema-version stamp; saveConfig() always overwrites it with CONFIG_VERSION on every write, never a user knob.",
   },
 ]
 
@@ -1224,20 +1235,16 @@ export interface ConfigKeyValueValidationResult {
 }
 
 /**
- * Validate a single value against the registry entry for `path`. An
- * unregistered path is accepted (`ok: true`) — CLI `config set` still
- * allows an unknown key, with its own warning; this only enforces
- * writability + type for a KNOWN key.
+ * Validate a single value's TYPE against the registry entry's schema for
+ * `path` — no writability check. An unregistered path is accepted
+ * (`ok: true`); the CLI (`agentproto config set`, the owner's own
+ * escape hatch) uses this, not {@link validateConfigKeyValue}, because
+ * `writable` is a policy for the future MCP/app surface, not for the local
+ * CLI.
  */
-export function validateConfigKeyValue(path: string, value: unknown): ConfigKeyValueValidationResult {
+export function validateConfigKeyType(path: string, value: unknown): ConfigKeyValueValidationResult {
   const entry = findConfigKey(path)
   if (!entry) return { ok: true }
-  if (!entry.writable) {
-    return {
-      ok: false,
-      error: `"${path}" is not writable (${entry.secret ? "secret — set it via the CLI/auth profiles" : "lockout — edit ~/.agentproto/config.json by hand"}).`,
-    }
-  }
   const result = entry.schema.safeParse(value)
   if (!result.success) {
     return {
@@ -1246,6 +1253,25 @@ export function validateConfigKeyValue(path: string, value: unknown): ConfigKeyV
     }
   }
   return { ok: true }
+}
+
+/**
+ * Validate a single value against the registry entry for `path`: type AND
+ * writability. For the future MCP/app `config_set` surface, which must
+ * refuse secret and lockout keys outright (`writable: false`) — the local
+ * CLI is exempt from this and uses {@link validateConfigKeyType} instead.
+ * An unregistered path is accepted (`ok: true`).
+ */
+export function validateConfigKeyValue(path: string, value: unknown): ConfigKeyValueValidationResult {
+  const entry = findConfigKey(path)
+  if (!entry) return { ok: true }
+  if (!entry.writable) {
+    return {
+      ok: false,
+      error: `"${path}" is not writable (${entry.secret ? "secret; set it via the CLI/auth profiles" : "lockout; edit ~/.agentproto/config.json by hand"}).`,
+    }
+  }
+  return validateConfigKeyType(path, value)
 }
 
 /**
