@@ -47,6 +47,8 @@ export interface AcpMcpServer {
   ref?: string
   headers?: Record<string, string>
   credentialRef?: string
+  args?: string[]
+  env?: Record<string, string>
 }
 
 /** Mirrors @agentproto/runtime SessionAwaitingQuestion. */

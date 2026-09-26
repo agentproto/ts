@@ -46,7 +46,7 @@ interface HeldPermission {
 }
 
 /**
- * Map our internal `AcpMcpServer` (`{ name, transport, ref, headers, credentialRef }`)
+ * Map our internal `AcpMcpServer` (`{ name, transport, ref, headers, credentialRef, args, env }`)
  * onto the `@agentclientprotocol/sdk` wire shape expected by
  * `session/new.mcpServers` (and `session/load.mcpServers`).
  *
@@ -54,7 +54,7 @@ interface HeldPermission {
  * differently from our compact internal form:
  *   - http → `{ type: "http", name, url, headers: [{ name, value }, …] }`
  *   - sse  → `{ type: "sse",  name, url, headers: [{ name, value }, …] }`
- *   - stdio → `{ name, command, args: [], env: [] }` (untagged variant)
+ *   - stdio → `{ name, command, args, env: [{ name, value }, …] }` (untagged variant)
  *
  * Without this mapping the raw `{ transport, ref }` entry reaches the
  * agent verbatim and `session/new` rejects with `Invalid params` — the
@@ -86,19 +86,25 @@ function toAcpMcpServer(server: unknown): unknown {
 
   switch (transport) {
     case "http":
-      return { type: "http", name, url: ref ?? "", headers: toAcpHeaders(headers) }
+      return { type: "http", name, url: ref ?? "", headers: toAcpNameValues(headers) }
     case "sse":
-      return { type: "sse", name, url: ref ?? "", headers: toAcpHeaders(headers) }
+      return { type: "sse", name, url: ref ?? "", headers: toAcpNameValues(headers) }
     case "stdio":
-      return { name, command: ref ?? "", args: [], env: [] }
+      return { name, command: ref ?? "", args: toAcpArgs(entry.args), env: toAcpNameValues(entry.env) }
     default:
       return entry
   }
 }
 
-function toAcpHeaders(headers: unknown): Array<{ name: string; value: string }> {
-  if (!headers || typeof headers !== "object") return []
-  return Object.entries(headers).map(([name, value]) => ({
+function toAcpArgs(args: unknown): string[] {
+  if (!Array.isArray(args)) return []
+  return args.map(a => (typeof a === "string" ? a : String(a)))
+}
+
+/** `Record<string,string>` → ACP's `[{ name, value }]` (http headers, stdio env). */
+function toAcpNameValues(record: unknown): Array<{ name: string; value: string }> {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return []
+  return Object.entries(record).map(([name, value]) => ({
     name,
     value: typeof value === "string" ? value : String(value),
   }))

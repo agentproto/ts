@@ -108,7 +108,9 @@
             "properties": {
               "name":      { "type": "string" },
               "transport": { "enum": ["stdio", "http", "sse"] },
-              "ref":       { "type": "string" }
+              "ref":       { "type": "string" },
+              "args":      { "type": "array", "items": { "type": "string" }, "description": "stdio only: argv passed to the `ref` command." },
+              "env":       { "type": "object", "additionalProperties": { "type": "string" }, "description": "stdio only: extra environment for the launched server." }
             }
           }
         }
