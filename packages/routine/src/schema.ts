@@ -40,7 +40,10 @@ const targetAgentSchema = z
         model: z.string().min(1).describe("Optional model identifier forwarded to the adapter.").optional(),
         cwd: z.string().min(1).describe("Working directory for the spawned session.").optional(),
       })
-      .strict(),
+      // Any other `agent_start` field (access, role, worktree, …) passes
+      // through: the runtime validates the whole object against agent_start's
+      // own input schema when lowering, so this package doesn't mirror it.
+      .passthrough(),
   })
   .strict()
 

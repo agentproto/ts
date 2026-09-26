@@ -122,6 +122,52 @@ describe("routineTargetToToolCall", () => {
     expect(call.inputs).not.toHaveProperty("origin")
   })
 
+  it("target.agent forwards every agent_start field, not just adapter/prompt/model/cwd", () => {
+    const call = routineTargetToToolCall(
+      {
+        agent: {
+          adapter: "claude-code",
+          prompt: "supervise",
+          access: { profileRef: "claude-subs-agentik" },
+          role: "supervisor",
+          worktree: { slug: "nightly" },
+          keepAlive: "true", // MCP-style stringified bool, coerced by the shared schema
+          wait: true, // meaningless for a detached fire: dropped
+        },
+      },
+      "nightly",
+    )
+    expect(call).toEqual({
+      tool: "agent_start",
+      inputs: {
+        adapter: "claude-code",
+        prompt: "supervise",
+        access: { profileRef: "claude-subs-agentik" },
+        role: "supervisor",
+        worktree: { slug: "nightly" },
+        keepAlive: true,
+        origin: "routine:nightly",
+      },
+    })
+  })
+
+  it("target.agent keeps its own origin over the routine stamp", () => {
+    const call = routineTargetToToolCall(
+      { agent: { adapter: "claude-code", prompt: "x", origin: "ops" } },
+      "demo-gc",
+    )
+    expect(call.inputs.origin).toBe("ops")
+  })
+
+  it("target.agent rejects a field agent_start's schema rejects", () => {
+    expect(() =>
+      routineTargetToToolCall(
+        { agent: { adapter: "claude-code", prompt: "x", worktree: { slug: "Not Kebab" } } },
+        "bad",
+      ),
+    ).toThrow(/routine 'bad' target.agent: invalid agent_start fields: worktree/)
+  })
+
   it("target.tool ignores routineId — inputs pass through verbatim, no origin injected", () => {
     const call = routineTargetToToolCall({ tool: "worktree_gc", inputs: { apply: true } }, "demo-gc")
     expect(call).toEqual({ tool: "worktree_gc", inputs: { apply: true } })

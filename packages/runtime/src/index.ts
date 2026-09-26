@@ -1545,8 +1545,9 @@ export async function createGateway(
   // Cron scheduler — singleton per daemon, persisted to
   // ~/.agentproto/cron-jobs.json. Jobs survive daemon restarts;
   // skipped fires during downtime are NOT backfilled (documented behaviour).
-  // Declared after `sessions` so it can spawn agent sessions via the registry.
-  // Agent jobs need `resolveAgentAdapter`; command jobs work without it.
+  // Agent jobs fire as `agent_start` calls through `dispatchTool`;
+  // `resolveAgentAdapter` is only needed to restart a dead `prompt-session`
+  // target. Command jobs need neither.
   const cronScheduler = createCronScheduler({
     sessionEvents,
     registry: sessions,
