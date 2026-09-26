@@ -113,7 +113,9 @@ describe("config_get", () => {
     expect(row.secret.set).toBe(true)
     expect(row.secret.fingerprint).toBeTruthy()
     expect(row.secret.last4).toBe("ssss")
-    expect(row.value).toEqual({ set: true })
+    // `value`/`effective` go through the same deep redaction as `secret` —
+    // a direct scalar secret leaf gets the full identity, not just `{set}`.
+    expect(row.value).toEqual({ set: true, fingerprint: row.secret.fingerprint, last4: "ssss" })
     await client.close()
   })
 
@@ -180,6 +182,70 @@ describe("config_get", () => {
     const res = parse(await client.callTool({ name: "config_get", arguments: { section: "remote" } }))
     expect(res.keys.every((k: { path: string }) => k.path.startsWith("tunnel.") || k.path.startsWith("pairing."))).toBe(true)
     expect(res.keys.length).toBeGreaterThan(0)
+    await client.close()
+  })
+
+  it("deep-redacts a secret nested under a non-secret container key (profiles, adapter auth)", async () => {
+    // `profiles` is `writable: false` but NOT itself `secret: true` — it's a
+    // record of per-profile daemon/tunnel overrides that can still nest a
+    // REAL secret leaf arbitrarily deep. Same for a per-adapter `auth` block
+    // read via the whole-object `defaults` blob. Neither must ever leak its
+    // raw value, since GET /config's read side must stay secret-safe too.
+    const secrets = {
+      alphaTunnel: "alpha-tunnel-secret-1234",
+      alphaDaemon: "alpha-daemon-secret-5678",
+      betaTunnel: "beta-tunnel-secret-9999",
+      adapterSub: "adapter-sub-token-aaaa",
+      adapterApiKey: "adapter-api-key-bbbb",
+    }
+    await writeCfg({
+      profiles: {
+        alpha: {
+          tunnel: { token: secrets.alphaTunnel },
+          daemon: { authToken: secrets.alphaDaemon },
+        },
+        beta: { tunnel: { token: secrets.betaTunnel } },
+      },
+      defaults: {
+        adapters: {
+          "claude-code": { auth: { token: secrets.adapterSub, apiKey: secrets.adapterApiKey } },
+        },
+      },
+    })
+    const client = await setupClient(makeDeps({}))
+    const raw = await client.callTool({ name: "config_get", arguments: {} })
+    const json = JSON.stringify(raw)
+    for (const secret of Object.values(secrets)) {
+      expect(json).not.toContain(secret)
+    }
+    const parsed = parse(raw)
+    const profilesRow = findKey(parsed, "profiles")
+    expect(profilesRow.value.alpha.tunnel.token).toMatchObject({ set: true })
+    expect(profilesRow.value.alpha.tunnel.token.fingerprint).toBeTruthy()
+    expect(profilesRow.value.alpha.daemon.authToken).toMatchObject({ set: true })
+    expect(profilesRow.value.beta.tunnel.token).toMatchObject({ set: true })
+    // Existing per-leaf secret keys still redact correctly alongside this.
+    const authTokenRow = findKey(parsed, "defaults.adapters.claude-code.auth.token")
+    expect(authTokenRow.value).toMatchObject({ set: true })
+    expect(authTokenRow.secret.fingerprint).toBeTruthy()
+    await client.close()
+  })
+
+  it("does not redact an ordinary object-valued key with no nested secret", async () => {
+    await writeCfg({
+      defaults: { adapters: { "claude-code": { options: { model: "sonnet", verbose: true } } } },
+    })
+    const client = await setupClient(makeDeps({}))
+    const res = parse(
+      await client.callTool({
+        name: "config_get",
+        arguments: { keys: ["defaults.adapters.claude-code.options"] },
+      }),
+    )
+    expect(findKey(res, "defaults.adapters.claude-code.options").value).toEqual({
+      model: "sonnet",
+      verbose: true,
+    })
     await client.close()
   })
 })
@@ -342,6 +408,26 @@ describe("config_set", () => {
     await client.callTool({ name: "config_set", arguments: { key: "daemon.authToken", value: "x".repeat(20) } })
     expect(seen).toHaveLength(1) // the rejected secret write emitted nothing
 
+    await client.close()
+  })
+
+  it("succeeds despite an unrelated pre-existing schema issue already on disk", async () => {
+    // A legacy hand-edit / older-daemon-written value that fails schema
+    // validation entirely on its own, unrelated to the key this write
+    // touches. Before the fix, `validateConfig(next)` having ANY issue at
+    // all rejected the write outright — so a single unrelated bad value on
+    // disk would have permanently blocked every future config_set call.
+    await writeCfg({ worktrees: { isolation: "bogus-legacy-value" as never } })
+    const client = await setupClient(makeDeps({}))
+    const res = parse(
+      await client.callTool({ name: "config_set", arguments: { key: "titler.model", value: "z-ai/glm-5" } }),
+    )
+    expect(res.ok).toBe(true)
+    const onDisk = await loadConfig(configPath)
+    expect(onDisk.titler?.model).toBe("z-ai/glm-5")
+    // The unrelated pre-existing issue is left untouched, not silently
+    // "fixed" by this write.
+    expect(onDisk.worktrees?.isolation).toBe("bogus-legacy-value")
     await client.close()
   })
 })

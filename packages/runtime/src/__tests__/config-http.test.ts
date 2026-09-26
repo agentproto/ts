@@ -1,8 +1,9 @@
 /**
  * `GET /config` / `PATCH /config` (PR-2) — the REST twin of the MCP
- * `config_get`/`config_set` tools. GET is gated like `GET /workspaces`
- * (browser-origin guard, no bearer token needed for a read); PATCH is
- * gated like `DELETE /workspaces/:slug` (per-boot token required).
+ * `config_get`/`config_set` tools. Both routes require the per-boot session
+ * token, same gate as `DELETE /workspaces/:slug` — a read here can surface
+ * secret-presence/fingerprint info for every secret field on the box, so it
+ * is gated like a mutating route rather than like `GET /workspaces`.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
@@ -98,17 +99,30 @@ async function startServer(configTools: ConfigToolsDeps) {
 }
 
 describe("GET /config", () => {
-  it("returns 200 with revision/path/keys, no token required", async () => {
+  it("returns 200 with revision/path/keys when given a valid token", async () => {
     await writeCfg({ daemon: { label: "box-1" } })
     const { port, http } = await startServer(makeConfigToolsDeps({}))
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/config?keys=daemon.label`)
+      const res = await fetch(`http://127.0.0.1:${port}/config?keys=daemon.label`, {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      })
       expect(res.status).toBe(200)
       const body = (await res.json()) as { revision: string; path: string; keys: unknown[] }
       expect(body.path).toBe(configPath)
       expect(body.keys).toEqual([
         expect.objectContaining({ path: "daemon.label", value: "box-1" }),
       ])
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("rejects without a token or trusted origin (401)", async () => {
+    await writeCfg({ daemon: { label: "box-1" } })
+    const { port, http } = await startServer(makeConfigToolsDeps({}))
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/config`)
+      expect(res.status).toBe(401)
     } finally {
       await http.stop()
     }
@@ -211,7 +225,9 @@ describe("PATCH /config", () => {
     await writeCfg({})
     const { port, http } = await startServer(makeConfigToolsDeps({}))
     try {
-      const getRes = await fetch(`http://127.0.0.1:${port}/config`)
+      const getRes = await fetch(`http://127.0.0.1:${port}/config`, {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      })
       const { revision } = (await getRes.json()) as { revision: string }
       // Mutate out-of-band.
       await writeCfg({ daemon: { label: "changed-elsewhere" } })
@@ -227,6 +243,65 @@ describe("PATCH /config", () => {
       const body = (await res.json()) as { error: string; revision: string }
       expect(body.error).toBe("stale_revision")
       expect(body.revision).toEqual(expect.any(String))
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("succeeds despite an unrelated pre-existing schema issue already on disk", async () => {
+    // A legacy hand-edit / older-daemon-written value that fails schema
+    // validation on ITS OWN, unrelated to the key this write touches.
+    await writeCfg({ worktrees: { isolation: "bogus-legacy-value" as never } })
+    const { port, http } = await startServer(makeConfigToolsDeps({}))
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/config`, {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${TOKEN}`,
+        },
+        body: JSON.stringify({ key: "titler.model", value: "z-ai/glm-5" }),
+      })
+      expect(res.status).toBe(200)
+      const onDisk = await loadConfig(configPath)
+      expect(onDisk.titler?.model).toBe("z-ai/glm-5")
+      // The unrelated pre-existing issue is left untouched, not silently
+      // "fixed" by this write.
+      expect(onDisk.worktrees?.isolation).toBe("bogus-legacy-value")
+    } finally {
+      await http.stop()
+    }
+  })
+})
+
+describe("GET /config secret redaction", () => {
+  it("never returns a raw secret nested under a non-secret container key (profiles)", async () => {
+    const secrets = [
+      "alpha-tunnel-secret-1234",
+      "alpha-daemon-secret-5678",
+      "beta-tunnel-secret-9999",
+    ]
+    await writeCfg({
+      profiles: {
+        alpha: { tunnel: { token: secrets[0] }, daemon: { authToken: secrets[1] } },
+        beta: { tunnel: { token: secrets[2] } },
+      },
+    })
+    const { port, http } = await startServer(makeConfigToolsDeps({}))
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/config?keys=profiles`, {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      })
+      expect(res.status).toBe(200)
+      const bodyText = await res.text()
+      for (const secret of secrets) {
+        expect(bodyText).not.toContain(secret)
+      }
+      const body = JSON.parse(bodyText) as { keys: Array<{ path: string; value: any }> }
+      const row = body.keys.find(k => k.path === "profiles")
+      expect(row?.value.alpha.tunnel.token.set).toBe(true)
+      expect(row?.value.alpha.daemon.authToken.set).toBe(true)
+      expect(row?.value.beta.tunnel.token.set).toBe(true)
     } finally {
       await http.stop()
     }

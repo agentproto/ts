@@ -46,7 +46,6 @@ import {
   findConfigKey,
   validateConfig,
   validateConfigKeyType,
-  redactConfigValue,
   type ConfigKeyEntry,
   type ConfigKeySection,
 } from "./config-schema.js"
@@ -317,6 +316,65 @@ function describeSecret(value: unknown): ConfigKeyDescriptor["secret"] {
   return { set: true }
 }
 
+/**
+ * Every secret registry leaf's path SUFFIX (the segments after its last `*`,
+ * or the whole path when it has none) — e.g. `daemon.authToken` -> `["daemon",
+ * "authToken"]`, `tunnel.token` -> `["tunnel", "token"]`,
+ * `defaults.adapters.*.auth.token` -> `["auth", "token"]`, `acpAgents.*.env` ->
+ * `["env"]`. Derived from `CONFIG_KEYS` (never hardcoded) so a future secret
+ * leaf is covered automatically. Computed once at module load — `CONFIG_KEYS`
+ * is a fixed `readonly` array.
+ */
+const SECRET_PATH_SUFFIXES: readonly string[][] = CONFIG_KEYS.filter(e => e.secret === true).map(e => {
+  const segs = e.path.split(".")
+  const starIdx = segs.lastIndexOf("*")
+  return starIdx === -1 ? segs : segs.slice(starIdx + 1)
+})
+
+/** True when `pathSegments` ENDS WITH one of {@link SECRET_PATH_SUFFIXES} —
+ *  matched regardless of how deep it's nested (so `profiles.alpha.tunnel.
+ *  token` matches the `tunnel.token` suffix exactly like the top-level
+ *  `tunnel.token` key itself does). */
+function matchesSecretSuffix(pathSegments: readonly string[]): boolean {
+  return SECRET_PATH_SUFFIXES.some(
+    suffix =>
+      pathSegments.length >= suffix.length &&
+      suffix.every((seg, i) => pathSegments[pathSegments.length - suffix.length + i] === seg),
+  )
+}
+
+/**
+ * Recursively redact any nested field whose path matches a secret registry
+ * leaf's suffix, not just a value living directly at a `secret: true`
+ * registry path. Needed because a `writable: false` CONTAINER key that isn't
+ * itself marked `secret` (e.g. `profiles`, a record of per-profile
+ * daemon/tunnel overrides) can still nest a REAL secret leaf arbitrarily
+ * deep (`profiles.<name>.tunnel.token`, `profiles.<name>.daemon.authToken`) —
+ * `GET /config` is ungated for reads, so returning that raw would leak it to
+ * any local process. Applied unconditionally to every key's `value`/
+ * `effective`: a value with no nested secret round-trips unchanged, and an
+ * object with no secret-shaped field (`defaults.adapters.*.options`, a plain
+ * `acpAgents` field) is walked harmlessly. Arrays are returned as-is — no
+ * schema here nests a secret leaf inside an array. */
+function redactSecretsDeep(pathSegments: readonly string[], value: unknown): unknown {
+  if (matchesSecretSuffix(pathSegments)) {
+    return describeSecret(value)
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return value
+  }
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, v]) => [
+      key,
+      redactSecretsDeep([...pathSegments, key], v),
+    ]),
+  )
+}
+
+function redactValueAtPath(path: string, value: unknown): unknown {
+  return redactSecretsDeep(path.split("."), value)
+}
+
 async function describeKey(
   entry: ConfigKeyEntry,
   path: string,
@@ -356,8 +414,12 @@ async function describeKey(
   const pendingRestart = entry.apply === "restart" ? !deepEqual(rawValue, bootValue) : false
 
   const isSecret = entry.secret === true
-  const displayValue = isSecret ? redactConfigValue(path, rawValue) : rawValue
-  const displayEffective = isSecret ? redactConfigValue(path, effective) : effective
+  // Deep redaction runs on EVERY key, not just ones the registry marks
+  // `secret: true` — a container key like `profiles` isn't itself secret but
+  // can nest one (see `redactSecretsDeep`'s doc). A value with nothing to
+  // redact round-trips unchanged.
+  const displayValue = redactValueAtPath(path, rawValue)
+  const displayEffective = redactValueAtPath(path, effective)
 
   return {
     path,
@@ -445,10 +507,20 @@ export async function configSet(
   const next = setConfigKey(liveCfg, input.key, newValue)
   const wholeValidation = validateConfig(next)
   if (!wholeValidation.ok) {
-    return {
-      ok: false,
-      error: "invalid_config",
-      message: `config_set: resulting config would be invalid: ${wholeValidation.issues.join("; ")}`,
+    // A live file can already carry an unrelated pre-existing schema issue
+    // (a legacy hand-edit, a field a prior daemon version wrote) — that must
+    // never block every future write to every OTHER key. Only an issue this
+    // write itself INTRODUCES (absent from `liveCfg`'s own validation) is
+    // rejected; a pre-existing issue that survives unrelated is left alone,
+    // same as `loadConfig`'s own tolerant-boot stance.
+    const beforeIssues = new Set(validateConfig(liveCfg).issues)
+    const newIssues = wholeValidation.issues.filter(issue => !beforeIssues.has(issue))
+    if (newIssues.length > 0) {
+      return {
+        ok: false,
+        error: "invalid_config",
+        message: `config_set: resulting config would be invalid: ${newIssues.join("; ")}`,
+      }
     }
   }
 

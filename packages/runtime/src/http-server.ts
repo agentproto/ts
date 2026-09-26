@@ -2660,13 +2660,22 @@ export async function startHttpServer(
 
         // REST twin of the MCP `config_get`/`config_set` tools
         // (config-tools.ts) — `~/.agentproto/config.json` over the
-        // `config-schema.ts` key registry. Read-only GET mirrors
-        // `GET /workspaces` (browser-origin guard, no bearer token
-        // required — nothing here ever returns a raw secret). The
-        // mutating PATCH mirrors `DELETE /workspaces/:slug`'s per-boot
-        // token gate, since it writes the same class of local file.
+        // `config-schema.ts` key registry. BOTH routes require the per-boot
+        // session token, same gate as `DELETE /workspaces/:slug`: even a
+        // read here can surface `set`/fingerprint presence for every secret
+        // field on the box (`daemon.authToken`, `tunnel.token`, per-adapter
+        // auth, nested per-profile overrides), unlike the plain directory
+        // listing `GET /workspaces` returns — defense in depth on top of the
+        // deep secret-value redaction in `config-tools.ts` itself. The
+        // built-in `@agentproto/config` app reaches this through
+        // `app_tool_call`, not this route, so gating it costs that app
+        // nothing.
         if (path === "/config" && req.method === "GET" && opts.configTools) {
-          if (guardBrowserOrigin(req, res)) return
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
           const reqUrl = new URL(req.url ?? "/", "http://localhost")
           const keysParam = reqUrl.searchParams.get("keys")
           const sectionParam = reqUrl.searchParams.get("section")
