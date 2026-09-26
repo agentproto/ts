@@ -67,6 +67,15 @@ describe("buildHeadlessBrowserMcpEntry", () => {
     expect(args.slice(-2)).toEqual(["--logFile", "/tmp/b.log"])
   })
 
+  it("uses a caller-owned profile dir instead of --isolated when given", () => {
+    const { args } = buildHeadlessBrowserMcpEntry({ mcp, userDataDir: "/tmp/agentproto-browser/s1" })
+    expect(args).not.toContain("--isolated")
+    expect(args.slice(args.indexOf("--userDataDir"), args.indexOf("--userDataDir") + 2)).toEqual([
+      "--userDataDir",
+      "/tmp/agentproto-browser/s1",
+    ])
+  })
+
   it("rejects a malformed viewport", () => {
     expect(() => buildHeadlessBrowserMcpEntry({ mcp, viewport: "big" })).toThrow(/WIDTHxHEIGHT/)
   })
