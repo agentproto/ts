@@ -85,6 +85,7 @@
     "@agentproto/auth": "workspace:*",
     "@agentproto/driver": "workspace:*",
     "@agentproto/driver-agent-cli": "workspace:*",
+    "@agentproto/llm-endpoint": "workspace:*",
     "@agentproto/model-catalog": "workspace:*",
     "@agentproto/provider-kit": "workspace:*",
     "@agentproto/rendezvous": "workspace:*",

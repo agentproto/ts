@@ -11,6 +11,7 @@ import { agentsStep, parseNpxPackage } from "./steps/agents.js"
 import { authStep } from "./steps/auth.js"
 import { clientsStep } from "./steps/clients.js"
 import { skillsStep } from "./steps/skills.js"
+import { localModelsStep } from "./steps/local-models.js"
 import { ONBOARDING_STEPS } from "./registry.js"
 import { runChecks } from "./run.js"
 import type { StepCheck } from "./types.js"
@@ -33,7 +34,16 @@ describe("healthy machine", () => {
     const reports = await runChecks(ONBOARDING_STEPS, createFakeContext())
     const bad = reports.flatMap((r) => r.checks).filter((c) => c.status !== "ok" && c.status !== "skipped")
     expect(bad).toEqual([])
-    expect(reports.map((r) => r.id)).toEqual(["preflight", "workspace", "daemon", "agents", "auth", "clients", "skills"])
+    expect(reports.map((r) => r.id)).toEqual([
+      "preflight",
+      "workspace",
+      "daemon",
+      "agents",
+      "auth",
+      "clients",
+      "skills",
+      "local-models",
+    ])
   })
 
   it("detect is read-only: zero fs writes after a full run", async () => {
@@ -455,5 +465,65 @@ describe("skills", () => {
   it("no skill-capable adapter is skipped", async () => {
     const checks = await skillsStep.detect(createFakeContext({ sources: { skillTargets: async () => [] } }))
     expect(checks[0]?.status).toBe("skipped")
+  })
+})
+
+describe("local-models", () => {
+  it("nothing configured (no FORGE_BASE_URL, no llm-endpoints.json) is skipped", async () => {
+    const checks = await localModelsStep.detect(createFakeContext())
+    expect(checks).toHaveLength(1)
+    expect(checks[0]?.status).toBe("skipped")
+  })
+
+  it("FORGE_BASE_URL alone is probed as the implicit forge endpoint", async () => {
+    const checks = await localModelsStep.detect(
+      createFakeContext({
+        env: { FORGE_BASE_URL: "http://10.0.10.20:8000/v1" },
+        fetch: (async () => new Response(JSON.stringify({ data: [{ id: "my-lora" }] }), { status: 200 })) as typeof fetch,
+      }),
+    )
+    expect(byId(checks, "local-models.forge")).toMatchObject({ status: "ok" })
+  })
+
+  it("a reachable file-configured endpoint reports ok", async () => {
+    const checks = await localModelsStep.detect(
+      createFakeContext({
+        fs: createFakeFs({
+          ...healthyFiles(),
+          [`${HOME}/.agentproto/llm-endpoints.json`]: JSON.stringify({
+            endpoints: [{ id: "bonsai", kind: "openai", baseUrl: "http://192.168.1.20:8081/v1" }],
+          }),
+        }),
+        fetch: (async () => new Response(JSON.stringify({ data: [] }), { status: 200 })) as typeof fetch,
+      }),
+    )
+    expect(byId(checks, "local-models.bonsai")).toMatchObject({ status: "ok" })
+  })
+
+  it("an unreachable endpoint warns instead of failing the whole step", async () => {
+    const checks = await localModelsStep.detect(
+      createFakeContext({
+        fs: createFakeFs({
+          ...healthyFiles(),
+          [`${HOME}/.agentproto/llm-endpoints.json`]: JSON.stringify({
+            endpoints: [{ id: "ollama", kind: "openai", baseUrl: "http://192.168.1.20:11434/v1" }],
+          }),
+        }),
+        fetch: (async () => Promise.reject(new Error("ECONNREFUSED"))) as typeof fetch,
+      }),
+    )
+    expect(byId(checks, "local-models.ollama")).toMatchObject({ status: "warn" })
+  })
+
+  it("a malformed endpoints file is a broken check with a clear fix", async () => {
+    const checks = await localModelsStep.detect(
+      createFakeContext({
+        fs: createFakeFs({
+          ...healthyFiles(),
+          [`${HOME}/.agentproto/llm-endpoints.json`]: "{ not json",
+        }),
+      }),
+    )
+    expect(byId(checks, "local-models.config")).toMatchObject({ status: "broken", fix: "agentproto llm endpoints list" })
   })
 })

@@ -116,6 +116,8 @@ export interface ChatCompletionsRequestBody {
   temperature?: number;
   top_p?: number;
   reasoning_effort?: string;
+  /** vLLM's OpenAI-compatible extension — see endpoints.ts's defaultRequestFields. */
+  chat_template_kwargs?: Record<string, unknown>;
 }
 
 // ── Validation ─────────────────────────────────────────────────────────────
