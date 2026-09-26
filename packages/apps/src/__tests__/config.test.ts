@@ -14,33 +14,53 @@ describe("config app", () => {
     expect(configApp.agents).toEqual([])
   })
 
-  it("ships the config UI panel with exactly the read-only tools allowlist", () => {
+  it("ships the config UI panel with exactly the declared tools allowlist", () => {
     expect(configApp.ui).toBeDefined()
     expect(configApp.ui!.title).toBe("agentproto config")
     expect(configApp.ui!.tools).toEqual([...CONFIG_TOOLS])
     expect(configApp.ui!.html.length).toBeGreaterThan(0)
   })
 
-  it("declares no write tools in this PR's allowlist", () => {
+  it("drops the retired legacy provider-keys read tool (providers.json is being retired)", () => {
+    expect(CONFIG_TOOLS).not.toContain("provider_key_list")
+  })
+
+  it("declares every write tool this PR's edit flows need", () => {
     const writeTools = [
       "auth_profile_create",
       "auth_profile_delete",
       "auth_profile_set_enabled",
       "auth_profile_set_models",
+      "auth_profile_refresh_models",
+      "auth_profile_import",
+      "auth_discover_credentials",
       "auth_profile_update",
+      "harness_preset_create",
+      "harness_preset_delete",
+      "harness_preset_set_default",
       "config_set",
       "remote_enable",
       "remote_disable",
       "pair_offer",
       "pair_revoke",
-      "harness_preset_create",
-      "harness_preset_delete",
-      "harness_preset_set_default",
+    ]
+    for (const tool of writeTools) {
+      expect(CONFIG_TOOLS).toContain(tool)
+    }
+  })
+
+  it("never adds a tool that installs code, controls sessions/agents, or manages arbitrary tunnels", () => {
+    const excludedTools = [
       "adapter_install",
       "tunnel_create",
       "tunnel_stop",
+      "session_list",
+      "session_kill",
+      "agent_start",
+      "agent_kill",
+      "command_run",
     ]
-    for (const tool of writeTools) {
+    for (const tool of excludedTools) {
       expect(CONFIG_TOOLS).not.toContain(tool)
     }
   })

@@ -1137,6 +1137,9 @@ importers:
       '@types/node':
         specifier: ^25.9.5
         version: 25.9.5
+      jsdom:
+        specifier: ^29.1.1
+        version: 29.1.1
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(jiti@2.7.0)(postcss@8.5.28)(tsx@4.23.13)(typescript@5.9.3)(yaml@2.9.1)
