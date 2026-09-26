@@ -100,6 +100,10 @@ import type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
 import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
 import { makeEvalReporterCredsStore } from "@agentproto/eval-reporters"
 import { McpProxyRegistry } from "./mcp-proxy.js"
+import { McpClientPool } from "./mcp-client-pool.js"
+import { McpAppsHostService } from "./mcp-apps-host.js"
+import { resolveMcpServer } from "./mcp-app-resolve.js"
+import { registerMcpAppHostTools } from "./mcp-app-host-tools.js"
 import { registerOrchestrationTools } from "./orchestration-tools.js"
 import {
   registerAppTools,
@@ -1725,6 +1729,22 @@ export async function createGateway(
   // sessions instead of re-spawning stdio children.
   const mcpProxy = new McpProxyRegistry()
 
+  // MCP Apps host (mcp-apps-host.ts) — the daemon fetches app UIs for a
+  // session's chat. Its own config-keyed client pool: a harness alias is
+  // resolved per session (session → project → user → imports), so two
+  // sessions can mean different servers by the same name.
+  const mcpAppsPool = new McpClientPool()
+  const mcpAppsHost = new McpAppsHostService({
+    pool: mcpAppsPool,
+    resolve: async (sessionId, alias) => {
+      const desc = sessions.get(sessionId)
+      if (!desc) return undefined
+      return resolveMcpServer(desc, sessionId, alias)
+    },
+    recordToolCall: (sessionId, record) => sessions.recordMcpAppToolCall(sessionId, record),
+    lookupToolCallName: (sessionId, toolCallId) => sessions.findToolCallName(sessionId, toolCallId),
+  })
+
   // Same proxy `mcp_imported_call` (session-tools.ts) dispatches through —
   // unwraps `{ok,result}|{ok:false,error}` into a plain return-or-throw for
   // `app_tool_call`'s `imported:<alias>/<toolName>` ids. Hoisted so the MCP
@@ -2101,6 +2121,8 @@ export async function createGateway(
         ? { listBrowserAdapters: opts.listBrowserAdapters }
         : {}),
     })
+    // MCP Apps host verbs — same root-/mcp-only exposure as mcp_imported_*.
+    registerMcpAppHostTools(server, { service: mcpAppsHost })
     registerOrchestrationTools(server, {
       registry: sessions,
       sessionEvents,
@@ -2780,6 +2802,7 @@ export async function createGateway(
       // Close upstream MCP clients (their stdio children would
       // otherwise leak the same way).
       await mcpProxy.closeAll()
+      await mcpAppsPool.closeAll()
       // Stop all active tunnels (TunnelRegistry) then the remote
       // controller's single-gateway tunnel. Both before HTTP so
       // cloudflared doesn't briefly proxy to a dead port.

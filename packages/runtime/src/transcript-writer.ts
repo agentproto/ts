@@ -27,6 +27,7 @@ import type { AgentStreamEvent } from "./sessions.js"
 import { extractCommandArgs } from "./tool-call-record.js"
 import { detectShellPrCreate } from "./pr-provenance.js"
 import type { SessionUsage } from "./usage.js"
+import type { McpAppToolCallRecord } from "./mcp-apps-host.js"
 
 /** Debounce window for flushing a buffered text-delta/thought fragment
  *  that hasn't hit a newline yet. Keeps a long no-newline stream from
@@ -136,6 +137,12 @@ export interface TranscriptWriter extends SessionObserver {
    *  stream: this is the aggregable turn-boundary durable record, so a
    *  daemon restart doesn't lose the session's accumulated usage. */
   recordUsageSnapshot(sessionId: string, usage: SessionUsage): void
+  /** Record a `tools/call` an MCP App iframe made through the daemon
+   *  (`mcp_app_tool_call`, mcp-apps-host.ts) — a side-channel call the
+   *  model didn't make, so it gets its own `kind: "mcp_app_tool_call"`
+   *  record ("called from app UI") rather than a harness `tool-call`.
+   *  Carries no args and no result. */
+  recordMcpAppToolCall(sessionId: string, record: McpAppToolCallRecord): void
   /** Flush buffers and close the session's append stream. Safe to call
    *  more than once (subsequent calls are no-ops) and safe to call for a
    *  session that never wrote anything (also a no-op). Production call
@@ -591,6 +598,19 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
         ...(usage.contextSize !== undefined ? { contextSize: usage.contextSize } : {}),
         ...(usage.contextUsed !== undefined ? { contextUsed: usage.contextUsed } : {}),
         source: usage.source,
+      })
+    },
+    recordMcpAppToolCall(sessionId, record) {
+      const state = getState(sessionId)
+      flushBuffers(sessionId, state)
+      writeRecord(sessionId, state, {
+        kind: "mcp_app_tool_call",
+        sessionId,
+        server: record.server,
+        tool: record.tool,
+        originToolCallId: record.originToolCallId,
+        isError: record.isError,
+        durationMs: record.durationMs,
       })
     },
     close(sessionId) {
