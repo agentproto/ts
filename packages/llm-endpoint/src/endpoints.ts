@@ -18,11 +18,20 @@ import { homedir } from 'os';
 import { resolve as resolvePath } from 'path';
 import { isRecord } from './packs.js';
 
-/** vLLM's OpenAI-compatible extension — see forge's identical field in the
- *  README's "Adding an OpenAI-compatible upstream provider" section. */
-export interface EndpointDefaultRequestFields {
-  chat_template_kwargs?: Record<string, unknown>;
-}
+/** A JSON value — what `JSON.parse` can ever produce. */
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+/** Keys that would let a config override routing or auth on the outbound
+ *  request instead of merely defaulting a model parameter — rejected at
+ *  parse time regardless of value. */
+const FORBIDDEN_DEFAULT_REQUEST_FIELD_KEYS = new Set(['model', 'messages', 'stream', 'tools', 'input']);
+
+/** Arbitrary top-level OpenAI-compatible request fields, merged UNDER the
+ *  client's own request (see index.ts's applyDefaultRequestFields) —
+ *  everything from vLLM's `chat_template_kwargs` extension to a plain field
+ *  like LM Studio's `reasoning_effort`. See README's "Adding an
+ *  OpenAI-compatible upstream provider" section. */
+export type EndpointDefaultRequestFields = Record<string, JsonValue>;
 
 export interface EndpointTimeoutConfig {
   /** Applied as the outbound socket timeout (time-to-first-byte). */
@@ -105,11 +114,20 @@ function validateEndpointConfig(raw: unknown, where: string, errors: string[]): 
     if (!isRecord(defaultRequestFields)) {
       errors.push(`${where}.defaultRequestFields: must be an object when present`);
       ok = false;
-    } else if (defaultRequestFields.chat_template_kwargs !== undefined && !isRecord(defaultRequestFields.chat_template_kwargs)) {
-      errors.push(`${where}.defaultRequestFields.chat_template_kwargs: must be an object when present`);
-      ok = false;
-    } else if (isRecord(defaultRequestFields.chat_template_kwargs)) {
-      builtFields = { chat_template_kwargs: defaultRequestFields.chat_template_kwargs };
+    } else {
+      const forbiddenKeys = Object.keys(defaultRequestFields).filter((k) => FORBIDDEN_DEFAULT_REQUEST_FIELD_KEYS.has(k));
+      if (forbiddenKeys.length > 0) {
+        errors.push(`${where}.defaultRequestFields: cannot set routing/auth field(s): ${forbiddenKeys.join(', ')}`);
+        ok = false;
+      } else if (defaultRequestFields.chat_template_kwargs !== undefined && !isRecord(defaultRequestFields.chat_template_kwargs)) {
+        errors.push(`${where}.defaultRequestFields.chat_template_kwargs: must be an object when present`);
+        ok = false;
+      } else {
+        // Parsed from JSON (readEndpointsFromDisk) or an equivalent literal in
+        // tests — every value is already JSON-shaped, so this is a type
+        // narrowing, not an unchecked assertion.
+        builtFields = defaultRequestFields as EndpointDefaultRequestFields;
+      }
     }
   }
 

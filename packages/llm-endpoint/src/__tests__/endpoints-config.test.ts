@@ -109,6 +109,29 @@ describe('parseEndpointsConfig', () => {
     expect(result.errors.some((e) => e.includes('defaultRequestFields.chat_template_kwargs'))).toBe(true);
   });
 
+  it('accepts an arbitrary top-level defaultRequestFields field, not just chat_template_kwargs', () => {
+    // Real case: LM Studio serving prism-ml/bonsai-27b ignores
+    // chat_template_kwargs.enable_thinking and reasoning.effort, but honours
+    // a plain top-level reasoning_effort — see ENDPOINTS-FIELDS-FIX.md.
+    const result = parseEndpointsConfig({
+      endpoints: [
+        { id: 'lmstudio', kind: 'openai', baseUrl: 'http://127.0.0.1:1234/v1', defaultRequestFields: { reasoning_effort: 'none' } },
+      ],
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.endpoints).toEqual([
+      { id: 'lmstudio', kind: 'openai', baseUrl: 'http://127.0.0.1:1234/v1', defaultRequestFields: { reasoning_effort: 'none' } },
+    ]);
+  });
+
+  it.each(['model', 'messages', 'stream', 'tools', 'input'])('rejects defaultRequestFields.%s — it would override routing/auth', (key) => {
+    const result = parseEndpointsConfig({
+      endpoints: [{ id: 'x', kind: 'openai', baseUrl: 'http://host:1/v1', defaultRequestFields: { [key]: 'nope' } }],
+    });
+    expect(result.endpoints).toEqual([]);
+    expect(result.errors.some((e) => e.includes('defaultRequestFields') && e.includes(key))).toBe(true);
+  });
+
   it('rejects a non-positive timeoutMs.firstTokenMs', () => {
     const result = parseEndpointsConfig({
       endpoints: [{ id: 'x', kind: 'openai', baseUrl: 'http://host:1/v1', timeoutMs: { firstTokenMs: -1 } }],
