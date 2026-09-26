@@ -4,6 +4,9 @@ import {
   encodeOfferWebUrl,
   parseOfferUrl,
   PAIR_WEB_URL,
+  PAIR_WEB_URL_TEMPLATE_CLOUD,
+  resolvePairPageUrl,
+  expectedPairHost,
   type PairingOffer,
 } from "../offer-url.js"
 import { PairingError, type PairingErrorCode } from "../handshake.js"
@@ -157,5 +160,68 @@ describe("offer URL codec", async () => {
     await expectPairingError(() => encodeOfferWebUrl("https://example.com/?v=1"), "malformed_offer")
     await expectPairingError(() => encodeOfferWebUrl(url, "https://x.example/pair#a"), "malformed_offer")
     await expectPairingError(() => encodeOfferWebUrl(url, "ftp://x.example/pair"), "malformed_offer")
+  })
+
+  describe("per-daemon pair page templates ({fp} in the hostname)", () => {
+    const FP = "a1b2c3d4e5f60718"
+
+    it("substitutes the daemon fingerprint into the host", async () => {
+      expect(resolvePairPageUrl("https://{fp}.agentproto.cloud/pair", FP)).toBe(
+        `https://${FP}.agentproto.cloud/pair`,
+      )
+      expect(resolvePairPageUrl("http://{fp}.localhost:3000/pair", FP.toUpperCase())).toBe(
+        `http://${FP}.localhost:3000/pair`,
+      )
+      expect(expectedPairHost(PAIR_WEB_URL_TEMPLATE_CLOUD, FP)).toBe(`${FP}.agentproto.cloud`)
+      expect(expectedPairHost("http://{fp}.localhost:3000/pair", FP)).toBe(`${FP}.localhost:3000`)
+
+      // encodeOfferWebUrl fills it from the offer's own `id`.
+      const offer = await makeOffer()
+      const url = encodeOfferUrl(offer)
+      const web = encodeOfferWebUrl(url, PAIR_WEB_URL_TEMPLATE_CLOUD)
+      expect(web).toBe(`https://${offer.fingerprint}.agentproto.cloud/pair#${url.slice(url.indexOf("?") + 1)}`)
+      expect(new URL(web).host).toBe(expectedPairHost(PAIR_WEB_URL_TEMPLATE_CLOUD, offer.fingerprint))
+      expect(await parseOfferUrl(web)).toEqual(offer)
+    })
+
+    it("leaves a plain URL unchanged, and the default is still cli.agentproto.sh", async () => {
+      expect(PAIR_WEB_URL).toBe("https://cli.agentproto.sh/pair")
+      expect(resolvePairPageUrl("https://pair.example.com/p/pair", FP)).toBe("https://pair.example.com/p/pair")
+      expect(expectedPairHost(PAIR_WEB_URL, FP)).toBe("cli.agentproto.sh")
+      const url = encodeOfferUrl(await makeOffer())
+      expect(encodeOfferWebUrl(url).startsWith(`${PAIR_WEB_URL}#v=2&`)).toBe(true)
+    })
+
+    it("rejects {fp} outside the hostname, stray placeholders, bad fingerprints and non-web URLs", async () => {
+      const bad = [
+        "https://agentproto.cloud/{fp}/pair", // path
+        "https://agentproto.cloud/pair?d={fp}", // query
+        "https://agentproto.cloud/pair#{fp}", // fragment
+        "https://{fp}@agentproto.cloud/pair", // userinfo
+        "https://agentproto.cloud:{fp}/pair", // port
+        "https://{fp}.agentproto.cloud/{fp}", // host + path
+        "https://{FP}.agentproto.cloud/pair", // unknown placeholder
+        "https://{daemon}.agentproto.cloud/pair",
+        "ftp://{fp}.agentproto.cloud/pair",
+        "{fp}.agentproto.cloud/pair",
+        "https://{fp}.agentproto.cloud/pair#",
+      ]
+      for (const t of bad) {
+        let thrown: unknown
+        try {
+          resolvePairPageUrl(t, FP)
+        } catch (err) {
+          thrown = err
+        }
+        expect(thrown, t).toBeInstanceOf(PairingError)
+      }
+      for (const fp of ["", "-abc", "abc-", "a".repeat(64), "not.hex", "zzzz", "a1b2/c3"]) {
+        expect(() => resolvePairPageUrl(PAIR_WEB_URL_TEMPLATE_CLOUD, fp), fp).toThrow(PairingError)
+      }
+      await expectPairingError(
+        () => encodeOfferWebUrl("agentproto://pair?v=2&s=x", PAIR_WEB_URL_TEMPLATE_CLOUD),
+        "malformed_offer",
+      )
+    })
   })
 })

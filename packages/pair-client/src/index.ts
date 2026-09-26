@@ -32,4 +32,11 @@ export {
 } from "./credential.js"
 export { TunnelClientError, type TunnelClientErrorCode } from "./errors.js"
 export { PAIRING_REVOKED_CODE, type ChannelTimeouts, type WebSocketConstructor } from "./channel.js"
-export { encodeOfferWebUrl, PAIR_WEB_URL } from "@agentproto/secrets/pairing/browser"
+export {
+  encodeOfferWebUrl,
+  expectedPairHost,
+  resolvePairPageUrl,
+  PAIR_PAGE_FP_PLACEHOLDER,
+  PAIR_WEB_URL,
+  PAIR_WEB_URL_TEMPLATE_CLOUD,
+} from "@agentproto/secrets/pairing/browser"

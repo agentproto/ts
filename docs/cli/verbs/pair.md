@@ -1,7 +1,7 @@
 # `agentproto pair`
 
 ```text
-agentproto pair offer  [--ttl 10m] [--rendezvous <wss://…>] [--no-qr | --qr [--pair-page <url>]] [--json]
+agentproto pair offer  [--ttl 10m] [--rendezvous <wss://…>] [--no-qr | --qr [--pair-page <url|template>]] [--json]
 agentproto pair accept "<offer-url>" [--name <label>]
 agentproto pair ls     [--json]
 agentproto pair revoke <fingerprint|name>
@@ -72,10 +72,25 @@ This window can close.
   runs the same handshake in the browser (`@agentproto/pair-client`) and shows
   the daemon's name and fingerprint to confirm. The `agentproto://` URL is still
   printed for `pair accept`, and either form is accepted by both clients.
-- `--pair-page <url>` (with `--qr`) points the link at another pair page, e.g.
-  a self-hosted or local `http://localhost:3000/pair`.
+- `--pair-page <url|template>` (with `--qr`) picks the pair page for this
+  offer. It overrides `pairing.pairPage` in config, and the default is
+  `https://cli.agentproto.sh/pair`. It accepts two forms:
+  - A **plain URL**, used as is, e.g. a local `http://localhost:3000/pair`.
+  - A **template** with `{fp}` in the **hostname**, filled with the daemon's
+    identity fingerprint (lowercase hex):
+
+    ```bash
+    agentproto pair offer --qr --pair-page 'https://{fp}.agentproto.cloud/pair'
+    # → https://a1b2c3d4e5f60718.agentproto.cloud/pair#v=2&…
+    ```
+
+    That gives each daemon its own browser origin (see
+    [concepts/pairing.md](../concepts/pairing.md#the-phone-pair-page-one-origin-per-daemon)).
+    `{fp}` anywhere else (path, query, port, userinfo) is rejected, as is any
+    other `{…}`. The page setting is checked before the offer is minted.
 - `--json` emits `{ url, fingerprint, rendezvous, rendezvousIsHostedDefault,
-  expiresAt }` for scripting, plus `webUrl` with `--qr`.
+  expiresAt }` for scripting, plus `webUrl` (the resolved pair-page link) with
+  `--qr`.
 
 ```bash
 agentproto pair offer --qr

@@ -29,6 +29,20 @@ showConfirm(pending.daemon.name, pending.daemon.fingerprint)
 const credential = await pending.confirm() // stored; or pending.cancel()
 ```
 
+**One origin per daemon.** `pair offer --qr` can point at a per-daemon page,
+e.g. `https://{fp}.agentproto.cloud/pair` via `pairing.pairPage` or
+`--pair-page` (the default is still `https://cli.agentproto.sh/pair`). A page
+built for that should check that it's on its daemon's origin before pairing:
+
+```ts
+import { expectedPairHost, inspectOffer, PAIR_WEB_URL_TEMPLATE_CLOUD } from "@agentproto/pair-client"
+
+const info = await inspectOffer(location.href)
+if (location.host !== expectedPairHost(PAIR_WEB_URL_TEMPLATE_CLOUD, info.fingerprint)) {
+  throw new Error("this pairing QR is for another daemon's page")
+}
+```
+
 `pairFromOffer` accepts both offer forms: the web link
 `https://cli.agentproto.sh/pair#v=1&rv=…` (the offer rides in the fragment,
 which is never sent to a server) and the plain `agentproto://pair?…` URL.

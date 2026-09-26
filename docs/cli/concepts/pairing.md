@@ -160,7 +160,9 @@ rate limiting, single-use tokens, constant-time token compare. Self-hostable via
   server. The page runs the client handshake in the browser with
   `@agentproto/pair-client` (WebCrypto, WebSocket, IndexedDB), which speaks
   the same wire protocol as `pair accept`, so the daemon can't tell the two
-  apart. `parseOfferUrl` accepts both forms.
+  apart. `parseOfferUrl` accepts both forms. Which page serves the link is
+  configurable (`pairing.pairPage`, `--pair-page`); see
+  [The phone pair page](#the-phone-pair-page-one-origin-per-daemon).
 - `pair ls` lists pairings (daemon REST, or the client store when offline);
   `pair revoke` drops one so its client can no longer reconnect.
 - **Revocation is announced.** Otherwise a revoked client and an offline
@@ -258,6 +260,45 @@ with that instruction, not a timeout:
   closes. It checks no token and serves nothing.
 - A v2 client whose daemon hangs up on its hello (a v1 daemon) gets an error
   that names the likely cause and the fix.
+
+## The phone pair page: one origin per daemon
+
+The page a phone opens from the QR is a static web app. It runs the handshake
+with `@agentproto/pair-client`, keeps the credential in IndexedDB, and
+installs the service worker that proxies the daemon's UI. The browser scopes
+all of that to the page's **origin**. If every daemon's pages shared one
+origin, a script on that origin could read every pairing's credential and
+reach every daemon's UI, and a bug in one daemon's app would reach the others.
+
+So the page setting takes a template with `{fp}` in the hostname, filled with
+the daemon's identity fingerprint:
+
+```text
+https://{fp}.agentproto.cloud/pair   →   https://a1b2c3d4e5f60718.agentproto.cloud/pair#v=2&…
+```
+
+Each daemon then gets its own origin. The browser keeps its credential,
+storage, service worker and UI apart from every other pairing, with no shared
+state to leak.
+- Rules: `{fp}` is only allowed in the hostname. The fingerprint must be a
+  valid DNS label (it's 16 lowercase hex chars).
+- The page checks it's on the right origin with
+  `expectedPairHost(template, fingerprint)`, compared against
+  `location.host`, and refuses an offer meant for another daemon.
+- **The default is still** `https://cli.agentproto.sh/pair`. The per-daemon
+  domain (`PAIR_WEB_URL_TEMPLATE_CLOUD`, `https://{fp}.agentproto.cloud/pair`)
+  becomes the default once its DNS is live. Until then, opt in with
+  `pairing.pairPage` in `config.json` or `pair offer --qr --pair-page <…>`
+  (the flag wins).
+
+**Self-hosting the pair page.** The page is a static bundle (no server-side
+code, and the offer stays in the URL fragment). Serve it from your own host and
+point `pairing.pairPage` at it:
+- a single origin, `"https://pair.example.com/pair"`, or
+- one origin per daemon, `"https://{fp}.pair.example.com/pair"`, which needs a
+  wildcard DNS record and TLS certificate.
+
+The page only needs to reach the rendezvous broker named in the offer.
 
 ## The hosted default
 

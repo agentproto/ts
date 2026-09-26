@@ -12,12 +12,15 @@ vi.mock("../commands/_daemon-helpers.js", async importOriginal => {
   return { ...orig, discoverDaemon: vi.fn(), httpPostJson: vi.fn(), printNoDaemonError: vi.fn() }
 })
 vi.mock("../util/qr.js", () => ({ printQr: vi.fn(async () => {}) }))
+vi.mock("@agentproto/runtime/config", () => ({ loadConfig: vi.fn(async () => ({})) }))
 
 const helpers = await import("../commands/_daemon-helpers.js")
 const { printQr } = await import("../util/qr.js")
 const discoverDaemon = vi.mocked(helpers.discoverDaemon)
 const httpPostJson = vi.mocked(helpers.httpPostJson)
 const qr = vi.mocked(printQr)
+const { loadConfig } = await import("@agentproto/runtime/config")
+const config = vi.mocked(loadConfig)
 
 const OFFER =
   "agentproto://pair?v=2&rv=wss%3A%2F%2Frdv.agentproto.sh%2Fv1&id=a1b2c3d4e5f60718&pk=AAA&sk=BBB&s=sec_ret-1&exp=1900000000"
@@ -39,6 +42,8 @@ describe("agentproto pair offer --qr", () => {
       vi.spyOn(process.stderr as any, "write").mockImplementation((c: unknown) => (err.push(String(c)), true)),
     ]
     qr.mockClear()
+    httpPostJson.mockClear()
+    config.mockResolvedValue({})
     discoverDaemon.mockResolvedValue({ found: { url: "http://127.0.0.1:18790", token: "tok" }, stale: [] })
     httpPostJson.mockResolvedValue({
       url: OFFER,
@@ -86,5 +91,45 @@ describe("agentproto pair offer --qr", () => {
     expect(await runPair(["offer", "--pair-page", "https://x.example/pair"])).toBe(2)
     expect(await runPair(["offer", "--qr", "--pair-page", "https://x.example/pair#frag"])).toBe(2)
     expect(err.join("")).toContain("mutually exclusive")
+  })
+
+  it("--pair-page takes a {fp} template: one origin per daemon", async () => {
+    expect(await runPair(["offer", "--qr", "--pair-page", "https://{fp}.agentproto.cloud/pair", "--json"])).toBe(0)
+    expect(JSON.parse(out.join("")).webUrl).toBe(`https://a1b2c3d4e5f60718.agentproto.cloud/pair#${QUERY}`)
+  })
+
+  it("config pairing.pairPage is used with --qr, and --pair-page overrides it", async () => {
+    config.mockResolvedValue({ pairing: { pairPage: "https://{fp}.agentproto.cloud/pair" } })
+    expect(await runPair(["offer", "--qr"])).toBe(0)
+    expect(qr).toHaveBeenCalledWith(`https://a1b2c3d4e5f60718.agentproto.cloud/pair#${QUERY}`)
+
+    qr.mockClear()
+    expect(await runPair(["offer", "--qr", "--pair-page", "https://pair.example.com/pair"])).toBe(0)
+    expect(qr).toHaveBeenCalledWith(`https://pair.example.com/pair#${QUERY}`)
+
+    // Without --qr the config isn't consulted and the output is unchanged.
+    qr.mockClear()
+    config.mockClear()
+    expect(await runPair(["offer"])).toBe(0)
+    expect(qr).toHaveBeenCalledWith(OFFER)
+    expect(config).not.toHaveBeenCalled()
+  })
+
+  it("an invalid template is refused before an offer is minted", async () => {
+    for (const bad of ["https://agentproto.cloud/{fp}/pair", "https://{nope}.agentproto.cloud/pair", "ftp://{fp}.x/pair"]) {
+      err.length = 0
+      expect(await runPair(["offer", "--qr", "--pair-page", bad])).toBe(2)
+      expect(err.join("")).toMatch(/--pair-page: pair page:/)
+    }
+    config.mockResolvedValue({ pairing: { pairPage: "https://x.example/pair?d={fp}" } })
+    err.length = 0
+    expect(await runPair(["offer", "--qr"])).toBe(2)
+    expect(err.join("")).toMatch(/pairing\.pairPage: pair page: \{fp\} is only allowed in the hostname/)
+    expect(httpPostJson).not.toHaveBeenCalled()
+  })
+
+  it("the default page is unchanged", async () => {
+    expect(await runPair(["offer", "--qr", "--json"])).toBe(0)
+    expect(JSON.parse(out.join("")).webUrl).toBe(`https://cli.agentproto.sh/pair#${QUERY}`)
   })
 })

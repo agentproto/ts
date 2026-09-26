@@ -67,7 +67,13 @@ agentproto config set daemon.port 18791
     // Whether the daemon opens standing rendezvous connections for every
     // persisted pairing on boot (so a paired client can reconnect anytime).
     // Mirrors tunnel.autoconnect. Default true when a rendezvous is set.
-    "autoconnect": true
+    "autoconnect": true,
+    // Web pair page for `pair offer --qr` (the offer rides in its URL
+    // fragment). A plain http(s) URL, or a template with {fp} in the HOSTNAME
+    // (the daemon fingerprint) for one browser origin per daemon.
+    // Absent → https://cli.agentproto.sh/pair. `--pair-page` overrides it.
+    // See concepts/pairing.md ("The phone pair page").
+    "pairPage": "https://{fp}.agentproto.cloud/pair"
   },
 
   // Global and per-adapter defaults auto-applied to every `agent_start`

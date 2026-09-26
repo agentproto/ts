@@ -60,8 +60,12 @@ export {
   OFFER_URL_HOST,
   OFFER_VERSION,
   PAIR_WEB_URL,
+  PAIR_WEB_URL_TEMPLATE_CLOUD,
+  PAIR_PAGE_FP_PLACEHOLDER,
   encodeOfferUrl,
   encodeOfferWebUrl,
+  resolvePairPageUrl,
+  expectedPairHost,
   type PairingOffer,
   type ParseOfferOptions,
 } from "./offer-url.js"
