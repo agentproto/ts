@@ -123,6 +123,9 @@ export interface TranscriptWriter extends SessionObserver {
   ): void
   /** Sender-side `session-message-sent` record — see SessionObserver. */
   recordSessionMessageSent(sessionId: string, record: SessionMessageSentRecord): void
+  /** Standalone `session-message` record (a message surfaced outside a turn
+   *  prompt, e.g. as an `inbox_wait` result) — see SessionObserver. */
+  recordSessionMessage(sessionId: string, message: SessionMessage): void
   /** Record one structured stream event, ahead of `projectEvent`'s
    *  flattening. Coalesces consecutive text-delta/thought chunks the same
    *  way the ring buffer does. */
@@ -341,6 +344,11 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
         text: userText,
         ...(opts?.source ? { source: opts.source } : {}),
       })
+    },
+    recordSessionMessage(sessionId, message) {
+      const state = getState(sessionId)
+      flushBuffers(sessionId, state)
+      writeRecord(sessionId, state, { kind: "session-message", sessionId, message })
     },
     recordSessionMessageSent(sessionId, record) {
       const state = getState(sessionId)

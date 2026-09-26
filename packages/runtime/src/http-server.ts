@@ -40,6 +40,16 @@ import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
 import type { SessionsRegistry, AgentSessionLike, RestartPolicy, SessionDescriptor } from "./sessions.js"
 import { SessionNotAliveError, applyBracketedPasteWrap } from "./sessions.js"
+import {
+  createSessionMessage,
+  isMessageAllowed,
+  messageFrom,
+  resolveRelation,
+  MESSAGE_KINDS,
+  MESSAGE_URGENCIES,
+  type MessageKind,
+  type MessageUrgency,
+} from "./session-message.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
 import type { RemoteController, EnableInput } from "./remote-controller.js"
@@ -5263,6 +5273,125 @@ async function handleSessions(
     }
     return true
   }
+  // ── Typed session messages (AIP-46 §Session messages) ─────────────
+  // POST /sessions/:id/messages — send a message TO :id. The sender is the
+  // human operator (relation `human`) unless the trusted loopback
+  // `?callerSessionId=<id>` names a session, in which case the tree ACL
+  // applies exactly as for the `message_send` tool. The body can never set
+  // the sender.
+  const messagesMatch = path.match(/^\/sessions\/([^/]+)\/messages$/)
+  if (messagesMatch && req.method === "POST") {
+    const id = messagesMatch[1]
+    if (!id) return false
+    const recipient = registry.get(id)
+    if (!recipient) {
+      json(404, { error: "no_such_session", id })
+      return true
+    }
+    const b = ((await readJsonBody(req)) ?? {}) as Record<string, unknown>
+    if (b.from !== undefined) {
+      json(400, { error: "from_not_settable", message: "the daemon attests the sender" })
+      return true
+    }
+    if (typeof b.text !== "string" || b.text.length === 0) {
+      json(400, { error: "text_required" })
+      return true
+    }
+    if (b.kind !== undefined && !MESSAGE_KINDS.includes(b.kind as MessageKind)) {
+      json(400, { error: "invalid_kind", allowed: MESSAGE_KINDS })
+      return true
+    }
+    if (b.urgency !== undefined && !MESSAGE_URGENCIES.includes(b.urgency as MessageUrgency)) {
+      json(400, { error: "invalid_urgency", allowed: MESSAGE_URGENCIES })
+      return true
+    }
+    const reqUrl = req.url ?? ""
+    const callerId =
+      new URLSearchParams(reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "").get(
+        "callerSessionId",
+      ) ?? undefined
+    const sender = callerId ? registry.get(callerId) : undefined
+    if (callerId && !sender) {
+      json(404, { error: "no_such_caller", callerSessionId: callerId })
+      return true
+    }
+    const relation = resolveRelation(sender, recipient)
+    if (!isMessageAllowed(relation)) {
+      json(403, { error: "forbidden_recipient", id, callerSessionId: callerId })
+      return true
+    }
+    let msg
+    try {
+      msg = createSessionMessage({
+        to: id,
+        from: messageFrom(sender, relation),
+        text: b.text,
+        ...(b.kind !== undefined ? { kind: b.kind as MessageKind } : {}),
+        ...(b.urgency !== undefined ? { urgency: b.urgency as MessageUrgency } : {}),
+        ...(typeof b.replyTo === "string" ? { replyTo: b.replyTo } : {}),
+        ...(typeof b.correlationId === "string" ? { correlationId: b.correlationId } : {}),
+        ...(b.data && typeof b.data === "object" ? { data: b.data as Record<string, unknown> } : {}),
+      })
+    } catch (err) {
+      json(400, { error: "invalid_message", message: err instanceof Error ? err.message : String(err) })
+      return true
+    }
+    const provenance = sender ? `${relation}:${sender.id}` : "user"
+    try {
+      const r = await registry.sendMessage(msg, {
+        source: sender ? provenance : "user",
+        origin: provenance,
+        // A human operator keeps `interrupt` (AIP-46: hosts SHOULD NOT grant
+        // it to session senders by default).
+        ...(!sender && msg.urgency === "interrupt" ? { interrupt: true } : {}),
+      })
+      json(200, { ok: true, id, relation, ...r })
+    } catch (err) {
+      if (err instanceof SessionNotAliveError) {
+        json(409, { error: "session_not_alive", status: err.status })
+        return true
+      }
+      json(500, { error: "send_message_failed", message: err instanceof Error ? err.message : String(err) })
+    }
+    return true
+  }
+  // GET /sessions/:id/inbox — un-consumed messages, oldest first.
+  const inboxMatch = path.match(/^\/sessions\/([^/]+)\/inbox$/)
+  if (inboxMatch && req.method === "GET") {
+    const id = inboxMatch[1]
+    if (!id) return false
+    const inbox = registry.listInbox(id)
+    if (inbox === null) {
+      json(404, { error: "no_such_session", id })
+      return true
+    }
+    json(200, { ok: true, id, inbox })
+    return true
+  }
+  // POST /sessions/:id/inbox/ack — body `{ ids: string[] | "all" }`.
+  const inboxAckMatch = path.match(/^\/sessions\/([^/]+)\/inbox\/ack$/)
+  if (inboxAckMatch && req.method === "POST") {
+    const id = inboxAckMatch[1]
+    if (!id) return false
+    if (!registry.get(id)) {
+      json(404, { error: "no_such_session", id })
+      return true
+    }
+    const b = ((await readJsonBody(req)) ?? {}) as { ids?: unknown }
+    const ids =
+      b.ids === "all"
+        ? ("all" as const)
+        : Array.isArray(b.ids) && b.ids.every(x => typeof x === "string")
+          ? (b.ids as string[])
+          : undefined
+    if (!ids) {
+      json(400, { error: "ids_required", message: 'ids must be a string[] or "all"' })
+      return true
+    }
+    json(200, { ok: true, id, ...registry.ackInbox(id, ids) })
+    return true
+  }
+
   // Inspect the queue after the fact — GET /sessions/:id/queue returns the
   // ordered list (origin, preview, queuedAt, position). 0 = next to dispatch.
   const queueListMatch = path.match(/^\/sessions\/([^/]+)\/queue$/)

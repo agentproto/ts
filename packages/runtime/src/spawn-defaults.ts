@@ -137,6 +137,12 @@ export interface SpawnDefaultsConfig {
    *  EXPLICIT `interrupt` on the call (true OR false) always wins over this
    *  default. */
   agentPromptInterrupt?: boolean
+  /** Inter-session messaging policy (AIP-46 §Session messages). */
+  messaging?: {
+    /** Let `message_send` / `message_reply` reach a sibling session (same
+     *  parent). Default false — only child↔parent. */
+    allowSiblings?: boolean
+  }
   /** Daemon-wide MCP gateway policy. See {@link McpDefaultsConfig}. */
   mcp?: McpDefaultsConfig
   /** Spawn-shape defaults applied when neither the `agent_start` call, its

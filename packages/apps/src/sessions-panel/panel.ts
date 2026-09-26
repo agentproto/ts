@@ -212,6 +212,7 @@ function renderSidebar() {
     var blocked = '';
     if (s.blockedOn === 'subagent') blocked = '<span class="badge bs">&#129513; sous-agent</span>';
     else if (s.blockedOn === 'command') blocked = '<span class="badge bs">&#9203; commande</span>';
+    else if (s.blockedOn === 'inbox') blocked = '<span class="badge bs">&#128236; attend messages</span>';
     html += '<div class="si' + active + '" onclick="selectSession(\\'' + s.id + '\\')">'
           + '<div class="sn">' + escHtml(label) + '</div>'
           + '<div class="sm">'

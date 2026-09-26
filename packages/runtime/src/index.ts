@@ -1056,6 +1056,11 @@ export const DEFAULT_ALWAYS_ON_TOOLS: readonly string[] = [
   "permissions_respond",
   "app_tool_call",
   "message_parent",
+  // Typed messaging (AIP-46 §Session messages): send to a tree neighbour,
+  // and the receive side a supervisor loops on instead of ending its turn.
+  "message_send",
+  "inbox_wait",
+  "inbox_list",
   "task_claim",
   "task_create",
   "task_list",
@@ -1877,6 +1882,7 @@ export async function createGateway(
     ...(configDefaults?.agentPromptInterrupt != null
       ? { defaultAgentPromptInterrupt: configDefaults.agentPromptInterrupt }
       : {}),
+    ...(configDefaults?.messaging?.allowSiblings ? { messagingAllowSiblings: true } : {}),
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
@@ -2021,6 +2027,7 @@ export async function createGateway(
       ...(configDefaults?.agentPromptInterrupt != null
         ? { defaultAgentPromptInterrupt: configDefaults.agentPromptInterrupt }
         : {}),
+      ...(configDefaults?.messaging?.allowSiblings ? { messagingAllowSiblings: true } : {}),
       ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
       ...(opts.resolveAgentAdapter
         ? { resolveAgentAdapter: opts.resolveAgentAdapter }

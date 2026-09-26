@@ -52,7 +52,7 @@ export interface SessionDescriptor {
   awaitingPermission?: boolean
   turnsCompleted?: number
   busy?: boolean
-  blockedOn?: "subagent" | "command"
+  blockedOn?: "subagent" | "command" | "inbox"
   pendingToolCallId?: string
   parentSessionId?: string
   depth?: number

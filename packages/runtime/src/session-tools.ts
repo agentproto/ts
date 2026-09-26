@@ -342,6 +342,9 @@ export interface RegisterSessionToolsOptions {
    *  `agent_prompt` / `message_parent`. See
    *  `RegisterAgentToolsOptions.defaultAgentPromptInterrupt`. */
   defaultAgentPromptInterrupt?: RegisterAgentToolsOptions["defaultAgentPromptInterrupt"]
+  /** Forwarded to `registerAgentTools` — config.json
+   *  `defaults.messaging.allowSiblings`. */
+  messagingAllowSiblings?: RegisterAgentToolsOptions["messagingAllowSiblings"]
   /**
    * Optional git-worktree status lister powering `worktree_status`.
    * Injected here (rather than defaulted inside the runtime) because the join

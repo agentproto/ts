@@ -160,6 +160,27 @@ export function createSessionMessage(input: {
   }
 }
 
+// ── Filters (inbox_wait / inbox_list) ─────────────────────────────────
+
+export interface MessageFilter {
+  /** Sender session ids, or `"children"` for any message whose relation is
+   *  `child` (i.e. from one of the recipient's own children). */
+  from?: readonly string[] | "children"
+  kind?: readonly MessageKind[]
+  correlationId?: string
+}
+
+export function matchesMessageFilter(msg: SessionMessage, filter: MessageFilter): boolean {
+  if (filter.from === "children") {
+    if (msg.from.relation !== "child") return false
+  } else if (filter.from && filter.from.length) {
+    if (!msg.from.sessionId || !filter.from.includes(msg.from.sessionId)) return false
+  }
+  if (filter.kind && filter.kind.length && !filter.kind.includes(msg.kind)) return false
+  if (filter.correlationId && msg.correlationId !== filter.correlationId) return false
+  return true
+}
+
 // ── Model-facing serialization ─────────────────────────────────────────
 
 export const MESSAGE_TAG = "agentproto-message"
@@ -220,6 +241,23 @@ export function renderSessionMessage(msg: SessionMessage): string {
 /** A coalesced batch → sibling tags, one per message, in order. */
 export function renderSessionMessages(msgs: readonly SessionMessage[]): string {
   return msgs.map(renderSessionMessage).join("\n\n")
+}
+
+/** One-line typed digest of `fyi` messages that never woke the session —
+ *  prepended (as a `system-prompt` slice) to the next turn it runs anyway. */
+export function renderInboxDigest(msgs: readonly SessionMessage[]): string {
+  const who = msgs
+    .map(m => {
+      const label = sanitizeLabel(m.from.label)
+      const sender = m.from.sessionId ? `${m.from.relation} ${m.from.sessionId}${label ? ` (${label})` : ""}` : m.from.relation
+      return `${m.id} from ${sender} [${m.kind}]`
+    })
+    .join("; ")
+  return (
+    `<agentproto-inbox unread="${msgs.length}">You have ${msgs.length} unread fyi ` +
+    `message(s): ${escapeMessageBody(who)}. Read them with inbox_list and ack them with ` +
+    `inbox_ack when handled.</agentproto-inbox>`
+  )
 }
 
 /** Taught once, the first time a session RECEIVES a message (recorded as a

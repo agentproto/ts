@@ -178,7 +178,7 @@ describe("message_parent — delivery", () => {
       expect(enqueue).toHaveBeenCalledWith(
         parent.id,
         "STOP — spec changed",
-        { interrupt: true, source: `child:${child.id}`, origin: `child:${child.id}`, envelope: childEnvelope(child.id, parent.id, "interrupt") },
+        { interrupt: true, queue: true, source: `child:${child.id}`, origin: `child:${child.id}`, envelope: childEnvelope(child.id, parent.id, "interrupt") },
       )
       expect(enqueue).toHaveBeenCalledTimes(1)
     } finally {
@@ -273,7 +273,7 @@ describe("message_parent — configurable interrupt default", () => {
       expect(enqueue).toHaveBeenCalledWith(
         parent.id,
         "urgent",
-        { interrupt: true, source: `child:${child.id}`, origin: `child:${child.id}`, envelope: childEnvelope(child.id, parent.id, "interrupt") },
+        { interrupt: true, queue: true, source: `child:${child.id}`, origin: `child:${child.id}`, envelope: childEnvelope(child.id, parent.id, "interrupt") },
       )
       expect(enqueue).toHaveBeenCalledTimes(1)
     } finally {
