@@ -29,6 +29,7 @@ export type SessionEventType =
   | "session:watcher-detached"
   | "session:bg-tasks-parked"
   | "session:bg-tasks-cleared"
+  | "session:bg-task"
   | "session:resumed"
   | "session:spawned"
   | "session:command-done"
@@ -127,6 +128,13 @@ export interface SessionTurnEndEvent {
    * a normal, productive turn.
    */
   empty?: boolean
+  /**
+   * True when the turn was not started by a prompt: the agent woke on its
+   * own (Claude Code's task-notification cycle after a background task
+   * settled) and the registry tracked that work as a turn. Absent on an
+   * ordinary prompted turn.
+   */
+  autonomous?: boolean
 }
 
 export interface SessionAwaitingInputEvent {
@@ -392,6 +400,30 @@ export interface SessionBgTasksParkedEvent {
 export interface SessionBgTasksClearedEvent {
   type: "session:bg-tasks-cleared"
   sessionId: string
+  label?: string
+  ts: string
+}
+
+/**
+ * One lifecycle edge of an agent's background task (a backgrounded Bash
+ * command, a monitor, ...) as the agent itself reported it — over ACP, the
+ * AIR `asyncTasks` extension (see @agentproto/acp's `background-task`
+ * StreamEvent). Unlike {@link SessionBgTasksParkedEvent} (a turn-end
+ * heuristic) this is the real lifecycle: `"started"` when the task is
+ * announced, `"settled"` when it reaches a terminal `status`. Mid-life
+ * progress updates only refresh `SessionDescriptor.backgroundTasks` and are
+ * not emitted. Same bus distribution as every other lifecycle event.
+ */
+export interface SessionBgTaskEvent {
+  type: "session:bg-task"
+  sessionId: string
+  phase: "started" | "settled"
+  taskId: string
+  taskKind?: string
+  description?: string
+  outputFile?: string
+  status?: string
+  summary?: string
   label?: string
   ts: string
 }
@@ -809,6 +841,7 @@ export type SessionEvent =
   | SessionWatcherDetachedEvent
   | SessionBgTasksParkedEvent
   | SessionBgTasksClearedEvent
+  | SessionBgTaskEvent
   | SessionResumedEvent
   | SessionSpawnedEvent
   | SessionCommandDoneEvent

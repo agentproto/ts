@@ -515,6 +515,19 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
             ...(evt.reportedSize !== undefined ? { reportedSize: evt.reportedSize } : {}),
           })
           break
+        case "background-task":
+          // The agent's background-task lifecycle (started / updated /
+          // settled) — durable so a reader can tell "idle, waiting on a
+          // task" from "idle, done", and what a later wake was about.
+          if (!evt.task) break
+          flushBuffers(sessionId, state)
+          writeRecord(sessionId, state, {
+            kind: "background-task",
+            sessionId,
+            phase: evt.phase,
+            task: evt.task,
+          })
+          break
         case "available-commands":
           flushBuffers(sessionId, state)
           writeRecord(sessionId, state, {

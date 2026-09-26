@@ -1053,6 +1053,13 @@ export interface AgentCliClient {
     requestId: string,
     resolution: AcpPermissionResolution,
   ): boolean
+  /**
+   * Subscribe to events the agent emits while no turn is in flight (an
+   * autonomous background-task wake, a late task lifecycle edge) — see
+   * `@agentproto/acp`'s `AcpClientSession.onOutOfTurnEvent`. Returns an
+   * unsubscribe function. Only the ACP arm implements this.
+   */
+  onOutOfTurnEvent?(listener: (event: StreamEvent) => void): () => void
   close(): Promise<void>
   /**
    * The session id the protocol arm holds. Populated after `connect()`
@@ -1335,6 +1342,14 @@ export interface AgentCliRuntimeSession {
     requestId: string,
     resolution: AcpPermissionResolution,
   ): boolean
+  /**
+   * Subscribe to events the agent emits while no turn is in flight —
+   * Claude Code's autonomous wake when a background task settles, and the
+   * AIR `asyncTasks` lifecycle (`background-task` events) that precedes it.
+   * Delegates to the protocol arm; absent for arms that can't produce them.
+   * Returns an unsubscribe function.
+   */
+  onOutOfTurnEvent?(listener: (event: StreamEvent) => void): () => void
   /**
    * Switch the active model on this LIVE, already-running session,
    * honoring the manifest's `models.apply` strategy:

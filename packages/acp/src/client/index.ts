@@ -19,6 +19,7 @@ import {
 import type {
   AcpMcpServer,
   AcpPermissionResolution,
+  BackgroundTaskInfo,
   StreamEvent,
 } from "../types.js"
 import { ACP_META_FEEDBACK } from "../types.js"
@@ -119,6 +120,13 @@ export interface AcpClientOptions {
   capabilities?: {
     fs?: { readTextFile?: boolean; writeTextFile?: boolean }
     terminal?: boolean
+    /**
+     * Advertise the AIR `asyncTasks` extension (default true), so an agent
+     * that implements it (claude-agent-acp) publishes its background tasks'
+     * lifecycle — surfaced as `background-task` StreamEvents. Pass `false`
+     * to opt out; an agent that doesn't know the extension ignores it.
+     */
+    asyncTasks?: boolean
   }
   /** Optional handlers for agent-initiated requests beyond fs / terminal. */
   handlers?: Partial<AcpClientHandlers>
@@ -319,6 +327,19 @@ export interface AcpClientSession {
    * exactly.
    */
   setSessionMode(modeId: string): Promise<SetConfigOptionResult>
+  /**
+   * Receive the events the agent emits while NO `prompt()` is in flight.
+   *
+   * An agent can work without being prompted: Claude Code wakes the model on
+   * its own when a background task settles (an "autonomous" task-notification
+   * cycle) and streams that work as ordinary `session/update`s. With no turn
+   * iterator to land in, those events used to be dropped on the floor — the
+   * host saw an idle session while the agent kept working. They are delivered
+   * here instead (in-turn events keep flowing through `prompt()`'s iterator
+   * only). Returns an unsubscribe function. With no listener registered, an
+   * out-of-turn event is dropped, as before.
+   */
+  onOutOfTurnEvent(listener: (event: StreamEvent) => void): () => void
   close(): Promise<void>
 }
 
@@ -341,6 +362,8 @@ interface SessionState {
   modes: SessionMode[]
   /** Snapshot of `AcpClientSession.currentModeId` — see there. */
   currentModeId: string | undefined
+  /** Listeners registered via `AcpClientSession.onOutOfTurnEvent`. */
+  outOfTurnListeners: Set<(event: StreamEvent) => void>
 }
 
 export async function createAcpClient(
@@ -394,7 +417,9 @@ export async function createAcpClient(
     }
   }
 
-  const stream: Stream = ndJsonStream(options.output, options.input)
+  const stream: Stream = withAirTaskUpdatesRerouted(
+    ndJsonStream(options.output, options.input),
+  )
 
   const connection: ClientSideConnection = new ClientSideConnection(
     () =>
@@ -437,6 +462,7 @@ export async function createAcpClient(
         configOptions: response.configOptions ?? [],
         modes: response.modes?.availableModes ?? [],
         currentModeId: response.modes?.currentModeId,
+        outOfTurnListeners: new Set(),
       }
       sessions.set(sessionId, state)
       // Apply model + effort via session/set_config_option immediately
@@ -550,6 +576,7 @@ export async function createAcpClient(
         configOptions: response.configOptions ?? [],
         modes: response.modes?.availableModes ?? [],
         currentModeId: response.modes?.currentModeId,
+        outOfTurnListeners: new Set(),
       }
       sessions.set(params.sessionId, state)
       return buildSession(
@@ -574,6 +601,14 @@ export async function createAcpClient(
   }
 }
 
+/**
+ * The AIR extension's `_meta` shape, as claude-agent-acp reads it
+ * (`air-extension.js` `clientSupportsAirCapability`): an integer `version`
+ * >= 1 and a `capabilities` list, under `_meta.jetbrains.air`.
+ */
+export const AIR_ASYNC_TASKS_CAPABILITY = "asyncTasks"
+const AIR_EXTENSION_VERSION = 1
+
 function clientCapabilitiesFromOptions(
   options: AcpClientOptions,
 ): Record<string, unknown> {
@@ -584,6 +619,18 @@ function clientCapabilitiesFromOptions(
       writeTextFile: caps.fs?.writeTextFile ?? false,
     },
     terminal: caps.terminal ?? false,
+    ...(caps.asyncTasks === false
+      ? {}
+      : {
+          _meta: {
+            jetbrains: {
+              air: {
+                version: AIR_EXTENSION_VERSION,
+                capabilities: [AIR_ASYNC_TASKS_CAPABILITY],
+              },
+            },
+          },
+        }),
   }
 }
 
@@ -770,6 +817,12 @@ function buildSession(
         return { applied: false, reason }
       }
     },
+    onOutOfTurnEvent(listener) {
+      state.outOfTurnListeners.add(listener)
+      return () => {
+        state.outOfTurnListeners.delete(listener)
+      }
+    },
     async close() {
       // Cancel any permission requests this session parked before dropping it,
       // so the agent's held RPCs settle rather than hang.
@@ -799,6 +852,29 @@ function makeIterator(state: SessionState): AsyncIterable<StreamEvent> {
         },
       }
     },
+  }
+}
+
+/**
+ * Route an agent-originated event: into the in-flight turn's iterator, or —
+ * when no `prompt()` is in flight — to the session's out-of-turn listeners
+ * (see `AcpClientSession.onOutOfTurnEvent`). Never buffered while idle: the
+ * next `prompt()` clears the buffer, so buffering only ever lost them.
+ */
+function deliver(state: SessionState, event: StreamEvent) {
+  if (state.active) {
+    enqueue(state, event)
+    return
+  }
+  for (const listener of state.outOfTurnListeners) {
+    try {
+      listener(event)
+    } catch (err) {
+      console.warn(
+        `[acp] out-of-turn listener threw:`,
+        err instanceof Error ? err.message : err,
+      )
+    }
   }
 }
 
@@ -885,7 +961,10 @@ function holdPermissionRequest(
 
   const state = sessions.get(sessionId)
   if (state) {
-    enqueue(state, {
+    // `deliver`, not `enqueue`: an autonomous cycle (no prompt in flight)
+    // can ask permission too, and a request parked where nobody reads it
+    // would hang that cycle forever.
+    deliver(state, {
       kind: "agent-prompt",
       sessionId,
       toolCallId: requestId,
@@ -912,12 +991,80 @@ function holdPermissionRequest(
   })
 }
 
+/**
+ * Internal extension method that carries an AIR `async_task_*` session update
+ * past the SDK — see {@link withAirTaskUpdatesRerouted}.
+ */
+const AIR_TASK_UPDATE_METHOD = "_agentproto/air_task_update"
+
+/**
+ * The ACP SDK validates every `session/update` against the core schema and
+ * rejects (logs + drops, `-32602 Invalid params`) any `sessionUpdate` kind it
+ * doesn't know — which includes the AIR extension's `async_task_spawned` /
+ * `async_task_progress` / `async_task_state_update`. Rewrite exactly those
+ * frames, in place in the inbound message stream, into an extension
+ * notification the SDK routes to `extNotification` unvalidated. Staying in
+ * the stream (rather than handling them on the side) keeps them in wire
+ * order with every other notification and the prompt response.
+ */
+function withAirTaskUpdatesRerouted(stream: Stream): Stream {
+  type Message = Stream["readable"] extends ReadableStream<infer M> ? M : never
+  // A stand-in transport without a real readable (unit tests mock the SDK
+  // stream as `{}`) has nothing to reroute.
+  if (typeof stream.readable?.pipeThrough !== "function") return stream
+  return {
+    writable: stream.writable,
+    readable: stream.readable.pipeThrough(
+      new TransformStream<Message, Message>({
+        transform(message, controller) {
+          const frame = message as { method?: unknown; params?: unknown; id?: unknown }
+          const update = (frame.params as { update?: { sessionUpdate?: unknown } } | undefined)
+            ?.update
+          if (
+            frame.method === "session/update" &&
+            frame.id === undefined &&
+            typeof update?.sessionUpdate === "string" &&
+            update.sessionUpdate.startsWith("async_task_")
+          ) {
+            controller.enqueue({ ...frame, method: AIR_TASK_UPDATE_METHOD } as Message)
+            return
+          }
+          controller.enqueue(message)
+        },
+      }),
+    ),
+  }
+}
+
 function buildClientHandlers(
   partial: Partial<AcpClientHandlers>,
   sessions: Map<string, SessionState>,
   onActivity: (() => void) | undefined,
   hold: PermissionHoldContext,
 ): AcpClientHandlers {
+  /** Shared body of `sessionUpdate` and the rerouted AIR task updates. */
+  const routeSessionUpdate = (params: unknown): void => {
+    // Every notification is a liveness signal, even ones that don't
+    // translate into a StreamEvent below (e.g. an in-progress
+    // tool_call_update) — this is the gap that leaves lastOutputAt
+    // stale during a long internal tool-call chain.
+    onActivity?.()
+
+    const sid = (params as { sessionId?: string }).sessionId
+    if (!sid) return
+    const state = sessions.get(sid)
+    if (!state) return
+
+    // Reset this session's in-flight turn watchdog (if any) — an
+    // incoming notification is exactly the "not silent" signal the
+    // watchdog exists to detect the absence of.
+    state.resetWatchdogTimer?.()
+
+    const update = (params as { update?: Record<string, unknown> }).update
+    if (!update) return
+    const event = translateSessionUpdate(sid, update)
+    if (event) deliver(state, event)
+  }
   return {
     // Spread the caller-supplied handlers FIRST so the named methods defined
     // below always win. This matters for `requestPermission`: the arm always
@@ -927,28 +1074,15 @@ function buildClientHandlers(
     // through to `partial.requestPermission` when hold mode is OFF.
     ...(partial as object),
     async sessionUpdate(params) {
-      // Every notification is a liveness signal, even ones that don't
-      // translate into a StreamEvent below (e.g. an in-progress
-      // tool_call_update) — this is the gap that leaves lastOutputAt
-      // stale during a long internal tool-call chain.
-      onActivity?.()
-
-      const sid = (params as { sessionId?: string }).sessionId
-      if (!sid) return
-      const state = sessions.get(sid)
-      if (!state) return
-
-      // Reset this session's in-flight turn watchdog (if any) — an
-      // incoming notification is exactly the "not silent" signal the
-      // watchdog exists to detect the absence of.
-      state.resetWatchdogTimer?.()
-
-      const update = (params as { update?: Record<string, unknown> }).update
-      if (!update) return
-      const event = translateSessionUpdate(sid, update)
-      if (event) enqueue(state, event)
-
+      routeSessionUpdate(params)
       if (partial.sessionUpdate) await partial.sessionUpdate(params)
+    },
+    async extNotification(method, params) {
+      if (method === AIR_TASK_UPDATE_METHOD) {
+        routeSessionUpdate(params)
+        return
+      }
+      if (partial.extNotification) await partial.extNotification(method, params)
     },
     async requestPermission(params) {
       // Every incoming request is a liveness signal.
@@ -1147,6 +1281,12 @@ function translateSessionUpdate(
       const meta = update._meta as Record<string, unknown> | undefined
       const model = typeof meta?.["_claude/model"] === "string" ? meta["_claude/model"] : undefined
       const sizeInferred = model !== undefined && !cost
+      const originMeta = meta?.["_claude/origin"]
+      const origin =
+        originMeta && typeof originMeta === "object" &&
+        typeof (originMeta as { kind?: unknown }).kind === "string"
+          ? (originMeta as { kind: string }).kind
+          : undefined
       return {
         kind: "usage_update",
         sessionId,
@@ -1157,6 +1297,7 @@ function translateSessionUpdate(
         ...(sizeInferred ? { sizeInferred } : {}),
         ...(tokensIn !== undefined ? { tokensIn } : {}),
         ...(tokensOut !== undefined ? { tokensOut } : {}),
+        ...(origin ? { origin } : {}),
       }
     }
     case "available_commands_update": {
@@ -1183,11 +1324,65 @@ function translateSessionUpdate(
         })),
       }
     }
+    case "async_task_spawned":
+    case "async_task_progress":
+    case "async_task_state_update":
+      return translateAsyncTaskUpdate(sessionId, update)
     case "user_message_chunk":
       return null
     default:
       return null
   }
+}
+
+const BACKGROUND_TASK_STATUSES = new Set([
+  "running",
+  "paused",
+  "completed",
+  "failed",
+  "stopped",
+])
+
+/**
+ * AIR `asyncTasks` lifecycle → `background-task` StreamEvent. Wire shapes
+ * (claude-agent-acp `async-tasks.js`):
+ *   async_task_spawned      {asyncTaskId, name, taskType, description, outputFilePath?, toolCallId?}
+ *   async_task_progress     {asyncTaskId, description?, summary?, outputFilePath?, ...}
+ *   async_task_state_update {asyncTaskId, state, summary?, outputFilePath?, toolCallId?}
+ * A `state_update` to running/paused is a mid-life update, not a settle.
+ */
+function translateAsyncTaskUpdate(
+  sessionId: string,
+  update: Record<string, unknown>,
+): StreamEvent | null {
+  const str = (key: string): string | undefined => {
+    const value = update[key]
+    return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined
+  }
+  const taskId = str("asyncTaskId")
+  if (!taskId) return null
+  const state = str("state")
+  const status =
+    state && BACKGROUND_TASK_STATUSES.has(state)
+      ? (state as BackgroundTaskInfo["status"])
+      : undefined
+  const phase =
+    update.sessionUpdate === "async_task_spawned"
+      ? "started"
+      : status === "completed" || status === "failed" || status === "stopped"
+        ? "settled"
+        : "updated"
+  const description = str("description") ?? str("name")
+  const task: BackgroundTaskInfo = {
+    taskId,
+    ...(str("taskType") ? { taskKind: str("taskType") } : {}),
+    ...(description ? { description } : {}),
+    ...(str("outputFilePath") ? { outputFile: str("outputFilePath") } : {}),
+    ...(phase === "started" ? { status: "running" as const } : status ? { status } : {}),
+    ...(str("summary") ? { summary: str("summary") } : {}),
+    ...(str("toolCallId") ? { toolCallId: str("toolCallId") } : {}),
+  }
+  return { kind: "background-task", sessionId, phase, task }
 }
 
 /**

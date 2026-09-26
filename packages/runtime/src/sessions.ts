@@ -58,6 +58,11 @@ import type {
   SessionConfigChangedEvent,
 } from "./session-event-bus.js"
 import { resolvePosture } from "./canonical-posture.js"
+import {
+  buildBackgroundTaskWakePrompt,
+  DEFAULT_BG_TASK_WAKE_GRACE_MS,
+  type SessionBackgroundTask,
+} from "./background-task-wake.js"
 import { resolveEffectiveRoute } from "./catalog-models.js"
 import { normalizeModelForWire } from "./model-wire.js"
 import {
@@ -147,6 +152,12 @@ export interface AgentSessionLike {
     requestId: string,
     resolution: AcpPermissionResolution,
   ): boolean | Promise<boolean>
+  /** Subscribe to events the agent emits while no turn is in flight — its
+   *  own wake-up when a background task settles, and the task lifecycle
+   *  itself. Mirrors `@agentproto/driver-agent-cli`'s
+   *  `AgentCliRuntimeSession.onOutOfTurnEvent`. Returns an unsubscribe
+   *  function. Absent for drivers that can't produce such events. */
+  onOutOfTurnEvent?(listener: (event: AgentStreamEvent) => void): () => void
   /**
    * Switch the active model on this LIVE session — mirrors
    * `@agentproto/driver-agent-cli`'s `AgentCliRuntimeSession.setModel`
@@ -369,6 +380,24 @@ export interface AgentStreamEvent {
     input?: { hint?: string } | null
     _meta?: { scope?: string; path?: string; bareName?: string; qualifiedName?: string }
   }>
+  /** "background-task" lifecycle edge — see @agentproto/acp's `StreamEvent`'s
+   *  `background-task` kind. */
+  phase?: "started" | "updated" | "settled"
+  /** "background-task" task snapshot — see @agentproto/acp's
+   *  `BackgroundTaskInfo`. Only `taskId` is guaranteed. */
+  task?: {
+    taskId: string
+    taskKind?: string
+    description?: string
+    outputFile?: string
+    status?: SessionBackgroundTask["status"]
+    summary?: string
+    toolCallId?: string
+  }
+  /** "usage_update" origin of the cycle it closes (claude-agent-acp's
+   *  `_meta["_claude/origin"].kind`, e.g. `"task-notification"` for an
+   *  autonomous wake) — see @agentproto/acp's `StreamEvent`. */
+  origin?: string
 }
 
 /**
@@ -980,10 +1009,23 @@ export interface SessionDescriptor {
    *  session sits `busy:false`, `awaitingInput:false`, background tasks
    *  pending — a silent dead end. Detection + signal ONLY (same doctrine
    *  as `stalledSinceMs`): nothing here re-prompts or wakes the session.
+   *  Not stamped for an agent that reports its background-task lifecycle
+   *  (see `backgroundTasks`) — that one is tracked and woken for real.
    *  Cleared (deleted, never a stale value) on the next turn start and on
    *  session exit. Emits `session:bg-tasks-parked` /
    *  `session:bg-tasks-cleared`. */
   pendingBgTasks?: number
+  /** The agent's background tasks that are still running (a backgrounded
+   *  Bash command, a monitor, ...), as the agent itself reports them — over
+   *  ACP, the AIR `asyncTasks` lifecycle. Unlike `pendingBgTasks` (a
+   *  turn-end heuristic) this is the real set: a task is added when it
+   *  starts and removed when it settles, so an idle session with a
+   *  non-empty list is "waiting on N background tasks", not parked. When
+   *  one settles while the session is idle the registry makes sure the
+   *  agent is woken (see `SessionsRegistryOptions.backgroundTaskWake`).
+   *  Absent when none are running; dropped on exit and on respawn (a new
+   *  process owns none of the old one's tasks). */
+  backgroundTasks?: SessionBackgroundTask[]
   /** ISO 8601 timestamp of the last turn that ended because the ADAPTER
    *  ITSELF reported a failure — `runAgentTurn` observed a `turn-end` event
    *  with `reason:"error"` (session-event-bus.ts's `SessionTurnEndEvent`,
@@ -1796,6 +1838,8 @@ export interface SessionSummary {
    *  `SessionDescriptor.pendingBgTasks`. Stamped at turn-end, cleared on the
    *  next turn start / exit. */
   pendingBgTasks?: number
+  /** Running background tasks — see `SessionDescriptor.backgroundTasks`. */
+  backgroundTasks?: SessionBackgroundTask[]
   /** Adapter-reported turn-error marker — see
    *  `SessionDescriptor.lastTurnErroredAt`. Stamped at turn-end, cleared on
    *  the next turn that completes without one. */
@@ -1902,6 +1946,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     blockedOn: desc.blockedOn,
     stalledSinceMs: desc.stalledSinceMs,
     pendingBgTasks: desc.pendingBgTasks,
+    backgroundTasks: desc.backgroundTasks,
     lastTurnErroredAt: desc.lastTurnErroredAt,
     origin: desc.origin,
     parentSessionId: desc.parentSessionId,
@@ -1949,6 +1994,30 @@ interface SessionRuntime {
    *  arguments (enrichment deduped by id) and announce-then-enrich (counted
    *  when the arguments finally show the flag). Reset with the counter. */
   bgTaskCountedIds?: Set<string>
+  /** Unsubscribes the registry from the live agent session's out-of-turn
+   *  events — see `bindOutOfTurnEvents`. Replaced on every (re)bind. */
+  outOfTurnUnsubscribe?: () => void
+  /** Set while the agent works WITHOUT a prompt (an autonomous
+   *  task-notification cycle) — the registry tracks that stretch as a turn:
+   *  `busy` is true, events are recorded, and it closes with a turn-end. */
+  autonomousTurn?: {
+    /** Tool calls announced and not yet resulted — synthesized at close,
+     *  and the silence-close fallback holds off while any are open. */
+    pendingToolCallIds: Set<string>
+    silenceTimer?: ReturnType<typeof setTimeout>
+  }
+  /** Background tasks that settled while the session was idle, awaiting
+   *  either the agent's own wake-up or the registry's wake prompt when
+   *  `timer` fires — see `SessionsRegistryOptions.backgroundTaskWake`. */
+  bgWake?: {
+    settled: SessionBackgroundTask[]
+    timer?: ReturnType<typeof setTimeout>
+  }
+  /** True once the agent has reported any background-task lifecycle event:
+   *  its tasks are tracked for real (and woken on), so the turn-end
+   *  `pendingBgTasks` heuristic — "parked, no wake-up path" — no longer
+   *  applies to it. */
+  reportsBackgroundTasks?: boolean
   /** Set when the session is a raw spawn (`kind: "command"|"terminal"`).
    *  Agent sessions don't expose the underlying process — the
    *  driver-agent-cli runtime owns it. */
@@ -3769,6 +3838,18 @@ export function createSessionsRegistry(opts?: {
   /** Default per-session tracing opt-in when `SpawnAgentInput.trace` is
    *  omitted. Defaults to false (tracing off). */
   langfuseTracingDefault?: boolean
+  /**
+   * Background-task wake (config `defaults.backgroundTaskWake`). When an
+   * agent's background task settles while the session is idle, Claude Code
+   * wakes the model itself (an autonomous task-notification cycle, which the
+   * registry now tracks as a turn). If no such self-wake shows up within
+   * `graceMs` (default {@link DEFAULT_BG_TASK_WAKE_GRACE_MS}), the registry
+   * sends the wake prompt itself — so an agent that ended its turn "waiting
+   * for the notification" is never left parked. `enabled` defaults to true.
+   * A task that settles mid-turn is left to the agent (it gets the
+   * notification in-turn); settles are coalesced into one wake.
+   */
+  backgroundTaskWake?: { enabled?: boolean; graceMs?: number }
   /** Adapter resolver used for context-continuity "continue fresh" spawns.
    *  When omitted, auto-continuation degrades to a hard-stop instead of
    *  spawning a replacement session. */
@@ -5112,6 +5193,9 @@ export function createSessionsRegistry(opts?: {
       case "available-commands":
         rt.desc.availableCommands = evt.commands ?? []
         break
+      case "background-task":
+        noteBackgroundTask(rt, evt)
+        break
     }
   }
 
@@ -5231,6 +5315,15 @@ export function createSessionsRegistry(opts?: {
     id: string,
     caller: string
   ): Promise<void> => {
+    // An autonomous turn has no `session/prompt` to cancel (cancelling with
+    // none in flight would mark the adapter's session cancelled and swallow
+    // the NEXT prompt's result). Close the daemon-side turn; the agent folds
+    // the incoming prompt into the cycle it is running.
+    if (rt.autonomousTurn) {
+      endAutonomousTurn(rt, "cancelled")
+      autonomousReopenHoldUntil.set(rt.desc.id, Date.now() + AUTONOMOUS_REOPEN_HOLD_MS)
+      return
+    }
     const session = rt.agentSession
     if (!session) {
       // Invariant: `runAgentTurn` requires `agentSession` before it
@@ -5401,6 +5494,7 @@ export function createSessionsRegistry(opts?: {
           return
         }
         rt.agentSession = fresh
+        bindOutOfTurnEvents(rt)
         rt.adapterSlug = adapterSlug
         rt.desc.adapterSessionId = fresh.sessionId
         // The resumed session is a fresh child process — refresh pid so
@@ -5752,6 +5846,9 @@ export function createSessionsRegistry(opts?: {
     // no-op-when-clean shape).
     rt.bgTaskStarts = 0
     rt.bgTaskCountedIds = new Set()
+    // A prompt reaches the agent anyway — it will see any task that settled
+    // meanwhile, so the fallback wake would only repeat the news.
+    takeBackgroundTaskWake(rt)
     if (rt.desc.pendingBgTasks !== undefined) {
       delete rt.desc.pendingBgTasks
       sessionEvents?.emit({
@@ -6194,7 +6291,9 @@ export function createSessionsRegistry(opts?: {
         // no bus wired) and announce on the bus. Detection + signal ONLY —
         // no auto-wake (what to say is the supervisor's call, not the
         // daemon's). Cleared on the next turn start / on session exit.
-        if ((rt.bgTaskStarts ?? 0) > 0 && !rt.desc.awaitingInput) {
+        // Only for an agent that does NOT report its task lifecycle: one that
+        // does is tracked in `backgroundTasks` and woken when a task settles.
+        if ((rt.bgTaskStarts ?? 0) > 0 && !rt.desc.awaitingInput && !rt.reportsBackgroundTasks) {
           rt.desc.pendingBgTasks = rt.bgTaskStarts
           schedulePersist()
           sessionEvents?.emit({
@@ -6253,6 +6352,314 @@ export function createSessionsRegistry(opts?: {
       // a logged error rather than throwing here).
       dispatchQueuedPrompt(rt)
     }
+  }
+
+  // ── Background tasks + autonomous turns ───────────────────────────────
+  // An agent can keep working with no prompt in flight: Claude Code wakes
+  // the model itself when a `run_in_background` task settles (a
+  // "task-notification" cycle) and streams that work as ordinary ACP
+  // updates. The ACP client hands those to `handleOutOfTurnEvent` (they used
+  // to be dropped — the session looked idle, "waiting on the notification",
+  // while the agent worked invisibly and a supervisor re-prompted or reaped
+  // it). The registry now tracks such a stretch as an AUTONOMOUS turn (busy,
+  // recorded, closed with a turn-end), mirrors the task lifecycle onto
+  // `SessionDescriptor.backgroundTasks`, and — for an agent that does NOT
+  // wake itself — sends the wake prompt when a task settles on an idle
+  // session (`backgroundTaskWake`, on by default).
+  const bgWakeEnabled = opts?.backgroundTaskWake?.enabled ?? true
+  const bgWakeGraceMs = opts?.backgroundTaskWake?.graceMs ?? DEFAULT_BG_TASK_WAKE_GRACE_MS
+  /** Silence after which an autonomous turn with no open tool call is closed
+   *  even though its closing cost frame never arrived. */
+  const AUTONOMOUS_SILENCE_CLOSE_MS = 120_000
+  /** The same fallback while a tool call is still open — generous, since a
+   *  foreground command inside the cycle can legitimately run for minutes. */
+  const AUTONOMOUS_SILENCE_CLOSE_WITH_TOOLS_MS = 30 * 60_000
+  /** After an interrupt closes an autonomous turn, the agent's in-progress
+   *  cycle keeps streaming until the new prompt lands on the wire; don't
+   *  re-open a turn (which would make the prompt's admission see `busy`)
+   *  for this long. */
+  const AUTONOMOUS_REOPEN_HOLD_MS = 5_000
+  /** Out-of-turn event kinds that mean the model is actually working. Task
+   *  lifecycle, usage and capability metadata alone do not open a turn. */
+  const AUTONOMOUS_WORK_KINDS = new Set([
+    "text-delta",
+    "thought",
+    "tool-call",
+    "tool-result",
+    "plan",
+    "agent-prompt",
+  ])
+  const autonomousReopenHoldUntil = new Map<string, number>()
+
+  /** Mirror one `background-task` lifecycle edge onto the descriptor, the
+   *  ring buffer and the bus; a settle on an idle session arms the wake. */
+  const noteBackgroundTask = (rt: SessionRuntime, evt: AgentStreamEvent): void => {
+    const info = evt.task
+    if (!info?.taskId) return
+    rt.reportsBackgroundTasks = true
+    const tasks = rt.desc.backgroundTasks ?? []
+    // A task that already settled can settle AGAIN: claude-agent-acp closes a
+    // task best-effort as "stopped" when its replace-level drops it, then
+    // corrects that with the authoritative "completed"/"failed" edge. Merge
+    // the correction onto the settled record (still held for the wake).
+    const settledBefore = rt.bgWake?.settled.find(t => t.taskId === info.taskId)
+    const prior = tasks.find(t => t.taskId === info.taskId) ?? settledBefore
+    const taskKind = info.taskKind ?? prior?.taskKind
+    const description = info.description ?? prior?.description
+    const outputFile = info.outputFile ?? prior?.outputFile
+    const summary = info.summary ?? prior?.summary
+    const toolCallId = info.toolCallId ?? prior?.toolCallId
+    const task: SessionBackgroundTask = {
+      taskId: info.taskId,
+      status: info.status ?? prior?.status ?? "running",
+      startedAt: prior?.startedAt ?? new Date().toISOString(),
+      ...(taskKind ? { taskKind } : {}),
+      ...(description ? { description } : {}),
+      ...(outputFile ? { outputFile } : {}),
+      ...(summary ? { summary } : {}),
+      ...(toolCallId ? { toolCallId } : {}),
+    }
+    const busEvent = (phase: "started" | "settled") =>
+      sessionEvents?.emit({
+        type: "session:bg-task",
+        sessionId: rt.desc.id,
+        phase,
+        taskId: task.taskId,
+        ...(task.taskKind ? { taskKind: task.taskKind } : {}),
+        ...(task.description ? { description: task.description } : {}),
+        ...(task.outputFile ? { outputFile: task.outputFile } : {}),
+        status: task.status,
+        ...(task.summary ? { summary: task.summary } : {}),
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts: new Date().toISOString(),
+      })
+    if (evt.phase === "settled") {
+      const rest = tasks.filter(t => t.taskId !== task.taskId)
+      if (rest.length > 0) rt.desc.backgroundTasks = rest
+      else delete rt.desc.backgroundTasks
+      // A repeated settle is only news when it corrects the status.
+      if (settledBefore?.status !== task.status) {
+        appendLine(
+          rt,
+          `\x1b[2m[bg-task] ${task.taskId} ${task.status}` +
+            `${task.description ? ` — ${task.description}` : ""}\x1b[0m`,
+          "stdout"
+        )
+        busEvent("settled")
+      }
+      // Mid-turn the agent hears about it in-turn; only an idle session
+      // can be left parked.
+      if (!rt.busy) queueBackgroundTaskWake(rt, task)
+    } else {
+      rt.desc.backgroundTasks = prior
+        ? tasks.map(t => (t.taskId === task.taskId ? task : t))
+        : [...tasks, task]
+      if (!prior) {
+        appendLine(
+          rt,
+          `\x1b[2m[bg-task] ${task.taskId} started` +
+            `${task.description ? ` — ${task.description}` : ""}\x1b[0m`,
+          "stdout"
+        )
+        busEvent("started")
+      }
+    }
+    schedulePersist()
+  }
+
+  /** Remember a settled task and arm the (coalescing) wake timer: every
+   *  settle inside one grace window rides the same wake. */
+  const queueBackgroundTaskWake = (rt: SessionRuntime, task: SessionBackgroundTask): void => {
+    if (!bgWakeEnabled || rt.desc.status !== "running") return
+    const wake = (rt.bgWake ??= { settled: [] })
+    // Latest edge wins — a corrected settle replaces the provisional one.
+    wake.settled = [...wake.settled.filter(t => t.taskId !== task.taskId), task]
+    if (wake.timer) return
+    wake.timer = setTimeout(() => {
+      void fireBackgroundTaskWake(rt)
+    }, bgWakeGraceMs)
+    wake.timer.unref?.()
+  }
+
+  /** Disarm the wake and hand back what it would have announced. */
+  const takeBackgroundTaskWake = (rt: SessionRuntime): SessionBackgroundTask[] => {
+    const wake = rt.bgWake
+    if (!wake) return []
+    if (wake.timer) clearTimeout(wake.timer)
+    rt.bgWake = undefined
+    return wake.settled
+  }
+
+  /** The grace window elapsed without the agent waking itself: prompt it. */
+  const fireBackgroundTaskWake = async (rt: SessionRuntime): Promise<void> => {
+    const settled = takeBackgroundTaskWake(rt)
+    if (settled.length === 0) return
+    // Working again (its own wake, or a prompt landed) — it hears the
+    // notification itself; a dead session has nobody to wake.
+    if (rt.busy || rt.desc.status !== "running" || !rt.agentSession) return
+    const message = buildBackgroundTaskWakePrompt(settled)
+    try {
+      const live = validateAgentTurn(rt.desc.id, "background-task-wake")
+      await runAgentTurn(live, message, { promptSource: "background-task" })
+    } catch (err) {
+      appendLine(
+        rt,
+        `[error] background-task wake dropped — ${err instanceof Error ? err.message : String(err)}`,
+        "stderr"
+      )
+    }
+  }
+
+  /** Open an autonomous turn: the agent started working with no prompt. */
+  const beginAutonomousTurn = (rt: SessionRuntime): void => {
+    // It woke itself — the registry's fallback wake is moot.
+    const settled = takeBackgroundTaskWake(rt)
+    rt.autonomousTurn = { pendingToolCallIds: new Set() }
+    rt.busy = true
+    rt.desc.busy = true
+    rt.emitter.emit("busy", true)
+    rt.desc.awaitingInput = false
+    rt.desc.awaitingQuestion = undefined
+    releaseBlockedOn(rt.desc)
+    clearStalledFlag(rt)
+    rt.activeToolCalls = new Map()
+    rt.toolCallIdsThisTurn = new Set()
+    rt.toolCallsThisTurn = 0
+    // No longer parked — same as a prompted turn start.
+    if (rt.desc.pendingBgTasks !== undefined) {
+      delete rt.desc.pendingBgTasks
+      sessionEvents?.emit({
+        type: "session:bg-tasks-cleared",
+        sessionId: rt.desc.id,
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts: new Date().toISOString(),
+      })
+    }
+    // Record WHY the agent is talking with nobody having prompted it — the
+    // transcript would otherwise show assistant output out of nowhere.
+    const note =
+      settled.length > 0
+        ? buildBackgroundTaskWakePrompt(settled, () => undefined)
+        : "(the agent resumed on its own)"
+    appendLine(rt, `\x1b[2m── ▶ [autonomous] ${note.split("\n")[0]} ──\x1b[0m`, "stdout")
+    transcriptWriter.recordPrompt(rt.desc.id, note, { source: "autonomous" })
+    schedulePersist()
+  }
+
+  /** Close the autonomous turn the same way a prompted one ends. */
+  const endAutonomousTurn = (rt: SessionRuntime, reason: string): void => {
+    const auto = rt.autonomousTurn
+    if (!auto) return
+    if (auto.silenceTimer) clearTimeout(auto.silenceTimer)
+    rt.autonomousTurn = undefined
+    for (const toolCallId of auto.pendingToolCallIds) {
+      const synthetic: AgentStreamEvent = { kind: "tool-result", toolCallId, result: null, isError: false }
+      transcriptWriter.recordEvent(rt.desc.id, synthetic)
+      projectEvent(rt, synthetic)
+    }
+    const turnEnd: AgentStreamEvent = { kind: "turn-end", reason }
+    transcriptWriter.recordEvent(rt.desc.id, turnEnd)
+    projectEvent(rt, turnEnd)
+    rt.busy = false
+    rt.desc.busy = false
+    rt.emitter.emit("busy", false)
+    releaseBlockedOn(rt.desc)
+    rt.activeToolCalls?.clear()
+    clearStalledFlag(rt)
+    rt.desc.turnsCompleted = (rt.desc.turnsCompleted ?? 0) + 1
+    rt.desc.lastTurnReason = reason
+    if (rt.desc.lastTurnEmpty !== undefined) delete rt.desc.lastTurnEmpty
+    const usage = buildUsageSnapshot(rt)
+    rt.desc.usageSource = usage.source
+    rt.desc.costUsd = usage.costUsd
+    transcriptWriter.recordUsageSnapshot(rt.desc.id, usage)
+    schedulePersist()
+    sessionEvents?.emit({
+      type: "session:turn-end",
+      sessionId: rt.desc.id,
+      awaitingInput: rt.desc.awaitingInput ?? false,
+      label: rt.desc.label,
+      ts: new Date().toISOString(),
+      reason,
+      autonomous: true,
+    })
+    dispatchQueuedPrompt(rt)
+  }
+
+  const armAutonomousSilenceClose = (rt: SessionRuntime): void => {
+    const auto = rt.autonomousTurn
+    if (!auto) return
+    if (auto.silenceTimer) clearTimeout(auto.silenceTimer)
+    auto.silenceTimer = setTimeout(
+      () => endAutonomousTurn(rt, "watchdog-timeout"),
+      auto.pendingToolCallIds.size > 0
+        ? AUTONOMOUS_SILENCE_CLOSE_WITH_TOOLS_MS
+        : AUTONOMOUS_SILENCE_CLOSE_MS
+    )
+    auto.silenceTimer.unref?.()
+  }
+
+  /** One event the agent emitted with no prompt in flight. */
+  const handleOutOfTurnEvent = (rt: SessionRuntime, evt: AgentStreamEvent): void => {
+    if (rt.desc.status !== "running") return
+    if (evt.kind === "usage_update") evt = normalizeUsageFrame(rt, evt)
+    if (
+      AUTONOMOUS_WORK_KINDS.has(evt.kind) &&
+      !rt.busy &&
+      (autonomousReopenHoldUntil.get(rt.desc.id) ?? 0) <= Date.now()
+    ) {
+      beginAutonomousTurn(rt)
+    }
+    const auto = rt.autonomousTurn
+    if (auto && evt.toolCallId) {
+      if (evt.kind === "tool-call") auto.pendingToolCallIds.add(evt.toolCallId)
+      else if (evt.kind === "tool-result") auto.pendingToolCallIds.delete(evt.toolCallId)
+    }
+    transcriptWriter.recordEvent(rt.desc.id, evt)
+    projectEvent(rt, evt)
+    if (!auto) return
+    // The cycle's closing result frame: claude-agent-acp reports every
+    // result's cost (tagged `origin: task-notification` for this lane).
+    if (evt.kind === "usage_update" && evt.cost) endAutonomousTurn(rt, "completed")
+    else armAutonomousSilenceClose(rt)
+  }
+
+  /**
+   * (Re)subscribe the registry to the live agent session's out-of-turn
+   * events. Called wherever `rt.agentSession` is (re)bound. A new agent
+   * process owns none of the old one's background tasks or cycle, so both
+   * are reset.
+   */
+  const bindOutOfTurnEvents = (rt: SessionRuntime): void => {
+    releaseOutOfTurnEvents(rt)
+    delete rt.desc.backgroundTasks
+    const session = rt.agentSession
+    if (!session?.onOutOfTurnEvent) return
+    rt.outOfTurnUnsubscribe = session.onOutOfTurnEvent(evt => {
+      if (rt.agentSession !== session) return
+      try {
+        handleOutOfTurnEvent(rt, evt)
+      } catch (err) {
+        console.warn(
+          `[sessions] ${rt.desc.id}: out-of-turn event (${evt.kind}) failed:`,
+          err instanceof Error ? err.message : err
+        )
+      }
+    })
+  }
+
+  /** Drop the subscription, the pending wake and any open autonomous
+   *  turn's timer — for a session whose agent process is going away. */
+  const releaseOutOfTurnEvents = (rt: SessionRuntime): void => {
+    rt.outOfTurnUnsubscribe?.()
+    rt.outOfTurnUnsubscribe = undefined
+    takeBackgroundTaskWake(rt)
+    if (rt.autonomousTurn?.silenceTimer) clearTimeout(rt.autonomousTurn.silenceTimer)
+    if (rt.autonomousTurn) {
+      rt.autonomousTurn = undefined
+      rt.busy = false
+    }
+    autonomousReopenHoldUntil.delete(rt.desc.id)
   }
 
   /**
@@ -6610,6 +7017,7 @@ export function createSessionsRegistry(opts?: {
       }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
+      bindOutOfTurnEvents(rt)
       // Lineage-attribution signal (WP-R3): announce the new session's parent
       // + depth the moment it's registered, so a live tree can nest it under
       // `parentSessionId` without waiting for its next snapshot poll. Rides the
@@ -6783,6 +7191,7 @@ export function createSessionsRegistry(opts?: {
         return
       }
       rt.agentSession = outcome.agentSession
+      bindOutOfTurnEvents(rt)
       rt.readUsage = outcome.readUsage
       rt.desc.cwd = outcome.cwd
       Object.assign(rt.desc, worktreeFields(outcome.cwd))
@@ -7915,6 +8324,8 @@ export function createSessionsRegistry(opts?: {
       // SIGTERM the underlying child/pty if any. Either branch is a
       // best-effort — the descriptor flip is what the UI surfaces.
       if (rt.agentSession) {
+        releaseOutOfTurnEvents(rt)
+        delete rt.desc.backgroundTasks
         // Durable usage recap on exit — before close() flushes the stream.
         recordExitUsageSnapshot(rt)
         void rt.agentSession.close().catch(() => undefined)
@@ -7964,6 +8375,8 @@ export function createSessionsRegistry(opts?: {
       // never join a boot-time resume-storm of dead work.
       rt.desc.endedReason = "idle-reaped"
       if (rt.agentSession) {
+        releaseOutOfTurnEvents(rt)
+        delete rt.desc.backgroundTasks
         // Durable usage recap on exit — before close() flushes the stream.
         recordExitUsageSnapshot(rt)
         void rt.agentSession.close().catch(() => undefined)
@@ -8018,6 +8431,8 @@ export function createSessionsRegistry(opts?: {
       rt.desc.crashedAt = rt.desc.endedAt
       rt.desc.lastError = `adapter process gone (pid ${pid}) — session crashed`
       if (rt.agentSession) {
+        releaseOutOfTurnEvents(rt)
+        delete rt.desc.backgroundTasks
         // Durable usage recap on exit — before close() flushes the stream.
         recordExitUsageSnapshot(rt)
         void rt.agentSession.close().catch(() => undefined)
@@ -8422,6 +8837,8 @@ function clearInFlightFlags(desc: SessionDescriptor): void {
   // paths (kill/shutdown/boot-reclassify) where session:exited is the
   // signal consumers key on; a bg-tasks-cleared would be noise.
   delete desc.pendingBgTasks
+  // Nor any live background task: its process is gone with the session.
+  delete desc.backgroundTasks
 }
 
 /**

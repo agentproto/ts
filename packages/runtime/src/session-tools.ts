@@ -401,6 +401,10 @@ export interface SessionListCompactItem {
   busy?: boolean
   awaitingInput?: boolean
   blockedOn?: SessionDescriptor["blockedOn"]
+  /** How many background tasks the agent still has running — the
+   *  "idle, but waiting on N background tasks" signal. Absent when none;
+   *  the task list itself is on the full record (`backgroundTasks`). */
+  backgroundTaskCount?: number
   lastActivityAt?: string
   startedAt: string
   exitCode?: number
@@ -441,6 +445,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   busy: s.busy,
   awaitingInput: s.awaitingInput,
   blockedOn: s.blockedOn,
+  ...(s.backgroundTasks?.length ? { backgroundTaskCount: s.backgroundTasks.length } : {}),
   lastActivityAt: s.lastActivityAt,
   startedAt: s.startedAt,
   exitCode: s.exitCode,

@@ -756,6 +756,13 @@ export function createAgentCliRuntime(
               },
             }
           : {}),
+        ...(arm.onOutOfTurnEvent
+          ? {
+              onOutOfTurnEvent(listener) {
+                return arm.onOutOfTurnEvent!(listener)
+              },
+            }
+          : {}),
         async close() {
           await arm.close()
           if (child && !child.killed) child.kill("SIGTERM")
