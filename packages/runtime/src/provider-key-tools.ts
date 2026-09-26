@@ -169,7 +169,7 @@ export function registerProviderKeyTools(
       "the env var holds a DIFFERENT value than the file: `serve` boot " +
       "(`injectProviderKeysIntoEnv`) copies each file key into env whenever " +
       "that env var isn't already set, so env === file is the ordinary " +
-      "boot-injected case, not shadowing — a differing value means some " +
+      "boot-injected case, not shadowing; a differing value means some " +
       "explicit env (a one-off `FOO_API_KEY=… serve`, a CI secret) won " +
       "instead and the file's key is not the one actually in effect. " +
       "Optional `provider` filters to one provider.",
