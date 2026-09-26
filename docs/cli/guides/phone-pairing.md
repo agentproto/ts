@@ -27,8 +27,14 @@ for the full protocol and threat model.
   the daemon. (At the time of writing, pair/v2 and the per-daemon pair page
   are on `main` but not yet in a published release — check `agentproto
   --version` against the latest [CHANGELOG](https://github.com/agentproto/ts/blob/main/packages/cli/CHANGELOG.md)
-  entry, or just try `agentproto pair offer --qr`: an older CLI won't
-  recognize `--qr`.)
+  entry.) Don't rely on whether `--qr` is merely recognized — an older CLI
+  can still accept the flag and print a link that 404s. Check the **printed
+  link itself**: it should look like
+  `https://<32-hex-chars>.agentproto.cloud/pair#…`, one origin per daemon.
+  If it instead prints `https://cli.agentproto.sh/pair#…`, or the id/host
+  label is only 16 hex characters, the daemon predates the per-daemon pair
+  page — update agentproto on the computer, restart the daemon, and run
+  `pair offer --qr` again.
 - Any phone browser in a **secure context** (Safari or Chrome over HTTPS —
   which `agentproto.cloud` always is). Pairing needs service workers, so
   skip private/incognito tabs.
@@ -109,10 +115,14 @@ the page links you to daemon B's own address instead:
   phone's pairing (revoked, or paired under a retired protocol version).
   Re-pair from a fresh QR: `agentproto pair offer --qr` on the computer,
   scan again.
-- **A 404 on the pairing link** — either the daemon is too old (pre-pair/v2
-  daemons mint a 16-hex-character fingerprint, which the current pair page
-  rejects as an invalid host) or the link got mistyped/truncated when
-  copied. Get a fresh QR rather than retyping the URL by hand.
+- **A 404 on the pairing link** — check the link against
+  `https://<32-hex-chars>.agentproto.cloud/pair#…` (see
+  [Prerequisites](#2-prerequisites)). A `https://cli.agentproto.sh/pair#…`
+  link, or a 16-hex-character id/host label, means the daemon predates the
+  per-daemon pair page: update agentproto on the computer, restart the
+  daemon, and get a fresh QR. Otherwise the link likely got
+  mistyped/truncated when copied — get a fresh QR rather than retyping the
+  URL by hand.
 - **Offline forever, never reconnects** — check that the daemon process is
   actually running (`agentproto serve`) and that it can reach
   `pairing.rendezvous` (the hosted default is
