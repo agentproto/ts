@@ -10,10 +10,12 @@ surfaces from a single port:
 - `POST /v1/responses` — OpenAI Responses API facade for Codex custom providers.
 
 Requests are fanned out to upstream providers — **Moonshot, OpenRouter, ZAI/Zhipu,
-Groq, xAI, direct OpenAI, Nebius AI Studio, and a self-hosted "forge" server for
-fine-tunes** — using provider-native model references. The
-proxy also handles Anthropic↔OpenAI schema translation, per-provider tool caps,
-orphaned-tool-call repair, and thinking-block stripping where needed.
+Groq, xAI, direct OpenAI, Nebius AI Studio, a self-hosted "forge" server for
+fine-tunes, and any number of named local/LAN model servers** (Ollama,
+llama-server, vLLM, …, configured from `~/.agentproto/llm-endpoints.json`) —
+using provider-native model references. The proxy also handles
+Anthropic↔OpenAI schema translation, per-provider tool caps, orphaned-tool-call
+repair, and thinking-block stripping where needed.
 
 - **Package:** `@agentproto/llm-endpoint`
 - **Entry:** `src/cli.ts` → `start()` in `src/index.ts`
@@ -95,6 +97,74 @@ curl http://localhost:18090/v1/chat/completions \
 curl http://localhost:18090/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"nebius/meta-llama/Llama-3.1-8B-Instruct","messages":[{"role":"user","content":"hi"}]}'
+```
+
+### Named endpoints — N local/LAN model servers (`~/.agentproto/llm-endpoints.json`)
+
+`forge` is one keyless self-hosted server. Real setups often have several —
+Ollama, llama-server, vLLM — each on its own host/port, possibly on another
+LAN machine. Named endpoints generalize `forge`'s mechanism to N of them,
+configured from a JSON file instead of a pair of env vars per server:
+
+```jsonc
+// ~/.agentproto/llm-endpoints.json (path overridable via LLM_ENDPOINT_ENDPOINTS_FILE)
+{
+  "endpoints": [
+    {
+      "id": "bonsai",
+      "kind": "openai",
+      "baseUrl": "http://192.168.1.20:8081/v1",
+      "apiKeyEnv": "BONSAI_API_KEY",
+      "defaultRequestFields": { "chat_template_kwargs": { "enable_thinking": false } },
+      "timeoutMs": { "firstTokenMs": 180000 }
+    },
+    { "id": "ollama", "kind": "openai", "baseUrl": "http://192.168.1.20:11434/v1" }
+  ]
+}
+```
+
+The field names deliberately mirror `openagentik/router`'s `providers[]`
+schema (`kind`, `baseUrl`, `apiKeyEnv`, `defaultRequestFields`, `timeoutMs`) so
+a config is portable between the two. Each entry becomes a routable provider
+`<id>/<model>` — `bonsai/bonsai-27b`, `ollama/qwen2.5-coder` — going through
+the exact same dispatch path as `forge`/`nebius` above: all three surfaces,
+Anthropic↔OpenAI translation, streaming, tool-cap handling, and `GET
+/v1/models` merging (an unreachable endpoint is skipped with a warning, never
+a 500 for the whole listing). `forge` itself keeps working unchanged — it's
+the implicit endpoint that `FORGE_BASE_URL`/`FORGE_API_KEY` configure; a file
+entry may not reuse the id `"forge"`.
+
+- **`apiKeyEnv`** names an env var (never the key itself). Absent, or the env
+  var unset, means the endpoint is always keyless — no `Authorization` header
+  sent, same as `forge` with no `FORGE_API_KEY`.
+- **`defaultRequestFields.chat_template_kwargs`** is merged UNDER the client's
+  own request value (a client-supplied key always wins) — the vLLM
+  OpenAI-compatible extension `forge` already documents above. Needed in
+  practice: Qwen3.6-based models (e.g. a Bonsai-served 27B) default to a
+  "thinking" chat template and, on a tight `max_tokens` budget, can spend the
+  whole budget reasoning and return empty content — `enable_thinking: false`
+  avoids that unless the caller explicitly opts back in.
+- When the upstream *still* returns only `reasoning_content` (no visible
+  `content`) — a model-level defect, not a config one — set
+  `LLM_ENDPOINT_PASSTHROUGH_THINKING=1` to surface it as an Anthropic
+  `thinking` block instead of an empty message.
+- **`GET /v1/endpoints`** (and `/endpoints`) reports live health per endpoint —
+  forge (if configured) plus every named endpoint, never nebius (a hosted
+  provider with a well-known catalog, not a local/LAN server): `{id, baseUrl
+  (no credential), reachable, models, latencyMs}`. Gated by the same
+  access-token check as `/v1/upstreams` (not the `/v1/models` public
+  exemption).
+- A `packs.local.json` route may target a named endpoint id as its
+  `provider` — an id that resolves to neither a canonical upstream, `forge`,
+  `nebius`, nor a configured endpoint is a clear load-time error instead of a
+  confusing 400 the first time a client hits that code.
+
+```sh
+curl http://localhost:18090/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"bonsai/bonsai-27b","messages":[{"role":"user","content":"hi"}]}'
+
+curl http://localhost:18090/v1/endpoints
 ```
 
 ### Anthropic Messages surface (`/v1/messages`)

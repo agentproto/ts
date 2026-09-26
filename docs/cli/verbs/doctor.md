@@ -17,6 +17,7 @@ and changes nothing: no file writes, no process starts, no prompts.
 | `auth` | no | Auth profiles (count, enabled) · credentials `auth discover` finds that aren't imported yet |
 | `clients` | no | Each detected coding client: agentproto MCP server still present in its config, pinned URL matches the daemon port |
 | `skills` | no | Each skill-capable adapter: agentproto skill pack installed and current |
+| `local-models` | no | Each named LLM-gateway endpoint (`~/.agentproto/llm-endpoints.json`, plus `forge` if `FORGE_BASE_URL` is set) answers `GET <baseUrl>/models` |
 
 Secrets are never read into the report — `auth` lists only origin, endpoint
 and method.
@@ -82,3 +83,4 @@ agentproto doctor --skip agents
 - [`daemon.md`](./daemon.md) — the `daemon` step's fixes
 - [`install-mcp.md`](./install-mcp.md) — the `clients` step's fixes
 - [`auth.md`](./auth.md) — `auth discover` / `auth profile import`
+- [`llm.md`](./llm.md) — the `local-models` step's endpoints, managed directly

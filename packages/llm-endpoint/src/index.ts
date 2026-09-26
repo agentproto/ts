@@ -26,6 +26,13 @@ import {
 } from './responses.js';
 import { getAuthProfile, KeychainStore } from '@agentproto/auth';
 import { handleBatchesRequest, isInternalLoopbackRequest, resumeIncompleteLocalQueueBatches } from './batches.js';
+import {
+  getConfiguredEndpoints,
+  parseUpstreamUrl,
+  type ConfigurableUpstream,
+  type EndpointConfig,
+  type EndpointDefaultRequestFields,
+} from './endpoints.js';
 
 // Port local du proxy — surchargeable via env (LLM_ENDPOINT_PORT | PORT).
 // NOTE: evaluated once at module-load time. Set the env variable *before*
@@ -96,9 +103,40 @@ function readLocalPacksFromDisk(): LocalPacksLoad {
     if (!result.ok) {
       return { packs: {}, errors: result.errors.map((e) => `${localPath}: ${e}`), path: localPath };
     }
+    // validateLocalPacks (packs.ts) only checks shape — it doesn't know the
+    // set of routable providers (that's runtime config: forge/nebius/the
+    // endpoints file), so cross-checking each route's provider happens here,
+    // at load, instead. A local pack may target a named endpoint id as its
+    // provider (e.g. "bonsai") — anything else is a clear load-time error
+    // rather than a confusing 400 the first time a client hits that code.
+    const providerErrors = validateLocalPackProviders(result.packs);
+    if (providerErrors.length > 0) {
+      return { packs: {}, errors: providerErrors.map((e) => `${localPath}: ${e}`), path: localPath };
+    }
     return { packs: result.packs, errors: [], path: localPath };
   }
   return { packs: {}, errors: [], path: null };
+}
+
+/**
+ * Every route's `provider` must resolve somewhere: a canonical upstream
+ * (anthropic, groq, …), forge, nebius, or a named endpoint from the
+ * endpoints file. Returns one `<packId>.models.<code>.provider`-scoped
+ * message per unresolvable provider — see the caller in readLocalPacksFromDisk.
+ */
+function validateLocalPackProviders(packs: Record<string, ModelPack>): string[] {
+  const errors: string[] = [];
+  for (const [packId, pack] of Object.entries(packs)) {
+    for (const [code, route] of Object.entries(pack.models)) {
+      if (!isKnownProvider(route.provider)) {
+        errors.push(
+          `packs.${packId}.models.${code}.provider: unknown provider "${route.provider}" ` +
+            `(known: ${[...KNOWN_PROVIDERS, ...getConfiguredEndpoints().map((e) => e.id)].join(', ')})`,
+        );
+      }
+    }
+  }
+  return errors;
 }
 
 // Load (and cache) local pack overrides. Fail-soft at load time: an invalid
@@ -266,14 +304,8 @@ function getResolvedKeys(): ProviderKeys {
   return resolveSecretKeys();
 }
 
-/** A resolved OpenAI-compatible upstream — parsed once per call from its base-URL env var. */
-export interface ConfigurableUpstream {
-  hostname: string;
-  port: number;
-  protocol: 'http' | 'https';
-  /** URL pathname with any trailing slash stripped, e.g. "/v1" or "" for root. */
-  pathPrefix: string;
-}
+/** Re-exported for back-compat — see {@link ConfigurableUpstream} in endpoints.ts. */
+export type { ConfigurableUpstream };
 
 /** Back-compat name — see {@link ConfigurableUpstream}. */
 export type ForgeUpstream = ConfigurableUpstream;
@@ -316,9 +348,10 @@ const CONFIGURABLE_PROVIDERS: Record<string, ConfigurableProviderSpec> = {
   },
 };
 
-/** false only for forge today — every other provider (nebius included) 401s on a missing key. */
+/** false for every fixed-hostname provider and nebius; true for forge and every
+ *  file-configured named endpoint — a private/LAN server may be keyless. */
 function isUpstreamKeyOptional(provider: string): boolean {
-  return CONFIGURABLE_PROVIDERS[provider]?.keyRequired === false;
+  return getConfigurableProviderSpec(provider)?.keyRequired === false;
 }
 
 /**
@@ -335,7 +368,13 @@ function configurableProviderUnavailableMessage(provider: string): string {
   return `${provider} provider not configured — set ${spec.baseUrlEnv} to enable "${provider}/<model>" routing.`;
 }
 
-/** Parse one base-URL value into a routable upstream; shared by every configurable provider. */
+/**
+ * Parse one base-URL value into a routable upstream; shared by every
+ * env-configured provider (forge, nebius). Wraps the pure
+ * {@link parseUpstreamUrl} with a one-time warning on failure — a file-
+ * configured endpoint doesn't need this wrapper since its baseUrl is already
+ * validated at load time (see endpoints.ts's parseEndpointsConfig).
+ */
 function parseConfigurableUpstreamUrl(value: string, provider: string): ConfigurableUpstream | null {
   let parsed: URL;
   try {
@@ -348,10 +387,7 @@ function parseConfigurableUpstreamUrl(value: string, provider: string): Configur
     warnUpstreamOnce(`${provider}:bad-scheme`, `[Proxy][${provider}] "${value}" must use http:// or https://; ${provider} provider disabled.`);
     return null;
   }
-  const protocol: 'http' | 'https' = parsed.protocol === 'http:' ? 'http' : 'https';
-  const port = parsed.port ? Number(parsed.port) : (protocol === 'https' ? 443 : 80);
-  const pathPrefix = parsed.pathname.replace(/\/+$/, '');
-  return { hostname: parsed.hostname, port, protocol, pathPrefix };
+  return parseUpstreamUrl(value);
 }
 
 /**
@@ -381,16 +417,72 @@ export function resolveNebiusBaseUrl(raw: string | undefined = process.env.NEBIU
   return parseConfigurableUpstreamUrl(value, 'nebius');
 }
 
-/** Dispatch to the right per-provider resolver — keeps callers provider-agnostic. */
-function resolveConfigurableUpstream(provider: string): ConfigurableUpstream | null {
-  switch (provider) {
-    case 'forge':
-      return resolveForgeBaseUrl();
-    case 'nebius':
-      return resolveNebiusBaseUrl();
-    default:
-      return null;
+/**
+ * A configurable provider's routing info, resolved uniformly regardless of
+ * whether it's one of the two static env-configured providers (forge,
+ * nebius) or a file-configured named endpoint. This is the "ONE code path"
+ * every dispatch site (the /v1/messages switch, /v1/chat/completions,
+ * /v1/responses, GET /v1/models merging, GET /v1/endpoints) goes through —
+ * adding a new named endpoint to the JSON file never needs a new case
+ * anywhere in this file.
+ */
+interface ResolvedConfigurableProvider {
+  /** false ⇒ a request proceeds with no Authorization header when the key is
+   *  unset (forge, every file endpoint — a private/LAN server may be
+   *  keyless). true ⇒ a missing key 401s (nebius only). */
+  keyRequired: boolean;
+  /** Env var the key is read from. Undefined ⇒ this endpoint never sends a key. */
+  apiKeyEnv?: string;
+  defaultRequestFields?: EndpointDefaultRequestFields;
+  resolveUpstream(): ConfigurableUpstream | null;
+  unavailableMessage(): string;
+}
+
+/**
+ * Look up `provider` as a configurable provider — forge/nebius (env-
+ * configured, unchanged from before) or a named endpoint from the JSON file
+ * (see endpoints.ts). Returns undefined for every fixed-hostname provider
+ * (anthropic, groq, …), which callers fall through to their existing switch
+ * for.
+ */
+function getConfigurableProviderSpec(provider: string): ResolvedConfigurableProvider | undefined {
+  const staticSpec = CONFIGURABLE_PROVIDERS[provider];
+  if (staticSpec) {
+    return {
+      keyRequired: staticSpec.keyRequired,
+      apiKeyEnv: staticSpec.apiKeyEnv,
+      resolveUpstream: () => (provider === 'forge' ? resolveForgeBaseUrl() : resolveNebiusBaseUrl()),
+      unavailableMessage: () => configurableProviderUnavailableMessage(provider),
+    };
   }
+  const fileEndpoint = getConfiguredEndpoints().find((e) => e.id === provider);
+  if (fileEndpoint) {
+    // Validated (a syntactically valid http(s) URL) at config-load time —
+    // parseUpstreamUrl cannot fail here, but a defensive null-safe caller is
+    // cheaper than a non-null assertion that a future load-path change could
+    // silently invalidate.
+    const upstream = parseUpstreamUrl(fileEndpoint.baseUrl);
+    return {
+      keyRequired: false,
+      apiKeyEnv: fileEndpoint.apiKeyEnv,
+      defaultRequestFields: fileEndpoint.defaultRequestFields,
+      resolveUpstream: () => upstream,
+      unavailableMessage: () => `"${provider}" endpoint is misconfigured (invalid baseUrl).`,
+    };
+  }
+  return undefined;
+}
+
+/** Merged UNDER the client's own request value (client keys win per-key) —
+ *  openai-kind dispatch only, mirrors openagentik/router's `defaultRequestFields`.
+ *  Today scoped to `chat_template_kwargs` (see endpoints.ts). The narrow
+ *  structural parameter type (rather than `Record<string, unknown>`) lets
+ *  this apply to both the untyped Anthropic/chat-completions payload and the
+ *  strongly-typed Responses-facade ChatCompletionsRequestBody with no cast. */
+function applyDefaultRequestFields(payload: { chat_template_kwargs?: Record<string, unknown> }, defaults: EndpointDefaultRequestFields | undefined): void {
+  if (!defaults?.chat_template_kwargs) return;
+  const clientFields = isRecord(payload.chat_template_kwargs) ? payload.chat_template_kwargs : {};
+  payload.chat_template_kwargs = { ...defaults.chat_template_kwargs, ...clientFields };
 }
 
 /**
@@ -413,8 +505,9 @@ function sendUpstreamRequest(
 // endpoint) so callers can fail loud with a 400 instead of misrouting. `port`/
 // `protocol` default to 443/https when absent (every fixed-hostname provider).
 function getChatCompletionsEndpoint(provider: string): { hostname: string; path: string; port?: number; protocol?: 'http' | 'https' } | null {
-  if (CONFIGURABLE_PROVIDERS[provider]) {
-    const upstream = resolveConfigurableUpstream(provider);
+  const configurableSpec = getConfigurableProviderSpec(provider);
+  if (configurableSpec) {
+    const upstream = configurableSpec.resolveUpstream();
     if (!upstream) return null;
     return { hostname: upstream.hostname, path: `${upstream.pathPrefix}/chat/completions`, port: upstream.port, protocol: upstream.protocol };
   }
@@ -439,6 +532,57 @@ function getChatCompletionsEndpoint(provider: string): { hostname: string; path:
   }
 }
 
+/** Outcome of an OpenAI-compatible `/models` probe: `ok` distinguishes "asked
+ *  and it answered" (even with zero models) from "unreachable / malformed
+ *  response" — used by GET /v1/endpoints' `reachable` field. */
+interface ModelProbeResult {
+  ok: boolean;
+  ids: string[];
+}
+
+/**
+ * GET `<pathPrefix>/models` against a resolved upstream and parse the
+ * OpenAI-shaped `{data:[{id}]}` list. Best-effort: any failure (network
+ * error, non-JSON body, timeout) resolves `{ok:false, ids:[]}` rather than
+ * rejecting — the caller decides whether that's fatal.
+ */
+function probeOpenAiModels(upstream: ConfigurableUpstream, cred: UpstreamCredential | undefined, timeoutMs: number): Promise<ModelProbeResult> {
+  const headers: Record<string, string> = {};
+  if (cred?.value) headers['Authorization'] = `Bearer ${cred.value}`;
+  return new Promise((resolvePromise) => {
+    const options: RequestOptions = {
+      hostname: upstream.hostname,
+      port: upstream.port,
+      path: `${upstream.pathPrefix}/models`,
+      method: 'GET',
+      headers,
+    };
+    const req = sendUpstreamRequest(upstream.protocol, options, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => {
+        try {
+          const parsed: unknown = JSON.parse(body);
+          const data = isRecord(parsed) && Array.isArray(parsed.data) ? parsed.data : [];
+          const ids: string[] = data
+            .map((m: unknown) => (isRecord(m) && typeof m.id === 'string' ? m.id : null))
+            .filter((id: string | null): id is string => id !== null);
+          resolvePromise({ ok: true, ids });
+        } catch {
+          resolvePromise({ ok: false, ids: [] });
+        }
+      });
+    });
+    req.on('error', () => resolvePromise({ ok: false, ids: [] }));
+    req.setTimeout(timeoutMs, () => {
+      req.destroy();
+      resolvePromise({ ok: false, ids: [] });
+    });
+    req.end();
+  });
+}
+
 /**
  * Live GET `${FORGE_BASE_URL}/models`, for merging into GET /v1/models.
  * Unlike every other provider here (a fixed, committed pack of model ids),
@@ -448,45 +592,39 @@ function getChatCompletionsEndpoint(provider: string): { hostname: string; path:
  * to an empty list rather than failing the whole /v1/models response.
  * nebius is not merged this way — its catalog is a well-known, static id
  * list a client already knows, unlike forge's dynamically-registered LoRAs.
+ * Uncached — forge's base URL/key can change (env) between requests within
+ * the same process, unlike a file-configured endpoint (see
+ * fetchFileEndpointModelIds's 30s cache below).
  */
 async function fetchForgeModelIds(): Promise<string[]> {
   const forge = resolveForgeBaseUrl();
   if (!forge) return [];
   const cred = await resolveUpstreamCredential('forge');
-  const headers: Record<string, string> = {};
-  if (cred?.value) headers['Authorization'] = `Bearer ${cred.value}`;
-  return new Promise((resolvePromise) => {
-    const options: RequestOptions = {
-      hostname: forge.hostname,
-      port: forge.port,
-      path: `${forge.pathPrefix}/models`,
-      method: 'GET',
-      headers,
-    };
-    const req = sendUpstreamRequest(forge.protocol, options, (res) => {
-      let body = '';
-      res.setEncoding('utf8');
-      res.on('data', (chunk) => { body += chunk; });
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(body);
-          const data = Array.isArray(parsed?.data) ? parsed.data : [];
-          const ids: string[] = data
-            .map((m: any) => (m && typeof m.id === 'string' ? m.id : null))
-            .filter((id: string | null): id is string => id !== null);
-          resolvePromise(ids);
-        } catch {
-          resolvePromise([]);
-        }
-      });
-    });
-    req.on('error', () => resolvePromise([]));
-    req.setTimeout(4000, () => {
-      req.destroy();
-      resolvePromise([]);
-    });
-    req.end();
-  });
+  return (await probeOpenAiModels(forge, cred, 4000)).ids;
+}
+
+const ENDPOINT_MODEL_PROBE_TIMEOUT_MS = 4000;
+const ENDPOINT_MODEL_CACHE_TTL_MS = 30_000;
+const _endpointProbeCache = new Map<string, { expiresAt: number; result: ModelProbeResult }>();
+
+/**
+ * Live GET `<baseUrl>/models` for one file-configured endpoint, for merging
+ * into GET /v1/models as `<id>/<model>` (same idea as fetchForgeModelIds,
+ * generalized to N endpoints). Cached for 30s per endpoint id — unlike forge,
+ * a client may probe several named endpoints in quick succession (each model
+ * listed under its own endpoint), so an uncached fan-out would multiply
+ * upstream round-trips on every /v1/models call.
+ */
+async function probeFileEndpointModels(endpoint: EndpointConfig): Promise<ModelProbeResult> {
+  const now = Date.now();
+  const cached = _endpointProbeCache.get(endpoint.id);
+  if (cached && cached.expiresAt > now) return cached.result;
+  const upstream = parseUpstreamUrl(endpoint.baseUrl);
+  if (!upstream) return { ok: false, ids: [] };
+  const cred = await resolveUpstreamCredential(endpoint.id);
+  const result = await probeOpenAiModels(upstream, cred, ENDPOINT_MODEL_PROBE_TIMEOUT_MS);
+  _endpointProbeCache.set(endpoint.id, { expiresAt: now + ENDPOINT_MODEL_CACHE_TTL_MS, result });
+  return result;
 }
 
 export interface ModelRouteContext {
@@ -508,16 +646,41 @@ export interface ModelRouteContext {
   anthropicFormat?: boolean;
 }
 
+/** KNOWN_PROVIDERS plus every id from the endpoints file — the file's ids are
+ *  runtime-configured (unlike KNOWN_TRANSPARENT_PROVIDERS' static set), so
+ *  they're checked separately rather than folded into that Set at import time. */
+function isKnownProvider(provider: string): boolean {
+  return KNOWN_PROVIDERS.has(provider) || getConfiguredEndpoints().some((e) => e.id === provider);
+}
+
 function applyProviderOverride(
   target: { provider: string; model: string; equivalentClaudeName?: string },
   providerOverride: string | null
 ): { provider: string; model: string } {
   const route = { provider: target.provider, model: target.model };
   if (!providerOverride) return route;
-  if (!KNOWN_PROVIDERS.has(providerOverride)) {
-    throw new Error(`Unknown provider "${providerOverride}" in ?p= (allowed: ${[...KNOWN_PROVIDERS].join(', ')})`);
+  if (!isKnownProvider(providerOverride)) {
+    const allowed = [...KNOWN_PROVIDERS, ...getConfiguredEndpoints().map((e) => e.id)];
+    throw new Error(`Unknown provider "${providerOverride}" in ?p= (allowed: ${allowed.join(', ')})`);
   }
   return { provider: providerOverride, model: route.model };
+}
+
+/**
+ * Parse a transparent `provider/model` reference against BOTH the static
+ * KNOWN_TRANSPARENT_PROVIDERS set (packs.ts) and the runtime-configured
+ * endpoints file — so `bonsai/bonsai-27b` routes the same way `forge/my-lora`
+ * always has. packs.ts stays dependency-free (no fs); this extension lives
+ * here, where the endpoints file is already read.
+ */
+function parseAnyTransparentModel(model: string): { provider: string; model: string } | null {
+  const known = parseTransparentModel(model);
+  if (known) return known;
+  const slashIdx = model.indexOf('/');
+  if (slashIdx <= 0 || slashIdx === model.length - 1) return null;
+  const provider = model.slice(0, slashIdx);
+  if (!getConfiguredEndpoints().some((e) => e.id === provider)) return null;
+  return { provider, model: model.slice(slashIdx + 1) };
 }
 
 /**
@@ -596,7 +759,7 @@ export function resolveModelRoute(
     }
   }
 
-  const transparent = parseTransparentModel(incomingModel);
+  const transparent = parseAnyTransparentModel(incomingModel);
   if (transparent) {
     console.log(`[Proxy] Transparent model reference "${incomingModel}" -> ${transparent.provider}:${transparent.model}`);
     return applyProviderOverride(transparent, ctx.queryProvider);
@@ -651,13 +814,13 @@ function readQueryAndToolOptions(parsedUrl: URL, req: IncomingMessage) {
 }
 
 function getApiKey(provider: string): string {
-  // Configurable providers (forge, nebius) sit outside the fixed 8-provider
-  // ProviderKeys/CANONICAL_UPSTREAMS shape (env-configured URL, one of them
-  // with an optional key) — resolved separately via their own apiKeyEnv
-  // rather than widening that shape for providers that don't fit its
-  // "always-on, fixed hostname" assumptions.
-  const configurable = CONFIGURABLE_PROVIDERS[provider];
-  if (configurable) return process.env[configurable.apiKeyEnv] || '';
+  // Configurable providers (forge, nebius, and every named endpoint from the
+  // JSON file) sit outside the fixed 8-provider ProviderKeys/CANONICAL_UPSTREAMS
+  // shape (env-configured URL, an optional key) — resolved separately via
+  // their own apiKeyEnv rather than widening that shape for providers that
+  // don't fit its "always-on, fixed hostname" assumptions.
+  const configurable = getConfigurableProviderSpec(provider);
+  if (configurable) return configurable.apiKeyEnv ? (process.env[configurable.apiKeyEnv] || '') : '';
   return getResolvedKeys()[provider as keyof ProviderKeys] || '';
 }
 
@@ -1099,6 +1262,48 @@ async function handleUpstreamTest(res: ServerResponse, provider: string): Promis
   }
 }
 
+/** One GET /v1/endpoints entry — never a credential, only whether one resolved. */
+interface EndpointHealth {
+  id: string;
+  baseUrl: string;
+  reachable: boolean;
+  models: string[];
+  latencyMs: number;
+}
+
+async function describeEndpointHealth(id: string, upstream: ConfigurableUpstream): Promise<EndpointHealth> {
+  const baseUrl = `${upstream.protocol}://${upstream.hostname}:${upstream.port}${upstream.pathPrefix}`;
+  const cred = await resolveUpstreamCredential(id);
+  const start = Date.now();
+  const { ok, ids } = await probeOpenAiModels(upstream, cred, ENDPOINT_MODEL_PROBE_TIMEOUT_MS);
+  return { id, baseUrl, reachable: ok, models: ids, latencyMs: Date.now() - start };
+}
+
+/**
+ * GET /v1/endpoints — write the health of forge (if configured) plus every
+ * file-configured named endpoint. Best-effort per entry: one endpoint being
+ * unreachable never fails the whole response (each probe already resolves
+ * `{ok:false}` rather than throwing).
+ */
+async function handleEndpointsStatus(res: ServerResponse): Promise<void> {
+  try {
+    const entries: EndpointHealth[] = [];
+    const forge = resolveForgeBaseUrl();
+    if (forge) entries.push(await describeEndpointHealth('forge', forge));
+    for (const endpoint of getConfiguredEndpoints()) {
+      const upstream = parseUpstreamUrl(endpoint.baseUrl);
+      if (!upstream) continue; // guaranteed valid at config-load time; defensive only
+      entries.push(await describeEndpointHealth(endpoint.id, upstream));
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ object: 'list', data: entries }));
+  } catch (e) {
+    console.error('[Proxy][endpoints] status error', e);
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { type: 'api_error', message: e instanceof Error ? e.message : String(e) } }));
+  }
+}
+
 /**
  * Handles POST /v1/responses (and /v1/{pack}/responses).
  *
@@ -1159,15 +1364,17 @@ function handleResponsesRequest(
         headerExcludeTools: opts.headerExcludeTools,
       });
 
+      const responsesConfigurableSpec = getConfigurableProviderSpec(resolvedTarget.provider);
       const endpoint = getChatCompletionsEndpoint(resolvedTarget.provider);
       if (!endpoint) {
-        const message = CONFIGURABLE_PROVIDERS[resolvedTarget.provider]
-          ? configurableProviderUnavailableMessage(resolvedTarget.provider)
+        const message = responsesConfigurableSpec
+          ? responsesConfigurableSpec.unavailableMessage()
           : `Provider "${resolvedTarget.provider}" does not support the OpenAI-compatible /v1/responses surface.`;
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { type: 'invalid_request_error', message } }));
         return;
       }
+      if (responsesConfigurableSpec) applyDefaultRequestFields(chatPayload, responsesConfigurableSpec.defaultRequestFields);
       const { hostname, path, port = 443, protocol = 'https' } = endpoint;
       const cred = await resolveUpstreamCredential(resolvedTarget.provider);
       const targetApiKey = cred?.value ?? '';
@@ -1315,15 +1522,17 @@ function handleChatCompletionsRequest(
         headerExcludeTools: opts.headerExcludeTools,
       });
 
+      const chatConfigurableSpec = getConfigurableProviderSpec(resolvedTarget.provider);
       const endpoint = getChatCompletionsEndpoint(resolvedTarget.provider);
       if (!endpoint) {
-        const message = CONFIGURABLE_PROVIDERS[resolvedTarget.provider]
-          ? configurableProviderUnavailableMessage(resolvedTarget.provider)
+        const message = chatConfigurableSpec
+          ? chatConfigurableSpec.unavailableMessage()
           : `Provider "${resolvedTarget.provider}" does not support the OpenAI-compatible /v1/chat/completions surface.`;
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { type: 'invalid_request_error', message } }));
         return;
       }
+      if (chatConfigurableSpec) applyDefaultRequestFields(payload, chatConfigurableSpec.defaultRequestFields);
       const { hostname, path, port = 443, protocol = 'https' } = endpoint;
       const cred = await resolveUpstreamCredential(resolvedTarget.provider);
       const targetApiKey = cred?.value ?? '';
@@ -1756,6 +1965,15 @@ function openaiJsonToAnthropic(jsonStr: string): string {
         });
       }
     }
+    // A reasoning model can burn its whole max_tokens budget "thinking" and
+    // return no visible content at all (finish_reason stays e.g. "length" —
+    // reproduced live on forge/bonsai-27b with a tight budget). Surfacing the
+    // reasoning as a thinking block is opt-in (LLM_ENDPOINT_PASSTHROUGH_THINKING)
+    // since it's raw model reasoning, not a normal response — a caller that
+    // doesn't expect it should keep seeing today's empty-content message.
+    if (content.length === 0 && msg && typeof msg.reasoning_content === 'string' && msg.reasoning_content && passthroughThinking()) {
+      content.push({ type: 'thinking', thinking: msg.reasoning_content, signature: '' });
+    }
     const usage = o.usage || {};
     const out = {
       id: o.id || `msg_${Date.now()}`,
@@ -2043,6 +2261,24 @@ function publicModels(): boolean {
   return _publicModels;
 }
 
+let _passthroughThinking: boolean | null = null;
+/**
+ * Whether a reasoning-only OpenAI response (`message.reasoning_content` set,
+ * `message.content` empty) is surfaced to the client as an Anthropic
+ * `thinking` block instead of an empty message (LLM_ENDPOINT_PASSTHROUGH_THINKING
+ * truthy). Reasoning models on a tight `max_tokens` budget (Qwen3.6-based —
+ * Bonsai 27B reproduced this live) can spend the whole budget "thinking" and
+ * return no visible content at all; surfacing the reasoning at least shows
+ * the caller what happened instead of a silent empty reply.
+ */
+function passthroughThinking(): boolean {
+  if (_passthroughThinking === null) {
+    const v = (process.env.LLM_ENDPOINT_PASSTHROUGH_THINKING ?? '').trim().toLowerCase();
+    _passthroughThinking = v === '1' || v === 'true' || v === 'yes' || v === 'on';
+  }
+  return _passthroughThinking;
+}
+
 /**
  * True only for the DEFAULT model-discovery path — `/v1/models` or `/models`,
  * never a pack-scoped list (`/v1/<pack>/models`). Lets opt-in public discovery
@@ -2127,7 +2363,7 @@ const server = createServer((req, res) => {
     const packPathMatch = urlPath.match(/^\/v1\/([^\/]+)(?:\/messages(?:\/batches(?:\/[^/]+)?(?:\/(?:results|cancel))?)?|\/models|\/chat\/completions|\/responses)?$/);
     if (packPathMatch) {
       const potentialPack = packPathMatch[1];
-      const RESERVED_SEGMENTS = new Set(['v1', 'messages', 'models', 'packs', 'chat', 'responses', 'upstreams']);
+      const RESERVED_SEGMENTS = new Set(['v1', 'messages', 'models', 'packs', 'chat', 'responses', 'upstreams', 'endpoints']);
       if (potentialPack && !RESERVED_SEGMENTS.has(potentialPack)) {
         if (getMergedPackIds().includes(potentialPack)) {
           packId = potentialPack;
@@ -2278,6 +2514,19 @@ const server = createServer((req, res) => {
     return;
   }
 
+  // 0f. Named-endpoint health (GET /v1/endpoints, /endpoints). Per endpoint:
+  // {id, baseUrl (no credential), reachable, models, latencyMs} — forge (if
+  // FORGE_BASE_URL is set) plus every valid entry from the endpoints file.
+  // nebius is deliberately excluded (a hosted provider with a well-known
+  // static catalog, not a local/LAN model server). A live check every call —
+  // no cache — since a health endpoint reporting a 30s-stale "reachable" would
+  // defeat its own purpose. Gated by the same access token as /v1/upstreams
+  // (NOT covered by the /v1/models public exemption).
+  if (req.method === 'GET' && (urlPath === '/v1/endpoints' || urlPath === '/endpoints')) {
+    void handleEndpointsStatus(res);
+    return;
+  }
+
   // 1. Endpoint /v1/models pour la découverte des modèles
   // Supporte aussi /v1/{pack}/models pour la sélection de pack via URL path
   if (req.method === 'GET' && (urlPath === '/v1/models' || urlPath === '/models' || urlPath.endsWith('/models'))) {
@@ -2289,14 +2538,23 @@ const server = createServer((req, res) => {
     // style for this request — either exposes equivalentClaudeName as the id.
     const isAliasPack = isLocalPack || anthropicFormat;
 
-    // forge's LoRA adapters live on the vLLM server itself, not in any
-    // committed pack — merge them live into the default pack's listing only,
-    // so a curated pack (xai, coding, ...) still returns exactly its own
-    // models. No-op (empty list) when FORGE_BASE_URL is unset.
+    // forge's LoRA adapters (and every file-configured named endpoint's
+    // models) live on the upstream server itself, not in any committed pack —
+    // merge them live into the default pack's listing only, so a curated pack
+    // (xai, coding, ...) still returns exactly its own models. No-op (empty
+    // list) when FORGE_BASE_URL is unset / no endpoints are configured. An
+    // unreachable endpoint is skipped with a warning already logged by its
+    // probe — never a 500 for the whole listing.
     if (activePack.id === DEFAULT_PACK_ID) {
       const forgeIds = await fetchForgeModelIds();
       for (const id of forgeIds) {
         mapping[`forge/${id}`] = { provider: 'forge', model: id };
+      }
+      for (const endpoint of getConfiguredEndpoints()) {
+        const { ids } = await probeFileEndpointModels(endpoint);
+        for (const id of ids) {
+          mapping[`${endpoint.id}/${id}`] = { provider: endpoint.id, model: id };
+        }
       }
     }
 
@@ -2475,6 +2733,50 @@ const server = createServer((req, res) => {
         packToolsAllow: activePack.toolsAllow,
       });
 
+      // Configurable providers (forge, nebius, and every named endpoint from
+      // the JSON file) share ONE dispatch branch instead of a switch case per
+      // id — adding a named endpoint never needs a code change here. Handled
+      // BEFORE the switch so an unmatched provider still falls through to the
+      // switch's `default: moonshot` fallback exactly as before.
+      const messagesConfigurableSpec = getConfigurableProviderSpec(resolvedTarget.provider);
+      if (messagesConfigurableSpec) {
+        const upstream = messagesConfigurableSpec.resolveUpstream();
+        if (!upstream) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: messagesConfigurableSpec.unavailableMessage() } }));
+          return;
+        }
+        hostname = upstream.hostname;
+        port = upstream.port;
+        protocol = upstream.protocol;
+        path = `${upstream.pathPrefix}/chat/completions`;
+        cred = await resolveUpstreamCredential(resolvedTarget.provider);
+        targetApiKey = cred?.value ?? '';
+        // A keyless-capable provider (forge, every file endpoint) must never
+        // send a bare "Bearer " header; a required-key one (nebius) 401s below
+        // before this matters if the value is empty.
+        if (cred && cred.value) Object.assign(headers, buildUpstreamAuthHeaders(resolvedTarget.provider, cred));
+        adaptAnthropicToOpenAI(payload);
+        applyDefaultRequestFields(payload, messagesConfigurableSpec.defaultRequestFields);
+
+        // Transformation des tools Anthropic (format OpenAI function) — même forme pour
+        // tout upstream OpenAI-compatible configurable (forge/vLLM, nebius, endpoints file).
+        if (payload.tools && Array.isArray(payload.tools)) {
+          payload.tools = payload.tools.map((t: any) => {
+            if (t.input_schema) {
+              return {
+                type: 'function',
+                function: {
+                  name: t.name,
+                  description: t.description,
+                  parameters: t.input_schema
+                }
+              };
+            }
+            return t;
+          });
+        }
+      } else {
       switch (resolvedTarget.provider) {
         case 'anthropic':
           // Anthropic natif — pas de transformation de forme requise.
@@ -2630,46 +2932,6 @@ const server = createServer((req, res) => {
           }
           break;
 
-        case 'forge':
-        case 'nebius': {
-          const upstream = resolveConfigurableUpstream(resolvedTarget.provider);
-          if (!upstream) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: { type: 'invalid_request_error', message: configurableProviderUnavailableMessage(resolvedTarget.provider) } }));
-            return;
-          }
-          hostname = upstream.hostname;
-          port = upstream.port;
-          protocol = upstream.protocol;
-          path = `${upstream.pathPrefix}/chat/completions`;
-          cred = await resolveUpstreamCredential(resolvedTarget.provider);
-          targetApiKey = cred?.value ?? '';
-          // An optional-key provider (forge) must never send a bare "Bearer "
-          // header; a required-key one (nebius) 401s below before this
-          // matters if the value is empty.
-          if (cred && cred.value) Object.assign(headers, buildUpstreamAuthHeaders(resolvedTarget.provider, cred));
-          adaptAnthropicToOpenAI(payload);
-
-          // Transformation des tools Anthropic (format OpenAI function) — même forme pour
-          // tout upstream OpenAI-compatible configurable (forge/vLLM, nebius).
-          if (payload.tools && Array.isArray(payload.tools)) {
-            payload.tools = payload.tools.map((t: any) => {
-              if (t.input_schema) {
-                return {
-                  type: 'function',
-                  function: {
-                    name: t.name,
-                    description: t.description,
-                    parameters: t.input_schema
-                  }
-                };
-              }
-              return t;
-            });
-          }
-          break;
-        }
-
         case 'moonshot':
         default:
           hostname = 'api.moonshot.ai';
@@ -2686,6 +2948,7 @@ const server = createServer((req, res) => {
             payload.thinking = { type: 'enabled', budget_tokens: 4000 };
           }
           break;
+      }
       }
 
       // Fail closed: buildUpstreamAuthHeaders returns null when a non-api-key
@@ -2766,7 +3029,7 @@ const server = createServer((req, res) => {
         const needsStrip =
           resolvedTarget.provider === 'openrouter' || resolvedTarget.provider === 'requesty';
         // Groq/ZAI/xAI/OpenAI/forge/nebius parlent OpenAI : convertir la réponse (JSON ou SSE) en Anthropic.
-        const needsConvert = resolvedTarget.provider === 'groq' || resolvedTarget.provider === 'zai' || resolvedTarget.provider === 'xai' || resolvedTarget.provider === 'openai' || Boolean(CONFIGURABLE_PROVIDERS[resolvedTarget.provider]);
+        const needsConvert = resolvedTarget.provider === 'groq' || resolvedTarget.provider === 'zai' || resolvedTarget.provider === 'xai' || resolvedTarget.provider === 'openai' || Boolean(getConfigurableProviderSpec(resolvedTarget.provider));
 
         if (needsConvert && !isStreaming) {
           const respHeaders = { ...proxyRes.headers };
@@ -2888,6 +3151,21 @@ export { server };
 
 /** Exporté pour les tests — voir la note sur le rejeu de tour vide. */
 export { isEmptyAnthropicTurn, resolveEmptyTurnRetries };
+
+/** Exported for tests — reasoning_content passthrough (see passthroughThinking). */
+export { openaiJsonToAnthropic };
+
+/** Re-exported for the endpoints file config — see endpoints.ts. */
+export {
+  getConfiguredEndpoints,
+  resetConfiguredEndpointsCache,
+  resolveEndpointsFilePath,
+  readEndpointsFromDisk,
+  parseEndpointsConfig,
+  type EndpointConfig,
+  type EndpointDefaultRequestFields,
+  type EndpointsFileLoad,
+} from './endpoints.js';
 
 /** Démarre le proxy sur `port` (défaut : {@link PORT}). Renvoie le serveur en écoute. */
 export function start(port: number = PORT) {

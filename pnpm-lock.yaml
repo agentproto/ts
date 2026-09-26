@@ -1343,6 +1343,9 @@ importers:
       '@agentproto/driver-agent-cli':
         specifier: workspace:*
         version: link:../driver/agent-cli
+      '@agentproto/llm-endpoint':
+        specifier: workspace:*
+        version: link:../llm-endpoint
       '@agentproto/model-catalog':
         specifier: workspace:*
         version: link:../model-catalog

@@ -141,6 +141,11 @@ export interface FakeContextOptions {
   nodeVersion?: string
   cwd?: string
   cliVersion?: string
+  env?: Record<string, string>
+  /** Overrides the default health-probe fetch (used by daemon.ts's step) —
+   *  a step that talks to a different URL (local-models.ts's endpoint probes)
+   *  needs its own routing here rather than the one-size health fake below. */
+  fetch?: typeof fetch
 }
 
 export interface FakeContext extends StepContext {
@@ -170,11 +175,13 @@ export function createFakeContext(opts: FakeContextOptions = {}): FakeContext {
       execCalls.push([cmd, ...args].join(" "))
       return exec(cmd, args)
     },
-    fetch: async () =>
-      health === null
-        ? Promise.reject(new Error("ECONNREFUSED"))
-        : new Response(JSON.stringify(health), { status: 200, headers: { "content-type": "application/json" } }),
-    env: {},
+    fetch:
+      opts.fetch ??
+      (async () =>
+        health === null
+          ? Promise.reject(new Error("ECONNREFUSED"))
+          : new Response(JSON.stringify(health), { status: 200, headers: { "content-type": "application/json" } })),
+    env: opts.env ?? {},
     homedir: HOME,
     cwd: opts.cwd ?? `${HOME}/proj/src`,
     platform: opts.platform ?? "darwin",

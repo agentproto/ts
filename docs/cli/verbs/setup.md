@@ -30,8 +30,8 @@ re-implementation), then re-checks the step and shows the result.
 | `auth` | Multiselect of discovered, not-imported credentials (all pre-selected). Then an optional API key (provider + masked input). Prints runnable models per harness | yes / no | `auth profile import` / `auth provider set` |
 | `clients` | Multiselect of detected clients without the MCP server (pre-selected). Wrong port ⇒ update | yes | `install-mcp --agent … --yes` / `install-mcp --update` |
 | `skills` | Missing or stale skill pack ⇒ install it | yes | `install skill/agentproto-pack --force` |
+| `local-models` | Checks each configured local/LAN model endpoint (`~/.agentproto/llm-endpoints.json`, plus `forge` from `FORGE_BASE_URL`) answers `/models`; warns if not. Manage them with [`llm endpoints`](./llm.md) | — | nothing |
 | `first-run` | A 20-second test session on your best harness: spawn, one prompt, stream the reply, stop | yes | daemon `/sessions/agent` |
-| `local-model` | Extra, informational: shows a configured `~/.agentproto/llm-endpoints.json` or `FORGE_BASE_URL`, else a one-line hint | — | nothing |
 
 Claude Code can't load a plugin headlessly: after the skills step the
 wizard prints the `/plugin marketplace add …` command to run inside

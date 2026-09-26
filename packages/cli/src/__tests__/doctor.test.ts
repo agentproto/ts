@@ -147,7 +147,7 @@ describe("agentproto doctor", () => {
     const h = harness()
     await runDoctor(["--json", "--skip", "agents", "--skip", "skills"], h.deps)
     const json: DoctorJson = JSON.parse(h.out())
-    expect(json.steps.map((s) => s.id)).toEqual(["preflight", "workspace", "daemon", "auth", "clients"])
+    expect(json.steps.map((s) => s.id)).toEqual(["preflight", "workspace", "daemon", "auth", "clients", "local-models"])
 
     const bad = harness()
     expect(await runDoctor(["--only", "nope"], bad.deps)).toBe(2)

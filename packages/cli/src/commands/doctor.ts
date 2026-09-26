@@ -26,7 +26,7 @@ Options:
   --skip <step>   skip this step (repeatable)
   -h, --help      show this help
 
-Steps: preflight, workspace, daemon, agents, auth, clients, skills
+Steps: preflight, workspace, daemon, agents, auth, clients, skills, local-models
 
 Exit code is 1 when a required step (preflight, workspace, daemon, agents)
 reports a missing or broken check, 0 otherwise.

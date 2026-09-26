@@ -339,7 +339,7 @@ Usage:
   agentproto setup [--yes] [--dry-run] [--json] [--only <step>...] [--skip <step>...]
       the onboarding wizard: detect (same checks as \`agentproto doctor\`), propose,
       apply through the existing verbs, verify. Re-running resumes: done steps are skipped.
-      Steps: preflight, workspace, daemon, agents, auth, clients, skills, first-run, local-model
+      Steps: preflight, workspace, daemon, agents, auth, clients, skills, local-models, first-run
 
   agentproto setup <slug> [--force] [--dry-run] [--only <stepId>...]
       re-run an adapter's AIP-29 setup pipeline (idempotent via skip_if + ledger)
