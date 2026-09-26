@@ -156,7 +156,7 @@ rate limiting, single-use tokens, constant-time token compare. Self-hostable via
   handshake, pins the daemon's keys, and persists the pairing.
 - `pair offer --qr` shows the same offer as a phone link: the web pair page
   with the offer in its URL fragment
-  (`https://cli.agentproto.sh/pair#v=2&rv=…`). A fragment never reaches a
+  (`https://<fingerprint>.agentproto.cloud/pair#v=2&rv=…`). A fragment never reaches a
   server. The page runs the client handshake in the browser with
   `@agentproto/pair-client` (WebCrypto, WebSocket, IndexedDB), which speaks
   the same wire protocol as `pair accept`, so the daemon can't tell the two
@@ -270,8 +270,8 @@ all of that to the page's **origin**. If every daemon's pages shared one
 origin, a script on that origin could read every pairing's credential and
 reach every daemon's UI, and a bug in one daemon's app would reach the others.
 
-So the page setting takes a template with `{fp}` in the hostname, filled with
-the daemon's identity fingerprint:
+So the pair page is a template with `{fp}` in the hostname, filled with the
+daemon's identity fingerprint. The default is:
 
 ```text
 https://{fp}.agentproto.cloud/pair   →   https://a1b2c3d4e5f60718.agentproto.cloud/pair#v=2&…
@@ -282,21 +282,25 @@ storage, service worker and UI apart from every other pairing, with no shared
 state to leak.
 - Rules: `{fp}` is only allowed in the hostname. The fingerprint must be a
   valid DNS label (it's 16 lowercase hex chars).
-- The page checks it's on the right origin with
-  `expectedPairHost(template, fingerprint)`, compared against
-  `location.host`, and refuses an offer meant for another daemon.
-- **The default is still** `https://cli.agentproto.sh/pair`. The per-daemon
-  domain (`PAIR_WEB_URL_TEMPLATE_CLOUD`, `https://{fp}.agentproto.cloud/pair`)
-  becomes the default once its DNS is live. Until then, opt in with
-  `pairing.pairPage` in `config.json` or `pair offer --qr --pair-page <…>`
-  (the flag wins).
+- The page refuses an offer whose daemon fingerprint isn't its own origin's
+  first label, before any network I/O, and stores only that daemon's
+  credential (AIP-59 §5.8). `expectedPairHost(template, fingerprint)` gives a
+  page the host to compare with `location.host`.
+- **The default is** `https://{fp}.agentproto.cloud/pair`
+  (`PAIR_WEB_URL_TEMPLATE_CLOUD`): one static page (`packages/pair-page`)
+  served on every `<fingerprint>.agentproto.cloud` by a Cloudflare Worker,
+  which answers 404 for any host whose first label isn't a fingerprint.
+  Change it with `pairing.pairPage` in `config.json` or
+  `pair offer --qr --pair-page <…>` (the flag wins).
 
-**Self-hosting the pair page.** The page is a static bundle (no server-side
-code, and the offer stays in the URL fragment). Serve it from your own host and
-point `pairing.pairPage` at it:
-- a single origin, `"https://pair.example.com/pair"`, or
+**Self-hosting the pair page.** The page is a static bundle
+(`packages/pair-page`: no server-side code, and the offer stays in the URL
+fragment). Serve it from your own host and point `pairing.pairPage` at it:
 - one origin per daemon, `"https://{fp}.pair.example.com/pair"`, which needs a
-  wildcard DNS record and TLS certificate.
+  wildcard DNS record and TLS certificate (recommended), or
+- a single shared origin, `"https://pair.example.com/pair"`. Every paired
+  daemon's UI then shares that origin with every other pairing's credential
+  (AIP-59 §5.8), so tell your users.
 
 The page only needs to reach the rendezvous broker named in the offer.
 

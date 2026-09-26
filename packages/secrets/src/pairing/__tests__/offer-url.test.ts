@@ -3,6 +3,7 @@ import {
   encodeOfferUrl,
   encodeOfferWebUrl,
   parseOfferUrl,
+  DEFAULT_PAIR_PAGE,
   PAIR_WEB_URL,
   PAIR_WEB_URL_TEMPLATE_CLOUD,
   resolvePairPageUrl,
@@ -128,7 +129,7 @@ describe("offer URL codec", async () => {
   it("wraps the offer in the fragment of the web pair page, and parses it back", async () => {
     const offer = await makeOffer()
     const url = encodeOfferUrl(offer)
-    const web = encodeOfferWebUrl(url)
+    const web = encodeOfferWebUrl(url, PAIR_WEB_URL)
     expect(web.startsWith(`${PAIR_WEB_URL}#v=2&`)).toBe(true)
     expect(new URLSearchParams(web.slice(web.indexOf("#") + 1)).get("s")).toBe(offer.secret)
     // Nothing of the offer is in the part a browser sends to the server.
@@ -184,12 +185,16 @@ describe("offer URL codec", async () => {
       expect(await parseOfferUrl(web)).toEqual(offer)
     })
 
-    it("leaves a plain URL unchanged, and the default is still cli.agentproto.sh", async () => {
-      expect(PAIR_WEB_URL).toBe("https://cli.agentproto.sh/pair")
+    it("leaves a plain URL unchanged, and defaults to one origin per daemon on agentproto.cloud", async () => {
+      expect(DEFAULT_PAIR_PAGE).toBe(PAIR_WEB_URL_TEMPLATE_CLOUD)
+      expect(PAIR_WEB_URL_TEMPLATE_CLOUD).toBe("https://{fp}.agentproto.cloud/pair")
       expect(resolvePairPageUrl("https://pair.example.com/p/pair", FP)).toBe("https://pair.example.com/p/pair")
+      // The shared-origin page stays selectable as a plain URL.
+      expect(PAIR_WEB_URL).toBe("https://cli.agentproto.sh/pair")
       expect(expectedPairHost(PAIR_WEB_URL, FP)).toBe("cli.agentproto.sh")
-      const url = encodeOfferUrl(await makeOffer())
-      expect(encodeOfferWebUrl(url).startsWith(`${PAIR_WEB_URL}#v=2&`)).toBe(true)
+      const offer = await makeOffer()
+      const url = encodeOfferUrl(offer)
+      expect(encodeOfferWebUrl(url).startsWith(`https://${offer.fingerprint}.agentproto.cloud/pair#v=2&`)).toBe(true)
     })
 
     it("rejects {fp} outside the hostname, stray placeholders, bad fingerprints and non-web URLs", async () => {

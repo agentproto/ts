@@ -29,10 +29,10 @@ showConfirm(pending.daemon.name, pending.daemon.fingerprint)
 const credential = await pending.confirm() // stored; or pending.cancel()
 ```
 
-**One origin per daemon.** `pair offer --qr` can point at a per-daemon page,
-e.g. `https://{fp}.agentproto.cloud/pair` via `pairing.pairPage` or
-`--pair-page` (the default is still `https://cli.agentproto.sh/pair`). A page
-built for that should check that it's on its daemon's origin before pairing:
+**One origin per daemon.** `pair offer --qr` points at a per-daemon page by
+default, `https://{fp}.agentproto.cloud/pair` (`pairing.pairPage` or
+`--pair-page` change it). A page built for that must check that it's on its
+daemon's origin before pairing (AIP-59 §5.8):
 
 ```ts
 import { expectedPairHost, inspectOffer, PAIR_WEB_URL_TEMPLATE_CLOUD } from "@agentproto/pair-client"
@@ -44,7 +44,7 @@ if (location.host !== expectedPairHost(PAIR_WEB_URL_TEMPLATE_CLOUD, info.fingerp
 ```
 
 `pairFromOffer` accepts both offer forms: the web link
-`https://cli.agentproto.sh/pair#v=1&rv=…` (the offer rides in the fragment,
+`https://<fingerprint>.agentproto.cloud/pair#v=2&rv=…` (the offer rides in the fragment,
 which is never sent to a server) and the plain `agentproto://pair?…` URL.
 
 The daemon records the pairing as soon as the handshake succeeds, the same as

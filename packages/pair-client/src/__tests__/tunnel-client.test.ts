@@ -49,7 +49,7 @@ describe("pairFromOffer", () => {
     const d = await startDaemon({ label: "studio-mac" })
     daemon = d
     const offerUrl = encodeOfferWebUrl(await d.offer())
-    expect(offerUrl.startsWith("https://cli.agentproto.sh/pair#")).toBe(true)
+    expect(offerUrl).toMatch(/^https:\/\/[0-9a-f]{16}\.agentproto\.cloud\/pair#/)
 
     // Step 0: no network — what the page can show straight from the QR.
     const info = await inspectOffer(offerUrl)

@@ -4,7 +4,7 @@
  *   offer  [--ttl 10m] [--rendezvous wss://…] [--no-qr | --qr [--pair-page <url|template>]]
  *          daemon side: mint an offer URL (+ QR) and start listening on the
  *          rendezvous. `--qr` renders the phone link instead: the web pair page
- *          with the offer in its fragment (`https://cli.agentproto.sh/pair#…`).
+ *          with the offer in its fragment (`https://<fp>.agentproto.cloud/pair#…`).
  *   accept "<offer-url>" [--name <label>]                 client side: verify +
  *          persist the pairing.
  *   ls     [--json]                                       list pairings (daemon
@@ -37,7 +37,7 @@ import {
   findClientPairing,
 } from "../util/client-pairings.js"
 import { printQr } from "../util/qr.js"
-import { encodeOfferWebUrl, PAIR_WEB_URL, resolvePairPageUrl } from "@agentproto/secrets/pairing"
+import { DEFAULT_PAIR_PAGE, encodeOfferWebUrl, resolvePairPageUrl } from "@agentproto/secrets/pairing"
 import { loadConfig } from "@agentproto/runtime/config"
 
 const USAGE = `agentproto pair — end-to-end daemon pairing over an untrusted rendezvous
@@ -53,11 +53,11 @@ Usage:
   offer   Daemon side: mint a single-use offer URL (+ QR) and start listening on
           the rendezvous. Share the URL with the client; it carries the daemon's
           public keys (MITM-proof) and a short-lived secret. --qr shows a QR
-          for a phone browser instead: ${PAIR_WEB_URL}#<offer>
-          (the offer rides in the fragment, never sent to a server).
-          --pair-page (or config pairing.pairPage) picks another page: a URL,
-          or a template with {fp} in the host for one origin per daemon,
-          e.g. https://{fp}.agentproto.cloud/pair.
+          for a phone browser instead: ${DEFAULT_PAIR_PAGE}#<offer>
+          ({fp} = the daemon fingerprint: one browser origin per daemon; the
+          offer rides in the fragment, never sent to a server).
+          --pair-page (or config pairing.pairPage) picks another page: a
+          template with {fp} in the host, or a plain URL (one shared origin).
   accept  Client side: verify the daemon's identity from the URL and persist the
           pairing to ~/.agentproto/pair-credentials.json.
   ls      List pairings. Uses the daemon's REST route when reachable; otherwise
@@ -123,10 +123,10 @@ async function runOffer(args: readonly string[]): Promise<number> {
   }
   // The pair page: --pair-page, else config pairing.pairPage, else the default.
   // Checked BEFORE minting, so a bad template never spends an offer.
-  let pairPage: string = PAIR_WEB_URL
+  let pairPage: string = DEFAULT_PAIR_PAGE
   if (values.qr) {
     try {
-      pairPage = values["pair-page"] ?? (await loadConfig()).pairing?.pairPage ?? PAIR_WEB_URL
+      pairPage = values["pair-page"] ?? (await loadConfig()).pairing?.pairPage ?? DEFAULT_PAIR_PAGE
       resolvePairPageUrl(pairPage, "0".repeat(16))
     } catch (err) {
       process.stderr.write(

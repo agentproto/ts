@@ -59,7 +59,8 @@ describe("agentproto pair offer --qr", () => {
 
   it("renders the web pair page with the offer in the fragment", async () => {
     expect(await runPair(["offer", "--qr"])).toBe(0)
-    const web = `https://cli.agentproto.sh/pair#${QUERY}`
+    // Default: the daemon's own origin on agentproto.cloud (AIP-59 §5.8).
+    const web = `https://a1b2c3d4e5f60718.agentproto.cloud/pair#${QUERY}`
     expect(qr).toHaveBeenCalledTimes(1)
     expect(qr).toHaveBeenCalledWith(web)
     const text = out.join("")
@@ -79,7 +80,7 @@ describe("agentproto pair offer --qr", () => {
   it("without --qr, the offer and its QR are unchanged", async () => {
     expect(await runPair(["offer"])).toBe(0)
     expect(qr).toHaveBeenCalledWith(OFFER)
-    expect(out.join("")).not.toContain("cli.agentproto.sh")
+    expect(out.join("")).not.toContain("/pair#")
 
     out.length = 0
     expect(await runPair(["offer", "--json"])).toBe(0)
@@ -128,8 +129,12 @@ describe("agentproto pair offer --qr", () => {
     expect(httpPostJson).not.toHaveBeenCalled()
   })
 
-  it("the default page is unchanged", async () => {
+  it("defaults to the per-daemon page; a plain URL still selects one shared page", async () => {
     expect(await runPair(["offer", "--qr", "--json"])).toBe(0)
+    expect(JSON.parse(out.join("")).webUrl).toBe(`https://a1b2c3d4e5f60718.agentproto.cloud/pair#${QUERY}`)
+
+    out.length = 0
+    expect(await runPair(["offer", "--qr", "--json", "--pair-page", "https://cli.agentproto.sh/pair"])).toBe(0)
     expect(JSON.parse(out.join("")).webUrl).toBe(`https://cli.agentproto.sh/pair#${QUERY}`)
   })
 })

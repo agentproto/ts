@@ -376,10 +376,10 @@ export interface PairingConfig {
    *  Mirrors `tunnel.autoconnect`. Default true when a rendezvous is set. */
   autoconnect?: boolean
   /** Web pair page for `pair offer --qr` (the offer rides in its fragment).
-   *  A plain http(s) URL, or a template with `{fp}` in the HOSTNAME, filled
-   *  with the daemon fingerprint, e.g. `https://{fp}.agentproto.cloud/pair`
-   *  for one origin per daemon. Unset → `https://cli.agentproto.sh/pair`.
-   *  `--pair-page` overrides it. */
+   *  A template with `{fp}` in the HOSTNAME, filled with the daemon
+   *  fingerprint (one origin per daemon), or a plain http(s) URL (one shared
+   *  origin). Unset → `https://{fp}.agentproto.cloud/pair`. `--pair-page`
+   *  overrides it. */
   pairPage?: string
 }
 

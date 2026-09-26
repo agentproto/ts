@@ -36,7 +36,7 @@
  * client the same parameters ride in the **fragment** of a web URL:
  *
  * ```
- *   https://cli.agentproto.sh/pair#v=2&rv=…&id=…&pk=…&sk=…&s=…&exp=…
+ *   https://<fingerprint>.agentproto.cloud/pair#v=2&rv=…&id=…&pk=…&sk=…&s=…&exp=…
  * ```
  *
  * i.e. the query string of the `agentproto://` URL, verbatim, after the `#`.
@@ -61,19 +61,24 @@ export const OFFER_URL_HOST = "pair" as const
 /** Offer-format version. Bumped if the param set changes. v2: `s` (a secret
  *  that never goes on the wire) replaces v1's `t` (route-and-proof). */
 export const OFFER_VERSION = 2 as const
-/** Default page for the web form of an offer (the offer rides in its fragment). */
+/** A single shared-origin page for the web form of an offer: every daemon's
+ *  pairing on one origin (AIP-59 §5.8 fallback, which exposes each pairing to
+ *  every other paired daemon's UI). Not the default: select it explicitly with
+ *  `pairing.pairPage` / `--pair-page`. */
 export const PAIR_WEB_URL = "https://cli.agentproto.sh/pair" as const
 /** Placeholder for the daemon fingerprint in a pair-page template. Allowed in
  *  the hostname only. */
 export const PAIR_PAGE_FP_PLACEHOLDER = "{fp}" as const
 /**
- * The planned per-daemon pair page: one origin per daemon
- * (`<fingerprint>.agentproto.cloud`), so each daemon's page, service worker
- * and stored credential are isolated from every other pairing's by the
- * browser's same-origin policy. NOT the default yet (its DNS isn't live):
- * select it with `pairing.pairPage` / `--pair-page`.
+ * The default pair page: one origin per daemon
+ * (`<fingerprint>.agentproto.cloud`, AIP-59 §5.8), so each daemon's page,
+ * service worker and stored credential are isolated from every other
+ * pairing's by the browser's same-origin policy. Override it with
+ * `pairing.pairPage` / `--pair-page` (a self-hosted page, or a plain URL).
  */
 export const PAIR_WEB_URL_TEMPLATE_CLOUD = "https://{fp}.agentproto.cloud/pair" as const
+/** The pair page used when none is configured. */
+export const DEFAULT_PAIR_PAGE = PAIR_WEB_URL_TEMPLATE_CLOUD
 
 /**
  * A parsed, structurally-valid pairing offer. `daemonX25519Pub` /
@@ -204,7 +209,7 @@ export function expectedPairHost(templateOrUrl: string, fingerprint: string): st
  * `{fp}` template (see `resolvePairPageUrl`) filled in with the offer's daemon
  * fingerprint (`id`).
  */
-export function encodeOfferWebUrl(offerUrl: string, pageUrl: string = PAIR_WEB_URL): string {
+export function encodeOfferWebUrl(offerUrl: string, pageUrl: string = DEFAULT_PAIR_PAGE): string {
   const q = offerUrl.indexOf("?")
   if (!offerUrl.startsWith(`${OFFER_URL_SCHEME}//${OFFER_URL_HOST}?`) || q < 0) {
     throw new PairingError("malformed_offer", `expected an ${OFFER_URL_SCHEME}//${OFFER_URL_HOST}?… offer URL`)
