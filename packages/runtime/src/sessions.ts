@@ -111,10 +111,12 @@ import {
 import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
 import { continueAgentSessionFresh } from "./session-continue-fresh.js"
 import {
+  compactOutcome,
   deriveSessionOutcome,
   readLastAssistantTextSync,
   shouldReplaceOutcome,
   type SessionOutcome,
+  type SessionOutcomeCompact,
 } from "./session-outcome.js"
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
@@ -1929,6 +1931,9 @@ export interface SessionSummary {
   endedAt?: string
   exitCode?: number
   killedMidTurn?: boolean
+  /** Compact derived outcome (status + 120-char summary preview) — see
+   *  `SessionDescriptor.outcome`; the full record is on GET /sessions/:id. */
+  outcome?: SessionOutcomeCompact
   lastOutputAt?: string
   lastActivityAt?: string
   currentPhase?: SessionCurrentPhase
@@ -2048,6 +2053,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     endedAt: desc.endedAt,
     exitCode: desc.exitCode,
     killedMidTurn: desc.killedMidTurn,
+    ...(desc.outcome ? { outcome: compactOutcome(desc.outcome) } : {}),
     lastOutputAt: desc.lastOutputAt,
     lastActivityAt: desc.lastActivityAt,
     currentPhase: desc.currentPhase,
