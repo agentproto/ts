@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { agentCliFrontmatterSchema } from "@agentproto/driver-agent-cli"
+import { agentCliFrontmatterSchema, composeSpawn } from "@agentproto/driver-agent-cli"
 import type { AgentprotoConfig } from "@agentproto/runtime/config"
 import {
   acpHandleFromSpec,
@@ -10,7 +10,7 @@ import {
   listAcpGenericAdapters,
   type AcpAgentSpec,
 } from "../acp-generic.js"
-import { resolveAdapter } from "../resolve.js"
+import { resolveAdapter, toAuthDescriptor } from "../resolve.js"
 
 // ── acpHandleFromSpec: spec → handle mapping ────────────────────────────
 
@@ -69,6 +69,44 @@ describe("acpHandleFromSpec", () => {
     })
     expect(handle.models?.default).toBe("m-1")
     expect(handle.models?.allowed).toEqual(["m-1", "m-2"])
+  })
+
+  it("projects the spec provider onto the handle and each allowed model", () => {
+    const kimi = ACP_CATALOG.find((e) => e.slug === "kimi-cli")!
+    const handle = acpHandleFromSpec(kimi)
+    expect(handle.provider).toBe("moonshot")
+    expect(handle.models?.default).toBe(kimi.models!.default)
+    // With a spec-level provider, allowed ids become { id, provider }
+    // bindings — the input `toAuthDescriptor`'s `modelProviders` and the
+    // catalog join read.
+    expect(handle.models?.allowed).toEqual(
+      kimi.models!.allowed!.map((id) => ({ id, provider: "moonshot" })),
+    )
+    expect(agentCliFrontmatterSchema.safeParse(handle).success).toBe(true)
+  })
+
+  it("declares a free-form `model` option so an explicit model passes compose validation", () => {
+    const kimi = ACP_CATALOG.find((e) => e.slug === "kimi-cli")!
+    const handle = acpHandleFromSpec(kimi)
+    expect(handle.options?.find((o) => o.id === "model")?.type).toBe("string")
+    // The exact call that used to throw `unknown_option at
+    // config.options.model` — a generic ACP agent takes its model over the
+    // ACP wire (models.apply default "config"), never via argv, so compose
+    // must accept the option and add nothing to binArgs.
+    const composed = composeSpawn(handle, { options: { model: "kimi-k2.5" } })
+    expect(composed.binArgs).toEqual(["acp"])
+  })
+
+  it("projects a fixed billing provider into the auth descriptor (spawn eligibility input)", () => {
+    // Regression for the kimi-cli spawn bug: without `provider` on the
+    // minted handle, `toAuthDescriptor` returned an EMPTY descriptor, the
+    // runtime's `directAuthMethods` presented no auth method on the direct
+    // route, and every auth profile (e.g. moonshot/api-key) came back
+    // `access_profile_ineligible`.
+    const kimi = ACP_CATALOG.find((e) => e.slug === "kimi-cli")!
+    const descriptor = toAuthDescriptor(acpHandleFromSpec(kimi))
+    expect(descriptor.provider).toBe("moonshot")
+    expect(descriptor.modelProviders?.["kimi-k3"]).toBe("moonshot")
   })
 
   it("throws a clear AIP-45 error for an invalid slug (id pattern)", () => {
