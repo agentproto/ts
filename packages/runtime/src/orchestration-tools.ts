@@ -53,6 +53,8 @@ import {
 } from "./outbound-adapters.js"
 import { randomBytes } from "node:crypto"
 import type { CronScheduler } from "./cron-scheduler.js"
+import { isSelfSchedulingTool } from "./cron-scheduler.js"
+import { detachedAgentStartSchema } from "./agent-start-schema.js"
 import type { RoutineRegistrar } from "./routine-registrar.js"
 import type { ActivityProjector } from "./activities.js"
 import { registerTaskTools } from "./task-tools.js"
@@ -2469,16 +2471,10 @@ export function registerOrchestrationTools(
         cwd: z.string().optional().describe("Working directory. Defaults to workspace root."),
         timeoutMs: z.number().int().positive().optional().describe("Hard kill timeout in ms. Default 60 000."),
       }),
-      z.object({
-        kind: z.literal("agent"),
-        adapter: z.string().min(1).describe("Agent adapter slug (e.g. 'claude-code', 'hermes')."),
-        prompt: z.string().min(1).describe("Prompt to send to the spawned agent."),
-        cwd: z.string().optional().describe("Working directory for the spawned session."),
-        model: z.string().optional().describe("Optional model identifier forwarded to the adapter."),
-        mode: z.string().optional().describe("AIP-45 mode id forwarded to the adapter, e.g. 'bypass-permissions', 'plan'."),
-        permissionHold: z.boolean().optional().describe("Start the spawned session in permission-hold (inbox) mode."),
-        options: z.record(z.string(), z.union([z.boolean(), z.number(), z.string()])).optional().describe("Manifest-declared option id → value map forwarded to the adapter."),
-      }),
+      // The full `agent_start` shape (minus `wait`), shared with the tool
+      // itself and routine `target.agent` — the job fires as a real
+      // `agent_start` call, so any field agent_start gains works here too.
+      detachedAgentStartSchema.extend({ kind: z.literal("agent") }),
       z.object({
         kind: z.literal("prompt-session"),
         sessionId: z.string().min(1).describe(
@@ -2486,13 +2482,22 @@ export function registerOrchestrationTools(
         ),
         prompt: z.string().min(1).describe("Prompt to send to the existing session."),
       }),
+      z.object({
+        kind: z.literal("tool"),
+        tool: z.string().min(1)
+          .refine(t => !isSelfSchedulingTool(t), {
+            message: "cron jobs may not dispatch cron_* tools (self-scheduling)",
+          })
+          .describe("Registered daemon MCP tool name to call in-process, e.g. 'worktree_gc'. cron_* tools are refused."),
+        inputs: z.record(z.string(), z.unknown()).optional().describe("Arguments passed to the tool verbatim."),
+      }),
     ])
 
     server.tool(
       "cron_create",
       "Schedule a recurring or one-shot cron job on the daemon. " +
         "Accepts a 5-field cron expression (minute hour day-of-month month day-of-week, local time) " +
-        "and a command, agent-spawn, or session-reprompt action. " +
+        "and a command, agent-spawn, session-reprompt, or daemon-tool action. " +
         "Returns the created job id and nextRunAt. " +
         "WARNING: this installs a persistent host-level job that survives daemon restarts.",
       {
@@ -2506,12 +2511,22 @@ export function registerOrchestrationTools(
         label: z.string().optional().describe("Human-readable label for the job."),
         action: cronActionSchema.describe(
           "What to do when the job fires. 'command' runs an allowlisted shell command; " +
-          "'agent' spawns a brand-new agent session; 'prompt-session' re-prompts an " +
-          "existing, already-running session in place (for durable check-in jobs).",
+          "'agent' spawns a brand-new agent session and takes every agent_start field " +
+          "(access.profileRef, role, worktree, …; not `wait`); 'prompt-session' re-prompts an " +
+          "existing, already-running session in place (for durable check-in jobs); " +
+          "'tool' calls a registered daemon MCP tool in-process (cron_* refused).",
         ),
       },
       async input => {
         try {
+          // A scoped server (toolSubset) must not reach tools outside its
+          // own subset by scheduling them: the fire runs on the daemon's
+          // unscoped internal server.
+          if (input.action.kind === "tool" && opts.toolSubset && !opts.toolSubset.has(input.action.tool)) {
+            throw new Error(
+              `cron action kind "tool" cannot dispatch '${input.action.tool}': not in this server's tool subset`,
+            )
+          }
           const job = cronScheduler.create({
             label: input.label,
             schedule: input.schedule,

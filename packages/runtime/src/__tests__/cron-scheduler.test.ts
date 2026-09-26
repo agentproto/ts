@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { createCronScheduler } from "../cron-scheduler.js"
 import { createSessionEventBus } from "../session-event-bus.js"
-import { createSessionsRegistry, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, type SessionsRegistry } from "../sessions.js"
+import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 
 // ── helpers ────────────────────────────────────────────────────────
 
@@ -324,14 +324,15 @@ describe("CronScheduler", () => {
     return { registry, sendPrompt, spawnAgent }
   }
 
-  it("run() — agent action threads mode, permissionHold, and options into startSession and spawnAgent", async () => {
+  it("run() — agent action lowers to an agent_start call carrying mode, permissionHold, and options", async () => {
     const workspace = makeTmpWorkspace()
     tmpDirs.push(workspace)
-    const { registry, sendPrompt, spawnAgent } = makeMockRegistry({ processAlive: true })
+    const { registry } = makeMockRegistry({ processAlive: true })
     const sessionEvents = createSessionEventBus()
-    const startSession = vi.fn().mockResolvedValue({ id: "adapter_sess_1" })
-    const resolveAgentAdapter = vi.fn().mockResolvedValue({ startSession })
-    const scheduler = createCronScheduler({ sessionEvents, registry, resolveAgentAdapter, workspace })
+    const dispatchTool = vi.fn().mockResolvedValue({
+      content: [{ type: "text", text: JSON.stringify({ id: "sess_bypass" }) }],
+    })
+    const scheduler = createCronScheduler({ sessionEvents, registry, dispatchTool, workspace })
     try {
       const job = scheduler.create({
         schedule: "0 0 1 1 *",
@@ -348,65 +349,63 @@ describe("CronScheduler", () => {
 
       const result = await scheduler.run(job.id)
 
-      expect(result).toBeDefined()
-      expect(result!.ok).toBe(true)
-      expect(startSession).toHaveBeenCalledOnce()
-      expect(startSession).toHaveBeenCalledWith({
-        cwd: workspace,
-        // Persistent isolated-config dir, keyed by the minted session id —
-        // what lets a reaped cron session natively resume (see
-        // adapterConfigDirFor in sessions.ts).
-        configDir: expect.stringContaining("adapter-config"),
+      expect(result).toEqual({ ok: true, summary: "spawned session sess_bypass (adapter=mock)" })
+      expect(dispatchTool).toHaveBeenCalledOnce()
+      expect(dispatchTool).toHaveBeenCalledWith("agent_start", {
+        adapter: "mock",
+        prompt: "wake up",
         mode: "bypass-permissions",
         permissionHold: true,
         options: { skills: "fast", verbose: true },
-        env: {
-          [SESSION_ID_ENV]: expect.any(String),
-          [WORKSPACE_SLUG_ENV]: "default",
-        },
+        cwd: workspace,
+        origin: `cron:${job.id}`,
       })
-      expect(spawnAgent).toHaveBeenCalledOnce()
-      expect(spawnAgent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          mode: "bypass-permissions",
-        }),
-      )
-      expect(sendPrompt).toHaveBeenCalledWith("sess_bypass-permissions", "wake up")
     } finally {
       scheduler.shutdown()
     }
   })
 
-  it("run() — agent action omits mode, permissionHold, and options when not provided", async () => {
+  it("run() — agent action adds no optional agent_start fields that weren't set", async () => {
     const workspace = makeTmpWorkspace()
     tmpDirs.push(workspace)
-    const { registry, spawnAgent } = makeMockRegistry({ processAlive: true })
+    const { registry } = makeMockRegistry({ processAlive: true })
     const sessionEvents = createSessionEventBus()
-    const startSession = vi.fn().mockResolvedValue({ id: "adapter_sess_2" })
-    const resolveAgentAdapter = vi.fn().mockResolvedValue({ startSession })
-    const scheduler = createCronScheduler({ sessionEvents, registry, resolveAgentAdapter, workspace })
+    const dispatchTool = vi.fn().mockResolvedValue({
+      content: [{ type: "text", text: JSON.stringify({ id: "sess_plain" }) }],
+    })
+    const scheduler = createCronScheduler({ sessionEvents, registry, dispatchTool, workspace })
     try {
       const job = scheduler.create({
         schedule: "0 0 1 1 *",
         recurring: true,
-        action: {
-          kind: "agent",
-          adapter: "mock",
-          prompt: "wake up",
-        },
+        action: { kind: "agent", adapter: "mock", prompt: "wake up", cwd: "/elsewhere", origin: "nightly" },
       })
 
       await scheduler.run(job.id)
 
-      expect(startSession).toHaveBeenCalledOnce()
-      const startArgs = startSession.mock.calls[0]![0]
-      expect(startArgs).toMatchObject({ cwd: workspace })
-      expect(startArgs).not.toHaveProperty("mode")
-      expect(startArgs).not.toHaveProperty("permissionHold")
-      expect(startArgs).not.toHaveProperty("options")
-      expect(spawnAgent).toHaveBeenCalledOnce()
-      const spawnArgs = spawnAgent.mock.calls[0]![0]
-      expect(spawnArgs).not.toHaveProperty("mode")
+      // Explicit cwd/origin win over the cron defaults; nothing else is added.
+      expect(dispatchTool.mock.calls[0]).toEqual([
+        "agent_start",
+        { adapter: "mock", prompt: "wake up", cwd: "/elsewhere", origin: "nightly" },
+      ])
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("run() — agent action fails clearly when dispatchTool is not wired", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const { registry } = makeMockRegistry({ processAlive: true })
+    const scheduler = createCronScheduler({ sessionEvents: createSessionEventBus(), registry, workspace })
+    try {
+      const job = scheduler.create({
+        schedule: "0 0 1 1 *",
+        action: { kind: "agent", adapter: "mock", prompt: "x" },
+      })
+      const result = await scheduler.run(job.id)
+      expect(result?.ok).toBe(false)
+      expect(result?.summary).toMatch(/agent action requires dispatchTool/)
     } finally {
       scheduler.shutdown()
     }
@@ -419,11 +418,10 @@ describe("CronScheduler", () => {
     const { registry } = makeMockRegistry({ processAlive: true })
     const sessionEvents = createSessionEventBus()
     let finishStart: (() => void) | undefined
-    const startSession = vi.fn(
-      () => new Promise<void>(resolve => { finishStart = resolve }),
+    const dispatchTool = vi.fn(
+      () => new Promise<unknown>(resolve => { finishStart = () => resolve({ content: [] }) }),
     )
-    const resolveAgentAdapter = vi.fn().mockResolvedValue({ startSession })
-    const scheduler = createCronScheduler({ sessionEvents, registry, resolveAgentAdapter, workspace })
+    const scheduler = createCronScheduler({ sessionEvents, registry, dispatchTool, workspace })
     try {
       const job = scheduler.create({
         schedule: "0 0 1 1 *",
@@ -431,16 +429,16 @@ describe("CronScheduler", () => {
         action: { kind: "agent", adapter: "mock", prompt: "slow maintenance" },
       })
       // Make the job due now. The first tick starts it; the second tick lands
-      // before startSession resolves and must observe the in-flight lease.
+      // before agent_start resolves and must observe the in-flight lease.
       job.nextRunAt = new Date(Date.now() - 1).toISOString()
 
       await vi.advanceTimersByTimeAsync(20_000)
       await Promise.resolve()
-      expect(startSession).toHaveBeenCalledOnce()
+      expect(dispatchTool).toHaveBeenCalledOnce()
 
       await vi.advanceTimersByTimeAsync(20_000)
       await Promise.resolve()
-      expect(startSession).toHaveBeenCalledOnce()
+      expect(dispatchTool).toHaveBeenCalledOnce()
 
       finishStart?.()
       // Let fireJob finish without draining the scheduler's recurring interval.
@@ -704,122 +702,6 @@ describe("CronScheduler", () => {
       expect(startSession.mock.calls[0]![0]).not.toHaveProperty("resumeSessionId")
 
       expect(sendPrompt).toHaveBeenCalledWith("sess_resumed", "wake up!")
-    } finally {
-      scheduler.shutdown()
-    }
-  })
-
-  it("run() — kind:\"agent\" forwards mode/permissionHold/options into startSession and mode into spawnAgent", async () => {
-    const workspace = makeTmpWorkspace()
-    tmpDirs.push(workspace)
-
-    const spawnedDesc = { id: "sess_new", processAlive: true }
-    const sendPrompt = vi.fn().mockResolvedValue(undefined)
-    const spawnAgent = vi.fn().mockReturnValue(spawnedDesc)
-    const mockRegistry = {
-      spawnAgent,
-      sendPrompt,
-    } as unknown as SessionsRegistry
-
-    const mockAgentSession = { id: "adapter_sess_1" }
-    const startSession = vi.fn().mockResolvedValue(mockAgentSession)
-    const resolveAgentAdapter = vi.fn().mockResolvedValue({ startSession })
-
-    const sessionEvents = createSessionEventBus()
-    const scheduler = createCronScheduler({
-      sessionEvents,
-      registry: mockRegistry,
-      resolveAgentAdapter,
-      workspace,
-    })
-    try {
-      const job = scheduler.create({
-        schedule: "0 0 1 1 *",
-        recurring: true,
-        action: {
-          kind: "agent",
-          adapter: "claude-code",
-          prompt: "ship it",
-          mode: "bypass-permissions",
-          permissionHold: true,
-          options: { skills: "docs" },
-        },
-      })
-      const result = await scheduler.run(job.id)
-
-      expect(result).toBeDefined()
-      expect(result!.ok).toBe(true)
-
-      expect(startSession).toHaveBeenCalledOnce()
-      expect(startSession.mock.calls[0]![0]).toMatchObject({
-        cwd: workspace,
-        mode: "bypass-permissions",
-        permissionHold: true,
-        options: { skills: "docs" },
-      })
-
-      expect(spawnAgent).toHaveBeenCalledOnce()
-      expect(spawnAgent.mock.calls[0]![0]).toMatchObject({ mode: "bypass-permissions" })
-
-      expect(sendPrompt).toHaveBeenCalledWith("sess_new", "ship it")
-    } finally {
-      scheduler.shutdown()
-    }
-  })
-
-  it("run() — kind:\"agent\" without mode/permissionHold/options leaks none of them into startSession", async () => {
-    const workspace = makeTmpWorkspace()
-    tmpDirs.push(workspace)
-
-    const spawnedDesc = { id: "sess_new", processAlive: true }
-    const sendPrompt = vi.fn().mockResolvedValue(undefined)
-    const spawnAgent = vi.fn().mockReturnValue(spawnedDesc)
-    const mockRegistry = {
-      spawnAgent,
-      sendPrompt,
-    } as unknown as SessionsRegistry
-
-    const mockAgentSession = { id: "adapter_sess_1" }
-    const startSession = vi.fn().mockResolvedValue(mockAgentSession)
-    const resolveAgentAdapter = vi.fn().mockResolvedValue({ startSession })
-
-    const sessionEvents = createSessionEventBus()
-    const scheduler = createCronScheduler({
-      sessionEvents,
-      registry: mockRegistry,
-      resolveAgentAdapter,
-      workspace,
-    })
-    try {
-      const job = scheduler.create({
-        schedule: "0 0 1 1 *",
-        recurring: true,
-        action: { kind: "agent", adapter: "claude-code", prompt: "ship it" },
-      })
-      const result = await scheduler.run(job.id)
-
-      expect(result).toBeDefined()
-      expect(result!.ok).toBe(true)
-
-      expect(startSession).toHaveBeenCalledOnce()
-      const startSessionArg = startSession.mock.calls[0]![0]
-      expect(startSessionArg).toEqual({
-        cwd: workspace,
-        // Always present — the persistent isolated-config dir is not one of
-        // the leak-prone optional fields this test guards, it's part of the
-        // base spawn contract (see adapterConfigDirFor in sessions.ts).
-        configDir: expect.stringContaining("adapter-config"),
-        env: {
-          [SESSION_ID_ENV]: expect.any(String),
-          [WORKSPACE_SLUG_ENV]: "default",
-        },
-      })
-      expect(startSessionArg).not.toHaveProperty("mode")
-      expect(startSessionArg).not.toHaveProperty("permissionHold")
-      expect(startSessionArg).not.toHaveProperty("options")
-
-      expect(spawnAgent).toHaveBeenCalledOnce()
-      expect(spawnAgent.mock.calls[0]![0]).not.toHaveProperty("mode")
     } finally {
       scheduler.shutdown()
     }

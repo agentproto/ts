@@ -41,6 +41,19 @@ describe("routineFrontmatterSchema — target union", () => {
     expect(result.success).toBe(true)
   })
 
+  it("passes extra agent_start fields on target.agent through (the runtime validates them)", () => {
+    const result = routineFrontmatterSchema.safeParse({
+      ...base,
+      target: {
+        agent: { adapter: "claude-code", prompt: "say hi", access: { profileRef: "p" }, role: "supervisor" },
+      },
+    })
+    expect(result.success).toBe(true)
+    expect(result.data?.target).toEqual({
+      agent: { adapter: "claude-code", prompt: "say hi", access: { profileRef: "p" }, role: "supervisor" },
+    })
+  })
+
   it("accepts target.workflow with a file ref", () => {
     const result = routineFrontmatterSchema.safeParse({
       ...base,

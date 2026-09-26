@@ -40,10 +40,11 @@ import {
 } from "node:fs"
 import { Cron } from "croner"
 import { loadAllowlist, runCommand } from "./command-tools.js"
-import { SESSION_ID_ENV, WORKSPACE_SLUG_ENV, adapterConfigDirFor, mintSessionId, type SessionsRegistry } from "./sessions.js"
+import { SESSION_ID_ENV, WORKSPACE_SLUG_ENV, mintSessionId, type SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import { restartAgentSession } from "./session-restart-core.js"
+import { toAgentStartCall, type DetachedAgentStartInput } from "./agent-start-schema.js"
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -55,16 +56,14 @@ export type CronAction =
       cwd?: string
       timeoutMs?: number
     }
-  | {
+  | ({
+      // Every `agent_start` field (minus `wait`) — one shared schema, see
+      // agent-start-schema.ts. Fired by lowering to an `agent_start` call,
+      // so a field added there works here with no extra code. Jobs persisted
+      // before this carried only adapter/prompt/cwd/model/mode/
+      // permissionHold/options, all still part of the shape.
       kind: "agent"
-      adapter: string
-      prompt: string
-      cwd?: string
-      model?: string
-      mode?: string // AIP-45 mode id, e.g. "bypass-permissions", "plan"
-      permissionHold?: boolean // start in permission-hold (inbox) mode
-      options?: Record<string, boolean | number | string> // manifest option ids
-    }
+    } & DetachedAgentStartInput)
   | {
       kind: "prompt-session"
       sessionId: string
@@ -81,6 +80,25 @@ export type CronAction =
       tool: string
       inputs?: Record<string, unknown>
     }
+
+/**
+ * True for a tool a `kind:"tool"` job must never dispatch: the cron verbs
+ * themselves. A job that creates/runs/deletes cron jobs is self-scheduling —
+ * one tick can fan out into unbounded persisted jobs — so it's refused at
+ * create time AND at fire time (a hand-edited cron-jobs.json can't sneak one in).
+ */
+export function isSelfSchedulingTool(tool: string): boolean {
+  return tool.startsWith("cron_")
+}
+
+/** Throws when `action` is one the scheduler refuses to hold. */
+export function assertCronActionAllowed(action: CronAction): void {
+  if (action.kind === "tool" && isSelfSchedulingTool(action.tool)) {
+    throw new Error(
+      `cron action kind "tool" cannot dispatch '${action.tool}': cron jobs may not schedule cron_* tools (self-scheduling)`,
+    )
+  }
+}
 
 export interface CronJob {
   id: string
@@ -411,6 +429,7 @@ export function createCronScheduler(opts: {
           `cron job '${job.id}': tool action requires dispatchTool to be wired`,
         )
       }
+      assertCronActionAllowed(action)
       const result = await dispatchTool(action.tool, action.inputs ?? {})
       const { ok, summary } = summarizeToolResult(result)
       if (!ok) {
@@ -419,54 +438,36 @@ export function createCronScheduler(opts: {
       return { ok: true, summary: `tool '${action.tool}': ${summary}` }
     }
 
-    // action.kind === "agent"
-    if (!resolveAgentAdapter) {
+    // action.kind === "agent" — lowered to the real `agent_start` handler
+    // (auth profile, role, worktree, dedupe, validation) exactly like a live
+    // call, rather than a parallel spawn path here.
+    if (!dispatchTool) {
       throw new Error(
-        `cron job '${job.id}': agent action requires resolveAgentAdapter to be wired`,
+        `cron job '${job.id}': agent action requires dispatchTool to be wired`,
       )
     }
-    const resolved = await resolveAgentAdapter(action.adapter)
-    if (!resolved) {
-      throw new Error(
-        `cron job '${job.id}': adapter '${action.adapter}' not found`,
-      )
+    const { kind: _kind, ...fields } = action
+    // Same default cwd the scheduler has always used, unless the job names
+    // its own location (cwd, workspaceSlug, or a preset that may pin one).
+    if (!fields.cwd && !fields.workspaceSlug && !fields.presetId) fields.cwd = workspace
+    const call = toAgentStartCall(fields, { origin: `cron:${job.id}`, context: `cron job '${job.id}'` })
+    const result = await dispatchTool(call.tool, call.inputs)
+    const { ok, summary } = summarizeToolResult(result)
+    if (!ok) {
+      throw new Error(`cron job '${job.id}': agent_start failed: ${summary}`)
     }
-    const cwd = action.cwd ?? workspace
-    // Minted BEFORE the spawn — same reason as the `command` action above:
-    // the id has to be known before the adapter process ever exec's so it
-    // can be injected as AGENTPROTO_SESSION_ID.
-    const agentSessionId = mintSessionId()
-    const agentSession = await resolved.startSession({
-      cwd,
-      configDir: adapterConfigDirFor(agentSessionId),
-      ...(action.model ? { model: action.model } : {}),
-      ...(action.mode ? { mode: action.mode } : {}),
-      ...(action.permissionHold ? { permissionHold: true } : {}),
-      ...(action.options && Object.keys(action.options).length > 0 ? { options: action.options } : {}),
-      env: {
-        [SESSION_ID_ENV]: agentSessionId,
-        [WORKSPACE_SLUG_ENV]: "default",
-      },
-    })
-    const desc = registry.spawnAgent({
-      id: agentSessionId,
-      workspaceSlug: "default",
-      cwd,
-      agentSession,
-      adapterSlug: action.adapter,
-      adapterConfigDir: adapterConfigDirFor(agentSessionId),
-      origin: "cron",
-      label: `cron:${job.id}`,
-      ...(action.mode ? { mode: action.mode } : {}),
-      ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
-    })
-    // Fire-and-forget: send the prompt and record the session id.
-    if (action.prompt) {
-      await registry.sendPrompt(desc.id, action.prompt)
+    let sessionId: string | undefined
+    try {
+      const body = JSON.parse(summary) as { id?: unknown }
+      if (typeof body.id === "string") sessionId = body.id
+    } catch {
+      // Non-JSON body — fall through to the raw summary.
     }
     return {
       ok: true,
-      summary: `spawned session ${desc.id} (adapter=${action.adapter})`,
+      summary: sessionId
+        ? `spawned session ${sessionId} (adapter=${action.adapter ?? action.harness ?? "preset"})`
+        : `agent_start: ${summary}`,
     }
   }
 
@@ -563,6 +564,7 @@ export function createCronScheduler(opts: {
 
   return {
     create({ label, schedule, timezone, recurring = true, action }) {
+      assertCronActionAllowed(action)
       // Validate schedule — throws SyntaxError if invalid.
       const cronInstance = parseCron(schedule, timezone)
       const id = `cron_${randomUUID()}`

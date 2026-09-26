@@ -155,6 +155,9 @@ export interface TargetAgent {
     prompt: string
     model?: string
     cwd?: string
+    /** Any other `agent_start` field (access, role, worktree, …) — validated
+     *  against agent_start's own input schema by the runtime bridge. */
+    [k: string]: unknown
   }
 }
 export interface TargetWorkflow {

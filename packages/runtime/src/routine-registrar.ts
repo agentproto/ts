@@ -23,6 +23,7 @@ import { readdirSync, readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { parseRoutineManifest, type RoutineFrontmatter } from "@agentproto/routine"
 import type { CronScheduler, CronAction } from "./cron-scheduler.js"
+import { toAgentStartCall } from "./agent-start-schema.js"
 
 const JOB_LABEL_PREFIX = "routine:"
 
@@ -38,9 +39,9 @@ export interface RoutineDispatchTool {
  * `workflow` — see the SPEC for why).
  *
  * `routineId`, when passed, is stamped onto an `agent` target's `agent_start`
- * call as `origin: "routine:<id>"` — the same origin convention
- * `cron-scheduler.ts`'s native `kind:"agent"` action already uses for
- * `origin: "cron"` — so a routine-fired session is attributable back to its
+ * call as `origin: "routine:<id>"` (unless the target sets its own) — the
+ * same convention `cron-scheduler.ts`'s native `kind:"agent"` action uses
+ * for `origin: "cron:<jobId>"` — so a routine-fired session is attributable back to its
  * routine in `session_list` / the sessions tree instead of looking like a
  * manual launch. `tool` / `workflow` targets pass inputs through verbatim
  * (unchanged): their tool handlers aren't guaranteed to accept `origin`.
@@ -53,17 +54,12 @@ export function routineTargetToToolCall(
     return { tool: target.tool, inputs: (target.inputs as Record<string, unknown> | undefined) ?? {} }
   }
   if ("agent" in target) {
-    const { adapter, prompt, model, cwd } = target.agent
-    return {
-      tool: "agent_start",
-      inputs: {
-        adapter,
-        prompt,
-        ...(model ? { model } : {}),
-        ...(cwd ? { cwd } : {}),
-        ...(routineId ? { origin: `${JOB_LABEL_PREFIX}${routineId}` } : {}),
-      },
-    }
+    // The whole `target.agent` object is agent_start input — validated
+    // against the shared schema, so any agent_start field works here too.
+    return toAgentStartCall(target.agent, {
+      ...(routineId ? { origin: `${JOB_LABEL_PREFIX}${routineId}` } : {}),
+      context: routineId ? `routine '${routineId}' target.agent` : "target.agent",
+    })
   }
   if ("workflow" in target) {
     const w = target.workflow

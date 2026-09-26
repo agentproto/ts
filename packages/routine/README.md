@@ -56,8 +56,10 @@ from source before writing any code:
    tool by name, ANY tool). `target.agent` and `target.workflow` are sugar
    that lower to a tool call:
    - `target.tool = { tool, inputs? }` → dispatched as-is.
-   - `target.agent = { adapter, prompt, model?, cwd? }` → dispatched as
-     `tool:"agent_start"` with those fields as `inputs`. **New target kind —
+   - `target.agent = { adapter, prompt, model?, cwd?, ...any other
+     agent_start field }` → dispatched as `tool:"agent_start"` with those
+     fields as `inputs`, validated against agent_start's own input schema
+     (`packages/runtime/src/agent-start-schema.ts`; `wait` is dropped). **New target kind —
      `TargetAgent` does not exist in the current AIP-41 draft's
      `target: TargetAction | TargetWorkflow | TargetTool` union**
      (`packages/routine/src/types.ts:46`). Flagged as a specs-repo follow-up
@@ -77,8 +79,9 @@ from source before writing any code:
      so the registrar has exactly one execution path
      (`routineTargetToToolCall`), not three.
 3. **Schema tightening** — `target` moves from `z.any()` to a `z.union` of
-   four `.strict()` object schemas (tool/agent/workflow/action — see
-   `schema.ts`). `z.union` rather than `z.discriminatedUnion` because the
+   four object schemas (tool/agent/workflow/action — see `schema.ts`),
+   `.strict()` except `target.agent`'s inner object, which passes extra
+   `agent_start` fields through to the runtime's validation. `z.union` rather than `z.discriminatedUnion` because the
    variants are told apart by *which key is present* (`tool` vs `agent` vs
    `workflow` vs `action`), not a shared literal discriminator field — adding
    one would itself be a spec change. `schedule` is deliberately **left**
