@@ -118,6 +118,7 @@ interface RenderRow {
   name: string
   idMono: string | undefined
   message: string | undefined
+  messageMuted: boolean
   tag: string
   tagTitle: string | undefined
   logo: RenderLogo
@@ -254,6 +255,7 @@ function toRenderRow(
     name: row.name,
     idMono: row.idMono,
     message: row.message,
+    messageMuted: row.messageMuted,
     tag: row.tag,
     tagTitle: row.tagTitle,
     logo: toRenderLogo(row.logo, webview, extensionUri),
@@ -1017,6 +1019,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .name .rtw { display: inline-flex; font-size: 8px; color: var(--faint); transition: transform 0.12s; cursor: pointer; }
     .name .rtw.closed { transform: rotate(-90deg); }
     .msg { color: var(--dim); font-size: 12px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .msg.muted { font-style: italic; opacity: 0.75; }
     .meta-loc { margin-top: 3px; font-size: 11px; color: var(--faint); }
     .meta { display: flex; gap: 8px; margin-top: 1px; align-items: center; font-size: 11px; color: var(--faint); flex-wrap: wrap; }
     .meta .harness { display: inline-flex; align-items: center; gap: 4px; }
@@ -1315,7 +1318,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
           '<span class="' + dotClasses + '"' + wsStyle + '></span>' +
           '<div class="mid">' +
             '<div class="name">' + nameLine + '</div>' +
-            (r.message ? '<div class="msg">' + escapeHtml(r.message) + '</div>' : '') +
+            (r.message ? '<div class="msg' + (r.messageMuted ? ' muted' : '') + '">' + escapeHtml(r.message) + '</div>' : '') +
             (metaLocHTML(r) ? '<div class="meta-loc">' + metaLocHTML(r) + '</div>' : '') +
             '<div class="meta">' + metaHTML(r, depth) + '</div>' +
           '</div>' +

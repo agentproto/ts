@@ -117,6 +117,12 @@ describe("isWebviewMessage", () => {
     expect(isWebviewMessage({ type: "ptyResize", cols: 80 })).toBe(false)
   })
 
+  it("accepts openSession only with a non-empty session id", () => {
+    expect(isWebviewMessage({ type: "openSession", sessionId: "sess_1" })).toBe(true)
+    expect(isWebviewMessage({ type: "openSession", sessionId: "" })).toBe(false)
+    expect(isWebviewMessage({ type: "openSession" })).toBe(false)
+  })
+
   it("accepts openLink with a known kind, a target, and an optional line", () => {
     expect(isWebviewMessage({ type: "openLink", kind: "external", target: "https://x" })).toBe(true)
     expect(isWebviewMessage({ type: "openLink", kind: "file", target: "src/a.ts", line: 12 })).toBe(true)

@@ -45,6 +45,7 @@ import type { SessionSummary, WorkspacesConfig } from "../client/types.js"
 import { isConversationTerminal } from "../../../runtime/src/conversation-store.js"
 import { isLiveSession } from "../commands/sessionActions.logic.js"
 import { adapterLogoFor, type AdapterLogo } from "./adapterIcon.logic.js"
+import { outcomeHintFor } from "./sessionOutcome.logic.js"
 import { canArchive, canUnarchive } from "../commands/sessionArchive.logic.js"
 import { shortSessionId } from "../client/sessionName.js"
 import { isMachineOrigin } from "../views/sessionsGroups.logic.js"
@@ -518,8 +519,12 @@ export interface WebviewRow {
   name: string
   /** The `· <id>` mono segment, for machine rows that split name from id. */
   idMono: string | undefined
-  /** Line 2 — the session's live activity summary, clamped; absent when there is none yet. */
+  /** Line 2 — the session's live activity summary, clamped; absent when there is none yet.
+   *  For an ended session with a derived outcome, the outcome hint instead
+   *  (see {@link outcomeHintFor}). */
   message: string | undefined
+  /** True when `message` is the muted "no output" hint of an empty outcome. */
+  messageMuted: boolean
   /** Line 3 lead segment — "⑂ <worktree>" for an isolated session, the
    *  WORKSPACE label for an in-place one (the posture is the default, so it
    *  isn't worth a word — where it runs is), or "" to render no line at all
@@ -782,7 +787,10 @@ function toRow(
   const rowStatus = webviewRowStatus(session, now, attentionDelaySec)
   // A starting session usually has no activity yet — never let it look like it
   // said something; a quiet "booting…" in the preview slot is truthful.
-  const message = previewTextFor(session) ?? (rowStatus === "starting" ? "booting…" : undefined)
+  // An ENDED session with a derived outcome says what it produced instead of
+  // its last activity line ("no output", muted, when it produced nothing).
+  const hint = outcomeHintFor(session)
+  const message = hint?.text ?? previewTextFor(session) ?? (rowStatus === "starting" ? "booting…" : undefined)
   const inPlace = isolation === "in-place"
   const tagTitleParts = [session.cwd, inPlace ? "runs in-place" : "isolated worktree"].filter(
     (p): p is string => Boolean(p),
@@ -800,6 +808,7 @@ function toRow(
     name: identity.name,
     idMono: identity.idMono,
     message,
+    messageMuted: hint?.muted === true,
     tag: inPlace ? (ws?.label ?? "") : isolation,
     tagTitle: tagTitleParts.length > 0 ? tagTitleParts.join(" · ") : undefined,
     logo: adapterLogoFor(session.adapterSlug ?? session.kind),
