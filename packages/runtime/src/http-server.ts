@@ -184,6 +184,7 @@ import { parseJsonRecordText, DEFAULT_APP_SERVE_PORT, type SandboxAppServeSpec }
 import { listPresets } from "./preset-tools.js"
 import {
   resolveWorktreeQueryRoot,
+  sessionWorktreeScope,
   type WorktreeStatusLister,
 } from "./worktree-status.js"
 import { livingSessionCwds, type WorktreeGcRunner } from "./worktree-gc.js"
@@ -2160,6 +2161,36 @@ export async function startHttpServer(
           const workspaceSlug = qs.get("workspaceSlug") ?? undefined
           const openOnly =
             qs.get("openOnly") === "1" || qs.get("openOnly") === "true"
+          // Transport twin of the tool's `sessionId`: just that session's
+          // worktree, computed alone.
+          const sessionRef = qs.get("sessionId")
+          if (sessionRef) {
+            const desc = opts.sessions?.findByIdOrName(sessionRef)
+            if (!desc) {
+              res.writeHead(404, { "content-type": "application/json" })
+              res.end(JSON.stringify({ error: "session_not_found" }))
+              return
+            }
+            const scope = sessionWorktreeScope(desc)
+            try {
+              const worktrees = scope
+                ? await opts.listWorktreeStatuses(scope.repoRoot, {
+                    paths: [scope.worktreePath],
+                  })
+                : []
+              res.writeHead(200, { "content-type": "application/json" })
+              res.end(JSON.stringify({ worktrees }))
+            } catch (err) {
+              res.writeHead(500, { "content-type": "application/json" })
+              res.end(
+                JSON.stringify({
+                  error: "worktree_status_failed",
+                  message: err instanceof Error ? err.message : String(err),
+                })
+              )
+            }
+            return
+          }
           const resolved = await resolveWorktreeQueryRoot({
             repoRoot: repoRoot ?? undefined,
             workspaceSlug: workspaceSlug ?? undefined,

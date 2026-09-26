@@ -90,6 +90,7 @@ import {
 } from "./workspaces-config.js"
 import {
   resolveWorktreeQueryRoot,
+  sessionWorktreeScope,
   type WorktreeStatusLister,
   type WorktreeStatusView,
 } from "./worktree-status.js"
@@ -583,6 +584,9 @@ export interface WorktreeStatusCompactItem {
   branch: string | null
   class: WorktreeStatusView["class"]
   reclaimable: boolean
+  dirty: WorktreeStatusView["dirty"]
+  changes?: WorktreeStatusView["changes"]
+  base: WorktreeStatusView["base"]
   pr: WorktreeStatusView["pr"]
   liveness: WorktreeStatusView["liveness"]
 }
@@ -594,6 +598,9 @@ export const compactWorktreeStatus = (
   branch: w.branch,
   class: w.class,
   reclaimable: w.reclaimable,
+  dirty: w.dirty,
+  ...(w.changes ? { changes: w.changes } : {}),
+  base: w.base,
   pr: w.pr,
   liveness: w.liveness,
 })
@@ -2286,17 +2293,28 @@ export function registerSessionTools(
         "When true, only return worktrees whose `pr.state` is `open`. " +
           "Default false."
       ),
+    sessionId: z
+      .string()
+      .optional()
+      .describe(
+        "Session id or name: return ONLY the worktree that session runs in " +
+          "(its `worktreePath`), computed alone instead of scanning every " +
+          "worktree of the repo. Wins over `repoRoot`/`workspaceSlug`. An " +
+          "empty list means the session isn't in a linked worktree."
+      ),
   })
   registerPaginatedListTool<z.infer<typeof worktreeStatusSchema>, WorktreeStatusView>({
     id: "worktree_status",
     description:
       "List the linked git worktrees for a repo and their live PR/session " +
       "linkage. Each entry includes path, branch, class, reclaimability, " +
-      "PR state/number, the sessions whose cwd sits in the worktree, and " +
-      "liveness. Use this to power a 'PRs in progress + linked sub-agents' " +
-      "panel. Pass `openOnly: true` to surface only worktrees whose PR is " +
-      "still open. COMPACT BY DEFAULT: each entry carries path/branch/" +
-      "class/reclaimable/pr/liveness; pass `full: true` to also get the " +
+      "dirty flag, ahead/behind vs the base branch, PR state/number/url, " +
+      "the sessions whose cwd sits in the worktree, and liveness. Use this " +
+      "to power a 'PRs in progress + linked sub-agents' panel. Pass " +
+      "`openOnly: true` to surface only worktrees whose PR is still open, " +
+      "or `sessionId` to read just the one worktree a session runs in. " +
+      "COMPACT BY DEFAULT: each entry carries path/branch/class/reclaimable/" +
+      "dirty/changes/base/pr/liveness; pass `full: true` to also get the " +
       "per-session roster (`sessions[]`).",
     schema: worktreeStatusSchema,
     body: async input => {
@@ -2306,6 +2324,14 @@ export function registerSessionTools(
             "a worktree status lister. The host must wire `listWorktreeStatuses` " +
             "in createGateway.",
         )
+      }
+
+      if (input.sessionId !== undefined) {
+        const desc = registry.findByIdOrName(input.sessionId)
+        if (!desc) throw new Error(`worktree_status: no session "${input.sessionId}"`)
+        const scope = sessionWorktreeScope(desc)
+        if (!scope) return []
+        return listWorktreeStatuses(scope.repoRoot, { paths: [scope.worktreePath] })
       }
 
       const resolved = await resolveWorktreeQueryRoot({

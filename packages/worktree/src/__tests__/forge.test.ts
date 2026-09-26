@@ -31,8 +31,16 @@ describe("parseGithubOwnerRepo", () => {
   it("parses an https remote URL without .git suffix", () => {
     expect(parseGithubOwnerRepo("https://github.com/agentproto/ts")).toEqual({ owner: "agentproto", repo: "ts" })
   })
+  it("parses an ssh remote through a multi-account host alias", () => {
+    expect(parseGithubOwnerRepo("git@github.com-agentik:agentik-studio/agentik-studio.git")).toEqual({
+      owner: "agentik-studio",
+      repo: "agentik-studio",
+    })
+  })
   it("returns null for a non-GitHub remote", () => {
     expect(parseGithubOwnerRepo("git@gitlab.com:agentproto/ts.git")).toBeNull()
+    // A lookalike host is not an alias of github.com.
+    expect(parseGithubOwnerRepo("git@github.company.com:agentproto/ts.git")).toBeNull()
   })
 })
 

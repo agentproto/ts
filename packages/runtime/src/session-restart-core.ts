@@ -779,6 +779,14 @@ export async function restartAgentSession(
       ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
       ...(authSpec ? { auth: authSpec } : {}),
       ...(launchConfig.options ? { options: launchConfig.options } : {}),
+      // Spawn-time guarantees survive a restart: the adapter runs under the
+      // same OS confinement it had (the EFFECTIVE mode `session-spawn.ts`
+      // recorded, re-applied explicitly so a since-edited workspace config
+      // can't silently loosen a running session's lineage), and a session
+      // spawned in permission-hold keeps routing its permission requests to
+      // the human inbox instead of auto-answering them.
+      ...(prev.commandSandbox ? { commandSandbox: prev.commandSandbox } : {}),
+      ...(prev.permissionHold ? { permissionHold: true } : {}),
       env: {
         [SESSION_ID_ENV]: restartedSessionId,
         [WORKSPACE_SLUG_ENV]: prev.workspaceSlug,
@@ -843,6 +851,9 @@ export async function restartAgentSession(
       ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
       ...(effMode ? { mode: effMode } : {}),
       ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),
+      // Echoed so the NEXT restart (and every reader) still sees them.
+      ...(prev.commandSandbox ? { commandSandbox: prev.commandSandbox } : {}),
+      ...(prev.permissionHold ? { permissionHold: true } : {}),
       // Lineage carry-forward (#session-visibility). A restart is a NEW
       // descriptor, but it is the same logical session continued — so its
       // origin (which channel spawned it: cowork/vscode/codex/cron) and its

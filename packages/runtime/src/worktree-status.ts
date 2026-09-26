@@ -25,9 +25,19 @@ export interface WorktreeStatusView {
   branch: string | null
   class: "reclaim" | "salvage" | "hold"
   reclaimable: boolean
+  /** Uncommitted work in the tree (modified, staged or untracked paths). */
+  dirty: boolean
+  /** Per-kind counts, present only when `dirty`. */
+  changes?: { modified: number; staged: number; untracked: number }
+  /** Ahead/behind vs the base ref the integration check compares against
+   *  (the repo's default branch, e.g. `origin/main`). `null` for a detached
+   *  tip or when git couldn't resolve the base. */
+  base: null | { ref: string; ahead: number; behind: number }
+  /** Integration state; `number` whenever the forge matched a PR (open,
+   *  merged, partial), `url` when the host knows the forge's web URL. */
   pr:
     | null
-    | { state: string; number?: number }
+    | { state: string; number?: number; url?: string }
   sessions: Array<{
     id: string
     adapterSlug?: string
@@ -41,12 +51,35 @@ export interface WorktreeStatusView {
   }
 }
 
+/** Narrows a lister call. `paths` computes only those worktrees (compared
+ *  resolved) instead of every worktree of the repo: one forge round-trip for
+ *  a per-session lookup, not one per worktree. */
+export interface WorktreeStatusListOptions {
+  paths?: readonly string[]
+}
+
 /** Injected port: the runtime asks the host to list worktrees for a repo. */
-export type WorktreeStatusLister = (repoRoot: string) => Promise<WorktreeStatusView[]>
+export type WorktreeStatusLister = (
+  repoRoot: string,
+  options?: WorktreeStatusListOptions,
+) => Promise<WorktreeStatusView[]>
 
 interface IntegrationLike {
   state: string
   pr?: number
+}
+
+interface TreeLike {
+  state: string
+  modified?: number
+  staged?: number
+  untracked?: number
+}
+
+interface BaseLike {
+  ref: string
+  ahead: number
+  behind: number
 }
 
 interface LivenessLike {
@@ -69,6 +102,8 @@ interface ProvenanceLike {
 interface WorktreeStatusEntryLike {
   path: string
   branch: string | null
+  tree?: TreeLike
+  base?: BaseLike | null
   class: WorktreeStatusView["class"]
   reclaimable: boolean
   integration: IntegrationLike
@@ -76,18 +111,39 @@ interface WorktreeStatusEntryLike {
   provenance: ProvenanceLike
 }
 
+export interface ToWorktreeStatusViewOptions {
+  /** Web URL of PR `number` on this repo's forge, when the host can build
+   *  one (e.g. from a GitHub `origin` remote). */
+  prUrl?: (number: number) => string | undefined
+}
+
 /**
  * Pure projection from a raw `WorktreeStatusEntry` to the view the daemon
  * surfaces. Kept in one place so the MCP tool and HTTP route cannot drift.
  */
-export function toWorktreeStatusView(entry: unknown): WorktreeStatusView {
+export function toWorktreeStatusView(
+  entry: unknown,
+  options: ToWorktreeStatusViewOptions = {},
+): WorktreeStatusView {
   const e = entry as WorktreeStatusEntryLike
+  const dirty = e.tree?.state === "dirty"
   return {
     path: e.path,
     branch: e.branch,
     class: e.class,
     reclaimable: e.reclaimable,
-    pr: derivePr(e.integration),
+    dirty,
+    ...(dirty
+      ? {
+          changes: {
+            modified: e.tree?.modified ?? 0,
+            staged: e.tree?.staged ?? 0,
+            untracked: e.tree?.untracked ?? 0,
+          },
+        }
+      : {}),
+    base: e.base ? { ref: e.base.ref, ahead: e.base.ahead, behind: e.base.behind } : null,
+    pr: derivePr(e.integration, options.prUrl),
     sessions: e.provenance.sessions.map(s => ({
       id: s.id,
       ...(s.adapterSlug !== undefined ? { adapterSlug: s.adapterSlug } : {}),
@@ -102,14 +158,14 @@ export function toWorktreeStatusView(entry: unknown): WorktreeStatusView {
   }
 }
 
-function derivePr(integration: IntegrationLike): WorktreeStatusView["pr"] {
-  if (integration.state === "open") {
-    return { state: "open", number: integration.pr }
-  }
-  if (integration.state === "merged") {
-    return { state: "merged" }
-  }
-  return { state: integration.state }
+function derivePr(
+  integration: IntegrationLike,
+  prUrl?: (number: number) => string | undefined,
+): WorktreeStatusView["pr"] {
+  const number = typeof integration.pr === "number" ? integration.pr : undefined
+  if (number === undefined) return { state: integration.state }
+  const url = prUrl?.(number)
+  return { state: integration.state, number, ...(url ? { url } : {}) }
 }
 
 /**
@@ -160,4 +216,22 @@ export async function resolveWorktreeQueryRoot(input: {
   }
 
   return { ok: true, repoRoot: ws.path }
+}
+
+/**
+ * Where a per-session `worktree_status` read points: the session's own
+ * `worktreePath`, listed against its `mainRepoPath` (the primary checkout,
+ * recorded at spawn) when known, else against the worktree path itself,
+ * which the host's lister resolves onto the repo. `null` when the session
+ * isn't in a linked worktree.
+ */
+export function sessionWorktreeScope(desc: {
+  worktreePath?: string
+  mainRepoPath?: string
+}): { repoRoot: string; worktreePath: string } | null {
+  if (!desc.worktreePath) return null
+  return {
+    repoRoot: desc.mainRepoPath ?? desc.worktreePath,
+    worktreePath: desc.worktreePath,
+  }
 }

@@ -40,11 +40,11 @@ describe("toWorktreeStatusView", () => {
     expect(view.pr).toEqual({ state: "open", number: 42 })
   })
 
-  it("projects a merged PR as {state:'merged'} without number", () => {
+  it("projects a merged PR with the number the forge matched", () => {
     const view = toWorktreeStatusView(
       makeEntry({ integration: { state: "merged", via: "squash", pr: 42, offline: false } }),
     )
-    expect(view.pr).toEqual({ state: "merged" })
+    expect(view.pr).toEqual({ state: "merged", number: 42 })
   })
 
   it("passes through unpushed / pushed-no-pr / local-only states", () => {
