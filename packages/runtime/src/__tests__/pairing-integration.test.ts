@@ -262,16 +262,22 @@ describe("paired channel over the real rendezvous broker", () => {
     const ws = new WebSocket(url)
     openSockets.push(ws)
     await new Promise<void>((resolve, reject) => {
-      ws.once("open", () => resolve())
-      ws.once("error", err => reject(err))
-      signal?.addEventListener("abort", () => {
+      // Like the CLI's daemonDialRendezvous: the signal only aborts the DIAL —
+      // once open, the registry owns the socket's lifetime.
+      const onAbort = (): void => {
         try {
           ws.close()
         } catch {
           /* ignore */
         }
         reject(new Error("aborted"))
+      }
+      ws.once("open", () => {
+        signal?.removeEventListener("abort", onAbort)
+        resolve()
       })
+      ws.once("error", err => reject(err))
+      signal?.addEventListener("abort", onAbort)
     })
     return wrapWebSocket(ws as unknown as Parameters<typeof wrapWebSocket>[0])
   }
@@ -358,28 +364,160 @@ describe("paired channel over the real rendezvous broker", () => {
     expect(res2.status).toBe(200)
     await client2.close()
 
-    // ── revoke → the pairing can no longer be reached ──
+    // ── revoke → the client is told, authenticated, that it was unpaired ──
     expect(await registry.revoke(fingerprint)).toBe(true)
     expect((await registry.list()).length).toBe(0)
 
-    // After revocation the daemon stops parking on the pairing's tokens, so a
-    // client dialing the epoch token parks alone and no splice happens. It gets
-    // no daemon hello → the handshake times out / never readies.
-    await new Promise(r => setTimeout(r, 100))
+    // The daemon keeps a tombstone on the pairing's routing tokens: the
+    // handshake still completes (the client verifies the daemon's signature),
+    // then the only frame is an E2E `error{pairing_revoked}` — never a hello,
+    // never a served channel.
     const epochToken2 = await deriveEpochRoutingToken(pairRoot, currentEpoch())
-    const clientRaw3 = await dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(epochToken2)}`)
+    const refusal = await dialRevoked(epochToken2, parsed.daemonX25519Pub, parsed.daemonEd25519Pub)
+    expect(refusal.frames).toEqual([
+      expect.objectContaining({ t: "error", code: "pairing_revoked" }),
+    ])
+    expect(refusal.closed).toBe(true)
+
+    // The tombstone is persisted with the routing tokens only — no pair root.
+    const file = JSON.parse(await readFile(join(tmp, "pairings.json"), "utf8"))
+    expect(file.pairings).toEqual([])
+    expect(file.revoked).toHaveLength(1)
+    expect(file.revoked[0].fingerprint).toBe(fingerprint)
+    expect(file.revoked[0].pairRoot).toBeUndefined()
+    expect(file.revoked[0].routes.map((r: { token: string }) => r.token)).toContain(epochToken2)
+  })
+
+  /** Dial a revoked pairing's routing token, run the client handshake, and
+   *  collect every decrypted frame until the channel closes. */
+  async function dialRevoked(
+    token: string,
+    daemonX25519Pub: string,
+    daemonEd25519Pub: string,
+  ): Promise<{ frames: unknown[]; closed: boolean }> {
+    // Let the revoked loops' sockets leave the broker before the tombstone's
+    // park is the one we splice with.
+    await new Promise(r => setTimeout(r, 150))
+    await vi.waitFor(() => expect(rendezvous.stats.parked).toBeGreaterThanOrEqual(1))
+    const raw = await dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(token)}`)
+    const started = await startClientHandshake({
+      daemonX25519Pub,
+      daemonEd25519Pub,
+      offerToken: token,
+      clientName: "revoked",
+    })
+    const wrapped = await clientHandshakeOverSink(
+      raw,
+      encodePairingMessage(started.hello),
+      reply => started.complete(decodePairingReply(reply)),
+      { timeoutMs: 4_000 },
+    )
+    const frames: unknown[] = []
+    wrapped.onFrame(f => frames.push(f))
+    const closed = await new Promise<boolean>(resolve => {
+      if (!wrapped.isOpen) resolve(true)
+      wrapped.onClose(() => resolve(true))
+      setTimeout(() => resolve(false), 4_000)
+    })
+    return { frames, closed }
+  }
+
+  it("a live channel is told pairing_revoked when its pairing is revoked", async () => {
+    registry = createPairingRegistry({
+      loadIdentity: async () => identity,
+      pairingsPath: join(tmp, "pairings.json"),
+      defaultRendezvousUrl: rvUrl,
+      dial: (url, signal) => dialRv(url, signal),
+      serve: makeServe(),
+      handshakeTimeoutMs: 4_000,
+      reconnectMinMs: 50,
+      reconnectMaxMs: 200,
+    })
+    const offer = await registry.createOffer({ ttlMs: 60_000 })
+    await vi.waitFor(() => expect(rendezvous.stats.parked).toBeGreaterThanOrEqual(1))
+    const parsed = await parseOfferUrl(offer.url)
+    const { client: first, session } = await clientAccept(
+      await dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(parsed.token)}`),
+      parsed.daemonX25519Pub,
+      parsed.daemonEd25519Pub,
+      parsed.token,
+      "phone",
+    )
+    await first.ready()
+    await first.close()
+    const pairRoot = await derivePairRoot(session)
+    const fingerprint = (await registry.list())[0]!.fingerprint
+
+    // Reconnect over the epoch token, then revoke while it's live.
+    const token = await deriveEpochRoutingToken(pairRoot, currentEpoch())
+    await vi.waitFor(() => expect(rendezvous.stats.parked).toBeGreaterThanOrEqual(1))
+    const raw = await dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(token)}`)
     const started = await startClientHandshake({
       daemonX25519Pub: parsed.daemonX25519Pub,
       daemonEd25519Pub: parsed.daemonEd25519Pub,
-      offerToken: epochToken2,
+      offerToken: token,
+      clientName: "phone",
+    })
+    const wrapped = await clientHandshakeOverSink(
+      raw,
+      encodePairingMessage(started.hello),
+      reply => started.complete(decodePairingReply(reply)),
+      { timeoutMs: 4_000 },
+    )
+    const frames: { t: string; code?: string }[] = []
+    wrapped.onFrame(f => frames.push(f as { t: string; code?: string }))
+    await vi.waitFor(() => expect(frames.map(f => f.t)).toContain("hello"))
+    const closed = new Promise<void>(resolve => wrapped.onClose(() => resolve()))
+
+    await registry.revoke(fingerprint)
+    await closed
+    expect(frames.at(-1)).toMatchObject({ t: "error", code: "pairing_revoked" })
+  })
+
+  it("revokedGraceMs: 0 keeps no tombstone — a revoked client finds no daemon", async () => {
+    registry = createPairingRegistry({
+      loadIdentity: async () => identity,
+      pairingsPath: join(tmp, "pairings.json"),
+      defaultRendezvousUrl: rvUrl,
+      dial: (url, signal) => dialRv(url, signal),
+      serve: makeServe(),
+      handshakeTimeoutMs: 4_000,
+      reconnectMinMs: 50,
+      reconnectMaxMs: 200,
+      revokedGraceMs: 0,
+    })
+    const offer = await registry.createOffer({ ttlMs: 60_000 })
+    await vi.waitFor(() => expect(rendezvous.stats.parked).toBeGreaterThanOrEqual(1))
+    const parsed = await parseOfferUrl(offer.url)
+    const { client, session } = await clientAccept(
+      await dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(parsed.token)}`),
+      parsed.daemonX25519Pub,
+      parsed.daemonEd25519Pub,
+      parsed.token,
+      "phone",
+    )
+    await client.ready()
+    await client.close()
+    const pairRoot = await derivePairRoot(session)
+    expect(await registry.revoke((await registry.list())[0]!.fingerprint)).toBe(true)
+
+    await new Promise(r => setTimeout(r, 100))
+    const token = await deriveEpochRoutingToken(pairRoot, currentEpoch())
+    const raw = await dialRv(`${rvUrl}?side=client&t=${encodeURIComponent(token)}`)
+    const started = await startClientHandshake({
+      daemonX25519Pub: parsed.daemonX25519Pub,
+      daemonEd25519Pub: parsed.daemonEd25519Pub,
+      offerToken: token,
       clientName: "revoked",
     })
-    const reconnectAttempt = clientHandshakeOverSink(
-      clientRaw3,
+    const attempt = clientHandshakeOverSink(
+      raw,
       encodePairingMessage(started.hello),
       reply => started.complete(decodePairingReply(reply)),
       { timeoutMs: 300 },
     )
-    await expect(reconnectAttempt).rejects.toBeTruthy()
+    await expect(attempt).rejects.toBeTruthy()
+    const file = JSON.parse(await readFile(join(tmp, "pairings.json"), "utf8"))
+    expect(file.revoked).toBeUndefined()
   })
 })
