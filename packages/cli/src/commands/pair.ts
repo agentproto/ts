@@ -1,8 +1,10 @@
 /**
  * `agentproto pair <subcommand>` — E2E daemon pairing (design: DESIGN §6).
  *
- *   offer  [--ttl 10m] [--rendezvous wss://…] [--no-qr]   daemon side: mint an
- *          offer URL (+ QR) and start listening on the rendezvous.
+ *   offer  [--ttl 10m] [--rendezvous wss://…] [--no-qr | --qr [--pair-page <url>]]
+ *          daemon side: mint an offer URL (+ QR) and start listening on the
+ *          rendezvous. `--qr` renders the phone link instead: the web pair page
+ *          with the offer in its fragment (`https://cli.agentproto.sh/pair#…`).
  *   accept "<offer-url>" [--name <label>]                 client side: verify +
  *          persist the pairing.
  *   ls     [--json]                                       list pairings (daemon
@@ -35,11 +37,12 @@ import {
   findClientPairing,
 } from "../util/client-pairings.js"
 import { printQr } from "../util/qr.js"
+import { encodeOfferWebUrl, PAIR_WEB_URL } from "@agentproto/secrets/pairing"
 
 const USAGE = `agentproto pair — end-to-end daemon pairing over an untrusted rendezvous
 
 Usage:
-  agentproto pair offer  [--ttl 10m] [--rendezvous <wss://…>] [--no-qr] [--json]
+  agentproto pair offer  [--ttl 10m] [--rendezvous <wss://…>] [--no-qr | --qr [--pair-page <url>]] [--json]
   agentproto pair accept "<offer-url>" [--name <label>]
   agentproto pair ls     [--json]
   agentproto pair revoke <fingerprint|name>
@@ -48,7 +51,9 @@ Usage:
 
   offer   Daemon side: mint a single-use offer URL (+ QR) and start listening on
           the rendezvous. Share the URL with the client; it carries the daemon's
-          public keys (MITM-proof) and a short-lived token.
+          public keys (MITM-proof) and a short-lived token. --qr shows a QR
+          for a phone browser instead: ${PAIR_WEB_URL}#<offer>
+          (the offer rides in the fragment, never sent to a server).
   accept  Client side: verify the daemon's identity from the URL and persist the
           pairing to ~/.agentproto/pair-credentials.json.
   ls      List pairings. Uses the daemon's REST route when reachable; otherwise
@@ -99,9 +104,19 @@ async function runOffer(args: readonly string[]): Promise<number> {
       ttl: { type: "string" },
       rendezvous: { type: "string" },
       "no-qr": { type: "boolean" },
+      qr: { type: "boolean" },
+      "pair-page": { type: "string" },
       json: { type: "boolean" },
     },
   })
+  if (values.qr && values["no-qr"]) {
+    process.stderr.write(`agentproto pair offer: --qr and --no-qr are mutually exclusive\n`)
+    return 2
+  }
+  if (values["pair-page"] && !values.qr) {
+    process.stderr.write(`agentproto pair offer: --pair-page only applies with --qr\n`)
+    return 2
+  }
 
   const report = await discoverDaemon()
   if (!report.found) {
@@ -142,8 +157,22 @@ async function runOffer(args: readonly string[]): Promise<number> {
     return 1
   }
 
+  // The phone link: the same offer, carried in the fragment of the web pair
+  // page (a fragment never leaves the browser).
+  let webUrl: string | undefined
+  if (values.qr) {
+    try {
+      webUrl = encodeOfferWebUrl(result.url, values["pair-page"] ?? PAIR_WEB_URL)
+    } catch (err) {
+      process.stderr.write(
+        `agentproto pair offer: ${err instanceof Error ? err.message : String(err)}\n`,
+      )
+      return 2
+    }
+  }
+
   if (values.json) {
-    process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+    process.stdout.write(JSON.stringify(webUrl ? { ...result, webUrl } : result, null, 2) + "\n")
     return 0
   }
 
@@ -151,7 +180,13 @@ async function runOffer(args: readonly string[]): Promise<number> {
     `\nPairing offer (daemon ${result.fingerprint}) — expires ${result.expiresAt}\n\n` +
       `  ${result.url}\n\n`,
   )
-  if (!values["no-qr"]) {
+  if (webUrl) {
+    process.stdout.write(`Scan with a phone (opens the pair page in the browser):\n\n  ${webUrl}\n\n`)
+    await printQr(webUrl)
+    process.stdout.write(
+      `Confirm the page shows daemon ${result.fingerprint} before you accept.\n\n`,
+    )
+  } else if (!values["no-qr"]) {
     await printQr(result.url)
   }
   const rvNote = result.rendezvousIsHostedDefault

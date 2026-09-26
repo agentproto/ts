@@ -1,7 +1,7 @@
 # `agentproto pair`
 
 ```text
-agentproto pair offer  [--ttl 10m] [--rendezvous <wss://…>] [--no-qr] [--json]
+agentproto pair offer  [--ttl 10m] [--rendezvous <wss://…>] [--no-qr | --qr [--pair-page <url>]] [--json]
 agentproto pair accept "<offer-url>" [--name <label>]
 agentproto pair ls     [--json]
 agentproto pair revoke <fingerprint|name>
@@ -60,8 +60,36 @@ This window can close.
   this offer.
 - `--no-qr` prints the URL only (also the fallback when the optional
   `qrcode-terminal` renderer isn't installed).
+- `--qr` pairs a **phone browser** instead of another CLI: it prints, and draws
+  as the QR, the web pair page with the offer in its fragment —
+  `https://cli.agentproto.sh/pair#v=1&rv=…&id=…&pk=…&sk=…&t=…&exp=…` (the query
+  string of the `agentproto://` URL, verbatim, after the `#`). A URL fragment
+  is never sent to a server, so the page's host never sees the token. The page
+  runs the same handshake in the browser (`@agentproto/pair-client`) and shows
+  the daemon's name and fingerprint to confirm. The `agentproto://` URL is still
+  printed for `pair accept`, and either form is accepted by both clients.
+- `--pair-page <url>` (with `--qr`) points the link at another pair page, e.g.
+  a self-hosted or local `http://localhost:3000/pair`.
 - `--json` emits `{ url, fingerprint, rendezvous, rendezvousIsHostedDefault,
-  expiresAt }` for scripting.
+  expiresAt }` for scripting, plus `webUrl` with `--qr`.
+
+```bash
+agentproto pair offer --qr
+```
+
+```text
+Pairing offer (daemon a1b2c3d4e5f60718) — expires 2026-07-13T19:20:00.000Z
+
+  agentproto://pair?v=1&rv=…&id=a1b2c3d4e5f60718&pk=…&sk=…&t=…&exp=…
+
+Scan with a phone (opens the pair page in the browser):
+
+  https://cli.agentproto.sh/pair#v=1&rv=…&id=a1b2c3d4e5f60718&pk=…&sk=…&t=…&exp=…
+
+  █▀▀▀▀▀█ ▀▀ █ █▀▀▀▀▀█        (QR of the pair-page link)
+  …
+
+Confirm the page shows daemon a1b2c3d4e5f60718 before you accept.
 
 **Routing precedence:** `--rendezvous` → `pairing.rendezvous` in config → the
 hosted default. To point elsewhere, self-host the broker
@@ -112,11 +140,19 @@ agentproto pair ls --json
 
 ## `revoke` — daemon side
 
-Drop a pairing by fingerprint or name so its client can no longer reconnect —
-the daemon stops parking on the pairing's routing tokens and refuses future
-hellos from that client. Also drops the local client-side record if it lives on
-this machine. With no daemon reachable, only the client-side record is removed
-(and a note says so).
+Drop a pairing by fingerprint or name so its client can no longer reconnect.
+A live channel for it is closed. Also drops the local client-side record if it
+lives on this machine. With no daemon reachable, only the client-side record is
+removed (and a note says so).
+
+For 14 days after the revoke, the daemon keeps answering the pairing's routing
+tokens. It completes the handshake, which proves to the client that this is the
+real daemon, sends one encrypted `pairing_revoked` frame, and closes. It never
+serves the channel. So a revoked browser client stops with "this device was
+unpaired from <daemon>; scan a new pairing QR" instead of retrying as if the
+daemon were offline. The broker can't forge that signal: it travels inside the
+E2E channel. The daemon keeps only that window's routing tokens, never the pair
+root.
 
 ```bash
 agentproto pair revoke my-laptop
@@ -155,7 +191,7 @@ of the same bridge later without changing the transport.
 | Path | Side | Contents |
 | --- | --- | --- |
 | `~/.agentproto/identity.json` | daemon | daemon X25519 + Ed25519 keys (`0600`, created lazily on first `offer`) |
-| `~/.agentproto/pairings.json` | daemon | persisted client pairings (`0600`) |
+| `~/.agentproto/pairings.json` | daemon | persisted client pairings, plus `revoked` tombstones (routing tokens only) for the post-revoke window (`0600`) |
 | `~/.agentproto/pair-credentials.json` | client | pinned daemon keys + `pairRoot` per pairing (`0600`) |
 
 Config keys (`~/.agentproto/config.json`): `pairing.rendezvous`,
