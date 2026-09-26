@@ -154,6 +154,7 @@
     "@agentproto/provider-presets": "workspace:*",
     "@agentproto/providers-store": "workspace:*",
     "@agentproto/redaction": "workspace:*",
+    "@agentproto/review": "workspace:*",
     "@agentproto/routine": "workspace:*",
     "@agentproto/sandbox": "workspace:*",
     "@agentproto/secrets": "workspace:*",

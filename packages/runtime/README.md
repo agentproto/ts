@@ -68,6 +68,7 @@ The `/mcp` endpoint exposes the core toolset plus several opt-in / feature-gated
 | `app_data_read` / `app_data_write` / `app_data_list` / `app_data_migrate` | App-scoped durable data plane, anchored at the app's `dataDir` (default `<dir>/data`; `app_install {dataDir}`) |
 | `app_state_append` / `app_state_get` / `app_state_list` | App-scoped **state ledger** (`<dataDir>/state/events.jsonl`) — append-only, zod-validated event envelope, fold to a stage snapshot; see below |
 | `harness_preset_list` / `harness_preset_create` / `harness_preset_delete` / `harness_preset_set_default` | Persisted harness→auth-profile presets (new) |
+| `review_run` / `review_status` / `review_cancel` / `review_ledger` / `review_export` | [`@agentproto/review`](../review) host: run a REVIEW.md binding over a git range (command lanes as subprocesses, agent lanes as child reviewer sessions), fold a `pass`/`block`/`incomplete` verdict, and record the attestation in the review ledger (`~/.agentproto/reviews`) (new) |
 | `workspace_brain_query` / `workspace_brain_status` / `workspace_brain_ingest` | Per-workspace transcript recall (new) |
 | `conversation_export` | Export a daemon transcript to a target adapter's native store, e.g. `claude-code` (new) |
 | `llm_endpoint_*` (`start`, `stop`, `status`, `set_upstream_link`, `list_links`) | Local LLM Endpoint proxy sidecar — only when `features.llmEndpoint` is enabled (new) |
