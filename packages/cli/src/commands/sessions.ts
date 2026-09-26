@@ -94,7 +94,8 @@ Usage:
                                       [--max-cost-usd <n>] [--cost-budget <spec>]
                                       [--worktree | --no-worktree]
                                       [--sandbox <provider-or-json>]
-                                      [--hold-permissions] [--no-color]
+                                      [--hold-permissions] [--browser headless]
+                                      [--no-color]
   agentproto sessions terminal [--preset <name>] [-- <argv...>] [--cwd <dir>]
                                             [--workspace <slug>] [--name <slug>]
                                             [--label <text>] [--cols <n>] [--rows <n>]
@@ -246,6 +247,9 @@ sessions start flags:
   --hold-permissions            park each tool-permission request in the inbox
                                  (approve/deny with \`agentproto permissions\`)
                                  instead of auto-answering it
+  --browser headless|off         give the agent its own isolated headless Chrome
+                                 (per-session chrome-devtools-mcp, closed with the
+                                 session). Mirrors MCP agent_start.browser.
 
 sessions terminal flags:
   --preset <name>              use a named 'terminalPresets' entry from
@@ -408,6 +412,7 @@ async function runStart(args: readonly string[]): Promise<number> {
       mode: { type: "string" },
       effort: { type: "string" },
       sandbox: { type: "string" },
+      browser: { type: "string" },
     },
   })
   const slug = positionals[0]
@@ -646,6 +651,18 @@ async function runStart(args: readonly string[]): Promise<number> {
     }
   }
 
+  let browser: "headless" | false | undefined
+  if (values.browser !== undefined) {
+    if (values.browser === "headless") browser = "headless"
+    else if (["off", "false", "none"].includes(values.browser)) browser = false
+    else {
+      process.stderr.write(
+        `agentproto sessions start: invalid --browser "${values.browser}" (expected headless|off).\n`
+      )
+      return 2
+    }
+  }
+
   const report = await discoverDaemon()
   if (!report.found) {
     printNoDaemonError(report, "agentproto sessions start")
@@ -717,6 +734,7 @@ async function runStart(args: readonly string[]): Promise<number> {
   if (orchestrator !== undefined) body.orchestrator = orchestrator
   if (mcpServers !== undefined) body.mcpServers = mcpServers
   if (values["hold-permissions"]) body.permissionHold = true
+  if (browser !== undefined) body.browser = browser
   // Source label: this spawn came from the agentproto CLI (#575).
   body.origin = "cli"
 

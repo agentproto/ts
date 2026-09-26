@@ -20,6 +20,8 @@
  * prompt instruction the model could rationalize past.
  */
 
+import type { SpawnBrowserMode } from "./browser-mount.js"
+
 export type DelegationPolicy = "allow" | "deny"
 
 export interface RoleToolPolicy {
@@ -62,6 +64,13 @@ export interface RoleProfile {
    * (`defaults.mcp.deferredTools` in config.json) applies unchanged.
    */
   deferredTools?: boolean
+  /**
+   * Role-level default for `agent_start.browser` (see `browser-mount.ts`):
+   * `"headless"` gives every spawn of this role its own isolated headless
+   * Chrome. An explicit spawn `browser` wins; undefined ⇒ no opinion (the
+   * user preset, then `defaults.spawn.browser`, decide).
+   */
+  browser?: SpawnBrowserMode
 }
 
 /**

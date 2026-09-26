@@ -860,6 +860,23 @@ export function registerAgentTools(
             "omit AND spawn a role with no opinion to fall through to the " +
             "daemon's own boot-time `defaults.mcp.deferredTools` config."
         ),
+      browser: z
+        .preprocess(
+          // `true` is sugar for the only mode; stringified booleans tolerated.
+          v => (v === true || v === "true" ? "headless" : v === "false" ? false : v),
+          z.union([z.literal("headless"), z.literal(false)]),
+        )
+        .optional()
+        .describe(
+          "`\"headless\"` gives the spawned agent its own isolated headless Chrome " +
+            "(1440x900, temporary profile) as a per-session `browser` MCP server " +
+            "(chrome-devtools-mcp: navigate_page, take_screenshot, evaluate_script, click, " +
+            "list_console_messages, …), torn down with the session (`true` = `\"headless\"`). " +
+            "Works for any adapter " +
+            "that mounts stdio MCP servers; runs inside the session's `commandSandbox` " +
+            "(`strict` ⇒ file:// only). `false` = none. Omit to use the role / preset / " +
+            "`defaults.spawn.browser` default (off). Not supported with `sandbox`."
+        ),
       trace: z
         .boolean()
         .optional()

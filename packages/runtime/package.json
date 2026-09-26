@@ -150,6 +150,7 @@
     "@agentproto/manifest": "workspace:*",
     "@agentproto/mcp-server": "workspace:*",
     "@agentproto/model-catalog": "workspace:*",
+    "@agentproto/plugin-local-browser": "workspace:*",
     "@agentproto/provider-kit": "workspace:*",
     "@agentproto/provider-presets": "workspace:*",
     "@agentproto/providers-store": "workspace:*",
