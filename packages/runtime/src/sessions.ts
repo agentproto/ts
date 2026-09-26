@@ -1987,6 +1987,12 @@ interface SessionRuntime {
    *  ring buffer unreadable when each token got its own
    *  `[thought]` line — coalesce the same way text-delta does. */
   thoughtBuf: string
+  /** Set by `interruptInFlightTurn` when the daemon cancels the in-flight
+   *  turn; consumed (and cleared) at the top of that turn's `finally`. An
+   *  interrupted turn does NOT drain `promptQueue` — queued prompts are
+   *  delivered only after a turn that ends on its own — except the one item
+   *  `deliverQueuedPrompt` interrupted for (`deliverQueueId`). */
+  interruptRequested?: { by: string; deliverQueueId?: string }
   /** In-flight resume promise. Deduplicates concurrent prompt
    *  attempts on a dead agent session — only one resume call hits
    *  the adapter, the rest await this promise. Cleared once
@@ -2207,6 +2213,16 @@ const HISTORY_CAP = 200
  *  round-trip to actually yield. Exported so tests assert against the
  *  real value instead of a hardcoded duplicate. */
 export const INTERRUPT_SETTLE_TIMEOUT_MS = 60_000
+
+/** Human-readable names for `interruptInFlightTurn`'s `caller`, used in the
+ *  transcript notice so a `cancelled` turn-end can be traced to the surface
+ *  that asked for it. */
+const INTERRUPT_CALLER_LABELS: Record<string, string> = {
+  interruptSession: "a stop request (agent_interrupt / POST /sessions/:id/interrupt)",
+  enqueuePrompt: "a prompt sent with interrupt: true",
+  sendPrompt: "a prompt sent with interrupt: true",
+  deliverQueuedPrompt: "a queue deliver-now (session_queue_deliver)",
+}
 
 /** Stamp the derived `desc.alive` liveness signal (§SessionDescriptor.alive):
  *  true iff the row's status counts as alive — the same "running" or
@@ -2866,7 +2882,8 @@ export interface SessionsRegistry {
    *
    *  Implemented as promote-to-front + interrupt: the cancelled turn's
    *  own `dispatchQueuedPrompt` (in its finally) then drains the promoted
-   *  item into a fresh turn. On an idle session (nothing to interrupt) the
+   *  item — and only that item; the rest wait for a natural turn-end —
+   *  into a fresh turn. On an idle session (nothing to interrupt) the
    *  promoted item is dispatched directly. Returns:
    *    `{ delivered: false, reason }` — `"no-session"` / `"not-in-queue"`;
    *    `{ delivered: true, interrupted: boolean }` otherwise. */
@@ -5223,13 +5240,21 @@ export function createSessionsRegistry(opts?: {
    * admission itself — the caller still goes through `validateAgentTurn`
    * afterward, now finding the session idle.
    *
-   * `caller` only shapes error messages; both entry points reach the same
-   * logic, so a message naming the wrong one would misdirect debugging.
+   * `caller` shapes error messages and the transcript notice; every entry
+   * point reaches the same logic, so a message naming the wrong one would
+   * misdirect debugging.
+   *
+   * Marks the turn as daemon-interrupted (`rt.interruptRequested`) so its
+   * `finally` holds `promptQueue` instead of draining it — pass
+   * `deliverQueueId` to drain exactly that item. Also writes a `notice`
+   * into the session's events log: an adapter-side `cancelled` turn-end
+   * is otherwise indistinguishable from the agent stopping on its own.
    */
   const interruptInFlightTurn = async (
     rt: SessionRuntime,
     id: string,
-    caller: string
+    caller: string,
+    deliverQueueId?: string
   ): Promise<void> => {
     const session = rt.agentSession
     if (!session) {
@@ -5241,9 +5266,23 @@ export function createSessionsRegistry(opts?: {
         `${caller}: session "${id}" is mid-turn but has no live agent session to cancel`
       )
     }
+    if (rt.busy) {
+      rt.interruptRequested = { by: caller, ...(deliverQueueId ? { deliverQueueId } : {}) }
+      const held = (rt.desc.promptQueue ?? []).filter(p => p.id !== deliverQueueId).length
+      const banner =
+        `── turn interrupted by ${INTERRUPT_CALLER_LABELS[caller] ?? caller}` +
+        (held > 0
+          ? `; ${held} queued prompt(s) held until the next turn ends on its own ──`
+          : " ──")
+      appendLine(rt, banner, "stdout")
+      transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: banner })
+    }
     try {
       await session.cancel()
     } catch (err) {
+      // Nothing was cancelled — the turn will end on its own, so its
+      // `finally` must drain the queue as usual.
+      rt.interruptRequested = undefined
       throw new Error(
         `${caller}: session "${id}" does not support interrupt — cancelling the in-flight turn failed: ${
           err instanceof Error ? err.message : String(err)
@@ -5266,12 +5305,19 @@ export function createSessionsRegistry(opts?: {
    * time, in order, without unbounded call-stack growth (each dispatch
    * is a fresh microtask via the `void (async () => ...)()` below, not
    * a direct recursive call).
+   *
+   * `onlyId` dispatches that item instead of the head (deliver-now).
+   * No-op while another turn is already running — a prompt admitted during
+   * the ending turn's awaited `finally` took the slot, and ITS `finally`
+   * drains next. Slicing the item off here anyway would only have it
+   * rejected as mid-turn and dropped.
    */
-  const dispatchQueuedPrompt = (rt: SessionRuntime): void => {
+  const dispatchQueuedPrompt = (rt: SessionRuntime, onlyId?: string): void => {
     const queue = rt.desc.promptQueue
-    const next = queue?.[0]
-    if (!queue || !next) return
-    rt.desc.promptQueue = queue.slice(1)
+    if (!queue?.length || rt.busy) return
+    const next = onlyId ? queue.find(p => p.id === onlyId) : queue[0]
+    if (!next) return
+    rt.desc.promptQueue = queue.filter(p => p !== next)
     schedulePersist()
     void (async () => {
       try {
@@ -5925,6 +5971,12 @@ export function createSessionsRegistry(opts?: {
         emitExited(rt)
       }
     } finally {
+      // Captured BEFORE `busy` flips: the awaits further down this block let
+      // the interrupting caller start its own turn (and that turn could be
+      // interrupted in turn), so reading the flag at the drain would see
+      // someone else's.
+      const interruptedBy = rt.interruptRequested
+      rt.interruptRequested = undefined
       rt.busy = false
       rt.desc.busy = false           // mirror onto the public descriptor for session_monitor
       rt.emitter.emit("busy", false)
@@ -6247,11 +6299,23 @@ export function createSessionsRegistry(opts?: {
       }
 
       // ── FIFO queue drain (session-queue-ux) ──────────────────────
-      // Runs after every turn, normal or abnormal — see
-      // `dispatchQueuedPrompt`'s doc for why re-dispatching into a
+      // Runs after every turn that ended on its own, normal or abnormal —
+      // see `dispatchQueuedPrompt`'s doc for why re-dispatching into a
       // no-longer-alive session is safe (it re-validates and drops with
       // a logged error rather than throwing here).
-      dispatchQueuedPrompt(rt)
+      //
+      // A turn the DAEMON interrupted drains nothing: queued means "after
+      // the current turn ends", not "the moment anyone cuts it". Draining
+      // here made a Stop start the next queued prompt immediately, made an
+      // unrelated queued prompt look like the cause of the cancel, and
+      // raced an `interrupt: true` prompt for the freed slot. The parked
+      // items drain after the next turn that ends naturally. The one
+      // exception is deliver-now, which interrupted precisely to run its
+      // item.
+      if (!interruptedBy) dispatchQueuedPrompt(rt)
+      else if (interruptedBy.deliverQueueId) {
+        dispatchQueuedPrompt(rt, interruptedBy.deliverQueueId)
+      }
     }
   }
 
@@ -7373,7 +7437,7 @@ export function createSessionsRegistry(opts?: {
       if (wasBusy) {
         // Await the cancelled turn actually settling — the interruption is
         // real and delivery is imminent (its finally dispatches the target).
-        await interruptInFlightTurn(rt, id, "deliverQueuedPrompt")
+        await interruptInFlightTurn(rt, id, "deliverQueuedPrompt", queueId)
         return { delivered: true, interrupted: true }
       }
       dispatchQueuedPrompt(rt)
