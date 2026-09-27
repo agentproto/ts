@@ -268,6 +268,13 @@ export interface LadderContext {
    *  plan's anchor detection asks the same question of every tip) — saves
    *  the ladder's first `merge-base` per tip. */
   related?: ReadonlyMap<string, boolean>
+  /**
+   * Memoized set of every commit reachable from `cmp` (at most two distinct
+   * values: `baseSha` and the anchor) — ONE `git rev-list <cmp>` replaces one
+   * `merge-base --is-ancestor` per tip. `null` above 500 000 commits (or on a
+   * git failure) = fall back to the per-tip call.
+   */
+  ancestorsOf?: (cmp: string) => Promise<Set<string> | null>
 }
 
 export async function createLadderContext(
@@ -279,12 +286,28 @@ export async function createLadderContext(
   const baseSha = (await gitOk(repoRoot, ["rev-parse", "--verify", `${baseRef}^{commit}`])).trim()
   const baseTree = (await gitOk(repoRoot, ["rev-parse", `${baseSha}^{tree}`])).trim()
   let idx: Promise<TreeIndex> | null = null
+  const ancestors = new Map<string, Promise<Set<string> | null>>()
+  const ancestorsOf = (cmp: string): Promise<Set<string> | null> => {
+    let p = ancestors.get(cmp)
+    if (!p) {
+      p = (async () => {
+        const res = await git(repoRoot, ["rev-list", cmp])
+        if (res.exitCode !== 0) return null
+        const shas = res.stdout.split("\n")
+        if (shas.length > 500_000) return null
+        return new Set(shas.filter(Boolean))
+      })()
+      ancestors.set(cmp, p)
+    }
+    return p
+  }
   return {
     repoRoot,
     baseSha,
     baseTree,
     anchor,
     index: () => (idx ??= indexTree(repoRoot, baseSha)),
+    ancestorsOf,
     ...(related ? { related } : {}),
   }
 }
@@ -376,8 +399,11 @@ export async function classifyTip(ctx: LadderContext, tip: string): Promise<TipC
   if (!related && !anchor) return { status: "unmerged", history: "unrelated", conflicts: true, ahead: null, behind: null }
   const history: BranchHistory = related ? "current" : "pre-rewrite"
   const cmp = related ? baseSha : (anchor as string)
-
-  if ((await git(repoRoot, ["merge-base", "--is-ancestor", tip, cmp])).exitCode === 0) {
+  const ancestors = ctx.ancestorsOf ? await ctx.ancestorsOf(cmp) : null
+  const isAncestor = ancestors
+    ? ancestors.has(tip)
+    : (await git(repoRoot, ["merge-base", "--is-ancestor", tip, cmp])).exitCode === 0
+  if (isAncestor) {
     return { status: "merged", history, ahead: 0, behind: null }
   }
   const counts = (await gitOk(repoRoot, ["rev-list", "--left-right", "--count", `${cmp}...${tip}`])).trim().split(/\s+/)
@@ -593,6 +619,16 @@ interface ClassifyEnv {
   mergedPrShas: Map<string, number>
   remoteShas: Set<string>
   remoteNames: Set<string>
+  /**
+   * Lazily computed, memoized set of every commit reachable from the base
+   * remote's refs — ONE `git rev-list --glob=refs/remotes/<remote>/*`
+   * answers every "is this sha contained in a remote ref" question instead
+   * of one `for-each-ref --contains` per ref. `null` (or absent) = fall
+   * back to the per-ref call.
+   */
+  remoteReachable?: () => Promise<Set<string> | null>
+  /** Same idea for orphan refs: commits reachable from local branches + the base remote's refs. */
+  localOrRemoteReachable?: () => Promise<Set<string> | null>
   minAgeDays: number
   includeReviewed: boolean
   verdicts?: BranchVerdictStore
@@ -616,12 +652,19 @@ async function pushStateOf(b: BranchRef, env: ClassifyEnv): Promise<BranchPushSt
   if (b.kind === "local") {
     if (env.remoteShas.has(b.sha)) return "same-tip-on-remote"
     if (env.remote) {
-      const contained = await git(repoRoot, ["for-each-ref", "--contains", b.sha, "--format=x", `refs/remotes/${env.remote}`])
-      if (contained.stdout.trim()) return "contained-in-remote"
+      const reachable = env.remoteReachable ? await env.remoteReachable() : null
+      if (reachable) {
+        if (reachable.has(b.sha)) return "contained-in-remote"
+      } else {
+        const contained = await git(repoRoot, ["for-each-ref", "--contains", b.sha, "--format=x", `refs/remotes/${env.remote}`])
+        if (contained.stdout.trim()) return "contained-in-remote"
+      }
     }
     return env.remoteNames.has(b.name) ? "diverged-from-remote" : "local-only"
   }
   if (b.kind === "orphan") {
+    const reachable = env.localOrRemoteReachable ? await env.localOrRemoteReachable() : null
+    if (reachable) return reachable.has(b.sha) ? "contained-elsewhere" : "only-copy"
     const scopes = ["refs/heads", ...(env.remote ? [`refs/remotes/${env.remote}`] : [])]
     const contained = await git(repoRoot, ["for-each-ref", "--contains", b.sha, "--format=x", ...scopes])
     return contained.stdout.trim() ? "contained-elsewhere" : "only-copy"
@@ -723,6 +766,21 @@ async function snapshot(input: {
   else anchor = null
   const ctx = await createLadderContext(input.repoRoot, baseSha, anchor, related)
   const remoteRefs = refs.filter((r) => r.kind === "remote")
+  // ONE `git rev-list` per question, memoized: every commit reachable from
+  // the base remote's refs (for `contained-in-remote`), and from local
+  // branches + those refs (for orphan `contained-elsewhere`). Above
+  // 500 000 commits the set is abandoned — `null` falls back to the
+  // per-ref `for-each-ref --contains` call.
+  const MAX_REACHABLE = 500_000
+  const revListSet = async (args: readonly string[]): Promise<Set<string> | null> => {
+    const res = await git(input.repoRoot, ["rev-list", ...args])
+    if (res.exitCode !== 0) return null
+    const shas = res.stdout.split("\n")
+    if (shas.length > MAX_REACHABLE) return null
+    return new Set(shas.filter(Boolean))
+  }
+  let remoteReachableP: Promise<Set<string> | null> | null = null
+  let localOrRemoteP: Promise<Set<string> | null> | null = null
   return {
     refs,
     otherRemoteRefs,
@@ -737,6 +795,12 @@ async function snapshot(input: {
       mergedPrShas: mergedPrs,
       remoteShas: new Set(remoteRefs.map((r) => r.sha)),
       remoteNames: new Set(remoteRefs.map((r) => r.name)),
+      ...(remote
+        ? {
+            remoteReachable: () => (remoteReachableP ??= revListSet([`--glob=refs/remotes/${remote}/*`])),
+            localOrRemoteReachable: () => (localOrRemoteP ??= revListSet(["--branches", `--glob=refs/remotes/${remote}/*`])),
+          }
+        : {}),
       minAgeDays: input.minAgeDays,
       includeReviewed: input.includeReviewed,
       ...(input.verdicts ? { verdicts: input.verdicts } : {}),
