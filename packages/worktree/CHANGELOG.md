@@ -1,5 +1,19 @@
 # @agentproto/worktree
 
+## 0.10.0
+
+### Minor Changes
+
+- 7f50ff6: Branch gc prunes stale remote-tracking refs (`git fetch --prune`) before classifying and reports it as `plan.fetched`; its delete pushes skip git hooks (`--no-verify`) and a refused batch is retried as a batch before falling back to one push per ref. The `maintain` workflow now applies worktree gc before branch gc.
+
+### Patch Changes
+
+- 1f03bf3: `branch_gc` can run in the background (`wait: false`, or `waitMs` to block at most that long) and be polled with the new `branch_gc_status` tool, so a multi-minute plan no longer times out an MCP call. Branch gc also answers "contained in a remote ref" and "merged into base" from one `git rev-list` each instead of one git call per ref (109 s → ~78 s on a 900-ref repo).
+- Updated dependencies [b0eeee7]
+- Updated dependencies [8a29038]
+- Updated dependencies [b9f9bb6]
+  - @agentproto/workflow-runtime@0.13.1
+
 ## 0.9.0
 
 ### Minor Changes

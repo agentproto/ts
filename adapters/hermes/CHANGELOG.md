@@ -1,5 +1,17 @@
 # @agentproto/adapter-hermes
 
+## 0.4.20
+
+### Patch Changes
+
+- 37ca1e3: Add cache/reasoning token detail and session_usage subtree rollup
+- Updated dependencies [fa1bfdd]
+- Updated dependencies [68ffab8]
+- Updated dependencies [b297612]
+- Updated dependencies [9a5730d]
+  - @agentproto/model-catalog@0.11.1
+  - @agentproto/driver-agent-cli@2.5.1
+
 ## 0.4.19
 
 ### Patch Changes

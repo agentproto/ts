@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/pair-page",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "description": "The per-daemon phone pair page (AIP-59): one static bundle served on every <fingerprint>.agentproto.cloud by a Cloudflare Worker. Pairs a browser with a daemon from an offer QR, then proxies the daemon's Control Center through a service worker over the E2E rendezvous tunnel.",
   "license": "Apache-2.0",

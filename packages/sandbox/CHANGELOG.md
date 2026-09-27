@@ -1,5 +1,19 @@
 # @agentproto/sandbox
 
+## 0.6.1
+
+### Patch Changes
+
+- Updated dependencies [1f03bf3]
+- Updated dependencies [b0eeee7]
+- Updated dependencies [8a29038]
+- Updated dependencies [b9f9bb6]
+- Updated dependencies [332aebf]
+- Updated dependencies [7f50ff6]
+  - @agentproto/worktree@0.10.0
+  - @agentproto/workflow-runtime@0.13.1
+  - @agentproto/secrets@1.1.0
+
 ## 0.6.0
 
 ### Minor Changes

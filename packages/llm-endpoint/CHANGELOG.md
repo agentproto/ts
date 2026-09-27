@@ -1,5 +1,16 @@
 # @agentproto/llm-endpoint
 
+## 0.9.0
+
+### Minor Changes
+
+- bc332e1: Merge top-level `system`/`instructions` and any non-leading `system`/`developer` messages into a single leading system message in both the Anthropic→OpenAI adapter and the Responses→ChatCompletions translator, preventing strict chat templates from rejecting mid-conversation system messages. Adds upstream error-status logging to the proxy and exports `adaptAnthropicToOpenAI` / `translateInputToMessages` for testing.
+- 78018d1: Add runtime connectors (LM Studio, Ollama, vLLM, llama-server, openai-compatible fallback) for probing/listing local inference endpoints, a new optional `connector` field on named endpoint config, and new `agentproto llm endpoints add/remove/detect/sync-pi` verbs plus an onboarding detect action.
+
+### Patch Changes
+
+- @agentproto/providers-store@0.3.19
+
 ## 0.8.0
 
 ### Minor Changes
