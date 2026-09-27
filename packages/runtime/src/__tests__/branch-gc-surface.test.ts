@@ -246,7 +246,12 @@ describe("POST /branches/gc + /branches/gc/verdict — HTTP routes", () => {
 
 describe("branch_gc + branch_gc_verdict — MCP tools", () => {
   async function harness(
-    opts: { runBranchGc?: BranchGcRunner; recordBranchGcVerdict?: BranchGcVerdictRecorder; readBranchGcVerdict?: BranchGcVerdictReader } = {},
+    opts: {
+      runBranchGc?: BranchGcRunner
+      recordBranchGcVerdict?: BranchGcVerdictRecorder
+      readBranchGcVerdict?: BranchGcVerdictReader
+      branchGcJobsDir?: string
+    } = {},
   ) {
     const { server } = await createMcpServer({ specs: [], name: "main", version: "0" })
     registerSessionTools(server, { workspace: process.cwd(), registry: createSessionsRegistry({ persist: false }), ...opts })
@@ -396,6 +401,41 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
       expect(JSON.parse(await readFile(done!.resultPath, "utf8"))).toEqual(PLAN_RESULT)
     } finally {
       await client.close()
+    }
+  })
+
+  it("jobs are shared across MCP server instances (start on one, poll on another)", async () => {
+    // Mirrors the daemon's real wiring: `mcpServerFactory` builds a NEW
+    // McpServer per MCP connection, each calling `registerSessionTools`.
+    // The job registry must be per-PROCESS, not per-instance.
+    let release!: (r: BranchGcResult) => void
+    const gate = new Promise<BranchGcResult>(res => {
+      release = res
+    })
+    const runner: BranchGcRunner = () => gate
+    const starter = await harness({ runBranchGc: runner })
+    const poller = await harness({ runBranchGc: runner })
+    try {
+      const start = await starter.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", wait: false } })
+      const { jobId } = JSON.parse(text(start)) as { jobId: string }
+      expect(jobId).toMatch(/^bgc_[0-9a-f]{8}$/)
+
+      const running = JSON.parse(text(await poller.callTool({ name: "branch_gc_status", arguments: { jobId } }))) as { status: string }
+      expect(running.status).toBe("running")
+
+      release(PLAN_RESULT)
+      let done: { status: string; summary: unknown; resultPath: string } | undefined
+      for (let i = 0; i < 100; i++) {
+        done = JSON.parse(text(await poller.callTool({ name: "branch_gc_status", arguments: { jobId } })))
+        if (done!.status === "done") break
+        await new Promise(res => setTimeout(res, 10))
+      }
+      expect(done!.status).toBe("done")
+      expect(done!.summary).toEqual(SUMMARY)
+      expect(existsSync(done!.resultPath)).toBe(true)
+    } finally {
+      await starter.close()
+      await poller.close()
     }
   })
 
