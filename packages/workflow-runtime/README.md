@@ -351,12 +351,18 @@ steps:
 
 `path` is read relative to `$run.workspace` (absolute paths, and any path
 that would resolve OUTSIDE the workspace, throw). The step hashes
-(`sha256`) and sizes the file, copies it to `artifactsDir/<sanitized key>`,
-and binds/report an `ArtifactEntry` — `{ key, path: "artifacts/<key>", sha256,
-size, stepId, contentType? }` (`path` here is relative to the RUN WORKSPACE
-ROOT, the parent of `$run.workspace` itself — not the source location).
-Pass `onArtifact` to `runWorkflow` to observe every one recorded, cache hit
-or fresh.
+(`sha256`) and sizes the file, copies it to `artifactsDir/<basename of path,
+sanitized>` — `path: "briefs/latest.md"` above lands at
+`artifacts/latest.md`, keeping the extension, NOT the bare key
+(`artifacts/brief`) — and binds/reports an `ArtifactEntry` — `{ key, path:
+"artifacts/<basename>", sha256, size, stepId, contentType? }` (`path` here is
+relative to the RUN WORKSPACE ROOT, the parent of `$run.workspace` itself —
+not the source location; always read it back rather than assuming a name).
+If two keys' files share a basename, the second one claimed is prefixed with
+its own sanitized key (`artifacts/<key>-<basename>`) instead of silently
+overwriting the first — deterministic, same result run to run. Pass
+`onArtifact` to `runWorkflow` to observe every one recorded, cache hit or
+fresh.
 
 A declarative WORKFLOW.md manifest may instead declare **`outputsFiles`**
 (AIP-16, amended by AIP-58 §4 with `required`) at the top level — checked

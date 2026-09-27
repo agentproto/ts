@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises"
+import { cp, mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { isAbsolute, join } from "node:path"
 import matter from "gray-matter"
@@ -1695,6 +1695,74 @@ describe("BRIEF-D: app-bundled TOOL.md/DRIVER.md tool steps", () => {
     await expect(runWorkflow({ workflow: compiled, input: { name: "World" } })).rejects.toThrow(
       /missing required secret 'BRIEF_D_APP_TOOLS_TEST_MISSING_SECRET'/,
     )
+  })
+
+  // F40 (AIP-58 dogfood): a `workflow_run_file` run must resolve a
+  // `kind:"tool"` step's driver script from the WORKFLOW.md's OWN directory
+  // (walking up to its app root), never from the `app_install` registry —
+  // otherwise a WORKFLOW.md loaded from a worktree copy of an installed app
+  // silently runs the INSTALLED copy's scripts instead of the worktree's.
+  it("resolves the tool step's driver from the WORKFLOW.md's own worktree copy, not the app_install registry's dir", async () => {
+    await buildBundledApp()
+    const { client, appRegistry } = await setup()
+    // Installs the ORIGINAL `dir` as the registered app.
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    // A worktree copy of the same app, with a driver that behaves
+    // differently — proves which copy's script actually ran.
+    const worktreeDir = await mkdtemp(join(tmpdir(), "app-tools-bundled-tools-worktree-"))
+    try {
+      await cp(dir, worktreeDir, { recursive: true })
+      await writeBundledManifest(worktreeDir, "drivers", "greet-cli", "DRIVER.md", {
+        schema: "agentproto/driver/v1",
+        id: "greet-cli",
+        name: "Greet CLI Driver (worktree copy)",
+        description: "Worktree copy — greets with a distinct marker so a test can tell which copy ran.",
+        version: "1.0.0",
+        kind: "cli",
+        implements: [
+          {
+            tool: "greet",
+            version: "*",
+            metadata: {
+              cli: {
+                argv: [
+                  "-e",
+                  "console.log(JSON.stringify({greeting: 'WORKTREE-hello, ' + process.argv[1]}))",
+                  "${input.name}",
+                ],
+                outputFormat: "json",
+              },
+            },
+          },
+        ],
+        metadata: { cli: { bin: process.execPath } },
+      })
+
+      const worktreeWorkflowPath = join(worktreeDir, ".agentproto", "workflows", "greet-flow", "WORKFLOW.md")
+      const handle = await loadWorkflowHandle(worktreeWorkflowPath)
+
+      const daemonRegistry = createDaemonToolRegistry(handle, async () => ({
+        content: [{ type: "text" as const, text: JSON.stringify({ ok: true }) }],
+      }))
+      // The one-line difference from `compileInstalledWorkflow`: pass the
+      // WORKTREE's own WORKFLOW.md path, not just the workflow id.
+      const appRegistryEntry = await resolveAppToolsForWorkflow(appRegistry, handle.id, worktreeWorkflowPath)
+      const merged = mergeAppAndDaemonToolRegistry(daemonRegistry, appRegistryEntry)
+      const compiled = compileWorkflow(handle, merged)
+
+      let greetOutput: unknown
+      await runWorkflow({
+        workflow: compiled,
+        input: { name: "World" },
+        onStepComplete: (stepId, output) => {
+          if (stepId === "greet") greetOutput = output
+        },
+      })
+      expect((greetOutput as { greeting?: string }).greeting).toBe("WORKTREE-hello, World")
+    } finally {
+      await rm(worktreeDir, { recursive: true, force: true })
+    }
   })
 })
 
