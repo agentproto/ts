@@ -131,6 +131,18 @@ export interface SessionTurnEndEvent {
    */
   empty?: boolean
   /**
+   * The in-band `error` stream event's message text observed during this
+   * turn, when one occurred (see `SessionDescriptor.lastTurnErrorMessage`'s
+   * doc). Present whenever `reason` is `"error"` AND the adapter emitted an
+   * `error`-kind event before ending the stream — including the case where
+   * the generator simply returned with no explicit turn-end and no thrown
+   * exception, which is exactly what left an errored turn indistinguishable
+   * from a clean one before this field existed. Absent when the adapter
+   * reported `reason:"error"` on its own turn-end without a preceding
+   * `error` event, and absent (not empty string) on every non-error turn.
+   */
+  error?: string
+  /**
    * True when the turn was not started by a prompt: the agent woke on its
    * own (Claude Code's task-notification cycle after a background task
    * settled) and the registry tracked that work as a turn. Absent on an

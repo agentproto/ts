@@ -109,6 +109,25 @@ describe("SessionEventBus", () => {
     )
   })
 
+  it("carries `reason`/`error` on a turn-end that failed in-band", () => {
+    const bus = createSessionEventBus()
+    const handler = vi.fn()
+    bus.on("session:turn-end", handler)
+
+    bus.emit({
+      type: "session:turn-end",
+      sessionId: "s1",
+      awaitingInput: false,
+      ts: "t",
+      reason: "error",
+      error: "Internal error: API Error: 400 ...",
+    })
+
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "error", error: "Internal error: API Error: 400 ..." }),
+    )
+  })
+
   it("multiple subscribers on same type all fire", () => {
     const bus = createSessionEventBus()
     const h1 = vi.fn()

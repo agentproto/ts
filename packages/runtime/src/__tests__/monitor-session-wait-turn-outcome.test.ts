@@ -298,6 +298,107 @@ describe("monitorSessionWait — empty/reason propagation (bug 2)", () => {
     expect(result.empty).toBe(true)
   })
 
+  it("sync fast-path (source: state) surfaces `error` from the persisted descriptor's lastTurnErrorMessage", async () => {
+    const registry = makeRegistry({
+      s1: idleAfterOneTurn("s1", { lastTurnReason: "error", lastTurnErrorMessage: "boom" }),
+    })
+    const bus = createSessionEventBus()
+    const ring = createEventRing()
+
+    const result = await monitorSessionWait({
+      registry,
+      sessionEvents: bus,
+      eventRing: ring,
+      sessionIds: ["s1"],
+      event: "turn-end",
+      timeoutMs: 5_000,
+      since: 0,
+    })
+
+    expect(result.source).toBe("state")
+    expect(result.reason).toBe("error")
+    expect(result.error).toBe("boom")
+  })
+
+  it("ring-replay (source: ring) surfaces `error` from the replayed event", async () => {
+    const registry = makeRegistry({})
+    const bus = createSessionEventBus()
+    const ring = createEventRing()
+    ring.wire(bus)
+
+    bus.emit({
+      type: "session:turn-end",
+      sessionId: "s1",
+      awaitingInput: false,
+      ts: new Date().toISOString(),
+      reason: "error",
+      error: "boom",
+    })
+
+    const result = await monitorSessionWait({
+      registry,
+      sessionEvents: bus,
+      eventRing: ring,
+      sessionIds: ["s1"],
+      event: "turn-end",
+      timeoutMs: 5_000,
+      since: 0,
+    })
+
+    expect(result.source).toBe("ring")
+    expect(result.reason).toBe("error")
+    expect(result.error).toBe("boom")
+  })
+
+  it("bus long-poll (source: bus) surfaces `error` from the live event", async () => {
+    const registry = makeRegistry({
+      s1: { id: "s1", kind: "agent-cli", workspaceSlug: "test", command: "mock", pid: null, status: "running", startedAt: new Date().toISOString() },
+    })
+    const bus = createSessionEventBus()
+    const ring = createEventRing()
+
+    const pending = monitorSessionWait({
+      registry,
+      sessionEvents: bus,
+      eventRing: ring,
+      sessionIds: ["s1"],
+      event: "turn-end",
+      timeoutMs: 5_000,
+    })
+    await new Promise(resolve => setTimeout(resolve, 10))
+    bus.emit({
+      type: "session:turn-end",
+      sessionId: "s1",
+      awaitingInput: false,
+      ts: new Date().toISOString(),
+      reason: "error",
+      error: "boom",
+    })
+    const result = await pending
+
+    expect(result.source).toBe("bus")
+    expect(result.reason).toBe("error")
+    expect(result.error).toBe("boom")
+  })
+
+  it("a productive turn leaves `error` absent, not empty string", async () => {
+    const registry = makeRegistry({ s1: idleAfterOneTurn("s1") })
+    const bus = createSessionEventBus()
+    const ring = createEventRing()
+
+    const result = await monitorSessionWait({
+      registry,
+      sessionEvents: bus,
+      eventRing: ring,
+      sessionIds: ["s1"],
+      event: "turn-end",
+      timeoutMs: 5_000,
+      since: 0,
+    })
+
+    expect(result.error).toBeUndefined()
+  })
+
   it("bus long-poll (source: bus) surfaces `reason: \"error\"` from the live event", async () => {
     const registry = makeRegistry({
       s1: { id: "s1", kind: "agent-cli", workspaceSlug: "test", command: "mock", pid: null, status: "running", startedAt: new Date().toISOString() },

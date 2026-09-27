@@ -254,6 +254,15 @@ export interface SessionWaitResult {
    *  reported one. `"error"` means the adapter reported a failed turn.
    *  Same three-branch coverage as `empty`. */
   reason?: string
+  /** The matched turn-end's captured error text — `SessionTurnEndEvent.error`
+   *  on the ring-replay/bus branches, `SessionDescriptor.lastTurnErrorMessage`
+   *  on the sync fast-path (no event object to read there). Present only
+   *  when `reason` is `"error"` AND the adapter emitted an in-band `error`
+   *  stream event during the turn. Same three-branch coverage as `empty`/
+   *  `reason` — this is the field a waiter (a supervisor session, `sessions
+   *  wait`, a webhook) needed to actually learn WHY a turn errored instead
+   *  of just that it did. */
+  error?: string
 }
 
 /**
@@ -350,10 +359,11 @@ export async function monitorSessionWait(opts: {
         ev.type === "session:turn-end" || ev.type === "session:awaiting-input"
           ? ev.question
           : undefined
-      // `empty`/`reason` only exist on `session:turn-end` — see
+      // `empty`/`reason`/`error` only exist on `session:turn-end` — see
       // `SessionTurnEndEvent`'s doc.
       const empty = ev.type === "session:turn-end" ? ev.empty : undefined
       const reason = ev.type === "session:turn-end" ? ev.reason : undefined
+      const error = ev.type === "session:turn-end" ? ev.error : undefined
       const replayDesc = evWithSid.sessionId
         ? registry.get(evWithSid.sessionId)
         : undefined
@@ -366,6 +376,7 @@ export async function monitorSessionWait(opts: {
         ...(replayDesc?.interrupted ? { interrupted: true } : {}),
         ...(empty ? { empty: true } : {}),
         ...(reason ? { reason } : {}),
+        ...(error !== undefined ? { error } : {}),
       }
     }
   }
@@ -422,6 +433,7 @@ export async function monitorSessionWait(opts: {
         ...(desc.interrupted ? { interrupted: true } : {}),
         ...(desc.lastTurnEmpty ? { empty: true } : {}),
         ...(desc.lastTurnReason !== undefined ? { reason: desc.lastTurnReason } : {}),
+        ...(desc.lastTurnErrorMessage !== undefined ? { error: desc.lastTurnErrorMessage } : {}),
       }
     }
     const terminal =
@@ -527,7 +539,7 @@ export async function monitorSessionWait(opts: {
           const sessionId = (ev as { sessionId?: string }).sessionId
           if (!sessionId || !idSet.has(sessionId)) return
           const desc = registry.get(sessionId)
-          // `empty`/`reason` only exist on `session:turn-end` — see
+          // `empty`/`reason`/`error` only exist on `session:turn-end` — see
           // `SessionTurnEndEvent`'s doc.
           const evTurnEnd = ev.type === "session:turn-end" ? ev : undefined
           finish({
@@ -540,6 +552,7 @@ export async function monitorSessionWait(opts: {
             ...(desc?.interrupted ? { interrupted: true } : {}),
             ...(evTurnEnd?.empty ? { empty: true } : {}),
             ...(evTurnEnd?.reason !== undefined ? { reason: evTurnEnd.reason } : {}),
+            ...(evTurnEnd?.error !== undefined ? { error: evTurnEnd.error } : {}),
           })
         }),
       )
@@ -2089,6 +2102,10 @@ export function registerOrchestrationTools(
         }
       }
       if (result.reason === "error") {
+        // `result.error` (when present) is the adapter's own captured
+        // message — fold it into the diagnostic text instead of letting
+        // the generic message below clobber it under the same JSON key.
+        const detail = result.error ? `: ${result.error}` : " (commonly an auth failure)"
         return {
           content: [
             {
@@ -2097,7 +2114,7 @@ export function registerOrchestrationTools(
                 ...payload,
                 error:
                   `session ${result.sessionId} ended its turn with reason 'error' — the ` +
-                  `adapter reported a failed turn (commonly an auth failure)`,
+                  `adapter reported a failed turn${detail}`,
               }),
             },
           ],

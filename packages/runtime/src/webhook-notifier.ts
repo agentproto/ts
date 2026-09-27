@@ -33,6 +33,17 @@ interface NotifyPayload {
   exitCode?: number
   status?: string
   question?: SessionAwaitingQuestion
+  /** `session:turn-end`'s `SessionTurnEndEvent.reason` (e.g. `"completed"`,
+   *  `"error"`, `"aborted"`), when the daemon/adapter reported one. Absent
+   *  for other event types and for a turn-end with no reason to report. */
+  reason?: string
+  /** `session:turn-end`'s `SessionTurnEndEvent.error` — the captured
+   *  in-band error text, when the turn ended with `reason: "error"` and the
+   *  adapter emitted an `error` stream event. Without this a registered
+   *  webhook learned only that a turn-end happened, not that it failed or
+   *  why — the same blind spot `agent_sessions_list`/`monitorSessionWait`
+   *  had before this field existed. */
+  error?: string
 }
 
 export function createWebhookNotifier(opts?: {
@@ -124,6 +135,10 @@ export function createWebhookNotifier(opts?: {
       }
       if ((ev.type === "session:turn-end" || ev.type === "session:awaiting-input") && ev.question) {
         payload.question = ev.question
+      }
+      if (ev.type === "session:turn-end") {
+        if (ev.reason !== undefined) payload.reason = ev.reason
+        if (ev.error !== undefined) payload.error = ev.error
       }
 
       for (const url of targets) {

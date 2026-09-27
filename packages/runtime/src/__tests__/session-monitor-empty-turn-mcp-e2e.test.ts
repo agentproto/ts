@@ -115,6 +115,36 @@ describe("session_monitor — fails loud on a silent no-op turn (MCP e2e)", () =
     expect(payload.error).toContain("reason 'error'")
   })
 
+  it("reason: \"error\" with a captured message folds it into the diagnostic text instead of dropping it", async () => {
+    const desc: SessionDescriptor = {
+      id: "sess_err_msg",
+      kind: "agent-cli",
+      workspaceSlug: "test",
+      command: "mock",
+      pid: null,
+      status: "running",
+      startedAt: new Date().toISOString(),
+      turnsCompleted: 1,
+      busy: false,
+      lastTurnReason: "error",
+      lastTurnErrorMessage: "Internal error: API Error: 400 ...",
+    }
+    const { client } = await connectedClient(makeRegistry({ sess_err_msg: desc }))
+
+    const result = await client.callTool({
+      name: "session_monitor",
+      arguments: { sessionIds: ["sess_err_msg"], event: "turn-end", since: 0 },
+    })
+
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    const payload = parseToolJson(result)
+    expect(payload.reason).toBe("error")
+    // The tool's own diagnostic `error` string must not silently swallow the
+    // adapter's captured message — it's folded into the same field instead
+    // of the generic "commonly an auth failure" filler.
+    expect(payload.error).toContain("Internal error: API Error: 400 ...")
+  })
+
   it("a productive turn does NOT set isError", async () => {
     const desc: SessionDescriptor = {
       id: "sess_ok",

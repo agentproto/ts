@@ -1038,6 +1038,12 @@ async function runShow(args: readonly string[]): Promise<number> {
     `  kind:     ${desc.kind}${desc.adapterSlug ? ` · ${desc.adapterSlug}` : ""}${desc.model ? ` · ${desc.model}` : ""}`,
     ...(desc.cwd ? [`  cwd:      ${desc.cwd}`] : []),
     `  started:  ${desc.startedAt}${desc.endedAt ? `  ended: ${desc.endedAt}` : ""}`,
+    ...(desc.lastTurnErroredAt
+      ? [
+          `  ✗ last turn errored (${desc.lastTurnErroredAt})` +
+            (desc.lastTurnErrorMessage ? `: ${desc.lastTurnErrorMessage}` : ""),
+        ]
+      : []),
   ]
   process.stdout.write(header.join("\n") + "\n")
   if (desc.outcome) process.stdout.write("\n" + formatOutcomeBlock(desc.outcome))
@@ -1913,9 +1919,12 @@ async function runWaitSession(opts: {
       return 4
     }
     if (erroredReason) {
+      const errText = typeof result.error === "string" ? result.error : undefined
       process.stderr.write(
-        `agentproto sessions wait: session ${sid} ended its turn with reason 'error' — ` +
-          `the adapter reported a failed turn (commonly an auth failure).\n`,
+        `agentproto sessions wait: session ${sid} ended its turn with reason 'error'` +
+          (errText
+            ? `: ${errText}\n`
+            : ` — the adapter reported a failed turn (commonly an auth failure).\n`),
       )
       return 4
     }

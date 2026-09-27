@@ -1179,16 +1179,32 @@ export interface SessionDescriptor {
    *  `status` to `"error"` directly (a genuinely terminal row the existing
    *  crash/error handling already catches). This is the twin gap for a
    *  turn that fails IN-BAND while the process stays alive: `status` stays
-   *  `"running"`, `lastError` stays unset (reserved for `markCrashed`), and
-   *  nothing else distinguishes the session from one that simply finished
-   *  a clean turn and is idle. Folded into the same "stalled" activity/UI
-   *  treatment a mid-turn stall gets (see sessionsTree.logic.ts's
-   *  `activityFor`) rather than a new state, on the theory that both mean
-   *  "the last thing this session did needs a look, not a re-prompt on
-   *  faith". Stamped at turn-end when `turnEndReason === "error"`; cleared
-   *  the moment a LATER turn completes without one (same reset shape as
+   *  `"running"`, `lastError` stays unset (still reserved for `markCrashed`
+   *  — see `lastTurnErrorMessage` below for the message text this field's
+   *  own turn carries), and nothing else distinguishes the session from
+   *  one that simply finished a clean turn and is idle. Folded into the
+   *  same "stalled" activity/UI treatment a mid-turn stall gets (see
+   *  sessionsTree.logic.ts's `activityFor`) rather than a new state, on
+   *  the theory that both mean "the last thing this session did needs a
+   *  look, not a re-prompt on faith". Stamped at turn-end when
+   *  `turnEndReason === "error"` — including the case where the adapter's
+   *  stream generator simply returned after emitting an in-band `error`
+   *  event with no explicit turn-end and no thrown exception, which
+   *  `runAgentTurn`'s P5 synthetic-reason fallback now classifies as
+   *  `"error"` rather than defaulting to `"exited"`. Cleared the moment a
+   *  LATER turn completes without one (same reset shape as
    *  `resumeAttempts`/`restartAttempts`). Detection + signal only. */
   lastTurnErroredAt?: string
+  /** The captured error text for the turn `lastTurnErroredAt` timestamps —
+   *  `evt.error.message` off the in-band stream `error` event observed
+   *  during that turn (see `runAgentTurn`'s `turnErrorMessage`). Distinct
+   *  from `lastError` (reserved for `markCrashed`) and from
+   *  `rt.lastErrorMessage` (an internal, cross-turn, never-cleared runtime
+   *  field — this one is the public, turn-scoped descriptor projection of
+   *  it). Absent when the adapter reported `reason:"error"` on its own
+   *  turn-end without a preceding `error`-kind stream event. Stamped and
+   *  cleared together with `lastTurnErroredAt`. */
+  lastTurnErrorMessage?: string
   /** True when the LAST completed turn produced zero assistant output and
    *  zero tool calls (mirrors `SessionTurnEndEvent.empty` — see that
    *  field's doc). Persisted so `monitorSessionWait`'s synchronous
@@ -6739,6 +6755,16 @@ export function createSessionsRegistry(opts?: {
     // `session:turn-end` bus event below — otherwise it's dropped after
     // `projectEvent` renders it into the ring buffer.
     let turnEndReason: string | undefined
+    // Captures the message of an in-band `error` stream event observed
+    // during THIS turn — deliberately separate from `rt.lastErrorMessage`,
+    // which is cross-turn and never cleared (reserved for the
+    // markCrashed/provider-limit paths below). Lets the P5 fallback below
+    // classify a turn whose generator simply returns (no explicit
+    // adapter turn-end, no thrown error) after emitting an `error` event
+    // as "error" instead of the default "exited" — see
+    // `SessionDescriptor.lastTurnErroredAt`'s doc. Also rides along on
+    // `lastTurnErrorMessage` and the `session:turn-end` bus event's `error`.
+    let turnErrorMessage: string | undefined
     // Productivity signals for empty-turn detection: a turn that produces
     // ZERO assistant text AND zero tool calls is a silent no-op (a bad /
     // unrecognized model id, or a provider that returned an empty
@@ -6859,6 +6885,9 @@ export function createSessionsRegistry(opts?: {
         if (evt.kind === "tool-result" && evt.toolCallId) {
           pendingToolCallIds.delete(evt.toolCallId)
         }
+        if (evt.kind === "error" && evt.error?.message) {
+          turnErrorMessage = evt.error.message
+        }
         if (evt.kind === "turn-end") {
           sawTurnEnd = true
           turnEndReason = evt.reason
@@ -6927,9 +6956,18 @@ export function createSessionsRegistry(opts?: {
       // completion signal instead of hanging. Idempotent — `sawTurnEnd`
       // short-circuits when the adapter already produced one.
       if (!sawTurnEnd) {
+        // A generator that returns cleanly (no throw) after having emitted
+        // an in-band `error` event is still an errored turn, not a clean
+        // "exited" one — `abnormalReason`/`killed` (a real abort/kill) take
+        // precedence when set, since those are more specific than "the
+        // stream carried an error somewhere".
         const reason =
           abnormalReason ??
-          (rt.desc.status === "killed" ? "aborted" : "exited")
+          (rt.desc.status === "killed"
+            ? "aborted"
+            : turnErrorMessage !== undefined
+              ? "error"
+              : "exited")
         const synthetic: AgentStreamEvent = { kind: "turn-end", reason }
         // Record to the durable transcript first (matches the in-loop
         // order: recordEvent before projectEvent), then flatten into the
@@ -6990,9 +7028,15 @@ export function createSessionsRegistry(opts?: {
         // as `resumeAttempts`/`restartAttempts` above.
         if (turnEndReason === "error") {
           rt.desc.lastTurnErroredAt = new Date().toISOString()
+          if (turnErrorMessage !== undefined) {
+            rt.desc.lastTurnErrorMessage = turnErrorMessage
+          } else {
+            delete rt.desc.lastTurnErrorMessage
+          }
           schedulePersist()
         } else if (rt.desc.lastTurnErroredAt !== undefined) {
           delete rt.desc.lastTurnErroredAt
+          delete rt.desc.lastTurnErrorMessage
           schedulePersist()
         }
 
@@ -7105,6 +7149,7 @@ export function createSessionsRegistry(opts?: {
             ...(rt.desc.awaitingQuestion ? { question: rt.desc.awaitingQuestion } : {}),
             ...(turnEndReason ? { reason: turnEndReason } : {}),
             ...(emptyTurn ? { empty: true } : {}),
+            ...(turnErrorMessage !== undefined ? { error: turnErrorMessage } : {}),
           })
           if (rt.desc.awaitingInput) {
             sessionEvents.emit({
@@ -7176,6 +7221,7 @@ export function createSessionsRegistry(opts?: {
             label: rt.desc.label,
             ts: new Date().toISOString(),
             ...(turnEndReason ? { reason: turnEndReason } : {}),
+            ...(turnErrorMessage !== undefined ? { error: turnErrorMessage } : {}),
           })
         }
       }
