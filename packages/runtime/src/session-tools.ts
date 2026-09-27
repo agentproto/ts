@@ -2665,12 +2665,22 @@ export function registerSessionTools(
           return { content: [{ type: "text", text: JSON.stringify({ jobId: job.id, status: "running", startedAt: job.startedAt }) }] }
         }
         if (input.waitMs !== undefined) {
+          let fireTimedOut!: (timedOut: boolean) => void
+          const timeout = new Promise<boolean>(r => {
+            // Kept so the timer doesn't linger past the call when the run
+            // settles first — otherwise a 40 s timer is alive on a 2 s job.
+            const handle = setTimeout(() => r(true), input.waitMs)
+            fireTimedOut = settled => {
+              clearTimeout(handle)
+              r(settled)
+            }
+          })
           const timedOut = await Promise.race([
             promise.then(
-              () => false,
-              () => false,
+              () => fireTimedOut(false),
+              () => fireTimedOut(false),
             ),
-            new Promise<boolean>(r => setTimeout(() => r(true), input.waitMs)),
+            timeout,
           ])
           if (timedOut) {
             return { content: [{ type: "text", text: JSON.stringify({ jobId: job.id, status: "running", startedAt: job.startedAt }) }] }
@@ -2733,6 +2743,18 @@ export function registerSessionTools(
         endedAt: job.endedAt,
         resultPath: join(BRANCH_GC_JOBS_DIR, `${job.id}.json`),
         summary: job.result?.summary,
+        // Apply results carry the restore log path and a per-outcome tally —
+        // exactly what a caller needs to decide "safe?" without fetching the
+        // full ~MB result with `full: true`.
+        ...(job.result?.mode === "apply"
+          ? {
+              restoreLog: job.result.restoreLog ?? null,
+              outcomeCounts: job.result.outcomes.reduce<Record<string, number>>((acc, o) => {
+                acc[o.result] = (acc[o.result] ?? 0) + 1
+                return acc
+              }, {}),
+            }
+          : {}),
         ...(input.full === true ? { result: job.result } : {}),
       }
       return { content: [{ type: "text", text: JSON.stringify(view) }] }

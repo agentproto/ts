@@ -398,6 +398,43 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
     }
   })
 
+  it("branch_gc_status for an apply job surfaces restoreLog and outcomeCounts", async () => {
+    let release!: (r: BranchGcResult) => void
+    const gate = new Promise<BranchGcResult>(res => {
+      release = res
+    })
+    const runner: BranchGcRunner = () => gate
+    const client = await harness({ runBranchGc: runner })
+    try {
+      const started = await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", wait: false } })
+      const { jobId } = JSON.parse(text(started)) as { jobId: string }
+      const APPLY_JOB_RESULT: BranchGcResult = {
+        mode: "apply",
+        plan: PLAN,
+        summary: SUMMARY,
+        outcomes: [
+          { kind: "local", name: "feat/done", sha: "c".repeat(40), result: "deleted" },
+          { kind: "remote", name: "origin/feat/stale", sha: "e".repeat(40), result: "held", holdReason: "open-pr" },
+          { kind: "orphan", name: "refs/remotes/gone/x", sha: "f".repeat(40), result: "deleted" },
+        ],
+        restoreLog: "/state/branch-gc/repo/restore-fake.json",
+      }
+      release(APPLY_JOB_RESULT)
+      let done: { status: string; restoreLog?: string | null; outcomeCounts?: Record<string, number> } | undefined
+      for (let i = 0; i < 100; i++) {
+        const r = await client.callTool({ name: "branch_gc_status", arguments: { jobId } })
+        done = JSON.parse(text(r))
+        if (done!.status === "done") break
+        await new Promise(res => setTimeout(res, 10))
+      }
+      expect(done!.status).toBe("done")
+      expect(done!.restoreLog).toBe("/state/branch-gc/repo/restore-fake.json")
+      expect(done!.outcomeCounts).toEqual({ deleted: 2, held: 1 })
+    } finally {
+      await client.close()
+    }
+  })
+
   it("waitMs with a fast runner returns the result inline; a failed job reports its error; unknown ids are not found", async () => {
     const { runner } = recordingRunner()
     const client = await harness({ runBranchGc: runner })
