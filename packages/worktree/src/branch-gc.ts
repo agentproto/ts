@@ -25,8 +25,10 @@
  *
  *   pr-merged       the tip IS the head commit (`headRefOid`) of a MERGED PR
  *                   — that exact commit was reviewed and merged, so nothing
- *                   was lost (forge shortcut in `classifyRef`, before the
- *                   ladder runs)
+ *                   was lost (forge shortcut in `classifyRef`: the ladder
+ *                   still runs, but an "unmerged" verdict is overridden
+ *                   before any reclaim/hold decision, skipping the
+ *                   push-state/verdict lookups below it)
  *   merged          tip is an ancestor of base
  *   squash-merged   `git merge-tree --write-tree base tip` == base's tree
  *                   (merging it changes nothing)
@@ -60,7 +62,7 @@ export const BRANCH_GC_SCOPES = ["local", "remote", "orphan"] as const
 /** `local` = refs/heads, `remote` = the base remote's tracking refs, `orphan` = refs/remotes/<ns>/* of a remote that no longer exists. */
 export type BranchRefKind = (typeof BRANCH_GC_SCOPES)[number]
 
-/** The verdict for one tip, in order of increasing cost (`pr-merged` is the forge shortcut that runs before the ladder). */
+/** The verdict for one tip, in order of increasing cost (`pr-merged` is the forge shortcut that overrides an "unmerged" ladder verdict, not a check that skips the ladder). */
 export type BranchStatus = "pr-merged" | "merged" | "squash-merged" | "patch-merged" | "content-merged" | "unmerged"
 
 /**

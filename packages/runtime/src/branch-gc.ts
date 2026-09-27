@@ -49,6 +49,7 @@ export interface BranchGcPlanEntryView {
   ageDays: number
   class: BranchGcClass
   reclaimReason?: BranchGcReclaimReason
+  mergedPr?: number
   holdReason?: BranchGcHoldReason
   holdDetail?: string
   pushed?: string
