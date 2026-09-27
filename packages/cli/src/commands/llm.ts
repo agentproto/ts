@@ -482,13 +482,20 @@ async function runEndpointsDetect(args: readonly string[]): Promise<number> {
   if (existing === null) return 1
   const existingIds = new Set(existing.map((e) => e.id))
 
+  const probed = await Promise.all(
+    (Object.entries(DEFAULT_LOCAL_PORTS) as [ConnectorId, number][]).map(async ([id, port]) => {
+      const connector = connectorById(id)
+      if (!connector) return null
+      const baseUrl = `http://127.0.0.1:${port}/v1`
+      const alive = await connector.probe(baseUrl)
+      return alive ? { id, baseUrl } : null
+    }),
+  )
+
   const detected: DetectedRuntime[] = []
-  for (const [id, port] of Object.entries(DEFAULT_LOCAL_PORTS) as [ConnectorId, number][]) {
-    const connector = connectorById(id)
-    if (!connector) continue
-    const baseUrl = `http://127.0.0.1:${port}/v1`
-    const alive = await connector.probe(baseUrl)
-    if (!alive) continue
+  for (const hit of probed) {
+    if (!hit) continue
+    const { id, baseUrl } = hit
     const existingEntry = existing.find((e) => e.id === id)
     if (existingEntry && !isLocalhostUrl(existingEntry.baseUrl)) {
       // Never re-point a hand-configured LAN/remote endpoint at localhost —

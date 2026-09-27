@@ -141,6 +141,20 @@ describe("syncPiModels", () => {
     await expect(readFile(resolvePiLedgerFilePath(), "utf-8")).rejects.toThrow()
   })
 
+  it("syncs a loaded ollama model with the conservative context fallback (ollama never reports loadedCtx)", async () => {
+    await writeEndpoints([{ id: "ollama", kind: "openai", baseUrl: "http://127.0.0.1:11434/v1", connector: "ollama" }])
+    const fetchImpl = fakeFetch({
+      "http://127.0.0.1:11434/api/tags": { models: [{ name: "llama3" }] },
+      "http://127.0.0.1:11434/api/ps": { models: [{ name: "llama3" }] },
+    })
+    const result = await syncPiModels({ fetchImpl })
+    expect(result.entries).toEqual([
+      { providerId: "ollama", baseUrl: "http://127.0.0.1:11434/v1", action: "added", modelIds: ["llama3"] },
+    ])
+    const written = JSON.parse(await readFile(resolvePiModelsFilePath(), "utf-8"))
+    expect(written.providers.ollama.models).toEqual([expect.objectContaining({ id: "llama3", contextWindow: 4096 })])
+  })
+
   it("a keyless endpoint gets a placeholder apiKey, never a fabricated secret", async () => {
     await writeEndpoints([{ id: "lmstudio", kind: "openai", baseUrl: "http://127.0.0.1:1234/v1", connector: "lmstudio" }])
     const fetchImpl = fakeFetch({
