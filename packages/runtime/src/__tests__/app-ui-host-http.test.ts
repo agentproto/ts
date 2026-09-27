@@ -100,7 +100,7 @@ describe("standalone app UI host — REST routes", () => {
       const res = await fetch(`${base}/apps/${APP_ID}/ui`)
       expect(res.status).toBe(200)
       expect(res.headers.get("content-type")).toContain("text/html")
-      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview:")
+      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview: vscode-file:")
       expect(res.headers.get("x-frame-options")).toBeNull()
       const html = await res.text()
       expect(html).toContain("media-viewer-marker")
@@ -225,7 +225,7 @@ describe("standalone app UI host — REST routes", () => {
       })
       expect(res.status).toBe(200)
       expect(res.headers.get("x-frame-options")).toBeNull()
-      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview:")
+      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview: vscode-file:")
     })
   })
 
@@ -234,7 +234,7 @@ describe("standalone app UI host — REST routes", () => {
       const res = await fetch(`${base}/apps/${APP_ID}/ui?embed=1`, {
         headers: { "sec-fetch-dest": "document", origin: base },
       })
-      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview:")
+      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview: vscode-file:")
     })
   })
 
@@ -244,7 +244,7 @@ describe("standalone app UI host — REST routes", () => {
         headers: { "sec-fetch-dest": "iframe", referer: "http://evil.example/page" },
       })
       expect(res.status).toBe(200)
-      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview:")
+      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview: vscode-file:")
     })
   })
 
@@ -260,7 +260,7 @@ describe("standalone app UI host — REST routes", () => {
   it("GET with a non-1 embed value keeps the default anti-framing headers", async () => {
     await withServer(async base => {
       const res = await fetch(`${base}/apps/${APP_ID}/ui?embed=0`)
-      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview:")
+      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview: vscode-file:")
     })
   })
 
@@ -284,7 +284,7 @@ describe("standalone app UI host — REST routes", () => {
           headers: { "sec-fetch-dest": "iframe" },
         })
         expect(res.status).toBe(200)
-        expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview:")
+        expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview: vscode-file:")
         const warned = warn.mock.calls.find(call => String(call[0]).includes("[app-ui] embed refused"))
         expect(warned).toBeDefined()
         expect(String(warned![0])).toContain('"embedToken":true')
@@ -299,7 +299,7 @@ describe("standalone app UI host — REST routes", () => {
       const res = await fetch(`${base}/apps/${APP_ID}/ui?embed=1&et=${mintAppEmbedToken(APP_ID)}`, {
         headers: { "sec-fetch-dest": "document", origin: base },
       })
-      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview:")
+      expect(res.headers.get("content-security-policy")).toBe("frame-ancestors 'self' vscode-webview: vscode-file:")
     })
   })
 
@@ -982,14 +982,14 @@ describe("standalone app UI host — shell delivery", () => {
       expect(first.headers["cache-control"]).toBe("no-cache")
       const etag = first.headers.etag as string
       expect(etag).toMatch(/^"[A-Za-z0-9_-]{43}"$/)
-      expect(first.headers["content-security-policy"]).toBe("frame-ancestors 'self' vscode-webview:")
+      expect(first.headers["content-security-policy"]).toBe("frame-ancestors 'self' vscode-webview: vscode-file:")
 
       const again = await rawGet(port, page, { "accept-encoding": "br", "if-none-match": etag })
       expect(again.status).toBe(304)
       expect(again.body.length).toBe(0)
       expect(again.headers.etag).toBe(etag)
       expect(again.headers["cache-control"]).toBe("no-cache")
-      expect(again.headers["content-security-policy"]).toBe("frame-ancestors 'self' vscode-webview:")
+      expect(again.headers["content-security-policy"]).toBe("frame-ancestors 'self' vscode-webview: vscode-file:")
 
       // Encoding never changes the entity tag: identity revalidates too.
       expect((await rawGet(port, page, { "if-none-match": etag })).status).toBe(304)
