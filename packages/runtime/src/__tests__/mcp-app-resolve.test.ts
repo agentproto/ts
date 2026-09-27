@@ -114,6 +114,37 @@ describe("resolveMcpServer", () => {
     expect(brokered?.config.headers).toEqual({ Authorization: "Bearer <guilde/token>" })
   })
 
+  it("strips ?deferred=1|0 from a session entry's url — the host's own connection needs the full tools/list", async () => {
+    const on = await resolveMcpServer(
+      {
+        mcpServers: [
+          { name: ALIAS, transport: "http", ref: "http://127.0.0.1:18790/mcp?deferred=1&callerSessionId=sess_1" },
+        ],
+      },
+      "s1",
+      ALIAS,
+      opts()
+    )
+    expect(on?.config.url).toBe("http://127.0.0.1:18790/mcp?callerSessionId=sess_1")
+
+    const off = await resolveMcpServer(
+      { mcpServers: [{ name: ALIAS, transport: "http", ref: "http://127.0.0.1:18790/mcp?deferred=0" }] },
+      "s1",
+      ALIAS,
+      opts()
+    )
+    expect(off?.config.url).toBe("http://127.0.0.1:18790/mcp")
+
+    // No `deferred` param at all: url passes through untouched.
+    const none = await resolveMcpServer(
+      { mcpServers: [{ name: ALIAS, transport: "http", ref: "https://s/mcp?callerSessionId=x" }] },
+      "s1",
+      ALIAS,
+      opts()
+    )
+    expect(none?.config.url).toBe("https://s/mcp?callerSessionId=x")
+  })
+
   it("walks the project scope in order: .mcp.json → claude.json project → cwd codex → home codex", async () => {
     await writeAllScopes()
     const cwd = join(projA, "sub")
