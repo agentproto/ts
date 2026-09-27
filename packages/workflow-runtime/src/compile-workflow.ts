@@ -86,7 +86,7 @@ function dig(value: unknown, path: readonly string[]): unknown {
   return v
 }
 
-const REF_RE = /^\$(input|item|steps)((?:\.[^.]+)*)$/
+const REF_RE = /^\$(input|item|steps|run)((?:\.[^.]+)*)$/
 
 /**
  * The prefix form of the ref grammar: a ref token at the START of a string
@@ -95,7 +95,7 @@ const REF_RE = /^\$(input|item|steps)((?:\.[^.]+)*)$/
  * segments stop at the first `.`, `$`, or `/` — so `$input.a$b/c` resolves
  * `$input.a` with rest `$b/c`. `$index` is recognized as a whole token too.
  */
-const REF_PREFIX_RE = /^\$(?:input|item|steps|index)((?:\.[^.$/]+)*)/
+const REF_PREFIX_RE = /^\$(?:input|item|steps|run|index)((?:\.[^.$/]+)*)/
 
 /** Resolve a single `$…` reference string against the run bindings. */
 export function resolveRef(ref: string, b: Bindings): unknown {
@@ -113,6 +113,10 @@ export function resolveRef(ref: string, b: Bindings): unknown {
       if (!stepId) throw new WorkflowCompileError(`'$steps' needs a step id`)
       return dig(b.steps[stepId], rest)
     }
+    // AIP-58 §4 — `$run.workspace`, a convenience alias for the run
+    // workspace path (see `Bindings.run`).
+    case "run":
+      return dig(b.run, segs)
   }
 }
 
@@ -153,6 +157,7 @@ function resolveTagName(name: string, b: Bindings): unknown {
   if (head === "steps" && segs.length > 1)
     return dig(b.steps[segs[1]!], segs.slice(2))
   if (head === "index" && segs.length === 1) return b.index
+  if (head === "run") return segs.length === 1 ? b.run : dig(b.run, segs.slice(1))
   return dig(b.input, segs)
 }
 
@@ -277,7 +282,7 @@ function refPathExists(ref: string, b: Bindings): boolean {
     segs.length = 0
     segs.push(...rest)
   } else {
-    v = m[1] === "input" ? b.input : b.item
+    v = m[1] === "input" ? b.input : m[1] === "run" ? b.run : b.item
   }
   for (const seg of segs) {
     if (v === null || typeof v !== "object") return false
@@ -425,12 +430,19 @@ export function compileWorkflow(
   const finallyCtx: Ctx = finallySteps?.length
     ? { opts, knownStepIds: new Set([...ctx.knownStepIds, ...collectStepIds(finallySteps)]) }
     : ctx
+  // AIP-58 §4 — `outputsFiles` (AIP-16, amended with `required`) survives
+  // unchanged onto the compiled RuntimeWorkflow; `checkOutputsFiles`
+  // (run-workflow.ts) reads it once every top-level step has finished.
+  const outputsFiles = (
+    handle as { outputsFiles?: Record<string, { path: string; required?: boolean; contentType?: string }> }
+  ).outputsFiles
   return {
     id: handle.id,
     description: handle.description,
     steps: compileSiblingsToSteps(steps, ctx),
     ...(finallySteps?.length ? { finally: compileSiblingsToSteps(finallySteps, finallyCtx) } : {}),
     ...(output ? { output } : {}),
+    ...(outputsFiles ? { outputsFiles } : {}),
   }
 }
 
@@ -958,6 +970,34 @@ function compileStep(step: any, ctx: Ctx): RunStep {
 
     case "gate":
       return compileGateStep(step, id)
+
+    case "artifact": {
+      // Entry-based handles may pass an already-built ArtifactStep straight
+      // through (function-valued key/path); a declarative WORKFLOW.md step
+      // gives plain strings — `path` resolves through the same `$…`
+      // ref-string grammar a gate step's `cwd` uses (a literal path passes
+      // through unchanged).
+      if (typeof step.key === "function" || typeof step.path === "function") {
+        const passthrough: RunStep = step
+        return passthrough
+      }
+      const key = f<string>(step, "key")
+      const rawPath = f<string>(step, "path")
+      if (typeof key !== "string" || key.trim().length === 0) {
+        throw new WorkflowCompileError(`artifact step '${id}' needs a non-empty 'key'`)
+      }
+      if (typeof rawPath !== "string" || rawPath.trim().length === 0) {
+        throw new WorkflowCompileError(`artifact step '${id}' needs a non-empty 'path'`)
+      }
+      const contentType = f<string | undefined>(step, "contentType")
+      return {
+        kind: "artifact",
+        id,
+        key,
+        path: (b: Bindings) => resolveRefString(id, "path", rawPath, b, "error"),
+        ...(contentType !== undefined ? { contentType } : {}),
+      }
+    }
 
     case "transform": {
       // Not a declarative manifest kind — no string expression language for

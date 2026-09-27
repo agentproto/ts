@@ -19,6 +19,7 @@ import type {
 } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
+import { MAX_READ_ARTIFACT_BYTES } from "./workflow-runner.js"
 import type { CompletionPolicySupervisor, AttachPolicyInput } from "./supervisor.js"
 import { withToolSubset } from "./tool-subset.js"
 import { jsonTolerant } from "./json-tolerant.js"
@@ -701,10 +702,17 @@ function truncateCompactError(error: string): string {
  * needs to know WHAT happened, without the full payload of what a step
  * produced.
  */
-export function compactWorkflowRunStatus(run: WorkflowRun): WorkflowRun {
+export function compactWorkflowRunStatus(
+  run: WorkflowRun,
+): Omit<WorkflowRun, "artifacts"> & { artifacts?: { key: string; path: string; size: number }[] } {
   return {
     ...run,
     ...(run.error !== undefined ? { error: truncateCompactError(run.error) } : {}),
+    // AIP-58 §4 — compact projection of Run.artifacts[]: key/path/size only
+    // (sha256/contentType/stepId are `full: true` detail).
+    ...(run.artifacts !== undefined
+      ? { artifacts: run.artifacts.map(a => ({ key: a.key, path: a.path, size: a.size })) }
+      : {}),
     stages: run.stages.map(stage => ({
       ...stage,
       steps: stage.steps.map(step => {
@@ -1155,6 +1163,65 @@ export function registerOrchestrationTools(
               }),
             },
           ],
+        }
+      },
+    )
+
+    server.tool(
+      "workflow_artifact_get",
+      "AIP-58 §4 — fetch a run artifact's file content back (see " +
+        "`workflow_status`'s `artifacts[]`: {key, path, size}). Capped at " +
+        `${MAX_READ_ARTIFACT_BYTES} bytes — a larger file still resolves ` +
+        "(`truncated: true`) with its first bytes; read the full file directly " +
+        "off `run.workspace + '/' + path` (`full: true` on `workflow_status`) " +
+        "for everything.",
+      {
+        runId: z.string().describe("Run id from `workflow_start`/`workflow_run_file`."),
+        key: z.string().describe("Artifact key, from `workflow_status`'s `artifacts[].key`."),
+      },
+      async input => {
+        const result = await workflowRunner.readArtifact(input.runId, input.key)
+        if (!result.ok) {
+          return { content: [{ type: "text", text: JSON.stringify(result) }], isError: true }
+        }
+        const isText = result.entry.contentType?.startsWith("text/") || result.entry.contentType === "application/json"
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                entry: result.entry,
+                truncated: result.truncated,
+                ...(isText
+                  ? { text: result.content.toString("utf8") }
+                  : { base64: result.content.toString("base64") }),
+              }),
+            },
+          ],
+        }
+      },
+    )
+
+    server.tool(
+      "workflow_publish",
+      "AIP-58 §4/§9 `run.publish` — copy a SUCCEEDED run's recorded artifact " +
+        "out of its own workspace to a shared destination. Refused unless the " +
+        "run has already finished successfully (never implicit at run end — " +
+        "publishing mid-run or after a failure/cancel would resurrect the " +
+        "exact 'two runs overwrite each other's files' race this verb exists " +
+        "to close). `to` defaults to the workflow's declared " +
+        "`outputsFiles.<key>.path` (with `<runId>`/`<workflowId>`/`<isoDate>` " +
+        "interpolated), resolved relative to the run's own cwd.",
+      {
+        runId: z.string().describe("Run id from `workflow_start`/`workflow_run_file`."),
+        artifactKey: z.string().describe("Artifact key, from `workflow_status`'s `artifacts[].key`."),
+        to: z.string().optional().describe("Override destination path. Omit to use the declared outputsFiles.<key>.path."),
+      },
+      async input => {
+        const result = await workflowRunner.publish(input.runId, { artifactKey: input.artifactKey, to: input.to })
+        return {
+          content: [{ type: "text", text: JSON.stringify(result) }],
+          ...(result.ok ? {} : { isError: true }),
         }
       },
     )

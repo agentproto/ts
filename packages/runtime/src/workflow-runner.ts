@@ -25,10 +25,10 @@
 
 import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
-import { join, dirname } from "node:path"
+import { join, dirname, isAbsolute, resolve as resolvePath } from "node:path"
 import { mkdirSync, readFileSync, existsSync, writeFileSync, renameSync } from "node:fs"
-import { buildAgentStep, runWorkflow, validateWorkflowInput, validateAgainstJsonSchema, StepOutcomeError } from "@agentproto/workflow-runtime"
-import type { AgentSandboxRef, ApprovalDecision, Bindings, GateReportEvent, RuntimeWorkflow } from "@agentproto/workflow-runtime"
+import { buildAgentStep, runWorkflow, validateWorkflowInput, validateAgainstJsonSchema, StepOutcomeError, MissingArtifactError } from "@agentproto/workflow-runtime"
+import type { AgentSandboxRef, ApprovalDecision, ArtifactEntry, Bindings, GateReportEvent, RuntimeWorkflow } from "@agentproto/workflow-runtime"
 import type { StepCache } from "@agentproto/workflow-runtime"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import type { WorkflowHandle } from "@agentproto/workflow"
@@ -45,6 +45,8 @@ import type { AppStateEventInput } from "./app-state.js"
 import type { AppRegistry, InstalledApp } from "./app-registry.js"
 import { createRunEventLog, readRunEvents, DEFAULT_RUNS_ROOT, type RunEventLog, type RunEventEnvelope } from "./run-event-log.js"
 import { loadWorkspacesConfig, getActiveWorkspace } from "./workspaces-config.js"
+import { ensureRunWorkspace, runWorkspacePaths } from "./run-workspace.js"
+import { copyFile, mkdir, readFile } from "node:fs/promises"
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -128,6 +130,23 @@ export interface WorkflowRun {
   appId?: string
   /** The app_run this run belongs to, when started through an app. */
   appRunId?: string
+  /** AIP-58 §4 Run workspace — `<runsRoot>/<runId>/`, this run's own
+   *  allocation (never shared with another run). Steps see the `scratch/`
+   *  subdirectory as `$run.workspace` / `{{run.workspace}}`; every
+   *  `artifacts[]` entry's `path` is relative to THIS root. Set at run
+   *  creation (`ensureRunWorkspace`), so it's populated even before
+   *  execution starts. */
+  workspace?: string
+  /** AIP-58 §1/§4 `Run.artifacts[]` — every file a `kind: "artifact"` step
+   *  (or a declared `outputsFiles` key) has copied into
+   *  `<workspace>/artifacts/` so far. Compact `workflow_status` projects
+   *  this to `{key, path, size}` (see `compactWorkflowRunStatus`). */
+  artifacts?: ArtifactEntry[]
+  /** AIP-16 `outputsFiles` (as amended by AIP-58 §4), copied from the
+   *  compiled workflow at `startFromFile` time — retained so `publish()`
+   *  can resolve an artifact key's default destination (`to`) without
+   *  re-loading/re-compiling the WORKFLOW.md. Only set by `startFromFile`. */
+  outputsFiles?: Record<string, { path: string; required?: boolean; contentType?: string }>
   /** Optional ledger `item` — stamped on EVERY app-ledger event this run
    *  appends, scoping them to one sub-key inside each stage (e.g. the map
    *  item or entity the run processes). */
@@ -264,7 +283,51 @@ export interface WorkflowRunner {
   ): { ok: true; runId: string; stepId: string } | { ok: false; error: "session_not_in_workflow_step" }
 
   cancel(runId: string): void
+
+  /**
+   * AIP-58 §4/§9 `run.publish { runId, artifactKey, to? }` — copy a
+   * SUCCEEDED run's recorded artifact out of its own workspace to a
+   * caller-visible destination. MUST be refused unless the run's `status`
+   * is already `"succeeded"` (§4 "Publish is a separate, explicit,
+   * post-success operation" — never implicit at run end, so two runs
+   * racing to publish to the same shared path is always an explicit,
+   * attributable act, not an accident of finishing order). `to`, when
+   * omitted, defaults to the artifact's declared `outputsFiles.<key>.path`
+   * (interpolated); relative destinations resolve against the run's own
+   * `cwd` (F25's app-root default) — the "outer" workspace AIP-16 calls the
+   * sync target. Fires `run.published` on success.
+   */
+  publish(
+    runId: string,
+    input: { artifactKey: string; to?: string },
+  ): Promise<
+    | { ok: true; publishedPath: string }
+    | {
+        ok: false
+        error: "run_not_found" | "not_succeeded" | "artifact_not_found" | "no_destination"
+        message: string
+      }
+  >
+
+  /**
+   * AIP-58 §4 "fetchable" — read a recorded artifact's file content back.
+   * Capped at {@link MAX_READ_ARTIFACT_BYTES}; a larger file still resolves
+   * (with `truncated: true`) rather than failing outright, so a caller can
+   * at least confirm the artifact exists and inspect its start.
+   */
+  readArtifact(
+    runId: string,
+    key: string,
+  ): Promise<
+    | { ok: true; entry: ArtifactEntry; content: Buffer; truncated: boolean }
+    | { ok: false; error: "run_not_found" | "artifact_not_found" | "file_missing"; message: string }
+  >
 }
+
+/** Cap for `readArtifact`'s returned content — a caller wanting the FULL
+ *  bytes of a large artifact should read `run.workspace + '/' + entry.path`
+ *  directly off disk instead. */
+export const MAX_READ_ARTIFACT_BYTES = 1_000_000
 
 // ── Internal state per run ───────────────────────────────────────────
 
@@ -810,6 +873,18 @@ async function resolveRunCwd(
   return daemonCwd === "/" ? homedir() : daemonCwd
 }
 
+/** Same `<runId>`/`<workflowId>`/`<isoDate>` interpolation
+ *  `@agentproto/workflow-runtime`'s `checkOutputsFiles` applies — duplicated
+ *  here because `publish()`'s destination default is resolved at the HOST
+ *  layer, from the persisted `WorkflowRun.outputsFiles`, not from a live
+ *  `RuntimeWorkflow` object. */
+function interpolateFileContractPath(path: string, workflowId: string, runId: string): string {
+  return path
+    .replace(/<runId>/g, runId)
+    .replace(/<workflowId>/g, workflowId)
+    .replace(/<isoDate>/g, new Date().toISOString().slice(0, 10))
+}
+
 /** Static step-kind lookup for the `stage-started` payload — walks the
  *  compiled step graph by id. `map`/`pipeline` bodies are runtime
  *  functions with no static step list (see `collectAgentSteps`), so steps
@@ -897,6 +972,7 @@ async function executeRunWorkflow(
   appRegistry?: Pick<AppRegistry, "getApp" | "listApps">,
   eventLog?: RunEventLog,
   lease?: { ownerId: string; heartbeatIntervalMs: number; now: () => Date },
+  runsRoot?: string,
 ): Promise<void> {
   // AIP-58 §2 owner liveness: renew this run's lease on a timer for as long
   // as THIS process is actually driving it — `sweep()` orphans a run once
@@ -910,6 +986,19 @@ async function executeRunWorkflow(
     }
     renew()
     state.heartbeatTimer = setInterval(renew, lease.heartbeatIntervalMs)
+  }
+
+  // AIP-58 §4 — this run's own workspace paths (undefined `runsRoot` ⇒ no
+  // workspace wired at all, e.g. a non-persisting test runner; `$run.workspace`
+  // and `kind: "artifact"` steps are simply unavailable for that run).
+  const workspacePaths = runsRoot !== undefined ? runWorkspacePaths(runsRoot, state.run.runId) : undefined
+  const onArtifact = (entry: ArtifactEntry): void => {
+    const list = state.run.artifacts ?? (state.run.artifacts = [])
+    const idx = list.findIndex((a) => a.key === entry.key)
+    if (idx === -1) list.push(entry)
+    else list[idx] = entry
+    persist?.()
+    eventLog?.append({ stepId: entry.stepId, type: "step.artifact", data: entry })
   }
 
   // App state ledger bridge (WP-Q): when the run belongs to an installed
@@ -934,6 +1023,9 @@ async function executeRunWorkflow(
       signal,
       cwd: state.cwd,
       workspaceSlug: state.workspaceSlug,
+      ...(workspacePaths
+        ? { workspace: workspacePaths.scratch, artifactsDir: workspacePaths.artifactsDir, runId: state.run.runId, onArtifact }
+        : {}),
       input,
       ...(cache ? { cache, cacheKey } : {}),
       // WP-S — human-resolved approval steps: a `kind: "approval"` step parks
@@ -1417,12 +1509,21 @@ async function executeRunWorkflow(
             }
           }
         }
+      } else if (err instanceof MissingArtifactError) {
+        // AIP-58 §4/§10 — a declared `outputsFiles.<key>` never materialized.
+        errorCode = err.code
+        state.run.errorCode = err.code
       }
 
-      // A structured outcome failure (StepOutcomeError) names exactly which
-      // step failed; any other error fails every step that was still
-      // running when it landed (`runningSteps`, captured above).
-      const failedStepIds = err instanceof StepOutcomeError ? [err.stepId] : [...runningSteps]
+      // A structured outcome failure (StepOutcomeError / MissingArtifactError)
+      // names exactly which step failed; any other error fails every step
+      // that was still running when it landed (`runningSteps`, above).
+      const failedStepIds =
+        err instanceof StepOutcomeError
+          ? [err.stepId]
+          : err instanceof MissingArtifactError && err.stepId !== undefined
+            ? [err.stepId]
+            : [...runningSteps]
 
       // F29: project the failure onto the steps it actually hit — the SAME
       // steps the event log records `step.failed` for below. A step that
@@ -1570,6 +1671,12 @@ export function createWorkflowRunner(opts: {
   const newEventLog = (runId: string): RunEventLog | undefined =>
     shouldPersist ? createRunEventLog(runId, runsRoot) : undefined
 
+  // AIP-58 §4 — gated on persistence exactly like the event log above: a
+  // non-persisting caller (most unit tests) gets no `run.workspace` at all,
+  // never a real `mkdir` under a default `~/.agentproto/runs` it never
+  // opted into.
+  const workspaceRunsRoot = (): string | undefined => (shouldPersist ? runsRoot : undefined)
+
   // Gated on persistence like the event log above — without it there's no
   // other process that could ever observe a lease, and skipping the
   // heartbeat timer entirely keeps a non-persisting caller (most unit
@@ -1686,6 +1793,11 @@ export function createWorkflowRunner(opts: {
   return {
     start: async (input) => {
       const runId = `wfrun_${randomUUID()}`
+      // AIP-58 §4 — allocated BEFORE the run record so `workspace` is
+      // recorded even though execution hasn't started yet (mirrors F25's
+      // `cwd` default).
+      const workspace = workspaceRunsRoot()
+      if (workspace !== undefined) ensureRunWorkspace(workspace, runId)
       const run: WorkflowRun = {
         runId,
         workflowId: input.workflowId,
@@ -1702,6 +1814,7 @@ export function createWorkflowRunner(opts: {
           })),
         })),
         ...(input.notifyUrl ? { notifyUrl: input.notifyUrl } : {}),
+        ...(workspace !== undefined ? { workspace: runWorkspacePaths(workspace, runId).root } : {}),
         ...resolveAppProvenance(opts.appRegistry, input.workflowId, {
           ...(input.appId !== undefined ? { appId: input.appId } : {}),
           ...(input.appRunId !== undefined ? { appRunId: input.appRunId } : {}),
@@ -1750,7 +1863,7 @@ export function createWorkflowRunner(opts: {
 
       const cache = input.cacheKey ? createFileStepCache(input.cacheKey) : undefined
 
-      void executeRunWorkflow(state, workflow, agents, abort.signal, sessionEvents, cache, input.cacheKey, undefined, persist, opts.appRegistry, eventLog, leaseOpts).then(() => {
+      void executeRunWorkflow(state, workflow, agents, abort.signal, sessionEvents, cache, input.cacheKey, undefined, persist, opts.appRegistry, eventLog, leaseOpts, workspace).then(() => {
         for (const [sid, binding] of sessionToRun) {
           if (binding.runId === runId) sessionToRun.delete(sid)
         }
@@ -1812,6 +1925,12 @@ export function createWorkflowRunner(opts: {
       // F25: resolved BEFORE the run record so `cwd` is recorded even when
       // defaulted (never a silent "/" — see resolveRunCwd).
       const cwd = await resolveRunCwd(opts.appRegistry, handle.id, args.cwd)
+      // AIP-58 §4 — same eager allocation as `start()`.
+      const workspaceRoot = workspaceRunsRoot()
+      if (workspaceRoot !== undefined) ensureRunWorkspace(workspaceRoot, runId)
+      const outputsFiles = (
+        handle as { outputsFiles?: Record<string, { path: string; required?: boolean; contentType?: string }> }
+      ).outputsFiles
       const run: WorkflowRun = {
         runId,
         workflowId: handle.id,
@@ -1828,6 +1947,8 @@ export function createWorkflowRunner(opts: {
           })),
         })),
         cwd,
+        ...(workspaceRoot !== undefined ? { workspace: runWorkspacePaths(workspaceRoot, runId).root } : {}),
+        ...(outputsFiles !== undefined ? { outputsFiles } : {}),
         ...resolveAppProvenance(opts.appRegistry, handle.id, {
           ...(args.appId !== undefined ? { appId: args.appId } : {}),
           ...(args.appRunId !== undefined ? { appRunId: args.appRunId } : {}),
@@ -1887,6 +2008,7 @@ export function createWorkflowRunner(opts: {
         opts.appRegistry,
         eventLog,
         leaseOpts,
+        workspaceRoot,
       ).then(() => {
         for (const [sid, binding] of sessionToRun) {
           if (binding.runId === runId) sessionToRun.delete(sid)
@@ -2057,6 +2179,76 @@ export function createWorkflowRunner(opts: {
         persist()
         state.eventLog?.append({ type: "run.cancelled", data: {} })
       }
+    },
+
+    publish: async (runId, input) => {
+      const state = runs.get(runId)
+      if (!state) {
+        return { ok: false, error: "run_not_found", message: `no run '${runId}'` }
+      }
+      const run = state.run
+      // AIP-58 §4 — the hard invariant: publishing mid-run, or a run that
+      // went on to fail/cancel, would resurrect the exact race this
+      // deferred-publish model exists to close.
+      if (run.status !== "done") {
+        return {
+          ok: false,
+          error: "not_succeeded",
+          message: `run '${runId}' is '${run.status}' (AIP-58 "succeeded"), not done — publish is refused until it is (AIP-58 §4)`,
+        }
+      }
+      const entry = run.artifacts?.find((a) => a.key === input.artifactKey)
+      if (!entry || run.workspace === undefined) {
+        return {
+          ok: false,
+          error: "artifact_not_found",
+          message: `run '${runId}' has no artifact keyed '${input.artifactKey}'`,
+        }
+      }
+      const declared = run.outputsFiles?.[input.artifactKey]
+      const toRaw =
+        input.to ?? (declared ? interpolateFileContractPath(declared.path, run.workflowId, runId) : undefined)
+      if (toRaw === undefined) {
+        return {
+          ok: false,
+          error: "no_destination",
+          message: `no 'to' given and no outputsFiles.${input.artifactKey}.path declared to default from`,
+        }
+      }
+      // `entry.path`/declared paths are workspace-relative (or a bare
+      // filename); the destination they sync to is the run's OWN outer
+      // workspace (F25's app-root cwd) — never the daemon process cwd.
+      const destBase = run.cwd ?? process.cwd()
+      const destAbs = isAbsolute(toRaw) ? toRaw : resolvePath(destBase, toRaw)
+      const srcAbs = join(run.workspace, entry.path)
+      try {
+        await mkdir(dirname(destAbs), { recursive: true })
+        await copyFile(srcAbs, destAbs)
+      } catch (err) {
+        return {
+          ok: false,
+          error: "artifact_not_found",
+          message: `failed to read/copy artifact file: ${err instanceof Error ? err.message : String(err)}`,
+        }
+      }
+      state.eventLog?.append({ type: "run.published", data: { artifactKey: input.artifactKey, to: destAbs } })
+      return { ok: true, publishedPath: destAbs }
+    },
+
+    readArtifact: async (runId, key) => {
+      const state = runs.get(runId)
+      if (!state) return { ok: false, error: "run_not_found", message: `no run '${runId}'` }
+      const entry = state.run.artifacts?.find((a) => a.key === key)
+      if (!entry || state.run.workspace === undefined) {
+        return { ok: false, error: "artifact_not_found", message: `run '${runId}' has no artifact keyed '${key}'` }
+      }
+      const abs = join(state.run.workspace, entry.path)
+      if (!existsSync(abs)) {
+        return { ok: false, error: "file_missing", message: `artifact '${key}' is recorded but its file is gone (${abs})` }
+      }
+      const full = await readFile(abs)
+      const truncated = full.length > MAX_READ_ARTIFACT_BYTES
+      return { ok: true, entry, content: truncated ? full.subarray(0, MAX_READ_ARTIFACT_BYTES) : full, truncated }
     },
   }
 }

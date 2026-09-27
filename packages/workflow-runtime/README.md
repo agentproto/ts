@@ -55,13 +55,16 @@ const { output, bindings } = await runWorkflow({ workflow: wf })
 
 ## Step kinds
 
-Every step reads `Bindings` (`{ input, steps, item?, index? }`) via selectors
-and binds its output under `id`.
+Every step reads `Bindings` (`{ input, steps, item?, index?, run? }`) via
+selectors and binds its output under `id`. `run` (`{ workspace }`) is present
+whenever the host wires `RunWorkflowArgs.workspace` — see **Run workspace
+(AIP-58 §4)** below.
 
 | kind | what it does |
 | --- | --- |
 | `tool` | Resolve a TOOL contract against `candidates` and run it. Cacheable. |
 | `agent` | Spawn/reuse an agent session, send a prompt, wait for the turn. Cacheable. |
+| `artifact` | Hash + copy a file out of `$run.workspace` into `artifactsDir`, recorded as an `ArtifactEntry`. Always cache-aware — see **Run workspace**. |
 | `transform` | Pure in-run compute — combine / filter / shape. No dispatch. |
 | `map` | Run a body once per array element (`bindings.item` / `index`); collect outputs. Fail-fast by default; `onError: "collect"` opts into per-item tolerance. |
 | `pipeline` | Run N items through K sequential stages with **no cross-item barrier**. Same `onError: "collect"` opt-in as `map`. |
@@ -301,6 +304,107 @@ notion of "the run that failed"; the cacheKey is just a namespace the caller
 re-supplies. A first-class `run.retry`/`run.replay` verb that resumes a named
 run without the caller re-threading `workflow`/`input`/`cacheKey` by hand is
 AIP-58 P5, not implemented here.
+
+### Run workspace (AIP-58 §4)
+
+A host wires `workspace` (an absolute directory) and `artifactsDir` (a
+sibling directory) onto `RunWorkflowArgs` — one allocation per run,
+`<runsRoot>/<runId>/{scratch,artifacts}` in `@agentproto/runtime`'s
+`WorkflowRunner`. Steps read `workspace` two ways:
+
+- **`$run.workspace`** / **`{{run.workspace}}`** — the same `$…`-ref and
+  mustache grammar `$input`/`$steps.<id>` already use, so it drops straight
+  into a `tool` step's `inputs`, a `gate` step's `args`/`cwd`, or an `agent`
+  step's `prompt`.
+- **`_workflowFsRoot`** — the AIP-16 file-contract convention (`inputs
+  ._workflowFsRoot`, injected by the host); use this form when the same
+  manifest needs to stay AIP-16-conformant independent of this runtime.
+
+Both name the identical path — pick whichever reads better at each call
+site. An `agent` step's own **cwd is unaffected** (AIP-15 F25: it stays the
+owning app's root) — the workspace path only reaches it as *text*, via the
+binding in its prompt.
+
+```yaml
+steps:
+  - id: fetch
+    kind: tool
+    tool: yt.fetch-captions
+    inputs:
+      url: $input.url
+      outDir: $run.workspace        # was: $input.outDir (one fixed, reused dir)
+  - id: clean
+    kind: agent
+    prompt: >-
+      Clean {{item}} and write the result under {{run.workspace}}/cleaned/.
+```
+
+#### `kind: "artifact"` — declaring a run artifact
+
+```ts
+{ kind: "artifact", id: "save", key: "brief", path: "briefs/latest.md", contentType: "text/markdown" }
+```
+
+`path` is read relative to `$run.workspace` (absolute paths, and any path
+that would resolve OUTSIDE the workspace, throw). The step hashes
+(`sha256`) and sizes the file, copies it to `artifactsDir/<sanitized key>`,
+and binds/report an `ArtifactEntry` — `{ key, path: "artifacts/<key>", sha256,
+size, stepId, contentType? }` (`path` here is relative to the RUN WORKSPACE
+ROOT, the parent of `$run.workspace` itself — not the source location).
+Pass `onArtifact` to `runWorkflow` to observe every one recorded, cache hit
+or fresh.
+
+A declarative WORKFLOW.md manifest may instead declare **`outputsFiles`**
+(AIP-16, amended by AIP-58 §4 with `required`) at the top level — checked
+ONCE, after every top-level step finishes:
+
+```yaml
+outputsFiles:
+  brief:
+    path: "./briefs/<runId>.md"   # <runId> / <workflowId> / <isoDate> interpolate
+    required: true
+```
+
+Present ⇒ copied into `artifactsDir` + reported, same as a `kind: "artifact"`
+step. Absent with `required: true` (or omitted — the default) ⇒ the run
+throws `MissingArtifactError` (`code: "missing-artifact"`, attributed to the
+last step that ran). Absent with `required: false` ⇒ a `console.warn`, the
+run still succeeds.
+
+**This is where a shared/fixed destination stops racing.** The
+Motivation this AIP exists for — two concurrent runs of the same workflow
+overwriting each other's output — is closed by `artifactsDir` being
+per-run: `outputsFiles.<key>.path`'s `<runId>`-interpolated form (or a bare
+fixed path) is *never* written to directly; it becomes the **default
+destination for an explicit `run.publish`** (`@agentproto/runtime`'s
+`WorkflowRunner.publish` / the `workflow_publish` MCP tool), which a host
+MUST refuse unless the run has already `"succeeded"`. See
+`@agentproto/runtime`'s own docs for `publish`/`readArtifact` (the "fetchable"
+half) and the compact `{key, path, size}` projection `workflow_status` shows.
+
+#### Cache/replay interplay — a design decision
+
+A cache hit (`cacheable: true` / journaled) replays a step's **recorded
+output** without re-executing it — but if that output only meant something
+because a FILE existed at some workspace-relative path, and this run's own
+workspace is a **different directory** than the run that originally wrote
+it (AIP-58 §4 "two runs MUST NEVER share a workspace" — replay/re-invocation
+under the same `cacheKey` is always a fresh, disjoint `runId`), a naive
+cache hit would report an output pointing at a file that was never actually
+written into THIS run's workspace.
+
+`kind: "artifact"` (and the `outputsFiles` check, which is really the same
+mechanism unrolled) closes this the way the AIP steers hosts to think about
+runs generally: **copy, never share**. A cache hit for an `artifact` step
+relocates (copies) the file from the ORIGINAL run's `artifactsDir` into the
+CURRENT run's own before returning — the two runs' workspaces stay fully
+disjoint on disk; only the *bytes* are reused, exactly the same way
+`run.replay`'s journal-sourced step reuse is specified to work (AIP-58 §6).
+This is a deliberate, narrower scope than "any cacheable step's output might
+reference a workspace file" — a plain cacheable `tool`/`agent` step whose
+output happens to name a path is NOT relocated automatically; route a
+step's file-shaped output through `kind: "artifact"` (or `outputsFiles`) to
+get cache/replay continuity for it.
 
 ### Step lifecycle callbacks
 

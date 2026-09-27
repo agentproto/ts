@@ -43,6 +43,10 @@
         "contentType": {
           "description": "Informational MIME type. Hosts MAY surface in audit logs / UIs.",
           "type": "string"
+        },
+        "required": {
+          "description": "outputsFiles only (AIP-58 amendment): missing when the producing step finishes MUST fail the run { code: \"missing-artifact\" } (AIP-58 section 4/10). Absent or false is advisory only -- a host MAY warn but MUST NOT fail the run.",
+          "type": "boolean"
         }
       }
     },

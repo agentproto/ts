@@ -481,6 +481,15 @@ export interface FileContractEntry {
    * Informational MIME type. Hosts MAY surface in audit logs / UIs.
    */
   contentType?: string
+  /**
+   * `outputsFiles` only (AIP-16 Amendment, added by AIP-58 §4): missing when
+   * the producing step finishes ⇒ the run fails `{ code: "missing-artifact"
+   * }`. Absent or `false` ⇒ advisory only. Hand-added ahead of a
+   * `scaffold-aip --schema-only` regen against
+   * `specs/resources/aip-16/draft/IO.schema.json`'s `fileContractEntry` def
+   * (also updated) — see that file for the source of truth.
+   */
+  required?: boolean
 }
 /**
  * Defined by AIP-16 — the IO `outputsFiles` block.

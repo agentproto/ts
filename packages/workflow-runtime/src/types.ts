@@ -24,6 +24,11 @@ export interface Bindings {
   readonly item?: unknown
   /** Present inside a `map` body — the element's index. */
   readonly index?: number
+  /** AIP-58 §4 Run workspace — present when the host wires
+   *  {@link RunWorkflowArgs.workspace}. `$run.workspace` / `{{run.workspace}}`
+   *  is a convenience alias for the same absolute path AIP-16 injects as
+   *  `$input._workflowFsRoot` — steps may use either. */
+  readonly run?: { readonly workspace: string }
 }
 
 /** The AIP-16 IO seam: read a value out of the run bindings. */
@@ -411,6 +416,49 @@ export interface AgentStep {
 }
 
 /**
+ * AIP-58 §4 Run workspace — declare a file under the run workspace
+ * (`$run.workspace` / `_workflowFsRoot`) as a run artifact: hashed, sized,
+ * and copied into the host's `artifactsDir` (`<runsRoot>/<runId>/artifacts/`).
+ * Bound output (and the value passed to {@link RunWorkflowArgs.onArtifact})
+ * is the resulting {@link ArtifactEntry}.
+ *
+ * Cache-aware when the run has `cache`/`cacheKey` wired (independent of any
+ * `cacheable` flag — there is none on this step; declaring the same key/path
+ * again under the same cacheKey is always cheap to re-verify): a hit COPIES
+ * the previously-cached file forward from its original `artifactsDir` into
+ * THIS run's own — never shares a directory across runs (AIP-58 §4 "two runs
+ * MUST NEVER share a workspace") — so a step declaring an artifact from a
+ * cache-hit-replayed upstream step still works. See `run-workflow.ts`'s
+ * `case "artifact"` for the exact mechanics.
+ */
+export interface ArtifactStep {
+  kind: "artifact"
+  id: string
+  /** Artifact key — also becomes its filename under `artifactsDir` (sanitized). */
+  key: Selector<string> | string
+  /** Path to the source file. Relative to `$run.workspace`; MUST resolve
+   *  inside it (an absolute path or a `..`-escaping relative one throws). */
+  path: Selector<string> | string
+  contentType?: Selector<string> | string
+}
+
+/**
+ * AIP-58 §4/§1 `ArtifactEntry` — one run-scoped copy of a declared output
+ * file. `path` is always `"artifacts/<sanitized key>"`, relative to the RUN
+ * WORKSPACE ROOT (`<runsRoot>/<runId>/`, the parent of `$run.workspace`
+ * itself) — never the original in-workspace location the file was read
+ * from.
+ */
+export interface ArtifactEntry {
+  key: string
+  path: string
+  sha256: string
+  size: number
+  stepId: string
+  contentType?: string
+}
+
+/**
  * `kind: "gate"` — run a shell command through the host's subprocess runner
  * as a deterministic pass/fail check (AIP-15 P3 / AIP-17). Exit code 0 is a
  * pass; any other code is a failure. Bound output is `{ ok, exitCode, report
@@ -529,6 +577,22 @@ export type RunStep =
   | SubworkflowStep
   | AgentStep
   | GateStep
+  | ArtifactStep
+
+/** One `outputsFiles.<key>` declaration carried onto a compiled
+ *  {@link RuntimeWorkflow} — the AIP-16 file contract, amended with
+ *  `required` (AIP-58 §4). `path` MAY use the `<runId>`/`<workflowId>`/
+ *  `<isoDate>` interpolation tokens AIP-16 names (`<toolId>` is not
+ *  resolvable at the workflow level and is left literal). */
+export interface OutputsFileContract {
+  path: string
+  /** Missing when the run's steps finish ⇒ `failed { code: "missing-artifact"
+   *  }` (AIP-58 §4/§10). Absent or `false` ⇒ advisory only — a `console.warn`,
+   *  the run still succeeds (mirrors `StepRecord.hint`'s "advisory, never
+   *  load-bearing" posture). */
+  required?: boolean
+  contentType?: string
+}
 
 export interface RuntimeWorkflow {
   id: string
@@ -544,6 +608,10 @@ export interface RuntimeWorkflow {
   finally?: readonly RunStep[]
   /** Pick the run's final output (default: the last top-level step's output). */
   output?: Selector<unknown>
+  /** AIP-16 `outputsFiles` (as amended by AIP-58 §4) — checked ONCE, after
+   *  every top-level step finishes successfully. See {@link OutputsFileContract}
+   *  and `run-workflow.ts`'s `checkOutputsFiles`. */
+  outputsFiles?: Readonly<Record<string, OutputsFileContract>>
 }
 
 /** A human/host decision on one approval request. `who` records WHO decided
@@ -648,6 +716,12 @@ export interface AgentSessionHost {
 export interface StepCacheEntry {
   output: unknown
   resolvedInputHash: string
+  /** Set only by a `kind: "artifact"` step (see {@link ArtifactStep}): the
+   *  absolute `artifactsDir` this entry's file was copied into when first
+   *  cached. A hit in a LATER run (a different `artifactsDir`, since AIP-58
+   *  §4 forbids two runs sharing a workspace) copies the file forward from
+   *  here into the new run's own `artifactsDir` instead of re-declaring it. */
+  artifactsDirAtCache?: string
 }
 
 /** Opt-in journal for cacheable steps. Host-injected; file-backed in the runtime. */
@@ -715,6 +789,22 @@ export interface RunWorkflowArgs {
   cwd?: string
   /** Workspace slug for spawned agent sessions. */
   workspaceSlug?: string
+  /** AIP-58 §4 Run workspace — absolute path to this run's own scratch
+   *  directory (AIP-16's `_workflowFsRoot`), exposed to steps as
+   *  `$run.workspace` / `{{run.workspace}}`. Undefined ⇒ the `run` binding
+   *  and `kind: "artifact"` steps are unavailable. */
+  workspace?: string
+  /** AIP-58 §4 — absolute path to this run's `artifacts/` directory. Required
+   *  alongside `workspace` for a `kind: "artifact"` step (or a declared
+   *  `RuntimeWorkflow.outputsFiles`) to run. */
+  artifactsDir?: string
+  /** This run's id — used only to interpolate the `<runId>` token in a
+   *  declared `outputsFiles.<key>.path` (AIP-16). Purely informational
+   *  otherwise. */
+  runId?: string
+  /** Called once per {@link ArtifactEntry} recorded — by a `kind: "artifact"`
+   *  step, or by the end-of-run `outputsFiles` check — cache hit or fresh. */
+  onArtifact?: (entry: ArtifactEntry) => void
   /** Run-level cost ceiling (USD). Once the summed cost of spawned sessions
    *  reaches this, the next AgentStep spawn fails with `budget_exceeded`. */
   maxTotalCostUsd?: number
