@@ -888,6 +888,12 @@ export const INBOX_CAP = 200
  *  `next-turn` (and coalesces with its neighbours at turn-end). */
 export const STEER_MIN_INTERVAL_MS = 10_000
 
+/** Poll cadence for a live session's usage reader (`armUsageRefresh`).
+ *  Hermes' state.db and opencode's broker db refresh continuously while the
+ *  CLI works, so a few seconds keeps `session_list` / `session_usage`
+ *  near-real-time without hammering either store. */
+export const USAGE_REFRESH_INTERVAL_MS = 5_000
+
 /** What `sendMessage` did with a message — truthful, per AIP-46. */
 export interface SendMessageResult {
   messageId: string
@@ -1587,7 +1593,8 @@ export interface SessionDescriptor {
   /** Where `costUsd` came from — `"adapter"` (adapter's own reader or a
    *  usage_update cost block), `"computed"` (tokens × in-repo catalog price),
    *  `"no-pricing"` (tokens present but the model isn't in the catalog — cost
-   *  deliberately left undefined), or `"none"`. Stamped at each turn-end. */
+   *  deliberately left undefined), or `"none"`. Stamped live on each
+   *  cost-bearing usage_update / reader read, and re-derived at turn-end. */
   usageSource?: import("./usage.js").UsageSource
   /** Latest known `available_commands_update` payload (see @agentproto/acp's
    *  `StreamEvent`'s `available-commands` kind) — the slash-commands/skills
@@ -2287,6 +2294,15 @@ interface SessionRuntime {
   /** Best-effort usage reader called after each turn. The adapter returns
    *  accumulated cost/token counts which are mirrored onto the descriptor. */
   readUsage?: () => Promise<{ model?: string; costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
+  /** Live-usage poll handle while the session runs — see `armUsageRefresh`.
+   *  An unref'd interval that self-clears once the descriptor's status stops
+   *  being "running". */
+  usageRefreshTimer?: ReturnType<typeof setInterval>
+  /** In-flight guard so overlapping async reader calls can't interleave. */
+  usageRefreshInFlight?: boolean
+  /** Serialized content hash of the last `readUsage` snapshot the poller
+   *  mirrored — so idle-without-change polls write nothing. */
+  lastUsageReadKey?: string
   /** True once an authoritative cost has been observed from the adapter —
    *  either its `readUsage` returned a `costUsd`, or a `usage_update` carried
    *  a `cost` block. Drives the `"adapter"` vs `"computed"` source decision at
@@ -4156,6 +4172,10 @@ export function createSessionsRegistry(opts?: {
    *  PTY is alive and unlinked. Tests pin tiny values; production default
    *  is `{ initialMs: 3_000, intervalMs: 15_000 }`. */
   conversationLinkProbeMs?: { initialMs: number; intervalMs: number }
+  /** Override for the live-usage poll cadence (`USAGE_REFRESH_INTERVAL_MS`,
+   *  root default 5s). Tests pin a small value so `armUsageRefresh`'s polling
+   *  can be observed in guest time. */
+  usageRefreshIntervalMs?: number
 }): SessionsRegistry {
   // `persistPath` names one exact file, so passing it means "don't
   // partition" (see its docblock). Absent it, state partitions per
@@ -5531,6 +5551,52 @@ export function createSessionsRegistry(opts?: {
         }
         if (typeof evt.tokensIn === "number") rt.desc.tokensIn = evt.tokensIn
         if (typeof evt.tokensOut === "number") rt.desc.tokensOut = evt.tokensOut
+        // ── Running-cost estimate (best-effort, live) ────────────────
+        // In-turn frames are frequently COST-LESS: claude-code's `used`-only
+        // occupancy frames stream the whole turn, opencode's live arm never
+        // carries a cost block (its cost/tokens arrive via the turn-end
+        // readUsage hook), and hermes only prices at its own reader — so a
+        // busy session's row showed NO cost at all until the first
+        // adapter-priced signal at turn-end. While NO authoritative cost has
+        // ever arrived (`adapterReportedCost` false — a cost-bearing frame
+        // above, or the turn-end reader, flips it), price the latest
+        // cumulative token count the frame carries against the in-repo
+        // catalog and surface that as a running estimate tagged
+        // `source: "computed"`. The moment an authoritative cost lands it
+        // REPLACES this estimate (never adds to it) — `adapterReportedCost`
+        // gates this branch off and the adapter branch above already
+        // overwrote `costUsd`, so there is no double counting window.
+        //
+        // Token basis, per frame shape: explicit cumulative tokensIn/tokensOut
+        // when the adapter reports them; otherwise `used`. For claude-code
+        // `used` is tokens-in-context (a LOWER bound on consumed input — each
+        // API call re-charges its context prefix), so the estimate reads low,
+        // not high — the right direction for a "best-effort running" figure.
+        // An unpriced model yields nothing (`no-pricing`), never a cost.
+        if (!rt.adapterReportedCost) {
+          // The model this usage belongs to: the frame's own report first
+          // (claude-agent-acp names it in `_meta["_claude/model"]`), then the
+          // session's active/spawned model.
+          const model =
+            (typeof evt.model === "string" && evt.model.length > 0 ? evt.model : undefined) ??
+            rt.desc.activeModel ??
+            rt.desc.model
+          const usage = deriveSessionUsage({
+            ...(model !== undefined ? { model } : {}),
+            ...(typeof evt.tokensIn === "number" ? { tokensIn: evt.tokensIn } : {}),
+            ...(typeof evt.tokensOut === "number" ? { tokensOut: evt.tokensOut } : {}),
+            ...(typeof evt.tokensIn !== "number" &&
+            typeof evt.tokensOut !== "number" &&
+            typeof evt.used === "number" &&
+            evt.used > 0
+              ? { tokensIn: evt.used }
+              : {}),
+          })
+          if (usage.source === "computed" && usage.costUsd !== undefined) {
+            rt.desc.costUsd = usage.costUsd
+            rt.desc.usageSource = "computed"
+          }
+        }
         break
       }
       // Mirror the latest command list onto the descriptor, same as
@@ -6038,10 +6104,190 @@ export function createSessionsRegistry(opts?: {
     transcriptWriter.recordUsageSnapshot(rt.desc.id, usage)
   }
 
+  /** Adapter-reader usage: the shape `readUsage` hooks return, modulo the doc
+   *  on `SessionRuntime.readUsage`. */
+  type AdapterUsageRead = {
+    model?: string
+    costUsd?: number
+    tokensIn?: number
+    tokensOut?: number
+  }
+
+  /**
+   * Mirror one adapter-reader usage snapshot onto a session — the shared body
+   * behind the turn-end cost refresh AND the live-usage poller
+   * (`armUsageRefresh` below). Mirrors model, cost, and tokens onto the
+   * descriptor, stamps `adapterReportedCost` (which demotes any running
+   * "computed" estimate to the authoritative adapter figure — replacement,
+   * never addition), and records a `usage_update` into the transcript plus a
+   * refreshed durable `usage_snapshot` when the reader returned any signal
+   * (size/used 0, cost + tokens when present).
+   *
+   * `dedupe: true` (the live poller) skips both the mirror and the recording
+   * when the read is content-identical to the previous one — an idle session
+   * polls every few seconds and its reader returns the same numbers every
+   * time; writing those out would spam events.jsonl without carrying news.
+   */
+  const applyUsageRead = (
+    rt: SessionRuntime,
+    usage: AdapterUsageRead,
+    opts?: { dedupe?: boolean },
+  ): void => {
+    if (rt.desc.kind !== "agent-cli") return
+    const key = [
+      usage.model ?? "",
+      usage.costUsd ?? "",
+      usage.tokensIn ?? "",
+      usage.tokensOut ?? "",
+    ].join("|")
+    if (opts?.dedupe && rt.lastUsageReadKey === key) return
+    rt.lastUsageReadKey = key
+
+    // A reader that knows the model (a sandbox box's `session_usage`)
+    // fills a descriptor that was spawned without one, so the
+    // provenance footer / session_usage can name it. Never
+    // overrides a model the spawn itself pinned.
+    if (typeof usage.model === "string" && usage.model.length > 0 && rt.desc.model === undefined) {
+      rt.desc.model = usage.model
+    }
+    if (usage.costUsd !== undefined) {
+      rt.desc.costUsd = usage.costUsd
+      rt.adapterReportedCost = true
+      // Live adapter-priced truth — stamped immediately, not only at the
+      // turn-end re-derivation, so `session_usage`'s `source` is truthful
+      // while the session is busy.
+      rt.desc.usageSource = "adapter"
+    }
+    if (usage.tokensIn !== undefined) rt.desc.tokensIn = usage.tokensIn
+    if (usage.tokensOut !== undefined) rt.desc.tokensOut = usage.tokensOut
+
+    // Tokens without an adapter cost (opencode's broker store reports a
+    // tokens-only row on some sessions) still surface a computed running
+    // figure — the same derivation the usage_update-frame path does, so a
+    // live session never shows bare tokens with an unexplained absent cost.
+    if (
+      !rt.adapterReportedCost &&
+      usage.costUsd === undefined &&
+      (usage.tokensIn !== undefined || usage.tokensOut !== undefined)
+    ) {
+      const derived = deriveSessionUsage({
+        ...(rt.desc.model !== undefined ? { model: rt.desc.model } : {}),
+        ...(usage.tokensIn !== undefined ? { tokensIn: usage.tokensIn } : {}),
+        ...(usage.tokensOut !== undefined ? { tokensOut: usage.tokensOut } : {}),
+      })
+      if (derived.source === "computed" && derived.costUsd !== undefined) {
+        rt.desc.costUsd = derived.costUsd
+        rt.desc.usageSource = "computed"
+      }
+    }
+
+    // Only when the reader actually returned a signal — never
+    // synthesize a usage event from nothing. Shape is identical to
+    // the ACP-arm's usage_update: size/used default to 0 (this reader
+    // carries no context-window figure, and `projectEvent` guards on
+    // >0 so the 0s never clobber a real size already mirrored onto
+    // the descriptor).
+    if (
+      usage.costUsd !== undefined ||
+      usage.tokensIn !== undefined ||
+      usage.tokensOut !== undefined
+    ) {
+      const usageEvent: AgentStreamEvent = {
+        kind: "usage_update",
+        size: 0,
+        used: 0,
+        ...(usage.costUsd !== undefined
+          ? { cost: { amount: usage.costUsd, currency: "USD" } }
+          : {}),
+        ...(usage.tokensIn !== undefined
+          ? { tokensIn: usage.tokensIn }
+          : {}),
+        ...(usage.tokensOut !== undefined
+          ? { tokensOut: usage.tokensOut }
+          : {}),
+      }
+      transcriptWriter.recordEvent(rt.desc.id, usageEvent)
+      // Refresh the durable recap too: snapshots are cumulatives and the
+      // rollup sums latest-in-window deltas (usage-rollup pin 1), so an extra
+      // mid-turn row is a delta input, never a double count. This also heals
+      // the "reader beat the adapter's own state-store write at turn-end"
+      // race, which used to strand a `source:"none"` row in the snapshot log
+      // while the live descriptor carried real numbers.
+      const snapshot = buildUsageSnapshot(rt)
+      if (snapshot.source !== "none") {
+        rt.desc.usageSource = snapshot.source
+        transcriptWriter.recordUsageSnapshot(rt.desc.id, snapshot)
+      }
+      schedulePersist()
+    }
+  }
+
+  /** Stop the live-usage poller, if armed. */
+  const stopUsageRefresh = (rt: SessionRuntime): void => {
+    if (rt.usageRefreshTimer) {
+      clearInterval(rt.usageRefreshTimer)
+      rt.usageRefreshTimer = undefined
+    }
+    rt.usageRefreshInFlight = false
+  }
+
+  /** One live-usage poll: re-read the adapter's usage reader and mirror any
+   *  changed values onto the descriptor + transcript. See `armUsageRefresh`. */
+  const pollUsageOnce = async (rt: SessionRuntime): Promise<void> => {
+    if (rt.usageRefreshInFlight) return
+    // The poll's own lifecycle gate: a session that is no longer "running"
+    // (killed / exited / errored, or still "starting") has no live usage to
+    // read and its timer is stale — disarm it. Checked before anything async
+    // so a raced stop still lands on the next tick rather than never.
+    if (rt.desc.status !== "running" || sessions.get(rt.desc.id) !== rt) {
+      stopUsageRefresh(rt)
+      return
+    }
+    if (!rt.readUsage) return
+    rt.usageRefreshInFlight = true
+    try {
+      const usage = await rt.readUsage()
+      // Re-check after the await: the session may have been killed or
+      // replaced mid-read; a late read must not touch the descriptor.
+      if (usage && rt.desc.status === "running" && sessions.get(rt.desc.id) === rt) {
+        applyUsageRead(rt, usage, { dedupe: true })
+      }
+    } catch {
+      // best-effort — swallow, same contract as the turn-end refresh
+    } finally {
+      rt.usageRefreshInFlight = false
+    }
+  }
+
+  /**
+   * Arm the live-usage poller for a session that carries a `readUsage` hook.
+   *
+   * WHY this exists: those readers were polled ONLY at turn-end
+   * (`runAgentTurn`'s turnCompleted block) — for hermes, whose ACP server
+   * emits NO usage frames at all, an entire long turn showed no cost/tokens
+   * until the turn ended; on the observed hermes executor session the first
+   * (and only) `usage_update` landed together with its aborted turn-end
+   * about 30 minutes after spawn. A calm 5s re-read keeps the cost/token
+   * fields on `session_list` / `session_usage` live for the whole session
+   * instead. The turn-end refresh keeps running too — the poller is merely
+   * the between-ends filler, and both paths funnel through `applyUsageRead`
+   * so mirroring cannot drift apart.
+   */
+  const armUsageRefresh = (rt: SessionRuntime): void => {
+    if (!rt.readUsage || rt.usageRefreshTimer) return
+    if (rt.desc.kind !== "agent-cli") return
+    const ms = opts?.usageRefreshIntervalMs ?? USAGE_REFRESH_INTERVAL_MS
+    const timer = setInterval(() => void pollUsageOnce(rt), ms)
+    // Never hold the daemon open for an idle poller.
+    timer.unref?.()
+    rt.usageRefreshTimer = timer
+  }
+
   function adapterSupportsCompact(agentSession: AgentSessionLike | undefined): boolean {
     if (!agentSession?.availableModes) return false
     return agentSession.availableModes.some(m => m.id.toLowerCase() === "compact")
   }
+
 
   async function attemptContextCompact(rt: SessionRuntime): Promise<void> {
     if (!adapterSupportsCompact(rt.agentSession)) {
@@ -6702,52 +6948,7 @@ export function createSessionsRegistry(opts?: {
         if (rt.readUsage) {
           try {
             const usage = await rt.readUsage()
-            if (usage) {
-              // A reader that knows the model (a sandbox box's `session_usage`)
-              // fills a descriptor that was spawned without one, so the
-              // provenance footer / session_usage can name it. Never
-              // overrides a model the spawn itself pinned.
-              if (typeof usage.model === "string" && usage.model.length > 0 && rt.desc.model === undefined) {
-                rt.desc.model = usage.model
-              }
-              if (usage.costUsd !== undefined) {
-                rt.desc.costUsd = usage.costUsd
-                rt.adapterReportedCost = true
-              }
-              if (usage.tokensIn !== undefined) rt.desc.tokensIn = usage.tokensIn
-              if (usage.tokensOut !== undefined) rt.desc.tokensOut = usage.tokensOut
-
-              // Record a `usage_update` into the transcript so non-claude
-              // adapters (hermes reads its state.db here; claude-code emits
-              // this inline over ACP) carry the SAME token/cost telemetry in
-              // events.jsonl. Only when the reader actually returned a signal
-              // — never synthesize a usage event from nothing. Shape is
-              // identical to the ACP-arm's usage_update: size/used default to
-              // 0 (this reader carries no context-window figure, and
-              // `projectEvent` guards on >0 so the 0s never clobber a real
-              // size already mirrored onto the descriptor).
-              if (
-                usage.costUsd !== undefined ||
-                usage.tokensIn !== undefined ||
-                usage.tokensOut !== undefined
-              ) {
-                const usageEvent: AgentStreamEvent = {
-                  kind: "usage_update",
-                  size: 0,
-                  used: 0,
-                  ...(usage.costUsd !== undefined
-                    ? { cost: { amount: usage.costUsd, currency: "USD" } }
-                    : {}),
-                  ...(usage.tokensIn !== undefined
-                    ? { tokensIn: usage.tokensIn }
-                    : {}),
-                  ...(usage.tokensOut !== undefined
-                    ? { tokensOut: usage.tokensOut }
-                    : {}),
-                }
-                transcriptWriter.recordEvent(rt.desc.id, usageEvent)
-              }
-            }
+            if (usage) applyUsageRead(rt, usage)
           } catch {
             // best-effort — swallow
           }
@@ -7624,6 +7825,9 @@ export function createSessionsRegistry(opts?: {
       sessions.set(id, rt)
       bindOutOfTurnEvents(rt)
       stampCapabilities(rt)
+      // Live usage refresh for reader-equipped adapters (hermes/opencode/
+      // sandbox) — armUsageRefresh is a no-op when no reader was wired.
+      armUsageRefresh(rt)
       // Lineage-attribution signal (WP-R3): announce the new session's parent
       // + depth the moment it's registered, so a live tree can nest it under
       // `parentSessionId` without waiting for its next snapshot poll. Rides the
@@ -7816,6 +8020,9 @@ export function createSessionsRegistry(opts?: {
       }
       rt.desc.status = "running"
       rt.emitter.emit("status", rt.desc.status)
+      // The reader just arrived — arm the live-usage poller now that the
+      // session is actually running (a "starting" row would never poll).
+      armUsageRefresh(rt)
       appendLine(
         rt,
         `── ${rt.desc.adapterSlug} agent session ${outcome.agentSession.sessionId} (cwd ${outcome.cwd}) ──`,
@@ -9117,6 +9324,9 @@ export function createSessionsRegistry(opts?: {
       rt.desc.killedMidTurn = rt.desc.busy === true
       rt.desc.status = "killed"
       rt.desc.endedAt = new Date().toISOString()
+      // The descriptor flip is the poller's own stop signal — but clear the
+      // timer here rather than letting it expire on the next tick.
+      stopUsageRefresh(rt)
       if (reason) rt.desc.endedReason = reason
       // A dead row carries no live parked-with-background-tasks flag. kill()
       // doesn't run clearInFlightFlags (an idle kill has no in-flight turn to
@@ -9569,6 +9779,8 @@ export function createSessionsRegistry(opts?: {
     const nowIso = new Date().toISOString()
     for (const rt of sessions.values()) {
       rt.emitter.removeAllListeners()
+      // Any live-usage poller dies with the registry — no strays.
+      stopUsageRefresh(rt)
       if (
         rt.desc.status === "running" ||
         rt.desc.status === "starting"
