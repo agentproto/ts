@@ -711,10 +711,11 @@ describe("LLM_PRICING_CATALOG — latest Anthropic ids", () => {
 describe("LLM_PRICING_CATALOG — Moonshot (Kimi)", () => {
   it.each([
     ["kimi-k3", 3.0, 15.0],
-    // kimi-k2.7-code is priced by MOONSHOT_GENERATED_PRICING now (0.66/3.4,
-    // not the old hand-typed 0.95/4.0) — generated wins on divergence, see
+    // kimi-k2.7-code is priced by MOONSHOT_GENERATED_PRICING now — OpenRouter's
+    // live number as of the 2026-09-27 catalog-sync (was 0.66/3.4, before that
+    // the old hand-typed 0.95/4.0) — generated wins on divergence, see
     // catalog.ts's LLM_PRICING_CATALOG comment and the PR body's table.
-    ["kimi-k2.7-code", 0.66, 3.4],
+    ["kimi-k2.7-code", 0.6562, 3.3],
   ])("%s resolves to expected direct-Moonshot pricing", (id, input, output) => {
     const pricing = resolvePricing(id)
     expect(pricing).toBeDefined()
