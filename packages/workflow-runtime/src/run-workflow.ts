@@ -908,19 +908,25 @@ function tryParseJson(text: string): unknown {
  * `runGateCommand` host hook is injected — a plain `node:child_process`
  * argv-vector invocation (no shell interpolation). Exit code 0 always
  * resolves (never rejects on a non-zero exit); a timeout resolves with
- * `timedOut: true` and whatever partial output was captured.
+ * `timedOut: true` and whatever partial output was captured. `spec.signal`
+ * (the run's cancel signal) is threaded straight into `execFile`'s own
+ * `signal` option, which kills the child process — a cancelled run must not
+ * leave a gate's subprocess running unsupervised any more than it leaves an
+ * agent step's session running; {@link execGateStep} re-checks the signal
+ * right after this resolves to turn the kill into a `WorkflowCancelledError`.
  */
 function defaultRunGateCommand(spec: {
   command: string
   args: readonly string[]
   cwd: string
   timeoutMs?: number
+  signal?: AbortSignal
 }): Promise<GateCommandResult> {
   return new Promise((resolve) => {
     execFile(
       spec.command,
       [...spec.args],
-      { cwd: spec.cwd, timeout: spec.timeoutMs, maxBuffer: 10 * 1024 * 1024 },
+      { cwd: spec.cwd, timeout: spec.timeoutMs, maxBuffer: 10 * 1024 * 1024, signal: spec.signal },
       (err, stdout, stderr) => {
         if (!err) {
           resolve({ exitCode: 0, stdout, stderr })
@@ -982,6 +988,11 @@ async function execGateStep(step: GateStep, ctx: RunCtx, b: Bindings): Promise<u
 
   let last: { ok: boolean; exitCode: number; report: unknown } | undefined
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // A cancel landing between retry attempts must not reprompt a session
+    // that cancel's releaseAll() may have already killed (which would
+    // surface as a confusing "session not found" error instead of a clean
+    // WorkflowCancelledError), nor wait out a retry backoff pointlessly.
+    if (ctx.signal?.aborted) throw new WorkflowCancelledError(step.id)
     if (attempt > 1 && step.onFail?.reprompt) {
       if (!ctx.agents) {
         throw new Error(`step '${step.id}': on_fail.reprompt requires a host agents implementation`)
@@ -1014,7 +1025,13 @@ async function execGateStep(step: GateStep, ctx: RunCtx, b: Bindings): Promise<u
       args,
       cwd,
       timeoutMs: step.timeoutMs,
+      signal: ctx.signal,
     })
+    // The signal killed the subprocess mid-command (see
+    // `defaultRunGateCommand`) — report the step as cancelled, not as
+    // whatever exit code the kill happened to produce, so it's never
+    // journaled as succeeded/failed and `workflow_retry` re-runs it.
+    if (ctx.signal?.aborted) throw new WorkflowCancelledError(step.id)
     const report = await resolveGateReport(cmdResult, cwd, step.reportPath)
     const ok = cmdResult.exitCode === 0
     last = { ok, exitCode: cmdResult.exitCode, report }

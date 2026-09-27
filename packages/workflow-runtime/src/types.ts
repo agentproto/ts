@@ -534,6 +534,12 @@ export type GateCommandRunner = (spec: {
   args: readonly string[]
   cwd: string
   timeoutMs?: number
+  /** The run's cancel signal — a cancelled run kills an in-flight gate
+   *  command's child process the same way it kills an agent step's session.
+   *  A host-injected runner should pass this through to its own subprocess
+   *  spawn (e.g. `child_process.execFile`'s `signal` option) so the process
+   *  is signalled, not merely orphaned. */
+  signal?: AbortSignal
 }) => Promise<GateCommandResult>
 
 /** One `kind: "gate"` command attempt's outcome, reported as it happens

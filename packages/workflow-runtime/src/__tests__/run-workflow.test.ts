@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from "vitest"
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync } from "node:fs"
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, mkdirSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, join } from "node:path"
 import { z } from "zod"
@@ -974,6 +974,9 @@ describe("runWorkflow — kind: gate (AIP-15 P3)", () => {
     )
   })
 
+  // Two real `node` spawns (no runGateCommand mock) — the default 5s vitest
+  // timeout is too tight under a loaded/sandboxed runner where a bare
+  // `node -e` invocation alone can take 1-2s.
   it("expands $… reference args against the bindings before running the command", async () => {
     const wf: RuntimeWorkflow = {
       id: "gate-ref-args",
@@ -1005,7 +1008,7 @@ describe("runWorkflow — kind: gate (AIP-15 P3)", () => {
     await expect(runWorkflow({ workflow: literal, input: { book: "book3" } })).resolves.toMatchObject({
       output: { ok: true, exitCode: 0 },
     })
-  })
+  }, 20000)
 
   it("throws a clear error naming the step and the arg when a ref resolves to nothing", async () => {
     const runGateCommand = vi.fn(async () => ({ exitCode: 0, stdout: "", stderr: "" }))
@@ -1041,7 +1044,7 @@ describe("runWorkflow — kind: gate (AIP-15 P3)", () => {
     // 0); a bare-ref-only grammar would reject the arg outright.
     const { output } = await runWorkflow({ workflow: wf, input: { book: "book3" } })
     expect(output).toMatchObject({ ok: true, exitCode: 0 })
-  })
+  }, 20000) // real `node` spawn — see the timeout note above.
 
   it("resolves a cwd ref: absolute stays absolute, relative (incl. .) resolves against the run cwd", async () => {
     const dir = mkdtempSync(join(tmpdir(), "gate-cwd-"))
@@ -1106,6 +1109,67 @@ describe("runWorkflow — kind: gate (AIP-15 P3)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  }, 20000) // real `node` spawn — see the timeout note above.
+
+  it("cancelling the run mid-command kills the gate's subprocess instead of letting it run to completion", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gate-cancel-kill-"))
+    try {
+      const ac = new AbortController()
+      const wf: RuntimeWorkflow = {
+        id: "gate-cancel-kill",
+        steps: [
+          {
+            kind: "gate",
+            id: "g",
+            command: "node",
+            args: ["-e", "setTimeout(() => require('fs').writeFileSync('marker.txt', 'ran'), 5000)"],
+            cwd: "$input.dir",
+          },
+        ],
+      }
+      setTimeout(() => ac.abort(), 100)
+      const startedAt = Date.now()
+      // No runGateCommand override — exercises the real execFile + `signal` path.
+      await expect(runWorkflow({ workflow: wf, input: { dir }, signal: ac.signal })).rejects.toThrow(
+        WorkflowCancelledError,
+      )
+      // Proves the child process was actually killed, not merely detached:
+      // it never reached the 5s timeout that would have written the marker,
+      // and the run settled in well under that.
+      expect(Date.now() - startedAt).toBeLessThan(4000)
+      expect(existsSync(join(dir, "marker.txt"))).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 20000) // real `node` spawn — see the timeout note above.
+
+  it("a signal already aborted before a retry attempt skips the reprompt and the command, throwing WorkflowCancelledError", async () => {
+    const sendPromptAndWait = vi.fn(async () => {})
+    const host = fakeHost({ sendPromptAndWait, resolveByLabel: vi.fn(() => "sess_fake") })
+    const ac = new AbortController()
+    const runGateCommand = vi.fn(async () => {
+      ac.abort()
+      return { exitCode: 1, stdout: "", stderr: "" }
+    })
+    const wf: RuntimeWorkflow = {
+      id: "gate-cancel-between-retries",
+      steps: [
+        {
+          kind: "gate",
+          id: "g",
+          command: "pnpm",
+          retry: { maxAttempts: 3, backoff: "fixed" },
+          onFail: { reprompt: "implement" },
+        },
+      ],
+    }
+    await expect(
+      runWorkflow({ workflow: wf, agents: host, runGateCommand, signal: ac.signal }),
+    ).rejects.toThrow(WorkflowCancelledError)
+    // Only the first attempt ran (it's the one that aborted); no second
+    // attempt's reprompt or command dispatched once cancelled.
+    expect(runGateCommand).toHaveBeenCalledTimes(1)
+    expect(sendPromptAndWait).not.toHaveBeenCalled()
   })
 })
 
