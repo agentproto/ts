@@ -1,5 +1,17 @@
 # @agentproto/llm-endpoint
 
+## 0.8.0
+
+### Minor Changes
+
+- 58e0da5: Publish `@agentproto/llm-endpoint` to npm: drop `private: true` and rewrite the README section documenting the OAuth/credentials handling contract.
+
+### Patch Changes
+
+- Updated dependencies [4612eda]
+  - @agentproto/auth@1.1.0
+  - @agentproto/providers-store@0.3.18
+
 ## 0.7.2
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @agentproto/adapter-code-brain-gbrain
 
+## 0.2.7
+
+### Patch Changes
+
+- Updated dependencies [cd00daa]
+  - @agentproto/driver@0.2.4
+  - @agentproto/code-brain@0.3.4
+
 ## 0.2.6
 
 ### Patch Changes

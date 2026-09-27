@@ -1,5 +1,25 @@
 # @agentproto/driver-agent-cli
 
+## 2.5.0
+
+### Minor Changes
+
+- dc87d79: Track claude-code's background-task wake instead of dropping it
+- 583ee19: Live-session teardown fixes: `DELETE /sessions/:id` (and `registry.forget`) now tears a still-running session down through the full kill teardown (adapter close, PTY/child SIGTERM, `session:exited` emit) before dropping the row, returning an additive `killed` field; adapter closes in the agent CLI now terminate the whole child process tree (SIGTERM → grace period → SIGKILL) so `npx` wrappers, MCP servers, and headless Chrome can no longer outlive the session.
+
+### Patch Changes
+
+- 8c74864: stdio MCP-server entries now carry `args` and `env` end to end: the ACP schema, runtime tool/HTTP parsing, spawn and restart mount builders, the file-based config converter, and the VS Code client type all forward them instead of silently dropping them. The local-browser plugin additionally exports headless per-session browser helpers (`ensureChromeDevtoolsMcp`, `resolveChrome`, `buildHeadlessBrowserMcpEntry`, …) and `installChromeMcp` gains generic `pkg`/`binName` options.
+- c9e8318: F34b: exec a pinned `npx -y pkg@x.y.z` adapter's cached bin directly instead of paying `npm exec`'s tree scans and locks (fail-closed to a plain npx spawn otherwise), and mark a running workflow agent step whose session is still booting as `phase: "spawning"` in `workflow_status` until its session id attaches.
+- Updated dependencies [65777ee]
+- Updated dependencies [8c74864]
+- Updated dependencies [dc87d79]
+- Updated dependencies [7d825ff]
+- Updated dependencies [535779b]
+- Updated dependencies [476b1ca]
+- Updated dependencies [5f0f9d1]
+  - @agentproto/acp@0.9.0
+
 ## 2.4.4
 
 ### Patch Changes
