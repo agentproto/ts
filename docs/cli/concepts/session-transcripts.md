@@ -55,7 +55,7 @@ append to a prior session's file.
 | `permission-resolved` | `toolCallId`, `decision`, `optionId?` | Durable counterpart to an `agent-prompt` ask, written when the request is approved, denied, or cancelled. `decision` is `"approve"`, `"deny"`, or `"cancelled"`; `optionId` mirrors the chosen option when one was offered (e.g. `allow_always`). |
 | `plan` | `entries` (`{content, priority, status}[]`) | Structured plan/todo-list snapshot. |
 | `usage_update` | `size`, `used`, `cost?` | Context window usage; `cost` is only present when the adapter reports one. |
-| `usage_snapshot` | `model?`, `costUsd?`, `tokensIn?`, `tokensOut?`, `contextSize?`, `contextUsed?`, `source` | On-demand usage pull (e.g. from the `session_usage` MCP tool). |
+| `usage_snapshot` | `model?`, `costUsd?`, `tokensIn?`, `tokensOut?`, `cacheReadTokens?`, `cacheWriteTokens?`, `reasoningTokens?`, `contextSize?`, `contextUsed?`, `source` | On-demand usage pull (e.g. from the `session_usage` MCP tool). |
 | `turn-end` | `reason` | Marks the end of a turn. |
 | `error` | `error` (`{message, code?, data?}`) | A turn-level error. |
 

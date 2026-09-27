@@ -44,6 +44,7 @@ A per-boot bearer token is generated automatically and written into `<workspace>
 | Adapter discovery | `GET /adapters` / `POST /adapters/:slug/install` | When `listAgentAdapters` / `installAgentAdapter` is wired |
 | App scope mounts   | `POST /apps/:appId/apply` / `DELETE /apps/:appId/apply` / `GET /scopes/:scopeId/apps` | Mirrors MCP `app_apply` / `app_unapply` / `app_list_applied`; needs `appRegistry` |
 | Sessions list     | `GET /sessions` / `GET /sessions/:id` / `GET /sessions/summaries` | id-or-name in `:id`; summaries are lightweight + paginated |
+| Session usage     | `GET /sessions/:id/usage`                | REST twin of `session_usage` MCP tool; add `?includeSubtree=1` to roll up cost + tokens over all descendant sessions |
 | Agent spawn       | `POST /sessions/agent`                   | Long-lived ACP agent (needs `resolveAgentAdapter`)    |
 | Interrupt turn    | `POST /sessions/:id/interrupt`           | Cancel the in-flight turn; session stays alive        |
 | Terminal input    | `POST /sessions/:id/terminal/input`      | Write raw input into a live PTY session               |
