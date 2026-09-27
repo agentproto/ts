@@ -658,6 +658,11 @@ export function classify(
   const idleOrUnreachable = liveness.state === "idle" || liveness.state === "daemon-unreachable"
   if ((merged || fresh) && clean && idleOrUnreachable) return { reclaimable: true, class: "reclaim" }
   if (merged && !clean) {
+    // A live session in the worktree holds it regardless of how the dirt
+    // looks — `salvage` must never archive/remove a worktree out from under
+    // a running agent, exactly like the reclaim branch above. Only then does
+    // the recent-write backstop apply.
+    if (!idleOrUnreachable) return { reclaimable: false, class: "hold" }
     const writtenRecently =
       tree.state === "dirty" &&
       typeof tree.newestMtimeMs === "number" &&
