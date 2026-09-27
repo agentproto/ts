@@ -10,19 +10,22 @@
 import { runTool } from "@agentproto/driver"
 import { createHash } from "node:crypto"
 import { execFile } from "node:child_process"
-import { readFile } from "node:fs/promises"
-import { isAbsolute, join, resolve } from "node:path"
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises"
+import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { z } from "zod"
 import { resolveRefString } from "./ref-string.js"
 import type {
   AgentStep,
   ApprovalDecision,
+  ArtifactEntry,
+  ArtifactStep,
   Bindings,
   FanOutOutcome,
   GateCommandResult,
   GateStep,
   KnowledgeAppliedRecord,
   OutputSchemaLike,
+  OutputsFileContract,
   RunStep,
   RunWorkflowArgs,
   RuntimeWorkflow,
@@ -90,6 +93,24 @@ export class StepOutcomeError extends Error {
 }
 
 /**
+ * AIP-58 §4/§10 — thrown when a declared `outputsFiles.<key>` (`required`
+ * absent or `true`) does not exist under the run workspace once every
+ * top-level step has finished. `stepId` is the last top-level step that ran
+ * (the manifest names no step for a workflow-level contract, so the last one
+ * to finish is the best available attribution).
+ */
+export class MissingArtifactError extends Error {
+  readonly code = "missing-artifact" as const
+  constructor(
+    readonly key: string,
+    readonly stepId: string | undefined,
+  ) {
+    super(`outputsFiles.${key} was required but is missing from the run workspace`)
+    this.name = "MissingArtifactError"
+  }
+}
+
+/**
  * Thrown when an {@link AgentStep}'s session could not be spawned at all
  * (`AgentSessionHost.spawn` rejected) — distinct from a session that spawned
  * and then failed its turn. A tolerant fan-out counts these toward its spawn
@@ -131,6 +152,12 @@ interface RunCtx {
   readonly agents?: RunWorkflowArgs["agents"]
   readonly cwd?: string
   readonly workspaceSlug?: string
+  /** AIP-58 §4 — see {@link RunWorkflowArgs.workspace}. */
+  readonly workspace?: string
+  /** AIP-58 §4 — see {@link RunWorkflowArgs.artifactsDir}. */
+  readonly artifactsDir?: string
+  readonly runId?: string
+  readonly onArtifact?: RunWorkflowArgs["onArtifact"]
   readonly cache?: RunWorkflowArgs["cache"]
   readonly cacheKey?: RunWorkflowArgs["cacheKey"]
   /** Set inside a `map`/`pipeline` fan-out body — the `[<index>]` path
@@ -167,8 +194,14 @@ async function releaseScope(ctx: RunCtx): Promise<void> {
   await Promise.all(ids.map((id) => Promise.resolve().then(() => release.call(agents, id)).catch(() => undefined)))
 }
 
-function view(state: RunState, item?: unknown, index?: number): Bindings {
-  return { input: state.input, steps: state.steps, item, index }
+function view(ctx: RunCtx, item?: unknown, index?: number): Bindings {
+  return {
+    input: ctx.state.input,
+    steps: ctx.state.steps,
+    item,
+    index,
+    ...(ctx.workspace !== undefined ? { run: { workspace: ctx.workspace } } : {}),
+  }
 }
 
 /**
@@ -886,12 +919,12 @@ async function execStepBody(
   index: number | undefined,
 ): Promise<unknown> {
   const { state, signal } = ctx
-  const b = view(state, item, index)
+  const b = view(ctx, item, index)
 
   // Notify step start for non-agent steps (agent steps notify in
-  // execAgentStep; a tool step notifies in its case, once it knows whether
-  // it's a cache hit).
-  if (step.kind !== "agent" && step.kind !== "tool") {
+  // execAgentStep; a tool/artifact step notifies in its own case, once it
+  // knows whether it's a cache hit).
+  if (step.kind !== "agent" && step.kind !== "tool" && step.kind !== "artifact") {
     ctx.onStepStart?.(step.id)
   }
 
@@ -940,7 +973,7 @@ async function execStepBody(
       const breaker = spawnBreaker(step.maxConsecutiveSpawnFailures ?? DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES)
       const runItem = async (idx: number): Promise<void> => {
         const el = arr[idx]
-        const inner = step.body(el, idx, view(state, el, idx))
+        const inner = step.body(el, idx, view(ctx, el, idx))
         const wrapped = withReleaseScope(withIndexedHooks(ctx, idx))
         try {
           const out = await execStep(inner, wrapped, el, idx)
@@ -968,7 +1001,7 @@ async function execStepBody(
       await Promise.all(Array.from({ length: Math.min(parallelism, arr.length) }, () => worker()))
       if (!tolerant) return results
       if (breaker.open !== undefined) {
-        skipUnstartedItems(ctx, step.id, next, arr, (el, idx) => [step.body(el, idx, view(state, el, idx))], breaker.open, results)
+        skipUnstartedItems(ctx, step.id, next, arr, (el, idx) => [step.body(el, idx, view(ctx, el, idx))], breaker.open, results)
       }
       return tolerantResult(results, breaker.open)
     }
@@ -987,7 +1020,7 @@ async function execStepBody(
         const wrapped = withReleaseScope(withIndexedHooks(ctx, idx))
         try {
           for (const stage of step.stages) {
-            const inner = stage(items[idx], idx, prev, view(state, items[idx], idx))
+            const inner = stage(items[idx], idx, prev, view(ctx, items[idx], idx))
             stageId = inner.id
             prev = await execStep(inner, wrapped, items[idx], idx)
             completeStep(wrapped, inner.id, prev)
@@ -1017,7 +1050,7 @@ async function execStepBody(
           step.id,
           next,
           items,
-          (el, idx) => step.stages.map((stage) => stage(el, idx, undefined, view(state, el, idx))),
+          (el, idx) => step.stages.map((stage) => stage(el, idx, undefined, view(ctx, el, idx))),
           breaker.open,
           results,
         )
@@ -1046,7 +1079,7 @@ async function execStepBody(
       let last: unknown
       while (
         iterations < step.maxIterations &&
-        step.while(view(state, item, index))
+        step.while(view(ctx, item, index))
       ) {
         last = await runSequence(step.body, ctx, item, index)
         iterations++
@@ -1111,6 +1144,10 @@ async function execStepBody(
         agents: ctx.agents,
         cwd: ctx.cwd,
         workspaceSlug: ctx.workspaceSlug,
+        workspace: ctx.workspace,
+        artifactsDir: ctx.artifactsDir,
+        runId: ctx.runId,
+        onArtifact: ctx.onArtifact,
         cache: ctx.cache,
         cacheKey: ctx.cacheKey,
         runGateCommand: ctx.runGateCommand,
@@ -1138,6 +1175,149 @@ async function execStepBody(
 
     case "gate":
       return execGateStep(step, ctx, b)
+
+    case "artifact":
+      return execArtifactStep(step, ctx, b)
+  }
+}
+
+/** Filesystem-safe filename for an artifact key — also used to name its
+ *  copy under `artifactsDir` (one flat file per key, no subdirectories). */
+function sanitizeArtifactKey(key: string): string {
+  const cleaned = key.replace(/[^a-zA-Z0-9._-]/g, "_")
+  return cleaned.length > 0 ? cleaned : "artifact"
+}
+
+/** Read + hash the file at `rawPath` (resolved against `workspace`, which
+ *  MUST contain it) and copy it into `artifactsDir/<sanitized key>`. Shared
+ *  by {@link execArtifactStep}'s fresh path and {@link checkOutputsFiles}. */
+async function copyIntoArtifacts(
+  stepId: string,
+  key: string,
+  rawPath: string,
+  workspace: string,
+  artifactsDir: string,
+  contentType: string | undefined,
+): Promise<ArtifactEntry> {
+  const abs = isAbsolute(rawPath) ? resolve(rawPath) : resolve(workspace, rawPath)
+  const rel = relative(workspace, abs)
+  if (rel.startsWith("..") || isAbsolute(rel)) {
+    throw new Error(`step '${stepId}': artifact path '${rawPath}' resolves outside the run workspace`)
+  }
+  const buf = await readFile(abs)
+  const sha256 = createHash("sha256").update(buf).digest("hex")
+  const destName = sanitizeArtifactKey(key)
+  await mkdir(artifactsDir, { recursive: true })
+  await writeFile(join(artifactsDir, destName), buf)
+  return {
+    key,
+    path: `artifacts/${destName}`,
+    sha256,
+    size: buf.length,
+    stepId,
+    ...(contentType !== undefined ? { contentType } : {}),
+  }
+}
+
+/** `kind: "artifact"` — see {@link ArtifactStep}'s doc for the cache/relocate
+ *  mechanics. */
+async function execArtifactStep(step: ArtifactStep, ctx: RunCtx, b: Bindings): Promise<ArtifactEntry> {
+  if (ctx.workspace === undefined || ctx.artifactsDir === undefined) {
+    throw new Error(`step '${step.id}': kind:"artifact" requires a run workspace (no workspace/artifactsDir wired)`)
+  }
+  const workspace = ctx.workspace
+  const artifactsDir = ctx.artifactsDir
+  const key = resolveSel(step.key, b)
+  const rawPath = resolveSel(step.path, b)
+  const contentType = step.contentType ? resolveSel(step.contentType, b) : undefined
+  const resolvedInputs = { key, path: rawPath }
+  const cacheOn = ctx.cache !== undefined && ctx.cacheKey !== undefined
+  const journalKey = cacheOn ? stepJournalKey(ctx, step) : undefined
+  const hash = cacheOn ? hashResolvedInputs(step.kind, resolvedInputs) : undefined
+
+  if (cacheOn) {
+    const entry = await ctx.cache!.get(journalKey!)
+    if (entry !== undefined && entry.resolvedInputHash === hash) {
+      const out = entry.output as ArtifactEntry
+      const destName = sanitizeArtifactKey(key)
+      const destAbs = join(artifactsDir, destName)
+      const srcAbs = join(entry.artifactsDirAtCache ?? artifactsDir, destName)
+      if (srcAbs !== destAbs) {
+        // AIP-58 §4 — "two runs MUST NEVER share a workspace": relocate the
+        // bytes into THIS run's own artifactsDir rather than reading from
+        // (or worse, pointing the run record at) the prior run's directory.
+        await mkdir(dirname(destAbs), { recursive: true })
+        try {
+          await copyFile(srcAbs, destAbs)
+        } catch {
+          // Best-effort — the source may have been cleaned up by a host
+          // retention policy (AIP-58 §4 permits discarding `scratch/`, but
+          // `artifacts/` SHOULD be retained; a missing source here is a
+          // deployment/retention issue, not something this run can fix).
+        }
+      }
+      ctx.onArtifact?.(out)
+      return cacheHit(ctx, step, out) as ArtifactEntry
+    }
+  }
+
+  ctx.onStepStart?.(step.id)
+  const out = await copyIntoArtifacts(step.id, key, rawPath, workspace, artifactsDir, contentType)
+  if (cacheOn) {
+    await ctx.cache!.set(journalKey!, { output: out, resolvedInputHash: hash!, artifactsDirAtCache: artifactsDir })
+  }
+  ctx.onArtifact?.(out)
+  return out
+}
+
+/** Replace AIP-16's `<runId>`/`<workflowId>`/`<isoDate>` interpolation tokens
+ *  in a declared `outputsFiles.<key>.path`. `<toolId>` has no meaning at the
+ *  workflow level and is left literal. */
+function interpolateFileContractPath(path: string, workflowId: string, runId: string | undefined): string {
+  return path
+    .replace(/<runId>/g, runId ?? "")
+    .replace(/<workflowId>/g, workflowId)
+    .replace(/<isoDate>/g, new Date().toISOString().slice(0, 10))
+}
+
+/**
+ * AIP-58 §4 / AIP-16 §Amendments — checked once every top-level step has
+ * finished successfully. For each declared `outputsFiles.<key>`: present ⇒
+ * copied into `artifactsDir` and reported via `onArtifact`, same as a
+ * `kind:"artifact"` step (but never cache-aware — see the README's "Cache/
+ * replay interplay" section for why that's a deliberate, documented limit —
+ * route a step's file-shaped output through an explicit `kind:"artifact"`
+ * step instead, if it needs to survive a cache hit in a later run);
+ * absent + `required === true` ⇒ throws {@link MissingArtifactError}. Absent
+ * OR `false` (the default — `required` is opt-in, matching AIP-16
+ * `IO.schema.json`'s `fileContractEntry.required` doc and the V3 vector's own
+ * note: "with required absent or false, the same scenario would be a
+ * warning") ⇒ advisory only, a `console.warn`, the run still succeeds.
+ */
+async function checkOutputsFiles(
+  outputsFiles: RuntimeWorkflow["outputsFiles"],
+  ctx: RunCtx,
+  workflowId: string,
+  lastStepId: string | undefined,
+): Promise<void> {
+  if (!outputsFiles) return
+  if (ctx.workspace === undefined || ctx.artifactsDir === undefined) return
+  for (const [key, contract] of Object.entries(outputsFiles)) {
+    const rawPath = interpolateFileContractPath(contract.path, workflowId, ctx.runId)
+    const abs = isAbsolute(rawPath) ? rawPath : resolve(ctx.workspace, rawPath)
+    let out: ArtifactEntry
+    try {
+      out = await copyIntoArtifacts(lastStepId ?? workflowId, key, abs, ctx.workspace, ctx.artifactsDir, contract.contentType)
+    } catch {
+      if (contract.required === true) {
+        throw new MissingArtifactError(key, lastStepId)
+      }
+      console.warn(
+        `[workflow-runtime] outputsFiles.${key} ('${contract.path}') is missing and not marked required — the run still succeeds (AIP-58 §4)`,
+      )
+      continue
+    }
+    ctx.onArtifact?.(out)
   }
 }
 
@@ -1167,7 +1347,7 @@ async function runFinally(steps: readonly RunStep[], ctx: RunCtx, bodyFailed: bo
 async function runWorkflowInner(
   workflow: RuntimeWorkflow,
   input: unknown,
-  hooks: Pick<RunCtx, "approve" | "resume" | "onInputRequired" | "signal" | "agents" | "cwd" | "workspaceSlug" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete" | "onStepSkipped" | "onStepFailed" | "runGateCommand" | "onGateReport" | "spawned">,
+  hooks: Pick<RunCtx, "approve" | "resume" | "onInputRequired" | "signal" | "agents" | "cwd" | "workspaceSlug" | "workspace" | "artifactsDir" | "runId" | "onArtifact" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete" | "onStepSkipped" | "onStepFailed" | "runGateCommand" | "onGateReport" | "spawned">,
   maxTotalCostUsd?: number,
 ): Promise<WorkflowRunResult> {
   const state: RunState = { input, steps: {}, costBySession: new Map(), maxTotalCostUsd, cachedHits: new Set() }
@@ -1184,6 +1364,7 @@ async function runWorkflowInner(
       completeStep(ctx, step.id, out)
       lastId = step.id
     }
+    await checkOutputsFiles(workflow.outputsFiles, ctx, workflow.id, lastId)
   } catch (err) {
     bodyFailed = true
     throw err
@@ -1194,7 +1375,7 @@ async function runWorkflowInner(
       if (ownsScope) await releaseScope(ctx)
     }
   }
-  const bindings = view(state)
+  const bindings = view(ctx)
   const output = workflow.output
     ? workflow.output(bindings)
     : lastId !== undefined
@@ -1214,6 +1395,10 @@ export async function runWorkflow(
     agents: args.agents,
     cwd: args.cwd,
     workspaceSlug: args.workspaceSlug,
+    workspace: args.workspace,
+    artifactsDir: args.artifactsDir,
+    runId: args.runId,
+    onArtifact: args.onArtifact,
     cache: args.cache,
     cacheKey: args.cacheKey,
     onStepStart: args.onStepStart,

@@ -55,6 +55,30 @@ workflow_run_file({
 
 Loads the AIP-15 file via the workflow-loader and runs it through the same runner as `workflow_start`, in the background. With a `cacheKey`, cacheable steps replay unchanged output on re-invocation instead of re-spawning.
 
+### Per-run workspace + artifacts (AIP-58 §4)
+
+Every run gets its own directory — steps see it as `$run.workspace` (a `tool` step's `inputs`, a `gate`'s `args`/`cwd`) or `{{run.workspace}}` (an `agent` step's prompt). Use it instead of a fixed/shared output path — that's exactly the "two concurrent runs clobber each other's files" bug this closes:
+
+```yaml
+steps:
+  - id: fetch
+    kind: tool
+    tool: yt.fetch-captions
+    inputs:
+      outDir: $run.workspace        # NOT a fixed "tmp/runs/latest" — every run gets its own dir
+```
+
+Declare a produced file as a run artifact with `kind: "artifact"`, or a manifest-level `outputsFiles` block (missing + `required: true` fails the run, `{ code: "missing-artifact" }`):
+
+```yaml
+outputsFiles:
+  brief:
+    path: "./briefs/<runId>.md"
+    required: true
+```
+
+`workflow_status` lists recorded artifacts compactly (`{key, path, size}`); fetch one's content with `workflow_artifact_get({runId, key})`. A workflow's declared `outputsFiles.<key>` never writes to its own shared `path` automatically — that stays in the run's own workspace until an explicit `workflow_publish({runId, artifactKey, to?})`, refused unless the run already `done`. This is what makes a fixed destination path safe to declare at all: publishing is always one attributable call, never an implicit race between whichever run finishes last.
+
 ### Conditional steps: `kind: branch`
 
 Arms are **exclusive** with a join — exactly one arm's steps run, then the run continues after the arms:

@@ -14,6 +14,7 @@ export {
   AgentInputRequiredError,
   StepOutcomeError,
   AgentSpawnError,
+  MissingArtifactError,
 } from "./run-workflow.js"
 export { DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES } from "./types.js"
 export {
@@ -71,6 +72,9 @@ export type {
   AgentRefResolution,
   AgentSandboxRef,
   AgentSessionHost,
+  ArtifactStep,
+  ArtifactEntry,
+  OutputsFileContract,
   StepCache,
   StepCacheEntry,
   StepHookInfo,

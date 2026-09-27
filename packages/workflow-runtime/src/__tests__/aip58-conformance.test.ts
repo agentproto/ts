@@ -1,16 +1,22 @@
 /**
- * AIP-58 (RUN) conformance harness — P1 + P2 slice.
+ * AIP-58 (RUN) conformance harness — P1 + P2 + P4 slice.
  *
  * Loads every vendored vector from `specs/resources/aip-58/draft/vectors/`
  * (mirrored by `scripts/sync-specs.mjs`) and registers one `describe` per
  * vector, so the full V1-V8 set is always visible in the test tree even
  * though P1 only made V1 green.
  *
- * V3, V5, V7 need pieces of the AIP-58 Run resource this runtime doesn't
- * ship yet — `Run.artifacts[]` / `missing-artifact`, the deferred-publish
- * model, `run.replay` (see `.plans/agent-apps-dogfood/IMPL-aip58.md`,
- * P2-P5). They stay `it.todo` with a one-line reason each so a later PR
- * flips them without re-discovering which vectors exist or what they need.
+ * V3 (missing-artifact, this PR / P4) drives `runWorkflow` directly with a
+ * `workspace`/`artifactsDir` wired and the vector's `outputsFiles` block
+ * carried onto the compiled workflow — no `Run` record or host involved, so
+ * it belongs at this transport-agnostic layer, unlike V5 below.
+ *
+ * V5 (disjoint workspaces + deferred publish) needs runId ALLOCATION and
+ * `run.publish` — both host concerns (`packages/runtime`'s
+ * `createWorkflowRunner` owns the runId + persistence `run.publish` reads
+ * back) — so it's conformance-tested in
+ * `packages/runtime/src/__tests__/run-workspace.test.ts` instead. V7 needs
+ * `run.replay` (P5, not this PR) and stays `it.todo`.
  *
  * V4 (host-restart) and V6 (owner-lease liveness) are genuinely green as of
  * P3b — but at the HOST layer (`packages/runtime`'s `createWorkflowRunner`
@@ -40,7 +46,8 @@
  */
 
 import { describe, expect, it, vi } from "vitest"
-import { readFileSync, readdirSync } from "node:fs"
+import { readFileSync, readdirSync, mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
 import { z } from "zod"
@@ -75,11 +82,10 @@ const vectors = loadVectors()
 
 /** One-line reason each not-yet-green vector is `it.todo` in this PR. */
 const NOT_YET_GREEN: Record<string, string> = {
-  V3: "needs Run.artifacts[] + the missing-artifact check on a required outputsFiles key — not implemented (P2/P4 Run workspace).",
   V4: "green as of P3b, but at the host layer — see packages/runtime/src/__tests__/aip58-events.test.ts (runWorkflow itself has no persistence/reload to restart).",
-  V5: "needs the deferred-publish model (run-scoped artifacts/<key> + explicit run.publish) — outputsFiles still syncs straight to its declared path today (P4 Run workspace).",
+  V5: "green as of P4, but at the host layer (disjoint <runsRoot>/<runId>/ allocation + run.publish are host concerns) — see packages/runtime/src/__tests__/run-workspace.test.ts.",
   V6: "green as of P3b, but at the host layer — see packages/runtime/src/__tests__/aip58-events.test.ts (runWorkflow itself has no owner/lease concept).",
-  V7: "needs run.replay + journal-sourced step reuse — StepCache exists but has no replay verb (P3 Journal).",
+  V7: "needs run.replay + journal-sourced step reuse — StepCache exists but has no replay verb (P5 Journal).",
 }
 
 /** Minimal fake {@link AgentSessionHost} for the V2/V8 vectors below — a
@@ -101,8 +107,70 @@ describe("AIP-58 conformance vectors", () => {
 
   for (const vector of vectors) {
     describe(`${vector.id}: ${vector.title}`, () => {
-      if (vector.id !== "V1" && vector.id !== "V2" && vector.id !== "V8") {
+      if (vector.id !== "V1" && vector.id !== "V2" && vector.id !== "V3" && vector.id !== "V8") {
         it.todo(`${vector.id}: ${vector.title} — ${NOT_YET_GREEN[vector.id]}`)
+        return
+      }
+
+      if (vector.id === "V3") {
+        // ── V3 — agent turn ends, required outputsFiles key absent → failed missing-artifact ──
+
+        it("required outputsFiles key missing when the run's steps finish → failed { code: missing-artifact }", async () => {
+          const manifestExcerpt = vector["manifestExcerpt"] as {
+            id: string
+            outputsFiles: Record<string, { path: string; required: boolean }>
+            steps: { id: string; kind: string; prompt: string }[]
+          }
+          const agentTurnResult = vector["agentTurnResult"] as {
+            finalMessage: string
+            outputsFilesProduced: string[]
+          }
+          const expected = vector["expected"] as { terminalState: string; error: { code: string; stepId: string } }
+
+          // Nothing under `outputsFilesProduced` — the vector's whole point is
+          // that the agent's turn READS as done but never wrote the file.
+          expect(agentTurnResult.outputsFilesProduced).toEqual([])
+
+          const tmpDir = mkdtempSync(join(tmpdir(), "aip58-v3-"))
+          const workspace = join(tmpDir, "scratch")
+          const artifactsDir = join(tmpDir, "artifacts")
+          mkdirSync(workspace, { recursive: true })
+
+          const host = fakeHost({ readFinalMessage: vi.fn(async () => agentTurnResult.finalMessage) })
+          const onArtifact = vi.fn()
+
+          // Compiled straight from the vector's own manifestExcerpt — the
+          // agent step declares no outputSchema (a vacuous contract, §3),
+          // so ONLY the workflow-level `outputsFiles` check can catch this.
+          const workflow: RuntimeWorkflow = {
+            id: manifestExcerpt.id,
+            steps: [
+              {
+                kind: "agent",
+                id: manifestExcerpt.steps[0]!.id,
+                adapter: "mock",
+                prompt: () => manifestExcerpt.steps[0]!.prompt,
+              },
+            ],
+            outputsFiles: manifestExcerpt.outputsFiles,
+          }
+
+          try {
+            await expect(
+              runWorkflow({ workflow, agents: host, workspace, artifactsDir, onArtifact, runId: "run_v3" }),
+            ).rejects.toMatchObject({
+              name: "MissingArtifactError",
+              code: expected.error.code,
+              stepId: expected.error.stepId,
+            })
+          } finally {
+            rmSync(tmpDir, { recursive: true, force: true })
+          }
+
+          expect(onArtifact).not.toHaveBeenCalled()
+          expect(expected.terminalState).toBe("failed")
+        })
+
         return
       }
 
