@@ -76,6 +76,7 @@ import {
 import {
   createGateway,
   createPairingRegistry,
+  createHostRegistry,
   createReconnectLogGate,
   sweepStaleRuntimeMetas,
   sweepStaleDaemonRegistry,
@@ -87,11 +88,13 @@ import {
   reconcileSandboxLedger,
   makeSandboxResolver,
   makeSandboxCredsStore,
+  resolveEffectiveLlmEndpointFlag,
   type AgentAdapterResolver,
   type AdapterAuthDescriptor,
   type GatewayHandle,
   type PairingRegistry,
   type PairingChannelHandle,
+  type HostRegistry,
 } from "@agentproto/runtime"
 import { CatalogProviderSchema, type CatalogProvider } from "@agentproto/model-catalog"
 import { loadOrCreateIdentity } from "@agentproto/secrets/identity"
@@ -661,6 +664,20 @@ export async function runServe(args: readonly string[]): Promise<number> {
     log: line => process.stderr.write(`${color.dim}${line}${color.reset}\n`),
   })
 
+  // ── HOST registry (reverse pairing, DEVICES-PLAN PR-C) ──
+  // The "client" half of pair/v2, living daemon-side: `devices add` registers
+  // another daemon as a driveable host, `devices status`/`exec` dial it on
+  // demand. Unlike pairingRegistry this keeps no standing connections — reuses
+  // the same `daemonDialRendezvous` dialer, but there's no `serve`/identity to
+  // inject (a host registration carries no persistent identity of its own on
+  // this side; `clientName` is just a self-reported label, same as `pair
+  // accept`).
+  const hostRegistry: HostRegistry = createHostRegistry({
+    hostsPath: joinPath(agentprotoHome, "hosts.json"),
+    dial: daemonDialRendezvous,
+    log: line => process.stderr.write(`${color.dim}${line}${color.reset}\n`),
+  })
+
   // ── idempotent boot ──
   // Empty specs + noop buildAgent. The playground gateway script
   // still has its own setup for spec authoring + Mastra heartbeat.
@@ -676,12 +693,18 @@ export async function runServe(args: readonly string[]): Promise<number> {
   const probeHost =
     opts.bind === "0.0.0.0" || opts.bind === "::" ? "127.0.0.1" : opts.bind
   const healthUrl = `http://${probeHost}:${opts.port}`
+  // Smart default (daemon-managed-gateway): an explicit config/profile value
+  // always wins; unset defaults ON the first time the operator already
+  // configured a named endpoint, an upstream link, or an explicit
+  // `llm-endpoint` route — see the resolver's docblock.
+  const effectiveLlmEndpoint = await resolveEffectiveLlmEndpointFlag(cfgFeatures.llmEndpoint)
   const bootOutcome = await bootGatewayIdempotent({
     healthUrl,
     probe: probeHealthyDaemon,
     boot: () =>
       createGateway({
         pairingRegistry,
+        hostRegistry,
         workspace: opts.workspace,
         port: opts.port,
         bind: opts.bind,
@@ -710,6 +733,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // daemon.resumeSessionsOnBoot (profile-overlaid). Off ⇒ the handle
         // method short-circuits and only lazy resume-on-prompt applies.
         resumeSessionsOnBoot: cfgDaemon.resumeSessionsOnBoot === true,
+        // Opt-in continue-on-boot: after the eager pass, prompt the sessions
+        // the last restart cut off mid-turn to continue. Off ⇒ no-op.
+        continueInterruptedOnBoot: cfgDaemon.continueInterruptedOnBoot === true,
         // Idle agent-session reaper (PR-6). Resolution order mirrors the config
         // module docblock: AGENTPROTO_IDLE_REAP_AFTER_MS env > config field >
         // off. A positive ms value arms the periodic sweep; anything else keeps
@@ -736,7 +762,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // (undefined ⇒ `createGateway` never wraps `withDeferredTools` —
         // today's fully-eager behaviour, unchanged for existing clients).
         deferredTools: resolveDeferredToolsGatewayOption(cfg.defaults?.mcp?.deferredTools),
-        llmEndpoint: cfgFeatures.llmEndpoint === true,
+        llmEndpoint: effectiveLlmEndpoint,
         resolveAgentAdapter,
         // Injected port behind `agent_start.worktree` + the `worktrees.isolation`
         // policy: runs `worktree.provision` over @agentproto/worktree, a dep the
@@ -903,6 +929,22 @@ export async function runServe(args: readonly string[]): Promise<number> {
       process.stderr.write(
         `${color.dim}eager-resumed ${eager.resumed}/${eager.candidates} session(s)` +
           `${eager.failed > 0 ? ` (${eager.failed} failed)` : ""}` +
+          `${color.reset}\n`,
+      )
+    }
+    // Continue-on-boot (opt-in, daemon.continueInterruptedOnBoot). Strictly
+    // AFTER the eager pass above, so a row whose eager resume failed carries
+    // its failed attempt and is skipped instead of lazily retried — and, like
+    // it, after the supervisor was re-armed, so a re-armed policy sees the
+    // continue turn end. Same cross-process gate.
+    const cont = await gateway.continueInterruptedOnBoot({
+      isServed: desc =>
+        resolveBucketSlug(desc.workspaceSlug, registeredSlugs) === servedBucket,
+    })
+    if (cont.enabled && cont.eligible > 0) {
+      process.stderr.write(
+        `${color.dim}continued ${cont.sent}/${cont.eligible} interrupted session(s)` +
+          `${cont.failed > 0 ? ` (${cont.failed} failed)` : ""}` +
           `${color.reset}\n`,
       )
     }

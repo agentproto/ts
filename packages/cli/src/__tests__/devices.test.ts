@@ -16,6 +16,7 @@ vi.mock("../commands/_daemon-helpers.js", async importOriginal => {
     ...orig,
     discoverDaemon: vi.fn(),
     httpGetJson: vi.fn(),
+    httpPostJson: vi.fn(),
     httpPatchRaw: vi.fn(),
     httpDelete: vi.fn(),
     printNoDaemonError: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock("../commands/_daemon-helpers.js", async importOriginal => {
 const helpers = await import("../commands/_daemon-helpers.js")
 const discoverDaemon = vi.mocked(helpers.discoverDaemon)
 const httpGetJson = vi.mocked(helpers.httpGetJson)
+const httpPostJson = vi.mocked(helpers.httpPostJson)
 const httpPatchRaw = vi.mocked(helpers.httpPatchRaw)
 const httpDelete = vi.mocked(helpers.httpDelete)
 const printNoDaemonError = vi.mocked(helpers.printNoDaemonError)
@@ -146,6 +148,88 @@ describe("agentproto devices", () => {
       const code = await runDevices(["revoke"])
       expect(code).toBe(2)
       expect(httpDelete).not.toHaveBeenCalled()
+    })
+  })
+
+  describe("add", () => {
+    it("POSTs /devices/add with the offer URL and optional name", async () => {
+      httpPostJson.mockResolvedValue({
+        fingerprint: "fp1",
+        name: "my-host",
+        rendezvousUrl: "wss://rdv.example/v1",
+      })
+      const code = await runDevices(["add", "agentproto://pair?v=2&…&scope=host", "--name", "my-host"])
+      expect(code).toBe(0)
+      expect(httpPostJson).toHaveBeenCalledWith(
+        "http://127.0.0.1:18790/devices/add",
+        { offerUrl: "agentproto://pair?v=2&…&scope=host", name: "my-host" },
+        "tok",
+      )
+      expect(out.join("")).toContain("Added host fp1")
+      expect(out.join("")).toContain("my-host")
+    })
+
+    it("missing offer-url exits 2 without a network call", async () => {
+      const code = await runDevices(["add"])
+      expect(code).toBe(2)
+      expect(httpPostJson).not.toHaveBeenCalled()
+    })
+
+    it("a refused (non-host-scoped) offer surfaces the daemon's message and exits 1", async () => {
+      httpPostJson.mockRejectedValue(new Error('HTTP 400: {"message":"this offer is not host-scoped"}'))
+      const code = await runDevices(["add", "agentproto://pair?v=2&…"])
+      expect(code).toBe(1)
+      expect(err.join("")).toContain("not host-scoped")
+    })
+
+    it("no daemon found exits 2", async () => {
+      discoverDaemon.mockResolvedValue({ found: null, stale: [] })
+      const code = await runDevices(["add", "agentproto://pair?v=2&…"])
+      expect(code).toBe(2)
+      expect(httpPostJson).not.toHaveBeenCalled()
+    })
+  })
+
+  describe("status", () => {
+    it("POSTs /devices/:target/exec with path /health and prints the JSON body", async () => {
+      httpPostJson.mockResolvedValue({
+        status: 200,
+        headers: { "content-type": "application/json" },
+        bodyBase64: Buffer.from(JSON.stringify({ ok: true })).toString("base64"),
+      })
+      const code = await runDevices(["status", "my-host"])
+      expect(code).toBe(0)
+      expect(httpPostJson).toHaveBeenCalledWith(
+        "http://127.0.0.1:18790/devices/my-host/exec",
+        { path: "/health" },
+        "tok",
+      )
+      expect(out.join("")).toContain("HTTP 200")
+      expect(out.join("")).toContain('"ok": true')
+    })
+
+    it("a non-2xx status exits 1", async () => {
+      httpPostJson.mockResolvedValue({
+        status: 502,
+        headers: {},
+        bodyBase64: Buffer.from("bad gateway").toString("base64"),
+      })
+      const code = await runDevices(["status", "my-host"])
+      expect(code).toBe(1)
+      expect(out.join("")).toContain("HTTP 502")
+    })
+
+    it("missing target exits 2 without a network call", async () => {
+      const code = await runDevices(["status"])
+      expect(code).toBe(2)
+      expect(httpPostJson).not.toHaveBeenCalled()
+    })
+
+    it("an unreachable host surfaces the error and exits 1", async () => {
+      httpPostJson.mockRejectedValue(new Error("HTTP 502: could not reach host"))
+      const code = await runDevices(["status", "my-host"])
+      expect(code).toBe(1)
+      expect(err.join("")).toContain("could not reach host")
     })
   })
 

@@ -72,6 +72,18 @@ export interface DaemonConfig {
    *  `agentproto config set daemon.resumeSessionsOnBoot true`. Surfaced in
    *  `daemon_health` / `GET /health`. */
   resumeSessionsOnBoot?: boolean
+  /** Opt-in continue-on-boot (continue-interrupted). When true, right after
+   *  the eager resume pass, the boot sends a "the daemon restarted mid-turn,
+   *  check the state on disk and continue" prompt to every session the LAST
+   *  restart interrupted mid-turn (`interrupted: true`) that is resumable,
+   *  under the resume cap, idle, and whose resume didn't fail. Never loops: at
+   *  most one auto-continue per restart and `MAX_AUTO_CONTINUE_ATTEMPTS` in a
+   *  row without a successful turn-end. Default false — the interrupted prompt
+   *  itself is never auto-retried, and a continue prompt is still a prompt
+   *  (tokens, side effects), so it's opt-in. The manual
+   *  `session_continue_interrupted` verb works regardless. Set via
+   *  `agentproto config set daemon.continueInterruptedOnBoot true`. */
+  continueInterruptedOnBoot?: boolean
   /** Idle agent-session reaper (PR-6). When set to a positive number of
    *  milliseconds, the daemon periodically retires agent-cli sessions that have
    *  been idle (not busy, not awaiting input, `status:"running"`) longer than

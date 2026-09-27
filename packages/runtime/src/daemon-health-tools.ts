@@ -23,6 +23,10 @@ export interface RegisterDaemonHealthToolsOptions {
    *  surfaced so an operator can confirm whether a restart will eagerly revive
    *  sessions or leave them dead-but-lazy-resumable. */
   resumeSessionsOnBoot: boolean
+  /** Effective value of the `daemon.continueInterruptedOnBoot` knob — whether
+   *  a restart will also send a one-shot continue prompt to the sessions it
+   *  interrupted mid-turn. Omitted ⇒ false. */
+  continueInterruptedOnBoot?: boolean
   /** Effective value of the `daemon.idleReapAfterMs` knob (PR-6) — the idle
    *  threshold (ms) after which the reaper retires an idle agent-cli session,
    *  or 0 when the reaper is off. Surfaced so an operator can confirm whether
@@ -94,6 +98,7 @@ export function registerDaemonHealthTools(
         registered: opts.registered,
         uptimeMs: Date.now() - opts.startedAt,
         resumeSessionsOnBoot: opts.resumeSessionsOnBoot,
+        continueInterruptedOnBoot: opts.continueInterruptedOnBoot === true,
         idleReapAfterMs: opts.idleReapAfterMs,
         crashDetectIntervalMs: opts.crashDetectIntervalMs ?? 0,
         restartSweepIntervalMs: opts.restartSweepIntervalMs ?? 0,

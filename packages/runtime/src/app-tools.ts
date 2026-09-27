@@ -22,7 +22,7 @@
 import { existsSync } from "node:fs"
 import { readFile, readdir, stat } from "node:fs/promises"
 import { homedir } from "node:os"
-import { isAbsolute, join, relative, resolve } from "node:path"
+import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import matter from "gray-matter"
 import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -227,25 +227,62 @@ export async function resolveAgentRefsForWorkflow(
 }
 
 /**
- * Load the AIP-14/AIP-30 tool/driver bundles (BRIEF-D) of the installed app
- * that owns `workflowId` — same owning-app lookup as
- * {@link resolveAgentRefsForWorkflow}. Returns undefined when no installed
- * app bundles the workflow, or the app bundles no tools/drivers, so
+ * Walk up from `startDir` looking for an app root — a directory whose own
+ * `.agentproto/APP.md` exists — stopping at the filesystem root. Mirrors how
+ * `git`/`tsconfig` resolve upward from a file to its owning project: an
+ * AIP-42 app's `workflows[].path` (APP.md frontmatter) is an arbitrary
+ * relative path under the app dir, so there's no fixed depth to strip off a
+ * WORKFLOW.md's own path — the marker file is the only reliable anchor.
+ * Returns undefined when no ancestor carries one (a bare WORKFLOW.md with no
+ * owning app bundle at all).
+ */
+function findAppRootFromFile(startDir: string): string | undefined {
+  let dir = startDir
+  for (;;) {
+    if (existsSync(join(dir, ".agentproto", "APP.md"))) return dir
+    const parent = dirname(dir)
+    if (parent === dir) return undefined
+    dir = parent
+  }
+}
+
+/**
+ * Load the AIP-14/AIP-30 tool/driver bundles (BRIEF-D) that a `kind:"tool"`
+ * step's driver scripts resolve against.
+ *
+ * F40 (AIP-58 dogfood): `workflowMdPath`, when given (a `workflow_run_file`
+ * run), takes priority — the app root is resolved by walking UP from the
+ * WORKFLOW.md's own directory ({@link findAppRootFromFile}), never from the
+ * `app_install` registry. Without this, a WORKFLOW.md loaded from a git
+ * worktree copy of an app still ran the INSTALLED copy's tool/driver
+ * scripts (looked up by workflow id, which both copies declare identically)
+ * — editing the worktree's DRIVER.md had no effect on the run it was
+ * supposedly testing. No ancestor `.agentproto/APP.md` found ⇒ undefined
+ * (a plain WORKFLOW.md with no owning app bundle), deliberately NOT falling
+ * back to an id-based registry lookup — that fallback is exactly the bug.
+ *
+ * `workflowMdPath` omitted (a `workflow_start` run, addressed by workflow
+ * id/app id, no file of its own) ⇒ the pre-F40 behaviour: the owning
+ * installed app, found by `workflowId` in the registry.
+ *
+ * Either way this re-reads `<dir>/.agentproto/tools|drivers/*` off disk on
+ * every call — the compiled `ToolHandle`/`DriverHandle` objects (with live
+ * `execute` closures) aren't persisted on the `InstalledApp` record. Returns
+ * undefined when the resolved dir bundles no tools/drivers either, so
  * `mergeAppAndDaemonToolRegistry` (workflow-tool-registry.ts) can treat
  * "nothing to merge" uniformly.
- *
- * Unlike `resolveAgentRefsForWorkflow` (which only needs a stored path
- * string), this re-reads `<app.dir>/.agentproto/tools|drivers/*` off disk on
- * every call — the compiled `ToolHandle`/`DriverHandle` objects (with live
- * `execute` closures) aren't persisted on the `InstalledApp` record.
  */
 export async function resolveAppToolsForWorkflow(
   appRegistry: AppRegistry,
   workflowId: string,
+  workflowMdPath?: string,
 ): Promise<AppToolRegistry | undefined> {
-  const app = appRegistry.listApps().find(a => a.workflows.some(w => w.id === workflowId))
-  if (!app) return undefined
-  const { tools, drivers } = await loadAppBundledTools(app.dir)
+  const dir =
+    workflowMdPath !== undefined
+      ? findAppRootFromFile(dirname(resolve(workflowMdPath)))
+      : appRegistry.listApps().find(a => a.workflows.some(w => w.id === workflowId))?.dir
+  if (dir === undefined) return undefined
+  const { tools, drivers } = await loadAppBundledTools(dir)
   if (tools.length === 0 && drivers.length === 0) return undefined
   const toolsById: Record<string, ToolHandle> = {}
   for (const tool of tools) toolsById[tool.id] = tool

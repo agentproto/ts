@@ -112,6 +112,26 @@ journaled output — no session spawn, no cost. The journal is file-backed under
 would be wasteful rather than wrong; most agent steps have side effects and
 should stay uncached.
 
+## Retry a failed run (AIP-58 §6)
+
+`workflow_retry({ runId })` starts a NEW run (its own runId + AIP-58 §4
+workspace, `retryOf` pointing at the original) that replays every step the
+original already completed — no re-spawn — and re-executes only from the
+first step that never succeeded. Unlike the `cacheKey` resume cache above,
+this needs no setup: every run journals its own steps internally, so
+`workflow_retry` works even when the original never passed a `cacheKey` or
+marked any step `cacheable`. Refused on a still-running or already-succeeded
+run — only a `failed`/`cancelled` run is retryable. An optional `input`
+override re-resolves every step against the new value; a step whose resolved
+input changes as a result (directly, or transitively via an upstream step it
+depends on) re-executes instead of replaying — the same resolved-input-hash
+comparison the resume cache above uses, not a separate mechanism.
+
+```jsonc
+{ "runId": "wfrun_..." }
+// → { "runId": "wfrun_...", "status": "running", "retryOf": "wfrun_..." }
+```
+
 ## The engine underneath
 
 `workflow_start` translates onto

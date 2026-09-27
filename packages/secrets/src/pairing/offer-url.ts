@@ -11,6 +11,7 @@
  *     &sk=<b64url ed25519 SPKI DER>        // daemon signing key
  *     &s=<one-time offer secret>           // derives the route + auth tokens
  *     &exp=<unix seconds>                  // offer expiry
+ *     &scope=host                          // optional — see "Offer scope" below
  * ```
  *
  * The URL **is** the bootstrap secret. It carries the daemon's public keys, so
@@ -48,6 +49,26 @@
  * escape). The handshake, however, speaks standard base64 SPKI DER, so
  * `parseOfferUrl` returns `daemonX25519Pub`/`daemonEd25519Pub` already converted
  * back to standard base64 — feed them straight into `startClientHandshake`.
+ *
+ * ## Offer scope
+ *
+ * `scope` is an optional, purely additive param: absent (the default) is
+ * today's plain "remote-control" offer, byte-identical to before this field
+ * existed — `encodeOfferUrl` only emits `&scope=host` when the caller sets
+ * `offer.scope === "host"`. A host-scoped offer is what lets the accepting
+ * side register the offering daemon as a driveable HOST (`agentproto devices
+ * add`), rather than just remote-controlling it as a client.
+ *
+ * `scope` rides in the plaintext query string — it is metadata, not part of
+ * the sealed handshake (`handshake.ts` never sees it). A relay could tamper
+ * it in transit; that changes nothing about actual technical capability (a
+ * pair/v2 client and host offer are cryptographically identical in what they
+ * grant), it can only mislead the ACCEPTING side's own bookkeeping about what
+ * it thinks it registered. The daemon that MINTED the offer records its own
+ * intended scope server-side (`PairingRegistry`'s `OfferEntry`/
+ * `PairingRecord`) independently of anything the URL says by the time a
+ * client presents it — that server-side record, never the URL text, is what
+ * is authoritative for what the offering daemon believes it granted.
  */
 
 import type { CryptoProvider } from "../crypto/types.js"
@@ -102,6 +123,11 @@ export interface PairingOffer {
   secret: string
   /** Offer expiry, unix seconds. */
   exp: number
+  /** Optional advisory scope (see "Offer scope" above). `"host"` marks an
+   *  offer minted with `agentproto pair offer --host`; absent/undefined is
+   *  the default plain remote-control offer. Plaintext, unauthenticated —
+   *  never treat it as authoritative on its own. */
+  scope?: "host"
 }
 
 // ─── base64 ⇄ base64url ──────────────────────────────────────────
@@ -137,6 +163,7 @@ export function encodeOfferUrl(offer: PairingOffer): string {
   params.set("sk", b64ToB64url(offer.daemonEd25519Pub))
   params.set("s", offer.secret)
   params.set("exp", String(offer.exp))
+  if (offer.scope === "host") params.set("scope", "host")
   return `${OFFER_URL_SCHEME}//${OFFER_URL_HOST}?${params.toString()}`
 }
 
@@ -353,6 +380,8 @@ export async function parseOfferUrl(
     throw new PairingError("offer_expired", "offer has expired")
   }
 
+  const scope = q.get("scope") === "host" ? "host" : undefined
+
   return {
     v: OFFER_VERSION,
     rendezvousUrl,
@@ -361,6 +390,7 @@ export async function parseOfferUrl(
     daemonEd25519Pub,
     secret,
     exp,
+    ...(scope ? { scope } : {}),
   }
 }
 

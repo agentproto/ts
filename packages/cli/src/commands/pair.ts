@@ -1,10 +1,13 @@
 /**
  * `agentproto pair <subcommand>` — E2E daemon pairing (design: DESIGN §6).
  *
- *   offer  [--ttl 10m] [--rendezvous wss://…] [--no-qr | --qr [--pair-page <url|template>]]
+ *   offer  [--ttl 10m] [--rendezvous wss://…] [--no-qr | --qr [--pair-page <url|template>]] [--host]
  *          daemon side: mint an offer URL (+ QR) and start listening on the
  *          rendezvous. `--qr` renders the phone link instead: the web pair page
  *          with the offer in its fragment (`https://<fp>.agentproto.cloud/pair#…`).
+ *          `--host` mints a HOST-scoped offer: the accepting side may register
+ *          this daemon as a driveable device (`agentproto devices add`), not
+ *          just remote-control it.
  *   accept "<offer-url>" [--name <label>]                 client side: verify +
  *          persist the pairing.
  *   ls     [--json]                                       list pairings (daemon
@@ -43,7 +46,7 @@ import { loadConfig } from "@agentproto/runtime/config"
 const USAGE = `agentproto pair — end-to-end daemon pairing over an untrusted rendezvous
 
 Usage:
-  agentproto pair offer  [--ttl 10m] [--rendezvous <wss://…>] [--no-qr | --qr [--pair-page <url|template>]] [--json]
+  agentproto pair offer  [--ttl 10m] [--rendezvous <wss://…>] [--no-qr | --qr [--pair-page <url|template>]] [--json] [--host]
   agentproto pair accept "<offer-url>" [--name <label>]
   agentproto pair ls     [--json]
   agentproto pair revoke <fingerprint|name>
@@ -111,6 +114,7 @@ async function runOffer(args: readonly string[]): Promise<number> {
       qr: { type: "boolean" },
       "pair-page": { type: "string" },
       json: { type: "boolean" },
+      host: { type: "boolean" },
     },
   })
   if (values.qr && values["no-qr"]) {
@@ -157,6 +161,7 @@ async function runOffer(args: readonly string[]): Promise<number> {
   const body: Record<string, unknown> = {}
   if (ttlMinutes !== undefined) body.ttlMinutes = ttlMinutes
   if (values.rendezvous) body.rendezvous = values.rendezvous
+  if (values.host) body.host = true
 
   let result: {
     url: string
@@ -164,6 +169,7 @@ async function runOffer(args: readonly string[]): Promise<number> {
     rendezvous: string
     rendezvousIsHostedDefault?: boolean
     expiresAt: string
+    scope?: "host"
   }
   try {
     result = await httpPostJson(`${endpoint.url}/pairings/offer`, body, endpoint.token)
@@ -200,6 +206,15 @@ async function runOffer(args: readonly string[]): Promise<number> {
     `\nPairing offer (daemon ${result.fingerprint}) — expires ${result.expiresAt}\n\n` +
       `  ${result.url}\n\n`,
   )
+  if (result.scope === "host") {
+    process.stdout.write(
+      `This offer grants HOST CONTROL — the accepting machine will register you\n` +
+        `as a driveable device (\`agentproto devices add\`), not just a remote-\n` +
+        `control client. That accepting machine will then be able to run any\n` +
+        `agentproto verb against this daemon, exactly like \`agentproto pair exec\`\n` +
+        `already permits today.\n\n`,
+    )
+  }
   if (webUrl) {
     process.stdout.write(`Scan with a phone (opens the pair page in the browser):\n\n  ${webUrl}\n\n`)
     await printQr(webUrl)

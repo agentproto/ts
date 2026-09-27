@@ -106,14 +106,50 @@ describe("AIP-58 §4 — kind: \"artifact\" step", () => {
 
       expect(entry).toMatchObject({
         key: "brief",
-        path: "artifacts/brief",
+        // F42: the declared file's own basename, extension kept — not the
+        // bare key.
+        path: "artifacts/brief.md",
         size: "# Hello\n".length,
         stepId: "save",
         contentType: "text/markdown",
       })
       expect(entry.sha256).toBe(sha256("# Hello\n"))
-      expect(readFileSync(join(artifactsDir, "brief"), "utf8")).toBe("# Hello\n")
+      expect(readFileSync(join(artifactsDir, "brief.md"), "utf8")).toBe("# Hello\n")
       expect(onArtifact).toHaveBeenCalledWith(entry)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it("F42: two keys whose source files share a basename are disambiguated deterministically, never overwrite each other", async () => {
+    const root = tmp("aip58-artifact-collision-")
+    const workspace = join(root, "scratch")
+    const artifactsDir = join(root, "artifacts")
+    mkdirSync(join(workspace, "a"), { recursive: true })
+    mkdirSync(join(workspace, "b"), { recursive: true })
+    writeFileSync(join(workspace, "a", "report.json"), "first")
+    writeFileSync(join(workspace, "b", "report.json"), "second")
+
+    try {
+      const workflow: RuntimeWorkflow = {
+        id: "wf",
+        steps: [
+          { kind: "artifact", id: "save-first", key: "first", path: "a/report.json" },
+          { kind: "artifact", id: "save-second", key: "second", path: "b/report.json" },
+        ],
+      }
+      const entries: ArtifactEntry[] = []
+      await runWorkflow({ workflow, workspace, artifactsDir, onArtifact: (e) => entries.push(e) })
+
+      // The first to claim "report.json" keeps the bare basename; the
+      // second is prefixed with its own key rather than silently
+      // overwriting the first's file.
+      expect(entries).toEqual([
+        expect.objectContaining({ key: "first", path: "artifacts/report.json" }),
+        expect.objectContaining({ key: "second", path: "artifacts/second-report.json" }),
+      ])
+      expect(readFileSync(join(artifactsDir, "report.json"), "utf8")).toBe("first")
+      expect(readFileSync(join(artifactsDir, "second-report.json"), "utf8")).toBe("second")
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
@@ -192,8 +228,12 @@ describe("AIP-58 §4 — cache interplay across runs (kind: \"artifact\")", () =
 
     // Disjoint on disk — run B got its OWN copy, not a pointer into run A's.
     expect(artifactsDirA).not.toBe(artifactsDirB)
-    expect(readFileSync(join(artifactsDirB, "out"), "utf8")).toBe("hello from run A")
-    expect(readFileSync(join(artifactsDirA, "out"), "utf8")).toBe(readFileSync(join(artifactsDirB, "out"), "utf8"))
+    // F42: destination filename is the source's own basename (`out.txt`),
+    // not the bare key (`out`).
+    expect(readFileSync(join(artifactsDirB, "out.txt"), "utf8")).toBe("hello from run A")
+    expect(readFileSync(join(artifactsDirA, "out.txt"), "utf8")).toBe(
+      readFileSync(join(artifactsDirB, "out.txt"), "utf8"),
+    )
 
     rmSync(rootA, { recursive: true, force: true })
     rmSync(rootB, { recursive: true, force: true })
@@ -414,8 +454,8 @@ describe("AIP-58 §4/§10 — declarative outputsFiles (missing-artifact)", () =
         outputsFiles: { brief: { path: "brief.md", required: true } },
       }
       await runWorkflow({ workflow, workspace, artifactsDir, onArtifact })
-      expect(onArtifact).toHaveBeenCalledWith(expect.objectContaining({ key: "brief", path: "artifacts/brief" }))
-      expect(readFileSync(join(artifactsDir, "brief"), "utf8")).toBe("content")
+      expect(onArtifact).toHaveBeenCalledWith(expect.objectContaining({ key: "brief", path: "artifacts/brief.md" }))
+      expect(readFileSync(join(artifactsDir, "brief.md"), "utf8")).toBe("content")
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

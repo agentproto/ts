@@ -85,6 +85,10 @@ import {
   type PtyFactory,
 } from "./sessions.js"
 import { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
+import {
+  runContinueOnBootPass,
+  type ContinueOnBootSummary,
+} from "./continue-interrupted.js"
 import { runIdleReapPass, type IdleReapSummary } from "./idle-reaper.js"
 import { runCrashDetectPass } from "./crash-reaper.js"
 import { runStallWatchdogPass } from "./stall-watchdog.js"
@@ -489,6 +493,19 @@ export type {
 } from "./sessions.js"
 export { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
 export {
+  continueInterruptedSessions,
+  continueSkipReason,
+  runContinueOnBootPass,
+  DEFAULT_CONTINUE_PROMPT,
+  CONTINUE_PROMPT_SOURCE,
+  MAX_AUTO_CONTINUE_ATTEMPTS,
+  type ContinueInterruptedMode,
+  type ContinueInterruptedOutcome,
+  type ContinueInterruptedResult,
+  type ContinueInterruptedSkipReason,
+  type ContinueOnBootSummary,
+} from "./continue-interrupted.js"
+export {
   runIdleReapPass,
   type IdleReapSummary,
   type IdleReaperRegistry,
@@ -573,6 +590,7 @@ import { RemoteController } from "./remote-controller.js"
 import { registerRemoteTools } from "./remote-tools.js"
 import { registerPairingTools } from "./pairing-tools.js"
 import type { PairingRegistry } from "./pairing-registry.js"
+import type { HostRegistry } from "./host-registry.js"
 import { createDeviceRegistry } from "./device-registry.js"
 import { registerDeviceTools } from "./device-tools.js"
 import { registerDaemonHealthTools } from "./daemon-health-tools.js"
@@ -605,6 +623,12 @@ export type { HeartbeatRunner, BuildHeartbeatAgent, HeartbeatAgent } from "./hea
 export type { RuntimeEvent, RuntimeEvents } from "./events.js"
 export type { WorkspaceFs } from "./workspace-fs.js"
 export type { TunnelDescriptor, TunnelStatus, TunnelProvider } from "./tunnel-registry.js"
+export type {
+  LlmEndpointStatusReport,
+  LlmEndpointDescriptor,
+  LlmEndpointStatus,
+} from "./llm-endpoint-registry.js"
+export { resolveEffectiveLlmEndpointFlag } from "./llm-endpoint-feature-flag.js"
 export type { EnableInput, EnableResult, RemoteStatus } from "./remote-controller.js"
 export {
   decideWorktreeIsolation,
@@ -638,6 +662,15 @@ export {
   type CreateOfferInput,
 } from "./pairing-registry.js"
 export { registerPairingTools, type RegisterPairingToolsOptions } from "./pairing-tools.js"
+export {
+  createHostRegistry,
+  HOSTS_VERSION,
+  type HostRegistry,
+  type HostRegistryDeps,
+  type HostRecord,
+  type ForwardHttpRequest,
+  type ForwardHttpResponse,
+} from "./host-registry.js"
 export {
   createDeviceRegistry,
   type Device,
@@ -804,6 +837,16 @@ export { policyWatchesSession } from "./supervisor.js"
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnySpec = DoctypeSpec<any, any>
 
+/** Concurrency cap for the boot-time passes (eager resume, continue-on-boot)
+ *  so a box-wide restart doesn't spawn every adapter at once (§5
+ *  "Resume-storm control"). Default 4; override via
+ *  AGENTPROTO_RESUME_CONCURRENCY, mirroring AGENTPROTO_POLICY_CONCURRENCY. */
+function bootResumeConcurrency(): number {
+  const raw = process.env.AGENTPROTO_RESUME_CONCURRENCY
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 4
+}
+
 export interface CreateGatewayOptions {
   /** Absolute path to the workspace dir. */
   workspace: string
@@ -822,6 +865,12 @@ export interface CreateGatewayOptions {
    *  to an `enabled: false` summary. Also surfaced in `daemon_health` /
    *  `GET /health` so an operator can see the effective value. */
   resumeSessionsOnBoot?: boolean
+  /** Opt-in continue-on-boot. Mirrors the `daemon.continueInterruptedOnBoot`
+   *  config knob; when true, the `continueInterruptedOnBoot()` handle method
+   *  runs the boot continue pass (see `continue-interrupted.ts`); when
+   *  false/omitted it short-circuits to an `enabled: false` summary. Surfaced
+   *  in `daemon_health` / `GET /health`. */
+  continueInterruptedOnBoot?: boolean
   /** Idle agent-session reaper threshold in ms (PR-6). Mirrors the
    *  `daemon.idleReapAfterMs` config knob; the CLI resolves it (env >
    *  config > off) and passes it here. When positive, the gateway starts a
@@ -1073,6 +1122,17 @@ export interface CreateGatewayOptions {
    * returns) so the injected `serve` can capture the finished gateway.
    */
   pairingRegistry?: PairingRegistry
+  /**
+   * Optional HOST registry (see `createHostRegistry`, DEVICES-PLAN PR-C) —
+   * the reverse-pairing "client" half of pair/v2, living daemon-side. When
+   * wired alongside `pairingRegistry`, the gateway layers registered hosts
+   * into `device_list`/`GET /devices`, and enables the `device_add` MCP tool
+   * plus `POST /devices/add` + `POST /devices/:id/exec`. Unlike
+   * `pairingRegistry`, this registry keeps no standing connections — every
+   * `add`/`forwardHttp` dials fresh — so there is nothing for the gateway to
+   * autoconnect or tear down on shutdown.
+   */
+  hostRegistry?: HostRegistry
   /** Enable the local LLM Endpoint proxy sidecar (route registration,
    *  MCP tools, child-process lifecycle). Default false — the endpoint is
    *  an opt-in feature; when off, the `llm-endpoint` custom route is not
@@ -1155,6 +1215,10 @@ export interface GatewayHandle {
    *  `CreateGatewayOptions.pairingRegistry`. Undefined otherwise. Exposed so
    *  the CLI can `startAutoconnect()` after boot and `shutdown()` it. */
   pairing?: PairingRegistry
+  /** HOST registry, when one was wired via `CreateGatewayOptions.hostRegistry`
+   *  (DEVICES-PLAN PR-C). Undefined otherwise. No autoconnect/shutdown to
+   *  call on it — see that option's doc comment. */
+  hosts?: HostRegistry
   /** Per-boot bearer token required on mutating /sessions/* routes
    *  + WS PTY upgrades. Exposed so an embedding host (e.g. the CLI
    *  shell that hosts the gateway in-process) can pass it to child
@@ -1179,6 +1243,16 @@ export interface GatewayHandle {
   resumeSessionsOnBoot(opts?: {
     isServed?: (desc: SessionDescriptor) => boolean
   }): Promise<EagerResumeSummary>
+  /** Run the opt-in continue-on-boot pass and return its tally — a no-op
+   *  returning `{ enabled: false, ... }` when the `continueInterruptedOnBoot`
+   *  knob is off. serve.ts invokes this right AFTER `resumeSessionsOnBoot()`
+   *  (so a row whose eager resume failed is recognisable and skipped) — and
+   *  therefore, like it, after the supervisor was re-armed, so a re-armed
+   *  completion policy sees the continue turn's turn-end. Same `isServed`
+   *  cross-process gate. */
+  continueInterruptedOnBoot(opts?: {
+    isServed?: (desc: SessionDescriptor) => boolean
+  }): Promise<ContinueOnBootSummary>
   stop(): Promise<void>
 }
 
@@ -1323,6 +1397,44 @@ export async function createGateway(
             line,
           }),
       })
+    : undefined
+  // Autostart on daemon boot (daemon-managed-gateway): mirrors
+  // `tunnels.restoreOnBoot()` above — non-blocking, boot must never wait on
+  // the sidecar. Unlike tunnels there's no persisted "was it running before
+  // restart" state to reconcile (the registry is pure in-memory, the child
+  // dies with the daemon); when the feature is on, always try to bring it
+  // up. A failure here just leaves the descriptor `error` — surfaced via
+  // `status()`/`lastError` — until an operator retries (`llm_endpoint_start`,
+  // `agentproto llm gateway restart`) or a spawn's lazy self-heal
+  // (`ensureLlmEndpointRunning` below) triggers another attempt. Crash
+  // recovery AFTER this succeeds is the registry's own internal
+  // backoff-restart (`LlmEndpointRegistry.scheduleCrashRestart`).
+  if (llmEndpoint) {
+    // `LLM_ENDPOINT_PORT` in the daemon's OWN ambient env relocates the
+    // autostarted sidecar off the built-in default (18090) — there's no
+    // `config.json` port knob for this yet, and autostart (unlike the
+    // `llm_endpoint_start` MCP tool) has no per-call argument a caller could
+    // set instead. Mirrors `LLM_ENDPOINT_BIN`'s existing ambient-env
+    // override for the bin path. Scoped to THIS call only — it does not
+    // change `assembleLlmEndpointEnv`'s tested `explicitEnv` > `port` arg >
+    // default precedence for any other caller.
+    const autostartPort = Number.parseInt(process.env.LLM_ENDPOINT_PORT ?? "", 10)
+    void llmEndpoint
+      .start(Number.isFinite(autostartPort) && autostartPort > 0 ? { port: autostartPort } : {})
+      .catch(() => {
+        // start() already records the failure on the descriptor
+        // (status:"error", lastError) and logs via onLog — nothing else to do.
+      })
+  }
+  // Self-heal hook for `spawnAgentSession` (session-spawn.ts): a spawn
+  // billing through the local llm-endpoint proxy ensures the sidecar is up
+  // before the adapter makes its first request, rather than assuming
+  // something (autostart above, or an operator) already started it.
+  // `start()` is idempotent — a no-op when already running+healthy.
+  const ensureLlmEndpointRunning = llmEndpoint
+    ? async (): Promise<void> => {
+        await llmEndpoint.start()
+      }
     : undefined
 
   // Build a server once eagerly so we can capture `registered` for
@@ -1709,10 +1821,12 @@ export async function createGateway(
         // installed app bundles, or one whose app bundles neither) and
         // `mergeAppAndDaemonToolRegistry` merges them over the daemon
         // passthrough registry — an app tool id wins over a daemon tool of
-        // the same id, logged here.
-        compileWorkflow: async handle => {
+        // the same id, logged here. F40: `workflowMdPath` (this run's own
+        // WORKFLOW.md) takes priority over the `app_install` registry — see
+        // `resolveAppToolsForWorkflow`'s doc.
+        compileWorkflow: async (handle, workflowMdPath) => {
           const daemonRegistry = createDaemonToolRegistry(handle, dispatchTool)
-          const appRegistryEntry = await resolveAppToolsForWorkflow(appRegistry, handle.id)
+          const appRegistryEntry = await resolveAppToolsForWorkflow(appRegistry, handle.id, workflowMdPath)
           const merged = mergeAppAndDaemonToolRegistry(daemonRegistry, appRegistryEntry, {
             onOverride: toolId =>
               console.warn(
@@ -2090,6 +2204,7 @@ export async function createGateway(
       registered,
       startedAt,
       resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
+      continueInterruptedOnBoot: opts.continueInterruptedOnBoot === true,
       idleReapAfterMs,
       crashDetectIntervalMs,
       restartSweepIntervalMs,
@@ -2123,10 +2238,13 @@ export async function createGateway(
     // remote tools above; the registry singleton lives on the gateway.
     if (opts.pairingRegistry) {
       registerPairingTools(server, { registry: opts.pairingRegistry })
-      // Device view over the same registry (DEVICES-PLAN PR-A) — role/kind/
-      // online layered on top of pair_list's records. device_revoke has the
-      // exact effect of pair_revoke; both surfaces stay live.
-      registerDeviceTools(server, { registry: createDeviceRegistry(opts.pairingRegistry) })
+      // Device view over the same registry (DEVICES-PLAN PR-A), plus any
+      // registered hosts (PR-C) — role/kind/online layered on top of
+      // pair_list's records. device_revoke has the exact effect of
+      // pair_revoke; both surfaces stay live.
+      registerDeviceTools(server, {
+        registry: createDeviceRegistry(opts.pairingRegistry, opts.hostRegistry),
+      })
     }
     // Agent-session orchestration — operators (Mastra agents in
     // cloud Guilde, Claude Code as a sub-agent, …) drive long-running
@@ -2153,6 +2271,7 @@ export async function createGateway(
       webhookNotifier,
       daemonMcpUrl,
       resolveSandboxProvider: resolveSandboxProviderResolved,
+      ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
       // `messagingDefaults` (resolved fresh above, per call) — the
       // unset-defaults for `interrupt` on agent_prompt/message_parent and
       // for message_send/message_reply's sibling/interrupt gates.
@@ -2545,8 +2664,10 @@ export async function createGateway(
     token,
     ptyEnabled: opts.spawnPty != null,
     tunnels,
+    ...(llmEndpoint ? { llmEndpoint } : {}),
     remote,
     ...(opts.pairingRegistry ? { pairings: opts.pairingRegistry } : {}),
+    ...(opts.hostRegistry ? { hostRegistry: opts.hostRegistry } : {}),
     sessionEvents,
     eventRing,
     supervisor,
@@ -2599,6 +2720,7 @@ export async function createGateway(
     // Same notifier `agent_start` registers `notifyUrl` with, so an HTTP
     // spawn's per-session webhook fires too.
     webhookNotifier,
+    ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
     ...(opts.listAgentAdapters
       ? { listAgentAdapters: opts.listAgentAdapters }
       : {}),
@@ -2630,6 +2752,7 @@ export async function createGateway(
       ...(opts.version ? { version: opts.version } : {}),
       ...(opts.build ? { build: opts.build } : {}),
       resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
+      continueInterruptedOnBoot: opts.continueInterruptedOnBoot === true,
       idleReapAfterMs,
       crashDetectIntervalMs,
       restartSweepIntervalMs,
@@ -2839,6 +2962,7 @@ export async function createGateway(
     sessions,
     tunnels,
     ...(opts.pairingRegistry ? { pairing: opts.pairingRegistry } : {}),
+    ...(opts.hostRegistry ? { hosts: opts.hostRegistry } : {}),
     token,
     mintOrchestratorScope: scopeTokens.mint,
     async resumeSessionsOnBoot(passOpts) {
@@ -2847,15 +2971,21 @@ export async function createGateway(
       if (!opts.resumeSessionsOnBoot) {
         return { enabled: false, candidates: 0, resumed: 0, failed: 0, skipped: 0 }
       }
-      // Small concurrency cap so a box-wide restart doesn't spawn every adapter
-      // at once (§5 "Resume-storm control"). Default 4; override via
-      // AGENTPROTO_RESUME_CONCURRENCY, mirroring AGENTPROTO_POLICY_CONCURRENCY.
-      const raw = process.env.AGENTPROTO_RESUME_CONCURRENCY
-      const parsed = raw ? Number.parseInt(raw, 10) : NaN
-      const concurrency = Number.isFinite(parsed) && parsed > 0 ? parsed : 4
       return runEagerResumePass({
         registry: sessions,
-        concurrency,
+        concurrency: bootResumeConcurrency(),
+        ...(passOpts?.isServed ? { isServed: passOpts.isServed } : {}),
+      })
+    },
+    async continueInterruptedOnBoot(passOpts) {
+      if (!opts.continueInterruptedOnBoot) {
+        return { enabled: false, eligible: 0, sent: 0, skipped: 0, failed: 0 }
+      }
+      // Same storm control as the eager pass: each send may lazily resume an
+      // adapter, so the same concurrency knob bounds it.
+      return runContinueOnBootPass({
+        registry: sessions,
+        concurrency: bootResumeConcurrency(),
         ...(passOpts?.isServed ? { isServed: passOpts.isServed } : {}),
       })
     },
@@ -2904,6 +3034,9 @@ export async function createGateway(
       if (opts.pairingRegistry) {
         await opts.pairingRegistry.shutdown().catch(() => {})
       }
+      // hostRegistry needs no teardown here: unlike pairingRegistry it keeps
+      // no standing rendezvous connections — every add()/forwardHttp() dials
+      // fresh and closes itself, so there is nothing to shut down.
       // Close upstream MCP clients (their stdio children would
       // otherwise leak the same way).
       await mcpProxy.closeAll()

@@ -257,6 +257,17 @@
           "cache_read": 0.006
         }
       },
+      "longcat-2.5-preview-free": {
+        "id": "longcat-2.5-preview-free",
+        "name": "LongCat 2.5 Preview Free",
+        "family": "longcat",
+        "release_date": "2026-09-25",
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0
+        }
+      },
       "mimo-v2-omni": {
         "id": "mimo-v2-omni",
         "name": "MiMo V2 Omni",

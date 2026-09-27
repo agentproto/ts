@@ -40,6 +40,7 @@ import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
 import type { SessionsRegistry, AgentSessionLike, RestartPolicy, SessionDescriptor } from "./sessions.js"
 import { SessionNotAliveError, applyBracketedPasteWrap } from "./sessions.js"
+import { continueInterruptedSessions } from "./continue-interrupted.js"
 import {
   createSessionMessage,
   isMessageAllowed,
@@ -52,8 +53,10 @@ import {
 } from "./session-message.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
+import type { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import type { RemoteController, EnableInput } from "./remote-controller.js"
 import type { PairingRegistry } from "./pairing-registry.js"
+import type { HostRegistry } from "./host-registry.js"
 import { createDeviceRegistry } from "./device-registry.js"
 import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
@@ -800,6 +803,12 @@ export interface RuntimeHttpServerOptions {
    *  (both share `spawnAgentSession`). Omitted → a spawn the policy says to
    *  isolate is rejected with `worktree_provisioner_not_enabled`. */
   provisionWorktree?: WorktreeProvisioner
+  /** Optional — mirrors `RegisterAgentToolsOptions.ensureLlmEndpointRunning`.
+   *  When wired, a `POST /sessions/agent` (or `/sessions/chat`) spawn billing
+   *  through the local `llm-endpoint` proxy self-heals the sidecar instead
+   *  of assuming it's already running, exactly as the MCP `agent_start`
+   *  tool does (both share `spawnAgentSession`). */
+  ensureLlmEndpointRunning?: SpawnAgentSessionDeps["ensureLlmEndpointRunning"]
   /** Optional — when wired, enables `GET /adapters` route + the
    *  MCP `adapter_list` tool so UIs can discover what's installed
    *  without trial-and-error against the resolver. Hosts ship the
@@ -901,6 +910,13 @@ export interface RuntimeHttpServerOptions {
   /** Optional — when wired, exposes /tunnels/* routes for creating and
    *  managing public tunnels for local ports. Without it the routes 404. */
   tunnels?: TunnelRegistry
+  /** Optional — when wired (i.e. `features.llmEndpoint` is on), exposes
+   *  `GET /llm-endpoint/status` + `POST /llm-endpoint/restart` for
+   *  `agentproto llm gateway status|restart` and the "LLM gateway" doctor
+   *  step — both run as a separate CLI invocation from the live daemon, so
+   *  they need this REST surface rather than reaching into the in-process
+   *  registry directly. Without it the routes 404. */
+  llmEndpoint?: LlmEndpointRegistry
   /** Optional — when wired, exposes POST /remote/enable, POST /remote/disable,
    *  GET /remote/status — the REST twin of the MCP `remote_enable` /
    *  `remote_disable` / `remote_status` tools (remote-tools.ts), for
@@ -911,6 +927,13 @@ export interface RuntimeHttpServerOptions {
    *  MCP `pair_offer` / `pair_list` / `pair_revoke` tools call. Without it the
    *  routes 404. */
   pairings?: PairingRegistry
+  /** Optional — when wired alongside `pairings`, layers registered HOSTS
+   *  (reverse pairing, DEVICES-PLAN PR-C) into `/devices` and enables
+   *  `POST /devices/add` + `POST /devices/:id/exec`. Same service the MCP
+   *  `device_add` tool calls. Without it those two routes 404 (or, for
+   *  `/devices/add`, 400 with a clear "no host registry wired" message) and
+   *  `/devices` shows only client devices, exactly like before PR-C. */
+  hostRegistry?: HostRegistry
   /** Optional — the session lifecycle event bus. When wired alongside
    *  `sessions`, `eventRing`, enables `GET /sessions/:id/wait` (a blocking
    *  long-poll that resolves when the session fires a lifecycle event).
@@ -1022,6 +1045,9 @@ export interface RuntimeHttpServerOptions {
     /** Effective `daemon.resumeSessionsOnBoot` knob (§5, PR-4). Kept in sync
      *  with the `daemon_health` MCP tool's field of the same name. */
     resumeSessionsOnBoot?: boolean
+    /** Effective `daemon.continueInterruptedOnBoot` knob. Kept in sync with
+     *  the `daemon_health` MCP tool's field of the same name. */
+    continueInterruptedOnBoot?: boolean
     /** Effective `daemon.idleReapAfterMs` knob (PR-6) — idle threshold (ms)
      *  before the reaper retires an idle agent-cli session, or 0 when off. Kept
      *  in sync with the `daemon_health` MCP tool's field of the same name. */
@@ -1610,6 +1636,7 @@ export async function startHttpServer(
         node: process.execPath,
         entry: process.argv[1] ?? null,
         resumeSessionsOnBoot: opts.meta.resumeSessionsOnBoot === true,
+        continueInterruptedOnBoot: opts.meta.continueInterruptedOnBoot === true,
         idleReapAfterMs: opts.meta.idleReapAfterMs ?? 0,
         crashDetectIntervalMs: opts.meta.crashDetectIntervalMs ?? 0,
         restartSweepIntervalMs: opts.meta.restartSweepIntervalMs ?? 0,
@@ -2034,6 +2061,7 @@ export async function startHttpServer(
             opts.listCatalogModels,
             opts.resolveSandboxProvider,
             opts.webhookNotifier,
+            opts.ensureLlmEndpointRunning,
           )
           if (handled) return
         }
@@ -3315,6 +3343,14 @@ export async function startHttpServer(
           if (handled) return
         }
 
+        // llm-endpoint routes — only registered when the gateway was built
+        // with an LlmEndpointRegistry (features.llmEndpoint on).
+        // /llm-endpoint/status, /llm-endpoint/restart.
+        if (opts.llmEndpoint && path.startsWith("/llm-endpoint")) {
+          const handled = await handleLlmEndpoint(req, res, path, opts.llmEndpoint)
+          if (handled) return
+        }
+
         // Remote-control routes — the REST twin of the MCP remote_enable/
         // remote_disable/remote_status tools, for `agentproto remote
         // enable/disable/status`. Only registered when the gateway was
@@ -3433,10 +3469,12 @@ export async function startHttpServer(
           if (handled) return
         }
 
-        // Device routes — role/kind/online layered on the same registry
-        // /pairings drives (DEVICES-PLAN PR-A). GET /devices, PATCH
+        // Device routes — role/kind/online layered on the same registries
+        // /pairings and (PR-C) hostRegistry drive. GET /devices, PATCH
         // /devices/:fingerprint (rename), DELETE /devices/:fingerprint
-        // (revoke — same effect as DELETE /pairings/:fingerprint). Same
+        // (revoke — same effect as DELETE /pairings/:fingerprint for a
+        // client device), POST /devices/add (register a host), POST
+        // /devices/:id/exec (forward one HTTP request to a host). Same
         // token gate as /pairings: mutating routes take the per-boot token;
         // GET is read-only.
         if (opts.pairings && path.startsWith("/devices")) {
@@ -3447,7 +3485,7 @@ export async function startHttpServer(
               return
             }
           }
-          const handled = await handleDevices(req, res, path, opts.pairings)
+          const handled = await handleDevices(req, res, path, opts.pairings, opts.hostRegistry)
           if (handled) return
         }
 
@@ -4437,6 +4475,11 @@ export function buildSpawnSessionHttpArgs(
  *                                    session is killed first, same
  *                                    teardown as /kill; returns
  *                                    { ok, id, killed }
+ *   POST   /sessions/continue-interrupted
+ *                                  → continue sessions the last restart cut
+ *                                    off mid-turn (session_continue_interrupted's
+ *                                    HTTP twin); body { dryRun? (default
+ *                                    true), ids?, prompt? }
  *   POST   /sessions/gc           → bulk GC terminal sessions (session_gc's
  *                                    HTTP twin); body { olderThanDays?,
  *                                    forget? }; returns { mode, ids, count }
@@ -4877,6 +4920,7 @@ async function handleSessions(
   listCatalogModels?: CatalogModelsLister,
   resolveSandboxProvider?: SpawnAgentSessionDeps["resolveSandboxProvider"],
   webhookNotifier?: SpawnAgentSessionDeps["webhookNotifier"],
+  ensureLlmEndpointRunning?: SpawnAgentSessionDeps["ensureLlmEndpointRunning"],
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -5068,6 +5112,7 @@ async function handleSessions(
         ...(listCatalogModels ? { listCatalogModels } : {}),
         ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
         ...(webhookNotifier ? { webhookNotifier } : {}),
+        ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
       },
       spawnArgs,
     )
@@ -5166,6 +5211,7 @@ async function handleSessions(
         ...(listCatalogModels ? { listCatalogModels } : {}),
         ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
         ...(webhookNotifier ? { webhookNotifier } : {}),
+        ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
       },
       spawnArgs,
     )
@@ -5743,6 +5789,27 @@ async function handleSessions(
     return true
   }
 
+  // Peek at a currently-running background task's output — the UI's "click
+  // a live background-task row" affordance. Deliberately scoped to a
+  // `taskId` already reported for THIS session (see
+  // `SessionsRegistry.readBackgroundTaskTail`'s doc for why this can never
+  // become an arbitrary-file-read route) rather than accepting a raw path.
+  const bgTaskTailMatch = path.match(
+    /^\/sessions\/([^/]+)\/background-tasks\/([^/]+)\/tail$/,
+  )
+  if (bgTaskTailMatch && req.method === "GET") {
+    const id = decodeURIComponent(bgTaskTailMatch[1] ?? "")
+    const taskId = decodeURIComponent(bgTaskTailMatch[2] ?? "")
+    if (!id || !taskId) return false
+    const result = registry.readBackgroundTaskTail(id, taskId)
+    if (!result) {
+      json(404, { error: "no_such_task", id, taskId })
+      return true
+    }
+    json(200, { ok: true, id, taskId, ...result })
+    return true
+  }
+
   // Cancel the in-flight turn on a live agent session and leave the
   // session itself alive and idle — the bare "interrupt, no next prompt"
   // primitive `POST /sessions/:id/prompt`'s own `interrupt` option lacks,
@@ -6064,6 +6131,38 @@ async function handleSessions(
   // the scoped MCP verb): the CLI operator GCs the whole registry. Collection
   // route, so it MUST precede the per-id `idMatch` below (which would else eat
   // `/sessions/gc` as an id).
+  // Continue the sessions the last restart cut off mid-turn — the HTTP twin of
+  // the `session_continue_interrupted` MCP verb, powering `agentproto sessions
+  // continue-interrupted`. Body: `{ dryRun?: boolean (default true), ids?:
+  // string[], prompt?: string }`; returns `ContinueInterruptedResult`.
+  // Operator surface — no subtree scoping. Collection route: must precede the
+  // per-id `idMatch` below.
+  if (path === "/sessions/continue-interrupted" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const ids = Array.isArray(b.ids)
+      ? b.ids
+          .filter((v): v is string => typeof v === "string" && v.length > 0)
+          .map(ref => registry.findByIdOrName(ref)?.id ?? ref)
+      : undefined
+    try {
+      const res = await continueInterruptedSessions({
+        registry,
+        mode: "manual",
+        dryRun: b.dryRun !== false,
+        ...(ids ? { ids } : {}),
+        ...(typeof b.prompt === "string" ? { prompt: b.prompt } : {}),
+      })
+      json(200, res)
+    } catch (err) {
+      json(500, {
+        error: "continue_interrupted_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+    return true
+  }
+
   if (path === "/sessions/gc" && req.method === "POST") {
     const body = await readJsonBody(req)
     const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
@@ -6803,6 +6902,60 @@ async function handleTunnels(
 }
 
 /**
+ * /llm-endpoint routes — status + restart for the daemon-managed
+ * `@agentproto/llm-endpoint` proxy sidecar. REST twin of the MCP
+ * `llm_endpoint_status` / `llm_endpoint_start` / `llm_endpoint_stop` tools
+ * (llm-endpoint-tools.ts), same `LlmEndpointRegistry` singleton — for
+ * `agentproto llm gateway status|restart` and the "LLM gateway" doctor step,
+ * both of which run as a separate CLI invocation from the live daemon and so
+ * cannot reach the in-process registry directly.
+ *
+ *   GET  /llm-endpoint/status  → LlmEndpointStatusReport
+ *   POST /llm-endpoint/restart → LlmEndpointDescriptor (stop, then start)
+ */
+async function handleLlmEndpoint(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  registry: LlmEndpointRegistry,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (path === "/llm-endpoint/status" && req.method === "GET") {
+    json(200, await registry.status())
+    return true
+  }
+
+  if (path === "/llm-endpoint/restart" && req.method === "POST") {
+    // Preserve the CURRENTLY-configured port across the restart — `start()`
+    // with no `port` falls back to the built-in default (18090), which
+    // would silently relocate a sidecar an operator deliberately runs on a
+    // different port (`LLM_ENDPOINT_PORT` at boot, or an explicit
+    // `llm_endpoint_start` port) onto the wrong one. `owner:"external"`
+    // never went through OUR `start()`, so there's no port of ours to keep —
+    // `stop()` is a no-op for it (never spawned by us) and `start()` falls
+    // through to the default, same as any first-ever start.
+    const priorPort = registry.get()?.port
+    try {
+      await registry.stop()
+      const desc = await registry.start(priorPort ? { port: priorPort } : {})
+      json(200, desc)
+    } catch (err) {
+      json(500, {
+        error: "restart_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+    return true
+  }
+
+  return false
+}
+
+/**
  * REST twin of the MCP `remote_enable` / `remote_disable` / `remote_status`
  * tools (remote-tools.ts) — same `RemoteController` singleton, so the two
  * surfaces can never disagree about whether a tunnel is up. Exists for
@@ -7520,10 +7673,12 @@ async function handlePairings(
     const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
     const ttlMinutes = typeof b.ttlMinutes === "number" ? b.ttlMinutes : undefined
     const rendezvous = typeof b.rendezvous === "string" ? b.rendezvous : undefined
+    const host = b.host === true
     try {
       const offer = await registry.createOffer({
         ...(ttlMinutes ? { ttlMs: ttlMinutes * 60_000 } : {}),
         ...(rendezvous ? { rendezvousUrl: rendezvous } : {}),
+        ...(host ? { scope: "host" } : {}),
       })
       json(200, {
         url: offer.url,
@@ -7531,6 +7686,7 @@ async function handlePairings(
         rendezvous: offer.rendezvousUrl,
         rendezvousIsHostedDefault: offer.rendezvousIsHostedDefault,
         expiresAt: new Date(offer.exp * 1000).toISOString(),
+        ...(offer.scope ? { scope: offer.scope } : {}),
       })
     } catch (err) {
       json(400, {
@@ -7549,6 +7705,7 @@ async function handlePairings(
       lastSeen: p.lastSeen,
       rendezvous: p.rendezvousUrl,
       ...(p.legacy ? { legacy: true } : {}),
+      ...(p.scope ? { scope: p.scope } : {}),
     }))
     json(200, { pairings })
     return true
@@ -7577,29 +7734,104 @@ async function handlePairings(
 }
 
 /**
- * /devices routes — a device view over the same pairing registry
- * (DEVICES-PLAN PR-A):
+ * /devices routes — a device view over the pairing registry, plus (PR-C)
+ * registered hosts:
  *   GET    /devices               → { devices: [...] } (role/kind/online on
- *                                    top of each pairing record)
+ *                                    top of each pairing/host record)
  *   PATCH  /devices/:fingerprint   → { name } rename
  *   DELETE /devices/:fingerprint   → revoke by fingerprint (or name)
+ *   POST   /devices/add            → { offerUrl, name? } register a host from
+ *                                    a `--host`-scoped offer URL → { ok,
+ *                                    fingerprint, name, rendezvousUrl } or
+ *                                    400 `{error,message}` (mirrors POST
+ *                                    /pairings/offer's error shape). 404s
+ *                                    with a "no host registry wired" message
+ *                                    when `hosts` wasn't passed.
+ *   POST   /devices/:id/exec       → { method?, path, headers?, bodyBase64? }
+ *                                    forward one HTTP request to a
+ *                                    registered host over its E2E channel →
+ *                                    { status, headers, bodyBase64 } (the
+ *                                    body is arbitrary bytes, so it's
+ *                                    base64-encoded on the wire both ways).
+ *                                    404s the same way as /devices/add when
+ *                                    no host registry is wired.
  *
- * Mirrors the MCP `device_list` / `device_rename` / `device_revoke` tools.
+ * Mirrors the MCP `device_list` / `device_rename` / `device_revoke` /
+ * `device_add` tools.
  */
 async function handleDevices(
   req: IncomingMessage,
   res: ServerResponse,
   path: string,
   registry: PairingRegistry,
+  hostRegistry?: HostRegistry,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
     res.end(JSON.stringify(body))
   }
-  const devices = createDeviceRegistry(registry)
+  const devices = createDeviceRegistry(registry, hostRegistry)
 
   if (path === "/devices" && req.method === "GET") {
     json(200, { devices: await devices.list() })
+    return true
+  }
+
+  if (path === "/devices/add" && req.method === "POST") {
+    if (!hostRegistry) {
+      json(404, { error: "no_host_registry", message: "this daemon has no host registry wired" })
+      return true
+    }
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const offerUrl = typeof b.offerUrl === "string" ? b.offerUrl : ""
+    const name = typeof b.name === "string" && b.name.trim() ? b.name.trim() : undefined
+    if (!offerUrl) {
+      json(400, { error: "bad_request", message: 'body must include a non-empty "offerUrl"' })
+      return true
+    }
+    try {
+      const result = await hostRegistry.add(offerUrl, name)
+      json(200, { ok: true, ...result })
+    } catch (err) {
+      json(400, { error: "add_failed", message: err instanceof Error ? err.message : String(err) })
+    }
+    return true
+  }
+
+  const execMatch = path.match(/^\/devices\/([^/]+)\/exec$/)
+  if (execMatch && req.method === "POST") {
+    if (!hostRegistry) {
+      json(404, { error: "no_host_registry", message: "this daemon has no host registry wired" })
+      return true
+    }
+    const target = decodeURIComponent(execMatch[1] ?? "")
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const reqPath = typeof b.path === "string" ? b.path : ""
+    if (!reqPath) {
+      json(400, { error: "bad_request", message: 'body must include a non-empty "path"' })
+      return true
+    }
+    const method = typeof b.method === "string" && b.method ? b.method : "GET"
+    const headers =
+      b.headers && typeof b.headers === "object" ? (b.headers as Record<string, string>) : undefined
+    const bodyBase64 = typeof b.bodyBase64 === "string" ? b.bodyBase64 : undefined
+    try {
+      const res2 = await hostRegistry.forwardHttp(target, {
+        method,
+        path: reqPath,
+        ...(headers ? { headers } : {}),
+        ...(bodyBase64 ? { body: new Uint8Array(Buffer.from(bodyBase64, "base64")) } : {}),
+      })
+      json(200, {
+        status: res2.status,
+        headers: res2.headers,
+        bodyBase64: Buffer.from(res2.body).toString("base64"),
+      })
+    } catch (err) {
+      json(502, { error: "exec_failed", message: err instanceof Error ? err.message : String(err) })
+    }
     return true
   }
 

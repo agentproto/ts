@@ -58,7 +58,7 @@ export interface EagerResumeSummary {
  *  likely to matter come back first under the concurrency cap. Falls back to
  *  `startedAt` when a row never recorded activity (both are ISO-8601, so a
  *  lexical compare is chronological). */
-function byLastActivityDesc(a: SessionDescriptor, b: SessionDescriptor): number {
+export function byLastActivityDesc(a: SessionDescriptor, b: SessionDescriptor): number {
   const at = a.lastActivityAt ?? a.startedAt
   const bt = b.lastActivityAt ?? b.startedAt
   return bt.localeCompare(at)

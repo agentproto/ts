@@ -139,6 +139,11 @@ Usage:
   agentproto sessions gc [--older-than-days <n>] [--forget] [--json]
                               (archive terminal sessions by default; --forget
                                DROPS descriptors instead. Never touches live.)
+  agentproto sessions continue-interrupted [--send] [--id <id-or-name>]...
+                              [--prompt <text>] [--json]
+                              (list sessions the LAST daemon restart cut off
+                               mid-turn; --send prompts each to continue —
+                               without it, a dry run that sends nothing)
   agentproto sessions wait <id-or-name> [--until <event>] [--policy <policyId>]
                               [--timeout <duration>] [--json]
                               (duration: bare integer = ms, unchanged — or an
@@ -327,6 +332,7 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   if (sub === "pin") return runPin(args.slice(1), true)
   if (sub === "unpin") return runPin(args.slice(1), false)
   if (sub === "gc") return runGc(args.slice(1))
+  if (sub === "continue-interrupted") return runContinueInterrupted(args.slice(1))
   if (sub === "terminal") return runTerminal(args.slice(1))
   if (sub === "export") return runExport(args.slice(1))
   if (sub === "story") return runStory(args.slice(1))
@@ -1193,6 +1199,95 @@ async function runPin(args: readonly string[], pinned: boolean): Promise<number>
       return 2
     }
     process.stderr.write(`agentproto sessions ${verb}: ${msg}\n`)
+    return 1
+  }
+}
+
+/** One per-session row of `POST /sessions/continue-interrupted`
+ *  (`ContinueInterruptedOutcome` in the runtime). */
+interface ContinueInterruptedRow {
+  id: string
+  name?: string
+  status: "eligible" | "sent" | "skipped" | "failed"
+  reason?: string
+  error?: string
+}
+
+/**
+ * `agentproto sessions continue-interrupted [--send] [--id <ref>]...
+ * [--prompt <text>] [--json]` — CLI parity for the
+ * `session_continue_interrupted` MCP verb. Lists the sessions the LAST daemon
+ * restart cut off mid-turn and, with `--send`, sends each a one-shot continue
+ * prompt (resuming it in place first if needed). Dry run by default — the
+ * same default as the verb. Hits `POST /sessions/continue-interrupted`.
+ */
+async function runContinueInterrupted(args: readonly string[]): Promise<number> {
+  const verb = "agentproto sessions continue-interrupted"
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      send: { type: "boolean" },
+      id: { type: "string", multiple: true },
+      prompt: { type: "string" },
+      json: { type: "boolean" },
+    },
+  })
+  if (positionals.length > 0) {
+    process.stderr.write(
+      `${verb}: unexpected positional(s): ${positionals.join(" ")}\n` +
+        `  Try: ${verb} --id <id-or-name> --send\n`,
+    )
+    return 2
+  }
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, verb)
+    return 2
+  }
+  const endpoint = report.found
+
+  const body: Record<string, unknown> = { dryRun: values.send !== true }
+  if (values.id && values.id.length > 0) body.ids = values.id
+  if (values.prompt !== undefined) body.prompt = values.prompt
+
+  try {
+    const result = await httpPostJson<{
+      dryRun: boolean
+      sessions: ContinueInterruptedRow[]
+      eligible: number
+      sent: number
+      skipped: number
+      failed: number
+    }>(`${endpoint.url}/sessions/continue-interrupted`, body, endpoint.token)
+    if (values.json) {
+      process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+      return result.failed > 0 ? 1 : 0
+    }
+    if (result.sessions.length === 0) {
+      process.stdout.write(`${verb}: no session was interrupted by the last restart.\n`)
+      return 0
+    }
+    for (const row of result.sessions) {
+      const who = row.name ? `${row.id} (${row.name})` : row.id
+      const detail = row.reason ?? row.error
+      process.stdout.write(`  ${row.status.padEnd(8)} ${who}${detail ? ` — ${detail}` : ""}\n`)
+    }
+    process.stdout.write(
+      result.dryRun
+        ? `${verb}: ${result.eligible} eligible (dry run — re-run with --send to prompt them).\n`
+        : `${verb}: sent ${result.sent}, skipped ${result.skipped}, failed ${result.failed}.\n`,
+    )
+    return result.failed > 0 ? 1 : 0
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/HTTP 401/.test(msg)) {
+      process.stderr.write((await explain401(endpoint, verb)) + "\n")
+      return 1
+    }
+    process.stderr.write(`${verb}: ${msg}\n`)
     return 1
   }
 }

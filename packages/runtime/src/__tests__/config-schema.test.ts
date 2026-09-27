@@ -28,6 +28,7 @@ describe("agentprotoConfigSchema", () => {
         strictOrigins: false,
         label: "my-box",
         resumeSessionsOnBoot: true,
+        continueInterruptedOnBoot: true,
         idleReapAfterMs: 600_000,
         crashDetectIntervalMs: 30_000,
         restartSweepIntervalMs: 0,

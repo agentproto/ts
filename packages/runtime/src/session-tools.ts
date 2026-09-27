@@ -63,6 +63,7 @@ import {
 } from "./context-continuity.js"
 import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
 import { continueAgentSessionFresh } from "./session-continue-fresh.js"
+import { continueInterruptedSessions } from "./continue-interrupted.js"
 import { compactOutcome, type SessionOutcomeCompact } from "./session-outcome.js"
 import type { SpawnAgentSessionDeps } from "./session-spawn.js"
 import {
@@ -277,6 +278,9 @@ export interface RegisterSessionToolsOptions {
    *  `catalog_models` MCP tool. Without it the tool returns a clear "not
    *  configured" error pointing at the host wiring. */
   listCatalogModels?: CatalogModelsLister
+  /** Forwarded to `registerAgentTools` — see
+   *  `RegisterAgentToolsOptions.ensureLlmEndpointRunning`. */
+  ensureLlmEndpointRunning?: SpawnAgentSessionDeps["ensureLlmEndpointRunning"]
   /** config.json `defaults` loader — same seam as
    *  `RestartAgentSessionOptions.loadDefaultsConfig` in session-restart-core.ts.
    *  Threaded into `session_restart`'s pty-native billing-auth re-resolution
@@ -489,6 +493,11 @@ export interface SessionListCompactItem {
    *  completed turn produced zero assistant output and zero tool calls.
    *  Absent (not `false`) on a productive turn. */
   lastTurnEmpty?: SessionDescriptor["lastTurnEmpty"]
+  /** Mirrors the derived `SessionDescriptor.interrupted` — true when a daemon
+   *  restart killed this session mid-turn and that turn was NOT re-run
+   *  (`session_continue_interrupted` sends it a continue prompt). Absent
+   *  otherwise. */
+  interrupted?: true
 }
 
 /** Public MCP descriptor projection. Resume environment is required by the
@@ -535,6 +544,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   ...(s.lastTurnErrorMessage !== undefined ? { lastTurnErrorMessage: s.lastTurnErrorMessage } : {}),
   ...(s.lastTurnReason !== undefined ? { lastTurnReason: s.lastTurnReason } : {}),
   ...(s.lastTurnEmpty !== undefined ? { lastTurnEmpty: s.lastTurnEmpty } : {}),
+  ...(s.interrupted ? { interrupted: true as const } : {}),
 })
 
 // ── batch compact projections (tool-transformer migration) ───────────────
@@ -957,7 +967,9 @@ export function registerSessionTools(
       "or to discover a session id by name. COMPACT BY DEFAULT: each entry " +
       "is a slim projection (id/kind/name/label/status/command/cwd/model/" +
       "busy/awaitingInput/blockedOn/lastActivityAt/depth/parentSessionId/" +
-      "continuedFrom/lastTurnErroredAt); " +
+      "continuedFrom/lastTurnErroredAt/interrupted); `interrupted: true` marks a " +
+      "session a daemon restart cut off mid-turn (see " +
+      "`session_continue_interrupted`); " +
       "pass `full: true` (or `compact: false`) for the complete, unprojected " +
       "per-session record. Raw shell-command runs " +
       "(`kind:'command'`) are a log, not a resumable session, so they're " +
@@ -1009,6 +1021,55 @@ export function registerSessionTools(
       }),
     ],
   })
+
+  // ── session_continue_interrupted ─────────────────────────────────
+  // Manual twin of `daemon.continueInterruptedOnBoot` — see
+  // continue-interrupted.ts for eligibility. Dry-run by default: the first
+  // call is a look, not a send.
+  server.tool(
+    "session_continue_interrupted",
+    "List the sessions the LAST daemon restart cut off mid-turn " +
+      "(`interrupted: true`) and — with `dryRun: false` — send each a one-shot " +
+      "\"continue\" prompt (the interrupted prompt itself is never re-run). " +
+      "Goes through the normal prompt path, so a dead-but-resumable session " +
+      "resumes in place first. Skips sessions that aren't interrupted, were " +
+      "interrupted by an older restart, aren't resumable, hit the resume " +
+      "attempt cap, or are already busy. Returns a per-session outcome " +
+      "(`eligible` on a dry run, else `sent`/`skipped` with a reason/`failed`).",
+    {
+      dryRun: mcpBool
+        .optional()
+        .describe("Default true: only report what would be sent. Pass false to send."),
+      ids: z
+        .array(z.string().min(1))
+        .optional()
+        .describe(
+          "Restrict to these sessions (id or name). Omitted ⇒ every session " +
+            "interrupted by the last restart.",
+        ),
+      prompt: z
+        .string()
+        .optional()
+        .describe("Custom continue prompt. Omitted ⇒ a default telling the agent " +
+          "its turn was cut off by a restart and to check the state on disk."),
+    },
+    async input => {
+      const subtree = callerScope
+        ? collectSubtree(callerScope.ownerSessionId, registry.list({ includeArchived: true }))
+        : undefined
+      const result = await continueInterruptedSessions({
+        registry,
+        mode: "manual",
+        dryRun: input.dryRun ?? true,
+        ...(input.ids
+          ? { ids: input.ids.map(ref => registry.findByIdOrName(ref)?.id ?? ref) }
+          : {}),
+        ...(input.prompt !== undefined ? { prompt: input.prompt } : {}),
+        ...(subtree ? { visible: (d: SessionDescriptor) => subtree.has(d.id) } : {}),
+      })
+      return { content: [{ type: "text", text: JSON.stringify(result) }] }
+    },
+  )
 
   // ── session_usage ────────────────────────────────────────────────
   server.tool(
@@ -1360,6 +1421,9 @@ export function registerSessionTools(
         ...(opts.resolveWorktreeIsolation ? { resolveWorktreeIsolation: opts.resolveWorktreeIsolation } : {}),
         ...(opts.loadRoleRegistry ? { loadRoleRegistry: opts.loadRoleRegistry } : {}),
         ...(listCatalogModels ? { listCatalogModels } : {}),
+        ...(opts.ensureLlmEndpointRunning
+          ? { ensureLlmEndpointRunning: opts.ensureLlmEndpointRunning }
+          : {}),
       }
       try {
         const result = await continueAgentSessionFresh(spawnDeps, desc, {
@@ -2495,6 +2559,66 @@ export function registerSessionTools(
               2,
             ),
           },
+        ],
+      }
+    },
+  )
+
+  // ── session_bg_task_tail ─────────────────────────────────────────
+  // A currently-running background task's info plus a tail of its output —
+  // the MCP twin of `GET /sessions/:id/background-tasks/:taskId/tail`. See
+  // `SessionsRegistry.readBackgroundTaskTail`'s doc for the taskId-only
+  // (never a raw path) scoping that keeps this from becoming an arbitrary-
+  // file-read tool. `taskId` comes from `SessionDescriptor.backgroundTasks`
+  // (`session_list` / `session_get`'s `backgroundTasks` field).
+  server.tool(
+    "session_bg_task_tail",
+    "Peek at a currently-RUNNING background task's output (a backgrounded " +
+      "Bash command, a monitor, ...) — the last lines of its output file, " +
+      "plus the task's own info (kind, description, status). Only works " +
+      "while the task is still tracked as running on " +
+      "`SessionDescriptor.backgroundTasks`; a settled task is dropped from " +
+      "that list moments after it reports terminal status, so this errors " +
+      "for one that already finished — use the `session:bg-task` event's " +
+      "own `summary` for that instead. `taskId` comes from " +
+      "`backgroundTasks` on `session_list` / `session_get`.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Session id or name — from `session_list`."),
+      taskId: z
+        .string()
+        .min(1)
+        .describe("The running task's id, from `SessionDescriptor.backgroundTasks`."),
+    },
+    async input => {
+      const desc = registry.findByIdOrName(input.sessionId)
+      if (!desc) {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ error: `no session "${input.sessionId}" found` }) },
+          ],
+          isError: true,
+        }
+      }
+      const result = registry.readBackgroundTaskTail(desc.id, input.taskId)
+      if (!result) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: `no running background task "${input.taskId}" on session "${desc.id}"`,
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      return {
+        content: [
+          { type: "text", text: JSON.stringify({ ok: true, sessionId: desc.id, ...result }, null, 2) },
         ],
       }
     },

@@ -12,7 +12,7 @@ process.env.GROQ_API_KEY = 'test-groq';
 process.env.XAI_API_KEY = 'test-xai';
 process.env.OPENAI_API_KEY = 'test-openai';
 
-const { trimTools, server, resolveModelRoute } = await import('../index.js');
+const { trimTools, server, resolveModelRoute, adaptAnthropicToOpenAI } = await import('../index.js');
 
 // ── trimTools ─────────────────────────────────────────────────────────────
 
@@ -225,6 +225,92 @@ describe('trimTools', () => {
     trimTools(payload, { ...baseOpts, packToolsExclude: ['mcp__*'] });
     expect(payload.tools).toBeUndefined();
     expect(payload.tool_choice).toBeUndefined();
+  });
+});
+
+// ── adaptAnthropicToOpenAI: system/developer normalization ────────────────
+// A system message anywhere but index 0 breaks strict chat templates (e.g.
+// llama.cpp/LM Studio on a Qwen GGUF: "System message must be at the
+// beginning"). claude-code 2.x sends its "# Environment" block as a
+// messages[] entry with role:"system" AFTER the user turn (not in the
+// top-level `system` field) — this is that entry.
+
+describe('adaptAnthropicToOpenAI system normalization', () => {
+  it('merges a top-level system string with a non-leading in-messages system entry', () => {
+    const payload = {
+      system: 'You are a helpful agent.',
+      messages: [
+        { role: 'user', content: 'hello' },
+        { role: 'system', content: '# Environment\ncwd: /tmp' },
+      ],
+    };
+    adaptAnthropicToOpenAI(payload);
+    expect(payload.system).toBeUndefined();
+    expect(payload.messages).toEqual([
+      { role: 'system', content: 'You are a helpful agent.\n\n# Environment\ncwd: /tmp' },
+      { role: 'user', content: 'hello' },
+    ]);
+  });
+
+  it('merges system content blocks (array form) with a non-leading developer entry', () => {
+    const payload = {
+      system: [{ type: 'text', text: 'Block one.' }, { type: 'text', text: 'Block two.' }],
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'developer', content: [{ type: 'text', text: 'dev note' }] },
+      ],
+    };
+    adaptAnthropicToOpenAI(payload);
+    expect(payload.messages[0]).toEqual({
+      role: 'system',
+      content: 'Block one.\n\nBlock two.\n\ndev note',
+    });
+    expect(payload.messages).toHaveLength(2);
+  });
+
+  it('merges multiple non-leading system/developer entries in order, none left in place', () => {
+    const payload = {
+      messages: [
+        { role: 'user', content: 'first' },
+        { role: 'system', content: 'reminder A' },
+        { role: 'assistant', content: 'ok' },
+        { role: 'developer', content: 'reminder B' },
+      ],
+    };
+    adaptAnthropicToOpenAI(payload);
+    expect(payload.messages).toEqual([
+      { role: 'system', content: 'reminder A\n\nreminder B' },
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'ok' },
+    ]);
+  });
+
+  it('is a no-op when already normalized (single leading system, nothing else)', () => {
+    const payload = {
+      messages: [
+        { role: 'system', content: 'You are a helpful agent.' },
+        { role: 'user', content: 'hello' },
+      ],
+    };
+    adaptAnthropicToOpenAI(payload);
+    expect(payload.messages).toEqual([
+      { role: 'system', content: 'You are a helpful agent.' },
+      { role: 'user', content: 'hello' },
+    ]);
+  });
+
+  it('leaves messages untouched when there is no system content anywhere', () => {
+    const payload = {
+      messages: [
+        { role: 'user', content: 'hello' },
+        { role: 'assistant', content: 'hi there' },
+      ],
+    };
+    adaptAnthropicToOpenAI(payload);
+    expect(payload.messages).toEqual([
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'hi there' },
+    ]);
   });
 });
 
