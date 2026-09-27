@@ -196,6 +196,8 @@ export interface BranchGcPlan {
   generatedAt: string
   /** Refs of OTHER configured remotes: never classified, never touched. */
   otherRemoteRefs: number
+  /** true = `git fetch --prune` of the base remote succeeded; false = it failed; null = skipped (opt-out or no remote). */
+  fetched: boolean | null
   entries: BranchGcPlanEntry[]
 }
 
@@ -682,6 +684,8 @@ interface Snapshot {
   env: ClassifyEnv
   refs: BranchRef[]
   otherRemoteRefs: number
+  /** Prune state of the base remote at snapshot time: true ok / false failed / null skipped. */
+  fetched: boolean | null
 }
 
 async function snapshot(input: {
@@ -694,9 +698,17 @@ async function snapshot(input: {
   minAgeDays: number
   includeReviewed: boolean
   nowMs: number
+  /** Default true: `git fetch --prune <baseRemote>` before listing refs (best-effort). */
+  fetch?: boolean
 }): Promise<Snapshot> {
   const remotes = await configuredRemotes(input.repoRoot)
   const remote = baseRemoteOf(input.base, remotes)
+  // Best-effort prune of stale remote-tracking refs BEFORE listing: a fetch
+  // failure (offline, no auth) must not throw — classify the refs as they are.
+  let fetched: boolean | null = null
+  if (remote && input.fetch !== false) {
+    fetched = (await git(input.repoRoot, ["fetch", "--prune", "--quiet", remote])).exitCode === 0
+  }
   const [{ refs, otherRemoteRefs }, worktrees, prs, mergedPrs] = await Promise.all([
     listBranchRefs(input.repoRoot, remote, remotes),
     worktreeBranches(input.repoRoot),
@@ -714,6 +726,7 @@ async function snapshot(input: {
   return {
     refs,
     otherRemoteRefs,
+    fetched,
     env: {
       ctx,
       tips: new Map(),
@@ -757,6 +770,8 @@ export interface PlanBranchGcInput {
   nowMs?: number
   /** Parallel ladder runs. Default 8. */
   concurrency?: number
+  /** Run `git fetch --prune <baseRemote>` before classifying. Default true. */
+  fetch?: boolean
 }
 
 function normalizeScopes(scopes: readonly BranchRefKind[] | undefined): BranchRefKind[] {
@@ -786,6 +801,7 @@ export async function planBranchGc(input: PlanBranchGcInput): Promise<BranchGcPl
     minAgeDays,
     includeReviewed,
     nowMs,
+    ...(input.fetch === false ? { fetch: false } : {}),
   })
   const inScope = snap.refs.filter((r) => scopes.includes(r.kind))
   const entries = await pool(inScope, input.concurrency ?? 8, (r) => classifyRef(r, snap.env))
@@ -803,6 +819,7 @@ export async function planBranchGc(input: PlanBranchGcInput): Promise<BranchGcPl
     includeReviewed,
     generatedAt: new Date(nowMs).toISOString(),
     otherRemoteRefs: snap.otherRemoteRefs,
+    fetched: snap.fetched,
     entries,
   }
 }
@@ -934,6 +951,8 @@ export interface ApplyBranchGcOptions {
   nowMs?: number
   /** Remote refs per `git push --delete`. Default 50. */
   remoteBatchSize?: number
+  /** Run `git fetch --prune <baseRemote>` before re-deriving entries. Default true. */
+  fetch?: boolean
 }
 
 export interface BranchGcApplyResult {
@@ -1018,6 +1037,7 @@ export async function applyBranchGc(plan: BranchGcPlan, options: ApplyBranchGcOp
     minAgeDays: plan.minAgeDays,
     includeReviewed: plan.includeReviewed,
     nowMs: options.nowMs ?? Date.now(),
+    ...(options.fetch === false ? { fetch: false } : {}),
   })
   const current = new Map(snap.refs.map((r) => [r.ref, r]))
 

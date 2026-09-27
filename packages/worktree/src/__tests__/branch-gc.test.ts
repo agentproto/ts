@@ -372,6 +372,21 @@ describe("branch gc — ref kinds and holds", () => {
     expect(entry(p, "gone/feat-lost", "orphan")).toMatchObject({ class: "review", pushed: "only-copy" })
   })
 
+  it("plan prunes stale remote-tracking refs: a branch deleted upstream is not classified", async () => {
+    const repo = await makeRepo()
+    const bare = await withOrigin(repo)
+    await branchWith(repo, "gone", { "g.txt": "g\n" })
+    await execGit(repo, ["push", "-q", "origin", "gone"])
+    await execGit(repo, ["fetch", "-q", "origin"])
+    expect(await refExists(repo, "refs/remotes/origin/gone")).toBe(true)
+    // Delete directly in the bare repo — the tracking ref is now a ghost.
+    await execGit(bare, ["update-ref", "-d", "refs/heads/gone"])
+
+    const p = await plan(repo, { base: "origin/main" })
+    expect(p.fetched).toBe(true)
+    expect(p.entries.some((e) => e.ref === "refs/remotes/origin/gone")).toBe(false)
+  })
+
   it("a worktree's branch AND its remote twin are held; base is protected", async () => {
     const repo = await makeRepo()
     await withOrigin(repo)
@@ -652,7 +667,7 @@ describe("branch gc — apply", () => {
     const p = await plan(repo, { base: "origin/main" })
     // Someone deletes feat/one upstream between plan and apply; our tracking ref is stale.
     await execGit(bare, ["update-ref", "-d", "refs/heads/feat/one"])
-    const { outcomes } = await applyBranchGc(p, { scopes: ["remote"], forge: new FakeForge(), stateDir: await tmp("branch-gc-state-") })
+    const { outcomes } = await applyBranchGc(p, { scopes: ["remote"], forge: new FakeForge(), stateDir: await tmp("branch-gc-state-"), fetch: false })
     expect(outcomes.filter((o) => o.result === "deleted").map((o) => o.name).sort()).toEqual(["feat/one", "feat/two"])
     expect(await refExists(bare, "refs/heads/feat/two")).toBe(false)
   })
