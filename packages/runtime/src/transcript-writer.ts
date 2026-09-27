@@ -26,7 +26,7 @@ import type { SessionMessage } from "./session-message.js"
 import type { AgentStreamEvent } from "./sessions.js"
 import { extractCommandArgs } from "./tool-call-record.js"
 import { detectShellPrCreate } from "./pr-provenance.js"
-import type { SessionUsage } from "./usage.js"
+import { pickUsageDetail, type SessionUsage } from "./usage.js"
 import type { McpAppToolCallRecord } from "./mcp-apps-host.js"
 
 /** Debounce window for flushing a buffered text-delta/thought fragment
@@ -595,6 +595,7 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
         ...(usage.costUsd !== undefined ? { costUsd: usage.costUsd } : {}),
         ...(usage.tokensIn !== undefined ? { tokensIn: usage.tokensIn } : {}),
         ...(usage.tokensOut !== undefined ? { tokensOut: usage.tokensOut } : {}),
+        ...pickUsageDetail(usage),
         ...(usage.contextSize !== undefined ? { contextSize: usage.contextSize } : {}),
         ...(usage.contextUsed !== undefined ? { contextUsed: usage.contextUsed } : {}),
         source: usage.source,

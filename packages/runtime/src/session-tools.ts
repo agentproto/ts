@@ -55,6 +55,7 @@ import {
 } from "./mcp-imports.js"
 import type { McpProxyRegistry, ProxyToolDescriptor } from "./mcp-proxy.js"
 import { projectSessionUsage } from "./usage.js"
+import { rollupSessionSubtree } from "./usage-subtree.js"
 import { parseWindow, rollupUsage } from "./usage-rollup.js"
 import {
   computeContextContinuityStatus,
@@ -807,13 +808,27 @@ export function registerSessionTools(
       "cost block), `computed` (tokens priced against agentproto's in-repo LLM " +
       "catalog), `no-pricing` (tokens present but the model isn't in the catalog " +
       "— cost is deliberately omitted, never fabricated), or `none` (nothing " +
-      "measured). Absent fields are omitted rather than zeroed. Same lookup as " +
-      "`session_list` / `session_restart` (by id or name).",
+      "measured). Also reports `cacheReadTokens` / `cacheWriteTokens` / " +
+      "`reasoningTokens` where the adapter exposes them, plus `turns`, " +
+      "`toolCalls`, `durationMs` (time inside turns). Absent fields are " +
+      "omitted rather than zeroed. `includeSubtree: true` returns " +
+      "`{ sessionId, self, subtree, children }` instead: `subtree` sums cost + " +
+      "tokens over this session and everything it (transitively) spawned, " +
+      "`children` lists the direct children with their own cost/tokens. Same " +
+      "lookup as `session_list` / `session_restart` (by id or name).",
     {
       idOrName: z
         .string()
         .min(1)
         .describe("Session id or name — from `session_list`, alive or historical."),
+      includeSubtree: z
+        .boolean()
+        .optional()
+        .describe(
+          "Also roll usage up over every session this one (transitively) spawned. " +
+            "Totals only sum sessions that report a field; a field no session " +
+            "reports is omitted.",
+        ),
     },
     async input => {
       const desc = registry.findByIdOrName(input.idOrName)
@@ -853,6 +868,14 @@ export function registerSessionTools(
             ],
             isError: true,
           }
+        }
+      }
+      if (input.includeSubtree) {
+        const rollup = rollupSessionSubtree(desc, registry.list({ includeArchived: true }))
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ sessionId: desc.id, ...rollup }) },
+          ],
         }
       }
       const usage = projectSessionUsage(desc)

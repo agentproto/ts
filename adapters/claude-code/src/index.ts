@@ -481,4 +481,12 @@ export function claudeCodeRuntime(): AgentCliRuntime {
   return createAgentCliRuntime(claudeCode)
 }
 
+export {
+  claudeCodeProjectSlug,
+  parseClaudeCodeTranscriptUsage,
+  readClaudeCodeUsage,
+  resetClaudeCodeUsageCache,
+  type ClaudeCodeUsage,
+} from "./usage.js"
+
 export type { AgentCliHandle, AgentCliRuntime }

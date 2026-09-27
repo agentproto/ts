@@ -114,6 +114,8 @@ import {
 } from "./mcp-imports.js"
 import { exportAgentSession } from "./transcript-export.js"
 import { parseWindow, rollupUsage } from "./usage-rollup.js"
+import { projectSessionUsage } from "./usage.js"
+import { rollupSessionSubtree } from "./usage-subtree.js"
 import {
   collectSessionSnapshots,
   enrichRollupWithAccountCredits,
@@ -431,8 +433,13 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
   }): Promise<AgentSessionLike>
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
-  /** Best-effort per-session usage reader (adapter-specific, e.g. hermes state.db). */
-  readUsage?: (adapterSessionId: string) => Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
+  /** Best-effort per-session usage reader (adapter-specific, e.g. hermes
+   *  state.db, the claude-code transcript JSONL). `ctx` carries the spawn's
+   *  cwd + isolated config dir for readers that locate their store by them. */
+  readUsage?: (
+    adapterSessionId: string,
+    ctx?: import("./usage.js").UsageReadContext,
+  ) => Promise<import("./usage.js").UsageReadResult | null>
   /** AIP-45 `options[]` this adapter's manifest declares (id + type only —
    *  no spawn internals). Lets `session-spawn.ts` fold a config-level
    *  `defaults.skills` list into `options.skills` using the shape the
@@ -5650,6 +5657,35 @@ async function handleSessions(
       return true
     }
     json(200, { ok: true, id, ...registry.ackInbox(id, ids) })
+    return true
+  }
+
+  // GET /sessions/:id/usage[?includeSubtree=true] — the REST twin of the
+  // `session_usage` MCP tool (same projection, same subtree rollup). Full
+  // daemon view: REST has no callerScope, same as /usage/rollup.
+  const usageMatch = path.match(/^\/sessions\/([^/]+)\/usage$/)
+  if (usageMatch && req.method === "GET") {
+    const id = decodeURIComponent(usageMatch[1] ?? "")
+    if (!id) return false
+    const desc = registry.findByIdOrName(id)
+    if (!desc) {
+      json(404, { error: "no_such_session", id })
+      return true
+    }
+    const reqUrl = req.url ?? ""
+    const queryString = reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : ""
+    const includeSubtree = ["1", "true"].includes(
+      new URLSearchParams(queryString).get("includeSubtree") ?? "",
+    )
+    json(
+      200,
+      includeSubtree
+        ? {
+            sessionId: desc.id,
+            ...rollupSessionSubtree(desc, registry.list({ includeArchived: true })),
+          }
+        : { sessionId: desc.id, ...projectSessionUsage(desc) },
+    )
     return true
   }
 

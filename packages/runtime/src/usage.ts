@@ -30,6 +30,55 @@ export type UsageSource = "adapter" | "computed" | "no-pricing" | "none"
 export interface TokenPricing {
   inputPer1M: number
   outputPer1M: number
+  /** Multiplier on `inputPer1M` for cache-read tokens (Anthropic: ~0.1).
+   *  Absent = 1 (no discount), same default as the catalog. */
+  cacheReadMultiplier?: number
+  /** Multiplier on `inputPer1M` for cache-creation tokens (Anthropic:
+   *  ~1.25). Absent = 1. */
+  cacheWriteMultiplier?: number
+}
+
+/**
+ * Token-detail and activity fields shared by every usage shape below. All
+ * optional and never zero-filled: absent means "this source doesn't report
+ * it", a present 0 is a measured zero.
+ *
+ *   - `cacheReadTokens` / `cacheWriteTokens`: prompt-cache reads / cache
+ *     creation, cumulative. Kept OUT of `tokensIn` (which is uncached input
+ *     only when a cache split is known).
+ *   - `reasoningTokens`: thinking/reasoning tokens, cumulative. A subset of
+ *     `tokensOut` for providers that bill them as output (Anthropic).
+ *   - `turns`: completed turns (the descriptor's `turnsCompleted`).
+ *   - `toolCalls`: tool calls the daemon observed, cumulative.
+ *   - `durationMs`: wall time spent inside turns, cumulative.
+ */
+export interface UsageDetail {
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
+  turns?: number
+  toolCalls?: number
+  durationMs?: number
+}
+
+/** The `UsageDetail` keys, in response order. */
+export const USAGE_DETAIL_KEYS = [
+  "cacheReadTokens",
+  "cacheWriteTokens",
+  "reasoningTokens",
+  "turns",
+  "toolCalls",
+  "durationMs",
+] as const satisfies readonly (keyof UsageDetail)[]
+
+/** Copy only the present (`number`) `UsageDetail` fields of `src`. */
+export function pickUsageDetail(src: UsageDetail): UsageDetail {
+  const out: UsageDetail = {}
+  for (const k of USAGE_DETAIL_KEYS) {
+    const v = src[k]
+    if (typeof v === "number" && Number.isFinite(v)) out[k] = v
+  }
+  return out
 }
 
 /** Pluggable pricing accessor — defaults to the in-repo catalog's
@@ -37,8 +86,31 @@ export interface TokenPricing {
  *  unknown model (the caller then tags `no-pricing`). */
 export type PricingResolver = (model: string) => TokenPricing | undefined
 
+/**
+ * What an adapter's usage reader (`readUsage`: hermes state.db, opencode.db,
+ * the claude-code transcript JSONL) returns. Every field is cumulative for
+ * the session and optional; `null` from the reader means "nothing found".
+ */
+export interface UsageReadResult {
+  model?: string
+  costUsd?: number
+  tokensIn?: number
+  tokensOut?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
+}
+
+/** Where a reader should look for the session's native store — the spawn's
+ *  cwd and isolated provider config dir (`CLAUDE_CONFIG_DIR` for
+ *  claude-code). Readers that key only on the session id ignore it. */
+export interface UsageReadContext {
+  cwd?: string
+  configDir?: string
+}
+
 /** Raw signals gathered over a turn, handed to `deriveSessionUsage`. */
-export interface UsageComputeInput {
+export interface UsageComputeInput extends UsageDetail {
   /** Requested model id — needed to look up per-token prices. */
   model?: string
   /** Cost the adapter reported directly (readUsage or usage_update.cost).
@@ -53,7 +125,7 @@ export interface UsageComputeInput {
 /** The resolved usage snapshot — the shape `session_usage` returns and the
  *  durable `usage_snapshot` transcript record carries. Cost/token fields are
  *  omitted when absent so a missing value never reads as a measured zero. */
-export interface SessionUsage {
+export interface SessionUsage extends UsageDetail {
   model?: string
   costUsd?: number
   tokensIn?: number
@@ -117,6 +189,7 @@ export function deriveSessionUsage(
     ...(input.model !== undefined ? { model: input.model } : {}),
     ...(input.tokensIn !== undefined ? { tokensIn: input.tokensIn } : {}),
     ...(input.tokensOut !== undefined ? { tokensOut: input.tokensOut } : {}),
+    ...pickUsageDetail(input),
     ...(input.contextSize !== undefined ? { contextSize: input.contextSize } : {}),
     ...(contextUsed !== undefined ? { contextUsed } : {}),
   }
@@ -127,7 +200,11 @@ export function deriveSessionUsage(
   }
 
   // 2. We have token counts — price them against the in-repo catalog.
-  const hasTokens = input.tokensIn !== undefined || input.tokensOut !== undefined
+  const hasTokens =
+    input.tokensIn !== undefined ||
+    input.tokensOut !== undefined ||
+    input.cacheReadTokens !== undefined ||
+    input.cacheWriteTokens !== undefined
   if (hasTokens) {
     const pricing = input.model !== undefined ? resolve(input.model) : undefined
     if (!pricing) {
@@ -135,9 +212,14 @@ export function deriveSessionUsage(
       // invent a dollar figure.
       return { ...base, source: "no-pricing" }
     }
+    // Cache tokens are priced off the input rate with the catalog's
+    // multipliers (default 1, i.e. no discount) — they're disjoint from
+    // `tokensIn`, so this adds, never double counts.
     const costUsd =
       tokenCost(input.tokensIn, pricing.inputPer1M) +
-      tokenCost(input.tokensOut, pricing.outputPer1M)
+      tokenCost(input.tokensOut, pricing.outputPer1M) +
+      tokenCost(input.cacheReadTokens, pricing.inputPer1M * (pricing.cacheReadMultiplier ?? 1)) +
+      tokenCost(input.cacheWriteTokens, pricing.inputPer1M * (pricing.cacheWriteMultiplier ?? 1))
     return { ...base, costUsd, source: "computed" }
   }
 
@@ -146,7 +228,8 @@ export function deriveSessionUsage(
 }
 
 /** Descriptor-shaped fields `projectSessionUsage` reads. */
-export interface UsageDescriptorFields {
+export interface UsageDescriptorFields
+  extends Omit<UsageDetail, "turns"> {
   model?: string
   costUsd?: number
   tokensIn?: number
@@ -154,6 +237,8 @@ export interface UsageDescriptorFields {
   contextSize?: number
   contextUsed?: number
   usageSource?: UsageSource
+  /** Surfaced as `turns`. */
+  turnsCompleted?: number
 }
 
 /**
@@ -173,6 +258,7 @@ export function projectSessionUsage(desc: UsageDescriptorFields): SessionUsage {
     ...(desc.costUsd !== undefined ? { costUsd: desc.costUsd } : {}),
     ...(desc.tokensIn !== undefined ? { tokensIn: desc.tokensIn } : {}),
     ...(desc.tokensOut !== undefined ? { tokensOut: desc.tokensOut } : {}),
+    ...pickUsageDetail({ ...desc, turns: desc.turnsCompleted }),
     ...(desc.contextSize !== undefined ? { contextSize: desc.contextSize } : {}),
     ...(contextUsed !== undefined ? { contextUsed } : {}),
     source: desc.usageSource ?? "none",

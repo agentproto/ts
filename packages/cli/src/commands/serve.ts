@@ -114,6 +114,7 @@ import { getBrowserAdapter, browserAdapters } from "@agentproto/adapter-browser"
 import { createAgentCliRuntime } from "@agentproto/driver-agent-cli"
 import { readHermesUsage } from "@agentproto/adapter-hermes"
 import { readOpenCodeUsage } from "@agentproto/adapter-opencode"
+import { readClaudeCodeUsage } from "@agentproto/adapter-claude-code"
 import { driverSpec } from "@agentproto/driver"
 import {
   resolveAdapter,
@@ -507,6 +508,14 @@ export async function runServe(args: readonly string[]): Promise<number> {
           `${adapter.handle.bin} ${(adapter.handle.bin_args ?? []).join(" ")}`.trim(),
         ...(slug === "hermes" ? { readUsage: (sid: string) => readHermesUsage(sid) } : {}),
         ...(slug === "opencode" ? { readUsage: (sid: string) => readOpenCodeUsage(sid) } : {}),
+        // claude-agent-acp's usage_update carries no input/output/cache
+        // split — Claude Code's own transcript JSONL does.
+        ...(slug === "claude-code"
+          ? {
+              readUsage: (sid: string, ctx?: { cwd?: string; configDir?: string }) =>
+                readClaudeCodeUsage(sid, ctx),
+            }
+          : {}),
         declaredOptions: (adapter.handle.options ?? []).map(o => ({
           id: o.id,
           type: o.type,

@@ -2958,7 +2958,11 @@ export async function spawnAgentSession(
           }
           const commandPreview = resolved!.commandPreview
           const readUsage = resolved!.readUsage
-            ? () => resolved!.readUsage!(agentSession.sessionId)
+            ? () =>
+                resolved!.readUsage!(agentSession.sessionId, {
+                  cwd: finalCwd,
+                  configDir: adapterConfigDirFor(mintedSessionId),
+                })
             : undefined
           registry.settlePendingAgent(pendingDesc.id, {
             ok: true,
@@ -3038,7 +3042,7 @@ export async function spawnAgentSession(
 
     let agentSession: AgentSessionLike
     let commandPreview: string | undefined
-    let readUsage: (() => Promise<{ model?: string; costUsd?: number; tokensIn?: number; tokensOut?: number } | null>) | undefined
+    let readUsage: (() => Promise<import("./usage.js").UsageReadResult | null>) | undefined
     let sandboxId: string | undefined
     let sandboxProvider: string | undefined
     let sandboxTeardown: SandboxLifecyclePolicy["teardown"] | undefined
@@ -3188,7 +3192,11 @@ export async function spawnAgentSession(
       commandPreview = resolved!.commandPreview
       if (resolved!.readUsage) {
         const startedSession = agentSession
-        readUsage = () => resolved!.readUsage!(startedSession.sessionId)
+        readUsage = () =>
+          resolved!.readUsage!(startedSession.sessionId, {
+            cwd,
+            configDir: adapterConfigDirFor(mintedSessionId),
+          })
       }
     }
 

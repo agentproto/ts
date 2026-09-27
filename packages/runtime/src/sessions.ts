@@ -93,7 +93,13 @@ import {
   writeBucketSnapshotSync,
 } from "./workspace-buckets.js"
 import { createTerminalTranscriptWriter } from "./terminal-transcript-writer.js"
-import { deriveSessionUsage, plausibleContextUsed, type SessionUsage } from "./usage.js"
+import {
+  deriveSessionUsage,
+  pickUsageDetail,
+  plausibleContextUsed,
+  type SessionUsage,
+  type UsageReadResult,
+} from "./usage.js"
 import { foldUsageFrameWindow, resetContextWindowForModel, type ContextSizeSource } from "./context-window.js"
 import { resolveWorktreeIdentity } from "./worktree-identity.js"
 import type { SessionAppServeInfo } from "./sandbox-app-serve.js"
@@ -1580,6 +1586,19 @@ export interface SessionDescriptor {
   /** Cumulative input / output token counts (same source + cadence as costUsd). */
   tokensIn?: number
   tokensOut?: number
+  /** Cumulative prompt-cache read / cache-creation / reasoning tokens, from
+   *  the adapter's usage reader (claude-code transcript, hermes state.db,
+   *  opencode.db). Absent when the adapter doesn't expose them — never
+   *  zero-filled. See `UsageDetail` in usage.ts. */
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
+  /** Tool calls the daemon observed across completed turns (cumulative).
+   *  Stamped at the first turn end, so absent = no turn has finished yet. */
+  toolCalls?: number
+  /** Wall time spent inside turns, cumulative ms. Same cadence as
+   *  `toolCalls`. */
+  durationMs?: number
   /** Context-window size + tokens-in-context from the latest `usage_update`
    *  event (ACP adapters that report a context window). Refreshed live as
    *  usage_update events arrive, not just at turn-end. */
@@ -2293,7 +2312,7 @@ interface SessionRuntime {
   costBudget?: CostBudget
   /** Best-effort usage reader called after each turn. The adapter returns
    *  accumulated cost/token counts which are mirrored onto the descriptor. */
-  readUsage?: () => Promise<{ model?: string; costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
+  readUsage?: () => Promise<import("./usage.js").UsageReadResult | null>
   /** Live-usage poll handle while the session runs — see `armUsageRefresh`.
    *  An unref'd interval that self-clears once the descriptor's status stops
    *  being "running". */
@@ -2303,6 +2322,14 @@ interface SessionRuntime {
   /** Serialized content hash of the last `readUsage` snapshot the poller
    *  mirrored — so idle-without-change polls write nothing. */
   lastUsageReadKey?: string
+  /** True once `readUsage` returned real token counts. From then on a
+   *  cost-less usage_update frame's `used` (tokens-in-context, a much
+   *  weaker proxy) no longer drives the running cost estimate, so the two
+   *  estimates can't flap against each other. */
+  readerReportedTokens?: boolean
+  /** `Date.now()` when the current turn started; folded into
+   *  `desc.durationMs` and cleared when the turn ends. */
+  turnStartedAtMs?: number
   /** True once an authoritative cost has been observed from the adapter —
    *  either its `readUsage` returned a `costUsd`, or a `usage_update` carried
    *  a `cost` block. Drives the `"adapter"` vs `"computed"` source decision at
@@ -3852,7 +3879,7 @@ export interface SpawnAgentInput {
    *  cost/token fields on the descriptor. Adapter-specific (e.g. hermes
    *  reads its state.db keyed by the adapter session id). Omit for adapters
    *  with no usage source. */
-  readUsage?: () => Promise<{ model?: string; costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
+  readUsage?: () => Promise<import("./usage.js").UsageReadResult | null>
   /** Opt this session into Langfuse tracing (prompt/completion + tool spans +
    *  tokens/cost). Effective opt-in is `trace ?? opts.langfuseTracingDefault ?? false`. */
   trace?: boolean
@@ -3915,7 +3942,7 @@ export type PendingAgentOutcome =
       commandPreview?: string
       resumable?: boolean
       nativeTerminalResume?: boolean
-      readUsage?: () => Promise<{ model?: string; costUsd?: number; tokensIn?: number; tokensOut?: number } | null>
+      readUsage?: () => Promise<import("./usage.js").UsageReadResult | null>
       /** Dispatched now that the tree + driver session both exist — never
        *  passed to `spawnAgentPending`, which would race the tree. */
       initialPrompt?: string
@@ -5592,7 +5619,15 @@ export function createSessionsRegistry(opts?: {
               ? { tokensIn: evt.used }
               : {}),
           })
-          if (usage.source === "computed" && usage.costUsd !== undefined) {
+          if (
+            usage.source === "computed" &&
+            usage.costUsd !== undefined &&
+            // A reader's real token split (applyUsageRead) is the better
+            // estimate; don't let a `used`-only frame overwrite it.
+            (!rt.readerReportedTokens ||
+              typeof evt.tokensIn === "number" ||
+              typeof evt.tokensOut === "number")
+          ) {
             rt.desc.costUsd = usage.costUsd
             rt.desc.usageSource = "computed"
           }
@@ -6085,9 +6120,23 @@ export function createSessionsRegistry(opts?: {
         : {}),
       ...(rt.desc.tokensIn !== undefined ? { tokensIn: rt.desc.tokensIn } : {}),
       ...(rt.desc.tokensOut !== undefined ? { tokensOut: rt.desc.tokensOut } : {}),
+      ...pickUsageDetail({ ...rt.desc, turns: rt.desc.turnsCompleted }),
       ...(rt.desc.contextSize !== undefined ? { contextSize: rt.desc.contextSize } : {}),
       ...(rt.desc.contextUsed !== undefined ? { contextUsed: rt.desc.contextUsed } : {}),
     })
+
+  /**
+   * Fold the turn in progress into the cumulative `durationMs` / `toolCalls`
+   * descriptor fields. Idempotent per turn (keyed on `turnStartedAtMs`), so
+   * the exit recap and the turn's own `finally` can both call it.
+   */
+  const closeTurnStats = (rt: SessionRuntime): void => {
+    if (rt.turnStartedAtMs === undefined) return
+    rt.desc.durationMs =
+      (rt.desc.durationMs ?? 0) + Math.max(0, Date.now() - rt.turnStartedAtMs)
+    rt.desc.toolCalls = (rt.desc.toolCalls ?? 0) + (rt.toolCallsThisTurn ?? 0)
+    rt.turnStartedAtMs = undefined
+  }
 
   /**
    * Write a final `usage_snapshot` recap when an agent session exits (kill,
@@ -6098,6 +6147,7 @@ export function createSessionsRegistry(opts?: {
    */
   const recordExitUsageSnapshot = (rt: SessionRuntime): void => {
     if (rt.desc.kind !== "agent-cli") return
+    closeTurnStats(rt)
     const usage = buildUsageSnapshot(rt)
     rt.desc.usageSource = usage.source
     if (usage.source === "none") return
@@ -6106,12 +6156,7 @@ export function createSessionsRegistry(opts?: {
 
   /** Adapter-reader usage: the shape `readUsage` hooks return, modulo the doc
    *  on `SessionRuntime.readUsage`. */
-  type AdapterUsageRead = {
-    model?: string
-    costUsd?: number
-    tokensIn?: number
-    tokensOut?: number
-  }
+  type AdapterUsageRead = UsageReadResult
 
   /**
    * Mirror one adapter-reader usage snapshot onto a session — the shared body
@@ -6139,6 +6184,9 @@ export function createSessionsRegistry(opts?: {
       usage.costUsd ?? "",
       usage.tokensIn ?? "",
       usage.tokensOut ?? "",
+      usage.cacheReadTokens ?? "",
+      usage.cacheWriteTokens ?? "",
+      usage.reasoningTokens ?? "",
     ].join("|")
     if (opts?.dedupe && rt.lastUsageReadKey === key) return
     rt.lastUsageReadKey = key
@@ -6160,20 +6208,28 @@ export function createSessionsRegistry(opts?: {
     }
     if (usage.tokensIn !== undefined) rt.desc.tokensIn = usage.tokensIn
     if (usage.tokensOut !== undefined) rt.desc.tokensOut = usage.tokensOut
+    if (usage.cacheReadTokens !== undefined) rt.desc.cacheReadTokens = usage.cacheReadTokens
+    if (usage.cacheWriteTokens !== undefined) rt.desc.cacheWriteTokens = usage.cacheWriteTokens
+    if (usage.reasoningTokens !== undefined) rt.desc.reasoningTokens = usage.reasoningTokens
+    const readerHasTokens =
+      usage.tokensIn !== undefined ||
+      usage.tokensOut !== undefined ||
+      usage.cacheReadTokens !== undefined ||
+      usage.cacheWriteTokens !== undefined
+    if (readerHasTokens) rt.readerReportedTokens = true
 
     // Tokens without an adapter cost (opencode's broker store reports a
     // tokens-only row on some sessions) still surface a computed running
     // figure — the same derivation the usage_update-frame path does, so a
     // live session never shows bare tokens with an unexplained absent cost.
-    if (
-      !rt.adapterReportedCost &&
-      usage.costUsd === undefined &&
-      (usage.tokensIn !== undefined || usage.tokensOut !== undefined)
-    ) {
+    if (!rt.adapterReportedCost && usage.costUsd === undefined && readerHasTokens) {
+      const model = rt.desc.activeModel ?? rt.desc.model
       const derived = deriveSessionUsage({
-        ...(rt.desc.model !== undefined ? { model: rt.desc.model } : {}),
+        ...(model !== undefined ? { model } : {}),
         ...(usage.tokensIn !== undefined ? { tokensIn: usage.tokensIn } : {}),
         ...(usage.tokensOut !== undefined ? { tokensOut: usage.tokensOut } : {}),
+        ...(usage.cacheReadTokens !== undefined ? { cacheReadTokens: usage.cacheReadTokens } : {}),
+        ...(usage.cacheWriteTokens !== undefined ? { cacheWriteTokens: usage.cacheWriteTokens } : {}),
       })
       if (derived.source === "computed" && derived.costUsd !== undefined) {
         rt.desc.costUsd = derived.costUsd
@@ -6187,11 +6243,7 @@ export function createSessionsRegistry(opts?: {
     // carries no context-window figure, and `projectEvent` guards on
     // >0 so the 0s never clobber a real size already mirrored onto
     // the descriptor).
-    if (
-      usage.costUsd !== undefined ||
-      usage.tokensIn !== undefined ||
-      usage.tokensOut !== undefined
-    ) {
+    if (usage.costUsd !== undefined || readerHasTokens) {
       const usageEvent: AgentStreamEvent = {
         kind: "usage_update",
         size: 0,
@@ -6651,6 +6703,7 @@ export function createSessionsRegistry(opts?: {
     rt.activeToolCalls = new Map()
     rt.toolCallIdsThisTurn = new Set()
     rt.toolCallsThisTurn = 0
+    rt.turnStartedAtMs = Date.now()
     // Clear a stale parked-with-background-tasks flag from the prior turn —
     // the session was re-prompted, so it is by definition no longer parked:
     // this turn will see whatever its background tasks produced. Counter
@@ -6847,6 +6900,7 @@ export function createSessionsRegistry(opts?: {
       // someone else's.
       const interruptedBy = rt.interruptRequested
       rt.interruptRequested = undefined
+      closeTurnStats(rt)
       rt.busy = false
       rt.desc.busy = false           // mirror onto the public descriptor for session_monitor
       rt.emitter.emit("busy", false)
@@ -7318,6 +7372,7 @@ export function createSessionsRegistry(opts?: {
     rt.activeToolCalls = new Map()
     rt.toolCallIdsThisTurn = new Set()
     rt.toolCallsThisTurn = 0
+    rt.turnStartedAtMs = Date.now()
     // No longer parked — same as a prompted turn start.
     if (rt.desc.pendingBgTasks !== undefined) {
       delete rt.desc.pendingBgTasks
@@ -7353,6 +7408,7 @@ export function createSessionsRegistry(opts?: {
     const turnEnd: AgentStreamEvent = { kind: "turn-end", reason }
     transcriptWriter.recordEvent(rt.desc.id, turnEnd)
     projectEvent(rt, turnEnd)
+    closeTurnStats(rt)
     rt.busy = false
     rt.desc.busy = false
     rt.emitter.emit("busy", false)
