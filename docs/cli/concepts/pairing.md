@@ -335,6 +335,34 @@ disable the default entirely — a daemon that must never reach the hosted broke
 unless an endpoint is named explicitly — set `pairing.rendezvous: ""`; `pair
 offer` then requires an explicit `--rendezvous`.
 
+## Offer scope (reverse pairing)
+
+`pair offer --host` mints an offer carrying `&scope=host`
+(`@agentproto/secrets/pairing`'s `offer-url.ts`). It changes **nothing** about
+the pair/v2 wire handshake — `scope` is plaintext metadata in the offer URL's
+query string, never inside the sealed hello — and it changes nothing about
+actual technical capability: a plain offer and a host-scoped offer are
+cryptographically identical in what they grant. `pair accept` + `pair exec`
+already give the accepting side full CLI-verb-equivalent control of the
+offering daemon, today, with no `--host` involved.
+
+What `scope` actually gates is **registration**:
+[`agentproto devices add`](../verbs/devices.md#add) refuses to register a
+daemon as a driveable *host* from an offer that isn't host-scoped. That stops
+an ordinary "let my phone remote-control me" offer from silently becoming a
+host registration on the accepting side. There is no override flag.
+
+Because `scope` is unauthenticated, a relay could flip it in transit — that
+can only mislead the *accepting* side's own bookkeeping about what it thinks
+it registered; it cannot grant it anything it couldn't already reach via
+`pair accept` + `pair exec`. The offering daemon's own record of what it
+granted (its `OfferEntry`, then the persisted `PairingRecord.scope`) is set
+from what *it* asked for when it minted the offer, never from anything a
+client's hello claims — the hello has no scope field at all.
+
+Revocation is unchanged: `pair revoke` / `devices revoke` on the offering
+daemon drops a pairing (host-scoped or not) exactly as it does today.
+
 ## Status
 
 - **Phase 1:** identity module, `pair/v1` handshake, `wrapE2E` channel, and the

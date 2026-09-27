@@ -2505,7 +2505,7 @@ export function createWorkflowRunner(opts: {
         // documented refusal (`not_retryable`), not an unhandled rejection.
         try {
           const handle = await loadWorkflowHandle(orig.path)
-          runtimeWorkflow = await compileWorkflow(handle)
+          runtimeWorkflow = await compileWorkflow(handle, orig.path)
         } catch (err) {
           return {
             ok: false,

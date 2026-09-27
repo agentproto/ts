@@ -1,7 +1,7 @@
 # `agentproto pair`
 
 ```text
-agentproto pair offer  [--ttl 10m] [--rendezvous <wss://…>] [--no-qr | --qr [--pair-page <url|template>]] [--json]
+agentproto pair offer  [--ttl 10m] [--rendezvous <wss://…>] [--no-qr | --qr [--pair-page <url|template>]] [--json] [--host]
 agentproto pair accept "<offer-url>" [--name <label>]
 agentproto pair ls     [--json]
 agentproto pair revoke <fingerprint|name>
@@ -88,6 +88,14 @@ This window can close.
     [concepts/pairing.md](../concepts/pairing.md#the-phone-pair-page-one-origin-per-daemon)).
   - A **plain URL**, used as is, e.g. a local `http://localhost:3000/pair`.
     Every daemon paired through it shares one origin.
+- `--host` mints a **HOST-scoped** offer: the accepting side may register
+  this daemon as a driveable device with
+  [`agentproto devices add`](./devices.md#add), not just remote-control it
+  with `pair accept` + `pair exec`. The underlying wire capability is
+  identical either way — `--host` is a consent/registration gate, not a new
+  technical restriction. See
+  [concepts/pairing.md](../concepts/pairing.md#offer-scope-reverse-pairing)
+  for what it does and doesn't change.
     `{fp}` anywhere else (path, query, port, userinfo) is rejected, as is any
     other `{…}`. The page setting is checked before the offer is minted.
 - `--json` emits `{ url, fingerprint, rendezvous, rendezvousIsHostedDefault,
