@@ -52,6 +52,7 @@ import {
 } from "./session-message.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
+import type { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import type { RemoteController, EnableInput } from "./remote-controller.js"
 import type { PairingRegistry } from "./pairing-registry.js"
 import { createDeviceRegistry } from "./device-registry.js"
@@ -800,6 +801,12 @@ export interface RuntimeHttpServerOptions {
    *  (both share `spawnAgentSession`). Omitted → a spawn the policy says to
    *  isolate is rejected with `worktree_provisioner_not_enabled`. */
   provisionWorktree?: WorktreeProvisioner
+  /** Optional — mirrors `RegisterAgentToolsOptions.ensureLlmEndpointRunning`.
+   *  When wired, a `POST /sessions/agent` (or `/sessions/chat`) spawn billing
+   *  through the local `llm-endpoint` proxy self-heals the sidecar instead
+   *  of assuming it's already running, exactly as the MCP `agent_start`
+   *  tool does (both share `spawnAgentSession`). */
+  ensureLlmEndpointRunning?: SpawnAgentSessionDeps["ensureLlmEndpointRunning"]
   /** Optional — when wired, enables `GET /adapters` route + the
    *  MCP `adapter_list` tool so UIs can discover what's installed
    *  without trial-and-error against the resolver. Hosts ship the
@@ -901,6 +908,13 @@ export interface RuntimeHttpServerOptions {
   /** Optional — when wired, exposes /tunnels/* routes for creating and
    *  managing public tunnels for local ports. Without it the routes 404. */
   tunnels?: TunnelRegistry
+  /** Optional — when wired (i.e. `features.llmEndpoint` is on), exposes
+   *  `GET /llm-endpoint/status` + `POST /llm-endpoint/restart` for
+   *  `agentproto llm gateway status|restart` and the "LLM gateway" doctor
+   *  step — both run as a separate CLI invocation from the live daemon, so
+   *  they need this REST surface rather than reaching into the in-process
+   *  registry directly. Without it the routes 404. */
+  llmEndpoint?: LlmEndpointRegistry
   /** Optional — when wired, exposes POST /remote/enable, POST /remote/disable,
    *  GET /remote/status — the REST twin of the MCP `remote_enable` /
    *  `remote_disable` / `remote_status` tools (remote-tools.ts), for
@@ -2034,6 +2048,7 @@ export async function startHttpServer(
             opts.listCatalogModels,
             opts.resolveSandboxProvider,
             opts.webhookNotifier,
+            opts.ensureLlmEndpointRunning,
           )
           if (handled) return
         }
@@ -3312,6 +3327,14 @@ export async function startHttpServer(
         // a TunnelRegistry. /tunnels, /tunnels/:id.
         if (opts.tunnels && path.startsWith("/tunnels")) {
           const handled = await handleTunnels(req, res, path, opts.tunnels)
+          if (handled) return
+        }
+
+        // llm-endpoint routes — only registered when the gateway was built
+        // with an LlmEndpointRegistry (features.llmEndpoint on).
+        // /llm-endpoint/status, /llm-endpoint/restart.
+        if (opts.llmEndpoint && path.startsWith("/llm-endpoint")) {
+          const handled = await handleLlmEndpoint(req, res, path, opts.llmEndpoint)
           if (handled) return
         }
 
@@ -4877,6 +4900,7 @@ async function handleSessions(
   listCatalogModels?: CatalogModelsLister,
   resolveSandboxProvider?: SpawnAgentSessionDeps["resolveSandboxProvider"],
   webhookNotifier?: SpawnAgentSessionDeps["webhookNotifier"],
+  ensureLlmEndpointRunning?: SpawnAgentSessionDeps["ensureLlmEndpointRunning"],
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -5068,6 +5092,7 @@ async function handleSessions(
         ...(listCatalogModels ? { listCatalogModels } : {}),
         ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
         ...(webhookNotifier ? { webhookNotifier } : {}),
+        ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
       },
       spawnArgs,
     )
@@ -5166,6 +5191,7 @@ async function handleSessions(
         ...(listCatalogModels ? { listCatalogModels } : {}),
         ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
         ...(webhookNotifier ? { webhookNotifier } : {}),
+        ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
       },
       spawnArgs,
     )
@@ -6796,6 +6822,60 @@ async function handleTunnels(
       return true
     }
     json(200, { ok, tunnelId: rawIdOrName })
+    return true
+  }
+
+  return false
+}
+
+/**
+ * /llm-endpoint routes — status + restart for the daemon-managed
+ * `@agentproto/llm-endpoint` proxy sidecar. REST twin of the MCP
+ * `llm_endpoint_status` / `llm_endpoint_start` / `llm_endpoint_stop` tools
+ * (llm-endpoint-tools.ts), same `LlmEndpointRegistry` singleton — for
+ * `agentproto llm gateway status|restart` and the "LLM gateway" doctor step,
+ * both of which run as a separate CLI invocation from the live daemon and so
+ * cannot reach the in-process registry directly.
+ *
+ *   GET  /llm-endpoint/status  → LlmEndpointStatusReport
+ *   POST /llm-endpoint/restart → LlmEndpointDescriptor (stop, then start)
+ */
+async function handleLlmEndpoint(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  registry: LlmEndpointRegistry,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (path === "/llm-endpoint/status" && req.method === "GET") {
+    json(200, await registry.status())
+    return true
+  }
+
+  if (path === "/llm-endpoint/restart" && req.method === "POST") {
+    // Preserve the CURRENTLY-configured port across the restart — `start()`
+    // with no `port` falls back to the built-in default (18090), which
+    // would silently relocate a sidecar an operator deliberately runs on a
+    // different port (`LLM_ENDPOINT_PORT` at boot, or an explicit
+    // `llm_endpoint_start` port) onto the wrong one. `owner:"external"`
+    // never went through OUR `start()`, so there's no port of ours to keep —
+    // `stop()` is a no-op for it (never spawned by us) and `start()` falls
+    // through to the default, same as any first-ever start.
+    const priorPort = registry.get()?.port
+    try {
+      await registry.stop()
+      const desc = await registry.start(priorPort ? { port: priorPort } : {})
+      json(200, desc)
+    } catch (err) {
+      json(500, {
+        error: "restart_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
     return true
   }
 

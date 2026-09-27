@@ -61,6 +61,12 @@ class MockRegistry extends LlmEndpointRegistry {
     if (this.healthQueue.length > 0) return this.healthQueue.shift() as boolean
     return this.healthDefault
   }
+
+  /** Simulate the child process exiting unexpectedly (a crash), as if
+   *  `launch()`'s real `child.once("exit", ...)` had fired. */
+  triggerCrash(code: number | null = 1): void {
+    this.onExitCb?.({ code, signal: null })
+  }
 }
 
 function makeRegistry(
@@ -337,6 +343,94 @@ describe("LlmEndpointRegistry", () => {
     await reg.shutdown()
 
     expect(reg.stopCalls).toBe(1)
+    expect(reg.get()?.status).toBe("stopped")
+  })
+
+  it("start throws on a startup crash WITHOUT scheduling a crash-restart", async () => {
+    const reg = makeRegistry({
+      injectKeys: async () => [],
+      crashRestart: { maxRetries: 3, windowMs: 1_000, baseDelayMs: 5, maxDelayMs: 20 },
+    })
+    reg.crashOnFirstProbe = true
+
+    await expect(reg.start({ port: 18201 })).rejects.toThrow(/exited/)
+    expect(reg.get()?.status).toBe("error")
+
+    // A crash during the STARTUP window is surfaced synchronously to the
+    // caller above — it must not also schedule an internal restart (that
+    // would race whatever the caller does with the thrown error).
+    await new Promise(res => setTimeout(res, 30))
+    expect(reg.launchCalls).toBe(1)
+    expect(reg.get()?.status).toBe("error")
+  })
+
+  it("crash-restarts an unexpected exit of an already-running child", async () => {
+    const reg = makeRegistry({
+      injectKeys: async () => [],
+      crashRestart: { maxRetries: 3, windowMs: 1_000, baseDelayMs: 5, factor: 2, maxDelayMs: 20 },
+    })
+    reg.healthDefault = true
+    await reg.start({ port: 18202 })
+    expect(reg.get()?.status).toBe("running")
+
+    reg.triggerCrash()
+    expect(reg.get()?.status).toBe("error")
+
+    // Past the scheduled backoff delay, the registry should have respawned
+    // and reached `running` again on its own, no caller intervention.
+    await new Promise(res => setTimeout(res, 40))
+    expect(reg.launchCalls).toBe(2)
+    expect(reg.get()?.status).toBe("running")
+  })
+
+  it("gives up crash-restarting once maxRetries within the window is exhausted", async () => {
+    const reg = makeRegistry({
+      injectKeys: async () => [],
+      crashRestart: { maxRetries: 1, windowMs: 1_000, baseDelayMs: 5, factor: 2, maxDelayMs: 20 },
+    })
+    reg.healthDefault = true
+    await reg.start({ port: 18203 })
+
+    reg.triggerCrash()
+    await new Promise(res => setTimeout(res, 40))
+    expect(reg.launchCalls).toBe(2)
+    expect(reg.get()?.status).toBe("running")
+
+    // Second crash — the 1-retry budget within the window is already spent.
+    reg.triggerCrash()
+    await new Promise(res => setTimeout(res, 40))
+    expect(reg.launchCalls).toBe(2)
+    expect(reg.get()?.status).toBe("error")
+  })
+
+  it("crashRestart maxRetries:0 disables restart entirely (opt-out)", async () => {
+    const reg = makeRegistry({
+      injectKeys: async () => [],
+      crashRestart: { maxRetries: 0 },
+    })
+    reg.healthDefault = true
+    await reg.start({ port: 18204 })
+
+    reg.triggerCrash()
+    await new Promise(res => setTimeout(res, 30))
+    expect(reg.launchCalls).toBe(1)
+    expect(reg.get()?.status).toBe("error")
+  })
+
+  it("stop() cancels a pending crash-restart", async () => {
+    const reg = makeRegistry({
+      injectKeys: async () => [],
+      crashRestart: { maxRetries: 3, windowMs: 1_000, baseDelayMs: 15, factor: 2, maxDelayMs: 40 },
+    })
+    reg.healthDefault = true
+    await reg.start({ port: 18205 })
+
+    reg.triggerCrash()
+    // Stop before the scheduled restart timer fires.
+    await reg.stop()
+    await new Promise(res => setTimeout(res, 40))
+
+    expect(reg.launchCalls).toBe(1)
     expect(reg.get()?.status).toBe("stopped")
   })
 

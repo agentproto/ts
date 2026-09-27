@@ -13,6 +13,7 @@ import { clientsStep } from "./steps/clients.js"
 import { devicesStep } from "./steps/devices.js"
 import { skillsStep } from "./steps/skills.js"
 import { localModelsStep } from "./steps/local-models.js"
+import { llmGatewayStep } from "./steps/llm-gateway.js"
 import { ONBOARDING_STEPS } from "./registry.js"
 import { runChecks } from "./run.js"
 import type { StepCheck } from "./types.js"
@@ -45,6 +46,7 @@ describe("healthy machine", () => {
       "devices",
       "skills",
       "local-models",
+      "llm-gateway",
     ])
   })
 
@@ -599,5 +601,122 @@ describe("local-models", () => {
       }),
     )
     expect(byId(checks, "local-models.config")).toMatchObject({ status: "broken", fix: "agentproto llm endpoints list" })
+  })
+})
+
+/** Routes `ctx.fetch` by path: `/health` always answers healthy (so
+ *  `fetchHealth` inside the step resolves) while `/llm-endpoint/status`
+ *  answers with whatever the test wants — the shared fake context's default
+ *  fetch answers every path identically, which can't exercise the step's
+ *  status-fetch independently of its health-fetch. */
+function fetchRoutingLlmEndpointStatus(respond: () => Response): typeof fetch {
+  return (async (input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
+    if (url.includes("/llm-endpoint/status")) return respond()
+    return new Response(JSON.stringify({ version: "1.0.0", uptimeMs: 65_000, pid: 4242 }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })
+  }) as typeof fetch
+}
+
+describe("llm-gateway", () => {
+  it("daemon unreachable is skipped, not broken", async () => {
+    const checks = await llmGatewayStep.detect(createFakeContext({ health: null }))
+    expect(checks).toHaveLength(1)
+    expect(checks[0]?.status).toBe("skipped")
+  })
+
+  it("features.llmEndpoint off (404) is skipped with a fix hint, not missing/broken", async () => {
+    const checks = await llmGatewayStep.detect(
+      createFakeContext({ fetch: fetchRoutingLlmEndpointStatus(() => new Response("", { status: 404 })) }),
+    )
+    expect(byId(checks, "llm-gateway.status")).toMatchObject({ status: "skipped" })
+    expect(byId(checks, "llm-gateway.status").fix).toMatch(/features\.llmEndpoint/)
+  })
+
+  it("an unrecognized 200 body (older/newer daemon) falls back to skipped, not broken", async () => {
+    const checks = await llmGatewayStep.detect(createFakeContext())
+    expect(byId(checks, "llm-gateway.status").status).toBe("skipped")
+  })
+
+  it("managed + healthy reports ok with the version and providers", async () => {
+    const status = {
+      running: true,
+      pid: 4242,
+      port: 18090,
+      baseUrl: "http://127.0.0.1:18090",
+      healthy: true,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      status: "running",
+      owner: "daemon",
+      linksApplied: true,
+      injectedProviders: ["anthropic"],
+      version: "1.2.3",
+    }
+    const checks = await llmGatewayStep.detect(
+      createFakeContext({
+        fetch: fetchRoutingLlmEndpointStatus(() => new Response(JSON.stringify(status), { status: 200 })),
+      }),
+    )
+    const c = byId(checks, "llm-gateway.status")
+    expect(c.status).toBe("ok")
+    expect(c.detail).toContain("managed")
+    expect(c.detail).toContain("v1.2.3")
+    expect(c.detail).toContain("anthropic")
+    expect(c.data).toMatchObject({ owner: "daemon", port: 18090 })
+  })
+
+  it("adopted external process reports ok, distinguished from a daemon-managed one", async () => {
+    const status = {
+      running: true,
+      pid: null,
+      port: 18090,
+      baseUrl: "http://127.0.0.1:18090",
+      healthy: true,
+      startedAt: null,
+      status: "running",
+      owner: "external",
+      linksApplied: false,
+    }
+    const checks = await llmGatewayStep.detect(
+      createFakeContext({
+        fetch: fetchRoutingLlmEndpointStatus(() => new Response(JSON.stringify(status), { status: 200 })),
+      }),
+    )
+    const c = byId(checks, "llm-gateway.status")
+    expect(c.status).toBe("ok")
+    expect(c.detail).toContain("external")
+    expect(c.data).toMatchObject({ owner: "external" })
+  })
+
+  it("feature on but not running warns with a restart fix", async () => {
+    const status = {
+      running: false,
+      pid: null,
+      port: 18090,
+      baseUrl: "http://127.0.0.1:18090",
+      healthy: false,
+      startedAt: null,
+      status: "error",
+      owner: "daemon",
+      linksApplied: false,
+      lastError: "llm-endpoint exited (code=1)",
+    }
+    const checks = await llmGatewayStep.detect(
+      createFakeContext({
+        fetch: fetchRoutingLlmEndpointStatus(() => new Response(JSON.stringify(status), { status: 200 })),
+      }),
+    )
+    const c = byId(checks, "llm-gateway.status")
+    expect(c.status).toBe("warn")
+    expect(c.fix).toBe("agentproto llm gateway restart")
+  })
+
+  it("a 5xx from a live daemon is a broken check", async () => {
+    const checks = await llmGatewayStep.detect(
+      createFakeContext({ fetch: fetchRoutingLlmEndpointStatus(() => new Response("", { status: 500 })) }),
+    )
+    expect(byId(checks, "llm-gateway.status").status).toBe("broken")
   })
 })

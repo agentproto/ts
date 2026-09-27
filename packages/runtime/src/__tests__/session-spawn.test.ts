@@ -5726,3 +5726,98 @@ describe("spawnAgentSession — browser: \"headless\"", () => {
     expect(registry.list()).toHaveLength(0)
   })
 })
+
+// ── ensureLlmEndpointRunning (daemon-managed-gateway self-heal) ─────────────
+//
+// Nothing else starts the local llm-endpoint proxy sidecar lazily — a spawn
+// whose resolved gateway is "llm-endpoint" used to assume it was already
+// running (started externally, or via the llm_endpoint_start MCP tool).
+// These tests pin: the hook fires exactly for that one gateway id, is
+// awaited before the adapter's startSession runs, and a rejection never
+// fails the spawn itself.
+describe("spawnAgentSession — ensureLlmEndpointRunning self-heal", () => {
+  it("calls the hook for an explicit route:{gateway:\"llm-endpoint\"} spawn", async () => {
+    const ensureLlmEndpointRunning = vi.fn(async () => {})
+    const { deps } = baseDeps({ ensureLlmEndpointRunning })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      route: { gateway: "llm-endpoint" },
+    })
+
+    expect(result.ok).toBe(true)
+    expect(ensureLlmEndpointRunning).toHaveBeenCalledTimes(1)
+  })
+
+  it("does NOT call the hook for a different gateway", async () => {
+    const ensureLlmEndpointRunning = vi.fn(async () => {})
+    const { deps } = baseDeps({ ensureLlmEndpointRunning })
+
+    await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      route: { gateway: "openrouter" },
+    })
+
+    expect(ensureLlmEndpointRunning).not.toHaveBeenCalled()
+  })
+
+  it("does NOT call the hook for a spawn with no route at all", async () => {
+    const ensureLlmEndpointRunning = vi.fn(async () => {})
+    const { deps } = baseDeps({ ensureLlmEndpointRunning })
+
+    await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp" })
+
+    expect(ensureLlmEndpointRunning).not.toHaveBeenCalled()
+  })
+
+  it("is awaited before the adapter's startSession runs", async () => {
+    const order: string[] = []
+    const ensureLlmEndpointRunning = vi.fn(async () => {
+      order.push("ensure")
+    })
+    const startSession = vi.fn(async () => {
+      order.push("startSession")
+      return fakeAgentSession()
+    })
+    const { deps } = baseDeps({
+      ensureLlmEndpointRunning,
+      resolveAgentAdapter: makeResolver(startSession),
+    })
+
+    await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      route: { gateway: "llm-endpoint" },
+    })
+
+    expect(order).toEqual(["ensure", "startSession"])
+  })
+
+  it("a rejection from the hook never fails the spawn — best-effort only", async () => {
+    const ensureLlmEndpointRunning = vi.fn(async () => {
+      throw new Error("llm-endpoint bin not found")
+    })
+    const { deps } = baseDeps({ ensureLlmEndpointRunning })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      route: { gateway: "llm-endpoint" },
+    })
+
+    expect(result.ok).toBe(true)
+    expect(ensureLlmEndpointRunning).toHaveBeenCalledTimes(1)
+  })
+
+  it("is a no-op (never throws) when the deps don't wire the hook at all", async () => {
+    const { deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      route: { gateway: "llm-endpoint" },
+    })
+    expect(result.ok).toBe(true)
+  })
+})

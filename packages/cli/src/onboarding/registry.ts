@@ -12,6 +12,7 @@ import { devicesStep } from "./steps/devices.js"
 import { skillsStep } from "./steps/skills.js"
 import { firstRunStep } from "./steps/first-run.js"
 import { localModelsStep } from "./steps/local-models.js"
+import { llmGatewayStep } from "./steps/llm-gateway.js"
 
 export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
   preflightStep,
@@ -23,6 +24,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
   devicesStep,
   skillsStep,
   localModelsStep,
+  llmGatewayStep,
 ]
 
 /** `agentproto setup`'s steps: the doctor checklist, then the proof-it-works

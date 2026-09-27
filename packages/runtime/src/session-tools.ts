@@ -277,6 +277,9 @@ export interface RegisterSessionToolsOptions {
    *  `catalog_models` MCP tool. Without it the tool returns a clear "not
    *  configured" error pointing at the host wiring. */
   listCatalogModels?: CatalogModelsLister
+  /** Forwarded to `registerAgentTools` — see
+   *  `RegisterAgentToolsOptions.ensureLlmEndpointRunning`. */
+  ensureLlmEndpointRunning?: SpawnAgentSessionDeps["ensureLlmEndpointRunning"]
   /** config.json `defaults` loader — same seam as
    *  `RestartAgentSessionOptions.loadDefaultsConfig` in session-restart-core.ts.
    *  Threaded into `session_restart`'s pty-native billing-auth re-resolution
@@ -1360,6 +1363,9 @@ export function registerSessionTools(
         ...(opts.resolveWorktreeIsolation ? { resolveWorktreeIsolation: opts.resolveWorktreeIsolation } : {}),
         ...(opts.loadRoleRegistry ? { loadRoleRegistry: opts.loadRoleRegistry } : {}),
         ...(listCatalogModels ? { listCatalogModels } : {}),
+        ...(opts.ensureLlmEndpointRunning
+          ? { ensureLlmEndpointRunning: opts.ensureLlmEndpointRunning }
+          : {}),
       }
       try {
         const result = await continueAgentSessionFresh(spawnDeps, desc, {

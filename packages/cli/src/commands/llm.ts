@@ -1,5 +1,6 @@
 /**
  * `agentproto llm endpoints <list|test>`
+ * `agentproto llm gateway <status|restart>`
  *
  * Read-only visibility into the LLM gateway's named OpenAI-compatible
  * endpoints (local/LAN model servers — Ollama, llama-server, vLLM, …),
@@ -12,6 +13,12 @@
  * shape). This mirrors how `auth cred`/`auth profile` keep their own JSON
  * stores, but scoped down to what's needed today: seeing what's configured
  * (`list`) and whether it's actually reachable (`test`).
+ *
+ * `gateway status|restart` is a different thing entirely: the daemon-managed
+ * `@agentproto/llm-endpoint` PROXY sidecar itself (`LlmEndpointRegistry`,
+ * `features.llmEndpoint`) — managed/external/missing, reachable, port,
+ * providers. Talks to the daemon's `/llm-endpoint/*` REST routes, same
+ * discovery + HTTP-helper pattern `agentproto tunnel` uses.
  */
 
 import { parseArgs } from "node:util"
@@ -20,6 +27,13 @@ import {
   resolveEndpointsFilePath,
   type EndpointConfig,
 } from "@agentproto/llm-endpoint"
+import type { LlmEndpointStatusReport } from "@agentproto/runtime"
+import {
+  discoverDaemon,
+  printNoDaemonError,
+  httpGetJson,
+  httpPostJson,
+} from "./_daemon-helpers.js"
 
 export async function runLlm(args: readonly string[]): Promise<number> {
   const sub = args[0]
@@ -27,6 +41,8 @@ export async function runLlm(args: readonly string[]): Promise<number> {
   switch (sub) {
     case "endpoints":
       return runLlmEndpoints(rest)
+    case "gateway":
+      return runLlmGateway(rest)
     case undefined:
     case "--help":
     case "-h":
@@ -38,16 +54,22 @@ export async function runLlm(args: readonly string[]): Promise<number> {
   }
 }
 
-const USAGE = `agentproto llm — the LLM gateway's named local/LAN model endpoints
+const USAGE = `agentproto llm — the LLM gateway: named endpoints + proxy sidecar
 
 Usage:
   agentproto llm endpoints list [--json]
   agentproto llm endpoints test [--json]
+  agentproto llm gateway status  [--json]
+  agentproto llm gateway restart [--json]
 
 Endpoints live in ~/.agentproto/llm-endpoints.json (LLM_ENDPOINT_ENDPOINTS_FILE
 overrides the path) — see the @agentproto/llm-endpoint README's "Named
 endpoints" section for the file's shape. Add/remove one by editing that file
 directly; \`list\`/\`test\` are read-only.
+
+\`gateway status|restart\` manage the daemon-supervised @agentproto/llm-endpoint
+PROXY sidecar itself (features.llmEndpoint) — a different thing from the named
+endpoints above.
 `
 
 const ENDPOINTS_USAGE = `agentproto llm endpoints — named OpenAI-compatible endpoints
@@ -227,4 +249,135 @@ async function runEndpointsTest(args: readonly string[]): Promise<number> {
     }
   }
   return results.every((r) => r.reachable) ? 0 : 1
+}
+
+// ── gateway (the proxy sidecar itself) ──────────────────────────────────
+
+const GATEWAY_USAGE = `agentproto llm gateway — the daemon-managed llm-endpoint proxy sidecar
+
+Usage:
+  agentproto llm gateway status  [--json]
+  agentproto llm gateway restart [--json]
+
+status  reports whether the sidecar is up, WHO owns it ("daemon" — this
+        daemon spawned it, or "external" — something else already answers
+        healthily on the port and the daemon adopted it read-only rather
+        than starting a second one), reachability, port, and providers.
+restart stops (if daemon-owned) then starts it. Requires a live daemon with
+        features.llmEndpoint on; an "external" owner is never touched by
+        this — the daemon never spawned it, so it has nothing to stop.
+`
+
+function printGatewayStatus(status: LlmEndpointStatusReport): void {
+  process.stdout.write(
+    `running  ${status.running}\n` +
+      `owner    ${status.owner}\n` +
+      `status   ${status.status}\n` +
+      `healthy  ${status.healthy}\n` +
+      (status.port !== null ? `port     ${status.port}\n` : "") +
+      (status.baseUrl ? `baseUrl  ${status.baseUrl}\n` : "") +
+      (status.pid !== null ? `pid      ${status.pid}\n` : "") +
+      (status.startedAt ? `started  ${status.startedAt}\n` : "") +
+      (status.injectedProviders && status.injectedProviders.length > 0
+        ? `providers ${status.injectedProviders.join(", ")}\n`
+        : "") +
+      (status.lastError ? `error    ${status.lastError}\n` : ""),
+  )
+}
+
+async function runLlmGateway(args: readonly string[]): Promise<number> {
+  const sub = args[0]
+  const rest = args.slice(1)
+  switch (sub) {
+    case "status":
+      return runGatewayStatus(rest)
+    case "restart":
+      return runGatewayRestart(rest)
+    case undefined:
+    case "--help":
+    case "-h":
+      process.stdout.write(GATEWAY_USAGE)
+      return 0
+    default:
+      process.stderr.write(
+        `agentproto llm gateway: unknown subcommand '${sub}'.\n\n${GATEWAY_USAGE}`,
+      )
+      return 2
+  }
+}
+
+async function runGatewayStatus(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    strict: true,
+    options: { json: { type: "boolean" } },
+  })
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto llm gateway status")
+    return 2
+  }
+  const endpoint = report.found
+
+  let status: LlmEndpointStatusReport
+  try {
+    status = await httpGetJson<LlmEndpointStatusReport>(`${endpoint.url}/llm-endpoint/status`)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/HTTP 404/.test(msg)) {
+      process.stderr.write(
+        "agentproto llm gateway status: the daemon was started without features.llmEndpoint " +
+          "(the /llm-endpoint routes aren't registered) — see `agentproto doctor`.\n",
+      )
+      return 2
+    }
+    process.stderr.write(`agentproto llm gateway status: ${msg}\n`)
+    return 1
+  }
+
+  if (values.json) {
+    process.stdout.write(JSON.stringify(status, null, 2) + "\n")
+  } else {
+    printGatewayStatus(status)
+  }
+  return status.running ? 0 : 1
+}
+
+async function runGatewayRestart(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    strict: true,
+    options: { json: { type: "boolean" } },
+  })
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto llm gateway restart")
+    return 2
+  }
+  const endpoint = report.found
+
+  let desc: unknown
+  try {
+    desc = await httpPostJson(`${endpoint.url}/llm-endpoint/restart`, {}, endpoint.token)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (/HTTP 404/.test(msg)) {
+      process.stderr.write(
+        "agentproto llm gateway restart: the daemon was started without features.llmEndpoint " +
+          "(the /llm-endpoint routes aren't registered) — see `agentproto doctor`.\n",
+      )
+      return 2
+    }
+    process.stderr.write(`agentproto llm gateway restart: ${msg}\n`)
+    return 1
+  }
+
+  if (values.json) {
+    process.stdout.write(JSON.stringify(desc, null, 2) + "\n")
+  } else {
+    process.stdout.write("llm-endpoint gateway restarted.\n")
+  }
+  return 0
 }
