@@ -880,18 +880,21 @@ function htmlRepresentation(html: string): EncodedRepresentation {
 }
 
 /**
- * Inject the standalone bridge `<script>` immediately before `</head>` (the
- * placement the task spec calls for), falling back to the earliest structural
- * tag (`<head>`/`<body>`/`<html>`) and finally to prepending, so the bridge is
- * defined before any app script runs even in a fragment without a head.
+ * Inject the standalone bridge `<script>` right after the earliest structural
+ * opening tag (`<head>`/`<body>`/`<html>`), falling back to prepending, so the
+ * bridge is defined before any app script runs.
+ *
+ * Deliberately NOT anchored on the first `</head>` match: a single-file app
+ * bundle (e.g. a Vite build) can inline its whole JS payload as a string
+ * literal before the real `</head>`, and that payload can itself contain the
+ * literal text `</head>` (e.g. a CSP-injection helper building a `<head>...
+ * </head>` fallback string). Matching the first `</head>` in the raw HTML
+ * text lands the bridge inside that JS string instead of the document head,
+ * breaking the page. Mirrors `injectAfterStructuralTag` in
+ * `packages/runtime/src/app-ui-apps.ts`, which the daemon's own
+ * `/apps/:appId/ui` route already relies on for the same reason.
  */
 export function injectBridge(html: string, bridgeScript: string): string {
-  const headClose = html.match(/<\/head>/i)
-  if (headClose?.index !== undefined) {
-    return (
-      html.slice(0, headClose.index) + bridgeScript + html.slice(headClose.index)
-    )
-  }
   for (const tag of ["head", "body", "html"]) {
     const match = html.match(new RegExp(`<${tag}[^>]*>`, "i"))
     if (match?.index !== undefined) {

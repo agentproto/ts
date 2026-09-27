@@ -115,16 +115,17 @@ describe("buildBridgeScript + RUNNER_SELECT_SCRIPT", () => {
 })
 
 describe("injectBridge", () => {
-  it("injects the script immediately before </head>, so it runs before app scripts", () => {
+  it("injects the script immediately after <head>, so it runs before app scripts", () => {
     const script = "<script>/* bridge */</script>"
     const html = "<html><head><title>t</title></head><body><script>window.McpApp.connect();</script></body></html>"
     const out = injectBridge(html, script)
-    expect(out.indexOf(script)).toBeLessThan(out.indexOf("</head>"))
+    expect(out.indexOf(script)).toBeGreaterThan(out.indexOf("<head>"))
+    expect(out.indexOf(script)).toBeLessThan(out.indexOf("<title>t</title>"))
     expect(out.indexOf(script)).toBeLessThan(out.indexOf("window.McpApp.connect()"))
     expect(out).toContain('<title>t</title>')
   })
 
-  it("falls back to prepending when there is no </head> or structural tag", () => {
+  it("falls back to prepending when there is no <head>/<body>/<html> structural tag", () => {
     const script = "<script>/* bridge */</script>"
     const out = injectBridge("Panel", script)
     expect(out.startsWith(script)).toBe(true)
@@ -134,6 +135,22 @@ describe("injectBridge", () => {
     const script = "<script>/* bridge */</script>"
     const out = injectBridge("<html><head><body>Panel</body></html>", script)
     expect(out.indexOf(script)).toBeLessThan(out.indexOf("<body>"))
+  })
+
+  it("does not land inside an inline <script> whose JS string literal contains the text </head>", () => {
+    // Regression for a real bundle (a single-file Vite build) that inlines a
+    // CSP-injection helper building a `<head>...</head>` fallback string as
+    // plain JS text — the literal "</head>" appears in that string well
+    // before the document's real closing head tag. Anchoring on the first
+    // `</head>` match landed the bridge inside that JS string and broke the
+    // page; the fix anchors on the opening structural tag instead.
+    const script = "<script>/* bridge */</script>"
+    const html =
+      '<html><head><script>function f(e){return "<head>"+e+"</head>"}window.McpApp.connect();</script></head><body></body></html>'
+    const out = injectBridge(html, script)
+    expect(out.indexOf(script)).toBeLessThan(out.indexOf("function f"))
+    expect(out.indexOf(script)).toBeLessThan(out.indexOf("window.McpApp.connect()"))
+    expect(out).toContain('"<head>"+e+"</head>"')
   })
 })
 
