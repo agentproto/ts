@@ -1,7 +1,7 @@
 ---
 name: pi-secrets
 id: pi-secrets
-description: Secret slots pi reads at boot. At minimum ONE model-provider key MUST be present — pi routes each turn to whichever provider the selected model belongs to (Anthropic / OpenAI / Google / Moonshot).
+description: Secret slots pi reads at boot. At minimum ONE model-provider key MUST be present — pi routes each turn to whichever provider the selected model belongs to (Anthropic / OpenAI / Google / Moonshot / OpenRouter).
 version: 0.1.0
 slots:
   - name: ANTHROPIC_API_KEY
@@ -20,6 +20,10 @@ slots:
     description: Moonshot AI API key — enables `moonshotai/kimi-*` models.
     required: false
     sensitivity: high
+  - name: OPENROUTER_API_KEY
+    description: OpenRouter API key — enables `openrouter/<vendor>/<product>` models (verified live against `openrouter/deepseek/deepseek-v4.1-flash` and `openrouter/z-ai/glm-5.3-flash`).
+    required: false
+    sensitivity: high
 constraints:
   - kind: at-least-one-of
     of:
@@ -27,13 +31,14 @@ constraints:
       - OPENAI_API_KEY
       - GOOGLE_GENERATIVE_AI_API_KEY
       - MOONSHOT_API_KEY
+      - OPENROUTER_API_KEY
 tags: [pi, secrets, model-providers]
 ---
 
 # Pi — secrets inventory
 
 Pi routes each turn to the provider that owns the selected model. The adapter
-declares the four provider key slots pi's supported providers read from the
+declares the five provider key slots pi's supported providers read from the
 process environment:
 
 | Env var | Provider | Unlocks |
@@ -42,6 +47,7 @@ process environment:
 | `OPENAI_API_KEY` | OpenAI | `openai/gpt-*` |
 | `GOOGLE_GENERATIVE_AI_API_KEY` | Google | `google/gemini-*` |
 | `MOONSHOT_API_KEY` | Moonshot AI | `moonshotai/kimi-*` |
+| `OPENROUTER_API_KEY` | OpenRouter | `openrouter/<vendor>/<product>` (e.g. `openrouter/deepseek/deepseek-v4.1-flash`) |
 
 **At least one** must be present, and it must match the provider of the model
 you route to (`models.default` is `anthropic/claude-sonnet-4-5`, so

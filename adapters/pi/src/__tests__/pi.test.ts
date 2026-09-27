@@ -35,6 +35,7 @@ describe("@agentproto/adapter-pi — manifest", () => {
       "OPENAI_API_KEY",
       "GOOGLE_GENERATIVE_AI_API_KEY",
       "MOONSHOT_API_KEY",
+      "OPENROUTER_API_KEY",
     ])
     expect(pi.continuation?.default).toBe("native-resume")
     expect(pi.continuation?.supported).toContain("native-resume")
@@ -78,6 +79,46 @@ describe("@agentproto/adapter-pi — manifest", () => {
     ).toBe(true)
     // env is keyed by the canonical provider slug, matching `provider` above.
     expect(pi.models?.env?.moonshot).toBe("MOONSHOT_API_KEY")
+  })
+
+  // Regression for the model-discovery gap: pi's real `--model` resolver
+  // accepts a literal `openrouter/<vendor>/<product>` id (verified live —
+  // `--model openrouter/deepseek/deepseek-v4.1-flash` resolves and bills
+  // correctly with an OpenRouter access profile) but the menu never
+  // advertised it, so `catalog_models`/`agentproto models pi` showed only
+  // Anthropic/OpenAI/Google/Moonshot even though the route worked.
+  it("advertises OpenRouter models with the vendor segment preserved (not collapsed to the bare product)", () => {
+    const allowed = pi.models?.allowed ?? []
+    const openrouterEntries = allowed.filter(
+      (m): m is { id: string; provider: string } => typeof m === "object" && m.provider === "openrouter",
+    )
+    expect(openrouterEntries.length).toBeGreaterThan(0)
+    // Every OpenRouter entry must be a real 3-segment `openrouter/<vendor>/<product>`
+    // id — collapsing to `openrouter/<product>` (the bug the fixed vendors' bareId
+    // logic would produce) silently drops the vendor and 404s upstream.
+    for (const entry of openrouterEntries) {
+      expect(entry.id.startsWith("openrouter/")).toBe(true)
+      const afterPrefix = entry.id.slice("openrouter/".length)
+      expect(afterPrefix.split("/").length).toBeGreaterThanOrEqual(2)
+    }
+    expect(openrouterEntries.some(m => m.id === "openrouter/deepseek/deepseek-v4.1-flash")).toBe(true)
+    expect(openrouterEntries.some(m => m.id === "openrouter/z-ai/glm-5.3-flash")).toBe(true)
+    expect(pi.models?.env?.openrouter).toBe("OPENROUTER_API_KEY")
+  })
+
+  it("declares an opt-in 'lean' context mode, applied via config so it reaches the proprietary arm", () => {
+    const lean = pi.modes?.find(m => m.id === "lean")
+    expect(lean).toBeDefined()
+    expect(lean?.kind).toBe("context")
+    // `apply: "config"` is load-bearing, not decorative: pi is a
+    // `protocol: "proprietary"` arm whose client.ts spawns its own child
+    // directly, so a mode's `bin_args_prepend`/`env` (the OTHER apply path)
+    // never reaches it — only `apply: "config"` forwards the mode id as
+    // `opts.mode` on connect(), which client.ts reads.
+    expect(lean?.apply).toBe("config")
+    // Default mode stays exactly as-is — no behavior change unless a caller
+    // explicitly opts in.
+    expect(pi.modes?.find(m => m.id === "default")).toBeDefined()
   })
 
   it("piRuntime returns a runtime bound to the pi handle", () => {

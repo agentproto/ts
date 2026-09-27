@@ -47,6 +47,20 @@ import { listModels } from "@agentproto/model-catalog"
  * Providers: Anthropic, OpenAI, Google, Moonshot — matching models.env.
  * Moonshot ids use the `moonshotai/` wire prefix pi's model resolver expects,
  * with the canonical `moonshot` billing provider.
+ *
+ * OpenRouter is added separately below (not in `supported`): pi's own model
+ * resolver accepts a literal `openrouter/<vendor>/<product>` id as a THIRD
+ * segment (verified live: `--model openrouter/deepseek/deepseek-v4.1-flash`
+ * with an OpenRouter access profile resolves and bills correctly —
+ * `modelDerivedApiKey: true` below picks `OPENROUTER_API_KEY` off that
+ * leading segment). Folding it into the same loop as the fixed vendors would
+ * be wrong: that loop collapses `bareId` to its LAST path segment before
+ * re-prefixing (`anthropic/claude-…` → `claude-…` → `anthropic/claude-…`),
+ * which is correct for a single-vendor provider but would drop OpenRouter's
+ * own vendor segment (`z-ai/glm-5.3-flash` → `glm-5.3-flash` →
+ * `openrouter/glm-5.3-flash`, losing `z-ai`). Mirrors
+ * `adapters/opencode/src/index.ts`'s `buildOpencodeModelMenu`, which hits
+ * the exact same shape and special-cases it the same way.
  */
 function buildPiModelMenu(): Array<{ id: string; provider: string }> {
   const supported = [
@@ -71,6 +85,13 @@ function buildPiModelMenu(): Array<{ id: string; provider: string }> {
     }
   }
 
+  for (const model of listModels({ kind: "llm", provider: "openrouter" })) {
+    const id = `openrouter/${model.id}`
+    if (seen.has(id)) continue
+    seen.add(id)
+    out.push({ id, provider: "openrouter" })
+  }
+
   return out.sort((a, b) => {
     if (a.provider !== b.provider) return a.provider.localeCompare(b.provider)
     return a.id.localeCompare(b.id)
@@ -83,7 +104,7 @@ export const pi: AgentCliHandle = defineAgentCli({
   description:
     "earendil-works/pi — MIT headless TypeScript coding agent. Driven over pi's " +
     "persistent JSON-over-stdio RPC mode (`pi --mode rpc`) as a spawned child. " +
-    "Multi-provider (Anthropic/OpenAI/Google/Moonshot), streaming, live-duplex " +
+    "Multi-provider (Anthropic/OpenAI/Google/Moonshot/OpenRouter), streaming, live-duplex " +
     "(steer/follow-up/abort mid-turn). No native ACP/MCP, but injected MCP " +
     "servers are BRIDGED into pi tools via a generated pi extension (see " +
     "MCP-BRIDGE.md); otherwise pi runs only its own built-in file/shell tools.",
@@ -115,6 +136,7 @@ export const pi: AgentCliHandle = defineAgentCli({
         "OPENAI_API_KEY",
         "GOOGLE_GENERATIVE_AI_API_KEY",
         "MOONSHOT_API_KEY",
+        "OPENROUTER_API_KEY",
       ],
     },
   },
@@ -170,6 +192,7 @@ export const pi: AgentCliHandle = defineAgentCli({
       // Keyed by the canonical provider slug, not the wire-format
       // `moonshotai` prefix.
       moonshot: "MOONSHOT_API_KEY",
+      openrouter: "OPENROUTER_API_KEY",
     },
   },
   capabilities: {
@@ -196,12 +219,57 @@ export const pi: AgentCliHandle = defineAgentCli({
     // Pi's RPC mode is a live duplex — steer / follow_up / abort mid-turn.
     bidirectional: true,
   },
-  // Pi's RPC surface has no plan/build/read-only mode switch to expose — a
-  // single default mode keeps the manifest honest (no invented modes).
   modes: [
     {
       id: "default",
       description: "Default pi RPC session — pi's own built-in file/shell tools.",
+    },
+    // Opt-in READ-ONLY, context-minimal review session (verified against pi
+    // 0.80.x `--help`: `--tools read --no-context-files --no-skills
+    // --no-extensions`). `apply: "config"` is the generic escape hatch for a
+    // mode with no bin_args/env surface reachable from THIS layer — pi is a
+    // `protocol: "proprietary"` arm (client.ts spawns its own child directly,
+    // never through the generic bin_args-compose path define-agent-cli.ts
+    // uses for ACP/print arms), so `bin_args_prepend`/`env` on a mode entry
+    // are silently inert for it. `apply: "config"` is the one path that
+    // still reaches proprietary arms: it forwards the mode id as
+    // `opts.mode` on `connect()` (define-agent-cli.ts's `configMode`)
+    // regardless of arm type, and `client.ts` reads it there to push the
+    // extra argv itself.
+    //
+    // This is layered UNDER the daemon's own required-instructions
+    // injection (`agents-md.ts` / `session-spawn.ts`'s AGENTS.md pointer or
+    // inline block, composed into the first prompt regardless of mode) —
+    // lean mode only suppresses pi's OWN redundant re-discovery of the same
+    // files plus pi's bash/edit/write tools and skills/extensions, never the
+    // daemon's own contract delivery.
+    //
+    // Deliberately `--tools read`, NOT `--no-tools`: the daemon's own
+    // AGENTS.md injection is "inline" only under `agentsMdInlineMaxKb`
+    // (default 8KB, `agents-md.ts`) — a repo whose AGENTS.md is bigger than
+    // that gets a POINTER sentence naming the path instead ("read it before
+    // your first tool call"), and a genuinely tool-less session has no tool
+    // to act on that instruction with. A pointer is a path, not the file's
+    // content — do not conflate the two. Keeping pi's own `read` tool
+    // enabled (pi's built-in tool ids, verified in the installed package's
+    // `core/sdk.js`: `["read","bash","edit","write"]`) means a pointer stays
+    // ACTIONABLE regardless of the target repo's AGENTS.md size, so required
+    // repository instructions are preserved rather than merely hoped-for.
+    // `bash`/`edit`/`write` and any injected MCP servers are still dropped
+    // (MCP bridging is skipped outright below) — this is a read-only review
+    // pass, not a tool-less one.
+    {
+      id: "lean",
+      kind: "context",
+      apply: "config",
+      description:
+        "Read-only, context-minimal review session: passes pi's own `--tools read " +
+        "--no-context-files --no-skills --no-extensions` (keeps only pi's built-in `read` " +
+        "tool — so a pointer-mode AGENTS.md instruction stays actionable — while dropping " +
+        "bash/edit/write, pi's native AGENTS.md/CLAUDE.md auto-discovery, and skill/extension " +
+        "discovery) and skips MCP-bridge injection. The daemon's own required AGENTS.md " +
+        "injection is unaffected. Read-only by construction — do not use for a session that " +
+        "needs to edit files or run commands.",
     },
   ],
   // `model` + `effort` are the two ids `createAgentCliRuntime` reads off

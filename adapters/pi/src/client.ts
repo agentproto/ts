@@ -297,12 +297,36 @@ export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient
       if (opts.model) args.push("--model", opts.model)
       if (opts.resumeSessionId) args.push("--session", opts.resumeSessionId)
 
+      // Lean review mode (manifest `modes[]` id "lean", forwarded here as
+      // `opts.mode` via `apply: "config"` — see index.ts's mode doc for why
+      // that's the only path that reaches a proprietary arm). Verified
+      // against pi 0.80.x `--help`: disables pi's own bash/edit/write tools,
+      // its native AGENTS.md/CLAUDE.md auto-discovery, and skill/extension
+      // discovery. Any injected MCP servers are skipped below rather than
+      // bridged — bridging tools this mode is about to exclude would only
+      // pay the enumerate() round-trip for nothing.
+      //
+      // `--tools read`, deliberately NOT `--no-tools`: the daemon's own
+      // AGENTS.md injection (session-spawn.ts) degrades to a POINTER
+      // sentence — a path, not the file's content — once the repo's
+      // AGENTS.md exceeds the inline size cap, and a fully tool-less session
+      // has no way to act on "read it before your first tool call." Keeping
+      // pi's `read` tool (one of its 4 built-ins — see index.ts's mode doc)
+      // means that instruction stays actionable regardless of AGENTS.md
+      // size, so required repository instructions are preserved rather than
+      // silently stranded. See client-lean-mode.test.ts's
+      // "keeps the read tool enabled" case for the regression guard.
+      const lean = opts.mode === "lean"
+      if (lean) {
+        args.push("--tools", "read", "--no-context-files", "--no-skills", "--no-extensions")
+      }
+
       // Bridge any injected MCP servers into pi via a generated extension:
       // enumerate their tools now, write a per-session config, and spawn pi with
       // `-e <extension>` + PI_MCP_BRIDGE_CONFIG so the extension registers one
       // pi tool per MCP tool. See ./mcp-bridge/ and ../MCP-BRIDGE.md.
       const childEnv: Record<string, string> = { ...opts.env }
-      if (opts.mcpServers?.length) {
+      if (opts.mcpServers?.length && !lean) {
         const { config, errors } = await enumerateMcpTools(opts.mcpServers)
         for (const e of errors) {
           console.warn(`[adapter-pi] mcp-bridge: server "${e.server}" unavailable — ${e.message}`)
