@@ -92,8 +92,13 @@ Usage:
                           ollama 11434, llama-server 8080, vllm 8000) on
                           127.0.0.1 and add/update the matching endpoint for
                           each one found running. No local server running is
-                          a normal outcome (exit 0). --dry-run reports what
-                          would change without writing the file.
+                          a normal outcome (exit 0). An existing entry whose
+                          id matches a detected runtime but whose baseUrl
+                          points somewhere other than 127.0.0.1/localhost
+                          (e.g. a LAN address) is left untouched and reported
+                          as skipped, never silently re-pointed at localhost.
+                          --dry-run reports what would change without
+                          writing the file.
   agentproto llm endpoints sync-pi [--dry-run] [--json]
                           Regenerate the matching provider entry in
                           ~/.pi/agent/models.json for every configured
@@ -442,7 +447,19 @@ interface DetectedRuntime {
   id: ConnectorId
   baseUrl: string
   connector: ConnectorId
-  action: "added" | "updated" | "would-add" | "would-update"
+  action: "added" | "updated" | "would-add" | "would-update" | "skipped-elsewhere"
+}
+
+/** `true` only for `http://127.0.0.1[:port]/...` or `http://localhost[:port]/...`
+ *  — anything else (a LAN IP, a hostname, https, …) is "points elsewhere" for
+ *  the purposes of `detect`'s clobber guard below. Never throws. */
+function isLocalhostUrl(url: string): boolean {
+  try {
+    const { hostname } = new URL(url)
+    return hostname === "127.0.0.1" || hostname === "localhost"
+  } catch {
+    return false
+  }
 }
 
 async function runEndpointsDetect(args: readonly string[]): Promise<number> {
@@ -468,20 +485,36 @@ async function runEndpointsDetect(args: readonly string[]): Promise<number> {
     const baseUrl = `http://127.0.0.1:${port}/v1`
     const alive = await connector.probe(baseUrl)
     if (!alive) continue
+    const existingEntry = existing.find((e) => e.id === id)
+    if (existingEntry && !isLocalhostUrl(existingEntry.baseUrl)) {
+      // Never re-point a hand-configured LAN/remote endpoint at localhost —
+      // report it and leave it exactly as the user wrote it.
+      detected.push({ id, baseUrl, connector: id, action: "skipped-elsewhere" })
+      continue
+    }
     const already = existingIds.has(id)
     const action = already ? (dryRun ? "would-update" : "updated") : (dryRun ? "would-add" : "added")
     detected.push({ id, baseUrl, connector: id, action })
   }
 
-  if (!dryRun && detected.length > 0) {
+  const actionable = detected.filter((d) => d.action === "added" || d.action === "updated")
+  if (!dryRun && actionable.length > 0) {
     const rebuilt = existing.map((e) => {
-      const d = detected.find((x) => x.id === e.id)
+      const d = actionable.find((x) => x.id === e.id)
       return d ? { ...e, baseUrl: d.baseUrl, connector: d.connector } : e
     })
-    for (const d of detected) {
+    for (const d of actionable) {
       if (!existingIds.has(d.id)) rebuilt.push({ id: d.id, kind: "openai", baseUrl: d.baseUrl, connector: d.connector })
     }
-    await writeEndpointsFile(path, rebuilt)
+    const { endpoints: parsed, errors } = parseEndpointsConfig({ endpoints: rebuilt })
+    if (errors.length > 0) {
+      process.stderr.write(
+        `agentproto llm endpoints detect: invalid endpoint after rebuild:\n` +
+          errors.map((e) => `  - ${e}\n`).join(""),
+      )
+      return 1
+    }
+    await writeEndpointsFile(path, parsed)
   }
 
   if (values.json) {
@@ -496,6 +529,13 @@ async function runEndpointsDetect(args: readonly string[]): Promise<number> {
     return 0
   }
   for (const d of detected) {
+    if (d.action === "skipped-elsewhere") {
+      process.stdout.write(
+        `Detected ${d.id} at ${d.baseUrl} -> existing endpoint "${d.id}" points elsewhere; ` +
+          `left untouched (skipped)\n`,
+      )
+      continue
+    }
     const verb = dryRun
       ? d.action === "would-add"
         ? "would write"
