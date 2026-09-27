@@ -710,6 +710,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // daemon.resumeSessionsOnBoot (profile-overlaid). Off ⇒ the handle
         // method short-circuits and only lazy resume-on-prompt applies.
         resumeSessionsOnBoot: cfgDaemon.resumeSessionsOnBoot === true,
+        // Opt-in continue-on-boot: after the eager pass, prompt the sessions
+        // the last restart cut off mid-turn to continue. Off ⇒ no-op.
+        continueInterruptedOnBoot: cfgDaemon.continueInterruptedOnBoot === true,
         // Idle agent-session reaper (PR-6). Resolution order mirrors the config
         // module docblock: AGENTPROTO_IDLE_REAP_AFTER_MS env > config field >
         // off. A positive ms value arms the periodic sweep; anything else keeps
@@ -903,6 +906,22 @@ export async function runServe(args: readonly string[]): Promise<number> {
       process.stderr.write(
         `${color.dim}eager-resumed ${eager.resumed}/${eager.candidates} session(s)` +
           `${eager.failed > 0 ? ` (${eager.failed} failed)` : ""}` +
+          `${color.reset}\n`,
+      )
+    }
+    // Continue-on-boot (opt-in, daemon.continueInterruptedOnBoot). Strictly
+    // AFTER the eager pass above, so a row whose eager resume failed carries
+    // its failed attempt and is skipped instead of lazily retried — and, like
+    // it, after the supervisor was re-armed, so a re-armed policy sees the
+    // continue turn end. Same cross-process gate.
+    const cont = await gateway.continueInterruptedOnBoot({
+      isServed: desc =>
+        resolveBucketSlug(desc.workspaceSlug, registeredSlugs) === servedBucket,
+    })
+    if (cont.enabled && cont.eligible > 0) {
+      process.stderr.write(
+        `${color.dim}continued ${cont.sent}/${cont.eligible} interrupted session(s)` +
+          `${cont.failed > 0 ? ` (${cont.failed} failed)` : ""}` +
           `${color.reset}\n`,
       )
     }

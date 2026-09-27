@@ -1234,6 +1234,29 @@ export interface SessionDescriptor {
    *  the underlying `killedMidTurn`/`endedReason`). The in-place resume path
    *  never auto-retries the interrupted prompt. */
   interrupted?: boolean
+  /** The `SessionsRegistry.bootId` of the FIRST daemon boot that found this
+   *  row interrupted — i.e. which restart cut its turn off. Stamped by the
+   *  boot reload (`loadHistorySnapshot`) on an interrupted row that doesn't
+   *  carry one yet; dropped whenever the row is interrupted AGAIN (so the next
+   *  boot restamps it) and on the next successful turn-end (with the markers it
+   *  qualifies). `interruptedAtBoot === registry.bootId` is how the
+   *  continue-interrupted verb and boot pass pick "interrupted by the LAST
+   *  restart" apart from a stale interruption nobody picked back up. PERSISTED
+   *  (unlike the derived `interrupted`) — the boot that stamped it may not be
+   *  the one reading it. */
+  interruptedAtBoot?: string
+  /** How many automatic continue prompts the daemon has sent this row
+   *  (`daemon.continueInterruptedOnBoot`) since its last successful turn-end.
+   *  Incremented BEFORE the prompt is sent, so a continue turn that itself
+   *  gets cut off by another restart still counts; reset on the next
+   *  successful turn-end. The boot pass stops at
+   *  `MAX_AUTO_CONTINUE_ATTEMPTS` — the no-loop bound for a turn that keeps
+   *  taking the daemon down with it. PERSISTED; absent until the first one. */
+  autoContinueAttempts?: number
+  /** `bootId` of the boot whose pass last auto-continued this row — the
+   *  at-most-one-auto-continue-per-restart guard. Reset with
+   *  `autoContinueAttempts`. */
+  lastAutoContinueBoot?: string
   /** How many in-place resume attempts have FAILED in a row for this session
    *  (§5 cap/backoff). Incremented on every failed `maybeResumeAgent` attempt —
    *  the resume throws, the adapter rejects the id, or the spawn returns null —
@@ -3293,6 +3316,17 @@ export interface SessionsRegistry {
    *  touching the adapter, so the bounded boot pass can call it per row and
    *  tally the results. */
   resumeOnBoot(id: string): Promise<EagerResumeOutcome>
+  /** Opaque id unique to this registry instance — one per daemon boot.
+   *  Stamped as `interruptedAtBoot` on rows the boot reload finds interrupted,
+   *  so `interruptedAtBoot === bootId` means "interrupted by the restart that
+   *  preceded THIS boot" (continue-interrupted). */
+  readonly bootId: string
+  /** Book one automatic continue prompt against `id` (increment
+   *  `autoContinueAttempts`, stamp `lastAutoContinueBoot = bootId`) and
+   *  persist. Called by the continue-on-boot pass BEFORE it sends, so the
+   *  no-loop bound holds even when the continue turn is itself cut off by the
+   *  next restart. No-op for an unknown id. */
+  recordAutoContinue(id: string): void
   /** Cancel the in-flight turn on a live agent-cli session and leave the
    *  session itself alive and idle — the bare "interrupt, no next prompt"
    *  primitive `sendPrompt`/`enqueuePrompt`'s `opts.interrupt` arm lacks
@@ -4263,6 +4297,10 @@ export function createSessionsRegistry(opts?: {
   const resolveAgentAdapter = opts?.resolveAgentAdapter
   const runWorktreeAutoReclaim = opts?.runWorktreeAutoReclaim
   const sessions = new Map<string, SessionRuntime>()
+  /** Unique per registry instance (= per daemon boot) — see
+   *  `SessionsRegistry.bootId`. Minted before the boot reload so it can stamp
+   *  `interruptedAtBoot`. */
+  const bootId = `boot_${new Date().toISOString()}_${randomUUID().slice(0, 8)}`
   /** Stamp the fields callers use for a quick status read. These are kept off
    *  disk because phase and elapsed time are meaningful only against the live
    *  runtime and current clock. */
@@ -4453,10 +4491,20 @@ export function createSessionsRegistry(opts?: {
           slug,
           sourceBucketOf,
           heldIdsByBucket,
+          bootId,
         )
       }
     } else {
-      loadHistorySnapshot(legacyPath, sessions, sessionEvents, transcriptBaseDir)
+      loadHistorySnapshot(
+        legacyPath,
+        sessions,
+        sessionEvents,
+        transcriptBaseDir,
+        undefined,
+        undefined,
+        undefined,
+        bootId,
+      )
     }
   }
   // Frozen at boot, deliberately never mutated again — distinct from
@@ -6992,6 +7040,12 @@ export function createSessionsRegistry(opts?: {
           delete rt.desc.killedMidTurn
           delete rt.desc.endedReason
         }
+        // ...and the continue-interrupted bookkeeping that qualifies them: a
+        // recovered session is no longer "interrupted by the last restart",
+        // and its auto-continue budget starts fresh.
+        delete rt.desc.interruptedAtBoot
+        delete rt.desc.autoContinueAttempts
+        delete rt.desc.lastAutoContinueBoot
 
         // ── Cap/backoff reset (§5): a turn that ran to completion proves the
         // session resumed cleanly, so the failed-resume backoff is cleared —
@@ -7670,6 +7724,14 @@ export function createSessionsRegistry(opts?: {
   }
 
   const registry: SessionsRegistry = {
+    bootId,
+    recordAutoContinue(id) {
+      const rt = sessions.get(id)
+      if (!rt) return
+      rt.desc.autoContinueAttempts = (rt.desc.autoContinueAttempts ?? 0) + 1
+      rt.desc.lastAutoContinueBoot = bootId
+      schedulePersist()
+    },
     spawn(input) {
       const id = input.id ?? `sess_${randomUUID().slice(0, 8)}`
       if (sessions.has(id)) {
@@ -9894,6 +9956,9 @@ export function createSessionsRegistry(opts?: {
         // killedMidTurn's docblock. clearInFlightFlags below zeroes busy
         // right after, so this is the last honest look at it.
         rt.desc.killedMidTurn = rt.desc.busy === true
+        // Interrupted AGAIN: the old boot marker names an earlier restart —
+        // drop it so the next boot stamps its own (see `interruptedAtBoot`).
+        if (rt.desc.killedMidTurn) delete rt.desc.interruptedAtBoot
         clearInFlightFlags(rt.desc)
         if (rt.agentSession) {
           recordExitUsageSnapshot(rt)
@@ -10015,6 +10080,9 @@ function loadHistorySnapshot(
    *  a row this daemon read at boot is never mistaken for a foreign one
    *  by `mergeBucketRows` after it's later forgotten. */
   heldIdsByBucket?: Map<string, Set<string>>,
+  /** This daemon's `SessionsRegistry.bootId` — stamped onto rows found
+   *  interrupted (`interruptedAtBoot`). */
+  bootId?: string,
 ): void {
   let raw: string
   try {
@@ -10083,6 +10151,19 @@ function loadHistorySnapshot(
     // no-op, so there is nothing to lose by not asking how it got there.
     clearInFlightFlags(reclassified)
     migratePendingChildNotices(reclassified)
+    // Which restart interrupted it (see `interruptedAtBoot`). A row this boot
+    // just reclassified was cut off by THIS restart whatever an older marker
+    // said; one already terminal on disk (graceful shutdown) keeps the marker
+    // of the first boot that saw it, or gets this boot's if it has none.
+    if (wasAlive) delete reclassified.interruptedAtBoot
+    if (
+      bootId !== undefined &&
+      reclassified.killedMidTurn === true &&
+      reclassified.endedReason === "daemon-restart" &&
+      reclassified.interruptedAtBoot === undefined
+    ) {
+      reclassified.interruptedAtBoot = bootId
+    }
     // Same reasoning as the in-flight flags above, for `contextUsed`: a
     // snapshot written before `plausibleContextUsed` existed can carry an
     // out-of-window value on disk, and a dead/historical ghost never gets
