@@ -1709,10 +1709,12 @@ export async function createGateway(
         // installed app bundles, or one whose app bundles neither) and
         // `mergeAppAndDaemonToolRegistry` merges them over the daemon
         // passthrough registry — an app tool id wins over a daemon tool of
-        // the same id, logged here.
-        compileWorkflow: async handle => {
+        // the same id, logged here. F40: `workflowMdPath` (this run's own
+        // WORKFLOW.md) takes priority over the `app_install` registry — see
+        // `resolveAppToolsForWorkflow`'s doc.
+        compileWorkflow: async (handle, workflowMdPath) => {
           const daemonRegistry = createDaemonToolRegistry(handle, dispatchTool)
-          const appRegistryEntry = await resolveAppToolsForWorkflow(appRegistry, handle.id)
+          const appRegistryEntry = await resolveAppToolsForWorkflow(appRegistry, handle.id, workflowMdPath)
           const merged = mergeAppAndDaemonToolRegistry(daemonRegistry, appRegistryEntry, {
             onOverride: toolId =>
               console.warn(

@@ -371,7 +371,7 @@ describe("WorkflowRunner human approvals (WP-S)", () => {
       registry: makeMockRegistry(),
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
-      compileWorkflow: compileApprovalWorkflow,
+      compileWorkflow: handle => compileApprovalWorkflow(handle),
       appRegistry,
       persistPath,
     })
@@ -387,7 +387,7 @@ describe("WorkflowRunner human approvals (WP-S)", () => {
       registry: makeMockRegistry(),
       sessionEvents: bus2,
       resolveAgentAdapter: makeMockAdapter(),
-      compileWorkflow: compileApprovalWorkflow,
+      compileWorkflow: handle => compileApprovalWorkflow(handle),
       appRegistry,
       persistPath,
     })
@@ -433,7 +433,7 @@ describe("WorkflowRunner human approvals (WP-S)", () => {
       registry: makeMockRegistry(),
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
-      compileWorkflow: compileApprovalWorkflow,
+      compileWorkflow: handle => compileApprovalWorkflow(handle),
       appRegistry,
     })
 

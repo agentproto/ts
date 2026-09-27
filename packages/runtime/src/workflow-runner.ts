@@ -1645,8 +1645,14 @@ export function createWorkflowRunner(opts: {
    * Compile a loaded {@link WorkflowHandle} into a {@link RuntimeWorkflow}.
    * Required for `startFromFile` when the WORKFLOW.md contains declarative
    * tool/map/parallel/etc steps; omitted/unsupported workflows return an error.
+   * `workflowMdPath` is `startFromFile`'s own `args.path` — the WORKFLOW.md
+   * file actually loaded for this run (F40: lets the callback resolve a
+   * `kind:"tool"` step's driver scripts from THIS file's own location
+   * instead of always the `app_install` registry's dir, so a WORKFLOW.md run
+   * from a worktree copy of an app doesn't silently execute the installed
+   * copy's scripts).
    */
-  compileWorkflow?: (handle: WorkflowHandle) => RuntimeWorkflow | Promise<RuntimeWorkflow>
+  compileWorkflow?: (handle: WorkflowHandle, workflowMdPath: string) => RuntimeWorkflow | Promise<RuntimeWorkflow>
   /**
    * Installed-app registry — enables the app state ledger bridge: when a
    * run's workflow id is owned by exactly one installed app (or `appId` is
@@ -1942,7 +1948,7 @@ export function createWorkflowRunner(opts: {
         return run
       }
 
-      const workflow = await compileWorkflow(handle)
+      const workflow = await compileWorkflow(handle, args.path)
       // Visible rows leave out untaken-until-proven branch-arm steps (F31);
       // the defs keep them for sessionId resolution.
       const fileStages = runtimeWorkflowToStages(workflow)
