@@ -676,4 +676,29 @@ describe("branch gc — apply", () => {
     expect(outcomes.filter((o) => o.result === "deleted").map((o) => o.name).sort()).toEqual(["feat/one", "feat/two"])
     expect(await refExists(bare, "refs/heads/feat/two")).toBe(false)
   })
+
+  it("a refused batch is retried as a batch: ghost + real refs all resolve without per-ref pushes", async () => {
+    const repo = await makeRepo()
+    const bare = await withOrigin(repo)
+    await branchWith(repo, "feat/a", { "a.txt": "a\n" })
+    await branchWith(repo, "feat/b", { "b.txt": "b\n" })
+    await execGit(repo, ["merge", "-q", "--no-ff", "-m", "m", "feat/a"])
+    await execGit(repo, ["merge", "-q", "--no-ff", "-m", "m2", "feat/b"])
+    await execGit(repo, ["push", "-q", "origin", "main", "feat/a", "feat/b"])
+    await execGit(repo, ["fetch", "-q", "origin"])
+    // A tracking ref that never existed upstream — git refuses the whole batch over it.
+    await execGit(repo, ["update-ref", "refs/remotes/origin/ghost", await sha(repo, "main")])
+    await execGit(repo, ["branch", "-q", "-D", "feat/a", "feat/b"])
+    const p = await plan(repo, { base: "origin/main" })
+    // feat/a and feat/b vanish upstream between plan and apply.
+    await execGit(bare, ["update-ref", "-d", "refs/heads/feat/a"])
+    await execGit(bare, ["update-ref", "-d", "refs/heads/feat/b"])
+
+    const { outcomes } = await applyBranchGc(p, { scopes: ["remote"], forge: new FakeForge(), stateDir: await tmp("branch-gc-state-"), fetch: false })
+    expect(outcomes.find((o) => o.name === "ghost")?.result).not.toBe("failed")
+    expect(outcomes.find((o) => o.name === "feat/a")?.result).toBe("deleted")
+    expect(outcomes.find((o) => o.name === "feat/b")?.result).toBe("deleted")
+    expect(await refExists(bare, "refs/heads/feat/a")).toBe(false)
+    expect(await refExists(bare, "refs/heads/feat/b")).toBe(false)
+  })
 })

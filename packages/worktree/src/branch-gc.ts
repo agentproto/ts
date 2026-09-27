@@ -1114,19 +1114,27 @@ export async function applyBranchGc(plan: BranchGcPlan, options: ApplyBranchGcOp
     // A non-atomic push deletes what it can and exits non-zero for the rest
     // (e.g. one branch already gone upstream): judge each ref by whether its
     // tracking ref survived the prune, not by the batch's exit code.
-    // git can also refuse the whole batch client-side over one bad ref, so
-    // anything still present is retried on its own before being reported.
-    let retried = false
+    // A refused batch is retried as a whole batch (same size): a single ghost
+    // ref makes git refuse the entire push, but a genuinely refused batch is
+    // rare enough that re-pushing the batch is cheaper than one push per ref.
+    // Only refs of a batch that fails AGAIN are pushed one by one.
+    const stillThere: BranchGcPlanEntry[] = []
     for (const { batch } of failedBatches) {
       for (const e of batch) {
-        if ((await git(repoRoot, ["rev-parse", "--verify", "--quiet", e.ref])).exitCode !== 0) {
-          results.set(e.ref, { ok: true })
-          continue
-        }
-        const one = await git(repoRoot, ["push", "--no-verify", remote, "--delete", e.name])
-        results.set(e.ref, one.exitCode === 0 ? { ok: true } : fail(one))
-        retried = true
+        if ((await git(repoRoot, ["rev-parse", "--verify", "--quiet", e.ref])).exitCode === 0) stillThere.push(e)
+        else results.set(e.ref, { ok: true })
       }
+    }
+    const failedAgain: BranchGcPlanEntry[] = []
+    for (const batch of chunk(stillThere, options.remoteBatchSize ?? 50)) {
+      const retry = await git(repoRoot, ["push", "--no-verify", remote, "--delete", ...batch.map((e) => e.name)])
+      if (retry.exitCode === 0) for (const e of batch) results.set(e.ref, { ok: true })
+      else failedAgain.push(...batch)
+    }
+    let retried = failedAgain.length > 0
+    for (const e of failedAgain) {
+      const one = await git(repoRoot, ["push", "--no-verify", remote, "--delete", e.name])
+      results.set(e.ref, one.exitCode === 0 ? { ok: true } : fail(one))
     }
     if (retried) await git(repoRoot, ["fetch", "--prune", "--quiet", remote])
   }
