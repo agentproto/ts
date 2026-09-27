@@ -8,7 +8,10 @@
  * LOADED context (what's actually usable right now), never its max — a
  * stale max value is what caused `~/.pi/agent/models.json` to drift out of
  * sync by hand in practice; and this must never clobber a user's own
- * hand-added provider/model entries. Ownership of what THIS module wrote is
+ * hand-added provider/model entries. One connector (Ollama) never reports a
+ * loaded context size at all — `DEFAULT_CONTEXT_FALLBACK` below covers that
+ * gap with a conservative guess rather than treating a genuinely loaded
+ * model as nothing-to-sync. Ownership of what THIS module wrote is
  * tracked in a side ledger (`~/.agentproto/pi-models-managed.json`), never
  * inferred from `models.json`'s own content — that keeps "is this ours" a
  * recorded fact instead of a guess, and means no extra marker field has to
@@ -21,6 +24,15 @@ import { dirname, join } from 'node:path';
 import { connectorById, getConfiguredEndpoints, type ConnectorId, type EndpointConfig } from '@agentproto/llm-endpoint';
 
 const DEFAULT_MAX_TOKENS = 8192;
+
+/** Ollama's `/api/tags`/`/api/ps` never report a loaded model's context size
+ *  (unlike LM Studio/llama-server/vLLM, which all expose it) — so a genuinely
+ *  loaded Ollama model has no real `loadedCtx` to report. Rather than treat
+ *  that as "nothing loaded" and silently skip it (the prior behavior), fall
+ *  back to this conservative default so the model still gets synced — it is
+ *  a guess, not a measurement, and callers who need the real figure should
+ *  check the runtime directly (e.g. `ollama show <model>`). */
+const DEFAULT_CONTEXT_FALLBACK = 4096;
 
 export interface PiModelEntry {
   id: string;
@@ -122,13 +134,15 @@ async function buildDesiredModels(endpoint: EndpointConfig, fetchImpl: typeof fe
   if (!connector) return [];
   const models = await connector.listModels(endpoint.baseUrl, fetchImpl);
   return models
-    .filter((m) => m.state === 'loaded' && typeof m.loadedCtx === 'number')
+    .filter((m) => m.state === 'loaded')
     .map((m) => ({
       id: m.id,
       name: `${m.id} (${connector.label})`,
       reasoning: false,
       input: ['text'],
-      contextWindow: m.loadedCtx as number,
+      // `loadedCtx` is only absent for a connector (Ollama) whose API never
+      // reports it — see DEFAULT_CONTEXT_FALLBACK above.
+      contextWindow: typeof m.loadedCtx === 'number' ? m.loadedCtx : DEFAULT_CONTEXT_FALLBACK,
       maxTokens: DEFAULT_MAX_TOKENS,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     }));

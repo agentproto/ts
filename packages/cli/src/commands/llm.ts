@@ -103,9 +103,13 @@ Usage:
                           Regenerate the matching provider entry in
                           ~/.pi/agent/models.json for every configured
                           endpoint, from its connector's LIVE loaded models
-                          (contextWindow = loaded ctx, never max). Only ever
-                          touches model ids this command previously wrote
-                          there (tracked in
+                          (contextWindow = loaded ctx, never max). Ollama's
+                          API never reports a loaded model's context size, so
+                          its models sync with a conservative 4096-token
+                          fallback rather than being skipped — check the
+                          runtime directly (e.g. `ollama show <model>`) if you
+                          need the real figure. Only ever touches model ids
+                          this command previously wrote there (tracked in
                           ~/.agentproto/pi-models-managed.json) — a
                           hand-added provider or model is left untouched.
                           --dry-run reports what would change without
