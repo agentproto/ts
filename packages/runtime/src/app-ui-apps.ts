@@ -16,6 +16,7 @@ import { z } from "zod"
 import { RUNNER_SELECT_SCRIPT } from "@agentproto/app-client/runner-select"
 import { DISPLAY_MODE_SCRIPT } from "@agentproto/app-client/display-mode"
 import type { AppRegistry } from "./app-registry.js"
+import { ensureAppUiBuilt } from "./app-ui-build.js"
 import type { AgnoMcpApp } from "@agentproto/apps"
 
 /** Derive the MCP tool id for an installed app's UI panel — strips the
@@ -419,6 +420,12 @@ export async function makeInstalledAppUiApps(
         `[app-ui-apps] skipping UI panel for app "${app.appId}": tool id "${toolId}" ` +
           "collides with an existing tool or another installed app's panel.",
       )
+      continue
+    }
+
+    const ensured = await ensureAppUiBuilt({ dir: app.dir, uiPath: ui.path, build: ui.build })
+    if (!ensured.ok) {
+      console.warn(`[app-ui-apps] skipping UI panel for app "${app.appId}": ${ensured.error}`)
       continue
     }
 

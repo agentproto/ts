@@ -538,6 +538,107 @@ describe("standalone app UI host — REST routes", () => {
 })
 
 /**
+ * `ui.build` — the daemon builds a declared-but-missing/stale `ui.path`
+ * bundle before serving it (app-ui-build.ts's `ensureAppUiBuilt`), rather
+ * than 404ing. A separate appId/dir per test so each gets its own
+ * `AppRegistry` record without touching the REST-routes describe's shared
+ * `uiPath`.
+ */
+describe("standalone app UI host — ui.build", () => {
+  const BUILD_APP_ID = "@test/ui-build-app"
+  let dir: string
+  let uiPath: string
+  let appRegistry: AppRegistry
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "agentproto-app-ui-build-http-"))
+    uiPath = join(dir, ".agentproto", "ui", "index.html")
+    appRegistry = createAppRegistry()
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  async function withServer(fn: (base: string) => Promise<void>): Promise<void> {
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory: async () =>
+        (await createMcpServer({ specs: [], name: "main", version: "0" })).server,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      meta: { workspace: process.cwd(), registered: [] },
+      appRegistry,
+    })
+    try {
+      await fn(`http://127.0.0.1:${port}`)
+    } finally {
+      await http.stop()
+    }
+  }
+
+  it("builds a missing bundle on the first request, then serves it", async () => {
+    appRegistry.upsertApp({
+      appId: BUILD_APP_ID,
+      dir,
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: {
+        path: uiPath,
+        build: {
+          command: `mkdir -p "${join(dir, ".agentproto", "ui")}" && printf '<html>built-marker</html>' > "${uiPath}"`,
+        },
+      },
+    })
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${BUILD_APP_ID}/ui`)
+      expect(res.status).toBe(200)
+      expect(await res.text()).toContain("built-marker")
+    })
+  })
+
+  it("a failing build surfaces a readable 500, not a bare 404", async () => {
+    appRegistry.upsertApp({
+      appId: BUILD_APP_ID,
+      dir,
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: { path: uiPath, build: { command: `echo boom 1>&2 && exit 3` } },
+    })
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${BUILD_APP_ID}/ui`)
+      expect(res.status).toBe(500)
+      const body = (await res.json()) as { error: string }
+      expect(body.error).toContain("exit 3")
+      expect(body.error).toContain("boom")
+    })
+  })
+
+  it("no ui.build and a missing bundle is a clear 500 naming the path, not a bare 404", async () => {
+    appRegistry.upsertApp({
+      appId: BUILD_APP_ID,
+      dir,
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: { path: uiPath },
+    })
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${BUILD_APP_ID}/ui`)
+      expect(res.status).toBe(500)
+      const body = (await res.json()) as { error: string }
+      expect(body.error).toContain(uiPath)
+      expect(body.error).toContain("ui.build")
+    })
+  })
+})
+
+/**
  * Builtin-panel fallback — `resolveBuiltinPanelUi` (builtin-apps.ts) lets
  * `GET /apps/:appId/ui` / `POST /apps/:appId/tool-call` serve a builtin
  * panel (never persisted to `AppRegistry`, so `appRegistry.getApp` always

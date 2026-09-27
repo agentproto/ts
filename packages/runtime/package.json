@@ -125,6 +125,11 @@
       "types": "./dist/app-ui-delivery.d.ts",
       "import": "./dist/app-ui-delivery.mjs",
       "default": "./dist/app-ui-delivery.mjs"
+    },
+    "./app-ui-build": {
+      "types": "./dist/app-ui-build.d.ts",
+      "import": "./dist/app-ui-build.mjs",
+      "default": "./dist/app-ui-build.mjs"
     }
   },
   "files": [

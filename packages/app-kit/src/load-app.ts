@@ -40,7 +40,14 @@ import matter from "gray-matter"
 import { agentFromManifest, parseAgentManifest } from "@agentproto/agent/manifest"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import { parseWorkspaceManifest, workspaceFromManifest } from "@agentproto/workspace/manifest"
-import type { AgentEntry, AppArtifactDecl, AppDataDefinition, AppDevDefinition, AppHandle } from "./types.js"
+import type {
+  AgentEntry,
+  AppArtifactDecl,
+  AppDataDefinition,
+  AppDevDefinition,
+  AppHandle,
+  AppUiBuildConfig,
+} from "./types.js"
 import { defineApp } from "./define-app.js"
 import { AppLoadError } from "./errors.js"
 import { loadAppBundledTools } from "./load-app-tools.js"
@@ -63,6 +70,7 @@ interface AppFrontmatterUi {
     readonly resourceDomains?: readonly string[]
     readonly frameDomains?: readonly string[]
   }
+  readonly build?: AppUiBuildConfig
 }
 
 interface AppFrontmatterArtifact {
@@ -136,6 +144,81 @@ export async function resolveAppUIRoot(appDir: string): Promise<string | undefin
     )
   }
   return dirname(resolveRef(appDir, path))
+}
+
+/** Validated `ui.path` + `ui.build`, as returned by {@link peekAppUi}. */
+export interface AppUiPeek {
+  readonly path: string
+  readonly build?: AppUiBuildConfig
+}
+
+function parseUiBuildFrontmatter(raw: unknown, appMdPath: string): AppUiBuildConfig | undefined {
+  if (raw === undefined) return undefined
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new AppLoadError(`'${appMdPath}': frontmatter 'ui.build' must be an object.`)
+  }
+  const command = (raw as Record<string, unknown>).command
+  if (typeof command !== "string" || command.trim() === "") {
+    throw new AppLoadError(`'${appMdPath}': frontmatter 'ui.build.command' must be a non-empty string.`)
+  }
+  const cwd = (raw as Record<string, unknown>).cwd
+  if (cwd !== undefined && (typeof cwd !== "string" || cwd.trim() === "")) {
+    throw new AppLoadError(`'${appMdPath}': frontmatter 'ui.build.cwd' must be a non-empty string.`)
+  }
+  const sources = (raw as Record<string, unknown>).sources
+  if (
+    sources !== undefined &&
+    (!Array.isArray(sources) || !sources.every(s => typeof s === "string" && s.trim() !== ""))
+  ) {
+    throw new AppLoadError(
+      `'${appMdPath}': frontmatter 'ui.build.sources' must be an array of non-empty strings.`,
+    )
+  }
+  return {
+    command,
+    ...(cwd !== undefined ? { cwd: cwd as string } : {}),
+    ...(sources !== undefined ? { sources: sources as string[] } : {}),
+  }
+}
+
+/**
+ * Peek `<appDir>/.agentproto/APP.md`'s `ui.path` + `ui.build` WITHOUT
+ * reading the ui html itself.
+ *
+ * `loadAppHandle` reads `ui.path` eagerly and throws {@link AppLoadError}
+ * when it's missing — exactly the case a declared `ui.build` exists to
+ * recover from. A caller that wants to build the bundle before it's
+ * expected to exist (the daemon's `app_install`, `app serve`, first UI
+ * serve — see `@agentproto/runtime`'s `ensureAppUiBuilt`) resolves this
+ * first, runs the build if declared, then calls `loadAppHandle` as usual.
+ *
+ * Returns `undefined` when APP.md is unreadable or declares no `ui` block
+ * — same "caller checks existence separately" contract as
+ * `resolveAppUIRoot`. Throws on a malformed `ui`/`ui.build` shape, same
+ * validation `loadAppHandle` would eventually hit.
+ */
+export async function peekAppUi(appDir: string): Promise<AppUiPeek | undefined> {
+  const appMdPath = join(appDir, ".agentproto", "APP.md")
+  let source: string
+  try {
+    source = await readFile(appMdPath, "utf8")
+  } catch {
+    return undefined
+  }
+  const data = matter(source).data as Record<string, unknown>
+  const ui = data.ui
+  if (ui === undefined) return undefined
+  if (typeof ui !== "object" || ui === null || Array.isArray(ui)) {
+    throw new AppLoadError(`'${appMdPath}': frontmatter 'ui' must be an object.`)
+  }
+  const path = (ui as Record<string, unknown>).path
+  if (typeof path !== "string" || path.trim() === "") {
+    throw new AppLoadError(
+      `'${appMdPath}': frontmatter 'ui.path' must be a non-empty string.`,
+    )
+  }
+  const build = parseUiBuildFrontmatter((ui as Record<string, unknown>).build, appMdPath)
+  return { path: resolveRef(appDir, path), ...(build ? { build } : {}) }
 }
 
 function isRefArray(v: unknown): v is AppRef[] {
@@ -305,6 +388,7 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
         `ui: cannot read '${uiPath}': ${err instanceof Error ? err.message : String(err)}`,
       )
     }
+    const build = parseUiBuildFrontmatter(fm.ui.build, appPath)
     ui = {
       html,
       ...(fm.ui.title !== undefined ? { title: fm.ui.title } : {}),
@@ -312,6 +396,7 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
       ...(fm.ui.tools !== undefined ? { tools: fm.ui.tools } : {}),
       ...(fm.ui.port !== undefined ? { port: fm.ui.port } : {}),
       ...(fm.ui.csp !== undefined ? { csp: fm.ui.csp } : {}),
+      ...(build !== undefined ? { build } : {}),
     }
   }
 

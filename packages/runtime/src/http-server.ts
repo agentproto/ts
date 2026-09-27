@@ -59,6 +59,7 @@ import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import type { AppRegistry } from "./app-registry.js"
 import { performAppToolCall, performBuiltinPanelToolCall, type AppToolCallDeps } from "./app-tools.js"
 import { injectStandaloneAppBridge } from "./app-ui-apps.js"
+import { ensureAppUiBuilt } from "./app-ui-build.js"
 import {
   IMMUTABLE_CACHE_CONTROL,
   appUiContentType,
@@ -7979,6 +7980,18 @@ async function handleAppUiPage(
     res.writeHead(404, { "content-type": "application/json" })
     res.end(JSON.stringify({ error: `app "${appId}" is not installed or has no UI.` }))
     return
+  }
+  // Build the bundle first when it's missing or stale and the app declares
+  // `ui.build` — single-flight per `uiPath`, so N concurrent first requests
+  // trigger exactly one build. An app with no `ui.build` (or a build that
+  // fails) gets a clear 500 naming the path/command, never a bare 404.
+  if (app?.ui) {
+    const ensured = await ensureAppUiBuilt({ dir: app.dir, uiPath: app.ui.path, build: app.ui.build })
+    if (!ensured.ok) {
+      res.writeHead(500, { "content-type": "application/json" })
+      res.end(JSON.stringify({ error: `app "${appId}": ${ensured.error}` }))
+      return
+    }
   }
   const baseUrl = requestHttpBaseUrl(req)
   // `?embed=1` — the trusted-embedder opt-out (see doc above + the

@@ -99,7 +99,20 @@ runtime app registry:
 
 - **`ui`** — an HTML dashboard/panel. `html` is written to
   `.agentproto/ui/index.html`; `APP.md` frontmatter carries the relative path
-  plus optional `title`, `description`, `tools`, and `csp`.
+  plus optional `title`, `description`, `tools`, `csp`, and `build`.
+- **`ui.build`** — how to (re)build `ui.path` when it's missing or stale,
+  so the bundle doesn't have to be committed. `{ command, cwd?, sources? }`:
+  `command` is a shell command line run with cwd `cwd` (default: the app
+  dir); `sources` is a list of globs (relative to `cwd`, default
+  `["src/**"]`) whose newest mtime is compared against `ui.path`'s to decide
+  staleness. The daemon/CLI run it — `app_install`, the first `GET
+  /apps/:appId/ui`, the MCP panel cache, and `agentproto app serve` all call
+  the same `ensureAppUiBuilt` (`@agentproto/runtime/app-ui-build`) before
+  serving, single-flight per bundle path so concurrent first requests only
+  build once. Output is captured to `<appDir>/.agentproto/ui-build.log`; a
+  failing build surfaces that log's tail as the tool/route error instead of
+  a bare 404. No `ui.build` declared ⇒ today's behavior: the bundle must
+  already exist on disk.
 - **`artifact`** — a persistent HTML dashboard (Cowork artifact). The app
   provides a path to an HTML file on disk; `emit` copies it to
   `.agentproto/artifact/index.html`. The daemon never writes the host manifest
@@ -225,6 +238,14 @@ export const dashboardApp = defineApp({
     html: "<!doctype html><html>…</html>",
     title: "Ops Dashboard",
     tools: ["terminal_start", "agent_start"],
+    // Only needed when `ui.path`'s bundle isn't committed to the repo —
+    // the daemon/CLI build it on demand before serving. See the APP.md
+    // frontmatter equivalent below.
+    build: {
+      command: "pnpm run build",
+      cwd: "ui",
+      sources: ["ui/src/**", "ui/index.html", "ui/vite.config.ts"],
+    },
   },
   artifact: {
     path: "/path/to/dashboard.html",
@@ -320,6 +341,31 @@ import { loadAppHandle } from "@agentproto/app-kit"
 const app = await loadAppHandle("/path/to/emitted/app")
 app.agents.map((e) => e.agent.id) // ["@agentik/reviewer", "fixer"]
 ```
+
+### `ui.build` — don't commit the generated bundle
+
+Add a `build` block under `ui` in `APP.md`'s frontmatter and gitignore
+`.agentproto/ui/index.html` — the daemon builds it on demand instead:
+
+```yaml
+ui:
+  path: .agentproto/ui/index.html
+  build:
+    command: pnpm run build
+    cwd: ui
+    sources:
+      - ui/src/**
+      - ui/index.html
+      - ui/vite.config.ts
+```
+
+`app_install`, the first `GET /apps/:appId/ui`, the MCP panel, and
+`agentproto app serve` all resolve this the same way (`peekAppUi` +
+`ensureAppUiBuilt` from `@agentproto/runtime/app-ui-build`): missing or
+older than the newest matching source → run `command` once (single-flight
+per bundle path, output captured to `.agentproto/ui-build.log`) → serve.
+Omit `build` to keep committing the bundle, unchanged from before this
+existed.
 
 ## Runtime note
 
