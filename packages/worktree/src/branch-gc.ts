@@ -266,6 +266,13 @@ export interface LadderContext {
    *  plan's anchor detection asks the same question of every tip) — saves
    *  the ladder's first `merge-base` per tip. */
   related?: ReadonlyMap<string, boolean>
+  /**
+   * Memoized set of every commit reachable from `cmp` (at most two distinct
+   * values: `baseSha` and the anchor) — ONE `git rev-list <cmp>` replaces one
+   * `merge-base --is-ancestor` per tip. `null` above 500 000 commits (or on a
+   * git failure) = fall back to the per-tip call.
+   */
+  ancestorsOf?: (cmp: string) => Promise<Set<string> | null>
 }
 
 export async function createLadderContext(
@@ -277,12 +284,28 @@ export async function createLadderContext(
   const baseSha = (await gitOk(repoRoot, ["rev-parse", "--verify", `${baseRef}^{commit}`])).trim()
   const baseTree = (await gitOk(repoRoot, ["rev-parse", `${baseSha}^{tree}`])).trim()
   let idx: Promise<TreeIndex> | null = null
+  const ancestors = new Map<string, Promise<Set<string> | null>>()
+  const ancestorsOf = (cmp: string): Promise<Set<string> | null> => {
+    let p = ancestors.get(cmp)
+    if (!p) {
+      p = (async () => {
+        const res = await git(repoRoot, ["rev-list", cmp])
+        if (res.exitCode !== 0) return null
+        const shas = res.stdout.split("\n")
+        if (shas.length > 500_000) return null
+        return new Set(shas.filter(Boolean))
+      })()
+      ancestors.set(cmp, p)
+    }
+    return p
+  }
   return {
     repoRoot,
     baseSha,
     baseTree,
     anchor,
     index: () => (idx ??= indexTree(repoRoot, baseSha)),
+    ancestorsOf,
     ...(related ? { related } : {}),
   }
 }
@@ -374,8 +397,11 @@ export async function classifyTip(ctx: LadderContext, tip: string): Promise<TipC
   if (!related && !anchor) return { status: "unmerged", history: "unrelated", conflicts: true, ahead: null, behind: null }
   const history: BranchHistory = related ? "current" : "pre-rewrite"
   const cmp = related ? baseSha : (anchor as string)
-
-  if ((await git(repoRoot, ["merge-base", "--is-ancestor", tip, cmp])).exitCode === 0) {
+  const ancestors = ctx.ancestorsOf ? await ctx.ancestorsOf(cmp) : null
+  const isAncestor = ancestors
+    ? ancestors.has(tip)
+    : (await git(repoRoot, ["merge-base", "--is-ancestor", tip, cmp])).exitCode === 0
+  if (isAncestor) {
     return { status: "merged", history, ahead: 0, behind: null }
   }
   const counts = (await gitOk(repoRoot, ["rev-list", "--left-right", "--count", `${cmp}...${tip}`])).trim().split(/\s+/)
