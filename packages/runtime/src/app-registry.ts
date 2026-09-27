@@ -57,6 +57,15 @@ export interface InstalledApp {
       readonly resourceDomains?: readonly string[]
       readonly frameDomains?: readonly string[]
     }
+    /** How to (re)build `path` when it's missing or older than its
+     *  declared sources — see `app-ui-build.ts`'s `ensureAppUiBuilt`, the
+     *  only reader of this field. Absent means "committed bundle, never
+     *  built by the daemon", today's behavior. */
+    readonly build?: {
+      readonly command: string
+      readonly cwd?: string
+      readonly sources?: readonly string[]
+    }
   }
   /** A persistent HTML dashboard (Cowork artifact) the app ships. `path` is
    *  absolute; `app_artifact_get` reads it back at call time. */

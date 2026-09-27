@@ -792,7 +792,7 @@ describe("app serve UI-root resolution (regression: ui.path was ignored)", () =>
     }
   })
 
-  it("fails loudly (exit 2) naming the resolved path and ui.path when the UI dir is missing", async () => {
+  it("fails loudly (exit 2) naming the missing ui.path file when there's no ui.build", async () => {
     const dir = await mktmp()
     await writeApp(dir, "schema: app/v1\nui:\n  path: ui/index.html\n")
     const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
@@ -800,9 +800,28 @@ describe("app serve UI-root resolution (regression: ui.path was ignored)", () =>
       const code = await runAppServe([dir])
       expect(code).toBe(2)
       const out = errSpy.mock.calls.map(c => String(c[0])).join("")
-      expect(out).toContain(join(dir, "ui"))
-      expect(out).toContain("'ui.path'")
-      expect(out).toContain("does not exist")
+      // ensureAppUiBuilt's error now fires before the old "resolved UI root
+      // does not exist" check even runs — it names the exact missing FILE
+      // (not just its directory) and points at the fix (declare ui.build).
+      expect(out).toContain(join(dir, "ui", "index.html"))
+      expect(out).toContain("ui.build")
+    } finally {
+      errSpy.mockRestore()
+    }
+  })
+
+  it("fails loudly (exit 2) when a declared ui.build exits 0 but never lands ui.path", async () => {
+    const dir = await mktmp()
+    await writeApp(
+      dir,
+      "schema: app/v1\nui:\n  path: ui/index.html\n  build:\n    command: mkdir -p wrong-dir\n",
+    )
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    try {
+      const code = await runAppServe([dir])
+      expect(code).toBe(2)
+      const out = errSpy.mock.calls.map(c => String(c[0])).join("")
+      expect(out).toContain("still missing")
     } finally {
       errSpy.mockRestore()
     }
@@ -817,6 +836,24 @@ describe("app serve UI-root resolution (regression: ui.path was ignored)", () =>
       expect(code).toBe(2)
       const out = errSpy.mock.calls.map(c => String(c[0])).join("")
       expect(out).toContain(join(dir, ".agentproto", "ui"))
+    } finally {
+      errSpy.mockRestore()
+    }
+  })
+
+  it("exits 2 with the build's error when a declared ui.build fails", async () => {
+    const dir = await mktmp()
+    await writeApp(
+      dir,
+      "schema: app/v1\nui:\n  path: ui/index.html\n  build:\n    command: echo boom-build 1>&2 && exit 5\n",
+    )
+    const errSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    try {
+      const code = await runAppServe([dir])
+      expect(code).toBe(2)
+      const out = errSpy.mock.calls.map(c => String(c[0])).join("")
+      expect(out).toContain("exit 5")
+      expect(out).toContain("boom-build")
     } finally {
       errSpy.mockRestore()
     }

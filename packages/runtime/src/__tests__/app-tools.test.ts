@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { isAbsolute, join } from "node:path"
 import matter from "gray-matter"
@@ -153,6 +153,67 @@ describe("app_* verbs", () => {
     expect(record.agents).toEqual([{ id: "worker", path: expect.stringContaining("AGENT.md") }])
     expect(record.workflows).toEqual([{ id: "do-thing", path: expect.stringContaining("WORKFLOW.md") }])
     expect(record.unvalidatedAgentTools).toEqual([])
+  })
+
+  it("app_install: builds a missing ui bundle on demand when ui.build is declared", async () => {
+    const uiPath = join(dir, ".agentproto", "ui", "index.html")
+    const app = defineApp({
+      id: "@test/ui-build-app",
+      name: "UI Build App",
+      ui: {
+        html: "<html>placeholder — never served, emit's file is deleted below</html>",
+        build: {
+          command: `mkdir -p "${join(dir, ".agentproto", "ui")}" && printf '<html>rebuilt</html>' > "${uiPath}"`,
+        },
+      },
+    })
+    await app.emit(dir)
+    // Simulate a repo that declares ui.build and never commits the bundle.
+    await rm(uiPath)
+
+    const { client } = await setup()
+    const res = await client.callTool({ name: "app_install", arguments: { dir } })
+    expect(isError(res)).toBe(false)
+    const record = parseToolJson(res)
+    expect(record.ui.build.command).toContain("printf")
+    expect(await readFile(uiPath, "utf8")).toBe("<html>rebuilt</html>")
+  })
+
+  it("app_install: a missing ui bundle with no ui.build fails with a clear error naming the path", async () => {
+    const uiPath = join(dir, ".agentproto", "ui", "index.html")
+    const app = defineApp({
+      id: "@test/ui-no-build-app",
+      name: "UI No Build App",
+      ui: { html: "<html>placeholder</html>" },
+    })
+    await app.emit(dir)
+    await rm(uiPath)
+
+    const { client } = await setup()
+    const res = await client.callTool({ name: "app_install", arguments: { dir } })
+    expect(isError(res)).toBe(true)
+    const body = parseToolJson(res)
+    expect(body.error).toContain(uiPath)
+    expect(body.error).toContain("ui.build")
+  })
+
+  it("app_install: a fresh committed ui bundle installs without running ui.build", async () => {
+    const uiPath = join(dir, ".agentproto", "ui", "index.html")
+    const app = defineApp({
+      id: "@test/ui-fresh-app",
+      name: "UI Fresh App",
+      ui: {
+        html: "<html>committed</html>",
+        // If this ran, install would fail loudly instead of just installing.
+        build: { command: `exit 1` },
+      },
+    })
+    await app.emit(dir)
+
+    const { client } = await setup()
+    const res = await client.callTool({ name: "app_install", arguments: { dir } })
+    expect(isError(res)).toBe(false)
+    expect(await readFile(uiPath, "utf8")).toBe("<html>committed</html>")
   })
 
   it("app_install: a bogus workflow tool id lists ALL missing ids in one error, not one at a time", async () => {

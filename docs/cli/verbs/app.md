@@ -49,6 +49,12 @@ Register the app (its `id` from `.agentproto/APP.md`) → `<appDir>` mapping in
 `agentproto app serve --app <id>` and the daemon can resolve it. Idempotent:
 re-running for the same id updates the entry.
 
+If APP.md's `ui` block declares a `build` (`{ command, cwd?, sources? }`),
+`app_install` builds the UI bundle first when it's missing or older than the
+newest matching `sources` file — see [`ui.build`](#ui-build-dont-commit-the-generated-bundle)
+below. No `ui.build` and a missing `ui.path` fails install with a clear
+error naming the path, same as before this existed.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--data-dir <path>` | see below | Where the app's durable data — everything `app_data_read` / `app_data_write` / `app_data_list` touch — lives. Absolute, `~`-relative, or relative to `<appDir>`. This is what keeps multi-GB generated output out of the app's source tree. |
@@ -85,8 +91,36 @@ browser tab with full MCP connectivity.
 The UI root is resolved from APP.md frontmatter: when `ui.path` is
 declared (e.g. `ui.path: ui/index.html`), the directory containing that
 file is used as the UI root; when `ui` is absent, the legacy
-`.agentproto/ui/` directory is used. A missing resolved UI root is a
-hard exit-2 error.
+`.agentproto/ui/` directory is used. When `ui.build` is declared, the
+bundle is built first if missing or stale (same as `install`, above); a
+missing resolved UI root with no `ui.build` (or a failing build) is a
+hard exit-2 error naming the path/command, not a silent 404.
+
+#### `ui.build` — don't commit the generated bundle
+
+```yaml
+ui:
+  path: .agentproto/ui/index.html
+  build:
+    command: pnpm run build
+    cwd: ui
+    sources:
+      - ui/src/**
+      - ui/index.html
+      - ui/vite.config.ts
+```
+
+`command` is a shell command line run with cwd `cwd` (default: the app
+dir); `sources` (default `["src/**"]`, relative to `cwd`) is compared by
+mtime against `ui.path` to decide staleness. `app_install`, this command,
+the daemon's `GET /apps/:appId/ui`, and the MCP panel all resolve it
+through the same `ensureAppUiBuilt` (`@agentproto/runtime/app-ui-build`),
+single-flight per bundle path so concurrent first requests build once.
+Output is captured to `<appDir>/.agentproto/ui-build.log`; a failing build
+surfaces that log's tail in the error instead of a bare 404. This is
+distinct from [`agentproto app build`](#build-appdir---json), which only
+knows the `<appDir>/ui/` Vite-project convention and must be run by hand —
+`ui.build` is declarative (any command, any layout) and runs automatically.
 
 | Flag | Default | Description |
 |------|---------|-------------|

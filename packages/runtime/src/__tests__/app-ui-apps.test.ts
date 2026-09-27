@@ -132,6 +132,48 @@ describe("makeInstalledAppUiApps", () => {
     warnSpy.mockRestore()
   })
 
+  it("builds a missing ui.path bundle (per ui.build) before mounting the panel", async () => {
+    const uiPath = join(dir, "index.html")
+    appRegistry.upsertApp({
+      appId: "@test/build-app",
+      dir,
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: {
+        path: uiPath,
+        title: "Built Panel",
+        build: { command: `printf '<html><body>Built Panel</body></html>' > "${uiPath}"` },
+      },
+    })
+
+    const cache = createUiHtmlCache()
+    const apps = await makeInstalledAppUiApps(appRegistry, cache, new Set())
+
+    expect(apps).toHaveLength(1)
+    expect(apps[0]!.html).toContain("Built Panel")
+  })
+
+  it("still skips (with a console.warn) when the bundle is missing and there's no ui.build", async () => {
+    appRegistry.upsertApp({
+      appId: "@test/still-unreadable-app",
+      dir,
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: { path: join(dir, "still-does-not-exist.html") },
+    })
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const cache = createUiHtmlCache()
+    const apps = await makeInstalledAppUiApps(appRegistry, cache, new Set())
+
+    expect(apps).toHaveLength(0)
+    expect(warnSpy).toHaveBeenCalledTimes(1)
+    expect(warnSpy.mock.calls[0]![0]).toContain("still-unreadable-app")
+    warnSpy.mockRestore()
+  })
+
   it("re-reads an in-place file rewrite even with no version change (rebuilt ui/index.html)", async () => {
     // The bug this guards: keying the cache on (path, app.updatedAt) alone
     // served stale html after a merged PR rebuilt the committed

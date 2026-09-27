@@ -73,6 +73,30 @@ export interface WorkspaceShorthand {
 export type WorkspaceInput = WorkspaceHandle | WorkspaceShorthand
 
 /**
+ * How to (re)build an `AppUiDefinition`'s on-disk bundle when it's missing
+ * or stale, so a repo can ship an APP.md that declares a build step instead
+ * of committing the generated `.agentproto/ui/index.html`. Carried verbatim
+ * in APP.md frontmatter (`ui.build`); app-kit itself never runs `command` —
+ * it stays host-agnostic (see load-app.ts's module doc) — the daemon/CLI
+ * do, via `@agentproto/runtime`'s `ensureAppUiBuilt` (app-ui-build.ts).
+ */
+export interface AppUiBuildConfig {
+  /** Shell command line to build the UI bundle, e.g. `"pnpm run build"`. */
+  readonly command: string
+  /** Working directory for `command` — absolute, or relative to the app
+   *  dir. Defaults to the app dir. */
+  readonly cwd?: string
+  /**
+   * Glob patterns (relative to `cwd`) whose newest mtime is compared
+   * against the built file's to decide staleness. Defaults to `["src/**"]`.
+   * Supports `**` (any number of path segments) and `*` (any characters
+   * within one segment) — not full glob syntax (no brace expansion, no
+   * negation).
+   */
+  readonly sources?: readonly string[]
+}
+
+/**
  * A single HTML surface an app ships alongside its agents — the artifact a
  * host renders (e.g. an embedded panel). `html` is the full document; `emit`
  * writes it to `.agentproto/ui/index.html` rather than inlining it into the
@@ -94,6 +118,9 @@ export interface AppUiDefinition {
     readonly resourceDomains?: readonly string[]
     readonly frameDomains?: readonly string[]
   }
+  /** How to (re)build this UI's bundle when it's missing or stale. Absent
+   *  means today's behavior: the bundle must already exist on disk. */
+  readonly build?: AppUiBuildConfig
 }
 
 /**

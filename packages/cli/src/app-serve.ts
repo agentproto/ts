@@ -59,7 +59,8 @@ import {
   type EncodedRepresentation,
   type RepresentationCache,
 } from "@agentproto/runtime/app-ui-delivery"
-import { resolveAppUIRoot } from "@agentproto/app-kit"
+import { peekAppUi } from "@agentproto/app-kit"
+import { ensureAppUiBuilt } from "@agentproto/runtime/app-ui-build"
 import { APP_UI_DISCOVERY_TOOLS, RUNNER_SELECT_SCRIPT } from "@agentproto/app-client/runner-select"
 import { pathExists } from "./commands/skill-install/shared.js"
 import { expandHome } from "./commands/skill-install/pack-resolve.js"
@@ -1202,8 +1203,10 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
   // frontmatter points elsewhere installs fine and serves nothing.
   const appMdPath = join(appDir, ".agentproto", "APP.md")
   let uiRoot: string
+  let uiPeek: Awaited<ReturnType<typeof peekAppUi>>
   try {
-    uiRoot = (await resolveAppUIRoot(appDir)) ?? join(appDir, ".agentproto", "ui")
+    uiPeek = await peekAppUi(appDir)
+    uiRoot = uiPeek ? dirname(uiPeek.path) : join(appDir, ".agentproto", "ui")
   } catch (err) {
     process.stderr.write(`agentproto app serve: ${err instanceof Error ? err.message : String(err)}\n`)
     return 2
@@ -1214,6 +1217,17 @@ export async function runAppServe(args: readonly string[]): Promise<number> {
         `(missing ${appMdPath}).\n${USAGE}\n`,
     )
     return 2
+  }
+  // Build the bundle first when `ui.build` is declared and it's missing or
+  // stale — same `ensureAppUiBuilt` the daemon runs on `app_install` / first
+  // `GET /apps/:appId/ui`, so a repo that declares a build step never has
+  // to run it by hand before `app serve` either.
+  if (uiPeek) {
+    const ensured = await ensureAppUiBuilt({ dir: appDir, uiPath: uiPeek.path, build: uiPeek.build })
+    if (!ensured.ok) {
+      process.stderr.write(`agentproto app serve: ${ensured.error}\n`)
+      return 2
+    }
   }
   if (!(await pathExists(uiRoot))) {
     process.stderr.write(

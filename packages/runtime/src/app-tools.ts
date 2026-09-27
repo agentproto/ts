@@ -25,7 +25,8 @@ import { isAbsolute, join, relative, resolve } from "node:path"
 import matter from "gray-matter"
 import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { loadAppHandle, loadAppBundledTools } from "@agentproto/app-kit"
+import { loadAppHandle, loadAppBundledTools, peekAppUi, type AppUiBuildConfig } from "@agentproto/app-kit"
+import { ensureAppUiBuilt } from "./app-ui-build.js"
 import { loadAgent } from "@agentproto/agent"
 import type { AnyRef } from "@agentproto/agent"
 import type { AgentRefResolution } from "@agentproto/workflow-runtime"
@@ -428,6 +429,7 @@ interface AppRefsUi {
     readonly resourceDomains?: readonly string[]
     readonly frameDomains?: readonly string[]
   }
+  readonly build?: AppUiBuildConfig
 }
 
 interface AppRefsArtifact {
@@ -617,6 +619,21 @@ export async function performInstall(
   resolveAgentAdapter?: AgentAdapterResolver,
   opts?: PerformInstallOptions,
 ): Promise<{ ok: true; record: Awaited<ReturnType<typeof appRegistry.upsertApp>> } | { ok: false; error: string }> {
+  // `loadAppHandle` reads `ui.path` eagerly and throws when it's missing —
+  // exactly the case a declared `ui.build` exists to recover from. Peek the
+  // frontmatter first (no html read) and build BEFORE the real load, so a
+  // missing-but-buildable bundle installs instead of failing.
+  let uiPeek: Awaited<ReturnType<typeof peekAppUi>>
+  try {
+    uiPeek = await peekAppUi(dir)
+  } catch (err) {
+    return { ok: false, error: `${err instanceof Error ? err.message : String(err)}` }
+  }
+  if (uiPeek) {
+    const ensured = await ensureAppUiBuilt({ dir, uiPath: uiPeek.path, build: uiPeek.build })
+    if (!ensured.ok) return { ok: false, error: `app_install: ${ensured.error}` }
+  }
+
   let handle: Awaited<ReturnType<typeof loadAppHandle>>
   try {
     handle = await loadAppHandle(dir)
@@ -670,6 +687,7 @@ export async function performInstall(
         ...(handle.ui?.description !== undefined ? { description: handle.ui.description } : {}),
         ...(handle.ui?.tools !== undefined ? { tools: handle.ui.tools } : {}),
         ...(handle.ui?.csp !== undefined ? { csp: handle.ui.csp } : {}),
+        ...(handle.ui?.build !== undefined ? { build: handle.ui.build } : {}),
       }
     : undefined
 

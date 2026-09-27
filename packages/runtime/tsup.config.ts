@@ -27,6 +27,7 @@ export default createTsupConfig({
     "telegram-proxy": "src/telegram-proxy.ts",
     "tool-envelope": "src/tool-envelope.ts",
     "app-ui-delivery": "src/app-ui-delivery.ts",
+    "app-ui-build": "src/app-ui-build.ts",
   },
   format: ["esm"],
   splitting: false,
