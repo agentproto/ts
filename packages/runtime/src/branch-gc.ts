@@ -11,7 +11,7 @@
 
 export type BranchGcKind = "local" | "remote" | "orphan"
 export type BranchGcClass = "reclaim" | "review" | "hold"
-export type BranchGcStatus = "merged" | "squash-merged" | "patch-merged" | "content-merged" | "unmerged"
+export type BranchGcStatus = "pr-merged" | "merged" | "squash-merged" | "patch-merged" | "content-merged" | "unmerged"
 export type BranchGcReclaimReason = Exclude<BranchGcStatus, "unmerged"> | "reviewed"
 export type BranchGcHoldReason = "protected" | "worktree" | "open-pr" | "pr-check-unavailable" | "young"
 export type BranchGcTriageVerdict = "obsolete" | "superseded" | "salvage" | "in-progress" | "unclear"

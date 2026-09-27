@@ -23,6 +23,10 @@
  * expensive checks (`classifyTip`), ported from the audited
  * `branch-hygiene.mjs` maintenance script that first cleaned a 460-ref repo:
  *
+ *   pr-merged       the tip IS the head commit (`headRefOid`) of a MERGED PR
+ *                   — that exact commit was reviewed and merged, so nothing
+ *                   was lost (forge shortcut in `classifyRef`, before the
+ *                   ladder runs)
  *   merged          tip is an ancestor of base
  *   squash-merged   `git merge-tree --write-tree base tip` == base's tree
  *                   (merging it changes nothing)
@@ -56,8 +60,8 @@ export const BRANCH_GC_SCOPES = ["local", "remote", "orphan"] as const
 /** `local` = refs/heads, `remote` = the base remote's tracking refs, `orphan` = refs/remotes/<ns>/* of a remote that no longer exists. */
 export type BranchRefKind = (typeof BRANCH_GC_SCOPES)[number]
 
-/** The ladder's verdict for one tip, in order of increasing cost. */
-export type BranchStatus = "merged" | "squash-merged" | "patch-merged" | "content-merged" | "unmerged"
+/** The verdict for one tip, in order of increasing cost (`pr-merged` is the forge shortcut that runs before the ladder). */
+export type BranchStatus = "pr-merged" | "merged" | "squash-merged" | "patch-merged" | "content-merged" | "unmerged"
 
 /**
  * `current`: the tip shares history with base. `pre-rewrite`: it doesn't, but
@@ -166,6 +170,8 @@ export interface BranchGcPlanEntry extends BranchRef, TipClassification {
   holdReason?: BranchGcHoldReason
   /** Human detail for a hold: the worktree path, `PR #n`, or why the PR check failed. */
   holdDetail?: string
+  /** Set when the status is `pr-merged`: the number of the merged PR whose head commit IS this tip. */
+  mergedPr?: number
   /** Set for unmerged local and orphan refs. */
   pushed?: BranchPushState
   verdict?: BranchVerdictSummary
@@ -551,6 +557,23 @@ async function openPrHeads(forge: ForgeClient | undefined): Promise<OpenPrHeads>
   }
 }
 
+/**
+ * Merged PR head sha → PR number, for the `pr-merged` shortcut. On any error
+ * or a forge without `listMergedPullRequests` this returns an empty map —
+ * never throws: unavailable just means "no shortcut", not "no merged PRs",
+ * and the ladder still classifies every ref on its own.
+ */
+async function mergedPrHeads(forge: ForgeClient | undefined): Promise<Map<string, number>> {
+  if (!forge?.listMergedPullRequests) return new Map()
+  try {
+    const heads = new Map<string, number>()
+    for (const pr of await forge.listMergedPullRequests()) heads.set(pr.headRefOid, pr.number)
+    return heads
+  } catch {
+    return new Map()
+  }
+}
+
 // ── classification of one ref ──────────────────────────────────────────
 
 interface ClassifyEnv {
@@ -562,6 +585,8 @@ interface ClassifyEnv {
   baseName: string
   worktrees: Map<string, string>
   prs: OpenPrHeads
+  /** Merged PR head sha → PR number (`pr-merged` shortcut). Empty = no shortcut available. */
+  mergedPrShas: Map<string, number>
   remoteShas: Set<string>
   remoteNames: Set<string>
   minAgeDays: number
@@ -609,7 +634,16 @@ async function classifyRef(b: BranchRef, env: ClassifyEnv): Promise<BranchGcPlan
   const tip = await pending
   const ageDays = Math.floor((env.nowMs - new Date(b.date).getTime()) / 86_400_000)
   const entry: BranchGcPlanEntry = { ...b, ...tip, ageDays, class: "hold" }
-  if (tip.status === "unmerged") {
+  // Merged-head shortcut: an "unmerged" tip that is EXACTLY the head commit of
+  // a MERGED PR lost nothing — that commit was reviewed and merged. Override
+  // the ladder's verdict (and skip its push-state/verdict work below) before
+  // any reclaim/hold decision; holds further down still win.
+  if (tip.status === "unmerged" && env.mergedPrShas.has(b.sha)) {
+    const pr = env.mergedPrShas.get(b.sha) as number
+    entry.status = "pr-merged"
+    entry.mergedPr = pr
+  }
+  if (entry.status === "unmerged") {
     const pushed = await pushStateOf(b, env)
     if (pushed) entry.pushed = pushed
     const stored = env.verdicts ? await env.verdicts.get(env.repoName, b.sha) : null
@@ -623,9 +657,9 @@ async function classifyRef(b: BranchRef, env: ClassifyEnv): Promise<BranchGcPlan
     if (hold.holdDetail) entry.holdDetail = hold.holdDetail
     return entry
   }
-  if (tip.status !== "unmerged") {
+  if (entry.status !== "unmerged") {
     entry.class = "reclaim"
-    entry.reclaimReason = tip.status
+    entry.reclaimReason = entry.status
     return entry
   }
   if (ageDays < env.minAgeDays) {
@@ -661,10 +695,11 @@ async function snapshot(input: {
 }): Promise<Snapshot> {
   const remotes = await configuredRemotes(input.repoRoot)
   const remote = baseRemoteOf(input.base, remotes)
-  const [{ refs, otherRemoteRefs }, worktrees, prs] = await Promise.all([
+  const [{ refs, otherRemoteRefs }, worktrees, prs, mergedPrs] = await Promise.all([
     listBranchRefs(input.repoRoot, remote, remotes),
     worktreeBranches(input.repoRoot),
     openPrHeads(input.forge),
+    mergedPrHeads(input.forge),
   ])
   const baseSha = (await gitOk(input.repoRoot, ["rev-parse", "--verify", `${input.base}^{commit}`])).trim()
   let anchor: string | null
@@ -684,6 +719,7 @@ async function snapshot(input: {
       baseName: remote && input.base.startsWith(`${remote}/`) ? input.base.slice(remote.length + 1) : input.base,
       worktrees,
       prs,
+      mergedPrShas: mergedPrs,
       remoteShas: new Set(remoteRefs.map((r) => r.sha)),
       remoteNames: new Set(remoteRefs.map((r) => r.name)),
       minAgeDays: input.minAgeDays,

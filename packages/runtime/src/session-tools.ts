@@ -2499,8 +2499,9 @@ export function registerSessionTools(
     "Garbage-collect a repo's branches. DEFAULTS TO A DRY RUN: returns a plan " +
       "classifying every local branch, base-remote branch and orphan tracking " +
       "ref (refs/remotes/<ns>/* of a removed remote) as `reclaim` (work " +
-      "provably in base: merged, squash-merged, patch-merged or " +
-      "content-merged), `review` (unmerged, old enough, not protected — " +
+      "provably in base: the head commit of a merged PR, merged, " +
+      "squash-merged, patch-merged or content-merged), `review` (unmerged, " +
+      "old enough, not protected — " +
       "carries coverage + the files not provably in base for a reviewer), or " +
       "`hold` (base/protected, checked out in a worktree or its remote twin, " +
       "open PR head, PR check unavailable, or younger than `minAgeDays`). " +

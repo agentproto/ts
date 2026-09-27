@@ -88,7 +88,10 @@ async function branchWith(
 }
 
 class FakeForge implements ForgeClient {
-  constructor(private readonly open: ForgePullRequestRef[] = []) {}
+  constructor(
+    private readonly open: ForgePullRequestRef[] = [],
+    private readonly merged: ForgePullRequestRef[] = [],
+  ) {}
   async pullRequestsForBranch(): Promise<ForgePullRequestRef[]> {
     return []
   }
@@ -99,10 +102,17 @@ class FakeForge implements ForgeClient {
   async listOpenPullRequests(): Promise<ForgePullRequestRef[]> {
     return this.open
   }
+  async listMergedPullRequests(): Promise<ForgePullRequestRef[]> {
+    return this.merged
+  }
 }
 
 function openPr(number: number, headRefName: string): ForgePullRequestRef {
   return { number, state: "open", merged: false, mergedAt: null, headRefName, headRefOid: "0".repeat(40) }
+}
+
+function mergedPr(number: number, headRefName: string, headRefOid: string): ForgePullRequestRef {
+  return { number, state: "closed", merged: true, mergedAt: "2026-01-01T00:00:00Z", headRefName, headRefOid }
 }
 
 function plan(repo: string, extra: Partial<PlanBranchGcInput> = {}): Promise<BranchGcPlan> {
@@ -210,6 +220,83 @@ describe("branch gc — reclaim ladder", () => {
     await branchWith(repo, "feat/fresh-work", { "n.ts": "n\n" })
     const e = entry(await plan(repo, { minAgeDays: 3 }), "feat/fresh-work")
     expect(e).toMatchObject({ status: "unmerged", class: "hold", holdReason: "young" })
+  })
+})
+
+// ── merged-PR head shortcut ──────────────────────────────────────────────
+
+describe("branch gc — pr-merged shortcut", () => {
+  it("an unmerged tip that IS a merged PR's head commit reclaims without a review", async () => {
+    const repo = await makeRepo()
+    const tip = await branchWith(repo, "feat/squash-merged-on-github", { "a.txt": "a\n" })
+    await commitFiles(repo, { "later.txt": "x\n" }, "later work") // base moved on after the squash merge
+    const p = await plan(repo, { forge: new FakeForge([], [mergedPr(101, "feat/squash-merged-on-github", tip)]) })
+    expect(entry(p, "feat/squash-merged-on-github")).toMatchObject({
+      status: "pr-merged",
+      mergedPr: 101,
+      class: "reclaim",
+      reclaimReason: "pr-merged",
+    })
+    // No forge shortcut data → the same branch stays review.
+    const without = await plan(repo, { forge: new FakeForge() })
+    expect(entry(without, "feat/squash-merged-on-github")).toMatchObject({ status: "unmerged", class: "review" })
+  })
+
+  it("a commit AFTER the merged head defeats the shortcut — the branch still needs review", async () => {
+    const repo = await makeRepo()
+    const head = await branchWith(repo, "feat/grew-after-merge", { "a.txt": "a\n" })
+    await commitFiles(repo, { "later.txt": "x\n" }, "later work")
+    // The branch tip moved past the merged head: the new work was never reviewed.
+    await execGit(repo, ["checkout", "-q", "feat/grew-after-merge"])
+    await commitFiles(repo, { "unreviewed.txt": "unreviewed\n" }, "post-merge work")
+    await execGit(repo, ["checkout", "-q", "main"])
+    const p = await plan(repo, { forge: new FakeForge([], [mergedPr(102, "feat/grew-after-merge", head)]) })
+    expect(entry(p, "feat/grew-after-merge")).toMatchObject({ status: "unmerged", class: "review" })
+  })
+
+  it("a forge without listMergedPullRequests behaves exactly as before (review, no shortcut)", async () => {
+    const repo = await makeRepo()
+    await branchWith(repo, "feat/no-shortcut", { "a.txt": "a\n" })
+    await commitFiles(repo, { "later.txt": "x\n" }, "later work")
+    // An old-style client: open-PR detection works, merged-PR listing doesn't
+    // (the optional method exists so such doubles keep compiling).
+    const legacy: ForgeClient = {
+      pullRequestsForBranch: async () => [],
+      pullRequestsForCommit: async () => [],
+      ensurePullHeadFetched: async () => {},
+      listOpenPullRequests: async () => [],
+    }
+    const p = await plan(repo, { forge: legacy })
+    expect(p.prCheck.available).toBe(true)
+    expect(entry(p, "feat/no-shortcut")).toMatchObject({ status: "unmerged", class: "review" })
+  })
+
+  it("holds still win over the pr-merged shortcut, and the deleted verdict-branch keeps the shortcut", async () => {
+    const repo = await makeRepo()
+    const tip = await branchWith(repo, "feat/merged-then-protected", { "a.txt": "a\n" })
+    await commitFiles(repo, { "later.txt": "x\n" }, "later work")
+    const forge = new FakeForge([openPr(9, "feat/merged-then-protected")], [mergedPr(103, "feat/merged-then-protected", tip)])
+    // tip is BOTH an open PR head and a merged PR head: the open-PR hold wins.
+    const held = await plan(repo, { forge })
+    expect(entry(held, "feat/merged-then-protected")).toMatchObject({ class: "hold", holdReason: "open-pr", holdDetail: "PR #9" })
+    // With the open PR gone, the shortcut alone decides — base moved on, so
+    // the ladder alone would never have said reclaim.
+    const now = await plan(repo, { forge: new FakeForge([], [mergedPr(103, "feat/merged-then-protected", tip)]) })
+    expect(entry(now, "feat/merged-then-protected")).toMatchObject({ status: "pr-merged", class: "reclaim" })
+  })
+
+  it("pr-merged is deletable: apply re-classifies from scratch and keeps the shortcut", async () => {
+    const repo = await makeRepo()
+    const tip = await branchWith(repo, "feat/apply-me", { "a.txt": "a\n" })
+    await commitFiles(repo, { "later.txt": "x\n" }, "later work")
+    const forge = new FakeForge([], [mergedPr(104, "feat/apply-me", tip)])
+    const p = await plan(repo, { forge })
+    expect(entry(p, "feat/apply-me").class).toBe("reclaim")
+    const stateDir = await tmp("branch-gc-state-")
+    const { outcomes, restoreLog } = await applyBranchGc(p, { scopes: ["local"], forge, stateDir })
+    expect(outcomes.find((o) => o.name === "feat/apply-me")).toMatchObject({ result: "deleted", reclaimReason: "pr-merged" })
+    expect(await refExists(repo, "refs/heads/feat/apply-me")).toBe(false)
+    expect(restoreLog).toBeTruthy()
   })
 })
 
