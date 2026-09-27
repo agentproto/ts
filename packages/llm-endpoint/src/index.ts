@@ -3201,6 +3201,21 @@ export {
   type EndpointsFileLoad,
 } from './endpoints.js';
 
+/** Re-exported for local/LAN runtime connectors — see connectors.ts. */
+export {
+  CONNECTORS,
+  CONNECTOR_IDS,
+  DEFAULT_LOCAL_PORTS,
+  connectorById,
+  detectConnector,
+  isConnectorId,
+  type Connector,
+  type ConnectorId,
+  type ConnectorModel,
+  type ConnectorModelState,
+  type ConnectorQuirks,
+} from './connectors.js';
+
 /** Démarre le proxy sur `port` (défaut : {@link PORT}). Renvoie le serveur en écoute. */
 export function start(port: number = PORT) {
   void resumeIncompleteLocalQueueBatches().catch((err: unknown) => {

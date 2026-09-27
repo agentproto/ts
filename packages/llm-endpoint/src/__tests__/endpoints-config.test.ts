@@ -139,6 +139,24 @@ describe('parseEndpointsConfig', () => {
     expect(result.endpoints).toEqual([]);
     expect(result.errors.some((e) => e.includes('timeoutMs.firstTokenMs'))).toBe(true);
   });
+
+  it('accepts a valid connector id', () => {
+    const result = parseEndpointsConfig({
+      endpoints: [{ id: 'lmstudio', kind: 'openai', baseUrl: 'http://127.0.0.1:1234/v1', connector: 'lmstudio' }],
+    });
+    expect(result.errors).toEqual([]);
+    expect(result.endpoints).toEqual([
+      { id: 'lmstudio', kind: 'openai', baseUrl: 'http://127.0.0.1:1234/v1', connector: 'lmstudio' },
+    ]);
+  });
+
+  it('rejects an unknown connector id', () => {
+    const result = parseEndpointsConfig({
+      endpoints: [{ id: 'x', kind: 'openai', baseUrl: 'http://host:1/v1', connector: 'bogus' }],
+    });
+    expect(result.endpoints).toEqual([]);
+    expect(result.errors.some((e) => e.includes('endpoints[0].connector'))).toBe(true);
+  });
 });
 
 describe('resolveEndpointsFilePath', () => {

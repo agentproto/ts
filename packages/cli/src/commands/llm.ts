@@ -1,25 +1,36 @@
 /**
- * `agentproto llm endpoints <list|test>`
+ * `agentproto llm endpoints <list|test|add|remove|detect>`
  *
- * Read-only visibility into the LLM gateway's named OpenAI-compatible
- * endpoints (local/LAN model servers — Ollama, llama-server, vLLM, …),
- * configured in `~/.agentproto/llm-endpoints.json`
+ * Read/write visibility into the LLM gateway's named OpenAI-compatible
+ * endpoints (local/LAN model servers — LM Studio, Ollama, llama-server,
+ * vLLM, …), configured in `~/.agentproto/llm-endpoints.json`
  * (`LLM_ENDPOINT_ENDPOINTS_FILE` overrides the path) — the same file
  * `@agentproto/llm-endpoint` reads at request time to route `<id>/<model>`.
  *
- * `add`/`remove` are deliberately out of scope for now — edit the JSON file
- * directly (see the package README's "Named endpoints" section for its
- * shape). This mirrors how `auth cred`/`auth profile` keep their own JSON
- * stores, but scoped down to what's needed today: seeing what's configured
- * (`list`) and whether it's actually reachable (`test`).
+ * `list`/`test` are read-only. `add`/`remove` edit the file for you (see the
+ * package README's "Named endpoints" section for its shape) instead of
+ * requiring a hand edit, and `detect` probes the well-known local ports for
+ * a running runtime and writes/updates the matching entry. This mirrors how
+ * `auth cred`/`auth profile` keep their own JSON stores.
  */
 
 import { parseArgs } from "node:util"
+import { mkdir, writeFile } from "node:fs/promises"
+import { dirname } from "node:path"
 import {
   readEndpointsFromDisk,
   resolveEndpointsFilePath,
+  parseEndpointsConfig,
+  connectorById,
+  detectConnector,
+  isConnectorId,
+  CONNECTOR_IDS,
+  DEFAULT_LOCAL_PORTS,
   type EndpointConfig,
+  type ConnectorId,
+  type ConnectorModel,
 } from "@agentproto/llm-endpoint"
+import { syncPiModels } from "../lib/pi-models.js"
 
 export async function runLlm(args: readonly string[]): Promise<number> {
   const sub = args[0]
@@ -43,11 +54,14 @@ const USAGE = `agentproto llm — the LLM gateway's named local/LAN model endpoi
 Usage:
   agentproto llm endpoints list [--json]
   agentproto llm endpoints test [--json]
+  agentproto llm endpoints add <name> --url <baseUrl> [--connector <id>] [--api-key-env VAR] [--json]
+  agentproto llm endpoints remove <name> [--json]
+  agentproto llm endpoints detect [--dry-run] [--json]
+  agentproto llm endpoints sync-pi [--dry-run] [--json]
 
 Endpoints live in ~/.agentproto/llm-endpoints.json (LLM_ENDPOINT_ENDPOINTS_FILE
 overrides the path) — see the @agentproto/llm-endpoint README's "Named
-endpoints" section for the file's shape. Add/remove one by editing that file
-directly; \`list\`/\`test\` are read-only.
+endpoints" section for the file's shape.
 `
 
 const ENDPOINTS_USAGE = `agentproto llm endpoints — named OpenAI-compatible endpoints
@@ -58,8 +72,39 @@ Usage:
                           env var is set) — no network call.
   agentproto llm endpoints test [--json]
                           live reachability + model listing per endpoint (a
-                          real GET <baseUrl>/models per entry, 4s timeout).
-                          Exit code is 1 if any endpoint is unreachable.
+                          real GET <baseUrl>/models per entry, 4s timeout,
+                          plus each endpoint's own connector.listModels() for
+                          a reachable endpoint). Exit code is 1 if any
+                          endpoint is unreachable.
+  agentproto llm endpoints add <name> --url <baseUrl>
+                          [--connector auto|${CONNECTOR_IDS.join("|")}]
+                          [--api-key-env VAR] [--json]
+                          Add a named endpoint and write it to the file.
+                          --connector defaults to "auto": probes <baseUrl> to
+                          identify the runtime, falling back to
+                          "openai-compatible" (with a warning) if nothing
+                          answers there yet — an explicit --connector skips
+                          probing entirely.
+  agentproto llm endpoints remove <name> [--json]
+                          Remove a named endpoint from the file.
+  agentproto llm endpoints detect [--dry-run] [--json]
+                          Probe the default local ports (lmstudio 1234,
+                          ollama 11434, llama-server 8080, vllm 8000) on
+                          127.0.0.1 and add/update the matching endpoint for
+                          each one found running. No local server running is
+                          a normal outcome (exit 0). --dry-run reports what
+                          would change without writing the file.
+  agentproto llm endpoints sync-pi [--dry-run] [--json]
+                          Regenerate the matching provider entry in
+                          ~/.pi/agent/models.json for every configured
+                          endpoint, from its connector's LIVE loaded models
+                          (contextWindow = loaded ctx, never max). Only ever
+                          touches model ids this command previously wrote
+                          there (tracked in
+                          ~/.agentproto/pi-models-managed.json) — a
+                          hand-added provider or model is left untouched.
+                          --dry-run reports what would change without
+                          writing either file.
 `
 
 async function runLlmEndpoints(args: readonly string[]): Promise<number> {
@@ -71,6 +116,15 @@ async function runLlmEndpoints(args: readonly string[]): Promise<number> {
       return runEndpointsList(rest)
     case "test":
       return runEndpointsTest(rest)
+    case "add":
+      return runEndpointsAdd(rest)
+    case "remove":
+    case "rm":
+      return runEndpointsRemove(rest)
+    case "detect":
+      return runEndpointsDetect(rest)
+    case "sync-pi":
+      return runEndpointsSyncPi(rest)
     case undefined:
     case "--help":
     case "-h":
@@ -94,6 +148,15 @@ function loadConfiguredOrFail(path: string): EndpointConfig[] | null {
     return null
   }
   return endpoints
+}
+
+/** Write `{ endpoints: [...] }` back to `path`, creating its parent dir
+ *  (e.g. a fresh install's missing `~/.agentproto`) if needed. Shared by
+ *  `add`/`remove`/`detect` — the only write path in this file; endpoints.ts
+ *  itself is deliberately write-free. */
+async function writeEndpointsFile(path: string, endpoints: EndpointConfig[]): Promise<void> {
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(path, `${JSON.stringify({ endpoints }, null, 2)}\n`)
 }
 
 async function runEndpointsList(args: readonly string[]): Promise<number> {
@@ -144,8 +207,10 @@ async function runEndpointsList(args: readonly string[]): Promise<number> {
 interface EndpointTestResult {
   id: string
   baseUrl: string
+  connector: ConnectorId
   reachable: boolean
   models: string[]
+  connectorModels?: ConnectorModel[]
   latencyMs: number
   detail?: string
 }
@@ -168,8 +233,12 @@ function extractModelIds(body: unknown): string[] {
 
 /** The cheapest live probe of one endpoint: GET <baseUrl>/models, time-boxed.
  *  Never throws — a network error / timeout / non-2xx resolves `reachable:false`
- *  with a human-readable `detail`, mirroring the gateway's own GET /v1/endpoints. */
+ *  with a human-readable `detail`, mirroring the gateway's own GET /v1/endpoints.
+ *  For a reachable endpoint, also runs its connector's own listModels() —
+ *  richer, runtime-specific detail (load state, context size) on top of the
+ *  generic OpenAI /models probe above. */
 async function testOneEndpoint(endpoint: EndpointConfig): Promise<EndpointTestResult> {
+  const connectorId: ConnectorId = endpoint.connector ?? "openai-compatible"
   const key = endpoint.apiKeyEnv ? process.env[endpoint.apiKeyEnv] : undefined
   const headers: Record<string, string> = key ? { Authorization: `Bearer ${key}` } : {}
   const start = Date.now()
@@ -182,14 +251,32 @@ async function testOneEndpoint(endpoint: EndpointConfig): Promise<EndpointTestRe
     })
     const latencyMs = Date.now() - start
     if (!res.ok) {
-      return { id: endpoint.id, baseUrl: endpoint.baseUrl, reachable: false, models: [], latencyMs, detail: `HTTP ${res.status}` }
+      return {
+        id: endpoint.id,
+        baseUrl: endpoint.baseUrl,
+        connector: connectorId,
+        reachable: false,
+        models: [],
+        latencyMs,
+        detail: `HTTP ${res.status}`,
+      }
     }
     const body: unknown = await res.json().catch(() => null)
-    return { id: endpoint.id, baseUrl: endpoint.baseUrl, reachable: true, models: extractModelIds(body), latencyMs }
+    const connectorModels = await connectorById(connectorId)?.listModels(endpoint.baseUrl)
+    return {
+      id: endpoint.id,
+      baseUrl: endpoint.baseUrl,
+      connector: connectorId,
+      reachable: true,
+      models: extractModelIds(body),
+      connectorModels: connectorModels ?? [],
+      latencyMs,
+    }
   } catch (err) {
     return {
       id: endpoint.id,
       baseUrl: endpoint.baseUrl,
+      connector: connectorId,
       reachable: false,
       models: [],
       latencyMs: Date.now() - start,
@@ -223,8 +310,239 @@ async function runEndpointsTest(args: readonly string[]): Promise<number> {
       const info = r.reachable
         ? `${r.models.length} model(s), ${r.latencyMs}ms`
         : (r.detail ?? "unknown error")
-      process.stdout.write(`  ${status}  ${r.id}  ${r.baseUrl}  ${info}\n`)
+      process.stdout.write(`  ${status}  ${r.id}  ${r.baseUrl}  connector=${r.connector}  ${info}\n`)
+      if (r.reachable && r.connectorModels && r.connectorModels.length > 0) {
+        for (const m of r.connectorModels) {
+          const ctx =
+            m.loadedCtx !== undefined && m.maxCtx !== undefined ? ` ctx=${m.loadedCtx}/${m.maxCtx}` : ""
+          process.stdout.write(`      - ${m.id}  state=${m.state}${ctx}\n`)
+        }
+      }
     }
   }
   return results.every((r) => r.reachable) ? 0 : 1
+}
+
+async function runEndpointsAdd(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      url: { type: "string" },
+      connector: { type: "string" },
+      "api-key-env": { type: "string" },
+      json: { type: "boolean" },
+    },
+  })
+  const name = positionals[0]
+  if (!name) {
+    process.stderr.write(`agentproto llm endpoints add: missing <name>.\n\n${ENDPOINTS_USAGE}`)
+    return 2
+  }
+  if (!values.url) {
+    process.stderr.write(`agentproto llm endpoints add: missing --url <baseUrl>.\n\n${ENDPOINTS_USAGE}`)
+    return 2
+  }
+  const connectorArg = values.connector ?? "auto"
+  if (connectorArg !== "auto" && !isConnectorId(connectorArg)) {
+    process.stderr.write(
+      `agentproto llm endpoints add: --connector must be "auto" or one of ${CONNECTOR_IDS.join(", ")} (got "${connectorArg}").\n`,
+    )
+    return 2
+  }
+
+  const path = resolveEndpointsFilePath()
+  const existing = loadConfiguredOrFail(path)
+  if (existing === null) return 1
+
+  let connector: ConnectorId
+  if (connectorArg === "auto") {
+    let urlLooksValid = true
+    try {
+      const parsed = new URL(values.url)
+      urlLooksValid = parsed.protocol === "http:" || parsed.protocol === "https:"
+    } catch {
+      urlLooksValid = false
+    }
+    const detected = urlLooksValid ? await detectConnector(values.url) : null
+    if (detected) {
+      connector = detected
+    } else {
+      process.stderr.write(
+        `agentproto llm endpoints add: nothing OpenAI-compatible answered at ${values.url}; ` +
+          `storing connector: "openai-compatible" as a fallback (re-run \`agentproto llm ` +
+          `endpoints detect\` once it's up if it turns out to be a known local runtime).\n`,
+      )
+      connector = "openai-compatible"
+    }
+  } else {
+    connector = connectorArg
+  }
+
+  const candidate: EndpointConfig = { id: name, kind: "openai", baseUrl: values.url, connector }
+  if (values["api-key-env"]) candidate.apiKeyEnv = values["api-key-env"]
+
+  const { endpoints: rebuilt, errors } = parseEndpointsConfig({ endpoints: [...existing, candidate] })
+  if (errors.length > 0) {
+    process.stderr.write(
+      `agentproto llm endpoints add: invalid endpoint:\n` + errors.map((e) => `  - ${e}\n`).join(""),
+    )
+    return 1
+  }
+
+  await writeEndpointsFile(path, rebuilt)
+
+  const added = rebuilt.find((e) => e.id === name)!
+  if (values.json) {
+    process.stdout.write(JSON.stringify(added, null, 2) + "\n")
+    return 0
+  }
+  process.stdout.write(`Added endpoint "${name}" (connector: ${connector}) -> ${added.baseUrl}\n`)
+  return 0
+}
+
+async function runEndpointsRemove(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: { json: { type: "boolean" } },
+  })
+  const name = positionals[0]
+  if (!name) {
+    process.stderr.write(`agentproto llm endpoints remove: missing <name>.\n\n${ENDPOINTS_USAGE}`)
+    return 2
+  }
+
+  const path = resolveEndpointsFilePath()
+  const existing = loadConfiguredOrFail(path)
+  if (existing === null) return 1
+
+  if (!existing.some((e) => e.id === name)) {
+    process.stderr.write(
+      `agentproto llm endpoints remove: no endpoint named "${name}" ` +
+        `(known: ${existing.map((e) => e.id).join(", ") || "(none configured)"}).\n`,
+    )
+    return 1
+  }
+
+  const remaining = existing.filter((e) => e.id !== name)
+  await writeEndpointsFile(path, remaining)
+
+  if (values.json) {
+    process.stdout.write(JSON.stringify({ removed: name, path }, null, 2) + "\n")
+    return 0
+  }
+  process.stdout.write(`Removed endpoint "${name}" from ${path}.\n`)
+  return 0
+}
+
+interface DetectedRuntime {
+  id: ConnectorId
+  baseUrl: string
+  connector: ConnectorId
+  action: "added" | "updated" | "would-add" | "would-update"
+}
+
+async function runEndpointsDetect(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    strict: true,
+    options: {
+      "dry-run": { type: "boolean" },
+      json: { type: "boolean" },
+    },
+  })
+  const dryRun = Boolean(values["dry-run"])
+
+  const path = resolveEndpointsFilePath()
+  const existing = loadConfiguredOrFail(path)
+  if (existing === null) return 1
+  const existingIds = new Set(existing.map((e) => e.id))
+
+  const detected: DetectedRuntime[] = []
+  for (const [id, port] of Object.entries(DEFAULT_LOCAL_PORTS) as [ConnectorId, number][]) {
+    const connector = connectorById(id)
+    if (!connector) continue
+    const baseUrl = `http://127.0.0.1:${port}/v1`
+    const alive = await connector.probe(baseUrl)
+    if (!alive) continue
+    const already = existingIds.has(id)
+    const action = already ? (dryRun ? "would-update" : "updated") : (dryRun ? "would-add" : "added")
+    detected.push({ id, baseUrl, connector: id, action })
+  }
+
+  if (!dryRun && detected.length > 0) {
+    const rebuilt = existing.map((e) => {
+      const d = detected.find((x) => x.id === e.id)
+      return d ? { ...e, baseUrl: d.baseUrl, connector: d.connector } : e
+    })
+    for (const d of detected) {
+      if (!existingIds.has(d.id)) rebuilt.push({ id: d.id, kind: "openai", baseUrl: d.baseUrl, connector: d.connector })
+    }
+    await writeEndpointsFile(path, rebuilt)
+  }
+
+  if (values.json) {
+    process.stdout.write(JSON.stringify({ detected, path }, null, 2) + "\n")
+    return 0
+  }
+
+  if (detected.length === 0) {
+    process.stdout.write(
+      "agentproto llm endpoints detect: no local model server detected on the default ports.\n",
+    )
+    return 0
+  }
+  for (const d of detected) {
+    const verb = dryRun
+      ? d.action === "would-add"
+        ? "would write"
+        : "would update"
+      : d.action === "added"
+        ? "wrote"
+        : "updated"
+    process.stdout.write(`Detected ${d.id} at ${d.baseUrl} -> ${verb} endpoint "${d.id}"\n`)
+  }
+  return 0
+}
+
+async function runEndpointsSyncPi(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    strict: true,
+    options: {
+      "dry-run": { type: "boolean" },
+      json: { type: "boolean" },
+    },
+  })
+  const dryRun = Boolean(values["dry-run"])
+  const result = await syncPiModels({ dryRun })
+
+  if (values.json) {
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+    return 0
+  }
+
+  if (result.entries.length === 0) {
+    process.stdout.write("agentproto llm endpoints sync-pi: no endpoints configured, nothing to sync.\n")
+    return 0
+  }
+  for (const e of result.entries) {
+    if (e.action === "skipped-no-loaded-models") {
+      process.stdout.write(`  ${e.providerId}  ${e.baseUrl}  no loaded models — skipped\n`)
+      continue
+    }
+    const verb = dryRun
+      ? e.action === "added"
+        ? "would add"
+        : e.action === "updated"
+          ? "would update"
+          : "unchanged"
+      : e.action
+    process.stdout.write(`  ${e.providerId}  ${e.baseUrl}  ${verb}  models: ${e.modelIds.join(", ") || "(none)"}\n`)
+  }
+  process.stdout.write(`${dryRun ? "Would write" : "Wrote"} ${result.modelsPath}\n`)
+  return 0
 }

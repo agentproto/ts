@@ -47,6 +47,7 @@ export function createFakeSetup(ctx: StepContext, opts: FakeSetupOptions = {}): 
     auth: async (a) => code(`auth ${a.join(" ")}`),
     installMcp: async (a) => code(`install-mcp ${a.join(" ")}`),
     installSkill: async (slug, a) => code(`install ${slug} ${a.join(" ")}`.trim()),
+    llmEndpoints: async (a) => code(`llm ${a.join(" ")}`),
     updateCli: async () => code("npm i -g @agentproto/cli@latest"),
     modelsSummary: async () => [{ slug: "claude-code", runnable: 3, total: 4 }],
     firstRun: async (slug, _prompt, onLine) => {

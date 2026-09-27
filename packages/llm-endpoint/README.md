@@ -150,11 +150,12 @@ configured from a JSON file instead of a pair of env vars per server:
       "defaultRequestFields": { "chat_template_kwargs": { "enable_thinking": false } },
       "timeoutMs": { "firstTokenMs": 180000 }
     },
-    { "id": "ollama", "kind": "openai", "baseUrl": "http://192.168.1.20:11434/v1" },
+    { "id": "ollama", "kind": "openai", "baseUrl": "http://192.168.1.20:11434/v1", "connector": "ollama" },
     {
       "id": "lmstudio",
       "kind": "openai",
       "baseUrl": "http://127.0.0.1:1234/v1",
+      "connector": "lmstudio",
       "defaultRequestFields": { "reasoning_effort": "none" }
     }
   ]
@@ -172,6 +173,13 @@ a 500 for the whole listing). `forge` itself keeps working unchanged — it's
 the implicit endpoint that `FORGE_BASE_URL`/`FORGE_API_KEY` configure; a file
 entry may not reuse the id `"forge"`.
 
+- **`connector`** names which local/LAN runtime `baseUrl` points at —
+  `lmstudio`, `ollama`, `vllm`, `llama-server`, or the generic
+  `openai-compatible` fallback (see `src/connectors.ts`). Optional: it never
+  affects request routing, only which connector's `listModels`/request quirks
+  `agentproto llm endpoints test`/`detect`/`doctor` use to show loaded models
+  and context size. An entry with no `connector` is treated as
+  `openai-compatible`.
 - **`apiKeyEnv`** names an env var (never the key itself). Absent, or the env
   var unset, means the endpoint is always keyless — no `Authorization` header
   sent, same as `forge` with no `FORGE_API_KEY`.
