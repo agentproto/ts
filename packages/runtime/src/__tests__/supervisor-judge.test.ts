@@ -188,7 +188,7 @@ describe("CompletionPolicySupervisor — WP7 judge-gate", () => {
 
     await waitFor(() => supervisor.getStatus(state.policyId)?.status === "done")
     expect(passed).toContain(state.policyId)
-    expect(registry.kill).toHaveBeenCalledWith(JUDGE_ID)
+    expect(registry.kill).toHaveBeenCalledWith(JUDGE_ID, undefined, "policy-cleanup")
   })
 
   it("(c) verdict FAIL → policy fails and nudges the watched session (onFail)", async () => {
@@ -219,7 +219,7 @@ describe("CompletionPolicySupervisor — WP7 judge-gate", () => {
     expect(registry.sendPrompt).toHaveBeenCalledWith("sess_test", "fix it (1)")
     await waitFor(() => supervisor.getStatus(state.policyId)?.status === "watching")
     expect(supervisor.getStatus(state.policyId)?.retries).toBe(1)
-    expect(registry.kill).toHaveBeenCalledWith(JUDGE_ID)
+    expect(registry.kill).toHaveBeenCalledWith(JUDGE_ID, undefined, "policy-cleanup")
   })
 
   it("(c2) verdict FAIL, no onFail → policy:failed (blocked)", async () => {
@@ -247,7 +247,7 @@ describe("CompletionPolicySupervisor — WP7 judge-gate", () => {
 
     await waitFor(() => supervisor.getStatus(state.policyId)?.status === "blocked")
     expect(failed).toContain(state.policyId)
-    expect(registry.kill).toHaveBeenCalledWith(JUDGE_ID)
+    expect(registry.kill).toHaveBeenCalledWith(JUDGE_ID, undefined, "policy-cleanup")
   })
 
   it("(d1) unparseable verdict → FAIL fail-safe (+ reason) + judge killed", async () => {
@@ -272,7 +272,7 @@ describe("CompletionPolicySupervisor — WP7 judge-gate", () => {
 
     await waitFor(() => supervisor.getStatus(state.policyId)?.status === "blocked")
     expect(supervisor.getStatus(state.policyId)?.error).toMatch(/VERDICT/i)
-    expect(registry.kill).toHaveBeenCalledWith(JUDGE_ID)
+    expect(registry.kill).toHaveBeenCalledWith(JUDGE_ID, undefined, "policy-cleanup")
   })
 
   it("(d2) judge timeout → FAIL fail-safe (+ reason) + judge killed", async () => {
@@ -298,7 +298,7 @@ describe("CompletionPolicySupervisor — WP7 judge-gate", () => {
 
     await waitFor(() => supervisor.getStatus(state.policyId)?.status === "blocked")
     expect(supervisor.getStatus(state.policyId)?.error).toMatch(/timed out/i)
-    expect(registry.kill).toHaveBeenCalledWith(JUDGE_ID)
+    expect(registry.kill).toHaveBeenCalledWith(JUDGE_ID, undefined, "policy-cleanup")
   })
 
   it("(d3) no resolver wired → judge gate fails fail-safe without spawning", async () => {

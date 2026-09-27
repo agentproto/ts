@@ -454,6 +454,12 @@ export {
   type SessionOutcomeCompact,
   type SessionOutcomeLink,
 } from "./session-outcome.js"
+export {
+  SESSION_END_REASONS,
+  isKnownSessionEndReason,
+  isProviderLimitError,
+  type SessionEndReason,
+} from "./session-end-reason.js"
 export type {
   AgentSessionLike,
   AgentStreamEvent,

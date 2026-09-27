@@ -3,7 +3,7 @@
  * `agentproto sessions start <slug> [--cwd <dir>] [--workspace <slug>]
  *                                    [--prompt <text>] [--label <text>]
  *                                    [--title <text>] [--attach] [--json]`
- * `agentproto sessions stop <id>`
+ * `agentproto sessions stop <id> [--completed]`
  *
  * Browse and control the daemon's live sessions (terminals, agent
  * CLIs, custom commands) without leaving the shell:
@@ -16,6 +16,12 @@
  *   agentproto sessions prompt <id> -p .. POST /sessions/:id/prompt to send a
  *                                        message into an already-running session
  *   agentproto sessions stop <id>        POST /sessions/:id/kill (SIGTERM)
+ *   agentproto sessions stop <id> --completed
+ *                                        same, tagged "completed" rather than
+ *                                        "stopped" (cut off early) on the
+ *                                        session's outcome. On a session
+ *                                        that's already ended, this instead
+ *                                        relabels its outcome as completed.
  *
  * The TUI is intentionally minimal — raw stdin keypresses, no inquirer
  * / blessed dep. Terminal emulator quirks (xterm vs iTerm, key
@@ -120,7 +126,10 @@ Usage:
                               (one session's detail: status, lineage, and —
                                once it has ended — its derived outcome: last
                                message, opened PRs, cost, run/parent links.)
-  agentproto sessions stop <id-or-name> [--json]
+  agentproto sessions stop <id-or-name> [--completed] [--json]
+                              (--completed: tag the outcome "completed" rather
+                               than "stopped"; on an already-ended session,
+                               relabels its outcome instead of erroring)
   agentproto sessions pin <id-or-name> [--json]
   agentproto sessions unpin <id-or-name> [--json]
                               (list-visibility only — pinned sessions sort to
@@ -1042,13 +1051,15 @@ async function runStop(args: readonly string[]): Promise<number> {
     strict: true,
     options: {
       json: { type: "boolean" },
+      completed: { type: "boolean" },
     },
   })
   const id = positionals[0]
   if (!id) {
     process.stderr.write(
       "agentproto sessions stop: missing session id.\n" +
-        "  Try: agentproto sessions stop <id-or-name>  (find ids with `agentproto sessions`)\n"
+        "  Try: agentproto sessions stop <id-or-name>  (find ids with `agentproto sessions`)\n" +
+        "       agentproto sessions stop <id-or-name> --completed  (tag it done, not cut off)\n"
     )
     return 2
   }
@@ -1071,7 +1082,7 @@ async function runStop(args: readonly string[]): Promise<number> {
   try {
     const result = await httpPostJson<{ ok: boolean; sessionId: string }>(
       `${endpoint.url}/sessions/${encodeURIComponent(id)}/kill`,
-      {},
+      values.completed ? { reason: "completed" } : {},
       endpoint.token,
     )
     if (values.json) {

@@ -30,6 +30,7 @@ import { withToolSubset } from "./tool-subset.js"
 import { collectSubtree } from "./agent-tools.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
 import type { SessionsRegistry, SessionDescriptor } from "./sessions.js"
+import type { SessionEndReason } from "./session-end-reason.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { EventRing } from "./event-ring.js"
 import type { CompletionPolicySupervisor } from "./supervisor.js"
@@ -417,7 +418,7 @@ export interface OrchestratorInjection {
  */
 export interface OrphanReaperRegistry {
   list(opts?: { includeArchived?: boolean }): readonly SessionDescriptor[]
-  kill(id: string, signal?: NodeJS.Signals): boolean
+  kill(id: string, signal?: NodeJS.Signals, reason?: SessionEndReason): boolean
 }
 
 /**
@@ -472,7 +473,7 @@ export function reapOrphanedDescendants(
     if (!desc || (desc.status !== "running" && desc.status !== "starting")) {
       continue
     }
-    if (registry.kill(id)) reaped.push(id)
+    if (registry.kill(id, undefined, "parent-exited")) reaped.push(id)
   }
   return reaped
 }
