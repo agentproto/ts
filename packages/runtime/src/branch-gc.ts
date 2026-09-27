@@ -70,6 +70,8 @@ export interface BranchGcPlanView {
   includeReviewed: boolean
   generatedAt: string
   otherRemoteRefs: number
+  /** true = base-remote `fetch --prune` succeeded; false = failed; null = skipped / no remote. */
+  fetched: boolean | null
   entries: BranchGcPlanEntryView[]
 }
 

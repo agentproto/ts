@@ -5,7 +5,7 @@
  * The forge is always a test double.
  */
 import { describe, it, expect, afterEach, vi } from "vitest"
-import { mkdtemp, rm, writeFile, mkdir, realpath } from "node:fs/promises"
+import { mkdtemp, rm, writeFile, mkdir, realpath, chmod } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 
@@ -372,6 +372,21 @@ describe("branch gc — ref kinds and holds", () => {
     expect(entry(p, "gone/feat-lost", "orphan")).toMatchObject({ class: "review", pushed: "only-copy" })
   })
 
+  it("plan prunes stale remote-tracking refs: a branch deleted upstream is not classified", async () => {
+    const repo = await makeRepo()
+    const bare = await withOrigin(repo)
+    await branchWith(repo, "gone", { "g.txt": "g\n" })
+    await execGit(repo, ["push", "-q", "origin", "gone"])
+    await execGit(repo, ["fetch", "-q", "origin"])
+    expect(await refExists(repo, "refs/remotes/origin/gone")).toBe(true)
+    // Delete directly in the bare repo — the tracking ref is now a ghost.
+    await execGit(bare, ["update-ref", "-d", "refs/heads/gone"])
+
+    const p = await plan(repo, { base: "origin/main" })
+    expect(p.fetched).toBe(true)
+    expect(p.entries.some((e) => e.ref === "refs/remotes/origin/gone")).toBe(false)
+  })
+
   it("a worktree's branch AND its remote twin are held; base is protected", async () => {
     const repo = await makeRepo()
     await withOrigin(repo)
@@ -652,8 +667,71 @@ describe("branch gc — apply", () => {
     const p = await plan(repo, { base: "origin/main" })
     // Someone deletes feat/one upstream between plan and apply; our tracking ref is stale.
     await execGit(bare, ["update-ref", "-d", "refs/heads/feat/one"])
-    const { outcomes } = await applyBranchGc(p, { scopes: ["remote"], forge: new FakeForge(), stateDir: await tmp("branch-gc-state-") })
+    // A failing pre-push hook must not stop the deletion: no-verify skips it.
+    const hook = join(repo, ".git", "hooks", "pre-push")
+    await mkdir(dirname(hook), { recursive: true })
+    await writeFile(hook, "#!/bin/sh\nexit 1\n")
+    await chmod(hook, 0o755)
+    const { outcomes } = await applyBranchGc(p, { scopes: ["remote"], forge: new FakeForge(), stateDir: await tmp("branch-gc-state-"), fetch: false })
     expect(outcomes.filter((o) => o.result === "deleted").map((o) => o.name).sort()).toEqual(["feat/one", "feat/two"])
     expect(await refExists(bare, "refs/heads/feat/two")).toBe(false)
+  })
+
+  it("a refused batch is retried as a batch: ghost + real refs all resolve without per-ref pushes", async () => {
+    const repo = await makeRepo()
+    const bare = await withOrigin(repo)
+    await branchWith(repo, "feat/a", { "a.txt": "a\n" })
+    await branchWith(repo, "feat/b", { "b.txt": "b\n" })
+    await execGit(repo, ["merge", "-q", "--no-ff", "-m", "m", "feat/a"])
+    await execGit(repo, ["merge", "-q", "--no-ff", "-m", "m2", "feat/b"])
+    await execGit(repo, ["push", "-q", "origin", "main", "feat/a", "feat/b"])
+    await execGit(repo, ["fetch", "-q", "origin"])
+    // A tracking ref that never existed upstream — git refuses the whole batch over it.
+    await execGit(repo, ["update-ref", "refs/remotes/origin/ghost", await sha(repo, "main")])
+    await execGit(repo, ["branch", "-q", "-D", "feat/a", "feat/b"])
+    const p = await plan(repo, { base: "origin/main" })
+    // Only `ghost` is missing upstream: the batch delete of feat/a and
+    // feat/b is refused wholesale, and the RETRY BATCH must delete them.
+
+    const { outcomes } = await applyBranchGc(p, { scopes: ["remote"], forge: new FakeForge(), stateDir: await tmp("branch-gc-state-"), fetch: false })
+    expect(outcomes.find((o) => o.name === "ghost")?.result).not.toBe("failed")
+    expect(outcomes.find((o) => o.name === "feat/a")?.result).toBe("deleted")
+    expect(outcomes.find((o) => o.name === "feat/b")?.result).toBe("deleted")
+    expect(await refExists(bare, "refs/heads/feat/a")).toBe(false)
+    expect(await refExists(bare, "refs/heads/feat/b")).toBe(false)
+  })
+
+  it("the per-ref fallback skips refs the partial retry already deleted upstream", async () => {
+    const repo = await makeRepo()
+    const bare = await withOrigin(repo)
+    await branchWith(repo, "feat/a", { "a.txt": "a\n" })
+    await branchWith(repo, "feat/b", { "b.txt": "b\n" })
+    await execGit(repo, ["merge", "-q", "--no-ff", "-m", "m", "feat/a"])
+    await execGit(repo, ["merge", "-q", "--no-ff", "-m", "m2", "feat/b"])
+    await execGit(repo, ["push", "-q", "origin", "main", "feat/a", "feat/b"])
+    await execGit(repo, ["fetch", "-q", "origin"])
+    // A tracking ref that never existed upstream — git refuses the whole batch over it.
+    await execGit(repo, ["update-ref", "refs/remotes/origin/ghost", await sha(repo, "main")])
+    await execGit(repo, ["branch", "-q", "-D", "feat/a", "feat/b"])
+    const p = await plan(repo, { base: "origin/main" })
+    // feat/a vanishes upstream between plan and apply. feat/b must vanish
+    // DURING the batch retry — simulated with a bare pre-receive hook that
+    // really deletes every pushed ref and then exits 1: non-atomic, so a
+    // push both succeeds on the wire and "fails" by exit code, leaving a
+    // stale tracking ref behind. remoteBatchSize 1 isolates the ghost in
+    // its own refused batch so feat/b's delete reaches the retry round.
+    const hook = join(bare, "hooks", "pre-receive")
+    await mkdir(dirname(hook), { recursive: true })
+    await writeFile(hook, '#!/bin/sh\nwhile read -r _old _rev ref; do git update-ref -d "$ref" 2>/dev/null || :; done\nexit 1\n')
+    await chmod(hook, 0o755)
+    await execGit(bare, ["update-ref", "-d", "refs/heads/feat/a"])
+
+    const { outcomes } = await applyBranchGc(p, { scopes: ["remote"], forge: new FakeForge(), stateDir: await tmp("branch-gc-state-"), fetch: false, remoteBatchSize: 1 })
+    // The retry "fails" (exit 1) but deletes feat/b for real; the per-ref
+    // fallback must not record it as `failed`.
+    expect(outcomes.find((o) => o.name === "ghost")?.result).not.toBe("failed")
+    expect(outcomes.find((o) => o.name === "feat/b")?.result).toBe("deleted")
+    expect(outcomes.some((o) => o.result === "failed")).toBe(false)
+    expect(await refExists(bare, "refs/heads/feat/b")).toBe(false)
   })
 })

@@ -148,6 +148,16 @@ steps:
     name: Review candidates with no recorded verdict
     description: Entry-based — see entry.mjs's computeReviewGaps.
 
+  - id: worktreeGcApply
+    kind: tool
+    name: Apply worktree gc
+    tool: worktree_gc
+    inputs:
+      repoRoot: $input.repoRoot
+      workspaceSlug: $input.workspaceSlug
+      apply: $input.applyMerged
+      salvageDirty: false
+
   - id: branchGcApply
     kind: tool
     name: Apply branch gc (reclaim only)
@@ -163,16 +173,6 @@ steps:
       apply: $input.applyMerged
       includeReviewed: false
       scopes: [local, remote, orphan]
-
-  - id: worktreeGcApply
-    kind: tool
-    name: Apply worktree gc
-    tool: worktree_gc
-    inputs:
-      repoRoot: $input.repoRoot
-      workspaceSlug: $input.workspaceSlug
-      apply: $input.applyMerged
-      salvageDirty: false
 
   - id: report
     kind: transform
