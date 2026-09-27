@@ -222,10 +222,26 @@ export function withDeferredTools(
         hits = candidates.filter(([name]) => names.has(name))
       } else {
         const terms = input.query.toLowerCase().split(/\s+/).filter(Boolean)
+        // A term matching the tool's own NAME is a much stronger relevance
+        // signal than the same term merely appearing somewhere in another
+        // tool's prose description — scoring them equally (as a flat
+        // haystack match count once did) let an unrelated tool's incidental
+        // description mention (e.g. "...the maintain workflow gives every
+        // reviewer...") tie with, and via registration-order tie-breaking
+        // sometimes outrank, the actually-named tool for a plain keyword
+        // like "workflow" — silently crowding it out of the capped result
+        // list. Confirmed live: `tool_search({query: "workflow"})` returned
+        // `branch_gc_review_worktree` (description-only hit, registered
+        // earlier) ahead of real `workflow_*` tools (AIP-58 dogfood F39).
         hits = candidates
           .map(([name, entry]): [string, CatalogEntry, number] => {
-            const haystack = `${name} ${entry.description ?? ""}`.toLowerCase()
-            return [name, entry, terms.filter(t => haystack.includes(t)).length]
+            const nameLc = name.toLowerCase()
+            const descLc = (entry.description ?? "").toLowerCase()
+            const score = terms.reduce(
+              (acc, t) => acc + (nameLc.includes(t) ? 100 : descLc.includes(t) ? 1 : 0),
+              0,
+            )
+            return [name, entry, score]
           })
           .filter(([, , score]) => score > 0)
           .sort((a, b) => b[2] - a[2])
