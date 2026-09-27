@@ -107,7 +107,7 @@ import type {
 import { basename, join } from "node:path"
 import { randomBytes } from "node:crypto"
 import { homedir } from "node:os"
-import { mkdir, writeFile, readdir, stat, unlink } from "node:fs/promises"
+import { mkdir, writeFile, readFile, readdir, stat, unlink } from "node:fs/promises"
 import {
   ALLOWLIST_REL,
   TERMINAL_GATE_ENV,
@@ -638,6 +638,177 @@ export const compactSessionItemWithProvenance = (
   ...(s.callerSessionId !== undefined ? { callerSessionId: s.callerSessionId } : {}),
 })
 
+// ── branch_gc background jobs (module scope) ─────────────────────────
+// The sibling of `worktree_gc` for refs: local branches, the base remote's
+// tracking branches, and orphan tracking refs of removed remotes.
+//
+// These live at MODULE scope, not inside `registerSessionTools`: the daemon's
+// `mcpServerFactory` (packages/runtime/src/index.ts) builds a NEW McpServer
+// per MCP connection and calls `registerSessionTools` on each, so a map
+// created inside the function would be per-server-instance — a `branch_gc`
+// started on one connection would be invisible to `branch_gc_status` on
+// another. One registry per daemon process is the contract.
+//
+// A plan can take minutes on a big repo, which blows past the ~49 s an MCP
+// caller should expect per call — so `wait: false` / `waitMs` run it in the
+// background and `branch_gc_status` polls the in-memory job (the finished
+// result is also saved to disk — see the retention/cleanup notes below).
+
+// Finished jobs older than 1 h are dropped when a new job starts, and their
+// on-disk result file (if any) is unlinked alongside the map entry. The map
+// itself does not survive a daemon restart, so `startBranchGcJob` ALSO
+// sweeps the jobs dir itself for stale files on every call — a restarted
+// daemon's fresh (empty) map never re-evicts a pre-restart file by id, so
+// the directory-level sweep is what actually bounds disk usage across
+// restarts.
+//
+// NOTE: every finished run — including an ordinary BLOCKING call with
+// neither `wait: false` nor `waitMs` set (e.g. the `maintain` workflow) —
+// still allocates a job-map entry and writes its full result to disk as a
+// side effect, even though the caller never sees a `jobId` and the
+// response shape is unchanged. That work isn't free, just invisible to
+// the caller.
+/** Where a finished job's full result is written (`<id>.json`). Injectable
+ *  via `RegisterSessionToolsOptions.branchGcJobsDir` (tests point it at a
+ *  temp dir); a registration without the option keeps the process default. */
+const BRANCH_GC_JOBS_DIR_DEFAULT = join(homedir(), ".agentproto", "branch-gc", "jobs")
+let branchGcJobsDirOverride: string | undefined
+const branchGcJobsDirOf = (): string => branchGcJobsDirOverride ?? BRANCH_GC_JOBS_DIR_DEFAULT
+const BRANCH_GC_JOB_RETENTION_MS = 3_600_000
+interface BranchGcJob {
+  id: string
+  status: "running" | "done" | "failed"
+  startedAt: string
+  startedMs: number
+  endedAt?: string
+  result?: BranchGcResult
+  /** Set only once `writeFile` actually succeeds. `branch_gc_status`
+   *  omits `resultPath` rather than pointing a caller at a file that was
+   *  never written (the write is best-effort and its failure swallowed). */
+  resultPath?: string
+  error?: string
+}
+const branchGcJobs = new Map<string, BranchGcJob>()
+// Best-effort sweep of the DIRECTORY itself (not just the in-memory map):
+// a file whose job was evicted from the map in a PRIOR process lifetime
+// (daemon restart) would otherwise never get unlinked, since the fresh
+// map has no entry — and therefore no eviction — for it.
+const sweepStaleBranchGcJobFiles = async (): Promise<void> => {
+  try {
+    const jobsDir = branchGcJobsDirOf()
+    const names = await readdir(jobsDir)
+    const cutoff = Date.now() - BRANCH_GC_JOB_RETENTION_MS
+    await Promise.all(
+      names.map(async name => {
+        const filePath = join(jobsDir, name)
+        try {
+          const info = await stat(filePath)
+          if (info.mtimeMs < cutoff) await unlink(filePath)
+        } catch {
+          // Best effort — a concurrent sweep/writer may have already
+          // removed or replaced it.
+        }
+      }),
+    )
+  } catch {
+    // Directory may not exist yet (no job has ever finished) — fine.
+  }
+}
+const startBranchGcJob = (
+  runner: BranchGcRunner,
+  runInput: BranchGcRunInput,
+): { job: BranchGcJob; promise: Promise<BranchGcResult> } => {
+  const startedMs = Date.now()
+  for (const [k, j] of branchGcJobs) {
+    if (j.endedAt && startedMs - Date.parse(j.endedAt) >= BRANCH_GC_JOB_RETENTION_MS) {
+      branchGcJobs.delete(k)
+      if (j.resultPath) void unlink(j.resultPath).catch(() => {})
+    }
+  }
+  void sweepStaleBranchGcJobFiles()
+  const job: BranchGcJob = { id: `bgc_${randomBytes(4).toString("hex")}`, status: "running", startedAt: new Date(startedMs).toISOString(), startedMs }
+  branchGcJobs.set(job.id, job)
+  const promise = runner(runInput)
+  void promise.then(
+    async result => {
+      // Save the full result before flipping to `done`, so a `resultPath`
+      // reported by `branch_gc_status` points at a file that actually
+      // exists — see `BranchGcJob.resultPath`.
+      const jobsDir = branchGcJobsDirOf()
+      const resultPath = join(jobsDir, `${job.id}.json`)
+      try {
+        await mkdir(jobsDir, { recursive: true })
+        await writeFile(resultPath, JSON.stringify(result))
+        job.resultPath = resultPath
+      } catch {
+        // Best effort — the in-memory job still carries the result; no
+        // `resultPath` is reported unless the write actually succeeded.
+      }
+      job.status = "done"
+      job.endedAt = new Date().toISOString()
+      job.result = result
+    },
+    err => {
+      job.status = "failed"
+      job.endedAt = new Date().toISOString()
+      job.error = err instanceof Error ? err.message : String(err)
+    },
+  )
+  return { job, promise }
+}
+
+const BRANCH_GC_POLL_AFTER_MS = 30_000
+/** The fire-and-drop payload for `branch_gc { wait: false }` / a `waitMs`
+ *  timeout, plus the `followUp` block telling a caller HOW to follow up
+ *  (which tool, with which args, how often) — the response used to say
+ *  nothing about that. */
+const branchGcBackgroundView = (jobId: string, startedAt: string): object => ({
+  jobId,
+  status: "running",
+  startedAt,
+  resultPath: join(branchGcJobsDirOf(), `${jobId}.json`),
+  followUp: {
+    tool: "branch_gc_status",
+    args: { jobId },
+    pollAfterMs: BRANCH_GC_POLL_AFTER_MS,
+    hint:
+      "Running in the background; a plan on a large repo takes a few minutes. " +
+      "Call branch_gc_status with this jobId about every 30 s. When done it " +
+      "returns the summary; the full result is written to resultPath (pass " +
+      "full: true to get it inline).",
+  },
+})
+
+/** The `done` view `branch_gc_status` returns — identical for an in-memory
+ *  job and one rebuilt from its on-disk result file (Part of the
+ *  disk-fallback contract: callers see the same shape either way). */
+const branchGcDoneView = (
+  jobId: string,
+  resultPath: string,
+  result: BranchGcResult,
+  full: boolean,
+  endedAt?: string,
+): object => ({
+  jobId,
+  status: "done",
+  ...(endedAt !== undefined ? { endedAt } : {}),
+  resultPath,
+  summary: result.summary,
+  // Apply results carry the restore log path and a per-outcome tally —
+  // exactly what a caller needs to decide "safe?" without fetching the
+  // full ~MB result with `full: true`.
+  ...(result.mode === "apply"
+    ? {
+        restoreLog: result.restoreLog ?? null,
+        outcomeCounts: result.outcomes.reduce<Record<string, number>>((acc, o) => {
+          acc[o.result] = (acc[o.result] ?? 0) + 1
+          return acc
+        }, {}),
+      }
+    : {}),
+  ...(full ? { result } : {}),
+})
+
 export function registerSessionTools(
   rawServer: McpServer,
   opts: RegisterSessionToolsOptions
@@ -658,11 +829,13 @@ export function registerSessionTools(
     runBranchGc,
     recordBranchGcVerdict,
     readBranchGcVerdict,
-    branchGcJobsDir,
     listCatalogModels,
     loadDefaultsConfig,
   } = opts
   const ptyEnabled = opts.ptyEnabled === true
+  // Point the module-level branch_gc job registry at the injected dir (tests
+  // use this to avoid writing into the real home directory). Last write wins.
+  if (opts.branchGcJobsDir) branchGcJobsDirOverride = opts.branchGcJobsDir
 
   // Shared registration helper for the list tools migrated onto the AIP
   // contract layer (session_list's pattern): defineTool + implementTool +
@@ -2524,119 +2697,6 @@ export function registerSessionTools(
     },
   )
 
-  // ── branch_gc ────────────────────────────────────────────────────
-  // The sibling of `worktree_gc` for refs: local branches, the base remote's
-  // tracking branches, and orphan tracking refs of removed remotes. Same
-  // contract — a DRY RUN unless `apply` is set, every entry re-classified
-  // right before it is touched, `hold` and `review` never touched — and every
-  // fact and mutation delegated to the injected `runBranchGc` port.
-  //
-  // A plan can take minutes on a big repo, which blows past the ~49 s an MCP
-  // caller should expect per call — so `wait: false` / `waitMs` run it in the
-  // background and `branch_gc_status` polls the in-memory job (the finished
-  // result is also saved to disk — see the retention/cleanup notes above
-  // `BranchGcJob`). The RESPONSE SHAPE for a default (blocking) call — the
-  // `maintain` workflow's call pattern — is unchanged; under the hood it
-  // still allocates a job entry and a disk write like any other run, just
-  // invisible to the caller because the handler awaits the job before
-  // returning.
-
-  // Finished jobs older than 1 h are dropped when a new job starts, and their
-  // on-disk result file (if any) is unlinked alongside the map entry. The map
-  // itself does not survive a daemon restart, so `startBranchGcJob` ALSO
-  // sweeps `BRANCH_GC_JOBS_DIR` itself for stale files on every call — a
-  // restarted daemon's fresh (empty) map never re-evicts a pre-restart
-  // file by id, so the directory-level sweep is what actually bounds disk
-  // usage across restarts.
-  //
-  // NOTE: every finished run — including an ordinary BLOCKING call with
-  // neither `wait: false` nor `waitMs` set (e.g. the `maintain` workflow) —
-  // still allocates a job-map entry and writes its full result to disk as a
-  // side effect, even though the caller never sees a `jobId` and the
-  // response shape is unchanged. That work isn't free, just invisible to
-  // the caller.
-  const BRANCH_GC_JOBS_DIR = branchGcJobsDir ?? join(homedir(), ".agentproto", "branch-gc", "jobs")
-  const BRANCH_GC_JOB_RETENTION_MS = 3_600_000
-  interface BranchGcJob {
-    id: string
-    status: "running" | "done" | "failed"
-    startedAt: string
-    startedMs: number
-    endedAt?: string
-    result?: BranchGcResult
-    /** Set only once `writeFile` actually succeeds. `branch_gc_status`
-     *  omits `resultPath` rather than pointing a caller at a file that was
-     *  never written (the write is best-effort and its failure swallowed). */
-    resultPath?: string
-    error?: string
-  }
-  const branchGcJobs = new Map<string, BranchGcJob>()
-  // Best-effort sweep of the DIRECTORY itself (not just the in-memory map):
-  // a file whose job was evicted from the map in a PRIOR process lifetime
-  // (daemon restart) would otherwise never get unlinked, since the fresh
-  // map has no entry — and therefore no eviction — for it.
-  const sweepStaleBranchGcJobFiles = async (): Promise<void> => {
-    try {
-      const names = await readdir(BRANCH_GC_JOBS_DIR)
-      const cutoff = Date.now() - BRANCH_GC_JOB_RETENTION_MS
-      await Promise.all(
-        names.map(async name => {
-          const filePath = join(BRANCH_GC_JOBS_DIR, name)
-          try {
-            const info = await stat(filePath)
-            if (info.mtimeMs < cutoff) await unlink(filePath)
-          } catch {
-            // Best effort — a concurrent sweep/writer may have already
-            // removed or replaced it.
-          }
-        }),
-      )
-    } catch {
-      // Directory may not exist yet (no job has ever finished) — fine.
-    }
-  }
-  const startBranchGcJob = (
-    runner: BranchGcRunner,
-    runInput: BranchGcRunInput,
-  ): { job: BranchGcJob; promise: Promise<BranchGcResult> } => {
-    const startedMs = Date.now()
-    for (const [k, j] of branchGcJobs) {
-      if (j.endedAt && startedMs - Date.parse(j.endedAt) >= BRANCH_GC_JOB_RETENTION_MS) {
-        branchGcJobs.delete(k)
-        if (j.resultPath) void unlink(j.resultPath).catch(() => {})
-      }
-    }
-    void sweepStaleBranchGcJobFiles()
-    const job: BranchGcJob = { id: `bgc_${randomBytes(4).toString("hex")}`, status: "running", startedAt: new Date(startedMs).toISOString(), startedMs }
-    branchGcJobs.set(job.id, job)
-    const promise = runner(runInput)
-    void promise.then(
-      async result => {
-        // Save the full result before flipping to `done`, so a `resultPath`
-        // reported by `branch_gc_status` points at a file that actually
-        // exists — see `BranchGcJob.resultPath`.
-        const resultPath = join(BRANCH_GC_JOBS_DIR, `${job.id}.json`)
-        try {
-          await mkdir(BRANCH_GC_JOBS_DIR, { recursive: true })
-          await writeFile(resultPath, JSON.stringify(result))
-          job.resultPath = resultPath
-        } catch {
-          // Best effort — the in-memory job still carries the result; no
-          // `resultPath` is reported unless the write actually succeeded.
-        }
-        job.status = "done"
-        job.endedAt = new Date().toISOString()
-        job.result = result
-      },
-      err => {
-        job.status = "failed"
-        job.endedAt = new Date().toISOString()
-        job.error = err instanceof Error ? err.message : String(err)
-      },
-    )
-    return { job, promise }
-  }
-
   const branchGcKind = z.enum(["local", "remote", "orphan"])
   server.tool(
     "branch_gc",
@@ -2654,7 +2714,9 @@ export function registerSessionTools(
       "the path of a restore log (sha + re-create command per deleted ref). " +
       "A plan can take minutes on a big repo: as an MCP caller, pass " +
       "`wait: false` (or `waitMs: 40000`) and poll `branch_gc_status` with " +
-      "the returned jobId instead of blocking.",
+      "the returned jobId instead of blocking. A `wait: false` (or `waitMs` " +
+      "timed-out) response returns a jobId plus a `followUp` block naming the " +
+      "poll tool and cadence — poll `branch_gc_status` with that jobId.",
     {
       repoRoot: z.string().optional().describe("Absolute path to the git repo. Wins over `workspaceSlug`."),
       workspaceSlug: z
@@ -2722,7 +2784,7 @@ export function registerSessionTools(
         }
         const { job, promise } = startBranchGcJob(runBranchGc, runInput)
         if (input.wait === false) {
-          return { content: [{ type: "text", text: JSON.stringify({ jobId: job.id, status: "running", startedAt: job.startedAt }) }] }
+          return { content: [{ type: "text", text: JSON.stringify(branchGcBackgroundView(job.id, job.startedAt)) }] }
         }
         if (input.waitMs !== undefined) {
           let fireTimedOut!: (timedOut: boolean) => void
@@ -2743,7 +2805,7 @@ export function registerSessionTools(
             timeout,
           ])
           if (timedOut) {
-            return { content: [{ type: "text", text: JSON.stringify({ jobId: job.id, status: "running", startedAt: job.startedAt }) }] }
+            return { content: [{ type: "text", text: JSON.stringify(branchGcBackgroundView(job.id, job.startedAt)) }] }
           }
           // Settled inside the window — fall through and return inline.
         }
@@ -2763,8 +2825,9 @@ export function registerSessionTools(
     "Poll a branch_gc run started with `wait: false` (or one that fell back to " +
       "the background via `waitMs`). While running: status + elapsed time. When " +
       "done: the plan's own summary, the path of the full result saved on disk " +
-      "(`resultPath`), and — with `full: true` — the full result itself. When " +
-      "failed: the error.",
+      "(`resultPath`), and — with `full: true` — the full result itself. While " +
+      "running the view also carries `followUp.pollAfterMs` (poll every 30 s). " +
+      "When failed: the error.",
     {
       jobId: z.string().describe("Job id returned by `branch_gc` (`bgc_…`)."),
       full: mcpBool.optional().describe("Include the full result JSON, not just the summary. Default false."),
@@ -2772,22 +2835,54 @@ export function registerSessionTools(
     async input => {
       const job = branchGcJobs.get(input.jobId)
       if (!job) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `branch_gc job '${input.jobId}' not found (jobs don't survive a daemon restart).`,
-            },
-          ],
-          isError: true,
+        // The map is per-process: an id from a prior daemon lifetime (or one
+        // whose map entry was already evicted) is not in it — but the job's
+        // full result is still on disk. Fall back to the result file before
+        // declaring the job lost. Guard the id first: only a well-formed
+        // `bgc_<hex8>` id may touch the filesystem, so a crafted id like
+        // `../x` can never escape the jobs dir.
+        const fallbackPath = join(branchGcJobsDirOf(), `${input.jobId}.json`)
+        if (!/^bgc_[0-9a-f]{8}$/.test(input.jobId)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `branch_gc job '${input.jobId}' not found (no running job and no result file at ${fallbackPath})`,
+              },
+            ],
+            isError: true,
+          }
         }
+        let parsed: BranchGcResult
+        try {
+          parsed = JSON.parse(await readFile(fallbackPath, "utf8")) as BranchGcResult
+        } catch {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `branch_gc job '${input.jobId}' not found (no running job and no result file at ${fallbackPath})`,
+              },
+            ],
+            isError: true,
+          }
+        }
+        const view = branchGcDoneView(input.jobId, fallbackPath, parsed, input.full === true)
+        return { content: [{ type: "text", text: JSON.stringify(view) }] }
       }
       if (job.status === "running") {
         return {
           content: [
             {
               type: "text",
-              text: JSON.stringify({ jobId: job.id, status: job.status, startedAt: job.startedAt, elapsedMs: Date.now() - job.startedMs }),
+              text: JSON.stringify({
+                jobId: job.id,
+                status: job.status,
+                startedAt: job.startedAt,
+                elapsedMs: Date.now() - job.startedMs,
+                resultPath: join(branchGcJobsDirOf(), `${job.id}.json`),
+                followUp: { pollAfterMs: BRANCH_GC_POLL_AFTER_MS },
+              }),
             },
           ],
         }
@@ -2797,26 +2892,7 @@ export function registerSessionTools(
           content: [{ type: "text", text: JSON.stringify({ jobId: job.id, status: job.status, endedAt: job.endedAt, error: job.error }) }],
         }
       }
-      const view = {
-        jobId: job.id,
-        status: job.status,
-        endedAt: job.endedAt,
-        resultPath: join(BRANCH_GC_JOBS_DIR, `${job.id}.json`),
-        summary: job.result?.summary,
-        // Apply results carry the restore log path and a per-outcome tally —
-        // exactly what a caller needs to decide "safe?" without fetching the
-        // full ~MB result with `full: true`.
-        ...(job.result?.mode === "apply"
-          ? {
-              restoreLog: job.result.restoreLog ?? null,
-              outcomeCounts: job.result.outcomes.reduce<Record<string, number>>((acc, o) => {
-                acc[o.result] = (acc[o.result] ?? 0) + 1
-                return acc
-              }, {}),
-            }
-          : {}),
-        ...(input.full === true ? { result: job.result } : {}),
-      }
+      const view = branchGcDoneView(job.id, join(branchGcJobsDirOf(), `${job.id}.json`), job.result!, input.full === true, job.endedAt)
       return { content: [{ type: "text", text: JSON.stringify(view) }] }
     },
   )
