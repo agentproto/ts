@@ -85,6 +85,10 @@ import {
   type PtyFactory,
 } from "./sessions.js"
 import { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
+import {
+  runContinueOnBootPass,
+  type ContinueOnBootSummary,
+} from "./continue-interrupted.js"
 import { runIdleReapPass, type IdleReapSummary } from "./idle-reaper.js"
 import { runCrashDetectPass } from "./crash-reaper.js"
 import { runStallWatchdogPass } from "./stall-watchdog.js"
@@ -489,6 +493,19 @@ export type {
 } from "./sessions.js"
 export { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
 export {
+  continueInterruptedSessions,
+  continueSkipReason,
+  runContinueOnBootPass,
+  DEFAULT_CONTINUE_PROMPT,
+  CONTINUE_PROMPT_SOURCE,
+  MAX_AUTO_CONTINUE_ATTEMPTS,
+  type ContinueInterruptedMode,
+  type ContinueInterruptedOutcome,
+  type ContinueInterruptedResult,
+  type ContinueInterruptedSkipReason,
+  type ContinueOnBootSummary,
+} from "./continue-interrupted.js"
+export {
   runIdleReapPass,
   type IdleReapSummary,
   type IdleReaperRegistry,
@@ -814,6 +831,16 @@ export { policyWatchesSession } from "./supervisor.js"
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnySpec = DoctypeSpec<any, any>
 
+/** Concurrency cap for the boot-time passes (eager resume, continue-on-boot)
+ *  so a box-wide restart doesn't spawn every adapter at once (§5
+ *  "Resume-storm control"). Default 4; override via
+ *  AGENTPROTO_RESUME_CONCURRENCY, mirroring AGENTPROTO_POLICY_CONCURRENCY. */
+function bootResumeConcurrency(): number {
+  const raw = process.env.AGENTPROTO_RESUME_CONCURRENCY
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 4
+}
+
 export interface CreateGatewayOptions {
   /** Absolute path to the workspace dir. */
   workspace: string
@@ -832,6 +859,12 @@ export interface CreateGatewayOptions {
    *  to an `enabled: false` summary. Also surfaced in `daemon_health` /
    *  `GET /health` so an operator can see the effective value. */
   resumeSessionsOnBoot?: boolean
+  /** Opt-in continue-on-boot. Mirrors the `daemon.continueInterruptedOnBoot`
+   *  config knob; when true, the `continueInterruptedOnBoot()` handle method
+   *  runs the boot continue pass (see `continue-interrupted.ts`); when
+   *  false/omitted it short-circuits to an `enabled: false` summary. Surfaced
+   *  in `daemon_health` / `GET /health`. */
+  continueInterruptedOnBoot?: boolean
   /** Idle agent-session reaper threshold in ms (PR-6). Mirrors the
    *  `daemon.idleReapAfterMs` config knob; the CLI resolves it (env >
    *  config > off) and passes it here. When positive, the gateway starts a
@@ -1204,6 +1237,16 @@ export interface GatewayHandle {
   resumeSessionsOnBoot(opts?: {
     isServed?: (desc: SessionDescriptor) => boolean
   }): Promise<EagerResumeSummary>
+  /** Run the opt-in continue-on-boot pass and return its tally — a no-op
+   *  returning `{ enabled: false, ... }` when the `continueInterruptedOnBoot`
+   *  knob is off. serve.ts invokes this right AFTER `resumeSessionsOnBoot()`
+   *  (so a row whose eager resume failed is recognisable and skipped) — and
+   *  therefore, like it, after the supervisor was re-armed, so a re-armed
+   *  completion policy sees the continue turn's turn-end. Same `isServed`
+   *  cross-process gate. */
+  continueInterruptedOnBoot(opts?: {
+    isServed?: (desc: SessionDescriptor) => boolean
+  }): Promise<ContinueOnBootSummary>
   stop(): Promise<void>
 }
 
@@ -2117,6 +2160,7 @@ export async function createGateway(
       registered,
       startedAt,
       resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
+      continueInterruptedOnBoot: opts.continueInterruptedOnBoot === true,
       idleReapAfterMs,
       crashDetectIntervalMs,
       restartSweepIntervalMs,
@@ -2661,6 +2705,7 @@ export async function createGateway(
       ...(opts.version ? { version: opts.version } : {}),
       ...(opts.build ? { build: opts.build } : {}),
       resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
+      continueInterruptedOnBoot: opts.continueInterruptedOnBoot === true,
       idleReapAfterMs,
       crashDetectIntervalMs,
       restartSweepIntervalMs,
@@ -2879,15 +2924,21 @@ export async function createGateway(
       if (!opts.resumeSessionsOnBoot) {
         return { enabled: false, candidates: 0, resumed: 0, failed: 0, skipped: 0 }
       }
-      // Small concurrency cap so a box-wide restart doesn't spawn every adapter
-      // at once (§5 "Resume-storm control"). Default 4; override via
-      // AGENTPROTO_RESUME_CONCURRENCY, mirroring AGENTPROTO_POLICY_CONCURRENCY.
-      const raw = process.env.AGENTPROTO_RESUME_CONCURRENCY
-      const parsed = raw ? Number.parseInt(raw, 10) : NaN
-      const concurrency = Number.isFinite(parsed) && parsed > 0 ? parsed : 4
       return runEagerResumePass({
         registry: sessions,
-        concurrency,
+        concurrency: bootResumeConcurrency(),
+        ...(passOpts?.isServed ? { isServed: passOpts.isServed } : {}),
+      })
+    },
+    async continueInterruptedOnBoot(passOpts) {
+      if (!opts.continueInterruptedOnBoot) {
+        return { enabled: false, eligible: 0, sent: 0, skipped: 0, failed: 0 }
+      }
+      // Same storm control as the eager pass: each send may lazily resume an
+      // adapter, so the same concurrency knob bounds it.
+      return runContinueOnBootPass({
+        registry: sessions,
+        concurrency: bootResumeConcurrency(),
         ...(passOpts?.isServed ? { isServed: passOpts.isServed } : {}),
       })
     },

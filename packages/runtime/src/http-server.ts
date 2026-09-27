@@ -40,6 +40,7 @@ import type { HeartbeatRunner } from "./heartbeat.js"
 import type { RuntimeEvents, RuntimeEvent } from "./events.js"
 import type { SessionsRegistry, AgentSessionLike, RestartPolicy, SessionDescriptor } from "./sessions.js"
 import { SessionNotAliveError, applyBracketedPasteWrap } from "./sessions.js"
+import { continueInterruptedSessions } from "./continue-interrupted.js"
 import {
   createSessionMessage,
   isMessageAllowed,
@@ -1030,6 +1031,9 @@ export interface RuntimeHttpServerOptions {
     /** Effective `daemon.resumeSessionsOnBoot` knob (§5, PR-4). Kept in sync
      *  with the `daemon_health` MCP tool's field of the same name. */
     resumeSessionsOnBoot?: boolean
+    /** Effective `daemon.continueInterruptedOnBoot` knob. Kept in sync with
+     *  the `daemon_health` MCP tool's field of the same name. */
+    continueInterruptedOnBoot?: boolean
     /** Effective `daemon.idleReapAfterMs` knob (PR-6) — idle threshold (ms)
      *  before the reaper retires an idle agent-cli session, or 0 when off. Kept
      *  in sync with the `daemon_health` MCP tool's field of the same name. */
@@ -1618,6 +1622,7 @@ export async function startHttpServer(
         node: process.execPath,
         entry: process.argv[1] ?? null,
         resumeSessionsOnBoot: opts.meta.resumeSessionsOnBoot === true,
+        continueInterruptedOnBoot: opts.meta.continueInterruptedOnBoot === true,
         idleReapAfterMs: opts.meta.idleReapAfterMs ?? 0,
         crashDetectIntervalMs: opts.meta.crashDetectIntervalMs ?? 0,
         restartSweepIntervalMs: opts.meta.restartSweepIntervalMs ?? 0,
@@ -4447,6 +4452,11 @@ export function buildSpawnSessionHttpArgs(
  *                                    session is killed first, same
  *                                    teardown as /kill; returns
  *                                    { ok, id, killed }
+ *   POST   /sessions/continue-interrupted
+ *                                  → continue sessions the last restart cut
+ *                                    off mid-turn (session_continue_interrupted's
+ *                                    HTTP twin); body { dryRun? (default
+ *                                    true), ids?, prompt? }
  *   POST   /sessions/gc           → bulk GC terminal sessions (session_gc's
  *                                    HTTP twin); body { olderThanDays?,
  *                                    forget? }; returns { mode, ids, count }
@@ -6095,6 +6105,38 @@ async function handleSessions(
   // the scoped MCP verb): the CLI operator GCs the whole registry. Collection
   // route, so it MUST precede the per-id `idMatch` below (which would else eat
   // `/sessions/gc` as an id).
+  // Continue the sessions the last restart cut off mid-turn — the HTTP twin of
+  // the `session_continue_interrupted` MCP verb, powering `agentproto sessions
+  // continue-interrupted`. Body: `{ dryRun?: boolean (default true), ids?:
+  // string[], prompt?: string }`; returns `ContinueInterruptedResult`.
+  // Operator surface — no subtree scoping. Collection route: must precede the
+  // per-id `idMatch` below.
+  if (path === "/sessions/continue-interrupted" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const ids = Array.isArray(b.ids)
+      ? b.ids
+          .filter((v): v is string => typeof v === "string" && v.length > 0)
+          .map(ref => registry.findByIdOrName(ref)?.id ?? ref)
+      : undefined
+    try {
+      const res = await continueInterruptedSessions({
+        registry,
+        mode: "manual",
+        dryRun: b.dryRun !== false,
+        ...(ids ? { ids } : {}),
+        ...(typeof b.prompt === "string" ? { prompt: b.prompt } : {}),
+      })
+      json(200, res)
+    } catch (err) {
+      json(500, {
+        error: "continue_interrupted_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+    return true
+  }
+
   if (path === "/sessions/gc" && req.method === "POST") {
     const body = await readJsonBody(req)
     const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
