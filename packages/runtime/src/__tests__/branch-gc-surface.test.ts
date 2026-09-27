@@ -10,6 +10,8 @@
 
 import { describe, it, expect } from "vitest"
 import { createServer } from "node:http"
+import { existsSync } from "node:fs"
+import { readFile } from "node:fs/promises"
 import { AddressInfo } from "node:net"
 import { createMcpServer } from "@agentproto/mcp-server"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
@@ -355,6 +357,82 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
       expect(text(r)).toContain("branch_gc_verdict_get is not enabled")
     } finally {
       await unwired.close()
+    }
+  })
+
+  it("wait: false returns a jobId; branch_gc_status goes running → done with a summary and a resultPath on disk", async () => {
+    let release!: (r: BranchGcResult) => void
+    const gate = new Promise<BranchGcResult>(res => {
+      release = res
+    })
+    const runner: BranchGcRunner = () => gate
+    const client = await harness({ runBranchGc: runner })
+    try {
+      const start = await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", wait: false } })
+      expect(isError(start)).toBe(false)
+      const started = JSON.parse(text(start)) as { jobId: string; status: string; startedAt: string }
+      expect(started.status).toBe("running")
+      expect(started.jobId).toMatch(/^bgc_[0-9a-f]{8}$/)
+      expect(started.startedAt).toBeTruthy()
+
+      const running = await client.callTool({ name: "branch_gc_status", arguments: { jobId: started.jobId } })
+      const runView = JSON.parse(text(running)) as { status: string; elapsedMs: number }
+      expect(runView.status).toBe("running")
+      expect(runView.elapsedMs).toBeGreaterThanOrEqual(0)
+
+      release(PLAN_RESULT)
+      // The job flips to `done` only after its async settle handler runs.
+      let done: { status: string; resultPath: string; summary: unknown } | undefined
+      for (let i = 0; i < 100; i++) {
+        const r = await client.callTool({ name: "branch_gc_status", arguments: { jobId: started.jobId } })
+        done = JSON.parse(text(r))
+        if (done!.status === "done") break
+        await new Promise(res => setTimeout(res, 10))
+      }
+      expect(done!.status).toBe("done")
+      expect(done!.summary).toEqual(SUMMARY)
+      expect(existsSync(done!.resultPath)).toBe(true)
+      expect(JSON.parse(await readFile(done!.resultPath, "utf8"))).toEqual(PLAN_RESULT)
+    } finally {
+      await client.close()
+    }
+  })
+
+  it("waitMs with a fast runner returns the result inline; a failed job reports its error; unknown ids are not found", async () => {
+    const { runner } = recordingRunner()
+    const client = await harness({ runBranchGc: runner })
+    try {
+      const r = await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", waitMs: 5000 } })
+      expect(JSON.parse(text(r))).toEqual(PLAN_RESULT)
+    } finally {
+      await client.close()
+    }
+
+    const failing: BranchGcRunner = async () => {
+      throw new Error("git exploded")
+    }
+    const failClient = await harness({ runBranchGc: failing })
+    try {
+      const started = await failClient.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", wait: false } })
+      const { jobId } = JSON.parse(text(started)) as { jobId: string }
+      let view: { status: string; error?: string } | undefined
+      for (let i = 0; i < 100; i++) {
+        view = JSON.parse(text(await failClient.callTool({ name: "branch_gc_status", arguments: { jobId } })))
+        if (view!.status === "failed") break
+        await new Promise(res => setTimeout(res, 10))
+      }
+      expect(view).toMatchObject({ status: "failed", error: "git exploded" })
+    } finally {
+      await failClient.close()
+    }
+
+    const unknown = await harness({ runBranchGc: runner })
+    try {
+      const r = await unknown.callTool({ name: "branch_gc_status", arguments: { jobId: "bgc_00000000" } })
+      expect(isError(r)).toBe(true)
+      expect(text(r)).toContain("not found (jobs don't survive a daemon restart)")
+    } finally {
+      await unknown.close()
     }
   })
 })

@@ -97,8 +97,17 @@ import {
   type WorktreeStatusView,
 } from "./worktree-status.js"
 import { livingSessionCwds, type WorktreeGcRunner } from "./worktree-gc.js"
-import type { BranchGcRunner, BranchGcVerdictRecorder, BranchGcVerdictReader } from "./branch-gc.js"
+import type {
+  BranchGcResult,
+  BranchGcRunInput,
+  BranchGcRunner,
+  BranchGcVerdictRecorder,
+  BranchGcVerdictReader,
+} from "./branch-gc.js"
 import { basename, join } from "node:path"
+import { randomBytes } from "node:crypto"
+import { homedir } from "node:os"
+import { mkdir, writeFile } from "node:fs/promises"
 import {
   ALLOWLIST_REL,
   TERMINAL_GATE_ENV,
@@ -2515,6 +2524,58 @@ export function registerSessionTools(
   // contract — a DRY RUN unless `apply` is set, every entry re-classified
   // right before it is touched, `hold` and `review` never touched — and every
   // fact and mutation delegated to the injected `runBranchGc` port.
+  //
+  // A plan can take minutes on a big repo, which blows past the ~49 s an MCP
+  // caller should expect per call — so `wait: false` / `waitMs` run it in the
+  // background and `branch_gc_status` polls the in-memory job (the finished
+  // result is also saved to disk). Default is still blocking, so the
+  // `maintain` workflow (which calls this tool without those fields) keeps
+  // today's behaviour exactly.
+
+  // Finished jobs older than 1 h are dropped when a new job starts; the
+  // results also live on disk (`BRANCH_GC_JOBS_DIR`), but the map does not
+  // survive a daemon restart.
+  const BRANCH_GC_JOBS_DIR = join(homedir(), ".agentproto", "branch-gc", "jobs")
+  interface BranchGcJob {
+    id: string
+    status: "running" | "done" | "failed"
+    startedAt: string
+    startedMs: number
+    endedAt?: string
+    result?: BranchGcResult
+    error?: string
+  }
+  const branchGcJobs = new Map<string, BranchGcJob>()
+  const startBranchGcJob = (runInput: BranchGcRunInput): { job: BranchGcJob; promise: Promise<BranchGcResult> } => {
+    const startedMs = Date.now()
+    for (const [k, j] of branchGcJobs) {
+      if (j.endedAt && startedMs - Date.parse(j.endedAt) >= 3_600_000) branchGcJobs.delete(k)
+    }
+    const job: BranchGcJob = { id: `bgc_${randomBytes(4).toString("hex")}`, status: "running", startedAt: new Date(startedMs).toISOString(), startedMs }
+    branchGcJobs.set(job.id, job)
+    const promise = (runBranchGc as BranchGcRunner)(runInput)
+    void promise.then(
+      async result => {
+        // Save the full result before flipping to `done`, so a `resultPath`
+        // reported by `branch_gc_status` always points at a written file.
+        try {
+          await mkdir(BRANCH_GC_JOBS_DIR, { recursive: true })
+          await writeFile(join(BRANCH_GC_JOBS_DIR, `${job.id}.json`), JSON.stringify(result))
+        } catch {
+          // Best effort — the in-memory job still carries the result.
+        }
+        job.status = "done"
+        job.endedAt = new Date().toISOString()
+        job.result = result
+      },
+      err => {
+        job.status = "failed"
+        job.endedAt = new Date().toISOString()
+        job.error = err instanceof Error ? err.message : String(err)
+      },
+    )
+    return { job, promise }
+  }
 
   const branchGcKind = z.enum(["local", "remote", "orphan"])
   server.tool(
@@ -2530,7 +2591,10 @@ export function registerSessionTools(
       "open PR head, PR check unavailable, or younger than `minAgeDays`). " +
       "`apply: true` (requires explicit `scopes`) deletes only `reclaim` " +
       "entries, re-classifying each right before deleting it, and returns " +
-      "the path of a restore log (sha + re-create command per deleted ref).",
+      "the path of a restore log (sha + re-create command per deleted ref). " +
+      "A plan can take minutes on a big repo: as an MCP caller, pass " +
+      "`wait: false` (or `waitMs: 40000`) and poll `branch_gc_status` with " +
+      "the returned jobId instead of blocking.",
     {
       repoRoot: z.string().optional().describe("Absolute path to the git repo. Wins over `workspaceSlug`."),
       workspaceSlug: z
@@ -2552,6 +2616,12 @@ export function registerSessionTools(
         ),
       anchor: z.string().optional().describe("Explicit anchor commit for a re-rooted base. Auto-detected when omitted."),
       apply: mcpBool.optional().describe("When true, EXECUTE the plan for `scopes`. Default false — a dry run."),
+      wait: mcpBool
+        .optional()
+        .describe("Block until the gc finishes (default true — today's behaviour). false ⇒ return a jobId immediately; poll `branch_gc_status`."),
+      waitMs: mcpNumber
+        .optional()
+        .describe("Block at most this many milliseconds, then fall back to background: returns `{ jobId, status: \"running\" }` to poll with `branch_gc_status`. Only meaningful with the default `wait: true`."),
     },
     async input => {
       if (!runBranchGc) {
@@ -2581,7 +2651,7 @@ export function registerSessionTools(
         }
       }
       try {
-        const result = await runBranchGc({
+        const runInput: BranchGcRunInput = {
           repoRoot: resolved.repoRoot,
           apply: input.apply === true,
           includeReviewed: input.includeReviewed === true,
@@ -2589,7 +2659,25 @@ export function registerSessionTools(
           ...(input.scopes?.length ? { scopes: input.scopes } : {}),
           ...(input.minAgeDays !== undefined ? { minAgeDays: input.minAgeDays } : {}),
           ...(input.anchor ? { anchor: input.anchor } : {}),
-        })
+        }
+        const { job, promise } = startBranchGcJob(runInput)
+        if (input.wait === false) {
+          return { content: [{ type: "text", text: JSON.stringify({ jobId: job.id, status: "running", startedAt: job.startedAt }) }] }
+        }
+        if (input.waitMs !== undefined) {
+          const timedOut = await Promise.race([
+            promise.then(
+              () => false,
+              () => false,
+            ),
+            new Promise<boolean>(r => setTimeout(() => r(true), input.waitMs)),
+          ])
+          if (timedOut) {
+            return { content: [{ type: "text", text: JSON.stringify({ jobId: job.id, status: "running", startedAt: job.startedAt }) }] }
+          }
+          // Settled inside the window — fall through and return inline.
+        }
+        const result = await promise
         return { content: [{ type: "text", text: JSON.stringify(result) }] }
       } catch (err) {
         return {
@@ -2597,6 +2685,57 @@ export function registerSessionTools(
           isError: true,
         }
       }
+    },
+  )
+
+  server.tool(
+    "branch_gc_status",
+    "Poll a branch_gc run started with `wait: false` (or one that fell back to " +
+      "the background via `waitMs`). While running: status + elapsed time. When " +
+      "done: the plan's own summary, the path of the full result saved on disk " +
+      "(`resultPath`), and — with `full: true` — the full result itself. When " +
+      "failed: the error.",
+    {
+      jobId: z.string().describe("Job id returned by `branch_gc` (`bgc_…`)."),
+      full: mcpBool.optional().describe("Include the full result JSON, not just the summary. Default false."),
+    },
+    async input => {
+      const job = branchGcJobs.get(input.jobId)
+      if (!job) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `branch_gc job '${input.jobId}' not found (jobs don't survive a daemon restart).`,
+            },
+          ],
+          isError: true,
+        }
+      }
+      if (job.status === "running") {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ jobId: job.id, status: job.status, startedAt: job.startedAt, elapsedMs: Date.now() - job.startedMs }),
+            },
+          ],
+        }
+      }
+      if (job.status === "failed") {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ jobId: job.id, status: job.status, endedAt: job.endedAt, error: job.error }) }],
+        }
+      }
+      const view = {
+        jobId: job.id,
+        status: job.status,
+        endedAt: job.endedAt,
+        resultPath: join(BRANCH_GC_JOBS_DIR, `${job.id}.json`),
+        summary: job.result?.summary,
+        ...(input.full === true ? { result: job.result } : {}),
+      }
+      return { content: [{ type: "text", text: JSON.stringify(view) }] }
     },
   )
 
