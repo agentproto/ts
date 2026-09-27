@@ -1,5 +1,14 @@
 # @agentproto/workflow-loader
 
+## 0.2.4
+
+### Patch Changes
+
+- Updated dependencies [6c68009]
+- Updated dependencies [9a5d311]
+- Updated dependencies [502f4c9]
+  - @agentproto/workflow@0.7.0
+
 ## 0.2.3
 
 ### Patch Changes

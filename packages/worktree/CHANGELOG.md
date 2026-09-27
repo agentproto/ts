@@ -1,5 +1,32 @@
 # @agentproto/worktree
 
+## 0.9.0
+
+### Minor Changes
+
+- eaa50f8: Add `branch_gc`, the sibling of `worktree_gc` for refs. It classifies local branches, the base remote's branches and orphan tracking refs (from removed remotes) as `reclaim` (provably in base: merged, squash-merged, patch-merged or content-merged), `review` or `hold` (protected, worktree plus its remote twin, open PR, PR check unavailable, too young). It's a dry run unless you pass `apply` with explicit `scopes`. Each ref is re-classified right before it's deleted, and every apply writes a restore log. `branch_gc_verdict` stores reviewer verdicts by tip sha, so `includeReviewed` can reclaim a ref once a gate has agreed. New CLI commands: `agentproto branch gc` and `agentproto branch review-queue`; new HTTP routes: `POST /branches/gc[/verdict]`. `worktree_gc` also changes: a noise allowlist (`noisePaths`, default `.opencode/package-lock.json`), status reads that take no optional locks, and clean idle worktrees whose branch content is squash/patch/content-merged now reclaim.
+- b61405e: Worktree status now carries base divergence (`dirty`/change counts, ahead/behind vs the default branch), PR web URLs built from a GitHub `origin` (including ssh host aliases), a per-session `worktree_status { sessionId }` / `GET /worktrees?sessionId=` narrow read, and new session descriptor fields `mainRepoPath` and `commandSandbox`. Adds `computeBaseDivergence`/`BaseDivergence` and `githubPrUrlBuilder` exports; `listWorktreeStatuses` accepts a `paths` filter.
+- 219e8cf: Additive engine features for tolerant fan-outs and cleanup: a spawn circuit breaker for `map`/`pipeline` with `onError: "collect"` (`maxConsecutiveSpawnFailures`, `AgentSpawnError`, `skipped` outcomes, `onStepFailed` hook), workflow-level `finally` cleanup steps, per-step agent `cwd` resolution against the run cwd, the `branch_gc_review_worktree` tool (disposable detached review worktrees), and parallelized/memoized `merge-base` sweeps in branch gc. The maintain workflow caps reviews per run (`maxReviews`, default 40) and runs every reviewer in its own detached worktree.
+- 8dc445b: branch_gc: reclaim merged-PR-head tips without review; review queue groups by branch name
+
+### Patch Changes
+
+- bdb5830: repo-maintenance: missing-verdict retry ladder (same-session nudge + large-model retry) via the new read-only `branch_gc_verdict_get` tool (`BranchGcVerdictReader` port); fixed the maintain report's worktree classification counts; `tool_search` option for the claude-code adapter, auto-disabled for allowlisted agent steps; `{{index}}` support in agent-step `sessionRef` for fan-out session reuse; step session descriptors now echo the pinned model/effort.
+- Updated dependencies [c3314bd]
+- Updated dependencies [cd00daa]
+- Updated dependencies [7c059bc]
+- Updated dependencies [582b79c]
+- Updated dependencies [579227e]
+- Updated dependencies [6c68009]
+- Updated dependencies [1e871ec]
+- Updated dependencies [5a466d6]
+- Updated dependencies [9a5d311]
+- Updated dependencies [bdb5830]
+- Updated dependencies [219e8cf]
+- Updated dependencies [502f4c9]
+  - @agentproto/workflow-runtime@0.13.0
+  - @agentproto/driver@0.2.4
+
 ## 0.8.1
 
 ### Patch Changes

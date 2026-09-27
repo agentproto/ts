@@ -1,5 +1,87 @@
 # @agentproto/cli
 
+## 1.0.0
+
+### Major Changes
+
+- f70d919: Retire pair/v1 with a route/auth token split (pair/v2): broker-visible tokens no longer authenticate; a distinct sealed-hello auth token is checked instead. v1 offers, pairings, credentials, and wire hellos are refused with an actionable `pairing_protocol_outdated` re-pair error, and daemons answer legacy v1 hellos with a notice-only re-pair channel. Breaking: `PAIR_VERSION` 2, `ClientHandshakeParams.offerToken`→`authToken`, `PairingOffer.token`→`secret`, `verifyOfferToken`→`verifyAuthToken`, `CreatedOffer.token`→`secret`, pairing/credentials files version 2 (v1 files load flagged `legacy`), new exports `respondToLegacyHandshake`, `deriveEpochAuthToken`, `deriveEpochTokens`, `deriveOfferTokens`, `RouteAuthTokens`.
+
+### Minor Changes
+
+- eaa50f8: Add `branch_gc`, the sibling of `worktree_gc` for refs. It classifies local branches, the base remote's branches and orphan tracking refs (from removed remotes) as `reclaim` (provably in base: merged, squash-merged, patch-merged or content-merged), `review` or `hold` (protected, worktree plus its remote twin, open PR, PR check unavailable, too young). It's a dry run unless you pass `apply` with explicit `scopes`. Each ref is re-classified right before it's deleted, and every apply writes a restore log. `branch_gc_verdict` stores reviewer verdicts by tip sha, so `includeReviewed` can reclaim a ref once a gate has agreed. New CLI commands: `agentproto branch gc` and `agentproto branch review-queue`; new HTTP routes: `POST /branches/gc[/verdict]`. `worktree_gc` also changes: a noise allowlist (`noisePaths`, default `.opencode/package-lock.json`), status reads that take no optional locks, and clean idle worktrees whose branch content is squash/patch/content-merged now reclaim.
+- 24467af: Deferred/lazy MCP tool loading: add per-mount `?deferred=1|0` query override, per-spawn/role `deferredTools` (executor defaults ON), and daemon-wide `defaults.mcp.deferredTools` config; extend the claude-code `lean` mode with native `ENABLE_TOOL_SEARCH`.
+- 5c75c79: New `agentproto doctor` verb: a read-only health check of the whole install (Node, workspace, daemon, agent harnesses, auth, MCP clients, skills), with `--json`, `--only`/`--skip` step selection, actionable fix commands, and an exit code driven by required steps. Backed by a new `onboarding` step framework shared with the upcoming setup wizard.
+- dc2a7c7: `remote_enable` (MCP tool and the new `POST /remote/enable` REST route) now returns a `phoneUrl` — the installed `@agentik/session-chat` app's UI, or the hosted panel fallback — with the token in a URL fragment; adds `GET/POST /remote/*` REST twins of the remote tools and a new `agentproto remote enable|disable|status [--qr]` CLI verb; `printQr` is extracted from `pair.ts` into a shared `util/qr.ts`.
+- 48da1d4: Add repo-maintenance app (maintain workflow + reviewer agent) and agentproto maintain CLI shortcut
+- e7a2958: Per-session headless browser: `agent_start`/HTTP/CLI spawns accept `browser: "headless"` (off by default), mounting an isolated chrome-devtools-mcp stdio server with a per-session Chrome profile that is swept on session exit; `buildHeadlessBrowserMcpEntry` gains an optional `userDataDir`.
+- 235c2cd: Named OpenAI-compatible endpoints for local and LAN model servers (`~/.agentproto/llm-endpoints.json`, routed as `<id>/<model>`, live model discovery, `GET /endpoints` health); `agentproto llm endpoints` verb and a `local-models` doctor step
+- ffe95b8: Add `agentproto setup` onboarding wizard; `onboard` becomes its alias; fix symlinked skill-pack install ENOTDIR
+- 5a466d6: Mount daemon /mcp gateway on workflow agent steps; fix prompt sections, map scheduling, run output persistence, maintain --wait
+- 5f923bb: Durable inter-session messaging inbox (AIP-46 §Session messages): new `message_send`, `message_reply`, `inbox_list`, `inbox_ack`, `inbox_wait` tools, `POST /sessions/:id/messages` / `GET /sessions/:id/inbox` / `POST /sessions/:id/inbox/ack` HTTP routes, `sessions inbox` / `sessions message` CLI commands, and a re-routed `message_parent` through `registry.sendMessage`.
+- bdb5830: repo-maintenance: missing-verdict retry ladder (same-session nudge + large-model retry) via the new read-only `branch_gc_verdict_get` tool (`BranchGcVerdictReader` port); fixed the maintain report's worktree classification counts; `tool_search` option for the claude-code adapter, auto-disabled for allowlisted agent steps; `{{index}}` support in agent-step `sessionRef` for fan-out session reuse; step session descriptors now echo the pinned model/effort.
+- b61405e: Worktree status now carries base divergence (`dirty`/change counts, ahead/behind vs the default branch), PR web URLs built from a GitHub `origin` (including ssh host aliases), a per-session `worktree_status { sessionId }` / `GET /worktrees?sessionId=` narrow read, and new session descriptor fields `mainRepoPath` and `commandSandbox`. Adds `computeBaseDivergence`/`BaseDivergence` and `githubPrUrlBuilder` exports; `listWorktreeStatuses` accepts a `paths` filter.
+- c671e27: Add derived session outcome (L1) and `sessions show` CLI command
+- 5f0f9d1: Add web-fragment pair offers, browser pair-client tunnel, and pairing revocation signalling
+- ef9f57e: Widen the daemon identity fingerprint from 64 to 128 bits and default `pairing.pairPage` to the new per-daemon `{fingerprint}.agentproto.cloud` pair page (`DEFAULT_PAIR_PAGE`); offer URLs now require the 32-hex fingerprint id.
+- 07e8751: Surface WHY a session ended: add a single-source `SessionEndReason` enum (`SESSION_END_REASONS`, `isKnownSessionEndReason`, `isProviderLimitError`), thread a `reason` through `SessionsRegistry.kill()` (operator-completed/operator-stopped/policy-cleanup/parent-exited/forgotten), tag cost-cap and provider-usage-limit teardowns, add an idempotent "mark as completed" outcome relabel on already-terminal rows (`termination.previousReason`), and a `sessions stop --completed` CLI flag.
+- a519173: Review primitive CLI and provenance: new `agentproto review run|verify|init` verb (daemon-backed or headless runs, attestation verification, REVIEW.md + pre-push hook + Actions scaffold); attestations gain optional `requester` and `pr` provenance and agent lanes record the reviewer's model; the runner gains `supersede` and head-aware dedupe; the ledger gains a mutable PR annotations sidecar with a new `review_pr` MCP tool that links attestations to GitHub PRs via `gh` and snapshots PR status.
+
+### Patch Changes
+
+- 242a60d: sessions wait: pre-flight idle check avoids burning --timeout on an already-finished turn
+- e412bd8: Sandbox spawn defaults cwd to the box's home, kills by default on close, and reconciles the ledger against the real provider
+- a16be06: Compress + etag the app-UI shell/assets via a shared delivery module
+- 476b1ca: Crypto portability refactor: `@agentproto/secrets` gains a `CryptoProvider` seam (node:crypto / WebCrypto) and a browser-safe `@agentproto/secrets/pairing/browser` entry; all public crypto APIs (`seal`/`unseal`, identity, pairing handshakes, offer URLs, pair-root/epoch-token derivation) are now async and take an optional trailing `crypto` provider — a breaking change. `@agentproto/acp` gains an `E2eAead` seam, a browser-safe `@agentproto/acp/tunnel/browser` entry, `holdFrames`, and async-derivation callbacks in the handshake-over-sink helpers, with the Node entry keeping its `Buffer`-typed `decodeData`. `@agentproto/cli` and `@agentproto/runtime` adapt call sites to the async APIs.
+- 713d8bd: Add config.json zod schema + CONFIG_KEYS registry; CLI config set/unset now type-validate values (writable/secret gating stays CLI-exempt, reserved for a future config_set)
+- 981916d: fix: make generic-ACP catalog adapters spawnable through the daemon — project the spec's billing provider onto minted generic handles (and each allowed model), include ready generic-ACP adapters in the catalog-models join, and declare a free-form `model` option applied over the ACP wire.
+- 8dc445b: branch_gc: reclaim merged-PR-head tips without review; review queue groups by branch name
+- Updated dependencies [eaa50f8]
+- Updated dependencies [58e0da5]
+- Updated dependencies [ab7970c]
+- Updated dependencies [0179144]
+- Updated dependencies [65777ee]
+- Updated dependencies [4e398a9]
+- Updated dependencies [54983df]
+- Updated dependencies [cd00daa]
+- Updated dependencies [d6d86b6]
+- Updated dependencies [48da1d4]
+- Updated dependencies [8c74864]
+- Updated dependencies [dc87d79]
+- Updated dependencies [7d825ff]
+- Updated dependencies [5a466d6]
+- Updated dependencies [583ee19]
+- Updated dependencies [ea5e30d]
+- Updated dependencies [5f923bb]
+- Updated dependencies [535779b]
+- Updated dependencies [bdb5830]
+- Updated dependencies [4612eda]
+- Updated dependencies [eabdd3c]
+- Updated dependencies [476b1ca]
+- Updated dependencies [b61405e]
+- Updated dependencies [219e8cf]
+- Updated dependencies [f70d919]
+- Updated dependencies [5f0f9d1]
+- Updated dependencies [8de3a66]
+- Updated dependencies [be22e9f]
+- Updated dependencies [ef9f57e]
+- Updated dependencies [c9e8318]
+- Updated dependencies [8dc445b]
+  - @agentproto/worktree@0.9.0
+  - @agentproto/llm-endpoint@0.8.0
+  - @agentproto/model-catalog@0.11.0
+  - @agentproto/acp@0.9.0
+  - @agentproto/apps@0.13.0
+  - @agentproto/app-client@0.4.0
+  - @agentproto/app-kit@1.3.0
+  - @agentproto/driver@0.2.4
+  - @agentproto/driver-agent-cli@2.5.0
+  - @agentproto/auth@1.1.0
+  - @agentproto/secrets@1.0.0
+  - create-agentproto-app@0.3.4
+  - @agentproto/sandbox-box@0.2.14
+  - @agentproto/sandbox-e2b@0.5.4
+  - @agentproto/workflow-loader@0.2.4
+
 ## 0.21.5
 
 ### Patch Changes

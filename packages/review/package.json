@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/review",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "@agentproto/review — the review primitive. A REVIEW.md manifest (checks + named bindings) compiled into an ordinary AIP-15 workflow (prepare → freeze range → parallel lanes → fan-in verdict), plus the verdict contract (pass | block | incomplete, per-lane findings) and a content-bound attestation (manifest sha + git range) a CI verifier can check. Pure: parses strings, builds handles, folds verdicts — no filesystem, git, or session I/O.",
   "keywords": [
     "agentproto",

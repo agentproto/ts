@@ -1,5 +1,11 @@
 # @agentproto/adapter-knowledge-qdrant
 
+## 0.2.6
+
+### Patch Changes
+
+- @agentproto/knowledge-engine@0.2.4
+
 ## 0.2.5
 
 ### Patch Changes

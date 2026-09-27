@@ -1,5 +1,11 @@
 # @agentproto/routine
 
+## 0.3.0
+
+### Minor Changes
+
+- 515352b: Cron kind:"agent" and routine target.agent now accept agent_start's full input shape
+
 ## 0.2.3
 
 ### Patch Changes
