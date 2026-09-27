@@ -2720,7 +2720,7 @@ export function registerSessionTools(
           ...(input.minAgeDays !== undefined ? { minAgeDays: input.minAgeDays } : {}),
           ...(input.anchor ? { anchor: input.anchor } : {}),
         }
-        const { job, promise } = startBranchGcJob(runInput)
+        const { job, promise } = startBranchGcJob(runBranchGc, runInput)
         if (input.wait === false) {
           return { content: [{ type: "text", text: JSON.stringify({ jobId: job.id, status: "running", startedAt: job.startedAt }) }] }
         }
