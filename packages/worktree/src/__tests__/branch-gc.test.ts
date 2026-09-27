@@ -372,6 +372,21 @@ describe("branch gc — ref kinds and holds", () => {
     expect(entry(p, "gone/feat-lost", "orphan")).toMatchObject({ class: "review", pushed: "only-copy" })
   })
 
+  it("a local branch whose tip is an ancestor of a remote ref (not equal to any remote tip) is contained-in-remote", async () => {
+    const repo = await makeRepo()
+    await withOrigin(repo)
+    const work = await branchWith(repo, "feat/work", { "a.txt": "a\n" })
+    // Push a branch that is one commit AHEAD of feat/work: its remote tip
+    // differs from `work`, but `work`'s tip is reachable from it.
+    await branchWith(repo, "feat/ahead", { "b.txt": "b\n" }, "feat/work")
+    await execGit(repo, ["push", "-q", "origin", "feat/ahead"])
+    await execGit(repo, ["branch", "-q", "-D", "feat/ahead"])
+    await execGit(repo, ["fetch", "-q", "origin"])
+    expect(work).not.toBe(await sha(repo, "main"))
+    const e = entry(await plan(repo), "feat/work")
+    expect(e).toMatchObject({ status: "unmerged", class: "review", pushed: "contained-in-remote" })
+  })
+
   it("a worktree's branch AND its remote twin are held; base is protected", async () => {
     const repo = await makeRepo()
     await withOrigin(repo)
