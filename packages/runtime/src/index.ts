@@ -101,6 +101,9 @@ import { resolveResumeAuth, restartAgentSession } from "./session-restart-core.j
 import { createTransmitterBindingStore } from "./transmitter-bindings.js"
 import { createInboundEndpointStore } from "./inbound-endpoints.js"
 import { routeInboundMessage } from "./inbound-router.js"
+import { createSentinelStore } from "./sentinel-store.js"
+import { createSentinelRuntime } from "./sentinel-runtime.js"
+import { resolveSentinelProvider } from "./sentinel-providers/registry.js"
 import { makeTelegramBotCredsStore, registerTelegramBotTools } from "./telegram-bot-creds.js"
 import type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
 import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
@@ -604,6 +607,10 @@ import {
   registerTunnelAdapterTools,
   makeTunnelCredsStore,
 } from "./tunnel-adapters.js"
+import {
+  registerSentinelAdapterTools,
+  makeSentinelCredsStore,
+} from "./sentinel-adapters.js"
 import {
   registerSandboxAdapterTools,
   makeSandboxResolver,
@@ -2015,6 +2022,25 @@ export async function createGateway(
     return restarted.desc.id
   }
 
+  // Sentinel primitive (AIP-60 step 2) — persisted watch registry
+  // (`~/.agentproto/sentinels.json`) + poll/delivery engine. No built-in
+  // provider ships yet (`local-gh` lands in step 3), so in practice this is
+  // inert until a sentinel exists on disk or a third-party
+  // `agentproto-sentinel-*` package is installed — safe to always wire, same
+  // "no new required config" posture as every other adapter family here.
+  // Landing reuses the exact same dead-session hooks the inbound router
+  // uses, above.
+  const sentinelStore = createSentinelStore({ persist })
+  const sentinelCredsStore = makeSentinelCredsStore()
+  const sentinelRuntime = createSentinelRuntime({
+    store: sentinelStore,
+    registry: { sendMessage: sessions.sendMessage },
+    resolveProvider: async (slug: string) =>
+      resolveSentinelProvider(slug, { creds: await sentinelCredsStore.read(slug) }),
+    isSessionAlive,
+    restartSession: restartInboundSession,
+  })
+
   // Inbound watcher — polls an agentpush source on a timer and spawns
   // one agent per new contact_ref (mode "spawn", default), or routes
   // into a bound session (mode "route"/"route-or-spawn") via the
@@ -2543,6 +2569,10 @@ export async function createGateway(
     // (list_tunnel_adapters + setup_tunnel_provider). Stateless wrt the
     // gateway — creds/ledger live under ~/.agentproto.
     await registerTunnelAdapterTools(server, {})
+    // Sentinel adapter introspection/setup, riding on @agentproto/provider-kit
+    // (list_sentinel_adapters + setup_sentinel_provider) — same resolver
+    // `sentinelRuntime` above resolves slugs through.
+    await registerSentinelAdapterTools(server, {})
     // Sandbox adapter introspection/setup, riding on @agentproto/provider-kit
     // (list_sandbox_providers + setup_sandbox_provider) — same resolver
     // `agent_start.sandbox` resolves slugs through above.
@@ -2613,6 +2643,21 @@ export async function createGateway(
       at: new Date().toISOString(),
       agent: opts.defaultBootAgent,
       error: `routine registrar reconcile failed: ${err instanceof Error ? err.message : String(err)}`,
+    })
+  }
+
+  // Re-attach every persisted sentinel to its provider and start the poll
+  // loop (AIP-60 §2: "on boot the store re-attaches each active sentinel to
+  // its provider"). Best-effort — a provider that fails to re-attach is
+  // marked `status:"error"` on its own record, never blocks daemon boot.
+  try {
+    await sentinelRuntime.start()
+  } catch (err) {
+    events.emit({
+      type: "heartbeat-error",
+      at: new Date().toISOString(),
+      agent: opts.defaultBootAgent,
+      error: `sentinel runtime start failed: ${err instanceof Error ? err.message : String(err)}`,
     })
   }
 
@@ -3006,6 +3051,11 @@ export async function createGateway(
       restartScheduler.dispose()
       // Flush inbound-watcher cursor state before sessions shut down.
       inboundWatcher?.shutdown()
+      // Stop the sentinel poll loop and flush its store before sessions shut
+      // down — same ordering reason as inboundWatcher above (delivery reads
+      // `sessions`).
+      sentinelRuntime.stop()
+      sentinelStore.flushSync()
       // Flush inbound-endpoint state synchronously -- persistence is a
       // debounced async write, so an endpoint registered via
       // inbound_endpoint_create just before a restart would otherwise be
