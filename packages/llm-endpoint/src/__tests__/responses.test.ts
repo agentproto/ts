@@ -4,6 +4,7 @@ import { Readable } from 'stream';
 import { IncomingMessage } from 'http';
 import { resolveModelRoute, type ModelRouteContext } from '../index.js';
 import { defaultPack } from '../packs.js';
+import { translateInputToMessages } from '../responses.js';
 
 const httpsMock = vi.hoisted(() => ({
   request: vi.fn(),
@@ -102,6 +103,66 @@ function getUpstreamCall() {
   const writeBody = clientRequest.write.mock.calls.at(-1)?.[0] as string;
   return { options, writeBody };
 }
+
+// ── translateInputToMessages: system/developer normalization ──────────────
+// Same defect as the Anthropic->OpenAI adapter: a system message anywhere
+// but index 0 breaks strict chat templates. `instructions` and every
+// system/developer input item must merge into one leading system message.
+
+describe('translateInputToMessages system normalization', () => {
+  it('merges instructions with a non-leading developer input item', () => {
+    const messages = translateInputToMessages(
+      [
+        { type: 'message', role: 'user', content: 'hello' },
+        { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'dev note' }] },
+      ],
+      'You are a helpful agent.'
+    );
+    expect(messages).toEqual([
+      { role: 'system', content: 'You are a helpful agent.\n\ndev note' },
+      { role: 'user', content: 'hello' },
+    ]);
+  });
+
+  it('merges a non-leading system input item even without instructions', () => {
+    const messages = translateInputToMessages(
+      [
+        { type: 'message', role: 'user', content: 'hello' },
+        { type: 'message', role: 'system', content: 'reminder' },
+      ],
+      undefined
+    );
+    expect(messages).toEqual([
+      { role: 'system', content: 'reminder' },
+      { role: 'user', content: 'hello' },
+    ]);
+  });
+
+  it('is a no-op when already normalized', () => {
+    const messages = translateInputToMessages(
+      [{ type: 'message', role: 'user', content: 'hello' }],
+      'You are a helpful agent.'
+    );
+    expect(messages).toEqual([
+      { role: 'system', content: 'You are a helpful agent.' },
+      { role: 'user', content: 'hello' },
+    ]);
+  });
+
+  it('leaves messages untouched when there is no system content anywhere', () => {
+    const messages = translateInputToMessages(
+      [
+        { type: 'message', role: 'user', content: 'hello' },
+        { type: 'message', role: 'assistant', content: 'hi there' },
+      ],
+      undefined
+    );
+    expect(messages).toEqual([
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'hi there' },
+    ]);
+  });
+});
 
 describe('Responses facade', () => {
   afterEach(() => {
