@@ -1627,25 +1627,43 @@ function handleChatCompletionsRequest(
 // supprimés et les champs sémantiquement équivalents convertis (system,
 // tool_choice, stop).
 function adaptAnthropicToOpenAI(payload: any) {
-  // 1. system (string | content blocks) -> message role:system en tête de messages
+  // 1. Fusionne le `system` top-level ET toute entrée messages[] de role
+  //    system/developer — où qu'elle soit dans le tableau — en UN seul
+  //    message role:system, en tête. Un system non-tête casse les templates
+  //    de chat stricts (llama.cpp/LM Studio sur un GGUF Qwen : "System
+  //    message must be at the beginning"). claude-code 2.x envoie justement
+  //    son bloc "# Environment" comme message role:system APRÈS le tour
+  //    user plutôt que dans le champ `system` — sans ce merge il survivait
+  //    tel quel jusqu'à l'upstream (l'ancien code ne regardait que
+  //    messages[0]).
+  const sysParts: string[] = [];
   if (payload.system != null) {
-    let sysText = '';
     if (typeof payload.system === 'string') {
-      sysText = payload.system;
+      if (payload.system) sysParts.push(payload.system);
     } else if (Array.isArray(payload.system)) {
-      sysText = payload.system
+      const text = payload.system
         .map((b: any) => (typeof b === 'string' ? b : b?.text ?? ''))
         .filter(Boolean)
         .join('\n\n');
-    }
-    if (sysText) {
-      if (!Array.isArray(payload.messages)) payload.messages = [];
-      // Évite le double si un message system existe déjà en tête.
-      if (!payload.messages[0] || payload.messages[0].role !== 'system') {
-        payload.messages.unshift({ role: 'system', content: sysText });
-      }
+      if (text) sysParts.push(text);
     }
     delete payload.system;
+  }
+  if (Array.isArray(payload.messages)) {
+    payload.messages = payload.messages.filter((m: any) => {
+      if (m?.role !== 'system' && m?.role !== 'developer') return true;
+      const text = typeof m.content === 'string'
+        ? m.content
+        : Array.isArray(m.content)
+          ? m.content.map((b: any) => (typeof b === 'string' ? b : b?.text ?? '')).filter(Boolean).join('\n\n')
+          : '';
+      if (text) sysParts.push(text);
+      return false;
+    });
+  }
+  if (sysParts.length) {
+    if (!Array.isArray(payload.messages)) payload.messages = [];
+    payload.messages.unshift({ role: 'system', content: sysParts.join('\n\n') });
   }
 
   // 2. tool_choice : {type:auto|any|tool|none, name?} -> schéma OpenAI.
@@ -3040,6 +3058,22 @@ const server = createServer((req, res) => {
             );
           }
         });
+        // Un statut d'erreur upstream était jusqu'ici invisible dans le log
+        // (le body n'est jamais tracé) — un second listener 'data' n'interfère
+        // pas avec la consommation du flux faite plus bas (pipe/buffer selon
+        // le provider), Node délivre les mêmes chunks à chaque listener.
+        if (status < 200 || status >= 300) {
+          let errBody = '';
+          proxyRes.on('data', (c: Buffer | string) => {
+            if (errBody.length < 300) errBody += c.toString('utf8');
+          });
+          proxyRes.on('end', () => {
+            console.error(
+              `[Proxy] upstream error: ${resolvedTarget.provider}:${resolvedTarget.model}` +
+                ` status=${status} body=${JSON.stringify(errBody.slice(0, 300))}`
+            );
+          });
+        }
         const contentType = proxyRes.headers['content-type'] as string || '';
         const isStreaming = (payload.stream === true) && /text\/event-stream/i.test(contentType);
         /** Rejoue le tour. Retourne false si le budget est épuisé. */
@@ -3188,6 +3222,9 @@ export { isEmptyAnthropicTurn, resolveEmptyTurnRetries };
 
 /** Exported for tests — reasoning_content passthrough (see passthroughThinking). */
 export { openaiJsonToAnthropic };
+
+/** Exporté pour les tests — normalisation system/developer -> un seul message en tête. */
+export { adaptAnthropicToOpenAI };
 
 /** Re-exported for the endpoints file config — see endpoints.ts. */
 export {

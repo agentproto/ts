@@ -345,36 +345,38 @@ function flattenContent(content: string | ResponsesContentItem[]): string {
   return content.map((c) => c.text).join('');
 }
 
-function translateInputToMessages(
+/** Exported for tests — system/developer merge into one leading message. */
+export function translateInputToMessages(
   input: string | ResponsesInputItem[],
   instructions: string | undefined
 ): ChatCompletionsMessage[] {
-  const messages: ChatCompletionsMessage[] = [];
+  // `instructions` and every `system`/`developer` message item are merged into
+  // ONE leading system message — a system message anywhere else in the array
+  // breaks strict chat templates ("System message must be at the beginning").
+  const sysParts: string[] = [];
+  if (instructions) sysParts.push(instructions);
 
-  if (instructions) {
-    messages.push({ role: 'system', content: instructions });
-  }
-
+  const rest: ChatCompletionsMessage[] = [];
   if (typeof input === 'string') {
-    messages.push({ role: 'user', content: input });
-    return messages;
-  }
-
-  for (const item of input) {
-    if (item.type === 'message') {
-      messages.push({
-        role: item.role === 'developer' ? 'system' : item.role,
-        content: flattenContent(item.content),
-      });
-    } else if (item.type === 'function_call_output') {
-      messages.push({
-        role: 'tool',
-        tool_call_id: item.call_id,
-        content: item.output,
-      });
+    rest.push({ role: 'user', content: input });
+  } else {
+    for (const item of input) {
+      if (item.type === 'message') {
+        if (item.role === 'developer' || item.role === 'system') {
+          const text = flattenContent(item.content);
+          if (text) sysParts.push(text);
+          continue;
+        }
+        rest.push({ role: item.role, content: flattenContent(item.content) });
+      } else if (item.type === 'function_call_output') {
+        rest.push({ role: 'tool', tool_call_id: item.call_id, content: item.output });
+      }
     }
   }
 
+  const messages: ChatCompletionsMessage[] = [];
+  if (sysParts.length) messages.push({ role: 'system', content: sysParts.join('\n\n') });
+  messages.push(...rest);
   return messages;
 }
 
