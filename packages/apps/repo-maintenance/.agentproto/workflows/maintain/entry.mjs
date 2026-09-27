@@ -69,53 +69,99 @@ const REVIEW_PROMPT =
   "NOT provably in base are: {{item.residualFiles}}. Merge base: {{item.mergeBase}}. Merged tree " +
   "(the tree base would have if this branch merged cleanly, or null when the merge conflicts): " +
   "{{#item.mergedTree}}{{item.mergedTree}}{{/item.mergedTree}}{{^item.mergedTree}}null{{/item.mergedTree}}. Ahead {{item.ahead}}, behind {{item.behind}}. Push state: {{item.pushed}}. " +
-  "Every ref sharing this tip: {{item.refs}}." +
+  "Refs of this branch (across its tips): {{item.refs}}." +
+  "{{#item.otherTips}}\n\nThis branch name has OLDER tip(s) besides {{item.sha}} — " +
+  "{{item.otherTips}} (JSON array of { sha, refs }; each sha may carry work the newer tip does " +
+  "not). The coverage above describes ONLY the primary tip {{item.sha}}. Inspect EVERY sha " +
+  "(git log/show/diff/ls-tree, `git show <sha>:<path>` — they are all commits of this repo) " +
+  "before deciding.{{/item.otherTips}}" +
   "\n\n{{item.reviewWorktree}} (your working directory) is a disposable detached worktree made " +
   "for this review alone and deleted afterwards. Read the branch through its sha (git log/show/" +
   "diff/ls-tree, `git show <sha>:<path>` for a file); never checkout, switch, stash, reset or " +
   "modify files — the stash list and refs are shared with every other checkout of this repo." +
   "\n\nRecord your verdict by calling branch_gc_verdict with repoRoot=" +
-  "\"{{item.reviewWorktree}}\", name=\"{{item.name}}\", sha=\"{{item.sha}}\", " +
-  "a triage block, and — ONLY when you agree deleting this branch loses nothing of value — a " +
-  "gate block with agree:true and non-empty evidence. Call branch_gc_verdict exactly once for " +
-  "this branch, then stop."
+  "\"{{item.reviewWorktree}}\", name=\"{{item.name}}\", the tip's sha, " +
+  "a triage block, and — ONLY when you agree deleting that tip's work loses nothing of value — a " +
+  "gate block with agree:true and non-empty evidence. Call branch_gc_verdict exactly once per " +
+  "tip: once for {{item.sha}}{{#item.otherTips}}, and once for every sha in {{item.otherTips}}{{/item.otherTips}}, then stop."
 
 const NUDGE_PROMPT =
-  "You did not call branch_gc_verdict for `{{item.name}}` (tip {{item.sha}}) — no verdict is " +
-  "stored for that sha. Call it now with your verdict: repoRoot=\"{{item.reviewWorktree}}\", " +
-  "name=\"{{item.name}}\", sha=\"{{item.sha}}\", a triage block, and a gate block only if you agree " +
-  "deletion loses nothing. Do not re-review; just record it, then stop."
+  "You did not call branch_gc_verdict for every tip of `{{item.name}}` — the store is still " +
+  "missing verdicts for: {{item.missingShas}} (tip shas of this branch; " +
+  "{{item.sha}} is the primary). Call it now for EACH missing sha, with your verdict: " +
+  "repoRoot=\"{{item.reviewWorktree}}\", name=\"{{item.name}}\", that sha, a triage block, and a " +
+  "gate block only if you agree deleting that tip's work loses nothing. Do not re-review; " +
+  "just record the missing verdicts, then stop."
 
-/** Read-only store lookup for the current item's tip — `branch_gc_verdict_get`
- *  answers `{ found, missing, record }` without re-running a whole plan. */
-const VERDICT_CHECK = id => ({
+/** Per-tip store lookups for one review item — `branch_gc_verdict_get` answers
+ *  `{ sha, found, missing, record }` without re-running a whole plan. A
+ *  branch-name item can carry SEVERAL tips (local + remote twins that
+ *  diverged), so the check is a sequential (parallelism 1) inner map over the
+ *  item's `allTips` tip objects, one lookup per tip; the map's own result is
+ *  the array of those answers. */
+const VERDICT_CHECK_MAP = id => ({
   id,
-  kind: "tool",
-  tool: "branch_gc_verdict_get",
-  inputs: { repoRoot: "$steps.branchGcPlan.plan.repoRoot", sha: "$item.sha" },
+  kind: "map",
+  over: "$item.allTips",
+  parallelism: 1,
+  steps: [
+    {
+      id: `${id}Get`,
+      kind: "tool",
+      tool: "branch_gc_verdict_get",
+      inputs: { repoRoot: "$steps.branchGcPlan.plan.repoRoot", sha: "$item.sha" },
+    },
+  ],
 })
 
-/** One `review`-class branch_gc plan entry per unique tip sha — a local
- *  branch and its remote twin share a tip, so they share one review instead
- *  of costing the reviewer two turns. Mirrors `branchReviewQueue()`
- *  (`packages/worktree/src/branch-gc.ts`), reimplemented here because that
- *  function isn't exposed through the `branch_gc` MCP tool (only the CLI's
- *  `review-queue` subcommand calls it directly) — including its skip of a
- *  tip that already carries a stored verdict (verdicts are keyed by sha, so
- *  only tips that moved get re-reviewed). Returns the queue (most recent tip
- *  first, then the larger residual) plus how many tips were skipped as
- *  already reviewed. */
+/** Fold the check map's per-tip answers into the item's verdict state. Reads
+ *  `$steps.<checkId>` — safe ONLY here, in the transform that runs IMMEDIATELY
+ *  after this item's own check map wrote that slot (no await between write and
+ *  read, so a concurrent sibling item cannot interleave) — then parks the
+ *  result on `$item` (`verdictMissing`, `missingShas`), which is exclusively
+ *  this item's, so the branch/prompt that follow never race a sibling's
+ *  overwrite of the shared `$steps` slot. */
+const VERDICT_NEEDS = (id, checkId) => ({
+  id,
+  kind: "transform",
+  compute: b => {
+    const answers = Array.isArray(b.steps[checkId]) ? b.steps[checkId] : []
+    const missingShas = answers.filter(r => r?.missing === true).map(r => r.sha)
+    b.item.verdictMissing = missingShas.length > 0
+    b.item.missingShas = missingShas
+    return { missing: missingShas.length > 0, missingShas }
+  },
+})
+
+/** One `review`-class branch_gc plan entry per BRANCH NAME — a local branch
+ *  and its remote twin share one review instead of costing the reviewer two
+ *  turns, whether they share a tip (grouped by sha, as before) or DIVERGED
+ *  (`foo` @ newer sha, `origin/foo` @ older sha: one reviewer inspects both
+ *  tips — the older one may carry work the newer does not). Mirrors
+ *  `branchReviewQueue()` (`packages/worktree/src/branch-gc.ts`), reimplemented
+ *  here because that function isn't exposed through the `branch_gc` MCP tool
+ *  (only the CLI's `review-queue` subcommand calls it directly) — including
+ *  its skip of a tip that already carries a stored verdict (verdicts are
+ *  keyed by sha, so only tips that moved get re-reviewed).
+ *
+ *  The merged item keeps the NEWEST unreviewed tip as its primary `sha`
+ *  (with that tip's coverage fields) and carries the older unreviewed tips
+ *  as `otherTips` (`[{ sha, refs }]`, newest first); `allTips` lists every
+ *  unreviewed tip and `refs` is the union across them. A name is
+ *  "already reviewed" — and left out of the queue — only when EVERY review
+ *  tip under that name carries a verdict; a partially reviewed name stays
+ *  queued with only its unreviewed tips. Returns the queue (oldest first,
+ *  then the larger residual) plus how many names were skipped as already
+ *  reviewed. */
 export function buildReviewQueue(branchGcPlanResult) {
   const plan = branchGcPlanResult?.plan
   const entries = Array.isArray(plan?.entries) ? plan.entries : []
   const bySha = new Map()
-  const reviewedShas = new Set()
+  const dates = new Map()
   for (const e of entries) {
     if (e.class !== "review") continue
-    if (e.verdict) {
-      reviewedShas.add(e.sha)
-      continue
-    }
+    dates.set(e.sha, e.date ?? "")
+    if (e.verdict) continue
     const seen = bySha.get(e.sha)
     if (seen) {
       seen.refs.push(e.ref)
@@ -147,12 +193,43 @@ export function buildReviewQueue(branchGcPlanResult) {
       refs: [e.ref],
     })
   }
-  const queue = [...bySha.values()].sort(
+  // Merge candidates whose refs share one branch NAME: `foo` and `origin/foo`
+  // with different tips were two queue items and two reviewers (4 of 40
+  // reviewer turns wasted in dogfood run 4).
+  const byName = new Map()
+  for (const c of bySha.values()) {
+    const sibs = byName.get(c.name)
+    if (sibs) sibs.push(c)
+    else byName.set(c.name, [c])
+  }
+  const queue = []
+  for (const sibs of byName.values()) {
+    sibs.sort((a, b) => String(dates.get(b.sha) ?? "").localeCompare(String(dates.get(a.sha) ?? "")))
+    const [primary, ...rest] = sibs
+    // Every item carries `allTips` (the verdict-check map iterates it); a
+    // single-tip item's `allTips` is just itself, and `otherTips` appears
+    // only when there IS an older tip (the prompt's extra section keys off it).
+    primary.allTips = sibs.map(c => ({ sha: c.sha, refs: c.refs }))
+    if (rest.length > 0) {
+      primary.otherTips = rest.map(c => ({ sha: c.sha, refs: c.refs }))
+      primary.refs = sibs.flatMap(c => c.refs)
+    }
+    queue.push(primary)
+  }
+  queue.sort(
     (a, b) =>
       (a.ageDays ?? Number.POSITIVE_INFINITY) - (b.ageDays ?? Number.POSITIVE_INFINITY) ||
       (b.residualFileCount ?? 0) - (a.residualFileCount ?? 0),
   )
-  return { queue, alreadyReviewed: reviewedShas.size }
+  // A name is "already reviewed" only when EVERY review tip under it carries
+  // a verdict — a name with one reviewed and one unreviewed tip is still
+  // queued (with only the unreviewed tips).
+  const pendingNames = new Set(queue.map(c => c.name))
+  const fullyReviewed = new Set()
+  for (const e of entries) {
+    if (e.class === "review" && e.verdict && !pendingNames.has(e.name)) fullyReviewed.add(e.name)
+  }
+  return { queue, alreadyReviewed: fullyReviewed.size }
 }
 
 /** `maxReviews` as a non-negative integer, else the default. */
@@ -191,13 +268,15 @@ function skippedShas(reviewCandidates, review) {
   return out
 }
 
-/** Candidates from the FIRST plan that still have no recorded verdict after
- *  the review map ran — `classifyRef` (branch-gc.ts) stamps `entry.verdict`
- *  for ANY unmerged ref with a stored verdict for its exact tip sha,
- *  regardless of `includeReviewed`, so a second plan is a cheap, accurate
- *  "did every candidate get reviewed" check with no separate verdict-read
- *  tool needed. A candidate the review map never started (circuit open) is
- *  not a gap — it's reported as not reviewed. */
+/** Candidate tips from the FIRST plan that still have no recorded verdict
+ *  after the review map ran — `classifyRef` (branch-gc.ts) stamps
+ *  `entry.verdict` for ANY unmerged ref with a stored verdict for its exact
+ *  tip sha, regardless of `includeReviewed`, so a second plan is a cheap,
+ *  accurate "did every tip get reviewed" check with no separate verdict-read
+ *  tool needed. A branch-name item reviews SEVERAL tips (primary +
+ *  `otherTips`), so one item can yield several gaps — one per still-missing
+ *  tip. A candidate the review map never started (circuit open) is not a
+ *  gap — it's reported as not reviewed. */
 export function computeReviewGaps(reviewCandidates, branchGcVerifyResult, review) {
   const afterEntries = branchGcVerifyResult?.plan?.entries
   const verdictShas = new Set(
@@ -206,9 +285,14 @@ export function computeReviewGaps(reviewCandidates, branchGcVerifyResult, review
       .map(e => e.sha),
   )
   const skipped = skippedShas(reviewCandidates, review)
-  return (reviewCandidates ?? [])
-    .filter(c => !verdictShas.has(c.sha) && !skipped.has(c.sha))
-    .map(c => ({ name: c.name, sha: c.sha, refs: c.refs }))
+  const gaps = []
+  for (const c of reviewCandidates ?? []) {
+    const refsBySha = new Map((c.allTips ?? [{ sha: c.sha }]).map(t => [t.sha, t.refs ?? c.refs]))
+    for (const [sha, refs] of refsBySha) {
+      if (!verdictShas.has(sha) && !skipped.has(sha)) gaps.push({ name: c.name, sha, refs })
+    }
+  }
+  return gaps
 }
 
 function countOutcomes(outcomes, result) {
@@ -425,18 +509,19 @@ export default {
             ? (b.input?.reviewModelSmall || DEFAULT_REVIEW_MODEL_SMALL)
             : (b.input?.reviewModelLarge || DEFAULT_REVIEW_MODEL_LARGE)),
         },
-        // A reviewer can end its turn announcing a call it never made. Check
-        // the store for THIS tip; if nothing landed, re-prompt the same
-        // session once, then retry once with a fresh large-model reviewer.
-        // Only a tip still missing after that is a gap (see `gaps`). Every
-        // `when` below reads the step right before it — map items share one
-        // `$steps` namespace, and only the immediate predecessor's value is
-        // guaranteed to be this item's.
-        VERDICT_CHECK("verdictCheck"),
+        // A reviewer can end its turn announcing calls it never made. Check
+        // the store for EVERY tip of this item (the per-tip map below); if
+        // any is missing, re-prompt the same session once, then retry once
+        // with a fresh large-model reviewer. Only a tip still missing after
+        // that is a gap (see `gaps`). Every `when` below reads the step right
+        // before it — map items share one `$steps` namespace, and only the
+        // immediate predecessor's value is guaranteed to be this item's.
+        VERDICT_CHECK_MAP("verdictCheck"),
+        VERDICT_NEEDS("needsNudge", "verdictCheck"),
         {
-          id: "needsNudge",
+          id: "needsNudgeBranch",
           kind: "branch",
-          branches: [{ when: "$steps.verdictCheck.missing", next: "nudge" }],
+          branches: [{ when: "$item.verdictMissing", next: "nudge" }],
           join: "reviewSettled",
         },
         {
@@ -447,11 +532,12 @@ export default {
           sessionRef: "reviewOne[{{index}}]",
           prompt: NUDGE_PROMPT,
         },
-        VERDICT_CHECK("verdictCheckAfterNudge"),
+        VERDICT_CHECK_MAP("verdictCheckAfterNudge"),
+        VERDICT_NEEDS("needsLargeRetry", "verdictCheckAfterNudge"),
         {
-          id: "needsLargeRetry",
+          id: "needsLargeRetryBranch",
           kind: "branch",
-          branches: [{ when: "$steps.verdictCheckAfterNudge.missing", next: "reviewRetryLarge" }],
+          branches: [{ when: "$item.verdictMissing", next: "reviewRetryLarge" }],
         },
         {
           id: "reviewRetryLarge",

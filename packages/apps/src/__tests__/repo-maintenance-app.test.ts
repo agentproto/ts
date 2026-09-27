@@ -59,16 +59,19 @@ describe("repo-maintenance app", () => {
     const reviewStep = workflow!.steps.find(s => s.id === "review") as {
       steps: Array<{ id: string; kind: string; agent?: { ref: string }; sessionRef?: string }>
     }
-    // reviewOne, then the missing-verdict retry: check → same-session nudge
-    // → check → large-model retry.
+    // reviewOne, then the missing-verdict retry: per-tip check (a map over
+    // the item's tips — one verdict_get per tip) → same-session nudge →
+    // check → large-model retry.
     expect(reviewStep.steps.map(s => `${s.id}:${s.kind}`)).toEqual([
       "reviewWorktreeAdd:tool",
       "reviewOne:agent",
-      "verdictCheck:tool",
-      "needsNudge:branch",
+      "verdictCheck:map",
+      "needsNudge:transform",
+      "needsNudgeBranch:branch",
       "nudge:agent",
-      "verdictCheckAfterNudge:tool",
-      "needsLargeRetry:branch",
+      "verdictCheckAfterNudge:map",
+      "needsLargeRetry:transform",
+      "needsLargeRetryBranch:branch",
       "reviewRetryLarge:agent",
       "reviewSettled:transform",
       "reviewWorktreeRemove:tool",
