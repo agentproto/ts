@@ -536,8 +536,8 @@ export async function applySettingsBundle(
       }
       try {
         const plaintext = unsealWithPassphrase(sealed.envelope, opts.unsealPassphrase)
-        const { value } = JSON.parse(plaintext) as { value: string; metadata?: Record<string, unknown> }
-        await deps.createAuthProfile(
+        const { value, metadata } = JSON.parse(plaintext) as { value: string; metadata?: Record<string, unknown> }
+        const created = await deps.createAuthProfile(
           {
             id: profile.id,
             endpoint: profile.endpoint,
@@ -554,6 +554,29 @@ export async function applySettingsBundle(
             removeProfile: async () => false,
           },
         )
+        // `createAuthProfile` always derives `kind` from `method`
+        // (oauth-bearer → "oat", else "pat") and never accepts an expiry —
+        // fine for a freshly-issued credential, but WRONG for a restored
+        // one whose real stored kind can be "assertion" (service-auth) or
+        // "daemon", and which can carry a real `expiresAt`. Overwrite the
+        // just-written store entry with the sealed record's actual
+        // kind/expiresAt/metadata so e.g. an assertion-backed profile isn't
+        // silently reclassified as directly-bearer-usable "oat"
+        // (`CredentialBroker.bearerHeaders()` treats "assertion" as needing
+        // a flow-engine exchange first) and a real expiry survives the
+        // round trip instead of vanishing (`isFresh()` treats an absent
+        // `expiresAt` as always-fresh).
+        if (created.credentialRef) {
+          await deps.credentialStore.write(
+            { path: created.credentialRef },
+            {
+              value,
+              kind: sealed.kind,
+              ...(sealed.expiresAt ? { expiresAt: sealed.expiresAt } : {}),
+              ...(metadata ? { metadata } : {}),
+            },
+          )
+        }
         authProfiles.added.push(profile.id)
         secretsRestored.push(profile.id)
         continue
@@ -707,8 +730,22 @@ function flattenConfig(obj: Record<string, unknown>, prefix = ""): { path: strin
   return out
 }
 
-/** Read + parse a bundle file. Throws with a clear message on bad JSON or a
- *  missing `version`. */
+/** Top-level array fields every {@link SettingsBundle} must carry — checked
+ *  by {@link readSettingsBundle} so a hand-edited or foreign JSON file with
+ *  a plausible-looking `version` but a missing/malformed field fails with a
+ *  clear message here rather than an unhelpful raw `TypeError` deep inside
+ *  `applySettingsBundle`. */
+const REQUIRED_ARRAY_FIELDS = [
+  "adapters",
+  "harnessPresets",
+  "authProfiles",
+  "llmEndpoints",
+  "mcpServers",
+  "configSkipped",
+] as const
+
+/** Read + parse a bundle file. Throws with a clear message on bad JSON, a
+ *  missing `version`, or a malformed/missing required field. */
 export async function readSettingsBundle(path: string): Promise<SettingsBundle> {
   const raw = await readFile(path, "utf8")
   let parsed: unknown
@@ -719,6 +756,18 @@ export async function readSettingsBundle(path: string): Promise<SettingsBundle> 
   }
   if (!parsed || typeof parsed !== "object" || !("version" in parsed)) {
     throw new Error(`${path} does not look like a settings bundle (missing "version")`)
+  }
+  const candidate = parsed as Record<string, unknown>
+  for (const field of REQUIRED_ARRAY_FIELDS) {
+    if (!Array.isArray(candidate[field])) {
+      throw new Error(`${path} does not look like a settings bundle (missing or malformed "${field}")`)
+    }
+  }
+  if (!candidate.config || typeof candidate.config !== "object" || Array.isArray(candidate.config)) {
+    throw new Error(`${path} does not look like a settings bundle (missing or malformed "config")`)
+  }
+  if (candidate.secrets !== undefined && !Array.isArray(candidate.secrets)) {
+    throw new Error(`${path} does not look like a settings bundle (malformed "secrets")`)
   }
   return parsed as SettingsBundle
 }

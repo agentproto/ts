@@ -368,6 +368,49 @@ describe("applySettingsBundle", () => {
     expect(report.harnessPresets.added).toEqual(["hm-cheap"])
   })
 
+  // Regression: `createAuthProfile` always derives `kind` from `method`
+  // (oauth-bearer → "oat", api-key → "pat") and never accepts an expiry.
+  // A profile whose REAL stored kind is "assertion" (the service-auth flow)
+  // must not come back as "oat" — `CredentialBroker.bearerHeaders()` treats
+  // "oat" as directly bearer-usable but "assertion" as needing a
+  // flow-engine exchange first, so a silent reclassification would start
+  // sending the raw JWT as an `Authorization: Bearer` header. A real
+  // `expiresAt` must also survive the round trip rather than vanish (an
+  // absent `expiresAt` reads as always-fresh downstream).
+  it("restores a sealed secret's exact kind and expiresAt, not just its value", async () => {
+    const assertionProfile: ExportedAuthProfile = { id: "work-service", endpoint: "guilde", method: "oauth-bearer" }
+    const gatherDeps = fakeGatherDeps({
+      listAuthProfiles: async () => [{ ...assertionProfile, credentialRef: "agentproto.auth.guilde.sub" }],
+      getAuthProfile: async (id: string) =>
+        id === assertionProfile.id ? { ...assertionProfile, credentialRef: "agentproto.auth.guilde.sub" } : undefined,
+      credentialStore: fakeCredentialStore({
+        "agentproto.auth.guilde.sub": {
+          value: "eyJhbGciOi.assertion.jwt",
+          kind: "assertion",
+          expiresAt: "2026-06-01T00:00:00.000Z",
+        },
+      }),
+    })
+    const { bundle } = await gatherSettingsBundle(
+      { includeSecrets: ["work-service"], passphrase: "a strong passphrase" },
+      gatherDeps,
+    )
+    expect(bundle.secrets![0]).toMatchObject({
+      profileId: "work-service",
+      kind: "assertion",
+      expiresAt: "2026-06-01T00:00:00.000Z",
+    })
+
+    const applyDeps = fakeApplyDeps()
+    const report = await applySettingsBundle(bundle, { unsealPassphrase: "a strong passphrase" }, applyDeps)
+    expect(report.secretsRestored).toEqual(["work-service"])
+    const profile = await applyDeps.getAuthProfile("work-service")
+    const stored = await applyDeps.credentialStore.read({ path: profile!.credentialRef! })
+    expect(stored?.kind).toBe("assertion")
+    expect(stored?.expiresAt).toBe("2026-06-01T00:00:00.000Z")
+    expect(stored?.value).toBe("eyJhbGciOi.assertion.jwt")
+  })
+
   it("falls back to a disabled stub when the unseal passphrase is wrong", async () => {
     const { bundle } = await gatherSettingsBundle(
       { includeSecrets: ["work-openrouter"], passphrase: "the real passphrase" },
@@ -443,5 +486,16 @@ describe("readSettingsBundle / writeSettingsBundle", () => {
     const file = join(dir, "not-a-bundle.json")
     await writeFile(file, JSON.stringify({ foo: "bar" }))
     await expect(readSettingsBundle(file)).rejects.toThrow(/does not look like a settings bundle/)
+  })
+
+  // Regression: a `version` field alone isn't enough to trust the rest of
+  // the shape — a hand-edited or foreign JSON file that happens to carry
+  // `version: 1` but is missing the actual bundle fields must fail here
+  // with a clear message, not deep inside applySettingsBundle as a raw
+  // TypeError.
+  it("rejects a file with a version but a missing/malformed required field", async () => {
+    const file = join(dir, "malformed-bundle.json")
+    await writeFile(file, JSON.stringify({ version: 1, adapters: [], authProfiles: "not-an-array" }))
+    await expect(readSettingsBundle(file)).rejects.toThrow(/missing or malformed "authProfiles"/)
   })
 })
