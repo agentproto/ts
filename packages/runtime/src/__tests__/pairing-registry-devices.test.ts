@@ -87,7 +87,10 @@ describe("PairingRegistry: rename / isOnline", () => {
     await rm(tmp, { recursive: true, force: true }).catch(() => {})
   })
 
-  async function pairOnce(name: string): Promise<{ fingerprint: string; client: E2eFrameSink }> {
+  async function pairOnce(
+    name: string,
+    createOfferInput: { scope?: "host" } = {},
+  ): Promise<{ fingerprint: string; client: E2eFrameSink }> {
     let clientSink: FrameSink | null = null
     const record: Middleware = (frame, deliver) => deliver(frame)
     registry = createPairingRegistry({
@@ -104,7 +107,7 @@ describe("PairingRegistry: rename / isOnline", () => {
       reconnectMinMs: 50,
       reconnectMaxMs: 200,
     })
-    const offer = await registry.createOffer({ ttlMs: 60_000 })
+    const offer = await registry.createOffer({ ttlMs: 60_000, ...createOfferInput })
     await vi.waitFor(() => expect(clientSink).not.toBeNull())
     const parsed = await parseOfferUrl(offer.url)
     const offerTokens = await deriveOfferTokens(parsed.secret)
@@ -158,6 +161,61 @@ describe("PairingRegistry: rename / isOnline", () => {
     client.close("done")
     await closed
     await vi.waitFor(() => expect(registry!.isOnline(fingerprint)).toBe(false))
+  })
+
+  it("createOffer({scope:'host'}) mints an offer whose URL carries scope=host", async () => {
+    registry = createPairingRegistry({
+      loadIdentity: async () => identity,
+      pairingsPath: join(tmp, "pairings.json"),
+      defaultRendezvousUrl: "ws://broker.invalid/v1",
+      dial: async () => connect().b,
+      serve: makeServe(),
+      handshakeTimeoutMs: 1_000,
+    })
+    const offer = await registry.createOffer({ ttlMs: 60_000, scope: "host" })
+    expect(offer.scope).toBe("host")
+    expect(offer.url).toContain("scope=host")
+    const parsed = await parseOfferUrl(offer.url)
+    expect(parsed.scope).toBe("host")
+  })
+
+  it("createOffer with no scope mints a plain offer (no scope on the result or URL)", async () => {
+    registry = createPairingRegistry({
+      loadIdentity: async () => identity,
+      pairingsPath: join(tmp, "pairings.json"),
+      defaultRendezvousUrl: "ws://broker.invalid/v1",
+      dial: async () => connect().b,
+      serve: makeServe(),
+      handshakeTimeoutMs: 1_000,
+    })
+    const offer = await registry.createOffer({ ttlMs: 60_000 })
+    expect(offer.scope).toBeUndefined()
+    expect(offer.url).not.toContain("scope")
+  })
+
+  it("a host-scoped offer's resulting PairingRecord carries scope: host", async () => {
+    const { client } = await pairOnce("office-mac", { scope: "host" })
+    client.close("done")
+    const [rec] = await registry!.list()
+    expect(rec?.scope).toBe("host")
+  })
+
+  it("a plain offer's resulting PairingRecord has no scope key at all", async () => {
+    const { client } = await pairOnce("jeremy@laptop")
+    client.close("done")
+    const [rec] = await registry!.list()
+    expect(rec).not.toHaveProperty("scope")
+  })
+
+  it("scope is never taken from the client's hello — only from this daemon's own offer record", async () => {
+    // The hello payload (handshake.ts's HelloPayload) has no scope field at
+    // all, so there is nothing for a malicious/confused client to send that
+    // could elevate a plain offer to host scope. A host-scoped offer yields
+    // scope: host regardless of the client's chosen name/label.
+    const { client } = await pairOnce("not-named-host-in-any-way", { scope: "host" })
+    client.close("done")
+    const [rec] = await registry!.list()
+    expect(rec?.scope).toBe("host")
   })
 })
 

@@ -201,3 +201,19 @@ for that.
 ### llm:huggingface
 - Added: zai-org/GLM-4.5, zai-org/GLM-5.1-FP8
 - Removed: ibm-granite/granite-4.2-30b, zai-org/GLM-4.6-FP8, zai-org/GLM-4.7-FP8
+
+## 2026-09-27
+
+### llm:openrouter
+- Added: perceptron/perceptron-mk1.5, typesafe/jev-router
+- Removed: anthropic/claude-3-haiku
+
+### llm:opencode-go
+- Added: opencode-go/longcat-2.5-preview-free
+
+### llm:opencode-zen
+- Added: opencode/longcat-2.5-preview-free, opencode/qwen3.8-max
+
+### llm:huggingface
+- Added: ibm-granite/granite-4.2-30b, zai-org/GLM-4.6-FP8
+- Removed: CohereLabs/command-a-vision-07-2025

@@ -37,11 +37,17 @@ function device(overrides: Partial<Device> = {}): Device {
   }
 }
 
-function fakeRegistry(devices: Device[]): DeviceRegistry {
+function fakeRegistry(
+  devices: Device[],
+  addImpl: DeviceRegistry["add"] = vi.fn(async () => {
+    throw new Error("add not stubbed")
+  }),
+): DeviceRegistry {
   return {
     list: async () => devices,
     rename: vi.fn(async (target: string) => devices.some(d => d.fingerprint === target || d.name === target)),
     revoke: vi.fn(async (target: string) => devices.some(d => d.fingerprint === target || d.name === target)),
+    add: addImpl,
   }
 }
 
@@ -91,6 +97,28 @@ describe("device_list / device_rename / device_revoke", () => {
     expect(await callTool(handlers, "device_revoke", { target: "nope" })).toEqual({
       ok: false,
       message: 'no device matched "nope"',
+    })
+  })
+
+  it("device_add reports ok:true with the registered host on success", async () => {
+    const { server, handlers } = fakeServer()
+    const add = vi.fn(async () => ({ fingerprint: "hfp1", name: "office-mac", rendezvousUrl: "wss://rdv.example/v1" }))
+    registerDeviceTools(server, { registry: fakeRegistry([], add) })
+    expect(
+      await callTool(handlers, "device_add", { offerUrl: "agentproto://pair?v=2&…&scope=host", name: "office-mac" }),
+    ).toEqual({ ok: true, fingerprint: "hfp1", name: "office-mac", rendezvousUrl: "wss://rdv.example/v1" })
+    expect(add).toHaveBeenCalledWith("agentproto://pair?v=2&…&scope=host", "office-mac")
+  })
+
+  it("device_add reports ok:false with the registry's error message on failure", async () => {
+    const { server, handlers } = fakeServer()
+    const add = vi.fn(async () => {
+      throw new Error("this offer is not host-scoped")
+    })
+    registerDeviceTools(server, { registry: fakeRegistry([], add) })
+    expect(await callTool(handlers, "device_add", { offerUrl: "agentproto://pair?v=2&…" })).toEqual({
+      ok: false,
+      message: "this offer is not host-scoped",
     })
   })
 })

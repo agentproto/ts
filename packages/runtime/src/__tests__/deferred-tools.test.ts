@@ -144,6 +144,43 @@ describe("withDeferredTools — MCP transport e2e", () => {
     )
     expect(result.tools.length).toBeLessThanOrEqual(1)
   })
+
+  // F39 (AIP-58 dogfood): a tool whose NAME matches the query must outrank
+  // one that merely mentions the keyword in its description, even when the
+  // description-only tool registered first. Before the fix both scored an
+  // equal raw "1 term matched" and a stable sort left registration order to
+  // decide ties — silently crowding a real `workflow_*` tool out of the
+  // capped default result window behind an unrelated tool that happened to
+  // say "workflow" once in its prose.
+  it("a name match outranks an earlier-registered description-only mention of the same keyword", async () => {
+    const rawServer = new McpServer({ name: "deferred-e2e-server", version: "0.0.0" })
+    const server = withDeferredTools(rawServer, { alwaysOn: new Set(["agent_start"]) })
+    server.tool("agent_start", "Spawn an agent session.", { adapter: z.string() }, async () => ({
+      content: [{ type: "text", text: "started" }],
+    }))
+    // Registered BEFORE the real match, description-only mention — stands
+    // in for `branch_gc_review_worktree`'s "the maintain workflow gives
+    // every reviewer its own..." line.
+    server.tool(
+      "branch_gc_review_worktree",
+      "Garbage-collect review worktrees (the maintain workflow gives every reviewer its own).",
+      {},
+      async () => ({ content: [{ type: "text", text: "gc'd" }] }),
+    )
+    server.tool("workflow_start", "Start a workflow run.", { workflowId: z.string() }, async () => ({
+      content: [{ type: "text", text: "started" }],
+    }))
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await rawServer.connect(serverTransport)
+    const client = new Client({ name: "deferred-e2e-client", version: "0.0.0" })
+    await client.connect(clientTransport)
+
+    const result = parseToolJson(
+      await client.callTool({ name: "tool_search", arguments: { query: "workflow", maxResults: 1 } }),
+    )
+    expect(result.tools.map((t: { name: string }) => t.name)).toEqual(["workflow_start"])
+  })
 })
 
 describe("resolveDeferredToolsGatewayOption — config.json's defaults.mcp.deferredTools tri-state", () => {

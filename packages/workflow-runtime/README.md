@@ -301,9 +301,13 @@ try {
 
 This is a manual retry, not a resumable run object — `runWorkflow` has no
 notion of "the run that failed"; the cacheKey is just a namespace the caller
-re-supplies. A first-class `run.retry`/`run.replay` verb that resumes a named
-run without the caller re-threading `workflow`/`input`/`cacheKey` by hand is
-AIP-58 P5, not implemented here.
+re-supplies. A first-class `run.retry` verb that resumes a named run without
+the caller re-threading `workflow`/`input`/`cacheKey` by hand — AIP-58 P5 —
+is a HOST concern, not something this transport-agnostic package implements
+itself: see `@agentproto/runtime`'s `WorkflowRunner.retry()` / the
+`workflow_retry` MCP tool, which owns runId allocation and an always-on
+internal journal (so it works even when the original run never passed a
+`cacheKey` at all — every step it runs is journaled internally either way).
 
 ### Run workspace (AIP-58 §4)
 
@@ -347,12 +351,18 @@ steps:
 
 `path` is read relative to `$run.workspace` (absolute paths, and any path
 that would resolve OUTSIDE the workspace, throw). The step hashes
-(`sha256`) and sizes the file, copies it to `artifactsDir/<sanitized key>`,
-and binds/report an `ArtifactEntry` — `{ key, path: "artifacts/<key>", sha256,
-size, stepId, contentType? }` (`path` here is relative to the RUN WORKSPACE
-ROOT, the parent of `$run.workspace` itself — not the source location).
-Pass `onArtifact` to `runWorkflow` to observe every one recorded, cache hit
-or fresh.
+(`sha256`) and sizes the file, copies it to `artifactsDir/<basename of path,
+sanitized>` — `path: "briefs/latest.md"` above lands at
+`artifacts/latest.md`, keeping the extension, NOT the bare key
+(`artifacts/brief`) — and binds/reports an `ArtifactEntry` — `{ key, path:
+"artifacts/<basename>", sha256, size, stepId, contentType? }` (`path` here is
+relative to the RUN WORKSPACE ROOT, the parent of `$run.workspace` itself —
+not the source location; always read it back rather than assuming a name).
+If two keys' files share a basename, the second one claimed is prefixed with
+its own sanitized key (`artifacts/<key>-<basename>`) instead of silently
+overwriting the first — deterministic, same result run to run. Pass
+`onArtifact` to `runWorkflow` to observe every one recorded, cache hit or
+fresh.
 
 A declarative WORKFLOW.md manifest may instead declare **`outputsFiles`**
 (AIP-16, amended by AIP-58 §4 with `required`) at the top level — checked

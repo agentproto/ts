@@ -1,16 +1,21 @@
 /**
  * `agentproto devices <subcommand>` — the device registry view over the
- * daemon's paired clients (DEVICES-PLAN PR-A): role/kind/online layered on
- * top of what `agentproto pair ls` shows.
+ * daemon's paired clients (DEVICES-PLAN PR-A) and registered hosts
+ * (reverse pairing, PR-C): role/kind/online layered on top of what
+ * `agentproto pair ls` shows.
  *
  *   list                                     [--json]  every known device.
  *   rename <fingerprint|name> <new-name>                rename a device.
  *   revoke <fingerprint|name>                            drop a device (same
  *          daemon-side effect as `agentproto pair revoke`).
+ *   add    <offer-url> [--name <label>]                 register a HOST from
+ *          an offer minted with `agentproto pair offer --host`.
+ *   status <fingerprint|name>                            probe a registered
+ *          host's /health over its E2E channel.
  *
  * Pairing itself (`pair offer` / `pair accept`) still lives under
- * `agentproto pair` — this is the list/manage surface. All three round-trip
- * the daemon's `/devices` REST routes (the same surface the MCP `device_*`
+ * `agentproto pair` — this is the list/manage surface. All round-trip the
+ * daemon's `/devices` REST routes (the same surface the MCP `device_*`
  * tools drive).
  */
 
@@ -19,6 +24,7 @@ import {
   discoverDaemon,
   printNoDaemonError,
   httpGetJson,
+  httpPostJson,
   httpPatchRaw,
   httpDelete,
 } from "./_daemon-helpers.js"
@@ -29,13 +35,21 @@ Usage:
   agentproto devices list   [--json]
   agentproto devices rename <fingerprint|name> <new-name>
   agentproto devices revoke <fingerprint|name>
+  agentproto devices add    <offer-url> [--name <label>]
+  agentproto devices status <fingerprint|name>
   agentproto devices --help
 
   list     Every device this daemon knows: name, fingerprint, role, kind,
-           rendezvous, createdAt, lastSeen, online.
+           rendezvous, createdAt, lastSeen, online, scope.
   rename   Give a device a new label (cosmetic only).
   revoke   Drop a device so it can no longer reconnect (same as
            \`agentproto pair revoke\`).
+  add      Register a HOST from an offer URL minted with
+           \`agentproto pair offer --host\` on the other machine. Refused if
+           the offer isn't host-scoped (a plain \`pair offer\` only grants
+           remote-control, not host registration).
+  status   Probe a registered host's /health over its E2E channel — proof the
+           host is reachable and driveable.
 `
 
 interface DeviceRow {
@@ -48,6 +62,7 @@ interface DeviceRow {
   lastSeen: string
   online: boolean
   legacy?: boolean
+  scope?: "host"
 }
 
 export async function runDevices(args: readonly string[]): Promise<number> {
@@ -65,12 +80,16 @@ export async function runDevices(args: readonly string[]): Promise<number> {
     case "revoke":
     case "rm":
       return runRevoke(args.slice(1))
+    case "add":
+      return runAdd(args.slice(1))
+    case "status":
+      return runStatus(args.slice(1))
     case undefined:
       process.stdout.write(USAGE)
       return 0
     default:
       process.stderr.write(
-        `agentproto devices: unknown subcommand "${sub}"\n  Known: list | rename | revoke\n`,
+        `agentproto devices: unknown subcommand "${sub}"\n  Known: list | rename | revoke | add | status\n`,
       )
       return 2
   }
@@ -116,7 +135,7 @@ async function runList(args: readonly string[]): Promise<number> {
   )
   for (const d of rows) {
     process.stdout.write(
-      `${(d.name ?? "").slice(0, 20).padEnd(20)}  ${d.fingerprint.padEnd(32)}  ${d.role.padEnd(6)}  ${d.kind.padEnd(8)}  ${(d.online ? "yes" : "no").padEnd(6)}  ${(d.lastSeen ?? "").padEnd(22)}  ${d.rendezvous ?? ""}${d.legacy ? "  [legacy: re-pair]" : ""}\n`,
+      `${(d.name ?? "").slice(0, 20).padEnd(20)}  ${d.fingerprint.padEnd(32)}  ${d.role.padEnd(6)}  ${d.kind.padEnd(8)}  ${(d.online ? "yes" : "no").padEnd(6)}  ${(d.lastSeen ?? "").padEnd(22)}  ${d.rendezvous ?? ""}${d.legacy ? "  [legacy: re-pair]" : ""}${d.scope === "host" ? "  [scope: host]" : ""}\n`,
     )
   }
   return 0
@@ -205,4 +224,96 @@ async function runRevoke(args: readonly string[]): Promise<number> {
   }
   process.stdout.write(`Revoked device "${target}".\n`)
   return 0
+}
+
+// ── add ──────────────────────────────────────────────────────────
+
+async function runAdd(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: { name: { type: "string" } },
+  })
+  const offerUrl = positionals[0]
+  if (!offerUrl) {
+    process.stderr.write(`agentproto devices add: missing "<offer-url>".\n`)
+    return 2
+  }
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto devices add")
+    return 2
+  }
+
+  let result: { fingerprint: string; name: string; rendezvousUrl: string }
+  try {
+    const body: Record<string, unknown> = { offerUrl }
+    if (values.name) body.name = values.name
+    result = await httpPostJson(`${report.found.url}/devices/add`, body, report.found.token)
+  } catch (err) {
+    process.stderr.write(
+      `agentproto devices add: ${err instanceof Error ? err.message : String(err)}\n`,
+    )
+    return 1
+  }
+
+  process.stdout.write(
+    `\n✓ Added host ${result.fingerprint}\n` +
+      `  name:       ${result.name}\n` +
+      `  rendezvous: ${result.rendezvousUrl}\n\n` +
+      `This device is now visible in \`agentproto devices list\` with role: host.\n` +
+      `Probe it with:\n` +
+      `  agentproto devices status ${result.name}\n`,
+  )
+  return 0
+}
+
+// ── status ───────────────────────────────────────────────────────
+
+async function runStatus(args: readonly string[]): Promise<number> {
+  const { positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {},
+  })
+  const target = positionals[0]
+  if (!target) {
+    process.stderr.write(`agentproto devices status: missing <fingerprint|name>.\n`)
+    return 2
+  }
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto devices status")
+    return 2
+  }
+
+  let result: { status: number; headers: Record<string, string>; bodyBase64: string }
+  try {
+    result = await httpPostJson(
+      `${report.found.url}/devices/${encodeURIComponent(target)}/exec`,
+      { path: "/health" },
+      report.found.token,
+    )
+  } catch (err) {
+    process.stderr.write(
+      `agentproto devices status: ${err instanceof Error ? err.message : String(err)}\n`,
+    )
+    return 1
+  }
+
+  const body = Buffer.from(result.bodyBase64, "base64").toString("utf8")
+  let parsed: unknown = body
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    /* not JSON — print raw */
+  }
+  process.stdout.write(
+    `HTTP ${result.status}\n${typeof parsed === "string" ? parsed : JSON.stringify(parsed, null, 2)}\n`,
+  )
+  return result.status >= 200 && result.status < 300 ? 0 : 1
 }

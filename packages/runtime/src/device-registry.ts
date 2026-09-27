@@ -1,16 +1,19 @@
 /**
- * Device registry — a read view over `PairingRegistry` that presents each
- * pairing as a "device" (DEVICES-PLAN PR-A). Today every device is a paired
- * CLIENT (today's `pair_offer`/`pair accept`); hosts (reverse pairing, PR-C)
- * join the same `list()` later with `role: "host"`.
+ * Device registry — a read view over `PairingRegistry` (+, when wired,
+ * `HostRegistry`) that presents each pairing/host as a "device" (DEVICES-PLAN
+ * PR-A, hosts added PR-C). A paired CLIENT (today's `pair_offer`/`pair
+ * accept`) gets `role: "client"`; a registered HOST (`pair offer --host` +
+ * `devices add`, host-registry.ts) gets `role: "host"`.
  *
  * This is deliberately a thin computed view, not a second store: renaming
- * and revoking a device mutate the same `pairings.json` `PairingRegistry`
- * already owns, so `pair_*`/`/pairings` and `device_*`/`/devices` are two
- * surfaces over one source of truth.
+ * and revoking a client device mutate the same `pairings.json`
+ * `PairingRegistry` already owns; a host device mutates the same
+ * `hosts.json` `HostRegistry` — so `pair_*`/`/pairings` and
+ * `device_*`/`/devices` are two surfaces over the same two sources of truth.
  */
 
 import type { PairingRegistry, PairingRecord } from "./pairing-registry.js"
+import type { HostRegistry, HostRecord } from "./host-registry.js"
 
 export type DeviceRole = "client" | "host"
 export type DeviceKind = "browser" | "cli" | "daemon"
@@ -23,22 +26,37 @@ export interface Device {
   rendezvous: string
   createdAt: string
   lastSeen: string
-  /** A channel (offer or reconnect) is served for this device right now. */
+  /** A channel (offer or reconnect) is served for this device right now
+   *  (client) or a `forwardHttp` call is in flight for it right now (host).
+   *  For a host this is NOT a live heartbeat — see host-registry.ts's
+   *  "Online tracking" — it only reflects actual recent/current traffic. */
   online: boolean
   /** A pair/v1 pairing: listed and revocable, but can't connect until
    *  re-paired — see `PairingRecord.legacy`. */
   legacy?: true
+  /** Set when this device's pairing/host record was granted under a
+   *  HOST-scoped offer (`agentproto pair offer --host`) — see
+   *  offer-url.ts's "Offer scope". Surfaced from either side of a pairing so
+   *  a user can see, from EITHER daemon, which of their pairings/hosts grant
+   *  host control. */
+  scope?: "host"
 }
 
 export interface DeviceRegistry {
   /** Every known device. Read-only. */
   list(): Promise<Device[]>
-  /** Rename a device (fingerprint or current name) to a new label. Returns
-   *  false when nothing matched. */
+  /** Rename a device (fingerprint or current name) to a new label. Tries the
+   *  pairing registry first, then the host registry. Returns false when
+   *  nothing matched. */
   rename(idOrName: string, newName: string): Promise<boolean>
-  /** Drop a device by fingerprint or name — same effect as `pair revoke`.
-   *  Returns false when nothing matched. */
+  /** Drop a device by fingerprint or name — same effect as `pair revoke` for
+   *  a client device, `devices revoke`-of-a-host for a host device. Tries
+   *  the pairing registry first, then the host registry. Returns false when
+   *  nothing matched. */
   revoke(idOrName: string): Promise<boolean>
+  /** Register a host from an offer URL (delegates to `HostRegistry.add`).
+   *  Rejects if no `HostRegistry` was wired into this device registry. */
+  add(offerUrl: string, name?: string): Promise<{ fingerprint: string; name: string; rendezvousUrl: string }>
 }
 
 /**
@@ -65,16 +83,58 @@ function toDevice(record: PairingRecord, online: boolean): Device {
     lastSeen: record.lastSeen,
     online,
     ...(record.legacy ? { legacy: true } : {}),
+    ...(record.scope ? { scope: record.scope } : {}),
   }
 }
 
-export function createDeviceRegistry(pairing: PairingRegistry): DeviceRegistry {
+/** A registered host is always `kind: "daemon"` — the other side of a
+ *  reverse pairing is, by construction, an agentproto daemon (never a
+ *  browser). A host is always `scope: "host"` by construction: `add()`
+ *  refuses anything else. */
+function toHostDevice(record: HostRecord, online: boolean): Device {
+  return {
+    fingerprint: record.fingerprint,
+    name: record.name,
+    role: "host",
+    kind: "daemon",
+    rendezvous: record.rendezvousUrl,
+    createdAt: record.createdAt,
+    lastSeen: record.lastSeen,
+    online,
+    ...(record.legacy ? { legacy: true } : {}),
+    scope: "host",
+  }
+}
+
+export function createDeviceRegistry(pairing: PairingRegistry, hosts?: HostRegistry): DeviceRegistry {
   return {
     async list() {
       const records = await pairing.list()
-      return records.map(r => toDevice(r, pairing.isOnline(r.fingerprint)))
+      const devices = records.map(r => toDevice(r, pairing.isOnline(r.fingerprint)))
+      if (hosts) {
+        const hostRecords = await hosts.list()
+        devices.push(...hostRecords.map(r => toHostDevice(r, hosts.isOnline(r.fingerprint))))
+      }
+      return devices
     },
-    rename: (idOrName, newName) => pairing.rename(idOrName, newName),
-    revoke: idOrName => pairing.revoke(idOrName),
+    async rename(idOrName, newName) {
+      if (await pairing.rename(idOrName, newName)) return true
+      if (hosts) return hosts.rename(idOrName, newName)
+      return false
+    },
+    async revoke(idOrName) {
+      if (await pairing.revoke(idOrName)) return true
+      if (hosts) return hosts.revoke(idOrName)
+      return false
+    },
+    async add(offerUrl, name) {
+      if (!hosts) {
+        throw new Error(
+          "this daemon has no host registry wired — devices add is unavailable (internal " +
+            "configuration issue, not a user error)",
+        )
+      }
+      return hosts.add(offerUrl, name)
+    },
   }
 }
