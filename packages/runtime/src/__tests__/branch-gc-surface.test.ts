@@ -11,7 +11,9 @@
 import { describe, it, expect } from "vitest"
 import { createServer } from "node:http"
 import { existsSync } from "node:fs"
-import { readFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { AddressInfo } from "node:net"
 import { createMcpServer } from "@agentproto/mcp-server"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
@@ -476,6 +478,42 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
     }
   })
 
+  it("branch_gc_status falls back to the on-disk result file for an unknown id", async () => {
+    const jobsDir = await mkdtemp(join(tmpdir(), "bgc-jobs-"))
+    const FAKE_ID = "bgc_deadbeef"
+    await mkdir(jobsDir, { recursive: true })
+    await writeFile(join(jobsDir, `${FAKE_ID}.json`), JSON.stringify(APPLY_RESULT))
+    const client = await harness({ runBranchGc: recordingRunner().runner, branchGcJobsDir: jobsDir })
+    try {
+      const r = await client.callTool({ name: "branch_gc_status", arguments: { jobId: FAKE_ID } })
+      expect(isError(r)).toBe(false)
+      const view = JSON.parse(text(r)) as { status: string; resultPath: string; restoreLog?: string; outcomeCounts?: Record<string, number> }
+      expect(view.status).toBe("done")
+      expect(view.resultPath).toBe(join(jobsDir, `${FAKE_ID}.json`))
+      expect(view.restoreLog).toBe("/state/branch-gc/repo/restore-x.json")
+      expect(view.outcomeCounts).toEqual({ deleted: 1 })
+      // full: true includes the parsed result
+      const full = JSON.parse(text(await client.callTool({ name: "branch_gc_status", arguments: { jobId: FAKE_ID, full: true } }))) as { status: string; result: unknown }
+      expect(full.result).toEqual(APPLY_RESULT)
+    } finally {
+      await client.close()
+      await rm(jobsDir, { recursive: true, force: true })
+    }
+  })
+
+  it("branch_gc_status rejects a malformed id without touching the filesystem", async () => {
+    const jobsDir = await mkdtemp(join(tmpdir(), "bgc-jobs-"))
+    const client = await harness({ runBranchGc: recordingRunner().runner, branchGcJobsDir: jobsDir })
+    try {
+      const r = await client.callTool({ name: "branch_gc_status", arguments: { jobId: "../x" } })
+      expect(isError(r)).toBe(true)
+      expect(text(r)).toContain("not found (no running job and no result file at")
+    } finally {
+      await client.close()
+      await rm(jobsDir, { recursive: true, force: true })
+    }
+  })
+
   it("waitMs with a fast runner returns the result inline; a failed job reports its error; unknown ids are not found", async () => {
     const { runner } = recordingRunner()
     const client = await harness({ runBranchGc: runner })
@@ -508,7 +546,7 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
     try {
       const r = await unknown.callTool({ name: "branch_gc_status", arguments: { jobId: "bgc_00000000" } })
       expect(isError(r)).toBe(true)
-      expect(text(r)).toContain("not found (jobs don't survive a daemon restart)")
+      expect(text(r)).toContain("not found (no running job and no result file at")
     } finally {
       await unknown.close()
     }

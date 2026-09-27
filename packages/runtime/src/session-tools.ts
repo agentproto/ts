@@ -107,7 +107,7 @@ import type {
 import { basename, join } from "node:path"
 import { randomBytes } from "node:crypto"
 import { homedir } from "node:os"
-import { mkdir, writeFile, readdir, stat, unlink } from "node:fs/promises"
+import { mkdir, writeFile, readFile, readdir, stat, unlink } from "node:fs/promises"
 import {
   ALLOWLIST_REL,
   TERMINAL_GATE_ENV,
@@ -756,6 +756,36 @@ const startBranchGcJob = (
   )
   return { job, promise }
 }
+
+/** The `done` view `branch_gc_status` returns — identical for an in-memory
+ *  job and one rebuilt from its on-disk result file (Part of the
+ *  disk-fallback contract: callers see the same shape either way). */
+const branchGcDoneView = (
+  jobId: string,
+  resultPath: string,
+  result: BranchGcResult,
+  full: boolean,
+  endedAt?: string,
+): object => ({
+  jobId,
+  status: "done",
+  ...(endedAt !== undefined ? { endedAt } : {}),
+  resultPath,
+  summary: result.summary,
+  // Apply results carry the restore log path and a per-outcome tally —
+  // exactly what a caller needs to decide "safe?" without fetching the
+  // full ~MB result with `full: true`.
+  ...(result.mode === "apply"
+    ? {
+        restoreLog: result.restoreLog ?? null,
+        outcomeCounts: result.outcomes.reduce<Record<string, number>>((acc, o) => {
+          acc[o.result] = (acc[o.result] ?? 0) + 1
+          return acc
+        }, {}),
+      }
+    : {}),
+  ...(full ? { result } : {}),
+})
 
 export function registerSessionTools(
   rawServer: McpServer,
@@ -2780,15 +2810,40 @@ export function registerSessionTools(
     async input => {
       const job = branchGcJobs.get(input.jobId)
       if (!job) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `branch_gc job '${input.jobId}' not found (jobs don't survive a daemon restart).`,
-            },
-          ],
-          isError: true,
+        // The map is per-process: an id from a prior daemon lifetime (or one
+        // whose map entry was already evicted) is not in it — but the job's
+        // full result is still on disk. Fall back to the result file before
+        // declaring the job lost. Guard the id first: only a well-formed
+        // `bgc_<hex8>` id may touch the filesystem, so a crafted id like
+        // `../x` can never escape the jobs dir.
+        const fallbackPath = join(branchGcJobsDirOf(), `${input.jobId}.json`)
+        if (!/^bgc_[0-9a-f]{8}$/.test(input.jobId)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `branch_gc job '${input.jobId}' not found (no running job and no result file at ${fallbackPath})`,
+              },
+            ],
+            isError: true,
+          }
         }
+        let parsed: BranchGcResult
+        try {
+          parsed = JSON.parse(await readFile(fallbackPath, "utf8")) as BranchGcResult
+        } catch {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `branch_gc job '${input.jobId}' not found (no running job and no result file at ${fallbackPath})`,
+              },
+            ],
+            isError: true,
+          }
+        }
+        const view = branchGcDoneView(input.jobId, fallbackPath, parsed, input.full === true)
+        return { content: [{ type: "text", text: JSON.stringify(view) }] }
       }
       if (job.status === "running") {
         return {
@@ -2805,26 +2860,7 @@ export function registerSessionTools(
           content: [{ type: "text", text: JSON.stringify({ jobId: job.id, status: job.status, endedAt: job.endedAt, error: job.error }) }],
         }
       }
-      const view = {
-        jobId: job.id,
-        status: job.status,
-        endedAt: job.endedAt,
-        resultPath: join(branchGcJobsDirOf(), `${job.id}.json`),
-        summary: job.result?.summary,
-        // Apply results carry the restore log path and a per-outcome tally —
-        // exactly what a caller needs to decide "safe?" without fetching the
-        // full ~MB result with `full: true`.
-        ...(job.result?.mode === "apply"
-          ? {
-              restoreLog: job.result.restoreLog ?? null,
-              outcomeCounts: job.result.outcomes.reduce<Record<string, number>>((acc, o) => {
-                acc[o.result] = (acc[o.result] ?? 0) + 1
-                return acc
-              }, {}),
-            }
-          : {}),
-        ...(input.full === true ? { result: job.result } : {}),
-      }
+      const view = branchGcDoneView(job.id, join(branchGcJobsDirOf(), `${job.id}.json`), job.result!, input.full === true, job.endedAt)
       return { content: [{ type: "text", text: JSON.stringify(view) }] }
     },
   )
