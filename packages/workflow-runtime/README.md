@@ -400,11 +400,38 @@ relocates (copies) the file from the ORIGINAL run's `artifactsDir` into the
 CURRENT run's own before returning — the two runs' workspaces stay fully
 disjoint on disk; only the *bytes* are reused, exactly the same way
 `run.replay`'s journal-sourced step reuse is specified to work (AIP-58 §6).
-This is a deliberate, narrower scope than "any cacheable step's output might
-reference a workspace file" — a plain cacheable `tool`/`agent` step whose
-output happens to name a path is NOT relocated automatically; route a
-step's file-shaped output through `kind: "artifact"` (or `outputsFiles`) to
-get cache/replay continuity for it.
+
+A plain cacheable `tool`/`agent` step gets the same treatment, not a narrower
+one (this used to be a documented gap — see "Cache key vs. the run
+workspace" below for why it had to stop being one):
+
+- **Hashing ignores the workspace's identity.** `hashResolvedInputs`
+  replaces every occurrence of `ctx.workspace` inside the serialized
+  resolved input/prompt (including trailing subpaths, e.g.
+  `<workspace>/cleaned/out.txt`) with a stable placeholder before hashing.
+  Two runs of the same logical step under the same `cacheKey` hash
+  identically even though AIP-58 §4 gives each one a fresh, disjoint
+  workspace directory — without this, ANY step whose input/prompt names
+  `$run.workspace` / `{{run.workspace}}` / `_workflowFsRoot` could never hit
+  the journal at all.
+- **A hit relocates forward.** On a hit, every workspace-relative file/
+  directory the entry recorded (`StepCacheEntry.workspaceFiles` — collected,
+  best-effort, from every string in the step's output that resolved to a
+  real path under the ORIGINAL run's workspace) is copied into the matching
+  path under the CURRENT run's own; the recorded output's path strings are
+  then rewritten from the original workspace onto the current one. A
+  downstream step whose input reads one of those paths (`$steps.<id>.path`)
+  finds the bytes there, not just the (by-then-gone) original run's.
+  Best-effort, same posture as the `artifact` step's own relocation: a
+  source already swept by a host's `scratch/` retention policy is not this
+  run's problem to recover.
+- **Still no cross-step content hashing.** This closes the *workspace-path*
+  gap only — the journal still hashes each step's own resolved inputs, not
+  a transitive hash of everything upstream. A step whose resolved input is
+  an opaque reference that stays textually identical across runs (a fixed
+  relative filename, an id) replays from cache on that basis alone,
+  regardless of whether the value behind that reference changed upstream —
+  same limitation any resolved-input-hash cache has, workspace or not.
 
 ### Step lifecycle callbacks
 

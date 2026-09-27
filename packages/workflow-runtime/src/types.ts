@@ -724,6 +724,20 @@ export interface StepCacheEntry {
    *  §4 forbids two runs sharing a workspace) copies the file forward from
    *  here into the new run's own `artifactsDir` instead of re-declaring it. */
   artifactsDirAtCache?: string
+  /** Set only for a cacheable `tool`/`agent` step (see `hashResolvedInputs`/
+   *  `buildCacheEntry` in `run-workflow.ts`) whenever the host wires a run
+   *  workspace: the absolute `$run.workspace` / `_workflowFsRoot` path this
+   *  entry was cached under. A hit in a LATER run (a different workspace —
+   *  AIP-58 §4 forbids two runs sharing one) rewrites `output`'s path
+   *  strings from here onto the new run's own, and relocates
+   *  {@link workspaceFiles} the same way. */
+  workspaceAtCache?: string
+  /** Workspace-relative files/directories (under {@link workspaceAtCache})
+   *  this entry's `output` pointed at and that existed on disk when the
+   *  entry was written — copied forward into a later cache-hit run's own
+   *  workspace so a downstream step reading one of these paths finds the
+   *  bytes there too, not just in the original (by-then-gone) run's. */
+  workspaceFiles?: readonly string[]
 }
 
 /** Opt-in journal for cacheable steps. Host-injected; file-backed in the runtime. */

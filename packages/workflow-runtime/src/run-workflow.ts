@@ -10,7 +10,7 @@
 import { runTool } from "@agentproto/driver"
 import { createHash } from "node:crypto"
 import { execFile } from "node:child_process"
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises"
+import { copyFile, cp, mkdir, readFile, stat, writeFile } from "node:fs/promises"
 import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { z } from "zod"
 import { resolveRefString } from "./ref-string.js"
@@ -29,6 +29,7 @@ import type {
   RunStep,
   RunWorkflowArgs,
   RuntimeWorkflow,
+  StepCacheEntry,
   StepFailedInfo,
   StepHookInfo,
   StepSkippedInfo,
@@ -369,11 +370,126 @@ function spentUsd(state: RunState): number {
   return total
 }
 
-/** Deterministic content hash of a step's resolved inputs. */
-function hashResolvedInputs(kind: string, resolved: unknown): string {
-  return createHash("sha256")
-    .update(`${kind}\u0000${JSON.stringify(resolved) ?? "undefined"}`)
-    .digest("hex")
+/** Sentinel a resolved input/prompt's absolute run-workspace path is
+ *  replaced with before hashing (see {@link hashResolvedInputs}). */
+const WORKSPACE_HASH_PLACEHOLDER = "\u0000$run.workspace\u0000"
+
+/** Deterministic content hash of a step's resolved inputs. `workspace` —
+ *  this run's `$run.workspace` / `_workflowFsRoot` absolute path, when the
+ *  host wires one — is replaced by a stable placeholder wherever it occurs
+ *  as a substring (including trailing subpaths, e.g.
+ *  `<workspace>/cleaned/out.txt`) before hashing. AIP-58 §4 gives every run
+ *  its OWN, disjoint workspace directory — a fresh absolute path each
+ *  time — so without this a step whose resolved input/prompt embeds
+ *  `$run.workspace` would hash differently on every run and never hit the
+ *  journal even though nothing about the step's actual work changed
+ *  (regression: AIP-58 P4 / #1467 broke #1421's cache this way). */
+function hashResolvedInputs(kind: string, resolved: unknown, workspace: string | undefined): string {
+  const serialized = `${kind}\u0000${JSON.stringify(resolved) ?? "undefined"}`
+  const normalized = workspace ? serialized.split(workspace).join(WORKSPACE_HASH_PLACEHOLDER) : serialized
+  return createHash("sha256").update(normalized).digest("hex")
+}
+
+/** `value`, recursively, with every string that is `from` (or `from` plus a
+ *  trailing subpath) rewritten to start with `to` instead. Used both to
+ *  normalize resolved inputs (`hashResolvedInputs` — via a literal split/join
+ *  rather than this walk, since inputs are hashed as one serialized blob)
+ *  and — here — to rewrite a cache hit's RECORDED OUTPUT so a path naming
+ *  the ORIGINAL run's workspace points at the CURRENT run's own instead
+ *  ({@link relocateCachedOutput}). Arrays/plain objects are copied; anything
+ *  else (numbers, booleans, class instances, `null`) passes through as-is. */
+function rewriteWorkspacePaths(value: unknown, from: string, to: string): unknown {
+  if (typeof value === "string") return value.split(from).join(to)
+  if (Array.isArray(value)) return value.map((v) => rewriteWorkspacePaths(v, from, to))
+  if (value !== null && typeof value === "object" && value.constructor === Object) {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = rewriteWorkspacePaths(v, from, to)
+    return out
+  }
+  return value
+}
+
+/** Every string in `value` (recursively) that names a path under `workspace`,
+ *  as a workspace-relative path — collected into `out`. A candidate only,
+ *  not yet checked against the filesystem (see {@link collectWorkspaceFiles}). */
+function collectWorkspaceCandidates(value: unknown, workspace: string, out: Set<string>): void {
+  if (typeof value === "string") {
+    if (value === workspace || value.startsWith(`${workspace}/`)) {
+      const rel = relative(workspace, value)
+      if (rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)) out.add(rel)
+    }
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const v of value) collectWorkspaceCandidates(v, workspace, out)
+    return
+  }
+  if (value !== null && typeof value === "object" && value.constructor === Object) {
+    for (const v of Object.values(value as Record<string, unknown>)) collectWorkspaceCandidates(v, workspace, out)
+  }
+}
+
+/** Every workspace-relative file/directory a cacheable step's output points
+ *  at — checked against the real filesystem (so a string that merely LOOKS
+ *  like a workspace path, but names nothing, isn't recorded as something a
+ *  later cache hit must relocate). Recorded on the journal entry
+ *  ({@link StepCacheEntry.workspaceFiles}) and copied forward by
+ *  {@link relocateCachedOutput} on a hit in a later run's own workspace. */
+async function collectWorkspaceFiles(out: unknown, workspace: string): Promise<string[]> {
+  const candidates = new Set<string>()
+  collectWorkspaceCandidates(out, workspace, candidates)
+  const files: string[] = []
+  for (const rel of candidates) {
+    try {
+      await stat(join(workspace, rel))
+      files.push(rel)
+    } catch {
+      // Not a real file/dir under the workspace — nothing to relocate.
+    }
+  }
+  return files
+}
+
+/** Journal entry for a fresh (non-hit) cacheable `tool`/`agent` step —
+ *  records the workspace it ran under, and (best-effort) every file/dir its
+ *  output pointed at under that workspace, so a cache hit in a LATER run
+ *  (necessarily a different workspace — AIP-58 §4) can relocate them
+ *  (see {@link relocateCachedOutput}) instead of replaying an output that
+ *  names a path that only ever existed in this now-gone run. */
+async function buildCacheEntry(ctx: RunCtx, out: unknown, hash: string): Promise<StepCacheEntry> {
+  if (ctx.workspace === undefined) return { output: out, resolvedInputHash: hash }
+  const workspaceFiles = await collectWorkspaceFiles(out, ctx.workspace)
+  return {
+    output: out,
+    resolvedInputHash: hash,
+    workspaceAtCache: ctx.workspace,
+    ...(workspaceFiles.length > 0 ? { workspaceFiles } : {}),
+  }
+}
+
+/** A `tool`/`agent` cache hit's recorded output, relocated onto the CURRENT
+ *  run: every file/dir the entry recorded under the ORIGINAL run's workspace
+ *  is copied into the matching path under this run's own (same relocation
+ *  spirit as `kind:"artifact"`'s cache hit — "two runs MUST NEVER share a
+ *  workspace", AIP-58 §4), then the recorded output's path strings are
+ *  rewritten to point there. Best-effort: a source the original run's
+ *  `scratch/` retention already swept is not this run's problem to recover
+ *  (same posture `kind:"artifact"`'s relocation takes). A no-op when the
+ *  entry predates this field, or this run has no workspace wired at all. */
+async function relocateCachedOutput(ctx: RunCtx, entry: StepCacheEntry): Promise<unknown> {
+  const from = entry.workspaceAtCache
+  const to = ctx.workspace
+  if (from === undefined || to === undefined || from === to) return entry.output
+  for (const rel of entry.workspaceFiles ?? []) {
+    const dest = join(to, rel)
+    try {
+      await mkdir(dirname(dest), { recursive: true })
+      await cp(join(from, rel), dest, { recursive: true })
+    } catch {
+      // Best-effort — see doc above.
+    }
+  }
+  return rewriteWorkspacePaths(entry.output, from, to)
 }
 
 /** Namespaced journal key for a step under a run's cacheKey. A step inside a
@@ -411,10 +527,10 @@ async function readStepCache(
   resolvedInputs: unknown,
 ): Promise<{ hit: true; output: unknown } | { hit: false; key: string; hash: string }> {
   const key = stepJournalKey(ctx, step)
-  const hash = hashResolvedInputs(step.kind, resolvedInputs)
+  const hash = hashResolvedInputs(step.kind, resolvedInputs, ctx.workspace)
   const entry = await ctx.cache!.get(key)
   if (entry !== undefined && entry.resolvedInputHash === hash) {
-    return { hit: true, output: entry.output }
+    return { hit: true, output: await relocateCachedOutput(ctx, entry) }
   }
   return { hit: false, key, hash }
 }
@@ -949,7 +1065,7 @@ async function execStepBody(
       if (c.hit) return cacheHit(ctx, step, c.output)
       ctx.onStepStart?.(step.id)
       const out = await runIt()
-      await ctx.cache!.set(c.key, { output: out, resolvedInputHash: c.hash })
+      await ctx.cache!.set(c.key, await buildCacheEntry(ctx, out, c.hash))
       return out
     }
 
@@ -1169,7 +1285,7 @@ async function execStepBody(
       const c = await readStepCache(ctx, step, resolved)
       if (c.hit) return cacheHit(ctx, step, c.output) // cache hit ⇒ NO spawn, NO budget spend
       const out = await execAgentStep(step, ctx, b)
-      await ctx.cache!.set(c.key, { output: out, resolvedInputHash: c.hash })
+      await ctx.cache!.set(c.key, await buildCacheEntry(ctx, out, c.hash))
       return out
     }
 
@@ -1233,7 +1349,7 @@ async function execArtifactStep(step: ArtifactStep, ctx: RunCtx, b: Bindings): P
   const resolvedInputs = { key, path: rawPath }
   const cacheOn = ctx.cache !== undefined && ctx.cacheKey !== undefined
   const journalKey = cacheOn ? stepJournalKey(ctx, step) : undefined
-  const hash = cacheOn ? hashResolvedInputs(step.kind, resolvedInputs) : undefined
+  const hash = cacheOn ? hashResolvedInputs(step.kind, resolvedInputs, ctx.workspace) : undefined
 
   if (cacheOn) {
     const entry = await ctx.cache!.get(journalKey!)
