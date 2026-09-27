@@ -3,10 +3,13 @@
  * `WorkflowRunner.retry()` / the `workflow_retry` MCP tool: given a
  * failed/cancelled runId, a NEW run replays every step the original already
  * completed from its own journal (no re-execution) and re-executes only from
- * the first step that never succeeded — working even when the original run
- * never passed a `cacheKey` (the internal, always-on per-run journal — see
- * `internalJournal` in `workflow-runner.ts` — is the source, not the
- * caller-facing `cacheKey` feature).
+ * the first step that never succeeded — working REGARDLESS of whether the
+ * original run ever passed a `cacheKey` (the internal, always-on per-run
+ * journal — see `internalJournal` in `workflow-runner.ts`). When the
+ * original DID pass its own `cacheKey`, that cache's existing semantics stay
+ * unchanged (only steps declared `cacheable: true` write anywhere) — its
+ * writes are additionally relayed into the internal journal
+ * (`teeIntoInternalJournal`) so `retry()` still finds them.
  *
  * V7 (`specs/resources/aip-58/draft/vectors/v7-replay.json`) names a more
  * general `run.replay { of, fromStep }` verb that can replay from an
@@ -20,7 +23,7 @@
  * run built to the vector's own shape.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { tmpdir } from "node:os"
@@ -131,13 +134,18 @@ function makeFlakyIncTool(id: string) {
 
 /** 5-step chain: fetch -> parse -> draft(flaky) -> polish -> save, each
  *  `{n}` in / `{n: n+1}` out, threaded `$steps.<id>.n`. `fetch` alone reads
- *  `$input.n` directly — everything downstream depends on it transitively. */
-function makeFiveStepWorkflow() {
+ *  `$input.n` directly — everything downstream depends on it transitively.
+ *  `cacheableSteps` (default: none declared) marks the named steps
+ *  `cacheable: true` in the generated manifest — needed for a test that
+ *  starts the run with its OWN explicit `cacheKey` (that path respects each
+ *  step's declared `cacheable` exactly as before P5, never forcing it). */
+function makeFiveStepWorkflow(cacheableSteps: readonly string[] = []) {
   const fetch = makeIncTool("demo.fetch")
   const parse = makeIncTool("demo.parse")
   const draft = makeFlakyIncTool("demo.draft")
   const polish = makeIncTool("demo.polish")
   const save = makeIncTool("demo.save")
+  const cacheableLine = (id: string): string => (cacheableSteps.includes(id) ? "\n    cacheable: true" : "")
   const manifest = `---
 name: Five step chain
 id: five-step-chain
@@ -154,27 +162,27 @@ steps:
     kind: tool
     tool: demo.fetch
     inputs:
-      n: $input.n
+      n: $input.n${cacheableLine("fetch")}
   - id: parse
     kind: tool
     tool: demo.parse
     inputs:
-      n: $steps.fetch.n
+      n: $steps.fetch.n${cacheableLine("parse")}
   - id: draft
     kind: tool
     tool: demo.draft
     inputs:
-      n: $steps.parse.n
+      n: $steps.parse.n${cacheableLine("draft")}
   - id: polish
     kind: tool
     tool: demo.polish
     inputs:
-      n: $steps.draft.n
+      n: $steps.draft.n${cacheableLine("polish")}
   - id: save
     kind: tool
     tool: demo.save
     inputs:
-      n: $steps.polish.n
+      n: $steps.polish.n${cacheableLine("save")}
 ---
 `
   const tools = {
@@ -315,6 +323,62 @@ describe("AIP-58 §6 Journal — WorkflowRunner.retry() (P5)", () => {
     const byLabel = new Map(retried!.stages[0]!.steps.map(s => [s.label, s]))
     expect(byLabel.get("fetch")?.cached).toBeUndefined()
     expect(byLabel.get("parse")?.cached).toBeUndefined()
+  })
+
+  it("a run started WITH an explicit cacheKey is still fully retryable — the caller's own cache and the internal journal coexist", async () => {
+    vi.stubEnv("HOME", tmpDir) // createFileStepCache's default dir (the caller's OWN cacheKey cache) is under homedir()
+    try {
+      // fetch/parse declared cacheable — required for the caller's OWN
+      // cacheKey feature to journal them at all (unchanged pre-P5
+      // semantics: a step not marked cacheable never writes anywhere,
+      // cacheKey or not).
+      const wf = makeFiveStepWorkflow(["fetch", "parse"])
+      const path = join(tmpDir, "WORKFLOW.md")
+      writeFileSync(path, wf.manifest, "utf8")
+
+      const runner = createWorkflowRunner({
+        registry: makeMockRegistry(),
+        sessionEvents: createSessionEventBus(),
+        resolveAgentAdapter: makeMockAdapter(),
+        persist: true,
+        persistPath,
+        runsRoot,
+        compileWorkflow: (handle) => compileWorkflow(handle, { tools: wf.tools, candidates: wf.candidates }),
+      })
+
+      const original = await runner.startFromFile({ path, input: { n: 1 }, cacheKey: "my-explicit-cache-key" })
+      const failed = await waitTerminal(runner, original.runId)
+      expect(failed?.status).toBe("failed")
+      expect(wf.steps.fetch.calls()).toBe(1)
+      expect(wf.steps.parse.calls()).toBe(1)
+      expect(wf.steps.draft.calls()).toBe(1)
+
+      // Retry never takes a cacheKey argument — it must find fetch/parse's
+      // already-succeeded output via the internal journal alone, without
+      // ever being told "my-explicit-cache-key".
+      const result = await runner.retry(original.runId)
+      expect(result.ok).toBe(true)
+      if (!result.ok) throw new Error("unreachable")
+
+      const retried = await waitTerminal(runner, result.run.runId)
+      expect(retried?.status).toBe("done")
+      expect(retried?.output).toEqual({ n: 6 }) // 1 -> 2 -> 3 -> 4 -> 5 -> 6
+
+      // Steps 1-2 replayed from the journal — no re-dispatch — exactly as
+      // when the original run never passed a cacheKey at all.
+      expect(wf.steps.fetch.calls()).toBe(1)
+      expect(wf.steps.parse.calls()).toBe(1)
+      // Step 3 onward re-executed for real.
+      expect(wf.steps.draft.calls()).toBe(2)
+      expect(wf.steps.polish.calls()).toBe(1)
+      expect(wf.steps.save.calls()).toBe(1)
+
+      const byLabel = new Map(retried!.stages[0]!.steps.map(s => [s.label, s]))
+      expect(byLabel.get("fetch")).toMatchObject({ status: "done", cached: true })
+      expect(byLabel.get("parse")).toMatchObject({ status: "done", cached: true })
+    } finally {
+      vi.unstubAllEnvs()
+    }
   })
 
   it("retry of a succeeded run is refused", async () => {
@@ -486,6 +550,38 @@ steps:
     expect(wf.steps.parse.calls()).toBe(1)
   })
 
+  it("retry() never throws when the original WORKFLOW.md source can no longer be reloaded — refuses not_retryable instead", async () => {
+    const wf = makeFiveStepWorkflow()
+    const path = join(tmpDir, "WORKFLOW.md")
+    writeFileSync(path, wf.manifest, "utf8")
+
+    const runner = createWorkflowRunner({
+      registry: makeMockRegistry(),
+      sessionEvents: createSessionEventBus(),
+      resolveAgentAdapter: makeMockAdapter(),
+      persist: true,
+      persistPath,
+      runsRoot,
+      compileWorkflow: (handle) => compileWorkflow(handle, { tools: wf.tools, candidates: wf.candidates }),
+    })
+
+    const original = await runner.startFromFile({ path, input: { n: 1 } })
+    const failed = await waitTerminal(runner, original.runId)
+    expect(failed?.status).toBe("failed")
+
+    // The source file is gone by the time someone calls retry() — a moved/
+    // deleted WORKFLOW.md, or one edited into something that no longer
+    // compiles.
+    rmSync(path, { force: true })
+
+    const result = await runner.retry(original.runId)
+    expect(result).toEqual({
+      ok: false,
+      error: "not_retryable",
+      message: expect.stringContaining(original.runId),
+    })
+  })
+
   it("V7 shape — original run's steps 1-2 succeeded, retry (auto-detected resume point) reuses them and re-executes from step 3", async () => {
     // Mirrors v7-replay.json's own topology (fetch/parse/draft/save, steps
     // 1-2 already succeeded) adapted to THIS runtime's narrower `run.retry`
@@ -551,12 +647,10 @@ steps:
       compileWorkflow: (handle) => compileWorkflow(handle, { tools, candidates }),
     })
 
-    const origRun = "run_orig"
+    // Assert against the real, host-generated runId throughout — not the
+    // vector's literal fixture id ("run_orig"), which isn't part of the
+    // public API.
     const original = await runner.startFromFile({ path, input: { n: 1 } })
-    // Rename isn't part of the public API — assert against the real runId
-    // instead of the vector's literal fixture id (host-generated, not
-    // caller-supplied).
-    void origRun
     const failed = await waitTerminal(runner, original.runId)
     expect(failed?.status).toBe("failed")
     const byLabel = new Map(failed!.stages[0]!.steps.map(s => [s.label, s]))

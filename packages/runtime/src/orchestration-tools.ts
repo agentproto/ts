@@ -1267,17 +1267,33 @@ export function registerOrchestrationTools(
         input: z.record(z.string(), z.unknown()).optional().describe("Override the workflow's `$input` binding for the new run (startFromFile-originated runs only). Omit to reuse the original run's input verbatim."),
       },
       async input => {
-        const result = await workflowRunner.retry(input.runId, input.input !== undefined ? { input: input.input } : undefined)
-        if (!result.ok) {
+        // `retry()` itself never throws for a documented refusal (a moved/
+        // broken WORKFLOW.md source surfaces as `not_retryable`) — this
+        // try/catch is defense in depth for anything else, mirroring
+        // `workflow_run_file`'s own handler above.
+        try {
+          const result = await workflowRunner.retry(input.runId, input.input !== undefined ? { input: input.input } : undefined)
+          if (!result.ok) {
+            return {
+              content: [{ type: "text", text: JSON.stringify({ error: result.error, message: result.message }) }],
+              isError: true,
+            }
+          }
           return {
-            content: [{ type: "text", text: JSON.stringify({ error: result.error, message: result.message }) }],
+            content: [
+              { type: "text", text: JSON.stringify({ runId: result.run.runId, status: result.run.status, retryOf: input.runId }) },
+            ],
+          }
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({ error: "not_retryable", message: err instanceof Error ? err.message : String(err) }),
+              },
+            ],
             isError: true,
           }
-        }
-        return {
-          content: [
-            { type: "text", text: JSON.stringify({ runId: result.run.runId, status: result.run.status, retryOf: input.runId }) },
-          ],
         }
       },
     )

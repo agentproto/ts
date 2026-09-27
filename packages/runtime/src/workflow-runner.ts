@@ -319,22 +319,28 @@ export interface WorkflowRunner {
    * and re-executes only from the first step that never succeeded onward.
    * "The original run's journal is the source": this works whether or not
    * the caller ever passed a `cacheKey` to the original `start`/
-   * `startFromFile` call (see `internalJournal` below) — every run
-   * journals its own steps internally for exactly this purpose. A step
-   * whose resolved input changed (an explicit `input` override here, or an
-   * upstream step producing different output because ITS input changed)
-   * naturally misses the journal and re-executes — no separate
-   * invalidation logic; it's the same resolved-input-hash comparison a
-   * cache hit always does (`@agentproto/workflow-runtime`'s
-   * `readStepCache`).
+   * `startFromFile` call — every run journals its own steps internally,
+   * ALWAYS (`internalJournal` below), independent of and in addition to
+   * whatever the caller's own `cacheKey`/`cacheable` opted into (a run
+   * started WITH a `cacheKey` keeps that cache's existing semantics
+   * unchanged; its successful writes are additionally relayed into the
+   * internal journal — see `teeIntoInternalJournal`). A step whose resolved
+   * input changed (an explicit `input` override here, or an upstream step
+   * producing different output because ITS input changed) naturally misses
+   * the journal and re-executes — no separate invalidation logic; it's the
+   * same resolved-input-hash comparison a cache hit always does
+   * (`@agentproto/workflow-runtime`'s `readStepCache`).
    *
    * Refused (`not_retryable`) unless the original run's status is `failed`
    * or `cancelled` — a `done` (succeeded) run has nothing left to retry, an
    * in-flight run has no failure to retry FROM. Refused (`run_not_found`)
-   * for an unknown runId, and (`not_retryable`) for a run that predates this
-   * field (no `path`/`startStages` recorded — a leftover pre-P5 record) or
-   * whose original source can no longer be reloaded (e.g. the WORKFLOW.md
-   * file has since moved).
+   * for an unknown runId, and (`not_retryable`) — never a thrown error —
+   * for a run that predates this field (no `path`/`startStages` recorded —
+   * a leftover pre-P5 record) or whose original source can no longer be
+   * reloaded (e.g. the WORKFLOW.md file has since moved or no longer
+   * compiles): reloading/recompiling is wrapped so a broken source is
+   * always a documented refusal, never an unhandled rejection out of this
+   * method.
    */
   retry(
     runId: string,
@@ -707,29 +713,62 @@ function resolveLineageRoot(runs: Map<string, RunState>, runId: string): string 
 /**
  * AIP-58 §6 Journal — the always-on, per-run-lineage internal StepCache (see
  * `forceCacheableWorkflow` above): every `start()`/`startFromFile()` run
- * gets one, keyed by its own runId (a fresh lineage of one), UNLESS the
- * caller supplied their own `cacheKey` — in which case this host defers
- * entirely to that existing, caller-facing cache/cacheable mechanism
- * (unchanged behaviour, respecting each step's own declared `cacheable`)
- * rather than layering a second cache underneath it. `retry()` reuses the
- * SAME file (via `resolveLineageRoot`) so the entries a `start()`/
- * `startFromFile()` run already wrote are visible to its later retries.
- * Stored under the LINEAGE ROOT's own run-workspace directory
- * (`runWorkspacePaths(runsRoot, rootRunId).root/journal.json`) — a sibling
- * of that run's `scratch/`/`artifacts/`, sharing its "no retention policy
- * implemented yet" posture (`run-workspace.ts`'s own doc comment).
- * `undefined` when persistence is off (no `runsRoot`/workspace at all — most
- * unit tests) or the caller opted into their own `cacheKey`.
+ * gets one, keyed by its own runId (a fresh lineage of one) — independent of
+ * whether the caller ALSO supplied their own `cacheKey` (that existing,
+ * caller-facing cache/cacheable mechanism is unaffected; see
+ * `teeIntoInternalJournal` below for how the two coexist in one execution).
+ * `retry()` reuses the SAME file (via `resolveLineageRoot`) so the entries a
+ * `start()`/`startFromFile()` run already wrote are visible to its later
+ * retries — REGARDLESS of whether that run used a caller `cacheKey`, a
+ * forced-cacheable-everything internal-only pass, or neither (nothing
+ * succeeded yet). Stored under the LINEAGE ROOT's own run-workspace
+ * directory (`runWorkspacePaths(runsRoot, rootRunId).root/journal.json`) —
+ * a sibling of that run's `scratch/`/`artifacts/`, sharing its "no
+ * retention policy implemented yet" posture (`run-workspace.ts`'s own doc
+ * comment). `undefined` only when persistence is off (no `runsRoot`/
+ * workspace at all — most unit tests).
  */
 function internalJournal(
   runsRoot: string | undefined,
   rootRunId: string,
-  callerCacheKey: string | undefined,
 ): { cache: StepCache; cacheKey: string } | undefined {
-  if (runsRoot === undefined || callerCacheKey !== undefined) return undefined
+  if (runsRoot === undefined) return undefined
   return {
     cache: createFileStepCache("journal", { dir: runWorkspacePaths(runsRoot, rootRunId).root }),
     cacheKey: "journal",
+  }
+}
+
+/**
+ * AIP-58 §6 Journal — when a caller ALSO supplies their own `cacheKey`, that
+ * cache (`primary`) keeps governing GETs and the run's own cache-hit
+ * behaviour exactly as before (unchanged semantics: only a step the author
+ * declared `cacheable: true` ever reads/writes it — `workflow-runner.ts`
+ * does NOT force `cacheable` in this branch, see `start`/`startFromFile`).
+ * This wraps `primary` so every successful SET *also* lands in the
+ * always-on `internal` journal (`internalJournal` above) — otherwise a run
+ * started with an explicit `cacheKey` would write ONLY to that
+ * caller-named, cross-run-shared cache file, and a later `retry()` (which
+ * always addresses the internal journal, never the caller's named one)
+ * would find nothing there and silently re-execute every step from
+ * scratch, even ones that already succeeded.
+ *
+ * The incoming `key` is `@agentproto/workflow-runtime`'s own
+ * `stepJournalKey` shape (`${cacheKey}\0${stepId}\0${kind}${suffix}`) — the
+ * relayed write swaps everything up to the first NUL for `internal`'s own
+ * cacheKey namespace (keeping `stepId`/`kind`/suffix identical), so
+ * `retry()`'s fixed `cacheKey: "journal"` lookups land on it regardless of
+ * what the caller's own cacheKey string was.
+ */
+function teeIntoInternalJournal(primary: StepCache, internal: { cache: StepCache; cacheKey: string }): StepCache {
+  return {
+    get: (key) => primary.get(key),
+    set: async (key, entry) => {
+      await primary.set(key, entry)
+      const nul = key.indexOf("\u0000")
+      const rest = nul === -1 ? key : key.slice(nul + 1)
+      await internal.cache.set(`${internal.cacheKey}\u0000${rest}`, entry)
+    },
   }
 }
 
@@ -2037,13 +2076,17 @@ export function createWorkflowRunner(opts: {
       eventLog?.append({ type: "run.started", data: {} })
 
       // Translate stages → RuntimeWorkflow and launch. AIP-58 §6 — the
-      // internal, always-on journal (unless the caller supplied their own
-      // `cacheKey`, in which case existing per-step `cacheable` behaviour is
-      // preserved exactly) forces every step cacheable, so a later `retry()`
-      // can replay whatever succeeds here without the caller having opted
-      // into caching at all.
-      const journal = internalJournal(workspace, runId, input.cacheKey)
-      const workflow = journal
+      // internal, always-on journal is active REGARDLESS of whether the
+      // caller supplied their own `cacheKey`. Without one, every step is
+      // forced cacheable so a later `retry()` can replay whatever succeeds
+      // here even though the caller never opted into caching at all. WITH
+      // one, existing per-step `cacheable` behaviour is preserved exactly
+      // (no forcing) — only the steps the caller already opted in write
+      // anywhere — but those writes are ALSO relayed into the internal
+      // journal (`teeIntoInternalJournal`, below), so `retry()` still finds
+      // them without needing to know the caller's own cacheKey.
+      const journal = internalJournal(workspace, runId)
+      const workflow = journal && input.cacheKey === undefined
         ? forceCacheableWorkflow(translateStages(input.stages, input.workflowId))
         : translateStages(input.stages, input.workflowId)
       const agents: SessionsRegistryAgentHost = new SessionsRegistryAgentHost(
@@ -2071,7 +2114,9 @@ export function createWorkflowRunner(opts: {
       )
       state.agents = agents
 
-      const cache = input.cacheKey ? createFileStepCache(input.cacheKey) : journal?.cache
+      const cache = input.cacheKey
+        ? (journal ? teeIntoInternalJournal(createFileStepCache(input.cacheKey), journal) : createFileStepCache(input.cacheKey))
+        : journal?.cache
       const effectiveCacheKey = input.cacheKey ?? journal?.cacheKey
 
       void executeRunWorkflow(state, workflow, agents, abort.signal, sessionEvents, cache, effectiveCacheKey, undefined, persist, opts.appRegistry, eventLog, leaseOpts, workspace).then(() => {
@@ -2219,11 +2264,16 @@ export function createWorkflowRunner(opts: {
       )
       state.agents = agents
 
-      // AIP-58 §6 — same internal-journal posture as `start()` above.
-      const journal = internalJournal(workspaceRoot, runId, args.cacheKey)
-      const cache = args.cacheKey ? createFileStepCache(args.cacheKey) : journal?.cache
+      // AIP-58 §6 — same internal-journal posture as `start()` above: always
+      // active, forcing cacheable only when the caller didn't supply their
+      // own `cacheKey`; when they did, their own cache's writes are teed
+      // into the internal journal instead (`teeIntoInternalJournal`).
+      const journal = internalJournal(workspaceRoot, runId)
+      const cache = args.cacheKey
+        ? (journal ? teeIntoInternalJournal(createFileStepCache(args.cacheKey), journal) : createFileStepCache(args.cacheKey))
+        : journal?.cache
       const effectiveCacheKey = args.cacheKey ?? journal?.cacheKey
-      const execWorkflow = journal ? forceCacheableWorkflow(workflow) : workflow
+      const execWorkflow = journal && args.cacheKey === undefined ? forceCacheableWorkflow(workflow) : workflow
 
       void executeRunWorkflow(
         state,
@@ -2438,12 +2488,25 @@ export function createWorkflowRunner(opts: {
       let effectiveInput: unknown
       if (orig.path !== undefined) {
         if (!compileWorkflow) {
-          throw new Error(
-            "workflow file execution requires a compileWorkflow callback to be configured on the runner",
-          )
+          return {
+            ok: false,
+            error: "not_retryable",
+            message: "workflow file execution requires a compileWorkflow callback to be configured on the runner",
+          }
         }
-        const handle = await loadWorkflowHandle(orig.path)
-        runtimeWorkflow = await compileWorkflow(handle)
+        // AIP-58 §6 — the original source MUST NOT throw `retry()` itself: a
+        // WORKFLOW.md moved/deleted/broken since the original run is a
+        // documented refusal (`not_retryable`), not an unhandled rejection.
+        try {
+          const handle = await loadWorkflowHandle(orig.path)
+          runtimeWorkflow = await compileWorkflow(handle)
+        } catch (err) {
+          return {
+            ok: false,
+            error: "not_retryable",
+            message: `could not reload "${orig.path}" to retry run "${originalRunId}": ${err instanceof Error ? err.message : String(err)}`,
+          }
+        }
         stepDefs = runtimeWorkflowToStages(runtimeWorkflow, { includeConditional: true })
         effectiveInput = retryInput && "input" in retryInput ? retryInput.input : orig.input
         displayStages = runtimeWorkflowToStages(runtimeWorkflow).map((stage, si) => ({
@@ -2475,11 +2538,12 @@ export function createWorkflowRunner(opts: {
       const workspace = workspaceRunsRoot()
       if (workspace !== undefined) ensureRunWorkspace(workspace, runId)
 
-      // Always the internal journal (never a caller cacheKey — see
-      // `internalJournal`'s own doc comment) — keyed to the LINEAGE ROOT so
-      // a retry-of-a-retry still sees every step any earlier attempt in the
-      // chain already completed.
-      const journal = internalJournal(workspace, rootRunId, undefined)
+      // Always the internal journal, keyed to the LINEAGE ROOT so a
+      // retry-of-a-retry still sees every step any earlier attempt in the
+      // chain already completed — REGARDLESS of whether that earlier
+      // attempt used its own caller `cacheKey` (see `teeIntoInternalJournal`
+      // and `internalJournal`'s own doc comments).
+      const journal = internalJournal(workspace, rootRunId)
       const execWorkflow = journal ? forceCacheableWorkflow(runtimeWorkflow) : runtimeWorkflow
 
       const run: WorkflowRun = {
