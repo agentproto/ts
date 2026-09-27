@@ -387,4 +387,26 @@ describe("agentproto llm endpoints detect", () => {
     expect(parsed.detected).toEqual([])
     await expect(readFile(process.env.LLM_ENDPOINT_ENDPOINTS_FILE!, "utf-8")).rejects.toThrow()
   })
+
+  it("never re-points an existing LAN-configured endpoint at localhost — reports it as skipped instead", async () => {
+    await writeFile(
+      process.env.LLM_ENDPOINT_ENDPOINTS_FILE!,
+      JSON.stringify({ endpoints: [{ id: "lmstudio", kind: "openai", baseUrl: "http://192.168.1.20:1234/v1", connector: "lmstudio" }] }),
+    )
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url === "http://127.0.0.1:1234/api/v0/models") {
+        return new Response(JSON.stringify({ data: [{ id: "m", state: "loaded", loaded_context_length: 4096 }] }), { status: 200 })
+      }
+      throw new Error("no network in test")
+    }) as typeof fetch)
+    const out = captureStdout()
+    const code = await runLlm(["endpoints", "detect"])
+    out.restore()
+    fetchSpy.mockRestore()
+    expect(code).toBe(0)
+    expect(out.text()).toContain('existing endpoint "lmstudio" points elsewhere')
+    const written = JSON.parse(await readFile(process.env.LLM_ENDPOINT_ENDPOINTS_FILE!, "utf-8"))
+    expect(written.endpoints).toEqual([{ id: "lmstudio", kind: "openai", baseUrl: "http://192.168.1.20:1234/v1", connector: "lmstudio" }])
+  })
 })

@@ -107,7 +107,7 @@ Usage:
                           API never reports a loaded model's context size, so
                           its models sync with a conservative 4096-token
                           fallback rather than being skipped — check the
-                          runtime directly (e.g. `ollama show <model>`) if you
+                          runtime directly (e.g. "ollama show <model>") if you
                           need the real figure. Only ever touches model ids
                           this command previously wrote there (tracked in
                           ~/.agentproto/pi-models-managed.json) — a
