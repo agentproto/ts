@@ -757,6 +757,28 @@ const startBranchGcJob = (
   return { job, promise }
 }
 
+const BRANCH_GC_POLL_AFTER_MS = 30_000
+/** The fire-and-drop payload for `branch_gc { wait: false }` / a `waitMs`
+ *  timeout, plus the `followUp` block telling a caller HOW to follow up
+ *  (which tool, with which args, how often) — the response used to say
+ *  nothing about that. */
+const branchGcBackgroundView = (jobId: string, startedAt: string): object => ({
+  jobId,
+  status: "running",
+  startedAt,
+  resultPath: join(branchGcJobsDirOf(), `${jobId}.json`),
+  followUp: {
+    tool: "branch_gc_status",
+    args: { jobId },
+    pollAfterMs: BRANCH_GC_POLL_AFTER_MS,
+    hint:
+      "Running in the background; a plan on a large repo takes a few minutes. " +
+      "Call branch_gc_status with this jobId about every 30 s. When done it " +
+      "returns the summary; the full result is written to resultPath (pass " +
+      "full: true to get it inline).",
+  },
+})
+
 /** The `done` view `branch_gc_status` returns — identical for an in-memory
  *  job and one rebuilt from its on-disk result file (Part of the
  *  disk-fallback contract: callers see the same shape either way). */
@@ -2692,7 +2714,9 @@ export function registerSessionTools(
       "the path of a restore log (sha + re-create command per deleted ref). " +
       "A plan can take minutes on a big repo: as an MCP caller, pass " +
       "`wait: false` (or `waitMs: 40000`) and poll `branch_gc_status` with " +
-      "the returned jobId instead of blocking.",
+      "the returned jobId instead of blocking. A `wait: false` (or `waitMs` " +
+      "timed-out) response returns a jobId plus a `followUp` block naming the " +
+      "poll tool and cadence — poll `branch_gc_status` with that jobId.",
     {
       repoRoot: z.string().optional().describe("Absolute path to the git repo. Wins over `workspaceSlug`."),
       workspaceSlug: z
@@ -2760,7 +2784,7 @@ export function registerSessionTools(
         }
         const { job, promise } = startBranchGcJob(runBranchGc, runInput)
         if (input.wait === false) {
-          return { content: [{ type: "text", text: JSON.stringify({ jobId: job.id, status: "running", startedAt: job.startedAt }) }] }
+          return { content: [{ type: "text", text: JSON.stringify(branchGcBackgroundView(job.id, job.startedAt)) }] }
         }
         if (input.waitMs !== undefined) {
           let fireTimedOut!: (timedOut: boolean) => void
@@ -2781,7 +2805,7 @@ export function registerSessionTools(
             timeout,
           ])
           if (timedOut) {
-            return { content: [{ type: "text", text: JSON.stringify({ jobId: job.id, status: "running", startedAt: job.startedAt }) }] }
+            return { content: [{ type: "text", text: JSON.stringify(branchGcBackgroundView(job.id, job.startedAt)) }] }
           }
           // Settled inside the window — fall through and return inline.
         }
@@ -2801,8 +2825,9 @@ export function registerSessionTools(
     "Poll a branch_gc run started with `wait: false` (or one that fell back to " +
       "the background via `waitMs`). While running: status + elapsed time. When " +
       "done: the plan's own summary, the path of the full result saved on disk " +
-      "(`resultPath`), and — with `full: true` — the full result itself. When " +
-      "failed: the error.",
+      "(`resultPath`), and — with `full: true` — the full result itself. While " +
+      "running the view also carries `followUp.pollAfterMs` (poll every 30 s). " +
+      "When failed: the error.",
     {
       jobId: z.string().describe("Job id returned by `branch_gc` (`bgc_…`)."),
       full: mcpBool.optional().describe("Include the full result JSON, not just the summary. Default false."),
@@ -2850,7 +2875,14 @@ export function registerSessionTools(
           content: [
             {
               type: "text",
-              text: JSON.stringify({ jobId: job.id, status: job.status, startedAt: job.startedAt, elapsedMs: Date.now() - job.startedMs }),
+              text: JSON.stringify({
+                jobId: job.id,
+                status: job.status,
+                startedAt: job.startedAt,
+                elapsedMs: Date.now() - job.startedMs,
+                resultPath: join(branchGcJobsDirOf(), `${job.id}.json`),
+                followUp: { pollAfterMs: BRANCH_GC_POLL_AFTER_MS },
+              }),
             },
           ],
         }

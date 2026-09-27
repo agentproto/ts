@@ -478,6 +478,34 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
     }
   })
 
+  it("background responses carry followUp instructions", async () => {
+    let release!: (r: BranchGcResult) => void
+    const gate = new Promise<BranchGcResult>(res => {
+      release = res
+    })
+    const runner: BranchGcRunner = () => gate
+    const client = await harness({ runBranchGc: runner })
+    try {
+      const start = JSON.parse(
+        text(await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", wait: false } })),
+      ) as { jobId: string; resultPath: string; followUp: { tool: string; args: { jobId: string }; pollAfterMs: number; hint: string } }
+      expect(start.followUp.tool).toBe("branch_gc_status")
+      expect(start.followUp.args.jobId).toBe(start.jobId)
+      expect(start.followUp.pollAfterMs).toBe(30000)
+      expect(start.followUp.hint).toContain("branch_gc_status")
+      expect(start.resultPath.endsWith(`${start.jobId}.json`)).toBe(true)
+
+      const running = JSON.parse(
+        text(await client.callTool({ name: "branch_gc_status", arguments: { jobId: start.jobId } })),
+      ) as { resultPath: string; followUp: { pollAfterMs: number } }
+      expect(running.resultPath.endsWith(`${start.jobId}.json`)).toBe(true)
+      expect(running.followUp.pollAfterMs).toBe(30000)
+    } finally {
+      release(PLAN_RESULT)
+      await client.close()
+    }
+  })
+
   it("branch_gc_status falls back to the on-disk result file for an unknown id", async () => {
     const jobsDir = await mkdtemp(join(tmpdir(), "bgc-jobs-"))
     const FAKE_ID = "bgc_deadbeef"
