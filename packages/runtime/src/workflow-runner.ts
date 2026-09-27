@@ -1713,9 +1713,41 @@ async function executeRunWorkflow(
     if (signal.aborted) {
       // `run.cancelled` is emitted by `cancel()` itself (the only caller
       // that ever aborts `signal`) — not here, to avoid a duplicate event.
+      //
+      // The engine stops dispatching new steps once cancelled
+      // (`run-workflow.ts`'s entry guard on every step, `WorkflowCancelledError`)
+      // but a step already `running` when the abort landed doesn't always
+      // call back into `onStepFailed` on its way out (a tolerant fan-out
+      // item does; a top-level step's rejection just unwinds straight to
+      // THIS catch) — so this is the one place a `running` row is ever
+      // resolved to a terminal status on a cancelled run. Without it the
+      // row (and its stage) stays `running` forever: the reported bug,
+      // `workflow_status` showing a `cancelled` run with a step that never
+      // stops. A `pending` row (never even started — the entry guard caught
+      // it, or a later stage was never reached) is `skipped`, not `cancelled`
+      // — it never ran at all.
+      const endedAt = new Date().toISOString()
+      for (const stage of state.run.stages) {
+        let stageTouched = false
+        for (const step of stage.steps) {
+          if (step.status === "running") {
+            step.status = "cancelled"
+            step.endedAt = endedAt
+            delete step.phase
+            stageTouched = true
+            eventLog?.append({ stepId: step.label, type: "step.failed", data: { message: "run cancelled", code: "cancelled" } })
+          } else if (step.status === "pending") {
+            step.status = "skipped"
+            step.skipReason = "run-cancelled"
+            stageTouched = true
+            eventLog?.append({ stepId: step.label, type: "step.skipped", data: { reason: "run-cancelled" } })
+          }
+        }
+        if (stageTouched || stage.status === "running") stage.status = "failed"
+      }
       runningSteps.clear()
       state.run.status = "cancelled"
-      state.run.endedAt = new Date().toISOString()
+      state.run.endedAt = endedAt
     } else {
       const errMsg = err instanceof Error ? err.message : String(err)
       state.run.status = "failed"
@@ -2112,6 +2144,11 @@ export function createWorkflowRunner(opts: {
           onSpawnStarted: stepKey => {
             if (markStepSpawning(state.run, stepKey)) persist()
           },
+          // Closes the "cancelled while spawning" race (see
+          // `killIfCancelledDuringSpawn`'s doc): `cancel()`'s own
+          // `releaseAll()` call only reaches sessions already tracked at
+          // the moment it runs.
+          signal: abort.signal,
           ...(opts.resolveSandboxProvider
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }
             : {}),
@@ -2262,6 +2299,11 @@ export function createWorkflowRunner(opts: {
           onSpawnStarted: stepKey => {
             if (markStepSpawning(state.run, stepKey)) persist()
           },
+          // Closes the "cancelled while spawning" race (see
+          // `killIfCancelledDuringSpawn`'s doc): `cancel()`'s own
+          // `releaseAll()` call only reaches sessions already tracked at
+          // the moment it runs.
+          signal: abort.signal,
           ...(opts.resolveSandboxProvider
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }
             : {}),
@@ -2607,6 +2649,11 @@ export function createWorkflowRunner(opts: {
           onSpawnStarted: stepKey => {
             if (markStepSpawning(state.run, stepKey)) persist()
           },
+          // Closes the "cancelled while spawning" race (see
+          // `killIfCancelledDuringSpawn`'s doc): `cancel()`'s own
+          // `releaseAll()` call only reaches sessions already tracked at
+          // the moment it runs.
+          signal: abort.signal,
           ...(opts.resolveSandboxProvider
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }
             : {}),

@@ -77,12 +77,14 @@ export type FanOutOutcome<T = unknown> =
       readonly error: string
     }
   | {
-      /** Never started: the fan-out's spawn circuit breaker opened first
-       *  (see {@link MapStep.maxConsecutiveSpawnFailures}). */
+      /** Never started: either the fan-out's spawn circuit breaker opened
+       *  first (see {@link MapStep.maxConsecutiveSpawnFailures}), or the run
+       *  was cancelled while earlier items were still in flight. */
       readonly status: "skipped"
       readonly index: number
       readonly item: unknown
-      /** `circuit-open: <first error of the failure streak>`. */
+      /** `circuit-open: <first error of the failure streak>`, or
+       *  `run-cancelled: run cancelled`. */
       readonly reason: string
     }
 
@@ -769,13 +771,16 @@ export interface StepSkippedInfo {
   /** `"branch-not-taken"`: the step sits in an untaken `branch` arm.
    *  `"circuit-open"`: a `map`/`pipeline` item never started because the
    *  fan-out's spawn circuit breaker opened
-   *  ({@link MapStep.maxConsecutiveSpawnFailures}). */
-  reason: "branch-not-taken" | "circuit-open"
+   *  ({@link MapStep.maxConsecutiveSpawnFailures}). `"run-cancelled"`: a
+   *  `map`/`pipeline` item never started because the run was cancelled
+   *  (`RunWorkflowArgs.signal` aborted) while earlier items were still in
+   *  flight. */
+  reason: "branch-not-taken" | "circuit-open" | "run-cancelled"
   /** Id of the authored step whose decision skipped the step — the `branch`
-   *  step, or (circuit-open) the `map`/`pipeline` step. */
+   *  step, or (circuit-open/run-cancelled) the `map`/`pipeline` step. */
   branchId: string
-  /** `"circuit-open"` only: the first error of the spawn-failure streak
-   *  that tripped the breaker. */
+  /** `"circuit-open"`: the first error of the spawn-failure streak that
+   *  tripped the breaker. `"run-cancelled"`: a fixed "run cancelled" message. */
   message?: string
 }
 

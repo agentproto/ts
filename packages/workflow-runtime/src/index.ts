@@ -11,6 +11,7 @@
 export {
   runWorkflow,
   WorkflowSuspendedError,
+  WorkflowCancelledError,
   AgentInputRequiredError,
   StepOutcomeError,
   AgentSpawnError,

@@ -507,7 +507,7 @@ export function turnToActivities(
 export interface ActivityRunStepSlice {
   index: number
   label: string
-  status: "pending" | "running" | "done" | "failed" | "skipped"
+  status: "pending" | "running" | "done" | "failed" | "skipped" | "cancelled"
   sessionId?: string
   startedAt?: string
   endedAt?: string
@@ -535,8 +535,8 @@ export interface ActivityWorkflowRunSlice {
  * Project one workflow run's steps (stage-barrier semantics): running →
  * active; a `pending` step waits on the stage barrier — the unfinished
  * steps of EARLIER stages are the sessions whose turn-ends open it;
- * done/failed → terminal; skipped → cancelled; a step still pending inside
- * a terminal run settles as cancelled.
+ * done/failed → terminal; skipped/cancelled → cancelled; a step still
+ * pending inside a terminal run settles as cancelled.
  */
 export function workflowToActivities(run: ActivityWorkflowRunSlice): ActivityRecord[] {
   const runTerminal = run.status === "done" || run.status === "failed" || run.status === "cancelled"
@@ -565,6 +565,7 @@ export function workflowToActivities(run: ActivityWorkflowRunSlice): ActivityRec
           records.push(record(base, "failed"))
           break
         case "skipped":
+        case "cancelled":
           records.push(record(base, "cancelled"))
           break
         case "pending": {

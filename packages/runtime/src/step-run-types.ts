@@ -11,7 +11,7 @@ export type RoutinePolicy =
 export interface RoutineStepState {
   index: number
   label: string
-  status: "pending" | "running" | "done" | "failed" | "skipped"
+  status: "pending" | "running" | "done" | "failed" | "skipped" | "cancelled"
   sessionId?: string
   /** Set on a `running` agent step while its session is still being
    *  spawned (adapter boot — `npx`, ACP handshake, …), so `workflow_status`

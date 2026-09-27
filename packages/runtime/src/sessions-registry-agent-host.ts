@@ -135,6 +135,18 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
        *  `WorkflowRunner` show the step as `spawning` until
        *  `onSessionLabeled` attaches its session. */
       onSpawnStarted?: (stepKey: string) => void
+      /**
+       * The run's cancel signal — checked right after a spawn registers its
+       * session (see {@link spawn}'s post-registration check). `cancel()`'s
+       * own {@link releaseAll} call only reaches sessions already in
+       * {@link unreleased} at the moment it runs; a spawn that was still
+       * mid-flight (adapter boot in progress) when `cancel()` fired would
+       * otherwise register into `unreleased` a moment too late and never get
+       * killed, running to completion unobserved. Checking `signal.aborted`
+       * again right after registration closes that race. Omitted ⇒ a spawn
+       * racing a cancel is never caught here (only `releaseAll` applies).
+       */
+      signal?: AbortSignal
     },
   ) {}
 
@@ -227,6 +239,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       }
       this.unreleased.add(result.descriptor.id)
       this.recordStepSession(opts, result.descriptor.id)
+      await this.killIfCancelledDuringSpawn(result.descriptor.id)
       // `harness.tools` has no generic per-spawn allowlist mechanism this
       // runtime can drive — `run-workflow.ts` already records
       // `toolsApplied: false` on the step's own output; this is the
@@ -326,6 +339,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
     })
     this.unreleased.add(desc.id)
     this.recordStepSession(opts, desc.id)
+    await this.killIfCancelledDuringSpawn(desc.id)
     if (harnessWarnings.length > 0) {
       this.sessionEvents.emit({
         type: "session:harness-warning",
@@ -358,6 +372,23 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       this.sessionsByLabel.set(opts.stepKey, sessionId)
       this.opts?.onSessionLabeled?.(opts.stepKey, sessionId)
     }
+  }
+
+  /**
+   * Closes the race between `cancel()`'s `releaseAll()` (which only reaches
+   * sessions already in {@link unreleased} at the moment it runs) and a
+   * spawn that was still mid-flight (adapter boot) when the cancel fired:
+   * `releaseAll` misses it, `unreleased.add` for THIS session then runs a
+   * moment too late, and — without this — the session runs to completion
+   * entirely unobserved by the cancel. Called right after a spawn registers
+   * its session; re-checks the signal and, if the run was cancelled in the
+   * meantime, kills the session immediately and throws, so the step doesn't
+   * go on to prompt a session that's already dead.
+   */
+  private async killIfCancelledDuringSpawn(sessionId: string): Promise<void> {
+    if (!this.opts?.signal?.aborted) return
+    await this.releaseSession(sessionId)
+    throw new Error(`run cancelled while session '${sessionId}' was spawning — killed immediately`)
   }
 
   /**

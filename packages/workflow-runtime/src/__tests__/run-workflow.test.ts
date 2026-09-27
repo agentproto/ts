@@ -15,6 +15,7 @@ import { defineDriver, implementTool } from "@agentproto/driver"
 import {
   runWorkflow,
   WorkflowSuspendedError,
+  WorkflowCancelledError,
   type RuntimeWorkflow,
   type StepCache,
 } from "../index.js"
@@ -2848,9 +2849,71 @@ describe("runWorkflow — finally", () => {
     }
     const { output } = await runWorkflow({ workflow: wf, agents: host, signal: ac.signal })
     expect(host.spawn).toHaveBeenCalledTimes(2)
-    expect(output).toMatchObject({ succeeded: 2, failed: 3 })
-    expect((output as { results: Array<{ error?: string }> }).results[2]!.error).toBe("step 's': run cancelled — not spawning")
+    // Items 0-1 already ran (their `sendPromptAndWait` had already resolved);
+    // items 2-4 never started at all — never dispatched, never spawned — so
+    // they're `skipped`, not `rejected` (a step that was never dispatched
+    // didn't "fail", it never ran).
+    expect(output).toMatchObject({ succeeded: 2, failed: 0, skipped: 3 })
+    expect((output as { results: Array<{ status?: string; reason?: string }> }).results[2]).toMatchObject({
+      status: "skipped",
+      reason: "run-cancelled: run cancelled",
+    })
     expect(log).toEqual(['cleanup:"wt-1"'])
+  })
+
+  it("a non-tolerant map cancelled mid-fanout throws instead of reporting success over an incomplete results array", async () => {
+    const ac = new AbortController()
+    const host = fakeHost({
+      spawn: vi.fn(async () => "sess_fake"),
+      sendPromptAndWait: vi.fn(async (_sid: string, prompt: string) => {
+        if (prompt === "1") ac.abort()
+      }),
+    })
+    const wf: RuntimeWorkflow = {
+      id: "map-cancel-throws",
+      steps: [
+        {
+          kind: "map",
+          id: "fan",
+          over: () => [0, 1, 2],
+          body: () => ({ kind: "agent", id: "s", adapter: "mock", prompt: (b) => String(b.item) }),
+        },
+        { kind: "transform", id: "after", compute: () => "should never run" },
+      ],
+    }
+    const err = await runWorkflow({ workflow: wf, agents: host, signal: ac.signal }).then(
+      () => {
+        throw new Error("expected runWorkflow to reject")
+      },
+      (e: unknown) => e,
+    )
+    expect(err).toBeInstanceOf(WorkflowCancelledError)
+    expect((err as WorkflowCancelledError).stepId).toBe("fan")
+    // Items 0-1 already spawned; item 2 never did — the map stopped
+    // dispatching the moment it observed the cancel, same as any other step.
+    expect(host.spawn).toHaveBeenCalledTimes(2)
+  })
+
+  it("no further step (a plain top-level one, not just a map item) is dispatched once the run is cancelled", async () => {
+    const ac = new AbortController()
+    const started: string[] = []
+    const wf: RuntimeWorkflow = {
+      id: "no-dispatch-after-cancel",
+      steps: [
+        { kind: "transform", id: "before", compute: () => "ok" },
+        { kind: "transform", id: "after", compute: () => "should never run" },
+      ],
+    }
+    ac.abort()
+    await expect(
+      runWorkflow({
+        workflow: wf,
+        signal: ac.signal,
+        onStepStart: (id) => started.push(id),
+      }),
+    ).rejects.toThrow(WorkflowCancelledError)
+    // Not even the FIRST step starts once the run is already cancelled.
+    expect(started).toEqual([])
   })
 
 })
