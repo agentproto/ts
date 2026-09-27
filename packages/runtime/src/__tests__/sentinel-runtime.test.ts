@@ -16,7 +16,7 @@ import { join } from "node:path"
 import { createSentinelStore, type Sentinel, type SentinelStore } from "../sentinel-store.js"
 import { createSentinelRuntime, type SentinelRuntimeRegistry } from "../sentinel-runtime.js"
 import { createFakeSentinelProvider, makeFakeEvent } from "../sentinel-providers/fake.js"
-import type { SentinelProviderHandle } from "../sentinel-providers/types.js"
+import { singleMatch, type SentinelMatchClause, type SentinelProviderHandle } from "../sentinel-providers/types.js"
 import { SessionNotAliveError, type SendMessageResult } from "../sessions.js"
 import type { SessionMessage } from "../session-message.js"
 
@@ -52,16 +52,18 @@ function newSentinel(
     sessionId?: string
     urgency?: "fyi" | "next-turn" | "steer" | "interrupt"
     subject?: string
+    match?: SentinelMatchClause[]
     until?: Sentinel["spec"]["until"]
     provider?: string
   },
 ): Sentinel {
   const subject = overrides?.subject ?? "fake:widget-1"
+  const match = overrides?.match ?? singleMatch(subject)
   return store.create({
     provider: overrides?.provider ?? "fake",
-    handle: { provider: overrides?.provider ?? "fake", remoteId: subject, cursor: "0" },
+    handle: { provider: overrides?.provider ?? "fake", remoteId: match[0]?.subject ?? subject, cursor: "0" },
     spec: {
-      subject,
+      match,
       until: overrides?.until ?? { kind: "never" },
       target: {
         kind: "session",
@@ -147,6 +149,48 @@ describe("SentinelRuntime", () => {
     expect(registry.calls).toHaveLength(1)
   })
 
+  it("a delivery that throws is NOT marked seen — the next tick redelivers it exactly once", async () => {
+    const store = createSentinelStore({ persist: false })
+    const provider = createFakeSentinelProvider()
+    const sentinel = newSentinel(store)
+    const event = makeFakeEvent({ id: "evt_1", type: "fake.widget.created", subject: "fake:widget-1" })
+    provider.emit(event)
+
+    let attempt = 0
+    const registry = stubRegistry(async () => {
+      attempt++
+      if (attempt === 1) throw new Error("transient failure")
+      return okResult()
+    })
+    const runtime = createSentinelRuntime({
+      store,
+      registry,
+      resolveProvider: resolverFor(provider),
+      isSessionAlive: () => true,
+      restartSession: async id => id,
+    })
+
+    // First tick: sendMessage throws an unexpected error. The batch halts
+    // without acking/advancing the cursor, and the event must NOT be marked
+    // seen — otherwise the redelivery below would be silently swallowed by
+    // dedup instead of landing.
+    await runtime.pollOnce()
+    expect(registry.calls).toHaveLength(1)
+    expect(store.get(sentinel.id)?.eventCount).toBe(0)
+    expect(store.isSeen(sentinel.id, "evt_1")).toBe(false)
+
+    // Second tick: the provider still serves the same event (cursor never
+    // advanced) — it must be redelivered, exactly once, not skipped.
+    await runtime.pollOnce()
+    expect(registry.calls).toHaveLength(2)
+    expect(store.get(sentinel.id)?.eventCount).toBe(1)
+    expect(store.isSeen(sentinel.id, "evt_1")).toBe(true)
+
+    // A third tick has nothing new to redeliver — the event is now seen.
+    await runtime.pollOnce()
+    expect(registry.calls).toHaveLength(2)
+  })
+
   it("dedup survives a store reload (daemon restart)", () => {
     const dir = mkdtempSync(join(tmpdir(), "sentinel-store-restart-"))
     const filePath = join(dir, "sentinels.json")
@@ -193,6 +237,48 @@ describe("SentinelRuntime", () => {
     expect(registry.calls).toHaveLength(2)
   })
 
+  it("until:subject_terminal with multiple match clauses expires only once ALL clause subjects have seen a terminal event", async () => {
+    const store = createSentinelStore({ persist: false })
+    const provider = createFakeSentinelProvider()
+    const sentinel = store.create({
+      provider: provider.slug,
+      handle: { provider: provider.slug, remoteId: "fake:widget-1", cursor: "0" },
+      spec: {
+        match: [{ subject: "fake:widget-1" }, { subject: "fake:widget-2" }],
+        until: { kind: "subject_terminal" },
+        target: { kind: "session", sessionId: "sess_1", urgency: "next-turn" },
+      },
+    })
+    provider.emit(makeFakeEvent({ id: "evt_1", type: "fake.done", subject: "fake:widget-1", terminal: true }))
+
+    const registry = stubRegistry(async () => okResult())
+    const runtime = createSentinelRuntime({
+      store,
+      registry,
+      resolveProvider: resolverFor(provider),
+      isSessionAlive: () => true,
+      restartSession: async id => id,
+    })
+
+    await runtime.pollOnce()
+    // Only ONE of the two clause subjects has terminated so far — still
+    // active, progress recorded on the record.
+    expect(store.get(sentinel.id)?.status).toBe("active")
+    expect(store.get(sentinel.id)?.terminalSubjects).toEqual(["fake:widget-1"])
+    expect(provider.canceled.size).toBe(0)
+
+    provider.emit(makeFakeEvent({ id: "evt_2", type: "fake.done", subject: "fake:widget-2", terminal: true }))
+    await runtime.pollOnce()
+    // Now BOTH clause subjects have terminated — expires and cancels.
+    expect(store.get(sentinel.id)?.status).toBe("expired")
+    expect([...(store.get(sentinel.id)?.terminalSubjects ?? [])].sort()).toEqual([
+      "fake:widget-1",
+      "fake:widget-2",
+    ])
+    expect(provider.canceled.has("fake:widget-1")).toBe(true)
+    expect(registry.calls).toHaveLength(2)
+  })
+
   it("re-attaches every pollable sentinel to its provider on start()", async () => {
     const store = createSentinelStore({ persist: false })
     const provider = createFakeSentinelProvider()
@@ -201,7 +287,7 @@ describe("SentinelRuntime", () => {
       provider: provider.slug,
       handle: { provider: provider.slug, remoteId: "fake:widget-9", cursor: "5" },
       spec: {
-        subject: "fake:widget-9",
+        match: singleMatch("fake:widget-9"),
         until: { kind: "never" },
         target: { kind: "session", sessionId: "sess_9", urgency: "fyi" },
       },
@@ -232,7 +318,7 @@ describe("SentinelRuntime", () => {
       provider: "does-not-exist",
       handle: { provider: "does-not-exist", cursor: "0" },
       spec: {
-        subject: "fake:widget-9",
+        match: singleMatch("fake:widget-9"),
         until: { kind: "never" },
         target: { kind: "session", sessionId: "sess_9", urgency: "fyi" },
       },

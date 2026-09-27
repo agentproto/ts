@@ -18,7 +18,7 @@ import { resolve, dirname, join } from "node:path"
 import { homedir } from "node:os"
 import { readFileSync, mkdirSync, writeFileSync, chmodSync, renameSync, promises as fsp } from "node:fs"
 import { ulid } from "./app-state.js"
-import type { SentinelHandle, SentinelSpec } from "./sentinel-providers/types.js"
+import type { SentinelHandle, SentinelSpec, SentinelTarget } from "./sentinel-providers/types.js"
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -42,6 +42,14 @@ export interface Sentinel {
    *  dedup window (design §2: "last 1000 event ids, dedup across providers/
    *  restarts"). */
   seen: string[]
+  /** For `spec.until.kind === "subject_terminal"` with more than one
+   *  `spec.match` clause: the clause subjects that have already seen a
+   *  terminal event. The sentinel only expires once every clause's subject
+   *  is present here. Stays `[]` for other `until` kinds (unused) and for a
+   *  single-clause spec is immediately superseded by expiry on that one
+   *  clause's terminal event — same behaviour as before multi-clause
+   *  `match` existed. */
+  terminalSubjects: string[]
 }
 
 export interface SentinelCreateInput {
@@ -52,8 +60,24 @@ export interface SentinelCreateInput {
 }
 
 export type SentinelUpdatePatch = Partial<
-  Pick<Sentinel, "spec" | "provider" | "handle" | "status" | "lastEventTs" | "eventCount" | "lastError">
+  Pick<
+    Sentinel,
+    "spec" | "provider" | "handle" | "status" | "lastEventTs" | "eventCount" | "lastError" | "terminalSubjects"
+  >
 >
+
+/** Thrown by `SentinelStore.create` for a target kind that has no delivery
+ *  implementation yet (`routine`, `webhook`) — the shape is frozen in
+ *  {@link SentinelTarget} so callers/tools can reference the full union, but
+ *  creation is refused until a later step wires actual delivery. */
+export class SentinelTargetNotImplementedError extends Error {
+  readonly kind: string
+  constructor(kind: string) {
+    super(`sentinel target kind "${kind}" is not implemented yet (not_implemented)`)
+    this.name = "SentinelTargetNotImplementedError"
+    this.kind = kind
+  }
+}
 
 export interface SentinelStore {
   get(id: string): Sentinel | undefined
@@ -64,8 +88,20 @@ export interface SentinelStore {
   /** true = first time this event id has been seen for this sentinel
    *  (persisted dedup, bounded). Returns true (treat-as-unseen) for an
    *  unknown sentinel id — never blocks a caller who already validated the
-   *  sentinel exists moments earlier. */
+   *  sentinel exists moments earlier.
+   *
+   *  Callers that need at-least-once delivery MUST check {@link isSeen}
+   *  BEFORE attempting delivery and only call `markSeen` AFTER delivery is
+   *  handled (delivered or parked) — calling this before delivery and
+   *  bailing out on a thrown error would dedupe the event out of every
+   *  future redelivery attempt, silently losing it. */
   markSeen(id: string, eventId: string): boolean
+  /** Read-only check: true = this event id is already in the persisted
+   *  `seen` window for this sentinel. Never mutates — use this to decide
+   *  whether an event needs (re)delivery, and only call `markSeen` once
+   *  delivery has actually been handled. Returns false for an unknown
+   *  sentinel id (nothing recorded, so nothing has been "seen"). */
+  isSeen(id: string, eventId: string): boolean
   /** Synchronous flush for shutdown paths. */
   flushSync(): void
 }
@@ -87,6 +123,14 @@ const PERSIST_DEBOUNCE_MS = 1_500
 const SEEN_CAP = 1_000
 
 let tmpSeq = 0
+
+/** Only `kind: "session"` has a delivery implementation today — see
+ *  {@link SentinelTargetNotImplementedError}. */
+function assertTargetImplemented(target: SentinelTarget): void {
+  if (target.kind !== "session") {
+    throw new SentinelTargetNotImplementedError(target.kind)
+  }
+}
 
 // ── Factory ───────────────────────────────────────────────────────────
 
@@ -202,6 +246,7 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
     },
 
     create(input: SentinelCreateInput): Sentinel {
+      assertTargetImplemented(input.spec.target)
       const id = `sen_${ulid(nowMs())}`
       const sentinel: Sentinel = {
         id,
@@ -212,6 +257,7 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
         createdTs: nowMs(),
         eventCount: 0,
         seen: [],
+        terminalSubjects: [],
       }
       sentinels.set(id, sentinel)
       schedulePersist()
@@ -231,6 +277,12 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
       const existed = sentinels.delete(id)
       if (existed) schedulePersist()
       return existed
+    },
+
+    isSeen(id: string, eventId: string): boolean {
+      const sentinel = sentinels.get(id)
+      if (!sentinel) return false
+      return sentinel.seen.includes(eventId)
     },
 
     markSeen(id: string, eventId: string): boolean {
