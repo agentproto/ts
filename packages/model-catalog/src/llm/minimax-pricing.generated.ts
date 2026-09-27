@@ -1,5 +1,5 @@
 // GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-minimax.mjs
-// (ids: committed PascalCase native list from catalog.ts, pricing: OpenRouter /v1/models (minimax/*), synced 2026-08-31T13:21:02.179Z)
+// (ids: committed PascalCase native list from catalog.ts, pricing: OpenRouter /v1/models (minimax/*), synced 2026-09-27T19:36:16.363Z)
 // Normalization: lowercase → prepend "minimax-" when missing
 // Known native ids: MiniMax-M2, M2-her, MiniMax-M2.1, MiniMax-M2.5, MiniMax-M2.7
 //
@@ -11,8 +11,8 @@
 
 export const MINIMAX_GENERATED_PRICING = {
   "M2-her": { inputPer1M: 0.3, outputPer1M: 1.2, cacheReadMultiplier: 0.1, vendor: "minimax", provider: "minimax" },
-  "MiniMax-M2": { inputPer1M: 0.255, outputPer1M: 1.02, vendor: "minimax", provider: "minimax" },
+  "MiniMax-M2": { inputPer1M: 0.3, outputPer1M: 1.2, vendor: "minimax", provider: "minimax" },
   "MiniMax-M2.1": { inputPer1M: 0.3, outputPer1M: 1.2, cacheReadMultiplier: 0.1, vendor: "minimax", provider: "minimax" },
   "MiniMax-M2.5": { inputPer1M: 0.27, outputPer1M: 1.08, cacheReadMultiplier: 0.1, vendor: "minimax", provider: "minimax" },
-  "MiniMax-M2.7": { inputPer1M: 0.3, outputPer1M: 1.2, cacheReadMultiplier: 0.2, vendor: "minimax", provider: "minimax" },
+  "MiniMax-M2.7": { inputPer1M: 0.21, outputPer1M: 0.84, cacheReadMultiplier: 0.2, vendor: "minimax", provider: "minimax" },
 } as const

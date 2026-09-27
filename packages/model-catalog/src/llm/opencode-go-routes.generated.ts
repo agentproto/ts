@@ -189,6 +189,13 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     vendor: "meituan",
     provider: "opencode-go",
   },
+  "opencode-go/longcat-2.5-preview-free": {
+    inputPer1M: 0,
+    outputPer1M: 0,
+    addedAt: "2026-09-25",
+    vendor: "meituan",
+    provider: "opencode-go",
+  },
   "opencode-go/mimo-v2-omni": {
     inputPer1M: 0.4,
     outputPer1M: 2,
