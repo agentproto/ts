@@ -495,7 +495,10 @@ describe("readSettingsBundle / writeSettingsBundle", () => {
   // TypeError.
   it("rejects a file with a version but a missing/malformed required field", async () => {
     const file = join(dir, "malformed-bundle.json")
-    await writeFile(file, JSON.stringify({ version: 1, adapters: [], authProfiles: "not-an-array" }))
+    await writeFile(
+      file,
+      JSON.stringify({ version: 1, adapters: [], harnessPresets: [], authProfiles: "not-an-array" }),
+    )
     await expect(readSettingsBundle(file)).rejects.toThrow(/missing or malformed "authProfiles"/)
   })
 })
