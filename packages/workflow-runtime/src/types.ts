@@ -586,10 +586,12 @@ export type RunStep =
  *  resolvable at the workflow level and is left literal). */
 export interface OutputsFileContract {
   path: string
-  /** Missing when the run's steps finish ⇒ `failed { code: "missing-artifact"
-   *  }` (AIP-58 §4/§10). Absent or `false` ⇒ advisory only — a `console.warn`,
-   *  the run still succeeds (mirrors `StepRecord.hint`'s "advisory, never
-   *  load-bearing" posture). */
+  /** `true`: missing when the run's steps finish ⇒ `failed { code:
+   *  "missing-artifact" }` (AIP-58 §4/§10). Absent (the default) or `false`
+   *  ⇒ advisory only — a `console.warn`, the run still succeeds (mirrors
+   *  `StepRecord.hint`'s "advisory, never load-bearing" posture; matches the
+   *  AIP-58 V3 vector's own note: "with required absent or false, the same
+   *  scenario would be a warning"). */
   required?: boolean
   contentType?: string
 }

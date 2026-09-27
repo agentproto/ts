@@ -1288,7 +1288,11 @@ function interpolateFileContractPath(path: string, workflowId: string, runId: st
  * replay interplay" section for why that's a deliberate, documented limit —
  * route a step's file-shaped output through an explicit `kind:"artifact"`
  * step instead, if it needs to survive a cache hit in a later run);
- * absent + `required !== false` ⇒ throws {@link MissingArtifactError}.
+ * absent + `required === true` ⇒ throws {@link MissingArtifactError}. Absent
+ * OR `false` (the default — `required` is opt-in, matching AIP-16
+ * `IO.schema.json`'s `fileContractEntry.required` doc and the V3 vector's own
+ * note: "with required absent or false, the same scenario would be a
+ * warning") ⇒ advisory only, a `console.warn`, the run still succeeds.
  */
 async function checkOutputsFiles(
   outputsFiles: RuntimeWorkflow["outputsFiles"],
@@ -1305,7 +1309,7 @@ async function checkOutputsFiles(
     try {
       out = await copyIntoArtifacts(lastStepId ?? workflowId, key, abs, ctx.workspace, ctx.artifactsDir, contract.contentType)
     } catch {
-      if (contract.required !== false) {
+      if (contract.required === true) {
         throw new MissingArtifactError(key, lastStepId)
       }
       console.warn(

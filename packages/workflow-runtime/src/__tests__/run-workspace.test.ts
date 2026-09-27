@@ -269,6 +269,32 @@ describe("AIP-58 §4/§10 — declarative outputsFiles (missing-artifact)", () =
     }
   })
 
+  it("required OMITTED entirely (not just false) missing ⇒ still only warns — required is opt-in, not opt-out", async () => {
+    const root = tmp("aip58-outputsfiles-omitted-")
+    const workspace = join(root, "scratch")
+    const artifactsDir = join(root, "artifacts")
+    mkdirSync(workspace, { recursive: true })
+
+    try {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+      const onArtifact = vi.fn()
+      const workflow: RuntimeWorkflow = {
+        id: "wf",
+        steps: [{ kind: "transform", id: "draft", compute: () => "ok" }],
+        // No `required` key at all — the V3 vector's own note: "with
+        // required absent or false, the same scenario would be a warning".
+        outputsFiles: { pdf: { path: "export.pdf" } },
+      }
+      const { output } = await runWorkflow({ workflow, workspace, artifactsDir, onArtifact })
+      expect(output).toBe("ok")
+      expect(onArtifact).not.toHaveBeenCalled()
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("pdf"))
+      warn.mockRestore()
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it("<runId> token interpolation resolves against RunWorkflowArgs.runId", async () => {
     const root = tmp("aip58-outputsfiles-token-")
     const workspace = join(root, "scratch")

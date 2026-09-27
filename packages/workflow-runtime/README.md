@@ -366,10 +366,10 @@ outputsFiles:
 ```
 
 Present ⇒ copied into `artifactsDir` + reported, same as a `kind: "artifact"`
-step. Absent with `required: true` (or omitted — the default) ⇒ the run
-throws `MissingArtifactError` (`code: "missing-artifact"`, attributed to the
-last step that ran). Absent with `required: false` ⇒ a `console.warn`, the
-run still succeeds.
+step. Absent with `required: true` ⇒ the run throws `MissingArtifactError`
+(`code: "missing-artifact"`, attributed to the last step that ran). Absent
+with `required: false` **or omitted (the default — `required` is opt-in)**
+⇒ a `console.warn`, the run still succeeds.
 
 **This is where a shared/fixed destination stops racing.** The
 Motivation this AIP exists for — two concurrent runs of the same workflow
