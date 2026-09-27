@@ -336,11 +336,8 @@ export function registerAgentTools(
         "Spawn a long-running agent CLI (claude-code, hermes, …) on the host. " +
       "The session stays alive across multiple turns — call `agent_prompt` " +
       "to continue the conversation. Returns the session id + initial descriptor. " +
-      "When `workspaceSlug` is set, resolves the cwd via " +
-      "`~/.agentproto/workspaces.json`; otherwise pass `cwd` explicitly or " +
-      "fall back to the active workspace. " +
-      "If you have shell access, `agentproto sessions start ...` is the CLI " +
-      "equivalent. (No shell? Keep using this tool.)",
+      "`agentproto sessions start ...` is the CLI equivalent, if you have shell access. " +
+      'Details on any field: tool_help {name:"agent_start", topic:"<field>"}',
       inputSchema: agentStartInputShape,
       // Session-chat widget: rendering agent_start's result auto-mounts the
       // session-chat launcher for the new session (ext-apps
