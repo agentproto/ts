@@ -395,6 +395,21 @@ describe("app_* verbs", () => {
     expect(apps[0].runs).toEqual([])
   })
 
+  it("app_list flags dirMissing:true once the install's dir is gone, and omits it while present", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const { client } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+
+    const before = parseToolJson(await client.callTool({ name: "app_list", arguments: {} }))
+    expect(before[0].dirMissing).toBeUndefined()
+
+    await rm(dir, { recursive: true, force: true })
+
+    const after = parseToolJson(await client.callTool({ name: "app_list", arguments: {} }))
+    expect(after).toHaveLength(1)
+    expect(after[0].dirMissing).toBe(true)
+  })
+
   it("app_run spawns a session per agent (stubbed spawn), app_status reports it, app_stop kills it", async () => {
     await buildFixtureApp(dir, { toolId: "known_tool" })
     const { client, registry, startSession } = await setup()
@@ -432,6 +447,27 @@ describe("app_* verbs", () => {
     expect(stopped.killed).toEqual([sessionId])
     expect(stopped.status).toBe("cancelled")
     expect(registry.get(sessionId)?.status).toBe("killed")
+  })
+
+  it("app_status flags dirMissing:true once the run's app dir is gone", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const { client } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+    const ran = parseToolJson(
+      await client.callTool({ name: "app_run", arguments: { appId: "@test/fixture-app" } }),
+    )
+
+    const before = parseToolJson(
+      await client.callTool({ name: "app_status", arguments: { appRunId: ran.appRunId } }),
+    )
+    expect(before.dirMissing).toBeUndefined()
+
+    await rm(dir, { recursive: true, force: true })
+
+    const after = parseToolJson(
+      await client.callTool({ name: "app_status", arguments: { appRunId: ran.appRunId } }),
+    )
+    expect(after.dirMissing).toBe(true)
   })
 
   it("app_install persists ui with an absolute path, plus description/artifacts/dev", async () => {

@@ -19,6 +19,7 @@
  * step at a time.
  */
 
+import { existsSync } from "node:fs"
 import { readFile, readdir, stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import { isAbsolute, join, relative, resolve } from "node:path"
@@ -805,6 +806,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
   const compactAppListItem = (
     app: InstalledApp & {
       dataDir: string
+      dirMissing: boolean
       runs: {
         appRunId: string
         status: string
@@ -823,6 +825,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     description: app.description,
     dir: app.dir,
     dataDir: app.dataDir,
+    ...(app.dirMissing ? { dirMissing: true } : {}),
     agents: app.agents.map(a => a.id),
     workflows: app.workflows.map(w => w.id),
     requires: app.requires,
@@ -832,7 +835,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
   const appListSchema = z.object({})
   type AppListInput = z.infer<typeof appListSchema>
 
-  registerBuiltinTool<AppListInput, (InstalledApp & { dataDir: string })[]>(server, {
+  registerBuiltinTool<AppListInput, (InstalledApp & { dataDir: string; dirMissing: boolean })[]>(server, {
     id: "app_list",
     description: "List installed apps, each with a summary of its app_run history. " +
       "COMPACT BY DEFAULT: each entry keeps appId/name/version/description/" +
@@ -840,13 +843,16 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       "summary (appRunId/status/timing/adapter/harness/model/session " +
       "count); pass `full: true` (or `compact: false`) for the complete " +
       "installed record including ui/artifact/skill/dev details and the " +
-      "full agent/workflow refs.",
+      "full agent/workflow refs. `dirMissing: true` flags an install whose " +
+      "`dir` no longer exists on disk (moved worktree, deleted checkout) — " +
+      "its ui panel (if any) serves an error page until reinstalled.",
     inputSchema: appListSchema,
     handler: async () => {
       const runs = appRegistry.listRuns()
       return appRegistry.listApps().map(app => ({
         ...app,
         dataDir: appDataDir(app),
+        dirMissing: !existsSync(app.dir),
         runs: runs
           .filter(r => r.appId === app.appId)
           .map(r => ({
@@ -1177,7 +1183,8 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       "however it was started). COMPACT BY DEFAULT (AIP-58 §9): sessions carry a " +
       "slim {agentId, sessionId, status} instead of the full session descriptor, " +
       "and each workflowRuns entry omits step outputs / gate-report bodies — pass " +
-      "`full: true` for everything.",
+      "`full: true` for everything. `dirMissing: true` is present when the app's " +
+      "installed `dir` no longer exists on disk.",
     { appRunId: z.string(), full: z.boolean().optional().describe("Include full session descriptors and workflow-run step outputs. Defaults to false (compact).") },
     async input => {
       const run = appRegistry.getRun(input.appRunId)
@@ -1251,6 +1258,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
         workflowRuns,
         ...(awaitingApprovals.length > 0 ? { awaitingApprovals } : {}),
         ...(state !== undefined ? { state } : {}),
+        ...(app && !existsSync(app.dir) ? { dirMissing: true } : {}),
       })
     },
   )

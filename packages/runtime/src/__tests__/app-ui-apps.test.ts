@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { runInNewContext } from "node:vm"
@@ -112,7 +112,7 @@ describe("makeInstalledAppUiApps", () => {
     warnSpy.mockRestore()
   })
 
-  it("skips an app whose ui.path can't be read, with a console.warn", async () => {
+  it("still mounts the panel (with a readable HTML error page, no console.warn) when ui.path can't be read", async () => {
     appRegistry.upsertApp({
       appId: "@test/unreadable-app",
       dir,
@@ -126,10 +126,58 @@ describe("makeInstalledAppUiApps", () => {
     const cache = createUiHtmlCache()
     const apps = await makeInstalledAppUiApps(appRegistry, cache, new Set())
 
-    expect(apps).toHaveLength(0)
-    expect(warnSpy).toHaveBeenCalledTimes(1)
-    expect(warnSpy.mock.calls[0]![0]).toContain("unreadable-app")
+    expect(apps).toHaveLength(1)
+    expect(apps[0]!.html).not.toMatch(/^\s*\{"error"/)
+    expect(apps[0]!.html).toContain("unreadable-app")
+    expect(warnSpy).not.toHaveBeenCalled()
     warnSpy.mockRestore()
+  })
+
+  it("mounts an error page (no console.warn) for a removed app dir, naming the dir", async () => {
+    const goneDir = join(dir, "gone-app")
+    await mkdir(goneDir, { recursive: true })
+    appRegistry.upsertApp({
+      appId: "@test/gone-dir-app",
+      dir: goneDir,
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: { path: join(goneDir, "index.html") },
+    })
+    await rm(goneDir, { recursive: true, force: true })
+
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const cache = createUiHtmlCache()
+    const apps = await makeInstalledAppUiApps(appRegistry, cache, new Set())
+
+    expect(apps).toHaveLength(1)
+    expect(apps[0]!.html).toContain(goneDir)
+    expect(apps[0]!.html).toContain("no longer exists")
+    expect(warnSpy).not.toHaveBeenCalled()
+    warnSpy.mockRestore()
+  })
+
+  it("mounts a self-refreshing 'building' placeholder while a slow ui.build is still running", async () => {
+    const uiPath = join(dir, "index.html")
+    appRegistry.upsertApp({
+      appId: "@test/slow-build-app",
+      dir,
+      name: "Slow Build App",
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: {
+        path: uiPath,
+        build: { command: `sleep 0.6 && printf '<html>slow</html>' > "${uiPath}"` },
+      },
+    })
+
+    const cache = createUiHtmlCache()
+    const apps = await makeInstalledAppUiApps(appRegistry, cache, new Set())
+
+    expect(apps).toHaveLength(1)
+    expect(apps[0]!.html).toContain('data-agentproto-ui-status="building"')
+    expect(apps[0]!.html).toContain("Slow Build App")
   })
 
   it("builds a missing ui.path bundle (per ui.build) before mounting the panel", async () => {
@@ -154,7 +202,7 @@ describe("makeInstalledAppUiApps", () => {
     expect(apps[0]!.html).toContain("Built Panel")
   })
 
-  it("still skips (with a console.warn) when the bundle is missing and there's no ui.build", async () => {
+  it("still mounts a readable error page (no console.warn) when the bundle is missing and there's no ui.build", async () => {
     appRegistry.upsertApp({
       appId: "@test/still-unreadable-app",
       dir,
@@ -168,9 +216,10 @@ describe("makeInstalledAppUiApps", () => {
     const cache = createUiHtmlCache()
     const apps = await makeInstalledAppUiApps(appRegistry, cache, new Set())
 
-    expect(apps).toHaveLength(0)
-    expect(warnSpy).toHaveBeenCalledTimes(1)
-    expect(warnSpy.mock.calls[0]![0]).toContain("still-unreadable-app")
+    expect(apps).toHaveLength(1)
+    expect(apps[0]!.html).toContain("still-does-not-exist.html")
+    expect(apps[0]!.html).not.toMatch(/^\s*\{"error"/)
+    expect(warnSpy).not.toHaveBeenCalled()
     warnSpy.mockRestore()
   })
 

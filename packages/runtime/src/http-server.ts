@@ -60,7 +60,8 @@ import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import type { AppRegistry } from "./app-registry.js"
 import { performAppToolCall, performBuiltinPanelToolCall, type AppToolCallDeps } from "./app-tools.js"
 import { injectStandaloneAppBridge } from "./app-ui-apps.js"
-import { ensureAppUiBuilt } from "./app-ui-build.js"
+import { resolveAppUiBuildState } from "./app-ui-build.js"
+import { renderAppUiBuildingHtml, renderAppUiErrorHtml } from "./app-ui-placeholder.js"
 import {
   IMMUTABLE_CACHE_CONTROL,
   appUiContentType,
@@ -125,7 +126,7 @@ import {
 } from "./usage-rollup-service.js"
 import { readConversation } from "./conversation-read.js"
 import { sessionEventsPath } from "./transcript-writer.js"
-import { createReadStream } from "node:fs"
+import { createReadStream, existsSync } from "node:fs"
 import { createInterface } from "node:readline"
 import { createTranscriptToUiMapper } from "./chat-stream.js"
 import {
@@ -8103,15 +8104,51 @@ async function handleAppUiPage(
     res.end(JSON.stringify({ error: `app "${appId}" is not installed or has no UI.` }))
     return
   }
+  // A removed app dir (the install record is stale — see `dirMissing` on
+  // `app_list`/`app_status`) is checked before ever touching `ui.path`, both
+  // because `stat`ing a path under a gone directory is a redundant ENOENT
+  // and because the message this way names the ACTUAL problem (the dir),
+  // not the file inside it.
+  if (app && !existsSync(app.dir)) {
+    const html = renderAppUiErrorHtml({
+      appName: app.name ?? appId,
+      message: `The app's directory "${app.dir}" no longer exists.`,
+      detailPath: app.dir,
+      fix: "Reinstall with `app_install <dir>`, or remove the stale install.",
+    })
+    res.writeHead(500, { "content-type": "text/html; charset=utf-8" })
+    res.end(html)
+    return
+  }
   // Build the bundle first when it's missing or stale and the app declares
   // `ui.build` — single-flight per `uiPath`, so N concurrent first requests
-  // trigger exactly one build. An app with no `ui.build` (or a build that
-  // fails) gets a clear 500 naming the path/command, never a bare 404.
+  // join the SAME build. Never blocks this request on the full build though
+  // (resolveAppUiBuildState only waits a short fast-path window): a build
+  // still running gets a self-refreshing "building" page instead of a
+  // request that hangs for the build's whole duration. An app with no
+  // `ui.build` (or a build that fails) gets a readable HTML error page
+  // naming the path/command, never raw JSON in a page body.
   if (app?.ui) {
-    const ensured = await ensureAppUiBuilt({ dir: app.dir, uiPath: app.ui.path, build: app.ui.build })
-    if (!ensured.ok) {
-      res.writeHead(500, { "content-type": "application/json" })
-      res.end(JSON.stringify({ error: `app "${appId}": ${ensured.error}` }))
+    const state = await resolveAppUiBuildState({ dir: app.dir, uiPath: app.ui.path, build: app.ui.build })
+    if (state.kind === "building") {
+      const html = renderAppUiBuildingHtml({
+        appName: app.name ?? appId,
+        startedAt: state.startedAt,
+        logTail: state.logTail,
+      })
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" })
+      res.end(html)
+      return
+    }
+    if (state.kind === "error") {
+      const html = renderAppUiErrorHtml({
+        appName: app.name ?? appId,
+        message: state.message,
+        detailPath: state.logPath,
+        logTail: state.logTail,
+      })
+      res.writeHead(500, { "content-type": "text/html; charset=utf-8" })
+      res.end(html)
       return
     }
   }
@@ -8146,12 +8183,14 @@ async function handleAppUiPage(
       )
     }
   } catch (err) {
-    res.writeHead(500, { "content-type": "application/json" })
-    res.end(
-      JSON.stringify({
-        error: `could not read app "${appId}"'s ui html at "${app?.ui?.path}": ${err instanceof Error ? err.message : String(err)}`,
-      }),
-    )
+    const html = renderAppUiErrorHtml({
+      appName: app?.name ?? appId,
+      message: `Could not read this app's ui html at "${app?.ui?.path}".`,
+      detailPath: app?.ui?.path,
+      logTail: err instanceof Error ? err.message : String(err),
+    })
+    res.writeHead(500, { "content-type": "text/html; charset=utf-8" })
+    res.end(html)
     return
   }
   // `no-cache` + the strong etag: every open revalidates, an unchanged

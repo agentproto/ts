@@ -28,6 +28,7 @@ export default createTsupConfig({
     "tool-envelope": "src/tool-envelope.ts",
     "app-ui-delivery": "src/app-ui-delivery.ts",
     "app-ui-build": "src/app-ui-build.ts",
+    "app-ui-placeholder": "src/app-ui-placeholder.ts",
   },
   format: ["esm"],
   splitting: false,

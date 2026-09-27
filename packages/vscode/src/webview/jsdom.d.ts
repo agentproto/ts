@@ -79,6 +79,9 @@ declare module "jsdom" {
     /** The focused element — the book's pause card focuses the composer. */
     readonly activeElement: DomElement | null
     dispatchEvent(event: DomEvent): boolean
+    querySelector(selectors: string): DomElement | null
+    /** appUiPlaceholder.dom.test.ts reads this for the rendered page text. */
+    readonly body: DomElement
   }
 
   export interface DomMutationObserverInit {
