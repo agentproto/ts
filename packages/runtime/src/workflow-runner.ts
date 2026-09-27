@@ -1890,6 +1890,9 @@ export function createWorkflowRunner(opts: {
             sessionToRun.set(sessionId, { runId, stepId, host: agents })
             if (attachStepSession(state.run, stepId, sessionId)) persist()
           },
+          onSpawnStarted: stepKey => {
+            if (markStepSpawning(state.run, stepKey)) persist()
+          },
           ...(opts.resolveSandboxProvider
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }
             : {}),
