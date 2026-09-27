@@ -1131,8 +1131,16 @@ export async function applyBranchGc(plan: BranchGcPlan, options: ApplyBranchGcOp
       if (retry.exitCode === 0) for (const e of batch) results.set(e.ref, { ok: true })
       else failedAgain.push(...batch)
     }
-    let retried = failedAgain.length > 0
+    const retried = failedAgain.length > 0
+    // The retry push is non-atomic too: it may have deleted some refs before
+    // failing, so prune first and judge each ref by its tracking ref again —
+    // gone ⇒ ok, only a ref still present gets its own push.
+    if (retried) await git(repoRoot, ["fetch", "--prune", "--quiet", remote])
     for (const e of failedAgain) {
+      if ((await git(repoRoot, ["rev-parse", "--verify", "--quiet", e.ref])).exitCode !== 0) {
+        results.set(e.ref, { ok: true })
+        continue
+      }
       const one = await git(repoRoot, ["push", "--no-verify", remote, "--delete", e.name])
       results.set(e.ref, one.exitCode === 0 ? { ok: true } : fail(one))
     }
