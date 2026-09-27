@@ -2500,6 +2500,66 @@ export function registerSessionTools(
     },
   )
 
+  // ── session_bg_task_tail ─────────────────────────────────────────
+  // A currently-running background task's info plus a tail of its output —
+  // the MCP twin of `GET /sessions/:id/background-tasks/:taskId/tail`. See
+  // `SessionsRegistry.readBackgroundTaskTail`'s doc for the taskId-only
+  // (never a raw path) scoping that keeps this from becoming an arbitrary-
+  // file-read tool. `taskId` comes from `SessionDescriptor.backgroundTasks`
+  // (`session_list` / `session_get`'s `backgroundTasks` field).
+  server.tool(
+    "session_bg_task_tail",
+    "Peek at a currently-RUNNING background task's output (a backgrounded " +
+      "Bash command, a monitor, ...) — the last lines of its output file, " +
+      "plus the task's own info (kind, description, status). Only works " +
+      "while the task is still tracked as running on " +
+      "`SessionDescriptor.backgroundTasks`; a settled task is dropped from " +
+      "that list moments after it reports terminal status, so this errors " +
+      "for one that already finished — use the `session:bg-task` event's " +
+      "own `summary` for that instead. `taskId` comes from " +
+      "`backgroundTasks` on `session_list` / `session_get`.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Session id or name — from `session_list`."),
+      taskId: z
+        .string()
+        .min(1)
+        .describe("The running task's id, from `SessionDescriptor.backgroundTasks`."),
+    },
+    async input => {
+      const desc = registry.findByIdOrName(input.sessionId)
+      if (!desc) {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ error: `no session "${input.sessionId}" found` }) },
+          ],
+          isError: true,
+        }
+      }
+      const result = registry.readBackgroundTaskTail(desc.id, input.taskId)
+      if (!result) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: `no running background task "${input.taskId}" on session "${desc.id}"`,
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      return {
+        content: [
+          { type: "text", text: JSON.stringify({ ok: true, sessionId: desc.id, ...result }, null, 2) },
+        ],
+      }
+    },
+  )
+
   // ── worktree_status ─────────────────────────────────────────────
   // Read-only view of the repo's linked worktrees + their live PR
   // integration + the sessions that opened them. The heavy join is
