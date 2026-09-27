@@ -573,6 +573,7 @@ import { RemoteController } from "./remote-controller.js"
 import { registerRemoteTools } from "./remote-tools.js"
 import { registerPairingTools } from "./pairing-tools.js"
 import type { PairingRegistry } from "./pairing-registry.js"
+import type { HostRegistry } from "./host-registry.js"
 import { createDeviceRegistry } from "./device-registry.js"
 import { registerDeviceTools } from "./device-tools.js"
 import { registerDaemonHealthTools } from "./daemon-health-tools.js"
@@ -644,6 +645,15 @@ export {
   type CreateOfferInput,
 } from "./pairing-registry.js"
 export { registerPairingTools, type RegisterPairingToolsOptions } from "./pairing-tools.js"
+export {
+  createHostRegistry,
+  HOSTS_VERSION,
+  type HostRegistry,
+  type HostRegistryDeps,
+  type HostRecord,
+  type ForwardHttpRequest,
+  type ForwardHttpResponse,
+} from "./host-registry.js"
 export {
   createDeviceRegistry,
   type Device,
@@ -1079,6 +1089,17 @@ export interface CreateGatewayOptions {
    * returns) so the injected `serve` can capture the finished gateway.
    */
   pairingRegistry?: PairingRegistry
+  /**
+   * Optional HOST registry (see `createHostRegistry`, DEVICES-PLAN PR-C) —
+   * the reverse-pairing "client" half of pair/v2, living daemon-side. When
+   * wired alongside `pairingRegistry`, the gateway layers registered hosts
+   * into `device_list`/`GET /devices`, and enables the `device_add` MCP tool
+   * plus `POST /devices/add` + `POST /devices/:id/exec`. Unlike
+   * `pairingRegistry`, this registry keeps no standing connections — every
+   * `add`/`forwardHttp` dials fresh — so there is nothing for the gateway to
+   * autoconnect or tear down on shutdown.
+   */
+  hostRegistry?: HostRegistry
   /** Enable the local LLM Endpoint proxy sidecar (route registration,
    *  MCP tools, child-process lifecycle). Default false — the endpoint is
    *  an opt-in feature; when off, the `llm-endpoint` custom route is not
@@ -1161,6 +1182,10 @@ export interface GatewayHandle {
    *  `CreateGatewayOptions.pairingRegistry`. Undefined otherwise. Exposed so
    *  the CLI can `startAutoconnect()` after boot and `shutdown()` it. */
   pairing?: PairingRegistry
+  /** HOST registry, when one was wired via `CreateGatewayOptions.hostRegistry`
+   *  (DEVICES-PLAN PR-C). Undefined otherwise. No autoconnect/shutdown to
+   *  call on it — see that option's doc comment. */
+  hosts?: HostRegistry
   /** Per-boot bearer token required on mutating /sessions/* routes
    *  + WS PTY upgrades. Exposed so an embedding host (e.g. the CLI
    *  shell that hosts the gateway in-process) can pass it to child
@@ -1753,10 +1778,12 @@ export async function createGateway(
         // installed app bundles, or one whose app bundles neither) and
         // `mergeAppAndDaemonToolRegistry` merges them over the daemon
         // passthrough registry — an app tool id wins over a daemon tool of
-        // the same id, logged here.
-        compileWorkflow: async handle => {
+        // the same id, logged here. F40: `workflowMdPath` (this run's own
+        // WORKFLOW.md) takes priority over the `app_install` registry — see
+        // `resolveAppToolsForWorkflow`'s doc.
+        compileWorkflow: async (handle, workflowMdPath) => {
           const daemonRegistry = createDaemonToolRegistry(handle, dispatchTool)
-          const appRegistryEntry = await resolveAppToolsForWorkflow(appRegistry, handle.id)
+          const appRegistryEntry = await resolveAppToolsForWorkflow(appRegistry, handle.id, workflowMdPath)
           const merged = mergeAppAndDaemonToolRegistry(daemonRegistry, appRegistryEntry, {
             onOverride: toolId =>
               console.warn(
@@ -2167,10 +2194,13 @@ export async function createGateway(
     // remote tools above; the registry singleton lives on the gateway.
     if (opts.pairingRegistry) {
       registerPairingTools(server, { registry: opts.pairingRegistry })
-      // Device view over the same registry (DEVICES-PLAN PR-A) — role/kind/
-      // online layered on top of pair_list's records. device_revoke has the
-      // exact effect of pair_revoke; both surfaces stay live.
-      registerDeviceTools(server, { registry: createDeviceRegistry(opts.pairingRegistry) })
+      // Device view over the same registry (DEVICES-PLAN PR-A), plus any
+      // registered hosts (PR-C) — role/kind/online layered on top of
+      // pair_list's records. device_revoke has the exact effect of
+      // pair_revoke; both surfaces stay live.
+      registerDeviceTools(server, {
+        registry: createDeviceRegistry(opts.pairingRegistry, opts.hostRegistry),
+      })
     }
     // Agent-session orchestration — operators (Mastra agents in
     // cloud Guilde, Claude Code as a sub-agent, …) drive long-running
@@ -2593,6 +2623,7 @@ export async function createGateway(
     ...(llmEndpoint ? { llmEndpoint } : {}),
     remote,
     ...(opts.pairingRegistry ? { pairings: opts.pairingRegistry } : {}),
+    ...(opts.hostRegistry ? { hostRegistry: opts.hostRegistry } : {}),
     sessionEvents,
     eventRing,
     supervisor,
@@ -2886,6 +2917,7 @@ export async function createGateway(
     sessions,
     tunnels,
     ...(opts.pairingRegistry ? { pairing: opts.pairingRegistry } : {}),
+    ...(opts.hostRegistry ? { hosts: opts.hostRegistry } : {}),
     token,
     mintOrchestratorScope: scopeTokens.mint,
     async resumeSessionsOnBoot(passOpts) {
@@ -2951,6 +2983,9 @@ export async function createGateway(
       if (opts.pairingRegistry) {
         await opts.pairingRegistry.shutdown().catch(() => {})
       }
+      // hostRegistry needs no teardown here: unlike pairingRegistry it keeps
+      // no standing rendezvous connections — every add()/forwardHttp() dials
+      // fresh and closes itself, so there is nothing to shut down.
       // Close upstream MCP clients (their stdio children would
       // otherwise leak the same way).
       await mcpProxy.closeAll()

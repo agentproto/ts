@@ -44,7 +44,8 @@ export interface RunWorkspacePaths {
   /** `<root>/inputs/` — reserved for staged `inputsFiles` (not yet used). */
   readonly inputsDir: string
   /** `<root>/artifacts/` — one file per `Run.artifacts[]` entry, named by
-   *  its (sanitized) key. */
+   *  its own declared file's basename (F42) — always read an entry's own
+   *  `path` back rather than deriving a filename from its key. */
   readonly artifactsDir: string
   /** `<root>/scratch/` — the AIP-16 fsRoot; `$run.workspace` / `{{run.workspace}}`. */
   readonly scratch: string
@@ -70,15 +71,4 @@ export function ensureRunWorkspace(runsRoot: string, runId: string): RunWorkspac
   mkdirSync(paths.artifactsDir, { recursive: true })
   mkdirSync(paths.scratch, { recursive: true })
   return paths
-}
-
-/** Filesystem-safe filename for an artifact key — MUST exactly match
- *  `@agentproto/workflow-runtime`'s own `sanitizeArtifactKey` (run-workflow.ts),
- *  since both sides name the same file under `artifactsDir` independently
- *  (the runtime writes it; this package reads it back for `publish`/
- *  `readArtifact`). Duplicated rather than shared across the package
- *  boundary for one two-line pure function. */
-export function sanitizeArtifactKey(key: string): string {
-  const cleaned = key.replace(/[^a-zA-Z0-9._-]/g, "_")
-  return cleaned.length > 0 ? cleaned : "artifact"
 }

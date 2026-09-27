@@ -1,4 +1,4 @@
-// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-anthropic.mjs (data: CONTEXT_WINDOWS fallback (ANTHROPIC_API_KEY unavailable) + OpenRouter pricing, synced 2026-08-31T13:29:13.694Z)
+// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-anthropic.mjs (data: CONTEXT_WINDOWS fallback (ANTHROPIC_API_KEY fetch failed) + OpenRouter pricing, synced 2026-09-27T19:36:15.989Z)
 
 export const ANTHROPIC_GENERATED_PRICING = {
   "claude-fable-5": { inputPer1M: 10, outputPer1M: 50, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, vendor: "anthropic", provider: "anthropic" },

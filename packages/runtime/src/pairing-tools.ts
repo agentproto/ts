@@ -66,11 +66,20 @@ export function registerPairingTools(
             "(wss://rdv.agentproto.sh/v1) when neither is set. The response's " +
             "`rendezvousIsHostedDefault` flags when that fallback applied.",
         ),
+      host: z
+        .boolean()
+        .optional()
+        .describe(
+          "Mint a HOST-scoped offer: the accepting side may register this " +
+            "daemon as a driveable host (`devices add`), not just remote-control " +
+            "it. Default false (plain remote-control offer).",
+        ),
     },
-    async ({ ttlMinutes, rendezvous }) => {
+    async ({ ttlMinutes, rendezvous, host }) => {
       const offer = await registry.createOffer({
         ...(ttlMinutes ? { ttlMs: ttlMinutes * 60_000 } : {}),
         ...(rendezvous ? { rendezvousUrl: rendezvous } : {}),
+        ...(host ? { scope: "host" } : {}),
       })
       return text({
         url: offer.url,
@@ -78,6 +87,7 @@ export function registerPairingTools(
         rendezvous: offer.rendezvousUrl,
         rendezvousIsHostedDefault: offer.rendezvousIsHostedDefault,
         expiresAt: new Date(offer.exp * 1000).toISOString(),
+        ...(offer.scope ? { scope: offer.scope } : {}),
       })
     },
   )
@@ -97,6 +107,7 @@ export function registerPairingTools(
           lastSeen: p.lastSeen,
           rendezvous: p.rendezvousUrl,
           ...(p.legacy ? { legacy: true } : {}),
+          ...(p.scope ? { scope: p.scope } : {}),
         })),
       })
     },

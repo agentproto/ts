@@ -55,6 +55,7 @@ import type { TunnelRegistry } from "./tunnel-registry.js"
 import type { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import type { RemoteController, EnableInput } from "./remote-controller.js"
 import type { PairingRegistry } from "./pairing-registry.js"
+import type { HostRegistry } from "./host-registry.js"
 import { createDeviceRegistry } from "./device-registry.js"
 import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
@@ -925,6 +926,13 @@ export interface RuntimeHttpServerOptions {
    *  MCP `pair_offer` / `pair_list` / `pair_revoke` tools call. Without it the
    *  routes 404. */
   pairings?: PairingRegistry
+  /** Optional — when wired alongside `pairings`, layers registered HOSTS
+   *  (reverse pairing, DEVICES-PLAN PR-C) into `/devices` and enables
+   *  `POST /devices/add` + `POST /devices/:id/exec`. Same service the MCP
+   *  `device_add` tool calls. Without it those two routes 404 (or, for
+   *  `/devices/add`, 400 with a clear "no host registry wired" message) and
+   *  `/devices` shows only client devices, exactly like before PR-C. */
+  hostRegistry?: HostRegistry
   /** Optional — the session lifecycle event bus. When wired alongside
    *  `sessions`, `eventRing`, enables `GET /sessions/:id/wait` (a blocking
    *  long-poll that resolves when the session fires a lifecycle event).
@@ -3456,10 +3464,12 @@ export async function startHttpServer(
           if (handled) return
         }
 
-        // Device routes — role/kind/online layered on the same registry
-        // /pairings drives (DEVICES-PLAN PR-A). GET /devices, PATCH
+        // Device routes — role/kind/online layered on the same registries
+        // /pairings and (PR-C) hostRegistry drive. GET /devices, PATCH
         // /devices/:fingerprint (rename), DELETE /devices/:fingerprint
-        // (revoke — same effect as DELETE /pairings/:fingerprint). Same
+        // (revoke — same effect as DELETE /pairings/:fingerprint for a
+        // client device), POST /devices/add (register a host), POST
+        // /devices/:id/exec (forward one HTTP request to a host). Same
         // token gate as /pairings: mutating routes take the per-boot token;
         // GET is read-only.
         if (opts.pairings && path.startsWith("/devices")) {
@@ -3470,7 +3480,7 @@ export async function startHttpServer(
               return
             }
           }
-          const handled = await handleDevices(req, res, path, opts.pairings)
+          const handled = await handleDevices(req, res, path, opts.pairings, opts.hostRegistry)
           if (handled) return
         }
 
@@ -7600,10 +7610,12 @@ async function handlePairings(
     const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
     const ttlMinutes = typeof b.ttlMinutes === "number" ? b.ttlMinutes : undefined
     const rendezvous = typeof b.rendezvous === "string" ? b.rendezvous : undefined
+    const host = b.host === true
     try {
       const offer = await registry.createOffer({
         ...(ttlMinutes ? { ttlMs: ttlMinutes * 60_000 } : {}),
         ...(rendezvous ? { rendezvousUrl: rendezvous } : {}),
+        ...(host ? { scope: "host" } : {}),
       })
       json(200, {
         url: offer.url,
@@ -7611,6 +7623,7 @@ async function handlePairings(
         rendezvous: offer.rendezvousUrl,
         rendezvousIsHostedDefault: offer.rendezvousIsHostedDefault,
         expiresAt: new Date(offer.exp * 1000).toISOString(),
+        ...(offer.scope ? { scope: offer.scope } : {}),
       })
     } catch (err) {
       json(400, {
@@ -7629,6 +7642,7 @@ async function handlePairings(
       lastSeen: p.lastSeen,
       rendezvous: p.rendezvousUrl,
       ...(p.legacy ? { legacy: true } : {}),
+      ...(p.scope ? { scope: p.scope } : {}),
     }))
     json(200, { pairings })
     return true
@@ -7657,29 +7671,104 @@ async function handlePairings(
 }
 
 /**
- * /devices routes — a device view over the same pairing registry
- * (DEVICES-PLAN PR-A):
+ * /devices routes — a device view over the pairing registry, plus (PR-C)
+ * registered hosts:
  *   GET    /devices               → { devices: [...] } (role/kind/online on
- *                                    top of each pairing record)
+ *                                    top of each pairing/host record)
  *   PATCH  /devices/:fingerprint   → { name } rename
  *   DELETE /devices/:fingerprint   → revoke by fingerprint (or name)
+ *   POST   /devices/add            → { offerUrl, name? } register a host from
+ *                                    a `--host`-scoped offer URL → { ok,
+ *                                    fingerprint, name, rendezvousUrl } or
+ *                                    400 `{error,message}` (mirrors POST
+ *                                    /pairings/offer's error shape). 404s
+ *                                    with a "no host registry wired" message
+ *                                    when `hosts` wasn't passed.
+ *   POST   /devices/:id/exec       → { method?, path, headers?, bodyBase64? }
+ *                                    forward one HTTP request to a
+ *                                    registered host over its E2E channel →
+ *                                    { status, headers, bodyBase64 } (the
+ *                                    body is arbitrary bytes, so it's
+ *                                    base64-encoded on the wire both ways).
+ *                                    404s the same way as /devices/add when
+ *                                    no host registry is wired.
  *
- * Mirrors the MCP `device_list` / `device_rename` / `device_revoke` tools.
+ * Mirrors the MCP `device_list` / `device_rename` / `device_revoke` /
+ * `device_add` tools.
  */
 async function handleDevices(
   req: IncomingMessage,
   res: ServerResponse,
   path: string,
   registry: PairingRegistry,
+  hostRegistry?: HostRegistry,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
     res.end(JSON.stringify(body))
   }
-  const devices = createDeviceRegistry(registry)
+  const devices = createDeviceRegistry(registry, hostRegistry)
 
   if (path === "/devices" && req.method === "GET") {
     json(200, { devices: await devices.list() })
+    return true
+  }
+
+  if (path === "/devices/add" && req.method === "POST") {
+    if (!hostRegistry) {
+      json(404, { error: "no_host_registry", message: "this daemon has no host registry wired" })
+      return true
+    }
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const offerUrl = typeof b.offerUrl === "string" ? b.offerUrl : ""
+    const name = typeof b.name === "string" && b.name.trim() ? b.name.trim() : undefined
+    if (!offerUrl) {
+      json(400, { error: "bad_request", message: 'body must include a non-empty "offerUrl"' })
+      return true
+    }
+    try {
+      const result = await hostRegistry.add(offerUrl, name)
+      json(200, { ok: true, ...result })
+    } catch (err) {
+      json(400, { error: "add_failed", message: err instanceof Error ? err.message : String(err) })
+    }
+    return true
+  }
+
+  const execMatch = path.match(/^\/devices\/([^/]+)\/exec$/)
+  if (execMatch && req.method === "POST") {
+    if (!hostRegistry) {
+      json(404, { error: "no_host_registry", message: "this daemon has no host registry wired" })
+      return true
+    }
+    const target = decodeURIComponent(execMatch[1] ?? "")
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const reqPath = typeof b.path === "string" ? b.path : ""
+    if (!reqPath) {
+      json(400, { error: "bad_request", message: 'body must include a non-empty "path"' })
+      return true
+    }
+    const method = typeof b.method === "string" && b.method ? b.method : "GET"
+    const headers =
+      b.headers && typeof b.headers === "object" ? (b.headers as Record<string, string>) : undefined
+    const bodyBase64 = typeof b.bodyBase64 === "string" ? b.bodyBase64 : undefined
+    try {
+      const res2 = await hostRegistry.forwardHttp(target, {
+        method,
+        path: reqPath,
+        ...(headers ? { headers } : {}),
+        ...(bodyBase64 ? { body: new Uint8Array(Buffer.from(bodyBase64, "base64")) } : {}),
+      })
+      json(200, {
+        status: res2.status,
+        headers: res2.headers,
+        bodyBase64: Buffer.from(res2.body).toString("base64"),
+      })
+    } catch (err) {
+      json(502, { error: "exec_failed", message: err instanceof Error ? err.message : String(err) })
+    }
     return true
   }
 

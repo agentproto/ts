@@ -11,7 +11,7 @@ import { runTool } from "@agentproto/driver"
 import { createHash } from "node:crypto"
 import { execFile } from "node:child_process"
 import { copyFile, cp, mkdir, readFile, stat, writeFile } from "node:fs/promises"
-import { dirname, isAbsolute, join, relative, resolve } from "node:path"
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { z } from "zod"
 import { resolveRefString } from "./ref-string.js"
 import type {
@@ -177,6 +177,13 @@ interface RunCtx {
   /** Sessions spawned in the current release scope (the run, or one
    *  `map`/`pipeline` item) — released when that scope settles. */
   readonly spawned?: string[]
+  /** F42 — on-disk artifact filenames already claimed this run, under
+   *  `artifactsDir` (one flat namespace, no subdirectories). One Set per
+   *  top-level run, shared by every nested `subworkflow` call (they write
+   *  into the SAME `artifactsDir` — see the `"subworkflow"` case in
+   *  `execStep`), so a parent's and a child's artifacts can't silently
+   *  collide either. See {@link reserveArtifactDestName}. */
+  readonly usedArtifactNames?: Set<string>
 }
 
 /** Open a release scope for one fan-out item: sessions its steps spawn are
@@ -1269,6 +1276,7 @@ async function execStepBody(
         runGateCommand: ctx.runGateCommand,
         onGateReport: ctx.onGateReport,
         spawned: ctx.spawned,
+        usedArtifactNames: ctx.usedArtifactNames,
       })
       return child.output
     }
@@ -1297,16 +1305,46 @@ async function execStepBody(
   }
 }
 
-/** Filesystem-safe filename for an artifact key — also used to name its
- *  copy under `artifactsDir` (one flat file per key, no subdirectories). */
-function sanitizeArtifactKey(key: string): string {
-  const cleaned = key.replace(/[^a-zA-Z0-9._-]/g, "_")
+/** Filesystem-safe filename — sanitizes either a bare artifact key (the
+ *  empty-basename fallback) or a declared file's basename. */
+function sanitizeArtifactFilename(name: string): string {
+  const cleaned = name.replace(/[^a-zA-Z0-9._-]/g, "_")
   return cleaned.length > 0 ? cleaned : "artifact"
 }
 
+/**
+ * F42 — an artifact's on-disk name under `artifactsDir` is the declared
+ * source file's own basename (sanitized), not its key: `outputsFiles.pdf:
+ * {path: transcript.pdf}` lands at `artifacts/transcript.pdf`, keeping the
+ * extension, instead of P4's extension-less `artifacts/pdf`.
+ *
+ * Two keys whose source files share a basename (e.g. two different steps
+ * each producing their own `report.json`) would otherwise silently
+ * overwrite one another in the flat `artifactsDir` namespace — disambiguated
+ * deterministically by prefixing a colliding name with its own sanitized
+ * key (and a counter, in the practically-unreachable case that ALSO
+ * collides), so the same workflow produces the same names run to run.
+ * `usedNames` is one Set per top-level run, shared across subworkflows —
+ * see `RunCtx.usedArtifactNames`.
+ */
+function reserveArtifactDestName(rawPath: string, key: string, usedNames: Set<string>): string {
+  const base = sanitizeArtifactFilename(basename(rawPath))
+  let candidate = base
+  if (usedNames.has(candidate)) {
+    const keyPart = sanitizeArtifactFilename(key)
+    candidate = `${keyPart}-${base}`
+    for (let n = 2; usedNames.has(candidate); n++) {
+      candidate = `${keyPart}-${n}-${base}`
+    }
+  }
+  usedNames.add(candidate)
+  return candidate
+}
+
 /** Read + hash the file at `rawPath` (resolved against `workspace`, which
- *  MUST contain it) and copy it into `artifactsDir/<sanitized key>`. Shared
- *  by {@link execArtifactStep}'s fresh path and {@link checkOutputsFiles}. */
+ *  MUST contain it) and copy it into `artifactsDir/<basename, disambiguated>`
+ *  (see {@link reserveArtifactDestName}). Shared by {@link execArtifactStep}'s
+ *  fresh path and {@link checkOutputsFiles}. */
 async function copyIntoArtifacts(
   stepId: string,
   key: string,
@@ -1314,6 +1352,7 @@ async function copyIntoArtifacts(
   workspace: string,
   artifactsDir: string,
   contentType: string | undefined,
+  usedNames: Set<string>,
 ): Promise<ArtifactEntry> {
   const abs = isAbsolute(rawPath) ? resolve(rawPath) : resolve(workspace, rawPath)
   const rel = relative(workspace, abs)
@@ -1322,7 +1361,7 @@ async function copyIntoArtifacts(
   }
   const buf = await readFile(abs)
   const sha256 = createHash("sha256").update(buf).digest("hex")
-  const destName = sanitizeArtifactKey(key)
+  const destName = reserveArtifactDestName(rawPath, key, usedNames)
   await mkdir(artifactsDir, { recursive: true })
   await writeFile(join(artifactsDir, destName), buf)
   return {
@@ -1355,7 +1394,12 @@ async function execArtifactStep(step: ArtifactStep, ctx: RunCtx, b: Bindings): P
     const entry = await ctx.cache!.get(journalKey!)
     if (entry !== undefined && entry.resolvedInputHash === hash) {
       const out = entry.output as ArtifactEntry
-      const destName = sanitizeArtifactKey(key)
+      // F42: reuse the EXACT name recorded at cache-write time — it may have
+      // been collision-disambiguated (see `reserveArtifactDestName`), so
+      // recomputing it fresh from `key` here could pick a different name
+      // than what THIS run's other artifacts already claimed.
+      const destName = out.path.slice("artifacts/".length)
+      ctx.usedArtifactNames?.add(destName)
       const destAbs = join(artifactsDir, destName)
       const srcAbs = join(entry.artifactsDirAtCache ?? artifactsDir, destName)
       if (srcAbs !== destAbs) {
@@ -1378,7 +1422,7 @@ async function execArtifactStep(step: ArtifactStep, ctx: RunCtx, b: Bindings): P
   }
 
   ctx.onStepStart?.(step.id)
-  const out = await copyIntoArtifacts(step.id, key, rawPath, workspace, artifactsDir, contentType)
+  const out = await copyIntoArtifacts(step.id, key, rawPath, workspace, artifactsDir, contentType, ctx.usedArtifactNames!)
   if (cacheOn) {
     await ctx.cache!.set(journalKey!, { output: out, resolvedInputHash: hash!, artifactsDirAtCache: artifactsDir })
   }
@@ -1423,7 +1467,7 @@ async function checkOutputsFiles(
     const abs = isAbsolute(rawPath) ? rawPath : resolve(ctx.workspace, rawPath)
     let out: ArtifactEntry
     try {
-      out = await copyIntoArtifacts(lastStepId ?? workflowId, key, abs, ctx.workspace, ctx.artifactsDir, contract.contentType)
+      out = await copyIntoArtifacts(lastStepId ?? workflowId, key, abs, ctx.workspace, ctx.artifactsDir, contract.contentType, ctx.usedArtifactNames!)
     } catch {
       if (contract.required === true) {
         throw new MissingArtifactError(key, lastStepId)
@@ -1463,14 +1507,21 @@ async function runFinally(steps: readonly RunStep[], ctx: RunCtx, bodyFailed: bo
 async function runWorkflowInner(
   workflow: RuntimeWorkflow,
   input: unknown,
-  hooks: Pick<RunCtx, "approve" | "resume" | "onInputRequired" | "signal" | "agents" | "cwd" | "workspaceSlug" | "workspace" | "artifactsDir" | "runId" | "onArtifact" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete" | "onStepSkipped" | "onStepFailed" | "runGateCommand" | "onGateReport" | "spawned">,
+  hooks: Pick<RunCtx, "approve" | "resume" | "onInputRequired" | "signal" | "agents" | "cwd" | "workspaceSlug" | "workspace" | "artifactsDir" | "runId" | "onArtifact" | "cache" | "cacheKey" | "onStepStart" | "onStepComplete" | "onStepSkipped" | "onStepFailed" | "runGateCommand" | "onGateReport" | "spawned" | "usedArtifactNames">,
   maxTotalCostUsd?: number,
 ): Promise<WorkflowRunResult> {
   const state: RunState = { input, steps: {}, costBySession: new Map(), maxTotalCostUsd, cachedHits: new Set() }
   // A subworkflow shares its parent's release scope (a parent step may
-  // `sessionRef` a child's session); only the outermost run owns one.
+  // `sessionRef` a child's session); only the outermost run owns one — same
+  // test (`hooks.spawned === undefined`) doubles as "own a fresh
+  // `usedArtifactNames`", since a subworkflow always passes both down
+  // together (see the `"subworkflow"` case above).
   const ownsScope = hooks.spawned === undefined
-  const ctx: RunCtx = { state, ...hooks, ...(ownsScope ? { spawned: [] } : {}) }
+  const ctx: RunCtx = {
+    state,
+    ...hooks,
+    ...(ownsScope ? { spawned: [], usedArtifactNames: new Set<string>() } : {}),
+  }
   let lastId: string | undefined
   let bodyFailed = false
   try {

@@ -76,6 +76,7 @@ import {
 import {
   createGateway,
   createPairingRegistry,
+  createHostRegistry,
   createReconnectLogGate,
   sweepStaleRuntimeMetas,
   sweepStaleDaemonRegistry,
@@ -93,6 +94,7 @@ import {
   type GatewayHandle,
   type PairingRegistry,
   type PairingChannelHandle,
+  type HostRegistry,
 } from "@agentproto/runtime"
 import { CatalogProviderSchema, type CatalogProvider } from "@agentproto/model-catalog"
 import { loadOrCreateIdentity } from "@agentproto/secrets/identity"
@@ -662,6 +664,20 @@ export async function runServe(args: readonly string[]): Promise<number> {
     log: line => process.stderr.write(`${color.dim}${line}${color.reset}\n`),
   })
 
+  // ── HOST registry (reverse pairing, DEVICES-PLAN PR-C) ──
+  // The "client" half of pair/v2, living daemon-side: `devices add` registers
+  // another daemon as a driveable host, `devices status`/`exec` dial it on
+  // demand. Unlike pairingRegistry this keeps no standing connections — reuses
+  // the same `daemonDialRendezvous` dialer, but there's no `serve`/identity to
+  // inject (a host registration carries no persistent identity of its own on
+  // this side; `clientName` is just a self-reported label, same as `pair
+  // accept`).
+  const hostRegistry: HostRegistry = createHostRegistry({
+    hostsPath: joinPath(agentprotoHome, "hosts.json"),
+    dial: daemonDialRendezvous,
+    log: line => process.stderr.write(`${color.dim}${line}${color.reset}\n`),
+  })
+
   // ── idempotent boot ──
   // Empty specs + noop buildAgent. The playground gateway script
   // still has its own setup for spec authoring + Mastra heartbeat.
@@ -688,6 +704,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
     boot: () =>
       createGateway({
         pairingRegistry,
+        hostRegistry,
         workspace: opts.workspace,
         port: opts.port,
         bind: opts.bind,
