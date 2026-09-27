@@ -283,6 +283,53 @@ describe("continueInterruptedSessions against a rehydrated registry", () => {
     reg.shutdown()
   })
 
+  // Live repro (build 7e38e0aa): three rows failed with a bare
+  // `enqueuePrompt: session "…" is not alive (status=killed)` — the lazy resume
+  // DID run (resumeAttempts went 0 → 1) but the adapter respawn failed, and the
+  // outcome hid that behind the post-resume admission error.
+  it("a send whose in-place resume fails says so, not just 'not alive'", async () => {
+    writeSessions(persistPath, [{ id: "refused", busy: true }])
+    const reg = createSessionsRegistry({
+      persistPath,
+      resumeAgent: makeResumer([], { refuse: ["refused"] }),
+    })
+    const res = await continueInterruptedSessions({ registry: reg, mode: "manual", dryRun: false })
+    const [out] = res.sessions
+    expect(out?.status).toBe("failed")
+    expect(out?.status === "failed" ? out.error : "").toMatch(/in-place resume failed/)
+    expect(reg.get("refused")?.resumeAttempts).toBe(1)
+    reg.shutdown()
+  })
+
+  // Live repro: the three failed rows' worktrees had been removed, so the
+  // respawn hit `cwd '…' does not exist`. That is knowable up front — the dry
+  // run must not call such a row eligible, and the send must not burn a
+  // resume attempt on it.
+  it("a row whose cwd no longer exists is skipped (cwd-missing) in dry run and send alike", async () => {
+    writeSessions(persistPath, [
+      { id: "gone", busy: true, cwd: join(tmp, "removed-worktree") },
+      { id: "here", busy: true, cwd: tmp },
+    ])
+    const log: string[] = []
+    const reg = createSessionsRegistry({ persistPath, resumeAgent: makeResumer(log) })
+
+    const dry = await continueInterruptedSessions({ registry: reg, mode: "manual" })
+    expect(dry.sessions).toEqual([
+      { id: "here", status: "eligible" },
+      { id: "gone", status: "skipped", reason: "cwd-missing" },
+    ])
+
+    const sent = await continueInterruptedSessions({ registry: reg, mode: "manual", dryRun: false })
+    await settle()
+    expect(sent.sessions.map(s => [s.id, s.status])).toEqual([
+      ["here", "sent"],
+      ["gone", "skipped"],
+    ])
+    expect(log).not.toContain("resume:gone")
+    expect(reg.get("gone")?.resumeAttempts).toBeUndefined()
+    reg.shutdown()
+  })
+
   it("session_list's compact projection carries interrupted:true (and omits it otherwise)", () => {
     seedMixed()
     const reg = createSessionsRegistry({ persistPath, resumeAgent: makeResumer([]) })
@@ -412,6 +459,59 @@ describe("continue-on-boot: no-loop rules", () => {
     expect(cont).toMatchObject({ eligible: 0, sent: 0, skipped: 1 })
     expect(log).toEqual([])
     reg.shutdown()
+  })
+
+  // Live repro (sess_c6a0f2d1 & co.): rows cut off by a restart the day
+  // before, persisted terminal by a daemon predating `interruptedAtBoot`, were
+  // stamped with the CURRENT boot on the first boot that read them — and so
+  // reported eligible, and auto-continued by the boot pass.
+  it("an interrupted row with no boot marker on disk (older restart / pre-feature) is stale, not this boot's", async () => {
+    writeSessions(persistPath, [
+      {
+        id: "legacy",
+        status: "killed",
+        killedMidTurn: true,
+        endedReason: "daemon-restart",
+        endedAt: "2026-09-26T23:56:39.628Z",
+      },
+    ])
+    const log: string[] = []
+    const reg = createSessionsRegistry({ persistPath, resumeAgent: makeResumer(log) })
+    expect(reg.get("legacy")?.interrupted).toBe(true)
+    expect(reg.get("legacy")?.interruptedAtBoot).not.toBe(reg.bootId)
+
+    const dry = await continueInterruptedSessions({ registry: reg, mode: "manual" })
+    expect(dry.sessions).toEqual([{ id: "legacy", status: "skipped", reason: "stale-interrupt" }])
+    const boot = await runContinueOnBootPass({ registry: reg, concurrency: 4 })
+    expect(boot).toMatchObject({ eligible: 0, sent: 0, skipped: 1 })
+    expect(log).toEqual([])
+    reg.shutdown()
+
+    // ...and it stays stale on every later boot too.
+    const next = createSessionsRegistry({ persistPath, resumeAgent: makeResumer(log) })
+    expect(continueSkipReason(next.get("legacy")!, next.bootId, "manual")).toBe("stale-interrupt")
+    next.shutdown()
+  })
+
+  it("a row the graceful shutdown cut off mid-turn IS the next boot's (only that boot's)", async () => {
+    writeSessions(persistPath, [{ id: "s", busy: false }])
+    const log: string[] = []
+    const resumer = makeResumer(log, { hang: ["s"] })
+    const first = createSessionsRegistry({ persistPath, resumeAgent: resumer })
+    // Put a turn in flight, then shut down gracefully under it.
+    await first.enqueuePrompt("s", "work")
+    await settle(10)
+    first.shutdown()
+
+    const second = createSessionsRegistry({ persistPath, resumeAgent: resumer })
+    expect(second.get("s")?.interruptedAtBoot).toBe(second.bootId)
+    const dry = await continueInterruptedSessions({ registry: second, mode: "manual" })
+    expect(dry.sessions).toEqual([{ id: "s", status: "eligible" }])
+    // Nobody picks it up; the NEXT boot must see it as stale.
+    second.shutdown()
+    const third = createSessionsRegistry({ persistPath, resumeAgent: resumer })
+    expect(continueSkipReason(third.get("s")!, third.bootId, "manual")).toBe("stale-interrupt")
+    third.shutdown()
   })
 
   it("bounds concurrency and respects the cross-process isServed gate", async () => {
