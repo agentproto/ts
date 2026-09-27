@@ -5,7 +5,7 @@
  * The forge is always a test double.
  */
 import { describe, it, expect, afterEach, vi } from "vitest"
-import { mkdtemp, rm, writeFile, mkdir, realpath } from "node:fs/promises"
+import { mkdtemp, rm, writeFile, mkdir, realpath, chmod } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 
@@ -667,6 +667,11 @@ describe("branch gc — apply", () => {
     const p = await plan(repo, { base: "origin/main" })
     // Someone deletes feat/one upstream between plan and apply; our tracking ref is stale.
     await execGit(bare, ["update-ref", "-d", "refs/heads/feat/one"])
+    // A failing pre-push hook must not stop the deletion: no-verify skips it.
+    const hook = join(repo, ".git", "hooks", "pre-push")
+    await mkdir(dirname(hook), { recursive: true })
+    await writeFile(hook, "#!/bin/sh\nexit 1\n")
+    await chmod(hook, 0o755)
     const { outcomes } = await applyBranchGc(p, { scopes: ["remote"], forge: new FakeForge(), stateDir: await tmp("branch-gc-state-"), fetch: false })
     expect(outcomes.filter((o) => o.result === "deleted").map((o) => o.name).sort()).toEqual(["feat/one", "feat/two"])
     expect(await refExists(bare, "refs/heads/feat/two")).toBe(false)

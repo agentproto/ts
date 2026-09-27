@@ -1103,7 +1103,9 @@ export async function applyBranchGc(plan: BranchGcPlan, options: ApplyBranchGcOp
   for (const [remote, list] of byRemote) {
     const failedBatches: Array<{ batch: BranchGcPlanEntry[]; res: ExecResult }> = []
     for (const batch of chunk(list, options.remoteBatchSize ?? 50)) {
-      const res = await git(repoRoot, ["push", remote, "--delete", ...batch.map((e) => e.name)])
+      // A deletion carries no content to check, and repo hooks (e.g. an AI
+      // review of the checked-out branch) would otherwise run once per push.
+      const res = await git(repoRoot, ["push", "--no-verify", remote, "--delete", ...batch.map((e) => e.name)])
       if (res.exitCode === 0) for (const e of batch) results.set(e.ref, { ok: true })
       else failedBatches.push({ batch, res })
     }
@@ -1121,7 +1123,7 @@ export async function applyBranchGc(plan: BranchGcPlan, options: ApplyBranchGcOp
           results.set(e.ref, { ok: true })
           continue
         }
-        const one = await git(repoRoot, ["push", remote, "--delete", e.name])
+        const one = await git(repoRoot, ["push", "--no-verify", remote, "--delete", e.name])
         results.set(e.ref, one.exitCode === 0 ? { ok: true } : fail(one))
         retried = true
       }
