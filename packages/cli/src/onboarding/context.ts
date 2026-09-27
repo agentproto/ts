@@ -10,6 +10,7 @@ import { loadConfig } from "@agentproto/runtime/config"
 import { loadWorkspacesConfig } from "@agentproto/runtime/workspaces-config"
 import { fetchLatestCliVersion } from "@agentproto/runtime/release-check"
 import { discoverCredentials } from "@agentproto/runtime/credential-discovery"
+import { readPairingsSnapshot } from "@agentproto/runtime"
 import { listAuthProfiles } from "@agentproto/auth"
 import { probeLoginShellPath } from "../commands/daemon.js"
 import { detectAgents, loadInstallState } from "../commands/install-mcp.js"
@@ -79,6 +80,14 @@ export function createStepContext(cliVersion: string): StepContext {
       discoverCredentials: async () => discoverCredentials(),
       detectClients: () => detectAgents(),
       loadMcpInstallState: () => loadInstallState(),
+      loadDevices: async () =>
+        (await readPairingsSnapshot()).map(r => ({
+          fingerprint: r.fingerprint,
+          name: r.name,
+          createdAt: r.createdAt,
+          lastSeen: r.lastSeen,
+          ...(r.legacy ? { legacy: true } : {}),
+        })),
       skillTargets: async () => (await resolveSkillFanOutTargets()).targets,
       resolveSkillPackDir: () => resolveSkillPackDir(undefined, { allowFetch: false }),
       latestSkillPackVersion: () => npmLatestVersion("@agentproto/skill-pack-agentproto", NETWORK_TIMEOUT_MS),

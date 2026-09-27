@@ -10,6 +10,7 @@ import { daemonStep } from "./steps/daemon.js"
 import { agentsStep, parseNpxPackage } from "./steps/agents.js"
 import { authStep } from "./steps/auth.js"
 import { clientsStep } from "./steps/clients.js"
+import { devicesStep } from "./steps/devices.js"
 import { skillsStep } from "./steps/skills.js"
 import { localModelsStep } from "./steps/local-models.js"
 import { ONBOARDING_STEPS } from "./registry.js"
@@ -41,6 +42,7 @@ describe("healthy machine", () => {
       "agents",
       "auth",
       "clients",
+      "devices",
       "skills",
       "local-models",
     ])
@@ -417,6 +419,78 @@ describe("clients", () => {
   it("no clients detected is skipped", async () => {
     const checks = await clientsStep.detect(createFakeContext({ sources: { detectClients: async () => [] } }))
     expect(checks[0]?.status).toBe("skipped")
+  })
+})
+
+describe("devices", () => {
+  it("no pairings is skipped", async () => {
+    const checks = await devicesStep.detect(createFakeContext())
+    expect(checks).toEqual([
+      expect.objectContaining({ id: "devices.count", status: "skipped" }),
+    ])
+  })
+
+  const NOW = Date.parse("2026-09-27T00:00:00.000Z")
+
+  it("recently-seen devices are just a count", async () => {
+    const checks = await devicesStep.detect(
+      createFakeContext({
+        now: () => NOW,
+        sources: {
+          loadDevices: async () => [
+            { fingerprint: "fp1", name: "laptop", createdAt: "2026-09-01T00:00:00.000Z", lastSeen: "2026-09-26T00:00:00.000Z" },
+          ],
+        },
+      }),
+    )
+    expect(byId(checks, "devices.count")).toMatchObject({ status: "ok", detail: "1 device(s)" })
+    expect(checks).toHaveLength(1)
+  })
+
+  it("a device not seen in 30+ days warns with a revoke fix", async () => {
+    const checks = await devicesStep.detect(
+      createFakeContext({
+        now: () => NOW,
+        sources: {
+          loadDevices: async () => [
+            { fingerprint: "fp1", name: "old-phone", createdAt: "2026-01-01T00:00:00.000Z", lastSeen: "2026-01-02T00:00:00.000Z" },
+          ],
+        },
+      }),
+    )
+    expect(byId(checks, "devices.stale.fp1")).toMatchObject({
+      status: "warn",
+      detail: "not seen in over 30 days",
+      fix: "agentproto pair revoke old-phone",
+    })
+  })
+
+  it("a device never seen since pairing says so, not just 'not seen'", async () => {
+    const checks = await devicesStep.detect(
+      createFakeContext({
+        now: () => NOW,
+        sources: {
+          loadDevices: async () => [
+            { fingerprint: "fp1", name: "ghost", createdAt: "2026-01-01T00:00:00.000Z", lastSeen: "2026-01-01T00:00:00.000Z" },
+          ],
+        },
+      }),
+    )
+    expect(byId(checks, "devices.stale.fp1").detail).toBe("never seen since paired in over 30 days")
+  })
+
+  it("a read failure warns instead of throwing", async () => {
+    const checks = await devicesStep.detect(
+      createFakeContext({
+        sources: {
+          loadDevices: async () => {
+            throw new Error("pairings.json unreadable")
+          },
+        },
+      }),
+    )
+    expect(byId(checks, "devices.count").status).toBe("warn")
+    expect(byId(checks, "devices.count").detail).toContain("not checked")
   })
 })
 
