@@ -314,6 +314,8 @@ export function createAgentCliRuntime(
       // behind unrelated disk load (see `resolveNpxFastPath`'s doc).
       const npxFast = resolveNpxFastPath(resolvedBin, composed.binArgs, env)
       if (npxFast) {
+        // Runs AFTER ensureExecDirOnPath, so this only adds to its append —
+        // matches what npx itself would have put first on the child's PATH.
         env.PATH = [npxFast.binDir, ...(env.PATH ?? "").split(delimiter).filter(Boolean)].join(delimiter)
       }
       const spawnBin = npxFast?.bin ?? resolvedBin
