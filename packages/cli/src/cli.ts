@@ -59,6 +59,7 @@ import { runDevices } from "./commands/devices.js"
 import { runRendezvous } from "./commands/rendezvous.js"
 import { runSandbox } from "./commands/sandbox.js"
 import { runLlm } from "./commands/llm.js"
+import { runSettings } from "./commands/settings.js"
 import { runHelp } from "./commands/help.js"
 import { cliFreshnessLine } from "./registry/freshness.js"
 
@@ -190,6 +191,11 @@ Usage:
   agentproto llm       endpoints <list|test> [--json]
                      the LLM gateway's named local/LAN model endpoints
                      (~/.agentproto/llm-endpoints.json)
+  agentproto settings  export [--out <file>] [--include-secrets <id>...] [--passphrase-env <VAR>]
+  agentproto settings  import <file> [--dry-run] [--yes] [--unseal-passphrase-env <VAR>]
+                     bring your setup to (or from) another machine — adapters,
+                     harness presets, auth-profile metadata, LLM endpoints,
+                     imported MCPs, sanitized config.json
   agentproto help      <tool> [--topic <section>]
                      long-form MCP tool docs — the same text as the
                      tool_help MCP tool, read locally, no daemon needed
@@ -267,6 +273,7 @@ const VERBS = new Set([
   "rendezvous",
   "sandbox",
   "llm",
+  "settings",
   "help",
 ])
 
@@ -407,6 +414,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runSandbox(rest)
     case "llm":
       return runLlm(rest)
+    case "settings":
+      return runSettings(rest)
     case "help":
       return runHelp(rest)
     default:
