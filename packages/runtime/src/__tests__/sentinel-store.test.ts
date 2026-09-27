@@ -7,11 +7,11 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { createSentinelStore } from "../sentinel-store.js"
-import type { SentinelSpec } from "../sentinel-providers/types.js"
+import { createSentinelStore, SentinelTargetNotImplementedError } from "../sentinel-store.js"
+import { singleMatch, type SentinelSpec } from "../sentinel-providers/types.js"
 
 const testSpec: SentinelSpec = {
-  subject: "github:agentproto/ts#1",
+  match: singleMatch("github:agentproto/ts#1"),
   until: { kind: "never" },
   target: { kind: "session", sessionId: "sess_1", urgency: "next-turn" },
 }
@@ -28,7 +28,27 @@ describe("SentinelStore", () => {
     expect(sentinel.status).toBe("active")
     expect(sentinel.eventCount).toBe(0)
     expect(sentinel.seen).toEqual([])
+    expect(sentinel.terminalSubjects).toEqual([])
     expect(store.get(sentinel.id)).toEqual(sentinel)
+  })
+
+  it("rejects a routine or webhook target at create time (frozen shape, not implemented)", () => {
+    const store = createSentinelStore({ persist: false })
+    expect(() =>
+      store.create({
+        provider: "fake",
+        handle: { provider: "fake" },
+        spec: { ...testSpec, target: { kind: "routine", routineId: "rt_1" } },
+      }),
+    ).toThrow(SentinelTargetNotImplementedError)
+    expect(() =>
+      store.create({
+        provider: "fake",
+        handle: { provider: "fake" },
+        spec: { ...testSpec, target: { kind: "webhook", url: "https://example.com/hook", secret: "s3cr3t" } },
+      }),
+    ).toThrow(/not implemented/)
+    expect(store.list()).toEqual([])
   })
 
   it("lists sentinels", () => {
@@ -69,6 +89,23 @@ describe("SentinelStore", () => {
     // The earliest ids were evicted (FIFO) — only the most recent window survives.
     expect(seen).not.toContain("evt_1")
     expect(seen).toContain("evt_bulk_999")
+  })
+
+  it("isSeen is a read-only check that never marks — markSeen after it still returns true (new)", () => {
+    const store = createSentinelStore({ persist: false })
+    const sentinel = store.create({ provider: "fake", handle: { provider: "fake" }, spec: testSpec })
+    expect(store.isSeen(sentinel.id, "evt_1")).toBe(false)
+    // Calling isSeen repeatedly must not itself mark the id seen.
+    expect(store.isSeen(sentinel.id, "evt_1")).toBe(false)
+    expect(store.markSeen(sentinel.id, "evt_1")).toBe(true)
+    expect(store.isSeen(sentinel.id, "evt_1")).toBe(true)
+    // Once genuinely marked, a second markSeen correctly reports "not new".
+    expect(store.markSeen(sentinel.id, "evt_1")).toBe(false)
+  })
+
+  it("isSeen on an unknown sentinel id returns false without throwing", () => {
+    const store = createSentinelStore({ persist: false })
+    expect(store.isSeen("sen_missing", "evt_1")).toBe(false)
   })
 
   it("markSeen on an unknown sentinel id returns true (treat-as-unseen) without throwing", () => {

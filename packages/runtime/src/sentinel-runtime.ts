@@ -5,8 +5,10 @@
  * Per tick: for every pollable sentinel (`active` or `orphaned` — the
  * provider-side watch is never cancelled just because a session died, the
  * PR is still real), resolve its provider, `poll()` new events, dedupe via
- * the store's persisted `seen` window, filter by `spec.types`/`spec.subject`,
- * and land each match into the target session's AIP-46 inbox via
+ * the store's persisted `seen` window, filter against `spec.match` (OR
+ * semantics across clauses — design contract change: a spec now watches ANY
+ * of several `{subject, types?}` clauses, not just one), and land each match
+ * into the target session's AIP-46 inbox via
  * `sessions.sendMessage` IN-PROCESS (`relation: "system"`, `kind: "notice"`),
  * ack'ing the provider only once the whole batch has been handled (at-least-
  * once — a redelivered event is a no-op via `seen`).
@@ -37,6 +39,7 @@ import type { Sentinel, SentinelStatus, SentinelStore } from "./sentinel-store.j
 import type {
   DeliveryPreference,
   SentinelEvent,
+  SentinelMatchClause,
   SentinelProviderHandle,
 } from "./sentinel-providers/types.js"
 
@@ -60,12 +63,11 @@ function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-// ── Matching (design §4 — type/subject grammar) ──────────────────────
+// ── Matching (design §4 — type/subject grammar; contract change — `match`
+// clauses, OR semantics) ──────────────────────────────────────────────
 
-function effectiveTypes(sentinel: Sentinel, provider: SentinelProviderHandle): string[] {
-  return sentinel.spec.types && sentinel.spec.types.length > 0
-    ? sentinel.spec.types
-    : provider.defaultTypes(sentinel.spec.subject)
+function effectiveTypes(clause: SentinelMatchClause, provider: SentinelProviderHandle): string[] {
+  return clause.types && clause.types.length > 0 ? clause.types : provider.defaultTypes(clause.subject)
 }
 
 /** `*` is the only wildcard — matches any run of characters, same
@@ -80,26 +82,33 @@ function matchesGlob(pattern: string, value: string): boolean {
   return new RegExp(`^${escaped}$`).test(value)
 }
 
-/** A spec subject ending in `*` prefix-matches any of the event's
+/** A clause subject ending in `*` prefix-matches any of the event's
  *  `subjects`; otherwise it must appear exactly. */
-function matchesSubject(specSubject: string, eventSubjects: readonly string[]): boolean {
-  if (specSubject.endsWith("*")) {
-    const prefix = specSubject.slice(0, -1)
+function matchesSubject(clauseSubject: string, eventSubjects: readonly string[]): boolean {
+  if (clauseSubject.endsWith("*")) {
+    const prefix = clauseSubject.slice(0, -1)
     return eventSubjects.some(s => s.startsWith(prefix))
   }
-  return eventSubjects.includes(specSubject)
+  return eventSubjects.includes(clauseSubject)
 }
 
+function clauseMatches(
+  clause: SentinelMatchClause,
+  event: SentinelEvent,
+  provider: SentinelProviderHandle,
+): boolean {
+  const types = effectiveTypes(clause, provider)
+  return types.some(t => matchesGlob(t, event.type)) && matchesSubject(clause.subject, event.subjects)
+}
+
+/** OR across `spec.match`: the event matches the sentinel if ANY clause
+ *  matches. */
 function eventMatchesSpec(
   sentinel: Sentinel,
   event: SentinelEvent,
   provider: SentinelProviderHandle,
 ): boolean {
-  const types = effectiveTypes(sentinel, provider)
-  return (
-    types.some(t => matchesGlob(t, event.type)) &&
-    matchesSubject(sentinel.spec.subject, event.subjects)
-  )
+  return sentinel.spec.match.some(clause => clauseMatches(clause, event, provider))
 }
 
 /** Envelope trimmed to fit the AIP-46 `data` cap — drop the provider's raw
@@ -203,13 +212,18 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     sessionId: string,
     urgency: MessageUrgency,
   ): SessionMessage {
-    const scheme = sentinel.spec.subject.split(":")[0] || sentinel.provider
+    // The EVENT's own subject, not the matching clause's (which may be a
+    // `*` prefix template) — contract change: `correlationId` names the
+    // concrete thing that happened, so `inbox_wait {correlationId}` means
+    // "anything on this exact PR/issue/etc", regardless of which clause's
+    // wildcard let it through.
+    const scheme = event.subject.split(":")[0] || sentinel.provider
     return createSessionMessage({
       to: sessionId,
       from: { relation: "system" },
       kind: "notice",
       urgency,
-      correlationId: `sentinel:${sentinel.spec.subject}`,
+      correlationId: `sentinel:${event.subject}`,
       text: `[${scheme}] ${event.summary}`,
       data: trimEventForEnvelope(event),
     })
@@ -251,8 +265,10 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
 
   async function deliverEvent(sentinel: Sentinel, event: SentinelEvent): Promise<void> {
     const target = sentinel.spec.target
-    // Routine targets (AIP-41 `schedule.kind: event`) aren't wired yet
-    // (design §6/§12 step 4) — nothing to deliver into, not a failure.
+    // Defensive only: `SentinelStore.create` already rejects any target
+    // kind other than "session" (`SentinelTargetNotImplementedError`), so a
+    // persisted sentinel never actually reaches this branch — narrows the
+    // type for `target.sessionId`/`target.urgency` below.
     if (target.kind !== "session") return
     const msg = buildMessage(sentinel, event, target.sessionId, target.urgency)
     try {
@@ -263,7 +279,27 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     }
   }
 
-  // ── Lifetime (design §2 — `until`) ──────────────────────────────────
+  // ── Lifetime (design §2 — `until`; contract change — `subject_terminal`
+  // with multiple `match` clauses expires only once EVERY clause's subject
+  // has seen a terminal event) ─────────────────────────────────────────
+
+  /** Records which of `sentinel.spec.match`'s clause subjects this terminal
+   *  event satisfies, then reports whether ALL of them now have. A
+   *  single-clause spec expires on that one clause's first terminal event —
+   *  same behaviour as before `match` supported fan-out. */
+  function checkSubjectTerminalExpiry(sentinel: Sentinel, event: SentinelEvent): boolean {
+    if (event.terminal !== true) return false
+    const satisfied = sentinel.spec.match
+      .map(clause => clause.subject)
+      .filter(subject => matchesSubject(subject, event.subjects))
+    if (satisfied.length === 0) return false
+
+    const merged = new Set([...sentinel.terminalSubjects, ...satisfied])
+    store.update(sentinel.id, { terminalSubjects: [...merged] })
+
+    const allSubjects = sentinel.spec.match.map(clause => clause.subject)
+    return allSubjects.every(subject => merged.has(subject))
+  }
 
   async function applyLifetime(
     sentinel: Sentinel,
@@ -271,13 +307,20 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     provider: SentinelProviderHandle,
   ): Promise<void> {
     const until = sentinel.spec.until
-    let expire = false
-    if (until.kind === "subject_terminal") {
-      expire = event.terminal === true && matchesSubject(sentinel.spec.subject, event.subjects)
-    } else if (until.kind === "count") {
-      expire = sentinel.eventCount >= until.n
-    } else if (until.kind === "at") {
-      expire = nowMs() >= until.ms
+    let expire: boolean
+    switch (until.kind) {
+      case "subject_terminal":
+        expire = checkSubjectTerminalExpiry(sentinel, event)
+        break
+      case "count":
+        expire = sentinel.eventCount >= until.n
+        break
+      case "at":
+        expire = nowMs() >= until.ms
+        break
+      case "never":
+        expire = false
+        break
     }
     if (!expire) return
     store.update(sentinel.id, { status: "expired" })
@@ -309,16 +352,28 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       if (!current) return // removed mid-batch
       if (!POLLABLE_STATUSES.has(current.status)) break // paused/expired/error — stop watching
 
-      if (!store.markSeen(current.id, event.id)) continue
-      if (!eventMatchesSpec(current, event, provider)) continue
+      if (store.isSeen(current.id, event.id)) continue
+
+      if (!eventMatchesSpec(current, event, provider)) {
+        // Filtered out, not a delivery attempt — still mark it seen so it's
+        // never reconsidered on a later tick.
+        store.markSeen(current.id, event.id)
+        continue
+      }
 
       try {
         await deliverEvent(current, event)
       } catch (err) {
+        // Do NOT mark seen: delivery did not complete (delivered OR parked
+        // both resolve normally — see deliverEvent/handleDeadSession), so
+        // this is a genuinely unhandled failure. Marking seen here would
+        // dedupe the event out of every future redelivery attempt on the
+        // next tick, silently losing it and breaking at-least-once.
         log(`[sentinel-runtime] ${current.id} delivery failed: ${describeError(err)}`)
         haltedOnError = true
         break
       }
+      store.markSeen(current.id, event.id)
 
       const updated = store.update(current.id, {
         eventCount: current.eventCount + 1,

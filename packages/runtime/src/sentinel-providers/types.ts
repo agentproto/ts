@@ -31,8 +31,10 @@ import type { MessageUrgency } from "../session-message.js"
  */
 export interface SentinelEvent {
   readonly specversion: "1.0"
-  /** Stable across retries/redeliveries — the consumer idempotency key
-   *  together with the sentinel id. */
+  /** Stable across retries/redeliveries. Idempotency key is `(sentinelId,
+   *  event.id)` — unaffected by `SentinelSpec.match` fan-out: an event that
+   *  happens to satisfy more than one match clause on the same sentinel is
+   *  still landed at most once. */
   readonly id: string
   /** URI naming the provider instance that emitted this event. */
   readonly source: string
@@ -67,25 +69,65 @@ export type SentinelUntil =
   | { kind: "count"; n: number }
   | { kind: "never" }
 
-/** Where a matching event is delivered. `routine` is reserved for AIP-41
- *  `schedule.kind: event` binding — not wired by the runtime yet (design
- *  §6/§12 step 4). */
+/** Where a matching event is delivered.
+ *
+ *  `routine` is reserved for AIP-41 `schedule.kind: event` binding; `webhook`
+ *  is reserved for forwarding a matched event to an external HTTP callback.
+ *  Both are FROZEN SHAPES ONLY — `SentinelStore.create` rejects them with
+ *  {@link SentinelTargetNotImplementedError} until a later step wires actual
+ *  delivery (design §6/§12 step 4 for `routine`; `webhook` has no design
+ *  section yet). Declaring the shape now lets callers/tools reference the
+ *  full union before delivery exists. */
 export type SentinelTarget =
   | { kind: "session"; sessionId: string; urgency: MessageUrgency }
   | { kind: "routine"; routineId: string }
+  | { kind: "webhook"; url: string; secret: string }
 
-/** "Watch `subject` for `types` until `condition`, deliver to `target`." */
-export interface SentinelSpec {
+/** One clause of a sentinel's watch: a subject (exact, or a `*`-suffixed
+ *  prefix match against an event's `subjects`) plus an optional per-clause
+ *  type glob list. */
+export interface SentinelMatchClause {
   /** Hierarchical routing key, e.g. "github:agentproto/ts#1428". A trailing
    *  `*` is a prefix match against an event's `subjects`. */
   subject: string
   /** Type globs; undefined = the provider's `defaultTypes(subject)`. */
   types?: string[]
+}
+
+/** Build a single-clause `match` array — the common case, and the shape
+ *  every sentinel used before multi-clause fan-out existed. */
+export function singleMatch(subject: string, types?: string[]): SentinelMatchClause[] {
+  return [{ subject, ...(types ? { types } : {}) }]
+}
+
+/**
+ * "Watch any of `match` until `condition`, deliver to `target`."
+ *
+ * `match` is OR semantics: an event matches the sentinel if it matches ANY
+ * clause (subject + that clause's own type glob / provider default). At
+ * least one clause is required — use {@link singleMatch} for a one-clause
+ * spec. The event's own `subject` (not the matching clause's, which may be a
+ * `*` prefix template) is what lands as `correlationId: sentinel:<subject>`
+ * and the `[<scheme>]` inbox-text prefix — see `sentinel-runtime.ts`.
+ *
+ * Dedup key is `(sentinelId, event.id)`, same for every clause — see
+ * {@link SentinelEvent.id}.
+ */
+export interface SentinelSpec {
+  match: SentinelMatchClause[]
   until: SentinelUntil
   target: SentinelTarget
   /** Provider slug; undefined = auto-select (not implemented by the runtime
    *  yet — step 2 requires an explicit slug). */
   provider?: string
+  /** Fan-out grouping — sentinels created together (e.g. several
+   *  PR-related watches for one review) share a `group` id so they can be
+   *  listed/removed together later. Purely descriptive: the runtime never
+   *  reads it, no MCP tool consumes it yet. */
+  group?: string
+  /** Human-readable label surfaced by `sentinel_list` / the CLI. Purely
+   *  descriptive, same as `group`. */
+  label?: string
 }
 
 // ── Provider contract (AIP-60 §3) ────────────────────────────────────────
