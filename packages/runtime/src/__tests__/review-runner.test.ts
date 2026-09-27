@@ -486,6 +486,55 @@ describe("review runner — verdicts over a real repo", () => {
     expect(run.status).toBe("failed")
     expect(run.error).toMatch(/no REVIEW.md at .*nope\/REVIEW.md/)
   })
+
+  it("list() reports running + settled-in-this-process runs, newest first, with requesterSessionId", async () => {
+    const repo = await makeRepo(manifest(['{id: slow, kind: command, run: "sleep 0.3"}']))
+    cleanup.push(repo.dir)
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }) })
+    const a = runner.start({ cwd: repo.dir, requesterSessionId: "req-a" })
+    expect(runner.list().find((r) => r.runId === a.runId)).toMatchObject({ status: "running", requesterSessionId: "req-a" })
+    await runner.wait(a.runId)
+    const done = runner.list().find((r) => r.runId === a.runId)!
+    expect(done.status).toBe("done")
+    expect(done.requesterSessionId).toBe("req-a")
+
+    const repo2 = await makeRepo(manifest(['{id: ok, kind: command, run: "true"}']))
+    cleanup.push(repo2.dir)
+    const b = await runToEnd(runner, { cwd: repo2.dir, parentSessionId: "req-b" })
+    // parentSessionId is the fallback requester when requesterSessionId is unset.
+    expect(runner.list().find((r) => r.runId === b.runId)?.requesterSessionId).toBe("req-b")
+    // Newest first.
+    const ids = runner.list().map((r) => r.runId)
+    expect(ids.indexOf(b.runId)).toBeLessThan(ids.indexOf(a.runId))
+  })
+
+  it("notifyRequester fires once a run with a requester reaches done, never for a cancelled/failed run", async () => {
+    const repo = await makeRepo(manifest(['{id: ok, kind: command, run: "true"}']))
+    cleanup.push(repo.dir)
+    const notified: Array<{ sessionId: string; text: string }> = []
+    const runner = createReviewRunner({
+      ledger: createReviewLedger({ root: ledgerRoot }),
+      notifyRequester: (sessionId, text) => notified.push({ sessionId, text }),
+    })
+    const done = await runToEnd(runner, { cwd: repo.dir, requesterSessionId: "watcher-1" })
+    expect(notified).toHaveLength(1)
+    expect(notified[0]!.sessionId).toBe("watcher-1")
+    expect(notified[0]!.text).toBe(
+      `review pass ${repo.baseSha.slice(0, 7)}..${repo.headSha.slice(0, 7)} (${done.runId})`,
+    )
+
+    // A run with NO requester never notifies (nothing to notify).
+    const repo2 = await makeRepo(manifest(['{id: ok, kind: command, run: "true"}']))
+    cleanup.push(repo2.dir)
+    await runToEnd(runner, { cwd: repo2.dir })
+    expect(notified).toHaveLength(1)
+
+    // A failed run (no REVIEW.md) never notifies even with a requester.
+    const repo3 = await makeRepo(manifest(['{id: ok, kind: command, run: "true"}']))
+    cleanup.push(repo3.dir)
+    await runToEnd(runner, { cwd: repo3.dir, manifestPath: "nope/REVIEW.md", requesterSessionId: "watcher-2" })
+    expect(notified).toHaveLength(1)
+  })
 })
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -597,6 +646,92 @@ describe("review MCP tools", () => {
     await runner.wait(started.runId)
     const polled = parseToolJson(await client.callTool({ name: "review_status", arguments: { runId: started.runId } }))
     expect(polled).toMatchObject({ status: "done", verdict: "pass" })
+  })
+
+  it("review_ledger includeRunning: a running row (lanes settled so far) precedes the settled row", async () => {
+    const repo = await makeRepo(
+      manifest(['{id: fast, kind: command, run: "true"}', '{id: slow, kind: command, run: "sleep 2"}']),
+    )
+    cleanup.push(repo.dir)
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }) })
+    const client = await connect(runner)
+    const started = parseToolJson(await client.callTool({ name: "review_run", arguments: { cwd: repo.dir, wait: false } }))
+
+    const until = Date.now() + 5000
+    while ((await runner.status(started.runId))?.lanes.length !== 1) {
+      if (Date.now() > until) throw new Error("timed out waiting for the fast lane to settle")
+      await new Promise((r) => setTimeout(r, 25))
+    }
+    const whileRunning = parseToolJson(
+      await client.callTool({ name: "review_ledger", arguments: { cwd: repo.dir, includeRunning: true } }),
+    )
+    const runningRow = whileRunning.attestations.find((r: { runId: string }) => r.runId === started.runId)
+    expect(runningRow).toMatchObject({ runId: started.runId, status: "running" })
+    expect(runningRow.lanes.some((l: { id: string; status: string }) => l.id === "fast" && l.status === "pass")).toBe(true)
+    expect(runningRow.verdict).toBeUndefined()
+
+    await runner.wait(started.runId)
+    const afterDone = parseToolJson(
+      await client.callTool({ name: "review_ledger", arguments: { cwd: repo.dir, includeRunning: true } }),
+    )
+    const settledRow = afterDone.attestations.find((r: { runId: string }) => r.runId === started.runId)
+    expect(settledRow).toMatchObject({ runId: started.runId, verdict: "pass" })
+    expect(settledRow.status).toBeUndefined()
+    expect(afterDone.attestations.filter((r: { runId: string }) => r.runId === started.runId)).toHaveLength(1)
+  })
+
+  it("review_ledger requesterSessionId scopes to that session; subtree includes a child's", async () => {
+    // Three SEPARATE repos (distinct ranges) so each requester owns its own
+    // ledger entry — a single shared range re-reviewed by a different
+    // requester (an overwrite of the same ledger key) is covered below.
+    const repoA = await makeRepo(manifest(['{id: ok, kind: command, run: "true"}']))
+    const repoB = await makeRepo(manifest(['{id: ok, kind: command, run: "true"}']))
+    const repoC = await makeRepo(manifest(['{id: ok, kind: command, run: "true"}']))
+    cleanup.push(repoA.dir, repoB.dir, repoC.dir)
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }) })
+    const server = new McpServer({ name: "review-tools-test-server", version: "0.0.0" })
+    registerReviewTools(server, {
+      runner,
+      resolveSubtree: (id) => (id === "parent-x" ? ["parent-x", "child-y"] : [id]),
+    })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "review-tools-test-client", version: "0.0.0" })
+    await client.connect(clientTransport)
+
+    await runToEnd(runner, { cwd: repoA.dir, requesterSessionId: "parent-x" })
+    await runToEnd(runner, { cwd: repoB.dir, requesterSessionId: "child-y" })
+    await runToEnd(runner, { cwd: repoC.dir, requesterSessionId: "unrelated-z" })
+
+    const parentOnly = parseToolJson(
+      await client.callTool({ name: "review_ledger", arguments: { requesterSessionId: "parent-x" } }),
+    )
+    expect(parentOnly.total).toBe(1)
+    expect(parentOnly.attestations[0].requester).toMatchObject({ sessionId: "parent-x" })
+
+    const withSubtree = parseToolJson(
+      await client.callTool({ name: "review_ledger", arguments: { requesterSessionId: "parent-x", subtree: true } }),
+    )
+    expect(withSubtree.total).toBe(2)
+    expect(withSubtree.attestations.map((a: { requester: { sessionId: string } }) => a.requester.sessionId).sort()).toEqual([
+      "child-y",
+      "parent-x",
+    ])
+  })
+
+  it("re-reviewing the exact same range under a different requester drops the old requester's stale index entry", async () => {
+    // Ledger identity is (repoRemote, manifestSha, binding, rangeSha) — a
+    // `nocache` re-run of the SAME range overwrites the one entry that key
+    // has. requesterSessionId filtering must follow the overwrite, not keep
+    // pointing the old requester at a file that no longer names them.
+    const repo = await makeRepo(manifest(['{id: ok, kind: command, run: "true"}']))
+    cleanup.push(repo.dir)
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }) })
+    await runToEnd(runner, { cwd: repo.dir, requesterSessionId: "first-requester" })
+    await runToEnd(runner, { cwd: repo.dir, requesterSessionId: "second-requester", nocache: true })
+
+    expect(await runner.ledger.list({ requesterSessionIds: ["second-requester"] })).toHaveLength(1)
+    expect(await runner.ledger.list({ requesterSessionIds: ["first-requester"] })).toEqual([])
   })
 
   it("error shapes: unknown run, export without a selector, bad range", async () => {

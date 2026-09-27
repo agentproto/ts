@@ -14,6 +14,7 @@
  */
 
 import { addReviewWorktree, ownerRepoOfReviewWorktree, removeReviewWorktrees } from "./review-worktree.js"
+import type { ReviewRunner } from "./review-runner.js"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type {
@@ -153,7 +154,24 @@ export interface SessionTreeNode {
    *  for the harness the checkpoint moved from/to. */
   continuedFrom?: string
   isOrchestrator: boolean
+  /** Latest 3 reviews this session requested (`review_run`'s
+   *  `requesterSessionId`, default the caller), newest first — settled
+   *  attestations from the ledger plus any still-`running`/`cancelled` run
+   *  this daemon process has seen (see `ReviewRunner.list()`). Present only
+   *  on a node that has requested at least one review. */
+  reviews?: ReviewBadge[]
   children: SessionTreeNode[]
+}
+
+/** One `session_tree` review badge — see `SessionTreeNode.reviews`. `range`
+ *  is `<base7>..<head7>` (short shas); a run with no resolved range yet
+ *  omits it rather than showing a misleading placeholder. */
+export interface ReviewBadge {
+  runId: string
+  verdict: "pass" | "block" | "incomplete" | "running" | "cancelled"
+  binding: string
+  range?: string
+  at: string
 }
 
 /** The stable bucket key for a root with no `origin` on its descriptor (a
@@ -197,6 +215,86 @@ export function groupRootsByOrigin(
     }
   }
   return order.map(origin => ({ origin, sessions: byOrigin.get(origin)! }))
+}
+
+/** Resolve `session_tree`'s `reviews` badges for a set of visible session
+ * ids in ONE ledger lookup (the index-backed `requesterSessionIds` filter,
+ * never a per-node query) plus the in-process `ReviewRunner.list()` for
+ * runs that never reach the ledger (`running`/`cancelled`/a runner-level
+ * `failed`, which has no verdict to fold so it's reported as `incomplete`
+ * — the badge enum has no separate slot for it). A `done` run is read from
+ * the ledger only (its attestation is authoritative and already covers a
+ * cache hit's requester), so a runner-level `done` row is skipped here to
+ * avoid a duplicate/stale badge for the same runId. */
+async function resolveReviewBadges(
+  runner: ReviewRunner,
+  sessionIds: readonly string[],
+): Promise<Map<string, ReviewBadge[]>> {
+  const idSet = new Set(sessionIds)
+  const byId = new Map<string, { badge: ReviewBadge; at: string }[]>()
+  const push = (sessionId: string, badge: ReviewBadge, at: string): void => {
+    const arr = byId.get(sessionId)
+    if (arr) arr.push({ badge, at })
+    else byId.set(sessionId, [{ badge, at }])
+  }
+  for (const run of runner.list()) {
+    if (run.status === "done") continue // covered by the ledger entry below
+    if (!run.requesterSessionId || !idSet.has(run.requesterSessionId)) continue
+    const verdict = run.status === "running" ? "running" : run.status === "cancelled" ? "cancelled" : "incomplete"
+    const range = run.baseSha && run.headSha ? `${run.baseSha.slice(0, 7)}..${run.headSha.slice(0, 7)}` : undefined
+    push(
+      run.requesterSessionId,
+      { runId: run.runId, verdict, binding: run.binding ?? "", ...(range ? { range } : {}), at: run.startedAt },
+      run.startedAt,
+    )
+  }
+  const entries = await runner.ledger.list({ requesterSessionIds: sessionIds })
+  for (const entry of entries) {
+    const sessionId = entry.attestation.requester?.sessionId
+    if (!sessionId) continue
+    const a = entry.attestation
+    push(
+      sessionId,
+      {
+        runId: a.runId,
+        verdict: a.verdict,
+        binding: a.binding,
+        range: `${a.target.baseSha.slice(0, 7)}..${a.target.headSha.slice(0, 7)}`,
+        at: a.createdAt,
+      },
+      a.createdAt,
+    )
+  }
+  const result = new Map<string, ReviewBadge[]>()
+  for (const [sessionId, badges] of byId) {
+    result.set(
+      sessionId,
+      badges
+        .sort((x, y) => y.at.localeCompare(x.at))
+        .slice(0, 3)
+        .map(b => b.badge),
+    )
+  }
+  return result
+}
+
+/** Attach `reviews` onto every node (recursively) that `badgesFor` returns a
+ * non-empty array for — leaves every other node untouched. Works for the
+ * full-dump `tree` (nested `children`) and every navigation slice (flat
+ * `children: []` on `children`/`parent`/`siblings` nodes; nested on
+ * `descendants`). */
+function attachReviewBadges(
+  nodes: readonly SessionTreeNode[],
+  badgesFor: (id: string) => ReviewBadge[] | undefined,
+): SessionTreeNode[] {
+  return nodes.map(n => {
+    const reviews = badgesFor(n.id)
+    return {
+      ...n,
+      ...(reviews && reviews.length > 0 ? { reviews } : {}),
+      children: attachReviewBadges(n.children, badgesFor),
+    }
+  })
 }
 
 /**
@@ -400,6 +498,11 @@ export interface RegisterSessionToolsOptions {
   /** Forwarded to `registerAgentTools` — see
    *  `RegisterAgentToolsOptions.isSessionChatInstalled`. */
   isSessionChatInstalled?: RegisterAgentToolsOptions["isSessionChatInstalled"]
+  /** The gateway-singleton review runner (review-runner.ts) — when wired,
+   *  `session_tree` attaches a `reviews` badge (latest 3) to every node that
+   *  has requested a review. Omitted ⇒ `session_tree` never carries
+   *  `reviews`, same output as before this field existed. */
+  reviewRunner?: ReviewRunner
 }
 
 /** MCP clients commonly stringify scalar arguments ("true"/"false"/"42").
@@ -865,6 +968,7 @@ export function registerSessionTools(
     readBranchGcVerdict,
     listCatalogModels,
     loadDefaultsConfig,
+    reviewRunner,
   } = opts
   const ptyEnabled = opts.ptyEnabled === true
   // Point the module-level branch_gc job registry at the injected dir (tests
@@ -2178,6 +2282,12 @@ export function registerSessionTools(
           s => s.status === "running" || s.status === "starting",
         )
       }
+      // One index-backed ledger lookup (+ the in-process runner list) for
+      // every visible node, never a per-node query — see resolveReviewBadges.
+      const reviewBadgesById = reviewRunner
+        ? await resolveReviewBadges(reviewRunner, rows.map(s => s.id))
+        : undefined
+      const badgesFor = reviewBadgesById ? (id: string) => reviewBadgesById.get(id) : undefined
       // ── Navigation mode (nodeId + direction) ──────────────────────
       // Additive slice of the tree: when both params arrive, walk the flat
       // (already scope/onlyAlive/archived-filtered) list instead of building
@@ -2324,11 +2434,20 @@ export function registerSessionTools(
             break
           }
         }
+        if (badgesFor) {
+          if ("children" in body) body = { children: attachReviewBadges(body.children as SessionTreeNode[], badgesFor) }
+          else if ("parent" in body) {
+            const parent = body.parent as SessionTreeNode | null
+            body = { parent: parent ? attachReviewBadges([parent], badgesFor)[0]! : null }
+          } else if ("siblings" in body) body = { siblings: attachReviewBadges(body.siblings as SessionTreeNode[], badgesFor) }
+          else if ("ancestors" in body) body = { ancestors: attachReviewBadges(body.ancestors as SessionTreeNode[], badgesFor) }
+          else if ("tree" in body) body = { tree: attachReviewBadges(body.tree as SessionTreeNode[], badgesFor) }
+        }
         return {
           content: [{ type: "text", text: JSON.stringify(body) }],
         }
       }
-      const tree = buildSessionTree(rows)
+      const tree = badgesFor ? attachReviewBadges(buildSessionTree(rows), badgesFor) : buildSessionTree(rows)
       // Additive companion view: the same roots bucketed by `origin` so a
       // client can show "claude-code desktop vs vscode extension vs cron"
       // groups — the human-launched roots have no agent parent to nest under,

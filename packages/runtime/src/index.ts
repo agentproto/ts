@@ -36,6 +36,7 @@ import {
   registerConversationLocateTool,
   registerConversationExportTool,
 } from "./session-tools.js"
+import { collectSubtree } from "./agent-tools.js"
 import { registerBrainTools } from "./brain-tools.js"
 import { createWorkspaceBrains } from "./workspace-brains.js"
 import { createWorkspaceBrainSubscriber } from "./workspace-brain-subscriber.js"
@@ -1856,6 +1857,13 @@ export async function createGateway(
       persist ? {} : { root: join(tmpdir(), `agentproto-reviews-${process.pid}-${randomUUID()}`) },
     ),
     daemonId: `agentproto-runtime@${hostname()}:${port}`,
+    // Display-only settle notice (Goal A item 4, review-session-panel step):
+    // a daemon-authored `notice` in the requester's own transcript, never a
+    // prompt/inbox delivery — see `SessionsRegistry.recordNotice`'s doc for
+    // why this can't wake an idle session or interrupt a busy one.
+    notifyRequester: (sessionId, text) => {
+      sessions.recordNotice(sessionId, text)
+    },
     ...(opts.resolveAgentAdapter
       ? {
           reviewers: createDaemonReviewerHost({
@@ -2302,6 +2310,9 @@ export async function createGateway(
       ...(opts.recordBranchGcVerdict ? { recordBranchGcVerdict: opts.recordBranchGcVerdict } : {}),
       ...(opts.readBranchGcVerdict ? { readBranchGcVerdict: opts.readBranchGcVerdict } : {}),
       isSessionChatInstalled,
+      // `session_tree`'s `reviews` badge (review-session-panel step) —
+      // the same gateway-singleton runner `registerReviewTools` uses below.
+      reviewRunner,
     })
     // Per-workspace brain — query/status/ingest over the shared brain
     // registry declared at gateway boot (workspaceBrains).
@@ -2367,6 +2378,11 @@ export async function createGateway(
     registerReviewTools(server, {
       runner: reviewRunner,
       ...(callerSessionId ? { callerSessionId } : {}),
+      // `review_ledger({requesterSessionId, subtree: true})` — expand to the
+      // requester's whole subtree via the same BFS session_tree/session_list
+      // use, over the full (includeArchived) list so an archived ancestor
+      // never severs the parent→child graph the BFS walks.
+      resolveSubtree: sessionId => [...collectSubtree(sessionId, sessions.list({ includeArchived: true }))],
     })
     // @agentproto/app-kit app lifecycle — install/list/run/status/stop
     // (app-tools.ts). `resolveAgentAdapter` gates the adapter-resolves check
