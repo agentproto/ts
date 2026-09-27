@@ -100,6 +100,7 @@ import { configGet, configSet, type ConfigToolsDeps } from "./config-tools.js"
 import type { ConfigKeySection } from "./config-schema.js"
 import { discoverMcps } from "./mcp-discovery.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
+import { computeCapabilitiesInventory } from "./capabilities-inventory.js"
 import type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
 import { normalizeInbound, verifyInboundSignature, type InboundProvider } from "./inbound-adapters.js"
 import type { InboundEndpoint, InboundEndpointStore } from "./inbound-endpoints.js"
@@ -3095,6 +3096,21 @@ export async function startHttpServer(
               })
             )
           }
+          return
+        }
+
+        // HTTP twin of the MCP `capabilities_inventory` tool — same shared
+        // builder (capabilities-inventory.ts) so the two surfaces can never
+        // drift. Always 200s: per-source failures become an `error` string
+        // on that block alone (see the builder's docblock).
+        if (path === "/capabilities/inventory" && req.method === "GET") {
+          const inventory = await computeCapabilitiesInventory({
+            registry: opts.sessions,
+            listAgentAdapters: opts.listAgentAdapters,
+            mcpProxy: opts.mcpProxy,
+          })
+          res.writeHead(200, { "content-type": "application/json" })
+          res.end(JSON.stringify(inventory))
           return
         }
 

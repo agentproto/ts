@@ -53,6 +53,11 @@ export const CONFIG_TOOLS = [
   "auth_profile_update",
   "adapter_list",
   "harness_capabilities",
+  "capabilities_inventory",
+  "mcp_imported_tool_list",
+  "mcp_imported_status",
+  "mcp_import",
+  "mcp_imported_remove",
   "harness_preset_list",
   "harness_preset_create",
   "harness_preset_delete",
@@ -80,6 +85,7 @@ const SECTIONS: ReadonlyArray<{ id: string; label: string }> = [
   { id: "wallets", label: "Wallets" },
   { id: "harnesses", label: "Harnesses" },
   { id: "models", label: "Models" },
+  { id: "capabilities", label: "Capabilities" },
   { id: "defaults", label: "Defaults" },
   { id: "remote", label: "Remote" },
   { id: "advanced", label: "Advanced" },
@@ -228,6 +234,7 @@ td.matrix-cell.disabled{opacity:.35;cursor:default}
     <div class="section" data-section="wallets" id="sec-wallets"></div>
     <div class="section" data-section="harnesses" id="sec-harnesses"></div>
     <div class="section" data-section="models" id="sec-models"></div>
+    <div class="section" data-section="capabilities" id="sec-capabilities"></div>
     <div class="section" data-section="defaults" id="sec-defaults"></div>
     <div class="section" data-section="remote" id="sec-remote"></div>
     <div class="section" data-section="advanced" id="sec-advanced"></div>
@@ -765,11 +772,31 @@ function showSection(sectionId) {
 function applyDeepLink(sectionId, id, sub) {
   var notfound = document.getElementById("notfound");
   notfound.style.display = "none";
-  var prevHl = document.querySelectorAll(".card.hl, tr.hl");
+  var prevHl = document.querySelectorAll(".card.hl, tr.hl, th.hl");
   for (var p = 0; p < prevHl.length; p++) prevHl[p].classList.remove("hl");
   if (id === undefined) return;
   var container = document.getElementById("sec-" + sectionId);
   if (!container) return;
+  // #capabilities/<mcp|skills>/<sub>: 'id' selects the TAB, not a card —
+  // switch tab (re-rendering the section) before looking for 'sub's card.
+  if (sectionId === "capabilities") {
+    var capTab = id === "skills" ? "skills" : "mcp";
+    if (capabilitiesState.tab !== capTab) {
+      capabilitiesState.tab = capTab;
+      renderCapabilities();
+      container = document.getElementById("sec-" + sectionId);
+    }
+    if (sub === undefined) return;
+    var capTarget = container.querySelector('[data-card-id="' + cssEscape(sub) + '"]');
+    if (!capTarget) {
+      notfound.textContent = "not found: " + id + "/" + sub;
+      notfound.style.display = "block";
+      return;
+    }
+    capTarget.classList.add("hl");
+    scrollIntoViewSafe(capTarget);
+    return;
+  }
   var targetId = sectionId === "remote" && id === "pairing" ? "pairing" : id;
   var target = container.querySelector('[data-card-id="' + cssEscape(targetId) + '"]');
   if (!target) {
@@ -870,6 +897,7 @@ var SECTION_LOADERS = {
   wallets: loadWallets,
   harnesses: loadHarnesses,
   models: loadModels,
+  capabilities: loadCapabilities,
   defaults: loadDefaults,
   remote: loadRemote,
   advanced: loadAdvanced,
@@ -1951,6 +1979,275 @@ function renderTitlerModelCard() {
   }, function () {
     loadModels();
   });
+}
+
+// ============================================================
+// Capabilities (MCP & Skills)
+// ============================================================
+
+var capabilitiesState = {
+  tab: "mcp", // "mcp" | "skills"
+  invResult: null,
+  expandedImports: {}, // importId -> bool
+};
+
+function loadCapabilities() {
+  return loadTool("capabilities_inventory", {}).then(function (r) {
+    capabilitiesState.invResult = r;
+    renderCapabilities();
+  });
+}
+
+function capTabsHtml() {
+  return '<span class="pillbar">'
+    + '<button type="button" class="' + (capabilitiesState.tab === "mcp" ? "active" : "") + '" data-cap-tab="mcp">MCP</button>'
+    + '<button type="button" class="' + (capabilitiesState.tab === "skills" ? "active" : "") + '" data-cap-tab="skills">Skills</button>'
+    + '</span>';
+}
+
+function capStatusTagHtml(status) {
+  var cls = status === "connected" ? "ok" : status === "error" ? "bad" : status === "idle" ? "" : "warn-tag";
+  return '<span class="tag ' + cls + '">' + escHtml(status) + '</span>';
+}
+
+function renderCapabilities() {
+  var el = document.getElementById("sec-capabilities");
+  var r = capabilitiesState.invResult;
+  var html = '<div class="sect-h">Capabilities' + capTabsHtml() + '</div>';
+  if (!r) { el.innerHTML = html; return; }
+  if (!r.ok) {
+    html += r.unknown
+      ? '<div class="muted-note">Capabilities inventory needs a newer agentproto daemon (capabilities_inventory).</div>'
+      : '<div class="muted-note">capabilities_inventory: ' + escHtml(r.message) + '</div>';
+    el.innerHTML = html;
+    return;
+  }
+  var inv = r.data;
+  html += capabilitiesState.tab === "skills" ? renderSkillsTabHtml(inv.skills || {}) : renderMcpTabHtml(inv.mcp || {});
+  el.innerHTML = html;
+  wireCapabilitiesTabs(el);
+  if (capabilitiesState.tab === "mcp") wireMcpTab(el);
+}
+
+function wireCapabilitiesTabs(container) {
+  var btns = container.querySelectorAll("[data-cap-tab]");
+  for (var i = 0; i < btns.length; i++) {
+    (function (btn) {
+      btn.addEventListener("click", function () {
+        capabilitiesState.tab = btn.getAttribute("data-cap-tab");
+        renderCapabilities();
+      });
+    })(btns[i]);
+  }
+}
+
+function renderMcpTabHtml(mcp) {
+  var imported = mcp.imported || [];
+  var discovered = mcp.discovered || [];
+  var reach = mcp.daemonMountByHarness || {};
+  var html = "";
+  if (mcp.error) html += '<div class="muted-note">mcp: ' + escHtml(mcp.error) + '</div>';
+
+  html += '<div class="sect-h">Imported MCP servers</div>';
+  if (imported.length === 0) {
+    html += '<div class="empty">No MCP servers imported yet.</div>';
+  } else {
+    html += '<div class="card"><div class="body"><table><thead><tr><th>Name</th><th>Source</th><th>Status</th><th>Tools</th><th>Used by</th><th></th><th></th></tr></thead><tbody>';
+    for (var i = 0; i < imported.length; i++) {
+      var m = imported[i];
+      var expanded = !!capabilitiesState.expandedImports[m.id];
+      var usedBy = (m.usedBySessions || []).length;
+      html += '<tr data-card-id="' + escHtml(m.id) + '" data-row-id="' + escHtml(m.id) + '">'
+        + '<td>' + escHtml(m.alias || m.name) + '</td>'
+        + '<td>' + escHtml(m.source) + '</td>'
+        + '<td>' + capStatusTagHtml(m.status) + (m.error ? ' <span class="tag bad" title="' + escHtml(m.error) + '">!</span>' : '') + '</td>'
+        + '<td>' + (m.toolCount != null ? String(m.toolCount) : "&#8211;") + '</td>'
+        + '<td>' + (usedBy > 0 ? "used by " + usedBy + " session" + (usedBy === 1 ? "" : "s") : "unused") + '</td>'
+        + '<td><button type="button" class="btn-sm" data-cap-import-tools="' + escHtml(m.id) + '" data-cap-import-alias="' + escHtml(m.alias || m.name) + '">' + (expanded ? "hide tools" : "show tools") + '</button></td>'
+        + '<td><button type="button" class="btn-sm danger" data-cap-import-remove="' + escHtml(m.id) + '">remove</button></td>'
+        + '</tr>'
+        + '<tr><td colspan="7"><div id="cap-import-tools-' + escHtml(pathId(m.id)) + '"></div></td></tr>';
+    }
+    html += '</tbody></table></div></div>';
+  }
+
+  html += '<div class="sect-h">Reach</div>';
+  var slugs = Object.keys(reach);
+  if (slugs.length === 0) {
+    html += '<div class="empty">No adapters installed.</div>';
+  } else {
+    html += '<div class="card"><div class="body">';
+    for (var s = 0; s < slugs.length; s++) {
+      var r2 = reach[slugs[s]];
+      var cls = r2 === "default" ? "ok" : r2 === "on-request" ? "" : "bad";
+      html += '<span class="tag ' + cls + '" style="margin:2px 4px 2px 0">' + escHtml(slugs[s]) + ": " + escHtml(r2) + '</span>';
+    }
+    html += '<div class="muted-note">"default" harnesses get the imported pool automatically; "on-request" harnesses can mount it explicitly via <code>mcpServers</code>; "none" harnesses cannot reach it at all. Either way, reach is via <code>mcp_imported_tool_list</code> / <code>mcp_imported_call</code>, not a direct per-server mount.</div>';
+    html += '</div></div>';
+  }
+
+  html += '<div class="sect-h">Discovered, not imported</div>';
+  var notImported = discovered.filter(function (d) { return !d.imported; });
+  if (notImported.length === 0) {
+    html += '<div class="empty">Nothing new discovered.</div>';
+  } else {
+    html += '<div class="card"><div class="body"><table><thead><tr><th>Name</th><th>Source</th><th>Type</th><th></th></tr></thead><tbody>';
+    for (var d = 0; d < notImported.length; d++) {
+      var disc = notImported[d];
+      html += '<tr data-card-id="' + escHtml(disc.id) + '" data-row-id="' + escHtml(disc.id) + '"><td>' + escHtml(disc.name) + '</td><td>' + escHtml(disc.source) + '</td><td>' + escHtml(disc.type) + '</td>'
+        + '<td><button type="button" class="btn-sm primary" data-cap-import="' + escHtml(disc.id) + '">import</button></td></tr>';
+    }
+    html += '</tbody></table></div></div>';
+  }
+  return html;
+}
+
+function wireMcpTab(container) {
+  var toolBtns = container.querySelectorAll("[data-cap-import-tools]");
+  for (var i = 0; i < toolBtns.length; i++) {
+    (function (btn) {
+      btn.addEventListener("click", function () {
+        var id = btn.getAttribute("data-cap-import-tools");
+        var alias = btn.getAttribute("data-cap-import-alias");
+        var expanded = !capabilitiesState.expandedImports[id];
+        capabilitiesState.expandedImports[id] = expanded;
+        btn.textContent = expanded ? "hide tools" : "show tools";
+        var host = document.getElementById("cap-import-tools-" + pathId(id));
+        if (!host) return;
+        if (!expanded) { host.innerHTML = ""; return; }
+        host.innerHTML = '<div class="muted-note">Loading tools&hellip;</div>';
+        loadTool("mcp_imported_tool_list", { alias: alias }).then(function (r) {
+          if (!r.ok) { host.innerHTML = '<div class="muted-note">mcp_imported_tool_list: ' + escHtml(r.message) + '</div>'; return; }
+          var tools = (r.data && r.data.tools) || [];
+          if (tools.length === 0) { host.innerHTML = '<div class="empty">No tools (server may not be connected yet).</div>'; return; }
+          var h = '<div class="muted-note">' + tools.length + ' tool(s):</div><ul>';
+          for (var t = 0; t < tools.length; t++) {
+            h += '<li><code>' + escHtml(tools[t].name) + '</code>' + (tools[t].description ? " &mdash; " + escHtml(tools[t].description) : "") + '</li>';
+          }
+          h += '</ul>';
+          host.innerHTML = h;
+        });
+      });
+    })(toolBtns[i]);
+  }
+
+  var removeBtns = container.querySelectorAll("[data-cap-import-remove]");
+  for (var r3 = 0; r3 < removeBtns.length; r3++) {
+    (function (btn) {
+      var id = btn.getAttribute("data-cap-import-remove");
+      btn.addEventListener("click", function () {
+        confirmClick("cap-import-remove-" + id, btn, function () {
+          loadTool("mcp_imported_remove", { id: id }).then(function (res) {
+            if (!res.ok) { toast(res.message, true); return; }
+            toast("Removed.", false);
+            loadCapabilities();
+          });
+        });
+      });
+    })(removeBtns[r3]);
+  }
+
+  var importBtns = container.querySelectorAll("[data-cap-import]");
+  for (var im = 0; im < importBtns.length; im++) {
+    (function (btn) {
+      var id = btn.getAttribute("data-cap-import");
+      btn.addEventListener("click", function () {
+        confirmClick("cap-import-" + id, btn, function () {
+          loadTool("mcp_import", { sourceMcpId: id }).then(function (res) {
+            if (!res.ok) { toast(res.message, true); return; }
+            toast("Imported.", false);
+            loadCapabilities();
+          });
+        });
+      });
+    })(importBtns[im]);
+  }
+}
+
+function capPackHasSkill(packs, name) {
+  for (var i = 0; i < packs.length; i++) {
+    if ((packs[i].skills || []).indexOf(name) !== -1) return true;
+  }
+  return false;
+}
+
+function renderSkillsTabHtml(skills) {
+  var harnesses = skills.byHarness || [];
+  var packs = skills.packs || [];
+  var defaults = skills.defaults || { global: [], byAdapter: {} };
+  var html = "";
+  if (skills.error) html += '<div class="muted-note">skills: ' + escHtml(skills.error) + '</div>';
+
+  html += '<div class="sect-h">Skills by harness</div>';
+  if (harnesses.length === 0) {
+    html += '<div class="empty">No adapters installed.</div>';
+    return html;
+  }
+
+  var skillNames = {};
+  for (var p = 0; p < packs.length; p++) {
+    for (var s = 0; s < (packs[p].skills || []).length; s++) skillNames[packs[p].skills[s]] = true;
+  }
+  for (var h = 0; h < harnesses.length; h++) {
+    for (var i2 = 0; i2 < (harnesses[h].installed || []).length; i2++) skillNames[harnesses[h].installed[i2]] = true;
+    for (var n = 0; n < (harnesses[h].native || []).length; n++) skillNames[harnesses[h].native[n]] = true;
+  }
+  var names = Object.keys(skillNames).sort();
+
+  html += '<div class="card"><div class="body" style="overflow-x:auto"><table><thead><tr><th>Skill</th>';
+  for (var c = 0; c < harnesses.length; c++) {
+    var target = harnesses[c].target;
+    html += '<th data-card-id="' + escHtml(harnesses[c].adapter) + '">' + escHtml(harnesses[c].adapter)
+      + '<div class="cfg-help">' + (target ? escHtml(target.dir || "") : "unsupported") + '</div>'
+      + (harnesses[c].spawnOption ? '<div class="cfg-help">skills spawn option</div>' : '')
+      + '</th>';
+  }
+  html += '</tr></thead><tbody>';
+
+  html += '<tr><td><em>defaults</em></td>';
+  for (var d = 0; d < harnesses.length; d++) {
+    var adapterDefaults = defaults.byAdapter[harnesses[d].adapter] || [];
+    var all = defaults.global.concat(adapterDefaults);
+    html += '<td>' + (all.length > 0 ? escHtml(all.join(", ")) : "&#8211;") + '</td>';
+  }
+  html += '</tr>';
+
+  if (names.length === 0) {
+    html += '<tr><td colspan="' + (harnesses.length + 1) + '">No skills found in any installed pack.</td></tr>';
+  }
+  for (var nm = 0; nm < names.length; nm++) {
+    html += '<tr><td>' + escHtml(names[nm]) + '</td>';
+    for (var hc = 0; hc < harnesses.length; hc++) {
+      var row = harnesses[hc];
+      var cell;
+      if (!row.target) {
+        cell = '<span class="tag">unsupported</span>';
+      } else if ((row.installed || []).indexOf(names[nm]) !== -1) {
+        cell = '<span class="tag ok">installed</span>';
+      } else if ((row.native || []).indexOf(names[nm]) !== -1) {
+        cell = '<span class="tag ok">native</span>';
+      } else if (capPackHasSkill(packs, names[nm])) {
+        cell = '<span class="tag warn-tag">available</span><div class="cfg-help"><code>agentproto install skill/' + escHtml(names[nm]) + '</code></div>';
+      } else {
+        cell = '<span class="tag">&#8211;</span>';
+      }
+      html += '<td>' + cell + '</td>';
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table></div></div>';
+
+  html += '<div class="sect-h">Packs</div>';
+  if (packs.length === 0) {
+    html += '<div class="empty">No skill packs found under ~/.agentproto/packs.</div>';
+  } else {
+    html += '<div class="card"><div class="body"><table><thead><tr><th>Pack</th><th>Version</th><th>Skills</th></tr></thead><tbody>';
+    for (var pk = 0; pk < packs.length; pk++) {
+      html += '<tr data-card-id="' + escHtml(packs[pk].name) + '"><td>' + escHtml(packs[pk].name) + '</td><td>' + escHtml(packs[pk].version || "") + '</td><td>' + escHtml((packs[pk].skills || []).join(", ")) + '</td></tr>';
+    }
+    html += '</tbody></table></div></div>';
+  }
+  return html;
 }
 
 // ============================================================
