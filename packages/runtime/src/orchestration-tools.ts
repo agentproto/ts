@@ -126,6 +126,7 @@ const compactWorkflowRun = (r: WorkflowRun) => ({
   ...(r.error !== undefined ? { error: r.error } : {}),
   ...(r.awaitingApproval !== undefined ? { awaitingApproval: r.awaitingApproval } : {}),
   ...(r.awaitingSuspend !== undefined ? { awaitingSuspend: r.awaitingSuspend } : {}),
+  ...(r.retryOf !== undefined ? { retryOf: r.retryOf } : {}),
 })
 
 /** COMPACT `policy_list` row — the run summary; gate stdout/verdict/commitPlan stay behind `full: true`. */
@@ -704,9 +705,16 @@ function truncateCompactError(error: string): string {
  */
 export function compactWorkflowRunStatus(
   run: WorkflowRun,
-): Omit<WorkflowRun, "artifacts"> & { artifacts?: { key: string; path: string; size: number }[] } {
+): Omit<WorkflowRun, "artifacts" | "startStages"> & { artifacts?: { key: string; path: string; size: number }[] } {
+  // `startStages` is pure internal plumbing (AIP-58 §6 `retry()`'s own
+  // source-reconstruction record) — never useful to a caller polling status,
+  // and potentially large (every step's full prompt text). Dropped even
+  // under `full: true` (that flag skips `compactWorkflowRunStatus`
+  // entirely and returns the raw `WorkflowRun`, same as today — this
+  // function only governs the COMPACT default).
+  const { startStages: _startStages, ...rest } = run
   return {
-    ...run,
+    ...rest,
     ...(run.error !== undefined ? { error: truncateCompactError(run.error) } : {}),
     // AIP-58 §4 — compact projection of Run.artifacts[]: key/path/size only
     // (sha256/contentType/stepId are `full: true` detail).
@@ -1238,6 +1246,39 @@ export function registerOrchestrationTools(
         workflowRunner.cancel(input.runId)
         const run = workflowRunner.status(input.runId)
         return { content: [{ type: "text", text: JSON.stringify({ runId: input.runId, status: run?.status ?? "not_found" }) }] }
+      },
+    )
+
+    server.tool(
+      "workflow_retry",
+      "AIP-58 §6 `run.retry` — given a `failed` or `cancelled` runId, starts a NEW " +
+        "run (its own runId + AIP-58 §4 workspace, `retryOf` pointing at the " +
+        "original) that replays every step the original run already completed " +
+        "from its own journal — no re-spawn, no re-execution — and re-executes " +
+        "only from the first step that never succeeded onward. Works even when " +
+        "the original run never passed a `cacheKey`: every run journals its own " +
+        "steps internally for exactly this purpose. Refused on a `done` " +
+        "(succeeded) or still in-flight run — there's nothing to retry FROM. " +
+        "An `input` override re-resolves every step against it; a step whose " +
+        "resolved input changes as a result naturally misses the journal and " +
+        "re-executes (same as any other downstream step it feeds).",
+      {
+        runId: z.string().describe("A failed or cancelled run id to retry, from `workflow_start`/`workflow_run_file`/`workflow_status`."),
+        input: z.record(z.string(), z.unknown()).optional().describe("Override the workflow's `$input` binding for the new run (startFromFile-originated runs only). Omit to reuse the original run's input verbatim."),
+      },
+      async input => {
+        const result = await workflowRunner.retry(input.runId, input.input !== undefined ? { input: input.input } : undefined)
+        if (!result.ok) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ error: result.error, message: result.message }) }],
+            isError: true,
+          }
+        }
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ runId: result.run.runId, status: result.run.status, retryOf: input.runId }) },
+          ],
+        }
       },
     )
 

@@ -301,9 +301,13 @@ try {
 
 This is a manual retry, not a resumable run object — `runWorkflow` has no
 notion of "the run that failed"; the cacheKey is just a namespace the caller
-re-supplies. A first-class `run.retry`/`run.replay` verb that resumes a named
-run without the caller re-threading `workflow`/`input`/`cacheKey` by hand is
-AIP-58 P5, not implemented here.
+re-supplies. A first-class `run.retry` verb that resumes a named run without
+the caller re-threading `workflow`/`input`/`cacheKey` by hand — AIP-58 P5 —
+is a HOST concern, not something this transport-agnostic package implements
+itself: see `@agentproto/runtime`'s `WorkflowRunner.retry()` / the
+`workflow_retry` MCP tool, which owns runId allocation and an always-on
+internal journal (so it works even when the original run never passed a
+`cacheKey` at all — every step it runs is journaled internally either way).
 
 ### Run workspace (AIP-58 §4)
 

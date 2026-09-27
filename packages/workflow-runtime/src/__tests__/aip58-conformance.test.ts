@@ -27,6 +27,15 @@
  * this transport-agnostic layer, not merely unimplemented — pointing at
  * that file rather than repeating the old "not implemented" reason.
  *
+ * V7 (journal-sourced replay) is likewise genuinely green as of P5 — but
+ * `run.retry` is a HOST concern (`packages/runtime`'s `WorkflowRunner.retry`
+ * owns runId allocation, the run record, and the always-on internal
+ * journal; `runWorkflow` here has none of those, only the underlying
+ * cacheable-step journal primitive P5 builds on), so it's conformance-
+ * tested in `packages/runtime/src/__tests__/workflow-retry.test.ts` instead
+ * (see that file's own module doc comment for how its narrower `run.retry`
+ * shape maps onto the vector's more general `run.replay`).
+ *
  * V1 (input validation, P1) drives the same validate-before-dispatch seam
  * `runtime/workflow-runner.ts`'s `startFromFile` uses (`validateWorkflowInput`),
  * against a fake tool registry, and asserts zero steps run on a rejected
@@ -85,7 +94,7 @@ const NOT_YET_GREEN: Record<string, string> = {
   V4: "green as of P3b, but at the host layer — see packages/runtime/src/__tests__/aip58-events.test.ts (runWorkflow itself has no persistence/reload to restart).",
   V5: "green as of P4, but at the host layer (disjoint <runsRoot>/<runId>/ allocation + run.publish are host concerns) — see packages/runtime/src/__tests__/run-workspace.test.ts.",
   V6: "green as of P3b, but at the host layer — see packages/runtime/src/__tests__/aip58-events.test.ts (runWorkflow itself has no owner/lease concept).",
-  V7: "needs run.replay + journal-sourced step reuse — StepCache exists but has no replay verb (P5 Journal).",
+  V7: "green as of P5, but at the host layer (runId allocation + the always-on internal journal are host concerns) — see packages/runtime/src/__tests__/workflow-retry.test.ts.",
 }
 
 /** Minimal fake {@link AgentSessionHost} for the V2/V8 vectors below — a
