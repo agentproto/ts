@@ -68,12 +68,15 @@ steps:
 
   - id: reviewQueue
     kind: transform
-    name: Queue unreviewed review candidates, one per tip sha
+    name: Queue unreviewed review candidates, one per branch name
     description: >-
       Entry-based — no string expression language for `compute` in the
       declarative manifest. See entry.mjs's buildReviewQueue: dedupes by tip
-      sha, skips tips that already carry a stored verdict, and orders newest
-      tip first, then the larger residual.
+      sha, then merges candidates whose refs share one branch name (a local
+      branch and its remote twin review together even when their tips
+      diverged — the newest tip is primary, the older ones ride along as
+      otherTips), skips names whose every tip already carries a stored
+      verdict, and orders oldest first, then the larger residual.
 
   - id: reviewCandidates
     kind: transform
@@ -90,16 +93,18 @@ steps:
 
   - id: review
     kind: map
-    name: Review every unmerged candidate
+    name: Review every unmerged branch
     description: >-
-      One reviewer-agent turn per unique tip sha, parallelism 4. Model is
+      One reviewer-agent turn per branch name, parallelism 4. Model is
       picked per item by entry.mjs: haiku when residualFileCount <= 3, else
-      sonnet. The agent records its verdict via branch_gc_verdict — this
-      step never applies anything. After the turn, branch_gc_verdict_get
-      checks the store for that tip; with no verdict, the SAME session is
-      re-prompted once, then one fresh large-model reviewer retries, and
-      only then is the tip left as a gap. Each item first creates its own
-      detached review worktree of the tip (`branch_gc_review_worktree`),
+      sonnet. The agent records its verdict via branch_gc_verdict — one call
+      PER tip the item carries (an item may hold a local + a remote tip that
+      diverged); this step never applies anything. After the turn,
+      branch_gc_verdict_get checks the store for EVERY tip; with any
+      verdict missing, the SAME session is re-prompted once, then one fresh
+      large-model reviewer retries, and only then are the still-missing tips
+      left as gaps. Each item first creates its own
+      detached review worktree of the primary tip (`branch_gc_review_worktree`),
       runs its reviewers there — never in the live checkout — and removes it
       last. Three spawn
       failures in a row open the engine's circuit breaker: the remaining

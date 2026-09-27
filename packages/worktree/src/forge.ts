@@ -73,6 +73,16 @@ export interface ForgeClient {
    * those callers, never as "no open PRs".
    */
   listOpenPullRequests?(): Promise<ForgePullRequestRef[]>
+  /**
+   * Every MERGED PR/MR in the repo, in one round-trip — the bulk twin of
+   * `listOpenPullRequests` for the merged-head shortcut (`branch-gc.ts`): a
+   * branch whose tip is EXACTLY a merged PR's head commit lost nothing (that
+   * commit was reviewed and merged), so it is reclaimable without an LLM
+   * review. Optional so existing test doubles keep compiling; a client that
+   * doesn't implement it is treated as "merged-PR detection unavailable" by
+   * those callers, never as "no merged PRs".
+   */
+  listMergedPullRequests?(): Promise<ForgePullRequestRef[]>
 }
 
 /** A client that always reports itself unreachable — the "no gh, no token" case. */
@@ -88,6 +98,9 @@ export class UnreachableForgeClient implements ForgeClient {
     throw new ForgeUnavailableError(this.reason)
   }
   async listOpenPullRequests(): Promise<ForgePullRequestRef[]> {
+    throw new ForgeUnavailableError(this.reason)
+  }
+  async listMergedPullRequests(): Promise<ForgePullRequestRef[]> {
     throw new ForgeUnavailableError(this.reason)
   }
 }
@@ -223,6 +236,12 @@ export class GhCliForgeClient implements ForgeClient {
     return this.parseOutput(stdout, ghPrListSchema, args).map(normalizeGhPrListItem)
   }
 
+  async listMergedPullRequests(): Promise<ForgePullRequestRef[]> {
+    const args = ["pr", "list", "--state", "merged", "--limit", "1000", "--json", "number,state,headRefName,headRefOid,mergedAt"]
+    const stdout = await this.run(args)
+    return this.parseOutput(stdout, ghPrListSchema, args).map(normalizeGhPrListItem)
+  }
+
   async ensurePullHeadFetched(prNumber: number, oid: string): Promise<void> {
     const check = await execArgv("git", ["-C", this.repoRoot, "cat-file", "-e", `${oid}^{commit}`], this.repoRoot)
     if (check.exitCode === 0) return
@@ -348,6 +367,20 @@ export class RestForgeClient implements ForgeClient {
       if (batch.length < 100) break
     }
     return all
+  }
+
+  async listMergedPullRequests(): Promise<ForgePullRequestRef[]> {
+    const all: ForgePullRequestRef[] = []
+    for (let page = 1; page <= 10; page++) {
+      const res = await this.get(`/repos/${this.owner}/${this.repo}/pulls?state=closed&per_page=100&page=${page}`)
+      if (!res.ok) {
+        throw new ForgeUnavailableError(`GitHub REST pulls?state=closed failed: ${res.status} ${res.statusText}`)
+      }
+      const batch = await this.pullRequestList(res)
+      all.push(...batch)
+      if (batch.length < 100) break
+    }
+    return all.filter((pr) => pr.merged)
   }
 
   async ensurePullHeadFetched(prNumber: number, oid: string): Promise<void> {

@@ -539,6 +539,123 @@ describe("repo-maintenance maintain workflow — rendered reviewer prompt", () =
   })
 })
 
+describe("repo-maintenance maintain workflow — review queue grouping (FIX-4: one reviewer per branch name)", () => {
+  const SHA_NEW = "1".repeat(40)
+  const SHA_OLD = "2".repeat(40)
+  const sha = (c: string) => c.repeat(40)
+
+  function reviewEntry(over: Record<string, unknown>) {
+    return {
+      kind: "local",
+      date: "2026-01-01T00:00:00Z",
+      author: "a",
+      subject: "s",
+      ageDays: 10,
+      class: "review",
+      status: "unmerged",
+      history: "current",
+      ahead: 1,
+      behind: 0,
+      residualFiles: [],
+      residualFileCount: 1,
+      ...over,
+    }
+  }
+
+  function planOf(entries: Array<Record<string, unknown>>) {
+    return {
+      mode: "plan",
+      plan: { repoRoot: "/repo", repoName: "repo", base: "origin/main", baseSha: sha("c"), scopes: ["local", "remote"], entries },
+      summary: { byClass: { local: { reclaim: 0, review: entries.length, hold: 0 }, remote: { reclaim: 0, review: 0, hold: 0 }, orphan: { reclaim: 0, review: 0, hold: 0 } }, byStatus: {} },
+    }
+  }
+
+  async function buildQueue(plan: unknown) {
+    const entry = await import(join(dirname(WORKFLOW_PATH), "entry.mjs")) as { buildReviewQueue: (p: unknown) => { queue: Array<Record<string, unknown>>; alreadyReviewed: number } }
+    return entry.buildReviewQueue(plan)
+  }
+
+  it("merges a local branch and its DIVERGED remote twin into one candidate: newest tip primary, older tip in otherTips, refs unioned", async () => {
+    const { queue, alreadyReviewed } = await buildQueue(planOf([
+      // Local `foo` moved on to a NEWER tip than its remote twin.
+      reviewEntry({
+        kind: "local",
+        name: "foo",
+        ref: "refs/heads/foo",
+        sha: SHA_NEW,
+        date: "2026-02-02T00:00:00Z",
+        ageDays: 5,
+      }),
+      reviewEntry({
+        kind: "remote",
+        remote: "origin",
+        name: "foo",
+        ref: "refs/remotes/origin/foo",
+        sha: SHA_OLD,
+        date: "2026-01-01T00:00:00Z",
+        ageDays: 10,
+      }),
+    ]))
+    expect(queue).toHaveLength(1)
+    const item = queue[0]!
+    expect(item.name).toBe("foo")
+    expect(item.sha).toBe(SHA_NEW) // primary = the NEWEST tip
+    expect(item.otherTips).toEqual([{ sha: SHA_OLD, refs: ["refs/remotes/origin/foo"] }])
+    expect(item.allTips).toEqual([
+      { sha: SHA_NEW, refs: ["refs/heads/foo"] },
+      { sha: SHA_OLD, refs: ["refs/remotes/origin/foo"] },
+    ])
+    expect(item.refs).toEqual(["refs/heads/foo", "refs/remotes/origin/foo"])
+    expect(alreadyReviewed).toBe(0)
+  })
+
+  it("a name with one reviewed and one unreviewed tip stays queued with only the unreviewed tips; a fully reviewed name counts as alreadyReviewed", async () => {
+    const { queue, alreadyReviewed } = await buildQueue(planOf([
+      // `foo`: local tip reviewed, remote tip not — still needs a review.
+      reviewEntry({
+        kind: "local",
+        name: "foo",
+        ref: "refs/heads/foo",
+        sha: SHA_NEW,
+        verdict: { triage: "obsolete", agree: true, reviewer: "repo-maintenance-reviewer" },
+      }),
+      reviewEntry({
+        kind: "remote",
+        remote: "origin",
+        name: "foo",
+        ref: "refs/remotes/origin/foo",
+        sha: SHA_OLD,
+      }),
+      // `bar`: its only tip carries a verdict — fully reviewed.
+      reviewEntry({
+        name: "bar",
+        ref: "refs/heads/bar",
+        sha: sha("3"),
+        verdict: { triage: "obsolete", agree: true, reviewer: "repo-maintenance-reviewer" },
+      }),
+    ]))
+    expect(queue).toHaveLength(1)
+    expect(queue[0]!.name).toBe("foo")
+    expect(queue[0]!.sha).toBe(SHA_OLD) // only the UNREVIEWED tip remains; it is the primary
+    expect(queue[0]!.allTips).toEqual([{ sha: SHA_OLD, refs: ["refs/remotes/origin/foo"] }])
+    expect(queue[0]!.otherTips).toBeUndefined()
+    expect(alreadyReviewed).toBe(1)
+  })
+
+  it("same-tip local+remote twins still collapse to one candidate with no otherTips (unchanged behavior)", async () => {
+    const { queue, alreadyReviewed } = await buildQueue(planOf([
+      reviewEntry({ name: "twin", ref: "refs/heads/twin", sha: SHA_NEW }),
+      reviewEntry({ kind: "remote", remote: "origin", name: "twin", ref: "refs/remotes/origin/twin", sha: SHA_NEW }),
+    ]))
+    expect(queue).toHaveLength(1)
+    expect(queue[0]!.sha).toBe(SHA_NEW)
+    expect(queue[0]!.refs).toEqual(["refs/heads/twin", "refs/remotes/origin/twin"])
+    expect(queue[0]!.allTips).toEqual([{ sha: SHA_NEW, refs: ["refs/heads/twin", "refs/remotes/origin/twin"] }])
+    expect(queue[0]!.otherTips).toBeUndefined()
+    expect(alreadyReviewed).toBe(0)
+  })
+})
+
 describe("repo-maintenance maintain workflow — at scale (FIX-3 dogfood)", () => {
   const sha = (i: number) => i.toString(16).padStart(40, "0")
   /** Every tool call of the most recent `run` (also when it rejected). */
