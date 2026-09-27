@@ -6,7 +6,9 @@ import {
   manifestSha,
   rangeSha,
   sha256Hex,
+  toLaneResult,
   verifyAttestation,
+  type Attestation,
   type LaneResult,
 } from "../index.js"
 
@@ -52,6 +54,79 @@ describe("buildAttestation", () => {
       binding: "ci",
       rangeSha: rangeSha(TARGET),
     })
+  })
+})
+
+describe("provenance fields (requester, pr, lane model)", () => {
+  const PR = { provider: "github" as const, repo: "acme/repo", number: 42, url: "https://github.com/acme/repo/pull/42" }
+
+  it("are optional: an attestation without them carries no empty keys", () => {
+    const att = build()
+    expect("requester" in att).toBe(false)
+    expect("pr" in att).toBe(false)
+    // An empty requester (no session, no author) is dropped, not recorded as {}.
+    const empty = buildAttestation({
+      runId: "r",
+      reviewId: "demo",
+      manifestSha: manifestSha(SOURCE),
+      binding: "ci",
+      target: TARGET,
+      lanes: lanes("pass"),
+      attestor: { daemon: "d", presets: [] },
+      requester: {},
+    })
+    expect("requester" in empty).toBe(false)
+  })
+
+  it("round-trip through JSON and still verify (same schema version)", () => {
+    const att = buildAttestation({
+      runId: "run-1",
+      reviewId: "demo",
+      manifestSha: manifestSha(SOURCE),
+      binding: "ci",
+      target: TARGET,
+      lanes: [
+        {
+          id: "correctness",
+          kind: "agent",
+          status: "pass",
+          blocking: true,
+          findings: [],
+          durationMs: 9,
+          sessionId: "s-1",
+          preset: "kimi",
+          model: "kimi-k2",
+        },
+      ],
+      attestor: { daemon: "host", presets: ["kimi"] },
+      requester: { sessionId: "caller-1", gitAuthor: { name: "Ada", email: "ada@example.com" } },
+      pr: PR,
+      createdAt: "2026-09-25T00:00:00.000Z",
+    })
+    const back = JSON.parse(JSON.stringify(att)) as Attestation
+    expect(back).toEqual(att)
+    expect(back.schema).toBe(ATTESTATION_SCHEMA)
+    expect(back.requester).toEqual({ sessionId: "caller-1", gitAuthor: { name: "Ada", email: "ada@example.com" } })
+    expect(back.pr).toEqual(PR)
+    expect(back.lanes[0]!.model).toBe("kimi-k2")
+    expect(verifyAttestation(back, { manifestSource: SOURCE, verdict: "pass" })).toEqual({ ok: true, problems: [] })
+  })
+
+  it("toLaneResult carries an agent lane's model through", () => {
+    const check = {
+      id: "correctness",
+      kind: "agent" as const,
+      preset: "kimi",
+      rubric: "r.md",
+      blockOn: "high" as const,
+      blocking: true,
+      timeoutMs: 1000,
+      effects: false as const,
+    }
+    const r = toLaneResult(check, { outcome: "reported", report: { findings: [] }, sessionId: "s", preset: "kimi", model: "m-1" }, 1)
+    expect(r).toMatchObject({ status: "pass", sessionId: "s", preset: "kimi", model: "m-1" })
+    const skipped = toLaneResult(check, { outcome: "skipped", error: "x", preset: "kimi" }, 1)
+    expect("model" in skipped).toBe(false)
   })
 })
 

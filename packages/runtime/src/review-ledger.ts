@@ -17,6 +17,12 @@
  * what gets attested (the checkout path, the manifest path, the manifest's
  * `verdict.exportDir`).
  *
+ * Beside each entry sits an optional `<rangeSha>.annotations.json`
+ * ({@link LedgerAnnotations}): the MUTABLE follow-up layer — a PR link found
+ * after the fact, and `review_pr` status snapshots appended over time. It is
+ * never hashed into (or exported with) the attestation, so annotating an
+ * entry can't disturb a signature over it.
+ *
  * Same persistence primitives as the sibling JSON stores (`node:fs/promises`,
  * write-tmp + rename). The root is injectable so tests never touch
  * `~/.agentproto`.
@@ -25,7 +31,13 @@
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { ledgerKeyOf, type Attestation, type LedgerKey, type RubricDigest } from "@agentproto/review"
+import {
+  ledgerKeyOf,
+  type Attestation,
+  type LedgerKey,
+  type ReviewPrRef,
+  type RubricDigest,
+} from "@agentproto/review"
 
 /** Host-local metadata stored beside an attestation (never exported). */
 export interface LedgerHostMeta {
@@ -40,6 +52,22 @@ export interface LedgerHostMeta {
 export interface LedgerEntry {
   attestation: Attestation
   host: LedgerHostMeta
+}
+
+/** One `review_pr` status fetch. */
+export interface PrStatusSnapshot {
+  /** ISO timestamp of the fetch. */
+  fetchedAt: string
+  state: "open" | "merged" | "closed"
+  reviews: Array<{ login: string; state: string; submittedAt: string }>
+  checks?: Array<{ name: string; conclusion: string | null }>
+}
+
+/** The mutable annotations sidecar of a ledger entry. */
+export interface LedgerAnnotations {
+  pr?: ReviewPrRef
+  /** Oldest first — each `review_pr` call appends one. */
+  prStatus?: PrStatusSnapshot[]
 }
 
 export interface ReviewLedgerFilter {
@@ -60,7 +88,21 @@ export interface ReviewLedger {
   findByRunId(runId: string): Promise<LedgerEntry | undefined>
   /** Entries matching `filter`, newest first. */
   list(filter?: ReviewLedgerFilter): Promise<LedgerEntry[]>
+  /** The annotations sidecar of `key` (`{}` when there is none). */
+  getAnnotations(key: LedgerKey): Promise<LedgerAnnotations>
+  /** Read-modify-write the annotations sidecar of `key`; returns the result. */
+  updateAnnotations(key: LedgerKey, update: (current: LedgerAnnotations) => LedgerAnnotations): Promise<LedgerAnnotations>
 }
+
+/** Record `pr` as the entry's PR link (replacing any previous link). */
+export const withPr =
+  (pr: ReviewPrRef) =>
+  (a: LedgerAnnotations): LedgerAnnotations => ({ ...a, pr })
+
+/** Append one status snapshot. */
+export const withPrStatus =
+  (snapshot: PrStatusSnapshot) =>
+  (a: LedgerAnnotations): LedgerAnnotations => ({ ...a, prStatus: [...(a.prStatus ?? []), snapshot] })
 
 export const defaultReviewLedgerRoot = (): string => join(homedir(), ".agentproto", "reviews")
 
@@ -72,6 +114,19 @@ export function repoSlug(repoRemote: string): string {
 
 function keyPath(root: string, key: LedgerKey): string {
   return join(root, repoSlug(key.repoRemote), key.manifestSha, key.binding, `${key.rangeSha}.json`)
+}
+
+const ANNOTATIONS_SUFFIX = ".annotations.json"
+
+function annotationsPath(root: string, key: LedgerKey): string {
+  return join(root, repoSlug(key.repoRemote), key.manifestSha, key.binding, `${key.rangeSha}${ANNOTATIONS_SUFFIX}`)
+}
+
+async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
+  await mkdir(join(path, ".."), { recursive: true })
+  const tmp = `${path}.tmp.${process.pid}.${Math.random().toString(36).slice(2)}`
+  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf8")
+  await rename(tmp, path)
 }
 
 const sameRubrics = (a: readonly RubricDigest[], b: readonly RubricDigest[]): boolean => {
@@ -105,7 +160,9 @@ async function subdirs(dir: string): Promise<string[]> {
 async function jsonFiles(dir: string): Promise<string[]> {
   try {
     const ents = await readdir(dir, { withFileTypes: true })
-    return ents.filter((e) => e.isFile() && e.name.endsWith(".json")).map((e) => join(dir, e.name))
+    return ents
+      .filter((e) => e.isFile() && e.name.endsWith(".json") && !e.name.endsWith(ANNOTATIONS_SUFFIX))
+      .map((e) => join(dir, e.name))
   } catch {
     return []
   }
@@ -113,6 +170,18 @@ async function jsonFiles(dir: string): Promise<string[]> {
 
 export function createReviewLedger(opts: { root?: string } = {}): ReviewLedger {
   const root = opts.root ?? defaultReviewLedgerRoot()
+  /** Per-sidecar write chain: two concurrent `updateAnnotations` on one key
+   *  in this process never lose an append. */
+  const annotationLocks = new Map<string, Promise<unknown>>()
+
+  async function readAnnotations(key: LedgerKey): Promise<LedgerAnnotations> {
+    try {
+      const parsed = JSON.parse(await readFile(annotationsPath(root, key), "utf8")) as LedgerAnnotations
+      return parsed && typeof parsed === "object" ? parsed : {}
+    } catch {
+      return {}
+    }
+  }
 
   async function scan(filter: ReviewLedgerFilter): Promise<LedgerEntry[]> {
     const repoDirs = filter.repoRemote ? [join(root, repoSlug(filter.repoRemote))] : await subdirs(root)
@@ -140,10 +209,7 @@ export function createReviewLedger(opts: { root?: string } = {}): ReviewLedger {
     root,
     async put(entry) {
       const path = keyPath(root, ledgerKeyOf(entry.attestation))
-      await mkdir(join(path, ".."), { recursive: true })
-      const tmp = `${path}.tmp.${process.pid}`
-      await writeFile(tmp, `${JSON.stringify(entry, null, 2)}\n`, "utf8")
-      await rename(tmp, path)
+      await writeJsonAtomic(path, entry)
       return path
     },
     async get(key) {
@@ -162,6 +228,22 @@ export function createReviewLedger(opts: { root?: string } = {}): ReviewLedger {
     },
     async list(filter = {}) {
       return scan(filter)
+    },
+    getAnnotations: readAnnotations,
+    async updateAnnotations(key, update) {
+      const path = annotationsPath(root, key)
+      const prev = annotationLocks.get(path) ?? Promise.resolve()
+      const next = prev.then(async () => {
+        const updated = update(await readAnnotations(key))
+        await writeJsonAtomic(path, updated)
+        return updated
+      })
+      const settled = next.catch(() => undefined)
+      annotationLocks.set(path, settled)
+      void settled.then(() => {
+        if (annotationLocks.get(path) === settled) annotationLocks.delete(path)
+      })
+      return next
     },
   }
 }

@@ -7,6 +7,9 @@
  *   review_cancel  cancel a running review (lane sessions are killed)
  *   review_ledger  list recorded attestations
  *   review_export  write one attestation out as a standalone JSON file
+ *   review_pr      follow a recorded review to its GitHub PR (via `gh`):
+ *                  link it, snapshot the PR's state/reviews/checks into the
+ *                  entry's annotations, return the combined view
  *
  * Async pattern mirrors `workflow_start`/`workflow_status`: `review_run`
  * blocks by default (`wait: true`) — pass `wait: false` for long reviews and
@@ -22,8 +25,20 @@ import { mkdir, writeFile } from "node:fs/promises"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import { rangeSha as computeRangeSha, type Attestation } from "@agentproto/review"
-import type { LedgerEntry } from "./review-ledger.js"
+import { ledgerKeyOf, rangeSha as computeRangeSha, type Attestation, type ReviewPrRef } from "@agentproto/review"
+import { withPr, withPrStatus, type LedgerAnnotations, type LedgerEntry, type ReviewLedger } from "./review-ledger.js"
+import {
+  execGh,
+  fetchPrStatus,
+  findPrForCommit,
+  githubRepoOf,
+  isRemoteOf,
+  parsePrUrl,
+  prHeadSha,
+  prRef,
+  toPrLookupError,
+  type GhRunner,
+} from "./review-pr.js"
 import { resolveRepo, revParse, type ReviewRun, type ReviewRunner } from "./review-runner.js"
 
 function jsonContent(payload: unknown): { content: Array<{ type: "text"; text: string }> } {
@@ -46,14 +61,17 @@ function runView(run: ReviewRun): Record<string, unknown> {
     ...(run.attestation ? { verdict: run.attestation.verdict } : {}),
     ...(run.cached ? { cached: true } : {}),
     ...(run.error ? { error: run.error } : {}),
+    ...(run.supersededBy ? { supersededBy: run.supersededBy } : {}),
     ...(run.status === "running" ? { lanes: run.lanes.map((l) => ({ id: l.id, status: l.status })) } : {}),
     ...(run.attestation ? { attestation: run.attestation } : {}),
     ...(run.ledgerPath ? { ledgerPath: run.ledgerPath } : {}),
   }
 }
 
-/** Compact `review_ledger` row. */
-function ledgerRow(a: Attestation): Record<string, unknown> {
+/** Compact `review_ledger` row. `pr`: the annotation link, else the one
+ *  recorded in the attestation. */
+function ledgerRow(a: Attestation, annotations: LedgerAnnotations = {}): Record<string, unknown> {
+  const pr = annotations.pr ?? a.pr
   return {
     runId: a.runId,
     reviewId: a.reviewId,
@@ -66,8 +84,49 @@ function ledgerRow(a: Attestation): Record<string, unknown> {
     manifestSha: a.manifestSha,
     createdAt: a.createdAt,
     ...(a.dirty ? { dirty: true } : {}),
+    ...(a.requester ? { requester: a.requester } : {}),
+    ...(pr ? { pr } : {}),
     lanes: a.lanes.map((l) => ({ id: l.id, status: l.status, blocking: l.blocking })),
   }
+}
+
+const prRefSchema = z
+  .object({
+    provider: z.literal("github"),
+    repo: z.string().regex(/^[^/\s]+\/[^/\s]+$/, "must be owner/name"),
+    number: z.number().int().positive(),
+    url: z.string().url(),
+  })
+  .strict()
+
+/** Resolve `<base>..<head>` / 64-hex to a rangeSha (refs need `root`). */
+async function resolveRangeSha(range: string, root: string | undefined): Promise<string> {
+  if (HEX64.test(range)) return range
+  const m = range.match(/^(.+?)\.\.(.+)$/)
+  if (!m) throw new Error("`range` must be `<base>..<head>` or a 64-hex rangeSha")
+  const [base, head] = [m[1]!, m[2]!]
+  const isSha = (s: string) => /^[0-9a-f]{40}$/.test(s)
+  const baseSha = root ? await revParse(root, base) : base
+  const headSha = root ? await revParse(root, head) : head
+  if (!isSha(baseSha) || !isSha(headSha)) {
+    throw new Error("refs in `range` need `cwd` to resolve; otherwise pass full 40-hex shas")
+  }
+  return computeRangeSha({ baseSha, headSha })
+}
+
+/** Summary of an attestation for the `review_pr` view. */
+const attestationSummary = (a: Attestation): Record<string, unknown> => {
+  const { lanes: _lanes, ...rest } = ledgerRow(a)
+  return rest
+}
+
+/** The newest ledger entry whose annotations (or attestation) link `pr`. */
+async function findByPr(ledger: ReviewLedger, pr: { repo: string; number: number }): Promise<LedgerEntry | undefined> {
+  for (const e of (await ledger.list()).filter((x) => isRemoteOf(x.attestation.target.repoRemote, pr.repo))) {
+    const linked = (await ledger.getAnnotations(ledgerKeyOf(e.attestation))).pr ?? e.attestation.pr
+    if (linked && linked.repo === pr.repo && linked.number === pr.number) return e
+  }
+  return undefined
 }
 
 const HEX64 = /^[0-9a-f]{64}$/
@@ -75,12 +134,16 @@ const HEX64 = /^[0-9a-f]{64}$/
 export interface RegisterReviewToolsOptions {
   runner: ReviewRunner
   /** The calling session (from `?callerSessionId=`) — agent-lane reviewer
-   *  sessions nest under it. */
+   *  sessions nest under it, and it is the default requester. */
   callerSessionId?: string
+  /** `gh` runner for `review_pr` — injectable for tests. Default: the real
+   *  `gh` on the daemon's PATH. */
+  gh?: GhRunner
 }
 
 export function registerReviewTools(server: McpServer, opts: RegisterReviewToolsOptions): void {
   const { runner, callerSessionId } = opts
+  const gh = opts.gh ?? execGh
 
   // ── review_run ────────────────────────────────────────────────
   server.tool(
@@ -105,6 +168,23 @@ export function registerReviewTools(server: McpServer, opts: RegisterReviewTools
       head: z.string().optional().describe("Range head ref/sha. Default: HEAD, resolved after the prepare phase."),
       nocache: z.boolean().optional().describe("Ignore a cached ledger verdict and re-run. Default false."),
       wait: z.boolean().optional().describe("Block until the review finishes (default true). false ⇒ return a runId immediately."),
+      requesterSessionId: z
+        .string()
+        .optional()
+        .describe("Session recorded as attestation.requester.sessionId. Default: the calling session."),
+      pr: prRefSchema
+        .optional()
+        .describe(
+          "The PR this range is reviewed for ({provider:'github', repo:'owner/name', number, url}) — recorded in the " +
+            "attestation and as the ledger entry's PR link. Pass it when you know it (a CI binding).",
+        ),
+      supersede: z
+        .boolean()
+        .optional()
+        .describe(
+          "Cancel in-flight reviews of the same repo + binding + base whose head DIFFERS (an older push). Cancelled " +
+            "runs write no verdict. Default false — gates that re-run on every push should pass true.",
+        ),
     },
     async (input) => {
       try {
@@ -116,6 +196,9 @@ export function registerReviewTools(server: McpServer, opts: RegisterReviewTools
           ...(input.head !== undefined ? { head: input.head } : {}),
           ...(input.nocache ? { nocache: true } : {}),
           ...(callerSessionId ? { parentSessionId: callerSessionId } : {}),
+          ...(input.requesterSessionId !== undefined ? { requesterSessionId: input.requesterSessionId } : {}),
+          ...(input.pr ? { pr: input.pr as ReviewPrRef } : {}),
+          ...(input.supersede ? { supersede: true } : {}),
         })
         if (input.wait === false) return jsonContent({ runId: run.runId, status: run.status })
         const finished = (await runner.wait(run.runId)) ?? run
@@ -148,7 +231,7 @@ export function registerReviewTools(server: McpServer, opts: RegisterReviewTools
     "review_cancel",
     "Cancel a running review. Lanes not yet started are skipped; running command lanes are " +
       "killed and running reviewer sessions are killed through the session lifecycle. The " +
-      "resulting verdict is `incomplete`.",
+      "run ends `cancelled` and writes NO verdict to the ledger.",
     {
       runId: z.string().describe("Run id to cancel."),
     },
@@ -184,19 +267,10 @@ export function registerReviewTools(server: McpServer, opts: RegisterReviewTools
         }
         let rangeSha: string | undefined
         if (input.range !== undefined) {
-          if (HEX64.test(input.range)) {
-            rangeSha = input.range
-          } else {
-            const m = input.range.match(/^(.+?)\.\.(.+)$/)
-            if (!m) return errorContent("review_ledger: `range` must be `<base>..<head>` or a 64-hex rangeSha")
-            const [base, head] = [m[1]!, m[2]!]
-            const isSha = (s: string) => /^[0-9a-f]{40}$/.test(s)
-            const baseSha = root ? await revParse(root, base) : base
-            const headSha = root ? await revParse(root, head) : head
-            if (!isSha(baseSha) || !isSha(headSha)) {
-              return errorContent("review_ledger: refs in `range` need `cwd` to resolve; otherwise pass full 40-hex shas")
-            }
-            rangeSha = computeRangeSha({ baseSha, headSha })
+          try {
+            rangeSha = await resolveRangeSha(input.range, root)
+          } catch (err) {
+            return errorContent(`review_ledger: ${errMessage(err)}`)
           }
         }
         const entries = await runner.ledger.list({
@@ -205,10 +279,12 @@ export function registerReviewTools(server: McpServer, opts: RegisterReviewTools
           ...(input.binding !== undefined ? { binding: input.binding } : {}),
         })
         const limit = input.limit ?? 50
-        return jsonContent({
-          total: entries.length,
-          attestations: entries.slice(0, limit).map((e) => ledgerRow(e.attestation)),
-        })
+        const rows = await Promise.all(
+          entries
+            .slice(0, limit)
+            .map(async (e) => ledgerRow(e.attestation, await runner.ledger.getAnnotations(ledgerKeyOf(e.attestation)))),
+        )
+        return jsonContent({ total: entries.length, attestations: rows })
       } catch (err) {
         return errorContent(`review_ledger failed: ${errMessage(err)}`)
       }
@@ -283,6 +359,141 @@ export function registerReviewTools(server: McpServer, opts: RegisterReviewTools
         return jsonContent({ path: outPath, runId: attestation.runId, verdict: attestation.verdict })
       } catch (err) {
         return errorContent(`review_export failed: ${errMessage(err)}`)
+      }
+    },
+  )
+
+  // ── review_pr ─────────────────────────────────────────────────
+  server.tool(
+    "review_pr",
+    "Follow a recorded review to its GitHub pull request. Selects a ledger entry by `runId`, " +
+      "`rangeSha`, `range` (+ `cwd`), `cwd` alone (the newest entry whose head is the checkout's " +
+      "HEAD), or `prUrl` (an entry already linked to that PR, else one whose head is the PR's " +
+      "head). With no PR link yet it resolves headSha → PR through the daemon host's `gh` " +
+      "(`repos/{owner}/{repo}/commits/{sha}/pulls`) and records the link. Then it fetches the PR's " +
+      "state + reviews (+ check runs), appends that snapshot to the entry's annotations (never to " +
+      "the attestation), and returns attestation summary + pr + latest status. `gh` missing, " +
+      "offline, or no PR found ⇒ `ok: false` with a structured `error: {code, message}`.",
+    {
+      runId: z.string().optional().describe("Run id (from review_run / review_ledger)."),
+      rangeSha: z.string().optional().describe("64-hex rangeSha (scoped to `cwd`'s repo when `cwd` is given)."),
+      range: z.string().optional().describe("`<base>..<head>` (refs need `cwd`) or a 64-hex rangeSha."),
+      cwd: z.string().optional().describe("A directory inside the reviewed repo."),
+      prUrl: z.string().optional().describe("https://github.com/<owner>/<repo>/pull/<n>"),
+    },
+    async (input) => {
+      try {
+        let entry: LedgerEntry | undefined
+        let requestedPr: ReviewPrRef | undefined
+        let repoRemote: string | undefined
+        let root: string | undefined
+        if (input.cwd) {
+          const repo = await resolveRepo(input.cwd)
+          root = repo.root
+          repoRemote = repo.repoRemote
+        }
+        const scoped = (f: { rangeSha?: string }) =>
+          runner.ledger.list({ ...f, ...(repoRemote !== undefined ? { repoRemote } : {}) })
+
+        if (input.runId) {
+          const run = await runner.status(input.runId)
+          if (run?.attestation) entry = await runner.ledger.get(ledgerKeyOf(run.attestation))
+          if (!entry) return errorContent(`review_pr: no recorded attestation for run '${input.runId}'`)
+        } else if (input.rangeSha !== undefined || input.range !== undefined) {
+          const rangeSha = await resolveRangeSha((input.rangeSha ?? input.range)!, root)
+          entry = (await scoped({ rangeSha }))[0]
+          if (!entry) return errorContent("review_pr: no recorded attestation for that range")
+        } else if (input.prUrl) {
+          const parsed = parsePrUrl(input.prUrl)
+          if (!parsed) return errorContent("review_pr: `prUrl` must look like https://github.com/<owner>/<repo>/pull/<n>")
+          requestedPr = prRef(parsed.repo, parsed.number)
+          entry = await findByPr(runner.ledger, parsed)
+          if (!entry) {
+            let head: string | undefined
+            try {
+              head = await prHeadSha(gh, parsed.repo, parsed.number)
+            } catch (err) {
+              const e = toPrLookupError(err)
+              return jsonContent({ ok: false, pr: requestedPr, error: { code: e.code, message: e.message } })
+            }
+            entry = head
+              ? (await runner.ledger.list()).find(
+                  (e) => isRemoteOf(e.attestation.target.repoRemote, parsed.repo) && e.attestation.target.headSha === head,
+                )
+              : undefined
+            if (!entry) {
+              return errorContent(
+                `review_pr: no recorded attestation is linked to ${requestedPr.url} or reviews its head${head ? ` (${head})` : ""}`,
+              )
+            }
+          }
+        } else if (root) {
+          const head = await revParse(root, "HEAD")
+          entry = (await scoped({})).find((e) => e.attestation.target.headSha === head)
+          if (!entry) return errorContent(`review_pr: no recorded attestation for ${root} at HEAD (${head})`)
+        } else {
+          return errorContent("review_pr: pass `runId`, `rangeSha`, `range` (+ `cwd`), `cwd`, or `prUrl`")
+        }
+
+        const a = entry.attestation
+        const key = ledgerKeyOf(a)
+        const annotations = await runner.ledger.getAnnotations(key)
+        let pr = annotations.pr ?? a.pr ?? requestedPr
+        let linkedVia: "annotation" | "attestation" | "prUrl" | "resolved" | undefined = annotations.pr
+          ? "annotation"
+          : a.pr
+            ? "attestation"
+            : requestedPr
+              ? "prUrl"
+              : undefined
+        try {
+          if (!pr) {
+            const repo = githubRepoOf(a.target.repoRemote)
+            if (!repo) {
+              return jsonContent({
+                ok: false,
+                attestation: attestationSummary(a),
+                error: {
+                  code: "unsupported_remote",
+                  message: `'${a.target.repoRemote}' is not a github.com remote — review_pr only follows GitHub PRs`,
+                },
+              })
+            }
+            pr = await findPrForCommit(gh, repo, a.target.headSha)
+            if (!pr) {
+              return jsonContent({
+                ok: false,
+                attestation: attestationSummary(a),
+                error: { code: "no_pr", message: `GitHub knows no pull request containing ${a.target.headSha} in ${repo}` },
+              })
+            }
+            linkedVia = "resolved"
+          }
+          const snapshot = await fetchPrStatus(gh, pr)
+          const linkPr = pr
+          const updated = await runner.ledger.updateAnnotations(key, (cur) =>
+            withPrStatus(snapshot)(cur.pr ? cur : withPr(linkPr)(cur)),
+          )
+          return jsonContent({
+            ok: true,
+            attestation: attestationSummary(a),
+            pr: updated.pr ?? pr,
+            linkedVia,
+            status: snapshot,
+            snapshots: updated.prStatus?.length ?? 1,
+          })
+        } catch (err) {
+          const e = toPrLookupError(err)
+          return jsonContent({
+            ok: false,
+            attestation: attestationSummary(a),
+            ...(pr ? { pr } : {}),
+            ...(annotations.prStatus?.length ? { lastStatus: annotations.prStatus.at(-1) } : {}),
+            error: { code: e.code, message: e.message },
+          })
+        }
+      } catch (err) {
+        return errorContent(`review_pr failed: ${errMessage(err)}`)
       }
     },
   )

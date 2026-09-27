@@ -1458,6 +1458,9 @@ importers:
       '@agentproto/agent-runtime':
         specifier: workspace:*
         version: link:../agent-runtime
+      '@agentproto/review':
+        specifier: workspace:*
+        version: link:../review
       '@agentproto/runtime':
         specifier: workspace:*
         version: link:../runtime
