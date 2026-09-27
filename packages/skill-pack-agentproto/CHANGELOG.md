@@ -1,5 +1,11 @@
 # @agentproto/skill-pack-agentproto
 
+## 0.8.5
+
+### Patch Changes
+
+- 8a29038: Add AIP-58 §6 run.retry (workflow_retry) — journal-sourced replay, no re-execution
+
 ## 0.8.4
 
 ### Patch Changes

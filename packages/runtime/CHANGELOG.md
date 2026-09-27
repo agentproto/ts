@@ -1,5 +1,51 @@
 # @agentproto/runtime
 
+## 4.1.0
+
+### Minor Changes
+
+- 663f9ec: `branch_gc` background jobs are now visible to `branch_gc_status` from any MCP connection (the job registry was per server instance, so a job started on one connection was "not found" on the next). `branch_gc_status` also reads a finished job back from its result file, and a background `branch_gc` response now carries `resultPath` plus a `followUp` block (tool, args, poll interval) telling the caller how to follow up.
+- 1f03bf3: `branch_gc` can run in the background (`wait: false`, or `waitMs` to block at most that long) and be polled with the new `branch_gc_status` tool, so a multi-minute plan no longer times out an MCP call. Branch gc also answers "contained in a remote ref" and "merged into base" from one `git rev-list` each instead of one git call per ref (109 s → ~78 s on a 900-ref repo).
+- 37ca1e3: Add cache/reasoning token detail and session_usage subtree rollup
+- b0b5fd5: Slim MCP tool schema descriptions into short contracts with on-demand `tool_help` pointers; add the always-on `tool_help` MCP tool and the `agentproto help <tool>` CLI verb, ship `docs/mcp-tools/` in the runtime package, and add a tool-schema budget guard test plus a measuring script.
+- a693944: Device registry (DEVICES-PLAN PR-A): new `createDeviceRegistry` / `registerDeviceTools` / `readPairingsSnapshot` exports and `rename`/`isOnline` on `PairingRegistry` in `@agentproto/runtime`; new `agentproto devices list|rename|revoke` CLI verb and a `devices` step in `doctor` in `@agentproto/cli`, with matching `/devices` REST routes and `device_*` MCP tools over the shared pairing registry.
+- 8a29038: Add AIP-58 §6 run.retry (workflow_retry) — journal-sourced replay, no re-execution
+- c0fed50: Surface in-band turn errors end-to-end: a turn whose adapter stream ends after an `error` event (no explicit turn-end) is now classified `reason: "error"` instead of `"exited"`. Adds `SessionTurnEndEvent.error`, `SessionWaitResult.error`, `lastTurnErrorMessage` on the descriptor/compact list projection, and forwards `reason`/`error` on webhook payloads; `sessions wait` and `session_monitor` diagnostics fold in the captured message.
+- 332aebf: Reverse pairing (DEVICES-PLAN PR-C): optional `scope: "host"` on pair/v2 offer URLs in `@agentproto/secrets` (`encodeOfferUrl`/`parseOfferUrl`, additive — a plain offer's URL is unchanged); new `createHostRegistry`/`HostRegistry` in `@agentproto/runtime` (the daemon-side pair/v2 client for registering and driving another daemon as a host), merged into `createDeviceRegistry`/`device_list` as `role: "host"`, plus the `device_add` MCP tool and `/devices/add` + `/devices/:id/exec` REST routes; new `agentproto pair offer --host` and `agentproto devices add|status` in `@agentproto/cli`.
+- 7e38e0a: Daemon-supervises the llm-endpoint gateway: crash-restart policy for `LlmEndpointRegistry`, boot autostart + `ensureLlmEndpointRunning` self-heal hook for spawns, `GET /llm-endpoint/status` + `POST /llm-endpoint/restart` REST routes, and the `resolveEffectiveLlmEndpointFlag` smart-default resolver (new exports).
+- 9a5730d: `agent_prompt`/`agent_start` (MCP) now accept the same content-block prompt shape the HTTP `POST /sessions/:id/prompt` route already did (new shared `promptInputSchema`). Print-arm adapters (`@agentproto/driver-agent-cli`) fail loudly with a turn error on non-text blocks instead of silently dropping them. `transcript-writer` materializes inline-bytes blocks (pasted images) into a content-addressed attachment store, and a new `GET /sessions/:id/attachments/:filename` route reads one back (new `AttachmentEntry`/`mimeTypeForExtension`/`sessionAttachmentsDir` exports).
+- 474a1a7: Add SessionsRegistry.readBackgroundTaskTail with HTTP + MCP (session_bg_task_tail) surfaces
+- aa8c64f: New continue-interrupted feature: `session_continue_interrupted` MCP verb, `POST /sessions/continue-interrupted`, `agentproto sessions continue-interrupted`, and the opt-in `daemon.continueInterruptedOnBoot` boot pass.
+- 7f50ff6: Branch gc prunes stale remote-tracking refs (`git fetch --prune`) before classifying and reports it as `plan.fetched`; its delete pushes skip git hooks (`--no-verify`) and a refused batch is retried as a batch before falling back to one push per ref. The `maintain` workflow now applies worktree gc before branch gc.
+
+### Patch Changes
+
+- 651d266: `ui://app_ui_<id>/view` and `GET /apps/:appId/ui` no longer block on a full `ui.build` run or serve raw `{"error":...}` JSON as page text. A build in flight now serves a self-refreshing "building" placeholder; a missing bundle, missing `ui.build`, a failed build, or a removed app dir now serves a readable HTML error page. `app_list`/`app_status` also report `dirMissing: true` for an installed app whose `dir` no longer exists.
+- 350df7e: Docs: document cache/reasoning token fields on `usage_snapshot` transcripts and the new `GET /sessions/:id/usage` REST endpoint in the runtime README.
+- 114d4e9: Allow vscode-file: in default app-ui frame-ancestors CSP
+- b9f9bb6: Fix two dogfood frictions: `tool_search` now weights a query term matching a tool's own name far above an incidental mention in another tool's description, so a real `workflow_*` tool can no longer be crowded out of a capped result by an unrelated tool's prose (F39); and `workflow_run_file` now resolves a `kind:"tool"` step's TOOL.md/DRIVER.md bundle from the given WORKFLOW.md's own directory (walking up to its app root) instead of always the `app_install` registry's dir, so running a WORKFLOW.md from a worktree copy of an installed app no longer silently executes the installed copy's scripts (F40).
+- 632f16a: Fix the `@agentproto/runtime` build on main: `run.retry` now passes the WORKFLOW.md path to `compileWorkflow`, whose signature gained that second argument in a concurrently merged change.
+- Updated dependencies [fa1bfdd]
+- Updated dependencies [68ffab8]
+- Updated dependencies [b0eeee7]
+- Updated dependencies [8a29038]
+- Updated dependencies [b9f9bb6]
+- Updated dependencies [b297612]
+- Updated dependencies [332aebf]
+- Updated dependencies [9a5730d]
+- Updated dependencies [7f50ff6]
+  - @agentproto/model-catalog@0.11.1
+  - @agentproto/workflow-runtime@0.13.1
+  - @agentproto/secrets@1.1.0
+  - @agentproto/driver-agent-cli@2.5.1
+  - @agentproto/apps@0.13.1
+  - @agentproto/providers-store@0.3.19
+  - @agentproto/sandbox@0.6.1
+  - @agentproto/review@0.2.0
+  - @agentproto/acp@0.9.0
+  - @agentproto/eval-reporters@0.2.17
+  - @agentproto/telemetry-langfuse@0.2.15
+
 ## 4.0.0
 
 ### Major Changes

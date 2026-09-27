@@ -1,5 +1,20 @@
 # @agentproto/adapter-claude-code
 
+## 2.4.0
+
+### Minor Changes
+
+- 37ca1e3: Add cache/reasoning token detail and session_usage subtree rollup
+
+### Patch Changes
+
+- Updated dependencies [fa1bfdd]
+- Updated dependencies [68ffab8]
+- Updated dependencies [b297612]
+- Updated dependencies [9a5730d]
+  - @agentproto/model-catalog@0.11.1
+  - @agentproto/driver-agent-cli@2.5.1
+
 ## 2.3.0
 
 ### Minor Changes

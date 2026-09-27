@@ -1,5 +1,41 @@
 # @agentproto/cli
 
+## 1.1.0
+
+### Minor Changes
+
+- b0b5fd5: Slim MCP tool schema descriptions into short contracts with on-demand `tool_help` pointers; add the always-on `tool_help` MCP tool and the `agentproto help <tool>` CLI verb, ship `docs/mcp-tools/` in the runtime package, and add a tool-schema budget guard test plus a measuring script.
+- a2793f7: Add `agentproto settings export|import`: snapshot a machine's setup (installed adapters, harness presets, auth-profile metadata, LLM endpoints, imported-MCP pointers, sanitized config.json) into a versioned JSON bundle and apply it additively to another machine, with opt-in passphrase-sealed secret restore (`--include-secrets` / `--passphrase-env` / `--unseal-passphrase-env`) and `--dry-run` preview.
+- a693944: Device registry (DEVICES-PLAN PR-A): new `createDeviceRegistry` / `registerDeviceTools` / `readPairingsSnapshot` exports and `rename`/`isOnline` on `PairingRegistry` in `@agentproto/runtime`; new `agentproto devices list|rename|revoke` CLI verb and a `devices` step in `doctor` in `@agentproto/cli`, with matching `/devices` REST routes and `device_*` MCP tools over the shared pairing registry.
+- 332aebf: Reverse pairing (DEVICES-PLAN PR-C): optional `scope: "host"` on pair/v2 offer URLs in `@agentproto/secrets` (`encodeOfferUrl`/`parseOfferUrl`, additive — a plain offer's URL is unchanged); new `createHostRegistry`/`HostRegistry` in `@agentproto/runtime` (the daemon-side pair/v2 client for registering and driving another daemon as a host), merged into `createDeviceRegistry`/`device_list` as `role: "host"`, plus the `device_add` MCP tool and `/devices/add` + `/devices/:id/exec` REST routes; new `agentproto pair offer --host` and `agentproto devices add|status` in `@agentproto/cli`.
+- 7e38e0a: `agentproto llm gateway status|restart` subcommands for the daemon-supervised llm-endpoint proxy sidecar, plus a new `llm-gateway` onboarding/doctor step.
+- 78018d1: Add runtime connectors (LM Studio, Ollama, vLLM, llama-server, openai-compatible fallback) for probing/listing local inference endpoints, a new optional `connector` field on named endpoint config, and new `agentproto llm endpoints add/remove/detect/sync-pi` verbs plus an onboarding detect action.
+- aa8c64f: New continue-interrupted feature: `session_continue_interrupted` MCP verb, `POST /sessions/continue-interrupted`, `agentproto sessions continue-interrupted`, and the opt-in `daemon.continueInterruptedOnBoot` boot pass.
+
+### Patch Changes
+
+- 37ca1e3: Add cache/reasoning token detail and session_usage subtree rollup
+- c0fed50: Surface in-band turn errors end-to-end: a turn whose adapter stream ends after an `error` event (no explicit turn-end) is now classified `reason: "error"` instead of `"exited"`. Adds `SessionTurnEndEvent.error`, `SessionWaitResult.error`, `lastTurnErrorMessage` on the descriptor/compact list projection, and forwards `reason`/`error` on webhook payloads; `sessions wait` and `session_monitor` diagnostics fold in the captured message.
+- ae64df8: Fix `agentproto app serve` injecting the bridge `<script>` inside a single-file app bundle's inlined JS when that JS contains the literal text `</head>` in a string, breaking the served page. `injectBridge` now anchors on the opening `<head>`/`<body>`/`<html>` tag instead of the first `</head>` match, matching the daemon's own `injectAfterStructuralTag` strategy.
+- Updated dependencies [fa1bfdd]
+- Updated dependencies [1f03bf3]
+- Updated dependencies [68ffab8]
+- Updated dependencies [bc332e1]
+- Updated dependencies [b297612]
+- Updated dependencies [332aebf]
+- Updated dependencies [9a5730d]
+- Updated dependencies [78018d1]
+- Updated dependencies [7f50ff6]
+  - @agentproto/model-catalog@0.11.1
+  - @agentproto/worktree@0.10.0
+  - @agentproto/llm-endpoint@0.9.0
+  - @agentproto/secrets@1.1.0
+  - @agentproto/driver-agent-cli@2.5.1
+  - @agentproto/apps@0.13.1
+  - @agentproto/acp@0.9.0
+  - @agentproto/sandbox-box@0.2.15
+  - @agentproto/sandbox-e2b@0.5.5
+
 ## 1.0.0
 
 ### Major Changes

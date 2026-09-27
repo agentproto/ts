@@ -1,5 +1,13 @@
 # @agentproto/worktree-agent-example
 
+## 0.0.20
+
+### Patch Changes
+
+- Updated dependencies [1f03bf3]
+- Updated dependencies [7f50ff6]
+  - @agentproto/worktree@0.10.0
+
 ## 0.0.19
 
 ### Patch Changes

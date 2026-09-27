@@ -1,5 +1,13 @@
 # @agentproto/workflow-runtime
 
+## 0.13.1
+
+### Patch Changes
+
+- b0eeee7: Fix a regression where AIP-58 P4's per-run workspace broke cacheable `tool`/`agent` step replay: the resolved-input hash now ignores the run's own workspace path (a fresh absolute directory every run), and a cache hit relocates any workspace-relative file the entry recorded into the current run's own workspace.
+- 8a29038: Add AIP-58 §6 run.retry (workflow_retry) — journal-sourced replay, no re-execution
+- b9f9bb6: Fix `kind:"artifact"` steps and `outputsFiles` storing a run artifact as `artifacts/<key>` with no extension. The on-disk name is now the declared file's own basename (`outputsFiles.pdf: {path: transcript.pdf}` now lands at `artifacts/transcript.pdf`), with a colliding basename between two keys deterministically disambiguated by prefixing the second with its own key instead of silently overwriting the first.
+
 ## 0.13.0
 
 ### Minor Changes

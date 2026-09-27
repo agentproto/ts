@@ -1,5 +1,11 @@
 # @agentproto/pair-page
 
+## 0.0.2
+
+### Patch Changes
+
+- @agentproto/pair-client@0.2.1
+
 ## 0.0.1
 
 ### Patch Changes
