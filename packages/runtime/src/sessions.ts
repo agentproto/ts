@@ -1235,11 +1235,14 @@ export interface SessionDescriptor {
    *  the underlying `killedMidTurn`/`endedReason`). The in-place resume path
    *  never auto-retries the interrupted prompt. */
   interrupted?: boolean
-  /** The `SessionsRegistry.bootId` of the FIRST daemon boot that found this
-   *  row interrupted — i.e. which restart cut its turn off. Stamped by the
-   *  boot reload (`loadHistorySnapshot`) on an interrupted row that doesn't
-   *  carry one yet; dropped whenever the row is interrupted AGAIN (so the next
-   *  boot restamps it) and on the next successful turn-end (with the markers it
+  /** The `SessionsRegistry.bootId` of the daemon boot that followed the
+   *  restart which cut this row's turn off. The graceful shutdown that
+   *  interrupts a turn parks `INTERRUPTED_PENDING_BOOT` here; the next boot
+   *  reload (`loadHistorySnapshot`) swaps that — or, after an unclean exit, a
+   *  row still alive on disk — for its own `bootId`. Nothing else is ever
+   *  stamped: an interrupted row carrying no marker was persisted by a daemon
+   *  predating it, i.e. by an older restart, and stays stale. Cleared on the
+   *  next successful turn-end (with the markers it
    *  qualifies). `interruptedAtBoot === registry.bootId` is how the
    *  continue-interrupted verb and boot pass pick "interrupted by the LAST
    *  restart" apart from a stale interruption nobody picked back up. PERSISTED
@@ -2740,6 +2743,15 @@ export function isResumable(desc: SessionDescriptor): boolean {
  * on the number.
  */
 export const MAX_RESUME_ATTEMPTS = 3
+
+/**
+ * `interruptedAtBoot` value a graceful shutdown parks on a row it cuts off
+ * mid-turn — "interrupted by the restart in progress; the next boot claims
+ * it". The boot id that will follow isn't known yet, and leaving the field
+ * empty would be indistinguishable from a row persisted before the marker
+ * existed (an older restart). Never survives a boot reload.
+ */
+export const INTERRUPTED_PENDING_BOOT = "pending-next-boot"
 
 /**
  * Cap-aware eligibility for in-place resume: `isResumable` (the descriptor has
@@ -9983,9 +9995,10 @@ export function createSessionsRegistry(opts?: {
         // killedMidTurn's docblock. clearInFlightFlags below zeroes busy
         // right after, so this is the last honest look at it.
         rt.desc.killedMidTurn = rt.desc.busy === true
-        // Interrupted AGAIN: the old boot marker names an earlier restart —
-        // drop it so the next boot stamps its own (see `interruptedAtBoot`).
-        if (rt.desc.killedMidTurn) delete rt.desc.interruptedAtBoot
+        // Interrupted (again) by THIS shutdown: park the pending marker so the
+        // next boot — and only the next boot — claims the row as its own
+        // restart's (see `interruptedAtBoot`).
+        if (rt.desc.killedMidTurn) rt.desc.interruptedAtBoot = INTERRUPTED_PENDING_BOOT
         clearInFlightFlags(rt.desc)
         if (rt.agentSession) {
           recordExitUsageSnapshot(rt)
@@ -10178,18 +10191,24 @@ function loadHistorySnapshot(
     // no-op, so there is nothing to lose by not asking how it got there.
     clearInFlightFlags(reclassified)
     migratePendingChildNotices(reclassified)
-    // Which restart interrupted it (see `interruptedAtBoot`). A row this boot
-    // just reclassified was cut off by THIS restart whatever an older marker
-    // said; one already terminal on disk (graceful shutdown) keeps the marker
-    // of the first boot that saw it, or gets this boot's if it has none.
-    if (wasAlive) delete reclassified.interruptedAtBoot
+    // Which restart interrupted it (see `interruptedAtBoot`). Only two shapes
+    // are THIS restart's: a row still alive on disk (the daemon died without
+    // a graceful shutdown), and one the graceful shutdown just parked with
+    // `INTERRUPTED_PENDING_BOOT`. Any other interrupted row keeps whatever it
+    // carries — an older boot's id, or nothing at all for a row persisted by
+    // a daemon predating the marker. That absence must NOT be read as "ours":
+    // those rows were cut off by an earlier restart (live: rows from the day
+    // before were stamped with the current boot and reported eligible).
     if (
       bootId !== undefined &&
       reclassified.killedMidTurn === true &&
       reclassified.endedReason === "daemon-restart" &&
-      reclassified.interruptedAtBoot === undefined
+      (wasAlive || reclassified.interruptedAtBoot === INTERRUPTED_PENDING_BOOT)
     ) {
       reclassified.interruptedAtBoot = bootId
+    } else if (reclassified.interruptedAtBoot === INTERRUPTED_PENDING_BOOT) {
+      // A pending marker on a row no longer interrupted — nothing to claim.
+      delete reclassified.interruptedAtBoot
     }
     // Same reasoning as the in-flight flags above, for `contextUsed`: a
     // snapshot written before `plausibleContextUsed` existed can carry an

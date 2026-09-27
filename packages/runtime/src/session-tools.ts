@@ -1034,7 +1034,7 @@ export function registerSessionTools(
       "Goes through the normal prompt path, so a dead-but-resumable session " +
       "resumes in place first. Skips sessions that aren't interrupted, were " +
       "interrupted by an older restart, aren't resumable, hit the resume " +
-      "attempt cap, or are already busy. Returns a per-session outcome " +
+      "attempt cap, are already busy, or whose cwd no longer exists. Returns a per-session outcome " +
       "(`eligible` on a dry run, else `sent`/`skipped` with a reason/`failed`).",
     {
       dryRun: mcpBool
