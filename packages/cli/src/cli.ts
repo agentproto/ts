@@ -55,6 +55,7 @@ import { runTask } from "./commands/task.js"
 import { runPermissions } from "./commands/permissions.js"
 import { runAcp } from "./commands/acp.js"
 import { runPair } from "./commands/pair.js"
+import { runDevices } from "./commands/devices.js"
 import { runRendezvous } from "./commands/rendezvous.js"
 import { runSandbox } from "./commands/sandbox.js"
 import { runLlm } from "./commands/llm.js"
@@ -175,6 +176,9 @@ Usage:
   agentproto pair      ls     [--json]
   agentproto pair      revoke <fingerprint|name>
   agentproto pair      exec   <fingerprint|name> -- <verb> [args…]
+  agentproto devices   list   [--json]
+  agentproto devices   rename <fingerprint|name> <new-name>
+  agentproto devices   revoke <fingerprint|name>
   agentproto rendezvous serve [--port <n>] [--host <ip>]
   agentproto sandbox   list [--json] | attach <provider> <sandboxId> | rm <id|label> [--box] | gc [--apply]
   agentproto app       pack <appDir> [--out <path.agentapp>] [--json]
@@ -259,6 +263,7 @@ const VERBS = new Set([
   "app",
   "acp",
   "pair",
+  "devices",
   "rendezvous",
   "sandbox",
   "llm",
@@ -394,6 +399,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runAcp(rest)
     case "pair":
       return runPair(rest)
+    case "devices":
+      return runDevices(rest)
     case "rendezvous":
       return runRendezvous(rest)
     case "sandbox":

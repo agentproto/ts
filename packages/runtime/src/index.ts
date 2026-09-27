@@ -573,6 +573,8 @@ import { RemoteController } from "./remote-controller.js"
 import { registerRemoteTools } from "./remote-tools.js"
 import { registerPairingTools } from "./pairing-tools.js"
 import type { PairingRegistry } from "./pairing-registry.js"
+import { createDeviceRegistry } from "./device-registry.js"
+import { registerDeviceTools } from "./device-tools.js"
 import { registerDaemonHealthTools } from "./daemon-health-tools.js"
 import { registerToolHelpTool } from "./tool-help-mcp.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
@@ -624,6 +626,7 @@ export type {
 } from "./worktree-isolation.js"
 export {
   createPairingRegistry,
+  readPairingsSnapshot,
   PAIRINGS_VERSION,
   type PairingRegistry,
   type PairingRegistryDeps,
@@ -635,6 +638,14 @@ export {
   type CreateOfferInput,
 } from "./pairing-registry.js"
 export { registerPairingTools, type RegisterPairingToolsOptions } from "./pairing-tools.js"
+export {
+  createDeviceRegistry,
+  type Device,
+  type DeviceRole,
+  type DeviceKind,
+  type DeviceRegistry,
+} from "./device-registry.js"
+export { registerDeviceTools, type RegisterDeviceToolsOptions } from "./device-tools.js"
 export {
   createReconnectLogGate,
   type ReconnectLogGate,
@@ -2112,6 +2123,10 @@ export async function createGateway(
     // remote tools above; the registry singleton lives on the gateway.
     if (opts.pairingRegistry) {
       registerPairingTools(server, { registry: opts.pairingRegistry })
+      // Device view over the same registry (DEVICES-PLAN PR-A) — role/kind/
+      // online layered on top of pair_list's records. device_revoke has the
+      // exact effect of pair_revoke; both surfaces stay live.
+      registerDeviceTools(server, { registry: createDeviceRegistry(opts.pairingRegistry) })
     }
     // Agent-session orchestration — operators (Mastra agents in
     // cloud Guilde, Claude Code as a sub-agent, …) drive long-running

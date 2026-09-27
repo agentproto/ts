@@ -107,6 +107,7 @@ export function healthySources(): StepSources {
     loadMcpInstallState: async () => ({
       entries: [{ agent: "cursor", configPath: `${HOME}/.cursor/mcp.json`, transport: "stdio", registeredAt: "" }],
     }),
+    loadDevices: async () => [],
     skillTargets: async () => [
       { slug: "claude-code", target: { format: "claude-plugin", unit: "whole-pack", outDir: "~/.claude/plugins/agentproto" } },
       { slug: "hermes", target: { format: "flat-dir", dir: "~/.hermes/skills" } },
@@ -146,6 +147,11 @@ export interface FakeContextOptions {
    *  a step that talks to a different URL (local-models.ts's endpoint probes)
    *  needs its own routing here rather than the one-size health fake below. */
   fetch?: typeof fetch
+  /** Overrides the default step-timing clock (a small incrementing counter,
+   *  fine for `durationMs` but not real wall-clock epoch math) — a step that
+   *  compares `now()` against an ISO timestamp (devices.ts's staleness
+   *  check) needs a real-looking epoch instead. */
+  now?: () => number
 }
 
 export interface FakeContext extends StepContext {
@@ -189,7 +195,7 @@ export function createFakeContext(opts: FakeContextOptions = {}): FakeContext {
     nodeVersion: opts.nodeVersion ?? "v22.1.0",
     uid: 501,
     cliVersion: opts.cliVersion ?? "1.0.0",
-    now: () => (clock += 5),
+    now: opts.now ?? (() => (clock += 5)),
     sources: { ...healthySources(), ...opts.sources },
   }
 }

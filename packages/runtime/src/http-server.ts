@@ -54,6 +54,7 @@ import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
 import type { RemoteController, EnableInput } from "./remote-controller.js"
 import type { PairingRegistry } from "./pairing-registry.js"
+import { createDeviceRegistry } from "./device-registry.js"
 import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import type { AppRegistry } from "./app-registry.js"
@@ -3410,6 +3411,24 @@ export async function startHttpServer(
             }
           }
           const handled = await handlePairings(req, res, path, opts.pairings)
+          if (handled) return
+        }
+
+        // Device routes — role/kind/online layered on the same registry
+        // /pairings drives (DEVICES-PLAN PR-A). GET /devices, PATCH
+        // /devices/:fingerprint (rename), DELETE /devices/:fingerprint
+        // (revoke — same effect as DELETE /pairings/:fingerprint). Same
+        // token gate as /pairings: mutating routes take the per-boot token;
+        // GET is read-only.
+        if (opts.pairings && path.startsWith("/devices")) {
+          if ((req.method ?? "GET") !== "GET") {
+            const gate = checkSessionsToken(req)
+            if (gate !== "ok") {
+              rejectUnauthorizedSession(req, res, gate)
+              return
+            }
+          }
+          const handled = await handleDevices(req, res, path, opts.pairings)
           if (handled) return
         }
 
@@ -7532,6 +7551,73 @@ async function handlePairings(
     json(405, {
       error: "method_not_allowed",
       message: "POST /pairings/offer · GET /pairings · DELETE /pairings/:fingerprint",
+    })
+    return true
+  }
+  return false
+}
+
+/**
+ * /devices routes — a device view over the same pairing registry
+ * (DEVICES-PLAN PR-A):
+ *   GET    /devices               → { devices: [...] } (role/kind/online on
+ *                                    top of each pairing record)
+ *   PATCH  /devices/:fingerprint   → { name } rename
+ *   DELETE /devices/:fingerprint   → revoke by fingerprint (or name)
+ *
+ * Mirrors the MCP `device_list` / `device_rename` / `device_revoke` tools.
+ */
+async function handleDevices(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  registry: PairingRegistry,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+  const devices = createDeviceRegistry(registry)
+
+  if (path === "/devices" && req.method === "GET") {
+    json(200, { devices: await devices.list() })
+    return true
+  }
+
+  const idMatch = path.match(/^\/devices\/([^/]+)$/)
+  if (idMatch && req.method === "PATCH") {
+    const target = decodeURIComponent(idMatch[1] ?? "")
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const name = typeof b.name === "string" ? b.name.trim() : ""
+    if (!name) {
+      json(400, { error: "bad_request", message: 'body must include a non-empty "name"' })
+      return true
+    }
+    const renamed = await devices.rename(target, name)
+    if (!renamed) {
+      json(404, { error: "not_found", message: `no device matched "${target}"` })
+      return true
+    }
+    json(200, { ok: true, target, name })
+    return true
+  }
+
+  if (idMatch && req.method === "DELETE") {
+    const target = decodeURIComponent(idMatch[1] ?? "")
+    const revoked = await devices.revoke(target)
+    if (!revoked) {
+      json(404, { error: "not_found", message: `no device matched "${target}"` })
+      return true
+    }
+    json(200, { ok: true, revoked: target })
+    return true
+  }
+
+  if (path === "/devices" || idMatch) {
+    json(405, {
+      error: "method_not_allowed",
+      message: "GET /devices · PATCH /devices/:fingerprint · DELETE /devices/:fingerprint",
     })
     return true
   }
