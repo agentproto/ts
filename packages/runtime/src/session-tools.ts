@@ -469,6 +469,26 @@ export interface SessionListCompactItem {
    *  plus the first 120 chars of its summary (`compactOutcome`). The full
    *  record (`full: true`) carries the whole `outcome`. */
   outcome?: SessionOutcomeCompact
+  /** Mirrors `SessionDescriptor.lastTurnErroredAt` — the last turn that
+   *  failed IN-BAND while the adapter process stayed alive (`status` stays
+   *  `"running"`). Absent otherwise. Surfaced in the compact projection so
+   *  a poller sees an errored turn without reading `full: true` or the raw
+   *  transcript — the exact gap that made a session whose turn died on an
+   *  upstream API error look identical to a healthy idle one. */
+  lastTurnErroredAt?: SessionDescriptor["lastTurnErroredAt"]
+  /** Mirrors `SessionDescriptor.lastTurnErrorMessage` — the captured error
+   *  text for `lastTurnErroredAt`. Absent when that timestamp is absent, or
+   *  when the adapter reported `reason:"error"` with no in-band `error`
+   *  event to capture a message from. */
+  lastTurnErrorMessage?: SessionDescriptor["lastTurnErrorMessage"]
+  /** Mirrors `SessionDescriptor.lastTurnReason` — the last completed turn's
+   *  reported reason (e.g. `"completed"`, `"error"`, `"aborted"`). Absent
+   *  when no reason was reported. */
+  lastTurnReason?: SessionDescriptor["lastTurnReason"]
+  /** Mirrors `SessionDescriptor.lastTurnEmpty` — true when the last
+   *  completed turn produced zero assistant output and zero tool calls.
+   *  Absent (not `false`) on a productive turn. */
+  lastTurnEmpty?: SessionDescriptor["lastTurnEmpty"]
 }
 
 /** Public MCP descriptor projection. Resume environment is required by the
@@ -511,6 +531,10 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   contextSizeSource: s.contextSizeSource,
   contextUsed: s.contextUsed,
   ...(s.outcome ? { outcome: compactOutcome(s.outcome) } : {}),
+  ...(s.lastTurnErroredAt !== undefined ? { lastTurnErroredAt: s.lastTurnErroredAt } : {}),
+  ...(s.lastTurnErrorMessage !== undefined ? { lastTurnErrorMessage: s.lastTurnErrorMessage } : {}),
+  ...(s.lastTurnReason !== undefined ? { lastTurnReason: s.lastTurnReason } : {}),
+  ...(s.lastTurnEmpty !== undefined ? { lastTurnEmpty: s.lastTurnEmpty } : {}),
 })
 
 // ── batch compact projections (tool-transformer migration) ───────────────
@@ -933,7 +957,7 @@ export function registerSessionTools(
       "or to discover a session id by name. COMPACT BY DEFAULT: each entry " +
       "is a slim projection (id/kind/name/label/status/command/cwd/model/" +
       "busy/awaitingInput/blockedOn/lastActivityAt/depth/parentSessionId/" +
-      "continuedFrom); " +
+      "continuedFrom/lastTurnErroredAt); " +
       "pass `full: true` (or `compact: false`) for the complete, unprojected " +
       "per-session record. Raw shell-command runs " +
       "(`kind:'command'`) are a log, not a resumable session, so they're " +

@@ -1200,6 +1200,10 @@ export function registerAgentTools(
     contextSize: s.contextSize,
     contextSizeSource: s.contextSizeSource,
     contextUsed: s.contextUsed,
+    ...(s.lastTurnErroredAt !== undefined ? { lastTurnErroredAt: s.lastTurnErroredAt } : {}),
+    ...(s.lastTurnErrorMessage !== undefined ? { lastTurnErrorMessage: s.lastTurnErrorMessage } : {}),
+    ...(s.lastTurnReason !== undefined ? { lastTurnReason: s.lastTurnReason } : {}),
+    ...(s.lastTurnEmpty !== undefined ? { lastTurnEmpty: s.lastTurnEmpty } : {}),
   })
   const agentSessionsListSchema = z.object({
     kind: z
@@ -1226,7 +1230,8 @@ export function registerAgentTools(
       "Each entry includes `kind`, `status`, age, etc. Use this when you only want " +
       "the agent-CLI subset. COMPACT BY DEFAULT: each entry is a slim projection " +
       "(id/kind/name/label/status/command/cwd/model/busy/awaitingInput/blockedOn/" +
-      "lastActivityAt/startedAt/exitCode/depth/parentSessionId); pass `full: true` " +
+      "lastActivityAt/startedAt/exitCode/depth/parentSessionId/lastTurnErroredAt); " +
+      "pass `full: true` " +
       "(or `compact: false`) for the complete, unprojected per-session record.",
     inputSchema: agentSessionsListSchema,
     handler: async (input) => {
