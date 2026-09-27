@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { runInNewContext } from "node:vm"
@@ -20,6 +20,15 @@ import {
   STANDALONE_REST_BRIDGE_SCRIPT,
 } from "../app-ui-apps.js"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
+
+// Wraps the real readFile in a vi.fn so `createUiHtmlCache`'s "unchanged
+// file -> no re-read" behavior is verifiable by call count, not just by
+// content equality (a fresh read of unchanged bytes returns an
+// indistinguishable string).
+vi.mock("node:fs/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>()
+  return { ...actual, readFile: vi.fn(actual.readFile) }
+})
 
 describe("appUiToolId", () => {
   it("strips an @owner/ prefix and maps non-alnum chars to underscores", () => {
@@ -123,22 +132,48 @@ describe("makeInstalledAppUiApps", () => {
     warnSpy.mockRestore()
   })
 
-  it("caches HTML (post bridge-injection) by (path, version) and re-reads only on a version change", async () => {
+  it("re-reads an in-place file rewrite even with no version change (rebuilt ui/index.html)", async () => {
+    // The bug this guards: keying the cache on (path, app.updatedAt) alone
+    // served stale html after a merged PR rebuilt the committed
+    // ui/index.html bundle in place, because app.updatedAt only changes on
+    // app_install — not when the file's bytes change underneath it.
     const uiPath = join(dir, "index.html")
     await writeFile(uiPath, "v1", "utf8")
 
     const cache = createUiHtmlCache()
-    const first = await cache.get(uiPath, "2026-01-01T00:00:00.000Z")
+    const version = "2026-01-01T00:00:00.000Z"
+    const first = await cache.get(uiPath, version)
     expect(first).toContain("v1")
     expect(first).toContain("window.McpApp")
 
-    await writeFile(uiPath, "v2", "utf8")
-    // Same version — still cached, doesn't pick up the on-disk change.
-    expect(await cache.get(uiPath, "2026-01-01T00:00:00.000Z")).toBe(first)
-    // New version — re-reads.
-    const second = await cache.get(uiPath, "2026-01-02T00:00:00.000Z")
-    expect(second).toContain("v2")
+    // Rebuilt in place, same version string, different size (and mtime).
+    await writeFile(uiPath, "v2-rebuilt-bundle", "utf8")
+    const second = await cache.get(uiPath, version)
+    expect(second).toContain("v2-rebuilt-bundle")
     expect(second).toContain("window.McpApp")
+    expect(second).not.toBe(first)
+  })
+
+  it("does not re-read the file from disk when neither the version nor the file changed", async () => {
+    const uiPath = join(dir, "index.html")
+    await writeFile(uiPath, "v1", "utf8")
+
+    const readFileMock = vi.mocked(readFile)
+    readFileMock.mockClear()
+
+    const cache = createUiHtmlCache()
+    const version = "2026-01-01T00:00:00.000Z"
+    const first = await cache.get(uiPath, version)
+    expect(readFileMock).toHaveBeenCalledTimes(1)
+
+    const second = await cache.get(uiPath, version)
+    expect(second).toBe(first)
+    // Still 1 — a stat-only check confirmed nothing changed, no re-read.
+    expect(readFileMock).toHaveBeenCalledTimes(1)
+
+    await writeFile(uiPath, "v2-rebuilt-bundle", "utf8")
+    await cache.get(uiPath, version)
+    expect(readFileMock).toHaveBeenCalledTimes(2)
   })
 
   it("accepts an optional view up to 200 chars, rejects longer, and echoes it from execute", async () => {

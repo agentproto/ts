@@ -11,7 +11,7 @@
  * `ui.path`) are skipped with a `console.warn`, not surfaced to the caller.
  */
 
-import { readFile } from "node:fs/promises"
+import { readFile, stat } from "node:fs/promises"
 import { z } from "zod"
 import { RUNNER_SELECT_SCRIPT } from "@agentproto/app-client/runner-select"
 import { DISPLAY_MODE_SCRIPT } from "@agentproto/app-client/display-mode"
@@ -360,23 +360,34 @@ export function injectStandaloneAppBridge(
   return injectAfterStructuralTag(html, script)
 }
 
-/** Per-path HTML cache keyed by `(path, version)` — a request rebuilds the
- *  McpServer every time, but re-reading an installed app's `ui.path` off
+/** Per-path HTML cache keyed on the file's own identity — a request rebuilds
+ *  the McpServer every time, but re-reading an installed app's `ui.path` off
  *  disk on every `/mcp` call would be wasteful when nothing changed. The
  *  cache lives at gateway scope (created once in index.ts, outside
- *  `mcpServerFactory`) so it actually persists across requests; `version`
- *  (the app's `updatedAt`) invalidates a stale entry after a re-install.
- *  The cached value is post-bridge-injection, so injection only runs once
- *  per (path, version) rather than on every served request. */
+ *  `mcpServerFactory`) so it actually persists across requests.
+ *
+ *  The `version` argument (the app's `updatedAt`) alone is NOT enough: it
+ *  only changes on `app_install`, not when the committed `ui/index.html`
+ *  bundle is rebuilt in place (e.g. a merged PR) — keying on it alone served
+ *  stale html until the app was reinstalled or the daemon restarted. Each
+ *  `get` additionally `stat`s the file and folds `mtimeMs:size` into the
+ *  cache key, so an in-place rewrite invalidates immediately with no
+ *  reinstall needed; `version` stays in the key too since a stat is already
+ *  paid for and it still catches the reinstall case for free. A stat per
+ *  request is cheap compared to the read + bridge injection it usually
+ *  saves. The cached value is post-bridge-injection, so injection only runs
+ *  once per (path, stamp) rather than on every served request. */
 export function createUiHtmlCache(): UiHtmlCache {
-  const cache = new Map<string, { version: string; html: string }>()
+  const cache = new Map<string, { stamp: string; html: string }>()
   return {
     async get(path, version) {
+      const st = await stat(path)
+      const stamp = `${version}:${st.mtimeMs}:${st.size}`
       const cached = cache.get(path)
-      if (cached && cached.version === version) return cached.html
+      if (cached && cached.stamp === stamp) return cached.html
       const raw = await readFile(path, "utf8")
       const html = injectMcpAppBridge(raw)
-      cache.set(path, { version, html })
+      cache.set(path, { stamp, html })
       return html
     },
   }

@@ -1633,7 +1633,8 @@ export async function createGateway(
   // HTML cache for installed apps' `ui.path` panels (app-ui-apps.ts) —
   // gateway-scope singleton so a `/mcp` request doesn't re-read an
   // unchanged panel's HTML off disk every time `mcpServerFactory` rebuilds
-  // the server. Keyed by (path, app.updatedAt), so a re-install invalidates.
+  // the server. Keyed by (path, app.updatedAt + the file's own mtime/size),
+  // so both a re-install AND an in-place rebuild of the file invalidate it.
   const appUiHtmlCache = createUiHtmlCache()
 
   // Workflow runner — singleton per daemon, shared across all MCP
