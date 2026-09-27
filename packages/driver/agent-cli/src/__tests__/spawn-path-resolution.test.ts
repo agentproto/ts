@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest"
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { EventEmitter } from "node:events"
 import { PassThrough } from "node:stream"
 import { delimiter, dirname, join } from "node:path"
@@ -93,6 +93,12 @@ const npxDef: AgentCliDefinition = {
 } as AgentCliDefinition
 
 const execDir = dirname(process.execPath)
+
+// These cases assert the plain-npx spawn; keep a machine whose real npx cache
+// happens to hold the pinned version from taking the fast path instead.
+beforeEach(() => {
+  vi.stubEnv("npm_config_cache", "/nonexistent-agentproto-npm-cache")
+})
 
 afterEach(() => {
   spawnCalls.length = 0

@@ -13,6 +13,12 @@ export interface RoutineStepState {
   label: string
   status: "pending" | "running" | "done" | "failed" | "skipped"
   sessionId?: string
+  /** Set on a `running` agent step while its session is still being
+   *  spawned (adapter boot — `npx`, ACP handshake, …), so `workflow_status`
+   *  tells "waiting for the agent to come up" apart from "agent working"
+   *  (F34b). Cleared as soon as the session id attaches, and never left on
+   *  a finished row. */
+  phase?: "spawning"
   startedAt?: string
   endedAt?: string
   error?: string
