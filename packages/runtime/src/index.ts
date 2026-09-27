@@ -504,7 +504,13 @@ export {
   type StallWatchdogRegistry,
 } from "./stall-watchdog.js"
 export { formatToolCall, formatToolResult } from "./tool-presenter.js"
-export { deriveSessionUsage, projectSessionUsage } from "./usage.js"
+export { deriveSessionUsage, pickUsageDetail, projectSessionUsage } from "./usage.js"
+export { rollupSessionSubtree } from "./usage-subtree.js"
+export type {
+  SessionUsageWithSubtree,
+  SubtreeChildUsage,
+  SubtreeUsageTotals,
+} from "./usage-subtree.js"
 export {
   composeSessionObservers,
   type SessionObserver,
@@ -522,6 +528,9 @@ export type {
   UsageComputeInput,
   PricingResolver,
   TokenPricing,
+  UsageDetail,
+  UsageReadContext,
+  UsageReadResult,
 } from "./usage.js"
 export { parseWindow, rollupUsage } from "./usage-rollup.js"
 export type {

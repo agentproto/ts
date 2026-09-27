@@ -191,3 +191,72 @@ describe("plausibleContextUsed", () => {
     expect(plausibleContextUsed(200_000, undefined)).toBeUndefined()
   })
 })
+
+describe("usage detail fields (cache / reasoning / activity)", () => {
+  const cachedResolver: PricingResolver = model =>
+    model === "cached-model"
+      ? { inputPer1M: 10, outputPer1M: 50, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25 }
+      : undefined
+
+  it("prices cache tokens off the input rate with the catalog multipliers, disjoint from tokensIn", () => {
+    const usage = deriveSessionUsage(
+      {
+        model: "cached-model",
+        tokensIn: 1_000_000,
+        tokensOut: 100_000,
+        cacheReadTokens: 2_000_000,
+        cacheWriteTokens: 400_000,
+      },
+      cachedResolver,
+    )
+    expect(usage.source).toBe("computed")
+    // in 1M×$10 + out 0.1M×$50 + read 2M×$1 + write 0.4M×$12.5 = 10+5+2+5
+    expect(usage.costUsd).toBeCloseTo(22, 10)
+    expect(usage.cacheReadTokens).toBe(2_000_000)
+    expect(usage.cacheWriteTokens).toBe(400_000)
+  })
+
+  it("cache tokens alone are enough to compute a cost (multiplier defaults to 1)", () => {
+    const usage = deriveSessionUsage({ model: "priced-model", cacheReadTokens: 1_000_000 }, fakeResolver)
+    expect(usage.source).toBe("computed")
+    expect(usage.costUsd).toBeCloseTo(3, 10)
+  })
+
+  it("never zero-fills absent detail fields; a measured 0 stays 0", () => {
+    const usage = deriveSessionUsage(
+      { model: "priced-model", tokensIn: 10, toolCalls: 0, turns: 2 },
+      fakeResolver,
+    )
+    expect(usage.toolCalls).toBe(0)
+    expect(usage.turns).toBe(2)
+    for (const k of ["cacheReadTokens", "cacheWriteTokens", "reasoningTokens", "durationMs"]) {
+      expect(k in usage).toBe(false)
+    }
+  })
+
+  it("projectSessionUsage surfaces turnsCompleted as `turns` and passes detail fields through", () => {
+    const out = projectSessionUsage({
+      costUsd: 1,
+      cacheReadTokens: 500,
+      reasoningTokens: 40,
+      toolCalls: 3,
+      durationMs: 1234,
+      turnsCompleted: 2,
+      usageSource: "adapter",
+    })
+    expect(out).toEqual({
+      costUsd: 1,
+      cacheReadTokens: 500,
+      reasoningTokens: 40,
+      turns: 2,
+      toolCalls: 3,
+      durationMs: 1234,
+      source: "adapter",
+    })
+  })
+
+  it("projectSessionUsage omits every detail field for a descriptor that has none", () => {
+    const out = projectSessionUsage({ usageSource: "none" })
+    expect(out).toEqual({ source: "none" })
+  })
+})

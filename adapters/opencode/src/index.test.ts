@@ -162,6 +162,31 @@ describe("readOpenCodeUsage", () => {
     expect(usage).toEqual({ tokensIn: 640, tokensOut: 128 })
   })
 
+  it("reads the cache + reasoning split when the schema has those columns", async () => {
+    const dbDir = join(tmp, "opencode")
+    const { mkdirSync } = await import("node:fs")
+    mkdirSync(dbDir, { recursive: true })
+    const sqliteSpecifier = ["node", "sqlite"].join(":")
+    const { DatabaseSync } = (await import(sqliteSpecifier)) as unknown as {
+      DatabaseSync: new (p: string) => { exec(sql: string): void; close(): void }
+    }
+    const db = new DatabaseSync(join(dbDir, "opencode.db"))
+    db.exec(
+      "CREATE TABLE session (id TEXT PRIMARY KEY, cost REAL, tokens_input INTEGER, tokens_output INTEGER, " +
+        "tokens_reasoning INTEGER, tokens_cache_read INTEGER, tokens_cache_write INTEGER);" +
+        "INSERT INTO session VALUES ('ses_cache', 0.5, 100, 20, 7, 3000, 400);",
+    )
+    db.close()
+    expect(await readOpenCodeUsage("ses_cache")).toEqual({
+      costUsd: 0.5,
+      tokensIn: 100,
+      tokensOut: 20,
+      cacheReadTokens: 3000,
+      cacheWriteTokens: 400,
+      reasoningTokens: 7,
+    })
+  })
+
   it("returns null when the session id is not found", async () => {
     await seedOpenCodeDb([{ id: "ses_other", cost: 1, tokens_input: 1, tokens_output: 1 }])
     const usage = await readOpenCodeUsage("ses_missing")

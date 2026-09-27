@@ -257,7 +257,14 @@ export function opencodeRuntime(): AgentCliRuntime {
  */
 export async function readOpenCodeUsage(
   sessionId: string,
-): Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null> {
+): Promise<{
+  costUsd?: number
+  tokensIn?: number
+  tokensOut?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
+} | null> {
   try {
     // node:sqlite is a Node 22+ builtin. Build the specifier at runtime so the
     // bundler (esbuild/tsup) can't statically rewrite it — it strips the
@@ -274,14 +281,26 @@ export async function readOpenCodeUsage(
     const dbPath = join(dataHome, "opencode", "opencode.db")
     const db = new DatabaseSync(dbPath, { readOnly: true })
     try {
-      const row = db
-        .prepare("SELECT cost, tokens_input AS ti, tokens_output AS to_ FROM session WHERE id = ?")
-        .get(sessionId) as { cost?: number; ti?: number; to_?: number } | undefined
+      // `SELECT *` so an older opencode.db without the cache/reasoning
+      // columns still reads (the missing ones just stay absent).
+      const row = db.prepare("SELECT * FROM session WHERE id = ?").get(sessionId) as
+        | {
+            cost?: number | null
+            tokens_input?: number | null
+            tokens_output?: number | null
+            tokens_cache_read?: number | null
+            tokens_cache_write?: number | null
+            tokens_reasoning?: number | null
+          }
+        | undefined
       if (!row) return null
       return {
         ...(row.cost != null ? { costUsd: Number(row.cost) } : {}),
-        ...(row.ti != null ? { tokensIn: row.ti } : {}),
-        ...(row.to_ != null ? { tokensOut: row.to_ } : {}),
+        ...(row.tokens_input != null ? { tokensIn: row.tokens_input } : {}),
+        ...(row.tokens_output != null ? { tokensOut: row.tokens_output } : {}),
+        ...(row.tokens_cache_read != null ? { cacheReadTokens: row.tokens_cache_read } : {}),
+        ...(row.tokens_cache_write != null ? { cacheWriteTokens: row.tokens_cache_write } : {}),
+        ...(row.tokens_reasoning != null ? { reasoningTokens: row.tokens_reasoning } : {}),
       }
     } finally {
       db.close()

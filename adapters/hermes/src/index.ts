@@ -370,6 +370,38 @@ export const hermesCapabilities: CapabilityStrategy = async (def, ctx) => {
 
 import { homedir } from "node:os"
 
+/** Cumulative usage `readHermesUsage` returns; absent = not reported. */
+export interface HermesUsage {
+  costUsd?: number
+  tokensIn?: number
+  tokensOut?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
+}
+
+interface HermesSessionUsageRow {
+  estimated_cost_usd?: number | null
+  input_tokens?: number | null
+  output_tokens?: number | null
+  cache_read_tokens?: number | null
+  cache_write_tokens?: number | null
+  reasoning_tokens?: number | null
+}
+
+/** Project a `sessions` row to `HermesUsage`, dropping NULL / missing
+ *  columns instead of coercing them to 0. */
+export function hermesRowUsage(row: HermesSessionUsageRow): HermesUsage {
+  return {
+    ...(row.estimated_cost_usd != null ? { costUsd: row.estimated_cost_usd } : {}),
+    ...(row.input_tokens != null ? { tokensIn: row.input_tokens } : {}),
+    ...(row.output_tokens != null ? { tokensOut: row.output_tokens } : {}),
+    ...(row.cache_read_tokens != null ? { cacheReadTokens: row.cache_read_tokens } : {}),
+    ...(row.cache_write_tokens != null ? { cacheWriteTokens: row.cache_write_tokens } : {}),
+    ...(row.reasoning_tokens != null ? { reasoningTokens: row.reasoning_tokens } : {}),
+  }
+}
+
 /** Best-effort read of a hermes session's cost/token usage from its state.db.
  *
  *  hermes writes the per-turn cost to state.db slightly AFTER the ACP turn
@@ -379,7 +411,7 @@ import { homedir } from "node:os"
  *  hang the caller (the turn-end path awaits this). */
 export async function readHermesUsage(
   sessionId: string,
-): Promise<{ costUsd?: number; tokensIn?: number; tokensOut?: number } | null> {
+): Promise<HermesUsage | null> {
   try {
     // node:sqlite is a Node 22+ builtin. Build the specifier at runtime so the
     // bundler (esbuild/tsup) can't statically rewrite it — it strips the
@@ -395,18 +427,20 @@ export async function readHermesUsage(
     const dbPath = join(homedir(), ".hermes", "state.db")
     const ATTEMPTS = 6
     const DELAY_MS = 130
-    let last: { costUsd?: number; tokensIn?: number; tokensOut?: number } | null = null
+    let last: HermesUsage | null = null
     for (let i = 0; i < ATTEMPTS; i++) {
       const db = new DatabaseSync(dbPath, { readOnly: true })
-      const row = db.prepare(
-        "select estimated_cost_usd as cost, input_tokens as ti, output_tokens as to_ from sessions where id = ?",
-      ).get(sessionId) as { cost?: number; ti?: number; to_?: number } | undefined
+      // `select *` so an older state.db without the cache/reasoning columns
+      // still reads (the missing ones just stay absent).
+      const row = db.prepare("select * from sessions where id = ?").get(sessionId) as
+        | HermesSessionUsageRow
+        | undefined
       db.close()
       if (row) {
-        last = { costUsd: row.cost, tokensIn: row.ti, tokensOut: row.to_ }
+        last = hermesRowUsage(row)
         // Cost has landed (non-null) → done. Otherwise keep polling: the row
         // exists but hermes hasn't written the cost for this turn yet.
-        if (row.cost !== null && row.cost !== undefined) return last
+        if (row.estimated_cost_usd != null) return last
       }
       if (i < ATTEMPTS - 1) await new Promise(r => setTimeout(r, DELAY_MS))
     }
