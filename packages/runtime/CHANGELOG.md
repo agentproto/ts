@@ -1,5 +1,11 @@
 # @agentproto/runtime
 
+## 4.1.0
+
+### Minor Changes
+
+- 37ca1e3: Add cache/reasoning token detail and session_usage subtree rollup
+
 ## 4.0.0
 
 ### Major Changes

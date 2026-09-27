@@ -1,5 +1,11 @@
 # @agentproto/adapter-opencode
 
+## 1.4.0
+
+### Minor Changes
+
+- 37ca1e3: Add cache/reasoning token detail and session_usage subtree rollup
+
 ## 1.3.4
 
 ### Patch Changes

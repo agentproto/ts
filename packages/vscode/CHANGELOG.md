@@ -1,5 +1,12 @@
 # agentproto-vscode
 
+## 0.18.1
+
+### Patch Changes
+
+- Updated dependencies [37ca1e3]
+  - @agentproto/runtime@4.1.0
+
 ## 0.18.0
 
 ### Minor Changes

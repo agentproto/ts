@@ -1,5 +1,11 @@
 # @agentproto/cli
 
+## 1.0.1
+
+### Patch Changes
+
+- 37ca1e3: Add cache/reasoning token detail and session_usage subtree rollup
+
 ## 1.0.0
 
 ### Major Changes
