@@ -606,6 +606,66 @@ describe("createPrintSession — mastracode print config", () => {
   })
 })
 
+describe("createPrintSession — content-block prompts", () => {
+  it("joins an array of text blocks with a newline into the prompt argv", async () => {
+    const session = createPrintSession({
+      bin: "npx",
+      baseArgs: ["-y", "mastracode"],
+      cwd: "/tmp",
+      env: {},
+      printConfig: MASTRACODE_PRINT_CONFIG,
+    })
+
+    const pending = collect(
+      session.send([
+        { type: "text", text: "look at this file" },
+        { type: "text", text: "and tell me what's wrong" },
+      ]),
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const idx = spawnCalls[0]?.args.indexOf("--prompt") ?? -1
+    expect(idx).toBeGreaterThanOrEqual(0)
+    expect(spawnCalls[0]?.args[idx + 1]).toBe("look at this file\nand tell me what's wrong")
+
+    feed(lastChild!, [
+      { type: "agent_end", reason: "complete" },
+      {
+        type: "result",
+        status: "completed",
+        text: "ok",
+        finishReason: "complete",
+        threadId: "thread-1",
+        exitCode: 0,
+      },
+    ])
+    finish(lastChild!, 0)
+    await pending
+  })
+
+  it("throws a clear error instead of silently dropping an image block this adapter can't send", async () => {
+    const session = createPrintSession({
+      bin: "npx",
+      baseArgs: ["-y", "mastracode"],
+      cwd: "/tmp",
+      env: {},
+      printConfig: MASTRACODE_PRINT_CONFIG,
+    })
+
+    const pending = collect(
+      session.send([
+        { type: "text", text: "look at this" },
+        { type: "image", data: "AAAA", mimeType: "image/png" },
+      ]),
+    )
+
+    await expect(pending).rejects.toThrow(/multimodal/)
+    // Never spawns the child — the prompt was rejected before argv was built.
+    expect(spawnCalls).toHaveLength(0)
+  })
+})
+
 // ─────────────────────────────────────────────────────────────────────
 // Google Antigravity (`agy`) stream-json print config.
 // Wire shapes verified against antigravity.google/docs/cli/headless: events

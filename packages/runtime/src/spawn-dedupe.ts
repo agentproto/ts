@@ -100,12 +100,25 @@ const IMPLICIT_KEY_PREFIX = "\x00implicit\x1f"
  */
 export function deriveImplicitIdempotencyKey(input: {
   label?: string
-  prompt?: string
+  /** A plain string prompt, or a content-block prompt (attachment-bearing
+   *  initial message) — hashed via its JSON form so an attachment-carrying
+   *  spawn still dedupes/differentiates correctly instead of throwing on
+   *  `createHash().update()`, which only accepts a string or Buffer. */
+  prompt?: unknown
 }): string | undefined {
   const label = input.label?.trim()
   if (!label) return undefined
+  // An absent prompt and an empty-string prompt must hash identically (see
+  // the regression test) — both mean "no prompt text" — so only a genuinely
+  // non-string, present prompt (content blocks) takes the JSON-form path.
+  const promptText =
+    input.prompt === undefined
+      ? ""
+      : typeof input.prompt === "string"
+        ? input.prompt
+        : JSON.stringify(input.prompt)
   const promptHash = createHash("sha256")
-    .update(input.prompt ?? "")
+    .update(promptText)
     .digest("hex")
     .slice(0, 16)
   return `${IMPLICIT_KEY_PREFIX}${label}\x1f${promptHash}`

@@ -2001,6 +2001,64 @@ describe("spawnAgentSession — title derives from the caller's prompt, not the 
   })
 })
 
+describe("spawnAgentSession — content-block initial prompt (attachment-bearing) skips preamble composition", () => {
+  // A plain-string prompt gets the role/AGENTS.md/RULES.md/lineage preamble
+  // string-concatenated ahead of it (see the "title derives from..." block
+  // above). A content-block prompt (a pasted image on a brand-new session)
+  // has nowhere for that TEXT to go without corrupting the multimodal turn,
+  // so `SpawnAgentSessionInput.prompt`'s doc says this path skips composition
+  // entirely and sends the caller's blocks verbatim — assert that here.
+  function recordingAgentSession(): { session: AgentSessionLike; received: Promise<unknown> } {
+    let resolveReceived!: (v: unknown) => void
+    const received = new Promise<unknown>(r => {
+      resolveReceived = r
+    })
+    const session: AgentSessionLike = {
+      sessionId: "acp_test",
+      async *send(message: unknown): AsyncIterable<AgentStreamEvent> {
+        resolveReceived(message)
+        return
+      },
+      async cancel() {},
+      async close() {},
+    }
+    return { session, received }
+  }
+
+  it("sends the caller's content blocks verbatim — no role disposition/AGENTS.md text prepended", async () => {
+    const { session, received } = recordingAgentSession()
+    const startSession = vi.fn(async () => session)
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const blocks = [
+      { type: "text", text: "what's in this screenshot?" },
+      { type: "image", data: "AAAA", mimeType: "image/png" },
+    ]
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      prompt: blocks,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+
+    expect(await received).toEqual(blocks)
+  })
+
+  it("still titles from the block prompt's own text block", async () => {
+    const { session } = recordingAgentSession()
+    const startSession = vi.fn(async () => session)
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      prompt: [{ type: "text", text: "Fix the markdown renderer." }],
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    expect(result.descriptor.title).toBe("Fix the markdown renderer")
+  })
+})
+
 describe("spawnAgentSession — title slot precedence: explicit title > label > derived", () => {
   it("an explicit --title wins over both the label and the prompt", async () => {
     const { deps } = baseDeps()

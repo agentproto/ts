@@ -3852,8 +3852,10 @@ export interface SpawnAgentInput {
   /** Optional initial prompt to dispatch immediately. The promise
    *  the registry returns resolves AFTER the spawn — the prompt
    *  runs in the background, projecting events into the ring
-   *  buffer. Skip to spawn idle. */
-  initialPrompt?: string
+   *  buffer. Skip to spawn idle. A plain string, or a content-block
+   *  prompt (attachment-bearing first message) — see
+   *  `SpawnAgentSessionInput.prompt`'s doc. */
+  initialPrompt?: string | Record<string, unknown> | unknown[]
   /** The daemon-composed SYSTEM slice of {@link initialPrompt} — the part
    *  it synthesized ahead of the CALLER's ask (role disposition, lineage
    *  line, AGENTS.md, posture preamble). The adapter still receives the
@@ -4010,8 +4012,10 @@ export type PendingAgentOutcome =
       nativeTerminalResume?: boolean
       readUsage?: () => Promise<import("./usage.js").UsageReadResult | null>
       /** Dispatched now that the tree + driver session both exist — never
-       *  passed to `spawnAgentPending`, which would race the tree. */
-      initialPrompt?: string
+       *  passed to `spawnAgentPending`, which would race the tree. A plain
+       *  string, or a content-block prompt (attachment-bearing first
+       *  message) — see `SpawnAgentSessionInput.prompt`'s doc. */
+      initialPrompt?: string | Record<string, unknown> | unknown[]
       /** The daemon-composed SYSTEM slice of `initialPrompt` (see
        *  `SpawnAgentInput.initialPromptSystem`) — threaded through the
        *  placeholder so the deferred dispatch records it as a system turn. */

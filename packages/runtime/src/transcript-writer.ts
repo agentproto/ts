@@ -18,7 +18,15 @@
  * `agent-cli` sessions' `runAgentTurn`.
  */
 
-import { createWriteStream, mkdirSync, readFileSync, type WriteStream } from "node:fs"
+import { createHash } from "node:crypto"
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  type WriteStream,
+} from "node:fs"
 import { homedir } from "node:os"
 import { isAbsolute, join } from "node:path"
 import type { SessionMessageSentRecord, SessionObserver } from "./session-observer.js"
@@ -70,6 +78,151 @@ export function sessionEventsPath(sessionId: string, baseDir?: string): string {
   return join(sessionTranscriptDir(sessionId, baseDir), "events.jsonl")
 }
 
+export function sessionAttachmentsDir(sessionId: string, baseDir?: string): string {
+  return join(sessionTranscriptDir(sessionId, baseDir), "attachments")
+}
+
+/**
+ * One content-addressed attachment materialized from an inline-bytes
+ * content block (a pasted image, a document sent as base64 rather than a
+ * `POST /files/upload` path reference). Deliberately mirrors AIP-58's
+ * `ArtifactEntry` (`packages/workflow-runtime/src/types.ts`) field-for-field
+ * — `path` here is relative to the SESSION dir the same way `ArtifactEntry.
+ * path` is relative to the run dir — so a later "promote this attachment to
+ * an artifact" step is a metadata copy, never a data migration.
+ */
+export interface AttachmentEntry {
+  /** Caller-supplied name when the block carried one, else the content-
+   *  addressed filename — the same value as the last path segment of `path`. */
+  key: string
+  /** `"attachments/<sha256>.<ext>"`, relative to `sessionTranscriptDir`. */
+  path: string
+  sha256: string
+  size: number
+  contentType?: string
+  /** Display name for the UI (file chip / image alt text) — the block's own
+   *  name/filename/uri when present, else the same value as `key`. */
+  name: string
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null
+}
+
+/** Extensions this daemon actually sees on attachments — covers the ACP
+ *  image wire shapes and common document types a print-arm/path-reference
+ *  fallback wouldn't otherwise route through here. Unknown mime types fall
+ *  back to `bin` rather than guessing. */
+const EXTENSION_BY_MIME_TYPE: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/webp": "webp",
+  "image/gif": "gif",
+  "image/svg+xml": "svg",
+  "application/pdf": "pdf",
+  "text/plain": "txt",
+  "text/csv": "csv",
+  "text/markdown": "md",
+  "application/json": "json",
+}
+
+/** Reverse of `EXTENSION_BY_MIME_TYPE`, for serving a materialized attachment
+ *  back with a correct `Content-Type` (`GET /sessions/:id/attachments/:file`
+ *  in http-server.ts) — the extension is all that's on disk, the mime type
+ *  it was written with isn't persisted separately. */
+export function mimeTypeForExtension(ext: string): string {
+  for (const [mimeType, candidateExt] of Object.entries(EXTENSION_BY_MIME_TYPE)) {
+    if (candidateExt === ext) return mimeType
+  }
+  return "application/octet-stream"
+}
+
+function extensionFor(mimeType: string | undefined, name: string | undefined): string {
+  const dot = name?.lastIndexOf(".") ?? -1
+  if (name && dot > 0 && dot < name.length - 1) {
+    return name.slice(dot + 1).toLowerCase().slice(0, 10)
+  }
+  if (mimeType && EXTENSION_BY_MIME_TYPE[mimeType]) return EXTENSION_BY_MIME_TYPE[mimeType]
+  return "bin"
+}
+
+/** Inline-bytes payload recovered from a content block, or `undefined` when
+ *  the block carries no bytes of its own (a text block, or a path/uri
+ *  reference with nothing to materialize). Recognizes the two inline-bytes
+ *  shapes this codebase actually produces:
+ *   - `{type:"image", data, mimeType, name?}` — the ACP wire shape (see
+ *     CLAUDE-CODE.md, opencode's adapter) hosts send a pasted image as.
+ *   - `{type:"resource", resource:{blob, mimeType, uri?}}` — MCP's embedded-
+ *     resource shape, for a document sent as bytes rather than a
+ *     `POST /files/upload` path reference. */
+function extractInlineBytes(
+  block: Record<string, unknown>,
+): { data: string; mimeType?: string; name?: string } | undefined {
+  if (typeof block.data === "string" && block.data.length > 0) {
+    const name =
+      typeof block.name === "string"
+        ? block.name
+        : typeof block.filename === "string"
+          ? block.filename
+          : undefined
+    return {
+      data: block.data,
+      mimeType: typeof block.mimeType === "string" ? block.mimeType : undefined,
+      name,
+    }
+  }
+  const resource = isRecord(block.resource) ? block.resource : undefined
+  if (resource && typeof resource.blob === "string" && resource.blob.length > 0) {
+    const uri = typeof resource.uri === "string" ? resource.uri : undefined
+    return {
+      data: resource.blob,
+      mimeType: typeof resource.mimeType === "string" ? resource.mimeType : undefined,
+      name: uri?.split("/").pop(),
+    }
+  }
+  return undefined
+}
+
+/** Writes an inline-bytes attachment to this session's content-addressed
+ *  attachment store (`<sessionDir>/attachments/<sha256>.<ext>`) and returns
+ *  its metadata. Content-addressed so re-sending the same bytes (a retry, a
+ *  quoted-back image) reuses the existing file instead of duplicating it.
+ *  Returns `undefined` on a decode/write failure — the caller falls back to
+ *  keeping the block's raw shape in the transcript rather than losing the
+ *  reference entirely (recording must never throw and fail the turn). */
+function materializeAttachment(
+  sessionId: string,
+  baseDir: string | undefined,
+  inline: { data: string; mimeType?: string; name?: string },
+): AttachmentEntry | undefined {
+  try {
+    const bytes = Buffer.from(inline.data, "base64")
+    const sha256 = createHash("sha256").update(bytes).digest("hex")
+    const ext = extensionFor(inline.mimeType, inline.name)
+    const filename = `${sha256}.${ext}`
+    const dir = sessionAttachmentsDir(sessionId, baseDir)
+    const absPath = join(dir, filename)
+    if (!existsSync(absPath)) {
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(absPath, bytes)
+    }
+    return {
+      key: inline.name ?? filename,
+      path: join("attachments", filename),
+      sha256,
+      size: bytes.length,
+      ...(inline.mimeType ? { contentType: inline.mimeType } : {}),
+      name: inline.name ?? filename,
+    }
+  } catch (err) {
+    console.warn(
+      `[transcript-writer] materializeAttachment: failed to write attachment for session ` +
+        `${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+    )
+    return undefined
+  }
+}
+
 /** Highest `seq` already durably on disk for a session, or 0 when the file
  *  is absent/empty. A fresh writer instance (e.g. after a daemon restart)
  *  opens the existing events.jsonl in append mode, so its first record must
@@ -116,7 +269,16 @@ export interface TranscriptWriter extends SessionObserver {
    *  record AHEAD of the `user-prompt`, and that user-prompt carries only
    *  the CALLER's own ask (the preamble stripped) — so viewers can fold
    *  the synthesized text instead of showing it as a user bubble. Recording-
-   *  only; never alters what the adapter receives or how the turn runs. */
+   *  only; never alters what the adapter receives or how the turn runs.
+   *
+   *  When `message` is a content block or block array (a multimodal turn),
+   *  the record's `text` field carries only its text blocks joined by "\n"
+   *  (never a JSON dump); the full blocks ride on a `blocks` field, with any
+   *  inline-bytes block (a pasted image) materialized to this session's
+   *  content-addressed attachment store and swapped for a lightweight
+   *  `{attachmentKey, attachmentPath}` reference — see `materializeAttachment`
+   *  — so events.jsonl never carries raw base64. Materialized attachments
+   *  also collect onto a top-level `attachments` field (`AttachmentEntry[]`). */
   recordPrompt(
     sessionId: string,
     message: unknown,
@@ -308,7 +470,25 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
     recordPrompt(sessionId, message, opts) {
       const state = getState(sessionId)
       flushBuffers(sessionId, state)
-      const text = typeof message === "string" ? message : JSON.stringify(message)
+      // Content blocks (image/resource) — `opts.system` is only ever set for
+      // a plain-string composed prompt (a block-shaped `agent_start` prompt
+      // SKIPS preamble composition entirely, see `SpawnAgentSessionInput.
+      // prompt`'s doc), so the string-based preamble-stripping below stays
+      // string-only and untouched by the block case.
+      const blocks: unknown[] | undefined =
+        typeof message === "string" ? undefined : Array.isArray(message) ? message : [message]
+      // Readable text for downstream consumers (session-titler, transcript
+      // previews) that just want a string — pulled from `text` blocks only,
+      // same convention as `session-title.ts`'s own extraction. Non-text
+      // blocks are never stringified into this field; they're recorded
+      // structurally below instead (`blocks`/`attachments`).
+      const text =
+        typeof message === "string"
+          ? message
+          : (blocks ?? [])
+              .filter((b): b is Record<string, unknown> => isRecord(b) && typeof b.text === "string")
+              .map(b => b.text as string)
+              .join("\n")
       // The daemon-composed SYSTEM slice of a spawned child's initial
       // prompt is recorded apart from the caller's ask. The user-prompt
       // text is the composed string with that preamble stripped (the
@@ -345,10 +525,40 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
         }
         return
       }
+      // Materialize any inline-bytes block (a pasted image, a document sent
+      // as base64 rather than a `POST /files/upload` path reference) to this
+      // session's content-addressed attachment store, and swap the block's
+      // heavy inline bytes for a lightweight `{attachmentKey, attachmentPath,
+      // mimeType}` reference before it reaches events.jsonl — keeps the
+      // durable transcript bounded regardless of how big an attachment was,
+      // and gives the UI a stable path to re-render from after reload. A
+      // block with no bytes of its own (text, or an already-path-based
+      // reference) passes through unchanged. See `materializeAttachment`'s
+      // doc for the AIP-58 `ArtifactEntry` parity this is designed for.
+      const attachments: AttachmentEntry[] = []
+      const blocksForTranscript = blocks?.map(block => {
+        if (!isRecord(block)) return block
+        const inline = extractInlineBytes(block)
+        if (!inline) return block
+        const entry = materializeAttachment(sessionId, baseDir, inline)
+        if (!entry) return block
+        attachments.push(entry)
+        const rest: Record<string, unknown> = { ...block }
+        delete rest.data
+        delete rest.resource
+        return {
+          ...rest,
+          attachmentKey: entry.key,
+          attachmentPath: entry.path,
+          ...(entry.contentType ? { mimeType: entry.contentType } : {}),
+        }
+      })
       writeRecord(sessionId, state, {
         kind: "user-prompt",
         sessionId,
         text: userText,
+        ...(blocksForTranscript ? { blocks: blocksForTranscript } : {}),
+        ...(attachments.length ? { attachments } : {}),
         ...(opts?.source ? { source: opts.source } : {}),
       })
     },
