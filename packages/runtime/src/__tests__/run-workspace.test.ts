@@ -22,7 +22,6 @@ import { defineTool } from "@agentproto/tool"
 import { defineDriver, implementTool } from "@agentproto/driver"
 import { compileWorkflow } from "@agentproto/workflow-runtime"
 import { createWorkflowRunner, type WorkflowRun } from "../workflow-runner.js"
-import { sanitizeArtifactKey } from "../run-workspace.js"
 import { compactWorkflowRunStatus } from "../orchestration-tools.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import type { SessionsRegistry, SessionDescriptor } from "../sessions.js"
@@ -194,22 +193,25 @@ steps:
       expect(runB.status).toBe("done")
       expect(runA.workspace).not.toBe(runB.workspace)
 
-      // §4: outputsFiles synced to EACH run's own artifacts/<key>, never the
-      // shared path — that file must not exist yet.
+      // §4: outputsFiles synced to EACH run's own artifacts/<basename>, never
+      // the shared path — that file must not exist yet.
       const sharedPath = join(appCwd, "briefs", "latest.md")
       expect(existsSync(sharedPath)).toBe(false)
 
-      expect(runA.artifacts).toEqual([{ key: "brief", path: "artifacts/brief", sha256: expect.any(String), size: expect.any(Number), stepId: "save" }])
-      expect(runB.artifacts).toEqual([{ key: "brief", path: "artifacts/brief", sha256: expect.any(String), size: expect.any(Number), stepId: "save" }])
+      // F42: the on-disk name is the declared file's own basename
+      // (`latest.md`, from `outputsFiles.brief.path: "./briefs/latest.md"`),
+      // not the bare key.
+      expect(runA.artifacts).toEqual([{ key: "brief", path: "artifacts/latest.md", sha256: expect.any(String), size: expect.any(Number), stepId: "save" }])
+      expect(runB.artifacts).toEqual([{ key: "brief", path: "artifacts/latest.md", sha256: expect.any(String), size: expect.any(Number), stepId: "save" }])
 
-      const artifactFileA = join(runA.workspace!, "artifacts", sanitizeArtifactKey("brief"))
-      const artifactFileB = join(runB.workspace!, "artifacts", sanitizeArtifactKey("brief"))
+      const artifactFileA = join(runA.workspace!, "artifacts", "latest.md")
+      const artifactFileB = join(runB.workspace!, "artifacts", "latest.md")
       expect(readFileSync(artifactFileA, "utf8")).toBe("https://example.com/pricing-a")
       expect(readFileSync(artifactFileB, "utf8")).toBe("https://example.com/pricing-b")
 
       // Compact `workflow_status` projection: key/path/size only.
       const compact = compactWorkflowRunStatus(runA)
-      expect(compact.artifacts).toEqual([{ key: "brief", path: "artifacts/brief", size: expect.any(Number) }])
+      expect(compact.artifacts).toEqual([{ key: "brief", path: "artifacts/latest.md", size: expect.any(Number) }])
 
       // Fetchable.
       const fetched = await runner.readArtifact(runA.runId, "brief")

@@ -434,7 +434,11 @@ export interface AgentStep {
 export interface ArtifactStep {
   kind: "artifact"
   id: string
-  /** Artifact key — also becomes its filename under `artifactsDir` (sanitized). */
+  /** Artifact key — identifies this artifact for `workflow_artifact_get`/
+   *  `workflow_publish`. Its on-disk filename under `artifactsDir` is
+   *  `path`'s own basename (sanitized), not the key — see {@link
+   *  ArtifactEntry.path} — unless another key's file shares the same
+   *  basename, in which case the key disambiguates it (F42). */
   key: Selector<string> | string
   /** Path to the source file. Relative to `$run.workspace`; MUST resolve
    *  inside it (an absolute path or a `..`-escaping relative one throws). */
@@ -444,10 +448,15 @@ export interface ArtifactStep {
 
 /**
  * AIP-58 §4/§1 `ArtifactEntry` — one run-scoped copy of a declared output
- * file. `path` is always `"artifacts/<sanitized key>"`, relative to the RUN
- * WORKSPACE ROOT (`<runsRoot>/<runId>/`, the parent of `$run.workspace`
- * itself) — never the original in-workspace location the file was read
- * from.
+ * file. `path` is `"artifacts/<basename>"` (F42: the declared source file's
+ * OWN basename, sanitized — e.g. `outputsFiles.pdf: {path: transcript.pdf}`
+ * ⇒ `artifacts/transcript.pdf` — keeping the extension, unlike the bare key),
+ * relative to the RUN WORKSPACE ROOT (`<runsRoot>/<runId>/`, the parent of
+ * `$run.workspace` itself) — never the original in-workspace location the
+ * file was read from. Two keys whose files share a basename get the SECOND
+ * one's name prefixed with its own sanitized key instead (deterministic,
+ * never a silent overwrite) — always read `path` back rather than assuming
+ * `artifacts/<key>` or `artifacts/<basename(path)>`.
  */
 export interface ArtifactEntry {
   key: string
