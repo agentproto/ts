@@ -19,6 +19,7 @@
 
 import { closeSync, openSync, readSync, fstatSync } from "node:fs"
 import type { SessionDescriptor } from "./sessions.js"
+import type { SessionEndReason } from "./session-end-reason.js"
 
 /** Hard cap on `outcome.summary`, in characters. */
 export const OUTCOME_SUMMARY_MAX = 600
@@ -60,9 +61,21 @@ export interface SessionOutcome {
    *  recorded — the termination axis, never mixed into `status`. */
   termination: {
     status: string
-    /** `SessionDescriptor.endedReason` (`daemon-restart` / `idle-reaped` /
-     *  `crashed`); absent for an operator kill, a natural exit, an error. */
-    reason?: string
+    /** Copy of `SessionDescriptor.endedReason` — see {@link SessionEndReason}
+     *  for the full, single-source enum of values (operator kill, cost cap,
+     *  provider limit, …). Absent for a plain natural exit or an ordinary
+     *  turn error this file doesn't tag. A value outside the known enum is
+     *  still valid (a newer/older daemon) — never gate rendering on it being
+     *  a member; see `isKnownSessionEndReason`. */
+    reason?: SessionEndReason
+    /** The reason this row carried BEFORE an operator's "mark as completed"
+     *  (`kill(id, signal, "operator-completed")` on an already-terminal
+     *  session — the UI's affordance for relabeling a finished-but-not-
+     *  operator-tagged row) overwrote `reason` with `"operator-completed"`.
+     *  Set ONLY by that relabel, so the true original mechanism (a natural
+     *  exit with no reason, `"crashed"`, `"idle-reaped"`, …) is never lost
+     *  under the operator's override. Absent otherwise. */
+    previousReason?: SessionEndReason
     exitCode?: number
     /** True when the session was killed with a turn in flight. */
     midTurn?: boolean

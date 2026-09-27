@@ -13,6 +13,8 @@ import {
   type Attestation,
   type Attestor,
   type LaneResult,
+  type ReviewPrRef,
+  type ReviewRequester,
   type ReviewTarget,
   type RubricDigest,
 } from "./types.js"
@@ -56,6 +58,8 @@ export interface BuildAttestationInput {
   attestor: Attestor
   rubrics?: RubricDigest[]
   dirty?: boolean
+  requester?: ReviewRequester
+  pr?: ReviewPrRef
   /** Override the timestamp (tests). */
   createdAt?: string
 }
@@ -77,6 +81,10 @@ export function buildAttestation(input: BuildAttestationInput): Attestation {
     attestor: { daemon: input.attestor.daemon, presets: [...new Set(input.attestor.presets)] },
     rubrics: input.rubrics ?? [],
     ...(input.dirty ? { dirty: true } : {}),
+    ...(input.requester && (input.requester.sessionId || input.requester.gitAuthor)
+      ? { requester: { ...input.requester } }
+      : {}),
+    ...(input.pr ? { pr: { ...input.pr } } : {}),
     createdAt: input.createdAt ?? new Date().toISOString(),
   }
 }

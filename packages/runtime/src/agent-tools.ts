@@ -918,14 +918,32 @@ export function registerAgentTools(
     "agent_kill",
     "Stop a session — SIGTERM the underlying child + close the agent protocol " +
       "session. Use to free resources after the operator is done, or when a " +
-      "session is wedged.",
+      "session is wedged. Called with `reason: \"completed\"` on a session " +
+      "that's ALREADY ended, this instead relabels its outcome as completed " +
+      "(the \"mark as completed\" affordance) rather than erroring — " +
+      "`reason: \"stopped\"` (or omitted) on an already-ended session stays a " +
+      "no-op.",
     {
       sessionId: sessionIdField,
       id: sessionIdAliasField,
+      reason: z
+        .enum(["completed", "stopped"])
+        .optional()
+        .describe(
+          "Why you're ending it — `completed` if it finished its work, " +
+            "`stopped` if you're cutting it off early (wedged, no longer " +
+            "needed, etc). Recorded on the session's outcome as " +
+            "`operator-completed` / `operator-stopped` so it reads as a " +
+            "deliberate stop, distinct from an automatic teardown (idle-reap, " +
+            "crash, cost cap, …). Omit to default to `stopped`. On a session " +
+            "that's already ended, `completed` relabels its outcome instead " +
+            "of erroring; `stopped`/omitted stays a no-op.",
+        ),
     },
     async input => {
       const sessionId = resolveSessionIdArg(input)
       if (!sessionId) return missingSessionIdError("agent_kill")
+      const endReason = input.reason === "completed" ? "operator-completed" : "operator-stopped"
       // Subtree scoping (WP4): on the scoped sub-gateway a child
       // orchestrator may only kill sessions in its own subtree — never
       // an arbitrary id (e.g. a sibling's, or the root operator's). Full
@@ -960,7 +978,7 @@ export function registerAgentTools(
           }
         }
       }
-      const ok = registry.kill(sessionId)
+      const ok = registry.kill(sessionId, undefined, endReason)
       return {
         content: [
           {

@@ -57,6 +57,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto pair`](./verbs/pair.md) — end-to-end pairing with a daemon over an untrusted rendezvous
 - [`agentproto permissions`](./verbs/permissions.md) — held tool-permission requests: list, approve/deny, or auto-resolve with `watch` rules
 - [`agentproto policy`](./verbs/policy.md) — CLI surface for the daemon's completion-policy engine (shell/judge gates, commit + human-ack)
+- [`agentproto review`](./verbs/review.md) — run, verify and scaffold REVIEW.md reviews (pre-push hook + GitHub Actions shim)
 - [`agentproto provider-preset`](./verbs/presets.md) — list provider gateway definitions + key-env status
 - [`agentproto preset`](./verbs/preset.md) — manage saved user spawn configurations
 - [`agentproto remote`](./verbs/remote.md) — publish this gateway (or another local port) to the internet via Cloudflare, bearer-gated

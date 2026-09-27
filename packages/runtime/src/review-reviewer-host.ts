@@ -93,6 +93,13 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
         return { status: "failed", preset: input.preset, error: `reviewer spawn failed (${spawned.code}): ${spawned.message}` }
       }
       const sessionId = spawned.descriptor.id
+      /** The reviewer's model, read off the session record (the live active
+       *  model when the adapter reported one, else the spawn model). */
+      const withModel = <T extends ReviewerRunResult>(r: T): T => {
+        const desc = registry.get(sessionId)
+        const model = desc?.activeModel ?? desc?.model ?? spawnFields.model
+        return model ? { ...r, model } : r
+      }
       const kill = () => {
         try {
           registry.kill(sessionId)
@@ -117,30 +124,35 @@ export function createDaemonReviewerHost(deps: DaemonReviewerHostDeps): Reviewer
           timeoutMs: input.timeoutMs,
           since,
         })
-        if (res.timedOut) return { status: "timeout", sessionId, preset: input.preset }
+        if (res.timedOut) return withModel({ status: "timeout", sessionId, preset: input.preset })
         if (input.signal?.aborted) {
-          return { status: "failed", sessionId, preset: input.preset, error: "review cancelled while the reviewer was running" }
+          return withModel({
+            status: "failed",
+            sessionId,
+            preset: input.preset,
+            error: "review cancelled while the reviewer was running",
+          })
         }
         if (res.event === "exited") {
           const status = registry.get(sessionId)?.status ?? res.status
-          return {
+          return withModel({
             status: "failed",
             sessionId,
             preset: input.preset,
             error: `reviewer session exited before finishing its turn (status '${status ?? "unknown"}')`,
-          }
+          })
         }
         if (res.event === "turn-end" && (res.empty || res.reason === "error")) {
-          return {
+          return withModel({
             status: "failed",
             sessionId,
             preset: input.preset,
             error: res.empty
               ? "reviewer produced an empty turn (commonly an auth failure or an invalid model id)"
               : "reviewer's turn ended with reason 'error' (commonly an auth failure)",
-          }
+          })
         }
-        return { status: "ended", sessionId, preset: input.preset }
+        return withModel({ status: "ended", sessionId, preset: input.preset })
       } finally {
         input.signal?.removeEventListener("abort", onAbort)
         // One-shot reviewer: its verdict is on disk (or it failed) — release

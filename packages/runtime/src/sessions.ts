@@ -118,6 +118,7 @@ import {
   type SessionOutcome,
   type SessionOutcomeCompact,
 } from "./session-outcome.js"
+import { isProviderLimitError, type SessionEndReason } from "./session-end-reason.js"
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
@@ -983,30 +984,36 @@ export interface SessionDescriptor {
   startedAt: string
   endedAt?: string
   exitCode?: number
-  /** Set alongside `status: "killed"` when the session ended NOT because an
-   *  operator targeted it (`kill()`) but because of an AUTOMATIC teardown:
-   *   - `"daemon-restart"` — the daemon process it lived in went away out from
-   *     under it: a hard crash discovered at next boot
-   *     (`loadHistorySnapshot`'s wasAlive reclassification), or a graceful
-   *     shutdown/restart that force-kills whatever's still busy
-   *     (`shutdownImpl`).
-   *   - `"idle-reaped"` — the idle-session reaper (`reapIdle`, PR-6) retired a
-   *     long-idle agent-cli row to free its adapter process. Deliberately kept
-   *     lazy-resumable (adapterSessionId/cwd intact) so a later prompt revives
-   *     it, but NEVER eager-resumed on boot — the eager pass (#638) gates on
-   *     `endedReason === "daemon-restart"`, so an `"idle-reaped"` row is
-   *     naturally excluded and a resume-storm of dead work is avoided.
-   *   - `"crashed"` — the crash-detect sweep (`markCrashed`) found the
-   *     adapter's OS process gone between turns, with no exit event ever
-   *     emitted for it (agent-cli holds its child alive across turns, so a
-   *     death outside a turn is otherwise silent until the next RPC throws).
-   *     `status` is set to `"error"` (not `"killed"`) since nothing targeted
-   *     it; see `lastError`/`crashedAt` for detail.
-   *  Absent for every other terminal path (operator kill, natural exit, turn
-   *  error) — the session's own fault, or at least not an automatic sweep's.
-   *  Lets the UI show "crashed with the daemon" / "reaped while idle" instead
-   *  of a bare "killed" that reads as deliberate. */
-  endedReason?: "daemon-restart" | "idle-reaped" | "crashed"
+  /** WHY the session ended — every stable value + its meaning is declared
+   *  once, in {@link SessionEndReason} (`session-end-reason.ts`), so a UI can
+   *  render a label for each without chasing the call site that set it.
+   *  Three families:
+   *   - automatic daemon-lifecycle teardown (unchanged, pre-existing):
+   *     `"daemon-restart"` (the daemon process it lived in went away out from
+   *     under it — a hard crash discovered at next boot, or a graceful
+   *     shutdown/restart that force-kills whatever's still busy),
+   *     `"idle-reaped"` (the idle-session reaper retired a long-idle row —
+   *     deliberately kept lazy-resumable but NEVER eager-resumed on boot,
+   *     since the eager pass gates on `endedReason === "daemon-restart"`),
+   *     `"crashed"` (the crash-detect sweep found the adapter's OS process
+   *     gone between turns with no exit event ever emitted for it — `status`
+   *     is `"error"`, not `"killed"`, since nothing targeted it);
+   *   - operator-issued kill: `"operator-completed"` / `"operator-stopped"`,
+   *     set ONLY by an explicit `POST /sessions/:id/kill` or the `agent_kill`
+   *     MCP tool (never by an internal automatic teardown), so it reads as
+   *     deliberate rather than random;
+   *   - other internal/automatic reasons: `"cost-cap-exceeded"` (the
+   *     turn-granular `maxCostUsd` cap tripped), `"policy-cleanup"` (a
+   *     supervisor gate tore down its own ephemeral judge session),
+   *     `"parent-exited"` (an orchestrator's dying subtree reap),
+   *     `"provider-limit"` (a driver-reported subscription/usage-cap error,
+   *     e.g. Claude Code's "hit your session limit"), `"forgotten"` (a live
+   *     session killed as part of an operator `DELETE`).
+   *  Absent for every terminal path this file doesn't tag (a plain natural
+   *  exit, an ordinary turn error) — the session's own fault, or at least
+   *  not something worth a special label. A string outside this list is
+   *  still valid (a newer/older daemon) — see `isKnownSessionEndReason`. */
+  endedReason?: SessionEndReason
   /** Whether a turn was actually in flight the INSTANT `status` flipped to
    *  "killed" — captured before anything else runs, because `busy` itself
    *  cannot be trusted after the fact: `runAgentTurn`'s `finally` is what
@@ -2250,6 +2257,13 @@ interface SessionRuntime {
   lastAssistantText?: string
   /** Set by a tool call: the next text-delta starts a new message. */
   lastAssistantTextSealed?: boolean
+  /** The most recent driver-reported `error` stream event's message this
+   *  session lifetime, kept so a LATER death that carries no error text of
+   *  its own (a bare "adapter process gone", from `markCrashed`'s pid probe)
+   *  can still be classified — e.g. `isProviderLimitError` distinguishing a
+   *  usage-cap death from a genuine crash. Not persisted; overwritten by
+   *  each new `error` event, never cleared mid-session. */
+  lastErrorMessage?: string
   /** Set by `interruptInFlightTurn` when the daemon cancels the in-flight
    *  turn; consumed (and cleared) at the top of that turn's `finally`. An
    *  interrupted turn does NOT drain `promptQueue` — queued prompts are
@@ -3506,7 +3520,26 @@ export interface SessionsRegistry {
    *  bytes at the end; `lastBytes` caps the returned size from the
    *  tail. Returns null when the session is missing or not a PTY. */
   readTerminalOutput(id: string, lastBytes?: number): Buffer | null
-  kill(id: string, signal?: NodeJS.Signals): boolean
+  /** SIGTERM the underlying child + close the agent protocol session.
+   *  `reason`, when given, is stamped onto `SessionDescriptor.endedReason`
+   *  (see {@link SessionEndReason}) — pass it from every call site that
+   *  knows WHY it's killing this session (an operator's explicit stop, a
+   *  supervisor tearing down its own judge session, …) rather than leaving
+   *  the row's cause of death unlabeled. Omitted preserves today's
+   *  behaviour: no `endedReason` is stamped by this call (the row may
+   *  already carry one from elsewhere, e.g. a prior `reapIdle`/`markCrashed`
+   *  — moot in practice since both already refuse a non-"running" row before
+   *  `kill()` would ever run on it).
+   *
+   *  A row that's ALREADY terminal (exited/killed/error) normally makes this
+   *  a no-op refusal (`false`) — EXCEPT `reason: "operator-completed"`,
+   *  which is instead treated as "mark as completed": the persisted
+   *  outcome's `termination.reason` is idempotently relabeled to
+   *  `"operator-completed"` (the true original mechanism preserved in
+   *  `termination.previousReason`) and this returns `true`. Every other
+   *  reason (including `"operator-stopped"` or none) on a terminal row
+   *  stays the plain no-op. */
+  kill(id: string, signal?: NodeJS.Signals, reason?: SessionEndReason): boolean
   /** Retire a long-idle agent-cli session to free its adapter process — the
    *  primitive the idle-session reaper (`runIdleReapPass`, PR-6) drives on a
    *  periodic sweep. Terminates the underlying adapter/child the SAME graceful
@@ -4420,6 +4453,35 @@ export function createSessionsRegistry(opts?: {
     })
     if (!shouldReplaceOutcome(rt.desc.outcome, next)) return
     rt.desc.outcome = next
+    schedulePersist()
+  }
+
+  // "Mark as completed" (UI affordance): an operator saying
+  // reason:"operator-completed" about a row that's ALREADY terminal isn't an
+  // error — `kill()` relabels the persisted outcome's `termination.reason`
+  // in place rather than refusing the call. Idempotent: the true original
+  // mechanism is captured in `termination.previousReason` on the FIRST call
+  // only, so relabeling twice never overwrites it with "operator-completed"
+  // itself. Never touches `desc.endedReason` — that stays the ground truth
+  // for HOW the row actually died; only the outcome's operator-facing label
+  // changes.
+  const markOutcomeCompleted = (rt: SessionRuntime): void => {
+    const existing =
+      rt.desc.outcome ??
+      deriveSessionOutcome(rt.desc, { lastAssistantText: rt.lastAssistantText })
+    const previousReason =
+      existing.termination.reason === "operator-completed"
+        ? existing.termination.previousReason
+        : existing.termination.reason
+    rt.desc.outcome = {
+      ...existing,
+      termination: {
+        ...existing.termination,
+        reason: "operator-completed",
+        ...(previousReason ? { previousReason } : {}),
+      },
+      recordedAt: new Date().toISOString(),
+    }
     schedulePersist()
   }
 
@@ -5425,6 +5487,7 @@ export function createSessionsRegistry(opts?: {
         // "blocked on command · <toolCallId>" while the agent worked on.
         releaseBlockedOn(rt.desc)
         rt.activeToolCalls?.clear()
+        if (evt.error?.message) rt.lastErrorMessage = evt.error.message
         const code =
           typeof evt.error?.code === "number" ? ` (code ${evt.error.code})` : ""
         appendLine(
@@ -6763,11 +6826,16 @@ export function createSessionsRegistry(opts?: {
         abnormalReason = "error"
         rt.desc.status = "error"
         rt.desc.endedAt = new Date().toISOString()
-        appendLine(
-          rt,
-          `[turn error] ${err instanceof Error ? err.message : String(err)}`,
-          "stderr"
-        )
+        const message = err instanceof Error ? err.message : String(err)
+        appendLine(rt, `[turn error] ${message}`, "stderr")
+        // A thrown provider/subscription usage-cap error (or one reported via
+        // an `error` stream event just before the generator gave up) gets its
+        // own reason instead of the bare "turn error" — see
+        // `isProviderLimitError`'s doc.
+        if (isProviderLimitError(message) || isProviderLimitError(rt.lastErrorMessage)) {
+          rt.desc.endedReason = "provider-limit"
+          rt.desc.lastError = message
+        }
         recordExitUsageSnapshot(rt)
         schedulePersist()
         emitExited(rt)
@@ -6910,6 +6978,7 @@ export function createSessionsRegistry(opts?: {
           )
           rt.desc.status = "killed"
           rt.desc.endedAt = new Date().toISOString()
+          rt.desc.endedReason = "cost-cap-exceeded"
           void rt.agentSession?.close().catch(() => undefined)
           void transcriptWriter.close(rt.desc.id)
           tracedSessions.delete(rt.desc.id)
@@ -9231,7 +9300,7 @@ export function createSessionsRegistry(opts?: {
       }
       return joined
     },
-    kill(id, signal = "SIGTERM") {
+    kill(id, signal = "SIGTERM", reason) {
       const rt = sessions.get(id)
       if (!rt) return false
       if (
@@ -9239,6 +9308,14 @@ export function createSessionsRegistry(opts?: {
         rt.desc.status === "killed" ||
         rt.desc.status === "error"
       ) {
+        // "Mark as completed" on an already-ended row (see
+        // `markOutcomeCompleted`'s doc) — every other reason (a plain
+        // "operator-stopped", or none at all) on a terminal row stays
+        // exactly today's no-op refusal.
+        if (reason === "operator-completed") {
+          markOutcomeCompleted(rt)
+          return true
+        }
         return false
       }
       // Read BEFORE the flip below — see killedMidTurn's docblock: this is
@@ -9250,6 +9327,7 @@ export function createSessionsRegistry(opts?: {
       // The descriptor flip is the poller's own stop signal — but clear the
       // timer here rather than letting it expire on the next tick.
       stopUsageRefresh(rt)
+      if (reason) rt.desc.endedReason = reason
       // A dead row carries no live parked-with-background-tasks flag. kill()
       // doesn't run clearInFlightFlags (an idle kill has no in-flight turn to
       // unwind), so drop it here — same "no dangling flag on a dead row" rule.
@@ -9359,11 +9437,21 @@ export function createSessionsRegistry(opts?: {
         return false
       }
       const pid = rt.desc.pid
+      // A recent driver-reported usage-cap error (Claude Code's "hit your
+      // session limit" et al) explains the process going away far better
+      // than a generic "crashed" — the crash-detect sweep only ever
+      // observes the pid gone, never why, so lean on the last `error`
+      // stream event this session saw.
+      const providerLimitMessage = isProviderLimitError(rt.lastErrorMessage)
+        ? rt.lastErrorMessage
+        : undefined
       rt.desc.status = "error"
       rt.desc.endedAt = new Date().toISOString()
-      rt.desc.endedReason = "crashed"
+      rt.desc.endedReason = providerLimitMessage ? "provider-limit" : "crashed"
       rt.desc.crashedAt = rt.desc.endedAt
-      rt.desc.lastError = `adapter process gone (pid ${pid}) — session crashed`
+      rt.desc.lastError = providerLimitMessage
+        ? `provider usage limit hit: ${providerLimitMessage}`
+        : `adapter process gone (pid ${pid}) — session crashed`
       if (rt.agentSession) {
         releaseOutOfTurnEvents(rt)
         delete rt.desc.backgroundTasks
@@ -9379,12 +9467,14 @@ export function createSessionsRegistry(opts?: {
         rt.agentSession = undefined
       }
       schedulePersist()
-      const banner = `[crashed] adapter process gone (pid ${pid}) — session crashed`
+      const banner = providerLimitMessage
+        ? `[provider-limit] ${providerLimitMessage}`
+        : `[crashed] adapter process gone (pid ${pid}) — session crashed`
       appendLine(rt, banner, "stderr")
       transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: banner })
-      // The usual lifecycle exit (carrying reason:"crashed" via emitExited,
-      // which reads desc.endedReason) so existing session:exited consumers
-      // see the row leave "running".
+      // The usual lifecycle exit (carrying reason:"crashed" or "provider-limit"
+      // via emitExited, which reads desc.endedReason) so existing
+      // session:exited consumers see the row leave "running".
       emitExited(rt)
       return true
     },

@@ -1101,7 +1101,8 @@ export function registerOrchestrationTools(
       "Poll the status of a background workflow run started with `workflow_start` or " +
         "`workflow_run_file`. Each stage reports its REAL steps (every step that " +
         "actually ran — tool/gate/agent, map/pipeline items as `<id>[<index>]`), with " +
-        "status/startedAt/endedAt/error/sessionId/suspend, so later work can inspect " +
+        "status/startedAt/endedAt/error/sessionId/suspend (a running agent step whose " +
+        "session is still booting carries `phase: \"spawning\"`), so later work can inspect " +
         "what an earlier step produced (e.g. via `agent_output` on that sessionId). " +
         "COMPACT BY DEFAULT (AIP-58 §9): omits each step's raw `output` and a gate " +
         "step's full `report` body — pass `full: true` for everything. A `done` run's " +

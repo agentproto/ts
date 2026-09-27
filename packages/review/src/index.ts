@@ -79,6 +79,8 @@ export {
   type LaneResult,
   type LaneStatus,
   type Quorum,
+  type ReviewPrRef,
+  type ReviewRequester,
   type ReviewTarget,
   type RubricDigest,
   type Severity,

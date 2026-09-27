@@ -130,6 +130,11 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
        *  `run_request_input` MCP tool (AIP-58 §9), without this host
        *  needing to know about runs at all. */
       onSessionLabeled?: (stepId: string, sessionId: string) => void
+      /** Notified when a step's spawn BEGINS (before the adapter boots),
+       *  keyed by the step's indexed key when it has one — lets
+       *  `WorkflowRunner` show the step as `spawning` until
+       *  `onSessionLabeled` attaches its session. */
+      onSpawnStarted?: (stepKey: string) => void
     },
   ) {}
 
@@ -167,6 +172,8 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
   ): Promise<string> {
     const workspaceSlug = opts.workspaceSlug ?? this.opts?.workspaceSlug ?? "default"
     const cwd = opts.cwd ?? this.opts?.cwd ?? process.cwd()
+    const spawnKey = opts.stepKey ?? opts.stepId
+    if (spawnKey !== undefined) this.opts?.onSpawnStarted?.(spawnKey)
 
     // Sandbox spawn: delegate to the same `spawnAgentSession` core the MCP
     // `agent_start` tool uses (session-spawn.ts) so the sandbox boot / secret

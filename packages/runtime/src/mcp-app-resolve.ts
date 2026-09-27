@@ -186,9 +186,30 @@ async function fromAcpMcpServer(
   }
   return {
     type: s.transport,
-    ...(s.ref !== undefined ? { url: s.ref } : {}),
+    ...(s.ref !== undefined ? { url: stripDeferredQueryParam(s.ref) } : {}),
     ...(headers ? { headers } : {}),
   }
+}
+
+/** An executor's own `mcpServers` entry for the daemon self-mount carries
+ *  `?deferred=1|0` (harness-parity item 3, deferred-tools.ts) so the
+ *  AGENT's `tools/list` stays lazy (only the always-on set + `tool_search`).
+ *  The MCP Apps host's OWN connection — built from that same session
+ *  config to answer `uiIndex`/`callTool` — needs the server's full
+ *  `tools/list` regardless, or every tool outside the always-on set reads
+ *  as "does not exist" to the app-UI gate. Only the host's listing changes
+ *  here; the agent's mount (the session's own `mcpServers` entry) is
+ *  untouched. Malformed URLs pass through unchanged. */
+function stripDeferredQueryParam(url: string): string {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return url
+  }
+  if (!parsed.searchParams.has("deferred")) return url
+  parsed.searchParams.delete("deferred")
+  return parsed.toString()
 }
 
 function pick(map: Record<string, unknown> | undefined, alias: string): unknown {

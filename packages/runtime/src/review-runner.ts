@@ -14,7 +14,9 @@
  *      gate runner), then the FREEZE (head resolved after prepare), then the
  *      lanes in parallel through {@link createReviewLaneExecutor}, then the
  *      fan-in verdict;
- *   4. build the attestation and write it to the ledger.
+ *   4. build the attestation and write it to the ledger. A CANCELLED run
+ *      (`cancel()`, or superseded by a newer head — see `supersede`) writes
+ *      nothing: nobody asked for its verdict any more.
  *
  * Lanes: command lanes run `sh -c <run>` in their own process group with a
  * hard timeout; agent lanes spawn a CHILD REVIEWER SESSION through
@@ -32,7 +34,7 @@
  * finished before a daemon restart.
  */
 
-import { spawn as spawnChild, execFile } from "node:child_process"
+import { spawn as spawnChild, execFile, execFileSync } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { mkdir, readFile, rm } from "node:fs/promises"
 import { hostname } from "node:os"
@@ -41,6 +43,7 @@ import {
   buildAgentLanePrompt,
   buildAttestation,
   compileReview,
+  ledgerKeyOf,
   manifestSha as hashManifest,
   parseAgentLaneReport,
   parseReviewManifest,
@@ -53,11 +56,13 @@ import {
   type LaneResult,
   type ReviewLaneExecutor,
   type ReviewOutcome,
+  type ReviewPrRef,
+  type ReviewRequester,
   type ReviewTarget,
   type RubricDigest,
 } from "@agentproto/review"
 import { compileWorkflow, runWorkflow } from "@agentproto/workflow-runtime"
-import { repoSlug, type LedgerEntry, type ReviewLedger } from "./review-ledger.js"
+import { repoSlug, withPr, type LedgerEntry, type ReviewLedger } from "./review-ledger.js"
 
 // ── git ──────────────────────────────────────────────────────────────
 
@@ -100,6 +105,14 @@ export const revParse = (root: string, ref: string): Promise<string> =>
   git(root, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]).catch(() => {
     throw new Error(`cannot resolve '${ref}' to a commit in ${root}`)
   })
+
+/** The author of `sha` — `undefined` when git can't say. */
+export async function commitAuthor(root: string, sha: string): Promise<{ name: string; email: string } | undefined> {
+  const out = await git(root, ["log", "-1", "--format=%an%x00%ae", sha]).catch(() => undefined)
+  if (!out) return undefined
+  const [name, email] = out.split("\0")
+  return name && email ? { name, email } : undefined
+}
 
 /** Tracked-file changes present? (Untracked files don't count — they can't
  *  change what a committed range contains.) */
@@ -185,9 +198,9 @@ export function runShellLane(input: {
 
 /** Outcome of one reviewer session's run. */
 export type ReviewerRunResult =
-  | { status: "ended"; sessionId: string; preset: string }
-  | { status: "timeout"; sessionId: string; preset: string }
-  | { status: "failed"; error: string; sessionId?: string; preset?: string }
+  | { status: "ended"; sessionId: string; preset: string; model?: string }
+  | { status: "timeout"; sessionId: string; preset: string; model?: string }
+  | { status: "failed"; error: string; sessionId?: string; preset?: string; model?: string }
 
 /**
  * The agent-lane executor seam: spawn a reviewer session under a harness
@@ -246,12 +259,14 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
       ...(ctx.parentSessionId ? { parentSessionId: ctx.parentSessionId } : {}),
       ...(signal ? { signal } : {}),
     })
+    const model = result.model ? { model: result.model } : {}
     if (result.status === "failed") {
       return {
         outcome: "skipped",
         error: result.error,
         ...(result.sessionId ? { sessionId: result.sessionId } : {}),
         preset: result.preset ?? check.preset,
+        ...model,
       }
     }
     if (result.status === "timeout") {
@@ -260,6 +275,7 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
         error: `reviewer exceeded ${check.timeoutMs}ms and was killed`,
         sessionId: result.sessionId,
         preset: result.preset,
+        ...model,
       }
     }
     let raw: string
@@ -271,16 +287,24 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
         error: `reviewer ended its turn without writing ${verdictPath}`,
         sessionId: result.sessionId,
         preset: result.preset,
+        ...model,
       }
     }
     try {
-      return { outcome: "reported", report: parseAgentLaneReport(raw), sessionId: result.sessionId, preset: result.preset }
+      return {
+        outcome: "reported",
+        report: parseAgentLaneReport(raw),
+        sessionId: result.sessionId,
+        preset: result.preset,
+        ...model,
+      }
     } catch (err) {
       return {
         outcome: "skipped",
         error: err instanceof Error ? err.message : String(err),
         sessionId: result.sessionId,
         preset: result.preset,
+        ...model,
       }
     }
   }
@@ -322,6 +346,19 @@ export interface ReviewRunInput {
   nocache?: boolean
   /** Session the agent lanes' reviewer sessions nest under. */
   parentSessionId?: string
+  /** Session that requested the review — recorded as
+   *  `attestation.requester.sessionId`. Default: `parentSessionId`. */
+  requesterSessionId?: string
+  /** The PR the range is being reviewed for, when the caller knows it —
+   *  recorded as `attestation.pr` and as the entry's annotation link. */
+  pr?: ReviewPrRef
+  /** Before running, cancel in-flight runs for the same repo + binding + base
+   *  whose head DIFFERS (an older push nobody will read the verdict of) — as
+   *  long as that run is the same line of work: the same checkout, or a head
+   *  that is an ancestor of this one. A sibling branch reviewed from another
+   *  worktree off the same base is never cancelled. Gates should pass
+   *  `true`; the default is `false`. */
+  supersede?: boolean
 }
 
 export type ReviewRunStatus = "running" | "done" | "failed" | "cancelled"
@@ -334,6 +371,14 @@ export interface ReviewRun {
   reviewId?: string
   binding?: string
   repoRemote?: string
+  /** The resolved range base, once known. */
+  baseSha?: string
+  /** The range head: the pre-prepare head once resolved, then the frozen head. */
+  headSha?: string
+  /** The checkout the run reviews, once resolved. */
+  repoRoot?: string
+  /** Set on a run cancelled because a newer head superseded it. */
+  supersededBy?: string
   /** Lanes settled so far (live progress while `running`). */
   lanes: LaneResult[]
   /** Set once `done`. */
@@ -372,7 +417,11 @@ export function hostPlaceholders(baseSha: string): Record<string, string> {
 export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunner {
   const { ledger } = opts
   const daemonId = opts.daemonId ?? `agentproto-runtime@${hostname()}`
-  const runs = new Map<string, { run: ReviewRun; done: Promise<void>; abort: AbortController }>()
+  const runs = new Map<
+    string,
+    /** `heads`: every head this run has been about (pre-prepare + frozen). */
+    { run: ReviewRun; done: Promise<void>; abort: AbortController; heads: Set<string> }
+  >()
   /** In-flight dedupe: an identical request joins the running run. */
   const inflight = new Map<string, string>()
 
@@ -382,6 +431,7 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
   async function execute(run: ReviewRun, input: ReviewRunInput, signal: AbortSignal): Promise<void> {
     const { root, repoRemote } = await resolveRepo(input.cwd)
     run.repoRemote = repoRemote
+    run.repoRoot = root
     const manifestPath = input.manifestPath
       ? resolve(input.cwd, input.manifestPath)
       : join(root, "REVIEW.md")
@@ -401,6 +451,12 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
             `cannot compute merge-base(${manifest.target.base}, HEAD) — pass 'base' explicitly or fetch the base ref (${err.message})`,
           )
         })
+    const headNow = await revParse(root, input.head ?? "HEAD")
+    run.baseSha = baseSha
+    run.headSha = headNow
+    runs.get(run.runId)?.heads.add(headNow)
+
+    if (input.supersede) await supersedeStale(run)
 
     const rubrics: RubricDigest[] = []
     for (const id of binding.checks) {
@@ -415,7 +471,6 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
     // moves the frozen head; on the next run the head already includes that
     // commit, so an idempotent prepare still converges onto a cache hit.
     if (!input.nocache) {
-      const headNow = await revParse(root, input.head ?? "HEAD")
       if (!(await isDirty(root))) {
         const hit = await ledger.lookupCached(
           { repoRemote, manifestSha: mSha, binding: binding.name, rangeSha: rangeSha({ baseSha, headSha: headNow }) },
@@ -439,6 +494,8 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
       freeze: async () => {
         const headSha = await revParse(root, input.head ?? "HEAD")
         dirty = await isDirty(root)
+        run.headSha = headSha
+        runs.get(run.runId)?.heads.add(headSha)
         return { repoRemote, baseSha, headSha }
       },
       executor: createReviewLaneExecutor({
@@ -457,7 +514,19 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
     const workflow = compileWorkflow(compiled.workflow, { tools: {}, candidates: [] })
     const result = await runWorkflow({ workflow, cwd: root, signal })
     const outcome = result.output as ReviewOutcome
+    if (signal.aborted) {
+      // Cancelled (or superseded): keep the live lane view, record nothing.
+      if (outcome?.lanes) run.lanes = outcome.lanes
+      await rm(runDir, { recursive: true, force: true })
+      return
+    }
 
+    const requesterSessionId = input.requesterSessionId ?? input.parentSessionId
+    const gitAuthor = await commitAuthor(root, outcome.target.headSha)
+    const requester: ReviewRequester = {
+      ...(requesterSessionId ? { sessionId: requesterSessionId } : {}),
+      ...(gitAuthor ? { gitAuthor } : {}),
+    }
     const attestation = buildAttestation({
       runId: run.runId,
       reviewId: manifest.id,
@@ -469,6 +538,8 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
       attestor: { daemon: daemonId, presets: outcome.lanes.flatMap((l) => (l.preset ? [l.preset] : [])) },
       rubrics,
       dirty,
+      requester,
+      ...(input.pr ? { pr: input.pr } : {}),
     })
     const entry: LedgerEntry = {
       attestation,
@@ -479,9 +550,53 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
       },
     }
     run.ledgerPath = await ledger.put(entry)
+    if (input.pr) await ledger.updateAnnotations(ledgerKeyOf(attestation), withPr(input.pr))
     run.attestation = attestation
     run.lanes = attestation.lanes
     await rm(runDir, { recursive: true, force: true })
+  }
+
+  /** Cancel every OTHER running run with the same repo + binding + base but
+   *  a different head than `run`, when it's the same line of work (same
+   *  checkout, or its head is an ancestor of `run`'s). Runs whose range isn't
+   *  resolved yet are left alone (nothing to compare). */
+  async function supersedeStale(run: ReviewRun): Promise<void> {
+    for (const [id, other] of [...runs]) {
+      if (id === run.runId || other.run.status !== "running") continue
+      const o = other.run
+      if (!o.baseSha || !o.headSha) continue
+      if (o.repoRemote !== run.repoRemote || o.binding !== run.binding || o.baseSha !== run.baseSha) continue
+      if (o.headSha === run.headSha || other.heads.has(run.headSha!)) continue
+      const sameLine =
+        o.repoRoot === run.repoRoot ||
+        (await git(run.repoRoot!, ["merge-base", "--is-ancestor", o.headSha, run.headSha!]).then(
+          () => true,
+          () => false,
+        ))
+      if (!sameLine || other.run.status !== "running") continue
+      o.supersededBy = run.runId
+      cancel(id)
+    }
+  }
+
+  function cancel(runId: string): boolean {
+    const live = runs.get(runId)
+    if (!live || live.run.status !== "running") return false
+    live.abort.abort()
+    return true
+  }
+
+  /** Current HEAD of `cwd` — sync, only on the (rare) dedupe-join path. */
+  function currentHead(cwd: string, ref: string): string | undefined {
+    try {
+      return execFileSync("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim()
+    } catch {
+      return undefined
+    }
   }
 
   async function status(runId: string): Promise<ReviewRun | undefined> {
@@ -511,7 +626,13 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
       const existing = inflight.get(key)
       if (existing) {
         const live = runs.get(existing)
-        if (live && live.run.status === "running") return live.run
+        // Join only while the in-flight run is still about the head this
+        // request would review: same request key but HEAD moved on (commit →
+        // push → commit → push) is a NEW range, not a duplicate.
+        if (live && live.run.status === "running") {
+          const head = live.heads.size > 0 ? currentHead(resolve(input.cwd), input.head ?? "HEAD") : undefined
+          if (head === undefined || live.heads.has(head)) return live.run
+        }
       }
       const run: ReviewRun = {
         runId: `review-${randomUUID()}`,
@@ -533,7 +654,7 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
           run.endedAt = new Date().toISOString()
           if (inflight.get(key) === run.runId) inflight.delete(key)
         })
-      runs.set(run.runId, { run, done, abort })
+      runs.set(run.runId, { run, done, abort, heads: new Set() })
       return run
     },
     async wait(runId) {
@@ -544,11 +665,6 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
       }
       return status(runId)
     },
-    cancel(runId) {
-      const live = runs.get(runId)
-      if (!live || live.run.status !== "running") return false
-      live.abort.abort()
-      return true
-    },
+    cancel,
   }
 }

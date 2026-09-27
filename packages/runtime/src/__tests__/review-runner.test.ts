@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
-import { verifyAttestation, type Attestation } from "@agentproto/review"
+import { ledgerKeyOf, verifyAttestation, type Attestation } from "@agentproto/review"
 import { createReviewLedger } from "../review-ledger.js"
 import {
   createReviewRunner,
@@ -31,7 +31,19 @@ import { registerReviewTools } from "../review-tools.js"
 // on a loaded machine or CI runner.
 vi.setConfig({ testTimeout: 30_000 })
 
-const sh = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim()
+/** git in `cwd`. Retries a held `index.lock`: tests that commit while a run
+ *  is in flight race the runner's own `git status` (which refreshes the
+ *  index under that lock). */
+const sh = (cwd: string, ...args: string[]): string => {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim()
+    } catch (err) {
+      if (attempt >= 40 || !/index\.lock/.test(String((err as { stderr?: unknown }).stderr ?? err))) throw err
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
+    }
+  }
+}
 
 const RUBRIC = "# rubric\nFind bugs.\n"
 
@@ -100,6 +112,14 @@ beforeEach(async () => {
 afterEach(async () => {
   for (const d of cleanup.splice(0)) await rm(d, { recursive: true, force: true })
 })
+
+async function waitFor(cond: () => boolean, timeoutMs = 10_000): Promise<void> {
+  const until = Date.now() + timeoutMs
+  while (!cond()) {
+    if (Date.now() > until) throw new Error("waitFor: condition not met in time")
+    await new Promise((r) => setTimeout(r, 25))
+  }
+}
 
 async function runToEnd(runner: ReviewRunner, input: Parameters<ReviewRunner["start"]>[0]) {
   const run = runner.start(input)
@@ -309,9 +329,143 @@ describe("review runner — verdicts over a real repo", () => {
     expect(runner.cancel(run.runId)).toBe(true)
     const done = (await runner.wait(run.runId))!
     expect(done.status).toBe("cancelled")
-    expect(done.attestation!.verdict).toBe("incomplete")
-    expect(done.attestation!.lanes[0]).toMatchObject({ status: "skipped" })
+    // A cancelled run records NOTHING: no attestation, no ledger entry.
+    expect(done.attestation).toBeUndefined()
+    expect(done.lanes[0]).toMatchObject({ status: "skipped" })
+    expect(await runner.ledger.list()).toEqual([])
     expect(runner.cancel(run.runId)).toBe(false)
+  })
+
+  it("records the requester (caller session + head author) and the reviewer's model", async () => {
+    const repo = await makeRepo(
+      manifest(["{id: correctness, kind: agent, preset: kimi, rubric: ./rubrics/correctness.md}"]),
+    )
+    cleanup.push(repo.dir)
+    const host: ReviewerSessionHost = {
+      async run(input) {
+        const path = input.prompt.match(/write EXACTLY ONE file — (\S+) —/)![1]!
+        await writeFile(path, JSON.stringify({ findings: [] }))
+        return { status: "ended", sessionId: "rev-1", preset: input.preset, model: "kimi-k2" }
+      },
+    }
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }), reviewers: host })
+    const run = await runToEnd(runner, { cwd: repo.dir, parentSessionId: "caller-1" })
+    expect(run.attestation!.requester).toEqual({
+      sessionId: "caller-1",
+      gitAuthor: { name: "t", email: "t@example.com" },
+    })
+    expect(run.attestation!.lanes[0]).toMatchObject({ sessionId: "rev-1", preset: "kimi", model: "kimi-k2" })
+
+    // An explicit requester overrides the parent session.
+    const again = await runToEnd(runner, {
+      cwd: repo.dir,
+      parentSessionId: "caller-1",
+      requesterSessionId: "gate-7",
+      nocache: true,
+    })
+    expect(again.attestation!.requester!.sessionId).toBe("gate-7")
+  })
+
+  it("records a passed-through pr in the attestation AND as the ledger annotation link", async () => {
+    const repo = await makeRepo(manifest(['{id: ok, kind: command, run: "true"}']))
+    cleanup.push(repo.dir)
+    const ledger = createReviewLedger({ root: ledgerRoot })
+    const runner = createReviewRunner({ ledger })
+    const pr = { provider: "github" as const, repo: "acme/demo", number: 7, url: "https://github.com/acme/demo/pull/7" }
+    const run = await runToEnd(runner, { cwd: repo.dir, pr })
+    expect(run.attestation!.pr).toEqual(pr)
+    const key = ledgerKeyOf(run.attestation!)
+    expect(await ledger.getAnnotations(key)).toEqual({ pr })
+    // The sidecar never shows up as a ledger entry of its own.
+    expect(await ledger.list()).toHaveLength(1)
+  })
+
+  it("does not join an in-flight run once HEAD has moved on (a new push is a new range)", async () => {
+    const repo = await makeRepo(manifest(['{id: slow, kind: command, run: "sleep 30"}']))
+    cleanup.push(repo.dir)
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }) })
+    const a = runner.start({ cwd: repo.dir })
+    await waitFor(() => a.headSha !== undefined)
+    await writeFile(join(repo.dir, "c.txt"), "c\n")
+    sh(repo.dir, "add", "-A")
+    sh(repo.dir, "commit", "-qm", "next")
+    const b = runner.start({ cwd: repo.dir })
+    expect(b.runId).not.toBe(a.runId)
+    runner.cancel(a.runId)
+    runner.cancel(b.runId)
+    await Promise.all([runner.wait(a.runId), runner.wait(b.runId)])
+  })
+
+  it("supersede: a run for a NEW head cancels the older head's in-flight run, which writes nothing", async () => {
+    // The lane marks (outside the tree) that it started on the frozen head,
+    // then only finishes quickly for a head that contains c.txt.
+    const repo = await makeRepo(
+      manifest(['{id: lane, kind: command, run: "touch ../{head}.started; git cat-file -e {head}:c.txt || sleep 30"}']),
+    )
+    cleanup.push(repo.dir, join(repo.dir, "..", `${repo.headSha}.started`))
+    const ledger = createReviewLedger({ root: ledgerRoot })
+    const runner = createReviewRunner({ ledger })
+    const older = runner.start({ cwd: repo.dir, supersede: true })
+    await waitFor(() => existsSync(join(repo.dir, "..", `${repo.headSha}.started`)))
+    const oldHead = older.headSha!
+    expect(oldHead).toBe(repo.headSha)
+    await writeFile(join(repo.dir, "c.txt"), "c\n")
+    sh(repo.dir, "add", "-A")
+    sh(repo.dir, "commit", "-qm", "next push")
+    const newer = runner.start({ cwd: repo.dir, supersede: true })
+    const [o, n] = await Promise.all([runner.wait(older.runId), runner.wait(newer.runId)])
+    expect(o).toMatchObject({ status: "cancelled", supersededBy: newer.runId })
+    expect(o!.attestation).toBeUndefined()
+    expect(n).toMatchObject({ status: "done" })
+    expect(n!.attestation!.verdict).toBe("pass")
+    const entries = await ledger.list()
+    expect(entries.map((e) => e.attestation.runId)).toEqual([newer.runId])
+    expect(entries[0]!.attestation.target.headSha).not.toBe(oldHead)
+  })
+
+  it("supersede never cancels a sibling branch reviewed from another worktree off the same base", async () => {
+    const repo = await makeRepo(manifest(['{id: slow, kind: command, run: "sleep 30"}']))
+    cleanup.push(repo.dir)
+    const sibling = `${repo.dir}-sibling`
+    cleanup.push(sibling)
+    sh(repo.dir, "worktree", "add", "-q", "-b", "sibling", sibling, "main")
+    await writeFile(join(sibling, "s.txt"), "s\n")
+    sh(sibling, "add", "-A")
+    sh(sibling, "commit", "-qm", "sibling change")
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }) })
+    const a = runner.start({ cwd: repo.dir, supersede: true })
+    await waitFor(() => a.headSha !== undefined)
+    const b = runner.start({ cwd: sibling, supersede: true })
+    await waitFor(() => b.headSha !== undefined)
+    // Same repo, binding and base, different heads — but not the same line.
+    expect(b.baseSha).toBe(a.baseSha)
+    await new Promise((r) => setTimeout(r, 300))
+    expect(a.status).toBe("running")
+    expect(a.supersededBy).toBeUndefined()
+    runner.cancel(a.runId)
+    runner.cancel(b.runId)
+    await Promise.all([runner.wait(a.runId), runner.wait(b.runId)])
+  })
+
+  it("supersede leaves a different binding, and a run without the flag, alone", async () => {
+    const repo = await makeRepo(
+      manifest(['{id: slow, kind: command, run: "sleep 30"}', '{id: quick, kind: command, run: "true"}'], [
+        "local: {checks: [slow]}",
+        "ci: {checks: [quick]}",
+      ]),
+    )
+    cleanup.push(repo.dir)
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }) })
+    const local = runner.start({ cwd: repo.dir, binding: "local" })
+    await waitFor(() => local.headSha !== undefined)
+    await writeFile(join(repo.dir, "c.txt"), "c\n")
+    sh(repo.dir, "add", "-A")
+    sh(repo.dir, "commit", "-qm", "next")
+    const ci = await runToEnd(runner, { cwd: repo.dir, binding: "ci", supersede: true })
+    expect(ci.status).toBe("done")
+    expect(local.status).toBe("running")
+    runner.cancel(local.runId)
+    await runner.wait(local.runId)
   })
 
   it("joins an identical in-flight request instead of starting a second run", async () => {
@@ -367,6 +521,7 @@ describe("review MCP tools", () => {
     const ran = parseToolJson(await client.callTool({ name: "review_run", arguments: { cwd: repo.dir } }))
     expect(ran).toMatchObject({ status: "done", verdict: "pass", reviewId: "demo", binding: "default" })
     expect(calls[0]!.parentSessionId).toBe("caller-1")
+    expect(ran.attestation.requester).toEqual({ sessionId: "caller-1", gitAuthor: { name: "t", email: "t@example.com" } })
 
     const status = parseToolJson(await client.callTool({ name: "review_status", arguments: { runId: ran.runId } }))
     expect(status).toMatchObject({ runId: ran.runId, status: "done", verdict: "pass" })
@@ -410,6 +565,26 @@ describe("review MCP tools", () => {
       }),
     )
     expect(byKey.path).toBe(join(repo.dir, ".reviews", `demo-default-${repo.headSha.slice(0, 12)}.json`))
+  })
+
+  it("review_run records a pr passthrough; review_ledger rows show it", async () => {
+    const repo = await makeRepo(manifest(['{id: ok, kind: command, run: "true"}']))
+    cleanup.push(repo.dir)
+    const client = await connect(createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }) }))
+    const pr = { provider: "github", repo: "acme/demo", number: 9, url: "https://github.com/acme/demo/pull/9" }
+    const ran = parseToolJson(
+      await client.callTool({ name: "review_run", arguments: { cwd: repo.dir, pr, requesterSessionId: "gate" } }),
+    )
+    expect(ran.attestation.pr).toEqual(pr)
+    expect(ran.attestation.requester.sessionId).toBe("gate")
+    const rows = parseToolJson(await client.callTool({ name: "review_ledger", arguments: { cwd: repo.dir } }))
+    expect(rows.attestations[0]).toMatchObject({ runId: ran.runId, pr, requester: { sessionId: "gate" } })
+
+    const bad = await client.callTool({
+      name: "review_run",
+      arguments: { cwd: repo.dir, pr: { provider: "gitlab", repo: "x", number: 1, url: "nope" } },
+    })
+    expect(bad.isError).toBe(true)
   })
 
   it("review_run wait:false returns a runId to poll", async () => {

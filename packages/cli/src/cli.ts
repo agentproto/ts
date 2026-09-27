@@ -49,6 +49,7 @@ import { runWorktree } from "./commands/worktree.js"
 import { runBranch } from "./commands/branch.js"
 import { runPolicy } from "./commands/policy.js"
 import { runWorkflow } from "./commands/workflow.js"
+import { runReview } from "./commands/review.js"
 import { runMaintain } from "./commands/maintain.js"
 import { runTask } from "./commands/task.js"
 import { runPermissions } from "./commands/permissions.js"
@@ -147,6 +148,10 @@ Usage:
   agentproto policy    ack    <policyId> (--approve|--reject) [--json]
   agentproto policy    ls     [--json]
   agentproto policy    cancel <policyId> [--json]
+  agentproto review    run [--binding <name>] [--supersede] [--headless] [--pr <url>] [--json]
+                       run a REVIEW.md binding; exit 0 pass / 1 block / 2 incomplete / 3 could not run
+  agentproto review    verify [<attestation|dir>] [--if-exported]   verify an exported attestation
+  agentproto review    init [--ci github]   scaffold REVIEW.md + pre-push hook (+ Actions shim)
   agentproto workflow  start --workflow-id <id> --stages-json <json|@file> [--cwd <dir>] [--json]
   agentproto workflow  run-file <path> [--input-json <json|@file>] [--cwd <dir>] [--json]
   agentproto workflow  status <runId> [--json]
@@ -243,6 +248,7 @@ const VERBS = new Set([
   "branch",
   "policy",
   "workflow",
+  "review",
   "maintain",
   "task",
   "permissions",
@@ -369,6 +375,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runBranch(rest)
     case "policy":
       return runPolicy(rest)
+    case "review":
+      return runReview(rest)
     case "workflow":
       return runWorkflow(rest)
     case "maintain":

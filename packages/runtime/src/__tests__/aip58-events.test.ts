@@ -916,4 +916,93 @@ steps:
     expect(registry.get(step!.sessionId!)).toBeDefined()
     runner.cancel(run.runId)
   })
+
+  it("F34b — an agent step whose session is still booting reads as `spawning`, then clears once it attaches", async () => {
+    let releaseBoot!: () => void
+    const booted = new Promise<void>(res => { releaseBoot = res })
+    const resolveAgentAdapter = (async () => ({
+      startSession: async () => {
+        await booted
+        return {
+          sessionId: "adapter_slow",
+          send: async function* () {},
+          cancel: async () => {},
+          close: async () => {},
+        }
+      },
+      commandPreview: "mock-adapter",
+    })) as unknown as AgentAdapterResolver
+    const runner = createWorkflowRunner({
+      registry: makeMockRegistry(),
+      sessionEvents: createSessionEventBus(),
+      resolveAgentAdapter,
+    })
+    const run = await runner.start({
+      workflowId: "wf",
+      stages: [{ steps: [{ label: "summarize", adapter: "mock", prompt: "go" }] }],
+    })
+    const stepNow = () => runner.status(run.runId)?.stages[0]?.steps[0]
+    await vi.waitFor(() => expect(stepNow()?.phase).toBe("spawning"))
+    expect(stepNow()).toMatchObject({ status: "running" })
+    expect(stepNow()?.sessionId).toBeUndefined()
+
+    releaseBoot()
+    await vi.waitFor(() => expect(stepNow()?.sessionId).toMatch(/^sess_/))
+    expect(stepNow()?.phase).toBeUndefined()
+    runner.cancel(run.runId)
+  })
+
+  it("F34b — `phase: \"spawning\"` also shows through `startFromFile` (the WORKFLOW.md / workflow_run_file path), not just `start()`", async () => {
+    let releaseBoot!: () => void
+    const booted = new Promise<void>(res => { releaseBoot = res })
+    const resolveAgentAdapter = (async () => ({
+      startSession: async () => {
+        await booted
+        return {
+          sessionId: "adapter_slow_file",
+          send: async function* () {},
+          cancel: async () => {},
+          close: async () => {},
+        }
+      },
+      commandPreview: "mock-adapter",
+    })) as unknown as AgentAdapterResolver
+    const runner = createWorkflowRunner({
+      registry: makeMockRegistry(),
+      sessionEvents: createSessionEventBus(),
+      resolveAgentAdapter,
+      compileWorkflow: (handle) => compileWorkflow(handle, { tools: {}, candidates: [] }),
+    })
+
+    const path = join(tmpDir, "WORKFLOW.md")
+    writeFileSync(
+      path,
+      `---
+name: Pricing brief
+id: pricing-brief
+description: A single slow-booting agent step.
+version: 1.0.0
+inputs: {}
+outputs: {}
+steps:
+  - id: summarize
+    kind: agent
+    adapter: mock
+    prompt: go
+---
+`,
+      "utf8",
+    )
+
+    const run = await runner.startFromFile({ path })
+    const stepNow = () => runner.status(run.runId)?.stages[0]?.steps[0]
+    await vi.waitFor(() => expect(stepNow()?.phase).toBe("spawning"))
+    expect(stepNow()).toMatchObject({ status: "running" })
+    expect(stepNow()?.sessionId).toBeUndefined()
+
+    releaseBoot()
+    await vi.waitFor(() => expect(stepNow()?.sessionId).toMatch(/^sess_/))
+    expect(stepNow()?.phase).toBeUndefined()
+    runner.cancel(run.runId)
+  })
 })
