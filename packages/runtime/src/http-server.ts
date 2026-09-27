@@ -275,18 +275,36 @@ const DEFAULT_ALLOWED_ORIGINS: readonly string[] = [
  * Default `frame-ancestors` CSP sources allowed to EMBED (not call —
  * that's `allowedOrigins`, a different axis) `GET /apps/:appId/ui`'s
  * response when `RuntimeHttpServerOptions.frameAncestors` doesn't list
- * them explicitly. `vscode-webview:` is a URI *scheme*, not an origin: it
- * matches any `vscode-webview://<random-uuid>` a VS Code webview mints, one
- * per webview instance and never reused. A hostile web page cannot mint or
- * spoof that scheme — only the VS Code host process can — so allowing the
- * scheme wholesale is exactly as narrow as allowlisting `vscode-webview:`
- * itself, unlike `*` (any embedder at all, including a hostile top-level
- * page that would then be able to drive the page's injected
- * `POST /apps/:appId/tool-call` bridge — see `handleAppUiPage`) or a
- * wildcard domain (still forgeable by registering a matching subdomain).
+ * them explicitly. `vscode-webview:` and `vscode-file:` are URI *schemes*,
+ * not origins: `vscode-webview:` matches any `vscode-webview://<random-uuid>`
+ * a VS Code webview mints, one per webview instance and never reused, and
+ * `vscode-file:` is the scheme VS Code desktop's workbench document itself
+ * loads from. A hostile web page cannot mint or spoof either scheme — only
+ * the VS Code (Electron) host process can register them — so allowing them
+ * wholesale is exactly as narrow as allowlisting either scheme by itself,
+ * unlike `*` (any embedder at all, including a hostile top-level page that
+ * would then be able to drive the page's injected `POST /apps/:appId/tool-call`
+ * bridge — see `handleAppUiPage`) or a wildcard domain (still forgeable by
+ * registering a matching subdomain).
+ *
+ * `vscode-file:` earns its own slot for a reason `vscode-webview:` alone
+ * doesn't cover: CSP's `frame-ancestors` is checked against EVERY ancestor
+ * up to the top of the frame tree, not just the immediate parent. In VS
+ * Code desktop, an app-panel iframe's ancestor chain is workbench
+ * (`vscode-file://vscode-app/...`) > webview host (`vscode-webview://<uuid>`)
+ * > inner webview frame (`vscode-webview://<uuid>`) > this iframe — so the
+ * top-level workbench document has to clear the allowlist too, and it's
+ * `vscode-file:`, not `vscode-webview:`. Without it, every embed in VS Code
+ * desktop's HTTP-iframe app panel (`appIframePanel.ts`) is blocked outright.
+ * VS Code for the Web / remote (github.dev, vscode.dev, a remote-SSH/Codespaces
+ * window) instead loads the workbench from `https://*.vscode-cdn.net` or the
+ * remote's own https origin — an ordinary web origin, not an unforgeable
+ * scheme — so it isn't and shouldn't be covered by this default; a web/remote
+ * embed would need an explicit, narrower origin via `RuntimeHttpServerOptions
+ * .frameAncestors` instead of widening this list.
  * Extra sources are additive via `RuntimeHttpServerOptions.frameAncestors`.
  */
-const DEFAULT_FRAME_ANCESTORS: readonly string[] = ["vscode-webview:"]
+const DEFAULT_FRAME_ANCESTORS: readonly string[] = ["vscode-webview:", "vscode-file:"]
 
 /**
  * Request headers whose mere presence proves a proxy/tunnel forwarded the
@@ -849,7 +867,7 @@ export interface RuntimeHttpServerOptions {
   strictOrigins?: boolean
   /** Extra `frame-ancestors` CSP sources for `GET /apps/:appId/ui`
    *  (`handleAppUiPage`), ADDED to `DEFAULT_FRAME_ANCESTORS`
-   *  (`vscode-webview:`) — WHO may EMBED the standalone app host in an
+   *  (`vscode-webview:`, `vscode-file:`) — WHO may EMBED the standalone app host in an
    *  iframe. Deliberately a separate list from `allowedOrigins`: that one
    *  gates who may CALL the daemon's mutating routes (including the app's
    *  own `tool-call` bridge), this one gates who may DISPLAY the page at
@@ -8068,15 +8086,19 @@ export function requestHttpBaseUrl(req: IncomingMessage): string {
  *  URL, so the appId segment carries over whichever spelling it used).
  *
  *  Default posture is `frame-ancestors 'self' <frameAncestors>` (defaulting
- *  to `vscode-webview:` — see `DEFAULT_FRAME_ANCESTORS`): standalone means
- *  a top-level tab, so embedding is refused by default EXCEPT from sources
- *  that are structurally unforgeable by a hostile web page. `'self'` covers
- *  the daemon framing its own UI; `vscode-webview:` covers a VS Code
- *  webview panel (e.g. the HTTP-iframe app panel) — its origin is
- *  `vscode-webview://<random-uuid>`, a scheme no ordinary web page can
- *  mint. That still closes the drive-by this header exists for: a hostile
- *  *web* page iframing the UI to drive its `tool-call` bridge cannot
- *  present either source. `x-frame-options` has no allowlist syntax beyond
+ *  to `vscode-webview:` and `vscode-file:` — see `DEFAULT_FRAME_ANCESTORS`):
+ *  standalone means a top-level tab, so embedding is refused by default
+ *  EXCEPT from sources that are structurally unforgeable by a hostile web
+ *  page. `'self'` covers the daemon framing its own UI; `vscode-webview:`
+ *  covers a VS Code webview panel (e.g. the HTTP-iframe app panel) — its
+ *  origin is `vscode-webview://<random-uuid>`, a scheme no ordinary web
+ *  page can mint; `vscode-file:` covers the VS Code desktop workbench
+ *  document that sits ABOVE that webview in the frame-ancestors chain (CSP
+ *  checks every ancestor up to the top, not just the immediate parent), a
+ *  scheme only the Electron host process can register. That still closes
+ *  the drive-by this header exists for: a hostile *web* page iframing the
+ *  UI to drive its `tool-call` bridge cannot present any of these sources.
+ *  `x-frame-options` has no allowlist syntax beyond
  *  `SAMEORIGIN`/`DENY` — it cannot express "self or this one scheme" — so
  *  it is only emitted (as `SAMEORIGIN`) when `frameAncestors` is empty and
  *  the CSP list collapses to plain `'self'`; once any extra source widens
