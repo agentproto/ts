@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir, homedir } from "node:os"
 import { join } from "node:path"
@@ -138,13 +139,13 @@ describe("createTranscriptWriter", () => {
     expect("source" in (lines[1] ?? {})).toBe(false)
   })
 
-  it("JSON-stringifies non-string prompt messages", async () => {
+  it("extracts a single content block's text rather than JSON-stringifying it", async () => {
     const writer = createTranscriptWriter({ baseDir: tmp })
     writer.recordPrompt("sess_1", { type: "text", text: "structured" })
     await writer.close("sess_1")
 
     const lines = readLines("sess_1")
-    expect(lines[0]?.text).toBe(JSON.stringify({ type: "text", text: "structured" }))
+    expect(lines[0]?.text).toBe("structured")
   })
 
   it("coalesces consecutive text-delta chunks into one record per newline-terminated line", async () => {
@@ -690,5 +691,96 @@ describe("createTranscriptWriter", () => {
       const records = readLines("sess_1").filter(r => r.kind === "tool-call-record")
       expect(records.map(r => r.command)).toEqual(["one", "two"])
     })
+  })
+})
+
+describe("recordPrompt — content-block attachments", () => {
+  let tmp: string
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "transcript-writer-attach-"))
+  })
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true })
+  })
+
+  function readLines(sessionId: string): Array<Record<string, unknown>> {
+    const path = sessionEventsPath(sessionId, tmp)
+    if (!existsSync(path)) return []
+    const out: Array<Record<string, unknown>> = []
+    for (const line of readFileSync(path, "utf8").split("\n")) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      out.push(JSON.parse(trimmed) as Record<string, unknown>)
+    }
+    return out
+  }
+
+  it("joins text blocks into `.text` without JSON-stringifying the array", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    writer.recordPrompt("sess_1", [
+      { type: "text", text: "look at this" },
+      { type: "text", text: "and fix it" },
+    ])
+    await writer.close("sess_1")
+
+    const lines = readLines("sess_1")
+    expect(lines[0]).toMatchObject({ kind: "user-prompt", text: "look at this\nand fix it" })
+  })
+
+  it("materializes an inline image block to a content-addressed file and references it, never inlining the bytes into events.jsonl", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    const data = Buffer.from("fake-png-bytes").toString("base64")
+    writer.recordPrompt("sess_1", [
+      { type: "text", text: "what's wrong here" },
+      { type: "image", data, mimeType: "image/png" },
+    ])
+    await writer.close("sess_1")
+
+    const lines = readLines("sess_1")
+    const record = lines[0]
+    expect(record).toMatchObject({ kind: "user-prompt", text: "what's wrong here" })
+
+    const sha256 = createHash("sha256").update(Buffer.from(data, "base64")).digest("hex")
+    const attachments = record?.attachments as Array<Record<string, unknown>>
+    expect(attachments).toHaveLength(1)
+    expect(attachments[0]).toMatchObject({
+      sha256,
+      size: Buffer.byteLength("fake-png-bytes"),
+      contentType: "image/png",
+      path: `attachments/${sha256}.png`,
+    })
+
+    const blocks = record?.blocks as Array<Record<string, unknown>>
+    expect(blocks[1]).toMatchObject({
+      type: "image",
+      attachmentPath: `attachments/${sha256}.png`,
+      mimeType: "image/png",
+    })
+    expect(blocks[1]?.data).toBeUndefined()
+
+    // Never leaked the raw base64 bytes into events.jsonl.
+    const raw = readFileSync(sessionEventsPath("sess_1", tmp), "utf8")
+    expect(raw).not.toContain(data)
+
+    // The file itself really is on disk with the right bytes.
+    const bytesOnDisk = readFileSync(
+      join(sessionTranscriptDir("sess_1", tmp), "attachments", `${sha256}.png`),
+    )
+    expect(bytesOnDisk.toString()).toBe("fake-png-bytes")
+  })
+
+  it("reuses the same content-addressed file for identical bytes sent twice", async () => {
+    const writer = createTranscriptWriter({ baseDir: tmp })
+    const data = Buffer.from("same-bytes").toString("base64")
+    writer.recordPrompt("sess_1", [{ type: "image", data, mimeType: "image/png" }])
+    writer.recordPrompt("sess_1", [{ type: "image", data, mimeType: "image/png" }])
+    await writer.close("sess_1")
+
+    const lines = readLines("sess_1")
+    const path1 = (lines[0]?.attachments as Array<Record<string, unknown>>)[0]?.path
+    const path2 = (lines[1]?.attachments as Array<Record<string, unknown>>)[0]?.path
+    expect(path1).toBe(path2)
   })
 })

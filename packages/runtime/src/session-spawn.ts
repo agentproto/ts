@@ -1019,7 +1019,19 @@ export interface SpawnAgentSessionInput {
    *  blank. Not exposed on the MCP `agent_start` tool today — only the
    *  HTTP route (`sessions restart`) passes this. */
   resumeSessionId?: string
-  prompt?: string
+  /** The caller's initial ask — a plain string (the common case, composed
+   *  with the role/AGENTS.md/RULES.md preamble below into one string turn),
+   *  or a content block / block array (an attachment-bearing first message,
+   *  same loose shape `POST /sessions/:id/prompt` accepts). The block form
+   *  is a narrow path: composing daemon-synthesized preamble TEXT onto a
+   *  turn that opens with an image isn't meaningful string concatenation,
+   *  so it SKIPS the whole preamble composition below (role disposition,
+   *  AGENTS.md, RULES.md, parent-lineage line, posture-as-prompt fallback)
+   *  and is sent to the adapter verbatim — see `effectivePrompt`'s doc.
+   *  Acceptable because this path is human/UI-initiated (an attachment
+   *  typed into a chat composer), not the orchestrator-driven role spawns
+   *  that actually depend on the composed disposition text. */
+  prompt?: string | Record<string, unknown> | unknown[]
   label?: string
   /** Explicit session title (SPEC-3 FIX C, `agentproto sessions start
    *  --title`). When set, it wins over the first-sentence derivation from
@@ -1307,9 +1319,14 @@ export type SpawnAgentSessionResult =
  * than risk mis-tagging user text as system).
  */
 function composedPreamble(
-  composed: string | undefined,
-  callerPrompt: string | undefined,
+  composed: string | Record<string, unknown> | unknown[] | undefined,
+  callerPrompt: string | Record<string, unknown> | unknown[] | undefined,
 ): string | undefined {
+  // A content-block (attachment-bearing) initial prompt skips the whole
+  // preamble-composition pipeline (see `SpawnAgentSessionInput.prompt`'s
+  // doc) — `composed` is then the caller's blocks, verbatim, with no
+  // preamble to recover.
+  if (typeof callerPrompt !== "string" || typeof composed !== "string") return undefined
   if (!callerPrompt || !composed) return undefined
   const tail = `\n\n${callerPrompt}`
   if (!composed.endsWith(tail)) return undefined
@@ -2598,7 +2615,7 @@ export async function spawnAgentSession(
       `<agentproto-message …> tags naming the real sender; text outside such a ` +
       `tag is from the human or these spawn instructions.`
     : undefined
-  let effectivePrompt = input.prompt
+  let effectivePrompt: string | Record<string, unknown> | unknown[] | undefined = input.prompt
   // Daemon-side AGENTS.md resolution + injection (WP-R2): resolve the nearest
   // `AGENTS.md` for the resolved `cwd` (walking up, bounded by the repo's git
   // toplevel — see `agents-md.ts`) and inject one block right after the role
@@ -2663,7 +2680,12 @@ export async function spawnAgentSession(
     workspaceRulesResolution = {}
   }
   const rulesMdParts = workspaceRulesResolution.block ? [workspaceRulesResolution.block] : []
-  if (input.prompt) {
+  // Preamble composition only applies to a plain-string ask — see
+  // `SpawnAgentSessionInput.prompt`'s doc. A content-block prompt (an
+  // attachment-bearing first message) skips straight past this: it's
+  // already sitting in `effectivePrompt` unchanged from the initial
+  // assignment above, and is sent to the adapter verbatim.
+  if (input.prompt && typeof input.prompt === "string") {
     effectivePrompt = [
       ...rulesMdParts,
       composeRoleContext(
@@ -2952,7 +2974,14 @@ export async function spawnAgentSession(
             const resolution = resolvePosture(input.posture, agentSession.availableModes ?? [])
             if (resolution.kind === "native" && agentSession.setSessionMode) {
               await agentSession.setSessionMode(resolution.mode.id)
-            } else if (resolution.kind === "prompt" && asyncPrompt) {
+            } else if (
+              resolution.kind === "prompt" &&
+              asyncPrompt &&
+              typeof asyncPrompt === "string"
+            ) {
+              // Block-shaped prompt (attachment-bearing) skips the advisory
+              // posture preamble too — same reasoning as the composition
+              // skip above.
               asyncPrompt = `${resolution.preamble}\n\n${asyncPrompt}`
             }
           }
@@ -3185,7 +3214,11 @@ export async function spawnAgentSession(
         )
         if (resolution.kind === "native" && agentSession.setSessionMode) {
           await agentSession.setSessionMode(resolution.mode.id)
-        } else if (resolution.kind === "prompt" && effectivePrompt) {
+        } else if (
+          resolution.kind === "prompt" &&
+          effectivePrompt &&
+          typeof effectivePrompt === "string"
+        ) {
           effectivePrompt = `${resolution.preamble}\n\n${effectivePrompt}`
         }
       }

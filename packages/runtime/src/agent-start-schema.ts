@@ -19,6 +19,7 @@ import {
   attachFieldSchema,
   commandSandboxSchema,
   contextContinuityInputSchema,
+  promptInputSchema,
 } from "./spawn-field-schemas.js"
 
 /** MCP clients commonly stringify scalar arguments ("true"/"false"/"42").
@@ -71,12 +72,17 @@ export const agentStartInputShape = {
     .string()
     .optional()
     .describe("Absolute path to spawn the agent in. Wins over `workspaceSlug` when both are set."),
-  prompt: z
-    .string()
+  prompt: promptInputSchema
     .optional()
     .describe(
       "Optional initial prompt — spawns and dispatches it in one call " +
-        "(spawn + `agent_prompt` combined). Omit to spawn idle."
+        "(spawn + `agent_prompt` combined). Omit to spawn idle. A plain " +
+        "string is composed with the role/AGENTS.md disposition preamble " +
+        "as usual; a content block or block array (e.g. a pasted image, " +
+        "`{type:\"image\", data, mimeType}`) SKIPS that composition and is " +
+        "sent to the adapter verbatim — the adapter negotiates its own " +
+        "multimodal support. " +
+        help("prompt")
     ),
   label: z
     .string()

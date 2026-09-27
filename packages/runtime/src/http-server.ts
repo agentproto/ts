@@ -125,7 +125,7 @@ import {
   enrichRollupWithProviderQuota,
 } from "./usage-rollup-service.js"
 import { readConversation } from "./conversation-read.js"
-import { sessionEventsPath } from "./transcript-writer.js"
+import { mimeTypeForExtension, sessionAttachmentsDir, sessionEventsPath } from "./transcript-writer.js"
 import { createReadStream, existsSync } from "node:fs"
 import { createInterface } from "node:readline"
 import { createTranscriptToUiMapper } from "./chat-stream.js"
@@ -1990,6 +1990,55 @@ export async function startHttpServer(
             return
           }
           await handleFileUpload(req, res, url)
+          return
+        }
+
+        // GET /sessions/:id/attachments/:filename — read back a content-
+        // addressed attachment `recordPrompt` materialized from an inline
+        // image block (see transcript-writer.ts's `materializeAttachment`),
+        // so a host UI can re-render the thumbnail after a reload (the
+        // durable transcript keeps only the `{attachmentPath, sha256}`
+        // reference, never the raw base64). Same auth gate as the other
+        // session-scoped reads — drive-by HTTP shouldn't read a user's files.
+        const attachmentMatch = path.match(/^\/sessions\/([^/]+)\/attachments\/([^/]+)$/)
+        if (attachmentMatch && req.method === "GET") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          const replyJson = (status: number, body: unknown): void => {
+            res.writeHead(status, { "content-type": "application/json" })
+            res.end(JSON.stringify(body))
+          }
+          const id = attachmentMatch[1]
+          const rawName = attachmentMatch[2]
+          if (!id || !rawName) {
+            replyJson(400, { error: "invalid_request" })
+            return
+          }
+          const safeName = decodeURIComponent(rawName).replace(/[\x00/\\]/g, "_")
+          const dir = sessionAttachmentsDir(id)
+          const target = resolvePath(dir, safeName)
+          // Defense-in-depth against a `..`-laden name, same check as upload.
+          if (!target.startsWith(resolvePath(dir) + sep)) {
+            replyJson(400, { error: "path_traversal_blocked" })
+            return
+          }
+          try {
+            const bytes = await readFile(target)
+            const contentType = mimeTypeForExtension(extname(safeName).slice(1).toLowerCase())
+            res.writeHead(200, {
+              "content-type": contentType,
+              "content-length": String(bytes.length),
+              // Content-addressed (the filename IS the sha256) — safe to
+              // cache forever, unlike the session's own mutable state.
+              "cache-control": "public, max-age=31536000, immutable",
+            })
+            res.end(bytes)
+          } catch {
+            replyJson(404, { error: "attachment_not_found" })
+          }
           return
         }
 
