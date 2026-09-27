@@ -690,9 +690,8 @@ describe("branch gc — apply", () => {
     await execGit(repo, ["update-ref", "refs/remotes/origin/ghost", await sha(repo, "main")])
     await execGit(repo, ["branch", "-q", "-D", "feat/a", "feat/b"])
     const p = await plan(repo, { base: "origin/main" })
-    // feat/a and feat/b vanish upstream between plan and apply.
-    await execGit(bare, ["update-ref", "-d", "refs/heads/feat/a"])
-    await execGit(bare, ["update-ref", "-d", "refs/heads/feat/b"])
+    // Only `ghost` is missing upstream: the batch delete of feat/a and
+    // feat/b is refused wholesale, and the RETRY BATCH must delete them.
 
     const { outcomes } = await applyBranchGc(p, { scopes: ["remote"], forge: new FakeForge(), stateDir: await tmp("branch-gc-state-"), fetch: false })
     expect(outcomes.find((o) => o.name === "ghost")?.result).not.toBe("failed")
