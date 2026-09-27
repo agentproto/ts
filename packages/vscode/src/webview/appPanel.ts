@@ -21,8 +21,16 @@ import * as vscode from "vscode"
 import type { DaemonClient } from "../client/daemonClient.js"
 import type { InstalledAppInfo } from "../client/types.js"
 import { appLabel } from "../views/appsTree.logic.js"
-import { appViewResourceUri } from "./appPanel.logic.js"
+import { appViewResourceUri, isAppUiBuilding } from "./appPanel.logic.js"
 import { AppPanelController } from "./appPanelController.js"
+
+/** How often to re-read the panel resource while the daemon's "still
+ *  building" placeholder is showing (appPanel.logic.ts's `isAppUiBuilding`)
+ *  — see buildAppHostHtml's doc for why THIS is the reload mechanism for
+ *  the webview panel (a meta-refresh inside its `srcdoc` iframe can't fetch
+ *  new content on its own). Short enough to feel live, long enough not to
+ *  hammer the daemon while a multi-second build runs. */
+const BUILDING_POLL_MS = 2_000
 
 /** Per-open overrides. Both are set together for a BUILTIN panel (an
  *  `app_catalog` entry with `category: "builtin"`), which is served at its
@@ -79,23 +87,38 @@ export function registerAppPanels(
         ctx.subscriptions,
       )
 
+      let disposed = false
+      let pollTimer: ReturnType<typeof setTimeout> | undefined
       panel.onDidDispose(() => {
+        disposed = true
+        clearTimeout(pollTimer)
         panels.delete(app.appId)
       })
 
-      void (async () => {
+      const resourceUri = opts.resourceUri ?? appViewResourceUri(app.appId)
+
+      // Re-reads the resource and swaps `panel.webview.html` wholesale while
+      // (and only while) the daemon is still serving its "building" stand-in
+      // — see BUILDING_POLL_MS's doc for why polling, not a push, is the
+      // reload mechanism for this host.
+      const load = async (): Promise<void> => {
+        if (disposed) return
         try {
-          const html = await client.readResource(
-            opts.resourceUri ?? appViewResourceUri(app.appId),
-          )
+          const html = await client.readResource(resourceUri)
+          if (disposed) return
           panel.webview.html = buildAppHostHtml(html, appLabel(app))
+          if (isAppUiBuilding(html)) {
+            pollTimer = setTimeout(() => void load(), BUILDING_POLL_MS)
+          }
         } catch (err) {
+          if (disposed) return
           panel.dispose()
           void vscode.window.showErrorMessage(
             `Open app '${app.appId}' failed: ${err instanceof Error ? err.message : String(err)}`,
           )
         }
-      })()
+      }
+      void load()
     },
   }
 }

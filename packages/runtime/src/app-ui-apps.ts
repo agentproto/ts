@@ -7,16 +7,26 @@
  *
  * `mcpServerFactory` (index.ts) rebuilds a fresh McpServer per `/mcp`
  * request, so this module never throws — a bad app record must not take
- * down every other request. Failures (a collided tool id, an unreadable
- * `ui.path`) are skipped with a `console.warn`, not surfaced to the caller.
+ * down every other request. A collided tool id is still skipped with a
+ * `console.warn` (there's nowhere else for a second panel to live). Every
+ * OTHER failure — a removed app dir, a missing/unreadable `ui.path`, a
+ * failed or in-flight `ui.build` — still mounts the panel, serving a
+ * readable HTML placeholder/error page in place of the real bundle
+ * (app-ui-placeholder.ts) instead of skipping it outright: a `ui://`
+ * resource that silently doesn't exist just shows as a JSON-RPC "resource
+ * not found" in a host, which is what motivated this file's placeholder
+ * page in the first place — a HOST-VISIBLE page, even a stand-in one, beats
+ * a resource the host has to explain away as missing.
  */
 
+import { existsSync } from "node:fs"
 import { readFile, stat } from "node:fs/promises"
 import { z } from "zod"
 import { RUNNER_SELECT_SCRIPT } from "@agentproto/app-client/runner-select"
 import { DISPLAY_MODE_SCRIPT } from "@agentproto/app-client/display-mode"
 import type { AppRegistry } from "./app-registry.js"
-import { ensureAppUiBuilt } from "./app-ui-build.js"
+import { resolveAppUiBuildState } from "./app-ui-build.js"
+import { renderAppUiBuildingHtml, renderAppUiErrorHtml } from "./app-ui-placeholder.js"
 import type { AgnoMcpApp } from "@agentproto/apps"
 
 /** Derive the MCP tool id for an installed app's UI panel — strips the
@@ -395,10 +405,14 @@ export function createUiHtmlCache(): UiHtmlCache {
 }
 
 /**
- * Build one `AgnoMcpApp` per installed app that has a `ui` block, skipping
- * (with a `console.warn`) any whose derived tool id collides with
- * `existingToolNames` (built-in panels) or an earlier installed app in this
- * same pass, and any whose `ui.path` can't be read.
+ * Build one `AgnoMcpApp` per installed app that has a `ui` block. The only
+ * case still SKIPPED (with a `console.warn`) is a derived tool id colliding
+ * with `existingToolNames` (built-in panels) or an earlier installed app in
+ * this same pass — there's nowhere else for a second panel with the same id
+ * to live. Every other failure (removed app dir, missing/unreadable
+ * `ui.path`, a failed or still-running `ui.build`) still mounts the panel,
+ * with its `html` swapped for a placeholder/error page — see the module
+ * doc's rationale and app-ui-placeholder.ts.
  */
 export async function makeInstalledAppUiApps(
   appRegistry: AppRegistry,
@@ -423,22 +437,38 @@ export async function makeInstalledAppUiApps(
       continue
     }
 
-    const ensured = await ensureAppUiBuilt({ dir: app.dir, uiPath: ui.path, build: ui.build })
-    if (!ensured.ok) {
-      console.warn(`[app-ui-apps] skipping UI panel for app "${app.appId}": ${ensured.error}`)
-      continue
-    }
-
-    let html: string
-    try {
-      html = await cache.get(ui.path, app.updatedAt)
-    } catch (err) {
-      console.warn(
-        `[app-ui-apps] skipping UI panel for app "${app.appId}": could not read "${ui.path}": ` +
-          `${err instanceof Error ? err.message : String(err)}`,
-      )
-      continue
-    }
+    const appName = app.name ?? app.appId
+    const html = !existsSync(app.dir)
+      ? renderAppUiErrorHtml({
+          appName,
+          message: `The app's directory "${app.dir}" no longer exists.`,
+          detailPath: app.dir,
+          fix: `Reinstall with \`app_install <dir>\`, or remove the stale install.`,
+        })
+      : await (async () => {
+          const state = await resolveAppUiBuildState({ dir: app.dir, uiPath: ui.path, build: ui.build })
+          if (state.kind === "building") {
+            return renderAppUiBuildingHtml({ appName, startedAt: state.startedAt, logTail: state.logTail })
+          }
+          if (state.kind === "error") {
+            return renderAppUiErrorHtml({
+              appName,
+              message: state.message,
+              detailPath: state.logPath,
+              logTail: state.logTail,
+            })
+          }
+          try {
+            return await cache.get(ui.path, app.updatedAt)
+          } catch (err) {
+            return renderAppUiErrorHtml({
+              appName,
+              message: `Could not read the built ui html at "${ui.path}".`,
+              detailPath: ui.path,
+              logTail: err instanceof Error ? err.message : String(err),
+            })
+          }
+        })()
 
     seen.add(toolId)
     apps.push({

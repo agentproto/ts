@@ -597,11 +597,52 @@ describe("standalone app UI host — ui.build", () => {
     await withServer(async base => {
       const res = await fetch(`${base}/apps/${BUILD_APP_ID}/ui`)
       expect(res.status).toBe(200)
+      expect(res.headers.get("content-type")).toContain("text/html")
+      // A trivial build finishes well inside the non-blocking fast-path
+      // window, so this lands directly on the real content — no polling
+      // needed in this test.
       expect(await res.text()).toContain("built-marker")
     })
   })
 
-  it("a failing build surfaces a readable 500, not a bare 404", async () => {
+  it("a slow build in flight serves a self-refreshing 'building' page instead of blocking the request", async () => {
+    appRegistry.upsertApp({
+      appId: BUILD_APP_ID,
+      dir,
+      name: "Slow Build App",
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: {
+        path: uiPath,
+        build: {
+          command:
+            `sleep 0.6 && mkdir -p "${join(dir, ".agentproto", "ui")}" && printf '<html>slow-built</html>' > "${uiPath}"`,
+        },
+      },
+    })
+    await withServer(async base => {
+      const started = Date.now()
+      const res = await fetch(`${base}/apps/${BUILD_APP_ID}/ui`)
+      expect(Date.now() - started).toBeLessThan(500)
+      expect(res.status).toBe(200)
+      expect(res.headers.get("content-type")).toContain("text/html")
+      const body = await res.text()
+      expect(body).toContain('data-agentproto-ui-status="building"')
+      expect(body).toContain("Slow Build App")
+      expect(body).toMatch(/<meta http-equiv="refresh"/)
+
+      // Poll like the meta-refresh would, until the background build lands.
+      let final = body
+      for (let i = 0; i < 20 && final.includes("building"); i++) {
+        await new Promise(r => setTimeout(r, 100))
+        final = await (await fetch(`${base}/apps/${BUILD_APP_ID}/ui`)).text()
+      }
+      expect(final).toContain("slow-built")
+    })
+  })
+
+  it("a failing build surfaces a readable HTML error page, not raw JSON", async () => {
     appRegistry.upsertApp({
       appId: BUILD_APP_ID,
       dir,
@@ -613,13 +654,15 @@ describe("standalone app UI host — ui.build", () => {
     await withServer(async base => {
       const res = await fetch(`${base}/apps/${BUILD_APP_ID}/ui`)
       expect(res.status).toBe(500)
-      const body = (await res.json()) as { error: string }
-      expect(body.error).toContain("exit 3")
-      expect(body.error).toContain("boom")
+      expect(res.headers.get("content-type")).toContain("text/html")
+      const body = await res.text()
+      expect(body).not.toMatch(/^\s*\{"error"/)
+      expect(body).toContain("exit 3")
+      expect(body).toContain("boom")
     })
   })
 
-  it("no ui.build and a missing bundle is a clear 500 naming the path, not a bare 404", async () => {
+  it("no ui.build and a missing bundle is a readable HTML error page naming the path, not raw JSON", async () => {
     appRegistry.upsertApp({
       appId: BUILD_APP_ID,
       dir,
@@ -631,9 +674,36 @@ describe("standalone app UI host — ui.build", () => {
     await withServer(async base => {
       const res = await fetch(`${base}/apps/${BUILD_APP_ID}/ui`)
       expect(res.status).toBe(500)
-      const body = (await res.json()) as { error: string }
-      expect(body.error).toContain(uiPath)
-      expect(body.error).toContain("ui.build")
+      expect(res.headers.get("content-type")).toContain("text/html")
+      const body = await res.text()
+      expect(body).not.toMatch(/^\s*\{"error"/)
+      expect(body).toContain(uiPath)
+      expect(body).toContain("ui.build")
+    })
+  })
+
+  it("a removed app dir is a readable HTML error page naming the dir", async () => {
+    const goneDir = join(dir, "gone-app")
+    await mkdir(goneDir, { recursive: true })
+    const goneUiPath = join(goneDir, "index.html")
+    appRegistry.upsertApp({
+      appId: BUILD_APP_ID,
+      dir: goneDir,
+      agents: [],
+      workflows: [],
+      unvalidatedAgentTools: [],
+      ui: { path: goneUiPath },
+    })
+    await rm(goneDir, { recursive: true, force: true })
+
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${BUILD_APP_ID}/ui`)
+      expect(res.status).toBe(500)
+      expect(res.headers.get("content-type")).toContain("text/html")
+      const body = await res.text()
+      expect(body).not.toMatch(/^\s*\{"error"/)
+      expect(body).toContain(goneDir)
+      expect(body).toContain("no longer exists")
     })
   })
 })

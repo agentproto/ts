@@ -10,7 +10,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { ensureAppUiBuilt, appUiBuildLogPath, newestSourceMtime } from "../app-ui-build.js"
+import {
+  ensureAppUiBuilt,
+  appUiBuildLogPath,
+  newestSourceMtime,
+  peekInFlightBuild,
+  resolveAppUiBuildState,
+} from "../app-ui-build.js"
 
 describe("ensureAppUiBuilt", () => {
   let dir: string
@@ -143,6 +149,72 @@ describe("ensureAppUiBuilt", () => {
     const result = await ensureAppUiBuilt({ dir, uiPath, build: { command, cwd: "ui" } })
     expect(result).toEqual({ ok: true, built: true })
     expect(await readFile(uiPath, "utf8")).toBe("source")
+  })
+})
+
+describe("resolveAppUiBuildState", () => {
+  let dir: string
+  let uiPath: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "agentproto-resolve-build-state-"))
+    uiPath = join(dir, ".agentproto", "ui", "index.html")
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it("resolves 'ready' fast when the bundle already exists and is fresh — no build ever runs", async () => {
+    await mkdir(dirname(uiPath), { recursive: true })
+    await writeFile(uiPath, "<html>already built</html>", "utf8")
+    const state = await resolveAppUiBuildState({
+      dir,
+      uiPath,
+      build: { command: `echo should-not-run >> "${join(dir, "ran.marker")}"` },
+    })
+    expect(state).toEqual({ kind: "ready" })
+    await expect(readFile(join(dir, "ran.marker"), "utf8")).rejects.toThrow()
+  })
+
+  it("resolves 'error' fast when there's no ui.build and the bundle is missing", async () => {
+    const state = await resolveAppUiBuildState({ dir, uiPath })
+    expect(state.kind).toBe("error")
+    if (state.kind !== "error") throw new Error("expected error")
+    expect(state.message).toContain(uiPath)
+    expect(state.logPath).toBe(appUiBuildLogPath(dir))
+  })
+
+  it("returns 'building' (never blocking) while a slow build is still running, then 'ready' once it lands", async () => {
+    const command =
+      `sleep 0.6 && mkdir -p "${dirname(uiPath)}" && printf '<html>slow-built</html>' > "${uiPath}"`
+    const started = Date.now()
+    const state = await resolveAppUiBuildState({ dir, uiPath, build: { command } })
+    expect(Date.now() - started).toBeLessThan(500)
+    expect(state.kind).toBe("building")
+    if (state.kind !== "building") throw new Error("expected building")
+    expect(state.startedAt).toBeLessThanOrEqual(Date.now())
+
+    // The SAME background build is still tracked — a second caller joins it
+    // rather than starting a fresh one (peekInFlightBuild finds it).
+    expect(peekInFlightBuild(uiPath)).toBeDefined()
+    await peekInFlightBuild(uiPath)
+
+    const after = await resolveAppUiBuildState({ dir, uiPath, build: { command: "exit 1" } })
+    expect(after).toEqual({ kind: "ready" })
+    expect(await readFile(uiPath, "utf8")).toBe("<html>slow-built</html>")
+  })
+
+  it("returns 'error' with the failure's message and a log tail once a build fails", async () => {
+    const state = await resolveAppUiBuildState({
+      dir,
+      uiPath,
+      build: { command: `echo "boom: broke" 1>&2 && exit 9` },
+    })
+    expect(state.kind).toBe("error")
+    if (state.kind !== "error") throw new Error("expected error")
+    expect(state.message).toContain("exit 9")
+    expect(state.logTail).toContain("boom: broke")
   })
 })
 

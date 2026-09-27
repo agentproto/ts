@@ -229,6 +229,30 @@ export type EnsureAppUiBuiltResult =
  *  calling this BEFORE the app has an id) still dedupes every caller. */
 const inFlight = new Map<string, Promise<EnsureAppUiBuiltResult>>()
 
+/** When the CURRENTLY in-flight build (if any) actually started running its
+ *  `build.command` — set right before `runShellCommand`, read by a
+ *  non-blocking caller (`resolveAppUiBuildState` below) to render "building
+ *  for Ns" without itself timing anything. Not set for a call that resolves
+ *  from `existing`/freshness alone (no command ever ran). */
+const buildStartedAt = new Map<string, number>()
+
+/** Peek whether `uiPath` has a build running right now without starting one
+ *  — a non-blocking caller (`resolveAppUiBuildState`) uses this to join an
+ *  ALREADY-showing build instead of racing a fresh `ensureAppUiBuilt` call
+ *  (which would itself re-do the cheap stat/freshness check every time). */
+export function peekInFlightBuild(uiPath: string): Promise<EnsureAppUiBuiltResult> | undefined {
+  return inFlight.get(uiPath)
+}
+
+/** Paired with {@link peekInFlightBuild}: when that returns a promise, this
+ *  is the wall-clock time (`Date.now()`) its build command actually started
+ *  — `undefined` if the in-flight promise hasn't reached `runShellCommand`
+ *  yet (a handful of stat calls out), in which case "now" is as good a
+ *  start time as any. */
+export function peekBuildStartedAt(uiPath: string): number | undefined {
+  return buildStartedAt.get(uiPath)
+}
+
 async function runEnsure(input: EnsureAppUiBuiltInput): Promise<EnsureAppUiBuiltResult> {
   const { dir, uiPath, build } = input
 
@@ -262,6 +286,7 @@ async function runEnsure(input: EnsureAppUiBuiltInput): Promise<EnsureAppUiBuilt
 
   const logPath = appUiBuildLogPath(dir)
   const startedAt = new Date().toISOString()
+  buildStartedAt.set(uiPath, Date.now())
   const result = await runShellCommand(build.command, buildCwd, input.timeoutMs ?? DEFAULT_BUILD_TIMEOUT_MS)
 
   const logBody =
@@ -320,7 +345,67 @@ export async function ensureAppUiBuilt(
   if (inflight) return inflight
   const promise = runEnsure(input).finally(() => {
     inFlight.delete(key)
+    buildStartedAt.delete(key)
   })
   inFlight.set(key, promise)
   return promise
+}
+
+const RESOLVE_FAST_PATH_MS = 300
+const READABLE_LOG_TAIL_LINES = 20
+const RESOLVE_TIMEOUT = Symbol("app-ui-build-resolve-timeout")
+
+async function readLogTailSafe(dir: string, n: number): Promise<string | undefined> {
+  try {
+    const text = await readFile(appUiBuildLogPath(dir), "utf8")
+    const lines = text.split("\n").filter(line => line.length > 0)
+    const tail = lines.slice(-n).join("\n")
+    return tail.length > 0 ? tail : undefined
+  } catch {
+    return undefined
+  }
+}
+
+export type AppUiBuildState =
+  | { readonly kind: "ready" }
+  | { readonly kind: "building"; readonly startedAt: number; readonly logTail?: string }
+  | { readonly kind: "error"; readonly message: string; readonly logPath: string; readonly logTail?: string }
+
+/**
+ * Non-blocking status check for `ensureAppUiBuilt`'s outcome — the piece
+ * that lets a PAGE render (the `ui://app_ui_<id>/view` MCP resource in
+ * app-ui-apps.ts, `GET /apps/:appId/ui` in http-server.ts) never stall on a
+ * multi-second `ui.build` run. Joins an already-running build via
+ * {@link peekInFlightBuild} (or starts one — still single-flight, since
+ * `ensureAppUiBuilt` itself owns `inFlight`) and waits only up to
+ * `RESOLVE_FAST_PATH_MS`: long enough that the common "already built and
+ * fresh" case (a handful of `stat` calls) resolves as `"ready"` without ever
+ * showing a placeholder, short enough that a real build never blocks the
+ * caller — it keeps running in the background regardless, and the NEXT call
+ * (after the page's own reload) picks up wherever that build landed.
+ */
+export async function resolveAppUiBuildState(input: EnsureAppUiBuiltInput): Promise<AppUiBuildState> {
+  const { dir, uiPath } = input
+  const pending = peekInFlightBuild(uiPath) ?? ensureAppUiBuilt(input)
+
+  const timeout = new Promise<typeof RESOLVE_TIMEOUT>(resolve => {
+    const timer = setTimeout(() => resolve(RESOLVE_TIMEOUT), RESOLVE_FAST_PATH_MS)
+    timer.unref()
+  })
+  const raced = await Promise.race([pending, timeout])
+
+  if (raced === RESOLVE_TIMEOUT) {
+    const startedAt = peekBuildStartedAt(uiPath) ?? Date.now()
+    return { kind: "building", startedAt, logTail: await readLogTailSafe(dir, READABLE_LOG_TAIL_LINES) }
+  }
+  const result = raced as EnsureAppUiBuiltResult
+  if (!result.ok) {
+    return {
+      kind: "error",
+      message: result.error,
+      logPath: appUiBuildLogPath(dir),
+      logTail: await readLogTailSafe(dir, READABLE_LOG_TAIL_LINES),
+    }
+  }
+  return { kind: "ready" }
 }

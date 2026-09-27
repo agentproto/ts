@@ -5,8 +5,10 @@ import {
   appUiToolId,
   appViewResourceUri,
   builtinViewResourceUri,
+  isAppUiBuilding,
 } from "./appPanel.logic.js"
 import { WORK_BOARD_APP_ID, WORK_BOARD_TOOL_ID } from "@agentproto/apps/work-board/panel"
+import { renderAppUiBuildingHtml, renderAppUiErrorHtml } from "@agentproto/runtime/app-ui-placeholder"
 
 describe("appUiToolId", () => {
   // Mirrors packages/runtime app-ui-apps.ts's appUiToolId — the daemon side
@@ -98,5 +100,24 @@ describe("appStandaloneUrl", () => {
     expect(appStandaloneUrl("http://localhost:18790", "weird?name")).toBe(
       "http://localhost:18790/apps/weird%3Fname/ui",
     )
+  })
+})
+
+describe("isAppUiBuilding", () => {
+  // Against the REAL daemon-side generator (app-ui-placeholder.ts), not a
+  // hand-written marker string — this is the actual cross-package contract
+  // registerAppPanels' polling loop relies on.
+  it("is true for the building placeholder", () => {
+    const html = renderAppUiBuildingHtml({ appName: "Test App", startedAt: Date.now() })
+    expect(isAppUiBuilding(html)).toBe(true)
+  })
+
+  it("is false for the error page — errors don't auto-poll", () => {
+    const html = renderAppUiErrorHtml({ appName: "Test App", message: "boom" })
+    expect(isAppUiBuilding(html)).toBe(false)
+  })
+
+  it("is false for an app's real, unrelated html", () => {
+    expect(isAppUiBuilding("<html><body>Panel</body></html>")).toBe(false)
   })
 })

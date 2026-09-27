@@ -130,6 +130,11 @@
       "types": "./dist/app-ui-build.d.ts",
       "import": "./dist/app-ui-build.mjs",
       "default": "./dist/app-ui-build.mjs"
+    },
+    "./app-ui-placeholder": {
+      "types": "./dist/app-ui-placeholder.d.ts",
+      "import": "./dist/app-ui-placeholder.mjs",
+      "default": "./dist/app-ui-placeholder.mjs"
     }
   },
   "files": [

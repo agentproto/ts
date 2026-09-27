@@ -3,6 +3,8 @@
  * unit-testable under plain vitest.
  */
 
+import { APP_UI_BUILDING_STATUS_ATTR } from "@agentproto/runtime/app-ui-placeholder"
+
 /**
  * Derive the MCP tool id for an installed app's UI panel — strips the
  * `@owner/` scope (if any) and maps every non `[a-z0-9]` character to `_`.
@@ -64,4 +66,17 @@ export function appStandaloneUrl(daemonUrl: string, appId: string): string {
     .join("/")
     .replace(/%40/g, "@")
   return `${base}/apps/${encodedId}/ui`
+}
+
+/**
+ * Whether a `resources/read` result is the daemon's "still building" stand-in
+ * page (app-ui-placeholder.ts's `renderAppUiBuildingHtml`) rather than the
+ * app's real UI. The panel html has no URL of its own (it's embedded as
+ * `srcdoc` — see buildAppHostHtml's doc), so it can't self-refresh into new
+ * content the way the standalone `GET /apps/:appId/ui` page's meta-refresh
+ * does; the HOST (registerAppPanels, appPanel.ts) is what re-reads the
+ * resource and replaces `panel.webview.html` while this stays true.
+ */
+export function isAppUiBuilding(html: string): boolean {
+  return html.includes(APP_UI_BUILDING_STATUS_ATTR)
 }
