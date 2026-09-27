@@ -5743,6 +5743,27 @@ async function handleSessions(
     return true
   }
 
+  // Peek at a currently-running background task's output — the UI's "click
+  // a live background-task row" affordance. Deliberately scoped to a
+  // `taskId` already reported for THIS session (see
+  // `SessionsRegistry.readBackgroundTaskTail`'s doc for why this can never
+  // become an arbitrary-file-read route) rather than accepting a raw path.
+  const bgTaskTailMatch = path.match(
+    /^\/sessions\/([^/]+)\/background-tasks\/([^/]+)\/tail$/,
+  )
+  if (bgTaskTailMatch && req.method === "GET") {
+    const id = decodeURIComponent(bgTaskTailMatch[1] ?? "")
+    const taskId = decodeURIComponent(bgTaskTailMatch[2] ?? "")
+    if (!id || !taskId) return false
+    const result = registry.readBackgroundTaskTail(id, taskId)
+    if (!result) {
+      json(404, { error: "no_such_task", id, taskId })
+      return true
+    }
+    json(200, { ok: true, id, taskId, ...result })
+    return true
+  }
+
   // Cancel the in-flight turn on a live agent session and leave the
   // session itself alive and idle — the bare "interrupt, no next prompt"
   // primitive `POST /sessions/:id/prompt`'s own `interrupt` option lacks,

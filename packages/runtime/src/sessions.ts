@@ -62,6 +62,7 @@ import { resolvePosture } from "./canonical-posture.js"
 import {
   buildBackgroundTaskWakePrompt,
   DEFAULT_BG_TASK_WAKE_GRACE_MS,
+  readOutputTail,
   type SessionBackgroundTask,
 } from "./background-task-wake.js"
 import { resolveEffectiveRoute } from "./catalog-models.js"
@@ -3271,6 +3272,21 @@ export interface SessionsRegistry {
     id: string,
     queueId: string
   ): Promise<{ delivered: boolean; reason?: string; interrupted?: boolean }>
+  /** A currently-RUNNING background task's info plus a tail of its output
+   *  file, for the UI's "click a live background-task row to peek at its
+   *  output" affordance. Scoped to `SessionDescriptor.backgroundTasks` on
+   *  purpose — a settled task is dropped from that list moments after it
+   *  reports terminal status (see `noteBackgroundTask`), so this never
+   *  becomes an arbitrary-file-read: the caller supplies a `taskId`, never a
+   *  path, and only a path the agent itself already reported for a task
+   *  still tracked as running is ever read. Returns `null` when the session
+   *  or the task is unknown (the caller surfaces 404); `tail` is `null` when
+   *  the task has no `outputFile` or the file can't be read (not yet
+   *  created, already rotated away, ...). */
+  readBackgroundTaskTail(
+    id: string,
+    taskId: string
+  ): { task: SessionBackgroundTask; tail: string | null } | null
   /** Eagerly resume ONE dead-but-resumable agent-cli session IN PLACE,
    *  WITHOUT a prompt — the boot-time counterpart to the lazy resume that
    *  `sendPrompt`/`enqueuePrompt` trigger on the first prompt after a restart
@@ -8825,6 +8841,13 @@ export function createSessionsRegistry(opts?: {
         queuedAt: p.queuedAt,
         position,
       }))
+    },
+    readBackgroundTaskTail(id, taskId) {
+      const rt = sessions.get(id)
+      if (!rt) return null
+      const task = rt.desc.backgroundTasks?.find(t => t.taskId === taskId)
+      if (!task) return null
+      return { task, tail: task.outputFile ? (readOutputTail(task.outputFile) ?? null) : null }
     },
     promoteQueuedPrompt(id, queueId) {
       const rt = sessions.get(id)
