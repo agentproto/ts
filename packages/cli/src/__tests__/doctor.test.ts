@@ -155,6 +155,7 @@ describe("agentproto doctor", () => {
       "clients",
       "devices",
       "local-models",
+      "llm-gateway",
     ])
 
     const bad = harness()

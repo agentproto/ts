@@ -40,7 +40,11 @@ import type {
 import { agentStartInputShape, mcpBool } from "./agent-start-schema.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
-import { spawnAgentSession, cleanAgentLines } from "./session-spawn.js"
+import {
+  spawnAgentSession,
+  cleanAgentLines,
+  type SpawnAgentSessionDeps,
+} from "./session-spawn.js"
 import type { CompletionPolicySupervisor } from "./supervisor.js"
 import { parsePostureInput } from "./canonical-posture.js"
 import { getUserPreset } from "./user-presets.js"
@@ -166,6 +170,12 @@ export interface RegisterAgentToolsOptions {
    *  `catalog_models` MCP tool (SPEC §5). Without it the tool returns a
    *  clear "not configured" error pointing at the host wiring. */
   listCatalogModels?: CatalogModelsLister
+  /** Mirrors `SpawnAgentSessionDeps.ensureLlmEndpointRunning` — threaded
+   *  straight through to `agent_start`'s `spawnAgentSession` call so a
+   *  spawn billing through the local `llm-endpoint` proxy self-heals the
+   *  sidecar instead of assuming it's already running. Omitted ⇒ unchanged
+   *  pre-existing behavior. */
+  ensureLlmEndpointRunning?: SpawnAgentSessionDeps["ensureLlmEndpointRunning"]
   /** The daemon's own plain `/mcp` gateway URL (e.g.
    *  `http://127.0.0.1:18790/mcp`). When set, `agent_start` with no
    *  caller-supplied `mcpServers` defaults to mounting this gateway for
@@ -316,6 +326,7 @@ export function registerAgentTools(
     isSessionChatInstalled,
     messagingAllowSiblings,
     messagingAgentInterrupt,
+    ensureLlmEndpointRunning,
   } = opts
   // Effective `interrupt` when a call leaves it unset: config default, else
   // false. An explicit boolean on the call always wins (checked at each site).
@@ -405,6 +416,7 @@ export function registerAgentTools(
           ...(provisionWorktree ? { provisionWorktree } : {}),
           ...(resolveWorktreeIsolation ? { resolveWorktreeIsolation } : {}),
           ...(listCatalogModels ? { listCatalogModels } : {}),
+          ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
         },
         {
           ...spawnInput,

@@ -62,6 +62,12 @@ export interface LlmEndpointStatusReport {
   lastError?: string
   injectedProviders?: string[]
   linkedProviders?: string[]
+  /** `@agentproto/llm-endpoint`'s own package version, read from the
+   *  resolved bin's `package.json` — best-effort, present only for
+   *  `owner:"daemon"` (the version of the code this registry would spawn /
+   *  did spawn). Undefined when unresolvable, or for `owner:"external"`
+   *  (an adopted process exposes no version of its own to probe). */
+  version?: string
 }
 
 /** Built-in default port — matches llm-endpoint's own `LLM_ENDPOINT_PORT` default. */
@@ -148,6 +154,30 @@ export interface LlmEndpointRegistryOptions {
   pollIntervalMs?: number
   /** Health-probe timeout for a single `GET /v1/models` request. */
   healthProbeTimeoutMs?: number
+  /**
+   * Crash-restart policy for an unexpected exit of an already-`running`
+   * (i.e. previously healthy) child — never for a crash during the initial
+   * startup window (that's surfaced synchronously as a thrown `start()`
+   * error, the caller's to handle) and never for a `stop()`-driven exit.
+   * Exponential backoff capped by a rolling-window retry limit — mirrors
+   * the `restartPolicy` shape documented for agent-cli sessions (`on`,
+   * `maxRetries`, `windowMs`, `baseDelayMs`, `factor`, `maxDelayMs`) in
+   * spirit, not by reusing that exact type. Set `maxRetries: 0` to disable
+   * (today's behavior — stay `error` until something calls `start()` again).
+   */
+  crashRestart?: {
+    /** Max restart attempts within `windowMs` before giving up and staying
+     *  `error`. Default 5. `0` disables crash-restart entirely. */
+    maxRetries?: number
+    /** Rolling window over which `maxRetries` is counted. Default 5 minutes. */
+    windowMs?: number
+    /** Delay before the first restart attempt. Default 1s. */
+    baseDelayMs?: number
+    /** Multiplier applied to the delay after each attempt. Default 2. */
+    factor?: number
+    /** Upper bound on the computed delay. Default 30s. */
+    maxDelayMs?: number
+  }
 }
 
 /**
@@ -286,6 +316,19 @@ export class LlmEndpointRegistry {
   private readonly readyTimeoutMs: number
   private readonly pollIntervalMs: number
   private readonly healthProbeTimeoutMs: number
+  private readonly crashRestartMaxRetries: number
+  private readonly crashRestartWindowMs: number
+  private readonly crashRestartBaseDelayMs: number
+  private readonly crashRestartFactor: number
+  private readonly crashRestartMaxDelayMs: number
+  /** Timestamps (ms) of recent crash-restart attempts, pruned to the
+   *  rolling window on each unexpected exit. */
+  private restartAttempts: number[] = []
+  private restartTimer: NodeJS.Timeout | undefined
+  /** Memoized result of {@link resolveVersionBestEffort} — `null` once a
+   *  resolution attempt fails, so a permanently-unresolvable bin doesn't
+   *  re-read the filesystem on every `status()` call. */
+  private cachedVersion: string | null | undefined
 
   constructor(opts: LlmEndpointRegistryOptions = {}) {
     this.workspace = opts.workspace ?? homedir()
@@ -296,6 +339,11 @@ export class LlmEndpointRegistry {
     this.readyTimeoutMs = opts.readyTimeoutMs ?? 6_000
     this.pollIntervalMs = opts.pollIntervalMs ?? 200
     this.healthProbeTimeoutMs = opts.healthProbeTimeoutMs ?? 3_000
+    this.crashRestartMaxRetries = opts.crashRestart?.maxRetries ?? 5
+    this.crashRestartWindowMs = opts.crashRestart?.windowMs ?? 5 * 60_000
+    this.crashRestartBaseDelayMs = opts.crashRestart?.baseDelayMs ?? 1_000
+    this.crashRestartFactor = opts.crashRestart?.factor ?? 2
+    this.crashRestartMaxDelayMs = opts.crashRestart?.maxDelayMs ?? 30_000
   }
 
   /**
@@ -383,6 +431,13 @@ export class LlmEndpointRegistry {
           // Only surface an unexpected exit; a `stop()` clears `this.proc`
           // first so a stop-driven exit doesn't flip the descriptor to error.
           if (this.proc && this.desc && this.desc.status !== "stopped") {
+            // Captured BEFORE overwriting below — only a crash of an
+            // already-`running` (previously healthy) child schedules a
+            // crash-restart. A crash during the startup window is instead
+            // surfaced synchronously as a thrown `start()` error (see the
+            // readiness loop below), which the caller (e.g. boot autostart)
+            // already handles; auto-restarting it here too would race that.
+            const wasRunning = this.desc.status === "running"
             this.desc.status = "error"
             this.desc.pid = null
             // Surface the captured log tail so the real reason is visible
@@ -391,6 +446,7 @@ export class LlmEndpointRegistry {
               `llm-endpoint exited (code=${info.code ?? "?"}, signal=${info.signal ?? "-"}).\n` +
               `llm-endpoint output (tail):\n${tailFile(logPath, 20)}`
             this.onLog?.(`[llm-endpoint] ${this.desc.lastError}`)
+            if (wasRunning) this.scheduleCrashRestart()
           }
         },
       })
@@ -446,6 +502,7 @@ export class LlmEndpointRegistry {
    * injected, which is meaningless for a process we never spawned).
    */
   async status(): Promise<LlmEndpointStatusReport> {
+    const version = this.resolveVersionBestEffort()
     if (!this.desc) {
       return {
         running: false,
@@ -457,6 +514,7 @@ export class LlmEndpointRegistry {
         status: "never-started",
         owner: "daemon",
         linksApplied: false,
+        ...(version ? { version } : {}),
       }
     }
     const running = this.desc.status === "running" || this.desc.status === "starting"
@@ -501,6 +559,7 @@ export class LlmEndpointRegistry {
       ...(this.desc.linkedProviders
         ? { linkedProviders: this.desc.linkedProviders }
         : {}),
+      ...(version ? { version } : {}),
     }
   }
 
@@ -517,7 +576,80 @@ export class LlmEndpointRegistry {
     if (this.proc) await this.stopInternal()
   }
 
+  /**
+   * Schedule a restart after an unexpected exit of a previously-`running`
+   * child. Exponential backoff (`baseDelayMs * factor^attempt`, capped at
+   * `maxDelayMs`), bounded by `maxRetries` attempts within the rolling
+   * `windowMs` window — once exceeded, gives up and stays `error` until an
+   * operator (or the lazy self-heal in `spawnAgentSession`) calls `start()`
+   * again. The scheduled retry itself goes through the public `start()`,
+   * so it's subject to the same in-flight dedup as any other caller.
+   */
+  private scheduleCrashRestart(): void {
+    if (this.crashRestartMaxRetries <= 0) return
+    const now = Date.now()
+    this.restartAttempts = this.restartAttempts.filter(
+      t => now - t < this.crashRestartWindowMs,
+    )
+    if (this.restartAttempts.length >= this.crashRestartMaxRetries) {
+      this.onLog?.(
+        `[llm-endpoint] crash-restart: giving up after ${this.restartAttempts.length} ` +
+          `attempt(s) within ${this.crashRestartWindowMs}ms — staying "error". ` +
+          "Call llm_endpoint_start (or `agentproto llm gateway restart`) to retry manually.",
+      )
+      return
+    }
+    const attempt = this.restartAttempts.length
+    this.restartAttempts.push(now)
+    const delay = Math.min(
+      this.crashRestartBaseDelayMs * this.crashRestartFactor ** attempt,
+      this.crashRestartMaxDelayMs,
+    )
+    this.onLog?.(
+      `[llm-endpoint] unexpected exit of a running child — scheduling crash-restart ` +
+        `attempt ${attempt + 1}/${this.crashRestartMaxRetries} in ${delay}ms`,
+    )
+    if (this.restartTimer) clearTimeout(this.restartTimer)
+    const timer = setTimeout(() => {
+      this.restartTimer = undefined
+      this.start().catch(err => {
+        this.onLog?.(
+          `[llm-endpoint] crash-restart attempt ${attempt + 1} failed: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        )
+      })
+    }, delay)
+    timer.unref?.()
+    this.restartTimer = timer
+  }
+
+  /**
+   * Best-effort `@agentproto/llm-endpoint` package version, read from the
+   * resolved bin's `package.json` (memoized — a permanently-unresolvable
+   * bin, e.g. never built, shouldn't re-hit the filesystem on every
+   * `status()` call). Returns `undefined` rather than throwing so a missing
+   * bin never turns `status()` itself into a failure.
+   */
+  private resolveVersionBestEffort(): string | undefined {
+    if (this.cachedVersion !== undefined) return this.cachedVersion ?? undefined
+    try {
+      const bin = resolveLlmEndpointBin(this.binPath)
+      const pkgJsonPath = join(dirname(bin), "..", "package.json")
+      const pkg = JSON.parse(readFileSync(pkgJsonPath, "utf8")) as { version?: unknown }
+      this.cachedVersion = typeof pkg.version === "string" ? pkg.version : null
+    } catch {
+      this.cachedVersion = null
+    }
+    return this.cachedVersion ?? undefined
+  }
+
   private async stopInternal(): Promise<void> {
+    // A deliberate stop cancels any pending crash-restart — the operator
+    // asked for this to be down, a scheduled retry must not undo that.
+    if (this.restartTimer) {
+      clearTimeout(this.restartTimer)
+      this.restartTimer = undefined
+    }
     const proc = this.proc
     // Clear `this.proc` before killing so the onExit callback treats the
     // resulting exit as expected (doesn't flip status to error).

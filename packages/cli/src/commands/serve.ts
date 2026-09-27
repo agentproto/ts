@@ -88,6 +88,7 @@ import {
   reconcileSandboxLedger,
   makeSandboxResolver,
   makeSandboxCredsStore,
+  resolveEffectiveLlmEndpointFlag,
   type AgentAdapterResolver,
   type AdapterAuthDescriptor,
   type GatewayHandle,
@@ -692,6 +693,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
   const probeHost =
     opts.bind === "0.0.0.0" || opts.bind === "::" ? "127.0.0.1" : opts.bind
   const healthUrl = `http://${probeHost}:${opts.port}`
+  // Smart default (daemon-managed-gateway): an explicit config/profile value
+  // always wins; unset defaults ON the first time the operator already
+  // configured a named endpoint, an upstream link, or an explicit
+  // `llm-endpoint` route — see the resolver's docblock.
+  const effectiveLlmEndpoint = await resolveEffectiveLlmEndpointFlag(cfgFeatures.llmEndpoint)
   const bootOutcome = await bootGatewayIdempotent({
     healthUrl,
     probe: probeHealthyDaemon,
@@ -756,7 +762,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // (undefined ⇒ `createGateway` never wraps `withDeferredTools` —
         // today's fully-eager behaviour, unchanged for existing clients).
         deferredTools: resolveDeferredToolsGatewayOption(cfg.defaults?.mcp?.deferredTools),
-        llmEndpoint: cfgFeatures.llmEndpoint === true,
+        llmEndpoint: effectiveLlmEndpoint,
         resolveAgentAdapter,
         // Injected port behind `agent_start.worktree` + the `worktrees.isolation`
         // policy: runs `worktree.provision` over @agentproto/worktree, a dep the

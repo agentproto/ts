@@ -957,6 +957,18 @@ export interface SpawnAgentSessionDeps {
    *  manifest not covering the requested model still reaches the driver,
    *  same as before this guard existed. */
   listCatalogModels?: CatalogModelsLister
+  /** Ensure the local `llm-endpoint` proxy sidecar (`LlmEndpointRegistry`)
+   *  is up before a spawn that bills through it. Without this hook, a spawn
+   *  whose resolved gateway is `"llm-endpoint"` assumed the sidecar was
+   *  already running (started externally, or via the `llm_endpoint_start`
+   *  MCP tool) — a fresh install with `features.llmEndpoint` on but nothing
+   *  having called that tool yet would spawn fine and only fail once the
+   *  adapter made its first request. Wired to the registry's own
+   *  (idempotent) `start()` at the composition root; omitted ⇒ unchanged
+   *  pre-existing behavior. Best-effort: a rejection here is swallowed by
+   *  the caller, not surfaced as a spawn failure — the adapter's own first
+   *  request is left to report the real connection error. */
+  ensureLlmEndpointRunning?: () => Promise<void>
 }
 
 export interface SpawnAgentSessionInput {
@@ -2549,6 +2561,15 @@ export async function spawnAgentSession(
   // silently dropped on the floor (see `resolvedRouteGateway`'s docblock).
   const descriptorRoute: RouteSpec | undefined =
     input.route ?? (resolvedRouteGateway ? { gateway: resolvedRouteGateway } : undefined)
+  // Self-heal a spawn billing through the local llm-endpoint proxy: nothing
+  // else starts that sidecar lazily (see `ensureLlmEndpointRunning`'s
+  // docblock) — without this, a fresh install with the feature on but
+  // `llm_endpoint_start` never called would spawn fine and only fail once
+  // the adapter made its first request. Best-effort and non-fatal.
+  const effectiveGatewayForEnsure = descriptorRoute?.gateway ?? profileResolvedRoute?.gateway
+  if (effectiveGatewayForEnsure === "llm-endpoint" && deps.ensureLlmEndpointRunning) {
+    await deps.ensureLlmEndpointRunning().catch(() => {})
+  }
   let launchConfig: RouteAwareLaunchConfig
   try {
     launchConfig = buildRouteAwareLaunchConfig({

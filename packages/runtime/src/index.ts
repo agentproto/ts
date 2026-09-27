@@ -623,6 +623,12 @@ export type { HeartbeatRunner, BuildHeartbeatAgent, HeartbeatAgent } from "./hea
 export type { RuntimeEvent, RuntimeEvents } from "./events.js"
 export type { WorkspaceFs } from "./workspace-fs.js"
 export type { TunnelDescriptor, TunnelStatus, TunnelProvider } from "./tunnel-registry.js"
+export type {
+  LlmEndpointStatusReport,
+  LlmEndpointDescriptor,
+  LlmEndpointStatus,
+} from "./llm-endpoint-registry.js"
+export { resolveEffectiveLlmEndpointFlag } from "./llm-endpoint-feature-flag.js"
 export type { EnableInput, EnableResult, RemoteStatus } from "./remote-controller.js"
 export {
   decideWorktreeIsolation,
@@ -1391,6 +1397,44 @@ export async function createGateway(
             line,
           }),
       })
+    : undefined
+  // Autostart on daemon boot (daemon-managed-gateway): mirrors
+  // `tunnels.restoreOnBoot()` above — non-blocking, boot must never wait on
+  // the sidecar. Unlike tunnels there's no persisted "was it running before
+  // restart" state to reconcile (the registry is pure in-memory, the child
+  // dies with the daemon); when the feature is on, always try to bring it
+  // up. A failure here just leaves the descriptor `error` — surfaced via
+  // `status()`/`lastError` — until an operator retries (`llm_endpoint_start`,
+  // `agentproto llm gateway restart`) or a spawn's lazy self-heal
+  // (`ensureLlmEndpointRunning` below) triggers another attempt. Crash
+  // recovery AFTER this succeeds is the registry's own internal
+  // backoff-restart (`LlmEndpointRegistry.scheduleCrashRestart`).
+  if (llmEndpoint) {
+    // `LLM_ENDPOINT_PORT` in the daemon's OWN ambient env relocates the
+    // autostarted sidecar off the built-in default (18090) — there's no
+    // `config.json` port knob for this yet, and autostart (unlike the
+    // `llm_endpoint_start` MCP tool) has no per-call argument a caller could
+    // set instead. Mirrors `LLM_ENDPOINT_BIN`'s existing ambient-env
+    // override for the bin path. Scoped to THIS call only — it does not
+    // change `assembleLlmEndpointEnv`'s tested `explicitEnv` > `port` arg >
+    // default precedence for any other caller.
+    const autostartPort = Number.parseInt(process.env.LLM_ENDPOINT_PORT ?? "", 10)
+    void llmEndpoint
+      .start(Number.isFinite(autostartPort) && autostartPort > 0 ? { port: autostartPort } : {})
+      .catch(() => {
+        // start() already records the failure on the descriptor
+        // (status:"error", lastError) and logs via onLog — nothing else to do.
+      })
+  }
+  // Self-heal hook for `spawnAgentSession` (session-spawn.ts): a spawn
+  // billing through the local llm-endpoint proxy ensures the sidecar is up
+  // before the adapter makes its first request, rather than assuming
+  // something (autostart above, or an operator) already started it.
+  // `start()` is idempotent — a no-op when already running+healthy.
+  const ensureLlmEndpointRunning = llmEndpoint
+    ? async (): Promise<void> => {
+        await llmEndpoint.start()
+      }
     : undefined
 
   // Build a server once eagerly so we can capture `registered` for
@@ -2227,6 +2271,7 @@ export async function createGateway(
       webhookNotifier,
       daemonMcpUrl,
       resolveSandboxProvider: resolveSandboxProviderResolved,
+      ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
       // `messagingDefaults` (resolved fresh above, per call) — the
       // unset-defaults for `interrupt` on agent_prompt/message_parent and
       // for message_send/message_reply's sibling/interrupt gates.
@@ -2619,6 +2664,7 @@ export async function createGateway(
     token,
     ptyEnabled: opts.spawnPty != null,
     tunnels,
+    ...(llmEndpoint ? { llmEndpoint } : {}),
     remote,
     ...(opts.pairingRegistry ? { pairings: opts.pairingRegistry } : {}),
     ...(opts.hostRegistry ? { hostRegistry: opts.hostRegistry } : {}),
@@ -2674,6 +2720,7 @@ export async function createGateway(
     // Same notifier `agent_start` registers `notifyUrl` with, so an HTTP
     // spawn's per-session webhook fires too.
     webhookNotifier,
+    ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
     ...(opts.listAgentAdapters
       ? { listAgentAdapters: opts.listAgentAdapters }
       : {}),
