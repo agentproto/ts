@@ -126,7 +126,10 @@ Usage:
                               (one session's detail: status, lineage, and —
                                once it has ended — its derived outcome: last
                                message, opened PRs, cost, run/parent links.)
-  agentproto sessions stop <id-or-name> [--json]
+  agentproto sessions stop <id-or-name> [--completed] [--json]
+                              (--completed: tag the outcome "completed" rather
+                               than "stopped"; on an already-ended session,
+                               relabels its outcome instead of erroring)
   agentproto sessions pin <id-or-name> [--json]
   agentproto sessions unpin <id-or-name> [--json]
                               (list-visibility only — pinned sessions sort to
