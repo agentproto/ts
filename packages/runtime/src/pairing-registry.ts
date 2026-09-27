@@ -252,9 +252,15 @@ export interface PairingRegistry {
   createOffer(input?: CreateOfferInput): Promise<CreatedOffer>
   /** All persisted pairings (copies). Loads `pairings.json` on first call. */
   list(): Promise<PairingRecord[]>
+  /** Rename a pairing by fingerprint or name (cosmetic only — no effect on
+   *  auth or routing). Returns false when nothing matched; throws on an
+   *  empty `newName`. */
+  rename(idOrName: string, newName: string): Promise<boolean>
   /** Drop a pairing by fingerprint or name; stops its rendezvous connections.
    *  Returns false when nothing matched. */
   revoke(idOrName: string): Promise<boolean>
+  /** Is a channel (offer or reconnect) currently served for this fingerprint? */
+  isOnline(fingerprint: string): boolean
   /** Start standing reconnect connections for every persisted pairing. Call
    *  after the gateway is up (so the injected `serve` can reach it). */
   startAutoconnect(): Promise<void>
@@ -270,6 +276,25 @@ const DEFAULT_REVOKED_GRACE_MS = 14 * 86_400_000
 
 function defaultPairingsPath(): string {
   return join(homedir(), ".agentproto", "pairings.json")
+}
+
+/**
+ * Read-only snapshot of `pairings.json` for callers that just want the
+ * persisted records — no `dial`/`serve`/`loadIdentity` deps, no rendezvous
+ * connections started (e.g. `agentproto doctor`'s devices check). Mirrors
+ * `ensureLoaded`'s parse + v1-legacy flagging; never throws — a missing or
+ * malformed file just yields `[]`.
+ */
+export async function readPairingsSnapshot(path?: string): Promise<PairingRecord[]> {
+  try {
+    const raw = await readFile(path ?? defaultPairingsPath(), "utf8")
+    const parsed: unknown = JSON.parse(raw)
+    if (!isPairingsFile(parsed)) return []
+    const fromV1 = parsed.v === LEGACY_PAIRINGS_VERSION
+    return parsed.pairings.map(rec => (fromV1 ? { ...rec, legacy: true } : rec))
+  } catch {
+    return []
+  }
 }
 
 function b64url(bytes: Buffer): string {
@@ -326,6 +351,10 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
 
   /** fingerprint → record. Source of truth in memory; disk is the mirror. */
   const pairings = new Map<string, PairingRecord>()
+  /** fingerprint → count of channels currently served (offer or reconnect).
+   *  Never persisted — a fresh boot starts with nothing online until a
+   *  reconnect loop pairs. */
+  const onlineCounts = new Map<string, number>()
   /** fingerprint → tombstone of a revoked pairing (see "Revocation"). */
   const revoked = new Map<string, RevokedPairingRecord>()
   /** route → offer. */
@@ -374,7 +403,21 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
     }
   }
 
-  async function persist(): Promise<void> {
+  // Serialize persist() calls through one chain: two calls racing (e.g. a
+  // reconnect's `lastSeen` update against a `rename`/`revoke` a user just
+  // triggered) would otherwise share the same pid-keyed tmp filename AND —
+  // worse — could finish out of start order, so whichever rename() landed
+  // last would silently overwrite newer in-memory state with a stale
+  // snapshot. Chaining makes each write wait its turn and read `pairings`/
+  // `revoked` fresh at that turn, so writes land in call order and every
+  // update is durably persisted.
+  let persistChain: Promise<void> = Promise.resolve()
+  function persist(): Promise<void> {
+    const run = persistChain.then(doPersist)
+    persistChain = run.catch(() => {})
+    return run
+  }
+  async function doPersist(): Promise<void> {
     for (const [fp, rec] of revoked) if (!tombstoneLive(rec)) revoked.delete(fp)
     const file: PairingsFile = {
       v: PAIRINGS_VERSION,
@@ -561,11 +604,15 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
         serving = true
         const handle = deps.serve(wrapped, ctx)
         channels.add(handle)
+        onlineCounts.set(ctx.fingerprint, (onlineCounts.get(ctx.fingerprint) ?? 0) + 1)
         log(`[pairing] channel up (${ctx.mode}) for ${ctx.fingerprint} via ${spec.key}`)
 
         await waitClosed(wrapped, signal)
         channels.delete(handle)
         await handle.close().catch(() => {})
+        const remaining = (onlineCounts.get(ctx.fingerprint) ?? 1) - 1
+        if (remaining > 0) onlineCounts.set(ctx.fingerprint, remaining)
+        else onlineCounts.delete(ctx.fingerprint)
         log(`[pairing] channel closed (${ctx.mode}) for ${ctx.fingerprint}`)
 
         if (spec.singleUse) break
@@ -795,6 +842,35 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
     return Array.from(pairings.values()).map(r => ({ ...r }))
   }
 
+  // Named `renamePairing`, not `rename` — this closure also calls the
+  // `node:fs/promises` `rename` (in `persist()`'s atomic write) and a same-
+  // named local function here would shadow that import for the rest of the
+  // closure, silently breaking every persist. Exposed on the returned
+  // registry as `rename`; only the internal binding avoids the collision.
+  async function renamePairing(idOrName: string, newName: string): Promise<boolean> {
+    const trimmed = newName.trim()
+    if (!trimmed) throw new Error("device name must not be empty")
+    await ensureLoaded()
+    let target: PairingRecord | undefined = pairings.get(idOrName)
+    if (!target) {
+      for (const rec of pairings.values()) {
+        if (rec.name === idOrName) {
+          target = rec
+          break
+        }
+      }
+    }
+    if (!target) return false
+    target.name = trimmed
+    await persist()
+    log(`[pairing] renamed ${target.fingerprint} to "${trimmed}"`)
+    return true
+  }
+
+  function isOnline(fingerprint: string): boolean {
+    return (onlineCounts.get(fingerprint) ?? 0) > 0
+  }
+
   async function shutdown(): Promise<void> {
     if (shuttingDown) return
     shuttingDown = true
@@ -807,7 +883,7 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
     channels.clear()
   }
 
-  return { createOffer, list, revoke, startAutoconnect, shutdown }
+  return { createOffer, list, rename: renamePairing, revoke, isOnline, startAutoconnect, shutdown }
 }
 
 // ── helpers ────────────────────────────────────────────────────

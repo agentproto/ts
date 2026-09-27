@@ -117,6 +117,17 @@ export interface ModelsSummaryRow {
   total: number
 }
 
+/** One paired device, redacted for the doctor's read-only check — no secret
+ *  (`pairRoot`, `clientPub`) crosses into `StepCheck.data`, which must never
+ *  carry one. */
+export interface DeviceSnapshot {
+  fingerprint: string
+  name: string
+  createdAt: string
+  lastSeen: string
+  legacy?: true
+}
+
 export interface FirstRunResult {
   ok: boolean
   error?: string
@@ -213,6 +224,10 @@ export interface StepSources {
   detectClients(): Promise<AgentDetection[]>
   /** `~/.agentproto/install-state.json` (what `install-mcp` recorded). */
   loadMcpInstallState(): Promise<InstallState>
+  /** Devices paired with this daemon (`~/.agentproto/pairings.json`), redacted
+   *  of every secret field. What `agentproto devices list` shows, minus
+   *  `online` (a live daemon connection, which doctor doesn't have). */
+  loadDevices(): Promise<DeviceSnapshot[]>
   /** Adapters declaring a skills fan-out target (`install skill/…`'s resolution). */
   skillTargets(): Promise<SkillFanOutTarget[]>
   /** The agentproto skill pack resolvable WITHOUT a network fetch, or `null`. */

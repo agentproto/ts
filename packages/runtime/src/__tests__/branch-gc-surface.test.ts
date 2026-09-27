@@ -80,6 +80,7 @@ const PLAN: BranchGcPlanView = {
   includeReviewed: false,
   generatedAt: "2026-09-26T00:00:00.000Z",
   otherRemoteRefs: 0,
+  fetched: null,
   entries: [
     {
       kind: "local",

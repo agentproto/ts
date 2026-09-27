@@ -16,6 +16,7 @@ and changes nothing: no file writes, no process starts, no prompts.
 | `agents` | yes | Each catalog adapter: package resolvable + its `version_check` presence probe passes. At least one needed |
 | `auth` | no | Auth profiles (count, enabled) · credentials `auth discover` finds that aren't imported yet |
 | `clients` | no | Each detected coding client: agentproto MCP server still present in its config, pinned URL matches the daemon port |
+| `devices` | no | Paired device count (`~/.agentproto/pairings.json`) · any device never seen, or not seen in 30+ days |
 | `skills` | no | Each skill-capable adapter: agentproto skill pack installed and current |
 | `local-models` | no | Each named LLM-gateway endpoint (`~/.agentproto/llm-endpoints.json`, plus `forge` if `FORGE_BASE_URL` is set) answers `GET <baseUrl>/models` |
 
