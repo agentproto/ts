@@ -52,6 +52,9 @@ export interface LaneResult {
   summary?: string
   /** Command lanes: the process exit code, when the process exited. */
   exitCode?: number
+  /** Agent lanes: the model the reviewer session ran on, when the host knows
+   *  it (the session record's active model). Omitted when unknown. */
+  model?: string
 }
 
 /** The folded review verdict.
@@ -90,6 +93,26 @@ export interface Attestor {
   presets: string[]
 }
 
+/** Who asked for the review. Informational provenance — it names the
+ *  requester, it does not authenticate them. */
+export interface ReviewRequester {
+  /** The agentproto session that requested the review (the MCP caller). */
+  sessionId?: string
+  /** The author of the reviewed range's head commit. */
+  gitAuthor?: { name: string; email: string }
+}
+
+/** A pull request the reviewed range belongs to. Recorded in the attestation
+ *  only when the caller knew it at review time (a CI binding); a link found
+ *  later lives in the ledger's mutable annotations instead. */
+export interface ReviewPrRef {
+  provider: "github"
+  /** `owner/name`. */
+  repo: string
+  number: number
+  url: string
+}
+
 /**
  * A verdict bound to content: the manifest that defined the review
  * (`manifestSha`), the binding that selected lanes, and the frozen git range
@@ -118,6 +141,10 @@ export interface Attestation {
    *  while the lanes ran — the checks then saw content the range doesn't
    *  contain, so the attestation is recorded but never served from cache. */
   dirty?: boolean
+  /** Who requested the review (session + head-commit author), when known. */
+  requester?: ReviewRequester
+  /** The PR the range was reviewed for, when the caller passed one. */
+  pr?: ReviewPrRef
   /** ISO timestamp. */
   createdAt: string
 }

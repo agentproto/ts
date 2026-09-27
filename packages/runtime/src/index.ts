@@ -293,8 +293,25 @@ export type {
   ReviewerSessionHost,
   CreateReviewRunnerOptions,
 } from "./review-runner.js"
-export { createReviewLedger, defaultReviewLedgerRoot, repoSlug } from "./review-ledger.js"
-export type { ReviewLedger, LedgerEntry, LedgerHostMeta, ReviewLedgerFilter } from "./review-ledger.js"
+export { createReviewLedger, defaultReviewLedgerRoot, repoSlug, withPr, withPrStatus } from "./review-ledger.js"
+export type {
+  ReviewLedger,
+  LedgerEntry,
+  LedgerHostMeta,
+  ReviewLedgerFilter,
+  LedgerAnnotations,
+  PrStatusSnapshot,
+} from "./review-ledger.js"
+export {
+  PrLookupError,
+  execGh,
+  fetchPrStatus,
+  findPrForCommit,
+  githubRepoOf,
+  parsePrUrl,
+  prHeadSha,
+} from "./review-pr.js"
+export type { GhRunner, PrLookupErrorCode } from "./review-pr.js"
 export { createDaemonReviewerHost, resolveReviewerPreset } from "./review-reviewer-host.js"
 export type { DaemonReviewerHostDeps } from "./review-reviewer-host.js"
 export { registerReviewTools } from "./review-tools.js"

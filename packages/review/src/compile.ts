@@ -63,12 +63,12 @@ export type LaneOutcome =
    *  stdout/stderr, surfaced as the finding detail on a non-zero exit. */
   | { outcome: "exited"; exitCode: number; output?: string }
   /** An agent lane's reviewer wrote a valid verdict file. */
-  | { outcome: "reported"; report: AgentLaneReport; sessionId?: string; preset?: string }
+  | { outcome: "reported"; report: AgentLaneReport; sessionId?: string; preset?: string; model?: string }
   /** The lane exceeded its `timeoutMs` and was stopped. */
-  | { outcome: "timeout"; error: string; sessionId?: string; preset?: string; output?: string }
+  | { outcome: "timeout"; error: string; sessionId?: string; preset?: string; model?: string; output?: string }
   /** The lane could not produce a result (spawn failed, no verdict file,
    *  cancelled, …). */
-  | { outcome: "skipped"; error: string; sessionId?: string; preset?: string }
+  | { outcome: "skipped"; error: string; sessionId?: string; preset?: string; model?: string }
 
 /** The host seam that actually runs a lane. The daemon wires a real one
  *  (subprocess for command lanes, a child reviewer session for agent lanes);
@@ -130,9 +130,10 @@ const tail = (s: string | undefined): string =>
  *  status is decided. */
 export function toLaneResult(check: ReviewCheck, outcome: LaneOutcome, durationMs: number): LaneResult {
   const base = { id: check.id, kind: check.kind, blocking: check.blocking, durationMs }
-  const sessionFields = (o: { sessionId?: string; preset?: string }) => ({
+  const sessionFields = (o: { sessionId?: string; preset?: string; model?: string }) => ({
     ...(o.sessionId !== undefined ? { sessionId: o.sessionId } : {}),
     ...(o.preset !== undefined ? { preset: o.preset } : {}),
+    ...(o.model !== undefined ? { model: o.model } : {}),
   })
   switch (outcome.outcome) {
     case "exited": {
