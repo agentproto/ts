@@ -504,6 +504,14 @@ export {
   type StallWatchdogRegistry,
 } from "./stall-watchdog.js"
 export { formatToolCall, formatToolResult } from "./tool-presenter.js"
+export {
+  measureTool,
+  measureToolList,
+  type MeasurableTool,
+  type MeasuredToolEntry,
+  type ToolListMeasurement,
+} from "./tool-schema-measure.js"
+export { extractHelpSection, getToolHelp, listToolHelpTopics } from "./tool-help.js"
 export { deriveSessionUsage, pickUsageDetail, projectSessionUsage } from "./usage.js"
 export { rollupSessionSubtree } from "./usage-subtree.js"
 export type {
@@ -566,6 +574,7 @@ import { registerRemoteTools } from "./remote-tools.js"
 import { registerPairingTools } from "./pairing-tools.js"
 import type { PairingRegistry } from "./pairing-registry.js"
 import { registerDaemonHealthTools } from "./daemon-health-tools.js"
+import { registerToolHelpTool } from "./tool-help-mcp.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
 import { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
@@ -1094,6 +1103,7 @@ const DEFAULT_TURN_STALL_AFTER_MS = 5 * 60_000
  */
 export const DEFAULT_ALWAYS_ON_TOOLS: readonly string[] = [
   "daemon_health",
+  "tool_help",
   "agent_start",
   "agent_prompt",
   "agent_output",
@@ -2076,6 +2086,10 @@ export async function createGateway(
       ...(opts.version ? { version: opts.version } : {}),
       ...(opts.build ? { build: opts.build } : {}),
     })
+    // Read-only lookup for a tool's long-form docs (`tool-help.ts`) — the
+    // fetch side of the slimmed-description contract every tool's schema
+    // now points at. Always-on (see DEFAULT_ALWAYS_ON_TOOLS) and tiny.
+    registerToolHelpTool(server)
     // Subprocess execution — the runtime's superpower for cloud
     // agents. Any allowlisted CLI on the user's machine (claude, gh,
     // pnpm, …) is reachable via `command_execute`. Allowlist lives at

@@ -58,6 +58,7 @@ import { runPair } from "./commands/pair.js"
 import { runRendezvous } from "./commands/rendezvous.js"
 import { runSandbox } from "./commands/sandbox.js"
 import { runLlm } from "./commands/llm.js"
+import { runHelp } from "./commands/help.js"
 import { cliFreshnessLine } from "./registry/freshness.js"
 
 const USAGE = `agentproto — AIP-45 agent CLI host
@@ -185,6 +186,9 @@ Usage:
   agentproto llm       endpoints <list|test> [--json]
                      the LLM gateway's named local/LAN model endpoints
                      (~/.agentproto/llm-endpoints.json)
+  agentproto help      <tool> [--topic <section>]
+                     long-form MCP tool docs — the same text as the
+                     tool_help MCP tool, read locally, no daemon needed
   agentproto --help
   agentproto --version
   agentproto --version --check-updates
@@ -258,6 +262,7 @@ const VERBS = new Set([
   "rendezvous",
   "sandbox",
   "llm",
+  "help",
 ])
 
 async function main(argv: readonly string[]): Promise<number> {
@@ -395,6 +400,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runSandbox(rest)
     case "llm":
       return runLlm(rest)
+    case "help":
+      return runHelp(rest)
     default:
       // Unreachable — VERBS membership checked above.
       process.stderr.write(`agentproto: unknown verb '${verb}'\n\n${USAGE}`)
