@@ -878,6 +878,26 @@ describe("standalone app UI host — shell delivery", () => {
     })
   })
 
+  it("assets: sw.js gets no-cache + service-worker-allowed for the parent page scope", async () => {
+    await writeFile(join(dir, "assets", "sw.js"), 'self.addEventListener("fetch", () => {})', "utf8")
+    await withServer(async port => {
+      const res = await rawGet(port, asset("sw.js"), {})
+      expect(res.status).toBe(200)
+      expect(res.headers["cache-control"]).toBe("no-cache")
+      expect(res.headers["service-worker-allowed"]).toBe(`/apps/${SHELL_APP_ID}/ui`)
+    })
+  })
+
+  it("assets: .webmanifest gets the manifest MIME type and no-cache", async () => {
+    await writeFile(join(dir, "assets", "manifest.webmanifest"), '{"name":"x"}', "utf8")
+    await withServer(async port => {
+      const res = await rawGet(port, asset("manifest.webmanifest"), {})
+      expect(res.status).toBe(200)
+      expect(res.headers["content-type"]).toBe("application/manifest+json; charset=utf-8")
+      expect(res.headers["cache-control"]).toBe("no-cache")
+    })
+  })
+
   it("assets: traversal, separators, dotfiles and symlink escapes are all 404s", async () => {
     await symlink(join(dir, "secret.txt"), join(dir, "assets", "escape.js"))
     await withServer(async port => {

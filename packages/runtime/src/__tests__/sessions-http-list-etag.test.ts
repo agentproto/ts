@@ -266,4 +266,60 @@ describe("GET /sessions — strong etag + if-none-match + ?since delta", () => {
       expect(body.sessions.map(s => s.id)).not.toContain(desc.id)
     })
   })
+
+  it("?fields= projects each row to the allowlist, always keeping id", async () => {
+    await withServer(async (port, registry) => {
+      registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: process.cwd(),
+        agentSession: fakeAgentSession("agent"),
+        adapterSlug: "fake",
+      })
+
+      const res = await fetch(`http://127.0.0.1:${port}/sessions?fields=status,kind,nope`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { sessions: Record<string, unknown>[] }
+      expect(body.sessions.length).toBeGreaterThan(0)
+      for (const row of body.sessions) {
+        expect(Object.keys(row).sort()).toEqual(["id", "kind", "status"])
+      }
+    })
+  })
+
+  it("GET /sessions/:id?fields= projects the single descriptor the same way", async () => {
+    await withServer(async (port, registry) => {
+      const desc = registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: process.cwd(),
+        agentSession: fakeAgentSession("agent"),
+        adapterSlug: "fake",
+      })
+      const res = await fetch(`http://127.0.0.1:${port}/sessions/${desc.id}?fields=status`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as Record<string, unknown>
+      expect(Object.keys(body).sort()).toEqual(["id", "status"])
+    })
+  })
+
+  it("?since omits rows archived before the timestamp", async () => {
+    await withServer(async (port, registry) => {
+      const desc = registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: process.cwd(),
+        agentSession: fakeAgentSession("agent"),
+        adapterSlug: "fake",
+      })
+      await registry.interruptSession(desc.id).catch(() => {})
+      const rt = registry.get(desc.id)
+      expect(rt).toBeTruthy()
+      ;(rt as { status: string }).status = "exited"
+      registry.archiveSession(desc.id)
+
+      const later = new Date(Date.now() + 60_000).toISOString()
+      const res = await fetch(`http://127.0.0.1:${port}/sessions?since=${encodeURIComponent(later)}`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { sessions: unknown[]; removed: string[] }
+      expect(body.removed).toEqual([])
+    })
+  })
 })

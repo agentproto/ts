@@ -217,6 +217,33 @@ function sessionDescriptorForHttp(
   return publicDescriptor
 }
 
+/** `?fields=a,b,c` allowlist for the sessions routes — the HTTP twin of the
+ *  `session_list` MCP tool's `fields`. Unknown names are ignored; `id` is
+ *  always kept so a caller can never lose the row's identity. No `fields`
+ *  ⇒ the untouched public descriptor. */
+function parseSessionFields(params: URLSearchParams): ReadonlySet<string> | undefined {
+  const raw = params.get("fields")
+  if (raw === null) return undefined
+  const names = raw
+    .split(",")
+    .map(s => s.trim())
+    .filter(s => s.length > 0)
+  return new Set(["id", ...names])
+}
+
+function projectSessionForHttp(
+  session: SessionDescriptor,
+  fields: ReadonlySet<string> | undefined,
+): Record<string, unknown> {
+  const pub = sessionDescriptorForHttp(session) as unknown as Record<string, unknown>
+  if (!fields) return pub
+  const out: Record<string, unknown> = {}
+  for (const key of fields) {
+    if (key in pub && pub[key] !== undefined) out[key] = pub[key]
+  }
+  return out
+}
+
 /**
  * Default Origin allowlist used when `RuntimeHttpServerOptions.allowedOrigins`
  * is undefined. Localhost on any port covers the user's own dev environments
@@ -4820,6 +4847,7 @@ async function handleSessions(
     const kindParam = params.get("kind")
     const includeCommands = params.get("includeCommands") === "true"
     const sinceParam = params.get("since")
+    const fields = parseSessionFields(params)
     const matchesFilter = (s: SessionDescriptor): boolean => {
       if (kindParam && kindParam !== "all") return s.kind === kindParam
       return includeCommands || s.kind !== "command"
@@ -4847,11 +4875,7 @@ async function handleSessions(
       // never bumped it) — the client keeps everything else from its held
       // list. `removed` covers the one way a row leaves the default
       // (`includeArchived=false`) view post-creation: `session_archive`.
-      // Descriptors don't carry an archival timestamp, so this reports
-      // every currently-archived id the caller's filter would otherwise
-      // match, on every delta request, rather than only newly-archived
-      // ones — still correct for a client reconciling a held list (removing
-      // an id it doesn't already have is a no-op), just not minimal.
+      // Rows carry archivedAt (set by archiveSession); only those archived at/after since are reported. Rows archived before the field existed have no timestamp and are always reported.
       const changed = rows.filter(s => {
         const ts = Date.parse(s.lastActivityAt ?? s.startedAt)
         return Number.isNaN(ts) || ts >= sinceMs
@@ -4860,11 +4884,16 @@ async function handleSessions(
         ? []
         : registry
             .list({ includeArchived: true })
-            .filter(s => s.archived && matchesFilter(s))
+            .filter(
+              s =>
+                s.archived &&
+                matchesFilter(s) &&
+                (s.archivedAt === undefined || Date.parse(s.archivedAt) >= sinceMs),
+            )
             .map(s => s.id)
-      body = { sessions: changed.map(sessionDescriptorForHttp), removed }
+      body = { sessions: changed.map(s => projectSessionForHttp(s, fields)), removed }
     } else {
-      body = { sessions: rows.map(sessionDescriptorForHttp) }
+      body = { sessions: rows.map(s => projectSessionForHttp(s, fields)) }
     }
 
     // Strong etag over the exact serialized body (app-ui-delivery.ts
@@ -6526,7 +6555,11 @@ async function handleSessions(
       json(404, { error: "session_not_found", id: rawIdOrName })
       return true
     }
-    json(200, sessionDescriptorForHttp(resolvedDesc))
+    const reqUrlForFields = req.url ?? ""
+    const qsForFields = reqUrlForFields.includes("?")
+      ? reqUrlForFields.slice(reqUrlForFields.indexOf("?") + 1)
+      : ""
+    json(200, projectSessionForHttp(resolvedDesc, parseSessionFields(new URLSearchParams(qsForFields))))
     return true
   }
 
@@ -8083,9 +8116,20 @@ async function handleAppUiAsset(
       compressible: isCompressibleContentType(contentType),
     }),
   )
+  // A service worker (`sw.js`) and a web-app manifest are NOT hashed
+  // build outputs: they must revalidate, and the worker must be allowed to
+  // control the page one level up (`/apps/:appId/ui`), which browsers only
+  // permit when the script's response says so.
+  const isServiceWorker = file === "sw.js"
+  const isManifest = file.endsWith(".webmanifest")
+  const rawPath = (req.url ?? "").split("?")[0] ?? ""
+  const pageScope = rawPath.endsWith(`/assets/${file}`)
+    ? rawPath.slice(0, -`/assets/${file}`.length)
+    : undefined
   sendRepresentation(req, res, rep, {
     "content-type": contentType,
-    "cache-control": IMMUTABLE_CACHE_CONTROL,
+    "cache-control": isServiceWorker || isManifest ? "no-cache" : IMMUTABLE_CACHE_CONTROL,
+    ...(isServiceWorker && pageScope ? { "service-worker-allowed": pageScope } : {}),
   })
 }
 
