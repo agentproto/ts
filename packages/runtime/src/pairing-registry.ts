@@ -124,6 +124,14 @@ export interface PairingRecord {
   /** Set on a pairing made under the retired pair/v1 protocol: listed and
    *  revocable, never served — its client is told to re-pair. */
   legacy?: true
+  /** Set when this pairing was made under an offer minted with
+   *  `agentproto pair offer --host` (PR-C) — i.e. the offering daemon's own
+   *  intent, recorded server-side at handshake time from the OfferEntry it
+   *  itself created, never from the (unauthenticated) `scope` param a client
+   *  presented in the offer URL. Absent for an ordinary remote-control
+   *  pairing. Purely informational here — it does not change how this
+   *  pairing is served. */
+  scope?: "host"
 }
 
 /** A revoked pairing still answered with `pairing_revoked` until `expiresAt`
@@ -200,6 +208,9 @@ export interface CreatedOffer {
    *  falls back to `HOSTED_RENDEZVOUS_URL`. Surfaced so `pair offer` can flag,
    *  never silently, that the daemon is relaying through our infrastructure. */
   rendezvousIsHostedDefault: boolean
+  /** Echoes `CreateOfferInput.scope`. `"host"` when minted with `--host`;
+   *  absent for a plain offer. */
+  scope?: "host"
 }
 
 export interface CreateOfferInput {
@@ -207,6 +218,12 @@ export interface CreateOfferInput {
   ttlMs?: number
   /** Rendezvous URL override; falls back to the configured default. */
   rendezvousUrl?: string
+  /** Mint a HOST-scoped offer (PR-C): the accepting side may register this
+   *  daemon as a driveable host (`devices add`), not just remote-control it.
+   *  Recorded on the resulting `OfferEntry`/`PairingRecord` server-side — this
+   *  is the authoritative record of what was granted, independent of the
+   *  `scope` param an accepting client's offer URL happens to carry. */
+  scope?: "host"
 }
 
 export interface PairingRegistryDeps {
@@ -318,6 +335,11 @@ interface OfferEntry {
   exp: number // unix seconds
   spent: boolean
   rendezvousUrl: string
+  /** This daemon's own recorded intent for the offer it minted (PR-C) — set
+   *  by `createOffer`'s caller, never by anything a client's hello claims
+   *  (the hello has no scope field). Written onto the resulting
+   *  `PairingRecord` on success. */
+  scope?: "host"
 }
 
 /** Re-pair notice sent (E2E, inside a completed v1 channel) to a pair/v1
@@ -653,7 +675,8 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
     const { route, auth } = await deriveOfferTokens(secret)
     const ttlMs = input.ttlMs ?? DEFAULT_TTL_MS
     const exp = Math.floor((now() + ttlMs) / 1000)
-    offers.set(route, { route, auth, exp, spent: false, rendezvousUrl })
+    const scope = input.scope
+    offers.set(route, { route, auth, exp, spent: false, rendezvousUrl, ...(scope ? { scope } : {}) })
 
     const fingerprint = await identityFingerprint(identity.x25519.pub)
     const url = encodeOfferUrl({
@@ -664,14 +687,16 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
       daemonEd25519Pub: identity.ed25519.pub,
       secret,
       exp,
+      ...(scope ? { scope } : {}),
     })
 
     startOfferLoop({ route, auth }, rendezvousUrl)
     log(
       `[pairing] offer minted (exp ${new Date(exp * 1000).toISOString()}) via ${rendezvousUrl}` +
-        (rendezvousIsHostedDefault ? " (hosted default)" : ""),
+        (rendezvousIsHostedDefault ? " (hosted default)" : "") +
+        (scope === "host" ? " [HOST-SCOPED]" : ""),
     )
-    return { secret, exp, url, fingerprint, rendezvousUrl, rendezvousIsHostedDefault }
+    return { secret, exp, url, fingerprint, rendezvousUrl, rendezvousIsHostedDefault, ...(scope ? { scope } : {}) }
   }
 
   function offerValid(route: string): boolean {
@@ -699,6 +724,11 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
         const pairRoot = await derivePairRoot(session)
         const fingerprint = session.peerFingerprint
         const nowIso = new Date(now()).toISOString()
+        // The offer's OWN recorded scope — never anything the client's hello
+        // claims (it has no scope field at all). `entry` is this offer's
+        // OfferEntry, looked up by route, which `verify` already confirmed
+        // above (it only returns true for a live, unspent, matching entry).
+        const entry = offers.get(route)
         const record: PairingRecord = {
           clientPub: hello.ePub,
           name: session.clientName ?? fingerprint,
@@ -707,6 +737,7 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
           lastSeen: nowIso,
           pairRoot,
           rendezvousUrl,
+          ...(entry?.scope ? { scope: entry.scope } : {}),
         }
         pairings.set(fingerprint, record)
         revoked.delete(fingerprint)

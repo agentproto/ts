@@ -108,6 +108,35 @@ describe("offer URL codec", async () => {
     await expectPairingError(() => parseOfferUrl(encodeOfferUrl(offer)), "malformed_offer")
   })
 
+  it("omits `scope` from the URL when absent (byte-identical to a plain offer)", async () => {
+    const offer = await makeOffer()
+    const url = encodeOfferUrl(offer)
+    expect(url).not.toContain("scope")
+    const parsed = await parseOfferUrl(url)
+    expect(parsed.scope).toBeUndefined()
+    expect(parsed).toEqual(offer)
+  })
+
+  it("includes `scope=host` in the URL when the offer is host-scoped", async () => {
+    const offer = await makeOffer({ scope: "host" })
+    const url = encodeOfferUrl(offer)
+    expect(url).toContain("scope=host")
+    const parsed = await parseOfferUrl(url)
+    expect(parsed.scope).toBe("host")
+    expect(parsed).toEqual(offer)
+  })
+
+  it("an offer with a tampered `scope` param still parses (advisory, unauthenticated field)", async () => {
+    // scope is plaintext query metadata, not covered by any signature — a
+    // relay can flip it in transit. parseOfferUrl doesn't (and can't) detect
+    // that; callers must never treat it as authoritative on its own (see the
+    // "Offer scope" doc comment) — the daemon's own server-side record is.
+    const offer = await makeOffer()
+    const url = encodeOfferUrl(offer).replace(/(&exp=\d+)/, "$1&scope=host")
+    const parsed = await parseOfferUrl(url)
+    expect(parsed.scope).toBe("host")
+  })
+
   it("rejects a non-integer exp", async () => {
     const url = encodeOfferUrl(await makeOffer()).replace(/exp=\d+/, "exp=not-a-number")
     await expectPairingError(() => parseOfferUrl(url), "malformed_offer")
