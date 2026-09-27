@@ -100,6 +100,8 @@ import {
   type SessionsRegistry,
 } from "../sessions.js"
 import { cdContractLine } from "../agents-md.js"
+import { SessionsRegistryAgentHost } from "../sessions-registry-agent-host.js"
+import { createSessionEventBus } from "../session-event-bus.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { OrchestratorScope } from "../orchestrator-gateway.js"
 import type { AgentSessionLike, AgentStreamEvent } from "../sessions.js"
@@ -3282,6 +3284,56 @@ function deferredProvisioner(): {
   })
   return { provisionWorktree, calls, resolve: d.resolve, reject: d.reject }
 }
+
+// F34b (live 2026-09-26): a plain workflow agent step sat with no session
+// while same-adapter worktree spawns were mid-provision. The wait turned out
+// to be npm's own `npx` tree scan (see driver-agent-cli's npx-fast-path) —
+// but the daemon side must keep the invariant this pins: a spawn that needs
+// no worktree never waits on another session's provisioning, whichever door
+// (agent_start / a workflow agent step) it comes through.
+describe("spawnAgentSession — a plain spawn never waits on another session's worktree provisioning (F34b)", () => {
+  const REPO = "/repo/checkout"
+
+  it("agent_start without a worktree and a workflow agent step both come up while a same-adapter provision hangs", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    // Never settles on its own — the stand-in for a ~10 min pnpm install+build.
+    const { provisionWorktree, calls, resolve } = deferredProvisioner()
+    const withProvisioner = { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") }
+
+    const provisioning = await spawnAgentSession(withProvisioner, {
+      adapter: "mock",
+      cwd: REPO,
+      worktree: { async: true },
+      label: "slow-worktree",
+    })
+    if (!provisioning.ok) throw new Error("expected success")
+    expect(calls).toHaveLength(1)
+    expect(registry.get(provisioning.descriptor.id)?.status).toBe("starting")
+
+    const plain = await spawnAgentSession(withProvisioner, {
+      adapter: "mock",
+      cwd: `${REPO}/projects/app`,
+      label: "plain",
+    })
+    if (!plain.ok) throw new Error("expected success")
+    expect(registry.get(plain.descriptor.id)?.status).toBe("running")
+
+    const host = new SessionsRegistryAgentHost(registry, createSessionEventBus(), makeResolver(startSession))
+    const stepSessionId = await host.spawn("mock", { cwd: `${REPO}/projects/app`, stepId: "summarize" })
+    expect(registry.get(stepSessionId)?.status).toBe("running")
+
+    // Both came up with the provision STILL in flight, and neither touched it.
+    expect(registry.get(provisioning.descriptor.id)?.status).toBe("starting")
+    expect(calls).toHaveLength(1)
+    expect(startSession).toHaveBeenCalledTimes(2)
+
+    resolve({ isolated: true, cwd: "/root/repo/slow-worktree", branch: "wt/slow-worktree" })
+    await vi.waitFor(() => {
+      expect(registry.get(provisioning.descriptor.id)?.status).toBe("running")
+    })
+  })
+})
 
 describe("spawnAgentSession — async worktree provisioning (WP-F)", () => {
   const ORIGINAL = "/repo/checkout"

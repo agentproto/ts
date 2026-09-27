@@ -11,6 +11,7 @@ import { createProprietaryProtocolArm } from "./protocol/proprietary.js"
 import { composeSpawn, RuntimeConfigError } from "./manifest/compose.js"
 import { wrapAgentCliSpawn } from "./command-sandbox-wrap.js"
 import { terminateChildTree } from "./process-tree.js"
+import { resolveNpxFastPath } from "./npx-fast-path.js"
 import {
   applyModelCommand,
   createArmSessionControls,
@@ -308,6 +309,15 @@ export function createAgentCliRuntime(
       // opts.env) so the append lands on the final PATH — see the helper's
       // doc for why even an absolute-path npx needs this.
       ensureExecDirOnPath(env)
+      // Pinned `npx -y pkg@x.y.z` already in the npx cache ⇒ exec the cached
+      // bin directly; npm's own pre-run tree scans made spawns wait minutes
+      // behind unrelated disk load (see `resolveNpxFastPath`'s doc).
+      const npxFast = resolveNpxFastPath(resolvedBin, composed.binArgs, env)
+      if (npxFast) {
+        env.PATH = [npxFast.binDir, ...(env.PATH ?? "").split(delimiter).filter(Boolean)].join(delimiter)
+      }
+      const spawnBin = npxFast?.bin ?? resolvedBin
+      const spawnArgs = npxFast?.args ?? composed.binArgs
 
       // Exact-file read grant (`AgentCliStartOptions.additionalReadPaths`):
       // the runtime hands down the exact AGENTS.md path(s) an inherited
@@ -449,8 +459,8 @@ export function createAgentCliRuntime(
         // PrintArmOptions.expectedModel).
         const printModel = config?.options?.model
         return createPrintSession({
-          bin: resolvedBin,
-          baseArgs: composed.binArgs,
+          bin: spawnBin,
+          baseArgs: spawnArgs,
           cwd,
           env,
           ...(opts?.resumeSessionId
@@ -484,8 +494,8 @@ export function createAgentCliRuntime(
         // calls — is denied out-of-workspace reads/writes. Off by default;
         // see `wrapAgentCliSpawn`'s doc for the fail-closed contract.
         const [execBin, execArgs] = await wrapAgentCliSpawn(
-          resolvedBin,
-          composed.binArgs,
+          spawnBin,
+          spawnArgs,
           {
             mode: opts?.commandSandbox,
             cwd,

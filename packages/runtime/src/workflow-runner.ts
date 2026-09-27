@@ -650,6 +650,7 @@ function attachStepSession(run: WorkflowRun, stepId: string, sessionId: string):
     const exact = stage.steps.find(s => s.label === stepId)
     if (exact) {
       exact.sessionId = sessionId
+      delete exact.phase
       return true
     }
   }
@@ -662,6 +663,21 @@ function attachStepSession(run: WorkflowRun, stepId: string, sessionId: string):
     )
     if (item) {
       item.sessionId = sessionId
+      delete item.phase
+      return true
+    }
+  }
+  return false
+}
+
+/** F34b: flag a running step row as `spawning` while its agent session is
+ *  still coming up — `attachStepSession` clears it once the id lands. */
+function markStepSpawning(run: WorkflowRun, stepKey: string): boolean {
+  for (const stage of run.stages) {
+    const row = stage.steps.find(s => s.label === stepKey)
+    if (row) {
+      if (row.status !== "running" || row.sessionId !== undefined) return false
+      row.phase = "spawning"
       return true
     }
   }
@@ -1240,6 +1256,7 @@ async function executeRunWorkflow(
           if (step) {
             doneStep = step
             step.status = "done"
+            delete step.phase
             step.endedAt = new Date().toISOString()
             step.output = output
             if (cached) step.cached = true
@@ -1343,6 +1360,7 @@ async function executeRunWorkflow(
           }
           if (row) {
             row.status = "failed"
+            delete row.phase
             row.endedAt = new Date().toISOString()
             row.error = info.error
           }
@@ -1485,6 +1503,11 @@ async function executeRunWorkflow(
     state.heartbeatTimer = undefined
   }
   state.run.lease = undefined
+  // A spawn the run ended under (cancel, failure) never attached a session —
+  // don't leave its row claiming it's still `spawning`.
+  for (const stage of state.run.stages) {
+    for (const step of stage.steps) delete step.phase
+  }
 
   // Drain the ledger append queue before the run's terminal state is
   // persisted, so the file reflects the run by the time status() flips.
@@ -1739,6 +1762,9 @@ export function createWorkflowRunner(opts: {
           onSessionLabeled: (stepId, sessionId) => {
             sessionToRun.set(sessionId, { runId, stepId, host: agents })
             if (attachStepSession(state.run, stepId, sessionId)) persist()
+          },
+          onSpawnStarted: stepKey => {
+            if (markStepSpawning(state.run, stepKey)) persist()
           },
           ...(opts.resolveSandboxProvider
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }

@@ -916,4 +916,39 @@ steps:
     expect(registry.get(step!.sessionId!)).toBeDefined()
     runner.cancel(run.runId)
   })
+
+  it("F34b — an agent step whose session is still booting reads as `spawning`, then clears once it attaches", async () => {
+    let releaseBoot!: () => void
+    const booted = new Promise<void>(res => { releaseBoot = res })
+    const resolveAgentAdapter = (async () => ({
+      startSession: async () => {
+        await booted
+        return {
+          sessionId: "adapter_slow",
+          send: async function* () {},
+          cancel: async () => {},
+          close: async () => {},
+        }
+      },
+      commandPreview: "mock-adapter",
+    })) as unknown as AgentAdapterResolver
+    const runner = createWorkflowRunner({
+      registry: makeMockRegistry(),
+      sessionEvents: createSessionEventBus(),
+      resolveAgentAdapter,
+    })
+    const run = await runner.start({
+      workflowId: "wf",
+      stages: [{ steps: [{ label: "summarize", adapter: "mock", prompt: "go" }] }],
+    })
+    const stepNow = () => runner.status(run.runId)?.stages[0]?.steps[0]
+    await vi.waitFor(() => expect(stepNow()?.phase).toBe("spawning"))
+    expect(stepNow()).toMatchObject({ status: "running" })
+    expect(stepNow()?.sessionId).toBeUndefined()
+
+    releaseBoot()
+    await vi.waitFor(() => expect(stepNow()?.sessionId).toMatch(/^sess_/))
+    expect(stepNow()?.phase).toBeUndefined()
+    runner.cancel(run.runId)
+  })
 })
