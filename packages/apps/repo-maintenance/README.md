@@ -27,9 +27,10 @@ The `maintain` workflow, one run:
    one re-prompt in the same session, then one retry on the large model.
 3. Re-plans `branch_gc` to confirm every candidate got a verdict, and
    reports any gap, the verdict tally, and the `salvage` branches by name.
-4. If `applyMerged` is true: `branch_gc` applies with `includeReviewed:
-   false` (reclaim-class refs only — merged / squash-merged / patch-merged /
-   content-merged) and `worktree_gc` applies (`salvageDirty: false`).
+4. If `applyMerged` is true: `worktree_gc` applies first (`salvageDirty:
+   false`) — removing a merged worktree frees its branch — then `branch_gc`
+   applies with `includeReviewed: false` (reclaim-class refs only — merged /
+   squash-merged / patch-merged / content-merged).
    **A `review`-class branch is never reclaimed by this workflow, agreed
    verdict or not** — see "Out of scope" below.
 5. Reports a markdown summary, and (only when `notify` is set AND there's a

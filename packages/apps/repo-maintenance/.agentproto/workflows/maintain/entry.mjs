@@ -578,6 +578,17 @@ export default {
       compute: b => computeReviewGaps(b.steps.reviewCandidates, b.steps.branchGcVerify, b.steps.review),
     },
     {
+      id: "worktreeGcApply",
+      kind: "tool",
+      tool: "worktree_gc",
+      inputs: {
+        repoRoot: "$input.repoRoot",
+        workspaceSlug: "$input.workspaceSlug",
+        apply: "$input.applyMerged",
+        salvageDirty: false,
+      },
+    },
+    {
       id: "branchGcApply",
       kind: "tool",
       tool: "branch_gc",
@@ -587,17 +598,6 @@ export default {
         apply: "$input.applyMerged",
         includeReviewed: false,
         scopes: ["local", "remote", "orphan"],
-      },
-    },
-    {
-      id: "worktreeGcApply",
-      kind: "tool",
-      tool: "worktree_gc",
-      inputs: {
-        repoRoot: "$input.repoRoot",
-        workspaceSlug: "$input.workspaceSlug",
-        apply: "$input.applyMerged",
-        salvageDirty: false,
       },
     },
     {
