@@ -5,7 +5,7 @@
  * any other source is ignored, one from the iframe gets an answer posted
  * back into it.
  */
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { buildCspMeta, MCP_APP_SANDBOX, mountMcpApp, type MountedMcpApp } from "../dom.js"
 
@@ -74,8 +74,9 @@ describe("mountMcpApp", () => {
     const { iframe } = await mount({ html: "<p>x</p>" })
     const inbox = captureViewInbox(iframe)
     window.dispatchEvent(new MessageEvent("message", { data: INITIALIZE, source: iframe.contentWindow }))
-    await tick()
-    expect(inbox).toHaveLength(1)
+    // Poll rather than sleep a fixed 20ms: the reply crosses the AppBridge
+    // transport asynchronously and lands later than that on a loaded CI runner.
+    await vi.waitFor(() => expect(inbox).toHaveLength(1), { timeout: 2000 })
     expect(inbox[0]).toMatchObject({
       jsonrpc: "2.0",
       id: 1,
