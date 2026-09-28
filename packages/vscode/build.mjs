@@ -18,7 +18,11 @@ const extensionOptions = {
   entryPoints: ["src/extension.ts"],
   bundle: true,
   outfile: "dist/extension.js",
-  external: ["vscode"],
+  // `@ast-grep/napi` ships a native `.node` binary esbuild can't bundle.
+  // @mastra/core (reached via runtime → apps → app-kit → mastra) loads it
+  // through an optional dynamic import that returns null when absent, so
+  // leaving it external just disables Mastra's AST edit tool in the host.
+  external: ["vscode", "@ast-grep/napi"],
   platform: "node",
   format: "cjs",
   target: "node20",
