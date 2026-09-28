@@ -11,7 +11,9 @@
  *
  * Non-blocking by design: a feature failure logs a warning and the hook
  * still exits 0, so a flaky AI call never wedges your commit/push. (Tighten
- * later per-feature if you want hard gating.)
+ * later per-feature if you want hard gating.) The exception is the
+ * deterministic changeset gate on push (changeset-gate.mjs): no AI involved,
+ * so it blocks when a changed publishable package has no changeset.
  */
 
 import { spawnSync } from 'node:child_process'
@@ -58,6 +60,15 @@ if (cfg.changeset?.stage === trigger) {
       process.exit(1)
     }
   }
+}
+
+// ── changeset gate (push, always on) ────────────────────────────────────────
+// Deterministic, no LLM: the branch must add a changeset naming every changed
+// publishable package. The one blocking check in this hook — see
+// changeset-gate.mjs for the rules and the AGENTFLOW_SKIP_CHANGESET escape.
+if (trigger === 'push') {
+  const gate = spawnSync('node', ['scripts/agentflow/changeset-gate.mjs'], { cwd: ROOT, stdio: 'inherit' })
+  if (gate.status !== 0) process.exit(1)
 }
 
 // ── review ───────────────────────────────────────────────────────────────────
