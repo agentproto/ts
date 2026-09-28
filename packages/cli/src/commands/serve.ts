@@ -703,6 +703,8 @@ export async function runServe(args: readonly string[]): Promise<number> {
     dial: daemonDialRendezvous,
     log: line => process.stderr.write(`${color.dim}${line}${color.reset}\n`),
   })
+  // Resume polling joined hosts that survived a restart (bounded, staggered).
+  void hostRegistry.start().catch(() => undefined)
 
   // ── JOIN TOKEN registry (SANDBOX-VISIBILITY-JOIN) ──
   // Mints long-lived, revocable, reusable credentials for `AGENTPROTO_JOIN`;

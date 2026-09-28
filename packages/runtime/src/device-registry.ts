@@ -28,8 +28,8 @@ export interface Device {
   lastSeen: string
   /** A channel (offer or reconnect) is served for this device right now
    *  (client), or for a host: a forward/snapshot is in flight or one reached
-   *  it within the online grace window. Not a heartbeat — see
-   *  host-registry.ts's "Online tracking". */
+   *  it within the online grace window (a background poll keeps that fresh
+   *  for joined hosts) — see host-registry.ts's "Online tracking". */
   online: boolean
   /** A pair/v1 pairing: listed and revocable, but can't connect until
    *  re-paired — see `PairingRecord.legacy`. */
@@ -45,6 +45,10 @@ export interface Device {
   provider?: string
   sandboxId?: string
   labels?: Record<string, string>
+  /** Host only: when this daemon last tried to reach it, and why the most
+   *  recent attempt failed (absent when the last attempt succeeded). */
+  lastProbeAt?: string
+  lastError?: string
 }
 
 export interface DeviceRegistry {
@@ -127,6 +131,8 @@ function toHostDevice(record: HostRecord, online: boolean): Device {
     ...(record.provider ? { provider: record.provider } : {}),
     ...(record.sandboxId ? { sandboxId: record.sandboxId } : {}),
     ...(record.labels ? { labels: record.labels } : {}),
+    ...(record.lastProbeAt ? { lastProbeAt: record.lastProbeAt } : {}),
+    ...(record.lastError ? { lastError: record.lastError } : {}),
   }
 }
 

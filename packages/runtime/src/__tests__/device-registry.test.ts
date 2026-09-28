@@ -54,6 +54,7 @@ function fakeHostRegistry(
     forwardHttpStream: vi.fn(),
     getSessionsSnapshot: vi.fn(() => undefined),
     snapshotNow: vi.fn(async () => false),
+    start: vi.fn(async () => {}),
   }
 }
 
@@ -230,6 +231,17 @@ describe("createDeviceRegistry", () => {
       expect(device).not.toHaveProperty("provider")
       expect(device).not.toHaveProperty("sandboxId")
       expect(device).not.toHaveProperty("labels")
+    })
+
+    it("surfaces a host's lastProbeAt/lastError, and omits them when absent", async () => {
+      const hosts = fakeHostRegistry([
+        hostRecord({ lastProbeAt: "2026-02-03T00:00:00.000Z", lastError: "handshake timed out" }),
+        hostRecord({ fingerprint: "hfp2", name: "ok-host" }),
+      ])
+      const [down, ok] = await createDeviceRegistry(fakeRegistry([]), hosts).list()
+      expect(down).toMatchObject({ lastProbeAt: "2026-02-03T00:00:00.000Z", lastError: "handshake timed out" })
+      expect(ok).not.toHaveProperty("lastError")
+      expect(ok).not.toHaveProperty("lastProbeAt")
     })
 
     it("forwardHttp() delegates to the host registry", async () => {

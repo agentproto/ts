@@ -44,7 +44,8 @@
  * background snapshot poll). There is no live probe backing `list()` — that
  * would make `devices list` slow/flaky over N hosts — so a host answering
  * every ~15s snapshot poll stays online, and one that stops answering
- * decays to offline after the grace window.
+ * decays to offline after the grace window. Every contact attempt stamps
+ * `lastProbeAt`; a failed one records `lastError` (cleared by the next success).
  *
  * ## Proactive session snapshots
  *
@@ -53,9 +54,12 @@
  * registry polls it (`snapshotIntervalMs`, faster while one of its sessions
  * is running) for its session list plus a capped output tail per session and
  * keeps the result in memory. Once the host is offline, `getSessionsSnapshot`
- * serves that — `stale: true` with the capture time. The loop stops after
- * `snapshotMaxFailures` consecutive unreachable polls and keeps the last
- * good capture. `snapshotNow()` lets a departing host trigger one last
+ * serves that — `stale: true` with the capture time. After
+ * `snapshotMaxFailures` consecutive unreachable polls the loop backs off
+ * exponentially (up to `probeBackoffMaxMs`) and keeps the last good capture;
+ * `start()` resumes the loop for every join-added host after a daemon
+ * restart, and background probes share a `probeConcurrency` cap.
+ * `snapshotNow()` lets a departing host trigger one last
  * capture (see `join-token-registry.ts`'s goodbye hello).
  */
 
@@ -97,7 +101,14 @@ const DEFAULT_JOINED_HOST_TTL_MS = 7 * 86_400_000
  *  first. */
 const MAX_CACHED_SESSION_PATHS_PER_HOST = 32
 /** How long after the last successful dial a host still reads `online`. */
-const DEFAULT_ONLINE_GRACE_MS = 45_000
+const DEFAULT_ONLINE_GRACE_MS = 120_000
+/** Ceiling of the poll backoff once a host has failed `snapshotMaxFailures` probes in a row. */
+const DEFAULT_PROBE_BACKOFF_MAX_MS = 300_000
+/** Background probes allowed in flight across all hosts at once. */
+const DEFAULT_PROBE_CONCURRENCY = 4
+/** Gap between the first polls of hosts resumed at boot, so a long list doesn't dial in one burst. */
+const RESUME_STAGGER_MS = 500
+const MAX_LAST_ERROR_CHARS = 300
 /** Minimum gap between `hosts.json` writes for a pure `lastSeen` bump. */
 const DEFAULT_LAST_SEEN_PERSIST_MS = 30_000
 const DEFAULT_SNAPSHOT_INTERVAL_MS = 15_000
@@ -133,8 +144,13 @@ export interface HostRecord {
   pairRoot: string
   /** ISO-8601 first-add timestamp. */
   createdAt: string
-  /** ISO-8601 of the most recent successful `forwardHttp`. */
+  /** ISO-8601 of the most recent successful contact (join, dial, background poll). */
   lastSeen: string
+  /** ISO-8601 of the most recent contact attempt, successful or not. Not
+   *  persisted on every attempt — it rides along with the next write. */
+  lastProbeAt?: string
+  /** Why the most recent contact attempt failed; cleared by the next success. */
+  lastError?: string
   /** Set on a host added under the retired pair/v1 protocol. Present for
    *  parity with `PairingRecord`/`ClientPairing`; pair/v1 offers are refused
    *  by `parseOfferUrl` before `add()` ever sees them, so this is currently
@@ -209,10 +225,14 @@ export interface HostRegistryDeps {
   snapshotIntervalMs?: number
   /** Faster cadence used while a snapshotted session is running. Default 5s. */
   snapshotActiveIntervalMs?: number
-  /** Consecutive unreachable polls before the loop gives up. Default 3. */
+  /** Consecutive unreachable polls before the poll starts backing off. Default 3. */
   snapshotMaxFailures?: number
-  /** A host stays `online` for this long after a successful dial. Default 45s. */
+  /** A host stays `online` for this long after a successful dial. Default 2 min. */
   onlineGraceMs?: number
+  /** Consecutive-failure poll backoff ceiling (ms). Default 5 min. */
+  probeBackoffMaxMs?: number
+  /** Max background probes in flight across all hosts. Default 4. */
+  probeConcurrency?: number
   /** Min gap between disk writes for a `lastSeen`-only change. Default 30s. */
   lastSeenPersistIntervalMs?: number
 }
@@ -333,6 +353,12 @@ export interface HostRegistry {
    * when snapshots are disabled.
    */
   snapshotNow(idOrName: string): Promise<boolean>
+  /**
+   * Load `hosts.json` and resume the background poll for every join-added
+   * host, so a daemon restart doesn't leave still-running CI boxes frozen at
+   * their join-time `lastSeen`. Idempotent; call once at boot.
+   */
+  start(): Promise<void>
 }
 
 function defaultHostsPath(): string {
@@ -379,6 +405,8 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
   )
   const snapshotMaxFailures = deps.snapshotMaxFailures ?? DEFAULT_SNAPSHOT_MAX_FAILURES
   const onlineGraceMs = deps.onlineGraceMs ?? DEFAULT_ONLINE_GRACE_MS
+  const probeBackoffMaxMs = deps.probeBackoffMaxMs ?? DEFAULT_PROBE_BACKOFF_MAX_MS
+  const probeConcurrency = Math.max(1, deps.probeConcurrency ?? DEFAULT_PROBE_CONCURRENCY)
   const lastSeenPersistIntervalMs = deps.lastSeenPersistIntervalMs ?? DEFAULT_LAST_SEEN_PERSIST_MS
   const selfName = defaultSelfName()
 
@@ -401,6 +429,19 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
   /** fingerprint → capture currently running, so concurrent callers share it. */
   const snapshotsInFlight = new Map<string, Promise<boolean>>()
 
+  let probesRunning = 0
+  const probeWaiters: Array<() => void> = []
+  async function withProbeSlot<T>(fn: () => Promise<T>): Promise<T> {
+    if (probesRunning >= probeConcurrency) await new Promise<void>(resolve => probeWaiters.push(resolve))
+    probesRunning++
+    try {
+      return await fn()
+    } finally {
+      probesRunning--
+      probeWaiters.shift()?.()
+    }
+  }
+
   let loaded = false
   async function ensureLoaded(): Promise<void> {
     if (loaded) return
@@ -417,6 +458,10 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
           // was ever used has a moved `lastSeen` and stays "manual".
           if (isLegacyJoinedShape(rec)) rec.addedVia = "join"
           hosts.set(rec.fingerprint, rec)
+        }
+        let i = 0
+        for (const rec of hosts.values()) {
+          if (rec.addedVia === "join") startSnapshotPoller(rec.fingerprint, snapshotActiveIntervalMs + i++ * RESUME_STAGGER_MS)
         }
       } else {
         log(`[hosts] ignoring ${hostsPath}: unrecognised format`)
@@ -623,10 +668,24 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     const t = now()
     lastReachedAt.set(record.fingerprint, t)
     record.lastSeen = new Date(t).toISOString()
+    record.lastProbeAt = record.lastSeen
+    const hadError = record.lastError !== undefined
+    delete record.lastError
     const persistedAt = lastSeenPersistedAt.get(record.fingerprint)
-    if (persistedAt !== undefined && t - persistedAt < lastSeenPersistIntervalMs) return
+    if (!hadError && persistedAt !== undefined && t - persistedAt < lastSeenPersistIntervalMs) return
     lastSeenPersistedAt.set(record.fingerprint, t)
     await persist().catch(err => log(`[hosts] lastSeen persist failed: ${errMsg(err)}`))
+  }
+
+  /** A dial to `record` failed on every attempt. `lastProbeAt`/`lastError`
+   *  always update in memory; the disk write happens only when the error text
+   *  changes, so a host that stays down doesn't rewrite `hosts.json` on every poll. */
+  async function markUnreachable(record: HostRecord, message: string): Promise<void> {
+    record.lastProbeAt = new Date(now()).toISOString()
+    const error = message.slice(0, MAX_LAST_ERROR_CHARS)
+    if (record.lastError === error) return
+    record.lastError = error
+    await persist().catch(err => log(`[hosts] lastError persist failed: ${errMsg(err)}`))
   }
 
   /**
@@ -689,11 +748,11 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
           `(pair/v1), upgrade it and re-pair: run \`agentproto pair offer --host\` on the ` +
           `host, then \`agentproto devices add\` here. (${PAIRING_PROTOCOL_OUTDATED_MESSAGE})`
         : ""
-    throw new Error(
-      `could not reach host ${record.fingerprint} via ${record.rendezvousUrl}: ${
-        lastErr instanceof Error ? lastErr.message : String(lastErr)
-      }${hint}`,
-    )
+    const failure = `could not reach host ${record.fingerprint} via ${record.rendezvousUrl}: ${
+      lastErr instanceof Error ? lastErr.message : String(lastErr)
+    }${hint}`
+    await markUnreachable(record, errMsg(lastErr))
+    throw new Error(failure)
   }
 
   function toTunnelReq(req: ForwardHttpRequest): TunnelHttpRequest {
@@ -779,12 +838,15 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     }
     const tick = async (): Promise<void> => {
       if (pollers.get(fingerprint) !== poller || !hosts.has(fingerprint)) return
-      const ok = await captureSnapshot(fingerprint).catch(() => false)
+      const ok = await withProbeSlot(() => captureSnapshot(fingerprint)).catch(() => false)
       if (pollers.get(fingerprint) !== poller) return
       poller.failures = ok ? 0 : poller.failures + 1
+      if (poller.failures === snapshotMaxFailures) {
+        log(`[hosts] snapshot poll for ${fingerprint} backing off: unreachable ${poller.failures}x (last capture kept)`)
+      }
       if (poller.failures >= snapshotMaxFailures) {
-        pollers.delete(fingerprint)
-        log(`[hosts] snapshot poll for ${fingerprint} stopped: unreachable ${poller.failures}x (last capture kept)`)
+        const steps = poller.failures - snapshotMaxFailures + 1
+        schedule(Math.min(snapshotIntervalMs * 2 ** Math.min(steps, 16), Math.max(probeBackoffMaxMs, snapshotIntervalMs)))
         return
       }
       schedule(snapshotHasRunningSession(snapshots.get(fingerprint)) ? snapshotActiveIntervalMs : snapshotIntervalMs)
@@ -933,6 +995,7 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     forwardHttpStream,
     getSessionsSnapshot,
     snapshotNow,
+    start: ensureLoaded,
   }
 }
 

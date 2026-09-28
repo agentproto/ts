@@ -34,6 +34,18 @@ import { generateIdentity, identityFingerprint, type DaemonIdentity } from "@age
 import { createHostRegistry, type HostRegistry } from "../host-registry.js"
 import { connect, type Middleware } from "./frame-harness.js"
 
+const realSetTimeout = globalThis.setTimeout
+
+/** Advance fake timers in steps, yielding real time between steps: a poll's
+ *  crypto/dial work is real async, so its follow-up timer is only scheduled a
+ *  few real ms after the previous fake tick fired. */
+async function advanceInSteps(totalMs: number, stepMs: number): Promise<void> {
+  for (let done = 0; done < totalMs; done += stepMs) {
+    await vi.advanceTimersByTimeAsync(stepMs)
+    await new Promise<void>(r => realSetTimeout(r, 10))
+  }
+}
+
 function stubUpstream(delayMs = 0, status = 200): void {
   vi.stubGlobal(
     "fetch",
@@ -707,7 +719,7 @@ describe("createHostRegistry", () => {
       expect(registry.getSessionsSnapshot(fingerprint, "/sessions/sess_zzz/output")).toBeUndefined()
     })
 
-    it("the background poll starts on join, takes a snapshot on its own, and stops after repeated unreachable polls", async () => {
+    it("the background poll starts on join, takes a snapshot on its own, and backs off (never gives up) once unreachable", async () => {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
       try {
         const state = {
@@ -719,6 +731,7 @@ describe("createHostRegistry", () => {
           snapshotIntervalMs: 15_000,
           snapshotActiveIntervalMs: 5_000,
           snapshotMaxFailures: 2,
+          probeBackoffMaxMs: 60_000,
         })
         // Nobody asked for anything — the first poll fires on its own, one
         // active-interval after the join.
@@ -734,19 +747,124 @@ describe("createHostRegistry", () => {
           expect(JSON.parse(Buffer.from(out!.body).toString("utf8")).lines).toContain("VERDICT: approve")
         })
 
-        // The runner exits: polls fail, the loop gives up after 2 and keeps the last capture.
+        // The runner exits: polls fail; after 2 the loop backs off (doubling to
+        // the cap) but keeps probing, and keeps the last capture.
         const dialsBefore = dial.mock.calls.length
         dial.mockImplementation(async () => {
           throw new Error("gone")
         })
-        for (let i = 0; i < 6; i++) await vi.advanceTimersByTimeAsync(20_000)
+        await advanceInSteps(120_000, 5_000)
         const failedPolls = dial.mock.calls.length - dialsBefore
-        expect(failedPolls).toBeGreaterThanOrEqual(2)
-        expect(failedPolls).toBeLessThanOrEqual(4) // 2 polls x (current + previous epoch attempt)
+        expect(failedPolls).toBeGreaterThanOrEqual(4) // >= 2 polls x (current + previous epoch attempt)
+        expect(failedPolls).toBeLessThanOrEqual(10)
+        expect((await registry.list())[0]?.lastError).toMatch(/gone/)
+
         const settled = dial.mock.calls.length
-        await vi.advanceTimersByTimeAsync(120_000)
-        expect(dial.mock.calls.length).toBe(settled)
+        await advanceInSteps(300_000, 5_000)
+        const laterPolls = dial.mock.calls.length - settled
+        expect(laterPolls).toBeGreaterThanOrEqual(2) // still probing
+        expect(laterPolls).toBeLessThanOrEqual(12) // but at the capped 60s cadence, not every 5s
         expect(registry.getSessionsSnapshot(fingerprint, "/sessions/sess_a/output")?.stale).toBe(true)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("a failed contact leaves online false and records lastProbeAt/lastError; a later success clears the error", async () => {
+      const { registry, fingerprint, dial, advance } = await joinedHost({ onlineGraceMs: 10_000 })
+      const working = dial.getMockImplementation()!
+
+      advance(11_000)
+      dial.mockImplementation(async () => {
+        throw new Error("handshake timed out")
+      })
+      await expect(registry.forwardHttp(fingerprint, { method: "GET", path: "/health" })).rejects.toThrow(/could not reach host/)
+      expect(registry.isOnline(fingerprint)).toBe(false)
+      const failed = (await registry.list())[0]!
+      expect(failed.lastError).toBe("handshake timed out")
+      expect(Date.parse(failed.lastProbeAt!)).toBe(Date.parse(failed.createdAt) + 11_000)
+      expect(failed.lastSeen).toBe(failed.createdAt) // a failed attempt is not "seen"
+      expect(JSON.parse(await readFile(hostsPath, "utf8")).hosts[0].lastError).toBe("handshake timed out")
+
+      // Same error again: memory updates, disk is left alone.
+      const mtime = (await stat(hostsPath)).mtimeMs
+      await new Promise(r => setTimeout(r, 25))
+      advance(1_000)
+      await expect(registry.forwardHttp(fingerprint, { method: "GET", path: "/health" })).rejects.toThrow()
+      expect((await stat(hostsPath)).mtimeMs).toBe(mtime)
+      expect(Date.parse((await registry.list())[0]!.lastProbeAt!)).toBe(Date.parse(failed.createdAt) + 12_000)
+
+      dial.mockImplementation(working)
+      await registry.forwardHttp(fingerprint, { method: "GET", path: "/health" })
+      expect(registry.isOnline(fingerprint)).toBe(true)
+      const recovered = (await registry.list())[0]!
+      expect(recovered.lastError).toBeUndefined()
+      expect(JSON.parse(await readFile(hostsPath, "utf8")).hosts[0].lastError).toBeUndefined()
+    })
+
+    it("start() resumes polling join-added hosts loaded from disk (a daemon restart), and skips manual hosts", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+      try {
+        stubSessions({ sessions: [{ id: "sess_a", status: "exited" }], lines: { sess_a: ["done"] } })
+        const identity = await generateIdentity()
+        const joined = await makeOffer(identity, { scope: "host" })
+        const { dial, waitReady } = makeEpochAwareDial(identity, joined.auth)
+        const first = createHostRegistry({ hostsPath, dial, handshakeTimeoutMs: 2_000, snapshotIntervalMs: 0 })
+        await first.add(joined.url, "ci-reviewer #1566", { joined: true })
+        await waitReady()
+
+        // Same file, a "new daemon process": nothing polls until start().
+        const second = createHostRegistry({ hostsPath, dial, handshakeTimeoutMs: 2_000, snapshotIntervalMs: 15_000 })
+        const dialsBefore = dial.mock.calls.length
+        await vi.advanceTimersByTimeAsync(30_000)
+        expect(dial.mock.calls.length).toBe(dialsBefore)
+
+        await second.start()
+        await vi.advanceTimersByTimeAsync(6_000)
+        await vi.waitFor(() => expect(second.getSessionsSnapshot(joined.fingerprint, "/sessions")).toBeDefined())
+        const row = (await second.list())[0]!
+        expect(row.lastProbeAt).toBeDefined()
+        expect(second.isOnline(joined.fingerprint)).toBe(true)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("caps concurrent background probes at probeConcurrency", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+      try {
+        const hosts = Array.from({ length: 5 }, (_, i) => ({
+          fingerprint: String(i).repeat(32),
+          name: `ci-${i}`,
+          daemonX25519Pub: "pk",
+          daemonEd25519Pub: "sk",
+          rendezvousUrl: "wss://rdv.example/v1",
+          pairRoot: "root",
+          createdAt: new Date().toISOString(),
+          lastSeen: new Date().toISOString(),
+          addedVia: "join",
+        }))
+        await writeFile(hostsPath, JSON.stringify({ v: 1, hosts }))
+        let inFlight = 0
+        let peak = 0
+        const dial = vi.fn(async () => {
+          inFlight++
+          peak = Math.max(peak, inFlight)
+          await new Promise(r => setTimeout(r, 1_000))
+          inFlight--
+          throw new Error("down")
+        })
+        const registry = createHostRegistry({
+          hostsPath,
+          dial,
+          snapshotIntervalMs: 60_000,
+          snapshotActiveIntervalMs: 1_000,
+          probeConcurrency: 2,
+        })
+        await registry.start()
+        await advanceInSteps(20_000, 500)
+        expect(dial.mock.calls.length).toBeGreaterThanOrEqual(5)
+        expect(peak).toBeLessThanOrEqual(2)
       } finally {
         vi.useRealTimers()
       }
