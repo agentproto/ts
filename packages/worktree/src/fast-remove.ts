@@ -119,7 +119,7 @@ function realOrResolved(path: string): string {
 export interface RemoveWorktreeFastOptions {
 	/**
 	 * `false` (default): re-verify the tree is clean via `git status
-	 * --porcelain --ignore-submodules=none` and refuse (throw) on any dirt — the same refusal a plain
+	 * --porcelain --untracked-files=normal --ignore-submodules=none` and refuse (throw) on any dirt — the same refusal a plain
 	 * `git worktree remove` performs. `true`: skip the cleanliness gate,
 	 * exactly like `git worktree remove --force` — only pass this when dirt
 	 * has been authorized (salvage snapshot durable / discard flags granted)
@@ -164,14 +164,15 @@ export async function removeWorktreeFast(
 	// gitignored files (`node_modules/`, `dist/` — present in every pnpm
 	// worktree) and refuses only modified/staged tracked files, unignored
 	// untracked files, and dirty submodules. That is precisely a non-empty
-	// `git status --porcelain --ignore-submodules=none` (NO `--ignored`), so
-	// that read is the gate: any output throws before anything moves. (A
+	// `git status --porcelain --untracked-files=normal --ignore-submodules=none`
+	// (NO `--ignored`; the untracked mode is explicit so a user config of
+	// `status.showUntrackedFiles=no` can't hide dirt), so that read is the gate: any output throws before anything moves. (A
 	// locked worktree is the other refusal class; gate (2) checks it from the
 	// `worktree list` it already reads.)
 	if (!force) {
 		const status = await execArgv(
 			"git",
-			["-C", path, "status", "--porcelain", "--ignore-submodules=none"],
+			["-C", path, "status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"],
 			repoRoot,
 		)
 		if (status.exitCode !== 0) {

@@ -163,6 +163,21 @@ describe("removeWorktreeFast", () => {
 		expect(dirs).toHaveLength(0)
 	}, 20_000)
 
+	it("still refuses an untracked file when the user config hides untracked files (status.showUntrackedFiles=no)", async () => {
+		const repoRoot = await makeRepo()
+		await execGit(repoRoot, ["config", "status.showUntrackedFiles", "no"])
+		const wtDir = await addWorktree(repoRoot, "hidden-untracked")
+		await writeFile(join(wtDir, "work.txt"), "real work\n")
+		const { dirs, spawnRemoval } = spyRemoval()
+
+		await expect(removeWorktreeFast(repoRoot, wtDir, { spawnRemoval })).rejects.toThrow(
+			/contains modified or untracked files/,
+		)
+		expect(existsSync(join(wtDir, "work.txt"))).toBe(true)
+		expect(await listWorktreePaths(repoRoot)).toContain(wtDir)
+		expect(dirs).toHaveLength(0)
+	}, 20_000)
+
 	it("refuses a locked worktree and leaves it registered", async () => {
 		const repoRoot = await makeRepo()
 		const wtDir = await addWorktree(repoRoot, "locked")
