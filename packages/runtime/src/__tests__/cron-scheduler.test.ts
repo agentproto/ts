@@ -55,13 +55,13 @@ describe("CronScheduler", () => {
     tmpDirs = []
   })
 
-  it("create() — valid schedule returns a job with nextRunAt", () => {
+  it("create() — valid schedule returns a job with nextRunAt", async () => {
     const workspace = makeTmpWorkspace()
     tmpDirs.push(workspace)
     const { sessionEvents, registry } = makeDeps(workspace)
     const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         schedule: "* * * * *",
         recurring: true,
         action: { kind: "command", command: "echo", args: ["hi"] },
@@ -77,19 +77,19 @@ describe("CronScheduler", () => {
     }
   })
 
-  it("create() — invalid schedule throws SyntaxError", () => {
+  it("create() — invalid schedule throws SyntaxError", async () => {
     const workspace = makeTmpWorkspace()
     tmpDirs.push(workspace)
     const { sessionEvents, registry } = makeDeps(workspace)
     const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
     try {
-      expect(() =>
+      await expect(
         scheduler.create({
           schedule: "not a valid cron expression at all !!!",
           recurring: true,
           action: { kind: "command", command: "echo" },
         }),
-      ).toThrow()
+      ).rejects.toThrow()
     } finally {
       scheduler.shutdown()
     }
@@ -108,7 +108,7 @@ describe("CronScheduler", () => {
     const { sessionEvents, registry } = makeDeps(workspace)
     const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         schedule: "0 0 1 1 *", // far future — won't auto-fire
         recurring: true,
         action: { kind: "command", command: "echo", args: ["hello"] },
@@ -134,7 +134,7 @@ describe("CronScheduler", () => {
     const { sessionEvents, registry } = makeDeps(workspace)
     const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         schedule: "0 0 1 1 *",
         recurring: true,
         action: { kind: "command", command: "echo", args: ["from-cron"] },
@@ -167,7 +167,7 @@ describe("CronScheduler", () => {
     const { sessionEvents, registry } = makeDeps(workspace)
     const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         schedule: "0 0 1 1 *",
         recurring: false, // one-shot
         action: { kind: "command", command: "echo", args: ["ping"] },
@@ -195,7 +195,7 @@ describe("CronScheduler", () => {
     const { sessionEvents, registry } = makeDeps(workspace)
     const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         schedule: "0 0 1 1 *",
         recurring: true,
         action: { kind: "command", command: "uname", args: ["-a"] },
@@ -209,13 +209,13 @@ describe("CronScheduler", () => {
     }
   })
 
-  it("delete() — removes job; delete unknown id throws", () => {
+  it("delete() — removes job; delete unknown id throws", async () => {
     const workspace = makeTmpWorkspace()
     tmpDirs.push(workspace)
     const { sessionEvents, registry } = makeDeps(workspace)
     const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         schedule: "* * * * *",
         recurring: true,
         action: { kind: "command", command: "echo" },
@@ -245,7 +245,7 @@ describe("CronScheduler", () => {
       sessionEvents: ev1, registry: r1, workspace, persistPath, persist: true,
     })
 
-    const job = s1.create({
+    const job = await s1.create({
       schedule: "0 0 1 1 *",
       label: "persisted-job",
       recurring: true,
@@ -291,7 +291,7 @@ describe("CronScheduler", () => {
 
     const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         schedule: "0 0 1 1 *",
         recurring: true,
         action: { kind: "command", command: "echo", args: ["events"] },
@@ -334,7 +334,7 @@ describe("CronScheduler", () => {
     })
     const scheduler = createCronScheduler({ sessionEvents, registry, dispatchTool, workspace })
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         schedule: "0 0 1 1 *",
         recurring: true,
         action: {
@@ -375,7 +375,7 @@ describe("CronScheduler", () => {
     })
     const scheduler = createCronScheduler({ sessionEvents, registry, dispatchTool, workspace })
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         schedule: "0 0 1 1 *",
         recurring: true,
         action: { kind: "agent", adapter: "mock", prompt: "wake up", cwd: "/elsewhere", origin: "nightly" },
@@ -399,7 +399,7 @@ describe("CronScheduler", () => {
     const { registry } = makeMockRegistry({ processAlive: true })
     const scheduler = createCronScheduler({ sessionEvents: createSessionEventBus(), registry, workspace })
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         schedule: "0 0 1 1 *",
         action: { kind: "agent", adapter: "mock", prompt: "x" },
       })
@@ -423,7 +423,7 @@ describe("CronScheduler", () => {
     )
     const scheduler = createCronScheduler({ sessionEvents, registry, dispatchTool, workspace })
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         schedule: "0 0 1 1 *",
         recurring: true,
         action: { kind: "agent", adapter: "mock", prompt: "slow maintenance" },
@@ -450,14 +450,14 @@ describe("CronScheduler", () => {
     }
   })
 
-  it("create() — accepts a prompt-session action shape", () => {
+  it("create() — accepts a prompt-session action shape", async () => {
     const workspace = makeTmpWorkspace()
     tmpDirs.push(workspace)
     const { registry } = makeMockRegistry({ processAlive: true })
     const sessionEvents = createSessionEventBus()
     const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         schedule: "* * * * *",
         recurring: true,
         action: { kind: "prompt-session", sessionId: "sess_abc", prompt: "status?" },
@@ -479,7 +479,7 @@ describe("CronScheduler", () => {
     const sessionEvents = createSessionEventBus()
     const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         schedule: "0 0 1 1 *",
         recurring: true,
         action: { kind: "prompt-session", sessionId: "sess_abc", prompt: "status?" },
@@ -501,7 +501,7 @@ describe("CronScheduler", () => {
     const sessionEvents = createSessionEventBus()
     const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         schedule: "0 0 1 1 *",
         recurring: true,
         action: { kind: "prompt-session", sessionId: "sess_missing", prompt: "status?" },
@@ -524,7 +524,7 @@ describe("CronScheduler", () => {
     // No resolveAgentAdapter wired — degraded fallback path.
     const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         schedule: "0 0 1 1 *",
         recurring: true,
         action: { kind: "prompt-session", sessionId: "sess_dead", prompt: "status?" },
@@ -547,7 +547,7 @@ describe("CronScheduler", () => {
     const sessionEvents = createSessionEventBus()
     const scheduler = createCronScheduler({ sessionEvents, registry, workspace })
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         schedule: "0 0 1 1 *",
         recurring: true,
         action: { kind: "prompt-session", sessionId: "sess_busy", prompt: "status?" },
@@ -612,7 +612,7 @@ describe("CronScheduler", () => {
       persist: true,
     })
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         schedule: "0 0 1 1 *",
         recurring: true,
         action: { kind: "prompt-session", sessionId: "sess_dead", prompt: "wake up!" },
@@ -686,7 +686,7 @@ describe("CronScheduler", () => {
       workspace,
     })
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         schedule: "0 0 1 1 *",
         recurring: true,
         action: { kind: "prompt-session", sessionId: "sess_dead", prompt: "wake up!" },
@@ -702,6 +702,172 @@ describe("CronScheduler", () => {
       expect(startSession.mock.calls[0]![0]).not.toHaveProperty("resumeSessionId")
 
       expect(sendPrompt).toHaveBeenCalledWith("sess_resumed", "wake up!")
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+})
+
+// ── create-time adapter check ──────────────────────────────────────
+
+describe("CronScheduler — create-time adapter check", () => {
+  let tmpDirs: string[] = []
+
+  afterEach(() => {
+    for (const d of tmpDirs) {
+      try { rmSync(d, { recursive: true }) } catch { /* ignore */ }
+    }
+    tmpDirs = []
+  })
+
+  /** Only `claude-code` resolves; `claude-subs-agentik` is an auth profile id. */
+  function makeScheduler(extra: Partial<Parameters<typeof createCronScheduler>[0]> = {}) {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const { sessionEvents, registry } = makeDeps(workspace)
+    const resolveAgentAdapter = vi.fn(async (slug: string) =>
+      slug === "claude-code" ? ({ startSession: vi.fn() } as never) : null,
+    )
+    const scheduler = createCronScheduler({
+      sessionEvents,
+      registry,
+      workspace,
+      resolveAgentAdapter,
+      getAuthProfile: async id => (id === "claude-subs-agentik" ? { endpoint: "anthropic" } : undefined),
+      listAgentAdapters: async () => [{ slug: "codex" }, { slug: "claude-code" }] as never,
+      ...extra,
+    })
+    return { scheduler, resolveAgentAdapter, workspace }
+  }
+
+  it("refuses an agent action whose adapter does not resolve, listing installed adapters", async () => {
+    const { scheduler } = makeScheduler()
+    try {
+      await expect(
+        scheduler.create({
+          schedule: "0 9 * * *",
+          action: { kind: "agent", adapter: "no-such-adapter", prompt: "x" },
+        }),
+      ).rejects.toThrow(
+        "cron action adapter 'no-such-adapter' could not be resolved — refusing to create a job " +
+          "that would fail at fire time. Installed adapters: claude-code, codex.",
+      )
+      expect(scheduler.list()).toEqual([])
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("refuses an unresolvable `harness` alias the same way", async () => {
+    const { scheduler } = makeScheduler()
+    try {
+      await expect(
+        scheduler.create({ schedule: "0 9 * * *", action: { kind: "agent", harness: "nope", prompt: "x" } }),
+      ).rejects.toThrow(/adapter 'nope' could not be resolved/)
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("hints when the slug is an auth profile id, not an adapter", async () => {
+    const { scheduler } = makeScheduler()
+    try {
+      await expect(
+        scheduler.create({
+          schedule: "50 20 * * *",
+          action: { kind: "agent", adapter: "claude-subs-agentik", prompt: "x" },
+        }),
+      ).rejects.toThrow(
+        "'claude-subs-agentik' is an auth profile (endpoint 'anthropic'), not an adapter; " +
+          "use adapter: 'claude-code' (or the adapter that bills that endpoint) with " +
+          "access.profileRef: 'claude-subs-agentik' (or presetId).",
+      )
+      expect(scheduler.list()).toEqual([])
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("also checks a kind:\"tool\" → agent_start action (what routine target.agent lowers to)", async () => {
+    const { scheduler } = makeScheduler()
+    try {
+      await expect(
+        scheduler.create({
+          schedule: "0 9 * * *",
+          action: { kind: "tool", tool: "agent_start", inputs: { adapter: "claude-subs-agentik", prompt: "x" } },
+        }),
+      ).rejects.toThrow(/is an auth profile/)
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("accepts a resolvable adapter", async () => {
+    const { scheduler, resolveAgentAdapter } = makeScheduler()
+    try {
+      const job = await scheduler.create({
+        schedule: "0 9 * * *",
+        action: { kind: "agent", adapter: "claude-code", access: { profileRef: "claude-subs-agentik" }, prompt: "x" },
+      })
+      expect(job.id).toMatch(/^cron_/)
+      expect(resolveAgentAdapter).toHaveBeenCalledWith("claude-code")
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("skips the check for a sandboxed spawn (the box resolves its own adapter)", async () => {
+    const { scheduler, resolveAgentAdapter } = makeScheduler()
+    try {
+      const job = await scheduler.create({
+        schedule: "0 9 * * *",
+        action: { kind: "agent", adapter: "box-only-adapter", sandbox: { provider: "docker" }, prompt: "x" } as never,
+      })
+      expect(job.id).toMatch(/^cron_/)
+      expect(resolveAgentAdapter).not.toHaveBeenCalled()
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("accepts a preset-only agent action (no explicit adapter to check)", async () => {
+    const { scheduler, resolveAgentAdapter } = makeScheduler()
+    try {
+      const job = await scheduler.create({
+        schedule: "0 9 * * *",
+        action: { kind: "agent", presetId: "cc-subs-agentik", prompt: "x" },
+      })
+      expect(job.id).toMatch(/^cron_/)
+      expect(resolveAgentAdapter).not.toHaveBeenCalled()
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("boot rehydration keeps loading a persisted job with an unresolvable adapter", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const persistPath = join(workspace, "cron-jobs.json")
+    const { writeFileSync } = await import("node:fs")
+    writeFileSync(
+      persistPath,
+      JSON.stringify([
+        {
+          id: "cron_legacy",
+          schedule: "50 20 * * *",
+          recurring: true,
+          active: true,
+          createdAt: new Date().toISOString(),
+          action: { kind: "agent", adapter: "claude-subs-agentik", prompt: "x" },
+        },
+      ]),
+    )
+    const { scheduler, resolveAgentAdapter } = makeScheduler({ persistPath, persist: true })
+    try {
+      const job = scheduler.get("cron_legacy")
+      expect(job?.active).toBe(true)
+      expect(job?.nextRunAt).toBeTruthy()
+      expect(resolveAgentAdapter).not.toHaveBeenCalled()
     } finally {
       scheduler.shutdown()
     }

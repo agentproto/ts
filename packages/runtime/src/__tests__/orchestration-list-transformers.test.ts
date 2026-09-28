@@ -135,7 +135,7 @@ function fakeCron(jobs: CronJob[]) {
 
 function fakeRoutineRegistrar(routines: RoutineFrontmatter[]) {
   return {
-    reconcile: () => ({ registered: [], skipped: [], removed: [], errors: [] }),
+    reconcile: async () => ({ registered: [], skipped: [], removed: [], errors: [] }),
     trigger: async () => ({ ok: true, summary: "stub" }),
     list: () => routines,
   }
@@ -345,11 +345,14 @@ describe("cron_list transformer migration", () => {
         "active",
         "id",
         "label",
+        "lastOk",
         "lastRunAt",
         "nextRunAt",
         "recurring",
         "schedule",
       ])
+      // A failed last run is visible without `full: true`.
+      expect(j.lastOk).toBe(true)
     }
 
     const full = JSON.parse(
