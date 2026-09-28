@@ -1,5 +1,11 @@
 # @agentproto/pack
 
+## 0.2.3
+
+### Patch Changes
+
+- 835738c: Corrects the incorrect AIP-52 attribution in `@agentproto/pack`: PACK.md has no assigned AIP (AIP-52 is ADAPTER, implemented by `@agentproto/mastra`). Updates package metadata, docs, and comments accordingly; runtime error strings are unchanged.
+
 ## 0.2.2
 
 ### Patch Changes

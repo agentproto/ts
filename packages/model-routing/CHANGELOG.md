@@ -1,5 +1,11 @@
 # @agentproto/model-routing
 
+## 0.3.0
+
+### Minor Changes
+
+- 38b821d: Renamed the AIP-57 pack constructor and type to `defineRoutingPack` / `RoutingPack`, since `definePack` and `Pack` collided in name with the unrelated `definePack` / `PackDefinition` in `@agentproto/pack` (AIP-52, a commercial vertical bundle — a different concept entirely). `definePack` and `Pack` remain exported as deprecated aliases for existing consumers.
+
 ## 0.2.0
 
 ### Minor Changes
