@@ -987,6 +987,16 @@ export interface RuntimeHttpServerOptions {
    *  comment) — never a plain remote-control pairing or `serve --connect`.
    *  Without this flag (or without `llmEndpoint`), the routes 403/404. */
   deviceInferenceShare?: boolean
+  /** Optional — mirrors `config.features.deviceSpawnAllow` (default false,
+   *  DEVICES-PLAN PR-D). When true, exposes `/device-spawn/*`: a gated
+   *  self-proxy onto THIS daemon's own `/mcp` + `/sessions/:id/events/stream`
+   *  for a paired HOST-scoped controller (see `HOST_SCOPE_HEADER`'s doc
+   *  comment) — lets the controller drive `agent_start({ sandbox:
+   *  "device:<this-daemon>" })` against this daemon. Reachable ONLY over a
+   *  host-scoped pairing, never a plain remote-control pairing or `serve
+   *  --connect`. Toggle via `agentproto devices allow-spawn on|off`. Without
+   *  this flag the routes 403. */
+  deviceSpawnAllow?: boolean
   /** Optional — when wired, exposes POST /remote/enable, POST /remote/disable,
    *  GET /remote/status — the REST twin of the MCP `remote_enable` /
    *  `remote_disable` / `remote_status` tools (remote-tools.ts), for
@@ -3933,6 +3943,27 @@ export async function startHttpServer(
             path,
             opts.llmEndpoint,
             opts.deviceInferenceShare === true,
+          )
+          if (handled) return
+        }
+
+        // Device-spawn routes (DEVICES-PLAN PR-D) — the RECEIVING side of a
+        // `device:<name>` sandbox spawn: this daemon self-proxies its own
+        // /mcp + /sessions/:id/events/stream for a paired HOST-scoped
+        // controller. The opt-in flag (and the host-scope header) are
+        // checked inside the handler, mirroring /device-inference's own
+        // "wired vs. enabled" split — here there's no optional dependency
+        // to gate registration on (the self-proxy only needs this daemon's
+        // own port, always known), so the route is always registered and
+        // 403s until both gates pass. /device-spawn/mcp,
+        // /device-spawn/sessions/:id/events/stream, etc.
+        if (path === "/device-spawn" || path.startsWith("/device-spawn/")) {
+          const handled = await handleDeviceSpawn(
+            req,
+            res,
+            path,
+            opts.port,
+            opts.deviceSpawnAllow === true,
           )
           if (handled) return
         }
@@ -7863,6 +7894,114 @@ async function handleDeviceInference(
 }
 
 /**
+ * /device-spawn routes (DEVICES-PLAN PR-D) — the RECEIVING side of a
+ * `device:<name>` sandbox spawn: this daemon self-proxies its OWN `/mcp` +
+ * `/sessions/:id/events/stream` for a paired HOST-scoped controller,
+ * exactly the shape `handleDeviceInference` above proxies onto the
+ * llm-endpoint sidecar, just pointed at THIS daemon's own gateway instead
+ * of a sidecar. Gated by BOTH the opt-in `deviceSpawnAllow` flag AND
+ * `HOST_SCOPE_HEADER` — same two-gate shape and same rationale as
+ * `handleDeviceInference` (see its doc comment): an ordinary remote-control
+ * pairing must never reach this, only one the OTHER side registered as a
+ * host (`pair offer --host` + `devices add`).
+ *
+ * The self-fetch to `http://127.0.0.1:${port}${subpath}` rides the same
+ * loopback socket `handleDeviceInference` uses to reach its sidecar, so it
+ * gets the existing loopback auth bypass for free: `/mcp` goes through
+ * `authorizeMcp` → `authorize()` (loopback, no Origin ⇒ allowed regardless
+ * of bearer mode) and `GET /sessions/:id/events/stream` is a read-only
+ * route `checkSessionsToken` never gates in the first place (mutating
+ * `/sessions/*` routes are the only ones it guards). No new auth surface
+ * needed — this route is additive on top of both.
+ *
+ *   ALL /device-spawn/<subpath>  → self-proxies to this daemon's own
+ *                                   `/<subpath>` (e.g. `/mcp`,
+ *                                   `/sessions/:id/events/stream`),
+ *                                   forwarding method/headers/body and
+ *                                   relaying the response chunk-by-chunk.
+ */
+async function handleDeviceSpawn(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  port: number,
+  spawnAllowed: boolean,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (!path.startsWith("/device-spawn/") && path !== "/device-spawn") return false
+
+  if (req.headers[HOST_SCOPE_HEADER] !== "1") {
+    json(403, {
+      error: "host_scope_required",
+      message:
+        "device-spawn is reachable only over a host-scoped pairing (the far end must have " +
+        "registered this daemon via `agentproto pair offer --host` + `agentproto devices add`)",
+    })
+    return true
+  }
+  if (!spawnAllowed) {
+    json(403, {
+      error: "spawn_disabled",
+      message: "this host has not opted in — run `agentproto devices allow-spawn on` on it",
+    })
+    return true
+  }
+
+  const subpath = path.slice("/device-spawn".length) || "/"
+  const headers: Record<string, string> = {}
+  for (const [k, v] of Object.entries(req.headers)) {
+    if (v === undefined) continue
+    const lower = k.toLowerCase()
+    if (lower === "connection" || lower === "keep-alive" || lower === "transfer-encoding") continue
+    if (lower === "upgrade" || lower === "host" || lower === "content-length") continue
+    if (lower === HOST_SCOPE_HEADER) continue
+    headers[k] = Array.isArray(v) ? v.join(", ") : v
+  }
+
+  let body: Buffer | undefined
+  if ((req.method ?? "GET") !== "GET" && (req.method ?? "GET") !== "HEAD") {
+    const chunks: Buffer[] = []
+    for await (const chunk of req) chunks.push(chunk as Buffer)
+    body = Buffer.concat(chunks)
+  }
+
+  let upstreamRes: globalThis.Response
+  try {
+    upstreamRes = await fetch(`http://127.0.0.1:${port}${subpath}`, {
+      method: req.method ?? "GET",
+      headers,
+      ...(body ? { body } : {}),
+      // Cast rationale — see `handleDeviceInference`'s identical cast above.
+    } as Parameters<typeof fetch>[1])
+  } catch (err) {
+    json(502, {
+      error: "self_proxy_unreachable",
+      message: err instanceof Error ? err.message : String(err),
+    })
+    return true
+  }
+
+  const resHeaders: Record<string, string> = {}
+  upstreamRes.headers.forEach((v, k) => {
+    if (k === "content-length" || k === "connection") return
+    resHeaders[k] = v
+  })
+  res.writeHead(upstreamRes.status, resHeaders)
+  if (!upstreamRes.body) {
+    res.end()
+    return true
+  }
+  // Relay chunk-by-chunk — required for the SSE events stream; harmless
+  // (one chunk) for a plain `/mcp` JSON reply.
+  Readable.fromWeb(upstreamRes.body as unknown as NodeWebReadableStream<Uint8Array>).pipe(res)
+  return true
+}
+
+/**
  * REST twin of the MCP `remote_enable` / `remote_disable` / `remote_status`
  * tools (remote-tools.ts) — same `RemoteController` singleton, so the two
  * surfaces can never disagree about whether a tunnel is up. Exists for
@@ -8677,6 +8816,14 @@ async function handlePairings(
  *                                    method it's asking the host for. Same
  *                                    404 as /exec when no host registry is
  *                                    wired.
+ *
+ * A separate route family, `/device-spawn/*` (DEVICES-PLAN PR-D,
+ * `handleDeviceSpawn` below), is the RECEIVING side of the above: it lives
+ * on the device being spawned ONTO (not the controller driving it), self-
+ * proxies this daemon's own `/mcp` + `/sessions/:id/events/stream` for a
+ * paired HOST-scoped controller, and is gated by `features.deviceSpawnAllow`
+ * (`agentproto devices allow-spawn on|off`) rather than anything in this
+ * function.
  *
  * Mirrors the MCP `device_list` / `device_rename` / `device_revoke` /
  * `device_add` tools.

@@ -831,6 +831,9 @@ describe("gc — dep-bump reclaim exemption", () => {
     const repo = await makeRepo()
     const origin = await realpath(await mkdtemp(join(tmpdir(), "wt-gc-dep-bump-origin-")))
     await execGit(origin, ["init", "--bare", "-b", "main"])
+    // `receive-pack` runs with the pusher's GIT_CONFIG_* env stripped, so the
+    // vitest.setup.ts override can't reach it; disable auto-maintenance per repo.
+    await execGit(origin, ["config", "maintenance.auto", "false"])
     await execGit(repo, ["remote", "add", "origin", origin])
     await execGit(repo, ["push", "origin", "main"])
     return { repo, origin }

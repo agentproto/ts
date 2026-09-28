@@ -198,6 +198,15 @@ export interface FeaturesConfig {
    *  --host` + `devices add`). Toggle via `agentproto devices
    *  share-inference on|off`. */
   deviceInferenceShare?: boolean
+  /** Opt this daemon in to being usable as an `agent_start({ sandbox:
+   *  "device:<name>" })` target (DEVICES-PLAN PR-D) — exposes
+   *  `/device-spawn/*` in http-server.ts, a self-proxy onto this daemon's
+   *  own `/mcp` + `/sessions/:id/events/stream`. Default false: even with
+   *  this on, only a HOST-scoped pairing (`pair offer --host` + `devices
+   *  add`) can reach the routes — a plain remote-control pairing never can,
+   *  whatever this is set to. Toggle via `agentproto devices allow-spawn
+   *  on|off`. */
+  deviceSpawnAllow?: boolean
 }
 
 /**

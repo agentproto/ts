@@ -351,6 +351,9 @@ describe("branch gc — re-rooted base + anchor", () => {
 async function withOrigin(repo: string): Promise<string> {
   const bare = await tmp("branch-gc-origin-")
   await execGit(bare, ["init", "-q", "--bare", "-b", "main"])
+  // `receive-pack` runs with the pusher's GIT_CONFIG_* env stripped, so the
+  // vitest.setup.ts override can't reach it; disable auto-maintenance per repo.
+  await execGit(bare, ["config", "maintenance.auto", "false"])
   await execGit(repo, ["remote", "add", "origin", bare])
   await execGit(repo, ["push", "-q", "origin", "main"])
   await execGit(repo, ["fetch", "-q", "origin"])

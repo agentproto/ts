@@ -269,12 +269,25 @@ describe("inbox + inbox_wait", () => {
     const cw = c.call("inbox_wait", { timeoutMs: 5000 })
     await until(() => registry.get(a.id)?.blockedOn === "inbox")
     const reply = await p.call("message_reply", { replyTo: q.messageId, text: "main" })
-    expect(reply).toMatchObject({ ok: true, to: a.id, relation: "parent", delivered: { via: "wait" } })
+    expect(reply, JSON.stringify(reply)).toMatchObject({ ok: true, to: a.id, relation: "parent", delivered: { via: "wait" } })
     const got = (await cw).messages as Array<{ text: string; replyTo: string; correlationId: string; from: { relation: string } }>
     expect(got[0]).toMatchObject({ text: "main", replyTo: q.messageId, correlationId: q.messageId, from: { relation: "parent" } })
     expect(await p.call("message_reply", { replyTo: "msg_nope0000", text: "?" })).toMatchObject({ isError: true, error: "unknown_message" })
     await p.close()
     await c.close()
+  })
+
+  it("findReceivedMessage sees an acked message before its transcript record reaches disk", async () => {
+    const { parent, kid } = tree()
+    const a = kid("a")
+    const waiting = registry.waitForMessages(parent.id, {}, { timeoutMs: 5000 })
+    const msg = createSessionMessage({ to: parent.id, from: messageFrom(a, "child"), text: "which branch?", kind: "question" })
+    await registry.sendMessage(msg)
+    await waiting
+    // Same tick as the ack: the `session-message` line is still in the
+    // append stream, so a disk-only lookup would miss it.
+    expect(registry.listInbox(parent.id)).toEqual([])
+    expect(registry.findReceivedMessage(parent.id, msg.id)).toMatchObject({ id: msg.id, from: { sessionId: a.id } })
   })
 
   it("caps the inbox at INBOX_CAP, dropping the oldest", async () => {
