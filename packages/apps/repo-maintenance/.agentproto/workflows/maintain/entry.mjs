@@ -20,7 +20,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 const DEFAULT_REVIEW_MODEL_SMALL = "claude-haiku-4-5-20251001"
-const DEFAULT_REVIEW_MODEL_LARGE = "claude-sonnet-5"
+const DEFAULT_REVIEW_MODEL_LARGE = "claude-sonnet-5-5"
 /** Reviews per run — 500+ candidates in one run is hours of agent turns;
  *  daily runs walk the backlog instead (a reviewed tip is skipped next time). */
 const DEFAULT_MAX_REVIEWS = 40
