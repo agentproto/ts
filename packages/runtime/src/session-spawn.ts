@@ -101,6 +101,14 @@ import {
 } from "./workspace-rules.js"
 import { deriveSessionTitle } from "./session-title.js"
 import { isAbsolute, join } from "node:path"
+import { syncPiModels } from "@agentproto/llm-endpoint"
+import {
+  fitCheckForTarget,
+  projectInferenceBinding,
+  resolveInferenceTarget,
+  type DeviceProbeResult,
+  type InferenceBindingRequest,
+} from "./inference-binding.js"
 
 /**
  * True when `p` (already absolute) sits inside `cwd` (or IS cwd). The
@@ -1031,6 +1039,13 @@ export interface SpawnAgentSessionDeps {
    *  the caller, not surfaced as a spawn failure — the adapter's own first
    *  request is left to report the real connection error. */
   ensureLlmEndpointRunning?: () => Promise<void>
+  /** Probe a paired device's own shared inference endpoint for a model —
+   *  the device-qualified leg of `agent_start.inference` (DEVICES-PLAN item
+   *  2). Wired at the composition root to `HostRegistry.forwardHttp` against
+   *  `/devices/:id/exec-stream/device-inference/v1/models`. Omitted ⇒ a
+   *  device-qualified `inference` reference fails fast with a clear
+   *  "no device probe wired" error instead of hanging. */
+  probeDeviceInference?: (device: string, modelId: string) => Promise<DeviceProbeResult>
 }
 
 export interface SpawnAgentSessionInput {
@@ -1151,6 +1166,12 @@ export interface SpawnAgentSessionInput {
   /** Named billing credential. Resolved from auth-profiles + keychain at the
    * final spawn boundary; the secret never crosses HTTP/MCP. */
   access?: { profileRef?: string }
+  /** Bind this spawn to a local/LAN inference endpoint — resolved (and fit-
+   *  checked) at the very top of `spawnAgentSession`, BEFORE preset
+   *  expansion, into ordinary `model`/`route`/`access`/`auth`/`deferredTools`
+   *  values the rest of this function already understands. Mutually
+   *  exclusive with those fields — see `resolveInferenceBindingInput`. */
+  inference?: InferenceBindingRequest
   posture?: Posture
   contextProfile?: ContextProfile
   /** A preloaded user preset. Callers resolve its id at their boundary so a
@@ -1377,6 +1398,8 @@ export type SpawnAgentSessionResult =
         | "access_profile_not_found"
         | "access_profile_ineligible"
         | "harness_preset_profile_unavailable"
+        | "inference_endpoint_unresolved"
+        | "inference_fit_check_failed"
         | "browser_unsupported"
         | "browser_unavailable"
         | "model_wallet_ineligible"
@@ -1434,6 +1457,64 @@ export async function spawnAgentSession(
   deps: SpawnAgentSessionDeps,
   input: SpawnAgentSessionInput,
 ): Promise<SpawnAgentSessionResult> {
+  // `inference` (SESSION-INFERENCE-BINDING): resolved FIRST, before presets
+  // or the model/route reconciliation below, into ordinary `model`/`route`/
+  // `access`/`auth`/`deferredTools` values — everything downstream of this
+  // block sees a normal, fully-specified spawn request and needs no
+  // awareness of `inference` at all. Each of the three spawn surfaces
+  // (agent-tools.ts's `agent_start`, http-server.ts's `POST /sessions/agent`,
+  // the CLI's `sessions start`) is responsible for defaulting `adapter` to
+  // `"pi"` itself (plan item 3) BEFORE calling in here — `input.adapter` is
+  // required by this function's own type and is trusted as already-resolved.
+  if (input.inference) {
+    if (input.model || input.route || input.access) {
+      return {
+        ok: false,
+        code: "inference_endpoint_unresolved",
+        message:
+          "agent_start: `inference` is mutually exclusive with `model`/`route`/`access` — bind the " +
+          "endpoint via `inference`, or pin those fields directly, never both in the same spawn.",
+      }
+    }
+    const harness = input.harness ?? input.adapter
+    const resolved = await resolveInferenceTarget(input.inference, {
+      ...(deps.probeDeviceInference ? { probeDevice: deps.probeDeviceInference } : {}),
+    })
+    if (!resolved.ok) {
+      return { ok: false, code: "inference_endpoint_unresolved", message: `agent_start: ${resolved.message}` }
+    }
+    const fit = fitCheckForTarget(harness, resolved.target, resolved.label, {
+      ...(input.inference.headroomPct !== undefined ? { headroomRatio: input.inference.headroomPct / 100 } : {}),
+    })
+    if (fit.verdict === "no-fit" && !input.inference.force) {
+      return {
+        ok: false,
+        code: "inference_fit_check_failed",
+        message: `agent_start: ${fit.message ?? "harness fit check failed."} Pass \`inference.force: true\` to override.`,
+      }
+    }
+    const projected = projectInferenceBinding(harness, resolved)
+    if (!projected.ok) {
+      return { ok: false, code: "inference_endpoint_unresolved", message: `agent_start: ${projected.message}` }
+    }
+    if (projected.projection.needsPiModelsSync) {
+      // Best-effort — a sync failure (e.g. no write access to ~/.pi) must not
+      // sink the spawn; pi's own request against an unsynced model id fails
+      // with its own clear error, same as today's fully-manual flow.
+      await syncPiModels().catch(() => {})
+    }
+    const { inference: _inference, ...withoutInference } = input
+    input = {
+      ...withoutInference,
+      model: projected.projection.model,
+      ...(projected.projection.route ? { route: projected.projection.route } : {}),
+      ...(projected.projection.auth ? { auth: projected.projection.auth } : {}),
+      ...(projected.projection.deferredTools !== undefined
+        ? { deferredTools: input.deferredTools ?? projected.projection.deferredTools }
+        : {}),
+    }
+  }
+
   // Presets are a lower-precedence layer than an explicit spawn request. Do
   // this once, at the common core, so HTTP, MCP and future clients have the
   // same semantics rather than each expanding a preset slightly differently.

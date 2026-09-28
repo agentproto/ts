@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import type { ConnectorModel, EndpointConfig } from "@agentproto/llm-endpoint"
 import {
   fitCheckForTarget,
+  projectInferenceBinding,
   resolveInferenceTarget,
   type DeviceProbeResult,
   type InferenceBindingOk,
@@ -164,6 +165,69 @@ describe("resolveInferenceTarget — device-endpoint offline", () => {
     )
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.message).toContain("device probe")
+  })
+})
+
+describe("projectInferenceBinding", () => {
+  const localOk: InferenceBindingOk = {
+    ok: true,
+    target: { kind: "local", endpointId: "lmstudio", modelId: "bonsai-27b-win", loadedCtx: 32_768, connector: "lmstudio", baseUrl: "http://x" },
+    gatewayModelId: "lmstudio/bonsai-27b-win",
+    label: "lmstudio",
+  }
+  const deviceOk: InferenceBindingOk = {
+    ok: true,
+    target: { kind: "device", remoteEndpointId: "ollama", device: "work-mac", modelId: "llama3", loadedCtx: undefined },
+    gatewayModelId: "ollama@work-mac/llama3",
+    label: "ollama@work-mac",
+  }
+
+  it("projects pi against a local endpoint: bare gateway model id, no route/access, needs a pi models sync", () => {
+    const result = projectInferenceBinding("pi", localOk)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.projection).toEqual({ model: "lmstudio/bonsai-27b-win", needsPiModelsSync: true })
+    }
+  })
+
+  it("refuses pi against a device endpoint (no generated provider config for that path)", () => {
+    const result = projectInferenceBinding("pi", deviceOk)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.message).toContain("not supported yet")
+  })
+
+  it("projects claude-code through the llm-endpoint gateway route with a placeholder api-key and deferredTools on", () => {
+    const result = projectInferenceBinding("claude-code", localOk)
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.projection).toEqual({
+        model: "lmstudio/bonsai-27b-win",
+        route: { gateway: "llm-endpoint" },
+        auth: { mode: "api-key", apiKey: "not-needed" },
+        deferredTools: true,
+      })
+    }
+  })
+
+  it("projects claude-sdk the same way as claude-code", () => {
+    const result = projectInferenceBinding("claude-sdk", localOk)
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.projection.route).toEqual({ gateway: "llm-endpoint" })
+  })
+
+  it("claude-code/claude-sdk projection also works against a device target", () => {
+    const result = projectInferenceBinding("claude-code", deviceOk)
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.projection.model).toBe("ollama@work-mac/llama3")
+  })
+
+  it("refuses an unsupported harness with an actionable message", () => {
+    const result = projectInferenceBinding("opencode", localOk)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.message).toContain("opencode")
+      expect(result.message).toContain("pi, claude-code, claude-sdk")
+    }
   })
 })
 

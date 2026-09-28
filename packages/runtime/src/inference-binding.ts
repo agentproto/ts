@@ -41,8 +41,11 @@ export interface InferenceBindingRequest {
   model?: string
   /** Skip the fit-check refusal (still runs the check, still warns). */
   force?: boolean
-  /** Overrides {@link DEFAULT_HEADROOM_RATIO} from `@agentproto/llm-endpoint`. */
-  headroomRatio?: number
+  /** Headroom percentage (0-95) held back from the endpoint's loaded ctx for
+   *  the fit check — the wire form of {@link DEFAULT_HEADROOM_RATIO} from
+   *  `@agentproto/llm-endpoint`. Converted to a 0-1 ratio by the caller
+   *  before reaching {@link fitCheckForTarget}. */
+  headroomPct?: number
 }
 
 /** Outcome of probing a paired device for its own shared inference models —
@@ -269,4 +272,80 @@ export function fitCheckForTarget(
     ...(opts.headroomRatio !== undefined ? { headroomRatio: opts.headroomRatio } : {}),
     endpointLabel: label,
   })
+}
+
+/**
+ * A resolved target's spawn-input projection for one harness — the concrete
+ * `model`/`route`/`auth`/`deferredTools` values `session-spawn.ts`'s ordinary
+ * pipeline already understands, so `inference` never needs its own parallel
+ * spawn path.
+ *
+ * `claude-code`/`claude-sdk` route through the daemon-managed `llm-endpoint`
+ * gateway sidecar via the ALREADY-REGISTERED `"llm-endpoint"` custom route
+ * (`packages/runtime/src/builtin-routes.ts`, gated by `features.llmEndpoint`)
+ * — the SAME `route.gateway`/`model` shape the manual recipe in
+ * `FIX-GATEWAY-SYSTEM-FIRST.md` used successfully. That route's key-env is
+ * `LLM_ENDPOINT_ACCESS_TOKENS` (`@agentproto/provider-presets`'s
+ * `"llm-endpoint"` preset) — the LOCAL sidecar only enforces it when an
+ * operator set `LLM_ENDPOINT_ACCESS_TOKENS` on the sidecar's OWN env (off by
+ * default), so an explicit non-empty placeholder credential (mirroring
+ * `pi-sync.ts`'s own `'not-needed'` convention for a keyless endpoint)
+ * satisfies `resolveAuthSpec` without requiring a pre-existing named auth
+ * profile — the point of this feature is a machine with none configured yet.
+ * `deferredTools: true` matches the plan's "default to lean tools for local
+ * endpoints".
+ *
+ * `pi` talks to a LOCAL endpoint directly (never through the gateway) using
+ * the SAME `<endpointId>/<modelId>` model id it already reads from
+ * `~/.pi/agent/models.json` — the caller must have synced that file first
+ * (`needsPiModelsSync: true` is the signal to do so; see `syncPiModels` in
+ * `pi-sync.ts`). A DEVICE target has no generated pi provider config in this
+ * codebase — refused rather than guessed.
+ */
+export function projectInferenceBinding(
+  harness: string,
+  resolved: InferenceBindingOk,
+): { ok: true; projection: SpawnProjection } | InferenceBindingError {
+  switch (harness) {
+    case "pi": {
+      if (resolved.target.kind === "device") {
+        return {
+          ok: false,
+          message:
+            `"pi" against a paired device's endpoint ("${resolved.label}") is not supported yet — ` +
+            'bind "claude-code"/"claude-sdk" through the gateway instead, or run pi directly on that device.',
+        }
+      }
+      return { ok: true, projection: { model: resolved.gatewayModelId, needsPiModelsSync: true } }
+    }
+    case "claude-code":
+    case "claude-sdk":
+      return {
+        ok: true,
+        projection: {
+          model: resolved.gatewayModelId,
+          route: { gateway: "llm-endpoint" },
+          auth: { mode: "api-key", apiKey: "not-needed" },
+          deferredTools: true,
+        },
+      }
+    default:
+      return {
+        ok: false,
+        message:
+          `"${harness}" has no local-endpoint wiring yet (supported: pi, claude-code, claude-sdk) — ` +
+          "pass `model`/`route`/`access` directly instead of `inference`.",
+      }
+  }
+}
+
+export interface SpawnProjection {
+  model: string
+  route?: { gateway: string }
+  auth?: { mode: "api-key"; apiKey: string }
+  deferredTools?: boolean
+  /** Set for `pi` against a LOCAL endpoint — the caller must sync
+   *  `~/.pi/agent/models.json` (`syncPiModels()`) before spawn so the model
+   *  id this projects is actually resolvable. */
+  needsPiModelsSync?: boolean
 }
