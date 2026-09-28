@@ -122,6 +122,7 @@ import { exportAgentSession } from "./transcript-export.js"
 import { parseWindow, rollupUsage } from "./usage-rollup.js"
 import { projectSessionUsage } from "./usage.js"
 import { rollupSessionSubtree } from "./usage-subtree.js"
+import { buildSessionCapabilities } from "./session-capabilities.js"
 import {
   collectSessionSnapshots,
   enrichRollupWithAccountCredits,
@@ -6130,6 +6131,28 @@ async function handleSessions(
           : 500
       json(status, { error: "set_posture_failed", message: msg })
     }
+    return true
+  }
+
+  // GET /sessions/:id/capabilities — the REST twin of the `session_capabilities`
+  // MCP tool (same shared builder, same JSON body): harness slash commands,
+  // modes/posture, model/effort, mounted MCP servers (redacted to name/
+  // transport/ref), resolved skills, and permission-hold state. Full daemon
+  // view: REST has no callerScope, same as `/sessions/:id/usage`.
+  const capabilitiesMatch = path.match(/^\/sessions\/([^/]+)\/capabilities$/)
+  if (capabilitiesMatch && req.method === "GET") {
+    const id = decodeURIComponent(capabilitiesMatch[1] ?? "")
+    if (!id) return false
+    const desc = registry.findByIdOrName(id)
+    if (!desc) {
+      json(404, { error: "no_such_session", id })
+      return true
+    }
+    // `get()` (not `findByIdOrName`'s own stamping) is what freshens
+    // `availableModes` from the live agent session — see `stampLiveModes`.
+    const fresh = registry.get(desc.id) ?? desc
+    const pendingPermissions = registry.listPendingPermissions({ sessionId: fresh.id }).length
+    json(200, buildSessionCapabilities(fresh, pendingPermissions))
     return true
   }
 

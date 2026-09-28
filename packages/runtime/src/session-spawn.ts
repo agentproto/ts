@@ -2866,6 +2866,7 @@ export async function spawnAgentSession(
         ...(input.label ? { label: input.label } : {}),
         ...(initialTitle ? { title: initialTitle } : {}),
         ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+        ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.boardId ? { meta: { boardId: input.boardId } } : {}),
@@ -3303,6 +3304,7 @@ export async function spawnAgentSession(
       // itself, not via `initialPrompt`).
       ...(initialTitle ? { title: initialTitle } : {}),
       ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+      ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
       // Parent attribution + depth. Set for spawns that arrived via the
       // scoped sub-gateway (WP4, parent from token) OR carry a trusted-loopback
       // `parentSessionId` lineage hint on the anonymous root path (WP-R1). A

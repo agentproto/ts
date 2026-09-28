@@ -839,6 +839,21 @@ describe("spawnAgentSession", () => {
     )
   })
 
+  it("(d) persists the resolved skills list on the descriptor regardless of adapter consumption", async () => {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { deps } = baseDeps({
+      resolveAgentAdapter: makeResolver(startSession),
+      loadDefaultsConfig: async () => ({ skills: ["agentproto"] }),
+    })
+
+    // claude-code declares no `skills` option (no `declaredOptions` at all,
+    // via `makeResolver`) — the resolved list still lands on the descriptor
+    // for display, even though nothing forwards it to the adapter.
+    const result = await spawnAgentSession(deps, { adapter: "claude-code", cwd: "/tmp" })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.descriptor.skills).toEqual(["agentproto"])
+  })
+
   it("(d) an explicit `skills` call fully replaces config defaults (no union)", async () => {
     const captured: { options?: Record<string, boolean | number | string> }[] = []
     const startSession = vi.fn(

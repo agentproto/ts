@@ -61,6 +61,7 @@ import {
   computeContextContinuityStatus,
   computeContextPct,
 } from "./context-continuity.js"
+import { buildSessionCapabilities } from "./session-capabilities.js"
 import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
 import { continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
@@ -1233,6 +1234,82 @@ export function registerSessionTools(
       )
       return {
         content: [{ type: "text", text: JSON.stringify(status) }],
+      }
+    },
+  )
+
+  // ── session_capabilities ─────────────────────────────────────────
+  server.tool(
+    "session_capabilities",
+    "Return everything one session can do and has attached, in a single " +
+      "read: harness slash commands (`commands`/`commandsSupported`), " +
+      "modes/posture (`availableModes`/`posture`/`canonicalPostures`), " +
+      "model/effort, mounted MCP servers (name/transport/ref only — never " +
+      "headers/env/credentials), resolved skills, and permission-hold state " +
+      "(`permissionHold`/`pendingPermissions`). Same lookup as `session_list` " +
+      "/ `session_restart` (by id or name); the REST twin is " +
+      "`GET /sessions/:id/capabilities`.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Session id or name — from `session_list`. Alias: `id`."),
+      id: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Alias for `sessionId`."),
+    },
+    async input => {
+      const idOrName = input.sessionId ?? input.id
+      if (!idOrName) {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ error: "missing sessionId (or id)" }) },
+          ],
+          isError: true,
+        }
+      }
+      const desc = registry.findByIdOrName(idOrName)
+      if (!desc) {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ error: `no session "${idOrName}" found` }) },
+          ],
+          isError: true,
+        }
+      }
+      if (callerScope) {
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+        if (!subtree.has(desc.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_capabilities: session "${desc.id}" is not in your subtree.`,
+                  sessionId: desc.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      // `get()` (not `findByIdOrName`'s own stamping) is what freshens
+      // `availableModes` from the live agent session — see `stampLiveModes`.
+      const fresh = registry.get(desc.id) ?? desc
+      const pendingPermissions = registry.listPendingPermissions({ sessionId: fresh.id }).length
+      return {
+        content: [
+          { type: "text", text: JSON.stringify(buildSessionCapabilities(fresh, pendingPermissions)) },
+        ],
       }
     },
   )
