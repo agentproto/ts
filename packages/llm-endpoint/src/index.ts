@@ -3336,6 +3336,30 @@ export {
   type ConnectorQuirks,
 } from './connectors.js';
 
+/** Re-exported for the harness fit check — see harness-fit.ts. */
+export {
+  checkHarnessFit,
+  DEFAULT_HEADROOM_RATIO,
+  HARNESS_FIRST_REQUEST_SIZE,
+  type FitCheckInput,
+  type FitCheckResult,
+  type FitVerdict,
+  type HarnessFirstRequestSize,
+} from './harness-fit.js';
+
+/** Re-exported for `pi` model-registry sync — see pi-sync.ts. Consumed by
+ *  both `@agentproto/cli` (`agentproto llm endpoints sync-pi`) and
+ *  `@agentproto/runtime` (session inference binding). */
+export {
+  resolvePiLedgerFilePath,
+  resolvePiModelsFilePath,
+  syncPiModels,
+  type PiModelEntry,
+  type PiSyncEntry,
+  type PiSyncOptions,
+  type PiSyncResult,
+} from './pi-sync.js';
+
 /** Démarre le proxy sur `port` (défaut : {@link PORT}). Renvoie le serveur en écoute. */
 export function start(port: number = PORT) {
   void resumeIncompleteLocalQueueBatches().catch((err: unknown) => {

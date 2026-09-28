@@ -8,8 +8,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { resetConfiguredEndpointsCache } from "@agentproto/llm-endpoint"
-import { resolvePiLedgerFilePath, resolvePiModelsFilePath, syncPiModels } from "../lib/pi-models.js"
+import { resetConfiguredEndpointsCache } from "../endpoints.js"
+import { resolvePiLedgerFilePath, resolvePiModelsFilePath, syncPiModels } from "../pi-sync.js"
 
 let dir: string
 const SAVED = {

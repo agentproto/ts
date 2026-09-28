@@ -38,7 +38,7 @@ import {
   type ConnectorId,
   type ConnectorModel,
 } from "@agentproto/llm-endpoint"
-import { syncPiModels } from "../lib/pi-models.js"
+import { syncPiModels } from "@agentproto/llm-endpoint"
 import type { LlmEndpointStatusReport } from "@agentproto/runtime"
 import {
   discoverDaemon,
