@@ -154,7 +154,8 @@
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "sim:inbound": "vite-node scripts/simulate-inbound.mjs",
-    "telegram:proxy": "vite-node scripts/telegram-proxy.mjs"
+    "telegram:proxy": "vite-node scripts/telegram-proxy.mjs",
+    "bench:review-ledger": "vite-node scripts/bench-review-ledger.mjs"
   },
   "dependencies": {
     "@agentproto/acp": "workspace:*",
