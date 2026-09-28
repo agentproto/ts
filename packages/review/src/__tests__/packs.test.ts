@@ -39,17 +39,23 @@ const CORE_PACK_SOURCE = packMd(
 /** A fake loader backed by an in-memory map of ref -> pack source text +
  *  rubric bytes, so tests never touch the filesystem or network. */
 function fakeLoader(opts: {
-  packs: Record<string, { source: string; refKind?: PackSource["refKind"]; root?: string }>
+  packs: Record<string, { source: string; refKind?: PackSource["refKind"]; trusted?: boolean; root?: string }>
   rubrics?: Record<string, string>
 }): PackLoader {
   return {
     async load(ref) {
       const entry = opts.packs[ref]
       if (!entry) throw new Error(`fakeLoader: no pack registered for '${ref}'`)
+      const refKind = entry.refKind ?? "relative"
       return {
         manifest: parsePackManifest(entry.source),
         source: entry.source,
-        refKind: entry.refKind ?? "relative",
+        refKind,
+        // Mirrors the runtime loader's default: only a relative ref is ever
+        // trusted, and even then only when the caller doesn't say otherwise
+        // (tests below exercise trusted:false on a "relative" refKind to
+        // prove resolvePacks gates on `trusted`, not `refKind`).
+        trusted: entry.trusted ?? refKind === "relative",
         root: entry.root ?? "/packs/core",
         async readRubric(relPath) {
           const content = opts.rubrics?.[relPath]
@@ -192,6 +198,35 @@ describe("resolvePacks", () => {
     expect(resolved.manifest.checks.map((c) => c.id)).toContain("core/lint")
   })
 
+  it("gates allowCommands on the loader's `trusted` flag, NOT on refKind — a 'relative' ref the loader marks untrusted still needs allowCommands", async () => {
+    const untrustedLoader = fakeLoader({
+      packs: { "./core-pack": { source: CORE_PACK_SOURCE, refKind: "relative", trusted: false } },
+      rubrics: CORE_RUBRICS,
+    })
+    const m = parseReviewManifest(
+      md(
+        "uses:",
+        "  - {pack: ./core-pack, as: core, preset: kimi, checks: [lint]}",
+        "checks: [{id: types, kind: command, run: tsc}]",
+        "bindings:",
+        "  local: {checks: [types, core/lint]}",
+      ),
+    )
+    await expect(resolvePacks(m, untrustedLoader)).rejects.toThrow(/check 'lint' is a command check/)
+    // The same manifest resolves fine once allowCommands opts in explicitly.
+    const mAllowed = parseReviewManifest(
+      md(
+        "uses:",
+        "  - {pack: ./core-pack, as: core, preset: kimi, checks: [lint], allowCommands: true}",
+        "checks: [{id: types, kind: command, run: tsc}]",
+        "bindings:",
+        "  local: {checks: [types, core/lint]}",
+      ),
+    )
+    const resolved = await resolvePacks(mAllowed, untrustedLoader)
+    expect(resolved.manifest.checks.map((c) => c.id)).toContain("core/lint")
+  })
+
   it("errors naming the check when an agent check resolves no preset anywhere", async () => {
     const m = parseReviewManifest(
       md(
@@ -252,6 +287,20 @@ describe("parseReviewManifest — uses[]", () => {
         ),
       ),
     ).toThrow(/must be pinned to a full 40-hex commit sha/)
+  })
+
+  it.each([
+    ["ssh transport", `git+ssh://git@example.com/org/pack.git#${"a".repeat(40)}`],
+    ["file transport", `git+file:///tmp/pack#${"a".repeat(40)}`],
+    ["ext:: transport (arbitrary local command execution)", `git+ext::sh -c 'touch /tmp/pwned'#${"a".repeat(40)}`],
+    ["plain http (not https)", `git+http://example.com/org/pack.git#${"a".repeat(40)}`],
+    ["a leading-dash ref masquerading as a git flag", `git+--upload-pack=touch /tmp/pwned#${"a".repeat(40)}`],
+  ])("rejects a git pack ref that isn't git+https:// — %s", (_label, pack) => {
+    expect(() =>
+      parseReviewManifest(
+        md("uses:", `  - {pack: ${JSON.stringify(pack)}, as: core}`, "checks: [{id: types, kind: command, run: tsc}]", "bindings:", "  local: {checks: [types]}"),
+      ),
+    ).toThrow(/must use git\+https:\/\//)
   })
 
   it("accepts a git ref pinned to a full 40-hex sha", () => {

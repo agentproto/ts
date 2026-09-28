@@ -170,14 +170,19 @@ calls for; a no-op when `uses` is empty, so a caller can always call it
 unconditionally). The daemon's loader
 (`@agentproto/runtime`'s `createReviewPackLoader`) resolves:
 
-- a relative path (`./…`, `../…`, or absolute) — inside the repo, relative
-  to the CONSUMER REVIEW.md's own directory;
+- a relative path (`./…`, `../…`, or absolute) — resolved against the
+  CONSUMER REVIEW.md's own directory. Resolving is NOT the same as being
+  trusted — see Security, below.
 - an npm package name — resolved from the reviewed repo's root via Node's
   own module resolution (`node_modules`, no network, no install);
-- `git+https://...#<sha>` — pinned to a full 40-hex commit sha ONLY; a
+- `git+https://...#<sha>` — `https://` ONLY (ssh://, file://, ext::, and
+  plain http:// are all rejected — `ext::` in particular can run an
+  arbitrary local command), pinned to a full 40-hex commit sha ONLY; a
   floating ref (branch, tag, short sha) is rejected at parse time —
   reproducibility first. Cloned once into
-  `~/.agentproto/review-packs/<sha>/` and reused from there.
+  `~/.agentproto/review-packs/<sha>/` and reused from there; the URL is
+  passed to `git clone` after a literal `--`, so it can never be misread as
+  a flag.
 
 **Identity + cache.** Each resolved pack gets a digest: sha256 over its
 REVIEW.md plus every rubric file its SELECTED checks use (sorted by path).
@@ -197,7 +202,14 @@ config resolves to even when its own rubric file didn't move).
 **Security.** A pack's `command` checks run shell commands in the
 CONSUMER's checkout — third-party code execution. They're a parse error
 unless the `uses` entry sets `allowCommands: true`. A relative-path pack is
-exempt (same repo, same trust).
+exempt — but "the ref string looks relative" is never enough by itself:
+the loader only exempts a relative pack whose resolved root (realpath'd,
+so a symlink can't point outside and still count) sits INSIDE the reviewed
+repo root AND whose REVIEW.md is tracked by git there. A `../..` escape, an
+absolute path elsewhere, or an untracked in-repo directory (a gitignored
+scratch dir, `./node_modules/<pkg>`) all still LOAD — they're just not
+exempt, same as an npm or git pack. An npm or git pack's command checks are
+never exempt, full stop.
 
 **Verify.** `review verify` re-checks `packs[]` digests against what THIS
 checkout's `uses[]` resolves to RIGHT NOW, but only when every pack

@@ -184,9 +184,15 @@ export interface PackSource {
   manifest: PackManifest
   /** The pack's REVIEW.md source bytes (hashed into the pack digest). */
   source: string
-  /** How this ref was resolved — governs the `allowCommands` exemption
-   *  (relative-path packs are same-repo, same-trust). */
+  /** How this ref was resolved (informational: does NOT by itself decide
+   *  trust — see {@link trusted}). */
   refKind: "relative" | "npm" | "git"
+  /** Governs the `allowCommands` exemption: true ONLY for a same-repo,
+   *  same-trust pack — the loader's own job to decide (a "relative" ref
+   *  string alone proves nothing; the resolved path could still point
+   *  outside the repo, or at untracked content the repo doesn't actually
+   *  own). Always false for an npm or git pack. */
+  trusted: boolean
   /** Absolute directory `readRubric`'s paths (and a lane executor reading
    *  the rubric at run time) are relative to. Carried onto each imported
    *  agent check as `AgentCheck.rubricBase`. */
@@ -263,7 +269,7 @@ export async function resolvePacks(manifest: ReviewManifest, loader: PackLoader)
       const namespacedId = `${use.as}/${id}`
 
       if (check.kind === "command") {
-        if (!(use.allowCommands || loaded.refKind === "relative")) {
+        if (!(use.allowCommands || loaded.trusted)) {
           throw new ReviewManifestError(
             `uses '${use.as}' (${use.pack}): check '${id}' is a command check — it would run shell ` +
               `commands in this checkout from third-party pack content. Set allowCommands: true on the ` +

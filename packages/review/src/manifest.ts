@@ -293,6 +293,17 @@ const FULL_SHA = /^[0-9a-f]{40}$/
 
 function normalizeUse(u: z.infer<typeof usesEntrySchema>): ReviewUse {
   if (u.pack.startsWith("git+")) {
+    // Only https:// is accepted — ssh://, file://, ext:: (arbitrary local
+    // command execution), and plain http:// are all rejected outright. This
+    // also closes an argument-injection angle for free: every accepted ref's
+    // URL literally starts with "https://", so it can never be mistaken for
+    // a `git clone` flag (which requires a leading '-').
+    if (!u.pack.startsWith("git+https://")) {
+      throw new ReviewManifestError(
+        `uses '${u.as}': git pack ref '${u.pack}' must use git+https:// — other git transports ` +
+          `(ssh://, file://, ext::, plain http://) are not accepted`,
+      )
+    }
     const hash = u.pack.indexOf("#")
     const pin = hash === -1 ? "" : u.pack.slice(hash + 1)
     if (!FULL_SHA.test(pin)) {
