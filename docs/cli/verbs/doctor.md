@@ -17,6 +17,7 @@ and changes nothing: no file writes, no process starts, no prompts.
 | `auth` | no | Auth profiles (count, enabled) · credentials `auth discover` finds that aren't imported yet |
 | `clients` | no | Each detected coding client: agentproto MCP server still present in its config, pinned URL matches the daemon port |
 | `devices` | no | Paired device count (`~/.agentproto/pairings.json`) · any device never seen, or not seen in 30+ days |
+| `rendezvous` | no | Whether the configured (or hosted-default) rendezvous broker is reachable, direct or through an `HTTPS_PROXY` — surfaces proxy-related dial failures that would otherwise only appear deep inside `pair accept`/`devices add` |
 | `skills` | no | Each skill-capable adapter: agentproto skill pack installed and current |
 | `local-models` ("Inference endpoints") | no | Each named LLM-gateway endpoint (`~/.agentproto/llm-endpoints.json`, plus `forge` if `FORGE_BASE_URL` is set) answers `GET <baseUrl>/models`; for a reachable one, its connector's own model listing (load state, context size) |
 
