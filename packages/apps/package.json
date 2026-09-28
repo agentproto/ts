@@ -139,6 +139,16 @@
       "import": "./dist/work-board/panel.mjs",
       "default": "./dist/work-board/panel.mjs"
     },
+    "./review-panel": {
+      "types": "./dist/review-panel/index.d.ts",
+      "import": "./dist/review-panel.mjs",
+      "default": "./dist/review-panel.mjs"
+    },
+    "./review-panel/panel": {
+      "types": "./dist/review-panel/panel.d.ts",
+      "import": "./dist/review-panel/panel.mjs",
+      "default": "./dist/review-panel/panel.mjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -158,7 +168,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "build:ui": "tsc --noEmit -p src/work-board/ui/tsconfig.json && node scripts/build-work-board-ui.mjs",
-    "build:ui:check": "tsc --noEmit -p src/work-board/ui/tsconfig.json && node scripts/build-work-board-ui.mjs --check"
+    "build:ui:check": "tsc --noEmit -p src/work-board/ui/tsconfig.json && node scripts/build-work-board-ui.mjs --check",
+    "build:ui:reviews": "tsc --noEmit -p src/review-panel/ui/tsconfig.json && node scripts/build-review-panel-ui.mjs",
+    "build:ui:reviews:check": "tsc --noEmit -p src/review-panel/ui/tsconfig.json && node scripts/build-review-panel-ui.mjs --check"
   },
   "dependencies": {
     "@agentproto/agent": "workspace:*",

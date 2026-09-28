@@ -69,9 +69,17 @@ function runView(run: ReviewRun): Record<string, unknown> {
 }
 
 /** Compact `review_ledger` row. `pr`: the annotation link, else the one
- *  recorded in the attestation. */
-function ledgerRow(a: Attestation, annotations: LedgerAnnotations = {}): Record<string, unknown> {
+ *  recorded in the attestation. `prState`: the most recent `review_pr`
+ *  status snapshot's state, when one was ever fetched — the "last known PR
+ *  state" the `agentproto_reviews` panel's list row shows without a second
+ *  round-trip. `cwd`: the host-local checkout `review_run` ran in (never
+ *  part of the attestation itself — it isn't portable — but real daemon-
+ *  local metadata a caller on THIS daemon needs to pass back into a fresh
+ *  `review_run`, e.g. the panel's "Re-run fresh" action). */
+function ledgerRow(entry: LedgerEntry, annotations: LedgerAnnotations = {}): Record<string, unknown> {
+  const a = entry.attestation
   const pr = annotations.pr ?? a.pr
+  const lastPrStatus = annotations.prStatus?.at(-1)
   return {
     runId: a.runId,
     reviewId: a.reviewId,
@@ -83,10 +91,31 @@ function ledgerRow(a: Attestation, annotations: LedgerAnnotations = {}): Record<
     rangeSha: a.rangeSha,
     manifestSha: a.manifestSha,
     createdAt: a.createdAt,
+    cwd: entry.host.repoRoot,
     ...(a.dirty ? { dirty: true } : {}),
     ...(a.requester ? { requester: a.requester } : {}),
     ...(pr ? { pr } : {}),
+    ...(lastPrStatus ? { prState: lastPrStatus.state } : {}),
     lanes: a.lanes.map((l) => ({ id: l.id, status: l.status, blocking: l.blocking })),
+  }
+}
+
+/** `review_ledger({includeRunning: true})` row for a still-running run — same
+ *  field names as `ledgerRow` where they apply, plus `status: "running"` and
+ *  no `verdict`/`rangeSha`/`manifestSha` (not resolved yet). */
+function runningRow(run: ReviewRun): Record<string, unknown> {
+  return {
+    runId: run.runId,
+    status: "running" as const,
+    ...(run.reviewId ? { reviewId: run.reviewId } : {}),
+    ...(run.binding ? { binding: run.binding } : {}),
+    ...(run.repoRemote ? { repoRemote: run.repoRemote } : {}),
+    ...(run.baseSha ? { baseSha: run.baseSha } : {}),
+    ...(run.headSha ? { headSha: run.headSha } : {}),
+    createdAt: run.startedAt,
+    ...(run.repoRoot ? { cwd: run.repoRoot } : {}),
+    ...(run.requesterSessionId ? { requester: { sessionId: run.requesterSessionId } } : {}),
+    lanes: run.lanes.map((l) => ({ id: l.id, status: l.status, blocking: l.blocking })),
   }
 }
 
@@ -115,8 +144,8 @@ async function resolveRangeSha(range: string, root: string | undefined): Promise
 }
 
 /** Summary of an attestation for the `review_pr` view. */
-const attestationSummary = (a: Attestation): Record<string, unknown> => {
-  const { lanes: _lanes, ...rest } = ledgerRow(a)
+const attestationSummary = (entry: LedgerEntry): Record<string, unknown> => {
+  const { lanes: _lanes, ...rest } = ledgerRow(entry)
   return rest
 }
 
@@ -131,6 +160,74 @@ async function findByPr(ledger: ReviewLedger, pr: { repo: string; number: number
 
 const HEX64 = /^[0-9a-f]{64}$/
 
+export interface ReviewLedgerQuery {
+  cwd?: string
+  repoRemote?: string
+  range?: string
+  binding?: string
+  requesterSessionId?: string
+  subtree?: boolean
+  includeRunning?: boolean
+  limit?: number
+}
+
+/**
+ * The `review_ledger` tool's body, factored out so a non-MCP caller (the
+ * `agentproto_reviews` builtin panel's initial snapshot, builtin-apps.ts)
+ * gets the EXACT same rows the tool itself returns — one implementation,
+ * not a second one that could drift. Throws on a bad `range`; the MCP
+ * handler above turns that into `errorContent`, a direct caller decides its
+ * own error handling.
+ */
+export async function reviewLedgerView(
+  runner: ReviewRunner,
+  input: ReviewLedgerQuery,
+  opts: { resolveSubtree?: (sessionId: string) => readonly string[] } = {},
+): Promise<{ total: number; attestations: Record<string, unknown>[] }> {
+  let repoRemote = input.repoRemote
+  let root: string | undefined
+  if (input.cwd) {
+    const repo = await resolveRepo(input.cwd)
+    root = repo.root
+    repoRemote ??= repo.repoRemote
+  }
+  let rangeSha: string | undefined
+  if (input.range !== undefined) {
+    rangeSha = await resolveRangeSha(input.range, root)
+  }
+  const requesterSessionIds = input.requesterSessionId
+    ? input.subtree && opts.resolveSubtree
+      ? [...opts.resolveSubtree(input.requesterSessionId)]
+      : [input.requesterSessionId]
+    : undefined
+  const entries = await runner.ledger.list({
+    ...(repoRemote !== undefined ? { repoRemote } : {}),
+    ...(rangeSha !== undefined ? { rangeSha } : {}),
+    ...(input.binding !== undefined ? { binding: input.binding } : {}),
+    ...(requesterSessionIds ? { requesterSessionIds } : {}),
+  })
+  let runningRows: Record<string, unknown>[] = []
+  if (input.includeRunning) {
+    const requesterSet = requesterSessionIds ? new Set(requesterSessionIds) : undefined
+    runningRows = runner
+      .list()
+      .filter((r) => r.status === "running")
+      .filter((r) => repoRemote === undefined || r.repoRemote === repoRemote)
+      .filter((r) => input.binding === undefined || r.binding === input.binding)
+      .filter((r) => !requesterSet || (r.requesterSessionId !== undefined && requesterSet.has(r.requesterSessionId)))
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+      .map(runningRow)
+  }
+  const limit = input.limit ?? 50
+  const settledRows = await Promise.all(
+    entries
+      .slice(0, Math.max(limit - runningRows.length, 0))
+      .map(async (e) => ledgerRow(e, await runner.ledger.getAnnotations(ledgerKeyOf(e.attestation)))),
+  )
+  const rows = [...runningRows, ...settledRows].slice(0, limit)
+  return { total: entries.length + runningRows.length, attestations: rows }
+}
+
 export interface RegisterReviewToolsOptions {
   runner: ReviewRunner
   /** The calling session (from `?callerSessionId=`) — agent-lane reviewer
@@ -139,10 +236,16 @@ export interface RegisterReviewToolsOptions {
   /** `gh` runner for `review_pr` — injectable for tests. Default: the real
    *  `gh` on the daemon's PATH. */
   gh?: GhRunner
+  /** Resolve a session id to its subtree (itself + every session it
+   *  transitively spawned) — backs `review_ledger({requesterSessionId,
+   *  subtree: true})`. Omitted ⇒ `subtree` is ignored (scoped to the exact
+   *  id only), so a caller without sessions-registry access still works,
+   *  just without the subtree expansion. */
+  resolveSubtree?: (sessionId: string) => readonly string[]
 }
 
 export function registerReviewTools(server: McpServer, opts: RegisterReviewToolsOptions): void {
-  const { runner, callerSessionId } = opts
+  const { runner, callerSessionId, resolveSubtree } = opts
   const gh = opts.gh ?? execGh
 
   // ── review_run ────────────────────────────────────────────────
@@ -247,44 +350,37 @@ export function registerReviewTools(server: McpServer, opts: RegisterReviewTools
     "review_ledger",
     "List review attestations recorded in the daemon's ledger (~/.agentproto/reviews), " +
       "newest first. Filter by repo (`cwd` resolves its remote, or pass `repoRemote`), by " +
-      "`range` (`<base>..<head>` refs/shas — refs need `cwd` — or a 64-hex rangeSha), and by " +
-      "`binding`. Rows are compact; use `review_export` for a full attestation.",
+      "`range` (`<base>..<head>` refs/shas — refs need `cwd` — or a 64-hex rangeSha), by " +
+      "`binding`, and by `requesterSessionId` (the session that asked for the review — pass " +
+      "`subtree: true` to also include reviews requested by any session it transitively " +
+      "spawned). `includeRunning: true` prepends in-flight runs — rows with `status: " +
+      "\"running\"` and the lanes settled so far — ahead of the settled ones. Rows are " +
+      "compact; use `review_export` for a full attestation.",
     {
       cwd: z.string().optional().describe("A directory inside the repo — scopes to its remote and resolves `range` refs."),
       repoRemote: z.string().optional().describe("Normalized repo remote (e.g. github.com/agentproto/ts)."),
       range: z.string().optional().describe("`<base>..<head>` or a 64-hex rangeSha."),
       binding: z.string().optional().describe("Keep only this binding."),
+      requesterSessionId: z
+        .string()
+        .optional()
+        .describe("Keep only reviews requested by this session (attestation.requester.sessionId)."),
+      subtree: z
+        .boolean()
+        .optional()
+        .describe(
+          "With `requesterSessionId`, also include reviews requested by any session it " +
+            "transitively spawned. Ignored without `requesterSessionId`. Default false.",
+        ),
+      includeRunning: z
+        .boolean()
+        .optional()
+        .describe("Also list in-flight runs (this daemon process only) ahead of the settled ones. Default false."),
       limit: z.number().int().positive().max(500).optional().describe("Max rows (default 50)."),
     },
     async (input) => {
       try {
-        let repoRemote = input.repoRemote
-        let root: string | undefined
-        if (input.cwd) {
-          const repo = await resolveRepo(input.cwd)
-          root = repo.root
-          repoRemote ??= repo.repoRemote
-        }
-        let rangeSha: string | undefined
-        if (input.range !== undefined) {
-          try {
-            rangeSha = await resolveRangeSha(input.range, root)
-          } catch (err) {
-            return errorContent(`review_ledger: ${errMessage(err)}`)
-          }
-        }
-        const entries = await runner.ledger.list({
-          ...(repoRemote !== undefined ? { repoRemote } : {}),
-          ...(rangeSha !== undefined ? { rangeSha } : {}),
-          ...(input.binding !== undefined ? { binding: input.binding } : {}),
-        })
-        const limit = input.limit ?? 50
-        const rows = await Promise.all(
-          entries
-            .slice(0, limit)
-            .map(async (e) => ledgerRow(e.attestation, await runner.ledger.getAnnotations(ledgerKeyOf(e.attestation)))),
-        )
-        return jsonContent({ total: entries.length, attestations: rows })
+        return jsonContent(await reviewLedgerView(runner, input, { resolveSubtree }))
       } catch (err) {
         return errorContent(`review_ledger failed: ${errMessage(err)}`)
       }
@@ -452,7 +548,7 @@ export function registerReviewTools(server: McpServer, opts: RegisterReviewTools
             if (!repo) {
               return jsonContent({
                 ok: false,
-                attestation: attestationSummary(a),
+                attestation: attestationSummary(entry),
                 error: {
                   code: "unsupported_remote",
                   message: `'${a.target.repoRemote}' is not a github.com remote — review_pr only follows GitHub PRs`,
@@ -463,7 +559,7 @@ export function registerReviewTools(server: McpServer, opts: RegisterReviewTools
             if (!pr) {
               return jsonContent({
                 ok: false,
-                attestation: attestationSummary(a),
+                attestation: attestationSummary(entry),
                 error: { code: "no_pr", message: `GitHub knows no pull request containing ${a.target.headSha} in ${repo}` },
               })
             }
@@ -476,7 +572,7 @@ export function registerReviewTools(server: McpServer, opts: RegisterReviewTools
           )
           return jsonContent({
             ok: true,
-            attestation: attestationSummary(a),
+            attestation: attestationSummary(entry),
             pr: updated.pr ?? pr,
             linkedVia,
             status: snapshot,
@@ -486,7 +582,7 @@ export function registerReviewTools(server: McpServer, opts: RegisterReviewTools
           const e = toPrLookupError(err)
           return jsonContent({
             ok: false,
-            attestation: attestationSummary(a),
+            attestation: attestationSummary(entry),
             ...(pr ? { pr } : {}),
             ...(annotations.prStatus?.length ? { lastStatus: annotations.prStatus.at(-1) } : {}),
             error: { code: e.code, message: e.message },

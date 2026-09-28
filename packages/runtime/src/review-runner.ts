@@ -388,6 +388,14 @@ export interface ReviewRun {
   /** Where the attestation was written in the ledger. */
   ledgerPath?: string
   error?: string
+  /** The session that requested this run (`input.requesterSessionId ??
+   *  input.parentSessionId`), when known — mirrors
+   *  `Attestation.requester.sessionId` for a run that hasn't (or never will)
+   *  reach the ledger, so `review_ledger({includeRunning: true})` and the
+   *  `session_tree` badge (WP-review-panel) can attribute an in-flight/
+   *  cancelled/failed run to its requester without waiting for an
+   *  attestation. */
+  requesterSessionId?: string
 }
 
 export interface ReviewRunner {
@@ -395,6 +403,13 @@ export interface ReviewRunner {
   status(runId: string): Promise<ReviewRun | undefined>
   wait(runId: string): Promise<ReviewRun | undefined>
   cancel(runId: string): boolean
+  /** Every run this daemon process has started, newest first — running runs
+   *  plus ones that settled (done/failed/cancelled) without a daemon
+   *  restart in between. Runs live in memory only for the process lifetime
+   *  (a restart loses this list, same as the rest of `runs` — the ATTESTATION
+   *  is what persists, in the ledger). Backs `review_ledger({includeRunning:
+   *  true})` and the `session_tree` review badge. */
+  list(): ReviewRun[]
   readonly ledger: ReviewLedger
 }
 
@@ -405,6 +420,14 @@ export interface CreateReviewRunnerOptions {
   reviewers?: ReviewerSessionHost
   /** Attestor identity. Default: `agentproto-runtime@<hostname>`. */
   daemonId?: string
+  /** Called once a run with a `requesterSessionId` reaches `done` — never
+   *  for `failed`/`cancelled` (no verdict to report). Display-only: the
+   *  daemon writes `text` into the requester's transcript as a `notice`
+   *  (see `sessions.ts`'s `recordNotice`) so `session_story`/`live_session`
+   *  show it — this never enqueues a prompt, touches the inbox, or starts a
+   *  turn. Fire-and-forget from the runner's perspective; a throw here is
+   *  swallowed. */
+  notifyRequester?: (sessionId: string, text: string) => void
 }
 
 /** Placeholder values the daemon binds for every review. `{changed}` is a
@@ -521,7 +544,7 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
       return
     }
 
-    const requesterSessionId = input.requesterSessionId ?? input.parentSessionId
+    const requesterSessionId = run.requesterSessionId
     const gitAuthor = await commitAuthor(root, outcome.target.headSha)
     const requester: ReviewRequester = {
       ...(requesterSessionId ? { sessionId: requesterSessionId } : {}),
@@ -639,6 +662,9 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
         status: "running",
         startedAt: new Date().toISOString(),
         lanes: [],
+        ...(input.requesterSessionId ?? input.parentSessionId
+          ? { requesterSessionId: input.requesterSessionId ?? input.parentSessionId }
+          : {}),
       }
       const abort = new AbortController()
       inflight.set(key, run.runId)
@@ -653,6 +679,17 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
         .finally(() => {
           run.endedAt = new Date().toISOString()
           if (inflight.get(key) === run.runId) inflight.delete(key)
+          // Display-only settle notice — done runs only (a failed/cancelled
+          // run has no verdict to report). See `notifyRequester`'s doc.
+          if (run.status === "done" && run.attestation && run.requesterSessionId && opts.notifyRequester) {
+            const a = run.attestation
+            const range = `${a.target.baseSha.slice(0, 7)}..${a.target.headSha.slice(0, 7)}`
+            try {
+              opts.notifyRequester(run.requesterSessionId, `review ${a.verdict} ${range} (${run.runId})`)
+            } catch {
+              // Best-effort — never let a notification failure affect the run.
+            }
+          }
         })
       runs.set(run.runId, { run, done, abort, heads: new Set() })
       return run
@@ -666,5 +703,8 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
       return status(runId)
     },
     cancel,
+    list() {
+      return [...runs.values()].map(v => v.run).sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+    },
   }
 }

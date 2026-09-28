@@ -120,4 +120,45 @@ describe("builtin-apps.ts — boot-time mount, no app_install required", () => {
 
     await client.close()
   })
+
+  it("mounts the reviews panel only when a listReviews read path is wired", async () => {
+    const withoutReviews = await setup()
+    const { tools: toolsWithout } = await withoutReviews.listTools()
+    expect(toolsWithout.some(t => t.name === "agentproto_reviews")).toBe(false)
+    await withoutReviews.close()
+
+    const server = new McpServer({ name: "builtin-apps-test", version: "0.0.1" })
+    registerMcpApps(
+      server,
+      makeBuiltinPanelApps({
+        listSessions: () => [],
+        httpBaseUrl: "http://127.0.0.1:18790",
+        isSessionChatInstalled: () => false,
+        listTasks: boardId => ({ boardId: boardId ?? "ws:default", tasks: [] }),
+        listReviews: async () => ({ total: 0, attestations: [] }),
+      }),
+    )
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "builtin-apps-client", version: "0.0.1" })
+    await client.connect(clientTransport)
+
+    const { tools } = await client.listTools()
+    const tool = tools.find(t => t.name === "agentproto_reviews")
+    expect(tool).toBeDefined()
+    // @ts-expect-error — _meta is non-standard but present in protocol
+    expect(tool?._meta?.ui?.resourceUri).toBe("ui://agentproto_reviews/view")
+
+    const { resources } = await client.listResources()
+    const resource = resources.find(r => r.uri === "ui://agentproto_reviews/view")
+    expect(resource?.mimeType).toBe("text/html;profile=mcp-app")
+
+    const result = await client.readResource({ uri: "ui://agentproto_reviews/view" })
+    const content = result.contents[0]
+    if (!content || !("text" in content)) throw new Error("expected text resource")
+    expect(content.text).toContain("<!DOCTYPE html>")
+    expect((content.text.match(/\.\/assets/g) ?? []).length).toBe(0)
+
+    await client.close()
+  })
 })

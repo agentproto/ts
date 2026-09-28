@@ -3771,6 +3771,18 @@ export interface SessionsRegistry {
    *  window keeps aging out naturally rather than being wiped by the
    *  give-up itself. Returns false (no-op) for an unknown id. */
   giveUpRestart(id: string, message: string): boolean
+  /** Record a daemon-authored DISPLAY-ONLY notice into an agent-cli
+   *  session's transcript — the same `kind: "notice"` event `markCrashed`/
+   *  `giveUpRestart`/`interruptInFlightTurn` already stamp on their own
+   *  teardown/interrupt paths (see transcript-writer.ts's "notice" case),
+   *  exposed generically for a caller with just a session id, no `rt`
+   *  in hand. Appends to `events.jsonl` (so `session_story`/`live_session`
+   *  render it as a system message) and the ring buffer — nothing else:
+   *  it does NOT touch `promptQueue`, the inbox, or `busy`, so it can never
+   *  enqueue a prompt, wake an idle session into a turn, or interrupt a busy
+   *  one. Returns false (no-op) for an unknown id or a non-`agent-cli`
+   *  session. */
+  recordNotice(id: string, text: string): boolean
   /** List permission requests currently parked in the pending-permissions
    *  inbox across all permission-hold sessions, newest last. Optionally
    *  filtered to one session. */
@@ -9773,6 +9785,13 @@ export function createSessionsRegistry(opts?: {
       delete rt.desc.nextRestartAt
       appendLine(rt, message, "stderr")
       transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: message })
+      return true
+    },
+    recordNotice(id, text) {
+      const rt = sessions.get(id)
+      if (!rt || rt.desc.kind !== "agent-cli") return false
+      appendLine(rt, text, "stdout")
+      transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text })
       return true
     },
     archiveSession(id) {

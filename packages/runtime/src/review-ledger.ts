@@ -75,6 +75,13 @@ export interface ReviewLedgerFilter {
   rangeSha?: string
   binding?: string
   manifestSha?: string
+  /** Keep only entries whose `attestation.requester.sessionId` is one of
+   *  these — backs `review_ledger({requesterSessionId, subtree})`: a single
+   *  id, or (with `subtree: true`) that session's whole subtree, resolved by
+   *  the caller before reaching the ledger. Answered from an in-memory
+   *  `requesterSessionId -> ledger keys` index (built lazily on first use,
+   *  kept current on every `put()`), never a full re-scan. */
+  requesterSessionIds?: readonly string[]
 }
 
 export interface ReviewLedger {
@@ -174,6 +181,31 @@ export function createReviewLedger(opts: { root?: string } = {}): ReviewLedger {
    *  in this process never lose an append. */
   const annotationLocks = new Map<string, Promise<unknown>>()
 
+  // `requesterSessionId -> Set<entry file path>` — built once (a single full
+  // scan) on first use by `list({requesterSessionIds})`, then kept current by
+  // `indexRequester` on every `put()`. Never rescanned after that: a lookup
+  // is index hits + a targeted `readEntry` per hit, not a directory walk.
+  const requesterIndex = new Map<string, Set<string>>()
+  let requesterIndexBuilt = false
+
+  function indexRequester(entry: LedgerEntry): void {
+    const sessionId = entry.attestation.requester?.sessionId
+    if (!sessionId) return
+    const path = keyPath(root, ledgerKeyOf(entry.attestation))
+    let paths = requesterIndex.get(sessionId)
+    if (!paths) {
+      paths = new Set()
+      requesterIndex.set(sessionId, paths)
+    }
+    paths.add(path)
+  }
+
+  async function ensureRequesterIndex(): Promise<void> {
+    if (requesterIndexBuilt) return
+    requesterIndexBuilt = true
+    for (const entry of await scan({})) indexRequester(entry)
+  }
+
   async function readAnnotations(key: LedgerKey): Promise<LedgerAnnotations> {
     try {
       const parsed = JSON.parse(await readFile(annotationsPath(root, key), "utf8")) as LedgerAnnotations
@@ -209,7 +241,17 @@ export function createReviewLedger(opts: { root?: string } = {}): ReviewLedger {
     root,
     async put(entry) {
       const path = keyPath(root, ledgerKeyOf(entry.attestation))
+      // A re-run of the same key (an identical range re-reviewed, e.g. a
+      // `nocache` request) OVERWRITES this one file — drop the old
+      // requester's index pointer first when the new attestation's requester
+      // differs, so a stale `sessionId -> path` entry never resolves to a
+      // file that no longer attests that session.
+      const previous = await readEntry(path)
+      const prevSessionId = previous?.attestation.requester?.sessionId
+      const nextSessionId = entry.attestation.requester?.sessionId
+      if (prevSessionId && prevSessionId !== nextSessionId) requesterIndex.get(prevSessionId)?.delete(path)
       await writeJsonAtomic(path, entry)
+      indexRequester(entry)
       return path
     },
     async get(key) {
@@ -227,7 +269,23 @@ export function createReviewLedger(opts: { root?: string } = {}): ReviewLedger {
       return (await scan({})).find((e) => e.attestation.runId === runId)
     },
     async list(filter = {}) {
-      return scan(filter)
+      if (filter.requesterSessionIds === undefined) return scan(filter)
+      await ensureRequesterIndex()
+      const paths = new Set<string>()
+      for (const sessionId of filter.requesterSessionIds) {
+        for (const path of requesterIndex.get(sessionId) ?? []) paths.add(path)
+      }
+      const entries = (await Promise.all([...paths].map(readEntry))).filter((e): e is LedgerEntry => e !== undefined)
+      const { requesterSessionIds: _requesterSessionIds, ...rest } = filter
+      const filtered = entries.filter(entry => {
+        const a = entry.attestation
+        if (rest.repoRemote !== undefined && a.target.repoRemote !== rest.repoRemote) return false
+        if (rest.rangeSha !== undefined && a.rangeSha !== rest.rangeSha) return false
+        if (rest.binding !== undefined && a.binding !== rest.binding) return false
+        if (rest.manifestSha !== undefined && a.manifestSha !== rest.manifestSha) return false
+        return true
+      })
+      return filtered.sort((x, y) => y.attestation.createdAt.localeCompare(x.attestation.createdAt))
     },
     getAnnotations: readAnnotations,
     async updateAnnotations(key, update) {

@@ -50,8 +50,12 @@ import {
   SESSION_CHAT_APP_ID,
   workBoardApp,
   makeWorkBoardApp,
+  reviewPanelApp,
+  makeReviewPanelApp,
   type AgnoMcpApp,
   type WorkBoardOutput,
+  type ReviewPanelInput,
+  type ReviewPanelOutput,
 } from "@agentproto/apps"
 import type { AppHandle } from "@agentproto/app-kit"
 import { stableAppEmbedToken } from "./embed-tokens.js"
@@ -78,6 +82,13 @@ export interface BuiltinPanelAppsOps {
    *  widget's read path. Omit `boardId` to resolve the operator's default
    *  board (`ws:<slug>`). */
   listTasks(boardId?: string): WorkBoardOutput<TaskRecord>
+  /** The `agentproto_reviews` widget's initial-snapshot read path — bound to
+   *  `reviewLedgerView(reviewRunner, ...)` (review-tools.ts), the exact
+   *  function `review_ledger` itself calls, so the panel's execute() output
+   *  and the tool's own reply can never drift apart into two
+   *  implementations. Omitted (no review runner wired) ⇒ the panel isn't
+   *  mounted at all — see `makeBuiltinPanelApps`. */
+  listReviews?: (input: ReviewPanelInput) => Promise<ReviewPanelOutput>
 }
 
 /**
@@ -124,6 +135,15 @@ export function makeBuiltinPanelApps(
     // work-board). Read path only; writes go through task_claim/
     // task_update/task_create over the bridge, same as every other caller.
     makeWorkBoardApp<TaskRecord>({ listTasks: ops.listTasks }),
+    // Reviews widget — a verdict list + detail view over the review ledger
+    // (see apps/src/review-panel). Writes go through review_cancel/
+    // review_run/review_pr/review_export over the bridge, same as every
+    // other caller. Mounted only when a review runner is wired (always true
+    // on the real daemon; `listReviews` is optional here so a test harness
+    // building `makeBuiltinPanelApps` without one — e.g.
+    // `builtinPanelCatalogEntries`'s stub ops below — still gets a
+    // deterministic, small app list).
+    ...(ops.listReviews ? [makeReviewPanelApp({ listReviews: ops.listReviews })] : []),
   ]
 }
 
@@ -139,6 +159,7 @@ const PANEL_APP_HANDLES: readonly AppHandle[] = [
   liveSessionApp,
   sessionChatApp,
   workBoardApp,
+  reviewPanelApp,
 ]
 
 export interface BuiltinPanelCatalogEntry {
@@ -212,7 +233,7 @@ export function resolveBuiltinPanelUi(appId: string, httpBaseUrl: string): Built
     const html = typeof app.html === "function" ? app.html({ httpBaseUrl }) : app.html
     return { html, tools: liveSessionApp.ui?.tools ?? [] }
   }
-  const handle = [sessionsPanelApp, agentsOverviewApp, bureauSessionsApp, sessionStoryApp, workBoardApp].find(
+  const handle = [sessionsPanelApp, agentsOverviewApp, bureauSessionsApp, sessionStoryApp, workBoardApp, reviewPanelApp].find(
     h => h.id === appId,
   )
   if (!handle?.ui) return undefined
@@ -225,6 +246,12 @@ export function builtinPanelCatalogEntries(): BuiltinPanelCatalogEntry[] {
     httpBaseUrl: "http://127.0.0.1:0",
     isSessionChatInstalled: () => false,
     listTasks: (boardId) => ({ boardId: boardId ?? "ws:default", tasks: [] }),
+    // Always provided (never omitted) here, same reasoning as
+    // `isSessionChatInstalled: () => false` above: `PANEL_APP_HANDLES` is
+    // zipped against this call's output BY INDEX, so the review panel must
+    // always be present in this specific call regardless of whether the
+    // real daemon happens to have a review runner wired.
+    listReviews: async () => ({ total: 0, attestations: [] }),
   })
   return apps.map((app, i) => {
     const handle = PANEL_APP_HANDLES[i]!
