@@ -610,6 +610,8 @@ import { registerRemoteTools } from "./remote-tools.js"
 import { registerPairingTools } from "./pairing-tools.js"
 import type { PairingRegistry } from "./pairing-registry.js"
 import type { HostRegistry } from "./host-registry.js"
+import { createDeviceSandboxProvider } from "./sandbox-providers/device.js"
+import type { SandboxProviderHandle } from "./sandbox-providers/types.js"
 import type { JoinTokenRegistry } from "./join-token-registry.js"
 import { createDeviceRegistry } from "./device-registry.js"
 import { registerDeviceTools } from "./device-tools.js"
@@ -1196,6 +1198,12 @@ export interface CreateGatewayOptions {
    *  gates `/device-inference/*` (see http-server.ts's `HOST_SCOPE_HEADER`
    *  doc comment for the full scope-gate story). */
   deviceInferenceShare?: boolean
+  /** Mirrors `config.features.deviceSpawnAllow` (DEVICES-PLAN PR-D). Default
+   *  false. Passed straight through to `startHttpServer`'s
+   *  `deviceSpawnAllow`, which gates `/device-spawn/*` — this daemon acting
+   *  as the RECEIVING end of an `agent_start({ sandbox: "device:<name>" })`
+   *  spawn driven from a paired controller. */
+  deviceSpawnAllow?: boolean
 }
 
 /** Default crash-detect sweep interval (crash-detect PR-1) when
@@ -1404,8 +1412,46 @@ export async function createGateway(
   // to the family's own built-in resolver (built-ins + `@agentproto/sandbox-
   // <slug>` dynamic import) when the host doesn't inject an override —
   // mirrors `resolveAgentAdapter`'s optional-injection shape.
-  const resolveSandboxProviderResolved: SandboxProviderResolver =
+  const baseSandboxProviderResolver: SandboxProviderResolver =
     opts.resolveSandboxProvider ?? makeSandboxResolver(makeSandboxCredsStore())
+  // `device:<name>` (DEVICES-PLAN PR-D) resolves to a synthetic handle built
+  // fresh per call around `opts.hostRegistry`, rather than living in
+  // `sandbox-providers/registry.ts` — that registry is deliberately free of
+  // `HostRegistry` coupling (it only knows built-ins + the fixed third-party
+  // catalog), and `hostRegistry` is only available here, at the gateway's
+  // composition root. `null` when no `hostRegistry` is wired ⇒
+  // `bootSandboxAgentSession` reports the existing "provider not found"
+  // error, same as any other unresolvable slug.
+  const resolveSandboxProviderResolved: SandboxProviderResolver = async (
+    slug: string,
+  ): Promise<SandboxProviderHandle | null> => {
+    if (slug.startsWith("device:")) {
+      const deviceName = slug.slice("device:".length)
+      if (!opts.hostRegistry || deviceName.length === 0) return null
+      return {
+        provider: createDeviceSandboxProvider(deviceName, opts.hostRegistry),
+        slug,
+        name: deviceName,
+        version: "builtin",
+        description: `Spawns and proxies an agent session on the paired host device "${deviceName}" over its pair/v2 channel.`,
+        requiresSetup: false,
+        capabilities: {
+          networkEgress: true,
+          mounts: false,
+          lifecyclePause: false,
+          readOnly: false,
+        },
+        // See that field's doc — a device's filesystem is disjoint from the
+        // driving daemon's; forwarding a HOST-shaped implicit cwd would
+        // almost always ENOENT there.
+        omitCwdWhenImplicit: true,
+        async check(): Promise<boolean> {
+          return true
+        },
+      }
+    }
+    return baseSandboxProviderResolver(slug)
+  }
   // Same loopback reasoning as `daemonMcpUrl` above, for the terminal MCP
   // app's PTY WebSocket: this process already knows its own bind/port, so
   // there's no need to shell out to `.agentproto/runtime.json` (the CLI's
@@ -2851,6 +2897,7 @@ export async function createGateway(
     },
     ...(llmEndpoint ? { llmEndpoint } : {}),
     ...(opts.deviceInferenceShare ? { deviceInferenceShare: true } : {}),
+    ...(opts.deviceSpawnAllow ? { deviceSpawnAllow: true } : {}),
     remote,
     ...(opts.pairingRegistry ? { pairings: opts.pairingRegistry } : {}),
     ...(opts.hostRegistry ? { hostRegistry: opts.hostRegistry } : {}),

@@ -56,4 +56,19 @@ export interface SandboxProviderHandle extends AdapterHandle {
    * of forwarding it into a box where it can never resolve.
    */
   readonly defaultCwd?: string
+  /**
+   * When true, `bootSandboxAgentSession` omits `cwd` from the box's own
+   * `agent_start` call entirely (rather than forwarding the HOST's resolved
+   * cwd) whenever the caller passed no explicit `agent_start.cwd` — letting
+   * the box's own `agent_start` apply ITS normal default-cwd resolution,
+   * exactly like an ordinary non-sandboxed local spawn. For a `device:<name>`
+   * target the "box" is another user's own machine with its own filesystem
+   * layout (its default workspace), so forwarding the driving daemon's
+   * host-shaped `cwd` (e.g. `/Volumes/...`) would almost always ENOENT
+   * there. Distinct from `defaultCwd`: that field substitutes a KNOWN
+   * in-box path (e2b/Box's `/home/user`); this one substitutes NOTHING,
+   * deferring entirely to the remote's own resolution. An explicit
+   * `agent_start.cwd` is still forwarded as-is regardless of this flag.
+   */
+  readonly omitCwdWhenImplicit?: boolean
 }

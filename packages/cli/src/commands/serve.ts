@@ -801,6 +801,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // is a deliberate operator decision (`agentproto devices
         // share-inference on`), never inferred from existing config.
         deviceInferenceShare: cfgFeatures.deviceInferenceShare === true,
+        // Same opt-in shape as deviceInferenceShare above (DEVICES-PLAN
+        // PR-D) — `agentproto devices allow-spawn on` is the deliberate
+        // operator decision that lets a paired HOST-scoped controller spawn
+        // agent sessions on THIS daemon.
+        deviceSpawnAllow: cfgFeatures.deviceSpawnAllow === true,
         resolveAgentAdapter,
         // Injected port behind `agent_start.worktree` + the `worktrees.isolation`
         // policy: runs `worktree.provision` over @agentproto/worktree, a dep the

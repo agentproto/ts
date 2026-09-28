@@ -45,6 +45,7 @@ Usage:
   agentproto devices add    <offer-url> [--name <label>]
   agentproto devices status <fingerprint|name>
   agentproto devices share-inference on|off
+  agentproto devices allow-spawn on|off
   agentproto devices sessions <fingerprint|name> [--session <id>] [--lines <n>] [--clean] [--json]
   agentproto devices join-token create|list|revoke ...  (see --help on that subcommand)
   agentproto devices --help
@@ -69,6 +70,14 @@ Usage:
            whatever this is set to. Default off. Writes
            features.deviceInferenceShare to config.json — restart
            \`agentproto serve\` (or the daemon) for a change to take effect.
+  allow-spawn
+           Opt THIS daemon in (or out) of being usable as an \`agent_start({
+           sandbox: "device:<name>" })\` target — spawning/driving agent
+           sessions here from a paired controller, over the same HOST-scoped
+           pairing requirement as share-inference (a plain remote-control
+           pairing never gets it). Default off. Writes
+           features.deviceSpawnAllow to config.json — restart \`agentproto
+           serve\` (or the daemon) for a change to take effect.
   sessions Read-only: a registered host's own session list, or (with
            --session) a tail of one session's output — forwarded live over
            the host's E2E channel.
@@ -142,6 +151,8 @@ export async function runDevices(args: readonly string[]): Promise<number> {
       return runStatus(args.slice(1))
     case "share-inference":
       return runShareInference(args.slice(1))
+    case "allow-spawn":
+      return runAllowSpawn(args.slice(1))
     case "sessions":
       return runSessions(args.slice(1))
     case "join-token":
@@ -151,7 +162,7 @@ export async function runDevices(args: readonly string[]): Promise<number> {
       return 0
     default:
       process.stderr.write(
-        `agentproto devices: unknown subcommand "${sub}"\n  Known: list | rename | revoke | add | status | share-inference | sessions | join-token\n`,
+        `agentproto devices: unknown subcommand "${sub}"\n  Known: list | rename | revoke | add | status | share-inference | allow-spawn | sessions | join-token\n`,
       )
       return 2
   }
@@ -411,6 +422,37 @@ async function runShareInference(args: readonly string[]): Promise<number> {
             : "\nNote: features.llmEndpoint is not explicitly on — it defaults on once a named\n" +
               "endpoint is configured (`agentproto llm endpoints add`/`detect`), but until then\n" +
               "these routes 404. Check with `agentproto llm gateway status`.\n")
+        : "") +
+      "\nRestart `agentproto serve` (or the daemon) for this to take effect.\n",
+  )
+  return 0
+}
+
+// ── allow-spawn ──────────────────────────────────────────────────
+
+async function runAllowSpawn(args: readonly string[]): Promise<number> {
+  const mode = args[0]
+  if (mode !== "on" && mode !== "off") {
+    process.stderr.write(
+      `agentproto devices allow-spawn: expected "on" or "off".\n` +
+        "  Try: agentproto devices allow-spawn on\n",
+    )
+    return 2
+  }
+  const enabled = mode === "on"
+
+  const cfg = await loadConfig()
+  const next = setConfigKey(cfg, "features.deviceSpawnAllow", enabled)
+  await saveConfig(next)
+
+  process.stdout.write(
+    `Device spawn allow: ${enabled ? "on" : "off"}.\n` +
+      (enabled
+        ? "This lets a paired controller spawn/drive agent sessions on this daemon\n" +
+          "(`agent_start({ sandbox: \"device:<name>\" })`) — but ONLY over a pairing the\n" +
+          "other side registered as a HOST (`agentproto pair offer --host` run here, then\n" +
+          "`agentproto devices add` there); a plain remote-control pairing never gets it,\n" +
+          "whatever this is set to.\n"
         : "") +
       "\nRestart `agentproto serve` (or the daemon) for this to take effect.\n",
   )
