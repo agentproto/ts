@@ -281,6 +281,16 @@ function defaultHostsPath(): string {
   return join(homedir(), ".agentproto", "hosts.json")
 }
 
+/** `/sessions` or `/sessions/...` exactly — not a loose prefix match, so a
+ *  hypothetical future `/sessions-admin/...` route (or similar) is never
+ *  mistaken for one of these read-only, cacheable-and-stale-fallback-able
+ *  paths. Shared by `cacheSessionsResponse` here and `device-registry.ts`'s
+ *  `forwardHttp` fallback gate — both must agree on exactly which paths this
+ *  applies to. */
+export function isSessionsPath(path: string): boolean {
+  return path === "/sessions" || path.startsWith("/sessions/") || path.startsWith("/sessions?")
+}
+
 /** Broker upgrade URL. `route` must be a ROUTE token — never an auth token or
  *  the offer secret: everything here is visible to the broker. Mirrors
  *  `pair-transport.ts`'s `rvUrl` / `pairing-registry.ts`'s `dialUrl`. */
@@ -419,6 +429,16 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
 
     const pairRoot = await derivePairRoot(derived)
     const nowIso = new Date(now()).toISOString()
+    const existing = hosts.get(offer.fingerprint)
+    // Sticky "manual": a human's own `pair offer --host` + `devices add`
+    // ceremony must never become prunable just because the SAME box later
+    // (or concurrently) also dials in with a join token — once a fingerprint
+    // has been manually added, it stays `addedVia: "manual"` regardless of
+    // what any later `add()` call for it reports. The reverse (a join-added
+    // host later manually re-added) is allowed to flip to "manual" — that's
+    // an explicit human action taking ownership of it.
+    const addedVia: HostRecord["addedVia"] =
+      existing?.addedVia === "manual" ? "manual" : meta?.joined ? "join" : "manual"
     const record: HostRecord = {
       fingerprint: offer.fingerprint,
       name: name ?? offer.fingerprint,
@@ -426,12 +446,12 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
       daemonEd25519Pub: offer.daemonEd25519Pub,
       rendezvousUrl: offer.rendezvousUrl,
       pairRoot,
-      createdAt: hosts.get(offer.fingerprint)?.createdAt ?? nowIso,
+      createdAt: existing?.createdAt ?? nowIso,
       lastSeen: nowIso,
       ...(meta?.provider ? { provider: meta.provider } : {}),
       ...(meta?.sandboxId ? { sandboxId: meta.sandboxId } : {}),
       ...(meta?.labels ? { labels: meta.labels } : {}),
-      addedVia: meta?.joined ? "join" : "manual",
+      addedVia,
     }
     hosts.set(record.fingerprint, record)
     await persist()
@@ -574,12 +594,17 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     }
   }
 
-  /** Cache a successful GET `/sessions*` response for `getSessionsSnapshot`'s
-   *  offline fallback. No-op for any other path (exec, device-inference,
-   *  …) — this cache exists only to make session HISTORY survive a host
-   *  going offline, not to snapshot arbitrary forwarded traffic. */
+  /** Cache a successful (2xx) GET `/sessions*` response for
+   *  `getSessionsSnapshot`'s offline fallback. No-op for any other path
+   *  (exec, device-inference, …) — this cache exists only to make session
+   *  HISTORY survive a host going offline, not to snapshot arbitrary
+   *  forwarded traffic. Also a no-op for a non-2xx response: caching a
+   *  transient 4xx/5xx as "last-known-good" would keep re-serving that
+   *  error, unchanged, for the rest of `joinedHostTtlMs` once the host
+   *  actually does go offline. */
   function cacheSessionsResponse(fingerprint: string, req: ForwardHttpRequest, res: ForwardHttpResponse): void {
-    if (req.method !== "GET" || !req.path.startsWith("/sessions")) return
+    if (req.method !== "GET" || !isSessionsPath(req.path)) return
+    if (res.status < 200 || res.status >= 300) return
     if (res.body.byteLength > MAX_CACHED_SESSION_BODY_BYTES) return
     let byPath = sessionsCache.get(fingerprint)
     if (!byPath) {

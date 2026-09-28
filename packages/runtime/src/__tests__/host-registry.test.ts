@@ -34,15 +34,15 @@ import { generateIdentity, identityFingerprint, type DaemonIdentity } from "@age
 import { createHostRegistry, type HostRegistry } from "../host-registry.js"
 import { connect, type Middleware } from "./frame-harness.js"
 
-function stubUpstream(delayMs = 0): void {
+function stubUpstream(delayMs = 0, status = 200): void {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: unknown) => {
       if (delayMs > 0) await new Promise(r => setTimeout(r, delayMs))
       return {
-        status: 200,
+        status,
         headers: { forEach: (cb: (v: string, k: string) => void) => cb("application/json", "content-type") },
-        arrayBuffer: async () => new TextEncoder().encode(JSON.stringify({ ok: true, path: String(url) })).buffer,
+        arrayBuffer: async () => new TextEncoder().encode(JSON.stringify({ ok: status < 300, path: String(url) })).buffer,
       }
     }),
   )
@@ -429,6 +429,32 @@ describe("createHostRegistry", () => {
       expect(registry.getSessionsSnapshot("no-such-host", "/sessions")).toBeUndefined()
     })
 
+    it("does not cache a non-2xx /sessions response — a transient 500 must not be served forever as 'last-known-good'", async () => {
+      const identity = await generateIdentity()
+      const { url, auth, fingerprint } = await makeOffer(identity, { scope: "host" })
+      const { dial, waitReady } = makeEpochAwareDial(identity, auth)
+      const registry = createHostRegistry({ hostsPath, dial, handshakeTimeoutMs: 2_000 })
+      await registry.add(url, "office-mac")
+      await waitReady()
+
+      stubUpstream(0, 500)
+      const res = await registry.forwardHttp(fingerprint, { method: "GET", path: "/sessions" })
+      expect(res.status).toBe(500)
+      expect(registry.getSessionsSnapshot(fingerprint, "/sessions")).toBeUndefined()
+    })
+
+    it("never matches a lookalike path like /sessions-admin/... as a /sessions* path", async () => {
+      const identity = await generateIdentity()
+      const { url, auth, fingerprint } = await makeOffer(identity, { scope: "host" })
+      const { dial, waitReady } = makeEpochAwareDial(identity, auth)
+      const registry = createHostRegistry({ hostsPath, dial, handshakeTimeoutMs: 2_000 })
+      await registry.add(url, "office-mac")
+      await waitReady()
+
+      await registry.forwardHttp(fingerprint, { method: "GET", path: "/sessions-admin/danger" })
+      expect(registry.getSessionsSnapshot(fingerprint, "/sessions-admin/danger")).toBeUndefined()
+    })
+
     it("caps distinct cached paths per host, evicting the oldest first", async () => {
       const identity = await generateIdentity()
       const { url, auth, fingerprint } = await makeOffer(identity, { scope: "host" })
@@ -509,6 +535,52 @@ describe("createHostRegistry", () => {
       await registry.add(url, "ci-reviewer #1536", { joined: true })
 
       clock += 365 * 86_400_000
+      expect(await registry.list()).toHaveLength(1)
+    })
+
+    it("addedVia: 'manual' is sticky — a manually-added host re-joined later via a token stays unprunable", async () => {
+      const identity = await generateIdentity()
+      const dial = vi.fn(async () => {
+        const { a, b } = connect()
+        const offer = lastOffer
+        void runFakeDaemon(a, identity, token => token === offer!.auth)
+        return b
+      })
+      let lastOffer: Awaited<ReturnType<typeof makeOffer>> | undefined
+      let clock = Date.now()
+      const registry = createHostRegistry({ hostsPath, dial, now: () => clock, joinedHostTtlMs: 1_000 })
+
+      lastOffer = await makeOffer(identity, { scope: "host" })
+      await registry.add(lastOffer.url, "office-mac") // the human ceremony first
+
+      lastOffer = await makeOffer(identity, { scope: "host" })
+      await registry.add(lastOffer.url, "office-mac (rejoined)", { joined: true }) // same fingerprint, now via token
+
+      clock += 2_000
+      // Still "manual" underneath (unprunable), even though the most recent
+      // add() call reported `joined: true`.
+      expect(await registry.list()).toHaveLength(1)
+    })
+
+    it("addedVia: a join-added host later manually re-added flips to 'manual' — an explicit human action takes ownership", async () => {
+      const identity = await generateIdentity()
+      const dial = vi.fn(async () => {
+        const { a, b } = connect()
+        const offer = lastOffer
+        void runFakeDaemon(a, identity, token => token === offer!.auth)
+        return b
+      })
+      let lastOffer: Awaited<ReturnType<typeof makeOffer>> | undefined
+      let clock = Date.now()
+      const registry = createHostRegistry({ hostsPath, dial, now: () => clock, joinedHostTtlMs: 1_000 })
+
+      lastOffer = await makeOffer(identity, { scope: "host" })
+      await registry.add(lastOffer.url, "ci-reviewer #1536", { joined: true })
+
+      lastOffer = await makeOffer(identity, { scope: "host" })
+      await registry.add(lastOffer.url, "renamed-by-human") // no meta — a manual re-add
+
+      clock += 2_000
       expect(await registry.list()).toHaveLength(1)
     })
   })

@@ -13,7 +13,7 @@
  */
 
 import type { PairingRegistry, PairingRecord } from "./pairing-registry.js"
-import type { HostRegistry, HostRecord, ForwardHttpRequest, ForwardHttpResponse } from "./host-registry.js"
+import { isSessionsPath, type HostRegistry, type HostRecord, type ForwardHttpRequest, type ForwardHttpResponse } from "./host-registry.js"
 
 export type DeviceRole = "client" | "host"
 export type DeviceKind = "browser" | "cli" | "daemon"
@@ -170,7 +170,7 @@ export function createDeviceRegistry(pairing: PairingRegistry, hosts?: HostRegis
       try {
         return await hosts.forwardHttp(idOrName, req)
       } catch (err) {
-        if (req.method !== "GET" || !req.path.startsWith("/sessions")) throw err
+        if (req.method !== "GET" || !isSessionsPath(req.path)) throw err
         const snapshot = hosts.getSessionsSnapshot(idOrName, req.path)
         if (!snapshot) throw err
         return snapshot
