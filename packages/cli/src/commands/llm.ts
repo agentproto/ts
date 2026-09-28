@@ -34,11 +34,14 @@ import {
   isConnectorId,
   CONNECTOR_IDS,
   DEFAULT_LOCAL_PORTS,
+  checkHarnessFit,
+  HARNESS_FIRST_REQUEST_SIZE,
+  syncPiModels,
   type EndpointConfig,
   type ConnectorId,
   type ConnectorModel,
+  type FitVerdict,
 } from "@agentproto/llm-endpoint"
-import { syncPiModels } from "@agentproto/llm-endpoint"
 import type { LlmEndpointStatusReport } from "@agentproto/runtime"
 import {
   discoverDaemon,
@@ -243,11 +246,32 @@ interface EndpointTestResult {
   reachable: boolean
   models: string[]
   connectorModels?: ConnectorModel[]
+  /** Per LOADED model, which known harnesses (`agent_start.inference`'s fit
+   *  check — `HARNESS_FIRST_REQUEST_SIZE`) fit this endpoint's loaded ctx.
+   *  Keyed by model id; absent for a model with no loaded ctx to check
+   *  against (`checkHarnessFit` would report every harness "unknown" — not
+   *  worth carrying the noise). */
+  harnessFit?: Record<string, Record<string, FitVerdict>>
   latencyMs: number
   detail?: string
 }
 
 const ENDPOINT_TEST_TIMEOUT_MS = 4000
+
+const KNOWN_HARNESSES = Object.keys(HARNESS_FIRST_REQUEST_SIZE)
+
+const FIT_GLYPH: Record<FitVerdict, string> = { fits: "✓", "no-fit": "✗", unknown: "?" }
+
+/** Which of the known harnesses (`HARNESS_FIRST_REQUEST_SIZE`) fit `loadedCtx`
+ *  — the SAME fit check `agent_start.inference` runs before spawn, surfaced
+ *  here read-only so an operator can tell ahead of time. */
+function harnessFitForCtx(loadedCtx: number | undefined): Record<string, FitVerdict> {
+  const out: Record<string, FitVerdict> = {}
+  for (const harness of KNOWN_HARNESSES) {
+    out[harness] = checkHarnessFit({ harness, loadedCtx }).verdict
+  }
+  return out
+}
 
 /** `{data:[{id}]}` OpenAI-shaped model list → the ids, tolerating anything else. */
 function extractModelIds(body: unknown): string[] {
@@ -295,6 +319,10 @@ async function testOneEndpoint(endpoint: EndpointConfig): Promise<EndpointTestRe
     }
     const body: unknown = await res.json().catch(() => null)
     const connectorModels = await connectorById(connectorId)?.listModels(endpoint.baseUrl)
+    const harnessFit: Record<string, Record<string, FitVerdict>> = {}
+    for (const m of connectorModels ?? []) {
+      if (m.state === "loaded" && m.loadedCtx !== undefined) harnessFit[m.id] = harnessFitForCtx(m.loadedCtx)
+    }
     return {
       id: endpoint.id,
       baseUrl: endpoint.baseUrl,
@@ -302,6 +330,7 @@ async function testOneEndpoint(endpoint: EndpointConfig): Promise<EndpointTestRe
       reachable: true,
       models: extractModelIds(body),
       connectorModels: connectorModels ?? [],
+      ...(Object.keys(harnessFit).length > 0 ? { harnessFit } : {}),
       latencyMs,
     }
   } catch (err) {
@@ -348,6 +377,13 @@ async function runEndpointsTest(args: readonly string[]): Promise<number> {
           const ctx =
             m.loadedCtx !== undefined && m.maxCtx !== undefined ? ` ctx=${m.loadedCtx}/${m.maxCtx}` : ""
           process.stdout.write(`      - ${m.id}  state=${m.state}${ctx}\n`)
+          const fit = r.harnessFit?.[m.id]
+          if (fit) {
+            const summary = Object.entries(fit)
+              .map(([harness, verdict]) => `${harness}=${FIT_GLYPH[verdict]}`)
+              .join(" ")
+            process.stdout.write(`          fit: ${summary}\n`)
+          }
         }
       }
     }

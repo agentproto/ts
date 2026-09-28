@@ -653,7 +653,7 @@ describe("local-models", () => {
     const check = byId(checks, "local-models.bonsai")
     expect(check).toMatchObject({
       status: "ok",
-      detail: "http://192.168.1.20:8081/v1 reachable — 1 loaded (bonsai-27b-win, ctx 62976/262144)",
+      detail: "http://192.168.1.20:8081/v1 reachable — 1 loaded (bonsai-27b-win, ctx 62976/262144 [claude-code✓ claude-sdk✓ pi✓])",
     })
     expect(check.data?.connector).toBe("lmstudio")
     expect(check.data?.models).toEqual([

@@ -208,6 +208,67 @@ describe("agentproto llm endpoints test", () => {
     expect(text).toContain("test-model")
     expect(text).toContain("state=unknown")
   })
+
+  it("shows the harness fit line for a loaded model with a known ctx (SESSION-INFERENCE-BINDING)", async () => {
+    const server: Server = createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" })
+      if (req.url?.endsWith("/api/v0/models")) {
+        res.end(JSON.stringify({ data: [{ id: "bonsai-27b-win", state: "loaded", loaded_context_length: 32768, max_context_length: 262144 }] }))
+      } else {
+        res.end(JSON.stringify({ data: [{ id: "bonsai-27b-win" }] }))
+      }
+    })
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()))
+    const address = server.address()
+    const port = typeof address === "object" && address ? address.port : 0
+
+    await writeFile(
+      process.env.LLM_ENDPOINT_ENDPOINTS_FILE!,
+      JSON.stringify({
+        endpoints: [{ id: "lmstudio", kind: "openai", baseUrl: `http://127.0.0.1:${port}/v1`, connector: "lmstudio" }],
+      }),
+    )
+    const out = captureStdout()
+    const code = await runLlm(["endpoints", "test"])
+    out.restore()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+
+    expect(code).toBe(0)
+    const text = out.text()
+    expect(text).toContain("ctx=32768/262144")
+    // 32768 < claude-code's ~48k threshold at the default 25% headroom, but clears
+    // claude-sdk's (~24.3k) and pi's (~10k) thresholds.
+    expect(text).toContain("fit: claude-code=✗ claude-sdk=✓ pi=✓")
+  })
+
+  it("--json includes harnessFit per loaded model", async () => {
+    const server: Server = createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" })
+      if (req.url?.endsWith("/api/v0/models")) {
+        res.end(JSON.stringify({ data: [{ id: "bonsai-27b-mac", state: "loaded", loaded_context_length: 86016, max_context_length: 262144 }] }))
+      } else {
+        res.end(JSON.stringify({ data: [{ id: "bonsai-27b-mac" }] }))
+      }
+    })
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()))
+    const address = server.address()
+    const port = typeof address === "object" && address ? address.port : 0
+
+    await writeFile(
+      process.env.LLM_ENDPOINT_ENDPOINTS_FILE!,
+      JSON.stringify({
+        endpoints: [{ id: "lmstudio", kind: "openai", baseUrl: `http://127.0.0.1:${port}/v1`, connector: "lmstudio" }],
+      }),
+    )
+    const out = captureStdout()
+    const code = await runLlm(["endpoints", "test", "--json"])
+    out.restore()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+
+    expect(code).toBe(0)
+    const parsed = JSON.parse(out.text())
+    expect(parsed.results[0].harnessFit["bonsai-27b-mac"]).toEqual({ "claude-code": "fits", "claude-sdk": "fits", pi: "fits" })
+  })
 })
 
 describe("agentproto llm endpoints add", () => {
