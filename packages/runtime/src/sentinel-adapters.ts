@@ -42,6 +42,7 @@ import {
   BUILTIN_SENTINEL_SLUGS,
   type SentinelCreds,
 } from "./sentinel-providers/registry.js"
+import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
 import type {
   SentinelProviderHandle,
   SentinelProviderCapabilities,
@@ -56,11 +57,20 @@ export interface SentinelAdapterInfo {
   capabilities: SentinelProviderCapabilities
 }
 
-/** Static catalog of built-in providers. Empty for AIP-60 step 2 —
- *  `local-gh`/`webhook`/`agentpush` land in later steps (design §12). A
- *  third-party `agentproto/adapter-<slug>` package still lists via
- *  `discoverExtras` below. */
-export const SENTINEL_CATALOG: AdapterCatalog = []
+/** Static catalog of built-in providers. `webhook`/`agentpush` land in later
+ *  steps (design §12). A third-party `agentproto/adapter-<slug>` package
+ *  still lists via `discoverExtras` below. */
+export const SENTINEL_CATALOG: AdapterCatalog = [
+  {
+    slug: LOCAL_GH_SLUG,
+    name: "Local GitHub CLI",
+    description:
+      "Zero-infra PR watcher over the host's authenticated `gh` CLI. No " +
+      "credentials, no webhook — diffs successive snapshots on a poll timer.",
+    packageName: "@agentproto/runtime",
+    hint: "github · zero-infra",
+  },
+]
 
 /** Extract the safe descriptor from a resolved handle. No secrets. */
 export function toSentinelInfo(handle: SentinelProviderHandle): SentinelAdapterInfo {

@@ -323,6 +323,20 @@ export interface ProvenanceConfig {
 }
 
 /**
+ * Sentinel auto-link policy (AIP-60 §6, step 4) — whether a PR an executor
+ * session opens gets a sentinel created for it automatically.
+ */
+export interface SentinelConfig {
+  /** Auto-watch a PR when a session opens one (`recordOpenedPr`, fed by
+   *  `command_execute`'s stamper and both `pr-provenance-reconciler.ts`
+   *  lanes). When unset, the daemon defaults to `true` only when the
+   *  `local-gh` provider is available (i.e. `gh auth status` succeeds) —
+   *  otherwise `false`, logged once. Explicitly setting this always wins
+   *  over that probe. Per-spawn opt-out: `agent_start.sentinel: false`. */
+  autoWatchPrs?: boolean
+}
+
+/**
  * Session-presence policy — how the dashboard triages a session into its
  * `running` / `tending` / `attention` / `quiet` presence state (see
  * `session-presence.ts`). Optional block on `AgentprotoConfig.sessions`.
@@ -507,6 +521,8 @@ export interface AgentprotoConfig {
   sessions?: SessionsConfig
   /** Provenance policy — the opt-in `gh` PATH shim. See {@link ProvenanceConfig}. */
   provenance?: ProvenanceConfig
+  /** Sentinel auto-link policy. See {@link SentinelConfig}. */
+  sentinel?: SentinelConfig
   /** Daemon-side AGENTS.md resolution/injection policy. See {@link AgentsMdConfig}. */
   agentsMd?: AgentsMdConfig
   /** Daemon-side session titler (`session-titler.ts`). DEFAULT OFF — when

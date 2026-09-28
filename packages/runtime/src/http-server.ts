@@ -54,6 +54,25 @@ import {
 } from "./session-message.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
+import type { SentinelStore } from "./sentinel-store.js"
+import type { SentinelProviderHandle } from "./sentinel-providers/types.js"
+import {
+  createSentinelWatch,
+  cancelSentinelWatch,
+  sentinelView,
+  type SentinelWatchInput,
+} from "./sentinel-tools.js"
+
+/** Deps for the `/sentinels/*` HTTP routes — the same shape
+ *  `registerSentinelTools` closes over, minus `defaultSessionId` (an HTTP
+ *  caller has no implicit calling-session identity; `sessionId` is always
+ *  required in the request body). */
+export interface SentinelHttpDeps {
+  store: SentinelStore
+  resolveProvider: (slug: string) => Promise<SentinelProviderHandle | null>
+  isSessionAlive: (sessionId: string) => boolean
+  activeIntervalMs?: number
+}
 import type { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import type { RemoteController, EnableInput } from "./remote-controller.js"
 import type { PairingRegistry } from "./pairing-registry.js"
@@ -913,6 +932,10 @@ export interface RuntimeHttpServerOptions {
   /** Optional — when wired, exposes /tunnels/* routes for creating and
    *  managing public tunnels for local ports. Without it the routes 404. */
   tunnels?: TunnelRegistry
+  /** Optional — when wired, exposes /sentinels/* routes for `agentproto
+   *  sentinel watch|list|rm|status` (the CLI has no in-process registry to
+   *  call, unlike the MCP `sentinel_*` tools). Without it the routes 404. */
+  sentinels?: SentinelHttpDeps
   /** Optional — when wired (i.e. `features.llmEndpoint` is on), exposes
    *  `GET /llm-endpoint/status` + `POST /llm-endpoint/restart` for
    *  `agentproto llm gateway status|restart` and the "LLM gateway" doctor
@@ -3454,6 +3477,15 @@ export async function startHttpServer(
           if (handled) return
         }
 
+        // Sentinel routes — the daemon-HTTP surface `agentproto sentinel`
+        // talks to (no in-process registry to call from a separate CLI
+        // invocation, unlike the MCP sentinel_* tools). /sentinels,
+        // /sentinels/:id.
+        if (opts.sentinels && path.startsWith("/sentinels")) {
+          const handled = await handleSentinels(req, res, path, opts.sentinels)
+          if (handled) return
+        }
+
         // llm-endpoint routes — only registered when the gateway was built
         // with an LlmEndpointRegistry (features.llmEndpoint on).
         // /llm-endpoint/status, /llm-endpoint/restart.
@@ -4303,6 +4335,20 @@ export function buildSpawnSessionHttpArgs(
   const browser = parseBrowserMode(b.browser === true || b.browser === "true" ? "headless" : b.browser)
   const browserField: Pick<SpawnAgentSessionInput, "browser"> =
     browser !== undefined ? { browser } : {}
+  // Sentinel auto-link opt-out — the HTTP twin of the MCP `agent_start`
+  // tool's `sentinel` field. Only an explicit `false` (or its stringified
+  // form) is forwarded — `true`/absent both mean "allowed" (the default).
+  // Hoisted for the same TS2590 reason as `browserField`/`spendCaps`.
+  const sentinelOptOut =
+    typeof b.sentinel === "boolean"
+      ? b.sentinel
+      : b.sentinel === "true"
+        ? true
+        : b.sentinel === "false"
+          ? false
+          : undefined
+  const sentinelField: Pick<SpawnAgentSessionInput, "sentinel"> =
+    sentinelOptOut === false ? { sentinel: false } : {}
   return {
     adapter,
     ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
@@ -4454,6 +4500,7 @@ export function buildSpawnSessionHttpArgs(
           return n ? { notifyParentOnCrash: true } : {}
         })()
       : {}),
+    ...sentinelField,
     // Worktree isolation — the HTTP twin of the MCP `agent_start` tool's
     // `worktree` field. Same `spawnAgentSession` core resolves the
     // `worktrees.isolation` policy, so `always` bites here too and there's
@@ -7028,6 +7075,95 @@ async function handleTunnels(
       return true
     }
     json(200, { ok, tunnelId: rawIdOrName })
+    return true
+  }
+
+  return false
+}
+
+/**
+ * /sentinels routes — create, list, get, and stop sentinels. The daemon-HTTP
+ * twin of `sentinel_watch`/`sentinel_list`/`sentinel_unwatch` (a separate CLI
+ * invocation has no in-process `SentinelStore` to call directly), sharing the
+ * exact same `createSentinelWatch`/`cancelSentinelWatch` logic those MCP
+ * tools use. Returns `true` when it handled the request.
+ *
+ *   GET    /sentinels        → { sentinels: SentinelView[] }
+ *   POST   /sentinels        → SentinelView (creates a new sentinel)
+ *   GET    /sentinels/:id    → SentinelView
+ *   DELETE /sentinels/:id    → { ok, id }
+ */
+async function handleSentinels(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  deps: SentinelHttpDeps,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (path === "/sentinels" && req.method === "GET") {
+    json(200, { sentinels: deps.store.list().map(sentinelView) })
+    return true
+  }
+
+  if (path === "/sentinels" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    if (!body || typeof body !== "object") {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const b = body as Record<string, unknown>
+    const until = b.until === "subject_terminal" || b.until === "never" ? b.until : undefined
+    const input: SentinelWatchInput = {
+      ...(typeof b.subject === "string" ? { subject: b.subject } : {}),
+      ...(typeof b.prUrl === "string" ? { prUrl: b.prUrl } : {}),
+      ...(typeof b.sessionId === "string" ? { sessionId: b.sessionId } : {}),
+      ...(Array.isArray(b.types) ? { types: b.types.filter((t): t is string => typeof t === "string") } : {}),
+      ...(typeof b.urgency === "string" ? { urgency: b.urgency as MessageUrgency } : {}),
+      ...(until ? { until } : {}),
+      ...(typeof b.provider === "string" ? { provider: b.provider } : {}),
+    }
+    const result = await createSentinelWatch(
+      {
+        store: deps.store,
+        resolveProvider: deps.resolveProvider,
+        isSessionAlive: deps.isSessionAlive,
+        ...(deps.activeIntervalMs !== undefined ? { activeIntervalMs: deps.activeIntervalMs } : {}),
+      },
+      input,
+    )
+    if (!result.ok) {
+      json(400, { error: result.error, message: result.message })
+      return true
+    }
+    json(201, sentinelView(result.sentinel))
+    return true
+  }
+
+  const sentinelMatch = path.match(/^\/sentinels\/([^/]+)$/)
+  if (!sentinelMatch) return false
+  const id = decodeURIComponent(sentinelMatch[1] ?? "")
+
+  if (req.method === "GET") {
+    const sentinel = deps.store.get(id)
+    if (!sentinel) {
+      json(404, { error: "sentinel_not_found", id })
+      return true
+    }
+    json(200, sentinelView(sentinel))
+    return true
+  }
+
+  if (req.method === "DELETE") {
+    const removed = await cancelSentinelWatch({ store: deps.store, resolveProvider: deps.resolveProvider }, id)
+    if (!removed) {
+      json(404, { error: "sentinel_not_found", id })
+      return true
+    }
+    json(200, { ok: true, id })
     return true
   }
 
