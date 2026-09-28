@@ -19,6 +19,7 @@ export {
   parseReviewManifest,
   resolveBinding,
   getCheck,
+  finalizeBindings,
   reviewFrontmatterSchema,
   ReviewManifestError,
   DEFAULT_BINDING,
@@ -31,7 +32,21 @@ export {
   type ReviewCheck,
   type CommandCheck,
   type AgentCheck,
+  type ReviewUse,
+  type UsesOverride,
 } from "./manifest.js"
+export {
+  parsePackManifest,
+  resolvePacks,
+  PackManifestError,
+  type PackManifest,
+  type PackCheck,
+  type PackCommandCheck,
+  type PackAgentCheck,
+  type PackSource,
+  type PackLoader,
+  type ResolvePacksResult,
+} from "./packs.js"
 export {
   compileReview,
   toLaneResult,
@@ -81,6 +96,7 @@ export {
   type Finding,
   type LaneResult,
   type LaneStatus,
+  type PackDigest,
   type Quorum,
   type ReviewPrRef,
   type ReviewRequester,

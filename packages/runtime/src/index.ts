@@ -330,6 +330,7 @@ export {
 export type { ReviewSignature, ReviewSigningKey, VerifySignedAttestationResult } from "./review-signing.js"
 export { composedFromRangeSha, findComposeCandidate } from "./review-compose.js"
 export type { ComposeCandidate, FindComposeCandidateInput } from "./review-compose.js"
+export { createReviewPackLoader, defaultReviewPackCacheDir } from "./review-pack-loader.js"
 export { createReviewLedger, defaultReviewLedgerRoot, repoSlug, withPr, withPrStatus } from "./review-ledger.js"
 export type {
   ReviewLedger,

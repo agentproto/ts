@@ -14,7 +14,13 @@
  * same repoRemote + binding + manifestSha + rubric digest for the lane, the
  * prior attestation's own `verdict` AND this lane's own status both `pass`,
  * the prior `baseSha` equal to the new base, the prior `headSha` a strict
- * ancestor of the new head, the prior not `dirty`. Trust is automatic here:
+ * ancestor of the new head, the prior not `dirty` — and, when this lane's
+ * check comes from a `uses[]` review pack (Step 5), the prior attestation
+ * must ALSO carry an identical digest for that pack (`input.packDigest`):
+ * the rubric-digest check alone only catches an edit to THIS check's rubric
+ * file, not an edit elsewhere in the pack (another check's config, the
+ * pack's own REVIEW.md) that could change what this check's config resolves
+ * to. Trust is automatic here:
  * a candidate is only ever drawn from THIS daemon's own ledger (`ledger.list`),
  * which is the "own ledger" half of the frozen trust rule — the "or signed by
  * a key in the allowed_signers in use" half applies to a prior attestation
@@ -44,6 +50,12 @@ export interface FindComposeCandidateInput {
   binding: string
   checkId: string
   rubricSha256: string
+  /** Set when `checkId` is a `uses[]` pack check (namespaced `<as>/<id>`):
+   *  the id + digest of the pack CURRENTLY resolved for that namespace.
+   *  Composition additionally requires the prior attestation's `packs` to
+   *  carry an entry with this same id and digest. `undefined` for a local
+   *  (non-pack) check — nothing extra to require. */
+  packDigest?: { id: string; sha256: string }
   baseSha: string
   headSha: string
 }
@@ -69,6 +81,10 @@ export async function findComposeCandidate(input: FindComposeCandidateInput): Pr
     if (!lane || lane.status !== "pass") continue
     const rubric = (a.rubrics ?? []).find((r) => r.check === input.checkId)
     if (!rubric || rubric.sha256 !== input.rubricSha256) continue
+    if (input.packDigest) {
+      const priorPack = (a.packs ?? []).find((p) => p.id === input.packDigest!.id)
+      if (!priorPack || priorPack.sha256 !== input.packDigest.sha256) continue
+    }
     if (!(await isAncestor(input.repoRoot, a.target.headSha, input.headSha))) continue
     return { attestation: a }
   }

@@ -14,6 +14,7 @@ import {
   type Attestation,
   type Attestor,
   type LaneResult,
+  type PackDigest,
   type ReviewPrRef,
   type ReviewRequester,
   type ReviewTarget,
@@ -58,6 +59,7 @@ export interface BuildAttestationInput {
   lanes: LaneResult[]
   attestor: Attestor
   rubrics?: RubricDigest[]
+  packs?: PackDigest[]
   dirty?: boolean
   requester?: ReviewRequester
   pr?: ReviewPrRef
@@ -81,6 +83,7 @@ export function buildAttestation(input: BuildAttestationInput): Attestation {
     verdict: foldVerdict(input.lanes, input.quorum),
     attestor: { daemon: input.attestor.daemon, presets: [...new Set(input.attestor.presets)] },
     rubrics: input.rubrics ?? [],
+    ...(input.packs && input.packs.length > 0 ? { packs: input.packs } : {}),
     ...(input.dirty ? { dirty: true } : {}),
     ...(input.requester && (input.requester.sessionId || input.requester.gitAuthor)
       ? { requester: { ...input.requester } }

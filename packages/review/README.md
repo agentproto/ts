@@ -111,6 +111,106 @@ alone: `${VAR}`, brace expansion like `{a,b}`, and the escaped literal
 | `{head}` | compiler, **lanes only** | frozen head sha (prepare runs before the freeze) |
 | `{changed}` | daemon host | `'[<baseSha>]'`, a shell-quoted turbo filter for packages changed in the range. Use `...{changed}` to include dependents. |
 
+## Review packs
+
+A review pack is an installable, pinned, reusable bundle of checks +
+rubrics — a repo `uses:` it instead of hand-writing the same rubrics every
+repo already has (correctness, security, …). `@agentproto/review-pack-core`
+ships three of them.
+
+**Pack format.** A pack is a directory whose own `REVIEW.md` declares
+`kind: review-pack`, `id`, `version` (semver), `description`, and `checks[]`
+in the normal check syntax — nothing else. A pack declares NO `bindings`, NO
+`prepare`, and NO `effects: true` check (each is a parse error): a pack is
+checks + rubrics, never a workflow of its own. An agent check inside a pack
+may OMIT `preset` — presets are host-specific, so the consumer supplies one.
+Rubric paths are relative to the pack's own root.
+
+```yaml
+---
+kind: review-pack
+id: core
+version: 1.0.0
+description: Generic correctness + security lanes.
+checks:
+  - {id: correctness, kind: agent, rubric: ./rubrics/correctness.md, blockOn: high}
+  - {id: security, kind: agent, rubric: ./rubrics/security.md, blockOn: high}
+---
+```
+
+**Consumption.** A top-level `uses:` in the CONSUMER's REVIEW.md:
+
+```yaml
+uses:
+  - pack: "@agentproto/review-pack-core"   # npm name | ./relative/path | git+https://...#<40-hex sha>
+    as: core                               # namespace — the pack's checks become core/<id>
+    checks: [correctness, security]        # optional subset; default all
+    preset: cc-subs-agentik                # default preset for the pack's agent checks
+    overrides:                             # optional per-check field overrides (by the pack's own id)
+      security: {blockOn: medium, timeoutMs: 600000}
+    allowCommands: false                   # see Security, below
+checks: [...]
+bindings:
+  local: {on: pre-push, checks: [types, core/correctness, core/security]}
+```
+
+A pack's imported checks are namespaced `<as>/<id>`; a binding references
+them like any other check. A manifest that declares `uses[]` must declare
+its bindings explicitly — the implied `default` binding only knows LOCAL
+checks, and silently excluding every pack check that way would be exactly
+the kind of misleading-verdict trap this package's parse-time validation
+exists to catch. An agent check that still has no `preset` after `overrides`
+and `uses[].preset` (and none in the pack itself) is a parse-time error
+naming the check.
+
+**Resolution.** `resolvePacks(manifest, loader)` is the pure package's half
+of this — it merges a manifest's `uses[]` in, given an injected
+`PackLoader` (the "host seam, not the pure package" the frozen design
+calls for; a no-op when `uses` is empty, so a caller can always call it
+unconditionally). The daemon's loader
+(`@agentproto/runtime`'s `createReviewPackLoader`) resolves:
+
+- a relative path (`./…`, `../…`, or absolute) — inside the repo, relative
+  to the CONSUMER REVIEW.md's own directory;
+- an npm package name — resolved from the reviewed repo's root via Node's
+  own module resolution (`node_modules`, no network, no install);
+- `git+https://...#<sha>` — pinned to a full 40-hex commit sha ONLY; a
+  floating ref (branch, tag, short sha) is rejected at parse time —
+  reproducibility first. Cloned once into
+  `~/.agentproto/review-packs/<sha>/` and reused from there.
+
+**Identity + cache.** Each resolved pack gets a digest: sha256 over its
+REVIEW.md plus every rubric file its SELECTED checks use (sorted by path).
+The attestation gains `packs?: [{ref, id, version, sha256}]` — additive, the
+attestation schema id is unchanged, and the digest lives inside the signed
+bytes automatically (nothing special to wire up). A ledger cache hit
+requires identical pack digests, exactly like rubric digests: edit one
+rubric a pack's checks use, or the pack's own REVIEW.md, and the next run
+misses the cache. Attestation composition (delta re-review, see
+`packages/runtime/src/review-compose.ts`) extends the same way — a lane
+whose check came from a pack composes only onto a prior attestation that
+carries an IDENTICAL digest for that pack, not just a matching digest for
+the lane's own rubric file (a change elsewhere in the pack — another
+check's config, the pack's own REVIEW.md — can change what this check's
+config resolves to even when its own rubric file didn't move).
+
+**Security.** A pack's `command` checks run shell commands in the
+CONSUMER's checkout — third-party code execution. They're a parse error
+unless the `uses` entry sets `allowCommands: true`. A relative-path pack is
+exempt (same repo, same trust).
+
+**Verify.** `review verify` re-checks `packs[]` digests against what THIS
+checkout's `uses[]` resolves to RIGHT NOW, but only when every pack
+actually resolves locally — an unresolvable pack (offline, not installed,
+the git cache missing) is a reported note, never a verify failure. A digest
+that DOES resolve and mismatches is a real failure: the pack's content
+changed since the attestation was produced.
+
+**Scaffolding.** `agentproto review init --pack <ref> [--as <ns>]` adds a
+`uses:` entry to REVIEW.md (creating the file first if absent) —
+idempotent by `pack` ref; a second `--pack` with the same ref is a no-op
+regardless of `--as`.
+
 ## Full example
 
 [`examples/REVIEW.md`](./examples/REVIEW.md), which the tests exercise:

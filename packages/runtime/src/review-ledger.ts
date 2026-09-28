@@ -35,6 +35,7 @@ import {
   ledgerKeyOf,
   type Attestation,
   type LedgerKey,
+  type PackDigest,
   type ReviewPrRef,
   type RubricDigest,
 } from "@agentproto/review"
@@ -93,8 +94,12 @@ export interface ReviewLedger {
   put(entry: LedgerEntry): Promise<string>
   get(key: LedgerKey): Promise<LedgerEntry | undefined>
   /** A reusable verdict for `key`: a clean (not dirty) `pass`/`block` whose
-   *  rubric digests still match. `incomplete` is never reused. */
-  lookupCached(key: LedgerKey, rubrics: readonly RubricDigest[]): Promise<LedgerEntry | undefined>
+   *  rubric AND pack digests still match. `incomplete` is never reused. */
+  lookupCached(
+    key: LedgerKey,
+    rubrics: readonly RubricDigest[],
+    packs?: readonly PackDigest[],
+  ): Promise<LedgerEntry | undefined>
   findByRunId(runId: string): Promise<LedgerEntry | undefined>
   /** Entries matching `filter`, newest first. */
   list(filter?: ReviewLedgerFilter): Promise<LedgerEntry[]>
@@ -143,6 +148,15 @@ const sameRubrics = (a: readonly RubricDigest[], b: readonly RubricDigest[]): bo
   const norm = (r: readonly RubricDigest[]) =>
     r
       .map((d) => `${d.check}\0${d.path}\0${d.sha256}`)
+      .sort()
+      .join("\n")
+  return norm(a) === norm(b)
+}
+
+const samePacks = (a: readonly PackDigest[], b: readonly PackDigest[]): boolean => {
+  const norm = (r: readonly PackDigest[]) =>
+    r
+      .map((d) => `${d.ref}\0${d.id}\0${d.version}\0${d.sha256}`)
       .sort()
       .join("\n")
   return norm(a) === norm(b)
@@ -288,12 +302,13 @@ export function createReviewLedger(opts: { root?: string } = {}): ReviewLedger {
     async get(key) {
       return readEntryCached(keyPath(root, key))
     },
-    async lookupCached(key, rubrics) {
+    async lookupCached(key, rubrics, packs = []) {
       const entry = await readEntryCached(keyPath(root, key))
       if (!entry) return undefined
       const a = entry.attestation
       if (a.verdict === "incomplete" || a.dirty) return undefined
       if (!sameRubrics(a.rubrics ?? [], rubrics)) return undefined
+      if (!samePacks(a.packs ?? [], packs)) return undefined
       return entry
     },
     async findByRunId(runId) {
