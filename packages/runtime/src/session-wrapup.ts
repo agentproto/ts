@@ -14,6 +14,12 @@
  * automatic exclusion. A `keepAlive` session that would otherwise close
  * downgrades to `judge` instead — a legitimately-parked supervisor still
  * deserves a second look, just not an autonomous close.
+ *
+ * `judge` is reserved for sessions that ARE idle-enough but ambiguous
+ * (no merge/parent-ended signal, a pending tool call, or the keepAlive
+ * downgrade above) — a barely-idle session never reaches a judge at all, it
+ * stays `keep`. Sending every session that's merely idle for a minute to a
+ * paid judge (FIX-9B) would be absurd.
  */
 
 import type { SessionDescriptor } from "./sessions.js"
@@ -147,19 +153,20 @@ export function planSessionWrapup(input: PlanSessionWrapupInput): SessionWrapupE
       // fired) — too early to say anything deterministic.
       cls = "judge"
       reasons.push("starting")
+    } else if (idleMinutesActual < idleThresholdMinutes) {
+      // Not idle long enough to say anything — this is the common case for
+      // most running sessions, and it must stay `keep`: sending every
+      // barely-idle session to a paid judge (FIX-9B) would be absurd.
+      cls = "keep"
+      reasons.push(`idle ${Math.round(idleMinutesActual)}m < ${idleThresholdMinutes}m`)
     } else {
-      const idleEnough = idleMinutesActual >= idleThresholdMinutes
       const mergeSignal = sig.worktreeMerged === true || sig.parentEnded === true
-      reasons.push(
-        idleEnough
-          ? `idle ${Math.round(idleMinutesActual)}m >= ${idleThresholdMinutes}m`
-          : `idle ${Math.round(idleMinutesActual)}m < ${idleThresholdMinutes}m`,
-      )
+      reasons.push(`idle ${Math.round(idleMinutesActual)}m >= ${idleThresholdMinutes}m`)
       if (sig.worktreeMerged) reasons.push("worktreeMerged")
       if (sig.parentEnded) reasons.push("parentEnded")
       if (sig.pendingToolCall) reasons.push("pendingToolCall")
 
-      if (idleEnough && mergeSignal && !sig.pendingToolCall) {
+      if (mergeSignal && !sig.pendingToolCall) {
         if (desc.keepAlive === true) {
           cls = "judge"
           reasons.push("keepAlive downgrades close to judge")

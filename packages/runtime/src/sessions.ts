@@ -1019,7 +1019,8 @@ export interface SessionDescriptor {
    *     e.g. Claude Code's "hit your session limit"), `"forgotten"` (a live
    *     session killed as part of an operator `DELETE`), `"steward-completed"` /
    *     `"steward-abandoned"` (the session steward's `closeWithOutcome` —
-   *     verdict `"done"` vs. everything else).
+   *     verdict `"done"` vs. `"abandoned"`; a `"blocked"`/`"needs-input"`
+   *     verdict doesn't close at all, see `SessionDescriptor.wrapupFlag`).
    *  Absent for every terminal path this file doesn't tag (a plain natural
    *  exit, an ordinary turn error) — the session's own fault, or at least
    *  not something worth a special label. A string outside this list is
@@ -1052,6 +1053,15 @@ export interface SessionDescriptor {
    *  revives the row. Persisted, so it survives restarts and archiving. See
    *  `session-outcome.ts`. */
   outcome?: SessionOutcome
+  /** A steward verdict of `"blocked"` or `"needs-input"` from
+   *  `registry.closeWithOutcome` (`session-wrapup.ts` / FIX-9A) — recorded
+   *  INSTEAD of closing, since neither verdict means the session is done.
+   *  The session stays exactly as alive as it was; this is a signal for a
+   *  human/orchestrator to look, not a termination. Persisted; overwritten
+   *  (not accumulated) by the next flag, and left stale on the descriptor
+   *  until something clears it (nothing here does — a later successful
+   *  turn/close is a separate, more informative signal than deleting this). */
+  wrapupFlag?: { verdict: "blocked" | "needs-input"; note?: string; judgedBy?: string; at: string }
   /** Last time anything was written to stdout/stderr. Lets the UI
    *  spot stuck sessions ("running for 2h, last output 12min ago"). */
   lastOutputAt?: string
@@ -3051,15 +3061,21 @@ export type PermissionRespondResult =
       message: string
     }
 
-/** Input to `SessionsRegistry.closeWithOutcome` — the Level 2 fields
- *  recorded onto the session's `SessionOutcome` before it's torn down. See
- *  {@link SessionOutcome} for the field meanings. */
+/** Input to `SessionsRegistry.closeWithOutcome`. `verdict: "done" |
+ *  "abandoned"` records the Level 2 fields onto the session's
+ *  `SessionOutcome` and actually closes it; `"blocked" | "needs-input"`
+ *  records the SAME `note`/`judgedBy` onto `SessionDescriptor.wrapupFlag`
+ *  instead and never touches the session's liveness. See {@link
+ *  SessionOutcome} / {@link SessionDescriptor.wrapupFlag} for the field
+ *  meanings. */
 export interface CloseWithOutcomeInput {
   verdict: "done" | "abandoned" | "blocked" | "needs-input"
   /** Overrides the outcome's derived summary when given (e.g. a judge's own
    *  written summary) — trimmed the same way `deriveSessionOutcome` trims
    *  `lastAssistantText`. Omitted keeps whatever `deriveSessionOutcome`
-   *  computed from the session's own last assistant message. */
+   *  computed from the session's own last assistant message. Ignored for a
+   *  `"blocked"`/`"needs-input"` verdict (there's no outcome to summarize —
+   *  nothing closed). */
   summary?: string
   note?: string
   /** A judge session id, or `"steward-rules"` for a deterministic close with
@@ -3676,21 +3692,29 @@ export interface SessionsRegistry {
    *  — the primitive the session steward (FIX-9A/9B) drives once a wrap-up
    *  plan (`planSessionWrapup`, `session-wrapup.ts`) puts a session in the
    *  `close`/`stuck` class, or a judge agent reaches a verdict on a `judge`
-   *  one. Terminates the same graceful way `kill()` does, tags
-   *  `endedReason: "steward-completed"` (verdict `"done"`) or
-   *  `"steward-abandoned"` (every other verdict), and — like `reapIdle`,
-   *  unlike a plain `kill()` — CLEARS the in-memory `agentSession` binding so
-   *  the row stays lazy-resumable in place. The recorded outcome's `source`/
-   *  `verdict`/`judgedBy`/`note` are stamped onto the row's `SessionOutcome`
-   *  (see `session-outcome.ts`) on top of what `deriveSessionOutcome` would
-   *  otherwise compute (last assistant message, PRs, cost) — a declared
-   *  close still shows what the session actually produced.
+   *  one. Verdict `"done"` or `"abandoned"` actually closes: terminates the
+   *  same graceful way `kill()` does, tags `endedReason: "steward-completed"`
+   *  (`"done"`) or `"steward-abandoned"` (`"abandoned"`), and — like
+   *  `reapIdle`, unlike a plain `kill()` — CLEARS the in-memory
+   *  `agentSession` binding so the row stays lazy-resumable in place. The
+   *  recorded outcome's `source`/`verdict`/`judgedBy`/`note` are stamped onto
+   *  the row's `SessionOutcome` (see `session-outcome.ts`) on top of what
+   *  `deriveSessionOutcome` would otherwise compute (last assistant message,
+   *  PRs, cost) — a declared close still shows what the session actually
+   *  produced. Verdict `"blocked"` or `"needs-input"` is NOT a completion —
+   *  nothing is terminated; the verdict is recorded as
+   *  `SessionDescriptor.wrapupFlag` instead, and the session is left exactly
+   *  as alive as it was.
    *
    *  Refuses (returns false, no-op) a session that is not a live
-   *  (`running`/`starting`) agent-cli row, OR that is `busy`/`awaitingInput`
-   *  AT THE MOMENT OF THE CALL — a plan computed moments earlier can be
-   *  stale; this is the re-check that keeps an autonomous close from ever
-   *  landing on a session that just picked up a turn or asked a question. */
+   *  (`running`/`starting`) agent-cli row, or that AT THE MOMENT OF THE CALL
+   *  is `busy`/`awaitingInput`/`awaitingPermission` or has a background task
+   *  outstanding (`pendingBgTasks`/`backgroundTasks`) — a plan computed
+   *  moments earlier can be stale; this is the re-check that keeps an
+   *  autonomous close from ever landing on a session that just picked up a
+   *  turn, asked a question, or still has something in flight. Applies to
+   *  BOTH branches (close and flag-only) — a stale plan is refused either
+   *  way, never silently acted on. */
   closeWithOutcome(id: string, input: CloseWithOutcomeInput): boolean
   /** Retire a long-idle agent-cli session to free its adapter process — the
    *  primitive the idle-session reaper (`runIdleReapPass`, PR-6) drives on a
@@ -9621,8 +9645,28 @@ export function createSessionsRegistry(opts?: {
       if (rt.desc.kind !== "agent-cli") return false
       if (rt.desc.status !== "running" && rt.desc.status !== "starting") return false
       // Re-check liveness AT THE MOMENT OF THE CALL — the plan that picked
-      // this session may be stale by the time the close actually lands.
-      if (rt.desc.busy === true || rt.desc.awaitingInput === true) return false
+      // this session may be stale by the time this actually lands. A
+      // background task (agent-reported or the turn-end heuristic) is the
+      // same kind of staleness: something is still in flight, so this
+      // REFUSES rather than silently dropping it.
+      if (rt.desc.busy === true || rt.desc.awaitingInput === true || rt.desc.awaitingPermission === true) {
+        return false
+      }
+      if ((rt.desc.pendingBgTasks ?? 0) > 0 || (rt.desc.backgroundTasks?.length ?? 0) > 0) return false
+
+      // "blocked" / "needs-input" are NOT completion — the session stays
+      // exactly as alive as it was, and the verdict is recorded as a flag
+      // instead of a termination. Only "done"/"abandoned" actually close.
+      if (input.verdict === "blocked" || input.verdict === "needs-input") {
+        rt.desc.wrapupFlag = {
+          verdict: input.verdict,
+          ...(input.note !== undefined ? { note: input.note } : {}),
+          ...(input.judgedBy !== undefined ? { judgedBy: input.judgedBy } : {}),
+          at: new Date().toISOString(),
+        }
+        schedulePersist()
+        return true
+      }
 
       const reason: SessionEndReason = input.verdict === "done" ? "steward-completed" : "steward-abandoned"
 
@@ -9630,10 +9674,8 @@ export function createSessionsRegistry(opts?: {
       rt.desc.status = "killed"
       rt.desc.endedAt = new Date().toISOString()
       rt.desc.endedReason = reason
-      delete rt.desc.pendingBgTasks
       if (rt.agentSession) {
         releaseOutOfTurnEvents(rt)
-        delete rt.desc.backgroundTasks
         recordExitUsageSnapshot(rt)
         void rt.agentSession.close().catch(() => undefined)
         void transcriptWriter.close(rt.desc.id)

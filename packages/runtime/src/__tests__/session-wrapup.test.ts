@@ -76,17 +76,25 @@ describe("planSessionWrapup — class: stuck", () => {
   })
 })
 
-describe("planSessionWrapup — class: judge (ambiguous)", () => {
-  it("idle past threshold but no merge/parent-ended signal ⇒ judge", () => {
-    const entries = plan([row({ id: "a" })])
-    expect(entries[0]!.class).toBe("judge")
-  })
-
-  it("idle below threshold, even with worktreeMerged ⇒ judge", () => {
+describe("planSessionWrapup — class: keep (not idle long enough yet)", () => {
+  it("idle below threshold ⇒ keep, even with a worktreeMerged signal", () => {
     const entries = plan(
       [row({ id: "a", lastActivityAt: "2026-07-23T00:40:00Z" })], // 5min idle
       signalsFor("a", { worktreeMerged: true }),
     )
+    expect(entries[0]!.class).toBe("keep")
+    expect(entries[0]!.reasons).toContain("idle 5m < 20m")
+  })
+
+  it("idle below threshold, running, no signals at all ⇒ keep, not judge", () => {
+    const entries = plan([row({ id: "a", lastActivityAt: "2026-07-23T00:44:00Z" })]) // 1min idle
+    expect(entries[0]!.class).toBe("keep")
+  })
+})
+
+describe("planSessionWrapup — class: judge (ambiguous)", () => {
+  it("idle past threshold but no merge/parent-ended signal ⇒ judge", () => {
+    const entries = plan([row({ id: "a" })])
     expect(entries[0]!.class).toBe("judge")
   })
 

@@ -4006,16 +4006,17 @@ export function registerSessionTools(
       "`idleMinutes` AND the session's worktree merged or its parent already " +
       "ended, with no tool call pending, and not `keepAlive`), `stuck` " +
       "(stuck in `status:'starting'` with no pid for 10+ minutes — closing it " +
-      "is free, it never ran), `judge` (ambiguous — includes a `keepAlive` " +
-      "session that would otherwise close, since `keepAlive` can only ever " +
-      "reach `judge`, never `close`), or `keep` (busy/awaitingInput/" +
-      "awaitingPermission/archived/pinned/has busy children/has a live " +
-      "parent/is the caller's own session — NEVER eligible for " +
-      "`session_wrapup_apply`; omitted here unless `includeKeep` is set). " +
-      "Also reports `rssBytes` (process-tree RSS) per entry and summed per " +
-      "class in `totals`. Feed `close`/`stuck` ids straight to " +
-      "`session_wrapup_apply`; `judge` ids need a judge's verdict first " +
-      "(FIX-9B).",
+      "is free, it never ran), `judge` (idle-enough but ambiguous — no merge/" +
+      "parent-ended signal, a pending tool call, or a `keepAlive` session " +
+      "that would otherwise close, since `keepAlive` can only ever reach " +
+      "`judge`, never `close`), or `keep` (not idle long enough yet, or " +
+      "busy/awaitingInput/awaitingPermission/archived/pinned/has busy " +
+      "children/has a live parent/is the caller's own session — NEVER " +
+      "eligible for `session_wrapup_apply`; omitted here unless " +
+      "`includeKeep` is set). Also reports `rssBytes` (process-tree RSS) per " +
+      "entry and summed per class in `totals`. Feed `close`/`stuck` ids " +
+      "straight to `session_wrapup_apply`; `judge` ids need a judge's " +
+      "verdict first (FIX-9B).",
     {
       idleMinutes: z
         .number()
@@ -4059,15 +4060,24 @@ export function registerSessionTools(
 
   server.tool(
     "session_wrapup_apply",
-    "Close specific sessions with a recorded outcome — the mutating half of " +
+    "Record a verdict on specific sessions — the mutating half of " +
       "`session_wrapup_plan`. Each id is RE-CLASSIFIED from scratch " +
       "immediately before acting (a plan computed moments earlier can be " +
       "stale) and is only acted on if it is STILL `close` or `stuck`. Pass " +
       "`judgedBy` (a judge session id) to also accept a `judge`-class id — " +
-      "the judge's verdict is what makes it safe to close. `keep`-class ids " +
-      "are ALWAYS refused, no exception. A closed session stays resumable " +
-      "(same as the idle reaper) — this never deletes anything. A scoped " +
-      "orchestrator may only act on its own subtree. Returns a per-id result.",
+      "the judge's verdict is what makes it safe to act on. `keep`-class ids " +
+      "are ALWAYS refused, no exception. `verdict: \"done\"` or " +
+      "`\"abandoned\"` actually CLOSES the session (tagged " +
+      "`endedReason:'steward-completed'`/`'steward-abandoned'`) and leaves it " +
+      "resumable (same as the idle reaper) — this never deletes anything. " +
+      "`verdict: \"blocked\"` or `\"needs-input\"` is NOT a completion: the " +
+      "session is left running untouched and the verdict is recorded as a " +
+      "flag (`SessionDescriptor.wrapupFlag`) instead — the per-id result's " +
+      "`action` says `closed` vs `flagged`. Also refused (result `ok:false`, " +
+      "`error:'refused_stale_or_busy'`) if the session is busy/awaitingInput/" +
+      "awaitingPermission or has a background task outstanding at the moment " +
+      "of the call, for either kind of action. A scoped orchestrator may only " +
+      "act on its own subtree. Returns a per-id result.",
     {
       sessionIds: z
         .array(z.string().min(1))
@@ -4076,11 +4086,12 @@ export function registerSessionTools(
       verdict: z
         .enum(["done", "abandoned", "blocked", "needs-input"])
         .describe(
-          "What the session's work amounted to. Only \"done\" is tagged " +
-            "`endedReason:'steward-completed'`; every other value is " +
-            "`'steward-abandoned'`.",
+          "What the session's work amounted to. \"done\"/\"abandoned\" CLOSE " +
+            "the session (`endedReason:'steward-completed'`/" +
+            "`'steward-abandoned'`); \"blocked\"/\"needs-input\" only FLAG it " +
+            "(`SessionDescriptor.wrapupFlag`) — the session keeps running.",
         ),
-      note: z.string().optional().describe("Free-text note recorded on the outcome."),
+      note: z.string().optional().describe("Free-text note recorded on the outcome or the flag."),
       judgedBy: z
         .string()
         .optional()
@@ -4121,14 +4132,16 @@ export function registerSessionTools(
         if (entry.class === "judge" && !input.judgedBy) {
           return { sessionId: desc.id, ok: false as const, class: entry.class, error: "ambiguous_needs_judge" }
         }
-        const closed = registry.closeWithOutcome(desc.id, {
+        const action: "closed" | "flagged" =
+          input.verdict === "done" || input.verdict === "abandoned" ? "closed" : "flagged"
+        const applied = registry.closeWithOutcome(desc.id, {
           verdict: input.verdict,
           ...(input.note !== undefined ? { note: input.note } : {}),
           judgedBy,
           source,
         })
-        return closed
-          ? { sessionId: desc.id, ok: true as const, class: entry.class }
+        return applied
+          ? { sessionId: desc.id, ok: true as const, class: entry.class, action }
           : { sessionId: desc.id, ok: false as const, class: entry.class, error: "refused_stale_or_busy" }
       })
 

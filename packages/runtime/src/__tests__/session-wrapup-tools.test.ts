@@ -135,10 +135,16 @@ describe("session_wrapup_plan", () => {
     // 2 minutes idle — clears no default (20min) threshold, but clears a 1min one.
     rt.lastActivityAt = new Date(Date.now() - 2 * 60_000).toISOString()
 
+    // Below the default 20min threshold ⇒ keep, omitted from the default
+    // (includeKeep:false) plan entirely.
     const defaultPlan = JSON.parse(
       textOf(await client.callTool({ name: "session_wrapup_plan", arguments: {} })),
     ) as { entries: Array<{ sessionId: string; class: string }> }
-    expect(defaultPlan.entries.find(e => e.sessionId === desc.id)?.class).toBe("judge")
+    expect(defaultPlan.entries.find(e => e.sessionId === desc.id)).toBeUndefined()
+    const defaultPlanWithKeep = JSON.parse(
+      textOf(await client.callTool({ name: "session_wrapup_plan", arguments: { includeKeep: true } })),
+    ) as { entries: Array<{ sessionId: string; class: string }> }
+    expect(defaultPlanWithKeep.entries.find(e => e.sessionId === desc.id)?.class).toBe("keep")
 
     const tightPlan = JSON.parse(
       textOf(await client.callTool({ name: "session_wrapup_plan", arguments: { idleMinutes: 1 } })),
@@ -171,7 +177,7 @@ describe("session_wrapup_apply", () => {
     const parsed = JSON.parse(textOf(res)) as {
       results: Array<{ sessionId: string; ok: boolean; class?: string }>
     }
-    expect(parsed.results).toEqual([{ sessionId: desc.id, ok: true, class: "close" }])
+    expect(parsed.results).toEqual([{ sessionId: desc.id, ok: true, class: "close", action: "closed" }])
     expect(registry.get(desc.id)?.endedReason).toBe("steward-completed")
     expect(registry.get(desc.id)?.outcome?.source).toBe("declared")
     expect(registry.get(desc.id)?.outcome?.judgedBy).toBe("steward-rules")
@@ -237,11 +243,87 @@ describe("session_wrapup_apply", () => {
     const judgedParsed = JSON.parse(textOf(judged)) as {
       results: Array<{ sessionId: string; ok: boolean; class?: string }>
     }
-    expect(judgedParsed.results).toEqual([{ sessionId: desc.id, ok: true, class: "judge" }])
+    expect(judgedParsed.results).toEqual([{ sessionId: desc.id, ok: true, class: "judge", action: "closed" }])
     expect(registry.get(desc.id)?.endedReason).toBe("steward-abandoned")
     expect(registry.get(desc.id)?.outcome?.source).toBe("judged")
     expect(registry.get(desc.id)?.outcome?.judgedBy).toBe("sess_judge1")
     expect(registry.get(desc.id)?.outcome?.note).toBe("gave up")
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("verdict:'blocked'/'needs-input' FLAGS instead of closing — session stays running", async () => {
+    const { client, registry, close } = await buildHarness(mergedLister)
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp/wt/done",
+      agentSession: idleAgentSession("acp-7"),
+      adapterSlug: "claude-code",
+    })
+    const rt = registry.get(desc.id)!
+    rt.lastActivityAt = OLD_TIMESTAMP
+    rt.worktreePath = "/tmp/wt/done"
+    rt.mainRepoPath = "/tmp/repo"
+
+    const res = await client.callTool({
+      name: "session_wrapup_apply",
+      arguments: { sessionIds: [desc.id], verdict: "blocked", note: "needs a missing API key" },
+    })
+    const parsed = JSON.parse(textOf(res)) as {
+      results: Array<{ sessionId: string; ok: boolean; class?: string; action?: string }>
+    }
+    expect(parsed.results).toEqual([{ sessionId: desc.id, ok: true, class: "close", action: "flagged" }])
+    expect(registry.get(desc.id)?.status).toBe("running")
+    expect(registry.get(desc.id)?.endedReason).toBeUndefined()
+    expect(registry.get(desc.id)?.wrapupFlag?.verdict).toBe("blocked")
+    expect(registry.get(desc.id)?.wrapupFlag?.note).toBe("needs a missing API key")
+    expect(registry.get(desc.id)?.wrapupFlag?.judgedBy).toBe("steward-rules")
+
+    const res2 = await client.callTool({
+      name: "session_wrapup_apply",
+      arguments: { sessionIds: [desc.id], verdict: "needs-input" },
+    })
+    const parsed2 = JSON.parse(textOf(res2)) as {
+      results: Array<{ sessionId: string; ok: boolean; action?: string }>
+    }
+    expect(parsed2.results).toEqual([{ sessionId: desc.id, ok: true, class: "close", action: "flagged" }])
+    expect(registry.get(desc.id)?.status).toBe("running")
+    expect(registry.get(desc.id)?.wrapupFlag?.verdict).toBe("needs-input")
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("refuses a flag-only verdict too when the session has a pending background task", async () => {
+    const { client, registry, close } = await buildHarness(mergedLister)
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp/wt/done",
+      agentSession: idleAgentSession("acp-8"),
+      adapterSlug: "claude-code",
+    })
+    const rt = registry.get(desc.id)!
+    rt.lastActivityAt = OLD_TIMESTAMP
+    rt.worktreePath = "/tmp/wt/done"
+    rt.mainRepoPath = "/tmp/repo"
+    rt.pendingBgTasks = 1
+
+    // A pending background task also feeds `pendingToolCall` into the
+    // planner, so the fresh re-plan sees `judge` here, not `close` — pass
+    // judgedBy so the id is still eligible, and confirm closeWithOutcome's
+    // OWN pendingBgTasks guard is what refuses it underneath.
+    const res = await client.callTool({
+      name: "session_wrapup_apply",
+      arguments: { sessionIds: [desc.id], verdict: "blocked", judgedBy: "sess_judge1" },
+    })
+    const parsed = JSON.parse(textOf(res)) as {
+      results: Array<{ sessionId: string; ok: boolean; class?: string; error?: string }>
+    }
+    expect(parsed.results).toEqual([
+      { sessionId: desc.id, ok: false, class: "judge", error: "refused_stale_or_busy" },
+    ])
+    expect(registry.get(desc.id)?.wrapupFlag).toBeUndefined()
 
     await close()
     registry.shutdown()

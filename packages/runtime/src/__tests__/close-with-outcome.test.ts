@@ -1,8 +1,11 @@
 /**
  * `registry.closeWithOutcome` (FIX-9A part 3) — the session steward's close
- * primitive: terminates a live agent-cli session the same graceful way
- * `kill()` does, but records a Level 2 (judged/declared) outcome and leaves
- * the row lazy-resumable exactly like `reapIdle` does.
+ * primitive: for verdict "done"/"abandoned" it terminates a live agent-cli
+ * session the same graceful way `kill()` does, recording a Level 2
+ * (judged/declared) outcome and leaving the row lazy-resumable exactly like
+ * `reapIdle` does. For verdict "blocked"/"needs-input" it does NOT close —
+ * it records `SessionDescriptor.wrapupFlag` instead and leaves the session
+ * exactly as alive as it was.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -142,6 +145,123 @@ describe("registry.closeWithOutcome", () => {
 
     expect(reg.closeWithOutcome(desc.id, { verdict: "done", source: "declared" })).toBe(false)
     expect(reg.get(desc.id)?.status).toBe("running")
+
+    reg.shutdown()
+  })
+
+  it("refuses (no-op) a session that became awaitingPermission since the plan", () => {
+    const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: liveAgentSession("acp-1", { value: false }),
+      adapterSlug: "claude-code",
+    })
+    reg.get(desc.id)!.awaitingPermission = true
+
+    expect(reg.closeWithOutcome(desc.id, { verdict: "done", source: "declared" })).toBe(false)
+    expect(reg.get(desc.id)?.status).toBe("running")
+
+    reg.shutdown()
+  })
+
+  it("refuses (no-op) a session with a pending background-task count, WITHOUT deleting it", () => {
+    const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: liveAgentSession("acp-1", { value: false }),
+      adapterSlug: "claude-code",
+    })
+    reg.get(desc.id)!.pendingBgTasks = 1
+
+    expect(reg.closeWithOutcome(desc.id, { verdict: "done", source: "declared" })).toBe(false)
+    expect(reg.get(desc.id)?.status).toBe("running")
+    expect(reg.get(desc.id)?.pendingBgTasks).toBe(1)
+
+    reg.shutdown()
+  })
+
+  it("refuses (no-op) a session with a tracked running background task, WITHOUT deleting it", () => {
+    const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: liveAgentSession("acp-1", { value: false }),
+      adapterSlug: "claude-code",
+    })
+    reg.get(desc.id)!.backgroundTasks = [
+      { taskId: "t1", status: "running", description: "long build", startedAt: new Date().toISOString() },
+    ]
+
+    expect(reg.closeWithOutcome(desc.id, { verdict: "done", source: "declared" })).toBe(false)
+    expect(reg.get(desc.id)?.status).toBe("running")
+    expect(reg.get(desc.id)?.backgroundTasks).toHaveLength(1)
+
+    reg.shutdown()
+  })
+
+  it("verdict:'blocked' does NOT close the session — records wrapupFlag instead, session stays running", () => {
+    const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp })
+    const closed = { value: false }
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: liveAgentSession("acp-1", closed),
+      adapterSlug: "claude-code",
+    })
+
+    const ok = reg.closeWithOutcome(desc.id, {
+      verdict: "blocked",
+      judgedBy: "sess_judge1",
+      note: "waiting on a missing API key",
+      source: "judged",
+    })
+    expect(ok).toBe(true)
+    expect(closed.value).toBe(false)
+
+    const after = reg.get(desc.id)!
+    expect(after.status).toBe("running")
+    expect(after.endedReason).toBeUndefined()
+    expect(after.outcome).toBeUndefined()
+    expect(after.wrapupFlag?.verdict).toBe("blocked")
+    expect(after.wrapupFlag?.judgedBy).toBe("sess_judge1")
+    expect(after.wrapupFlag?.note).toBe("waiting on a missing API key")
+    expect(after.wrapupFlag?.at).toBeTruthy()
+
+    reg.shutdown()
+  })
+
+  it("verdict:'needs-input' does NOT close the session — records wrapupFlag instead", () => {
+    const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: liveAgentSession("acp-1", { value: false }),
+      adapterSlug: "claude-code",
+    })
+
+    expect(reg.closeWithOutcome(desc.id, { verdict: "needs-input", source: "declared" })).toBe(true)
+
+    const after = reg.get(desc.id)!
+    expect(after.status).toBe("running")
+    expect(after.wrapupFlag?.verdict).toBe("needs-input")
+
+    reg.shutdown()
+  })
+
+  it("a flag-only verdict is ALSO refused when the session is busy/awaitingInput/etc.", () => {
+    const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: liveAgentSession("acp-1", { value: false }),
+      adapterSlug: "claude-code",
+    })
+    reg.get(desc.id)!.busy = true
+
+    expect(reg.closeWithOutcome(desc.id, { verdict: "blocked", source: "declared" })).toBe(false)
+    expect(reg.get(desc.id)?.wrapupFlag).toBeUndefined()
 
     reg.shutdown()
   })
