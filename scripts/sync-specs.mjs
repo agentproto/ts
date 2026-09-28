@@ -34,14 +34,13 @@
  *     onto the freshly-copied upstream content instead of overwriting it,
  *     so re-running this script never reverts a known, deliberate drift.
  *
- * CI has no network and no sibling `agentproto/agentproto` checkout (no
- * such mechanism exists in this repo today — see the spec-drift-gate PR
- * body). Without `--source`, `--check` degrades to the network-free half
- * of the gate: the allowlist presence/difference assertions above, which
- * need only the vendored copy and the allowlist file. The full
- * vendored-vs-canonical diff runs for any contributor with a real sibling
- * checkout (the DEFAULT_SOURCE convention below), or when `--source` is
- * passed explicitly.
+ * CI checks out the public agentproto/agentproto repo and passes it via
+ * `--source`, so the full vendored-vs-canonical diff runs on every PR (a
+ * canonical spec change turns ts CI red until this script is run — by
+ * design). Without `--source` and with no sibling checkout at
+ * DEFAULT_SOURCE, `--check` degrades to the network-free half of the gate:
+ * the allowlist presence assertions above, which need only the vendored
+ * copy and the allowlist file.
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
@@ -223,9 +222,9 @@ const allowlist = loadAllowlist()
 if (!existsSync(source)) {
   if (mode === "check" && !sourceExplicit) {
     process.stdout.write(
-      `sync-specs --check: no upstream checkout at ${source}. That's expected in CI ` +
-        `(no network, no sibling agentproto/agentproto checkout — see the sync-specs.mjs ` +
-        `header) and for any contributor without one. Skipping the vendored-vs-canonical ` +
+      `sync-specs --check: no upstream checkout at ${source}. Pass --source ` +
+        `<dir>/specs/resources or clone agentproto/agentproto next to this repo to run the ` +
+        `full diff (CI does this). Skipping the vendored-vs-canonical ` +
         `diff; running the network-free half of the gate instead.\n`
     )
     const result = checkAllowlistIntegrity(allowlist, undefined)

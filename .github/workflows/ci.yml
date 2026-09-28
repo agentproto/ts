@@ -261,20 +261,28 @@ jobs:
           node scripts/check-spec-drift.mjs
 
       # Guard the vendored copy of the AIP JSON Schemas (specs/resources/)
-      # against silent regressions. CI has no network and no sibling
-      # agentproto/agentproto checkout, so this can't do the full
-      # vendored-vs-canonical diff (that runs for any contributor with a
-      # real sibling checkout, or with --source passed explicitly — see
-      # scripts/sync-specs.mjs's header). What it CAN do without network:
-      # assert every field in specs/spec-drift-allowlist.json (ts shipped
-      # ahead of what canonical has ratified — aip-5 workspace, aip-15
-      # routines/cacheable/join/fallthrough, aip-36 join/extraPorts, etc.)
-      # is still actually present in the vendored copy, so a careless hand
-      # edit or a naive future resync can't silently drop one.
-      - name: Check vendored spec drift (allowlist integrity)
+      # against drift from canonical. agentproto/agentproto is public, so CI
+      # checks it out (shallow, main) into a directory inside the workspace
+      # (actions/checkout cannot write outside it) and runs the FULL
+      # vendored-vs-canonical diff with --source. Fields ts ships ahead of
+      # canonical (specs/spec-drift-allowlist.json) are masked; anything else
+      # fails, in either direction. INTENDED consequence: a spec change merged
+      # upstream turns this red on ts until someone runs
+      # `node scripts/sync-specs.mjs` and commits the result. Without --source
+      # (local runs with no sibling checkout) --check falls back to the
+      # network-free allowlist-integrity half — see scripts/sync-specs.mjs.
+      - name: Checkout canonical specs
+        uses: actions/checkout@v5
+        with:
+          repository: agentproto/agentproto
+          ref: main
+          path: .canonical-specs
+          fetch-depth: 1
+
+      - name: Check vendored spec drift
         run: |
           node --test scripts/sync-specs.test.mjs
-          node scripts/sync-specs.mjs --check
+          node scripts/sync-specs.mjs --check --source .canonical-specs/specs/resources
 
       # Guard the e2b workstation template's derived artifacts: the generated
       # TS module, e2b.template.toml build args, marked doc blocks, and the
