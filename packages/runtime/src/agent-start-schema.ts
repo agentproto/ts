@@ -158,6 +158,13 @@ export const agentStartInputShape = {
       "Notify this session's parent directly (in-band) if it later crashes. " +
         `Independent of the global \`notifyUrl\` webhook, which fires either way. ${help("notifyParentOnCrash")}`
     ),
+  sentinel: mcpBool
+    .optional()
+    .describe(
+      "Set false to opt this spawn OUT of sentinel auto-link: a PR this " +
+        "session opens will never get an automatic AIP-60 sentinel watching " +
+        `it, regardless of the daemon's \`sentinel.autoWatchPrs\` config. ${help("sentinel")}`
+    ),
   allowSharedCwd: mcpBool
     .optional()
     .describe(

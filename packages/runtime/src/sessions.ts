@@ -1796,6 +1796,12 @@ export interface SessionDescriptor {
    *  want. Threaded like `permissionHold` — set at spawn time, immutable
    *  thereafter. */
   notifyParentOnCrash?: boolean
+  /** Per-spawn opt-out of sentinel auto-link (AIP-60 §6/step 4,
+   *  `agent_start.sentinel: false`). `undefined`/`true` = allowed (subject to
+   *  `config.sentinel.autoWatchPrs`); `false` = this session's opened PRs are
+   *  never auto-watched, no matter the config. Set once at spawn, immutable
+   *  thereafter — same threading as `notifyParentOnCrash`. */
+  sentinelAutoWatch?: boolean
   /** True when the session was spawned in permission-hold mode. */
   permissionHold?: boolean
   /** Effective OS-level confinement of the adapter's own process
@@ -3992,6 +3998,9 @@ export interface SpawnAgentInput {
   /** Recorded verbatim onto {@link SessionDescriptor.notifyParentOnCrash} —
    *  see that field's doc. Default false. */
   notifyParentOnCrash?: boolean
+  /** Recorded verbatim onto {@link SessionDescriptor.sentinelAutoWatch} — see
+   *  that field's doc. `undefined` = allowed. */
+  sentinelAutoWatch?: boolean
   /** Exempt this session from the idle-reaper (`isReapable` in
    *  idle-reaper.ts) regardless of how long it sits idle — stamped straight
    *  onto `SessionDescriptor.keepAlive`. Default false. */
@@ -4206,6 +4215,13 @@ export type AgentSessionResumer = (input: {
 }) => Promise<AgentSessionLike | null>
 
 export function createSessionsRegistry(opts?: {
+  /** Fires exactly once per NEWLY-recorded opened PR (AIP-60 §6/step 4
+   *  sentinel auto-link) — every lane that calls `recordOpenedPr`
+   *  (`command_execute`'s stamper, both `pr-provenance-reconciler.ts` lanes)
+   *  funnels through this one hook. Best-effort from the registry's side —
+   *  a throw here is caught and logged, never propagated. `desc` is the
+   *  session's descriptor AFTER the PR was recorded. */
+  onOpenedPr?: (sessionId: string, input: RecordOpenedPrInput, desc: SessionDescriptor) => void
   /** Override the persistence path — tests pin a tmpdir.
    *
    *  Setting this also opts OUT of per-workspace partitioning: it names
@@ -7957,6 +7973,7 @@ export function createSessionsRegistry(opts?: {
           ? { parentSessionId: input.parentSessionId }
           : {}),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
+        ...(input.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
         ...(input.origin ? { origin: input.origin } : {}),
         depth: input.depth ?? 0,
         // Spawn-time hints (e.g. `boardId`) — copied, not aliased, so a
@@ -8110,6 +8127,7 @@ export function createSessionsRegistry(opts?: {
           ? { parentSessionId: input.parentSessionId }
           : {}),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
+        ...(input.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
         ...(input.origin ? { origin: input.origin } : {}),
         depth: input.depth ?? 0,
         ...(input.meta ? { meta: { ...input.meta } } : {}),
@@ -8584,6 +8602,18 @@ export function createSessionsRegistry(opts?: {
         // The provenance stamp can land after the session already ended —
         // fold the PR into its recorded outcome (a richer write replaces).
         if (rt.desc.outcome) recordOutcome(rt)
+        // Sentinel auto-link (AIP-60 §6/step 4) — fires exactly once per
+        // NEWLY-recorded PR, regardless of which lane recorded it
+        // (command_execute's stamper and both pr-provenance-reconciler.ts
+        // lanes all funnel through this same registry call). Best-effort:
+        // a throwing hook must never break PR-recording itself.
+        try {
+          opts?.onOpenedPr?.(sessionId, input, rt.desc)
+        } catch (err) {
+          console.warn(
+            `[sessions] onOpenedPr hook failed for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        }
       }
       return rt.desc
     },

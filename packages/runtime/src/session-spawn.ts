@@ -1197,6 +1197,12 @@ export interface SpawnAgentSessionInput {
    *  external webhook path (`notifyUrl`) already fires regardless of this
    *  flag. */
   notifyParentOnCrash?: boolean
+  /** Per-spawn opt-out of sentinel auto-link (AIP-60 §6/step 4): `false`
+   *  means a PR this session opens is never auto-watched, regardless of
+   *  `config.sentinel.autoWatchPrs`. Recorded verbatim onto
+   *  {@link SessionDescriptor.sentinelAutoWatch}; `undefined`/`true` = allowed
+   *  (still gated by the config default). */
+  sentinel?: boolean
   /** Exempt this session from the idle-reaper (`isReapable` in
    *  idle-reaper.ts) regardless of how long it sits idle. Stamped straight
    *  onto the descriptor — see `SessionDescriptor.keepAlive`. Default false
@@ -2868,6 +2874,7 @@ export async function spawnAgentSession(
         ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
+        ...(input.sentinel === false ? { sentinelAutoWatch: false } : {}),
         ...(input.boardId ? { meta: { boardId: input.boardId } } : {}),
         ...(input.origin ? { origin: input.origin } : {}),
         depth: recordedDepth,

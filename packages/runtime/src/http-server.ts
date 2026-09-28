@@ -4273,6 +4273,20 @@ export function buildSpawnSessionHttpArgs(
   const browser = parseBrowserMode(b.browser === true || b.browser === "true" ? "headless" : b.browser)
   const browserField: Pick<SpawnAgentSessionInput, "browser"> =
     browser !== undefined ? { browser } : {}
+  // Sentinel auto-link opt-out — the HTTP twin of the MCP `agent_start`
+  // tool's `sentinel` field. Only an explicit `false` (or its stringified
+  // form) is forwarded — `true`/absent both mean "allowed" (the default).
+  // Hoisted for the same TS2590 reason as `browserField`/`spendCaps`.
+  const sentinelOptOut =
+    typeof b.sentinel === "boolean"
+      ? b.sentinel
+      : b.sentinel === "true"
+        ? true
+        : b.sentinel === "false"
+          ? false
+          : undefined
+  const sentinelField: Pick<SpawnAgentSessionInput, "sentinel"> =
+    sentinelOptOut === false ? { sentinel: false } : {}
   return {
     adapter,
     ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
@@ -4424,6 +4438,7 @@ export function buildSpawnSessionHttpArgs(
           return n ? { notifyParentOnCrash: true } : {}
         })()
       : {}),
+    ...sentinelField,
     // Worktree isolation — the HTTP twin of the MCP `agent_start` tool's
     // `worktree` field. Same `spawnAgentSession` core resolves the
     // `worktrees.isolation` policy, so `always` bites here too and there's

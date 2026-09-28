@@ -145,6 +145,24 @@ in-flight one) if it's busy. Default false. The free external webhook
 only adds the direct signal into the parent's OWN session, for a delegating
 supervisor that wants to react to a child's death without polling.
 
+## sentinel
+
+Set `false` to opt this spawn out of sentinel auto-link (AIP-60 §6): when the
+session opens a PR (via `command_execute`'s `gh pr create` stamper, or either
+`pr-provenance-reconciler.ts` lane discovering one), the daemon normally
+creates a sentinel watching that PR for this session — `match:
+github:owner/repo#N` with the default PR type set, `until:
+subject_terminal`, `label: auto:pr#N`, `group: <this session id>`, delivered
+back to this session at `next-turn` urgency. `sentinel: false` disables that
+for this session specifically, regardless of the daemon's
+`sentinel.autoWatchPrs` config. Default (unset) = allowed, still subject to
+that config default (which itself defaults to `true` only when `local-gh`
+(the host's authenticated `gh` CLI) is usable). The auto-created sentinel is
+NOT torn down if this session later exits for good — its provider-side watch
+keeps running and events park/orphan through the same dead-session path
+every sentinel uses; `sentinel_list` / `agentproto sentinel list` still shows
+it, filterable by `group: <session id>`.
+
 ## allowSharedCwd
 
 Acknowledge that this nested spawn WILL run in place inside its parent's
