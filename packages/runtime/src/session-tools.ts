@@ -67,7 +67,20 @@ import { buildSessionCapabilities } from "./session-capabilities.js"
 import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
 import { continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
-import { compactOutcome, type SessionOutcomeCompact } from "./session-outcome.js"
+import {
+  compactOutcome,
+  OUTCOME_SUMMARY_MAX,
+  readLastAssistantTextSync,
+  trimOutcomeText,
+  type SessionOutcomeCompact,
+} from "./session-outcome.js"
+import { processTreeRss } from "./process-memory.js"
+import {
+  planSessionWrapup,
+  type SessionWrapupClass,
+  type SessionWrapupEntry,
+  type SessionWrapupSignals,
+} from "./session-wrapup.js"
 import type { SpawnAgentSessionDeps } from "./session-spawn.js"
 import {
   collectSessionSnapshots,
@@ -603,6 +616,9 @@ export interface SessionListCompactItem {
    *  (`session_continue_interrupted` sends it a continue prompt). Absent
    *  otherwise. */
   interrupted?: true
+  /** Mirrors `SessionDescriptor.rssBytes` — only present when the request
+   *  opted in with `withMemory: true` (it costs a `ps` spawn). */
+  rssBytes?: number
 }
 
 /** Public MCP descriptor projection. Resume environment is required by the
@@ -650,6 +666,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   ...(s.lastTurnReason !== undefined ? { lastTurnReason: s.lastTurnReason } : {}),
   ...(s.lastTurnEmpty !== undefined ? { lastTurnEmpty: s.lastTurnEmpty } : {}),
   ...(s.interrupted ? { interrupted: true as const } : {}),
+  ...(s.rssBytes !== undefined ? { rssBytes: s.rssBytes } : {}),
 })
 
 // ── batch compact projections (tool-transformer migration) ───────────────
@@ -962,6 +979,7 @@ export function registerSessionTools(
     workspace,
     mcpProxy,
     callerScope,
+    callerSessionId,
     resolveAgentAdapter,
     listWorktreeStatuses,
     runWorktreeGc,
@@ -1060,6 +1078,16 @@ export function registerSessionTools(
         "When true, also include archived sessions (hidden from every " +
           "other view by `session_archive`). Default false.",
       ),
+    withMemory: z
+      .boolean()
+      .optional()
+      .describe(
+        "When true, add `rssBytes` (summed RSS in bytes of the process tree, " +
+          "via `ps`) to every live session that has a pid. Default false — " +
+          "a distinct opt-in from `full`/`compact` since it costs one `ps` " +
+          "spawn per call; omitted otherwise, so a plain listing never pays " +
+          "for it.",
+      ),
     ...pageParamsShape,
   })
   type SessionListInput = z.infer<typeof sessionListSchema>
@@ -1116,6 +1144,19 @@ export function registerSessionTools(
         rows = rows.filter(
           s => s.status === "running" || s.status === "starting",
         )
+      }
+      if (input.withMemory) {
+        const live = rows.filter(
+          (s): s is SessionDescriptor & { pid: number } =>
+            typeof s.pid === "number" && (s.status === "running" || s.status === "starting"),
+        )
+        if (live.length > 0) {
+          const rssByPid = await processTreeRss(live.map(s => s.pid))
+          rows = rows.map(s => {
+            const rssBytes = typeof s.pid === "number" ? rssByPid.get(s.pid) : undefined
+            return rssBytes !== undefined ? { ...s, rssBytes } : s
+          })
+        }
       }
       return rows.map(publicSessionDescriptor)
     },
@@ -4095,6 +4136,243 @@ export function registerSessionTools(
       })
       return { content: [{ type: "text", text: JSON.stringify(res) }] }
     }
+  )
+
+  // ── session_wrapup_plan / session_wrapup_apply — session steward ─────
+  // (FIX-9A part 4). All classification logic lives in `planSessionWrapup`
+  // (session-wrapup.ts, pure, zero LLM calls) — this is just the transport
+  // + the live-signal gathering the pure planner can't do itself (worktree
+  // merge status, a transcript tail read, RSS). FIX-9B adds a judge agent
+  // for the ambiguous `judge` class; nothing here ever calls one.
+
+  const WRAPUP_STUCK_STARTING_MS = 10 * 60_000
+  const wrapupCallerSessionId = callerSessionId ?? callerScope?.ownerSessionId
+
+  const isWrapupCandidate = (d: SessionDescriptor): boolean =>
+    d.kind === "agent-cli" && (d.status === "running" || d.status === "starting")
+
+  const isStuckStarting = (d: SessionDescriptor, nowMs: number): boolean => {
+    if (d.status !== "starting" || d.pid !== null) return false
+    const tsStr = d.lastActivityAt ?? d.startedAt
+    const ts = tsStr ? Date.parse(tsStr) : Number.NaN
+    return Number.isFinite(ts) && nowMs - ts >= WRAPUP_STUCK_STARTING_MS
+  }
+
+  /** Gather everything `planSessionWrapup` needs but can't compute itself:
+   *  worktree merge status (one `listWorktreeStatuses` call per distinct
+   *  repo root, batched across every candidate in that repo), parent-ended,
+   *  a pending tool call, the stuck-starting check, a transcript tail, and
+   *  RSS (one `ps` call for every candidate with a pid, via `processTreeRss`
+   *  — Part 1). Returns the full session universe (needed for parent-alive
+   *  lookups) with `rssBytes` merged onto the candidates that have it. */
+  const gatherWrapupInputs = async (
+    nowMs: number,
+  ): Promise<{ all: SessionDescriptor[]; sessionsForPlan: SessionDescriptor[]; signals: Map<string, SessionWrapupSignals> }> => {
+    const all = registry.list({ includeArchived: true })
+    const byId = new Map(all.map(d => [d.id, d]))
+    const candidates = all.filter(isWrapupCandidate)
+
+    const withPid = candidates.filter((d): d is SessionDescriptor & { pid: number } => typeof d.pid === "number")
+    const rssByPid = withPid.length > 0 ? await processTreeRss(withPid.map(d => d.pid)) : new Map<number, number>()
+
+    const mergedByWorktreePath = new Map<string, boolean>()
+    if (listWorktreeStatuses) {
+      const pathsByRepo = new Map<string, Set<string>>()
+      for (const d of candidates) {
+        const scope = sessionWorktreeScope(d)
+        if (!scope) continue
+        const set = pathsByRepo.get(scope.repoRoot) ?? new Set<string>()
+        set.add(scope.worktreePath)
+        pathsByRepo.set(scope.repoRoot, set)
+      }
+      for (const [repoRoot, paths] of pathsByRepo) {
+        try {
+          const views = await listWorktreeStatuses(repoRoot, { paths: [...paths] })
+          for (const v of views) mergedByWorktreePath.set(v.path, v.pr?.state === "merged")
+        } catch {
+          // Best-effort signal only — a lister failure never blocks the plan.
+        }
+      }
+    }
+
+    const signals = new Map<string, SessionWrapupSignals>()
+    const rssById = new Map<string, number>()
+    for (const d of candidates) {
+      const scope = sessionWorktreeScope(d)
+      const worktreeMerged = scope ? mergedByWorktreePath.get(scope.worktreePath) === true : false
+      const parent = d.parentSessionId ? byId.get(d.parentSessionId) : undefined
+      const parentEnded =
+        d.parentSessionId !== undefined &&
+        (parent === undefined || (parent.status !== "running" && parent.status !== "starting"))
+      const pendingToolCall = (d.pendingBgTasks ?? 0) > 0 || (d.backgroundTasks?.length ?? 0) > 0
+      const lastAssistantTail = d.eventsPath
+        ? trimOutcomeText(readLastAssistantTextSync(d.eventsPath), OUTCOME_SUMMARY_MAX, "tail")
+        : undefined
+      signals.set(d.id, {
+        ...(worktreeMerged ? { worktreeMerged: true } : {}),
+        ...(parentEnded ? { parentEnded: true } : {}),
+        ...(lastAssistantTail !== undefined ? { lastAssistantTail } : {}),
+        ...(pendingToolCall ? { pendingToolCall: true } : {}),
+        ...(isStuckStarting(d, nowMs) ? { stuckStarting: true } : {}),
+      })
+      if (typeof d.pid === "number") {
+        const rss = rssByPid.get(d.pid)
+        if (rss !== undefined) rssById.set(d.id, rss)
+      }
+    }
+
+    const sessionsForPlan = all.map(d => (rssById.has(d.id) ? { ...d, rssBytes: rssById.get(d.id) } : d))
+    return { all, sessionsForPlan, signals }
+  }
+
+  server.tool(
+    "session_wrapup_plan",
+    "DRY RUN, mutates nothing — classify every idle agent-cli session for " +
+      "the session steward: `close` (safe to auto-close: idle past " +
+      "`idleMinutes` AND the session's worktree merged or its parent already " +
+      "ended, with no tool call pending, and not `keepAlive`), `stuck` " +
+      "(stuck in `status:'starting'` with no pid for 10+ minutes — closing it " +
+      "is free, it never ran), `judge` (idle-enough but ambiguous — no merge/" +
+      "parent-ended signal, a pending tool call, or a `keepAlive` session " +
+      "that would otherwise close, since `keepAlive` can only ever reach " +
+      "`judge`, never `close`), or `keep` (not idle long enough yet, or " +
+      "busy/awaitingInput/awaitingPermission/archived/pinned/has busy " +
+      "children/has a live parent/is the caller's own session — NEVER " +
+      "eligible for `session_wrapup_apply`; omitted here unless " +
+      "`includeKeep` is set). Also reports `rssBytes` (process-tree RSS) per " +
+      "entry and summed per class in `totals`. Feed `close`/`stuck` ids " +
+      "straight to `session_wrapup_apply`; `judge` ids need a judge's " +
+      "verdict first (FIX-9B).",
+    {
+      idleMinutes: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe("Idle threshold in minutes a `close` candidate must clear. Default 20."),
+      includeKeep: mcpBool
+        .optional()
+        .describe(
+          "Include `keep`-class entries too. Default false — `keep` rows are " +
+            "never acted on, so they're omitted to keep the plan focused on " +
+            "what the steward might actually do.",
+        ),
+    },
+    async input => {
+      const nowMs = Date.now()
+      const { all, sessionsForPlan, signals } = await gatherWrapupInputs(nowMs)
+      const subtree = callerScope ? collectSubtree(callerScope.ownerSessionId, all) : undefined
+
+      let entries = planSessionWrapup({
+        sessions: sessionsForPlan,
+        nowMs,
+        ...(input.idleMinutes !== undefined ? { idleMinutes: input.idleMinutes } : {}),
+        signals,
+        ...(wrapupCallerSessionId ? { callerSessionId: wrapupCallerSessionId } : {}),
+      })
+
+      if (subtree) entries = entries.filter(e => subtree.has(e.sessionId))
+      if (!input.includeKeep) entries = entries.filter(e => e.class !== "keep")
+
+      const totals: Partial<Record<SessionWrapupClass, number>> = {}
+      for (const e of entries) {
+        if (e.rssBytes === undefined) continue
+        totals[e.class] = (totals[e.class] ?? 0) + e.rssBytes
+      }
+
+      return { content: [{ type: "text", text: JSON.stringify({ entries, totals }) }] }
+    },
+  )
+
+  server.tool(
+    "session_wrapup_apply",
+    "Record a verdict on specific sessions — the mutating half of " +
+      "`session_wrapup_plan`. Each id is RE-CLASSIFIED from scratch " +
+      "immediately before acting (a plan computed moments earlier can be " +
+      "stale) and is only acted on if it is STILL `close` or `stuck`. Pass " +
+      "`judgedBy` (a judge session id) to also accept a `judge`-class id — " +
+      "the judge's verdict is what makes it safe to act on. `keep`-class ids " +
+      "are ALWAYS refused, no exception. `verdict: \"done\"` or " +
+      "`\"abandoned\"` actually CLOSES the session (tagged " +
+      "`endedReason:'steward-completed'`/`'steward-abandoned'`) and leaves it " +
+      "resumable (same as the idle reaper) — this never deletes anything. " +
+      "`verdict: \"blocked\"` or `\"needs-input\"` is NOT a completion: the " +
+      "session is left running untouched and the verdict is recorded as a " +
+      "flag (`SessionDescriptor.wrapupFlag`) instead — the per-id result's " +
+      "`action` says `closed` vs `flagged`. Also refused (result `ok:false`, " +
+      "`error:'refused_stale_or_busy'`) if the session is busy/awaitingInput/" +
+      "awaitingPermission or has a background task outstanding at the moment " +
+      "of the call, for either kind of action. A scoped orchestrator may only " +
+      "act on its own subtree. Returns a per-id result.",
+    {
+      sessionIds: z
+        .array(z.string().min(1))
+        .min(1)
+        .describe("Session ids or names, from `session_wrapup_plan`."),
+      verdict: z
+        .enum(["done", "abandoned", "blocked", "needs-input"])
+        .describe(
+          "What the session's work amounted to. \"done\"/\"abandoned\" CLOSE " +
+            "the session (`endedReason:'steward-completed'`/" +
+            "`'steward-abandoned'`); \"blocked\"/\"needs-input\" only FLAG it " +
+            "(`SessionDescriptor.wrapupFlag`) — the session keeps running.",
+        ),
+      note: z.string().optional().describe("Free-text note recorded on the outcome or the flag."),
+      judgedBy: z
+        .string()
+        .optional()
+        .describe(
+          "A judge session id. When set, the outcome's `source` is " +
+            "`'judged'` and a `judge`-class session also becomes eligible " +
+            "(not just `close`/`stuck`). Omitted ⇒ `source:'declared'`, " +
+            "`judgedBy:'steward-rules'`, and only `close`/`stuck` are eligible.",
+        ),
+    },
+    async input => {
+      const nowMs = Date.now()
+      const { all, sessionsForPlan, signals } = await gatherWrapupInputs(nowMs)
+      const subtree = callerScope ? collectSubtree(callerScope.ownerSessionId, all) : undefined
+
+      const entries = planSessionWrapup({
+        sessions: sessionsForPlan,
+        nowMs,
+        signals,
+        ...(wrapupCallerSessionId ? { callerSessionId: wrapupCallerSessionId } : {}),
+      })
+      const entryById = new Map(entries.map(e => [e.sessionId, e]))
+
+      const source: "judged" | "declared" = input.judgedBy ? "judged" : "declared"
+      const judgedBy = input.judgedBy ?? "steward-rules"
+
+      const results = input.sessionIds.map(ref => {
+        const desc = registry.findByIdOrName(ref)
+        if (!desc) return { sessionId: ref, ok: false as const, error: "not_found" }
+        if (subtree && !subtree.has(desc.id)) {
+          return { sessionId: desc.id, ok: false as const, error: "orchestrator_session_out_of_scope" }
+        }
+        const entry = entryById.get(desc.id)
+        if (!entry) return { sessionId: desc.id, ok: false as const, error: "not_a_candidate" }
+        if (entry.class === "keep") {
+          return { sessionId: desc.id, ok: false as const, class: entry.class, error: "keep_class_never_touched" }
+        }
+        if (entry.class === "judge" && !input.judgedBy) {
+          return { sessionId: desc.id, ok: false as const, class: entry.class, error: "ambiguous_needs_judge" }
+        }
+        const action: "closed" | "flagged" =
+          input.verdict === "done" || input.verdict === "abandoned" ? "closed" : "flagged"
+        const applied = registry.closeWithOutcome(desc.id, {
+          verdict: input.verdict,
+          ...(input.note !== undefined ? { note: input.note } : {}),
+          judgedBy,
+          source,
+        })
+        return applied
+          ? { sessionId: desc.id, ok: true as const, class: entry.class, action }
+          : { sessionId: desc.id, ok: false as const, class: entry.class, error: "refused_stale_or_busy" }
+      })
+
+      return { content: [{ type: "text", text: JSON.stringify({ results }) }] }
+    },
   )
 
   server.tool(

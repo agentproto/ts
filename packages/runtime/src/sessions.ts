@@ -129,8 +129,10 @@ import { continueAgentSessionFresh } from "./session-continue-fresh.js"
 import {
   compactOutcome,
   deriveSessionOutcome,
+  OUTCOME_SUMMARY_MAX,
   readLastAssistantTextSync,
   shouldReplaceOutcome,
+  trimOutcomeText,
   type SessionOutcome,
   type SessionOutcomeCompact,
 } from "./session-outcome.js"
@@ -1024,7 +1026,10 @@ export interface SessionDescriptor {
    *     `"parent-exited"` (an orchestrator's dying subtree reap),
    *     `"provider-limit"` (a driver-reported subscription/usage-cap error,
    *     e.g. Claude Code's "hit your session limit"), `"forgotten"` (a live
-   *     session killed as part of an operator `DELETE`).
+   *     session killed as part of an operator `DELETE`), `"steward-completed"` /
+   *     `"steward-abandoned"` (the session steward's `closeWithOutcome` —
+   *     verdict `"done"` vs. `"abandoned"`; a `"blocked"`/`"needs-input"`
+   *     verdict doesn't close at all, see `SessionDescriptor.wrapupFlag`).
    *  Absent for every terminal path this file doesn't tag (a plain natural
    *  exit, an ordinary turn error) — the session's own fault, or at least
    *  not something worth a special label. A string outside this list is
@@ -1057,6 +1062,15 @@ export interface SessionDescriptor {
    *  revives the row. Persisted, so it survives restarts and archiving. See
    *  `session-outcome.ts`. */
   outcome?: SessionOutcome
+  /** A steward verdict of `"blocked"` or `"needs-input"` from
+   *  `registry.closeWithOutcome` (`session-wrapup.ts` / FIX-9A) — recorded
+   *  INSTEAD of closing, since neither verdict means the session is done.
+   *  The session stays exactly as alive as it was; this is a signal for a
+   *  human/orchestrator to look, not a termination. Persisted; overwritten
+   *  (not accumulated) by the next flag, and left stale on the descriptor
+   *  until something clears it (nothing here does — a later successful
+   *  turn/close is a separate, more informative signal than deleting this). */
+  wrapupFlag?: { verdict: "blocked" | "needs-input"; note?: string; judgedBy?: string; at: string }
   /** Last time anything was written to stdout/stderr. Lets the UI
    *  spot stuck sessions ("running for 2h, last output 12min ago"). */
   lastOutputAt?: string
@@ -1094,6 +1108,12 @@ export interface SessionDescriptor {
    *  every read since it's a live OS query, stale the instant it's
    *  written to disk. */
   processAlive?: boolean
+  /** Summed RSS in bytes of this session's process and all its OS-level
+   *  descendants (`processTreeRss`, `process-memory.ts`). Ephemeral,
+   *  never persisted — stamped only when a caller opts in (`session_list`'s
+   *  `withMemory: true`) since it costs a `ps` spawn; absent otherwise, and
+   *  absent for a row with no `pid` or that `ps` didn't report. */
+  rssBytes?: number
   /** Count of live supervisors currently blocked waiting on this session —
    *  HTTP `GET /sessions/:id/wait` long-polls and `session_monitor`
    *  subscriptions, both via `monitorSessionWait` (#session-visibility).
@@ -3072,6 +3092,29 @@ export type PermissionRespondResult =
       message: string
     }
 
+/** Input to `SessionsRegistry.closeWithOutcome`. `verdict: "done" |
+ *  "abandoned"` records the Level 2 fields onto the session's
+ *  `SessionOutcome` and actually closes it; `"blocked" | "needs-input"`
+ *  records the SAME `note`/`judgedBy` onto `SessionDescriptor.wrapupFlag`
+ *  instead and never touches the session's liveness. See {@link
+ *  SessionOutcome} / {@link SessionDescriptor.wrapupFlag} for the field
+ *  meanings. */
+export interface CloseWithOutcomeInput {
+  verdict: "done" | "abandoned" | "blocked" | "needs-input"
+  /** Overrides the outcome's derived summary when given (e.g. a judge's own
+   *  written summary) — trimmed the same way `deriveSessionOutcome` trims
+   *  `lastAssistantText`. Omitted keeps whatever `deriveSessionOutcome`
+   *  computed from the session's own last assistant message. Ignored for a
+   *  `"blocked"`/`"needs-input"` verdict (there's no outcome to summarize —
+   *  nothing closed). */
+  summary?: string
+  note?: string
+  /** A judge session id, or `"steward-rules"` for a deterministic close with
+   *  no judge in the loop. */
+  judgedBy?: string
+  source: "judged" | "declared"
+}
+
 export interface SessionsRegistry {
   spawn(input: SpawnSessionInput): SessionDescriptor
   /** Adopt a ChildProcess that was spawned outside the registry —
@@ -3700,6 +3743,34 @@ export interface SessionsRegistry {
    *  reason (including `"operator-stopped"` or none) on a terminal row
    *  stays the plain no-op. */
   kill(id: string, signal?: NodeJS.Signals, reason?: SessionEndReason): boolean
+  /** Close a LIVE agent-cli session with a Level 2 (judged/declared) outcome
+   *  — the primitive the session steward (FIX-9A/9B) drives once a wrap-up
+   *  plan (`planSessionWrapup`, `session-wrapup.ts`) puts a session in the
+   *  `close`/`stuck` class, or a judge agent reaches a verdict on a `judge`
+   *  one. Verdict `"done"` or `"abandoned"` actually closes: terminates the
+   *  same graceful way `kill()` does, tags `endedReason: "steward-completed"`
+   *  (`"done"`) or `"steward-abandoned"` (`"abandoned"`), and — like
+   *  `reapIdle`, unlike a plain `kill()` — CLEARS the in-memory
+   *  `agentSession` binding so the row stays lazy-resumable in place. The
+   *  recorded outcome's `source`/`verdict`/`judgedBy`/`note` are stamped onto
+   *  the row's `SessionOutcome` (see `session-outcome.ts`) on top of what
+   *  `deriveSessionOutcome` would otherwise compute (last assistant message,
+   *  PRs, cost) — a declared close still shows what the session actually
+   *  produced. Verdict `"blocked"` or `"needs-input"` is NOT a completion —
+   *  nothing is terminated; the verdict is recorded as
+   *  `SessionDescriptor.wrapupFlag` instead, and the session is left exactly
+   *  as alive as it was.
+   *
+   *  Refuses (returns false, no-op) a session that is not a live
+   *  (`running`/`starting`) agent-cli row, or that AT THE MOMENT OF THE CALL
+   *  is `busy`/`awaitingInput`/`awaitingPermission` or has a background task
+   *  outstanding (`pendingBgTasks`/`backgroundTasks`) — a plan computed
+   *  moments earlier can be stale; this is the re-check that keeps an
+   *  autonomous close from ever landing on a session that just picked up a
+   *  turn, asked a question, or still has something in flight. Applies to
+   *  BOTH branches (close and flag-only) — a stale plan is refused either
+   *  way, never silently acted on. */
+  closeWithOutcome(id: string, input: CloseWithOutcomeInput): boolean
   /** Retire a long-idle agent-cli session to free its adapter process — the
    *  primitive the idle-session reaper (`runIdleReapPass`, PR-6) drives on a
    *  periodic sweep. Terminates the underlying adapter/child the SAME graceful
@@ -9685,6 +9756,78 @@ export function createSessionsRegistry(opts?: {
       // Child/PTY sessions emit from their exit handlers; the
       // exitedEmitted guard prevents a duplicate from kill() AND exit.
       emitExited(rt)
+      return true
+    },
+    closeWithOutcome(id, input) {
+      const rt = sessions.get(id)
+      if (!rt) return false
+      // Same universe as reapIdle: a live agent-cli row only — a PTY/command/
+      // terminal/browser session, or one already terminal, is never touched.
+      if (rt.desc.kind !== "agent-cli") return false
+      if (rt.desc.status !== "running" && rt.desc.status !== "starting") return false
+      // Re-check liveness AT THE MOMENT OF THE CALL — the plan that picked
+      // this session may be stale by the time this actually lands. A
+      // background task (agent-reported or the turn-end heuristic) is the
+      // same kind of staleness: something is still in flight, so this
+      // REFUSES rather than silently dropping it.
+      if (rt.desc.busy === true || rt.desc.awaitingInput === true || rt.desc.awaitingPermission === true) {
+        return false
+      }
+      if ((rt.desc.pendingBgTasks ?? 0) > 0 || (rt.desc.backgroundTasks?.length ?? 0) > 0) return false
+
+      // "blocked" / "needs-input" are NOT completion — the session stays
+      // exactly as alive as it was, and the verdict is recorded as a flag
+      // instead of a termination. Only "done"/"abandoned" actually close.
+      if (input.verdict === "blocked" || input.verdict === "needs-input") {
+        rt.desc.wrapupFlag = {
+          verdict: input.verdict,
+          ...(input.note !== undefined ? { note: input.note } : {}),
+          ...(input.judgedBy !== undefined ? { judgedBy: input.judgedBy } : {}),
+          at: new Date().toISOString(),
+        }
+        schedulePersist()
+        return true
+      }
+
+      const reason: SessionEndReason = input.verdict === "done" ? "steward-completed" : "steward-abandoned"
+
+      rt.desc.killedMidTurn = false // guaranteed by the busy guard above
+      rt.desc.status = "killed"
+      rt.desc.endedAt = new Date().toISOString()
+      rt.desc.endedReason = reason
+      if (rt.agentSession) {
+        releaseOutOfTurnEvents(rt)
+        recordExitUsageSnapshot(rt)
+        void rt.agentSession.close().catch(() => undefined)
+        void transcriptWriter.close(rt.desc.id)
+        tracedSessions.delete(rt.desc.id)
+        // THE difference from a plain kill(): clear the binding so the row is
+        // lazy-resumable in this same daemon lifetime — same as reapIdle.
+        rt.agentSession = undefined
+      }
+      killChildIfSpawned(rt.child, "SIGTERM")
+      schedulePersist()
+      // Derives + records the Level 1 outcome first (source:"derived") —
+      // same one exit funnel every terminal path goes through.
+      emitExited(rt)
+
+      // Layer the Level 2 fields on top of what emitExited just derived —
+      // same "merge after the termination fields are set" shape as
+      // markOutcomeCompleted, so the derived summary/artifacts/cost survive
+      // under the judged/declared verdict.
+      const base = rt.desc.outcome ?? deriveSessionOutcome(rt.desc, { lastAssistantText: rt.lastAssistantText })
+      rt.desc.outcome = {
+        ...base,
+        source: input.source,
+        verdict: input.verdict,
+        ...(input.summary !== undefined
+          ? { summary: trimOutcomeText(input.summary, OUTCOME_SUMMARY_MAX, "tail") }
+          : {}),
+        ...(input.judgedBy !== undefined ? { judgedBy: input.judgedBy } : {}),
+        ...(input.note !== undefined ? { note: input.note } : {}),
+        recordedAt: new Date().toISOString(),
+      }
+      schedulePersist()
       return true
     },
     reapIdle(id, idleMs = 0) {
