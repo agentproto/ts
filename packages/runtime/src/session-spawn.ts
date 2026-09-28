@@ -9,6 +9,7 @@
 import type { AcpMcpServer } from "@agentproto/acp"
 import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/command-sandbox"
 import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
+import { sessionTranscriptDir } from "./transcript-writer.js"
 import type { AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
   loadWorkspacesConfig,
@@ -96,7 +97,7 @@ import {
   type WorkspaceRulesResolution,
 } from "./workspace-rules.js"
 import { deriveSessionTitle } from "./session-title.js"
-import { isAbsolute } from "node:path"
+import { isAbsolute, join } from "node:path"
 
 /**
  * True when `p` (already absolute) sits inside `cwd` (or IS cwd). The
@@ -378,6 +379,16 @@ export function gcSpawnClaims(claims: Map<string, SpawnClaim>, now: number): voi
  * the implicit dedupe key does — unlabelled worktree fan-out (same slug,
  * no label) stays outside this check too.
  */
+/** Where a worktree provisioning's setup-hook FULL output gets persisted —
+ *  under the spawning session's own transcript dir, so it outlives a
+ *  subsequently-reclaimed worktree and sits next to that session's other
+ *  daemon-owned records (`events.jsonl`). Threaded onto every
+ *  `provisionWorktree` call (both the sync and async-provisioning branches)
+ *  as `WorktreeProvisionRequest.setupLogPath` — see that field's doc. */
+function worktreeSetupLogPath(sessionId: string): string {
+  return join(sessionTranscriptDir(sessionId), "worktree-setup.log")
+}
+
 function findWorktreeLabelCwdCollision(
   registry: SessionsRegistry,
   excludeId: string,
@@ -2909,6 +2920,11 @@ export async function spawnAgentSession(
             ...(worktreeRequest.slug ? { slug: worktreeRequest.slug } : {}),
             ...(worktreeRequest.base ? { base: worktreeRequest.base } : {}),
             ...(input.label ? { labelHint: input.label } : {}),
+            setupLogPath: worktreeSetupLogPath(mintedSessionId),
+            // Unattended path — no human present to retry a transient
+            // failure, so bound it here rather than have the caller pay
+            // for an entirely fresh worktree. See `runSetup`'s doc.
+            retrySetupOnFailure: true,
           })
         } catch (err) {
           registry.settlePendingAgent(pendingDesc.id, {
@@ -3025,6 +3041,9 @@ export async function spawnAgentSession(
           ...(worktreeRequest.slug ? { slug: worktreeRequest.slug } : {}),
           ...(worktreeRequest.base ? { base: worktreeRequest.base } : {}),
           ...(input.label ? { labelHint: input.label } : {}),
+          setupLogPath: worktreeSetupLogPath(mintedSessionId),
+          // Same reasoning as the async branch above — see `runSetup`'s doc.
+          retrySetupOnFailure: true,
         })
       } catch (err) {
         return finish({

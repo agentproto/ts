@@ -104,11 +104,18 @@ export const provisionWorktreeBuiltin = implementTool(
     // `runSetup` gate) — reused here rather than re-reading the base tree.
     if (config) {
       try {
-        await runSetup(config, {
-          sourceCheckoutPath: input.repoRoot,
-          worktreePath: cwd,
-          branchName: branch,
-        })
+        await runSetup(
+          config,
+          {
+            sourceCheckoutPath: input.repoRoot,
+            worktreePath: cwd,
+            branchName: branch,
+          },
+          {
+            ...(input.setupLogPath ? { logPath: input.setupLogPath } : {}),
+            ...(input.retrySetupOnFailure ? { retryOnFailure: true } : {}),
+          },
+        )
       } catch (err) {
         if (err instanceof HookError) {
           throw new ToolError({ code: "execution_failed", message: err.message })
