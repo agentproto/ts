@@ -144,7 +144,8 @@ export function reviewTemplate(opts: { id: string; base: string; command: string
   ].join("\n")
 }
 
-export function workflowTemplate(pm: PackageManager): string {
+export function workflowTemplate(pm: PackageManager, opts: { allowedSigners?: boolean } = {}): string {
+  const verifyFlags = opts.allowedSigners ? ' --allowed-signers .agentproto/allowed_signers' : ""
   const setup =
     pm === "pnpm"
       ? ["      - uses: pnpm/action-setup@v4", "      - run: pnpm install --frozen-lockfile"]
@@ -190,7 +191,7 @@ export function workflowTemplate(pm: PackageManager): string {
     "          lanes=$?",
     "          # 1 = block, 3+ = the review could not run: fail as-is.",
     '          case "$lanes" in 0|2) ;; *) exit "$lanes" ;; esac',
-    "          $AGENTPROTO review verify --if-exported --annotate github",
+    `          $AGENTPROTO review verify --if-exported --annotate github${verifyFlags}`,
     "          verify=$?",
     '          if [ "$verify" -eq 0 ]; then exit 0; fi',
     "          # 5 = no exportDir declared, 4 = none exported for this range.",
@@ -337,7 +338,14 @@ export async function reviewInit(opts: { cwd: string; ci?: "github" }): Promise<
 
   if (opts.ci === "github") {
     const { pm } = await detectPackageManager(root)
-    steps.push(await writeIfAbsent(join(root, ".github", "workflows", "review.yml"), workflowTemplate(pm), "review.yml"))
+    const allowedSigners = existsSync(join(root, ".agentproto", "allowed_signers"))
+    steps.push(
+      await writeIfAbsent(
+        join(root, ".github", "workflows", "review.yml"),
+        workflowTemplate(pm, { allowedSigners }),
+        "review.yml",
+      ),
+    )
   }
 
   return { root, steps, noop: steps.every((s) => s.action === "unchanged" || s.action === "skipped"), warnings }

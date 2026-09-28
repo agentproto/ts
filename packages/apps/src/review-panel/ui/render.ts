@@ -68,6 +68,11 @@ export function renderRow(row: ReviewRow): string {
   const flags: string[] = []
   if (row.dirty) flags.push('<span class="tag t-dirty">dirty</span>')
   if (row.cached) flags.push('<span class="tag t-cached">cached</span>')
+  // A running row has no `signed` field yet (nothing attested); only a
+  // settled ledger row (row.status undefined) carries one either way.
+  if (row.status !== "running") {
+    flags.push(row.signed ? '<span class="tag t-signed">signed</span>' : '<span class="tag t-unsigned">unsigned</span>')
+  }
   return (
     `<tr class="row" data-runid="${esc(row.runId)}" tabindex="0">` +
     `<td>${verdictChip(status)}</td>` +
@@ -138,6 +143,14 @@ export function renderDetail(detail: RunDetail): string {
   const header: string[] = [`<div class="detail-hdr">`, verdictChip(status), `<span class="mono">${esc(detail.runId)}</span>`]
   if (detail.binding) header.push(`<span class="tag">${esc(detail.binding)}</span>`)
   if (detail.cached) header.push('<span class="tag t-cached">cached</span>')
+  if (detail.status === "done" && detail.attestation) {
+    const sig = detail.attestation.attestor?.signature
+    header.push(
+      sig
+        ? `<span class="tag t-signed" title="${esc(sig.keyFingerprint)}">signed: ${esc(sig.principal)}</span>`
+        : '<span class="tag t-unsigned">unsigned</span>',
+    )
+  }
   header.push(`</div>`)
   if (detail.error) header.push(`<div class="detail-error">${esc(detail.error)}</div>`)
   if (detail.supersededBy) header.push(`<div class="muted">superseded by ${esc(detail.supersededBy)}</div>`)

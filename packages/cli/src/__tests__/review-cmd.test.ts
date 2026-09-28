@@ -10,9 +10,9 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { buildAttestation, manifestSha, type Attestation, type LaneResult } from "@agentproto/review"
+import { attestationSha256, buildAttestation, manifestSha, rangeSha, type Attestation, type LaneResult } from "@agentproto/review"
 import { BLOCK_START, HOOK_SCRIPT, reviewInit } from "../commands/review-init.js"
-import { EXIT, prRefFromUrl, renderVerdict, runReview } from "../commands/review.js"
+import { EXIT, VERIFY_EXIT, prRefFromUrl, renderVerdict, runReview } from "../commands/review.js"
 
 vi.setConfig({ testTimeout: 30_000 })
 
@@ -127,6 +127,20 @@ describe("review init", () => {
     expect(wf).toContain("::error title=review incomplete::")
     expect(await readFile(join(repo, "REVIEW.md"), "utf8")).toMatch(/ci:\n\s+on: pull_request/)
     expect((await reviewInit({ cwd: repo, ci: "github" })).noop).toBe(true)
+  })
+
+  it("--ci github passes --allowed-signers only when .agentproto/allowed_signers already exists", async () => {
+    const withoutFile = await scratchRepo()
+    await reviewInit({ cwd: withoutFile, ci: "github" })
+    const wfWithout = await readFile(join(withoutFile, ".github", "workflows", "review.yml"), "utf8")
+    expect(wfWithout).not.toContain("--allowed-signers")
+
+    const withFile = await scratchRepo()
+    await mkdir(join(withFile, ".agentproto"), { recursive: true })
+    await writeFile(join(withFile, ".agentproto", "allowed_signers"), "me@example.com namespaces=\"agentproto-review\" ssh-ed25519 AAAA\n")
+    await reviewInit({ cwd: withFile, ci: "github" })
+    const wfWith = await readFile(join(withFile, ".github", "workflows", "review.yml"), "utf8")
+    expect(wfWith).toContain("review verify --if-exported --annotate github --allowed-signers .agentproto/allowed_signers")
   })
 
   it("the installed hook gates a real push on the CLI's exit code", async () => {
@@ -254,6 +268,45 @@ describe("review verify", () => {
     expect(bad.code).toBe(1)
     expect(bad.err).toMatch(/does NOT verify/)
     expect(bad.err).toMatch(/::error title=review attestation invalid::/)
+  })
+
+  it("resolves a composedFrom reference in the export dir; a missing or tampered prior fails it (exit 1)", async () => {
+    const repo = await verifyRepo()
+    await writeFile(join(repo.dir, "c.txt"), "c\n")
+    sh(repo.dir, "add", "-A")
+    sh(repo.dir, "commit", "-qm", "second change")
+    const head = sh(repo.dir, "rev-parse", "HEAD")
+
+    const prior = attest(repo.baseSha, repo.headSha, { runId: "run-prior" })
+    const current = attest(repo.baseSha, head, {
+      runId: "run-current",
+      lanes: [
+        {
+          ...passLanes[0]!,
+          composedFrom: { rangeSha: rangeSha({ baseSha: repo.baseSha, headSha: repo.headSha }), headSha: repo.headSha, attestationSha256: attestationSha256(prior) },
+        },
+      ],
+    })
+    await mkdir(join(repo.dir, ".reviews"))
+    await writeFile(join(repo.dir, ".reviews", "demo-local-prior.json"), JSON.stringify(prior))
+    await writeFile(join(repo.dir, ".reviews", "demo-local-current.json"), JSON.stringify(current))
+
+    const ok = await captureRun(["verify", "--cwd", repo.dir, "--json"])
+    expect(ok.code).toBe(VERIFY_EXIT.ok)
+
+    // The prior attestation changes after the fact (its digest no longer
+    // matches composedFrom.attestationSha256) — the reference no longer
+    // resolves, even though `current`'s own content still verifies fine.
+    await writeFile(join(repo.dir, ".reviews", "demo-local-prior.json"), JSON.stringify({ ...prior, verdict: "pass", lanes: [{ ...passLanes[0], status: "fail" }] }))
+    const tampered = await captureRun(["verify", "--cwd", repo.dir, "--json"])
+    expect(tampered.code).toBe(VERIFY_EXIT.invalid)
+    expect(JSON.parse(tampered.out).problems[0]).toMatch(/does not match composedFrom.attestationSha256/)
+
+    // Removing the prior entirely: the reference doesn't resolve at all.
+    await rm(join(repo.dir, ".reviews", "demo-local-prior.json"))
+    const missing = await captureRun(["verify", "--cwd", repo.dir, "--json"])
+    expect(missing.code).toBe(VERIFY_EXIT.invalid)
+    expect(JSON.parse(missing.out).problems[0]).toMatch(/not found in/)
   })
 
   it("accepts HEAD^ when HEAD only commits the export; 4 when nothing matches; 5 with --if-exported and no exportDir", async () => {

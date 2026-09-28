@@ -62,8 +62,17 @@ export type LaneOutcome =
   /** A command lane's process exited. `output` is a (tail of) combined
    *  stdout/stderr, surfaced as the finding detail on a non-zero exit. */
   | { outcome: "exited"; exitCode: number; output?: string }
-  /** An agent lane's reviewer wrote a valid verdict file. */
-  | { outcome: "reported"; report: AgentLaneReport; sessionId?: string; preset?: string; model?: string }
+  /** An agent lane's reviewer wrote a valid verdict file. `composedFrom`:
+   *  set by the host when this lane reused a prior passing attestation and
+   *  reviewed only the delta — see `LaneResult.composedFrom`. */
+  | {
+      outcome: "reported"
+      report: AgentLaneReport
+      sessionId?: string
+      preset?: string
+      model?: string
+      composedFrom?: LaneResult["composedFrom"]
+    }
   /** The lane exceeded its `timeoutMs` and was stopped. */
   | { outcome: "timeout"; error: string; sessionId?: string; preset?: string; model?: string; output?: string }
   /** The lane could not produce a result (spawn failed, no verdict file,
@@ -162,6 +171,7 @@ export function toLaneResult(check: ReviewCheck, outcome: LaneOutcome, durationM
         findings: outcome.report.findings,
         ...(outcome.report.summary !== undefined ? { summary: outcome.report.summary } : {}),
         ...sessionFields(outcome),
+        ...(outcome.composedFrom ? { composedFrom: outcome.composedFrom } : {}),
       }
     }
     case "timeout":

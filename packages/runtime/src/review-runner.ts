@@ -40,6 +40,7 @@ import { mkdir, readFile, rm } from "node:fs/promises"
 import { hostname } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import {
+  attestationSha256,
   buildAgentLanePrompt,
   buildAttestation,
   compileReview,
@@ -63,6 +64,8 @@ import {
 } from "@agentproto/review"
 import { compileWorkflow, runWorkflow } from "@agentproto/workflow-runtime"
 import { repoSlug, withPr, type LedgerEntry, type ReviewLedger } from "./review-ledger.js"
+import { composedFromRangeSha, findComposeCandidate } from "./review-compose.js"
+import { resolvePrincipal, signAttestation } from "./review-signing.js"
 
 // ── git ──────────────────────────────────────────────────────────────
 
@@ -220,6 +223,17 @@ export interface ReviewerSessionHost {
   }): Promise<ReviewerRunResult>
 }
 
+/** Attestation composition wiring for `createReviewLaneExecutor` — omitted
+ *  or `enabled: false` disables composition and every agent lane reviews the
+ *  full frozen range, same as before Goal B. */
+export interface ReviewComposeContext {
+  enabled: boolean
+  ledger: ReviewLedger
+  manifestSha: string
+  binding: string
+  rubrics: RubricDigest[]
+}
+
 export interface ReviewLaneExecutorContext {
   runId: string
   reviewId: string
@@ -229,6 +243,7 @@ export interface ReviewLaneExecutorContext {
   runDir: string
   reviewers?: ReviewerSessionHost
   parentSessionId?: string
+  compose?: ReviewComposeContext
 }
 
 /** The daemon's {@link ReviewLaneExecutor}: subprocess command lanes, child
@@ -247,13 +262,52 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
     } catch {
       return { outcome: "skipped", error: `rubric not found: ${rubricPath}` }
     }
+
+    // Composition: an agent lane may reuse a prior PASSING attestation and
+    // review only the delta on top of it — see review-compose.ts. Command
+    // lanes never reach this function; only agent lanes compose.
+    let promptTarget = target
+    let composedFrom: LaneResult["composedFrom"] | undefined
+    if (ctx.compose?.enabled) {
+      const rubric = ctx.compose.rubrics.find((r) => r.check === check.id)
+      const candidate = rubric
+        ? await findComposeCandidate({
+            ledger: ctx.compose.ledger,
+            repoRoot: ctx.repoRoot,
+            repoRemote: target.repoRemote,
+            manifestSha: ctx.compose.manifestSha,
+            binding: ctx.compose.binding,
+            checkId: check.id,
+            rubricSha256: rubric.sha256,
+            baseSha: target.baseSha,
+            headSha: target.headSha,
+          })
+        : undefined
+      if (candidate) {
+        const priorHeadSha = candidate.attestation.target.headSha
+        promptTarget = { ...target, baseSha: priorHeadSha }
+        composedFrom = {
+          rangeSha: composedFromRangeSha(candidate),
+          headSha: priorHeadSha,
+          attestationSha256: attestationSha256(candidate.attestation),
+        }
+      }
+    }
+
     const verdictPath = join(ctx.runDir, `${check.id}.verdict.json`)
     await mkdir(ctx.runDir, { recursive: true })
     await rm(verdictPath, { force: true })
     const result = await ctx.reviewers.run({
       preset: check.preset,
       cwd: ctx.repoRoot,
-      prompt: buildAgentLanePrompt({ reviewId: ctx.reviewId, check, target, rubricPath, verdictPath }),
+      prompt: buildAgentLanePrompt({
+        reviewId: ctx.reviewId,
+        check,
+        target: promptTarget,
+        rubricPath,
+        verdictPath,
+        ...(composedFrom ? { composedFrom: { priorHeadSha: composedFrom.headSha } } : {}),
+      }),
       label: `review:${ctx.reviewId}:${check.id}`,
       timeoutMs: check.timeoutMs,
       ...(ctx.parentSessionId ? { parentSessionId: ctx.parentSessionId } : {}),
@@ -297,6 +351,7 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
         sessionId: result.sessionId,
         preset: result.preset,
         ...model,
+        ...(composedFrom ? { composedFrom } : {}),
       }
     } catch (err) {
       return {
@@ -344,6 +399,12 @@ export interface ReviewRunInput {
   head?: string
   /** Ignore a cached ledger verdict and re-run. */
   nocache?: boolean
+  /** Let an agent lane reuse a prior passing attestation and review only the
+   *  delta on top of it (attestation composition — see `review-compose.ts`).
+   *  Default true. `nocache: true` implies `compose: false` — a caller
+   *  asking to ignore the cache wants a full fresh review, not a partial
+   *  one. Command lanes are never composed regardless of this flag. */
+  compose?: boolean
   /** Session the agent lanes' reviewer sessions nest under. */
   parentSessionId?: string
   /** Session that requested the review — recorded as
@@ -396,6 +457,12 @@ export interface ReviewRun {
    *  cancelled/failed run to its requester without waiting for an
    *  attestation. */
   requesterSessionId?: string
+  /** Set when the attestation was written UNSIGNED because signing failed
+   *  (no `ssh-keygen`, an unreadable/unwritable key, …) — a signing failure
+   *  never fails the review itself, but the reason is surfaced here rather
+   *  than silently dropped. Absent when the attestation is signed, or the
+   *  run never reached a verdict. */
+  signingError?: string
 }
 
 export interface ReviewRunner {
@@ -420,6 +487,20 @@ export interface CreateReviewRunnerOptions {
   reviewers?: ReviewerSessionHost
   /** Attestor identity. Default: `agentproto-runtime@<hostname>`. */
   daemonId?: string
+  /** Directory the review signing keypair lives in. Default:
+   *  `~/.agentproto/keys` (see `review-signing.ts`'s `defaultReviewKeysDir`).
+   *  Override for a throwaway HOME in a live-proof daemon, or a temp dir in
+   *  tests — production code should leave this unset. */
+  signingKeysDir?: string
+  /** Overrides the resolved signing principal for every run (tests; a
+   *  configured `review.principal`). Default: `git config user.email` of
+   *  the reviewed repo, else a host-derived fallback — see
+   *  `review-signing.ts`'s `resolvePrincipal`. */
+  signingPrincipal?: string
+  /** `env` passed to the `ssh-keygen` child processes signing shells out to
+   *  — tests use this to simulate "ssh-keygen not on PATH" without touching
+   *  the real PATH. Default: `process.env`. */
+  signingEnv?: NodeJS.ProcessEnv
   /** Called once a run with a `requesterSessionId` reaches `done` — never
    *  for `failed`/`cancelled` (no verdict to report). Display-only: the
    *  daemon writes `text` into the requester's transcript as a `notice`
@@ -508,6 +589,11 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
       }
     }
 
+    // `nocache: true` asks for a full fresh review, so it implies
+    // `compose: false` too — reusing a prior lane's verdict would be the
+    // same kind of cache reuse `nocache` opts out of.
+    const composeEnabled = input.nocache ? false : (input.compose ?? true)
+
     let dirty = false
     const runDir = join(ledger.root, repoSlug(repoRemote), "runs", run.runId)
     const compiled = compileReview(manifest, {
@@ -529,6 +615,7 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
         runDir,
         ...(opts.reviewers ? { reviewers: opts.reviewers } : {}),
         ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
+        compose: { enabled: composeEnabled, ledger, manifestSha: mSha, binding: binding.name, rubrics },
       }),
       onLaneSettled: (lane) => {
         run.lanes = [...run.lanes, lane]
@@ -550,7 +637,7 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
       ...(requesterSessionId ? { sessionId: requesterSessionId } : {}),
       ...(gitAuthor ? { gitAuthor } : {}),
     }
-    const attestation = buildAttestation({
+    const unsigned = buildAttestation({
       runId: run.runId,
       reviewId: manifest.id,
       manifestSha: mSha,
@@ -564,6 +651,19 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
       requester,
       ...(input.pr ? { pr: input.pr } : {}),
     })
+    // Only the daemon signs (frozen design, Goal A). A signing failure (no
+    // `ssh-keygen`, an unreadable key) NEVER fails the review — the
+    // attestation is written unsigned, with the reason on the run view.
+    const principal = await resolvePrincipal({ repoRoot: root, configuredPrincipal: opts.signingPrincipal })
+    const signed = await signAttestation(unsigned, {
+      principal,
+      ...(opts.signingKeysDir ? { keysDir: opts.signingKeysDir } : {}),
+      ...(opts.signingEnv ? { env: opts.signingEnv } : {}),
+    })
+    if (signed.error) run.signingError = signed.error
+    const attestation: Attestation = signed.signature
+      ? { ...unsigned, attestor: { ...unsigned.attestor, signature: signed.signature } }
+      : unsigned
     const entry: LedgerEntry = {
       attestation,
       host: {

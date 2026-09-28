@@ -61,6 +61,7 @@ function runView(run: ReviewRun): Record<string, unknown> {
     ...(run.attestation ? { verdict: run.attestation.verdict } : {}),
     ...(run.cached ? { cached: true } : {}),
     ...(run.error ? { error: run.error } : {}),
+    ...(run.signingError ? { signingError: run.signingError } : {}),
     ...(run.supersededBy ? { supersededBy: run.supersededBy } : {}),
     ...(run.status === "running" ? { lanes: run.lanes.map((l) => ({ id: l.id, status: l.status })) } : {}),
     ...(run.attestation ? { attestation: run.attestation } : {}),
@@ -96,6 +97,9 @@ function ledgerRow(entry: LedgerEntry, annotations: LedgerAnnotations = {}): Rec
     ...(a.requester ? { requester: a.requester } : {}),
     ...(pr ? { pr } : {}),
     ...(lastPrStatus ? { prState: lastPrStatus.state } : {}),
+    // Compact signed/unsigned indicator — the full signature (and any
+    // composedFrom lane detail) lives on the full attestation (review_export).
+    signed: !!a.attestor.signature,
     lanes: a.lanes.map((l) => ({ id: l.id, status: l.status, blocking: l.blocking })),
   }
 }
@@ -269,7 +273,15 @@ export function registerReviewTools(server: McpServer, opts: RegisterReviewTools
       binding: z.string().optional().describe("Binding to run (e.g. local, ci). Default: the sole binding, or `default`."),
       base: z.string().optional().describe("Range base ref/sha. Default: merge-base(<manifest target.base>, HEAD)."),
       head: z.string().optional().describe("Range head ref/sha. Default: HEAD, resolved after the prepare phase."),
-      nocache: z.boolean().optional().describe("Ignore a cached ledger verdict and re-run. Default false."),
+      nocache: z.boolean().optional().describe("Ignore a cached ledger verdict and re-run. Default false. Implies compose:false."),
+      compose: z
+        .boolean()
+        .optional()
+        .describe(
+          "Let an agent lane reuse a prior passing attestation and review only the delta on top of it (attestation " +
+            "composition — see LaneResult.composedFrom). Default true. Command lanes are never composed. Ignored " +
+            "(false) when `nocache` is set.",
+        ),
       wait: z.boolean().optional().describe("Block until the review finishes (default true). false ⇒ return a runId immediately."),
       requesterSessionId: z
         .string()
@@ -298,6 +310,7 @@ export function registerReviewTools(server: McpServer, opts: RegisterReviewTools
           ...(input.base !== undefined ? { base: input.base } : {}),
           ...(input.head !== undefined ? { head: input.head } : {}),
           ...(input.nocache ? { nocache: true } : {}),
+          ...(input.compose !== undefined ? { compose: input.compose } : {}),
           ...(callerSessionId ? { parentSessionId: callerSessionId } : {}),
           ...(input.requesterSessionId !== undefined ? { requesterSessionId: input.requesterSessionId } : {}),
           ...(input.pr ? { pr: input.pr as ReviewPrRef } : {}),
