@@ -74,6 +74,15 @@ import {
 } from "./session-observer.js"
 import { artifactMarkerLines, formatToolCall, formatToolResult } from "./tool-presenter.js"
 import { createTranscriptWriter, sessionEventsPath } from "./transcript-writer.js"
+import {
+  addSessionArtifact as addSessionArtifactImpl,
+  getSessionArtifact as getSessionArtifactImpl,
+  listSessionArtifacts as listSessionArtifactsImpl,
+  pinSessionArtifact as pinSessionArtifactImpl,
+  type AddSessionArtifactInput,
+  type ArtifactRecord,
+  type GetSessionArtifactResult,
+} from "./session-artifacts.js"
 import { maybeTitleSession } from "./session-titler.js"
 import { buildResumeContextDigest } from "./resume-context-digest.js"
 import {
@@ -3552,6 +3561,30 @@ export interface SessionsRegistry {
    *  touches `keepAlive`, reaper eligibility, or any notification path —
    *  pin is quiet, structural state only. Throws when the id is unknown. */
   setPinned(id: string, pinned: boolean): SessionDescriptor
+  /** Materialize a new artifact (or version of one) into the session's
+   *  durable artifact store (`session_artifact_add` MCP verb / `POST
+   *  /sessions/:id/artifacts`) — see `session-artifacts.ts`. Emits
+   *  `session:artifact-added` on a real (non-deduped) write. Throws when
+   *  the id is unknown. */
+  addSessionArtifact(id: string, input: AddSessionArtifactInput): ArtifactRecord
+  /** Current-state fold of the session's artifact store — every key's
+   *  version history, most-recently-updated first. Empty array for a
+   *  known session with no artifacts yet. Throws when the id is unknown. */
+  listSessionArtifacts(id: string): ArtifactRecord[]
+  /** One artifact version's metadata plus its bounded file content (single-
+   *  file kinds only — a "site" version's content is browsed via the raw-
+   *  serve HTTP route instead). Undefined when the key/version doesn't
+   *  exist. Throws when the session id is unknown. */
+  getSessionArtifact(
+    id: string,
+    key: string,
+    opts?: { version?: number; maxBytes?: number },
+  ): GetSessionArtifactResult | undefined
+  /** Set or clear an artifact's pin (`session_artifact_pin` MCP verb /
+   *  `POST /sessions/:id/artifacts/:key/pin`). Emits
+   *  `session:artifact-pinned-changed`. Undefined when the key doesn't
+   *  exist. Throws when the session id is unknown. */
+  setArtifactPinned(id: string, key: string, pinned: boolean): ArtifactRecord | undefined
   /**
    * Manually override `awaitingInput`/`awaitingQuestion` (the
    * `session_flag_status` MCP verb) — the ONE write path for this pair
@@ -4591,8 +4624,20 @@ export function createSessionsRegistry(opts?: {
   const recordOutcome = (rt: SessionRuntime): void => {
     if (rt.desc.kind !== "agent-cli") return
     if (rt.desc.status === "running" || rt.desc.status === "starting") return
+    // Pinned session artifacts ride the outcome as `type: "file"` refs —
+    // best-effort: a store read failure (e.g. a corrupt ledger line) must
+    // never block recording the rest of the outcome.
+    let pinnedArtifacts: import("./session-outcome.js").SessionOutcomeArtifact[] = []
+    try {
+      pinnedArtifacts = listSessionArtifactsImpl(rt.desc.id, transcriptBaseDir)
+        .filter(a => a.pinned)
+        .map(a => ({ type: "file" as const, ref: a.key, title: a.label ?? a.key }))
+    } catch {
+      // Ignore — see comment above.
+    }
     const next = deriveSessionOutcome(rt.desc, {
       lastAssistantText: rt.lastAssistantText ?? rt.desc.outcome?.summary,
+      ...(pinnedArtifacts.length > 0 ? { artifacts: pinnedArtifacts } : {}),
     })
     if (!shouldReplaceOutcome(rt.desc.outcome, next)) return
     rt.desc.outcome = next
@@ -9889,6 +9934,45 @@ export function createSessionsRegistry(opts?: {
       })
       stampReadLiveness(rt.desc)
       return rt.desc
+    },
+    addSessionArtifact(id, input) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`addSessionArtifact: no session "${id}"`)
+      const result = addSessionArtifactImpl(id, input, transcriptBaseDir)
+      if (result.added) {
+        sessionEvents?.emit({
+          type: "session:artifact-added",
+          sessionId: id,
+          key: result.record.key,
+          kind: result.record.kind,
+          version: result.version.version,
+          ...(result.record.label ? { label: result.record.label } : {}),
+          ts: new Date().toISOString(),
+        })
+      }
+      return result.record
+    },
+    listSessionArtifacts(id) {
+      if (!sessions.get(id)) throw new Error(`listSessionArtifacts: no session "${id}"`)
+      return listSessionArtifactsImpl(id, transcriptBaseDir)
+    },
+    getSessionArtifact(id, key, opts) {
+      if (!sessions.get(id)) throw new Error(`getSessionArtifact: no session "${id}"`)
+      return getSessionArtifactImpl(id, key, opts, transcriptBaseDir)
+    },
+    setArtifactPinned(id, key, pinned) {
+      if (!sessions.get(id)) throw new Error(`setArtifactPinned: no session "${id}"`)
+      const record = pinSessionArtifactImpl(id, key, pinned, transcriptBaseDir)
+      if (record) {
+        sessionEvents?.emit({
+          type: "session:artifact-pinned-changed",
+          sessionId: id,
+          key,
+          pinned,
+          ts: new Date().toISOString(),
+        })
+      }
+      return record
     },
     flagAwaitingInput(id, patch) {
       const rt = sessions.get(id)

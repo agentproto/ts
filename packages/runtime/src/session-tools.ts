@@ -4466,6 +4466,201 @@ export function registerSessionTools(
   )
 
   server.tool(
+    "session_artifact_add",
+    "Materialize a durable artifact (document, image, pdf, html, presentation, " +
+      "site, or generic file) into this session's artifact store — the thing " +
+      "that shows as an inline card in the conversation and lists in the " +
+      "session's 'Artifacts' section, kept across restarts (unlike a plain " +
+      "chat attachment). Pass EITHER `bytes` (base64, for content the agent " +
+      "produced in-memory) OR `sourcePath` (an absolute path to an existing " +
+      "file, or a directory for a `kind: \"site\"` — e.g. a canvakit export). " +
+      "Re-adding the same `key` with different content records a new version; " +
+      "re-adding identical bytes is a no-op (content-addressed dedup).",
+    {
+      idOrName: z.string().min(1).describe("Session id or name — from `session_list`."),
+      key: z
+        .string()
+        .optional()
+        .describe(
+          "Stable id to version under. Omit to derive one from `name`, else the " +
+            "content hash — pass an explicit key when you intend to re-add a " +
+            "later version of the same artifact.",
+        ),
+      kind: z
+        .enum(["image", "document", "pdf", "html", "presentation", "site", "file"])
+        .optional()
+        .describe("Defaults to an inference from `mimeType`/`name`/`sourcePath`."),
+      label: z.string().optional().describe("Display label for the inline card / Artifacts section."),
+      sourceRef: z
+        .string()
+        .optional()
+        .describe("Free-form provenance, e.g. 'workflow-run:<runId>/<key>' or 'canvakit:<exportPath>'."),
+      bytes: z.string().optional().describe("Inline content, base64-encoded. Mutually exclusive with `sourcePath`."),
+      name: z.string().optional().describe("Display name — also the default `key`/extension source."),
+      mimeType: z.string().optional().describe("Content type, when known."),
+      sourcePath: z
+        .string()
+        .optional()
+        .describe(
+          "Absolute path to an existing file or directory to copy in. A directory " +
+            "implies `kind: \"site\"` unless overridden. Mutually exclusive with `bytes`.",
+        ),
+    },
+    async input => {
+      const prev = registry.findByIdOrName(input.idOrName)
+      if (!prev) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: `no session "${input.idOrName}" found` }) }],
+          isError: true,
+        }
+      }
+      if (callerScope) {
+        const subtree = collectSubtree(callerScope.ownerSessionId, registry.list({ includeArchived: true }))
+        if (!subtree.has(prev.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_artifact_add: session "${prev.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only touch sessions it (transitively) spawned.",
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      try {
+        const record = registry.addSessionArtifact(prev.id, {
+          ...(input.key ? { key: input.key } : {}),
+          ...(input.kind ? { kind: input.kind } : {}),
+          ...(input.label ? { label: input.label } : {}),
+          createdBy: "agent",
+          ...(input.sourceRef ? { sourceRef: input.sourceRef } : {}),
+          ...(input.bytes ? { bytes: input.bytes } : {}),
+          ...(input.name ? { name: input.name } : {}),
+          ...(input.mimeType ? { mimeType: input.mimeType } : {}),
+          ...(input.sourcePath ? { sourcePath: input.sourcePath } : {}),
+        })
+        return { content: [{ type: "text", text: JSON.stringify(record) }] }
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `session_artifact_add: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  server.tool(
+    "session_artifact_list",
+    "List every artifact in this session's store — each key's current label/" +
+      "kind/pin plus its full version history. Empty array for a session with " +
+      "none yet.",
+    {
+      idOrName: z.string().min(1).describe("Session id or name — from `session_list`."),
+    },
+    async input => {
+      const prev = registry.findByIdOrName(input.idOrName)
+      if (!prev) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: `no session "${input.idOrName}" found` }) }],
+          isError: true,
+        }
+      }
+      const records = registry.listSessionArtifacts(prev.id)
+      return { content: [{ type: "text", text: JSON.stringify({ artifacts: records }) }] }
+    },
+  )
+
+  server.tool(
+    "session_artifact_get",
+    "Fetch one artifact version's metadata plus its bounded file content — " +
+      "capped, a larger file still resolves (`truncated: true`) with its " +
+      "first bytes. A `kind: \"site\"` version returns metadata only (no " +
+      "`content`); browse it via `GET /sessions/:id/artifacts/:key/raw/...` " +
+      "instead.",
+    {
+      idOrName: z.string().min(1).describe("Session id or name — from `session_list`."),
+      key: z.string().min(1).describe("Artifact key, from `session_artifact_list`."),
+      version: z.number().int().positive().optional().describe("Defaults to the latest version."),
+      maxBytes: z.number().int().positive().optional().describe("Content cap in bytes. Defaults to 512 KiB."),
+    },
+    async input => {
+      const prev = registry.findByIdOrName(input.idOrName)
+      if (!prev) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: `no session "${input.idOrName}" found` }) }],
+          isError: true,
+        }
+      }
+      const result = registry.getSessionArtifact(prev.id, input.key, {
+        ...(input.version !== undefined ? { version: input.version } : {}),
+        ...(input.maxBytes !== undefined ? { maxBytes: input.maxBytes } : {}),
+      })
+      if (!result) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: `no artifact "${input.key}" found` }) }],
+          isError: true,
+        }
+      }
+      const isText =
+        result.version.contentType?.startsWith("text/") ||
+        result.version.contentType === "application/json" ||
+        result.version.contentType === "text/html"
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              record: result.record,
+              version: result.version,
+              truncated: result.truncated,
+              ...(result.content
+                ? isText
+                  ? { text: result.content.toString("utf8") }
+                  : { base64: result.content.toString("base64") }
+                : {}),
+            }),
+          },
+        ],
+      }
+    },
+  )
+
+  server.tool(
+    "session_artifact_pin",
+    "Set or clear an artifact's pin — a pinned artifact surfaces in the " +
+      "session's derived outcome (the ended block) as a `type: \"file\"` ref, " +
+      "in addition to always listing in `session_artifact_list`.",
+    {
+      idOrName: z.string().min(1).describe("Session id or name — from `session_list`."),
+      key: z.string().min(1).describe("Artifact key, from `session_artifact_list`."),
+      pinned: mcpBool.describe("true to pin, false to unpin."),
+    },
+    async input => {
+      const prev = registry.findByIdOrName(input.idOrName)
+      if (!prev) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: `no session "${input.idOrName}" found` }) }],
+          isError: true,
+        }
+      }
+      const record = registry.setArtifactPinned(prev.id, input.key, input.pinned)
+      if (!record) {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ error: `no artifact "${input.key}" found` }) }],
+          isError: true,
+        }
+      }
+      return { content: [{ type: "text", text: JSON.stringify(record) }] }
+    },
+  )
+
+  server.tool(
     "terminal_start",
     "Spawn a process under a real PTY (node-pty) on the host. Bytes (including " +
       "ANSI escapes, alt-screen sequences) flow through the daemon's byte ring " +

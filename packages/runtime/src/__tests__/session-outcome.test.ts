@@ -166,6 +166,25 @@ describe("derived session outcome — registry", () => {
     reg.shutdown()
   })
 
+  it("a pinned session artifact rides the outcome as a type:\"file\" ref; unpinned ones don't", () => {
+    const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp })
+    const a = reg.spawnAgent({ workspaceSlug: "default", cwd: tmp, agentSession: turnSession([]), adapterSlug: "claude-code" })
+    reg.addSessionArtifact(a.id, {
+      key: "report",
+      label: "Report",
+      createdBy: "agent",
+      bytes: Buffer.from("hi").toString("base64"),
+    })
+    reg.addSessionArtifact(a.id, { key: "scratch", createdBy: "agent", bytes: Buffer.from("x").toString("base64") })
+    reg.setArtifactPinned(a.id, "report", true)
+    reg.kill(a.id)
+    expect(reg.get(a.id)?.outcome).toMatchObject({
+      status: "produced",
+      artifacts: [{ type: "file", ref: "report", title: "Report" }],
+    })
+    reg.shutdown()
+  })
+
   it("idempotent: two terminal transitions ⇒ one outcome (first write wins)", () => {
     const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp })
     const desc = reg.spawnAgent({ workspaceSlug: "default", cwd: tmp, agentSession: turnSession([]), adapterSlug: "claude-code" })

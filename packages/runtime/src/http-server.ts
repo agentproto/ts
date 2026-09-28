@@ -132,6 +132,7 @@ import {
 } from "./usage-rollup-service.js"
 import { readConversation } from "./conversation-read.js"
 import { mimeTypeForExtension, sessionAttachmentsDir, sessionEventsPath } from "./transcript-writer.js"
+import { listSessionArtifacts, resolveArtifactPath, resolveSiteFile } from "./session-artifacts.js"
 import { createReadStream, existsSync } from "node:fs"
 import { createInterface } from "node:readline"
 import { createTranscriptToUiMapper } from "./chat-stream.js"
@@ -2112,6 +2113,206 @@ export async function startHttpServer(
             res.end(bytes)
           } catch {
             replyJson(404, { error: "attachment_not_found" })
+          }
+          return
+        }
+
+        // Session artifact store — durable, content-addressed documents kept
+        // across restarts (`session-artifacts.ts`). Same auth gate as the
+        // attachments route above; the raw-serve route additionally sends a
+        // strict CSP so an embedded html/site artifact can render but never
+        // phone home to the daemon or any other origin.
+        const artifactRawMatch = path.match(/^\/sessions\/([^/]+)\/artifacts\/([^/]+)\/raw(?:\/(.*))?$/)
+        if (artifactRawMatch && req.method === "GET") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          const id = artifactRawMatch[1]!
+          const key = decodeURIComponent(artifactRawMatch[2]!)
+          const subPath = artifactRawMatch[3] ? decodeURIComponent(artifactRawMatch[3]) : ""
+          const versionParam = new URL(req.url ?? "/", "http://localhost").searchParams.get("version")
+          const record = listSessionArtifacts(id).find(r => r.key === key)
+          const version = record
+            ? versionParam
+              ? record.versions.find(v => v.version === Number(versionParam))
+              : record.versions[record.versions.length - 1]
+            : undefined
+          if (!record || !version) {
+            res.writeHead(404, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "artifact_not_found" }))
+            return
+          }
+          const target = version.isDirectory
+            ? resolveSiteFile(id, version, subPath)
+            : resolveArtifactPath(id, version)
+          if (!target) {
+            res.writeHead(404, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "artifact_not_found" }))
+            return
+          }
+          try {
+            const bytes = await readFile(target)
+            const contentType = version.isDirectory
+              ? appUiContentType(extname(target))
+              : (version.contentType ?? mimeTypeForExtension(extname(target).slice(1).toLowerCase()))
+            res.writeHead(200, {
+              "content-type": contentType,
+              "content-length": String(bytes.length),
+              "cache-control": "public, max-age=31536000, immutable",
+              // Sandboxed rendering: scripts/styles may run (an html/site
+              // artifact needs them to render at all) but the page can reach
+              // nowhere — no fetch/XHR/WS back to the daemon or anywhere
+              // else, no form submission, no framing by a third party.
+              "content-security-policy":
+                "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; " +
+                "style-src 'unsafe-inline'; img-src data: 'self'; font-src data: 'self'; " +
+                "connect-src 'none'; form-action 'none'; frame-ancestors 'self'",
+              "x-content-type-options": "nosniff",
+            })
+            res.end(bytes)
+          } catch {
+            res.writeHead(404, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "artifact_not_found" }))
+          }
+          return
+        }
+
+        const artifactPinMatch = path.match(/^\/sessions\/([^/]+)\/artifacts\/([^/]+)\/pin$/)
+        if (artifactPinMatch && req.method === "POST") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          if (!opts.sessions) {
+            res.writeHead(404, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "sessions_not_configured" }))
+            return
+          }
+          const id = artifactPinMatch[1]!
+          const key = decodeURIComponent(artifactPinMatch[2]!)
+          const body = (await readJsonBody(req)) as { pinned?: boolean } | null
+          try {
+            const record = opts.sessions.setArtifactPinned(id, key, body?.pinned === true)
+            if (!record) {
+              res.writeHead(404, { "content-type": "application/json" })
+              res.end(JSON.stringify({ error: "artifact_not_found" }))
+              return
+            }
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify(record))
+          } catch (err) {
+            res.writeHead(404, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+          }
+          return
+        }
+
+        const artifactKeyMatch = path.match(/^\/sessions\/([^/]+)\/artifacts\/([^/]+)$/)
+        if (artifactKeyMatch && req.method === "GET") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          if (!opts.sessions) {
+            res.writeHead(404, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "sessions_not_configured" }))
+            return
+          }
+          const id = artifactKeyMatch[1]!
+          const key = decodeURIComponent(artifactKeyMatch[2]!)
+          const versionParam = new URL(req.url ?? "/", "http://localhost").searchParams.get("version")
+          try {
+            const result = opts.sessions.getSessionArtifact(id, key, {
+              ...(versionParam ? { version: Number(versionParam) } : {}),
+            })
+            if (!result) {
+              res.writeHead(404, { "content-type": "application/json" })
+              res.end(JSON.stringify({ error: "artifact_not_found" }))
+              return
+            }
+            const isText =
+              result.version.contentType?.startsWith("text/") || result.version.contentType === "application/json"
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                record: result.record,
+                version: result.version,
+                truncated: result.truncated,
+                ...(result.content
+                  ? isText
+                    ? { text: result.content.toString("utf8") }
+                    : { base64: result.content.toString("base64") }
+                  : {}),
+              }),
+            )
+          } catch (err) {
+            res.writeHead(404, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+          }
+          return
+        }
+
+        if (path.match(/^\/sessions\/([^/]+)\/artifacts$/) && (req.method === "GET" || req.method === "POST")) {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          if (!opts.sessions) {
+            res.writeHead(404, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "sessions_not_configured" }))
+            return
+          }
+          const id = path.slice("/sessions/".length, -"/artifacts".length)
+          if (req.method === "GET") {
+            try {
+              const artifacts = opts.sessions.listSessionArtifacts(id)
+              res.writeHead(200, { "content-type": "application/json" })
+              res.end(JSON.stringify({ artifacts }))
+            } catch (err) {
+              res.writeHead(404, { "content-type": "application/json" })
+              res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+            }
+            return
+          }
+          const body = (await readJsonBody(req)) as
+            | {
+                key?: string
+                kind?: string
+                label?: string
+                sourceRef?: string
+                bytes?: string
+                name?: string
+                mimeType?: string
+                sourcePath?: string
+              }
+            | null
+          if (!body || (!body.bytes && !body.sourcePath)) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "invalid_request", message: "one of `bytes`/`sourcePath` is required" }))
+            return
+          }
+          try {
+            const record = opts.sessions.addSessionArtifact(id, {
+              ...(body.key ? { key: body.key } : {}),
+              ...(body.kind ? { kind: body.kind as import("./session-artifacts.js").ArtifactKind } : {}),
+              ...(body.label ? { label: body.label } : {}),
+              createdBy: "user",
+              ...(body.sourceRef ? { sourceRef: body.sourceRef } : {}),
+              ...(body.bytes ? { bytes: body.bytes } : {}),
+              ...(body.name ? { name: body.name } : {}),
+              ...(body.mimeType ? { mimeType: body.mimeType } : {}),
+              ...(body.sourcePath ? { sourcePath: body.sourcePath } : {}),
+            })
+            res.writeHead(201, { "content-type": "application/json" })
+            res.end(JSON.stringify(record))
+          } catch (err) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
           }
           return
         }
