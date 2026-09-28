@@ -61,6 +61,9 @@ export interface PrStatusSnapshot {
   state: "open" | "merged" | "closed"
   reviews: Array<{ login: string; state: string; submittedAt: string }>
   checks?: Array<{ name: string; conclusion: string | null }>
+  /** The PR's head commit at fetch time — absent from snapshots taken
+   *  before this field existed. */
+  headSha?: string
 }
 
 /** The mutable annotations sidecar of a ledger entry. */

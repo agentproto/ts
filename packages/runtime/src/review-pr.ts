@@ -141,6 +141,7 @@ export async function fetchPrStatus(gh: GhRunner, pr: ReviewPrRef, now: () => Da
       submittedAt: r.submitted_at ?? "",
     })),
     ...(checks ? { checks } : {}),
+    ...(pull.head?.sha ? { headSha: pull.head.sha } : {}),
   }
 }
 
