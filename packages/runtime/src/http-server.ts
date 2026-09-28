@@ -30,6 +30,7 @@ import type { AcpMcpServer } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
+import { LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "@modelcontextprotocol/sdk/types.js"
 import { WebSocketServer, type WebSocket } from "ws"
 import { ZodError, type ZodType } from "zod"
 import type { UIMessageChunk } from "ai"
@@ -1456,6 +1457,49 @@ export async function startHttpServer(
   // sessions — first failure logs immediately, then ≤1 line/min with a
   // suppressed count.
   const mcpErrorLogGate = createReconnectLogGate()
+  const mcpProtocolVersionLogGate = createReconnectLogGate()
+
+  /**
+   * The SDK (1.30.x) rejects any `mcp-protocol-version` request header
+   * outside its own `SUPPORTED_PROTOCOL_VERSIONS` with a 400 — including a
+   * header that's simply NEWER than this SDK knows about, e.g. an updated
+   * client sending `2026-07-28` against an SDK whose latest known version
+   * is `2025-11-25` (`webStandardStreamableHttp.js`'s `validateProtocolVersion`,
+   * reached from every verb since `StreamableHTTPServerTransport` delegates
+   * to it for GET/POST/DELETE alike). Per spec the version is negotiated at
+   * `initialize`, not enforced header-by-header — a value newer than
+   * anything we support should be served at our latest rather than bounced.
+   * Rewriting the header before the transport parses it is the smallest
+   * fix that doesn't touch `initialize` negotiation itself. An unsupported
+   * value that ISN'T newer (a typo, a version this SDK dropped) is left
+   * alone so the transport's real 400 still fires.
+   */
+  function coerceUnsupportedProtocolVersionHeader(req: IncomingMessage): void {
+    const headerValue = req.headers["mcp-protocol-version"]
+    const version = Array.isArray(headerValue) ? headerValue[0] : headerValue
+    if (typeof version !== "string") return
+    if ((SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(version)) return
+    if (version <= LATEST_PROTOCOL_VERSION) return
+    const line = mcpProtocolVersionLogGate.onFailure(
+      `mcp:protocol-version:${version}`,
+      `[mcp] client sent protocol version "${version}", newer than this SDK's ` +
+        `${LATEST_PROTOCOL_VERSION} — treating request as ${LATEST_PROTOCOL_VERSION}`,
+    )
+    if (line) console.debug(line)
+    req.headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
+    // `@hono/node-server` (which `StreamableHTTPServerTransport` uses to
+    // bridge Node's HTTP API to the Fetch API the SDK's version check
+    // actually reads) builds its Headers from `req.rawHeaders`, NOT the
+    // parsed `req.headers` object above — so that assignment alone is
+    // invisible to the transport. Rewrite the raw pair too, matching
+    // case-insensitively since `rawHeaders` preserves the wire casing.
+    const rawHeaders = req.rawHeaders
+    for (let i = 0; i < rawHeaders.length - 1; i += 2) {
+      if (rawHeaders[i]?.toLowerCase() === "mcp-protocol-version") {
+        rawHeaders[i + 1] = LATEST_PROTOCOL_VERSION
+      }
+    }
+  }
 
   /**
    * Drive one MCP request over a fresh server+transport pair, per the
@@ -1468,6 +1512,7 @@ export async function startHttpServer(
     res: ServerResponse,
     server: McpServer,
   ): Promise<void> {
+    coerceUnsupportedProtocolVersionHeader(req)
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     })
