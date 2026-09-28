@@ -8,6 +8,7 @@
 
 import type { AcpMcpServer } from "@agentproto/acp"
 import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/command-sandbox"
+import { trackWorktreeProvision } from "./process-stats.js"
 import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
 import type { AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
@@ -3213,17 +3214,21 @@ export async function spawnAgentSession(
       void (async () => {
         let outcome: Awaited<ReturnType<WorktreeProvisioner>>
         try {
-          outcome = await provisionWorktree({
-            cwd: baseCwd,
-            ...(worktreeRequest.slug ? { slug: worktreeRequest.slug } : {}),
-            ...(worktreeRequest.base ? { base: worktreeRequest.base } : {}),
-            ...(input.label ? { labelHint: input.label } : {}),
-            setupLogPath: worktreeSetupLogPath(mintedSessionId),
-            // Unattended path — no human present to retry a transient
-            // failure, so bound it here rather than have the caller pay
-            // for an entirely fresh worktree. See `runSetup`'s doc.
-            retrySetupOnFailure: true,
-          })
+          outcome = await trackWorktreeProvision(
+            { sessionId: mintedSessionId, cwd: baseCwd, ...(input.label ? { label: input.label } : {}) },
+            () =>
+              provisionWorktree({
+                cwd: baseCwd,
+                ...(worktreeRequest.slug ? { slug: worktreeRequest.slug } : {}),
+                ...(worktreeRequest.base ? { base: worktreeRequest.base } : {}),
+                ...(input.label ? { labelHint: input.label } : {}),
+                setupLogPath: worktreeSetupLogPath(mintedSessionId),
+                // Unattended path — no human present to retry a transient
+                // failure, so bound it here rather than have the caller pay
+                // for an entirely fresh worktree. See `runSetup`'s doc.
+                retrySetupOnFailure: true,
+              }),
+          )
         } catch (err) {
           registry.settlePendingAgent(pendingDesc.id, {
             ok: false,
@@ -3340,16 +3345,21 @@ export async function spawnAgentSession(
     // `cwd` sits in no git repo (nothing to isolate) ⇒ spawn plain, unchanged.
     if (worktreeRequest && provisionWorktree) {
       let outcome: Awaited<ReturnType<WorktreeProvisioner>>
+      const provisionCwd = cwd
       try {
-        outcome = await provisionWorktree({
-          cwd,
-          ...(worktreeRequest.slug ? { slug: worktreeRequest.slug } : {}),
-          ...(worktreeRequest.base ? { base: worktreeRequest.base } : {}),
-          ...(input.label ? { labelHint: input.label } : {}),
-          setupLogPath: worktreeSetupLogPath(mintedSessionId),
-          // Same reasoning as the async branch above — see `runSetup`'s doc.
-          retrySetupOnFailure: true,
-        })
+        outcome = await trackWorktreeProvision(
+          { sessionId: mintedSessionId, cwd: provisionCwd, ...(input.label ? { label: input.label } : {}) },
+          () =>
+            provisionWorktree({
+              cwd: provisionCwd,
+              ...(worktreeRequest.slug ? { slug: worktreeRequest.slug } : {}),
+              ...(worktreeRequest.base ? { base: worktreeRequest.base } : {}),
+              ...(input.label ? { labelHint: input.label } : {}),
+              setupLogPath: worktreeSetupLogPath(mintedSessionId),
+              // Same reasoning as the async branch above — see `runSetup`'s doc.
+              retrySetupOnFailure: true,
+            }),
+        )
       } catch (err) {
         return finish({
           ok: false,

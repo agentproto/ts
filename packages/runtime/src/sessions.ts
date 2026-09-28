@@ -1114,6 +1114,11 @@ export interface SessionDescriptor {
    *  `withMemory: true`) since it costs a `ps` spawn; absent otherwise, and
    *  absent for a row with no `pid` or that `ps` didn't report. */
   rssBytes?: number
+  /** Process-tree resource sample for this session (`process-stats.ts`):
+   *  RSS, %CPU, process count, top commands by RSS - plus, at `stats:"full"`,
+   *  every process. Ephemeral and opt-in (`session_list`/`agent_sessions_list`
+   *  `stats`), never persisted; absent for a row with no live process. */
+  stats?: Omit<import("./process-stats.js").SessionResourceStats, "sessionId">
   /** Count of live supervisors currently blocked waiting on this session —
    *  HTTP `GET /sessions/:id/wait` long-polls and `session_monitor`
    *  subscriptions, both via `monitorSessionWait` (#session-visibility).

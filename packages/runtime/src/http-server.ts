@@ -20,6 +20,7 @@
  * tool calls become a real use case.
  */
 
+import { buildLabeledStatsReport } from "./process-stats.js"
 import { parseBrowserMode } from "./browser-mount.js"
 import { randomUUID } from "node:crypto"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
@@ -5683,6 +5684,36 @@ async function handleSessions(
     }
     res.writeHead(200, { etag, "content-type": "application/json" })
     res.end(serialized)
+    return true
+  }
+
+  // GET /sessions/stats?detail=summary|full&fresh=true - per-session process
+  // resource stats (RSS, %CPU, process count, top commands) from the shared
+  // sampler, plus the daemon / provisioning / orphan buckets and host
+  // load + free memory. Same report the `session_stats` MCP tool returns.
+  if (path === "/sessions/stats" && req.method === "GET") {
+    const reqUrl = req.url ?? ""
+    const params = new URLSearchParams(reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "")
+    const detail = params.get("detail")
+    if (detail !== null && detail !== "summary" && detail !== "full") {
+      json(400, {
+        error: "invalid_detail",
+        message: `?detail must be "summary" or "full", got ${JSON.stringify(detail)}.`,
+      })
+      return true
+    }
+    try {
+      json(
+        200,
+        await buildLabeledStatsReport({
+          sessions: registry.list({ includeArchived: true }),
+          ...(detail ? { detail } : {}),
+          ...(params.get("fresh") === "true" ? { fresh: true } : {}),
+        }),
+      )
+    } catch (err) {
+      json(500, { error: "stats_failed", message: err instanceof Error ? err.message : String(err) })
+    }
     return true
   }
 

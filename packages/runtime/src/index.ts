@@ -527,6 +527,27 @@ export type {
   EagerResumeFailReason,
 } from "./sessions.js"
 export { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
+// Per-session process-tree resource stats (`session_stats`, `GET /sessions/stats`).
+export {
+  createProcessStatsService,
+  getProcessStatsService,
+  normalizeCommand,
+  trackWorktreeProvision,
+} from "./process-stats.js"
+export type {
+  CommandGroupStats,
+  HostInfo,
+  LabeledProcessStatsReport,
+  LabeledSessionStats,
+  OrphanGroup,
+  ProcessDetail,
+  ProcessStatsReport,
+  ProcessStatsService,
+  ProvisionInFlight,
+  ResourceStats,
+  SessionResourceStats,
+  StatsDetail,
+} from "./process-stats.js"
 export {
   continueInterruptedSessions,
   continueSkipReason,
