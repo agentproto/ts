@@ -2,32 +2,53 @@ import { describe, it, expect, afterEach, beforeEach, vi } from "vitest"
 import { mkdtemp, rm, writeFile, mkdir, readFile, lstat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { ExecResult } from "../exec.js"
 
-const spawnSpy = vi.fn()
-vi.mock("node:child_process", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:child_process")>()
-  return {
-    ...actual,
-    spawn: (...args: Parameters<typeof actual.spawn>) => {
-      spawnSpy(...args)
-      return actual.spawn(...args)
-    },
-  }
+/**
+ * `execArgv` is mocked (not the real `cp` binary) so the argv-shape and
+ * fallback-on-failure assertions below are deterministic across hosts. An
+ * earlier version of this file forced `process.platform` and relied on the
+ * REAL host `cp` binary disagreeing with the forced platform to exercise the
+ * fallback path — that happened to work on a macOS dev box (BSD `cp` chokes
+ * on `--reflink`, so forcing "linux" there triggered a genuine failure) but
+ * broke on Linux CI, where GNU `cp` doesn't understand `-Rc` the way BSD
+ * `cp` does, so forcing "darwin" there ALSO triggers an unplanned fallback —
+ * the opposite direction, but still wrong for a test asserting exactly one
+ * call. Mocking `execArgv`'s exit code directly removes the host dependency
+ * entirely. The default implementation still delegates to the real
+ * `execArgv` (see the `vi.mock` factory below), so the unforced tests below
+ * still perform genuine copies through the host's real `cp`.
+ */
+const { execArgvMock } = vi.hoisted(() => ({ execArgvMock: vi.fn() }))
+vi.mock("../exec.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../exec.js")>()
+  return { ...actual, execArgv: execArgvMock }
 })
+
+// Captured once so `beforeEach` can re-arm the passthrough default after
+// `mockClear()` — `mockClear()` also drops the implementation set on this
+// mock (unlike a mock whose implementation was set outside an async `vi.mock`
+// factory), so re-applying it per test is required, not just defensive.
+const { execArgv: realExecArgv } = await vi.importActual<typeof import("../exec.js")>("../exec.js")
 
 import { cloneEntries } from "../clone.js"
 
-/** Real platform is "darwin" here (we're on macOS) — tests that want to
- *  exercise the Linux argv/fallback path override it for the duration of
- *  one test and restore it in `afterEach`. */
 const realPlatform = process.platform
 function setPlatform(value: NodeJS.Platform): void {
   Object.defineProperty(process, "platform", { value, configurable: true })
 }
+function once(exitCode: number, stderr = ""): void {
+  execArgvMock.mockImplementationOnce(
+    async (): Promise<ExecResult> => ({ exitCode, stdout: "", stderr }),
+  )
+}
 
 describe("cloneEntries", () => {
   const cleanupPaths: string[] = []
-  beforeEach(() => spawnSpy.mockClear())
+  beforeEach(() => {
+    execArgvMock.mockClear()
+    execArgvMock.mockImplementation(realExecArgv)
+  })
   afterEach(async () => {
     setPlatform(realPlatform)
     while (cleanupPaths.length) {
@@ -91,7 +112,7 @@ describe("cloneEntries", () => {
     await expect(cloneEntries(repoRoot, cwd, ["node_modules"])).resolves.toBeUndefined()
   })
 
-  it("uses `cp -Rc` (clonefile) on darwin", async () => {
+  it("uses `cp -Rc` (clonefile) on darwin, one call, when it succeeds", async () => {
     setPlatform("darwin")
     const repoRoot = await mkdtemp(join(tmpdir(), "clone-src-"))
     cleanupPaths.push(repoRoot)
@@ -99,19 +120,36 @@ describe("cloneEntries", () => {
     cleanupPaths.push(cwd)
     await writeFile(join(repoRoot, "cache.db"), "x\n")
 
+    once(0)
     await cloneEntries(repoRoot, cwd, ["cache.db"])
 
-    const cpCalls = spawnSpy.mock.calls.filter((c) => c[0] === "cp")
-    expect(cpCalls[0]?.[1]).toEqual(["-Rc", join(repoRoot, "cache.db"), join(cwd, "cache.db")])
-    // macOS `cp -c` falls back to copyfile(2) internally on its own when
-    // cloning isn't available — no second `cp` invocation needed here.
-    expect(cpCalls).toHaveLength(1)
+    expect(execArgvMock.mock.calls).toHaveLength(1)
+    expect(execArgvMock.mock.calls[0]?.[0]).toBe("cp")
+    expect(execArgvMock.mock.calls[0]?.[1]).toEqual(["-Rc", join(repoRoot, "cache.db"), join(cwd, "cache.db")])
   })
 
-  it("falls back to a plain copy when the platform's CoW attempt fails (e.g. --reflink=auto on a non-GNU cp)", async () => {
-    // Forcing "linux" while actually running on macOS's BSD `cp` (which
-    // doesn't understand `--reflink`) makes the primary attempt genuinely
-    // fail — exercising the real fallback path, not a mocked one.
+  it("uses `cp -r --reflink=auto` on linux, one call, when it succeeds", async () => {
+    setPlatform("linux")
+    const repoRoot = await mkdtemp(join(tmpdir(), "clone-src-"))
+    cleanupPaths.push(repoRoot)
+    const cwd = await mkdtemp(join(tmpdir(), "clone-dest-"))
+    cleanupPaths.push(cwd)
+    await writeFile(join(repoRoot, "cache.db"), "x\n")
+
+    once(0)
+    await cloneEntries(repoRoot, cwd, ["cache.db"])
+
+    expect(execArgvMock.mock.calls).toHaveLength(1)
+    expect(execArgvMock.mock.calls[0]?.[0]).toBe("cp")
+    expect(execArgvMock.mock.calls[0]?.[1]).toEqual([
+      "-r",
+      "--reflink=auto",
+      join(repoRoot, "cache.db"),
+      join(cwd, "cache.db"),
+    ])
+  })
+
+  it("falls back to a plain `cp -R` when the platform's primary attempt fails", async () => {
     setPlatform("linux")
     const repoRoot = await mkdtemp(join(tmpdir(), "clone-src-"))
     cleanupPaths.push(repoRoot)
@@ -120,46 +158,47 @@ describe("cloneEntries", () => {
     await mkdir(join(repoRoot, "node_modules"), { recursive: true })
     await writeFile(join(repoRoot, "node_modules", "dep.js"), "x\n")
 
+    once(1, "reflink not supported")
+    once(0)
     await cloneEntries(repoRoot, cwd, ["node_modules"])
 
-    const cpCalls = spawnSpy.mock.calls.filter((c) => c[0] === "cp")
-    expect(cpCalls[0]?.[1]).toEqual([
+    expect(execArgvMock.mock.calls).toHaveLength(2)
+    expect(execArgvMock.mock.calls[0]?.[1]).toEqual([
       "-r",
       "--reflink=auto",
       join(repoRoot, "node_modules"),
       join(cwd, "node_modules"),
     ])
-    expect(cpCalls[1]?.[1]).toEqual(["-R", join(repoRoot, "node_modules"), join(cwd, "node_modules")])
-    expect(cpCalls).toHaveLength(2)
-
-    const content = await readFile(join(cwd, "node_modules", "dep.js"), "utf8")
-    expect(content).toBe("x\n")
+    expect(execArgvMock.mock.calls[1]?.[1]).toEqual(["-R", join(repoRoot, "node_modules"), join(cwd, "node_modules")])
   })
 
-  // Skipped as root: permission bits don't restrict root, so the forced
-  // failure this test relies on (an unwritable destination directory) would
-  // never actually fail and the test would be asserting nothing.
-  const isRoot = typeof process.getuid === "function" && process.getuid() === 0
-  it.skipIf(isRoot)(
-    "throws a clear error when both the clone attempt and the fallback fail",
-    async () => {
-      setPlatform("linux")
-      const repoRoot = await mkdtemp(join(tmpdir(), "clone-src-"))
-      cleanupPaths.push(repoRoot)
-      const cwd = await mkdtemp(join(tmpdir(), "clone-dest-"))
-      cleanupPaths.push(cwd)
-      await writeFile(join(repoRoot, "cache.db"), "x\n")
+  it("throws a clear error naming the source path when both attempts fail", async () => {
+    setPlatform("linux")
+    const repoRoot = await mkdtemp(join(tmpdir(), "clone-src-"))
+    cleanupPaths.push(repoRoot)
+    const cwd = await mkdtemp(join(tmpdir(), "clone-dest-"))
+    cleanupPaths.push(cwd)
+    await writeFile(join(repoRoot, "cache.db"), "x\n")
 
-      const { chmod } = await import("node:fs/promises")
-      // Read+execute only: `cp` can list `cwd` but can't create an entry in
-      // it, so both the (forced-failing) reflink attempt and the plain-copy
-      // fallback genuinely fail — a real double failure, not a mocked one.
-      await chmod(cwd, 0o555)
-      try {
-        await expect(cloneEntries(repoRoot, cwd, ["cache.db"])).rejects.toThrow(/clone of/)
-      } finally {
-        await chmod(cwd, 0o755)
-      }
-    },
-  )
+    once(1, "reflink not supported")
+    once(1, "permission denied")
+
+    await expect(cloneEntries(repoRoot, cwd, ["cache.db"])).rejects.toThrow(/clone of/)
+    expect(execArgvMock.mock.calls).toHaveLength(2)
+  })
+
+  it("attempts no CoW flag at all on an unsupported platform, straight to plain copy", async () => {
+    setPlatform("win32")
+    const repoRoot = await mkdtemp(join(tmpdir(), "clone-src-"))
+    cleanupPaths.push(repoRoot)
+    const cwd = await mkdtemp(join(tmpdir(), "clone-dest-"))
+    cleanupPaths.push(cwd)
+    await writeFile(join(repoRoot, "cache.db"), "x\n")
+
+    once(0)
+    await cloneEntries(repoRoot, cwd, ["cache.db"])
+
+    expect(execArgvMock.mock.calls).toHaveLength(1)
+    expect(execArgvMock.mock.calls[0]?.[1]).toEqual(["-R", join(repoRoot, "cache.db"), join(cwd, "cache.db")])
+  })
 })
