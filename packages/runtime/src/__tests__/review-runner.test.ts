@@ -684,10 +684,22 @@ describe("review MCP tools", () => {
     // Three SEPARATE repos (distinct ranges) so each requester owns its own
     // ledger entry — a single shared range re-reviewed by a different
     // requester (an overwrite of the same ledger key) is covered below.
+    // `makeRepo` hardcodes the SAME origin remote for every call, and a
+    // fast/quiet runner can create all three within the same wall-clock
+    // second — with identical content, message, and author that makes the
+    // `feature` commit (and therefore rangeSha) BYTE-IDENTICAL across all
+    // three repos, silently collapsing them onto one ledger key. An extra
+    // unique marker file per repo keeps the tree (hence the commit hash)
+    // distinct regardless of timing.
     const repoA = await makeRepo(manifest(['{id: ok, kind: command, run: "true"}']))
     const repoB = await makeRepo(manifest(['{id: ok, kind: command, run: "true"}']))
     const repoC = await makeRepo(manifest(['{id: ok, kind: command, run: "true"}']))
     cleanup.push(repoA.dir, repoB.dir, repoC.dir)
+    for (const [repo, marker] of [[repoA, "A"], [repoB, "B"], [repoC, "C"]] as const) {
+      await writeFile(join(repo.dir, "marker.txt"), marker)
+      sh(repo.dir, "add", "-A")
+      sh(repo.dir, "commit", "-qm", `marker ${marker}`)
+    }
     const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }) })
     const server = new McpServer({ name: "review-tools-test-server", version: "0.0.0" })
     registerReviewTools(server, {
