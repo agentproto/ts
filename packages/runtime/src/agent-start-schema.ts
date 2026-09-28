@@ -193,6 +193,22 @@ export const agentStartInputShape = {
         "(not unions) config defaults when set. Adapters with no `skills` " +
         `option (e.g. claude-code) ignore it. ${help("skills")}`
     ),
+  bundles: jsonTolerant(z.array(z.string()))
+    .optional()
+    .describe(
+      "Capability bundle ids (`bundle_list`) to attach — each expands to its " +
+        "imported MCPs (mounted as native MCP servers, never via the " +
+        "mcp_imported_* indirection) + skills, and optionally the daemon's " +
+        "own /mcp. REPLACES (not unions) config defaults when set. " +
+        `${help("bundles")}`
+    ),
+  daemonMount: mcpBool
+    .optional()
+    .describe(
+      "Explicitly mount the daemon's own scoped /mcp gateway for this spawn " +
+        "— the only way an adapter outside the default self-mount set " +
+        `(opencode, codex, gemini, …) gets it. Default false. ${help("daemonMount")}`
+    ),
   model: z
     .string()
     .optional()

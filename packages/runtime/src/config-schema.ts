@@ -104,6 +104,8 @@ const defaultsAdapterConfigSchema: z.ZodType<DefaultsAdapterConfig> = z
     options: optionsMapSchema.optional(),
     auth: defaultsAdapterAuthConfigSchema.optional(),
     contextContinuity: contextContinuityPolicySchema.optional(),
+    bundles: z.array(z.string()).optional(),
+    daemonMount: z.boolean().optional(),
   })
   .passthrough()
 
@@ -118,6 +120,7 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
     skills: z.array(z.string()).optional(),
     options: optionsMapSchema.optional(),
     adapters: z.record(z.string(), defaultsAdapterConfigSchema).optional(),
+    bundles: z.array(z.string()).optional(),
     contextContinuity: contextContinuityPolicySchema.optional(),
     defaultRoleDepthCutoff: z.number().optional(),
     maxGrantableDelegation: z.number().optional(),
@@ -676,6 +679,15 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     help: "AIP-45 options auto-applied to every agent_start spawn.",
   },
   {
+    path: "defaults.bundles",
+    schema: strArray,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Default capability bundles",
+    help: "Bundle ids (bundle_list) auto-attached to every agent_start spawn (unioned with per-adapter bundles).",
+  },
+  {
     path: "defaults.defaultRoleDepthCutoff",
     schema: num,
     apply: "hot",
@@ -904,6 +916,25 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "harnesses",
     label: "Adapter default options",
     help: "AIP-45 options auto-applied to spawns of this adapter.",
+  },
+  {
+    path: "defaults.adapters.*.bundles",
+    schema: strArray,
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Adapter default capability bundles",
+    help: "Bundle ids (bundle_list) auto-attached to spawns of this adapter (unioned with the global default).",
+  },
+  {
+    path: "defaults.adapters.*.daemonMount",
+    schema: z.boolean(),
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Adapter daemon self-mount opt-in",
+    help: "Explicitly mount the daemon's own scoped /mcp for spawns of this adapter, for harnesses outside the default self-mount allowlist (opencode, codex, gemini, …).",
+    default: false,
   },
   {
     path: "defaults.adapters.*.contextContinuity",

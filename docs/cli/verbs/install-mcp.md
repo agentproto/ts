@@ -25,6 +25,7 @@ never clobber MCP servers you added yourself.
 | `aider` | Aider | stdio | `mcp_servers` in `~/.aider.conf.yml` |
 | `windsurf` | Windsurf | stdio | `~/.codeium/windsurf/mcp_config.json` |
 | `hermes` | Hermes | HTTP | `mcp_servers.agentproto` in `~/.hermes/config.yaml` |
+| `opencode` | OpenCode | HTTP (`remote`) | `mcp.agentproto` in `~/.config/opencode/opencode.json` |
 
 An agent counts as detected when its binary is on `PATH` **or** its config
 file/dir exists (windsurf, like cursor, has no relevant CLI binary — detection
@@ -36,6 +37,14 @@ Hermes is edited surgically — a real hermes config carries sibling MCP servers
 under `mcp_servers:`, so the entry is upserted in place and the file is backed
 up to `config.yaml.bak` first. If `~/.hermes/config.yaml` doesn't exist yet,
 the step is skipped rather than synthesised: run hermes once, then re-run.
+
+OpenCode is registered as a `"remote"` MCP entry (`{type: "remote", url}`)
+under the top-level `mcp` map of `~/.config/opencode/opencode.json` — a
+merge, never a truncate, so any other config (provider keys, other `mcp`
+entries) survives. OpenCode merges every config source it loads rather than
+picking one exclusively (opencode.ai/docs/config/), so this is written even
+when a hand-maintained `opencode.jsonc` already exists alongside it; the two
+are additive.
 
 ## `--app <appId>`: scoped registration for a book/library app
 

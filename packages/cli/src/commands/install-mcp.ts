@@ -40,7 +40,15 @@ import { findInstalledAppDir, readDeclaredCategory, readDeclaredLibraryBookIds }
 
 // ── types ───────────────────────────────────────────────────────────────────
 
-export type AgentName = "claude" | "cursor" | "codex" | "claude-desktop" | "aider" | "hermes" | "windsurf"
+export type AgentName =
+  | "claude"
+  | "cursor"
+  | "codex"
+  | "claude-desktop"
+  | "aider"
+  | "hermes"
+  | "windsurf"
+  | "opencode"
 type Transport = "http" | "stdio"
 
 export interface InstallStateEntry {
@@ -102,6 +110,7 @@ Detected agents are registered with the right MCP transport:
   aider           → stdio entry in ~/.aider.conf.yml
   windsurf        → stdio entry in ~/.codeium/windsurf/mcp_config.json
   hermes          → HTTP entry under mcp_servers.agentproto in ~/.hermes/config.yaml
+  opencode        → remote MCP entry under mcp.agentproto in ~/.config/opencode/opencode.json
 `
 
 const ALL_AGENTS: AgentName[] = [
@@ -112,6 +121,7 @@ const ALL_AGENTS: AgentName[] = [
   "aider",
   "windsurf",
   "hermes",
+  "opencode",
 ]
 
 /** Agents whose config format can hold multiple named MCP entries
@@ -482,6 +492,24 @@ async function detectAgent(name: AgentName): Promise<AgentDetection | null> {
       if (!hasConfig) return null
       return { name, label: "Windsurf", configPath, hasBinary: false, hasConfig }
     }
+    case "opencode": {
+      // OpenCode's global config is `~/.config/opencode/opencode.json` OR
+      // `opencode.jsonc` (verified against the installed CLI + published
+      // docs, opencode.ai/docs/config/) — configs from every loaded source
+      // are MERGED, not exclusive-replace, so writing the plain `.json` twin
+      // alongside an existing `.jsonc` is safe (no conflict, just another
+      // merged source). We always register into `.json` — see
+      // `registerOpencode` — but detect either.
+      const configDir = join(home, ".config", "opencode")
+      const configPath = join(configDir, "opencode.json")
+      const hasBinary = await isBinaryOnPath("opencode")
+      const hasConfig =
+        (await fileExists(configPath)) ||
+        (await fileExists(join(configDir, "opencode.jsonc"))) ||
+        (await dirExists(configDir))
+      if (!hasBinary && !hasConfig) return null
+      return { name, label: "OpenCode", configPath, hasBinary, hasConfig }
+    }
   }
 }
 
@@ -543,6 +571,21 @@ export function inspectMcpRegistration(
       const envUrl = findEnvUrl(block)
       return envUrl ? { present: true, url: envUrl } : { present: true }
     }
+    case "opencode": {
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(content)
+      } catch {
+        return { present: false }
+      }
+      if (typeof parsed !== "object" || parsed === null) return { present: false }
+      const mcp: unknown = Reflect.get(parsed, "mcp")
+      if (typeof mcp !== "object" || mcp === null) return { present: false }
+      const entry: unknown = Reflect.get(mcp, SERVER_NAME)
+      if (typeof entry !== "object" || entry === null) return { present: false }
+      const url: unknown = Reflect.get(entry, "url")
+      return typeof url === "string" ? { present: true, url } : { present: true }
+    }
     case "aider":
     case "hermes": {
       const lines = content.split("\n")
@@ -601,6 +644,8 @@ async function registerAgent(
       return registerHermes(detection, mcpUrl)
     case "windsurf":
       return registerStdioJson(detection, "windsurf", stdioEnv)
+    case "opencode":
+      return registerOpencode(detection, mcpUrl)
   }
 }
 
@@ -643,6 +688,7 @@ async function registerAgentScoped(
     case "claude":
     case "aider":
     case "hermes":
+    case "opencode":
       // Unreachable: callers filter targets to SCOPED_CAPABLE_AGENTS before
       // calling this function (see the --app handling in runInstallMcp).
       throw new Error(`agentproto mcp-app scoped mode is not supported for "${detection.name}".`)
@@ -870,6 +916,46 @@ async function registerHermes(
   }
 }
 
+/**
+ * OpenCode: write/merge a `"remote"` MCP entry into `~/.config/opencode/
+ * opencode.json`'s top-level `mcp` map. OpenCode merges every config source
+ * it loads (global `.json` + `.jsonc`, project, env-injected — see
+ * opencode.ai/docs/config/) rather than picking one exclusively, so writing
+ * the plain `.json` twin alongside a hand-maintained `opencode.jsonc` is
+ * safe: the two are additive, never a replace. Preserves every sibling key
+ * (provider config, other `mcp` entries, …) — a full read-modify-write, not
+ * a truncate.
+ */
+async function registerOpencode(
+  detection: AgentDetection,
+  mcpUrl: string,
+): Promise<InstallStateEntry> {
+  const configPath = detection.configPath
+  let config: Record<string, unknown> = {}
+  try {
+    const raw = await fs.readFile(configPath, "utf8")
+    config = JSON.parse(raw) as Record<string, unknown>
+  } catch {
+    // File doesn't exist yet (a sibling opencode.jsonc, if any, is left
+    // untouched — OpenCode merges both) — start fresh.
+  }
+  if (!config.mcp || typeof config.mcp !== "object") {
+    config.mcp = {}
+  }
+  const mcp = config.mcp as Record<string, unknown>
+  mcp[SERVER_NAME] = { type: "remote", url: mcpUrl }
+
+  await fs.mkdir(dirname(configPath), { recursive: true })
+  await fs.writeFile(configPath, JSON.stringify(config, null, 2) + "\n", "utf8")
+
+  return {
+    agent: "opencode",
+    configPath,
+    transport: "http",
+    registeredAt: new Date().toISOString(),
+  }
+}
+
 // ── unregister ───────────────────────────────────────────────────────────────
 
 async function unregisterAgent(entry: InstallStateEntry): Promise<void> {
@@ -927,6 +1013,24 @@ async function unregisterAgent(entry: InstallStateEntry): Promise<void> {
       await fs.writeFile(entry.configPath, content, "utf8")
       break
     }
+    case "opencode":
+      await removeFromOpencodeConfig(entry.configPath, serverKey)
+      break
+  }
+}
+
+async function removeFromOpencodeConfig(configPath: string, serverKey: string = SERVER_NAME): Promise<void> {
+  let config: Record<string, unknown> = {}
+  try {
+    const raw = await fs.readFile(configPath, "utf8")
+    config = JSON.parse(raw) as Record<string, unknown>
+  } catch {
+    return // file gone
+  }
+  if (config.mcp && typeof config.mcp === "object") {
+    const mcp = config.mcp as Record<string, unknown>
+    delete mcp[serverKey]
+    await fs.writeFile(configPath, JSON.stringify(config, null, 2) + "\n", "utf8")
   }
 }
 

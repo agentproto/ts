@@ -29,6 +29,7 @@ import {
   SubscriptionSourceError,
   modelIdPrefixProvider,
   subscriptionSurfaceFor,
+  resolveBundleDefaults,
   type SpawnDefaultsConfig,
   type DefaultsAdapterAuthConfig,
   type ResolvedAuthSpec,
@@ -36,6 +37,8 @@ import {
   type AdapterAuthDescriptor,
   type CredentialSource,
 } from "./spawn-defaults.js"
+import { loadBundles, type BundlesFile } from "./bundles.js"
+import { loadImportedMcps, type ImportedMcpsConfig } from "./mcp-imports.js"
 import {
   buildRouteAwareLaunchConfig,
   type RouteAwareLaunchConfig,
@@ -857,6 +860,45 @@ export function shouldInjectDaemonSelfMount(
   return false
 }
 
+/**
+ * Build the daemon's own scoped `/mcp` self-mount entry — the same ref shape
+ * the hermes/claude-code default injection below builds (a `denyTools` query
+ * for a delegation-denied role, an optional `?deferred=` override, and a
+ * `callerSessionId` stamp for identity/auto-parent attribution). Pure —
+ * shared by that default injection, a bundle's `includeDaemon` (PLAN D phase
+ * 1), and an explicit `agent_start.daemonMount: true` opt-in, so the URL
+ * logic lives in exactly one place.
+ */
+export function buildDaemonSelfMountEntry(
+  daemonMcpUrl: string,
+  opts: {
+    delegationDenied: boolean
+    deferredToolsOverride?: boolean
+    callerSessionId: string
+  },
+): AcpMcpServer {
+  let ref = opts.delegationDenied
+    ? `${daemonMcpUrl}${daemonMcpUrl.includes("?") ? "&" : "?"}denyTools=${DELEGATION_TOOL_NAMES.join(",")}`
+    : daemonMcpUrl
+  if (opts.deferredToolsOverride !== undefined) {
+    ref += `${ref.includes("?") ? "&" : "?"}deferred=${opts.deferredToolsOverride ? "1" : "0"}`
+  }
+  ref += `${ref.includes("?") ? "&" : "?"}callerSessionId=${encodeURIComponent(opts.callerSessionId)}`
+  return { name: "agentproto", transport: "http", ref }
+}
+
+/** Slugify an imported-MCP alias into a valid `mcpServers[].name` — lowercase,
+ *  non-alphanumerics collapsed to a single hyphen, trimmed. Falls back to the
+ *  import id when the alias slugifies to nothing (e.g. an alias made only of
+ *  symbols). Used by the bundle `mcpImports` expansion below. */
+export function slugifyMcpImportName(alias: string, fallbackId: string): string {
+  const slug = alias
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+  return slug || fallbackId
+}
+
 /** Strip ANSI escapes and drop the ACP framing/marker noise (`── … ──`
  *  turn frames + `[thought]` / `[tool]` lines) so the lines read as plain,
  *  human-friendly text. Used by `agent_output({clean})` and the
@@ -900,6 +942,15 @@ export interface SpawnAgentSessionDeps {
    *  `loadConfig` when omitted; tests inject a stub to avoid touching
    *  the real file. */
   loadDefaultsConfig?: () => Promise<SpawnDefaultsConfig | undefined>
+  /** Loads `~/.agentproto/bundles.json` for capability-bundle expansion
+   *  (`agent_start.bundles` / config `defaults.bundles`, PLAN D phase 1).
+   *  Defaults to the real loader when omitted; tests inject a stub to avoid
+   *  touching the real file. */
+  loadBundlesConfig?: () => Promise<BundlesFile>
+  /** Loads `~/.agentproto/imported-mcps.json` — resolves a bundle's
+   *  `mcpImports` ids to their alias/snapshot and detects dangling ones.
+   *  Defaults to the real loader when omitted; tests inject a stub. */
+  loadImportedMcpsConfig?: () => Promise<ImportedMcpsConfig>
   /** Builds the per-session headless-browser mount for `browser:
    *  "headless"` (see `browser-mount.ts`). Defaults to the real resolver
    *  (installs chrome-devtools-mcp on first use); tests inject a stub. */
@@ -1076,6 +1127,22 @@ export interface SpawnAgentSessionInput {
    *  such option (e.g. claude-code, which auto-discovers skills) ignore
    *  it. See `resolveSpawnDefaults` / `normalizeSkillsOption`. */
   skills?: string[]
+  /** Capability bundle ids (`bundle_list`) to attach (PLAN D phase 1). Merged
+   *  with config.json's `defaults.bundles` / `defaults.adapters.<slug>.bundles`
+   *  with the same precedence/replace semantics as `skills` — see
+   *  `resolveBundleDefaults`. Each bundle expands to its `mcpImports` (mounted
+   *  as native MCP servers via the daemon's `/mcp/imported/<id>` passthrough,
+   *  never the two-step `mcp_imported_*` indirection), optionally the
+   *  daemon's own `/mcp` (`includeDaemon`), and its `skills` (unioned into
+   *  the resolved skill list). Ignored (with a warning) for a sandbox spawn —
+   *  the box cannot reach this daemon's loopback `/mcp`. */
+  bundles?: string[]
+  /** Explicitly mount the daemon's own scoped `/mcp` for this spawn — the
+   *  only way an adapter outside `shouldInjectDaemonSelfMount`'s allowlist
+   *  (opencode, codex, gemini, …) gets it. Merged with config's
+   *  `defaults.adapters.<slug>.daemonMount` (per-spawn wins). Ignored (with a
+   *  warning) for a sandbox spawn. */
+  daemonMount?: boolean
   model?: string
   effort?: string
   /** Decomposed route identity.  This is canonical transport; `mode` remains
@@ -1388,6 +1455,7 @@ export async function spawnAgentSession(
       // caller-named (and the worktree guard sees a real repo, not a fallback).
       cwd: explicit.cwd ?? preset.cwd,
       skills: explicit.skills ?? preset.skills,
+      bundles: explicit.bundles ?? preset.bundles,
     }
   }
 
@@ -1850,6 +1918,17 @@ export async function spawnAgentSession(
   const configDefaults = loadDefaultsConfig
     ? await loadDefaultsConfig()
     : (await loadConfig()).defaults
+  // Capability bundles (PLAN D phase 1) — resolved right alongside
+  // `configDefaults` since both come from the same config load; EXPANSION
+  // (turning `bundleIds` into `mcpServers` entries, below) needs
+  // `~/.agentproto/bundles.json` + the imported-MCP set, so it happens later,
+  // once `mintedSessionId` exists.
+  const { bundleIds, daemonMount: explicitDaemonMount } = resolveBundleDefaults(
+    configDefaults,
+    input.adapter,
+    { bundles: input.bundles, daemonMount: input.daemonMount },
+  )
+  const bundleSkillsUnion = new Set<string>()
   // Role REGISTRY (spawn-role-profiles extensibility): custom
   // (pack-carried) roles merged with the two built-ins at every
   // resolution below — see `role.ts`'s `mergeRoleRegistry`. Loaded once
@@ -1978,19 +2057,13 @@ export async function spawnAgentSession(
   // attributed to it (PR 7 / Gap 7) — `handleMcp` (http-server.ts) reads
   // the query param and threads it into `registerCommandTools`.
   if (!mcpServers && shouldInjectDaemonSelfMount(input.adapter, input.sandbox) && daemonMcpUrl) {
-    let ref = delegationDenied
-      ? `${daemonMcpUrl}${daemonMcpUrl.includes("?") ? "&" : "?"}denyTools=${DELEGATION_TOOL_NAMES.join(",")}`
-      : daemonMcpUrl
-    // Deferred-tools per-mount override (harness-parity item 3) — see
-    // `deferredToolsOverride` above. Only appended when SOMETHING (the
-    // explicit call or the resolved role) actually expressed an opinion;
-    // otherwise the ref carries no `?deferred=` at all and the gateway's
-    // own boot-time default decides.
-    if (deferredToolsOverride !== undefined) {
-      ref += `${ref.includes("?") ? "&" : "?"}deferred=${deferredToolsOverride ? "1" : "0"}`
-    }
-    ref += `${ref.includes("?") ? "&" : "?"}callerSessionId=${encodeURIComponent(mintedSessionId)}`
-    mcpServers = [{ name: "agentproto", transport: "http", ref }]
+    mcpServers = [
+      buildDaemonSelfMountEntry(daemonMcpUrl, {
+        delegationDenied,
+        deferredToolsOverride,
+        callerSessionId: mintedSessionId,
+      }),
+    ]
   }
   let bindOrchestratorLifecycle:
     | ((sessionId: string) => () => void)
@@ -2033,6 +2106,108 @@ export async function spawnAgentSession(
       ? injection.scope.tools.has("agent_start")
       : (requestedTools ? requestedTools.includes("agent_start") : true) &&
         (callerScope ? callerScope.tools.has("agent_start") : true)
+  }
+  // ── Capability bundles (PLAN D phase 1) ──────────────────────────
+  // Bundles are pure ADDITION — they run after the hermes/claude-code
+  // self-mount default and the orchestrator injection above, appending to
+  // whatever `mcpServers` already holds rather than replacing it. A sandbox
+  // spawn can't reach this daemon's loopback `/mcp`, so bundle MCP entries
+  // (imported-MCP mounts + `includeDaemon`) are skipped there with a warning
+  // — the bundle's `skills` still apply (folded into `spawnDefaults` below).
+  if (bundleIds.length > 0) {
+    // MCP-mount expansion (imports + includeDaemon) needs BOTH a reachable
+    // loopback (no sandbox) AND a configured daemon URL; skills union needs
+    // neither, so it's collected unconditionally below — a sandbox spawn (or
+    // a daemon with no `/mcp` URL) still gets a bundle's skills, only its MCP
+    // entries are skipped.
+    const mcpMountUrl = input.sandbox === undefined ? daemonMcpUrl : undefined
+    if (input.sandbox !== undefined) {
+      spawnWarnings.push(
+        "agent_start: bundles' MCP mounts skipped for a sandbox spawn (the box " +
+          "cannot reach this daemon's loopback /mcp) — their skills still apply.",
+      )
+    } else if (!mcpMountUrl) {
+      spawnWarnings.push(
+        "agent_start: bundles' MCP mounts skipped — daemon has no /mcp URL configured " +
+          "— their skills still apply.",
+      )
+    }
+    const bundlesFile = deps.loadBundlesConfig ? await deps.loadBundlesConfig() : await loadBundles()
+    let importedConfig: ImportedMcpsConfig | undefined
+    for (const bundleId of bundleIds) {
+      const bundle = bundlesFile.bundles.find(b => b.id === bundleId)
+      if (!bundle) {
+        spawnWarnings.push(`agent_start: bundle "${bundleId}" not found — skipped.`)
+        continue
+      }
+      for (const skill of bundle.skills) bundleSkillsUnion.add(skill)
+      if (!mcpMountUrl) continue
+      importedConfig ??= deps.loadImportedMcpsConfig
+        ? await deps.loadImportedMcpsConfig()
+        : await loadImportedMcps()
+      for (const importId of bundle.mcpImports) {
+        const entry = importedConfig.imports.find(e => e.id === importId)
+        if (!entry) {
+          spawnWarnings.push(
+            `agent_start: bundle "${bundleId}" references removed MCP import "${importId}" — skipped.`,
+          )
+          continue
+        }
+        const name = slugifyMcpImportName(entry.alias, importId)
+        if ((mcpServers ?? []).some(e => e.name === name)) {
+          spawnWarnings.push(
+            `agent_start: bundle "${bundleId}"'s import "${name}" collides with an ` +
+              "existing mcpServers entry name — the existing one wins.",
+          )
+          continue
+        }
+        const ref =
+          `${mcpMountUrl}/imported/${encodeURIComponent(importId)}` +
+          `?callerSessionId=${encodeURIComponent(mintedSessionId)}`
+        mcpServers = [...(mcpServers ?? []), { name, transport: "http", ref }]
+      }
+      if (bundle.includeDaemon) {
+        if ((mcpServers ?? []).some(e => e.name === "agentproto")) {
+          spawnWarnings.push(
+            `agent_start: bundle "${bundleId}"'s includeDaemon skipped — an "agentproto" ` +
+              "mcpServers entry already exists.",
+          )
+        } else {
+          mcpServers = [
+            ...(mcpServers ?? []),
+            buildDaemonSelfMountEntry(mcpMountUrl, {
+              delegationDenied,
+              deferredToolsOverride,
+              callerSessionId: mintedSessionId,
+            }),
+          ]
+        }
+      }
+    }
+  }
+  // Explicit any-harness daemon opt-in (`agent_start.daemonMount` / config
+  // `defaults.adapters.<slug>.daemonMount`) — independent of bundles, and of
+  // `shouldInjectDaemonSelfMount`'s fixed adapter allowlist (that default
+  // stays unchanged; this is the caller saying so explicitly for an adapter
+  // that isn't on it, e.g. opencode/codex/gemini).
+  if (explicitDaemonMount) {
+    if (input.sandbox !== undefined) {
+      spawnWarnings.push(
+        "agent_start: daemonMount skipped for a sandbox spawn (the box cannot reach " +
+          "this daemon's loopback /mcp).",
+      )
+    } else if (!daemonMcpUrl) {
+      spawnWarnings.push("agent_start: daemonMount skipped — daemon has no /mcp URL configured.")
+    } else if (!(mcpServers ?? []).some(e => e.name === "agentproto")) {
+      mcpServers = [
+        ...(mcpServers ?? []),
+        buildDaemonSelfMountEntry(daemonMcpUrl, {
+          delegationDenied,
+          deferredToolsOverride,
+          callerSessionId: mintedSessionId,
+        }),
+      ]
+    }
   }
   // ── Identity stamp: decouple attribution from capability ────────
   // Ensure EVERY mcpServers entry that targets THIS daemon's own `/mcp`
@@ -2176,12 +2351,20 @@ export async function spawnAgentSession(
       trackBrowserSession(mintedSessionId)
     }
   }
-  const spawnDefaults = resolveSpawnDefaults(configDefaults, input.adapter, {
+  const baseSpawnDefaults = resolveSpawnDefaults(configDefaults, input.adapter, {
     skills: input.skills,
     options: input.options,
     auth: input.auth,
     contextContinuity: input.contextContinuity,
   })
+  // Fold bundle skills (collected while expanding `bundleIds` above) into the
+  // resolved skill list — bundles UNION in regardless of whether `skills`
+  // ended up explicit or config-derived, unlike the explicit-replaces-config
+  // rule that governs `skills` itself.
+  const spawnDefaults =
+    bundleSkillsUnion.size > 0
+      ? { ...baseSpawnDefaults, skills: Array.from(new Set([...baseSpawnDefaults.skills, ...bundleSkillsUnion])) }
+      : baseSpawnDefaults
   const resolvedContextContinuity: ResolvedContextContinuityPolicy =
     resolveContextContinuityPolicy(
       undefined,
@@ -3331,6 +3514,7 @@ export async function spawnAgentSession(
       ...(initialTitle ? { title: initialTitle } : {}),
       ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
       ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
+      ...(bundleIds.length > 0 ? { bundles: bundleIds } : {}),
       // Parent attribution + depth. Set for spawns that arrived via the
       // scoped sub-gateway (WP4, parent from token) OR carry a trusted-loopback
       // `parentSessionId` lineage hint on the anonymous root path (WP-R1). A
