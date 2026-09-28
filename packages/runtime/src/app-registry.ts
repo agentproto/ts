@@ -17,9 +17,20 @@ export interface InstalledAppRef {
   readonly path: string
 }
 
+/** Where an installed app came from — the pin `app_resync` compares against.
+ *  Absent on a record (legacy / `{dir}` install) means `{ kind: "local" }`. */
+export type AppSource =
+  | { kind: "local" }
+  | { kind: "git"; url: string; ref?: string; sha: string; subdir?: string }
+  | { kind: "agentapp"; url: string; sha256: string; version: string }
+
 export interface InstalledApp {
   readonly appId: string
   readonly dir: string
+  /** Provenance of a remote install (git URL / `.agentapp`), set by
+   *  `app_install {url}` / `{file}` and kept current by `app_resync`.
+   *  Absent = local dir install. */
+  readonly source?: AppSource
   /** Absolute root of the app's durable data (the `app_data_*` plane).
    *  Resolved once at install time by `performInstall` — explicit
    *  `app_install {dataDir}` > the record's previous `dataDir` > the APP.md
