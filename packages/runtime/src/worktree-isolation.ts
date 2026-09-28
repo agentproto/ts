@@ -85,6 +85,21 @@ export interface WorktreeProvisionRequest {
   /** Free-text label (the session's `label`) the provisioner may fold into a
    *  minted slug for human readability. Never load-bearing for correctness. */
   labelHint?: string
+  /** Absolute path the provisioner should append the setup hooks' FULL
+   *  stdout+stderr to (see `worktree.provision`'s `setupLogPath` input and
+   *  `@agentproto/worktree`'s `runSetup`). `session-spawn.ts` passes the
+   *  spawning session's own transcript dir here, so a failing setup hook's
+   *  full output survives even after a subsequently-reclaimed worktree is
+   *  gone — the short `HookError` message alone only carries a filtered
+   *  tail. Omitted callers (e.g. `agentproto worktree new`, no session to
+   *  log into) simply get no persisted log. */
+  setupLogPath?: string
+  /** Re-run a failing `worktree.setup` command exactly once before giving
+   *  up — see `worktree.provision`'s `retrySetupOnFailure` input and
+   *  `runSetup`'s doc for why this is a bounded complement, not a
+   *  substitute, and why the daemon opts in while `agentproto worktree new`
+   *  doesn't. */
+  retrySetupOnFailure?: boolean
 }
 
 /** The provisioner's outcome. `isolated: false` is NOT a failure — it means

@@ -86,6 +86,14 @@ export const provisionWorktreeTool = defineTool({
       .boolean()
       .optional()
       .describe("Read the base tree's agentproto.json and apply its declarative worktree lifecycle: `worktree.depsCmd`/`worktree.linkPaths` as fallbacks for the inputs above, then the `worktree.setup` hooks after creation. Default true; a failing setup hook fails provisioning."),
+    setupLogPath: z
+      .string()
+      .optional()
+      .describe("Absolute path to append the FULL, unfiltered stdout+stderr of every `worktree.setup` hook command to (success or failure). Caller-provided — typically a path under the spawning session's own directory, so the full output outlives a subsequently-reclaimed worktree. Best-effort: a write failure never fails provisioning. When omitted, only a short, noise-filtered tail survives in a failing hook's own error message."),
+    retrySetupOnFailure: z
+      .boolean()
+      .optional()
+      .describe("Re-run a failing `worktree.setup` command exactly once before giving up — a complement to (never a substitute for) a real root-cause fix, meant for unattended callers with no way to retry themselves short of provisioning an entirely new worktree. Default false: an interactive caller (e.g. `agentproto worktree new`) sees a genuine failure on the first try rather than waiting through an identical rerun."),
   }),
   outputSchema: z.object({
     cwd: z.string().describe("Absolute path to the created worktree."),
