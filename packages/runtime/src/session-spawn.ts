@@ -58,6 +58,7 @@ import {
   serviceableModelRoutes,
   suggestModelSlugs,
 } from "./catalog-models.js"
+import { authProfileAsAdapterHint } from "./adapter-slug-hint.js"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import {
   getAuthProfile,
@@ -2483,14 +2484,18 @@ export async function spawnAgentSession(
     // `resolveAdapter`) already returns successfully through that window,
     // so reaching this branch at all means either the adapter has never
     // resolved in this process, or it went unresolvable long enough to
-    // exhaust that grace period.
+    // exhaust that grace period. Unless the slug is an auth-profile id — then
+    // neither "mid-rebuild" nor "install it" applies, and the shared hint
+    // (same text as cron's create-time check) says what was meant.
+    const profileHint = await authProfileAsAdapterHint(input.adapter, getAuthProfile)
     return {
       ok: false,
       code: "adapter_not_found",
-      message:
-        `agent_start: adapter "${input.adapter}" could not be resolved. If it was ` +
-        `working a moment ago, something may be mid-rebuild — wait and retry. If it ` +
-        `has never been installed, run \`agentproto install ${input.adapter}\` first.`,
+      message: profileHint
+        ? `agent_start: adapter "${input.adapter}" could not be resolved. ${profileHint}`
+        : `agent_start: adapter "${input.adapter}" could not be resolved. If it was ` +
+          `working a moment ago, something may be mid-rebuild — wait and retry. If it ` +
+          `has never been installed, run \`agentproto install ${input.adapter}\` first.`,
     }
   }
   if (resolveHostAuth && !resolved) {

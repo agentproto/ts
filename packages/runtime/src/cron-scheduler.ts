@@ -44,6 +44,7 @@ import { SESSION_ID_ENV, WORKSPACE_SLUG_ENV, mintSessionId, type SessionsRegistr
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterLister, AgentAdapterResolver } from "./http-server.js"
 import { restartAgentSession } from "./session-restart-core.js"
+import { authProfileAsAdapterHint, type AuthProfileLookup } from "./adapter-slug-hint.js"
 import { toAgentStartCall, type DetachedAgentStartInput } from "./agent-start-schema.js"
 
 // ── Public types ─────────────────────────────────────────────────────
@@ -122,7 +123,7 @@ function hostAdapterSlugOf(action: CronAction): string | undefined {
 export interface CronAdapterCheckDeps {
   resolveAgentAdapter?: AgentAdapterResolver
   /** Auth-profile lookup by id — only used to word the error when the slug is a profile id. */
-  getAuthProfile?: (id: string) => Promise<{ endpoint?: string } | undefined>
+  getAuthProfile?: AuthProfileLookup
   /** Installed-adapter lister — only used to list valid slugs in the error. */
   listAgentAdapters?: AgentAdapterLister
 }
@@ -144,14 +145,8 @@ export async function assertCronAdapterResolvable(
   const resolved = await deps.resolveAgentAdapter(slug).catch(() => null)
   if (resolved) return
 
-  let hint: string | undefined
-  const profile = await deps.getAuthProfile?.(slug).catch(() => undefined)
-  if (profile) {
-    hint =
-      `'${slug}' is an auth profile${profile.endpoint ? ` (endpoint '${profile.endpoint}')` : ""}, ` +
-      `not an adapter; use adapter: 'claude-code' (or the adapter that bills that endpoint) ` +
-      `with access.profileRef: '${slug}' (or presetId).`
-  } else {
+  let hint = await authProfileAsAdapterHint(slug, deps.getAuthProfile)
+  if (!hint) {
     const installed = await deps.listAgentAdapters?.().catch(() => undefined)
     if (installed && installed.length > 0) {
       hint = `Installed adapters: ${installed.map(a => a.slug).sort().join(", ")}.`
