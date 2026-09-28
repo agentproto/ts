@@ -19,6 +19,11 @@
  * `~/.agentproto/sentinels-parked.jsonl` and the sentinel is marked
  * `orphaned`.
  *
+ * Push providers (`webhook`) have no `poll()`: the daemon's inbound route
+ * hands their parsed events to `deliverPushed`, which runs the SAME
+ * per-event pipeline (seen -> match -> deliver -> markSeen -> lifetime) so
+ * dedup, `until` and dead-session handling behave identically to polling.
+ *
  * Cadence: 15s while any pollable sentinel had an event in the last 10 min,
  * 60s otherwise (design §3) — a self-rescheduling `setTimeout` rather than
  * `setInterval` so the interval can adapt tick to tick.
@@ -36,11 +41,11 @@ import {
 } from "./session-message.js"
 import { SessionNotAliveError, type SendMessageResult } from "./sessions.js"
 import type { Sentinel, SentinelStatus, SentinelStore } from "./sentinel-store.js"
-import type {
-  DeliveryPreference,
-  SentinelEvent,
-  SentinelMatchClause,
-  SentinelProviderHandle,
+import {
+  deliveryPreferenceFor,
+  type SentinelEvent,
+  type SentinelMatchClause,
+  type SentinelProviderHandle,
 } from "./sentinel-providers/types.js"
 
 // ── Constants ─────────────────────────────────────────────────────────
@@ -168,6 +173,12 @@ export interface SentinelRuntime {
   /** Force one poll tick across every poll-capable, pollable sentinel —
    *  used by tests and (later) `sentinel_poll_now`. */
   pollOnce(): Promise<void>
+  /** Deliver events a push provider already parsed + verified (the
+   *  `/inbound/sentinel-<hookKey>` route) to one sentinel, through the same
+   *  dedup/match/lifetime pipeline the poll loop uses. `failed: true` means a
+   *  delivery threw and was NOT marked seen — the caller should answer 5xx so
+   *  the sender can redeliver. Unknown or non-live sentinels are a no-op. */
+  deliverPushed(sentinelId: string, events: readonly SentinelEvent[]): Promise<{ delivered: number; failed: boolean }>
 }
 
 export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRuntime {
@@ -331,25 +342,19 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     }
   }
 
-  // ── Poll ──────────────────────────────────────────────────────────
+  // ── Shared per-event pipeline (poll + push) ─────────────────────────
 
-  async function pollSentinel(sentinel: Sentinel): Promise<void> {
-    const provider = await opts.resolveProvider(sentinel.provider)
-    if (!provider || !provider.poll) return
-
-    let result: { events: SentinelEvent[]; cursor: string }
-    try {
-      result = await provider.poll(sentinel.handle, POLL_BATCH_LIMIT)
-    } catch (err) {
-      store.update(sentinel.id, { lastError: describeError(err) })
-      return
-    }
-
+  async function processEvents(
+    sentinelId: string,
+    provider: SentinelProviderHandle,
+    events: readonly SentinelEvent[],
+  ): Promise<{ haltedOnError: boolean; delivered: number }> {
     let haltedOnError = false
+    let delivered = 0
 
-    for (const event of result.events) {
-      const current = store.get(sentinel.id)
-      if (!current) return // removed mid-batch
+    for (const event of events) {
+      const current = store.get(sentinelId)
+      if (!current) break // removed mid-batch
       if (!POLLABLE_STATUSES.has(current.status)) break // paused/expired/error — stop watching
 
       if (store.isSeen(current.id, event.id)) continue
@@ -374,6 +379,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         break
       }
       store.markSeen(current.id, event.id)
+      delivered++
 
       const updated = store.update(current.id, {
         eventCount: current.eventCount + 1,
@@ -381,6 +387,25 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       })
       if (updated) await applyLifetime(updated, event, provider)
     }
+
+    return { haltedOnError, delivered }
+  }
+
+  // ── Poll ──────────────────────────────────────────────────────────
+
+  async function pollSentinel(sentinel: Sentinel): Promise<void> {
+    const provider = await opts.resolveProvider(sentinel.provider)
+    if (!provider || !provider.poll) return
+
+    let result: { events: SentinelEvent[]; cursor: string }
+    try {
+      result = await provider.poll(sentinel.handle, POLL_BATCH_LIMIT)
+    } catch (err) {
+      store.update(sentinel.id, { lastError: describeError(err) })
+      return
+    }
+
+    const { haltedOnError } = await processEvents(sentinel.id, provider, result.events)
 
     if (!haltedOnError) {
       const latest = store.get(sentinel.id)
@@ -408,6 +433,35 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     } finally {
       inFlight = false
     }
+  }
+
+  // ── Push ────────────────────────────────────────────────────────────
+
+  /** Per-sentinel serial chain: two concurrent deliveries of the same event
+   *  (a GitHub redelivery racing the original) must not both pass `isSeen`
+   *  before either calls `markSeen`. */
+  const pushChains = new Map<string, Promise<unknown>>()
+
+  function deliverPushed(
+    sentinelId: string,
+    events: readonly SentinelEvent[],
+  ): Promise<{ delivered: number; failed: boolean }> {
+    const run = async (): Promise<{ delivered: number; failed: boolean }> => {
+      const sentinel = store.get(sentinelId)
+      if (!sentinel || !POLLABLE_STATUSES.has(sentinel.status)) return { delivered: 0, failed: false }
+      const provider = await opts.resolveProvider(sentinel.provider)
+      if (!provider) return { delivered: 0, failed: false }
+      const { haltedOnError, delivered } = await processEvents(sentinelId, provider, events)
+      return { delivered, failed: haltedOnError }
+    }
+    const prev = pushChains.get(sentinelId) ?? Promise.resolve()
+    const next = prev.then(run, run)
+    const tail = next.catch(() => undefined)
+    pushChains.set(sentinelId, tail)
+    void tail.then(() => {
+      if (pushChains.get(sentinelId) === tail) pushChains.delete(sentinelId)
+    })
+    return next
   }
 
   // ── Timer ─────────────────────────────────────────────────────────
@@ -447,7 +501,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         })
         continue
       }
-      const delivery: DeliveryPreference = { mode: "poll", intervalMs: activeIntervalMs }
+      const delivery = deliveryPreferenceFor(provider, activeIntervalMs)
       try {
         const handle = await provider.attach(sentinel.handle, delivery)
         store.update(sentinel.id, { handle })
@@ -469,5 +523,6 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       }
     },
     pollOnce,
+    deliverPushed,
   }
 }

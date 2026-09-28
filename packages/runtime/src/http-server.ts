@@ -62,6 +62,7 @@ import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
 import type { SentinelStore } from "./sentinel-store.js"
 import type { SentinelProviderHandle } from "./sentinel-providers/types.js"
+import { handleSentinelInbound, type SentinelInboundDeps } from "./sentinel-inbound.js"
 import {
   createSentinelWatch,
   cancelSentinelWatch,
@@ -78,6 +79,9 @@ export interface SentinelHttpDeps {
   resolveProvider: (slug: string) => Promise<SentinelProviderHandle | null>
   isSessionAlive: (sessionId: string) => boolean
   activeIntervalMs?: number
+  /** Enables `POST /inbound/sentinel-<hookKey>` (push providers). Without it
+   *  that path falls through to the ordinary inbound-endpoint lookup. */
+  runtime?: SentinelInboundDeps["runtime"]
 }
 import type { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import type { RemoteController, EnableInput } from "./remote-controller.js"
@@ -2544,7 +2548,22 @@ export async function startHttpServer(
 
         const inboundSlugMatch = path.match(/^\/inbound\/([^/]+)$/)
         if (inboundSlugMatch && req.method === "POST") {
-          await handleProviderInbound(req, res, decodeURIComponent(inboundSlugMatch[1] ?? ""), { routeInboundMessage: opts.routeInboundMessage, endpointStore: opts.endpointStore, checkSessionsToken, rejectUnauthorizedSession })
+          await handleProviderInbound(req, res, decodeURIComponent(inboundSlugMatch[1] ?? ""), {
+            ...(opts.sentinels?.runtime
+              ? {
+                  sentinelInbound: (hookKey, inbound) =>
+                    handleSentinelInbound(hookKey, inbound, {
+                      store: opts.sentinels!.store,
+                      runtime: opts.sentinels!.runtime!,
+                      resolveProvider: opts.sentinels!.resolveProvider,
+                    }),
+                }
+              : {}),
+            routeInboundMessage: opts.routeInboundMessage,
+            endpointStore: opts.endpointStore,
+            checkSessionsToken,
+            rejectUnauthorizedSession,
+          })
           return
         }
 
@@ -9409,6 +9428,10 @@ async function handleRoutineDefs(
 
 
 interface InboundHandlerDeps {
+  sentinelInbound?: (
+    hookKey: string,
+    req: { rawBody: string; headers: Record<string, string | string[] | undefined> },
+  ) => ReturnType<typeof handleSentinelInbound>
   routeInboundMessage?: RuntimeHttpServerOptions["routeInboundMessage"]
   endpointStore?: InboundEndpointStore
   checkSessionsToken: (req: IncomingMessage) => "ok" | "missing" | "bad"
@@ -9548,6 +9571,31 @@ async function handleProviderInbound(
   slug: string,
   deps: InboundHandlerDeps,
 ): Promise<void> {
+  // "sentinel" dialect: `/inbound/sentinel-<hookKey>` is a push-provider hook.
+  // Signature-gated by the provider (never the bearer). The `sentinel-` slug
+  // prefix is reserved once sentinel ingress is enabled; an unknown key
+  // answers the same generic 404 as any unknown endpoint (nothing echoed).
+  if (slug.startsWith("sentinel-") && deps.sentinelInbound) {
+    const rawResult = await readRawBody(req)
+    if (!rawResult.ok) {
+      res.writeHead(rawResult.status, { "content-type": "application/json" })
+      res.end(JSON.stringify({ error: rawResult.error }))
+      return
+    }
+    const result = await deps.sentinelInbound(slug.slice("sentinel-".length), {
+      rawBody: rawResult.raw,
+      headers: inboundRequestHeaders(req),
+    })
+    if (result) {
+      res.writeHead(result.status, { "content-type": "application/json" })
+      res.end(JSON.stringify(result.body))
+      return
+    }
+    res.writeHead(404, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "unknown_inbound_endpoint" }))
+    return
+  }
+
   if (!deps.endpointStore) {
     res.writeHead(404, { "content-type": "application/json" })
     res.end(JSON.stringify({ error: "unknown_inbound_endpoint" }))
