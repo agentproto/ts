@@ -209,6 +209,37 @@ export interface PackLoader {
   load(ref: string): Promise<PackSource>
 }
 
+/** The only pack-digest recipe version that exists today — see
+ *  {@link computePackDigestSha256}'s doc comment for the exact byte
+ *  layout. Travels as `PackDigest.alg`, inside the signed attestation. */
+export const PACK_DIGEST_ALG = "agentproto-pack-digest/v1" as const
+
+/**
+ * The v1 pack-digest recipe: sha256 over a canonical text built from the
+ * pack's own REVIEW.md source plus every rubric file its SELECTED checks
+ * use. Exact byte layout, so a verifier can reproduce it from raw files
+ * with no need to re-run `resolvePacks`:
+ *
+ *   1. One line per input:
+ *      - the REVIEW.md source gets the literal label `"REVIEW.md"`
+ *      - each rubric gets the check's OWN `rubric` path exactly as
+ *        declared on the pack (relative to the pack root, NOT namespaced)
+ *      - a line is `<label>\0<sha256-hex-of-that-input's-raw-bytes>`
+ *        (`\0`, not `:` or whitespace — a label can legally contain either)
+ *   2. Lines sorted lexicographically (stable regardless of iteration
+ *      order — `checks:` subset order, Map iteration, etc.)
+ *   3. Lines joined with `"\n"`, no trailing newline
+ *   4. The joined string is UTF-8-encoded and sha256'd; the digest is the
+ *      lowercase hex of that hash
+ *
+ * `rubrics` must already be limited to exactly the checks this `uses[]`
+ * entry selects — this function does no filtering of its own.
+ */
+export function computePackDigestSha256(reviewMdSource: string, rubrics: readonly { path: string; bytes: Uint8Array }[]): string {
+  const digestLines = [`REVIEW.md\0${sha256Hex(reviewMdSource)}`, ...rubrics.map((r) => `${r.path}\0${sha256Hex(r.bytes)}`)].sort()
+  return sha256Hex(digestLines.join("\n"))
+}
+
 export interface ResolvePacksResult {
   /** The consumer's manifest with every `uses[]` pack's selected checks
    *  merged in (namespaced `<as>/<id>`) and bindings re-finalized against
@@ -316,15 +347,12 @@ export async function resolvePacks(manifest: ReviewManifest, loader: PackLoader)
       rubricFiles.push({ path: check.rubric, bytes })
     }
 
-    const digestLines = [
-      `REVIEW.md\0${sha256Hex(loaded.source)}`,
-      ...rubricFiles.map((r) => `${r.path}\0${sha256Hex(r.bytes)}`),
-    ].sort()
     const digest: PackDigest = {
       ref: use.pack,
       id: loaded.manifest.id,
       version: loaded.manifest.version,
-      sha256: sha256Hex(digestLines.join("\n")),
+      alg: PACK_DIGEST_ALG,
+      sha256: computePackDigestSha256(loaded.source, rubricFiles),
     }
     packs.push(digest)
     packByNamespace[use.as] = digest

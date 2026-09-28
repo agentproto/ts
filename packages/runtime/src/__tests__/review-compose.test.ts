@@ -12,7 +12,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { ATTESTATION_SCHEMA, type Attestation } from "@agentproto/review"
+import { ATTESTATION_SCHEMA, PACK_DIGEST_ALG, type Attestation } from "@agentproto/review"
 import { findComposeCandidate, type FindComposeCandidateInput } from "../review-compose.js"
 import type { LedgerEntry, ReviewLedger } from "../review-ledger.js"
 
@@ -96,7 +96,7 @@ describe("findComposeCandidate — pack digest rule", () => {
   })
 
   it("composes when the prior attestation carries an identical pack digest", async () => {
-    const ledger = fakeLedger([fakeAttestation({ packs: [{ ref: "./core-pack", id: "core", version: "1.0.0", sha256: "pack-sha-1" }] })])
+    const ledger = fakeLedger([fakeAttestation({ packs: [{ ref: "./core-pack", id: "core", version: "1.0.0", alg: PACK_DIGEST_ALG, sha256: "pack-sha-1" }] })])
     const candidate = await findComposeCandidate({
       ...baseInput(ledger),
       packDigest: { id: "core", sha256: "pack-sha-1" },
@@ -109,7 +109,7 @@ describe("findComposeCandidate — pack digest rule", () => {
     // pack as a whole (e.g. another check's config, or the pack's own
     // REVIEW.md) changed — proves this rule catches something the existing
     // per-check rubric-digest check does not.
-    const ledger = fakeLedger([fakeAttestation({ packs: [{ ref: "./core-pack", id: "core", version: "1.0.0", sha256: "pack-sha-OLD" }] })])
+    const ledger = fakeLedger([fakeAttestation({ packs: [{ ref: "./core-pack", id: "core", version: "1.0.0", alg: PACK_DIGEST_ALG, sha256: "pack-sha-OLD" }] })])
     const candidate = await findComposeCandidate({
       ...baseInput(ledger),
       packDigest: { id: "core", sha256: "pack-sha-NEW" },

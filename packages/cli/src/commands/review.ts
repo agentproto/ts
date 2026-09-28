@@ -519,6 +519,16 @@ async function resolveComposedFrom(att: Attestation, exportDir: string): Promise
  * "verify the digests only when the pack resolves locally". Any digest that
  * DOES resolve and mismatches is a real `problems` entry (the pack's content
  * changed since the range was reviewed).
+ *
+ * `alg` is checked BEFORE the digest itself: `resolved.packs[i].alg` is
+ * always the digest recipe THIS build of `resolvePacks` knows (currently
+ * the only one that exists, `PACK_DIGEST_ALG`) — so an attestation whose
+ * `alg` differs was hashed under a recipe this verifier can't reproduce.
+ * That is a HARD failure, not a note: comparing hex digests computed under
+ * two different, unstated recipes as if they were comparable is exactly
+ * the "mis-verify" a versioned `alg` field exists to rule out — silently
+ * downgrading it to "unresolvable, skip" would let a forged `alg` (or a
+ * pack digest recipe nobody has audited yet) sail through unverified.
  */
 async function verifyPackDigests(
   att: Attestation,
@@ -535,6 +545,13 @@ async function verifyPackDigests(
       const got = resolved.packs.find((p) => p.ref === want.ref)
       if (!got) {
         problems.push(`pack '${want.ref}' (id '${want.id}') is recorded on the attestation but this REVIEW.md's uses[] no longer declares it`)
+        continue
+      }
+      if (want.alg !== got.alg) {
+        problems.push(
+          `pack '${want.ref}' was attested with digest algorithm '${want.alg}', but this checkout's resolver only knows ` +
+            `'${got.alg}' — refusing to compare digests computed under different, unstated recipes`,
+        )
         continue
       }
       if (got.sha256 !== want.sha256) {

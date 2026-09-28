@@ -186,18 +186,45 @@ unconditionally). The daemon's loader
 
 **Identity + cache.** Each resolved pack gets a digest: sha256 over its
 REVIEW.md plus every rubric file its SELECTED checks use (sorted by path).
-The attestation gains `packs?: [{ref, id, version, sha256}]` — additive, the
-attestation schema id is unchanged, and the digest lives inside the signed
-bytes automatically (nothing special to wire up). A ledger cache hit
-requires identical pack digests, exactly like rubric digests: edit one
-rubric a pack's checks use, or the pack's own REVIEW.md, and the next run
-misses the cache. Attestation composition (delta re-review, see
-`packages/runtime/src/review-compose.ts`) extends the same way — a lane
-whose check came from a pack composes only onto a prior attestation that
-carries an IDENTICAL digest for that pack, not just a matching digest for
-the lane's own rubric file (a change elsewhere in the pack — another
-check's config, the pack's own REVIEW.md — can change what this check's
-config resolves to even when its own rubric file didn't move).
+The attestation gains `packs?: [{ref, id, version, alg, sha256}]` —
+additive, the attestation schema id is unchanged, and the digest lives
+inside the signed bytes automatically (nothing special to wire up). A
+ledger cache hit requires identical pack digests, exactly like rubric
+digests: edit one rubric a pack's checks use, or the pack's own REVIEW.md,
+and the next run misses the cache. Attestation composition (delta
+re-review, see `packages/runtime/src/review-compose.ts`) extends the same
+way — a lane whose check came from a pack composes only onto a prior
+attestation that carries an IDENTICAL digest for that pack, not just a
+matching digest for the lane's own rubric file (a change elsewhere in the
+pack — another check's config, the pack's own REVIEW.md — can change what
+this check's config resolves to even when its own rubric file didn't
+move).
+
+`alg` names the digest RECIPE (not the hash function — that's always
+sha256): which bytes get hashed, in what order, with what separators. It
+travels inside a *signed* attestation, so it's versioned from day one even
+though only one version exists — `agentproto-pack-digest/v1`
+(`PACK_DIGEST_ALG`, `computePackDigestSha256` in `packages/review/src/packs.ts`).
+Exact byte layout, reproducible from raw files with no need to re-run
+`resolvePacks`:
+
+1. One line per input: the REVIEW.md source gets the literal label
+   `"REVIEW.md"`; each SELECTED rubric gets the check's own `rubric` path
+   exactly as declared on the pack (relative to the pack root, not
+   namespaced). A line is `<label>\0<sha256-hex-of-that-input's-raw-bytes>`
+   — a NUL separator, not `:` or whitespace, since a label could legally
+   contain either.
+2. Lines sorted lexicographically (stable regardless of `checks:` subset
+   iteration order).
+3. Lines joined with `"\n"`, no trailing newline.
+4. The joined string is UTF-8-encoded and sha256'd; the digest is the
+   lowercase hex of that hash.
+
+`review verify` checks `alg` BEFORE comparing `sha256`: an attestation
+whose `alg` this checkout's `resolvePacks` doesn't recognize is a hard
+verify FAILURE, not a soft "can't check" note — comparing hex digests
+computed under two different, unstated recipes as if they meant the same
+thing is exactly the mis-verify a versioned `alg` exists to rule out.
 
 **Security.** A pack's `command` checks run shell commands in the
 CONSUMER's checkout — third-party code execution. They're a parse error
@@ -271,6 +298,7 @@ verdict:
   verdict: "pass" | "block" | "incomplete",
   attestor: { daemon, presets },
   rubrics: [{ check, path, sha256 }],   // agent-lane rubric digests
+  packs?: [{ ref, id, version, alg, sha256 }],   // resolved uses[] pack digests — see Review packs
   dirty?: true,                   // tracked changes were present while lanes ran
   createdAt
 }
