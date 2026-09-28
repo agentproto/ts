@@ -15,7 +15,7 @@ import { mkdtemp, rm, unlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { ATTESTATION_SCHEMA, ledgerKeyOf, type Attestation } from "@agentproto/review"
+import { ATTESTATION_SCHEMA, PACK_DIGEST_ALG, ledgerKeyOf, type Attestation, type PackDigest } from "@agentproto/review"
 import { createReviewLedger, repoSlug } from "../review-ledger.js"
 
 function fakeAttestation(overrides: Partial<Attestation> & { requesterSessionId: string }): Attestation {
@@ -125,5 +125,20 @@ describe("review ledger — parsed-entry cache", () => {
 
   it("repoSlug stays stable across cache reads (sanity: same on-disk layout as before caching)", () => {
     expect(repoSlug("github.com/acme/demo")).toBe("github.com_acme_demo")
+  })
+})
+
+describe("review ledger — lookupCached pack digests", () => {
+  const pack = (alg: string): PackDigest =>
+    ({ ref: "./core", id: "core", version: "1.0.0", alg, sha256: "p".repeat(64) }) as PackDigest
+
+  it("hits only when the pack digest matches under the same alg", async () => {
+    const ledger = createReviewLedger({ root })
+    const attestation = fakeAttestation({ requesterSessionId: "s1", packs: [pack(PACK_DIGEST_ALG)] })
+    await ledger.put({ attestation, host: { repoRoot: "/tmp/repo", manifestPath: "/tmp/repo/REVIEW.md" } })
+    const key = ledgerKeyOf(attestation)
+    expect(await ledger.lookupCached(key, [], [pack(PACK_DIGEST_ALG)])).toBeDefined()
+    // Identical hex under a different recipe must not be served as a hit.
+    expect(await ledger.lookupCached(key, [], [pack("v2-from-the-future")])).toBeUndefined()
   })
 })

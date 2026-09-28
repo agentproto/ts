@@ -107,13 +107,18 @@ export interface ReconcileResult {
   skipped: Array<{ id: string; reason: string }>
   /** Cron jobs removed because their routine vanished, was disabled, or was superseded by a changed one. */
   removed: string[]
-  /** Files that failed to parse/validate — collected, not fatal to the rest of the scan. */
+  /** Files that failed to parse/validate or register — collected, not fatal to the rest of the scan. */
   errors: Array<{ file: string; error: string }>
 }
 
 export interface RoutineRegistrar {
-  /** Scan, validate, and reconcile cron jobs for every routine found. Safe to call repeatedly. */
-  reconcile(): ReconcileResult
+  /**
+   * Scan, validate, and reconcile cron jobs for every routine found. Safe to
+   * call repeatedly. A routine whose job the scheduler refuses (e.g. an
+   * unresolvable `target.agent.adapter`) lands in `errors`, never aborting
+   * the rest of the pass.
+   */
+  reconcile(): Promise<ReconcileResult>
   /**
    * Re-parse one routine by id and fire its target immediately via
    * `dispatchTool` — bypasses the schedule AND the `enabled` flag, and
@@ -166,7 +171,7 @@ export function createRoutineRegistrar(opts: {
   }
 
   return {
-    reconcile() {
+    async reconcile() {
       const { parsed, errors } = parseAll()
       lastParsed = parsed
 
@@ -184,7 +189,7 @@ export function createRoutineRegistrar(opts: {
 
       const desiredIds = new Set<string>()
 
-      for (const { frontmatter } of parsed) {
+      for (const { file, frontmatter } of parsed) {
         const id = frontmatter.id
         if (!frontmatter.enabled) {
           skipped.push({ id, reason: "enabled: false" })
@@ -231,13 +236,21 @@ export function createRoutineRegistrar(opts: {
           removed.push(existing.id)
         }
 
-        cronScheduler.create({
-          label: `${JOB_LABEL_PREFIX}${id}`,
-          schedule: schedule.cron,
-          ...(schedule.timezone ? { timezone: schedule.timezone } : {}),
-          recurring: true,
-          action,
-        })
+        try {
+          await cronScheduler.create({
+            label: `${JOB_LABEL_PREFIX}${id}`,
+            schedule: schedule.cron,
+            ...(schedule.timezone ? { timezone: schedule.timezone } : {}),
+            recurring: true,
+            action,
+          })
+        } catch (err) {
+          errors.push({
+            file,
+            error: `routine '${id}': cron job not registered: ${err instanceof Error ? err.message : String(err)}`,
+          })
+          continue
+        }
         registered.push(id)
       }
 

@@ -55,7 +55,7 @@ export interface FindComposeCandidateInput {
    *  Composition additionally requires the prior attestation's `packs` to
    *  carry an entry with this same id and digest. `undefined` for a local
    *  (non-pack) check — nothing extra to require. */
-  packDigest?: { id: string; sha256: string }
+  packDigest?: { id: string; alg: string; sha256: string }
   baseSha: string
   headSha: string
 }
@@ -83,7 +83,7 @@ export async function findComposeCandidate(input: FindComposeCandidateInput): Pr
     if (!rubric || rubric.sha256 !== input.rubricSha256) continue
     if (input.packDigest) {
       const priorPack = (a.packs ?? []).find((p) => p.id === input.packDigest!.id)
-      if (!priorPack || priorPack.sha256 !== input.packDigest.sha256) continue
+      if (!priorPack || priorPack.alg !== input.packDigest.alg || priorPack.sha256 !== input.packDigest.sha256) continue
     }
     if (!(await isAncestor(input.repoRoot, a.target.headSha, input.headSha))) continue
     return { attestation: a }

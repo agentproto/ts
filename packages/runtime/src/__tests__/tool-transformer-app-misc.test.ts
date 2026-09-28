@@ -203,6 +203,7 @@ describe("task_list (paginated transformer)", () => {
       get: () => tasks[0]!,
       claim: () => ({ ok: true, task: tasks[0]! }),
       update: () => ({ ok: true, task: tasks[0]! }),
+      linkApproval: () => ({ ok: true, task: tasks[0]! }),
       resolveBoardId: (_caller, explicit) => explicit ?? "ws:default",
       snapshot: () => tasks,
       dispose() {},

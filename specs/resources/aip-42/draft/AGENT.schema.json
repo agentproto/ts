@@ -178,7 +178,7 @@
           }
         }
       ],
-      "description": "AIP-27 ref primitive — string shorthand or { ref | file | inline }."
+      "description": "AIP-54 ref primitive — string shorthand or { ref | file | inline }."
     },
     "agentRef": {
       "$ref": "#/$defs/anyRef"

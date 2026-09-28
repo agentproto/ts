@@ -6,6 +6,11 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**", "skills/**", ".claude-plugin/**"]
     },
+    "@agentproto/corpus-cli#build": {
+      "dependsOn": ["^build"],
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/specs/resources/**"],
+      "outputs": ["dist/**"]
+    },
     "check-types": {
       "dependsOn": ["^build"],
       "outputs": []

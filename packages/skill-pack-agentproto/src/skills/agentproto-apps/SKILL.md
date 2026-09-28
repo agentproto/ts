@@ -1,7 +1,7 @@
 ---
 name: agentproto-apps
 description:
-  Operate and build Agentproto apps — AIP-42 app bundles (`defineApp().emit(dir)`,
+  Operate and build Agentproto apps — AIP-53 app bundles (`defineApp().emit(dir)`,
   APP.md + agents/ + workflows/ + ui/) and their daemon lifecycle (app_install,
   app_apply, app_run, app_status, app_stop) plus the app-scoped durable data
   plane (app_data_read/write/list/migrate). Covers serving one with a UI
@@ -12,12 +12,12 @@ description:
   apps persist data", "run an app's agents in order", or debugging an installed
   app (job-application-kit, …).
 metadata:
-  tags: agentproto, app, aip42, udashboard, app_run, app_data, defineApp, app serve
+  tags: agentproto, app, aip53, udashboard, app_run, app_data, defineApp, app serve
   aip3:
     uses: ["agentproto"]
 ---
 
-# Agentproto apps (AIP-42)
+# Agentproto apps (AIP-53)
 
 A **packaged app** is a directory that ships one or more AIP-42 agents, the
 AIP-15 workflows they run, and (optionally) a single-file web UI, emitted under

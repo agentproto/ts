@@ -4,14 +4,15 @@
  * `sentinel-adapters.ts`'s kit wiring resolve providers the same way every
  * other adapter family does.
  *
- * Step 3 (AIP-60) adds the first built-in, `local-gh` — zero infra, no
- * credentials. `webhook` / `agentpush` are added by later steps (design §12
- * steps 5, 10) without changing this shape.
+ * Built-ins: `local-gh` (step 3 — zero infra, poll) and `webhook` (step 5 —
+ * GitHub repo hooks, push). `agentpush` is added by a later step (design §12
+ * step 10) without changing this shape.
  */
 
 import { discoverAdapterPackages } from "@agentproto/provider-kit"
 
 import { localGhSentinelProvider, LOCAL_GH_SLUG } from "./local-gh.js"
+import { webhookSentinelProvider, WEBHOOK_SLUG } from "./webhook.js"
 import type { SentinelProviderHandle } from "./types.js"
 
 /** Per-slug credentials, as stored by the creds store / setup tool. */
@@ -28,14 +29,16 @@ export type SentinelProviderFactory = (
 
 /**
  * Built-in providers keyed by canonical slug. `local-gh` ignores creds — it
- * needs none, it uses the host's ambient `gh` auth.
+ * needs none, it uses the host's ambient `gh` auth. `webhook` likewise, and
+ * resolves the daemon's public URL through `sentinel-public-url.ts`.
  */
 export const BUILTIN_SENTINEL_PROVIDERS: Record<string, SentinelProviderFactory> = {
   [LOCAL_GH_SLUG]: () => localGhSentinelProvider(),
+  [WEBHOOK_SLUG]: () => webhookSentinelProvider(),
 }
 
 /** The canonical built-in slugs, in catalog order. */
-export const BUILTIN_SENTINEL_SLUGS: readonly string[] = [LOCAL_GH_SLUG]
+export const BUILTIN_SENTINEL_SLUGS: readonly string[] = [LOCAL_GH_SLUG, WEBHOOK_SLUG]
 
 const slugToCamel = (slug: string): string =>
   slug.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase())

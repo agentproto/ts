@@ -49,7 +49,7 @@ function makeFakeCronScheduler(): CronScheduler {
   const jobs = new Map<string, CronJob>()
   let counter = 0
   return {
-    create({ label, schedule, timezone, recurring = true, action }) {
+    async create({ label, schedule, timezone, recurring = true, action }) {
       const id = `fake_cron_${++counter}`
       const job: CronJob = {
         id,
@@ -214,7 +214,7 @@ describe("createRoutineRegistrar — unit (fakes)", () => {
     return { workspace, cronScheduler, calls, registrar }
   }
 
-  it("reconcile() registers a cron job for an enabled, cron-scheduled tool-target routine", () => {
+  it("reconcile() registers a cron job for an enabled, cron-scheduled tool-target routine", async () => {
     const { workspace, cronScheduler, registrar } = setup()
     writeRoutine(
       workspace,
@@ -232,7 +232,7 @@ describe("createRoutineRegistrar — unit (fakes)", () => {
         "    apply: true",
       ].join("\n"),
     )
-    const result = registrar.reconcile()
+    const result = await registrar.reconcile()
     expect(result.errors).toEqual([])
     expect(result.registered).toEqual(["demo-gc"])
     const jobs = cronScheduler.list()
@@ -241,7 +241,7 @@ describe("createRoutineRegistrar — unit (fakes)", () => {
     expect(jobs[0]!.action).toEqual({ kind: "tool", tool: "worktree_gc", inputs: { apply: true } })
   })
 
-  it("reconcile() skips a disabled routine and does not register a job", () => {
+  it("reconcile() skips a disabled routine and does not register a job", async () => {
     const { workspace, cronScheduler, registrar } = setup()
     writeRoutine(
       workspace,
@@ -255,13 +255,13 @@ describe("createRoutineRegistrar — unit (fakes)", () => {
         "enabled: false",
       ].join("\n"),
     )
-    const result = registrar.reconcile()
+    const result = await registrar.reconcile()
     expect(result.registered).toEqual([])
     expect(result.skipped).toEqual([{ id: "off", reason: "enabled: false" }])
     expect(cronScheduler.list()).toHaveLength(0)
   })
 
-  it("reconcile() skips a non-cron schedule with a clear reason", () => {
+  it("reconcile() skips a non-cron schedule with a clear reason", async () => {
     const { workspace, registrar } = setup()
     writeRoutine(
       workspace,
@@ -274,41 +274,41 @@ describe("createRoutineRegistrar — unit (fakes)", () => {
         "target:\n  tool: worktree_gc",
       ].join("\n"),
     )
-    const result = registrar.reconcile()
+    const result = await registrar.reconcile()
     expect(result.registered).toEqual([])
     expect(result.skipped[0]!.id).toBe("manual-one")
     expect(result.skipped[0]!.reason).toMatch(/manual/)
   })
 
-  it("reconcile() is idempotent — a second call with no changes registers nothing new", () => {
+  it("reconcile() is idempotent — a second call with no changes registers nothing new", async () => {
     const { workspace, cronScheduler, registrar } = setup()
     writeRoutine(
       workspace,
       "demo-gc",
       "schema: routine/v1\nid: demo-gc\ndescription: test\nschedule:\n  kind: cron\n  cron: \"0 4 * * *\"\ntarget:\n  tool: worktree_gc",
     )
-    registrar.reconcile()
+    await registrar.reconcile()
     const before = cronScheduler.list().map(j => j.id)
-    registrar.reconcile()
+    await registrar.reconcile()
     const after = cronScheduler.list().map(j => j.id)
     expect(after).toEqual(before)
   })
 
-  it("reconcile() delete+recreates a job whose routine content changed", () => {
+  it("reconcile() delete+recreates a job whose routine content changed", async () => {
     const { workspace, cronScheduler, registrar } = setup()
     writeRoutine(
       workspace,
       "demo-gc",
       "schema: routine/v1\nid: demo-gc\ndescription: test\nschedule:\n  kind: cron\n  cron: \"0 4 * * *\"\ntarget:\n  tool: worktree_gc",
     )
-    registrar.reconcile()
+    await registrar.reconcile()
     const firstJobId = cronScheduler.list()[0]!.id
     writeRoutine(
       workspace,
       "demo-gc",
       "schema: routine/v1\nid: demo-gc\ndescription: test\nschedule:\n  kind: cron\n  cron: \"0 5 * * *\"\ntarget:\n  tool: worktree_gc",
     )
-    const result = registrar.reconcile()
+    const result = await registrar.reconcile()
     expect(result.removed).toEqual([firstJobId])
     const jobs = cronScheduler.list()
     expect(jobs).toHaveLength(1)
@@ -316,22 +316,22 @@ describe("createRoutineRegistrar — unit (fakes)", () => {
     expect(jobs[0]!.schedule).toBe("0 5 * * *")
   })
 
-  it("reconcile() removes a job whose routine file was deleted", () => {
+  it("reconcile() removes a job whose routine file was deleted", async () => {
     const { workspace, cronScheduler, registrar } = setup()
     writeRoutine(
       workspace,
       "demo-gc",
       "schema: routine/v1\nid: demo-gc\ndescription: test\nschedule:\n  kind: cron\n  cron: \"0 4 * * *\"\ntarget:\n  tool: worktree_gc",
     )
-    registrar.reconcile()
+    await registrar.reconcile()
     expect(cronScheduler.list()).toHaveLength(1)
     rmSync(join(workspace, ".routines", "demo-gc"), { recursive: true })
-    const result = registrar.reconcile()
+    const result = await registrar.reconcile()
     expect(result.removed).toHaveLength(1)
     expect(cronScheduler.list()).toHaveLength(0)
   })
 
-  it("reconcile() collects a per-file parse error without failing the whole scan", () => {
+  it("reconcile() collects a per-file parse error without failing the whole scan", async () => {
     const { workspace, registrar } = setup()
     writeRoutine(
       workspace,
@@ -343,10 +343,46 @@ describe("createRoutineRegistrar — unit (fakes)", () => {
       "good",
       "schema: routine/v1\nid: good\ndescription: test\nschedule:\n  kind: cron\n  cron: \"* * * * *\"\ntarget:\n  tool: worktree_gc",
     )
-    const result = registrar.reconcile()
+    const result = await registrar.reconcile()
     expect(result.errors).toHaveLength(1)
     expect(result.errors[0]!.file).toContain("broken")
     expect(result.registered).toEqual(["good"])
+  })
+
+  it("reconcile() reports an unresolvable target.agent adapter as that routine's error, registering the rest", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const sessionEvents = createSessionEventBus()
+    const cronScheduler = createCronScheduler({
+      sessionEvents,
+      registry: createSessionsRegistry({ sessionEvents, persistPath: join(workspace, "sessions.json") }),
+      workspace,
+      resolveAgentAdapter: async slug => (slug === "claude-code" ? ({} as never) : null),
+      getAuthProfile: async id => (id === "claude-subs-agentik" ? { endpoint: "anthropic" } : undefined),
+    })
+    try {
+      const registrar = createRoutineRegistrar({ workspace, cronScheduler, dispatchTool: async () => ({}) })
+      writeRoutine(
+        workspace,
+        "bad-adapter",
+        "schema: routine/v1\nid: bad-adapter\ndescription: test\nschedule:\n  kind: cron\n  cron: \"50 20 * * *\"\ntarget:\n  agent:\n    adapter: claude-subs-agentik\n    prompt: hi",
+      )
+      writeRoutine(
+        workspace,
+        "good",
+        "schema: routine/v1\nid: good\ndescription: test\nschedule:\n  kind: cron\n  cron: \"* * * * *\"\ntarget:\n  agent:\n    adapter: claude-code\n    prompt: hi",
+      )
+      const result = await registrar.reconcile()
+      expect(result.registered).toEqual(["good"])
+      expect(result.errors).toHaveLength(1)
+      expect(result.errors[0]!.file).toContain("bad-adapter")
+      expect(result.errors[0]!.error).toMatch(
+        /^routine 'bad-adapter': cron job not registered: cron action adapter 'claude-subs-agentik' could not be resolved.*is an auth profile/,
+      )
+      expect(cronScheduler.list().map(j => j.label)).toEqual(["routine:good"])
+    } finally {
+      cronScheduler.shutdown()
+    }
   })
 
   it("trigger() dispatches a tool-target routine even when disabled and not reconciled", async () => {
@@ -452,7 +488,7 @@ describe("AIP-41 routine → real dispatch (all three target kinds fire)", () =>
 
     try {
       // 1. reconcile() registers all three as real, live CronScheduler jobs.
-      const reconciled = registrar.reconcile()
+      const reconciled = await registrar.reconcile()
       expect(reconciled.registered.sort()).toEqual(["agent-demo", "tool-demo", "workflow-demo"])
       const jobs = cronScheduler.list()
       expect(jobs).toHaveLength(3)
@@ -728,7 +764,7 @@ describe("orchestration list pagination — minimal page-walks (PR-7)", () => {
           `schema: routine/v1\nid: ${id}\ndescription: test\nschedule:\n  kind: cron\n  cron: "0 4 * * *"\ntarget:\n  tool: worktree_gc`,
         )
       }
-      registrar.reconcile()
+      await registrar.reconcile()
       const client = await listClient({ routineRegistrar: registrar })
 
       const unpaginatedText = contentText(await client.callTool({ name: "routine_list", arguments: {} }))
@@ -750,7 +786,7 @@ describe("orchestration list pagination — minimal page-walks (PR-7)", () => {
     const cronScheduler = makeFakeCronScheduler()
     const action = { kind: "command", command: "true" } as const
     for (const label of ["pg-a", "pg-b", "pg-c"]) {
-      cronScheduler.create({ label, schedule: "0 4 * * *", action })
+      await cronScheduler.create({ label, schedule: "0 4 * * *", action })
     }
     const client = await listClient({ cronScheduler })
 

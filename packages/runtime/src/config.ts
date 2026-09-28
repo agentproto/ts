@@ -342,6 +342,24 @@ export interface ProvenanceConfig {
 }
 
 /**
+ * Approvals policy (`packages/runtime/src/approvals/`, E1a) — config for
+ * the `web_click` human decision channel. See `AIP-7-AMENDMENT.md` for the
+ * full channel design.
+ */
+export interface ApprovalsConfig {
+  /**
+   * Origins allowed to decide a pending approval through `POST
+   * /approvals/:id/decision` (in addition to the daemon's own per-boot
+   * bearer token, which is ALWAYS required on that route regardless of
+   * this list). Default empty — `web_click` is OFF until at least one
+   * origin is configured. Lockout-shaped like `daemon.allowedOrigins`,
+   * but a SEPARATE list: the general browser-origin allowlist is not
+   * automatically trusted to decide approvals.
+   */
+  webOrigins?: string[]
+}
+
+/**
  * Sentinel auto-link policy (AIP-60 §6, step 4) — whether a PR an executor
  * session opens gets a sentinel created for it automatically.
  */
@@ -552,6 +570,8 @@ export interface AgentprotoConfig {
   sessions?: SessionsConfig
   /** Provenance policy — the opt-in `gh` PATH shim. See {@link ProvenanceConfig}. */
   provenance?: ProvenanceConfig
+  /** Approvals policy — the `web_click` origin allowlist. See {@link ApprovalsConfig}. */
+  approvals?: ApprovalsConfig
   /** Sentinel auto-link policy. See {@link SentinelConfig}. */
   sentinel?: SentinelConfig
   /** Review-primitive host policy. See {@link ReviewConfig}. */

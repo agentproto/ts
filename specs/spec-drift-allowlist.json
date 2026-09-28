@@ -1,0 +1,140 @@
+{
+  "description": "Known, pending-spec drift: fields already shipped in ts's vendored copy of an AIP JSON Schema (specs/resources/) that the canonical spec at agentproto/agentproto hasn't ratified yet. `scripts/sync-specs.mjs --check` masks exactly these fields before diffing the vendored tree against canonical, so the gate stays green for KNOWN, deliberate drift and fails on anything new or unaccounted for. It also asserts every entry below is still PRESENT (and, when a canonical checkout is available, still meaningfully different from canonical) in the vendored copy — so a careless resync can't silently drop one of these fields without the gate noticing. `field` is a dot path into the parsed JSON Schema (e.g. `$defs.stepTool.properties.cacheable`). Each entry is a candidate upstream spec PR; remove it here once that PR merges and a real `sync-specs` run brings the field in from canonical.",
+  "entries": [
+    {
+      "file": "aip-5/draft/TEMPLATE.schema.json",
+      "field": "$defs.sourceFile.properties.workspace",
+      "reason": "Resolve a template output path against a named workspace instead of the render filesystem — shipped in @agentproto/canvakit."
+    },
+    {
+      "file": "aip-5/draft/TEMPLATE.schema.json",
+      "field": "$defs.sourceQuery.properties.workspace",
+      "reason": "Same cross-workspace resolution, for the glob/query source form."
+    },
+    {
+      "file": "aip-15/draft/WORKFLOW.schema.json",
+      "field": "properties.routines",
+      "reason": "AIP-41 ROUTINE.md routines[] that fire a workflow — the decoupled alternative to a kind:schedule trigger, shipped in @agentproto/workflow."
+    },
+    {
+      "file": "aip-15/draft/WORKFLOW.schema.json",
+      "field": "$defs.routineRef",
+      "reason": "Supporting $def for properties.routines (ref | file | inline)."
+    },
+    {
+      "file": "aip-15/draft/WORKFLOW.schema.json",
+      "field": "$defs.stepTool.properties.cacheable",
+      "reason": "Cache a tool step's output under the run's cacheKey, shipped in @agentproto/workflow-runtime."
+    },
+    {
+      "file": "aip-15/draft/WORKFLOW.schema.json",
+      "field": "$defs.stepBranch.properties.join",
+      "reason": "Exclusive-branch join target (F22 branch semantics), shipped in @agentproto/workflow-runtime."
+    },
+    {
+      "file": "aip-15/draft/WORKFLOW.schema.json",
+      "field": "$defs.stepBranch.properties.fallthrough",
+      "reason": "Legacy non-exclusive branch semantics, kept for back-compat during the F22 exclusive-branch migration."
+    },
+    {
+      "file": "aip-16/draft/IO.schema.json",
+      "field": "$defs.fileContractEntry.properties.required",
+      "reason": "AIP-58 amendment: a missing required output artifact fails the run (step.skipped/artifact contract work, P1-P4)."
+    },
+    {
+      "file": "aip-36/draft/SANDBOX.schema.json",
+      "field": "properties.config",
+      "reason": "config.properties.installAdapters — semantic harness slugs to pre-install at sandbox boot, shipped in @agentproto/sandbox. (Masking the whole config object: canonical's config has no properties/additionalProperties wrapper at all, only { type, description }.)"
+    },
+    {
+      "file": "aip-36/draft/SANDBOX.schema.json",
+      "field": "properties.env.properties.autoPassthrough",
+      "reason": "Opt-in billing-credential env passthrough into a fresh box, shipped in @agentproto/sandbox."
+    },
+    {
+      "file": "aip-36/draft/SANDBOX.schema.json",
+      "field": "properties.join",
+      "reason": "Auto-join wiring for sandbox host auto-registration (#1517)."
+    },
+    {
+      "file": "aip-36/draft/SANDBOX.schema.json",
+      "field": "properties.extraPorts",
+      "reason": "Port-exposure API — app ports to expose at boot (#1147)."
+    },
+    {
+      "file": "aip-44/draft/ACP.schema.json",
+      "field": "$defs.aip44Extensions.properties.mcp_servers.items.properties.args",
+      "reason": "stdio MCP server argv, carried through to session/new (#1406)."
+    },
+    {
+      "file": "aip-44/draft/ACP.schema.json",
+      "field": "$defs.aip44Extensions.properties.mcp_servers.items.properties.env",
+      "reason": "stdio MCP server env, carried through to session/new (#1406)."
+    },
+    {
+      "file": "aip-45/draft/AGENT-CLI.schema.json",
+      "field": "properties.env",
+      "reason": "Static always-on env vars for a generic ACP agent adapter, merged before mode/option env."
+    },
+    {
+      "file": "aip-45/draft/AGENT-CLI.schema.json",
+      "field": "properties.presets",
+      "reason": "Adapter-contributed gateway presets merged into the provider-preset catalog."
+    },
+    {
+      "file": "aip-45/draft/AGENT-CLI.schema.json",
+      "field": "$defs.preset",
+      "reason": "Supporting $def for properties.presets."
+    },
+    {
+      "file": "aip-45/draft/AGENT-CLI.schema.json",
+      "field": "$defs.models.properties.allowed",
+      "reason": "Richer allowed-model entries ({id, provider?, mode?}) alongside bare id strings, not just bare strings."
+    },
+    {
+      "file": "aip-45/draft/AGENT-CLI.schema.json",
+      "field": "$defs.mode.properties.kind",
+      "reason": "Session-config axis tag ('context') on a mode."
+    },
+    {
+      "file": "aip-45/draft/AGENT-CLI.schema.json",
+      "field": "$defs.mode.properties.bin_args_prepend",
+      "reason": "Argv prepended (vs. only appended) before the manifest's bin_args when a mode is active."
+    },
+    {
+      "file": "aip-45/draft/AGENT-CLI.schema.json",
+      "field": "$defs.option.properties.bin_args_prepend",
+      "reason": "Same prepend addition, for options."
+    },
+    {
+      "file": "aip-45/draft/AGENT-CLI.schema.json",
+      "field": "$defs.mode.properties.env_unset",
+      "reason": "Delete env keys when a mode is active, to scrub a credential a gateway mode must not leak."
+    },
+    {
+      "file": "aip-45/draft/AGENT-CLI.schema.json",
+      "field": "$defs.option.properties.env_unset",
+      "reason": "Same env-scrub addition, for options."
+    },
+    {
+      "file": "aip-45/draft/AGENT-CLI.schema.json",
+      "field": "$defs.mode.properties.status",
+      "reason": "Honest support-status surfaced to clients (active/noop/planned)."
+    },
+    {
+      "file": "aip-45/draft/AGENT-CLI.schema.json",
+      "field": "$defs.mode.properties.status_note",
+      "reason": "Human-readable reason backing status."
+    },
+    {
+      "file": "aip-58/draft/event.schema.json",
+      "field": "$defs.eventType",
+      "reason": "step.skipped event for a step in an untaken AIP-15 exclusive-branch arm (F22)."
+    },
+    {
+      "file": "aip-58/draft/run.schema.json",
+      "field": "$defs.stepRecord.properties.status",
+      "reason": "'skipped' StepRecord status, paired with the step.skipped event (F22)."
+    }
+  ]
+}

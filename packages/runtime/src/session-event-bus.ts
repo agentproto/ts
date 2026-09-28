@@ -54,6 +54,10 @@ export type SessionEventType =
   | "workflow:suspended"
   | "workflow:suspend-resumed"
   | "session:harness-warning"
+  | "approval:requested"
+  | "approval:decided"
+  | "approval:consumed"
+  | "approval:expired"
 
 /**
  * Fixed severity vocabulary for a judge-gate finding (WP-D). Deliberately
@@ -887,6 +891,58 @@ export interface SessionHarnessWarningEvent {
   ts: string
 }
 
+/**
+ * Emitted by the approvals engine (`approvals/engine.ts`) when an
+ * `approval_request` (MCP or `POST /approvals`) raises a new pending
+ * approval. `taskId` is present when the request is linked to a task —
+ * the task ledger uses it for nothing (linking already happened
+ * synchronously at request time via `TaskLedger.linkApproval`); it rides
+ * here purely for a listener's convenience.
+ */
+export interface ApprovalRequestedEvent {
+  type: "approval:requested"
+  approvalId: string
+  kind: string
+  taskId?: string
+  ts: string
+}
+
+/**
+ * Emitted once a human decides a pending approval through a declared
+ * channel (`web_click`, `ui_card`) — never for anything else. The task
+ * ledger subscribes to this: a task in `awaiting_approval` whose
+ * `approvalIds` contains `approvalId` moves to `in_progress` on
+ * `decision:"approved"`, or `cancelled` (`meta.reason:"denied"`) on
+ * `decision:"denied"`.
+ */
+export interface ApprovalDecidedEvent {
+  type: "approval:decided"
+  approvalId: string
+  decision: "approved" | "denied"
+  channel: "web_click" | "ui_card"
+  taskId?: string
+  ts: string
+}
+
+/** Emitted when `approval_consume` (or its HTTP twin) atomically consumes
+ *  an approved approval — the gated action is now cleared to run exactly
+ *  once. */
+export interface ApprovalConsumedEvent {
+  type: "approval:consumed"
+  approvalId: string
+  taskId?: string
+  ts: string
+}
+
+/** Emitted when a pending approval's `expiresAt` (or its owning task's end)
+ *  lapses before a human decided. */
+export interface ApprovalExpiredEvent {
+  type: "approval:expired"
+  approvalId: string
+  taskId?: string
+  ts: string
+}
+
 export type SessionEvent =
   | SessionTurnEndEvent
   | SessionAwaitingInputEvent
@@ -928,6 +984,10 @@ export type SessionEvent =
   | WorkflowSuspendedEvent
   | WorkflowSuspendResumedEvent
   | SessionHarnessWarningEvent
+  | ApprovalRequestedEvent
+  | ApprovalDecidedEvent
+  | ApprovalConsumedEvent
+  | ApprovalExpiredEvent
 
 export interface SessionEventBus {
   emit(ev: SessionEvent): void
