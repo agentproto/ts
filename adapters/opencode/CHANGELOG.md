@@ -1,5 +1,11 @@
 # @agentproto/adapter-opencode
 
+## 1.5.0
+
+### Minor Changes
+
+- a3ec1d6: Add capability bundles (bundle_list/create/update/delete, /mcp/imported/<id> passthrough), agent_start.daemonMount, and opencode install-mcp/skills support
+
 ## 1.4.0
 
 ### Minor Changes
