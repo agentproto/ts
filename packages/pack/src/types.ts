@@ -1,5 +1,5 @@
 /**
- * AIP-52 PackDefinition + PackHandle.
+ * PackDefinition + PackHandle (unassigned AIP — no spec written yet).
  *
  * A pack is the distributable bundle: a plugin (inline skills or a merge
  * of published skill packs), zero or more apps, a knowledge workspace
@@ -11,7 +11,7 @@
  */
 
 /**
- * AIP-52 PACK.md bundle: plugin + apps + knowledge + playbook.
+ * PACK.md bundle: plugin + apps + knowledge + playbook.
  */
 export type PackDefinition = {
   schema: "pack/v1"

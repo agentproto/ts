@@ -3,7 +3,9 @@ import { packFrontmatterSchema } from "./schema.js"
 import type { PackDefinition, PackHandle, PackStatus } from "./types.js"
 
 /**
- * AIP-52 reference implementation of `definePack`.
+ * Reference implementation of `definePack` (PACK.md — unassigned AIP,
+ * no spec written yet; see the `aip:` field below for why the error
+ * prefix still reads "AIP-52").
  *
  * Built on `createDoctype` so the cross-AIP invariants (id pattern,
  * description length, top-level freeze, "definePack (AIP-52): …"
@@ -20,6 +22,12 @@ import type { PackDefinition, PackHandle, PackStatus } from "./types.js"
  *   readDescription: def.description.
  */
 export const definePack = createDoctype<PackDefinition, PackHandle>({
+  // NOT a real AIP-52 claim — AIP-52 is ADAPTER (agentadapter/v1,
+  // @agentproto/mastra). PACK.md has no AIP number assigned; there is
+  // no collision (ADAPTER is a code contract, not a createDoctype
+  // registrant) and nothing else keys off this number, but there's
+  // also no real number to put here instead. Left as-is pending a
+  // decision — see the PR that introduced this comment.
   aip: 52,
   name: "pack",
   readIdentity: (def) => def.name,

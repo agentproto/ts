@@ -3,7 +3,7 @@ import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 export default createTsupConfig({
   banner: `/**
  * @agentproto/pack v0.1.0
- * AIP-52 PACK.md \`definePack\` reference implementation.
+ * PACK.md \`definePack\` reference implementation (unassigned AIP).
  */`,
   entry: {
     index: "src/index.ts",
