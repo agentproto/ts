@@ -47,12 +47,26 @@ export interface SessionOutcomeLink {
 }
 
 export interface SessionOutcome {
-  /** Level 1 only ever writes `"derived"`; a declared outcome (Level 2) is a
-   *  later addition. */
-  source: "derived"
+  /** Level 1 (`deriveSessionOutcome`) only ever writes `"derived"` — what an
+   *  ended session produced, with zero agent/human cooperation. Level 2 adds
+   *  `"judged"` (a judge agent decided the verdict, `judgedBy` names the
+   *  judge session) and `"declared"` (a deterministic rule or an operator
+   *  declared it, `judgedBy` is `"steward-rules"` or absent). See
+   *  `registry.closeWithOutcome`. */
+  source: "derived" | "judged" | "declared"
   /** `produced` — the session said something or left an artifact;
    *  `empty` — no assistant text and no artifacts. */
   status: "produced" | "empty"
+  /** Level 2 only: what a judge/declaration decided the session's work
+   *  amounted to. Absent on a plain Level 1 `"derived"` outcome. */
+  verdict?: "done" | "abandoned" | "blocked" | "needs-input"
+  /** Level 2 only: who reached `verdict` — a session id (a judge agent) or
+   *  the literal `"steward-rules"` for a deterministic close with no judge
+   *  in the loop. Absent on a plain Level 1 `"derived"` outcome. */
+  judgedBy?: string
+  /** Level 2 only: free-text note from the judge/declaration explaining
+   *  `verdict` — never populated by `deriveSessionOutcome` itself. */
+  note?: string
   /** Last assistant message of the session, trimmed to
    *  {@link OUTCOME_SUMMARY_MAX} chars (the TAIL is kept — the conclusion,
    *  not the preamble). Absent when the session never said anything. */
