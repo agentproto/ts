@@ -12,9 +12,9 @@
  *   - `KNOWN_TRANSPARENT_PROVIDERS` / `parseTransparentModel` client-facing parsing
  */
 import { describe, expect, it } from "vitest"
-import { definePack } from "../pack.js"
+import { defineRoutingPack } from "../pack.js"
 import { resolve } from "../resolve.js"
-import type { Pack, Route } from "../types.js"
+import type { Route, RoutingPack } from "../types.js"
 
 // packs.ts's ModelRoute carries verified-capability fields beyond the AIP-57
 // base Route — exactly the extension point §1 calls out ("Implementations
@@ -25,7 +25,7 @@ interface LlmEndpointRoute extends Route {
   maxOutputTokens?: number
 }
 
-const anthropicPack = definePack<
+const anthropicPack = defineRoutingPack<
   "claude-opus-4-8" | "claude-sonnet-5" | "claude-haiku-4-5" | "claude-fable-5",
   LlmEndpointRoute
 >({
@@ -42,7 +42,7 @@ const anthropicPack = definePack<
   },
 })
 
-const xaiPack = definePack<"grok-4.5" | "grok-4.3", LlmEndpointRoute>({
+const xaiPack = defineRoutingPack<"grok-4.5" | "grok-4.3", LlmEndpointRoute>({
   id: "xai",
   label: "xAI (Grok)",
   keyspace: "model",
@@ -55,16 +55,16 @@ const xaiPack = definePack<"grok-4.5" | "grok-4.3", LlmEndpointRoute>({
 // PACK_REGISTRY was a plain `Record<string, ModelPack>` — nothing in AIP-57's
 // four primitives needs to own that; a registry-of-packs is just host-level
 // indexing, so this is exactly what a consumer writes, unassisted. Widened to
-// `Pack<string, LlmEndpointRoute>` because a registry mixes packs whose
+// `RoutingPack<string, LlmEndpointRoute>` because a registry mixes packs whose
 // keyspaces (the literal model codes) legitimately differ pack to pack.
-const PACK_REGISTRY: Record<string, Pack<string, LlmEndpointRoute>> = {
+const PACK_REGISTRY: Record<string, RoutingPack<string, LlmEndpointRoute>> = {
   [anthropicPack.id]: anthropicPack,
   [xaiPack.id]: xaiPack,
 }
 const DEFAULT_PACK_ID = "anthropic"
 
 /** Mirrors `resolvePack` from packs.ts — a 3-line host lookup, not a library primitive. */
-function resolvePack(packId: string | null | undefined): Pack<string, LlmEndpointRoute> {
+function resolvePack(packId: string | null | undefined): RoutingPack<string, LlmEndpointRoute> {
   const id = packId ?? DEFAULT_PACK_ID
   const pack = PACK_REGISTRY[id]
   if (!pack) throw new RangeError(`Unknown pack id: "${id}". Available: ${Object.keys(PACK_REGISTRY).join(", ")}`)

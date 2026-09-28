@@ -6,7 +6,7 @@
  * itself MUST NOT be retained (§5 Security Considerations).
  */
 
-import type { Chain, ChainResolution, Layer, Pack, ResolvedRoute, Route, RoutableRequest } from "./types.js"
+import type { Chain, ChainResolution, Layer, ResolvedRoute, Route, RoutableRequest, RoutingPack } from "./types.js"
 import { resolve } from "./resolve.js"
 
 /**
@@ -76,10 +76,10 @@ export function defineChain(chain: Chain, chainIds: ReadonlySet<string> | readon
  * one (§5) — returns `null`, never throws; an empty chain is a runtime
  * condition (every candidate currently gated off), not a config error.
  *
- * Kept independent of {@link Pack} / {@link resolve} so a host can bind
+ * Kept independent of {@link RoutingPack} / {@link resolve} so a host can bind
  * `isResolvable` to whatever "is this ref a real, currently-enabled route"
- * means for it. {@link resolveThroughChain} is the `Pack`-bound convenience
- * built on top.
+ * means for it. {@link resolveThroughChain} is the `RoutingPack`-bound
+ * convenience built on top.
  */
 export function resolveChain(
   chain: Chain,
@@ -95,7 +95,7 @@ export function resolveChain(
 }
 
 /**
- * Resolve a chain through a {@link Pack}: a ref is resolvable when it is a
+ * Resolve a chain through a {@link RoutingPack}: a ref is resolvable when it is a
  * key of `pack` and {@link resolve} against it (through `layers`) is not
  * gated to `null`. Reattaches the served identity onto the returned
  * {@link ResolvedRoute} exactly once (§5): `key` is the real served key
@@ -106,7 +106,7 @@ export function resolveChain(
  */
 export function resolveThroughChain<Key extends string, R extends Route = Route>(
   chain: Chain,
-  pack: Pack<Key, R>,
+  pack: RoutingPack<Key, R>,
   req: RoutableRequest,
   layers: readonly Layer<Key, R>[] = []
 ): ResolvedRoute<R> | null {

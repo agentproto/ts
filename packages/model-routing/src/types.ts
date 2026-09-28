@@ -12,7 +12,7 @@
  *
  * Implementations MAY carry verified capability metadata alongside a Route
  * (context window, max output tokens, …) by extending this interface — see
- * the generic `R extends Route` parameter threaded through {@link Pack},
+ * the generic `R extends Route` parameter threaded through {@link RoutingPack},
  * {@link Layer} and {@link ResolvedRoute}. Per §1, such fields MUST be
  * absent rather than guessed when unverified.
  */
@@ -39,7 +39,7 @@ export interface Route {
 /** A Route, or `null` to declare a key explicitly unavailable (§4). */
 export type RouteOrGate = Route | null
 
-// ── Pack (§2) ────────────────────────────────────────────────────────────
+// ── RoutingPack (§2) ─────────────────────────────────────────────────────
 
 /**
  * `"model"` and `"role"` are reserved keyspace names; others MAY be
@@ -54,7 +54,7 @@ export type Keyspace = "model" | "role" | (string & {})
  * the `Key` union to be present, so an incomplete pack is a compile error,
  * not a runtime lookup miss. Absence and `null` are not synonyms — see §4.
  */
-export interface Pack<Key extends string = string, R extends Route = Route> {
+export interface RoutingPack<Key extends string = string, R extends Route = Route> {
   id: string
   label: string
   description?: string
@@ -62,6 +62,9 @@ export interface Pack<Key extends string = string, R extends Route = Route> {
   keyspace: Keyspace
   routes: Readonly<Record<Key, R | null>>
 }
+
+/** @deprecated Use {@link RoutingPack}. Kept for `@agentproto/model-routing` consumers still on the old name. */
+export type Pack<Key extends string = string, R extends Route = Route> = RoutingPack<Key, R>
 
 // ── Layers and resolution (§3, §4) ──────────────────────────────────────
 

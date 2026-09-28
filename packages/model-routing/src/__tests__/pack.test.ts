@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest"
-import { definePack, overlay } from "../pack.js"
+import { definePack, defineRoutingPack, overlay } from "../pack.js"
 
-describe("definePack", () => {
+describe("defineRoutingPack", () => {
   it("is total over its keyspace — every declared key has a Route or an explicit null", () => {
-    const pack = definePack({
+    const pack = defineRoutingPack({
       id: "p",
       label: "P",
       keyspace: "role",
@@ -15,10 +15,14 @@ describe("definePack", () => {
     expect(pack.routes.triage).toEqual({ model: "haiku" })
     expect(pack.routes.deepThink).toBeNull()
   })
+
+  it("definePack is a deprecated alias of defineRoutingPack", () => {
+    expect(definePack).toBe(defineRoutingPack)
+  })
 })
 
 describe("overlay", () => {
-  const base = definePack({
+  const base = defineRoutingPack({
     id: "base",
     label: "Base",
     keyspace: "model",
@@ -48,7 +52,7 @@ describe("overlay", () => {
     expect(patched.keyspace).toBe("model")
   })
 
-  it("can gate a key via overlay too — an overlay entry is just another Pack entry", () => {
+  it("can gate a key via overlay too — an overlay entry is just another RoutingPack entry", () => {
     const patched = overlay(base, {
       id: "gated",
       label: "Gated",

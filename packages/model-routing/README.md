@@ -14,8 +14,8 @@ Reference implementation of **AIP-57 — MODEL-ROUTING**, described at
 A pure, I/O-free primitive for resolving an AIP-42 `ModelRef` that is not a
 literal provider/model pair to a concrete served model:
 
-- **Pack** (§2) — a named, TOTAL map from a declared keyspace to a `Route`
-  (or `null`).
+- **RoutingPack** (§2) — a named, TOTAL map from a declared keyspace to a
+  `Route` (or `null`).
 - **Layers** (§3, §4) — `override > env > pack` precedence, always reporting
   which layer won a given resolution.
 - **Null-as-gate** (§4) — `null` explicitly disables a key; a lower layer's
@@ -31,9 +31,9 @@ literal provider/model pair to a concrete served model:
 No I/O, no clock, no randomness (§7).
 
 ```ts
-import { definePack, resolve, envLayer } from "@agentproto/model-routing"
+import { defineRoutingPack, resolve, envLayer } from "@agentproto/model-routing"
 
-const pack = definePack({
+const pack = defineRoutingPack({
   id: "default",
   label: "Default",
   keyspace: "model",
@@ -47,6 +47,11 @@ const env = envLayer(process.env, ["fast", "smart"])
 const resolved = resolve(pack, "fast", [env])
 // resolved.source tells you which layer won: "override" | "env" | "pack"
 ```
+
+> `definePack` / `Pack` (this package's original names, before they were
+> renamed to `defineRoutingPack` / `RoutingPack` to stop colliding with the
+> unrelated `definePack` in `@agentproto/pack`, AIP-52) still work as
+> deprecated aliases.
 
 ## Chains (sticky selection)
 
