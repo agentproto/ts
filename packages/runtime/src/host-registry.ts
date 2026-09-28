@@ -37,16 +37,26 @@
  *
  * ## Online tracking
  *
- * `isOnline(fingerprint)` mirrors `PairingRegistry.isOnline`: it's true only
- * while a `forwardHttp()` call for that fingerprint is in flight (a
- * reference count, incremented on dial and decremented in a `finally`).
- * There is no live probe backing `list()` — that would make `devices list`
- * slow/flaky over N hosts — so `list()`'s `online` is only ever true
- * immediately after (or during) an actual `forwardHttp`/`devices status`
- * call, never a background heartbeat. That's enough to make `devices list`
- * show the right thing right after `devices status`/`exec`, which is what
- * matters for this PR; a standing/autoconnect host connection with a real
- * liveness signal is PR-D's to build.
+ * `isOnline(fingerprint)` is true while a `forwardHttp()` call for that
+ * fingerprint is in flight (a reference count, incremented on dial and
+ * decremented in a `finally`), OR within `onlineGraceMs` of the last time a
+ * dial to it actually succeeded (an `add()` handshake, a `forwardHttp`, or a
+ * background snapshot poll). There is no live probe backing `list()` — that
+ * would make `devices list` slow/flaky over N hosts — so a host answering
+ * every ~15s snapshot poll stays online, and one that stops answering
+ * decays to offline after the grace window.
+ *
+ * ## Proactive session snapshots
+ *
+ * A join-token-added host (an ephemeral CI runner) lives ~3 minutes, far
+ * shorter than anyone watches it. So from the moment such a host joins, this
+ * registry polls it (`snapshotIntervalMs`, faster while one of its sessions
+ * is running) for its session list plus a capped output tail per session and
+ * keeps the result in memory. Once the host is offline, `getSessionsSnapshot`
+ * serves that — `stale: true` with the capture time. The loop stops after
+ * `snapshotMaxFailures` consecutive unreachable polls and keeps the last
+ * good capture. `snapshotNow()` lets a departing host trigger one last
+ * capture (see `join-token-registry.ts`'s goodbye hello).
  */
 
 import { mkdir, readFile, writeFile, chmod, rename } from "node:fs/promises"
@@ -86,6 +96,19 @@ const DEFAULT_JOINED_HOST_TTL_MS = 7 * 86_400_000
  *  for a host with many short-lived sessions; oldest-cached path evicted
  *  first. */
 const MAX_CACHED_SESSION_PATHS_PER_HOST = 32
+/** How long after the last successful dial a host still reads `online`. */
+const DEFAULT_ONLINE_GRACE_MS = 45_000
+/** Minimum gap between `hosts.json` writes for a pure `lastSeen` bump. */
+const DEFAULT_LAST_SEEN_PERSIST_MS = 30_000
+const DEFAULT_SNAPSHOT_INTERVAL_MS = 15_000
+/** Poll cadence while any snapshotted session is `running`/`starting`. */
+const DEFAULT_SNAPSHOT_ACTIVE_INTERVAL_MS = 5_000
+const DEFAULT_SNAPSHOT_MAX_FAILURES = 3
+const SNAPSHOT_REQUEST_TIMEOUT_MS = 10_000
+/** Output lines captured per session (the daemon's own `lastN` ceiling is 500). */
+const SNAPSHOT_OUTPUT_LINES = 200
+/** Sessions captured per host, most recently active first. */
+const SNAPSHOT_MAX_SESSIONS = 20
 /** Cap on a single cached response body — `device_sessions`'s own `lastN`
  *  already caps line count (max 500), so this is a defensive ceiling, not
  *  the primary control. */
@@ -180,6 +203,18 @@ export interface HostRegistryDeps {
    * field existed) is NEVER pruned, regardless of this setting.
    */
   joinedHostTtlMs?: number
+  /** Cadence (ms) of the proactive session snapshot poll for a join-added
+   *  host. Default 15s; `0` disables the poll (and `snapshotNow` becomes a
+   *  no-op that returns false). */
+  snapshotIntervalMs?: number
+  /** Faster cadence used while a snapshotted session is running. Default 5s. */
+  snapshotActiveIntervalMs?: number
+  /** Consecutive unreachable polls before the loop gives up. Default 3. */
+  snapshotMaxFailures?: number
+  /** A host stays `online` for this long after a successful dial. Default 45s. */
+  onlineGraceMs?: number
+  /** Min gap between disk writes for a `lastSeen`-only change. Default 30s. */
+  lastSeenPersistIntervalMs?: number
 }
 
 export interface ForwardHttpRequest {
@@ -208,6 +243,22 @@ export interface ForwardHttpResponse {
 interface CachedForwardHttpResponse extends ForwardHttpResponse {
   stale: true
   capturedAt: string
+}
+
+/** One session's captured output tail — the parsed `GET /sessions/:id/output`
+ *  body (`{ sessionId, status, lines, … }`). */
+interface CapturedOutput {
+  capturedAt: string
+  body: Record<string, unknown> & { lines: string[] }
+}
+
+/** A proactive capture of a host's sessions (see the module doc). */
+interface HostSnapshot {
+  capturedAt: string
+  listStatus: number
+  listHeaders: Record<string, string>
+  listBody: Uint8Array
+  outputs: Map<string, CapturedOutput>
 }
 
 /** Streaming counterpart of {@link ForwardHttpResponse} — `body` is a Web
@@ -275,6 +326,13 @@ export interface HostRegistry {
    * why that's an acceptable trade here.
    */
   getSessionsSnapshot(idOrName: string, path: string): ForwardHttpResponse | undefined
+  /**
+   * Capture this host's session list + output tails right now (the same
+   * capture the background poll takes). Resolves true when the host was
+   * reached. Never throws; false for an unknown host, an unreachable one, or
+   * when snapshots are disabled.
+   */
+  snapshotNow(idOrName: string): Promise<boolean>
 }
 
 function defaultHostsPath(): string {
@@ -314,6 +372,14 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
   const dialTimeoutMs = deps.dialTimeoutMs ?? DIAL_TIMEOUT_MS
   const handshakeTimeoutMs = deps.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS
   const joinedHostTtlMs = deps.joinedHostTtlMs ?? DEFAULT_JOINED_HOST_TTL_MS
+  const snapshotIntervalMs = deps.snapshotIntervalMs ?? DEFAULT_SNAPSHOT_INTERVAL_MS
+  const snapshotActiveIntervalMs = Math.min(
+    deps.snapshotActiveIntervalMs ?? DEFAULT_SNAPSHOT_ACTIVE_INTERVAL_MS,
+    snapshotIntervalMs > 0 ? snapshotIntervalMs : Infinity,
+  )
+  const snapshotMaxFailures = deps.snapshotMaxFailures ?? DEFAULT_SNAPSHOT_MAX_FAILURES
+  const onlineGraceMs = deps.onlineGraceMs ?? DEFAULT_ONLINE_GRACE_MS
+  const lastSeenPersistIntervalMs = deps.lastSeenPersistIntervalMs ?? DEFAULT_LAST_SEEN_PERSIST_MS
   const selfName = defaultSelfName()
 
   /** fingerprint → record. Source of truth in memory; disk is the mirror. */
@@ -324,6 +390,16 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
    *  → last successful GET response for that exact path. In-memory only,
    *  capped per host — see {@link cacheSessionsResponse}. */
   const sessionsCache = new Map<string, Map<string, CachedForwardHttpResponse>>()
+  /** fingerprint → ms of the last successful dial (`add`, `forwardHttp`, poll). */
+  const lastReachedAt = new Map<string, number>()
+  /** fingerprint → ms of the last disk write of a `lastSeen` bump. */
+  const lastSeenPersistedAt = new Map<string, number>()
+  /** fingerprint → proactive capture (see module doc). In-memory only. */
+  const snapshots = new Map<string, HostSnapshot>()
+  /** fingerprint → running background poll. */
+  const pollers = new Map<string, { timer: ReturnType<typeof setTimeout> | undefined; failures: number }>()
+  /** fingerprint → capture currently running, so concurrent callers share it. */
+  const snapshotsInFlight = new Map<string, Promise<boolean>>()
 
   let loaded = false
   async function ensureLoaded(): Promise<void> {
@@ -333,7 +409,15 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
       const raw = await readFile(hostsPath, "utf8")
       const parsed: unknown = JSON.parse(raw)
       if (isHostsFile(parsed)) {
-        for (const rec of parsed.hosts) hosts.set(rec.fingerprint, rec)
+        for (const rec of parsed.hosts) {
+          // Hosts a join token added before `addedVia` existed carry no
+          // marker. Adopt the unmistakable shape (default fingerprint name,
+          // no self-reported meta, never reached again since `add()`) as
+          // "join" so the TTL sweep covers them; a manually added host that
+          // was ever used has a moved `lastSeen` and stays "manual".
+          if (isLegacyJoinedShape(rec)) rec.addedVia = "join"
+          hosts.set(rec.fingerprint, rec)
+        }
       } else {
         log(`[hosts] ignoring ${hostsPath}: unrecognised format`)
       }
@@ -454,8 +538,12 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
       addedVia,
     }
     hosts.set(record.fingerprint, record)
+    lastReachedAt.set(record.fingerprint, now())
+    lastSeenPersistedAt.set(record.fingerprint, now())
     await persist()
     log(`[hosts] added ${record.fingerprint} (${record.name})`)
+    // First poll shortly after the join: the runner is only just starting its session.
+    if (addedVia === "join") startSnapshotPoller(record.fingerprint, snapshotActiveIntervalMs)
 
     // The add ceremony is one-shot — close the channel; `forwardHttp` dials
     // fresh, on demand, every time.
@@ -478,11 +566,20 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     }
     if (expired.length === 0) return
     for (const fp of expired) {
-      hosts.delete(fp)
-      sessionsCache.delete(fp)
+      forgetHost(fp)
       log(`[hosts] pruned ${fp}: joined host, unseen for over ${joinedHostTtlMs}ms`)
     }
     await persist()
+  }
+
+  /** Drop a host and everything derived from it in memory. */
+  function forgetHost(fingerprint: string): void {
+    hosts.delete(fingerprint)
+    sessionsCache.delete(fingerprint)
+    snapshots.delete(fingerprint)
+    lastReachedAt.delete(fingerprint)
+    lastSeenPersistedAt.delete(fingerprint)
+    stopSnapshotPoller(fingerprint)
   }
 
   async function list(): Promise<HostRecord[]> {
@@ -507,14 +604,29 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     await ensureLoaded()
     const target = findHost(idOrName)
     if (!target) return false
-    hosts.delete(target.fingerprint)
+    forgetHost(target.fingerprint)
     await persist()
     log(`[hosts] revoked ${target.fingerprint} (${target.name})`)
     return true
   }
 
   function isOnline(fingerprint: string): boolean {
-    return (onlineCounts.get(fingerprint) ?? 0) > 0
+    if ((onlineCounts.get(fingerprint) ?? 0) > 0) return true
+    const reached = lastReachedAt.get(fingerprint)
+    return reached !== undefined && now() - reached < onlineGraceMs
+  }
+
+  /** A dial to `record` just succeeded: it is online, and `lastSeen` moves.
+   *  The in-memory value is always current; the disk write is throttled so a
+   *  polled host doesn't rewrite `hosts.json` every few seconds. */
+  async function markReached(record: HostRecord): Promise<void> {
+    const t = now()
+    lastReachedAt.set(record.fingerprint, t)
+    record.lastSeen = new Date(t).toISOString()
+    const persistedAt = lastSeenPersistedAt.get(record.fingerprint)
+    if (persistedAt !== undefined && t - persistedAt < lastSeenPersistIntervalMs) return
+    lastSeenPersistedAt.set(record.fingerprint, t)
+    await persist().catch(err => log(`[hosts] lastSeen persist failed: ${errMsg(err)}`))
   }
 
   /**
@@ -555,8 +667,7 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
         )
         const client = createTunnelClient({ sink: wrapped })
         await client.ready()
-        record.lastSeen = new Date(now()).toISOString()
-        await persist().catch(err => log(`[hosts] lastSeen persist failed: ${errMsg(err)}`))
+        await markReached(record)
         return client
       } catch (err) {
         lastErr = err
@@ -629,9 +740,126 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
   function getSessionsSnapshot(idOrName: string, path: string): ForwardHttpResponse | undefined {
     const record = findHost(idOrName)
     if (!record) return undefined
-    const entry = sessionsCache.get(record.fingerprint)?.get(path)
+    const exact = sessionsCache.get(record.fingerprint)?.get(path)
+    const derived = deriveFromSnapshot(snapshots.get(record.fingerprint), path)
+    // Whichever capture is newer wins — a poll may be more recent than the
+    // last query someone happened to make, or the other way round.
+    const entry = derived && (!exact || Date.parse(derived.capturedAt) > Date.parse(exact.capturedAt)) ? derived : exact
     if (!entry) return undefined
     return { ...entry, headers: { ...entry.headers }, body: entry.body }
+  }
+
+  // ── proactive snapshots ────────────────────────────────────────
+
+  function stopSnapshotPoller(fingerprint: string): void {
+    const poller = pollers.get(fingerprint)
+    if (!poller) return
+    if (poller.timer) clearTimeout(poller.timer)
+    pollers.delete(fingerprint)
+  }
+
+  /** (Re)start the background poll for a host. A poll already running for it
+   *  is left alone — only its failure count resets, since the host just
+   *  proved reachable. */
+  function startSnapshotPoller(fingerprint: string, delayMs: number): void {
+    if (snapshotIntervalMs <= 0) return
+    const existing = pollers.get(fingerprint)
+    if (existing) {
+      existing.failures = 0
+      return
+    }
+    const poller: { timer: ReturnType<typeof setTimeout> | undefined; failures: number } = {
+      timer: undefined,
+      failures: 0,
+    }
+    pollers.set(fingerprint, poller)
+    const schedule = (ms: number): void => {
+      poller.timer = setTimeout(() => void tick(), ms)
+      if (typeof poller.timer.unref === "function") poller.timer.unref()
+    }
+    const tick = async (): Promise<void> => {
+      if (pollers.get(fingerprint) !== poller || !hosts.has(fingerprint)) return
+      const ok = await captureSnapshot(fingerprint).catch(() => false)
+      if (pollers.get(fingerprint) !== poller) return
+      poller.failures = ok ? 0 : poller.failures + 1
+      if (poller.failures >= snapshotMaxFailures) {
+        pollers.delete(fingerprint)
+        log(`[hosts] snapshot poll for ${fingerprint} stopped: unreachable ${poller.failures}x (last capture kept)`)
+        return
+      }
+      schedule(snapshotHasRunningSession(snapshots.get(fingerprint)) ? snapshotActiveIntervalMs : snapshotIntervalMs)
+    }
+    schedule(delayMs)
+  }
+
+  function captureSnapshot(fingerprint: string): Promise<boolean> {
+    const running = snapshotsInFlight.get(fingerprint)
+    if (running) return running
+    const run = doCaptureSnapshot(fingerprint).finally(() => snapshotsInFlight.delete(fingerprint))
+    snapshotsInFlight.set(fingerprint, run)
+    return run
+  }
+
+  async function doCaptureSnapshot(fingerprint: string): Promise<boolean> {
+    const record = hosts.get(fingerprint)
+    if (!record) return false
+    onlineCounts.set(fingerprint, (onlineCounts.get(fingerprint) ?? 0) + 1)
+    let client: TunnelClient | undefined
+    try {
+      client = await connectToHost(record)
+      const get = async (path: string): Promise<ForwardHttpResponse> => {
+        const res = await withTimeout(
+          client!.forwardHttp(toTunnelReq({ method: "GET", path })),
+          SNAPSHOT_REQUEST_TIMEOUT_MS,
+          `snapshot ${path}`,
+        )
+        return { status: res.status, headers: { ...res.headers }, body: new Uint8Array(res.body) }
+      }
+      const list = await get("/sessions")
+      if (list.status < 200 || list.status >= 300 || list.body.byteLength > MAX_CACHED_SESSION_BODY_BYTES) return true
+      const capturedAt = new Date(now()).toISOString()
+      const prior = snapshots.get(fingerprint)
+      const outputs = new Map<string, CapturedOutput>()
+      for (const id of pickSnapshotSessionIds(list.body)) {
+        try {
+          const out = await get(`/sessions/${encodeURIComponent(id)}/output?lastN=${SNAPSHOT_OUTPUT_LINES}`)
+          const parsed = out.status >= 200 && out.status < 300 ? parseOutputBody(out.body) : undefined
+          if (parsed) outputs.set(id, { capturedAt: new Date(now()).toISOString(), body: parsed })
+          else if (prior?.outputs.has(id)) outputs.set(id, prior.outputs.get(id)!)
+        } catch (err) {
+          // One session's tail failing (or the tunnel dropping mid-capture)
+          // must not discard the rest — keep whatever we had for it.
+          if (prior?.outputs.has(id)) outputs.set(id, prior.outputs.get(id)!)
+          log(`[hosts] snapshot of ${fingerprint} session ${id} failed: ${errMsg(err)}`)
+        }
+      }
+      snapshots.set(fingerprint, {
+        capturedAt,
+        listStatus: list.status,
+        listHeaders: list.headers,
+        listBody: list.body,
+        outputs,
+      })
+      return true
+    } finally {
+      if (client) await client.close().catch(() => {})
+      const remaining = (onlineCounts.get(fingerprint) ?? 1) - 1
+      if (remaining > 0) onlineCounts.set(fingerprint, remaining)
+      else onlineCounts.delete(fingerprint)
+    }
+  }
+
+  async function snapshotNow(idOrName: string): Promise<boolean> {
+    if (snapshotIntervalMs <= 0) return false
+    await ensureLoaded()
+    const record = findHost(idOrName)
+    if (!record) return false
+    try {
+      return await captureSnapshot(record.fingerprint)
+    } catch (err) {
+      log(`[hosts] snapshot of ${record.fingerprint} failed: ${errMsg(err)}`)
+      return false
+    }
   }
 
   async function forwardHttp(idOrName: string, req: ForwardHttpRequest): Promise<ForwardHttpResponse> {
@@ -704,6 +932,7 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     forwardHttp,
     forwardHttpStream,
     getSessionsSnapshot,
+    snapshotNow,
   }
 }
 
@@ -751,6 +980,124 @@ function wrapStreamWithCleanup(
 }
 
 // ── helpers ────────────────────────────────────────────────────
+
+/** See `ensureLoaded`: the shape of a host a join token added before
+ *  `HostRecord.addedVia` existed. */
+function isLegacyJoinedShape(rec: HostRecord): boolean {
+  return (
+    rec.addedVia === undefined &&
+    rec.name === rec.fingerprint &&
+    rec.provider === undefined &&
+    rec.sandboxId === undefined &&
+    rec.labels === undefined &&
+    rec.lastSeen === rec.createdAt
+  )
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${what} timed out after ${ms}ms`)), ms)
+    if (typeof timer.unref === "function") timer.unref()
+    p.then(
+      v => {
+        clearTimeout(timer)
+        resolve(v)
+      },
+      e => {
+        clearTimeout(timer)
+        reject(e)
+      },
+    )
+  })
+}
+
+function parseJsonBody(body: Uint8Array): unknown {
+  try {
+    return JSON.parse(Buffer.from(body).toString("utf8"))
+  } catch {
+    return undefined
+  }
+}
+
+function snapshotSessionRows(body: Uint8Array): Array<Record<string, unknown>> {
+  const parsed = parseJsonBody(body)
+  const rows = parsed !== null && typeof parsed === "object" ? (parsed as { sessions?: unknown }).sessions : undefined
+  return Array.isArray(rows)
+    ? rows.filter((r): r is Record<string, unknown> => r !== null && typeof r === "object")
+    : []
+}
+
+/** Ids of the sessions worth capturing output for: most recently active first,
+ *  capped at `SNAPSHOT_MAX_SESSIONS`. */
+function pickSnapshotSessionIds(listBody: Uint8Array): string[] {
+  const ts = (r: Record<string, unknown>): number => {
+    const v = r["lastActivityAt"] ?? r["startedAt"]
+    return typeof v === "string" ? Date.parse(v) || 0 : 0
+  }
+  return snapshotSessionRows(listBody)
+    .filter(r => typeof r["id"] === "string")
+    .sort((a, b) => ts(b) - ts(a))
+    .slice(0, SNAPSHOT_MAX_SESSIONS)
+    .map(r => r["id"] as string)
+}
+
+function snapshotHasRunningSession(snap: HostSnapshot | undefined): boolean {
+  if (!snap) return false
+  return snapshotSessionRows(snap.listBody).some(r => r["status"] === "running" || r["status"] === "starting")
+}
+
+function parseOutputBody(body: Uint8Array): CapturedOutput["body"] | undefined {
+  const parsed = parseJsonBody(body)
+  if (parsed === null || typeof parsed !== "object") return undefined
+  const rec = parsed as Record<string, unknown>
+  if (!Array.isArray(rec["lines"]) || !rec["lines"].every(l => typeof l === "string")) return undefined
+  return rec as CapturedOutput["body"]
+}
+
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\u001b\[[0-9;?]*[ -\/]*[@-~]|\u001b\][^\u0007]*\u0007/g
+
+/** Serve a `GET /sessions` or `GET /sessions/:id/output` request out of a
+ *  proactive capture. Only the plain forms are derivable (`/sessions` with no
+ *  query, output with `lastN`/`clean`); anything else (`?since=`, `?fields=`,
+ *  …) is left to the exact-path cache. */
+function deriveFromSnapshot(snap: HostSnapshot | undefined, path: string): CachedForwardHttpResponse | undefined {
+  if (!snap) return undefined
+  const q = path.indexOf("?")
+  const pathname = q === -1 ? path : path.slice(0, q)
+  const query = new URLSearchParams(q === -1 ? "" : path.slice(q + 1))
+  if (pathname === "/sessions") {
+    if ([...query.keys()].length > 0) return undefined
+    return {
+      status: snap.listStatus,
+      headers: { ...snap.listHeaders },
+      body: snap.listBody,
+      stale: true,
+      capturedAt: snap.capturedAt,
+    }
+  }
+  const m = pathname.match(/^\/sessions\/([^/]+)\/output$/)
+  if (!m) return undefined
+  const captured = snap.outputs.get(decodeURIComponent(m[1] ?? ""))
+  if (!captured) return undefined
+  for (const k of query.keys()) if (k !== "lastN" && k !== "clean") return undefined
+  const lastNRaw = Number(query.get("lastN") ?? "80")
+  const limit = Number.isInteger(lastNRaw) && lastNRaw >= 1 ? Math.min(lastNRaw, 500) : 80
+  const clean = ["1", "true"].includes(query.get("clean") ?? "")
+  let lines = captured.body.lines.slice(-limit)
+  if (clean) {
+    lines = lines
+      .map(l => l.replace(ANSI_RE, "").trimEnd())
+      .filter(l => l.trim().length > 0)
+  }
+  return {
+    status: 200,
+    headers: { "content-type": "application/json" },
+    body: new TextEncoder().encode(JSON.stringify({ ...captured.body, lines })),
+    stale: true,
+    capturedAt: captured.capturedAt,
+  }
+}
 
 function isHostsFile(v: unknown): v is HostsFile {
   if (typeof v !== "object" || v === null) return false

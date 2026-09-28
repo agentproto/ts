@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
-import { mkdtemp, rm, readFile, stat } from "node:fs/promises"
+import { mkdtemp, rm, readFile, stat, writeFile } from "node:fs/promises"
 import { randomBytes } from "node:crypto"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -99,6 +99,46 @@ async function runFakeDaemon(
   })
   if (!session) throw new Error("fake daemon: handshake did not complete")
   return session
+}
+
+/** `add()`'s handshake verifies the offer's one-time `auth`; every
+ *  later `forwardHttp()` reconnects on that pair's EPOCH tokens instead
+ *  (see `connectToHost`) — this fake daemon accepts both, exactly like
+ *  the "dials the current epoch" test above. */
+function makeEpochAwareDial(identity: DaemonIdentity, offerAuth: string) {
+  // `pairRootServer` must be captured ONCE, from `add()`'s own
+  // handshake session — same as a real daemon deriving it once at
+  // `add()` time and reusing it for every later epoch-token
+  // verification. Each `forwardHttp()` handshake below establishes its
+  // OWN fresh ephemeral session (new sendKey/recvKey), so re-deriving
+  // "the pair root" from THAT session on every call — instead of only
+  // the first — would silently diverge from `record.pairRoot` (fixed
+  // at `add()` time) the moment a second `forwardHttp()` runs.
+  let pairRootServer: string | null = null
+  const verifyAuthToken = async (token: string): Promise<boolean> => {
+    if (token === offerAuth) return true
+    if (!pairRootServer) return false
+    const epoch = currentEpoch()
+    for (const e of [epoch, epoch - 1]) {
+      if (token === (await deriveEpochTokens(pairRootServer, e)).auth) return true
+    }
+    return false
+  }
+  const dial = vi.fn(async () => {
+    const { a, b } = connect()
+    void runFakeDaemon(a, identity, verifyAuthToken).then(async session => {
+      if (pairRootServer === null) pairRootServer = await derivePairRoot(session)
+    })
+    return b
+  })
+  // The server-side `.then()` above (capturing `pairRootServer`) is a
+  // fire-and-forget promise, not awaited by `add()` itself — a test
+  // that dials `forwardHttp()` right after `add()` resolves can race
+  // ahead of it (exactly the race the "dials the current epoch" test
+  // above guards against with its own `vi.waitFor`). Callers here must
+  // await this before their first `forwardHttp()` call.
+  const waitReady = (): Promise<void> => vi.waitFor(() => expect(pairRootServer).not.toBeNull())
+  return { dial, waitReady }
 }
 
 describe("createHostRegistry", () => {
@@ -307,7 +347,8 @@ describe("createHostRegistry", () => {
         return b
       })
 
-      const registry = createHostRegistry({ hostsPath, dial, handshakeTimeoutMs: 2_000 })
+      // onlineGraceMs: 0 — this case pins the strictly in-flight half of isOnline.
+      const registry = createHostRegistry({ hostsPath, dial, handshakeTimeoutMs: 2_000, onlineGraceMs: 0 })
       await registry.add(url, "office-mac")
       // Let the add() handshake's fake daemon finish deriving pairRootServer.
       await vi.waitFor(() => expect(pairRootServer).not.toBeNull())
@@ -350,46 +391,6 @@ describe("createHostRegistry", () => {
   })
 
   describe("getSessionsSnapshot() (SANDBOX-VISIBILITY-JOIN #3)", () => {
-    /** `add()`'s handshake verifies the offer's one-time `auth`; every
-     *  later `forwardHttp()` reconnects on that pair's EPOCH tokens instead
-     *  (see `connectToHost`) — this fake daemon accepts both, exactly like
-     *  the "dials the current epoch" test above. */
-    function makeEpochAwareDial(identity: DaemonIdentity, offerAuth: string) {
-      // `pairRootServer` must be captured ONCE, from `add()`'s own
-      // handshake session — same as a real daemon deriving it once at
-      // `add()` time and reusing it for every later epoch-token
-      // verification. Each `forwardHttp()` handshake below establishes its
-      // OWN fresh ephemeral session (new sendKey/recvKey), so re-deriving
-      // "the pair root" from THAT session on every call — instead of only
-      // the first — would silently diverge from `record.pairRoot` (fixed
-      // at `add()` time) the moment a second `forwardHttp()` runs.
-      let pairRootServer: string | null = null
-      const verifyAuthToken = async (token: string): Promise<boolean> => {
-        if (token === offerAuth) return true
-        if (!pairRootServer) return false
-        const epoch = currentEpoch()
-        for (const e of [epoch, epoch - 1]) {
-          if (token === (await deriveEpochTokens(pairRootServer, e)).auth) return true
-        }
-        return false
-      }
-      const dial = vi.fn(async () => {
-        const { a, b } = connect()
-        void runFakeDaemon(a, identity, verifyAuthToken).then(async session => {
-          if (pairRootServer === null) pairRootServer = await derivePairRoot(session)
-        })
-        return b
-      })
-      // The server-side `.then()` above (capturing `pairRootServer`) is a
-      // fire-and-forget promise, not awaited by `add()` itself — a test
-      // that dials `forwardHttp()` right after `add()` resolves can race
-      // ahead of it (exactly the race the "dials the current epoch" test
-      // above guards against with its own `vi.waitFor`). Callers here must
-      // await this before their first `forwardHttp()` call.
-      const waitReady = (): Promise<void> => vi.waitFor(() => expect(pairRootServer).not.toBeNull())
-      return { dial, waitReady }
-    }
-
     it("caches a successful GET /sessions* forwardHttp response, keyed by exact path", async () => {
       const identity = await generateIdentity()
       const { url, auth, fingerprint } = await makeOffer(identity, { scope: "host" })
@@ -585,6 +586,253 @@ describe("createHostRegistry", () => {
     })
   })
 
+  describe("online, lastSeen and proactive snapshots (join visibility round 2)", () => {
+    /** Upstream whose /sessions and /sessions/:id/output answers can be
+     *  swapped between polls, like a runner mid-review. */
+    function stubSessions(state: { sessions: Array<Record<string, unknown>>; lines: Record<string, string[]> }): void {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: unknown) => {
+          const u = new URL(String(url))
+          const out = u.pathname.match(/^\/upstream\/sessions\/([^/]+)\/output$/)
+          const body = out
+            ? { sessionId: out[1], status: "running", lines: state.lines[out[1]!] ?? [] }
+            : { sessions: state.sessions }
+          return {
+            status: 200,
+            headers: { forEach: (cb: (v: string, k: string) => void) => cb("application/json", "content-type") },
+            arrayBuffer: async () => new TextEncoder().encode(JSON.stringify(body)).buffer,
+          }
+        }),
+      )
+    }
+
+    async function joinedHost(opts: Parameters<typeof createHostRegistry>[0] extends infer D ? Partial<D> : never = {}) {
+      const identity = await generateIdentity()
+      const { url, auth, fingerprint } = await makeOffer(identity, { scope: "host" })
+      const { dial, waitReady } = makeEpochAwareDial(identity, auth)
+      let clock = Date.now()
+      const registry = createHostRegistry({
+        hostsPath,
+        dial,
+        now: () => clock,
+        handshakeTimeoutMs: 2_000,
+        snapshotIntervalMs: 0,
+        ...opts,
+      })
+      await registry.add(url, "ci-reviewer #1553", { joined: true })
+      await waitReady()
+      return { registry, fingerprint, dial, advance: (ms: number) => (clock += ms) }
+    }
+
+    it("online: true right after a join and for the grace window after a successful forward, then decays", async () => {
+      const { registry, fingerprint, advance } = await joinedHost({ onlineGraceMs: 10_000 })
+      expect(registry.isOnline(fingerprint)).toBe(true) // the join handshake itself proved it reachable
+
+      advance(11_000)
+      expect(registry.isOnline(fingerprint)).toBe(false)
+
+      await registry.forwardHttp(fingerprint, { method: "GET", path: "/health" })
+      expect(registry.isOnline(fingerprint)).toBe(true)
+      advance(9_000)
+      expect(registry.isOnline(fingerprint)).toBe(true)
+      advance(2_000)
+      expect(registry.isOnline(fingerprint)).toBe(false)
+    })
+
+    it("a host that never connected (unknown fingerprint) is not online", async () => {
+      const registry = createHostRegistry({ hostsPath, dial: vi.fn() })
+      expect(registry.isOnline("nope")).toBe(false)
+    })
+
+    it("lastSeen moves on every successful forward (in memory) and is persisted at most once per throttle window", async () => {
+      const { registry, fingerprint, advance } = await joinedHost({ lastSeenPersistIntervalMs: 60_000 })
+      const created = (await registry.list())[0]!
+      expect(created.lastSeen).toBe(created.createdAt)
+
+      advance(5_000)
+      await registry.forwardHttp(fingerprint, { method: "GET", path: "/health" })
+      const afterFirst = (await registry.list())[0]!
+      expect(Date.parse(afterFirst.lastSeen)).toBe(Date.parse(created.createdAt) + 5_000)
+      // Throttled: within the window the disk copy still has the join-time value.
+      let file = JSON.parse(await readFile(hostsPath, "utf8"))
+      expect(file.hosts[0].lastSeen).toBe(created.lastSeen)
+
+      advance(61_000)
+      await registry.forwardHttp(fingerprint, { method: "GET", path: "/health" })
+      const afterSecond = (await registry.list())[0]!
+      expect(Date.parse(afterSecond.lastSeen)).toBe(Date.parse(afterFirst.lastSeen) + 61_000)
+      file = JSON.parse(await readFile(hostsPath, "utf8"))
+      expect(file.hosts[0].lastSeen).toBe(afterSecond.lastSeen)
+    })
+
+    it("snapshotNow captures the session list + output tails, served stale once the host is unreachable", async () => {
+      const state = {
+        sessions: [
+          { id: "sess_a", status: "running", lastActivityAt: "2026-09-28T20:00:00Z" },
+          { id: "sess_b", status: "exited", lastActivityAt: "2026-09-28T19:00:00Z" },
+        ],
+        lines: { sess_a: ["turn 1", "VERDICT: approve"], sess_b: ["old"] },
+      }
+      stubSessions(state)
+      const { registry, fingerprint, dial } = await joinedHost({ snapshotIntervalMs: 60_000 })
+
+      expect(await registry.snapshotNow(fingerprint)).toBe(true)
+
+      // The host is gone: every further dial fails.
+      dial.mockImplementation(async () => {
+        throw new Error("handshake timed out")
+      })
+      await expect(registry.forwardHttp(fingerprint, { method: "GET", path: "/sessions" })).rejects.toThrow(
+        /could not reach host/,
+      )
+
+      const list = registry.getSessionsSnapshot(fingerprint, "/sessions")
+      expect(list?.stale).toBe(true)
+      expect(typeof list?.capturedAt).toBe("string")
+      expect(JSON.parse(Buffer.from(list!.body).toString("utf8")).sessions.map((s: { id: string }) => s.id)).toEqual([
+        "sess_a",
+        "sess_b",
+      ])
+
+      // Output, both with and without the query the callers actually send
+      // (device_sessions with no lastN sends a bare trailing "?").
+      for (const path of ["/sessions/sess_a/output", "/sessions/sess_a/output?", "/sessions/sess_a/output?lastN=1"]) {
+        const out = registry.getSessionsSnapshot(fingerprint, path)
+        expect(out?.stale, path).toBe(true)
+        const body = JSON.parse(Buffer.from(out!.body).toString("utf8"))
+        expect(body.lines.at(-1)).toBe("VERDICT: approve")
+        if (path.endsWith("lastN=1")) expect(body.lines).toEqual(["VERDICT: approve"])
+      }
+      expect(registry.getSessionsSnapshot(fingerprint, "/sessions/sess_zzz/output")).toBeUndefined()
+    })
+
+    it("the background poll starts on join, takes a snapshot on its own, and stops after repeated unreachable polls", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+      try {
+        const state = {
+          sessions: [{ id: "sess_a", status: "running", lastActivityAt: "2026-09-28T20:00:00Z" }],
+          lines: { sess_a: ["working…"] },
+        }
+        stubSessions(state)
+        const { registry, fingerprint, dial } = await joinedHost({
+          snapshotIntervalMs: 15_000,
+          snapshotActiveIntervalMs: 5_000,
+          snapshotMaxFailures: 2,
+        })
+        // Nobody asked for anything — the first poll fires on its own, one
+        // active-interval after the join.
+        await vi.advanceTimersByTimeAsync(5_000)
+        await vi.waitFor(() => expect(registry.getSessionsSnapshot(fingerprint, "/sessions")).toBeDefined())
+
+        // A running session speeds the cadence up: the next poll is 5s out, and
+        // picks up new output.
+        state.lines["sess_a"] = ["working…", "VERDICT: approve"]
+        await vi.advanceTimersByTimeAsync(5_000)
+        await vi.waitFor(() => {
+          const out = registry.getSessionsSnapshot(fingerprint, "/sessions/sess_a/output")
+          expect(JSON.parse(Buffer.from(out!.body).toString("utf8")).lines).toContain("VERDICT: approve")
+        })
+
+        // The runner exits: polls fail, the loop gives up after 2 and keeps the last capture.
+        const dialsBefore = dial.mock.calls.length
+        dial.mockImplementation(async () => {
+          throw new Error("gone")
+        })
+        for (let i = 0; i < 6; i++) await vi.advanceTimersByTimeAsync(20_000)
+        const failedPolls = dial.mock.calls.length - dialsBefore
+        expect(failedPolls).toBeGreaterThanOrEqual(2)
+        expect(failedPolls).toBeLessThanOrEqual(4) // 2 polls x (current + previous epoch attempt)
+        const settled = dial.mock.calls.length
+        await vi.advanceTimersByTimeAsync(120_000)
+        expect(dial.mock.calls.length).toBe(settled)
+        expect(registry.getSessionsSnapshot(fingerprint, "/sessions/sess_a/output")?.stale).toBe(true)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("a manually-added host is not polled in the background", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+      try {
+        stubSessions({ sessions: [], lines: {} })
+        const identity = await generateIdentity()
+        const { url, auth, fingerprint } = await makeOffer(identity, { scope: "host" })
+        const { dial, waitReady } = makeEpochAwareDial(identity, auth)
+        const registry = createHostRegistry({ hostsPath, dial, handshakeTimeoutMs: 2_000, snapshotIntervalMs: 1_000 })
+        await registry.add(url, "office-mac") // no meta.joined
+        await waitReady()
+        const dials = dial.mock.calls.length
+        await vi.advanceTimersByTimeAsync(30_000)
+        expect(dial.mock.calls.length).toBe(dials)
+        expect(registry.getSessionsSnapshot(fingerprint, "/sessions")).toBeUndefined()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("revoking a host drops its snapshot and stops its poll", async () => {
+      stubSessions({ sessions: [{ id: "sess_a" }], lines: { sess_a: ["x"] } })
+      const { registry, fingerprint } = await joinedHost({ snapshotIntervalMs: 60_000 })
+      expect(await registry.snapshotNow(fingerprint)).toBe(true)
+      expect(await registry.revoke(fingerprint)).toBe(true)
+      expect(registry.getSessionsSnapshot(fingerprint, "/sessions")).toBeUndefined()
+      expect(await registry.snapshotNow(fingerprint)).toBe(false)
+    })
+
+    it("snapshotNow is a no-op false when snapshots are disabled or the host is unknown", async () => {
+      const { registry, fingerprint } = await joinedHost({ snapshotIntervalMs: 0 })
+      expect(await registry.snapshotNow(fingerprint)).toBe(false)
+      const other = createHostRegistry({ hostsPath, dial: vi.fn(), snapshotIntervalMs: 1_000 })
+      expect(await other.snapshotNow("no-such-host")).toBe(false)
+    })
+  })
+
+  describe("pruning old unlabeled join hosts (pre-#1542 records)", () => {
+    function legacyRecord(over: Record<string, unknown> = {}): Record<string, unknown> {
+      const fp = "f675351f" + "0".repeat(24)
+      return {
+        fingerprint: fp,
+        name: fp,
+        daemonX25519Pub: "pk",
+        daemonEd25519Pub: "sk",
+        rendezvousUrl: "wss://rdv.example/v1",
+        pairRoot: "root",
+        createdAt: "2026-09-28T14:23:07.000Z",
+        lastSeen: "2026-09-28T14:23:07.000Z",
+        ...over,
+      }
+    }
+
+    it("prunes a legacy fingerprint-named, never-reached host past the TTL — and only that one", async () => {
+      const legacyJoined = legacyRecord()
+      const manualNamed = legacyRecord({ fingerprint: "a".repeat(32), name: "office-mac" })
+      const manualUsed = legacyRecord({ fingerprint: "b".repeat(32), name: "b".repeat(32), lastSeen: "2026-09-29T10:00:00.000Z" })
+      const explicitManual = legacyRecord({ fingerprint: "c".repeat(32), name: "c".repeat(32), addedVia: "manual" })
+      await writeFile(hostsPath, JSON.stringify({ v: 1, hosts: [legacyJoined, manualNamed, manualUsed, explicitManual] }))
+
+      const registry = createHostRegistry({
+        hostsPath,
+        dial: vi.fn(),
+        now: () => Date.parse("2026-10-06T00:00:00.000Z"), // 7d+ after every lastSeen above except manualUsed's
+      })
+      const names = (await registry.list()).map(h => h.name).sort()
+      expect(names).toEqual(["office-mac", "b".repeat(32), "c".repeat(32)].sort())
+      const file = JSON.parse(await readFile(hostsPath, "utf8"))
+      expect(file.hosts).toHaveLength(3)
+    })
+
+    it("never touches pairings.json (clients / `pair offer` pairings) when pruning", async () => {
+      const pairingsPath = join(tmp, "pairings.json")
+      const pairings = JSON.stringify({ v: 2, pairings: [{ fingerprint: "p".repeat(32), name: "jeremy@laptop" }] })
+      await writeFile(pairingsPath, pairings)
+      await writeFile(hostsPath, JSON.stringify({ v: 1, hosts: [legacyRecord()] }))
+      const registry = createHostRegistry({ hostsPath, dial: vi.fn(), now: () => Date.parse("2026-10-20T00:00:00.000Z") })
+      expect(await registry.list()).toHaveLength(0)
+      expect(await readFile(pairingsPath, "utf8")).toBe(pairings)
+    })
+  })
+
   describe("forwardHttpStream()", () => {
     it("rejects with 'no host matched' when the target is unknown, without dialing", async () => {
       const dial = vi.fn()
@@ -618,7 +866,7 @@ describe("createHostRegistry", () => {
         return b
       })
 
-      const registry = createHostRegistry({ hostsPath, dial, handshakeTimeoutMs: 2_000 })
+      const registry = createHostRegistry({ hostsPath, dial, handshakeTimeoutMs: 2_000, onlineGraceMs: 0 })
       await registry.add(url, "office-mac")
       await vi.waitFor(() => expect(pairRootServer).not.toBeNull())
 
