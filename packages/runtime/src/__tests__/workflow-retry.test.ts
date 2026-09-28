@@ -469,6 +469,100 @@ steps:
     runner.cancel(result.run.runId)
   })
 
+  it("a step interrupted by cancel is genuinely re-executed on retry, not replayed from the journal as if it had succeeded", async () => {
+    // The internal journal (P5) only ever writes a step's output AFTER it
+    // resolves — a step killed mid-flight by `cancel()` throws instead, so
+    // nothing is ever written for it. This is the regression the underlying
+    // fix (`run-workflow.ts`'s cancel handling + `SessionsRegistryAgentHost`
+    // actually killing the in-flight session) exists to guarantee: without
+    // it, retry would either hang on the same never-finishing step or —
+    // worse — silently treat a partial run as fully cached.
+    const descriptors = new Map<string, SessionDescriptor>()
+    const bus = createSessionEventBus()
+    const registry = makeMockRegistry({
+      spawnAgent: (input: { cwd: string }) => {
+        const id = `sess_${descriptors.size}`
+        const desc = {
+          id,
+          kind: "agent-cli" as const,
+          workspaceSlug: "test",
+          command: "mock",
+          pid: null,
+          status: "running" as const,
+          startedAt: new Date().toISOString(),
+          cwd: input.cwd,
+        }
+        descriptors.set(id, desc)
+        return desc
+      },
+      // Never turn-ends on its own — only a `kill()` (via cancel) settles it.
+      sendPrompt: async () => {},
+      get: (id: string) => descriptors.get(id),
+      kill: (id: string) => {
+        const desc = descriptors.get(id)
+        if (!desc || desc.status === "killed") return false
+        desc.status = "killed"
+        bus.emit({ type: "session:exited", sessionId: id, status: "killed", ts: new Date().toISOString() })
+        return true
+      },
+      archiveSession: (id: string) => {
+        const desc = descriptors.get(id)!
+        desc.archived = true
+        return desc
+      },
+    })
+
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      persist: true,
+      persistPath,
+      runsRoot,
+    })
+
+    const run = await runner.start({
+      workflowId: "cancel-then-retry",
+      stages: [{ steps: [{ label: "step1", adapter: "mock", prompt: "go" }] }],
+    })
+
+    // Let the step actually spawn (genuinely in flight) before cancelling.
+    for (let i = 0; i < 100 && descriptors.size === 0; i++) await new Promise(res => setTimeout(res, 0))
+    expect(descriptors.size).toBe(1)
+
+    runner.cancel(run.runId)
+    let final = runner.status(run.runId)
+    for (let i = 0; i < 100 && final?.stages[0]?.steps[0]?.status === "running"; i++) {
+      await new Promise(res => setTimeout(res, 5))
+      final = runner.status(run.runId)
+    }
+    expect(final?.status).toBe("cancelled")
+    // The interrupted step is `cancelled`, never a fabricated `done` —
+    // otherwise retry would see it as already-succeeded and skip it.
+    expect(final?.stages[0]?.steps[0]?.status).toBe("cancelled")
+    expect(descriptors.get("sess_0")?.status).toBe("killed")
+
+    const result = await runner.retry(run.runId)
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("unreachable")
+
+    // A genuine re-execution spawns a SECOND, brand-new session — it is NOT
+    // replayed from the journal (which would spawn zero new sessions and
+    // mark the step `cached: true`).
+    for (let i = 0; i < 100 && descriptors.size < 2; i++) await new Promise(res => setTimeout(res, 0))
+    expect(descriptors.size).toBe(2)
+
+    let retried = runner.status(result.run.runId)
+    for (let i = 0; i < 100 && retried?.stages[0]?.steps[0]?.status !== "running"; i++) {
+      await new Promise(res => setTimeout(res, 5))
+      retried = runner.status(result.run.runId)
+    }
+    expect(retried?.stages[0]?.steps[0]?.cached).toBeUndefined()
+    expect(retried?.stages[0]?.steps[0]?.sessionId).toBe("sess_1")
+
+    runner.cancel(result.run.runId)
+  })
+
   it("a run whose lease expired (orphaned — V6) is reported failed and is retryable", async () => {
     let clock = new Date("2026-09-25T10:00:00.000Z")
     const runner = createWorkflowRunner({

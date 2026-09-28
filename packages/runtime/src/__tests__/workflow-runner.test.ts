@@ -338,6 +338,175 @@ describe("WorkflowRunner", () => {
     expect(["cancelled", "running"]).toContain(status?.status)
   })
 
+  it("cancel kills the in-flight agent step's session, the next stage never starts, and every row settles to a terminal status", async () => {
+    const bus = createSessionEventBus()
+    const descriptors = new Map<string, SessionDescriptor>()
+    const registry = makeMockRegistry({
+      spawnAgent: vi.fn((input) => {
+        const id = `sess_${descriptors.size}`
+        const desc: SessionDescriptor = {
+          id,
+          kind: "agent-cli" as const,
+          workspaceSlug: "test",
+          command: "mock",
+          pid: null,
+          status: "running" as const,
+          startedAt: new Date().toISOString(),
+          cwd: input.cwd,
+        }
+        descriptors.set(id, desc)
+        return desc
+      }),
+      // Never turn-ends on its own — only a kill (or a real reply) ever
+      // settles this step's wait, so the step is reliably still in flight
+      // when `cancel()` fires.
+      sendPrompt: vi.fn(async () => {}),
+      get: vi.fn((id: string) => descriptors.get(id)),
+      // A realistic `kill()` — flips status and emits `session:exited`, the
+      // same signal `SessionsRegistryAgentHost.waitTurnEnd` listens for.
+      kill: vi.fn((id: string) => {
+        const desc = descriptors.get(id)
+        if (!desc || desc.status === "killed") return false
+        desc.status = "killed"
+        bus.emit({ type: "session:exited", sessionId: id, status: "killed", ts: new Date().toISOString() })
+        return true
+      }),
+      archiveSession: vi.fn((id: string) => {
+        const desc = descriptors.get(id)!
+        desc.archived = true
+        return desc
+      }),
+    })
+
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+    })
+
+    const run = await runner.start({
+      workflowId: "cancel-kill-test",
+      stages: [
+        { steps: [{ label: "step1", adapter: "mock", prompt: "go" }] },
+        { steps: [{ label: "step2", adapter: "mock", prompt: "should never run" }] },
+      ],
+    })
+
+    // Wait for step1 to actually spawn (its session is genuinely in flight)
+    // before cancelling — otherwise we'd only be testing the spawn-race path.
+    for (let i = 0; i < 100 && descriptors.size === 0; i++) await waitNextTick()
+    expect(descriptors.size).toBe(1)
+
+    runner.cancel(run.runId)
+
+    // `cancel()` flips `run.status` to "cancelled" synchronously — poll on
+    // the STEP row instead, which only settles once `executeRunWorkflow`'s
+    // own promise actually unwinds through its aborted-catch branch.
+    let final = runner.status(run.runId)
+    for (let i = 0; i < 100 && final?.stages[0]?.steps[0]?.status === "running"; i++) {
+      await new Promise(res => setTimeout(res, 5))
+      final = runner.status(run.runId)
+    }
+
+    expect(final?.status).toBe("cancelled")
+    // The session was actually killed, not just left running under a
+    // "cancelled" label painted over it.
+    expect(registry.kill).toHaveBeenCalledWith("sess_0")
+    expect(descriptors.get("sess_0")?.status).toBe("killed")
+    // The interrupted step settles to a terminal status of its own —
+    // `cancelled`, never left `running` forever.
+    expect(final?.stages[0]?.steps[0]?.status).toBe("cancelled")
+    // Stage 2 never started at all.
+    expect(final?.stages[1]?.status).not.toBe("running")
+    expect(final?.stages[1]?.steps[0]?.status).toBe("skipped")
+    expect(registry.spawnAgent).toHaveBeenCalledTimes(1)
+  })
+
+  it("cancel firing WHILE an agent step's session is still spawning still kills it once it registers (the exact reported race)", async () => {
+    // Live repro this closes: a `workflow_cancel` landing right as an agent
+    // step's session was mid-spawn used to be invisible to `cancel()`'s
+    // `releaseAll()` (which only reaches sessions already tracked at the
+    // moment it runs) — the session then finished registering a moment
+    // later, unkilled, and ran to completion as if nothing had happened.
+    const bus = createSessionEventBus()
+    const descriptors = new Map<string, SessionDescriptor>()
+    let releaseSpawn: (() => void) | undefined
+    const spawnGate = new Promise<void>(resolve => {
+      releaseSpawn = resolve
+    })
+    const registry = makeMockRegistry({
+      spawnAgent: vi.fn((input) => {
+        const id = `sess_${descriptors.size}`
+        const desc: SessionDescriptor = {
+          id,
+          kind: "agent-cli" as const,
+          workspaceSlug: "test",
+          command: "mock",
+          pid: null,
+          status: "running" as const,
+          startedAt: new Date().toISOString(),
+          cwd: input.cwd,
+        }
+        descriptors.set(id, desc)
+        return desc
+      }),
+      sendPrompt: vi.fn(async () => {}),
+      get: vi.fn((id: string) => descriptors.get(id)),
+      kill: vi.fn((id: string) => {
+        const desc = descriptors.get(id)
+        if (!desc || desc.status === "killed") return false
+        desc.status = "killed"
+        bus.emit({ type: "session:exited", sessionId: id, status: "killed", ts: new Date().toISOString() })
+        return true
+      }),
+      archiveSession: vi.fn((id: string) => {
+        const desc = descriptors.get(id)!
+        desc.archived = true
+        return desc
+      }),
+    })
+
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      // The adapter boot (`startSession`) blocks on `spawnGate` — this is the
+      // window `cancel()` fires inside, before the session has registered.
+      resolveAgentAdapter: vi.fn(async () => ({
+        startSession: async () => {
+          await spawnGate
+          return {
+            sessionId: "adapter_x",
+            send: async function* () {},
+            cancel: async () => {},
+            close: async () => {},
+          }
+        },
+      })),
+    })
+
+    const run = await runner.start({
+      workflowId: "spawn-race",
+      stages: [{ steps: [{ label: "step1", adapter: "mock", prompt: "go" }] }],
+    })
+
+    // Cancel lands BEFORE the spawn has registered any session at all.
+    expect(descriptors.size).toBe(0)
+    runner.cancel(run.runId)
+    expect(runner.status(run.runId)?.status).toBe("cancelled")
+    expect(descriptors.size).toBe(0)
+
+    // Now let the (already-in-flight) spawn actually complete.
+    releaseSpawn!()
+
+    for (let i = 0; i < 100 && descriptors.size === 0; i++) await waitNextTick()
+    expect(descriptors.size).toBe(1)
+
+    for (let i = 0; i < 100 && descriptors.get("sess_0")?.status !== "killed"; i++) {
+      await new Promise(res => setTimeout(res, 5))
+    }
+    expect(descriptors.get("sess_0")?.status).toBe("killed")
+  })
+
   it("list() returns all runs", async () => {
     const bus = createSessionEventBus()
     const registry = makeMockRegistry()

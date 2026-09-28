@@ -129,6 +129,21 @@ export class AgentSpawnError extends Error {
   }
 }
 
+/**
+ * Thrown instead of dispatching a step whose run was cancelled
+ * (`ctx.signal.aborted`) — checked BEFORE any work for the step begins (see
+ * {@link execStepBody}'s entry guard), so a cancel stops the run from
+ * starting any further step, including a sibling within the SAME stage/
+ * fan-out, not just a later one. Never journaled: it's thrown before a
+ * cacheable step's `cache.set` call, so `workflow_retry` re-executes it.
+ */
+export class WorkflowCancelledError extends Error {
+  constructor(readonly stepId: string) {
+    super(`step '${stepId}': run cancelled — not started`)
+    this.name = "WorkflowCancelledError"
+  }
+}
+
 interface RunState {
   readonly input: unknown
   readonly steps: Record<string, unknown>
@@ -296,19 +311,23 @@ function spawnBreaker(threshold: number): { settle: (err?: unknown) => void; rea
   }
 }
 
-/** Report every item a tripped breaker never started as `skipped` (each of
- *  its body's statically-known steps, indexed like a started item's). */
+/** Report every item never started as `skipped` (each of its body's
+ *  statically-known steps, indexed like a started item's) — either because a
+ *  tripped spawn circuit breaker (`kind: "circuit-open"`) or the run being
+ *  cancelled (`kind: "run-cancelled"`) stopped the fan-out from starting any
+ *  more items. */
 function skipUnstartedItems(
   ctx: RunCtx,
   fanOutId: string,
   from: number,
   items: readonly unknown[],
   bodiesOf: (item: unknown, idx: number) => readonly RunStep[],
+  kind: StepSkippedInfo["reason"],
   reason: string,
   results: unknown[],
 ): void {
   for (let idx = from; idx < items.length; idx++) {
-    results[idx] = { status: "skipped", index: idx, item: items[idx], reason: `circuit-open: ${reason}` }
+    results[idx] = { status: "skipped", index: idx, item: items[idx], reason: `${kind}: ${reason}` }
     const itemCtx = withIndexedHooks(ctx, idx)
     if (!itemCtx.onStepSkipped) continue
     let bodies: readonly RunStep[]
@@ -320,7 +339,7 @@ function skipUnstartedItems(
       continue
     }
     for (const id of new Set(skippableStepIds(bodies))) {
-      itemCtx.onStepSkipped(id, { reason: "circuit-open", branchId: fanOutId, message: reason })
+      itemCtx.onStepSkipped(id, { reason: kind, branchId: fanOutId, message: reason })
     }
   }
 }
@@ -741,8 +760,12 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
   if (step.adapter) {
     // A cancelled run winds down (its `finally` still runs) — it must not
     // start new agent sessions on the way (a fan-out would otherwise keep
-    // spawning reviewers after the cancel killed the running ones).
-    if (ctx.signal?.aborted) throw new Error(`step '${step.id}': run cancelled — not spawning`)
+    // spawning reviewers after the cancel killed the running ones). The
+    // entry guard in `execStepBody` already catches this for a step that
+    // hadn't started at all; this second check covers a cancel landing
+    // WHILE this step's own body is already running (knowledge
+    // materialization, sandbox/model resolution, …), before it reaches spawn.
+    if (ctx.signal?.aborted) throw new WorkflowCancelledError(step.id)
     try {
       sessionId = await ctx.agents!.spawn(resolveSel(step.adapter, b), {
         cwd,
@@ -885,19 +908,25 @@ function tryParseJson(text: string): unknown {
  * `runGateCommand` host hook is injected — a plain `node:child_process`
  * argv-vector invocation (no shell interpolation). Exit code 0 always
  * resolves (never rejects on a non-zero exit); a timeout resolves with
- * `timedOut: true` and whatever partial output was captured.
+ * `timedOut: true` and whatever partial output was captured. `spec.signal`
+ * (the run's cancel signal) is threaded straight into `execFile`'s own
+ * `signal` option, which kills the child process — a cancelled run must not
+ * leave a gate's subprocess running unsupervised any more than it leaves an
+ * agent step's session running; {@link execGateStep} re-checks the signal
+ * right after this resolves to turn the kill into a `WorkflowCancelledError`.
  */
 function defaultRunGateCommand(spec: {
   command: string
   args: readonly string[]
   cwd: string
   timeoutMs?: number
+  signal?: AbortSignal
 }): Promise<GateCommandResult> {
   return new Promise((resolve) => {
     execFile(
       spec.command,
       [...spec.args],
-      { cwd: spec.cwd, timeout: spec.timeoutMs, maxBuffer: 10 * 1024 * 1024 },
+      { cwd: spec.cwd, timeout: spec.timeoutMs, maxBuffer: 10 * 1024 * 1024, signal: spec.signal },
       (err, stdout, stderr) => {
         if (!err) {
           resolve({ exitCode: 0, stdout, stderr })
@@ -959,6 +988,11 @@ async function execGateStep(step: GateStep, ctx: RunCtx, b: Bindings): Promise<u
 
   let last: { ok: boolean; exitCode: number; report: unknown } | undefined
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // A cancel landing between retry attempts must not reprompt a session
+    // that cancel's releaseAll() may have already killed (which would
+    // surface as a confusing "session not found" error instead of a clean
+    // WorkflowCancelledError), nor wait out a retry backoff pointlessly.
+    if (ctx.signal?.aborted) throw new WorkflowCancelledError(step.id)
     if (attempt > 1 && step.onFail?.reprompt) {
       if (!ctx.agents) {
         throw new Error(`step '${step.id}': on_fail.reprompt requires a host agents implementation`)
@@ -991,7 +1025,13 @@ async function execGateStep(step: GateStep, ctx: RunCtx, b: Bindings): Promise<u
       args,
       cwd,
       timeoutMs: step.timeoutMs,
+      signal: ctx.signal,
     })
+    // The signal killed the subprocess mid-command (see
+    // `defaultRunGateCommand`) — report the step as cancelled, not as
+    // whatever exit code the kill happened to produce, so it's never
+    // journaled as succeeded/failed and `workflow_retry` re-runs it.
+    if (ctx.signal?.aborted) throw new WorkflowCancelledError(step.id)
     const report = await resolveGateReport(cmdResult, cwd, step.reportPath)
     const ok = cmdResult.exitCode === 0
     last = { ok, exitCode: cmdResult.exitCode, report }
@@ -1042,6 +1082,16 @@ async function execStepBody(
   index: number | undefined,
 ): Promise<unknown> {
   const { state, signal } = ctx
+
+  // A cancelled run must not dispatch ANY further step — a sibling still
+  // queued in the same stage/fan-out included, not just a later stage (the
+  // old contract, "no new stages will be started", left a same-stage
+  // successor like a `map`'s next item or the step right after it free to
+  // start). Checked before `onStepStart` fires, so a step that never ran
+  // never reports as started. `runFinally` clears `signal` on its own ctx
+  // (cleanup must survive a cancel), so this never blocks a `finally` step.
+  if (signal?.aborted) throw new WorkflowCancelledError(step.id)
+
   const b = view(ctx, item, index)
 
   // Notify step start for non-agent steps (agent steps notify in
@@ -1116,15 +1166,24 @@ async function execStepBody(
         }
       }
       const worker = async (): Promise<void> => {
-        while (!failed && breaker.open === undefined && next < arr.length) {
+        while (!failed && breaker.open === undefined && signal?.aborted !== true && next < arr.length) {
           const idx = next++
           await runItem(idx)
         }
       }
       await Promise.all(Array.from({ length: Math.min(parallelism, arr.length) }, () => worker()))
+      // The run was cancelled while items remained unstarted: a non-tolerant
+      // map must not report success over an incomplete `results` array — a
+      // tolerant one instead marks the rest `skipped` (same shape a tripped
+      // circuit breaker leaves), same as {@link skipUnstartedItems}'s other caller.
+      if (signal?.aborted === true && next < arr.length) {
+        if (!tolerant) throw new WorkflowCancelledError(step.id)
+        skipUnstartedItems(ctx, step.id, next, arr, (el, idx) => [step.body(el, idx, view(ctx, el, idx))], "run-cancelled", "run cancelled", results)
+        return tolerantResult(results, breaker.open)
+      }
       if (!tolerant) return results
       if (breaker.open !== undefined) {
-        skipUnstartedItems(ctx, step.id, next, arr, (el, idx) => [step.body(el, idx, view(ctx, el, idx))], breaker.open, results)
+        skipUnstartedItems(ctx, step.id, next, arr, (el, idx) => [step.body(el, idx, view(ctx, el, idx))], "circuit-open", breaker.open, results)
       }
       return tolerantResult(results, breaker.open)
     }
@@ -1160,12 +1219,27 @@ async function execStepBody(
         }
       }
       const worker = async (): Promise<void> => {
-        while ((!tolerant || breaker.open === undefined) && next < items.length) {
+        while ((!tolerant || breaker.open === undefined) && signal?.aborted !== true && next < items.length) {
           const idx = next++
           await runItem(idx)
         }
       }
       await Promise.all(Array.from({ length: Math.min(cap, items.length) }, () => worker()))
+      // See the `"map"` case's identical guard above.
+      if (signal?.aborted === true && next < items.length) {
+        if (!tolerant) throw new WorkflowCancelledError(step.id)
+        skipUnstartedItems(
+          ctx,
+          step.id,
+          next,
+          items,
+          (el, idx) => step.stages.map((stage) => stage(el, idx, undefined, view(ctx, el, idx))),
+          "run-cancelled",
+          "run cancelled",
+          results,
+        )
+        return tolerantResult(results, breaker.open)
+      }
       if (!tolerant) return results
       if (breaker.open !== undefined) {
         skipUnstartedItems(
@@ -1174,6 +1248,7 @@ async function execStepBody(
           next,
           items,
           (el, idx) => step.stages.map((stage) => stage(el, idx, undefined, view(ctx, el, idx))),
+          "circuit-open",
           breaker.open,
           results,
         )

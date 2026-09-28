@@ -1250,8 +1250,15 @@ export function registerOrchestrationTools(
 
     server.tool(
       "workflow_cancel",
-      "Cancel a running workflow. Steps already in flight will finish, but no " +
-        "new stages will be started.",
+      "Cancel a running workflow. No further step is dispatched after this — " +
+        "not a later stage, and not a sibling still queued in the same stage " +
+        "or `map`/`pipeline` fan-out. A step already in flight is aborted: an " +
+        "agent step's session is killed, a tool step's child process is " +
+        "killed. Every step that didn't finish is marked terminal — `cancelled` " +
+        "if it was running, `skipped` if it never started — never left " +
+        "`running`. A step that was interrupted mid-flight is NOT recorded as " +
+        "succeeded, so `workflow_retry` re-executes it rather than replaying " +
+        "a partial result from the journal.",
       {
         runId: z.string().describe("Run id to cancel."),
       },
