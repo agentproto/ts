@@ -54,6 +54,88 @@ describe("runSetup / HookError", () => {
     return `node ${JSON.stringify(path)}`
   }
 
+  /** Write a script under `dir` that tracks its own invocation count in a
+   *  sibling counter file and, on each successive invocation, behaves per
+   *  the corresponding entry of `attempts` (clamped to the last entry once
+   *  exhausted). Used to exercise `opts.retryOnFailure`, where the SAME
+   *  command is re-run and must behave differently across attempts. Returns
+   *  the `node <path>` command plus the counter file's path so tests can
+   *  assert exactly how many times the hook actually ran. */
+  async function writeFlakyHookScript(
+    dir: string,
+    name: string,
+    opts: { attempts: Array<{ exitCode: number; stdout?: string }> },
+  ): Promise<{ command: string; counterPath: string }> {
+    const path = join(dir, name)
+    const counterPath = join(dir, `${name}.count`)
+    const body = [
+      `import { readFileSync, writeFileSync } from "node:fs"`,
+      `const counterPath = ${JSON.stringify(counterPath)}`,
+      `let n = 0`,
+      `try { n = parseInt(readFileSync(counterPath, "utf8"), 10) } catch {}`,
+      `n += 1`,
+      `writeFileSync(counterPath, String(n))`,
+      `const attempts = ${JSON.stringify(opts.attempts)}`,
+      `const attempt = attempts[Math.min(n - 1, attempts.length - 1)]`,
+      `if (attempt.stdout) console.log(attempt.stdout)`,
+      `process.exit(attempt.exitCode)`,
+    ].join("\n")
+    await writeFile(path, body, "utf8")
+    return { command: `node ${JSON.stringify(path)}`, counterPath }
+  }
+
+  it("retryOnFailure: a hook that fails once then succeeds resolves, and the log shows both attempts", async () => {
+    const ctx = await makeCtx()
+    const logDir = await mkdtemp(join(tmpdir(), "wt-lifecycle-retry-log-"))
+    cleanupPaths.push(logDir)
+    const logPath = join(logDir, "setup.log")
+    const { command, counterPath } = await writeFlakyHookScript(ctx.worktreePath, "flaky.mjs", {
+      attempts: [
+        { exitCode: 1, stdout: "attempt 1 failing" },
+        { exitCode: 0, stdout: "attempt 2 succeeded" },
+      ],
+    })
+    const config: AgentprotoConfig = { worktree: { setup: [command] } }
+    const runs = await runSetup(config, ctx, { logPath, retryOnFailure: true })
+    expect(runs).toHaveLength(2)
+    expect(runs[0]?.result.exitCode).toBe(1)
+    expect(runs[1]?.result.exitCode).toBe(0)
+    const fullLog = await readFile(logPath, "utf8")
+    expect(fullLog).toContain("attempt 1 failing")
+    expect(fullLog).toContain("attempt 2 succeeded")
+    expect(fullLog).toContain("(retry 1/1)")
+    expect(parseInt(await readFile(counterPath, "utf8"), 10)).toBe(2)
+  })
+
+  it("retryOnFailure: a hook that fails twice throws HookError (with the retry's own result) after exactly 2 executions, log labeled '(retry 1/1)'", async () => {
+    const ctx = await makeCtx()
+    const logDir = await mkdtemp(join(tmpdir(), "wt-lifecycle-retry-log-"))
+    cleanupPaths.push(logDir)
+    const logPath = join(logDir, "setup.log")
+    const { command, counterPath } = await writeFlakyHookScript(ctx.worktreePath, "flaky.mjs", {
+      attempts: [
+        { exitCode: 1, stdout: "attempt 1 failing" },
+        { exitCode: 1, stdout: "attempt 2 also failing" },
+      ],
+    })
+    const config: AgentprotoConfig = { worktree: { setup: [command] } }
+    try {
+      await runSetup(config, ctx, { logPath, retryOnFailure: true })
+      expect.unreachable("runSetup should have thrown")
+    } catch (err) {
+      expect(err).toBeInstanceOf(HookError)
+      const hookErr = err as HookError
+      // The thrown error reflects the RETRY's own result, not the first
+      // attempt's — matches `runSetup`'s docblock.
+      expect(hookErr.message).toContain("attempt 2 also failing")
+    }
+    expect(parseInt(await readFile(counterPath, "utf8"), 10)).toBe(2)
+    const fullLog = await readFile(logPath, "utf8")
+    expect(fullLog).toContain("(retry 1/1)")
+    expect(fullLog).toContain("attempt 1 failing")
+    expect(fullLog).toContain("attempt 2 also failing")
+  })
+
   it("combines stdout+stderr and keeps the real diagnostic even when stderr is non-empty", async () => {
     const ctx = await makeCtx()
     // Mirrors the incident shape: a noise line on stderr (the .npmrc/
