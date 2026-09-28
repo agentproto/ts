@@ -58,6 +58,17 @@ const POLL_BATCH_LIMIT = 50
 /** Statuses whose provider-side watch stays live — the sentinel keeps
  *  polling even while `orphaned` (design §2: "the provider-side watch is
  *  never cancelled just because a session died"). */
+/** End reasons that mean a human/steward closed the session on purpose —
+ *  a sentinel notice must never resurrect it. */
+const DELIBERATE_END_REASONS: ReadonlySet<string> = new Set([
+  "operator-completed",
+  "operator-stopped",
+  "steward-completed",
+  "steward-abandoned",
+])
+
+const CLOSED_SUBJECTS_CAP = 500
+
 const POLLABLE_STATUSES: ReadonlySet<SentinelStatus> = new Set(["active", "orphaned"])
 
 function agentprotoHome(): string {
@@ -151,6 +162,11 @@ export interface SentinelRuntimeOptions {
   isSessionAlive: (sessionId: string) => boolean
   /** Same hook `inbound-router.ts` uses (`index.ts`'s `restartInboundSession`). */
   restartSession: (sessionId: string) => Promise<string>
+  /** Looks up a session's end reason + parent. When the target ended with a
+   *  deliberate outcome (`operator-completed`, `steward-*`, `operator-stopped`)
+   *  the sentinel never resumes it — the notice goes to the parent (if alive)
+   *  or is parked. Omitted → every dead target is resumed (legacy). */
+  sessionInfo?: (sessionId: string) => { endedReason?: string; parentSessionId?: string } | undefined
   /** Poll cadence while "hot" (an event landed within `hotWindowMs`).
    *  Default 15s. */
   activeIntervalMs?: number
@@ -240,6 +256,32 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     })
   }
 
+  /** The target was closed on purpose: never resume it. Hand the notice to
+   *  its live parent (as `fyi`, so it lands in the inbox without forcing a
+   *  turn); with no live parent, park it in the journal. */
+  async function routeAroundClosedSession(
+    sentinel: Sentinel,
+    event: SentinelEvent,
+    msg: SessionMessage,
+    sessionId: string,
+    info: { endedReason?: string; parentSessionId?: string },
+  ): Promise<void> {
+    const parentId = info.parentSessionId
+    if (parentId && opts.isSessionAlive(parentId)) {
+      try {
+        await opts.registry.sendMessage(
+          { ...msg, to: parentId, urgency: "fyi", text: `[for closed session ${sessionId}] ${msg.text}` },
+          { source: "sentinel", origin: sentinel.id },
+        )
+        return
+      } catch (err) {
+        if (!(err instanceof SessionNotAliveError)) throw err
+      }
+    }
+    parkEvent(sentinel, event, `session ${sessionId} closed (${info.endedReason}); not resuming, no live parent`)
+    markOrphaned(sentinel)
+  }
+
   async function handleDeadSession(
     sentinel: Sentinel,
     event: SentinelEvent,
@@ -254,6 +296,12 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       // still sees as alive (a race) — park rather than spin retrying.
       parkEvent(sentinel, event, "session reported alive but sendMessage rejected it")
       markOrphaned(sentinel)
+      return
+    }
+
+    const info = opts.sessionInfo?.(sessionId)
+    if (info?.endedReason && DELIBERATE_END_REASONS.has(info.endedReason)) {
+      await routeAroundClosedSession(sentinel, event, msg, sessionId, info)
       return
     }
 
@@ -342,6 +390,28 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     }
   }
 
+  // ── Closed subjects (merged/closed PR) ──────────────────────────────
+
+  /** Maintains `closedSubjects` from the event stream and reports whether
+   *  `event.subject` is closed AFTER this event (a terminal event closes its
+   *  own subject; a `.reopened` event reopens it). Only subjects the spec
+   *  actually watches are tracked. */
+  function trackClosure(sentinel: Sentinel, event: SentinelEvent): boolean {
+    const closed = sentinel.closedSubjects ?? []
+    const isClosed = closed.includes(event.subject)
+    if (event.terminal === true) {
+      if (isClosed || !sentinel.spec.match.some(c => matchesSubject(c.subject, event.subjects))) return isClosed
+      const next = [...closed, event.subject].slice(-CLOSED_SUBJECTS_CAP)
+      store.update(sentinel.id, { closedSubjects: next })
+      return true
+    }
+    if (isClosed && event.type.endsWith(".reopened")) {
+      store.update(sentinel.id, { closedSubjects: closed.filter(s => s !== event.subject) })
+      return false
+    }
+    return isClosed
+  }
+
   // ── Shared per-event pipeline (poll + push) ─────────────────────────
 
   async function processEvents(
@@ -358,6 +428,15 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       if (!POLLABLE_STATUSES.has(current.status)) break // paused/expired/error — stop watching
 
       if (store.isSeen(current.id, event.id)) continue
+
+      const closedNow = trackClosure(current, event)
+      if (closedNow && !event.terminal) {
+        // Post-merge/close noise (a check_suite failing after the merge):
+        // journal it, never wake or resume anything for it.
+        parkEvent(current, event, `subject ${event.subject} already closed`)
+        store.markSeen(current.id, event.id)
+        continue
+      }
 
       if (!eventMatchesSpec(current, event, provider)) {
         // Filtered out, not a delivery attempt — still mark it seen so it's
