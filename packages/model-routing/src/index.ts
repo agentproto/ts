@@ -18,6 +18,7 @@ export type {
   ChainResolution,
   Keyspace,
   Layer,
+  /** @deprecated Use {@link RoutingPack}. */
   Pack,
   ReservedSource,
   ResolvedRoute,
@@ -25,10 +26,16 @@ export type {
   RoutableRequest,
   Route,
   RouteOrGate,
+  RoutingPack,
   Source,
 } from "./types.js"
 
-export { definePack, overlay } from "./pack.js"
+export {
+  /** @deprecated Use {@link defineRoutingPack}. */
+  definePack,
+  defineRoutingPack,
+  overlay,
+} from "./pack.js"
 export { resolve } from "./resolve.js"
 export { envKeySuffix, envLayer, parseRouteRef, type EnvLayerOptions } from "./env.js"
 export {

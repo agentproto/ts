@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { definePack } from "../pack.js"
+import { defineRoutingPack } from "../pack.js"
 import { resolve } from "../resolve.js"
 import type { Layer } from "../types.js"
 
 type Role = "triage" | "speak" | "deepThink"
 
-const pack = definePack<Role>({
+const pack = defineRoutingPack<Role>({
   id: "simone",
   label: "Simone",
   keyspace: "role",
@@ -93,7 +93,7 @@ describe("resolve — extra route metadata (verified capability fields, §1) pas
   }
 
   it("carries fields beyond the base Route shape end to end", () => {
-    const p = definePack<"a", RouteWithLimits>({
+    const p = defineRoutingPack<"a", RouteWithLimits>({
       id: "p",
       label: "P",
       keyspace: "model",

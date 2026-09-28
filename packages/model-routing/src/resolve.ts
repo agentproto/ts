@@ -7,7 +7,7 @@
  * record as a plain argument), never inside `resolve` itself.
  */
 
-import type { Layer, Pack, ResolvedRoute, Route, Source } from "./types.js"
+import type { Layer, ResolvedRoute, Route, RoutingPack, Source } from "./types.js"
 
 /**
  * Resolve `key` against `pack`, walking `layers` in the given order —
@@ -22,7 +22,7 @@ import type { Layer, Pack, ResolvedRoute, Route, Source } from "./types.js"
  * explicit entry always wins and resets the gate.
  */
 export function resolve<Key extends string, R extends Route = Route>(
-  pack: Pack<Key, R>,
+  pack: RoutingPack<Key, R>,
   key: Key,
   layers: readonly Layer<Key, R>[] = []
 ): ResolvedRoute<R> | null {
