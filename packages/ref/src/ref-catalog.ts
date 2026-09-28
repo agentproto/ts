@@ -111,7 +111,7 @@ export class RefCatalog {
  * Derive a typed ref from a spec + handle. The spec's keyBy MUST be the
  * same function the family's registry uses, so a ref's id can never
  * drift from its registry key. Throws when the handle has no key at all
- * (e.g. an anonymous AIP-42 app — such handles cannot be referenced).
+ * (e.g. an anonymous AIP-53 app — such handles cannot be referenced).
  */
 export function refFor<A extends number, H extends RefKeyableHandle>(
   spec: { readonly aip: A; readonly keyBy?: (h: H) => string },

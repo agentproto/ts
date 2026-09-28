@@ -260,13 +260,27 @@ jobs:
           node --test scripts/check-spec-drift.test.mjs
           node scripts/check-spec-drift.mjs
 
+      # Guard the vendored copy of the AIP JSON Schemas (specs/resources/)
+      # against silent regressions. CI has no network and no sibling
+      # agentproto/agentproto checkout, so this can't do the full
+      # vendored-vs-canonical diff (that runs for any contributor with a
+      # real sibling checkout, or with --source passed explicitly — see
+      # scripts/sync-specs.mjs's header). What it CAN do without network:
+      # assert every field in specs/spec-drift-allowlist.json (ts shipped
+      # ahead of what canonical has ratified — aip-5 workspace, aip-15
+      # routines/cacheable/join/fallthrough, aip-36 join/extraPorts, etc.)
+      # is still actually present in the vendored copy, so a careless hand
+      # edit or a naive future resync can't silently drop one.
+      - name: Check vendored spec drift (allowlist integrity)
+        run: |
+          node --test scripts/sync-specs.test.mjs
+          node scripts/sync-specs.mjs --check
+
       # Guard the e2b workstation template's derived artifacts: the generated
       # TS module, e2b.template.toml build args, marked doc blocks, and the
       # sandbox-e2b package.json description must all match
       # templates/workstation/versions.json. Zero-credential — no e2b access,
-      # just file comparison. (sync-specs --check has no CI home today; this
-      # is the same drift-check pattern, placed next to the other script
-      # gates in build-and-test.)
+      # just file comparison.
       - name: Check template sync drift
         run: node scripts/sync-templates.mjs --check
 
