@@ -793,6 +793,58 @@ const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000
 
 // ── Persistence helpers (mirrors routine-runner.ts exactly) ──────────
 
+/**
+ * F44b: a run reload finds in a terminal status (already `cancelled` on
+ * disk — e.g. `cancel()`'s synchronous status flip + `persist()` landed but
+ * the daemon died before the run's own promise chain unwound into
+ * `executeRunWorkflow`'s catch block, which is the only other place that
+ * finalizes a `running`/`pending` step on cancel — or just corrected to
+ * `failed` by the host-interrupted check above) must never leave a step
+ * behind still `running`/`pending`: `workflow_status` would show a
+ * cancelled/failed/done run with a step stuck forever (the reported bug).
+ * Mirrors `executeRunWorkflow`'s own cancel finalization: `cancelled` ⇒
+ * running→cancelled / pending→skipped; `failed`/`done` ⇒ both→failed with a
+ * `host-interrupted` error, since neither ran to completion under a live
+ * owner. Returns whether anything changed (so the caller knows to persist).
+ */
+function finalizeStuckSteps(run: WorkflowRun): boolean {
+  if (run.status !== "cancelled" && run.status !== "failed" && run.status !== "done") return false
+  const cancelled = run.status === "cancelled"
+  const endedAt = run.endedAt ?? new Date().toISOString()
+  let anyTouched = false
+  for (const stage of run.stages) {
+    let stageTouched = false
+    for (const step of stage.steps) {
+      if (step.status === "running") {
+        delete step.phase
+        step.endedAt = endedAt
+        if (cancelled) {
+          step.status = "cancelled"
+        } else {
+          step.status = "failed"
+          step.error = "interrupted by daemon restart"
+        }
+        stageTouched = true
+      } else if (step.status === "pending") {
+        if (cancelled) {
+          step.status = "skipped"
+          step.skipReason = "run-cancelled"
+        } else {
+          step.status = "failed"
+          step.endedAt = endedAt
+          step.error = "interrupted by daemon restart"
+        }
+        stageTouched = true
+      }
+    }
+    if (stageTouched) {
+      anyTouched = true
+      if (stage.status !== "done" && stage.status !== "failed") stage.status = "failed"
+    }
+  }
+  return anyTouched
+}
+
 function loadRuns(persistPath: string, runsRoot: string): Map<string, RunState> {
   const result = new Map<string, RunState>()
   if (!existsSync(persistPath)) return result
@@ -831,6 +883,16 @@ function loadRuns(persistPath: string, runsRoot: string): Map<string, RunState> 
       createRunEventLog(run.runId, runsRoot).append({
         type: "run.failed",
         data: { code: "host-interrupted", message: run.error },
+      })
+    }
+    // F44b: whether the run was ALREADY terminal on disk (e.g. `cancelled` —
+    // see `finalizeStuckSteps`'s doc) or just corrected to `failed` above,
+    // its steps must not be left `running`/`pending`.
+    if (finalizeStuckSteps(run)) {
+      anyMarkedInterrupted = true
+      createRunEventLog(run.runId, runsRoot).append({
+        type: "run.steps-finalized",
+        data: { code: "host-interrupted", status: run.status },
       })
     }
     // WP-S: a run parked awaiting a human approval is NOT failed on reload —

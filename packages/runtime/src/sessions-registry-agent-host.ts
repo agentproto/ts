@@ -420,10 +420,17 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
     await Promise.all([...this.unreleased].map(id => this.releaseSession(id)))
   }
 
+  /**
+   * `waitTurnEnd` subscribes before `sendPrompt` is even called, so a cancel
+   * that kills the session WHILE `sendPrompt` is still in flight (the whole
+   * turn, for an on-host claude-code step) rejects `turnEnded` before either
+   * promise had a `.then`/`.catch` attached to it — an unhandled rejection
+   * that crashes the daemon process outright (not just this run). Passing
+   * both to `Promise.all` in the same expression attaches a handler to each
+   * synchronously, before the event bus can fire the rejection asynchronously.
+   */
   async sendPromptAndWait(sessionId: string, prompt: string): Promise<void> {
-    const turnEnded = this.waitTurnEnd(sessionId)
-    await this.registry.sendPrompt(sessionId, prompt)
-    await turnEnded
+    await Promise.all([this.waitTurnEnd(sessionId), this.registry.sendPrompt(sessionId, prompt)])
   }
 
   resolveByLabel(stepId: string): string | undefined {
@@ -464,9 +471,7 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
     if (!desc?.awaitingInput) return
 
     if (policy.awaiting === "auto-allow") {
-      const turnEnded = this.waitTurnEnd(sessionId)
-      await this.registry.sendPrompt(sessionId, policy.prompt)
-      await turnEnded
+      await this.sendPromptAndWait(sessionId, policy.prompt)
     } else if (policy.awaiting === "escalate") {
       const escalateUrl = policy.webhookUrl ?? this.opts?.notifyUrl
       if (escalateUrl) {
