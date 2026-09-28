@@ -1,5 +1,25 @@
 # @agentproto/runtime
 
+## 5.1.0
+
+### Minor Changes
+
+- 3619a5f: Device inference over pair/v2: a controller can address a paired host's local models transparently as `<endpointId>@<device>` (e.g. `ollama@work-mac/llama3.1:8b`), routed over the paired E2E channel with no open inbound port. Includes the opt-in `features.deviceInferenceShare` flag + `agentproto devices share-inference on|off` (gated by host-scoped pairings via a daemon-injected `x-agentproto-host-scope` header), the streaming `POST /devices/:id/exec-stream/<subpath>` relay, corporate-proxy support (`HTTPS_PROXY`/`NO_PROXY`) for rendezvous dials, and a `doctor` rendezvous reachability step.
+- a3ec1d6: Add capability bundles (bundle_list/create/update/delete, /mcp/imported/<id> passthrough), agent_start.daemonMount, and opencode install-mcp/skills support
+- 54e1f3b: Add session-scoped artifact store: session_artifact_add/_list/_get/_pin tools, /sessions/:id/artifacts* HTTP routes, and outcome file refs
+- b7b85d6: Auto-join wiring for sandbox boxes: optional `join: { tokenEnv: string }` on the AIP-36 `SandboxDefinition` (`@agentproto/sandbox`) names a host env var whose value (a join-token URL) is forwarded into the box under the same name at boot — sugar over `env.passthrough`, self-documenting for the auto-join case, and a no-op (never a boot failure) when the named host env var isn't actually set. `@agentproto/runtime`'s sandbox-boot slug collection (`bootSandboxAgentSession`) now includes `join.tokenEnv` in the resolved secret set whenever it's present and resolvable.
+- b7b85d6: Join tokens (SANDBOX-VISIBILITY-JOIN): a daemon can now mint a long-lived, revocable, reusable credential (`join_token_create`/`join_token_list`/`join_token_revoke` MCP tools, `POST/GET /devices/join-tokens` + `DELETE /devices/join-tokens/:id` REST routes, `agentproto devices join-token create|list|revoke` in `@agentproto/cli`) that a box daemon reads from its `AGENTPROTO_JOIN` env var at boot to auto-register itself as a host (`HostRegistry.add`, DEVICES-PLAN PR-C) with no offer URL to relay by hand — new `createJoinTokenRegistry`/`JoinTokenRegistry` in `@agentproto/runtime`, wired into `createGateway`'s `joinTokens` option, and boot-time `AGENTPROTO_JOIN` handling in `agentproto serve`. `HostRecord`/`Device` gain optional self-reported `provider`/`sandboxId`/`labels`, set via `HostRegistry.add`'s new optional `meta` parameter. New `device_sessions` MCP tool + `GET /devices/:id/sessions[/:sessionId/output]` REST routes + `agentproto devices sessions` (and the new `DeviceRegistry.forwardHttp`/`GET /sessions/:id/output` it's built on) let one daemon read another registered host's session list and tail a session's output over the same E2E channel `/devices/:id/exec` already uses. `@agentproto/apps`'s builtin Session Chat launcher additionally allowlists `device_list`/`device_sessions` for its UI.
+- 4ecd91b: `local-gh` sentinel provider: check-completed and closed events now key off the PR's head sha, so a new push whose CI concludes the same way as the last one (e.g. lint fails again) is no longer dropped by the delivery dedup, and a check that finishes between two polls on a new head is no longer masked by the old head's already-seen conclusions. `PrStatusSnapshot` gains an optional `headSha` field, and a new `github.pull_request.synchronize` event (now in the PR default type set) is emitted for the push itself.
+- 3dc5a8b: feat(runtime): session steward runtime — wrap-up plan, per-session RAM, close with outcome. Adds `processTreeRss` (per-session process-tree RSS via `ps`) and `session_list`'s `withMemory` input; `planSessionWrapup`, a deterministic (zero-LLM) close/stuck/judge/keep classifier for idle agent-cli sessions; `SessionOutcome` Level 2 fields (`source: "judged" | "declared"`, `verdict`, `judgedBy`, `note`) alongside two new `SessionEndReason` values (`steward-completed`, `steward-abandoned`); `registry.closeWithOutcome` (verdict `"done"`/`"abandoned"` closes the session lazy-resumably, `"blocked"`/`"needs-input"` records `SessionDescriptor.wrapupFlag` instead without touching liveness); and the `session_wrapup_plan` / `session_wrapup_apply` MCP tools. The judge-agent workflow for the ambiguous class is a separate follow-up.
+
+### Patch Changes
+
+- Updated dependencies [83ffc2d]
+- Updated dependencies [b7b85d6]
+- Updated dependencies [b7b85d6]
+  - @agentproto/apps@0.15.0
+  - @agentproto/sandbox@0.7.0
+
 ## 5.0.0
 
 ### Major Changes

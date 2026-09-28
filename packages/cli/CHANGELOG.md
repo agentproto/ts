@@ -1,5 +1,26 @@
 # @agentproto/cli
 
+## 1.3.0
+
+### Minor Changes
+
+- 3619a5f: Device inference over pair/v2: a controller can address a paired host's local models transparently as `<endpointId>@<device>` (e.g. `ollama@work-mac/llama3.1:8b`), routed over the paired E2E channel with no open inbound port. Includes the opt-in `features.deviceInferenceShare` flag + `agentproto devices share-inference on|off` (gated by host-scoped pairings via a daemon-injected `x-agentproto-host-scope` header), the streaming `POST /devices/:id/exec-stream/<subpath>` relay, corporate-proxy support (`HTTPS_PROXY`/`NO_PROXY`) for rendezvous dials, and a `doctor` rendezvous reachability step.
+- a3ec1d6: Add capability bundles (bundle_list/create/update/delete, /mcp/imported/<id> passthrough), agent_start.daemonMount, and opencode install-mcp/skills support
+- 83ffc2d: Fast worktree removal (rename to same-volume `.trash` + prune + detached background delete) wired into cleanup-worktree and gc, plus `agentproto maintain --all` with repeatable `--repo` to maintain every repo owning worktrees under the worktrees root.
+- b7b85d6: Join tokens (SANDBOX-VISIBILITY-JOIN): a daemon can now mint a long-lived, revocable, reusable credential (`join_token_create`/`join_token_list`/`join_token_revoke` MCP tools, `POST/GET /devices/join-tokens` + `DELETE /devices/join-tokens/:id` REST routes, `agentproto devices join-token create|list|revoke` in `@agentproto/cli`) that a box daemon reads from its `AGENTPROTO_JOIN` env var at boot to auto-register itself as a host (`HostRegistry.add`, DEVICES-PLAN PR-C) with no offer URL to relay by hand — new `createJoinTokenRegistry`/`JoinTokenRegistry` in `@agentproto/runtime`, wired into `createGateway`'s `joinTokens` option, and boot-time `AGENTPROTO_JOIN` handling in `agentproto serve`. `HostRecord`/`Device` gain optional self-reported `provider`/`sandboxId`/`labels`, set via `HostRegistry.add`'s new optional `meta` parameter. New `device_sessions` MCP tool + `GET /devices/:id/sessions[/:sessionId/output]` REST routes + `agentproto devices sessions` (and the new `DeviceRegistry.forwardHttp`/`GET /sessions/:id/output` it's built on) let one daemon read another registered host's session list and tail a session's output over the same E2E channel `/devices/:id/exec` already uses. `@agentproto/apps`'s builtin Session Chat launcher additionally allowlists `device_list`/`device_sessions` for its UI.
+
+### Patch Changes
+
+- Updated dependencies [3619a5f]
+- Updated dependencies [83ffc2d]
+- Updated dependencies [b7b85d6]
+- Updated dependencies [4ecd91b]
+  - @agentproto/llm-endpoint@0.10.0
+  - @agentproto/worktree@0.12.0
+  - @agentproto/apps@0.15.0
+  - @agentproto/sandbox-box@0.2.17
+  - @agentproto/sandbox-e2b@0.5.7
+
 ## 1.2.0
 
 ### Minor Changes

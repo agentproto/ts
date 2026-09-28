@@ -1,5 +1,15 @@
 # @agentproto/worktree
 
+## 0.12.0
+
+### Minor Changes
+
+- 83ffc2d: Fast worktree removal (rename to same-volume `.trash` + prune + detached background delete) wired into cleanup-worktree and gc, plus `agentproto maintain --all` with repeatable `--repo` to maintain every repo owning worktrees under the worktrees root.
+
+### Patch Changes
+
+- 4ecd91b: Fix a CI-only flaky test in `lifecycle.test.ts`: generated hook scripts used `process.exit()` right after many `console.log()` calls, which can truncate stdout on a piped (non-TTY) stream before the writes flush. Switched to `process.exitCode = …` so pending output drains before exit. Test-only; no runtime behavior change.
+
 ## 0.11.0
 
 ### Minor Changes
