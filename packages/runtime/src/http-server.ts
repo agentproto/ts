@@ -9297,7 +9297,7 @@ async function handleCron(
       return true
     }
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         label: typeof b.label === "string" ? b.label : undefined,
         schedule,
         recurring: typeof b.recurring === "boolean" ? b.recurring : true,
@@ -9381,7 +9381,7 @@ async function handleRoutineDefs(
 
   if (path === "/routine-defs/reconcile" && req.method === "POST") {
     try {
-      const result = registrar.reconcile()
+      const result = await registrar.reconcile()
       json(200, result)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)

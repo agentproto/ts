@@ -117,11 +117,11 @@ describe("cron_create schema — kind:\"tool\"", () => {
     expect(scheduler.list()).toHaveLength(0)
   })
 
-  it("scheduler.create() refuses cron_* even when called directly", () => {
+  it("scheduler.create() refuses cron_* even when called directly", async () => {
     const { scheduler } = makeScheduler()
-    expect(() =>
+    await expect(
       scheduler.create({ schedule: "* * * * *", action: { kind: "tool", tool: "cron_create" } }),
-    ).toThrow(/self-scheduling/)
+    ).rejects.toThrow(/self-scheduling/)
   })
 
   it("a hand-edited persisted cron_* tool job is refused at fire time, never dispatched", async () => {
@@ -340,7 +340,7 @@ describe("cron_create schema — agent action is agent_start's own shape", () =>
       isError: true,
     }))
     const { scheduler } = makeScheduler({ dispatchTool })
-    const job = scheduler.create({
+    const job = await scheduler.create({
       schedule: "* * * * *",
       action: { kind: "agent", adapter: "claude-code", prompt: "x", access: { profileRef: "gone" } },
     })

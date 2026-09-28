@@ -154,6 +154,7 @@ import { approvalCardResourceUri, renderApprovalCardHtml } from "./approvals/car
 import { wireSupervisorNotify } from "./supervisor-notify.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler } from "./cron-scheduler.js"
+import { getAuthProfile } from "@agentproto/auth"
 import { createRoutineRegistrar } from "./routine-registrar.js"
 import { createDaemonToolRegistry, mergeAppAndDaemonToolRegistry } from "./workflow-tool-registry.js"
 export type {
@@ -1896,14 +1897,20 @@ export async function createGateway(
   // ~/.agentproto/cron-jobs.json. Jobs survive daemon restarts;
   // skipped fires during downtime are NOT backfilled (documented behaviour).
   // Agent jobs fire as `agent_start` calls through `dispatchTool`;
-  // `resolveAgentAdapter` is only needed to restart a dead `prompt-session`
-  // target. Command jobs need neither.
+  // `resolveAgentAdapter` restarts a dead `prompt-session` target and, at
+  // create time, refuses an agent job whose adapter doesn't resolve
+  // (`getAuthProfile`/`listAgentAdapters` only word that error). Command
+  // jobs need none of them.
   const cronScheduler = createCronScheduler({
     sessionEvents,
     registry: sessions,
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
+    ...(opts.listAgentAdapters
+      ? { listAgentAdapters: opts.listAgentAdapters }
+      : {}),
+    getAuthProfile,
     dispatchTool,
     workspace,
     persist,
@@ -2904,7 +2911,7 @@ export async function createGateway(
   // collected in the result, not thrown) — same "never fails a session/boot"
   // posture as the PR-provenance reconciler above.
   try {
-    routineRegistrar.reconcile()
+    await routineRegistrar.reconcile()
   } catch (err) {
     events.emit({
       type: "heartbeat-error",
