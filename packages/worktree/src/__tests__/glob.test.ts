@@ -1,8 +1,12 @@
-import { describe, it, expect, afterEach } from "vitest"
+import { describe, it, expect, afterEach, vi } from "vitest"
 import { mkdtemp, rm, writeFile, mkdir, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { expandGlob } from "../glob.js"
+
+// The large-tree fixture builds 2,500 files and the afterEach rmdir's them
+// on a loaded external SSD — the default 5s per-test budget times out there.
+vi.setConfig({ testTimeout: 60_000 })
 
 describe("expandGlob", () => {
   const cleanupPaths: string[] = []

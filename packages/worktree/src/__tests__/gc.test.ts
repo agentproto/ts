@@ -35,6 +35,11 @@ import { planGc, applyGc, classifyForGc, reclaimOneWorktree, type GcApplyOutcome
 import { InMemoryVerdictMemoStore, listGitWorktrees, type IntegrationState } from "../status.js"
 import { UnreachableForgeClient, type ForgeClient, type ForgePullRequestRef } from "../forge.js"
 
+// Real git fixtures: dozens of spawns per test (same posture as
+// branch-gc.test.ts's setConfig — the suite predates it and has been timing
+// out per-test at the default 5s on a loaded external-SSD host since).
+vi.setConfig({ testTimeout: 60_000 })
+
 // ── fixtures (same shape as status.test.ts) ─────────────────────────────
 
 async function makeRepo(): Promise<string> {
@@ -88,6 +93,17 @@ function worktreeRemoveCalls(): unknown[][] {
   return spawnSpy.mock.calls.filter(
     (call) => call[0] === "git" && Array.isArray(call[1]) && call[1].includes("worktree") && call[1].includes("remove"),
   )
+}
+
+/**
+ * Every `--force` argv the removal pipeline actually sent to git — the
+ * invariant this suite guards. Since fast-remove, a reclaim removal may run
+ * the plain `worktree remove` twice (the non-force safety probe + a
+ * tolerated-dirt fallback), both without `--force`; the assertion is the
+ * same either way: no call git received ever carries `--force`.
+ */
+function forcedRemoveCalls(): unknown[][] {
+  return worktreeRemoveCalls().filter((call) => Array.isArray(call[1]) && call[1].includes("--force"))
 }
 
 beforeEach(() => spawnSpy.mockClear())
@@ -470,9 +486,10 @@ describe("gc reclaim — the argv passed to git", () => {
     const outcome = outcomes.find((o) => o.path === wtPath)
     expect(outcome?.result).toBe("reclaimed")
 
-    const removeCalls = worktreeRemoveCalls()
-    expect(removeCalls.length).toBeGreaterThan(0)
-    for (const call of removeCalls) expect(call[1]).not.toContain("--force")
+    // The strong invariant: git never received a `--force` argv on this
+    // reclaim path (the removal may probe then rename instead, so the
+    // assertion is "no forced call", not "at least one remove call").
+    expect(forcedRemoveCalls()).toHaveLength(0)
 
     // Branch deletion only ever runs for merged(*) — this entry is exactly that.
     const branches = await execGit(repo, ["branch", "--list", "feat/reclaim-me"])
@@ -1641,9 +1658,10 @@ describe("gc — noise allowlist, lock-free status, in-base promotion", () => {
 
     const outcomes = await applyGc(plan, { repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW, noisePaths })
     expect(outcomes.find((o) => o.path === wtPath)?.result).toBe("reclaimed")
-    const removes = worktreeRemoveCalls()
-    expect(removes.length).toBeGreaterThan(0)
-    for (const call of removes) expect(call[1]).not.toContain("--force")
+    // Same strong invariant as the argv test above: noise-path cleanup +
+    // removal (probe → rename → prune, or a tolerated-dirt fallback) must
+    // never send `--force` to git.
+    expect(forcedRemoveCalls()).toHaveLength(0)
   })
 
   it("the default allowlist covers .opencode/package-lock.json only", async () => {
