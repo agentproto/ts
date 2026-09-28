@@ -30,6 +30,12 @@
  *     network, no install). The looked-up path is `<name>/package.json` —
  *     works for a files-only package with no `main`/`exports` restricting
  *     subpaths, as long as it exposes `"./package.json"` (or none at all).
+ *
+ * A separate confinement, orthogonal to the three forms above and applied
+ * regardless of which one resolved a pack: a check's own `rubric` field is
+ * untrusted input (the pack author's, not the consumer's), so
+ * {@link readRubricConfined} refuses to read outside the pack's own root —
+ * see its doc comment.
  */
 
 import { execFile } from "node:child_process"
@@ -65,6 +71,40 @@ async function readSource(root: string): Promise<string> {
   }
 }
 
+/** True when realpath `child` is `realParent` itself or sits inside it —
+ *  the one containment check both the `allowCommands` trust boundary and
+ *  the rubric-path confinement below share. Compares realpath'd strings
+ *  only (never the raw, un-resolved paths), so a symlink can't fake it. */
+function isRealPathInside(realChild: string, realParent: string): boolean {
+  return realChild === realParent || realChild.startsWith(realParent + sep)
+}
+
+/**
+ * A pack check's own `rubric` field is untrusted input — read it ONLY from
+ * inside the pack's root. `resolve(root, relPath)` alone isn't enough (an
+ * absolute `relPath`, a `../../..` escape, or a same-directory symlink
+ * pointing elsewhere would all still "resolve"); the REALPATH of the
+ * result must land inside the REALPATH of `root`. This runs at
+ * `resolvePacks` time (every selected agent check's rubric is read for the
+ * pack digest before any lane ever starts), so a malicious rubric path
+ * never reaches a reviewer session's prompt either. Applies to every pack
+ * — trusted or not; a pack pointing outside its own root has no legitimate
+ * reason to, regardless of the `allowCommands` trust boundary. */
+async function readRubricConfined(root: string, relPath: string): Promise<Uint8Array> {
+  const resolved = resolve(root, relPath)
+  let realResolved: string
+  let realRoot: string
+  try {
+    ;[realResolved, realRoot] = await Promise.all([realpath(resolved), realpath(root)])
+  } catch (err) {
+    throw new Error(`could not read (${err instanceof Error ? err.message : String(err)})`)
+  }
+  if (!isRealPathInside(realResolved, realRoot)) {
+    throw new Error(`resolves outside its pack root (${root}) — refusing to read it`)
+  }
+  return readFile(realResolved)
+}
+
 async function loadFromRoot(root: string, refKind: PackSource["refKind"], trusted: boolean): Promise<PackSource> {
   const source = await readSource(root)
   return {
@@ -73,7 +113,7 @@ async function loadFromRoot(root: string, refKind: PackSource["refKind"], truste
     refKind,
     trusted,
     root,
-    readRubric: (relPath: string) => readFile(resolve(root, relPath)),
+    readRubric: (relPath: string) => readRubricConfined(root, relPath),
   }
 }
 
@@ -91,7 +131,7 @@ async function isTrustedRelativePack(root: string, repoRoot: string): Promise<bo
   } catch {
     return false
   }
-  if (realRoot !== realRepo && !realRoot.startsWith(realRepo + sep)) return false
+  if (!isRealPathInside(realRoot, realRepo)) return false
   const relReviewMd = join(relative(realRepo, realRoot), "REVIEW.md")
   try {
     await execFileP("git", ["-C", realRepo, "ls-files", "--error-unmatch", "--", relReviewMd])

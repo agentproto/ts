@@ -211,6 +211,18 @@ scratch dir, `./node_modules/<pkg>`) all still LOAD — they're just not
 exempt, same as an npm or git pack. An npm or git pack's command checks are
 never exempt, full stop.
 
+A pack check's `rubric` field is untrusted input too (the pack author's,
+not the consumer's) — the loader refuses to read outside the pack's own
+root, realpath'd on BOTH sides so neither a `../../..` escape, an absolute
+path, nor a same-directory symlink pointing elsewhere can smuggle out
+content from anywhere else on disk (`~/.ssh`, `/etc/passwd`, …) into the
+pack digest or the reviewer's prompt. This applies to every pack —
+including a trusted, same-repo one; there's no legitimate reason a pack's
+own rubric needs to live outside it. Checked once, at `resolvePacks` time
+(before any lane runs), so a violating pack never reaches a reviewer
+session at all — the whole review fails with a clear error naming the
+check instead.
+
 **Verify.** `review verify` re-checks `packs[]` digests against what THIS
 checkout's `uses[]` resolves to RIGHT NOW, but only when every pack
 actually resolves locally — an unresolvable pack (offline, not installed,

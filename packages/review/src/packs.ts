@@ -304,8 +304,16 @@ export async function resolvePacks(manifest: ReviewManifest, loader: PackLoader)
         ...(check.description !== undefined ? { description: check.description } : {}),
         rubricBase: loaded.root,
       }
+      let bytes: Uint8Array
+      try {
+        bytes = await loaded.readRubric(check.rubric)
+      } catch (err) {
+        throw new ReviewManifestError(
+          `uses '${use.as}' (${use.pack}): agent check '${id}' rubric '${check.rubric}' ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
       pushChecked(merged)
-      rubricFiles.push({ path: check.rubric, bytes: await loaded.readRubric(check.rubric) })
+      rubricFiles.push({ path: check.rubric, bytes })
     }
 
     const digestLines = [

@@ -12,7 +12,11 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { createReviewPackLoader, defaultReviewPackCacheDir } from "../review-pack-loader.js"
-import { startGitHttpsFixture, type GitHttpsFixture } from "./helpers/git-https-fixture.js"
+import { opensslAvailable, startGitHttpsFixture, type GitHttpsFixture } from "./helpers/git-https-fixture.js"
+
+// Top-level await: whether the ONE test that needs a real git+https://
+// server can run at all on this machine (openssl on PATH).
+const HAS_OPENSSL = await opensslAvailable()
 
 const sh = (cwd: string, ...args: string[]): string =>
   execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim()
@@ -67,6 +71,61 @@ describe("createReviewPackLoader — relative path", () => {
     await mkdir(join(repoRoot, "packs", "empty"), { recursive: true })
     const loader = createReviewPackLoader({ repoRoot, manifestDir: repoRoot })
     await expect(loader.load("./packs/empty")).rejects.toThrow(/no REVIEW\.md/)
+  })
+})
+
+describe("createReviewPackLoader — readRubric is confined to the pack root", () => {
+  // Applies regardless of trust: a pack's rubric field is untrusted input
+  // (the pack author's, not the consumer's) even for an otherwise-trusted
+  // relative pack — there's no legitimate reason it needs to read outside
+  // its own root.
+  it("rejects a ../../ escape out of the pack root", async () => {
+    const repoRoot = join(workdir, "repo")
+    const packDir = join(repoRoot, "packs", "core")
+    await writePackDir(packDir)
+    await mkdir(join(repoRoot, "secret"), { recursive: true })
+    await writeFile(join(repoRoot, "secret", "id_ed25519"), "not-a-real-key")
+    await writeFile(join(packDir, "REVIEW.md"), PACK_SOURCE.replace("./rubrics/correctness.md", "../../secret/id_ed25519"))
+
+    const loader = createReviewPackLoader({ repoRoot, manifestDir: repoRoot })
+    const source = await loader.load("./packs/core")
+    expect(source.manifest.checks[0]).toMatchObject({ rubric: "../../secret/id_ed25519" })
+    await expect(source.readRubric("../../secret/id_ed25519")).rejects.toThrow(/resolves outside its pack root/)
+  })
+
+  it("rejects an absolute path outside the pack root", async () => {
+    const repoRoot = join(workdir, "repo")
+    const packDir = join(repoRoot, "packs", "core")
+    await writePackDir(packDir)
+    const secretPath = join(workdir, "outside-secret.txt")
+    await writeFile(secretPath, "not-a-real-secret")
+
+    const loader = createReviewPackLoader({ repoRoot, manifestDir: repoRoot })
+    const source = await loader.load("./packs/core")
+    await expect(source.readRubric(secretPath)).rejects.toThrow(/resolves outside its pack root/)
+  })
+
+  it("rejects a symlink inside the pack that points outside it (realpath sees through it)", async () => {
+    const repoRoot = join(workdir, "repo")
+    const packDir = join(repoRoot, "packs", "core")
+    await writePackDir(packDir)
+    const secretPath = join(workdir, "symlink-secret.txt")
+    await writeFile(secretPath, "not-a-real-secret")
+    await symlink(secretPath, join(packDir, "rubrics", "linked.md"))
+
+    const loader = createReviewPackLoader({ repoRoot, manifestDir: repoRoot })
+    const source = await loader.load("./packs/core")
+    await expect(source.readRubric("./rubrics/linked.md")).rejects.toThrow(/resolves outside its pack root/)
+  })
+
+  it("still reads a rubric that legitimately lives inside the pack root", async () => {
+    const repoRoot = join(workdir, "repo")
+    const packDir = join(repoRoot, "packs", "core")
+    await writePackDir(packDir)
+    const loader = createReviewPackLoader({ repoRoot, manifestDir: repoRoot })
+    const source = await loader.load("./packs/core")
+    const rubric = await source.readRubric("./rubrics/correctness.md")
+    expect(Buffer.from(rubric).toString("utf8")).toContain("Find bugs.")
   })
 })
 
@@ -179,58 +238,61 @@ describe("createReviewPackLoader — npm", () => {
 })
 
 describe("createReviewPackLoader — git", () => {
-  let fixture: GitHttpsFixture
-
-  async function makeBareFixture(): Promise<{ sha: string; branch: string }> {
-    const work = join(workdir, "git-work")
-    await mkdir(work, { recursive: true })
-    sh(work, "init", "-q", "-b", "main")
-    sh(work, "config", "user.email", "t@example.com")
-    sh(work, "config", "user.name", "t")
-    sh(work, "config", "commit.gpgsign", "false")
-    await writePackDir(work)
-    sh(work, "add", "-A")
-    sh(work, "commit", "-qm", "pack v1")
-    const sha = sh(work, "rev-parse", "HEAD")
-
-    const projectRoot = join(workdir, "git-http-root")
-    await mkdir(projectRoot, { recursive: true })
-    const bare = join(projectRoot, "pack.git")
-    sh(workdir, "clone", "-q", "--bare", work, bare)
-    fixture = await startGitHttpsFixture(projectRoot)
-    return { sha, branch: "main" }
-  }
+  let fixture: GitHttpsFixture | undefined
 
   afterEach(async () => {
     await fixture?.close()
+    fixture = undefined
   })
 
-  it("clones a full-sha-pinned git+https:// ref into the cache dir and reuses it on a second resolve", async () => {
-    const { sha } = await makeBareFixture()
-    const cacheDir = join(workdir, "cache")
+  // Only this test needs a REAL, reachable git+https:// server (openssl to
+  // mint a throwaway cert + git-http-backend to serve it) — everything else
+  // in this block rejects before any network attempt, so it doesn't need
+  // the fixture at all. Skipped, not failed, when openssl isn't on PATH.
+  const clone = HAS_OPENSSL ? it : it.skip
+  clone(
+    `clones a full-sha-pinned git+https:// ref into the cache dir and reuses it on a second resolve${HAS_OPENSSL ? "" : " (skipped: openssl not found on PATH)"}`,
+    async () => {
+      const work = join(workdir, "git-work")
+      await mkdir(work, { recursive: true })
+      sh(work, "init", "-q", "-b", "main")
+      sh(work, "config", "user.email", "t@example.com")
+      sh(work, "config", "user.name", "t")
+      sh(work, "config", "commit.gpgsign", "false")
+      await writePackDir(work)
+      sh(work, "add", "-A")
+      sh(work, "commit", "-qm", "pack v1")
+      const sha = sh(work, "rev-parse", "HEAD")
+
+      const projectRoot = join(workdir, "git-http-root")
+      await mkdir(projectRoot, { recursive: true })
+      sh(workdir, "clone", "-q", "--bare", work, join(projectRoot, "pack.git"))
+      fixture = await startGitHttpsFixture(projectRoot)
+
+      const cacheDir = join(workdir, "cache")
+      const repoRoot = join(workdir, "repo")
+      await mkdir(repoRoot, { recursive: true })
+      const loader = createReviewPackLoader({ repoRoot, manifestDir: repoRoot, cacheDir, env: fixture.env })
+
+      const ref = `git+${fixture.url}/pack.git#${sha}`
+      const first = await loader.load(ref)
+      expect(first.refKind).toBe("git")
+      expect(first.trusted).toBe(false) // git packs are NEVER exempt from allowCommands
+      expect(first.manifest.id).toBe("core")
+      expect(first.root).toBe(join(cacheDir, sha))
+
+      // Second resolve reuses the cache: works even once the fixture is closed.
+      await fixture.close()
+      const second = await loader.load(ref)
+      expect(second.root).toBe(first.root)
+    },
+  )
+
+  it("rejects a floating ref (branch, not a full 40-hex sha) — no network needed, this fails on the sha format alone", async () => {
     const repoRoot = join(workdir, "repo")
     await mkdir(repoRoot, { recursive: true })
-    const loader = createReviewPackLoader({ repoRoot, manifestDir: repoRoot, cacheDir, env: fixture.env })
-
-    const ref = `git+${fixture.url}/pack.git#${sha}`
-    const first = await loader.load(ref)
-    expect(first.refKind).toBe("git")
-    expect(first.trusted).toBe(false) // git packs are NEVER exempt from allowCommands
-    expect(first.manifest.id).toBe("core")
-    expect(first.root).toBe(join(cacheDir, sha))
-
-    // Second resolve reuses the cache: works even once the fixture is closed.
-    await fixture.close()
-    const second = await loader.load(ref)
-    expect(second.root).toBe(first.root)
-  })
-
-  it("rejects a floating ref (branch, not a full 40-hex sha)", async () => {
-    const { branch } = await makeBareFixture()
-    const repoRoot = join(workdir, "repo")
-    await mkdir(repoRoot, { recursive: true })
-    const loader = createReviewPackLoader({ repoRoot, manifestDir: repoRoot, cacheDir: join(workdir, "cache"), env: fixture.env })
-    await expect(loader.load(`git+${fixture.url}/pack.git#${branch}`)).rejects.toThrow(/pinned to a full 40-hex commit sha/)
+    const loader = createReviewPackLoader({ repoRoot, manifestDir: repoRoot, cacheDir: join(workdir, "cache") })
+    await expect(loader.load("git+https://127.0.0.1:1/pack.git#main")).rejects.toThrow(/pinned to a full 40-hex commit sha/)
   })
 
   // Defense in depth: the loader validates the transport itself rather than

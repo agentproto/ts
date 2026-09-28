@@ -227,6 +227,27 @@ describe("resolvePacks", () => {
     expect(resolved.manifest.checks.map((c) => c.id)).toContain("core/lint")
   })
 
+  it("wraps a readRubric failure (e.g. the runtime loader's path-confinement check) naming the check and pack", async () => {
+    const escapingLoader = fakeLoader({
+      packs: { "./core-pack": { source: CORE_PACK_SOURCE } },
+      // No rubric registered for correctness — readRubric rejects, as the
+      // real loader's confinement check would for a `../../` escape.
+      rubrics: { "./rubrics/security.md": CORE_RUBRICS["./rubrics/security.md"] },
+    })
+    const m = parseReviewManifest(
+      md(
+        "uses:",
+        "  - {pack: ./core-pack, as: core, preset: kimi, checks: [correctness]}",
+        "checks: [{id: types, kind: command, run: tsc}]",
+        "bindings:",
+        "  local: {checks: [types, core/correctness]}",
+      ),
+    )
+    await expect(resolvePacks(m, escapingLoader)).rejects.toThrow(
+      /agent check 'correctness' rubric '\.\/rubrics\/correctness\.md'.*no rubric registered/,
+    )
+  })
+
   it("errors naming the check when an agent check resolves no preset anywhere", async () => {
     const m = parseReviewManifest(
       md(
