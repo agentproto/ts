@@ -88,7 +88,9 @@ export function createFakeSentinelProvider(
 
     async create(spec: SentinelSpec, delivery: DeliveryPreference): Promise<SentinelHandle> {
       attachCalls.push(delivery)
-      return { provider: slug, remoteId: spec.subject, cursor: "0" }
+      // The first match clause's subject stands in for "the primary thing
+      // being watched" — good enough for a test double's remoteId.
+      return { provider: slug, remoteId: spec.match[0]?.subject, cursor: "0" }
     },
 
     async attach(handle: SentinelHandle, delivery: DeliveryPreference): Promise<SentinelHandle> {
