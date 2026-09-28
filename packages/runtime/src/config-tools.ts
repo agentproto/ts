@@ -793,12 +793,12 @@ export function registerConfigTools(server: McpServer, deps: ConfigToolsDeps): v
   server.tool(
     "config_set",
     "Write ONE key in `~/.agentproto/config.json`, allowlisted against the " +
-      "key registry. A `models.<role>` write whose model id the catalog does " +
-      "not know still succeeds but returns `warnings`. Allowlist detail: " +
       "key registry (`config-schema.ts`'s `CONFIG_KEYS`): an unknown key or " +
       "one marked `writable: false` (a secret field, since wallet secrets " +
       "belong in auth profiles, or a daemon lockout field that could cut " +
       "the app off from the daemon) is rejected outright, never written. " +
+      "A `models.<role>` write whose model id the catalog does not know still " +
+      "succeeds but returns `warnings`. " +
       "Give exactly one of `value` (type-checked against the key's own " +
       "schema, then the WHOLE resulting config is re-validated before " +
       "saving) or `unset: true` (delete the key). Pass `revision` (from a " +

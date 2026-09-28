@@ -28,6 +28,7 @@ import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { loadAppHandle, loadAppBundledTools, peekAppUi, type AppUiBuildConfig } from "@agentproto/app-kit"
 import { ensureAppUiBuilt } from "./app-ui-build.js"
+import { parseModelRoleRef } from "./model-roles.js"
 import { loadAgent } from "@agentproto/agent"
 import type { AnyRef } from "@agentproto/agent"
 import type { AgentRefResolution } from "@agentproto/workflow-runtime"
@@ -144,6 +145,25 @@ async function waitForSessionTerminal(
  *  run on claude-code. Anything else keeps the pre-F26 blanket default. */
 export const MODEL_ROUTED_ADAPTER = "claude-code"
 
+/** Resolves a model ROLE (`review.large`) to a model id — see `model-roles.ts`. */
+export type ModelRoleResolver = (role: string) => Promise<string | undefined>
+
+/**
+ * An AGENT.md `model:` may be `role:<name>` (see `model-roles.ts`) instead of
+ * a model id: resolve it now, before adapter selection or spawn. A role that
+ * cannot be resolved yields `undefined` (the adapter's own default) rather
+ * than leaking the raw `role:` string to a model API.
+ */
+export async function resolveAgentModelRef(
+  model: string | undefined,
+  resolveRole?: ModelRoleResolver,
+): Promise<string | undefined> {
+  if (model === undefined) return undefined
+  const role = parseModelRoleRef(model)
+  if (role === undefined) return model
+  return resolveRole ? resolveRole(role) : undefined
+}
+
 function defaultAdapterForModel(model: string | undefined): string {
   if (model === undefined) return DEFAULT_AGENT_ADAPTER
   const bare = model.includes("/") ? model.slice(model.lastIndexOf("/") + 1) : model
@@ -192,6 +212,7 @@ function agentMetadataAdapter(metadata: { [k: string]: unknown } | undefined): s
 export async function resolveAgentRefsForWorkflow(
   appRegistry: AppRegistry,
   workflowId: string,
+  resolveRole?: ModelRoleResolver,
 ): Promise<Record<string, AgentRefResolution> | undefined> {
   const app = appRegistry.listApps().find(a => a.workflows.some(w => w.id === workflowId))
   if (!app) return undefined
@@ -202,7 +223,7 @@ export async function resolveAgentRefsForWorkflow(
     let tools: string[] | undefined
     try {
       const { handle } = await loadAgent(agent.path)
-      model = typeof handle.model === "string" ? handle.model : undefined
+      model = await resolveAgentModelRef(typeof handle.model === "string" ? handle.model : undefined, resolveRole)
       metadataAdapter = agentMetadataAdapter(handle.metadata)
       // String tool ids only — they scope the daemon gateway an agent step's
       // session gets (sessions-registry-agent-host.ts). A structured ref has
@@ -320,9 +341,13 @@ export function buildAgentRunSpawnConfig(
 /** Load an AGENT.md's declared model (string form only — a structured
  *  `ModelRef` has no single id to pass as `agent_start.model`) and body,
  *  for `buildAgentRunSpawnConfig`. */
-export async function loadAgentPromptDefaults(agentPath: string): Promise<{ model?: string; body: string }> {
+export async function loadAgentPromptDefaults(
+  agentPath: string,
+  resolveRole?: ModelRoleResolver,
+): Promise<{ model?: string; body: string }> {
   const { handle, body } = await loadAgent(agentPath)
-  return { ...(typeof handle.model === "string" ? { model: handle.model } : {}), body }
+  const model = await resolveAgentModelRef(typeof handle.model === "string" ? handle.model : undefined, resolveRole)
+  return { ...(model !== undefined ? { model } : {}), body }
 }
 
 function textResult(body: unknown): { content: { type: "text"; text: string }[] } {
@@ -532,6 +557,8 @@ export interface RegisterAppToolsOptions {
    * failing one step at a time deep into a run.
    */
   listRegisteredToolIds: () => Promise<string[]>
+  /** Resolves an AGENT.md `model: role:<name>` at `app_run` time. */
+  resolveModelRole?: ModelRoleResolver
   /** When wired, `app_status` folds in workflow runs whose `workflowId`
    *  belongs to the app — any run of one of its bundled WORKFLOW.md files,
    *  however it was started (`workflow_run_file`, `workflow_start`, …).
@@ -802,7 +829,7 @@ export async function performInstall(
 }
 
 export function registerAppTools(server: McpServer, opts: RegisterAppToolsOptions): void {
-  const { registry, resolveAgentAdapter, listRegisteredToolIds, workflowRunner, dispatchTool, callImportedTool } =
+  const { registry, resolveAgentAdapter, listRegisteredToolIds, workflowRunner, dispatchTool, callImportedTool, resolveModelRole } =
     opts
   const appRegistry: AppRegistry = opts.appRegistry ?? createAppRegistry({
     ...(opts.persistPath !== undefined ? { persistPath: opts.persistPath } : {}),
@@ -1047,7 +1074,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           spawnOptions = { agent: agentPath }
           if (spawnModel === undefined) {
             try {
-              spawnModel = (await loadAgentPromptDefaults(agentPath)).model
+              spawnModel = (await loadAgentPromptDefaults(agentPath, resolveModelRole)).model
             } catch (err) {
               errors.push({
                 agentId,
@@ -1058,7 +1085,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           }
         } else {
           try {
-            const defaults = await loadAgentPromptDefaults(agentPath)
+            const defaults = await loadAgentPromptDefaults(agentPath, resolveModelRole)
             const built = buildAgentRunSpawnConfig(defaults, { model, prompt: input.prompt })
             spawnModel = built.model
             spawnPrompt = built.prompt

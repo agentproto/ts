@@ -38,6 +38,7 @@ describe("repo-maintenance app", () => {
     const [workflow] = app.workflows
     const stepIds = workflow!.steps.map(s => `${s.id}:${s.kind}`)
     expect(stepIds).toEqual([
+      "modelRoles:tool",
       "worktreeGcPlan:tool",
       "branchGcPlan:tool",
       "reviewQueue:transform",
@@ -86,5 +87,66 @@ describe("repo-maintenance app", () => {
     const [workflow] = app.workflows
     const applyStep = workflow!.steps.find(s => s.id === "branchGcApply") as { inputs: Record<string, unknown> }
     expect(applyStep.inputs.includeReviewed).toBe(false)
+  })
+
+  describe("reviewer models come from model roles", () => {
+    type Sel = (b: unknown) => string | undefined
+    const load = async () => {
+      const app = await loadAppHandle(APP_DIR)
+      const [workflow] = app.workflows
+      const review = workflow!.steps.find(s => s.id === "review") as { steps: Array<{ id: string; model?: unknown }> }
+      return {
+        app,
+        workflow: workflow!,
+        small: (review.steps.find(s => s.id === "reviewOne")!.model) as Sel,
+        retry: (review.steps.find(s => s.id === "reviewRetryLarge")!.model) as Sel,
+      }
+    }
+    // What the daemon's `model_roles` tool returns for the `modelRoles` step.
+    const roles = (models: Record<string, string>) => ({ modelRoles: { models } })
+
+    it("asks model_roles for review.small/review.large, folding the explicit inputs in as its top layer", async () => {
+      const { workflow } = await load()
+      const step = workflow.steps.find(s => s.id === "modelRoles") as { kind: string; tool: string; inputs: Record<string, unknown> }
+      expect(step.kind).toBe("tool")
+      expect(step.tool).toBe("model_roles")
+      expect(step.inputs.roles).toEqual(["review.small", "review.large"])
+      expect(step.inputs.inputs).toEqual({ "review.small": "$input.reviewModelSmall", "review.large": "$input.reviewModelLarge" })
+    })
+
+    it("does not default the model inputs (a default would be indistinguishable from an explicit choice)", async () => {
+      const { workflow } = await load()
+      const inputs = (workflow as unknown as { inputs: Record<string, { default?: unknown }> }).inputs
+      expect(inputs.reviewModelSmall).toBeDefined()
+      expect(inputs.reviewModelSmall!.default).toBeUndefined()
+      expect(inputs.reviewModelLarge!.default).toBeUndefined()
+    })
+
+    it("picks the configured role by residual size, and the retry reviewer uses review.large", async () => {
+      const { small, retry } = await load()
+      const steps = roles({ "review.small": "cfg-small", "review.large": "cfg-large" })
+      expect(small({ input: {}, steps, item: { residualFileCount: 2 } })).toBe("cfg-small")
+      expect(small({ input: {}, steps, item: { residualFileCount: 4 } })).toBe("cfg-large")
+      expect(retry({ input: {}, steps })).toBe("cfg-large")
+    })
+
+    it("an explicit input wins over the resolved role", async () => {
+      const { small, retry } = await load()
+      const steps = roles({ "review.small": "cfg-small", "review.large": "cfg-large" })
+      const input = { reviewModelSmall: "in-small", reviewModelLarge: "in-large" }
+      expect(small({ input, steps, item: { residualFileCount: 1 } })).toBe("in-small")
+      expect(small({ input, steps, item: { residualFileCount: 9 } })).toBe("in-large")
+      expect(retry({ input, steps })).toBe("in-large")
+    })
+
+    it("with no role resolution at all the selector yields undefined, leaving the reviewer AGENT.md model in charge", async () => {
+      const { small } = await load()
+      expect(small({ input: {}, steps: {}, item: { residualFileCount: 1 } })).toBeUndefined()
+    })
+
+    it("the reviewer AGENT.md references the review.large role instead of a model id", async () => {
+      const { app } = await load()
+      expect(app.agents[0]!.agent.model).toBe("role:review.large")
+    })
   })
 })
