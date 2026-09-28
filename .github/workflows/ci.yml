@@ -54,6 +54,7 @@ jobs:
           EVENT_ACTION: ${{ github.event.action }}
           BEFORE_SHA: ${{ github.event.before }}
           AFTER_SHA: ${{ github.event.after }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           skip=false
 
@@ -70,7 +71,15 @@ jobs:
             esac
           }
 
-          if [ "$EVENT_ACTION" != "synchronize" ]; then
+          # The changesets "Version Packages" PR only bumps versions and
+          # CHANGELOGs; everything it carries was already built + tested on
+          # main, and Release rebuilds (and publishes) from main after merge.
+          # It is regenerated on every push to main, and each "Update branch"
+          # merge re-ran a full ~13min build for nothing — skip it outright.
+          if [[ "$HEAD_REF" == changeset-release/* ]]; then
+            echo "Release PR ($HEAD_REF) — already built on main, skipping Build+test."
+            skip=true
+          elif [ "$EVENT_ACTION" != "synchronize" ]; then
             echo "action=$EVENT_ACTION (not a synchronize push) — running Build+test."
           elif [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
             echo "No usable 'before' sha — running Build+test."
@@ -137,7 +146,9 @@ jobs:
     # the occasional wasted build on rapid pushes.
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-build
-      cancel-in-progress: false
+      # Release PR: no reviewer pushes to protect, and only the latest
+      # version bump matters — let a newer push cancel the stale run.
+      cancel-in-progress: ${{ startsWith(github.head_ref, 'changeset-release/') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
