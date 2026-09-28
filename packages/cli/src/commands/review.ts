@@ -549,7 +549,7 @@ async function verifyPackDigests(
       }
       if (want.alg !== got.alg) {
         problems.push(
-          `pack '${want.ref}' was attested with digest algorithm '${want.alg}', but this checkout's resolver only knows ` +
+          `pack '${want.ref}' was attested with digest algorithm ${want.alg ? `'${want.alg}'` : "(none recorded — a pre-v1 attestation)"}, but this checkout's resolver only knows ` +
             `'${got.alg}' — refusing to compare digests computed under different, unstated recipes`,
         )
         continue
