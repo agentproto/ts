@@ -19,7 +19,7 @@ import {
   type TunnelServerOptions,
 } from "@agentproto/acp/tunnel"
 import { loadImportedMcps } from "@agentproto/runtime/mcp-imports"
-import type { GatewayHandle } from "@agentproto/runtime"
+import { HOST_SCOPE_HEADER, type GatewayHandle } from "@agentproto/runtime"
 import type { PtyFactory } from "./pty-factory.js"
 
 /** The `createTunnelServer` options common to `serve --connect` and pairing —
@@ -46,13 +46,31 @@ export interface BuildTunnelServerOptionsInput {
   /** Prefix for the sessions-registry label of adopted spawns. `serve --connect`
    *  uses "tunnel"; a pairing uses "pair". Default "pair". */
   childLabelPrefix?: string
+  /**
+   * This channel's own recorded pairing scope (device inference, DEVICES-PLAN
+   * item 1) — mirrors `PairingChannelContext.scope`. `"host"` injects an
+   * `x-agentproto-host-scope` header onto every forwarded `http_request`, the
+   * same way `injectAuthToken` injects `authorization`: the tunnel server
+   * overrides any same-named header the frame itself carries, so the far end
+   * (whoever dials in over this channel) cannot forge it — only the daemon's
+   * OWN scope decision at serve time ever sets it. Gates the device-inference
+   * routes (`/device-inference/*` in http-server.ts) so an ordinary
+   * remote-control pairing can never reach them, only a host-scoped one.
+   * Omitted (or the connect-only call site, which passes nothing) ⇒ no
+   * header, those routes 403 unless the request is loopback-local.
+   */
+  pairingScope?: "host"
 }
 
 export function buildDaemonTunnelServerOptions(
   input: BuildTunnelServerOptionsInput,
 ): CommonTunnelServerOptions {
-  const { gateway, label, spawnPty, announcedTools, injectAuthToken } = input
+  const { gateway, label, spawnPty, announcedTools, injectAuthToken, pairingScope } = input
   const childLabelPrefix = input.childLabelPrefix ?? "pair"
+  const injectHeaders: Record<string, string> = {
+    ...(injectAuthToken ? { authorization: `Bearer ${injectAuthToken}` } : {}),
+    ...(pairingScope === "host" ? { [HOST_SCOPE_HEADER]: "1" } : {}),
+  }
 
   return {
     label,
@@ -62,9 +80,7 @@ export function buildDaemonTunnelServerOptions(
     // Generic HTTP-relay upstream for `http_request` frames — the daemon's own
     // gateway, where /mcp, /sessions, /events, /permissions live.
     httpUpstream: gateway.url,
-    ...(injectAuthToken
-      ? { httpInjectHeaders: { authorization: `Bearer ${injectAuthToken}` } }
-      : {}),
+    ...(Object.keys(injectHeaders).length > 0 ? { httpInjectHeaders: injectHeaders } : {}),
     httpForwardTimeoutMs: DEFAULT_HTTP_FORWARD_TIMEOUT_MS,
     wsDialTimeoutMs: DEFAULT_WS_DIAL_TIMEOUT_MS,
     httpStreamIdleTimeoutMs: 120_000,

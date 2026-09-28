@@ -178,6 +178,7 @@ const featuresConfigSchema: z.ZodType<FeaturesConfig> = z
   .object({
     pty: z.boolean().optional(),
     llmEndpoint: z.boolean().optional(),
+    deviceInferenceShare: z.boolean().optional(),
   })
   .passthrough()
 
@@ -1149,6 +1150,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "daemon",
     label: "LLM Endpoint feature",
     help: "Enable the local LLM Endpoint proxy sidecar (route + MCP tools + child-process lifecycle).",
+    default: false,
+  },
+  {
+    path: "features.deviceInferenceShare",
+    schema: bool,
+    apply: "restart",
+    writable: true,
+    section: "daemon",
+    label: "Device inference sharing",
+    help: "Expose this daemon's local inference endpoint(s) to a paired HOST-scoped controller. Toggle via `agentproto devices share-inference on|off`.",
     default: false,
   },
 ] as const

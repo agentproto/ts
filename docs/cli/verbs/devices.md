@@ -6,6 +6,7 @@ agentproto devices rename <fingerprint|name> <new-name>
 agentproto devices revoke <fingerprint|name>
 agentproto devices add    <offer-url> [--name <label>]
 agentproto devices status <fingerprint|name>
+agentproto devices share-inference on|off
 ```
 
 The device registry: a management view over every client paired with this
@@ -99,6 +100,36 @@ Probes a registered host's `/health` over its E2E channel — a fresh dial +
 handshake each call (a host has no standing connection, unlike a paired
 client). Confirms the host is reachable and this daemon can still drive it.
 Exits non-zero on an unreachable host or a non-2xx response.
+
+## `share-inference`
+
+```bash
+agentproto devices share-inference on
+agentproto devices share-inference off
+```
+
+Opt THIS daemon in (or out) of exposing its own local inference endpoint(s)
+— the `llmEndpoint` sidecar's `GET /v1/models` and `POST
+/v1/chat/completions` — to a paired controller. Writes
+`features.deviceInferenceShare` to `config.json`; restart `agentproto serve`
+(or the daemon) for a change to take effect.
+
+**Two independent gates, both required**, from either side:
+
+- On THIS machine (B): `deviceInferenceShare` on (this command) AND
+  `features.llmEndpoint` on (`agentproto llm gateway status`; it defaults on
+  once a named endpoint is configured).
+- On the pairing itself: the OTHER daemon (A) must have registered this one
+  as a **host** — `agentproto pair offer --host` here, `agentproto devices
+  add` there. An ordinary remote-control pairing never gets these routes,
+  whatever `share-inference` is set to — see
+  [pair.md](./pair.md#offer--daemon-side).
+
+Once both are on, A addresses this daemon's endpoints transparently as
+`<endpointId>@<device>` — e.g. a model string `ollama@my-host/llama3.1:8b`
+routed through A's own llm-endpoint gateway forwards to B's `ollama`
+endpoint, over the paired E2E channel, with no open inbound port on B.
+Offline/unreachable surfaces as a normal upstream error, not a hang.
 
 ## See also
 

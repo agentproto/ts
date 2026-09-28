@@ -104,6 +104,8 @@
     "cli-highlight": "^2.1.11",
     "create-agentproto-app": "workspace:*",
     "gray-matter": "^4.0.3",
+    "http-proxy-agent": "7.0.2",
+    "https-proxy-agent": "7.0.6",
     "qrcode-terminal": "^0.12.0",
     "ws": "^8.21.3",
     "zod": "^4.6.5"

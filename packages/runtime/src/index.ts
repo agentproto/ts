@@ -197,6 +197,11 @@ export type {
   CatalogModelsLister,
   AdapterCapabilitiesLister,
 } from "./http-server.js"
+// Header the tunnel server injects on a host-scoped pairing's forwarded
+// requests (DEVICES-PLAN item 1) — re-exported so `packages/cli`'s
+// `buildDaemonTunnelServerOptions` (which sets it) and http-server.ts's own
+// `handleDeviceInference` (which checks it) share one literal, not two.
+export { HOST_SCOPE_HEADER } from "./http-server.js"
 export type {
   CapabilitiesInventory,
   CapabilitiesInventoryMcp,
@@ -1164,6 +1169,12 @@ export interface CreateGatewayOptions {
    *  an opt-in feature; when off, the `llm-endpoint` custom route is not
    *  registered and the `llm_endpoint_*` MCP tools are not exposed. */
   llmEndpoint?: boolean
+  /** Mirrors `config.features.deviceInferenceShare` (DEVICES-PLAN item 1).
+   *  Default false. Only meaningful alongside `llmEndpoint: true` — passed
+   *  straight through to `startHttpServer`'s `deviceInferenceShare`, which
+   *  gates `/device-inference/*` (see http-server.ts's `HOST_SCOPE_HEADER`
+   *  doc comment for the full scope-gate story). */
+  deviceInferenceShare?: boolean
 }
 
 /** Default crash-detect sweep interval (crash-detect PR-1) when
@@ -1344,6 +1355,15 @@ export async function createGateway(
     throw new Error(`runtime: workspace dir does not exist: ${workspace}`)
   }
   const port = opts.port ?? 18790
+  // Per-boot bearer token. Required on mutating /sessions/* routes
+  // and on the WS upgrade for /sessions/:id/pty. Persisted to
+  // runtime.json (mode 0600) so the same-user CLI can read it; a
+  // browser-loaded localhost page can't. Hoisted above its original spot
+  // (just before `startHttpServer`) so it's already in scope where the
+  // llm-endpoint sidecar registry is constructed below, which needs it to
+  // reach back into THIS daemon's own `/devices/:id/exec-stream` (device-
+  // inference model routing, DEVICES-PLAN item 2).
+  const token = opts.token ?? randomUUID()
   // Loopback URL for the daemon's own plain `/mcp` gateway — always
   // 127.0.0.1 regardless of `opts.bind`, mirroring the orchestrator
   // injector's loopback default (orchestrator-gateway.ts), since a
@@ -1423,6 +1443,14 @@ export async function createGateway(
             at: new Date().toISOString(),
             line,
           }),
+        // Loopback callback into THIS daemon's own gateway (deterministic —
+        // `port` is fixed before the server ever binds) + its per-boot
+        // bearer, so the sidecar can reach `/devices/:id/exec-stream` to
+        // route a `<endpoint>@<device>` model (DEVICES-PLAN item 2).
+        // Injected regardless of `deviceInferenceShare`/`hostRegistry` — an
+        // unconfigured/offline device just 404s/502s at request time, same
+        // as any other unreachable upstream.
+        daemonCallback: { baseUrl: `http://127.0.0.1:${port}`, token },
       })
     : undefined
   // Autostart on daemon boot (daemon-managed-gateway): mirrors
@@ -1988,12 +2016,6 @@ export async function createGateway(
     // reports merged/closed.
     ...(opts.resolvePrState ? { resolvePrState: opts.resolvePrState } : {}),
   })
-
-  // Per-boot bearer token. Required on mutating /sessions/* routes
-  // and on the WS upgrade for /sessions/:id/pty. Persisted to
-  // runtime.json (mode 0600) so the same-user CLI can read it; a
-  // browser-loaded localhost page can't.
-  const token = opts.token ?? randomUUID()
 
   // MCP proxy — single registry that holds open Client connections
   // to every imported MCP server. The per-request mcpServerFactory
@@ -2801,6 +2823,7 @@ export async function createGateway(
       isSessionAlive,
     },
     ...(llmEndpoint ? { llmEndpoint } : {}),
+    ...(opts.deviceInferenceShare ? { deviceInferenceShare: true } : {}),
     remote,
     ...(opts.pairingRegistry ? { pairings: opts.pairingRegistry } : {}),
     ...(opts.hostRegistry ? { hostRegistry: opts.hostRegistry } : {}),

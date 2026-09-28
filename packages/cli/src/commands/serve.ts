@@ -93,12 +93,14 @@ import {
   type AdapterAuthDescriptor,
   type GatewayHandle,
   type PairingRegistry,
+  type PairingChannelContext,
   type PairingChannelHandle,
   type HostRegistry,
 } from "@agentproto/runtime"
 import { CatalogProviderSchema, type CatalogProvider } from "@agentproto/model-catalog"
 import { loadOrCreateIdentity } from "@agentproto/secrets/identity"
 import { buildDaemonTunnelServerOptions } from "../util/tunnel-serve.js"
+import { resolveProxyDialOptions } from "../util/proxy-dial.js"
 import { homedir } from "node:os"
 import { join as joinPath } from "node:path"
 import {
@@ -635,7 +637,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
     process.env.AGENTPROTO_HOME ?? joinPath(homedir(), ".agentproto")
   const cfgPairing = cfg.pairing ?? {}
   let gateway: GatewayHandle
-  const servePairedChannel = (sink: E2eFrameSink): PairingChannelHandle => {
+  const servePairedChannel = (sink: E2eFrameSink, ctx: PairingChannelContext): PairingChannelHandle => {
     const server = createTunnelServer({
       sink,
       ...buildDaemonTunnelServerOptions({
@@ -646,6 +648,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // Inject the gateway's per-boot bearer so mutating /sessions routes
         // (no loopback bypass) work over the peer-authenticated pairing.
         injectAuthToken: gateway.token,
+        // This channel's own recorded scope (device-inference gate) — never
+        // anything the far end's hello claims, only what THIS pairing was
+        // actually granted (see PairingChannelContext.scope's doc comment).
+        ...(ctx.scope ? { pairingScope: ctx.scope } : {}),
       }),
     })
     return { close: () => server.close() }
@@ -763,6 +769,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // today's fully-eager behaviour, unchanged for existing clients).
         deferredTools: resolveDeferredToolsGatewayOption(cfg.defaults?.mcp?.deferredTools),
         llmEndpoint: effectiveLlmEndpoint,
+        // Opt-in, no smart-default (unlike `llmEndpoint` above) — exposing
+        // this daemon's local inference to a paired host-scoped controller
+        // is a deliberate operator decision (`agentproto devices
+        // share-inference on`), never inferred from existing config.
+        deviceInferenceShare: cfgFeatures.deviceInferenceShare === true,
         resolveAgentAdapter,
         // Injected port behind `agent_start.worktree` + the `worktrees.isolation`
         // policy: runs `worktree.provision` over @agentproto/worktree, a dep the
@@ -1454,12 +1465,17 @@ function resolveRestartSweepIntervalMs(configured: number | undefined): number {
  * Dial a rendezvous broker outbound (daemon side) and adapt the socket to a
  * `FrameSink`. Injected into the pairing registry. Honours the registry's abort
  * signal so shutdown tears down an in-flight dial promptly.
+ *
+ * Routes through `HTTPS_PROXY`/`HTTP_PROXY` (respecting `NO_PROXY`) when
+ * configured — see `../util/proxy-dial.js` — so a corporate-proxied,
+ * outbound-HTTPS-only network still reaches the broker.
  */
 async function daemonDialRendezvous(
   url: string,
   signal: AbortSignal,
 ): Promise<FrameSink> {
-  const ws = new WebSocket(url)
+  const { agent } = resolveProxyDialOptions(url)
+  const ws = new WebSocket(url, agent ? { agent } : undefined)
   await new Promise<void>((resolve, reject) => {
     const cleanup = (): void => {
       ws.off("open", onOpen)

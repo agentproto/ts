@@ -28,6 +28,7 @@ import {
   httpPatchRaw,
   httpDelete,
 } from "./_daemon-helpers.js"
+import { loadConfig, saveConfig, setConfigKey } from "@agentproto/runtime/config"
 
 const USAGE = `agentproto devices — manage devices known to this daemon
 
@@ -37,6 +38,7 @@ Usage:
   agentproto devices revoke <fingerprint|name>
   agentproto devices add    <offer-url> [--name <label>]
   agentproto devices status <fingerprint|name>
+  agentproto devices share-inference on|off
   agentproto devices --help
 
   list     Every device this daemon knows: name, fingerprint, role, kind,
@@ -50,6 +52,15 @@ Usage:
            remote-control, not host registration).
   status   Probe a registered host's /health over its E2E channel — proof the
            host is reachable and driveable.
+  share-inference
+           Opt THIS daemon in (or out) of exposing its own local inference
+           endpoint(s) — the llm-endpoint sidecar's /v1/models and
+           /v1/chat/completions — to a paired controller, but ONLY over a
+           pairing the OTHER side registered as a host (\`pair offer --host\`
+           + \`devices add\`); a plain remote-control pairing never gets it,
+           whatever this is set to. Default off. Writes
+           features.deviceInferenceShare to config.json — restart
+           \`agentproto serve\` (or the daemon) for a change to take effect.
 `
 
 interface DeviceRow {
@@ -84,12 +95,14 @@ export async function runDevices(args: readonly string[]): Promise<number> {
       return runAdd(args.slice(1))
     case "status":
       return runStatus(args.slice(1))
+    case "share-inference":
+      return runShareInference(args.slice(1))
     case undefined:
       process.stdout.write(USAGE)
       return 0
     default:
       process.stderr.write(
-        `agentproto devices: unknown subcommand "${sub}"\n  Known: list | rename | revoke | add | status\n`,
+        `agentproto devices: unknown subcommand "${sub}"\n  Known: list | rename | revoke | add | status | share-inference\n`,
       )
       return 2
   }
@@ -316,4 +329,41 @@ async function runStatus(args: readonly string[]): Promise<number> {
     `HTTP ${result.status}\n${typeof parsed === "string" ? parsed : JSON.stringify(parsed, null, 2)}\n`,
   )
   return result.status >= 200 && result.status < 300 ? 0 : 1
+}
+
+// ── share-inference ─────────────────────────────────────────────────
+
+async function runShareInference(args: readonly string[]): Promise<number> {
+  const mode = args[0]
+  if (mode !== "on" && mode !== "off") {
+    process.stderr.write(
+      `agentproto devices share-inference: expected "on" or "off".\n` +
+        "  Try: agentproto devices share-inference on\n",
+    )
+    return 2
+  }
+  const enabled = mode === "on"
+
+  const cfg = await loadConfig()
+  const next = setConfigKey(cfg, "features.deviceInferenceShare", enabled)
+  await saveConfig(next)
+
+  const llmEndpointOn = next.features?.llmEndpoint === true
+  process.stdout.write(
+    `Device inference sharing: ${enabled ? "on" : "off"}.\n` +
+      (enabled
+        ? "This exposes this daemon's own local inference endpoint(s) (the llm-endpoint\n" +
+          "sidecar's /v1/models + /v1/chat/completions) to a paired controller — but ONLY\n" +
+          "over a pairing the other side registered as a HOST (`agentproto pair offer\n" +
+          "--host` run here, then `agentproto devices add` there); a plain remote-control\n" +
+          "pairing never gets it, whatever this is set to.\n" +
+          (llmEndpointOn
+            ? ""
+            : "\nNote: features.llmEndpoint is not explicitly on — it defaults on once a named\n" +
+              "endpoint is configured (`agentproto llm endpoints add`/`detect`), but until then\n" +
+              "these routes 404. Check with `agentproto llm gateway status`.\n")
+        : "") +
+      "\nRestart `agentproto serve` (or the daemon) for this to take effect.\n",
+  )
+  return 0
 }
