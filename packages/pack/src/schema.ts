@@ -1,5 +1,5 @@
 /**
- * AIP-52 PACK.md frontmatter zod schema.
+ * PACK.md frontmatter zod schema (unassigned AIP — no spec written yet).
  *
  * Imported by both `define-pack.ts` (TS path validation) and
  * `manifest/index.ts` (.md path validation) so every field-level
