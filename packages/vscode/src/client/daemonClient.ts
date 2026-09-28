@@ -334,10 +334,18 @@ export class DaemonClient {
    * `listSessions()` returns for local sessions. Rejects (502) for a
    * client-role device — only a registered host answers a forwarded HTTP
    * request.
+   *
+   * `stale`/`capturedAt` are set when the host is offline and this is the
+   * daemon's last-known-good snapshot instead of a live forward (see
+   * `HostRegistry.getSessionsSnapshot`) — absent on a live response.
    */
-  async getDeviceSessions(id: string): Promise<SessionDescriptor[]> {
-    const body = await this.getJson<{ sessions: SessionDescriptor[] }>(`/devices/${encodeURIComponent(id)}/sessions`)
-    return body.sessions ?? []
+  async getDeviceSessions(
+    id: string,
+  ): Promise<{ sessions: SessionDescriptor[]; stale?: boolean; capturedAt?: string }> {
+    const body = await this.getJson<{ sessions: SessionDescriptor[]; stale?: boolean; capturedAt?: string }>(
+      `/devices/${encodeURIComponent(id)}/sessions`,
+    )
+    return { sessions: body.sessions ?? [], ...(body.stale ? { stale: true, capturedAt: body.capturedAt } : {}) }
   }
 
   /** GET /devices/:id/sessions/:sessionId/output — a tail of that session's

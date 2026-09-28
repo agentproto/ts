@@ -144,6 +144,25 @@ export const sandboxRefFor = (config, verb) => {
   // per-call (not hoisted to module scope) so it reflects this process's
   // actual env at spec-build time.
   const hasJoinToken = typeof process.env.AGENTPROTO_JOIN === "string" && process.env.AGENTPROTO_JOIN.trim() !== ""
+  // Self-reported join metadata (SANDBOX-VISIBILITY-JOIN) — `serve.ts`'s
+  // `joinAsBox()` reads these into the join hello's `clientName` envelope so
+  // a CI box shows up in `device_list` as more than a raw fingerprint. Same
+  // gate shape as `AGENTPROTO_JOIN` itself: each is only appended when THIS
+  // process (the workflow step) actually set it as a literal env var — never
+  // unconditionally, so a fork PR / no-PR run / a run where the caller
+  // didn't bother setting one of these stays a clean no-op for that var,
+  // same as `AGENTPROTO_JOIN` itself does when the secret isn't configured.
+  const JOIN_META_ENV_VARS = [
+    "AGENTPROTO_JOIN_NAME",
+    "AGENTPROTO_JOIN_PROVIDER",
+    "AGENTPROTO_JOIN_SANDBOX_ID",
+    "AGENTPROTO_JOIN_LABELS",
+  ]
+  const presentJoinMetaEnvVars = hasJoinToken
+    ? JOIN_META_ENV_VARS.filter(
+        name => typeof process.env[name] === "string" && process.env[name].trim() !== "",
+      )
+    : []
   const passthroughBase =
     nativePassthrough ??
     (Array.isArray(cfg.reviewerSandboxEnv) && cfg.reviewerSandboxEnv.length > 0
@@ -156,10 +175,11 @@ export const sandboxRefFor = (config, verb) => {
   // one reviewer lane's env list, so gating it only on the unconfigured
   // default would silently disable auto-join the moment anyone (including
   // this repo, today) sets `reviewerSandboxEnv`.
-  const passthrough =
-    hasJoinToken && !passthroughBase.includes("AGENTPROTO_JOIN")
-      ? [...passthroughBase, "AGENTPROTO_JOIN"]
-      : passthroughBase
+  const passthrough = [
+    ...passthroughBase,
+    ...(hasJoinToken && !passthroughBase.includes("AGENTPROTO_JOIN") ? ["AGENTPROTO_JOIN"] : []),
+    ...presentJoinMetaEnvVars.filter(name => !passthroughBase.includes(name)),
+  ]
   // The verb's adapter is NOT installed here anymore: the runtime
   // auto-injects the adapter boot package since #1232
   // (`sandboxAdapterBootPackages` in session-spawn.ts), so a CI-side

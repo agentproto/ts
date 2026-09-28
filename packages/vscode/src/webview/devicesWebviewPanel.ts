@@ -171,8 +171,8 @@ class DevicesWebviewProvider implements vscode.WebviewViewProvider {
     this.sessionsByDevice.set(id, { status: "loading" })
     this.post()
     try {
-      const sessions = await this.client.getDeviceSessions(id)
-      this.sessionsByDevice.set(id, { status: "loaded", sessions })
+      const { sessions, stale, capturedAt } = await this.client.getDeviceSessions(id)
+      this.sessionsByDevice.set(id, { status: "loaded", sessions, ...(stale ? { stale, capturedAt } : {}) })
     } catch (err) {
       this.sessionsByDevice.set(id, { status: "error", message: describeError(err) })
     }
@@ -353,6 +353,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .sage { color: var(--vscode-descriptionForeground, #9d9d9d); font-size: 11px; white-space: nowrap; flex: 0 0 auto; }
     .sstate { color: var(--vscode-descriptionForeground, #9d9d9d); font-size: 11px; padding: 4px 6px; }
     .sstate.error { color: var(--vscode-errorForeground, #f14c4c); }
+    .sstate.stale { color: var(--vscode-editorWarning-foreground, #cca700); }
   </style>
 </head>
 <body class="daemon-state">
@@ -385,6 +386,9 @@ export function buildHtml(nonce: string, cspSource: string): string {
 
       function sessionsHTML(r) {
         if (!r.sessions) return '';
+        var stale = r.sessions.status === 'loaded' && r.sessions.stale
+          ? '<div class="sstate stale">Host offline — last seen sessions (' + escapeHtml(r.sessions.staleLabel || 'captured earlier') + ')</div>'
+          : '';
         var body;
         if (r.sessions.status === 'loading') {
           body = '<div class="sstate">Loading sessions…</div>';
@@ -401,7 +405,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
             '</div>';
           }).join('');
         }
-        return '<div class="sessions" data-owner="' + escapeHtml(r.id) + '">' + body + '</div>';
+        return '<div class="sessions" data-owner="' + escapeHtml(r.id) + '">' + stale + body + '</div>';
       }
 
       function rowHTML(r) {

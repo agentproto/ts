@@ -1500,10 +1500,16 @@ function resolveTurnStallAfterMs(configured: number | undefined): number | undef
 
 const JOIN_DIAL_TIMEOUT_MS = 15_000
 const JOIN_HANDSHAKE_TIMEOUT_MS = 15_000
-/** How long the box's own self-offer needs to live — just long enough for
- *  the home daemon on the other end of this same handshake to dial it back
- *  a moment later; not a standing credential. */
-const JOIN_SELF_OFFER_TTL_MS = 60_000
+/** How long the box's own self-offer needs to live — long enough for the
+ *  home daemon's join-token accept loop to finish THIS join's own handshake,
+ *  process it, and dial back — not a standing credential. 3 minutes, not
+ *  "a moment later": the dial-back is a full second pair/v2 round trip
+ *  through the same broker, queued behind the accept loop's own handling of
+ *  the join hello, and under real broker latency (or a busy accept loop
+ *  mid-`handleJoined` for a prior box) a tight TTL here is exactly how a
+ *  legitimate join silently fails to become a device — see
+ *  `join-token-registry.ts`'s `JoinTokenRecord.lastJoinError` doc. */
+const JOIN_SELF_OFFER_TTL_MS = 180_000
 
 /** Broker upgrade URL for the box's outbound join dial (`side=client`) —
  *  mirrors `pair-transport.ts`'s `rvUrl` / `host-registry.ts`'s `rvUrl`. */

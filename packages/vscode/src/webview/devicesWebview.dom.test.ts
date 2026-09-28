@@ -193,6 +193,40 @@ describe("devices webview — render", () => {
     const state = el(panel, "list").querySelector(".sstate.error")!
     expect(state.textContent).toBe("device unreachable")
   })
+
+  it("renders self-reported labels in a host's meta line (SANDBOX-VISIBILITY-JOIN #1)", () => {
+    const panel = renderPanel()
+    send(panel, modelMessage([{ ...HOST_ROW, detail: "e2b · fp-host · pr=1536, repo=agentproto/ts" }]))
+    const row = el(panel, "list").querySelector('.row[data-id="fp-host"]')!
+    expect(row.querySelector(".meta")!.textContent).toBe("e2b · fp-host · pr=1536, repo=agentproto/ts")
+  })
+
+  it("renders a stale banner above the session list when the host is offline (SANDBOX-VISIBILITY-JOIN #3)", () => {
+    const panel = renderPanel()
+    const expandedHost = {
+      ...HOST_ROW,
+      sessions: {
+        status: "loaded",
+        rows: [{ id: "s1", name: "agent-cli · s1", status: "working", ageLabel: "2 mins ago" }],
+        stale: true,
+        staleLabel: "captured 4 mins ago",
+      },
+    }
+    send(panel, modelMessage([expandedHost]))
+    const staleBanner = el(panel, "list").querySelector('.sessions[data-owner="fp-host"] .sstate.stale')!
+    expect(staleBanner.textContent).toContain("Host offline")
+    expect(staleBanner.textContent).toContain("captured 4 mins ago")
+    // The (stale) session rows themselves still render alongside the banner.
+    const srows = [...el(panel, "list").querySelectorAll('.sessions[data-owner="fp-host"] .srow')]
+    expect(srows).toHaveLength(1)
+  })
+
+  it("omits the stale banner for a live (non-stale) loaded sessions state", () => {
+    const panel = renderPanel()
+    const expandedHost = { ...HOST_ROW, sessions: { status: "loaded", rows: [] } }
+    send(panel, modelMessage([expandedHost]))
+    expect(el(panel, "list").querySelector(".sstate.stale")).toBeNull()
+  })
 })
 
 describe("devices webview — interactions", () => {

@@ -260,6 +260,11 @@ async function buildProgressContext(client, run) {
         ...(s.adapterSlug ? { adapterSlug: s.adapterSlug } : {}),
         ...(s.model ? { model: s.model } : {}),
         ...(s.turnsCompleted !== undefined ? { turnsCompleted: s.turnsCompleted } : {}),
+        // Same session_list summary this lookup already fetched — no extra
+        // session_usage round trip needed for the tool-call/token detail.
+        ...(s.toolCallsThisTurn !== undefined ? { toolCallsThisTurn: s.toolCallsThisTurn } : {}),
+        ...(s.tokensIn !== undefined ? { tokensIn: s.tokensIn } : {}),
+        ...(s.tokensOut !== undefined ? { tokensOut: s.tokensOut } : {}),
       }
     }
     if (Object.keys(sessionMap).length > 0) context.sessions = sessionMap

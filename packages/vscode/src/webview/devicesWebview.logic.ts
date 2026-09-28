@@ -25,11 +25,15 @@ export interface DeviceSessionRow {
 }
 
 /** `sessionsByDevice` entry — mirrors the load lifecycle the panel drives
- *  (fetch on expand, refetch on the view's own refresh cadence). */
+ *  (fetch on expand, refetch on the view's own refresh cadence). A `loaded`
+ *  state is `stale: true` when the host was offline and the daemon served
+ *  its last-known-good snapshot instead of a live forward (see
+ *  `HostRegistry.getSessionsSnapshot`) — `capturedAt` is that snapshot's
+ *  ISO-8601 capture time. Both absent on a live response. */
 export type DeviceSessionsState =
   | { status: "loading" }
   | { status: "error"; message: string }
-  | { status: "loaded"; sessions: readonly SessionDescriptor[] }
+  | { status: "loaded"; sessions: readonly SessionDescriptor[]; stale?: boolean; capturedAt?: string }
 
 export interface DeviceWebviewRow {
   /** `"this-machine"` for the synthetic first row, else the device fingerprint. */
@@ -51,11 +55,14 @@ export interface DeviceWebviewRow {
   expandable: boolean
   fingerprint: string | undefined
   /** Present only while `expandable && expanded` — undefined otherwise, so
-   *  the panel never sends session state for a row that can't show it. */
+   *  the panel never sends session state for a row that can't show it. A
+   *  `loaded` state's `staleLabel` (e.g. "captured 4m ago") is set only when
+   *  `stale` is — pre-formatted with `relativeTime` so the view has nothing
+   *  to compute. */
   sessions:
     | { status: "loading" }
     | { status: "error"; message: string }
-    | { status: "loaded"; rows: DeviceSessionRow[] }
+    | { status: "loaded"; rows: DeviceSessionRow[]; stale?: boolean; staleLabel?: string }
     | undefined
 }
 
@@ -67,11 +74,24 @@ function shortFingerprint(fp: string): string {
   return fp.length > 12 ? `${fp.slice(0, 10)}…` : fp
 }
 
+/** `{pr: "1536", repo: "agentproto/ts"}` -> `"pr=1536, repo=agentproto/ts"` —
+ *  self-reported at join time (SANDBOX-VISIBILITY-JOIN #1), so a CI-joined
+ *  box reads as more than a raw fingerprint (e.g. which PR spawned it). */
+function labelsDetail(labels: Record<string, string> | undefined): string | undefined {
+  if (!labels) return undefined
+  const rendered = Object.entries(labels)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(", ")
+  return rendered || undefined
+}
+
 function deviceDetail(d: Device): string {
   const parts: string[] = []
   if (d.provider) parts.push(d.provider)
   if (d.sandboxId) parts.push(d.sandboxId)
   parts.push(shortFingerprint(d.fingerprint))
+  const labels = labelsDetail(d.labels)
+  if (labels) parts.push(labels)
   return parts.join(" · ")
 }
 
@@ -110,9 +130,18 @@ function toDeviceRow(
 function toSessionsState(
   state: DeviceSessionsState,
   now: number,
-): { status: "loading" } | { status: "error"; message: string } | { status: "loaded"; rows: DeviceSessionRow[] } {
+):
+  | { status: "loading" }
+  | { status: "error"; message: string }
+  | { status: "loaded"; rows: DeviceSessionRow[]; stale?: boolean; staleLabel?: string } {
   if (state.status !== "loaded") return state
-  return { status: "loaded", rows: buildDeviceSessionRows(state.sessions, now) }
+  return {
+    status: "loaded",
+    rows: buildDeviceSessionRows(state.sessions, now),
+    ...(state.stale
+      ? { stale: true, staleLabel: `captured ${state.capturedAt ? relativeTime(state.capturedAt, now) : "?"}` }
+      : {}),
+  }
 }
 
 const ACTIVITY_RANK: Record<SessionActivity, number> = {

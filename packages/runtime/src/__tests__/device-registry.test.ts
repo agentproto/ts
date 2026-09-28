@@ -52,6 +52,7 @@ function fakeHostRegistry(
     isOnline: fp => online.has(fp),
     forwardHttp: vi.fn(),
     forwardHttpStream: vi.fn(),
+    getSessionsSnapshot: vi.fn(() => undefined),
   }
 }
 
@@ -242,6 +243,44 @@ describe("createDeviceRegistry", () => {
       const res = await devices.forwardHttp("hfp1", { method: "GET", path: "/sessions" })
       expect(hosts.forwardHttp).toHaveBeenCalledWith("hfp1", { method: "GET", path: "/sessions" })
       expect(res.status).toBe(200)
+    })
+
+    it("forwardHttp() falls back to a cached snapshot for a GET /sessions* path when the live forward fails", async () => {
+      const registry = fakeRegistry([])
+      const hosts = fakeHostRegistry([hostRecord()])
+      ;(hosts.forwardHttp as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("could not reach host"))
+      ;(hosts.getSessionsSnapshot as ReturnType<typeof vi.fn>).mockReturnValue({
+        status: 200,
+        headers: {},
+        body: new TextEncoder().encode('{"sessions":[]}'),
+        stale: true,
+        capturedAt: "2026-01-01T00:00:00.000Z",
+      })
+      const devices = createDeviceRegistry(registry, hosts)
+      const res = await devices.forwardHttp("hfp1", { method: "GET", path: "/sessions" })
+      expect(hosts.getSessionsSnapshot).toHaveBeenCalledWith("hfp1", "/sessions")
+      expect(res).toMatchObject({ status: 200, stale: true, capturedAt: "2026-01-01T00:00:00.000Z" })
+    })
+
+    it("forwardHttp() rethrows when the live forward fails AND there's no cached snapshot", async () => {
+      const registry = fakeRegistry([])
+      const hosts = fakeHostRegistry([hostRecord()])
+      ;(hosts.forwardHttp as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("could not reach host"))
+      const devices = createDeviceRegistry(registry, hosts)
+      await expect(devices.forwardHttp("hfp1", { method: "GET", path: "/sessions" })).rejects.toThrow(
+        /could not reach host/,
+      )
+    })
+
+    it("forwardHttp() never falls back for a non-/sessions path (e.g. exec) — stale data there would be actively wrong", async () => {
+      const registry = fakeRegistry([])
+      const hosts = fakeHostRegistry([hostRecord()])
+      ;(hosts.forwardHttp as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("could not reach host"))
+      const devices = createDeviceRegistry(registry, hosts)
+      await expect(devices.forwardHttp("hfp1", { method: "POST", path: "/exec" })).rejects.toThrow(
+        /could not reach host/,
+      )
+      expect(hosts.getSessionsSnapshot).not.toHaveBeenCalled()
     })
   })
 

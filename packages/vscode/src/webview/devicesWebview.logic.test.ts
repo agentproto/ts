@@ -140,6 +140,40 @@ describe("buildDevicesWebviewModel", () => {
     expect(model.rows[1]!.detail).toBe("modal · sbx-9 · fp-host")
   })
 
+  it("includes self-reported labels in a host's detail line (SANDBOX-VISIBILITY-JOIN #1) — e.g. which PR a CI box joined for", () => {
+    const model = buildDevicesWebviewModel({
+      hostname: "h",
+      daemonVersion: undefined,
+      localSessionCount: 0,
+      devices: [
+        device({
+          fingerprint: "fp-host",
+          role: "host",
+          kind: "daemon",
+          provider: "e2b",
+          labels: { pr: "1536", repo: "agentproto/ts" },
+        }),
+      ],
+      expandedIds: new Set(),
+      sessionsByDevice: new Map(),
+      now: NOW,
+    })
+    expect(model.rows[1]!.detail).toBe("e2b · fp-host · pr=1536, repo=agentproto/ts")
+  })
+
+  it("omits the labels segment entirely when a device self-reports none", () => {
+    const model = buildDevicesWebviewModel({
+      hostname: "h",
+      daemonVersion: undefined,
+      localSessionCount: 0,
+      devices: [device({ fingerprint: "fp-host", role: "host", kind: "daemon" })],
+      expandedIds: new Set(),
+      sessionsByDevice: new Map(),
+      now: NOW,
+    })
+    expect(model.rows[1]!.detail).toBe("fp-host")
+  })
+
   it("sorts online devices before offline ones, then alphabetically", () => {
     const model = buildDevicesWebviewModel({
       hostname: "h",
@@ -173,6 +207,52 @@ describe("buildDevicesWebviewModel", () => {
       status: "loaded",
       rows: [{ id: "s1", name: "agent-cli · s1", status: "working", ageLabel: "1 min ago" }],
     })
+  })
+
+  it("marks a loaded sessions state stale with a formatted capture-time label when the host is offline (SANDBOX-VISIBILITY-JOIN #3)", () => {
+    const host = device({ fingerprint: "fp-host", role: "host", kind: "daemon" })
+    const model = buildDevicesWebviewModel({
+      hostname: "h",
+      daemonVersion: undefined,
+      localSessionCount: 0,
+      devices: [host],
+      expandedIds: new Set(["fp-host"]),
+      sessionsByDevice: new Map<string, DeviceSessionsState>([
+        [
+          "fp-host",
+          {
+            status: "loaded",
+            sessions: [session({ busy: true })],
+            stale: true,
+            capturedAt: new Date(NOW - 4 * 60_000).toISOString(),
+          },
+        ],
+      ]),
+      now: NOW,
+    })
+    const row = model.rows[1]!
+    expect(row.sessions).toEqual({
+      status: "loaded",
+      rows: [{ id: "s1", name: "agent-cli · s1", status: "working", ageLabel: "1 min ago" }],
+      stale: true,
+      staleLabel: "captured 4 mins ago",
+    })
+  })
+
+  it("a live (non-stale) loaded sessions state carries no stale/staleLabel fields at all", () => {
+    const host = device({ fingerprint: "fp-host", role: "host", kind: "daemon" })
+    const model = buildDevicesWebviewModel({
+      hostname: "h",
+      daemonVersion: undefined,
+      localSessionCount: 0,
+      devices: [host],
+      expandedIds: new Set(["fp-host"]),
+      sessionsByDevice: new Map<string, DeviceSessionsState>([["fp-host", { status: "loaded", sessions: [] }]]),
+      now: NOW,
+    })
+    const sessionsState = model.rows[1]!.sessions
+    expect(sessionsState).not.toHaveProperty("stale")
+    expect(sessionsState).not.toHaveProperty("staleLabel")
   })
 
   it("omits sessions state for a collapsed host even when a cached entry exists", () => {

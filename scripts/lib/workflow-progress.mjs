@@ -30,26 +30,56 @@
  * @property {string} [cliSource] Where the agentproto CLI came from ("npm" | "workspace").
  * @property {number} [maxReviewTurns] `reviewConfig.maxReviewTurns`, for the turn=n/max detail.
  * @property {string} [reviewerSessionId] The reviewer step's sessionId, called out explicitly.
- * @property {Record<string, {sandboxProvider?: string, sandboxId?: string, adapterSlug?: string, model?: string, turnsCompleted?: number}>} [sessions]
+ * @property {Record<string, {sandboxProvider?: string, sandboxId?: string, adapterSlug?: string, model?: string, turnsCompleted?: number, toolCallsThisTurn?: number, tokensIn?: number, tokensOut?: number}>} [sessions]
  *   Per-session live detail, keyed by sessionId (from a `session_list` lookup) —
- *   only sessions the caller actually resolved need an entry.
+ *   only sessions the caller actually resolved need an entry. `toolCallsThisTurn`/
+ *   `tokensIn`/`tokensOut` are the same fields `session_list`'s own summary
+ *   already carries — no separate `session_usage` lookup needed for these.
  */
 
+/** `1234` -> `"1.2k"`, `1_500_000` -> `"1.5M"` — keeps the heartbeat line
+ *  short even once real conversations rack up six-figure token counts. */
+function formatCount(n) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return String(n)
+}
+
+/** `1234` (ms) -> `"1s"`, `125_000` -> `"2m5s"`, `7_265_000` -> `"2h1m"`. */
+function formatElapsedMs(ms) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) return `${hours}h${minutes}m`
+  if (minutes > 0) return `${minutes}m${seconds}s`
+  return `${seconds}s`
+}
+
 /** Enriches one RUNNING step's `label@sessionId` with whatever live session
- *  detail `context.sessions` has for it. No entry ⇒ output identical to before. */
-function describeRunningStep(step, context) {
+ *  detail `context.sessions` has for it, plus elapsed time computed from the
+ *  step's own `startedAt` (no lookup needed — already on the run object). No
+ *  entry and no `startedAt` ⇒ output identical to before. */
+function describeRunningStep(step, context, now = Date.now()) {
   const sessionId = step?.sessionId
   const base = `${step?.label ?? '?'}${sessionId ? `@${sessionId}` : ''}`
   const info = sessionId ? context?.sessions?.[sessionId] : undefined
-  if (!info) return base
   const bits = []
-  if (info.sandboxProvider) {
+  if (info?.sandboxProvider) {
     bits.push(`sandbox=${info.sandboxProvider}${info.sandboxId ? `:${info.sandboxId}` : ''}`)
   }
-  if (info.adapterSlug) bits.push(`adapter=${info.adapterSlug}`)
-  if (info.model) bits.push(`model=${info.model}`)
-  if (info.turnsCompleted !== undefined) {
+  if (info?.adapterSlug) bits.push(`adapter=${info.adapterSlug}`)
+  if (info?.model) bits.push(`model=${info.model}`)
+  if (info?.turnsCompleted !== undefined) {
     bits.push(`turn=${info.turnsCompleted}${context?.maxReviewTurns ? `/${context.maxReviewTurns}` : ''}`)
+  }
+  if (info?.toolCallsThisTurn !== undefined) bits.push(`tools=${info.toolCallsThisTurn}`)
+  if (info?.tokensIn !== undefined || info?.tokensOut !== undefined) {
+    bits.push(`tokens=${formatCount(info.tokensIn ?? 0)}in/${formatCount(info.tokensOut ?? 0)}out`)
+  }
+  if (typeof step?.startedAt === 'string') {
+    const startedMs = Date.parse(step.startedAt)
+    if (Number.isFinite(startedMs)) bits.push(`elapsed=${formatElapsedMs(now - startedMs)}`)
   }
   return bits.length ? `${base}(${bits.join(',')})` : base
 }
@@ -66,9 +96,11 @@ function describeRunningStep(step, context) {
  * @param {RunProgressContext} [context] optional out-of-band detail the `run`
  *   object itself doesn't carry (see the typedef above). Omitted ⇒ output is
  *   byte-identical to calling this function with one argument, always.
+ * @param {number} [now] injectable clock (ms) for the `elapsed=` detail — tests
+ *   only; defaults to `Date.now()`.
  * @returns {string}
  */
-export function describeRunProgress(run, context) {
+export function describeRunProgress(run, context, now = Date.now()) {
   const parts = [`status=${run?.status ?? '?'}`]
   for (const stage of Array.isArray(run?.stages) ? run.stages : []) {
     const steps = Array.isArray(stage?.steps) ? stage.steps : []
@@ -78,7 +110,7 @@ export function describeRunProgress(run, context) {
       `stage${stage?.index ?? '?'}${stage?.label ? `(${stage.label})` : ''}` +
         `=${stage?.status ?? '?'} [${done}/${steps.length}]` +
         (running.length
-          ? ` running=${running.map((s) => describeRunningStep(s, context)).join(',')}`
+          ? ` running=${running.map((s) => describeRunningStep(s, context, now)).join(',')}`
           : ''),
     )
   }
