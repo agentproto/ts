@@ -60,14 +60,43 @@ export interface ResolveImportOptions {
 
 const warnedOrigin = new Set<string>()
 
-function normUrl(u: string | undefined): string | undefined {
+/** Normalized url identity: protocol + host + port + path. Query (incl.
+ *  `callerSessionId` / `deferred`), fragment and trailing slashes are
+ *  dropped; `localhost` / `[::1]` fold onto `127.0.0.1`. */
+export function normUrl(u: string | undefined): string | undefined {
   if (!u) return undefined
   try {
     const x = new URL(u)
-    return `${x.protocol}//${x.host}${x.pathname.replace(/\/+$/, "")}`
+    const host = /^(localhost|\[::1\])$/.test(x.hostname) ? "127.0.0.1" : x.hostname
+    return `${x.protocol}//${host}${x.port ? `:${x.port}` : ""}${x.pathname.replace(/\/+$/, "")}`
   } catch {
     return u.replace(/\/+$/, "")
   }
+}
+
+const ABS_PATH_ARG = /^(?:[/~]|[A-Za-z]:[\\/])/
+
+/** Normalized stdio identity: command basename + args, with absolute-path
+ *  args (and `--flag=/abs/path` values) dropped — they are per-profile /
+ *  per-machine and would defeat matching. */
+export function stdioKey(m: Pick<DiscoveredMcp, "command" | "args">): string | undefined {
+  if (!m.command) return undefined
+  const base = m.command.split(/[\\/]/).pop() || m.command
+  const args = (m.args ?? []).filter(a => {
+    const v = a.startsWith("-") && a.includes("=") ? a.slice(a.indexOf("=") + 1) : a
+    return !ABS_PATH_ARG.test(v)
+  })
+  return JSON.stringify([base, args])
+}
+
+/** Same upstream server, regardless of which config file declares it (P3
+ *  double-mount detection). url-based when both have a url, else stdio. */
+export function sameNativeUpstream(a: DiscoveredMcp, b: DiscoveredMcp): boolean {
+  const ua = normUrl(a.url)
+  const ub = normUrl(b.url)
+  if (ua || ub) return ua !== undefined && ua === ub
+  const ka = stdioKey(a)
+  return ka !== undefined && ka === stdioKey(b)
 }
 
 function sameUpstream(a: DiscoveredMcp, b: DiscoveredMcp): boolean {

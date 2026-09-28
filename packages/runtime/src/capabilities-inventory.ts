@@ -31,7 +31,8 @@ import type { AgentAdapterLister, AdapterListEntry } from "./http-server.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
 import { loadImportedMcps as loadImportedMcpsReal, secretRefKeys, type ImportedMcpsConfig } from "./mcp-imports.js"
 import { discoverMcps as discoverMcpsReal, type DiscoveredMcp } from "./mcp-discovery.js"
-import { shouldInjectDaemonSelfMount } from "./session-spawn.js"
+import { shouldInjectDaemonSelfMount, slugifyMcpImportName } from "./session-spawn.js"
+import { sameNativeUpstream } from "./mcp-import-resolve.js"
 import { loadConfig as loadConfigReal, type AgentprotoConfig } from "./config.js"
 import { loadBundles as loadBundlesReal, type BundlesFile } from "./bundles.js"
 import { resolveBundleDefaults } from "./spawn-defaults.js"
@@ -63,6 +64,25 @@ export interface CapabilitiesInventoryImportedMcp {
   /** Per installed adapter: how it reaches this import with NO per-spawn
    *  arguments (resolved default bundles + daemon self-mount default). */
   reach: Record<string, ImportedMcpReach>
+  /** Double-mount report (P3): OTHER discovered harness-config entries that
+   *  point at the same upstream as this import, i.e. a harness likely
+   *  mounts it natively AND through the daemon. Omitted when none. Identity
+   *  fields only — never url/command/args/headers/env.
+   *  `sameName` = the slugified alias equals the native name (claude-code
+   *  then shadows one with the other: no duplicate tools, but they may
+   *  silently be different servers/creds).
+   *  Limitation: discovery scans the host configs + registered workspaces
+   *  only; a session's own cwd `.mcp.json` outside a registered workspace is
+   *  NOT seen here (only `mcp-app-resolve` sees it). Report only — nothing
+   *  is rewritten. */
+  alsoNativeIn?: CapabilitiesInventoryAlsoNative[]
+}
+
+export interface CapabilitiesInventoryAlsoNative {
+  source: string
+  scope: string
+  name: string
+  sameName: boolean
 }
 
 export interface CapabilitiesInventoryDiscoveredMcp {
@@ -220,6 +240,15 @@ async function buildMcpInventory(
         : alias?.status === "error"
           ? "error"
           : "idle"
+    const importName = slugifyMcpImportName(entry.alias, entry.id)
+    const alsoNative: CapabilitiesInventoryAlsoNative[] = discovered
+      .filter(d => d.id !== entry.id && sameNativeUpstream(d, entry.snapshot))
+      .map(d => ({
+        source: d.source,
+        scope: d.scope,
+        name: d.name,
+        sameName: d.name === importName,
+      }))
     const usedBySessions = liveSessions
       .filter(s => (s.mcpServers ?? []).some(m => m.name === entry.alias || m.name === entry.id))
       .map(s => s.id)
@@ -237,6 +266,7 @@ async function buildMcpInventory(
       ...(alias?.stale ? { stale: alias.stale } : {}),
       ...(secretRefKeys(entry) ? { secretRefKeys: secretRefKeys(entry) } : {}),
       reach: reachById.get(entry.id) ?? {},
+      ...(alsoNative.length > 0 ? { alsoNativeIn: alsoNative } : {}),
     }
   })
 
