@@ -4215,11 +4215,19 @@ async function bootSandboxAgentSession(opts: {
       : {}),
   })
 
+  // `omitCwdWhenImplicit` (device sandbox — see that field's doc): the
+  // caller passed no explicit cwd, so don't forward the HOST's own
+  // resolved `boxCwd` (fallback workspace/worktree path) into a box whose
+  // filesystem is a whole other machine's — omit `cwd` entirely and let
+  // the box's own `agent_start` apply its normal default-cwd resolution,
+  // same as an ordinary non-sandboxed local spawn.
+  const omitCwd = handle.omitCwdWhenImplicit === true && !opts.explicitCwd
   let remoteSessionId: string
+  let resolvedCwd = boxCwd
   try {
     const remoteDesc = await host.start({
       adapter: opts.adapter,
-      cwd: boxCwd,
+      ...(omitCwd ? {} : { cwd: boxCwd }),
       ...(opts.mcpServers ? { mcpServers: toMcpServerMounts(opts.mcpServers) } : {}),
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.route ? { route: opts.route } : {}),
@@ -4228,6 +4236,7 @@ async function bootSandboxAgentSession(opts: {
       ...(opts.auth ? { auth: opts.auth } : {}),
     })
     remoteSessionId = remoteDesc.id
+    if (omitCwd && remoteDesc.cwd) resolvedCwd = remoteDesc.cwd
   } catch (err) {
     // The box was fully booted but its own `agent_start` failed — reap the
     // box (kill: it holds nothing of value) and mark the ledger so the
@@ -4270,7 +4279,7 @@ async function bootSandboxAgentSession(opts: {
     }),
     commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
     sandboxId: host.sandboxId,
-    cwd: boxCwd,
+    cwd: resolvedCwd,
     provider: providerSlug,
     sandboxTeardown: lifecyclePolicy.teardown,
     ...(host.ports && Object.keys(host.ports).length > 0 ? { sandboxPorts: host.ports } : {}),

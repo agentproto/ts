@@ -182,6 +182,7 @@ const featuresConfigSchema: z.ZodType<FeaturesConfig> = z
     pty: z.boolean().optional(),
     llmEndpoint: z.boolean().optional(),
     deviceInferenceShare: z.boolean().optional(),
+    deviceSpawnAllow: z.boolean().optional(),
   })
   .passthrough()
 
@@ -1191,6 +1192,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "daemon",
     label: "Device inference sharing",
     help: "Expose this daemon's local inference endpoint(s) to a paired HOST-scoped controller. Toggle via `agentproto devices share-inference on|off`.",
+    default: false,
+  },
+  {
+    path: "features.deviceSpawnAllow",
+    schema: bool,
+    apply: "restart",
+    writable: true,
+    section: "daemon",
+    label: "Device spawn allow",
+    help: "Allow a paired HOST-scoped controller to spawn/drive agent sessions on this daemon (`agent_start({ sandbox: \"device:<name>\" })`). Toggle via `agentproto devices allow-spawn on|off`.",
     default: false,
   },
 ] as const
