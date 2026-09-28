@@ -48,6 +48,7 @@ import {
 import { registerAuthProfileTools } from "./auth-profile-tools.js"
 import { registerConfigTools, type ConfigToolsDeps } from "./config-tools.js"
 import { registerHarnessPresetTools } from "./harness-preset-tools.js"
+import { registerUserPresetTools } from "./user-preset-tools.js"
 import { registerCredentialDiscoveryTools } from "./credential-discovery.js"
 import { registerWebSearchTools } from "./web-search-tools.js"
 import { registerMcpApps } from "./mcp-apps-adapter.js"
@@ -2527,6 +2528,10 @@ export async function createGateway(
     // set_default). Same no-host-wiring stance as the auth-profile tools —
     // the store reads/writes the fixed `~/.agentproto/harness-presets.json`.
     registerHarnessPresetTools(server)
+    // User-owned spawn presets ("favorites") — user_preset_list/save/delete,
+    // the MCP twin of the `/user-presets` HTTP routes. `includeRecent` reads
+    // the same session registry as every other session-backed tool here.
+    registerUserPresetTools(server, { registry: sessions })
     // Read-only scanner: report locally-present credentials (Claude Code /
     // Codex / Gemini logins, ~/.hermes/config.yaml, provider env keys) with
     // provenance, so onboarding can offer an import. Never returns a value.

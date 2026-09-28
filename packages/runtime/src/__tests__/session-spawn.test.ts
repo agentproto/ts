@@ -6088,3 +6088,51 @@ describe("spawnAgentSession — agent_start.inference (SESSION-INFERENCE-BINDING
     expect(llmEndpointState.syncPiModelsCalls).toBe(0)
   })
 })
+
+describe("spawnAgentSession — preset lastUsedAt stamp", () => {
+  // Isolated HOME: unlike the rest of this file, these tests WRITE to
+  // `~/.agentproto/presets.json` (via `touchUserPreset`), so they must never
+  // touch the real file on the machine running the suite.
+  let prevHome: string | undefined
+  let home: string
+
+  beforeEach(() => {
+    prevHome = process.env.HOME
+    home = mkdtempSync(join(tmpdir(), "agp-session-spawn-presets-"))
+    process.env.HOME = home
+  })
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.HOME
+    else process.env.HOME = prevHome
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  it("stamps lastUsedAt on the preset a spawn resolved, preserving every other field", async () => {
+    const { saveUserPreset, getUserPreset } = await import("../user-presets.js")
+    await saveUserPreset({ id: "fast-route", label: "Fast route", model: "deepseek/deepseek-v4-pro" })
+    expect((await getUserPreset("fast-route"))?.lastUsedAt).toBeUndefined()
+
+    const { deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      preset: { id: "fast-route", label: "Fast route", model: "deepseek/deepseek-v4-pro" },
+    })
+    expect(result.ok).toBe(true)
+
+    const stamped = await getUserPreset("fast-route")
+    expect(stamped?.lastUsedAt).toEqual(expect.any(String))
+    expect(stamped?.model).toBe("deepseek/deepseek-v4-pro")
+  })
+
+  it("a presetId with no matching stored preset is a no-op, not a spawn failure", async () => {
+    const { deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      preset: { id: "never-saved", label: "Never saved" },
+    })
+    expect(result.ok).toBe(true)
+  })
+})

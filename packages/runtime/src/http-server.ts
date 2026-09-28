@@ -206,6 +206,7 @@ import {
 import { parsePostureInput } from "./canonical-posture.js"
 import {
   deleteUserPreset,
+  deriveRecentSpawnConfigs,
   getUserPreset,
   listUserPresets,
   saveUserPreset,
@@ -3750,9 +3751,16 @@ export async function startHttpServer(
         // User presets are private saved spawn configurations. Keep this
         // deliberately distinct from `/presets` below, which is the static
         // provider-preset catalog retained for compatibility.
+        // `?includeRecent=1` ALSO returns up to 5 distinct recent spawn
+        // configs (adapter, model, profileRef, cwd) derived from this
+        // host's own session history, each marked `recent: true` — not
+        // persisted, mirrors `user_preset_list({ includeRecent: true })`.
         if (path === "/user-presets" && req.method === "GET") {
+          const includeRecent = new URL(req.url ?? "/", "http://localhost").searchParams.get("includeRecent") === "1"
+          const presets = await listUserPresets()
+          const recent = includeRecent ? deriveRecentSpawnConfigs(opts.sessions?.list() ?? []) : undefined
           res.writeHead(200, { "content-type": "application/json" })
-          res.end(JSON.stringify({ presets: await listUserPresets() }))
+          res.end(JSON.stringify({ presets, ...(recent ? { recent } : {}) }))
           return
         }
         // POST /user-presets — create or update a favorite (upsert by id).
