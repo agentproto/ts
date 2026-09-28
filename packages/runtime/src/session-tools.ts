@@ -122,7 +122,12 @@ import {
   type WorktreeStatusLister,
   type WorktreeStatusView,
 } from "./worktree-status.js"
-import { livingSessionCwds, type WorktreeGcRunner } from "./worktree-gc.js"
+import { livingSessionCwds, type WorktreeGcResult, type WorktreeGcRunner } from "./worktree-gc.js"
+import {
+  createBackgroundJobRegistry,
+  timedOutWaiting,
+  type BackgroundJob,
+} from "./background-jobs.js"
 import type {
   BranchGcResult,
   BranchGcRunInput,
@@ -131,9 +136,7 @@ import type {
   BranchGcVerdictReader,
 } from "./branch-gc.js"
 import { basename, join } from "node:path"
-import { randomBytes } from "node:crypto"
 import { homedir } from "node:os"
-import { mkdir, writeFile, readFile, readdir, stat, unlink } from "node:fs/promises"
 import {
   ALLOWLIST_REL,
   TERMINAL_GATE_ENV,
@@ -519,6 +522,16 @@ export interface RegisterSessionToolsOptions {
    *  `~/.agentproto/branch-gc/jobs`. Injectable so tests can point it at a
    *  temp dir instead of the real home directory. */
   branchGcJobsDir?: string
+  /** Same, for `worktree_gc`'s background jobs (`worktree_gc_status`).
+   *  Defaults to `~/.agentproto/worktree-gc/jobs`. */
+  worktreeGcJobsDir?: string
+  /** Same, for `session_wrapup_plan`'s background jobs
+   *  (`session_wrapup_status`). Defaults to `~/.agentproto/session-wrapup/jobs`. */
+  sessionWrapupJobsDir?: string
+  /** Same, for `session_wrapup_apply`'s background jobs (polled through
+   *  `session_wrapup_status`, ids `swa_…`). Defaults to
+   *  `~/.agentproto/session-wrapup/apply-jobs`. */
+  sessionWrapupApplyJobsDir?: string
   /** Forwarded to `registerAgentTools` — see
    *  `RegisterAgentToolsOptions.isSessionChatInstalled`. */
   isSessionChatInstalled?: RegisterAgentToolsOptions["isSessionChatInstalled"]
@@ -803,146 +816,50 @@ export const compactSessionItemWithProvenance = (
   ...(s.callerSessionId !== undefined ? { callerSessionId: s.callerSessionId } : {}),
 })
 
-// ── branch_gc background jobs (module scope) ─────────────────────────
-// The sibling of `worktree_gc` for refs: local branches, the base remote's
-// tracking branches, and orphan tracking refs of removed remotes.
-//
-// These live at MODULE scope, not inside `registerSessionTools`: the daemon's
-// `mcpServerFactory` (packages/runtime/src/index.ts) builds a NEW McpServer
-// per MCP connection and calls `registerSessionTools` on each, so a map
-// created inside the function would be per-server-instance — a `branch_gc`
-// started on one connection would be invisible to `branch_gc_status` on
-// another. One registry per daemon process is the contract.
-//
-// A plan can take minutes on a big repo, which blows past the ~49 s an MCP
-// caller should expect per call — so `wait: false` / `waitMs` run it in the
-// background and `branch_gc_status` polls the in-memory job (the finished
-// result is also saved to disk — see the retention/cleanup notes below).
+// ── background jobs (module scope) ───────────────────────────────────
+// `branch_gc`, `worktree_gc` and `session_wrapup_plan` can each run for
+// minutes — past the ~49 s an MCP caller should expect per call — so they
+// support `wait: false` / `waitMs` and a `*_status` poll tool. The registries
+// live at MODULE scope (one per daemon process, shared across the per-
+// connection McpServers); the machinery is in `./background-jobs.ts`.
+const branchGcJobs = createBackgroundJobRegistry<BranchGcResult>({
+  idPrefix: "bgc_",
+  defaultDir: join(homedir(), ".agentproto", "branch-gc", "jobs"),
+})
+const worktreeGcJobs = createBackgroundJobRegistry<WorktreeGcResult>({
+  idPrefix: "wgc_",
+  defaultDir: join(homedir(), ".agentproto", "worktree-gc", "jobs"),
+})
+interface SessionWrapupPlanResult {
+  entries: SessionWrapupEntry[]
+  totals: Partial<Record<SessionWrapupClass, number>>
+}
+const sessionWrapupJobs = createBackgroundJobRegistry<SessionWrapupPlanResult>({
+  idPrefix: "swp_",
+  defaultDir: join(homedir(), ".agentproto", "session-wrapup", "jobs"),
+})
 
-// Finished jobs older than 1 h are dropped when a new job starts, and their
-// on-disk result file (if any) is unlinked alongside the map entry. The map
-// itself does not survive a daemon restart, so `startBranchGcJob` ALSO
-// sweeps the jobs dir itself for stale files on every call — a restarted
-// daemon's fresh (empty) map never re-evicts a pre-restart file by id, so
-// the directory-level sweep is what actually bounds disk usage across
-// restarts.
-//
-// NOTE: every finished run — including an ordinary BLOCKING call with
-// neither `wait: false` nor `waitMs` set (e.g. the `maintain` workflow) —
-// still allocates a job-map entry and writes its full result to disk as a
-// side effect, even though the caller never sees a `jobId` and the
-// response shape is unchanged. That work isn't free, just invisible to
-// the caller.
-/** Where a finished job's full result is written (`<id>.json`). Injectable
- *  via `RegisterSessionToolsOptions.branchGcJobsDir` (tests point it at a
- *  temp dir); a registration without the option keeps the process default. */
-const BRANCH_GC_JOBS_DIR_DEFAULT = join(homedir(), ".agentproto", "branch-gc", "jobs")
-let branchGcJobsDirOverride: string | undefined
-const branchGcJobsDirOf = (): string => branchGcJobsDirOverride ?? BRANCH_GC_JOBS_DIR_DEFAULT
-const BRANCH_GC_JOB_RETENTION_MS = 3_600_000
-interface BranchGcJob {
-  id: string
-  status: "running" | "done" | "failed"
-  startedAt: string
-  startedMs: number
-  endedAt?: string
-  result?: BranchGcResult
-  /** Set only once `writeFile` actually succeeds. `branch_gc_status`
-   *  omits `resultPath` rather than pointing a caller at a file that was
-   *  never written (the write is best-effort and its failure swallowed). */
-  resultPath?: string
-  error?: string
+interface SessionWrapupApplyResult {
+  results: Array<{ sessionId: string; ok: boolean; class?: SessionWrapupClass; action?: "closed" | "flagged"; error?: string }>
 }
-const branchGcJobs = new Map<string, BranchGcJob>()
-// Best-effort sweep of the DIRECTORY itself (not just the in-memory map):
-// a file whose job was evicted from the map in a PRIOR process lifetime
-// (daemon restart) would otherwise never get unlinked, since the fresh
-// map has no entry — and therefore no eviction — for it.
-const sweepStaleBranchGcJobFiles = async (): Promise<void> => {
-  try {
-    const jobsDir = branchGcJobsDirOf()
-    const names = await readdir(jobsDir)
-    const cutoff = Date.now() - BRANCH_GC_JOB_RETENTION_MS
-    await Promise.all(
-      names.map(async name => {
-        const filePath = join(jobsDir, name)
-        try {
-          const info = await stat(filePath)
-          if (info.mtimeMs < cutoff) await unlink(filePath)
-        } catch {
-          // Best effort — a concurrent sweep/writer may have already
-          // removed or replaced it.
-        }
-      }),
-    )
-  } catch {
-    // Directory may not exist yet (no job has ever finished) — fine.
-  }
-}
-const startBranchGcJob = (
-  runner: BranchGcRunner,
-  runInput: BranchGcRunInput,
-): { job: BranchGcJob; promise: Promise<BranchGcResult> } => {
-  const startedMs = Date.now()
-  for (const [k, j] of branchGcJobs) {
-    if (j.endedAt && startedMs - Date.parse(j.endedAt) >= BRANCH_GC_JOB_RETENTION_MS) {
-      branchGcJobs.delete(k)
-      if (j.resultPath) void unlink(j.resultPath).catch(() => {})
-    }
-  }
-  void sweepStaleBranchGcJobFiles()
-  const job: BranchGcJob = { id: `bgc_${randomBytes(4).toString("hex")}`, status: "running", startedAt: new Date(startedMs).toISOString(), startedMs }
-  branchGcJobs.set(job.id, job)
-  const promise = runner(runInput)
-  void promise.then(
-    async result => {
-      // Save the full result before flipping to `done`, so a `resultPath`
-      // reported by `branch_gc_status` points at a file that actually
-      // exists — see `BranchGcJob.resultPath`.
-      const jobsDir = branchGcJobsDirOf()
-      const resultPath = join(jobsDir, `${job.id}.json`)
-      try {
-        await mkdir(jobsDir, { recursive: true })
-        await writeFile(resultPath, JSON.stringify(result))
-        job.resultPath = resultPath
-      } catch {
-        // Best effort — the in-memory job still carries the result; no
-        // `resultPath` is reported unless the write actually succeeded.
-      }
-      job.status = "done"
-      job.endedAt = new Date().toISOString()
-      job.result = result
-    },
-    err => {
-      job.status = "failed"
-      job.endedAt = new Date().toISOString()
-      job.error = err instanceof Error ? err.message : String(err)
-    },
-  )
-  return { job, promise }
-}
+const sessionWrapupApplyJobs = createBackgroundJobRegistry<SessionWrapupApplyResult>({
+  idPrefix: "swa_",
+  defaultDir: join(homedir(), ".agentproto", "session-wrapup", "apply-jobs"),
+})
 
-const BRANCH_GC_POLL_AFTER_MS = 30_000
-/** The fire-and-drop payload for `branch_gc { wait: false }` / a `waitMs`
- *  timeout, plus the `followUp` block telling a caller HOW to follow up
- *  (which tool, with which args, how often) — the response used to say
- *  nothing about that. */
-const branchGcBackgroundView = (jobId: string, startedAt: string): object => ({
-  jobId,
-  status: "running",
-  startedAt,
-  resultPath: join(branchGcJobsDirOf(), `${jobId}.json`),
-  followUp: {
+/** Default window `worktree_gc` / `session_wrapup_plan` block for before
+ *  falling back to the background view (under a ~60 s MCP client timeout). */
+const BACKGROUND_DEFAULT_WAIT_MS = 25_000
+
+const branchGcBackgroundView = (job: BackgroundJob<BranchGcResult>): object =>
+  branchGcJobs.backgroundView(job, {
     tool: "branch_gc_status",
-    args: { jobId },
-    pollAfterMs: BRANCH_GC_POLL_AFTER_MS,
     hint:
       "Running in the background; a plan on a large repo takes a few minutes. " +
       "Call branch_gc_status with this jobId about every 30 s. When done it " +
       "returns the summary; the full result is written to resultPath (pass " +
       "full: true to get it inline).",
-  },
-})
+  })
 
 /** The `done` view `branch_gc_status` returns — identical for an in-memory
  *  job and one rebuilt from its on-disk result file (Part of the
@@ -974,6 +891,73 @@ const branchGcDoneView = (
   ...(full ? { result } : {}),
 })
 
+const worktreeGcBackgroundView = (job: BackgroundJob<WorktreeGcResult>): object =>
+  worktreeGcJobs.backgroundView(job, {
+    tool: "worktree_gc_status",
+    hint:
+      "Running in the background (it keeps going even if you never poll). " +
+      "Call worktree_gc_status with this jobId about every 30 s; when done it " +
+      "returns the same result worktree_gc returns inline.",
+  })
+
+const sessionWrapupApplyBackgroundView = (job: BackgroundJob<SessionWrapupApplyResult>): object =>
+  sessionWrapupApplyJobs.backgroundView(job, {
+    tool: "session_wrapup_status",
+    hint:
+      "Running in the background (it keeps going even if you never poll). " +
+      "Call session_wrapup_status with this jobId about every 30 s; when " +
+      "done, `result` is the same `{ results }` session_wrapup_apply returns inline.",
+  })
+
+const sessionWrapupBackgroundView = (job: BackgroundJob<SessionWrapupPlanResult>): object =>
+  sessionWrapupJobs.backgroundView(job, {
+    tool: "session_wrapup_status",
+    hint:
+      "Running in the background. Call session_wrapup_status with this " +
+      "jobId about every 30 s; when done it returns the same `{ entries, " +
+      "totals }` session_wrapup_plan returns inline.",
+  })
+
+/** Shared `*_status` handler for jobs whose done view is just the result
+ *  itself: memory first, then the on-disk result file, then not-found. */
+const backgroundStatusResult = async <T>(
+  toolName: string,
+  jobs: ReturnType<typeof createBackgroundJobRegistry<T>>,
+  jobId: string,
+): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> => {
+  const job = jobs.get(jobId)
+  if (!job) {
+    const parsed = await jobs.readResultFile(jobId)
+    if (parsed === undefined) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${toolName} job '${jobId}' not found (no running job and no result file at ${jobs.resultPathFor(jobId)})`,
+          },
+        ],
+        isError: true,
+      }
+    }
+    return { content: [{ type: "text", text: JSON.stringify({ jobId, status: "done", resultPath: jobs.resultPathFor(jobId), result: parsed }) }] }
+  }
+  if (job.status !== "done") return { content: [{ type: "text", text: JSON.stringify(jobs.progressView(job)) }] }
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          jobId: job.id,
+          status: "done",
+          endedAt: job.endedAt,
+          resultPath: jobs.resultPathFor(job.id),
+          result: job.result,
+        }),
+      },
+    ],
+  }
+}
+
 export function registerSessionTools(
   rawServer: McpServer,
   opts: RegisterSessionToolsOptions
@@ -1003,7 +987,10 @@ export function registerSessionTools(
   const ptyEnabled = opts.ptyEnabled === true
   // Point the module-level branch_gc job registry at the injected dir (tests
   // use this to avoid writing into the real home directory). Last write wins.
-  if (opts.branchGcJobsDir) branchGcJobsDirOverride = opts.branchGcJobsDir
+  if (opts.branchGcJobsDir) branchGcJobs.setDir(opts.branchGcJobsDir)
+  if (opts.worktreeGcJobsDir) worktreeGcJobs.setDir(opts.worktreeGcJobsDir)
+  if (opts.sessionWrapupJobsDir) sessionWrapupJobs.setDir(opts.sessionWrapupJobsDir)
+  if (opts.sessionWrapupApplyJobsDir) sessionWrapupApplyJobs.setDir(opts.sessionWrapupApplyJobsDir)
 
   // Shared registration helper for the list tools migrated onto the AIP
   // contract layer (session_list's pattern): defineTool + implementTool +
@@ -3138,7 +3125,11 @@ export function registerSessionTools(
       "`salvageDirty` is also true), never silently discarded. `hold` " +
       "entries are never touched. Each entry is re-classified from scratch " +
       "immediately before it is touched, so a plan that has gone stale is " +
-      "refused rather than acted on.",
+      "refused rather than acted on. A plan with forge lookups (or an apply " +
+      "over many worktrees) can take minutes: this call waits up to 25 s " +
+      "(`waitMs`), then returns `{ jobId, status: \"running\", followUp }` — " +
+      "poll `worktree_gc_status` with that jobId. The run keeps going in the " +
+      "background either way.",
     {
       repoRoot: z
         .string()
@@ -3182,6 +3173,19 @@ export function registerSessionTools(
             "ONLY on these counts as clean). Default `.opencode/package-lock.json`; " +
             "pass [] to disable."
         ),
+      wait: mcpBool
+        .optional()
+        .describe(
+          "false ⇒ return a jobId immediately; poll `worktree_gc_status`. " +
+            "true ⇒ block until the gc finishes (no background fallback). " +
+            "Default: wait up to `waitMs`, then fall back to background."
+        ),
+      waitMs: mcpNumber
+        .optional()
+        .describe(
+          "Block at most this many milliseconds, then fall back to background. " +
+            "Default 25000."
+        ),
     },
     async input => {
       if (!runWorktreeGc) {
@@ -3216,16 +3220,26 @@ export function registerSessionTools(
       }
 
       try {
-        const result = await runWorktreeGc({
-          repoRoot: resolved.repoRoot,
-          apply: input.apply === true,
-          salvageDirty: input.salvageDirty === true,
-          includeDetached: input.includeDetached === true,
-          // The daemon's own live in-memory registry, not a disk re-read —
-          // see `livingSessionCwds`'s doc.
-          protectedPaths: livingSessionCwds(registry),
-          ...(input.noisePaths ? { noisePaths: input.noisePaths } : {}),
-        })
+        const { job, promise } = worktreeGcJobs.start(() =>
+          runWorktreeGc({
+            repoRoot: resolved.repoRoot,
+            apply: input.apply === true,
+            salvageDirty: input.salvageDirty === true,
+            includeDetached: input.includeDetached === true,
+            // The daemon's own live in-memory registry, not a disk re-read —
+            // see `livingSessionCwds`'s doc.
+            protectedPaths: livingSessionCwds(registry),
+            ...(input.noisePaths ? { noisePaths: input.noisePaths } : {}),
+          })
+        )
+        if (input.wait === false) {
+          return { content: [{ type: "text", text: JSON.stringify(worktreeGcBackgroundView(job)) }] }
+        }
+        const waitMs = input.wait === true ? undefined : (input.waitMs ?? BACKGROUND_DEFAULT_WAIT_MS)
+        if (waitMs !== undefined && (await timedOutWaiting(promise, waitMs))) {
+          return { content: [{ type: "text", text: JSON.stringify(worktreeGcBackgroundView(job)) }] }
+        }
+        const result = await promise
         return {
           content: [
             {
@@ -3246,6 +3260,19 @@ export function registerSessionTools(
         }
       }
     },
+  )
+
+  server.tool(
+    "worktree_gc_status",
+    "Poll a worktree_gc run that fell back to the background (`wait: false`, " +
+      "or it outlasted `waitMs`). While running: status + elapsed time and " +
+      "`followUp.pollAfterMs`. When done: the same result `worktree_gc` " +
+      "returns inline (plan or outcomes), also saved at `resultPath`. When " +
+      "failed: the error.",
+    {
+      jobId: z.string().describe("Job id returned by `worktree_gc` (`wgc_…`)."),
+    },
+    async input => backgroundStatusResult("worktree_gc", worktreeGcJobs, input.jobId),
   )
 
   const branchGcKind = z.enum(["local", "remote", "orphan"])
@@ -3333,32 +3360,12 @@ export function registerSessionTools(
           ...(input.minAgeDays !== undefined ? { minAgeDays: input.minAgeDays } : {}),
           ...(input.anchor ? { anchor: input.anchor } : {}),
         }
-        const { job, promise } = startBranchGcJob(runBranchGc, runInput)
+        const { job, promise } = branchGcJobs.start(() => runBranchGc(runInput))
         if (input.wait === false) {
-          return { content: [{ type: "text", text: JSON.stringify(branchGcBackgroundView(job.id, job.startedAt)) }] }
+          return { content: [{ type: "text", text: JSON.stringify(branchGcBackgroundView(job)) }] }
         }
-        if (input.waitMs !== undefined) {
-          let fireTimedOut!: (timedOut: boolean) => void
-          const timeout = new Promise<boolean>(r => {
-            // Kept so the timer doesn't linger past the call when the run
-            // settles first — otherwise a 40 s timer is alive on a 2 s job.
-            const handle = setTimeout(() => r(true), input.waitMs)
-            fireTimedOut = settled => {
-              clearTimeout(handle)
-              r(settled)
-            }
-          })
-          const timedOut = await Promise.race([
-            promise.then(
-              () => fireTimedOut(false),
-              () => fireTimedOut(false),
-            ),
-            timeout,
-          ])
-          if (timedOut) {
-            return { content: [{ type: "text", text: JSON.stringify(branchGcBackgroundView(job.id, job.startedAt)) }] }
-          }
-          // Settled inside the window — fall through and return inline.
+        if (input.waitMs !== undefined && (await timedOutWaiting(promise, input.waitMs))) {
+          return { content: [{ type: "text", text: JSON.stringify(branchGcBackgroundView(job)) }] }
         }
         const result = await promise
         return { content: [{ type: "text", text: JSON.stringify(result) }] }
@@ -3389,61 +3396,26 @@ export function registerSessionTools(
         // The map is per-process: an id from a prior daemon lifetime (or one
         // whose map entry was already evicted) is not in it — but the job's
         // full result is still on disk. Fall back to the result file before
-        // declaring the job lost. Guard the id first: only a well-formed
-        // `bgc_<hex8>` id may touch the filesystem, so a crafted id like
-        // `../x` can never escape the jobs dir.
-        const fallbackPath = join(branchGcJobsDirOf(), `${input.jobId}.json`)
-        if (!/^bgc_[0-9a-f]{8}$/.test(input.jobId)) {
+        // declaring the job lost.
+        const parsed = await branchGcJobs.readResultFile(input.jobId)
+        if (!parsed) {
           return {
             content: [
               {
                 type: "text",
-                text: `branch_gc job '${input.jobId}' not found (no running job and no result file at ${fallbackPath})`,
+                text: `branch_gc job '${input.jobId}' not found (no running job and no result file at ${branchGcJobs.resultPathFor(input.jobId)})`,
               },
             ],
             isError: true,
           }
         }
-        let parsed: BranchGcResult
-        try {
-          parsed = JSON.parse(await readFile(fallbackPath, "utf8")) as BranchGcResult
-        } catch {
-          return {
-            content: [
-              {
-                type: "text",
-                text: `branch_gc job '${input.jobId}' not found (no running job and no result file at ${fallbackPath})`,
-              },
-            ],
-            isError: true,
-          }
-        }
-        const view = branchGcDoneView(input.jobId, fallbackPath, parsed, input.full === true)
+        const view = branchGcDoneView(input.jobId, branchGcJobs.resultPathFor(input.jobId), parsed, input.full === true)
         return { content: [{ type: "text", text: JSON.stringify(view) }] }
       }
-      if (job.status === "running") {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                jobId: job.id,
-                status: job.status,
-                startedAt: job.startedAt,
-                elapsedMs: Date.now() - job.startedMs,
-                resultPath: join(branchGcJobsDirOf(), `${job.id}.json`),
-                followUp: { pollAfterMs: BRANCH_GC_POLL_AFTER_MS },
-              }),
-            },
-          ],
-        }
+      if (job.status !== "done") {
+        return { content: [{ type: "text", text: JSON.stringify(branchGcJobs.progressView(job)) }] }
       }
-      if (job.status === "failed") {
-        return {
-          content: [{ type: "text", text: JSON.stringify({ jobId: job.id, status: job.status, endedAt: job.endedAt, error: job.error }) }],
-        }
-      }
-      const view = branchGcDoneView(job.id, join(branchGcJobsDirOf(), `${job.id}.json`), job.result!, input.full === true, job.endedAt)
+      const view = branchGcDoneView(job.id, branchGcJobs.resultPathFor(job.id), job.result!, input.full === true, job.endedAt)
       return { content: [{ type: "text", text: JSON.stringify(view) }] }
     },
   )
@@ -4303,12 +4275,17 @@ export function registerSessionTools(
    *  lookups) with `rssBytes` merged onto the candidates that have it. */
   const gatherWrapupInputs = async (
     nowMs: number,
+    gatherScope: { onlyIds?: ReadonlySet<string> } = {},
   ): Promise<{ all: SessionDescriptor[]; sessionsForPlan: SessionDescriptor[]; signals: Map<string, SessionWrapupSignals> }> => {
     const all = registry.list({ includeArchived: true })
     const byId = new Map(all.map(d => [d.id, d]))
-    const candidates = all.filter(isWrapupCandidate)
+    // `onlyIds` (the apply path): gather live signals for just those
+    // sessions — no `ps`, no transcript tails, no worktree lookups for
+    // anyone else. `all` still carries the full universe, since the pure
+    // planner needs it for parent lookups.
+    const candidates = all.filter(d => isWrapupCandidate(d) && (!gatherScope.onlyIds || gatherScope.onlyIds.has(d.id)))
 
-    const withPid = candidates.filter((d): d is SessionDescriptor & { pid: number } => typeof d.pid === "number")
+    const withPid = gatherScope.onlyIds ? [] : candidates.filter((d): d is SessionDescriptor & { pid: number } => typeof d.pid === "number")
     const rssByPid = withPid.length > 0 ? await processTreeRss(withPid.map(d => d.pid)) : new Map<number, number>()
 
     const mergedByWorktreePath = new Map<string, boolean>()
@@ -4321,14 +4298,18 @@ export function registerSessionTools(
         set.add(scope.worktreePath)
         pathsByRepo.set(scope.repoRoot, set)
       }
-      for (const [repoRoot, paths] of pathsByRepo) {
-        try {
-          const views = await listWorktreeStatuses(repoRoot, { paths: [...paths] })
-          for (const v of views) mergedByWorktreePath.set(v.path, v.pr?.state === "merged")
-        } catch {
-          // Best-effort signal only — a lister failure never blocks the plan.
-        }
-      }
+      // Repos are independent — look them up concurrently (each is a forge
+      // round-trip), one call per repo however many sessions live in it.
+      await Promise.all(
+        [...pathsByRepo].map(async ([repoRoot, paths]) => {
+          try {
+            const views = await listWorktreeStatuses(repoRoot, { paths: [...paths] })
+            for (const v of views) mergedByWorktreePath.set(v.path, v.pr?.state === "merged")
+          } catch {
+            // Best-effort signal only — a lister failure never blocks the plan.
+          }
+        }),
+      )
     }
 
     const signals = new Map<string, SessionWrapupSignals>()
@@ -4341,7 +4322,7 @@ export function registerSessionTools(
         d.parentSessionId !== undefined &&
         (parent === undefined || (parent.status !== "running" && parent.status !== "starting"))
       const pendingToolCall = (d.pendingBgTasks ?? 0) > 0 || (d.backgroundTasks?.length ?? 0) > 0
-      const lastAssistantTail = d.eventsPath
+      const lastAssistantTail = d.eventsPath && !gatherScope.onlyIds
         ? trimOutcomeText(readLastAssistantTextSync(d.eventsPath), OUTCOME_SUMMARY_MAX, "tail")
         : undefined
       signals.set(d.id, {
@@ -4378,7 +4359,10 @@ export function registerSessionTools(
       "`includeKeep` is set). Also reports `rssBytes` (process-tree RSS) per " +
       "entry and summed per class in `totals`. Feed `close`/`stuck` ids " +
       "straight to `session_wrapup_apply`; `judge` ids need a judge's " +
-      "verdict first (FIX-9B).",
+      "verdict first (FIX-9B). Computing worktree merge status can take " +
+      "minutes: this call waits up to 25 s (`waitMs`), then returns " +
+      "`{ jobId, status: \"running\", followUp }` — poll " +
+      "`session_wrapup_status` with that jobId.",
     {
       idleMinutes: z
         .number()
@@ -4393,31 +4377,77 @@ export function registerSessionTools(
             "never acted on, so they're omitted to keep the plan focused on " +
             "what the steward might actually do.",
         ),
+      wait: mcpBool
+        .optional()
+        .describe(
+          "false ⇒ return a jobId immediately; poll `session_wrapup_status`. " +
+            "true ⇒ block until the plan is computed. Default: wait up to " +
+            "`waitMs`, then fall back to background.",
+        ),
+      waitMs: mcpNumber
+        .optional()
+        .describe("Block at most this many milliseconds, then fall back to background. Default 25000."),
     },
     async input => {
-      const nowMs = Date.now()
-      const { all, sessionsForPlan, signals } = await gatherWrapupInputs(nowMs)
-      const subtree = callerScope ? collectSubtree(callerScope.ownerSessionId, all) : undefined
+      const computePlan = async (): Promise<SessionWrapupPlanResult> => {
+        const nowMs = Date.now()
+        const { all, sessionsForPlan, signals } = await gatherWrapupInputs(nowMs)
+        const subtree = callerScope ? collectSubtree(callerScope.ownerSessionId, all) : undefined
 
-      let entries = planSessionWrapup({
-        sessions: sessionsForPlan,
-        nowMs,
-        ...(input.idleMinutes !== undefined ? { idleMinutes: input.idleMinutes } : {}),
-        signals,
-        ...(wrapupCallerSessionId ? { callerSessionId: wrapupCallerSessionId } : {}),
-      })
+        let entries = planSessionWrapup({
+          sessions: sessionsForPlan,
+          nowMs,
+          ...(input.idleMinutes !== undefined ? { idleMinutes: input.idleMinutes } : {}),
+          signals,
+          ...(wrapupCallerSessionId ? { callerSessionId: wrapupCallerSessionId } : {}),
+        })
 
-      if (subtree) entries = entries.filter(e => subtree.has(e.sessionId))
-      if (!input.includeKeep) entries = entries.filter(e => e.class !== "keep")
+        if (subtree) entries = entries.filter(e => subtree.has(e.sessionId))
+        if (!input.includeKeep) entries = entries.filter(e => e.class !== "keep")
 
-      const totals: Partial<Record<SessionWrapupClass, number>> = {}
-      for (const e of entries) {
-        if (e.rssBytes === undefined) continue
-        totals[e.class] = (totals[e.class] ?? 0) + e.rssBytes
+        const totals: Partial<Record<SessionWrapupClass, number>> = {}
+        for (const e of entries) {
+          if (e.rssBytes === undefined) continue
+          totals[e.class] = (totals[e.class] ?? 0) + e.rssBytes
+        }
+        return { entries, totals }
       }
 
-      return { content: [{ type: "text", text: JSON.stringify({ entries, totals }) }] }
+      const { job, promise } = sessionWrapupJobs.start(computePlan)
+      if (input.wait === false) {
+        return { content: [{ type: "text", text: JSON.stringify(sessionWrapupBackgroundView(job)) }] }
+      }
+      const waitMs = input.wait === true ? undefined : (input.waitMs ?? BACKGROUND_DEFAULT_WAIT_MS)
+      if (waitMs !== undefined && (await timedOutWaiting(promise, waitMs))) {
+        return { content: [{ type: "text", text: JSON.stringify(sessionWrapupBackgroundView(job)) }] }
+      }
+      try {
+        return { content: [{ type: "text", text: JSON.stringify(await promise) }] }
+      } catch (err) {
+        return {
+          content: [
+            { type: "text", text: `session_wrapup_plan failed: ${err instanceof Error ? err.message : String(err)}` },
+          ],
+          isError: true,
+        }
+      }
     },
+  )
+
+  server.tool(
+    "session_wrapup_status",
+    "Poll a session_wrapup_plan or session_wrapup_apply run that fell back to " +
+      "the background (`wait: false`, or it outlasted `waitMs`). While running: status + " +
+      "elapsed time and `followUp.pollAfterMs`. When done: `result` is the " +
+      "same `{ entries, totals }` (plan) or `{ results }` (apply) the tool " +
+      "returns inline. When failed: the error.",
+    {
+      jobId: z.string().describe("Job id returned by `session_wrapup_plan` (`swp_…`) or `session_wrapup_apply` (`swa_…`)."),
+    },
+    async input =>
+      input.jobId.startsWith("swa_")
+        ? backgroundStatusResult("session_wrapup_apply", sessionWrapupApplyJobs, input.jobId)
+        : backgroundStatusResult("session_wrapup_plan", sessionWrapupJobs, input.jobId),
   )
 
   server.tool(
@@ -4439,7 +4469,10 @@ export function registerSessionTools(
       "`error:'refused_stale_or_busy'`) if the session is busy/awaitingInput/" +
       "awaitingPermission or has a background task outstanding at the moment " +
       "of the call, for either kind of action. A scoped orchestrator may only " +
-      "act on its own subtree. Returns a per-id result.",
+      "act on its own subtree. Returns a per-id result. Only the requested " +
+      "sessions are re-checked (never a full plan). If it outlasts 25 s " +
+      "(`waitMs`) it returns `{ jobId, status: \"running\", followUp }` — " +
+      "poll `session_wrapup_status`; the apply keeps running regardless.",
     {
       sessionIds: z
         .array(z.string().min(1))
@@ -4462,53 +4495,90 @@ export function registerSessionTools(
             "`'judged'` and a `judge`-class session also becomes eligible " +
             "(not just `close`/`stuck`). Omitted ⇒ `source:'declared'`, " +
             "`judgedBy:'steward-rules'`, and only `close`/`stuck` are eligible.",
+        ),      wait: mcpBool
+        .optional()
+        .describe(
+          "false ⇒ return a jobId immediately; poll `session_wrapup_status`. " +
+            "true ⇒ block until done. Default: wait up to `waitMs`, then " +
+            "fall back to background (the apply keeps running).",
         ),
+      waitMs: mcpNumber
+        .optional()
+        .describe("Block at most this many milliseconds, then fall back to background. Default 25000."),
     },
     async input => {
-      const nowMs = Date.now()
-      const { all, sessionsForPlan, signals } = await gatherWrapupInputs(nowMs)
-      const subtree = callerScope ? collectSubtree(callerScope.ownerSessionId, all) : undefined
-
-      const entries = planSessionWrapup({
-        sessions: sessionsForPlan,
-        nowMs,
-        signals,
-        ...(wrapupCallerSessionId ? { callerSessionId: wrapupCallerSessionId } : {}),
-      })
-      const entryById = new Map(entries.map(e => [e.sessionId, e]))
-
-      const source: "judged" | "declared" = input.judgedBy ? "judged" : "declared"
-      const judgedBy = input.judgedBy ?? "steward-rules"
-
-      const results = input.sessionIds.map(ref => {
-        const desc = registry.findByIdOrName(ref)
-        if (!desc) return { sessionId: ref, ok: false as const, error: "not_found" }
-        if (subtree && !subtree.has(desc.id)) {
-          return { sessionId: desc.id, ok: false as const, error: "orchestrator_session_out_of_scope" }
+      const computeApply = async (): Promise<SessionWrapupApplyResult> => {
+        const nowMs = Date.now()
+        // Resolve the requested refs first (in-memory) so signal gathering
+        // — the slow part, a forge lookup per worktree — is limited to
+        // exactly these sessions, never a plan over the whole registry.
+        const requestedIds = new Set<string>()
+        for (const ref of input.sessionIds) {
+          const desc = registry.findByIdOrName(ref)
+          if (desc) requestedIds.add(desc.id)
         }
-        const entry = entryById.get(desc.id)
-        if (!entry) return { sessionId: desc.id, ok: false as const, error: "not_a_candidate" }
-        if (entry.class === "keep") {
-          return { sessionId: desc.id, ok: false as const, class: entry.class, error: "keep_class_never_touched" }
-        }
-        if (entry.class === "judge" && !input.judgedBy) {
-          return { sessionId: desc.id, ok: false as const, class: entry.class, error: "ambiguous_needs_judge" }
-        }
-        const action: "closed" | "flagged" =
-          input.verdict === "done" || input.verdict === "abandoned" ? "closed" : "flagged"
-        const applied = registry.closeWithOutcome(desc.id, {
-          verdict: input.verdict,
-          ...(input.note !== undefined ? { note: input.note } : {}),
-          judgedBy,
-          source,
+        const { all, sessionsForPlan, signals } = await gatherWrapupInputs(nowMs, { onlyIds: requestedIds })
+        const subtree = callerScope ? collectSubtree(callerScope.ownerSessionId, all) : undefined
+
+        const entries = planSessionWrapup({
+          sessions: sessionsForPlan,
+          nowMs,
+          signals,
+          ...(wrapupCallerSessionId ? { callerSessionId: wrapupCallerSessionId } : {}),
         })
-        return applied
-          ? { sessionId: desc.id, ok: true as const, class: entry.class, action }
-          : { sessionId: desc.id, ok: false as const, class: entry.class, error: "refused_stale_or_busy" }
-      })
+        const entryById = new Map(entries.map(e => [e.sessionId, e]))
 
-      return { content: [{ type: "text", text: JSON.stringify({ results }) }] }
-    },
+        const source: "judged" | "declared" = input.judgedBy ? "judged" : "declared"
+        const judgedBy = input.judgedBy ?? "steward-rules"
+
+        const results = input.sessionIds.map(ref => {
+          const desc = registry.findByIdOrName(ref)
+          if (!desc) return { sessionId: ref, ok: false as const, error: "not_found" }
+          if (subtree && !subtree.has(desc.id)) {
+            return { sessionId: desc.id, ok: false as const, error: "orchestrator_session_out_of_scope" }
+          }
+          const entry = entryById.get(desc.id)
+          if (!entry) return { sessionId: desc.id, ok: false as const, error: "not_a_candidate" }
+          if (entry.class === "keep") {
+            return { sessionId: desc.id, ok: false as const, class: entry.class, error: "keep_class_never_touched" }
+          }
+          if (entry.class === "judge" && !input.judgedBy) {
+            return { sessionId: desc.id, ok: false as const, class: entry.class, error: "ambiguous_needs_judge" }
+          }
+          const action: "closed" | "flagged" =
+            input.verdict === "done" || input.verdict === "abandoned" ? "closed" : "flagged"
+          const applied = registry.closeWithOutcome(desc.id, {
+            verdict: input.verdict,
+            ...(input.note !== undefined ? { note: input.note } : {}),
+            judgedBy,
+            source,
+          })
+          return applied
+            ? { sessionId: desc.id, ok: true as const, class: entry.class, action }
+            : { sessionId: desc.id, ok: false as const, class: entry.class, error: "refused_stale_or_busy" }
+        })
+        return { results }
+      }
+
+      const { job, promise } = sessionWrapupApplyJobs.start(computeApply)
+      if (input.wait === false) {
+        return { content: [{ type: "text", text: JSON.stringify(sessionWrapupApplyBackgroundView(job)) }] }
+      }
+      const waitMs = input.wait === true ? undefined : (input.waitMs ?? BACKGROUND_DEFAULT_WAIT_MS)
+      if (waitMs !== undefined && (await timedOutWaiting(promise, waitMs))) {
+        return { content: [{ type: "text", text: JSON.stringify(sessionWrapupApplyBackgroundView(job)) }] }
+      }
+      try {
+        return { content: [{ type: "text", text: JSON.stringify(await promise) }] }
+      } catch (err) {
+        return {
+          content: [
+            { type: "text", text: `session_wrapup_apply failed: ${err instanceof Error ? err.message : String(err)}` },
+          ],
+          isError: true,
+        }
+      }
+    }
   )
 
   server.tool(

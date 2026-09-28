@@ -15,18 +15,21 @@
  *      are authorized to die; only the cost is being moved.
  *   2. `git worktree prune` — git forgets the (now missing) registration.
  *      The worktree disappears from `git worktree list` immediately.
- *   3. `rm -rf` on the trash dir runs in a DETACHED child
- *      (`spawn("rm", ["-rf", trashDir], { detached: true, stdio: "ignore" })`
- *      + `.unref()`) — the parent never waits for the hundreds of thousands
- *      of unlinks, and survives its own exit. The next `gc` apply also
+ *   3. `rm -rf` on the trash dirs runs in ONE DETACHED, serialized deleter
+ *      per pool (`ensureTrashDeleter`; a `.trash/.deleting` pid file stops a
+ *      second one spawning while it lives) — the parent never waits for the
+ *      hundreds of thousands of unlinks, survives its own exit, and a burst
+ *      of reclaims doesn't storm the disk with parallel `rm`s. The next `gc` apply also
  *      sweeps stale `.trash` dirs (`sweepWorktreeTrash`) so nothing leaks
  *      even if a child is killed mid-delete.
  *
  * SAFETY — the plain/forced `git worktree remove` semantics this must not
- * weaken, verified empirically against git (see the brief):
- *   - A non-force removal must refuse a dirty tree: the caller passes
- *     `force: false` only for a tree already checked clean, and
- *     `removeWorktreeFast` re-checks `git status --porcelain` itself and
+ * weaken, verified empirically against git:
+ *   - Plain `git worktree remove` ACCEPTS gitignored files (`node_modules`,
+ *     `dist`) and refuses only modified/staged tracked files, unignored
+ *     untracked files, dirty submodules and locked worktrees. A non-force
+ *     `removeWorktreeFast` gates on `git status --porcelain
+ *     --ignore-submodules=none` (no `--ignored`) plus a locked check, and
  *     throws (leaving the worktree in place) rather than renaming dirt away.
  *   - A forced removal is only ever passed after a salvage snapshot or an
  *     explicit user-granted discard flag upstream — this module doesn't
@@ -38,13 +41,67 @@
  */
 
 import { spawn } from "node:child_process"
-import { existsSync, mkdirSync, readdirSync, realpathSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { rename } from "node:fs/promises"
-import { basename, join } from "node:path"
+import { basename, dirname, join } from "node:path"
 import { execArgv, execGit } from "./exec.js"
 
 /** Directory (inside the worktrees root's repo bucket) background-delete leftovers land in. */
 export const WORKTREE_TRASH_DIRNAME = ".trash"
+
+/** Pid file (inside a trash dir) of the pool's running background deleter. */
+export const WORKTREE_TRASH_PIDFILE = ".deleting"
+
+// One deleter per pool, removing `.trash/*` one dir after another and looping
+// until a pass finds nothing (so a dir parked mid-run is still picked up).
+// Dotfiles (the pid file) are not matched by `*`. The EXIT trap drops the pid
+// file; a killed deleter leaves a stale one, which `isPidAlive` detects.
+const DELETER_SCRIPT =
+	'trap \'rm -f "$1/.deleting"\' EXIT; n=1; while [ "$n" -gt 0 ]; do n=0; for d in "$1"/*; do [ -e "$d" ] || continue; rm -rf "$d"; n=1; done; done'
+
+function isPidAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0)
+		return true
+	} catch (err) {
+		return (err as NodeJS.ErrnoException).code === "EPERM"
+	}
+}
+
+function defaultSpawnDeleter(trashParent: string): number | undefined {
+	const child = spawn("sh", ["-c", DELETER_SCRIPT, "_", trashParent], { detached: true, stdio: "ignore" })
+	child.unref()
+	return child.pid
+}
+
+/**
+ * Make sure ONE detached background deleter is draining `trashParent`
+ * (`<pool>/.trash`). Many reclaims in a single gc apply used to each spawn
+ * their own `rm -rf` at once, storming the disk; now a live pid in
+ * `.deleting` means the running deleter will pick the new dir up, so no
+ * second one is spawned. A stale pid file (dead process) is replaced.
+ * `spawnDeleter` is the test seam; it returns the spawned child's pid.
+ */
+export function ensureTrashDeleter(
+	trashParent: string,
+	spawnDeleter: (trashParent: string) => number | undefined = defaultSpawnDeleter,
+): void {
+	const pidFile = join(trashParent, WORKTREE_TRASH_PIDFILE)
+	try {
+		const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10)
+		if (Number.isInteger(pid) && pid > 0 && isPidAlive(pid)) return
+	} catch {
+		// no pid file — no deleter running
+	}
+	const pid = spawnDeleter(trashParent)
+	if (pid !== undefined) {
+		try {
+			writeFileSync(pidFile, String(pid))
+		} catch {
+			// best-effort: worst case a second deleter is spawned next time
+		}
+	}
+}
 
 /**
  * `realpath`, falling back to the input for a path that doesn't exist —
@@ -62,7 +119,7 @@ function realOrResolved(path: string): string {
 export interface RemoveWorktreeFastOptions {
 	/**
 	 * `false` (default): re-verify the tree is clean via `git status
-	 * --porcelain` and refuse (throw) on any dirt — the same refusal a plain
+	 * --porcelain --untracked-files=normal --ignore-submodules=none` and refuse (throw) on any dirt — the same refusal a plain
 	 * `git worktree remove` performs. `true`: skip the cleanliness gate,
 	 * exactly like `git worktree remove --force` — only pass this when dirt
 	 * has been authorized (salvage snapshot durable / discard flags granted)
@@ -75,11 +132,18 @@ export interface RemoveWorktreeFastOptions {
 	 */
 	now?: () => number
 	/**
-	 * Test seam — overrides the detached `rm -rf` child (e.g. an in-process
-	 * spy). Receives the trash dir path. Default: a detached
-	 * `spawn("rm", ["-rf", …])` the parent never waits on.
+	 * Test seam — overrides background deletion per trash dir (e.g. an
+	 * in-process spy). Receives the trash dir path. Default: one detached,
+	 * serialized deleter per pool (`ensureTrashDeleter`) the parent never
+	 * waits on.
 	 */
 	spawnRemoval?: (trashDir: string) => void
+	/**
+	 * Test seam — replaces spawning the pool's single serialized background
+	 * deleter (see `ensureTrashDeleter`). Receives the `.trash` parent and
+	 * returns the spawned pid. Ignored when `spawnRemoval` is set.
+	 */
+	spawnDeleter?: (trashParent: string) => number | undefined
 }
 
 /**
@@ -95,33 +159,20 @@ export async function removeWorktreeFast(
 ): Promise<void> {
 	const force = options.force === true
 
-	// Safety gate (1): a non-force removal must refuse a dirty tree, exactly
-	// like `git worktree remove` without `--force`, whose arbiter is git's
-	// own refusal rules — so the gate re-derives git's verdict without
-	// mutating anything (there is no `worktree remove --dry-run` flag):
-	//
-	//   a. the registration check below;
-	//   b. `git status --porcelain=v2 --ignored=matching` in the worktree —
-	//      ANY output at all refuses. That one probe reproduces the exact
-	//      tolerance table git's non-force removal enforces, verified
-	//      empirically against this repo's own git: modified/staged/unignored
-	//      dirt (`1`/`2`/`?`/`u` records) refuses it, and — the case a
-	//      plain `--porcelain` cannot see — gitignored files refuse it too
-	//      (`!` records), which is why git's plain removal of a
-	//      gitignore-only tree errors out even though `status --porcelain`
-	//      reads empty;
-	//   c. submodule dirt: git plain-refuses a tree with modified submodule
-	//      content, which a `!`/`?`-free porcelain read would miss — a
-	//      read-only `worktree remove` probe catches that residual class,
-	//      and only that class, by its 128 exit with the dir still intact.
-	//
-	// A refused probe throws before anything moves; a passing one is the
-	// tree git itself certifies removable, which is the moment the rename
-	// is safe to be instant.
+	// Safety gate (1): a non-force removal must refuse exactly what plain
+	// `git worktree remove` refuses. Verified against git: it ACCEPTS
+	// gitignored files (`node_modules/`, `dist/` — present in every pnpm
+	// worktree) and refuses only modified/staged tracked files, unignored
+	// untracked files, and dirty submodules. That is precisely a non-empty
+	// `git status --porcelain --untracked-files=normal --ignore-submodules=none`
+	// (NO `--ignored`; the untracked mode is explicit so a user config of
+	// `status.showUntrackedFiles=no` can't hide dirt), so that read is the gate: any output throws before anything moves. (A
+	// locked worktree is the other refusal class; gate (2) checks it from the
+	// `worktree list` it already reads.)
 	if (!force) {
 		const status = await execArgv(
 			"git",
-			["-C", path, "status", "--porcelain=v2", "--ignored=matching"],
+			["-C", path, "status", "--porcelain", "--untracked-files=normal", "--ignore-submodules=none"],
 			repoRoot,
 		)
 		if (status.exitCode !== 0) {
@@ -130,20 +181,9 @@ export async function removeWorktreeFast(
 			)
 		}
 		if (status.stdout.trim().length > 0) {
-			const probe = await execArgv("git", ["-C", repoRoot, "worktree", "remove", path], repoRoot)
-			if (probe.exitCode !== 0) {
-				// Git's own refusal (the common case: real dirt). Nothing moved.
-				throw new Error(
-					`git worktree remove failed (exit ${probe.exitCode}): ${probe.stderr.trim() || probe.stdout.trim()}`,
-				)
-			}
-			// The status read saw dirt the removal tolerates (a gitignored path
-			// that a `.gitignore` in the worktree shadows differently than in
-			// the main repo, etc.) — git itself just removed the worktree, so
-			// there is nothing left to rename; fall back to the old path's
-			// final steps (branch handling stays the caller's).
-			await execGit(repoRoot, ["worktree", "prune"])
-			return
+			throw new Error(
+				`git worktree remove failed (exit 128): '${path}' contains modified or untracked files, use --force to delete it`,
+			)
 		}
 	}
 
@@ -157,21 +197,31 @@ export async function removeWorktreeFast(
 			`git worktree list failed (exit ${list.exitCode}): ${list.stderr.trim() || list.stdout.trim()}`,
 		)
 	}
-	const registered = new Set(
-		list.stdout
-			.split("\n")
-			.filter((line) => line.startsWith("worktree "))
-			.map((line) => line.slice("worktree ".length).trim()),
-	)
 	// git reports each worktree under its own realpath — a caller passing a
 	// symlinked spelling (macOS /tmp → /private/tmp, the default test/tmpdir
 	// shape on this host) would never string-match. Compare through realpath
 	// on BOTH sides (falling back to the literal path when realpath fails,
 	// e.g. a dangling registration); a genuinely-unregistered path still
 	// fails here, leaving everything untouched.
-	const registeredReal = new Set([...registered].map(realOrResolved))
-	if (!registeredReal.has(realOrResolved(path))) {
+	const target = realOrResolved(path)
+	let found = false
+	let locked = false
+	for (const block of list.stdout.split(/\n\s*\n/)) {
+		const lines = block.split("\n")
+		const head = lines.find((line) => line.startsWith("worktree "))
+		if (!head || realOrResolved(head.slice("worktree ".length).trim()) !== target) continue
+		found = true
+		locked = lines.some((line) => line === "locked" || line.startsWith("locked "))
+		break
+	}
+	if (!found) {
 		throw new Error(`not a linked worktree of ${repoRoot}: ${path}`)
+	}
+	// `git worktree prune` skips locked registrations, so renaming a locked
+	// worktree would leave git tracking a missing dir; plain removal refuses it
+	// too. Refuse before anything moves.
+	if (locked) {
+		throw new Error(`git worktree remove failed (exit 128): '${path}' is locked; unlock it first`)
 	}
 
 	// Fast path: rename to a same-volume trash dir (instant, even for
@@ -202,7 +252,7 @@ export async function removeWorktreeFast(
 	if (options.spawnRemoval) {
 		options.spawnRemoval(trashDir)
 	} else {
-		spawn("rm", ["-rf", trashDir], { detached: true, stdio: "ignore" }).unref()
+		ensureTrashDeleter(dirname(trashDir), options.spawnDeleter)
 	}
 }
 
@@ -213,7 +263,10 @@ export async function removeWorktreeFast(
  * start of a `gc` apply, where seconds of stale bytes are harmless. Missing
  * root is a no-op, not an error.
  */
-export function sweepWorktreeTrash(root: string, options: { spawnRemoval?: (dir: string) => void } = {}): void {
+export function sweepWorktreeTrash(
+	root: string,
+	options: { spawnRemoval?: (dir: string) => void; spawnDeleter?: (trashParent: string) => number | undefined } = {},
+): void {
 	// Sync read is deliberate: the caller (gc apply) wants to fire the sweep
 	// and move on in the same tick, without awaiting an async dependency
 	// chain just to list a directory. A missing/unreadable trash dir means
@@ -224,12 +277,11 @@ export function sweepWorktreeTrash(root: string, options: { spawnRemoval?: (dir:
 	} catch {
 		return
 	}
-	for (const name of names) {
-		const trashDir = join(root, WORKTREE_TRASH_DIRNAME, name)
-		if (options.spawnRemoval) {
-			options.spawnRemoval(trashDir)
-		} else {
-			spawn("rm", ["-rf", trashDir], { detached: true, stdio: "ignore" }).unref()
-		}
+	names = names.filter((name) => name !== WORKTREE_TRASH_PIDFILE)
+	if (names.length === 0) return
+	if (options.spawnRemoval) {
+		for (const name of names) options.spawnRemoval(join(root, WORKTREE_TRASH_DIRNAME, name))
+	} else {
+		ensureTrashDeleter(join(root, WORKTREE_TRASH_DIRNAME), options.spawnDeleter)
 	}
 }
