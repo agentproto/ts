@@ -217,3 +217,11 @@ for that.
 ### llm:huggingface
 - Added: ibm-granite/granite-4.2-30b, zai-org/GLM-4.6-FP8
 - Removed: CohereLabs/command-a-vision-07-2025
+
+## 2026-09-28
+
+### llm:opencode-go
+- Removed: opencode-go/glm-5, opencode-go/glm-5.1, opencode-go/kimi-k2.5, opencode-go/mimo-v2-omni, opencode-go/mimo-v2-pro, opencode-go/minimax-m2.5, opencode-go/omen-alpha, opencode-go/ox-alpha-free, opencode-go/qwen3.5-plus
+
+### llm:huggingface
+- Removed: zai-org/GLM-4.5, zai-org/GLM-4.6-FP8, zai-org/GLM-5.1-FP8
