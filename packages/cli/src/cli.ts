@@ -201,6 +201,7 @@ Usage:
                      the LLM gateway's named local/LAN model endpoints
                      (~/.agentproto/llm-endpoints.json)
   agentproto mcp       migrate-secrets [--apply]   # move imported-MCP header/env secrets to the keychain (dry-run default)
+  agentproto mcp       mount-default <adapter> <importId…>   # natively mount imported MCPs in every <adapter> spawn
   agentproto settings  export [--out <file>] [--include-secrets <id>...] [--passphrase-env <VAR>]
   agentproto settings  import <file> [--dry-run] [--yes] [--unseal-passphrase-env <VAR>]
                      bring your setup to (or from) another machine — adapters,

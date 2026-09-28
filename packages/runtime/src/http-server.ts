@@ -3925,7 +3925,7 @@ export async function startHttpServer(
               id: String(body?.id ?? ""),
               label: String(body?.label ?? ""),
               ...(body?.description ? { description: body.description } : {}),
-              mcpImports: Array.isArray(body?.mcpImports) ? body.mcpImports : [],
+              mcpImports: Array.isArray(body?.mcpImports) ? body.mcpImports : body?.mcpImports === "*" ? "*" : [],
               ...(body?.includeDaemon !== undefined ? { includeDaemon: body.includeDaemon } : {}),
               skills: Array.isArray(body?.skills) ? body.skills : [],
             })

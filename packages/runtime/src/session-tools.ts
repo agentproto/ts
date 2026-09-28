@@ -2394,9 +2394,11 @@ export function registerSessionTools(
       label: z.string().min(1).describe("Human-readable name."),
       description: z.string().min(1).optional(),
       mcpImports: z
-        .array(z.string().min(1))
+        .union([z.array(z.string().min(1)), z.literal("*")])
         .optional()
-        .describe("Imported-MCP ids from `mcp_imported_list`. Default []."),
+        .describe(
+          "Imported-MCP ids from `mcp_imported_list`, or \"*\" for every import present at spawn time (opt-in; floods the tool palette). Default [].",
+        ),
       includeDaemon: z
         .boolean()
         .optional()
@@ -2443,7 +2445,7 @@ export function registerSessionTools(
       id: z.string().min(1).describe("Existing bundle id."),
       label: z.string().min(1).optional(),
       description: z.string().min(1).optional(),
-      mcpImports: z.array(z.string().min(1)).optional(),
+      mcpImports: z.union([z.array(z.string().min(1)), z.literal("*")]).optional(),
       includeDaemon: z.boolean().optional(),
       skills: z.array(z.string().min(1)).optional(),
     },

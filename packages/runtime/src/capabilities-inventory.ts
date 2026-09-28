@@ -33,6 +33,15 @@ import { loadImportedMcps as loadImportedMcpsReal, secretRefKeys, type ImportedM
 import { discoverMcps as discoverMcpsReal, type DiscoveredMcp } from "./mcp-discovery.js"
 import { shouldInjectDaemonSelfMount } from "./session-spawn.js"
 import { loadConfig as loadConfigReal, type AgentprotoConfig } from "./config.js"
+import { loadBundles as loadBundlesReal, type BundlesFile } from "./bundles.js"
+import { resolveBundleDefaults } from "./spawn-defaults.js"
+
+/** How a harness reaches one imported MCP by default:
+ *  - `native`   — a default bundle mounts it as a native mcpServers entry;
+ *  - `indirect` — only via the daemon's own `/mcp` (`mcp_imported_call`),
+ *                 which the harness gets by default / config / bundle;
+ *  - `none`     — no default path (still reachable on request). */
+export type ImportedMcpReach = "native" | "indirect" | "none"
 
 export interface CapabilitiesInventoryImportedMcp {
   id: string
@@ -51,6 +60,9 @@ export interface CapabilitiesInventoryImportedMcp {
   stale?: { reason: string }
   /** Header/env KEY names held behind secret refs (never values). */
   secretRefKeys?: { headers?: string[]; env?: string[] }
+  /** Per installed adapter: how it reaches this import with NO per-spawn
+   *  arguments (resolved default bundles + daemon self-mount default). */
+  reach: Record<string, ImportedMcpReach>
 }
 
 export interface CapabilitiesInventoryDiscoveredMcp {
@@ -112,6 +124,9 @@ export interface CapabilitiesInventoryDeps {
   /** Test seam — defaults to the real `loadConfig` (reads
    *  `~/.agentproto/config.json`). */
   loadConfig?: () => Promise<AgentprotoConfig>
+  /** Test seam — defaults to the real `loadBundles` (reads
+   *  `~/.agentproto/bundles.json`). */
+  loadBundles?: () => Promise<BundlesFile>
 }
 
 const EMPTY_MCP: CapabilitiesInventoryMcp = {
@@ -142,15 +157,52 @@ function classifyDaemonMount(adapter: AdapterListEntry): "default" | "on-request
   return shouldInjectDaemonSelfMount(adapter.slug, undefined) ? "default" : "on-request"
 }
 
+/** Per-adapter reach for each import, from the DEFAULT bundles only
+ *  (`defaults.bundles` ∪ `defaults.adapters.<slug>.bundles`, same resolver a
+ *  spawn uses). Only ACP adapters can take `mcpServers` at all. Pure. */
+export function computeImportedReach(
+  importIds: readonly string[],
+  adapters: readonly AdapterListEntry[],
+  config: AgentprotoConfig,
+  bundles: BundlesFile,
+): Map<string, Record<string, ImportedMcpReach>> {
+  const out = new Map<string, Record<string, ImportedMcpReach>>(importIds.map(id => [id, {}]))
+  for (const adapter of adapters) {
+    const acp = adapter.protocol === "acp"
+    const { bundleIds, daemonMount } = resolveBundleDefaults(config.defaults, adapter.slug, {})
+    const active = bundles.bundles.filter(b => bundleIds.includes(b.id))
+    const indirect =
+      acp &&
+      (classifyDaemonMount(adapter) === "default" ||
+        daemonMount === true ||
+        active.some(b => b.includeDaemon === true))
+    const wildcard = active.some(b => b.mcpImports === "*")
+    const named = new Set(active.flatMap(b => (b.mcpImports === "*" ? [] : b.mcpImports)))
+    for (const id of importIds) {
+      out.get(id)![adapter.slug] =
+        acp && (wildcard || named.has(id)) ? "native" : indirect ? "indirect" : "none"
+    }
+  }
+  return out
+}
+
 async function buildMcpInventory(
   deps: CapabilitiesInventoryDeps,
   adapters: AdapterListEntry[],
 ): Promise<CapabilitiesInventoryMcp> {
-  const [importedConfig, discovered, aliasSummaries] = await Promise.all([
+  const [importedConfig, discovered, aliasSummaries, config, bundlesFile] = await Promise.all([
     (deps.loadImportedMcps ?? loadImportedMcpsReal)(),
     (deps.discoverMcps ?? discoverMcpsReal)(),
     deps.mcpProxy ? deps.mcpProxy.listAliases() : Promise.resolve([]),
+    (deps.loadConfig ?? loadConfigReal)().catch((): AgentprotoConfig => ({})),
+    (deps.loadBundles ?? loadBundlesReal)().catch((): BundlesFile => ({ version: 1, bundles: [] })),
   ])
+  const reachById = computeImportedReach(
+    importedConfig.imports.map(e => e.id),
+    adapters,
+    config,
+    bundlesFile,
+  )
 
   const importedIds = new Set(importedConfig.imports.map(e => e.id))
   const aliasByImportId = new Map(aliasSummaries.map(a => [a.importId, a]))
@@ -184,6 +236,7 @@ async function buildMcpInventory(
       ...(entry.resolve ? { resolve: entry.resolve } : {}),
       ...(alias?.stale ? { stale: alias.stale } : {}),
       ...(secretRefKeys(entry) ? { secretRefKeys: secretRefKeys(entry) } : {}),
+      reach: reachById.get(entry.id) ?? {},
     }
   })
 
