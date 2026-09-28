@@ -106,6 +106,8 @@ import { routeInboundMessage } from "./inbound-router.js"
 import { createSentinelStore } from "./sentinel-store.js"
 import { createSentinelRuntime } from "./sentinel-runtime.js"
 import { resolveSentinelProvider } from "./sentinel-providers/registry.js"
+import { makePublicUrlResolver, setSentinelPublicUrlSource } from "./sentinel-public-url.js"
+import { builtinProviderCapabilities } from "./remote-providers/registry.js"
 import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
 import { registerSentinelTools } from "./sentinel-tools.js"
 import { createSentinelAutoLinker } from "./sentinel-autolink.js"
@@ -1518,6 +1520,17 @@ export async function createGateway(
     // restoreOnBoot already logs per-tunnel failures via onLog.
   })
 
+  // Public origin GitHub calls back into for the `webhook` sentinel provider:
+  // AGENTPROTO_PUBLIC_URL, else an active tunnel to this daemon's port
+  // (stable only when the tunnel provider declares `stableUrl`).
+  setSentinelPublicUrlSource(
+    makePublicUrlResolver({
+      port,
+      listTunnels: () => tunnels.list(),
+      isStableProvider: provider => builtinProviderCapabilities(provider)?.stableUrl === true,
+    }),
+  )
+
   // Single-sidecar registry for the @agentproto/llm-endpoint proxy — gated
   // behind `opts.llmEndpoint` (default false). When off, no registry is
   // created, no MCP tools are registered, and the route is absent too
@@ -2920,6 +2933,7 @@ export async function createGateway(
       store: sentinelStore,
       resolveProvider: resolveSentinelProviderResolved,
       isSessionAlive,
+      runtime: sentinelRuntime,
     },
     ...(llmEndpoint ? { llmEndpoint } : {}),
     ...(opts.deviceInferenceShare ? { deviceInferenceShare: true } : {}),

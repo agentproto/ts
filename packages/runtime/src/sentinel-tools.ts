@@ -6,8 +6,11 @@
  * "trusted `?callerSessionId=`" pattern `message-tools.ts` uses — so a
  * session watching its own PR doesn't need to know its own id.
  *
- * Provider auto-select isn't implemented yet (design §6): `provider`
- * defaults to `local-gh`, the only built-in that ships as of this step.
+ * Provider auto-select (design §6): with no explicit `provider`, `webhook` is
+ * used only when a STABLE public URL exists and the provider reports itself
+ * ready; otherwise `local-gh`. An explicit `provider` is never second-guessed
+ * (and never silently falls back — a not-ready `webhook` fails `create` with
+ * its setup error).
  *
  * `createSentinelWatch`/`cancelSentinelWatch`/`sentinelView` are exported so
  * `http-server.ts`'s `POST/GET/DELETE /sentinels` routes (the daemon-HTTP
@@ -25,7 +28,10 @@ import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
 import { parsePrUrl } from "./review-pr.js"
 import { GITHUB_DEFAULT_PR_TYPES } from "./sentinel-github-normalize.js"
 import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
+import { WEBHOOK_SLUG } from "./sentinel-providers/webhook.js"
+import { resolveSentinelPublicUrl, type SentinelPublicUrl } from "./sentinel-public-url.js"
 import {
+  deliveryPreferenceFor,
   singleMatch,
   type SentinelHandle,
   type SentinelMatchClause,
@@ -60,6 +66,9 @@ export interface SentinelWatchDeps {
    *  `DeliveryPreference`. Default 15s (matches `sentinel-runtime.ts`'s
    *  `activeIntervalMs`). */
   activeIntervalMs?: number
+  /** Public-URL source for provider auto-select. Defaults to the
+   *  daemon-wired resolver (`sentinel-public-url.ts`). */
+  publicUrl?: () => SentinelPublicUrl | undefined
 }
 
 export type SentinelWatchResult =
@@ -73,6 +82,17 @@ function resolveUntil(input: "subject_terminal" | "never" | undefined, prSugar: 
   // terminal event (design §6); a raw `subject` defaults to "never" (the
   // caller presumably wants `sentinel_unwatch` to be the only way out).
   return prSugar ? { kind: "subject_terminal" } : { kind: "never" }
+}
+
+/** `webhook` only when a stable public URL exists AND the provider is ready
+ *  (hook scope, gh auth); else `local-gh`. */
+async function autoSelectProviderSlug(deps: SentinelWatchDeps): Promise<string> {
+  const pub = (deps.publicUrl ?? resolveSentinelPublicUrl)()
+  if (!pub?.stable) return LOCAL_GH_SLUG
+  const webhook = await deps.resolveProvider(WEBHOOK_SLUG)
+  if (!webhook) return LOCAL_GH_SLUG
+  const readiness = webhook.readiness ? await webhook.readiness() : { ready: true }
+  return readiness.ready ? WEBHOOK_SLUG : LOCAL_GH_SLUG
 }
 
 /** The shared create path: resolve `prUrl` sugar / a raw `subject`, default
@@ -120,7 +140,7 @@ export async function createSentinelWatch(
     return { ok: false, error: "session_not_alive", message: `session "${sessionId}" is not alive` }
   }
 
-  const providerSlug = input.provider ?? LOCAL_GH_SLUG
+  const providerSlug = input.provider ?? (await autoSelectProviderSlug(deps))
   const provider = await deps.resolveProvider(providerSlug)
   if (!provider) {
     return { ok: false, error: "unknown_provider", message: `provider "${providerSlug}" is not available` }
@@ -135,7 +155,7 @@ export async function createSentinelWatch(
 
   let handle: SentinelHandle
   try {
-    handle = await provider.create(spec, { mode: "poll", intervalMs: deps.activeIntervalMs ?? 15_000 })
+    handle = await provider.create(spec, deliveryPreferenceFor(provider, deps.activeIntervalMs ?? 15_000))
   } catch (err) {
     return { ok: false, error: "provider_create_failed", message: err instanceof Error ? err.message : String(err) }
   }
@@ -251,9 +271,13 @@ export function registerSentinelTools(server: McpServer, opts: RegisterSentinelT
       "either `prUrl` (sugar: `https://github.com/o/r/pull/N` -> subject " +
       "`github:o/r#N`, the default PR type set, and `until: subject_terminal`) " +
       "or a raw `subject` (e.g. `github:o/r#N`, `github:o/r`). `sessionId` " +
-      "defaults to the calling session. `provider` defaults to `local-gh` " +
-      "(the only built-in today — zero infra, uses the host's authenticated " +
-      "`gh` CLI).",
+      "defaults to the calling session. `provider` picks the backend: " +
+      "`local-gh` (poll every ~15-60s over the host's authenticated `gh` CLI, " +
+      "zero infra) or `webhook` (near-real-time push via a GitHub repo hook; " +
+      "needs a public daemon URL — a named tunnel or AGENTPROTO_PUBLIC_URL — " +
+      "and a `gh` token with admin:repo_hook; see `list_sentinel_adapters` for " +
+      "readiness). Omitted, it defaults to `webhook` when a stable public URL " +
+      "exists and webhook is ready, else `local-gh`.",
     {
       subject: z.string().optional().describe("Raw subject, e.g. \"github:owner/repo#42\". Mutually exclusive with prUrl."),
       prUrl: z.string().optional().describe("https://github.com/owner/repo/pull/N — sugar for subject+types+until."),
@@ -261,7 +285,7 @@ export function registerSentinelTools(server: McpServer, opts: RegisterSentinelT
       types: z.array(z.string()).optional().describe("Type globs. Defaults to the provider's defaultTypes(subject)."),
       urgency: urgencyField.optional().describe("Inbox delivery urgency. Default \"next-turn\"."),
       until: untilField.optional().describe("Lifetime. Default \"subject_terminal\" for prUrl, \"never\" for a raw subject."),
-      provider: z.string().optional().describe("Provider slug. Default \"local-gh\"."),
+      provider: z.string().optional().describe("Provider slug: \"local-gh\" or \"webhook\". Default: \"webhook\" when a stable public URL is configured and webhook is ready, else \"local-gh\"."),
     },
     async (input: SentinelWatchInput) => {
       const result = await createSentinelWatch(
