@@ -1,0 +1,52 @@
+# Session Steward
+
+A built-in agentproto app that wraps up idle agent sessions. It sits on top
+of the runtime's `session_wrapup_plan` / `session_wrapup_apply` tools
+(FIX-9A) and adds the missing loop: a cheap judge for the ambiguous
+sessions. Hand-authored bundle (`.agentproto/APP.md` + `agents/` +
+`workflows/`), like `repo-maintenance` — the workflow's decisions (candidate
+split, strict verdict parse, confidence threshold, report) are real
+functions in `workflows/session-steward/entry.mjs`, which only the `entry:`
+loader path can carry.
+
+## What one run does
+
+1. `plan` — `session_wrapup_plan { idleMinutes }` (dry run).
+2. `autoApply` (only with `apply`) — `close` ids →
+   `session_wrapup_apply { verdict: "done", note: "steward-rules: …" }`,
+   `stuck` ids → `{ verdict: "abandoned" }`.
+3. `evidence` — per `judge` candidate (at most `maxJudged`, most RAM first),
+   the read-only `session_evidence` tool: label, cwd, idle, keepAlive, RAM,
+   the plan's signals, the last ~10 turns (~3 KB), and worktree
+   branch/dirty/ahead/behind/PR. Under ~5 KB per session.
+4. `judge` — per candidate, backend picked by `judge` (default `auto`):
+   - **Jev** (`auto` when `JEV_API_KEY` resolves — daemon env, else the host
+     secret resolver — or `judge: "jev"`): one `session_judge_jev` call, a
+     calibrated `choice` over the five verdicts with the evidence as state;
+     confidence = the chosen verdict's probability, full probabilities in the
+     report, `judgedBy: jev:<jevModel>`.
+   - **Agent** (`judge: "agent"`, `auto` without a key, or any Jev failure
+     for that session — reported as such): one turn of
+     `@agentproto/session-steward-judge` on `judgeModel` (haiku by default),
+     strict JSON verdict. A malformed reply is `active`, confidence 0. The
+     judge session is released (killed + archived) when its item settles.
+   Verdicts: `done|abandoned|blocked|needs-input|active`. A judge error never
+   closes anything.
+5. `ask` (only with `askSessions`) — low-confidence, idle, non-keepAlive,
+   not-awaiting-input sessions get ONE prompt asking them to reply
+   `STEWARD: DONE …` / `STEWARD: NOT-DONE …`; a ~3 min bounded wait; the
+   answer becomes a `declared` verdict.
+6. `judgedApply` (only with `apply`) — confident `done`/`abandoned` close
+   (resumable, with a recorded outcome); confident `blocked`/`needs-input`
+   only flag. Everything else is left alone and reported.
+7. `report` — markdown table (class, session, idle, RAM, verdict,
+   confidence, reason, action) plus RAM freed / still held.
+
+## Running it
+
+```bash
+agentproto app install packages/apps/session-steward
+agentproto workflow run-file \
+  packages/apps/session-steward/.agentproto/workflows/session-steward/WORKFLOW.md \
+  --input-json '{"apply": false}'
+```
