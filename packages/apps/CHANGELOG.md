@@ -1,5 +1,17 @@
 # @agentproto/apps
 
+## 0.14.0
+
+### Minor Changes
+
+- eba403e: Add the read-only `capabilities_inventory` MCP tool and its `GET /capabilities/inventory` HTTP twin (shared builder in the runtime), plus exported `CapabilitiesInventory*` types. Add a Capabilities (MCP & Skills) section to the `@agentproto/config` app, including the new `capabilities` deep-link fragment section.
+- 753bfc7: `review_ledger` gains `includeRunning`, `requesterSessionId`, and `subtree` (backed by a lazy, incrementally-updated ledger index, never a full re-scan), and `ReviewRunner.list()` surfaces in-flight and settled-in-this-process runs. `session_tree` nodes that requested a review now carry a `reviews` badge (latest 3, newest first). A settled review with a known requester writes a display-only `notice` into that session's transcript (never a prompt, never a wake) via the new `SessionsRegistry.recordNotice`. New builtin panel `agentproto_reviews` (`packages/apps/src/review-panel`) — a verdict list + detail view over the review ledger, mounted alongside sessions-panel/work-board, with cancel / re-run-fresh / PR-status / export actions over the existing `review_*` tools.
+
+### Patch Changes
+
+- Updated dependencies [afe8324]
+  - @agentproto/app-kit@1.3.1
+
 ## 0.13.1
 
 ### Patch Changes
