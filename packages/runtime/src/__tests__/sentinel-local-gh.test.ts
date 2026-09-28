@@ -155,6 +155,102 @@ describe("localGhSentinelProvider", () => {
     expect(after.events[0]!.data.merged).toBe(true)
   })
 
+  it("same-conclusion CI on a new head emits a second check_suite.completed event", async () => {
+    const state: FakeGhState = {
+      number: 42,
+      state: "open",
+      merged: false,
+      headSha: "sha1",
+      reviews: [],
+      checks: [{ name: "lint", conclusion: null }],
+    }
+    const provider = localGhSentinelProvider({ gh: makeFakeGh(state), nowMs: () => 1_000 })
+    let handle = await provider.create(watchSpec(), { mode: "poll", intervalMs: 15_000 })
+    const baseline = await provider.poll!(handle, 50)
+    handle = { ...handle, cursor: baseline.cursor }
+
+    // sha1's lint fails.
+    state.checks = [{ name: "lint", conclusion: "failure" }]
+    const firstFailure = await provider.poll!(handle, 50)
+    const firstCheckEvents = firstFailure.events.filter(e => e.type === "github.check_suite.completed")
+    expect(firstCheckEvents).toHaveLength(1)
+    handle = { ...handle, cursor: firstFailure.cursor }
+
+    // New push; CI reruns and fails the same way — must not be dropped as a
+    // dup of the sha1 failure event above.
+    state.headSha = "sha2"
+    state.checks = [{ name: "lint", conclusion: null }]
+    const pushed = await provider.poll!(handle, 50)
+    const syncEvent = pushed.events.find(e => e.type === "github.pull_request.synchronize")
+    expect(syncEvent).toBeDefined()
+    expect(syncEvent!.terminal).toBe(false)
+    expect(syncEvent!.summary).toContain("sha2".slice(0, 7))
+    handle = { ...handle, cursor: pushed.cursor }
+
+    state.checks = [{ name: "lint", conclusion: "failure" }]
+    const rerun = await provider.poll!(handle, 50)
+    const secondCheckEvents = rerun.events.filter(e => e.type === "github.check_suite.completed")
+    expect(secondCheckEvents).toHaveLength(1)
+    expect(secondCheckEvents[0]!.data.conclusion).toBe("failure")
+    expect(secondCheckEvents[0]!.id).not.toBe(firstCheckEvents[0]!.id)
+  })
+
+  it("checks completing between polls on a new head still fire (not masked by the old head's by-name conclusions)", async () => {
+    const state: FakeGhState = {
+      number: 42,
+      state: "open",
+      merged: false,
+      headSha: "sha1",
+      reviews: [],
+      checks: [{ name: "lint", conclusion: "success" }],
+    }
+    const provider = localGhSentinelProvider({ gh: makeFakeGh(state), nowMs: () => 1_000 })
+    let handle = await provider.create(watchSpec(), { mode: "poll", intervalMs: 15_000 })
+    const baseline = await provider.poll!(handle, 50)
+    handle = { ...handle, cursor: baseline.cursor }
+
+    // New push whose check completes by the very next poll (no intermediate
+    // "pending" poll observed) — must still fire, not be treated as already
+    // seen because `lint` already had a conclusion on the old head.
+    state.headSha = "sha2"
+    state.checks = [{ name: "lint", conclusion: "success" }]
+    const after = await provider.poll!(handle, 50)
+    const checkEvents = after.events.filter(e => e.type === "github.check_suite.completed")
+    expect(checkEvents).toHaveLength(1)
+    expect(checkEvents[0]!.data.conclusion).toBe("success")
+  })
+
+  it("reopen then close within one watch emits two distinct closed events", async () => {
+    const state: FakeGhState = { number: 42, state: "open", merged: false, headSha: "sha1", reviews: [], checks: [] }
+    let fetchedAt = 1_000
+    const provider = localGhSentinelProvider({ gh: makeFakeGh(state), nowMs: () => fetchedAt })
+    let handle = await provider.create(watchSpec(), { mode: "poll", intervalMs: 15_000 })
+    const baseline = await provider.poll!(handle, 50)
+    handle = { ...handle, cursor: baseline.cursor }
+
+    fetchedAt = 2_000
+    state.state = "closed"
+    state.merged = false
+    const closed1 = await provider.poll!(handle, 50)
+    expect(closed1.events).toHaveLength(1)
+    expect(closed1.events[0]!.type).toBe("github.pull_request.closed")
+    handle = { ...handle, cursor: closed1.cursor }
+
+    fetchedAt = 3_000
+    state.state = "open"
+    const reopened = await provider.poll!(handle, 50)
+    expect(reopened.events).toEqual([])
+    handle = { ...handle, cursor: reopened.cursor }
+
+    fetchedAt = 4_000
+    state.state = "closed"
+    state.merged = true
+    const closed2 = await provider.poll!(handle, 50)
+    expect(closed2.events).toHaveLength(1)
+    expect(closed2.events[0]!.type).toBe("github.pull_request.closed")
+    expect(closed2.events[0]!.id).not.toBe(closed1.events[0]!.id)
+  })
+
   it("a gh failure backs off (no throw, no crash) and is surfaced via status()", async () => {
     const failingGh: GhRunner = async () => {
       throw new Error("network blip")

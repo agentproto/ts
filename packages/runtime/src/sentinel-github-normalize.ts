@@ -26,6 +26,7 @@ export const GITHUB_DEFAULT_PR_TYPES: readonly string[] = [
   "github.workflow_run.completed",
   "github.pull_request_review.submitted",
   "github.pull_request.closed",
+  "github.pull_request.synchronize",
   "github.issue_comment.created",
 ]
 
