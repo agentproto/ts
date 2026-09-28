@@ -50,10 +50,11 @@ import {
 import {
   loadImportedMcps,
   saveImportedMcps,
-  addImport,
+  addImportWithSecrets,
   removeImport,
   type ImportedMcpEntry,
 } from "./mcp-imports.js"
+import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import {
   loadBundles,
   createBundle,
@@ -2126,14 +2127,21 @@ export function registerSessionTools(
           }
         }
         const cfg = await loadImportedMcps()
-        const next = addImport(cfg, {
-          snapshot,
-          ...(input.alias ? { alias: input.alias } : {}),
-        })
-        await saveImportedMcps(next)
-        const entry = next.imports.find(e => e.id === snapshot.id)
+        const added = await addImportWithSecrets(
+          cfg,
+          {
+            snapshot,
+            ...(input.alias ? { alias: input.alias } : {}),
+          },
+          getMcpCredentialDeps()
+        )
+        await saveImportedMcps(added.config)
+        const out =
+          added.warnings.length > 0
+            ? { ...added.entry, warnings: added.warnings }
+            : added.entry
         return {
-          content: [{ type: "text", text: JSON.stringify(entry) }],
+          content: [{ type: "text", text: JSON.stringify(out) }],
         }
       } catch (err) {
         return {

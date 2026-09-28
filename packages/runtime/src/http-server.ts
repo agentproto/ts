@@ -147,9 +147,10 @@ import type { HarnessCapabilities } from "@agentproto/provider-kit"
 import {
   loadImportedMcps,
   saveImportedMcps,
-  addImport,
+  addImportWithSecrets,
   removeImport,
 } from "./mcp-imports.js"
+import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import { exportAgentSession } from "./transcript-export.js"
 import { parseWindow, rollupUsage } from "./usage-rollup.js"
 import { projectSessionUsage } from "./usage.js"
@@ -3415,13 +3416,23 @@ export async function startHttpServer(
             return
           }
           const cfg = await loadImportedMcps()
-          const next = addImport(cfg, {
-            snapshot,
-            ...(body.alias ? { alias: body.alias } : {}),
-          })
-          await saveImportedMcps(next)
+          const added = await addImportWithSecrets(
+            cfg,
+            {
+              snapshot,
+              ...(body.alias ? { alias: body.alias } : {}),
+            },
+            getMcpCredentialDeps()
+          )
+          await saveImportedMcps(added.config)
           res.writeHead(201, { "content-type": "application/json" })
-          res.end(JSON.stringify(next.imports.find(e => e.id === snapshot.id)))
+          res.end(
+            JSON.stringify(
+              added.warnings.length > 0
+                ? { ...added.entry, warnings: added.warnings }
+                : added.entry
+            )
+          )
           return
         }
         const importMatch = path.match(/^\/mcps\/imports\/(.+)$/)
