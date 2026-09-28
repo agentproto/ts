@@ -29,6 +29,13 @@
  *   – Actions: tools/call → review_cancel / review_run (nocache + wait:false
  *     + supersede, "Re-run fresh") / review_pr / review_export — real tool
  *     names only, no second write path
+ *   – Deep link: an agent lane's reviewer-session id opens (openLink, or
+ *     window.open as a fallback) `/apps/@agentproto/live-session/ui
+ *     ?sessionId=<id>` — runtime's `handleAppUiPage` validates and bakes
+ *     that query param into the live-session widget's initData
+ *     (builtin-apps.ts's `isValidDeepLinkSessionId`), so it boots already
+ *     pinned to the exact reviewer session instead of self-discovering the
+ *     newest running one. See ./ui/render.ts's `liveSessionUrl`.
  *
  * The verdict/status chip (never render a running/cancelled run as if it
  * had a verdict): pass/block/incomplete/running/cancelled/failed, one
@@ -49,7 +56,9 @@ export const REVIEW_PANEL_TOOL_ID = "agentproto_reviews"
 
 /** The daemon tools this panel's html calls, in order of first use. Consumed
  *  as `ui.tools` by ./index.ts and as the client-side allowlist by any host
- *  that dispatches the panel's `tools/call` directly. */
+ *  that dispatches the panel's `tools/call` directly. The reviewer-session
+ *  deep link (./ui/render.ts's `liveSessionUrl`) is a plain `openLink`/
+ *  `window.open` navigation, not a tools/call, so it needs no entry here. */
 export const REVIEW_PANEL_UI_TOOLS = [
   "review_ledger",
   "review_status",

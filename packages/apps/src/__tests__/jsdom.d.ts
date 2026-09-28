@@ -81,6 +81,7 @@ declare module "jsdom" {
 
   export interface DomLocation {
     hash: string
+    readonly origin: string
   }
 
   export interface DomWindow {
@@ -96,6 +97,12 @@ declare module "jsdom" {
      *  a bubbling click on a `tr` so main.ts's delegated listener (bound on
      *  the list pane, not each row) sees it. */
     Event: new (type: string, eventInitDict?: { bubbles?: boolean }) => DomEvent
+    /** Overridden by review-panel-actions.dom.test.ts to capture the
+     *  reviewer-session deep link's `window.open(url, "_blank")` fallback —
+     *  the standalone bridge never sets `hostCapabilities.openLinks`
+     *  (panel-bridge.ts's `initBridge` only does that on the postMessage
+     *  path), so main.ts's `openSession` always takes this branch here. */
+    open: (url: string, target?: string) => unknown
   }
 
   export interface JSDOMOptions {

@@ -10,6 +10,11 @@
  * specifies — Cancel -> review_cancel, Re-run fresh -> review_run with
  * {nocache:true, wait:false, supersede:true}, Fetch PR status -> review_pr
  * by runId, Export -> review_export. Never a second, invented write path.
+ *
+ * Also covers the reviewer-session deep link: clicking an agent lane's
+ * `.sess-link` button opens `/apps/@agentproto/live-session/ui?sessionId=…`
+ * (ui/render.ts's `liveSessionUrl`) — a real per-session URL, never a bare
+ * link to the session-less live-session panel.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -40,11 +45,46 @@ const RUNNING_ROW = {
   lanes: [],
 }
 
+const DONE_ROW = {
+  runId: "review-done",
+  verdict: "pass",
+  binding: "default",
+  repoRemote: "github.com/acme/demo",
+  baseSha: "b".repeat(40),
+  headSha: "h".repeat(40),
+  createdAt: new Date().toISOString(),
+  lanes: [{ id: "correctness", status: "pass", blocking: true }],
+}
+
 function baseHandlers(): Record<string, ToolHandler> {
   return {
-    review_ledger: () => ok({ total: 1, attestations: [RUNNING_ROW] }),
-    review_status: () =>
-      ok({ runId: "review-live", status: "running", binding: "default", lanes: [{ id: "ok", status: "pass" }] }),
+    review_ledger: () => ok({ total: 2, attestations: [RUNNING_ROW, DONE_ROW] }),
+    review_status: args => {
+      if (args.runId === "review-done") {
+        return ok({
+          runId: "review-done",
+          status: "done",
+          verdict: "pass",
+          binding: "default",
+          attestation: {
+            target: { repoRemote: "github.com/acme/demo", baseSha: "b".repeat(40), headSha: "h".repeat(40) },
+            lanes: [
+              {
+                id: "correctness",
+                kind: "agent",
+                status: "pass",
+                blocking: true,
+                findings: [],
+                sessionId: "sess_reviewer",
+              },
+            ],
+            rubrics: [],
+            createdAt: new Date().toISOString(),
+          },
+        })
+      }
+      return ok({ runId: "review-live", status: "running", binding: "default", lanes: [{ id: "ok", status: "pass" }] })
+    },
     review_cancel: () => ok({ runId: "review-live", cancelled: true, status: "cancelled" }),
     review_run: () => ok({ runId: "review-live-2", status: "running" }),
     review_pr: () => ok({ ok: true, status: { state: "open" } }),
@@ -159,5 +199,27 @@ describe("agentproto_reviews panel — action wiring (real panel script, fake br
     await settle()
     const exportCall = calls.find(c => c.tool === "review_export")
     expect(exportCall?.args).toEqual({ runId: "review-live" })
+  })
+
+  it("clicking an agent lane's reviewer-session link opens the live-session widget deep-linked to exactly that session", async () => {
+    const { window } = renderPanel()
+    await settle()
+    window.document.querySelector('tr[data-runid="review-done"]')!.dispatchEvent(new window.Event("click", { bubbles: true }))
+    await settle()
+    const sessLink = window.document.querySelector(".sess-link")
+    expect(sessLink).toBeTruthy()
+    expect(sessLink!.getAttribute("data-session-id")).toBe("sess_reviewer")
+    // The standalone bridge (window.McpApp, used here) never populates
+    // hostCapabilities.openLinks (panel-bridge.ts's initBridge only does
+    // that over the real postMessage handshake), so openSession always
+    // takes the window.open fallback in this test environment.
+    const opened: Array<[string, string | undefined]> = []
+    window.open = (url: string, target?: string) => {
+      opened.push([url, target])
+      return null
+    }
+    sessLink!.dispatchEvent(new window.Event("click", { bubbles: true }))
+    await settle()
+    expect(opened).toEqual([["https://example.test/apps/@agentproto/live-session/ui?sessionId=sess_reviewer", "_blank"]])
   })
 })

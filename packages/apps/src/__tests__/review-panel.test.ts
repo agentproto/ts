@@ -70,6 +70,11 @@ describe("REVIEW_PANEL_HTML", () => {
     }
   })
 
+  it("deep-links the reviewer session by URL, not by adding a tool to the allowlist", () => {
+    expect(REVIEW_PANEL_UI_TOOLS).not.toContain("live_session")
+    expect(REVIEW_PANEL_HTML).toContain("/apps/@agentproto/live-session/ui?sessionId=")
+  })
+
   it("re-run fresh passes nocache + wait:false + supersede", () => {
     expect(REVIEW_PANEL_HTML).toContain("nocache")
     expect(REVIEW_PANEL_HTML).toContain("supersede")

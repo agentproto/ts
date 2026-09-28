@@ -203,6 +203,25 @@ export interface BuiltinPanelUi {
 }
 
 /**
+ * Guards the `sessionId` query param `GET /apps/:appId/ui` accepts for the
+ * live-session builtin only (`resolveBuiltinPanelUi`'s `sessionId` param,
+ * threaded through by `handleAppUiPage` in http-server.ts from the raw,
+ * request-controlled query string). The review panel's reviewer-session
+ * link (`apps/src/review-panel/ui/render.ts`'s `liveSessionUrl`) always
+ * sends a real `mintSessionId()`-shaped id (sessions.ts: `sess_` + a hex
+ * suffix), so this stays a narrow allowlist rather than the wider "id or
+ * name" surface `live_session`'s own tool input accepts — a query param
+ * that fails this check is silently ignored (the widget falls back to
+ * self-discovering the newest running session) rather than trusted as-is
+ * into the served page's `window.__APP_INIT__`.
+ */
+const DEEP_LINK_SESSION_ID_RE = /^sess_[A-Za-z0-9_-]+$/
+
+export function isValidDeepLinkSessionId(id: string): boolean {
+  return DEEP_LINK_SESSION_ID_RE.test(id)
+}
+
+/**
  * Resolve a builtin panel's standalone html + tool allowlist by its catalog
  * `appId` (e.g. `@agentproto/work-board`) — `undefined` for anything that
  * isn't one of the panels this WP covers, which the caller must then 404
@@ -223,14 +242,27 @@ export interface BuiltinPanelUi {
  * daemon happens to be running there. Re-rendered here with the CALLER's
  * own `httpBaseUrl` (the requesting daemon's real origin, derived by
  * http-server.ts from the request itself) instead, so the served widget's
- * stream always points at the daemon that's actually serving it. Every
- * other panel's html only ever talks to its host via the relative
- * `./tool-call` bridge fetch, so it's served unmodified.
+ * stream always points at the daemon that's actually serving it. It's also
+ * the one panel whose html is now `sessionId`-dependent: a validated
+ * `sessionId` (`isValidDeepLinkSessionId` above) is baked into the SAME
+ * `window.__APP_INIT__` the widget's own boot() already reads (live-
+ * session/panel.ts), pinning its focus to that session instead of self-
+ * discovering the newest running one — this is what the review panel's
+ * reviewer-session link deep-links to. An invalid/absent `sessionId` is
+ * indistinguishable from omitting it. Every other panel's html only ever
+ * talks to its host via the relative `./tool-call` bridge fetch, so it's
+ * served unmodified and ignores this param entirely.
  */
-export function resolveBuiltinPanelUi(appId: string, httpBaseUrl: string): BuiltinPanelUi | undefined {
+export function resolveBuiltinPanelUi(
+  appId: string,
+  httpBaseUrl: string,
+  sessionId?: string,
+): BuiltinPanelUi | undefined {
   if (appId === liveSessionApp.id) {
+    const pinnedSessionId = sessionId && isValidDeepLinkSessionId(sessionId) ? sessionId : undefined
     const app = makeLiveSessionApp({ httpBaseUrl })
-    const html = typeof app.html === "function" ? app.html({ httpBaseUrl }) : app.html
+    const html =
+      typeof app.html === "function" ? app.html({ httpBaseUrl, sessionId: pinnedSessionId }) : app.html
     return { html, tools: liveSessionApp.ui?.tools ?? [] }
   }
   const handle = [sessionsPanelApp, agentsOverviewApp, bureauSessionsApp, sessionStoryApp, workBoardApp, reviewPanelApp].find(
