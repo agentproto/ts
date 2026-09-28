@@ -1,5 +1,6 @@
 /**
- * AIP-52 PACK.md sidecar parser + manifest-to-handle constructor.
+ * PACK.md sidecar parser + manifest-to-handle constructor (unassigned
+ * AIP — no spec written yet).
  *
  * Mirror of `@agentproto/playbook/manifest`: the .md provides metadata;
  * the TS module supplies any spec-specific runtime bits that can't live

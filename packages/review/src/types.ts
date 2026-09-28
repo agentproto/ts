@@ -99,6 +99,20 @@ export interface RubricDigest {
   sha256: string
 }
 
+/** Content hash of one resolved review pack (`uses[]` entry) at review time —
+ *  sha256 over the pack's REVIEW.md plus every rubric file its selected
+ *  checks use (sorted by path). `ref` is the `uses[].pack` string as
+ *  written; `id`/`version` come from the pack's own REVIEW.md. A digest edit
+ *  (the pack's REVIEW.md, or any rubric it selects) changes what the pack's
+ *  lanes check, so it's part of what the verdict attests — same role as
+ *  {@link RubricDigest} for a locally-declared check. */
+export interface PackDigest {
+  ref: string
+  id: string
+  version: string
+  sha256: string
+}
+
 /** Who produced the verdict. */
 export interface Attestor {
   /** The daemon (host) identity that ran the review. */
@@ -173,6 +187,9 @@ export interface Attestation {
   attestor: Attestor
   /** Agent-lane rubric digests (empty when the binding has no agent lane). */
   rubrics: RubricDigest[]
+  /** Digests of the review packs (`uses[]`) this run resolved — omitted when
+   *  the manifest declares none. Additive; schema id unchanged. */
+  packs?: PackDigest[]
   /** True when the working tree had uncommitted changes to tracked files
    *  while the lanes ran — the checks then saw content the range doesn't
    *  contain, so the attestation is recorded but never served from cache. */

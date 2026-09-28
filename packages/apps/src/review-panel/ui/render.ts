@@ -4,6 +4,24 @@ export function esc(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
 }
 
+/**
+ * The live-session widget's standalone URL, deep-linked to one session.
+ * `GET /apps/:appId/ui` normally serves a single static html snapshot per
+ * builtin panel (`resolveBuiltinPanelUi`, runtime's builtin-apps.ts) — no
+ * per-request substitution point for most panels. `live_session` is the one
+ * exception: runtime's `handleAppUiPage` reads this exact `?sessionId=`
+ * query param, validates it (`isValidDeepLinkSessionId`), and — only when
+ * valid — bakes it into `window.__APP_INIT__.sessionId` so the widget boots
+ * already pinned to that session instead of self-discovering the newest
+ * running one. Kept pure so a test can assert the built URL without
+ * touching the DOM. `origin` is `window.location.origin` at the call site —
+ * passed in rather than read here so this stays a plain string → string
+ * function.
+ */
+export function liveSessionUrl(origin: string, sessionId: string): string {
+  return `${origin}/apps/@agentproto/live-session/ui?sessionId=${encodeURIComponent(sessionId)}`
+}
+
 /** `<base7>..<head7>` — never truncates a sha shorter than 7 (rare, but a
  *  short synthetic sha in a test fixture shouldn't throw). */
 export function shortRange(baseSha?: string, headSha?: string): string {
@@ -108,7 +126,8 @@ function findingLine(f: Finding): string {
 
 /** One lane's detail block: status/blocking/duration/error head, findings,
  *  and — for an agent lane — model/preset/rubric sha + a link to the
- *  reviewer session (opens the live-session panel; see main.ts). */
+ *  reviewer session (deep-links the live-session panel focused on that
+ *  exact session via `liveSessionUrl`; see main.ts). */
 export function renderLaneDetail(lane: DetailLane, rubrics: readonly RubricDigest[] = []): string {
   const parts: string[] = []
   parts.push(`<div class="lane-hdr">`)

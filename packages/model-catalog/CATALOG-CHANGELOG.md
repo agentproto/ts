@@ -225,3 +225,12 @@ for that.
 
 ### llm:huggingface
 - Removed: zai-org/GLM-4.5, zai-org/GLM-4.6-FP8, zai-org/GLM-5.1-FP8
+
+## 2026-09-28
+
+### llm:openrouter
+- Added: nex-agi/nex-n2.5-mini, nex-agi/nex-n2.5-pro
+- Removed: deepseek/deepseek-r1-distill-llama-70b
+
+### llm:huggingface
+- Removed: deepseek-ai/DeepSeek-V3, deepseek-ai/DeepSeek-V3.2-Exp

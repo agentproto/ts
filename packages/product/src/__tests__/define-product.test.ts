@@ -33,7 +33,7 @@ function buildWorld() {
     description: "bundle",
     version: "1.0.0",
     plugin: { inline: true },
-    pricing: { bundle: 49 }, // legacy AIP-52 pricing — deliberately ignored by the capability
+    pricing: { bundle: 49 }, // legacy pack-defined pricing — deliberately ignored by the capability
   })
   const sandbox = defineSandbox({ id: "e2b-main", provider: "e2b" })
   const tool = defineTool({ id: "search-web", name: "search-web", description: "web search" })

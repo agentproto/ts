@@ -13,7 +13,7 @@
  */
 
 import type { PairingRegistry, PairingRecord } from "./pairing-registry.js"
-import type { HostRegistry, HostRecord, ForwardHttpRequest, ForwardHttpResponse } from "./host-registry.js"
+import { isSessionsPath, type HostRegistry, type HostRecord, type ForwardHttpRequest, type ForwardHttpResponse } from "./host-registry.js"
 
 export type DeviceRole = "client" | "host"
 export type DeviceKind = "browser" | "cli" | "daemon"
@@ -62,9 +62,21 @@ export interface DeviceRegistry {
   /** Register a host from an offer URL (delegates to `HostRegistry.add`).
    *  Rejects if no `HostRegistry` was wired into this device registry. */
   add(offerUrl: string, name?: string): Promise<{ fingerprint: string; name: string; rendezvousUrl: string }>
-  /** Forward one HTTP request to a HOST device on demand (delegates to
-   *  `HostRegistry.forwardHttp`) — the basis for `device_sessions`. Rejects
-   *  if no `HostRegistry` was wired, or if `idOrName` doesn't match a host. */
+  /**
+   * Forward one HTTP request to a HOST device on demand (delegates to
+   * `HostRegistry.forwardHttp`) — the basis for `device_sessions`. Rejects
+   * if no `HostRegistry` was wired, or if `idOrName` doesn't match a host.
+   *
+   * For a GET `/sessions*` request specifically (SANDBOX-VISIBILITY-JOIN
+   * #3): if the live forward fails (most commonly the host is offline —
+   * an ephemeral CI box's ~3min lifetime is well within normal
+   * `device_sessions` polling cadence), falls back to
+   * `HostRegistry.getSessionsSnapshot` — the last successful response for
+   * that EXACT path, `stale: true`, with a `capturedAt` timestamp — instead
+   * of throwing. Still throws if there's no snapshot to fall back to, or
+   * for any other path (exec, device-inference, …), where serving stale
+   * data silently would be actively wrong.
+   */
   forwardHttp(idOrName: string, req: ForwardHttpRequest): Promise<ForwardHttpResponse>
 }
 
@@ -155,7 +167,14 @@ export function createDeviceRegistry(pairing: PairingRegistry, hosts?: HostRegis
             "configuration issue, not a user error)",
         )
       }
-      return hosts.forwardHttp(idOrName, req)
+      try {
+        return await hosts.forwardHttp(idOrName, req)
+      } catch (err) {
+        if (req.method !== "GET" || !isSessionsPath(req.path)) throw err
+        const snapshot = hosts.getSessionsSnapshot(idOrName, req.path)
+        if (!snapshot) throw err
+        return snapshot
+      }
     },
   }
 }

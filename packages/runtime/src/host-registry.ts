@@ -78,6 +78,18 @@ export const HOSTS_VERSION = 1 as const
 
 const DIAL_TIMEOUT_MS = 15_000
 const HANDSHAKE_TIMEOUT_MS = 15_000
+/** Default TTL for a join-token-added host with no recent `lastSeen` — see
+ *  `HostRegistryDeps.joinedHostTtlMs`. */
+const DEFAULT_JOINED_HOST_TTL_MS = 7 * 86_400_000
+/** Cap on distinct `/sessions*` paths cached per host (list + however many
+ *  individual sessions' output have actually been queried) — bounds memory
+ *  for a host with many short-lived sessions; oldest-cached path evicted
+ *  first. */
+const MAX_CACHED_SESSION_PATHS_PER_HOST = 32
+/** Cap on a single cached response body — `device_sessions`'s own `lastN`
+ *  already caps line count (max 500), so this is a defensive ceiling, not
+ *  the primary control. */
+const MAX_CACHED_SESSION_BODY_BYTES = 256 * 1024
 
 /** One persisted host — a daemon this daemon can drive. */
 export interface HostRecord {
@@ -112,6 +124,17 @@ export interface HostRecord {
   provider?: string
   sandboxId?: string
   labels?: Record<string, string>
+  /**
+   * How this host got here (SANDBOX-VISIBILITY-JOIN #3) — `"join"` for a
+   * box that dialed in via `AGENTPROTO_JOIN`/`join-token-registry.ts`,
+   * `"manual"` for the human `pair offer --host` + `devices add` ceremony.
+   * Absent on a record persisted before this field existed; treated as
+   * `"manual"` (never auto-pruned) rather than assumed ephemeral. Only
+   * `"join"` hosts are eligible for the `joinedHostTtlMs` sweep in `list()`
+   * — a human's own paired machine must never silently disappear just
+   * because it hasn't been dialed in a week.
+   */
+  addedVia?: "join" | "manual"
 }
 
 /** Optional self-reported metadata `add()` attaches to the resulting
@@ -120,6 +143,10 @@ export interface HostJoinMeta {
   provider?: string
   sandboxId?: string
   labels?: Record<string, string>
+  /** Set by `join-token-registry.ts`'s `handleJoined()` — never by a manual
+   *  `device_add`/`devices add` call — so `add()` can tell a join-token box
+   *  apart from a human's own paired host (see `HostRecord.addedVia`). */
+  joined?: true
 }
 
 interface HostsFile {
@@ -142,6 +169,17 @@ export interface HostRegistryDeps {
   dialTimeoutMs?: number
   /** Handshake ceiling per attempt. Default 15s. */
   handshakeTimeoutMs?: number
+  /**
+   * TTL (ms) for a join-token-added host (`HostRecord.addedVia === "join"`)
+   * that hasn't been seen since — swept opportunistically at the top of
+   * every `list()` call rather than on its own timer, since staleness here
+   * is an observability concern (an ephemeral CI box's `hosts.json` entry
+   * outliving it by weeks), not something anything blocks on. Default 7
+   * days. `0` disables pruning entirely. A manually-added host
+   * (`addedVia !== "join"`, including every record persisted before this
+   * field existed) is NEVER pruned, regardless of this setting.
+   */
+  joinedHostTtlMs?: number
 }
 
 export interface ForwardHttpRequest {
@@ -155,6 +193,21 @@ export interface ForwardHttpResponse {
   status: number
   headers: Record<string, string>
   body: Uint8Array
+  /** Set when this response was served from the last-known-good `/sessions*`
+   *  cache instead of a live forward (SANDBOX-VISIBILITY-JOIN #3) — see
+   *  {@link HostRegistry.getSessionsSnapshot}. Absent on every live
+   *  response, including `forwardHttp` itself, which never sets it — only
+   *  the cache fallback in `device-registry.ts` does. */
+  stale?: true
+  /** ISO-8601 capture time of a `stale` response. */
+  capturedAt?: string
+}
+
+/** A cache entry — always has both `stale`/`capturedAt` set, unlike its
+ *  parent `ForwardHttpResponse` where they're optional. */
+interface CachedForwardHttpResponse extends ForwardHttpResponse {
+  stale: true
+  capturedAt: string
 }
 
 /** Streaming counterpart of {@link ForwardHttpResponse} — `body` is a Web
@@ -210,10 +263,32 @@ export interface HostRegistry {
    * cancelled — only then does it close and the online count drop.
    */
   forwardHttpStream(idOrName: string, req: ForwardHttpRequest): Promise<ForwardHttpStreamResponse>
+  /**
+   * The last-known-good response for a GET `/sessions` or
+   * `/sessions/:id/output...` request against this host, captured the last
+   * time {@link forwardHttp} actually reached it — or `undefined` if this
+   * host has never answered that exact path, or isn't known at all. Always
+   * `stale: true` (a live hit never goes through this method — callers
+   * should try {@link forwardHttp} first and only fall back to this on
+   * failure, which is exactly what `device-registry.ts`'s `forwardHttp`
+   * wrapper does). In-memory only — see host-registry.ts's module doc for
+   * why that's an acceptable trade here.
+   */
+  getSessionsSnapshot(idOrName: string, path: string): ForwardHttpResponse | undefined
 }
 
 function defaultHostsPath(): string {
   return join(homedir(), ".agentproto", "hosts.json")
+}
+
+/** `/sessions` or `/sessions/...` exactly — not a loose prefix match, so a
+ *  hypothetical future `/sessions-admin/...` route (or similar) is never
+ *  mistaken for one of these read-only, cacheable-and-stale-fallback-able
+ *  paths. Shared by `cacheSessionsResponse` here and `device-registry.ts`'s
+ *  `forwardHttp` fallback gate — both must agree on exactly which paths this
+ *  applies to. */
+export function isSessionsPath(path: string): boolean {
+  return path === "/sessions" || path.startsWith("/sessions/") || path.startsWith("/sessions?")
 }
 
 /** Broker upgrade URL. `route` must be a ROUTE token — never an auth token or
@@ -238,12 +313,17 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
   const log = deps.log ?? (() => {})
   const dialTimeoutMs = deps.dialTimeoutMs ?? DIAL_TIMEOUT_MS
   const handshakeTimeoutMs = deps.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS
+  const joinedHostTtlMs = deps.joinedHostTtlMs ?? DEFAULT_JOINED_HOST_TTL_MS
   const selfName = defaultSelfName()
 
   /** fingerprint → record. Source of truth in memory; disk is the mirror. */
   const hosts = new Map<string, HostRecord>()
   /** fingerprint → count of `forwardHttp` calls currently in flight. */
   const onlineCounts = new Map<string, number>()
+  /** fingerprint → path (e.g. "/sessions", "/sessions/abc/output?lastN=80")
+   *  → last successful GET response for that exact path. In-memory only,
+   *  capped per host — see {@link cacheSessionsResponse}. */
+  const sessionsCache = new Map<string, Map<string, CachedForwardHttpResponse>>()
 
   let loaded = false
   async function ensureLoaded(): Promise<void> {
@@ -349,6 +429,16 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
 
     const pairRoot = await derivePairRoot(derived)
     const nowIso = new Date(now()).toISOString()
+    const existing = hosts.get(offer.fingerprint)
+    // Sticky "manual": a human's own `pair offer --host` + `devices add`
+    // ceremony must never become prunable just because the SAME box later
+    // (or concurrently) also dials in with a join token — once a fingerprint
+    // has been manually added, it stays `addedVia: "manual"` regardless of
+    // what any later `add()` call for it reports. The reverse (a join-added
+    // host later manually re-added) is allowed to flip to "manual" — that's
+    // an explicit human action taking ownership of it.
+    const addedVia: HostRecord["addedVia"] =
+      existing?.addedVia === "manual" ? "manual" : meta?.joined ? "join" : "manual"
     const record: HostRecord = {
       fingerprint: offer.fingerprint,
       name: name ?? offer.fingerprint,
@@ -356,11 +446,12 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
       daemonEd25519Pub: offer.daemonEd25519Pub,
       rendezvousUrl: offer.rendezvousUrl,
       pairRoot,
-      createdAt: hosts.get(offer.fingerprint)?.createdAt ?? nowIso,
+      createdAt: existing?.createdAt ?? nowIso,
       lastSeen: nowIso,
       ...(meta?.provider ? { provider: meta.provider } : {}),
       ...(meta?.sandboxId ? { sandboxId: meta.sandboxId } : {}),
       ...(meta?.labels ? { labels: meta.labels } : {}),
+      addedVia,
     }
     hosts.set(record.fingerprint, record)
     await persist()
@@ -372,8 +463,31 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     return { fingerprint: record.fingerprint, name: record.name, rendezvousUrl: record.rendezvousUrl }
   }
 
+  /**
+   * Drop join-token-added hosts that haven't been seen in `joinedHostTtlMs`
+   * — swept here rather than on a timer since this is a `list()`-time
+   * observability concern, not something anything blocks on. A manually
+   * added host (`addedVia !== "join"`) is never touched.
+   */
+  async function pruneExpiredJoinedHosts(): Promise<void> {
+    if (joinedHostTtlMs <= 0) return
+    const cutoff = now() - joinedHostTtlMs
+    const expired: string[] = []
+    for (const rec of hosts.values()) {
+      if (rec.addedVia === "join" && Date.parse(rec.lastSeen) <= cutoff) expired.push(rec.fingerprint)
+    }
+    if (expired.length === 0) return
+    for (const fp of expired) {
+      hosts.delete(fp)
+      sessionsCache.delete(fp)
+      log(`[hosts] pruned ${fp}: joined host, unseen for over ${joinedHostTtlMs}ms`)
+    }
+    await persist()
+  }
+
   async function list(): Promise<HostRecord[]> {
     await ensureLoaded()
+    await pruneExpiredJoinedHosts()
     return Array.from(hosts.values()).map(r => ({ ...r }))
   }
 
@@ -480,6 +594,46 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     }
   }
 
+  /** Cache a successful (2xx) GET `/sessions*` response for
+   *  `getSessionsSnapshot`'s offline fallback. No-op for any other path
+   *  (exec, device-inference, …) — this cache exists only to make session
+   *  HISTORY survive a host going offline, not to snapshot arbitrary
+   *  forwarded traffic. Also a no-op for a non-2xx response: caching a
+   *  transient 4xx/5xx as "last-known-good" would keep re-serving that
+   *  error, unchanged, for the rest of `joinedHostTtlMs` once the host
+   *  actually does go offline. */
+  function cacheSessionsResponse(fingerprint: string, req: ForwardHttpRequest, res: ForwardHttpResponse): void {
+    if (req.method !== "GET" || !isSessionsPath(req.path)) return
+    if (res.status < 200 || res.status >= 300) return
+    if (res.body.byteLength > MAX_CACHED_SESSION_BODY_BYTES) return
+    let byPath = sessionsCache.get(fingerprint)
+    if (!byPath) {
+      byPath = new Map()
+      sessionsCache.set(fingerprint, byPath)
+    }
+    byPath.delete(req.path) // re-insert at the end so eviction below is LRU-ish
+    byPath.set(req.path, {
+      status: res.status,
+      headers: { ...res.headers },
+      body: res.body,
+      stale: true,
+      capturedAt: new Date(now()).toISOString(),
+    })
+    while (byPath.size > MAX_CACHED_SESSION_PATHS_PER_HOST) {
+      const oldest = byPath.keys().next().value
+      if (oldest === undefined) break
+      byPath.delete(oldest)
+    }
+  }
+
+  function getSessionsSnapshot(idOrName: string, path: string): ForwardHttpResponse | undefined {
+    const record = findHost(idOrName)
+    if (!record) return undefined
+    const entry = sessionsCache.get(record.fingerprint)?.get(path)
+    if (!entry) return undefined
+    return { ...entry, headers: { ...entry.headers }, body: entry.body }
+  }
+
   async function forwardHttp(idOrName: string, req: ForwardHttpRequest): Promise<ForwardHttpResponse> {
     await ensureLoaded()
     const record = findHost(idOrName)
@@ -490,7 +644,9 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     try {
       client = await connectToHost(record)
       const res = await client.forwardHttp(toTunnelReq(req))
-      return { status: res.status, headers: { ...res.headers }, body: new Uint8Array(res.body) }
+      const result: ForwardHttpResponse = { status: res.status, headers: { ...res.headers }, body: new Uint8Array(res.body) }
+      cacheSessionsResponse(record.fingerprint, req, result)
+      return result
     } finally {
       if (client) await client.close().catch(() => {})
       const remaining = (onlineCounts.get(record.fingerprint) ?? 1) - 1
@@ -539,7 +695,16 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     return { status: res.status, headers: { ...res.headers }, body: wrapStreamWithCleanup(res.body, cleanup) }
   }
 
-  return { add, list, rename: renameHost, revoke, isOnline, forwardHttp, forwardHttpStream }
+  return {
+    add,
+    list,
+    rename: renameHost,
+    revoke,
+    isOnline,
+    forwardHttp,
+    forwardHttpStream,
+    getSessionsSnapshot,
+  }
 }
 
 /**

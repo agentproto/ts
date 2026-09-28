@@ -1555,4 +1555,9 @@ export interface DeviceSessionOutput {
    *  daemon fell back to raw (ANSI-stripped) lines instead. */
   activityFallback?: true
   lines: string[]
+  /** Set when the host is offline and this is the daemon's last-known-good
+   *  snapshot of this exact query instead of a live forward — see
+   *  `HostRegistry.getSessionsSnapshot`. Absent on a live response. */
+  stale?: boolean
+  capturedAt?: string
 }

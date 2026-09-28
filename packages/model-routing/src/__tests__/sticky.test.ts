@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { definePack } from "../pack.js"
+import { defineRoutingPack } from "../pack.js"
 import { defineChain, fnv1a32, resolveChain, resolveThroughChain, stablePrefixHash } from "../sticky.js"
 import type { RoutableRequest } from "../types.js"
 
@@ -68,8 +68,8 @@ describe("defineChain — chain-to-chain fails at configuration load (§5 Securi
   })
 })
 
-describe("resolveThroughChain — chain composed with a Pack", () => {
-  const pack = definePack({
+describe("resolveThroughChain — chain composed with a RoutingPack", () => {
+  const pack = defineRoutingPack({
     id: "p",
     label: "P",
     keyspace: "model",

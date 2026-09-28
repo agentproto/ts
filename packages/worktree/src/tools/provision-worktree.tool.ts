@@ -11,34 +11,27 @@ export const provisionWorktreeTool = defineTool({
   description:
     "Create a git worktree for `repoRoot` at a sibling '_worktrees/<slug>' " +
     "directory (or `dir`, when given), on a new branch 'wt/<slug>' (or " +
-    "`branch`, when given) cut from `base`. If `depsCmd` is given, it runs " +
-    "inside the new worktree afterwards (e.g. install deps). If `copyGlobs` " +
-    "is given, matching files under `repoRoot` (including gitignored ones, " +
-    "e.g. local secrets) are copied into the worktree at the same relative " +
-    "path. If `linkPaths` is given, each is symlinked from `repoRoot` into " +
-    "the worktree before `depsCmd` runs — for gitignored, expensive-to-" +
-    "recreate trees a fresh worktree lacks (node_modules, sibling workspace " +
-    "repos) so the workspace graph resolves without a full reinstall. When " +
-    "`depsCmd`/`linkPaths` are omitted, they fall back to `worktree.depsCmd`/" +
-    "`worktree.linkPaths` declared in the base tree's agentproto.json (same " +
-    "`runSetup` gate as the setup hooks below) — an explicit input always " +
-    "wins over the declarative default. If " +
-    "`writeFiles` is given, each entry's `content` is written into the " +
-    "worktree at `path` before `depsCmd` runs — for generated, worktree-" +
-    "specific config a tool invoked by `depsCmd` needs to see (e.g. a " +
-    "package-manager config pointing a cache/store dir outside the " +
-    "worktree, so it isn't shared with — or clobbered by — a sibling " +
-    "worktree). `mode: \"create\"` (default) skips an entry whose path " +
-    "already exists, matching `linkPaths`' never-clobber rule; " +
-    "`mode: \"append\"` always appends (creating the file if missing) and, " +
-    "if git already tracks that path, marks it `skip-worktree` afterwards " +
-    "so the tweak never shows up as a local modification the caller could " +
-    "accidentally commit — callers are responsible for making the content " +
-    "itself idempotent (e.g. checking `repoRoot`'s copy of the file for the " +
-    "line before including the entry, since a fresh worktree's tracked " +
-    "files start as a byte-identical checkout). Also writes a creation-" +
-    "provenance marker into the worktree's private gitdir.",
-  version: "0.2.0",
+    "`branch`, when given) cut from `base`. `depsCmd` runs inside the new " +
+    "worktree afterwards (e.g. install deps). `copyGlobs` copies matching " +
+    "files (incl. gitignored, e.g. secrets) from `repoRoot` into the " +
+    "worktree. `cloneGlobs` clones matching dirs/files (e.g. " +
+    "`node_modules`) from `repoRoot` before `depsCmd`, copy-on-write where " +
+    "supported, else a plain copy — never a symlink. `linkPaths` symlinks " +
+    "gitignored, expensive-to-recreate paths from `repoRoot` before " +
+    "`depsCmd`. `writeFiles` writes/appends generated, worktree-specific " +
+    "config before `depsCmd`; see each field's own description for its " +
+    "`mode` and clobber rules. Each of `depsCmd`/`linkPaths`/`copyGlobs`/" +
+    "`cloneGlobs`/`writeFiles`, when omitted, falls back first to the " +
+    "same-named field in `<repoRoot>/.agentproto/worktree.json` (local, " +
+    "host-owned, gitignored — read off disk, never a branch), then — " +
+    "`depsCmd`/`linkPaths` only — to `worktree.depsCmd`/`worktree.linkPaths` " +
+    "in the base tree's COMMITTED agentproto.json (same `runSetup` gate as " +
+    "the setup hooks below). An explicit input wins over both defaults; the " +
+    "local file wins over the committed one. Local `writeFiles` entries may " +
+    "use a `{slug}` placeholder in `path`/`content`, substituted per call. " +
+    "Also writes a creation-provenance marker into the worktree's private " +
+    "gitdir.",
+  version: "0.3.0",
   inputSchema: z.object({
     repoRoot: z.string().describe("Absolute path to the git repository root."),
     base: z
@@ -65,6 +58,12 @@ export const provisionWorktreeTool = defineTool({
       .array(z.string())
       .optional()
       .describe("Glob patterns (relative to repoRoot) of gitignored files to copy into the worktree, e.g. 'envs/**/.env.local'."),
+    cloneGlobs: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Glob patterns (relative to repoRoot) of gitignored dirs/files to clone into the worktree before depsCmd, e.g. 'node_modules'. Copy-on-write where the filesystem supports it, falling back to a plain copy — never a symlink. Each pattern segment may use '*'/'?'; '**' is not supported (a clone target is a single named entry per level, matched and copied as a whole rather than enumerated file-by-file).",
+      ),
     linkPaths: z
       .array(z.string())
       .optional()
@@ -85,7 +84,7 @@ export const provisionWorktreeTool = defineTool({
     runSetup: z
       .boolean()
       .optional()
-      .describe("Read the base tree's agentproto.json and apply its declarative worktree lifecycle: `worktree.depsCmd`/`worktree.linkPaths` as fallbacks for the inputs above, then the `worktree.setup` hooks after creation. Default true; a failing setup hook fails provisioning."),
+      .describe("Apply the declarative worktree lifecycle: `<repoRoot>/.agentproto/worktree.json` (local) and the base tree's agentproto.json (committed) as fallbacks for the inputs above, then the committed config's `worktree.setup` hooks after creation. Default true; a failing setup hook fails provisioning."),
     setupLogPath: z
       .string()
       .optional()

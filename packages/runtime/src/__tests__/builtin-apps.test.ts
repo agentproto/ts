@@ -11,7 +11,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { registerMcpApps } from "../mcp-apps-adapter.js"
-import { makeBuiltinPanelApps } from "../builtin-apps.js"
+import { makeBuiltinPanelApps, isValidDeepLinkSessionId, resolveBuiltinPanelUi } from "../builtin-apps.js"
 
 const EXPECTED = [
   { toolId: "agentproto_sessions", resourceUri: "ui://agentproto_sessions/view" },
@@ -160,5 +160,40 @@ describe("builtin-apps.ts — boot-time mount, no app_install required", () => {
     expect((content.text.match(/\.\/assets/g) ?? []).length).toBe(0)
 
     await client.close()
+  })
+})
+
+describe("isValidDeepLinkSessionId", () => {
+  it("accepts a mintSessionId()-shaped id", () => {
+    expect(isValidDeepLinkSessionId("sess_a3f8c1b2")).toBe(true)
+  })
+  it("rejects anything that isn't sess_<word chars>", () => {
+    for (const bad of ["", "claude-main", "sess_", "sess_../../etc/passwd", "sess_<script>", "sess_a b"]) {
+      expect(isValidDeepLinkSessionId(bad)).toBe(false)
+    }
+  })
+})
+
+describe("resolveBuiltinPanelUi — live-session's sessionId deep link", () => {
+  it("bakes a valid sessionId into the served page's window.__APP_INIT__, pinning it", () => {
+    const ui = resolveBuiltinPanelUi("@agentproto/live-session", "http://127.0.0.1:18790", "sess_a3f8c1b2")
+    expect(ui).toBeDefined()
+    expect(ui!.html).toContain('"sessionId":"sess_a3f8c1b2"')
+  })
+
+  it("ignores an invalid sessionId — same html as omitting it entirely", () => {
+    const withBadId = resolveBuiltinPanelUi("@agentproto/live-session", "http://127.0.0.1:18790", "../etc/passwd")
+    const withNone = resolveBuiltinPanelUi("@agentproto/live-session", "http://127.0.0.1:18790")
+    expect(withBadId).toBeDefined()
+    expect(withBadId!.html).not.toContain("etc/passwd")
+    expect(withBadId!.html).toBe(withNone!.html)
+  })
+
+  it("leaves every other builtin's html untouched by a sessionId param", () => {
+    const withoutSessionId = resolveBuiltinPanelUi("@agentproto/review-panel", "http://127.0.0.1:18790")
+    const withSessionId = resolveBuiltinPanelUi("@agentproto/review-panel", "http://127.0.0.1:18790", "sess_a3f8c1b2")
+    expect(withSessionId).toBeDefined()
+    expect(withSessionId!.html).toBe(withoutSessionId!.html)
+    expect(withSessionId!.html).not.toContain("sess_a3f8c1b2")
   })
 })

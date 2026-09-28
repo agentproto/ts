@@ -11,7 +11,9 @@
  *           lanes settle `skipped` ⇒ verdict `incomplete` — the CI mode.
  *   verify  check an exported attestation (`review_export` /
  *           `verdict.exportDir`) against the manifest + range THIS checkout
- *           sees (`verifyAttestation`), and (with `--allowed-signers`) its
+ *           sees (`verifyAttestation`), its `packs[]` digests when every
+ *           pack still resolves locally (soft — an unresolvable pack is
+ *           reported, not a failure), and (with `--allowed-signers`) its
  *           signature (`verifySignedAttestation`, `@agentproto/runtime`).
  *   init    scaffold REVIEW.md + a pre-push hook (+ a GitHub Actions shim),
  *           see ./review-init.ts.
@@ -34,8 +36,10 @@ import {
   attestationSha256,
   parseReviewManifest,
   rangeSha as computeRangeSha,
+  resolvePacks,
   verifyAttestation,
   type Attestation,
+  type ReviewManifest,
   type ReviewPrRef,
 } from "@agentproto/review"
 import { mcpToolCall, withDaemon } from "./workflow.js"
@@ -53,7 +57,7 @@ Usage:
                         [--binding <name>] [--verdict pass|block|incomplete|any]
                         [--if-exported] [--allowed-signers <file>] [--require-signed]
                         [--annotate github] [--json]
-  agentproto review init [--cwd <dir>] [--ci github] [--json]
+  agentproto review init [--cwd <dir>] [--ci github] [--pack <ref>] [--as <ns>] [--json]
   agentproto review key [show] [--principal <id>] [--cwd <dir>] [--json]
   agentproto review --help
 
@@ -88,7 +92,10 @@ init:
   \`agentproto review run --binding local --supersede\` — chained after an
   existing hook, never overwriting it; honours core.hooksPath. --ci github
   also writes .github/workflows/review.yml, passing --allowed-signers when
-  .agentproto/allowed_signers exists. Idempotent.
+  .agentproto/allowed_signers exists. --pack <ref> adds a \`uses: [{pack:
+  <ref>, as: <ns>}]\` entry to REVIEW.md (--as sets <ns>; default derived
+  from <ref>) — idempotent by pack ref, a second run with the same ref is a
+  no-op. Idempotent.
 
 key:
   Prints the daemon install's review signing key (generated at first use if
@@ -504,6 +511,47 @@ async function resolveComposedFrom(att: Attestation, exportDir: string): Promise
   return problems
 }
 
+/**
+ * Re-check `att.packs[]` against what THIS checkout's `uses[]` packs resolve
+ * to right now — the digest half of "review packs are content-pinned".
+ * Soft by design: a pack the verifier's checkout can't resolve (offline, not
+ * installed, the git cache missing) is reported as a NOTE, never a failure —
+ * "verify the digests only when the pack resolves locally". Any digest that
+ * DOES resolve and mismatches is a real `problems` entry (the pack's content
+ * changed since the range was reviewed).
+ */
+async function verifyPackDigests(
+  att: Attestation,
+  manifest: ReviewManifest,
+  opts: { repoRoot: string; manifestDir: string },
+): Promise<{ problems: string[]; notes: string[] }> {
+  if (!att.packs || att.packs.length === 0) return { problems: [], notes: [] }
+  try {
+    const { createReviewPackLoader } = await import("@agentproto/runtime")
+    const loader = createReviewPackLoader({ repoRoot: opts.repoRoot, manifestDir: opts.manifestDir })
+    const resolved = await resolvePacks(manifest, loader)
+    const problems: string[] = []
+    for (const want of att.packs) {
+      const got = resolved.packs.find((p) => p.ref === want.ref)
+      if (!got) {
+        problems.push(`pack '${want.ref}' (id '${want.id}') is recorded on the attestation but this REVIEW.md's uses[] no longer declares it`)
+        continue
+      }
+      if (got.sha256 !== want.sha256) {
+        problems.push(
+          `pack '${want.ref}' content changed: the attestation was signed against digest ${want.sha256.slice(0, 12)}…, this checkout resolves ${got.sha256.slice(0, 12)}…`,
+        )
+      }
+    }
+    return { problems, notes: [] }
+  } catch (err) {
+    return {
+      problems: [],
+      notes: [`pack(s) not resolvable from this checkout, digest unchecked (${err instanceof Error ? err.message : String(err)})`],
+    }
+  }
+}
+
 async function runVerify(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: [...args],
@@ -612,6 +660,16 @@ async function runVerify(args: readonly string[]): Promise<number> {
     ])
   }
 
+  const packCheck = await verifyPackDigests(found.att, manifest, { repoRoot: root, manifestDir: dirname(manifestPath) })
+  if (packCheck.problems.length > 0) {
+    const packPayload = { ok: false, problems: packCheck.problems, path: found.path, runId: found.att.runId, verdict: found.att.verdict }
+    return report(VERIFY_EXIT.invalid, packPayload, [
+      `[review] ✗ attestation ${found.path} verifies, but a review pack's digest does not match:`,
+      ...packCheck.problems.map((p) => `[review]     ${p}`),
+      ...(gh ? [`::error title=review pack digest invalid::${ghEscape(packCheck.problems.join("; "))}`] : []),
+    ])
+  }
+
   const requireSigned = !!values["require-signed"]
   const defaultAllowedSigners = join(root, ".agentproto", "allowed_signers")
   const allowedSignersPath = values["allowed-signers"]
@@ -640,9 +698,10 @@ async function runVerify(args: readonly string[]): Promise<number> {
     ])
   }
 
-  return report(VERIFY_EXIT.ok, payload, [
+  return report(VERIFY_EXIT.ok, { ...payload, ...(packCheck.notes.length > 0 ? { packNotes: packCheck.notes } : {}) }, [
     `[review] ✓ attestation verified: ${found.att.reviewId}/${found.att.binding} ${short(baseSha)}..${short(checkedHead)} → ${found.att.verdict} (${found.path})` +
       (found.att.attestor.signature ? ` [signed: ${found.att.attestor.signature.principal}]` : ""),
+    ...packCheck.notes.map((n) => `[review]   – ${n}`),
   ])
 }
 

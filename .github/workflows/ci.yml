@@ -1000,6 +1000,18 @@ jobs:
           # adds the passthrough NAME when this env var actually has a value.
           # NEVER print this value — same sensitivity class as GITHUB_TOKEN.
           AGENTPROTO_JOIN: ${{ secrets.AGENTPROTO_JOIN }}
+          # Self-reported join metadata (SANDBOX-VISIBILITY-JOIN) — all
+          # non-secret GITHUB_* context, gated the same way as AGENTPROTO_JOIN
+          # itself (sandbox-agent.mjs only forwards a var whose NAME is set
+          # here; a fork PR run still gets no AGENTPROTO_JOIN and so none of
+          # this either). Deliberately no AGENTPROTO_JOIN_NAME: this box
+          # doesn't know the join token's own name ("ci-reviewer"), only the
+          # home daemon does — join-token-registry.ts synthesizes
+          # "<token name> #<pr>" from these labels when the box doesn't
+          # self-report one. reviewerSandbox.provider is pinned to "e2b" in
+          # .github/agentic-review.json, so that part's a safe literal too.
+          AGENTPROTO_JOIN_PROVIDER: e2b
+          AGENTPROTO_JOIN_LABELS: "pr=${{ github.event.pull_request.number }},repo=${{ github.repository }},run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
           # auth-mode from .github/agentic-review.json (reviewerAuthMode).
@@ -1219,6 +1231,8 @@ jobs:
           # is still an e2b sandbox reviewer run, just billed to the fallback
           # account. See that step's comment for the no-op-on-fork guarantee.
           AGENTPROTO_JOIN: ${{ secrets.AGENTPROTO_JOIN }}
+          AGENTPROTO_JOIN_PROVIDER: e2b
+          AGENTPROTO_JOIN_LABELS: "pr=${{ github.event.pull_request.number }},repo=${{ github.repository }},run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
           auth-mode: ${{ steps.cliver.outputs.auth-mode }}

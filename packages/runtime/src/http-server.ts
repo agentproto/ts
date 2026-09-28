@@ -82,7 +82,7 @@ export interface SentinelHttpDeps {
 import type { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import type { RemoteController, EnableInput } from "./remote-controller.js"
 import type { PairingRegistry } from "./pairing-registry.js"
-import type { HostRegistry } from "./host-registry.js"
+import type { HostRegistry, ForwardHttpResponse } from "./host-registry.js"
 import type { JoinTokenRegistry } from "./join-token-registry.js"
 import { createDeviceRegistry } from "./device-registry.js"
 import { createReconnectLogGate } from "./reconnect-log-gate.js"
@@ -9084,13 +9084,38 @@ async function handleDevices(
   // registered host's own /sessions[/:id/output], over the same
   // forwardHttp() `/devices/:id/exec` already uses. The HTTP twin of the
   // `device_sessions` MCP tool.
+  // A `stale`/`capturedAt` forward (SANDBOX-VISIBILITY-JOIN #3 — the host
+  // went offline, this is the last-known-good `/sessions*` snapshot, see
+  // device-registry.ts's `forwardHttp`) merges those two fields into the
+  // JSON body — same shape the `device_sessions` MCP tool already returns —
+  // rather than a header, so a plain JSON consumer (the VS Code Devices
+  // view included) sees it without inspecting response headers.
+  function writeDeviceSessionsResponse(res2: ForwardHttpResponse): void {
+    if (!res2.stale) {
+      res.writeHead(res2.status, { "content-type": "application/json" })
+      res.end(Buffer.from(res2.body))
+      return
+    }
+    let merged: unknown
+    try {
+      const parsed: unknown = JSON.parse(Buffer.from(res2.body).toString("utf8"))
+      merged =
+        parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+          ? { ...(parsed as Record<string, unknown>), stale: true, capturedAt: res2.capturedAt }
+          : { stale: true, capturedAt: res2.capturedAt, value: parsed }
+    } catch {
+      merged = { stale: true, capturedAt: res2.capturedAt }
+    }
+    res.writeHead(res2.status, { "content-type": "application/json" })
+    res.end(JSON.stringify(merged))
+  }
+
   const deviceSessionsMatch = path.match(/^\/devices\/([^/]+)\/sessions$/)
   if (deviceSessionsMatch && req.method === "GET") {
     const target = decodeURIComponent(deviceSessionsMatch[1] ?? "")
     try {
       const res2 = await devices.forwardHttp(target, { method: "GET", path: "/sessions" })
-      res.writeHead(res2.status, { "content-type": "application/json" })
-      res.end(Buffer.from(res2.body))
+      writeDeviceSessionsResponse(res2)
     } catch (err) {
       json(502, { error: "forward_failed", message: err instanceof Error ? err.message : String(err) })
     }
@@ -9105,8 +9130,7 @@ async function handleDevices(
     const qs = reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?")) : ""
     try {
       const res2 = await devices.forwardHttp(target, { method: "GET", path: `/sessions/${sessionId}/output${qs}` })
-      res.writeHead(res2.status, { "content-type": "application/json" })
-      res.end(Buffer.from(res2.body))
+      writeDeviceSessionsResponse(res2)
     } catch (err) {
       json(502, { error: "forward_failed", message: err instanceof Error ? err.message : String(err) })
     }
@@ -9630,7 +9654,16 @@ async function handleAppUiPage(
   frameAncestors: readonly string[],
 ): Promise<void> {
   const app = appRegistry.getApp(appId)
-  const builtin = app?.ui ? undefined : resolveBuiltinPanelUi(appId, requestHttpBaseUrl(req))
+  // `?sessionId=` — only consulted by the live-session builtin
+  // (`resolveBuiltinPanelUi`'s doc): the review panel's reviewer-session
+  // link deep-links here (`liveSessionUrl`, apps/src/review-panel/ui/
+  // render.ts) so the widget boots already pinned instead of self-
+  // discovering the newest running session. Handed through RAW —
+  // `resolveBuiltinPanelUi` (`isValidDeepLinkSessionId`) is the one that
+  // validates it; every other builtin's `resolveBuiltinPanelUi` branch
+  // ignores this param entirely.
+  const sessionIdParam = new URL(req.url ?? "/", "http://localhost").searchParams.get("sessionId") ?? undefined
+  const builtin = app?.ui ? undefined : resolveBuiltinPanelUi(appId, requestHttpBaseUrl(req), sessionIdParam)
   if (!app?.ui && !builtin) {
     res.writeHead(404, { "content-type": "application/json" })
     res.end(JSON.stringify({ error: `app "${appId}" is not installed or has no UI.` }))
@@ -9708,8 +9741,12 @@ async function handleAppUiPage(
       )
     } else {
       const html = builtin!.html
+      // `sessionIdParam` folds into the key (not just the `stamp`, which
+      // already self-corrects on a mismatch) so concurrent requests for
+      // different pinned sessions land in distinct LRU slots instead of
+      // repeatedly evicting one shared "builtin\0live_session\0..." entry.
       rep = await appUiRepresentations.get(
-        `builtin\0${appId}\0${baseUrl}\0${variant ?? ""}`,
+        `builtin\0${appId}\0${baseUrl}\0${variant ?? ""}\0${sessionIdParam ?? ""}`,
         html,
         () => appUiPageRepresentation(html, baseUrl, variant),
       )

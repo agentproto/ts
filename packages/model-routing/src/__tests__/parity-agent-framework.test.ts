@@ -1,7 +1,7 @@
 /**
  * Parity with `@agstudio/agent-framework`'s
- * `mastra/model-provider/model-routing.ts` — `defineRoutingPack` →
- * `definePack`, `overlayPack` → `overlay`, `resolveRoute` → `resolve`,
+ * `mastra/model-provider/model-routing.ts` — `defineRoutingPack` stays
+ * `defineRoutingPack`, `overlayPack` → `overlay`, `resolveRoute` → `resolve`,
  * `RouteSource` → `Source`, `ModelRouteOrOff` → `RouteOrGate`.
  *
  * This was the implementation §2–§4 were extracted from, so the goal here is
@@ -24,7 +24,7 @@
  */
 import { describe, expect, it } from "vitest"
 import { envLayer, parseRouteRef } from "../env.js"
-import { overlay, definePack } from "../pack.js"
+import { overlay, defineRoutingPack } from "../pack.js"
 import { resolve } from "../resolve.js"
 import type { Layer, Route } from "../types.js"
 
@@ -32,7 +32,7 @@ type Role = "triage" | "speak" | "deepThink"
 
 const KNOWN_PROVIDERS = ["openai", "anthropic", "google", "openrouter", "moonshot"]
 
-const simone = definePack<Role>({
+const simone = defineRoutingPack<Role>({
   id: "simone",
   label: "Simone",
   keyspace: "role",
@@ -147,7 +147,7 @@ describe("parity: agent-framework model-routing.ts", () => {
   })
 
   it("fallbacks (§6 rungs) survive resolution untouched, distinct from chains", () => {
-    const withFallback = definePack<"triage">({
+    const withFallback = defineRoutingPack<"triage">({
       id: "x",
       label: "X",
       keyspace: "role",
