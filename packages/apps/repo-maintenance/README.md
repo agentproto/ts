@@ -58,6 +58,10 @@ story.) Then run it once ad-hoc:
 ```bash
 agentproto maintain --repo <path>              # dry run: plan + review
 agentproto maintain --repo <path> --apply-merged
+agentproto maintain --all                      # every repo that owns a
+                                               # worktree under the
+                                               # worktrees root, one
+                                               # workflow run per repo
 ```
 
 or via the daemon directly:
