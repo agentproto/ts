@@ -1856,6 +1856,74 @@ describe("createSessionsRegistry", () => {
       expect(restored.get(session.id)?.openedPrs).toEqual(recorded?.openedPrs)
       restored.shutdown()
     })
+
+    it("fires onOpenedPr exactly once per genuinely new PR — never on a repeat report (AIP-60 §6 auto-link hook)", () => {
+      const onOpenedPr = vi.fn()
+      const reg = createSessionsRegistry({ persistPath, onOpenedPr })
+      const session = reg.recordCommand({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        command: "git",
+        args: ["status"],
+        exitCode: 0,
+        signal: null,
+        durationMs: 1,
+        stdout: "",
+        stderr: "",
+      })
+
+      reg.recordOpenedPr(session.id, {
+        adapter: "github",
+        number: 42,
+        url: "https://github.com/acme/widgets/pull/42",
+      })
+      expect(onOpenedPr).toHaveBeenCalledTimes(1)
+      expect(onOpenedPr).toHaveBeenCalledWith(
+        session.id,
+        { adapter: "github", number: 42, url: "https://github.com/acme/widgets/pull/42" },
+        expect.objectContaining({ id: session.id }),
+      )
+
+      // A retried/duplicate report (either lane of pr-provenance-reconciler.ts
+      // re-observing the same PR, or a genuine network retry) must not fire
+      // the hook again — recordOpenedPr's own (adapter, url) dedupe gates it.
+      reg.recordOpenedPr(session.id, {
+        adapter: "github",
+        number: 42,
+        url: "https://github.com/acme/widgets/pull/42",
+      })
+      expect(onOpenedPr).toHaveBeenCalledTimes(1)
+
+      reg.shutdown()
+    })
+
+    it("a throwing onOpenedPr hook never breaks PR recording itself", () => {
+      const reg = createSessionsRegistry({
+        persistPath,
+        onOpenedPr: () => {
+          throw new Error("boom")
+        },
+      })
+      const session = reg.recordCommand({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        command: "git",
+        args: ["status"],
+        exitCode: 0,
+        signal: null,
+        durationMs: 1,
+        stdout: "",
+        stderr: "",
+      })
+
+      const recorded = reg.recordOpenedPr(session.id, {
+        adapter: "github",
+        number: 43,
+        url: "https://github.com/acme/widgets/pull/43",
+      })
+      expect(recorded?.openedPrs).toHaveLength(1)
+      reg.shutdown()
+    })
   })
 
   describe("priorCommandSessionId", () => {

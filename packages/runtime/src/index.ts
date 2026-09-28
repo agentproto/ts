@@ -104,7 +104,9 @@ import { routeInboundMessage } from "./inbound-router.js"
 import { createSentinelStore } from "./sentinel-store.js"
 import { createSentinelRuntime } from "./sentinel-runtime.js"
 import { resolveSentinelProvider } from "./sentinel-providers/registry.js"
+import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
 import { registerSentinelTools } from "./sentinel-tools.js"
+import { createSentinelAutoLinker } from "./sentinel-autolink.js"
 import { makeTelegramBotCredsStore, registerTelegramBotTools } from "./telegram-bot-creds.js"
 import type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
 import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
@@ -1548,6 +1550,42 @@ export async function createGateway(
   // the real ~/.agentproto/ — see `CreateGatewayOptions.persist`.
   const persist = opts.persist ?? true
 
+  // Sentinel store + provider resolver — hoisted above `sessions` because
+  // the auto-link hook (`onOpenedPr`, wired into `createSessionsRegistry`
+  // below) needs both and neither depends on `sessions` itself (only
+  // `sentinelRuntime`, built later, needs `sessions.sendMessage`).
+  const sentinelStore = createSentinelStore({ persist })
+  const sentinelCredsStore = makeSentinelCredsStore()
+  const resolveSentinelProviderResolved = async (slug: string) =>
+    resolveSentinelProvider(slug, { creds: await sentinelCredsStore.read(slug) })
+
+  // `config.sentinel.autoWatchPrs` resolver — read fresh on every opened PR
+  // (never cached), same read-per-call discipline as
+  // `resolveMessagingDefaults`. Unset in config ⇒ default true only when
+  // `local-gh` is actually usable (`gh auth status` succeeds), else false
+  // with a one-line log so a laptop with no `gh` auth doesn't silently
+  // watch nothing without explanation.
+  let loggedNoAutoWatchDefault = false
+  const resolveAutoWatchPrs = async (): Promise<boolean> => {
+    const cfg = await loadConfig().catch((): { sentinel?: { autoWatchPrs?: boolean } } => ({}))
+    if (cfg.sentinel?.autoWatchPrs !== undefined) return cfg.sentinel.autoWatchPrs
+    const provider = await resolveSentinelProviderResolved(LOCAL_GH_SLUG)
+    const ok = provider ? await provider.check() : false
+    if (!ok && !loggedNoAutoWatchDefault) {
+      loggedNoAutoWatchDefault = true
+      console.warn(
+        "[sentinel-autolink] local-gh unavailable (gh not authenticated?) — " +
+          "sentinel.autoWatchPrs defaults to false; set it explicitly to override.",
+      )
+    }
+    return ok
+  }
+  const sentinelAutoLinker = createSentinelAutoLinker({
+    store: sentinelStore,
+    resolveProvider: resolveSentinelProviderResolved,
+    autoWatchPrs: resolveAutoWatchPrs,
+  })
+
   // Sessions registry — single instance per gateway, captured by
   // the per-request mcpServerFactory closure below + handed to
   // startHttpServer for the /sessions HTTP routes. Declared here
@@ -1556,6 +1594,7 @@ export async function createGateway(
   const sessions = createSessionsRegistry({
     sessionEvents,
     persist,
+    onOpenedPr: sentinelAutoLinker.onOpenedPr,
     ...(daemonConfig.sessions?.eventsDir
       ? { transcriptDir: defaultTranscriptBaseDir() }
       : {}),
@@ -2031,17 +2070,10 @@ export async function createGateway(
     return restarted.desc.id
   }
 
-  // Sentinel primitive (AIP-60) — persisted watch registry
-  // (`~/.agentproto/sentinels.json`) + poll/delivery engine, with the
-  // `local-gh` built-in (zero infra, host `gh` CLI) — safe to always wire,
-  // same "no new required config" posture as every other adapter family
-  // here (an unconfigured/no-sentinel daemon just never has anything to
-  // poll). Landing reuses the exact same dead-session hooks the inbound
-  // router uses, above.
-  const sentinelStore = createSentinelStore({ persist })
-  const sentinelCredsStore = makeSentinelCredsStore()
-  const resolveSentinelProviderResolved = async (slug: string) =>
-    resolveSentinelProvider(slug, { creds: await sentinelCredsStore.read(slug) })
+  // Sentinel primitive (AIP-60) — poll/delivery engine over the store +
+  // resolver already built above (hoisted so the auto-link hook could use
+  // them before `sessions` existed). Landing reuses the exact same
+  // dead-session hooks the inbound router uses, above.
   const sentinelRuntime = createSentinelRuntime({
     store: sentinelStore,
     registry: { sendMessage: sessions.sendMessage },
