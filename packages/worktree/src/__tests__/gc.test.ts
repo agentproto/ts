@@ -103,9 +103,19 @@ describe("classifyForGc", () => {
   const CLEAN = { state: "clean" as const }
   const DIRTY = { state: "dirty" as const, modified: 1, staged: 0, untracked: 0, newestMtimeMs: null }
   const IDLE = { state: "idle" as const, sessions: [] as never[], services: [] as never[] }
+  const LIVE = { state: "sessions" as const, sessions: [{ id: "s1", startedAt: "t", status: "running" as const }], services: [] as never[] }
   const DETACHED: IntegrationState = { state: "detached", checkedAt: "t" }
   const MERGED_SQUASH: IntegrationState = { state: "merged", via: "squash", pr: 1, checkedAt: "t", offline: false }
   const FRESH: IntegrationState = { state: "fresh", checkedAt: "t" }
+  const PLANS_ONLY_DIRTY = {
+    state: "dirty" as const,
+    modified: 0,
+    staged: 0,
+    untracked: 1,
+    newestMtimeMs: null,
+    onlyUnder: ".plans/",
+  }
+  const MIXED_PLANS_DIRTY = { state: "dirty" as const, modified: 0, staged: 0, untracked: 2, newestMtimeMs: null }
 
   it("delegates to classify() when --include-detached is absent: clean+idle detached is hold", () => {
     expect(classifyForGc(CLEAN, DETACHED, IDLE)).toBe("hold")
@@ -125,6 +135,24 @@ describe("classifyForGc", () => {
 
   it("fresh + dirty is hold regardless of --include-detached — ancestry alone never licenses salvage", () => {
     expect(classifyForGc(DIRTY, FRESH, IDLE, { includeDetached: true })).toBe("hold")
+  })
+
+  // ── plans-only: a no-commit worktree whose only dirt is `.plans/` archives instead of holding forever ──
+
+  it("fresh + idle + only `.plans/` untracked => salvage (archived, not discarded)", () => {
+    expect(classifyForGc(PLANS_ONLY_DIRTY, FRESH, IDLE)).toBe("salvage")
+  })
+
+  it("fresh + `.plans/` AND a real source file => still hold — plans-only must be the ENTIRE dirt", () => {
+    expect(classifyForGc(MIXED_PLANS_DIRTY, FRESH, IDLE)).toBe("hold")
+  })
+
+  it("fresh + a live session + only `.plans/` => hold — a live session always wins", () => {
+    expect(classifyForGc(PLANS_ONLY_DIRTY, FRESH, LIVE)).toBe("hold")
+  })
+
+  it("merged (not fresh/detached) + only `.plans/` dirt is unaffected by this rule — falls through to classify()'s ordinary salvage", () => {
+    expect(classifyForGc(PLANS_ONLY_DIRTY, MERGED_SQUASH, IDLE)).toBe("salvage")
   })
 })
 
@@ -295,6 +323,115 @@ describe("gc — the 2026-07-15 incident: a fresh worktree with uncommitted work
     expect(wtList.stdout).toContain(wtPath)
     expect(await readFile(join(wtPath, "session-notes.md"), "utf8")).toBe("17.5 KB of uncommitted work\n")
     expect(worktreeRemoveCalls()).toHaveLength(0)
+  })
+})
+
+// ── plans-only: a no-commit worktree whose only dirt is `.plans/` archives, not holds forever ──
+
+describe("gc — plans-only worktrees (no commits of their own, dirt entirely under `.plans/`)", () => {
+  it("fresh + idle + only `.plans/a.md` untracked plans as salvage, and --salvage-dirty archives (never discards) it", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    const wtPath = join(repo, "..", `plans-only-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(wtPath)
+    await addWorktree(repo, wtPath, ["-b", "wt/plans-only"], "main")
+    await mkdir(join(wtPath, ".plans"), { recursive: true })
+    await writeFile(join(wtPath, ".plans", "a.md"), "the plan\n")
+
+    const forge = new UnreachableForgeClient("must not be called — ancestry alone classifies a fresh branch")
+    const memo = new InMemoryVerdictMemoStore()
+    const plan = await planGc({ repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW })
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.integration).toEqual({ state: "fresh", checkedAt: FROZEN_NOW() })
+    expect(entry?.class).toBe("salvage")
+
+    const salvageRoot = await mkdtemp(join(tmpdir(), "wt-gc-plans-salvage-root-"))
+    cleanupPaths.push(salvageRoot)
+    const outcomes = await applyGc(plan, {
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      salvageDirty: true,
+      salvageRoot,
+      now: FROZEN_NOW,
+    })
+    const outcome = outcomes.find((o) => o.path === wtPath) as Extract<GcApplyOutcome, { result: "salvaged" }>
+    expect(outcome?.result).toBe("salvaged")
+
+    // The plan file is preserved in the snapshot, never discarded.
+    const manifestRaw = await readFile(join(outcome.salvageDir, "MANIFEST.json"), "utf8")
+    const manifest = JSON.parse(manifestRaw)
+    expect(manifest.untrackedFiles).toEqual([".plans/a.md"])
+    const copied = await readFile(join(outcome.salvageDir, "untracked", ".plans", "a.md"), "utf8")
+    expect(copied).toBe("the plan\n")
+
+    // Only after the snapshot exists is the worktree actually gone.
+    const wtList = await execGit(repo, ["worktree", "list", "--porcelain"])
+    expect(wtList.stdout).not.toContain(wtPath)
+  })
+
+  it("fresh + `.plans/a.md` AND a real source file holds — plans-only must be the worktree's ENTIRE dirt", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    const wtPath = join(repo, "..", `plans-mixed-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(wtPath)
+    await addWorktree(repo, wtPath, ["-b", "wt/plans-mixed"], "main")
+    await mkdir(join(wtPath, ".plans"), { recursive: true })
+    await writeFile(join(wtPath, ".plans", "a.md"), "the plan\n")
+    await writeFile(join(wtPath, "x.ts"), "// real work in progress\n")
+
+    const forge = new UnreachableForgeClient("must not be called — ancestry alone classifies a fresh branch")
+    const memo = new InMemoryVerdictMemoStore()
+    const plan = await planGc({ repoRoot: repo, repoName: "test-repo", forge, memo, defaultBranchRef: "main", now: FROZEN_NOW })
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.class).toBe("hold")
+
+    const outcomes = await applyGc(plan, {
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      salvageDirty: true,
+      now: FROZEN_NOW,
+    })
+    expect(outcomes.find((o) => o.path === wtPath)?.result).toBe("held")
+    const wtList = await execGit(repo, ["worktree", "list", "--porcelain"])
+    expect(wtList.stdout).toContain(wtPath)
+  })
+
+  it("fresh + a live session in the worktree + only `.plans/` dirt holds — a live session always wins", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    const wtPath = join(repo, "..", `plans-live-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(wtPath)
+    await addWorktree(repo, wtPath, ["-b", "wt/plans-live"], "main")
+    await mkdir(join(wtPath, ".plans"), { recursive: true })
+    await writeFile(join(wtPath, ".plans", "a.md"), "the plan\n")
+
+    const sessionsPath = join(repo, "..", `sessions-${Math.random().toString(36).slice(2)}.json`)
+    cleanupPaths.push(sessionsPath)
+    await writeFile(
+      sessionsPath,
+      JSON.stringify({ sessions: [{ id: "live-1", startedAt: "2026-07-15T00:00:00.000Z", status: "running", cwd: wtPath }] }),
+    )
+
+    const forge = new UnreachableForgeClient("must not be called — ancestry alone classifies a fresh branch")
+    const memo = new InMemoryVerdictMemoStore()
+    const plan = await planGc({
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      sessionsPath,
+      now: FROZEN_NOW,
+    })
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.liveness?.state).toBe("sessions")
+    expect(entry?.class).toBe("hold")
   })
 })
 
@@ -1585,5 +1722,55 @@ describe("gc — noise allowlist, lock-free status, in-base promotion", () => {
     const e2 = plan2.find((e) => e.path === wtPath)
     expect(e2?.integration?.state).toBe("open")
     expect(e2?.class).toBe("hold")
+  })
+})
+
+describe("gc — the wider default noise list (lockfile + launch.json churn)", () => {
+  it("a merged worktree whose only dirt is lockfile churn plans as reclaim; a real source edit stays salvage", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    // A tracked root lockfile, so the noise path is a tracked restore-to-HEAD, not a delete.
+    await writeFile(join(repo, "pnpm-lock.yaml"), "lockfileVersion: '1.0'\n")
+    await execGit(repo, ["add", "pnpm-lock.yaml"])
+    await execGit(repo, ["commit", "-m", "add lockfile"])
+    await execGit(repo, ["checkout", "-b", "wt/lock-noise"])
+    await writeFile(join(repo, "a.txt"), "a\n")
+    await execGit(repo, ["add", "a.txt"])
+    await execGit(repo, ["commit", "-m", "feat"])
+    const tip = await headSha(repo)
+    await execGit(repo, ["checkout", "main"])
+    const wtPath = join(repo, "..", `lock-noise-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(wtPath)
+    await addWorktree(repo, wtPath, [], "wt/lock-noise")
+
+    // The forge confirms the branch tip itself was merged (squash: PR head == tip).
+    const forge = new FakeForgeClient([pr({ number: 42, headRefOid: tip, headRefName: "wt/lock-noise" })])
+    const memo = new InMemoryVerdictMemoStore()
+    const gcInput = {
+      repoRoot: repo,
+      repoName: "test-repo",
+      forge,
+      memo,
+      defaultBranchRef: "main",
+      now: FROZEN_NOW,
+    }
+
+    await writeFile(join(wtPath, "pnpm-lock.yaml"), "churn\n") // tracked, modified noise
+    await writeFile(join(wtPath, "package-lock.json"), "{}\n") // untracked noise
+    const plan = await planGc(gcInput)
+    const entry = plan.find((e) => e.path === wtPath)
+    expect(entry?.class).toBe("reclaim")
+
+    // One real source edit on top: no longer noise-only → salvage (merged + dirty).
+    await writeFile(join(wtPath, "a.txt"), "edited\n")
+    // Backdate every dirty path (the newest-mtime scan includes the noise
+    // paths too) past the recent-write hold window, so the test isolates the
+    // noise rule, not the RECENT_WRITE_HOLD_WINDOW_MS guard.
+    const oldTime = new Date(Date.now() - 60 * 60_000)
+    for (const p of ["pnpm-lock.yaml", "package-lock.json", "a.txt"]) {
+      await utimes(join(wtPath, p), oldTime, oldTime)
+    }
+    const plan2 = await planGc(gcInput)
+    expect(plan2.find((e) => e.path === wtPath)?.class).toBe("salvage")
   })
 })
