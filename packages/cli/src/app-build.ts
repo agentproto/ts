@@ -25,12 +25,136 @@
  * pnpm — the same convention `create-agentproto-app` scaffolds with.
  */
 
+import { spawn, spawnSync, type ChildProcess } from "node:child_process"
 import { readFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { parseArgs } from "node:util"
 
-import { pathExists, spawnInherit } from "./commands/skill-install/shared.js"
+import { pathExists } from "./commands/skill-install/shared.js"
 import { expandHome } from "./commands/skill-install/pack-resolve.js"
+
+/** Grace between SIGTERM and SIGKILL when tearing a build tree down. */
+const KILL_GRACE_MS = 2000
+
+/** Caller controls for {@link runAppBuild}; the CLI passes none. */
+export interface AppBuildOptions {
+  /** Aborting kills the whole build process tree; the build reports failure. */
+  signal?: AbortSignal
+  /** Kill the build tree and fail if it runs longer than this. Off by default. */
+  timeoutMs?: number
+}
+
+/**
+ * Signal the build's whole process group (POSIX: the child is its own group
+ * leader, so `-pid` reaches the package manager AND every script it spawned;
+ * Windows: `taskkill /T`). Best effort — an already-dead group is fine.
+ */
+function killTree(child: ChildProcess, sig: NodeJS.Signals): void {
+  const pid = child.pid
+  if (pid === undefined) return
+  if (process.platform === "win32") {
+    spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" })
+    return
+  }
+  try {
+    process.kill(-pid, sig)
+  } catch {
+    try {
+      child.kill(sig)
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
+interface BuildRun {
+  code: number
+  /** Set when the tree was killed by abort / timeout rather than exiting on its own. */
+  stopped?: "aborted" | "timed-out"
+}
+
+/**
+ * Spawn `<cmd> <argv>` inheriting stdio, in its own process group, and
+ * guarantee the tree never outlives this call: abort, timeout, a fatal signal
+ * to this process, or this process exiting all kill the whole group.
+ */
+function spawnBuildTree(
+  cmd: string,
+  argv: string[],
+  opts: { cwd: string; signal?: AbortSignal; timeoutMs?: number },
+): Promise<BuildRun> {
+  return new Promise((resolvePromise, reject) => {
+    const posix = process.platform !== "win32"
+    const child = spawn(cmd, argv, {
+      stdio: "inherit",
+      cwd: opts.cwd,
+      detached: posix,
+    })
+
+    let stopped: BuildRun["stopped"]
+    let graceTimer: NodeJS.Timeout | undefined
+    let timeoutTimer: NodeJS.Timeout | undefined
+    let exited = false
+
+    const stop = (why: NonNullable<BuildRun["stopped"]>): void => {
+      if (exited || stopped) return
+      stopped = why
+      killTree(child, "SIGTERM")
+      graceTimer = setTimeout(() => killTree(child, "SIGKILL"), KILL_GRACE_MS)
+    }
+
+    // A terminal Ctrl-C only reaches our foreground group, not the detached
+    // build group, so relay fatal signals then re-raise for the default exit.
+    const relay = (sig: NodeJS.Signals): void => {
+      killTree(child, "SIGKILL")
+      cleanup()
+      process.kill(process.pid, sig)
+    }
+    const onSigint = (): void => relay("SIGINT")
+    const onSigterm = (): void => relay("SIGTERM")
+    const onSighup = (): void => relay("SIGHUP")
+    const onProcessExit = (): void => {
+      if (!exited) killTree(child, "SIGKILL")
+    }
+    const onAbort = (): void => stop("aborted")
+
+    const cleanup = (): void => {
+      if (graceTimer) clearTimeout(graceTimer)
+      if (timeoutTimer) clearTimeout(timeoutTimer)
+      process.off("SIGINT", onSigint)
+      process.off("SIGTERM", onSigterm)
+      process.off("SIGHUP", onSighup)
+      process.off("exit", onProcessExit)
+      opts.signal?.removeEventListener("abort", onAbort)
+    }
+
+    process.on("SIGINT", onSigint)
+    process.on("SIGTERM", onSigterm)
+    process.on("SIGHUP", onSighup)
+    process.on("exit", onProcessExit)
+
+    if (opts.signal) {
+      if (opts.signal.aborted) onAbort()
+      else opts.signal.addEventListener("abort", onAbort, { once: true })
+    }
+    if (opts.timeoutMs !== undefined) {
+      timeoutTimer = setTimeout(() => stop("timed-out"), opts.timeoutMs)
+    }
+
+    child.once("error", (err) => {
+      exited = true
+      cleanup()
+      reject(err)
+    })
+    child.once("exit", (code) => {
+      exited = true
+      // After a forced stop, sweep stragglers that outlived the group leader.
+      if (stopped) killTree(child, "SIGKILL")
+      cleanup()
+      resolvePromise({ code: code ?? 0, stopped })
+    })
+  })
+}
 
 const USAGE = `agentproto app build — build an app's ui/ source project into .agentproto/ui/
 
@@ -110,7 +234,10 @@ async function checkUiBuildable(
 }
 
 /** `agentproto app build <appDir> [--json]`. */
-export async function runAppBuild(args: readonly string[]): Promise<number> {
+export async function runAppBuild(
+  args: readonly string[],
+  buildOpts: AppBuildOptions = {},
+): Promise<number> {
   const { values, positionals } = parseArgs({
     args: [...args],
     allowPositionals: true,
@@ -162,7 +289,22 @@ export async function runAppBuild(args: readonly string[]): Promise<number> {
 
   // 3. Run the ui project's own build script.
   const pm = await detectPackageManager(appDir, uiDir)
-  const code = await spawnInherit(pm, ["run", "build"], { cwd: uiDir })
+  const run = await spawnBuildTree(pm, ["run", "build"], {
+    cwd: uiDir,
+    signal: buildOpts.signal,
+    timeoutMs: buildOpts.timeoutMs,
+  })
+  if (run.stopped) {
+    const why =
+      run.stopped === "timed-out"
+        ? `timed out after ${buildOpts.timeoutMs}ms`
+        : "was aborted"
+    process.stderr.write(
+      `agentproto app build: '${pm} run build' ${why}; build process tree killed.\n`,
+    )
+    return 1
+  }
+  const code = run.code
   if (code !== 0) {
     process.stderr.write(
       `agentproto app build: '${pm} run build' failed with exit code ${code}.\n`,
