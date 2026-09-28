@@ -47,6 +47,7 @@ async function buildHarness(listWorktreeStatuses?: WorktreeStatusLister, session
     registry,
     workspace: process.cwd(),
     sessionWrapupJobsDir: sessionWrapupJobsDir ?? defaultJobsDir,
+    sessionWrapupApplyJobsDir: `${sessionWrapupJobsDir ?? defaultJobsDir}-apply`,
     ...(listWorktreeStatuses ? { listWorktreeStatuses } : {}),
   })
 
@@ -474,3 +475,131 @@ describe("session_wrapup_apply", () => {
     registry.shutdown()
   })
 })
+
+describe("session_wrapup_apply — targeted re-plan + background mode", () => {
+  function spawnIdleWithWorktree(registry: SessionsRegistry, name: string, repo: string): string {
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: `/tmp/wt/${name}`,
+      agentSession: idleAgentSession(`acp-${name}`),
+      adapterSlug: "claude-code",
+    })
+    const rt = registry.get(desc.id)!
+    rt.lastActivityAt = OLD_TIMESTAMP
+    rt.worktreePath = `/tmp/wt/${name}`
+    rt.mainRepoPath = `/tmp/${repo}`
+    return desc.id
+  }
+
+  it("applying a close-class id computes signals only for that session — one lookup, no other sessions' worktrees", async () => {
+    const calls: Array<{ repoRoot: string; paths: string[] }> = []
+    const lister: WorktreeStatusLister = async (repoRoot, options) => {
+      calls.push({ repoRoot, paths: [...(options?.paths ?? [])] })
+      return mergedLister(repoRoot, options)
+    }
+    const { client, registry, close } = await buildHarness(lister)
+    try {
+      const target = spawnIdleWithWorktree(registry, "target", "repo-a")
+      const other1 = spawnIdleWithWorktree(registry, "other1", "repo-a")
+      const other2 = spawnIdleWithWorktree(registry, "other2", "repo-b")
+
+      const res = await client.callTool({
+        name: "session_wrapup_apply",
+        arguments: { sessionIds: [target], verdict: "done" },
+      })
+      expect(JSON.parse(textOf(res))).toEqual({
+        results: [{ sessionId: target, ok: true, class: "close", action: "closed" }],
+      })
+      expect(calls).toEqual([{ repoRoot: "/tmp/repo-a", paths: ["/tmp/wt/target"] }])
+      expect(registry.get(target)?.endedReason).toBe("steward-completed")
+      // Bystanders were neither looked up nor touched.
+      expect(registry.get(other1)?.status).toBe("running")
+      expect(registry.get(other2)?.status).toBe("running")
+    } finally {
+      await close()
+      registry.shutdown()
+    }
+  })
+
+  it("still refuses a busy session on the targeted path", async () => {
+    const { client, registry, close } = await buildHarness(mergedLister)
+    try {
+      const id = spawnIdleWithWorktree(registry, "busy", "repo-a")
+      registry.get(id)!.busy = true
+      const res = await client.callTool({ name: "session_wrapup_apply", arguments: { sessionIds: [id], verdict: "done" } })
+      expect(JSON.parse(textOf(res))).toEqual({
+        results: [{ sessionId: id, ok: false, class: "keep", error: "keep_class_never_touched" }],
+      })
+      expect(registry.get(id)?.status).toBe("running")
+    } finally {
+      await close()
+      registry.shutdown()
+    }
+  })
+
+  it("wait:false returns a swa_ jobId; session_wrapup_status reports the same {results} once done", async () => {
+    const jobsDir = await mkdtemp(join(tmpdir(), "swp-jobs-"))
+    let release!: () => void
+    const gate = new Promise<void>(res => {
+      release = res
+    })
+    const { client, registry, close } = await buildHarness(async (repoRoot, options) => {
+      await gate
+      return mergedLister(repoRoot, options)
+    }, jobsDir)
+    try {
+      const id = spawnIdleWithWorktree(registry, "bg", "repo-a")
+      const started = JSON.parse(
+        textOf(await client.callTool({ name: "session_wrapup_apply", arguments: { sessionIds: [id], verdict: "done", wait: false } })),
+      ) as { jobId: string; status: string; followUp: { tool: string; args: { jobId: string } } }
+      expect(started.status).toBe("running")
+      expect(started.jobId).toMatch(/^swa_[0-9a-f]{8}$/)
+      expect(started.followUp).toMatchObject({ tool: "session_wrapup_status", args: { jobId: started.jobId } })
+      expect(registry.get(id)?.status).toBe("running")
+
+      release()
+      let done: { status: string; result: { results: unknown[] } } | undefined
+      for (let i = 0; i < 200; i++) {
+        done = JSON.parse(textOf(await client.callTool({ name: "session_wrapup_status", arguments: { jobId: started.jobId } })))
+        if (done!.status !== "running") break
+        await new Promise(res => setTimeout(res, 10))
+      }
+      expect(done!.status).toBe("done")
+      expect(done!.result.results).toEqual([{ sessionId: id, ok: true, class: "close", action: "closed" }])
+      expect(registry.get(id)?.endedReason).toBe("steward-completed")
+    } finally {
+      release()
+      await close()
+      registry.shutdown()
+      await rm(jobsDir, { recursive: true, force: true })
+      await rm(`${jobsDir}-apply`, { recursive: true, force: true })
+    }
+  })
+
+  it("an apply that outlasts waitMs falls back to the background view", async () => {
+    const jobsDir = await mkdtemp(join(tmpdir(), "swp-jobs-"))
+    let release!: () => void
+    const gate = new Promise<void>(res => {
+      release = res
+    })
+    const { client, registry, close } = await buildHarness(async (repoRoot, options) => {
+      await gate
+      return mergedLister(repoRoot, options)
+    }, jobsDir)
+    try {
+      const id = spawnIdleWithWorktree(registry, "slow", "repo-a")
+      const view = JSON.parse(
+        textOf(await client.callTool({ name: "session_wrapup_apply", arguments: { sessionIds: [id], verdict: "done", waitMs: 20 } })),
+      ) as { jobId?: string; status?: string }
+      expect(view.status).toBe("running")
+      expect(view.jobId).toMatch(/^swa_/)
+    } finally {
+      release()
+      await close()
+      registry.shutdown()
+      await rm(jobsDir, { recursive: true, force: true })
+      await rm(`${jobsDir}-apply`, { recursive: true, force: true })
+    }
+  })
+})
+

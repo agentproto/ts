@@ -528,6 +528,10 @@ export interface RegisterSessionToolsOptions {
   /** Same, for `session_wrapup_plan`'s background jobs
    *  (`session_wrapup_status`). Defaults to `~/.agentproto/session-wrapup/jobs`. */
   sessionWrapupJobsDir?: string
+  /** Same, for `session_wrapup_apply`'s background jobs (polled through
+   *  `session_wrapup_status`, ids `swa_…`). Defaults to
+   *  `~/.agentproto/session-wrapup/apply-jobs`. */
+  sessionWrapupApplyJobsDir?: string
   /** Forwarded to `registerAgentTools` — see
    *  `RegisterAgentToolsOptions.isSessionChatInstalled`. */
   isSessionChatInstalled?: RegisterAgentToolsOptions["isSessionChatInstalled"]
@@ -835,6 +839,14 @@ const sessionWrapupJobs = createBackgroundJobRegistry<SessionWrapupPlanResult>({
   defaultDir: join(homedir(), ".agentproto", "session-wrapup", "jobs"),
 })
 
+interface SessionWrapupApplyResult {
+  results: Array<{ sessionId: string; ok: boolean; class?: SessionWrapupClass; action?: "closed" | "flagged"; error?: string }>
+}
+const sessionWrapupApplyJobs = createBackgroundJobRegistry<SessionWrapupApplyResult>({
+  idPrefix: "swa_",
+  defaultDir: join(homedir(), ".agentproto", "session-wrapup", "apply-jobs"),
+})
+
 /** Default window `worktree_gc` / `session_wrapup_plan` block for before
  *  falling back to the background view (under a ~60 s MCP client timeout). */
 const BACKGROUND_DEFAULT_WAIT_MS = 25_000
@@ -886,6 +898,15 @@ const worktreeGcBackgroundView = (job: BackgroundJob<WorktreeGcResult>): object 
       "Running in the background (it keeps going even if you never poll). " +
       "Call worktree_gc_status with this jobId about every 30 s; when done it " +
       "returns the same result worktree_gc returns inline.",
+  })
+
+const sessionWrapupApplyBackgroundView = (job: BackgroundJob<SessionWrapupApplyResult>): object =>
+  sessionWrapupApplyJobs.backgroundView(job, {
+    tool: "session_wrapup_status",
+    hint:
+      "Running in the background (it keeps going even if you never poll). " +
+      "Call session_wrapup_status with this jobId about every 30 s; when " +
+      "done, `result` is the same `{ results }` session_wrapup_apply returns inline.",
   })
 
 const sessionWrapupBackgroundView = (job: BackgroundJob<SessionWrapupPlanResult>): object =>
@@ -969,6 +990,7 @@ export function registerSessionTools(
   if (opts.branchGcJobsDir) branchGcJobs.setDir(opts.branchGcJobsDir)
   if (opts.worktreeGcJobsDir) worktreeGcJobs.setDir(opts.worktreeGcJobsDir)
   if (opts.sessionWrapupJobsDir) sessionWrapupJobs.setDir(opts.sessionWrapupJobsDir)
+  if (opts.sessionWrapupApplyJobsDir) sessionWrapupApplyJobs.setDir(opts.sessionWrapupApplyJobsDir)
 
   // Shared registration helper for the list tools migrated onto the AIP
   // contract layer (session_list's pattern): defineTool + implementTool +
@@ -4253,12 +4275,17 @@ export function registerSessionTools(
    *  lookups) with `rssBytes` merged onto the candidates that have it. */
   const gatherWrapupInputs = async (
     nowMs: number,
+    gatherScope: { onlyIds?: ReadonlySet<string> } = {},
   ): Promise<{ all: SessionDescriptor[]; sessionsForPlan: SessionDescriptor[]; signals: Map<string, SessionWrapupSignals> }> => {
     const all = registry.list({ includeArchived: true })
     const byId = new Map(all.map(d => [d.id, d]))
-    const candidates = all.filter(isWrapupCandidate)
+    // `onlyIds` (the apply path): gather live signals for just those
+    // sessions — no `ps`, no transcript tails, no worktree lookups for
+    // anyone else. `all` still carries the full universe, since the pure
+    // planner needs it for parent lookups.
+    const candidates = all.filter(d => isWrapupCandidate(d) && (!gatherScope.onlyIds || gatherScope.onlyIds.has(d.id)))
 
-    const withPid = candidates.filter((d): d is SessionDescriptor & { pid: number } => typeof d.pid === "number")
+    const withPid = gatherScope.onlyIds ? [] : candidates.filter((d): d is SessionDescriptor & { pid: number } => typeof d.pid === "number")
     const rssByPid = withPid.length > 0 ? await processTreeRss(withPid.map(d => d.pid)) : new Map<number, number>()
 
     const mergedByWorktreePath = new Map<string, boolean>()
@@ -4295,7 +4322,7 @@ export function registerSessionTools(
         d.parentSessionId !== undefined &&
         (parent === undefined || (parent.status !== "running" && parent.status !== "starting"))
       const pendingToolCall = (d.pendingBgTasks ?? 0) > 0 || (d.backgroundTasks?.length ?? 0) > 0
-      const lastAssistantTail = d.eventsPath
+      const lastAssistantTail = d.eventsPath && !gatherScope.onlyIds
         ? trimOutcomeText(readLastAssistantTextSync(d.eventsPath), OUTCOME_SUMMARY_MAX, "tail")
         : undefined
       signals.set(d.id, {
@@ -4409,15 +4436,18 @@ export function registerSessionTools(
 
   server.tool(
     "session_wrapup_status",
-    "Poll a session_wrapup_plan run that fell back to the background " +
-      "(`wait: false`, or it outlasted `waitMs`). While running: status + " +
+    "Poll a session_wrapup_plan or session_wrapup_apply run that fell back to " +
+      "the background (`wait: false`, or it outlasted `waitMs`). While running: status + " +
       "elapsed time and `followUp.pollAfterMs`. When done: `result` is the " +
-      "same `{ entries, totals }` `session_wrapup_plan` returns inline. When " +
-      "failed: the error.",
+      "same `{ entries, totals }` (plan) or `{ results }` (apply) the tool " +
+      "returns inline. When failed: the error.",
     {
-      jobId: z.string().describe("Job id returned by `session_wrapup_plan` (`swp_…`)."),
+      jobId: z.string().describe("Job id returned by `session_wrapup_plan` (`swp_…`) or `session_wrapup_apply` (`swa_…`)."),
     },
-    async input => backgroundStatusResult("session_wrapup_plan", sessionWrapupJobs, input.jobId),
+    async input =>
+      input.jobId.startsWith("swa_")
+        ? backgroundStatusResult("session_wrapup_apply", sessionWrapupApplyJobs, input.jobId)
+        : backgroundStatusResult("session_wrapup_plan", sessionWrapupJobs, input.jobId),
   )
 
   server.tool(
@@ -4439,7 +4469,10 @@ export function registerSessionTools(
       "`error:'refused_stale_or_busy'`) if the session is busy/awaitingInput/" +
       "awaitingPermission or has a background task outstanding at the moment " +
       "of the call, for either kind of action. A scoped orchestrator may only " +
-      "act on its own subtree. Returns a per-id result.",
+      "act on its own subtree. Returns a per-id result. Only the requested " +
+      "sessions are re-checked (never a full plan). If it outlasts 25 s " +
+      "(`waitMs`) it returns `{ jobId, status: \"running\", followUp }` — " +
+      "poll `session_wrapup_status`; the apply keeps running regardless.",
     {
       sessionIds: z
         .array(z.string().min(1))
@@ -4462,53 +4495,90 @@ export function registerSessionTools(
             "`'judged'` and a `judge`-class session also becomes eligible " +
             "(not just `close`/`stuck`). Omitted ⇒ `source:'declared'`, " +
             "`judgedBy:'steward-rules'`, and only `close`/`stuck` are eligible.",
+        ),      wait: mcpBool
+        .optional()
+        .describe(
+          "false ⇒ return a jobId immediately; poll `session_wrapup_status`. " +
+            "true ⇒ block until done. Default: wait up to `waitMs`, then " +
+            "fall back to background (the apply keeps running).",
         ),
+      waitMs: mcpNumber
+        .optional()
+        .describe("Block at most this many milliseconds, then fall back to background. Default 25000."),
     },
     async input => {
-      const nowMs = Date.now()
-      const { all, sessionsForPlan, signals } = await gatherWrapupInputs(nowMs)
-      const subtree = callerScope ? collectSubtree(callerScope.ownerSessionId, all) : undefined
-
-      const entries = planSessionWrapup({
-        sessions: sessionsForPlan,
-        nowMs,
-        signals,
-        ...(wrapupCallerSessionId ? { callerSessionId: wrapupCallerSessionId } : {}),
-      })
-      const entryById = new Map(entries.map(e => [e.sessionId, e]))
-
-      const source: "judged" | "declared" = input.judgedBy ? "judged" : "declared"
-      const judgedBy = input.judgedBy ?? "steward-rules"
-
-      const results = input.sessionIds.map(ref => {
-        const desc = registry.findByIdOrName(ref)
-        if (!desc) return { sessionId: ref, ok: false as const, error: "not_found" }
-        if (subtree && !subtree.has(desc.id)) {
-          return { sessionId: desc.id, ok: false as const, error: "orchestrator_session_out_of_scope" }
+      const computeApply = async (): Promise<SessionWrapupApplyResult> => {
+        const nowMs = Date.now()
+        // Resolve the requested refs first (in-memory) so signal gathering
+        // — the slow part, a forge lookup per worktree — is limited to
+        // exactly these sessions, never a plan over the whole registry.
+        const requestedIds = new Set<string>()
+        for (const ref of input.sessionIds) {
+          const desc = registry.findByIdOrName(ref)
+          if (desc) requestedIds.add(desc.id)
         }
-        const entry = entryById.get(desc.id)
-        if (!entry) return { sessionId: desc.id, ok: false as const, error: "not_a_candidate" }
-        if (entry.class === "keep") {
-          return { sessionId: desc.id, ok: false as const, class: entry.class, error: "keep_class_never_touched" }
-        }
-        if (entry.class === "judge" && !input.judgedBy) {
-          return { sessionId: desc.id, ok: false as const, class: entry.class, error: "ambiguous_needs_judge" }
-        }
-        const action: "closed" | "flagged" =
-          input.verdict === "done" || input.verdict === "abandoned" ? "closed" : "flagged"
-        const applied = registry.closeWithOutcome(desc.id, {
-          verdict: input.verdict,
-          ...(input.note !== undefined ? { note: input.note } : {}),
-          judgedBy,
-          source,
+        const { all, sessionsForPlan, signals } = await gatherWrapupInputs(nowMs, { onlyIds: requestedIds })
+        const subtree = callerScope ? collectSubtree(callerScope.ownerSessionId, all) : undefined
+
+        const entries = planSessionWrapup({
+          sessions: sessionsForPlan,
+          nowMs,
+          signals,
+          ...(wrapupCallerSessionId ? { callerSessionId: wrapupCallerSessionId } : {}),
         })
-        return applied
-          ? { sessionId: desc.id, ok: true as const, class: entry.class, action }
-          : { sessionId: desc.id, ok: false as const, class: entry.class, error: "refused_stale_or_busy" }
-      })
+        const entryById = new Map(entries.map(e => [e.sessionId, e]))
 
-      return { content: [{ type: "text", text: JSON.stringify({ results }) }] }
-    },
+        const source: "judged" | "declared" = input.judgedBy ? "judged" : "declared"
+        const judgedBy = input.judgedBy ?? "steward-rules"
+
+        const results = input.sessionIds.map(ref => {
+          const desc = registry.findByIdOrName(ref)
+          if (!desc) return { sessionId: ref, ok: false as const, error: "not_found" }
+          if (subtree && !subtree.has(desc.id)) {
+            return { sessionId: desc.id, ok: false as const, error: "orchestrator_session_out_of_scope" }
+          }
+          const entry = entryById.get(desc.id)
+          if (!entry) return { sessionId: desc.id, ok: false as const, error: "not_a_candidate" }
+          if (entry.class === "keep") {
+            return { sessionId: desc.id, ok: false as const, class: entry.class, error: "keep_class_never_touched" }
+          }
+          if (entry.class === "judge" && !input.judgedBy) {
+            return { sessionId: desc.id, ok: false as const, class: entry.class, error: "ambiguous_needs_judge" }
+          }
+          const action: "closed" | "flagged" =
+            input.verdict === "done" || input.verdict === "abandoned" ? "closed" : "flagged"
+          const applied = registry.closeWithOutcome(desc.id, {
+            verdict: input.verdict,
+            ...(input.note !== undefined ? { note: input.note } : {}),
+            judgedBy,
+            source,
+          })
+          return applied
+            ? { sessionId: desc.id, ok: true as const, class: entry.class, action }
+            : { sessionId: desc.id, ok: false as const, class: entry.class, error: "refused_stale_or_busy" }
+        })
+        return { results }
+      }
+
+      const { job, promise } = sessionWrapupApplyJobs.start(computeApply)
+      if (input.wait === false) {
+        return { content: [{ type: "text", text: JSON.stringify(sessionWrapupApplyBackgroundView(job)) }] }
+      }
+      const waitMs = input.wait === true ? undefined : (input.waitMs ?? BACKGROUND_DEFAULT_WAIT_MS)
+      if (waitMs !== undefined && (await timedOutWaiting(promise, waitMs))) {
+        return { content: [{ type: "text", text: JSON.stringify(sessionWrapupApplyBackgroundView(job)) }] }
+      }
+      try {
+        return { content: [{ type: "text", text: JSON.stringify(await promise) }] }
+      } catch (err) {
+        return {
+          content: [
+            { type: "text", text: `session_wrapup_apply failed: ${err instanceof Error ? err.message : String(err)}` },
+          ],
+          isError: true,
+        }
+      }
+    }
   )
 
   server.tool(
