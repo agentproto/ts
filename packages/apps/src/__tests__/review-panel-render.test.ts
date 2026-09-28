@@ -3,12 +3,11 @@ import {
   ageOf,
   esc,
   laneStatusChip,
+  liveSessionUrl,
   renderDetail,
   renderList,
   renderLaneDetail,
   renderRow,
-  sessionLinkCall,
-  SESSION_LINK_TOOL,
   severityTag,
   shortRange,
   verdictChip,
@@ -144,15 +143,16 @@ describe("renderLaneDetail", () => {
   })
 })
 
-describe("sessionLinkCall", () => {
-  it("carries the exact tool name and sessionId to deep-link the live-session widget", () => {
-    expect(sessionLinkCall("sess_reviewer")).toEqual({
-      tool: "live_session",
-      args: { sessionId: "sess_reviewer" },
-    })
+describe("liveSessionUrl", () => {
+  it("builds the live-session widget URL with the sessionId query param", () => {
+    expect(liveSessionUrl("https://daemon.example", "sess_reviewer")).toBe(
+      "https://daemon.example/apps/@agentproto/live-session/ui?sessionId=sess_reviewer",
+    )
   })
-  it("uses the SESSION_LINK_TOOL constant, not a hardcoded string", () => {
-    expect(sessionLinkCall("sess_x").tool).toBe(SESSION_LINK_TOOL)
+  it("URL-encodes a sessionId with reserved characters", () => {
+    expect(liveSessionUrl("https://daemon.example", "sess/weird id&x")).toBe(
+      "https://daemon.example/apps/@agentproto/live-session/ui?sessionId=sess%2Fweird%20id%26x",
+    )
   })
 })
 

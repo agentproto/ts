@@ -29,12 +29,13 @@
  *   – Actions: tools/call → review_cancel / review_run (nocache + wait:false
  *     + supersede, "Re-run fresh") / review_pr / review_export — real tool
  *     names only, no second write path
- *   – Deep link: an agent lane's reviewer-session id calls tools/call →
- *     live_session (sessionId) — the SAME cross-app auto-render mechanism
- *     agent_start uses for the session-chat launcher (its tool definition
- *     carries `_meta.ui.resourceUri: "ui://live_session/view"`), so the
- *     host opens/focuses that widget already pinned to the exact reviewer
- *     session instead of the generic newest-running one.
+ *   – Deep link: an agent lane's reviewer-session id opens (openLink, or
+ *     window.open as a fallback) `/apps/@agentproto/live-session/ui
+ *     ?sessionId=<id>` — runtime's `handleAppUiPage` validates and bakes
+ *     that query param into the live-session widget's initData
+ *     (builtin-apps.ts's `isValidDeepLinkSessionId`), so it boots already
+ *     pinned to the exact reviewer session instead of self-discovering the
+ *     newest running one. See ./ui/render.ts's `liveSessionUrl`.
  *
  * The verdict/status chip (never render a running/cancelled run as if it
  * had a verdict): pass/block/incomplete/running/cancelled/failed, one
@@ -55,11 +56,9 @@ export const REVIEW_PANEL_TOOL_ID = "agentproto_reviews"
 
 /** The daemon tools this panel's html calls, in order of first use. Consumed
  *  as `ui.tools` by ./index.ts and as the client-side allowlist by any host
- *  that dispatches the panel's `tools/call` directly. `live_session` isn't
- *  a review tool — it's how an agent lane's reviewer-session link
- *  deep-links the live-session widget (see ./ui/render.ts's
- *  `sessionLinkCall`); it has to be on this allowlist too, or the
- *  standalone REST bridge (`performBuiltinPanelToolCall`) refuses the call. */
+ *  that dispatches the panel's `tools/call` directly. The reviewer-session
+ *  deep link (./ui/render.ts's `liveSessionUrl`) is a plain `openLink`/
+ *  `window.open` navigation, not a tools/call, so it needs no entry here. */
 export const REVIEW_PANEL_UI_TOOLS = [
   "review_ledger",
   "review_status",
@@ -67,7 +66,6 @@ export const REVIEW_PANEL_UI_TOOLS = [
   "review_run",
   "review_pr",
   "review_export",
-  "live_session",
 ] as const
 
 export const REVIEW_PANEL_HTML = REVIEW_PANEL_HTML_GENERATED

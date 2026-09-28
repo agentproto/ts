@@ -1,5 +1,5 @@
 import "./style.css"
-import { renderList, renderDetail, sessionLinkCall } from "./render.js"
+import { renderList, renderDetail, liveSessionUrl } from "./render.js"
 import type { ReviewLedgerResult, ReviewRow, RunDetail } from "./types.js"
 
 const POLL_RUNNING_MS = 4_000
@@ -68,19 +68,31 @@ function boot(): void {
   }
 
   /**
-   * Deep-links the live-session panel to a reviewer session — calls the
-   * `live_session` tool over this panel's own bridge (`sessionLinkCall`,
-   * render.ts) exactly as `agent_start`'s launch card does for
-   * session-chat: that tool's `_meta.ui.resourceUri` (registered by
-   * runtime's mcp-apps-adapter.ts) makes the host auto-open/focus
-   * `ui://live_session/view` and push the `{sessionId}` result to it, which
-   * live-session/panel.ts's own `ui/notifications/tool-result` listener
-   * uses to pin its focus to THAT session. No new navigation primitive.
+   * Opens the live-session panel deep-linked to a reviewer session — same
+   * `openLink`-with-`window.open`-fallback convention session-chat's card
+   * link uses (panel-bridge.ts's `openLink`), the only existing cross-panel
+   * navigation primitive this codebase has, now pointed at a real per-
+   * session URL (`liveSessionUrl`, render.ts): runtime's `handleAppUiPage`
+   * reads the `?sessionId=` query param and bakes it into the served
+   * widget's `window.__APP_INIT__` when it's a validated session id (see
+   * builtin-apps.ts's `isValidDeepLinkSessionId`), so the widget boots
+   * already pinned instead of self-discovering the newest running session.
+   * `window.location.origin` is the daemon's own origin whenever this panel
+   * is served standalone (the same route `resolveBuiltinPanelUi` answers)
+   * — an opaque iframe origin (some embedded hosts) can't resolve it, in
+   * which case the link opens relative to nothing and the host's own error
+   * surfaces instead.
    */
   function openSession(sessionId: string): void {
     if (!sessionId) return
-    const { tool, args } = sessionLinkCall(sessionId)
-    callTool(tool, args).catch((e: Error) => setStatus(`Open session failed: ${e.message}`))
+    const origin = window.location.origin && window.location.origin !== "null" ? window.location.origin : ""
+    const url = liveSessionUrl(origin, sessionId)
+    const caps = getHostCapabilities()
+    if (caps?.openLinks) {
+      openLink(url).catch(() => window.open(url, "_blank"))
+    } else {
+      window.open(url, "_blank")
+    }
   }
 
   function loadList(): Promise<void> {

@@ -12,10 +12,9 @@
  * by runId, Export -> review_export. Never a second, invented write path.
  *
  * Also covers the reviewer-session deep link: clicking an agent lane's
- * `.sess-link` button calls live_session({sessionId}) — the same cross-app
- * auto-render tool agent_start uses for the session-chat launcher (see
- * ui/render.ts's `sessionLinkCall`) — never a bare `openLink` to a
- * session-less URL.
+ * `.sess-link` button opens `/apps/@agentproto/live-session/ui?sessionId=…`
+ * (ui/render.ts's `liveSessionUrl`) — a real per-session URL, never a bare
+ * link to the session-less live-session panel.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -90,7 +89,6 @@ function baseHandlers(): Record<string, ToolHandler> {
     review_run: () => ok({ runId: "review-live-2", status: "running" }),
     review_pr: () => ok({ ok: true, status: { state: "open" } }),
     review_export: () => ok({ path: "/tmp/review-live.json" }),
-    live_session: () => ok({ sessionId: "sess_reviewer", httpBaseUrl: "http://127.0.0.1:18790" }),
   }
 }
 
@@ -203,17 +201,25 @@ describe("agentproto_reviews panel — action wiring (real panel script, fake br
     expect(exportCall?.args).toEqual({ runId: "review-live" })
   })
 
-  it("clicking an agent lane's reviewer-session link calls live_session with exactly {sessionId}", async () => {
-    const { window, calls } = renderPanel()
+  it("clicking an agent lane's reviewer-session link opens the live-session widget deep-linked to exactly that session", async () => {
+    const { window } = renderPanel()
     await settle()
     window.document.querySelector('tr[data-runid="review-done"]')!.dispatchEvent(new window.Event("click", { bubbles: true }))
     await settle()
     const sessLink = window.document.querySelector(".sess-link")
     expect(sessLink).toBeTruthy()
     expect(sessLink!.getAttribute("data-session-id")).toBe("sess_reviewer")
+    // The standalone bridge (window.McpApp, used here) never populates
+    // hostCapabilities.openLinks (panel-bridge.ts's initBridge only does
+    // that over the real postMessage handshake), so openSession always
+    // takes the window.open fallback in this test environment.
+    const opened: Array<[string, string | undefined]> = []
+    window.open = (url: string, target?: string) => {
+      opened.push([url, target])
+      return null
+    }
     sessLink!.dispatchEvent(new window.Event("click", { bubbles: true }))
     await settle()
-    const liveSessionCall = calls.find(c => c.tool === "live_session")
-    expect(liveSessionCall?.args).toEqual({ sessionId: "sess_reviewer" })
+    expect(opened).toEqual([["https://example.test/apps/@agentproto/live-session/ui?sessionId=sess_reviewer", "_blank"]])
   })
 })

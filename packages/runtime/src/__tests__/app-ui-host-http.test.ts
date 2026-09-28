@@ -772,6 +772,37 @@ describe("standalone app UI host — builtin panel fallback", () => {
     })
   })
 
+  it("GET bakes a valid ?sessionId= into live-session's initData, pinning its focus", async () => {
+    await withServer(async base => {
+      const res = await fetch(`${base}/apps/${encodeURIComponent(liveSessionApp.id!)}/ui?sessionId=sess_a3f8c1b2`)
+      expect(res.status).toBe(200)
+      const html = await res.text()
+      expect(html).toContain('"sessionId":"sess_a3f8c1b2"')
+    })
+  })
+
+  it("GET ignores an invalid ?sessionId= — same page as omitting it, never reflected raw", async () => {
+    await withServer(async base => {
+      const [withBadId, withNone] = await Promise.all([
+        fetch(`${base}/apps/${encodeURIComponent(liveSessionApp.id!)}/ui?sessionId=../../../etc/passwd`).then(r => r.text()),
+        fetch(`${base}/apps/${encodeURIComponent(liveSessionApp.id!)}/ui`).then(r => r.text()),
+      ])
+      expect(withBadId).not.toContain("etc/passwd")
+      expect(withBadId).toBe(withNone)
+    })
+  })
+
+  it("GET ignores ?sessionId= for every other builtin — the html is byte-identical either way", async () => {
+    await withServer(async base => {
+      const [withSessionId, withoutSessionId] = await Promise.all([
+        fetch(`${base}/apps/${encodeURIComponent(workBoardApp.id!)}/ui?sessionId=sess_a3f8c1b2`).then(r => r.text()),
+        fetch(`${base}/apps/${encodeURIComponent(workBoardApp.id!)}/ui`).then(r => r.text()),
+      ])
+      expect(withSessionId).toBe(withoutSessionId)
+      expect(withSessionId).not.toContain("sess_a3f8c1b2")
+    })
+  })
+
   it("GET 404s for an appId that is neither installed nor a builtin", async () => {
     await withServer(async base => {
       const res = await fetch(`${base}/apps/@nope/nothing/ui`)

@@ -9622,7 +9622,16 @@ async function handleAppUiPage(
   frameAncestors: readonly string[],
 ): Promise<void> {
   const app = appRegistry.getApp(appId)
-  const builtin = app?.ui ? undefined : resolveBuiltinPanelUi(appId, requestHttpBaseUrl(req))
+  // `?sessionId=` — only consulted by the live-session builtin
+  // (`resolveBuiltinPanelUi`'s doc): the review panel's reviewer-session
+  // link deep-links here (`liveSessionUrl`, apps/src/review-panel/ui/
+  // render.ts) so the widget boots already pinned instead of self-
+  // discovering the newest running session. Handed through RAW —
+  // `resolveBuiltinPanelUi` (`isValidDeepLinkSessionId`) is the one that
+  // validates it; every other builtin's `resolveBuiltinPanelUi` branch
+  // ignores this param entirely.
+  const sessionIdParam = new URL(req.url ?? "/", "http://localhost").searchParams.get("sessionId") ?? undefined
+  const builtin = app?.ui ? undefined : resolveBuiltinPanelUi(appId, requestHttpBaseUrl(req), sessionIdParam)
   if (!app?.ui && !builtin) {
     res.writeHead(404, { "content-type": "application/json" })
     res.end(JSON.stringify({ error: `app "${appId}" is not installed or has no UI.` }))
@@ -9700,8 +9709,12 @@ async function handleAppUiPage(
       )
     } else {
       const html = builtin!.html
+      // `sessionIdParam` folds into the key (not just the `stamp`, which
+      // already self-corrects on a mismatch) so concurrent requests for
+      // different pinned sessions land in distinct LRU slots instead of
+      // repeatedly evicting one shared "builtin\0live_session\0..." entry.
       rep = await appUiRepresentations.get(
-        `builtin\0${appId}\0${baseUrl}\0${variant ?? ""}`,
+        `builtin\0${appId}\0${baseUrl}\0${variant ?? ""}\0${sessionIdParam ?? ""}`,
         html,
         () => appUiPageRepresentation(html, baseUrl, variant),
       )
