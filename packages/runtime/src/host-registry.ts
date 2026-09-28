@@ -105,6 +105,21 @@ export interface HostRecord {
    *  by `parseOfferUrl` before `add()` ever sees them, so this is currently
    *  unreachable — kept so a future downgrade path has somewhere to flag it. */
   legacy?: true
+  /** Self-reported by the host at add-time (SANDBOX-VISIBILITY-JOIN) — e.g. a
+   *  sandbox provider slug, a provider-side sandbox id, and free-form labels
+   *  (PR number, run URL, …). Never verified beyond "the host said so"; purely
+   *  descriptive for `device_list`/`devices sessions`. */
+  provider?: string
+  sandboxId?: string
+  labels?: Record<string, string>
+}
+
+/** Optional self-reported metadata `add()` attaches to the resulting
+ *  `HostRecord` (see `HostRecord.provider`/`sandboxId`/`labels`). */
+export interface HostJoinMeta {
+  provider?: string
+  sandboxId?: string
+  labels?: Record<string, string>
 }
 
 interface HostsFile {
@@ -162,7 +177,11 @@ export interface HostRegistry {
    * mirrors `pair-transport.ts`'s `acceptOffer`), derives the pair root, and
    * persists a `HostRecord` (upserted by fingerprint — re-adding replaces).
    */
-  add(offerUrl: string, name?: string): Promise<{ fingerprint: string; name: string; rendezvousUrl: string }>
+  add(
+    offerUrl: string,
+    name?: string,
+    meta?: HostJoinMeta,
+  ): Promise<{ fingerprint: string; name: string; rendezvousUrl: string }>
   /** All persisted hosts (copies). Loads `hosts.json` on first call. */
   list(): Promise<HostRecord[]>
   /** Rename a host (fingerprint or current name). Returns false when nothing
@@ -283,6 +302,7 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
   async function add(
     offerUrl: string,
     name?: string,
+    meta?: HostJoinMeta,
   ): Promise<{ fingerprint: string; name: string; rendezvousUrl: string }> {
     await ensureLoaded()
     const offer = await parseOfferUrl(offerUrl, { now: now() })
@@ -338,6 +358,9 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
       pairRoot,
       createdAt: hosts.get(offer.fingerprint)?.createdAt ?? nowIso,
       lastSeen: nowIso,
+      ...(meta?.provider ? { provider: meta.provider } : {}),
+      ...(meta?.sandboxId ? { sandboxId: meta.sandboxId } : {}),
+      ...(meta?.labels ? { labels: meta.labels } : {}),
     }
     hosts.set(record.fingerprint, record)
     await persist()

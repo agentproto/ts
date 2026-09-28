@@ -221,6 +221,61 @@ test('empty/invalid reviewerSandbox still resolves to host (no spec, no cwd)', (
   }
 })
 
+// ── AGENTPROTO_JOIN passthrough (gated on the daemon process actually
+//    having a value — see sandbox-agent.mjs's comment on why this can't be
+//    unconditional like ANTHROPIC_API_KEY/GITHUB_TOKEN) ────────────────────
+
+test('default passthrough omits AGENTPROTO_JOIN when this process has none (fork PR / no secret configured)', () => {
+  assert.equal(process.env.AGENTPROTO_JOIN, undefined)
+  const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
+  assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN'])
+})
+
+test('default passthrough adds AGENTPROTO_JOIN when this process has a value to offer', () => {
+  process.env.AGENTPROTO_JOIN = 'https://join.example/token'
+  try {
+    const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
+    assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'AGENTPROTO_JOIN'])
+  } finally {
+    delete process.env.AGENTPROTO_JOIN
+  }
+})
+
+test('a configured reviewerSandboxEnv still wins its own list, but AGENTPROTO_JOIN is still appended when present — this repo\'s own opencode lane must not silently lose auto-join just because it pins reviewerSandboxEnv', () => {
+  process.env.AGENTPROTO_JOIN = 'https://join.example/token'
+  try {
+    const spec = sandboxRefFor(
+      { reviewerSandbox: 'e2b', reviewerSandboxEnv: ['OPENROUTER_API_KEY', 'GITHUB_TOKEN'] },
+      'review',
+    )
+    assert.deepEqual(spec.env.passthrough, ['OPENROUTER_API_KEY', 'GITHUB_TOKEN', 'AGENTPROTO_JOIN'])
+  } finally {
+    delete process.env.AGENTPROTO_JOIN
+  }
+})
+
+test('native object form without env.passthrough also picks up the gated AGENTPROTO_JOIN default', () => {
+  process.env.AGENTPROTO_JOIN = 'https://join.example/token'
+  try {
+    const spec = sandboxRefFor({ reviewerSandbox: { provider: 'e2b' } }, 'review')
+    assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'AGENTPROTO_JOIN'])
+  } finally {
+    delete process.env.AGENTPROTO_JOIN
+  }
+})
+
+test('AGENTPROTO_JOIN set but blank/whitespace is treated as absent', () => {
+  for (const blank of ['', '   ']) {
+    process.env.AGENTPROTO_JOIN = blank
+    try {
+      const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
+      assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN'])
+    } finally {
+      delete process.env.AGENTPROTO_JOIN
+    }
+  }
+})
+
 test('native object spec still selects /home/user as the workspace cwd', () => {
   assert.equal(workspaceCwdFor({ reviewerSandbox: { provider: 'e2b' } }, 'review'), '/home/user')
   const bindings = {

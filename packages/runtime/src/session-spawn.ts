@@ -4122,7 +4122,21 @@ async function bootSandboxAgentSession(opts: {
   // yet, so this is the full slug set).
   const passthrough = spec.env?.passthrough ?? []
   const authEnv = spec.env?.auth?.state?.env ?? []
-  const slugs = Array.from(new Set([...passthrough, ...authEnv]))
+  const declaredSlugs = new Set([...passthrough, ...authEnv])
+  // `join.tokenEnv` — sugar over `env.passthrough` for the auto-join case:
+  // forward a single host env var (a join-token URL) into the box under the
+  // same name. Unlike an explicit `env.passthrough` entry, a missing value
+  // must be a no-op rather than a boot failure (many hosts — e.g. a fork's
+  // CI run with no `AGENTPROTO_JOIN` secret — never set it), so it's only
+  // added to the strict slug set (which fails loudly on an unresolvable
+  // slug, see `resolveSandboxSecretsEnv`) once confirmed resolvable —
+  // mirroring the `env.autoPassthrough` probe in `withSandboxAuthAutoPassthrough`.
+  const joinTokenEnv = spec.join?.tokenEnv
+  if (joinTokenEnv && !declaredSlugs.has(joinTokenEnv)) {
+    const resolvable = (await resolveSandboxSecret(joinTokenEnv)) !== null
+    if (resolvable) declaredSlugs.add(joinTokenEnv)
+  }
+  const slugs = Array.from(declaredSlugs)
 
   let host: SandboxAgentSessionHost
   try {

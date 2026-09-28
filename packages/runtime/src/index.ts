@@ -610,6 +610,7 @@ import { registerRemoteTools } from "./remote-tools.js"
 import { registerPairingTools } from "./pairing-tools.js"
 import type { PairingRegistry } from "./pairing-registry.js"
 import type { HostRegistry } from "./host-registry.js"
+import type { JoinTokenRegistry } from "./join-token-registry.js"
 import { createDeviceRegistry } from "./device-registry.js"
 import { registerDeviceTools } from "./device-tools.js"
 import { registerDaemonHealthTools } from "./daemon-health-tools.js"
@@ -699,9 +700,19 @@ export {
   type HostRegistry,
   type HostRegistryDeps,
   type HostRecord,
+  type HostJoinMeta,
   type ForwardHttpRequest,
   type ForwardHttpResponse,
 } from "./host-registry.js"
+export {
+  createJoinTokenRegistry,
+  JOIN_TOKENS_VERSION,
+  type JoinTokenRegistry,
+  type JoinTokenRegistryDeps,
+  type JoinTokenRecord,
+  type CreateJoinTokenInput,
+  type CreatedJoinToken,
+} from "./join-token-registry.js"
 export {
   createDeviceRegistry,
   type Device,
@@ -1164,6 +1175,16 @@ export interface CreateGatewayOptions {
    * autoconnect or tear down on shutdown.
    */
   hostRegistry?: HostRegistry
+  /**
+   * Optional JOIN TOKEN registry (see `createJoinTokenRegistry`,
+   * SANDBOX-VISIBILITY-JOIN). When wired alongside `pairingRegistry` +
+   * `hostRegistry`, the gateway mounts `POST/GET /devices/join-tokens` +
+   * `DELETE /devices/join-tokens/:id`, the `join_token_create/list/revoke`
+   * MCP tools, and `device_sessions`/`GET /devices/:id/sessions[/…/output]`.
+   * Autoconnect is the caller's to start (after this returns), same as
+   * `pairingRegistry`.
+   */
+  joinTokens?: JoinTokenRegistry
   /** Enable the local LLM Endpoint proxy sidecar (route registration,
    *  MCP tools, child-process lifecycle). Default false — the endpoint is
    *  an opt-in feature; when off, the `llm-endpoint` custom route is not
@@ -1257,6 +1278,11 @@ export interface GatewayHandle {
    *  (DEVICES-PLAN PR-C). Undefined otherwise. No autoconnect/shutdown to
    *  call on it — see that option's doc comment. */
   hosts?: HostRegistry
+  /** JOIN TOKEN registry, when one was wired via
+   *  `CreateGatewayOptions.joinTokens` (SANDBOX-VISIBILITY-JOIN). Undefined
+   *  otherwise. Exposed so the CLI can `startAutoconnect()` after boot and
+   *  `shutdown()` it, same as `pairing`. */
+  joinTokens?: JoinTokenRegistry
   /** Per-boot bearer token required on mutating /sessions/* routes
    *  + WS PTY upgrades. Exposed so an embedding host (e.g. the CLI
    *  shell that hosts the gateway in-process) can pass it to child
@@ -2349,6 +2375,7 @@ export async function createGateway(
       // pair_revoke; both surfaces stay live.
       registerDeviceTools(server, {
         registry: createDeviceRegistry(opts.pairingRegistry, opts.hostRegistry),
+        ...(opts.joinTokens ? { joinTokens: opts.joinTokens } : {}),
       })
     }
     // Agent-session orchestration — operators (Mastra agents in
@@ -2827,6 +2854,7 @@ export async function createGateway(
     remote,
     ...(opts.pairingRegistry ? { pairings: opts.pairingRegistry } : {}),
     ...(opts.hostRegistry ? { hostRegistry: opts.hostRegistry } : {}),
+    ...(opts.joinTokens ? { joinTokens: opts.joinTokens } : {}),
     sessionEvents,
     eventRing,
     supervisor,
@@ -3122,6 +3150,7 @@ export async function createGateway(
     tunnels,
     ...(opts.pairingRegistry ? { pairing: opts.pairingRegistry } : {}),
     ...(opts.hostRegistry ? { hosts: opts.hostRegistry } : {}),
+    ...(opts.joinTokens ? { joinTokens: opts.joinTokens } : {}),
     token,
     mintOrchestratorScope: scopeTokens.mint,
     async resumeSessionsOnBoot(passOpts) {

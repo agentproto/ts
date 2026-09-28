@@ -95,8 +95,10 @@ export const ATTRIBUTION_STRIP_SETUP_COMMAND = [
  *     `{ provider: "e2b", config?: {...}, env?: { passthrough?: [...] },
  *     lifecycle?: {...}, reuse?: … }`. Defaults are merged under it, never
  *     over it: if the object's `env.passthrough` is absent it falls back to
- *     `reviewerSandboxEnv`, then to `["ANTHROPIC_API_KEY", "GITHUB_TOKEN"]`;
- *     the setup hook + `cliVersion` pin are merged into
+ *     `reviewerSandboxEnv`, then to `["ANTHROPIC_API_KEY", "GITHUB_TOKEN"]`
+ *     (plus `"AGENTPROTO_JOIN"` when this process actually has one to offer —
+ *     see the comment below `sandboxRefFor` reads it from); the setup hook +
+ *     `cliVersion` pin are merged into
  *     `config` (object-provided config keys win); any other top-level keys of
  *     the object are carried through untouched — nothing is invented.
  *
@@ -125,11 +127,39 @@ export const sandboxRefFor = (config, verb) => {
     nativeEnv && Array.isArray(nativeEnv.passthrough) && nativeEnv.passthrough.length > 0
       ? nativeEnv.passthrough
       : undefined
-  const passthrough =
+  // AGENTPROTO_JOIN carries a home-daemon join token into the sandbox (see
+  // AIP-36 `join.tokenEnv`, owned by a separate workstream — this module
+  // never reads or sets that field, only the passthrough NAME below) so a
+  // freshly booted CI box can dial home and register itself as a driveable
+  // host. UNLIKE `join.tokenEnv` (deliberately a no-op when its value is
+  // absent — see session-spawn.ts), a plain `env.passthrough` entry is a
+  // STRICT slug: the sandbox boot fails loudly if it can't be resolved from
+  // the daemon's own process env (`resolveSandboxSecretsEnv`). A fork PR, or
+  // any run of this repo with no `AGENTPROTO_JOIN` secret configured, never
+  // sets this env var — so whichever passthrough list wins below (native
+  // `env.passthrough`, a configured `reviewerSandboxEnv`, or the bare
+  // default) only gets the name appended when this process actually has a
+  // value to give it, never unconditionally alongside ANTHROPIC_API_KEY/
+  // GITHUB_TOKEN (always-required inputs to this lane, not optional). Read
+  // per-call (not hoisted to module scope) so it reflects this process's
+  // actual env at spec-build time.
+  const hasJoinToken = typeof process.env.AGENTPROTO_JOIN === "string" && process.env.AGENTPROTO_JOIN.trim() !== ""
+  const passthroughBase =
     nativePassthrough ??
     (Array.isArray(cfg.reviewerSandboxEnv) && cfg.reviewerSandboxEnv.length > 0
       ? cfg.reviewerSandboxEnv
       : ["ANTHROPIC_API_KEY", "GITHUB_TOKEN"])
+  // Applied to WHICHEVER list won above (native `env.passthrough`, a
+  // configured `reviewerSandboxEnv` — e.g. this repo's own opencode lane
+  // pins `["OPENROUTER_API_KEY", "GITHUB_TOKEN"]` — or the bare built-in
+  // default): the join token is a daemon-wide capability, not specific to
+  // one reviewer lane's env list, so gating it only on the unconfigured
+  // default would silently disable auto-join the moment anyone (including
+  // this repo, today) sets `reviewerSandboxEnv`.
+  const passthrough =
+    hasJoinToken && !passthroughBase.includes("AGENTPROTO_JOIN")
+      ? [...passthroughBase, "AGENTPROTO_JOIN"]
+      : passthroughBase
   // The verb's adapter is NOT installed here anymore: the runtime
   // auto-injects the adapter boot package since #1232
   // (`sandboxAdapterBootPackages` in session-spawn.ts), so a CI-side

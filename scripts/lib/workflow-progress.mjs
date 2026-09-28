@@ -12,6 +12,49 @@
  */
 
 /**
+ * Extra observability detail `describeRunProgress` cannot derive from a
+ * `WorkflowRun` alone — `workflow_status`'s step rows carry only
+ * index/label/status/sessionId/phase/timestamps (see `RoutineStepState` in
+ * `packages/runtime/src/step-run-types.ts`), never the adapter, model,
+ * sandbox placement, or turn count a session is actually running under. A
+ * caller that wants those (e.g. the driver, which already knows its own
+ * ADAPTER/CLI_SOURCE env and the workflow's `reviewConfig`, and can look up a
+ * session's live descriptor via `session_list`) assembles this object and
+ * passes it as the second argument. Entirely optional and purely additive —
+ * omitting it (or passing `{}`) reproduces the exact pre-existing output.
+ *
+ * @typedef {object} RunProgressContext
+ * @property {string} [adapter] Reviewer adapter slug for the whole run (e.g.
+ *   "claude-code", "opencode") — known to the driver without any lookup.
+ * @property {string} [model] Reviewer model id override, when configured.
+ * @property {string} [cliSource] Where the agentproto CLI came from ("npm" | "workspace").
+ * @property {number} [maxReviewTurns] `reviewConfig.maxReviewTurns`, for the turn=n/max detail.
+ * @property {string} [reviewerSessionId] The reviewer step's sessionId, called out explicitly.
+ * @property {Record<string, {sandboxProvider?: string, sandboxId?: string, adapterSlug?: string, model?: string, turnsCompleted?: number}>} [sessions]
+ *   Per-session live detail, keyed by sessionId (from a `session_list` lookup) —
+ *   only sessions the caller actually resolved need an entry.
+ */
+
+/** Enriches one RUNNING step's `label@sessionId` with whatever live session
+ *  detail `context.sessions` has for it. No entry ⇒ output identical to before. */
+function describeRunningStep(step, context) {
+  const sessionId = step?.sessionId
+  const base = `${step?.label ?? '?'}${sessionId ? `@${sessionId}` : ''}`
+  const info = sessionId ? context?.sessions?.[sessionId] : undefined
+  if (!info) return base
+  const bits = []
+  if (info.sandboxProvider) {
+    bits.push(`sandbox=${info.sandboxProvider}${info.sandboxId ? `:${info.sandboxId}` : ''}`)
+  }
+  if (info.adapterSlug) bits.push(`adapter=${info.adapterSlug}`)
+  if (info.model) bits.push(`model=${info.model}`)
+  if (info.turnsCompleted !== undefined) {
+    bits.push(`turn=${info.turnsCompleted}${context?.maxReviewTurns ? `/${context.maxReviewTurns}` : ''}`)
+  }
+  return bits.length ? `${base}(${bits.join(',')})` : base
+}
+
+/**
  * Compact one-line progress fingerprint: run status, per-stage status,
  * done/total step counts, and the label (+sessionId) of whatever is RUNNING.
  *
@@ -20,9 +63,12 @@
  *
  * @param {unknown} run a WorkflowRun (or anything — tolerates partial shapes,
  *   since it is fed straight from an MCP tool result)
+ * @param {RunProgressContext} [context] optional out-of-band detail the `run`
+ *   object itself doesn't carry (see the typedef above). Omitted ⇒ output is
+ *   byte-identical to calling this function with one argument, always.
  * @returns {string}
  */
-export function describeRunProgress(run) {
+export function describeRunProgress(run, context) {
   const parts = [`status=${run?.status ?? '?'}`]
   for (const stage of Array.isArray(run?.stages) ? run.stages : []) {
     const steps = Array.isArray(stage?.steps) ? stage.steps : []
@@ -32,9 +78,7 @@ export function describeRunProgress(run) {
       `stage${stage?.index ?? '?'}${stage?.label ? `(${stage.label})` : ''}` +
         `=${stage?.status ?? '?'} [${done}/${steps.length}]` +
         (running.length
-          ? ` running=${running
-              .map((s) => `${s?.label ?? '?'}${s?.sessionId ? `@${s.sessionId}` : ''}`)
-              .join(',')}`
+          ? ` running=${running.map((s) => describeRunningStep(s, context)).join(',')}`
           : ''),
     )
   }
@@ -42,5 +86,9 @@ export function describeRunProgress(run) {
   if (run?.awaitingSuspend) {
     parts.push(`awaitingSuspend=${(run.awaitingSuspend.on ?? []).join('|')}`)
   }
+  if (context?.reviewerSessionId) parts.push(`reviewer=${context.reviewerSessionId}`)
+  if (context?.adapter) parts.push(`adapter=${context.adapter}`)
+  if (context?.model) parts.push(`model=${context.model}`)
+  if (context?.cliSource) parts.push(`cliSource=${context.cliSource}`)
   return parts.join(' · ')
 }

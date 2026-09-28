@@ -94,6 +94,15 @@ export interface SandboxDefinition {
     egress?: string[]
   }
   /**
+   * Auto-join wiring: forwards a host env var (holding a join-token URL) into the sandbox by the same name, so the box can register itself with the daemon that minted the token.
+   */
+  join?: {
+    /**
+     * Name of a host env var whose value (a join-token URL) should be forwarded into the sandbox under the SAME name at boot, so the box can auto-register with the daemon that minted the token. Equivalent to adding that name to `env.passthrough` — provided as a distinct, self-documenting field because its purpose (auto-join) is different from an arbitrary forwarded secret. Absent/no-op when the named host env var isn't actually set (e.g. a fork's CI run with no `AGENTPROTO_JOIN` secret) — never fails the boot.
+     */
+    tokenEnv: string
+  }
+  /**
    * Filesystems mounted inside the sandbox at declared paths. Maps to Mastra Workspace.mounts.
    */
   mounts?: MountEntry[]

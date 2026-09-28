@@ -83,6 +83,7 @@ import type { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import type { RemoteController, EnableInput } from "./remote-controller.js"
 import type { PairingRegistry } from "./pairing-registry.js"
 import type { HostRegistry } from "./host-registry.js"
+import type { JoinTokenRegistry } from "./join-token-registry.js"
 import { createDeviceRegistry } from "./device-registry.js"
 import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
@@ -195,7 +196,8 @@ import type {
   ResolvedAuthSpec,
 } from "./spawn-defaults.js"
 import type { ContextProfile, Posture } from "./session-config.js"
-import { spawnAgentSession, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
+import { spawnAgentSession, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
+import { stripAnsi } from "./agent-tools.js"
 import {
   restartAgentSession,
   RestartOverrideError,
@@ -1002,6 +1004,15 @@ export interface RuntimeHttpServerOptions {
    *  `/devices/add`, 400 with a clear "no host registry wired" message) and
    *  `/devices` shows only client devices, exactly like before PR-C. */
   hostRegistry?: HostRegistry
+  /** Optional — when wired alongside `pairings`/`hostRegistry`
+   *  (SANDBOX-VISIBILITY-JOIN), enables `POST /devices/join-tokens`
+   *  (mint), `GET /devices/join-tokens` (list, secret stripped), `DELETE
+   *  /devices/join-tokens/:id` (revoke), `GET /devices/:id/sessions`
+   *  (forward a host's session list), and `GET
+   *  /devices/:id/sessions/:sessionId/output` (forward an `agent_output`
+   *  tail) — plus the `join_token_create/list/revoke` and `device_sessions`
+   *  MCP tools. Without it those routes 404. */
+  joinTokens?: JoinTokenRegistry
   /** Optional — the session lifecycle event bus. When wired alongside
    *  `sessions`, `eventRing`, enables `GET /sessions/:id/wait` (a blocking
    *  long-poll that resolves when the session fires a lifecycle event).
@@ -4062,7 +4073,7 @@ export async function startHttpServer(
               return
             }
           }
-          const handled = await handleDevices(req, res, path, opts.pairings, opts.hostRegistry)
+          const handled = await handleDevices(req, res, path, opts.pairings, opts.hostRegistry, opts.joinTokens)
           if (handled) return
         }
 
@@ -6377,6 +6388,53 @@ async function handleSessions(
     return true
   }
 
+  // GET /sessions/:id/output?lastN=&clean= — the REST twin of the MCP
+  // `agent_output` tool (SANDBOX-VISIBILITY-JOIN): a best-effort tail of the
+  // ring buffer, so a plain HTTP forward (e.g. `HostRegistry.forwardHttp`,
+  // no MCP session negotiation) can reach it. Mirrors `agent_output`'s
+  // clean-mode + activity-fallback logic exactly.
+  const outputMatch = path.match(/^\/sessions\/([^/]+)\/output$/)
+  if (outputMatch && req.method === "GET") {
+    const id = decodeURIComponent(outputMatch[1] ?? "")
+    if (!id) return false
+    const desc = registry.findByIdOrName(id)
+    if (!desc) {
+      json(404, { error: "no_such_session", id })
+      return true
+    }
+    const reqUrl = req.url ?? ""
+    const queryString = reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : ""
+    const query = new URLSearchParams(queryString)
+    const lastNRaw = Number(query.get("lastN") ?? "80")
+    const limit = Number.isInteger(lastNRaw) && lastNRaw >= 1 ? Math.min(lastNRaw, 500) : 80
+    const clean = ["1", "true"].includes(query.get("clean") ?? "")
+    const lines: string[] = []
+    const unsub = registry.attach(desc.id, (line: string) => {
+      lines.push(line)
+    })
+    if (unsub) unsub()
+    const tail = lines.slice(-limit)
+    let output = clean ? cleanAgentLines(tail) : tail
+    let activityFallback = false
+    if (clean && output.length === 0 && tail.length > 0) {
+      output = tail
+        .map(stripAnsi)
+        .map(l => l.trimEnd())
+        .filter(l => l.trim().length > 0)
+        .slice(-limit)
+      activityFallback = output.length > 0
+    }
+    json(200, {
+      sessionId: desc.id,
+      status: desc.status,
+      currentPhase: desc.currentPhase,
+      lastOutputAt: desc.lastOutputAt,
+      ...(activityFallback ? { activityFallback: true } : {}),
+      lines: output,
+    })
+    return true
+  }
+
   // Inspect the queue after the fact — GET /sessions/:id/queue returns the
   // ordered list (origin, preview, queuedAt, position). 0 = next to dispatch.
   const queueListMatch = path.match(/^\/sessions\/([^/]+)\/queue$/)
@@ -8629,6 +8687,7 @@ async function handleDevices(
   path: string,
   registry: PairingRegistry,
   hostRegistry?: HostRegistry,
+  joinTokens?: JoinTokenRegistry,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -8767,6 +8826,97 @@ async function handleDevices(
     }
     res.writeHead(streamRes.status, streamRes.headers)
     Readable.fromWeb(streamRes.body as unknown as NodeWebReadableStream<Uint8Array>).pipe(res)
+    return true
+  }
+
+  // Join tokens (SANDBOX-VISIBILITY-JOIN): mint/list/revoke a long-lived,
+  // reusable credential a box daemon's AGENTPROTO_JOIN reads to auto-register
+  // as a host — see join-token-registry.ts. 404s the same way as
+  // /devices/add when no join-token registry is wired.
+  if (path === "/devices/join-tokens" && req.method === "POST") {
+    if (!joinTokens) {
+      json(404, { error: "no_join_token_registry", message: "this daemon has no join-token registry wired" })
+      return true
+    }
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const name = typeof b.name === "string" ? b.name.trim() : ""
+    if (!name) {
+      json(400, { error: "bad_request", message: 'body must include a non-empty "name"' })
+      return true
+    }
+    const ttlMs = typeof b.ttlMs === "number" ? b.ttlMs : undefined
+    const maxUses = typeof b.maxUses === "number" ? b.maxUses : undefined
+    const rendezvousUrl = typeof b.rendezvousUrl === "string" ? b.rendezvousUrl : undefined
+    try {
+      const created = await joinTokens.create({
+        name,
+        ...(ttlMs !== undefined ? { ttlMs } : {}),
+        ...(maxUses !== undefined ? { maxUses } : {}),
+        ...(rendezvousUrl ? { rendezvousUrl } : {}),
+      })
+      json(200, created)
+    } catch (err) {
+      json(400, { error: "create_failed", message: err instanceof Error ? err.message : String(err) })
+    }
+    return true
+  }
+
+  if (path === "/devices/join-tokens" && req.method === "GET") {
+    if (!joinTokens) {
+      json(404, { error: "no_join_token_registry", message: "this daemon has no join-token registry wired" })
+      return true
+    }
+    json(200, { tokens: await joinTokens.list() })
+    return true
+  }
+
+  const joinTokenIdMatch = path.match(/^\/devices\/join-tokens\/([^/]+)$/)
+  if (joinTokenIdMatch && req.method === "DELETE") {
+    if (!joinTokens) {
+      json(404, { error: "no_join_token_registry", message: "this daemon has no join-token registry wired" })
+      return true
+    }
+    const target = decodeURIComponent(joinTokenIdMatch[1] ?? "")
+    const revoked = await joinTokens.revoke(target)
+    if (!revoked) {
+      json(404, { error: "not_found", message: `no join token matched "${target}"` })
+      return true
+    }
+    json(200, { ok: true, revoked: target })
+    return true
+  }
+
+  // Device sessions (SANDBOX-VISIBILITY-JOIN): a read-only forward of a
+  // registered host's own /sessions[/:id/output], over the same
+  // forwardHttp() `/devices/:id/exec` already uses. The HTTP twin of the
+  // `device_sessions` MCP tool.
+  const deviceSessionsMatch = path.match(/^\/devices\/([^/]+)\/sessions$/)
+  if (deviceSessionsMatch && req.method === "GET") {
+    const target = decodeURIComponent(deviceSessionsMatch[1] ?? "")
+    try {
+      const res2 = await devices.forwardHttp(target, { method: "GET", path: "/sessions" })
+      res.writeHead(res2.status, { "content-type": "application/json" })
+      res.end(Buffer.from(res2.body))
+    } catch (err) {
+      json(502, { error: "forward_failed", message: err instanceof Error ? err.message : String(err) })
+    }
+    return true
+  }
+
+  const deviceSessionOutputMatch = path.match(/^\/devices\/([^/]+)\/sessions\/([^/]+)\/output$/)
+  if (deviceSessionOutputMatch && req.method === "GET") {
+    const target = decodeURIComponent(deviceSessionOutputMatch[1] ?? "")
+    const sessionId = decodeURIComponent(deviceSessionOutputMatch[2] ?? "")
+    const reqUrl = req.url ?? ""
+    const qs = reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?")) : ""
+    try {
+      const res2 = await devices.forwardHttp(target, { method: "GET", path: `/sessions/${sessionId}/output${qs}` })
+      res.writeHead(res2.status, { "content-type": "application/json" })
+      res.end(Buffer.from(res2.body))
+    } catch (err) {
+      json(502, { error: "forward_failed", message: err instanceof Error ? err.message : String(err) })
+    }
     return true
   }
 

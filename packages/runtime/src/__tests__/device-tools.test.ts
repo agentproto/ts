@@ -8,6 +8,7 @@ import { describe, it, expect, vi } from "vitest"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { registerDeviceTools } from "../device-tools.js"
 import type { Device, DeviceRegistry } from "../device-registry.js"
+import type { JoinTokenRegistry } from "../join-token-registry.js"
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ToolHandler = (args: any) => Promise<{ content: Array<{ type: "text"; text: string }> }>
@@ -42,12 +43,29 @@ function fakeRegistry(
   addImpl: DeviceRegistry["add"] = vi.fn(async () => {
     throw new Error("add not stubbed")
   }),
+  forwardHttpImpl: DeviceRegistry["forwardHttp"] = vi.fn(async () => {
+    throw new Error("forwardHttp not stubbed")
+  }),
 ): DeviceRegistry {
   return {
     list: async () => devices,
     rename: vi.fn(async (target: string) => devices.some(d => d.fingerprint === target || d.name === target)),
     revoke: vi.fn(async (target: string) => devices.some(d => d.fingerprint === target || d.name === target)),
     add: addImpl,
+    forwardHttp: forwardHttpImpl,
+  }
+}
+
+function fakeJoinTokens(overrides: Partial<JoinTokenRegistry> = {}): JoinTokenRegistry {
+  return {
+    create: vi.fn(async () => {
+      throw new Error("create not stubbed")
+    }),
+    list: vi.fn(async () => []),
+    revoke: vi.fn(async () => false),
+    startAutoconnect: vi.fn(async () => {}),
+    shutdown: vi.fn(async () => {}),
+    ...overrides,
   }
 }
 
@@ -119,6 +137,128 @@ describe("device_list / device_rename / device_revoke", () => {
     expect(await callTool(handlers, "device_add", { offerUrl: "agentproto://pair?v=2&…" })).toEqual({
       ok: false,
       message: "this offer is not host-scoped",
+    })
+  })
+})
+
+describe("device_sessions", () => {
+  function jsonBody(body: unknown): { status: number; headers: Record<string, string>; body: Uint8Array } {
+    return { status: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify(body)) }
+  }
+
+  it("with no sessionId, forwards a GET /sessions and returns it", async () => {
+    const { server, handlers } = fakeServer()
+    const forwardHttp = vi.fn(async () => jsonBody({ sessions: [{ id: "s1" }] }))
+    registerDeviceTools(server, { registry: fakeRegistry([], undefined, forwardHttp) })
+    expect(await callTool(handlers, "device_sessions", { target: "hfp1" })).toEqual({
+      ok: true,
+      sessions: [{ id: "s1" }],
+    })
+    expect(forwardHttp).toHaveBeenCalledWith("hfp1", { method: "GET", path: "/sessions" })
+  })
+
+  it("with a sessionId, forwards a GET /sessions/:id/output with lastN/clean in the query", async () => {
+    const { server, handlers } = fakeServer()
+    const forwardHttp = vi.fn(async (_target: string, _req: { method: string; path: string }) =>
+      jsonBody({ lines: ["hello"] }),
+    )
+    registerDeviceTools(server, { registry: fakeRegistry([], undefined, forwardHttp) })
+    expect(
+      await callTool(handlers, "device_sessions", { target: "hfp1", sessionId: "s1", lastN: 10, clean: true }),
+    ).toEqual({ ok: true, lines: ["hello"] })
+    const [target, req] = forwardHttp.mock.calls[0]!
+    expect(target).toBe("hfp1")
+    expect(req.method).toBe("GET")
+    expect(req.path).toMatch(/^\/sessions\/s1\/output\?/)
+    expect(req.path).toContain("lastN=10")
+    expect(req.path).toContain("clean=true")
+  })
+
+  it("reports ok:false with the registry's error message on failure", async () => {
+    const { server, handlers } = fakeServer()
+    const forwardHttp = vi.fn(async () => {
+      throw new Error("could not reach host")
+    })
+    registerDeviceTools(server, { registry: fakeRegistry([], undefined, forwardHttp) })
+    expect(await callTool(handlers, "device_sessions", { target: "nope" })).toEqual({
+      ok: false,
+      message: "could not reach host",
+    })
+  })
+
+  it("a non-200 forward reports ok:false with the status and raw body", async () => {
+    const { server, handlers } = fakeServer()
+    const forwardHttp = vi.fn(async () => ({
+      status: 502,
+      headers: {},
+      body: new TextEncoder().encode("bad gateway"),
+    }))
+    registerDeviceTools(server, { registry: fakeRegistry([], undefined, forwardHttp) })
+    expect(await callTool(handlers, "device_sessions", { target: "hfp1" })).toEqual({
+      ok: false,
+      status: 502,
+      message: "bad gateway",
+    })
+  })
+})
+
+describe("join_token_create / join_token_list / join_token_revoke", () => {
+  it("are not registered when no JoinTokenRegistry is wired", async () => {
+    const { server, handlers } = fakeServer()
+    registerDeviceTools(server, { registry: fakeRegistry([]) })
+    expect(handlers.has("join_token_create")).toBe(false)
+    expect(handlers.has("join_token_list")).toBe(false)
+    expect(handlers.has("join_token_revoke")).toBe(false)
+  })
+
+  it("join_token_create returns the minted token on success", async () => {
+    const { server, handlers } = fakeServer()
+    const create = vi.fn(async () => ({
+      id: "abc123",
+      name: "ci-reviewer",
+      token: "agentproto://pair?v=2&…&scope=host",
+      rendezvousUrl: "wss://rdv.example/v1",
+      expiresAt: "2026-04-01T00:00:00.000Z",
+    }))
+    registerDeviceTools(server, { registry: fakeRegistry([]), joinTokens: fakeJoinTokens({ create }) })
+    expect(await callTool(handlers, "join_token_create", { name: "ci-reviewer" })).toEqual({
+      ok: true,
+      id: "abc123",
+      name: "ci-reviewer",
+      token: "agentproto://pair?v=2&…&scope=host",
+      rendezvousUrl: "wss://rdv.example/v1",
+      expiresAt: "2026-04-01T00:00:00.000Z",
+    })
+    expect(create).toHaveBeenCalledWith({ name: "ci-reviewer" })
+  })
+
+  it("join_token_list returns the registry's tokens verbatim", async () => {
+    const { server, handlers } = fakeServer()
+    const tokens: Awaited<ReturnType<JoinTokenRegistry["list"]>> = [
+      {
+        id: "abc123",
+        name: "ci-reviewer",
+        rendezvousUrl: "wss://rdv.example/v1",
+        createdAt: "x",
+        expiresAt: "y",
+        useCount: 0,
+      },
+    ]
+    registerDeviceTools(server, { registry: fakeRegistry([]), joinTokens: fakeJoinTokens({ list: vi.fn(async () => tokens) }) })
+    expect(await callTool(handlers, "join_token_list", {})).toEqual({ tokens })
+  })
+
+  it("join_token_revoke reports ok:true on a match, ok:false otherwise", async () => {
+    const { server, handlers } = fakeServer()
+    const revoke = vi.fn(async (target: string) => target === "abc123")
+    registerDeviceTools(server, { registry: fakeRegistry([]), joinTokens: fakeJoinTokens({ revoke }) })
+    expect(await callTool(handlers, "join_token_revoke", { target: "abc123" })).toEqual({
+      ok: true,
+      revoked: "abc123",
+    })
+    expect(await callTool(handlers, "join_token_revoke", { target: "nope" })).toEqual({
+      ok: false,
+      message: 'no join token matched "nope"',
     })
   })
 })

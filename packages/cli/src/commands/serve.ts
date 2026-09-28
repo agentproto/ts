@@ -65,6 +65,7 @@ import {
   createTunnelServer,
   wrapWebSocket,
   connectSinkE2E,
+  clientHandshakeOverSink,
   type FrameSink,
   type E2eFrameSink,
 } from "@agentproto/acp/tunnel"
@@ -72,11 +73,17 @@ import {
   startTunnelHandshake,
   encodeTunnelMessage,
   decodeTunnelAccept,
+  startClientHandshake,
+  encodePairingMessage,
+  decodePairingReply,
+  parseOfferUrl,
+  deriveOfferTokens,
 } from "@agentproto/secrets/pairing"
 import {
   createGateway,
   createPairingRegistry,
   createHostRegistry,
+  createJoinTokenRegistry,
   createReconnectLogGate,
   sweepStaleRuntimeMetas,
   sweepStaleDaemonRegistry,
@@ -96,6 +103,7 @@ import {
   type PairingChannelContext,
   type PairingChannelHandle,
   type HostRegistry,
+  type JoinTokenRegistry,
 } from "@agentproto/runtime"
 import { CatalogProviderSchema, type CatalogProvider } from "@agentproto/model-catalog"
 import { loadOrCreateIdentity } from "@agentproto/secrets/identity"
@@ -684,6 +692,24 @@ export async function runServe(args: readonly string[]): Promise<number> {
     log: line => process.stderr.write(`${color.dim}${line}${color.reset}\n`),
   })
 
+  // ── JOIN TOKEN registry (SANDBOX-VISIBILITY-JOIN) ──
+  // Mints long-lived, revocable, reusable credentials for `AGENTPROTO_JOIN`;
+  // a box daemon holding one dials in and this daemon adds it to
+  // `hostRegistry` automatically — see join-token-registry.ts's module doc
+  // for why this needs no protocol changes (two ordinary pair/v2 handshakes
+  // back to back). Same `daemonDialRendezvous`/identity/rendezvous wiring as
+  // `pairingRegistry` above.
+  const joinTokenRegistry: JoinTokenRegistry = createJoinTokenRegistry({
+    loadIdentity: () => loadOrCreateIdentity(joinPath(agentprotoHome, "identity.json")),
+    joinTokensPath: joinPath(agentprotoHome, "join-tokens.json"),
+    ...(cfgPairing.rendezvous !== undefined
+      ? { defaultRendezvousUrl: cfgPairing.rendezvous }
+      : {}),
+    dial: daemonDialRendezvous,
+    addHost: (offerUrl, name, meta) => hostRegistry.add(offerUrl, name, meta),
+    log: line => process.stderr.write(`${color.dim}${line}${color.reset}\n`),
+  })
+
   // ── idempotent boot ──
   // Empty specs + noop buildAgent. The playground gateway script
   // still has its own setup for spec authoring + Mastra heartbeat.
@@ -711,6 +737,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
       createGateway({
         pairingRegistry,
         hostRegistry,
+        joinTokens: joinTokenRegistry,
         workspace: opts.workspace,
         port: opts.port,
         bind: opts.bind,
@@ -1005,6 +1032,29 @@ export async function runServe(args: readonly string[]): Promise<number> {
     void pairingRegistry.startAutoconnect().catch(err =>
       process.stderr.write(
         `agentproto serve: pairing autoconnect failed — ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      ),
+    )
+    void joinTokenRegistry.startAutoconnect().catch(err =>
+      process.stderr.write(
+        `agentproto serve: join-token autoconnect failed — ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      ),
+    )
+  }
+
+  // ── AGENTPROTO_JOIN (SANDBOX-VISIBILITY-JOIN, box side) ──
+  // A box daemon (e.g. a CI reviewer sandbox) started with this env var set
+  // auto-registers as a host on whichever daemon minted the token — no offer
+  // URL to relay by hand. Best-effort + non-blocking: a bad/expired/revoked
+  // token, or a broker being down, must never gate boot; failures just log.
+  const agentprotoJoin = process.env.AGENTPROTO_JOIN
+  if (agentprotoJoin) {
+    void joinAsBox(agentprotoJoin, pairingRegistry).catch(err =>
+      process.stderr.write(
+        `agentproto serve: AGENTPROTO_JOIN failed — ${
           err instanceof Error ? err.message : String(err)
         }\n`,
       ),
@@ -1441,6 +1491,124 @@ function resolveTurnStallAfterMs(configured: number | undefined): number | undef
     return undefined
   }
   return configured
+}
+
+const JOIN_DIAL_TIMEOUT_MS = 15_000
+const JOIN_HANDSHAKE_TIMEOUT_MS = 15_000
+/** How long the box's own self-offer needs to live — just long enough for
+ *  the home daemon on the other end of this same handshake to dial it back
+ *  a moment later; not a standing credential. */
+const JOIN_SELF_OFFER_TTL_MS = 60_000
+
+/** Broker upgrade URL for the box's outbound join dial (`side=client`) —
+ *  mirrors `pair-transport.ts`'s `rvUrl` / `host-registry.ts`'s `rvUrl`. */
+function joinDialUrl(rendezvousUrl: string, route: string): string {
+  const sep = rendezvousUrl.includes("?") ? "&" : "?"
+  return `${rendezvousUrl}${sep}side=client&t=${encodeURIComponent(route)}`
+}
+
+/** Parse `AGENTPROTO_JOIN_LABELS` (`key=value,key2=value2`) into a plain
+ *  string record; malformed/empty entries are dropped rather than failing
+ *  the whole join. Absent/empty env → `undefined` (no `labels` sent). */
+function parseJoinLabels(raw: string | undefined): Record<string, string> | undefined {
+  if (!raw || !raw.trim()) return undefined
+  const labels: Record<string, string> = {}
+  for (const pair of raw.split(",")) {
+    const eq = pair.indexOf("=")
+    if (eq <= 0) continue
+    const key = pair.slice(0, eq).trim()
+    const value = pair.slice(eq + 1).trim()
+    if (key && value) labels[key] = value
+  }
+  return Object.keys(labels).length > 0 ? labels : undefined
+}
+
+/**
+ * `AGENTPROTO_JOIN` boot wiring (SANDBOX-VISIBILITY-JOIN, box side). `token`
+ * is a join-token URL minted by some other daemon's `join_token_create` /
+ * `agentproto devices join-token create`. This:
+ *
+ *   1. Mints THIS box's own local, short-TTL, host-scoped offer via the
+ *      already-running `pairingRegistry` — exactly what `agentproto pair
+ *      offer --host` does, just called in-process instead of from a human's
+ *      terminal. `pairingRegistry`'s own (unmodified) offer-park loop starts
+ *      immediately and will serve whichever daemon dials it.
+ *   2. Dials the join token's route as the CLIENT — the role a browser/CLI
+ *      plays consuming a normal offer, NOT `HostRegistry.add`'s role — and
+ *      hands the minting daemon a JSON envelope (via the ordinary
+ *      `clientName` hello field, no wire changes) carrying THIS box's
+ *      self-offer URL plus optional self-reported name/provider/sandboxId/
+ *      labels (from `AGENTPROTO_JOIN_NAME`/`_PROVIDER`/`_SANDBOX_ID`/
+ *      `_LABELS`, all optional).
+ *   3. Closes — this dial is bootstrap-only, a single string handed over.
+ *      The minting daemon takes it from there (`join-token-registry.ts`
+ *      calls its own `HostRegistry.add` against the offer this just handed
+ *      it), which is what actually dials back and completes the host
+ *      registration. This box then just answers that second dial through
+ *      `pairingRegistry`'s already-started offer/reconnect loop, same as any
+ *      other paired daemon — no further box-side code needed.
+ *
+ * Errors (expired/revoked/malformed token, broker unreachable) are the
+ * caller's to log; they must never fail daemon boot.
+ */
+async function joinAsBox(token: string, pairingRegistry: PairingRegistry): Promise<void> {
+  const offer = await parseOfferUrl(token, { now: Date.now() })
+  if (offer.scope !== "host") {
+    throw new Error("AGENTPROTO_JOIN does not carry a host-scoped join token")
+  }
+
+  const selfOffer = await pairingRegistry.createOffer({ scope: "host", ttlMs: JOIN_SELF_OFFER_TTL_MS })
+
+  const { route, auth } = await deriveOfferTokens(offer.secret)
+  const ac = new AbortController()
+  const timer = setTimeout(
+    () => ac.abort(new Error(`AGENTPROTO_JOIN dial timed out after ${JOIN_DIAL_TIMEOUT_MS}ms`)),
+    JOIN_DIAL_TIMEOUT_MS,
+  )
+  if (typeof timer.unref === "function") timer.unref()
+  let raw: FrameSink
+  try {
+    raw = await daemonDialRendezvous(joinDialUrl(offer.rendezvousUrl, route), ac.signal)
+  } finally {
+    clearTimeout(timer)
+  }
+
+  const labels = parseJoinLabels(process.env.AGENTPROTO_JOIN_LABELS)
+  const clientName = JSON.stringify({
+    offerUrl: selfOffer.url,
+    ...(process.env.AGENTPROTO_JOIN_NAME ? { name: process.env.AGENTPROTO_JOIN_NAME } : {}),
+    ...(process.env.AGENTPROTO_JOIN_PROVIDER ? { provider: process.env.AGENTPROTO_JOIN_PROVIDER } : {}),
+    ...(process.env.AGENTPROTO_JOIN_SANDBOX_ID ? { sandboxId: process.env.AGENTPROTO_JOIN_SANDBOX_ID } : {}),
+    ...(labels ? { labels } : {}),
+  })
+
+  const started = await startClientHandshake({
+    daemonX25519Pub: offer.daemonX25519Pub,
+    daemonEd25519Pub: offer.daemonEd25519Pub,
+    authToken: auth,
+    clientName,
+  })
+  let peerFingerprint: string | undefined
+  const wrapped = await clientHandshakeOverSink(
+    raw,
+    encodePairingMessage(started.hello),
+    async replyBytes => {
+      const session = await started.complete(decodePairingReply(replyBytes))
+      peerFingerprint = session.peerFingerprint
+      return session
+    },
+    { timeoutMs: JOIN_HANDSHAKE_TIMEOUT_MS },
+  )
+  if (peerFingerprint !== offer.fingerprint) {
+    wrapped.close("fingerprint mismatch")
+    throw new Error(
+      `AGENTPROTO_JOIN: daemon fingerprint ${peerFingerprint ?? "(none)"} does not match the token's ${offer.fingerprint}`,
+    )
+  }
+  wrapped.close("join complete")
+  process.stderr.write(
+    `${color.dim}[join] registered with daemon ${offer.fingerprint} via AGENTPROTO_JOIN${color.reset}\n`,
+  )
 }
 
 /**

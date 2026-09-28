@@ -981,6 +981,14 @@ jobs:
         uses: ./.github/actions/agentproto-run
         env:
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
+          # Home-daemon join token (see AIP-36 `join.tokenEnv`, and
+          # sandbox-agent.mjs's gated AGENTPROTO_JOIN passthrough default) —
+          # lets a freshly booted e2b box dial home and register itself as a
+          # driveable host. Absent on a fork PR (no access to repo secrets),
+          # which is a deliberate no-op end to end: sandbox-agent.mjs only
+          # adds the passthrough NAME when this env var actually has a value.
+          # NEVER print this value — same sensitivity class as GITHUB_TOKEN.
+          AGENTPROTO_JOIN: ${{ secrets.AGENTPROTO_JOIN }}
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
           # auth-mode from .github/agentic-review.json (reviewerAuthMode).
@@ -1196,6 +1204,10 @@ jobs:
         uses: ./.github/actions/agentproto-run
         env:
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
+          # Same join-token passthrough as the primary attempt above — this
+          # is still an e2b sandbox reviewer run, just billed to the fallback
+          # account. See that step's comment for the no-op-on-fork guarantee.
+          AGENTPROTO_JOIN: ${{ secrets.AGENTPROTO_JOIN }}
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
           auth-mode: ${{ steps.cliver.outputs.auth-mode }}
