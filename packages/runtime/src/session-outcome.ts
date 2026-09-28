@@ -31,8 +31,11 @@ export const OUTCOME_COMPACT_SUMMARY_MAX = 120
 export const OUTCOME_TAIL_BYTES = 64 * 1024
 
 export interface SessionOutcomeArtifact {
-  type: "pr" | "commit" | "url"
-  /** The artifact's canonical reference — a PR url, a commit sha, a url. */
+  type: "pr" | "commit" | "url" | "file"
+  /** The artifact's canonical reference — a PR url, a commit sha, a url,
+   *  or (for `type: "file"`) the session artifact's `key`
+   *  (`session-artifacts.ts`) — resolve it via `session_artifact_get` /
+   *  `GET /sessions/:id/artifacts/:key`. */
   ref: string
   title?: string
 }
@@ -105,6 +108,12 @@ export function trimOutcomeText(text: string | undefined, max: number, keep: "he
 export interface DeriveSessionOutcomeInput {
   /** The last assistant message the registry observed (raw, untrimmed). */
   lastAssistantText?: string
+  /** Extra `type: "file"` artifacts to merge alongside the PR-derived ones
+   *  — the registry passes the session's PINNED `session-artifacts.ts`
+   *  records here so the ended block can show them (an unpinned artifact
+   *  still lists in the session's "Artifacts" section, just not surfaced
+   *  in the terse outcome). */
+  artifacts?: SessionOutcomeArtifact[]
   now?: Date
 }
 
@@ -117,11 +126,14 @@ export function deriveSessionOutcome(desc: SessionDescriptor, input: DeriveSessi
   const now = input.now ?? new Date()
   const summary = trimOutcomeText(input.lastAssistantText, OUTCOME_SUMMARY_MAX, "tail")
 
-  const artifacts: SessionOutcomeArtifact[] = (desc.openedPrs ?? []).map(pr => ({
-    type: "pr",
-    ref: pr.url,
-    title: `#${pr.number}`,
-  }))
+  const artifacts: SessionOutcomeArtifact[] = [
+    ...(desc.openedPrs ?? []).map((pr): SessionOutcomeArtifact => ({
+      type: "pr",
+      ref: pr.url,
+      title: `#${pr.number}`,
+    })),
+    ...(input.artifacts ?? []),
+  ]
 
   const links: SessionOutcomeLink[] = []
   const runId = desc.meta?.workflowRunId

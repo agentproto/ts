@@ -38,6 +38,8 @@ export type SessionEventType =
   | "session:config-changed"
   | "session:renamed"
   | "session:pinned-changed"
+  | "session:artifact-added"
+  | "session:artifact-pinned-changed"
   | "session:message"
   | "policy:passed"
   | "policy:failed"
@@ -624,6 +626,34 @@ export interface SessionPinnedEvent {
 }
 
 /**
+ * Emitted when a new artifact (or a new version of an existing one) is
+ * materialized into the session's artifact store (`session_artifact_add`,
+ * `POST /sessions/:id/artifacts` — see `session-artifacts.ts`). Carries just
+ * enough for a live UI to append/update its inline card and "Artifacts"
+ * section without a round trip — the full record (all versions) is a
+ * `session_artifact_list` / `GET /sessions/:id/artifacts` call away.
+ */
+export interface SessionArtifactAddedEvent {
+  type: "session:artifact-added"
+  sessionId: string
+  key: string
+  kind: string
+  version: number
+  label?: string
+  ts: string
+}
+
+/** Emitted when an artifact's `pinned` flag changes
+ *  (`session_artifact_pin`, `POST /sessions/:id/artifacts/:key/pin`). */
+export interface SessionArtifactPinnedEvent {
+  type: "session:artifact-pinned-changed"
+  sessionId: string
+  key: string
+  pinned: boolean
+  ts: string
+}
+
+/**
  * Emitted when a session is first registered in the registry (WP-R3) — both
  * the agent-cli spawn path (`spawnAgent`) and the terminal path (`spawnPty`).
  * The lineage-attribution signal a live UI (the VS Code sessions tree) uses to
@@ -880,6 +910,8 @@ export type SessionEvent =
   | SessionConfigChangedEvent
   | SessionRenamedEvent
   | SessionPinnedEvent
+  | SessionArtifactAddedEvent
+  | SessionArtifactPinnedEvent
   | SessionMessageEvent
   | PolicyPassedEvent
   | PolicyFailedEvent
