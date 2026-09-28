@@ -614,7 +614,19 @@ export async function runServe(args: readonly string[]): Promise<number> {
       }`,
     )
   }
+  // Imported-MCP secret seam (P0: wired, unused until P1). ref =
+  // `<keychain path>#<account>`, e.g. `agentproto/mcp-import/<id>#header:Authorization`.
+  const mcpSecretStore = new KeychainStore()
+  const splitMcpSecretRef = (ref: string): { path: string; account: string } => {
+    const i = ref.lastIndexOf("#")
+    return i < 0 ? { path: ref, account: ref } : { path: ref.slice(0, i), account: ref.slice(i + 1) }
+  }
   setMcpCredentialDeps({
+    resolveMcpSecret: async (ref) =>
+      (await mcpSecretStore.read(splitMcpSecretRef(ref)))?.value,
+    storeMcpSecret: async (ref, value) => {
+      await mcpSecretStore.write(splitMcpSecretRef(ref), { value, kind: "pat" })
+    },
     resolveMcpCredentialHeaders: ({ credentialRef, signal }) =>
       credentialBroker.resolveHeaders({
         path: credentialRef,
