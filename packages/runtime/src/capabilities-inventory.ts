@@ -29,7 +29,7 @@ import { fileURLToPath } from "node:url"
 import type { SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterLister, AdapterListEntry } from "./http-server.js"
 import type { McpProxyRegistry } from "./mcp-proxy.js"
-import { loadImportedMcps as loadImportedMcpsReal, type ImportedMcpsConfig } from "./mcp-imports.js"
+import { loadImportedMcps as loadImportedMcpsReal, secretRefKeys, type ImportedMcpsConfig } from "./mcp-imports.js"
 import { discoverMcps as discoverMcpsReal, type DiscoveredMcp } from "./mcp-discovery.js"
 import { shouldInjectDaemonSelfMount } from "./session-spawn.js"
 import { loadConfig as loadConfigReal, type AgentprotoConfig } from "./config.js"
@@ -45,6 +45,12 @@ export interface CapabilitiesInventoryImportedMcp {
   /** Only present when `status === "connected"` — never connects just to count. */
   toolCount?: number
   usedBySessions: string[]
+  /** `live` re-reads the source harness config; `snapshot` uses the stored copy. */
+  resolve?: "live" | "snapshot"
+  /** Set when the last resolution fell back (source missing / secret unresolved). */
+  stale?: { reason: string }
+  /** Header/env KEY names held behind secret refs (never values). */
+  secretRefKeys?: { headers?: string[]; env?: string[] }
 }
 
 export interface CapabilitiesInventoryDiscoveredMcp {
@@ -175,6 +181,9 @@ async function buildMcpInventory(
       ...(alias?.lastError ? { error: alias.lastError } : {}),
       ...(status === "connected" ? { toolCount: alias?.toolCount ?? 0 } : {}),
       usedBySessions,
+      ...(entry.resolve ? { resolve: entry.resolve } : {}),
+      ...(alias?.stale ? { stale: alias.stale } : {}),
+      ...(secretRefKeys(entry) ? { secretRefKeys: secretRefKeys(entry) } : {}),
     }
   })
 
