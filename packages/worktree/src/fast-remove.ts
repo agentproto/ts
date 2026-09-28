@@ -15,10 +15,11 @@
  *      are authorized to die; only the cost is being moved.
  *   2. `git worktree prune` — git forgets the (now missing) registration.
  *      The worktree disappears from `git worktree list` immediately.
- *   3. `rm -rf` on the trash dir runs in a DETACHED child
- *      (`spawn("rm", ["-rf", trashDir], { detached: true, stdio: "ignore" })`
- *      + `.unref()`) — the parent never waits for the hundreds of thousands
- *      of unlinks, and survives its own exit. The next `gc` apply also
+ *   3. `rm -rf` on the trash dirs runs in ONE DETACHED, serialized deleter
+ *      per pool (`ensureTrashDeleter`; a `.trash/.deleting` pid file stops a
+ *      second one spawning while it lives) — the parent never waits for the
+ *      hundreds of thousands of unlinks, survives its own exit, and a burst
+ *      of reclaims doesn't storm the disk with parallel `rm`s. The next `gc` apply also
  *      sweeps stale `.trash` dirs (`sweepWorktreeTrash`) so nothing leaks
  *      even if a child is killed mid-delete.
  *
@@ -40,13 +41,67 @@
  */
 
 import { spawn } from "node:child_process"
-import { existsSync, mkdirSync, readdirSync, realpathSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { rename } from "node:fs/promises"
-import { basename, join } from "node:path"
+import { basename, dirname, join } from "node:path"
 import { execArgv, execGit } from "./exec.js"
 
 /** Directory (inside the worktrees root's repo bucket) background-delete leftovers land in. */
 export const WORKTREE_TRASH_DIRNAME = ".trash"
+
+/** Pid file (inside a trash dir) of the pool's running background deleter. */
+export const WORKTREE_TRASH_PIDFILE = ".deleting"
+
+// One deleter per pool, removing `.trash/*` one dir after another and looping
+// until a pass finds nothing (so a dir parked mid-run is still picked up).
+// Dotfiles (the pid file) are not matched by `*`. The EXIT trap drops the pid
+// file; a killed deleter leaves a stale one, which `isPidAlive` detects.
+const DELETER_SCRIPT =
+	'trap \'rm -f "$1/.deleting"\' EXIT; n=1; while [ "$n" -gt 0 ]; do n=0; for d in "$1"/*; do [ -e "$d" ] || continue; rm -rf "$d"; n=1; done; done'
+
+function isPidAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0)
+		return true
+	} catch (err) {
+		return (err as NodeJS.ErrnoException).code === "EPERM"
+	}
+}
+
+function defaultSpawnDeleter(trashParent: string): number | undefined {
+	const child = spawn("sh", ["-c", DELETER_SCRIPT, "_", trashParent], { detached: true, stdio: "ignore" })
+	child.unref()
+	return child.pid
+}
+
+/**
+ * Make sure ONE detached background deleter is draining `trashParent`
+ * (`<pool>/.trash`). Many reclaims in a single gc apply used to each spawn
+ * their own `rm -rf` at once, storming the disk; now a live pid in
+ * `.deleting` means the running deleter will pick the new dir up, so no
+ * second one is spawned. A stale pid file (dead process) is replaced.
+ * `spawnDeleter` is the test seam; it returns the spawned child's pid.
+ */
+export function ensureTrashDeleter(
+	trashParent: string,
+	spawnDeleter: (trashParent: string) => number | undefined = defaultSpawnDeleter,
+): void {
+	const pidFile = join(trashParent, WORKTREE_TRASH_PIDFILE)
+	try {
+		const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10)
+		if (Number.isInteger(pid) && pid > 0 && isPidAlive(pid)) return
+	} catch {
+		// no pid file — no deleter running
+	}
+	const pid = spawnDeleter(trashParent)
+	if (pid !== undefined) {
+		try {
+			writeFileSync(pidFile, String(pid))
+		} catch {
+			// best-effort: worst case a second deleter is spawned next time
+		}
+	}
+}
 
 /**
  * `realpath`, falling back to the input for a path that doesn't exist —
@@ -77,11 +132,18 @@ export interface RemoveWorktreeFastOptions {
 	 */
 	now?: () => number
 	/**
-	 * Test seam — overrides the detached `rm -rf` child (e.g. an in-process
-	 * spy). Receives the trash dir path. Default: a detached
-	 * `spawn("rm", ["-rf", …])` the parent never waits on.
+	 * Test seam — overrides background deletion per trash dir (e.g. an
+	 * in-process spy). Receives the trash dir path. Default: one detached,
+	 * serialized deleter per pool (`ensureTrashDeleter`) the parent never
+	 * waits on.
 	 */
 	spawnRemoval?: (trashDir: string) => void
+	/**
+	 * Test seam — replaces spawning the pool's single serialized background
+	 * deleter (see `ensureTrashDeleter`). Receives the `.trash` parent and
+	 * returns the spawned pid. Ignored when `spawnRemoval` is set.
+	 */
+	spawnDeleter?: (trashParent: string) => number | undefined
 }
 
 /**
@@ -189,7 +251,7 @@ export async function removeWorktreeFast(
 	if (options.spawnRemoval) {
 		options.spawnRemoval(trashDir)
 	} else {
-		spawn("rm", ["-rf", trashDir], { detached: true, stdio: "ignore" }).unref()
+		ensureTrashDeleter(dirname(trashDir), options.spawnDeleter)
 	}
 }
 
@@ -200,7 +262,10 @@ export async function removeWorktreeFast(
  * start of a `gc` apply, where seconds of stale bytes are harmless. Missing
  * root is a no-op, not an error.
  */
-export function sweepWorktreeTrash(root: string, options: { spawnRemoval?: (dir: string) => void } = {}): void {
+export function sweepWorktreeTrash(
+	root: string,
+	options: { spawnRemoval?: (dir: string) => void; spawnDeleter?: (trashParent: string) => number | undefined } = {},
+): void {
 	// Sync read is deliberate: the caller (gc apply) wants to fire the sweep
 	// and move on in the same tick, without awaiting an async dependency
 	// chain just to list a directory. A missing/unreadable trash dir means
@@ -211,12 +276,11 @@ export function sweepWorktreeTrash(root: string, options: { spawnRemoval?: (dir:
 	} catch {
 		return
 	}
-	for (const name of names) {
-		const trashDir = join(root, WORKTREE_TRASH_DIRNAME, name)
-		if (options.spawnRemoval) {
-			options.spawnRemoval(trashDir)
-		} else {
-			spawn("rm", ["-rf", trashDir], { detached: true, stdio: "ignore" }).unref()
-		}
+	names = names.filter((name) => name !== WORKTREE_TRASH_PIDFILE)
+	if (names.length === 0) return
+	if (options.spawnRemoval) {
+		for (const name of names) options.spawnRemoval(join(root, WORKTREE_TRASH_DIRNAME, name))
+	} else {
+		ensureTrashDeleter(join(root, WORKTREE_TRASH_DIRNAME), options.spawnDeleter)
 	}
 }

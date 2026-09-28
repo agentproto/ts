@@ -12,7 +12,13 @@ import { existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 import { realpathSync } from "node:fs"
-import { removeWorktreeFast, sweepWorktreeTrash, WORKTREE_TRASH_DIRNAME } from "../fast-remove.js"
+import {
+	removeWorktreeFast,
+	sweepWorktreeTrash,
+	ensureTrashDeleter,
+	WORKTREE_TRASH_DIRNAME,
+	WORKTREE_TRASH_PIDFILE,
+} from "../fast-remove.js"
 import { execGit } from "../exec.js"
 
 const cleanupPaths: string[] = []
@@ -212,6 +218,62 @@ describe("removeWorktreeFast", () => {
 			/not a linked worktree/,
 		)
 		expect(dirs).toHaveLength(0)
+	}, 20_000)
+})
+
+describe("serialized background deleter", () => {
+	it("two removals in a row spawn ONE deleter for the pool", async () => {
+		const repoRoot = await makeRepo()
+		const a = await addWorktree(repoRoot, "burst-a")
+		const b = await addWorktree(repoRoot, "burst-b")
+		const spawned: string[] = []
+		// process.pid is alive for the whole test, standing in for a running deleter.
+		const spawnDeleter = (trashParent: string) => {
+			spawned.push(trashParent)
+			return process.pid
+		}
+
+		await removeWorktreeFast(repoRoot, a, { spawnDeleter })
+		await removeWorktreeFast(repoRoot, b, { spawnDeleter })
+
+		const trashParent = join(repoRoot, "pool", WORKTREE_TRASH_DIRNAME)
+		expect(spawned).toEqual([trashParent])
+		expect(await readFile(join(trashParent, WORKTREE_TRASH_PIDFILE), "utf8")).toBe(String(process.pid))
+		// Both worktrees are parked for that one deleter to drain.
+		expect((await readdir(trashParent)).filter((n) => n !== WORKTREE_TRASH_PIDFILE)).toHaveLength(2)
+	}, 30_000)
+
+	it("respawns when the pid file is stale", async () => {
+		const trashParent = await mkdtemp(join(tmpdir(), "wt-fast-trash-"))
+		cleanupPaths.push(trashParent)
+		await writeFile(join(trashParent, WORKTREE_TRASH_PIDFILE), "2147483646")
+		const spawned: string[] = []
+
+		ensureTrashDeleter(trashParent, (dir) => {
+			spawned.push(dir)
+			return process.pid
+		})
+
+		expect(spawned).toEqual([trashParent])
+		expect(await readFile(join(trashParent, WORKTREE_TRASH_PIDFILE), "utf8")).toBe(String(process.pid))
+	})
+
+	it("the real deleter drains every trash dir and removes its pid file", async () => {
+		const trashParent = await mkdtemp(join(tmpdir(), "wt-fast-trash-"))
+		cleanupPaths.push(trashParent)
+		for (const name of ["one", "two", "three"]) {
+			await mkdir(join(trashParent, name, "node_modules"), { recursive: true })
+			await writeFile(join(trashParent, name, "node_modules", "x"), "y\n")
+		}
+
+		ensureTrashDeleter(trashParent)
+
+		const deadline = Date.now() + 10_000
+		for (;;) {
+			if ((await readdir(trashParent)).length === 0) break
+			if (Date.now() > deadline) throw new Error(`trash never drained: ${await readdir(trashParent)}`)
+			await new Promise((r) => setTimeout(r, 100))
+		}
 	}, 20_000)
 })
 
