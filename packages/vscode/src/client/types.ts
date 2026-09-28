@@ -1500,3 +1500,59 @@ export type TaskPatchResult =
   | { task: TaskRecord; verifying?: boolean }
   | { conflict: true; current: TaskRecord }
   | { error: string }
+
+// ── Devices (GET /devices) — client-only shapes ──────────────────────────
+//    Mirrors @agentproto/runtime's device-registry.ts Device field-for-field
+//    (not re-exported from there — the vscode package doesn't depend on
+//    runtime's device-registry module, same precedent as SessionDescriptor
+//    being hand-mirrored elsewhere in this file).
+
+export type DeviceRole = "client" | "host"
+export type DeviceKind = "browser" | "cli" | "daemon"
+
+/** A paired device (client or host) known to this daemon's registry — one
+ *  row of `GET /devices`. A client is the other end of a `pair_offer`/`pair
+ *  accept` handshake; a host is a daemon registered via a HOST-scoped offer
+ *  (`agentproto pair offer --host` + `devices add`). */
+export interface Device {
+  fingerprint: string
+  name: string
+  role: DeviceRole
+  kind: DeviceKind
+  rendezvous: string
+  createdAt: string
+  lastSeen: string
+  /** A channel is served for this device right now (client) or a
+   *  `forwardHttp` call is in flight for it right now (host) — for a host
+   *  this is NOT a live heartbeat, only actual recent/current traffic. */
+  online: boolean
+  /** A pre-pair/v2 pairing: listed and revocable, but can't connect until
+   *  re-paired. */
+  legacy?: true
+  /** Set when this device's pairing/host record was granted under a
+   *  HOST-scoped offer — surfaced from either side of a pairing so a user
+   *  can see, from either daemon, which of their pairings/hosts grant host
+   *  control. */
+  scope?: "host"
+  /** Self-reported by a host at join time. Absent for a client device. */
+  provider?: string
+  sandboxId?: string
+  labels?: Record<string, string>
+}
+
+/**
+ * `GET /devices/:id/sessions/:sessionId/output` — a best-effort tail of that
+ * session's ring buffer, forwarded from the target host (the REST twin of
+ * the `agent_output` MCP tool run against the local `GET
+ * /sessions/:id/output`).
+ */
+export interface DeviceSessionOutput {
+  sessionId: string
+  status: string
+  currentPhase?: string
+  lastOutputAt?: string
+  /** Set when the clean-mode ring buffer had nothing after filtering and the
+   *  daemon fell back to raw (ANSI-stripped) lines instead. */
+  activityFallback?: true
+  lines: string[]
+}

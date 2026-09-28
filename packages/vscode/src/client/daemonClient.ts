@@ -42,6 +42,8 @@ import type {
   CreateAuthProfileRequest,
   CreatedAuthProfileResult,
   DaemonHealth,
+  Device,
+  DeviceSessionOutput,
   DiscoveredCredential,
   HarnessCapabilities,
   ImportCredentialRequest,
@@ -314,6 +316,47 @@ export class DaemonClient {
 
   async getSession(id: string): Promise<SessionDescriptor> {
     return this.getJson<SessionDescriptor>(`/sessions/${encodeURIComponent(id)}`)
+  }
+
+  // ── Devices ──────────────────────────────────────────────────────────
+
+  /** GET /devices — every paired device (client/host) this daemon's registry
+   *  knows about. Unauthenticated GET (loopback); rename/revoke below need
+   *  the bearer, same as every other mutating verb this client sends. */
+  async listDevices(): Promise<Device[]> {
+    const body = await this.getJson<{ devices: Device[] }>("/devices")
+    return body.devices ?? []
+  }
+
+  /**
+   * GET /devices/:id/sessions — a HOST device's own `GET /sessions`,
+   * forwarded over its E2E channel. Same {@link SessionDescriptor} shape
+   * `listSessions()` returns for local sessions. Rejects (502) for a
+   * client-role device — only a registered host answers a forwarded HTTP
+   * request.
+   */
+  async getDeviceSessions(id: string): Promise<SessionDescriptor[]> {
+    const body = await this.getJson<{ sessions: SessionDescriptor[] }>(`/devices/${encodeURIComponent(id)}/sessions`)
+    return body.sessions ?? []
+  }
+
+  /** GET /devices/:id/sessions/:sessionId/output — a tail of that session's
+   *  ring buffer, forwarded from the host. Read-only. */
+  async getDeviceSessionOutput(id: string, sessionId: string): Promise<DeviceSessionOutput> {
+    return this.getJson<DeviceSessionOutput>(
+      `/devices/${encodeURIComponent(id)}/sessions/${encodeURIComponent(sessionId)}/output`,
+    )
+  }
+
+  /** PATCH /devices/:fingerprint — rename a device (client or host). */
+  async renameDevice(fingerprint: string, name: string): Promise<{ ok: boolean; target: string; name: string }> {
+    return this.patchJson(`/devices/${encodeURIComponent(fingerprint)}`, { name })
+  }
+
+  /** DELETE /devices/:fingerprint — revoke a device (client or host); same
+   *  effect as `pair revoke` / `devices revoke` on the CLI. */
+  async revokeDevice(fingerprint: string): Promise<{ ok: boolean; revoked: string }> {
+    return this.deleteJson(`/devices/${encodeURIComponent(fingerprint)}`)
   }
 
   /**
@@ -1483,6 +1526,10 @@ export class DaemonClient {
 
   private async putJson<T>(path: string, body: unknown): Promise<T> {
     return this.request<T>("PUT", path, body)
+  }
+
+  private async patchJson<T>(path: string, body: unknown): Promise<T> {
+    return this.request<T>("PATCH", path, body)
   }
 
   /**
