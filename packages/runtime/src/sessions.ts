@@ -1937,10 +1937,13 @@ export interface SessionDescriptor {
   contextContinuityAckedAtPct?: number
   /** Id of the most recent checkpoint created for this session. */
   checkpointId?: string
-  /** When this session was continued fresh, the source session id. */
+  /** The source session id when this row continues another one: a
+   *  continue-fresh handoff OR a revival (restart / cron / sentinel / inbound
+   *  wake / direct resume of the same adapter conversation — also recorded as
+   *  `resumedFrom`). Absent on a row that started a conversation. */
   continuedFrom?: string
-  /** When this session was continued fresh into a new session, the target
-   *  session id. */
+  /** The row that continued this one (the inverse of `continuedFrom`); the
+   *  latest continuation wins when a row is revived more than once. */
   continuedTo?: string
   /** Set alongside `continuedFrom` on the NEW session — the harness the
    *  checkpoint moved from/to and when. Present on every `continue_fresh`
@@ -5153,6 +5156,22 @@ export function createSessionsRegistry(opts?: {
     })()
   }
 
+  /** A revival (restart / lazy fork) mints a NEW descriptor for the SAME
+   *  conversation. `resumedFrom` alone is invisible to list/tree consumers,
+   *  so every revival also records `continuedFrom` — the field the session
+   *  list, tree and UI group by — and back-links `continuedTo` on the prior
+   *  row (see {@link linkContinuedTo}). */
+  const resumeLineage = (
+    resumedFrom: string | undefined,
+  ): { resumedFrom?: string; continuedFrom?: string } =>
+    resumedFrom ? { resumedFrom, continuedFrom: resumedFrom } : {}
+
+  const linkContinuedTo = (resumedFrom: string | undefined, newId: string): void => {
+    if (!resumedFrom || resumedFrom === newId) return
+    const prevRt = sessions.get(resumedFrom)
+    if (prevRt) prevRt.desc.continuedTo = newId
+  }
+
   const schedulePersist = (): void => {
     if (!persist || shutdownDone) return
     if (persistTimer) clearTimeout(persistTimer)
@@ -8190,7 +8209,7 @@ export function createSessionsRegistry(opts?: {
         // can legitimately be "" (a fresh fallback spawn with no continuity),
         // so it's gated on `!== undefined` rather than truthiness — a truthy
         // gate would silently drop the empty-string case.
-        ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),
+        ...resumeLineage(input.resumedFrom),
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
         ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
@@ -8221,6 +8240,7 @@ export function createSessionsRegistry(opts?: {
       }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
+      linkContinuedTo(input.resumedFrom, id)
       bindOutOfTurnEvents(rt)
       stampCapabilities(rt)
       // Live usage refresh for reader-equipped adapters (hermes/opencode/
@@ -8336,7 +8356,7 @@ export function createSessionsRegistry(opts?: {
         // below): what `session_restart` / `session_continue_fresh` read to
         // keep a held session in hold, and what summaries report.
         ...(input.permissionHold ? { permissionHold: true } : {}),
-        ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),
+        ...resumeLineage(input.resumedFrom),
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
         ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
@@ -8365,6 +8385,7 @@ export function createSessionsRegistry(opts?: {
       }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
+      linkContinuedTo(input.resumedFrom, id)
       sessionEvents?.emit({
         type: "session:spawned",
         sessionId: id,
@@ -8586,7 +8607,7 @@ export function createSessionsRegistry(opts?: {
         depth: input.depth ?? 0,
         // Restart lineage — same gating rule as spawnAgent above (`resumeVia`
         // can legitimately be "").
-        ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),
+        ...resumeLineage(input.resumedFrom),
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
         // Carried so a LATER `pty-plain` restart of THIS row can still
         // replay the same extra env (see `ptyResumeEnv`'s doc) — the only
@@ -8610,6 +8631,7 @@ export function createSessionsRegistry(opts?: {
       }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
+      linkContinuedTo(input.resumedFrom, id)
       // Lineage-attribution signal (WP-R3) — same rule as spawnAgent above.
       sessionEvents?.emit({
         type: "session:spawned",
