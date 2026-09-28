@@ -47,7 +47,7 @@
     "extends": {
       "type": "string",
       "minLength": 1,
-      "description": "Reference to a parent ROLE. Triggers composition. Accepts any of the ref forms in AIP-47 §Reference syntax: bare slug (`seo-specialist`), scoped slug (`builtin/seo-specialist`, `file/<path>`, `db/<id>`), `ws://roles/<slug>` URI, or fully-qualified URL. Path-form refs SHOULD end in 'ROLE.md'."
+      "description": "Reference to a parent ROLE. Triggers composition. Accepts any of the ref forms in AIP-54 §Reference syntax: bare slug (`seo-specialist`), scoped slug (`builtin/seo-specialist`, `file/<path>`, `db/<id>`), `ws://roles/<slug>` URI, or fully-qualified URL. Path-form refs SHOULD end in 'ROLE.md'."
     },
     "department": {
       "type": "string",

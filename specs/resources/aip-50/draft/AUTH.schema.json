@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-50/auth-provider.json",
+  "title": "AUTH.md — agentauth/v1 frontmatter",
+  "description": "AIP-50: auth-provider manifest frontmatter. Declares how a CLI tool or agent authenticates to a remote API server.",
+  "type": "object",
+  "required": ["id", "description", "apiBase", "auth"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 80,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "description": "Vendor id — kebab/dot, 2–80 chars, leading alphanumeric."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "description": "Human/LLM-facing description of the vendor and its auth."
+    },
+    "apiBase": {
+      "type": "string",
+      "format": "uri",
+      "description": "Canonical API base URL (no trailing slash)."
+    },
+    "audience": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Credential plane hint (recommended: 'tunnel', 'api', 'mcp'; free-form allowed). Clients SHOULD embed this in the credential store key. Enforcement is server-side; this is defense-in-depth only."
+    },
+    "auth": {
+      "description": "Authentication configuration.",
+      "oneOf": [
+        {
+          "description": "PAT flow — read existing token from Keychain or prompt.",
+          "type": "object",
+          "required": ["flow", "tokenStore"],
+          "additionalProperties": false,
+          "properties": {
+            "flow": { "const": "pat" },
+            "tokenStore": { "$ref": "#/$defs/tokenStoreSpec" }
+          }
+        },
+        {
+          "description": "service-auth flow — auth.md claim ceremony (RFC 8628 + JWT-bearer).",
+          "type": "object",
+          "required": ["flow", "tokenStore"],
+          "additionalProperties": false,
+          "properties": {
+            "flow": { "const": "service-auth" },
+            "clientId": { "type": "string", "minLength": 1 },
+            "loginHint": { "type": "string", "minLength": 1 },
+            "tokenStore": { "$ref": "#/$defs/tokenStoreSpec" }
+          }
+        },
+        {
+          "description": "device-code flow — plain RFC 8628 device authorization, yielding a durable access token.",
+          "type": "object",
+          "required": ["flow", "tokenStore"],
+          "additionalProperties": false,
+          "properties": {
+            "flow": { "const": "device-code" },
+            "clientId": { "type": "string", "minLength": 1 },
+            "scope": { "type": "string", "minLength": 1 },
+            "deviceLabel": { "type": "string", "minLength": 1 },
+            "tokenStore": { "$ref": "#/$defs/tokenStoreSpec" }
+          }
+        }
+      ]
+    },
+    "install": {
+      "description": "AIP-19 provision target — pair auth with an install endpoint.",
+      "$ref": "#/$defs/installConfig"
+    }
+  },
+  "$defs": {
+    "tokenStoreSpec": {
+      "type": "object",
+      "required": ["keychain"],
+      "additionalProperties": false,
+      "properties": {
+        "keychain": {
+          "type": "string",
+          "minLength": 1,
+          "description": "macOS Keychain service name."
+        },
+        "account": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Keychain account. '{server}' is substituted with the resolved server URL."
+        }
+      }
+    },
+    "installConfig": {
+      "type": "object",
+      "required": ["sealKey", "secretBacked"],
+      "additionalProperties": false,
+      "properties": {
+        "sealKey": {
+          "type": "string",
+          "minLength": 1,
+          "description": "URL path for the seal-key endpoint."
+        },
+        "secretBacked": {
+          "type": "string",
+          "minLength": 1,
+          "description": "URL path template for the secret-backed install endpoint. May contain {guildId}."
+        }
+      }
+    }
+  }
+}

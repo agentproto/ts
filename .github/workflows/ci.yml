@@ -260,13 +260,35 @@ jobs:
           node --test scripts/check-spec-drift.test.mjs
           node scripts/check-spec-drift.mjs
 
+      # Guard the vendored copy of the AIP JSON Schemas (specs/resources/)
+      # against drift from canonical. agentproto/agentproto is public, so CI
+      # checks it out (shallow, main) into a directory inside the workspace
+      # (actions/checkout cannot write outside it) and runs the FULL
+      # vendored-vs-canonical diff with --source. Fields ts ships ahead of
+      # canonical (specs/spec-drift-allowlist.json) are masked; anything else
+      # fails, in either direction. INTENDED consequence: a spec change merged
+      # upstream turns this red on ts until someone runs
+      # `node scripts/sync-specs.mjs` and commits the result. Without --source
+      # (local runs with no sibling checkout) --check falls back to the
+      # network-free allowlist-integrity half — see scripts/sync-specs.mjs.
+      - name: Checkout canonical specs
+        uses: actions/checkout@v5
+        with:
+          repository: agentproto/agentproto
+          ref: main
+          path: .canonical-specs
+          fetch-depth: 1
+
+      - name: Check vendored spec drift
+        run: |
+          node --test scripts/sync-specs.test.mjs
+          node scripts/sync-specs.mjs --check --source .canonical-specs/specs/resources
+
       # Guard the e2b workstation template's derived artifacts: the generated
       # TS module, e2b.template.toml build args, marked doc blocks, and the
       # sandbox-e2b package.json description must all match
       # templates/workstation/versions.json. Zero-credential — no e2b access,
-      # just file comparison. (sync-specs --check has no CI home today; this
-      # is the same drift-check pattern, placed next to the other script
-      # gates in build-and-test.)
+      # just file comparison.
       - name: Check template sync drift
         run: node scripts/sync-templates.mjs --check
 

@@ -1,13 +1,13 @@
 ---
 name: pb-build-app
-description: Package your agents and workflows as an installable agentproto AIP-42 APP and run it end to end. Trigger for app packaging - 'build an agentproto app', 'bundle my agents', 'install and run an app', 'app_install my workflow bundle'.
+description: Package your agents and workflows as an installable agentproto AIP-53 APP and run it end to end. Trigger for app packaging - 'build an agentproto app', 'bundle my agents', 'install and run an app', 'app_install my workflow bundle'.
 ---
 
 # pb-build-app — package my agents + workflows as an agentproto APP
 
 ## Goal
 
-Turn a folder of agents and workflows into an installable AIP-42 APP: author
+Turn a folder of agents and workflows into an installable AIP-53 APP: author
 it, install it (validation included), apply it to a scope, run its agents,
 watch the run, tear it down, and share it.
 
