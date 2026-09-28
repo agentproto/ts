@@ -1178,10 +1178,10 @@ const DEFAULT_TURN_STALL_AFTER_MS = 5 * 60_000
  * `toolPolicy.delegation: "deny"`, so those two names are simply absent
  * from a deny-role's registry and cost nothing) but still needs to report
  * back to its parent (`message_parent`), coordinate over the task ledger
- * (`task_*`), and observe its own session/turn state
- * (`session_context_status` alongside the pre-existing `session_list` /
- * `session_monitor` / `session_events_poll`). Everything else (fs_*,
- * directory_*, command_*, remote_*, browser_*, terminal_*, mcp_*,
+ * (`task_*`), and observe its own session/turn state and capabilities
+ * (`session_context_status` / `session_capabilities` alongside the
+ * pre-existing `session_list` / `session_monitor` / `session_events_poll`).
+ * Everything else (fs_*, directory_*, command_*, remote_*, browser_*, terminal_*, mcp_*,
  * routine_*, workflow_*, policy_*, inbound_watcher_*, session_tree,
  * agent_export, adapter_list, every `app_ui_*` panel tool, ...) starts
  * deferred — reachable via `tool_search`, never removed from `tools/call`.
@@ -1197,6 +1197,7 @@ export const DEFAULT_ALWAYS_ON_TOOLS: readonly string[] = [
   "session_monitor",
   "session_events_poll",
   "session_context_status",
+  "session_capabilities",
   "permissions_list",
   "permissions_respond",
   "app_tool_call",

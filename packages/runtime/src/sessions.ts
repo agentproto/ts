@@ -1694,6 +1694,15 @@ export interface SessionDescriptor {
    *  — so this carries no secrets today. Should the shape ever grow
    *  headers/tokens, NEVER log this field's contents. */
   mcpServers?: AcpMcpServer[]
+  /** Resolved skills list at spawn time — explicit ∪ preset ∪ config
+   *  defaults (`resolveSpawnDefaults`'s own merge), recorded regardless of
+   *  whether the adapter actually CONSUMES a `skills` spawn option (today
+   *  only hermes does — see `normalizeSkillsOption`). Persisted so it
+   *  survives restart/resume like `mcpServers`, and so a read surface
+   *  (`session_capabilities`) can show what was resolved even for an
+   *  adapter (claude-code) that auto-discovers skills on its own and never
+   *  reads this list back. */
+  skills?: string[]
   /** Provider-specific resume hints sniffed from the session's
    *  output. claude-code prints `claude --resume <uuid>` on exit;
    *  we capture that uuid as `claudeResumeId`. On `restart`, when a
@@ -1830,8 +1839,15 @@ export interface SessionDescriptor {
    *  time (spawn / resume) — shown in `session_list` so a sender can predict
    *  a message's delivery tier. `steering`: the agent accepts ACP steering
    *  (`_session/steering`) — a `steer` message can be injected into its
-   *  running turn instead of waiting for it to end. */
-  capabilities?: { steering: boolean }
+   *  running turn instead of waiting for it to end. `commandsSupported`:
+   *  the live agent session is the ACP protocol arm (has a working `steer`
+   *  method — only the ACP arm implements it, per `AgentSessionLike`'s own
+   *  doc), which is what actually emits `available_commands_update`
+   *  notifications; false for the print/proprietary arms regardless of
+   *  `steeringSupported`, since a harness can be ACP without advertising
+   *  the steering extension. Read by `session_capabilities` to derive its
+   *  `arm`/`commandsSupported` fields without re-deriving the signal. */
+  capabilities?: { steering: boolean; commandsSupported: boolean }
   /** FIFO of prompts that arrived while this session was mid-turn and
    *  asked to be QUEUED rather than rejected (`enqueuePrompt`'s
    *  `opts.queue` arm — see its doc comment). Index 0 is next to
@@ -3889,6 +3905,10 @@ export interface SpawnAgentInput {
    *  the resume/re-spawn path can re-mount the same toolset (orchestrator
    *  WP1). */
   mcpServers?: AcpMcpServer[]
+  /** Resolved skills list at spawn time (`resolveSpawnDefaults`'s merged
+   *  explicit ∪ preset ∪ config-defaults result) — recorded verbatim onto
+   *  {@link SessionDescriptor.skills}. See that field's doc. */
+  skills?: string[]
   /** Persistent isolated-config dir this spawn passed to
    *  `startSession({ configDir })` — recorded verbatim onto
    *  {@link SessionDescriptor.adapterConfigDir} so restart/lazy-resume can
@@ -7605,11 +7625,21 @@ export function createSessionsRegistry(opts?: {
     else armAutonomousSilenceClose(rt)
   }
 
-  /** Stamp `desc.capabilities` from the agent session just attached. */
+  /** Stamp `desc.capabilities` from the agent session just attached.
+   *  `commandsSupported` uses `steer` presence alone (not `steeringSupported`,
+   *  which is a separate ACP extension a harness can decline) as the ACP-arm
+   *  signal — only `createAcpProtocolArm` wires a `steer` method onto
+   *  `AgentSessionLike`; the print and proprietary arms never do. */
   const stampCapabilities = (rt: SessionRuntime): void => {
-    const steering = rt.agentSession?.steer !== undefined && rt.agentSession.steeringSupported === true
-    if (rt.desc.capabilities?.steering === steering) return
-    rt.desc.capabilities = { steering }
+    const isAcpArm = rt.agentSession?.steer !== undefined
+    const steering = isAcpArm && rt.agentSession?.steeringSupported === true
+    if (
+      rt.desc.capabilities?.steering === steering &&
+      rt.desc.capabilities?.commandsSupported === isAcpArm
+    ) {
+      return
+    }
+    rt.desc.capabilities = { steering, commandsSupported: isAcpArm }
     schedulePersist()
   }
 
@@ -7947,6 +7977,9 @@ export function createSessionsRegistry(opts?: {
         // Persist the spawn-time MCP mounts so resume re-mounts the same
         // toolset (orchestrator WP1). Reference-only shape — no secrets.
         ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+        // Persist the resolved skills list, whether or not this adapter
+        // consumes it (see `SessionDescriptor.skills`'s doc).
+        ...(input.skills && input.skills.length > 0 ? { skills: input.skills } : {}),
         // Persist the isolated-config location so restart/lazy-resume can
         // hand the respawned adapter the SAME dir (native-resume store).
         ...(input.adapterConfigDir ? { adapterConfigDir: input.adapterConfigDir } : {}),
@@ -8105,6 +8138,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.title ? { title: input.title } : {}),
         ...(input.label ? { renamedByUser: false } : {}),
         ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+        ...(input.skills && input.skills.length > 0 ? { skills: input.skills } : {}),
         ...(input.adapterConfigDir ? { adapterConfigDir: input.adapterConfigDir } : {}),
         ...(input.parentSessionId
           ? { parentSessionId: input.parentSessionId }
