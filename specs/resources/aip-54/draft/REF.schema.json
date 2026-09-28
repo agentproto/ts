@@ -10,7 +10,7 @@
     "aip": {
       "type": "integer",
       "minimum": 1,
-      "description": "The referenced artifact's owning AIP number — the type discriminator that names the registry family (42 = app, 52 = pack, 14 = tool, …)."
+      "description": "The referenced artifact's owning AIP number — the type discriminator that names the registry family (53 = app, 52 = adapter, 14 = tool, …)."
     },
     "id": {
       "type": "string",
