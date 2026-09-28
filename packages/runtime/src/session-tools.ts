@@ -4571,6 +4571,25 @@ export function registerSessionTools(
           isError: true,
         }
       }
+      if (callerScope) {
+        const subtree = collectSubtree(callerScope.ownerSessionId, registry.list({ includeArchived: true }))
+        if (!subtree.has(prev.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_artifact_list: session "${prev.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only touch sessions it (transitively) spawned.",
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
       const records = registry.listSessionArtifacts(prev.id)
       return { content: [{ type: "text", text: JSON.stringify({ artifacts: records }) }] }
     },
@@ -4595,6 +4614,25 @@ export function registerSessionTools(
         return {
           content: [{ type: "text", text: JSON.stringify({ error: `no session "${input.idOrName}" found` }) }],
           isError: true,
+        }
+      }
+      if (callerScope) {
+        const subtree = collectSubtree(callerScope.ownerSessionId, registry.list({ includeArchived: true }))
+        if (!subtree.has(prev.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_artifact_get: session "${prev.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only touch sessions it (transitively) spawned.",
+                }),
+              },
+            ],
+            isError: true,
+          }
         }
       }
       const result = registry.getSessionArtifact(prev.id, input.key, {
@@ -4647,6 +4685,25 @@ export function registerSessionTools(
         return {
           content: [{ type: "text", text: JSON.stringify({ error: `no session "${input.idOrName}" found` }) }],
           isError: true,
+        }
+      }
+      if (callerScope) {
+        const subtree = collectSubtree(callerScope.ownerSessionId, registry.list({ includeArchived: true }))
+        if (!subtree.has(prev.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_artifact_pin: session "${prev.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only touch sessions it (transitively) spawned.",
+                }),
+              },
+            ],
+            isError: true,
+          }
         }
       }
       const record = registry.setArtifactPinned(prev.id, input.key, input.pinned)
