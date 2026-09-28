@@ -1,5 +1,13 @@
 # @agentproto/model-catalog
 
+## 0.11.2
+
+### Patch Changes
+
+- d4ac86e: Sync generated catalog data from the pinned provider sources.
+- d000369: Sync generated catalog data from the pinned provider sources.
+- d4ac86e: Sync generated catalog data from the pinned provider sources: refreshed pricing (moonshot kimi-k2.6, minimax M2.7, deepseek/openrouter rows), removed delisted models (zai-org GLM-4.5/4.6-FP8/5.1-FP8, several opencode-go routes, baseten provider rows), and updated catalog-sync snapshot fixtures. Also replaces retired-id test pins (opencode-go `minimax-m2.5`/`omen-alpha`) with structural bounds in the claude-code, claude-sdk, and runtime model suites.
+
 ## 0.11.1
 
 ### Patch Changes

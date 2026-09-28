@@ -1,5 +1,15 @@
 # @agentproto/llm-endpoint
 
+## 0.11.0
+
+### Minor Changes
+
+- 21a117c: Add session inference-binding (agent_start.inference) with harness fit-check, relocate pi models sync into llm-endpoint
+
+### Patch Changes
+
+- @agentproto/providers-store@0.3.20
+
 ## 0.10.0
 
 ### Minor Changes
