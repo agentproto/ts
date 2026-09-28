@@ -7,13 +7,16 @@ agentproto llm endpoints add <name> --url <baseUrl> [--connector <id>] [--api-ke
 agentproto llm endpoints remove <name> [--json]
 agentproto llm endpoints detect [--dry-run] [--json]
 agentproto llm endpoints sync-pi [--dry-run] [--json]
+agentproto llm gateway status  [--json]
+agentproto llm gateway restart [--json]
 ```
 
-Read/write visibility into the LLM gateway's (`@agentproto/llm-endpoint`)
-**named endpoints** — local/LAN OpenAI-compatible model servers (LM Studio,
-Ollama, llama-server, vLLM, …) the gateway can route `<id>/<model>` requests
-to, alongside its fixed hosted providers and the single `forge` self-hosted
-slot.
+The `endpoints` subverbs provide read/write visibility into the LLM gateway's
+(`@agentproto/llm-endpoint`) **named endpoints** — local/LAN OpenAI-compatible
+model servers (LM Studio, Ollama, llama-server, vLLM, …) the gateway can route
+`<id>/<model>` requests to, alongside its fixed hosted providers and the single
+`forge` self-hosted slot. The `gateway` subverbs manage the proxy sidecar
+process itself — see [below](#gateway).
 
 Endpoints are configured in `~/.agentproto/llm-endpoints.json`
 (`LLM_ENDPOINT_ENDPOINTS_FILE` overrides the path). `list`/`test` are
@@ -160,6 +163,50 @@ agentproto llm endpoints sync-pi
 
 agentproto llm endpoints list --json | jq -r '.endpoints[].id'
 ```
+
+## `gateway`
+
+Manage the **daemon-supervised `@agentproto/llm-endpoint` proxy sidecar** — a
+different surface from the named endpoints above. The sidecar is the process the
+daemon boots (and restarts on crash) when `features.llmEndpoint` is on; it's
+what clients actually hit when they talk to `GET /v1/models` or POST a chat
+completion. Both subverbs require a reachable daemon with that feature enabled;
+if the daemon is missing or was started without it they exit `2` with an
+actionable message.
+
+### `gateway status`
+
+```bash
+agentproto llm gateway status
+agentproto llm gateway status --json
+```
+
+Reports whether the sidecar is running, who owns it, its reachability, port,
+pid, and the providers it has injected:
+
+- `owner: "daemon"` — this daemon spawned the process.
+- `owner: "external"` — something else already answered healthily on the port;
+  the daemon adopted it read-only rather than starting a second one.
+
+Exits `0` when running, `1` when not running.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | `false` | Emit the raw `LlmEndpointStatusReport` object instead of the key/value table. |
+
+### `gateway restart`
+
+```bash
+agentproto llm gateway restart
+agentproto llm gateway restart --json
+```
+
+Stops (if daemon-owned) then starts the sidecar. An `"external"` owner is
+never touched — the daemon never spawned it, so it has nothing to stop.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | `false` | Emit the restarted status object instead of a confirmation line. |
 
 ## See also
 
