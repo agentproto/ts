@@ -257,6 +257,7 @@ export const changesetRulesBlock = () => [
   `   - minor: new exported function/type/class, new optional parameter, new feature`,
   `   - major: removed/renamed export, incompatible signature change, breaking behavior`,
   `   - CI / workflow / script changes → do NOT bump any package`,
+  `   - ONE frontmatter block per changeset file listing every package — a second \`---\` block is read as body, so its packages are never bumped`,
 ].join("\n")
 
 /** The non-negotiables, placement-aware. */

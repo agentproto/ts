@@ -123,14 +123,20 @@ and therefore an agent, cannot reach it either way. An agent running
 those gates. That is exactly the 2026-07-15 incident this file exists to
 prevent.
 
-**Don't hand-write a changeset.** The agentic reviewer writes it for you as
-part of its automatic pass on every PR push (the pr-review job,
-`.github/workflows/ci.yml:504-534`) — a hand-written one is redundant and the
-`changeset-check` job (`ci.yml:282-367`) doesn't need one from you: it only
-requires *a* changeset to exist before merge, and only when
-`packages/**`/`adapters/**` changed. Docs-only changes (like this file) need
-no changeset at all (`ci.yml:305-314`; private packages are exempt too,
-`:315-334`).
+**Write the changeset locally, before your first push.** When a PR changes a
+publishable package's `src/**` or `package.json` (`packages/**`,
+`adapters/**`; private packages are exempt), run `pnpm changeset:ai`: it takes
+the package list from `scripts/check-changeset-coverage.mjs` (not from the
+model) and writes `.changeset/<slug>.md`. Review it, commit it, push. One file,
+ONE frontmatter block listing every changed package: changesets reads only the
+first `---` block, so a package in a second block is never bumped (that's how
+#1505 went red). The pre-push hook enforces this deterministically
+(`scripts/agentflow/changeset-gate.mjs`, no AI call): it blocks the push when
+the branch adds no changeset covering every changed package, or when a
+changeset stacks several blocks. The CI reviewer (pr-review job) still writes
+one if it's missing, but that's the backup, not the plan. Docs/test/config-only
+changes need no changeset. `AGENTFLOW_SKIP_CHANGESET=1 git push` bypasses the
+gate when you genuinely want CI to write it.
 
 **Don't stamp `[agentflow-reviewed]`** in a commit message, and don't run
 `review:ai --stamp` locally, unless a human explicitly told you to. That

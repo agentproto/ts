@@ -113,6 +113,61 @@ export function fixChangeset(md, known) {
   return { text, fixed, unresolved }
 }
 
+const BUMP_LINE = /^\s*["']?[^"':]+["']?\s*:\s*(major|minor|patch)\s*$/
+const BUMP_RANK = { patch: 0, minor: 1, major: 2 }
+
+/**
+ * Collapse a changeset that stacks several frontmatter blocks into ONE.
+ *
+ * Changesets parses only the first `---` block; any later block is body text.
+ * The agentic reviewer wrote `.changeset/pr-1505-agentic.md` as one block per
+ * package (runtime, then apps), so `@agentproto/apps` was silently undeclared
+ * and the coverage gate went red. A later block counts only when every line in
+ * it is a `name: bump` pair, so a markdown `---` rule in the body is left
+ * alone. A package declared twice keeps its highest bump. Pure — returns the
+ * text unchanged (merged: false) when there is nothing to collapse.
+ */
+export function mergeFrontmatterBlocks(md) {
+  const lines = md.split('\n')
+  if ((lines[0] ?? '').trimEnd() !== '---') return { text: md, merged: false }
+  const bumps = new Map()
+  const addBump = (line) => {
+    const m = /^\s*["']?([^"':]+?)["']?\s*:\s*(major|minor|patch)\s*$/.exec(line)
+    const name = m[1].trim()
+    const prev = bumps.get(name)
+    if (prev === undefined || BUMP_RANK[m[2]] > BUMP_RANK[prev]) bumps.set(name, m[2])
+  }
+  const bodies = []
+  let body = []
+  let extra = 0
+  let i = 1
+  // First (real) frontmatter block.
+  for (; i < lines.length && lines[i].trimEnd() !== '---'; i++) {
+    if (BUMP_LINE.test(lines[i])) addBump(lines[i])
+  }
+  if (i >= lines.length) return { text: md, merged: false }
+  for (i++; i < lines.length; i++) {
+    if (lines[i].trimEnd() === '---') {
+      let j = i + 1
+      while (j < lines.length && BUMP_LINE.test(lines[j])) j++
+      if (j > i + 1 && j < lines.length && lines[j].trimEnd() === '---') {
+        for (let k = i + 1; k < j; k++) addBump(lines[k])
+        bodies.push(body)
+        body = []
+        extra++
+        i = j
+        continue
+      }
+    }
+    body.push(lines[i])
+  }
+  bodies.push(body)
+  if (extra === 0) return { text: md, merged: false }
+  const header = [...bumps].map(([name, bump]) => `"${name}": ${bump}`)
+  const prose = bodies.map((b) => b.join('\n').trim()).filter(Boolean).join('\n\n')
+  return { text: `---\n${header.join('\n')}\n---\n\n${prose}\n`, merged: true }
+}
+
 function main(argv) {
   const fix = argv.includes('--fix')
   const known = workspacePackages()
@@ -131,6 +186,22 @@ function main(argv) {
   for (const f of files) {
     const path = resolve(dir, f)
     let md = readFileSync(path, 'utf8')
+
+    const merge = mergeFrontmatterBlocks(md)
+    if (merge.merged) {
+      if (fix) {
+        writeFileSync(path, merge.text)
+        md = merge.text
+        healed++
+        console.log(`✎ .changeset/${f}: merged stacked frontmatter blocks into one`)
+      } else {
+        console.error(
+          `✗ .changeset/${f}: several frontmatter blocks — changesets reads only the first, ` +
+            `so the packages in the later ones are never bumped. (run with --fix)`,
+        )
+        bad++
+      }
+    }
 
     if (fix) {
       const { text, fixed } = fixChangeset(md, known)
@@ -155,10 +226,10 @@ function main(argv) {
     }
   }
 
-  if (healed > 0) console.log(`✎ auto-corrected ${healed} package name(s).`)
+  if (healed > 0) console.log(`✎ auto-corrected ${healed} changeset issue(s).`)
   if (bad > 0) {
     console.error(
-      `\n${bad} bad package name(s). \`changeset version\` would fail on main and ` +
+      `\n${bad} changeset problem(s). \`changeset version\` would fail on main and ` +
         `take down every release until fixed — which is exactly what pr-338-review did.`,
     )
     return 1

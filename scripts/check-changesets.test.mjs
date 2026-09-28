@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { declaredPackages, nearestWorkspaceName, fixChangeset } from './check-changesets.mjs'
+import { declaredPackages, nearestWorkspaceName, fixChangeset, mergeFrontmatterBlocks } from './check-changesets.mjs'
 
 const KNOWN = new Set(['agentproto-vscode', '@agentproto/cli', '@agentproto/runtime'])
 
@@ -49,4 +49,24 @@ test('fixChangeset reports an unresolvable name instead of mangling it', () => {
   assert.equal(text, md)
   assert.deepEqual(fixed, [])
   assert.deepEqual(unresolved, ['@agentproto/ghost'])
+})
+
+test('mergeFrontmatterBlocks collapses one-block-per-package into a single frontmatter (pr-1505)', () => {
+  const md =
+    '---\n"@agentproto/runtime": minor\n---\n\nAdd capabilities_inventory.\n\n' +
+    '---\n"@agentproto/apps": minor\n---\n\nAdd the Capabilities view.\n'
+  const { text, merged } = mergeFrontmatterBlocks(md)
+  assert.equal(merged, true)
+  assert.deepEqual(declaredPackages(text), ['@agentproto/runtime', '@agentproto/apps'])
+  assert.match(text, /Add capabilities_inventory\.\n\nAdd the Capabilities view\.\n$/)
+})
+
+test('mergeFrontmatterBlocks keeps the highest bump for a package declared twice', () => {
+  const md = '---\n"@agentproto/cli": patch\n---\n\nA.\n\n---\n"@agentproto/cli": minor\n---\n\nB.\n'
+  assert.equal(mergeFrontmatterBlocks(md).text, '---\n"@agentproto/cli": minor\n---\n\nA.\n\nB.\n')
+})
+
+test('mergeFrontmatterBlocks leaves a single-block changeset and body --- rules alone', () => {
+  const md = '---\n"@agentproto/cli": patch\n---\n\nIntro.\n\n---\n\nMore prose after a rule.\n'
+  assert.deepEqual(mergeFrontmatterBlocks(md), { text: md, merged: false })
 })
