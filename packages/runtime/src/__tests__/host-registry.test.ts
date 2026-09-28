@@ -349,6 +349,170 @@ describe("createHostRegistry", () => {
     })
   })
 
+  describe("getSessionsSnapshot() (SANDBOX-VISIBILITY-JOIN #3)", () => {
+    /** `add()`'s handshake verifies the offer's one-time `auth`; every
+     *  later `forwardHttp()` reconnects on that pair's EPOCH tokens instead
+     *  (see `connectToHost`) — this fake daemon accepts both, exactly like
+     *  the "dials the current epoch" test above. */
+    function makeEpochAwareDial(identity: DaemonIdentity, offerAuth: string) {
+      // `pairRootServer` must be captured ONCE, from `add()`'s own
+      // handshake session — same as a real daemon deriving it once at
+      // `add()` time and reusing it for every later epoch-token
+      // verification. Each `forwardHttp()` handshake below establishes its
+      // OWN fresh ephemeral session (new sendKey/recvKey), so re-deriving
+      // "the pair root" from THAT session on every call — instead of only
+      // the first — would silently diverge from `record.pairRoot` (fixed
+      // at `add()` time) the moment a second `forwardHttp()` runs.
+      let pairRootServer: string | null = null
+      const verifyAuthToken = async (token: string): Promise<boolean> => {
+        if (token === offerAuth) return true
+        if (!pairRootServer) return false
+        const epoch = currentEpoch()
+        for (const e of [epoch, epoch - 1]) {
+          if (token === (await deriveEpochTokens(pairRootServer, e)).auth) return true
+        }
+        return false
+      }
+      const dial = vi.fn(async () => {
+        const { a, b } = connect()
+        void runFakeDaemon(a, identity, verifyAuthToken).then(async session => {
+          if (pairRootServer === null) pairRootServer = await derivePairRoot(session)
+        })
+        return b
+      })
+      // The server-side `.then()` above (capturing `pairRootServer`) is a
+      // fire-and-forget promise, not awaited by `add()` itself — a test
+      // that dials `forwardHttp()` right after `add()` resolves can race
+      // ahead of it (exactly the race the "dials the current epoch" test
+      // above guards against with its own `vi.waitFor`). Callers here must
+      // await this before their first `forwardHttp()` call.
+      const waitReady = (): Promise<void> => vi.waitFor(() => expect(pairRootServer).not.toBeNull())
+      return { dial, waitReady }
+    }
+
+    it("caches a successful GET /sessions* forwardHttp response, keyed by exact path", async () => {
+      const identity = await generateIdentity()
+      const { url, auth, fingerprint } = await makeOffer(identity, { scope: "host" })
+      const { dial, waitReady } = makeEpochAwareDial(identity, auth)
+      const registry = createHostRegistry({ hostsPath, dial, handshakeTimeoutMs: 2_000 })
+      await registry.add(url, "office-mac")
+      await waitReady()
+
+      expect(registry.getSessionsSnapshot(fingerprint, "/sessions")).toBeUndefined()
+      await registry.forwardHttp(fingerprint, { method: "GET", path: "/sessions" })
+
+      const snapshot = registry.getSessionsSnapshot(fingerprint, "/sessions")
+      expect(snapshot).toBeDefined()
+      expect(snapshot!.stale).toBe(true)
+      expect(typeof snapshot!.capturedAt).toBe("string")
+      expect(JSON.parse(Buffer.from(snapshot!.body).toString("utf8")).ok).toBe(true)
+
+      // A different path (e.g. one session's own output) isn't the same
+      // cache entry.
+      expect(registry.getSessionsSnapshot(fingerprint, "/sessions/abc/output")).toBeUndefined()
+    })
+
+    it("does not cache a non-GET or a non-/sessions path", async () => {
+      const identity = await generateIdentity()
+      const { url, auth, fingerprint } = await makeOffer(identity, { scope: "host" })
+      const { dial, waitReady } = makeEpochAwareDial(identity, auth)
+      const registry = createHostRegistry({ hostsPath, dial, handshakeTimeoutMs: 2_000 })
+      await registry.add(url, "office-mac")
+      await waitReady()
+
+      await registry.forwardHttp(fingerprint, { method: "GET", path: "/health" })
+      expect(registry.getSessionsSnapshot(fingerprint, "/health")).toBeUndefined()
+    })
+
+    it("returns undefined for an unknown host, without throwing", () => {
+      const registry = createHostRegistry({ hostsPath, dial: vi.fn() })
+      expect(registry.getSessionsSnapshot("no-such-host", "/sessions")).toBeUndefined()
+    })
+
+    it("caps distinct cached paths per host, evicting the oldest first", async () => {
+      const identity = await generateIdentity()
+      const { url, auth, fingerprint } = await makeOffer(identity, { scope: "host" })
+      const { dial, waitReady } = makeEpochAwareDial(identity, auth)
+      const registry = createHostRegistry({ hostsPath, dial, handshakeTimeoutMs: 2_000 })
+      await registry.add(url, "office-mac")
+      await waitReady()
+
+      // MAX_CACHED_SESSION_PATHS_PER_HOST is 32 — 40 distinct session output
+      // paths should evict the earliest ones.
+      for (let i = 0; i < 40; i++) {
+        await registry.forwardHttp(fingerprint, { method: "GET", path: `/sessions/s${i}/output` })
+      }
+      expect(registry.getSessionsSnapshot(fingerprint, "/sessions/s0/output")).toBeUndefined()
+      expect(registry.getSessionsSnapshot(fingerprint, "/sessions/s39/output")).toBeDefined()
+    })
+  })
+
+  describe("pruning join-token-added hosts (SANDBOX-VISIBILITY-JOIN #3)", () => {
+    it("prunes a join-token-added host whose lastSeen is past joinedHostTtlMs, on the next list()", async () => {
+      const identity = await generateIdentity()
+      const { url, auth } = await makeOffer(identity, { scope: "host" })
+      const dial = vi.fn(async () => {
+        const { a, b } = connect()
+        void runFakeDaemon(a, identity, token => token === auth)
+        return b
+      })
+      let clock = Date.now()
+      const registry = createHostRegistry({
+        hostsPath,
+        dial,
+        now: () => clock,
+        joinedHostTtlMs: 1_000,
+      })
+      await registry.add(url, "ci-reviewer #1536", { joined: true })
+      expect(await registry.list()).toHaveLength(1)
+
+      clock += 2_000
+      const list = await registry.list()
+      expect(list).toHaveLength(0)
+
+      // Actually persisted, not just filtered in memory.
+      const file = JSON.parse(await readFile(hostsPath, "utf8"))
+      expect(file.hosts).toHaveLength(0)
+    })
+
+    it("never prunes a manually-added host, regardless of joinedHostTtlMs", async () => {
+      const identity = await generateIdentity()
+      const { url, auth } = await makeOffer(identity, { scope: "host" })
+      const dial = vi.fn(async () => {
+        const { a, b } = connect()
+        void runFakeDaemon(a, identity, token => token === auth)
+        return b
+      })
+      let clock = Date.now()
+      const registry = createHostRegistry({
+        hostsPath,
+        dial,
+        now: () => clock,
+        joinedHostTtlMs: 1_000,
+      })
+      await registry.add(url, "office-mac") // no meta.joined — the human ceremony
+
+      clock += 2_000
+      expect(await registry.list()).toHaveLength(1)
+    })
+
+    it("joinedHostTtlMs: 0 disables pruning entirely", async () => {
+      const identity = await generateIdentity()
+      const { url, auth } = await makeOffer(identity, { scope: "host" })
+      const dial = vi.fn(async () => {
+        const { a, b } = connect()
+        void runFakeDaemon(a, identity, token => token === auth)
+        return b
+      })
+      let clock = Date.now()
+      const registry = createHostRegistry({ hostsPath, dial, now: () => clock, joinedHostTtlMs: 0 })
+      await registry.add(url, "ci-reviewer #1536", { joined: true })
+
+      clock += 365 * 86_400_000
+      expect(await registry.list()).toHaveLength(1)
+    })
+  })
+
   describe("forwardHttpStream()", () => {
     it("rejects with 'no host matched' when the target is unknown, without dialing", async () => {
       const dial = vi.fn()

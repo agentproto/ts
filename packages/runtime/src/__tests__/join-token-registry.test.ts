@@ -149,12 +149,50 @@ describe("createJoinTokenRegistry", () => {
     expect(addHost).toHaveBeenCalledWith(
       expect.stringContaining("scope=host"),
       "ci-reviewer-pr1492",
-      { provider: "e2b", sandboxId: "sbx_abc123", labels: { pr: "1492" } },
+      { joined: true, provider: "e2b", sandboxId: "sbx_abc123", labels: { pr: "1492" } },
     )
 
     const list = await registry.list()
     expect(list[0]!.useCount).toBe(1)
     expect(list[0]!.lastUsedAt).toBeTruthy()
+    await registry.shutdown()
+  })
+
+  it("synthesizes '<token name> #<pr>' when the box self-reports a pr label but no name (SANDBOX-VISIBILITY-JOIN #1) — the box never knows the token's own name", async () => {
+    const addHost = vi.fn().mockResolvedValue({ fingerprint: "box-fp" })
+    const { registry, getBoxSink } = makeRegistry(addHost)
+    const created = await registry.create({ name: "ci-reviewer", ttlMs: 60_000 })
+    await vi.waitFor(() => getBoxSink())
+    const boxSink = getBoxSink()
+
+    await dialAsBox(created.token, async () => boxSink, {
+      offerUrl: "agentproto://pair?v=2&rv=ws%3A%2F%2Fbox.invalid%2Fv1&id=" + "0".repeat(32) + "&pk=AA&sk=BB&s=cc&exp=9999999999&scope=host",
+      provider: "e2b",
+      labels: { pr: "1536", repo: "agentproto/ts" },
+    })
+
+    await vi.waitFor(() => expect(addHost).toHaveBeenCalled())
+    expect(addHost).toHaveBeenCalledWith(
+      expect.stringContaining("scope=host"),
+      "ci-reviewer #1536",
+      { joined: true, provider: "e2b", labels: { pr: "1536", repo: "agentproto/ts" } },
+    )
+    await registry.shutdown()
+  })
+
+  it("falls back to the bare token name when the box self-reports neither a name nor a pr label", async () => {
+    const addHost = vi.fn().mockResolvedValue({ fingerprint: "box-fp" })
+    const { registry, getBoxSink } = makeRegistry(addHost)
+    const created = await registry.create({ name: "ci-reviewer", ttlMs: 60_000 })
+    await vi.waitFor(() => getBoxSink())
+    const boxSink = getBoxSink()
+
+    await dialAsBox(created.token, async () => boxSink, {
+      offerUrl: "agentproto://pair?v=2&rv=ws%3A%2F%2Fbox.invalid%2Fv1&id=" + "0".repeat(32) + "&pk=AA&sk=BB&s=cc&exp=9999999999&scope=host",
+    })
+
+    await vi.waitFor(() => expect(addHost).toHaveBeenCalled())
+    expect(addHost).toHaveBeenCalledWith(expect.stringContaining("scope=host"), "ci-reviewer", { joined: true })
     await registry.shutdown()
   })
 

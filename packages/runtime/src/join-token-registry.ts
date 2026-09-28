@@ -113,6 +113,22 @@ export interface JoinTokenRecord {
   lastUsedAt?: string
   /** ISO-8601 revoke time. Present ⇒ inactive; kept for `list()` history. */
   revokedAt?: string
+  /**
+   * A joined box's `useCount` bumps unconditionally (it only reflects that
+   * the AUTH TOKEN was valid), but turning that join into a visible device
+   * is a SEPARATE, later step — `deps.addHost` dialing back into the box's
+   * self-minted offer, a second full pair/v2 round trip. That step can fail
+   * (the box's 60s-TTL self-offer expiring before the home daemon gets to
+   * it, the box already tearing down, a broker hiccup) without `useCount`
+   * ever reflecting it — which is exactly how PR #1536's run 36438398607
+   * went unnoticed: `useCount: 2`, one visible device, no error anywhere a
+   * human would look. Set on the most recent failed `addHost` call, cleared
+   * on the next SUCCESSFUL one, so `join_token_list` always shows whether
+   * the box currently backing `useCount` actually made it into `device_list`.
+   */
+  lastJoinError?: string
+  /** ISO-8601 of `lastJoinError`. */
+  lastJoinErrorAt?: string
 }
 
 interface JoinTokensFile {
@@ -394,17 +410,41 @@ export function createJoinTokenRegistry(deps: JoinTokenRegistryDeps): JoinTokenR
       log(`[join-tokens] "${record.name}": joined box sent no self-offer — nothing added`)
       return
     }
-    const name = typeof hello.name === "string" && hello.name ? hello.name : undefined
     const meta: HostJoinMeta = {
+      joined: true,
       ...(typeof hello.provider === "string" && hello.provider ? { provider: hello.provider } : {}),
       ...(typeof hello.sandboxId === "string" && hello.sandboxId ? { sandboxId: hello.sandboxId } : {}),
       ...(isPlainStringRecord(hello.labels) ? { labels: hello.labels } : {}),
     }
+    // A box doesn't know the join token's own name (only this daemon does),
+    // so a CI box that doesn't self-report AGENTPROTO_JOIN_NAME (see
+    // ci.yml — it deliberately doesn't set one) still ends up as more than
+    // a raw fingerprint in `device_list`: "<token name> #<pr>" when the
+    // self-reported labels carry a `pr` (the common case this exists for),
+    // falling back to just the token name otherwise.
+    const name =
+      typeof hello.name === "string" && hello.name
+        ? hello.name
+        : meta.labels?.["pr"]
+          ? `${record.name} #${meta.labels["pr"]}`
+          : record.name
     try {
       await deps.addHost(hello.offerUrl, name, meta)
       log(`[join-tokens] "${record.name}": added host via join (self-reported name "${name ?? "(none)"}")`)
+      if (record.lastJoinError !== undefined || record.lastJoinErrorAt !== undefined) {
+        delete record.lastJoinError
+        delete record.lastJoinErrorAt
+        await persist()
+      }
     } catch (err) {
-      log(`[join-tokens] "${record.name}": adding the joined box as a host failed: ${errMsg(err)}`)
+      const message = errMsg(err)
+      log(
+        `[join-tokens] "${record.name}": ADDING THE JOINED BOX AS A HOST FAILED (useCount bumped, no ` +
+          `device recorded — visible via join_token_list until the next successful join): ${message}`,
+      )
+      record.lastJoinError = message
+      record.lastJoinErrorAt = new Date(now()).toISOString()
+      await persist()
     }
   }
 

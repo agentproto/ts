@@ -127,8 +127,11 @@ export function registerDeviceTools(
     "Read-only: a registered HOST device's own session list (compact), or " +
       "(with sessionId) a tail of one session's output — forwarded live " +
       "over the host's E2E channel (HostRegistry.forwardHttp), the same " +
-      "path device_add / `agentproto devices exec` uses. Rejects if the " +
-      "target isn't a registered host.",
+      "path device_add / `agentproto devices exec` uses. If the host is " +
+      "offline, falls back to the last successful response for this exact " +
+      "query (stale: true, capturedAt: when it was captured) instead of " +
+      "failing outright — still rejects if there's nothing cached, or the " +
+      "target isn't a registered host at all.",
     {
       target: z.string().describe("The host's fingerprint or name (see device_list)."),
       sessionId: z
@@ -157,10 +160,11 @@ export function registerDeviceTools(
       try {
         const res = await registry.forwardHttp(target, { method: "GET", path })
         const body = Buffer.from(res.body).toString("utf8")
+        const staleFields = res.stale ? { stale: true as const, capturedAt: res.capturedAt } : {}
         if (res.status !== 200) {
-          return text({ ok: false, status: res.status, message: body })
+          return text({ ok: false, status: res.status, message: body, ...staleFields })
         }
-        return text({ ok: true, ...(JSON.parse(body) as object) })
+        return text({ ok: true, ...staleFields, ...(JSON.parse(body) as object) })
       } catch (err) {
         return text({ ok: false, message: err instanceof Error ? err.message : String(err) })
       }

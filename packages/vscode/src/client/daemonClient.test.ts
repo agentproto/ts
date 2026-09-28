@@ -106,6 +106,18 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
       if (req.url === "/devices/host-1/sessions" && req.method === "GET") {
         return { status: 200, body: { sessions: [{ id: "s1", kind: "agent-cli", status: "running", command: "x", pid: 1, startedAt: "t", workspaceSlug: "ws" }] } }
       }
+      // host-2: an offline host — the daemon's last-known-good `/sessions`
+      // snapshot, `stale`/`capturedAt` merged into the same body shape.
+      if (req.url === "/devices/host-2/sessions" && req.method === "GET") {
+        return {
+          status: 200,
+          body: {
+            sessions: [{ id: "s1", kind: "agent-cli", status: "running", command: "x", pid: 1, startedAt: "t", workspaceSlug: "ws" }],
+            stale: true,
+            capturedAt: "2026-01-01T00:00:00.000Z",
+          },
+        }
+      }
       if (req.url === "/devices/host-1/sessions/s1/output" && req.method === "GET") {
         return { status: 200, body: { sessionId: "s1", status: "running", lines: ["hello"] } }
       }
@@ -373,9 +385,17 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
   })
 
   it("GET /devices/:id/sessions unwraps the { sessions } envelope for a forwarded host", async () => {
-    const sessions = await client().getDeviceSessions("host-1")
+    const { sessions, stale } = await client().getDeviceSessions("host-1")
     expect(sessions).toHaveLength(1)
     expect(sessions[0]?.id).toBe("s1")
+    expect(stale).toBeUndefined()
+  })
+
+  it("GET /devices/:id/sessions surfaces stale + capturedAt when the host is offline", async () => {
+    const { sessions, stale, capturedAt } = await client().getDeviceSessions("host-2")
+    expect(sessions).toHaveLength(1)
+    expect(stale).toBe(true)
+    expect(capturedAt).toBe("2026-01-01T00:00:00.000Z")
   })
 
   it("GET /devices/:id/sessions/:sessionId/output returns the forwarded output tail", async () => {

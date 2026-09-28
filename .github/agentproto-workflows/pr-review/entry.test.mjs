@@ -284,3 +284,75 @@ test('native object spec still selects /home/user as the workspace cwd', () => {
   assert.notEqual(workflow.steps[0].sandbox(bindings), undefined)
   assert.equal(workflow.steps[0].cwd(bindings), '/home/user')
 })
+
+// ── AGENTPROTO_JOIN_* metadata passthrough (SANDBOX-VISIBILITY-JOIN) ───────
+// Same gate shape as AGENTPROTO_JOIN itself: only appended when both the
+// join token AND that specific meta var are actually present on this
+// process, so a fork PR / no-join run never grows this list, and a run that
+// sets AGENTPROTO_JOIN but skips (say) AGENTPROTO_JOIN_LABELS still gets the
+// others.
+
+test('join metadata vars are omitted with no AGENTPROTO_JOIN (nothing to attach metadata to)', () => {
+  process.env.AGENTPROTO_JOIN_NAME = 'ci-reviewer #1536'
+  try {
+    const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
+    assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN'])
+  } finally {
+    delete process.env.AGENTPROTO_JOIN_NAME
+  }
+})
+
+test('join metadata vars are appended alongside AGENTPROTO_JOIN when both are present', () => {
+  process.env.AGENTPROTO_JOIN = 'https://join.example/token'
+  process.env.AGENTPROTO_JOIN_NAME = 'ci-reviewer #1536'
+  process.env.AGENTPROTO_JOIN_PROVIDER = 'e2b'
+  process.env.AGENTPROTO_JOIN_SANDBOX_ID = 'sbx_abc123'
+  process.env.AGENTPROTO_JOIN_LABELS = 'pr=1536,run=https://github.com/agentproto/ts/actions/runs/36438398607'
+  try {
+    const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
+    assert.deepEqual(spec.env.passthrough, [
+      'ANTHROPIC_API_KEY',
+      'GITHUB_TOKEN',
+      'AGENTPROTO_JOIN',
+      'AGENTPROTO_JOIN_NAME',
+      'AGENTPROTO_JOIN_PROVIDER',
+      'AGENTPROTO_JOIN_SANDBOX_ID',
+      'AGENTPROTO_JOIN_LABELS',
+    ])
+  } finally {
+    delete process.env.AGENTPROTO_JOIN
+    delete process.env.AGENTPROTO_JOIN_NAME
+    delete process.env.AGENTPROTO_JOIN_PROVIDER
+    delete process.env.AGENTPROTO_JOIN_SANDBOX_ID
+    delete process.env.AGENTPROTO_JOIN_LABELS
+  }
+})
+
+test('only the join metadata vars this process actually set are appended — partial config stays partial', () => {
+  process.env.AGENTPROTO_JOIN = 'https://join.example/token'
+  process.env.AGENTPROTO_JOIN_PROVIDER = 'e2b'
+  try {
+    const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
+    assert.deepEqual(spec.env.passthrough, [
+      'ANTHROPIC_API_KEY',
+      'GITHUB_TOKEN',
+      'AGENTPROTO_JOIN',
+      'AGENTPROTO_JOIN_PROVIDER',
+    ])
+  } finally {
+    delete process.env.AGENTPROTO_JOIN
+    delete process.env.AGENTPROTO_JOIN_PROVIDER
+  }
+})
+
+test('blank/whitespace join metadata vars are treated as absent, same as AGENTPROTO_JOIN itself', () => {
+  process.env.AGENTPROTO_JOIN = 'https://join.example/token'
+  process.env.AGENTPROTO_JOIN_NAME = '   '
+  try {
+    const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
+    assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'AGENTPROTO_JOIN'])
+  } finally {
+    delete process.env.AGENTPROTO_JOIN
+    delete process.env.AGENTPROTO_JOIN_NAME
+  }
+})
