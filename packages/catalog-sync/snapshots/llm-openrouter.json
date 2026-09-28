@@ -2241,13 +2241,13 @@
         "instruct_type": null
       },
       "pricing": {
-        "prompt": "0.000000035",
-        "completion": "0.00000029",
-        "input_cache_read": "0.000000001"
+        "prompt": "0.00000003",
+        "completion": "0.0000006",
+        "input_cache_read": "0.00000001"
       },
       "top_provider": {
-        "context_length": 1040000,
-        "max_completion_tokens": 384000,
+        "context_length": 1048576,
+        "max_completion_tokens": 943718,
         "is_moderated": false
       },
       "per_request_limits": null,
@@ -2971,13 +2971,13 @@
         "instruct_type": null
       },
       "pricing": {
-        "prompt": "0.000000035",
-        "completion": "0.00000029",
-        "input_cache_read": "0.000000001"
+        "prompt": "0.0000003",
+        "completion": "0.0000012",
+        "input_cache_read": "0.000000006"
       },
       "top_provider": {
-        "context_length": 1040000,
-        "max_completion_tokens": 384000,
+        "context_length": 1048576,
+        "max_completion_tokens": 943718,
         "is_moderated": false
       },
       "per_request_limits": null,
@@ -3173,6 +3173,136 @@
           "none"
         ],
         "default_effort": "medium"
+      }
+    },
+    {
+      "id": "nex-agi/nex-n2.5-mini",
+      "canonical_slug": "nex-agi/nex-n2.5-mini-20260908",
+      "hugging_face_id": "nex-agi/Nex-N2.5-mini",
+      "name": "Nex AGI: Nex-N2.5-Mini",
+      "created": 1788890061,
+      "description": "Nex-N2.5 is an agentic model built to turn goals into working, verified outcomes. Its core strength is agentic coding within a visual feedback loop: it can explore codebases, implement multi-file...",
+      "context_length": 262144,
+      "architecture": {
+        "modality": "text+image->text",
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Qwen3",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.000000025",
+        "completion": "0.0000001",
+        "input_cache_read": "0.0000000025"
+      },
+      "top_provider": {
+        "context_length": 262144,
+        "max_completion_tokens": 235929,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [
+        "include_reasoning",
+        "logprobs",
+        "max_tokens",
+        "reasoning",
+        "reasoning_effort",
+        "structured_outputs",
+        "temperature",
+        "top_k",
+        "top_logprobs",
+        "top_p"
+      ],
+      "default_parameters": {
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "top_k": 40
+      },
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "links": {
+        "details": "/api/v1/models/nex-agi/nex-n2.5-mini-20260908/endpoints"
+      },
+      "reasoning": {
+        "mandatory": false,
+        "supported_efforts": [
+          "high",
+          "medium",
+          "none"
+        ],
+        "default_effort": "high"
+      }
+    },
+    {
+      "id": "nex-agi/nex-n2.5-pro",
+      "canonical_slug": "nex-agi/nex-n2.5-pro-20260907",
+      "hugging_face_id": "nex-agi/Nex-N2.5-Pro",
+      "name": "Nex AGI: Nex-N2.5-Pro",
+      "created": 1788890050,
+      "description": "Nex-N2.5 is an agentic model built to turn goals into working, verified outcomes. Its core strength is agentic coding within a visual feedback loop: it can explore codebases, implement multi-file...",
+      "context_length": 262144,
+      "architecture": {
+        "modality": "text+image->text",
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "text"
+        ],
+        "tokenizer": "Qwen3",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.000000075",
+        "completion": "0.00000025",
+        "input_cache_read": "0.000000015"
+      },
+      "top_provider": {
+        "context_length": 262144,
+        "max_completion_tokens": 235929,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [
+        "include_reasoning",
+        "logprobs",
+        "max_tokens",
+        "reasoning",
+        "reasoning_effort",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_logprobs",
+        "top_p"
+      ],
+      "default_parameters": {
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "top_k": 40
+      },
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "links": {
+        "details": "/api/v1/models/nex-agi/nex-n2.5-pro-20260907/endpoints"
+      },
+      "reasoning": {
+        "mandatory": false,
+        "supported_efforts": [
+          "high",
+          "medium",
+          "none"
+        ],
+        "default_effort": "high"
       }
     },
     {
@@ -11585,9 +11715,9 @@
         "instruct_type": null
       },
       "pricing": {
-        "prompt": "0.000000132",
-        "completion": "0.000000528",
-        "input_cache_read": "0.000000033",
+        "prompt": "0.0000000825",
+        "completion": "0.00000033",
+        "input_cache_read": "0.000000020625",
         "overrides": [
           {
             "utc_start": 0,
@@ -16716,9 +16846,9 @@
         "instruct_type": null
       },
       "pricing": {
-        "prompt": "0.000001",
-        "completion": "0.000009",
-        "input_cache_read": "0.0000003"
+        "prompt": "0.00000097575",
+        "completion": "0.0000085442",
+        "input_cache_read": "0.000000176987"
       },
       "top_provider": {
         "context_length": 1048576,
@@ -17922,9 +18052,9 @@
         "instruct_type": null
       },
       "pricing": {
-        "prompt": "0.00000095526",
-        "completion": "0.00000191052",
-        "input_cache_read": "0.000000079605"
+        "prompt": "0.000000783",
+        "completion": "0.000001566",
+        "input_cache_read": "0.00000006525"
       },
       "top_provider": {
         "context_length": 1024000,
@@ -18080,9 +18210,9 @@
         "instruct_type": null
       },
       "pricing": {
-        "prompt": "0.00000014",
-        "completion": "0.00000028",
-        "input_cache_read": "0.000000028"
+        "prompt": "0.00000007308",
+        "completion": "0.00000014616",
+        "input_cache_read": "0.000000014616"
       },
       "top_provider": {
         "context_length": 1048576,
@@ -19131,9 +19261,9 @@
         "instruct_type": null
       },
       "pricing": {
-        "prompt": "0.0000014",
-        "completion": "0.0000044",
-        "input_cache_read": "0.00000026"
+        "prompt": "0.0000009646",
+        "completion": "0.0000030316",
+        "input_cache_read": "0.00000017914"
       },
       "top_provider": {
         "context_length": 202752,
@@ -31089,7 +31219,7 @@
       },
       "top_provider": {
         "context_length": 163840,
-        "max_completion_tokens": 65536,
+        "max_completion_tokens": 147456,
         "is_moderated": false
       },
       "per_request_limits": null,
@@ -31121,7 +31251,7 @@
       },
       "supported_voices": null,
       "knowledge_cutoff": "2025-07-31",
-      "expiration_date": "2026-09-28",
+      "expiration_date": null,
       "links": {
         "details": "/api/v1/models/deepseek/deepseek-v3.2-exp/endpoints"
       },
@@ -31649,12 +31779,11 @@
       },
       "pricing": {
         "prompt": "0.00000027",
-        "completion": "0.000001",
-        "input_cache_read": "0.000000135"
+        "completion": "0.000001"
       },
       "top_provider": {
-        "context_length": 131072,
-        "max_completion_tokens": 32768,
+        "context_length": 163840,
+        "max_completion_tokens": 147456,
         "is_moderated": false
       },
       "per_request_limits": null,
@@ -31684,7 +31813,7 @@
       },
       "supported_voices": null,
       "knowledge_cutoff": "2025-03-31",
-      "expiration_date": "2026-09-28",
+      "expiration_date": null,
       "links": {
         "details": "/api/v1/models/deepseek/deepseek-v3.1-terminus/endpoints"
       },
@@ -39553,59 +39682,6 @@
       }
     },
     {
-      "id": "deepseek/deepseek-r1-distill-llama-70b",
-      "canonical_slug": "deepseek/deepseek-r1-distill-llama-70b",
-      "hugging_face_id": "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
-      "name": "DeepSeek: R1 Distill Llama 70B",
-      "created": 1737663169,
-      "description": "DeepSeek R1 Distill Llama 70B is a distilled large language model based on [Llama-3.3-70B-Instruct](/meta-llama/llama-3.3-70b-instruct), using outputs from [DeepSeek R1](/deepseek/deepseek-r1). The model combines advanced distillation techniques to achieve high performance across...",
-      "context_length": 8192,
-      "architecture": {
-        "modality": "text->text",
-        "input_modalities": [
-          "text"
-        ],
-        "output_modalities": [
-          "text"
-        ],
-        "tokenizer": "Llama3",
-        "instruct_type": "deepseek-r1"
-      },
-      "pricing": {
-        "prompt": "0.0000008",
-        "completion": "0.0000008"
-      },
-      "top_provider": {
-        "context_length": 8192,
-        "max_completion_tokens": 7372,
-        "is_moderated": false
-      },
-      "per_request_limits": null,
-      "supported_parameters": [
-        "frequency_penalty",
-        "include_reasoning",
-        "max_tokens",
-        "presence_penalty",
-        "reasoning",
-        "repetition_penalty",
-        "seed",
-        "stop",
-        "temperature",
-        "top_k",
-        "top_p"
-      ],
-      "default_parameters": {},
-      "supported_voices": null,
-      "knowledge_cutoff": "2024-07-31",
-      "expiration_date": "2026-09-28",
-      "links": {
-        "details": "/api/v1/models/deepseek/deepseek-r1-distill-llama-70b/endpoints"
-      },
-      "reasoning": {
-        "mandatory": false
-      }
-    },
-    {
       "id": "deepseek/deepseek-r1",
       "canonical_slug": "deepseek/deepseek-r1",
       "hugging_face_id": "deepseek-ai/DeepSeek-R1",
@@ -42669,7 +42745,7 @@
       }
     }
   ],
-  "total_count": 458,
+  "total_count": 459,
   "links": {
     "next": null
   }
