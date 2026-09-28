@@ -238,6 +238,15 @@ export const opencode: AgentCliHandle = defineAgentCli({
     },
   },
   tags: ["opencode", "sst", "acp", "agent-runtime", "coding"],
+  metadata: {
+    // Opts opencode into `agentproto install skill/<slug>` fan-out (no
+    // --target given). Confirmed against the installed opencode CLI +
+    // published docs (opencode.ai/docs/skills/): it auto-discovers
+    // `~/.config/opencode/skills/<name>/SKILL.md` (global) in addition to
+    // project-local `.opencode/skills/`, `.claude/skills/`, `.agents/skills/`
+    // — same flat-dir, one-subdir-per-skill shape as hermes.
+    skills: { format: "flat-dir", dir: "~/.config/opencode/skills" },
+  },
 })
 
 export function opencodeRuntime(): AgentCliRuntime {

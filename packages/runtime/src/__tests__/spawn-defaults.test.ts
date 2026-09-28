@@ -9,6 +9,7 @@
 import { describe, it, expect, vi } from "vitest"
 import {
   resolveSpawnDefaults,
+  resolveBundleDefaults,
   normalizeSkillsOption,
   credentialFingerprint,
   resolveAuthSpec,
@@ -119,6 +120,67 @@ describe("resolveSpawnDefaults", () => {
     const defaults: SpawnDefaultsConfig = { skills: ["agentproto"] }
     const result = resolveSpawnDefaults(defaults, "hermes", { skills: [] })
     expect(result.skills).toEqual([])
+  })
+})
+
+describe("resolveBundleDefaults (PLAN D phase 1)", () => {
+  it("passes through with no defaults and no explicit call", () => {
+    expect(resolveBundleDefaults(undefined, "opencode", {})).toEqual({ bundleIds: [] })
+  })
+
+  it("applies global defaults when no per-adapter block matches", () => {
+    const defaults: SpawnDefaultsConfig = { bundles: ["research"] }
+    expect(resolveBundleDefaults(defaults, "opencode", {})).toEqual({ bundleIds: ["research"] })
+  })
+
+  it("unions global + per-adapter bundle ids", () => {
+    const defaults: SpawnDefaultsConfig = {
+      bundles: ["research"],
+      adapters: { opencode: { bundles: ["opencode-only"] } },
+    }
+    const result = resolveBundleDefaults(defaults, "opencode", {})
+    expect(result.bundleIds.sort()).toEqual(["opencode-only", "research"].sort())
+  })
+
+  it("does not apply another adapter's per-adapter bundles", () => {
+    const defaults: SpawnDefaultsConfig = {
+      bundles: ["research"],
+      adapters: { opencode: { bundles: ["opencode-only"] } },
+    }
+    const result = resolveBundleDefaults(defaults, "codex", {})
+    expect(result.bundleIds).toEqual(["research"])
+  })
+
+  it("an explicit-call bundles list REPLACES the union — it does not merge", () => {
+    const defaults: SpawnDefaultsConfig = {
+      bundles: ["research"],
+      adapters: { opencode: { bundles: ["opencode-only"] } },
+    }
+    const result = resolveBundleDefaults(defaults, "opencode", { bundles: ["explicit-only"] })
+    expect(result.bundleIds).toEqual(["explicit-only"])
+  })
+
+  it("an explicit-call EMPTY bundles list is a deliberate opt-out, not a passthrough", () => {
+    const defaults: SpawnDefaultsConfig = { bundles: ["research"] }
+    expect(resolveBundleDefaults(defaults, "opencode", { bundles: [] })).toEqual({ bundleIds: [] })
+  })
+
+  it("daemonMount: explicit call wins over the per-adapter config default", () => {
+    const defaults: SpawnDefaultsConfig = { adapters: { opencode: { daemonMount: true } } }
+    expect(resolveBundleDefaults(defaults, "opencode", {})).toEqual({
+      bundleIds: [],
+      daemonMount: true,
+    })
+    expect(resolveBundleDefaults(defaults, "opencode", { daemonMount: false })).toEqual({
+      bundleIds: [],
+      daemonMount: false,
+    })
+  })
+
+  it("daemonMount is undefined (not false) when neither the call nor config says anything — no global default exists", () => {
+    const result = resolveBundleDefaults(undefined, "opencode", {})
+    expect(result.daemonMount).toBeUndefined()
+    expect("daemonMount" in result).toBe(false)
   })
 })
 

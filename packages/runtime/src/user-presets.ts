@@ -54,6 +54,10 @@ export interface UserPreset extends Partial<SessionConfig> {
    *  `SpawnAgentSessionInput.skills`. Omitted means the adapter/defaults
    *  decide. */
   skills?: string[]
+  /** Capability bundle ids (`bundle_list`) for a spawn from this preset — the
+   *  same axis as `SpawnAgentSessionInput.bundles`. Omitted means the
+   *  adapter/defaults decide. */
+  bundles?: string[]
   /** `agent_start.browser` for spawns from this preset. Ranks below the
    *  role's own default (see `resolveBrowserMode`). */
   browser?: SpawnBrowserMode
@@ -72,6 +76,7 @@ const userPresetSchema = z.object({
   contextProfile: z.string().min(1).optional(),
   cwd: z.string().min(1).optional(),
   skills: z.array(z.string().min(1)).optional(),
+  bundles: z.array(z.string().min(1)).optional(),
   browser: z.union([z.literal("headless"), z.literal(false)]).optional(),
 }) satisfies z.ZodType<UserPreset>
 

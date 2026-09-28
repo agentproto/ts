@@ -28,9 +28,14 @@ import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, extname, isAbsolute, join, resolve as resolvePath, sep } from "node:path"
 import type { AcpMcpServer } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
-import { LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "@modelcontextprotocol/sdk/types.js"
+import {
+  LATEST_PROTOCOL_VERSION,
+  SUPPORTED_PROTOCOL_VERSIONS,
+  ListToolsRequestSchema,
+  CallToolRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js"
 import { WebSocketServer, type WebSocket } from "ws"
 import { ZodError, type ZodType } from "zod"
 import type { UIMessageChunk } from "ai"
@@ -183,6 +188,15 @@ import {
   saveUserPreset,
   type UserPreset,
 } from "./user-presets.js"
+import {
+  loadBundles,
+  createBundle,
+  updateBundle,
+  deleteBundle,
+  danglingImports,
+  BundleValidationError,
+  type Bundle,
+} from "./bundles.js"
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
@@ -1665,6 +1679,77 @@ export async function startHttpServer(
     await serveMcp(req, res, server)
   }
 
+  /**
+   * Per-import passthrough (PLAN D phase 1). Mounted at
+   * `/mcp/imported/<importId>` — a streamable-HTTP MCP server that proxies
+   * `tools/list`/`tools/call` of ONE imported server via `McpProxyRegistry`,
+   * under the upstream's OWN (unprefixed) tool names — the connecting
+   * harness namespaces by server name, same as any other native MCP mount.
+   * Distinct from `mcp_imported_tool_list`/`mcp_imported_call`
+   * (session-tools.ts), which stay as the two-step indirection for a session
+   * already on the daemon's own `/mcp`; this endpoint is what lets a
+   * capability bundle mount the SAME imported server into any OTHER harness
+   * (opencode, codex, …) as a first-class MCP server. Same auth as `/mcp`
+   * (loopback + token / `callerSessionId` — see `authorizeMcp`). An
+   * upstream that's down surfaces as a tool-call error result, never a hang
+   * (the registry's own connect path already bounds it — see mcp-proxy.ts).
+   */
+  async function handleImportedMcp(
+    req: IncomingMessage,
+    res: ServerResponse,
+    importId: string,
+  ): Promise<void> {
+    if (!authorizeMcp(req, res)) return
+    if (!opts.mcpProxy) {
+      res.writeHead(501, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: "mcp_proxy_not_configured",
+          message: "The daemon was started without an MCP proxy — wire `mcpProxy` in createGateway.",
+        }),
+      )
+      return
+    }
+    const proxy = opts.mcpProxy
+    const aliases = await proxy.listAliases()
+    const known = aliases.find(a => a.importId === importId || a.alias === importId)
+    if (!known) {
+      res.writeHead(404, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: "import_not_found",
+          message:
+            `No imported MCP "${importId}" — it may have been removed (mcp_imported_remove). ` +
+            "Check mcp_imported_list for current ids.",
+        }),
+      )
+      return
+    }
+    const server = new McpServer(
+      { name: `agentproto-imported-${known.alias}`, version: opts.meta.version ?? "0.1.0-alpha" },
+      { capabilities: { tools: {} } },
+    )
+    server.server.setRequestHandler(ListToolsRequestSchema, async () => {
+      const out = await proxy.listTools(importId)
+      if (!out.ok) return { tools: [] }
+      return {
+        tools: out.tools.map(t => ({
+          name: t.name,
+          ...(t.description ? { description: t.description } : {}),
+          inputSchema: (t.inputSchema as Record<string, unknown> | undefined) ?? { type: "object" },
+        })),
+      }
+    })
+    server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      const out = await proxy.callTool(importId, request.params.name, request.params.arguments ?? {})
+      if (!out.ok) {
+        return { content: [{ type: "text", text: out.error }], isError: true }
+      }
+      return out.result as { content: Array<{ type: "text"; text: string }>; isError?: boolean }
+    })
+    await serveMcp(req, res, server)
+  }
+
   function handleHealth(_req: IncomingMessage, res: ServerResponse): void {
     res.writeHead(200, { "content-type": "application/json" })
     res.end(
@@ -2035,6 +2120,13 @@ export async function startHttpServer(
         }
         if (path === "/mcp/orchestrator") {
           await handleOrchestratorMcp(req, res)
+          return
+        }
+        // Per-import passthrough (PLAN D phase 1) — checked before the bare
+        // `/mcp` match below since it's a distinct, longer prefix.
+        if (path.startsWith("/mcp/imported/")) {
+          const importId = decodeURIComponent(path.slice("/mcp/imported/".length))
+          await handleImportedMcp(req, res, importId)
           return
         }
         if (path === "/mcp") {
@@ -3440,6 +3532,98 @@ export async function startHttpServer(
           return
         }
 
+        // Capability bundles (PLAN D phase 1) — HTTP twins of the
+        // bundle_list/bundle_create/bundle_update/bundle_delete MCP tools.
+        // GET /bundles → { bundles: (Bundle & { dangling: string[] })[] }
+        if (path === "/bundles" && req.method === "GET") {
+          const [bundlesFile, importedConfig] = await Promise.all([loadBundles(), loadImportedMcps()])
+          const importedIds = new Set(importedConfig.imports.map(e => e.id))
+          res.writeHead(200, { "content-type": "application/json" })
+          res.end(
+            JSON.stringify({
+              bundles: bundlesFile.bundles.map(b => ({ ...b, dangling: danglingImports(b, importedIds) })),
+            }),
+          )
+          return
+        }
+        // POST /bundles — create. Token-gated like POST /user-presets: a
+        // bundle grants MCP-mount capability to any future spawn naming it.
+        if (path === "/bundles" && req.method === "POST") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          const body = (await readJsonBody(req)) as Partial<Bundle> | null
+          try {
+            const bundle = await createBundle({
+              id: String(body?.id ?? ""),
+              label: String(body?.label ?? ""),
+              ...(body?.description ? { description: body.description } : {}),
+              mcpImports: Array.isArray(body?.mcpImports) ? body.mcpImports : [],
+              ...(body?.includeDaemon !== undefined ? { includeDaemon: body.includeDaemon } : {}),
+              skills: Array.isArray(body?.skills) ? body.skills : [],
+            })
+            res.writeHead(201, { "content-type": "application/json" })
+            res.end(JSON.stringify({ bundle }))
+          } catch (err) {
+            const status = err instanceof ZodError || err instanceof BundleValidationError ? 400 : 500
+            res.writeHead(status, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: err instanceof ZodError || err instanceof BundleValidationError ? "invalid_input" : "create_failed",
+                message: err instanceof Error ? err.message : String(err),
+              }),
+            )
+          }
+          return
+        }
+        // PUT /bundles/:id — partial update (merge). 404 when `id` doesn't
+        // exist. Token-gated.
+        const bundleUpdateMatch = path.match(/^\/bundles\/(.+)$/)
+        if (bundleUpdateMatch && req.method === "PUT") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          const id = decodeURIComponent(bundleUpdateMatch[1] ?? "")
+          const body = (await readJsonBody(req)) as Partial<Bundle> | null
+          try {
+            const bundle = await updateBundle(id, body ?? {})
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify({ bundle }))
+          } catch (err) {
+            const notFound = err instanceof BundleValidationError && err.message.includes("not found")
+            const status = notFound ? 404 : err instanceof ZodError || err instanceof BundleValidationError ? 400 : 500
+            res.writeHead(status, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: notFound
+                  ? "not_found"
+                  : err instanceof ZodError || err instanceof BundleValidationError
+                    ? "invalid_input"
+                    : "update_failed",
+                message: err instanceof Error ? err.message : String(err),
+              }),
+            )
+          }
+          return
+        }
+        // DELETE /bundles/:id — 404 when it never existed. Token-gated.
+        if (bundleUpdateMatch && req.method === "DELETE") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          const id = decodeURIComponent(bundleUpdateMatch[1] ?? "")
+          const deleted = await deleteBundle(id)
+          res.writeHead(deleted ? 200 : 404, { "content-type": "application/json" })
+          res.end(JSON.stringify({ deleted }))
+          return
+        }
+
         // Preset routes — static data, always available (no registry opt-in).
         // GET /presets → { presets: AdapterEntry<PresetInfo>[] }
         if (path === "/presets" && req.method === "GET") {
@@ -4278,6 +4462,8 @@ export function buildSpawnSessionHttpArgs(
   // `autoParentSessionId`, which no caller may set.
   const commandSandbox = parseCommandSandboxField(b.commandSandbox)
   const skills = b.skills !== undefined ? parseSkillsField(b.skills) : undefined
+  const bundles = b.bundles !== undefined ? parseSkillsField(b.bundles) : undefined
+  const daemonMount = parseBooleanField(b.daemonMount)
   const contextContinuity =
     b.contextContinuity !== undefined
       ? parseWithJsonTolerance(contextContinuityInputSchema, b.contextContinuity)
@@ -4288,10 +4474,19 @@ export function buildSpawnSessionHttpArgs(
   const notifyUrl = parseNotifyUrlField(b.notifyUrl)
   const agentStartParity: Pick<
     SpawnAgentSessionInput,
-    "commandSandbox" | "skills" | "contextContinuity" | "deferredTools" | "attach" | "notifyUrl"
+    | "commandSandbox"
+    | "skills"
+    | "bundles"
+    | "daemonMount"
+    | "contextContinuity"
+    | "deferredTools"
+    | "attach"
+    | "notifyUrl"
   > = {
     ...(commandSandbox !== undefined ? { commandSandbox } : {}),
     ...(skills !== undefined ? { skills } : {}),
+    ...(bundles !== undefined ? { bundles } : {}),
+    ...(daemonMount !== undefined ? { daemonMount } : {}),
     ...(contextContinuity !== undefined ? { contextContinuity } : {}),
     ...(deferredTools !== undefined ? { deferredTools } : {}),
     ...(attach !== undefined ? { attach } : {}),

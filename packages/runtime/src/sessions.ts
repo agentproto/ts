@@ -1703,6 +1703,11 @@ export interface SessionDescriptor {
    *  adapter (claude-code) that auto-discovers skills on its own and never
    *  reads this list back. */
   skills?: string[]
+  /** Capability bundle ids (`bundle_list`) resolved for this spawn (PLAN D
+   *  phase 1) — ids only, never the expanded imported-MCP snapshots (those
+   *  live only in `mcpServers` above, as reference-only proxy URLs). Absent
+   *  ⇒ no bundle was attached. */
+  bundles?: string[]
   /** Provider-specific resume hints sniffed from the session's
    *  output. claude-code prints `claude --resume <uuid>` on exit;
    *  we capture that uuid as `claudeResumeId`. On `restart`, when a
@@ -3921,6 +3926,9 @@ export interface SpawnAgentInput {
    *  explicit ∪ preset ∪ config-defaults result) — recorded verbatim onto
    *  {@link SessionDescriptor.skills}. See that field's doc. */
   skills?: string[]
+  /** Capability bundle ids resolved for this spawn — recorded verbatim onto
+   *  {@link SessionDescriptor.bundles}; see that field's doc. */
+  bundles?: string[]
   /** Persistent isolated-config dir this spawn passed to
    *  `startSession({ configDir })` — recorded verbatim onto
    *  {@link SessionDescriptor.adapterConfigDir} so restart/lazy-resume can
@@ -7992,6 +8000,7 @@ export function createSessionsRegistry(opts?: {
         // Persist the resolved skills list, whether or not this adapter
         // consumes it (see `SessionDescriptor.skills`'s doc).
         ...(input.skills && input.skills.length > 0 ? { skills: input.skills } : {}),
+        ...(input.bundles && input.bundles.length > 0 ? { bundles: input.bundles } : {}),
         // Persist the isolated-config location so restart/lazy-resume can
         // hand the respawned adapter the SAME dir (native-resume store).
         ...(input.adapterConfigDir ? { adapterConfigDir: input.adapterConfigDir } : {}),

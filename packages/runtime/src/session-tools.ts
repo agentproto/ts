@@ -54,6 +54,15 @@ import {
   removeImport,
   type ImportedMcpEntry,
 } from "./mcp-imports.js"
+import {
+  loadBundles,
+  createBundle,
+  updateBundle,
+  deleteBundle,
+  danglingImports,
+  BundleValidationError,
+  type Bundle,
+} from "./bundles.js"
 import type { McpProxyRegistry, ProxyToolDescriptor } from "./mcp-proxy.js"
 import { computeCapabilitiesInventory } from "./capabilities-inventory.js"
 import { projectSessionUsage } from "./usage.js"
@@ -2302,6 +2311,133 @@ export function registerSessionTools(
         isError?: boolean
       }
     }
+  )
+
+  // ── bundle_list (PLAN D phase 1) ──────────────────────────────
+  // A capability bundle carries no secrets (unlike an imported-MCP
+  // snapshot's command/args/env/headers), so there is no compact/full
+  // split here — `project` is the identity function and every field is
+  // always returned. `dangling` is computed fresh against the live
+  // imported-MCP set on every call, not persisted on the bundle itself.
+  const bundleListSchema = z.object({})
+  registerPaginatedListTool<Record<string, never>, Bundle & { dangling: string[] }>({
+    id: "bundle_list",
+    description:
+      "List capability bundles — named sets of imported MCPs + skills (+ " +
+      "optionally the daemon's own /mcp) attachable to ANY harness in one " +
+      "`agent_start({bundles:[...]})` call. Imported MCPs reach the harness " +
+      "as their own MCP server with native tool names (via the daemon's " +
+      "/mcp/imported/<id> passthrough) — never the two-step " +
+      "mcp_imported_tool_list/mcp_imported_call indirection. `dangling` " +
+      "flags mcpImports ids whose underlying import was removed " +
+      "(mcp_imported_remove) since the bundle was saved; a spawn naming " +
+      "this bundle skips those entries with a warning.",
+    schema: bundleListSchema,
+    body: async () => {
+      const [bundlesFile, importedConfig] = await Promise.all([loadBundles(), loadImportedMcps()])
+      const importedIds = new Set(importedConfig.imports.map(e => e.id))
+      return bundlesFile.bundles.map(b => ({ ...b, dangling: danglingImports(b, importedIds) }))
+    },
+    project: item => item,
+    keyOf: b => b.id,
+    itemKey: "bundles",
+  })
+
+  // ── bundle_create ──────────────────────────────────────────────
+  server.tool(
+    "bundle_create",
+    "Create a capability bundle. Fails if `id` already exists (use " +
+      "bundle_update) or if `mcpImports` names an id not in `mcp_imported_list`.",
+    {
+      id: z
+        .string()
+        .regex(/^[a-z0-9][a-z0-9-]*$/, "id must be lowercase kebab-case (letters, digits, hyphens)")
+        .describe("Stable machine-local id, e.g. 'research'."),
+      label: z.string().min(1).describe("Human-readable name."),
+      description: z.string().min(1).optional(),
+      mcpImports: z
+        .array(z.string().min(1))
+        .optional()
+        .describe("Imported-MCP ids from `mcp_imported_list`. Default []."),
+      includeDaemon: z
+        .boolean()
+        .optional()
+        .describe("Also mount the daemon's own scoped /mcp for a spawn carrying this bundle."),
+      skills: z
+        .array(z.string().min(1))
+        .optional()
+        .describe("Skill ids unioned into a spawn's resolved skill list. Default []."),
+    },
+    async input => {
+      try {
+        const bundle = await createBundle({
+          id: input.id,
+          label: input.label,
+          ...(input.description ? { description: input.description } : {}),
+          mcpImports: input.mcpImports ?? [],
+          ...(input.includeDaemon !== undefined ? { includeDaemon: input.includeDaemon } : {}),
+          skills: input.skills ?? [],
+        })
+        return { content: [{ type: "text", text: JSON.stringify(bundle) }] }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `bundle_create failed: ${err instanceof BundleValidationError ? err.message : err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  // ── bundle_update ──────────────────────────────────────────────
+  server.tool(
+    "bundle_update",
+    "Update an existing capability bundle. Fields present in the call " +
+      "REPLACE the bundle's own (arrays are replaced wholesale, not merged " +
+      "element-wise); omitted fields are left as-is. Fails if `id` doesn't " +
+      "exist (use bundle_create) or if the merged `mcpImports` names an id " +
+      "not in `mcp_imported_list`.",
+    {
+      id: z.string().min(1).describe("Existing bundle id."),
+      label: z.string().min(1).optional(),
+      description: z.string().min(1).optional(),
+      mcpImports: z.array(z.string().min(1)).optional(),
+      includeDaemon: z.boolean().optional(),
+      skills: z.array(z.string().min(1)).optional(),
+    },
+    async input => {
+      try {
+        const { id, ...patch } = input
+        const bundle = await updateBundle(id, patch)
+        return { content: [{ type: "text", text: JSON.stringify(bundle) }] }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `bundle_update failed: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  // ── bundle_delete ──────────────────────────────────────────────
+  server.tool(
+    "bundle_delete",
+    "Delete a capability bundle. A future `agent_start.bundles` call naming " +
+      "this id gets a spawn warning (skipped, not rejected) instead of an error.",
+    { id: z.string().min(1) },
+    async input => {
+      const deleted = await deleteBundle(input.id)
+      return { content: [{ type: "text", text: JSON.stringify({ deleted, id: input.id }) }] }
+    },
   )
 
   // ── session_tree (WP5) ────────────────────────────────────────
