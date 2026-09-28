@@ -4,8 +4,9 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { test } from "node:test"
+import { fileURLToPath } from "node:url"
 
-const ROOT = resolve(import.meta.dirname, "..")
+const ROOT = resolve(fileURLToPath(new URL(".", import.meta.url)), "..")
 const SCRIPT = resolve(ROOT, "scripts/sync-specs.mjs")
 
 /** Build an isolated { source, target, allowlist } fixture triple under a
