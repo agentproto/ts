@@ -1,7 +1,7 @@
 # `agentproto maintain`
 
 ```text
-agentproto maintain [--repo <dir>] [--apply-merged] [--json]
+agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--wait] [--json]
 ```
 
 Convenience shortcut over `agentproto workflow run-file` for the built-in
@@ -31,9 +31,11 @@ One run:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--repo <dir>` | cwd | Any dir inside the repo. |
-| `--apply-merged` | `false` | Apply (reclaim-class only) after review. |
-| `--json` | `false` | Print the raw `workflow_run_file` reply. |
+| `--repo <dir>` | cwd | Any dir inside the repo. **Repeatable** — pass multiple `--repo` flags to target specific repos. Combined with `--all` to supplement discovered repos. |
+| `--all` | `false` | Run once per repo: every main repo that owns a worktree under the worktrees root, plus any `--repo` dirs. Prints the discovered repo list first; exits `1` if any run fails. |
+| `--apply-merged` | `false` | Apply (reclaim-class only) after review. When used with `--all`, applies to every repo. |
+| `--wait` | `false` | Block until each run ends, then print its markdown report. Exit `0` when all done, `1` when any failed or was cancelled. |
+| `--json` | `false` | Print the raw `workflow_run_file` reply (with `--wait`: the finished run records, one per repo). |
 
 This starts the run and returns immediately (the run executes in the
 background) — poll it with:
@@ -41,6 +43,8 @@ background) — poll it with:
 ```bash
 agentproto workflow status <runId>
 ```
+
+Or pass `--wait` to block until it finishes and print the report inline.
 
 ## Examples
 
@@ -50,6 +54,12 @@ agentproto maintain --repo ~/code/my-app
 
 # Plan + review, then apply reclaim-class branch/worktree gc
 agentproto maintain --repo ~/code/my-app --apply-merged
+
+# Run for every repo that owns worktrees under the worktrees root
+agentproto maintain --all --apply-merged
+
+# Block until done and print the report
+agentproto maintain --repo ~/code/my-app --wait
 ```
 
 ## Scheduling it

@@ -7,6 +7,10 @@ agentproto devices revoke <fingerprint|name>
 agentproto devices add    <offer-url> [--name <label>]
 agentproto devices status <fingerprint|name>
 agentproto devices share-inference on|off
+agentproto devices sessions <fingerprint|name> [--session <id>] [--lines <n>] [--clean] [--json]
+agentproto devices join-token create <name> [--ttl <duration>] [--max-uses <n>]
+agentproto devices join-token list   [--json]
+agentproto devices join-token revoke <id|name>
 ```
 
 The device registry: a management view over every client paired with this
@@ -130,6 +134,67 @@ Once both are on, A addresses this daemon's endpoints transparently as
 routed through A's own llm-endpoint gateway forwards to B's `ollama`
 endpoint, over the paired E2E channel, with no open inbound port on B.
 Offline/unreachable surfaces as a normal upstream error, not a hang.
+
+## `sessions`
+
+```bash
+agentproto devices sessions my-host
+agentproto devices sessions my-host --session <sessionId> [--lines 100] [--clean] [--json]
+```
+
+Read-only access to a registered host's own session list (or, with
+`--session`, a tail of one session's output) — forwarded live over the host's
+E2E channel.
+
+| Flag | Description |
+|------|-------------|
+| `--session <id>` | Fetch one session's output instead of the session list. |
+| `--lines <n>` | When fetching output, return the last N lines (default: provider decided). |
+| `--clean` | Strip ANSI codes from output lines. |
+| `--json` | Emit raw JSON from the daemon's response. |
+
+Without `--session`, prints the host's session list as JSON. Exits non-zero if
+the host is unreachable.
+
+## `join-token`
+
+```bash
+agentproto devices join-token create <name> [--ttl <duration>] [--max-uses <n>]
+agentproto devices join-token list   [--json]
+agentproto devices join-token revoke <id|name>
+```
+
+Manage **AGENTPROTO_JOIN credentials** — long-lived, revocable, reusable
+tokens a box daemon reads from its `AGENTPROTO_JOIN` env var at boot to
+auto-register itself as a host on this daemon. No offer URL to relay by hand.
+
+### `join-token create`
+
+Mints a new join token and prints it **once** — it is never shown again by
+`list`. Set it as the box daemon's `AGENTPROTO_JOIN` env var (e.g. a GitHub
+Actions secret or a Kubernetes secret).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--ttl <duration>` | `90d` | Lifetime of the token — `90d`, `24h`, `30m`, `45s`, etc. |
+| `--max-uses <n>` | unlimited | Reuse ceiling; revoked automatically once reached. |
+
+### `join-token list`
+
+Lists all tokens for this daemon: id, name, createdAt, expiresAt, use count,
+last used, and revocation status. Never shows the token secret itself.
+`--json` emits `{ tokens: [...] }`.
+
+### `join-token revoke`
+
+Stops a token's standing accept loop. A box that already joined through it
+keeps its host registration — use `agentproto devices revoke <device>` to
+drop the registered device separately if needed.
+
+A box daemon started with a valid `AGENTPROTO_JOIN` URL dials in at boot and
+this daemon adds it to its host registry automatically (same effect as
+running `agentproto devices add` by hand, but fully automated). See also the
+`AGENTPROTO_JOIN` boot-time handling in [`serve.md`](./serve.md#agentproto_join).
 
 ## See also
 
