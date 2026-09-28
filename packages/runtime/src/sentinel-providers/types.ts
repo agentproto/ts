@@ -216,7 +216,7 @@ export interface SentinelProviderHandle extends AdapterHandle {
   poll?(handle: SentinelHandle, limit: number): Promise<{ events: SentinelEvent[]; cursor: string }>
   ack?(handle: SentinelHandle, cursor: string): Promise<void>
   /** Push mode: verify + parse one inbound HTTP request into events (called
-   *  by the `"sentinel"` dialect on `POST /inbound/sentinel/:hookKey`). */
+   *  by the `"sentinel"` dialect on `POST /inbound/sentinel-<hookKey>`). */
   parseInbound?(
     req: { rawBody: string; headers: Record<string, string | string[] | undefined> },
     handle: SentinelHandle,
