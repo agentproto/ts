@@ -1,8 +1,14 @@
 /**
  * pi wiring — generate/update the matching provider entries in
- * `~/.pi/agent/models.json` (the `pi` harness's own model registry) from
- * this CLI's named endpoints + their connectors, so a locally loaded model
+ * `~/.pi/agent/models.json` (the `pi` harness's own model registry) from the
+ * configured named endpoints + their connectors, so a locally loaded model
  * is usable from `pi` without a hand edit.
+ *
+ * Lives in `@agentproto/llm-endpoint` (not `@agentproto/cli`, where it
+ * started) so BOTH the CLI (`agentproto llm endpoints sync-pi`) and the
+ * daemon (`packages/runtime`'s `inference` session-binding, which must
+ * sync before spawning a `pi` session against a local endpoint) can call it
+ * directly — `packages/runtime` never depends on `@agentproto/cli`.
  *
  * Two rules drive the shape of this: `contextWindow` must be the model's
  * LOADED context (what's actually usable right now), never its max — a
@@ -21,7 +27,8 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { connectorById, getConfiguredEndpoints, type ConnectorId, type EndpointConfig } from '@agentproto/llm-endpoint';
+import { connectorById, type ConnectorId } from './connectors.js';
+import { getConfiguredEndpoints, type EndpointConfig } from './endpoints.js';
 
 const DEFAULT_MAX_TOKENS = 8192;
 

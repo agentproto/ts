@@ -4836,6 +4836,11 @@ export function buildSpawnSessionHttpArgs(
           : undefined
   const sentinelField: Pick<SpawnAgentSessionInput, "sentinel"> =
     sentinelOptOut === false ? { sentinel: false } : {}
+  // `inference` (SESSION-INFERENCE-BINDING) — hoisted for the same TS2590
+  // reason as `browserField`/`sentinelField`/`spendCaps`.
+  const inferenceParsed = b.inference !== undefined ? parseInferenceField(b.inference) : undefined
+  const inferenceField: Pick<SpawnAgentSessionInput, "inference"> =
+    inferenceParsed !== undefined ? { inference: inferenceParsed } : {}
   return {
     adapter,
     ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
@@ -4862,6 +4867,7 @@ export function buildSpawnSessionHttpArgs(
           return parsed !== undefined ? { access: parsed } : {}
         })()
       : {}),
+    ...inferenceField,
     ...(typeof b.posture === "string" && b.posture.length > 0
       ? { posture: parsePostureInput(b.posture) }
       : {}),
@@ -5307,6 +5313,30 @@ function parseAccessField(raw: unknown): { profileRef?: string } | undefined {
   return typeof profileRef === "string" && profileRef.length > 0 ? { profileRef } : {}
 }
 
+/** Parse the `inference` body field — the HTTP twin of the MCP `agent_start`
+ *  tool's `inference` field (SESSION-INFERENCE-BINDING). Tolerant of a
+ *  JSON-stringified object (see `parseOrchestratorField`). */
+function parseInferenceField(
+  raw: unknown,
+): { endpoint?: string; model?: string; force?: boolean; headroomPct?: number } | undefined {
+  const value = typeof raw === "string" ? tryParseJson(raw) : raw
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const obj = value as Record<string, unknown>
+  const force =
+    typeof obj.force === "boolean" ? obj.force : obj.force === "true" ? true : obj.force === "false" ? false : undefined
+  const headroomPctRaw = typeof obj.headroomPct === "string" ? Number(obj.headroomPct) : obj.headroomPct
+  const headroomPct =
+    typeof headroomPctRaw === "number" && Number.isFinite(headroomPctRaw) && headroomPctRaw >= 0 && headroomPctRaw <= 95
+      ? headroomPctRaw
+      : undefined
+  return {
+    ...(typeof obj.endpoint === "string" && obj.endpoint.length > 0 ? { endpoint: obj.endpoint } : {}),
+    ...(typeof obj.model === "string" && obj.model.length > 0 ? { model: obj.model } : {}),
+    ...(force !== undefined ? { force } : {}),
+    ...(headroomPct !== undefined ? { headroomPct } : {}),
+  }
+}
+
 /** Parse the `restartPolicy` body field on `POST /sessions/agent` — the HTTP
  *  twin of the MCP `agent_start` tool's `restartPolicy` field (restart-
  *  scheduler PR-2). Tolerates a JSON-stringified object (see
@@ -5736,7 +5766,15 @@ async function handleSessions(
       json(400, { error: "preset_not_found", message: `No user preset "${presetId}" found.` })
       return true
     }
-    const adapter = typeof b.adapter === "string" ? b.adapter : (typeof b.harness === "string" ? b.harness : (preset?.adapter ?? preset?.harness ?? ""))
+    // Default harness for a local endpoint bind: `inference` with no
+    // explicit adapter/harness/preset defaults to "pi" (SESSION-INFERENCE-
+    // BINDING item 3) — mirrors agent-tools.ts's `agent_start` handler.
+    const adapter =
+      typeof b.adapter === "string"
+        ? b.adapter
+        : typeof b.harness === "string"
+          ? b.harness
+          : (preset?.adapter ?? preset?.harness ?? (b.inference ? "pi" : ""))
     if (!adapter) {
       json(400, { error: "missing_adapter" })
       return true
@@ -5835,7 +5873,7 @@ async function handleSessions(
         ? b.adapter
         : typeof b.harness === "string"
           ? b.harness
-          : preset?.adapter ?? preset?.harness ?? ""
+          : preset?.adapter ?? preset?.harness ?? (b.inference ? "pi" : "")
     if (!adapter) {
       json(400, { error: "missing_adapter" })
       return true

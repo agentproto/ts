@@ -3374,6 +3374,9 @@ importers:
       '@agentproto/eval-reporters':
         specifier: workspace:*
         version: link:../eval-reporters
+      '@agentproto/llm-endpoint':
+        specifier: workspace:*
+        version: link:../llm-endpoint
       '@agentproto/manifest':
         specifier: workspace:*
         version: link:../manifest

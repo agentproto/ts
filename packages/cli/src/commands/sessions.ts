@@ -101,6 +101,8 @@ Usage:
                                       [--worktree | --no-worktree]
                                       [--sandbox <provider-or-json>]
                                       [--hold-permissions] [--browser headless]
+                                      [--inference-endpoint <id>] [--inference-model <id>]
+                                      [--inference-force] [--inference-headroom-pct <n>]
                                       [--no-color]
   agentproto sessions terminal [--preset <name>] [-- <argv...>] [--cwd <dir>]
                                             [--workspace <slug>] [--name <slug>]
@@ -231,6 +233,16 @@ sessions start flags:
                                   (CLI twin of the MCP agent_start access.profileRef
                                   — pin endpoint + credential, never silently the
                                   default). Overrides the daemon's default profile.
+  --inference-endpoint <id>     bind this spawn to a local/LAN inference endpoint
+                                  (see "agentproto llm endpoints list"), or "<id>@<device>"
+                                  for a paired device's own shared endpoint. Omitting
+                                  <adapter> when this is set defaults it to "pi".
+  --inference-model <id>        a bare model id (with --inference-endpoint), or the
+                                  shorthand "<model>@<device|endpoint>" alone.
+  --inference-force             skip the fit-check refusal on a clear miss (still
+                                  runs the check, still warns).
+  --inference-headroom-pct <n>  headroom percentage (0-95) held back from the
+                                  endpoint's loaded ctx for the fit check. Default 25.
   --max-cost-usd <n>            HARD spend ceiling in USD for THIS session: the
                                   daemon KILLS the session at the next turn end
                                   once its cost crosses n. This is the kill
@@ -446,14 +458,25 @@ async function runStart(args: readonly string[]): Promise<number> {
       effort: { type: "string" },
       sandbox: { type: "string" },
       browser: { type: "string" },
+      "inference-endpoint": { type: "string" },
+      "inference-model": { type: "string" },
+      "inference-force": { type: "boolean" },
+      "inference-headroom-pct": { type: "string" },
     },
   })
   const slug = positionals[0]
-  if (!slug && !values.preset) {
+  // `--inference-endpoint`/`--inference-model` can stand in for the adapter
+  // slug too (SESSION-INFERENCE-BINDING item 3) — the daemon defaults it to
+  // "pi" when neither a slug nor a preset was given (see http-server.ts's
+  // `POST /sessions/agent`).
+  const hasInference = Boolean(values["inference-endpoint"] || values["inference-model"])
+  if (!slug && !values.preset && !hasInference) {
     process.stderr.write(
       "agentproto sessions start: missing adapter slug or --preset.\n" +
         "  Try: agentproto sessions start claude-code --attach\n" +
-        "       agentproto sessions start --preset fast-deepseek --attach\n"
+        "       agentproto sessions start --preset fast-deepseek --attach\n" +
+        "       agentproto sessions start --inference-endpoint lmstudio --attach   " +
+        "(defaults to the pi harness)\n"
     )
     return 2
   }
@@ -733,6 +756,27 @@ async function runStart(args: readonly string[]): Promise<number> {
   // `resolveAccessProfileAuth`. Mutation-free: the secret itself is resolved
   // daemon-side, never carried over HTTP/on the command line.
   if (values["access-profile"]) body.access = { profileRef: values["access-profile"] }
+  // Bind this spawn to a local/LAN inference endpoint — the CLI twin of the
+  // MCP `agent_start` tool's `inference` field.
+  if (hasInference) {
+    let headroomPct: number | undefined
+    if (values["inference-headroom-pct"] !== undefined) {
+      const n = Number(values["inference-headroom-pct"])
+      if (!Number.isFinite(n) || n < 0 || n > 95) {
+        process.stderr.write(
+          `agentproto sessions start: invalid --inference-headroom-pct "${values["inference-headroom-pct"]}" (expected a number 0-95).\n`
+        )
+        return 2
+      }
+      headroomPct = n
+    }
+    body.inference = {
+      ...(values["inference-endpoint"] ? { endpoint: values["inference-endpoint"] } : {}),
+      ...(values["inference-model"] ? { model: values["inference-model"] } : {}),
+      ...(values["inference-force"] ? { force: true } : {}),
+      ...(headroomPct !== undefined ? { headroomPct } : {}),
+    }
+  }
   // Spend caps — the CLI twins of the MCP `agent_start` tool's `maxCostUsd`
   // and `costBudget` fields. DIFFERENT things (the help must not blur them):
   //   maxCostUsd  the HARD ceiling — the daemon KILLS the session at the next
