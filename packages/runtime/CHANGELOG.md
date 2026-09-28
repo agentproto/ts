@@ -1,5 +1,37 @@
 # @agentproto/runtime
 
+## 5.0.0
+
+### Major Changes
+
+- 52e286a: Sentinel: replace `SentinelSpec.subject` with a required multi-clause `spec.match` (OR semantics across `{subject, types?}` clauses; new `singleMatch()` helper). Dedup is now applied only after delivery (at-least-once) via the new read-only `SentinelStore.isSeen`. `SentinelTarget` gains frozen (not-yet-delivered) `routine` and `webhook` variants, rejected at create time with the new `SentinelTargetNotImplementedError`. `Sentinel` records gain a persisted `terminalSubjects` list for multi-clause `until: subject_terminal` expiry.
+
+### Minor Changes
+
+- fee6123: feat(runtime): sentinel primitive (AIP-60 step 1/2) — persisted watch registry (`sentinel-store`), poll/delivery engine (`sentinel-runtime`), pluggable provider contract + registry, GitHub webhook → CloudEvents normalizer, and `list_sentinel_adapters` / `setup_sentinel_provider` MCP tools. No built-in provider ships yet; the feature is inert until a sentinel exists on disk or a third-party provider package is installed.
+- eba403e: Add the read-only `capabilities_inventory` MCP tool and its `GET /capabilities/inventory` HTTP twin (shared builder in the runtime), plus exported `CapabilitiesInventory*` types. Add a Capabilities (MCP & Skills) section to the `@agentproto/config` app, including the new `capabilities` deep-link fragment section.
+- 8277109: Combine stdout+stderr in HookError, add setup-hook log persistence and bounded retry
+- 753bfc7: `review_ledger` gains `includeRunning`, `requesterSessionId`, and `subtree` (backed by a lazy, incrementally-updated ledger index, never a full re-scan), and `ReviewRunner.list()` surfaces in-flight and settled-in-this-process runs. `session_tree` nodes that requested a review now carry a `reviews` badge (latest 3, newest first). A settled review with a known requester writes a display-only `notice` into that session's transcript (never a prompt, never a wake) via the new `SessionsRegistry.recordNotice`. New builtin panel `agentproto_reviews` (`packages/apps/src/review-panel`) — a verdict list + detail view over the review ledger, mounted alongside sessions-panel/work-board, with cancel / re-run-fresh / PR-status / export actions over the existing `review_*` tools.
+- 5b80cb5: AIP-60 step 3/4: add the `local-gh` sentinel provider (zero-infra PR polling over the host's authenticated `gh` CLI), sentinel auto-link (a PR opened by a session is auto-watched, gated by `config.sentinel.autoWatchPrs` and the per-spawn `agent_start.sentinel: false` opt-out), `sentinel_watch`/`sentinel_list`/`sentinel_unwatch`/`sentinel_poll_now` MCP tools, `/sentinels` daemon HTTP routes, a new `agentproto sentinel` CLI subcommand, and a `SentinelSpec.subject` → `match[]` (OR multi-clause) contract with at-least-once delivery in the sentinel runtime.
+- 7727cbe: Add session_capabilities read surface (MCP tool + GET /sessions/:id/capabilities)
+- 8518b3f: Fix workflow_cancel: a still-running step is finalized to a `cancelled` status instead of being left `running` forever, an in-flight agent session that was still spawning when cancel fired is killed immediately, and a step interrupted mid-flight is never journaled as succeeded so `workflow_retry` re-executes it.
+
+### Patch Changes
+
+- f731f49: Fix continue-interrupted: only the last restart's rows, truthful send failures
+- 11e917c: Tolerate newer-than-known mcp-protocol-version headers on /mcp instead of 400ing
+- Updated dependencies [eba403e]
+- Updated dependencies [753bfc7]
+- Updated dependencies [8518b3f]
+- Updated dependencies [afe8324]
+  - @agentproto/apps@0.14.0
+  - @agentproto/workflow-runtime@0.14.0
+  - @agentproto/app-kit@1.3.1
+  - @agentproto/sandbox@0.6.2
+  - @agentproto/review@0.2.0
+  - @agentproto/eval-reporters@0.2.18
+  - @agentproto/telemetry-langfuse@0.2.16
+
 ## 4.1.0
 
 ### Minor Changes

@@ -1,5 +1,12 @@
 # @agentproto/workflow-ai-sdk
 
+## 0.1.12
+
+### Patch Changes
+
+- Updated dependencies [8518b3f]
+  - @agentproto/workflow-runtime@0.14.0
+
 ## 0.1.11
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @agentproto/workflow-runtime
 
+## 0.14.0
+
+### Minor Changes
+
+- 8518b3f: Fix workflow_cancel: every step (agent, gate, map/pipeline fan-out) now refuses to dispatch once a run is cancelled, including a sibling in the same stage — not just a later one. A gate step's subprocess is killed via the abort signal instead of running to completion unsupervised.
+
 ## 0.13.1
 
 ### Patch Changes

@@ -1,5 +1,25 @@
 # @agentproto/cli
 
+## 1.2.0
+
+### Minor Changes
+
+- 5b80cb5: AIP-60 step 3/4: add the `local-gh` sentinel provider (zero-infra PR polling over the host's authenticated `gh` CLI), sentinel auto-link (a PR opened by a session is auto-watched, gated by `config.sentinel.autoWatchPrs` and the per-spawn `agent_start.sentinel: false` opt-out), `sentinel_watch`/`sentinel_list`/`sentinel_unwatch`/`sentinel_poll_now` MCP tools, `/sentinels` daemon HTTP routes, a new `agentproto sentinel` CLI subcommand, and a `SentinelSpec.subject` → `match[]` (OR multi-clause) contract with at-least-once delivery in the sentinel runtime.
+
+### Patch Changes
+
+- 8277109: Combine stdout+stderr in HookError, add setup-hook log persistence and bounded retry
+- Updated dependencies [eba403e]
+- Updated dependencies [8277109]
+- Updated dependencies [753bfc7]
+- Updated dependencies [c1899d7]
+- Updated dependencies [afe8324]
+  - @agentproto/apps@0.14.0
+  - @agentproto/worktree@0.11.0
+  - @agentproto/app-kit@1.3.1
+  - @agentproto/sandbox-box@0.2.16
+  - @agentproto/sandbox-e2b@0.5.6
+
 ## 1.1.0
 
 ### Minor Changes
