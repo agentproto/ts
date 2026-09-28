@@ -24,6 +24,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http"
 import { createServer as createProbeServer } from "node:net"
 import { Readable } from "node:stream"
+import { pipeline } from "node:stream/promises"
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web"
 import type { HostRegistry } from "./host-registry.js"
 
@@ -55,6 +56,19 @@ function collectHeaders(raw: IncomingMessage["headers"]): Record<string, string>
   return headers
 }
 
+/** `pipeline()`'s signal for "one side closed before the other finished" —
+ *  the ordinary shape of an MCP client hanging up early (it doesn't always
+ *  read a response to completion, e.g. right after `agent_start` itself
+ *  already failed). Not an error worth surfacing or crashing over. */
+function isPrematureCloseError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code?: unknown }).code === "ERR_STREAM_PREMATURE_CLOSE"
+  )
+}
+
 async function readBody(req: IncomingMessage): Promise<Uint8Array | undefined> {
   const chunks: Buffer[] = []
   for await (const chunk of req) chunks.push(chunk as Buffer)
@@ -69,15 +83,22 @@ export async function startDeviceSandboxBridge(
 
   const server = createServer((req, res) => {
     void handleRequest(req, res).catch(err => {
+      // A failure AFTER headers were already sent means the response body
+      // was mid-relay (the `pipeline` above) — `res` may already be
+      // destroyed; there is no well-formed error body left to send, only a
+      // best-effort `end()`.
+      if (res.writableEnded) return
       if (!res.headersSent) {
         res.writeHead(502, { "content-type": "application/json" })
+        res.end(
+          JSON.stringify({
+            error: "device_sandbox_bridge_failed",
+            message: err instanceof Error ? err.message : String(err),
+          }),
+        )
+        return
       }
-      res.end(
-        JSON.stringify({
-          error: "device_sandbox_bridge_failed",
-          message: err instanceof Error ? err.message : String(err),
-        }),
-      )
+      res.end()
     })
   })
 
@@ -108,7 +129,32 @@ export async function startDeviceSandboxBridge(
       resHeaders[k] = v
     }
     res.writeHead(upstream.status, resHeaders)
-    Readable.fromWeb(upstream.body as unknown as NodeWebReadableStream<Uint8Array>).pipe(res)
+    // `pipeline` (NOT raw `.pipe()`) is load-bearing here: this source is a
+    // REAL network connection (`forwardHttpStream`'s `TunnelClient`, held
+    // open for the life of the stream — see `wrapStreamWithCleanup` in
+    // host-registry.ts). `.pipe()` only unpipes on a premature `res` close
+    // (an MCP client that hangs up early, e.g. after `agent_start` already
+    // failed) — it never cancels the SOURCE, so the tunnel connection is
+    // abandoned rather than closed: `onlineCounts` never decrements, and if
+    // the device later disconnects on its own, the orphaned stream's
+    // `error` event has no listener left and crashes the WHOLE daemon
+    // (observed live: "Tunnel closed mid-stream" reached
+    // `emitErrorNT`/`Unhandled 'error' event'` with no in-flight request
+    // left to catch it). `pipeline` destroys both ends symmetrically —
+    // an early `res` close cancels the web `ReadableStream` too, which
+    // `wrapStreamWithCleanup`'s own `cancel()` turns into a prompt
+    // `client.close()` + online-count decrement. A premature close is
+    // NORMAL (not every MCP call reads its response to completion) so it's
+    // swallowed here rather than rethrown into the request handler's own
+    // catch (which would 502 a response that already ended).
+    try {
+      await pipeline(
+        Readable.fromWeb(upstream.body as unknown as NodeWebReadableStream<Uint8Array>),
+        res,
+      )
+    } catch (err) {
+      if (!isPrematureCloseError(err)) throw err
+    }
   }
 
   const port = await getFreePort()

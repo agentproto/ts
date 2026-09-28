@@ -61,11 +61,13 @@ describe("startDeviceSandboxBridge", () => {
   })
 
   it("forwards a non-/mcp subpath (e.g. the events stream route) unchanged, just prefixed", async () => {
-    const forwardHttpStream = vi.fn(async (): Promise<ForwardHttpStreamResponse> => ({
-      status: 200,
-      headers: { "content-type": "text/event-stream" },
-      body: streamOf(": connected\n\n"),
-    }))
+    const forwardHttpStream = vi.fn(
+      async (_target: string, _req: ForwardHttpRequest): Promise<ForwardHttpStreamResponse> => ({
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+        body: streamOf(": connected\n\n"),
+      }),
+    )
     const hostRegistry = { forwardHttpStream } as unknown as HostRegistry
 
     bridge = await startDeviceSandboxBridge({ hostRegistry, target: "work-mac" })
@@ -106,5 +108,52 @@ describe("startDeviceSandboxBridge", () => {
     await b.close()
     bridge = undefined
     await expect(fetch(b.mcpUrl, { method: "POST", body: "{}" })).rejects.toThrow()
+  })
+
+  it("cancels the upstream stream when the downstream client disconnects early — never leaves a dangling connection", async () => {
+    // Regression for a live bug found via the two-daemon proof: raw
+    // `.pipe()` only unpipes on an early `res` close, it never cancels the
+    // SOURCE — so a real `forwardHttpStream` connection (a `TunnelClient`
+    // held open for the stream's life) was abandoned rather than closed.
+    // When the remote later disconnected on its own, the orphaned stream's
+    // `error` event had no listener left and crashed the whole daemon
+    // ("Unhandled 'error' event" / "Tunnel closed mid-stream"). This proves
+    // the fix: an early client disconnect must promptly `cancel()` the
+    // upstream `ReadableStream`, not just stop writing to the client.
+    let cancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        // One chunk, then hang open (never closes on its own) — models a
+        // long-lived SSE stream (the events-stream / MCP notification
+        // channel) sitting idle between events.
+        controller.enqueue(new TextEncoder().encode("partial"))
+      },
+      cancel() {
+        cancelled = true
+      },
+    })
+    const hostRegistry = {
+      forwardHttpStream: vi.fn(async () => ({
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+        body,
+      })),
+    } as unknown as HostRegistry
+
+    bridge = await startDeviceSandboxBridge({ hostRegistry, target: "work-mac" })
+    const res = await fetch(bridge.mcpUrl, { method: "POST", body: "{}" })
+    expect(res.status).toBe(200)
+    // The client stops reading and tears down its side WITHOUT ever
+    // finishing the body — exactly what an MCP client does when it hangs
+    // up on a long-lived stream (it doesn't always read a response to
+    // completion). This is the client-side mirror of what killing device B
+    // mid-session looks like from the bridge's perspective.
+    await res.body!.cancel()
+
+    const deadline = Date.now() + 2000
+    while (!cancelled && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    expect(cancelled).toBe(true)
   })
 })
