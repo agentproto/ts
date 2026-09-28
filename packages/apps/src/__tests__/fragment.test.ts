@@ -66,6 +66,20 @@ describe("config app deep-link fragment", () => {
     expect(buildConfigFragment("remote", "pairing", "ab12cd34")).toBe("#remote/pairing/ab12cd34")
   })
 
+  it("round-trips the capabilities section, with and without id/sub", () => {
+    expect(CONFIG_SECTIONS).toContain("capabilities")
+    expect(buildConfigFragment("capabilities")).toBe("#capabilities")
+    expect(parseConfigFragment("#capabilities")).toEqual({ section: "capabilities" })
+    expect(buildConfigFragment("capabilities", "mcp", "chrome-devtools")).toBe(
+      "#capabilities/mcp/chrome-devtools",
+    )
+    expect(parseConfigFragment("#capabilities/mcp/chrome-devtools")).toEqual({
+      section: "capabilities",
+      id: "mcp",
+      sub: "chrome-devtools",
+    })
+  })
+
   it("parses a raw view the same with or without a leading '#'", () => {
     // ui.ts's routeToView feeds an MCP-hosted `view` argument straight through
     // parseConfigFragment — this is the "accept with or without a leading #"

@@ -194,6 +194,13 @@ export type {
   AdapterCapabilitiesLister,
 } from "./http-server.js"
 export type {
+  CapabilitiesInventory,
+  CapabilitiesInventoryMcp,
+  CapabilitiesInventorySkills,
+  SkillPackInventoryEntry,
+  SkillsByHarnessEntry,
+} from "./capabilities-inventory.js"
+export type {
   WorktreeStatusLister,
   WorktreeStatusView,
 } from "./worktree-status.js"

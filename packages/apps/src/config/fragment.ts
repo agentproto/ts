@@ -2,7 +2,7 @@
  * The `@agentproto/config` deep-link fragment grammar (plan §3.4):
  *
  *   #<section>[/<id>[/<sub>]]
- *   section := wallets | harnesses | models | defaults | remote | advanced
+ *   section := wallets | harnesses | models | capabilities | defaults | remote | advanced
  *   id      := encodeURIComponent(profileId | adapterSlug | modelRef | configKey | "pairing")
  *
  * Written in plain ES5-safe syntax (`var`/`function`, no arrows, no
@@ -14,7 +14,7 @@
  * source has no dependency on this module's closure.
  */
 
-export const CONFIG_SECTIONS = ["wallets", "harnesses", "models", "defaults", "remote", "advanced"] as const
+export const CONFIG_SECTIONS = ["wallets", "harnesses", "models", "capabilities", "defaults", "remote", "advanced"] as const
 
 export type ConfigSection = (typeof CONFIG_SECTIONS)[number]
 
@@ -29,7 +29,7 @@ export interface ParsedConfigFragment {
  *  percent-encoding in `id`/`sub` falls back to the raw segment rather than
  *  throwing. */
 export function parseConfigFragment(hash: string): ParsedConfigFragment {
-  var SECTIONS = ["wallets", "harnesses", "models", "defaults", "remote", "advanced"]
+  var SECTIONS = ["wallets", "harnesses", "models", "capabilities", "defaults", "remote", "advanced"]
   var raw = String(hash || "").replace(/^#/, "")
   var parts = raw.split("/").filter(function (p) {
     return p.length > 0

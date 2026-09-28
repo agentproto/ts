@@ -54,6 +54,7 @@ import {
   type ImportedMcpEntry,
 } from "./mcp-imports.js"
 import type { McpProxyRegistry, ProxyToolDescriptor } from "./mcp-proxy.js"
+import { computeCapabilitiesInventory } from "./capabilities-inventory.js"
 import { projectSessionUsage } from "./usage.js"
 import { rollupSessionSubtree } from "./usage-subtree.js"
 import { parseWindow, rollupUsage } from "./usage-rollup.js"
@@ -865,6 +866,7 @@ export function registerSessionTools(
     readBranchGcVerdict,
     listCatalogModels,
     loadDefaultsConfig,
+    listAgentAdapters,
   } = opts
   const ptyEnabled = opts.ptyEnabled === true
   // Point the module-level branch_gc job registry at the injected dir (tests
@@ -1825,6 +1827,34 @@ export function registerSessionTools(
     keyOf: e => e.id,
     itemKey: "imports",
   })
+
+  // ── capabilities_inventory ───────────────────────────────────────
+  // Read-only, never throws — a failure in one source (MCP discovery, the
+  // proxy registry, an adapter package that fails to import) becomes an
+  // `error` string on that block alone; the rest of the inventory still
+  // returns. See `capabilities-inventory.ts` for the shared builder (also
+  // backs the `GET /capabilities/inventory` HTTP twin in http-server.ts).
+  server.tool(
+    "capabilities_inventory",
+    "One read that answers: which MCP servers does the daemon know " +
+      "(imported, discovered but not imported), are they up, what tools do " +
+      "they have, which harnesses can reach them by default, who's using " +
+      "them right now; and which skills are installed, for which harness. " +
+      "Read-only and side-effect-free — never connects to an MCP just to " +
+      "count its tools, never fetches a skill pack from the network. " +
+      "Powers the `@agentproto/config` app's Capabilities section.",
+    {},
+    async () => {
+      const inventory = await computeCapabilitiesInventory({
+        registry,
+        listAgentAdapters,
+        mcpProxy,
+      })
+      return {
+        content: [{ type: "text", text: JSON.stringify(inventory) }],
+      }
+    }
+  )
 
   // ── mcp_import ─────────────────────────────────────────────────
   server.tool(
