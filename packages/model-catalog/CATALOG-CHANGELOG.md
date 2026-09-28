@@ -245,3 +245,6 @@ for that.
 
 ### llm:context-windows
 - Added: claude-sonnet-5-5
+
+### llm:anthropic
+- Added: claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5

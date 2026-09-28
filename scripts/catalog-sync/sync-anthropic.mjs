@@ -2,10 +2,10 @@
 /**
  * Anthropic pricing sync — fetches live model list from
  * `GET https://api.anthropic.com/v1/models?limit=1000` (if ANTHROPIC_API_KEY
- * is set), or falls back to the canonical native Anthropic model ids embedded
- * below (sourced from packages/catalog-sync/snapshots/llm-anthropic.json /
- * packages/model-catalog/src/llm/context-windows.generated.ts — the
- * `provider: "anthropic"` entries), and OpenRouter pricing for each.
+ * is set), or falls back to the committed live snapshot
+ * packages/catalog-sync/snapshots/llm-anthropic.json (refreshed by
+ * `catalog-sync generate --refresh` earlier in the same weekly job), and
+ * OpenRouter pricing for each.
  * Regenerates `packages/model-catalog/src/llm/anthropic-pricing.generated.ts`.
  *
  * Emits native Anthropic ids with DASHES (e.g. `claude-opus-4-6`), not
@@ -17,7 +17,7 @@
  * prompt price), following the same pattern as sync-google.mjs.
  */
 
-import { writeFileSync } from "node:fs"
+import { readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
 const OUTPUT_PATH = resolve(
@@ -25,23 +25,22 @@ const OUTPUT_PATH = resolve(
   "../../packages/model-catalog/src/llm/anthropic-pricing.generated.ts"
 )
 
-// Canonical native Anthropic model ids, sourced from
-// packages/catalog-sync/snapshots/llm-anthropic.json (the live
-// api.anthropic.com/v1/models snapshot). These are the ONLY valid
-// Anthropic model ids — OpenRouter :batch and -fast variants are
-// NOT real Anthropic ids and are never emitted.
-const NATIVE_ANTHROPIC_IDS = [
-  "claude-opus-5",
-  "claude-sonnet-5",
-  "claude-fable-5",
-  "claude-opus-4-8",
-  "claude-opus-4-7",
-  "claude-sonnet-4-6",
-  "claude-opus-4-6",
-  "claude-opus-4-5-20251101",
-  "claude-haiku-4-5-20251001",
-  "claude-sonnet-4-5-20250929",
-]
+const SNAPSHOT_PATH = resolve(
+  import.meta.dirname,
+  "../../packages/catalog-sync/snapshots/llm-anthropic.json"
+)
+
+// Fallback id list: the committed api.anthropic.com/v1/models snapshot, read
+// at run time. This used to be a hand-maintained array, and since the live
+// fetch below was failing (no `anthropic-version` header → 400) every weekly
+// sync fell back to it: claude-opus-5-5 / claude-fable-5-1 / claude-sonnet-5-5
+// reached the snapshot and context-windows but never the native pricing list.
+// OpenRouter :batch and -fast variants are NOT real Anthropic ids and are
+// never emitted.
+function readSnapshotModels() {
+  const json = JSON.parse(readFileSync(SNAPSHOT_PATH, "utf-8"))
+  return json.data || []
+}
 
 function round6(n) {
   return Math.round(n * 1_000_000) / 1_000_000
@@ -49,7 +48,7 @@ function round6(n) {
 
 async function fetchAnthropicModels(apiKey) {
   const res = await fetch("https://api.anthropic.com/v1/models?limit=1000", {
-    headers: { "x-api-key": apiKey },
+    headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
   })
   if (!res.ok) {
     throw new Error(
@@ -123,7 +122,9 @@ function resolveOpenRouterEntry(id, openRouterMap) {
 
 async function main() {
   const apiKey = process.env.ANTHROPIC_API_KEY
-  let anthropicIds = NATIVE_ANTHROPIC_IDS.map((id) => ({ id }))
+  let anthropicIds = readSnapshotModels()
+    .filter((m) => !m.archived)
+    .map((m) => ({ id: m.id }))
   let idSource = ""
 
   if (apiKey) {
@@ -138,13 +139,13 @@ async function main() {
         idSource = "live api.anthropic.com/v1/models"
       }
     } catch (err) {
-      console.log(`  Anthropic API failed: ${err.message} — using CONTEXT_WINDOWS fallback`)
-      idSource = "CONTEXT_WINDOWS fallback (ANTHROPIC_API_KEY fetch failed)"
+      console.log(`  Anthropic API failed: ${err.message} — using committed snapshot`)
+      idSource = "llm-anthropic.json snapshot (ANTHROPIC_API_KEY fetch failed)"
     }
   }
 
   if (!idSource) {
-    idSource = "CONTEXT_WINDOWS fallback (ANTHROPIC_API_KEY unavailable)"
+    idSource = "llm-anthropic.json snapshot (ANTHROPIC_API_KEY unavailable)"
   }
 
   console.log(`  ${anthropicIds.length} model ids from ${idSource}`)
