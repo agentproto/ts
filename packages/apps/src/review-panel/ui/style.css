@@ -1,0 +1,184 @@
+/* ═══════════════════════════════════════════════════════════════════
+   Semantic tokens + runtime mapping sheets — same scheme as work-board's
+   style.css (see that file's header doc for the two-mapping-sheet
+   rationale): every rule below reads ONLY the --rp-* custom properties,
+   each resolving through a live --vscode-* var() first, then the
+   agentproto brand fallback.
+   ═══════════════════════════════════════════════════════════════════ */
+
+:root {
+  --rp-bg: var(--vscode-editor-background, #f5f6f3);
+  --rp-surface: var(--vscode-sideBar-background, #ffffff);
+  --rp-ink: var(--vscode-editor-foreground, #171a1e);
+  --rp-ink-muted: var(--vscode-descriptionForeground, #5c6470);
+  --rp-border: var(--vscode-panel-border, #dde0da);
+  --rp-accent: var(--vscode-button-background, #0f62fe);
+
+  --rp-pass: var(--vscode-charts-green, #3edc81);
+  --rp-block: var(--vscode-charts-red, #fa4d56);
+  --rp-incomplete: var(--vscode-charts-yellow, #f0b429);
+  --rp-running: var(--vscode-charts-blue, #4589ff);
+  --rp-cancelled: var(--vscode-descriptionForeground, #5c6470);
+  --rp-failed: var(--vscode-charts-red, #fa4d56);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --rp-bg: var(--vscode-editor-background, #101214);
+    --rp-surface: var(--vscode-sideBar-background, #16191d);
+    --rp-ink: var(--vscode-editor-foreground, #e8eaed);
+    --rp-ink-muted: var(--vscode-descriptionForeground, #99a2ad);
+    --rp-border: var(--vscode-panel-border, #272c33);
+    --rp-accent: var(--vscode-button-background, #4589ff);
+
+    --rp-pass: var(--vscode-charts-green, #3edc81);
+    --rp-block: var(--vscode-charts-red, #fa4d56);
+    --rp-incomplete: var(--vscode-charts-yellow, #f0b429);
+    --rp-running: var(--vscode-charts-blue, #4589ff);
+    --rp-cancelled: var(--vscode-descriptionForeground, #99a2ad);
+    --rp-failed: var(--vscode-charts-red, #fa4d56);
+  }
+}
+
+/* ── Base ─────────────────────────────────────────────────────────── */
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  background: var(--rp-bg);
+  color: var(--rp-ink);
+  overflow: hidden;
+}
+
+.mono {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, "Courier New", monospace;
+}
+.muted { color: var(--rp-ink-muted); }
+
+#app { display: flex; flex-direction: column; height: 100%; }
+
+#toolbar {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--rp-border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--rp-surface);
+  flex-shrink: 0;
+}
+#toolbar-label { font-size: 11px; color: var(--rp-ink-muted); }
+.tbtn {
+  background: var(--rp-bg);
+  border: 1px solid var(--rp-border);
+  color: var(--rp-ink);
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+.tbtn:hover { background: var(--rp-border); }
+.tbtn:disabled { opacity: 0.5; cursor: default; }
+.tbtn.danger { border-color: var(--rp-block); color: var(--rp-block); }
+
+#main { flex: 1; overflow: hidden; display: flex; }
+#list-pane { flex: 1; overflow-y: auto; }
+#detail-pane {
+  width: 420px;
+  min-width: 320px;
+  border-left: 1px solid var(--rp-border);
+  overflow-y: auto;
+  display: none;
+  flex-direction: column;
+}
+#detail-pane.open { display: flex; }
+#detail-close { align-self: flex-end; margin: 6px; }
+
+table.list { width: 100%; border-collapse: collapse; }
+table.list th {
+  text-align: left;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--rp-ink-muted);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--rp-border);
+  position: sticky;
+  top: 0;
+  background: var(--rp-surface);
+}
+table.list td { padding: 6px 8px; border-bottom: 1px solid var(--rp-border); font-size: 12px; vertical-align: middle; }
+tr.row { cursor: pointer; }
+tr.row:hover, tr.row:focus { background: color-mix(in srgb, var(--rp-accent) 8%, transparent); outline: none; }
+tr.row.selected { background: color-mix(in srgb, var(--rp-accent) 14%, transparent); }
+
+.empty { padding: 24px 12px; color: var(--rp-ink-muted); font-size: 12px; text-align: center; }
+
+.chip { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+.chip-verdict.v-pass { background: color-mix(in srgb, var(--rp-pass) 18%, transparent); color: var(--rp-pass); }
+.chip-verdict.v-block { background: color-mix(in srgb, var(--rp-block) 18%, transparent); color: var(--rp-block); }
+.chip-verdict.v-incomplete { background: color-mix(in srgb, var(--rp-incomplete) 18%, transparent); color: var(--rp-incomplete); }
+.chip-verdict.v-running { background: color-mix(in srgb, var(--rp-running) 18%, transparent); color: var(--rp-running); }
+.chip-verdict.v-cancelled { background: color-mix(in srgb, var(--rp-cancelled) 15%, transparent); color: var(--rp-cancelled); }
+.chip-verdict.v-failed { background: color-mix(in srgb, var(--rp-failed) 18%, transparent); color: var(--rp-failed); }
+
+.chip-lane.l-pass { background: color-mix(in srgb, var(--rp-pass) 15%, transparent); color: var(--rp-pass); }
+.chip-lane.l-fail { background: color-mix(in srgb, var(--rp-block) 15%, transparent); color: var(--rp-block); }
+.chip-lane.l-skipped { background: color-mix(in srgb, var(--rp-ink-muted) 15%, transparent); color: var(--rp-ink-muted); }
+.chip-lane.l-timeout { background: color-mix(in srgb, var(--rp-incomplete) 15%, transparent); color: var(--rp-incomplete); }
+
+.tag { display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 10px; font-weight: 600; white-space: nowrap; }
+.t-dirty { background: color-mix(in srgb, var(--rp-incomplete) 15%, transparent); color: var(--rp-incomplete); }
+.t-cached { background: color-mix(in srgb, var(--rp-ink-muted) 15%, transparent); color: var(--rp-ink-muted); }
+.t-blocking { background: color-mix(in srgb, var(--rp-block) 12%, transparent); color: var(--rp-block); }
+.t-advisory { background: color-mix(in srgb, var(--rp-ink-muted) 12%, transparent); color: var(--rp-ink-muted); }
+.pr-open { background: color-mix(in srgb, var(--rp-pass) 15%, transparent); color: var(--rp-pass); }
+.pr-merged { background: color-mix(in srgb, var(--rp-accent) 15%, transparent); color: var(--rp-accent); }
+.pr-closed { background: color-mix(in srgb, var(--rp-ink-muted) 15%, transparent); color: var(--rp-ink-muted); }
+.sev-high { background: color-mix(in srgb, var(--rp-block) 18%, transparent); color: var(--rp-block); }
+.sev-medium { background: color-mix(in srgb, var(--rp-incomplete) 18%, transparent); color: var(--rp-incomplete); }
+.sev-low { background: color-mix(in srgb, var(--rp-ink-muted) 15%, transparent); color: var(--rp-ink-muted); }
+
+.detail { padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.detail-hdr { display: flex; align-items: center; gap: 8px; }
+.detail-error { color: var(--rp-block); font-size: 12px; word-break: break-word; }
+.detail-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 10px 10px; }
+
+.lane {
+  border: 1px solid var(--rp-border);
+  border-radius: 6px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lane-hdr { display: flex; align-items: center; gap: 6px; }
+.lane-id { font-weight: 600; font-size: 12px; }
+.lane-error { color: var(--rp-block); font-size: 11px; word-break: break-word; }
+.lane-agent-meta { font-size: 11px; color: var(--rp-ink-muted); }
+.sess-link {
+  background: none;
+  border: none;
+  color: var(--rp-accent);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.findings { display: flex; flex-direction: column; gap: 4px; }
+.finding summary { cursor: pointer; font-size: 11px; list-style: none; }
+.finding summary::-webkit-details-marker { display: none; }
+.finding-detail { font-size: 11px; color: var(--rp-ink-muted); padding: 4px 0 0 4px; white-space: pre-wrap; word-break: break-word; }
+
+#statusbar {
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--rp-ink-muted);
+  border-top: 1px solid var(--rp-border);
+  background: var(--rp-surface);
+  flex-shrink: 0;
+}

@@ -130,7 +130,7 @@ import { createWorkflowRunner } from "./workflow-runner.js"
 import { createReviewRunner } from "./review-runner.js"
 import { createReviewLedger } from "./review-ledger.js"
 import { createDaemonReviewerHost } from "./review-reviewer-host.js"
-import { registerReviewTools } from "./review-tools.js"
+import { registerReviewTools, reviewLedgerView } from "./review-tools.js"
 import { compileWorkflow } from "@agentproto/workflow-runtime"
 import { createFileStepCache } from "./workflow-step-cache.js"
 import { withDeferredTools } from "./deferred-tools.js"
@@ -2456,6 +2456,17 @@ export async function createGateway(
             { kind: "operator" },
           ),
         }),
+        // Reviews widget's initial-snapshot read path — the SAME
+        // `reviewLedgerView` function `review_ledger` itself calls
+        // (review-tools.ts), so this can never drift from what the tool
+        // returns. `includeRunning: true` always on, matching the panel's
+        // own live-poll behavior.
+        listReviews: (input) =>
+          reviewLedgerView(
+            reviewRunner,
+            { ...input, includeRunning: true },
+            { resolveSubtree: (sessionId) => [...collectSubtree(sessionId, sessions.list({ includeArchived: true }))] },
+          ),
       }),
       // Same ptyEnabled gate as terminal_start/terminal_input/… in
       // session-tools.ts — the panel would be able to open the WS but

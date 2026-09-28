@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>agentproto reviews</title>
+<!-- PANEL_BRIDGE: replaced with the inline panelBridgeScript() output by
+     vite.config.ts's injectPanelBridge plugin — a classic (non-module)
+     script so its `initBridge`/`callTool` land as globals before the
+     deferred module script below runs. -->
+<!--PANEL_BRIDGE-->
+<link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+<div id="app">
+  <div id="toolbar">
+    <span id="toolbar-label">Reviews</span>
+    <button class="tbtn" id="refresh-btn" title="Refresh">&#8635;</button>
+  </div>
+  <div id="main">
+    <div id="list-pane"></div>
+    <div id="detail-pane">
+      <button class="tbtn" id="detail-close">&times; Close</button>
+      <div id="detail-body"></div>
+      <div class="detail-actions">
+        <button class="tbtn danger" id="cancel-btn">Cancel</button>
+        <button class="tbtn" id="rerun-btn">Re-run fresh</button>
+        <button class="tbtn" id="pr-btn">Fetch PR status</button>
+        <button class="tbtn" id="export-btn">Export</button>
+      </div>
+    </div>
+  </div>
+  <div id="statusbar">Connecting to bridge&#8230;</div>
+</div>
+<script type="module" src="./main.ts"></script>
+</body>
+</html>

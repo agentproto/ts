@@ -69,9 +69,17 @@ function runView(run: ReviewRun): Record<string, unknown> {
 }
 
 /** Compact `review_ledger` row. `pr`: the annotation link, else the one
- *  recorded in the attestation. */
-function ledgerRow(a: Attestation, annotations: LedgerAnnotations = {}): Record<string, unknown> {
+ *  recorded in the attestation. `prState`: the most recent `review_pr`
+ *  status snapshot's state, when one was ever fetched — the "last known PR
+ *  state" the `agentproto_reviews` panel's list row shows without a second
+ *  round-trip. `cwd`: the host-local checkout `review_run` ran in (never
+ *  part of the attestation itself — it isn't portable — but real daemon-
+ *  local metadata a caller on THIS daemon needs to pass back into a fresh
+ *  `review_run`, e.g. the panel's "Re-run fresh" action). */
+function ledgerRow(entry: LedgerEntry, annotations: LedgerAnnotations = {}): Record<string, unknown> {
+  const a = entry.attestation
   const pr = annotations.pr ?? a.pr
+  const lastPrStatus = annotations.prStatus?.at(-1)
   return {
     runId: a.runId,
     reviewId: a.reviewId,
@@ -83,9 +91,11 @@ function ledgerRow(a: Attestation, annotations: LedgerAnnotations = {}): Record<
     rangeSha: a.rangeSha,
     manifestSha: a.manifestSha,
     createdAt: a.createdAt,
+    cwd: entry.host.repoRoot,
     ...(a.dirty ? { dirty: true } : {}),
     ...(a.requester ? { requester: a.requester } : {}),
     ...(pr ? { pr } : {}),
+    ...(lastPrStatus ? { prState: lastPrStatus.state } : {}),
     lanes: a.lanes.map((l) => ({ id: l.id, status: l.status, blocking: l.blocking })),
   }
 }
@@ -103,6 +113,7 @@ function runningRow(run: ReviewRun): Record<string, unknown> {
     ...(run.baseSha ? { baseSha: run.baseSha } : {}),
     ...(run.headSha ? { headSha: run.headSha } : {}),
     createdAt: run.startedAt,
+    ...(run.repoRoot ? { cwd: run.repoRoot } : {}),
     ...(run.requesterSessionId ? { requester: { sessionId: run.requesterSessionId } } : {}),
     lanes: run.lanes.map((l) => ({ id: l.id, status: l.status, blocking: l.blocking })),
   }
@@ -133,8 +144,8 @@ async function resolveRangeSha(range: string, root: string | undefined): Promise
 }
 
 /** Summary of an attestation for the `review_pr` view. */
-const attestationSummary = (a: Attestation): Record<string, unknown> => {
-  const { lanes: _lanes, ...rest } = ledgerRow(a)
+const attestationSummary = (entry: LedgerEntry): Record<string, unknown> => {
+  const { lanes: _lanes, ...rest } = ledgerRow(entry)
   return rest
 }
 
@@ -211,7 +222,7 @@ export async function reviewLedgerView(
   const settledRows = await Promise.all(
     entries
       .slice(0, Math.max(limit - runningRows.length, 0))
-      .map(async (e) => ledgerRow(e.attestation, await runner.ledger.getAnnotations(ledgerKeyOf(e.attestation)))),
+      .map(async (e) => ledgerRow(e, await runner.ledger.getAnnotations(ledgerKeyOf(e.attestation)))),
   )
   const rows = [...runningRows, ...settledRows].slice(0, limit)
   return { total: entries.length + runningRows.length, attestations: rows }
@@ -537,7 +548,7 @@ export function registerReviewTools(server: McpServer, opts: RegisterReviewTools
             if (!repo) {
               return jsonContent({
                 ok: false,
-                attestation: attestationSummary(a),
+                attestation: attestationSummary(entry),
                 error: {
                   code: "unsupported_remote",
                   message: `'${a.target.repoRemote}' is not a github.com remote — review_pr only follows GitHub PRs`,
@@ -548,7 +559,7 @@ export function registerReviewTools(server: McpServer, opts: RegisterReviewTools
             if (!pr) {
               return jsonContent({
                 ok: false,
-                attestation: attestationSummary(a),
+                attestation: attestationSummary(entry),
                 error: { code: "no_pr", message: `GitHub knows no pull request containing ${a.target.headSha} in ${repo}` },
               })
             }
@@ -561,7 +572,7 @@ export function registerReviewTools(server: McpServer, opts: RegisterReviewTools
           )
           return jsonContent({
             ok: true,
-            attestation: attestationSummary(a),
+            attestation: attestationSummary(entry),
             pr: updated.pr ?? pr,
             linkedVia,
             status: snapshot,
@@ -571,7 +582,7 @@ export function registerReviewTools(server: McpServer, opts: RegisterReviewTools
           const e = toPrLookupError(err)
           return jsonContent({
             ok: false,
-            attestation: attestationSummary(a),
+            attestation: attestationSummary(entry),
             ...(pr ? { pr } : {}),
             ...(annotations.prStatus?.length ? { lastStatus: annotations.prStatus.at(-1) } : {}),
             error: { code: e.code, message: e.message },

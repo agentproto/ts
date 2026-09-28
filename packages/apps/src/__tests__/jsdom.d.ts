@@ -92,7 +92,10 @@ declare module "jsdom" {
     McpApp?: DomMcpApp
     addEventListener(type: string, handler: () => void): void
     dispatchEvent(event: DomEvent): boolean
-    Event: new (type: string) => DomEvent
+    /** `eventInitDict.bubbles` — review-panel-actions.dom.test.ts dispatches
+     *  a bubbling click on a `tr` so main.ts's delegated listener (bound on
+     *  the list pane, not each row) sees it. */
+    Event: new (type: string, eventInitDict?: { bubbles?: boolean }) => DomEvent
   }
 
   export interface JSDOMOptions {

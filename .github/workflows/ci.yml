@@ -285,6 +285,15 @@ jobs:
       - name: Check work-board UI drift
         run: pnpm --filter @agentproto/apps run build:ui:check
 
+      # Same drift guard as work-board's, for the review verdict panel
+      # (packages/apps/src/review-panel/ui/**) — see
+      # scripts/build-review-panel-ui.mjs and the "Check work-board UI
+      # drift" step's comment above for the full rationale (a live rebuild
+      # + diff, not an enumerated file list, so it also catches drift from
+      # ../panel-bridge.ts).
+      - name: Check review panel UI drift
+        run: pnpm --filter @agentproto/apps run build:ui:reviews:check
+
       - name: Run sync-templates tests
         run: node --test scripts/sync-templates.test.mjs
 

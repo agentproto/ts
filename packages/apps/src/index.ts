@@ -65,3 +65,5 @@ export type {
 } from "./session-chat/index.js"
 export { makeWorkBoardApp, workBoardApp } from "./work-board/index.js"
 export type { WorkBoardOps, WorkBoardInput, WorkBoardOutput } from "./work-board/index.js"
+export { makeReviewPanelApp, reviewPanelApp } from "./review-panel/index.js"
+export type { ReviewPanelOps, ReviewPanelInput, ReviewPanelOutput } from "./review-panel/index.js"
