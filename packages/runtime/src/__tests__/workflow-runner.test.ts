@@ -704,6 +704,103 @@ describe("WorkflowRunner persistence", () => {
     expect(runner2.list()).toHaveLength(1)
   })
 
+  it("F44b: finalizes stuck running/pending steps as cancelled/skipped for an already-cancelled run found on restart", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeMockRegistry()
+
+    // Reproduces the crash's second defect: `cancel()` flips `run.status`
+    // to "cancelled" and persists synchronously, but the daemon died
+    // (the F44 unhandled rejection, or any other crash) before the run's
+    // own promise chain reached the step/stage finalization in its catch
+    // block — so the persisted file has a terminal run with a step stuck
+    // "running" forever.
+    const stuckRun = {
+      runId: "wfrun_stuckcancel1",
+      workflowId: "cancelled-run",
+      status: "cancelled",
+      startedAt: new Date().toISOString(),
+      endedAt: new Date().toISOString(),
+      stages: [
+        {
+          index: 0,
+          status: "running",
+          steps: [
+            { index: 0, label: "clean-chunk[0]", status: "running", sessionId: "sess_x" },
+            { index: 1, label: "clean-chunk[1]", status: "pending" },
+            { index: 2, label: "clean-chunk[2]", status: "done" },
+          ],
+        },
+      ],
+      result: { sessionIds: ["sess_x"] },
+    }
+    writeFileSync(persistPath, JSON.stringify([stuckRun], null, 2), "utf8")
+
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      persistPath,
+    })
+
+    const s = runner.status("wfrun_stuckcancel1")
+    expect(s?.status).toBe("cancelled")
+    expect(s?.stages[0]?.steps[0]).toMatchObject({ label: "clean-chunk[0]", status: "cancelled" })
+    expect(s?.stages[0]?.steps[0]?.phase).toBeUndefined()
+    expect(s?.stages[0]?.steps[1]).toMatchObject({
+      label: "clean-chunk[1]",
+      status: "skipped",
+      skipReason: "run-cancelled",
+    })
+    expect(s?.stages[0]?.steps[2]).toMatchObject({ label: "clean-chunk[2]", status: "done" })
+    expect(s?.stages[0]?.status).toBe("failed")
+
+    // Persisted immediately, the same way the host-interrupted correction is.
+    const persisted = JSON.parse(readFileSync(persistPath, "utf8")) as Array<{ stages: Array<{ steps: Array<{ status: string }> }> }>
+    expect(persisted[0]?.stages[0]?.steps[0]?.status).toBe("cancelled")
+  })
+
+  it("F44b: finalizes stuck steps as failed (interrupted by daemon restart) for an already-terminal failed run found on restart", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeMockRegistry()
+
+    const stuckRun = {
+      runId: "wfrun_stuckfailed1",
+      workflowId: "failed-run",
+      status: "failed",
+      error: "some earlier step error",
+      startedAt: new Date().toISOString(),
+      endedAt: new Date().toISOString(),
+      stages: [
+        {
+          index: 0,
+          status: "running",
+          steps: [{ index: 0, label: "other-step", status: "running", sessionId: "sess_y" }],
+        },
+      ],
+      result: { sessionIds: ["sess_y"] },
+    }
+    writeFileSync(persistPath, JSON.stringify([stuckRun], null, 2), "utf8")
+
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      persistPath,
+    })
+
+    const s = runner.status("wfrun_stuckfailed1")
+    expect(s?.status).toBe("failed")
+    // The run's own top-level error is untouched — only the stuck step gets
+    // the daemon-restart reason, not the run's original failure reason.
+    expect(s?.error).toBe("some earlier step error")
+    expect(s?.stages[0]?.steps[0]).toMatchObject({
+      label: "other-step",
+      status: "failed",
+      error: "interrupted by daemon restart",
+    })
+    expect(s?.stages[0]?.status).toBe("failed")
+  })
+
   it("marks running/awaiting-input runs as failed on restart", async () => {
     const bus = createSessionEventBus()
     const registry = makeMockRegistry()
