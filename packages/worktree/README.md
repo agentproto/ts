@@ -8,9 +8,12 @@ and cleaning up a git worktree — the primitive a `@agentproto/workflow-runtime
 
 - **`worktree.provision`** — `git worktree add` a new worktree for `repoRoot`
   at `<repoRoot>/../_worktrees/<slug>` on branch `wt/<slug>`, cut from `base`
-  (default `origin/main`). Optionally runs `depsCmd` inside it, and copies
-  `copyGlobs` (e.g. gitignored local secrets) from `repoRoot` into it at the
-  same relative path. Then runs the base tree's `agentproto.json` **setup**
+  (default `origin/main`). Before `depsCmd` runs: `linkPaths` are symlinked in,
+  `writeFiles` are written, and `cloneGlobs` (e.g. `node_modules`) are cloned
+  in — copy-on-write where the filesystem supports it, else a plain copy,
+  never a symlink. Then `depsCmd` runs, then `copyGlobs` (e.g. gitignored
+  local secrets) are copied from `repoRoot` into the worktree at the same
+  relative path. Finally runs the base tree's `agentproto.json` **setup**
   hooks (unless `runSetup: false`). Returns `{ cwd, branch }`.
 - **`worktree.run-gate`** — run a caller-provided command inside a directory
   and report pass/fail from its exit code.
@@ -69,6 +72,61 @@ the committed tree of the base ref (default `origin/main`), never a worktree's
 working tree. A feature branch or an agent editing files inside a worktree
 therefore **cannot inject** setup/teardown hooks or service commands that run
 on the host; only what a reviewer merged into the base branch executes.
+
+## `<repoRoot>/.agentproto/worktree.json` — local, per-machine worktree defaults
+
+`agentproto.json` is committed and shared by everyone who clones the repo, so
+it can't hold anything host-specific — a pnpm store path, whether to clone
+`node_modules` at all. `.agentproto/worktree.json` fills that gap: a LOCAL,
+gitignored, host-owned file (same idea as `.agentproto/allowed-commands.json`)
+that one machine can drop to declare its own worktree defaults, without
+committing them:
+
+```json
+{
+  "cloneGlobs": ["node_modules"],
+  "linkPaths": ["../sibling-repo"],
+  "copyGlobs": ["envs/**/.env.local"],
+  "writeFiles": [
+    { "path": "pnpm-workspace.yaml", "content": "\nvirtualStoreDir: /abs/path/.pnpm-vstores/{slug}\n", "mode": "append" }
+  ],
+  "depsCmd": "pnpm install --prefer-offline"
+}
+```
+
+- **`cloneGlobs`** — glob patterns (relative to `repoRoot`) of gitignored
+  dirs/files cloned into the worktree BEFORE `depsCmd` runs. Copy-on-write
+  where the filesystem supports it (macOS APFS `cp -c`/clonefile, Linux `cp
+  --reflink=auto`), falling back to a plain copy — never a symlink, so
+  `depsCmd` can mutate the clone (e.g. `pnpm install` repairing it) without
+  touching the source checkout. A directory match is cloned as a whole unit
+  (e.g. `node_modules` costs one `readdir`, not a walk of everything inside
+  it); `**` is not supported — name each path segment explicitly.
+- **`writeFiles`' `path`/`content`** may use a literal `{slug}` placeholder,
+  substituted with the worktree's own slug — e.g. pointing pnpm's
+  `virtualStoreDir` at a distinct, collision-free directory per worktree
+  (mirrors the real use case this shipped for: `agentik-studio`'s
+  `infra/cli/src/commands/wt.ts` `defaultWriteFiles`).
+- **`copyGlobs` / `linkPaths` / `depsCmd`** — same shape and semantics as the
+  matching `worktree.provision` inputs / `agentproto.json` fields above.
+
+**Precedence** (highest wins): an explicit `worktree.provision` tool input >
+this local file > `agentproto.json`'s committed `worktree.depsCmd`/
+`worktree.linkPaths` (`copyGlobs`/`cloneGlobs`/`writeFiles` have no committed
+equivalent, so for those the chain stops at this file). Same `runSetup` gate
+as the committed config.
+
+**Security model**: unlike `agentproto.json`, this file is read straight off
+disk (never `git show`) from `repoRoot` — the SOURCE checkout, never the
+freshly created worktree, which starts with no copy of it (the directory is
+gitignored repo-wide). There is nothing here for the committed-config
+guarantee to defend against: a branch can't smuggle this file in, because it
+can never be committed at all. The trust model is simply "whoever owns this
+machine's filesystem" — same as `allowed-commands.json`.
+
+Path-traversal guard: a `cloneGlobs` pattern that could resolve outside
+`repoRoot` (a leading `/`, or any `..` segment) is rejected before any
+filesystem access.
 
 ### Environment
 
