@@ -120,6 +120,11 @@
         {
           "id": "agentproto.apps",
           "name": "Apps"
+        },
+        {
+          "id": "agentproto.devicesWebview",
+          "name": "Devices",
+          "type": "webview"
         }
       ],
       "agentprotoConfig": [

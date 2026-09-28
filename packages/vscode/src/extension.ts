@@ -65,6 +65,7 @@ import { registerTerminalSwitch } from "./terminal/terminalSwitch.js"
 import { registerTranscriptPanels } from "./webview/transcriptPanel.js"
 import { registerSessionsWebview } from "./webview/sessionsWebviewPanel.js"
 import { registerActivityWebview } from "./webview/activityWebviewPanel.js"
+import { registerDevicesWebview } from "./webview/devicesWebviewPanel.js"
 import { registerWorkWebview } from "./webview/workWebviewPanel.js"
 import { registerAppPanels } from "./webview/appPanel.js"
 import { builtinViewResourceUri } from "./webview/appPanel.logic.js"
@@ -177,6 +178,10 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // column below Activity. Rides the same SessionStore signal — no second
   // polling timer; claiming/status moves stay in the board app.
   registerWorkWebview(ctx, client, store)
+  // This machine + every paired device (client/host) GET /devices knows
+  // about, with lazy drill-down into a host's remote sessions. Same
+  // SessionStore signal as Activity/Work — no second polling timer.
+  registerDevicesWebview(ctx, client, store)
   // Opt-in webview alternatives for Harnesses and Auth Profiles, gated by
   // `agentproto.harnessesView` / `agentproto.authProfilesView` in package.json.
   registerHarnessesWebview(ctx, client, harnessesProvider)
