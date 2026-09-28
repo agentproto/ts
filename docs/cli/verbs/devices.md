@@ -7,6 +7,7 @@ agentproto devices revoke <fingerprint|name>
 agentproto devices add    <offer-url> [--name <label>]
 agentproto devices status <fingerprint|name>
 agentproto devices share-inference on|off
+agentproto devices allow-spawn on|off
 agentproto devices sessions <fingerprint|name> [--session <id>] [--lines <n>] [--clean] [--json]
 agentproto devices join-token create <name> [--ttl <duration>] [--max-uses <n>]
 agentproto devices join-token list   [--json]
@@ -134,6 +135,24 @@ Once both are on, A addresses this daemon's endpoints transparently as
 routed through A's own llm-endpoint gateway forwards to B's `ollama`
 endpoint, over the paired E2E channel, with no open inbound port on B.
 Offline/unreachable surfaces as a normal upstream error, not a hang.
+
+## `allow-spawn`
+
+```bash
+agentproto devices allow-spawn on
+agentproto devices allow-spawn off
+```
+
+Opt THIS daemon in (or out) of being usable as an `agent_start({ sandbox:
+"device:<name>" })` target — letting a paired controller spawn and drive agent
+sessions on this machine's own daemon, exactly as `sandbox: "e2b"` proxies a
+cloud box. The same HOST-scoped pairing requirement applies as for
+`share-inference`: the controlling daemon must have registered this one as a
+host (`pair offer --host` here, then `devices add` there) — a plain
+remote-control pairing never gets these routes.
+
+Default **off**. Writes `features.deviceSpawnAllow` to `config.json`; restart
+`agentproto serve` (or the daemon) for a change to take effect.
 
 ## `sessions`
 
