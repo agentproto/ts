@@ -18,6 +18,33 @@ import type { CollectionDefinition, CollectionHandle } from "./types.js"
 export const defineCollection = createDoctype<CollectionDefinition, CollectionHandle>({
   aip: 18,
   name: "collection",
+  // AIP-18 has two branches with different identity fields:
+  //   collection.schema/v1 (COLLECTION.md) → name
+  //   collection.item/v1   (ITEM.md)       → id
+  // Dispatch on the `schema` discriminator so the cross-AIP id-pattern
+  // check runs against the right token (the cross-AIP default reads
+  // `def.id` unconditionally, which is undefined on every schema-branch
+  // def — that alone made defineCollection reject every valid
+  // COLLECTION.md before this fix).
+  readIdentity: (def) => {
+    const d = def as { schema?: string; name?: string; id?: string }
+    return d.schema === "collection.item/v1" ? (d.id ?? "") : (d.name ?? "")
+  },
+  // Union of both branches' identity patterns (name:
+  // `^[a-z][a-z0-9-]*[a-z0-9]$`, id: `^[A-Za-z0-9][A-Za-z0-9_:-]*$`) —
+  // the cross-AIP default (`^[a-z0-9][a-z0-9._-]{1,79}$`) would reject
+  // a valid item id (leading uppercase, `:`) and doesn't bound length
+  // the same way (96 vs 80). The exact per-branch shape is enforced by
+  // the schema-derived zod in `validate()` below; this gate only
+  // catches a missing/malformed identity before that runs.
+  idPattern: /^[A-Za-z0-9][A-Za-z0-9_:-]{0,95}$/,
+  // AIP-18's `collection.item/v1` branch has no `description` field
+  // (it uses `title` instead) — the cross-AIP default description
+  // check reads `def.description` unconditionally and would reject
+  // every valid ITEM.md. Length-checking `description` on the schema
+  // branch is already covered by the schema-derived zod below
+  // (required, 1-2000 chars), so skip the cross-AIP generic check.
+  readDescription: false,
   validate(def) {
     // Cross-field rules run BEFORE the field-level zod check so a
     // structurally-broken def (e.g. appliesTo without extends) reports

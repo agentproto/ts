@@ -208,12 +208,22 @@ export interface FieldDef {
 }
 /**
  * Required when type=array. Recursive shape — describes the inner item type.
+ *
+ * `name` is optional here (unlike `FieldDef.name`) even though the
+ * canonical JSON Schema's `$defs/fieldDef.items` is `$ref:
+ * #/$defs/fieldDef`, which textually requires `name` at every recursion
+ * depth. Every `items:` example in EXAMPLES.md (e.g. okrs' `keyResults`,
+ * incidents' `impactWindow`) omits `name` inside `items` — a name only
+ * makes sense for an entry inside `fields[]`; the recursive `items`
+ * shape describes just the inner value type. Hand-tuned to match spec
+ * intent + the documented examples; flagged as a spec amendment needed
+ * in the PR (`$defs/fieldDef.items` should point at a name-less variant).
  */
 export interface FieldDef1 {
   /**
    * kebab-or-camel-case field name. Merge key when composing.
    */
-  name: string
+  name?: string
   /**
    * Field type. Drift across composition (parent string -> child number) is HARD refused (`collection_field_type_drift`).
    */
