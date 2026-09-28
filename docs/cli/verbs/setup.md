@@ -30,7 +30,7 @@ re-implementation), then re-checks the step and shows the result.
 | `auth` | Multiselect of discovered, not-imported credentials (all pre-selected). Then an optional API key (provider + masked input). Prints runnable models per harness | yes / no | `auth profile import` / `auth provider set` |
 | `clients` | Multiselect of detected clients without the MCP server (pre-selected). Wrong port ⇒ update | yes | `install-mcp --agent … --yes` / `install-mcp --update` |
 | `skills` | Missing or stale skill pack ⇒ install it | yes | `install skill/agentproto-pack --force` |
-| `local-models` | Checks each configured local/LAN model endpoint (`~/.agentproto/llm-endpoints.json`, plus `forge` from `FORGE_BASE_URL`) answers `/models`; warns if not. Manage them with [`llm endpoints`](./llm.md) | — | nothing |
+| `local-models` ("Inference endpoints") | Checks each configured local/LAN model endpoint (`~/.agentproto/llm-endpoints.json`, plus `forge` from `FORGE_BASE_URL`) answers `/models`, plus its connector's loaded models/context size; also probes the default local ports for a runtime running but not yet configured. A runtime found running but unconfigured ⇒ run `llm endpoints detect` (then `sync-pi`) | yes | `llm endpoints detect` + `llm endpoints sync-pi` |
 | `first-run` | A 20-second test session on your best harness: spawn, one prompt, stream the reply, stop | yes | daemon `/sessions/agent` |
 
 Claude Code can't load a plugin headlessly: after the skills step the
@@ -78,7 +78,7 @@ actions taken, and the re-checked result:
 │  ✓ Cursor  registered in ~/.cursor/mcp.json
 │  ✓ Windsurf  registered in ~/.codeium/windsurf/mcp_config.json
 │
-◆  Local model (optional)  none configured — point FORGE_BASE_URL at an OpenAI-compatible server (vLLM, Ollama…) to use one
+◆  Inference endpoints  none configured (~/.agentproto/llm-endpoints.json)
 │
 └  30 ok · 1 warn · 0 missing · 0 broken
 ```

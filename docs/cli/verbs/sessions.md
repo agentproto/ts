@@ -42,6 +42,8 @@ agentproto sessions stop     <id-or-name> [--json]
 agentproto sessions wait     <id-or-name> [--until <event>] [--timeout <duration>]
                                            [--policy <policyId>] [--json]
 agentproto sessions gc       [--older-than-days <n>] [--forget] [--json]
+agentproto sessions continue-interrupted [--send] [--id <id-or-name>...]
+                                           [--prompt <text>] [--json]
 agentproto sessions queue    <id-or-name> [--force <n>] [--deliver <n>]
                                            [--drop <n>] [--json]
 agentproto sessions inbox    <id-or-name> [--ack <msgId,...|all>] [--json]
@@ -632,6 +634,34 @@ By default it **archives** them (hidden from the default view, still
 readable/importable) via `POST /sessions/gc`. Pass `--forget` to drop the
 descriptors instead (the native conversation on disk survives). `--older-than-days`
 keeps anything more recent. Live sessions are never touched.
+
+### `continue-interrupted`
+
+```bash
+agentproto sessions continue-interrupted
+agentproto sessions continue-interrupted --send
+agentproto sessions continue-interrupted --send --id ses_abc12 --id ses_def34
+agentproto sessions continue-interrupted --send --prompt "continue from where you left off"
+```
+
+CLI parity for the `session_continue_interrupted` MCP verb. Lists the sessions
+the **last daemon restart** cut off mid-turn — i.e., sessions that were still
+in a running turn when the daemon process exited and whose turn therefore never
+received a proper turn-end. Without `--send` it's a **dry run** that prints the
+eligible sessions and exits without touching anything. Pass `--send` to send
+each eligible session a one-shot continue prompt (resuming it in place first if
+needed). Hits `POST /sessions/continue-interrupted`.
+
+The opt-in `daemon.continueInterruptedOnBoot` config flag runs this pass
+automatically whenever the daemon boots (with `--send` behaviour), so a crash
+and restart can self-heal without manual intervention.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--send` | `false` | Actually send the continue prompt to each eligible session. Without this the command is a dry run — it prints what it would do, then exits. |
+| `--id <id-or-name>` | (all eligible) | Restrict to this session only. Repeatable. |
+| `--prompt <text>` | *(default continue message)* | Custom text to send as the continue prompt. |
+| `--json` | `false` | Emit `{dryRun, sessions, eligible, sent, skipped, failed}` instead of the human summary. Exits `1` if any session failed. |
 
 ### `queue <id-or-name>`
 

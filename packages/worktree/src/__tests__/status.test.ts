@@ -534,6 +534,14 @@ describe("classify (PLAN.md §1.2)", () => {
     expect(classify(DIRTY, MERGED_SQUASH, IDLE)).toEqual({ reclaimable: false, class: "salvage" })
   })
 
+  it("merged + dirty + a live session => hold — salvage never touches a worktree with a live agent", () => {
+    expect(classify(DIRTY, MERGED_SQUASH, LIVE)).toEqual({ reclaimable: false, class: "hold" })
+  })
+
+  it("merged + dirty + daemon-unreachable => still salvage (git's own refusal is the safety net)", () => {
+    expect(classify(DIRTY, MERGED_SQUASH, DAEMON_UNREACHABLE)).toEqual({ reclaimable: false, class: "salvage" })
+  })
+
   it("merged + dirty, written inside the hold window => hold, not salvage", () => {
     const justWritten = { ...DIRTY, newestMtimeMs: NOW_MS - 60_000 } // 1 minute ago
     expect(classify(justWritten, MERGED_SQUASH, IDLE, NOW_MS)).toEqual({ reclaimable: false, class: "hold" })

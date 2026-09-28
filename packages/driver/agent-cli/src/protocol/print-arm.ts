@@ -540,19 +540,48 @@ function setupMcpConfigFile(
 
 // ── Prompt extraction ───────────────────────────────────────────────
 
+/** Print-mode CLIs (mastracode, antigravity, jcode, …) declare
+ *  `capabilities.multimodal: false` — this arm spawns a fresh subprocess
+ *  per turn and hands it ONE plain-text argv value, with no wire-level
+ *  content-block channel for an image/resource block to ride on. A
+ *  non-text block therefore has nowhere to go: silently dropping it (the
+ *  previous behavior — filtering an array down to just its text blocks)
+ *  would send an incomplete prompt with no indication anything was lost.
+ *  Throwing here instead surfaces a clear `[turn error]` in the session's
+ *  event stream (same convention as an ACP adapter rejecting content its
+ *  own `promptCapabilities` doesn't advertise) — the caller should upload
+ *  the file via `POST /files/upload` and reference its path in the prompt
+ *  text instead, which this adapter reads natively (see its `file_attach`
+ *  capability). */
 function extractPromptText(message: unknown): string {
   if (typeof message === "string") return message
-  if (message !== null && typeof message === "object") {
-    const m = message as Record<string, unknown>
-    if (typeof m.text === "string") return m.text
-    if (Array.isArray(message)) {
-      return (message as Array<Record<string, unknown>>)
-        .filter(b => b.type === "text" && typeof b.text === "string")
-        .map(b => b.text as string)
-        .join("\n")
+  const blocks = Array.isArray(message) ? message : [message]
+  const texts: string[] = []
+  for (const block of blocks) {
+    if (block !== null && typeof block === "object") {
+      const b = block as Record<string, unknown>
+      if (b.type === "text" && typeof b.text === "string") {
+        texts.push(b.text)
+        continue
+      }
+      if (b.type === undefined && typeof b.text === "string") {
+        // Not an ACP-shaped block at all — a caller-supplied `{text: "..."}`
+        // convenience shape rather than `{type:"text", text:"..."}`.
+        texts.push(b.text)
+        continue
+      }
     }
+    const kind =
+      block !== null && typeof block === "object" && typeof (block as Record<string, unknown>).type === "string"
+        ? ((block as Record<string, unknown>).type as string)
+        : typeof block
+    throw new Error(
+      `this adapter has no multimodal input (capabilities.multimodal: false) — got a ` +
+        `"${kind}" content block it can't send. Upload the file via POST /files/upload ` +
+        `and reference its path in the prompt text instead.`
+    )
   }
-  return JSON.stringify(message)
+  return texts.join("\n")
 }
 
 // ── Session id capture per event schema ─────────────────────────────

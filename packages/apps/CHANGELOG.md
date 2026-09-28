@@ -1,5 +1,11 @@
 # @agentproto/apps
 
+## 0.13.1
+
+### Patch Changes
+
+- 7f50ff6: Branch gc prunes stale remote-tracking refs (`git fetch --prune`) before classifying and reports it as `plan.fetched`; its delete pushes skip git hooks (`--no-verify`) and a refused batch is retried as a batch before falling back to one push per ref. The `maintain` workflow now applies worktree gc before branch gc.
+
 ## 0.13.0
 
 ### Minor Changes

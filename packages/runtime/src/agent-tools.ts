@@ -38,6 +38,7 @@ import type {
   AdapterListEntry,
 } from "./http-server.js"
 import { agentStartInputShape, mcpBool } from "./agent-start-schema.js"
+import { promptInputSchema } from "./spawn-field-schemas.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import {
@@ -515,7 +516,13 @@ export function registerAgentTools(
     {
       sessionId: sessionIdField,
       id: sessionIdAliasField,
-      prompt: z.string().min(1).describe("The next user turn (plain text)."),
+      prompt: promptInputSchema.describe(
+        "The next user turn — plain text, or a content block / block array " +
+          "for a multimodal turn (e.g. a pasted image, " +
+          '`{type:"image", data, mimeType}`), same loose shape ' +
+          "`POST /sessions/:id/prompt` accepts over HTTP. Forwarded to the " +
+          "adapter verbatim; it negotiates its own multimodal support."
+      ),
       interrupt: z
         .boolean()
         .optional()

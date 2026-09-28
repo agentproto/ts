@@ -1,5 +1,13 @@
 # @agentproto/model-catalog
 
+## 0.11.1
+
+### Patch Changes
+
+- fa1bfdd: Sync kimi-k2.7-code pricing to OpenRouter's live numbers
+- 68ffab8: Stop pinning drift-prone generated pricing data in catalog tests
+- b297612: Sync generated catalog data from the pinned provider sources
+
 ## 0.11.0
 
 ### Minor Changes

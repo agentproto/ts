@@ -21,10 +21,13 @@
  * Eligibility (both modes): an agent-cli row that is `interrupted` BY THE LAST
  * RESTART (`interruptedAtBoot === registry.bootId` — a stale interruption from
  * an older restart that nobody picked up is left alone), resumable under the
- * attempt cap (`canResume`), and not already busy. The prompt goes through
- * `enqueuePrompt`, the normal prompt path, so a dead-but-resumable row
- * lazy-resumes with its billing auth re-resolved exactly as a human prompt
- * would.
+ * attempt cap (`canResume`), not already busy, and whose `cwd` still exists
+ * (a removed worktree fails the adapter respawn every time — knowable up front,
+ * so the dry run must not call such a row eligible). The prompt goes through
+ * `enqueuePrompt`, the same entry MCP `agent_prompt` uses, so a
+ * dead-but-resumable row lazy-resumes with its billing auth re-resolved exactly
+ * as a human prompt would. When that resume fails, the outcome says so instead
+ * of passing on the bare post-resume "not alive" admission error.
  *
  * No-loop rules (boot mode only — a human pressing the button is intent):
  *   - never auto-continue a row whose resume has failed (`resumeAttempts > 0`:
@@ -42,9 +45,11 @@
  * skipped rather than lazily retried.
  */
 
+import { existsSync } from "node:fs"
 import {
   canResume,
   isResumable,
+  MAX_RESUME_ATTEMPTS,
   type SessionDescriptor,
   type SessionsRegistry,
 } from "./sessions.js"
@@ -78,6 +83,8 @@ export type ContinueInterruptedSkipReason =
   | "resume-cap-exhausted"
   /** Mid-turn already — someone got there first. */
   | "busy"
+  /** The row's `cwd` is gone (removed worktree) — the resume would fail. */
+  | "cwd-missing"
   /** Boot mode: a resume attempt has failed on this row. */
   | "resume-failed"
   /** Boot mode: already auto-continued by this boot. */
@@ -164,8 +171,15 @@ export async function continueInterruptedSessions(opts: {
   /** Extra visibility filter (a scoped orchestrator's subtree). Rows it
    *  rejects are dropped silently — never reported, never sent. */
   visible?: (desc: SessionDescriptor) => boolean
+  /** Filesystem probe for the `cwd-missing` check. Default `existsSync`. */
+  cwdExists?: (cwd: string) => boolean
 }): Promise<ContinueInterruptedResult> {
   const { registry, mode, isServed, visible } = opts
+  const cwdExists = opts.cwdExists ?? existsSync
+  // Descriptor rules, then the one environmental fact the resume depends on
+  // that is cheap to check before spending a resume attempt on it.
+  const skipReason = (d: SessionDescriptor): ContinueInterruptedSkipReason | undefined =>
+    continueSkipReason(d, bootId, mode) ?? (d.cwd && !cwdExists(d.cwd) ? "cwd-missing" : undefined)
   const dryRun = opts.dryRun ?? true
   const prompt = opts.prompt?.trim() ? opts.prompt : DEFAULT_CONTINUE_PROMPT
   const limit = Math.max(1, Math.floor(opts.concurrency ?? 4))
@@ -179,7 +193,7 @@ export async function continueInterruptedSessions(opts: {
       outcomes.push({ ...withName(d), status: "skipped", reason: "not-served" })
       return
     }
-    const reason = continueSkipReason(d, bootId, mode)
+    const reason = skipReason(d)
     if (reason) outcomes.push({ ...withName(d), status: "skipped", reason })
     else candidates.push(d)
   }
@@ -230,7 +244,7 @@ export async function continueInterruptedSessions(opts: {
       // Re-check against the live row: a lazy prompt may have raced us
       // between selection and this slot.
       const live = registry.get(d.id) ?? d
-      const reason = continueSkipReason(live, bootId, mode)
+      const reason = skipReason(live)
       if (reason) {
         sentOutcomes[index] = { ...withName(d), status: "skipped", reason }
         continue
@@ -238,14 +252,25 @@ export async function continueInterruptedSessions(opts: {
       // Book the auto-continue BEFORE sending: if this turn takes the
       // daemon down (or the next restart cuts it off), the count survives.
       if (mode === "boot") registry.recordAutoContinue(d.id)
+      const attemptsBefore = live.resumeAttempts ?? 0
       try {
         await registry.enqueuePrompt(d.id, prompt, { source: CONTINUE_PROMPT_SOURCE })
         sentOutcomes[index] = { ...withName(d), status: "sent" }
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        // The lazy resume swallows the adapter's own error (it's logged as
+        // `resumeAgent(...) failed: ...`) and books a failed attempt; what
+        // reaches us is admission's "not alive" on the still-dead row. Name
+        // the real failure so the caller doesn't read it as a routing bug.
+        const attemptsAfter = registry.get(d.id)?.resumeAttempts ?? 0
         sentOutcomes[index] = {
           ...withName(d),
           status: "failed",
-          error: err instanceof Error ? err.message : String(err),
+          error:
+            attemptsAfter > attemptsBefore
+              ? `in-place resume failed (attempt ${attemptsAfter}/${MAX_RESUME_ATTEMPTS}; ` +
+                `the daemon log has the adapter's error): ${message}`
+              : message,
         }
       }
     }

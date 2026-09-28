@@ -17,6 +17,7 @@ import { runInstall } from "../commands/install.js"
 import { runAuth } from "../commands/auth.js"
 import { ensureDaemon, runInstallMcp } from "../commands/install-mcp.js"
 import { runInstallSkill } from "../commands/install-skill.js"
+import { runLlm } from "../commands/llm.js"
 import { modelsSummary } from "../commands/models.js"
 import { findInstalledAppDir } from "../app-serve.js"
 import { runFirstSession } from "./first-run-session.js"
@@ -104,6 +105,7 @@ function realVerbs(cwd: string): SetupVerbs {
     auth: (args) => runAuth(args),
     installMcp: (args) => runInstallMcp(args),
     installSkill: (slug, args) => runInstallSkill(slug, args),
+    llmEndpoints: (args) => runLlm(args),
     updateCli: () =>
       new Promise((resolve) => {
         const child = spawn("npm", ["i", "-g", "@agentproto/cli@latest"], { stdio: "inherit" })

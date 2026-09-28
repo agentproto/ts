@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/pair-client",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "@agentproto/pair-client — browser-safe client for agentproto E2E daemon pairing. Pair from an offer QR, keep the credential in IndexedDB, and reach the daemon with a WHATWG fetch (streamed bodies, SSE) multiplexed over one rendezvous WebSocket, with reconnect and a typed revocation error.",
   "keywords": [
     "agentproto",

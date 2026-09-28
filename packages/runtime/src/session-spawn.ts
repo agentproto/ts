@@ -9,6 +9,7 @@
 import type { AcpMcpServer } from "@agentproto/acp"
 import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/command-sandbox"
 import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
+import { sessionTranscriptDir } from "./transcript-writer.js"
 import type { AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
   loadWorkspacesConfig,
@@ -96,7 +97,7 @@ import {
   type WorkspaceRulesResolution,
 } from "./workspace-rules.js"
 import { deriveSessionTitle } from "./session-title.js"
-import { isAbsolute } from "node:path"
+import { isAbsolute, join } from "node:path"
 
 /**
  * True when `p` (already absolute) sits inside `cwd` (or IS cwd). The
@@ -378,6 +379,16 @@ export function gcSpawnClaims(claims: Map<string, SpawnClaim>, now: number): voi
  * the implicit dedupe key does — unlabelled worktree fan-out (same slug,
  * no label) stays outside this check too.
  */
+/** Where a worktree provisioning's setup-hook FULL output gets persisted —
+ *  under the spawning session's own transcript dir, so it outlives a
+ *  subsequently-reclaimed worktree and sits next to that session's other
+ *  daemon-owned records (`events.jsonl`). Threaded onto every
+ *  `provisionWorktree` call (both the sync and async-provisioning branches)
+ *  as `WorktreeProvisionRequest.setupLogPath` — see that field's doc. */
+function worktreeSetupLogPath(sessionId: string): string {
+  return join(sessionTranscriptDir(sessionId), "worktree-setup.log")
+}
+
 function findWorktreeLabelCwdCollision(
   registry: SessionsRegistry,
   excludeId: string,
@@ -1031,7 +1042,19 @@ export interface SpawnAgentSessionInput {
    *  blank. Not exposed on the MCP `agent_start` tool today — only the
    *  HTTP route (`sessions restart`) passes this. */
   resumeSessionId?: string
-  prompt?: string
+  /** The caller's initial ask — a plain string (the common case, composed
+   *  with the role/AGENTS.md/RULES.md preamble below into one string turn),
+   *  or a content block / block array (an attachment-bearing first message,
+   *  same loose shape `POST /sessions/:id/prompt` accepts). The block form
+   *  is a narrow path: composing daemon-synthesized preamble TEXT onto a
+   *  turn that opens with an image isn't meaningful string concatenation,
+   *  so it SKIPS the whole preamble composition below (role disposition,
+   *  AGENTS.md, RULES.md, parent-lineage line, posture-as-prompt fallback)
+   *  and is sent to the adapter verbatim — see `effectivePrompt`'s doc.
+   *  Acceptable because this path is human/UI-initiated (an attachment
+   *  typed into a chat composer), not the orchestrator-driven role spawns
+   *  that actually depend on the composed disposition text. */
+  prompt?: string | Record<string, unknown> | unknown[]
   label?: string
   /** Explicit session title (SPEC-3 FIX C, `agentproto sessions start
    *  --title`). When set, it wins over the first-sentence derivation from
@@ -1319,9 +1342,14 @@ export type SpawnAgentSessionResult =
  * than risk mis-tagging user text as system).
  */
 function composedPreamble(
-  composed: string | undefined,
-  callerPrompt: string | undefined,
+  composed: string | Record<string, unknown> | unknown[] | undefined,
+  callerPrompt: string | Record<string, unknown> | unknown[] | undefined,
 ): string | undefined {
+  // A content-block (attachment-bearing) initial prompt skips the whole
+  // preamble-composition pipeline (see `SpawnAgentSessionInput.prompt`'s
+  // doc) — `composed` is then the caller's blocks, verbatim, with no
+  // preamble to recover.
+  if (typeof callerPrompt !== "string" || typeof composed !== "string") return undefined
   if (!callerPrompt || !composed) return undefined
   const tail = `\n\n${callerPrompt}`
   if (!composed.endsWith(tail)) return undefined
@@ -2619,7 +2647,7 @@ export async function spawnAgentSession(
       `<agentproto-message …> tags naming the real sender; text outside such a ` +
       `tag is from the human or these spawn instructions.`
     : undefined
-  let effectivePrompt = input.prompt
+  let effectivePrompt: string | Record<string, unknown> | unknown[] | undefined = input.prompt
   // Daemon-side AGENTS.md resolution + injection (WP-R2): resolve the nearest
   // `AGENTS.md` for the resolved `cwd` (walking up, bounded by the repo's git
   // toplevel — see `agents-md.ts`) and inject one block right after the role
@@ -2684,7 +2712,12 @@ export async function spawnAgentSession(
     workspaceRulesResolution = {}
   }
   const rulesMdParts = workspaceRulesResolution.block ? [workspaceRulesResolution.block] : []
-  if (input.prompt) {
+  // Preamble composition only applies to a plain-string ask — see
+  // `SpawnAgentSessionInput.prompt`'s doc. A content-block prompt (an
+  // attachment-bearing first message) skips straight past this: it's
+  // already sitting in `effectivePrompt` unchanged from the initial
+  // assignment above, and is sent to the adapter verbatim.
+  if (input.prompt && typeof input.prompt === "string") {
     effectivePrompt = [
       ...rulesMdParts,
       composeRoleContext(
@@ -2844,6 +2877,7 @@ export async function spawnAgentSession(
         ...(input.label ? { label: input.label } : {}),
         ...(initialTitle ? { title: initialTitle } : {}),
         ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+        ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.boardId ? { meta: { boardId: input.boardId } } : {}),
@@ -2909,6 +2943,11 @@ export async function spawnAgentSession(
             ...(worktreeRequest.slug ? { slug: worktreeRequest.slug } : {}),
             ...(worktreeRequest.base ? { base: worktreeRequest.base } : {}),
             ...(input.label ? { labelHint: input.label } : {}),
+            setupLogPath: worktreeSetupLogPath(mintedSessionId),
+            // Unattended path — no human present to retry a transient
+            // failure, so bound it here rather than have the caller pay
+            // for an entirely fresh worktree. See `runSetup`'s doc.
+            retrySetupOnFailure: true,
           })
         } catch (err) {
           registry.settlePendingAgent(pendingDesc.id, {
@@ -2973,7 +3012,14 @@ export async function spawnAgentSession(
             const resolution = resolvePosture(input.posture, agentSession.availableModes ?? [])
             if (resolution.kind === "native" && agentSession.setSessionMode) {
               await agentSession.setSessionMode(resolution.mode.id)
-            } else if (resolution.kind === "prompt" && asyncPrompt) {
+            } else if (
+              resolution.kind === "prompt" &&
+              asyncPrompt &&
+              typeof asyncPrompt === "string"
+            ) {
+              // Block-shaped prompt (attachment-bearing) skips the advisory
+              // posture preamble too — same reasoning as the composition
+              // skip above.
               asyncPrompt = `${resolution.preamble}\n\n${asyncPrompt}`
             }
           }
@@ -3025,6 +3071,9 @@ export async function spawnAgentSession(
           ...(worktreeRequest.slug ? { slug: worktreeRequest.slug } : {}),
           ...(worktreeRequest.base ? { base: worktreeRequest.base } : {}),
           ...(input.label ? { labelHint: input.label } : {}),
+          setupLogPath: worktreeSetupLogPath(mintedSessionId),
+          // Same reasoning as the async branch above — see `runSetup`'s doc.
+          retrySetupOnFailure: true,
         })
       } catch (err) {
         return finish({
@@ -3206,7 +3255,11 @@ export async function spawnAgentSession(
         )
         if (resolution.kind === "native" && agentSession.setSessionMode) {
           await agentSession.setSessionMode(resolution.mode.id)
-        } else if (resolution.kind === "prompt" && effectivePrompt) {
+        } else if (
+          resolution.kind === "prompt" &&
+          effectivePrompt &&
+          typeof effectivePrompt === "string"
+        ) {
           effectivePrompt = `${resolution.preamble}\n\n${effectivePrompt}`
         }
       }
@@ -3270,6 +3323,7 @@ export async function spawnAgentSession(
       // itself, not via `initialPrompt`).
       ...(initialTitle ? { title: initialTitle } : {}),
       ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+      ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
       // Parent attribution + depth. Set for spawns that arrived via the
       // scoped sub-gateway (WP4, parent from token) OR carry a trusted-loopback
       // `parentSessionId` lineage hint on the anonymous root path (WP-R1). A

@@ -388,6 +388,10 @@ export function makeWorktreeProvisioner(): WorktreeProvisioner {
         slug,
         dir,
         ...(req.base !== undefined ? { base: req.base } : {}),
+        ...(req.setupLogPath !== undefined ? { setupLogPath: req.setupLogPath } : {}),
+        ...(req.retrySetupOnFailure !== undefined
+          ? { retrySetupOnFailure: req.retrySetupOnFailure }
+          : {}),
       },
     })
     return { isolated: true, cwd: provisioned.cwd, branch: provisioned.branch }

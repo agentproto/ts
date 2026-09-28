@@ -18,7 +18,7 @@ and changes nothing: no file writes, no process starts, no prompts.
 | `clients` | no | Each detected coding client: agentproto MCP server still present in its config, pinned URL matches the daemon port |
 | `devices` | no | Paired device count (`~/.agentproto/pairings.json`) · any device never seen, or not seen in 30+ days |
 | `skills` | no | Each skill-capable adapter: agentproto skill pack installed and current |
-| `local-models` | no | Each named LLM-gateway endpoint (`~/.agentproto/llm-endpoints.json`, plus `forge` if `FORGE_BASE_URL` is set) answers `GET <baseUrl>/models` |
+| `local-models` ("Inference endpoints") | no | Each named LLM-gateway endpoint (`~/.agentproto/llm-endpoints.json`, plus `forge` if `FORGE_BASE_URL` is set) answers `GET <baseUrl>/models`; for a reachable one, its connector's own model listing (load state, context size) |
 
 Secrets are never read into the report — `auth` lists only origin, endpoint
 and method.

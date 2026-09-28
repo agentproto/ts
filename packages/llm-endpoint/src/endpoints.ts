@@ -17,6 +17,7 @@ import { readFileSync } from 'fs';
 import { homedir } from 'os';
 import { resolve as resolvePath } from 'path';
 import { isRecord } from './packs.js';
+import { CONNECTOR_IDS, isConnectorId, type ConnectorId } from './connectors.js';
 
 /** A JSON value — what `JSON.parse` can ever produce. */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
@@ -47,6 +48,13 @@ export interface EndpointConfig {
   id: string;
   kind: 'openai';
   baseUrl: string;
+  /** Which local/LAN runtime this points at (`lmstudio`, `ollama`, `vllm`,
+   *  `llama-server`) or the generic `openai-compatible` fallback — see
+   *  `connectors.ts`. Absent on entries written before connectors existed;
+   *  callers that need one (`endpoints test`, `doctor`) treat a missing
+   *  value as `openai-compatible`. Never affects request routing — only
+   *  which connector's `listModels`/`quirks` apply. */
+  connector?: ConnectorId;
   /** Name of the env var holding the key — never the key itself. Absent ⇒
    *  the endpoint is always keyless (a private/LAN server with no auth). */
   apiKeyEnv?: string;
@@ -73,7 +81,7 @@ function validateEndpointConfig(raw: unknown, where: string, errors: string[]): 
     errors.push(`${where}: expected an object, got ${raw === null ? 'null' : typeof raw}`);
     return null;
   }
-  const { id, kind, baseUrl, apiKeyEnv, defaultRequestFields, timeoutMs } = raw;
+  const { id, kind, baseUrl, connector, apiKeyEnv, defaultRequestFields, timeoutMs } = raw;
   let ok = true;
 
   if (typeof id !== 'string' || id.length === 0) {
@@ -102,6 +110,11 @@ function validateEndpointConfig(raw: unknown, where: string, errors: string[]): 
       errors.push(`${where}.baseUrl: "${baseUrl}" is not a valid URL`);
       ok = false;
     }
+  }
+
+  if (connector !== undefined && !isConnectorId(connector)) {
+    errors.push(`${where}.connector: must be one of ${CONNECTOR_IDS.join(', ')} when present (got ${JSON.stringify(connector)})`);
+    ok = false;
   }
 
   if (apiKeyEnv !== undefined && (typeof apiKeyEnv !== 'string' || apiKeyEnv.length === 0)) {
@@ -150,6 +163,7 @@ function validateEndpointConfig(raw: unknown, where: string, errors: string[]): 
   if (!ok || typeof id !== 'string' || typeof baseUrl !== 'string' || !validUrl) return null;
 
   const built: EndpointConfig = { id, kind: 'openai', baseUrl };
+  if (isConnectorId(connector)) built.connector = connector;
   if (typeof apiKeyEnv === 'string') built.apiKeyEnv = apiKeyEnv;
   if (builtFields) built.defaultRequestFields = builtFields;
   if (builtTimeout) built.timeoutMs = builtTimeout;

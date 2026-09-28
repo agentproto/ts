@@ -55,6 +55,7 @@ import {
   type ImportedMcpEntry,
 } from "./mcp-imports.js"
 import type { McpProxyRegistry, ProxyToolDescriptor } from "./mcp-proxy.js"
+import { computeCapabilitiesInventory } from "./capabilities-inventory.js"
 import { projectSessionUsage } from "./usage.js"
 import { rollupSessionSubtree } from "./usage-subtree.js"
 import { parseWindow, rollupUsage } from "./usage-rollup.js"
@@ -62,6 +63,7 @@ import {
   computeContextContinuityStatus,
   computeContextPct,
 } from "./context-continuity.js"
+import { buildSessionCapabilities } from "./session-capabilities.js"
 import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
 import { continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
@@ -969,6 +971,7 @@ export function registerSessionTools(
     listCatalogModels,
     loadDefaultsConfig,
     reviewRunner,
+    listAgentAdapters,
   } = opts
   const ptyEnabled = opts.ptyEnabled === true
   // Point the module-level branch_gc job registry at the injected dir (tests
@@ -1138,7 +1141,7 @@ export function registerSessionTools(
       "Goes through the normal prompt path, so a dead-but-resumable session " +
       "resumes in place first. Skips sessions that aren't interrupted, were " +
       "interrupted by an older restart, aren't resumable, hit the resume " +
-      "attempt cap, or are already busy. Returns a per-session outcome " +
+      "attempt cap, are already busy, or whose cwd no longer exists. Returns a per-session outcome " +
       "(`eligible` on a dry run, else `sent`/`skipped` with a reason/`failed`).",
     {
       dryRun: mcpBool
@@ -1337,6 +1340,82 @@ export function registerSessionTools(
       )
       return {
         content: [{ type: "text", text: JSON.stringify(status) }],
+      }
+    },
+  )
+
+  // ── session_capabilities ─────────────────────────────────────────
+  server.tool(
+    "session_capabilities",
+    "Return everything one session can do and has attached, in a single " +
+      "read: harness slash commands (`commands`/`commandsSupported`), " +
+      "modes/posture (`availableModes`/`posture`/`canonicalPostures`), " +
+      "model/effort, mounted MCP servers (name/transport/ref only — never " +
+      "headers/env/credentials), resolved skills, and permission-hold state " +
+      "(`permissionHold`/`pendingPermissions`). Same lookup as `session_list` " +
+      "/ `session_restart` (by id or name); the REST twin is " +
+      "`GET /sessions/:id/capabilities`.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Session id or name — from `session_list`. Alias: `id`."),
+      id: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Alias for `sessionId`."),
+    },
+    async input => {
+      const idOrName = input.sessionId ?? input.id
+      if (!idOrName) {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ error: "missing sessionId (or id)" }) },
+          ],
+          isError: true,
+        }
+      }
+      const desc = registry.findByIdOrName(idOrName)
+      if (!desc) {
+        return {
+          content: [
+            { type: "text", text: JSON.stringify({ error: `no session "${idOrName}" found` }) },
+          ],
+          isError: true,
+        }
+      }
+      if (callerScope) {
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+        if (!subtree.has(desc.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_capabilities: session "${desc.id}" is not in your subtree.`,
+                  sessionId: desc.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      // `get()` (not `findByIdOrName`'s own stamping) is what freshens
+      // `availableModes` from the live agent session — see `stampLiveModes`.
+      const fresh = registry.get(desc.id) ?? desc
+      const pendingPermissions = registry.listPendingPermissions({ sessionId: fresh.id }).length
+      return {
+        content: [
+          { type: "text", text: JSON.stringify(buildSessionCapabilities(fresh, pendingPermissions)) },
+        ],
       }
     },
   )
@@ -1929,6 +2008,34 @@ export function registerSessionTools(
     keyOf: e => e.id,
     itemKey: "imports",
   })
+
+  // ── capabilities_inventory ───────────────────────────────────────
+  // Read-only, never throws — a failure in one source (MCP discovery, the
+  // proxy registry, an adapter package that fails to import) becomes an
+  // `error` string on that block alone; the rest of the inventory still
+  // returns. See `capabilities-inventory.ts` for the shared builder (also
+  // backs the `GET /capabilities/inventory` HTTP twin in http-server.ts).
+  server.tool(
+    "capabilities_inventory",
+    "One read that answers: which MCP servers does the daemon know " +
+      "(imported, discovered but not imported), are they up, what tools do " +
+      "they have, which harnesses can reach them by default, who's using " +
+      "them right now; and which skills are installed, for which harness. " +
+      "Read-only and side-effect-free — never connects to an MCP just to " +
+      "count its tools, never fetches a skill pack from the network. " +
+      "Powers the `@agentproto/config` app's Capabilities section.",
+    {},
+    async () => {
+      const inventory = await computeCapabilitiesInventory({
+        registry,
+        listAgentAdapters,
+        mcpProxy,
+      })
+      return {
+        content: [{ type: "text", text: JSON.stringify(inventory) }],
+      }
+    }
+  )
 
   // ── mcp_import ─────────────────────────────────────────────────
   server.tool(

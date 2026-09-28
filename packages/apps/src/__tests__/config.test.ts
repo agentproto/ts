@@ -49,6 +49,24 @@ describe("config app", () => {
     }
   })
 
+  it("declares the capabilities-section tools (MCP & Skills view)", () => {
+    // mcp_imported_status is allowlisted for feature-detection parity with
+    // the other mcp_imported_* proxy tools but the panel drives its status
+    // column entirely off capabilities_inventory — it's not dispatched from
+    // ui.ts, so it's checked against the allowlist only, not the HTML body.
+    expect(CONFIG_TOOLS).toContain("mcp_imported_status")
+    const dispatchedCapabilitiesTools = [
+      "capabilities_inventory",
+      "mcp_imported_tool_list",
+      "mcp_import",
+      "mcp_imported_remove",
+    ]
+    for (const tool of dispatchedCapabilitiesTools) {
+      expect(CONFIG_TOOLS).toContain(tool)
+      expect(configApp.ui!.html).toContain(tool)
+    }
+  })
+
   it("never adds a tool that installs code, controls sessions/agents, or manages arbitrary tunnels", () => {
     const excludedTools = [
       "adapter_install",

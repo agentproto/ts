@@ -18,6 +18,7 @@ import { ONBOARDING_STEPS } from "./registry.js"
 import { runChecks } from "./run.js"
 import type { StepCheck } from "./types.js"
 import { HOME, createFakeContext, createFakeFs, healthyFiles } from "./__fixtures__/fake-context.js"
+import { createFakeSetup } from "./__fixtures__/fake-setup.js"
 
 function byId(checks: StepCheck[], id: string): StepCheck {
   const c = checks.find((x) => x.id === id)
@@ -561,19 +562,134 @@ describe("local-models", () => {
     expect(byId(checks, "local-models.forge")).toMatchObject({ status: "ok" })
   })
 
-  it("a reachable file-configured endpoint reports ok", async () => {
+  it("a reachable file-configured endpoint reports ok, plus its connector's models", async () => {
     const checks = await localModelsStep.detect(
       createFakeContext({
         fs: createFakeFs({
           ...healthyFiles(),
           [`${HOME}/.agentproto/llm-endpoints.json`]: JSON.stringify({
-            endpoints: [{ id: "bonsai", kind: "openai", baseUrl: "http://192.168.1.20:8081/v1" }],
+            endpoints: [{ id: "bonsai", kind: "openai", baseUrl: "http://192.168.1.20:8081/v1", connector: "lmstudio" }],
           }),
         }),
-        fetch: (async () => new Response(JSON.stringify({ data: [] }), { status: 200 })) as typeof fetch,
+        fetch: (async (url: string | URL) => {
+          if (String(url).endsWith("/api/v0/models")) {
+            return new Response(
+              JSON.stringify({
+                data: [
+                  { id: "bonsai-27b-win", state: "loaded", loaded_context_length: 62976, max_context_length: 262144 },
+                  { id: "other-model", state: "not-loaded" },
+                ],
+              }),
+              { status: 200 },
+            )
+          }
+          return new Response(JSON.stringify({ data: [] }), { status: 200 })
+        }) as typeof fetch,
       }),
     )
-    expect(byId(checks, "local-models.bonsai")).toMatchObject({ status: "ok" })
+    const check = byId(checks, "local-models.bonsai")
+    expect(check).toMatchObject({
+      status: "ok",
+      detail: "http://192.168.1.20:8081/v1 reachable — 1 loaded (bonsai-27b-win, ctx 62976/262144)",
+    })
+    expect(check.data?.connector).toBe("lmstudio")
+    expect(check.data?.models).toEqual([
+      { id: "bonsai-27b-win", state: "loaded", loadedCtx: 62976, maxCtx: 262144 },
+      { id: "other-model", state: "not-loaded" },
+    ])
+  })
+
+  it("a reachable endpoint with no models loaded says so", async () => {
+    const checks = await localModelsStep.detect(
+      createFakeContext({
+        fs: createFakeFs({
+          ...healthyFiles(),
+          [`${HOME}/.agentproto/llm-endpoints.json`]: JSON.stringify({
+            endpoints: [{ id: "bonsai", kind: "openai", baseUrl: "http://192.168.1.20:8081/v1", connector: "lmstudio" }],
+          }),
+        }),
+        fetch: (async (url: string | URL) => {
+          if (String(url).endsWith("/api/v0/models")) {
+            return new Response(
+              JSON.stringify({ data: [{ id: "a", state: "not-loaded" }, { id: "b", state: "not-loaded" }] }),
+              { status: 200 },
+            )
+          }
+          return new Response(JSON.stringify({ data: [] }), { status: 200 })
+        }) as typeof fetch,
+      }),
+    )
+    expect(byId(checks, "local-models.bonsai")).toMatchObject({
+      status: "ok",
+      detail: "http://192.168.1.20:8081/v1 reachable — 2 models, none loaded",
+    })
+  })
+
+  it("plan() proposes running detect when an undetected runtime was found", async () => {
+    const ctx = createFakeContext()
+    const undetectedCheck = {
+      id: "local-models.undetected.lmstudio",
+      title: "Undetected local model server (LM Studio)",
+      status: "warn" as const,
+      detail: "LM Studio is running at http://127.0.0.1:1234/v1 but not yet a configured endpoint",
+    }
+    const actions = await localModelsStep.plan!([undetectedCheck], ctx, new Map())
+    expect(actions).toHaveLength(1)
+    expect(actions[0]).toMatchObject({ id: "local-models.detect", default: true })
+
+    const { io, calls } = createFakeSetup(ctx)
+    const result = await actions[0]!.apply(io)
+    expect(calls).toEqual(["llm endpoints detect", "llm endpoints sync-pi"])
+    expect(result.ok).toBe(true)
+  })
+
+  it("apply()'s pi sync failing is non-fatal — detect itself already succeeded", async () => {
+    const ctx = createFakeContext()
+    const undetectedCheck = {
+      id: "local-models.undetected.lmstudio",
+      title: "Undetected local model server (LM Studio)",
+      status: "warn" as const,
+      detail: "LM Studio is running at http://127.0.0.1:1234/v1 but not yet a configured endpoint",
+    }
+    const actions = await localModelsStep.plan!([undetectedCheck], ctx, new Map())
+    const { io } = createFakeSetup(ctx, { codes: { "llm endpoints sync-pi": 1 } })
+    const result = await actions[0]!.apply(io)
+    expect(result.ok).toBe(true)
+    expect(result.detail).toContain("non-fatal")
+  })
+
+  it("plan() proposes nothing when the step is unsettled for a reason detect can't fix", async () => {
+    const ctx = createFakeContext()
+    const unreachableCheck = {
+      id: "local-models.ollama",
+      title: 'Endpoint "ollama"',
+      status: "warn" as const,
+      detail: "http://192.168.1.20:11434/v1 unreachable: ECONNREFUSED",
+    }
+    expect(await localModelsStep.plan!([unreachableCheck], ctx, new Map())).toEqual([])
+  })
+
+  it("detect() surfaces an undetected runtime even with nothing configured yet — otherwise setup would never offer to look", async () => {
+    const checks = await localModelsStep.detect(
+      createFakeContext({
+        fetch: (async (url: string | URL) => {
+          if (String(url) === "http://127.0.0.1:1234/api/v0/models") {
+            return new Response(JSON.stringify({ data: [{ id: "m", state: "loaded" }] }), { status: 200 })
+          }
+          return Promise.reject(new Error("ECONNREFUSED"))
+        }) as typeof fetch,
+      }),
+    )
+    expect(checks).toEqual([
+      {
+        id: "local-models.undetected.lmstudio",
+        title: "Undetected local model server (LM Studio)",
+        status: "warn",
+        detail: "LM Studio is running at http://127.0.0.1:1234/v1 but not yet a configured endpoint",
+        fix: "agentproto llm endpoints detect",
+        data: { connector: "lmstudio", baseUrl: "http://127.0.0.1:1234/v1" },
+      },
+    ])
   })
 
   it("an unreachable endpoint warns instead of failing the whole step", async () => {

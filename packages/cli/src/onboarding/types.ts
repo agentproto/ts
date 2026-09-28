@@ -147,6 +147,8 @@ export interface SetupVerbs {
   auth(args: readonly string[]): Promise<number>
   installMcp(args: readonly string[]): Promise<number>
   installSkill(slug: string, args: readonly string[]): Promise<number>
+  /** `agentproto llm endpoints ...` — see commands/llm.ts's `runLlm`. */
+  llmEndpoints(args: readonly string[]): Promise<number>
   /** `npm i -g @agentproto/cli@latest`. */
   updateCli(): Promise<number>
   modelsSummary(): Promise<ModelsSummaryRow[]>

@@ -1,0 +1,473 @@
+/**
+ * SentinelRuntime — the poll loop + delivery engine over poll-capable
+ * sentinel providers (AIP-60 §2/§3/§6).
+ *
+ * Per tick: for every pollable sentinel (`active` or `orphaned` — the
+ * provider-side watch is never cancelled just because a session died, the
+ * PR is still real), resolve its provider, `poll()` new events, dedupe via
+ * the store's persisted `seen` window, filter against `spec.match` (OR
+ * semantics across clauses — design contract change: a spec now watches ANY
+ * of several `{subject, types?}` clauses, not just one), and land each match
+ * into the target session's AIP-46 inbox via
+ * `sessions.sendMessage` IN-PROCESS (`relation: "system"`, `kind: "notice"`),
+ * ack'ing the provider only once the whole batch has been handled (at-least-
+ * once — a redelivered event is a no-op via `seen`).
+ *
+ * Dead session: `sendMessage` throws `SessionNotAliveError` -> resume via the
+ * SAME `isSessionAlive`/`restartSession` hooks `inbound-router.ts` uses, and
+ * retry once; otherwise the event is appended to
+ * `~/.agentproto/sentinels-parked.jsonl` and the sentinel is marked
+ * `orphaned`.
+ *
+ * Cadence: 15s while any pollable sentinel had an event in the last 10 min,
+ * 60s otherwise (design §3) — a self-rescheduling `setTimeout` rather than
+ * `setInterval` so the interval can adapt tick to tick.
+ */
+
+import { resolve, dirname, join } from "node:path"
+import { homedir } from "node:os"
+import { mkdirSync, appendFileSync } from "node:fs"
+
+import {
+  createSessionMessage,
+  MAX_MESSAGE_DATA_BYTES,
+  type MessageUrgency,
+  type SessionMessage,
+} from "./session-message.js"
+import { SessionNotAliveError, type SendMessageResult } from "./sessions.js"
+import type { Sentinel, SentinelStatus, SentinelStore } from "./sentinel-store.js"
+import type {
+  DeliveryPreference,
+  SentinelEvent,
+  SentinelMatchClause,
+  SentinelProviderHandle,
+} from "./sentinel-providers/types.js"
+
+// ── Constants ─────────────────────────────────────────────────────────
+
+const DEFAULT_ACTIVE_INTERVAL_MS = 15_000
+const DEFAULT_IDLE_INTERVAL_MS = 60_000
+const DEFAULT_HOT_WINDOW_MS = 10 * 60 * 1000
+const POLL_BATCH_LIMIT = 50
+
+/** Statuses whose provider-side watch stays live — the sentinel keeps
+ *  polling even while `orphaned` (design §2: "the provider-side watch is
+ *  never cancelled just because a session died"). */
+const POLLABLE_STATUSES: ReadonlySet<SentinelStatus> = new Set(["active", "orphaned"])
+
+function agentprotoHome(): string {
+  return process.env.AGENTPROTO_HOME ?? join(homedir(), ".agentproto")
+}
+
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+// ── Matching (design §4 — type/subject grammar; contract change — `match`
+// clauses, OR semantics) ──────────────────────────────────────────────
+
+function effectiveTypes(clause: SentinelMatchClause, provider: SentinelProviderHandle): string[] {
+  return clause.types && clause.types.length > 0 ? clause.types : provider.defaultTypes(clause.subject)
+}
+
+/** `*` is the only wildcard — matches any run of characters, same
+ *  expressiveness the design's `types`/subject globs need. */
+function matchesGlob(pattern: string, value: string): boolean {
+  if (pattern === value) return true
+  if (!pattern.includes("*")) return false
+  const escaped = pattern
+    .split("*")
+    .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join(".*")
+  return new RegExp(`^${escaped}$`).test(value)
+}
+
+/** A clause subject ending in `*` prefix-matches any of the event's
+ *  `subjects`; otherwise it must appear exactly. */
+function matchesSubject(clauseSubject: string, eventSubjects: readonly string[]): boolean {
+  if (clauseSubject.endsWith("*")) {
+    const prefix = clauseSubject.slice(0, -1)
+    return eventSubjects.some(s => s.startsWith(prefix))
+  }
+  return eventSubjects.includes(clauseSubject)
+}
+
+function clauseMatches(
+  clause: SentinelMatchClause,
+  event: SentinelEvent,
+  provider: SentinelProviderHandle,
+): boolean {
+  const types = effectiveTypes(clause, provider)
+  return types.some(t => matchesGlob(t, event.type)) && matchesSubject(clause.subject, event.subjects)
+}
+
+/** OR across `spec.match`: the event matches the sentinel if ANY clause
+ *  matches. */
+function eventMatchesSpec(
+  sentinel: Sentinel,
+  event: SentinelEvent,
+  provider: SentinelProviderHandle,
+): boolean {
+  return sentinel.spec.match.some(clause => clauseMatches(clause, event, provider))
+}
+
+/** Envelope trimmed to fit the AIP-46 `data` cap — drop the provider's raw
+ *  projection first (the biggest variable part), then fall back to a bare
+ *  identity stub. */
+function trimEventForEnvelope(event: SentinelEvent): Record<string, unknown> {
+  const byteSize = (v: unknown): number => Buffer.byteLength(JSON.stringify(v), "utf8")
+  const full: Record<string, unknown> = { ...event }
+  if (byteSize(full) <= MAX_MESSAGE_DATA_BYTES) return full
+  const trimmed = { ...full, data: { truncated: true } }
+  if (byteSize(trimmed) <= MAX_MESSAGE_DATA_BYTES) return trimmed
+  return { id: event.id, type: event.type, subject: event.subject, summary: event.summary, truncated: true }
+}
+
+// ── Public surface ────────────────────────────────────────────────────
+
+/** The slice of `SessionsRegistry` the runtime needs — structural so this
+ *  module stays unit-testable without a full registry (same shape as
+ *  `supervisor-notify.ts`'s `SupervisorNotifyRegistry`). */
+export interface SentinelRuntimeRegistry {
+  sendMessage(
+    msg: SessionMessage,
+    opts?: { source?: string; origin?: string; allowInterrupt?: boolean },
+  ): Promise<SendMessageResult>
+}
+
+export interface SentinelRuntimeOptions {
+  store: SentinelStore
+  registry: SentinelRuntimeRegistry
+  /** Resolve a sentinel's provider slug to a live handle — the daemon wires
+   *  this to `resolveSentinelProvider` + the sentinel creds store; tests
+   *  wire it directly to a `createFakeSentinelProvider()` instance. */
+  resolveProvider: (slug: string) => Promise<SentinelProviderHandle | null>
+  /** Same hook `inbound-router.ts` uses (`index.ts`'s `isSessionAlive`). */
+  isSessionAlive: (sessionId: string) => boolean
+  /** Same hook `inbound-router.ts` uses (`index.ts`'s `restartInboundSession`). */
+  restartSession: (sessionId: string) => Promise<string>
+  /** Poll cadence while "hot" (an event landed within `hotWindowMs`).
+   *  Default 15s. */
+  activeIntervalMs?: number
+  /** Poll cadence otherwise. Default 60s. */
+  idleIntervalMs?: number
+  /** Window that counts as "hot". Default 10 minutes. */
+  hotWindowMs?: number
+  /** Override for the parked-event journal (tests). Default
+   *  `~/.agentproto/sentinels-parked.jsonl`. */
+  parkedPath?: string
+  nowMs?: () => number
+  log?: (line: string) => void
+}
+
+export interface SentinelRuntime {
+  /** Re-attaches every pollable sentinel to its provider, then starts the
+   *  poll timer. */
+  start(): Promise<void>
+  stop(): void
+  /** Force one poll tick across every poll-capable, pollable sentinel —
+   *  used by tests and (later) `sentinel_poll_now`. */
+  pollOnce(): Promise<void>
+}
+
+export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRuntime {
+  const { store } = opts
+  const nowMs = opts.nowMs ?? Date.now
+  const log = opts.log ?? ((line: string): void => console.warn(line))
+  const activeIntervalMs = opts.activeIntervalMs ?? DEFAULT_ACTIVE_INTERVAL_MS
+  const idleIntervalMs = opts.idleIntervalMs ?? DEFAULT_IDLE_INTERVAL_MS
+  const hotWindowMs = opts.hotWindowMs ?? DEFAULT_HOT_WINDOW_MS
+  const parkedPath = opts.parkedPath ?? resolve(agentprotoHome(), "sentinels-parked.jsonl")
+
+  let timer: ReturnType<typeof setTimeout> | null = null
+  let inFlight = false
+
+  // ── Parking (dead, unresumable session) ─────────────────────────────
+
+  function parkEvent(sentinel: Sentinel, event: SentinelEvent, reason: string): void {
+    try {
+      mkdirSync(dirname(parkedPath), { recursive: true })
+      const line = JSON.stringify({
+        sentinelId: sentinel.id,
+        event,
+        reason,
+        ts: new Date(nowMs()).toISOString(),
+      })
+      appendFileSync(parkedPath, line + "\n", { mode: 0o600 })
+    } catch (err) {
+      log(`[sentinel-runtime] failed to park event for ${sentinel.id}: ${describeError(err)}`)
+    }
+  }
+
+  function markOrphaned(sentinel: Sentinel): void {
+    const current = store.get(sentinel.id)
+    if (current && current.status !== "orphaned") store.update(sentinel.id, { status: "orphaned" })
+  }
+
+  // ── Delivery ─────────────────────────────────────────────────────────
+
+  function buildMessage(
+    sentinel: Sentinel,
+    event: SentinelEvent,
+    sessionId: string,
+    urgency: MessageUrgency,
+  ): SessionMessage {
+    // The EVENT's own subject, not the matching clause's (which may be a
+    // `*` prefix template) — contract change: `correlationId` names the
+    // concrete thing that happened, so `inbox_wait {correlationId}` means
+    // "anything on this exact PR/issue/etc", regardless of which clause's
+    // wildcard let it through.
+    const scheme = event.subject.split(":")[0] || sentinel.provider
+    return createSessionMessage({
+      to: sessionId,
+      from: { relation: "system" },
+      kind: "notice",
+      urgency,
+      correlationId: `sentinel:${event.subject}`,
+      text: `[${scheme}] ${event.summary}`,
+      data: trimEventForEnvelope(event),
+    })
+  }
+
+  async function handleDeadSession(
+    sentinel: Sentinel,
+    event: SentinelEvent,
+    msg: SessionMessage,
+  ): Promise<void> {
+    const target = sentinel.spec.target
+    if (target.kind !== "session") return
+    const sessionId = target.sessionId
+
+    if (opts.isSessionAlive(sessionId)) {
+      // sendMessage reported not-alive on a session our own liveness check
+      // still sees as alive (a race) — park rather than spin retrying.
+      parkEvent(sentinel, event, "session reported alive but sendMessage rejected it")
+      markOrphaned(sentinel)
+      return
+    }
+
+    try {
+      const resumedId = await opts.restartSession(sessionId)
+      const resumedMsg: SessionMessage = resumedId === sessionId ? msg : { ...msg, to: resumedId }
+      await opts.registry.sendMessage(resumedMsg, { source: "sentinel", origin: sentinel.id })
+      if (resumedId !== sessionId) {
+        store.update(sentinel.id, {
+          spec: { ...sentinel.spec, target: { ...target, sessionId: resumedId } },
+        })
+      }
+      const current = store.get(sentinel.id)
+      if (current && current.status === "orphaned") store.update(sentinel.id, { status: "active" })
+    } catch (err) {
+      parkEvent(sentinel, event, describeError(err))
+      markOrphaned(sentinel)
+    }
+  }
+
+  async function deliverEvent(sentinel: Sentinel, event: SentinelEvent): Promise<void> {
+    const target = sentinel.spec.target
+    // Defensive only: `SentinelStore.create` already rejects any target
+    // kind other than "session" (`SentinelTargetNotImplementedError`), so a
+    // persisted sentinel never actually reaches this branch — narrows the
+    // type for `target.sessionId`/`target.urgency` below.
+    if (target.kind !== "session") return
+    const msg = buildMessage(sentinel, event, target.sessionId, target.urgency)
+    try {
+      await opts.registry.sendMessage(msg, { source: "sentinel", origin: sentinel.id })
+    } catch (err) {
+      if (!(err instanceof SessionNotAliveError)) throw err
+      await handleDeadSession(sentinel, event, msg)
+    }
+  }
+
+  // ── Lifetime (design §2 — `until`; contract change — `subject_terminal`
+  // with multiple `match` clauses expires only once EVERY clause's subject
+  // has seen a terminal event) ─────────────────────────────────────────
+
+  /** Records which of `sentinel.spec.match`'s clause subjects this terminal
+   *  event satisfies, then reports whether ALL of them now have. A
+   *  single-clause spec expires on that one clause's first terminal event —
+   *  same behaviour as before `match` supported fan-out. */
+  function checkSubjectTerminalExpiry(sentinel: Sentinel, event: SentinelEvent): boolean {
+    if (event.terminal !== true) return false
+    const satisfied = sentinel.spec.match
+      .map(clause => clause.subject)
+      .filter(subject => matchesSubject(subject, event.subjects))
+    if (satisfied.length === 0) return false
+
+    const merged = new Set([...sentinel.terminalSubjects, ...satisfied])
+    store.update(sentinel.id, { terminalSubjects: [...merged] })
+
+    const allSubjects = sentinel.spec.match.map(clause => clause.subject)
+    return allSubjects.every(subject => merged.has(subject))
+  }
+
+  async function applyLifetime(
+    sentinel: Sentinel,
+    event: SentinelEvent,
+    provider: SentinelProviderHandle,
+  ): Promise<void> {
+    const until = sentinel.spec.until
+    let expire: boolean
+    switch (until.kind) {
+      case "subject_terminal":
+        expire = checkSubjectTerminalExpiry(sentinel, event)
+        break
+      case "count":
+        expire = sentinel.eventCount >= until.n
+        break
+      case "at":
+        expire = nowMs() >= until.ms
+        break
+      case "never":
+        expire = false
+        break
+    }
+    if (!expire) return
+    store.update(sentinel.id, { status: "expired" })
+    try {
+      await provider.cancel(sentinel.handle)
+    } catch (err) {
+      log(`[sentinel-runtime] cancel failed for ${sentinel.id}: ${describeError(err)}`)
+    }
+  }
+
+  // ── Poll ──────────────────────────────────────────────────────────
+
+  async function pollSentinel(sentinel: Sentinel): Promise<void> {
+    const provider = await opts.resolveProvider(sentinel.provider)
+    if (!provider || !provider.poll) return
+
+    let result: { events: SentinelEvent[]; cursor: string }
+    try {
+      result = await provider.poll(sentinel.handle, POLL_BATCH_LIMIT)
+    } catch (err) {
+      store.update(sentinel.id, { lastError: describeError(err) })
+      return
+    }
+
+    let haltedOnError = false
+
+    for (const event of result.events) {
+      const current = store.get(sentinel.id)
+      if (!current) return // removed mid-batch
+      if (!POLLABLE_STATUSES.has(current.status)) break // paused/expired/error — stop watching
+
+      if (store.isSeen(current.id, event.id)) continue
+
+      if (!eventMatchesSpec(current, event, provider)) {
+        // Filtered out, not a delivery attempt — still mark it seen so it's
+        // never reconsidered on a later tick.
+        store.markSeen(current.id, event.id)
+        continue
+      }
+
+      try {
+        await deliverEvent(current, event)
+      } catch (err) {
+        // Do NOT mark seen: delivery did not complete (delivered OR parked
+        // both resolve normally — see deliverEvent/handleDeadSession), so
+        // this is a genuinely unhandled failure. Marking seen here would
+        // dedupe the event out of every future redelivery attempt on the
+        // next tick, silently losing it and breaking at-least-once.
+        log(`[sentinel-runtime] ${current.id} delivery failed: ${describeError(err)}`)
+        haltedOnError = true
+        break
+      }
+      store.markSeen(current.id, event.id)
+
+      const updated = store.update(current.id, {
+        eventCount: current.eventCount + 1,
+        lastEventTs: nowMs(),
+      })
+      if (updated) await applyLifetime(updated, event, provider)
+    }
+
+    if (!haltedOnError) {
+      const latest = store.get(sentinel.id)
+      if (latest) {
+        if (provider.ack) {
+          try {
+            await provider.ack(latest.handle, result.cursor)
+          } catch (err) {
+            log(`[sentinel-runtime] ack failed for ${sentinel.id}: ${describeError(err)}`)
+          }
+        }
+        store.update(sentinel.id, { handle: { ...latest.handle, cursor: result.cursor } })
+      }
+    }
+  }
+
+  async function pollOnce(): Promise<void> {
+    if (inFlight) return
+    inFlight = true
+    try {
+      const pollable = store.list().filter(s => POLLABLE_STATUSES.has(s.status))
+      for (const sentinel of pollable) {
+        await pollSentinel(sentinel)
+      }
+    } finally {
+      inFlight = false
+    }
+  }
+
+  // ── Timer ─────────────────────────────────────────────────────────
+
+  function currentIntervalMs(): number {
+    const now = nowMs()
+    const hot = store
+      .list()
+      .some(
+        s =>
+          POLLABLE_STATUSES.has(s.status) &&
+          s.lastEventTs !== undefined &&
+          now - s.lastEventTs < hotWindowMs,
+      )
+    return hot ? activeIntervalMs : idleIntervalMs
+  }
+
+  function scheduleNext(): void {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => {
+      void pollOnce()
+        .catch(err => log(`[sentinel-runtime] unhandled poll error: ${describeError(err)}`))
+        .finally(scheduleNext)
+    }, currentIntervalMs())
+  }
+
+  // ── Re-attach (daemon restart) ───────────────────────────────────────
+
+  async function reattachAll(): Promise<void> {
+    const pollable = store.list().filter(s => POLLABLE_STATUSES.has(s.status))
+    for (const sentinel of pollable) {
+      const provider = await opts.resolveProvider(sentinel.provider)
+      if (!provider) {
+        store.update(sentinel.id, {
+          status: "error",
+          lastError: `unknown sentinel provider "${sentinel.provider}"`,
+        })
+        continue
+      }
+      const delivery: DeliveryPreference = { mode: "poll", intervalMs: activeIntervalMs }
+      try {
+        const handle = await provider.attach(sentinel.handle, delivery)
+        store.update(sentinel.id, { handle })
+      } catch (err) {
+        store.update(sentinel.id, { status: "error", lastError: describeError(err) })
+      }
+    }
+  }
+
+  return {
+    async start(): Promise<void> {
+      await reattachAll()
+      if (!timer) scheduleNext()
+    },
+    stop(): void {
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+    },
+    pollOnce,
+  }
+}

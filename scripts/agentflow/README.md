@@ -31,6 +31,13 @@ pipeline.
   { "changeset": { "stage": "push", "engine": "local" } }
   ```
 
+**Changeset gate (always on, push).** Independent of `stage`, the pre-push
+hook runs `scripts/agentflow/changeset-gate.mjs`: a deterministic check (no
+LLM) that the branch adds a changeset naming every changed publishable package,
+in a single frontmatter block, read from the committed state. It blocks the push
+with `run pnpm changeset:ai` otherwise. It skips `main` and
+`changeset-release/*`; `AGENTFLOW_SKIP_CHANGESET=1` bypasses it.
+
 Engine precedence: `--engine` flag → `AGENTFLOW_ENGINE` env → config → default.
 
 ## Run it

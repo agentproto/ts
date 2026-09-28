@@ -18,6 +18,24 @@ export const attachFieldSchema = z.union([
   z.object({ parent: z.string().min(1).optional() }),
 ])
 
+/** A single ACP-shaped content block, e.g. `{type:"text", text:"..."}` or
+ *  `{type:"image", data, mimeType}` — validated loosely (any non-empty
+ *  object) so the daemon doesn't duplicate the adapter's own block-shape
+ *  rules; an ill-formed block surfaces as a clear turn error from the
+ *  adapter instead (see `POST /sessions/:id/prompt`'s doc). */
+const contentBlockSchema = z.record(z.string(), z.unknown())
+
+/** `prompt` on `agent_prompt` and `agent_start` — a plain string (the
+ *  common case) or a content block / block array for a multimodal turn
+ *  (e.g. a pasted image), same loose shape `POST /sessions/:id/prompt`
+ *  already accepts over HTTP. Forwarded to the registry verbatim; the
+ *  adapter negotiates its own content support. */
+export const promptInputSchema = z.union([
+  z.string().min(1),
+  contentBlockSchema,
+  z.array(contentBlockSchema).min(1),
+])
+
 /** `contextContinuity` — per-session override of the context-continuity
  *  policy (warn / compact / continue-fresh / hard-stop thresholds + the
  *  carry-over sections). */

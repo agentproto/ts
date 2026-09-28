@@ -1,5 +1,12 @@
 # @agentproto/egress
 
+## 0.1.9
+
+### Patch Changes
+
+- Updated dependencies [332aebf]
+  - @agentproto/secrets@1.1.0
+
 ## 0.1.8
 
 ### Patch Changes

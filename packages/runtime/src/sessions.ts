@@ -1235,11 +1235,14 @@ export interface SessionDescriptor {
    *  the underlying `killedMidTurn`/`endedReason`). The in-place resume path
    *  never auto-retries the interrupted prompt. */
   interrupted?: boolean
-  /** The `SessionsRegistry.bootId` of the FIRST daemon boot that found this
-   *  row interrupted — i.e. which restart cut its turn off. Stamped by the
-   *  boot reload (`loadHistorySnapshot`) on an interrupted row that doesn't
-   *  carry one yet; dropped whenever the row is interrupted AGAIN (so the next
-   *  boot restamps it) and on the next successful turn-end (with the markers it
+  /** The `SessionsRegistry.bootId` of the daemon boot that followed the
+   *  restart which cut this row's turn off. The graceful shutdown that
+   *  interrupts a turn parks `INTERRUPTED_PENDING_BOOT` here; the next boot
+   *  reload (`loadHistorySnapshot`) swaps that — or, after an unclean exit, a
+   *  row still alive on disk — for its own `bootId`. Nothing else is ever
+   *  stamped: an interrupted row carrying no marker was persisted by a daemon
+   *  predating it, i.e. by an older restart, and stays stale. Cleared on the
+   *  next successful turn-end (with the markers it
    *  qualifies). `interruptedAtBoot === registry.bootId` is how the
    *  continue-interrupted verb and boot pass pick "interrupted by the LAST
    *  restart" apart from a stale interruption nobody picked back up. PERSISTED
@@ -1691,6 +1694,15 @@ export interface SessionDescriptor {
    *  — so this carries no secrets today. Should the shape ever grow
    *  headers/tokens, NEVER log this field's contents. */
   mcpServers?: AcpMcpServer[]
+  /** Resolved skills list at spawn time — explicit ∪ preset ∪ config
+   *  defaults (`resolveSpawnDefaults`'s own merge), recorded regardless of
+   *  whether the adapter actually CONSUMES a `skills` spawn option (today
+   *  only hermes does — see `normalizeSkillsOption`). Persisted so it
+   *  survives restart/resume like `mcpServers`, and so a read surface
+   *  (`session_capabilities`) can show what was resolved even for an
+   *  adapter (claude-code) that auto-discovers skills on its own and never
+   *  reads this list back. */
+  skills?: string[]
   /** Provider-specific resume hints sniffed from the session's
    *  output. claude-code prints `claude --resume <uuid>` on exit;
    *  we capture that uuid as `claudeResumeId`. On `restart`, when a
@@ -1827,8 +1839,15 @@ export interface SessionDescriptor {
    *  time (spawn / resume) — shown in `session_list` so a sender can predict
    *  a message's delivery tier. `steering`: the agent accepts ACP steering
    *  (`_session/steering`) — a `steer` message can be injected into its
-   *  running turn instead of waiting for it to end. */
-  capabilities?: { steering: boolean }
+   *  running turn instead of waiting for it to end. `commandsSupported`:
+   *  the live agent session is the ACP protocol arm (has a working `steer`
+   *  method — only the ACP arm implements it, per `AgentSessionLike`'s own
+   *  doc), which is what actually emits `available_commands_update`
+   *  notifications; false for the print/proprietary arms regardless of
+   *  `steeringSupported`, since a harness can be ACP without advertising
+   *  the steering extension. Read by `session_capabilities` to derive its
+   *  `arm`/`commandsSupported` fields without re-deriving the signal. */
+  capabilities?: { steering: boolean; commandsSupported: boolean }
   /** FIFO of prompts that arrived while this session was mid-turn and
    *  asked to be QUEUED rather than rejected (`enqueuePrompt`'s
    *  `opts.queue` arm — see its doc comment). Index 0 is next to
@@ -2740,6 +2759,15 @@ export function isResumable(desc: SessionDescriptor): boolean {
  * on the number.
  */
 export const MAX_RESUME_ATTEMPTS = 3
+
+/**
+ * `interruptedAtBoot` value a graceful shutdown parks on a row it cuts off
+ * mid-turn — "interrupted by the restart in progress; the next boot claims
+ * it". The boot id that will follow isn't known yet, and leaving the field
+ * empty would be indistinguishable from a row persisted before the marker
+ * existed (an older restart). Never survives a boot reload.
+ */
+export const INTERRUPTED_PENDING_BOOT = "pending-next-boot"
 
 /**
  * Cap-aware eligibility for in-place resume: `isResumable` (the descriptor has
@@ -3864,8 +3892,10 @@ export interface SpawnAgentInput {
   /** Optional initial prompt to dispatch immediately. The promise
    *  the registry returns resolves AFTER the spawn — the prompt
    *  runs in the background, projecting events into the ring
-   *  buffer. Skip to spawn idle. */
-  initialPrompt?: string
+   *  buffer. Skip to spawn idle. A plain string, or a content-block
+   *  prompt (attachment-bearing first message) — see
+   *  `SpawnAgentSessionInput.prompt`'s doc. */
+  initialPrompt?: string | Record<string, unknown> | unknown[]
   /** The daemon-composed SYSTEM slice of {@link initialPrompt} — the part
    *  it synthesized ahead of the CALLER's ask (role disposition, lineage
    *  line, AGENTS.md, posture preamble). The adapter still receives the
@@ -3887,6 +3917,10 @@ export interface SpawnAgentInput {
    *  the resume/re-spawn path can re-mount the same toolset (orchestrator
    *  WP1). */
   mcpServers?: AcpMcpServer[]
+  /** Resolved skills list at spawn time (`resolveSpawnDefaults`'s merged
+   *  explicit ∪ preset ∪ config-defaults result) — recorded verbatim onto
+   *  {@link SessionDescriptor.skills}. See that field's doc. */
+  skills?: string[]
   /** Persistent isolated-config dir this spawn passed to
    *  `startSession({ configDir })` — recorded verbatim onto
    *  {@link SessionDescriptor.adapterConfigDir} so restart/lazy-resume can
@@ -4022,8 +4056,10 @@ export type PendingAgentOutcome =
       nativeTerminalResume?: boolean
       readUsage?: () => Promise<import("./usage.js").UsageReadResult | null>
       /** Dispatched now that the tree + driver session both exist — never
-       *  passed to `spawnAgentPending`, which would race the tree. */
-      initialPrompt?: string
+       *  passed to `spawnAgentPending`, which would race the tree. A plain
+       *  string, or a content-block prompt (attachment-bearing first
+       *  message) — see `SpawnAgentSessionInput.prompt`'s doc. */
+      initialPrompt?: string | Record<string, unknown> | unknown[]
       /** The daemon-composed SYSTEM slice of `initialPrompt` (see
        *  `SpawnAgentInput.initialPromptSystem`) — threaded through the
        *  placeholder so the deferred dispatch records it as a system turn. */
@@ -7601,11 +7637,21 @@ export function createSessionsRegistry(opts?: {
     else armAutonomousSilenceClose(rt)
   }
 
-  /** Stamp `desc.capabilities` from the agent session just attached. */
+  /** Stamp `desc.capabilities` from the agent session just attached.
+   *  `commandsSupported` uses `steer` presence alone (not `steeringSupported`,
+   *  which is a separate ACP extension a harness can decline) as the ACP-arm
+   *  signal — only `createAcpProtocolArm` wires a `steer` method onto
+   *  `AgentSessionLike`; the print and proprietary arms never do. */
   const stampCapabilities = (rt: SessionRuntime): void => {
-    const steering = rt.agentSession?.steer !== undefined && rt.agentSession.steeringSupported === true
-    if (rt.desc.capabilities?.steering === steering) return
-    rt.desc.capabilities = { steering }
+    const isAcpArm = rt.agentSession?.steer !== undefined
+    const steering = isAcpArm && rt.agentSession?.steeringSupported === true
+    if (
+      rt.desc.capabilities?.steering === steering &&
+      rt.desc.capabilities?.commandsSupported === isAcpArm
+    ) {
+      return
+    }
+    rt.desc.capabilities = { steering, commandsSupported: isAcpArm }
     schedulePersist()
   }
 
@@ -7943,6 +7989,9 @@ export function createSessionsRegistry(opts?: {
         // Persist the spawn-time MCP mounts so resume re-mounts the same
         // toolset (orchestrator WP1). Reference-only shape — no secrets.
         ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+        // Persist the resolved skills list, whether or not this adapter
+        // consumes it (see `SessionDescriptor.skills`'s doc).
+        ...(input.skills && input.skills.length > 0 ? { skills: input.skills } : {}),
         // Persist the isolated-config location so restart/lazy-resume can
         // hand the respawned adapter the SAME dir (native-resume store).
         ...(input.adapterConfigDir ? { adapterConfigDir: input.adapterConfigDir } : {}),
@@ -8101,6 +8150,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.title ? { title: input.title } : {}),
         ...(input.label ? { renamedByUser: false } : {}),
         ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
+        ...(input.skills && input.skills.length > 0 ? { skills: input.skills } : {}),
         ...(input.adapterConfigDir ? { adapterConfigDir: input.adapterConfigDir } : {}),
         ...(input.parentSessionId
           ? { parentSessionId: input.parentSessionId }
@@ -9998,9 +10048,10 @@ export function createSessionsRegistry(opts?: {
         // killedMidTurn's docblock. clearInFlightFlags below zeroes busy
         // right after, so this is the last honest look at it.
         rt.desc.killedMidTurn = rt.desc.busy === true
-        // Interrupted AGAIN: the old boot marker names an earlier restart —
-        // drop it so the next boot stamps its own (see `interruptedAtBoot`).
-        if (rt.desc.killedMidTurn) delete rt.desc.interruptedAtBoot
+        // Interrupted (again) by THIS shutdown: park the pending marker so the
+        // next boot — and only the next boot — claims the row as its own
+        // restart's (see `interruptedAtBoot`).
+        if (rt.desc.killedMidTurn) rt.desc.interruptedAtBoot = INTERRUPTED_PENDING_BOOT
         clearInFlightFlags(rt.desc)
         if (rt.agentSession) {
           recordExitUsageSnapshot(rt)
@@ -10193,18 +10244,24 @@ function loadHistorySnapshot(
     // no-op, so there is nothing to lose by not asking how it got there.
     clearInFlightFlags(reclassified)
     migratePendingChildNotices(reclassified)
-    // Which restart interrupted it (see `interruptedAtBoot`). A row this boot
-    // just reclassified was cut off by THIS restart whatever an older marker
-    // said; one already terminal on disk (graceful shutdown) keeps the marker
-    // of the first boot that saw it, or gets this boot's if it has none.
-    if (wasAlive) delete reclassified.interruptedAtBoot
+    // Which restart interrupted it (see `interruptedAtBoot`). Only two shapes
+    // are THIS restart's: a row still alive on disk (the daemon died without
+    // a graceful shutdown), and one the graceful shutdown just parked with
+    // `INTERRUPTED_PENDING_BOOT`. Any other interrupted row keeps whatever it
+    // carries — an older boot's id, or nothing at all for a row persisted by
+    // a daemon predating the marker. That absence must NOT be read as "ours":
+    // those rows were cut off by an earlier restart (live: rows from the day
+    // before were stamped with the current boot and reported eligible).
     if (
       bootId !== undefined &&
       reclassified.killedMidTurn === true &&
       reclassified.endedReason === "daemon-restart" &&
-      reclassified.interruptedAtBoot === undefined
+      (wasAlive || reclassified.interruptedAtBoot === INTERRUPTED_PENDING_BOOT)
     ) {
       reclassified.interruptedAtBoot = bootId
+    } else if (reclassified.interruptedAtBoot === INTERRUPTED_PENDING_BOOT) {
+      // A pending marker on a row no longer interrupted — nothing to claim.
+      delete reclassified.interruptedAtBoot
     }
     // Same reasoning as the in-flight flags above, for `contextUsed`: a
     // snapshot written before `plausibleContextUsed` existed can carry an
