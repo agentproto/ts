@@ -45,8 +45,26 @@ loader path can carry.
 ## Running it
 
 ```bash
+agentproto steward --wait                     # dry run: plan + verdicts, report
+agentproto steward --apply --wait             # close / flag confident verdicts
+agentproto steward --apply --idle 60 --min-confidence 0.9 --judge agent
+agentproto steward --ask-sessions --wait      # also ask low-confidence sessions
+```
+
+`agentproto steward` installs (upserts) this app and starts the workflow via
+`workflow_run_file`; it passes `AGENTPROTO_SESSION_ID` as `callerSessionId`
+so a run never judges the session that started it. Or call the daemon
+directly:
+
+```bash
 agentproto app install packages/apps/session-steward
 agentproto workflow run-file \
   packages/apps/session-steward/.agentproto/workflows/session-steward/WORKFLOW.md \
   --input-json '{"apply": false}'
 ```
+
+## Routine
+
+`routines/session-steward-hourly` is an AIP-41 `ROUTINE.md` template: hourly,
+`apply: true`, `askSessions: false`, shipped `enabled: false` — nothing
+starts closing sessions on install. Its own doc lists the enabling steps.

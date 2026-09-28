@@ -52,6 +52,7 @@ import { runPolicy } from "./commands/policy.js"
 import { runWorkflow } from "./commands/workflow.js"
 import { runReview } from "./commands/review.js"
 import { runMaintain } from "./commands/maintain.js"
+import { runSteward } from "./commands/steward.js"
 import { runTask } from "./commands/task.js"
 import { runPermissions } from "./commands/permissions.js"
 import { runAcp } from "./commands/acp.js"
@@ -168,6 +169,8 @@ Usage:
   agentproto workflow  resolve <runId> (--approve|--reject) [--who <name>] [--note <text>]
   agentproto maintain  [--repo <dir>] [--apply-merged] [--json]
                        plan/review (and optionally apply) branch + worktree gc for a repo
+  agentproto steward   [--apply] [--idle <min>] [--min-confidence <x>] [--judge <auto|jev|agent>] [--ask-sessions] [--wait] [--json]
+                       judge idle agent sessions, then close or flag them (dry run by default)
   agentproto task      create <title> [--description <text>] [--board-id <id>] [--json]
   agentproto task      list [--board-id <id>] [--status <s>] [--include-closed] [--json]
   agentproto task      claim <taskId> --rev <n>
@@ -269,6 +272,7 @@ const VERBS = new Set([
   "workflow",
   "review",
   "maintain",
+  "steward",
   "task",
   "permissions",
   "app",
@@ -405,6 +409,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runWorkflow(rest)
     case "maintain":
       return runMaintain(rest)
+    case "steward":
+      return runSteward(rest)
     case "task":
       return runTask(rest)
     case "permissions":
