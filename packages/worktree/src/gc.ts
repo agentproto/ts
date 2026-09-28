@@ -80,10 +80,21 @@ export interface ClassifyForGcOptions {
 
 /**
  * gc's own classifier, layered on top of `classify` (status.ts) rather than
- * reimplementing it — reuse first (AGENTS.md, PLAN.md §0.6). The one thing
- * `classify` cannot know is `--include-detached`, a gc-specific flag; that
- * override lives here, not in the read-only status engine `ls --status`
- * also depends on.
+ * reimplementing it — reuse first (AGENTS.md, PLAN.md §0.6). `classify`
+ * itself never lets a `fresh` worktree salvage, clean or not — that
+ * invariant is load-bearing for `ls --status` and every other caller (see
+ * its 2026-07-15 note) and stays untouched here. What `classify` cannot know
+ * is gc-specific archival policy; two overrides live here instead:
+ *   - `--include-detached`: a clean, idle DETACHED worktree moves `hold` →
+ *     `reclaim`.
+ *   - the "plans-only" rule below: a no-commit worktree (`fresh`, or
+ *     `detached` when `includeDetached` is set — same gate, since a detached
+ *     HEAD's commit safety is exactly as unproven either way) whose ONLY
+ *     dirt is untracked files under `.plans/` moves `hold` → `salvage`, so
+ *     `--salvage-dirty` archives the plan files (never discards them) instead
+ *     of holding the worktree forever. Narrow on purpose: any OTHER dirt
+ *     (even one non-`.plans/` file, or a tracked/staged change) leaves this
+ *     untouched and `classify`'s ordinary `hold` stands.
  */
 export function classifyForGc(
   tree: TreeState,
@@ -91,9 +102,22 @@ export function classifyForGc(
   liveness: LivenessState,
   options: ClassifyForGcOptions = {},
 ): GcClass {
+  const idleOrUnreachable = liveness.state === "idle" || liveness.state === "daemon-unreachable"
   if (options.includeDetached && integration.state === "detached") {
-    const idleOrUnreachable = liveness.state === "idle" || liveness.state === "daemon-unreachable"
     if (tree.state === "clean" && idleOrUnreachable) return "reclaim"
+  }
+  const noCommitsOfItsOwn =
+    integration.state === "fresh" || (Boolean(options.includeDetached) && integration.state === "detached")
+  if (
+    noCommitsOfItsOwn &&
+    idleOrUnreachable &&
+    tree.state === "dirty" &&
+    tree.modified === 0 &&
+    tree.staged === 0 &&
+    tree.untracked > 0 &&
+    tree.onlyUnder === ".plans/"
+  ) {
+    return "salvage"
   }
   return classify(tree, integration, liveness, options.nowMs).class
 }

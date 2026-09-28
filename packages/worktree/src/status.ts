@@ -56,6 +56,15 @@ export type TreeState =
        * a liveness-independent "someone touched this a moment ago" signal.
        */
       newestMtimeMs: number | null
+      /**
+       * Set to `.plans/` when every non-noise dirty path starts with it —
+       * i.e. the ENTIRE tree's dirt lives under `.plans/`. `undefined`
+       * otherwise (mixed dirt, or dirt outside `.plans/` entirely). Feeds
+       * gc's plans-only salvage rule (`classifyForGc`, gc.ts): `.plans/`
+       * holds the user's plan files, never to be discarded, but also never a
+       * reason to hold a no-commit worktree forever.
+       */
+      onlyUnder?: string
     }
 
 export interface ComputeTreeStateOptions {
@@ -114,6 +123,7 @@ export async function computeTreeState(
     )
   }
   const noise: string[] = []
+  const dirtyPaths: string[] = []
   let modified = 0
   let staged = 0
   let untracked = 0
@@ -124,6 +134,7 @@ export async function computeTreeState(
       noise.push(path)
       continue
     }
+    if (path !== null) dirtyPaths.push(path)
     if (line.startsWith("? ")) {
       untracked++
       continue
@@ -135,12 +146,14 @@ export async function computeTreeState(
     }
   }
   if (modified === 0 && staged === 0 && untracked === 0) return noise.length > 0 ? { state: "clean", noise } : { state: "clean" }
+  const onlyUnder = dirtyPaths.length > 0 && dirtyPaths.every((p) => p.startsWith(".plans/")) ? ".plans/" : undefined
   return {
     state: "dirty",
     modified,
     staged,
     untracked,
     newestMtimeMs: await newestDirtyMtimeMs(repoRoot, worktreePath),
+    ...(onlyUnder ? { onlyUnder } : {}),
   }
 }
 
