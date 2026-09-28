@@ -234,3 +234,14 @@ for that.
 
 ### llm:huggingface
 - Removed: deepseek-ai/DeepSeek-V3, deepseek-ai/DeepSeek-V3.2-Exp
+
+## 2026-09-28
+
+### llm:openrouter
+- Added: anthropic/claude-sonnet-5.5, anthropic/claude-sonnet-5.5:batch
+
+### llm:huggingface
+- Removed: Qwen/Qwen3-Coder-480B-A35B-Instruct, deepseek-ai/DeepSeek-R1-Distill-Llama-70B, swiss-ai/Apertus-v1.5-70B
+
+### llm:context-windows
+- Added: claude-sonnet-5-5
