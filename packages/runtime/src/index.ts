@@ -104,6 +104,7 @@ import { routeInboundMessage } from "./inbound-router.js"
 import { createSentinelStore } from "./sentinel-store.js"
 import { createSentinelRuntime } from "./sentinel-runtime.js"
 import { resolveSentinelProvider } from "./sentinel-providers/registry.js"
+import { registerSentinelTools } from "./sentinel-tools.js"
 import { makeTelegramBotCredsStore, registerTelegramBotTools } from "./telegram-bot-creds.js"
 import type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
 import { langfuseSessionTracer } from "./langfuse-session-tracer.js"
@@ -630,6 +631,14 @@ export type { HeartbeatRunner, BuildHeartbeatAgent, HeartbeatAgent } from "./hea
 export type { RuntimeEvent, RuntimeEvents } from "./events.js"
 export type { WorkspaceFs } from "./workspace-fs.js"
 export type { TunnelDescriptor, TunnelStatus, TunnelProvider } from "./tunnel-registry.js"
+export type { SentinelStatus } from "./sentinel-store.js"
+export type {
+  SentinelSpec,
+  SentinelMatchClause,
+  SentinelUntil,
+  SentinelTarget,
+} from "./sentinel-providers/types.js"
+export type { SentinelView } from "./sentinel-tools.js"
 export type {
   LlmEndpointStatusReport,
   LlmEndpointDescriptor,
@@ -2022,21 +2031,21 @@ export async function createGateway(
     return restarted.desc.id
   }
 
-  // Sentinel primitive (AIP-60 step 2) — persisted watch registry
-  // (`~/.agentproto/sentinels.json`) + poll/delivery engine. No built-in
-  // provider ships yet (`local-gh` lands in step 3), so in practice this is
-  // inert until a sentinel exists on disk or a third-party
-  // `agentproto-sentinel-*` package is installed — safe to always wire, same
-  // "no new required config" posture as every other adapter family here.
-  // Landing reuses the exact same dead-session hooks the inbound router
-  // uses, above.
+  // Sentinel primitive (AIP-60) — persisted watch registry
+  // (`~/.agentproto/sentinels.json`) + poll/delivery engine, with the
+  // `local-gh` built-in (zero infra, host `gh` CLI) — safe to always wire,
+  // same "no new required config" posture as every other adapter family
+  // here (an unconfigured/no-sentinel daemon just never has anything to
+  // poll). Landing reuses the exact same dead-session hooks the inbound
+  // router uses, above.
   const sentinelStore = createSentinelStore({ persist })
   const sentinelCredsStore = makeSentinelCredsStore()
+  const resolveSentinelProviderResolved = async (slug: string) =>
+    resolveSentinelProvider(slug, { creds: await sentinelCredsStore.read(slug) })
   const sentinelRuntime = createSentinelRuntime({
     store: sentinelStore,
     registry: { sendMessage: sessions.sendMessage },
-    resolveProvider: async (slug: string) =>
-      resolveSentinelProvider(slug, { creds: await sentinelCredsStore.read(slug) }),
+    resolveProvider: resolveSentinelProviderResolved,
     isSessionAlive,
     restartSession: restartInboundSession,
   })
@@ -2573,6 +2582,16 @@ export async function createGateway(
     // (list_sentinel_adapters + setup_sentinel_provider) — same resolver
     // `sentinelRuntime` above resolves slugs through.
     await registerSentinelAdapterTools(server, {})
+    // Sentinel watch/list/unwatch/poll-now — `sessionId` defaults to the
+    // connecting client's `?callerSessionId=` (absent for a human/root call),
+    // same pattern registerMessageTools uses below.
+    registerSentinelTools(server, {
+      store: sentinelStore,
+      runtime: sentinelRuntime,
+      resolveProvider: resolveSentinelProviderResolved,
+      isSessionAlive,
+      ...(callerSessionId ? { callerSessionId } : {}),
+    })
     // Sandbox adapter introspection/setup, riding on @agentproto/provider-kit
     // (list_sandbox_providers + setup_sandbox_provider) — same resolver
     // `agent_start.sandbox` resolves slugs through above.
@@ -2709,6 +2728,11 @@ export async function createGateway(
     token,
     ptyEnabled: opts.spawnPty != null,
     tunnels,
+    sentinels: {
+      store: sentinelStore,
+      resolveProvider: resolveSentinelProviderResolved,
+      isSessionAlive,
+    },
     ...(llmEndpoint ? { llmEndpoint } : {}),
     remote,
     ...(opts.pairingRegistry ? { pairings: opts.pairingRegistry } : {}),

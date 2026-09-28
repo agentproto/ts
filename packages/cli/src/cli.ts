@@ -34,6 +34,7 @@ import { runConversation } from "./commands/conversation.js"
 import { runUsage } from "./commands/usage.js"
 import { runBrain } from "./commands/brain.js"
 import { runTunnel } from "./commands/tunnel.js"
+import { runSentinel } from "./commands/sentinel.js"
 import { runRemote } from "./commands/remote.js"
 import { runProviderPresets } from "./commands/presets.js"
 import { runPreset } from "./commands/preset.js"
@@ -118,6 +119,10 @@ Usage:
   agentproto tunnel    list   [--active] [--json]
   agentproto tunnel    stop   <id-or-name> [--json]
   agentproto tunnel    status <id-or-name> [--json]
+  agentproto sentinel  watch pr <url> [--session <id>] [--urgency <u>] [--until closed] [--json]
+  agentproto sentinel  list   [--json]
+  agentproto sentinel  rm     <id> [--json]
+  agentproto sentinel  status <id> [--json]
   agentproto remote    enable [--qr] [--target-port <n>] [--json]
                                            publish this gateway (or another local port) to the internet
   agentproto remote    disable | status [--json]
@@ -361,6 +366,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runBrain(rest)
     case "tunnel":
       return runTunnel(rest)
+    case "sentinel":
+      return runSentinel(rest)
     case "remote":
       return runRemote(rest)
     case "presets":

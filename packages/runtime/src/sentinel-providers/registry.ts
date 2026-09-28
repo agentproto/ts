@@ -1,17 +1,17 @@
 /**
  * Slug-keyed sentinel provider registry — mirrors `remote-providers/registry.ts`
- * (the tunnel family) exactly, so `sentinel-runtime.ts` and the future
- * `sentinel-adapters.ts` kit wiring resolve providers the same way every
+ * (the tunnel family) exactly, so `sentinel-runtime.ts` and
+ * `sentinel-adapters.ts`'s kit wiring resolve providers the same way every
  * other adapter family does.
  *
- * Step 2 (AIP-60) ships the contract + store + runtime with NO built-in
- * provider — `local-gh` lands in step 3. `BUILTIN_SENTINEL_PROVIDERS` is
- * empty on purpose; the registry still resolves third-party packages
- * discovered on disk so the contract is exercisable end to end.
+ * Step 3 (AIP-60) adds the first built-in, `local-gh` — zero infra, no
+ * credentials. `webhook` / `agentpush` are added by later steps (design §12
+ * steps 5, 10) without changing this shape.
  */
 
 import { discoverAdapterPackages } from "@agentproto/provider-kit"
 
+import { localGhSentinelProvider, LOCAL_GH_SLUG } from "./local-gh.js"
 import type { SentinelProviderHandle } from "./types.js"
 
 /** Per-slug credentials, as stored by the creds store / setup tool. */
@@ -27,14 +27,15 @@ export type SentinelProviderFactory = (
 ) => SentinelProviderHandle
 
 /**
- * Built-in providers keyed by canonical slug. Empty for step 2 — see module
- * doc. `local-gh` / `webhook` / `agentpush` are added by later steps
- * (design §12 steps 3, 5, 10) without changing this shape.
+ * Built-in providers keyed by canonical slug. `local-gh` ignores creds — it
+ * needs none, it uses the host's ambient `gh` auth.
  */
-export const BUILTIN_SENTINEL_PROVIDERS: Record<string, SentinelProviderFactory> = {}
+export const BUILTIN_SENTINEL_PROVIDERS: Record<string, SentinelProviderFactory> = {
+  [LOCAL_GH_SLUG]: () => localGhSentinelProvider(),
+}
 
-/** The canonical built-in slugs, in catalog order. Empty for step 2. */
-export const BUILTIN_SENTINEL_SLUGS: readonly string[] = []
+/** The canonical built-in slugs, in catalog order. */
+export const BUILTIN_SENTINEL_SLUGS: readonly string[] = [LOCAL_GH_SLUG]
 
 const slugToCamel = (slug: string): string =>
   slug.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase())
