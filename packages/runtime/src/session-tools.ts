@@ -65,6 +65,7 @@ import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } fro
 import { continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
 import { compactOutcome, type SessionOutcomeCompact } from "./session-outcome.js"
+import { processTreeRss } from "./process-memory.js"
 import type { SpawnAgentSessionDeps } from "./session-spawn.js"
 import {
   collectSessionSnapshots,
@@ -498,6 +499,9 @@ export interface SessionListCompactItem {
    *  (`session_continue_interrupted` sends it a continue prompt). Absent
    *  otherwise. */
   interrupted?: true
+  /** Mirrors `SessionDescriptor.rssBytes` — only present when the request
+   *  opted in with `withMemory: true` (it costs a `ps` spawn). */
+  rssBytes?: number
 }
 
 /** Public MCP descriptor projection. Resume environment is required by the
@@ -545,6 +549,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   ...(s.lastTurnReason !== undefined ? { lastTurnReason: s.lastTurnReason } : {}),
   ...(s.lastTurnEmpty !== undefined ? { lastTurnEmpty: s.lastTurnEmpty } : {}),
   ...(s.interrupted ? { interrupted: true as const } : {}),
+  ...(s.rssBytes !== undefined ? { rssBytes: s.rssBytes } : {}),
 })
 
 // ── batch compact projections (tool-transformer migration) ───────────────
@@ -953,6 +958,16 @@ export function registerSessionTools(
         "When true, also include archived sessions (hidden from every " +
           "other view by `session_archive`). Default false.",
       ),
+    withMemory: z
+      .boolean()
+      .optional()
+      .describe(
+        "When true, add `rssBytes` (summed RSS in bytes of the process tree, " +
+          "via `ps`) to every live session that has a pid. Default false — " +
+          "a distinct opt-in from `full`/`compact` since it costs one `ps` " +
+          "spawn per call; omitted otherwise, so a plain listing never pays " +
+          "for it.",
+      ),
     ...pageParamsShape,
   })
   type SessionListInput = z.infer<typeof sessionListSchema>
@@ -1009,6 +1024,19 @@ export function registerSessionTools(
         rows = rows.filter(
           s => s.status === "running" || s.status === "starting",
         )
+      }
+      if (input.withMemory) {
+        const live = rows.filter(
+          (s): s is SessionDescriptor & { pid: number } =>
+            typeof s.pid === "number" && (s.status === "running" || s.status === "starting"),
+        )
+        if (live.length > 0) {
+          const rssByPid = await processTreeRss(live.map(s => s.pid))
+          rows = rows.map(s => {
+            const rssBytes = typeof s.pid === "number" ? rssByPid.get(s.pid) : undefined
+            return rssBytes !== undefined ? { ...s, rssBytes } : s
+          })
+        }
       }
       return rows.map(publicSessionDescriptor)
     },

@@ -1085,6 +1085,12 @@ export interface SessionDescriptor {
    *  every read since it's a live OS query, stale the instant it's
    *  written to disk. */
   processAlive?: boolean
+  /** Summed RSS in bytes of this session's process and all its OS-level
+   *  descendants (`processTreeRss`, `process-memory.ts`). Ephemeral,
+   *  never persisted — stamped only when a caller opts in (`session_list`'s
+   *  `withMemory: true`) since it costs a `ps` spawn; absent otherwise, and
+   *  absent for a row with no `pid` or that `ps` didn't report. */
+  rssBytes?: number
   /** Count of live supervisors currently blocked waiting on this session —
    *  HTTP `GET /sessions/:id/wait` long-polls and `session_monitor`
    *  subscriptions, both via `monitorSessionWait` (#session-visibility).
