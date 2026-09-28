@@ -17,7 +17,7 @@ import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 import type { McpProxyRegistry, ProxyAliasSummary } from "../mcp-proxy.js"
 import type { ImportedMcpsConfig } from "../mcp-imports.js"
 import type { DiscoveredMcp } from "../mcp-discovery.js"
-import { computeCapabilitiesInventory } from "../capabilities-inventory.js"
+import { computeCapabilitiesInventory, computeImportedReach } from "../capabilities-inventory.js"
 
 const IMPORTED_SNAPSHOT: DiscoveredMcp = {
   id: "claude-code:global:chrome-devtools",
@@ -101,6 +101,7 @@ describe("computeCapabilitiesInventory", () => {
         status: "connected",
         toolCount: 7,
         usedBySessions: ["sess-1"],
+        reach: {},
       },
     ])
 
@@ -214,5 +215,60 @@ describe("capabilities_inventory MCP tool", () => {
     expect(Array.isArray(inventory.skills.byHarness)).toBe(true)
 
     await client.close()
+  })
+})
+
+describe("capabilities inventory — per-import reach (P2)", () => {
+  const adapters = [
+    { slug: "claude-code", protocol: "acp" },
+    { slug: "hermes", protocol: "acp" },
+    { slug: "opencode", protocol: "acp" },
+    { slug: "printer", protocol: "print" },
+  ] as never
+  const bundles = {
+    version: 1 as const,
+    bundles: [
+      { id: "harness-claude-code", label: "cc", mcpImports: ["a"], skills: [] },
+      { id: "everything", label: "all", mcpImports: "*" as const, skills: [] },
+      { id: "withdaemon", label: "d", mcpImports: [], includeDaemon: true, skills: [] },
+    ],
+  }
+
+  it("empty defaults: daemon-default harnesses are indirect, the rest none", () => {
+    const m = computeImportedReach(["a"], adapters, {}, bundles)
+    expect(m.get("a")).toEqual({ "claude-code": "indirect", hermes: "indirect", opencode: "none", printer: "none" })
+  })
+
+  it("a default bundle makes its imports native for that adapter only", () => {
+    const m = computeImportedReach(["a", "b"], adapters, { defaults: { adapters: { "claude-code": { bundles: ["harness-claude-code"] } } } }, bundles)
+    expect(m.get("a")?.["claude-code"]).toBe("native")
+    expect(m.get("b")?.["claude-code"]).toBe("indirect")
+    expect(m.get("a")?.hermes).toBe("indirect")
+  })
+
+  it('"*" is native for every listed import; non-ACP adapters never native; includeDaemon/daemonMount make on-request adapters indirect', () => {
+    const m = computeImportedReach(
+      ["a", "b"],
+      adapters,
+      { defaults: { bundles: ["everything"], adapters: { opencode: { bundles: ["withdaemon"] }, hermes: { daemonMount: true } } } },
+      bundles,
+    )
+    expect(m.get("b")).toEqual({ "claude-code": "native", hermes: "native", opencode: "native", printer: "none" })
+    const n = computeImportedReach(["a"], adapters, { defaults: { adapters: { opencode: { bundles: ["withdaemon"] } } } }, bundles)
+    expect(n.get("a")?.opencode).toBe("indirect")
+  })
+
+  it("is wired into the inventory (via injected loadBundles/loadConfig) without leaking bundle content", async () => {
+    const inventory = await computeCapabilitiesInventory({
+      listAgentAdapters: async () => [{ slug: "claude-code", protocol: "acp", packageName: "@agentproto/nope" }] as never,
+      loadImportedMcps: async () => IMPORTED_CONFIG,
+      discoverMcps: async () => [],
+      loadConfig: async () => ({ defaults: { adapters: { "claude-code": { bundles: ["harness-claude-code"] } } } }),
+      loadBundles: async () => ({
+        version: 1,
+        bundles: [{ id: "harness-claude-code", label: "cc", mcpImports: [IMPORTED_SNAPSHOT.id], skills: [] }],
+      }),
+    })
+    expect(inventory.mcp.imported[0]?.reach).toEqual({ "claude-code": "native" })
   })
 })
