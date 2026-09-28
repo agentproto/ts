@@ -290,7 +290,7 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
             binding: ctx.compose.binding,
             checkId: check.id,
             rubricSha256: rubric.sha256,
-            ...(packDigest ? { packDigest: { id: packDigest.id, sha256: packDigest.sha256 } } : {}),
+            ...(packDigest ? { packDigest: { id: packDigest.id, alg: packDigest.alg, sha256: packDigest.sha256 } } : {}),
             baseSha: target.baseSha,
             headSha: target.headSha,
           })

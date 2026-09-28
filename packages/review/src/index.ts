@@ -38,6 +38,8 @@ export {
 export {
   parsePackManifest,
   resolvePacks,
+  computePackDigestSha256,
+  PACK_DIGEST_ALG,
   PackManifestError,
   type PackManifest,
   type PackCheck,
