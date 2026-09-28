@@ -47,6 +47,7 @@ import { execArgv, execGit } from "./exec.js"
 import { cleanupWorktreeTool } from "./tools/index.js"
 import { worktreeProvider } from "./provider/index.js"
 import { salvageWorktree } from "./salvage.js"
+import { sweepWorktreeTrash } from "./fast-remove.js"
 import type { ForgeClient } from "./forge.js"
 import {
   classify,
@@ -786,6 +787,16 @@ export interface ApplyGcOptions {
   protectedPaths?: string[]
   /** See `PlanGcInput.noisePaths`. */
   noisePaths?: readonly string[]
+  /**
+   * The bucket directory this repo's worktrees are provisioned under — the
+   * same value `planGc` takes. When passed, apply first fires
+   * `sweepWorktreeTrash(worktreesRoot)` (fast-remove.ts): every leftover
+   * `.trash/*` dir left behind by an interrupted background delete is
+   * handed to a fresh detached `rm -rf` child, so a killed mid-delete
+   * removal (crash, reboot) still converges — seconds of stale bytes at
+   * apply time are harmless, and the sweep never blocks on the deletes.
+   */
+  worktreesRoot?: string
 }
 
 export type GcApplyOutcome =
@@ -1015,6 +1026,10 @@ async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<Gc
  * `git worktree remove`.
  */
 export async function applyGc(plan: readonly GcPlanEntry[], options: ApplyGcOptions): Promise<GcApplyOutcome[]> {
+  // Leftover `.trash/*` from a rename-removal whose background delete died
+  // (crash/reboot) — fire a fresh detached `rm -rf` per dir and move on; the
+  // sweep never blocks the apply (see `sweepWorktreeTrash`, fast-remove.ts).
+  if (options.worktreesRoot) sweepWorktreeTrash(options.worktreesRoot)
   const outcomes: GcApplyOutcome[] = []
   for (const entry of plan) {
     outcomes.push(await applyOne(entry, options))

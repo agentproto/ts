@@ -1,5 +1,6 @@
 import { implementTool } from "@agentproto/driver"
 import { cleanupWorktreeTool } from "../../tools/cleanup-worktree.tool.js"
+import { removeWorktreeFast } from "../../fast-remove.js"
 import { execGit } from "../../exec.js"
 import { loadConfigFromBase } from "../../config.js"
 import { runTeardown } from "../../lifecycle.js"
@@ -76,6 +77,14 @@ export const cleanupWorktreeBuiltin = implementTool(
     const discardUntracked = input.discardUntracked === true
     const discardModified = input.discardModified === true
 
+    // Every removal below goes through `removeWorktreeFast` (fast-remove.ts):
+    // rename to a same-volume trash dir + `worktree prune`, bytes deleted by
+    // a detached background child — `git worktree remove`'s per-file unlink
+    // loop measured ~10 minutes on a pnpm worktree on an external SSD, and
+    // nothing here waits on that. The fast helper performs the same
+    // cleanliness gate a plain `git worktree remove` performs (and falls
+    // back to it wholesale when the rename fails), so the refusal semantics
+    // each branch below encodes are unchanged.
     if (discardUntracked || discardModified) {
       // At least one discard flag is set: git's own `--force` is all-or-
       // nothing, so we categorize the tree ourselves first to make sure the
@@ -88,19 +97,18 @@ export const cleanupWorktreeBuiltin = implementTool(
         if (tree.untracked > 0 && !discardUntracked) blocked.push("untracked")
         if ((tree.modified > 0 || tree.staged > 0) && !discardModified) blocked.push("modified")
         if (blocked.length > 0) throw new WorktreeNotRemovableError(input.cwd, blocked)
-        await execGit(input.repoRoot, ["worktree", "remove", "--force", input.cwd])
+        await removeWorktreeFast(input.repoRoot, input.cwd, { force: true })
       } else {
-        await execGit(input.repoRoot, ["worktree", "remove", input.cwd])
+        await removeWorktreeFast(input.repoRoot, input.cwd)
       }
     } else {
       // No discard flag: git's own refusal is the final arbiter (PLAN.md
-      // §5.2 layer 3) — no need to re-implement the dirty check here. A
-      // clean tree (or one with only gitignored files) removes fine; a
-      // dirty one makes git itself fail, which we surface as the same typed
-      // error without claiming to know which class blocked it (we never
-      // asked).
+      // §5.2 layer 3) — re-implemented by `removeWorktreeFast` as the same
+      // non-force gate (refuse on `git status --porcelain` output). A
+      // dirty tree surfaces as the same typed error without claiming to
+      // know which class blocked it (we never asked).
       try {
-        await execGit(input.repoRoot, ["worktree", "remove", input.cwd])
+        await removeWorktreeFast(input.repoRoot, input.cwd)
       } catch (err) {
         throw new WorktreeNotRemovableError(input.cwd, [], err instanceof Error ? err.message : String(err))
       }

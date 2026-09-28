@@ -28,6 +28,12 @@ export {
   type SalvageResult,
 } from "./salvage.js"
 export { execArgv, execShell, execGit, type ExecResult, type ExecOptions } from "./exec.js"
+export {
+	removeWorktreeFast,
+	sweepWorktreeTrash,
+	WORKTREE_TRASH_DIRNAME,
+	type RemoveWorktreeFastOptions,
+} from "./fast-remove.js"
 export { expandGlob, globToRegExp } from "./glob.js"
 export {
   CONFIG_FILENAME,
