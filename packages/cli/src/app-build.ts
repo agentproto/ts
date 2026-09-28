@@ -47,7 +47,7 @@ export interface AppBuildOptions {
 /**
  * Signal the build's whole process group (POSIX: the child is its own group
  * leader, so `-pid` reaches the package manager AND every script it spawned;
- * Windows: `taskkill /T`). Best effort — an already-dead group is fine.
+ * Windows: `taskkill /T`). Best effort; an already-dead group is fine.
  */
 function killTree(child: ChildProcess, sig: NodeJS.Signals): void {
   const pid = child.pid
