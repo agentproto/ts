@@ -13,7 +13,7 @@
  */
 
 import type { PairingRegistry, PairingRecord } from "./pairing-registry.js"
-import type { HostRegistry, HostRecord } from "./host-registry.js"
+import type { HostRegistry, HostRecord, ForwardHttpRequest, ForwardHttpResponse } from "./host-registry.js"
 
 export type DeviceRole = "client" | "host"
 export type DeviceKind = "browser" | "cli" | "daemon"
@@ -40,6 +40,11 @@ export interface Device {
    *  a user can see, from EITHER daemon, which of their pairings/hosts grant
    *  host control. */
   scope?: "host"
+  /** Self-reported by a host at join time (SANDBOX-VISIBILITY-JOIN) — see
+   *  `HostRecord.provider`/`sandboxId`/`labels`. Absent for a client device. */
+  provider?: string
+  sandboxId?: string
+  labels?: Record<string, string>
 }
 
 export interface DeviceRegistry {
@@ -57,6 +62,10 @@ export interface DeviceRegistry {
   /** Register a host from an offer URL (delegates to `HostRegistry.add`).
    *  Rejects if no `HostRegistry` was wired into this device registry. */
   add(offerUrl: string, name?: string): Promise<{ fingerprint: string; name: string; rendezvousUrl: string }>
+  /** Forward one HTTP request to a HOST device on demand (delegates to
+   *  `HostRegistry.forwardHttp`) — the basis for `device_sessions`. Rejects
+   *  if no `HostRegistry` was wired, or if `idOrName` doesn't match a host. */
+  forwardHttp(idOrName: string, req: ForwardHttpRequest): Promise<ForwardHttpResponse>
 }
 
 /**
@@ -103,6 +112,9 @@ function toHostDevice(record: HostRecord, online: boolean): Device {
     online,
     ...(record.legacy ? { legacy: true } : {}),
     scope: "host",
+    ...(record.provider ? { provider: record.provider } : {}),
+    ...(record.sandboxId ? { sandboxId: record.sandboxId } : {}),
+    ...(record.labels ? { labels: record.labels } : {}),
   }
 }
 
@@ -135,6 +147,15 @@ export function createDeviceRegistry(pairing: PairingRegistry, hosts?: HostRegis
         )
       }
       return hosts.add(offerUrl, name)
+    },
+    async forwardHttp(idOrName, req) {
+      if (!hosts) {
+        throw new Error(
+          "this daemon has no host registry wired — device sessions is unavailable (internal " +
+            "configuration issue, not a user error)",
+        )
+      }
+      return hosts.forwardHttp(idOrName, req)
     },
   }
 }

@@ -173,6 +173,14 @@ export const sessionChatApp: AppHandle = defineApp({
       "adapter_list",
       "conversation_read",
       "session_restart",
+      // SANDBOX-VISIBILITY-JOIN: lets a "Devices" view group sessions by
+      // paired host (e.g. a CI reviewer box) instead of only this daemon's
+      // own. Read-only. NOTE: the installed `@agentik/session-chat` app's
+      // own APP.md `ui.tools` allowlist needs the SAME two names added in
+      // lockstep (see the comment above) — that app's source lives outside
+      // this repo, so its UI won't actually call these until that's done too.
+      "device_list",
+      "device_sessions",
     ],
   },
 })
