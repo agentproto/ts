@@ -908,6 +908,63 @@ export function slugifyMcpImportName(alias: string, fallbackId: string): string 
   return slug || fallbackId
 }
 
+export interface MountImportsContext {
+  /** Bundle id — only used to label warnings. */
+  bundleId: string
+  /** Daemon `/mcp` base URL. Undefined (sandbox spawn / no URL configured)
+   *  ⇒ nothing is mounted; the caller reports that skip once. */
+  mcpMountUrl: string | undefined
+  /** Id of the session being spawned, baked in as `callerSessionId`. */
+  sessionId: string
+  imported: ImportedMcpsConfig
+  /** `mcpServers` already on the spawn — an entry with the same name wins. */
+  existing: readonly AcpMcpServer[]
+}
+
+/**
+ * Pure expansion of a bundle's `mcpImports` into native `http` mcpServers
+ * entries pointing at the daemon's `/mcp/imported/<id>` passthrough.
+ * `"*"` expands to every currently imported MCP. Rules (unchanged from the
+ * former inline loop): a removed/unknown id is skipped with a warning; a
+ * name collision with an existing (or earlier-mounted) entry keeps the
+ * existing one and warns; no `mcpMountUrl` mounts nothing. For claude-code
+ * the mount name is the slugified alias on purpose — a session-level entry
+ * shadows an ambient same-named one at the SDK layer.
+ */
+export function mountImports(
+  ids: readonly string[] | "*",
+  ctx: MountImportsContext,
+): { mounts: AcpMcpServer[]; warnings: string[] } {
+  const mounts: AcpMcpServer[] = []
+  const warnings: string[] = []
+  if (!ctx.mcpMountUrl) return { mounts, warnings }
+  const taken = new Set(ctx.existing.map(e => e.name))
+  const wanted = ids === "*" ? ctx.imported.imports.map(e => e.id) : ids
+  for (const importId of wanted) {
+    const entry = ctx.imported.imports.find(e => e.id === importId)
+    if (!entry) {
+      warnings.push(
+        `agent_start: bundle "${ctx.bundleId}" references removed MCP import "${importId}" — skipped.`,
+      )
+      continue
+    }
+    const name = slugifyMcpImportName(entry.alias, importId)
+    if (taken.has(name)) {
+      warnings.push(
+        `agent_start: bundle "${ctx.bundleId}"'s import "${name}" collides with an ` +
+          "existing mcpServers entry name — the existing one wins.",
+      )
+      continue
+    }
+    taken.add(name)
+    const ref =
+      `${ctx.mcpMountUrl}/imported/${encodeURIComponent(importId)}` +
+      `?callerSessionId=${encodeURIComponent(ctx.sessionId)}`
+    mounts.push({ name, transport: "http", ref })
+  }
+  return { mounts, warnings }
+}
+
 /** Strip ANSI escapes and drop the ACP framing/marker noise (`── … ──`
  *  turn frames + `[thought]` / `[tool]` lines) so the lines read as plain,
  *  human-friendly text. Used by `agent_output({clean})` and the
@@ -2231,27 +2288,15 @@ export async function spawnAgentSession(
       importedConfig ??= deps.loadImportedMcpsConfig
         ? await deps.loadImportedMcpsConfig()
         : await loadImportedMcps()
-      for (const importId of bundle.mcpImports) {
-        const entry = importedConfig.imports.find(e => e.id === importId)
-        if (!entry) {
-          spawnWarnings.push(
-            `agent_start: bundle "${bundleId}" references removed MCP import "${importId}" — skipped.`,
-          )
-          continue
-        }
-        const name = slugifyMcpImportName(entry.alias, importId)
-        if ((mcpServers ?? []).some(e => e.name === name)) {
-          spawnWarnings.push(
-            `agent_start: bundle "${bundleId}"'s import "${name}" collides with an ` +
-              "existing mcpServers entry name — the existing one wins.",
-          )
-          continue
-        }
-        const ref =
-          `${mcpMountUrl}/imported/${encodeURIComponent(importId)}` +
-          `?callerSessionId=${encodeURIComponent(mintedSessionId)}`
-        mcpServers = [...(mcpServers ?? []), { name, transport: "http", ref }]
-      }
+      const mounted = mountImports(bundle.mcpImports, {
+        bundleId,
+        mcpMountUrl,
+        sessionId: mintedSessionId,
+        imported: importedConfig,
+        existing: mcpServers ?? [],
+      })
+      spawnWarnings.push(...mounted.warnings)
+      if (mounted.mounts.length > 0) mcpServers = [...(mcpServers ?? []), ...mounted.mounts]
       if (bundle.includeDaemon) {
         if ((mcpServers ?? []).some(e => e.name === "agentproto")) {
           spawnWarnings.push(
