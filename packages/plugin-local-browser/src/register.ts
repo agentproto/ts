@@ -57,6 +57,10 @@ interface ImportEntry {
   id: string
   alias: string
   addedAt: string
+  /** Additive P1 fields — written for our own entry, passed through
+   *  untouched on every other entry (incl. `secretRefs`). */
+  origin?: { kind: string; scope: string; name: string }
+  resolve?: "live" | "snapshot"
   snapshot: {
     id: string
     source: string
@@ -93,6 +97,9 @@ export async function registerLocalBrowser(
     id,
     alias: IMPORT_ALIAS,
     addedAt: new Date().toISOString(),
+    origin: { kind: "plugin", scope: "plugin:local-browser", name: IMPORT_ALIAS },
+    // No discovery source: the stored snapshot is authoritative.
+    resolve: "snapshot",
     snapshot: {
       id,
       source: "plugin",

@@ -61,6 +61,7 @@ import { runRendezvous } from "./commands/rendezvous.js"
 import { runSandbox } from "./commands/sandbox.js"
 import { runLlm } from "./commands/llm.js"
 import { runSettings } from "./commands/settings.js"
+import { runMcp } from "./commands/mcp.js"
 import { runHelp } from "./commands/help.js"
 import { cliFreshnessLine } from "./registry/freshness.js"
 
@@ -196,6 +197,7 @@ Usage:
   agentproto llm       endpoints <list|test> [--json]
                      the LLM gateway's named local/LAN model endpoints
                      (~/.agentproto/llm-endpoints.json)
+  agentproto mcp       migrate-secrets [--apply]   # move imported-MCP header/env secrets to the keychain (dry-run default)
   agentproto settings  export [--out <file>] [--include-secrets <id>...] [--passphrase-env <VAR>]
   agentproto settings  import <file> [--dry-run] [--yes] [--unseal-passphrase-env <VAR>]
                      bring your setup to (or from) another machine — adapters,
@@ -279,6 +281,7 @@ const VERBS = new Set([
   "sandbox",
   "llm",
   "settings",
+  "mcp",
   "help",
 ])
 
@@ -423,6 +426,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runLlm(rest)
     case "settings":
       return runSettings(rest)
+    case "mcp":
+      return runMcp(rest)
     case "help":
       return runHelp(rest)
     default:
