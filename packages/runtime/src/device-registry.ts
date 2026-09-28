@@ -27,9 +27,9 @@ export interface Device {
   createdAt: string
   lastSeen: string
   /** A channel (offer or reconnect) is served for this device right now
-   *  (client) or a `forwardHttp` call is in flight for it right now (host).
-   *  For a host this is NOT a live heartbeat — see host-registry.ts's
-   *  "Online tracking" — it only reflects actual recent/current traffic. */
+   *  (client), or for a host: a forward/snapshot is in flight or one reached
+   *  it within the online grace window. Not a heartbeat — see
+   *  host-registry.ts's "Online tracking". */
   online: boolean
   /** A pair/v1 pairing: listed and revocable, but can't connect until
    *  re-paired — see `PairingRecord.legacy`. */

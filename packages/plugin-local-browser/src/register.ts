@@ -119,7 +119,10 @@ export async function registerLocalBrowser(
 
   await fs.mkdir(dirname(path), { recursive: true })
   const tmp = `${path}.tmp.${process.pid}`
-  await fs.writeFile(tmp, JSON.stringify(next, null, 2) + "\n", "utf8")
+  await fs.writeFile(tmp, JSON.stringify(next, null, 2) + "\n", {
+    encoding: "utf8",
+    mode: 0o600,
+  })
   await fs.rename(tmp, path)
 
   return { importsPath: path, replaced, id }
@@ -137,7 +140,10 @@ export async function unregisterLocalBrowser(
   const next: ImportedMcpsFile = { version: 1, imports: others }
   await fs.mkdir(dirname(importsPath), { recursive: true })
   const tmp = `${importsPath}.tmp.${process.pid}`
-  await fs.writeFile(tmp, JSON.stringify(next, null, 2) + "\n", "utf8")
+  await fs.writeFile(tmp, JSON.stringify(next, null, 2) + "\n", {
+    encoding: "utf8",
+    mode: 0o600,
+  })
   await fs.rename(tmp, importsPath)
   return { removed }
 }

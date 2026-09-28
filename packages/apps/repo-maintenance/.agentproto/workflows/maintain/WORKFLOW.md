@@ -31,7 +31,7 @@ inputs:
   reviewModelLarge:
     type: string
     description: Model for a review candidate with residualFileCount > 3.
-    default: claude-sonnet-5
+    default: claude-sonnet-5-5
   maxReviews:
     type: number
     description: >-

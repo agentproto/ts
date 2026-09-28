@@ -172,6 +172,13 @@ process.on("SIGTERM", () => {
   process.exit(143)
 })
 
+async function waitForDaemonExit(timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (!daemonExited && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 100))
+  }
+}
+
 async function waitForDaemonHealthy(deadlineMs) {
   const healthUrl = `http://127.0.0.1:${port}/health`
   while (Date.now() < deadlineMs) {
@@ -608,5 +615,10 @@ try {
   exitCode = 1
 } finally {
   killDaemon()
+  // SIGTERM makes the daemon say goodbye to the home daemon it joined
+  // (AGENTPROTO_JOIN) so the reviewer's final output is captured before this
+  // runner disappears — exiting right away would cut that short. Bounded; a
+  // daemon with no join exits in well under a second.
+  await waitForDaemonExit(35_000)
 }
 process.exit(exitCode)

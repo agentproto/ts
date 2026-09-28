@@ -53,6 +53,7 @@ function fakeHostRegistry(
     forwardHttp: vi.fn(),
     forwardHttpStream: vi.fn(),
     getSessionsSnapshot: vi.fn(() => undefined),
+    snapshotNow: vi.fn(async () => false),
   }
 }
 

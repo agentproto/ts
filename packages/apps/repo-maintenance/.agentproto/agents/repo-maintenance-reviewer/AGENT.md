@@ -6,7 +6,7 @@ description: >-
   `maintain` workflow's `review` map step) and decides whether deleting it
   loses anything of value. Records its verdict via the branch_gc_verdict
   tool — it never writes files and never deletes anything itself.
-model: claude-sonnet-5
+model: claude-sonnet-5-5
 boundaries:
   - Read-only on git — never checkout, switch, branch -d, reset, stash, commit, fetch, push, or touch a worktree
   - Never edit, create, or delete any file in the repo

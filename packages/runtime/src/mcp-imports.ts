@@ -86,7 +86,11 @@ export async function saveImportedMcps(
 ): Promise<void> {
   await fs.mkdir(dirname(path), { recursive: true })
   const tmp = `${path}.tmp.${process.pid}`
-  await fs.writeFile(tmp, JSON.stringify(config, null, 2) + "\n", "utf8")
+  // 0600: entries may hold literal upstream credentials (parity with bundles.ts).
+  await fs.writeFile(tmp, JSON.stringify(config, null, 2) + "\n", {
+    encoding: "utf8",
+    mode: 0o600,
+  })
   await fs.rename(tmp, path)
 }
 
