@@ -7,6 +7,8 @@ import {
   renderList,
   renderLaneDetail,
   renderRow,
+  sessionLinkCall,
+  SESSION_LINK_TOOL,
   severityTag,
   shortRange,
   verdictChip,
@@ -139,6 +141,18 @@ describe("renderLaneDetail", () => {
     expect(html).toContain("SQL injection")
     expect(html).toContain("db.ts:42")
     expect(html).toContain("unsanitized input")
+  })
+})
+
+describe("sessionLinkCall", () => {
+  it("carries the exact tool name and sessionId to deep-link the live-session widget", () => {
+    expect(sessionLinkCall("sess_reviewer")).toEqual({
+      tool: "live_session",
+      args: { sessionId: "sess_reviewer" },
+    })
+  })
+  it("uses the SESSION_LINK_TOOL constant, not a hardcoded string", () => {
+    expect(sessionLinkCall("sess_x").tool).toBe(SESSION_LINK_TOOL)
   })
 })
 

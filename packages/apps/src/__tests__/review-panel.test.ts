@@ -70,6 +70,10 @@ describe("REVIEW_PANEL_HTML", () => {
     }
   })
 
+  it("declares live_session on its ui.tools allowlist, for the reviewer-session deep link", () => {
+    expect(REVIEW_PANEL_UI_TOOLS).toContain("live_session")
+  })
+
   it("re-run fresh passes nocache + wait:false + supersede", () => {
     expect(REVIEW_PANEL_HTML).toContain("nocache")
     expect(REVIEW_PANEL_HTML).toContain("supersede")

@@ -4,6 +4,27 @@ export function esc(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
 }
 
+/**
+ * The `live_session` widget's tool id — same tool live-session/panel.ts's
+ * own self-bootstrap fallback calls (`callTool('live_session', {})`).
+ * Registered by `registerMcpApps` (runtime's mcp-apps-adapter.ts) with
+ * `_meta.ui.resourceUri: "ui://live_session/view"` at the TOOL DEFINITION
+ * level — the same auto-render binding `agent_start` uses to pop open the
+ * session-chat launcher — so calling it from ANY panel's bridge (not just
+ * live-session's own) makes the host open/focus that widget and push the
+ * `{sessionId}` result to it via `ui/notifications/tool-result`, which
+ * live-session/panel.ts already listens for to pin its focus. No new
+ * navigation primitive: this is that existing cross-app deep-link
+ * mechanism, reused.
+ */
+export const SESSION_LINK_TOOL = "live_session"
+
+/** The exact bridge call a reviewer-session link performs — kept pure so a
+ *  test can assert the tool name + args without touching the DOM. */
+export function sessionLinkCall(sessionId: string): { tool: string; args: { sessionId: string } } {
+  return { tool: SESSION_LINK_TOOL, args: { sessionId } }
+}
+
 /** `<base7>..<head7>` — never truncates a sha shorter than 7 (rare, but a
  *  short synthetic sha in a test fixture shouldn't throw). */
 export function shortRange(baseSha?: string, headSha?: string): string {
@@ -108,7 +129,8 @@ function findingLine(f: Finding): string {
 
 /** One lane's detail block: status/blocking/duration/error head, findings,
  *  and — for an agent lane — model/preset/rubric sha + a link to the
- *  reviewer session (opens the live-session panel; see main.ts). */
+ *  reviewer session (deep-links the live-session panel focused on that
+ *  exact session via `sessionLinkCall`; see main.ts). */
 export function renderLaneDetail(lane: DetailLane, rubrics: readonly RubricDigest[] = []): string {
   const parts: string[] = []
   parts.push(`<div class="lane-hdr">`)
