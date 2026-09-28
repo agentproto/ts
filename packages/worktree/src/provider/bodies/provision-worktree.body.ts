@@ -6,11 +6,31 @@ import { ToolError } from "@agentproto/tool"
 import { provisionWorktreeTool } from "../../tools/provision-worktree.tool.js"
 import { execGit, execShell } from "../../exec.js"
 import { expandGlob } from "../../glob.js"
-import { loadConfigFromBase } from "../../config.js"
+import { loadConfigFromBase, normalizeHook } from "../../config.js"
 import { loadLocalWorktreeConfig, resolveLocalWriteFiles } from "../../local-config.js"
 import { cloneEntries } from "../../clone.js"
 import { runSetup, HookError } from "../../lifecycle.js"
+import { removeWorktreeFast } from "../../fast-remove.js"
+import {
+  ProvisionCancelledError,
+  currentProvisionContext,
+  provisionScheduler,
+  type ProvisionLease,
+  type ProvisionPhase,
+  type ProvisionProgress,
+} from "../../provision-scheduler.js"
 import { writeWorktreeMarker } from "../../provenance.js"
+
+/**
+ * A cancelled provisioning is a half-built worktree nobody will ever use:
+ * remove the one THIS call created (and its branch) so a killed spawn leaves
+ * nothing behind. Best-effort, never throws; a failed (not cancelled)
+ * provisioning keeps its worktree for inspection as before.
+ */
+async function discardCancelledWorktree(repoRoot: string, cwd: string, branch: string): Promise<void> {
+  await removeWorktreeFast(repoRoot, cwd, { force: true }).catch(() => {})
+  await execGit(repoRoot, ["branch", "-D", branch]).catch(() => {})
+}
 
 export const provisionWorktreeBuiltin = implementTool(
   provisionWorktreeTool,
@@ -92,68 +112,135 @@ export const provisionWorktreeBuiltin = implementTool(
       }
     }
 
-    // Clone gitignored, expensive-to-recreate trees (e.g. node_modules) from
-    // the source checkout BEFORE depsCmd, same ordering reasoning as
-    // linkPaths/writeFiles above — except a clone is an independent,
-    // writable copy (copy-on-write where the filesystem supports it), not a
-    // symlink, so depsCmd can freely mutate it without touching the source
-    // checkout, and a subsequent install becomes a quick verify/repair
-    // rather than a full reinstall.
-    if (cloneGlobs.length > 0) {
+    // Everything from here on is the HEAVY segment (clone, deps, copy, setup
+    // hooks): it takes one slot from the daemon-wide scheduler so a burst of
+    // spawns cannot run a dozen package-manager installs against one store at
+    // once. The cheap prep above stays outside the slot. A run with nothing
+    // heavy to do never queues.
+    const ctx = currentProvisionContext()
+    const signal = ctx?.signal
+    const report = (progress: ProvisionProgress): void => {
       try {
-        await cloneEntries(input.repoRoot, cwd, cloneGlobs)
-      } catch (err) {
-        throw new ToolError({
-          code: "execution_failed",
-          message: `cloneGlobs failed: ${err instanceof Error ? err.message : String(err)}`,
-        })
+        ctx?.onProgress?.(progress)
+      } catch {
+        // An observer must never break provisioning.
       }
     }
+    const hasSetup = config ? normalizeHook(config.worktree?.setup).length > 0 : false
+    const firstHeavy: ProvisionPhase | null =
+      cloneGlobs.length > 0
+        ? "clone"
+        : depsCmd
+          ? "deps"
+          : copyGlobs.length > 0
+            ? "copy"
+            : hasSetup
+              ? "setup"
+              : null
 
-    if (depsCmd) {
-      const result = await execShell(depsCmd, cwd)
-      if (result.exitCode !== 0) {
-        throw new ToolError({
-          code: "execution_failed",
-          message: `depsCmd '${depsCmd}' failed (exit ${result.exitCode}): ${result.stderr || result.stdout}`,
-        })
-      }
+    if (firstHeavy === null) {
+      report({ kind: "done", outcome: "ok" })
+      return { cwd, branch }
     }
 
-    for (const pattern of copyGlobs) {
-      const matches = await expandGlob(input.repoRoot, pattern)
-      for (const rel of matches) {
-        const dest = join(cwd, rel)
-        await mkdir(dirname(dest), { recursive: true })
-        await copyFile(join(input.repoRoot, rel), dest)
-      }
-    }
+    let phase: ProvisionPhase = firstHeavy
+    let lease: ProvisionLease | undefined
+    try {
+      lease = await provisionScheduler.acquire({
+        repoKey: resolve(input.repoRoot),
+        ...(ctx?.callerKey ? { callerKey: ctx.callerKey } : {}),
+        ...(signal ? { signal } : {}),
+        onQueued: (position) => report({ kind: "queued", position, phase: firstHeavy }),
+      })
+      if (signal?.aborted) throw new ProvisionCancelledError()
+      report({ kind: "started", phase })
 
-    // Declarative lifecycle: run the repo's committed `agentproto.json` setup
-    // hooks in the fresh worktree. `config` was already loaded above (same
-    // `runSetup` gate) — reused here rather than re-reading the base tree.
-    if (config) {
-      try {
-        await runSetup(
-          config,
-          {
-            sourceCheckoutPath: input.repoRoot,
-            worktreePath: cwd,
-            branchName: branch,
-          },
-          {
-            ...(input.setupLogPath ? { logPath: input.setupLogPath } : {}),
-            ...(input.retrySetupOnFailure ? { retryOnFailure: true } : {}),
-          },
-        )
-      } catch (err) {
-        if (err instanceof HookError) {
-          throw new ToolError({ code: "execution_failed", message: err.message })
+      // Clone gitignored, expensive-to-recreate trees (e.g. node_modules) from
+      // the source checkout BEFORE depsCmd, same ordering reasoning as
+      // linkPaths/writeFiles above — except a clone is an independent,
+      // writable copy (copy-on-write where the filesystem supports it), not a
+      // symlink, so depsCmd can freely mutate it without touching the source
+      // checkout, and a subsequent install becomes a quick verify/repair
+      // rather than a full reinstall.
+      if (cloneGlobs.length > 0) {
+        phase = "clone"
+        report({ kind: "phase", phase })
+        try {
+          await cloneEntries(input.repoRoot, cwd, cloneGlobs, signal)
+        } catch (err) {
+          if (err instanceof ProvisionCancelledError) throw err
+          throw new ToolError({
+            code: "execution_failed",
+            message: `cloneGlobs failed: ${err instanceof Error ? err.message : String(err)}`,
+          })
         }
-        throw err
       }
+
+      if (depsCmd) {
+        phase = "deps"
+        report({ kind: "phase", phase })
+        const result = await execShell(depsCmd, cwd, signal ? { signal } : {})
+        // A killed install exits non-zero; that is a cancellation, not a failure.
+        if (signal?.aborted) throw new ProvisionCancelledError()
+        if (result.exitCode !== 0) {
+          throw new ToolError({
+            code: "execution_failed",
+            message: `depsCmd '${depsCmd}' failed (exit ${result.exitCode}): ${result.stderr || result.stdout}`,
+          })
+        }
+      }
+
+      if (copyGlobs.length > 0) {
+        phase = "copy"
+        report({ kind: "phase", phase })
+        for (const pattern of copyGlobs) {
+          const matches = await expandGlob(input.repoRoot, pattern)
+          for (const rel of matches) {
+            if (signal?.aborted) throw new ProvisionCancelledError()
+            const dest = join(cwd, rel)
+            await mkdir(dirname(dest), { recursive: true })
+            await copyFile(join(input.repoRoot, rel), dest)
+          }
+        }
+      }
+
+      // Declarative lifecycle: run the repo's committed `agentproto.json` setup
+      // hooks in the fresh worktree. `config` was already loaded above (same
+      // `runSetup` gate) — reused here rather than re-reading the base tree.
+      if (config && hasSetup) {
+        phase = "setup"
+        report({ kind: "phase", phase })
+        try {
+          await runSetup(
+            config,
+            {
+              sourceCheckoutPath: input.repoRoot,
+              worktreePath: cwd,
+              branchName: branch,
+            },
+            {
+              ...(input.setupLogPath ? { logPath: input.setupLogPath } : {}),
+              ...(input.retrySetupOnFailure ? { retryOnFailure: true } : {}),
+              ...(signal ? { signal } : {}),
+            },
+          )
+        } catch (err) {
+          if (err instanceof HookError) {
+            throw new ToolError({ code: "execution_failed", message: err.message })
+          }
+          throw err
+        }
+      }
+    } catch (err) {
+      const cancelled = err instanceof ProvisionCancelledError
+      report({ kind: "done", outcome: cancelled ? "cancelled" : "failed" })
+      if (cancelled) await discardCancelledWorktree(input.repoRoot, cwd, branch)
+      throw err
+    } finally {
+      lease?.release()
     }
 
+    report({ kind: "done", outcome: "ok" })
     return { cwd, branch }
   },
 )

@@ -45,7 +45,12 @@ import type { ContextContinuityPolicy } from "./context-continuity.js"
 import type { DeferredToolsConfig } from "./deferred-tools.js"
 import type { SpawnBrowserMode } from "./browser-mount.js"
 
-import { DEFAULT_WORKTREE_ISOLATION, WORKTREE_ISOLATION_ENV } from "./worktree-isolation.js"
+import {
+  DEFAULT_WORKTREE_ISOLATION,
+  DEFAULT_WORKTREE_PROVISION_CONCURRENCY,
+  WORKTREE_ISOLATION_ENV,
+  WORKTREE_PROVISION_CONCURRENCY_ENV,
+} from "./worktree-isolation.js"
 import { DEFAULT_SPAWN_ATTACH, SPAWN_ATTACH_ENV } from "./spawn-attach.js"
 import { DEFAULT_SPAWN_DEDUPE, SPAWN_DEDUPE_ENV } from "./spawn-dedupe.js"
 import { DEFAULT_ATTENTION_DELAY_SEC, ATTENTION_DELAY_ENV } from "./session-presence.js"
@@ -199,6 +204,9 @@ const worktreesConfigSchema: z.ZodType<WorktreesConfig> = z
   .object({
     root: z.string().optional(),
     isolation: z.enum(["always", "on-request", "never"]).optional(),
+    provisionConcurrency: z.number().int().min(0).optional(),
+    provisionConcurrencyByRepo: z.record(z.string(), z.number().int().min(0)).optional(),
+    provisionLoadFactor: z.number().min(0).optional(),
   })
   .passthrough()
 
@@ -808,6 +816,36 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Worktree isolation policy",
     help: "Whether a freshly-spawned agent_start session is isolated into its own git worktree.",
     default: DEFAULT_WORKTREE_ISOLATION,
+  },
+  {
+    path: "worktrees.provisionConcurrency",
+    schema: z.number().int().min(0),
+    apply: "hot",
+    env: WORKTREE_PROVISION_CONCURRENCY_ENV,
+    writable: true,
+    section: "defaults",
+    label: "Worktree provisioning concurrency",
+    help: "Max worktree provisionings running their heavy phases (depsCmd, clones, setup hooks) at once; the rest queue FIFO. 0 = unlimited.",
+    default: DEFAULT_WORKTREE_PROVISION_CONCURRENCY,
+  },
+  {
+    path: "worktrees.provisionConcurrencyByRepo",
+    schema: z.record(str, z.number().int().min(0)),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Per-repo provisioning concurrency",
+    help: "Per-repo caps on concurrent heavy provisioning, keyed by repo path or directory name; never looser than the global cap.",
+  },
+  {
+    path: "worktrees.provisionLoadFactor",
+    schema: z.number().min(0),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Provisioning load guard factor",
+    help: "Hold back a new heavy provisioning while the 1-minute load average exceeds cores x this factor. 0 or unset = off.",
+    default: 0,
   },
   {
     path: "spawn.attach",

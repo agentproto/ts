@@ -167,6 +167,41 @@ agentproto worktree archive <path> [--base <ref>] [--keep-branch] [--json]
 runs its teardown hooks, and removes it (deleting the branch unless
 `--keep-branch`).
 
+## Provisioning concurrency (daemon-wide queue)
+
+`worktree.provision` runs its heavy phases (`cloneGlobs`, `depsCmd`,
+`copyGlobs`, `setup` hooks) through `provisionScheduler`, a process-wide FIFO
+queue with a cap (default 2; `0` = unlimited). One slot covers the whole heavy
+segment of one provisioning, so a single spawn never interleaves with itself.
+`git worktree add` and the cheap prep (`linkPaths`, `writeFiles`) run before
+the queue and are never throttled.
+
+```ts
+import { provisionScheduler, parseProvisionLimits, runWithProvisionContext } from "@agentproto/worktree"
+
+provisionScheduler.configure(parseProvisionLimits(config.worktrees))
+
+await runWithProvisionContext(
+  { callerKey: parentSessionId, signal, onProgress: p => log(p) },
+  () => runTool({ tool: provisionWorktreeTool, candidates, input }),
+)
+```
+
+- **Fairness.** FIFO, with the caller holding the fewest running slots going
+  first, so one orchestrator's burst cannot starve another caller.
+- **Cancellation.** Aborting `signal` drops a queued entry, or kills a running
+  phase's whole process group (SIGTERM, then SIGKILL after 5s), and rejects
+  with `ProvisionCancelledError`. A cancelled provisioning removes its
+  half-made worktree and branch; a plain failure keeps the worktree.
+- **Progress.** `onProgress` receives `queued` (with `position`), `started`,
+  `phase` and `done` (`ok`, `failed` or `cancelled`).
+- **Config.** `worktrees.provisionConcurrency`,
+  `worktrees.provisionConcurrencyByRepo`, `worktrees.provisionLoadFactor` in
+  `~/.agentproto/config.json`; env `AGENTPROTO_WORKTREES_PROVISION_CONCURRENCY`
+  wins. See the CLI docs for the full table.
+- **Scope.** The queue is per process. The daemon owns the shared one;
+  `agentproto worktree new` has its own instance.
+
 ## `worktreeAgentWorkflow`
 
 This package also exports the `RuntimeWorkflow` def that chains the three

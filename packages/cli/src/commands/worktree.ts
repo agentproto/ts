@@ -66,6 +66,10 @@ import {
   WorktreeNotRemovableError,
   planGc,
   applyGc,
+  parseProvisionLimits,
+  provisionScheduler,
+  runWithProvisionContext,
+  ProvisionCancelledError,
   reclaimOneWorktree,
   type WorktreeStatusEntry,
   type GcPlanEntry,
@@ -373,26 +377,49 @@ export function mintWorktreeSlug(labelHint?: string): string {
  * spawn lands plain — lands the worktree under the same `worktrees.root` as
  * `worktree new`, and returns the worktree's cwd for the session to adopt.
  */
-export function makeWorktreeProvisioner(): WorktreeProvisioner {
+export function makeWorktreeProvisioner(configPath?: string): WorktreeProvisioner {
   return async (req: WorktreeProvisionRequest): Promise<WorktreeProvisionOutcome> => {
     const repoRoot = repoRootOf(resolve(req.cwd))
     if (!repoRoot) return { isolated: false, reason: "not-a-git-repo" }
     const slug = req.slug ?? mintWorktreeSlug(req.labelHint)
-    const root = await resolveWorktreesRoot(undefined)
+    const root = await resolveWorktreesRoot(undefined, configPath)
     const dir = join(root, repoLabel(repoRoot), slug)
-    const provisioned = await runTool({
-      tool: provisionWorktreeTool,
-      candidates,
-      input: {
-        repoRoot,
-        slug,
-        dir,
-        ...(req.base !== undefined ? { base: req.base } : {}),
-        ...(req.setupLogPath !== undefined ? { setupLogPath: req.setupLogPath } : {}),
-        ...(req.retrySetupOnFailure !== undefined
-          ? { retrySetupOnFailure: req.retrySetupOnFailure }
-          : {}),
+    // Re-read per provision so a `worktrees.provisionConcurrency` edit applies
+    // to the next spawn without a daemon restart. An unreadable config falls
+    // back to env + defaults: it must never take provisioning down.
+    const cfg = await loadConfig(configPath).catch(() => undefined)
+    provisionScheduler.configure(parseProvisionLimits(cfg?.worktrees))
+    // The scheduler-facing context rides AsyncLocalStorage: the tool contract
+    // has no room for callbacks, and the runner's own abort signal is bound to
+    // the tool's 30s default timeout, which must never cancel a long install.
+    const provisioned = await runWithProvisionContext(
+      {
+        ...(req.callerId !== undefined ? { callerKey: req.callerId } : {}),
+        ...(req.signal !== undefined ? { signal: req.signal } : {}),
+        ...(req.onProgress !== undefined ? { onProgress: req.onProgress } : {}),
       },
+      () =>
+        runTool({
+          tool: provisionWorktreeTool,
+          candidates,
+          input: {
+            repoRoot,
+            slug,
+            dir,
+            ...(req.base !== undefined ? { base: req.base } : {}),
+            ...(req.setupLogPath !== undefined ? { setupLogPath: req.setupLogPath } : {}),
+            ...(req.retrySetupOnFailure !== undefined
+              ? { retrySetupOnFailure: req.retrySetupOnFailure }
+              : {}),
+          },
+        }),
+    ).catch((err: unknown) => {
+      // The runner may re-wrap a thrown body error; a cancelled provisioning
+      // must surface as a cancellation, not as an opaque tool failure.
+      if (req.signal?.aborted && !(err instanceof ProvisionCancelledError)) {
+        throw new ProvisionCancelledError()
+      }
+      throw err
     })
     return { isolated: true, cwd: provisioned.cwd, branch: provisioned.branch }
   }

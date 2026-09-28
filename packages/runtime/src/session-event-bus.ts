@@ -33,6 +33,7 @@ export type SessionEventType =
   | "session:bg-task"
   | "session:resumed"
   | "session:spawned"
+  | "session:provisioning"
   | "session:command-done"
   | "session:model-changed"
   | "session:config-changed"
@@ -676,6 +677,26 @@ export interface SessionSpawnedEvent {
   ts: string
 }
 
+/**
+ * Emitted as a session's worktree provisioning moves through the daemon-wide
+ * provisioning queue: `queued` (waiting for a heavy-phase slot; `position` is
+ * the 1-based projected dispatch order), `started` (slot granted, heavy
+ * segment running), `phase` (entered another heavy phase), `done` (finished;
+ * `outcome` says how). `phase` names the heavy phase concerned. For a
+ * synchronous `agent_start` the `sessionId` is the id the session will have
+ * once provisioning finishes (no registry row exists before then).
+ */
+export interface SessionProvisioningEvent {
+  type: "session:provisioning"
+  sessionId: string
+  kind: "queued" | "started" | "phase" | "done"
+  phase?: "worktree" | "clone" | "deps" | "copy" | "setup"
+  position?: number
+  outcome?: "ok" | "failed" | "cancelled"
+  label?: string
+  ts: string
+}
+
 /** Emitted by the supervisor when a completion policy's gate passes. */
 export interface PolicyPassedEvent {
   type: "policy:passed"
@@ -961,6 +982,7 @@ export type SessionEvent =
   | SessionBgTaskEvent
   | SessionResumedEvent
   | SessionSpawnedEvent
+  | SessionProvisioningEvent
   | SessionCommandDoneEvent
   | SessionModelChangedEvent
   | SessionConfigChangedEvent

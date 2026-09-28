@@ -3190,9 +3190,14 @@ export async function spawnAgentSession(
     // sitting in "starting" forever.
     if (worktreeRequest?.async && provisionWorktree) {
       const defaultModel = resolved?.defaultModel
+      // Killing the placeholder aborts this controller (via the registry's
+      // exit funnel): a queued provisioning drops out of the daemon-wide
+      // queue, a running one has its install's process tree killed.
+      const provisionAbort = new AbortController()
       const pendingDesc = registry.spawnAgentPending({
         id: mintedSessionId,
         ...resumeLineageFields,
+        onCancel: () => provisionAbort.abort(),
         workspaceSlug: resolvedSlug,
         cwd,
         adapterSlug: input.adapter,
@@ -3293,6 +3298,9 @@ export async function spawnAgentSession(
                 // failure, so bound it here rather than have the caller pay
                 // for an entirely fresh worktree. See `runSetup`'s doc.
                 retrySetupOnFailure: true,
+                signal: provisionAbort.signal,
+                ...(parentSessionId ? { callerId: parentSessionId } : {}),
+                onProgress: progress => registry.reportProvisioning(pendingDesc.id, progress),
               }),
           )
         } catch (err) {
@@ -3424,6 +3432,12 @@ export async function spawnAgentSession(
               setupLogPath: worktreeSetupLogPath(mintedSessionId),
               // Same reasoning as the async branch above — see `runSetup`'s doc.
               retrySetupOnFailure: true,
+              // No registry row exists yet (and no abort handle: the caller holds
+              // the RPC open), so this branch gets the throttling and the
+              // `session:provisioning` events keyed by the id the session will
+              // have, but no descriptor field and no mid-provision cancellation.
+              ...(parentSessionId ? { callerId: parentSessionId } : {}),
+              onProgress: progress => registry.reportProvisioning(mintedSessionId, progress),
             }),
         )
       } catch (err) {

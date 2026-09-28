@@ -1160,6 +1160,9 @@ async function runShow(args: readonly string[]): Promise<number> {
     `${desc.id}${name ? `  ${name}` : ""}`,
     `  status:   ${desc.status}${desc.endedReason ? ` (${desc.endedReason})` : ""}`,
     `  kind:     ${desc.kind}${desc.adapterSlug ? ` · ${desc.adapterSlug}` : ""}${desc.model ? ` · ${desc.model}` : ""}`,
+    ...(desc.provisioning
+      ? [`  provision: ${provisioningLabel(desc.provisioning)} (state ${desc.provisioning.state}, phase ${desc.provisioning.phase})`]
+      : []),
     ...(desc.cwd ? [`  cwd:      ${desc.cwd}`] : []),
     `  started:  ${desc.startedAt}${desc.endedAt ? `  ended: ${desc.endedAt}` : ""}`,
     ...(desc.lastTurnErroredAt
@@ -2838,6 +2841,23 @@ export type PresenceRenderSession = {
   lastOutputAt?: string
   lastTurnErroredAt?: string
   exitCode?: number
+  /** Worktree-provisioning progress of a `starting` row (daemon-wide
+   *  provisioning queue) — see `SessionDescriptor.provisioning`. */
+  provisioning?: {
+    state: "queued" | "running"
+    position?: number
+    phase?: string
+    startedAt?: string
+  }
+}
+
+/** Short provisioning suffix for a `starting` row: `queued #2` while waiting
+ *  for a heavy-phase slot, else the phase it is executing (`deps`). Empty when
+ *  the row carries no provisioning info. */
+export function provisioningLabel(p: PresenceRenderSession["provisioning"]): string {
+  if (!p) return ""
+  if (p.state === "queued") return p.position !== undefined ? `queued #${p.position}` : "queued"
+  return p.phase ?? "provisioning"
 }
 
 export function statusBadge(
@@ -2871,6 +2891,9 @@ export function statusLabel(
   attentionDelaySec?: number,
 ): string {
   if (s.status !== "running" && s.status !== "starting") return s.status ?? ""
+  if (s.status === "starting" && s.provisioning) {
+    return `starting ${provisioningLabel(s.provisioning)}`
+  }
   const badge = statusBadge(s, attentionDelaySec)
   return badge ? `${s.status} ${badge}` : s.status ?? ""
 }

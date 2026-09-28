@@ -582,6 +582,10 @@ export interface SessionListCompactItem {
   name?: string
   label?: string
   status: SessionDescriptor["status"]
+  /** Worktree-provisioning progress of a `starting` row (`queued` with a
+   *  1-based `position`, or `running`, plus the `phase`) — see
+   *  `SessionDescriptor.provisioning`. Absent once provisioning is over. */
+  provisioning?: SessionDescriptor["provisioning"]
   /** Liveness (stamped at read time by the registry) — the unambiguous
    *  signal; `status` alone is a lifecycle classification, not liveness. */
   alive?: boolean
@@ -674,6 +678,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   name: s.name,
   label: s.label,
   status: s.status,
+  ...(s.provisioning ? { provisioning: { ...s.provisioning } } : {}),
   alive: s.alive,
   pty: s.pty,
   command: s.command,
