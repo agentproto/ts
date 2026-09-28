@@ -152,6 +152,9 @@ export interface FakeContextOptions {
    *  compares `now()` against an ISO timestamp (devices.ts's staleness
    *  check) needs a real-looking epoch instead. */
   now?: () => number
+  /** Overrides the default `dialWebSocket` (used by rendezvous.ts) — defaults
+   *  to a reachable, direct-mode probe so the healthy-machine test stays ok. */
+  dialWebSocket?: StepContext["dialWebSocket"]
 }
 
 export interface FakeContext extends StepContext {
@@ -187,6 +190,7 @@ export function createFakeContext(opts: FakeContextOptions = {}): FakeContext {
         health === null
           ? Promise.reject(new Error("ECONNREFUSED"))
           : new Response(JSON.stringify(health), { status: 200, headers: { "content-type": "application/json" } })),
+    dialWebSocket: opts.dialWebSocket ?? (async () => ({ ok: true, via: "direct" })),
     env: opts.env ?? {},
     homedir: HOME,
     cwd: opts.cwd ?? `${HOME}/proj/src`,

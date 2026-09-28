@@ -58,6 +58,7 @@ import {
   type FrameSink,
   type TunnelClient,
   type TunnelHttpRequest,
+  type TunnelHttpStreamResponse,
 } from "@agentproto/acp/tunnel"
 import {
   startClientHandshake,
@@ -141,6 +142,16 @@ export interface ForwardHttpResponse {
   body: Uint8Array
 }
 
+/** Streaming counterpart of {@link ForwardHttpResponse} — `body` is a Web
+ *  `ReadableStream` the caller drains directly (SSE chat/completions, most
+ *  notably) instead of a fully-buffered `Uint8Array`. See
+ *  {@link HostRegistry.forwardHttpStream}. */
+export interface ForwardHttpStreamResponse {
+  status: number
+  headers: Record<string, string>
+  body: ReadableStream<Uint8Array>
+}
+
 export interface HostRegistry {
   /**
    * Accept an offer URL and register the target daemon as a driveable host.
@@ -170,6 +181,16 @@ export interface HostRegistry {
    * on the hello (likely a pair/v1 peer).
    */
   forwardHttp(idOrName: string, req: ForwardHttpRequest): Promise<ForwardHttpResponse>
+  /**
+   * Same dial/handshake/retry shape as {@link forwardHttp}, but for a
+   * streamed response (SSE, NDJSON, long-poll) — the daemon-inference proxy's
+   * `/v1/chat/completions` most notably, which must relay tokens as they
+   * arrive rather than buffering the whole completion first. Unlike
+   * `forwardHttp`, the tunnel client is kept open (and `isOnline` stays true)
+   * until the returned `body` stream is fully drained, errors, or is
+   * cancelled — only then does it close and the online count drop.
+   */
+  forwardHttpStream(idOrName: string, req: ForwardHttpRequest): Promise<ForwardHttpStreamResponse>
 }
 
 function defaultHostsPath(): string {
@@ -359,68 +380,56 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     return (onlineCounts.get(fingerprint) ?? 0) > 0
   }
 
-  async function forwardHttp(idOrName: string, req: ForwardHttpRequest): Promise<ForwardHttpResponse> {
-    await ensureLoaded()
-    const record = findHost(idOrName)
-    if (!record) throw new Error(`no host matched "${idOrName}"`)
-
+  /**
+   * Shared dial/handshake/retry core for `forwardHttp` and
+   * `forwardHttpStream` — everything up to (and including) a ready
+   * `TunnelClient`, current-then-previous epoch, same hung-up-on-hello
+   * tracking for the re-pair hint. Bumps `onlineCounts` on entry; the
+   * caller is responsible for decrementing it (and closing the returned
+   * client) once it's actually done with the connection — immediately
+   * for a buffered call, on stream-drain for a streamed one.
+   */
+  async function connectToHost(record: HostRecord): Promise<TunnelClient> {
     const epoch = currentEpoch(now())
     const attempts = [epoch, epoch - 1]
     let lastErr: unknown
     let hungUpOnHello = 0
-    onlineCounts.set(record.fingerprint, (onlineCounts.get(record.fingerprint) ?? 0) + 1)
-    try {
-      for (const e of attempts) {
-        const { route, auth } = await deriveEpochTokens(record.pairRoot, e)
-        let raw: FrameSink
+    for (const e of attempts) {
+      const { route, auth } = await deriveEpochTokens(record.pairRoot, e)
+      let raw: FrameSink
+      try {
+        raw = await dialWithTimeout(rvUrl(record.rendezvousUrl, route))
+      } catch (err) {
+        lastErr = err
+        continue
+      }
+      try {
+        const started = await startClientHandshake({
+          daemonX25519Pub: record.daemonX25519Pub,
+          daemonEd25519Pub: record.daemonEd25519Pub,
+          authToken: auth,
+          clientName: record.name,
+        })
+        const wrapped = await clientHandshakeOverSink(
+          raw,
+          encodePairingMessage(started.hello),
+          replyBytes => started.complete(decodePairingReply(replyBytes)),
+          { timeoutMs: handshakeTimeoutMs },
+        )
+        const client = createTunnelClient({ sink: wrapped })
+        await client.ready()
+        record.lastSeen = new Date(now()).toISOString()
+        await persist().catch(err => log(`[hosts] lastSeen persist failed: ${errMsg(err)}`))
+        return client
+      } catch (err) {
+        lastErr = err
+        if (err instanceof Error && /transport closed during handshake/.test(err.message)) hungUpOnHello++
         try {
-          raw = await dialWithTimeout(rvUrl(record.rendezvousUrl, route))
-        } catch (err) {
-          lastErr = err
-          continue
-        }
-        let client: TunnelClient | undefined
-        try {
-          const started = await startClientHandshake({
-            daemonX25519Pub: record.daemonX25519Pub,
-            daemonEd25519Pub: record.daemonEd25519Pub,
-            authToken: auth,
-            clientName: record.name,
-          })
-          const wrapped = await clientHandshakeOverSink(
-            raw,
-            encodePairingMessage(started.hello),
-            replyBytes => started.complete(decodePairingReply(replyBytes)),
-            { timeoutMs: handshakeTimeoutMs },
-          )
-          client = createTunnelClient({ sink: wrapped })
-          await client.ready()
-          const tunnelReq: TunnelHttpRequest = {
-            method: req.method,
-            path: req.path,
-            ...(req.headers ? { headers: req.headers } : {}),
-            ...(req.body ? { body: Buffer.from(req.body) } : {}),
-          }
-          const res = await client.forwardHttp(tunnelReq)
-          record.lastSeen = new Date(now()).toISOString()
-          await persist().catch(err => log(`[hosts] lastSeen persist failed: ${errMsg(err)}`))
-          return { status: res.status, headers: { ...res.headers }, body: new Uint8Array(res.body) }
-        } catch (err) {
-          lastErr = err
-          if (err instanceof Error && /transport closed during handshake/.test(err.message)) hungUpOnHello++
-          try {
-            raw.close("handshake failed")
-          } catch {
-            /* ignore */
-          }
-        } finally {
-          if (client) await client.close().catch(() => {})
+          raw.close("handshake failed")
+        } catch {
+          /* ignore */
         }
       }
-    } finally {
-      const remaining = (onlineCounts.get(record.fingerprint) ?? 1) - 1
-      if (remaining > 0) onlineCounts.set(record.fingerprint, remaining)
-      else onlineCounts.delete(record.fingerprint)
     }
 
     // Every attempt reached a host that hung up on our hello: the likeliest
@@ -439,7 +448,118 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     )
   }
 
-  return { add, list, rename: renameHost, revoke, isOnline, forwardHttp }
+  function toTunnelReq(req: ForwardHttpRequest): TunnelHttpRequest {
+    return {
+      method: req.method,
+      path: req.path,
+      ...(req.headers ? { headers: req.headers } : {}),
+      ...(req.body ? { body: Buffer.from(req.body) } : {}),
+    }
+  }
+
+  async function forwardHttp(idOrName: string, req: ForwardHttpRequest): Promise<ForwardHttpResponse> {
+    await ensureLoaded()
+    const record = findHost(idOrName)
+    if (!record) throw new Error(`no host matched "${idOrName}"`)
+
+    onlineCounts.set(record.fingerprint, (onlineCounts.get(record.fingerprint) ?? 0) + 1)
+    let client: TunnelClient | undefined
+    try {
+      client = await connectToHost(record)
+      const res = await client.forwardHttp(toTunnelReq(req))
+      return { status: res.status, headers: { ...res.headers }, body: new Uint8Array(res.body) }
+    } finally {
+      if (client) await client.close().catch(() => {})
+      const remaining = (onlineCounts.get(record.fingerprint) ?? 1) - 1
+      if (remaining > 0) onlineCounts.set(record.fingerprint, remaining)
+      else onlineCounts.delete(record.fingerprint)
+    }
+  }
+
+  async function forwardHttpStream(
+    idOrName: string,
+    req: ForwardHttpRequest,
+  ): Promise<ForwardHttpStreamResponse> {
+    await ensureLoaded()
+    const record = findHost(idOrName)
+    if (!record) throw new Error(`no host matched "${idOrName}"`)
+
+    onlineCounts.set(record.fingerprint, (onlineCounts.get(record.fingerprint) ?? 0) + 1)
+    let decremented = false
+    const decrement = (): void => {
+      if (decremented) return
+      decremented = true
+      const remaining = (onlineCounts.get(record.fingerprint) ?? 1) - 1
+      if (remaining > 0) onlineCounts.set(record.fingerprint, remaining)
+      else onlineCounts.delete(record.fingerprint)
+    }
+
+    let client: TunnelClient
+    try {
+      client = await connectToHost(record)
+    } catch (err) {
+      decrement()
+      throw err
+    }
+    let res: TunnelHttpStreamResponse
+    try {
+      res = await client.forwardHttpStream(toTunnelReq(req))
+    } catch (err) {
+      await client.close().catch(() => {})
+      decrement()
+      throw err
+    }
+    const cleanup = (): void => {
+      void client.close().catch(() => {})
+      decrement()
+    }
+    return { status: res.status, headers: { ...res.headers }, body: wrapStreamWithCleanup(res.body, cleanup) }
+  }
+
+  return { add, list, rename: renameHost, revoke, isOnline, forwardHttp, forwardHttpStream }
+}
+
+/**
+ * Wrap a Web `ReadableStream` so `cleanup` runs exactly once, whichever way
+ * the stream ends: fully drained, upstream error, or the consumer cancelling
+ * early (e.g. the OpenAI client aborting a chat/completions stream). This is
+ * what lets `forwardHttpStream` keep the tunnel client (and `isOnline`) alive
+ * for the whole SSE lifetime instead of closing right after headers arrive.
+ */
+function wrapStreamWithCleanup(
+  source: ReadableStream<Uint8Array>,
+  cleanup: () => void,
+): ReadableStream<Uint8Array> {
+  const reader = source.getReader()
+  let cleanedUp = false
+  const runCleanup = (): void => {
+    if (cleanedUp) return
+    cleanedUp = true
+    cleanup()
+  }
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read()
+        if (done) {
+          controller.close()
+          runCleanup()
+          return
+        }
+        controller.enqueue(value)
+      } catch (err) {
+        controller.error(err)
+        runCleanup()
+      }
+    },
+    async cancel(reason) {
+      try {
+        await reader.cancel(reason)
+      } finally {
+        runCleanup()
+      }
+    },
+  })
 }
 
 // ── helpers ────────────────────────────────────────────────────

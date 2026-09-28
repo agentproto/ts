@@ -23,6 +23,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http"
 import WebSocket from "ws"
+import { resolveProxyDialOptions } from "./proxy-dial.js"
 import {
   createTunnelClient,
   clientHandshakeOverSink,
@@ -52,10 +53,13 @@ const DIAL_TIMEOUT_MS = 15_000
 const HANDSHAKE_TIMEOUT_MS = 15_000
 
 /** Open a WS to `url` and adapt it to a `FrameSink`. Rejects on dial failure or
- *  timeout. */
+ *  timeout. Routes through `HTTPS_PROXY`/`HTTP_PROXY` (respecting `NO_PROXY`)
+ *  when configured — see `./proxy-dial.js` — the CLI-local equivalent of
+ *  `serve.ts`'s `daemonDialRendezvous`, same reasoning applies here. */
 export function dialRendezvous(url: string, timeoutMs = DIAL_TIMEOUT_MS): Promise<FrameSink> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url)
+    const { agent } = resolveProxyDialOptions(url)
+    const ws = new WebSocket(url, agent ? { agent } : undefined)
     const timer = setTimeout(() => {
       try {
         ws.close()

@@ -51,6 +51,7 @@ function fakeHostRegistry(
     revoke: vi.fn(async () => opts.revokeMatches ?? true),
     isOnline: fp => online.has(fp),
     forwardHttp: vi.fn(),
+    forwardHttpStream: vi.fn(),
   }
 }
 

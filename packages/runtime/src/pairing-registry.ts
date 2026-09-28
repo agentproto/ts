@@ -184,6 +184,13 @@ export interface PairingChannelContext {
   fingerprint: string
   /** Client label. */
   name: string
+  /** This pairing's OWN recorded scope (mirrors `PairingRecord.scope`) —
+   *  `"host"` when the offer that produced it was minted with
+   *  `agentproto pair offer --host`, absent for an ordinary remote-control
+   *  pairing. Present on BOTH the offer and every reconnect context, so
+   *  `serve` can gate scope-restricted routes (e.g. device-inference
+   *  proxying) the same way on first contact and on every later reconnect. */
+  scope?: "host"
 }
 
 /** Handle to a live served channel — the registry closes it on teardown. */
@@ -744,7 +751,7 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
         await persist()
         // Start standing reconnect connections so the client can come back.
         startReconnectLoops(record)
-        return { mode: "offer", fingerprint, name: record.name }
+        return { mode: "offer", fingerprint, name: record.name, ...(record.scope ? { scope: record.scope } : {}) }
       },
     })
   }
@@ -778,6 +785,7 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingRegistr
             mode: "reconnect",
             fingerprint: record.fingerprint,
             name: existing?.name ?? record.name,
+            ...(record.scope ? { scope: record.scope } : {}),
           }
         },
       })

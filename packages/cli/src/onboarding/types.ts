@@ -255,4 +255,15 @@ export interface StepContext {
   cliVersion: string
   now(): number
   sources: StepSources
+  /** Open (and immediately close) a WebSocket to `url` as a live reachability
+   *  probe — used by rendezvous.ts. Routes through a corporate proxy exactly
+   *  like the daemon's real dial (`../util/proxy-dial.js`), and reports which
+   *  mode was used. Never rejects. */
+  dialWebSocket(url: string, opts?: { timeoutMs?: number }): Promise<WebSocketProbeResult>
+}
+
+export interface WebSocketProbeResult {
+  ok: boolean
+  via: "direct" | "proxy"
+  error?: string
 }

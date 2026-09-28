@@ -348,4 +348,85 @@ describe("createHostRegistry", () => {
       )
     })
   })
+
+  describe("forwardHttpStream()", () => {
+    it("rejects with 'no host matched' when the target is unknown, without dialing", async () => {
+      const dial = vi.fn()
+      const registry = createHostRegistry({ hostsPath, dial })
+      await expect(
+        registry.forwardHttpStream("no-such-host", { method: "GET", path: "/health" }),
+      ).rejects.toThrow(/no host matched "no-such-host"/)
+      expect(dial).not.toHaveBeenCalled()
+    })
+
+    it("dials, streams the response, and keeps isOnline true until the body is fully drained", async () => {
+      const identity = await generateIdentity()
+      const { url, auth, fingerprint } = await makeOffer(identity, { scope: "host" })
+      stubUpstream(60)
+
+      let pairRootServer: string | null = null
+      const verifyAuthToken = async (token: string): Promise<boolean> => {
+        if (token === auth) return true
+        if (!pairRootServer) return false
+        const epoch = currentEpoch()
+        for (const e of [epoch, epoch - 1]) {
+          if (token === (await deriveEpochTokens(pairRootServer, e)).auth) return true
+        }
+        return false
+      }
+      const dial = vi.fn(async () => {
+        const { a, b } = connect()
+        void runFakeDaemon(a, identity, verifyAuthToken).then(async session => {
+          pairRootServer = await derivePairRoot(session)
+        })
+        return b
+      })
+
+      const registry = createHostRegistry({ hostsPath, dial, handshakeTimeoutMs: 2_000 })
+      await registry.add(url, "office-mac")
+      await vi.waitFor(() => expect(pairRootServer).not.toBeNull())
+
+      expect(registry.isOnline(fingerprint)).toBe(false)
+      const res = await registry.forwardHttpStream(fingerprint, { method: "GET", path: "/health" })
+      expect(res.status).toBe(200)
+      // Headers arrived but the body hasn't been drained yet — unlike
+      // forwardHttp, the tunnel client (and isOnline) must stay up for the
+      // whole stream lifetime, not just the initial round-trip.
+      expect(registry.isOnline(fingerprint)).toBe(true)
+
+      const reader = res.body.getReader()
+      const chunks: Uint8Array[] = []
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        chunks.push(value)
+      }
+      const body = Buffer.concat(chunks.map(c => Buffer.from(c))).toString("utf8")
+      expect(JSON.parse(body).ok).toBe(true)
+
+      await vi.waitFor(() => expect(registry.isOnline(fingerprint)).toBe(false))
+    })
+
+    it("surfaces a re-pair hint when every attempt hangs up on the hello", async () => {
+      const identity = await generateIdentity()
+      const { url, auth, fingerprint } = await makeOffer(identity, { scope: "host" })
+      let addDone = false
+      const dial = vi.fn(async () => {
+        const { a, b } = connect()
+        if (!addDone) {
+          void runFakeDaemon(a, identity, token => token === auth)
+        } else {
+          a.close("simulated hang up")
+        }
+        return b
+      })
+      const registry = createHostRegistry({ hostsPath, dial, handshakeTimeoutMs: 500, dialTimeoutMs: 500 })
+      await registry.add(url, "office-mac")
+      addDone = true
+
+      await expect(
+        registry.forwardHttpStream(fingerprint, { method: "GET", path: "/health" }),
+      ).rejects.toThrow(/could not reach host/)
+    })
+  })
 })

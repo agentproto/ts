@@ -23,7 +23,8 @@
 import { parseBrowserMode } from "./browser-mount.js"
 import { randomUUID } from "node:crypto"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
-import type { Duplex } from "node:stream"
+import { Readable, type Duplex } from "node:stream"
+import type { ReadableStream as NodeWebReadableStream } from "node:stream/web"
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, extname, isAbsolute, join, resolve as resolvePath, sep } from "node:path"
 import type { AcpMcpServer } from "@agentproto/acp"
@@ -353,6 +354,23 @@ const PROXY_FORWARDING_HEADERS: readonly string[] = [
   "cf-ray",
   "via",
 ]
+
+/**
+ * Set by the tunnel server (never a caller) on every `http_request` it
+ * forwards from a HOST-scoped pairing (DEVICES-PLAN item 1) —
+ * `buildDaemonTunnelServerOptions`'s `pairingScope` in
+ * `packages/cli/src/util/tunnel-serve.ts`. `httpInjectHeaders` overrides any
+ * same-named header the ORIGINAL caller's frame carried, so this can never be
+ * spoofed by whoever dials in over a pairing — only the daemon's own
+ * server-side scope decision at serve time ever sets it.
+ *
+ * Deliberately NOT paired with an `isLoopback` bypass the way most other
+ * routes are: every `http_request` a tunnel forwards to THIS server lands as
+ * a loopback socket (the daemon dialing its own gateway via `fetch`), so
+ * `isLoopback` is true for ALL forwarded traffic — host-scoped or not — and
+ * cannot distinguish them. `handleDeviceInference` checks this header alone.
+ */
+export const HOST_SCOPE_HEADER = "x-agentproto-host-scope"
 
 /**
  * Pluggable adapter resolver — keeps the runtime package free of any
@@ -943,6 +961,15 @@ export interface RuntimeHttpServerOptions {
    *  they need this REST surface rather than reaching into the in-process
    *  registry directly. Without it the routes 404. */
   llmEndpoint?: LlmEndpointRegistry
+  /** Optional — mirrors `config.features.deviceInferenceShare` (default
+   *  false). When true AND `llmEndpoint` is wired, exposes
+   *  `GET /device-inference/v1/models` + `POST
+   *  /device-inference/v1/chat/completions`: a read-only proxy onto this
+   *  daemon's own `llmEndpoint` sidecar, reachable ONLY over a channel the
+   *  tunnel server has marked host-scoped (see `HOST_SCOPE_HEADER`'s doc
+   *  comment) — never a plain remote-control pairing or `serve --connect`.
+   *  Without this flag (or without `llmEndpoint`), the routes 403/404. */
+  deviceInferenceShare?: boolean
   /** Optional — when wired, exposes POST /remote/enable, POST /remote/disable,
    *  GET /remote/status — the REST twin of the MCP `remote_enable` /
    *  `remote_disable` / `remote_status` tools (remote-tools.ts), for
@@ -3494,6 +3521,26 @@ export async function startHttpServer(
           if (handled) return
         }
 
+        // Device-inference routes (DEVICES-PLAN item 1) — a read-only proxy
+        // onto this daemon's own llm-endpoint sidecar, reachable ONLY over a
+        // channel the tunnel server marked host-scoped (see
+        // HOST_SCOPE_HEADER's doc comment) — never a plain remote-control
+        // pairing. Only registered when the sidecar itself is wired; the
+        // opt-in flag is checked (and can 403 even when the route exists)
+        // inside the handler, mirroring `handleDevices`'s own
+        // "wired vs. enabled" split. /device-inference/v1/models,
+        // /device-inference/v1/chat/completions.
+        if (opts.llmEndpoint && path.startsWith("/device-inference")) {
+          const handled = await handleDeviceInference(
+            req,
+            res,
+            path,
+            opts.llmEndpoint,
+            opts.deviceInferenceShare === true,
+          )
+          if (handled) return
+        }
+
         // Remote-control routes — the REST twin of the MCP remote_enable/
         // remote_disable/remote_status tools, for `agentproto remote
         // enable/disable/status`. Only registered when the gateway was
@@ -3617,7 +3664,9 @@ export async function startHttpServer(
         // /devices/:fingerprint (rename), DELETE /devices/:fingerprint
         // (revoke — same effect as DELETE /pairings/:fingerprint for a
         // client device), POST /devices/add (register a host), POST
-        // /devices/:id/exec (forward one HTTP request to a host). Same
+        // /devices/:id/exec (forward one HTTP request to a host), POST
+        // /devices/:id/exec-stream/<subpath> (streaming counterpart, always
+        // POST outer verb so it always takes the token gate below). Same
         // token gate as /pairings: mutating routes take the per-boot token;
         // GET is read-only.
         if (opts.pairings && path.startsWith("/devices")) {
@@ -7225,6 +7274,141 @@ async function handleLlmEndpoint(
 }
 
 /**
+ * /device-inference routes (DEVICES-PLAN item 1) — a read-only proxy onto
+ * this daemon's OWN `llmEndpoint` sidecar for a paired HOST-scoped
+ * controller: list models, and forward (streaming) chat/completions. Gated
+ * by BOTH the opt-in `deviceInferenceShare` flag AND `HOST_SCOPE_HEADER` (see
+ * its doc comment for why this can't use the usual `isLoopback` bypass).
+ * Never touches `checkSessionsToken` — an ordinary (non-host) pairing
+ * already carries a valid bearer (injected unconditionally by
+ * `buildDaemonTunnelServerOptions`) and would sail through that gate, which
+ * is exactly the case this route must refuse.
+ *
+ *   GET  /device-inference/v1/models           → proxies the sidecar's own
+ *                                                  GET /v1/models verbatim.
+ *   POST /device-inference/v1/chat/completions  → proxies + STREAMS the
+ *                                                  sidecar's own
+ *                                                  POST /v1/chat/completions.
+ */
+async function handleDeviceInference(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  registry: LlmEndpointRegistry,
+  shareEnabled: boolean,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  const isModels = path === "/device-inference/v1/models"
+  const isChat = path === "/device-inference/v1/chat/completions"
+  if (!isModels && !isChat) return false
+
+  if (req.headers[HOST_SCOPE_HEADER] !== "1") {
+    json(403, {
+      error: "host_scope_required",
+      message:
+        "device-inference is reachable only over a host-scoped pairing " +
+        "(the far end must have registered this daemon via `agentproto pair " +
+        "offer --host` + `agentproto devices add`)",
+    })
+    return true
+  }
+  if (!shareEnabled) {
+    json(403, {
+      error: "sharing_disabled",
+      message: "this host has not opted in — run `agentproto devices share-inference on` on it",
+    })
+    return true
+  }
+
+  const method = isModels ? "GET" : "POST"
+  if ((req.method ?? "GET") !== method) {
+    json(405, { error: "method_not_allowed", message: `${method} ${path}` })
+    return true
+  }
+
+  let baseUrl: string
+  try {
+    baseUrl = (await registry.start()).baseUrl
+  } catch (err) {
+    json(502, {
+      error: "sidecar_unavailable",
+      message: `local llm-endpoint sidecar failed to start: ${err instanceof Error ? err.message : String(err)}`,
+    })
+    return true
+  }
+
+  // Hop-by-hop headers plus the scope marker itself — no reason for the
+  // sidecar (or its own upstream) to see an internal daemon header.
+  const HOP_BY_HOP = new Set([
+    "connection",
+    "keep-alive",
+    "transfer-encoding",
+    "upgrade",
+    "host",
+    "content-length",
+    HOST_SCOPE_HEADER,
+  ])
+  const headers: Record<string, string> = {}
+  for (const [k, v] of Object.entries(req.headers)) {
+    if (v === undefined || HOP_BY_HOP.has(k.toLowerCase())) continue
+    headers[k] = Array.isArray(v) ? v.join(", ") : v
+  }
+
+  let body: Buffer | undefined
+  if (method === "POST") {
+    const chunks: Buffer[] = []
+    for await (const chunk of req) chunks.push(chunk as Buffer)
+    body = Buffer.concat(chunks)
+  }
+
+  let upstreamRes: globalThis.Response
+  try {
+    upstreamRes = await fetch(`${baseUrl}${isModels ? "/v1/models" : "/v1/chat/completions"}`, {
+      method,
+      headers,
+      ...(body ? { body } : {}),
+      // Cast the whole init object via `fetch`'s own parameter type — its
+      // exact shape (and whether a Node `Buffer` satisfies `body`) differs
+      // across the DOM-lib vs. non-DOM-lib global `fetch` ambient typings
+      // different packages in this monorepo compile against (there's no
+      // universal `BodyInit` name to cast the field through directly: it
+      // doesn't exist at all without the DOM lib). Node's runtime fetch
+      // accepts a Buffer (a Uint8Array) regardless of which ambient type
+      // wins.
+    } as Parameters<typeof fetch>[1])
+  } catch (err) {
+    json(502, {
+      error: "sidecar_unreachable",
+      message: err instanceof Error ? err.message : String(err),
+    })
+    return true
+  }
+
+  const resHeaders: Record<string, string> = {}
+  upstreamRes.headers.forEach((v, k) => {
+    if (k === "content-length" || k === "connection") return
+    resHeaders[k] = v
+  })
+  res.writeHead(upstreamRes.status, resHeaders)
+  if (!upstreamRes.body) {
+    res.end()
+    return true
+  }
+  // Relay chunk-by-chunk as they arrive — required for the chat/completions
+  // SSE stream; harmless (just one chunk) for the buffered /v1/models reply.
+  // Cast through `unknown` — see the `body` cast above's comment: the DOM-lib
+  // vs. non-DOM-lib global `ReadableStream` a package compiles against isn't
+  // nominally the same type `Readable.fromWeb` (node:stream/web) declares,
+  // even though both describe the identical runtime object.
+  Readable.fromWeb(upstreamRes.body as unknown as NodeWebReadableStream<Uint8Array>).pipe(res)
+  return true
+}
+
+/**
  * REST twin of the MCP `remote_enable` / `remote_disable` / `remote_status`
  * tools (remote-tools.ts) — same `RemoteController` singleton, so the two
  * surfaces can never disagree about whether a tunnel is up. Exists for
@@ -8024,6 +8208,21 @@ async function handlePairings(
  *                                    base64-encoded on the wire both ways).
  *                                    404s the same way as /devices/add when
  *                                    no host registry is wired.
+ *   POST   /devices/:id/exec-stream/<subpath>  (DEVICES-PLAN item 2) — raw
+ *                                    streaming counterpart of /exec: no JSON
+ *                                    envelope, the request body is forwarded
+ *                                    verbatim as `/<subpath>` and the
+ *                                    response is RELAYED chunk-by-chunk
+ *                                    (never buffered) — required for the
+ *                                    device-inference chat/completions SSE
+ *                                    stream. The real forwarded method rides
+ *                                    in `x-agentproto-forward-method`
+ *                                    (`GET`|`POST`) since the outer verb is
+ *                                    always POST, so this always passes the
+ *                                    bearer gate below regardless of which
+ *                                    method it's asking the host for. Same
+ *                                    404 as /exec when no host registry is
+ *                                    wired.
  *
  * Mirrors the MCP `device_list` / `device_rename` / `device_revoke` /
  * `device_add` tools.
@@ -8101,6 +8300,77 @@ async function handleDevices(
     } catch (err) {
       json(502, { error: "exec_failed", message: err instanceof Error ? err.message : String(err) })
     }
+    return true
+  }
+
+  // POST /devices/:id/exec-stream/<subpath> — streaming counterpart of
+  // /exec (DEVICES-PLAN item 2), for a target whose RESPONSE must be relayed
+  // as it arrives (the device-inference chat/completions SSE, most notably)
+  // instead of buffered-then-base64'd. The outer HTTP verb is ALWAYS POST —
+  // same reasoning as /exec's own JSON-wrapped `method` field: this must
+  // ALWAYS pass the bearer gate below, whatever the underlying forwarded
+  // request's method is, rather than a caller dodging it by asking for an
+  // (outer) GET. The REAL method rides in `x-agentproto-forward-method`;
+  // the raw request body (unwrapped — no JSON envelope, no base64) is piped
+  // straight through to the host. `<subpath>` becomes the forwarded
+  // `/<subpath>` — this is what `llm-endpoint`'s device-endpoint routing
+  // (`<id>@<device>` in the model string) targets, landing on the OTHER
+  // daemon's own `/device-inference/*` (see http-server.ts's
+  // `handleDeviceInference`).
+  const execStreamMatch = path.match(/^\/devices\/([^/]+)\/exec-stream\/(.+)$/)
+  if (execStreamMatch && req.method === "POST") {
+    if (!hostRegistry) {
+      json(404, { error: "no_host_registry", message: "this daemon has no host registry wired" })
+      return true
+    }
+    const target = decodeURIComponent(execStreamMatch[1] ?? "")
+    const subPath = execStreamMatch[2] ?? ""
+    const forwardMethodRaw = (req.headers["x-agentproto-forward-method"] ?? "").toString().toUpperCase()
+    if (forwardMethodRaw !== "GET" && forwardMethodRaw !== "POST") {
+      json(400, {
+        error: "bad_request",
+        message: 'request must include header "x-agentproto-forward-method: GET" or "POST"',
+      })
+      return true
+    }
+
+    const HOP_BY_HOP = new Set([
+      "connection",
+      "keep-alive",
+      "transfer-encoding",
+      "upgrade",
+      "host",
+      "content-length",
+      "authorization",
+      "x-agentproto-forward-method",
+    ])
+    const headers: Record<string, string> = {}
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (v === undefined || HOP_BY_HOP.has(k.toLowerCase())) continue
+      headers[k] = Array.isArray(v) ? v.join(", ") : v
+    }
+
+    const chunks: Buffer[] = []
+    for await (const chunk of req) chunks.push(chunk as Buffer)
+    const bodyBuf = Buffer.concat(chunks)
+
+    let streamRes: { status: number; headers: Record<string, string>; body: ReadableStream<Uint8Array> }
+    try {
+      streamRes = await hostRegistry.forwardHttpStream(target, {
+        method: forwardMethodRaw,
+        path: `/${subPath}`,
+        headers,
+        ...(bodyBuf.length > 0 ? { body: new Uint8Array(bodyBuf) } : {}),
+      })
+    } catch (err) {
+      json(502, {
+        error: "exec_stream_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+      return true
+    }
+    res.writeHead(streamRes.status, streamRes.headers)
+    Readable.fromWeb(streamRes.body as unknown as NodeWebReadableStream<Uint8Array>).pipe(res)
     return true
   }
 

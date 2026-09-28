@@ -188,6 +188,16 @@ export interface FeaturesConfig {
    *  an opt-in feature; when off, the `llm-endpoint` custom route is not
    *  registered and the `llm_endpoint_*` MCP tools are not exposed. */
   llmEndpoint?: boolean
+  /** Expose this daemon's local inference endpoint(s) (the `llmEndpoint`
+   *  sidecar above) to paired controllers over a HOST-scoped pairing —
+   *  `GET /device-inference/v1/models` + `POST
+   *  /device-inference/v1/chat/completions` in http-server.ts. Default
+   *  false: even with `llmEndpoint` on, a plain remote-control pairing (or
+   *  `serve --connect`) never gets these routes regardless of this flag —
+   *  it also requires the pairing itself to be host-scoped (`pair offer
+   *  --host` + `devices add`). Toggle via `agentproto devices
+   *  share-inference on|off`. */
+  deviceInferenceShare?: boolean
 }
 
 /**

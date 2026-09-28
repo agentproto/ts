@@ -445,6 +445,62 @@ interface ResolvedConfigurableProvider {
  * (anthropic, groq, …), which callers fall through to their existing switch
  * for.
  */
+/**
+ * A paired HOST's own inference endpoint, addressed transparently as
+ * `<endpointId>@<device>` (DEVICES-PLAN item 2) — e.g. `ollama@work-mac`,
+ * where `work-mac` is whatever `agentproto devices list` shows for that
+ * host (fingerprint or friendly name) and `ollama` is an endpoint id on the
+ * far side's OWN llm-endpoint gateway, not this one. `device` excludes `@`
+ * and `/` so the split is unambiguous against a bare `<id>/<model>`
+ * reference (no file-configured endpoint id may contain `@` either, since
+ * `parseEndpointsConfig` never validates that — this pattern is what makes
+ * it safe not to).
+ */
+const DEVICE_PROVIDER_RE = /^(.+)@([^@/]+)$/;
+
+function parseDeviceProvider(provider: string): { endpointId: string; device: string } | null {
+  const m = DEVICE_PROVIDER_RE.exec(provider);
+  return m ? { endpointId: m[1]!, device: m[2]! } : null;
+}
+
+/**
+ * Resolve a `<endpointId>@<device>` provider to the LOCAL agentproto
+ * daemon's own device-inference forward route (DEVICES-PLAN item 2) —
+ * `packages/runtime/src/http-server.ts`'s `POST
+ * /devices/:id/exec-stream/<subpath>`, which relays through the daemon's
+ * `HostRegistry` to the OTHER daemon's `/device-inference/*` (gated there to
+ * a host-scoped pairing only). `LLM_ENDPOINT_DAEMON_URL` /
+ * `LLM_ENDPOINT_DAEMON_TOKEN` are injected by
+ * `packages/runtime/src/llm-endpoint-registry.ts` when THIS sidecar was
+ * spawned by an agentproto daemon — absent (e.g. llm-endpoint run
+ * standalone) makes every `@device` reference "not configured", never a
+ * crash. `keyRequired: true` so a missing/wrong token 401s instead of
+ * silently forwarding with no `Authorization` — the daemon's
+ * `/devices/:id/exec-stream` bearer gate has no loopback bypass, unlike most
+ * of its other routes (see `HOST_SCOPE_HEADER`'s doc comment for why).
+ */
+function resolveDeviceProviderSpec(device: string): ResolvedConfigurableProvider {
+  const unavailableMessage = () =>
+    `"@${device}" device-inference routing requires this llm-endpoint sidecar to be started by an ` +
+    'agentproto daemon (LLM_ENDPOINT_DAEMON_URL is unset) — run it via `agentproto serve` with ' +
+    'features.llmEndpoint on, not as a bare standalone process.';
+  return {
+    keyRequired: true,
+    apiKeyEnv: 'LLM_ENDPOINT_DAEMON_TOKEN',
+    resolveUpstream: () => {
+      const daemonUrl = process.env.LLM_ENDPOINT_DAEMON_URL?.trim();
+      if (!daemonUrl) return null;
+      const base = parseUpstreamUrl(daemonUrl);
+      if (!base) return null;
+      return {
+        ...base,
+        pathPrefix: `${base.pathPrefix}/devices/${encodeURIComponent(device)}/exec-stream/device-inference/v1`,
+      };
+    },
+    unavailableMessage,
+  };
+}
+
 function getConfigurableProviderSpec(provider: string): ResolvedConfigurableProvider | undefined {
   const staticSpec = CONFIGURABLE_PROVIDERS[provider];
   if (staticSpec) {
@@ -470,6 +526,8 @@ function getConfigurableProviderSpec(provider: string): ResolvedConfigurableProv
       unavailableMessage: () => `"${provider}" endpoint is misconfigured (invalid baseUrl).`,
     };
   }
+  const deviceRoute = parseDeviceProvider(provider);
+  if (deviceRoute) return resolveDeviceProviderSpec(deviceRoute.device);
   return undefined;
 }
 
@@ -670,7 +728,11 @@ export interface ModelRouteContext {
  *  runtime-configured (unlike KNOWN_TRANSPARENT_PROVIDERS' static set), so
  *  they're checked separately rather than folded into that Set at import time. */
 function isKnownProvider(provider: string): boolean {
-  return KNOWN_PROVIDERS.has(provider) || getConfiguredEndpoints().some((e) => e.id === provider);
+  return (
+    KNOWN_PROVIDERS.has(provider) ||
+    getConfiguredEndpoints().some((e) => e.id === provider) ||
+    DEVICE_PROVIDER_RE.test(provider)
+  );
 }
 
 function applyProviderOverride(
@@ -699,7 +761,7 @@ function parseAnyTransparentModel(model: string): { provider: string; model: str
   const slashIdx = model.indexOf('/');
   if (slashIdx <= 0 || slashIdx === model.length - 1) return null;
   const provider = model.slice(0, slashIdx);
-  if (!getConfiguredEndpoints().some((e) => e.id === provider)) return null;
+  if (!getConfiguredEndpoints().some((e) => e.id === provider) && !DEVICE_PROVIDER_RE.test(provider)) return null;
   return { provider, model: model.slice(slashIdx + 1) };
 }
 
@@ -1536,6 +1598,10 @@ function handleChatCompletionsRequest(
       }
 
       payload.model = resolvedTarget.model;
+      // `<endpointId>@<device>` (DEVICES-PLAN item 2) — see the /v1/messages
+      // handler's identical rewrite for why.
+      const deviceRoute = parseDeviceProvider(resolvedTarget.provider);
+      if (deviceRoute) payload.model = `${deviceRoute.endpointId}/${resolvedTarget.model}`;
 
       trimTools(payload, {
         provider: resolvedTarget.provider,
@@ -1592,6 +1658,10 @@ function handleChatCompletionsRequest(
         headers: {
           'Content-Type': 'application/json',
           ...(targetApiKey ? { 'Authorization': `Bearer ${targetApiKey}` } : {}),
+          // See the /v1/messages handler's identical header — the daemon's
+          // /devices/:id/exec-stream 400s without it, always POST outer verb
+          // notwithstanding.
+          ...(deviceRoute ? { 'x-agentproto-forward-method': 'POST' } : {}),
         },
       };
 
@@ -2761,6 +2831,13 @@ const server = createServer((req, res) => {
       let headers: Record<string, string> = { 'Content-Type': 'application/json' };
 
       payload.model = resolvedTarget.model;
+      // `<endpointId>@<device>` (DEVICES-PLAN item 2): the OTHER daemon's own
+      // gateway resolves models against ITS endpoint id, with no `@device`
+      // suffix — rewrite before it ever reaches `applyProviderOverride`'s
+      // caller-visible model, same as the OpenAI chat/completions handler
+      // below.
+      const deviceRoute = parseDeviceProvider(resolvedTarget.provider);
+      if (deviceRoute) payload.model = `${deviceRoute.endpointId}/${resolvedTarget.model}`;
 
       // Trimme les outils AVANT la transformation de forme propre à chaque provider
       // (ZAI/Groq mappent input_schema → function.parameters ; le trim doit voir la forme Anthropic).
@@ -2798,6 +2875,12 @@ const server = createServer((req, res) => {
         // send a bare "Bearer " header; a required-key one (nebius) 401s below
         // before this matters if the value is empty.
         if (cred && cred.value) Object.assign(headers, buildUpstreamAuthHeaders(resolvedTarget.provider, cred));
+        // The daemon's `/devices/:id/exec-stream` ALWAYS takes an outer POST
+        // regardless of the real forwarded method — see that route's doc
+        // comment in http-server.ts. This surface only ever reaches it via
+        // chat/completions, so the real method is always POST too, but the
+        // header is still required (the route 400s without it).
+        if (deviceRoute) headers['x-agentproto-forward-method'] = 'POST';
         // adaptAnthropicToOpenAI drops `thinking` outright (OpenAI has no such
         // field) — capture it first so an explicit client `thinking:
         // {type:"enabled"}` can withhold a default `reasoning_effort` (e.g.
