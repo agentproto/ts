@@ -354,6 +354,9 @@ describe("reconcileIntegration (PLAN.md §1.3)", () => {
     const origin = await mkdtemp(join(tmpdir(), "wt-status-origin-"))
     cleanupPaths.push(origin)
     await execGit(origin, ["init", "--bare", "-b", "main"])
+    // `receive-pack` runs with the pusher's GIT_CONFIG_* env stripped, so the
+    // vitest.setup.ts override can't reach it; disable auto-maintenance per repo.
+    await execGit(origin, ["config", "maintenance.auto", "false"])
     await execGit(repo, ["remote", "add", "origin", origin])
     await execGit(repo, ["push", "origin", "main"])
 
@@ -400,6 +403,9 @@ describe("reconcileIntegration (PLAN.md §1.3)", () => {
     const origin = await mkdtemp(join(tmpdir(), "wt-status-origin-"))
     cleanupPaths.push(origin)
     await execGit(origin, ["init", "--bare", "-b", "main"])
+    // `receive-pack` runs with the pusher's GIT_CONFIG_* env stripped, so the
+    // vitest.setup.ts override can't reach it; disable auto-maintenance per repo.
+    await execGit(origin, ["config", "maintenance.auto", "false"])
     await execGit(repo, ["remote", "add", "origin", origin])
     await execGit(repo, ["push", "origin", "main"])
     await execGit(repo, ["checkout", "-b", "feat/deleted-upstream"])
