@@ -870,16 +870,16 @@
       },
       "grok-4.7": {
         "id": "grok-4.7",
-        "name": "Grok 4.7 (30% Off)",
+        "name": "Grok 4.7",
         "family": "grok",
         "release_date": "2026-09-21",
         "provider": {
           "npm": "@ai-sdk/openai"
         },
         "cost": {
-          "input": 1.4,
-          "output": 4.2,
-          "cache_read": 0.35
+          "input": 2,
+          "output": 6,
+          "cache_read": 0.5
         }
       },
       "grok-build-0.1": {

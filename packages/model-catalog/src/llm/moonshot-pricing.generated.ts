@@ -1,4 +1,4 @@
-// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-moonshot.mjs (data: Moonshot API + OpenRouter pricing, synced 2026-09-28T16:12:59.936Z)
+// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-moonshot.mjs (data: Moonshot API + OpenRouter pricing, synced 2026-09-28T18:56:23.597Z)
 
 export const MOONSHOT_GENERATED_PRICING = {
   "kimi-k2.6": { inputPer1M: 0.65, outputPer1M: 3.41, cacheReadMultiplier: 0.2308, vendor: "moonshot", provider: "moonshot" },

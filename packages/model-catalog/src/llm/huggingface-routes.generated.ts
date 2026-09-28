@@ -549,7 +549,7 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         inputPer1M: 0.08,
         outputPer1M: 0.28,
         supportsTools: true,
-        supportsStructuredOutput: false,
+        supportsStructuredOutput: true,
       },
       {
         provider: "featherless-ai",
@@ -630,24 +630,6 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         outputPer1M: 0.912,
         supportsTools: true,
         supportsStructuredOutput: true,
-      }
-    ],
-  },
-  "Qwen/Qwen3-Coder-480B-A35B-Instruct": {
-    wireId: "Qwen/Qwen3-Coder-480B-A35B-Instruct",
-    providers: [
-      {
-        provider: "featherless-ai",
-        status: "live",
-      },
-      {
-        provider: "novita",
-        status: "live",
-        contextLength: 262144,
-        inputPer1M: 0.38,
-        outputPer1M: 1.55,
-        supportsTools: true,
-        supportsStructuredOutput: false,
       }
     ],
   },
@@ -774,7 +756,7 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         inputPer1M: 0.29,
         outputPer1M: 2.4,
         supportsTools: true,
-        supportsStructuredOutput: true,
+        supportsStructuredOutput: false,
       },
       {
         provider: "novita",
@@ -1085,6 +1067,15 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
     wireId: "XiaomiMiMo/MiMo-V2.5",
     providers: [
       {
+        provider: "deepinfra",
+        status: "live",
+        contextLength: 262144,
+        inputPer1M: 0.14,
+        outputPer1M: 0.28,
+        supportsTools: true,
+        supportsStructuredOutput: true,
+      },
+      {
         provider: "featherless-ai",
         status: "live",
       },
@@ -1102,15 +1093,6 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
   "XiaomiMiMo/MiMo-V2.5-Pro": {
     wireId: "XiaomiMiMo/MiMo-V2.5-Pro",
     providers: [
-      {
-        provider: "deepinfra",
-        status: "live",
-        contextLength: 1048576,
-        inputPer1M: 1,
-        outputPer1M: 3,
-        supportsTools: true,
-        supportsStructuredOutput: true,
-      },
       {
         provider: "novita",
         status: "live",
@@ -1225,24 +1207,6 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
       }
     ],
   },
-  "deepseek-ai/DeepSeek-R1-Distill-Llama-70B": {
-    wireId: "deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
-    providers: [
-      {
-        provider: "featherless-ai",
-        status: "live",
-      },
-      {
-        provider: "novita",
-        status: "live",
-        contextLength: 8192,
-        inputPer1M: 0.8,
-        outputPer1M: 0.8,
-        supportsTools: false,
-        supportsStructuredOutput: false,
-      }
-    ],
-  },
   "deepseek-ai/DeepSeek-R1-Distill-Llama-8B": {
     wireId: "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
     providers: [
@@ -1275,7 +1239,7 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         inputPer1M: 0.2,
         outputPer1M: 0.2,
         supportsTools: false,
-        supportsStructuredOutput: false,
+        supportsStructuredOutput: true,
       }
     ],
   },
@@ -1330,15 +1294,6 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
       {
         provider: "featherless-ai",
         status: "live",
-      },
-      {
-        provider: "novita",
-        status: "live",
-        contextLength: 131072,
-        inputPer1M: 0.27,
-        outputPer1M: 1,
-        supportsTools: true,
-        supportsStructuredOutput: true,
       }
     ],
   },
@@ -1357,15 +1312,6 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
       {
         provider: "featherless-ai",
         status: "live",
-      },
-      {
-        provider: "novita",
-        status: "live",
-        contextLength: 131072,
-        inputPer1M: 0.27,
-        outputPer1M: 1,
-        supportsTools: true,
-        supportsStructuredOutput: true,
       }
     ],
   },
@@ -1790,7 +1736,7 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         inputPer1M: 0.06,
         outputPer1M: 0.18,
         supportsTools: true,
-        supportsStructuredOutput: false,
+        supportsStructuredOutput: true,
       },
       {
         provider: "novita",
@@ -2480,23 +2426,6 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
       }
     ],
   },
-  "swiss-ai/Apertus-v1.5-70B": {
-    wireId: "swiss-ai/Apertus-v1.5-70B",
-    providers: [
-      {
-        provider: "featherless-ai",
-        status: "live",
-      },
-      {
-        provider: "publicai",
-        status: "live",
-        inputPer1M: 0.82,
-        outputPer1M: 2.92,
-        supportsTools: true,
-        supportsStructuredOutput: true,
-      }
-    ],
-  },
   "tencent/Hy3": {
     wireId: "tencent/Hy3",
     providers: [
@@ -2555,7 +2484,7 @@ export const HUGGINGFACE_ROUTES: Record<string, HuggingFaceRoute> = {
         status: "live",
         contextLength: 1048576,
         supportsTools: true,
-        supportsStructuredOutput: false,
+        supportsStructuredOutput: true,
       },
       {
         provider: "together",
