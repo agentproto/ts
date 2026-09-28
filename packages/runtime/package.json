@@ -169,6 +169,8 @@
     "@agentproto/driver-agent-cli": "workspace:*",
     "@agentproto/driver-http": "workspace:*",
     "@agentproto/eval-reporters": "workspace:*",
+    "@agentproto/governance": "workspace:*",
+    "@agentproto/governance-engine": "workspace:*",
     "@agentproto/llm-endpoint": "workspace:*",
     "@agentproto/manifest": "workspace:*",
     "@agentproto/mcp-server": "workspace:*",

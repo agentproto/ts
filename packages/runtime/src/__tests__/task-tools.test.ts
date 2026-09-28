@@ -75,6 +75,7 @@ function fakeLedger(results: {
       calls.push({ verb: "update", input, caller })
       return results.update ?? { ok: true, task }
     },
+    linkApproval: () => ({ ok: true, task }),
     resolveBoardId: (caller, explicit) =>
       explicit ?? (caller.kind === "session" ? `tree:${caller.sessionId}` : "ws:default"),
     snapshot: () => [task],

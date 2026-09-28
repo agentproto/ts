@@ -298,18 +298,30 @@ export function registerTaskTools(
   )
 
   // ── task_update ───────────────────────────────────────────────────
+  const taskArtifactLinkSchema = z.union([
+    z.object({ sessionId: z.string(), key: z.string(), sha256: z.string() }),
+    z.object({ approvalId: z.string() }),
+  ])
+
   server.tool(
     "task_update",
     "Update a task (rev-CAS: pass the rev you last read; a mismatch answers " +
       "`{conflict:true, current}`). The OWNER sets status " +
-      "(in_progress/done/failed) and releases itself (`owner:null`); the " +
-      "CREATOR/operator additionally edit fields, reassign `owner`, cancel, " +
-      "and reopen a done task (`status:\"pending\"`). `status:\"done\"` on a " +
-      "task with a declared `verify` does NOT close it immediately — the " +
-      "reply says `verifying:true` and the gate decides after your turn ends " +
-      "(green → done, red → stays in_progress with `lastVerifyError`; watch " +
+      "(in_progress/done/failed/awaiting_approval) and releases itself " +
+      "(`owner:null`); the CREATOR/operator additionally edit fields, " +
+      "reassign `owner`, cancel, and reopen a done task " +
+      "(`status:\"pending\"`). `status:\"done\"` on a task with a declared " +
+      "`verify` does NOT close it immediately — the reply says " +
+      "`verifying:true` and the gate decides after your turn ends (green → " +
+      "done, red → stays in_progress with `lastVerifyError`; watch " +
       "`task:changed`). `evidence:{policyId}` closes it off an " +
-      "already-passed policy without re-running anything.",
+      "already-passed policy without re-running anything. " +
+      "`status:\"awaiting_approval\"` parks the task on one or more " +
+      "`approvalIds` (must resolve non-empty, in this write or already on " +
+      "the task) — a human `approval:decided` on any of them then moves it " +
+      "on its own: approved → in_progress, denied → cancelled " +
+      "(`meta.reason:\"denied\"`). The owner never gets released while " +
+      "waiting, even across a restart.",
     {
       taskId: z.string().describe("Task id from task_list / task_create."),
       rev: z.number().int().min(0).describe("The rev you last read."),
@@ -318,8 +330,9 @@ export function registerTaskTools(
         .optional()
         .describe(
           "Target status. pending ⇄ in_progress → done|failed; " +
-            "pending|in_progress → cancelled; done → pending is the explicit " +
-            "reopen (creator/operator).",
+            "in_progress ⇄ awaiting_approval; " +
+            "pending|in_progress|awaiting_approval → cancelled; " +
+            "done → pending is the explicit reopen (creator/operator).",
         ),
       title: z.string().optional().describe("New title (creator/operator)."),
       description: z.string().optional().describe("New description (creator/operator)."),
@@ -343,6 +356,19 @@ export function registerTaskTools(
         .string()
         .optional()
         .describe("Free-text note, stamped into meta.note (last-write-wins)."),
+      approvalIds: jsonTolerant(z.array(z.string()))
+        .optional()
+        .describe(
+          "Replace the linked approval ids (owner-settable, like `note`). " +
+            "Required non-empty when moving into awaiting_approval.",
+        ),
+      artifacts: jsonTolerant(z.array(taskArtifactLinkSchema))
+        .optional()
+        .describe(
+          "Replace the evidence trail: session artifacts " +
+            "(`{sessionId, key, sha256}`) and/or approval payload pointers " +
+            "(`{approvalId}`). Owner-settable, like `note`.",
+        ),
     },
     async input => {
       if (!ledger) return notAvailable
@@ -362,6 +388,8 @@ export function registerTaskTools(
             ...(input.owner !== undefined ? { owner: input.owner } : {}),
             ...(input.evidence !== undefined ? { evidence: input.evidence } : {}),
             ...(input.note !== undefined ? { note: input.note } : {}),
+            ...(input.approvalIds !== undefined ? { approvalIds: input.approvalIds } : {}),
+            ...(input.artifacts !== undefined ? { artifacts: input.artifacts } : {}),
           },
           caller,
         ),
