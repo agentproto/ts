@@ -47,6 +47,21 @@ import {
 } from "./browser-tools.js"
 import { registerAuthProfileTools } from "./auth-profile-tools.js"
 import { registerConfigTools, type ConfigToolsDeps } from "./config-tools.js"
+import { registerModelRolesTools } from "./model-roles-tools.js"
+export {
+  DEFAULT_MODEL_ROLES,
+  MODEL_ROLE_REF_PREFIX,
+  listModelRoles,
+  parseModelRoleRef,
+  resolveModelRole,
+  type ModelRoleContext,
+  type ModelRoleEntry,
+  type ModelRoleSource,
+  type ModelRoleValue,
+  type ModelRolesConfig,
+  type ResolvedModelRole,
+} from "./model-roles.js"
+export { modelRoles, loadWorkspaceModelRoles, type ModelRolesInput, type ModelRolesOutput } from "./model-roles-tools.js"
 import { registerHarnessPresetTools } from "./harness-preset-tools.js"
 import { registerUserPresetTools } from "./user-preset-tools.js"
 import { registerCredentialDiscoveryTools } from "./credential-discovery.js"
@@ -2609,6 +2624,9 @@ export async function createGateway(
     // `DEFAULT_ORCHESTRATOR_TOOLS` (orchestrator-gateway.ts), so a scoped
     // child orchestrator can never reconfigure the daemon it runs on.
     registerConfigTools(server, configToolsDeps)
+    // `model_roles` — read-only role → model listing (model-roles.ts). Same
+    // root-only exposure; workflow `tool` steps reach it through dispatchTool.
+    registerModelRolesTools(server)
     // Persisted harness→profile bindings (harness_preset_list/create/delete/
     // set_default). Same no-host-wiring stance as the auth-profile tools —
     // the store reads/writes the fixed `~/.agentproto/harness-presets.json`.

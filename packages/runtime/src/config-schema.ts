@@ -51,6 +51,7 @@ import { DEFAULT_ATTENTION_DELAY_SEC, ATTENTION_DELAY_ENV } from "./session-pres
 import { DEFAULT_WRAP_GH, PROVENANCE_WRAP_GH_ENV } from "./gh-provenance-shim.js"
 import { DEFAULT_AGENTS_MD_INLINE_MAX_KB } from "./agents-md.js"
 import { DEFAULT_TITLER_MODEL } from "./session-titler.js"
+import { DEFAULT_MODEL_ROLES } from "./model-roles.js"
 import { DEFAULT_BG_TASK_WAKE_GRACE_MS } from "./background-task-wake.js"
 import { DEFAULT_ROLE_DEPTH_CUTOFF } from "./role.js"
 
@@ -240,6 +241,18 @@ const pairingConfigSchema: z.ZodType<PairingConfig> = z
   })
   .passthrough()
 
+/** One `models` role value: a model id, or `{ model, route?, profile? }`. */
+const modelRoleValueSchema = z.union([
+  z.string().min(1),
+  z
+    .object({
+      model: z.string().min(1),
+      route: z.string().optional(),
+      profile: z.string().optional(),
+    })
+    .passthrough(),
+])
+
 const profileConfigSchema: z.ZodType<ProfileConfig> = z
   .object({
     daemon: daemonConfigSchema.optional(),
@@ -299,6 +312,7 @@ export const agentprotoConfigSchema = z
     provenance: provenanceConfigSchema.optional(),
     approvals: approvalsConfigSchema.optional(),
     agentsMd: agentsMdConfigSchema.optional(),
+    models: z.record(z.string(), modelRoleValueSchema).optional(),
     titler: titlerConfigSchema.optional(),
     profiles: z.record(z.string(), profileConfigSchema).optional(),
     activeProfile: z.string().optional(),
@@ -354,6 +368,7 @@ type ConfigTopLevelKey =
   | "provenance"
   | "approvals"
   | "agentsMd"
+  | "models"
   | "titler"
   | "profiles"
   | "activeProfile"
@@ -666,6 +681,24 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
   },
 
   // ── models ──
+  {
+    // One row per configured role. Role names are dotted (`review.pr`), so a
+    // concrete key is `models.review.pr` — `findConfigKey` maps any
+    // `models.<role>` onto this entry, and `splitConfigPath` (config.ts) keeps
+    // the role as ONE segment. The full role list (incl. built-in defaults and
+    // where each value comes from) is the `model_roles` tool.
+    path: "models.*",
+    schema: modelRoleValueSchema,
+    apply: "hot",
+    writable: true,
+    section: "models",
+    label: "Model role",
+    help:
+      "Model for a role (review.small, review.large, review.pr, judge.session, …): a model id, or " +
+      "{ model, route?, profile? }. Precedence: explicit run input > the repo's agentproto.json `models` > " +
+      "this daemon config > built-in default (`model_roles` lists every role and its source). " +
+      `Built-in defaults: ${Object.entries(DEFAULT_MODEL_ROLES).map(([r, m]) => `${r}=${m}`).join(", ")}.`,
+  },
   {
     path: "titler.model",
     schema: str,
@@ -1251,7 +1284,9 @@ function pathSegmentsMatch(entryPath: string, concretePath: string): boolean {
  *  `defaults.adapters.claude-code.skills`), matching any `*` wildcard
  *  segment. Returns `undefined` for a path with no registered entry. */
 export function findConfigKey(path: string): ConfigKeyEntry | undefined {
-  return CONFIG_KEYS.find(entry => pathSegmentsMatch(entry.path, path))
+  // Role names are dotted, so any `models.<role>` is the one `models.*` entry.
+  const lookup = path.startsWith("models.") && path.length > "models.".length ? "models.*" : path
+  return CONFIG_KEYS.find(entry => pathSegmentsMatch(entry.path, lookup))
 }
 
 function isKnownConfigPath(path: string): boolean {

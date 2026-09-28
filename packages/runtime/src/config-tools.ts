@@ -60,6 +60,7 @@ import { resolveAttentionDelaySec, ATTENTION_DELAY_ENV } from "./session-presenc
 import { loadProvenanceWrapGh, PROVENANCE_WRAP_GH_ENV, parseWrapGh } from "./gh-provenance-shim.js"
 import { loadAgentsMdInlineMaxKb } from "./agents-md.js"
 import type { RuntimeEvents } from "./events.js"
+import { unknownModelRoleIds } from "./model-roles.js"
 
 /** Boot-computed values for the four `daemon.*` restart-class knobs whose
  *  actual env>config>default resolution happens CLI-side (`serve.ts`'s
@@ -201,6 +202,9 @@ export type ConfigSetResult =
       applied: "hot" | "restart-required"
       shadowedByEnv?: string
       revision: string
+      /** Non-blocking notes about the write that was accepted anyway — today:
+       *  a `models.<role>` id the model catalog doesn't know. */
+      warnings?: string[]
     }
   | {
       ok: false
@@ -692,6 +696,13 @@ export async function configSet(
   const envParsed = envRaw !== undefined && envParser ? envParser(envRaw) : undefined
   const shadowedByEnv = envParsed !== undefined ? entry.env : undefined
 
+  const warnings =
+    entry.path === "models.*" && !wantsUnset
+      ? unknownModelRoleIds({ [input.key.slice("models.".length)]: newValue }).map(
+          u => `model "${u.model}" (role ${u.role}) is not in the model catalog — saved anyway; check the id.`,
+        )
+      : []
+
   deps.events.emit({
     type: "config:changed",
     at: new Date().toISOString(),
@@ -706,6 +717,7 @@ export async function configSet(
     applied,
     ...(shadowedByEnv ? { shadowedByEnv } : {}),
     revision,
+    ...(warnings.length > 0 ? { warnings } : {}),
   }
 }
 
@@ -781,6 +793,8 @@ export function registerConfigTools(server: McpServer, deps: ConfigToolsDeps): v
   server.tool(
     "config_set",
     "Write ONE key in `~/.agentproto/config.json`, allowlisted against the " +
+      "key registry. A `models.<role>` write whose model id the catalog does " +
+      "not know still succeeds but returns `warnings`. Allowlist detail: " +
       "key registry (`config-schema.ts`'s `CONFIG_KEYS`): an unknown key or " +
       "one marked `writable: false` (a secret field, since wallet secrets " +
       "belong in auth profiles, or a daemon lockout field that could cut " +
