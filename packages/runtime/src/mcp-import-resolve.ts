@@ -83,6 +83,23 @@ function sameUpstream(a: DiscoveredMcp, b: DiscoveredMcp): boolean {
   return false
 }
 
+/** Upstream identity that secrets are bound to: http/sse = protocol+host+port
+ *  (a PATH change on the same origin is allowed); stdio = command + args. */
+function sameIdentity(a: DiscoveredMcp, b: DiscoveredMcp): boolean {
+  if (a.type !== b.type) return false
+  if (a.url || b.url) {
+    try {
+      return new URL(a.url ?? "").origin === new URL(b.url ?? "").origin
+    } catch {
+      return false
+    }
+  }
+  return (
+    a.command === b.command &&
+    JSON.stringify(a.args ?? []) === JSON.stringify(b.args ?? [])
+  )
+}
+
 /**
  * Files whose mtime signals that a `live` entry's source changed.
  * claude-code / cursor / codex → the harness's global config; workspace →
@@ -122,6 +139,7 @@ export async function resolveImportConnection(
   let base: DiscoveredMcp = entry.snapshot
   let stale: { reason: string } | undefined
   let origin: ImportedMcpOrigin | undefined
+  let upstreamChanged = false
 
   if (entry.resolve === "live") {
     let found: DiscoveredMcp | undefined
@@ -149,15 +167,8 @@ export async function resolveImportConnection(
     }
     if (found) {
       base = found
-      if (
-        entry.secretRefs &&
-        normUrl(found.url) !== normUrl(entry.snapshot.url) &&
-        !warnedOrigin.has(entry.id)
-      ) {
-        warnedOrigin.add(entry.id)
-        console.warn(
-          `[mcp-import] "${entry.alias}": live source now points at a different upstream than at import time; stored secrets are unchanged (re-import to rotate)`
-        )
+      if (entry.secretRefs && !sameIdentity(found, entry.snapshot)) {
+        upstreamChanged = true
       }
     } else {
       stale = { reason: "source-entry-missing" }
@@ -166,7 +177,27 @@ export async function resolveImportConnection(
 
   const config = { ...connectionOf(base) }
   const refs = entry.secretRefs
-  if (refs) {
+  if (refs && upstreamChanged) {
+    // Secrets are bound to the upstream they were imported for: never inject
+    // them into a re-pointed live entry. Drop the ref'd keys (and any marker).
+    const dropH = new Set(Object.keys(refs.headers ?? {}).map(k => k.toLowerCase()))
+    if (config.headers) {
+      config.headers = Object.fromEntries(
+        Object.entries(config.headers).filter(
+          ([k, v]) => !dropH.has(k.toLowerCase()) && v !== SECRET_REF_MARKER
+        )
+      )
+    }
+    if (config.env) {
+      const dropE = new Set(Object.keys(refs.env ?? {}))
+      config.env = Object.fromEntries(
+        Object.entries(config.env).filter(
+          ([k, v]) => !dropE.has(k) && v !== SECRET_REF_MARKER
+        )
+      )
+    }
+    stale = { reason: "upstream-changed" }
+  } else if (refs) {
     const unresolved: string[] = []
     const resolveOne = async (ref: string): Promise<string | undefined> => {
       try {
