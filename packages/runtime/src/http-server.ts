@@ -190,6 +190,7 @@ import type {
   TaskUpdateInput,
   TaskWriteResult,
 } from "./task-ledger.js"
+import { handleApprovals } from "./approvals/http.js"
 import type {
   DeclaredAdapterOption,
   AdapterAuthDescriptor,
@@ -787,12 +788,25 @@ export interface RuntimeHttpServerOptions {
    * `agentStepMcpServers` in sessions-registry-agent-host.ts). Composes with
    * `denyTools` (a name on both is excluded).
    */
+  /**
+   * `surface`, when present, is parsed from the request's `?surface=<name>`
+   * query string (see `handleMcp` below). Today's only value,
+   * `"approval-cards"`, is the ONLY way `approval_card_decide` and any
+   * `ui://agentproto/approval/<id>` card resource are ever registered — the
+   * plain root `/mcp` and every `callerSessionId`-carrying request (a
+   * daemon-spawned session, including agent-CLI sessions that don't honour
+   * `_meta.ui.visibility`) never get them, full stop. `handleMcp` refuses
+   * the request outright (403) when `callerSessionId` AND
+   * `surface=approval-cards` are both present, rather than silently
+   * degrading to a card-less server — see the security note there.
+   */
   mcpServerFactory: (
     denyTools?: ReadonlySet<string>,
     callerSessionId?: string,
     origin?: string,
     deferred?: boolean,
     allowTools?: ReadonlySet<string>,
+    surface?: string,
   ) => Promise<McpServer>
   /**
    * Optional scoped orchestrator sub-gateway (WP2). When BOTH this and
@@ -1054,6 +1068,19 @@ export interface RuntimeHttpServerOptions {
    *  surface is the `/mcp/orchestrator` gateway). Without it the routes
    *  404. */
   taskLedger?: TaskLedger
+  /** Optional — the approvals engine (`approvals/engine.ts`). When wired,
+   *  enables the `/approvals` routes — `POST /approvals`, `GET
+   *  /approvals?status=`, `GET /approvals/:id`, `GET /approvals/:id/wait`,
+   *  `POST /approvals/:id/consume`, and the `web_click` decision route
+   *  `POST /approvals/:id/decision` (gated by BOTH the per-boot token and
+   *  `approvalsWebOrigins`). HTTP callers are OPERATOR context, same as
+   *  `/tasks` and `/policies`. Without it the routes 404. */
+  approvals?: import("./approvals/engine.js").ApprovalsEngine
+  /** Origins allowed to decide through the `web_click` channel
+   *  (`approvals.webOrigins` in config). Empty/absent ⇒ the channel is off
+   *  — the decision route always 403s regardless of token. Only read when
+   *  `approvals` is wired. */
+  approvalsWebOrigins?: readonly string[]
   /** Optional — when wired, exposes /cron routes for creating and
    *  managing durable cron jobs. Without it the routes 404. */
   cronScheduler?: import("./cron-scheduler.js").CronScheduler
@@ -1686,6 +1713,15 @@ export async function startHttpServer(
     return raw && raw.length > 0 ? raw : undefined
   }
 
+  /** Mirrors `parseCallerSessionIdQuery` for the `surface` query param —
+   *  see `RuntimeHttpServerOptions.mcpServerFactory`'s doc on `surface`. */
+  function parseSurfaceQuery(url: string): string | undefined {
+    const qIdx = url.indexOf("?")
+    if (qIdx === -1) return undefined
+    const raw = new URLSearchParams(url.slice(qIdx + 1)).get("surface")
+    return raw && raw.length > 0 ? raw : undefined
+  }
+
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!authorizeMcp(req, res)) return
     const denyTools = parseToolListQuery(req.url ?? "", "denyTools")
@@ -1693,7 +1729,26 @@ export async function startHttpServer(
     const callerSessionId = parseCallerSessionIdQuery(req.url ?? "")
     const origin = parseOriginQuery(req.url ?? "")
     const deferred = parseDeferredQuery(req.url ?? "")
-    const server = await opts.mcpServerFactory(denyTools, callerSessionId, origin, deferred, allowTools)
+    const surface = parseSurfaceQuery(req.url ?? "")
+    // Security boundary (approval-cards): a daemon-spawned session's
+    // self-ref connection (`callerSessionId`) must NEVER reach the
+    // approval-cards surface — that surface exists only for a human-facing
+    // MCP Apps host (Claude Desktop via `install-mcp`), and an agent CLI
+    // that can read `ui://` resources and call app-only tools would
+    // otherwise mint its own approval ticket and self-approve. Refuse
+    // outright rather than silently building a card-less server, so a
+    // misconfigured spawn fails loudly instead of looking like it worked.
+    if (surface === "approval-cards" && callerSessionId) {
+      res.writeHead(403, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: "forbidden_surface",
+          message: "the approval-cards MCP surface is not available to daemon-spawned sessions",
+        }),
+      )
+      return
+    }
+    const server = await opts.mcpServerFactory(denyTools, callerSessionId, origin, deferred, allowTools, surface)
     await serveMcp(req, res, server)
   }
 
@@ -4038,6 +4093,30 @@ export async function startHttpServer(
         ) {
           if (guardBrowserOrigin(req, res)) return
           const handled = await handleTasks(req, res, path, opts.taskLedger)
+          if (handled) return
+        }
+
+        // Approvals routes — HTTP twins over the approvals engine
+        // (approvals/engine.ts): POST /approvals, GET /approvals?status=,
+        // GET /approvals/:id, GET /approvals/:id/wait, POST
+        // /approvals/:id/consume, plus the web_click decision route POST
+        // /approvals/:id/decision. HTTP callers are OPERATOR context, same
+        // split as /tasks and /policies. The decision route does NOT go
+        // through the general `guardBrowserOrigin` gate — it enforces its
+        // own, stricter Origin check against `approvalsWebOrigins` (a
+        // DIFFERENT allowlist than `daemon.allowedOrigins`), plus the
+        // per-boot token; applying both would reject an origin that's
+        // correctly listed in one but not the other.
+        if (
+          opts.approvals &&
+          (path === "/approvals" || path.startsWith("/approvals/"))
+        ) {
+          const isDecisionRoute = /^\/approvals\/[^/]+\/decision$/.test(path)
+          if (!isDecisionRoute && guardBrowserOrigin(req, res)) return
+          const handled = await handleApprovals(req, res, path, opts.approvals, {
+            ...(opts.token !== undefined ? { token: opts.token } : {}),
+            webOrigins: opts.approvalsWebOrigins ?? [],
+          })
           if (handled) return
         }
 

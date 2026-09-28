@@ -26,6 +26,7 @@ import type {
   PairingConfig,
   ProfileConfig,
   ProvenanceConfig,
+  ApprovalsConfig,
   SessionsConfig,
   SpawnConfig,
   TerminalPreset,
@@ -204,6 +205,10 @@ const provenanceConfigSchema: z.ZodType<ProvenanceConfig> = z
   .object({ wrapGh: z.boolean().optional() })
   .passthrough()
 
+const approvalsConfigSchema: z.ZodType<ApprovalsConfig> = z
+  .object({ webOrigins: z.array(z.string()).optional() })
+  .passthrough()
+
 const sessionsConfigSchema: z.ZodType<SessionsConfig> = z
   .object({
     attentionDelaySec: z.number().optional(),
@@ -292,6 +297,7 @@ export const agentprotoConfigSchema = z
     spawn: spawnConfigSchema.optional(),
     sessions: sessionsConfigSchema.optional(),
     provenance: provenanceConfigSchema.optional(),
+    approvals: approvalsConfigSchema.optional(),
     agentsMd: agentsMdConfigSchema.optional(),
     titler: titlerConfigSchema.optional(),
     profiles: z.record(z.string(), profileConfigSchema).optional(),
@@ -346,6 +352,7 @@ type ConfigTopLevelKey =
   | "spawn"
   | "sessions"
   | "provenance"
+  | "approvals"
   | "agentsMd"
   | "titler"
   | "profiles"
@@ -449,6 +456,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "daemon",
     label: "Allowed origins",
     help: "Trusted browser origins for mutating /sessions/* routes, in addition to the hardcoded localhost defaults. Lockout: a bad value can lock a browser UI out.",
+  },
+  {
+    path: "approvals.webOrigins",
+    schema: strArray,
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Approval web-click origins",
+    help: "Origins allowed to decide a pending approval via POST /approvals/:id/decision (web_click channel). Empty (default) turns the channel off entirely. A SEPARATE allowlist from daemon.allowedOrigins, which is not automatically trusted to decide approvals. Lockout: a bad value can lock the web decision UI out.",
+    default: [],
   },
   {
     path: "daemon.strictOrigins",

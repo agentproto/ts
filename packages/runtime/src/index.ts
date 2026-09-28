@@ -17,11 +17,11 @@
 
 import { sweepSessionBrowser } from "./browser-mount.js"
 import { randomUUID } from "node:crypto"
-import { existsSync } from "node:fs"
+import { existsSync, mkdtempSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { hostname, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { createMcpServer } from "@agentproto/mcp-server"
+import { createMcpServer, registerUiResource } from "@agentproto/mcp-server"
 import type { DoctypeSpec } from "@agentproto/manifest"
 
 import { writeRuntimeMeta } from "./agentproto-dir.js"
@@ -147,6 +147,10 @@ import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createPrProvenanceReconciler, type OpenPrResolver } from "./pr-provenance-reconciler.js"
 import { createActivityProjector, type PrStateResolver } from "./activities.js"
 import { createTaskLedger } from "./task-ledger.js"
+import { createApprovalsEngine, type ApprovalsEngine } from "./approvals/engine.js"
+import { registerApprovalTools } from "./approvals/tools.js"
+import { registerApprovalCardDecideTool } from "./approvals/card-tool.js"
+import { approvalCardResourceUri, renderApprovalCardHtml } from "./approvals/card.js"
 import { wireSupervisorNotify } from "./supervisor-notify.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler } from "./cron-scheduler.js"
@@ -2086,6 +2090,23 @@ export async function createGateway(
     ...(operatorWorkspaceSlug ? { operatorWorkspaceSlug } : {}),
   })
 
+  // Approvals engine (approvals/engine.ts) — the daemon's human-approval
+  // primitive on AIP-7 signatures (E1a). Always constructed (mirrors every
+  // other gateway-owned store): with `persist` off (test gateways), it's
+  // pointed at a throwaway tmp dir instead of skipping construction, so
+  // `~/.agentproto/approvals` is NEVER touched by a `persist:false`
+  // gateway — the same hermetic-tests guarantee `taskLedger` gets from its
+  // own `persist` switch, expressed here as a homeDir choice instead of an
+  // internal no-op flag (this module has no in-memory-only mode).
+  const approvalsHomeDir = persist
+    ? undefined
+    : mkdtempSync(join(tmpdir(), "agentproto-approvals-"))
+  const approvalsEngine: ApprovalsEngine = createApprovalsEngine({
+    sessionEvents,
+    ...(approvalsHomeDir ? { homeDir: approvalsHomeDir } : {}),
+    webOrigins: daemonConfig.approvals?.webOrigins ?? [],
+  })
+
   // Supervisor crash-notification (crash-detect PR-4). Opt-in per child
   // (`notifyParentOnCrash`) — delivers a `[child-crashed] …` notice into a
   // crashed child's live parent, without ever interrupting a busy one. See
@@ -2322,6 +2343,7 @@ export async function createGateway(
     origin?: string,
     deferredOverride?: boolean,
     allowTools?: ReadonlySet<string>,
+    surface?: string,
   ) => {
     const { server: rawServer } = await createMcpServer({
       specs: opts.specs,
@@ -2428,6 +2450,45 @@ export async function createGateway(
       registry: sessions,
       ...(callerSessionId ? { callerSessionId } : {}),
     })
+    // Approvals (E1a) — model-visible request/get/wait/consume are safe
+    // everywhere (they can request and consume, never decide) and register
+    // on every surface. `callerSessionId` mirrors `registerCommandTools`
+    // just above: a daemon-spawned session's self-ref connection carries
+    // one, so its requests are attributed to that session instead of
+    // falling back to the operator.
+    registerApprovalTools(server, {
+      engine: approvalsEngine,
+      ...(callerSessionId ? { callerSessionId } : {}),
+    })
+    // SECURITY BOUNDARY: `approval_card_decide` and every
+    // `ui://agentproto/approval/<id>` card resource are mounted ONLY on the
+    // dedicated `?surface=approval-cards` connection, and `handleMcp`
+    // (http-server.ts) already refuses that surface outright when a
+    // `callerSessionId` is present — the `!callerSessionId` check here is
+    // defense in depth for any other caller of this factory. Every other
+    // surface (root `/mcp`, any daemon-spawned session's self-ref
+    // connection) gets NEITHER: an agent CLI's model can typically
+    // `resources/read` and call app-only tools despite
+    // `_meta.ui.visibility: ["app"]` (most hosts don't honour it), so
+    // mounting the card there would let an agent mint its own ticket and
+    // self-approve. Only a human-facing MCP Apps host (Claude Desktop via
+    // `install-mcp --app`, configured to dial `/mcp?surface=approval-cards`)
+    // is meant to ever see this surface. Re-derived from the engine's own
+    // pending set on every build (this factory runs once per stateless
+    // `/mcp` connection — see the module docblock — so a resource
+    // registered inside a tool handler would vanish before the next
+    // connection could `resources/read` it).
+    if (surface === "approval-cards" && !callerSessionId) {
+      registerApprovalCardDecideTool(server, approvalsEngine)
+      for (const pending of approvalsEngine.list({ status: "pending" })) {
+        registerUiResource(server, {
+          name: `approval-${pending.id}`,
+          uri: approvalCardResourceUri(pending.id),
+          html: () => renderApprovalCardHtml(approvalsEngine, pending.id),
+          description: "Human approval card",
+        })
+      }
+    }
     // Remote-tunnel lifecycle. The controller is a singleton on the
     // gateway, so registering its tools per-request is just rebinding
     // the same closures — the underlying state lives in `remote`.
@@ -2933,6 +2994,8 @@ export async function createGateway(
     supervisor,
     activityProjector,
     taskLedger,
+    approvals: approvalsEngine,
+    approvalsWebOrigins: daemonConfig.approvals?.webOrigins ?? [],
     ...(workflowRunner ? { workflowRunner } : {}),
     appRegistry,
     performAppInstall: performInstall,
@@ -3291,6 +3354,8 @@ export async function createGateway(
       // Detach the task ledger's bus subscription + sync-flush tasks.json
       // (same debounce-then-flush contract as supervisor.shutdown()).
       taskLedger.dispose()
+      // Clear the approvals engine's pending `approval_wait` timers.
+      approvalsEngine.dispose()
       // Kill all live sessions before tearing down HTTP — otherwise
       // long-running children inherit the daemon's listening socket
       // and stay around as zombies after the parent exits.
