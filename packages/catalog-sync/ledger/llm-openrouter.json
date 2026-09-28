@@ -42,6 +42,8 @@
   "anthropic/claude-sonnet-4.6": "2026-02-17",
   "anthropic/claude-sonnet-4.6:batch": "2026-02-17",
   "anthropic/claude-sonnet-5": "2026-06-30",
+  "anthropic/claude-sonnet-5.5": "2026-09-28",
+  "anthropic/claude-sonnet-5.5:batch": "2026-09-28",
   "anthropic/claude-sonnet-5:batch": "2026-06-30",
   "arcee-ai/trinity-large-thinking": "2026-04-01",
   "baidu/ernie-4.5-vl-424b-a47b": "2025-06-30",

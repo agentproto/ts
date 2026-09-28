@@ -36,6 +36,7 @@ export const CONTEXT_WINDOWS: Record<string, ContextWindowEntry> = {
   "claude-sonnet-4-5-20250929": { contextWindow: 1000000, maxOutput: 64000, displayName: "Claude Sonnet 4.5", provider: "anthropic" },
   "claude-sonnet-4-6": { contextWindow: 1000000, maxOutput: 128000, displayName: "Claude Sonnet 4.6", provider: "anthropic" },
   "claude-sonnet-5": { contextWindow: 1000000, maxOutput: 128000, displayName: "Claude Sonnet 5", provider: "anthropic" },
+  "claude-sonnet-5-5": { contextWindow: 1000000, maxOutput: 128000, displayName: "Claude Sonnet 5.5", provider: "anthropic" },
   "codestral-2508": { contextWindow: 256000, provider: "mistral" },
   "codestral-embed": { contextWindow: 8192, provider: "mistral" },
   "codestral-embed-2505": { contextWindow: 8192, provider: "mistral" },
