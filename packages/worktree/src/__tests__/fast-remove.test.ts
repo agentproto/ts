@@ -124,6 +124,51 @@ describe("removeWorktreeFast", () => {
 		expect(dirs).toHaveLength(0)
 	}, 20_000)
 
+	it("renames a clean worktree holding only gitignored files (node_modules) to the trash — no slow removal", async () => {
+		const repoRoot = await makeRepo()
+		await writeFile(join(repoRoot, ".gitignore"), "node_modules/\n")
+		await execGit(repoRoot, ["add", ".gitignore"])
+		await execGit(repoRoot, ["commit", "-m", "ignore node_modules"])
+		const wtDir = await addWorktree(repoRoot, "ignored-only")
+		await mkdir(join(wtDir, "node_modules"), { recursive: true })
+		await writeFile(join(wtDir, "node_modules", "x"), "dep\n")
+		const { dirs, spawnRemoval } = spyRemoval()
+
+		await removeWorktreeFast(repoRoot, wtDir, { spawnRemoval })
+
+		expect(existsSync(wtDir)).toBe(false)
+		expect(await listWorktreePaths(repoRoot)).not.toContain(wtDir)
+		expect(dirs).toHaveLength(1)
+		expect(dirs[0]?.startsWith(join(repoRoot, "pool", WORKTREE_TRASH_DIRNAME))).toBe(true)
+		expect(await readFile(join(dirs[0] ?? "", "node_modules", "x"), "utf8")).toBe("dep\n")
+	}, 20_000)
+
+	it("refuses a worktree with an untracked, unignored file and leaves it intact", async () => {
+		const repoRoot = await makeRepo()
+		const wtDir = await addWorktree(repoRoot, "untracked")
+		await writeFile(join(wtDir, "new.txt"), "fresh\n")
+		const { dirs, spawnRemoval } = spyRemoval()
+
+		await expect(removeWorktreeFast(repoRoot, wtDir, { spawnRemoval })).rejects.toThrow(
+			/contains modified or untracked files/,
+		)
+		expect(existsSync(join(wtDir, "new.txt"))).toBe(true)
+		expect(await listWorktreePaths(repoRoot)).toContain(wtDir)
+		expect(dirs).toHaveLength(0)
+	}, 20_000)
+
+	it("refuses a locked worktree and leaves it registered", async () => {
+		const repoRoot = await makeRepo()
+		const wtDir = await addWorktree(repoRoot, "locked")
+		await execGit(repoRoot, ["worktree", "lock", wtDir])
+		const { dirs, spawnRemoval } = spyRemoval()
+
+		await expect(removeWorktreeFast(repoRoot, wtDir, { spawnRemoval })).rejects.toThrow(/locked/)
+		expect(existsSync(wtDir)).toBe(true)
+		expect(await listWorktreePaths(repoRoot)).toContain(wtDir)
+		expect(dirs).toHaveLength(0)
+	}, 20_000)
+
 	it("force removes a dirty tree whose dirt was authorized upstream", async () => {
 		const repoRoot = await makeRepo()
 		const wtDir = await addWorktree(repoRoot, "forced")

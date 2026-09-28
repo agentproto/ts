@@ -23,10 +23,12 @@
  *      even if a child is killed mid-delete.
  *
  * SAFETY — the plain/forced `git worktree remove` semantics this must not
- * weaken, verified empirically against git (see the brief):
- *   - A non-force removal must refuse a dirty tree: the caller passes
- *     `force: false` only for a tree already checked clean, and
- *     `removeWorktreeFast` re-checks `git status --porcelain` itself and
+ * weaken, verified empirically against git:
+ *   - Plain `git worktree remove` ACCEPTS gitignored files (`node_modules`,
+ *     `dist`) and refuses only modified/staged tracked files, unignored
+ *     untracked files, dirty submodules and locked worktrees. A non-force
+ *     `removeWorktreeFast` gates on `git status --porcelain
+ *     --ignore-submodules=none` (no `--ignored`) plus a locked check, and
  *     throws (leaving the worktree in place) rather than renaming dirt away.
  *   - A forced removal is only ever passed after a salvage snapshot or an
  *     explicit user-granted discard flag upstream — this module doesn't
@@ -62,7 +64,7 @@ function realOrResolved(path: string): string {
 export interface RemoveWorktreeFastOptions {
 	/**
 	 * `false` (default): re-verify the tree is clean via `git status
-	 * --porcelain` and refuse (throw) on any dirt — the same refusal a plain
+	 * --porcelain --ignore-submodules=none` and refuse (throw) on any dirt — the same refusal a plain
 	 * `git worktree remove` performs. `true`: skip the cleanliness gate,
 	 * exactly like `git worktree remove --force` — only pass this when dirt
 	 * has been authorized (salvage snapshot durable / discard flags granted)
@@ -95,33 +97,19 @@ export async function removeWorktreeFast(
 ): Promise<void> {
 	const force = options.force === true
 
-	// Safety gate (1): a non-force removal must refuse a dirty tree, exactly
-	// like `git worktree remove` without `--force`, whose arbiter is git's
-	// own refusal rules — so the gate re-derives git's verdict without
-	// mutating anything (there is no `worktree remove --dry-run` flag):
-	//
-	//   a. the registration check below;
-	//   b. `git status --porcelain=v2 --ignored=matching` in the worktree —
-	//      ANY output at all refuses. That one probe reproduces the exact
-	//      tolerance table git's non-force removal enforces, verified
-	//      empirically against this repo's own git: modified/staged/unignored
-	//      dirt (`1`/`2`/`?`/`u` records) refuses it, and — the case a
-	//      plain `--porcelain` cannot see — gitignored files refuse it too
-	//      (`!` records), which is why git's plain removal of a
-	//      gitignore-only tree errors out even though `status --porcelain`
-	//      reads empty;
-	//   c. submodule dirt: git plain-refuses a tree with modified submodule
-	//      content, which a `!`/`?`-free porcelain read would miss — a
-	//      read-only `worktree remove` probe catches that residual class,
-	//      and only that class, by its 128 exit with the dir still intact.
-	//
-	// A refused probe throws before anything moves; a passing one is the
-	// tree git itself certifies removable, which is the moment the rename
-	// is safe to be instant.
+	// Safety gate (1): a non-force removal must refuse exactly what plain
+	// `git worktree remove` refuses. Verified against git: it ACCEPTS
+	// gitignored files (`node_modules/`, `dist/` — present in every pnpm
+	// worktree) and refuses only modified/staged tracked files, unignored
+	// untracked files, and dirty submodules. That is precisely a non-empty
+	// `git status --porcelain --ignore-submodules=none` (NO `--ignored`), so
+	// that read is the gate: any output throws before anything moves. (A
+	// locked worktree is the other refusal class; gate (2) checks it from the
+	// `worktree list` it already reads.)
 	if (!force) {
 		const status = await execArgv(
 			"git",
-			["-C", path, "status", "--porcelain=v2", "--ignored=matching"],
+			["-C", path, "status", "--porcelain", "--ignore-submodules=none"],
 			repoRoot,
 		)
 		if (status.exitCode !== 0) {
@@ -130,20 +118,9 @@ export async function removeWorktreeFast(
 			)
 		}
 		if (status.stdout.trim().length > 0) {
-			const probe = await execArgv("git", ["-C", repoRoot, "worktree", "remove", path], repoRoot)
-			if (probe.exitCode !== 0) {
-				// Git's own refusal (the common case: real dirt). Nothing moved.
-				throw new Error(
-					`git worktree remove failed (exit ${probe.exitCode}): ${probe.stderr.trim() || probe.stdout.trim()}`,
-				)
-			}
-			// The status read saw dirt the removal tolerates (a gitignored path
-			// that a `.gitignore` in the worktree shadows differently than in
-			// the main repo, etc.) — git itself just removed the worktree, so
-			// there is nothing left to rename; fall back to the old path's
-			// final steps (branch handling stays the caller's).
-			await execGit(repoRoot, ["worktree", "prune"])
-			return
+			throw new Error(
+				`git worktree remove failed (exit 128): '${path}' contains modified or untracked files, use --force to delete it`,
+			)
 		}
 	}
 
@@ -157,21 +134,31 @@ export async function removeWorktreeFast(
 			`git worktree list failed (exit ${list.exitCode}): ${list.stderr.trim() || list.stdout.trim()}`,
 		)
 	}
-	const registered = new Set(
-		list.stdout
-			.split("\n")
-			.filter((line) => line.startsWith("worktree "))
-			.map((line) => line.slice("worktree ".length).trim()),
-	)
 	// git reports each worktree under its own realpath — a caller passing a
 	// symlinked spelling (macOS /tmp → /private/tmp, the default test/tmpdir
 	// shape on this host) would never string-match. Compare through realpath
 	// on BOTH sides (falling back to the literal path when realpath fails,
 	// e.g. a dangling registration); a genuinely-unregistered path still
 	// fails here, leaving everything untouched.
-	const registeredReal = new Set([...registered].map(realOrResolved))
-	if (!registeredReal.has(realOrResolved(path))) {
+	const target = realOrResolved(path)
+	let found = false
+	let locked = false
+	for (const block of list.stdout.split(/\n\s*\n/)) {
+		const lines = block.split("\n")
+		const head = lines.find((line) => line.startsWith("worktree "))
+		if (!head || realOrResolved(head.slice("worktree ".length).trim()) !== target) continue
+		found = true
+		locked = lines.some((line) => line === "locked" || line.startsWith("locked "))
+		break
+	}
+	if (!found) {
 		throw new Error(`not a linked worktree of ${repoRoot}: ${path}`)
+	}
+	// `git worktree prune` skips locked registrations, so renaming a locked
+	// worktree would leave git tracking a missing dir; plain removal refuses it
+	// too. Refuse before anything moves.
+	if (locked) {
+		throw new Error(`git worktree remove failed (exit 128): '${path}' is locked; unlock it first`)
 	}
 
 	// Fast path: rename to a same-volume trash dir (instant, even for
