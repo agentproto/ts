@@ -1,5 +1,13 @@
 # @agentproto/cli
 
+## 1.4.1
+
+### Patch Changes
+
+- Updated dependencies [d2df24b]
+  - @agentproto/model-catalog@0.11.3
+  - @agentproto/llm-endpoint@0.11.1
+
 ## 1.4.0
 
 ### Minor Changes

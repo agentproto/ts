@@ -1,5 +1,14 @@
 # @agentproto/runtime
 
+## 5.2.1
+
+### Patch Changes
+
+- Updated dependencies [d2df24b]
+  - @agentproto/model-catalog@0.11.3
+  - @agentproto/providers-store@0.3.21
+  - @agentproto/llm-endpoint@0.11.1
+
 ## 5.2.0
 
 ### Minor Changes

@@ -1,5 +1,12 @@
 # @agentproto/catalog-sync
 
+## 0.7.3
+
+### Patch Changes
+
+- Updated dependencies [d2df24b]
+  - @agentproto/model-catalog@0.11.3
+
 ## 0.7.2
 
 ### Patch Changes

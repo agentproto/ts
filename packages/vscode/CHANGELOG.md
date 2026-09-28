@@ -1,5 +1,11 @@
 # agentproto-vscode
 
+## 0.19.1
+
+### Patch Changes
+
+- @agentproto/runtime@5.2.1
+
 ## 0.19.0
 
 ### Minor Changes
