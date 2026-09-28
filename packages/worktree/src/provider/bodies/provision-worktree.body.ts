@@ -7,6 +7,8 @@ import { provisionWorktreeTool } from "../../tools/provision-worktree.tool.js"
 import { execGit, execShell } from "../../exec.js"
 import { expandGlob } from "../../glob.js"
 import { loadConfigFromBase } from "../../config.js"
+import { loadLocalWorktreeConfig, resolveLocalWriteFiles } from "../../local-config.js"
+import { cloneEntries } from "../../clone.js"
 import { runSetup, HookError } from "../../lifecycle.js"
 import { writeWorktreeMarker } from "../../provenance.js"
 
@@ -35,16 +37,26 @@ export const provisionWorktreeBuiltin = implementTool(
 
     // Declarative lifecycle config, read once from the base tree's committed
     // agentproto.json (never the working tree — see config.ts's SECURITY
-    // note). Gated on `runSetup` since that flag is the opt-out for the whole
-    // agentproto.json-driven lifecycle, not just the setup/teardown hooks.
-    // Loaded here (rather than at each call site) so every caller of this
-    // tool — the CLI's `worktree new` and the daemon's spawn-time provisioner
-    // alike — picks up a repo's declared `depsCmd`/`linkPaths` automatically,
-    // without duplicating the config-load-and-merge logic per call site. An
-    // explicit tool input still wins over the declarative default.
+    // note), and once more from the source checkout's LOCAL, host-owned
+    // `.agentproto/worktree.json` (never the working tree of the fresh
+    // worktree either — see local-config.ts's doc). Both gated on `runSetup`
+    // since that flag is the opt-out for the whole declarative lifecycle, not
+    // just the setup/teardown hooks. Loaded here (rather than at each call
+    // site) so every caller of this tool — the CLI's `worktree new` and the
+    // daemon's spawn-time provisioner alike — picks up a repo's declared
+    // defaults automatically, without duplicating the load-and-merge logic
+    // per call site. Precedence: explicit tool input > local worktree.json >
+    // committed agentproto.json.
     const config = input.runSetup !== false ? await loadConfigFromBase(input.repoRoot, base) : null
-    const linkPaths = input.linkPaths ?? config?.worktree?.linkPaths ?? []
-    const depsCmd = input.depsCmd ?? config?.worktree?.depsCmd
+    const localConfig =
+      input.runSetup !== false ? await loadLocalWorktreeConfig(input.repoRoot) : null
+    const linkPaths = input.linkPaths ?? localConfig?.linkPaths ?? config?.worktree?.linkPaths ?? []
+    const depsCmd = input.depsCmd ?? localConfig?.depsCmd ?? config?.worktree?.depsCmd
+    const copyGlobs = input.copyGlobs ?? localConfig?.copyGlobs ?? []
+    const cloneGlobs = input.cloneGlobs ?? localConfig?.cloneGlobs ?? []
+    // `copyGlobs`/`cloneGlobs`/`writeFiles` have no committed-agentproto.json
+    // equivalent, so their fallback chain stops at the local file.
+    const writeFiles = input.writeFiles ?? resolveLocalWriteFiles(localConfig?.writeFiles, input.slug)
 
     // Symlink gitignored, expensive-to-recreate trees from the host repo into
     // the worktree BEFORE depsCmd, so a workspace whose graph spans gitignored
@@ -62,7 +74,7 @@ export const provisionWorktreeBuiltin = implementTool(
 
     // Write generated, worktree-specific config BEFORE depsCmd, so a tool it
     // invokes (e.g. a package manager) sees it on first run.
-    for (const file of input.writeFiles ?? []) {
+    for (const file of writeFiles) {
       const dest = join(cwd, file.path)
       await mkdir(dirname(dest), { recursive: true })
       if (file.mode === "append") {
@@ -80,6 +92,24 @@ export const provisionWorktreeBuiltin = implementTool(
       }
     }
 
+    // Clone gitignored, expensive-to-recreate trees (e.g. node_modules) from
+    // the source checkout BEFORE depsCmd, same ordering reasoning as
+    // linkPaths/writeFiles above — except a clone is an independent,
+    // writable copy (copy-on-write where the filesystem supports it), not a
+    // symlink, so depsCmd can freely mutate it without touching the source
+    // checkout, and a subsequent install becomes a quick verify/repair
+    // rather than a full reinstall.
+    if (cloneGlobs.length > 0) {
+      try {
+        await cloneEntries(input.repoRoot, cwd, cloneGlobs)
+      } catch (err) {
+        throw new ToolError({
+          code: "execution_failed",
+          message: `cloneGlobs failed: ${err instanceof Error ? err.message : String(err)}`,
+        })
+      }
+    }
+
     if (depsCmd) {
       const result = await execShell(depsCmd, cwd)
       if (result.exitCode !== 0) {
@@ -90,7 +120,7 @@ export const provisionWorktreeBuiltin = implementTool(
       }
     }
 
-    for (const pattern of input.copyGlobs ?? []) {
+    for (const pattern of copyGlobs) {
       const matches = await expandGlob(input.repoRoot, pattern)
       for (const rel of matches) {
         const dest = join(cwd, rel)

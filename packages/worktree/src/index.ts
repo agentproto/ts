@@ -34,7 +34,8 @@ export {
 	WORKTREE_TRASH_DIRNAME,
 	type RemoveWorktreeFastOptions,
 } from "./fast-remove.js"
-export { expandGlob, globToRegExp } from "./glob.js"
+export { expandGlob, expandCloneGlob, globToRegExp, GlobTraversalError } from "./glob.js"
+export { cloneEntries } from "./clone.js"
 export {
   CONFIG_FILENAME,
   parseConfig,
@@ -48,6 +49,15 @@ export {
   type ScriptConfig,
   type NamedScript,
 } from "./config.js"
+export {
+  LOCAL_WORKTREE_CONFIG_REL,
+  parseLocalWorktreeConfig,
+  loadLocalWorktreeConfig,
+  applySlugPlaceholder,
+  resolveLocalWriteFiles,
+  type LocalWorktreeConfig,
+  type LocalWriteFileEntry,
+} from "./local-config.js"
 export {
   ENV_VARS,
   hookEnv,

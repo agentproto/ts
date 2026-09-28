@@ -417,6 +417,192 @@ describe("worktree.provision + worktree.cleanup (real git, disposable repo)", ()
     })
   })
 
+  it("clones cloneGlobs entries from the host repo into the worktree, before depsCmd, never as a symlink", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+
+    await mkdir(join(repoRoot, "node_modules", "dep"), { recursive: true })
+    await writeFile(join(repoRoot, "node_modules", "dep", "index.js"), "module.exports = 1\n")
+    await writeFile(join(repoRoot, ".gitignore"), "node_modules\n")
+
+    const provisioned = await runTool({
+      tool: provisionWorktreeTool,
+      candidates,
+      input: {
+        repoRoot,
+        base: "main",
+        slug: "with-clone",
+        cloneGlobs: ["node_modules"],
+        // Proves the clone exists BEFORE depsCmd: reads the cloned file.
+        depsCmd:
+          "node -e \"require('fs').writeFileSync('cloned.txt', require('fs').readFileSync('node_modules/dep/index.js','utf8'))\"",
+      },
+    })
+    cleanupPaths.push(provisioned.cwd)
+
+    const cloneStat = await lstat(join(provisioned.cwd, "node_modules"))
+    expect(cloneStat.isSymbolicLink()).toBe(false)
+    const seenByDeps = await readFile(join(provisioned.cwd, "cloned.txt"), "utf8")
+    expect(seenByDeps).toBe("module.exports = 1\n")
+
+    // The clone must be independent — mutating it in the worktree never
+    // touches the host repo's copy.
+    await writeFile(join(provisioned.cwd, "node_modules", "dep", "index.js"), "mutated\n")
+    const untouched = await readFile(join(repoRoot, "node_modules", "dep", "index.js"), "utf8")
+    expect(untouched).toBe("module.exports = 1\n")
+
+    await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: { repoRoot, cwd: provisioned.cwd, discardUntracked: true },
+    })
+  })
+
+  it("refuses a cloneGlobs pattern that escapes repoRoot, before touching the filesystem", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+    // Fails after `git worktree add` (traversal is only checked once
+    // cloneGlobs actually runs) — pin `dir` so the half-created worktree is
+    // still reachable for cleanup below.
+    const dir = join(await mkdtemp(join(tmpdir(), "wt-traversal-")), "wt")
+    cleanupPaths.push(dirname(dir))
+
+    await expect(
+      runTool({
+        tool: provisionWorktreeTool,
+        candidates,
+        input: { repoRoot, base: "main", slug: "traversal", dir, cloneGlobs: ["../escape"] },
+      }),
+    ).rejects.toThrow(/escapes the repo root|traversal/)
+  })
+
+  it("falls back to .agentproto/worktree.json's declarative depsCmd/linkPaths/cloneGlobs/copyGlobs/writeFiles, read straight off disk", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+
+    await mkdir(join(repoRoot, "node_modules"), { recursive: true })
+    await writeFile(join(repoRoot, "node_modules", "marker.js"), "cloned\n")
+    await mkdir(join(repoRoot, "sibling"), { recursive: true })
+    await writeFile(join(repoRoot, "sibling", "file.txt"), "linked\n")
+    await mkdir(join(repoRoot, "envs"), { recursive: true })
+    await writeFile(join(repoRoot, "envs", ".env.local"), "SECRET=1\n")
+
+    await mkdir(join(repoRoot, ".agentproto"), { recursive: true })
+    await writeFile(
+      join(repoRoot, ".agentproto", "worktree.json"),
+      JSON.stringify({
+        depsCmd: "node -e \"require('fs').writeFileSync('deps-ran.txt','from-local')\"",
+        linkPaths: ["sibling"],
+        cloneGlobs: ["node_modules"],
+        copyGlobs: ["envs/.env.local"],
+        writeFiles: [{ path: "generated-{slug}.cfg", content: "slug={slug}\n" }],
+      }),
+    )
+    // Deliberately NOT committed — proves the file is read straight off
+    // disk, not from any git ref.
+
+    const provisioned = await runTool({
+      tool: provisionWorktreeTool,
+      candidates,
+      input: { repoRoot, base: "main", slug: "local-cfg" },
+    })
+    cleanupPaths.push(provisioned.cwd)
+
+    const deps = await readFile(join(provisioned.cwd, "deps-ran.txt"), "utf8")
+    expect(deps).toBe("from-local")
+    const linkStat = await lstat(join(provisioned.cwd, "sibling"))
+    expect(linkStat.isSymbolicLink()).toBe(true)
+    const cloneStat = await lstat(join(provisioned.cwd, "node_modules"))
+    expect(cloneStat.isSymbolicLink()).toBe(false)
+    const copied = await readFile(join(provisioned.cwd, "envs", ".env.local"), "utf8")
+    expect(copied).toBe("SECRET=1\n")
+    const generated = await readFile(join(provisioned.cwd, "generated-local-cfg.cfg"), "utf8")
+    expect(generated).toBe("slug=local-cfg\n")
+
+    await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: { repoRoot, cwd: provisioned.cwd, discardUntracked: true },
+    })
+  })
+
+  it("precedence: an explicit tool input wins over .agentproto/worktree.json, which wins over committed agentproto.json", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+
+    await writeFile(
+      join(repoRoot, "agentproto.json"),
+      JSON.stringify({
+        worktree: { depsCmd: "node -e \"require('fs').writeFileSync('from.txt','committed')\"" },
+      }),
+    )
+    await execGit(repoRoot, ["add", "agentproto.json"])
+    await execGit(repoRoot, ["commit", "-m", "declare committed depsCmd"])
+
+    await mkdir(join(repoRoot, ".agentproto"), { recursive: true })
+    await writeFile(
+      join(repoRoot, ".agentproto", "worktree.json"),
+      JSON.stringify({ depsCmd: "node -e \"require('fs').writeFileSync('from.txt','local')\"" }),
+    )
+
+    // Local worktree.json beats the committed default.
+    const localWins = await runTool({
+      tool: provisionWorktreeTool,
+      candidates,
+      input: { repoRoot, base: "main", slug: "local-beats-committed" },
+    })
+    cleanupPaths.push(localWins.cwd)
+    expect(await readFile(join(localWins.cwd, "from.txt"), "utf8")).toBe("local")
+    await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: { repoRoot, cwd: localWins.cwd, discardUntracked: true },
+    })
+
+    // An explicit tool input beats both declarative defaults.
+    const inputWins = await runTool({
+      tool: provisionWorktreeTool,
+      candidates,
+      input: {
+        repoRoot,
+        base: "main",
+        slug: "input-beats-both",
+        depsCmd: "node -e \"require('fs').writeFileSync('from.txt','explicit')\"",
+      },
+    })
+    cleanupPaths.push(inputWins.cwd)
+    expect(await readFile(join(inputWins.cwd, "from.txt"), "utf8")).toBe("explicit")
+    await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: { repoRoot, cwd: inputWins.cwd, discardUntracked: true },
+    })
+  })
+
+  it("runSetup: false also skips the .agentproto/worktree.json fallback", async () => {
+    const repoRoot = await makeTempRepo()
+    cleanupPaths.push(repoRoot)
+    await mkdir(join(repoRoot, ".agentproto"), { recursive: true })
+    await writeFile(
+      join(repoRoot, ".agentproto", "worktree.json"),
+      JSON.stringify({ depsCmd: "node -e \"require('fs').writeFileSync('deps-ran.txt','x')\"" }),
+    )
+
+    const provisioned = await runTool({
+      tool: provisionWorktreeTool,
+      candidates,
+      input: { repoRoot, base: "main", slug: "no-setup-skips-local", runSetup: false },
+    })
+    cleanupPaths.push(provisioned.cwd)
+    await expect(access(join(provisioned.cwd, "deps-ran.txt"))).rejects.toThrow()
+
+    await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      input: { repoRoot, cwd: provisioned.cwd },
+    })
+  })
+
   it("archives a real linked git worktree — dir removed, branch deleted, worktree list clean", async () => {
     const repoRoot = await makeTempRepo()
     cleanupPaths.push(repoRoot)
