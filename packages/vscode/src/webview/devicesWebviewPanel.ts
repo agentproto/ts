@@ -321,7 +321,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .twist.open { transform: rotate(90deg); }
     .twist[hidden] { visibility: hidden; }
     .mid { flex: 1; min-width: 0; }
-    .name { font-weight: 600; font-size: 12.5px; display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+    .name { font-weight: 600; font-size: 12.5px; display: flex; gap: 6px; align-items: baseline; min-width: 0; flex-wrap: wrap; row-gap: 2px; }
     .name .chip { font-weight: 400; font-size: 10px; letter-spacing: .03em; color: var(--vscode-descriptionForeground, #9d9d9d); border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35)); border-radius: 4px; padding: 0 4px; white-space: nowrap; }
     .name .chip.host-scoped { color: var(--vscode-charts-purple, #b180d7); border-color: currentColor; }
     .name .chip.legacy { color: var(--vscode-editorWarning-foreground, #cca700); border-color: currentColor; }
