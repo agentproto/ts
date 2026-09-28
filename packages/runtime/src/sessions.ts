@@ -2312,6 +2312,13 @@ interface SessionRuntime {
   /** When this session last had a message steered into it — the R3 rate
    *  limit (`STEER_MIN_INTERVAL_MS`). In-memory only. */
   lastSteerAt?: number
+  /** Messages this session received that have since left its inbox (acked
+   *  by a wait, a turn, `inbox_ack`, or steered in), newest last, bounded
+   *  by `INBOX_CAP`. `findReceivedMessage` reads this before the transcript:
+   *  the `session-message` record goes through an async append stream, so a
+   *  reply issued right after the ack can beat it to disk. In-memory only —
+   *  after a restart the transcript is flushed and is the source. */
+  recentlyReceived?: SessionMessage[]
   autonomousTurn?: {
     /** Tool calls announced and not yet resulted — synthesized at close,
      *  and the silence-close fallback holds off while any are open. */
@@ -6774,8 +6781,15 @@ export function createSessionsRegistry(opts?: {
     }
     setInbox(rt, next)
   }
+  const rememberReceived = (rt: SessionRuntime, msgs: readonly SessionMessage[]): void => {
+    if (!msgs.length) return
+    const ids = new Set(msgs.map(m => m.id))
+    const next = [...(rt.recentlyReceived ?? []).filter(m => !ids.has(m.id)), ...msgs]
+    rt.recentlyReceived = next.length > INBOX_CAP ? next.slice(-INBOX_CAP) : next
+  }
   const removeFromInbox = (rt: SessionRuntime, ids: ReadonlySet<string>): void => {
     if (!rt.desc.inbox?.some(m => ids.has(m.id))) return
+    rememberReceived(rt, rt.desc.inbox.filter(m => ids.has(m.id)))
     setInbox(rt, rt.desc.inbox.filter(m => !ids.has(m.id)))
   }
   const dropQueuedEnvelopes = (rt: SessionRuntime, ids: ReadonlySet<string>): void => {
@@ -6843,6 +6857,7 @@ export function createSessionsRegistry(opts?: {
     }
     recordSent(stamped)
     transcriptWriter.recordSessionMessage?.(rt.desc.id, stamped)
+    rememberReceived(rt, [stamped])
     emitSessionMessage(stamped)
     appendLine(rt, `[message] ${stamped.id} from ${stamped.from.relation} steered into the running turn`, "stdout")
     return true
@@ -9069,6 +9084,10 @@ export function createSessionsRegistry(opts?: {
       if (!rt) return undefined
       const inInbox = rt.desc.inbox?.find(m => m.id === messageId)
       if (inInbox) return inInbox
+      // Consumed this daemon lifetime: its transcript record may still be
+      // in the append stream's buffer, not on disk yet.
+      const recent = rt.recentlyReceived?.find(m => m.id === messageId)
+      if (recent) return recent
       let raw: string
       try {
         raw = readFileSync(sessionEventsPath(id, transcriptBaseDir), "utf8")
