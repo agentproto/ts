@@ -188,6 +188,7 @@ import { policyWatchesSession } from "./supervisor.js"
 import type { CompletionPolicySupervisor, AttachPolicyInput, GateSpec } from "./supervisor.js"
 import { parseTaskStatus } from "./task-ledger.js"
 import type {
+  TaskArtifactLink,
   TaskCaller,
   TaskCreateInput,
   TaskLedger,
@@ -8601,6 +8602,18 @@ function isStringRecord(value: unknown): value is Record<string, string> {
   )
 }
 
+/** Structural narrow for a `TaskArtifactLink` arriving over REST — mirrors
+ *  `task-tools.ts`'s `taskArtifactLinkSchema` union. */
+function isTaskArtifactLink(value: unknown): value is TaskArtifactLink {
+  if (!isJsonRecord(value)) return false
+  if ("approvalId" in value) return typeof value.approvalId === "string"
+  return (
+    typeof value.sessionId === "string" &&
+    typeof value.key === "string" &&
+    typeof value.sha256 === "string"
+  )
+}
+
 async function handleTasks(
   req: IncomingMessage,
   res: ServerResponse,
@@ -8719,6 +8732,25 @@ async function handleTasks(
       typeof b.evidence.policyId === "string"
         ? { policyId: b.evidence.policyId }
         : undefined
+    if (
+      b.approvalIds !== undefined &&
+      !(Array.isArray(b.approvalIds) && b.approvalIds.every(t => typeof t === "string"))
+    ) {
+      json(400, { error: "invalid_approval_ids", message: "`approvalIds` must be an array of strings" })
+      return true
+    }
+    if (
+      b.artifacts !== undefined &&
+      !(Array.isArray(b.artifacts) && b.artifacts.every(isTaskArtifactLink))
+    ) {
+      json(400, {
+        error: "invalid_artifacts",
+        message: "`artifacts` must be an array of { sessionId, key, sha256 } or { approvalId }",
+      })
+      return true
+    }
+    const approvalIds = b.approvalIds as string[] | undefined
+    const artifacts = b.artifacts as TaskArtifactLink[] | undefined
     const input: TaskUpdateInput = {
       taskId,
       rev: b.rev,
@@ -8731,6 +8763,8 @@ async function handleTasks(
       ...(typeof b.owner === "string" || b.owner === null ? { owner: b.owner } : {}),
       ...(evidence !== undefined ? { evidence } : {}),
       ...(typeof b.note === "string" ? { note: b.note } : {}),
+      ...(approvalIds !== undefined ? { approvalIds } : {}),
+      ...(artifacts !== undefined ? { artifacts } : {}),
     }
     writeResult(ledger.update(input, caller))
     return true
