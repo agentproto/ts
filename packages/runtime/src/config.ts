@@ -356,6 +356,18 @@ export interface SentinelConfig {
 }
 
 /**
+ * Review-primitive host policy (`@agentproto/review` + `review-runner.ts`).
+ */
+export interface ReviewConfig {
+  /** The owner identity attestation signatures claim (`attestor.signature.
+   *  principal`) — see `review-signing.ts`'s `resolvePrincipal`. When unset,
+   *  the daemon falls back to `git config user.email` of the reviewed repo,
+   *  then a host-derived value; this never blocks signing, it only lets an
+   *  operator pin one identity across every repo the daemon reviews. */
+  principal?: string
+}
+
+/**
  * Session-presence policy — how the dashboard triages a session into its
  * `running` / `tending` / `attention` / `quiet` presence state (see
  * `session-presence.ts`). Optional block on `AgentprotoConfig.sessions`.
@@ -542,6 +554,8 @@ export interface AgentprotoConfig {
   provenance?: ProvenanceConfig
   /** Sentinel auto-link policy. See {@link SentinelConfig}. */
   sentinel?: SentinelConfig
+  /** Review-primitive host policy. See {@link ReviewConfig}. */
+  review?: ReviewConfig
   /** Daemon-side AGENTS.md resolution/injection policy. See {@link AgentsMdConfig}. */
   agentsMd?: AgentsMdConfig
   /** Daemon-side session titler (`session-titler.ts`). DEFAULT OFF — when

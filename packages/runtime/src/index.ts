@@ -315,7 +315,21 @@ export type {
   ReviewerRunResult,
   ReviewerSessionHost,
   CreateReviewRunnerOptions,
+  ReviewComposeContext,
 } from "./review-runner.js"
+export {
+  allowedSignersLine,
+  defaultReviewKeysDir,
+  ensureReviewSigningKey,
+  fileExists,
+  resolvePrincipal,
+  signAttestation,
+  verifySignedAttestation,
+  SIGN_NAMESPACE,
+} from "./review-signing.js"
+export type { ReviewSignature, ReviewSigningKey, VerifySignedAttestationResult } from "./review-signing.js"
+export { composedFromRangeSha, findComposeCandidate } from "./review-compose.js"
+export type { ComposeCandidate, FindComposeCandidateInput } from "./review-compose.js"
 export { createReviewLedger, defaultReviewLedgerRoot, repoSlug, withPr, withPrStatus } from "./review-ledger.js"
 export type {
   ReviewLedger,
@@ -2020,6 +2034,12 @@ export async function createGateway(
       persist ? {} : { root: join(tmpdir(), `agentproto-reviews-${process.pid}-${randomUUID()}`) },
     ),
     daemonId: `agentproto-runtime@${hostname()}:${port}`,
+    // A test gateway (`persist: false`) signs with a throwaway keypair, same
+    // as its ledger — never the real `~/.agentproto/keys`.
+    ...(persist
+      ? {}
+      : { signingKeysDir: join(tmpdir(), `agentproto-review-keys-${process.pid}-${randomUUID()}`) }),
+    ...(daemonConfig.review?.principal ? { signingPrincipal: daemonConfig.review.principal } : {}),
     // Display-only settle notice (Goal A item 4, review-session-panel step):
     // a daemon-authored `notice` in the requester's own transcript, never a
     // prompt/inbox delivery — see `SessionsRegistry.recordNotice`'s doc for

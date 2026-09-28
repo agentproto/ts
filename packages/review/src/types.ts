@@ -55,6 +55,20 @@ export interface LaneResult {
   /** Agent lanes: the model the reviewer session ran on, when the host knows
    *  it (the session record's active model). Omitted when unknown. */
   model?: string
+  /** Agent lanes only: set when this lane reused a prior PASSING attestation
+   *  and reviewed only the delta on top of it, instead of the full range —
+   *  see "attestation composition" in the package doc. `rangeSha` is the
+   *  PRIOR attestation's own ledger-key rangeSha (`baseSha..headSha` of that
+   *  prior run — same `baseSha` as this one, since composition requires it);
+   *  `headSha` is that prior attestation's head (the delta this lane
+   *  actually reviewed is `headSha..<this run's head>`); `attestationSha256`
+   *  pins the exact prior attestation reused, so a verifier can resolve it
+   *  and confirm it wasn't swapped for a different one after the fact. */
+  composedFrom?: {
+    rangeSha: string
+    headSha: string
+    attestationSha256: string
+  }
 }
 
 /** The folded review verdict.
@@ -91,6 +105,28 @@ export interface Attestor {
   daemon: string
   /** Harness presets the agent lanes ran under, deduplicated. */
   presets: string[]
+  /** Ed25519 signature over the canonical JSON of the attestation with THIS
+   *  field absent (see `canonicalAttestationBytes`) — only the daemon signs;
+   *  owner/session/model/presets stay claims inside the payload, never
+   *  signers. Additive and optional: an attestation the signing daemon
+   *  couldn't sign (no `ssh-keygen`, an unreadable key) is written unsigned
+   *  rather than failing the review, and a v1 verifier that ignores this
+   *  field stays correct either way. */
+  signature?: {
+    alg: "ssh-ed25519"
+    /** `ssh-keygen -lf` fingerprint of the signing key (`SHA256:...`). */
+    keyFingerprint: string
+    /** The owner identity claimed — checked against an allowed_signers
+     *  file's principal column at verify time. This is a CLAIM inside the
+     *  signed payload's envelope, not itself authenticated by the
+     *  signature; the daemon's key is what's authenticated, principal is
+     *  what it vouches for. */
+    principal: string
+    /** ISO timestamp the signature was produced. */
+    signedAt: string
+    /** Armored `ssh-keygen -Y sign -n agentproto-review` SSHSIG output. */
+    sig: string
+  }
 }
 
 /** Who asked for the review. Informational provenance — it names the

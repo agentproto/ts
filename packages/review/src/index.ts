@@ -65,11 +65,14 @@ export {
   rangeSha,
   sha256Hex,
   ledgerKeyOf,
+  canonicalAttestationBytes,
+  attestationSha256,
   type BuildAttestationInput,
   type LedgerKey,
   type VerifyAttestationExpect,
   type VerifyAttestationResult,
 } from "./attestation.js"
+export { canonicalJson } from "./canonical-json.js"
 export {
   ATTESTATION_SCHEMA,
   type Attestation,

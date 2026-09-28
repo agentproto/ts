@@ -8,6 +8,7 @@
  */
 
 import { createHash } from "node:crypto"
+import { canonicalJson } from "./canonical-json.js"
 import {
   ATTESTATION_SCHEMA,
   type Attestation,
@@ -87,6 +88,26 @@ export function buildAttestation(input: BuildAttestationInput): Attestation {
     ...(input.pr ? { pr: { ...input.pr } } : {}),
     createdAt: input.createdAt ?? new Date().toISOString(),
   }
+}
+
+/**
+ * The exact bytes a signature covers: canonical JSON of the attestation with
+ * `attestor.signature` stripped. Recomputed at verify time from whatever the
+ * verifier has in hand — tampering with ANY other field (verdict, a lane, the
+ * claimed principal, …) changes these bytes and so breaks the signature.
+ */
+export function canonicalAttestationBytes(att: Attestation): string {
+  const { signature: _signature, ...attestorRest } = att.attestor
+  return canonicalJson({ ...att, attestor: attestorRest })
+}
+
+/** sha256 of the full attestation (canonical JSON, signature included if
+ *  present) — identifies exactly this attestation object. Used by
+ *  `LaneResult.composedFrom.attestationSha256` to pin which prior
+ *  attestation a delta re-review built on, so a verifier can resolve it (by
+ *  its ledger key / export file) and confirm it wasn't swapped afterward. */
+export function attestationSha256(att: Attestation): string {
+  return sha256Hex(canonicalJson(att))
 }
 
 export interface VerifyAttestationExpect {
