@@ -14,6 +14,12 @@
  *   3. `--ci github`: `.github/workflows/review.yml`, a shim that runs the
  *      `ci` binding's lanes headless on `pull_request` and verifies an
  *      exported attestation when the repo exports them.
+ *   4. `--pack <ref> [--as <ns>]`: adds a `uses: [{pack: <ref>, as: <ns>}]`
+ *      entry to REVIEW.md (creating it first if absent). `--as` defaults to
+ *      a slug derived from `<ref>`. Idempotent by `pack` value — a second
+ *      `--pack` with the same ref is a no-op regardless of `--as`. Edits the
+ *      frontmatter textually, never a full YAML re-serialization, so a
+ *      hand-authored REVIEW.md's comments and formatting survive.
  *
  * Idempotent: every step compares before it writes, and a second run
  * reports "already initialized — nothing to do".
@@ -24,6 +30,7 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 import { parseArgs } from "node:util"
+import matter from "gray-matter"
 
 export const HOOK_SCRIPT = "agentproto-review-pre-push"
 export const BLOCK_START = "# >>> agentproto review >>>"
@@ -142,6 +149,52 @@ export function reviewTemplate(opts: { id: string; base: string; command: string
     "(a lane couldn't run — not a rejection).",
     "",
   ].join("\n")
+}
+
+/** Default `as` namespace for a `--pack <ref>` with no `--as`: the ref's
+ *  last path segment, an npm scope/`review-pack-` prefix stripped, and a
+ *  `git+...#sha` reduced to its repo name. `@agentproto/review-pack-core`
+ *  → `core`; `./packs/security-extra` → `security-extra`. */
+export function defaultPackNamespace(ref: string): string {
+  let name = ref
+  if (name.startsWith("git+")) {
+    name = name.slice("git+".length).split("#")[0]!.replace(/\.git$/, "")
+  }
+  name = name.split("/").filter(Boolean).pop() ?? name
+  name = name.replace(/^review-pack-/, "")
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+  return slug || "pack"
+}
+
+/**
+ * Add a `uses[]` entry for `entry.pack` to a REVIEW.md source string —
+ * idempotent by `pack` value (a second call with the same ref is a no-op,
+ * regardless of `as`). Edits the frontmatter TEXTUALLY (never a full
+ * YAML re-serialization) so a hand-authored REVIEW.md's comments and
+ * formatting survive untouched — gray-matter's `data` is only read here, to
+ * decide idempotency, never written back wholesale.
+ */
+export function addUsesEntry(source: string, entry: { pack: string; as: string }): { source: string; changed: boolean } {
+  const parsed = matter(source)
+  const existingUses = Array.isArray(parsed.data["uses"]) ? (parsed.data["uses"] as Array<{ pack?: unknown }>) : []
+  if (existingUses.some((u) => u && u.pack === entry.pack)) {
+    return { source, changed: false }
+  }
+  const fmMatch = source.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+  if (!fmMatch) throw new Error("addUsesEntry: REVIEW.md has no frontmatter block")
+  const fmText = fmMatch[1]!
+  const usesItem = `  - pack: ${JSON.stringify(entry.pack)}\n    as: ${entry.as}`
+  let newFmText: string
+  if (/^uses:\s*$/m.test(fmText)) {
+    newFmText = fmText.replace(/^uses:\s*$/m, `uses:\n${usesItem}`)
+  } else {
+    // No uses: key yet — declare it right after `kind: review`.
+    newFmText = fmText.replace(/^(kind:\s*review\s*)$/m, `$1\nuses:\n${usesItem}`)
+  }
+  return { source: source.replace(fmText, newFmText), changed: true }
 }
 
 export function workflowTemplate(pm: PackageManager, opts: { allowedSigners?: boolean } = {}): string {
@@ -304,28 +357,44 @@ export interface ReviewInitResult {
   warnings: string[]
 }
 
-export async function reviewInit(opts: { cwd: string; ci?: "github" }): Promise<ReviewInitResult> {
+export async function reviewInit(opts: { cwd: string; ci?: "github"; pack?: string; packAs?: string }): Promise<ReviewInitResult> {
   const root = await git(opts.cwd, ["rev-parse", "--show-toplevel"])
   const steps: StepResult[] = []
   const warnings: string[] = []
 
   const reviewPath = join(root, "REVIEW.md")
   const existingReview = await readMaybe(reviewPath)
-  if (existingReview === undefined) {
+  const isNewReview = existingReview === undefined
+  let content: string
+  if (isNewReview) {
     const { pm, hasTest } = await detectPackageManager(root)
     const defaultBranch = await git(root, ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]).catch(
       () => "origin/main",
     )
-    await writeFile(
-      reviewPath,
-      reviewTemplate({
-        id: reviewId(root),
-        base: defaultBranch || "origin/main",
-        command: pm && hasTest ? `${pm} test` : "git diff --check {base} HEAD",
-        ci: opts.ci === "github",
-      }),
-    )
+    content = reviewTemplate({
+      id: reviewId(root),
+      base: defaultBranch || "origin/main",
+      command: pm && hasTest ? `${pm} test` : "git diff --check {base} HEAD",
+      ci: opts.ci === "github",
+    })
+  } else {
+    content = existingReview
+  }
+
+  let usesChanged = false
+  if (opts.pack) {
+    const as = opts.packAs ?? defaultPackNamespace(opts.pack)
+    const added = addUsesEntry(content, { pack: opts.pack, as })
+    content = added.source
+    usesChanged = added.changed
+  }
+
+  if (isNewReview) {
+    await writeFile(reviewPath, content)
     steps.push({ path: reviewPath, action: "created" })
+  } else if (usesChanged) {
+    await writeFile(reviewPath, content)
+    steps.push({ path: reviewPath, action: "updated", note: `added uses[] entry for '${opts.pack}'` })
   } else {
     steps.push({ path: reviewPath, action: "unchanged", note: "exists — left as is" })
     if (!/^\s{2}local:/m.test(existingReview)) warnings.push("REVIEW.md declares no `local` binding — the pre-push hook runs `--binding local`")
@@ -359,6 +428,8 @@ export async function runReviewInit(args: readonly string[]): Promise<number> {
     options: {
       cwd: { type: "string" },
       ci: { type: "string" },
+      pack: { type: "string" },
+      as: { type: "string" },
       json: { type: "boolean" },
     },
   })
@@ -366,9 +437,15 @@ export async function runReviewInit(args: readonly string[]): Promise<number> {
     process.stderr.write(`agentproto review init: --ci only supports 'github'\n`)
     return 64
   }
+  if (values.as !== undefined && !values.pack) {
+    process.stderr.write(`agentproto review init: --as needs --pack\n`)
+    return 64
+  }
   const result = await reviewInit({
     cwd: resolve(values.cwd ?? process.cwd()),
     ...(values.ci === "github" ? { ci: "github" as const } : {}),
+    ...(values.pack !== undefined ? { pack: values.pack } : {}),
+    ...(values.as !== undefined ? { packAs: values.as } : {}),
   })
   if (values.json) {
     process.stdout.write(`${JSON.stringify(result)}\n`)

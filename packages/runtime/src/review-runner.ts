@@ -50,11 +50,13 @@ import {
   parseReviewManifest,
   rangeSha,
   resolveBinding,
+  resolvePacks,
   sha256Hex,
   type AgentCheck,
   type Attestation,
   type LaneOutcome,
   type LaneResult,
+  type PackDigest,
   type ReviewLaneExecutor,
   type ReviewOutcome,
   type ReviewPrRef,
@@ -65,6 +67,7 @@ import {
 import { compileWorkflow, runWorkflow } from "@agentproto/workflow-runtime"
 import { repoSlug, withPr, type LedgerEntry, type ReviewLedger } from "./review-ledger.js"
 import { composedFromRangeSha, findComposeCandidate } from "./review-compose.js"
+import { createReviewPackLoader } from "./review-pack-loader.js"
 import { resolvePrincipal, signAttestation } from "./review-signing.js"
 
 // ── git ──────────────────────────────────────────────────────────────
@@ -232,6 +235,10 @@ export interface ReviewComposeContext {
   manifestSha: string
   binding: string
   rubrics: RubricDigest[]
+  /** `as` → this run's resolved pack digest — a lane whose check came from
+   *  a `uses[]` pack additionally requires the candidate to carry an
+   *  identical digest for that pack (see `review-compose.ts`). */
+  packByNamespace?: Record<string, PackDigest>
 }
 
 export interface ReviewLaneExecutorContext {
@@ -256,7 +263,7 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
         error: "agent lanes are not available on this daemon (started without an agent adapter resolver)",
       }
     }
-    const rubricPath = resolve(dirname(ctx.manifestPath), check.rubric)
+    const rubricPath = resolve(check.rubricBase ?? dirname(ctx.manifestPath), check.rubric)
     try {
       await readFile(rubricPath)
     } catch {
@@ -270,6 +277,10 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
     let composedFrom: LaneResult["composedFrom"] | undefined
     if (ctx.compose?.enabled) {
       const rubric = ctx.compose.rubrics.find((r) => r.check === check.id)
+      // A namespaced check id (`<as>/<id>`) came from a uses[] pack — pin
+      // composition to an identical pack digest too, not just the rubric.
+      const namespace = check.id.includes("/") ? check.id.slice(0, check.id.indexOf("/")) : undefined
+      const packDigest = namespace ? ctx.compose.packByNamespace?.[namespace] : undefined
       const candidate = rubric
         ? await findComposeCandidate({
             ledger: ctx.compose.ledger,
@@ -279,6 +290,7 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
             binding: ctx.compose.binding,
             checkId: check.id,
             rubricSha256: rubric.sha256,
+            ...(packDigest ? { packDigest: { id: packDigest.id, sha256: packDigest.sha256 } } : {}),
             baseSha: target.baseSha,
             headSha: target.headSha,
           })
@@ -294,7 +306,9 @@ export function createReviewLaneExecutor(ctx: ReviewLaneExecutorContext): Review
       }
     }
 
-    const verdictPath = join(ctx.runDir, `${check.id}.verdict.json`)
+    // A pack-derived check id is namespaced (`<as>/<id>`) — flatten it for
+    // the filename rather than creating a subdirectory under runDir.
+    const verdictPath = join(ctx.runDir, `${check.id.replace(/\//g, "__")}.verdict.json`)
     await mkdir(ctx.runDir, { recursive: true })
     await rm(verdictPath, { force: true })
     const result = await ctx.reviewers.run({
@@ -542,7 +556,9 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
     const source = await readFile(manifestPath, "utf8").catch(() => {
       throw new Error(`no REVIEW.md at ${manifestPath}`)
     })
-    const manifest = parseReviewManifest(source)
+    const parsed = parseReviewManifest(source)
+    const packLoader = createReviewPackLoader({ repoRoot: root, manifestDir: dirname(manifestPath) })
+    const { manifest, packs: packDigests, packByNamespace } = await resolvePacks(parsed, packLoader)
     const binding = resolveBinding(manifest, input.binding)
     run.reviewId = manifest.id
     run.binding = binding.name
@@ -566,7 +582,7 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
     for (const id of binding.checks) {
       const check = manifest.checks.find((c) => c.id === id)
       if (check?.kind !== "agent") continue
-      const path = resolve(dirname(manifestPath), check.rubric)
+      const path = resolve(check.rubricBase ?? dirname(manifestPath), check.rubric)
       const bytes = await readFile(path).catch(() => undefined)
       if (bytes) rubrics.push({ check: check.id, path: check.rubric, sha256: sha256Hex(bytes) })
     }
@@ -579,6 +595,7 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
         const hit = await ledger.lookupCached(
           { repoRemote, manifestSha: mSha, binding: binding.name, rangeSha: rangeSha({ baseSha, headSha: headNow }) },
           rubrics,
+          packDigests,
         )
         if (hit) {
           run.attestation = hit.attestation
@@ -615,7 +632,7 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
         runDir,
         ...(opts.reviewers ? { reviewers: opts.reviewers } : {}),
         ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
-        compose: { enabled: composeEnabled, ledger, manifestSha: mSha, binding: binding.name, rubrics },
+        compose: { enabled: composeEnabled, ledger, manifestSha: mSha, binding: binding.name, rubrics, packByNamespace },
       }),
       onLaneSettled: (lane) => {
         run.lanes = [...run.lanes, lane]
@@ -647,6 +664,7 @@ export function createReviewRunner(opts: CreateReviewRunnerOptions): ReviewRunne
       lanes: outcome.lanes,
       attestor: { daemon: daemonId, presets: outcome.lanes.flatMap((l) => (l.preset ? [l.preset] : [])) },
       rubrics,
+      packs: packDigests,
       dirty,
       requester,
       ...(input.pr ? { pr: input.pr } : {}),
