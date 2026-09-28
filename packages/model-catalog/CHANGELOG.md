@@ -1,5 +1,11 @@
 # @agentproto/model-catalog
 
+## 0.11.3
+
+### Patch Changes
+
+- d2df24b: Sync generated catalog data from the pinned provider sources.
+
 ## 0.11.2
 
 ### Patch Changes
