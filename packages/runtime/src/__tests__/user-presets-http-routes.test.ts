@@ -23,6 +23,7 @@ import { startHttpServer } from "../http-server.js"
 import { createRuntimeEvents } from "../events.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
+import type { SessionDescriptor, SessionsRegistry } from "../sessions.js"
 
 interface UserPresetShape {
   id: string
@@ -31,6 +32,15 @@ interface UserPresetShape {
   model?: string
   cwd?: string
   skills?: string[]
+  lastUsedAt?: string
+}
+
+interface RecentSpawnConfigShape {
+  adapter?: string
+  model?: string
+  profileRef?: string
+  cwd?: string
+  recent: true
 }
 
 describe("user-preset (favorite) authoring — REST routes", () => {
@@ -51,12 +61,14 @@ describe("user-preset (favorite) authoring — REST routes", () => {
   async function withServer(
     fn: (base: string) => Promise<void>,
     token?: string,
+    sessions?: SessionsRegistry,
   ): Promise<void> {
     const port = await freePort()
     const http = await startHttpServer({
       port,
       auth: { mode: "none" },
       ...(token ? { token } : {}),
+      ...(sessions ? { sessions } : {}),
       mcpServerFactory: async () =>
         (await createMcpServer({ specs: [], name: "main", version: "0" })).server,
       conversations: noopConversations(),
@@ -195,6 +207,41 @@ describe("user-preset (favorite) authoring — REST routes", () => {
       const getRes = await fetch(`${base}/user-presets`)
       expect(getRes.status).toBe(200)
     }, TOKEN)
+  })
+
+  it("GET /user-presets?includeRecent=1 adds a `recent` list derived from session history; omitted without the flag", async () => {
+    const sessions = {
+      list: () => [
+        {
+          id: "sess-1",
+          kind: "agent-cli",
+          workspaceSlug: "default",
+          command: "claude (agent)",
+          pid: 4242,
+          status: "running",
+          startedAt: "2026-07-23T00:00:00Z",
+          harness: "hermes",
+          model: "deepseek",
+          cwd: "/tmp/a",
+        } satisfies SessionDescriptor,
+      ],
+    } as unknown as SessionsRegistry
+
+    await withServer(async base => {
+      const withoutFlag = (await (await fetch(`${base}/user-presets`)).json()) as {
+        presets: UserPresetShape[]
+        recent?: RecentSpawnConfigShape[]
+      }
+      expect(withoutFlag.recent).toBeUndefined()
+
+      const withFlag = (await (await fetch(`${base}/user-presets?includeRecent=1`)).json()) as {
+        presets: UserPresetShape[]
+        recent?: RecentSpawnConfigShape[]
+      }
+      expect(withFlag.recent).toEqual([
+        { adapter: "hermes", model: "deepseek", cwd: "/tmp/a", recent: true },
+      ])
+    }, undefined, sessions)
   })
 })
 

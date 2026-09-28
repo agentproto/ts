@@ -18,6 +18,7 @@ import type {
   SessionConfig,
 } from "./session-config.js"
 import type { SpawnBrowserMode } from "./browser-mount.js"
+import type { SessionDescriptor } from "./sessions.js"
 
 const effortSchema = z.enum(["low", "medium", "high", "xhigh", "max", "ultracode"])
 const postureSchema = z.union([
@@ -61,9 +62,16 @@ export interface UserPreset extends Partial<SessionConfig> {
   /** `agent_start.browser` for spawns from this preset. Ranks below the
    *  role's own default (see `resolveBrowserMode`). */
   browser?: SpawnBrowserMode
+  /** ISO 8601 timestamp of the last spawn that resolved a `presetId` to this
+   *  preset (agent_start, `/sessions/agent`, `/sessions/chat` — stamped once
+   *  in `spawnAgentSession`, the shared core all three route through). Never
+   *  set by a caller directly; `saveUserPreset` preserves the existing value
+   *  across an edit unless the write explicitly overrides it. Absent for a
+   *  preset that has never been used to spawn. */
+  lastUsedAt?: string
 }
 
-const userPresetSchema = z.object({
+export const userPresetSchema = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
   label: z.string().min(1),
   adapter: z.string().min(1).optional(),
@@ -78,6 +86,7 @@ const userPresetSchema = z.object({
   skills: z.array(z.string().min(1)).optional(),
   bundles: z.array(z.string().min(1)).optional(),
   browser: z.union([z.literal("headless"), z.literal(false)]).optional(),
+  lastUsedAt: z.string().min(1).optional(),
 }) satisfies z.ZodType<UserPreset>
 
 const userPresetsFileSchema = z.object({
@@ -123,13 +132,17 @@ export async function getUserPreset(id: string): Promise<UserPreset | undefined>
 }
 
 /** Add or replace a preset by id. The parser makes this the single validation
- * boundary for CLI, MCP and editor callers. */
+ * boundary for CLI, MCP and editor callers. An edit that doesn't name its own
+ * `lastUsedAt` keeps the existing preset's stamp rather than wiping it — a
+ * rename/retune of a favorite must not erase its recency. */
 export async function saveUserPreset(preset: UserPreset): Promise<void> {
   const validated = userPresetSchema.parse(preset)
   const file = await loadUserPresets()
   const index = file.presets.findIndex(existing => existing.id === validated.id)
-  if (index === -1) file.presets.push(validated)
-  else file.presets[index] = validated
+  const lastUsedAt = validated.lastUsedAt ?? (index === -1 ? undefined : file.presets[index]?.lastUsedAt)
+  const next: UserPreset = { ...validated, ...(lastUsedAt ? { lastUsedAt } : {}) }
+  if (index === -1) file.presets.push(next)
+  else file.presets[index] = next
   await writeUserPresets(file)
 }
 
@@ -140,4 +153,62 @@ export async function deleteUserPreset(id: string): Promise<boolean> {
   file.presets.splice(index, 1)
   await writeUserPresets(file)
   return true
+}
+
+/** Stamp `lastUsedAt` on the preset a spawn just resolved `presetId` to.
+ * Best-effort: an unknown id is a no-op, and a write failure here must never
+ * fail the spawn it's timestamping — callers should await it inside a
+ * `.catch(() => {})`. */
+export async function touchUserPreset(id: string): Promise<void> {
+  const file = await loadUserPresets()
+  const index = file.presets.findIndex(preset => preset.id === id)
+  if (index === -1) return
+  file.presets[index] = { ...file.presets[index]!, lastUsedAt: new Date().toISOString() }
+  await writeUserPresets(file)
+}
+
+/** One de-duplicated recent spawn configuration, derived from session
+ *  history rather than persisted — the `user_preset_list({ includeRecent:
+ *  true })` / `GET /user-presets?includeRecent=1` companion view to actual
+ *  favorites, so a caller can "save as favorite" something they've spawned
+ *  before without retyping it. */
+export interface RecentSpawnConfig {
+  adapter?: string
+  model?: string
+  profileRef?: string
+  cwd?: string
+  /** Always true — the marker that distinguishes a derived row from a
+   *  persisted {@link UserPreset} when the two are rendered in one list. */
+  recent: true
+}
+
+/** Derive up to `limit` distinct recent spawn configurations (adapter,
+ *  model, profileRef, cwd) from the registry's own newest-first session
+ *  list. Only `agent-cli` sessions carry a spawn config; a session that
+ *  named neither `harness` nor `adapterSlug` is skipped (nothing to offer
+ *  as a favorite). Distinctness is by the exact (adapter, model, profileRef,
+ *  cwd) tuple, keeping only the most recent occurrence of each. */
+export function deriveRecentSpawnConfigs(
+  descriptors: readonly SessionDescriptor[],
+  limit = 5,
+): RecentSpawnConfig[] {
+  const seen = new Set<string>()
+  const out: RecentSpawnConfig[] = []
+  for (const desc of descriptors) {
+    if (out.length >= limit) break
+    if (desc.kind !== "agent-cli") continue
+    const adapter = desc.harness ?? desc.adapterSlug
+    if (!adapter) continue
+    const config: Omit<RecentSpawnConfig, "recent"> = {
+      adapter,
+      ...(desc.model ? { model: desc.model } : {}),
+      ...(desc.accessProfile?.profileRef ? { profileRef: desc.accessProfile.profileRef } : {}),
+      ...(desc.cwd ? { cwd: desc.cwd } : {}),
+    }
+    const key = JSON.stringify(config)
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ ...config, recent: true })
+  }
+  return out
 }

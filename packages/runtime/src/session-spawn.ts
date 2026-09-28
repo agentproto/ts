@@ -75,7 +75,7 @@ import {
   type ResolvedContextContinuityPolicy,
 } from "./context-continuity.js"
 import { resolvePosture } from "./canonical-posture.js"
-import type { UserPreset } from "./user-presets.js"
+import { touchUserPreset, type UserPreset } from "./user-presets.js"
 import { getDefaultHarnessPreset } from "./harness-preset-store.js"
 import {
   HEADLESS_BROWSER_PROMPT_HINT,
@@ -1538,6 +1538,10 @@ export async function spawnAgentSession(
       skills: explicit.skills ?? preset.skills,
       bundles: explicit.bundles ?? preset.bundles,
     }
+    // Best-effort recency stamp — a favorite just got resolved and used for
+    // this spawn. Never let the write (or its absence, for a since-deleted
+    // preset) affect the spawn itself.
+    await touchUserPreset(preset.id).catch(() => {})
   }
 
   // Harness default preset (`harness-presets.json`): when NEITHER an explicit
