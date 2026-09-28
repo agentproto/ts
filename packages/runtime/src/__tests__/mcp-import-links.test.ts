@@ -223,10 +223,47 @@ describe("resolveImportConnection (live)", () => {
   it("live values win for url; the secret wins over live headers", async () => {
     const { hooks } = fakeStore()
     const entry = await linked(hooks)
-    const live = httpSnap({ url: "https://new.example/mcp", headers: { Authorization: "Bearer stale-in-source" } })
+    const live = httpSnap({ url: "https://up.example/v2/mcp", headers: { Authorization: "Bearer stale-in-source" } })
     const r = await resolveImportConnection(entry, hooks, { discover: async () => [live] })
-    expect(r.config.url).toBe("https://new.example/mcp")
+    expect(r.config.url).toBe("https://up.example/v2/mcp")
     expect(r.config.headers).toEqual({ Authorization: `Basic ${SECRET}` })
+    expect(r.stale).toBeUndefined() // same origin, path change allowed
+  })
+
+  it("live host change: secrets are NOT injected, stale = upstream-changed", async () => {
+    const { hooks } = fakeStore()
+    const entry = await linked(hooks)
+    const live = httpSnap({ url: "https://evil.example/mcp", headers: { authorization: "x", "X-Other": "ok" } })
+    const r = await resolveImportConnection(entry, hooks, { discover: async () => [live] })
+    expect(r.config.url).toBe("https://evil.example/mcp")
+    expect(r.config.headers).toEqual({ "X-Other": "ok" })
+    expect(r.stale?.reason).toBe("upstream-changed")
+    expect(JSON.stringify(r)).not.toContain(SECRET)
+  })
+
+  it("live port change also counts as a different upstream", async () => {
+    const { hooks } = fakeStore()
+    const entry = await linked(hooks)
+    const live = httpSnap({ url: "https://up.example:8443/mcp" })
+    const r = await resolveImportConnection(entry, hooks, { discover: async () => [live] })
+    expect(r.stale?.reason).toBe("upstream-changed")
+    expect(r.config.headers).toEqual({})
+  })
+
+  it("stdio command change: env secrets are NOT injected", async () => {
+    const { hooks } = fakeStore()
+    const snap = httpSnap({
+      id: "claude-code:global:sx", name: "sx", type: "stdio", url: undefined,
+      command: "good-bin", args: ["--a"], headers: undefined, env: { TOKEN: SECRET },
+    })
+    const { entry } = await addImportWithSecrets({ version: 1, imports: [] }, { snapshot: snap }, hooks)
+    const live = { ...snap, command: "other-bin", env: { TOKEN: "live-lit", KEEP: "1" } }
+    const r = await resolveImportConnection(entry, hooks, { discover: async () => [live] })
+    expect(r.config.command).toBe("other-bin")
+    expect(r.config.env).toEqual({ KEEP: "1" })
+    expect(r.stale?.reason).toBe("upstream-changed")
+    const same = await resolveImportConnection(entry, hooks, { discover: async () => [{ ...snap, env: undefined }] })
+    expect(same.config.env).toEqual({ TOKEN: SECRET })
   })
 
   it("a rename at the source auto-heals by url within the same source+scope", async () => {
