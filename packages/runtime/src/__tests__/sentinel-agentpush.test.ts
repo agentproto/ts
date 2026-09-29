@@ -639,7 +639,7 @@ describe("agentpush credentials and readiness", () => {
     expect(provider.capabilities).toMatchObject({ push: true, poll: true, durable: true, needsPublicUrl: false, requiresAuth: true })
   })
 
-  it("stores the API key in a 0600 file and never surfaces it via the lister", async () => {
+  it("stores the API key in a 0600 creds file", async () => {
     const home = tmp()
     const creds = makeSentinelCredsStore(home)
     await creds.write("agentpush", { apiKey: "ak_secret_value", baseUrl: "https://ap.example" })
