@@ -151,14 +151,14 @@ export function parseProcStat(
 /** Where the process table comes from. Injectable for tests. */
 export type ProcessTableSource = () => Promise<ProcRow[]>
 
-function execPs(platform: NodeJS.Platform): Promise<string> {
+function execPs(platform: NodeJS.Platform, timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
       "ps",
       psArgs(platform),
       // LC_ALL=C pins the decimal separator of `pcpu` to `.` regardless of the
       // operator's locale.
-      { maxBuffer: 32 * 1024 * 1024, timeout: 20_000, env: { ...process.env, LC_ALL: "C" } },
+      { maxBuffer: 32 * 1024 * 1024, timeout: timeoutMs, env: { ...process.env, LC_ALL: "C" } },
       (err, stdout) =>
         err
           ? reject(new Error(`ps failed${(err as { killed?: boolean }).killed ? " (timed out, host overloaded?)" : ""}: ${err.message.trim()}`))
@@ -188,18 +188,25 @@ async function readProcfsTable(): Promise<ProcRow[]> {
   return rows.filter((r): r is ProcRow => r !== null)
 }
 
-/** Default table source: `ps` on macOS/Linux, `/proc` when Linux has no `ps`
- *  (slim containers). Windows resolves to an empty table - no data, no throw. */
-export const defaultProcessTableSource: ProcessTableSource = async () => {
-  const platform = process.platform
-  if (platform === "win32") return []
-  try {
-    return parsePsTable(await execPs(platform), platform)
-  } catch (err) {
-    if (platform === "linux") return readProcfsTable()
-    throw err
+/** Table source with its own `ps` time budget: `ps` on macOS/Linux, `/proc`
+ *  when Linux has no `ps` (slim containers). Windows resolves to an empty
+ *  table - no data, no throw. */
+export function createProcessTableSource(timeoutMs = 20_000): ProcessTableSource {
+  return async () => {
+    const platform = process.platform
+    if (platform === "win32") return []
+    try {
+      return parsePsTable(await execPs(platform, timeoutMs), platform)
+    } catch (err) {
+      if (platform === "linux") return readProcfsTable()
+      throw err
+    }
   }
 }
+
+/** Default table source (20s `ps` budget - generous because a saturated host
+ *  is exactly when this is asked for). */
+export const defaultProcessTableSource: ProcessTableSource = createProcessTableSource()
 
 // ── command normalization ───────────────────────────────────────────
 
@@ -858,7 +865,7 @@ export function createProcessStatsService(opts: ProcessStatsServiceOptions = {})
     const daemonPid = opts.daemonPid ?? process.pid
     const claimed = attributeProcesses({
       table: rows,
-      sessions: sessions.map(toInput),
+      sessions: sessions.map(toStatsSessionInput),
       daemonPid,
       provisions: [],
       detail: "summary",
@@ -905,7 +912,7 @@ export function createProcessStatsService(opts: ProcessStatsServiceOptions = {})
       const provisions = tracker.list()
       const a = attributeProcesses({
         table: snap.table,
-        sessions: sessions.map(toInput),
+        sessions: sessions.map(toStatsSessionInput),
         daemonPid,
         provisions,
         envHints: snap.envHints,
@@ -932,7 +939,7 @@ export function createProcessStatsService(opts: ProcessStatsServiceOptions = {})
   }
 }
 
-function toInput(s: StatsSessionDescriptor): StatsSessionInput {
+export function toStatsSessionInput(s: StatsSessionDescriptor): StatsSessionInput {
   return {
     id: s.id,
     pid: s.pid ?? null,

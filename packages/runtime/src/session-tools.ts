@@ -92,6 +92,7 @@ import {
   withSessionStats,
   type ProcessStatsService,
 } from "./process-stats.js"
+import { getHostLoadService, type HostLoadReport, type HostLoadService } from "./host-load.js"
 import {
   planSessionWrapup,
   type SessionWrapupClass,
@@ -485,6 +486,9 @@ export interface RegisterSessionToolsOptions {
   /** Process-stats sampler behind `session_list({stats})` / `session_stats`.
    *  Defaults to the process-wide shared service; tests inject a fake table. */
   processStats?: ProcessStatsService
+  /** Host-load collector behind `host_load`. Defaults to the process-wide
+   *  shared service; tests inject fake probes. */
+  hostLoad?: HostLoadService
   /** Forwarded to `registerAgentTools` — see
    *  `RegisterAgentToolsOptions.resolveWorktreeIsolation`. */
   resolveWorktreeIsolation?: RegisterAgentToolsOptions["resolveWorktreeIsolation"]
@@ -1239,6 +1243,51 @@ export function registerSessionTools(
         ...(input.fresh ? { fresh: true } : {}),
         ...(visible ? { visible } : {}),
         ...(opts.processStats ? { service: opts.processStats } : {}),
+      })
+    },
+    transformers: [catchErrors()],
+  })
+
+  // ── host_load ────────────────────────────────────────────────────
+  // Host-wide load: loadavg vs cores, CPU split, RAM/swap, per-disk IO, the
+  // heaviest processes with their owning session, and WARNINGS (swap
+  // pressure, old busy orphans, deleted-cwd loops, filesystem-wide scans,
+  // duplicate servers on a port). Read-only; nothing here kills anything.
+  registerBuiltinTool<{ detail?: "summary" | "full"; fresh?: boolean; budgetMs?: number }, HostLoadReport>(server, {
+    id: "host_load",
+    description:
+      "Host-level load report: load average vs core count, CPU user/sys/idle, RAM " +
+      "(used/wired/compressor/free) and swap, per-disk transfers/s + MB/s, the top 10 " +
+      "processes by CPU and by memory footprint (compressed pages included on macOS) " +
+      "each tagged with its owning session (`session`/`daemon`/`provisioning`/" +
+      "`orphan`/`system`/`other`), and `warnings` (swap > 50%, orphaned processes " +
+      "older than 30 min that are busy or serving, deleted-cwd processes, " +
+      "filesystem-wide `find`/`bfs`/`du` scans, several servers on one port, load > " +
+      "4x cores). `detail:\"full\"` adds a per-session rollup and every process. " +
+      "Bounded to ~2s: a probe that is slow or unavailable is named in `partial` and " +
+      "the rest still ships (raise `budgetMs` to give the macOS `top` footprint " +
+      "probe longer on a saturated host). Cached ~2s; `fresh:true` resamples. Never " +
+      "needs sudo. A subtree-scoped caller sees host metrics plus only its own " +
+      "sessions' processes.",
+    inputSchema: z.object({
+      detail: z.enum(["summary", "full"]).optional().describe('Default "summary".'),
+      fresh: mcpBool.optional().describe("Bypass the ~2s cache and sample now."),
+      budgetMs: z.coerce
+        .number()
+        .int()
+        .min(300)
+        .max(60_000)
+        .optional()
+        .describe("Time budget for the sample in ms (default 1900)."),
+    }),
+    handler: async input => {
+      const all = registry.list({ includeArchived: true })
+      const visible = callerScope ? collectSubtree(callerScope.ownerSessionId, all) : undefined
+      return (opts.hostLoad ?? getHostLoadService()).report(all, {
+        ...(input.detail ? { detail: input.detail } : {}),
+        ...(input.fresh ? { fresh: true } : {}),
+        ...(input.budgetMs ? { budgetMs: input.budgetMs } : {}),
+        ...(visible ? { visible } : {}),
       })
     },
     transformers: [catchErrors()],
