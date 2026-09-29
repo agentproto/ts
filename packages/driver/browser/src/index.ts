@@ -2,8 +2,9 @@
  * @agentproto/driver-browser: browser provider kit.
  *
  * `defineBrowser` (manifest + idempotent launch), the `BrowserInstance` and
- * `BrowserDriver` ports, a provider registry, a provider-kit lister and the
- * typed capability gate (`browser:unsupported`).
+ * `BrowserDriver` ports, a provider registry, a provider-kit lister, the
+ * typed capability gate (`browser:unsupported`), the supervisor (health loop,
+ * crash-loop detector, orphan sweep, keepAlive policy) and the conformance kit.
  */
 
 export { defineBrowser } from "./define-browser.js"
@@ -108,3 +109,59 @@ export type {
   ScreenshotFileResult,
   ScreenshotSegmentsResult,
 } from "./driver.js"
+
+export {
+  createBrowserSupervisor,
+  systemClock,
+  DEFAULT_LAUNCH_BUDGET_MS,
+  BROWSER_CRASH_LOOPING_CODE,
+  BROWSER_LAUNCH_TIMEOUT_CODE,
+  BrowserCrashLoopError,
+  BrowserLaunchTimeoutError,
+} from "./supervisor/supervisor.js"
+export type {
+  SupervisorClock,
+  SupervisorState,
+  SupervisorStatus,
+  BackendRestartEvent,
+  BrowserSupervisor,
+  BrowserSupervisorOptions,
+} from "./supervisor/supervisor.js"
+export {
+  sweepOrphans,
+  browserInstanceMarker,
+  commandHasMarker,
+  psListProcesses,
+} from "./supervisor/orphan-sweep.js"
+export type {
+  ProcessEntry,
+  ProcessLister,
+  ProcessKiller,
+  OrphanSweepOptions,
+} from "./supervisor/orphan-sweep.js"
+export { KeepAlivePolicy } from "./supervisor/keep-alive.js"
+export type { KeepAlivePolicyOptions, IdleShutdownVerdict } from "./supervisor/keep-alive.js"
+
+export { runConformance } from "./conformance/run.js"
+export { CONFORMANCE_LEVELS, ConformanceSkip } from "./conformance/types.js"
+export type {
+  ConformanceLevel,
+  ConformanceFixture,
+  ConformanceOptions,
+  ConformanceContext,
+  ConformanceCheck,
+  ConformanceCheckResult,
+  ConformanceLevelReport,
+  ConformanceReport,
+} from "./conformance/types.js"
+export { createFakeBrowserProvider } from "./conformance/fake-provider.js"
+export type {
+  FakeBrowserFault,
+  FakeBrowserOptions,
+  FakeBrowserState,
+} from "./conformance/fake-provider.js"
+export {
+  startFakeRemoteBrowserServer,
+  createFakeRemoteBrowserProvider,
+} from "./conformance/fake-remote.js"
+export type { FakeRemoteBrowserServer } from "./conformance/fake-remote.js"
