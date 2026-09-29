@@ -18,7 +18,7 @@ export type ConformanceLevel = (typeof CONFORMANCE_LEVELS)[number]
 
 /** A page the provider can load, so DOM-touching checks have something real to drive. */
 export interface ConformanceFixture {
-  /** Navigation target for `navigate`. Default `about:blank`. */
+  /** Navigation target for `navigate`, and the `initialUrl` of the driver each level attaches. Default `about:blank`. */
   url?: string
   /** With `buttonSelector`, enables the click/fill check. */
   inputSelector?: string

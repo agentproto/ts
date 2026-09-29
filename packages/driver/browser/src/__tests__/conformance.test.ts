@@ -27,6 +27,27 @@ describe("conformance kit: in-memory fake", () => {
     expect(level(report.levels, "network").checks.map((c) => c.name)).toContain("list-requests")
   })
 
+  it("attaches each level's driver at the fixture url", async () => {
+    const { provider } = createFakeBrowserProvider()
+    const attached: Array<string | undefined> = []
+    const spying: typeof provider = {
+      ...provider,
+      launch: async (opts, ctx) => {
+        const instance = await provider.launch(opts, ctx)
+        return {
+          ...instance,
+          attach: (attachOpts) => {
+            attached.push(attachOpts?.initialUrl)
+            return instance.attach(attachOpts)
+          },
+        }
+      },
+    }
+    await runConformance(spying, { levels: ["core", "interaction"], fixture: { url: "http://127.0.0.1:1/" } })
+    expect(attached.length).toBeGreaterThan(0)
+    expect(attached).toContain("http://127.0.0.1:1/")
+  })
+
   it("runs only the requested levels", async () => {
     const { provider } = createFakeBrowserProvider()
     const report = await runConformance(provider, { levels: ["core"] })

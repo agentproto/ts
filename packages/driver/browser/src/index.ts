@@ -165,3 +165,24 @@ export {
   createFakeRemoteBrowserProvider,
 } from "./conformance/fake-remote.js"
 export type { FakeRemoteBrowserServer } from "./conformance/fake-remote.js"
+
+export {
+  BROWSER_PROFILE_REFUSED_CODE,
+  BrowserProfileRefusedError,
+  isBrowserProfileRefusedError,
+  defaultChromeUserDataDirs,
+  isDefaultChromeUserDataDir,
+  resolveDedicatedProfileDir,
+  assertNoOwnedArgs,
+  assertSpawnArgsSafe,
+  liveProfileLockPid,
+} from "./profile.js"
+export type {
+  BrowserProfileRefusedCause,
+  BrowserProfileRefusedReason,
+  DefaultDirEnv,
+  ResolveDedicatedProfileInput,
+} from "./profile.js"
+
+export { browserCookieSchema, cookiesFromSessionPayload } from "./cookies.js"
+export type { BrowserCookie, BrowserCookieSource } from "./cookies.js"
