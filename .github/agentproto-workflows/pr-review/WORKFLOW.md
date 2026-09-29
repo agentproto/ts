@@ -73,7 +73,9 @@ One-step agentflow that carries the full PR review inside a single
 and AIP conventions so the agent can operate without a custom toolset — it
 uses claude-code's native bash/file-read tools to inspect the diff and the
 `gh` CLI (already authenticated via `GITHUB_TOKEN`) to post the review and
-commit the changeset.
+hand the changeset to CI as a marked PR comment
+(`<!-- agentic-changeset:<path> -->`); the CI job commits it after the review
+gates.
 
 The step runs `git diff origin/<baseRef>...HEAD` itself, so no pre-computed
 diff is passed as input — the agent sees the live checkout.

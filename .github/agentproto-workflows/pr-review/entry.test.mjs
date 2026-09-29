@@ -29,6 +29,8 @@ test('reviewerSandbox + repo selects sandbox (shared delivery helper) delivery',
   // (records the review to the artifact ledger) instead of raw curl.
   assert.match(text, /deliver-artifact\.mjs/)
   assert.match(text, /--kind review/)
+  assert.doesNotMatch(text, /git push/)
+  assert.match(text, /agentic-changeset:/)
   assert.doesNotMatch(text, /gh pr review 7 --comment/)
   assert.doesNotMatch(text, /LOCAL run/)
 })

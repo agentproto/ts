@@ -73,20 +73,21 @@ const postReviewInstruction = (placement, prNumber, repo) => {
 }
 
 // Changeset delivery, switched on placement: the host lane's checkout is the
-// CI workspace (the job commits it); a sandbox clone is ephemeral, so the
-// changeset must be pushed to the PR head branch — head branch resolved via
-// REST (no `gh` in the box). A local run has no PR and writes nothing.
+// CI workspace (the job commits it); a sandbox clone is ephemeral AND must not
+// push (moving the PR head mid-turn races the dedupe gates in ci.yml), so the
+// box hands the file over as a marked PR comment that the host "Commit
+// changeset" step materializes after the gates. A local run writes nothing.
 const changesetDeliveryInstruction = (placement, prNumber, repo) =>
   placement === "sandbox"
     ? [
-        `   Sandbox delivery: heal any guessed package name, then commit the changeset file and push it to the PR head branch:`,
+        `   Sandbox delivery: do NOT commit and do NOT push — the box must never move the PR head (a mid-turn push races the CI dedupe gates and produces duplicate reviews). Heal any guessed package name, then hand the file to CI as a PR comment; the host job commits it AFTER the review gates:`,
         `   \`\`\`bash`,
-        `   HEAD_BRANCH=$(curl -sS -H "Authorization: Bearer \${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" \\`,
-        `     "https://api.github.com/repos/${repo}/pulls/${prNumber}" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>console.log(JSON.parse(d).head.ref))')`,
-        `   node scripts/check-changesets.mjs --fix || true   # heal a mis-scoped name (e.g. @agentproto/vscode → agentproto-vscode) BEFORE it lands — the host-side --fix never sees a changeset pushed from the box`,
-        `   git add .changeset/pr-${prNumber}-agentic.md && git commit -m "chore: agentic reviewer — changeset" && git push origin "HEAD:\${HEAD_BRANCH}"`,
+        `   node scripts/check-changesets.mjs --fix || true   # heal a mis-scoped name (e.g. @agentproto/vscode → agentproto-vscode) BEFORE it is handed over`,
+        `   node -e 'const fs=require("fs");const p=".changeset/pr-${prNumber}-agentic.md";const body="<!-- agentic-changeset:"+p+" -->\\nProposed changeset (not committed by the reviewer; CI commits it after the review gates):\\n\\n\`\`\`md\\n"+fs.readFileSync(p,"utf8").replace(/\\n?$/,"\\n")+"\`\`\`\\n";fs.writeFileSync("changeset-comment.json",JSON.stringify({body}))'`,
+        `   curl -sS -X POST -H "Authorization: Bearer \${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" \\`,
+        `     "https://api.github.com/repos/${repo}/issues/${prNumber}/comments" --data @changeset-comment.json`,
         `   \`\`\``,
-        `   If the push is rejected, include the changeset file content verbatim in a follow-up PR comment (POST /repos/${repo}/issues/${prNumber}/comments with a {"body": ...} payload) instead — never fail the review over changeset delivery.`,
+        `   If the POST fails, retry once; never fail the review over changeset delivery.`,
       ].join("\n")
     : ""
 
