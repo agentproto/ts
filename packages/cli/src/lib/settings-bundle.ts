@@ -56,6 +56,7 @@ import {
   loadImportedMcps,
   addImport,
   findImport,
+  secretRefKeys,
   saveImportedMcps,
   type ImportedMcpEntry,
 } from "@agentproto/runtime/mcp-imports"
@@ -102,6 +103,12 @@ export interface ExportedMcpImport {
   id: string
   alias: string
   addedAt: string
+  /** Link back to the source config (additive; informational on import). */
+  origin?: ImportedMcpEntry["origin"]
+  resolve?: ImportedMcpEntry["resolve"]
+  /** KEY names whose values live in the source machine's secret store —
+   *  values/refs never leave it (like `headerKeys`). */
+  secretRefKeys?: { headers?: string[]; env?: string[] }
   snapshot: {
     source: string
     scope: string
@@ -270,6 +277,9 @@ function redactMcpEntry(entry: ImportedMcpEntry): ExportedMcpImport {
     id: entry.id,
     alias: entry.alias,
     addedAt: entry.addedAt,
+    ...(entry.origin ? { origin: entry.origin } : {}),
+    ...(entry.resolve ? { resolve: entry.resolve } : {}),
+    ...(secretRefKeys(entry) ? { secretRefKeys: secretRefKeys(entry) } : {}),
     snapshot: {
       source: snapshot.source,
       scope: snapshot.scope,
@@ -487,6 +497,11 @@ export interface SettingsApplyReport {
   harnessPresets: OutcomeList
   llmEndpoints: OutcomeList
   mcpServers: OutcomeList
+  /** Imported MCPs whose secrets lived in the exporting machine's secret
+   *  store: entry added with EMPTY placeholders for these keys (names only);
+   *  supply them locally (re-run `mcp_import` / set the values). Dangling by
+   *  construction, reported like an auth profile's missing credential. */
+  mcpDanglingSecrets: { id: string; headers?: string[]; env?: string[] }[]
   config: OutcomeList
 }
 
@@ -659,6 +674,7 @@ export async function applySettingsBundle(
 
   // ── imported MCP servers ──
   const mcpServers = emptyOutcome()
+  const mcpDanglingSecrets: SettingsApplyReport["mcpDanglingSecrets"] = []
   let mcpConfig = await deps.loadImportedMcps()
   for (const entry of bundle.mcpServers) {
     if (findImport(mcpConfig, entry.id)) {
@@ -666,6 +682,7 @@ export async function applySettingsBundle(
       continue
     }
     mcpServers.added.push(entry.id)
+    if (entry.secretRefKeys) mcpDanglingSecrets.push({ id: entry.id, ...entry.secretRefKeys })
     if (dryRun) continue
     const { envKeys, headerKeys, redacted: _redacted, ...snapshotRest } = entry.snapshot
     mcpConfig = addImport(mcpConfig, {
@@ -709,6 +726,7 @@ export async function applySettingsBundle(
     harnessPresets,
     llmEndpoints,
     mcpServers,
+    mcpDanglingSecrets,
     config,
   }
 }

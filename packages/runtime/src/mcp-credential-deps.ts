@@ -28,11 +28,11 @@ export interface McpCredentialDeps {
    *  bare `process.env` read at the call site. Returns null when the slug
    *  can't be resolved (missing/unconfigured). */
   resolveSandboxSecret?: (slug: string) => Promise<string | null>
-  /** Seam (unused until P1): read an imported-MCP secret by opaque ref
-   *  (`agentproto/mcp-import/<importId>`, account `<header|env>:<KEY>`).
-   *  Undefined when the ref is missing. */
+  /** Read an imported-MCP secret by opaque ref
+   *  (`agentproto/mcp-import/<importId>#<header|env>:<KEY>`, split on the last
+   *  `#` into keychain path + account). Undefined when the ref is missing. */
   resolveMcpSecret?: (ref: string) => Promise<string | undefined>
-  /** Seam (unused until P1): persist an imported-MCP secret under `ref`. */
+  /** Persist an imported-MCP secret under `ref`. */
   storeMcpSecret?: (ref: string, value: string) => Promise<void>
 }
 
