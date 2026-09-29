@@ -15,8 +15,17 @@
  */
 
 import { readFile } from "node:fs/promises"
-import { homedir, platform } from "node:os"
-import { join } from "node:path"
+import { homedir } from "node:os"
+import {
+  chromeLocalStatePath,
+  chromeTimeToIso,
+  chromeUserDataDir,
+  parseLocalState,
+} from "@agentproto/browser-profiles"
+
+// One implementation of the path resolution and Local State parsing: it lives
+// in @agentproto/browser-profiles and is re-exported here unchanged.
+export { chromeLocalStatePath, chromeUserDataDir }
 
 export interface ChromeProfile {
   /** Directory name under the Chrome user-data-dir (`Default`,
@@ -35,42 +44,6 @@ export interface ChromeProfile {
   isLastUsed: boolean
 }
 
-/** Resolves the platform-specific Chrome user-data-dir root. */
-export function chromeUserDataDir(home: string = homedir()): string {
-  switch (platform()) {
-    case "darwin":
-      return join(home, "Library", "Application Support", "Google", "Chrome")
-    case "win32":
-      // %LOCALAPPDATA% defaults to <home>\AppData\Local
-      return join(
-        process.env.LOCALAPPDATA ?? join(home, "AppData", "Local"),
-        "Google",
-        "Chrome",
-        "User Data"
-      )
-    default:
-      return join(home, ".config", "google-chrome")
-  }
-}
-
-export function chromeLocalStatePath(home: string = homedir()): string {
-  return join(chromeUserDataDir(home), "Local State")
-}
-
-interface RawProfileInfo {
-  name?: unknown
-  user_name?: unknown
-  active_time?: unknown
-  last_active_time?: unknown
-}
-
-interface RawLocalState {
-  profile?: {
-    info_cache?: Record<string, RawProfileInfo>
-    last_used?: unknown
-  }
-}
-
 /**
  * Read + parse Chrome's Local State. Returns the profile list sorted
  * by last-active descending (most-recently-used first), with the
@@ -82,22 +55,16 @@ interface RawLocalState {
 export async function listChromeProfiles(
   home: string = homedir()
 ): Promise<ChromeProfile[]> {
-  const path = chromeLocalStatePath(home)
-  const raw = await readFile(path, "utf8")
-  const parsed = JSON.parse(raw) as RawLocalState
-  const cache = parsed.profile?.info_cache ?? {}
-  const lastUsed =
-    typeof parsed.profile?.last_used === "string" ? parsed.profile.last_used : ""
+  const raw = await readFile(chromeLocalStatePath(home), "utf8")
+  const parsed = parseLocalState(raw)
 
-  const profiles: ChromeProfile[] = Object.entries(cache).map(
-    ([directory, info]) => ({
-      directory,
-      name: typeof info.name === "string" ? info.name : directory,
-      email: typeof info.user_name === "string" ? info.user_name : "",
-      lastActive: chromeTimeToIso(info.active_time ?? info.last_active_time),
-      isLastUsed: directory === lastUsed,
-    })
-  )
+  const profiles: ChromeProfile[] = parsed.profiles.map(p => ({
+    directory: p.directory,
+    name: p.name ?? p.directory,
+    email: p.userName ?? "",
+    lastActive: chromeTimeToIso(p.activeTime),
+    isLastUsed: p.directory === parsed.lastUsed,
+  }))
 
   profiles.sort((a, b) => {
     if (a.isLastUsed !== b.isLastUsed) return a.isLastUsed ? -1 : 1
@@ -105,29 +72,4 @@ export async function listChromeProfiles(
   })
 
   return profiles
-}
-
-/**
- * Chrome stores timestamps as microseconds since the Windows epoch
- * (1601-01-01 UTC). Convert to ISO-8601, or return "" when the field
- * is missing or out of plausible range (so callers can't accidentally
- * surface 1601 in a UI).
- */
-function chromeTimeToIso(raw: unknown): string {
-  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) return ""
-  // Heuristic: > 1e16 → microseconds since 1601 epoch (modern Chrome);
-  // > 1e9 → unix seconds (legacy); else unparseable.
-  let unixMs: number
-  if (raw > 1e16) {
-    // microseconds since 1601-01-01 → ms since unix epoch
-    unixMs = Math.floor(raw / 1000) - 11_644_473_600_000
-  } else if (raw > 1e12) {
-    unixMs = raw
-  } else if (raw > 1e9) {
-    unixMs = raw * 1000
-  } else {
-    return ""
-  }
-  if (unixMs <= 0 || unixMs > Date.now() + 86_400_000) return ""
-  return new Date(unixMs).toISOString()
 }
