@@ -5,7 +5,7 @@
  */
 
 import { afterEach, describe, it, expect, vi } from "vitest"
-import { callJevSystemOne, judgeSessionWithJev, resolveJevApiKey } from "../jev-client.js"
+import { callJevSystemOne, judgeSessionWithJev, resolveJevApiKey, resolveJevConfig, setJevConfigLoader } from "../jev-client.js"
 import { setMcpCredentialDeps } from "../mcp-credential-deps.js"
 
 const json = (body: unknown, status = 200) =>
@@ -110,13 +110,52 @@ describe("judgeSessionWithJev", () => {
 })
 
 describe("resolveJevApiKey", () => {
-  afterEach(() => setMcpCredentialDeps({}))
+  afterEach(() => {
+    setMcpCredentialDeps({})
+    setJevConfigLoader(async () => ({}))
+  })
 
-  it("reads JEV_API_KEY from the env first, then the host secret resolver", async () => {
+  it("config jev.apiKey wins over everything (trimmed)", async () => {
+    setJevConfigLoader(async () => ({ jev: { apiKey: " from-config " } }))
+    setMcpCredentialDeps({ resolveSandboxSecret: async slug => (slug === "JEV_API_KEY" ? "from-broker" : null) })
+    expect(await resolveJevApiKey({ JEV_API_KEY: "from-env" })).toBe("from-config")
+    expect(await resolveJevApiKey({})).toBe("from-config")
+  })
+
+  it("env beats the host secret resolver", async () => {
+    setMcpCredentialDeps({ resolveSandboxSecret: async slug => (slug === "JEV_API_KEY" ? "from-broker" : null) })
+    expect(await resolveJevApiKey({ JEV_API_KEY: "from-env" })).toBe("from-env")
+    expect(await resolveJevApiKey({})).toBe("from-broker")
+  })
+
+  it("env fallback when the config has no key; host resolver last; null when nothing", async () => {
+    setJevConfigLoader(async () => ({ jev: {} }))
     setMcpCredentialDeps({ resolveSandboxSecret: async slug => (slug === "JEV_API_KEY" ? "from-broker" : null) })
     expect(await resolveJevApiKey({ JEV_API_KEY: "from-env" })).toBe("from-env")
     expect(await resolveJevApiKey({})).toBe("from-broker")
     setMcpCredentialDeps({})
     expect(await resolveJevApiKey({})).toBeNull()
+  })
+
+  it("unreadable config falls through to the env var", async () => {
+    setJevConfigLoader(async () => {
+      throw new Error("no config")
+    })
+    expect(await resolveJevApiKey({ JEV_API_KEY: "from-env" })).toBe("from-env")
+  })
+})
+
+describe("resolveJevConfig", () => {
+  afterEach(() => setJevConfigLoader(async () => ({})))
+
+  it("trims and passes through model/baseUrl; omits blank/missing fields; survives a throwing loader", async () => {
+    setJevConfigLoader(async () => ({ jev: { model: " jev-2 ", baseUrl: " https://x ", apiKey: " " } }))
+    expect(await resolveJevConfig()).toEqual({ model: "jev-2", baseUrl: "https://x" })
+    setJevConfigLoader(async () => ({}))
+    expect(await resolveJevConfig()).toEqual({})
+    setJevConfigLoader(async () => {
+      throw new Error("nope")
+    })
+    expect(await resolveJevConfig()).toEqual({})
   })
 })

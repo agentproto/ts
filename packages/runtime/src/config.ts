@@ -157,9 +157,9 @@ export interface TitlerConfig {
 
 export interface JevConfig {
   /** Jev (TypeSafe System One) API key. Read by `resolveJevApiKey` BEFORE
-   *  the `JEV_API_KEY` environment variable — the config file is the
-   *  primary home for this first-party secret, the env var is the
-   *  override/fallback. Secret: redacted by `config_get`. */
+   *  the `JEV_API_KEY` environment variable: the config file is the
+   *  primary home for this first-party secret and the env var is the
+   *  fallback. Secret: redacted by `config_get`. */
   apiKey?: string
   /** Jev model id. Default `jev-latest`. */
   model?: string
