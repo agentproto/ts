@@ -51,14 +51,14 @@ describe("definePack", () => {
 
   it("throws when neither plugin.inline nor a non-empty plugin.includes is set", () => {
     expect(() => definePack(validPack({ plugin: {} }))).toThrowError(
-      /definePack \(AIP-52\): plugin requires either `inline: true` or a non-empty `includes` list/,
+      /definePack \(AIP-64\): plugin requires either `inline: true` or a non-empty `includes` list/,
     )
   })
 
   it("throws when pricing is present and pricing.bundle <= 0", () => {
     expect(() =>
       definePack(validPack({ pricing: { bundle: 0 } })),
-    ).toThrowError(/definePack \(AIP-52\): pricing\.bundle must be > 0/)
+    ).toThrowError(/definePack \(AIP-64\): pricing\.bundle must be > 0/)
   })
 })
 
