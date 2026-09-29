@@ -31,6 +31,20 @@ them — and lets agents read, write, and improve their own components.
 
 ## Quick start
 
+Or bootstrap from zero in one line:
+
+```bash
+# macOS / linux
+curl -fsSL https://raw.githubusercontent.com/agentproto/ts/main/scripts/bootstrap/install.sh | bash
+```
+
+```powershell
+# Windows 10/11 (PowerShell 5.1+)
+irm https://raw.githubusercontent.com/agentproto/ts/main/scripts/bootstrap/install.ps1 | iex
+```
+
+Manual path:
+
 ```bash
 npm i -g @agentproto/cli
 agentproto install claude-code   # auto-installs the adapter package too

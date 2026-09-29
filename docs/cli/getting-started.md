@@ -1,5 +1,27 @@
 # Getting started
 
+## One-line install
+
+Prefer to skip the manual steps? Two bootstrap scripts take a fresh machine
+from zero to a working agentproto (Node check/install, the CLI, the daemon,
+`agentproto doctor`) non-interactively:
+
+```bash
+# macOS / linux
+curl -fsSL https://raw.githubusercontent.com/agentproto/ts/main/scripts/bootstrap/install.sh | bash
+```
+
+```powershell
+# Windows 10/11 (PowerShell 5.1+)
+irm https://raw.githubusercontent.com/agentproto/ts/main/scripts/bootstrap/install.ps1 | iex
+```
+
+Both are idempotent (safe to run twice, never downgrade an existing valid
+Node), install nothing but Node and the CLI, and print the manual command on
+every failure path.
+
+## From npm install to working setup
+
 From `npm install` to a working install — daemon running, an agent harness
 ready, your coding client wired to agentproto over MCP, skills installed —
 with one command: `agentproto setup`. The manual path is kept below for
