@@ -76,6 +76,38 @@ whenever the host wires `RunWorkflowArgs.workspace` — see **Run workspace
 | `group` | Run a list of steps as one unit; output is the last step's. |
 | `subworkflow` | Run a nested workflow with its own isolated bindings. |
 
+### Step timeouts (`tool` / `gate`)
+
+A `tool` or `gate` step's dispatch is bounded by `timeout_ms` (`timeoutMs` on
+the compiled `ToolStep`/`GateStep`) — default `DEFAULT_STEP_TIMEOUT_MS` (10
+minutes) when the step declares none. On expiry the step fails with `step
+'<id>': timed out after <n>ms`; the underlying subprocess (a `kind: cli`
+driver's spawn, or a `gate` step's command) is killed by its WHOLE process
+group, not just the direct child, so a subprocess that spawned its own
+children (e.g. headless Chrome) can't leave orphans running past the step.
+
+This exists because completion for both used to depend on the child's stdio
+pipes closing (`close`), not the direct child's own `exit` — a grandchild
+that inherited an fd (inherited/piped stdout or stderr) and outlived its
+parent (e.g. reparented to pid 1) could hold that pipe open forever even
+after the tool's actual work was done, hanging the step indefinitely with no
+timeout to bound it. Both the CLI driver's `runSubprocess` and this
+package's `defaultRunGateCommand` now settle on `exit` (with a short drain
+window for any already-in-flight stdio) instead.
+
+```yaml
+steps:
+  - id: pdf-render
+    kind: tool
+    tool: pdf.render
+    timeout_ms: 120000          # override the 10-minute default
+  - id: lint
+    kind: gate
+    command: pnpm
+    args: ["lint"]
+    timeout_ms: 60000
+```
+
 ### WORKFLOW.md `kind: branch` — exclusive arms + join
 
 `compileWorkflow` compiles a declarative AIP-15 `kind: branch` step (goto-style
