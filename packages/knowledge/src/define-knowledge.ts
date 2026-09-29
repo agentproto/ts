@@ -36,7 +36,30 @@ export const defineKnowledge = createDoctype<KnowledgeDefinition, KnowledgeHandl
         return ""
     }
   },
+  // Union of the three branches' identity patterns (slug / name:
+  // `^[a-z][a-z0-9-]*[a-z0-9]$`, id: `^[a-z0-9][a-z0-9-]*$`, all 2-96
+  // chars). The cross-AIP default caps at 80 chars and allows `.`/`_`,
+  // so it rejects valid 81-96 char identities. The exact per-branch
+  // shape is enforced by the schema-derived zod in `validate()`.
+  idPattern: /^[a-z0-9][a-z0-9-]{1,95}$/,
+  // `knowledge.entry/v1` and `knowledge.source/v1` have no `description`
+  // field, so the cross-AIP default (`def.description`, required)
+  // rejected every valid entry and source. The workspace branch's
+  // `description` (required, 1-2000) is enforced by the zod below.
+  readDescription: false,
   validate(def) {
+    // AIP-10 workspace rule (`allOf[if appliesTo minItems 1 then
+    // required extends]`): a view MUST extend a parent. Runs before the
+    // zod check so it reports the structural error, not a cascade.
+    const w = def as { schema?: string; appliesTo?: unknown; extends?: unknown }
+    if (
+      w.schema === "knowledge.workspace/v1" &&
+      Array.isArray(w.appliesTo) &&
+      w.appliesTo.length > 0 &&
+      w.extends == null
+    ) {
+      throw new Error(`defineKnowledge (AIP-10): appliesTo is non-empty — extends MUST be set`)
+    }
     const result = knowledgeFrontmatterSchema.safeParse(def)
     if (!result.success) {
       throw new Error(
@@ -45,15 +68,10 @@ export const defineKnowledge = createDoctype<KnowledgeDefinition, KnowledgeHandl
           .join("; ")}`,
       )
     }
-    // TODO: spec-10-specific cross-field rules (if/then/allOf in
-    // the JSON Schema) — those don't translate to zod cleanly and
-    // belong here. See @agentproto/operator's autonomy=gated rule.
   },
   build(def) {
-    // Default build: spread the validated definition into a fresh object.
-    // Hand-tune for nested freezing (Object.freeze on arrays/objects) and
-    // for fields that need defaults applied — see @agentproto/operator
-    // for a reference shape.
-    return { ...def } as KnowledgeHandle
+    // Use the zod output so schema defaults are applied and timestamps
+    // are normalised to ISO strings, matching the .md manifest path.
+    return knowledgeFrontmatterSchema.parse(def) as unknown as KnowledgeHandle
   },
 })
