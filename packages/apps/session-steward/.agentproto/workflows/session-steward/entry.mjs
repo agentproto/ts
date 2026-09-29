@@ -23,7 +23,11 @@ import { tmpdir } from "node:os"
 
 const DEFAULT_IDLE_MINUTES = 30
 const DEFAULT_MIN_CONFIDENCE = 0.8
-const DEFAULT_JUDGE_MODEL = "claude-haiku-4-5-20251001"
+// The agent judge's model is the `judge.session` model ROLE, resolved at run
+// time by the `modelRoles` step (the daemon's `model_roles` tool): explicit
+// `judgeModel` input > repo agentproto.json `models` > daemon config `models`
+// > built-in default (packages/runtime/src/model-roles.ts). No model id here.
+const ROLE_JUDGE_SESSION = "judge.session"
 const DEFAULT_MAX_JUDGED = 15
 const DEFAULT_JEV_MODEL = "jev-latest"
 const JUDGE_BACKENDS = ["auto", "jev", "agent"]
@@ -47,15 +51,23 @@ function num(v, fallback, { min = 0, max = Number.POSITIVE_INFINITY } = {}) {
   return typeof v === "number" && Number.isFinite(v) && v >= min && v <= max ? v : fallback
 }
 
+/** An explicit input model, else the `modelRoles` step's resolution of `role`;
+ *  undefined leaves the judge agent's own AGENT.md `model` in charge. */
+function explicitOrRole(explicit, modelRoles, role) {
+  if (typeof explicit === "string" && explicit.trim()) return explicit.trim()
+  const resolved = modelRoles?.models?.[role]
+  return typeof resolved === "string" && resolved ? resolved : undefined
+}
+
 /** Every input with its default applied — steps read `$steps.settings.*`,
  *  never a raw `$input.*` that may be absent. */
-export function resolveSettings(input) {
+export function resolveSettings(input, modelRoles) {
   const i = input ?? {}
   return {
     idleMinutes: Math.floor(num(i.idleMinutes, DEFAULT_IDLE_MINUTES, { min: 1 })),
     apply: i.apply === true,
     minConfidence: num(i.minConfidence, DEFAULT_MIN_CONFIDENCE, { max: 1 }),
-    judgeModel: typeof i.judgeModel === "string" && i.judgeModel.trim() ? i.judgeModel.trim() : DEFAULT_JUDGE_MODEL,
+    judgeModel: explicitOrRole(i.judgeModel, modelRoles, ROLE_JUDGE_SESSION),
     judge: JUDGE_BACKENDS.includes(i.judge) ? i.judge : "auto",
     jevModel: typeof i.jevModel === "string" && i.jevModel.trim() ? i.jevModel.trim() : DEFAULT_JEV_MODEL,
     maxJudged: Math.floor(num(i.maxJudged, DEFAULT_MAX_JUDGED)),
@@ -424,7 +436,7 @@ export function buildReport(b) {
   lines.push("")
   lines.push(
     `idle ≥ ${s.idleMinutes} min · minConfidence ${s.minConfidence} · judge \`${s.judge}\` ` +
-      `(jev \`${s.jevModel}\`, agent \`${s.judgeModel}\`)` +
+      `(jev \`${s.jevModel}\`, agent \`${s.judgeModel ?? "agent default"}\`)` +
       (s.askSessions ? " · askSessions on" : ""),
   )
   if (!s.apply) lines.push("", "_Dry run: nothing was closed or flagged. Re-run with `apply: true` to act._")
@@ -500,14 +512,20 @@ export default {
     minConfidence: { type: "number", description: `Judge confidence needed to act. Default ${DEFAULT_MIN_CONFIDENCE}.`, default: DEFAULT_MIN_CONFIDENCE },
     judge: { type: "string", description: "Judge backend: `auto` (Jev when JEV_API_KEY resolves, else the agent judge), `jev`, or `agent`. A Jev failure always falls back to the agent judge. Default auto.", default: "auto" },
     jevModel: { type: "string", description: `Jev model. Default ${DEFAULT_JEV_MODEL}.`, default: DEFAULT_JEV_MODEL },
-    judgeModel: { type: "string", description: `Model for the agent judge. Default ${DEFAULT_JUDGE_MODEL}.`, default: DEFAULT_JUDGE_MODEL },
+    judgeModel: { type: "string", description: `Model for the agent judge. Default: the \`${ROLE_JUDGE_SESSION}\` model role (repo agentproto.json \`models\` > daemon config \`models\` > built-in).` },
     maxJudged: { type: "number", description: `Most \`judge\` sessions judged per run, most RAM first. Default ${DEFAULT_MAX_JUDGED}.`, default: DEFAULT_MAX_JUDGED },
     askSessions: { type: "boolean", description: "Ask low-confidence idle sessions directly whether they're done. Default false — it spends a turn in someone else's conversation.", default: false },
     callerSessionId: { type: "string", description: "The calling session's id — never a candidate. The CLI passes AGENTPROTO_SESSION_ID." },
   },
   outputs: {},
   steps: [
-    { id: "settings", kind: "transform", compute: b => resolveSettings(b.input) },
+    {
+      id: "modelRoles",
+      kind: "tool",
+      tool: "model_roles",
+      inputs: { roles: [ROLE_JUDGE_SESSION], inputs: { [ROLE_JUDGE_SESSION]: "$input.judgeModel" } },
+    },
+    { id: "settings", kind: "transform", compute: b => resolveSettings(b.input, b.steps.modelRoles) },
     {
       id: "plan",
       kind: "tool",
@@ -589,7 +607,7 @@ export default {
           agent: { ref: JUDGE_REF },
           cwd: tmpdir(),
           prompt: "$item.judgePrompt",
-          model: b => b.steps.settings?.judgeModel || DEFAULT_JUDGE_MODEL,
+          model: b => b.steps.settings?.judgeModel,
         },
         {
           id: "judgeParse",

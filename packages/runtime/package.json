@@ -160,6 +160,7 @@
     "bench:review-ledger": "vite-node scripts/bench-review-ledger.mjs"
   },
   "dependencies": {
+    "@agentproto/a2a": "workspace:*",
     "@agentproto/acp": "workspace:*",
     "@agentproto/agent": "workspace:*",
     "@agentproto/app-client": "workspace:*",

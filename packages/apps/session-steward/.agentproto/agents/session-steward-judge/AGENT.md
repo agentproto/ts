@@ -6,7 +6,7 @@ description: >-
   agent session is done, abandoned, blocked, needs input, or still active.
   One turn, one strict JSON verdict, then the session is released. Spawned
   by the `session-steward` workflow's `judge` map step.
-model: claude-haiku-4-5-20251001
+model: role:judge.session
 boundaries:
   - Answer from the evidence in the prompt alone — never call a tool, never read or write files
   - Reply with exactly one JSON object and nothing else
