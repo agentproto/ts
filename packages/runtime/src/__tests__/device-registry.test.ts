@@ -54,6 +54,9 @@ function fakeHostRegistry(
     forwardHttpStream: vi.fn(),
     getSessionsSnapshot: vi.fn(() => undefined),
     snapshotNow: vi.fn(async () => false),
+    markEnded: vi.fn(async () => false),
+    sweep: vi.fn(async () => {}),
+    start: vi.fn(async () => {}),
   }
 }
 
@@ -230,6 +233,39 @@ describe("createDeviceRegistry", () => {
       expect(device).not.toHaveProperty("provider")
       expect(device).not.toHaveProperty("sandboxId")
       expect(device).not.toHaveProperty("labels")
+    })
+
+    it("surfaces a host's lastProbeAt/lastError, and omits them when absent", async () => {
+      const hosts = fakeHostRegistry([
+        hostRecord({ lastProbeAt: "2026-02-03T00:00:00.000Z", lastError: "handshake timed out" }),
+        hostRecord({ fingerprint: "hfp2", name: "ok-host" }),
+      ])
+      const [down, ok] = await createDeviceRegistry(fakeRegistry([]), hosts).list()
+      expect(down).toMatchObject({ lastProbeAt: "2026-02-03T00:00:00.000Z", lastError: "handshake timed out" })
+      expect(ok).not.toHaveProperty("lastError")
+      expect(ok).not.toHaveProperty("lastProbeAt")
+    })
+
+    it("hides ended hosts by default and shows them, marked, with includeEnded", async () => {
+      const hosts = fakeHostRegistry([
+        hostRecord({ fingerprint: "live", name: "ci-live" }),
+        hostRecord({ fingerprint: "gone", name: "ci-gone", ended: true, endedAt: "2026-02-02T02:00:00.000Z", endReason: "ttl" }),
+      ])
+      const registry = createDeviceRegistry(fakeRegistry([record()]), hosts)
+      expect((await registry.list()).map(d => d.name).sort()).toEqual(["ci-live", "jeremy@laptop"])
+      const all = await registry.list({ includeEnded: true })
+      expect(all.map(d => d.name).sort()).toEqual(["ci-gone", "ci-live", "jeremy@laptop"])
+      expect(all.find(d => d.name === "ci-gone")).toMatchObject({ ended: true, endedAt: "2026-02-02T02:00:00.000Z" })
+      expect(all.find(d => d.name === "ci-live")).not.toHaveProperty("ended")
+      // A paired client device is never hidden.
+      expect((await registry.list()).some(d => d.role === "client")).toBe(true)
+    })
+
+    it("surfaces stale on a manually added host that is unreachable past the TTL", async () => {
+      const hosts = fakeHostRegistry([hostRecord({ stale: true })])
+      const [device] = await createDeviceRegistry(fakeRegistry([]), hosts).list()
+      expect(device).toMatchObject({ stale: true })
+      expect(device).not.toHaveProperty("ended")
     })
 
     it("forwardHttp() delegates to the host registry", async () => {

@@ -92,6 +92,26 @@ describe("AIP-18 spec examples (EXAMPLES.md) — collection.item/v1", () => {
     expect((frontmatter as Record<string, unknown>).repro).toContain("Safari 17.4")
   })
 
+  it("example-6 bug item uses the default `owner` role and quoted timestamps (strings, no Date)", () => {
+    const { frontmatter } = parseCollectionManifest(loadFixture("example-6-bug.item.md"))
+    if (frontmatter.schema !== "collection.item/v1") throw new Error("unreachable")
+    expect(frontmatter.owner).toBe("ws://operators/eng-frontend-lead")
+    expect(frontmatter.createdAt).toBe("2026-04-26T09:14:00Z")
+    expect(frontmatter.updatedAt).toBe("2026-04-27T11:02:00Z")
+  })
+
+  it("still accepts (and normalizes) UNquoted timestamps — consumers MAY accept native timestamps", () => {
+    const src = loadFixture("example-6-bug.item.md").replace(
+      /^(createdAt|updatedAt): "(.+)"$/gm,
+      "$1: $2",
+    )
+    expect(src).toMatch(/^createdAt: 2026-04-26T09:14:00Z$/m)
+    const { frontmatter } = parseCollectionManifest(src)
+    if (frontmatter.schema !== "collection.item/v1") throw new Error("unreachable")
+    expect(frontmatter.createdAt).toBe("2026-04-26T09:14:00.000Z")
+    expect(frontmatter.updatedAt).toBe("2026-04-27T11:02:00.000Z")
+  })
+
   it("example-6 OKR item carries a multi-owner array (coLeads)", () => {
     const { frontmatter } = parseCollectionManifest(loadFixture("example-6-okr.item.md"))
     if (frontmatter.schema !== "collection.item/v1") throw new Error("unreachable")
