@@ -375,12 +375,63 @@ describe("webhook provider — public URL rotation", () => {
     expect(patches[0]!.args.join(" ")).not.toContain(rec.secret)
   })
 
-  it("attach with an unchanged URL makes no gh call", async () => {
+  it("attach with an unchanged URL only verifies the hook (one GET, no writes)", async () => {
     const { gh, provider } = harness()
     const handle = await provider.create(specFor("github:o/r#1"), PUSH)
     const n = gh.calls.length
     await provider.attach(handle, PUSH)
-    expect(gh.calls).toHaveLength(n)
+    const added = gh.calls.slice(n)
+    expect(added).toHaveLength(1)
+    expect(added[0]!.args).not.toContain("POST")
+    expect(added[0]!.args).not.toContain("PATCH")
+    expect(added[0]!.args.some(a => /^repos\/o\/r\/hooks\/\d+$/.test(a))).toBe(true)
+  })
+
+  it("attach recreates a hook deleted on GitHub even when the public URL is unchanged, keeping key + holder", async () => {
+    const { gh, hooks, provider } = harness()
+    const handle = await provider.create(specFor("github:o/r#1"), PUSH)
+    const before = hooks.getByRepo("o/r")!
+    gh.hooks.clear()
+
+    const re = await provider.attach(handle, PUSH)
+
+    const after = hooks.getByRepo("o/r")!
+    expect(after.hookId).not.toBe(before.hookId)
+    expect(after.key).toBe(before.key)
+    expect(after.holders).toEqual(before.holders)
+    // a fresh secret is minted for the fresh hook and pushed to GitHub, never via argv
+    expect(after.secret).not.toBe(before.secret)
+    expect(gh.hooks.get(after.hookId)!.config.url).toBe(`${ORIGIN}/inbound/sentinel-${before.key}`)
+    expect(re.remoteId).toBe(String(after.hookId))
+    expect(posts(gh)).toHaveLength(2)
+  })
+
+  it("attach tolerates a non-404 verify failure (GitHub unreachable at boot): no throw, no recreate", async () => {
+    const { gh, hooks, provider } = harness()
+    const handle = await provider.create(specFor("github:o/r#1"), PUSH)
+    const before = hooks.getByRepo("o/r")!
+    const realRun = gh.run
+    const offline: WebhookGhRunner = async (args, opts) => {
+      if (args.some(a => /^repos\/o\/r\/hooks\/\d+$/.test(a))) throw new Error("gh: connection refused")
+      return realRun(args, opts)
+    }
+    const flaky = webhookSentinelProvider({ gh: offline, hooks, publicUrl: () => stable(), now: () => new Date("2026-09-28T10:00:00.000Z") })
+
+    await expect(flaky.attach(handle, PUSH)).resolves.toMatchObject({ remoteId: String(before.hookId) })
+    expect(hooks.getByRepo("o/r")!.hookId).toBe(before.hookId)
+    expect(posts(gh)).toHaveLength(1)
+  })
+
+  it("create still fails loudly (strict) when verifying a recorded hook hits a non-404 error", async () => {
+    const { gh, hooks, provider } = harness()
+    await provider.create(specFor("github:o/r#1"), PUSH)
+    const realRun = gh.run
+    const offline: WebhookGhRunner = async (args, opts) => {
+      if (args.some(a => /^repos\/o\/r\/hooks\/\d+$/.test(a))) throw new Error("gh: connection refused")
+      return realRun(args, opts)
+    }
+    const flaky = webhookSentinelProvider({ gh: offline, hooks, publicUrl: () => stable(), now: () => new Date("2026-09-28T10:00:00.000Z") })
+    await expect(flaky.create(specFor("github:o/r#2"), PUSH)).rejects.toThrow(/connection refused/)
   })
 
   it("attach re-points once for several sentinels sharing the hook", async () => {

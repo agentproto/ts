@@ -59,6 +59,9 @@ export interface Sentinel {
 }
 
 export interface SentinelCreateInput {
+  /** Pre-minted id (see {@link mintSentinelId}); minted by the store when
+   *  omitted. */
+  id?: string
   spec: SentinelSpec
   provider: string
   handle: SentinelHandle
@@ -129,6 +132,12 @@ const PERSIST_DEBOUNCE_MS = 1_500
 const SEEN_CAP = 1_000
 
 let tmpSeq = 0
+
+/** `sen_<ulid>` — minted before provider `create` when the provider needs to
+ *  stamp the id remotely, then passed to `SentinelStore.create({id})`. */
+export function mintSentinelId(nowMs: number = Date.now()): string {
+  return `sen_${ulid(nowMs)}`
+}
 
 /** Only `kind: "session"` has a delivery implementation today — see
  *  {@link SentinelTargetNotImplementedError}. */
@@ -253,7 +262,7 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
 
     create(input: SentinelCreateInput): Sentinel {
       assertTargetImplemented(input.spec.target)
-      const id = `sen_${ulid(nowMs())}`
+      const id = input.id ?? mintSentinelId(nowMs())
       const sentinel: Sentinel = {
         id,
         spec: input.spec,

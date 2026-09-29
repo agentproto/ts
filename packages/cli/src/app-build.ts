@@ -27,6 +27,7 @@
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process"
 import { readFile } from "node:fs/promises"
+import type { Socket } from "node:net"
 import { join, resolve } from "node:path"
 import { parseArgs } from "node:util"
 
@@ -67,6 +68,35 @@ function killTree(child: ChildProcess, sig: NodeJS.Signals): void {
   }
 }
 
+/**
+ * POSIX guard for the one exit no in-process handler sees: this process being
+ * SIGKILLed / crashing hard. The build group is detached, so it would be
+ * reparented to init and keep running (a wedged script then spins forever).
+ * The watchdog is a detached `sh` whose stdin is a pipe we never write to:
+ * the kernel closes our end when we die for any reason, `read` hits EOF, and
+ * the watchdog tears the build group down. Kill it once the build is over.
+ */
+export function spawnParentDeathWatchdog(pgid: number): ChildProcess {
+  const watchdog = spawn(
+    "sh",
+    [
+      "-c",
+      'read _ ; kill -TERM -"$1" 2>/dev/null; sleep 2; kill -KILL -"$1" 2>/dev/null',
+      "sh",
+      String(pgid),
+    ],
+    { stdio: ["pipe", "ignore", "ignore"], detached: true },
+  )
+  // Never keep the event loop alive on the watchdog's account.
+  watchdog.on("error", () => {})
+  watchdog.unref()
+  // Child stdio pipes are net.Sockets; an open one also holds the loop.
+  const stdin = watchdog.stdin as Socket | null
+  stdin?.on("error", () => {})
+  stdin?.unref()
+  return watchdog
+}
+
 interface BuildRun {
   code: number
   /** Set when the tree was killed by abort / timeout rather than exiting on its own. */
@@ -76,7 +106,8 @@ interface BuildRun {
 /**
  * Spawn `<cmd> <argv>` inheriting stdio, in its own process group, and
  * guarantee the tree never outlives this call: abort, timeout, a fatal signal
- * to this process, or this process exiting all kill the whole group.
+ * to this process, or this process exiting all kill the whole group, and (POSIX)
+ * {@link spawnParentDeathWatchdog} covers this process dying uncatchably.
  */
 function spawnBuildTree(
   cmd: string,
@@ -90,6 +121,9 @@ function spawnBuildTree(
       cwd: opts.cwd,
       detached: posix,
     })
+
+    const watchdog =
+      posix && child.pid !== undefined ? spawnParentDeathWatchdog(child.pid) : undefined
 
     let stopped: BuildRun["stopped"]
     let graceTimer: NodeJS.Timeout | undefined
@@ -119,6 +153,8 @@ function spawnBuildTree(
     const onAbort = (): void => stop("aborted")
 
     const cleanup = (): void => {
+      // SIGKILL (not EOF): EOF would make it signal a group that may be gone.
+      watchdog?.kill("SIGKILL")
       if (graceTimer) clearTimeout(graceTimer)
       if (timeoutTimer) clearTimeout(timeoutTimer)
       process.off("SIGINT", onSigint)

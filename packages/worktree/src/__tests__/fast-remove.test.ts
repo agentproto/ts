@@ -8,7 +8,8 @@
 
 import { describe, it, expect, afterEach } from "vitest"
 import { mkdtemp, rm, writeFile, mkdir, readdir, readFile } from "node:fs/promises"
-import { existsSync } from "node:fs"
+import { existsSync, writeFileSync } from "node:fs"
+import { spawnSync } from "node:child_process"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 import { realpathSync } from "node:fs"
@@ -16,6 +17,7 @@ import {
 	removeWorktreeFast,
 	sweepWorktreeTrash,
 	ensureTrashDeleter,
+	DELETER_SCRIPT,
 	WORKTREE_TRASH_DIRNAME,
 	WORKTREE_TRASH_PIDFILE,
 } from "../fast-remove.js"
@@ -236,6 +238,15 @@ describe("removeWorktreeFast", () => {
 	}, 20_000)
 })
 
+/** Stand-in deleter that, like the real script, writes its own pid file. */
+function fakeDeleter(spawned: string[]): (trashParent: string) => number {
+	return (trashParent) => {
+		spawned.push(trashParent)
+		writeFileSync(join(trashParent, WORKTREE_TRASH_PIDFILE), String(process.pid))
+		return process.pid
+	}
+}
+
 describe("serialized background deleter", () => {
 	it("two removals in a row spawn ONE deleter for the pool", async () => {
 		const repoRoot = await makeRepo()
@@ -243,10 +254,7 @@ describe("serialized background deleter", () => {
 		const b = await addWorktree(repoRoot, "burst-b")
 		const spawned: string[] = []
 		// process.pid is alive for the whole test, standing in for a running deleter.
-		const spawnDeleter = (trashParent: string) => {
-			spawned.push(trashParent)
-			return process.pid
-		}
+		const spawnDeleter = fakeDeleter(spawned)
 
 		await removeWorktreeFast(repoRoot, a, { spawnDeleter })
 		await removeWorktreeFast(repoRoot, b, { spawnDeleter })
@@ -264,13 +272,33 @@ describe("serialized background deleter", () => {
 		await writeFile(join(trashParent, WORKTREE_TRASH_PIDFILE), "2147483646")
 		const spawned: string[] = []
 
-		ensureTrashDeleter(trashParent, (dir) => {
-			spawned.push(dir)
-			return process.pid
-		})
+		ensureTrashDeleter(trashParent, fakeDeleter(spawned))
 
 		expect(spawned).toEqual([trashParent])
 		expect(await readFile(join(trashParent, WORKTREE_TRASH_PIDFILE), "utf8")).toBe(String(process.pid))
+	})
+
+	it("a deleter that finishes before ensureTrashDeleter returns leaves no stale pid file (fast-runner race)", async () => {
+		const trashParent = await mkdtemp(join(tmpdir(), "wt-fast-trash-"))
+		cleanupPaths.push(trashParent)
+		await mkdir(join(trashParent, "one"), { recursive: true })
+		await writeFile(join(trashParent, "one", "x"), "y\n")
+
+		// Deterministic stand-in for a fast runner: the REAL deleter script runs
+		// to completion (drains the dir, fires its EXIT trap) before the spawn
+		// call even returns — i.e. before the parent could write any pid file.
+		ensureTrashDeleter(trashParent, (dir) => spawnSync("sh", ["-c", DELETER_SCRIPT, "_", dir]).pid)
+
+		expect(await readdir(trashParent)).toEqual([])
+	}, 20_000)
+
+	it("drops the placeholder pid file when no deleter was started", async () => {
+		const trashParent = await mkdtemp(join(tmpdir(), "wt-fast-trash-"))
+		cleanupPaths.push(trashParent)
+
+		ensureTrashDeleter(trashParent, () => undefined)
+
+		expect(await readdir(trashParent)).toEqual([])
 	})
 
 	it("the real deleter drains every trash dir and removes its pid file", async () => {

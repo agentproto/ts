@@ -259,11 +259,19 @@ jobs:
       # `node scripts/sync-specs.mjs` and commits the result. Without --source
       # (local runs with no sibling checkout) --check falls back to the
       # network-free allowlist-integrity half — see scripts/sync-specs.mjs.
+      # Pinned, not main: specs/canonical.lock.json records the canonical
+      # commit the vendored tree was synced from (written by
+      # scripts/sync-specs.mjs). A canonical merge therefore never turns ts
+      # CI red on its own; the aip-sync PR moves the pin.
+      - name: Read pinned canonical commit
+        id: canon
+        run: echo "sha=$(node -p "require('./specs/canonical.lock.json').sha")" >> "$GITHUB_OUTPUT"
+
       - name: Checkout canonical specs
         uses: actions/checkout@v5
         with:
           repository: agentproto/agentproto
-          ref: main
+          ref: ${{ steps.canon.outputs.sha }}
           path: .canonical-specs
           fetch-depth: 1
 
@@ -447,6 +455,13 @@ jobs:
             AFFECTED="--affected"
           fi
           pnpm exec turbo run build $AFFECTED $FILTERS
+          # Suites that load a package's `dist/` without depending on it (the
+          # cli's jcode smoke test) — built unscoped by --affected, see
+          # BUILD_EXTRAS in scripts/ci-test-shards.mjs.
+          EXTRAS=$(node scripts/ci-test-shards.mjs --shard ${{ matrix.shard }} --of 4 --extras)
+          if [ -n "$EXTRAS" ]; then
+            pnpm exec turbo run build $EXTRAS
+          fi
         env:
           TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
           TURBO_TEAM: agentproto-ts
