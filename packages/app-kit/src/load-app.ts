@@ -44,6 +44,7 @@ import type {
   AgentEntry,
   AppArtifactDecl,
   AppDataDefinition,
+  AppDefinition,
   AppDevDefinition,
   AppHandle,
   AppUiBuildConfig,
@@ -51,6 +52,7 @@ import type {
 import { defineApp } from "./define-app.js"
 import { AppLoadError } from "./errors.js"
 import { loadAppBundledTools } from "./load-app-tools.js"
+import { normalizeManifestFields } from "./manifest-fields.js"
 
 export { AppLoadError }
 
@@ -94,7 +96,10 @@ interface AppFrontmatter {
   readonly agents: readonly AppRef[]
   readonly workflows: readonly AppRef[]
   readonly workspace?: string
-  readonly requires?: readonly string[]
+  readonly requires?: AppDefinition["requires"]
+  readonly placement?: AppDefinition["placement"]
+  readonly exposes?: AppDefinition["exposes"]
+  readonly accepts?: AppDefinition["accepts"]
   readonly ui?: AppFrontmatterUi
   readonly artifact?: AppFrontmatterArtifact
   readonly skill?: AppFrontmatterSkill
@@ -249,11 +254,13 @@ function parseAppFrontmatter(data: Record<string, unknown>, appPath: string): Ap
       `'${appPath}': frontmatter 'workflows' must be an array of { id, path }.`,
     )
   }
-  if (data.requires !== undefined) {
-    if (!Array.isArray(data.requires) || !data.requires.every((e) => typeof e === "string")) {
-      throw new AppLoadError(`'${appPath}': frontmatter 'requires' must be an array of strings.`)
-    }
-  }
+  // placement / requires / exposes / accepts: shape, enum and "exposed id is
+  // declared" checks, same rules `defineApp` re-applies.
+  normalizeManifestFields(
+    data,
+    { agents: data.agents.map(a => a.id), workflows: data.workflows.map(w => w.id) },
+    msg => new AppLoadError(`'${appPath}': frontmatter ${msg}`),
+  )
   if (data.data !== undefined) {
     const d = data.data as { dir?: unknown } | null
     if (
@@ -411,6 +418,9 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
     ...(fm.version !== undefined ? { version: fm.version } : {}),
     ...(fm.description !== undefined ? { description: fm.description } : {}),
     ...(fm.requires !== undefined ? { requires: fm.requires } : {}),
+    ...(fm.placement !== undefined ? { placement: fm.placement } : {}),
+    ...(fm.exposes !== undefined ? { exposes: fm.exposes } : {}),
+    ...(fm.accepts !== undefined ? { accepts: fm.accepts } : {}),
     ...(ui !== undefined ? { ui } : {}),
     ...(fm.artifact !== undefined
       ? { artifact: { path: resolveRef(dir, fm.artifact.path), ...(fm.artifact.title !== undefined ? { title: fm.artifact.title } : {}), ...(fm.artifact.description !== undefined ? { description: fm.artifact.description } : {}) } }

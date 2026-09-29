@@ -34,6 +34,18 @@ import { generateIdentity, identityFingerprint, type DaemonIdentity } from "@age
 import { createHostRegistry, type HostRegistry } from "../host-registry.js"
 import { connect, type Middleware } from "./frame-harness.js"
 
+const realSetTimeout = globalThis.setTimeout
+
+/** Advance fake timers in steps, yielding real time between steps: a poll's
+ *  crypto/dial work is real async, so its follow-up timer is only scheduled a
+ *  few real ms after the previous fake tick fired. */
+async function advanceInSteps(totalMs: number, stepMs: number): Promise<void> {
+  for (let done = 0; done < totalMs; done += stepMs) {
+    await vi.advanceTimersByTimeAsync(stepMs)
+    await new Promise<void>(r => realSetTimeout(r, 10))
+  }
+}
+
 function stubUpstream(delayMs = 0, status = 200): void {
   vi.stubGlobal(
     "fetch",
@@ -128,7 +140,7 @@ function makeEpochAwareDial(identity: DaemonIdentity, offerAuth: string) {
     const { a, b } = connect()
     void runFakeDaemon(a, identity, verifyAuthToken).then(async session => {
       if (pairRootServer === null) pairRootServer = await derivePairRoot(session)
-    })
+    }).catch(() => undefined) // a rejected attempt (skewed injected clock) is retried by the client
     return b
   })
   // The server-side `.then()` above (capturing `pairRootServer`) is a
@@ -474,82 +486,243 @@ describe("createHostRegistry", () => {
     })
   })
 
-  describe("pruning join-token-added hosts (SANDBOX-VISIBILITY-JOIN #3)", () => {
-    it("prunes a join-token-added host whose lastSeen is past joinedHostTtlMs, on the next list()", async () => {
+  describe("ended hosts: mark and gc (SANDBOX-VISIBILITY-JOIN #3)", () => {
+    const H = 3_600_000
+    const D = 24 * H
+
+    /** A join-added host through the real `add()` path, with an injectable clock. */
+    async function joinedRegistry(opts: Partial<Parameters<typeof createHostRegistry>[0]> = {}, name = "ci-reviewer #1536") {
       const identity = await generateIdentity()
-      const { url, auth } = await makeOffer(identity, { scope: "host" })
-      const dial = vi.fn(async () => {
-        const { a, b } = connect()
-        void runFakeDaemon(a, identity, token => token === auth)
-        return b
-      })
-      let clock = Date.now()
+      const { url, auth, fingerprint } = await makeOffer(identity, { scope: "host" })
+      const { dial, waitReady } = makeEpochAwareDial(identity, auth)
+      const t0 = Date.now()
+      let clock = t0
       const registry = createHostRegistry({
         hostsPath,
         dial,
         now: () => clock,
-        joinedHostTtlMs: 1_000,
+        handshakeTimeoutMs: 2_000,
+        snapshotIntervalMs: 0,
+        ...opts,
       })
-      await registry.add(url, "ci-reviewer #1536", { joined: true })
-      expect(await registry.list()).toHaveLength(1)
+      await registry.add(url, name, { joined: true })
+      await waitReady()
+      return { registry, fingerprint, dial, t0, advance: (ms: number) => (clock += ms) }
+    }
 
-      clock += 2_000
-      const list = await registry.list()
-      expect(list).toHaveLength(0)
+    function rawHost(over: Record<string, unknown>): Record<string, unknown> {
+      return {
+        fingerprint: "a".repeat(32),
+        name: "ci-reviewer #1",
+        daemonX25519Pub: "pk",
+        daemonEd25519Pub: "sk",
+        rendezvousUrl: "wss://rdv.example/v1",
+        pairRoot: "root",
+        createdAt: "2026-09-29T00:00:00.000Z",
+        lastSeen: "2026-09-29T00:00:00.000Z",
+        addedVia: "join",
+        ...over,
+      }
+    }
 
-      // Actually persisted, not just filtered in memory.
+    it("marks a join-added host ended once unreachable past the TTL (default 2h), stamped when the TTL lapsed", async () => {
+      const { registry, t0, advance } = await joinedRegistry()
+      advance(H + 60_000)
+      expect((await registry.list())[0]?.ended).toBeUndefined()
+
+      advance(2 * H) // now 3h1m past the last contact
+      const [rec] = await registry.list()
+      expect(rec).toMatchObject({ ended: true, endReason: "ttl" })
+      expect(Date.parse(rec!.endedAt!)).toBe(t0 + 2 * H)
+      expect(JSON.parse(await readFile(hostsPath, "utf8")).hosts[0]).toMatchObject({ ended: true, endReason: "ttl" })
+      expect(registry.isOnline(rec!.fingerprint)).toBe(false)
+    })
+
+    it("a host reached within the TTL is not ended", async () => {
+      const { registry, fingerprint, advance } = await joinedRegistry({ onlineGraceMs: 1_000 })
+      advance(H + 30 * 60_000)
+      await registry.forwardHttp(fingerprint, { method: "GET", path: "/health" })
+      advance(H + 30 * 60_000) // 3h since join, 1.5h since last contact
+      expect((await registry.list())[0]?.ended).toBeUndefined()
+    })
+
+    it("endedTtlMs is configurable and 0 disables ending", async () => {
+      const short = await joinedRegistry({ endedTtlMs: 1_000 })
+      short.advance(2_000)
+      expect((await short.registry.list())[0]?.ended).toBe(true)
+
+      const off = await joinedRegistry({ endedTtlMs: 0, hostsPath: join(tmp, "off.json") }, "other")
+      off.advance(365 * D)
+      expect((await off.registry.list())[0]?.ended).toBeUndefined()
+    })
+
+    it("deletes an ended join host after the retention (default 7 days) and persists the deletion", async () => {
+      const { registry, advance } = await joinedRegistry()
+      advance(3 * H)
+      expect(await registry.list()).toHaveLength(1) // ended, retained
+      advance(6 * D)
+      expect(await registry.list()).toHaveLength(1) // 6d3h since join = 6d1h since ended
+      advance(2 * D)
+      expect(await registry.list()).toHaveLength(0)
+      expect(JSON.parse(await readFile(hostsPath, "utf8")).hosts).toHaveLength(0)
+    })
+
+    it("endedRetentionMs is configurable and 0 keeps ended hosts forever", async () => {
+      const keep = await joinedRegistry({ endedRetentionMs: 0 })
+      keep.advance(365 * D)
+      expect((await keep.registry.list())[0]?.ended).toBe(true)
+
+      const quick = await joinedRegistry({ endedTtlMs: 1_000, endedRetentionMs: 5_000, hostsPath: join(tmp, "quick.json") }, "quick")
+      quick.advance(2_000)
+      expect(await quick.registry.list()).toHaveLength(1)
+      quick.advance(5_000)
+      expect(await quick.registry.list()).toHaveLength(0)
+    })
+
+    it("never deletes (or ends) a manually added host — it only shows stale", async () => {
+      const hosts = [
+        rawHost({ fingerprint: "b".repeat(32), name: "office-mac", addedVia: "manual" }),
+        rawHost({ fingerprint: "c".repeat(32), name: "old-record-no-marker", addedVia: undefined, lastSeen: "2026-09-29T00:00:00.000Z", createdAt: "2026-08-01T00:00:00.000Z" }),
+        rawHost({ fingerprint: "d".repeat(32), name: "ci-old", ended: true, endedAt: "2026-09-01T00:00:00.000Z", endReason: "ttl" }),
+      ]
+      await writeFile(hostsPath, JSON.stringify({ v: 1, hosts }))
+      const fresh = createHostRegistry({ hostsPath, dial: vi.fn(), snapshotIntervalMs: 0, now: () => Date.parse("2027-01-01T00:00:00.000Z") })
+      const listed = await fresh.list()
+      expect(listed.map(h => h.name).sort()).toEqual(["office-mac", "old-record-no-marker"])
+      for (const h of listed) {
+        expect(h.ended).toBeUndefined()
+        expect(h.stale).toBe(true)
+      }
       const file = JSON.parse(await readFile(hostsPath, "utf8"))
-      expect(file.hosts).toHaveLength(0)
+      expect(file.hosts.map((h: { name: string }) => h.name).sort()).toEqual(["office-mac", "old-record-no-marker"])
+      expect(file.hosts.some((h: { stale?: boolean }) => h.stale !== undefined)).toBe(false) // computed, never persisted
     })
 
-    it("never prunes a manually-added host, regardless of joinedHostTtlMs", async () => {
-      const identity = await generateIdentity()
-      const { url, auth } = await makeOffer(identity, { scope: "host" })
-      const dial = vi.fn(async () => {
-        const { a, b } = connect()
-        void runFakeDaemon(a, identity, token => token === auth)
-        return b
-      })
-      let clock = Date.now()
+    it("a manual host reached recently is not stale", async () => {
+      await writeFile(hostsPath, JSON.stringify({ v: 1, hosts: [rawHost({ name: "office-mac", addedVia: "manual" })] }))
       const registry = createHostRegistry({
         hostsPath,
-        dial,
-        now: () => clock,
-        joinedHostTtlMs: 1_000,
+        dial: vi.fn(),
+        snapshotIntervalMs: 0,
+        now: () => Date.parse("2026-09-29T01:00:00.000Z"),
       })
-      await registry.add(url, "office-mac") // no meta.joined — the human ceremony
-
-      clock += 2_000
-      expect(await registry.list()).toHaveLength(1)
+      expect((await registry.list())[0]?.stale).toBeUndefined()
     })
 
-    it("joinedHostTtlMs: 0 disables pruning entirely", async () => {
+    it("sweep() applies the lifecycle to a freshly loaded file without anyone calling list()", async () => {
+      await writeFile(
+        hostsPath,
+        JSON.stringify({
+          v: 1,
+          hosts: [
+            rawHost({ fingerprint: "a".repeat(32), name: "stale-ci", lastSeen: "2026-09-29T00:00:00.000Z" }),
+            rawHost({ fingerprint: "b".repeat(32), name: "ancient-ci", lastSeen: "2026-08-01T00:00:00.000Z" }),
+          ],
+        }),
+      )
+      const registry = createHostRegistry({
+        hostsPath,
+        dial: vi.fn(),
+        snapshotIntervalMs: 0,
+        now: () => Date.parse("2026-09-29T05:00:00.000Z"),
+      })
+      await registry.sweep()
+      const file = JSON.parse(await readFile(hostsPath, "utf8"))
+      expect(file.hosts).toHaveLength(1)
+      expect(file.hosts[0]).toMatchObject({ name: "stale-ci", ended: true, endReason: "ttl" })
+    })
+
+    it("markEnded ends a join host immediately (goodbye), is idempotent, and refuses manual or unknown hosts", async () => {
+      const { registry, fingerprint, advance } = await joinedRegistry()
+      expect(registry.isOnline(fingerprint)).toBe(true)
+      advance(1_000)
+      expect(await registry.markEnded(fingerprint)).toBe(true)
+      const [rec] = await registry.list()
+      expect(rec).toMatchObject({ ended: true, endReason: "goodbye" })
+      expect(registry.isOnline(fingerprint)).toBe(false)
+      const endedAt = rec!.endedAt
+      advance(1_000)
+      expect(await registry.markEnded(fingerprint)).toBe(true)
+      expect((await registry.list())[0]?.endedAt).toBe(endedAt)
+      expect(JSON.parse(await readFile(hostsPath, "utf8")).hosts[0]).toMatchObject({ ended: true, endReason: "goodbye" })
+
+      expect(await registry.markEnded("nope")).toBe(false)
+
       const identity = await generateIdentity()
-      const { url, auth } = await makeOffer(identity, { scope: "host" })
+      const offer = await makeOffer(identity, { scope: "host" })
+      const manual = createHostRegistry({
+        hostsPath: join(tmp, "manual-hosts.json"),
+        snapshotIntervalMs: 0,
+        dial: vi.fn(async () => {
+          const { a, b } = connect()
+          void runFakeDaemon(a, identity, token => token === offer.auth).catch(() => undefined) // later epoch dials are refused; not under test
+          return b
+        }),
+      })
+      await manual.add(offer.url, "office-mac")
+      expect(await manual.markEnded("office-mac")).toBe(false)
+      expect((await manual.list())[0]?.ended).toBeUndefined()
+    })
+
+    it("re-adding an ended host's fingerprint (a rejoin) makes it live again", async () => {
+      const identity = await generateIdentity()
+      let offer = await makeOffer(identity, { scope: "host" })
       const dial = vi.fn(async () => {
         const { a, b } = connect()
-        void runFakeDaemon(a, identity, token => token === auth)
+        const o = offer
+        void runFakeDaemon(a, identity, token => token === o.auth).catch(() => undefined) // later epoch dials are refused; not under test
         return b
       })
-      let clock = Date.now()
-      const registry = createHostRegistry({ hostsPath, dial, now: () => clock, joinedHostTtlMs: 0 })
-      await registry.add(url, "ci-reviewer #1536", { joined: true })
+      const registry = createHostRegistry({ hostsPath, dial, snapshotIntervalMs: 0 })
+      await registry.add(offer.url, "ci-reviewer #9", { joined: true })
+      await registry.markEnded(offer.fingerprint)
+      expect((await registry.list())[0]?.ended).toBe(true)
 
-      clock += 365 * 86_400_000
-      expect(await registry.list()).toHaveLength(1)
+      offer = await makeOffer(identity, { scope: "host" })
+      await registry.add(offer.url, "ci-reviewer #9", { joined: true })
+      expect((await registry.list())[0]?.ended).toBeUndefined()
     })
 
-    it("addedVia: 'manual' is sticky — a manually-added host re-joined later via a token stays unprunable", async () => {
+    it("stops polling a host once it is ended, and never resumes polling an ended host at boot", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+      try {
+        const identity = await generateIdentity()
+        const offer = await makeOffer(identity, { scope: "host" })
+        const { dial, waitReady } = makeEpochAwareDial(identity, offer.auth)
+        const registry = createHostRegistry({
+          hostsPath,
+          dial,
+          handshakeTimeoutMs: 2_000,
+          snapshotIntervalMs: 15_000,
+          snapshotActiveIntervalMs: 5_000,
+        })
+        await registry.add(offer.url, "ci-reviewer #10", { joined: true })
+        await waitReady()
+        await registry.markEnded(offer.fingerprint)
+        const dials = dial.mock.calls.length
+        await advanceInSteps(60_000, 5_000)
+        expect(dial.mock.calls.length).toBe(dials)
+
+        const reloaded = createHostRegistry({ hostsPath, dial, handshakeTimeoutMs: 2_000, snapshotIntervalMs: 15_000 })
+        await reloaded.start()
+        await advanceInSteps(60_000, 5_000)
+        expect(dial.mock.calls.length).toBe(dials)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("addedVia: 'manual' is sticky — a manually-added host re-joined later via a token is never ended", async () => {
       const identity = await generateIdentity()
       const dial = vi.fn(async () => {
         const { a, b } = connect()
         const offer = lastOffer
-        void runFakeDaemon(a, identity, token => token === offer!.auth)
+        void runFakeDaemon(a, identity, token => token === offer!.auth).catch(() => undefined) // later epoch dials are refused; not under test
         return b
       })
       let lastOffer: Awaited<ReturnType<typeof makeOffer>> | undefined
       let clock = Date.now()
-      const registry = createHostRegistry({ hostsPath, dial, now: () => clock, joinedHostTtlMs: 1_000 })
+      const registry = createHostRegistry({ hostsPath, dial, now: () => clock, snapshotIntervalMs: 0, endedTtlMs: 1_000 })
 
       lastOffer = await makeOffer(identity, { scope: "host" })
       await registry.add(lastOffer.url, "office-mac") // the human ceremony first
@@ -558,9 +731,9 @@ describe("createHostRegistry", () => {
       await registry.add(lastOffer.url, "office-mac (rejoined)", { joined: true }) // same fingerprint, now via token
 
       clock += 2_000
-      // Still "manual" underneath (unprunable), even though the most recent
-      // add() call reported `joined: true`.
-      expect(await registry.list()).toHaveLength(1)
+      const [rec] = await registry.list()
+      expect(rec?.ended).toBeUndefined()
+      expect(await registry.markEnded(lastOffer.fingerprint)).toBe(false)
     })
 
     it("addedVia: a join-added host later manually re-added flips to 'manual' — an explicit human action takes ownership", async () => {
@@ -568,12 +741,12 @@ describe("createHostRegistry", () => {
       const dial = vi.fn(async () => {
         const { a, b } = connect()
         const offer = lastOffer
-        void runFakeDaemon(a, identity, token => token === offer!.auth)
+        void runFakeDaemon(a, identity, token => token === offer!.auth).catch(() => undefined) // later epoch dials are refused; not under test
         return b
       })
       let lastOffer: Awaited<ReturnType<typeof makeOffer>> | undefined
       let clock = Date.now()
-      const registry = createHostRegistry({ hostsPath, dial, now: () => clock, joinedHostTtlMs: 1_000 })
+      const registry = createHostRegistry({ hostsPath, dial, now: () => clock, snapshotIntervalMs: 0, endedTtlMs: 1_000 })
 
       lastOffer = await makeOffer(identity, { scope: "host" })
       await registry.add(lastOffer.url, "ci-reviewer #1536", { joined: true })
@@ -582,7 +755,7 @@ describe("createHostRegistry", () => {
       await registry.add(lastOffer.url, "renamed-by-human") // no meta — a manual re-add
 
       clock += 2_000
-      expect(await registry.list()).toHaveLength(1)
+      expect((await registry.list())[0]?.ended).toBeUndefined()
     })
   })
 
@@ -707,7 +880,7 @@ describe("createHostRegistry", () => {
       expect(registry.getSessionsSnapshot(fingerprint, "/sessions/sess_zzz/output")).toBeUndefined()
     })
 
-    it("the background poll starts on join, takes a snapshot on its own, and stops after repeated unreachable polls", async () => {
+    it("the background poll starts on join, takes a snapshot on its own, and backs off (never gives up) once unreachable", async () => {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
       try {
         const state = {
@@ -719,6 +892,7 @@ describe("createHostRegistry", () => {
           snapshotIntervalMs: 15_000,
           snapshotActiveIntervalMs: 5_000,
           snapshotMaxFailures: 2,
+          probeBackoffMaxMs: 60_000,
         })
         // Nobody asked for anything — the first poll fires on its own, one
         // active-interval after the join.
@@ -734,19 +908,124 @@ describe("createHostRegistry", () => {
           expect(JSON.parse(Buffer.from(out!.body).toString("utf8")).lines).toContain("VERDICT: approve")
         })
 
-        // The runner exits: polls fail, the loop gives up after 2 and keeps the last capture.
+        // The runner exits: polls fail; after 2 the loop backs off (doubling to
+        // the cap) but keeps probing, and keeps the last capture.
         const dialsBefore = dial.mock.calls.length
         dial.mockImplementation(async () => {
           throw new Error("gone")
         })
-        for (let i = 0; i < 6; i++) await vi.advanceTimersByTimeAsync(20_000)
+        await advanceInSteps(120_000, 5_000)
         const failedPolls = dial.mock.calls.length - dialsBefore
-        expect(failedPolls).toBeGreaterThanOrEqual(2)
-        expect(failedPolls).toBeLessThanOrEqual(4) // 2 polls x (current + previous epoch attempt)
+        expect(failedPolls).toBeGreaterThanOrEqual(4) // >= 2 polls x (current + previous epoch attempt)
+        expect(failedPolls).toBeLessThanOrEqual(10)
+        expect((await registry.list())[0]?.lastError).toMatch(/gone/)
+
         const settled = dial.mock.calls.length
-        await vi.advanceTimersByTimeAsync(120_000)
-        expect(dial.mock.calls.length).toBe(settled)
+        await advanceInSteps(300_000, 5_000)
+        const laterPolls = dial.mock.calls.length - settled
+        expect(laterPolls).toBeGreaterThanOrEqual(2) // still probing
+        expect(laterPolls).toBeLessThanOrEqual(12) // but at the capped 60s cadence, not every 5s
         expect(registry.getSessionsSnapshot(fingerprint, "/sessions/sess_a/output")?.stale).toBe(true)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("a failed contact leaves online false and records lastProbeAt/lastError; a later success clears the error", async () => {
+      const { registry, fingerprint, dial, advance } = await joinedHost({ onlineGraceMs: 10_000 })
+      const working = dial.getMockImplementation()!
+
+      advance(11_000)
+      dial.mockImplementation(async () => {
+        throw new Error("handshake timed out")
+      })
+      await expect(registry.forwardHttp(fingerprint, { method: "GET", path: "/health" })).rejects.toThrow(/could not reach host/)
+      expect(registry.isOnline(fingerprint)).toBe(false)
+      const failed = (await registry.list())[0]!
+      expect(failed.lastError).toBe("handshake timed out")
+      expect(Date.parse(failed.lastProbeAt!)).toBe(Date.parse(failed.createdAt) + 11_000)
+      expect(failed.lastSeen).toBe(failed.createdAt) // a failed attempt is not "seen"
+      expect(JSON.parse(await readFile(hostsPath, "utf8")).hosts[0].lastError).toBe("handshake timed out")
+
+      // Same error again: memory updates, disk is left alone.
+      const mtime = (await stat(hostsPath)).mtimeMs
+      await new Promise(r => setTimeout(r, 25))
+      advance(1_000)
+      await expect(registry.forwardHttp(fingerprint, { method: "GET", path: "/health" })).rejects.toThrow()
+      expect((await stat(hostsPath)).mtimeMs).toBe(mtime)
+      expect(Date.parse((await registry.list())[0]!.lastProbeAt!)).toBe(Date.parse(failed.createdAt) + 12_000)
+
+      dial.mockImplementation(working)
+      await registry.forwardHttp(fingerprint, { method: "GET", path: "/health" })
+      expect(registry.isOnline(fingerprint)).toBe(true)
+      const recovered = (await registry.list())[0]!
+      expect(recovered.lastError).toBeUndefined()
+      expect(JSON.parse(await readFile(hostsPath, "utf8")).hosts[0].lastError).toBeUndefined()
+    })
+
+    it("start() resumes polling join-added hosts loaded from disk (a daemon restart), and skips manual hosts", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+      try {
+        stubSessions({ sessions: [{ id: "sess_a", status: "exited" }], lines: { sess_a: ["done"] } })
+        const identity = await generateIdentity()
+        const joined = await makeOffer(identity, { scope: "host" })
+        const { dial, waitReady } = makeEpochAwareDial(identity, joined.auth)
+        const first = createHostRegistry({ hostsPath, dial, handshakeTimeoutMs: 2_000, snapshotIntervalMs: 0 })
+        await first.add(joined.url, "ci-reviewer #1566", { joined: true })
+        await waitReady()
+
+        // Same file, a "new daemon process": nothing polls until start().
+        const second = createHostRegistry({ hostsPath, dial, handshakeTimeoutMs: 2_000, snapshotIntervalMs: 15_000 })
+        const dialsBefore = dial.mock.calls.length
+        await vi.advanceTimersByTimeAsync(30_000)
+        expect(dial.mock.calls.length).toBe(dialsBefore)
+
+        await second.start()
+        await vi.advanceTimersByTimeAsync(6_000)
+        await vi.waitFor(() => expect(second.getSessionsSnapshot(joined.fingerprint, "/sessions")).toBeDefined())
+        const row = (await second.list())[0]!
+        expect(row.lastProbeAt).toBeDefined()
+        expect(second.isOnline(joined.fingerprint)).toBe(true)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("caps concurrent background probes at probeConcurrency", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+      try {
+        const hosts = Array.from({ length: 5 }, (_, i) => ({
+          fingerprint: String(i).repeat(32),
+          name: `ci-${i}`,
+          daemonX25519Pub: "pk",
+          daemonEd25519Pub: "sk",
+          rendezvousUrl: "wss://rdv.example/v1",
+          pairRoot: "root",
+          createdAt: new Date().toISOString(),
+          lastSeen: new Date().toISOString(),
+          addedVia: "join",
+        }))
+        await writeFile(hostsPath, JSON.stringify({ v: 1, hosts }))
+        let inFlight = 0
+        let peak = 0
+        const dial = vi.fn(async () => {
+          inFlight++
+          peak = Math.max(peak, inFlight)
+          await new Promise(r => setTimeout(r, 1_000))
+          inFlight--
+          throw new Error("down")
+        })
+        const registry = createHostRegistry({
+          hostsPath,
+          dial,
+          snapshotIntervalMs: 60_000,
+          snapshotActiveIntervalMs: 1_000,
+          probeConcurrency: 2,
+        })
+        await registry.start()
+        await advanceInSteps(20_000, 500)
+        expect(dial.mock.calls.length).toBeGreaterThanOrEqual(5)
+        expect(peak).toBeLessThanOrEqual(2)
       } finally {
         vi.useRealTimers()
       }
