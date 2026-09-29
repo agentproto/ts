@@ -10,10 +10,9 @@
  * detected that — this script does.
  *
  * How it works: re-runs `scripts/scaffold-aip.mjs --schema-only` against
- * the vendored JSON draft in an isolated temp tree (the scaffolder
- * hardcodes `SPEC_DIR = <repo>/../agentproto/specs`, which does not exist
- * in checkouts/CI, so we stage `<tmp>/agentproto/specs` + a copy of the
- * scaffolder and run it from there), then diffs the emitted schema.ts
+ * the vendored JSON draft in an isolated temp tree (no sibling specs
+ * checkout). The same repo-local path is used for direct generation and
+ * the drift check, then the emitted schema.ts is diffed
  * against the checked-in `packages/<slug>/src/schema.ts`. Exit 1 on any
  * divergence.
  *
@@ -32,7 +31,7 @@
  */
 
 import { spawnSync } from "node:child_process"
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -74,45 +73,24 @@ function parseArgs(argv) {
   return args
 }
 
-export function specDirCandidates(root) {
-  return [
-    resolve(root, "specs"), // vendored layout (this repo, CI)
-    resolve(root, "..", "agentproto", "specs"), // sibling spec-repo layout
-  ]
-}
-
 /**
  * Stage the temp tree the scaffolder needs:
  *   <tmp>/repo/scripts/scaffold-aip.mjs   — copy (TS_ROOT must be <tmp>/repo)
  *   <tmp>/repo/node_modules               — symlink to the real one
- *   <tmp>/agentproto/specs/resources      — symlink to the real drafts
- *   <tmp>/agentproto/specs/aip-<N>.mdx    — real spec if found, else a stub
- *                                             (only its frontmatter is read)
+ *   <tmp>/repo/specs/resources           — symlink to the vendored drafts
+ * No sibling checkout or MDX stub is required.
  * Returns { tmp, scaffoldPath, specJsonPath }.
  */
 export function stageTempTree(root, { aip, slug, doctype }) {
   const tmp = mkdtempSync(join(tmpdir(), "spec-drift-"))
   const repo = join(tmp, "repo")
-  const specs = join(tmp, "agentproto", "specs")
+  const specs = join(repo, "specs")
   mkdirSync(join(repo, "scripts"), { recursive: true })
   mkdirSync(specs, { recursive: true })
 
   cpSync(join(root, "scripts", "scaffold-aip.mjs"), join(repo, "scripts", "scaffold-aip.mjs"))
   symlinkSync(join(root, "node_modules"), join(repo, "node_modules"))
   symlinkSync(join(root, "specs", "resources"), join(specs, "resources"))
-
-  const mdx = `aip-${aip}.mdx`
-  const realSpec = specDirCandidates(root)
-    .map((dir) => join(dir, mdx))
-    .find(existsSync)
-  if (realSpec) {
-    cpSync(realSpec, join(specs, mdx))
-  } else {
-    writeFileSync(
-      join(specs, mdx),
-      `---\ntitle: "AIP-${aip}: ${doctype}.md"\ndescription: "drift-check stub"\n---\n\nStub for check-spec-drift — the scaffolder only reads frontmatter.\n`,
-    )
-  }
 
   return {
     tmp,

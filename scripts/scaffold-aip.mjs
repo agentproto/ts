@@ -2,9 +2,8 @@
 /**
  * scaffold-aip — generate a package skeleton for an AIP.
  *
- * Reads spec metadata from `../agentproto/specs/aip-<N>.mdx` (sibling
- * layout — same convention as `agentproto/site/scripts/sync-content.mjs`)
- * and emits a `packages/<slug>/` skeleton wired up to:
+ * Reads the vendored JSON draft from `specs/resources/aip-<N>/draft/` and
+ * emits a `packages/<slug>/` skeleton wired up to:
  *
  *   - @agentproto/define-doctype (the meta-factory)
  *   - tsup + tsconfig matching the existing tool/ + driver/core layout
@@ -42,7 +41,7 @@ import { jsonSchemaToZod } from "json-schema-to-zod"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const TS_ROOT = resolve(HERE, "..")
-const SPEC_DIR = resolve(TS_ROOT, "../agentproto/specs")
+const SPEC_DIR = resolve(TS_ROOT, "specs")
 
 // ── arg parsing ──────────────────────────────────────────────────────
 const args = parseArgs(process.argv.slice(2))
@@ -73,12 +72,10 @@ const PKG_NAME = `@agentproto/${SLUG}`
 const PKG_DIR = resolve(TS_ROOT, "packages", SLUG)
 
 // ── read spec metadata ───────────────────────────────────────────────
+// MDX frontmatter is optional: the vendored tree tracks JSON drafts, not
+// `aip-<N>.mdx`. Use it when present, but never require a sibling checkout.
 const specPath = resolve(SPEC_DIR, `aip-${AIP}.mdx`)
-if (!existsSync(specPath)) {
-  console.error(`spec not found at ${specPath}`)
-  process.exit(1)
-}
-const fm = matter(readFileSync(specPath, "utf8")).data
+const fm = existsSync(specPath) ? matter(readFileSync(specPath, "utf8")).data : {}
 
 const title = String(fm.title ?? `AIP-${AIP}: ${DOCTYPE}.md`)
 const description = String(
