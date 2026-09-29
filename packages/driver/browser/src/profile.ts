@@ -141,6 +141,17 @@ export function isDefaultChromeUserDataDir(candidate: string, env: DefaultDirEnv
 const PROFILE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const REAL_PROFILE_NAME = /^(default|profile[ _-]?\d+|guest profile|system profile)$/i
 
+/**
+ * Live proof that a human recorded a full-profile grant (AIP-63 C3). It is asked
+ * at every launch, so revoking the grant takes effect on the next one. It never
+ * lifts the default-user-data-dir refusal: a full-profile launch still runs on a
+ * dedicated dir holding a clone.
+ */
+export interface FullProfileGrantProof {
+  readonly grantId: string
+  isActive(): boolean
+}
+
 export interface ResolveDedicatedProfileInput {
   providerId: string
   /** Root under which dedicated dirs live (the provider's data dir). */
@@ -150,8 +161,10 @@ export interface ResolveDedicatedProfileInput {
   label?: string
   /** An explicit dir; allowed only when it is not (inside) a default browser dir. */
   userDataDir?: string
-  /** Always refused until the grant model lands. */
+  /** Refused with `browser:profile-refused` unless `fullProfileGrant` is active. */
   fullProfile?: boolean
+  /** Proof of a recorded full-profile grant; unlocks `fullProfile` only. */
+  fullProfileGrant?: FullProfileGrantProof
   env?: DefaultDirEnv
 }
 
@@ -164,7 +177,7 @@ export function resolveDedicatedProfileDir(input: ResolveDedicatedProfileInput):
   const refuse = (reason: BrowserProfileRefusedReason, detail?: string): never => {
     throw new BrowserProfileRefusedError({ reason, providerId, ...(detail ? { detail } : {}) })
   }
-  if (input.fullProfile) refuse("full-profile")
+  if (input.fullProfile && input.fullProfileGrant?.isActive() !== true) refuse("full-profile")
 
   const looksLikePath = (value: string): boolean => /[\\/]/.test(value) || value.startsWith("~") || value.startsWith(".")
   const explicit = input.userDataDir ?? (input.profile !== undefined && looksLikePath(input.profile) ? input.profile : undefined)

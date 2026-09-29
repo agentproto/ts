@@ -65,7 +65,8 @@ function deriveKey(password: string): Buffer {
   return pbkdf2Sync(password, "saltysalt", 1003, 16, "sha1")
 }
 
-function readSafeStorageKey(): Buffer {
+/** Read the Chrome Safe Storage key from the macOS Keychain. Touches the Keychain: call only on an explicit user action. */
+export function readSafeStorageKey(): Buffer {
   const pw = execFileSync("security", ["find-generic-password", "-wa", "Chrome", "-s", "Chrome Safe Storage"])
     .toString()
     .trim()
@@ -114,6 +115,25 @@ const sqlite = (db: string, args: readonly string[]): string =>
 export function countCookies(profileDir: string): Known<number> {
   try {
     return { known: withCookiesCopy(profileDir, "bp-ct-", db => Number(sqlite(db, ["SELECT count(*) FROM cookies;"]))) }
+  } catch (e) {
+    return { unknown: errText(e) }
+  }
+}
+
+/** Cookie counts per requested domain (host and subdomains), no decryption. A failed read is `{ unknown }`, never zeros. */
+export function countCookiesByDomain(profileDir: string, domains: readonly string[]): Known<Record<string, number>> {
+  try {
+    const hosts = withCookiesCopy(profileDir, "bp-cd-", db =>
+      sqlite(db, ["SELECT host_key FROM cookies;"])
+        .split("\n")
+        .filter(Boolean)
+        .map(h => h.replace(/^\./, "").toLowerCase()),
+    )
+    const counts: Record<string, number> = Object.fromEntries(domains.map(d => [d, 0]))
+    for (const host of hosts) {
+      for (const d of domains) if (host === d || host.endsWith(`.${d}`)) counts[d] = (counts[d] ?? 0) + 1
+    }
+    return { known: counts }
   } catch (e) {
     return { unknown: errText(e) }
   }

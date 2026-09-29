@@ -18,7 +18,11 @@ import { stdin as input, stdout as output } from "node:process"
 import { promises as fs } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import type { ConsentPrompt, FullProfileProof } from "@agentproto/browser-profiles"
 import {
+  createLocalBrowserConsent,
+  grantFullProfileClone,
+  LOCAL_BROWSER_SESSION_ID,
   listChromeProfiles,
   DEFAULT_AUTOMATION_USER_DATA_DIR,
   setup,
@@ -29,19 +33,24 @@ import {
 const USAGE = `agentproto-browser — wire a real Chrome profile into the agentproto daemon
 
 Usage:
-  agentproto-browser setup   [--profile <dir>] [--yes]
+  agentproto-browser setup   [--profile <dir>] [--full-profile] [--yes]
                              [--skip-clone] [--skip-install]
                              [--user-data-dir <path>]
                              [--chrome-mcp-version <ver>]
                              [--headless]
   agentproto-browser status
+  agentproto-browser revoke  [--grant <id>]
   agentproto-browser remove
   agentproto-browser --help
 
 setup steps:
   1. Reads ~/Library/Application Support/Google/Chrome/Local State
   2. Prompts you to pick one of your Chrome profiles (skip with --profile)
-  3. Clones it to ~/.agentproto/chrome-profile/ (skip with --skip-clone)
+  3. Clones it to ~/.agentproto/chrome-profile/ (skip with --skip-clone).
+     The clone copies EVERY cookie in the profile, so it is a full-profile
+     grant: you confirm it at the prompt, or pass --full-profile --yes.
+     It is recorded in ~/.agentproto/bureau/consent.jsonl and undone with
+     \`revoke\`. --yes alone does not grant it.
   4. Installs chrome-devtools-mcp into ~/.agentproto/chrome-mcp/
      (skip with --skip-install — only safe on re-run)
   5. Writes an entry to ~/.agentproto/imported-mcps.json so the daemon
@@ -64,6 +73,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runSetup(rest)
     case "status":
       return runStatus()
+    case "revoke":
+      return runRevoke(rest)
     case "remove":
       return runRemove()
     default:
@@ -80,6 +91,7 @@ async function runSetup(args: readonly string[]): Promise<number> {
     options: {
       profile: { type: "string" },
       yes: { type: "boolean", short: "y" },
+      "full-profile": { type: "boolean" },
       "skip-clone": { type: "boolean" },
       "skip-install": { type: "boolean" },
       "user-data-dir": { type: "string" },
@@ -131,6 +143,14 @@ async function runSetup(args: readonly string[]): Promise<number> {
   const destUserDataDir = values["user-data-dir"] ?? DEFAULT_AUTOMATION_USER_DATA_DIR()
   const skipClone = values["skip-clone"] === true
 
+  if (!skipClone && values.yes && !values["full-profile"]) {
+    process.stderr.write(
+      "agentproto-browser: the clone copies every cookie in the profile. " +
+        "Non-interactive setup needs --full-profile with --yes, or --skip-clone.\n"
+    )
+    return 1
+  }
+
   if (!values.yes) {
     process.stdout.write(
       `\nAbout to set up:\n` +
@@ -152,6 +172,24 @@ async function runSetup(args: readonly string[]): Promise<number> {
     }
   }
 
+  let fullProfileGrant: FullProfileProof | undefined
+  if (!skipClone) {
+    const interactive = input.isTTY === true && values.yes !== true
+    const host = createLocalBrowserConsent(interactive ? { prompt: terminalPrompt } : {})
+    try {
+      const consent = await grantFullProfileClone({
+        host,
+        profile: profile.directory,
+        ...(values.yes ? { yes: true } : {}),
+      })
+      process.stdout.write(`\n${consent.warning}\n  grant ${consent.grantId}\n\n`)
+      fullProfileGrant = consent.proof
+    } catch (err) {
+      process.stderr.write(`agentproto-browser: ${(err as Error).message}\n`)
+      return 1
+    }
+  }
+
   const extraChromeArgs: string[] = []
   if (values.headless) extraChromeArgs.push("--headless=new")
 
@@ -163,6 +201,7 @@ async function runSetup(args: readonly string[]): Promise<number> {
     profileDirectory: profile.directory,
     destUserDataDir,
     skipClone,
+    ...(fullProfileGrant ? { fullProfileGrant } : {}),
     skipInstall: values["skip-install"] === true,
     ...(values["chrome-mcp-version"]
       ? { chromeMcpVersion: values["chrome-mcp-version"] }
@@ -269,6 +308,36 @@ async function runStatus(): Promise<number> {
   return 0
 }
 
+async function runRevoke(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    allowPositionals: false,
+    strict: true,
+    options: { grant: { type: "string" } },
+  })
+  const host = createLocalBrowserConsent()
+  const targets = values.grant
+    ? [values.grant]
+    : host
+        .listGrants()
+        .filter(g => g.sessionId === LOCAL_BROWSER_SESSION_ID && g.fullProfile === true && g.revokedAt === undefined)
+        .map(g => g.id)
+  if (targets.length === 0) {
+    process.stdout.write("agentproto-browser: no active full-profile grant to revoke.\n")
+    return 0
+  }
+  for (const id of targets) {
+    try {
+      const res = await host.revoke(id)
+      process.stdout.write(`revoked ${id} (local material: ${res.derived.local})\n`)
+    } catch (err) {
+      process.stderr.write(`agentproto-browser: ${(err as Error).message}\n`)
+      return 1
+    }
+  }
+  return 0
+}
+
 async function runRemove(): Promise<number> {
   const { removed } = await teardown()
   if (removed === 0) {
@@ -314,6 +383,16 @@ async function promptProfile(
   } finally {
     rl.close()
   }
+}
+
+const terminalPrompt: ConsentPrompt = {
+  async confirm(q) {
+    if (q.kind === "full-profile") {
+      process.stdout.write(`\n${q.warning}\n`)
+      return promptYesNo(`Grant full access to profile ${q.profile}?`)
+    }
+    return false
+  },
 }
 
 async function promptYesNo(question: string): Promise<boolean> {

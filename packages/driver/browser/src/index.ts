@@ -181,6 +181,7 @@ export type {
   BrowserProfileRefusedCause,
   BrowserProfileRefusedReason,
   DefaultDirEnv,
+  FullProfileGrantProof,
   ResolveDedicatedProfileInput,
 } from "./profile.js"
 
