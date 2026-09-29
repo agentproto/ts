@@ -1,4 +1,5 @@
 import {
+  A2A_BINDING_JSONRPC,
   A2A_PROTOCOL_VERSION,
   type AgentCard,
   type AgentSkill,
@@ -80,22 +81,33 @@ function skillsFor(app: AppCardInput): AgentSkill[] {
 }
 
 function baseCard(
-  fields: Pick<AgentCard, "name" | "description" | "url" | "version" | "skills">,
+  fields: Pick<AgentCard, "name" | "description" | "version" | "skills"> & {
+    url: string
+  },
 ): AgentCard {
+  const { url, ...rest } = fields
   return {
-    protocolVersion: A2A_PROTOCOL_VERSION,
-    ...fields,
-    preferredTransport: "JSONRPC",
+    name: rest.name,
+    description: rest.description,
+    supportedInterfaces: [
+      {
+        url,
+        protocolBinding: A2A_BINDING_JSONRPC,
+        protocolVersion: A2A_PROTOCOL_VERSION,
+      },
+    ],
+    version: rest.version,
     capabilities: {
       streaming: false,
       pushNotifications: false,
     },
     securitySchemes: {
-      bearer: { type: "http", scheme: "bearer" },
+      bearer: { httpAuthSecurityScheme: { scheme: "Bearer" } },
     },
-    security: [{ bearer: [] }],
+    securityRequirements: [{ schemes: { bearer: { list: [] } } }],
     defaultInputModes: ["text/plain"],
     defaultOutputModes: ["text/plain", "application/json"],
+    skills: rest.skills,
   }
 }
 

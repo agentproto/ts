@@ -3,17 +3,20 @@
  * agentproto apps. Protocol: https://a2a-protocol.org
  */
 
-export { A2A_PROTOCOL_VERSION } from "./types.js"
+export { A2A_BINDING_JSONRPC, A2A_PROTOCOL_VERSION } from "./types.js"
 export type {
   AgentCard,
   AgentCapabilities,
+  AgentCardSignature,
   AgentExtension,
   AgentInterface,
   AgentProvider,
   AgentSkill,
   APIKeySecurityScheme,
   HTTPAuthSecurityScheme,
+  SecurityRequirement,
   SecurityScheme,
+  StringList,
 } from "./types.js"
 export {
   appA2aUrl,

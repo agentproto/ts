@@ -112,12 +112,23 @@ describe("A2A Agent Card HTTP routes", () => {
       expect(res.status).toBe(200)
       expect(res.headers.get("content-type")).toContain("application/json")
       const card = (await res.json()) as AgentCard
-      expect(card.protocolVersion).toBe(A2A_PROTOCOL_VERSION)
+      expect(A2A_PROTOCOL_VERSION).toBe("1.0")
       expect(card.name).toBe("Fixture App")
       expect(card.version).toBe("2.0.0")
-      expect(card.url).toBe(`${base}/a2a/apps/%40test%2Ffixture-app`)
+      expect(card.supportedInterfaces).toEqual([
+        {
+          url: `${base}/a2a/apps/%40test%2Ffixture-app`,
+          protocolBinding: "JSONRPC",
+          protocolVersion: "1.0",
+        },
+      ])
+      expect(card).not.toHaveProperty("url")
+      expect(card).not.toHaveProperty("protocolVersion")
       expect(card.capabilities).toEqual({ streaming: false, pushNotifications: false })
-      expect(card.securitySchemes).toEqual({ bearer: { type: "http", scheme: "bearer" } })
+      expect(card.securitySchemes).toEqual({
+        bearer: { httpAuthSecurityScheme: { scheme: "Bearer" } },
+      })
+      expect(card.securityRequirements).toEqual([{ schemes: { bearer: { list: [] } } }])
       expect(card.skills).toEqual([])
     })
   })
@@ -143,7 +154,7 @@ describe("A2A Agent Card HTTP routes", () => {
       const res = await fetch(`${base}/.well-known/agent-card.json`)
       expect(res.status).toBe(200)
       const card = (await res.json()) as AgentCard
-      expect(card.url).toBe(base)
+      expect(card.supportedInterfaces[0]?.url).toBe(base)
       expect(card.name).toBe("agentproto daemon")
       expect(card.skills).toEqual([])
     })
@@ -208,7 +219,7 @@ describe("A2A Agent Card HTTP routes", () => {
     it("lists exposed agents and workflows as skills on the app card", async () => {
       const { status, body } = await get(`/a2a/apps/${encodeURIComponent(APP_ID)}/.well-known/agent-card.json`)
       expect(status).toBe(200)
-      expect(body.url).toBe("http://daemon.test/a2a/apps/%40test%2Ffixture-app")
+      expect(body.supportedInterfaces[0].url).toBe("http://daemon.test/a2a/apps/%40test%2Ffixture-app")
       expect(body.skills).toEqual([
         {
           id: "@test/fixture-app/worker",
@@ -228,7 +239,7 @@ describe("A2A Agent Card HTTP routes", () => {
 
     it("aggregates the same skills on the daemon index card", async () => {
       const { body } = await get("/.well-known/agent-card.json")
-      expect(body.url).toBe("http://daemon.test")
+      expect(body.supportedInterfaces[0].url).toBe("http://daemon.test")
       expect(body.skills.map((s: { id: string }) => s.id)).toEqual([
         "@test/fixture-app/worker",
         "@test/fixture-app/do-thing",
