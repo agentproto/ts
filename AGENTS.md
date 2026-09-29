@@ -46,7 +46,8 @@ Each rung has exactly one owner — don't reach into the next one.
 
    **`pnpm test` is necessary but not sufficient — the CI gate is `pnpm test`
    AND `pnpm check-types`.** `check-types` (`tsc --noEmit`) runs as its own
-   step of CI's `build-and-test` job (`.github/workflows/ci.yml:182-186`);
+   step of CI's `typecheck` job, one of the pieces behind the `Build + test`
+   status (`.github/workflows/ci.yml`);
    Vitest transpiles without type-checking, so a type error in a **test
    file** sails through `pnpm test` and only fails in CI (this bit an executor:
    a mistyped `vi.spyOn` mock passed the local gate, reddened CI). Run both,
