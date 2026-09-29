@@ -61,6 +61,16 @@
  * restart, and background probes share a `probeConcurrency` cap.
  * `snapshotNow()` lets a departing host trigger one last
  * capture (see `join-token-registry.ts`'s goodbye hello).
+ *
+ * ## Ended hosts
+ *
+ * A join-added host is an ephemeral CI box, so it is marked `ended` when its
+ * goodbye arrives (`markEnded`) or when it has been unreachable for
+ * `endedTtlMs` (2 h), and deleted `endedRetentionMs` (7 d) after that.
+ * `sweep()` runs that pass (the daemon calls it on a timer; `list()` runs it
+ * too). Ended hosts are still returned by `list()` — hiding them from the
+ * default `device_list` is `device-registry.ts`'s job. A manually added host
+ * is never ended or deleted; `list()` only flags it `stale`.
  */
 
 import { mkdir, readFile, writeFile, chmod, rename } from "node:fs/promises"
@@ -92,9 +102,12 @@ export const HOSTS_VERSION = 1 as const
 
 const DIAL_TIMEOUT_MS = 15_000
 const HANDSHAKE_TIMEOUT_MS = 15_000
-/** Default TTL for a join-token-added host with no recent `lastSeen` — see
- *  `HostRegistryDeps.joinedHostTtlMs`. */
-const DEFAULT_JOINED_HOST_TTL_MS = 7 * 86_400_000
+/** Default unreachable-for window after which a join-added host is marked
+ *  ended — see `HostRegistryDeps.endedTtlMs`. */
+const DEFAULT_ENDED_TTL_MS = 2 * 3_600_000
+/** Default time an ended host is kept before deletion — see
+ *  `HostRegistryDeps.endedRetentionMs`. */
+const DEFAULT_ENDED_RETENTION_MS = 7 * 86_400_000
 /** Cap on distinct `/sessions*` paths cached per host (list + however many
  *  individual sessions' output have actually been queried) — bounds memory
  *  for a host with many short-lived sessions; oldest-cached path evicted
@@ -151,6 +164,19 @@ export interface HostRecord {
   lastProbeAt?: string
   /** Why the most recent contact attempt failed; cleared by the next success. */
   lastError?: string
+  /** A join-added host that is gone: it said goodbye, or was unreachable for
+   *  longer than `endedTtlMs`. Ended hosts are no longer polled, read offline,
+   *  and are deleted `endedRetentionMs` after `endedAt`. Never set on a
+   *  manually added host. */
+  ended?: true
+  /** ISO-8601 of when the host ended (for a TTL end: when the TTL lapsed, not
+   *  when the sweep noticed). */
+  endedAt?: string
+  endReason?: "goodbye" | "ttl"
+  /** Computed by `list()`, never persisted: a manually added host that has
+   *  been unreachable for longer than `endedTtlMs`. Stale hosts stay listed
+   *  and are never deleted — only join-added hosts are. */
+  stale?: true
   /** Set on a host added under the retired pair/v1 protocol. Present for
    *  parity with `PairingRecord`/`ClientPairing`; pair/v1 offers are refused
    *  by `parseOfferUrl` before `add()` ever sees them, so this is currently
@@ -169,9 +195,9 @@ export interface HostRecord {
    * `"manual"` for the human `pair offer --host` + `devices add` ceremony.
    * Absent on a record persisted before this field existed; treated as
    * `"manual"` (never auto-pruned) rather than assumed ephemeral. Only
-   * `"join"` hosts are eligible for the `joinedHostTtlMs` sweep in `list()`
-   * — a human's own paired machine must never silently disappear just
-   * because it hasn't been dialed in a week.
+   * `"join"` hosts are eligible for the ended/retention sweep — a human's
+   * own paired machine must never silently disappear just because it hasn't
+   * been dialed in a week.
    */
   addedVia?: "join" | "manual"
 }
@@ -209,16 +235,16 @@ export interface HostRegistryDeps {
   /** Handshake ceiling per attempt. Default 15s. */
   handshakeTimeoutMs?: number
   /**
-   * TTL (ms) for a join-token-added host (`HostRecord.addedVia === "join"`)
-   * that hasn't been seen since — swept opportunistically at the top of
-   * every `list()` call rather than on its own timer, since staleness here
-   * is an observability concern (an ephemeral CI box's `hosts.json` entry
-   * outliving it by weeks), not something anything blocks on. Default 7
-   * days. `0` disables pruning entirely. A manually-added host
-   * (`addedVia !== "join"`, including every record persisted before this
-   * field existed) is NEVER pruned, regardless of this setting.
+   * A join-added host (`HostRecord.addedVia === "join"`) unreachable for this
+   * long (ms since `lastSeen`) is marked `ended`. Default 2 h; `0` disables.
+   * Manually added hosts are never ended — `list()` only flags them `stale`.
    */
-  joinedHostTtlMs?: number
+  endedTtlMs?: number
+  /**
+   * An ended host is deleted this long (ms) after `endedAt`. Default 7 days;
+   * `0` keeps ended hosts forever. Only join-added hosts are ever deleted.
+   */
+  endedRetentionMs?: number
   /** Cadence (ms) of the proactive session snapshot poll for a join-added
    *  host. Default 15s; `0` disables the poll (and `snapshotNow` becomes a
    *  no-op that returns false). */
@@ -354,6 +380,18 @@ export interface HostRegistry {
    */
   snapshotNow(idOrName: string): Promise<boolean>
   /**
+   * Mark a join-added host ended right now (its CI job said goodbye). Stops
+   * its poll. Returns false for an unknown host or a manually added one,
+   * which is never ended. Idempotent.
+   */
+  markEnded(idOrName: string, reason?: "goodbye" | "ttl"): Promise<boolean>
+  /**
+   * Run the lifecycle sweep now: mark join-added hosts ended past `endedTtlMs`,
+   * delete those ended past `endedRetentionMs`, persist if anything changed.
+   * Cheap (one pass over the in-memory map); `list()` runs the same pass.
+   */
+  sweep(): Promise<void>
+  /**
    * Load `hosts.json` and resume the background poll for every join-added
    * host, so a daemon restart doesn't leave still-running CI boxes frozen at
    * their join-time `lastSeen`. Idempotent; call once at boot.
@@ -397,7 +435,8 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
   const log = deps.log ?? (() => {})
   const dialTimeoutMs = deps.dialTimeoutMs ?? DIAL_TIMEOUT_MS
   const handshakeTimeoutMs = deps.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS
-  const joinedHostTtlMs = deps.joinedHostTtlMs ?? DEFAULT_JOINED_HOST_TTL_MS
+  const endedTtlMs = deps.endedTtlMs ?? DEFAULT_ENDED_TTL_MS
+  const endedRetentionMs = deps.endedRetentionMs ?? DEFAULT_ENDED_RETENTION_MS
   const snapshotIntervalMs = deps.snapshotIntervalMs ?? DEFAULT_SNAPSHOT_INTERVAL_MS
   const snapshotActiveIntervalMs = Math.min(
     deps.snapshotActiveIntervalMs ?? DEFAULT_SNAPSHOT_ACTIVE_INTERVAL_MS,
@@ -442,6 +481,8 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     }
   }
 
+  /** A lifecycle change made outside `sweep()` (at load) still owes a disk write. */
+  let lifecycleDirty = false
   let loaded = false
   async function ensureLoaded(): Promise<void> {
     if (loaded) return
@@ -459,9 +500,10 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
           if (isLegacyJoinedShape(rec)) rec.addedVia = "join"
           hosts.set(rec.fingerprint, rec)
         }
+        if (applyLifecycle()) lifecycleDirty = true
         let i = 0
         for (const rec of hosts.values()) {
-          if (rec.addedVia === "join") startSnapshotPoller(rec.fingerprint, snapshotActiveIntervalMs + i++ * RESUME_STAGGER_MS)
+          if (rec.addedVia === "join" && !rec.ended) startSnapshotPoller(rec.fingerprint, snapshotActiveIntervalMs + i++ * RESUME_STAGGER_MS)
         }
       } else {
         log(`[hosts] ignoring ${hostsPath}: unrecognised format`)
@@ -596,25 +638,64 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     return { fingerprint: record.fingerprint, name: record.name, rendezvousUrl: record.rendezvousUrl }
   }
 
+  /** A dial to this host is running right now. */
+  function inFlight(fingerprint: string): boolean {
+    return (onlineCounts.get(fingerprint) ?? 0) > 0
+  }
+
+  function markEndedRecord(rec: HostRecord, reason: "goodbye" | "ttl", atMs: number): void {
+    rec.ended = true
+    rec.endedAt = new Date(atMs).toISOString()
+    rec.endReason = reason
+    lastReachedAt.delete(rec.fingerprint)
+    stopSnapshotPoller(rec.fingerprint)
+  }
+
   /**
-   * Drop join-token-added hosts that haven't been seen in `joinedHostTtlMs`
-   * — swept here rather than on a timer since this is a `list()`-time
-   * observability concern, not something anything blocks on. A manually
-   * added host (`addedVia !== "join"`) is never touched.
+   * One pass of the join-host lifecycle: unreachable past `endedTtlMs` ⇒ ended
+   * (stamped at the moment the TTL lapsed, so a host unseen for weeks is also
+   * past retention immediately); ended past `endedRetentionMs` ⇒ deleted. A
+   * manually added host is never touched. Returns whether anything changed.
    */
-  async function pruneExpiredJoinedHosts(): Promise<void> {
-    if (joinedHostTtlMs <= 0) return
-    const cutoff = now() - joinedHostTtlMs
-    const expired: string[] = []
-    for (const rec of hosts.values()) {
-      if (rec.addedVia === "join" && Date.parse(rec.lastSeen) <= cutoff) expired.push(rec.fingerprint)
+  function applyLifecycle(): boolean {
+    const t = now()
+    let changed = false
+    for (const rec of Array.from(hosts.values())) {
+      if (rec.addedVia !== "join") continue
+      if (!rec.ended && endedTtlMs > 0 && !inFlight(rec.fingerprint)) {
+        const lastSeenMs = Date.parse(rec.lastSeen)
+        if (t - lastSeenMs >= endedTtlMs) {
+          markEndedRecord(rec, "ttl", Math.min(t, lastSeenMs + endedTtlMs))
+          log(`[hosts] ${rec.fingerprint} (${rec.name}) ended: unreachable for over ${endedTtlMs}ms`)
+          changed = true
+        }
+      }
+      if (rec.ended && endedRetentionMs > 0 && t - Date.parse(rec.endedAt ?? "") >= endedRetentionMs) {
+        forgetHost(rec.fingerprint)
+        log(`[hosts] pruned ${rec.fingerprint} (${rec.name}): ended over ${endedRetentionMs}ms ago`)
+        changed = true
+      }
     }
-    if (expired.length === 0) return
-    for (const fp of expired) {
-      forgetHost(fp)
-      log(`[hosts] pruned ${fp}: joined host, unseen for over ${joinedHostTtlMs}ms`)
-    }
-    await persist()
+    return changed
+  }
+
+  async function sweep(): Promise<void> {
+    await ensureLoaded()
+    const changed = applyLifecycle()
+    if (!changed && !lifecycleDirty) return
+    lifecycleDirty = false
+    await persist().catch(err => log(`[hosts] sweep persist failed: ${errMsg(err)}`))
+  }
+
+  async function markEnded(idOrName: string, reason: "goodbye" | "ttl" = "goodbye"): Promise<boolean> {
+    await ensureLoaded()
+    const rec = findHost(idOrName)
+    if (!rec || rec.addedVia !== "join") return false
+    if (rec.ended) return true
+    markEndedRecord(rec, reason, now())
+    log(`[hosts] ${rec.fingerprint} (${rec.name}) ended: ${reason}`)
+    await persist().catch(err => log(`[hosts] ended persist failed: ${errMsg(err)}`))
+    return true
   }
 
   /** Drop a host and everything derived from it in memory. */
@@ -628,9 +709,20 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
   }
 
   async function list(): Promise<HostRecord[]> {
-    await ensureLoaded()
-    await pruneExpiredJoinedHosts()
-    return Array.from(hosts.values()).map(r => ({ ...r }))
+    await sweep()
+    const t = now()
+    return Array.from(hosts.values()).map(r => {
+      const copy = { ...r }
+      if (
+        r.addedVia !== "join" &&
+        endedTtlMs > 0 &&
+        !inFlight(r.fingerprint) &&
+        t - Date.parse(r.lastSeen) >= endedTtlMs
+      ) {
+        copy.stale = true
+      }
+      return copy
+    })
   }
 
   async function renameHost(idOrName: string, newName: string): Promise<boolean> {
@@ -770,7 +862,7 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
    *  HISTORY survive a host going offline, not to snapshot arbitrary
    *  forwarded traffic. Also a no-op for a non-2xx response: caching a
    *  transient 4xx/5xx as "last-known-good" would keep re-serving that
-   *  error, unchanged, for the rest of `joinedHostTtlMs` once the host
+   *  error, unchanged, for the rest of the host's retention once it
    *  actually does go offline. */
   function cacheSessionsResponse(fingerprint: string, req: ForwardHttpRequest, res: ForwardHttpResponse): void {
     if (req.method !== "GET" || !isSessionsPath(req.path)) return
@@ -837,7 +929,7 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
       if (typeof poller.timer.unref === "function") poller.timer.unref()
     }
     const tick = async (): Promise<void> => {
-      if (pollers.get(fingerprint) !== poller || !hosts.has(fingerprint)) return
+      if (pollers.get(fingerprint) !== poller || !hosts.get(fingerprint) || hosts.get(fingerprint)?.ended) return
       const ok = await withProbeSlot(() => captureSnapshot(fingerprint)).catch(() => false)
       if (pollers.get(fingerprint) !== poller) return
       poller.failures = ok ? 0 : poller.failures + 1
@@ -995,7 +1087,9 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     forwardHttpStream,
     getSessionsSnapshot,
     snapshotNow,
-    start: ensureLoaded,
+    markEnded,
+    sweep,
+    start: sweep,
   }
 }
 

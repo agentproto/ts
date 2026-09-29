@@ -49,11 +49,24 @@ export interface Device {
    *  recent attempt failed (absent when the last attempt succeeded). */
   lastProbeAt?: string
   lastError?: string
+  /** Host only: a join-added (CI) host that is gone — said goodbye or was
+   *  unreachable past the TTL. Hidden from `list()` unless `includeEnded`. */
+  ended?: true
+  endedAt?: string
+  /** Host only: a manually added host unreachable past the TTL. Still listed,
+   *  never auto-deleted. */
+  stale?: true
+}
+
+export interface ListDevicesOptions {
+  /** Include ended (gone) join-added hosts, which `list()` hides by default. */
+  includeEnded?: boolean
 }
 
 export interface DeviceRegistry {
-  /** Every known device. Read-only. */
-  list(): Promise<Device[]>
+  /** Every known device, minus ended join-added hosts unless
+   *  `includeEnded`. Read-only. */
+  list(opts?: ListDevicesOptions): Promise<Device[]>
   /** Rename a device (fingerprint or current name) to a new label. Tries the
    *  pairing registry first, then the host registry. Returns false when
    *  nothing matched. */
@@ -133,17 +146,23 @@ function toHostDevice(record: HostRecord, online: boolean): Device {
     ...(record.labels ? { labels: record.labels } : {}),
     ...(record.lastProbeAt ? { lastProbeAt: record.lastProbeAt } : {}),
     ...(record.lastError ? { lastError: record.lastError } : {}),
+    ...(record.ended ? { ended: true as const, ...(record.endedAt ? { endedAt: record.endedAt } : {}) } : {}),
+    ...(record.stale ? { stale: true as const } : {}),
   }
 }
 
 export function createDeviceRegistry(pairing: PairingRegistry, hosts?: HostRegistry): DeviceRegistry {
   return {
-    async list() {
+    async list(opts) {
       const records = await pairing.list()
       const devices = records.map(r => toDevice(r, pairing.isOnline(r.fingerprint)))
       if (hosts) {
         const hostRecords = await hosts.list()
-        devices.push(...hostRecords.map(r => toHostDevice(r, hosts.isOnline(r.fingerprint))))
+        devices.push(
+          ...hostRecords
+            .filter(r => opts?.includeEnded || !r.ended)
+            .map(r => toHostDevice(r, hosts.isOnline(r.fingerprint))),
+        )
       }
       return devices
     },

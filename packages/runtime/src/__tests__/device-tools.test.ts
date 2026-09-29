@@ -48,7 +48,9 @@ function fakeRegistry(
   }),
 ): DeviceRegistry {
   return {
-    list: async () => devices,
+    list: vi.fn(async (opts?: { includeEnded?: boolean }) =>
+      devices.filter(d => opts?.includeEnded || !d.ended),
+    ),
     rename: vi.fn(async (target: string) => devices.some(d => d.fingerprint === target || d.name === target)),
     revoke: vi.fn(async (target: string) => devices.some(d => d.fingerprint === target || d.name === target)),
     add: addImpl,
@@ -82,6 +84,18 @@ describe("device_list / device_rename / device_revoke", () => {
     const devices = [device()]
     registerDeviceTools(server, { registry: fakeRegistry(devices) })
     expect(await callTool(handlers, "device_list", {})).toEqual({ devices })
+  })
+
+  it("device_list hides ended hosts unless includeEnded is set", async () => {
+    const { server, handlers } = fakeServer()
+    const live = device({ fingerprint: "live", role: "host", kind: "daemon" })
+    const gone = device({ fingerprint: "gone", role: "host", kind: "daemon", ended: true, endedAt: "2026-02-02T00:00:00.000Z" })
+    const registry = fakeRegistry([live, gone])
+    registerDeviceTools(server, { registry })
+    expect(await callTool(handlers, "device_list", {})).toEqual({ devices: [live] })
+    expect(registry.list).toHaveBeenLastCalledWith({ includeEnded: false })
+    expect(await callTool(handlers, "device_list", { includeEnded: true })).toEqual({ devices: [live, gone] })
+    expect(registry.list).toHaveBeenLastCalledWith({ includeEnded: true })
   })
 
   it("device_rename reports ok:true on a match", async () => {
