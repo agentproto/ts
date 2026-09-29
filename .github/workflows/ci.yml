@@ -117,35 +117,37 @@ jobs:
 
           echo "skip_build=$skip" >> "$GITHUB_OUTPUT"
 
-  build-and-test:
-    name: Build + test
+  # ── Build + test, split so the pieces run in parallel ─────────────────────
+  # This used to be ONE serial job (median 12.4 min over 28 PR runs: tests 7.7,
+  # type-check 3.3, build 0.8). It is now:
+  #   typecheck       build + `tsc --noEmit` + the repo-level script gates
+  #   test (matrix)   the workspace's test suites in 4 weight-balanced shards
+  #                   (scripts/ci-test-shards.mjs — every package with a test
+  #                   script lands in exactly one shard)
+  #   build-and-test  a tiny aggregate that KEEPS the name "Build + test" and
+  #                   the id `build-and-test`: increment-guard's prior-green
+  #                   lookup, pr-review's "Wait for Build + test", auto-merge's
+  #                   `needs`, and scripts/maintainer.mjs all key on that name.
+  #
+  # All three carry the same gate as before: only a literal skip_build=='true'
+  # (set on `pull_request` by increment-guard above) skips them; `always()` so
+  # a `push` event (increment-guard is `skipped` there, not `success`) doesn't
+  # fall through GitHub's default needs-propagation and skip them too.
+  #
+  # Concurrency stays per job with cancel-in-progress: false (see the header
+  # comment): pr-review pushes its changeset commit mid-run, which would
+  # otherwise cancel a running build. Each piece needs its OWN group — sharing
+  # one would serialize the pieces behind each other and undo the split.
+  typecheck:
+    name: Type-check + repo gates
     runs-on: ubuntu-latest
     timeout-minutes: 15
     needs: [increment-guard]
-    # `always()` so a `push` event (increment-guard's `if` is false there,
-    # so it's `skipped`, not `success`) doesn't fall through GitHub's default
-    # needs-propagation and skip the build too. The real gate is the output
-    # check: only a literal skip_build=='true' (set on `pull_request` by
-    # increment-guard above) skips this job; anything else — push events,
-    # increment-guard itself failing — runs the build as before.
     if: |
       always() &&
       needs.increment-guard.outputs.skip_build != 'true'
-    # pr-review now runs in parallel with build-and-test. The sandboxed
-    # reviewer pushes its changeset commit during analysis (Phase 2 of the
-    # review session — see .github/agentproto-workflows/lib/sandbox-agent.mjs
-    # and entry.mjs), which would otherwise re-trigger CI and CANCEL this
-    # build via the concurrency group. With cancel-in-progress: false, the
-    # re-triggered build queues behind this one; increment-guard skips it
-    # instantly (the push is 100% chore — only .changeset/*.md), so the
-    # queue drain is effectively zero-cost. The original cancel-on-push
-    # optimization (rapid dev-push cancels the previous build) is
-    # sacrificed: builds now queue rather than cancel, at ~15m per extra
-    # push. The tradeoff is deliberate — the parallelization benefit (review
-    # + build run simultaneously, saving 5-15m wall-clock per PR) outweighs
-    # the occasional wasted build on rapid pushes.
     concurrency:
-      group: ${{ github.workflow }}-${{ github.ref }}-build
+      group: ${{ github.workflow }}-${{ github.ref }}-typecheck
       # Release PR: no reviewer pushes to protect, and only the latest
       # version bump matters — let a newer push cancel the stale run.
       cancel-in-progress: ${{ startsWith(github.head_ref, 'changeset-release/') }}
@@ -180,9 +182,9 @@ jobs:
       # every commit since the multi-package extraction.
       #
       # `vars.CI_AFFECTED_ONLY` (repo variable, Settings → Variables) is
-      # the quick on/off switch: "false" reverts these three steps to the
-      # full unscoped `pnpm build`/`check-types`/`test` — no code change,
-      # no redeploy, just flip the variable — if turbo's affected-scoping
+      # the quick on/off switch: "false" reverts these steps (and the test
+      # shards below) to the full unscoped run — no code change, no
+      # redeploy, just flip the variable — if turbo's affected-scoping
       # or the remote cache ever misbehaves.
       #
       # The affected path only applies on `pull_request` — on `push` (i.e.
@@ -217,31 +219,17 @@ jobs:
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
           TURBO_SCM_BASE: origin/main
 
-      # `pnpm test`'s `pretest` hook (package.json) runs this doc-coverage
-      # check before the actual tests. The turbo path below calls `pnpm exec
-      # turbo run test` directly, which does NOT go through the `pnpm test`
-      # npm script and so would silently skip that hook — run it explicitly
-      # instead, only on the turbo path (the full-scope path below still
-      # gets it for free via the lifecycle hook; running both would just
-      # duplicate the check).
+      # The root `pretest` hook (package.json) runs this doc-coverage check
+      # before `pnpm test`. The test shards below call turbo / `pnpm -r`
+      # directly, which does NOT go through that npm lifecycle hook, so the
+      # check lives here, unconditionally.
       - name: Check CLI docs coverage (pretest)
-        if: github.event_name == 'pull_request' && vars.CI_AFFECTED_ONLY != 'false'
         run: node scripts/agentflow/docs.mjs --check
 
-      - name: Run tests
-        run: |
-          if [ "${{ github.event_name == 'pull_request' && vars.CI_AFFECTED_ONLY != 'false' }}" = "true" ]; then
-            pnpm exec turbo run test --affected --filter="./packages/**" --filter="./adapters/**"
-          else
-            pnpm test
-          fi
-        env:
-          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
-          TURBO_TEAM: agentproto-ts
-          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
-          TURBO_SCM_BASE: origin/main
-          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      # Guards the shard planner itself: a package missing from every shard
+      # would silently stop being tested.
+      - name: Run ci-test-shards tests
+        run: node --test scripts/ci-test-shards.test.mjs
 
       # `pnpm test` only covers packages/** and adapters/**, so the release
       # tooling in scripts/ would otherwise ship untested. These guard the
@@ -404,6 +392,114 @@ jobs:
       # only a genuinely-unknown name reaches this hard gate.
       - name: Validate changeset package names
         run: node scripts/check-changesets.mjs
+
+  test:
+    name: Tests (${{ matrix.shard }}/4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [increment-guard]
+    if: |
+      always() &&
+      needs.increment-guard.outputs.skip_build != 'true'
+    strategy:
+      # A red shard must not hide the others' results — the reviewer and the
+      # author want the full list of failing packages in one run.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-test-${{ matrix.shard }}
+      cancel-in-progress: ${{ startsWith(github.head_ref, 'changeset-release/') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          # turbo's --affected diffs origin/main...HEAD to scope work to
+          # changed packages + dependents. That range must be fully present
+          # in the checkout, or turbo safely (silently) falls back to
+          # treating every package as affected — fetch-depth: 0 is load
+          # bearing, not cosmetic.
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        # version read from packageManager field in package.json
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Each shard builds only its own packages + their dependencies (turbo
+      # `^build`, mostly remote-cache hits), then tests only its packages —
+      # `--filter` lists come from scripts/ci-test-shards.mjs. Building the
+      # shard's own packages, not just their deps, matters: some suites run
+      # the package's own `dist/`.
+      - name: Build shard packages
+        run: |
+          FILTERS=$(node scripts/ci-test-shards.mjs --shard ${{ matrix.shard }} --of 4)
+          AFFECTED=""
+          if [ "${{ github.event_name == 'pull_request' && vars.CI_AFFECTED_ONLY != 'false' }}" = "true" ]; then
+            AFFECTED="--affected"
+          fi
+          pnpm exec turbo run build $AFFECTED $FILTERS
+        env:
+          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
+          TURBO_TEAM: agentproto-ts
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+          TURBO_SCM_BASE: origin/main
+
+      # PRs run only the affected tests through turbo. Everything else
+      # (push to main, CI_AFFECTED_ONLY=false) runs the shard's suites in full
+      # through `pnpm -r`, exactly like the old unscoped `pnpm test` did — no
+      # turbo test cache, so a green main is a real full run.
+      - name: Run tests
+        run: |
+          FILTERS=$(node scripts/ci-test-shards.mjs --shard ${{ matrix.shard }} --of 4)
+          if [ "${{ github.event_name == 'pull_request' && vars.CI_AFFECTED_ONLY != 'false' }}" = "true" ]; then
+            pnpm exec turbo run test --affected $FILTERS
+          else
+            pnpm -r $FILTERS test
+          fi
+        env:
+          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
+          TURBO_TEAM: agentproto-ts
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+          TURBO_SCM_BASE: origin/main
+          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+  # The single "Build + test" status everything else keys on. Skipped exactly
+  # when the pieces above are skipped (same `if`), so increment-guard's
+  # chore-only skip still reads as "skipped" to auto-merge and the reviewer's
+  # wait; red if either piece is anything but success.
+  build-and-test:
+    name: Build + test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [increment-guard, typecheck, test]
+    if: |
+      always() &&
+      needs.increment-guard.outputs.skip_build != 'true'
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-build
+      cancel-in-progress: ${{ startsWith(github.head_ref, 'changeset-release/') }}
+    steps:
+      - name: Require every build/test piece to have passed
+        env:
+          TYPECHECK: ${{ needs.typecheck.result }}
+          TESTS: ${{ needs.test.result }}
+        run: |
+          echo "Type-check + repo gates: $TYPECHECK"
+          echo "Tests (all shards):      $TESTS"
+          if [ "$TYPECHECK" != "success" ] || [ "$TESTS" != "success" ]; then
+            echo "::error::Build + test is red — see the failing piece above."
+            exit 1
+          fi
 
   # On PRs: verify a changeset was added. Quick git-only check that
   # runs in parallel with build-and-test to give fast feedback.
@@ -1513,8 +1609,8 @@ jobs:
       # changeset is withheld and the "Agentic review" status is downgraded
       # to neutral (see the gate step), but the review CONTENT is still
       # posted — a broken build doesn't invalidate the review's opinion.
-      # build-and-test's own timeout is 15m, so 30m of polling is generous
-      # headroom for queue delay + a slow run without ever holding the
+      # Each piece behind Build + test has a 15m timeout (the aggregate itself
+      # 5m), so 30m of polling is generous headroom for queue delay + a slow run without ever holding the
       # merge hostage indefinitely.
       - name: Wait for Build + test
         id: buildwait

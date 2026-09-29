@@ -160,6 +160,54 @@ describe("defineCliDriver — end-to-end via runTool", () => {
   })
 })
 
+describe("defineCliDriver — completes on the child's own exit, not on stdio close (F45)", () => {
+  it("resolves quickly with the parsed output even when the subprocess leaves a detached grandchild holding stdout/stderr open", async () => {
+    const tool = defineTool({
+      id: "orphan-tool",
+      description: "prints its JSON result, then leaves an orphaned grandchild inheriting stdio",
+      inputSchema: z.object({}),
+      outputSchema: z.object({ ok: z.boolean(), path: z.string() }),
+    })
+
+    // Mirrors the real F45 repro: the script prints its result and exits —
+    // its own work is done — but a grandchild it spawned (stdio: 'inherit',
+    // detached: true, simulating a headless-Chrome renderer helper
+    // reparented off this process) keeps the write end of stdout/stderr
+    // open for 5s after. The old `close`-based completion would hang for
+    // that whole window (6+ minutes in the live incident); the fix
+    // completes as soon as THIS script's own process exits.
+    const script = [
+      "const { spawn } = require('node:child_process');",
+      "process.stdout.write(JSON.stringify({ ok: true, path: '/tmp/out.pdf' }));",
+      "const gc = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], " +
+        "{ stdio: ['ignore', 'inherit', 'inherit'], detached: true });",
+      "gc.unref();",
+      "process.exit(0);",
+    ].join(" ")
+
+    const provider = defineCliDriver({
+      id: "orphan-cli",
+      name: "orphan",
+      description: "x",
+      kind: "cli",
+      bin: process.execPath,
+      output: { defaultFormat: "json", exitCodes: { 0: "ok" } },
+      implements: [
+        {
+          tool: "./tools/orphan-tool/TOOL.md",
+          version: "^1",
+          metadata: { cli: { argv: ["-e", script] } },
+        },
+      ],
+    })
+
+    const start = Date.now()
+    const out = await runTool({ tool, candidates: [provider], input: {} })
+    expect(Date.now() - start).toBeLessThan(4000)
+    expect(out).toEqual({ ok: true, path: "/tmp/out.pdf" })
+  }, 8000)
+})
+
 describe("defineCliDriver — cwd", () => {
   it("without cwd, the subprocess inherits the host process's cwd (unchanged behaviour)", async () => {
     const out = await runTool({ tool: cwdTool(), candidates: [cwdDriver()], input: {} })

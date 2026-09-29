@@ -17,7 +17,7 @@ export {
   AgentSpawnError,
   MissingArtifactError,
 } from "./run-workflow.js"
-export { DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES } from "./types.js"
+export { DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES, DEFAULT_STEP_TIMEOUT_MS } from "./types.js"
 export {
   compileWorkflow,
   WorkflowCompileError,
