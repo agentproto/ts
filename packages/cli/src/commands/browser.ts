@@ -42,7 +42,7 @@ import {
   httpGetJson,
   humaniseDelta,
 } from "./_daemon-helpers.js"
-import { getBrowserAdapter } from "@agentproto/adapter-browser"
+import { browserAdapters, getBrowserAdapter } from "@agentproto/adapter-browser"
 import { runSteps, loadLedger } from "../lib/setup-prompts.js"
 import type { AgentCliSetupStep } from "@agentproto/driver-agent-cli"
 
@@ -139,7 +139,7 @@ async function runBrowserInstall(args: readonly string[]): Promise<number> {
   if (!adapter) {
     process.stderr.write(
       `agentproto browser install: unknown adapter "${adapterId}".\n` +
-        `  Available: camofox, bureau, chromium\n`,
+        `  Available: ${Object.keys(browserAdapters).join(", ")}\n`,
     )
     return 2
   }

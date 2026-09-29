@@ -167,6 +167,7 @@
   "dependencies": {
     "@agentproto/a2a": "workspace:*",
     "@agentproto/acp": "workspace:*",
+    "@agentproto/adapter-browser": "workspace:*",
     "@agentproto/agent": "workspace:*",
     "@agentproto/app-client": "workspace:*",
     "@agentproto/app-kit": "workspace:*",
@@ -175,6 +176,7 @@
     "@agentproto/command-sandbox": "workspace:*",
     "@agentproto/driver": "workspace:*",
     "@agentproto/driver-agent-cli": "workspace:*",
+    "@agentproto/driver-browser": "workspace:*",
     "@agentproto/driver-http": "workspace:*",
     "@agentproto/eval-reporters": "workspace:*",
     "@agentproto/governance": "workspace:*",

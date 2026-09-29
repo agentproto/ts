@@ -221,6 +221,24 @@ We use a `data-*` custom part rather than the `ai` v6 native `tool-approval-requ
 
 Only `permission-resolved` (the final decision) transits the chat stream today. PENDING permission requests (the same class of thing `ai` models as `tool-approval-request`, and Mastra as `tool-call-approval`) are **not** yet surfaced by this route — there is no per-turn "request is waiting for a human" event in this stream. That is a known gap, out of scope for this work package, not an oversight; closing it (emitting a pending-approval data part when the daemon holds on a permission) is future work.
 
+## Browser adapters and page tools
+
+The daemon, `POST /sessions/browser` and the CLI resolve browser adapters (`camofox`, `bureau`, `chromium`) through one table, `defaultBrowserAdapterResolution()`, backed by the `@agentproto/adapter-browser` facade.
+
+`projectBrowserTools(instance, { provider })` projects a `@agentproto/driver-browser` `BrowserInstance` onto page-level MCP tools (MCP only; the SDK stays the typed client):
+
+```ts
+import { projectBrowserTools } from "@agentproto/runtime"
+
+const projected = projectBrowserTools(instance, { provider: { id: "camofox", capabilities: provider.manifest.capabilities } })
+projected.register(mcpServer) // browser_navigate, browser_evaluate, browser_click, browser_fill,
+                              // browser_screenshot, browser_get_dom, browser_list_requests,
+                              // browser_get_request_body, browser_cdp_send
+await projected.close()
+```
+
+Tools are gated by capability before any driver is attached. A tool the provider cannot serve returns an error result with `structuredContent.error.code === "browser:unsupported"` and `error.cause.capability` naming the missing capability (for example `cdp` for `browser_list_requests` on a `cdp:false` provider). `browser_download` and `browser_act` are Bureau session-pool features, not driver-port verbs, so they are not projected. `path` on `browser_screenshot` and `browser_get_dom` needs the `writeArtifact` option; without it the call fails with a clear message.
+
 ## License
 
 MIT — see [LICENSE](../../LICENSE).

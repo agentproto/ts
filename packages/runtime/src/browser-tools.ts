@@ -25,6 +25,7 @@ import type { AdapterLister } from "@agentproto/provider-kit"
 import { registerBuiltinTool } from "@agentproto/mcp-server"
 import { catchErrors, paginated } from "@agentproto/tool"
 import type { SessionsRegistry, SessionDescriptor } from "./sessions.js"
+import { defaultBrowserAdapterIds } from "./browser-adapters.js"
 
 // ── Minimal structural types (no dep on @agentproto/adapter-browser) ──────────
 
@@ -316,7 +317,7 @@ export function registerBrowserTools(
           ? listBrowserAdapters()
               .map(a => a.id)
               .join(", ")
-          : "camofox, bureau"
+          : defaultBrowserAdapterIds().join(", ")
         return {
           content: [
             {

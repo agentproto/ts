@@ -3469,6 +3469,9 @@ importers:
       '@agentproto/acp':
         specifier: workspace:*
         version: link:../acp
+      '@agentproto/adapter-browser':
+        specifier: workspace:*
+        version: link:../../adapters/browser
       '@agentproto/agent':
         specifier: workspace:*
         version: link:../agent
@@ -3493,6 +3496,9 @@ importers:
       '@agentproto/driver-agent-cli':
         specifier: workspace:*
         version: link:../driver/agent-cli
+      '@agentproto/driver-browser':
+        specifier: workspace:*
+        version: link:../driver/browser
       '@agentproto/driver-http':
         specifier: workspace:*
         version: link:../driver/http

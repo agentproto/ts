@@ -454,7 +454,19 @@ export {
   type CatalogProviderPricing,
 } from "./catalog-provider-models.js"
 export type { BrowserAdapterResolver, BrowserAdapterLister, BrowserAdapterInfo } from "./browser-tools.js"
-export { makeBrowserAdapterLister } from "./browser-adapters.js"
+export {
+  makeBrowserAdapterLister,
+  defaultBrowserAdapterResolution,
+  defaultBrowserAdapterIds,
+} from "./browser-adapters.js"
+export { projectBrowserTools } from "./browser-projection.js"
+export type {
+  ProjectedBrowserTool,
+  ProjectedBrowserTools,
+  ProjectedProvider,
+  ProjectedToolResult,
+  ProjectBrowserToolsOptions,
+} from "./browser-projection.js"
 export type { BrowserAdapterHandle } from "./browser-adapters.js"
 export type {
   SandboxProviderResolver,
