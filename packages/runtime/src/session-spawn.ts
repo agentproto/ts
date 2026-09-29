@@ -8,6 +8,7 @@
 
 import type { AcpMcpServer } from "@agentproto/acp"
 import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/command-sandbox"
+import { trackWorktreeProvision } from "./process-stats.js"
 import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
 import type { AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
@@ -906,6 +907,63 @@ export function slugifyMcpImportName(alias: string, fallbackId: string): string 
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
   return slug || fallbackId
+}
+
+export interface MountImportsContext {
+  /** Bundle id — only used to label warnings. */
+  bundleId: string
+  /** Daemon `/mcp` base URL. Undefined (sandbox spawn / no URL configured)
+   *  ⇒ nothing is mounted; the caller reports that skip once. */
+  mcpMountUrl: string | undefined
+  /** Id of the session being spawned, baked in as `callerSessionId`. */
+  sessionId: string
+  imported: ImportedMcpsConfig
+  /** `mcpServers` already on the spawn — an entry with the same name wins. */
+  existing: readonly AcpMcpServer[]
+}
+
+/**
+ * Pure expansion of a bundle's `mcpImports` into native `http` mcpServers
+ * entries pointing at the daemon's `/mcp/imported/<id>` passthrough.
+ * `"*"` expands to every currently imported MCP. Rules (unchanged from the
+ * former inline loop): a removed/unknown id is skipped with a warning; a
+ * name collision with an existing (or earlier-mounted) entry keeps the
+ * existing one and warns; no `mcpMountUrl` mounts nothing. For claude-code
+ * the mount name is the slugified alias on purpose — a session-level entry
+ * shadows an ambient same-named one at the SDK layer.
+ */
+export function mountImports(
+  ids: readonly string[] | "*",
+  ctx: MountImportsContext,
+): { mounts: AcpMcpServer[]; warnings: string[] } {
+  const mounts: AcpMcpServer[] = []
+  const warnings: string[] = []
+  if (!ctx.mcpMountUrl) return { mounts, warnings }
+  const taken = new Set(ctx.existing.map(e => e.name))
+  const wanted = ids === "*" ? ctx.imported.imports.map(e => e.id) : ids
+  for (const importId of wanted) {
+    const entry = ctx.imported.imports.find(e => e.id === importId)
+    if (!entry) {
+      warnings.push(
+        `agent_start: bundle "${ctx.bundleId}" references removed MCP import "${importId}" — skipped.`,
+      )
+      continue
+    }
+    const name = slugifyMcpImportName(entry.alias, importId)
+    if (taken.has(name)) {
+      warnings.push(
+        `agent_start: bundle "${ctx.bundleId}"'s import "${name}" collides with an ` +
+          "existing mcpServers entry name — the existing one wins.",
+      )
+      continue
+    }
+    taken.add(name)
+    const ref =
+      `${ctx.mcpMountUrl}/imported/${encodeURIComponent(importId)}` +
+      `?callerSessionId=${encodeURIComponent(ctx.sessionId)}`
+    mounts.push({ name, transport: "http", ref })
+  }
+  return { mounts, warnings }
 }
 
 /** Strip ANSI escapes and drop the ACP framing/marker noise (`── … ──`
@@ -2246,27 +2304,15 @@ export async function spawnAgentSession(
       importedConfig ??= deps.loadImportedMcpsConfig
         ? await deps.loadImportedMcpsConfig()
         : await loadImportedMcps()
-      for (const importId of bundle.mcpImports) {
-        const entry = importedConfig.imports.find(e => e.id === importId)
-        if (!entry) {
-          spawnWarnings.push(
-            `agent_start: bundle "${bundleId}" references removed MCP import "${importId}" — skipped.`,
-          )
-          continue
-        }
-        const name = slugifyMcpImportName(entry.alias, importId)
-        if ((mcpServers ?? []).some(e => e.name === name)) {
-          spawnWarnings.push(
-            `agent_start: bundle "${bundleId}"'s import "${name}" collides with an ` +
-              "existing mcpServers entry name — the existing one wins.",
-          )
-          continue
-        }
-        const ref =
-          `${mcpMountUrl}/imported/${encodeURIComponent(importId)}` +
-          `?callerSessionId=${encodeURIComponent(mintedSessionId)}`
-        mcpServers = [...(mcpServers ?? []), { name, transport: "http", ref }]
-      }
+      const mounted = mountImports(bundle.mcpImports, {
+        bundleId,
+        mcpMountUrl,
+        sessionId: mintedSessionId,
+        imported: importedConfig,
+        existing: mcpServers ?? [],
+      })
+      spawnWarnings.push(...mounted.warnings)
+      if (mounted.mounts.length > 0) mcpServers = [...(mcpServers ?? []), ...mounted.mounts]
       if (bundle.includeDaemon) {
         if ((mcpServers ?? []).some(e => e.name === "agentproto")) {
           spawnWarnings.push(
@@ -3234,17 +3280,21 @@ export async function spawnAgentSession(
       void (async () => {
         let outcome: Awaited<ReturnType<WorktreeProvisioner>>
         try {
-          outcome = await provisionWorktree({
-            cwd: baseCwd,
-            ...(worktreeRequest.slug ? { slug: worktreeRequest.slug } : {}),
-            ...(worktreeRequest.base ? { base: worktreeRequest.base } : {}),
-            ...(input.label ? { labelHint: input.label } : {}),
-            setupLogPath: worktreeSetupLogPath(mintedSessionId),
-            // Unattended path — no human present to retry a transient
-            // failure, so bound it here rather than have the caller pay
-            // for an entirely fresh worktree. See `runSetup`'s doc.
-            retrySetupOnFailure: true,
-          })
+          outcome = await trackWorktreeProvision(
+            { sessionId: mintedSessionId, cwd: baseCwd, ...(input.label ? { label: input.label } : {}) },
+            () =>
+              provisionWorktree({
+                cwd: baseCwd,
+                ...(worktreeRequest.slug ? { slug: worktreeRequest.slug } : {}),
+                ...(worktreeRequest.base ? { base: worktreeRequest.base } : {}),
+                ...(input.label ? { labelHint: input.label } : {}),
+                setupLogPath: worktreeSetupLogPath(mintedSessionId),
+                // Unattended path — no human present to retry a transient
+                // failure, so bound it here rather than have the caller pay
+                // for an entirely fresh worktree. See `runSetup`'s doc.
+                retrySetupOnFailure: true,
+              }),
+          )
         } catch (err) {
           registry.settlePendingAgent(pendingDesc.id, {
             ok: false,
@@ -3361,16 +3411,21 @@ export async function spawnAgentSession(
     // `cwd` sits in no git repo (nothing to isolate) ⇒ spawn plain, unchanged.
     if (worktreeRequest && provisionWorktree) {
       let outcome: Awaited<ReturnType<WorktreeProvisioner>>
+      const provisionCwd = cwd
       try {
-        outcome = await provisionWorktree({
-          cwd,
-          ...(worktreeRequest.slug ? { slug: worktreeRequest.slug } : {}),
-          ...(worktreeRequest.base ? { base: worktreeRequest.base } : {}),
-          ...(input.label ? { labelHint: input.label } : {}),
-          setupLogPath: worktreeSetupLogPath(mintedSessionId),
-          // Same reasoning as the async branch above — see `runSetup`'s doc.
-          retrySetupOnFailure: true,
-        })
+        outcome = await trackWorktreeProvision(
+          { sessionId: mintedSessionId, cwd: provisionCwd, ...(input.label ? { label: input.label } : {}) },
+          () =>
+            provisionWorktree({
+              cwd: provisionCwd,
+              ...(worktreeRequest.slug ? { slug: worktreeRequest.slug } : {}),
+              ...(worktreeRequest.base ? { base: worktreeRequest.base } : {}),
+              ...(input.label ? { labelHint: input.label } : {}),
+              setupLogPath: worktreeSetupLogPath(mintedSessionId),
+              // Same reasoning as the async branch above — see `runSetup`'s doc.
+              retrySetupOnFailure: true,
+            }),
+        )
       } catch (err) {
         return finish({
           ok: false,

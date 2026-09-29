@@ -196,18 +196,24 @@ export function webhookSentinelProvider(opts: WebhookProviderOptions = {}): Sent
   async function ensureHook(
     repo: string,
     origin: string,
-    o: { verifyExisting: boolean; key?: string },
+    o: { verify: "strict" | "tolerant"; key?: string },
   ): Promise<WebhookHookRecord> {
     const store = hooks()
     let rec = store.getByRepo(repo)
 
-    if (rec && o.verifyExisting) {
+    if (rec) {
+      let deleted = false
       try {
-        await gh(["api", "-H", "Accept: application/vnd.github+json", `repos/${repo}/hooks/${rec.hookId}`])
+        await gh(["api", "-H", "Accept: application/vnd.github+json", `repos/${rec.repo}/hooks/${rec.hookId}`])
       } catch (err) {
-        if (!isNotFound(err)) throw err
-        // Deleted on GitHub behind our back — recreate below, keeping the key
-        // and holders so existing sentinels stay valid.
+        // `tolerant` (daemon-boot attach): an unreachable/unauthorised GitHub
+        // must not fail the re-attach — only a definite 404 triggers recreate.
+        if (isNotFound(err)) deleted = true
+        else if (o.verify === "strict") throw err
+      }
+      if (deleted) {
+        // Deleted on GitHub behind our back — recreate, keeping the key and
+        // holders so existing sentinels stay valid.
         const secret = randomBytes(32).toString("hex")
         const hookId = await ghCreateHook(repo, callbackUrl(origin, rec.key), secret)
         rec = { ...rec, hookId, secret, origin }
@@ -313,7 +319,7 @@ export function webhookSentinelProvider(opts: WebhookProviderOptions = {}): Sent
       const holder = `wh_${randomBytes(8).toString("hex")}`
       const store = hooks()
       return store.withRepoLock(repo, async () => {
-        const rec = await ensureHook(repo, pub.url, { verifyExisting: true })
+        const rec = await ensureHook(repo, pub.url, { verify: "strict" })
         const withHolder = { ...rec, holders: [...new Set([...rec.holders, holder])] }
         store.put(withHolder)
         return handleFor(withHolder, holder)
@@ -337,7 +343,7 @@ export function webhookSentinelProvider(opts: WebhookProviderOptions = {}): Sent
       if (!pub) return { ...handle }
       const store = hooks()
       return store.withRepoLock(repo, async () => {
-        const rec = await ensureHook(repo, pub.url, { verifyExisting: false, key: hookKey })
+        const rec = await ensureHook(repo, pub.url, { verify: "tolerant", key: hookKey })
         const withHolder = rec.holders.includes(holder) ? rec : { ...rec, holders: [...rec.holders, holder] }
         if (withHolder !== rec) store.put(withHolder)
         return handleFor(withHolder, holder)

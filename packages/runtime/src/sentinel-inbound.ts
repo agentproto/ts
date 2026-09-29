@@ -26,39 +26,80 @@ export interface SentinelInboundResult {
   body: Record<string, unknown>
 }
 
+type InboundReq = { rawBody: string; headers: Record<string, string | string[] | undefined> }
+type ParseResult = ReturnType<NonNullable<SentinelProviderHandle["parseInbound"]>>
+
+const AUTH_FAILURES: ReadonlySet<string> = new Set(["missing_signature", "bad_signature", "stale_timestamp"])
+
+function failureResult(reason: string): SentinelInboundResult | null {
+  if (reason === "unknown_hook") return null
+  if (AUTH_FAILURES.has(reason)) return { status: 401, body: { error: "bad_signature", reason } }
+  return { status: 400, body: { error: reason } }
+}
+
+async function deliverAll(
+  sentinels: readonly Sentinel[],
+  events: readonly SentinelEvent[],
+  deps: SentinelInboundDeps,
+): Promise<SentinelInboundResult> {
+  let delivered = 0
+  let failed = false
+  for (const sentinel of sentinels) {
+    const result = await deps.runtime.deliverPushed(sentinel.id, events)
+    delivered += result.delivered
+    if (result.failed) failed = true
+  }
+  // 5xx (not 200) so a delivery that threw stays retryable: it was never
+  // marked seen, so the sender's redelivery is delivered rather than swallowed.
+  if (failed) return { status: 500, body: { error: "delivery_failed" } }
+  return { status: 200, body: { ok: true, events: events.length, sentinels: sentinels.length, delivered } }
+}
+
+/** Push subscriptions owned by a non-webhook provider (agentpush): each
+ *  sentinel carries its own hook key + secret in `handle.state`, so verify
+ *  against that sentinel's handle. */
+async function handleProviderOwnedInbound(
+  hookKey: string,
+  req: InboundReq,
+  deps: SentinelInboundDeps,
+): Promise<SentinelInboundResult | null> {
+  const bound = deps.store
+    .list()
+    .filter(s => s.provider !== WEBHOOK_SLUG && s.handle.state?.hookKey === hookKey)
+  let failure: SentinelInboundResult | null = null
+  for (const sentinel of bound) {
+    const provider = await deps.resolveProvider(sentinel.provider)
+    if (!provider?.parseInbound) continue
+    const parsed: ParseResult = provider.parseInbound(req, sentinel.handle)
+    if (!parsed.ok) {
+      failure ??= failureResult(parsed.reason)
+      continue
+    }
+    if (parsed.events.length === 0) return { status: 200, body: { ok: true, action: "ignored", events: 0 } }
+    return deliverAll([sentinel], parsed.events, deps)
+  }
+  return failure
+}
+
 /** `null` = `hookKey` is not a known sentinel hook (the caller answers a
  *  generic 404 — nothing about hook keys is echoed). */
 export async function handleSentinelInbound(
   hookKey: string,
-  req: { rawBody: string; headers: Record<string, string | string[] | undefined> },
+  req: InboundReq,
   deps: SentinelInboundDeps,
 ): Promise<SentinelInboundResult | null> {
   const provider = await deps.resolveProvider(WEBHOOK_SLUG)
-  if (!provider?.parseInbound) return null
+  if (!provider?.parseInbound) return handleProviderOwnedInbound(hookKey, req, deps)
 
   const parsed = provider.parseInbound(req, { provider: WEBHOOK_SLUG, state: { hookKey } })
   if (!parsed.ok) {
-    if (parsed.reason === "unknown_hook") return null
-    if (parsed.reason === "missing_signature" || parsed.reason === "bad_signature") {
-      return { status: 401, body: { error: "bad_signature", reason: parsed.reason } }
-    }
-    return { status: 400, body: { error: parsed.reason } }
+    if (parsed.reason === "unknown_hook") return handleProviderOwnedInbound(hookKey, req, deps)
+    return failureResult(parsed.reason)
   }
   if (parsed.events.length === 0) return { status: 200, body: { ok: true, action: "ignored", events: 0 } }
 
   const bound: Sentinel[] = deps.store
     .list()
     .filter(s => s.provider === WEBHOOK_SLUG && s.handle.state?.hookKey === hookKey)
-
-  let delivered = 0
-  let failed = false
-  for (const sentinel of bound) {
-    const result = await deps.runtime.deliverPushed(sentinel.id, parsed.events)
-    delivered += result.delivered
-    if (result.failed) failed = true
-  }
-  // 5xx (not 200) so a delivery that threw stays retryable: it was never
-  // marked seen, so GitHub's redelivery is delivered rather than swallowed.
-  if (failed) return { status: 500, body: { error: "delivery_failed" } }
-  return { status: 200, body: { ok: true, events: parsed.events.length, sentinels: bound.length, delivered } }
+  return deliverAll(bound, parsed.events, deps)
 }

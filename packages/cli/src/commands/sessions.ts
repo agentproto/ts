@@ -62,6 +62,12 @@ import {
   type DaemonEndpoint,
 } from "./_daemon-helpers.js"
 import { waitForPolicy } from "./_policy-wait.js"
+import {
+  StatsFlagError,
+  extractStatsFlag,
+  renderStatsTable,
+  type StatsMode,
+} from "./sessions-stats.js"
 import { parseDuration, formatDuration } from "../util/duration.js"
 import {
   hasResumeStrategy,
@@ -77,7 +83,7 @@ import {
   type StoryStepKind,
   type ExportedSession,
 } from "@agentproto/runtime/session-story"
-import type { SessionDescriptor } from "@agentproto/runtime"
+import type { LabeledProcessStatsReport, SessionDescriptor } from "@agentproto/runtime"
 import type { AcpMcpServer } from "@agentproto/acp"
 
 const USAGE = `agentproto sessions — browse and control daemon sessions
@@ -86,6 +92,16 @@ Usage:
   agentproto sessions [--watch] [--simple] [--json]
                               (--simple: with --watch, the flat-table picker
                                instead of the 3-pane dashboard)
+  agentproto sessions --stats[=full] [--json] [--no-color]
+                              (RAM / CPU / process count per session, sorted
+                               by RAM, with a totals row, the daemon and
+                               worktree-provisioning buckets, host load and
+                               free memory, and agentproto-looking orphans
+                               that belong to no live session - reported,
+                               never killed. --stats=full (or --stats
+                               --verbose) also lists each session's child
+                               processes: pid, command, RSS, CPU, elapsed.
+                               CPU is ps's %CPU, kernel-averaged.)
   agentproto sessions --attach <id-or-name> [--no-color]
   agentproto sessions start <adapter> [--cwd <dir>] [--workspace <slug>]
                                       [--model <id>] [--auth subscription|api-key]
@@ -355,8 +371,20 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   if (sub === "inbox") return runInbox(args.slice(1))
   if (sub === "message") return runMessage(args.slice(1))
 
+  let statsMode: StatsMode | undefined
+  let listArgs: readonly string[] = args
+  try {
+    const extracted = extractStatsFlag(args)
+    statsMode = extracted.stats
+    listArgs = extracted.rest
+  } catch (err) {
+    if (!(err instanceof StatsFlagError)) throw err
+    process.stderr.write(`agentproto sessions: ${err.message}\n`)
+    return 2
+  }
+
   const { values } = parseArgs({
-    args: [...args],
+    args: [...listArgs],
     allowPositionals: false,
     strict: true,
     options: {
@@ -383,6 +411,18 @@ export async function runSessions(args: readonly string[]): Promise<number> {
     })
   }
 
+  if (statsMode) {
+    if (values.watch) {
+      process.stderr.write("agentproto sessions: --stats can't be combined with --watch\n")
+      return 2
+    }
+    return runListStats(endpoint.url, statsMode, {
+      json: values.json === true,
+      colour: !values["no-color"] && process.stdout.isTTY === true,
+      attentionDelaySec: await resolveAttentionDelaySec(),
+    })
+  }
+
   if (values.json) {
     const list = await fetchSessions(endpoint.url)
     process.stdout.write(JSON.stringify(list, null, 2) + "\n")
@@ -401,6 +441,40 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   // One-shot
   const list = await fetchSessions(endpoint.url)
   printTable(list, await resolveAttentionDelaySec())
+  return 0
+}
+
+/** `agentproto sessions --stats[=full]` - see sessions-stats.ts. */
+async function runListStats(
+  baseUrl: string,
+  mode: StatsMode,
+  opts: { json: boolean; colour: boolean; attentionDelaySec: number },
+): Promise<number> {
+  let report: LabeledProcessStatsReport
+  try {
+    report = await httpGetJson<LabeledProcessStatsReport>(`${baseUrl}/sessions/stats?detail=${mode}`)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    process.stderr.write(
+      `agentproto sessions: could not read session stats (${msg})` +
+        (/404/.test(msg)
+          ? ". A daemon started before this feature has no /sessions/stats route - restart it to pick it up.\n"
+          : ".\n"),
+    )
+    return 1
+  }
+  if (opts.json) {
+    process.stdout.write(JSON.stringify(report, null, 2) + "\n")
+    return 0
+  }
+  const list = await fetchSessions(baseUrl)
+  const rows = sortPinnedFirst(list).map(s => ({
+    id: s.id,
+    label: s.label ?? s.name ?? "",
+    kind: terminalKindMark(s) || s.kind,
+    status: statusLabel(s, opts.attentionDelaySec),
+  }))
+  process.stdout.write(renderStatsTable(rows, report, { colour: opts.colour, mode }))
   return 0
 }
 
