@@ -416,9 +416,13 @@ describe("WorkflowRunner", () => {
     // The interrupted step settles to a terminal status of its own —
     // `cancelled`, never left `running` forever.
     expect(final?.stages[0]?.steps[0]?.status).toBe("cancelled")
+    // F45: the stage itself is `cancelled` too — not `failed`. Nothing in
+    // it actually failed; it was interrupted by the cancel.
+    expect(final?.stages[0]?.status).toBe("cancelled")
     // Stage 2 never started at all.
     expect(final?.stages[1]?.status).not.toBe("running")
     expect(final?.stages[1]?.steps[0]?.status).toBe("skipped")
+    expect(final?.stages[1]?.status).toBe("cancelled")
     expect(registry.spawnAgent).toHaveBeenCalledTimes(1)
   })
 
@@ -752,11 +756,58 @@ describe("WorkflowRunner persistence", () => {
       skipReason: "run-cancelled",
     })
     expect(s?.stages[0]?.steps[2]).toMatchObject({ label: "clean-chunk[2]", status: "done" })
-    expect(s?.stages[0]?.status).toBe("failed")
+    // F45: a stage of a CANCELLED run whose steps are only done/cancelled/
+    // skipped must itself be `cancelled`, not `failed` — nothing in it
+    // actually failed. Seen live on wfrun_c6ae5a52 (repaired at boot by
+    // this exact function reporting the stage as `failed`).
+    expect(s?.stages[0]?.status).toBe("cancelled")
 
     // Persisted immediately, the same way the host-interrupted correction is.
-    const persisted = JSON.parse(readFileSync(persistPath, "utf8")) as Array<{ stages: Array<{ steps: Array<{ status: string }> }> }>
+    const persisted = JSON.parse(readFileSync(persistPath, "utf8")) as Array<{ stages: Array<{ status: string; steps: Array<{ status: string }> }> }>
     expect(persisted[0]?.stages[0]?.steps[0]?.status).toBe("cancelled")
+    expect(persisted[0]?.stages[0]?.status).toBe("cancelled")
+  })
+
+  it("F45: a cancelled run's stage stays `failed` if one of its steps genuinely failed before the cancel landed", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeMockRegistry()
+
+    // A step already `failed` (a real error, not the cancel) sits alongside
+    // steps the cancel itself resolves — the stage must NOT be painted over
+    // as `cancelled`; it stays `failed` because something in it actually did.
+    const stuckRun = {
+      runId: "wfrun_stuckcancel2",
+      workflowId: "cancelled-run-with-failure",
+      status: "cancelled",
+      startedAt: new Date().toISOString(),
+      endedAt: new Date().toISOString(),
+      stages: [
+        {
+          index: 0,
+          status: "running",
+          steps: [
+            { index: 0, label: "already-failed", status: "failed", error: "boom" },
+            { index: 1, label: "in-flight", status: "running", sessionId: "sess_z" },
+            { index: 2, label: "never-started", status: "pending" },
+          ],
+        },
+      ],
+      result: { sessionIds: ["sess_z"] },
+    }
+    writeFileSync(persistPath, JSON.stringify([stuckRun], null, 2), "utf8")
+
+    const runner = createWorkflowRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      persistPath,
+    })
+
+    const s = runner.status("wfrun_stuckcancel2")
+    expect(s?.stages[0]?.steps[0]).toMatchObject({ label: "already-failed", status: "failed" })
+    expect(s?.stages[0]?.steps[1]).toMatchObject({ label: "in-flight", status: "cancelled" })
+    expect(s?.stages[0]?.steps[2]).toMatchObject({ label: "never-started", status: "skipped" })
+    expect(s?.stages[0]?.status).toBe("failed")
   })
 
   it("F44b: finalizes stuck steps as failed (interrupted by daemon restart) for an already-terminal failed run found on restart", async () => {
