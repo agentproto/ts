@@ -810,7 +810,12 @@ jobs:
       - name: Capture PR head SHA
         id: headsha
         if: steps.prstate.outputs.skip != 'true'
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          # Wall-clock start of THIS job: the postcheck gates count bot reviews
+          # submitted at or after this instant (a head sha can move under them,
+          # a timestamp cannot).
+          echo "job-start=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       # Feed the reviewer its last-reviewed commit + prior review body so it can
       # review only the increment (last reviewed SHA → HEAD) instead of the full
@@ -1219,6 +1224,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          JOB_START: ${{ steps.headsha.outputs.job-start }}
           # The reviewer's own artifact ledger — routed through env, not
           # interpolated inline, same shell-injection reasoning as PR_TITLE
           # elsewhere in this file (it's machine-written JSON, but the
@@ -1265,9 +1271,14 @@ jobs:
           }
           # --paginate + `jq -s add` is load-bearing: a naive `--paginate
           # --jq` evaluates per PAGE and can miscount.
+          # Count THIS job's bot reviews by submission time, not by head sha:
+          # the head can move under the recount (the reviewer's own changeset
+          # push did exactly that on PR #1137 and #1576); a submitted_at
+          # cannot. An empty JOB_START degrades to "any bot review ever",
+          # which only ever disarms the fallback tiers (no duplicate risk).
           count_reviews() {
             gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
-              | jq -s "add | [.[] | select(.commit_id==\"$1\")] | length"
+              | jq -s --arg since "$JOB_START" 'add | [.[] | select(.user.type=="Bot" and .submitted_at >= $since)] | length'
           }
           COUNT=""
           for attempt in 1 2 3; do
@@ -1303,7 +1314,7 @@ jobs:
           SETTLE_PASSES=0
           while [ "$COUNT" -eq 0 ] 2>/dev/null && [ "$SETTLE_PASSES" -lt 2 ]; do
             SETTLE_PASSES=$((SETTLE_PASSES + 1))
-            echo "Zero reviews against head $SHA so far — settle pass $SETTLE_PASSES/2 (the listing may lag a just-posted review)…"
+            echo "Zero bot reviews since job start $JOB_START so far (live head $SHA) — settle pass $SETTLE_PASSES/2 (the listing may lag a just-posted review)…"
             sleep 10
             if ! settle_recount; then
               echo "::warning::postcheck: GitHub API unreachable during a settle pass — posted=unknown (fallback tiers stays disarmed; verify decides)."
@@ -1311,7 +1322,7 @@ jobs:
               exit 0
             fi
           done
-          echo "Reviews already posted against live head $SHA: $COUNT"
+          echo "Bot reviews posted since job start $JOB_START (live head $SHA): $COUNT"
           if [ "$COUNT" -gt 0 ] 2>/dev/null; then
             echo "posted=true" >> "$GITHUB_OUTPUT"
           else
@@ -1428,6 +1439,7 @@ jobs:
           # The fallback-account tier's own artifact ledger — same
           # ledger-first reasoning as the postcheck step above.
           REVIEWER_ARTIFACTS: ${{ steps.reviewer-agentproto-fallback.outputs.artifacts }}
+          JOB_START: ${{ steps.headsha.outputs.job-start }}
         run: |
           # Ledger-first, same reasoning as the postcheck step above: the
           # fallback-account tier can ALSO push its own changeset mid-turn
@@ -1452,9 +1464,14 @@ jobs:
           }
           # Same --paginate + `jq -s add` recipe as the postcheck step above —
           # see its comment for why a naive `--paginate --jq` miscounts.
+          # Count THIS job's bot reviews by submission time, not by head sha:
+          # the head can move under the recount (the reviewer's own changeset
+          # push did exactly that on PR #1137 and #1576); a submitted_at
+          # cannot. An empty JOB_START degrades to "any bot review ever",
+          # which only ever disarms the fallback tiers (no duplicate risk).
           count_reviews() {
             gh api --paginate "repos/${{ github.repository }}/pulls/$PR_NUMBER/reviews" \
-              | jq -s "add | [.[] | select(.commit_id==\"$1\")] | length"
+              | jq -s --arg since "$JOB_START" 'add | [.[] | select(.user.type=="Bot" and .submitted_at >= $since)] | length'
           }
           COUNT=""
           for attempt in 1 2 3; do
@@ -1490,7 +1507,7 @@ jobs:
           SETTLE_PASSES=0
           while [ "$COUNT" -eq 0 ] 2>/dev/null && [ "$SETTLE_PASSES" -lt 2 ]; do
             SETTLE_PASSES=$((SETTLE_PASSES + 1))
-            echo "Zero reviews against head $SHA so far — settle pass $SETTLE_PASSES/2 (post-fallback-account check)…"
+            echo "Zero bot reviews since job start $JOB_START so far (live head $SHA) — settle pass $SETTLE_PASSES/2 (post-fallback-account check)…"
             sleep 10
             if ! settle_recount; then
               echo "::warning::postcheck-fallback: GitHub API unreachable during a settle pass — posted=unknown (legacy tier stays disarmed; verify decides)."
@@ -1498,7 +1515,7 @@ jobs:
               exit 0
             fi
           done
-          echo "Reviews already posted against live head $SHA (post-fallback-account check): $COUNT"
+          echo "Bot reviews posted since job start $JOB_START (live head $SHA, post-fallback-account check): $COUNT"
           if [ "$COUNT" -gt 0 ] 2>/dev/null; then
             echo "posted=true" >> "$GITHUB_OUTPUT"
           else
@@ -1691,24 +1708,16 @@ jobs:
           steps.bypass.outputs.skip != 'true' &&
           steps.buildwait.outputs.build_ok == 'true'
         id: changeset
-        # The sandboxed reviewer (reviewerSandbox) can ALSO push a changeset
-        # itself, mid-turn, straight from inside the box (see
-        # changesetDeliveryInstruction in pr-review/entry.mjs) — independent
-        # of this host-side step and often already landed by the time this
-        # runs. When that races this step's own stale local checkout, `git
-        # push` here rejects as non-fast-forward and this step fails. Without
-        # continue-on-error that failure cascaded (no `if: always()` below)
-        # into skipping "Verify review was posted" AND "Stamp review
-        # provenance footer" for the ENTIRE job — so a review that posted
-        # cleanly went out with no footer for a reason that has nothing to do
-        # with the review itself. This step's own outcome is cosmetic (the
-        # changeset either already landed via the box, or the
-        # changeset-check gate catches a genuinely missing one) — it must
-        # never gate the review's own verification/stamping.
+        # The sandboxed reviewer never pushes (it hands its changeset over as a
+        # PR comment, materialized below). This step's own outcome is still
+        # cosmetic: a push here can race a human push on the branch, and a
+        # genuinely missing changeset is caught by the changeset-check gate —
+        # it must never gate the review's own verification/stamping.
         continue-on-error: true
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           BOT_SLUG: ${{ steps.setup.outputs.app-slug }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           # Attribute the commit to the App bot (mentionable identity) when an
           # App token was minted; fall back to github-actions[bot] otherwise.
@@ -1720,6 +1729,27 @@ jobs:
           # unique workspace match is left for the "Validate changeset package
           # names" gate. `|| true` so a leftover unresolvable name doesn't abort
           # the commit — that gate is what turns it red, honestly.
+          # Materialize a changeset the sandboxed reviewer handed over as a PR
+          # comment (marker `<!-- agentic-changeset:<path> -->`, see
+          # changesetDeliveryInstruction in pr-review/entry.mjs). The box never
+          # pushes: moving the PR head mid-turn raced the dedupe gates above and
+          # produced duplicate reviews (PR #1137, #1241, #1576). This step runs
+          # AFTER every gate, so landing the file here is race-free. Never
+          # overwrites a changeset already on the branch.
+          gh api --paginate "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" \
+            | jq -rs 'add | [.[] | select(.user.type=="Bot" and (.body // "" | test("<!-- agentic-changeset:")))] | sort_by(.created_at) | last | .body // empty' \
+            > changeset-comment.txt || true
+          if [ -s changeset-comment.txt ]; then
+            node -e '
+              const fs = require("fs")
+              const body = fs.readFileSync("changeset-comment.txt", "utf8")
+              const m = body.match(/<!-- agentic-changeset:(\.changeset\/[A-Za-z0-9._-]+\.md) -->[\s\S]*?```md\n([\s\S]*?)```/)
+              if (!m) { console.log("agentic-changeset: marker found but no fenced block — ignoring"); process.exit(0) }
+              if (fs.existsSync(m[1])) { console.log("agentic-changeset: " + m[1] + " already on the branch — keeping it"); process.exit(0) }
+              fs.writeFileSync(m[1], m[2]); console.log("agentic-changeset: materialized " + m[1] + " from the reviewer comment")
+            '
+          fi
+          rm -f changeset-comment.txt
           node scripts/check-changesets.mjs --fix || true
           git add '.changeset/*.md'
           if git diff --cached --quiet; then
