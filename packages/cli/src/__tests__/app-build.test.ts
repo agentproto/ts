@@ -14,7 +14,13 @@ import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 
-import { runAppBuild, detectPackageManager } from "../app-build.js"
+import { spawn } from "node:child_process"
+
+import {
+  runAppBuild,
+  detectPackageManager,
+  spawnParentDeathWatchdog,
+} from "../app-build.js"
 
 // Generous: `pnpm run build` cold-starts pnpm + node, slow on a loaded machine.
 const SPAWN_TEST_TIMEOUT_MS = 120_000
@@ -22,6 +28,8 @@ const SPAWN_TEST_TIMEOUT_MS = 120_000
 const tmpRoots: string[] = []
 const pendingBuilds: Array<{ abort: AbortController; done: Promise<unknown> }> = []
 const pidFiles: string[] = []
+/** Detached process-group leaders a test started directly; SIGKILLed as a group. */
+const groupPids: number[] = []
 
 afterEach(async () => {
   // Stop every in-flight build and wait for its tree to die BEFORE removing
@@ -37,6 +45,14 @@ afterEach(async () => {
     }
   }
   pidFiles.length = 0
+  for (const pid of groupPids) {
+    try {
+      process.kill(-pid, "SIGKILL")
+    } catch {
+      /* already gone */
+    }
+  }
+  groupPids.length = 0
   for (const p of tmpRoots) await rm(p, { recursive: true, force: true })
   tmpRoots.length = 0
   vi.restoreAllMocks()
@@ -294,4 +310,56 @@ describe("runAppBuild", () => {
     expect(await runAppBuild([appDir])).toBe(1)
     expect(stderr.join("")).toContain("../.agentproto/ui")
   }, SPAWN_TEST_TIMEOUT_MS)
+})
+
+describe.skipIf(process.platform === "win32")("spawnParentDeathWatchdog", () => {
+  /** A detached group (sh leader + hanging node child), like a real build tree. */
+  async function startHangingGroup(dir: string): Promise<{ leader: number; child: number }> {
+    const pidFile = join(dir, "grandchild.pid")
+    const leader = spawn(
+      "sh",
+      ["-c", `"${process.execPath}" -e "require('fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000)" "${pidFile}"; :`],
+      { stdio: "ignore", detached: true },
+    )
+    leader.unref()
+    const leaderPid = leader.pid as number
+    groupPids.push(leaderPid)
+    await waitFor(() => existsSync(pidFile), 30_000, "grandchild to start")
+    return { leader: leaderPid, child: Number(await readFile(pidFile, "utf8")) }
+  }
+
+  it(
+    "kills the build group when the parent's end of its pipe closes (parent died)",
+    async () => {
+      const dir = await mktmp()
+      const { leader, child } = await startHangingGroup(dir)
+      const watchdog = spawnParentDeathWatchdog(leader)
+      try {
+        // Alive while the parent holds the pipe.
+        await new Promise((r) => setTimeout(r, 500))
+        expect(pidAlive(leader) && pidAlive(child)).toBe(true)
+        // What the kernel does to our end when this process is SIGKILLed.
+        watchdog.stdin?.destroy()
+        await waitFor(() => !pidAlive(leader) && !pidAlive(child), 10_000, "build group to die")
+      } finally {
+        watchdog.kill("SIGKILL")
+      }
+    },
+    SPAWN_TEST_TIMEOUT_MS,
+  )
+
+  it(
+    "leaves the group alone once killed itself (normal build completion)",
+    async () => {
+      const dir = await mktmp()
+      const { leader, child } = await startHangingGroup(dir)
+      const watchdog = spawnParentDeathWatchdog(leader)
+      const gone = new Promise((r) => watchdog.once("exit", r))
+      watchdog.kill("SIGKILL")
+      await gone
+      await new Promise((r) => setTimeout(r, 500))
+      expect(pidAlive(leader) && pidAlive(child)).toBe(true)
+    },
+    SPAWN_TEST_TIMEOUT_MS,
+  )
 })
