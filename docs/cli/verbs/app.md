@@ -1,7 +1,8 @@
 # `agentproto app`
 
 ```text
-agentproto app install <appDir> [--data-dir <path>]
+agentproto app install <appDir|url|file.agentapp> [--ref <ref>] [--subdir <path>] [--data-dir <path>]
+agentproto app resync <appId>
 agentproto app list
 agentproto app pack   <appDir> [--out <path.agentapp>] [--json]
 agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]
@@ -42,7 +43,7 @@ survive the round-trip.
 
 ## Subverbs
 
-### `install <appDir> [--data-dir <path>]`
+### `install <appDir|url|file.agentapp> [--ref <ref>] [--subdir <path>] [--data-dir <path>]`
 
 Register the app (its `id` from `.agentproto/APP.md`) → `<appDir>` mapping in
 `~/.agentproto/apps.json`, the same file the daemon's `app_install` writes, so
@@ -75,6 +76,33 @@ How paths resolve against it (the daemon's rule, `packages/runtime/src/app-data.
    does under `<appDir>`, it resolves there — files written by a pre-data-dir
    install keep working, and `app_data_list` merges both views. Move the
    folder into the data dir and the fallback stops applying.
+
+#### Installing from a git URL or a `.agentapp`
+
+A git URL (`https://…`, `git@…`, `file://…`) or a `.agentapp` (an `https://`
+/ `file://` URL, or a local path) is installed **by the running daemon**
+(`app_install {url, ref?, subdir?}` / `{file}`), so start the daemon first:
+
+- **git**: shallow clone into `<daemon state dir>/apps/<repo>[-<subdir>]`
+  (`~/.agentproto/apps/…`, never your cwd). `--ref` picks a branch or tag,
+  `--subdir` the app's path inside the repo. The installed commit is pinned
+  as `source: { kind: "git", url, ref?, sha, subdir? }`.
+- **`.agentapp`**: downloaded (30 s timeout, 200 MB cap) or read, digest
+  verified exactly like `unpack`, then installed under
+  `<state dir>/apps/<id>`. Pinned as
+  `source: { kind: "agentapp", url, sha256, version }`. A digest mismatch
+  refuses the install and leaves any previous install untouched.
+
+Re-installing replaces the app dir atomically and keeps the app's data dir.
+`app_list` / `app_status` show `source`.
+
+### `resync <appId>`
+
+Ask the daemon to re-check a git / `.agentapp` install against its source
+(`git ls-remote` vs the pinned sha; re-download vs the pinned `sha256`).
+Prints `{ "changed": false }`, or reinstalls and prints
+`{ "changed": true, "from": …, "to": … }`. Apps installed from a local
+directory have no source and error.
 
 ### `list`
 

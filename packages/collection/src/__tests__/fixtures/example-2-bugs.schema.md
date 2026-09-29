@@ -44,8 +44,8 @@ initialStatus: open
 
 ownership:
   cardinality: single
-  role: assignee
-  required: false # bugs may be filed before they have an assignee
+  role: owner
+  required: false # bugs may be filed before they have an owner
 
 deadline:
   kind: none
@@ -85,7 +85,7 @@ steps drive fix.
 ## Conventions
 
 - File a bug as soon as a reproducible defect is observed; you don't need to
-  know who'll fix it (assignee is optional at creation).
+  know who'll fix it (owner is optional at creation).
 - `repro` is mandatory because a bug without a repro is just a rumour.
-- Critical bugs without an assignee surface a `warn` lint — pager / on-call
+- Critical bugs without an owner surface a `warn` lint — pager / on-call
   owner SHOULD pick them up.
