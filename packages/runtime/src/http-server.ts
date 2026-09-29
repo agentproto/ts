@@ -110,6 +110,7 @@ import {
 } from "./app-ui-delivery.js"
 import { resolveBuiltinPanelUi } from "./builtin-apps.js"
 import { resolveRequestHttpBaseUrl } from "./public-origins.js"
+import { handleA2aCardRoute, matchA2aCardRoute } from "./a2a-card-http.js"
 import {
   assertExternalPathRealInside,
   isExternalRootGranted,
@@ -4227,6 +4228,18 @@ export async function startHttpServer(
         if (opts.routineRegistrar && path.startsWith("/routine-defs/")) {
           const handled = await handleRoutineDefs(req, res, path, opts.routineRegistrar)
           if (handled) return
+        }
+
+        // A2A Agent Cards (a2a-card-http.ts) — daemon index + one per app.
+        const a2aCardRoute = opts.appRegistry ? matchA2aCardRoute(req.method, path) : null
+        if (a2aCardRoute) {
+          if (guardBrowserOrigin(req, res)) return
+          if (!authorize(req, res)) return
+          await handleA2aCardRoute(req, res, a2aCardRoute, {
+            appRegistry: opts.appRegistry!,
+            baseUrl: requestHttpBaseUrl(req),
+          })
+          return
         }
 
         // Standalone app UI host — GET /apps/:appId/ui serves an installed

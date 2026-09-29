@@ -1,0 +1,59 @@
+{
+  "name": "@agentproto/a2a",
+  "version": "0.0.0",
+  "description": "@agentproto/a2a — typed A2A (Agent2Agent) Agent Card and builders for agentproto apps. Hand-written from the A2A JSON spec; no SDK dependency.",
+  "keywords": [
+    "agentproto",
+    "a2a",
+    "agent2agent",
+    "agent-card",
+    "open-standard",
+    "agentic"
+  ],
+  "homepage": "https://agentproto.sh",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/a2a"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.9.5",
+    "esbuild": "^0.28.2",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
