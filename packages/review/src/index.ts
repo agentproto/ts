@@ -21,6 +21,8 @@ export {
   getCheck,
   finalizeBindings,
   reviewFrontmatterSchema,
+  checkReviewFrontmatter,
+  buildReviewManifest,
   ReviewManifestError,
   DEFAULT_BINDING,
   DEFAULT_BASE_REF,
@@ -28,6 +30,7 @@ export {
   DEFAULT_AGENT_TIMEOUT_MS,
   type ReviewManifest,
   type ReviewFrontmatter,
+  type ReviewDefinition,
   type ReviewBinding,
   type ReviewCheck,
   type CommandCheck,
@@ -35,6 +38,10 @@ export {
   type ReviewUse,
   type UsesOverride,
 } from "./manifest.js"
+export { defineReview, type ReviewHandle } from "./define-review.js"
+export { parseGitPackRef, GitPackRefError } from "./git-pack-ref.js"
+export { reviewPackFrontmatterSchema, type ReviewPackFrontmatter } from "./pack-schema.js"
+export { attestationFrontmatterSchema, type AttestationFrontmatter } from "./attestation-schema.js"
 export {
   parsePackManifest,
   resolvePacks,

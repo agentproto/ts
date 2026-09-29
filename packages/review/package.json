@@ -4,14 +4,16 @@
   "description": "@agentproto/review — the review primitive. A REVIEW.md manifest (checks + named bindings) compiled into an ordinary AIP-15 workflow (prepare → freeze range → parallel lanes → fan-in verdict), plus the verdict contract (pass | block | incomplete, per-lane findings) and a content-bound attestation (manifest sha + git range) a CI verifier can check. Pure: parses strings, builds handles, folds verdicts — no filesystem, git, or session I/O.",
   "keywords": [
     "agentproto",
+    "aip-62",
     "review",
+    "defineReview",
     "verdict",
     "attestation",
     "workflow",
     "open-standard",
     "agentic"
   ],
-  "homepage": "https://agentproto.sh",
+  "homepage": "https://agentproto.sh/docs/aip-62",
   "repository": {
     "type": "git",
     "url": "https://github.com/agentproto/ts",
@@ -50,6 +52,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@agentproto/define-doctype": "workspace:*",
     "@agentproto/workflow": "workspace:*",
     "gray-matter": "^4.0.3",
     "zod": "^4.6.5"
