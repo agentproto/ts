@@ -4,6 +4,7 @@
 agentproto cron add --schedule <cron-expr>
                     (--command <cmd> [--args <arg>...] [--cwd <dir>] [--timeout-ms <duration>]
                      | --adapter <slug> --prompt <text> [--cwd <dir>] [--model <id>]
+                                       [--options-json <json|@file>]
                      | --target-session <id> --prompt <text>)
                     [--label <text>] [--once] [--json]
 agentproto cron list   [--json]
@@ -64,6 +65,7 @@ next run.
 | `--prompt <text>` | — | The turn to send. Required with `--adapter` or `--target-session`. |
 | `--cwd <dir>` | — | Working dir (command and agent kinds). |
 | `--model <id>` | — | Model override (agent kind). |
+| `--options-json <json\|@file>` | — | Extra `agent_start` spawn fields beyond the discrete flags (agent kind only). Inline JSON or `@<file>`. Discrete flags (`--cwd`, `--model`, `--adapter`) win on collision. A `kind` key is refused. |
 | `--timeout-ms <duration>` | — | Command timeout (command kind). Bare integer or explicit `ms` suffix only; `s`/`m`/`h` are rejected because the flag name already declares milliseconds. |
 | `--label <text>` | — | Human-readable label, shown by `list`. |
 | `--once` | `false` | Fire once, then deactivate. |
@@ -109,6 +111,11 @@ agentproto cron add --schedule "0 9 * * 1-5" \
 # Check in on a long-lived session every 15 minutes, in place
 agentproto cron add --schedule "*/15 * * * *" \
   --target-session sess_abc123 --prompt "status?"
+
+# Spawn an agent with a custom MCP server every 2 hours
+agentproto cron add --schedule "0 */2 * * *" --adapter my-adapter \
+  --prompt "health check" \
+  --options-json '{"mcpServers":[{"name":"gateway","transport":"http","ref":"http://127.0.0.1:18790/mcp"}]}'
 
 # Inspect, fire out of band, tear down
 agentproto cron list --json
