@@ -57,6 +57,12 @@ export const BUILD_EXTRAS = {
   // resolve.test.ts "resolves jcode": workspace-local adapter resolution reads
   // adapters/jcode/dist; jcode is deliberately not a dependency of the cli.
   '@agentproto/cli': ['@agentproto/adapter-jcode'],
+  // panel-bridge.roundtrip.test.ts imports ../../../apps/src/panel-bridge.ts by
+  // relative path; panel-bridge.ts imports @agentproto/app-client/display-mode,
+  // which needs app-client's built dist/. apps is deliberately not a dependency
+  // of mcp-app-host, so turbo's ^build never reaches it in a shard — building
+  // apps pulls app-client (and the rest of its ^build chain) with it.
+  '@agentproto/mcp-app-host': ['@agentproto/apps'],
 }
 
 /** Extra build targets for one shard's packages (see BUILD_EXTRAS), sorted and deduped. */
