@@ -1662,6 +1662,32 @@ describe("compileWorkflow — declarative tool step timeout_ms (F45)", () => {
     const compiled = compileWorkflow(wf, { tools, candidates })
     expect((compiled.steps[0] as { timeoutMs?: number }).timeoutMs).toBeUndefined()
   })
+
+  // `defineWorkflow`'s own schema leaves `steps` as opaque JSON — an ENTRY-based
+  // handle (same pattern as the empty-command gate test below) bypasses it, so
+  // this is the only place a bad `timeout_ms` gets caught at all.
+  it("rejects a non-numeric timeout_ms on a tool step at compile time", () => {
+    const handle = {
+      id: "bad-tool-timeout",
+      description: "demo",
+      steps: [{ kind: "tool", id: "d", tool: "demo.double", inputs: {}, timeout_ms: "five" }],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any
+    expect(() => compileWorkflow(handle, { tools, candidates })).toThrow(WorkflowCompileError)
+    expect(() => compileWorkflow(handle, { tools, candidates })).toThrow(
+      /tool step 'd' has an invalid 'timeout_ms' \("five"\)/,
+    )
+  })
+
+  it("rejects a non-positive timeout_ms on a tool step at compile time", () => {
+    const handle = {
+      id: "bad-tool-timeout-zero",
+      description: "demo",
+      steps: [{ kind: "tool", id: "d", tool: "demo.double", inputs: {}, timeout_ms: 0 }],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any
+    expect(() => compileWorkflow(handle, { tools, candidates })).toThrow(/must be a number >= 1/)
+  })
 })
 
 describe("compileWorkflow — declarative gate step (AIP-15 P3)", () => {
@@ -1694,6 +1720,19 @@ describe("compileWorkflow — declarative gate step (AIP-15 P3)", () => {
     expect(step.cwd).toBe("/repo")
     expect(step.reportPath).toBe("gate-report.json")
     expect(step.timeoutMs).toBe(5000)
+  })
+
+  it("rejects an invalid timeout_ms on a gate step at compile time", () => {
+    const handle = {
+      id: "bad-gate-timeout",
+      description: "demo",
+      steps: [{ kind: "gate", id: "g", command: "pnpm", timeout_ms: -1 }],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any
+    expect(() => compileWorkflow(handle, { tools, candidates })).toThrow(WorkflowCompileError)
+    expect(() => compileWorkflow(handle, { tools, candidates })).toThrow(
+      /gate step 'g' has an invalid 'timeout_ms' \(-1\) — must be a number >= 1/,
+    )
   })
 
   it("maps retry.max_attempts/backoff/initial_ms and on_fail.reprompt/with to camelCase", () => {
