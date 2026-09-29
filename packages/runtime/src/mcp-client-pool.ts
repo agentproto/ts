@@ -258,9 +258,11 @@ const defaultOpener: McpClientOpener = (config, label) =>
     expandHeaders: true,
   })
 
-/** Message shapes that mean the connection itself died mid-call — the
+/** Message shapes that mean the connection itself died mid-call, or that
+ *  the upstream rejected our credentials (401/403: a rotated token) — the
  *  same set `McpProxyRegistry.callTool` treats as "reconnect next time". */
-const DEAD_CONNECTION_RE = /closed|disconnect|EPIPE|ECONNRESET/i
+export const DEAD_CONNECTION_RE =
+  /closed|disconnect|EPIPE|ECONNRESET|\b40[13]\b|unauthorized|forbidden/i
 
 /** `tools/list` is a paginated MCP result (`nextCursor`); a server with
  *  enough tools may spread them over several pages. The UI index needs

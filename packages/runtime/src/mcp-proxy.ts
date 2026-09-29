@@ -32,7 +32,9 @@
 
 import { promises as fs } from "node:fs"
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js"
-import { openMcpClient, safeClose } from "./mcp-client-pool.js"
+import { DEAD_CONNECTION_RE, openMcpClient, safeClose } from "./mcp-client-pool.js"
+import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
+import { resolveImportConnection } from "./mcp-import-resolve.js"
 import {
   loadImportedMcps,
   IMPORTED_MCPS_PATH,
@@ -250,7 +252,7 @@ export class McpProxyRegistry {
       // mid-call (process crash, http server restart). The next call
       // re-opens via connectIfNeeded.
       const msg = err instanceof Error ? err.message : String(err)
-      if (/closed|disconnect|EPIPE|ECONNRESET/i.test(msg)) {
+      if (DEAD_CONNECTION_RE.test(msg)) {
         await safeClose(handle.client)
         handle.client = null
         handle.tools = null
@@ -318,6 +320,11 @@ function toDescriptor(tool: {
  * http/sse open over the network. Returns a connected `Client` on
  * success; throws with a useful message on failure.
  */
-function openClient(entry: ImportedMcpEntry): Promise<Client> {
-  return openMcpClient(entry.snapshot, { label: `import "${entry.alias}"` })
+async function openClient(entry: ImportedMcpEntry): Promise<Client> {
+  const { config } = await resolveImportConnection(entry, getMcpCredentialDeps())
+  return openMcpClient(config, {
+    label: `import "${entry.alias}"`,
+    // claude-code `.mcp.json` semantics; parity with McpClientPool.
+    expandHeaders: true,
+  })
 }

@@ -268,7 +268,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(reviewSpawns).toHaveLength(2)
     const byModel = new Map(reviewSpawns.map(s => [s.model, s]))
     expect(byModel.get("claude-haiku-4-5-20251001")).toBeDefined() // SHA_A: residualFileCount 2 <= 3
-    expect(byModel.get("claude-sonnet-5")).toBeDefined() // SHA_B: residualFileCount 4 > 3
+    expect(byModel.get("claude-sonnet-5-5")).toBeDefined() // SHA_B: residualFileCount 4 > 3
 
     // SHA_B (no verdict): nudged in its OWN session, then one fresh
     // large-model retry — and still a gap. SHA_A: neither.
@@ -279,7 +279,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(nudges[0]!.prompt).toContain(SHA_B)
     const retries = spawns.filter(s => s.stepId === "reviewRetryLarge")
     expect(retries).toHaveLength(1)
-    expect(retries[0]!.model).toBe("claude-sonnet-5")
+    expect(retries[0]!.model).toBe("claude-sonnet-5-5")
     expect(sends.find(s => s.sessionId === retries[0]!.id)!.prompt).toContain(`(tip ${SHA_B})`)
     const checkedShas = calls.filter(c => c.name === "branch_gc_verdict_get").map(c => c.inputs.sha)
     expect(checkedShas.filter(sha => sha === SHA_A)).toHaveLength(1)

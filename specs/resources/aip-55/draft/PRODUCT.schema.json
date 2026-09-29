@@ -212,7 +212,7 @@
     },
     "on": {
       "$ref": "https://agentproto.sh/schemas/aip-54/REF.schema.json",
-      "description": "The referenced artifact this pricing attaches to (AIP-54 ref/v1). String contexts use the aip:// URI form, e.g. 'aip://42/book-companion@1.2.0'. The target AIP needs zero pricing awareness; hosts MUST refuse when the ref does not resolve."
+      "description": "The referenced artifact this pricing attaches to (AIP-54 ref/v1). String contexts use the aip:// URI form, e.g. 'aip://53/book-companion@1.2.0'. The target AIP needs zero pricing awareness; hosts MUST refuse when the ref does not resolve."
     },
     "title": {
       "type": "string",

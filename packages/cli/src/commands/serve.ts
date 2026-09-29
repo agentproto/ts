@@ -614,7 +614,19 @@ export async function runServe(args: readonly string[]): Promise<number> {
       }`,
     )
   }
+  // Imported-MCP secret seam (P0: wired, unused until P1). ref =
+  // `<keychain path>#<account>`, e.g. `agentproto/mcp-import/<id>#header:Authorization`.
+  const mcpSecretStore = new KeychainStore()
+  const splitMcpSecretRef = (ref: string): { path: string; account: string } => {
+    const i = ref.lastIndexOf("#")
+    return i < 0 ? { path: ref, account: ref } : { path: ref.slice(0, i), account: ref.slice(i + 1) }
+  }
   setMcpCredentialDeps({
+    resolveMcpSecret: async (ref) =>
+      (await mcpSecretStore.read(splitMcpSecretRef(ref)))?.value,
+    storeMcpSecret: async (ref, value) => {
+      await mcpSecretStore.write(splitMcpSecretRef(ref), { value, kind: "pat" })
+    },
     resolveMcpCredentialHeaders: ({ credentialRef, signal }) =>
       credentialBroker.resolveHeaders({
         path: credentialRef,
@@ -707,6 +719,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
       : {}),
     dial: daemonDialRendezvous,
     addHost: (offerUrl, name, meta) => hostRegistry.add(offerUrl, name, meta),
+    flushHost: fingerprint => hostRegistry.snapshotNow(fingerprint),
     log: line => process.stderr.write(`${color.dim}${line}${color.reset}\n`),
   })
 
@@ -1056,14 +1069,19 @@ export async function runServe(args: readonly string[]): Promise<number> {
   // URL to relay by hand. Best-effort + non-blocking: a bad/expired/revoked
   // token, or a broker being down, must never gate boot; failures just log.
   const agentprotoJoin = process.env.AGENTPROTO_JOIN
+  let joinHandle: JoinHandle | undefined
   if (agentprotoJoin) {
-    void joinAsBox(agentprotoJoin, pairingRegistry).catch(err =>
-      process.stderr.write(
-        `agentproto serve: AGENTPROTO_JOIN failed — ${
-          err instanceof Error ? err.message : String(err)
-        }\n`,
-      ),
-    )
+    void joinAsBox(agentprotoJoin, pairingRegistry)
+      .then(handle => {
+        joinHandle = handle
+      })
+      .catch(err =>
+        process.stderr.write(
+          `agentproto serve: AGENTPROTO_JOIN failed — ${
+            err instanceof Error ? err.message : String(err)
+          }\n`,
+        ),
+      )
   }
 
   // ── shutdown wiring (covers both local-only and tunnel modes) ──
@@ -1076,6 +1094,14 @@ export async function runServe(args: readonly string[]): Promise<number> {
     process.stderr.write(
       `\n${color.dim}── shutting down (${signal}) · v${__CLI_VERSION__} · up ${formatDuration(Date.now() - bootedAt)} ──${color.reset}\n`,
     )
+    // Tell the daemon we joined that we're leaving, so it captures our final
+    // session output while we can still answer (bounded — never blocks exit).
+    if (joinHandle) {
+      await Promise.race([
+        joinHandle.goodbye().catch(() => undefined),
+        new Promise<void>(resolve => setTimeout(resolve, JOIN_GOODBYE_TOTAL_MS).unref?.()),
+      ])
+    }
     aborter.abort()
     await gateway.stop().catch(() => undefined)
     // Delete our own runtime.json so the next CLI invocation doesn't
@@ -1500,6 +1526,10 @@ function resolveTurnStallAfterMs(configured: number | undefined): number | undef
 
 const JOIN_DIAL_TIMEOUT_MS = 15_000
 const JOIN_HANDSHAKE_TIMEOUT_MS = 15_000
+/** How long a leaving box waits for its join daemon to finish the final capture. */
+const JOIN_GOODBYE_WAIT_MS = 20_000
+/** Hard ceiling on the whole goodbye (dial + handshake + wait) at shutdown. */
+const JOIN_GOODBYE_TOTAL_MS = 30_000
 /** How long the box's own self-offer needs to live — long enough for the
  *  home daemon's join-token accept loop to finish THIS join's own handshake,
  *  process it, and dial back — not a standing credential. 3 minutes, not
@@ -1562,14 +1592,67 @@ function parseJoinLabels(raw: string | undefined): Record<string, string> | unde
  * Errors (expired/revoked/malformed token, broker unreachable) are the
  * caller's to log; they must never fail daemon boot.
  */
-async function joinAsBox(token: string, pairingRegistry: PairingRegistry): Promise<void> {
+async function joinAsBox(token: string, pairingRegistry: PairingRegistry): Promise<JoinHandle> {
   const offer = await parseOfferUrl(token, { now: Date.now() })
   if (offer.scope !== "host") {
     throw new Error("AGENTPROTO_JOIN does not carry a host-scoped join token")
   }
 
   const selfOffer = await pairingRegistry.createOffer({ scope: "host", ttlMs: JOIN_SELF_OFFER_TTL_MS })
+  const selfFingerprint = (await parseOfferUrl(selfOffer.url, { now: Date.now() })).fingerprint
 
+  const labels = parseJoinLabels(process.env.AGENTPROTO_JOIN_LABELS)
+  const wrapped = await dialJoinChannel(
+    offer,
+    JSON.stringify({
+      offerUrl: selfOffer.url,
+      ...(process.env.AGENTPROTO_JOIN_NAME ? { name: process.env.AGENTPROTO_JOIN_NAME } : {}),
+      ...(process.env.AGENTPROTO_JOIN_PROVIDER ? { provider: process.env.AGENTPROTO_JOIN_PROVIDER } : {}),
+      ...(process.env.AGENTPROTO_JOIN_SANDBOX_ID ? { sandboxId: process.env.AGENTPROTO_JOIN_SANDBOX_ID } : {}),
+      ...(labels ? { labels } : {}),
+    }),
+  )
+  wrapped.close("join complete")
+  process.stderr.write(
+    `${color.dim}[join] registered with daemon ${offer.fingerprint} via AGENTPROTO_JOIN${color.reset}\n`,
+  )
+
+  let saidGoodbye = false
+  return {
+    async goodbye(): Promise<void> {
+      if (saidGoodbye) return
+      saidGoodbye = true
+      const ch = await dialJoinChannel(offer, JSON.stringify({ goodbye: true, fingerprint: selfFingerprint }))
+      // The minting daemon closes once it has captured our final session
+      // output; wait for that (bounded), since we're about to exit.
+      await new Promise<void>(resolve => {
+        const timer = setTimeout(resolve, JOIN_GOODBYE_WAIT_MS)
+        if (typeof timer.unref === "function") timer.unref()
+        ch.onClose(() => {
+          clearTimeout(timer)
+          resolve()
+        })
+      })
+      ch.close("goodbye complete")
+      process.stderr.write(`${color.dim}[join] said goodbye to daemon ${offer.fingerprint}${color.reset}\n`)
+    },
+  }
+}
+
+/** Handle for a completed `AGENTPROTO_JOIN` registration. */
+interface JoinHandle {
+  /** Ask the daemon we joined to capture our final session output; call once,
+   *  just before exiting. Rejects if it can't be reached in time. */
+  goodbye(): Promise<void>
+}
+
+/** Dial a join token's route as the CLIENT and complete the pair/v2
+ *  handshake, carrying `clientName` (the JSON envelope) in the hello. The
+ *  caller owns the returned, open channel. */
+async function dialJoinChannel(
+  offer: Awaited<ReturnType<typeof parseOfferUrl>>,
+  clientName: string,
+): Promise<E2eFrameSink> {
   const { route, auth } = await deriveOfferTokens(offer.secret)
   const ac = new AbortController()
   const timer = setTimeout(
@@ -1583,15 +1666,6 @@ async function joinAsBox(token: string, pairingRegistry: PairingRegistry): Promi
   } finally {
     clearTimeout(timer)
   }
-
-  const labels = parseJoinLabels(process.env.AGENTPROTO_JOIN_LABELS)
-  const clientName = JSON.stringify({
-    offerUrl: selfOffer.url,
-    ...(process.env.AGENTPROTO_JOIN_NAME ? { name: process.env.AGENTPROTO_JOIN_NAME } : {}),
-    ...(process.env.AGENTPROTO_JOIN_PROVIDER ? { provider: process.env.AGENTPROTO_JOIN_PROVIDER } : {}),
-    ...(process.env.AGENTPROTO_JOIN_SANDBOX_ID ? { sandboxId: process.env.AGENTPROTO_JOIN_SANDBOX_ID } : {}),
-    ...(labels ? { labels } : {}),
-  })
 
   const started = await startClientHandshake({
     daemonX25519Pub: offer.daemonX25519Pub,
@@ -1616,10 +1690,7 @@ async function joinAsBox(token: string, pairingRegistry: PairingRegistry): Promi
       `AGENTPROTO_JOIN: daemon fingerprint ${peerFingerprint ?? "(none)"} does not match the token's ${offer.fingerprint}`,
     )
   }
-  wrapped.close("join complete")
-  process.stderr.write(
-    `${color.dim}[join] registered with daemon ${offer.fingerprint} via AGENTPROTO_JOIN${color.reset}\n`,
-  )
+  return wrapped
 }
 
 /**

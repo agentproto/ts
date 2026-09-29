@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agentproto.sh/schemas/aip-52/HARNESS.schema.json",
+  "$id": "https://agentproto.sh/schemas/pending/harness/HARNESS.schema.json",
   "title": "HarnessDefinition",
   "description": "Validates the YAML frontmatter of a .harness/<slug>.md file. A Harness is a stateful conversational shell with modes, threads, tool-approval gates, subagents, and observational memory. Today the canonical runtime is Mastra's Harness class (@mastra/core/harness); the spec is implementation-agnostic.",
   "$comment": "Relationship to other AIPs: a Harness HAS agents (via modes[].agent and HarnessConfig.agent) but IS NOT a subtype of AIP-42. AIP-42 agents are referenced from harness manifests via $resolver. See also AIP-12 for agent pack ingestion — packs can auto-generate .harness/ manifests from modes/*.md files.",

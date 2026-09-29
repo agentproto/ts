@@ -10,6 +10,10 @@
 
 import { describe, it, expect } from "vitest"
 import { createServer } from "node:http"
+import { existsSync } from "node:fs"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { AddressInfo } from "node:net"
 import { createMcpServer } from "@agentproto/mcp-server"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
@@ -268,13 +272,16 @@ describe("POST /worktrees/gc — HTTP route", () => {
   })
 })
 
+const tmpJobsDir = join(tmpdir(), `wgc-jobs-default-${process.pid}`)
+
 describe("worktree_gc — MCP tool", () => {
-  async function harness(runWorktreeGc?: WorktreeGcRunner) {
+  async function harness(runWorktreeGc?: WorktreeGcRunner, worktreeGcJobsDir?: string) {
     const registry = createSessionsRegistry({ persist: false })
     const { server } = await createMcpServer({ specs: [], name: "main", version: "0" })
     registerSessionTools(server, {
       workspace: process.cwd(),
       registry,
+      worktreeGcJobsDir: worktreeGcJobsDir ?? tmpJobsDir,
       ...(runWorktreeGc ? { runWorktreeGc } : {}),
     })
 
@@ -398,5 +405,130 @@ describe("worktree_gc — MCP tool", () => {
     } finally {
       await client.close()
     }
+  })
+
+  describe("background mode", () => {
+    const text = (r: unknown): string => (r as { content: Array<{ text: string }> }).content[0]!.text
+    const isError = (r: unknown): boolean => (r as { isError?: boolean }).isError === true
+    const gated = (): { runner: WorktreeGcRunner; release: (r: WorktreeGcResult) => void } => {
+      let release!: (r: WorktreeGcResult) => void
+      const gate = new Promise<WorktreeGcResult>(res => {
+        release = res
+      })
+      return { runner: () => gate, release }
+    }
+    async function pollDone(h: { client: Client }, jobId: string): Promise<{ status: string; resultPath: string; result: unknown }> {
+      let view: { status: string; resultPath: string; result: unknown } | undefined
+      for (let i = 0; i < 200; i++) {
+        view = JSON.parse(text(await h.client.callTool({ name: "worktree_gc_status", arguments: { jobId } })))
+        if (view!.status !== "running") break
+        await new Promise(res => setTimeout(res, 10))
+      }
+      return view!
+    }
+
+    it("wait:false returns a jobId + followUp; worktree_gc_status goes running → done with the result and a file on disk", async () => {
+      const jobsDir = await mkdtemp(join(tmpdir(), "wgc-jobs-"))
+      const { runner, release } = gated()
+      const h = await harness(runner, jobsDir)
+      try {
+        const started = JSON.parse(
+          text(await h.client.callTool({ name: "worktree_gc", arguments: { repoRoot: "/repo", wait: false } })),
+        ) as { jobId: string; status: string; followUp: { tool: string; args: { jobId: string }; pollAfterMs: number; hint: string } }
+        expect(started.status).toBe("running")
+        expect(started.jobId).toMatch(/^wgc_[0-9a-f]{8}$/)
+        expect(started.followUp.tool).toBe("worktree_gc_status")
+        expect(started.followUp.args).toEqual({ jobId: started.jobId })
+        expect(started.followUp.pollAfterMs).toBe(30000)
+        expect(started.followUp.hint).toContain("worktree_gc_status")
+
+        const running = JSON.parse(
+          text(await h.client.callTool({ name: "worktree_gc_status", arguments: { jobId: started.jobId } })),
+        ) as { status: string; elapsedMs: number }
+        expect(running.status).toBe("running")
+        expect(running.elapsedMs).toBeGreaterThanOrEqual(0)
+
+        release(PLAN_RESULT)
+        const done = await pollDone(h, started.jobId)
+        expect(done.status).toBe("done")
+        expect(done.result).toEqual(PLAN_RESULT)
+        expect(existsSync(done.resultPath)).toBe(true)
+        expect(JSON.parse(await readFile(done.resultPath, "utf8"))).toEqual(PLAN_RESULT)
+      } finally {
+        release(PLAN_RESULT)
+        await h.close()
+        await rm(jobsDir, { recursive: true, force: true })
+      }
+    })
+
+    it("a run that outlasts waitMs falls back to the background view; the run still completes", async () => {
+      const jobsDir = await mkdtemp(join(tmpdir(), "wgc-jobs-"))
+      const { runner, release } = gated()
+      const h = await harness(runner, jobsDir)
+      try {
+        const res = await h.client.callTool({ name: "worktree_gc", arguments: { repoRoot: "/repo", waitMs: 20 } })
+        const view = JSON.parse(text(res)) as { jobId: string; status: string }
+        expect(view.status).toBe("running")
+        release(APPLY_RESULT)
+        expect((await pollDone(h, view.jobId)).result).toEqual(APPLY_RESULT)
+      } finally {
+        release(APPLY_RESULT)
+        await h.close()
+        await rm(jobsDir, { recursive: true, force: true })
+      }
+    })
+
+    it("the default wait returns a fast run inline (no jobId)", async () => {
+      const { runner } = recordingRunner()
+      const h = await harness(runner)
+      try {
+        const res = await h.client.callTool({ name: "worktree_gc", arguments: { repoRoot: "/repo" } })
+        expect(JSON.parse(text(res))).toEqual(PLAN_RESULT)
+      } finally {
+        await h.close()
+      }
+    })
+
+    it("a runner failure surfaces inline for a waiting call and via status for a background one", async () => {
+      const failing: WorktreeGcRunner = async () => {
+        throw new Error("git exploded")
+      }
+      const h = await harness(failing)
+      try {
+        const inline = await h.client.callTool({ name: "worktree_gc", arguments: { repoRoot: "/repo" } })
+        expect(isError(inline)).toBe(true)
+        expect(text(inline)).toContain("worktree_gc failed: git exploded")
+
+        const started = JSON.parse(
+          text(await h.client.callTool({ name: "worktree_gc", arguments: { repoRoot: "/repo", wait: false } })),
+        ) as { jobId: string }
+        const view = await pollDone(h, started.jobId)
+        expect(view).toMatchObject({ status: "failed", error: "git exploded" })
+      } finally {
+        await h.close()
+      }
+    })
+
+    it("worktree_gc_status falls back to the on-disk result, rejects malformed ids, and reports unknown ids", async () => {
+      const jobsDir = await mkdtemp(join(tmpdir(), "wgc-jobs-"))
+      await mkdir(jobsDir, { recursive: true })
+      await writeFile(join(jobsDir, "wgc_deadbeef.json"), JSON.stringify(APPLY_RESULT))
+      const h = await harness(recordingRunner().runner, jobsDir)
+      try {
+        const disk = await h.client.callTool({ name: "worktree_gc_status", arguments: { jobId: "wgc_deadbeef" } })
+        expect(isError(disk)).toBe(false)
+        expect(JSON.parse(text(disk))).toMatchObject({ status: "done", result: APPLY_RESULT })
+
+        const bad = await h.client.callTool({ name: "worktree_gc_status", arguments: { jobId: "../x" } })
+        expect(isError(bad)).toBe(true)
+        expect(text(bad)).toContain("not found (no running job and no result file at")
+
+        const unknown = await h.client.callTool({ name: "worktree_gc_status", arguments: { jobId: "wgc_00000000" } })
+        expect(isError(unknown)).toBe(true)
+      } finally {
+        await h.close()
+        await rm(jobsDir, { recursive: true, force: true })
+      }
+    })
   })
 })

@@ -77,6 +77,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto worktree`](./verbs/worktree.md) — git worktree lifecycle (provision under `worktrees.root`, status-aware `ls`, guarded/salvage removal, `gc`)
 - [`agentproto branch`](./verbs/branch.md) — branch gc: classify local/remote/orphan refs as reclaim/review/hold, reversible apply, review queue
 - [`agentproto maintain`](./verbs/maintain.md) — plan/review (and optionally apply) branch + worktree gc for a repo, via the built-in `repo-maintenance` app's workflow
+- [`agentproto steward`](./verbs/steward.md) — judge idle agent sessions, then close or flag them with a recorded outcome, via the built-in `session-steward` app's workflow (dry run by default)
 
 ### Concepts
 

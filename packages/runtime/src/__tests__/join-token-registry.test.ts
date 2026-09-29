@@ -73,7 +73,7 @@ describe("createJoinTokenRegistry", () => {
 
   /** Wire a registry whose `dial` splices straight to a fake box via
    *  frame-harness — no real network, real pair/v2 crypto both ways. */
-  function makeRegistry(addHost: (...args: unknown[]) => unknown) {
+  function makeRegistry(addHost: (...args: unknown[]) => unknown, flushHost?: (fingerprint: string) => Promise<unknown>) {
     let capturedRoute: string | undefined
     const dial = vi.fn(async (wsUrl: string) => {
       const url = new URL(wsUrl.replace(/^ws/, "http"))
@@ -90,6 +90,7 @@ describe("createJoinTokenRegistry", () => {
       joinTokensPath,
       dial,
       addHost: addHost as (offerUrl: string, name?: string, meta?: unknown) => Promise<unknown>,
+      ...(flushHost ? { flushHost } : {}),
       handshakeTimeoutMs: HANDSHAKE_TIMEOUT_MS,
       reconnectMinMs: 10,
       reconnectMaxMs: 20,
@@ -207,6 +208,32 @@ describe("createJoinTokenRegistry", () => {
       await dialAsBox(created.token, async () => boxSink, { offerUrl: `agentproto://pair?v=2&rv=ws%3A%2F%2Fbox.invalid%2Fv1&id=${"0".repeat(32)}&pk=AA&sk=BB&s=cc&exp=9999999999&scope=host`, name: `box-${i}` })
       await vi.waitFor(() => expect(addHost).toHaveBeenCalledTimes(i + 1))
     }
+    await registry.shutdown()
+  })
+
+  it("a goodbye hello flushes the host's snapshot, refunds the use, and does not re-add the host", async () => {
+    const addHost = vi.fn().mockResolvedValue({ fingerprint: "box-fp" })
+    const flushHost = vi.fn().mockResolvedValue(true)
+    const { registry, dial, getBoxSink } = makeRegistry(addHost, flushHost)
+    const created = await registry.create({ name: "ci-reviewer", ttlMs: 60_000 })
+    const offerUrl = `agentproto://pair?v=2&rv=ws%3A%2F%2Fbox.invalid%2Fv1&id=${"0".repeat(32)}&pk=AA&sk=BB&s=cc&exp=9999999999&scope=host`
+
+    await vi.waitFor(() => expect(dial).toHaveBeenCalledTimes(1))
+    const boxSink1 = getBoxSink()
+    await dialAsBox(created.token, async () => boxSink1, { offerUrl, name: "ci-reviewer #1" })
+    await vi.waitFor(() => expect(addHost).toHaveBeenCalledTimes(1))
+    const afterJoin = (await registry.list())[0]!
+    expect(afterJoin.useCount).toBe(1)
+
+    await vi.waitFor(() => expect(dial).toHaveBeenCalledTimes(2))
+    const boxSink2 = getBoxSink()
+    await dialAsBox(created.token, async () => boxSink2, { goodbye: true, fingerprint: "box-fp" })
+    await vi.waitFor(() => expect(flushHost).toHaveBeenCalledWith("box-fp"))
+
+    expect(addHost).toHaveBeenCalledTimes(1)
+    const afterGoodbye = (await registry.list())[0]!
+    expect(afterGoodbye.useCount).toBe(1)
+    expect(afterGoodbye.lastUsedAt).toBe(afterJoin.lastUsedAt)
     await registry.shutdown()
   })
 
