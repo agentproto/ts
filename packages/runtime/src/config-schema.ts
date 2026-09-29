@@ -21,6 +21,7 @@ import type {
   AgentprotoConfig,
   AcpAgentConfigEntry,
   AgentsMdConfig,
+  CatalogConfig,
   DaemonConfig,
   FeaturesConfig,
   PairingConfig,
@@ -170,6 +171,12 @@ const titlerConfigSchema: z.ZodType<TitlerConfig> = z
   })
   .passthrough()
 
+const catalogConfigSchema: z.ZodType<CatalogConfig> = z
+  .object({
+    sources: z.array(z.object({ url: z.string() }).passthrough()).optional(),
+  })
+  .passthrough()
+
 const tunnelConfigSchema: z.ZodType<TunnelConfig> = z
   .object({
     host: z.string().optional(),
@@ -314,6 +321,7 @@ export const agentprotoConfigSchema = z
     agentsMd: agentsMdConfigSchema.optional(),
     models: z.record(z.string(), modelRoleValueSchema).optional(),
     titler: titlerConfigSchema.optional(),
+    catalog: catalogConfigSchema.optional(),
     profiles: z.record(z.string(), profileConfigSchema).optional(),
     activeProfile: z.string().optional(),
     defaults: spawnDefaultsConfigSchema.optional(),
@@ -370,6 +378,7 @@ type ConfigTopLevelKey =
   | "agentsMd"
   | "models"
   | "titler"
+  | "catalog"
   | "profiles"
   | "activeProfile"
   | "defaults"
@@ -708,6 +717,17 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Titler model",
     help: "OpenRouter model id used to generate session titles. Requires OPENROUTER_API_KEY.",
     default: DEFAULT_TITLER_MODEL,
+  },
+
+  // ── daemon: app catalog ──
+  {
+    path: "catalog.sources",
+    schema: z.array(z.object({ url: str }).passthrough()),
+    apply: "hot",
+    writable: true,
+    section: "daemon",
+    label: "App catalog sources",
+    help: "Remote catalogs merged into `app_catalog`: an array of `{ url }`, each returning `{ entries: AppCatalogEntry[] }`. Wins over `sources` in ~/.agentproto/app-catalog.json when both are set.",
   },
 
   // ── defaults: spawn ──

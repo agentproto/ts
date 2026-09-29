@@ -25,7 +25,7 @@ const extensionOptions = {
   external: ["vscode", "@ast-grep/napi"],
   platform: "node",
   format: "cjs",
-  target: "node20",
+  target: "node22",
   sourcemap: true,
   sourcesContent: true,
   logLevel: "info",

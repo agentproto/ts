@@ -9,7 +9,10 @@
  * — re-run scaffold-aip to refresh after spec changes.
  *
  * Cross-field rules (if/then/allOf in JSON Schema) don't translate
- * cleanly and live in `define-collection.ts`'s `validate(def)` instead.
+ * cleanly. The top-level one (`appliesTo` non-empty => `extends`) lives in
+ * `define-collection.ts`'s `validate(def)`; the per-field ones
+ * (`type: enum` => `enum`, `type: array` => `items`, `type: ref` =>
+ * `refKind`) are hand-written below as `requireCompanionKeys` (fix 2c).
  *
  * Hand-fixes on top of the generator's output:
  *
@@ -21,25 +24,24 @@
  *    scaffolder's `tryDiscriminatedUnion` detects the shared `schema`
  *    const-literal discriminator and emits `z.discriminatedUnion`
  *    directly, which is what's below.
- * 2. `fieldDef` (`$defs/fieldDef`, used by `schema.fields[]`) is
- *    self-referential via `items: { $ref: "#/$defs/fieldDef" }`
- *    (nested array field types, e.g. an array-of-array-of-string).
- *    json-schema-to-zod can't express recursive refs and silently
- *    degrades them to `z.any()`, which would accept any `fields[]`
- *    shape at all. Hand-written below as `fieldDefSchema` (+
- *    `fieldItemsSchema`, see next point) using `z.lazy` instead of
- *    relying on the generator for that node.
- * 2b. **Likely spec bug** (not fixed in the JSON Schema — flagged in
- *    the PR as an amendment): `$defs/fieldDef.items` is `$ref:
- *    #/$defs/fieldDef`, which textually requires `name` again at
- *    every recursion depth. But every `items:` example in
- *    `EXAMPLES.md` (okrs' `keyResults`, incidents' `impactWindow`)
- *    omits `name` inside `items` — a name only makes sense for an
- *    entry inside `fields[]`; the recursive `items` shape describes
- *    just the inner value type and has no name of its own.
- *    `fieldItemsSchema` below is `fieldDefSchema` with `name` made
- *    optional, used only for the `items` property; `fieldDefSchema`
- *    itself (used for `fields[]` entries) still requires `name`.
+ * 2. `fieldDef` (`$defs/fieldDef`, used by `schema.fields[]`) and
+ *    `fieldShape` (`$defs/fieldShape`, the name-less shape used for an
+ *    array field's `items:`) are self-referential: `items` is
+ *    `$ref: #/$defs/fieldShape`, which recurses into itself (nested array
+ *    field types, e.g. an array-of-array-of-string). json-schema-to-zod
+ *    can't express recursive refs and silently degrades them to
+ *    `z.any()`, which would accept any `fields[]` shape at all.
+ *    Hand-written below as `fieldDefSchema` and `fieldItemsSchema`
+ *    (= `$defs/fieldShape`) using `z.lazy` instead of relying on the
+ *    generator for those nodes. The two mirror the JSON Schema
+ *    field-for-field; `fieldItemsSchema` is `fieldDefSchema` minus `name`,
+ *    and being `.strict()` it REJECTS a `name` inside `items` (`name` is
+ *    required, and only meaningful, for `fields[]` entries).
+ * 2c. `$defs/fieldDef` and `$defs/fieldShape` carry `allOf` if/then rules:
+ *    `type: enum` requires `enum`, `type: array` requires `items`,
+ *    `type: ref` requires `refKind`. Enforced by `requireCompanionKeys`,
+ *    a `superRefine` applied to both hand-written schemas (so it also
+ *    runs at every `items:` depth).
  * 3. `collection.item/v1`'s `createdAt` / `updatedAt` are `z.string()`
  *    per the JSON Schema's `format: date-time`, but gray-matter's YAML
  *    parser (js-yaml) auto-resolves an unquoted ISO-8601 timestamp
@@ -47,27 +49,44 @@
  *    uses) into a native `Date` — before the value ever reaches zod.
  *    Both fields accept `string | Date` and normalize to an ISO
  *    string so the parsed frontmatter always matches the spec's typed
- *    shape regardless of whether the YAML author quoted the value.
+ *    shape regardless of whether the YAML author quoted the value. The
+ *    spec sanctions this: producers SHOULD quote timestamps, consumers
+ *    MAY accept native ones (AIP-18 ITEM.md, "Timestamps and dates").
  */
 
 import { z } from "zod"
-import type { FieldDef, FieldDef1 } from "./types.js"
+import type { FieldDef, FieldShape } from "./types.js"
 
-// Hand-written — see fixes (2) and (2b) in the file banner. Used only for
-// the recursive `items` property (no `name`); mirrors fieldDefSchema
-// otherwise.
-export const fieldItemsSchema: z.ZodType<FieldDef1> = z.lazy(() =>
+// Hand-written — see fix (2c) in the file banner. Mirrors the `allOf`
+// if/then rules on `$defs/fieldDef` and `$defs/fieldShape`.
+const COMPANION_KEYS = [
+  ["enum", "enum"],
+  ["array", "items"],
+  ["ref", "refKind"],
+] as const
+
+function requireCompanionKeys(
+  field: { type: string } & Record<string, unknown>,
+  ctx: z.RefinementCtx,
+): void {
+  for (const [type, key] of COMPANION_KEYS) {
+    if (field.type === type && field[key] === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: [key],
+        message: `${key} is required when type=${type}`,
+      })
+    }
+  }
+}
+
+// Hand-written — see fixes (2) and (2c) in the file banner. Mirrors
+// `$defs/fieldShape`: used only for the recursive `items` property, has
+// no `name` (strict, so a `name` here is rejected); mirrors
+// fieldDefSchema otherwise.
+export const fieldItemsSchema: z.ZodType<FieldShape> = z.lazy(() =>
   z
     .object({
-      name: z
-        .string()
-        .regex(new RegExp("^[a-z][a-zA-Z0-9_]*$"))
-        .min(1)
-        .max(64)
-        .describe(
-          "kebab-or-camel-case field name. Merge key when composing.",
-        )
-        .optional(),
       type: z
         .enum([
           "string",
@@ -106,7 +125,7 @@ export const fieldItemsSchema: z.ZodType<FieldDef1> = z.lazy(() =>
         .optional(),
       items: fieldItemsSchema
         .describe(
-          "Required when type=array. Recursive shape — describes the inner item type.",
+          "Required when type=array. Recursive shape — describes the inner item type. Carries no `name` (see `fieldShape`).",
         )
         .optional(),
       refKind: z
@@ -146,14 +165,15 @@ export const fieldItemsSchema: z.ZodType<FieldDef1> = z.lazy(() =>
         .default(true),
     })
     .strict()
+    .superRefine(requireCompanionKeys)
     .describe(
-      "Definition of one field on a collection's item schema. Merge-by-name. Type drift between parent and child is HARD refused.",
+      "Name-less field definition: the shape of an array field's `items:`. Identical to `fieldDef` minus `name` — an inner value type has no name of its own, and `name` is only meaningful (and required) for entries in `fields[]`. Keep the two property lists in sync.",
     ),
 )
 
 // Hand-written — see fix (2) in the file banner. Mirrors `$defs/fieldDef`
 // in COLLECTION.schema.json field-for-field; `items` recurses into
-// `fieldItemsSchema` (see fix 2b) since the JSON Schema ref is
+// `fieldItemsSchema` (see fix 2) since the JSON Schema ref is
 // self-referential.
 export const fieldDefSchema: z.ZodType<FieldDef> = z.lazy(() =>
   z
@@ -204,7 +224,7 @@ export const fieldDefSchema: z.ZodType<FieldDef> = z.lazy(() =>
         .optional(),
       items: fieldItemsSchema
         .describe(
-          "Required when type=array. Recursive shape — describes the inner item type.",
+          "Required when type=array. Recursive shape — describes the inner item type. Carries no `name` (see `fieldShape`).",
         )
         .optional(),
       refKind: z
@@ -244,8 +264,9 @@ export const fieldDefSchema: z.ZodType<FieldDef> = z.lazy(() =>
         .default(true),
     })
     .strict()
+    .superRefine(requireCompanionKeys)
     .describe(
-      "Definition of one field on a collection's item schema. Merge-by-name. Type drift between parent and child is HARD refused.",
+      "Definition of one field on a collection's item schema (an entry in `fields[]`). Merge-by-name. Type drift between parent and child is HARD refused. Identical to `fieldShape` plus a REQUIRED `name`; keep the two property lists in sync.",
     ),
 )
 
@@ -323,7 +344,7 @@ export const collectionFrontmatterSchema = z.discriminatedUnion("schema", [
         message: "Invalid input: Should pass single schema. Passed " + passed,
       });
     }
-  }).describe("OPTIONAL — owner ref(s). Single string or array depending on collection.ownership.cardinality.").optional(), "status": z.string().regex(new RegExp("^[a-z][a-z0-9-]*$")).describe("OPTIONAL — current status. MUST be a status id declared (locally or inherited) by the collection.").optional(), "dueAt": z.string().describe("OPTIONAL — deadline value. Format depends on collection.deadline.kind: ISO date for target-date, ISO datetime for window, RRULE-like for recurrent.").optional(), "attachments": z.array(z.string()).refine((arr) => arr.every((item, i) => arr.indexOf(item) == i), { message: "All items must be unique!" }).describe("OPTIONAL — list of attachment refs. Hosts resolve refs against the workspace's file registry.").default([] as never), "links": z.array(z.string()).refine((arr) => arr.every((item, i) => arr.indexOf(item) == i), { message: "All items must be unique!" }).describe("OPTIONAL — list of cross-references to other items, knowledge entries, or external URLs.").default([] as never), "tags": z.array(z.string().regex(new RegExp("^[a-z][a-z0-9-]*$"))).refine((arr) => arr.every((item, i) => arr.indexOf(item) == i), { message: "All items must be unique!" }).describe("OPTIONAL — free-form tags consumed by retrieval, search, and grouping.").default([] as never), "createdAt": dateTimeStringSchema.describe("OPTIONAL — ISO 8601 creation timestamp.").optional(), "updatedAt": dateTimeStringSchema.describe("OPTIONAL — ISO 8601 last-update timestamp.").optional(), "metadata": z.record(z.string(), z.any()).describe("Vendor-specific extensions, namespaced under <vendor>. Hosts MUST tolerate unknown keys; the spec's normative fields MUST NOT change meaning.").default({} as never) }).catchall(z.any()).describe("Item instance doctype. Universal core (schema, collection, id, title) is the only set of MUST fields. Every other field shown here is OPTIONAL at the AIP-18 level — the resolved collection schema decides which become required for this collection's items. additionalProperties is true because collection-specific fields (declared in COLLECTION.md fields[]) appear flat at the item's top level."),
+  }).describe("OPTIONAL — owner ref(s). Single string or array depending on collection.ownership.cardinality.").optional(), "status": z.string().regex(new RegExp("^[a-z][a-z0-9-]*$")).describe("OPTIONAL — current status. MUST be a status id declared (locally or inherited) by the collection.").optional(), "dueAt": z.string().describe("OPTIONAL — deadline value. Format depends on collection.deadline.kind: ISO date for target-date, ISO datetime for window, RRULE-like for recurrent. Same quoting rule as `createdAt`: producers SHOULD quote date and datetime values; consumers MAY accept a native date/timestamp.").optional(), "attachments": z.array(z.string()).refine((arr) => arr.every((item, i) => arr.indexOf(item) == i), { message: "All items must be unique!" }).describe("OPTIONAL — list of attachment refs. Hosts resolve refs against the workspace's file registry.").default([] as never), "links": z.array(z.string()).refine((arr) => arr.every((item, i) => arr.indexOf(item) == i), { message: "All items must be unique!" }).describe("OPTIONAL — list of cross-references to other items, knowledge entries, or external URLs.").default([] as never), "tags": z.array(z.string().regex(new RegExp("^[a-z][a-z0-9-]*$"))).refine((arr) => arr.every((item, i) => arr.indexOf(item) == i), { message: "All items must be unique!" }).describe("OPTIONAL — free-form tags consumed by retrieval, search, and grouping.").default([] as never), "createdAt": dateTimeStringSchema.describe("OPTIONAL — ISO 8601 creation timestamp. Producers SHOULD write it as a quoted YAML string (createdAt: \"2026-04-26T09:14:00Z\"): some YAML 1.1 parsers resolve an unquoted ISO timestamp to a native timestamp, which is not a string. Consumers MAY accept a native timestamp and normalize it to an ISO 8601 string before validating.").optional(), "updatedAt": dateTimeStringSchema.describe("OPTIONAL — ISO 8601 last-update timestamp. Same quoting rule as `createdAt`: producers SHOULD quote it; consumers MAY accept a native timestamp.").optional(), "metadata": z.record(z.string(), z.any()).describe("Vendor-specific extensions, namespaced under <vendor>. Hosts MUST tolerate unknown keys; the spec's normative fields MUST NOT change meaning.").default({} as never) }).catchall(z.any()).describe("Item instance doctype. Universal core (schema, collection, id, title) is the only set of MUST fields. Every other field shown here is OPTIONAL at the AIP-18 level — the resolved collection schema decides which become required for this collection's items. additionalProperties is true because collection-specific fields (declared in COLLECTION.md fields[]) appear flat at the item's top level."),
 ]).describe("Validates the YAML frontmatter portion of an AIP-18 collection schema or item. The doctype is selected via the `schema` discriminator: 'collection.schema/v1' (a COLLECTION.md, the schema for a class of records) or 'collection.item/v1' (an instance of one record validated against a named collection).")
 
 export type CollectionFrontmatter = z.infer<typeof collectionFrontmatterSchema>

@@ -155,6 +155,17 @@ export interface TitlerConfig {
   model?: string
 }
 
+export interface CatalogSourceConfig {
+  /** HTTP(S) URL returning `{ entries: AppCatalogEntry[] }`. */
+  url: string
+}
+
+export interface CatalogConfig {
+  /** Remote app-catalog sources merged into `app_catalog`. When set, these
+   *  win over `sources` in `~/.agentproto/app-catalog.json`. */
+  sources?: CatalogSourceConfig[]
+}
+
 export interface TunnelConfig {
   /** Cloud WS URL. When set + autoconnect=true, `agentproto serve`
    *  bootstraps with `--connect <host>`. */
@@ -599,6 +610,8 @@ export interface AgentprotoConfig {
    *  user prompt, 6 whole words) on any failure. A user-created label is
    *  NEVER overwritten, and a session is titled at most once. */
   titler?: TitlerConfig
+  /** App catalog settings (`app-catalog.ts`). See {@link CatalogConfig}. */
+  catalog?: CatalogConfig
   /** Named connection profiles. See `ProfileConfig` for the merge
    *  semantics — a profile's fields shallow-override the top-level
    *  defaults for the selected run. */
