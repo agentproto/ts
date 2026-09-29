@@ -3921,6 +3921,9 @@ importers:
       '@agentproto/define-doctype':
         specifier: workspace:*
         version: link:../define-doctype
+      '@agentproto/policy':
+        specifier: workspace:*
+        version: link:../policy
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3

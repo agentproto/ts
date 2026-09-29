@@ -17,6 +17,8 @@ export { defineStorage } from "./define-storage.js"
 export type {
   StorageDefinition,
   StorageHandle,
+  PolicyRefEntry,
+  PolicyRefBlock,
   StorageRuntimeInput,
   StorageRuntimeHandle,
 } from "./types.js"

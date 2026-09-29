@@ -7,6 +7,8 @@
  * by hand for fields that get defaults applied in build().
  */
 
+import type { PolicyDefinition } from "@agentproto/policy"
+
 export type IdentityRefEntry =
   | {
       name: string
@@ -27,6 +29,24 @@ export type IdentityRefEntry =
       role?: string
       [k: string]: unknown
     }
+
+/**
+ * One entry of the AIP-38 `policy` block: an inline POLICY frontmatter
+ * object, or a pointer to one (`ref` = registry slug / workspace-relative
+ * path, `file` = workspace-relative path). Shape mirrors the canonical
+ * `policyRefEntry` / `policyRefBlock` $defs in STORAGE.schema.json.
+ */
+export type PolicyRefEntry =
+  | PolicyDefinition
+  | { ref: string; [k: string]: unknown }
+  | { file: string; [k: string]: unknown }
+
+/**
+ * The AIP-38 `policy` block: a single entry or a non-empty array of them.
+ */
+export type PolicyRefBlock =
+  | PolicyRefEntry
+  | [PolicyRefEntry, ...PolicyRefEntry[]]
 
 /**
  * Validates the YAML frontmatter portion of an AIP-35 STORAGE.md manifest, OR the inline form embedded in any other manifest's `storage:` block. Filesystem-only — sandbox-shaped backends (e2b/modal/...) live in AIP-36 SANDBOX.md.
@@ -58,6 +78,10 @@ export interface StorageDefinition {
    * AIP-23 identity-ref block — commit author(s) for syncing providers (github). Supports multi-attribution (primary + co-authors).
    */
   identity?: IdentityRefEntry | [IdentityRefEntry, ...IdentityRefEntry[]]
+  /**
+   * AIP-38 POLICY block — access grants on storage actions (e.g. `storage:commit`). Inline policy/v1 object, `{ ref }` / `{ file }` pointer, or an array of those. Parsed and surfaced on the handle; enforcement is a host concern.
+   */
+  policy?: PolicyRefBlock
   /**
    * Paths NOT mirrored to the backing store. Glob-ish, prefix-matched.
    */
@@ -117,6 +141,9 @@ export interface SyncBlock {
     pr_policy?: "none" | "auto" | "manual"
   }
   conflict?: {
+    /**
+     * Declared and schema-validated; no runtime implementation yet.
+     */
     policy?: "rebase" | "merge" | "abort" | "manual" | "last-writer-wins" | "split-conflicts"
   }
 }

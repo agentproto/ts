@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { parseToolManifest } from "../manifest/index.js"
+import { checkMinimalJsonSchema } from "../json-schema.js"
 
 describe("parseToolManifest", () => {
   it("parses a minimal valid manifest", () => {
@@ -69,5 +70,110 @@ id: missing
 ---
 `
     expect(() => parseToolManifest(source)).toThrow(/description|version/)
+  })
+})
+
+describe("parseToolManifest: AIP-16 IO block well-formedness", () => {
+  const manifestWith = (io: string) => `---
+name: Echo
+id: echo
+description: Returns its input verbatim.
+version: 0.1.0
+${io}
+---
+`
+
+  it("accepts well-formed inputs/outputs blocks", () => {
+    const m = parseToolManifest(
+      manifestWith(`inputs:
+  type: object
+  properties:
+    msg:
+      type: string
+  required: [msg]
+outputs:
+  type: object
+  properties:
+    echo:
+      $ref: "#/properties/msg"
+      enum: [a, b]
+`),
+    )
+    expect(m.frontmatter.inputs).toBeDefined()
+    expect(m.frontmatter.outputs).toBeDefined()
+  })
+
+  it("accepts blocks that omit the checked keys", () => {
+    const m = parseToolManifest(manifestWith("inputs:\n  type: string\n"))
+    expect(m.frontmatter.inputs).toEqual({ type: "string" })
+  })
+
+  it("rejects properties that is not an object", () => {
+    expect(() =>
+      parseToolManifest(manifestWith('inputs:\n  properties: "..."')),
+    ).toThrow(/invalid inputs block for tool echo: properties must be an object/)
+  })
+
+  it("rejects required that is not an array of strings", () => {
+    expect(() =>
+      parseToolManifest(manifestWith('inputs:\n  required: "name"')),
+    ).toThrow(/invalid inputs block for tool echo: required must be an array of strings/)
+  })
+
+  it("rejects required entries that are not strings", () => {
+    expect(() =>
+      parseToolManifest(manifestWith("inputs:\n  required:\n  - 42")),
+    ).toThrow(/required must be an array of strings/)
+  })
+
+  it("rejects type that is neither string nor string array", () => {
+    expect(() =>
+      parseToolManifest(manifestWith("inputs:\n  type: 42")),
+    ).toThrow(/invalid inputs block for tool echo: type must be a string or array of strings/)
+  })
+
+  it("rejects an empty type array", () => {
+    expect(() =>
+      parseToolManifest(manifestWith("inputs:\n  type: []")),
+    ).toThrow(/type must be a string or array of strings/)
+  })
+
+  it("rejects a non-string $ref", () => {
+    expect(() =>
+      parseToolManifest(manifestWith("outputs:\n  $ref: 7")),
+    ).toThrow(/invalid outputs block for tool echo: \$ref must be a string/)
+  })
+
+  it("rejects an empty enum", () => {
+    expect(() =>
+      parseToolManifest(manifestWith("inputs:\n  enum: []")),
+    ).toThrow(/invalid inputs block for tool echo: enum must be a non-empty array/)
+  })
+
+  it("rejects items that is not an object", () => {
+    expect(() =>
+      parseToolManifest(manifestWith("inputs:\n  items: \"nope\"")),
+    ).toThrow(/invalid inputs block for tool echo: items must be an object or array of objects/)
+  })
+
+  it("accepts tuple-form items (array of objects)", () => {
+    const m = parseToolManifest(
+      manifestWith("inputs:\n  items:\n    - type: string\n"),
+    )
+    expect(m.frontmatter.inputs).toEqual({ items: [{ type: "string" }] })
+  })
+
+  it("rejects a block that is not an object at all", () => {
+    // Non-object blocks are caught earlier by the frontmatter zod schema
+    // (z.record); checkMinimalJsonSchema defends the same invariant for
+    // direct callers.
+    expect(checkMinimalJsonSchema(42)).toEqual([
+      { path: "", message: "schema must be an object" },
+    ])
+  })
+
+  it("accepts tuple-form type arrays", () => {
+    const m = parseToolManifest(manifestWith("inputs:\n  type: [string, 'null']\n"))
+    expect(m.frontmatter.inputs).toEqual({ type: ["string", "null"] })
   })
 })
