@@ -1,5 +1,13 @@
 # @agentproto/operator
 
+## 0.1.4
+
+### Patch Changes
+
+- 444efc5: Accept the canonical AIP-9 spec tag `agentoperators/v1` (plural) in OPERATOR.md frontmatter, and make it the exported `SPEC_NAME`. The old singular `agentoperator/v1` is still accepted but deprecated.
+- Updated dependencies [461df5e]
+  - @agentproto/define-doctype@0.1.3
+
 ## 0.1.3
 
 ### Patch Changes

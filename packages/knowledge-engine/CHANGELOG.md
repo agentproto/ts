@@ -1,5 +1,16 @@
 # @agentproto/knowledge-engine
 
+## 0.2.5
+
+### Patch Changes
+
+- Updated dependencies [036c9df]
+  - @agentproto/driver-cli@0.2.1
+  - @agentproto/driver@0.2.5
+  - @agentproto/tool@0.3.2
+  - @agentproto/driver-http@0.1.9
+  - @agentproto/driver-mcp@0.1.9
+
 ## 0.2.4
 
 ### Patch Changes

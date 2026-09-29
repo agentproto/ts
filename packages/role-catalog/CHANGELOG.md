@@ -1,5 +1,12 @@
 # @agentproto/role-catalog
 
+## 0.1.4
+
+### Patch Changes
+
+- @agentproto/policy@0.1.4
+- @agentproto/role@0.1.4
+
 ## 0.1.3
 
 ### Patch Changes

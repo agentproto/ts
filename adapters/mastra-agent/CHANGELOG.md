@@ -1,5 +1,51 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.7.15
+
+### Patch Changes
+
+- Updated dependencies [3bab874]
+- Updated dependencies [003d217]
+- Updated dependencies [e0e7f09]
+- Updated dependencies [d9cd5d7]
+- Updated dependencies [c86b801]
+- Updated dependencies [b31de6f]
+- Updated dependencies [0329a22]
+- Updated dependencies [2977214]
+- Updated dependencies [7130165]
+- Updated dependencies [d13db8f]
+- Updated dependencies [428f72f]
+- Updated dependencies [7130165]
+- Updated dependencies [51561f3]
+- Updated dependencies [b63c311]
+- Updated dependencies [7130165]
+- Updated dependencies [f058a9b]
+- Updated dependencies [88f2836]
+- Updated dependencies [e9400e1]
+- Updated dependencies [7a5c2d1]
+- Updated dependencies [461df5e]
+- Updated dependencies [3cf99c3]
+- Updated dependencies [14e2494]
+- Updated dependencies [a48ec1f]
+- Updated dependencies [db1205c]
+- Updated dependencies [af001c6]
+- Updated dependencies [388555e]
+- Updated dependencies [6a1bedc]
+- Updated dependencies [9a6da77]
+- Updated dependencies [9002043]
+- Updated dependencies [6ffa227]
+- Updated dependencies [439110f]
+- Updated dependencies [7b442f7]
+- Updated dependencies [2973a57]
+- Updated dependencies [e9f2a56]
+- Updated dependencies [9002043]
+- Updated dependencies [e00ee6d]
+- Updated dependencies [78cd278]
+  - @agentproto/runtime@5.3.0
+  - @agentproto/mastra@0.2.16
+  - @agentproto/driver-agent-cli@2.6.0
+  - @agentproto/agent@0.2.5
+
 ## 0.7.14
 
 ### Patch Changes

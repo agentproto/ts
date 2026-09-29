@@ -1,5 +1,16 @@
 # @agentproto/adapter-code-brain-gbrain
 
+## 0.2.8
+
+### Patch Changes
+
+- 88f2836: Weekly minor/patch dependency bumps across workspaces (@modelcontextprotocol/sdk 1.30.0 → 1.30.1, @anthropic-ai/claude-agent-sdk 0.3.282 → 0.3.283, turbo 2.10.12 → 2.11.5, @tauri-apps/* 2.12, @tanstack/react-query 5.104, e2b 2.51, @earendil-works/pi-tui 0.87, tsx 4.23.15, @types/vscode 1.138).
+- Updated dependencies [88f2836]
+  - @agentproto/provider-kit@0.4.6
+  - @agentproto/driver@0.2.5
+  - @agentproto/tool@0.3.2
+  - @agentproto/code-brain@0.3.5
+
 ## 0.2.7
 
 ### Patch Changes

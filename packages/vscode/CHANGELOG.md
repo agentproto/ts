@@ -1,5 +1,58 @@
 # agentproto-vscode
 
+## 0.20.0
+
+### Minor Changes
+
+- 9002043: `@agentproto/runtime`: the session list projections (`GET /sessions` summary and the compact `session_list` item) now carry `lastError` (capped at 2000 chars), so list views can show why an errored session died.
+
+  `agentproto-vscode`: the sessions webview derives a short, readable failure cause from `lastError` (`failureCauseFor`), renders it error-styled with the full error as a row tooltip, and splits errored sessions into a dedicated "Failed" section — "Attention" now holds stalled sessions only.
+
+### Patch Changes
+
+- 88f2836: Weekly minor/patch dependency bumps across workspaces (@modelcontextprotocol/sdk 1.30.0 → 1.30.1, @anthropic-ai/claude-agent-sdk 0.3.282 → 0.3.283, turbo 2.10.12 → 2.11.5, @tauri-apps/* 2.12, @tanstack/react-query 5.104, e2b 2.51, @earendil-works/pi-tui 0.87, tsx 4.23.15, @types/vscode 1.138).
+- d7c8225: fix(vscode): keep `@ast-grep/napi` external in the extension bundle so esbuild no longer attempts to inline its native `.node` binary; Mastra's AST edit tool is simply unavailable in the VS Code host when the module is absent.
+- Updated dependencies [3bab874]
+- Updated dependencies [003d217]
+- Updated dependencies [e0e7f09]
+- Updated dependencies [d9cd5d7]
+- Updated dependencies [c86b801]
+- Updated dependencies [b31de6f]
+- Updated dependencies [0329a22]
+- Updated dependencies [2977214]
+- Updated dependencies [7130165]
+- Updated dependencies [d13db8f]
+- Updated dependencies [428f72f]
+- Updated dependencies [7130165]
+- Updated dependencies [51561f3]
+- Updated dependencies [b63c311]
+- Updated dependencies [7130165]
+- Updated dependencies [f058a9b]
+- Updated dependencies [88f2836]
+- Updated dependencies [e9400e1]
+- Updated dependencies [7a5c2d1]
+- Updated dependencies [461df5e]
+- Updated dependencies [3cf99c3]
+- Updated dependencies [14e2494]
+- Updated dependencies [a48ec1f]
+- Updated dependencies [db1205c]
+- Updated dependencies [af001c6]
+- Updated dependencies [388555e]
+- Updated dependencies [6a1bedc]
+- Updated dependencies [9a6da77]
+- Updated dependencies [9002043]
+- Updated dependencies [6ffa227]
+- Updated dependencies [439110f]
+- Updated dependencies [7b442f7]
+- Updated dependencies [2973a57]
+- Updated dependencies [e9f2a56]
+- Updated dependencies [9002043]
+- Updated dependencies [e00ee6d]
+- Updated dependencies [78cd278]
+  - @agentproto/runtime@5.3.0
+  - @agentproto/apps@0.17.0
+  - @agentproto/mcp-app-host@0.1.2
+
 ## 0.19.1
 
 ### Patch Changes

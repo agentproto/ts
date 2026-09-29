@@ -1,5 +1,12 @@
 # @agentproto/acp
 
+## 0.9.1
+
+### Patch Changes
+
+- Updated dependencies [461df5e]
+  - @agentproto/define-doctype@0.1.3
+
 ## 0.9.0
 
 ### Minor Changes

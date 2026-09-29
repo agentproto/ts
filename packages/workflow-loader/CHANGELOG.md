@@ -1,5 +1,11 @@
 # @agentproto/workflow-loader
 
+## 0.2.5
+
+### Patch Changes
+
+- @agentproto/workflow@0.7.1
+
 ## 0.2.4
 
 ### Patch Changes

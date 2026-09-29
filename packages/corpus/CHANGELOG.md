@@ -1,5 +1,23 @@
 # @agentproto/corpus
 
+## 0.8.2
+
+### Patch Changes
+
+- aa5e4bd: fix(knowledge): make defineKnowledge accept valid AIP-10 entries/sources — cross-AIP `description`/id-length defaults and unquoted YAML timestamps were rejecting every valid `knowledge.entry/v1` and `knowledge.source/v1` definition. Un-skips the corpus conformance tests for the AIP-10 knowledge and AIP-12 playbook manifests.
+- e8fc640: fix(collection): make the AIP-18 schema satisfiable so defineCollection accepts valid docs
+- Updated dependencies [bc6e7af]
+- Updated dependencies [aa5e4bd]
+- Updated dependencies [444efc5]
+- Updated dependencies [e8fc640]
+- Updated dependencies [461df5e]
+  - @agentproto/collection@0.1.4
+  - @agentproto/knowledge@0.1.4
+  - @agentproto/operator@0.1.4
+  - @agentproto/routine@0.3.1
+  - @agentproto/playbook@0.1.4
+  - @agentproto/workflow@0.7.1
+
 ## 0.8.1
 
 ### Patch Changes

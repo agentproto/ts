@@ -1,5 +1,20 @@
 # @agentproto/sandbox
 
+## 0.7.2
+
+### Patch Changes
+
+- Updated dependencies [88f2836]
+- Updated dependencies [461df5e]
+- Updated dependencies [14e2494]
+- Updated dependencies [036c9df]
+- Updated dependencies [2b36ea0]
+- Updated dependencies [78cd278]
+  - @agentproto/worktree@0.14.0
+  - @agentproto/define-doctype@0.1.3
+  - @agentproto/workflow-runtime@0.15.0
+  - @agentproto/secrets@1.1.1
+
 ## 0.7.1
 
 ### Patch Changes

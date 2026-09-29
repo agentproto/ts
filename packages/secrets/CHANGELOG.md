@@ -1,5 +1,13 @@
 # @agentproto/secrets
 
+## 1.1.1
+
+### Patch Changes
+
+- Updated dependencies [461df5e]
+  - @agentproto/define-doctype@0.1.3
+  - @agentproto/auth@1.1.1
+
 ## 1.1.0
 
 ### Minor Changes

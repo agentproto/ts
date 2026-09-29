@@ -1,5 +1,28 @@
 # @agentproto/app-kit
 
+## 1.4.0
+
+### Minor Changes
+
+- d9cd5d7: Install apps from a git URL or a `.agentapp` and keep them in sync. `@agentproto/app-kit` now exports the AIP-53 bundle core (`packApp`, `unpackApp`, `aggregateSha256`, `collectFiles`, `isManifest`, `AgentAppPackError`), lifted out of the CLI with no behaviour change (unpack additionally refuses a manifest listing paths outside the bundle root). The runtime's `app_install` accepts exactly one of `{dir}`, `{url, ref?, subdir?}` (shallow git clone) or `{url}`/`{file}` for a `.agentapp`, installs remote sources under `<state dir>/apps/<slug>` with an atomic swap that keeps the data dir and survives a failed install, and records `InstalledApp.source` (`local` / `git` sha / `agentapp` sha256+version), surfaced by `app_list` and `app_status`. New `app_resync {appId}` compares the source (`git ls-remote` / re-downloaded bundle digest) and reinstalls when it changed. The CLI gains `agentproto app install <dir|url|file.agentapp> [--ref] [--subdir]` (URL/bundle installs are executed by the daemon) and `agentproto app resync <appId>`; `app pack`/`unpack` are now thin wrappers over app-kit.
+- 6a1bedc: App-spawned sessions (`app_run`, and workflow agent steps whose workflow carries an `appId`) now get filesystem zones: the installed app source is read-only, the run workspace and app `data/` dir are writable, everything else is denied. Enforced on the daemon's own file/command tools always; on the harness's native tools (claude-code) via `@agentproto/command-sandbox` zoned mode plus host `CLAUDE.md`/`AGENTS.md` exclusion when the adapter and OS sandbox support it. Apps opt into `boundaries: { enforce: "required" }` in `defineApp`/`APP.md` to refuse a spawn instead of silently downgrading when native enforcement isn't available.
+
+### Patch Changes
+
+- dfeebb6: APP.md gains optional `placement`, `requires` (object form: browser/fs/gpu/secrets/apps; the flat app-id array still works), `exposes` and `accepts` keys, validated in `defineApp` and `loadAppHandle`, surfaced on `AppHandle`, and round-tripped by `emit`. Semantics only; no scheduling behavior.
+- 461df5e: Package-metadata refresh accompanying the vendored-specs resync (PR #1554): homepage URLs and keyword tags renumbered to the ratified AIP numbers (app-kit/apps → AIP-53, mastra → AIP-52, define-doctype → AIP-56, wallet → AIP-49), a stale agentik.net homepage corrected (redaction), new keyword tags (pair-client → AIP-59, runtime → AIP-46/AIP-58), and test/doc-comment updates replacing the retired sandbox AIP-61 placeholder with a 9999 fixture number (product, ref), plus bundled SKILL.md renumbering (skill-pack-agentproto) and a routine doc comment aligned with the now-upstream `targetAgent` variant. No runtime behavior changes.
+- Updated dependencies [461df5e]
+- Updated dependencies [036c9df]
+  - @agentproto/mastra@0.2.16
+  - @agentproto/driver-cli@0.2.1
+  - @agentproto/agent@0.2.5
+  - @agentproto/driver@0.2.5
+  - @agentproto/tool@0.3.2
+  - @agentproto/workflow@0.7.1
+  - @agentproto/workspace@0.1.4
+  - @agentproto/driver-http@0.1.9
+  - @agentproto/workflow-loader@0.2.5
+
 ## 1.3.1
 
 ### Patch Changes

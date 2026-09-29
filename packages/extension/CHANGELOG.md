@@ -1,5 +1,13 @@
 # @agentproto/extension
 
+## 0.2.3
+
+### Patch Changes
+
+- Updated dependencies [461df5e]
+  - @agentproto/define-doctype@0.1.3
+  - @agentproto/manifest@0.2.3
+
 ## 0.2.2
 
 ### Patch Changes

@@ -1,5 +1,84 @@
 # @agentproto/cli
 
+## 1.5.0
+
+### Minor Changes
+
+- d9cd5d7: Install apps from a git URL or a `.agentapp` and keep them in sync. `@agentproto/app-kit` now exports the AIP-53 bundle core (`packApp`, `unpackApp`, `aggregateSha256`, `collectFiles`, `isManifest`, `AgentAppPackError`), lifted out of the CLI with no behaviour change (unpack additionally refuses a manifest listing paths outside the bundle root). The runtime's `app_install` accepts exactly one of `{dir}`, `{url, ref?, subdir?}` (shallow git clone) or `{url}`/`{file}` for a `.agentapp`, installs remote sources under `<state dir>/apps/<slug>` with an atomic swap that keeps the data dir and survives a failed install, and records `InstalledApp.source` (`local` / `git` sha / `agentapp` sha256+version), surfaced by `app_list` and `app_status`. New `app_resync {appId}` compares the source (`git ls-remote` / re-downloaded bundle digest) and reinstalls when it changed. The CLI gains `agentproto app install <dir|url|file.agentapp> [--ref] [--subdir]` (URL/bundle installs are executed by the daemon) and `agentproto app resync <appId>`; `app pack`/`unpack` are now thin wrappers over app-kit.
+- 2977214: feat(host): host-level load report. New `agentproto host load [--full] [--json] [--watch <s>] [--budget <ms>]` prints loadavg vs core count, CPU user/sys/idle, RAM (used/wired/compressor/free) and swap, per-disk transfers/s and MB/s, and the top 10 processes by CPU and by memory footprint (compressed pages included), each tagged with its owning session or `orphan`/`system`, plus a WARNINGS section: swap above 50%, old busy or serving orphans (ppid 1), deleted-cwd processes, filesystem-wide `find`/`bfs`/`du` scans, duplicate servers on one port, load above 4x cores. The same JSON is served by `GET /host/load` and the `host_load` MCP tool (`detail: "summary" | "full"`). macOS uses `vm_stat`, `sysctl`, `iostat`, `top`, `ps`, `lsof`; Linux reads `/proc`; no sudo. Every probe runs under a timeout so the call stays around 2 s on a saturated host, and a slow probe is named in `partial`. The collector (`getHostLoadService`, `createHostLoadService`, `collectHostSample`) is exported from `@agentproto/runtime` for schedulers that gate heavy jobs on host load.
+- 7130165: Imported MCPs link to their source and keep secrets out of `imported-mcps.json` (P1). Entries gain additive optional fields (`origin`, `resolve: "live" | "snapshot"`, `secretRefs`); the file stays `version: 1`. A single `resolveImportConnection` chokepoint (shared by the proxy and the MCP-Apps host) resolves `live` entries against discovery (exact id, else same source+scope url/command+args match; missing source falls back to the snapshot and reports `stale`) and resolves `secretRefs` from the OS keychain into the same header/env key, dropping rather than leaking bound secrets when a live source re-points to a different upstream. On import (`mcp_import`, `POST /mcps/imports`) literal header/env values are stored via `storeMcpSecret` and replaced by refs (literal + warning when no store). `McpProxyRegistry` reconnects when a live source file's mtime changes; `stale`/`resolve`/secret key names surface in `mcp_imported_status`, `capabilities_inventory` and `/mcps/proxy/status`.
+
+  New `agentproto mcp migrate-secrets [--apply]` (dry-run default) migrates existing literal-secret entries to secret refs.
+
+  New `agentproto mcp mount-default <adapter> <importId...>` (P2) lets an adapter natively mount imported MCPs via a managed `harness-<adapter>` bundle, so the adapter spawns with those MCPs mounted by default instead of proxied.
+
+  `capabilities_inventory` now reports `alsoNativeIn` (P3): other harness configs that already natively mount the same upstream, identified by normalized url/stdio matching (absolute-path args stripped) with no upstream url/header material leaking into the report.
+
+  Settings bundles export secret key names only and report dangling secrets on apply.
+
+- 428f72f: Joined CI hosts now report real liveness and are cleaned up. Every successful contact bumps `lastSeen` (persisted throttled) and `online` covers an active channel or a contact within the 2 min grace; joined hosts are probed in the background with bounded concurrency and exponential backoff (never giving up), resumed after a daemon restart, and record `lastProbeAt`/`lastError`. A joined host unreachable past a TTL (default 2 h, `AGENTPROTO_HOST_ENDED_TTL_MS`) or that says goodbye is marked `ended` and hidden from `device_list` / `GET /devices` / `devices list` unless `includeEnded` / `--include-ended`; ended hosts are deleted after a retention (default 7 d, `AGENTPROTO_HOST_ENDED_RETENTION_MS`). Manually added hosts and client devices are never ended or deleted (a manual host past the TTL only shows `stale`). The sweep runs every 60 s in `agentproto serve`.
+- a48ec1f: New `session-steward` built-in app: a workflow that classifies idle agent sessions, closes rule-certain ones, judges the ambiguous ones (Jev when `JEV_API_KEY` resolves, else a one-shot agent judge), and closes or flags only confident verdicts — a dry run by default. `@agentproto/cli` adds the `agentproto steward` command over it. `@agentproto/runtime` adds the read-only `session_evidence` and `session_judge_jev` MCP tools plus the exported `jev-client` and `session-evidence` modules behind them.
+- 28e1c4b: Reviewer correction: the app-build orphan-process fix adds a new exported `AppBuildOptions` interface and a new optional `buildOpts` parameter on `runAppBuild`, which is a minor (not patch) bump per repo release rules. Supersedes the patch bump in `app-build-no-orphan-child.md`.
+- e00ee6d: feat(sessions): per-session process-tree resource stats. The daemon samples the host process table (ps, with a /proc fallback on Linux) and attributes RSS, %CPU, process count and top commands to each live session by descending from its adapter pid, with separate buckets for the daemon and for worktree provisioning work, and a report-only list of agentproto-looking orphan processes (never killed). New surfaces: `agentproto sessions --stats[=full] [--json]` (RAM-sorted table, totals row, host load and free memory), `GET /sessions/stats`, a `session_stats` MCP tool, and `stats: true | "full"` on `session_list` and `agent_sessions_list`.
+- 78cd278: feat(worktree): throttle heavy worktree provisioning through a daemon-wide FIFO queue. `depsCmd`, `cloneGlobs` and setup hooks now run at most `worktrees.provisionConcurrency` (default 2, `0` = unlimited, env `AGENTPROTO_WORKTREES_PROVISION_CONCURRENCY`) at a time, fair across callers, with optional per-repo caps and a `provisionLoadFactor` load guard. Killing a `starting` session drops its queued provisioning or terminates a running install's whole process tree and removes the half-made worktree. Sessions report `provisioning: { state, position, phase, startedAt }` in `agent_sessions_list`, `session_list` and `agentproto sessions`, and the event bus emits `session:provisioning` events.
+
+### Patch Changes
+
+- 28e1c4b: `agentproto app build` no longer leaves an orphaned build tree behind. The ui project's `<pm> run build` now runs in its own process group, and the whole group is killed on abort, timeout, a fatal signal to the CLI (SIGINT/SIGTERM/SIGHUP), or the CLI exiting. `runAppBuild` accepts an optional `{ signal, timeoutMs }` for callers; the CLI behavior and output are otherwise unchanged.
+- a61d514: `agentproto app build`: a parent-death watchdog now tears the detached build process group down when the CLI (or a test runner hosting it) is SIGKILLed or crashes, so the build tree is never reparented to init and left running.
+- c86b801: The daemon, the `POST /sessions/browser` route and the CLI now resolve browser adapters through one shared table, `defaultBrowserAdapterResolution()`, backed by the `@agentproto/adapter-browser` facade (`camofox`, `bureau`, `chromium`). The "Available adapters" hints derive from that table instead of hardcoded copies. `start_browser`, `stop_browser`, `list_browsers`, `browser_status`, `browser_adapter_list`, `POST /sessions/browser` and every `agentproto browser` / `agentproto serve` flag keep their request and response shapes.
+
+  New `projectBrowserTools(instance, { provider })` in `@agentproto/runtime` projects a `@agentproto/driver-browser` `BrowserInstance` onto the page-level MCP tools (`browser_navigate`, `browser_evaluate`, `browser_click`, `browser_fill`, `browser_screenshot`, `browser_get_dom`, `browser_list_requests`, `browser_get_request_body`, `browser_cdp_send`). A tool whose capability the provider lacks answers with a typed `browser:unsupported` result naming the capability (for example `cdp` for `browser_list_requests`), before any driver is attached.
+
+- 0329a22: Harden imported-MCP connections (P0). `imported-mcps.json` is now written mode 0600 by every writer (runtime `saveImportedMcps`, plugin-local-browser register/unregister). The daemon proxy expands `${VAR}` in upstream headers (parity with the apps-host pool). A 401/403/unauthorized/forbidden failure now drops the upstream client so the next call reconnects, in both `McpProxyRegistry` and `McpClientPool`. New shared `resolveImportConnection` (`mcp-import-resolve.ts`) feeds both the proxy and the apps-host resolver. `McpCredentialDeps` gains `resolveMcpSecret` / `storeMcpSecret` seams (wired to the keychain in `serve`, unused until a later phase).
+- d13db8f: Joined CI hosts stay visible after they exit: the home daemon now snapshots a joined host's sessions plus an output tail on connect and every ~15s (5s while a session runs), and serves them `stale: true` with `capturedAt` once the host is gone. A joining daemon sends a goodbye on shutdown so the home side takes a final snapshot. `online` now reflects recent successful traffic (45s grace), `lastSeen` is bumped on every successful forward (persisted throttled), and the 7-day join TTL prune also covers pre-#1542 unlabeled fingerprint-named join hosts (never `pair offer` pairings or clients).
+- 7130165: Native imported-MCP mounts via default bundles (P2): `Bundle.mcpImports` may be `"*"` (expands to the current import set at spawn), the bundle expansion loop is extracted into the pure `mountImports`, `agentproto mcp mount-default <adapter> <importId…>` creates/extends bundle `harness-<adapter>` and links it into `defaults.adapters.<adapter>.bundles` (default stays empty), and `capabilities_inventory` reports per-import `reach` (`native` | `indirect` | `none`) per adapter. New `@agentproto/runtime/bundles` export.
+- f058a9b: Extract the host-side pairing registry into a new `@agentproto/pairing-host` package so a non-daemon host can embed AIP-59 pairing without depending on the runtime. The package also ships a default `dialRendezvous`, `serveLoopbackHttp` (forward a paired channel to a local HTTP app with injected headers and an optional path allow-list), and an optional local-device credential (`mintLocalDevice` / `verifyDeviceBearer`, revocable like any pairing, stored as an optional `localDevices` field in `pairings.json`). `@agentproto/runtime` re-exports the registry unchanged and `@agentproto/cli` imports `dialRendezvous` from the package; daemon behaviour is identical.
+- 88f2836: Weekly minor/patch dependency bumps across workspaces (@modelcontextprotocol/sdk 1.30.0 → 1.30.1, @anthropic-ai/claude-agent-sdk 0.3.282 → 0.3.283, turbo 2.10.12 → 2.11.5, @tauri-apps/* 2.12, @tanstack/react-query 5.104, e2b 2.51, @earendil-works/pi-tui 0.87, tsx 4.23.15, @types/vscode 1.138).
+- e9400e1: Algorithm-tag the review pack digest (agentproto-pack-digest/v1)
+- 3cf99c3: **@agentproto/runtime:** Adds the `webhook` push sentinel provider (AIP-60 §5): one refcounted GitHub repo hook per repo pointing at `POST /inbound/sentinel-<hookKey>`, HMAC-gated and delivered through a new `SentinelRuntime.deliverPushed()` path that reuses the poll pipeline (seen-dedup, match, `until`). Also adds public-URL resolution (`AGENTPROTO_PUBLIC_URL` / stable-tunnel detection), an optional `readiness()` probe on `SentinelProviderHandle` surfaced by `list_sentinel_adapters`, a new exported `deliveryPreferenceFor()` helper, and provider auto-select in `createSentinelWatch` (push fields on `DeliveryPreference` are now optional).
+
+  **@agentproto/cli:** Updates `sentinel watch` help text for the new `webhook` provider option and its auto-select default.
+
+- 6a1bedc: App-spawned sessions (`app_run`, and workflow agent steps whose workflow carries an `appId`) now get filesystem zones: the installed app source is read-only, the run workspace and app `data/` dir are writable, everything else is denied. Enforced on the daemon's own file/command tools always; on the harness's native tools (claude-code) via `@agentproto/command-sandbox` zoned mode plus host `CLAUDE.md`/`AGENTS.md` exclusion when the adapter and OS sandbox support it. Apps opt into `boundaries: { enforce: "required" }` in `defineApp`/`APP.md` to refuse a spawn instead of silently downgrading when native enforcement isn't available.
+- 439110f: `@agentproto/runtime`: new exports `projectBrowserTools` and `defaultBrowserAdapterResolution`/`defaultBrowserAdapterResolutionIds`, shared browser adapter resolution used by the CLI and MCP surface.
+
+  `@agentproto/cli`: `serve.ts` now resolves browser adapters through `defaultBrowserAdapterResolution` instead of a local mapping.
+
+- Updated dependencies [d9cd5d7]
+- Updated dependencies [dfeebb6]
+- Updated dependencies [84f5782]
+- Updated dependencies [f2678e0]
+- Updated dependencies [51561f3]
+- Updated dependencies [b63c311]
+- Updated dependencies [c86b801]
+- Updated dependencies [f058a9b]
+- Updated dependencies [88f2836]
+- Updated dependencies [461df5e]
+- Updated dependencies [14e2494]
+- Updated dependencies [a48ec1f]
+- Updated dependencies [6a1bedc]
+- Updated dependencies [2973a57]
+- Updated dependencies [2b36ea0]
+- Updated dependencies [78cd278]
+  - @agentproto/app-kit@1.4.0
+  - @agentproto/adapter-browser@0.2.0
+  - @agentproto/apps@0.17.0
+  - @agentproto/pairing-host@0.1.0
+  - @agentproto/app-client@0.4.1
+  - @agentproto/llm-endpoint@0.11.2
+  - @agentproto/provider-kit@0.4.6
+  - @agentproto/sandbox-e2b@0.5.9
+  - @agentproto/worktree@0.14.0
+  - @agentproto/driver-agent-cli@2.6.0
+  - create-agentproto-app@0.3.5
+  - @agentproto/acp@0.9.1
+  - @agentproto/auth@1.1.1
+  - @agentproto/driver@0.2.5
+  - @agentproto/secrets@1.1.1
+  - @agentproto/sandbox-box@0.2.19
+  - @agentproto/workflow-loader@0.2.5
+
 ## 1.4.1
 
 ### Patch Changes

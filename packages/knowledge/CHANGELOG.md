@@ -1,5 +1,13 @@
 # @agentproto/knowledge
 
+## 0.1.4
+
+### Patch Changes
+
+- aa5e4bd: fix(knowledge): make defineKnowledge accept valid AIP-10 entries/sources — cross-AIP `description`/id-length defaults and unquoted YAML timestamps were rejecting every valid `knowledge.entry/v1` and `knowledge.source/v1` definition. Un-skips the corpus conformance tests for the AIP-10 knowledge and AIP-12 playbook manifests.
+- Updated dependencies [461df5e]
+  - @agentproto/define-doctype@0.1.3
+
 ## 0.1.3
 
 ### Patch Changes
