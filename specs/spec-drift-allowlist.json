@@ -28,6 +28,16 @@
     },
     {
       "file": "aip-15/draft/WORKFLOW.schema.json",
+      "field": "$defs.stepTool.properties.timeout_ms",
+      "reason": "Per-step dispatch timeout (default 10min) so a driver that never settles its own promise doesn't hang the step forever (F45), shipped in @agentproto/workflow-runtime."
+    },
+    {
+      "file": "aip-15/draft/WORKFLOW.schema.json",
+      "field": "$defs.stepGate.properties.timeout_ms",
+      "reason": "Documents the timeout_ms field @agentproto/workflow-runtime's GateStep/compileGateStep already read — was missing from the schema draft (F45)."
+    },
+    {
+      "file": "aip-15/draft/WORKFLOW.schema.json",
       "field": "$defs.stepBranch.properties.join",
       "reason": "Exclusive-branch join target (F22 branch semantics), shipped in @agentproto/workflow-runtime."
     },
