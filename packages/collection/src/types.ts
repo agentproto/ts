@@ -157,7 +157,7 @@ export type Schema = {
 }
 
 /**
- * Definition of one field on a collection's item schema. Merge-by-name. Type drift between parent and child is HARD refused.
+ * Definition of one field on a collection's item schema (an entry in `fields[]`). Merge-by-name. Type drift between parent and child is HARD refused. Identical to `fieldShape` plus a REQUIRED `name`; keep the two property lists in sync.
  */
 export interface FieldDef {
   /**
@@ -180,7 +180,10 @@ export interface FieldDef {
    * Required when type=enum. Children may narrow to a subset; widening to a superset is permitted (it does not invalidate instances).
    */
   enum?: string[]
-  items?: FieldDef1
+  /**
+   * Required when type=array. Recursive shape — describes the inner item type. Carries no `name` (see `fieldShape`).
+   */
+  items?: FieldShape
   /**
    * Required when type=ref. The target collection's `name`. Hosts validate that ref values point at items of this collection.
    */
@@ -207,23 +210,14 @@ export interface FieldDef {
   enabled?: boolean
 }
 /**
- * Required when type=array. Recursive shape — describes the inner item type.
+ * Name-less field definition: the shape of an array field's `items:`. Identical to `fieldDef` minus `name` — an inner value type has no name of its own, and `name` is only meaningful (and required) for entries in `fields[]`. Keep the two property lists in sync.
  *
- * `name` is optional here (unlike `FieldDef.name`) even though the
- * canonical JSON Schema's `$defs/fieldDef.items` is `$ref:
- * #/$defs/fieldDef`, which textually requires `name` at every recursion
- * depth. Every `items:` example in EXAMPLES.md (e.g. okrs' `keyResults`,
- * incidents' `impactWindow`) omits `name` inside `items` — a name only
- * makes sense for an entry inside `fields[]`; the recursive `items`
- * shape describes just the inner value type. Hand-tuned to match spec
- * intent + the documented examples; flagged as a spec amendment needed
- * in the PR (`$defs/fieldDef.items` should point at a name-less variant).
+ * The canonical schema now generates two identical `items` types
+ * (`FieldShape` for `FieldDef.items`, `FieldShape1` for its own recursive
+ * `items`); collapsed here into one self-referential `FieldShape`. Unlike
+ * `FieldDef`, it has no `name`.
  */
-export interface FieldDef1 {
-  /**
-   * kebab-or-camel-case field name. Merge key when composing.
-   */
-  name?: string
+export interface FieldShape {
   /**
    * Field type. Drift across composition (parent string -> child number) is HARD refused (`collection_field_type_drift`).
    */
@@ -240,7 +234,10 @@ export interface FieldDef1 {
    * Required when type=enum. Children may narrow to a subset; widening to a superset is permitted (it does not invalidate instances).
    */
   enum?: string[]
-  items?: FieldDef1
+  /**
+   * Required when type=array. Recursive shape — describes the inner item type. Carries no `name` (see `fieldShape`).
+   */
+  items?: FieldShape
   /**
    * Required when type=ref. The target collection's `name`. Hosts validate that ref values point at items of this collection.
    */
@@ -307,7 +304,7 @@ export interface Item {
    */
   status?: string
   /**
-   * OPTIONAL — deadline value. Format depends on collection.deadline.kind: ISO date for target-date, ISO datetime for window, RRULE-like for recurrent.
+   * OPTIONAL — deadline value. Format depends on collection.deadline.kind: ISO date for target-date, ISO datetime for window, RRULE-like for recurrent. Same quoting rule as `createdAt`: producers SHOULD quote date and datetime values; consumers MAY accept a native date/timestamp.
    */
   dueAt?: string
   /**
@@ -323,11 +320,11 @@ export interface Item {
    */
   tags?: string[]
   /**
-   * OPTIONAL — ISO 8601 creation timestamp.
+   * OPTIONAL — ISO 8601 creation timestamp. Producers SHOULD write it as a quoted YAML string (createdAt: "2026-04-26T09:14:00Z"): some YAML 1.1 parsers resolve an unquoted ISO timestamp to a native timestamp, which is not a string. Consumers MAY accept a native timestamp and normalize it to an ISO 8601 string before validating.
    */
   createdAt?: string
   /**
-   * OPTIONAL — ISO 8601 last-update timestamp.
+   * OPTIONAL — ISO 8601 last-update timestamp. Same quoting rule as `createdAt`: producers SHOULD quote it; consumers MAY accept a native timestamp.
    */
   updatedAt?: string
   /**

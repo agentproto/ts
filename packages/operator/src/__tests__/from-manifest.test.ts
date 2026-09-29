@@ -5,7 +5,7 @@ import {
 } from "../manifest/index.js"
 
 const SAMPLE = `---
-schema: agentoperator/v1
+schema: agentoperators/v1
 name: Lex
 id: lex
 persona_summary: Researcher who validates sources before recommending.
@@ -52,6 +52,34 @@ describe("parseOperatorManifest", () => {
     expect(m.frontmatter.tools).toHaveLength(1)
     expect(m.frontmatter.governance?.autonomy).toBe("supervised")
     expect(m.body).toContain("# Lex")
+  })
+
+  it("accepts the canonical agentoperators/v1 tag", () => {
+    const m = parseOperatorManifest(SAMPLE)
+    expect(m.frontmatter.schema).toBe("agentoperators/v1")
+  })
+
+  it("accepts the legacy singular agentoperator/v1 tag", () => {
+    const legacy = SAMPLE.replace(
+      "schema: agentoperators/v1",
+      "schema: agentoperator/v1",
+    )
+    const m = parseOperatorManifest(legacy)
+    expect(m.frontmatter.schema).toBe("agentoperator/v1")
+    expect(m.frontmatter.id).toBe("lex")
+  })
+
+  it("accepts a manifest with no schema tag", () => {
+    const untagged = SAMPLE.replace(/^schema: .*\n/m, "")
+    expect(parseOperatorManifest(untagged).frontmatter.schema).toBeUndefined()
+  })
+
+  it("rejects an unknown schema tag", () => {
+    const bad = SAMPLE.replace(
+      "schema: agentoperators/v1",
+      "schema: agentoperators/v2",
+    )
+    expect(() => parseOperatorManifest(bad)).toThrow(/schema/)
   })
 
   it("rejects missing required field (profile)", () => {
