@@ -18,17 +18,17 @@ import { join } from "node:path"
 /** A2A spec version the field names and error codes below follow. */
 export const A2A_PROTOCOL_VERSION = "1.0"
 
-/** `Major.Minor` versions this ingress serves. An empty version means `0.3`
- *  (spec compat rule), which is not served: the 0.3 method names are gone. */
+/** `Major.Minor` versions this ingress serves. */
 export const A2A_SUPPORTED_VERSIONS: readonly string[] = [A2A_PROTOCOL_VERSION]
 
 /** Resolve the requested version from the `A2A-Version` header, else the
- *  `?version=` query param; empty means `0.3`. */
+ *  `?version=` query param. Neither given defaults to 1.0: this daemon never
+ *  shipped 0.3, so there is no legacy client to stay compatible with. */
 export function negotiateVersion(
   header: string | undefined,
   query: string | null | undefined,
 ): { version: string; supported: boolean } {
-  const version = header?.trim() || query?.trim() || "0.3"
+  const version = header?.trim() || query?.trim() || A2A_PROTOCOL_VERSION
   return { version, supported: A2A_SUPPORTED_VERSIONS.includes(version) }
 }
 

@@ -290,17 +290,18 @@ describe("A2A task ingress", () => {
     })
   })
 
-  it("serves 1.0 from the A2A-Version header or ?version=, header first", async () => {
+  it("serves 1.0 from the A2A-Version header or ?version=, header first, and by default when neither is sent", async () => {
     await withServer(async rpc => {
       expect((await rpc(APP_ID, sendReq("solo"), false, { version: "1.0" })).json.result.task.id).toBe("run-1")
       expect((await rpc(APP_ID, sendReq("solo"), false, { version: null, query: "?version=1.0" })).json.result.task.id).toBe("run-2")
       expect((await rpc(APP_ID, sendReq("solo"), false, { version: "1.0", query: "?version=0.3" })).json.result.task.id).toBe("run-3")
+      expect((await rpc(APP_ID, sendReq("solo"), false, { version: null })).json.result.task.id).toBe("run-4")
     })
   })
 
-  it("answers VersionNotSupported (-32009) for 0.3, an unknown version, or none (= 0.3)", async () => {
+  it("answers VersionNotSupported (-32009) for an explicit 0.3 or unknown version", async () => {
     await withServer(async rpc => {
-      for (const opts of [{ version: null }, { version: "0.3" }, { version: "2.0" }, { version: null, query: "?version=0.3" }]) {
+      for (const opts of [{ version: "0.3" }, { version: "2.0" }, { version: null, query: "?version=0.3" }]) {
         const res = await rpc(APP_ID, sendReq("solo"), false, opts)
         expect(res.json.error.code).toBe(-32009)
         expect(res.json.error.data).toEqual({ supportedVersions: ["1.0"] })
