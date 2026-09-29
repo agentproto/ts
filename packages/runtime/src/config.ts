@@ -155,6 +155,18 @@ export interface TitlerConfig {
   model?: string
 }
 
+export interface JevConfig {
+  /** Jev (TypeSafe System One) API key. Read by `resolveJevApiKey` BEFORE
+   *  the `JEV_API_KEY` environment variable — the config file is the
+   *  primary home for this first-party secret, the env var is the
+   *  override/fallback. Secret: redacted by `config_get`. */
+  apiKey?: string
+  /** Jev model id. Default `jev-latest`. */
+  model?: string
+  /** Jev endpoint override. Default `https://api.typesafe.ai/v1/systemone`. */
+  baseUrl?: string
+}
+
 export interface CatalogSourceConfig {
   /** HTTP(S) URL returning `{ entries: AppCatalogEntry[] }`. */
   url: string
@@ -638,6 +650,8 @@ export interface AgentprotoConfig {
    *  user prompt, 6 whole words) on any failure. A user-created label is
    *  NEVER overwritten, and a session is titled at most once. */
   titler?: TitlerConfig
+  /** Jev judge backend settings (`jev-client.ts`). See {@link JevConfig}. */
+  jev?: JevConfig
   /** App catalog settings (`app-catalog.ts`). See {@link CatalogConfig}. */
   catalog?: CatalogConfig
   /** Named connection profiles. See `ProfileConfig` for the merge

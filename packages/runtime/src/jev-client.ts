@@ -15,6 +15,7 @@
 
 import { z } from "zod"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
+import { loadConfig } from "./config.js"
 
 export const JEV_DEFAULT_URL = "https://api.typesafe.ai/v1/systemone"
 export const JEV_DEFAULT_MODEL = "jev-latest"
@@ -158,6 +159,15 @@ export async function callJevSystemOne(
 /** `JEV_API_KEY` from the daemon's env, else the host-injected secret
  *  resolver (the same broker sandbox env passthrough uses), else null. */
 export async function resolveJevApiKey(env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+  // The config file is the primary home for this first-party secret (it
+  // belongs to agentproto itself, not to any one workspace's env file);
+  // the env var is the override.
+  try {
+    const cfg = (await loadConfig()).jev?.apiKey
+    if (cfg && cfg.trim()) return cfg.trim()
+  } catch {
+    // config unreadable — fall through to the env var
+  }
   const fromEnv = env[JEV_API_KEY_ENV]
   if (fromEnv && fromEnv.trim()) return fromEnv.trim()
   const resolver = getMcpCredentialDeps().resolveSandboxSecret
@@ -167,6 +177,17 @@ export async function resolveJevApiKey(env: NodeJS.ProcessEnv = process.env): Pr
     return v && v.trim() ? v.trim() : null
   } catch {
     return null
+  }
+}
+
+/** Jev model/baseUrl preferences from the config file (`jev.model`,
+ *  `jev.baseUrl`), for callers that take an optional model override. */
+export async function resolveJevConfig(): Promise<{ model?: string; baseUrl?: string }> {
+  try {
+    const jev = (await loadConfig()).jev
+    return { ...(jev?.model ? { model: jev.model } : {}), ...(jev?.baseUrl ? { baseUrl: jev.baseUrl } : {}) }
+  } catch {
+    return {}
   }
 }
 

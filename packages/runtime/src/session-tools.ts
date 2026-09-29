@@ -100,7 +100,7 @@ import {
   type SessionWrapupSignals,
 } from "./session-wrapup.js"
 import { buildSessionEvidence, readRecentTurnsSync } from "./session-evidence.js"
-import { judgeSessionWithJev, resolveJevApiKey } from "./jev-client.js"
+import { judgeSessionWithJev, resolveJevApiKey, resolveJevConfig } from "./jev-client.js"
 import type { SpawnAgentSessionDeps } from "./session-spawn.js"
 import {
   collectSessionSnapshots,
@@ -4796,11 +4796,13 @@ export function registerSessionTools(
       model: z.string().optional().describe("Jev model. Default `jev-latest`."),
     },
     async input => {
+      const jevCfg = await resolveJevConfig()
       const judgement = await judgeSessionWithJev({
         sessionId: input.sessionId,
         evidence: input.evidence,
         apiKey: await resolveJevApiKey(),
-        ...(input.model ? { model: input.model } : {}),
+        ...(input.model ? { model: input.model } : jevCfg.model ? { model: jevCfg.model } : {}),
+        ...(jevCfg.baseUrl ? { baseUrl: jevCfg.baseUrl } : {}),
       })
       return { content: [{ type: "text", text: JSON.stringify(judgement) }] }
     },
