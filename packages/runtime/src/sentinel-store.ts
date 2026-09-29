@@ -50,6 +50,12 @@ export interface Sentinel {
    *  clause's terminal event — same behaviour as before multi-clause
    *  `match` existed. */
   terminalSubjects: string[]
+  /** Concrete event subjects (e.g. `github:o/r#12`) that have already seen a
+   *  terminal event (PR merged/closed) — any later NON-terminal event for one
+   *  of them is post-mortem noise (a check_suite failing after the merge) and
+   *  is parked instead of delivered. Independent of `spec.until`. Absent on
+   *  sentinels persisted before this field existed. */
+  closedSubjects?: string[]
 }
 
 export interface SentinelCreateInput {
@@ -62,7 +68,7 @@ export interface SentinelCreateInput {
 export type SentinelUpdatePatch = Partial<
   Pick<
     Sentinel,
-    "spec" | "provider" | "handle" | "status" | "lastEventTs" | "eventCount" | "lastError" | "terminalSubjects"
+    "spec" | "provider" | "handle" | "status" | "lastEventTs" | "eventCount" | "lastError" | "terminalSubjects" | "closedSubjects"
   >
 >
 
@@ -258,6 +264,7 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
         eventCount: 0,
         seen: [],
         terminalSubjects: [],
+        closedSubjects: [],
       }
       sentinels.set(id, sentinel)
       schedulePersist()
