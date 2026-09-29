@@ -1233,7 +1233,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: false,
     section: "advanced",
     label: "Jev API key",
-    help: "Jev (TypeSafe System One) judge API key. Read by the session steward's Jev backend before falling back to the JEV_API_KEY env var. Not writable through config_set — edit ~/.agentproto/config.json by hand.",
+    help: "Jev (TypeSafe System One) judge API key. Read by the session steward's Jev backend before falling back to the JEV_API_KEY env var. Not writable through config_set; edit ~/.agentproto/config.json by hand.",
   },
   {
     path: "jev.model",
