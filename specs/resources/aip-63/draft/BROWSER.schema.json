@@ -1,0 +1,423 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/docs/aip-63/BROWSER.schema.json",
+  "title": "BROWSER.md frontmatter, agentbrowser/v1",
+  "description": "JSON Schema for the YAML frontmatter of an AIP-63 browser provider manifest. A browser manifest is ANY-kind AIP-30 DRIVER frontmatter plus a `browser:` block: the AIP-30 schema applies unchanged (via allOf), and the kind's own subtype schema (for example AIP-29 for kind cli) still applies in addition. The $defs also carry the consent grant record (`grant`) and the consent ledger record (`ledgerRecord`), validated by `$ref` to `#/$defs/grant` and `#/$defs/ledgerRecord`.",
+  "type": "object",
+  "required": ["browser"],
+  "allOf": [
+    { "$ref": "https://agentproto.sh/docs/aip-30/DRIVER.schema.json" },
+    {
+      "properties": {
+        "browser": { "$ref": "#/$defs/browser" }
+      }
+    },
+    {
+      "description": "M4: a tool in implements[] whose capability gate is closed is a manifest error.",
+      "if": {
+        "required": ["implements"],
+        "properties": {
+          "implements": {
+            "contains": {
+              "required": ["tool"],
+              "properties": { "tool": { "enum": ["browser.list_requests", "browser.get_request_body", "browser.cdp_send"] } }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "browser": {
+            "required": ["capabilities"],
+            "properties": {
+              "capabilities": { "required": ["cdp"], "properties": { "cdp": { "const": true } } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["implements"],
+        "properties": {
+          "implements": { "contains": { "required": ["tool"], "properties": { "tool": { "const": "browser.download" } } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "browser": {
+            "required": ["capabilities"],
+            "properties": {
+              "capabilities": { "required": ["downloads"], "properties": { "downloads": { "const": true } } }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["implements"],
+        "properties": {
+          "implements": { "contains": { "required": ["tool"], "properties": { "tool": { "const": "browser.act" } } } }
+        }
+      },
+      "then": {
+        "properties": {
+          "browser": {
+            "required": ["capabilities"],
+            "properties": {
+              "capabilities": { "required": ["aiActions"], "properties": { "aiActions": { "const": true } } }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "domain": {
+      "type": "string",
+      "maxLength": 253,
+      "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})$",
+      "description": "An explicit lowercase registrable domain or host (at least two labels, ASCII or punycode). No wildcard, no leading dot, no bare TLD. A schema cannot see the Public Suffix List, so a host MUST additionally reject public suffixes (for example co.uk) at runtime (C2)."
+    },
+    "sha256Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "conformanceLevel": {
+      "type": "string",
+      "enum": ["core", "interaction", "network", "download", "profile"]
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Absent boolean = false. Absent recording = none. A closed gate makes the dependent tools return browser:unsupported naming the capability (T3).",
+      "properties": {
+        "cdp": { "type": "boolean", "description": "A Chrome DevTools Protocol endpoint is available (browser.endpoints.cdp)." },
+        "downloads": { "type": "boolean" },
+        "recording": { "type": "string", "enum": ["none", "screencast", "video"] },
+        "stealth": { "type": "boolean", "description": "A declared design goal, not a guarantee of undetectability." },
+        "fullPageScreenshot": { "type": "boolean" },
+        "trustedInput": { "type": "boolean", "description": "Input events are produced at the browser or OS level and are indistinguishable from user input to page script (isTrusted true)." },
+        "multiTarget": { "type": "boolean", "description": "More than one tab or page target per instance." },
+        "aiActions": { "type": "boolean", "description": "Natural-language actions (browser.act) are served by the provider." },
+        "cookies": { "type": "boolean", "description": "Cookies can be set on and read from a context by the host." },
+        "storageState": { "type": "boolean", "description": "A full storage state (cookies plus origin storage) can be loaded into a context." },
+        "persistentProfile": { "type": "boolean", "description": "A named profile survives instance stop." }
+      }
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": { "type": "string", "description": "Default endpoint. A local provider SHOULD default to a loopback address." },
+        "discovered": { "type": "boolean", "description": "true when the endpoint is only known after launch (for example a remote session's CDP URL)." }
+      },
+      "anyOf": [{ "required": ["url"] }, { "required": ["discovered"] }]
+    },
+    "sink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.\\-]{1,79}$" },
+        "kind": { "type": "string", "enum": ["local", "remote"] },
+        "operator": { "type": "string", "description": "Who receives session material at this sink (informational, shown in the acknowledgement prompt)." },
+        "region": { "type": "array", "items": { "type": "string" } },
+        "ack": { "type": "string", "enum": ["none", "required"], "default": "none" }
+      },
+      "if": { "properties": { "kind": { "const": "remote" } } },
+      "then": { "required": ["ack"], "properties": { "ack": { "const": "required" } } }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "launch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "idempotent": { "const": true },
+            "budgetMs": { "type": "integer", "minimum": 1000, "default": 120000 },
+            "progressWindowMs": { "type": "integer", "minimum": 100, "default": 10000 },
+            "hardCeilingMs": { "type": "integer", "minimum": 1000 }
+          }
+        },
+        "health": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": { "type": "string", "pattern": "^/" },
+            "intervalMs": { "type": "integer", "minimum": 100, "default": 10000 },
+            "timeoutMs": { "type": "integer", "minimum": 100, "default": 5000 }
+          }
+        },
+        "stop": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "graceMs": { "type": "integer", "minimum": 0, "default": 5000 }
+          }
+        },
+        "supervision": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "crashLoop": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "maxFailures": { "type": "integer", "minimum": 2, "default": 3 },
+                "windowMs": { "type": "integer", "minimum": 1000, "default": 300000 }
+              }
+            },
+            "orphanMarker": { "type": "string", "minLength": 1, "description": "Process marker (for example an argv token) carried by every process the instance spawns; the orphan sweep terminates only processes that carry it." },
+            "idleReapMs": { "type": "integer", "minimum": 0, "description": "Idle timeout after which a non-keepAlive target may be closed. 0 or absent = no idle reaping." }
+          }
+        }
+      }
+    },
+    "browser": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["location", "display", "instances", "capabilities", "profiles"],
+      "properties": {
+        "location": { "type": "string", "enum": ["local", "remote"] },
+        "display": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "enum": ["headless", "headed"] }
+        },
+        "instances": { "type": "string", "enum": ["single", "multi"] },
+        "endpoints": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "rest": { "$ref": "#/$defs/endpoint" },
+            "cdp": { "$ref": "#/$defs/endpoint" }
+          }
+        },
+        "capabilities": { "$ref": "#/$defs/capabilities" },
+        "profiles": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["modes"],
+          "properties": {
+            "modes": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "enum": ["ephemeral", "persistent", "import", "native-login", "clone"] }
+            },
+            "storedBy": { "type": "string", "enum": ["host", "provider"], "description": "Who persists session material between instance runs. provider means the provider keeps its own jar, outside the host store and outside the host's at-rest protections." }
+          }
+        },
+        "lifecycle": { "$ref": "#/$defs/lifecycle" },
+        "sinks": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/sink" }
+        },
+        "conformance": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/conformanceLevel" },
+          "contains": { "const": "core" },
+          "description": "Levels the provider claims. core is always required. A claimed level MUST pass the conformance suite for it (section Conformance)."
+        }
+      },
+      "allOf": [
+        {
+          "description": "M2: a remote provider is a credential sink and MUST declare at least one remote sink.",
+          "if": { "properties": { "location": { "const": "remote" } } },
+          "then": {
+            "required": ["sinks"],
+            "properties": { "sinks": { "contains": { "required": ["kind"], "properties": { "kind": { "const": "remote" } } } } }
+          }
+        },
+        {
+          "description": "M3: capabilities.cdp and endpoints.cdp go together.",
+          "if": { "required": ["capabilities"], "properties": { "capabilities": { "required": ["cdp"], "properties": { "cdp": { "const": true } } } } },
+          "then": { "required": ["endpoints"], "properties": { "endpoints": { "required": ["cdp"] } } }
+        },
+        {
+          "if": { "required": ["endpoints"], "properties": { "endpoints": { "required": ["cdp"] } } },
+          "then": { "properties": { "capabilities": { "required": ["cdp"], "properties": { "cdp": { "const": true } } } } }
+        },
+        {
+          "description": "M5: persistent profile mode needs the persistentProfile capability.",
+          "if": { "properties": { "profiles": { "properties": { "modes": { "contains": { "const": "persistent" } } } } } },
+          "then": { "properties": { "capabilities": { "required": ["persistentProfile"], "properties": { "persistentProfile": { "const": true } } } } }
+        },
+        {
+          "description": "M5: import and clone need a way to seed a context (cookies or storageState).",
+          "if": { "properties": { "profiles": { "properties": { "modes": { "contains": { "enum": ["import", "clone"] } } } } } },
+          "then": {
+            "properties": {
+              "capabilities": {
+                "anyOf": [
+                  { "required": ["cookies"], "properties": { "cookies": { "const": true } } },
+                  { "required": ["storageState"], "properties": { "storageState": { "const": true } } }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "description": "M6: a claimed level needs the capability it tests.",
+          "if": { "required": ["conformance"], "properties": { "conformance": { "contains": { "const": "network" } } } },
+          "then": { "properties": { "capabilities": { "required": ["cdp"], "properties": { "cdp": { "const": true } } } } }
+        },
+        {
+          "if": { "required": ["conformance"], "properties": { "conformance": { "contains": { "const": "download" } } } },
+          "then": { "properties": { "capabilities": { "required": ["downloads"], "properties": { "downloads": { "const": true } } } } }
+        },
+        {
+          "if": { "required": ["conformance"], "properties": { "conformance": { "contains": { "const": "profile" } } } },
+          "then": {
+            "properties": {
+              "capabilities": {
+                "anyOf": [
+                  { "required": ["cookies"], "properties": { "cookies": { "const": true } } },
+                  { "required": ["storageState"], "properties": { "storageState": { "const": true } } }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "grantSink": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": { "kind": { "const": "local" } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "providerId", "ackSeq"],
+          "properties": {
+            "kind": { "const": "remote" },
+            "providerId": { "type": "string" },
+            "ackSeq": { "type": "integer", "minimum": 0, "description": "Ledger seq of the sink-ack record that authorised this remote sink (C6)." }
+          }
+        }
+      ]
+    },
+    "grant": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A consent grant. The only way session material enters a store or a remote instance (C1). The scope is EITHER an explicit domain list OR fullProfile true: a wildcard is not a value of domains.",
+      "required": ["id", "sessionId", "source", "sinks", "grantedAt", "grantedVia", "cookieCount"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "deviceId": { "type": "string", "minLength": 1, "description": "Paired device (AIP-59) this grant is scoped to. Absent = usable by any device the host serves (C12)." },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "profile"],
+          "properties": {
+            "kind": { "type": "string", "enum": ["chrome", "firefox", "file", "native-login"] },
+            "profile": { "type": "string", "minLength": 1 }
+          }
+        },
+        "domains": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/domain" } },
+        "fullProfile": { "const": true, "description": "The recorded full-profile grant (C3). Not a wildcard domain." },
+        "sinks": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/grantSink" } },
+        "grantedAt": { "type": "string", "format": "date-time" },
+        "grantedVia": { "type": "string", "enum": ["interactive", "flag"] },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "cookieCount": { "type": "integer", "minimum": 0 },
+        "revokedAt": { "type": "string", "format": "date-time" }
+      },
+      "oneOf": [
+        { "required": ["domains"], "not": { "required": ["fullProfile"] } },
+        { "required": ["fullProfile"], "not": { "required": ["domains"] } }
+      ],
+      "if": { "required": ["fullProfile"] },
+      "then": { "properties": { "sinks": { "items": { "properties": { "kind": { "const": "local" } } } } } }
+    },
+    "ledgerRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One line of the append-only consent ledger. The property set is closed on purpose: there is no field a cookie value or storage value could be placed in (C9, C10).",
+      "required": ["seq", "at", "event", "actor"],
+      "properties": {
+        "seq": { "type": "integer", "minimum": 0 },
+        "at": { "type": "string", "format": "date-time" },
+        "event": { "type": "string", "enum": ["grant", "refresh", "revoke", "sink-ack", "deny"] },
+        "actor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": { "type": "string", "enum": ["human", "agent", "system"] },
+            "via": { "type": "string", "description": "Channel, for example cli, ui, mcp." },
+            "deviceId": { "type": "string", "minLength": 1 }
+          }
+        },
+        "grantId": { "type": "string", "minLength": 1 },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "domains": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/domain" } },
+        "fullProfile": { "const": true },
+        "cookieCount": { "type": "integer", "minimum": 0 },
+        "nameHashes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/sha256Hex" },
+          "description": "SHA-256 of the grantId, a NUL byte and a cookie name, lowercase hex. Never a value."
+        },
+        "sinkId": { "type": "string" },
+        "derived": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["local", "remote"],
+          "properties": {
+            "local": { "type": "string", "enum": ["deleted", "none"] },
+            "remote": { "type": "string", "enum": ["confirmed", "unavailable", "failed", "not-applicable"] }
+          }
+        },
+        "reason": { "type": "string", "maxLength": 500 },
+        "prev": { "$ref": "#/$defs/sha256Hex", "description": "SHA-256 of the previous line, for a tamper-evident chain (SHOULD)." }
+      },
+      "allOf": [
+        {
+          "description": "C7: an agent may refresh, revoke or be denied. It cannot grant or acknowledge a sink.",
+          "if": { "properties": { "actor": { "properties": { "kind": { "const": "agent" } } } } },
+          "then": { "properties": { "event": { "enum": ["refresh", "revoke", "deny"] } } }
+        },
+        {
+          "if": { "properties": { "event": { "const": "grant" } } },
+          "then": {
+            "required": ["grantId", "sessionId", "cookieCount"],
+            "oneOf": [
+              { "required": ["domains"], "not": { "required": ["fullProfile"] } },
+              { "required": ["fullProfile"], "not": { "required": ["domains"] } }
+            ],
+            "properties": { "domains": { "minItems": 1 } }
+          }
+        },
+        {
+          "if": { "properties": { "event": { "const": "refresh" } } },
+          "then": { "required": ["grantId", "domains", "cookieCount"], "properties": { "domains": { "minItems": 1 } } }
+        },
+        {
+          "if": { "properties": { "event": { "const": "revoke" } } },
+          "then": { "required": ["grantId", "derived"] }
+        },
+        {
+          "if": { "properties": { "event": { "const": "sink-ack" } } },
+          "then": { "required": ["grantId", "sinkId"], "properties": { "actor": { "properties": { "kind": { "const": "human" } } } } }
+        },
+        {
+          "if": { "properties": { "event": { "const": "deny" } } },
+          "then": { "required": ["reason"] }
+        }
+      ]
+    }
+  }
+}

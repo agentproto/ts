@@ -9,7 +9,7 @@
   "properties": {
     "kind": { "const": "review" },
     "id": { "$ref": "#/$defs/id" },
-    "name": { "type": "string" },
+    "name": { "type": "string", "minLength": 1 },
     "description": { "type": "string" },
     "target": {
       "description": "What is reviewed. v1 supports only a git range. The string form \"git-range\" is shorthand for { kind: git-range } with the default base (origin/main). The reviewed range is merge-base(base, HEAD)..HEAD.",
@@ -84,7 +84,7 @@
           "minLength": 1,
           "description": "Executed as `sh -c`. May contain {base}, {head}, {changed} placeholders; {{name}} escapes a literal {name}."
         },
-        "cwd": { "type": "string", "description": "Relative to the repo root." },
+        "cwd": { "type": "string", "minLength": 1, "description": "Relative to the repo root." },
         "blocking": { "type": "boolean", "default": true },
         "timeoutMs": { "type": "integer", "exclusiveMinimum": 0, "default": 600000 },
         "effects": {
@@ -124,6 +124,7 @@
       "properties": {
         "on": {
           "type": "string",
+          "minLength": 1,
           "description": "Informational label (e.g. pre-push, pr). Nothing dispatches on it."
         },
         "prepare": {
