@@ -60,6 +60,7 @@ import { resolveAttentionDelaySec, ATTENTION_DELAY_ENV } from "./session-presenc
 import { loadProvenanceWrapGh, PROVENANCE_WRAP_GH_ENV, parseWrapGh } from "./gh-provenance-shim.js"
 import { loadAgentsMdInlineMaxKb } from "./agents-md.js"
 import type { RuntimeEvents } from "./events.js"
+import { unknownModelRoleIds } from "./model-roles.js"
 
 /** Boot-computed values for the four `daemon.*` restart-class knobs whose
  *  actual env>config>default resolution happens CLI-side (`serve.ts`'s
@@ -201,6 +202,9 @@ export type ConfigSetResult =
       applied: "hot" | "restart-required"
       shadowedByEnv?: string
       revision: string
+      /** Non-blocking notes about the write that was accepted anyway — today:
+       *  a `models.<role>` id the model catalog doesn't know. */
+      warnings?: string[]
     }
   | {
       ok: false
@@ -692,6 +696,13 @@ export async function configSet(
   const envParsed = envRaw !== undefined && envParser ? envParser(envRaw) : undefined
   const shadowedByEnv = envParsed !== undefined ? entry.env : undefined
 
+  const warnings =
+    entry.path === "models.*" && !wantsUnset
+      ? unknownModelRoleIds({ [input.key.slice("models.".length)]: newValue }).map(
+          u => `model "${u.model}" (role ${u.role}) is not in the model catalog — saved anyway; check the id.`,
+        )
+      : []
+
   deps.events.emit({
     type: "config:changed",
     at: new Date().toISOString(),
@@ -706,6 +717,7 @@ export async function configSet(
     applied,
     ...(shadowedByEnv ? { shadowedByEnv } : {}),
     revision,
+    ...(warnings.length > 0 ? { warnings } : {}),
   }
 }
 
@@ -785,6 +797,8 @@ export function registerConfigTools(server: McpServer, deps: ConfigToolsDeps): v
       "one marked `writable: false` (a secret field, since wallet secrets " +
       "belong in auth profiles, or a daemon lockout field that could cut " +
       "the app off from the daemon) is rejected outright, never written. " +
+      "A `models.<role>` write whose model id the catalog does not know still " +
+      "succeeds but returns `warnings`. " +
       "Give exactly one of `value` (type-checked against the key's own " +
       "schema, then the WHOLE resulting config is re-validated before " +
       "saving) or `unset: true` (delete the key). Pass `revision` (from a " +

@@ -34,8 +34,15 @@
 import { parsePrUrl } from "./review-pr.js"
 import { GITHUB_DEFAULT_PR_TYPES } from "./sentinel-github-normalize.js"
 import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
-import { singleMatch, type SentinelProviderHandle, type SentinelSpec } from "./sentinel-providers/types.js"
-import type { SentinelStore } from "./sentinel-store.js"
+import {
+  deliveryPreferenceFor,
+  singleMatch,
+  type SentinelProviderHandle,
+  type SentinelSpec,
+} from "./sentinel-providers/types.js"
+import { autoSelectProviderSlug } from "./sentinel-provider-select.js"
+import type { SentinelPublicUrl } from "./sentinel-public-url.js"
+import { mintSentinelId, type SentinelStore } from "./sentinel-store.js"
 import type { RecordOpenedPrInput } from "./sessions.js"
 
 /** The slice of `SessionDescriptor` this module reads — structural so tests
@@ -52,6 +59,9 @@ export interface SentinelAutoLinkOptions {
    *  default baked in) — called fresh on every opened PR, never cached. */
   autoWatchPrs: () => Promise<boolean>
   activeIntervalMs?: number
+  /** Public-URL source for provider auto-selection (webhook needs a stable
+   *  one). Defaults to the daemon-wired resolver. */
+  publicUrl?: () => SentinelPublicUrl | undefined
   log?: (line: string) => void
 }
 
@@ -88,26 +98,41 @@ export function createSentinelAutoLinker(opts: SentinelAutoLinkOptions): Sentine
     const subject = `github:${parsed.repo}#${parsed.number}`
     if (alreadyWatching(subject, sessionId)) return
 
-    const provider = await opts.resolveProvider(LOCAL_GH_SLUG)
-    if (!provider) {
-      log(`[sentinel-autolink] provider "${LOCAL_GH_SLUG}" unavailable — not watching ${subject}`)
-      return
-    }
+    // Same order as `sentinel_watch` (agentpush > webhook > local-gh). A
+    // best-effort auto-link never leaves a PR unwatched just because the
+    // preferred backend is down: on any failure it retries once on local-gh.
+    const selected = await autoSelectProviderSlug({
+      resolveProvider: opts.resolveProvider,
+      ...(opts.publicUrl ? { publicUrl: opts.publicUrl } : {}),
+    })
+    const candidates = selected === LOCAL_GH_SLUG ? [LOCAL_GH_SLUG] : [selected, LOCAL_GH_SLUG]
 
-    const spec: SentinelSpec = {
-      match: singleMatch(subject, [...GITHUB_DEFAULT_PR_TYPES]),
-      until: { kind: "subject_terminal" },
-      target: { kind: "session", sessionId, urgency: "next-turn" },
-      provider: LOCAL_GH_SLUG,
-      label: `auto:pr#${parsed.number}`,
-      group: sessionId,
-    }
-
-    try {
-      const handle = await provider.create(spec, { mode: "poll", intervalMs: opts.activeIntervalMs ?? 15_000 })
-      opts.store.create({ spec, provider: LOCAL_GH_SLUG, handle })
-    } catch (err) {
-      log(`[sentinel-autolink] failed to auto-watch ${subject}: ${err instanceof Error ? err.message : String(err)}`)
+    for (const slug of candidates) {
+      const provider = await opts.resolveProvider(slug)
+      if (!provider) {
+        log(`[sentinel-autolink] provider "${slug}" unavailable — not watching ${subject} via it`)
+        continue
+      }
+      const spec: SentinelSpec = {
+        match: singleMatch(subject, [...GITHUB_DEFAULT_PR_TYPES]),
+        until: { kind: "subject_terminal" },
+        target: { kind: "session", sessionId, urgency: "next-turn" },
+        provider: slug,
+        label: `auto:pr#${parsed.number}`,
+        group: sessionId,
+      }
+      const id = mintSentinelId()
+      try {
+        const handle = await provider.create(
+          spec,
+          deliveryPreferenceFor(provider, opts.activeIntervalMs ?? 15_000),
+          { sentinelId: id },
+        )
+        opts.store.create({ id, spec, provider: slug, handle })
+        return
+      } catch (err) {
+        log(`[sentinel-autolink] failed to auto-watch ${subject} via ${slug}: ${err instanceof Error ? err.message : String(err)}`)
+      }
     }
   }
 

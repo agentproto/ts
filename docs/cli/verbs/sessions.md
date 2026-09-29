@@ -5,6 +5,8 @@ agentproto sessions                                one-shot table dump
 agentproto sessions --watch [--simple] [--no-color]
 agentproto sessions --attach <id-or-name> [--no-color]
 agentproto sessions --json                         JSON dump
+agentproto sessions --stats[=full] [--verbose] [--json] [--no-color]
+                                                   per-session RAM / CPU / process counts
 agentproto sessions start    <adapter> [--cwd <dir>] [--workspace <slug>]
                                         [--model <id>] [--base-url <url>]
                                         [--auth subscription|api-key]
@@ -119,6 +121,81 @@ When any session was spawned inside a git worktree, a `WORKTREE` column is
 inserted between `WORKSPACE` and `STATUS` showing the worktree's leaf directory
 name. The full path and the worktree id are shown in the `--watch` detail pane
 and in `--json`.
+
+### `--stats[=full]` (who is eating the host)
+
+```bash
+agentproto sessions --stats
+agentproto sessions --stats=full        # same as --stats --verbose
+agentproto sessions --stats --json
+```
+
+Samples the host process table once (`ps` on macOS and Linux, `/proc` when
+Linux has no `ps`) and attributes every process to a session by descending
+from the adapter pid the daemon already knows. No env scraping is needed for
+a session whose pid is known. Rows are sorted by RAM:
+
+```text
+host: load 3.25 2.50 1.75 (12 cpus) | memory free 20.0 GB of 64.0 GB
+
+ID          LABEL                               KIND       STATUS      RAM    CPU  PROCS  TOP
+sess_big    gate-run                            agent-cli  running  2.0 GB  84.2%      9  vitest x4 1.5 GB, claude 400 MB
+sess_small  docs                                agent-cli  running  300 MB   0.5%      2  claude 280 MB
+sess_idle   -                                   terminal   ended         -      -      -
+----------------------------------------------------------------------------------------------------
+-           (daemon pid 100)                    daemon              150 MB   1.2%      1  node 150 MB
+-           (worktree provisioning)             provision              0 B   0.0%      0
+TOTAL       (sessions + daemon + provisioning)                      2.4 GB  85.9%     12
+
+orphans: 1 agentproto-looking process group(s) with no live session (reported only, never killed)
+PID  COMMAND     RAM   CPU  PROCS  AGE  SESSION    WHY
+777  vitest   512 MB  0.0%      3   1d  sess_dead  adapter-config marker in command line
+```
+
+- **TOP** names the biggest command groups by RSS with normalized names
+  (`pnpm install`, `vitest`, `tsc`, `tsup`, `esbuild`, `git`, `claude`,
+  `node`, ...) instead of raw `node /long/path/...` command lines.
+- **`(daemon)`** is the daemon process plus its own non-session children.
+- **`(worktree provisioning)`** is work not yet attached to a session:
+  daemon children (`pnpm install`, builds from `worktree.setup`) that started
+  after an in-flight worktree provision began. In-flight provisions are listed
+  beneath the row. This is a heuristic on start time; a daemon child that
+  happens to start during a provision window is counted here too.
+- **orphans** are processes owned by the same user that look agentproto-owned
+  but belong to no live session: their command line (or, best effort, their
+  environment) names a `~/.agentproto/adapter-config/<id>` path or
+  `AGENTPROTO_SESSION_ID`, or references a killed session's adapter-config
+  directory or worktree. Only reparented roots have their environment read
+  (Linux `/proc/<pid>/environ`; macOS `ps -E`, which some setups blank out).
+  They are **reported only, never killed**, and are not part of `TOTAL`.
+  A marked process whose session is still live is folded into that session and
+  shown as `(detached)` in the full view.
+  Orphans are judged per daemon: on a host running several daemons, another
+  daemon's sessions show up here because this daemon does not know them.
+- **CPU** is the `%CPU` that `ps` reports: a kernel-averaged figure that lags
+  a sudden spike, the same number you read off `ps`/`top`. It can exceed 100
+  for multi-threaded work.
+- **RAM** is resident set size, summed over the tree. Shared pages are
+  counted once per process, so a tree of forked workers can over-report.
+- The sample is cached for about 3 seconds and shared across the CLI, HTTP and
+  MCP surfaces, so repeated calls cost one `ps`.
+
+`--stats=full` (or `--stats --verbose`) adds one line per process under each
+row: pid, command, RSS, CPU and elapsed time (capped at 12 per row).
+`--json` prints the daemon's report as-is (see below). `--stats` cannot be
+combined with `--watch`. A daemon started before this feature has no
+`/sessions/stats` route; restart it to pick the route up.
+
+MCP and HTTP expose the same data:
+
+| Surface | Call |
+|---|---|
+| `session_list` / `agent_sessions_list` | `{stats: true \| "full"}` adds a `stats` object (`rssBytes`, `cpuPercent`, `procCount`, `topCommands`, `pid`, and `processes` for `"full"`) to each live row that has a pid. |
+| `session_stats` | `{detail?: "summary" \| "full", fresh?: boolean}` returns the whole report: `host` (load average, free/total memory), labelled `sessions` sorted by RSS, `daemon`, `provisioning` (with `inFlight`), `orphans`, `totals`. |
+| HTTP | `GET /sessions/stats?detail=summary\|full&fresh=true` |
+
+A caller scoped to its own subtree sees only its own sessions; the
+host-wide `daemon`, `provisioning` and `orphans` buckets are withheld.
 
 ### `--watch` (3-pane dashboard, default)
 

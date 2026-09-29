@@ -41,6 +41,26 @@ DRIVER.md's `metadata.cli.cwd` overrides it — itself resolved relative to the
 app root, and rejected at load time if it would resolve outside the app
 root.
 
+## Completion, timeouts, and orphaned children
+
+A call completes on the spawned subprocess's own `exit`, never on its stdio
+`close` — the direct child's `exit` only depends on its own lifetime, while
+`close` also waits for its stdout/stderr pipes to close. A binary that spawns
+its own child with inherited or piped stdio (e.g. headless Chrome) can leave
+an orphan holding that pipe open long after the binary's real work is done
+(the orphan may even be reparented to pid 1), which would hang `close`
+forever even though the tool call itself succeeded. A short drain window
+after `exit` still gives any already-in-flight stdio a chance to land before
+the streams are torn down.
+
+The subprocess is spawned detached (its own process group). On the run's
+cancel signal aborting, or on a caller-side timeout (see
+`@agentproto/workflow-runtime`'s per-step `timeout_ms`, which wraps every
+`tool` step dispatch — this package has no timeout of its own), the WHOLE
+process group is killed via `process.kill(-pid)` (SIGTERM, escalating to
+SIGKILL if a survivor remains after a short grace period) — not just the
+direct child — so an orphan sharing that group doesn't outlive the call.
+
 ## Spec
 
 See [AIP-29](https://agentproto.sh/docs/aip-29) for the CLI provider

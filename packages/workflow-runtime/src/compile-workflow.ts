@@ -369,6 +369,21 @@ function normalizeToolId(ref: string): string {
 const f = <T>(step: object, key: string): T =>
   (step as Record<string, unknown>)[key] as T
 
+/** Validate an optional `timeout_ms` field: the JSON schema guards
+ *  WORKFLOW.md-authored manifests, but a programmatic `defineWorkflow` (or
+ *  entry.mjs handle) step bypasses that schema entirely — a bad value
+ *  (`timeout_ms: "five"`, `timeout_ms: 0`) must fail HERE, at compile time,
+ *  not silently reach the runtime dispatcher. */
+function assertStepTimeoutMs(id: string, kind: string, value: unknown): number | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 1) {
+    throw new WorkflowCompileError(
+      `${kind} step '${id}' has an invalid 'timeout_ms' (${JSON.stringify(value)}) — must be a number >= 1`,
+    )
+  }
+  return value
+}
+
 function assertLinear(steps: readonly { id: string; kind: string; next?: string }[]): void {
   steps.forEach((s, i) => {
     const next = (s as { next?: string }).next
@@ -797,7 +812,7 @@ function compileGateStep(step: any, id: string): GateStep {
   const args = f<string[] | undefined>(step, "args")
   const cwd = f<string | undefined>(step, "cwd")
   const reportPath = f<string | undefined>(step, "report")
-  const timeoutMs = f<number | undefined>(step, "timeout_ms")
+  const timeoutMs = assertStepTimeoutMs(id, "gate", step.timeout_ms)
   const retry = f<
     { max_attempts: number; backoff: "fixed" | "exponential"; initial_ms?: number } | undefined
   >(step, "retry")
@@ -843,6 +858,7 @@ function compileStep(step: any, ctx: Ctx): RunStep {
       assertKnownStepRefs(inputs, ctx.knownStepIds, `tool step '${id}' inputs`, {
         makeError: (message) => new WorkflowCompileError(message),
       })
+      const timeoutMs = assertStepTimeoutMs(id, "tool", step.timeout_ms)
       return {
         kind: "tool",
         id,
@@ -853,6 +869,7 @@ function compileStep(step: any, ctx: Ctx): RunStep {
           ? (b) => opts.contextFor!(toolId, b)
           : undefined,
         ...(step.cacheable ? { cacheable: true } : {}),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
       }
     }
 

@@ -179,10 +179,19 @@ export type DeliveryPreference =
  *  `attach` call site from hardcoding `mode: "poll"` now that push-only
  *  providers exist. */
 export function deliveryPreferenceFor(
-  provider: Pick<SentinelProviderHandle, "capabilities">,
+  provider: Pick<SentinelProviderHandle, "capabilities" | "preferredDelivery">,
   intervalMs: number,
 ): DeliveryPreference {
+  if (provider.preferredDelivery) return provider.preferredDelivery(intervalMs)
   return provider.capabilities.poll ? { mode: "poll", intervalMs } : { mode: "push" }
+}
+
+/** Extra context the runtime/tools hand to `create` beyond the spec. */
+export interface SentinelCreateContext {
+  /** The id the store will record this sentinel under (`sen_<ulid>`), minted
+   *  BEFORE `create` so a provider that stamps it remotely (agentpush's
+   *  `consumerRef`) names the same sentinel the daemon does. */
+  sentinelId?: string
 }
 
 /** Whether a provider can operate right now, and if not, why. */
@@ -205,7 +214,7 @@ export interface SentinelProviderHandle extends AdapterHandle {
   readonly setupFields?: readonly SetupField[]
   /** Start watching. `delivery` tells the provider how the daemon wants
    *  events. */
-  create(spec: SentinelSpec, delivery: DeliveryPreference): Promise<SentinelHandle>
+  create(spec: SentinelSpec, delivery: DeliveryPreference, ctx?: SentinelCreateContext): Promise<SentinelHandle>
   /** Re-attach after a daemon restart (re-point a callback, resume a
    *  cursor). */
   attach(handle: SentinelHandle, delivery: DeliveryPreference): Promise<SentinelHandle>
@@ -221,6 +230,9 @@ export interface SentinelProviderHandle extends AdapterHandle {
     req: { rawBody: string; headers: Record<string, string | string[] | undefined> },
     handle: SentinelHandle,
   ): { ok: true; events: SentinelEvent[] } | { ok: false; reason: string }
+  /** Delivery a provider that supports both modes wants by default. Absent =
+   *  poll when `capabilities.poll`, else push (see {@link deliveryPreferenceFor}). */
+  preferredDelivery?(intervalMs: number): DeliveryPreference
   /** Default `types` for a subject scheme when the spec leaves it undefined. */
   defaultTypes(subject: string): string[]
   /** Optional operational-readiness probe (public URL known, auth scope

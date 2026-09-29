@@ -26,12 +26,16 @@ inputs:
     default: false
   reviewModelSmall:
     type: string
-    description: Model for a review candidate with residualFileCount <= 3.
-    default: claude-haiku-4-5-20251001
+    description: >-
+      Model for a review candidate with residualFileCount <= 3. Default: the
+      `review.small` model role (repo agentproto.json `models` > daemon config
+      `models` > built-in).
   reviewModelLarge:
     type: string
-    description: Model for a review candidate with residualFileCount > 3.
-    default: claude-sonnet-5-5
+    description: >-
+      Model for a review candidate with residualFileCount > 3, and the retry
+      reviewer. Default: the `review.large` model role (repo agentproto.json
+      `models` > daemon config `models` > built-in).
   maxReviews:
     type: number
     description: >-
@@ -47,6 +51,20 @@ inputs:
       the report when set. Omit for no notification.
 outputs: {}
 steps:
+  - id: modelRoles
+    kind: tool
+    name: Resolve the reviewer model roles
+    tool: model_roles
+    inputs:
+      repoRoot: $input.repoRoot
+      workspaceSlug: $input.workspaceSlug
+      roles:
+        - review.small
+        - review.large
+      inputs:
+        review.small: $input.reviewModelSmall
+        review.large: $input.reviewModelLarge
+
   - id: worktreeGcPlan
     kind: tool
     name: Plan worktree gc
