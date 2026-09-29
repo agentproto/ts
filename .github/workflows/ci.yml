@@ -447,6 +447,13 @@ jobs:
             AFFECTED="--affected"
           fi
           pnpm exec turbo run build $AFFECTED $FILTERS
+          # Suites that load a package's `dist/` without depending on it (the
+          # cli's jcode smoke test) — built unscoped by --affected, see
+          # BUILD_EXTRAS in scripts/ci-test-shards.mjs.
+          EXTRAS=$(node scripts/ci-test-shards.mjs --shard ${{ matrix.shard }} --of 4 --extras)
+          if [ -n "$EXTRAS" ]; then
+            pnpm exec turbo run build $EXTRAS
+          fi
         env:
           TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
           TURBO_TEAM: agentproto-ts
