@@ -8,8 +8,10 @@ agentproto review run    [--binding <name>] [--cwd <dir>] [--manifest <path>]
 agentproto review verify [<attestation.json | dir>] [--cwd <dir>]
                          [--manifest <path>] [--base <ref>] [--head <ref>]
                          [--binding <name>] [--verdict pass|block|incomplete|any]
-                         [--if-exported] [--annotate github] [--json]
+                         [--if-exported] [--allowed-signers <file>]
+                         [--require-signed] [--annotate github] [--json]
 agentproto review init   [--cwd <dir>] [--ci github] [--json]
+agentproto review key    [show] [--principal <id>] [--cwd <dir>] [--json]
 ```
 
 CLI surface of the review primitive: a repo's `REVIEW.md` declares check lanes
@@ -30,6 +32,7 @@ that didn't reach a verdict:
 | `1` | `block` — a blocking lane failed |
 | `2` | `incomplete` — a lane timed out / was skipped, or the daemon wasn't reachable. **Not** a rejection: fix and retry. |
 | `3` | the review could not run (bad `REVIEW.md`, unresolvable range) |
+| `6` | signature invalid or missing when `--require-signed` (`verify` only) |
 | `64` | usage error |
 
 ## `run`
@@ -62,7 +65,13 @@ verdict re-folded from its lanes) and the verdict (default `pass`). With a
 directory — default the manifest's `verdict.exportDir` — it picks the
 attestation for the range head, or for `HEAD^` when `HEAD` only adds files
 under that directory (committing the export). Exit `0` verified, `1` invalid,
-`4` no attestation for the range, `5` (`--if-exported`) no `exportDir` declared.
+`4` no attestation for the range, `5` (`--if-exported`) no `exportDir` declared,
+`6` signature invalid or missing when `--require-signed`.
+
+| Flag | Description |
+|------|-------------|
+| `--allowed-signers <file>` | SSH `allowed_signers` file to verify the attestation's signature against. Defaults to `.agentproto/allowed_signers` in the repo root when the file exists. An **invalid** signature always exits `6`; a **missing** signature (or no `allowed_signers` file) only exits `6` when `--require-signed` is also set. |
+| `--require-signed` | Fail (exit `6`) if the attestation has no signature, instead of accepting unsigned attestations silently. |
 
 ## `init`
 
@@ -86,6 +95,26 @@ nothing to do"):
   can't run in CI) passes only when a verified exported attestation covers the
   PR range; otherwise it fails with a dedicated `review incomplete` annotation.
 
+## `key`
+
+```bash
+agentproto review key
+agentproto review key show --json
+agentproto review key --principal my-team@example.com
+```
+
+Prints the daemon install's review signing key: its fingerprint and the
+`allowed_signers` line ready to paste into `.agentproto/allowed_signers` (or
+pass to `--allowed-signers`). The keypair is generated at
+`~/.agentproto/keys/review_ed25519` on first use; it is a shared host file,
+not per-daemon state, so this command never requires a running daemon.
+
+| Flag | Description |
+|------|-------------|
+| `--principal <id>` | Identity claimed in the `allowed_signers` line (default: `git config user.email` in `--cwd`'s repo). |
+| `--cwd <dir>` | Repo root for resolving the default principal. |
+| `--json` | Emit `{ fingerprint, principal, publicKeyPath, allowedSignersLine }`. |
+
 ## Examples
 
 ```sh
@@ -93,4 +122,6 @@ agentproto review init --ci github
 agentproto review run --binding local --supersede
 agentproto review run --headless --binding ci --annotate github --pr "$PR_URL"
 agentproto review verify --if-exported
+agentproto review verify --allowed-signers .agentproto/allowed_signers --require-signed
+agentproto review key
 ```

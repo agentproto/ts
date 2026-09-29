@@ -363,6 +363,11 @@ client's hello claims — the hello has no scope field at all.
 Revocation is unchanged: `pair revoke` / `devices revoke` on the offering
 daemon drops a pairing (host-scoped or not) exactly as it does today.
 
+Setting up a host-scoped pairing (and sharing its local inference) from a
+locked-down machine with no admin rights and behind a corporate HTTPS proxy
+is covered end to end in
+[No-admin install](../guides/no-admin-install.md).
+
 ## Status
 
 - **Phase 1:** identity module, `pair/v1` handshake, `wrapE2E` channel, and the

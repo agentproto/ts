@@ -1,5 +1,27 @@
 # @agentproto/llm-endpoint
 
+## 0.11.1
+
+### Patch Changes
+
+- @agentproto/providers-store@0.3.21
+
+## 0.11.0
+
+### Minor Changes
+
+- 21a117c: Add session inference-binding (agent_start.inference) with harness fit-check, relocate pi models sync into llm-endpoint
+
+### Patch Changes
+
+- @agentproto/providers-store@0.3.20
+
+## 0.10.0
+
+### Minor Changes
+
+- 3619a5f: Device inference over pair/v2: a controller can address a paired host's local models transparently as `<endpointId>@<device>` (e.g. `ollama@work-mac/llama3.1:8b`), routed over the paired E2E channel with no open inbound port. Includes the opt-in `features.deviceInferenceShare` flag + `agentproto devices share-inference on|off` (gated by host-scoped pairings via a daemon-injected `x-agentproto-host-scope` header), the streaming `POST /devices/:id/exec-stream/<subpath>` relay, corporate-proxy support (`HTTPS_PROXY`/`NO_PROXY`) for rendezvous dials, and a `doctor` rendezvous reachability step.
+
 ## 0.9.0
 
 ### Minor Changes

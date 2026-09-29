@@ -13,6 +13,7 @@ import { join } from "node:path"
 
 import {
   createSessionEventBus,
+  type ApprovalDecidedEvent,
   type TaskChangedEvent,
 } from "../session-event-bus.js"
 import {
@@ -695,5 +696,221 @@ describe("persistence", () => {
     mustOk(ledger.create({ title: "t" }, session("sup")))
     ledger.dispose()
     expect(readdirSync(dir)).toEqual([])
+  })
+
+  it("round-trips approvalIds and artifacts through a reload", () => {
+    const dir = mkdtempSync(join(tmpdir(), "task-ledger-links-"))
+    const persistPath = join(dir, "tasks.json")
+
+    const first = harness({ sessions: LINEAGE, persistPath })
+    const t = mustOk(first.ledger.create({ title: "t" }, session("sup")))
+    mustOk(first.ledger.claim({ taskId: t.taskId, rev: 0 }, session("exec")))
+    const linked = mustOk(
+      first.ledger.update(
+        {
+          taskId: t.taskId,
+          rev: 1,
+          status: "awaiting_approval",
+          approvalIds: ["apr_1"],
+          artifacts: [
+            { sessionId: "exec", key: "invoice", sha256: "a".repeat(64) },
+            { approvalId: "apr_1" },
+          ],
+        },
+        session("exec"),
+      ),
+    )
+    expect(linked.status).toBe("awaiting_approval")
+    first.ledger.dispose()
+
+    const second = harness({ sessions: LINEAGE, persistPath })
+    const reloaded = second.ledger.get(t.taskId, OPERATOR)
+    expect(reloaded?.status).toBe("awaiting_approval")
+    expect(reloaded?.approvalIds).toEqual(["apr_1"])
+    expect(reloaded?.artifacts).toEqual([
+      { sessionId: "exec", key: "invoice", sha256: "a".repeat(64) },
+      { approvalId: "apr_1" },
+    ])
+    // The owner survived the reload untouched — the no-release rule at boot.
+    expect(reloaded?.owner).toBe("exec")
+    second.ledger.dispose()
+  })
+})
+
+// ── awaiting_approval (E1b) ─────────────────────────────────────────────
+
+function approvalDecided(over: Partial<ApprovalDecidedEvent>): ApprovalDecidedEvent {
+  return {
+    type: "approval:decided",
+    approvalId: "apr_1",
+    decision: "approved",
+    channel: "web_click",
+    ts: "t",
+    ...over,
+  }
+}
+
+describe("awaiting_approval — entering the wait", () => {
+  it("in_progress → awaiting_approval requires a non-empty approvalIds", () => {
+    const { ledger } = harness({ sessions: LINEAGE })
+    const t = mustOk(ledger.create({ title: "t" }, session("sup")))
+    mustOk(ledger.claim({ taskId: t.taskId, rev: 0 }, session("exec")))
+    expect(
+      mustError(
+        ledger.update({ taskId: t.taskId, rev: 1, status: "awaiting_approval" }, session("exec")),
+      ),
+    ).toContain("no linked approvalIds")
+    const linked = mustOk(
+      ledger.update(
+        { taskId: t.taskId, rev: 1, status: "awaiting_approval", approvalIds: ["apr_1"] },
+        session("exec"),
+      ),
+    )
+    expect(linked.status).toBe("awaiting_approval")
+    expect(linked.approvalIds).toEqual(["apr_1"])
+  })
+
+  it("a pre-existing approvalIds list also satisfies the requirement", () => {
+    const { ledger } = harness({ sessions: LINEAGE })
+    const t = mustOk(ledger.create({ title: "t" }, session("sup")))
+    mustOk(ledger.claim({ taskId: t.taskId, rev: 0 }, session("exec")))
+    mustOk(ledger.update({ taskId: t.taskId, rev: 1, approvalIds: ["apr_1"] }, session("exec")))
+    const linked = mustOk(
+      ledger.update({ taskId: t.taskId, rev: 2, status: "awaiting_approval" }, session("exec")),
+    )
+    expect(linked.status).toBe("awaiting_approval")
+  })
+
+  it("pending → awaiting_approval is refused (not a reachable transition)", () => {
+    const { ledger } = harness({ sessions: LINEAGE })
+    const t = mustOk(ledger.create({ title: "t" }, session("sup")))
+    expect(
+      mustError(
+        ledger.update(
+          { taskId: t.taskId, rev: 0, status: "awaiting_approval", approvalIds: ["apr_1"] },
+          session("sup"),
+        ),
+      ),
+    ).toContain("invalid transition")
+  })
+
+  it("linkApproval appends idempotently and flips in_progress → awaiting_approval once", () => {
+    const { ledger, seen } = harness({ sessions: LINEAGE })
+    const t = mustOk(ledger.create({ title: "t" }, session("sup")))
+    mustOk(ledger.claim({ taskId: t.taskId, rev: 0 }, session("exec")))
+    const first = mustOk(ledger.linkApproval(t.taskId, "apr_1", session("exec")))
+    expect(first.status).toBe("awaiting_approval")
+    expect(first.approvalIds).toEqual(["apr_1"])
+    expect(seen.at(-1)?.change).toBe("status")
+    // A second link (another approval on the same wait) stays awaiting_approval,
+    // dedupes a repeat, and reports "edited" — not another status flip.
+    const second = mustOk(ledger.linkApproval(t.taskId, "apr_2", session("exec")))
+    expect(second.approvalIds).toEqual(["apr_1", "apr_2"])
+    expect(second.status).toBe("awaiting_approval")
+    expect(seen.at(-1)?.change).toBe("edited")
+    const third = mustOk(ledger.linkApproval(t.taskId, "apr_1", session("exec")))
+    expect(third.approvalIds).toEqual(["apr_1", "apr_2"])
+  })
+
+  it("linkApproval refuses a task with nothing to wait on (pending/done)", () => {
+    const { ledger } = harness({ sessions: LINEAGE })
+    const t = mustOk(ledger.create({ title: "t" }, session("sup")))
+    expect(mustError(ledger.linkApproval(t.taskId, "apr_1", session("sup")))).toContain(
+      "cannot link an approval to a pending task",
+    )
+  })
+
+  it("linkApproval requires owner, creator, or operator", () => {
+    const { ledger } = harness({ sessions: LINEAGE })
+    const t = mustOk(ledger.create({ title: "t" }, session("sup")))
+    mustOk(ledger.claim({ taskId: t.taskId, rev: 0 }, session("exec")))
+    expect(mustError(ledger.linkApproval(t.taskId, "apr_1", session("exec2")))).toContain(
+      "owner, its creator, or the operator",
+    )
+  })
+})
+
+describe("awaiting_approval — approval:decided settlement", () => {
+  it("approved moves an awaiting_approval task to in_progress", () => {
+    const { ledger, bus, seen } = harness({ sessions: LINEAGE })
+    const t = mustOk(ledger.create({ title: "t" }, session("sup")))
+    mustOk(ledger.claim({ taskId: t.taskId, rev: 0 }, session("exec")))
+    mustOk(ledger.linkApproval(t.taskId, "apr_1", session("exec")))
+    bus.emit(approvalDecided({ approvalId: "apr_1", decision: "approved" }))
+    const resolved = ledger.get(t.taskId, OPERATOR)
+    expect(resolved?.status).toBe("in_progress")
+    expect(resolved?.owner).toBe("exec") // untouched — same owner resumes.
+    expect(seen.at(-1)).toMatchObject({ change: "status", status: "in_progress" })
+  })
+
+  it("denied cancels the task with meta.reason = \"denied\"", () => {
+    const { ledger, bus } = harness({ sessions: LINEAGE })
+    const t = mustOk(ledger.create({ title: "t" }, session("sup")))
+    mustOk(ledger.claim({ taskId: t.taskId, rev: 0 }, session("exec")))
+    mustOk(ledger.linkApproval(t.taskId, "apr_1", session("exec")))
+    bus.emit(approvalDecided({ approvalId: "apr_1", decision: "denied" }))
+    const resolved = ledger.get(t.taskId, OPERATOR)
+    expect(resolved?.status).toBe("cancelled")
+    expect(resolved?.meta?.reason).toBe("denied")
+    expect(resolved?.closedAt).toBeDefined()
+  })
+
+  it("ignores a decision for an approval id the task never linked", () => {
+    const { ledger, bus } = harness({ sessions: LINEAGE })
+    const t = mustOk(ledger.create({ title: "t" }, session("sup")))
+    mustOk(ledger.claim({ taskId: t.taskId, rev: 0 }, session("exec")))
+    mustOk(ledger.linkApproval(t.taskId, "apr_1", session("exec")))
+    bus.emit(approvalDecided({ approvalId: "apr_unrelated", decision: "approved" }))
+    expect(ledger.get(t.taskId, OPERATOR)?.status).toBe("awaiting_approval")
+  })
+
+  it("a stale decision on a task that already moved on is a no-op", () => {
+    const { ledger, bus } = harness({ sessions: LINEAGE })
+    const t = mustOk(ledger.create({ title: "t" }, session("sup")))
+    mustOk(ledger.claim({ taskId: t.taskId, rev: 0 }, session("exec")))
+    mustOk(ledger.linkApproval(t.taskId, "apr_1", session("exec")))
+    // Manually reverted before the decision arrives (e.g. the owner gave up
+    // waiting) — the late "approved" must not resurrect the wait.
+    const reverted = mustOk(
+      ledger.update(
+        { taskId: t.taskId, rev: 2, status: "in_progress" },
+        session("exec"),
+      ),
+    )
+    bus.emit(approvalDecided({ approvalId: "apr_1", decision: "approved" }))
+    expect(ledger.get(t.taskId, OPERATOR)?.rev).toBe(reverted.rev) // untouched.
+  })
+})
+
+describe("awaiting_approval — no release while waiting", () => {
+  it("owner death (session:exited) does NOT release an awaiting_approval task", () => {
+    const { ledger, bus } = harness({ sessions: LINEAGE })
+    const t = mustOk(ledger.create({ title: "t" }, session("sup")))
+    mustOk(ledger.claim({ taskId: t.taskId, rev: 0 }, session("exec")))
+    mustOk(ledger.linkApproval(t.taskId, "apr_1", session("exec")))
+    bus.emit({ type: "session:exited", sessionId: "exec", status: "killed", ts: "t" })
+    const task = ledger.get(t.taskId, OPERATOR)
+    expect(task?.status).toBe("awaiting_approval")
+    expect(task?.owner).toBe("exec")
+  })
+
+  it("boot does NOT release an awaiting_approval task whose owner didn't survive", () => {
+    const dir = mkdtempSync(join(tmpdir(), "task-ledger-awaiting-boot-"))
+    const persistPath = join(dir, "tasks.json")
+
+    const first = harness({ sessions: LINEAGE, persistPath })
+    const t = mustOk(first.ledger.create({ title: "t" }, session("sup")))
+    mustOk(first.ledger.claim({ taskId: t.taskId, rev: 0 }, session("exec")))
+    mustOk(first.ledger.linkApproval(t.taskId, "apr_1", session("exec")))
+    first.ledger.dispose()
+
+    // Reboot into a registry where exec did NOT survive — same shape as the
+    // plain persistence test, but this task must come back untouched.
+    const second = harness({ sessions: { sup: { status: "running" } }, persistPath })
+    const reloaded = second.ledger.get(t.taskId, OPERATOR)
+    expect(reloaded?.status).toBe("awaiting_approval")
+    expect(reloaded?.owner).toBe("exec")
+    expect(reloaded?.meta?.releasedReason).toBeUndefined()
+    second.ledger.dispose()
   })
 })

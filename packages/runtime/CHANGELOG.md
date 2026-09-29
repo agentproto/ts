@@ -1,5 +1,74 @@
 # @agentproto/runtime
 
+## 5.2.1
+
+### Patch Changes
+
+- Updated dependencies [d2df24b]
+  - @agentproto/model-catalog@0.11.3
+  - @agentproto/providers-store@0.3.21
+  - @agentproto/llm-endpoint@0.11.1
+
+## 5.2.0
+
+### Minor Changes
+
+- 8c5ee51: `device` sandbox provider (DEVICES-PLAN PR-D): a paired HOST device (reverse pairing, `HostRegistry`) is now usable as an `agent_start({ sandbox: "device:<name>" })` target, spawning and proxying an agent session on that device's own daemon exactly like `sandbox: "e2b"` proxies a cloud box today — prompt/output/events/kill all work from the driving daemon, and the session shows up in `session_list` with its device.
+
+  On the receiving device, this is opt-in and off by default: `agentproto devices allow-spawn on|off` (`features.deviceSpawnAllow`) gates a new `/device-spawn/*` route family, reachable only over a pairing the other side registered as a host (`pair offer --host` + `devices add`) — mirrors `devices share-inference`'s gate shape. A device's own filesystem is unrelated to the driving daemon's, so a spawn with no explicit `cwd` is no longer forwarded as a host-shaped path that would ENOENT remotely; the box's own `agent_start` resolves its own default instead (new `SandboxProviderHandle.omitCwdWhenImplicit` flag, additive for every other provider).
+
+- 5ce6cdc: Join-token host visibility follow-ups (SANDBOX-VISIBILITY-JOIN, stacked on #1517/#1535): a CI-joined box's `AGENTPROTO_JOIN_PROVIDER`/`AGENTPROTO_JOIN_LABELS` env are now forwarded into the sandbox the same gated way `AGENTPROTO_JOIN` already is, and `join-token-registry.ts` synthesizes `"<token name> #<pr>"` for a box that doesn't self-report a name (it never knows the token's own name — only the home daemon does).
+
+  A failed `addHost()` round trip (the daemon dialing back into a joined box's self-minted offer) is now recorded on the join token as `lastJoinError`/`lastJoinErrorAt` instead of only logging it — `useCount` bumping with no matching device update is no longer silent. The box's self-offer TTL widened from 60s to 3min to give that round trip more slack under real broker latency.
+
+  `HostRegistry` now caches the last successful `GET /sessions*` response per host and serves it (`stale: true`, with a capture timestamp) when a subsequent forward to an offline host fails — wired through `device-registry.ts`'s `forwardHttp`, the `device_sessions` MCP tool, and `GET /devices/:id/sessions[/:id/output]`. A join-token-added host is now tagged (`HostRecord.addedVia`) and pruned after `joinedHostTtlMs` (default 7 days) of no `lastSeen` activity; a manually paired host (`pair offer --host` + `devices add`) is never auto-pruned.
+
+- 21a117c: Add session inference-binding (agent_start.inference) with harness fit-check, relocate pi models sync into llm-endpoint
+- de2decc: Review attestation signing and composition: `@agentproto/review` gains `canonicalJson`, `canonicalAttestationBytes`, and `attestationSha256` plus optional `Attestor.signature` and `LaneResult.composedFrom` fields. `@agentproto/runtime` adds `review-signing.ts` (SSH-keygen-based `signAttestation`/`verifySignedAttestation`, key management, `ReviewConfig`) and `review-compose.ts` (delta re-review composition). `@agentproto/cli` adds the `review key` subcommand and `verify --allowed-signers/--require-signed` (exit code 6). The review panel shows signed/unsigned badges.
+- 6f53567: Review panel: the agent-lane reviewer-session link now deep-links the live-session widget as a real per-session URL (`/apps/@agentproto/live-session/ui?sessionId=<id>`), opened via `openLink` with a `window.open` fallback — the same convention session-chat's card link uses. Runtime's `handleAppUiPage` reads the `sessionId` query param, validates it (`isValidDeepLinkSessionId`), and bakes it into the live-session widget's `window.__APP_INIT__` so it boots already pinned to that session; invalid or absent ids are ignored and every other builtin's html is served byte-identical. `REVIEW_PANEL_UI_TOOLS` keeps only the review tools (the deep link is a navigation, not a `tools/call`), and the panel exports `liveSessionUrl`.
+- f3f632a: Add UserPreset.lastUsedAt stamping, user_preset_* MCP tools, and includeRecent spawn-config candidates
+
+### Patch Changes
+
+- 2d8c803: Fix `workflow_cancel` crashing the whole daemon when it lands on a run whose agent step is mid-turn: `SessionsRegistryAgentHost.sendPromptAndWait` (and `onAwaitingInput`'s auto-allow branch) now await `registry.sendPrompt` and `waitTurnEnd` together via `Promise.all`, so a session killed mid-turn rejects cleanly instead of producing an unhandled rejection. Also finalizes any step left `running`/`pending` on a persisted terminal (cancelled/failed/done) run found at daemon boot, so a run interrupted mid-finalization no longer reports a stuck step forever.
+- 8c03fe2: Fix message_reply race where a just-acked message could miss its unflushed transcript record
+- d4ac86e: Sync generated catalog data from the pinned provider sources: refreshed pricing (moonshot kimi-k2.6, minimax M2.7, deepseek/openrouter rows), removed delisted models (zai-org GLM-4.5/4.6-FP8/5.1-FP8, several opencode-go routes, baseten provider rows), and updated catalog-sync snapshot fixtures. Also replaces retired-id test pins (opencode-go `minimax-m2.5`/`omen-alpha`) with structural bounds in the claude-code, claude-sdk, and runtime model suites.
+- c463221: Cache parsed review-ledger entries keyed by `stat` (mtimeMs + size) so repeated `session_tree` polling no longer re-reads and re-parses unchanged attestation files. Own writes invalidate the cached path immediately, reads always guard against writes from other `ReviewLedger` instances over the same root, and annotations (`getAnnotations`) are deliberately excluded from the cache so `pr`/`prState` are never served stale. Also adds a `bench:review-ledger` script for steady-state before/after numbers.
+- c6e3989: Pack rubric paths are now confined to the pack's own root in the runtime loader: `PackSource.readRubric` realpaths both the resolved path and the pack root and refuses to read anything that resolves outside it — covering `../../` escapes, absolute paths, and same-directory symlinks pointing elsewhere — regardless of whether the pack is trusted. `resolvePacks` now eagerly reads every selected agent check's rubric at resolve time and wraps any loader failure in a `ReviewManifestError` naming the pack and check, so a violating pack fails the review up front instead of mid-session.
+- Updated dependencies [d4ac86e]
+- Updated dependencies [d000369]
+- Updated dependencies [d4ac86e]
+- Updated dependencies [21a117c]
+- Updated dependencies [de2decc]
+- Updated dependencies [6f53567]
+- Updated dependencies [c6e3989]
+  - @agentproto/model-catalog@0.11.2
+  - @agentproto/llm-endpoint@0.11.0
+  - @agentproto/review@0.3.0
+  - @agentproto/apps@0.16.0
+  - @agentproto/providers-store@0.3.20
+  - @agentproto/sandbox@0.7.1
+
+## 5.1.0
+
+### Minor Changes
+
+- 3619a5f: Device inference over pair/v2: a controller can address a paired host's local models transparently as `<endpointId>@<device>` (e.g. `ollama@work-mac/llama3.1:8b`), routed over the paired E2E channel with no open inbound port. Includes the opt-in `features.deviceInferenceShare` flag + `agentproto devices share-inference on|off` (gated by host-scoped pairings via a daemon-injected `x-agentproto-host-scope` header), the streaming `POST /devices/:id/exec-stream/<subpath>` relay, corporate-proxy support (`HTTPS_PROXY`/`NO_PROXY`) for rendezvous dials, and a `doctor` rendezvous reachability step.
+- a3ec1d6: Add capability bundles (bundle_list/create/update/delete, /mcp/imported/<id> passthrough), agent_start.daemonMount, and opencode install-mcp/skills support
+- 54e1f3b: Add session-scoped artifact store: session_artifact_add/_list/_get/_pin tools, /sessions/:id/artifacts* HTTP routes, and outcome file refs
+- b7b85d6: Auto-join wiring for sandbox boxes: optional `join: { tokenEnv: string }` on the AIP-36 `SandboxDefinition` (`@agentproto/sandbox`) names a host env var whose value (a join-token URL) is forwarded into the box under the same name at boot — sugar over `env.passthrough`, self-documenting for the auto-join case, and a no-op (never a boot failure) when the named host env var isn't actually set. `@agentproto/runtime`'s sandbox-boot slug collection (`bootSandboxAgentSession`) now includes `join.tokenEnv` in the resolved secret set whenever it's present and resolvable.
+- b7b85d6: Join tokens (SANDBOX-VISIBILITY-JOIN): a daemon can now mint a long-lived, revocable, reusable credential (`join_token_create`/`join_token_list`/`join_token_revoke` MCP tools, `POST/GET /devices/join-tokens` + `DELETE /devices/join-tokens/:id` REST routes, `agentproto devices join-token create|list|revoke` in `@agentproto/cli`) that a box daemon reads from its `AGENTPROTO_JOIN` env var at boot to auto-register itself as a host (`HostRegistry.add`, DEVICES-PLAN PR-C) with no offer URL to relay by hand — new `createJoinTokenRegistry`/`JoinTokenRegistry` in `@agentproto/runtime`, wired into `createGateway`'s `joinTokens` option, and boot-time `AGENTPROTO_JOIN` handling in `agentproto serve`. `HostRecord`/`Device` gain optional self-reported `provider`/`sandboxId`/`labels`, set via `HostRegistry.add`'s new optional `meta` parameter. New `device_sessions` MCP tool + `GET /devices/:id/sessions[/:sessionId/output]` REST routes + `agentproto devices sessions` (and the new `DeviceRegistry.forwardHttp`/`GET /sessions/:id/output` it's built on) let one daemon read another registered host's session list and tail a session's output over the same E2E channel `/devices/:id/exec` already uses. `@agentproto/apps`'s builtin Session Chat launcher additionally allowlists `device_list`/`device_sessions` for its UI.
+- 4ecd91b: `local-gh` sentinel provider: check-completed and closed events now key off the PR's head sha, so a new push whose CI concludes the same way as the last one (e.g. lint fails again) is no longer dropped by the delivery dedup, and a check that finishes between two polls on a new head is no longer masked by the old head's already-seen conclusions. `PrStatusSnapshot` gains an optional `headSha` field, and a new `github.pull_request.synchronize` event (now in the PR default type set) is emitted for the push itself.
+- 3dc5a8b: feat(runtime): session steward runtime — wrap-up plan, per-session RAM, close with outcome. Adds `processTreeRss` (per-session process-tree RSS via `ps`) and `session_list`'s `withMemory` input; `planSessionWrapup`, a deterministic (zero-LLM) close/stuck/judge/keep classifier for idle agent-cli sessions; `SessionOutcome` Level 2 fields (`source: "judged" | "declared"`, `verdict`, `judgedBy`, `note`) alongside two new `SessionEndReason` values (`steward-completed`, `steward-abandoned`); `registry.closeWithOutcome` (verdict `"done"`/`"abandoned"` closes the session lazy-resumably, `"blocked"`/`"needs-input"` records `SessionDescriptor.wrapupFlag` instead without touching liveness); and the `session_wrapup_plan` / `session_wrapup_apply` MCP tools. The judge-agent workflow for the ambiguous class is a separate follow-up.
+
+### Patch Changes
+
+- Updated dependencies [83ffc2d]
+- Updated dependencies [b7b85d6]
+- Updated dependencies [b7b85d6]
+  - @agentproto/apps@0.15.0
+  - @agentproto/sandbox@0.7.0
+
 ## 5.0.0
 
 ### Major Changes

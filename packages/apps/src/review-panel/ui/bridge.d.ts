@@ -4,7 +4,7 @@
  * `panelBridgeScript()` (../../panel-bridge.ts) ahead of this module script
  * — see that file's docblock for the wire protocol. `openLink` is declared
  * here (unlike work-board's bridge.d.ts) because this panel opens the
- * live-session widget for a reviewer session id — see main.ts.
+ * live-session widget, deep-linked to a reviewer session id — see main.ts.
  */
 export {}
 

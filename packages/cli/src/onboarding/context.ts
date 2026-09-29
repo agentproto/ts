@@ -6,6 +6,7 @@
 import { spawn } from "node:child_process"
 import { promises as fs } from "node:fs"
 import { arch, homedir, platform } from "node:os"
+import WebSocket from "ws"
 import { loadConfig } from "@agentproto/runtime/config"
 import { loadWorkspacesConfig } from "@agentproto/runtime/workspaces-config"
 import { fetchLatestCliVersion } from "@agentproto/runtime/release-check"
@@ -18,7 +19,8 @@ import { resolveSkillFanOutTargets } from "../commands/install-skill.js"
 import { resolveSkillPackDir } from "../commands/skill-install/pack-resolve.js"
 import { resolveAdapter } from "../registry/resolve.js"
 import { npmLatestVersion } from "../registry/freshness.js"
-import type { ExecFn, StepContext, StepFs } from "./types.js"
+import { resolveProxyDialOptions } from "../util/proxy-dial.js"
+import type { ExecFn, StepContext, StepFs, WebSocketProbeResult } from "./types.js"
 
 const NETWORK_TIMEOUT_MS = 3_000
 
@@ -56,11 +58,42 @@ export const realExec: ExecFn = (cmd, args, opts = {}) =>
     child.once("exit", (code) => done(code ?? 1))
   })
 
+/** Real `dialWebSocket`: open (and immediately close) a WS to `url`, routed
+ *  through a corporate proxy exactly like the daemon's own rendezvous dial —
+ *  never rejects. */
+function realDialWebSocket(url: string, opts: { timeoutMs?: number } = {}): Promise<WebSocketProbeResult> {
+  const { agent, via } = resolveProxyDialOptions(url)
+  const timeoutMs = opts.timeoutMs ?? 4_000
+  return new Promise(resolve => {
+    let settled = false
+    const ws = new WebSocket(url, agent ? { agent } : undefined)
+    const finish = (result: WebSocketProbeResult): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      ws.off("open", onOpen)
+      ws.off("error", onError)
+      try {
+        ws.terminate()
+      } catch {
+        /* ignore */
+      }
+      resolve(result)
+    }
+    const onOpen = (): void => finish({ ok: true, via })
+    const onError = (err: Error): void => finish({ ok: false, via, error: err.message })
+    const timer = setTimeout(() => finish({ ok: false, via, error: `timed out after ${timeoutMs}ms` }), timeoutMs)
+    ws.once("open", onOpen)
+    ws.once("error", onError)
+  })
+}
+
 export function createStepContext(cliVersion: string): StepContext {
   return {
     fs: realFs,
     exec: realExec,
     fetch: (input, init) => fetch(input, init),
+    dialWebSocket: realDialWebSocket,
     env: process.env,
     homedir: homedir(),
     cwd: process.cwd(),

@@ -236,6 +236,7 @@ describe("normalizeGithubEvent", () => {
       "github.workflow_run.completed",
       "github.pull_request_review.submitted",
       "github.pull_request.closed",
+      "github.pull_request.synchronize",
       "github.issue_comment.created",
     ])
     expect(GITHUB_DEFAULT_PR_TYPES.some(t => t.startsWith("github.check_run"))).toBe(false)

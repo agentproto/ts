@@ -135,11 +135,20 @@ describe("marketing fixture workspace conformance", () => {
       assertValid(validators.collection, fm, "tiktok-hook-2026-05/ITEM.md")
     })
 
-    // KNOWN GAP — @agentproto/collection/manifest zod is also a stub (z.any oneOf).
-    // JSON Schema validation above is the source of truth until zod is regenerated.
-    it.skip("parseCollectionManifest accepts COLLECTION.md (blocked on zod regen)", () => {
+    it("parseCollectionManifest accepts COLLECTION.md", () => {
       const src = readFileSync(
         path.join(FIXTURES_ROOT, "collections/corpus-candidate/COLLECTION.md"),
+        "utf8",
+      )
+      expect(() => parseCollectionManifest(src)).not.toThrow()
+    })
+
+    it("parseCollectionManifest accepts ITEM.md", () => {
+      const src = readFileSync(
+        path.join(
+          FIXTURES_ROOT,
+          "collections/corpus-candidate/tiktok-hook-2026-05/ITEM.md",
+        ),
         "utf8",
       )
       expect(() => parseCollectionManifest(src)).not.toThrow()

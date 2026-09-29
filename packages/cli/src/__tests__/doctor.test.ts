@@ -154,6 +154,7 @@ describe("agentproto doctor", () => {
       "auth",
       "clients",
       "devices",
+      "rendezvous",
       "local-models",
       "llm-gateway",
     ])

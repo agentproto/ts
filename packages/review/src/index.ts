@@ -19,6 +19,7 @@ export {
   parseReviewManifest,
   resolveBinding,
   getCheck,
+  finalizeBindings,
   reviewFrontmatterSchema,
   ReviewManifestError,
   DEFAULT_BINDING,
@@ -31,7 +32,23 @@ export {
   type ReviewCheck,
   type CommandCheck,
   type AgentCheck,
+  type ReviewUse,
+  type UsesOverride,
 } from "./manifest.js"
+export {
+  parsePackManifest,
+  resolvePacks,
+  computePackDigestSha256,
+  PACK_DIGEST_ALG,
+  PackManifestError,
+  type PackManifest,
+  type PackCheck,
+  type PackCommandCheck,
+  type PackAgentCheck,
+  type PackSource,
+  type PackLoader,
+  type ResolvePacksResult,
+} from "./packs.js"
 export {
   compileReview,
   toLaneResult,
@@ -65,11 +82,14 @@ export {
   rangeSha,
   sha256Hex,
   ledgerKeyOf,
+  canonicalAttestationBytes,
+  attestationSha256,
   type BuildAttestationInput,
   type LedgerKey,
   type VerifyAttestationExpect,
   type VerifyAttestationResult,
 } from "./attestation.js"
+export { canonicalJson } from "./canonical-json.js"
 export {
   ATTESTATION_SCHEMA,
   type Attestation,
@@ -78,6 +98,7 @@ export {
   type Finding,
   type LaneResult,
   type LaneStatus,
+  type PackDigest,
   type Quorum,
   type ReviewPrRef,
   type ReviewRequester,

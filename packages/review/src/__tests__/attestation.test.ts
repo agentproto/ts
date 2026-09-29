@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest"
 import {
   ATTESTATION_SCHEMA,
+  attestationSha256,
   buildAttestation,
+  canonicalAttestationBytes,
+  canonicalJson,
   ledgerKeyOf,
   manifestSha,
   rangeSha,
@@ -127,6 +130,25 @@ describe("provenance fields (requester, pr, lane model)", () => {
     expect(r).toMatchObject({ status: "pass", sessionId: "s", preset: "kimi", model: "m-1" })
     const skipped = toLaneResult(check, { outcome: "skipped", error: "x", preset: "kimi" }, 1)
     expect("model" in skipped).toBe(false)
+  })
+})
+
+describe("canonicalAttestationBytes / attestationSha256", () => {
+  it("strips attestor.signature but hashes everything else", () => {
+    const att = build()
+    const signed: Attestation = { ...att, attestor: { ...att.attestor, signature: { alg: "ssh-ed25519", keyFingerprint: "SHA256:x", principal: "p", signedAt: "t", sig: "s" } } }
+    // The signed bytes are identical whether or not a signature is attached —
+    // a verifier recomputes them the same way regardless.
+    expect(canonicalAttestationBytes(signed)).toBe(canonicalAttestationBytes(att))
+    expect(canonicalAttestationBytes(att)).toBe(canonicalJson(att))
+    expect(canonicalAttestationBytes(att)).not.toMatch(/signature/)
+  })
+
+  it("attestationSha256 changes when the signature changes (it hashes the whole object)", () => {
+    const att = build()
+    const signed: Attestation = { ...att, attestor: { ...att.attestor, signature: { alg: "ssh-ed25519", keyFingerprint: "SHA256:x", principal: "p", signedAt: "t", sig: "s" } } }
+    expect(attestationSha256(att)).not.toBe(attestationSha256(signed))
+    expect(attestationSha256(att)).toBe(attestationSha256(build()))
   })
 })
 

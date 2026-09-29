@@ -1,6 +1,6 @@
 /**
- * `agentproto review <run | verify | init>` — the CLI surface of the review
- * primitive (`@agentproto/review` + the daemon's `review_*` tools).
+ * `agentproto review <run | verify | init | key>` — the CLI surface of the
+ * review primitive (`@agentproto/review` + the daemon's `review_*` tools).
  *
  *   run     run a REVIEW.md binding and exit on its verdict. By default it
  *           rides the daemon's `/mcp` endpoint (`review_run` wait:false, then
@@ -11,25 +11,35 @@
  *           lanes settle `skipped` ⇒ verdict `incomplete` — the CI mode.
  *   verify  check an exported attestation (`review_export` /
  *           `verdict.exportDir`) against the manifest + range THIS checkout
- *           sees (`verifyAttestation`).
+ *           sees (`verifyAttestation`), its `packs[]` digests when every
+ *           pack still resolves locally (soft — an unresolvable pack is
+ *           reported, not a failure), and (with `--allowed-signers`) its
+ *           signature (`verifySignedAttestation`, `@agentproto/runtime`).
  *   init    scaffold REVIEW.md + a pre-push hook (+ a GitHub Actions shim),
  *           see ./review-init.ts.
+ *   key     show the daemon-install's review signing key: fingerprint + a
+ *           ready-to-paste allowed_signers line.
  *
  * Exit codes are the trinary verdict, so hooks and CI can tell a rejection
  * from a review that never reached one:
  *   0 pass · 1 block · 2 incomplete (incl. no daemon reachable) · 3 the
- *   review could not run (bad REVIEW.md, git error) · 64 usage.
+ *   review could not run (bad REVIEW.md, git error) · 6 (verify only)
+ *   signature missing/invalid when required · 64 usage.
  */
 
-import { readdir, readFile, mkdtemp } from "node:fs/promises"
+import { readdir, readFile, mkdtemp, stat } from "node:fs/promises"
 import { hostname, tmpdir } from "node:os"
-import { isAbsolute, join, resolve } from "node:path"
+import { dirname, isAbsolute, join, resolve } from "node:path"
 import { execFile } from "node:child_process"
 import { parseArgs } from "node:util"
 import {
+  attestationSha256,
   parseReviewManifest,
+  rangeSha as computeRangeSha,
+  resolvePacks,
   verifyAttestation,
   type Attestation,
+  type ReviewManifest,
   type ReviewPrRef,
 } from "@agentproto/review"
 import { mcpToolCall, withDaemon } from "./workflow.js"
@@ -45,8 +55,10 @@ Usage:
   agentproto review verify [<attestation.json | dir>] [--cwd <dir>]
                         [--manifest <path>] [--base <ref>] [--head <ref>]
                         [--binding <name>] [--verdict pass|block|incomplete|any]
-                        [--if-exported] [--annotate github] [--json]
-  agentproto review init [--cwd <dir>] [--ci github] [--json]
+                        [--if-exported] [--allowed-signers <file>] [--require-signed]
+                        [--annotate github] [--json]
+  agentproto review init [--cwd <dir>] [--ci github] [--pack <ref>] [--as <ns>] [--json]
+  agentproto review key [show] [--principal <id>] [--cwd <dir>] [--json]
   agentproto review --help
 
 run:
@@ -66,14 +78,31 @@ verify:
   repo remote, and the verdict (default pass). With a directory (default:
   the manifest's verdict.exportDir) it picks the attestation whose head is
   the range head — or HEAD^ when HEAD only adds files under that directory
-  (the "commit the export" convention). Exit 0 verified, 1 invalid, 4 no
-  attestation for the range, 5 (--if-exported) no exportDir declared.
+  (the "commit the export" convention). Exit 0 verified, 1 invalid (also:
+  a lane's composedFrom reference doesn't resolve or isn't itself valid), 4
+  no attestation for the range, 5 (--if-exported) no exportDir declared.
+  --allowed-signers <file> (default: .agentproto/allowed_signers if present)
+  checks the attestation's signature against it — an INVALID signature is
+  always exit 6; a MISSING signature (or no allowed_signers to check
+  against) is only exit 6 with --require-signed, so an older unsigned
+  export still verifies by default.
 
 init:
   Scaffolds REVIEW.md (if absent) and installs a pre-push hook running
   \`agentproto review run --binding local --supersede\` — chained after an
   existing hook, never overwriting it; honours core.hooksPath. --ci github
-  also writes .github/workflows/review.yml. Idempotent.
+  also writes .github/workflows/review.yml, passing --allowed-signers when
+  .agentproto/allowed_signers exists. --pack <ref> adds a \`uses: [{pack:
+  <ref>, as: <ns>}]\` entry to REVIEW.md (--as sets <ns>; default derived
+  from <ref>) — idempotent by pack ref, a second run with the same ref is a
+  no-op. Idempotent.
+
+key:
+  Prints the daemon install's review signing key (generated at first use if
+  absent, ~/.agentproto/keys/review_ed25519): its fingerprint, and the
+  allowed_signers line to paste into .agentproto/allowed_signers for
+  --require-signed verification. --principal overrides the identity claimed
+  (default: git config user.email of --cwd's repo).
 `
 
 export const EXIT = { pass: 0, block: 1, incomplete: 2, error: 3, usage: 64 } as const
@@ -105,8 +134,10 @@ export async function runReview(args: readonly string[]): Promise<number> {
         return await runVerify(rest)
       case "init":
         return await runReviewInit(rest)
+      case "key":
+        return await runKey(rest)
       default:
-        process.stderr.write(`agentproto review: unknown subcommand "${sub}"\n  Known: run | verify | init\n`)
+        process.stderr.write(`agentproto review: unknown subcommand "${sub}"\n  Known: run | verify | init | key\n`)
         return EXIT.usage
     }
   } catch (err) {
@@ -385,7 +416,7 @@ async function runViaDaemon(input: RunInput): Promise<ReviewRunView | { daemonDo
 
 // ── verify ───────────────────────────────────────────────────────────
 
-export const VERIFY_EXIT = { ok: 0, invalid: 1, notFound: 4, notExported: 5 } as const
+export const VERIFY_EXIT = { ok: 0, invalid: 1, notFound: 4, notExported: 5, signatureRequired: 6 } as const
 
 async function readAttestation(path: string): Promise<Attestation | undefined> {
   try {
@@ -431,6 +462,113 @@ const normalizeRemote = (url: string): string => {
   return s.replace(/\.git$/, "").replace(/\/+$/, "")
 }
 
+/** All parseable attestations under `dir` (non-recursive — same scope
+ *  `findInDir` searches). Used to resolve a `composedFrom` reference. */
+async function allInDir(dir: string): Promise<Attestation[]> {
+  let names: string[]
+  try {
+    names = (await readdir(dir)).filter((n) => n.endsWith(".json"))
+  } catch {
+    return []
+  }
+  const out: Attestation[] = []
+  for (const n of names) {
+    const att = await readAttestation(join(dir, n))
+    if (att) out.push(att)
+  }
+  return out
+}
+
+/**
+ * Resolve every `composedFrom` reference an attestation's lanes carry: the
+ * prior attestation it built on must be findable (by its own rangeSha) in
+ * `exportDir`, its digest must match `attestationSha256` (pinning — it
+ * wasn't swapped after the fact), and it must itself verify. One problem
+ * string per lane that fails to resolve; empty when every lane resolves
+ * (including lanes with no `composedFrom` at all — nothing to check).
+ */
+async function resolveComposedFrom(att: Attestation, exportDir: string): Promise<string[]> {
+  const composed = att.lanes.filter((l) => l.composedFrom)
+  if (composed.length === 0) return []
+  const candidates = await allInDir(exportDir)
+  const problems: string[] = []
+  for (const lane of composed) {
+    const ref = lane.composedFrom!
+    const prior = candidates.find((c) => computeRangeSha(c.target) === ref.rangeSha && c.binding === att.binding)
+    if (!prior) {
+      problems.push(`lane '${lane.id}': composedFrom references a prior attestation (rangeSha ${short(ref.rangeSha)}…) not found in ${exportDir}`)
+      continue
+    }
+    if (attestationSha256(prior) !== ref.attestationSha256) {
+      problems.push(`lane '${lane.id}': the prior attestation in ${exportDir} does not match composedFrom.attestationSha256 (it changed after this review composed onto it)`)
+      continue
+    }
+    const priorResult = verifyAttestation(prior, { verdict: "pass" })
+    if (!priorResult.ok) {
+      problems.push(`lane '${lane.id}': the prior attestation it composed onto does not itself verify — ${priorResult.problems.join("; ")}`)
+    }
+  }
+  return problems
+}
+
+/**
+ * Re-check `att.packs[]` against what THIS checkout's `uses[]` packs resolve
+ * to right now — the digest half of "review packs are content-pinned".
+ * Soft by design: a pack the verifier's checkout can't resolve (offline, not
+ * installed, the git cache missing) is reported as a NOTE, never a failure —
+ * "verify the digests only when the pack resolves locally". Any digest that
+ * DOES resolve and mismatches is a real `problems` entry (the pack's content
+ * changed since the range was reviewed).
+ *
+ * `alg` is checked BEFORE the digest itself: `resolved.packs[i].alg` is
+ * always the digest recipe THIS build of `resolvePacks` knows (currently
+ * the only one that exists, `PACK_DIGEST_ALG`) — so an attestation whose
+ * `alg` differs was hashed under a recipe this verifier can't reproduce.
+ * That is a HARD failure, not a note: comparing hex digests computed under
+ * two different, unstated recipes as if they were comparable is exactly
+ * the "mis-verify" a versioned `alg` field exists to rule out — silently
+ * downgrading it to "unresolvable, skip" would let a forged `alg` (or a
+ * pack digest recipe nobody has audited yet) sail through unverified.
+ */
+async function verifyPackDigests(
+  att: Attestation,
+  manifest: ReviewManifest,
+  opts: { repoRoot: string; manifestDir: string },
+): Promise<{ problems: string[]; notes: string[] }> {
+  if (!att.packs || att.packs.length === 0) return { problems: [], notes: [] }
+  try {
+    const { createReviewPackLoader } = await import("@agentproto/runtime")
+    const loader = createReviewPackLoader({ repoRoot: opts.repoRoot, manifestDir: opts.manifestDir })
+    const resolved = await resolvePacks(manifest, loader)
+    const problems: string[] = []
+    for (const want of att.packs) {
+      const got = resolved.packs.find((p) => p.ref === want.ref)
+      if (!got) {
+        problems.push(`pack '${want.ref}' (id '${want.id}') is recorded on the attestation but this REVIEW.md's uses[] no longer declares it`)
+        continue
+      }
+      if (want.alg !== got.alg) {
+        problems.push(
+          `pack '${want.ref}' was attested with digest algorithm ${want.alg ? `'${want.alg}'` : "(none recorded — a pre-v1 attestation)"}, but this checkout's resolver only knows ` +
+            `'${got.alg}' — refusing to compare digests computed under different, unstated recipes`,
+        )
+        continue
+      }
+      if (got.sha256 !== want.sha256) {
+        problems.push(
+          `pack '${want.ref}' content changed: the attestation was signed against digest ${want.sha256.slice(0, 12)}…, this checkout resolves ${got.sha256.slice(0, 12)}…`,
+        )
+      }
+    }
+    return { problems, notes: [] }
+  } catch (err) {
+    return {
+      problems: [],
+      notes: [`pack(s) not resolvable from this checkout, digest unchecked (${err instanceof Error ? err.message : String(err)})`],
+    }
+  }
+}
+
 async function runVerify(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: [...args],
@@ -444,6 +582,8 @@ async function runVerify(args: readonly string[]): Promise<number> {
       binding: { type: "string" },
       verdict: { type: "string" },
       "if-exported": { type: "boolean" },
+      "allowed-signers": { type: "string" },
+      "require-signed": { type: "boolean" },
       annotate: { type: "string" },
       json: { type: "boolean" },
     },
@@ -518,14 +658,112 @@ async function runVerify(args: readonly string[]): Promise<number> {
     ...(wantVerdict !== "any" ? { verdict: wantVerdict as Attestation["verdict"] } : {}),
   })
   const payload = { ok: result.ok, problems: result.problems, path: found.path, runId: found.att.runId, verdict: found.att.verdict }
-  if (result.ok) {
-    return report(VERIFY_EXIT.ok, payload, [
-      `[review] ✓ attestation verified: ${found.att.reviewId}/${found.att.binding} ${short(baseSha)}..${short(checkedHead)} → ${found.att.verdict} (${found.path})`,
+  if (!result.ok) {
+    return report(VERIFY_EXIT.invalid, payload, [
+      `[review] ✗ attestation ${found.path} does NOT verify:`,
+      ...result.problems.map((p) => `[review]     ${p}`),
+      ...(gh ? [`::error title=review attestation invalid::${ghEscape(result.problems.join("; "))}`] : []),
     ])
   }
-  return report(VERIFY_EXIT.invalid, payload, [
-    `[review] ✗ attestation ${found.path} does NOT verify:`,
-    ...result.problems.map((p) => `[review]     ${p}`),
-    ...(gh ? [`::error title=review attestation invalid::${ghEscape(result.problems.join("; "))}`] : []),
+
+  const exportDir = target.endsWith(".json") ? dirname(target) : target
+  const composeProblems = await resolveComposedFrom(found.att, exportDir)
+  if (composeProblems.length > 0) {
+    const composePayload = { ok: false, problems: composeProblems, path: found.path, runId: found.att.runId, verdict: found.att.verdict }
+    return report(VERIFY_EXIT.invalid, composePayload, [
+      `[review] ✗ attestation ${found.path} verifies its own content, but a composedFrom reference does not resolve:`,
+      ...composeProblems.map((p) => `[review]     ${p}`),
+      ...(gh ? [`::error title=review composedFrom invalid::${ghEscape(composeProblems.join("; "))}`] : []),
+    ])
+  }
+
+  const packCheck = await verifyPackDigests(found.att, manifest, { repoRoot: root, manifestDir: dirname(manifestPath) })
+  if (packCheck.problems.length > 0) {
+    const packPayload = { ok: false, problems: packCheck.problems, path: found.path, runId: found.att.runId, verdict: found.att.verdict }
+    return report(VERIFY_EXIT.invalid, packPayload, [
+      `[review] ✗ attestation ${found.path} verifies, but a review pack's digest does not match:`,
+      ...packCheck.problems.map((p) => `[review]     ${p}`),
+      ...(gh ? [`::error title=review pack digest invalid::${ghEscape(packCheck.problems.join("; "))}`] : []),
+    ])
+  }
+
+  const requireSigned = !!values["require-signed"]
+  const defaultAllowedSigners = join(root, ".agentproto", "allowed_signers")
+  const allowedSignersPath = values["allowed-signers"]
+    ? resolve(cwd, values["allowed-signers"])
+    : await stat(defaultAllowedSigners)
+        .then(() => defaultAllowedSigners)
+        .catch(() => undefined)
+  const sigProblems: string[] = []
+  if (found.att.attestor.signature) {
+    if (allowedSignersPath) {
+      const { verifySignedAttestation } = await import("@agentproto/runtime")
+      const sigResult = await verifySignedAttestation(found.att, { allowedSignersPath })
+      if (!sigResult.ok) sigProblems.push(...sigResult.problems)
+    } else if (requireSigned) {
+      sigProblems.push("no --allowed-signers file to verify the signature against")
+    }
+  } else if (requireSigned) {
+    sigProblems.push("attestation is not signed")
+  }
+  if (sigProblems.length > 0) {
+    const sigPayload = { ok: false, problems: sigProblems, path: found.path, runId: found.att.runId, verdict: found.att.verdict }
+    return report(VERIFY_EXIT.signatureRequired, sigPayload, [
+      `[review] ✗ attestation ${found.path} content verifies, but its signature does not:`,
+      ...sigProblems.map((p) => `[review]     ${p}`),
+      ...(gh ? [`::error title=review signature invalid::${ghEscape(sigProblems.join("; "))}`] : []),
+    ])
+  }
+
+  return report(VERIFY_EXIT.ok, { ...payload, ...(packCheck.notes.length > 0 ? { packNotes: packCheck.notes } : {}) }, [
+    `[review] ✓ attestation verified: ${found.att.reviewId}/${found.att.binding} ${short(baseSha)}..${short(checkedHead)} → ${found.att.verdict} (${found.path})` +
+      (found.att.attestor.signature ? ` [signed: ${found.att.attestor.signature.principal}]` : ""),
+    ...packCheck.notes.map((n) => `[review]   – ${n}`),
   ])
+}
+
+// ── key ──────────────────────────────────────────────────────────────
+
+/** `agentproto review key [show]` — the daemon install's review signing key:
+ *  fingerprint + the allowed_signers line to paste for `--require-signed`.
+ *  Generates the keypair at `~/.agentproto/keys` on first use (same key
+ *  `review run` signs with) — this never talks to a running daemon; the key
+ *  is a shared host file, not daemon-process state. */
+async function runKey(args: readonly string[]): Promise<number> {
+  if (args[0] !== undefined && args[0] !== "show" && !args[0].startsWith("-")) {
+    process.stderr.write(`agentproto review key: unknown subcommand "${args[0]}"\n  Known: show\n`)
+    return EXIT.usage
+  }
+  const rest = args[0] === "show" ? args.slice(1) : args
+  const { values } = parseArgs({
+    args: [...rest],
+    allowPositionals: false,
+    strict: true,
+    options: {
+      cwd: { type: "string" },
+      principal: { type: "string" },
+      json: { type: "boolean" },
+    },
+  })
+  const { allowedSignersLine, ensureReviewSigningKey, resolvePrincipal } = await import("@agentproto/runtime")
+  const cwd = resolve(values.cwd ?? process.cwd())
+  const repoRoot = await git(cwd, ["rev-parse", "--show-toplevel"]).catch(() => cwd)
+  const key = await ensureReviewSigningKey()
+  const principal = await resolvePrincipal({ repoRoot, configuredPrincipal: values.principal })
+  const line = allowedSignersLine(principal, key.publicKeyLine)
+  if (values.json) {
+    process.stdout.write(`${JSON.stringify({ fingerprint: key.fingerprint, principal, publicKeyPath: key.publicKeyPath, allowedSignersLine: line })}\n`)
+    return 0
+  }
+  process.stdout.write(
+    [
+      `[review] signing key: ${key.publicKeyPath}`,
+      `[review] fingerprint: ${key.fingerprint}`,
+      `[review] principal:   ${principal}`,
+      `[review] paste into .agentproto/allowed_signers (or --allowed-signers <file>):`,
+      `  ${line}`,
+      "",
+    ].join("\n"),
+  )
+  return 0
 }

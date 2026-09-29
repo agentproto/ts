@@ -23,14 +23,20 @@
 import { parseBrowserMode } from "./browser-mount.js"
 import { randomUUID } from "node:crypto"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
-import type { Duplex } from "node:stream"
+import { Readable, type Duplex } from "node:stream"
+import type { ReadableStream as NodeWebReadableStream } from "node:stream/web"
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, extname, isAbsolute, join, resolve as resolvePath, sep } from "node:path"
 import type { AcpMcpServer } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
-import { LATEST_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS } from "@modelcontextprotocol/sdk/types.js"
+import {
+  LATEST_PROTOCOL_VERSION,
+  SUPPORTED_PROTOCOL_VERSIONS,
+  ListToolsRequestSchema,
+  CallToolRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js"
 import { WebSocketServer, type WebSocket } from "ws"
 import { ZodError, type ZodType } from "zod"
 import type { UIMessageChunk } from "ai"
@@ -56,6 +62,7 @@ import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
 import type { SentinelStore } from "./sentinel-store.js"
 import type { SentinelProviderHandle } from "./sentinel-providers/types.js"
+import { handleSentinelInbound, type SentinelInboundDeps } from "./sentinel-inbound.js"
 import {
   createSentinelWatch,
   cancelSentinelWatch,
@@ -72,11 +79,15 @@ export interface SentinelHttpDeps {
   resolveProvider: (slug: string) => Promise<SentinelProviderHandle | null>
   isSessionAlive: (sessionId: string) => boolean
   activeIntervalMs?: number
+  /** Enables `POST /inbound/sentinel-<hookKey>` (push providers). Without it
+   *  that path falls through to the ordinary inbound-endpoint lookup. */
+  runtime?: SentinelInboundDeps["runtime"]
 }
 import type { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import type { RemoteController, EnableInput } from "./remote-controller.js"
 import type { PairingRegistry } from "./pairing-registry.js"
-import type { HostRegistry } from "./host-registry.js"
+import type { HostRegistry, ForwardHttpResponse } from "./host-registry.js"
+import type { JoinTokenRegistry } from "./join-token-registry.js"
 import { createDeviceRegistry } from "./device-registry.js"
 import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
@@ -151,6 +162,7 @@ import {
 } from "./usage-rollup-service.js"
 import { readConversation } from "./conversation-read.js"
 import { mimeTypeForExtension, sessionAttachmentsDir, sessionEventsPath } from "./transcript-writer.js"
+import { listSessionArtifacts, resolveArtifactPath, resolveSiteFile } from "./session-artifacts.js"
 import { createReadStream, existsSync } from "node:fs"
 import { createInterface } from "node:readline"
 import { createTranscriptToUiMapper } from "./chat-stream.js"
@@ -182,13 +194,15 @@ import type {
   TaskUpdateInput,
   TaskWriteResult,
 } from "./task-ledger.js"
+import { handleApprovals } from "./approvals/http.js"
 import type {
   DeclaredAdapterOption,
   AdapterAuthDescriptor,
   ResolvedAuthSpec,
 } from "./spawn-defaults.js"
 import type { ContextProfile, Posture } from "./session-config.js"
-import { spawnAgentSession, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
+import { spawnAgentSession, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
+import { stripAnsi } from "./agent-tools.js"
 import {
   restartAgentSession,
   RestartOverrideError,
@@ -197,11 +211,21 @@ import {
 import { parsePostureInput } from "./canonical-posture.js"
 import {
   deleteUserPreset,
+  deriveRecentSpawnConfigs,
   getUserPreset,
   listUserPresets,
   saveUserPreset,
   type UserPreset,
 } from "./user-presets.js"
+import {
+  loadBundles,
+  createBundle,
+  updateBundle,
+  deleteBundle,
+  danglingImports,
+  BundleValidationError,
+  type Bundle,
+} from "./bundles.js"
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
@@ -353,6 +377,23 @@ const PROXY_FORWARDING_HEADERS: readonly string[] = [
   "cf-ray",
   "via",
 ]
+
+/**
+ * Set by the tunnel server (never a caller) on every `http_request` it
+ * forwards from a HOST-scoped pairing (DEVICES-PLAN item 1) —
+ * `buildDaemonTunnelServerOptions`'s `pairingScope` in
+ * `packages/cli/src/util/tunnel-serve.ts`. `httpInjectHeaders` overrides any
+ * same-named header the ORIGINAL caller's frame carried, so this can never be
+ * spoofed by whoever dials in over a pairing — only the daemon's own
+ * server-side scope decision at serve time ever sets it.
+ *
+ * Deliberately NOT paired with an `isLoopback` bypass the way most other
+ * routes are: every `http_request` a tunnel forwards to THIS server lands as
+ * a loopback socket (the daemon dialing its own gateway via `fetch`), so
+ * `isLoopback` is true for ALL forwarded traffic — host-scoped or not — and
+ * cannot distinguish them. `handleDeviceInference` checks this header alone.
+ */
+export const HOST_SCOPE_HEADER = "x-agentproto-host-scope"
 
 /**
  * Pluggable adapter resolver — keeps the runtime package free of any
@@ -751,12 +792,25 @@ export interface RuntimeHttpServerOptions {
    * `agentStepMcpServers` in sessions-registry-agent-host.ts). Composes with
    * `denyTools` (a name on both is excluded).
    */
+  /**
+   * `surface`, when present, is parsed from the request's `?surface=<name>`
+   * query string (see `handleMcp` below). Today's only value,
+   * `"approval-cards"`, is the ONLY way `approval_card_decide` and any
+   * `ui://agentproto/approval/<id>` card resource are ever registered — the
+   * plain root `/mcp` and every `callerSessionId`-carrying request (a
+   * daemon-spawned session, including agent-CLI sessions that don't honour
+   * `_meta.ui.visibility`) never get them, full stop. `handleMcp` refuses
+   * the request outright (403) when `callerSessionId` AND
+   * `surface=approval-cards` are both present, rather than silently
+   * degrading to a card-less server — see the security note there.
+   */
   mcpServerFactory: (
     denyTools?: ReadonlySet<string>,
     callerSessionId?: string,
     origin?: string,
     deferred?: boolean,
     allowTools?: ReadonlySet<string>,
+    surface?: string,
   ) => Promise<McpServer>
   /**
    * Optional scoped orchestrator sub-gateway (WP2). When BOTH this and
@@ -943,6 +997,25 @@ export interface RuntimeHttpServerOptions {
    *  they need this REST surface rather than reaching into the in-process
    *  registry directly. Without it the routes 404. */
   llmEndpoint?: LlmEndpointRegistry
+  /** Optional — mirrors `config.features.deviceInferenceShare` (default
+   *  false). When true AND `llmEndpoint` is wired, exposes
+   *  `GET /device-inference/v1/models` + `POST
+   *  /device-inference/v1/chat/completions`: a read-only proxy onto this
+   *  daemon's own `llmEndpoint` sidecar, reachable ONLY over a channel the
+   *  tunnel server has marked host-scoped (see `HOST_SCOPE_HEADER`'s doc
+   *  comment) — never a plain remote-control pairing or `serve --connect`.
+   *  Without this flag (or without `llmEndpoint`), the routes 403/404. */
+  deviceInferenceShare?: boolean
+  /** Optional — mirrors `config.features.deviceSpawnAllow` (default false,
+   *  DEVICES-PLAN PR-D). When true, exposes `/device-spawn/*`: a gated
+   *  self-proxy onto THIS daemon's own `/mcp` + `/sessions/:id/events/stream`
+   *  for a paired HOST-scoped controller (see `HOST_SCOPE_HEADER`'s doc
+   *  comment) — lets the controller drive `agent_start({ sandbox:
+   *  "device:<this-daemon>" })` against this daemon. Reachable ONLY over a
+   *  host-scoped pairing, never a plain remote-control pairing or `serve
+   *  --connect`. Toggle via `agentproto devices allow-spawn on|off`. Without
+   *  this flag the routes 403. */
+  deviceSpawnAllow?: boolean
   /** Optional — when wired, exposes POST /remote/enable, POST /remote/disable,
    *  GET /remote/status — the REST twin of the MCP `remote_enable` /
    *  `remote_disable` / `remote_status` tools (remote-tools.ts), for
@@ -960,6 +1033,15 @@ export interface RuntimeHttpServerOptions {
    *  `/devices/add`, 400 with a clear "no host registry wired" message) and
    *  `/devices` shows only client devices, exactly like before PR-C. */
   hostRegistry?: HostRegistry
+  /** Optional — when wired alongside `pairings`/`hostRegistry`
+   *  (SANDBOX-VISIBILITY-JOIN), enables `POST /devices/join-tokens`
+   *  (mint), `GET /devices/join-tokens` (list, secret stripped), `DELETE
+   *  /devices/join-tokens/:id` (revoke), `GET /devices/:id/sessions`
+   *  (forward a host's session list), and `GET
+   *  /devices/:id/sessions/:sessionId/output` (forward an `agent_output`
+   *  tail) — plus the `join_token_create/list/revoke` and `device_sessions`
+   *  MCP tools. Without it those routes 404. */
+  joinTokens?: JoinTokenRegistry
   /** Optional — the session lifecycle event bus. When wired alongside
    *  `sessions`, `eventRing`, enables `GET /sessions/:id/wait` (a blocking
    *  long-poll that resolves when the session fires a lifecycle event).
@@ -990,6 +1072,19 @@ export interface RuntimeHttpServerOptions {
    *  surface is the `/mcp/orchestrator` gateway). Without it the routes
    *  404. */
   taskLedger?: TaskLedger
+  /** Optional — the approvals engine (`approvals/engine.ts`). When wired,
+   *  enables the `/approvals` routes — `POST /approvals`, `GET
+   *  /approvals?status=`, `GET /approvals/:id`, `GET /approvals/:id/wait`,
+   *  `POST /approvals/:id/consume`, and the `web_click` decision route
+   *  `POST /approvals/:id/decision` (gated by BOTH the per-boot token and
+   *  `approvalsWebOrigins`). HTTP callers are OPERATOR context, same as
+   *  `/tasks` and `/policies`. Without it the routes 404. */
+  approvals?: import("./approvals/engine.js").ApprovalsEngine
+  /** Origins allowed to decide through the `web_click` channel
+   *  (`approvals.webOrigins` in config). Empty/absent ⇒ the channel is off
+   *  — the decision route always 403s regardless of token. Only read when
+   *  `approvals` is wired. */
+  approvalsWebOrigins?: readonly string[]
   /** Optional — when wired, exposes /cron routes for creating and
    *  managing durable cron jobs. Without it the routes 404. */
   cronScheduler?: import("./cron-scheduler.js").CronScheduler
@@ -1622,6 +1717,15 @@ export async function startHttpServer(
     return raw && raw.length > 0 ? raw : undefined
   }
 
+  /** Mirrors `parseCallerSessionIdQuery` for the `surface` query param —
+   *  see `RuntimeHttpServerOptions.mcpServerFactory`'s doc on `surface`. */
+  function parseSurfaceQuery(url: string): string | undefined {
+    const qIdx = url.indexOf("?")
+    if (qIdx === -1) return undefined
+    const raw = new URLSearchParams(url.slice(qIdx + 1)).get("surface")
+    return raw && raw.length > 0 ? raw : undefined
+  }
+
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!authorizeMcp(req, res)) return
     const denyTools = parseToolListQuery(req.url ?? "", "denyTools")
@@ -1629,7 +1733,26 @@ export async function startHttpServer(
     const callerSessionId = parseCallerSessionIdQuery(req.url ?? "")
     const origin = parseOriginQuery(req.url ?? "")
     const deferred = parseDeferredQuery(req.url ?? "")
-    const server = await opts.mcpServerFactory(denyTools, callerSessionId, origin, deferred, allowTools)
+    const surface = parseSurfaceQuery(req.url ?? "")
+    // Security boundary (approval-cards): a daemon-spawned session's
+    // self-ref connection (`callerSessionId`) must NEVER reach the
+    // approval-cards surface — that surface exists only for a human-facing
+    // MCP Apps host (Claude Desktop via `install-mcp`), and an agent CLI
+    // that can read `ui://` resources and call app-only tools would
+    // otherwise mint its own approval ticket and self-approve. Refuse
+    // outright rather than silently building a card-less server, so a
+    // misconfigured spawn fails loudly instead of looking like it worked.
+    if (surface === "approval-cards" && callerSessionId) {
+      res.writeHead(403, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: "forbidden_surface",
+          message: "the approval-cards MCP surface is not available to daemon-spawned sessions",
+        }),
+      )
+      return
+    }
+    const server = await opts.mcpServerFactory(denyTools, callerSessionId, origin, deferred, allowTools, surface)
     await serveMcp(req, res, server)
   }
 
@@ -1685,6 +1808,77 @@ export async function startHttpServer(
       return
     }
     const server = await opts.orchestratorMcpServerFactory(scope)
+    await serveMcp(req, res, server)
+  }
+
+  /**
+   * Per-import passthrough (PLAN D phase 1). Mounted at
+   * `/mcp/imported/<importId>` — a streamable-HTTP MCP server that proxies
+   * `tools/list`/`tools/call` of ONE imported server via `McpProxyRegistry`,
+   * under the upstream's OWN (unprefixed) tool names — the connecting
+   * harness namespaces by server name, same as any other native MCP mount.
+   * Distinct from `mcp_imported_tool_list`/`mcp_imported_call`
+   * (session-tools.ts), which stay as the two-step indirection for a session
+   * already on the daemon's own `/mcp`; this endpoint is what lets a
+   * capability bundle mount the SAME imported server into any OTHER harness
+   * (opencode, codex, …) as a first-class MCP server. Same auth as `/mcp`
+   * (loopback + token / `callerSessionId` — see `authorizeMcp`). An
+   * upstream that's down surfaces as a tool-call error result, never a hang
+   * (the registry's own connect path already bounds it — see mcp-proxy.ts).
+   */
+  async function handleImportedMcp(
+    req: IncomingMessage,
+    res: ServerResponse,
+    importId: string,
+  ): Promise<void> {
+    if (!authorizeMcp(req, res)) return
+    if (!opts.mcpProxy) {
+      res.writeHead(501, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: "mcp_proxy_not_configured",
+          message: "The daemon was started without an MCP proxy — wire `mcpProxy` in createGateway.",
+        }),
+      )
+      return
+    }
+    const proxy = opts.mcpProxy
+    const aliases = await proxy.listAliases()
+    const known = aliases.find(a => a.importId === importId || a.alias === importId)
+    if (!known) {
+      res.writeHead(404, { "content-type": "application/json" })
+      res.end(
+        JSON.stringify({
+          error: "import_not_found",
+          message:
+            `No imported MCP "${importId}" — it may have been removed (mcp_imported_remove). ` +
+            "Check mcp_imported_list for current ids.",
+        }),
+      )
+      return
+    }
+    const server = new McpServer(
+      { name: `agentproto-imported-${known.alias}`, version: opts.meta.version ?? "0.1.0-alpha" },
+      { capabilities: { tools: {} } },
+    )
+    server.server.setRequestHandler(ListToolsRequestSchema, async () => {
+      const out = await proxy.listTools(importId)
+      if (!out.ok) return { tools: [] }
+      return {
+        tools: out.tools.map(t => ({
+          name: t.name,
+          ...(t.description ? { description: t.description } : {}),
+          inputSchema: (t.inputSchema as Record<string, unknown> | undefined) ?? { type: "object" },
+        })),
+      }
+    })
+    server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      const out = await proxy.callTool(importId, request.params.name, request.params.arguments ?? {})
+      if (!out.ok) {
+        return { content: [{ type: "text", text: out.error }], isError: true }
+      }
+      return out.result as { content: Array<{ type: "text"; text: string }>; isError?: boolean }
+    })
     await serveMcp(req, res, server)
   }
 
@@ -2060,6 +2254,13 @@ export async function startHttpServer(
           await handleOrchestratorMcp(req, res)
           return
         }
+        // Per-import passthrough (PLAN D phase 1) — checked before the bare
+        // `/mcp` match below since it's a distinct, longer prefix.
+        if (path.startsWith("/mcp/imported/")) {
+          const importId = decodeURIComponent(path.slice("/mcp/imported/".length))
+          await handleImportedMcp(req, res, importId)
+          return
+        }
         if (path === "/mcp") {
           await handleMcp(req, res)
           return
@@ -2139,6 +2340,206 @@ export async function startHttpServer(
           return
         }
 
+        // Session artifact store — durable, content-addressed documents kept
+        // across restarts (`session-artifacts.ts`). Same auth gate as the
+        // attachments route above; the raw-serve route additionally sends a
+        // strict CSP so an embedded html/site artifact can render but never
+        // phone home to the daemon or any other origin.
+        const artifactRawMatch = path.match(/^\/sessions\/([^/]+)\/artifacts\/([^/]+)\/raw(?:\/(.*))?$/)
+        if (artifactRawMatch && req.method === "GET") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          const id = artifactRawMatch[1]!
+          const key = decodeURIComponent(artifactRawMatch[2]!)
+          const subPath = artifactRawMatch[3] ? decodeURIComponent(artifactRawMatch[3]) : ""
+          const versionParam = new URL(req.url ?? "/", "http://localhost").searchParams.get("version")
+          const record = listSessionArtifacts(id).find(r => r.key === key)
+          const version = record
+            ? versionParam
+              ? record.versions.find(v => v.version === Number(versionParam))
+              : record.versions[record.versions.length - 1]
+            : undefined
+          if (!record || !version) {
+            res.writeHead(404, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "artifact_not_found" }))
+            return
+          }
+          const target = version.isDirectory
+            ? resolveSiteFile(id, version, subPath)
+            : resolveArtifactPath(id, version)
+          if (!target) {
+            res.writeHead(404, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "artifact_not_found" }))
+            return
+          }
+          try {
+            const bytes = await readFile(target)
+            const contentType = version.isDirectory
+              ? appUiContentType(extname(target))
+              : (version.contentType ?? mimeTypeForExtension(extname(target).slice(1).toLowerCase()))
+            res.writeHead(200, {
+              "content-type": contentType,
+              "content-length": String(bytes.length),
+              "cache-control": "public, max-age=31536000, immutable",
+              // Sandboxed rendering: scripts/styles may run (an html/site
+              // artifact needs them to render at all) but the page can reach
+              // nowhere — no fetch/XHR/WS back to the daemon or anywhere
+              // else, no form submission, no framing by a third party.
+              "content-security-policy":
+                "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; " +
+                "style-src 'unsafe-inline'; img-src data: 'self'; font-src data: 'self'; " +
+                "connect-src 'none'; form-action 'none'; frame-ancestors 'self'",
+              "x-content-type-options": "nosniff",
+            })
+            res.end(bytes)
+          } catch {
+            res.writeHead(404, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "artifact_not_found" }))
+          }
+          return
+        }
+
+        const artifactPinMatch = path.match(/^\/sessions\/([^/]+)\/artifacts\/([^/]+)\/pin$/)
+        if (artifactPinMatch && req.method === "POST") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          if (!opts.sessions) {
+            res.writeHead(404, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "sessions_not_configured" }))
+            return
+          }
+          const id = artifactPinMatch[1]!
+          const key = decodeURIComponent(artifactPinMatch[2]!)
+          const body = (await readJsonBody(req)) as { pinned?: boolean } | null
+          try {
+            const record = opts.sessions.setArtifactPinned(id, key, body?.pinned === true)
+            if (!record) {
+              res.writeHead(404, { "content-type": "application/json" })
+              res.end(JSON.stringify({ error: "artifact_not_found" }))
+              return
+            }
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify(record))
+          } catch (err) {
+            res.writeHead(404, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+          }
+          return
+        }
+
+        const artifactKeyMatch = path.match(/^\/sessions\/([^/]+)\/artifacts\/([^/]+)$/)
+        if (artifactKeyMatch && req.method === "GET") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          if (!opts.sessions) {
+            res.writeHead(404, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "sessions_not_configured" }))
+            return
+          }
+          const id = artifactKeyMatch[1]!
+          const key = decodeURIComponent(artifactKeyMatch[2]!)
+          const versionParam = new URL(req.url ?? "/", "http://localhost").searchParams.get("version")
+          try {
+            const result = opts.sessions.getSessionArtifact(id, key, {
+              ...(versionParam ? { version: Number(versionParam) } : {}),
+            })
+            if (!result) {
+              res.writeHead(404, { "content-type": "application/json" })
+              res.end(JSON.stringify({ error: "artifact_not_found" }))
+              return
+            }
+            const isText =
+              result.version.contentType?.startsWith("text/") || result.version.contentType === "application/json"
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                record: result.record,
+                version: result.version,
+                truncated: result.truncated,
+                ...(result.content
+                  ? isText
+                    ? { text: result.content.toString("utf8") }
+                    : { base64: result.content.toString("base64") }
+                  : {}),
+              }),
+            )
+          } catch (err) {
+            res.writeHead(404, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+          }
+          return
+        }
+
+        if (path.match(/^\/sessions\/([^/]+)\/artifacts$/) && (req.method === "GET" || req.method === "POST")) {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          if (!opts.sessions) {
+            res.writeHead(404, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "sessions_not_configured" }))
+            return
+          }
+          const id = path.slice("/sessions/".length, -"/artifacts".length)
+          if (req.method === "GET") {
+            try {
+              const artifacts = opts.sessions.listSessionArtifacts(id)
+              res.writeHead(200, { "content-type": "application/json" })
+              res.end(JSON.stringify({ artifacts }))
+            } catch (err) {
+              res.writeHead(404, { "content-type": "application/json" })
+              res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+            }
+            return
+          }
+          const body = (await readJsonBody(req)) as
+            | {
+                key?: string
+                kind?: string
+                label?: string
+                sourceRef?: string
+                bytes?: string
+                name?: string
+                mimeType?: string
+                sourcePath?: string
+              }
+            | null
+          if (!body || (!body.bytes && !body.sourcePath)) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "invalid_request", message: "one of `bytes`/`sourcePath` is required" }))
+            return
+          }
+          try {
+            const record = opts.sessions.addSessionArtifact(id, {
+              ...(body.key ? { key: body.key } : {}),
+              ...(body.kind ? { kind: body.kind as import("./session-artifacts.js").ArtifactKind } : {}),
+              ...(body.label ? { label: body.label } : {}),
+              createdBy: "user",
+              ...(body.sourceRef ? { sourceRef: body.sourceRef } : {}),
+              ...(body.bytes ? { bytes: body.bytes } : {}),
+              ...(body.name ? { name: body.name } : {}),
+              ...(body.mimeType ? { mimeType: body.mimeType } : {}),
+              ...(body.sourcePath ? { sourcePath: body.sourcePath } : {}),
+            })
+            res.writeHead(201, { "content-type": "application/json" })
+            res.end(JSON.stringify(record))
+          } catch (err) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }))
+          }
+          return
+        }
+
         if (path === "/inbound" && req.method === "POST") {
           // Legacy native path — bearer-gated, unchanged.
           await handleNativeInbound(req, res, { routeInboundMessage: opts.routeInboundMessage, endpointStore: opts.endpointStore, checkSessionsToken, rejectUnauthorizedSession })
@@ -2147,7 +2548,22 @@ export async function startHttpServer(
 
         const inboundSlugMatch = path.match(/^\/inbound\/([^/]+)$/)
         if (inboundSlugMatch && req.method === "POST") {
-          await handleProviderInbound(req, res, decodeURIComponent(inboundSlugMatch[1] ?? ""), { routeInboundMessage: opts.routeInboundMessage, endpointStore: opts.endpointStore, checkSessionsToken, rejectUnauthorizedSession })
+          await handleProviderInbound(req, res, decodeURIComponent(inboundSlugMatch[1] ?? ""), {
+            ...(opts.sentinels?.runtime
+              ? {
+                  sentinelInbound: (hookKey, inbound) =>
+                    handleSentinelInbound(hookKey, inbound, {
+                      store: opts.sentinels!.store,
+                      runtime: opts.sentinels!.runtime!,
+                      resolveProvider: opts.sentinels!.resolveProvider,
+                    }),
+                }
+              : {}),
+            routeInboundMessage: opts.routeInboundMessage,
+            endpointStore: opts.endpointStore,
+            checkSessionsToken,
+            rejectUnauthorizedSession,
+          })
           return
         }
 
@@ -3409,9 +3825,16 @@ export async function startHttpServer(
         // User presets are private saved spawn configurations. Keep this
         // deliberately distinct from `/presets` below, which is the static
         // provider-preset catalog retained for compatibility.
+        // `?includeRecent=1` ALSO returns up to 5 distinct recent spawn
+        // configs (adapter, model, profileRef, cwd) derived from this
+        // host's own session history, each marked `recent: true` — not
+        // persisted, mirrors `user_preset_list({ includeRecent: true })`.
         if (path === "/user-presets" && req.method === "GET") {
+          const includeRecent = new URL(req.url ?? "/", "http://localhost").searchParams.get("includeRecent") === "1"
+          const presets = await listUserPresets()
+          const recent = includeRecent ? deriveRecentSpawnConfigs(opts.sessions?.list() ?? []) : undefined
           res.writeHead(200, { "content-type": "application/json" })
-          res.end(JSON.stringify({ presets: await listUserPresets() }))
+          res.end(JSON.stringify({ presets, ...(recent ? { recent } : {}) }))
           return
         }
         // POST /user-presets — create or update a favorite (upsert by id).
@@ -3463,6 +3886,98 @@ export async function startHttpServer(
           return
         }
 
+        // Capability bundles (PLAN D phase 1) — HTTP twins of the
+        // bundle_list/bundle_create/bundle_update/bundle_delete MCP tools.
+        // GET /bundles → { bundles: (Bundle & { dangling: string[] })[] }
+        if (path === "/bundles" && req.method === "GET") {
+          const [bundlesFile, importedConfig] = await Promise.all([loadBundles(), loadImportedMcps()])
+          const importedIds = new Set(importedConfig.imports.map(e => e.id))
+          res.writeHead(200, { "content-type": "application/json" })
+          res.end(
+            JSON.stringify({
+              bundles: bundlesFile.bundles.map(b => ({ ...b, dangling: danglingImports(b, importedIds) })),
+            }),
+          )
+          return
+        }
+        // POST /bundles — create. Token-gated like POST /user-presets: a
+        // bundle grants MCP-mount capability to any future spawn naming it.
+        if (path === "/bundles" && req.method === "POST") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          const body = (await readJsonBody(req)) as Partial<Bundle> | null
+          try {
+            const bundle = await createBundle({
+              id: String(body?.id ?? ""),
+              label: String(body?.label ?? ""),
+              ...(body?.description ? { description: body.description } : {}),
+              mcpImports: Array.isArray(body?.mcpImports) ? body.mcpImports : [],
+              ...(body?.includeDaemon !== undefined ? { includeDaemon: body.includeDaemon } : {}),
+              skills: Array.isArray(body?.skills) ? body.skills : [],
+            })
+            res.writeHead(201, { "content-type": "application/json" })
+            res.end(JSON.stringify({ bundle }))
+          } catch (err) {
+            const status = err instanceof ZodError || err instanceof BundleValidationError ? 400 : 500
+            res.writeHead(status, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: err instanceof ZodError || err instanceof BundleValidationError ? "invalid_input" : "create_failed",
+                message: err instanceof Error ? err.message : String(err),
+              }),
+            )
+          }
+          return
+        }
+        // PUT /bundles/:id — partial update (merge). 404 when `id` doesn't
+        // exist. Token-gated.
+        const bundleUpdateMatch = path.match(/^\/bundles\/(.+)$/)
+        if (bundleUpdateMatch && req.method === "PUT") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          const id = decodeURIComponent(bundleUpdateMatch[1] ?? "")
+          const body = (await readJsonBody(req)) as Partial<Bundle> | null
+          try {
+            const bundle = await updateBundle(id, body ?? {})
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify({ bundle }))
+          } catch (err) {
+            const notFound = err instanceof BundleValidationError && err.message.includes("not found")
+            const status = notFound ? 404 : err instanceof ZodError || err instanceof BundleValidationError ? 400 : 500
+            res.writeHead(status, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: notFound
+                  ? "not_found"
+                  : err instanceof ZodError || err instanceof BundleValidationError
+                    ? "invalid_input"
+                    : "update_failed",
+                message: err instanceof Error ? err.message : String(err),
+              }),
+            )
+          }
+          return
+        }
+        // DELETE /bundles/:id — 404 when it never existed. Token-gated.
+        if (bundleUpdateMatch && req.method === "DELETE") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          const id = decodeURIComponent(bundleUpdateMatch[1] ?? "")
+          const deleted = await deleteBundle(id)
+          res.writeHead(deleted ? 200 : 404, { "content-type": "application/json" })
+          res.end(JSON.stringify({ deleted }))
+          return
+        }
+
         // Preset routes — static data, always available (no registry opt-in).
         // GET /presets → { presets: AdapterEntry<PresetInfo>[] }
         if (path === "/presets" && req.method === "GET") {
@@ -3491,6 +4006,47 @@ export async function startHttpServer(
         // /llm-endpoint/status, /llm-endpoint/restart.
         if (opts.llmEndpoint && path.startsWith("/llm-endpoint")) {
           const handled = await handleLlmEndpoint(req, res, path, opts.llmEndpoint)
+          if (handled) return
+        }
+
+        // Device-inference routes (DEVICES-PLAN item 1) — a read-only proxy
+        // onto this daemon's own llm-endpoint sidecar, reachable ONLY over a
+        // channel the tunnel server marked host-scoped (see
+        // HOST_SCOPE_HEADER's doc comment) — never a plain remote-control
+        // pairing. Only registered when the sidecar itself is wired; the
+        // opt-in flag is checked (and can 403 even when the route exists)
+        // inside the handler, mirroring `handleDevices`'s own
+        // "wired vs. enabled" split. /device-inference/v1/models,
+        // /device-inference/v1/chat/completions.
+        if (opts.llmEndpoint && path.startsWith("/device-inference")) {
+          const handled = await handleDeviceInference(
+            req,
+            res,
+            path,
+            opts.llmEndpoint,
+            opts.deviceInferenceShare === true,
+          )
+          if (handled) return
+        }
+
+        // Device-spawn routes (DEVICES-PLAN PR-D) — the RECEIVING side of a
+        // `device:<name>` sandbox spawn: this daemon self-proxies its own
+        // /mcp + /sessions/:id/events/stream for a paired HOST-scoped
+        // controller. The opt-in flag (and the host-scope header) are
+        // checked inside the handler, mirroring /device-inference's own
+        // "wired vs. enabled" split — here there's no optional dependency
+        // to gate registration on (the self-proxy only needs this daemon's
+        // own port, always known), so the route is always registered and
+        // 403s until both gates pass. /device-spawn/mcp,
+        // /device-spawn/sessions/:id/events/stream, etc.
+        if (path === "/device-spawn" || path.startsWith("/device-spawn/")) {
+          const handled = await handleDeviceSpawn(
+            req,
+            res,
+            path,
+            opts.port,
+            opts.deviceSpawnAllow === true,
+          )
           if (handled) return
         }
 
@@ -3559,6 +4115,30 @@ export async function startHttpServer(
           if (handled) return
         }
 
+        // Approvals routes — HTTP twins over the approvals engine
+        // (approvals/engine.ts): POST /approvals, GET /approvals?status=,
+        // GET /approvals/:id, GET /approvals/:id/wait, POST
+        // /approvals/:id/consume, plus the web_click decision route POST
+        // /approvals/:id/decision. HTTP callers are OPERATOR context, same
+        // split as /tasks and /policies. The decision route does NOT go
+        // through the general `guardBrowserOrigin` gate — it enforces its
+        // own, stricter Origin check against `approvalsWebOrigins` (a
+        // DIFFERENT allowlist than `daemon.allowedOrigins`), plus the
+        // per-boot token; applying both would reject an origin that's
+        // correctly listed in one but not the other.
+        if (
+          opts.approvals &&
+          (path === "/approvals" || path.startsWith("/approvals/"))
+        ) {
+          const isDecisionRoute = /^\/approvals\/[^/]+\/decision$/.test(path)
+          if (!isDecisionRoute && guardBrowserOrigin(req, res)) return
+          const handled = await handleApprovals(req, res, path, opts.approvals, {
+            ...(opts.token !== undefined ? { token: opts.token } : {}),
+            webOrigins: opts.approvalsWebOrigins ?? [],
+          })
+          if (handled) return
+        }
+
         // Sandbox ledger routes — GET /sandboxes/:id/alive probes the box's
         // PROVIDER for liveness and stamps the verdict into the ledger. The
         // ledger `state` alone is not trustworthy (an e2b box can vanish
@@ -3617,7 +4197,9 @@ export async function startHttpServer(
         // /devices/:fingerprint (rename), DELETE /devices/:fingerprint
         // (revoke — same effect as DELETE /pairings/:fingerprint for a
         // client device), POST /devices/add (register a host), POST
-        // /devices/:id/exec (forward one HTTP request to a host). Same
+        // /devices/:id/exec (forward one HTTP request to a host), POST
+        // /devices/:id/exec-stream/<subpath> (streaming counterpart, always
+        // POST outer verb so it always takes the token gate below). Same
         // token gate as /pairings: mutating routes take the per-boot token;
         // GET is read-only.
         if (opts.pairings && path.startsWith("/devices")) {
@@ -3628,7 +4210,7 @@ export async function startHttpServer(
               return
             }
           }
-          const handled = await handleDevices(req, res, path, opts.pairings, opts.hostRegistry)
+          const handled = await handleDevices(req, res, path, opts.pairings, opts.hostRegistry, opts.joinTokens)
           if (handled) return
         }
 
@@ -4310,6 +4892,8 @@ export function buildSpawnSessionHttpArgs(
   // `autoParentSessionId`, which no caller may set.
   const commandSandbox = parseCommandSandboxField(b.commandSandbox)
   const skills = b.skills !== undefined ? parseSkillsField(b.skills) : undefined
+  const bundles = b.bundles !== undefined ? parseSkillsField(b.bundles) : undefined
+  const daemonMount = parseBooleanField(b.daemonMount)
   const contextContinuity =
     b.contextContinuity !== undefined
       ? parseWithJsonTolerance(contextContinuityInputSchema, b.contextContinuity)
@@ -4320,10 +4904,19 @@ export function buildSpawnSessionHttpArgs(
   const notifyUrl = parseNotifyUrlField(b.notifyUrl)
   const agentStartParity: Pick<
     SpawnAgentSessionInput,
-    "commandSandbox" | "skills" | "contextContinuity" | "deferredTools" | "attach" | "notifyUrl"
+    | "commandSandbox"
+    | "skills"
+    | "bundles"
+    | "daemonMount"
+    | "contextContinuity"
+    | "deferredTools"
+    | "attach"
+    | "notifyUrl"
   > = {
     ...(commandSandbox !== undefined ? { commandSandbox } : {}),
     ...(skills !== undefined ? { skills } : {}),
+    ...(bundles !== undefined ? { bundles } : {}),
+    ...(daemonMount !== undefined ? { daemonMount } : {}),
     ...(contextContinuity !== undefined ? { contextContinuity } : {}),
     ...(deferredTools !== undefined ? { deferredTools } : {}),
     ...(attach !== undefined ? { attach } : {}),
@@ -4349,6 +4942,11 @@ export function buildSpawnSessionHttpArgs(
           : undefined
   const sentinelField: Pick<SpawnAgentSessionInput, "sentinel"> =
     sentinelOptOut === false ? { sentinel: false } : {}
+  // `inference` (SESSION-INFERENCE-BINDING) — hoisted for the same TS2590
+  // reason as `browserField`/`sentinelField`/`spendCaps`.
+  const inferenceParsed = b.inference !== undefined ? parseInferenceField(b.inference) : undefined
+  const inferenceField: Pick<SpawnAgentSessionInput, "inference"> =
+    inferenceParsed !== undefined ? { inference: inferenceParsed } : {}
   return {
     adapter,
     ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
@@ -4375,6 +4973,7 @@ export function buildSpawnSessionHttpArgs(
           return parsed !== undefined ? { access: parsed } : {}
         })()
       : {}),
+    ...inferenceField,
     ...(typeof b.posture === "string" && b.posture.length > 0
       ? { posture: parsePostureInput(b.posture) }
       : {}),
@@ -4820,6 +5419,30 @@ function parseAccessField(raw: unknown): { profileRef?: string } | undefined {
   return typeof profileRef === "string" && profileRef.length > 0 ? { profileRef } : {}
 }
 
+/** Parse the `inference` body field — the HTTP twin of the MCP `agent_start`
+ *  tool's `inference` field (SESSION-INFERENCE-BINDING). Tolerant of a
+ *  JSON-stringified object (see `parseOrchestratorField`). */
+function parseInferenceField(
+  raw: unknown,
+): { endpoint?: string; model?: string; force?: boolean; headroomPct?: number } | undefined {
+  const value = typeof raw === "string" ? tryParseJson(raw) : raw
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const obj = value as Record<string, unknown>
+  const force =
+    typeof obj.force === "boolean" ? obj.force : obj.force === "true" ? true : obj.force === "false" ? false : undefined
+  const headroomPctRaw = typeof obj.headroomPct === "string" ? Number(obj.headroomPct) : obj.headroomPct
+  const headroomPct =
+    typeof headroomPctRaw === "number" && Number.isFinite(headroomPctRaw) && headroomPctRaw >= 0 && headroomPctRaw <= 95
+      ? headroomPctRaw
+      : undefined
+  return {
+    ...(typeof obj.endpoint === "string" && obj.endpoint.length > 0 ? { endpoint: obj.endpoint } : {}),
+    ...(typeof obj.model === "string" && obj.model.length > 0 ? { model: obj.model } : {}),
+    ...(force !== undefined ? { force } : {}),
+    ...(headroomPct !== undefined ? { headroomPct } : {}),
+  }
+}
+
 /** Parse the `restartPolicy` body field on `POST /sessions/agent` — the HTTP
  *  twin of the MCP `agent_start` tool's `restartPolicy` field (restart-
  *  scheduler PR-2). Tolerates a JSON-stringified object (see
@@ -5249,7 +5872,15 @@ async function handleSessions(
       json(400, { error: "preset_not_found", message: `No user preset "${presetId}" found.` })
       return true
     }
-    const adapter = typeof b.adapter === "string" ? b.adapter : (typeof b.harness === "string" ? b.harness : (preset?.adapter ?? preset?.harness ?? ""))
+    // Default harness for a local endpoint bind: `inference` with no
+    // explicit adapter/harness/preset defaults to "pi" (SESSION-INFERENCE-
+    // BINDING item 3) — mirrors agent-tools.ts's `agent_start` handler.
+    const adapter =
+      typeof b.adapter === "string"
+        ? b.adapter
+        : typeof b.harness === "string"
+          ? b.harness
+          : (preset?.adapter ?? preset?.harness ?? (b.inference ? "pi" : ""))
     if (!adapter) {
       json(400, { error: "missing_adapter" })
       return true
@@ -5348,7 +5979,7 @@ async function handleSessions(
         ? b.adapter
         : typeof b.harness === "string"
           ? b.harness
-          : preset?.adapter ?? preset?.harness ?? ""
+          : preset?.adapter ?? preset?.harness ?? (b.inference ? "pi" : "")
     if (!adapter) {
       json(400, { error: "missing_adapter" })
       return true
@@ -5929,6 +6560,53 @@ async function handleSessions(
           }
         : { sessionId: desc.id, ...projectSessionUsage(desc) },
     )
+    return true
+  }
+
+  // GET /sessions/:id/output?lastN=&clean= — the REST twin of the MCP
+  // `agent_output` tool (SANDBOX-VISIBILITY-JOIN): a best-effort tail of the
+  // ring buffer, so a plain HTTP forward (e.g. `HostRegistry.forwardHttp`,
+  // no MCP session negotiation) can reach it. Mirrors `agent_output`'s
+  // clean-mode + activity-fallback logic exactly.
+  const outputMatch = path.match(/^\/sessions\/([^/]+)\/output$/)
+  if (outputMatch && req.method === "GET") {
+    const id = decodeURIComponent(outputMatch[1] ?? "")
+    if (!id) return false
+    const desc = registry.findByIdOrName(id)
+    if (!desc) {
+      json(404, { error: "no_such_session", id })
+      return true
+    }
+    const reqUrl = req.url ?? ""
+    const queryString = reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : ""
+    const query = new URLSearchParams(queryString)
+    const lastNRaw = Number(query.get("lastN") ?? "80")
+    const limit = Number.isInteger(lastNRaw) && lastNRaw >= 1 ? Math.min(lastNRaw, 500) : 80
+    const clean = ["1", "true"].includes(query.get("clean") ?? "")
+    const lines: string[] = []
+    const unsub = registry.attach(desc.id, (line: string) => {
+      lines.push(line)
+    })
+    if (unsub) unsub()
+    const tail = lines.slice(-limit)
+    let output = clean ? cleanAgentLines(tail) : tail
+    let activityFallback = false
+    if (clean && output.length === 0 && tail.length > 0) {
+      output = tail
+        .map(stripAnsi)
+        .map(l => l.trimEnd())
+        .filter(l => l.trim().length > 0)
+        .slice(-limit)
+      activityFallback = output.length > 0
+    }
+    json(200, {
+      sessionId: desc.id,
+      status: desc.status,
+      currentPhase: desc.currentPhase,
+      lastOutputAt: desc.lastOutputAt,
+      ...(activityFallback ? { activityFallback: true } : {}),
+      lines: output,
+    })
     return true
   }
 
@@ -7225,6 +7903,249 @@ async function handleLlmEndpoint(
 }
 
 /**
+ * /device-inference routes (DEVICES-PLAN item 1) — a read-only proxy onto
+ * this daemon's OWN `llmEndpoint` sidecar for a paired HOST-scoped
+ * controller: list models, and forward (streaming) chat/completions. Gated
+ * by BOTH the opt-in `deviceInferenceShare` flag AND `HOST_SCOPE_HEADER` (see
+ * its doc comment for why this can't use the usual `isLoopback` bypass).
+ * Never touches `checkSessionsToken` — an ordinary (non-host) pairing
+ * already carries a valid bearer (injected unconditionally by
+ * `buildDaemonTunnelServerOptions`) and would sail through that gate, which
+ * is exactly the case this route must refuse.
+ *
+ *   GET  /device-inference/v1/models           → proxies the sidecar's own
+ *                                                  GET /v1/models verbatim.
+ *   POST /device-inference/v1/chat/completions  → proxies + STREAMS the
+ *                                                  sidecar's own
+ *                                                  POST /v1/chat/completions.
+ */
+async function handleDeviceInference(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  registry: LlmEndpointRegistry,
+  shareEnabled: boolean,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  const isModels = path === "/device-inference/v1/models"
+  const isChat = path === "/device-inference/v1/chat/completions"
+  if (!isModels && !isChat) return false
+
+  if (req.headers[HOST_SCOPE_HEADER] !== "1") {
+    json(403, {
+      error: "host_scope_required",
+      message:
+        "device-inference is reachable only over a host-scoped pairing " +
+        "(the far end must have registered this daemon via `agentproto pair " +
+        "offer --host` + `agentproto devices add`)",
+    })
+    return true
+  }
+  if (!shareEnabled) {
+    json(403, {
+      error: "sharing_disabled",
+      message: "this host has not opted in — run `agentproto devices share-inference on` on it",
+    })
+    return true
+  }
+
+  const method = isModels ? "GET" : "POST"
+  if ((req.method ?? "GET") !== method) {
+    json(405, { error: "method_not_allowed", message: `${method} ${path}` })
+    return true
+  }
+
+  let baseUrl: string
+  try {
+    baseUrl = (await registry.start()).baseUrl
+  } catch (err) {
+    json(502, {
+      error: "sidecar_unavailable",
+      message: `local llm-endpoint sidecar failed to start: ${err instanceof Error ? err.message : String(err)}`,
+    })
+    return true
+  }
+
+  // Hop-by-hop headers plus the scope marker itself — no reason for the
+  // sidecar (or its own upstream) to see an internal daemon header.
+  const HOP_BY_HOP = new Set([
+    "connection",
+    "keep-alive",
+    "transfer-encoding",
+    "upgrade",
+    "host",
+    "content-length",
+    HOST_SCOPE_HEADER,
+  ])
+  const headers: Record<string, string> = {}
+  for (const [k, v] of Object.entries(req.headers)) {
+    if (v === undefined || HOP_BY_HOP.has(k.toLowerCase())) continue
+    headers[k] = Array.isArray(v) ? v.join(", ") : v
+  }
+
+  let body: Buffer | undefined
+  if (method === "POST") {
+    const chunks: Buffer[] = []
+    for await (const chunk of req) chunks.push(chunk as Buffer)
+    body = Buffer.concat(chunks)
+  }
+
+  let upstreamRes: globalThis.Response
+  try {
+    upstreamRes = await fetch(`${baseUrl}${isModels ? "/v1/models" : "/v1/chat/completions"}`, {
+      method,
+      headers,
+      ...(body ? { body } : {}),
+      // Cast the whole init object via `fetch`'s own parameter type — its
+      // exact shape (and whether a Node `Buffer` satisfies `body`) differs
+      // across the DOM-lib vs. non-DOM-lib global `fetch` ambient typings
+      // different packages in this monorepo compile against (there's no
+      // universal `BodyInit` name to cast the field through directly: it
+      // doesn't exist at all without the DOM lib). Node's runtime fetch
+      // accepts a Buffer (a Uint8Array) regardless of which ambient type
+      // wins.
+    } as Parameters<typeof fetch>[1])
+  } catch (err) {
+    json(502, {
+      error: "sidecar_unreachable",
+      message: err instanceof Error ? err.message : String(err),
+    })
+    return true
+  }
+
+  const resHeaders: Record<string, string> = {}
+  upstreamRes.headers.forEach((v, k) => {
+    if (k === "content-length" || k === "connection") return
+    resHeaders[k] = v
+  })
+  res.writeHead(upstreamRes.status, resHeaders)
+  if (!upstreamRes.body) {
+    res.end()
+    return true
+  }
+  // Relay chunk-by-chunk as they arrive — required for the chat/completions
+  // SSE stream; harmless (just one chunk) for the buffered /v1/models reply.
+  // Cast through `unknown` — see the `body` cast above's comment: the DOM-lib
+  // vs. non-DOM-lib global `ReadableStream` a package compiles against isn't
+  // nominally the same type `Readable.fromWeb` (node:stream/web) declares,
+  // even though both describe the identical runtime object.
+  Readable.fromWeb(upstreamRes.body as unknown as NodeWebReadableStream<Uint8Array>).pipe(res)
+  return true
+}
+
+/**
+ * /device-spawn routes (DEVICES-PLAN PR-D) — the RECEIVING side of a
+ * `device:<name>` sandbox spawn: this daemon self-proxies its OWN `/mcp` +
+ * `/sessions/:id/events/stream` for a paired HOST-scoped controller,
+ * exactly the shape `handleDeviceInference` above proxies onto the
+ * llm-endpoint sidecar, just pointed at THIS daemon's own gateway instead
+ * of a sidecar. Gated by BOTH the opt-in `deviceSpawnAllow` flag AND
+ * `HOST_SCOPE_HEADER` — same two-gate shape and same rationale as
+ * `handleDeviceInference` (see its doc comment): an ordinary remote-control
+ * pairing must never reach this, only one the OTHER side registered as a
+ * host (`pair offer --host` + `devices add`).
+ *
+ * The self-fetch to `http://127.0.0.1:${port}${subpath}` rides the same
+ * loopback socket `handleDeviceInference` uses to reach its sidecar, so it
+ * gets the existing loopback auth bypass for free: `/mcp` goes through
+ * `authorizeMcp` → `authorize()` (loopback, no Origin ⇒ allowed regardless
+ * of bearer mode) and `GET /sessions/:id/events/stream` is a read-only
+ * route `checkSessionsToken` never gates in the first place (mutating
+ * `/sessions/*` routes are the only ones it guards). No new auth surface
+ * needed — this route is additive on top of both.
+ *
+ *   ALL /device-spawn/<subpath>  → self-proxies to this daemon's own
+ *                                   `/<subpath>` (e.g. `/mcp`,
+ *                                   `/sessions/:id/events/stream`),
+ *                                   forwarding method/headers/body and
+ *                                   relaying the response chunk-by-chunk.
+ */
+async function handleDeviceSpawn(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  port: number,
+  spawnAllowed: boolean,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  if (!path.startsWith("/device-spawn/") && path !== "/device-spawn") return false
+
+  if (req.headers[HOST_SCOPE_HEADER] !== "1") {
+    json(403, {
+      error: "host_scope_required",
+      message:
+        "device-spawn is reachable only over a host-scoped pairing (the far end must have " +
+        "registered this daemon via `agentproto pair offer --host` + `agentproto devices add`)",
+    })
+    return true
+  }
+  if (!spawnAllowed) {
+    json(403, {
+      error: "spawn_disabled",
+      message: "this host has not opted in — run `agentproto devices allow-spawn on` on it",
+    })
+    return true
+  }
+
+  const subpath = path.slice("/device-spawn".length) || "/"
+  const headers: Record<string, string> = {}
+  for (const [k, v] of Object.entries(req.headers)) {
+    if (v === undefined) continue
+    const lower = k.toLowerCase()
+    if (lower === "connection" || lower === "keep-alive" || lower === "transfer-encoding") continue
+    if (lower === "upgrade" || lower === "host" || lower === "content-length") continue
+    if (lower === HOST_SCOPE_HEADER) continue
+    headers[k] = Array.isArray(v) ? v.join(", ") : v
+  }
+
+  let body: Buffer | undefined
+  if ((req.method ?? "GET") !== "GET" && (req.method ?? "GET") !== "HEAD") {
+    const chunks: Buffer[] = []
+    for await (const chunk of req) chunks.push(chunk as Buffer)
+    body = Buffer.concat(chunks)
+  }
+
+  let upstreamRes: globalThis.Response
+  try {
+    upstreamRes = await fetch(`http://127.0.0.1:${port}${subpath}`, {
+      method: req.method ?? "GET",
+      headers,
+      ...(body ? { body } : {}),
+      // Cast rationale — see `handleDeviceInference`'s identical cast above.
+    } as Parameters<typeof fetch>[1])
+  } catch (err) {
+    json(502, {
+      error: "self_proxy_unreachable",
+      message: err instanceof Error ? err.message : String(err),
+    })
+    return true
+  }
+
+  const resHeaders: Record<string, string> = {}
+  upstreamRes.headers.forEach((v, k) => {
+    if (k === "content-length" || k === "connection") return
+    resHeaders[k] = v
+  })
+  res.writeHead(upstreamRes.status, resHeaders)
+  if (!upstreamRes.body) {
+    res.end()
+    return true
+  }
+  // Relay chunk-by-chunk — required for the SSE events stream; harmless
+  // (one chunk) for a plain `/mcp` JSON reply.
+  Readable.fromWeb(upstreamRes.body as unknown as NodeWebReadableStream<Uint8Array>).pipe(res)
+  return true
+}
+
+/**
  * REST twin of the MCP `remote_enable` / `remote_disable` / `remote_status`
  * tools (remote-tools.ts) — same `RemoteController` singleton, so the two
  * surfaces can never disagree about whether a tunnel is up. Exists for
@@ -8024,6 +8945,29 @@ async function handlePairings(
  *                                    base64-encoded on the wire both ways).
  *                                    404s the same way as /devices/add when
  *                                    no host registry is wired.
+ *   POST   /devices/:id/exec-stream/<subpath>  (DEVICES-PLAN item 2) — raw
+ *                                    streaming counterpart of /exec: no JSON
+ *                                    envelope, the request body is forwarded
+ *                                    verbatim as `/<subpath>` and the
+ *                                    response is RELAYED chunk-by-chunk
+ *                                    (never buffered) — required for the
+ *                                    device-inference chat/completions SSE
+ *                                    stream. The real forwarded method rides
+ *                                    in `x-agentproto-forward-method`
+ *                                    (`GET`|`POST`) since the outer verb is
+ *                                    always POST, so this always passes the
+ *                                    bearer gate below regardless of which
+ *                                    method it's asking the host for. Same
+ *                                    404 as /exec when no host registry is
+ *                                    wired.
+ *
+ * A separate route family, `/device-spawn/*` (DEVICES-PLAN PR-D,
+ * `handleDeviceSpawn` below), is the RECEIVING side of the above: it lives
+ * on the device being spawned ONTO (not the controller driving it), self-
+ * proxies this daemon's own `/mcp` + `/sessions/:id/events/stream` for a
+ * paired HOST-scoped controller, and is gated by `features.deviceSpawnAllow`
+ * (`agentproto devices allow-spawn on|off`) rather than anything in this
+ * function.
  *
  * Mirrors the MCP `device_list` / `device_rename` / `device_revoke` /
  * `device_add` tools.
@@ -8034,6 +8978,7 @@ async function handleDevices(
   path: string,
   registry: PairingRegistry,
   hostRegistry?: HostRegistry,
+  joinTokens?: JoinTokenRegistry,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -8100,6 +9045,192 @@ async function handleDevices(
       })
     } catch (err) {
       json(502, { error: "exec_failed", message: err instanceof Error ? err.message : String(err) })
+    }
+    return true
+  }
+
+  // POST /devices/:id/exec-stream/<subpath> — streaming counterpart of
+  // /exec (DEVICES-PLAN item 2), for a target whose RESPONSE must be relayed
+  // as it arrives (the device-inference chat/completions SSE, most notably)
+  // instead of buffered-then-base64'd. The outer HTTP verb is ALWAYS POST —
+  // same reasoning as /exec's own JSON-wrapped `method` field: this must
+  // ALWAYS pass the bearer gate below, whatever the underlying forwarded
+  // request's method is, rather than a caller dodging it by asking for an
+  // (outer) GET. The REAL method rides in `x-agentproto-forward-method`;
+  // the raw request body (unwrapped — no JSON envelope, no base64) is piped
+  // straight through to the host. `<subpath>` becomes the forwarded
+  // `/<subpath>` — this is what `llm-endpoint`'s device-endpoint routing
+  // (`<id>@<device>` in the model string) targets, landing on the OTHER
+  // daemon's own `/device-inference/*` (see http-server.ts's
+  // `handleDeviceInference`).
+  const execStreamMatch = path.match(/^\/devices\/([^/]+)\/exec-stream\/(.+)$/)
+  if (execStreamMatch && req.method === "POST") {
+    if (!hostRegistry) {
+      json(404, { error: "no_host_registry", message: "this daemon has no host registry wired" })
+      return true
+    }
+    const target = decodeURIComponent(execStreamMatch[1] ?? "")
+    const subPath = execStreamMatch[2] ?? ""
+    const forwardMethodRaw = (req.headers["x-agentproto-forward-method"] ?? "").toString().toUpperCase()
+    if (forwardMethodRaw !== "GET" && forwardMethodRaw !== "POST") {
+      json(400, {
+        error: "bad_request",
+        message: 'request must include header "x-agentproto-forward-method: GET" or "POST"',
+      })
+      return true
+    }
+
+    const HOP_BY_HOP = new Set([
+      "connection",
+      "keep-alive",
+      "transfer-encoding",
+      "upgrade",
+      "host",
+      "content-length",
+      "authorization",
+      "x-agentproto-forward-method",
+    ])
+    const headers: Record<string, string> = {}
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (v === undefined || HOP_BY_HOP.has(k.toLowerCase())) continue
+      headers[k] = Array.isArray(v) ? v.join(", ") : v
+    }
+
+    const chunks: Buffer[] = []
+    for await (const chunk of req) chunks.push(chunk as Buffer)
+    const bodyBuf = Buffer.concat(chunks)
+
+    let streamRes: { status: number; headers: Record<string, string>; body: ReadableStream<Uint8Array> }
+    try {
+      streamRes = await hostRegistry.forwardHttpStream(target, {
+        method: forwardMethodRaw,
+        path: `/${subPath}`,
+        headers,
+        ...(bodyBuf.length > 0 ? { body: new Uint8Array(bodyBuf) } : {}),
+      })
+    } catch (err) {
+      json(502, {
+        error: "exec_stream_failed",
+        message: err instanceof Error ? err.message : String(err),
+      })
+      return true
+    }
+    res.writeHead(streamRes.status, streamRes.headers)
+    Readable.fromWeb(streamRes.body as unknown as NodeWebReadableStream<Uint8Array>).pipe(res)
+    return true
+  }
+
+  // Join tokens (SANDBOX-VISIBILITY-JOIN): mint/list/revoke a long-lived,
+  // reusable credential a box daemon's AGENTPROTO_JOIN reads to auto-register
+  // as a host — see join-token-registry.ts. 404s the same way as
+  // /devices/add when no join-token registry is wired.
+  if (path === "/devices/join-tokens" && req.method === "POST") {
+    if (!joinTokens) {
+      json(404, { error: "no_join_token_registry", message: "this daemon has no join-token registry wired" })
+      return true
+    }
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const name = typeof b.name === "string" ? b.name.trim() : ""
+    if (!name) {
+      json(400, { error: "bad_request", message: 'body must include a non-empty "name"' })
+      return true
+    }
+    const ttlMs = typeof b.ttlMs === "number" ? b.ttlMs : undefined
+    const maxUses = typeof b.maxUses === "number" ? b.maxUses : undefined
+    const rendezvousUrl = typeof b.rendezvousUrl === "string" ? b.rendezvousUrl : undefined
+    try {
+      const created = await joinTokens.create({
+        name,
+        ...(ttlMs !== undefined ? { ttlMs } : {}),
+        ...(maxUses !== undefined ? { maxUses } : {}),
+        ...(rendezvousUrl ? { rendezvousUrl } : {}),
+      })
+      json(200, created)
+    } catch (err) {
+      json(400, { error: "create_failed", message: err instanceof Error ? err.message : String(err) })
+    }
+    return true
+  }
+
+  if (path === "/devices/join-tokens" && req.method === "GET") {
+    if (!joinTokens) {
+      json(404, { error: "no_join_token_registry", message: "this daemon has no join-token registry wired" })
+      return true
+    }
+    json(200, { tokens: await joinTokens.list() })
+    return true
+  }
+
+  const joinTokenIdMatch = path.match(/^\/devices\/join-tokens\/([^/]+)$/)
+  if (joinTokenIdMatch && req.method === "DELETE") {
+    if (!joinTokens) {
+      json(404, { error: "no_join_token_registry", message: "this daemon has no join-token registry wired" })
+      return true
+    }
+    const target = decodeURIComponent(joinTokenIdMatch[1] ?? "")
+    const revoked = await joinTokens.revoke(target)
+    if (!revoked) {
+      json(404, { error: "not_found", message: `no join token matched "${target}"` })
+      return true
+    }
+    json(200, { ok: true, revoked: target })
+    return true
+  }
+
+  // Device sessions (SANDBOX-VISIBILITY-JOIN): a read-only forward of a
+  // registered host's own /sessions[/:id/output], over the same
+  // forwardHttp() `/devices/:id/exec` already uses. The HTTP twin of the
+  // `device_sessions` MCP tool.
+  // A `stale`/`capturedAt` forward (SANDBOX-VISIBILITY-JOIN #3 — the host
+  // went offline, this is the last-known-good `/sessions*` snapshot, see
+  // device-registry.ts's `forwardHttp`) merges those two fields into the
+  // JSON body — same shape the `device_sessions` MCP tool already returns —
+  // rather than a header, so a plain JSON consumer (the VS Code Devices
+  // view included) sees it without inspecting response headers.
+  function writeDeviceSessionsResponse(res2: ForwardHttpResponse): void {
+    if (!res2.stale) {
+      res.writeHead(res2.status, { "content-type": "application/json" })
+      res.end(Buffer.from(res2.body))
+      return
+    }
+    let merged: unknown
+    try {
+      const parsed: unknown = JSON.parse(Buffer.from(res2.body).toString("utf8"))
+      merged =
+        parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+          ? { ...(parsed as Record<string, unknown>), stale: true, capturedAt: res2.capturedAt }
+          : { stale: true, capturedAt: res2.capturedAt, value: parsed }
+    } catch {
+      merged = { stale: true, capturedAt: res2.capturedAt }
+    }
+    res.writeHead(res2.status, { "content-type": "application/json" })
+    res.end(JSON.stringify(merged))
+  }
+
+  const deviceSessionsMatch = path.match(/^\/devices\/([^/]+)\/sessions$/)
+  if (deviceSessionsMatch && req.method === "GET") {
+    const target = decodeURIComponent(deviceSessionsMatch[1] ?? "")
+    try {
+      const res2 = await devices.forwardHttp(target, { method: "GET", path: "/sessions" })
+      writeDeviceSessionsResponse(res2)
+    } catch (err) {
+      json(502, { error: "forward_failed", message: err instanceof Error ? err.message : String(err) })
+    }
+    return true
+  }
+
+  const deviceSessionOutputMatch = path.match(/^\/devices\/([^/]+)\/sessions\/([^/]+)\/output$/)
+  if (deviceSessionOutputMatch && req.method === "GET") {
+    const target = decodeURIComponent(deviceSessionOutputMatch[1] ?? "")
+    const sessionId = decodeURIComponent(deviceSessionOutputMatch[2] ?? "")
+    const reqUrl = req.url ?? ""
+    const qs = reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?")) : ""
+    try {
+      const res2 = await devices.forwardHttp(target, { method: "GET", path: `/sessions/${sessionId}/output${qs}` })
+      writeDeviceSessionsResponse(res2)
+    } catch (err) {
+      json(502, { error: "forward_failed", message: err instanceof Error ? err.message : String(err) })
     }
     return true
   }
@@ -8185,7 +9316,7 @@ async function handleCron(
       return true
     }
     try {
-      const job = scheduler.create({
+      const job = await scheduler.create({
         label: typeof b.label === "string" ? b.label : undefined,
         schedule,
         recurring: typeof b.recurring === "boolean" ? b.recurring : true,
@@ -8269,7 +9400,7 @@ async function handleRoutineDefs(
 
   if (path === "/routine-defs/reconcile" && req.method === "POST") {
     try {
-      const result = registrar.reconcile()
+      const result = await registrar.reconcile()
       json(200, result)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -8297,6 +9428,10 @@ async function handleRoutineDefs(
 
 
 interface InboundHandlerDeps {
+  sentinelInbound?: (
+    hookKey: string,
+    req: { rawBody: string; headers: Record<string, string | string[] | undefined> },
+  ) => ReturnType<typeof handleSentinelInbound>
   routeInboundMessage?: RuntimeHttpServerOptions["routeInboundMessage"]
   endpointStore?: InboundEndpointStore
   checkSessionsToken: (req: IncomingMessage) => "ok" | "missing" | "bad"
@@ -8436,6 +9571,31 @@ async function handleProviderInbound(
   slug: string,
   deps: InboundHandlerDeps,
 ): Promise<void> {
+  // "sentinel" dialect: `/inbound/sentinel-<hookKey>` is a push-provider hook.
+  // Signature-gated by the provider (never the bearer). The `sentinel-` slug
+  // prefix is reserved once sentinel ingress is enabled; an unknown key
+  // answers the same generic 404 as any unknown endpoint (nothing echoed).
+  if (slug.startsWith("sentinel-") && deps.sentinelInbound) {
+    const rawResult = await readRawBody(req)
+    if (!rawResult.ok) {
+      res.writeHead(rawResult.status, { "content-type": "application/json" })
+      res.end(JSON.stringify({ error: rawResult.error }))
+      return
+    }
+    const result = await deps.sentinelInbound(slug.slice("sentinel-".length), {
+      rawBody: rawResult.raw,
+      headers: inboundRequestHeaders(req),
+    })
+    if (result) {
+      res.writeHead(result.status, { "content-type": "application/json" })
+      res.end(JSON.stringify(result.body))
+      return
+    }
+    res.writeHead(404, { "content-type": "application/json" })
+    res.end(JSON.stringify({ error: "unknown_inbound_endpoint" }))
+    return
+  }
+
   if (!deps.endpointStore) {
     res.writeHead(404, { "content-type": "application/json" })
     res.end(JSON.stringify({ error: "unknown_inbound_endpoint" }))
@@ -8621,7 +9781,16 @@ async function handleAppUiPage(
   frameAncestors: readonly string[],
 ): Promise<void> {
   const app = appRegistry.getApp(appId)
-  const builtin = app?.ui ? undefined : resolveBuiltinPanelUi(appId, requestHttpBaseUrl(req))
+  // `?sessionId=` — only consulted by the live-session builtin
+  // (`resolveBuiltinPanelUi`'s doc): the review panel's reviewer-session
+  // link deep-links here (`liveSessionUrl`, apps/src/review-panel/ui/
+  // render.ts) so the widget boots already pinned instead of self-
+  // discovering the newest running session. Handed through RAW —
+  // `resolveBuiltinPanelUi` (`isValidDeepLinkSessionId`) is the one that
+  // validates it; every other builtin's `resolveBuiltinPanelUi` branch
+  // ignores this param entirely.
+  const sessionIdParam = new URL(req.url ?? "/", "http://localhost").searchParams.get("sessionId") ?? undefined
+  const builtin = app?.ui ? undefined : resolveBuiltinPanelUi(appId, requestHttpBaseUrl(req), sessionIdParam)
   if (!app?.ui && !builtin) {
     res.writeHead(404, { "content-type": "application/json" })
     res.end(JSON.stringify({ error: `app "${appId}" is not installed or has no UI.` }))
@@ -8699,8 +9868,12 @@ async function handleAppUiPage(
       )
     } else {
       const html = builtin!.html
+      // `sessionIdParam` folds into the key (not just the `stamp`, which
+      // already self-corrects on a mismatch) so concurrent requests for
+      // different pinned sessions land in distinct LRU slots instead of
+      // repeatedly evicting one shared "builtin\0live_session\0..." entry.
       rep = await appUiRepresentations.get(
-        `builtin\0${appId}\0${baseUrl}\0${variant ?? ""}`,
+        `builtin\0${appId}\0${baseUrl}\0${variant ?? ""}\0${sessionIdParam ?? ""}`,
         html,
         () => appUiPageRepresentation(html, baseUrl, variant),
       )

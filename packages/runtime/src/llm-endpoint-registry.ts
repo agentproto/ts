@@ -148,6 +148,13 @@ export interface LlmEndpointRegistryOptions {
    * touching the on-disk links store.
    */
   injectLinks?: (env: NodeJS.ProcessEnv) => Promise<string[]>
+  /** This daemon's own loopback base URL + per-boot bearer, injected into
+   *  EVERY spawn (including a crash-restart, which calls `start()` with no
+   *  args) as `LLM_ENDPOINT_DAEMON_URL` / `LLM_ENDPOINT_DAEMON_TOKEN` — see
+   *  `assembleLlmEndpointEnv`'s `daemonCallback` doc comment. Constructor-
+   *  level (not a per-`start()` `env` override) precisely so it survives a
+   *  restart the caller didn't supply args for. */
+  daemonCallback?: { baseUrl: string; token: string }
   /** Max time `start` waits for the freshly-spawned child to answer health. */
   readyTimeoutMs?: number
   /** Poll interval for the readiness/health wait. */
@@ -203,6 +210,17 @@ export async function assembleLlmEndpointEnv(input: {
   baseEnv?: NodeJS.ProcessEnv
   injectKeys?: (env: NodeJS.ProcessEnv) => Promise<string[]>
   injectLinks?: (env: NodeJS.ProcessEnv) => Promise<string[]>
+  /**
+   * This DAEMON's own loopback base URL (`http://127.0.0.1:<daemon port>`)
+   * and per-boot bearer — injected as `LLM_ENDPOINT_DAEMON_URL` /
+   * `LLM_ENDPOINT_DAEMON_TOKEN` so the sidecar can call back into THIS
+   * daemon's `/devices/:id/exec-stream` to route a `<endpoint>@<device>`
+   * model (DEVICES-PLAN item 2) — a different daemon than whatever
+   * `LLM_ENDPOINT_PORT` the sidecar itself binds. Absent when the caller
+   * (e.g. a standalone `agentproto llm gateway` invocation with no daemon)
+   * has nothing to inject.
+   */
+  daemonCallback?: { baseUrl: string; token: string }
 }): Promise<{
   env: NodeJS.ProcessEnv
   port: number
@@ -232,6 +250,10 @@ export async function assembleLlmEndpointEnv(input: {
   env.LLM_ENDPOINT_PORT = String(port)
   if (input.accessTokens != null && input.accessTokens !== "") {
     env.LLM_ENDPOINT_ACCESS_TOKENS = input.accessTokens
+  }
+  if (input.daemonCallback) {
+    env.LLM_ENDPOINT_DAEMON_URL = input.daemonCallback.baseUrl
+    env.LLM_ENDPOINT_DAEMON_TOKEN = input.daemonCallback.token
   }
   // Explicit env wins over the injected keys/tokens above…
   if (input.explicitEnv) {
@@ -313,6 +335,7 @@ export class LlmEndpointRegistry {
   private readonly injectLinks:
     | ((env: NodeJS.ProcessEnv) => Promise<string[]>)
     | undefined
+  private readonly daemonCallback: { baseUrl: string; token: string } | undefined
   private readonly readyTimeoutMs: number
   private readonly pollIntervalMs: number
   private readonly healthProbeTimeoutMs: number
@@ -336,6 +359,7 @@ export class LlmEndpointRegistry {
     this.binPath = opts.binPath
     this.injectKeys = opts.injectKeys
     this.injectLinks = opts.injectLinks
+    this.daemonCallback = opts.daemonCallback
     this.readyTimeoutMs = opts.readyTimeoutMs ?? 6_000
     this.pollIntervalMs = opts.pollIntervalMs ?? 200
     this.healthProbeTimeoutMs = opts.healthProbeTimeoutMs ?? 3_000
@@ -399,6 +423,7 @@ export class LlmEndpointRegistry {
       ...(input.env ? { explicitEnv: input.env } : {}),
       ...(this.injectKeys ? { injectKeys: this.injectKeys } : {}),
       ...(this.injectLinks ? { injectLinks: this.injectLinks } : {}),
+      ...(this.daemonCallback ? { daemonCallback: this.daemonCallback } : {}),
     })
     const baseUrl = `http://127.0.0.1:${port}`
 

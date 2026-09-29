@@ -1,5 +1,25 @@
 # @agentproto/worktree
 
+## 0.13.0
+
+### Minor Changes
+
+- 9a9a3e7: `worktree.provision` gains `cloneGlobs`: glob patterns of gitignored dirs/files (e.g. `node_modules`) cloned into the worktree before `depsCmd`, copy-on-write where the filesystem supports it (macOS `cp -Rc`, Linux `cp --reflink=auto`), falling back to a plain copy, never a symlink. New file `<repoRoot>/.agentproto/worktree.json`: a local, gitignored, host-owned config a machine can use to declare its own `depsCmd`/`linkPaths`/`copyGlobs`/`cloneGlobs`/`writeFiles` defaults (with a `{slug}` placeholder in `writeFiles`), read straight off disk rather than committed. Precedence: explicit tool input > local `worktree.json` > committed `agentproto.json`. Both `worktree.provision` and the daemon's `agent_start({worktree})` spawn path pick up the new local config automatically.
+
+### Patch Changes
+
+- 904f3d4: Test-only fix: disable git auto-maintenance in worktree test fixtures via a vitest setup file (GIT_CONFIG_* env overrides) plus per-repo `maintenance.auto=false` for bare origins, since `receive-pack` strips the pusher's GIT_CONFIG_* env. Prevents flaky `ENOTEMPTY` cleanup failures from `git maintenance run --auto` holding locks during afterEach teardown.
+
+## 0.12.0
+
+### Minor Changes
+
+- 83ffc2d: Fast worktree removal (rename to same-volume `.trash` + prune + detached background delete) wired into cleanup-worktree and gc, plus `agentproto maintain --all` with repeatable `--repo` to maintain every repo owning worktrees under the worktrees root.
+
+### Patch Changes
+
+- 4ecd91b: Fix a CI-only flaky test in `lifecycle.test.ts`: generated hook scripts used `process.exit()` right after many `console.log()` calls, which can truncate stdout on a piped (non-TTY) stream before the writes flush. Switched to `process.exitCode = …` so pending output drains before exit. Test-only; no runtime behavior change.
+
 ## 0.11.0
 
 ### Minor Changes

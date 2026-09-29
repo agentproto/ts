@@ -87,16 +87,28 @@ export interface AgentLanePromptInput {
   rubricPath: string
   /** Absolute path the reviewer must write its verdict JSON to. */
   verdictPath: string
+  /** Set when this lane is a DELTA re-review composed onto a prior passing
+   *  attestation: `target` is already narrowed to `priorHeadSha..head`, and
+   *  this names the commit everything before it was already reviewed and
+   *  passed — told to the reviewer explicitly rather than left implicit in
+   *  the range alone. */
+  composedFrom?: { priorHeadSha: string }
 }
 
 /** Build the reviewer session's prompt. Pure string assembly — the host
  *  resolves both paths. */
 export function buildAgentLanePrompt(input: AgentLanePromptInput): string {
-  const { reviewId, check, target, rubricPath, verdictPath } = input
+  const { reviewId, check, target, rubricPath, verdictPath, composedFrom } = input
   const range = `${target.baseSha}..${target.headSha}`
   const budgetMin = Math.max(1, Math.round((check.timeoutMs / 60_000) * 0.8))
   return [
     `You are review lane '${check.id}' of review '${reviewId}'. Review the committed git range ${range} in this repository.`,
+    ...(composedFrom
+      ? [
+          "",
+          `This is a DELTA re-review: everything up to and including ${composedFrom.priorHeadSha} already passed this lane in an earlier review. Review ONLY what changed in ${range} — you do not need to re-review commits before ${composedFrom.priorHeadSha}.`,
+        ]
+      : []),
     "",
     `Your rubric — what to look for and how to grade it — is at ${rubricPath}. Read it first; it overrides any general reviewing habits.`,
     "",

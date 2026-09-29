@@ -93,6 +93,41 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
       // Echo back the request so tests can assert auth + path mapping.
       if (req.url === "/health") return { status: 200, body: { status: "ok", workspace: "/ws", registered: [] } }
       if (req.url === "/sessions" && req.method === "GET") return { status: 200, body: { sessions: [{ id: "s1", kind: "agent-cli", status: "running", command: "x", pid: 1, startedAt: "t", workspaceSlug: "ws" }] } }
+      if (req.url === "/devices" && req.method === "GET") {
+        return {
+          status: 200,
+          body: {
+            devices: [
+              { fingerprint: "fp-1", name: "Phone", role: "client", kind: "browser", rendezvous: "wss://r/1", createdAt: "t", lastSeen: "t", online: true },
+            ],
+          },
+        }
+      }
+      if (req.url === "/devices/host-1/sessions" && req.method === "GET") {
+        return { status: 200, body: { sessions: [{ id: "s1", kind: "agent-cli", status: "running", command: "x", pid: 1, startedAt: "t", workspaceSlug: "ws" }] } }
+      }
+      // host-2: an offline host — the daemon's last-known-good `/sessions`
+      // snapshot, `stale`/`capturedAt` merged into the same body shape.
+      if (req.url === "/devices/host-2/sessions" && req.method === "GET") {
+        return {
+          status: 200,
+          body: {
+            sessions: [{ id: "s1", kind: "agent-cli", status: "running", command: "x", pid: 1, startedAt: "t", workspaceSlug: "ws" }],
+            stale: true,
+            capturedAt: "2026-01-01T00:00:00.000Z",
+          },
+        }
+      }
+      if (req.url === "/devices/host-1/sessions/s1/output" && req.method === "GET") {
+        return { status: 200, body: { sessionId: "s1", status: "running", lines: ["hello"] } }
+      }
+      if (req.url === "/devices/fp-1" && req.method === "PATCH") {
+        const patch = req.body as { name?: string }
+        return { status: 200, body: { ok: true, target: "fp-1", name: patch.name } }
+      }
+      if (req.url === "/devices/fp-1" && req.method === "DELETE") {
+        return { status: 200, body: { ok: true, revoked: "fp-1" } }
+      }
       if (req.url?.startsWith("/sessions/summaries") && req.method === "GET") return { status: 200, body: { summaries: [{ id: "s1", kind: "agent-cli", status: "running", command: "x", pid: 1, startedAt: "t", workspaceSlug: "ws" }], total: 1 } }
       if (req.url === "/permissions" && req.method === "GET") return { status: 200, body: { permissions: [] } }
       if (req.url?.startsWith("/permissions?sessionId=") && req.method === "GET") return { status: 200, body: { permissions: [] } }
@@ -341,6 +376,46 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
   it("GET /sessions/:id returns a single descriptor", async () => {
     const s = await client().getSession("s1")
     expect(s.id).toBe("s1")
+  })
+
+  it("GET /devices unwraps the { devices } envelope", async () => {
+    const devices = await client().listDevices()
+    expect(devices).toHaveLength(1)
+    expect(devices[0]).toMatchObject({ fingerprint: "fp-1", role: "client", online: true })
+  })
+
+  it("GET /devices/:id/sessions unwraps the { sessions } envelope for a forwarded host", async () => {
+    const { sessions, stale } = await client().getDeviceSessions("host-1")
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0]?.id).toBe("s1")
+    expect(stale).toBeUndefined()
+  })
+
+  it("GET /devices/:id/sessions surfaces stale + capturedAt when the host is offline", async () => {
+    const { sessions, stale, capturedAt } = await client().getDeviceSessions("host-2")
+    expect(sessions).toHaveLength(1)
+    expect(stale).toBe(true)
+    expect(capturedAt).toBe("2026-01-01T00:00:00.000Z")
+  })
+
+  it("GET /devices/:id/sessions/:sessionId/output returns the forwarded output tail", async () => {
+    const output = await client().getDeviceSessionOutput("host-1", "s1")
+    expect(output).toEqual({ sessionId: "s1", status: "running", lines: ["hello"] })
+  })
+
+  it("PATCH /devices/:fingerprint renames a device", async () => {
+    const result = await client().renameDevice("fp-1", "New Name")
+    expect(result).toEqual({ ok: true, target: "fp-1", name: "New Name" })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.method).toBe("PATCH")
+    expect(last.body).toEqual({ name: "New Name" })
+  })
+
+  it("DELETE /devices/:fingerprint revokes a device", async () => {
+    const result = await client().revokeDevice("fp-1")
+    expect(result).toEqual({ ok: true, revoked: "fp-1" })
+    const last = daemon.requests[daemon.requests.length - 1]!
+    expect(last.method).toBe("DELETE")
   })
 
   it("POST /sessions/agent sends the spawn body and returns 201 descriptor", async () => {

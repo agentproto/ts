@@ -6,7 +6,8 @@ import { defineApp, type AppHandle } from "@agentproto/app-kit"
 import { definePack, type PackHandle } from "@agentproto/pack"
 import { defineTool } from "@agentproto/tool"
 
-// Hypothetical AIP-61 sandbox — a future AIP with ZERO pricing awareness.
+// Hypothetical sandbox family — a future AIP with ZERO pricing awareness. 9999 is a
+// deliberately fake placeholder (61 was used before but is now INFERENCE).
 interface SandboxHandle {
   readonly id: string
   readonly provider: string
@@ -15,7 +16,7 @@ const defineSandbox = (d: SandboxHandle): SandboxHandle => Object.freeze({ ...d 
 
 const appSpec = { aip: 42, keyBy: (h: AppHandle) => h.id! }
 const packSpec = { aip: 52, keyBy: (h: PackHandle) => h.name }
-const sandboxSpec = { aip: 61, keyBy: (h: SandboxHandle) => h.id }
+const sandboxSpec = { aip: 9999, keyBy: (h: SandboxHandle) => h.id }
 const toolSpec = { aip: 14, keyBy: (h: { id: string }) => h.id }
 
 /** Fixtures mirroring the dogfood that shaped the design. */
@@ -33,7 +34,7 @@ function buildWorld() {
     description: "bundle",
     version: "1.0.0",
     plugin: { inline: true },
-    pricing: { bundle: 49 }, // legacy AIP-52 pricing — deliberately ignored by the capability
+    pricing: { bundle: 49 }, // legacy pack-defined pricing — deliberately ignored by the capability
   })
   const sandbox = defineSandbox({ id: "e2b-main", provider: "e2b" })
   const tool = defineTool({ id: "search-web", name: "search-web", description: "web search" })
@@ -47,7 +48,7 @@ function buildWorld() {
   cat.registerFamily<PackHandle>(52, { family: "pack", keyBy: h => h.name }, packs)
   const sandboxes = createRegistry<SandboxHandle>({ family: "sandbox", keyBy: h => h.id })
   sandboxes.register(sandbox)
-  cat.registerFamily<SandboxHandle>(61, { family: "sandbox", keyBy: h => h.id }, sandboxes)
+  cat.registerFamily<SandboxHandle>(9999, { family: "sandbox", keyBy: h => h.id }, sandboxes)
   const tools = createRegistry<{ id: string }>({ family: "tool", keyBy: h => h.id })
   tools.register(tool)
   cat.registerFamily<{ id: string }>(14, { family: "tool", keyBy: h => h.id }, tools)
@@ -84,7 +85,7 @@ describe("ONE pricing mechanism across four artifact kinds", () => {
       }),
     ]
     expect(caps).toHaveLength(4)
-    expect(new Set(caps.map(c => c.on.aip))).toEqual(new Set([42, 52, 61, 14]))
+    expect(new Set(caps.map(c => c.on.aip))).toEqual(new Set([42, 52, 9999, 14]))
   })
 
   it("the target AIP never learns about pricing — sandbox handle untouched", () => {
@@ -245,7 +246,7 @@ describe("collectPriced — the 'collection of priced things' join", () => {
     expect(joined[2]!.handle).toBe(sandbox)
     expect(joined[3]!.handle).toBe(tool)
     // a dangling ref: skipped by the join, but discoverable via the catalog
-    expect(cat.resolve({ aip: 61, id: "ghost" })).toBeUndefined()
+    expect(cat.resolve({ aip: 9999, id: "ghost" })).toBeUndefined()
   })
 })
 
@@ -253,10 +254,10 @@ describe("defineProduct — `on` accepts the aip:// URI form (AIP-54)", () => {
   const price = { model: "one-time", amountMinor: 1, currency: "usd" } as const
 
   it("parses the URI form into the same normalized ref as the object form", () => {
-    const viaUri = defineProduct({ id: "p", kind: "pricing", on: "aip://42/book-companion", price })
-    const viaObj = defineProduct({ id: "p", kind: "pricing", on: { aip: 42, id: "book-companion" }, price })
+    const viaUri = defineProduct({ id: "p", kind: "pricing", on: "aip://53/book-companion", price })
+    const viaObj = defineProduct({ id: "p", kind: "pricing", on: { aip: 53, id: "book-companion" }, price })
     expect(viaUri.on).toEqual(viaObj.on)
-    expect(viaUri.on).toEqual({ aip: 42, id: "book-companion" })
+    expect(viaUri.on).toEqual({ aip: 53, id: "book-companion" })
   })
 
   it("parses the pinned URI form aip://<aip>/<id>@<version>", () => {
@@ -270,9 +271,9 @@ describe("defineProduct — `on` accepts the aip:// URI form (AIP-54)", () => {
   })
 
   it("attachPricing works with the URI form, including its derived default id", () => {
-    const p = attachPricing("aip://42/book-companion", price)
-    expect(p.on).toEqual({ aip: 42, id: "book-companion" })
-    expect(p.id).toBe("pricing-one-time-42-book-companion")
+    const p = attachPricing("aip://53/book-companion", price)
+    expect(p.on).toEqual({ aip: 53, id: "book-companion" })
+    expect(p.id).toBe("pricing-one-time-53-book-companion")
   })
 
   it("rejects a malformed aip:// URI loudly and specifically", () => {
@@ -297,7 +298,7 @@ describe("defineProduct — `on` accepts the aip:// URI form (AIP-54)", () => {
       amountMinor: 1,
       currency: "usd",
     })
-    const ghost = attachPricing({ aip: 61, id: "ghost" }, {
+    const ghost = attachPricing({ aip: 9999, id: "ghost" }, {
       model: "one-time",
       amountMinor: 1,
       currency: "usd",
@@ -307,6 +308,6 @@ describe("defineProduct — `on` accepts the aip:// URI form (AIP-54)", () => {
     expect(resolved[0]!.handle).toBe(app)
     expect(dangling).toHaveLength(1)
     expect(dangling[0]!.product).toBe(ghost)
-    expect(dangling[0]!.ref).toEqual({ aip: 61, id: "ghost" })
+    expect(dangling[0]!.ref).toEqual({ aip: 9999, id: "ghost" })
   })
 })

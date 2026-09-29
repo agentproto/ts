@@ -230,7 +230,7 @@ export async function resolveAgentRefsForWorkflow(
  * Walk up from `startDir` looking for an app root — a directory whose own
  * `.agentproto/APP.md` exists — stopping at the filesystem root. Mirrors how
  * `git`/`tsconfig` resolve upward from a file to its owning project: an
- * AIP-42 app's `workflows[].path` (APP.md frontmatter) is an arbitrary
+ * AIP-53 app's `workflows[].path` (APP.md frontmatter) is an arbitrary
  * relative path under the app dir, so there's no fixed depth to strip off a
  * WORKFLOW.md's own path — the marker file is the only reliable anchor.
  * Returns undefined when no ancestor carries one (a bare WORKFLOW.md with no

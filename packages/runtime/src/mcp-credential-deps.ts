@@ -1,9 +1,10 @@
 /**
  * Dependency-injection surface for MCP credential resolution.
  *
- * `packages/runtime` intentionally does NOT depend on `@agentproto/auth`;
- * the daemon bootstrap (e.g. `packages/cli`) can set a broker-backed
- * resolver here, and `session-spawn.ts` will call it when an `mcpServers`
+ * `packages/runtime` does depend on `@agentproto/auth` (e.g. `KeychainStore`
+ * in `session-spawn.ts`), but credential resolution is still injected here
+ * so non-darwin / test stores stay pluggable. The daemon bootstrap (e.g.
+ * `packages/cli`) can set a broker-backed resolver here, and `session-spawn.ts` will call it when an `mcpServers`
  * entry carries `credentialRef`. Errors from the hook are treated as
  * non-fatal by the caller.
  */
@@ -27,6 +28,12 @@ export interface McpCredentialDeps {
    *  bare `process.env` read at the call site. Returns null when the slug
    *  can't be resolved (missing/unconfigured). */
   resolveSandboxSecret?: (slug: string) => Promise<string | null>
+  /** Seam (unused until P1): read an imported-MCP secret by opaque ref
+   *  (`agentproto/mcp-import/<importId>`, account `<header|env>:<KEY>`).
+   *  Undefined when the ref is missing. */
+  resolveMcpSecret?: (ref: string) => Promise<string | undefined>
+  /** Seam (unused until P1): persist an imported-MCP secret under `ref`. */
+  storeMcpSecret?: (ref: string, value: string) => Promise<void>
 }
 
 let deps: McpCredentialDeps = {}

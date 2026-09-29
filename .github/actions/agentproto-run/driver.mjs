@@ -77,6 +77,21 @@ if (!existsSync(workflowPath)) {
 
 const cliSource = process.env.CLI_SOURCE ?? "npm"
 
+// Static, zero-lookup detail for the progress heartbeat (describeRunProgress's
+// `context` arg, see scripts/lib/workflow-progress.mjs) — already sitting in
+// this process's own scope, unlike per-session sandbox/turn detail below
+// which needs a live session_list lookup.
+const reviewConfig =
+  workflowInput && typeof workflowInput === "object" && workflowInput.reviewConfig &&
+  typeof workflowInput.reviewConfig === "object"
+    ? workflowInput.reviewConfig
+    : undefined
+const reviewerModel =
+  typeof reviewConfig?.reviewerModel === "string" && reviewConfig.reviewerModel.trim()
+    ? reviewConfig.reviewerModel.trim()
+    : undefined
+const maxReviewTurns = typeof reviewConfig?.maxReviewTurns === "number" ? reviewConfig.maxReviewTurns : undefined
+
 let agentprotoBin
 if (cliSource === "workspace") {
   agentprotoBin = join(cwd, "packages", "cli", "dist", "cli.mjs")
@@ -157,6 +172,13 @@ process.on("SIGTERM", () => {
   process.exit(143)
 })
 
+async function waitForDaemonExit(timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (!daemonExited && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 100))
+  }
+}
+
 async function waitForDaemonHealthy(deadlineMs) {
   const healthUrl = `http://127.0.0.1:${port}/health`
   while (Date.now() < deadlineMs) {
@@ -196,6 +218,68 @@ async function writeGithubOutput(name, value) {
 }
 
 const TERMINAL_STATUSES = new Set(["done", "failed", "cancelled"])
+
+/**
+ * Assembles `describeRunProgress`'s optional second argument for one poll's
+ * print. The static fields (adapter/model/cliSource/maxReviewTurns) cost
+ * nothing — this driver already has them in scope. Per-session sandbox
+ * placement and turn count are NOT on the `run`/`workflow_status` shape at
+ * all (see the `RunProgressContext` typedef in workflow-progress.mjs), so
+ * this is the "small additional lookup": one `session_list` call, scoped to
+ * whatever sessionIds this run's steps have actually attached so far.
+ * Best-effort — a lookup failure degrades to the static fields only, never
+ * breaks the heartbeat itself.
+ */
+async function buildProgressContext(client, run) {
+  const context = {
+    ...(adapter ? { adapter } : {}),
+    ...(reviewerModel ? { model: reviewerModel } : {}),
+    ...(cliSource ? { cliSource } : {}),
+    ...(maxReviewTurns !== undefined ? { maxReviewTurns } : {}),
+  }
+  const sessionIds = new Set()
+  for (const stage of Array.isArray(run?.stages) ? run.stages : []) {
+    for (const step of Array.isArray(stage?.steps) ? stage.steps : []) {
+      if (!step?.sessionId) continue
+      sessionIds.add(step.sessionId)
+      // First session to attach a sessionId, in stage/step order — this
+      // driver's own lane (pr-review, pr, fix) always drives a single agent
+      // session per run, so "first" is unambiguously "the" reviewer session.
+      if (context.reviewerSessionId === undefined) context.reviewerSessionId = step.sessionId
+    }
+  }
+  if (sessionIds.size === 0) return context
+  try {
+    const result = await client.callTool({
+      name: "session_list",
+      arguments: { full: true, includeArchived: true },
+    })
+    // No limit/cursor ⇒ the legacy `{ sessions: [...] }` wrapper (session_list's
+    // own `itemKey`), not the `{ items, nextCursor }` page envelope — see
+    // `paginated()` in packages/tool/src/transformers.ts.
+    const sessions = parseToolResult(result)?.sessions
+    const sessionMap = {}
+    for (const s of Array.isArray(sessions) ? sessions : []) {
+      if (!s?.id || !sessionIds.has(s.id)) continue
+      sessionMap[s.id] = {
+        ...(s.sandboxProvider ? { sandboxProvider: s.sandboxProvider } : {}),
+        ...(s.sandboxId ? { sandboxId: s.sandboxId } : {}),
+        ...(s.adapterSlug ? { adapterSlug: s.adapterSlug } : {}),
+        ...(s.model ? { model: s.model } : {}),
+        ...(s.turnsCompleted !== undefined ? { turnsCompleted: s.turnsCompleted } : {}),
+        // Same session_list summary this lookup already fetched — no extra
+        // session_usage round trip needed for the tool-call/token detail.
+        ...(s.toolCallsThisTurn !== undefined ? { toolCallsThisTurn: s.toolCallsThisTurn } : {}),
+        ...(s.tokensIn !== undefined ? { tokensIn: s.tokensIn } : {}),
+        ...(s.tokensOut !== undefined ? { tokensOut: s.tokensOut } : {}),
+      }
+    }
+    if (Object.keys(sessionMap).length > 0) context.sessions = sessionMap
+  } catch (err) {
+    console.error(`driver: session_list lookup for progress detail failed: ${err.message}`)
+  }
+  return context
+}
 
 async function main() {
   await waitForDaemonHealthy(Date.now() + 120_000)
@@ -241,9 +325,16 @@ async function main() {
     // `status` means the tool call itself errored (e.g. "run not found").
     if (!run.status) throw new Error(`workflow_status failed: ${run.error ?? "unknown error"}`)
 
+    // Base fingerprint drives change-detection exactly as before (stage/step
+    // status only) — enrichment below (adapter/model/sandbox/turn detail)
+    // rides along on whatever line actually gets printed, but never causes
+    // an EXTRA print (a turn count ticking up on its own isn't a "change"
+    // worth breaking the on-change throttle for; the 60s heartbeat still
+    // surfaces it).
     const progress = describeRunProgress(run)
     if (progress !== lastProgress || Date.now() - lastHeartbeatAt >= HEARTBEAT_MS) {
-      console.log(`driver: [+${Math.round((Date.now() - pollStartedAt) / 1000)}s] ${progress}`)
+      const context = await buildProgressContext(client, run)
+      console.log(`driver: [+${Math.round((Date.now() - pollStartedAt) / 1000)}s] ${describeRunProgress(run, context)}`)
       lastProgress = progress
       lastHeartbeatAt = Date.now()
     }
@@ -524,5 +615,10 @@ try {
   exitCode = 1
 } finally {
   killDaemon()
+  // SIGTERM makes the daemon say goodbye to the home daemon it joined
+  // (AGENTPROTO_JOIN) so the reviewer's final output is captured before this
+  // runner disappears — exiting right away would cut that short. Bounded; a
+  // daemon with no join exits in well under a second.
+  await waitForDaemonExit(35_000)
 }
 process.exit(exitCode)

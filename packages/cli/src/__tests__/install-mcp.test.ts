@@ -521,6 +521,91 @@ describe("runInstallMcp — windsurf", () => {
   })
 })
 
+describe("runInstallMcp — opencode", () => {
+  const opencodeConfigPath = "/tmp/fake-home/.config/opencode/opencode.json"
+
+  it("registers a remote MCP entry at ~/.config/opencode/opencode.json", async () => {
+    mockMultiPath({ dirs: ["/tmp/fake-home/.config/opencode"] })
+
+    const code = await runInstallMcp(["--agent", "opencode", "--yes"])
+    expect(code).toBe(0)
+
+    const configWrite = mockFs.writeFile.mock.calls.find(c => c[0] === opencodeConfigPath)
+    expect(configWrite).toBeDefined()
+    const written = JSON.parse(configWrite![1] as string)
+    expect(written.mcp.agentproto).toEqual({ type: "remote", url: "http://127.0.0.1:18790/mcp" })
+  })
+
+  it("merges into an existing opencode.json without dropping other keys", async () => {
+    mockMultiPath({
+      files: {
+        [opencodeConfigPath]: JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          provider: { openrouter: { api: "sk-or-v1-existing" } },
+          mcp: { jira: { type: "remote", url: "https://jira.example.com/mcp" } },
+        }),
+      },
+    })
+
+    const code = await runInstallMcp(["--agent", "opencode", "--yes"])
+    expect(code).toBe(0)
+
+    const configWrite = mockFs.writeFile.mock.calls.find(c => c[0] === opencodeConfigPath)
+    expect(configWrite).toBeDefined()
+    const written = JSON.parse(configWrite![1] as string)
+    // Pre-existing keys survive the merge — a full read-modify-write, not a truncate.
+    expect(written.$schema).toBe("https://opencode.ai/config.json")
+    expect(written.provider.openrouter.api).toBe("sk-or-v1-existing")
+    expect(written.mcp.jira).toEqual({ type: "remote", url: "https://jira.example.com/mcp" })
+    // New entry is added alongside the survivors.
+    expect(written.mcp.agentproto).toEqual({ type: "remote", url: "http://127.0.0.1:18790/mcp" })
+  })
+
+  it("is detected when only opencode.jsonc exists (not opencode.json)", async () => {
+    mockMultiPath({
+      files: { "/tmp/fake-home/.config/opencode/opencode.jsonc": "{}" },
+    })
+
+    const code = await runInstallMcp(["--agent", "opencode", "--yes"])
+    expect(code).toBe(0)
+    // Registration still writes the plain .json twin — opencode merges both.
+    const configWrite = mockFs.writeFile.mock.calls.find(c => c[0] === opencodeConfigPath)
+    expect(configWrite).toBeDefined()
+  })
+
+  it("--uninstall removes only the agentproto entry, leaving siblings intact", async () => {
+    mockMultiPath({
+      files: {
+        [opencodeConfigPath]: JSON.stringify({
+          mcp: {
+            jira: { type: "remote", url: "https://jira.example.com/mcp" },
+            agentproto: { type: "remote", url: "http://127.0.0.1:18790/mcp" },
+          },
+        }),
+        "/tmp/fake-home/.agentproto/install-state.json": JSON.stringify({
+          entries: [
+            {
+              agent: "opencode",
+              configPath: opencodeConfigPath,
+              transport: "http",
+              registeredAt: new Date().toISOString(),
+            },
+          ],
+        }),
+      },
+    })
+
+    const code = await runInstallMcp(["--uninstall"])
+    expect(code).toBe(0)
+
+    const configWrite = mockFs.writeFile.mock.calls.find(c => c[0] === opencodeConfigPath)
+    expect(configWrite).toBeDefined()
+    const written = JSON.parse(configWrite![1] as string)
+    expect(written.mcp.agentproto).toBeUndefined()
+    expect(written.mcp.jira).toEqual({ type: "remote", url: "https://jira.example.com/mcp" })
+  })
+})
+
 // ── tests: --app scoped mode ─────────────────────────────────────────────────
 
 describe("runInstallMcp --app", () => {

@@ -74,6 +74,15 @@ import {
 } from "./session-observer.js"
 import { artifactMarkerLines, formatToolCall, formatToolResult } from "./tool-presenter.js"
 import { createTranscriptWriter, sessionEventsPath } from "./transcript-writer.js"
+import {
+  addSessionArtifact as addSessionArtifactImpl,
+  getSessionArtifact as getSessionArtifactImpl,
+  listSessionArtifacts as listSessionArtifactsImpl,
+  pinSessionArtifact as pinSessionArtifactImpl,
+  type AddSessionArtifactInput,
+  type ArtifactRecord,
+  type GetSessionArtifactResult,
+} from "./session-artifacts.js"
 import { maybeTitleSession } from "./session-titler.js"
 import { buildResumeContextDigest } from "./resume-context-digest.js"
 import {
@@ -120,8 +129,10 @@ import { continueAgentSessionFresh } from "./session-continue-fresh.js"
 import {
   compactOutcome,
   deriveSessionOutcome,
+  OUTCOME_SUMMARY_MAX,
   readLastAssistantTextSync,
   shouldReplaceOutcome,
+  trimOutcomeText,
   type SessionOutcome,
   type SessionOutcomeCompact,
 } from "./session-outcome.js"
@@ -1015,7 +1026,10 @@ export interface SessionDescriptor {
    *     `"parent-exited"` (an orchestrator's dying subtree reap),
    *     `"provider-limit"` (a driver-reported subscription/usage-cap error,
    *     e.g. Claude Code's "hit your session limit"), `"forgotten"` (a live
-   *     session killed as part of an operator `DELETE`).
+   *     session killed as part of an operator `DELETE`), `"steward-completed"` /
+   *     `"steward-abandoned"` (the session steward's `closeWithOutcome` —
+   *     verdict `"done"` vs. `"abandoned"`; a `"blocked"`/`"needs-input"`
+   *     verdict doesn't close at all, see `SessionDescriptor.wrapupFlag`).
    *  Absent for every terminal path this file doesn't tag (a plain natural
    *  exit, an ordinary turn error) — the session's own fault, or at least
    *  not something worth a special label. A string outside this list is
@@ -1048,6 +1062,15 @@ export interface SessionDescriptor {
    *  revives the row. Persisted, so it survives restarts and archiving. See
    *  `session-outcome.ts`. */
   outcome?: SessionOutcome
+  /** A steward verdict of `"blocked"` or `"needs-input"` from
+   *  `registry.closeWithOutcome` (`session-wrapup.ts` / FIX-9A) — recorded
+   *  INSTEAD of closing, since neither verdict means the session is done.
+   *  The session stays exactly as alive as it was; this is a signal for a
+   *  human/orchestrator to look, not a termination. Persisted; overwritten
+   *  (not accumulated) by the next flag, and left stale on the descriptor
+   *  until something clears it (nothing here does — a later successful
+   *  turn/close is a separate, more informative signal than deleting this). */
+  wrapupFlag?: { verdict: "blocked" | "needs-input"; note?: string; judgedBy?: string; at: string }
   /** Last time anything was written to stdout/stderr. Lets the UI
    *  spot stuck sessions ("running for 2h, last output 12min ago"). */
   lastOutputAt?: string
@@ -1085,6 +1108,12 @@ export interface SessionDescriptor {
    *  every read since it's a live OS query, stale the instant it's
    *  written to disk. */
   processAlive?: boolean
+  /** Summed RSS in bytes of this session's process and all its OS-level
+   *  descendants (`processTreeRss`, `process-memory.ts`). Ephemeral,
+   *  never persisted — stamped only when a caller opts in (`session_list`'s
+   *  `withMemory: true`) since it costs a `ps` spawn; absent otherwise, and
+   *  absent for a row with no `pid` or that `ps` didn't report. */
+  rssBytes?: number
   /** Count of live supervisors currently blocked waiting on this session —
    *  HTTP `GET /sessions/:id/wait` long-polls and `session_monitor`
    *  subscriptions, both via `monitorSessionWait` (#session-visibility).
@@ -1703,6 +1732,11 @@ export interface SessionDescriptor {
    *  adapter (claude-code) that auto-discovers skills on its own and never
    *  reads this list back. */
   skills?: string[]
+  /** Capability bundle ids (`bundle_list`) resolved for this spawn (PLAN D
+   *  phase 1) — ids only, never the expanded imported-MCP snapshots (those
+   *  live only in `mcpServers` above, as reference-only proxy URLs). Absent
+   *  ⇒ no bundle was attached. */
+  bundles?: string[]
   /** Provider-specific resume hints sniffed from the session's
    *  output. claude-code prints `claude --resume <uuid>` on exit;
    *  we capture that uuid as `claudeResumeId`. On `restart`, when a
@@ -1903,10 +1937,13 @@ export interface SessionDescriptor {
   contextContinuityAckedAtPct?: number
   /** Id of the most recent checkpoint created for this session. */
   checkpointId?: string
-  /** When this session was continued fresh, the source session id. */
+  /** The source session id when this row continues another one: a
+   *  continue-fresh handoff OR a revival (restart / cron / sentinel / inbound
+   *  wake / direct resume of the same adapter conversation — also recorded as
+   *  `resumedFrom`). Absent on a row that started a conversation. */
   continuedFrom?: string
-  /** When this session was continued fresh into a new session, the target
-   *  session id. */
+  /** The row that continued this one (the inverse of `continuedFrom`); the
+   *  latest continuation wins when a row is revived more than once. */
   continuedTo?: string
   /** Set alongside `continuedFrom` on the NEW session — the harness the
    *  checkpoint moved from/to and when. Present on every `continue_fresh`
@@ -2278,6 +2315,13 @@ interface SessionRuntime {
   /** When this session last had a message steered into it — the R3 rate
    *  limit (`STEER_MIN_INTERVAL_MS`). In-memory only. */
   lastSteerAt?: number
+  /** Messages this session received that have since left its inbox (acked
+   *  by a wait, a turn, `inbox_ack`, or steered in), newest last, bounded
+   *  by `INBOX_CAP`. `findReceivedMessage` reads this before the transcript:
+   *  the `session-message` record goes through an async append stream, so a
+   *  reply issued right after the ack can beat it to disk. In-memory only —
+   *  after a restart the transcript is flushed and is the source. */
+  recentlyReceived?: SessionMessage[]
   autonomousTurn?: {
     /** Tool calls announced and not yet resulted — synthesized at close,
      *  and the silence-close fallback holds off while any are open. */
@@ -3063,6 +3107,29 @@ export type PermissionRespondResult =
       message: string
     }
 
+/** Input to `SessionsRegistry.closeWithOutcome`. `verdict: "done" |
+ *  "abandoned"` records the Level 2 fields onto the session's
+ *  `SessionOutcome` and actually closes it; `"blocked" | "needs-input"`
+ *  records the SAME `note`/`judgedBy` onto `SessionDescriptor.wrapupFlag`
+ *  instead and never touches the session's liveness. See {@link
+ *  SessionOutcome} / {@link SessionDescriptor.wrapupFlag} for the field
+ *  meanings. */
+export interface CloseWithOutcomeInput {
+  verdict: "done" | "abandoned" | "blocked" | "needs-input"
+  /** Overrides the outcome's derived summary when given (e.g. a judge's own
+   *  written summary) — trimmed the same way `deriveSessionOutcome` trims
+   *  `lastAssistantText`. Omitted keeps whatever `deriveSessionOutcome`
+   *  computed from the session's own last assistant message. Ignored for a
+   *  `"blocked"`/`"needs-input"` verdict (there's no outcome to summarize —
+   *  nothing closed). */
+  summary?: string
+  note?: string
+  /** A judge session id, or `"steward-rules"` for a deterministic close with
+   *  no judge in the loop. */
+  judgedBy?: string
+  source: "judged" | "declared"
+}
+
 export interface SessionsRegistry {
   spawn(input: SpawnSessionInput): SessionDescriptor
   /** Adopt a ChildProcess that was spawned outside the registry —
@@ -3558,6 +3625,30 @@ export interface SessionsRegistry {
    *  touches `keepAlive`, reaper eligibility, or any notification path —
    *  pin is quiet, structural state only. Throws when the id is unknown. */
   setPinned(id: string, pinned: boolean): SessionDescriptor
+  /** Materialize a new artifact (or version of one) into the session's
+   *  durable artifact store (`session_artifact_add` MCP verb / `POST
+   *  /sessions/:id/artifacts`) — see `session-artifacts.ts`. Emits
+   *  `session:artifact-added` on a real (non-deduped) write. Throws when
+   *  the id is unknown. */
+  addSessionArtifact(id: string, input: AddSessionArtifactInput): ArtifactRecord
+  /** Current-state fold of the session's artifact store — every key's
+   *  version history, most-recently-updated first. Empty array for a
+   *  known session with no artifacts yet. Throws when the id is unknown. */
+  listSessionArtifacts(id: string): ArtifactRecord[]
+  /** One artifact version's metadata plus its bounded file content (single-
+   *  file kinds only — a "site" version's content is browsed via the raw-
+   *  serve HTTP route instead). Undefined when the key/version doesn't
+   *  exist. Throws when the session id is unknown. */
+  getSessionArtifact(
+    id: string,
+    key: string,
+    opts?: { version?: number; maxBytes?: number },
+  ): GetSessionArtifactResult | undefined
+  /** Set or clear an artifact's pin (`session_artifact_pin` MCP verb /
+   *  `POST /sessions/:id/artifacts/:key/pin`). Emits
+   *  `session:artifact-pinned-changed`. Undefined when the key doesn't
+   *  exist. Throws when the session id is unknown. */
+  setArtifactPinned(id: string, key: string, pinned: boolean): ArtifactRecord | undefined
   /**
    * Manually override `awaitingInput`/`awaitingQuestion` (the
    * `session_flag_status` MCP verb) — the ONE write path for this pair
@@ -3667,6 +3758,34 @@ export interface SessionsRegistry {
    *  reason (including `"operator-stopped"` or none) on a terminal row
    *  stays the plain no-op. */
   kill(id: string, signal?: NodeJS.Signals, reason?: SessionEndReason): boolean
+  /** Close a LIVE agent-cli session with a Level 2 (judged/declared) outcome
+   *  — the primitive the session steward (FIX-9A/9B) drives once a wrap-up
+   *  plan (`planSessionWrapup`, `session-wrapup.ts`) puts a session in the
+   *  `close`/`stuck` class, or a judge agent reaches a verdict on a `judge`
+   *  one. Verdict `"done"` or `"abandoned"` actually closes: terminates the
+   *  same graceful way `kill()` does, tags `endedReason: "steward-completed"`
+   *  (`"done"`) or `"steward-abandoned"` (`"abandoned"`), and — like
+   *  `reapIdle`, unlike a plain `kill()` — CLEARS the in-memory
+   *  `agentSession` binding so the row stays lazy-resumable in place. The
+   *  recorded outcome's `source`/`verdict`/`judgedBy`/`note` are stamped onto
+   *  the row's `SessionOutcome` (see `session-outcome.ts`) on top of what
+   *  `deriveSessionOutcome` would otherwise compute (last assistant message,
+   *  PRs, cost) — a declared close still shows what the session actually
+   *  produced. Verdict `"blocked"` or `"needs-input"` is NOT a completion —
+   *  nothing is terminated; the verdict is recorded as
+   *  `SessionDescriptor.wrapupFlag` instead, and the session is left exactly
+   *  as alive as it was.
+   *
+   *  Refuses (returns false, no-op) a session that is not a live
+   *  (`running`/`starting`) agent-cli row, or that AT THE MOMENT OF THE CALL
+   *  is `busy`/`awaitingInput`/`awaitingPermission` or has a background task
+   *  outstanding (`pendingBgTasks`/`backgroundTasks`) — a plan computed
+   *  moments earlier can be stale; this is the re-check that keeps an
+   *  autonomous close from ever landing on a session that just picked up a
+   *  turn, asked a question, or still has something in flight. Applies to
+   *  BOTH branches (close and flag-only) — a stale plan is refused either
+   *  way, never silently acted on. */
+  closeWithOutcome(id: string, input: CloseWithOutcomeInput): boolean
   /** Retire a long-idle agent-cli session to free its adapter process — the
    *  primitive the idle-session reaper (`runIdleReapPass`, PR-6) drives on a
    *  periodic sweep. Terminates the underlying adapter/child the SAME graceful
@@ -3927,6 +4046,9 @@ export interface SpawnAgentInput {
    *  explicit ∪ preset ∪ config-defaults result) — recorded verbatim onto
    *  {@link SessionDescriptor.skills}. See that field's doc. */
   skills?: string[]
+  /** Capability bundle ids resolved for this spawn — recorded verbatim onto
+   *  {@link SessionDescriptor.bundles}; see that field's doc. */
+  bundles?: string[]
   /** Persistent isolated-config dir this spawn passed to
    *  `startSession({ configDir })` — recorded verbatim onto
    *  {@link SessionDescriptor.adapterConfigDir} so restart/lazy-resume can
@@ -4619,8 +4741,20 @@ export function createSessionsRegistry(opts?: {
   const recordOutcome = (rt: SessionRuntime): void => {
     if (rt.desc.kind !== "agent-cli") return
     if (rt.desc.status === "running" || rt.desc.status === "starting") return
+    // Pinned session artifacts ride the outcome as `type: "file"` refs —
+    // best-effort: a store read failure (e.g. a corrupt ledger line) must
+    // never block recording the rest of the outcome.
+    let pinnedArtifacts: import("./session-outcome.js").SessionOutcomeArtifact[] = []
+    try {
+      pinnedArtifacts = listSessionArtifactsImpl(rt.desc.id, transcriptBaseDir)
+        .filter(a => a.pinned)
+        .map(a => ({ type: "file" as const, ref: a.key, title: a.label ?? a.key }))
+    } catch {
+      // Ignore — see comment above.
+    }
     const next = deriveSessionOutcome(rt.desc, {
       lastAssistantText: rt.lastAssistantText ?? rt.desc.outcome?.summary,
+      ...(pinnedArtifacts.length > 0 ? { artifacts: pinnedArtifacts } : {}),
     })
     if (!shouldReplaceOutcome(rt.desc.outcome, next)) return
     rt.desc.outcome = next
@@ -5020,6 +5154,22 @@ export function createSessionsRegistry(opts?: {
         )
       }
     })()
+  }
+
+  /** A revival (restart / lazy fork) mints a NEW descriptor for the SAME
+   *  conversation. `resumedFrom` alone is invisible to list/tree consumers,
+   *  so every revival also records `continuedFrom` — the field the session
+   *  list, tree and UI group by — and back-links `continuedTo` on the prior
+   *  row (see {@link linkContinuedTo}). */
+  const resumeLineage = (
+    resumedFrom: string | undefined,
+  ): { resumedFrom?: string; continuedFrom?: string } =>
+    resumedFrom ? { resumedFrom, continuedFrom: resumedFrom } : {}
+
+  const linkContinuedTo = (resumedFrom: string | undefined, newId: string): void => {
+    if (!resumedFrom || resumedFrom === newId) return
+    const prevRt = sessions.get(resumedFrom)
+    if (prevRt) prevRt.desc.continuedTo = newId
   }
 
   const schedulePersist = (): void => {
@@ -6650,8 +6800,15 @@ export function createSessionsRegistry(opts?: {
     }
     setInbox(rt, next)
   }
+  const rememberReceived = (rt: SessionRuntime, msgs: readonly SessionMessage[]): void => {
+    if (!msgs.length) return
+    const ids = new Set(msgs.map(m => m.id))
+    const next = [...(rt.recentlyReceived ?? []).filter(m => !ids.has(m.id)), ...msgs]
+    rt.recentlyReceived = next.length > INBOX_CAP ? next.slice(-INBOX_CAP) : next
+  }
   const removeFromInbox = (rt: SessionRuntime, ids: ReadonlySet<string>): void => {
     if (!rt.desc.inbox?.some(m => ids.has(m.id))) return
+    rememberReceived(rt, rt.desc.inbox.filter(m => ids.has(m.id)))
     setInbox(rt, rt.desc.inbox.filter(m => !ids.has(m.id)))
   }
   const dropQueuedEnvelopes = (rt: SessionRuntime, ids: ReadonlySet<string>): void => {
@@ -6719,6 +6876,7 @@ export function createSessionsRegistry(opts?: {
     }
     recordSent(stamped)
     transcriptWriter.recordSessionMessage?.(rt.desc.id, stamped)
+    rememberReceived(rt, [stamped])
     emitSessionMessage(stamped)
     appendLine(rt, `[message] ${stamped.id} from ${stamped.from.relation} steered into the running turn`, "stdout")
     return true
@@ -8008,6 +8166,7 @@ export function createSessionsRegistry(opts?: {
         // Persist the resolved skills list, whether or not this adapter
         // consumes it (see `SessionDescriptor.skills`'s doc).
         ...(input.skills && input.skills.length > 0 ? { skills: input.skills } : {}),
+        ...(input.bundles && input.bundles.length > 0 ? { bundles: input.bundles } : {}),
         // Persist the isolated-config location so restart/lazy-resume can
         // hand the respawned adapter the SAME dir (native-resume store).
         ...(input.adapterConfigDir ? { adapterConfigDir: input.adapterConfigDir } : {}),
@@ -8050,7 +8209,7 @@ export function createSessionsRegistry(opts?: {
         // can legitimately be "" (a fresh fallback spawn with no continuity),
         // so it's gated on `!== undefined` rather than truthiness — a truthy
         // gate would silently drop the empty-string case.
-        ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),
+        ...resumeLineage(input.resumedFrom),
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
         ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
@@ -8081,6 +8240,7 @@ export function createSessionsRegistry(opts?: {
       }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
+      linkContinuedTo(input.resumedFrom, id)
       bindOutOfTurnEvents(rt)
       stampCapabilities(rt)
       // Live usage refresh for reader-equipped adapters (hermes/opencode/
@@ -8196,7 +8356,7 @@ export function createSessionsRegistry(opts?: {
         // below): what `session_restart` / `session_continue_fresh` read to
         // keep a held session in hold, and what summaries report.
         ...(input.permissionHold ? { permissionHold: true } : {}),
-        ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),
+        ...resumeLineage(input.resumedFrom),
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
         ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
@@ -8225,6 +8385,7 @@ export function createSessionsRegistry(opts?: {
       }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
+      linkContinuedTo(input.resumedFrom, id)
       sessionEvents?.emit({
         type: "session:spawned",
         sessionId: id,
@@ -8446,7 +8607,7 @@ export function createSessionsRegistry(opts?: {
         depth: input.depth ?? 0,
         // Restart lineage — same gating rule as spawnAgent above (`resumeVia`
         // can legitimately be "").
-        ...(input.resumedFrom ? { resumedFrom: input.resumedFrom } : {}),
+        ...resumeLineage(input.resumedFrom),
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
         // Carried so a LATER `pty-plain` restart of THIS row can still
         // replay the same extra env (see `ptyResumeEnv`'s doc) — the only
@@ -8470,6 +8631,7 @@ export function createSessionsRegistry(opts?: {
       }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
+      linkContinuedTo(input.resumedFrom, id)
       // Lineage-attribution signal (WP-R3) — same rule as spawnAgent above.
       sessionEvents?.emit({
         type: "session:spawned",
@@ -8944,6 +9106,10 @@ export function createSessionsRegistry(opts?: {
       if (!rt) return undefined
       const inInbox = rt.desc.inbox?.find(m => m.id === messageId)
       if (inInbox) return inInbox
+      // Consumed this daemon lifetime: its transcript record may still be
+      // in the append stream's buffer, not on disk yet.
+      const recent = rt.recentlyReceived?.find(m => m.id === messageId)
+      if (recent) return recent
       let raw: string
       try {
         raw = readFileSync(sessionEventsPath(id, transcriptBaseDir), "utf8")
@@ -9642,6 +9808,78 @@ export function createSessionsRegistry(opts?: {
       emitExited(rt)
       return true
     },
+    closeWithOutcome(id, input) {
+      const rt = sessions.get(id)
+      if (!rt) return false
+      // Same universe as reapIdle: a live agent-cli row only — a PTY/command/
+      // terminal/browser session, or one already terminal, is never touched.
+      if (rt.desc.kind !== "agent-cli") return false
+      if (rt.desc.status !== "running" && rt.desc.status !== "starting") return false
+      // Re-check liveness AT THE MOMENT OF THE CALL — the plan that picked
+      // this session may be stale by the time this actually lands. A
+      // background task (agent-reported or the turn-end heuristic) is the
+      // same kind of staleness: something is still in flight, so this
+      // REFUSES rather than silently dropping it.
+      if (rt.desc.busy === true || rt.desc.awaitingInput === true || rt.desc.awaitingPermission === true) {
+        return false
+      }
+      if ((rt.desc.pendingBgTasks ?? 0) > 0 || (rt.desc.backgroundTasks?.length ?? 0) > 0) return false
+
+      // "blocked" / "needs-input" are NOT completion — the session stays
+      // exactly as alive as it was, and the verdict is recorded as a flag
+      // instead of a termination. Only "done"/"abandoned" actually close.
+      if (input.verdict === "blocked" || input.verdict === "needs-input") {
+        rt.desc.wrapupFlag = {
+          verdict: input.verdict,
+          ...(input.note !== undefined ? { note: input.note } : {}),
+          ...(input.judgedBy !== undefined ? { judgedBy: input.judgedBy } : {}),
+          at: new Date().toISOString(),
+        }
+        schedulePersist()
+        return true
+      }
+
+      const reason: SessionEndReason = input.verdict === "done" ? "steward-completed" : "steward-abandoned"
+
+      rt.desc.killedMidTurn = false // guaranteed by the busy guard above
+      rt.desc.status = "killed"
+      rt.desc.endedAt = new Date().toISOString()
+      rt.desc.endedReason = reason
+      if (rt.agentSession) {
+        releaseOutOfTurnEvents(rt)
+        recordExitUsageSnapshot(rt)
+        void rt.agentSession.close().catch(() => undefined)
+        void transcriptWriter.close(rt.desc.id)
+        tracedSessions.delete(rt.desc.id)
+        // THE difference from a plain kill(): clear the binding so the row is
+        // lazy-resumable in this same daemon lifetime — same as reapIdle.
+        rt.agentSession = undefined
+      }
+      killChildIfSpawned(rt.child, "SIGTERM")
+      schedulePersist()
+      // Derives + records the Level 1 outcome first (source:"derived") —
+      // same one exit funnel every terminal path goes through.
+      emitExited(rt)
+
+      // Layer the Level 2 fields on top of what emitExited just derived —
+      // same "merge after the termination fields are set" shape as
+      // markOutcomeCompleted, so the derived summary/artifacts/cost survive
+      // under the judged/declared verdict.
+      const base = rt.desc.outcome ?? deriveSessionOutcome(rt.desc, { lastAssistantText: rt.lastAssistantText })
+      rt.desc.outcome = {
+        ...base,
+        source: input.source,
+        verdict: input.verdict,
+        ...(input.summary !== undefined
+          ? { summary: trimOutcomeText(input.summary, OUTCOME_SUMMARY_MAX, "tail") }
+          : {}),
+        ...(input.judgedBy !== undefined ? { judgedBy: input.judgedBy } : {}),
+        ...(input.note !== undefined ? { note: input.note } : {}),
+        recordedAt: new Date().toISOString(),
+      }
+      schedulePersist()
+      return true
+    },
     reapIdle(id, idleMs = 0) {
       const rt = sessions.get(id)
       if (!rt) return false
@@ -9938,6 +10176,45 @@ export function createSessionsRegistry(opts?: {
       })
       stampReadLiveness(rt.desc)
       return rt.desc
+    },
+    addSessionArtifact(id, input) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`addSessionArtifact: no session "${id}"`)
+      const result = addSessionArtifactImpl(id, input, transcriptBaseDir)
+      if (result.added) {
+        sessionEvents?.emit({
+          type: "session:artifact-added",
+          sessionId: id,
+          key: result.record.key,
+          kind: result.record.kind,
+          version: result.version.version,
+          ...(result.record.label ? { label: result.record.label } : {}),
+          ts: new Date().toISOString(),
+        })
+      }
+      return result.record
+    },
+    listSessionArtifacts(id) {
+      if (!sessions.get(id)) throw new Error(`listSessionArtifacts: no session "${id}"`)
+      return listSessionArtifactsImpl(id, transcriptBaseDir)
+    },
+    getSessionArtifact(id, key, opts) {
+      if (!sessions.get(id)) throw new Error(`getSessionArtifact: no session "${id}"`)
+      return getSessionArtifactImpl(id, key, opts, transcriptBaseDir)
+    },
+    setArtifactPinned(id, key, pinned) {
+      if (!sessions.get(id)) throw new Error(`setArtifactPinned: no session "${id}"`)
+      const record = pinSessionArtifactImpl(id, key, pinned, transcriptBaseDir)
+      if (record) {
+        sessionEvents?.emit({
+          type: "session:artifact-pinned-changed",
+          sessionId: id,
+          key,
+          pinned,
+          ts: new Date().toISOString(),
+        })
+      }
+      return record
     },
     flagAwaitingInput(id, patch) {
       const rt = sessions.get(id)

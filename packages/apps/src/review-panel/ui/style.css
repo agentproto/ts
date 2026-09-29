@@ -133,6 +133,8 @@ tr.row.selected { background: color-mix(in srgb, var(--rp-accent) 14%, transpare
 .tag { display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 10px; font-weight: 600; white-space: nowrap; }
 .t-dirty { background: color-mix(in srgb, var(--rp-incomplete) 15%, transparent); color: var(--rp-incomplete); }
 .t-cached { background: color-mix(in srgb, var(--rp-ink-muted) 15%, transparent); color: var(--rp-ink-muted); }
+.t-signed { background: color-mix(in srgb, var(--rp-pass) 12%, transparent); color: var(--rp-pass); }
+.t-unsigned { background: color-mix(in srgb, var(--rp-ink-muted) 10%, transparent); color: var(--rp-ink-muted); }
 .t-blocking { background: color-mix(in srgb, var(--rp-block) 12%, transparent); color: var(--rp-block); }
 .t-advisory { background: color-mix(in srgb, var(--rp-ink-muted) 12%, transparent); color: var(--rp-ink-muted); }
 .pr-open { background: color-mix(in srgb, var(--rp-pass) 15%, transparent); color: var(--rp-pass); }

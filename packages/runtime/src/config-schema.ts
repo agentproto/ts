@@ -26,6 +26,7 @@ import type {
   PairingConfig,
   ProfileConfig,
   ProvenanceConfig,
+  ApprovalsConfig,
   SessionsConfig,
   SpawnConfig,
   TerminalPreset,
@@ -104,6 +105,8 @@ const defaultsAdapterConfigSchema: z.ZodType<DefaultsAdapterConfig> = z
     options: optionsMapSchema.optional(),
     auth: defaultsAdapterAuthConfigSchema.optional(),
     contextContinuity: contextContinuityPolicySchema.optional(),
+    bundles: z.array(z.string()).optional(),
+    daemonMount: z.boolean().optional(),
   })
   .passthrough()
 
@@ -118,6 +121,7 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
     skills: z.array(z.string()).optional(),
     options: optionsMapSchema.optional(),
     adapters: z.record(z.string(), defaultsAdapterConfigSchema).optional(),
+    bundles: z.array(z.string()).optional(),
     contextContinuity: contextContinuityPolicySchema.optional(),
     defaultRoleDepthCutoff: z.number().optional(),
     maxGrantableDelegation: z.number().optional(),
@@ -178,6 +182,8 @@ const featuresConfigSchema: z.ZodType<FeaturesConfig> = z
   .object({
     pty: z.boolean().optional(),
     llmEndpoint: z.boolean().optional(),
+    deviceInferenceShare: z.boolean().optional(),
+    deviceSpawnAllow: z.boolean().optional(),
   })
   .passthrough()
 
@@ -197,6 +203,10 @@ const spawnConfigSchema: z.ZodType<SpawnConfig> = z
 
 const provenanceConfigSchema: z.ZodType<ProvenanceConfig> = z
   .object({ wrapGh: z.boolean().optional() })
+  .passthrough()
+
+const approvalsConfigSchema: z.ZodType<ApprovalsConfig> = z
+  .object({ webOrigins: z.array(z.string()).optional() })
   .passthrough()
 
 const sessionsConfigSchema: z.ZodType<SessionsConfig> = z
@@ -287,6 +297,7 @@ export const agentprotoConfigSchema = z
     spawn: spawnConfigSchema.optional(),
     sessions: sessionsConfigSchema.optional(),
     provenance: provenanceConfigSchema.optional(),
+    approvals: approvalsConfigSchema.optional(),
     agentsMd: agentsMdConfigSchema.optional(),
     titler: titlerConfigSchema.optional(),
     profiles: z.record(z.string(), profileConfigSchema).optional(),
@@ -341,6 +352,7 @@ type ConfigTopLevelKey =
   | "spawn"
   | "sessions"
   | "provenance"
+  | "approvals"
   | "agentsMd"
   | "titler"
   | "profiles"
@@ -444,6 +456,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "daemon",
     label: "Allowed origins",
     help: "Trusted browser origins for mutating /sessions/* routes, in addition to the hardcoded localhost defaults. Lockout: a bad value can lock a browser UI out.",
+  },
+  {
+    path: "approvals.webOrigins",
+    schema: strArray,
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Approval web-click origins",
+    help: "Origins allowed to decide a pending approval via POST /approvals/:id/decision (web_click channel). Empty (default) turns the channel off entirely. A SEPARATE allowlist from daemon.allowedOrigins, which is not automatically trusted to decide approvals. Lockout: a bad value can lock the web decision UI out.",
+    default: [],
   },
   {
     path: "daemon.strictOrigins",
@@ -675,6 +697,15 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     help: "AIP-45 options auto-applied to every agent_start spawn.",
   },
   {
+    path: "defaults.bundles",
+    schema: strArray,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Default capability bundles",
+    help: "Bundle ids (bundle_list) auto-attached to every agent_start spawn (unioned with per-adapter bundles).",
+  },
+  {
     path: "defaults.defaultRoleDepthCutoff",
     schema: num,
     apply: "hot",
@@ -903,6 +934,25 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "harnesses",
     label: "Adapter default options",
     help: "AIP-45 options auto-applied to spawns of this adapter.",
+  },
+  {
+    path: "defaults.adapters.*.bundles",
+    schema: strArray,
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Adapter default capability bundles",
+    help: "Bundle ids (bundle_list) auto-attached to spawns of this adapter (unioned with the global default).",
+  },
+  {
+    path: "defaults.adapters.*.daemonMount",
+    schema: z.boolean(),
+    apply: "hot",
+    writable: true,
+    section: "harnesses",
+    label: "Adapter daemon self-mount opt-in",
+    help: "Explicitly mount the daemon's own scoped /mcp for spawns of this adapter, for harnesses outside the default self-mount allowlist (opencode, codex, gemini, …).",
+    default: false,
   },
   {
     path: "defaults.adapters.*.contextContinuity",
@@ -1149,6 +1199,26 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "daemon",
     label: "LLM Endpoint feature",
     help: "Enable the local LLM Endpoint proxy sidecar (route + MCP tools + child-process lifecycle).",
+    default: false,
+  },
+  {
+    path: "features.deviceInferenceShare",
+    schema: bool,
+    apply: "restart",
+    writable: true,
+    section: "daemon",
+    label: "Device inference sharing",
+    help: "Expose this daemon's local inference endpoint(s) to a paired HOST-scoped controller. Toggle via `agentproto devices share-inference on|off`.",
+    default: false,
+  },
+  {
+    path: "features.deviceSpawnAllow",
+    schema: bool,
+    apply: "restart",
+    writable: true,
+    section: "daemon",
+    label: "Device spawn allow",
+    help: "Allow a paired HOST-scoped controller to spawn/drive agent sessions on this daemon (`agent_start({ sandbox: \"device:<name>\" })`). Toggle via `agentproto devices allow-spawn on|off`.",
     default: false,
   },
 ] as const

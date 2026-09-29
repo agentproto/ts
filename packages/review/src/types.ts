@@ -55,6 +55,20 @@ export interface LaneResult {
   /** Agent lanes: the model the reviewer session ran on, when the host knows
    *  it (the session record's active model). Omitted when unknown. */
   model?: string
+  /** Agent lanes only: set when this lane reused a prior PASSING attestation
+   *  and reviewed only the delta on top of it, instead of the full range —
+   *  see "attestation composition" in the package doc. `rangeSha` is the
+   *  PRIOR attestation's own ledger-key rangeSha (`baseSha..headSha` of that
+   *  prior run — same `baseSha` as this one, since composition requires it);
+   *  `headSha` is that prior attestation's head (the delta this lane
+   *  actually reviewed is `headSha..<this run's head>`); `attestationSha256`
+   *  pins the exact prior attestation reused, so a verifier can resolve it
+   *  and confirm it wasn't swapped for a different one after the fact. */
+  composedFrom?: {
+    rangeSha: string
+    headSha: string
+    attestationSha256: string
+  }
 }
 
 /** The folded review verdict.
@@ -85,12 +99,61 @@ export interface RubricDigest {
   sha256: string
 }
 
+/** Content hash of one resolved review pack (`uses[]` entry) at review time —
+ *  sha256 over the pack's REVIEW.md plus every rubric file its selected
+ *  checks use (sorted by path). `ref` is the `uses[].pack` string as
+ *  written; `id`/`version` come from the pack's own REVIEW.md. A digest edit
+ *  (the pack's REVIEW.md, or any rubric it selects) changes what the pack's
+ *  lanes check, so it's part of what the verdict attests — same role as
+ *  {@link RubricDigest} for a locally-declared check.
+ *
+ *  `alg` names the RECIPE `sha256` was computed under — which bytes, in
+ *  what order, with what separators (see `packs.ts`'s
+ *  `computePackDigestSha256` for the exact v1 layout, documented there and
+ *  in `packages/review/README.md`'s "Review packs" section). It is NOT the
+ *  hash function (that's always sha256) — it's a version tag for the
+ *  format itself, so a future recipe change never gets compared against an
+ *  older one as if they were the same thing. This travels inside a SIGNED
+ *  attestation and is expensive to change after the fact, so it's
+ *  versioned from day one even though only one version exists yet. A
+ *  verifier that doesn't recognize `alg` must refuse to compare rather
+ *  than silently mis-verify — see `verifyPackDigests` in the CLI. */
+export interface PackDigest {
+  ref: string
+  id: string
+  version: string
+  alg: "agentproto-pack-digest/v1"
+  sha256: string
+}
+
 /** Who produced the verdict. */
 export interface Attestor {
   /** The daemon (host) identity that ran the review. */
   daemon: string
   /** Harness presets the agent lanes ran under, deduplicated. */
   presets: string[]
+  /** Ed25519 signature over the canonical JSON of the attestation with THIS
+   *  field absent (see `canonicalAttestationBytes`) — only the daemon signs;
+   *  owner/session/model/presets stay claims inside the payload, never
+   *  signers. Additive and optional: an attestation the signing daemon
+   *  couldn't sign (no `ssh-keygen`, an unreadable key) is written unsigned
+   *  rather than failing the review, and a v1 verifier that ignores this
+   *  field stays correct either way. */
+  signature?: {
+    alg: "ssh-ed25519"
+    /** `ssh-keygen -lf` fingerprint of the signing key (`SHA256:...`). */
+    keyFingerprint: string
+    /** The owner identity claimed — checked against an allowed_signers
+     *  file's principal column at verify time. This is a CLAIM inside the
+     *  signed payload's envelope, not itself authenticated by the
+     *  signature; the daemon's key is what's authenticated, principal is
+     *  what it vouches for. */
+    principal: string
+    /** ISO timestamp the signature was produced. */
+    signedAt: string
+    /** Armored `ssh-keygen -Y sign -n agentproto-review` SSHSIG output. */
+    sig: string
+  }
 }
 
 /** Who asked for the review. Informational provenance — it names the
@@ -137,6 +200,9 @@ export interface Attestation {
   attestor: Attestor
   /** Agent-lane rubric digests (empty when the binding has no agent lane). */
   rubrics: RubricDigest[]
+  /** Digests of the review packs (`uses[]`) this run resolved — omitted when
+   *  the manifest declares none. Additive; schema id unchanged. */
+  packs?: PackDigest[]
   /** True when the working tree had uncommitted changes to tracked files
    *  while the lanes ran — the checks then saw content the range doesn't
    *  contain, so the attestation is recorded but never served from cache. */

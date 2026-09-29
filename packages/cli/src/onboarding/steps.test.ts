@@ -11,6 +11,7 @@ import { agentsStep, parseNpxPackage } from "./steps/agents.js"
 import { authStep } from "./steps/auth.js"
 import { clientsStep } from "./steps/clients.js"
 import { devicesStep } from "./steps/devices.js"
+import { rendezvousStep } from "./steps/rendezvous.js"
 import { skillsStep } from "./steps/skills.js"
 import { localModelsStep } from "./steps/local-models.js"
 import { llmGatewayStep } from "./steps/llm-gateway.js"
@@ -45,6 +46,7 @@ describe("healthy machine", () => {
       "auth",
       "clients",
       "devices",
+      "rendezvous",
       "skills",
       "local-models",
       "llm-gateway",
@@ -497,6 +499,67 @@ describe("devices", () => {
   })
 })
 
+describe("rendezvous", () => {
+  it("reachable direct reports ok with the hosted default url", async () => {
+    const checks = await rendezvousStep.detect(
+      createFakeContext({ dialWebSocket: async () => ({ ok: true, via: "direct" }) }),
+    )
+    expect(byId(checks, "rendezvous.reachable")).toMatchObject({
+      status: "ok",
+      detail: "reachable (direct) — wss://rdv.agentproto.sh/v1",
+    })
+  })
+
+  it("reachable via proxy is distinguished from direct", async () => {
+    const checks = await rendezvousStep.detect(
+      createFakeContext({ dialWebSocket: async () => ({ ok: true, via: "proxy" }) }),
+    )
+    expect(byId(checks, "rendezvous.reachable").detail).toContain("reachable (via proxy)")
+  })
+
+  it("a configured pairing.rendezvous overrides the hosted default", async () => {
+    const checks = await rendezvousStep.detect(
+      createFakeContext({
+        sources: { loadConfig: async () => ({ pairing: { rendezvous: "wss://rv.example.com/v1" } }) },
+        dialWebSocket: async () => ({ ok: true, via: "direct" }),
+      }),
+    )
+    expect(byId(checks, "rendezvous.reachable").detail).toContain("wss://rv.example.com/v1")
+  })
+
+  it("pairing.rendezvous set to \"\" is skipped, not warned", async () => {
+    const checks = await rendezvousStep.detect(
+      createFakeContext({ sources: { loadConfig: async () => ({ pairing: { rendezvous: "" } }) } }),
+    )
+    expect(byId(checks, "rendezvous.reachable").status).toBe("skipped")
+  })
+
+  it("an unreachable broker warns with the error and a fix", async () => {
+    const checks = await rendezvousStep.detect(
+      createFakeContext({ dialWebSocket: async () => ({ ok: false, via: "direct", error: "ECONNREFUSED" }) }),
+    )
+    expect(byId(checks, "rendezvous.reachable")).toMatchObject({
+      status: "warn",
+      fix: expect.stringContaining("agentproto rendezvous serve"),
+    })
+    expect(byId(checks, "rendezvous.reachable").detail).toContain("ECONNREFUSED")
+  })
+
+  it("a loadConfig failure warns instead of throwing", async () => {
+    const checks = await rendezvousStep.detect(
+      createFakeContext({
+        sources: {
+          loadConfig: async () => {
+            throw new Error("config.json unreadable")
+          },
+        },
+      }),
+    )
+    expect(byId(checks, "rendezvous.reachable").status).toBe("warn")
+    expect(byId(checks, "rendezvous.reachable").detail).toContain("not checked")
+  })
+})
+
 describe("skills", () => {
   it("plugin not installed warns with the install fix", async () => {
     const checks = await skillsStep.detect(
@@ -590,7 +653,7 @@ describe("local-models", () => {
     const check = byId(checks, "local-models.bonsai")
     expect(check).toMatchObject({
       status: "ok",
-      detail: "http://192.168.1.20:8081/v1 reachable — 1 loaded (bonsai-27b-win, ctx 62976/262144)",
+      detail: "http://192.168.1.20:8081/v1 reachable — 1 loaded (bonsai-27b-win, ctx 62976/262144 [claude-code✓ claude-sdk✓ pi✓])",
     })
     expect(check.data?.connector).toBe("lmstudio")
     expect(check.data?.models).toEqual([

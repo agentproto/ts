@@ -18,7 +18,7 @@ import type { RoutineRegistrar } from "../routine-registrar.js"
 
 function makeMockRegistrar(definitions: unknown[] = []): RoutineRegistrar {
   return {
-    reconcile: () => ({ registered: [], skipped: [], removed: [], errors: [] }),
+    reconcile: async () => ({ registered: [], skipped: [], removed: [], errors: [] }),
     trigger: async () => ({ ok: true, summary: "mock" }),
     list: () => definitions as ReturnType<RoutineRegistrar["list"]>,
   }

@@ -1,5 +1,5 @@
 import "./style.css"
-import { renderList, renderDetail } from "./render.js"
+import { renderList, renderDetail, liveSessionUrl } from "./render.js"
 import type { ReviewLedgerResult, ReviewRow, RunDetail } from "./types.js"
 
 const POLL_RUNNING_MS = 4_000
@@ -68,23 +68,25 @@ function boot(): void {
   }
 
   /**
-   * Opens the live-session panel for a reviewer session — same `openLink`-
-   * with-`window.open`-fallback convention session-chat's card link uses
-   * (panel-bridge.ts's `openLink`), the only existing cross-panel
-   * navigation primitive this codebase has (see this panel's PR body for
-   * why a deep link to the EXACT session isn't wired: this is a static
-   * work-board-style build, so there is no per-request substitution point
-   * to bake a `sessionId` query into, unlike live-session's
-   * function-of-initData `LIVE_SESSION_HTML`). `window.location.origin` is
-   * the daemon's own origin whenever this panel is served standalone (the
-   * same route `resolveBuiltinPanelUi` answers) — an opaque iframe origin
-   * (some embedded hosts) can't resolve it, in which case the link opens
-   * relative to nothing and the host's own error surfaces instead.
+   * Opens the live-session panel deep-linked to a reviewer session — same
+   * `openLink`-with-`window.open`-fallback convention session-chat's card
+   * link uses (panel-bridge.ts's `openLink`), the only existing cross-panel
+   * navigation primitive this codebase has, now pointed at a real per-
+   * session URL (`liveSessionUrl`, render.ts): runtime's `handleAppUiPage`
+   * reads the `?sessionId=` query param and bakes it into the served
+   * widget's `window.__APP_INIT__` when it's a validated session id (see
+   * builtin-apps.ts's `isValidDeepLinkSessionId`), so the widget boots
+   * already pinned instead of self-discovering the newest running session.
+   * `window.location.origin` is the daemon's own origin whenever this panel
+   * is served standalone (the same route `resolveBuiltinPanelUi` answers)
+   * — an opaque iframe origin (some embedded hosts) can't resolve it, in
+   * which case the link opens relative to nothing and the host's own error
+   * surfaces instead.
    */
   function openSession(sessionId: string): void {
     if (!sessionId) return
     const origin = window.location.origin && window.location.origin !== "null" ? window.location.origin : ""
-    const url = `${origin}/apps/agentproto_live_session/ui`
+    const url = liveSessionUrl(origin, sessionId)
     const caps = getHostCapabilities()
     if (caps?.openLinks) {
       openLink(url).catch(() => window.open(url, "_blank"))

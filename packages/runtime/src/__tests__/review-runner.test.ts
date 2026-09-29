@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
-import { ledgerKeyOf, verifyAttestation, type Attestation } from "@agentproto/review"
+import { ledgerKeyOf, rangeSha, verifyAttestation, type Attestation } from "@agentproto/review"
 import { createReviewLedger } from "../review-ledger.js"
 import {
   createReviewRunner,
@@ -160,7 +160,10 @@ describe("review runner — verdicts over a real repo", () => {
       ["correctness", "pass"],
     ])
     expect(att.lanes[1]).toMatchObject({ sessionId: "sess-1", preset: "kimi", summary: "fine" })
-    expect(att.attestor).toEqual({ daemon: "test-daemon", presets: ["kimi"] })
+    expect(att.attestor).toMatchObject({ daemon: "test-daemon", presets: ["kimi"] })
+    // Only the daemon signs (Goal A): every attestation a run writes is
+    // signed by default in these tests (real `ssh-keygen`, hermetic $HOME).
+    expect(att.attestor.signature).toMatchObject({ alg: "ssh-ed25519", principal: "t@example.com" })
     expect(att.rubrics).toEqual([
       { check: "correctness", path: "./rubrics/correctness.md", sha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
     ])
@@ -534,6 +537,170 @@ describe("review runner — verdicts over a real repo", () => {
     cleanup.push(repo3.dir)
     await runToEnd(runner, { cwd: repo3.dir, manifestPath: "nope/REVIEW.md", requesterSessionId: "watcher-2" })
     expect(notified).toHaveLength(1)
+  })
+})
+
+describe("attestation composition (Goal B)", () => {
+  /** main (base) ← feature, grown by one commit at a time. Each `grow()`
+   *  call adds a commit and returns the new head. */
+  async function growingRepo(review: string) {
+    const dir = await realpath(await mkdtemp(join(tmpdir(), "agp-review-compose-")))
+    sh(dir, "init", "-q", "-b", "main")
+    sh(dir, "config", "user.email", "t@example.com")
+    sh(dir, "config", "user.name", "t")
+    sh(dir, "config", "commit.gpgsign", "false")
+    await writeFile(join(dir, "REVIEW.md"), review)
+    await mkdir(join(dir, "rubrics"))
+    await writeFile(join(dir, "rubrics", "correctness.md"), RUBRIC)
+    await writeFile(join(dir, "a.txt"), "a\n")
+    sh(dir, "add", "-A")
+    sh(dir, "commit", "-qm", "base")
+    const baseSha = sh(dir, "rev-parse", "HEAD")
+    sh(dir, "checkout", "-qb", "feature")
+    sh(dir, "remote", "add", "origin", "git@github.com:acme/demo.git")
+    let n = 0
+    const grow = async (): Promise<string> => {
+      n += 1
+      await writeFile(join(dir, `f${n}.txt`), `${n}\n`)
+      sh(dir, "add", "-A")
+      sh(dir, "commit", "-qm", `change ${n}`)
+      return sh(dir, "rev-parse", "HEAD")
+    }
+    return { dir, baseSha, grow }
+  }
+
+  const COMPOSE_REVIEW = manifest([
+    '{id: files, kind: command, run: "true"}',
+    "{id: correctness, kind: agent, preset: kimi, rubric: ./rubrics/correctness.md}",
+  ])
+
+  it("reuses a prior passing attestation: the agent lane reviews only the delta, composedFrom is set, the command lane still runs at the new head", async () => {
+    const repo = await growingRepo(COMPOSE_REVIEW)
+    cleanup.push(repo.dir)
+    const { host, calls } = fakeReviewers({ findings: [] })
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }), reviewers: host })
+
+    const mid = await repo.grow()
+    const first = await runToEnd(runner, { cwd: repo.dir, base: repo.baseSha, head: mid })
+    expect(first.attestation!.verdict).toBe("pass")
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.prompt).toContain(`${repo.baseSha}..${mid}`)
+
+    const head = await repo.grow()
+    const second = await runToEnd(runner, { cwd: repo.dir, base: repo.baseSha, head })
+    expect(second.attestation!.verdict).toBe("pass")
+    expect(second.cached).toBeUndefined() // grew past the cached rangeSha — a real run, not a ledger hit
+    expect(calls).toHaveLength(2)
+
+    // The agent lane's prompt only names the delta range, and says so.
+    expect(calls[1]!.prompt).toContain(`${mid}..${head}`)
+    expect(calls[1]!.prompt).not.toContain(`${repo.baseSha}..${head}`)
+    expect(calls[1]!.prompt).toMatch(/DELTA re-review/)
+    expect(calls[1]!.prompt).toContain(mid)
+
+    const correctness = second.attestation!.lanes.find((l) => l.id === "correctness")!
+    expect(correctness.composedFrom).toMatchObject({ headSha: mid, rangeSha: rangeSha({ baseSha: repo.baseSha, headSha: mid }) })
+    expect(correctness.composedFrom!.attestationSha256).toEqual(expect.stringMatching(/^[0-9a-f]{64}$/))
+
+    // Command lanes are never composed — always the full frozen range.
+    const files = second.attestation!.lanes.find((l) => l.id === "files")!
+    expect(files.composedFrom).toBeUndefined()
+    expect(second.attestation!.target).toEqual({ repoRemote: "github.com/acme/demo", baseSha: repo.baseSha, headSha: head })
+  })
+
+  it("does not compose when the rubric changed in between — full review, no composedFrom", async () => {
+    const repo = await growingRepo(COMPOSE_REVIEW)
+    cleanup.push(repo.dir)
+    const { host, calls } = fakeReviewers({ findings: [] })
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }), reviewers: host })
+
+    const mid = await repo.grow()
+    await runToEnd(runner, { cwd: repo.dir, base: repo.baseSha, head: mid })
+    await writeFile(join(repo.dir, "rubrics", "correctness.md"), `${RUBRIC}\nEdited.\n`)
+    sh(repo.dir, "add", "-A")
+    sh(repo.dir, "commit", "-qm", "edit rubric")
+    const head = await repo.grow()
+
+    const second = await runToEnd(runner, { cwd: repo.dir, base: repo.baseSha, head })
+    expect(calls[1]!.prompt).toContain(`${repo.baseSha}..${head}`)
+    expect(calls[1]!.prompt).not.toMatch(/DELTA re-review/)
+    expect(second.attestation!.lanes.find((l) => l.id === "correctness")!.composedFrom).toBeUndefined()
+  })
+
+  it("does not compose across a different binding, a different base, a non-ancestor head, or onto an attestation that didn't itself pass", async () => {
+    const repo = await growingRepo(
+      manifest(
+        [
+          '{id: files, kind: command, run: "true"}',
+          "{id: correctness, kind: agent, preset: kimi, rubric: ./rubrics/correctness.md}",
+        ],
+        ["a:", "  checks: [files, correctness]", "b:", "  checks: [files, correctness]"],
+      ),
+    )
+    cleanup.push(repo.dir)
+    const { host, calls } = fakeReviewers({ findings: [] })
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }), reviewers: host })
+
+    const mid = await repo.grow()
+    await runToEnd(runner, { cwd: repo.dir, binding: "a", base: repo.baseSha, head: mid })
+    const head = await repo.grow()
+
+    // Different binding: no candidate.
+    const otherBinding = await runToEnd(runner, { cwd: repo.dir, binding: "b", base: repo.baseSha, head })
+    expect(calls.at(-1)!.prompt).toContain(`${repo.baseSha}..${head}`)
+    expect(otherBinding.attestation!.lanes.find((l) => l.id === "correctness")!.composedFrom).toBeUndefined()
+
+    // Different base: the prior attestation's baseSha (repo.baseSha) doesn't
+    // match this run's base (mid) — no candidate, even though mid..head is
+    // otherwise a perfectly good delta.
+    const differentBase = await runToEnd(runner, { cwd: repo.dir, binding: "a", base: mid, head })
+    expect(differentBase.attestation!.lanes.find((l) => l.id === "correctness")!.composedFrom).toBeUndefined()
+
+    // A branch that does NOT contain `mid` (not an ancestor): no candidate.
+    sh(repo.dir, "checkout", "-qb", "sibling", repo.baseSha)
+    await writeFile(join(repo.dir, "sibling.txt"), "s\n")
+    sh(repo.dir, "add", "-A")
+    sh(repo.dir, "commit", "-qm", "sibling change")
+    const siblingHead = sh(repo.dir, "rev-parse", "HEAD")
+    const sibling = await runToEnd(runner, { cwd: repo.dir, binding: "a", base: repo.baseSha, head: siblingHead })
+    expect(sibling.attestation!.lanes.find((l) => l.id === "correctness")!.composedFrom).toBeUndefined()
+  })
+
+  it("does not compose onto a prior attestation whose OVERALL verdict wasn't pass — even for a lane that itself passed", async () => {
+    const repo = await growingRepo(
+      manifest([
+        '{id: files, kind: command, run: "false"}', // always fails ⇒ verdict block
+        "{id: correctness, kind: agent, preset: kimi, rubric: ./rubrics/correctness.md}",
+      ]),
+    )
+    cleanup.push(repo.dir)
+    const { host, calls } = fakeReviewers({ findings: [] }) // correctness itself always passes
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }), reviewers: host })
+
+    const mid = await repo.grow()
+    const first = await runToEnd(runner, { cwd: repo.dir, base: repo.baseSha, head: mid })
+    expect(first.attestation!.verdict).toBe("block")
+    expect(first.attestation!.lanes.find((l) => l.id === "correctness")!.status).toBe("pass")
+
+    const head = await repo.grow()
+    const second = await runToEnd(runner, { cwd: repo.dir, base: repo.baseSha, head })
+    expect(calls.at(-1)!.prompt).toContain(`${repo.baseSha}..${head}`)
+    expect(second.attestation!.lanes.find((l) => l.id === "correctness")!.composedFrom).toBeUndefined()
+  })
+
+  it("nocache implies compose:false; compose:false always reviews the full range", async () => {
+    const repo = await growingRepo(COMPOSE_REVIEW)
+    cleanup.push(repo.dir)
+    const { host, calls } = fakeReviewers({ findings: [] })
+    const runner = createReviewRunner({ ledger: createReviewLedger({ root: ledgerRoot }), reviewers: host })
+
+    const mid = await repo.grow()
+    await runToEnd(runner, { cwd: repo.dir, base: repo.baseSha, head: mid })
+    const head = await repo.grow()
+
+    const withCompose = await runToEnd(runner, { cwd: repo.dir, base: repo.baseSha, head, compose: false })
+    expect(calls.at(-1)!.prompt).toContain(`${repo.baseSha}..${head}`)
+    expect(withCompose.attestation!.lanes.find((l) => l.id === "correctness")!.composedFrom).toBeUndefined()
   })
 })
 

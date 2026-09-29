@@ -20,6 +20,20 @@
  * First poll always establishes the baseline with zero emitted events —
  * `diffSnapshots` only fires when there IS a previous snapshot to compare
  * against.
+ *
+ * A new `headSha` between two snapshots (a push) resets the check baseline
+ * to empty and emits a `github.pull_request.synchronize` event — otherwise a
+ * same-conclusion rerun on the new head (e.g. lint fails again) would mint
+ * the same check event id as the old head's and get dropped by the delivery
+ * dedup, and a check that finishes between two polls on the new head would
+ * never fire at all (it'd already look "seen" against the old head's
+ * by-name conclusions).
+ *
+ * `github.issue_comment.created` (in `GITHUB_DEFAULT_PR_TYPES`) is NOT
+ * produced here: it would need its own `issues/:n/comments` poll beyond what
+ * `fetchPrStatus` already fetches, and isn't wired up yet. A sentinel
+ * watching a PR for comments should add `webhook`/`agentpush` for that type,
+ * or wait for this provider to grow it.
  */
 
 import { createHash } from "node:crypto"
@@ -151,7 +165,9 @@ function diffSnapshots(
     const merged = current.state === "merged"
     events.push(
       makeEvent({
-        idParts: [prTag, "closed", current.state],
+        // `fetchedAt` (not just prTag+state) so a reopen-then-close within
+        // one watch produces two distinct ids instead of deduping the second.
+        idParts: [prTag, "closed", current.state, current.fetchedAt],
         type: "github.pull_request.closed",
         subject: ctx.subject,
         subjects,
@@ -181,7 +197,32 @@ function diffSnapshots(
     )
   }
 
-  const prevChecks = new Map((previous.checks ?? []).map(c => [c.name, c.conclusion]))
+  // A new head sha means every check on `previous` belongs to a commit
+  // that's gone — diff checks against an empty baseline so a same-conclusion
+  // rerun (e.g. lint fails again) still fires, and surface the push itself
+  // as a non-terminal event so a caller watching only for "PR moved" sees it
+  // even when no check finishes between polls.
+  const headChanged =
+    previous.headSha !== undefined && current.headSha !== undefined && previous.headSha !== current.headSha
+  const checksBaseline = headChanged ? [] : (previous.checks ?? [])
+
+  if (headChanged) {
+    const shortSha = current.headSha!.slice(0, 7)
+    events.push(
+      makeEvent({
+        idParts: [prTag, "synchronize", current.headSha!],
+        type: "github.pull_request.synchronize",
+        subject: ctx.subject,
+        subjects,
+        terminal: false,
+        time: current.fetchedAt,
+        data: { action: "synchronize", repo: ctx.repo, number: ctx.number, headSha: current.headSha },
+        summary: `New commits pushed to ${prTag} (${shortSha})`,
+      }),
+    )
+  }
+
+  const prevChecks = new Map(checksBaseline.map(c => [c.name, c.conclusion]))
   const nowCompleted = (current.checks ?? []).filter(
     c => c.conclusion !== null && (prevChecks.get(c.name) ?? null) === null,
   )
@@ -193,7 +234,10 @@ function diffSnapshots(
       .join(",")
     events.push(
       makeEvent({
-        idParts: [prTag, "checks", namesKey],
+        // headSha so an identical conclusion set on a new head (e.g. lint
+        // fails again after a push) mints a fresh id instead of colliding
+        // with the previous head's already-delivered event.
+        idParts: [prTag, "checks", current.headSha ?? "", namesKey],
         type: "github.check_suite.completed",
         subject: ctx.subject,
         subjects,

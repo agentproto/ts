@@ -54,6 +54,7 @@ jobs:
           EVENT_ACTION: ${{ github.event.action }}
           BEFORE_SHA: ${{ github.event.before }}
           AFTER_SHA: ${{ github.event.after }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           skip=false
 
@@ -70,7 +71,15 @@ jobs:
             esac
           }
 
-          if [ "$EVENT_ACTION" != "synchronize" ]; then
+          # The changesets "Version Packages" PR only bumps versions and
+          # CHANGELOGs; everything it carries was already built + tested on
+          # main, and Release rebuilds (and publishes) from main after merge.
+          # It is regenerated on every push to main, and each "Update branch"
+          # merge re-ran a full ~13min build for nothing — skip it outright.
+          if [[ "$HEAD_REF" == changeset-release/* ]]; then
+            echo "Release PR ($HEAD_REF) — already built on main, skipping Build+test."
+            skip=true
+          elif [ "$EVENT_ACTION" != "synchronize" ]; then
             echo "action=$EVENT_ACTION (not a synchronize push) — running Build+test."
           elif [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
             echo "No usable 'before' sha — running Build+test."
@@ -137,7 +146,9 @@ jobs:
     # the occasional wasted build on rapid pushes.
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-build
-      cancel-in-progress: false
+      # Release PR: no reviewer pushes to protect, and only the latest
+      # version bump matters — let a newer push cancel the stale run.
+      cancel-in-progress: ${{ startsWith(github.head_ref, 'changeset-release/') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -249,13 +260,35 @@ jobs:
           node --test scripts/check-spec-drift.test.mjs
           node scripts/check-spec-drift.mjs
 
+      # Guard the vendored copy of the AIP JSON Schemas (specs/resources/)
+      # against drift from canonical. agentproto/agentproto is public, so CI
+      # checks it out (shallow, main) into a directory inside the workspace
+      # (actions/checkout cannot write outside it) and runs the FULL
+      # vendored-vs-canonical diff with --source. Fields ts ships ahead of
+      # canonical (specs/spec-drift-allowlist.json) are masked; anything else
+      # fails, in either direction. INTENDED consequence: a spec change merged
+      # upstream turns this red on ts until someone runs
+      # `node scripts/sync-specs.mjs` and commits the result. Without --source
+      # (local runs with no sibling checkout) --check falls back to the
+      # network-free allowlist-integrity half — see scripts/sync-specs.mjs.
+      - name: Checkout canonical specs
+        uses: actions/checkout@v5
+        with:
+          repository: agentproto/agentproto
+          ref: main
+          path: .canonical-specs
+          fetch-depth: 1
+
+      - name: Check vendored spec drift
+        run: |
+          node --test scripts/sync-specs.test.mjs
+          node scripts/sync-specs.mjs --check --source .canonical-specs/specs/resources
+
       # Guard the e2b workstation template's derived artifacts: the generated
       # TS module, e2b.template.toml build args, marked doc blocks, and the
       # sandbox-e2b package.json description must all match
       # templates/workstation/versions.json. Zero-credential — no e2b access,
-      # just file comparison. (sync-specs --check has no CI home today; this
-      # is the same drift-check pattern, placed next to the other script
-      # gates in build-and-test.)
+      # just file comparison.
       - name: Check template sync drift
         run: node scripts/sync-templates.mjs --check
 
@@ -981,6 +1014,26 @@ jobs:
         uses: ./.github/actions/agentproto-run
         env:
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
+          # Home-daemon join token (see AIP-36 `join.tokenEnv`, and
+          # sandbox-agent.mjs's gated AGENTPROTO_JOIN passthrough default) —
+          # lets a freshly booted e2b box dial home and register itself as a
+          # driveable host. Absent on a fork PR (no access to repo secrets),
+          # which is a deliberate no-op end to end: sandbox-agent.mjs only
+          # adds the passthrough NAME when this env var actually has a value.
+          # NEVER print this value — same sensitivity class as GITHUB_TOKEN.
+          AGENTPROTO_JOIN: ${{ secrets.AGENTPROTO_JOIN }}
+          # Self-reported join metadata (SANDBOX-VISIBILITY-JOIN) — all
+          # non-secret GITHUB_* context, gated the same way as AGENTPROTO_JOIN
+          # itself (sandbox-agent.mjs only forwards a var whose NAME is set
+          # here; a fork PR run still gets no AGENTPROTO_JOIN and so none of
+          # this either). Deliberately no AGENTPROTO_JOIN_NAME: this box
+          # doesn't know the join token's own name ("ci-reviewer"), only the
+          # home daemon does — join-token-registry.ts synthesizes
+          # "<token name> #<pr>" from these labels when the box doesn't
+          # self-report one. reviewerSandbox.provider is pinned to "e2b" in
+          # .github/agentic-review.json, so that part's a safe literal too.
+          AGENTPROTO_JOIN_PROVIDER: e2b
+          AGENTPROTO_JOIN_LABELS: "pr=${{ github.event.pull_request.number }},repo=${{ github.repository }},run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
           # auth-mode from .github/agentic-review.json (reviewerAuthMode).
@@ -1196,6 +1249,12 @@ jobs:
         uses: ./.github/actions/agentproto-run
         env:
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
+          # Same join-token passthrough as the primary attempt above — this
+          # is still an e2b sandbox reviewer run, just billed to the fallback
+          # account. See that step's comment for the no-op-on-fork guarantee.
+          AGENTPROTO_JOIN: ${{ secrets.AGENTPROTO_JOIN }}
+          AGENTPROTO_JOIN_PROVIDER: e2b
+          AGENTPROTO_JOIN_LABELS: "pr=${{ github.event.pull_request.number }},repo=${{ github.repository }},run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
           auth-mode: ${{ steps.cliver.outputs.auth-mode }}

@@ -51,6 +51,9 @@ function fakeHostRegistry(
     revoke: vi.fn(async () => opts.revokeMatches ?? true),
     isOnline: fp => online.has(fp),
     forwardHttp: vi.fn(),
+    forwardHttpStream: vi.fn(),
+    getSessionsSnapshot: vi.fn(() => undefined),
+    snapshotNow: vi.fn(async () => false),
   }
 }
 
@@ -210,11 +213,89 @@ describe("createDeviceRegistry", () => {
       expect(hosts.add).toHaveBeenCalledWith("agentproto://pair?v=2&…&scope=host", "office-mac")
       expect(result).toEqual({ fingerprint: "hfp1", name: "office-mac", rendezvousUrl: "wss://rdv.example/v1" })
     })
+
+    it("surfaces a host's self-reported provider/sandboxId/labels (SANDBOX-VISIBILITY-JOIN)", async () => {
+      const registry = fakeRegistry([])
+      const hosts = fakeHostRegistry([
+        hostRecord({ provider: "e2b", sandboxId: "sbx_abc123", labels: { pr: "1492" } }),
+      ])
+      const [device] = await createDeviceRegistry(registry, hosts).list()
+      expect(device).toMatchObject({ provider: "e2b", sandboxId: "sbx_abc123", labels: { pr: "1492" } })
+    })
+
+    it("a host with no self-reported metadata has none of those keys", async () => {
+      const registry = fakeRegistry([])
+      const hosts = fakeHostRegistry([hostRecord()])
+      const [device] = await createDeviceRegistry(registry, hosts).list()
+      expect(device).not.toHaveProperty("provider")
+      expect(device).not.toHaveProperty("sandboxId")
+      expect(device).not.toHaveProperty("labels")
+    })
+
+    it("forwardHttp() delegates to the host registry", async () => {
+      const registry = fakeRegistry([])
+      const hosts = fakeHostRegistry([hostRecord()])
+      ;(hosts.forwardHttp as ReturnType<typeof vi.fn>).mockResolvedValue({
+        status: 200,
+        headers: {},
+        body: new Uint8Array(),
+      })
+      const devices = createDeviceRegistry(registry, hosts)
+      const res = await devices.forwardHttp("hfp1", { method: "GET", path: "/sessions" })
+      expect(hosts.forwardHttp).toHaveBeenCalledWith("hfp1", { method: "GET", path: "/sessions" })
+      expect(res.status).toBe(200)
+    })
+
+    it("forwardHttp() falls back to a cached snapshot for a GET /sessions* path when the live forward fails", async () => {
+      const registry = fakeRegistry([])
+      const hosts = fakeHostRegistry([hostRecord()])
+      ;(hosts.forwardHttp as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("could not reach host"))
+      ;(hosts.getSessionsSnapshot as ReturnType<typeof vi.fn>).mockReturnValue({
+        status: 200,
+        headers: {},
+        body: new TextEncoder().encode('{"sessions":[]}'),
+        stale: true,
+        capturedAt: "2026-01-01T00:00:00.000Z",
+      })
+      const devices = createDeviceRegistry(registry, hosts)
+      const res = await devices.forwardHttp("hfp1", { method: "GET", path: "/sessions" })
+      expect(hosts.getSessionsSnapshot).toHaveBeenCalledWith("hfp1", "/sessions")
+      expect(res).toMatchObject({ status: 200, stale: true, capturedAt: "2026-01-01T00:00:00.000Z" })
+    })
+
+    it("forwardHttp() rethrows when the live forward fails AND there's no cached snapshot", async () => {
+      const registry = fakeRegistry([])
+      const hosts = fakeHostRegistry([hostRecord()])
+      ;(hosts.forwardHttp as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("could not reach host"))
+      const devices = createDeviceRegistry(registry, hosts)
+      await expect(devices.forwardHttp("hfp1", { method: "GET", path: "/sessions" })).rejects.toThrow(
+        /could not reach host/,
+      )
+    })
+
+    it("forwardHttp() never falls back for a non-/sessions path (e.g. exec) — stale data there would be actively wrong", async () => {
+      const registry = fakeRegistry([])
+      const hosts = fakeHostRegistry([hostRecord()])
+      ;(hosts.forwardHttp as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("could not reach host"))
+      const devices = createDeviceRegistry(registry, hosts)
+      await expect(devices.forwardHttp("hfp1", { method: "POST", path: "/exec" })).rejects.toThrow(
+        /could not reach host/,
+      )
+      expect(hosts.getSessionsSnapshot).not.toHaveBeenCalled()
+    })
   })
 
   it("add() rejects when no HostRegistry was wired", async () => {
     const registry = fakeRegistry([])
     const devices = createDeviceRegistry(registry)
     await expect(devices.add("agentproto://pair?v=2&…")).rejects.toThrow(/no host registry/)
+  })
+
+  it("forwardHttp() rejects when no HostRegistry was wired", async () => {
+    const registry = fakeRegistry([])
+    const devices = createDeviceRegistry(registry)
+    await expect(devices.forwardHttp("fp1", { method: "GET", path: "/sessions" })).rejects.toThrow(
+      /no host registry/,
+    )
   })
 })

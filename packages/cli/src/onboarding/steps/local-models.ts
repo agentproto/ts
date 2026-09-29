@@ -21,6 +21,8 @@ import {
   connectorById,
   parseEndpointsConfig,
   DEFAULT_LOCAL_PORTS,
+  checkHarnessFit,
+  HARNESS_FIRST_REQUEST_SIZE,
   type ConnectorId,
   type ConnectorModel,
   type EndpointConfig,
@@ -65,6 +67,19 @@ async function loadEndpoints(ctx: StepContext): Promise<LoadedEndpoints> {
   return { entries: result.endpoints, error: null, path }
 }
 
+const KNOWN_HARNESSES = Object.keys(HARNESS_FIRST_REQUEST_SIZE)
+
+/** Which known harnesses (`agent_start.inference`'s fit check) fit a loaded
+ *  model's ctx, e.g. `"pi✓ claude-code✗"`. `undefined` loaded ctx (a
+ *  connector like Ollama that never reports one) still names every harness
+ *  as `?` (unknown) — informational, not a failure. */
+function fitSummary(loadedCtx: number | undefined): string {
+  return KNOWN_HARNESSES.map((harness) => {
+    const verdict = checkHarnessFit({ harness, loadedCtx }).verdict
+    return `${harness}${verdict === "fits" ? "✓" : verdict === "no-fit" ? "✗" : "?"}`
+  }).join(" ")
+}
+
 /** One line summarizing a connector's model listing, or `null` when there's
  *  nothing to add (no models reported). Loaded vs. not-loaded is
  *  informational — never downgrades the check's status. */
@@ -72,8 +87,10 @@ function summarizeModels(models: ConnectorModel[]): string | null {
   if (models.length === 0) return null
   const loaded = models.filter((m) => m.state === "loaded")
   if (loaded.length === 0) return `${models.length} model${models.length === 1 ? "" : "s"}, none loaded`
-  const describe = (m: ConnectorModel): string =>
-    m.loadedCtx !== undefined && m.maxCtx !== undefined ? `${m.id}, ctx ${m.loadedCtx}/${m.maxCtx}` : m.id
+  const describe = (m: ConnectorModel): string => {
+    const ctxPart = m.loadedCtx !== undefined && m.maxCtx !== undefined ? `, ctx ${m.loadedCtx}/${m.maxCtx}` : ""
+    return `${m.id}${ctxPart} [${fitSummary(m.loadedCtx)}]`
+  }
   return `${loaded.length} loaded (${loaded.map(describe).join("; ")})`
 }
 

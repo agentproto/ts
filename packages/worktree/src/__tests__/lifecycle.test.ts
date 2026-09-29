@@ -48,7 +48,13 @@ describe("runSetup / HookError", () => {
     const body = [
       ...(opts.stdoutLines ?? []).map(line => `console.log(${JSON.stringify(line)})`),
       ...(opts.stderrLines ?? []).map(line => `console.error(${JSON.stringify(line)})`),
-      `process.exit(${opts.exitCode})`,
+      // `process.exitCode = …` (not `process.exit()`): stdout/stderr are
+      // pipes here, not a TTY, so writes are async on Linux — `process.exit()`
+      // terminates immediately and can truncate whatever hasn't flushed yet
+      // (lost the CI-only race that dropped this script's last ~15 lines,
+      // "THE ACTUAL FAILURE" included). Setting `exitCode` and letting the
+      // event loop drain naturally waits for pending writes first.
+      `process.exitCode = ${opts.exitCode}`,
     ].join("\n")
     await writeFile(path, body, "utf8")
     return `node ${JSON.stringify(path)}`
@@ -78,7 +84,8 @@ describe("runSetup / HookError", () => {
       `const attempts = ${JSON.stringify(opts.attempts)}`,
       `const attempt = attempts[Math.min(n - 1, attempts.length - 1)]`,
       `if (attempt.stdout) console.log(attempt.stdout)`,
-      `process.exit(attempt.exitCode)`,
+      // See the sibling `writeHookScript` comment: `exitCode`, not `exit()`.
+      `process.exitCode = attempt.exitCode`,
     ].join("\n")
     await writeFile(path, body, "utf8")
     return { command: `node ${JSON.stringify(path)}`, counterPath }
@@ -274,7 +281,7 @@ describe("runTeardown", () => {
     cleanupPaths.push(logDir)
     const logPath = join(logDir, "teardown.log")
     const scriptPath = join(dir, "teardown.mjs")
-    await writeFile(scriptPath, `console.log("cleanup failed")\nprocess.exit(1)`, "utf8")
+    await writeFile(scriptPath, `console.log("cleanup failed")\nprocess.exitCode = 1`, "utf8")
     const config: AgentprotoConfig = {
       worktree: { teardown: [`node ${JSON.stringify(scriptPath)}`] },
     }

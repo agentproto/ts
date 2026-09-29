@@ -77,6 +77,38 @@ vi.mock("@agentproto/auth", async importOriginal => {
   }
 })
 
+// Control `@agentproto/llm-endpoint`'s configured-endpoints/connector reads
+// deterministically — the `inference`-binding tests below must never touch
+// the real `~/.agentproto/llm-endpoints.json` or make a real network probe,
+// and `syncPiModels` must never touch the real `~/.pi/agent/models.json`.
+const llmEndpointState = vi.hoisted(() => ({
+  endpoints: [] as { id: string; kind: "openai"; baseUrl: string; connector?: string }[],
+  models: {} as Record<string, { id: string; state: "loaded" | "not-loaded" | "unknown"; loadedCtx?: number }[]>,
+  syncPiModelsCalls: 0,
+}))
+vi.mock("@agentproto/llm-endpoint", async importOriginal => {
+  const actual = await importOriginal<typeof import("@agentproto/llm-endpoint")>()
+  return {
+    ...actual,
+    getConfiguredEndpoints: () => llmEndpointState.endpoints,
+    connectorById: (id: string) => ({
+      id,
+      label: id,
+      defaultPort: null,
+      quirks: {},
+      probe: async () => true,
+      listModels: async (baseUrl: string) => {
+        const ep = llmEndpointState.endpoints.find(e => e.baseUrl === baseUrl)
+        return ep ? (llmEndpointState.models[ep.id] ?? []) : []
+      },
+    }),
+    syncPiModels: vi.fn(async () => {
+      llmEndpointState.syncPiModelsCalls++
+      return { modelsPath: "", ledgerPath: "", entries: [] }
+    }),
+  }
+})
+
 import {
   spawnAgentSession,
   cleanAgentLines,
@@ -4221,6 +4253,36 @@ describe("spawnAgentSession — access.profileRef (named auth profile)", () => {
     oauthState.impl = async () => "sk-ant-oat01-fresh-from-keychain"
   })
 
+  it("an auth-profile id passed as `adapter` gets the profileRef hint, not install advice", async () => {
+    authProfileState.profiles["claude-subs-agentik"] = {
+      id: "claude-subs-agentik",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      source: "claude-code-oauth",
+    }
+    const { deps } = baseDeps({ resolveAgentAdapter: async () => null })
+    const result = await spawnAgentSession(deps, { adapter: "claude-subs-agentik", cwd: "/tmp" })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected refusal")
+    expect(result.code).toBe("adapter_not_found")
+    expect(result.message).toBe(
+      'agent_start: adapter "claude-subs-agentik" could not be resolved. ' +
+        "'claude-subs-agentik' is an auth profile (endpoint 'anthropic'), not an adapter; " +
+        "use adapter: 'claude-code' (or the adapter that bills that endpoint) with " +
+        "access.profileRef: 'claude-subs-agentik' (or presetId).",
+    )
+    expect(result.message).not.toContain("agentproto install")
+  })
+
+  it("an unknown adapter that is not a profile id keeps the mid-rebuild / install advice", async () => {
+    const { deps } = baseDeps({ resolveAgentAdapter: async () => null })
+    const result = await spawnAgentSession(deps, { adapter: "no-such-adapter", cwd: "/tmp" })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected refusal")
+    expect(result.message).toContain("mid-rebuild")
+    expect(result.message).toContain("agentproto install no-such-adapter")
+  })
+
   it("a source-backed profile resolves the credential FRESH via Mode 3 (reuses the same recipe resolver)", async () => {
     authProfileState.profiles["anthropic-sub"] = {
       id: "anthropic-sub",
@@ -5890,6 +5952,216 @@ describe("spawnAgentSession — ensureLlmEndpointRunning self-heal", () => {
       adapter: "mock",
       cwd: "/tmp",
       route: { gateway: "llm-endpoint" },
+    })
+    expect(result.ok).toBe(true)
+  })
+})
+
+describe("spawnAgentSession — agent_start.inference (SESSION-INFERENCE-BINDING)", () => {
+  beforeEach(() => {
+    llmEndpointState.endpoints = []
+    llmEndpointState.models = {}
+    llmEndpointState.syncPiModelsCalls = 0
+  })
+
+  it("refuses when `inference` is combined with `model`/`route`/`access`", async () => {
+    const { deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "pi",
+      cwd: "/tmp",
+      model: "some-model",
+      inference: { endpoint: "lmstudio" },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected refusal")
+    expect(result.code).toBe("inference_endpoint_unresolved")
+    expect(result.message).toContain("mutually exclusive")
+  })
+
+  it("refuses with inference_endpoint_unresolved when the named endpoint isn't configured", async () => {
+    const { deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "pi",
+      cwd: "/tmp",
+      inference: { endpoint: "nope", model: "x" },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected refusal")
+    expect(result.code).toBe("inference_endpoint_unresolved")
+    expect(result.message).toContain("not a configured endpoint")
+  })
+
+  it("refuses with inference_fit_check_failed on a clear miss, and the message is actionable", async () => {
+    llmEndpointState.endpoints = [{ id: "lmstudio", kind: "openai", baseUrl: "http://127.0.0.1:1234/v1", connector: "lmstudio" }]
+    llmEndpointState.models = { lmstudio: [{ id: "bonsai-27b-win", state: "loaded", loadedCtx: 32_768 }] }
+    const { deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      inference: { endpoint: "lmstudio", model: "bonsai-27b-win" },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected refusal")
+    expect(result.code).toBe("inference_fit_check_failed")
+    expect(result.message).toContain("claude-code")
+    expect(result.message).toContain("pi")
+    expect(result.message).toContain("inference.force")
+  })
+
+  it("`inference.force: true` overrides a fit-check miss and proceeds", async () => {
+    llmEndpointState.endpoints = [{ id: "lmstudio", kind: "openai", baseUrl: "http://127.0.0.1:1234/v1", connector: "lmstudio" }]
+    llmEndpointState.models = { lmstudio: [{ id: "bonsai-27b-win", state: "loaded", loadedCtx: 32_768 }] }
+    const registerCustomRoute = (await import("@agentproto/model-catalog/route-identity")).registerCustomRoute
+    registerCustomRoute("llm-endpoint", { flavor: "anthropic", baseUrl: "http://127.0.0.1:18090", authEnv: "LLM_ENDPOINT_ACCESS_TOKENS" })
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      inference: { endpoint: "lmstudio", model: "bonsai-27b-win", force: true },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error(`expected spawn, got: ${result.message}`)
+    expect(result.descriptor.model).toBe("lmstudio/bonsai-27b-win")
+  })
+
+  it("resolves the model-only shorthand \"<model>@<endpoint>\" and projects claude-code through the llm-endpoint gateway route with deferredTools on", async () => {
+    llmEndpointState.endpoints = [{ id: "lmstudio", kind: "openai", baseUrl: "http://127.0.0.1:1234/v1", connector: "lmstudio" }]
+    llmEndpointState.models = { lmstudio: [{ id: "bonsai-27b-mac", state: "loaded", loadedCtx: 86_016 }] }
+    const registerCustomRoute = (await import("@agentproto/model-catalog/route-identity")).registerCustomRoute
+    registerCustomRoute("llm-endpoint", { flavor: "anthropic", baseUrl: "http://127.0.0.1:18090", authEnv: "LLM_ENDPOINT_ACCESS_TOKENS" })
+    const { deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      inference: { model: "bonsai-27b-mac@lmstudio" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error(`expected spawn, got: ${result.message}`)
+    expect(result.descriptor.model).toBe("lmstudio/bonsai-27b-mac")
+  })
+
+  it("projects pi against a local endpoint with no route/access, and syncs pi's models.json first", async () => {
+    llmEndpointState.endpoints = [{ id: "lmstudio", kind: "openai", baseUrl: "http://127.0.0.1:1234/v1", connector: "lmstudio" }]
+    llmEndpointState.models = { lmstudio: [{ id: "bonsai-27b-win", state: "loaded", loadedCtx: 82_944 }] }
+    const { deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "pi",
+      cwd: "/tmp",
+      inference: { endpoint: "lmstudio", model: "bonsai-27b-win" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error(`expected spawn, got: ${result.message}`)
+    expect(result.descriptor.model).toBe("lmstudio/bonsai-27b-win")
+    expect(llmEndpointState.syncPiModelsCalls).toBe(1)
+  })
+
+  it("device-endpoint offline surfaces as inference_endpoint_unresolved, distinct from a plain fit-check miss", async () => {
+    const { deps } = baseDeps({
+      probeDeviceInference: async () => ({ reachable: false, message: "pairing tunnel not connected" }),
+    })
+    const result = await spawnAgentSession(deps, {
+      adapter: "pi",
+      cwd: "/tmp",
+      inference: { endpoint: "ollama@work-mac", model: "llama3" },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected refusal")
+    expect(result.code).toBe("inference_endpoint_unresolved")
+    expect(result.message).toContain("offline or unreachable")
+  })
+
+  it("a device endpoint that IS reachable resolves with an unknown (never-blocking) fit check — claude-code via the gateway (pi has no device-endpoint wiring)", async () => {
+    const registerCustomRoute = (await import("@agentproto/model-catalog/route-identity")).registerCustomRoute
+    registerCustomRoute("llm-endpoint", { flavor: "anthropic", baseUrl: "http://127.0.0.1:18090", authEnv: "LLM_ENDPOINT_ACCESS_TOKENS" })
+    const { deps } = baseDeps({
+      probeDeviceInference: async () => ({ reachable: true, endpointId: "ollama", modelIds: ["llama3"] }),
+    })
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      inference: { endpoint: "ollama@work-mac", model: "llama3" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error(`expected spawn, got: ${result.message}`)
+    expect(result.descriptor.model).toBe("ollama@work-mac/llama3")
+  })
+
+  it("pi against a device endpoint is refused — no generated provider config for that path yet", async () => {
+    const { deps } = baseDeps({
+      probeDeviceInference: async () => ({ reachable: true, endpointId: "ollama", modelIds: ["llama3"] }),
+    })
+    const result = await spawnAgentSession(deps, {
+      adapter: "pi",
+      cwd: "/tmp",
+      inference: { endpoint: "ollama@work-mac", model: "llama3" },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected refusal")
+    expect(result.code).toBe("inference_endpoint_unresolved")
+    expect(result.message).toContain("not supported yet")
+  })
+
+  it("refuses an unsupported harness (opencode) with an actionable message, no side effects", async () => {
+    llmEndpointState.endpoints = [{ id: "lmstudio", kind: "openai", baseUrl: "http://127.0.0.1:1234/v1", connector: "lmstudio" }]
+    llmEndpointState.models = { lmstudio: [{ id: "bonsai-27b-win", state: "loaded", loadedCtx: 82_944 }] }
+    const { deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "opencode",
+      cwd: "/tmp",
+      inference: { endpoint: "lmstudio", model: "bonsai-27b-win" },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected refusal")
+    expect(result.code).toBe("inference_endpoint_unresolved")
+    expect(result.message).toContain("opencode")
+    expect(llmEndpointState.syncPiModelsCalls).toBe(0)
+  })
+})
+
+describe("spawnAgentSession — preset lastUsedAt stamp", () => {
+  // Isolated HOME: unlike the rest of this file, these tests WRITE to
+  // `~/.agentproto/presets.json` (via `touchUserPreset`), so they must never
+  // touch the real file on the machine running the suite.
+  let prevHome: string | undefined
+  let home: string
+
+  beforeEach(() => {
+    prevHome = process.env.HOME
+    home = mkdtempSync(join(tmpdir(), "agp-session-spawn-presets-"))
+    process.env.HOME = home
+  })
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.HOME
+    else process.env.HOME = prevHome
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  it("stamps lastUsedAt on the preset a spawn resolved, preserving every other field", async () => {
+    const { saveUserPreset, getUserPreset } = await import("../user-presets.js")
+    await saveUserPreset({ id: "fast-route", label: "Fast route", model: "deepseek/deepseek-v4-pro" })
+    expect((await getUserPreset("fast-route"))?.lastUsedAt).toBeUndefined()
+
+    const { deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      preset: { id: "fast-route", label: "Fast route", model: "deepseek/deepseek-v4-pro" },
+    })
+    expect(result.ok).toBe(true)
+
+    const stamped = await getUserPreset("fast-route")
+    expect(stamped?.lastUsedAt).toEqual(expect.any(String))
+    expect(stamped?.model).toBe("deepseek/deepseek-v4-pro")
+  })
+
+  it("a presetId with no matching stored preset is a no-op, not a spawn failure", async () => {
+    const { deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      preset: { id: "never-saved", label: "Never saved" },
     })
     expect(result.ok).toBe(true)
   })

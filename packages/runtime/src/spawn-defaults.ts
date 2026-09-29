@@ -91,6 +91,15 @@ export interface DefaultsAdapterConfig {
   options?: Record<string, boolean | number | string>
   auth?: DefaultsAdapterAuthConfig
   contextContinuity?: ContextContinuityPolicy
+  /** Capability bundle ids (`bundle_list`) auto-attached to spawns of this
+   *  adapter — unioned with the global `defaults.bundles`. See
+   *  {@link resolveBundleDefaults}. */
+  bundles?: string[]
+  /** Explicitly mount the daemon's own scoped `/mcp` for spawns of this
+   *  adapter — the only way an adapter outside `shouldInjectDaemonSelfMount`'s
+   *  allowlist (opencode, codex, gemini, …) gets it by default. Overridden
+   *  per-spawn by `agent_start.daemonMount`. */
+  daemonMount?: boolean
 }
 
 /** Shape of `config.json`'s top-level `defaults` block. */
@@ -98,6 +107,9 @@ export interface SpawnDefaultsConfig {
   skills?: string[]
   options?: Record<string, boolean | number | string>
   adapters?: Record<string, DefaultsAdapterConfig>
+  /** Capability bundle ids auto-attached to every spawn — see
+   *  {@link DefaultsAdapterConfig.bundles} for the per-adapter union partner. */
+  bundles?: string[]
   contextContinuity?: ContextContinuityPolicy
   /** Depth cutoff for the role-derived default (see `resolveRole` in
    *  `role.ts`) applied when an `agent_start` call omits `role`:
@@ -262,6 +274,39 @@ export function resolveSpawnDefaults(
     },
     ...(contextContinuity !== undefined ? { contextContinuity } : {}),
   }
+}
+
+export interface ResolvedBundleDefaults {
+  /** Effective bundle ids for this spawn — see the precedence rule below. */
+  bundleIds: string[]
+  /** Explicit-call `daemonMount` ?? `defaults.adapters.<slug>.daemonMount`.
+   *  Undefined ⇒ neither said anything (no global `defaults.daemonMount` —
+   *  this is an adapter-scoped opt-in, unlike `bundles`/`skills`). */
+  daemonMount?: boolean
+}
+
+/**
+ * Resolve the effective capability-bundle ids + daemon-mount opt-in for a
+ * spawn — same precedence shape as `skills` in {@link resolveSpawnDefaults}
+ * (global ∪ per-adapter when the caller passed no `bundles` at all; an
+ * explicit `bundles` — even `[]` — REPLACES the union). Kept separate from
+ * `resolveSpawnDefaults` because bundle EXPANSION (turning ids into
+ * `mcpServers` entries) needs `~/.agentproto/bundles.json` + the imported-MCP
+ * set — filesystem reads this module deliberately stays free of — while this
+ * resolver itself stays pure and unit-testable in isolation.
+ */
+export function resolveBundleDefaults(
+  defaults: SpawnDefaultsConfig | undefined,
+  adapterSlug: string,
+  input: { bundles?: string[]; daemonMount?: boolean },
+): ResolvedBundleDefaults {
+  const adapterDefaults = defaults?.adapters?.[adapterSlug]
+  const bundleIds =
+    input.bundles !== undefined
+      ? input.bundles
+      : Array.from(new Set([...(defaults?.bundles ?? []), ...(adapterDefaults?.bundles ?? [])]))
+  const daemonMount = input.daemonMount ?? adapterDefaults?.daemonMount
+  return { bundleIds, ...(daemonMount !== undefined ? { daemonMount } : {}) }
 }
 
 /**

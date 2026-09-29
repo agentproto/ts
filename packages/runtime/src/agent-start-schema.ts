@@ -193,6 +193,22 @@ export const agentStartInputShape = {
         "(not unions) config defaults when set. Adapters with no `skills` " +
         `option (e.g. claude-code) ignore it. ${help("skills")}`
     ),
+  bundles: jsonTolerant(z.array(z.string()))
+    .optional()
+    .describe(
+      "Capability bundle ids (`bundle_list`) to attach — each expands to its " +
+        "imported MCPs (mounted as native MCP servers, never via the " +
+        "mcp_imported_* indirection) + skills, and optionally the daemon's " +
+        "own /mcp. REPLACES (not unions) config defaults when set. " +
+        `${help("bundles")}`
+    ),
+  daemonMount: mcpBool
+    .optional()
+    .describe(
+      "Explicitly mount the daemon's own scoped /mcp gateway for this spawn " +
+        "— the only way an adapter outside the default self-mount set " +
+        `(opencode, codex, gemini, …) gets it. Default false. ${help("daemonMount")}`
+    ),
   model: z
     .string()
     .optional()
@@ -213,6 +229,38 @@ export const agentStartInputShape = {
   )
     .optional()
     .describe("Billing route/gateway. Independent of `model` and `access`."),
+  inference: jsonTolerant(
+    z.object({
+      endpoint: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('A registered local/LAN inference endpoint id (`agentproto llm endpoints list`), or "<id>@<device>" for a paired device\'s own shared endpoint.'),
+      model: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('A bare model id (paired with `endpoint`), or the shorthand "<model>@<device|endpoint>" when `endpoint` is omitted.'),
+      force: mcpBool
+        .optional()
+        .describe("Skip the fit-check refusal on a clear miss (the check still runs and still warns)."),
+      headroomPct: z
+        .number()
+        .min(0)
+        .max(95)
+        .optional()
+        .describe("Headroom percentage held back from the endpoint's loaded ctx for the fit check. Default 25."),
+    })
+  )
+    .optional()
+    .describe(
+      "Bind this spawn to a local/LAN inference endpoint instead of a cloud model: `{endpoint}`, " +
+        '`{endpoint, model}`, or the shorthand `{model: "<model>@<device|endpoint>"}`. Runs a fit ' +
+        "check (the harness's known first-request size vs the endpoint's loaded ctx) BEFORE " +
+        "spawning and refuses with an actionable error on a clear miss (`force` overrides). " +
+        'Defaults `adapter`/`harness` to "pi" when neither is set. Mutually exclusive with ' +
+        `\`model\`/\`route\`/\`access\` — set those directly instead of \`inference\`, never both. ${help("inference")}`
+    ),
   access: jsonTolerant(z.object({ profileRef: z.string().min(1).optional() }))
     .optional()
     .describe("Named auth profile to bill at initial spawn; resolved from the local keychain."),

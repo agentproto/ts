@@ -32,13 +32,51 @@
  *
  * We exit non-zero only for that third case, and only after running every
  * script: one dead vendor API shouldn't cost the diff from the other six.
+ *
+ * CATALOG-CHANGELOG. `catalog-sync generate` logs its own id adds/removes to
+ * packages/model-catalog/CATALOG-CHANGELOG.md, but these native lists never
+ * did — claude-sonnet-5-5 showed up under llm:openrouter and
+ * llm:context-windows while its native llm:anthropic entry went unlogged.
+ * So we diff each `sync-<vendor>.mjs` output's top-level ids before/after
+ * (same key shape and format as packages/catalog-sync/src/changelog.ts) and
+ * append `### llm:<vendor>` subsections — into today's section when the
+ * generate step already opened one, else under a new `## <date>` header.
  */
 
 import { spawnSync } from "node:child_process"
-import { readdirSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { resolve } from "node:path"
 
 const DIR = import.meta.dirname
 const SKIP_EXIT_CODE = 2
+const LLM_DIR = resolve(DIR, "../../packages/model-catalog/src/llm")
+const CHANGELOG_PATH = resolve(DIR, "../../packages/model-catalog/CATALOG-CHANGELOG.md")
+const RECORD_KEY_RE = /^ {2}"([^"]+)":\s*\{/gm
+
+const vendorOf = script => script.slice("sync-".length, -".mjs".length)
+const outputOf = script => resolve(LLM_DIR, `${vendorOf(script)}-pricing.generated.ts`)
+
+function readIds(path) {
+  if (!existsSync(path)) return new Set()
+  return new Set([...readFileSync(path, "utf-8").matchAll(RECORD_KEY_RE)].map(m => m[1]))
+}
+
+function appendChangelog(entries) {
+  const nonEmpty = entries.filter(e => e.added.length > 0 || e.removed.length > 0)
+  if (nonEmpty.length === 0 || !existsSync(CHANGELOG_PATH)) return
+  const date = new Date().toISOString().slice(0, 10)
+  const existing = readFileSync(CHANGELOG_PATH, "utf-8").replace(/\n+$/, "\n")
+  const lastHeader = [...existing.matchAll(/^## (\S+)$/gm)].at(-1)?.[1]
+  const lines = lastHeader === date ? [] : [`## ${date}`, ""]
+  for (const e of nonEmpty) {
+    lines.push(`### llm:${e.vendor}`)
+    if (e.added.length > 0) lines.push(`- Added: ${e.added.join(", ")}`)
+    if (e.removed.length > 0) lines.push(`- Removed: ${e.removed.join(", ")}`)
+    lines.push("")
+  }
+  writeFileSync(CHANGELOG_PATH, `${existing}\n${lines.join("\n").replace(/\n+$/, "\n")}`, "utf-8")
+  console.log(`  changelog: ${nonEmpty.map(e => `llm:${e.vendor}`).join(", ")}`)
+}
 
 const scripts = readdirSync(DIR)
   .filter(name => name.startsWith("sync-") && name.endsWith(".mjs"))
@@ -54,9 +92,11 @@ console.log(`Running ${scripts.length} native-vendor sync script(s)…\n`)
 const synced = []
 const skipped = []
 const failed = []
+const idDiffs = []
 
 for (const script of scripts) {
   console.log(`━━━ ${script} ━━━`)
+  const before = readIds(outputOf(script))
   const result = spawnSync(process.execPath, [`${DIR}/${script}`], {
     stdio: "inherit",
     env: process.env,
@@ -75,8 +115,16 @@ for (const script of scripts) {
   } else {
     failed.push({ script, reason: `exit ${code}` })
   }
+  const after = readIds(outputOf(script))
+  idDiffs.push({
+    vendor: vendorOf(script),
+    added: [...after].filter(id => !before.has(id)).sort(),
+    removed: [...before].filter(id => !after.has(id)).sort(),
+  })
   console.log("")
 }
+
+appendChangelog(idDiffs)
 
 console.log("━━━ summary ━━━")
 console.log(`  synced:  ${synced.length}${synced.length ? ` (${synced.join(", ")})` : ""}`)

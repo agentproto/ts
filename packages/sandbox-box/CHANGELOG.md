@@ -1,5 +1,18 @@
 # @agentproto/sandbox-box
 
+## 0.2.18
+
+### Patch Changes
+
+- @agentproto/sandbox@0.7.1
+
+## 0.2.17
+
+### Patch Changes
+
+- Updated dependencies [b7b85d6]
+  - @agentproto/sandbox@0.7.0
+
 ## 0.2.16
 
 ### Patch Changes

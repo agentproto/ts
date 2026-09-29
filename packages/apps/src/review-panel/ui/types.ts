@@ -54,6 +54,10 @@ export interface ReviewRow {
   createdAt: string
   dirty?: boolean
   cached?: boolean
+  /** Whether the daemon signed the attestation (`attestor.signature` present)
+   *  — see `review_ledger`'s `ledgerRow()`. Absent on a row from a daemon
+   *  build that predates signing; treated as unsigned either way. */
+  signed?: boolean
   /** The host-local checkout `review_run` ran in — never part of the
    *  attestation (not portable), but real metadata this daemon can hand
    *  back into a fresh `review_run` (the "Re-run fresh" action). */
@@ -126,5 +130,8 @@ export interface RunDetail {
     pr?: PrRef
     dirty?: boolean
     createdAt: string
+    /** Only `signature.principal`/`keyFingerprint` are rendered — the `sig`
+     *  bytes never reach this panel. */
+    attestor?: { signature?: { principal: string; keyFingerprint: string } }
   }
 }

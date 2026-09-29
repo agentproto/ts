@@ -221,6 +221,61 @@ test('empty/invalid reviewerSandbox still resolves to host (no spec, no cwd)', (
   }
 })
 
+// ── AGENTPROTO_JOIN passthrough (gated on the daemon process actually
+//    having a value — see sandbox-agent.mjs's comment on why this can't be
+//    unconditional like ANTHROPIC_API_KEY/GITHUB_TOKEN) ────────────────────
+
+test('default passthrough omits AGENTPROTO_JOIN when this process has none (fork PR / no secret configured)', () => {
+  assert.equal(process.env.AGENTPROTO_JOIN, undefined)
+  const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
+  assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN'])
+})
+
+test('default passthrough adds AGENTPROTO_JOIN when this process has a value to offer', () => {
+  process.env.AGENTPROTO_JOIN = 'https://join.example/token'
+  try {
+    const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
+    assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'AGENTPROTO_JOIN'])
+  } finally {
+    delete process.env.AGENTPROTO_JOIN
+  }
+})
+
+test('a configured reviewerSandboxEnv still wins its own list, but AGENTPROTO_JOIN is still appended when present — this repo\'s own opencode lane must not silently lose auto-join just because it pins reviewerSandboxEnv', () => {
+  process.env.AGENTPROTO_JOIN = 'https://join.example/token'
+  try {
+    const spec = sandboxRefFor(
+      { reviewerSandbox: 'e2b', reviewerSandboxEnv: ['OPENROUTER_API_KEY', 'GITHUB_TOKEN'] },
+      'review',
+    )
+    assert.deepEqual(spec.env.passthrough, ['OPENROUTER_API_KEY', 'GITHUB_TOKEN', 'AGENTPROTO_JOIN'])
+  } finally {
+    delete process.env.AGENTPROTO_JOIN
+  }
+})
+
+test('native object form without env.passthrough also picks up the gated AGENTPROTO_JOIN default', () => {
+  process.env.AGENTPROTO_JOIN = 'https://join.example/token'
+  try {
+    const spec = sandboxRefFor({ reviewerSandbox: { provider: 'e2b' } }, 'review')
+    assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'AGENTPROTO_JOIN'])
+  } finally {
+    delete process.env.AGENTPROTO_JOIN
+  }
+})
+
+test('AGENTPROTO_JOIN set but blank/whitespace is treated as absent', () => {
+  for (const blank of ['', '   ']) {
+    process.env.AGENTPROTO_JOIN = blank
+    try {
+      const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
+      assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN'])
+    } finally {
+      delete process.env.AGENTPROTO_JOIN
+    }
+  }
+})
+
 test('native object spec still selects /home/user as the workspace cwd', () => {
   assert.equal(workspaceCwdFor({ reviewerSandbox: { provider: 'e2b' } }, 'review'), '/home/user')
   const bindings = {
@@ -228,4 +283,76 @@ test('native object spec still selects /home/user as the workspace cwd', () => {
   }
   assert.notEqual(workflow.steps[0].sandbox(bindings), undefined)
   assert.equal(workflow.steps[0].cwd(bindings), '/home/user')
+})
+
+// ── AGENTPROTO_JOIN_* metadata passthrough (SANDBOX-VISIBILITY-JOIN) ───────
+// Same gate shape as AGENTPROTO_JOIN itself: only appended when both the
+// join token AND that specific meta var are actually present on this
+// process, so a fork PR / no-join run never grows this list, and a run that
+// sets AGENTPROTO_JOIN but skips (say) AGENTPROTO_JOIN_LABELS still gets the
+// others.
+
+test('join metadata vars are omitted with no AGENTPROTO_JOIN (nothing to attach metadata to)', () => {
+  process.env.AGENTPROTO_JOIN_NAME = 'ci-reviewer #1536'
+  try {
+    const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
+    assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN'])
+  } finally {
+    delete process.env.AGENTPROTO_JOIN_NAME
+  }
+})
+
+test('join metadata vars are appended alongside AGENTPROTO_JOIN when both are present', () => {
+  process.env.AGENTPROTO_JOIN = 'https://join.example/token'
+  process.env.AGENTPROTO_JOIN_NAME = 'ci-reviewer #1536'
+  process.env.AGENTPROTO_JOIN_PROVIDER = 'e2b'
+  process.env.AGENTPROTO_JOIN_SANDBOX_ID = 'sbx_abc123'
+  process.env.AGENTPROTO_JOIN_LABELS = 'pr=1536,run=https://github.com/agentproto/ts/actions/runs/36438398607'
+  try {
+    const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
+    assert.deepEqual(spec.env.passthrough, [
+      'ANTHROPIC_API_KEY',
+      'GITHUB_TOKEN',
+      'AGENTPROTO_JOIN',
+      'AGENTPROTO_JOIN_NAME',
+      'AGENTPROTO_JOIN_PROVIDER',
+      'AGENTPROTO_JOIN_SANDBOX_ID',
+      'AGENTPROTO_JOIN_LABELS',
+    ])
+  } finally {
+    delete process.env.AGENTPROTO_JOIN
+    delete process.env.AGENTPROTO_JOIN_NAME
+    delete process.env.AGENTPROTO_JOIN_PROVIDER
+    delete process.env.AGENTPROTO_JOIN_SANDBOX_ID
+    delete process.env.AGENTPROTO_JOIN_LABELS
+  }
+})
+
+test('only the join metadata vars this process actually set are appended — partial config stays partial', () => {
+  process.env.AGENTPROTO_JOIN = 'https://join.example/token'
+  process.env.AGENTPROTO_JOIN_PROVIDER = 'e2b'
+  try {
+    const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
+    assert.deepEqual(spec.env.passthrough, [
+      'ANTHROPIC_API_KEY',
+      'GITHUB_TOKEN',
+      'AGENTPROTO_JOIN',
+      'AGENTPROTO_JOIN_PROVIDER',
+    ])
+  } finally {
+    delete process.env.AGENTPROTO_JOIN
+    delete process.env.AGENTPROTO_JOIN_PROVIDER
+  }
+})
+
+test('blank/whitespace join metadata vars are treated as absent, same as AGENTPROTO_JOIN itself', () => {
+  process.env.AGENTPROTO_JOIN = 'https://join.example/token'
+  process.env.AGENTPROTO_JOIN_NAME = '   '
+  try {
+    const spec = sandboxRefFor({ reviewerSandbox: 'e2b' }, 'review')
+    assert.deepEqual(spec.env.passthrough, ['ANTHROPIC_API_KEY', 'GITHUB_TOKEN', 'AGENTPROTO_JOIN'])
+  } finally {
+    delete process.env.AGENTPROTO_JOIN
+    delete process.env.AGENTPROTO_JOIN_NAME
+  }
 })

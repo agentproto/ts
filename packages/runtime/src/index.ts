@@ -17,11 +17,11 @@
 
 import { sweepSessionBrowser } from "./browser-mount.js"
 import { randomUUID } from "node:crypto"
-import { existsSync } from "node:fs"
+import { existsSync, mkdtempSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { hostname, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { createMcpServer } from "@agentproto/mcp-server"
+import { createMcpServer, registerUiResource } from "@agentproto/mcp-server"
 import type { DoctypeSpec } from "@agentproto/manifest"
 
 import { writeRuntimeMeta } from "./agentproto-dir.js"
@@ -48,6 +48,7 @@ import {
 import { registerAuthProfileTools } from "./auth-profile-tools.js"
 import { registerConfigTools, type ConfigToolsDeps } from "./config-tools.js"
 import { registerHarnessPresetTools } from "./harness-preset-tools.js"
+import { registerUserPresetTools } from "./user-preset-tools.js"
 import { registerCredentialDiscoveryTools } from "./credential-discovery.js"
 import { registerWebSearchTools } from "./web-search-tools.js"
 import { registerMcpApps } from "./mcp-apps-adapter.js"
@@ -105,6 +106,8 @@ import { routeInboundMessage } from "./inbound-router.js"
 import { createSentinelStore } from "./sentinel-store.js"
 import { createSentinelRuntime } from "./sentinel-runtime.js"
 import { resolveSentinelProvider } from "./sentinel-providers/registry.js"
+import { makePublicUrlResolver, setSentinelPublicUrlSource } from "./sentinel-public-url.js"
+import { builtinProviderCapabilities } from "./remote-providers/registry.js"
 import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
 import { registerSentinelTools } from "./sentinel-tools.js"
 import { createSentinelAutoLinker } from "./sentinel-autolink.js"
@@ -146,9 +149,14 @@ import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createPrProvenanceReconciler, type OpenPrResolver } from "./pr-provenance-reconciler.js"
 import { createActivityProjector, type PrStateResolver } from "./activities.js"
 import { createTaskLedger } from "./task-ledger.js"
+import { createApprovalsEngine, type ApprovalsEngine } from "./approvals/engine.js"
+import { registerApprovalTools } from "./approvals/tools.js"
+import { registerApprovalCardDecideTool } from "./approvals/card-tool.js"
+import { approvalCardResourceUri, renderApprovalCardHtml } from "./approvals/card.js"
 import { wireSupervisorNotify } from "./supervisor-notify.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler } from "./cron-scheduler.js"
+import { getAuthProfile } from "@agentproto/auth"
 import { createRoutineRegistrar } from "./routine-registrar.js"
 import { createDaemonToolRegistry, mergeAppAndDaemonToolRegistry } from "./workflow-tool-registry.js"
 export type {
@@ -197,6 +205,11 @@ export type {
   CatalogModelsLister,
   AdapterCapabilitiesLister,
 } from "./http-server.js"
+// Header the tunnel server injects on a host-scoped pairing's forwarded
+// requests (DEVICES-PLAN item 1) — re-exported so `packages/cli`'s
+// `buildDaemonTunnelServerOptions` (which sets it) and http-server.ts's own
+// `handleDeviceInference` (which checks it) share one literal, not two.
+export { HOST_SCOPE_HEADER } from "./http-server.js"
 export type {
   CapabilitiesInventory,
   CapabilitiesInventoryMcp,
@@ -310,7 +323,22 @@ export type {
   ReviewerRunResult,
   ReviewerSessionHost,
   CreateReviewRunnerOptions,
+  ReviewComposeContext,
 } from "./review-runner.js"
+export {
+  allowedSignersLine,
+  defaultReviewKeysDir,
+  ensureReviewSigningKey,
+  fileExists,
+  resolvePrincipal,
+  signAttestation,
+  verifySignedAttestation,
+  SIGN_NAMESPACE,
+} from "./review-signing.js"
+export type { ReviewSignature, ReviewSigningKey, VerifySignedAttestationResult } from "./review-signing.js"
+export { composedFromRangeSha, findComposeCandidate } from "./review-compose.js"
+export type { ComposeCandidate, FindComposeCandidateInput } from "./review-compose.js"
+export { createReviewPackLoader, defaultReviewPackCacheDir } from "./review-pack-loader.js"
 export { createReviewLedger, defaultReviewLedgerRoot, repoSlug, withPr, withPrStatus } from "./review-ledger.js"
 export type {
   ReviewLedger,
@@ -605,6 +633,9 @@ import { registerRemoteTools } from "./remote-tools.js"
 import { registerPairingTools } from "./pairing-tools.js"
 import type { PairingRegistry } from "./pairing-registry.js"
 import type { HostRegistry } from "./host-registry.js"
+import { createDeviceSandboxProvider } from "./sandbox-providers/device.js"
+import type { SandboxProviderHandle } from "./sandbox-providers/types.js"
+import type { JoinTokenRegistry } from "./join-token-registry.js"
 import { createDeviceRegistry } from "./device-registry.js"
 import { registerDeviceTools } from "./device-tools.js"
 import { registerDaemonHealthTools } from "./daemon-health-tools.js"
@@ -694,9 +725,19 @@ export {
   type HostRegistry,
   type HostRegistryDeps,
   type HostRecord,
+  type HostJoinMeta,
   type ForwardHttpRequest,
   type ForwardHttpResponse,
 } from "./host-registry.js"
+export {
+  createJoinTokenRegistry,
+  JOIN_TOKENS_VERSION,
+  type JoinTokenRegistry,
+  type JoinTokenRegistryDeps,
+  type JoinTokenRecord,
+  type CreateJoinTokenInput,
+  type CreatedJoinToken,
+} from "./join-token-registry.js"
 export {
   createDeviceRegistry,
   type Device,
@@ -1159,11 +1200,33 @@ export interface CreateGatewayOptions {
    * autoconnect or tear down on shutdown.
    */
   hostRegistry?: HostRegistry
+  /**
+   * Optional JOIN TOKEN registry (see `createJoinTokenRegistry`,
+   * SANDBOX-VISIBILITY-JOIN). When wired alongside `pairingRegistry` +
+   * `hostRegistry`, the gateway mounts `POST/GET /devices/join-tokens` +
+   * `DELETE /devices/join-tokens/:id`, the `join_token_create/list/revoke`
+   * MCP tools, and `device_sessions`/`GET /devices/:id/sessions[/…/output]`.
+   * Autoconnect is the caller's to start (after this returns), same as
+   * `pairingRegistry`.
+   */
+  joinTokens?: JoinTokenRegistry
   /** Enable the local LLM Endpoint proxy sidecar (route registration,
    *  MCP tools, child-process lifecycle). Default false — the endpoint is
    *  an opt-in feature; when off, the `llm-endpoint` custom route is not
    *  registered and the `llm_endpoint_*` MCP tools are not exposed. */
   llmEndpoint?: boolean
+  /** Mirrors `config.features.deviceInferenceShare` (DEVICES-PLAN item 1).
+   *  Default false. Only meaningful alongside `llmEndpoint: true` — passed
+   *  straight through to `startHttpServer`'s `deviceInferenceShare`, which
+   *  gates `/device-inference/*` (see http-server.ts's `HOST_SCOPE_HEADER`
+   *  doc comment for the full scope-gate story). */
+  deviceInferenceShare?: boolean
+  /** Mirrors `config.features.deviceSpawnAllow` (DEVICES-PLAN PR-D). Default
+   *  false. Passed straight through to `startHttpServer`'s
+   *  `deviceSpawnAllow`, which gates `/device-spawn/*` — this daemon acting
+   *  as the RECEIVING end of an `agent_start({ sandbox: "device:<name>" })`
+   *  spawn driven from a paired controller. */
+  deviceSpawnAllow?: boolean
 }
 
 /** Default crash-detect sweep interval (crash-detect PR-1) when
@@ -1246,6 +1309,11 @@ export interface GatewayHandle {
    *  (DEVICES-PLAN PR-C). Undefined otherwise. No autoconnect/shutdown to
    *  call on it — see that option's doc comment. */
   hosts?: HostRegistry
+  /** JOIN TOKEN registry, when one was wired via
+   *  `CreateGatewayOptions.joinTokens` (SANDBOX-VISIBILITY-JOIN). Undefined
+   *  otherwise. Exposed so the CLI can `startAutoconnect()` after boot and
+   *  `shutdown()` it, same as `pairing`. */
+  joinTokens?: JoinTokenRegistry
   /** Per-boot bearer token required on mutating /sessions/* routes
    *  + WS PTY upgrades. Exposed so an embedding host (e.g. the CLI
    *  shell that hosts the gateway in-process) can pass it to child
@@ -1344,6 +1412,15 @@ export async function createGateway(
     throw new Error(`runtime: workspace dir does not exist: ${workspace}`)
   }
   const port = opts.port ?? 18790
+  // Per-boot bearer token. Required on mutating /sessions/* routes
+  // and on the WS upgrade for /sessions/:id/pty. Persisted to
+  // runtime.json (mode 0600) so the same-user CLI can read it; a
+  // browser-loaded localhost page can't. Hoisted above its original spot
+  // (just before `startHttpServer`) so it's already in scope where the
+  // llm-endpoint sidecar registry is constructed below, which needs it to
+  // reach back into THIS daemon's own `/devices/:id/exec-stream` (device-
+  // inference model routing, DEVICES-PLAN item 2).
+  const token = opts.token ?? randomUUID()
   // Loopback URL for the daemon's own plain `/mcp` gateway — always
   // 127.0.0.1 regardless of `opts.bind`, mirroring the orchestrator
   // injector's loopback default (orchestrator-gateway.ts), since a
@@ -1358,8 +1435,46 @@ export async function createGateway(
   // to the family's own built-in resolver (built-ins + `@agentproto/sandbox-
   // <slug>` dynamic import) when the host doesn't inject an override —
   // mirrors `resolveAgentAdapter`'s optional-injection shape.
-  const resolveSandboxProviderResolved: SandboxProviderResolver =
+  const baseSandboxProviderResolver: SandboxProviderResolver =
     opts.resolveSandboxProvider ?? makeSandboxResolver(makeSandboxCredsStore())
+  // `device:<name>` (DEVICES-PLAN PR-D) resolves to a synthetic handle built
+  // fresh per call around `opts.hostRegistry`, rather than living in
+  // `sandbox-providers/registry.ts` — that registry is deliberately free of
+  // `HostRegistry` coupling (it only knows built-ins + the fixed third-party
+  // catalog), and `hostRegistry` is only available here, at the gateway's
+  // composition root. `null` when no `hostRegistry` is wired ⇒
+  // `bootSandboxAgentSession` reports the existing "provider not found"
+  // error, same as any other unresolvable slug.
+  const resolveSandboxProviderResolved: SandboxProviderResolver = async (
+    slug: string,
+  ): Promise<SandboxProviderHandle | null> => {
+    if (slug.startsWith("device:")) {
+      const deviceName = slug.slice("device:".length)
+      if (!opts.hostRegistry || deviceName.length === 0) return null
+      return {
+        provider: createDeviceSandboxProvider(deviceName, opts.hostRegistry),
+        slug,
+        name: deviceName,
+        version: "builtin",
+        description: `Spawns and proxies an agent session on the paired host device "${deviceName}" over its pair/v2 channel.`,
+        requiresSetup: false,
+        capabilities: {
+          networkEgress: true,
+          mounts: false,
+          lifecyclePause: false,
+          readOnly: false,
+        },
+        // See that field's doc — a device's filesystem is disjoint from the
+        // driving daemon's; forwarding a HOST-shaped implicit cwd would
+        // almost always ENOENT there.
+        omitCwdWhenImplicit: true,
+        async check(): Promise<boolean> {
+          return true
+        },
+      }
+    }
+    return baseSandboxProviderResolver(slug)
+  }
   // Same loopback reasoning as `daemonMcpUrl` above, for the terminal MCP
   // app's PTY WebSocket: this process already knows its own bind/port, so
   // there's no need to shell out to `.agentproto/runtime.json` (the CLI's
@@ -1410,6 +1525,17 @@ export async function createGateway(
     // restoreOnBoot already logs per-tunnel failures via onLog.
   })
 
+  // Public origin GitHub calls back into for the `webhook` sentinel provider:
+  // AGENTPROTO_PUBLIC_URL, else an active tunnel to this daemon's port
+  // (stable only when the tunnel provider declares `stableUrl`).
+  setSentinelPublicUrlSource(
+    makePublicUrlResolver({
+      port,
+      listTunnels: () => tunnels.list(),
+      isStableProvider: provider => builtinProviderCapabilities(provider)?.stableUrl === true,
+    }),
+  )
+
   // Single-sidecar registry for the @agentproto/llm-endpoint proxy — gated
   // behind `opts.llmEndpoint` (default false). When off, no registry is
   // created, no MCP tools are registered, and the route is absent too
@@ -1423,6 +1549,14 @@ export async function createGateway(
             at: new Date().toISOString(),
             line,
           }),
+        // Loopback callback into THIS daemon's own gateway (deterministic —
+        // `port` is fixed before the server ever binds) + its per-boot
+        // bearer, so the sidecar can reach `/devices/:id/exec-stream` to
+        // route a `<endpoint>@<device>` model (DEVICES-PLAN item 2).
+        // Injected regardless of `deviceInferenceShare`/`hostRegistry` — an
+        // unconfigured/offline device just 404s/502s at request time, same
+        // as any other unreachable upstream.
+        daemonCallback: { baseUrl: `http://127.0.0.1:${port}`, token },
       })
     : undefined
   // Autostart on daemon boot (daemon-managed-gateway): mirrors
@@ -1776,14 +1910,20 @@ export async function createGateway(
   // ~/.agentproto/cron-jobs.json. Jobs survive daemon restarts;
   // skipped fires during downtime are NOT backfilled (documented behaviour).
   // Agent jobs fire as `agent_start` calls through `dispatchTool`;
-  // `resolveAgentAdapter` is only needed to restart a dead `prompt-session`
-  // target. Command jobs need neither.
+  // `resolveAgentAdapter` restarts a dead `prompt-session` target and, at
+  // create time, refuses an agent job whose adapter doesn't resolve
+  // (`getAuthProfile`/`listAgentAdapters` only word that error). Command
+  // jobs need none of them.
   const cronScheduler = createCronScheduler({
     sessionEvents,
     registry: sessions,
     ...(opts.resolveAgentAdapter
       ? { resolveAgentAdapter: opts.resolveAgentAdapter }
       : {}),
+    ...(opts.listAgentAdapters
+      ? { listAgentAdapters: opts.listAgentAdapters }
+      : {}),
+    getAuthProfile,
     dispatchTool,
     workspace,
     persist,
@@ -1920,6 +2060,12 @@ export async function createGateway(
       persist ? {} : { root: join(tmpdir(), `agentproto-reviews-${process.pid}-${randomUUID()}`) },
     ),
     daemonId: `agentproto-runtime@${hostname()}:${port}`,
+    // A test gateway (`persist: false`) signs with a throwaway keypair, same
+    // as its ledger — never the real `~/.agentproto/keys`.
+    ...(persist
+      ? {}
+      : { signingKeysDir: join(tmpdir(), `agentproto-review-keys-${process.pid}-${randomUUID()}`) }),
+    ...(daemonConfig.review?.principal ? { signingPrincipal: daemonConfig.review.principal } : {}),
     // Display-only settle notice (Goal A item 4, review-session-panel step):
     // a daemon-authored `notice` in the requester's own transcript, never a
     // prompt/inbox delivery — see `SessionsRegistry.recordNotice`'s doc for
@@ -1964,6 +2110,23 @@ export async function createGateway(
     ...(operatorWorkspaceSlug ? { operatorWorkspaceSlug } : {}),
   })
 
+  // Approvals engine (approvals/engine.ts) — the daemon's human-approval
+  // primitive on AIP-7 signatures (E1a). Always constructed (mirrors every
+  // other gateway-owned store): with `persist` off (test gateways), it's
+  // pointed at a throwaway tmp dir instead of skipping construction, so
+  // `~/.agentproto/approvals` is NEVER touched by a `persist:false`
+  // gateway — the same hermetic-tests guarantee `taskLedger` gets from its
+  // own `persist` switch, expressed here as a homeDir choice instead of an
+  // internal no-op flag (this module has no in-memory-only mode).
+  const approvalsHomeDir = persist
+    ? undefined
+    : mkdtempSync(join(tmpdir(), "agentproto-approvals-"))
+  const approvalsEngine: ApprovalsEngine = createApprovalsEngine({
+    sessionEvents,
+    ...(approvalsHomeDir ? { homeDir: approvalsHomeDir } : {}),
+    webOrigins: daemonConfig.approvals?.webOrigins ?? [],
+  })
+
   // Supervisor crash-notification (crash-detect PR-4). Opt-in per child
   // (`notifyParentOnCrash`) — delivers a `[child-crashed] …` notice into a
   // crashed child's live parent, without ever interrupting a busy one. See
@@ -1988,12 +2151,6 @@ export async function createGateway(
     // reports merged/closed.
     ...(opts.resolvePrState ? { resolvePrState: opts.resolvePrState } : {}),
   })
-
-  // Per-boot bearer token. Required on mutating /sessions/* routes
-  // and on the WS upgrade for /sessions/:id/pty. Persisted to
-  // runtime.json (mode 0600) so the same-user CLI can read it; a
-  // browser-loaded localhost page can't.
-  const token = opts.token ?? randomUUID()
 
   // MCP proxy — single registry that holds open Client connections
   // to every imported MCP server. The per-request mcpServerFactory
@@ -2096,6 +2253,10 @@ export async function createGateway(
     resolveProvider: resolveSentinelProviderResolved,
     isSessionAlive,
     restartSession: restartInboundSession,
+    sessionInfo: id => {
+      const desc = sessions.get(id)
+      return desc ? { endedReason: desc.endedReason, parentSessionId: desc.parentSessionId } : undefined
+    },
   })
 
   // Inbound watcher — polls an agentpush source on a timer and spawns
@@ -2206,6 +2367,7 @@ export async function createGateway(
     origin?: string,
     deferredOverride?: boolean,
     allowTools?: ReadonlySet<string>,
+    surface?: string,
   ) => {
     const { server: rawServer } = await createMcpServer({
       specs: opts.specs,
@@ -2312,6 +2474,45 @@ export async function createGateway(
       registry: sessions,
       ...(callerSessionId ? { callerSessionId } : {}),
     })
+    // Approvals (E1a) — model-visible request/get/wait/consume are safe
+    // everywhere (they can request and consume, never decide) and register
+    // on every surface. `callerSessionId` mirrors `registerCommandTools`
+    // just above: a daemon-spawned session's self-ref connection carries
+    // one, so its requests are attributed to that session instead of
+    // falling back to the operator.
+    registerApprovalTools(server, {
+      engine: approvalsEngine,
+      ...(callerSessionId ? { callerSessionId } : {}),
+    })
+    // SECURITY BOUNDARY: `approval_card_decide` and every
+    // `ui://agentproto/approval/<id>` card resource are mounted ONLY on the
+    // dedicated `?surface=approval-cards` connection, and `handleMcp`
+    // (http-server.ts) already refuses that surface outright when a
+    // `callerSessionId` is present — the `!callerSessionId` check here is
+    // defense in depth for any other caller of this factory. Every other
+    // surface (root `/mcp`, any daemon-spawned session's self-ref
+    // connection) gets NEITHER: an agent CLI's model can typically
+    // `resources/read` and call app-only tools despite
+    // `_meta.ui.visibility: ["app"]` (most hosts don't honour it), so
+    // mounting the card there would let an agent mint its own ticket and
+    // self-approve. Only a human-facing MCP Apps host (Claude Desktop via
+    // `install-mcp --app`, configured to dial `/mcp?surface=approval-cards`)
+    // is meant to ever see this surface. Re-derived from the engine's own
+    // pending set on every build (this factory runs once per stateless
+    // `/mcp` connection — see the module docblock — so a resource
+    // registered inside a tool handler would vanish before the next
+    // connection could `resources/read` it).
+    if (surface === "approval-cards" && !callerSessionId) {
+      registerApprovalCardDecideTool(server, approvalsEngine)
+      for (const pending of approvalsEngine.list({ status: "pending" })) {
+        registerUiResource(server, {
+          name: `approval-${pending.id}`,
+          uri: approvalCardResourceUri(pending.id),
+          html: () => renderApprovalCardHtml(approvalsEngine, pending.id),
+          description: "Human approval card",
+        })
+      }
+    }
     // Remote-tunnel lifecycle. The controller is a singleton on the
     // gateway, so registering its tools per-request is just rebinding
     // the same closures — the underlying state lives in `remote`.
@@ -2327,6 +2528,7 @@ export async function createGateway(
       // pair_revoke; both surfaces stay live.
       registerDeviceTools(server, {
         registry: createDeviceRegistry(opts.pairingRegistry, opts.hostRegistry),
+        ...(opts.joinTokens ? { joinTokens: opts.joinTokens } : {}),
       })
     }
     // Agent-session orchestration — operators (Mastra agents in
@@ -2411,6 +2613,10 @@ export async function createGateway(
     // set_default). Same no-host-wiring stance as the auth-profile tools —
     // the store reads/writes the fixed `~/.agentproto/harness-presets.json`.
     registerHarnessPresetTools(server)
+    // User-owned spawn presets ("favorites") — user_preset_list/save/delete,
+    // the MCP twin of the `/user-presets` HTTP routes. `includeRecent` reads
+    // the same session registry as every other session-backed tool here.
+    registerUserPresetTools(server, { registry: sessions })
     // Read-only scanner: report locally-present credentials (Claude Code /
     // Codex / Gemini logins, ~/.hermes/config.yaml, provider env keys) with
     // provenance, so onboarding can offer an import. Never returns a value.
@@ -2722,7 +2928,7 @@ export async function createGateway(
   // collected in the result, not thrown) — same "never fails a session/boot"
   // posture as the PR-provenance reconciler above.
   try {
-    routineRegistrar.reconcile()
+    await routineRegistrar.reconcile()
   } catch (err) {
     events.emit({
       type: "heartbeat-error",
@@ -2799,16 +3005,22 @@ export async function createGateway(
       store: sentinelStore,
       resolveProvider: resolveSentinelProviderResolved,
       isSessionAlive,
+      runtime: sentinelRuntime,
     },
     ...(llmEndpoint ? { llmEndpoint } : {}),
+    ...(opts.deviceInferenceShare ? { deviceInferenceShare: true } : {}),
+    ...(opts.deviceSpawnAllow ? { deviceSpawnAllow: true } : {}),
     remote,
     ...(opts.pairingRegistry ? { pairings: opts.pairingRegistry } : {}),
     ...(opts.hostRegistry ? { hostRegistry: opts.hostRegistry } : {}),
+    ...(opts.joinTokens ? { joinTokens: opts.joinTokens } : {}),
     sessionEvents,
     eventRing,
     supervisor,
     activityProjector,
     taskLedger,
+    approvals: approvalsEngine,
+    approvalsWebOrigins: daemonConfig.approvals?.webOrigins ?? [],
     ...(workflowRunner ? { workflowRunner } : {}),
     appRegistry,
     performAppInstall: performInstall,
@@ -3099,6 +3311,7 @@ export async function createGateway(
     tunnels,
     ...(opts.pairingRegistry ? { pairing: opts.pairingRegistry } : {}),
     ...(opts.hostRegistry ? { hosts: opts.hostRegistry } : {}),
+    ...(opts.joinTokens ? { joinTokens: opts.joinTokens } : {}),
     token,
     mintOrchestratorScope: scopeTokens.mint,
     async resumeSessionsOnBoot(passOpts) {
@@ -3166,6 +3379,8 @@ export async function createGateway(
       // Detach the task ledger's bus subscription + sync-flush tasks.json
       // (same debounce-then-flush contract as supervisor.shutdown()).
       taskLedger.dispose()
+      // Clear the approvals engine's pending `approval_wait` timers.
+      approvalsEngine.dispose()
       // Kill all live sessions before tearing down HTTP — otherwise
       // long-running children inherit the daemon's listening socket
       // and stay around as zombies after the parent exits.

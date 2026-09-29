@@ -1,5 +1,21 @@
 # @agentproto/adapter-pi
 
+## 0.4.2
+
+### Patch Changes
+
+- Updated dependencies [d2df24b]
+  - @agentproto/model-catalog@0.11.3
+
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies [d4ac86e]
+- Updated dependencies [d000369]
+- Updated dependencies [d4ac86e]
+  - @agentproto/model-catalog@0.11.2
+
 ## 0.4.0
 
 ### Minor Changes

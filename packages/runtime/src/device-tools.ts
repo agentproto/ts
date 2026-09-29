@@ -19,9 +19,13 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { DeviceRegistry } from "./device-registry.js"
+import type { JoinTokenRegistry } from "./join-token-registry.js"
 
 export interface RegisterDeviceToolsOptions {
   registry: DeviceRegistry
+  /** Optional (SANDBOX-VISIBILITY-JOIN) — when wired, registers
+   *  `join_token_create`/`join_token_list`/`join_token_revoke`. */
+  joinTokens?: JoinTokenRegistry
 }
 
 function text(value: string | object): {
@@ -41,7 +45,7 @@ export function registerDeviceTools(
   server: McpServer,
   opts: RegisterDeviceToolsOptions,
 ): void {
-  const { registry } = opts
+  const { registry, joinTokens } = opts
 
   server.tool(
     "device_list",
@@ -117,4 +121,104 @@ export function registerDeviceTools(
       )
     },
   )
+
+  server.tool(
+    "device_sessions",
+    "Read-only: a registered HOST device's own session list (compact), or " +
+      "(with sessionId) a tail of one session's output — forwarded live " +
+      "over the host's E2E channel (HostRegistry.forwardHttp), the same " +
+      "path device_add / `agentproto devices exec` uses. If the host is " +
+      "offline, falls back to the last successful response for this exact " +
+      "query (stale: true, capturedAt: when it was captured) instead of " +
+      "failing outright — still rejects if there's nothing cached, or the " +
+      "target isn't a registered host at all.",
+    {
+      target: z.string().describe("The host's fingerprint or name (see device_list)."),
+      sessionId: z
+        .string()
+        .optional()
+        .describe("Tail this session's output instead of listing all sessions."),
+      lastN: z
+        .number()
+        .int()
+        .min(1)
+        .max(500)
+        .optional()
+        .describe("Max output lines to return (with sessionId). Default 80, max 500."),
+      clean: z
+        .boolean()
+        .optional()
+        .describe("Strip ANSI codes and drop framing lines (with sessionId)."),
+    },
+    async ({ target, sessionId, lastN, clean }) => {
+      const path = sessionId
+        ? `/sessions/${encodeURIComponent(sessionId)}/output?${new URLSearchParams({
+            ...(lastN !== undefined ? { lastN: String(lastN) } : {}),
+            ...(clean ? { clean: "true" } : {}),
+          }).toString()}`
+        : "/sessions"
+      try {
+        const res = await registry.forwardHttp(target, { method: "GET", path })
+        const body = Buffer.from(res.body).toString("utf8")
+        const staleFields = res.stale ? { stale: true as const, capturedAt: res.capturedAt } : {}
+        if (res.status !== 200) {
+          return text({ ok: false, status: res.status, message: body, ...staleFields })
+        }
+        return text({ ok: true, ...staleFields, ...(JSON.parse(body) as object) })
+      } catch (err) {
+        return text({ ok: false, message: err instanceof Error ? err.message : String(err) })
+      }
+    },
+  )
+
+  if (joinTokens) {
+    server.tool(
+      "join_token_create",
+      "Mint a long-lived, revocable, reusable join token: a value for a box " +
+        "daemon's AGENTPROTO_JOIN env var so it auto-registers as a host on " +
+        "boot, no offer URL to relay by hand. Shown ONCE — never persisted " +
+        "or echoed again by join_token_list.",
+      {
+        name: z.string().min(1).describe('Label for this token (e.g. "ci-reviewer").'),
+        ttlMs: z.number().int().positive().optional().describe("Time-to-live in ms. Default 90 days."),
+        maxUses: z.number().int().positive().optional().describe("Reuse ceiling. Default unlimited."),
+      },
+      async ({ name, ttlMs, maxUses }) => {
+        try {
+          const created = await joinTokens.create({
+            name,
+            ...(ttlMs !== undefined ? { ttlMs } : {}),
+            ...(maxUses !== undefined ? { maxUses } : {}),
+          })
+          return text({ ok: true, ...created })
+        } catch (err) {
+          return text({ ok: false, message: err instanceof Error ? err.message : String(err) })
+        }
+      },
+    )
+
+    server.tool(
+      "join_token_list",
+      "List join tokens: id, name, createdAt, expiresAt, maxUses, useCount, " +
+        "lastUsedAt, revokedAt. Never returns the token's secret. Read-only.",
+      {},
+      async () => text({ tokens: await joinTokens.list() }),
+    )
+
+    server.tool(
+      "join_token_revoke",
+      "Revoke a join token by id or name — stops its standing accept loop; " +
+        "a box already joined through it keeps its host registration (revoke " +
+        "the device itself via device_revoke to drop that too).",
+      { target: z.string().describe("The token's id or name (see join_token_list).") },
+      async ({ target }) => {
+        const revoked = await joinTokens.revoke(target)
+        return text(
+          revoked
+            ? { ok: true, revoked: target }
+            : { ok: false, message: `no join token matched "${target}"` },
+        )
+      },
+    )
+  }
 }

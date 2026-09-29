@@ -21,8 +21,10 @@ import { z } from "zod"
  * present (`tool` / `agent` / `workflow` / `action`), not a shared literal
  * discriminator field.
  *
- * `agent` is NEW — not yet in the upstream AIP-41 draft JSON Schema
- * (flagged as a specs-repo follow-up in the PR, not applied here).
+ * `agent` is now in the upstream AIP-41 draft JSON Schema too
+ * (`$defs.targetAgent`, synced into `resources/aip-41/draft/ROUTINE.schema.json`) —
+ * this union is still hand-tightened rather than re-run from `scaffold-aip`,
+ * for the same reason as the rest of `target` (see packages/routine/README.md).
  */
 const targetToolSchema = z
   .object({

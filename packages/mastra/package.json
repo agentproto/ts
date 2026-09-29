@@ -4,14 +4,14 @@
   "description": "@agentproto/mastra — turn an AIP-42 AGENT.md handle into a runnable Mastra Agent. The package is a thin adapter: you supply resolvers (model, tool, workflow, memory) and it composes the manifest's identity, persona, body, boundaries, and tool refs into a constructed `new Agent({...})` from `@mastra/core/agent`. Reference implementation for the agent/v1 → Mastra runtime path.",
   "keywords": [
     "agentproto",
-    "aip-42",
+    "aip-52",
     "mastra",
     "agent",
     "runtime",
     "adapter",
     "open-standard"
   ],
-  "homepage": "https://agentproto.sh/docs/aip-42",
+  "homepage": "https://agentproto.sh/docs/aip-52",
   "repository": {
     "type": "git",
     "url": "https://github.com/agentproto/ts",

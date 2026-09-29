@@ -29,6 +29,7 @@ import {
   SubscriptionSourceError,
   modelIdPrefixProvider,
   subscriptionSurfaceFor,
+  resolveBundleDefaults,
   type SpawnDefaultsConfig,
   type DefaultsAdapterAuthConfig,
   type ResolvedAuthSpec,
@@ -36,6 +37,8 @@ import {
   type AdapterAuthDescriptor,
   type CredentialSource,
 } from "./spawn-defaults.js"
+import { loadBundles, type BundlesFile } from "./bundles.js"
+import { loadImportedMcps, type ImportedMcpsConfig } from "./mcp-imports.js"
 import {
   buildRouteAwareLaunchConfig,
   type RouteAwareLaunchConfig,
@@ -55,6 +58,7 @@ import {
   serviceableModelRoutes,
   suggestModelSlugs,
 } from "./catalog-models.js"
+import { authProfileAsAdapterHint } from "./adapter-slug-hint.js"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import {
   getAuthProfile,
@@ -72,7 +76,7 @@ import {
   type ResolvedContextContinuityPolicy,
 } from "./context-continuity.js"
 import { resolvePosture } from "./canonical-posture.js"
-import type { UserPreset } from "./user-presets.js"
+import { touchUserPreset, type UserPreset } from "./user-presets.js"
 import { getDefaultHarnessPreset } from "./harness-preset-store.js"
 import {
   HEADLESS_BROWSER_PROMPT_HINT,
@@ -98,6 +102,14 @@ import {
 } from "./workspace-rules.js"
 import { deriveSessionTitle } from "./session-title.js"
 import { isAbsolute, join } from "node:path"
+import { syncPiModels } from "@agentproto/llm-endpoint"
+import {
+  fitCheckForTarget,
+  projectInferenceBinding,
+  resolveInferenceTarget,
+  type DeviceProbeResult,
+  type InferenceBindingRequest,
+} from "./inference-binding.js"
 
 /**
  * True when `p` (already absolute) sits inside `cwd` (or IS cwd). The
@@ -857,6 +869,45 @@ export function shouldInjectDaemonSelfMount(
   return false
 }
 
+/**
+ * Build the daemon's own scoped `/mcp` self-mount entry — the same ref shape
+ * the hermes/claude-code default injection below builds (a `denyTools` query
+ * for a delegation-denied role, an optional `?deferred=` override, and a
+ * `callerSessionId` stamp for identity/auto-parent attribution). Pure —
+ * shared by that default injection, a bundle's `includeDaemon` (PLAN D phase
+ * 1), and an explicit `agent_start.daemonMount: true` opt-in, so the URL
+ * logic lives in exactly one place.
+ */
+export function buildDaemonSelfMountEntry(
+  daemonMcpUrl: string,
+  opts: {
+    delegationDenied: boolean
+    deferredToolsOverride?: boolean
+    callerSessionId: string
+  },
+): AcpMcpServer {
+  let ref = opts.delegationDenied
+    ? `${daemonMcpUrl}${daemonMcpUrl.includes("?") ? "&" : "?"}denyTools=${DELEGATION_TOOL_NAMES.join(",")}`
+    : daemonMcpUrl
+  if (opts.deferredToolsOverride !== undefined) {
+    ref += `${ref.includes("?") ? "&" : "?"}deferred=${opts.deferredToolsOverride ? "1" : "0"}`
+  }
+  ref += `${ref.includes("?") ? "&" : "?"}callerSessionId=${encodeURIComponent(opts.callerSessionId)}`
+  return { name: "agentproto", transport: "http", ref }
+}
+
+/** Slugify an imported-MCP alias into a valid `mcpServers[].name` — lowercase,
+ *  non-alphanumerics collapsed to a single hyphen, trimmed. Falls back to the
+ *  import id when the alias slugifies to nothing (e.g. an alias made only of
+ *  symbols). Used by the bundle `mcpImports` expansion below. */
+export function slugifyMcpImportName(alias: string, fallbackId: string): string {
+  const slug = alias
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+  return slug || fallbackId
+}
+
 /** Strip ANSI escapes and drop the ACP framing/marker noise (`── … ──`
  *  turn frames + `[thought]` / `[tool]` lines) so the lines read as plain,
  *  human-friendly text. Used by `agent_output({clean})` and the
@@ -900,6 +951,15 @@ export interface SpawnAgentSessionDeps {
    *  `loadConfig` when omitted; tests inject a stub to avoid touching
    *  the real file. */
   loadDefaultsConfig?: () => Promise<SpawnDefaultsConfig | undefined>
+  /** Loads `~/.agentproto/bundles.json` for capability-bundle expansion
+   *  (`agent_start.bundles` / config `defaults.bundles`, PLAN D phase 1).
+   *  Defaults to the real loader when omitted; tests inject a stub to avoid
+   *  touching the real file. */
+  loadBundlesConfig?: () => Promise<BundlesFile>
+  /** Loads `~/.agentproto/imported-mcps.json` — resolves a bundle's
+   *  `mcpImports` ids to their alias/snapshot and detects dangling ones.
+   *  Defaults to the real loader when omitted; tests inject a stub. */
+  loadImportedMcpsConfig?: () => Promise<ImportedMcpsConfig>
   /** Builds the per-session headless-browser mount for `browser:
    *  "headless"` (see `browser-mount.ts`). Defaults to the real resolver
    *  (installs chrome-devtools-mcp on first use); tests inject a stub. */
@@ -980,6 +1040,13 @@ export interface SpawnAgentSessionDeps {
    *  the caller, not surfaced as a spawn failure — the adapter's own first
    *  request is left to report the real connection error. */
   ensureLlmEndpointRunning?: () => Promise<void>
+  /** Probe a paired device's own shared inference endpoint for a model —
+   *  the device-qualified leg of `agent_start.inference` (DEVICES-PLAN item
+   *  2). Wired at the composition root to `HostRegistry.forwardHttp` against
+   *  `/devices/:id/exec-stream/device-inference/v1/models`. Omitted ⇒ a
+   *  device-qualified `inference` reference fails fast with a clear
+   *  "no device probe wired" error instead of hanging. */
+  probeDeviceInference?: (device: string, modelId: string) => Promise<DeviceProbeResult>
 }
 
 export interface SpawnAgentSessionInput {
@@ -1076,6 +1143,22 @@ export interface SpawnAgentSessionInput {
    *  such option (e.g. claude-code, which auto-discovers skills) ignore
    *  it. See `resolveSpawnDefaults` / `normalizeSkillsOption`. */
   skills?: string[]
+  /** Capability bundle ids (`bundle_list`) to attach (PLAN D phase 1). Merged
+   *  with config.json's `defaults.bundles` / `defaults.adapters.<slug>.bundles`
+   *  with the same precedence/replace semantics as `skills` — see
+   *  `resolveBundleDefaults`. Each bundle expands to its `mcpImports` (mounted
+   *  as native MCP servers via the daemon's `/mcp/imported/<id>` passthrough,
+   *  never the two-step `mcp_imported_*` indirection), optionally the
+   *  daemon's own `/mcp` (`includeDaemon`), and its `skills` (unioned into
+   *  the resolved skill list). Ignored (with a warning) for a sandbox spawn —
+   *  the box cannot reach this daemon's loopback `/mcp`. */
+  bundles?: string[]
+  /** Explicitly mount the daemon's own scoped `/mcp` for this spawn — the
+   *  only way an adapter outside `shouldInjectDaemonSelfMount`'s allowlist
+   *  (opencode, codex, gemini, …) gets it. Merged with config's
+   *  `defaults.adapters.<slug>.daemonMount` (per-spawn wins). Ignored (with a
+   *  warning) for a sandbox spawn. */
+  daemonMount?: boolean
   model?: string
   effort?: string
   /** Decomposed route identity.  This is canonical transport; `mode` remains
@@ -1084,6 +1167,12 @@ export interface SpawnAgentSessionInput {
   /** Named billing credential. Resolved from auth-profiles + keychain at the
    * final spawn boundary; the secret never crosses HTTP/MCP. */
   access?: { profileRef?: string }
+  /** Bind this spawn to a local/LAN inference endpoint — resolved (and fit-
+   *  checked) at the very top of `spawnAgentSession`, BEFORE preset
+   *  expansion, into ordinary `model`/`route`/`access`/`auth`/`deferredTools`
+   *  values the rest of this function already understands. Mutually
+   *  exclusive with those fields — see `resolveInferenceBindingInput`. */
+  inference?: InferenceBindingRequest
   posture?: Posture
   contextProfile?: ContextProfile
   /** A preloaded user preset. Callers resolve its id at their boundary so a
@@ -1310,6 +1399,8 @@ export type SpawnAgentSessionResult =
         | "access_profile_not_found"
         | "access_profile_ineligible"
         | "harness_preset_profile_unavailable"
+        | "inference_endpoint_unresolved"
+        | "inference_fit_check_failed"
         | "browser_unsupported"
         | "browser_unavailable"
         | "model_wallet_ineligible"
@@ -1367,6 +1458,64 @@ export async function spawnAgentSession(
   deps: SpawnAgentSessionDeps,
   input: SpawnAgentSessionInput,
 ): Promise<SpawnAgentSessionResult> {
+  // `inference` (SESSION-INFERENCE-BINDING): resolved FIRST, before presets
+  // or the model/route reconciliation below, into ordinary `model`/`route`/
+  // `access`/`auth`/`deferredTools` values — everything downstream of this
+  // block sees a normal, fully-specified spawn request and needs no
+  // awareness of `inference` at all. Each of the three spawn surfaces
+  // (agent-tools.ts's `agent_start`, http-server.ts's `POST /sessions/agent`,
+  // the CLI's `sessions start`) is responsible for defaulting `adapter` to
+  // `"pi"` itself (plan item 3) BEFORE calling in here — `input.adapter` is
+  // required by this function's own type and is trusted as already-resolved.
+  if (input.inference) {
+    if (input.model || input.route || input.access) {
+      return {
+        ok: false,
+        code: "inference_endpoint_unresolved",
+        message:
+          "agent_start: `inference` is mutually exclusive with `model`/`route`/`access` — bind the " +
+          "endpoint via `inference`, or pin those fields directly, never both in the same spawn.",
+      }
+    }
+    const harness = input.harness ?? input.adapter
+    const resolved = await resolveInferenceTarget(input.inference, {
+      ...(deps.probeDeviceInference ? { probeDevice: deps.probeDeviceInference } : {}),
+    })
+    if (!resolved.ok) {
+      return { ok: false, code: "inference_endpoint_unresolved", message: `agent_start: ${resolved.message}` }
+    }
+    const fit = fitCheckForTarget(harness, resolved.target, resolved.label, {
+      ...(input.inference.headroomPct !== undefined ? { headroomRatio: input.inference.headroomPct / 100 } : {}),
+    })
+    if (fit.verdict === "no-fit" && !input.inference.force) {
+      return {
+        ok: false,
+        code: "inference_fit_check_failed",
+        message: `agent_start: ${fit.message ?? "harness fit check failed."} Pass \`inference.force: true\` to override.`,
+      }
+    }
+    const projected = projectInferenceBinding(harness, resolved)
+    if (!projected.ok) {
+      return { ok: false, code: "inference_endpoint_unresolved", message: `agent_start: ${projected.message}` }
+    }
+    if (projected.projection.needsPiModelsSync) {
+      // Best-effort — a sync failure (e.g. no write access to ~/.pi) must not
+      // sink the spawn; pi's own request against an unsynced model id fails
+      // with its own clear error, same as today's fully-manual flow.
+      await syncPiModels().catch(() => {})
+    }
+    const { inference: _inference, ...withoutInference } = input
+    input = {
+      ...withoutInference,
+      model: projected.projection.model,
+      ...(projected.projection.route ? { route: projected.projection.route } : {}),
+      ...(projected.projection.auth ? { auth: projected.projection.auth } : {}),
+      ...(projected.projection.deferredTools !== undefined
+        ? { deferredTools: input.deferredTools ?? projected.projection.deferredTools }
+        : {}),
+    }
+  }
+
   // Presets are a lower-precedence layer than an explicit spawn request. Do
   // this once, at the common core, so HTTP, MCP and future clients have the
   // same semantics rather than each expanding a preset slightly differently.
@@ -1388,7 +1537,12 @@ export async function spawnAgentSession(
       // caller-named (and the worktree guard sees a real repo, not a fallback).
       cwd: explicit.cwd ?? preset.cwd,
       skills: explicit.skills ?? preset.skills,
+      bundles: explicit.bundles ?? preset.bundles,
     }
+    // Best-effort recency stamp — a favorite just got resolved and used for
+    // this spawn. Never let the write (or its absence, for a since-deleted
+    // preset) affect the spawn itself.
+    await touchUserPreset(preset.id).catch(() => {})
   }
 
   // Harness default preset (`harness-presets.json`): when NEITHER an explicit
@@ -1850,6 +2004,17 @@ export async function spawnAgentSession(
   const configDefaults = loadDefaultsConfig
     ? await loadDefaultsConfig()
     : (await loadConfig()).defaults
+  // Capability bundles (PLAN D phase 1) — resolved right alongside
+  // `configDefaults` since both come from the same config load; EXPANSION
+  // (turning `bundleIds` into `mcpServers` entries, below) needs
+  // `~/.agentproto/bundles.json` + the imported-MCP set, so it happens later,
+  // once `mintedSessionId` exists.
+  const { bundleIds, daemonMount: explicitDaemonMount } = resolveBundleDefaults(
+    configDefaults,
+    input.adapter,
+    { bundles: input.bundles, daemonMount: input.daemonMount },
+  )
+  const bundleSkillsUnion = new Set<string>()
   // Role REGISTRY (spawn-role-profiles extensibility): custom
   // (pack-carried) roles merged with the two built-ins at every
   // resolution below — see `role.ts`'s `mergeRoleRegistry`. Loaded once
@@ -1945,6 +2110,21 @@ export async function spawnAgentSession(
   // `spawnAgent` via `SpawnAgentInput.id` so the descriptor ends up with
   // this exact id rather than a second, different one (PR 7 / Gap 7).
   const mintedSessionId = mintSessionId()
+  // A direct spawn that reattaches an adapter-native conversation some
+  // existing row already owns (`POST /sessions { resumeSessionId }`) is a
+  // revival of that row — record the lineage rather than forking silently.
+  const resumeSource = input.resumeSessionId
+    ? registry
+        .list()
+        .filter(
+          d => d.adapterSessionId === input.resumeSessionId && d.adapterSlug === input.adapter,
+        )
+        .sort((x, y) => (x.startedAt ?? "").localeCompare(y.startedAt ?? ""))
+        .at(-1)
+    : undefined
+  const resumeLineageFields = resumeSource
+    ? { resumedFrom: resumeSource.id, resumeVia: "resumed via ACP" }
+    : {}
   // Default the daemon's own gateway onto spawns that supplied no
   // `mcpServers` — two distinct rationales, one mechanism (see
   // `shouldInjectDaemonSelfMount` for the per-adapter reasoning):
@@ -1978,19 +2158,13 @@ export async function spawnAgentSession(
   // attributed to it (PR 7 / Gap 7) — `handleMcp` (http-server.ts) reads
   // the query param and threads it into `registerCommandTools`.
   if (!mcpServers && shouldInjectDaemonSelfMount(input.adapter, input.sandbox) && daemonMcpUrl) {
-    let ref = delegationDenied
-      ? `${daemonMcpUrl}${daemonMcpUrl.includes("?") ? "&" : "?"}denyTools=${DELEGATION_TOOL_NAMES.join(",")}`
-      : daemonMcpUrl
-    // Deferred-tools per-mount override (harness-parity item 3) — see
-    // `deferredToolsOverride` above. Only appended when SOMETHING (the
-    // explicit call or the resolved role) actually expressed an opinion;
-    // otherwise the ref carries no `?deferred=` at all and the gateway's
-    // own boot-time default decides.
-    if (deferredToolsOverride !== undefined) {
-      ref += `${ref.includes("?") ? "&" : "?"}deferred=${deferredToolsOverride ? "1" : "0"}`
-    }
-    ref += `${ref.includes("?") ? "&" : "?"}callerSessionId=${encodeURIComponent(mintedSessionId)}`
-    mcpServers = [{ name: "agentproto", transport: "http", ref }]
+    mcpServers = [
+      buildDaemonSelfMountEntry(daemonMcpUrl, {
+        delegationDenied,
+        deferredToolsOverride,
+        callerSessionId: mintedSessionId,
+      }),
+    ]
   }
   let bindOrchestratorLifecycle:
     | ((sessionId: string) => () => void)
@@ -2033,6 +2207,108 @@ export async function spawnAgentSession(
       ? injection.scope.tools.has("agent_start")
       : (requestedTools ? requestedTools.includes("agent_start") : true) &&
         (callerScope ? callerScope.tools.has("agent_start") : true)
+  }
+  // ── Capability bundles (PLAN D phase 1) ──────────────────────────
+  // Bundles are pure ADDITION — they run after the hermes/claude-code
+  // self-mount default and the orchestrator injection above, appending to
+  // whatever `mcpServers` already holds rather than replacing it. A sandbox
+  // spawn can't reach this daemon's loopback `/mcp`, so bundle MCP entries
+  // (imported-MCP mounts + `includeDaemon`) are skipped there with a warning
+  // — the bundle's `skills` still apply (folded into `spawnDefaults` below).
+  if (bundleIds.length > 0) {
+    // MCP-mount expansion (imports + includeDaemon) needs BOTH a reachable
+    // loopback (no sandbox) AND a configured daemon URL; skills union needs
+    // neither, so it's collected unconditionally below — a sandbox spawn (or
+    // a daemon with no `/mcp` URL) still gets a bundle's skills, only its MCP
+    // entries are skipped.
+    const mcpMountUrl = input.sandbox === undefined ? daemonMcpUrl : undefined
+    if (input.sandbox !== undefined) {
+      spawnWarnings.push(
+        "agent_start: bundles' MCP mounts skipped for a sandbox spawn (the box " +
+          "cannot reach this daemon's loopback /mcp) — their skills still apply.",
+      )
+    } else if (!mcpMountUrl) {
+      spawnWarnings.push(
+        "agent_start: bundles' MCP mounts skipped — daemon has no /mcp URL configured " +
+          "— their skills still apply.",
+      )
+    }
+    const bundlesFile = deps.loadBundlesConfig ? await deps.loadBundlesConfig() : await loadBundles()
+    let importedConfig: ImportedMcpsConfig | undefined
+    for (const bundleId of bundleIds) {
+      const bundle = bundlesFile.bundles.find(b => b.id === bundleId)
+      if (!bundle) {
+        spawnWarnings.push(`agent_start: bundle "${bundleId}" not found — skipped.`)
+        continue
+      }
+      for (const skill of bundle.skills) bundleSkillsUnion.add(skill)
+      if (!mcpMountUrl) continue
+      importedConfig ??= deps.loadImportedMcpsConfig
+        ? await deps.loadImportedMcpsConfig()
+        : await loadImportedMcps()
+      for (const importId of bundle.mcpImports) {
+        const entry = importedConfig.imports.find(e => e.id === importId)
+        if (!entry) {
+          spawnWarnings.push(
+            `agent_start: bundle "${bundleId}" references removed MCP import "${importId}" — skipped.`,
+          )
+          continue
+        }
+        const name = slugifyMcpImportName(entry.alias, importId)
+        if ((mcpServers ?? []).some(e => e.name === name)) {
+          spawnWarnings.push(
+            `agent_start: bundle "${bundleId}"'s import "${name}" collides with an ` +
+              "existing mcpServers entry name — the existing one wins.",
+          )
+          continue
+        }
+        const ref =
+          `${mcpMountUrl}/imported/${encodeURIComponent(importId)}` +
+          `?callerSessionId=${encodeURIComponent(mintedSessionId)}`
+        mcpServers = [...(mcpServers ?? []), { name, transport: "http", ref }]
+      }
+      if (bundle.includeDaemon) {
+        if ((mcpServers ?? []).some(e => e.name === "agentproto")) {
+          spawnWarnings.push(
+            `agent_start: bundle "${bundleId}"'s includeDaemon skipped — an "agentproto" ` +
+              "mcpServers entry already exists.",
+          )
+        } else {
+          mcpServers = [
+            ...(mcpServers ?? []),
+            buildDaemonSelfMountEntry(mcpMountUrl, {
+              delegationDenied,
+              deferredToolsOverride,
+              callerSessionId: mintedSessionId,
+            }),
+          ]
+        }
+      }
+    }
+  }
+  // Explicit any-harness daemon opt-in (`agent_start.daemonMount` / config
+  // `defaults.adapters.<slug>.daemonMount`) — independent of bundles, and of
+  // `shouldInjectDaemonSelfMount`'s fixed adapter allowlist (that default
+  // stays unchanged; this is the caller saying so explicitly for an adapter
+  // that isn't on it, e.g. opencode/codex/gemini).
+  if (explicitDaemonMount) {
+    if (input.sandbox !== undefined) {
+      spawnWarnings.push(
+        "agent_start: daemonMount skipped for a sandbox spawn (the box cannot reach " +
+          "this daemon's loopback /mcp).",
+      )
+    } else if (!daemonMcpUrl) {
+      spawnWarnings.push("agent_start: daemonMount skipped — daemon has no /mcp URL configured.")
+    } else if (!(mcpServers ?? []).some(e => e.name === "agentproto")) {
+      mcpServers = [
+        ...(mcpServers ?? []),
+        buildDaemonSelfMountEntry(daemonMcpUrl, {
+          delegationDenied,
+          deferredToolsOverride,
+          callerSessionId: mintedSessionId,
+        }),
+      ]
+    }
   }
   // ── Identity stamp: decouple attribution from capability ────────
   // Ensure EVERY mcpServers entry that targets THIS daemon's own `/mcp`
@@ -2176,12 +2452,20 @@ export async function spawnAgentSession(
       trackBrowserSession(mintedSessionId)
     }
   }
-  const spawnDefaults = resolveSpawnDefaults(configDefaults, input.adapter, {
+  const baseSpawnDefaults = resolveSpawnDefaults(configDefaults, input.adapter, {
     skills: input.skills,
     options: input.options,
     auth: input.auth,
     contextContinuity: input.contextContinuity,
   })
+  // Fold bundle skills (collected while expanding `bundleIds` above) into the
+  // resolved skill list — bundles UNION in regardless of whether `skills`
+  // ended up explicit or config-derived, unlike the explicit-replaces-config
+  // rule that governs `skills` itself.
+  const spawnDefaults =
+    bundleSkillsUnion.size > 0
+      ? { ...baseSpawnDefaults, skills: Array.from(new Set([...baseSpawnDefaults.skills, ...bundleSkillsUnion])) }
+      : baseSpawnDefaults
   const resolvedContextContinuity: ResolvedContextContinuityPolicy =
     resolveContextContinuityPolicy(
       undefined,
@@ -2215,14 +2499,18 @@ export async function spawnAgentSession(
     // `resolveAdapter`) already returns successfully through that window,
     // so reaching this branch at all means either the adapter has never
     // resolved in this process, or it went unresolvable long enough to
-    // exhaust that grace period.
+    // exhaust that grace period. Unless the slug is an auth-profile id — then
+    // neither "mid-rebuild" nor "install it" applies, and the shared hint
+    // (same text as cron's create-time check) says what was meant.
+    const profileHint = await authProfileAsAdapterHint(input.adapter, getAuthProfile)
     return {
       ok: false,
       code: "adapter_not_found",
-      message:
-        `agent_start: adapter "${input.adapter}" could not be resolved. If it was ` +
-        `working a moment ago, something may be mid-rebuild — wait and retry. If it ` +
-        `has never been installed, run \`agentproto install ${input.adapter}\` first.`,
+      message: profileHint
+        ? `agent_start: adapter "${input.adapter}" could not be resolved. ${profileHint}`
+        : `agent_start: adapter "${input.adapter}" could not be resolved. If it was ` +
+          `working a moment ago, something may be mid-rebuild — wait and retry. If it ` +
+          `has never been installed, run \`agentproto install ${input.adapter}\` first.`,
     }
   }
   if (resolveHostAuth && !resolved) {
@@ -2858,6 +3146,7 @@ export async function spawnAgentSession(
       const defaultModel = resolved?.defaultModel
       const pendingDesc = registry.spawnAgentPending({
         id: mintedSessionId,
+        ...resumeLineageFields,
         workspaceSlug: resolvedSlug,
         cwd,
         adapterSlug: input.adapter,
@@ -3291,6 +3580,7 @@ export async function spawnAgentSession(
     const initialSystemPrompt = composedPreamble(effectivePrompt, input.prompt)
     const desc = registry.spawnAgent({
       id: mintedSessionId,
+      ...resumeLineageFields,
       workspaceSlug: resolvedSlug,
       cwd,
       agentSession,
@@ -3331,6 +3621,7 @@ export async function spawnAgentSession(
       ...(initialTitle ? { title: initialTitle } : {}),
       ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
       ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
+      ...(bundleIds.length > 0 ? { bundles: bundleIds } : {}),
       // Parent attribution + depth. Set for spawns that arrived via the
       // scoped sub-gateway (WP4, parent from token) OR carry a trusted-loopback
       // `parentSessionId` lineage hint on the anonymous root path (WP-R1). A
@@ -3938,7 +4229,21 @@ async function bootSandboxAgentSession(opts: {
   // yet, so this is the full slug set).
   const passthrough = spec.env?.passthrough ?? []
   const authEnv = spec.env?.auth?.state?.env ?? []
-  const slugs = Array.from(new Set([...passthrough, ...authEnv]))
+  const declaredSlugs = new Set([...passthrough, ...authEnv])
+  // `join.tokenEnv` — sugar over `env.passthrough` for the auto-join case:
+  // forward a single host env var (a join-token URL) into the box under the
+  // same name. Unlike an explicit `env.passthrough` entry, a missing value
+  // must be a no-op rather than a boot failure (many hosts — e.g. a fork's
+  // CI run with no `AGENTPROTO_JOIN` secret — never set it), so it's only
+  // added to the strict slug set (which fails loudly on an unresolvable
+  // slug, see `resolveSandboxSecretsEnv`) once confirmed resolvable —
+  // mirroring the `env.autoPassthrough` probe in `withSandboxAuthAutoPassthrough`.
+  const joinTokenEnv = spec.join?.tokenEnv
+  if (joinTokenEnv && !declaredSlugs.has(joinTokenEnv)) {
+    const resolvable = (await resolveSandboxSecret(joinTokenEnv)) !== null
+    if (resolvable) declaredSlugs.add(joinTokenEnv)
+  }
+  const slugs = Array.from(declaredSlugs)
 
   let host: SandboxAgentSessionHost
   try {
@@ -4017,11 +4322,19 @@ async function bootSandboxAgentSession(opts: {
       : {}),
   })
 
+  // `omitCwdWhenImplicit` (device sandbox — see that field's doc): the
+  // caller passed no explicit cwd, so don't forward the HOST's own
+  // resolved `boxCwd` (fallback workspace/worktree path) into a box whose
+  // filesystem is a whole other machine's — omit `cwd` entirely and let
+  // the box's own `agent_start` apply its normal default-cwd resolution,
+  // same as an ordinary non-sandboxed local spawn.
+  const omitCwd = handle.omitCwdWhenImplicit === true && !opts.explicitCwd
   let remoteSessionId: string
+  let resolvedCwd = boxCwd
   try {
     const remoteDesc = await host.start({
       adapter: opts.adapter,
-      cwd: boxCwd,
+      ...(omitCwd ? {} : { cwd: boxCwd }),
       ...(opts.mcpServers ? { mcpServers: toMcpServerMounts(opts.mcpServers) } : {}),
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.route ? { route: opts.route } : {}),
@@ -4030,6 +4343,7 @@ async function bootSandboxAgentSession(opts: {
       ...(opts.auth ? { auth: opts.auth } : {}),
     })
     remoteSessionId = remoteDesc.id
+    if (omitCwd && remoteDesc.cwd) resolvedCwd = remoteDesc.cwd
   } catch (err) {
     // The box was fully booted but its own `agent_start` failed — reap the
     // box (kill: it holds nothing of value) and mark the ledger so the
@@ -4072,7 +4386,7 @@ async function bootSandboxAgentSession(opts: {
     }),
     commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
     sandboxId: host.sandboxId,
-    cwd: boxCwd,
+    cwd: resolvedCwd,
     provider: providerSlug,
     sandboxTeardown: lifecyclePolicy.teardown,
     ...(host.ports && Object.keys(host.ports).length > 0 ? { sandboxPorts: host.ports } : {}),

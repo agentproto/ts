@@ -13,7 +13,7 @@
  */
 
 import type { PairingRegistry, PairingRecord } from "./pairing-registry.js"
-import type { HostRegistry, HostRecord } from "./host-registry.js"
+import { isSessionsPath, type HostRegistry, type HostRecord, type ForwardHttpRequest, type ForwardHttpResponse } from "./host-registry.js"
 
 export type DeviceRole = "client" | "host"
 export type DeviceKind = "browser" | "cli" | "daemon"
@@ -27,9 +27,9 @@ export interface Device {
   createdAt: string
   lastSeen: string
   /** A channel (offer or reconnect) is served for this device right now
-   *  (client) or a `forwardHttp` call is in flight for it right now (host).
-   *  For a host this is NOT a live heartbeat — see host-registry.ts's
-   *  "Online tracking" — it only reflects actual recent/current traffic. */
+   *  (client), or for a host: a forward/snapshot is in flight or one reached
+   *  it within the online grace window. Not a heartbeat — see
+   *  host-registry.ts's "Online tracking". */
   online: boolean
   /** A pair/v1 pairing: listed and revocable, but can't connect until
    *  re-paired — see `PairingRecord.legacy`. */
@@ -40,6 +40,11 @@ export interface Device {
    *  a user can see, from EITHER daemon, which of their pairings/hosts grant
    *  host control. */
   scope?: "host"
+  /** Self-reported by a host at join time (SANDBOX-VISIBILITY-JOIN) — see
+   *  `HostRecord.provider`/`sandboxId`/`labels`. Absent for a client device. */
+  provider?: string
+  sandboxId?: string
+  labels?: Record<string, string>
 }
 
 export interface DeviceRegistry {
@@ -57,6 +62,22 @@ export interface DeviceRegistry {
   /** Register a host from an offer URL (delegates to `HostRegistry.add`).
    *  Rejects if no `HostRegistry` was wired into this device registry. */
   add(offerUrl: string, name?: string): Promise<{ fingerprint: string; name: string; rendezvousUrl: string }>
+  /**
+   * Forward one HTTP request to a HOST device on demand (delegates to
+   * `HostRegistry.forwardHttp`) — the basis for `device_sessions`. Rejects
+   * if no `HostRegistry` was wired, or if `idOrName` doesn't match a host.
+   *
+   * For a GET `/sessions*` request specifically (SANDBOX-VISIBILITY-JOIN
+   * #3): if the live forward fails (most commonly the host is offline —
+   * an ephemeral CI box's ~3min lifetime is well within normal
+   * `device_sessions` polling cadence), falls back to
+   * `HostRegistry.getSessionsSnapshot` — the last successful response for
+   * that EXACT path, `stale: true`, with a `capturedAt` timestamp — instead
+   * of throwing. Still throws if there's no snapshot to fall back to, or
+   * for any other path (exec, device-inference, …), where serving stale
+   * data silently would be actively wrong.
+   */
+  forwardHttp(idOrName: string, req: ForwardHttpRequest): Promise<ForwardHttpResponse>
 }
 
 /**
@@ -103,6 +124,9 @@ function toHostDevice(record: HostRecord, online: boolean): Device {
     online,
     ...(record.legacy ? { legacy: true } : {}),
     scope: "host",
+    ...(record.provider ? { provider: record.provider } : {}),
+    ...(record.sandboxId ? { sandboxId: record.sandboxId } : {}),
+    ...(record.labels ? { labels: record.labels } : {}),
   }
 }
 
@@ -135,6 +159,22 @@ export function createDeviceRegistry(pairing: PairingRegistry, hosts?: HostRegis
         )
       }
       return hosts.add(offerUrl, name)
+    },
+    async forwardHttp(idOrName, req) {
+      if (!hosts) {
+        throw new Error(
+          "this daemon has no host registry wired — device sessions is unavailable (internal " +
+            "configuration issue, not a user error)",
+        )
+      }
+      try {
+        return await hosts.forwardHttp(idOrName, req)
+      } catch (err) {
+        if (req.method !== "GET" || !isSessionsPath(req.path)) throw err
+        const snapshot = hosts.getSessionsSnapshot(idOrName, req.path)
+        if (!snapshot) throw err
+        return snapshot
+      }
     },
   }
 }

@@ -541,8 +541,8 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     provider: "opencode",
   },
   "opencode/grok-4.7": {
-    inputPer1M: 1.4,
-    outputPer1M: 4.2,
+    inputPer1M: 2,
+    outputPer1M: 6,
     cacheReadMultiplier: 0.25,
     addedAt: "2026-09-21",
     vendor: "x-ai",

@@ -1,5 +1,21 @@
 # @agentproto/adapter-jcode
 
+## 0.2.17
+
+### Patch Changes
+
+- Updated dependencies [d2df24b]
+  - @agentproto/model-catalog@0.11.3
+
+## 0.2.16
+
+### Patch Changes
+
+- Updated dependencies [d4ac86e]
+- Updated dependencies [d000369]
+- Updated dependencies [d4ac86e]
+  - @agentproto/model-catalog@0.11.2
+
 ## 0.2.15
 
 ### Patch Changes

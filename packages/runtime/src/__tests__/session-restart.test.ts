@@ -632,6 +632,18 @@ describe("session_restart — resumedFrom/resumeVia persist on the stored descri
     const stored = registry.get(newId)
     expect(stored?.resumedFrom).toBe(prev.id)
     expect(stored?.resumeVia).toBe("resumed via ACP")
+    // The revival is a NEW id for the same conversation: `continuedFrom` /
+    // `continuedTo` are what session_list / session_tree group by.
+    expect(stored?.continuedFrom).toBe(prev.id)
+    expect(registry.get(prev.id)?.continuedTo).toBe(newId)
+    const listed = JSON.parse(
+      (
+        (await client.callTool({ name: "session_list", arguments: {} })).content as Array<{
+          text: string
+        }>
+      )[0]!.text,
+    ) as { sessions: Array<{ id: string; continuedFrom?: string }> }
+    expect(listed.sessions.find(r => r.id === newId)?.continuedFrom).toBe(prev.id)
 
     await close()
     registry.shutdown()
@@ -663,6 +675,8 @@ describe("session_restart — resumedFrom/resumeVia persist on the stored descri
     const stored = registry.get(newId)
     expect(stored?.resumedFrom).toBe(prev.id)
     expect(stored?.resumeVia).toBe("resumed via claude --resume")
+    expect(stored?.continuedFrom).toBe(prev.id)
+    expect(registry.get(prev.id)?.continuedTo).toBe(newId)
 
     await close()
     registry.shutdown()

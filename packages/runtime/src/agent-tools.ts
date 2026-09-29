@@ -396,7 +396,13 @@ export function registerAgentTools(
           isError: true,
         }
       }
-      const adapter = input.adapter ?? input.harness ?? preset?.adapter ?? preset?.harness
+      // Default harness for a local endpoint bind: `inference` with no
+      // explicit adapter/harness/preset defaults to "pi" (SESSION-INFERENCE-
+      // BINDING item 3) — the lightest-weight harness against a small local
+      // model. Lowest precedence: an explicit adapter/harness/preset choice
+      // always wins.
+      const adapter =
+        input.adapter ?? input.harness ?? preset?.adapter ?? preset?.harness ?? (input.inference ? "pi" : undefined)
       if (!adapter) {
         return {
           content: [{ type: "text", text: "agent_start: adapter is required unless the selected preset provides one." }],

@@ -1,5 +1,23 @@
 # @agentproto/adapter-claude-sdk
 
+## 0.7.7
+
+### Patch Changes
+
+- Updated dependencies [d2df24b]
+  - @agentproto/model-catalog@0.11.3
+
+## 0.7.6
+
+### Patch Changes
+
+- d4ac86e: Tests: drop retired OpenCode Go model-id pins; the derived-menu equality already covers the roster.
+- d4ac86e: Sync generated catalog data from the pinned provider sources: refreshed pricing (moonshot kimi-k2.6, minimax M2.7, deepseek/openrouter rows), removed delisted models (zai-org GLM-4.5/4.6-FP8/5.1-FP8, several opencode-go routes, baseten provider rows), and updated catalog-sync snapshot fixtures. Also replaces retired-id test pins (opencode-go `minimax-m2.5`/`omen-alpha`) with structural bounds in the claude-code, claude-sdk, and runtime model suites.
+- Updated dependencies [d4ac86e]
+- Updated dependencies [d000369]
+- Updated dependencies [d4ac86e]
+  - @agentproto/model-catalog@0.11.2
+
 ## 0.7.5
 
 ### Patch Changes

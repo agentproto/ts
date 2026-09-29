@@ -186,3 +186,38 @@ gateway → delete the daemon's `runtime.json`. The exit banner is
 
 Stale `runtime.json` files (dead PID) in registered workspaces are
 swept at boot — they confuse discovery otherwise.
+
+## `AGENTPROTO_JOIN` — auto-register as a host at boot {#agentproto_join}
+
+A box daemon (e.g. a CI reviewer sandbox or a cloud computer) can
+auto-register itself as a host on a controlling daemon without relaying an
+offer URL by hand. Set the `AGENTPROTO_JOIN` env var to a join-token URL
+minted by the controlling daemon:
+
+```bash
+# On the controlling daemon:
+agentproto devices join-token create ci-runner
+
+# On the box daemon's startup env:
+export AGENTPROTO_JOIN="agentproto://join?v=2&…"
+agentproto serve
+```
+
+At boot, if `AGENTPROTO_JOIN` is set, `agentproto serve` dials the minting
+daemon, hands over a self-offer URL, and the controlling daemon registers
+this box as a host automatically (visible in `agentproto devices list` with
+`role: host`). The join is best-effort and non-blocking — a missing, expired,
+or revoked token logs a warning but never prevents the daemon from booting.
+
+Optional companion env vars let the box report metadata to the controlling
+daemon:
+
+| Env var | What it sets |
+|---------|-------------|
+| `AGENTPROTO_JOIN_NAME` | Display name for the registered host device. |
+| `AGENTPROTO_JOIN_PROVIDER` | Self-reported sandbox provider (e.g. `box`, `e2b`). |
+| `AGENTPROTO_JOIN_SANDBOX_ID` | Self-reported sandbox ID. |
+| `AGENTPROTO_JOIN_LABELS` | Comma-separated `key=value` pairs, e.g. `env=prod,region=us-east-1`. |
+
+Mint and manage join tokens with
+[`agentproto devices join-token`](./devices.md#join-token).

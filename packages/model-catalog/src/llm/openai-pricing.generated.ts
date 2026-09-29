@@ -1,5 +1,5 @@
 // GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-openai.mjs
-// (ids: openrouter.ai/api/v1/models openai/* only (no OPENAI_API_KEY at sync time); prices: platform.openai.com/docs/pricing.md, OpenRouter fallback per row; synced 2026-09-27T19:36:17.408Z)
+// (ids: openrouter.ai/api/v1/models openai/* only (no OPENAI_API_KEY at sync time); prices: platform.openai.com/docs/pricing.md, OpenRouter fallback per row; synced 2026-09-28T18:56:24.044Z)
 //
 // Provenance is recorded PER ROW — `idSource` says which list the id came
 // from, `priceSource` which source priced it:
@@ -79,7 +79,7 @@ export const OPENAI_GENERATED_PRICING = {
   "gpt-5.6-luna-pro:batch": { inputPer1M: 0.1, outputPer1M: 0.6, cacheReadMultiplier: 0.1, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "gpt-5.6-luna:batch": { inputPer1M: 0.1, outputPer1M: 0.6, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, vendor: "openai", provider: "openai", priceSource: "openai", idSource: "openrouter" },
   "gpt-5.6-sol": { inputPer1M: 4, outputPer1M: 20, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, vendor: "openai", provider: "openai", priceSource: "openai", idSource: "openrouter" },
-  "gpt-5.6-sol-pro": { inputPer1M: 2, outputPer1M: 10, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
+  "gpt-5.6-sol-pro": { inputPer1M: 4, outputPer1M: 20, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "gpt-5.6-sol-pro:batch": { inputPer1M: 1, outputPer1M: 5, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "gpt-5.6-sol:batch": { inputPer1M: 2, outputPer1M: 10, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, vendor: "openai", provider: "openai", priceSource: "openai", idSource: "openrouter" },
   "gpt-5.6-terra": { inputPer1M: 2, outputPer1M: 12, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, vendor: "openai", provider: "openai", priceSource: "openai", idSource: "openrouter" },

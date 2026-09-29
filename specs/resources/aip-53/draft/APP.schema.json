@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/docs/aip-53/APP.schema.json",
+  "title": "APP.md frontmatter — app/v1 (agent app bundle + UI surface)",
+  "description": "Validates the YAML frontmatter portion of an AIP-53 APP.md manifest — the on-disk form of an AppDefinition. Codifies shipped behaviour: `agents` may be empty for a UI-only app when `ui` is present (packages/app-kit/src/define-app.ts:49-52), and `data` / `category` are carried verbatim (packages/app-kit/src/types.ts).",
+  "type": "object",
+  "required": ["schema", "version"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "app/v1",
+      "description": "Exactly `app/v1`. Any other value MUST be refused by the loader."
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Machine identifier for the app itself. Optional — an anonymous bundle cannot be installed by id. Written with any `@owner/` prefix as authored."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable app name."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][\\w.\\-]+)?$",
+      "description": "App version. Defaulted to `0.1.0` by defineApp when `id` is set and version is omitted (conformance rule 8)."
+    },
+    "description": {
+      "type": "string",
+      "description": "App description. Also the APP.md markdown body."
+    },
+    "agents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "path"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1, "description": "Path to the AGENT.md, relative to the app dir." }
+        }
+      },
+      "description": "`{ id, path }` refs, one per bundled agent. MAY be empty ONLY when `ui` is present (UI-only app) — see the allOf guard below."
+    },
+    "workflows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "path"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1, "description": "Path to the WORKFLOW.md, relative to the app dir." }
+        }
+      },
+      "description": "`{ id, path }` refs, one per bundled workflow. Every bundled workflow MUST be referenced by at least one agent's workflows[] (attachment invariant, both directions)."
+    },
+    "workspace": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Optional home workspace id (AIP-34). When set, a sibling WORKSPACE.md exists at the app dir root."
+    },
+    "requires": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true,
+      "description": "APP ids this app depends on. Bare ids — no version constraints in v1."
+    },
+    "ui": {
+      "type": "object",
+      "required": ["path"],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "const": ".agentproto/ui/index.html",
+          "description": "The UI surface entry point."
+        },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "tools": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "The ui_tool_call / app_tool_call allowlist — every tool a UI-originated call may reach. Enforced server-side on every call."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Preferred local port hint for `app serve`."
+        },
+        "csp": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "connectDomains": { "type": "array", "items": { "type": "string" } },
+            "resourceDomains": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      },
+      "description": "The UI surface. `html` (the full document) is required on the in-memory AppDefinition at defineApp time and is NOT carried in APP.md frontmatter — it is emitted to `ui.path`. Its non-emptiness is enforced by defineApp (conformance rule 5)."
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["path"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "description": "Emitted bundle path .agentproto/artifact/index.html." },
+        "title": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    },
+    "skill": {
+      "type": "object",
+      "required": ["path"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "description": "Emitted bundle path .agentproto/skill (must contain a SKILL.md)." },
+        "title": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type"],
+        "additionalProperties": false,
+        "properties": {
+          "type": { "type": "string", "minLength": 1 },
+          "description": { "type": "string" }
+        }
+      },
+      "description": "Artifact types this app's agents may produce, declared for discovery."
+    },
+    "dev": {
+      "type": "object",
+      "required": ["launch"],
+      "additionalProperties": false,
+      "properties": {
+        "launch": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["name", "runtimeExecutable"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "runtimeExecutable": { "type": "string", "minLength": 1 },
+              "runtimeArgs": { "type": "array", "items": { "type": "string" } },
+              "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+              "url": { "type": "string" }
+            }
+          }
+        }
+      },
+      "description": "Dev-launch configuration, carried verbatim in frontmatter."
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "dir": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Default data-dir hint for the app_data_* plane, RELATIVE to the app dir (e.g. `data` means `<appDir>/data`). Overridden by an explicit dataDir at install time."
+        }
+      },
+      "description": "Default data-directory hint (AppDataDefinition). See AIP-53 § The app data plane."
+    },
+    "externalReadRoots": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true,
+      "description": "Host directories the app is granted READ-ONLY access to outside its sandboxed dir (absolute or ~-relative). Carried verbatim in frontmatter by emit/load; validated to exist at install time. Read-only everywhere — there is no write/delete path for these roots."
+    },
+    "category": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Coarse grouping surfaced in host catalogs/trees (e.g. `book`). Freeform — not validated against a fixed enum."
+    }
+  },
+  "allOf": [
+    {
+      "title": "UI-only carve-out",
+      "description": "An app with an empty or absent `agents` array is conforming ONLY when `ui` is present (codifies packages/app-kit/src/define-app.ts:49-52 and the five builtin panels in packages/apps/src/index.ts that ship as agents: []).",
+      "if": {
+        "anyOf": [
+          { "not": { "required": ["agents"] } },
+          { "properties": { "agents": { "maxItems": 0 } } }
+        ]
+      },
+      "then": { "required": ["ui"] }
+    },
+    {
+      "title": "Attachment invariant (structural part)",
+      "description": "A UI-only app bundles zero workflows: a bundled workflow with no referencing agent would be an orphan (conformance rule 3).",
+      "if": {
+        "anyOf": [
+          { "not": { "required": ["agents"] } },
+          { "properties": { "agents": { "maxItems": 0 } } }
+        ]
+      },
+      "then": {
+        "properties": { "workflows": { "maxItems": 0 } }
+      }
+    }
+  ]
+}

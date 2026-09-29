@@ -6,6 +6,12 @@ agentproto devices rename <fingerprint|name> <new-name>
 agentproto devices revoke <fingerprint|name>
 agentproto devices add    <offer-url> [--name <label>]
 agentproto devices status <fingerprint|name>
+agentproto devices share-inference on|off
+agentproto devices allow-spawn on|off
+agentproto devices sessions <fingerprint|name> [--session <id>] [--lines <n>] [--clean] [--json]
+agentproto devices join-token create <name> [--ttl <duration>] [--max-uses <n>]
+agentproto devices join-token list   [--json]
+agentproto devices join-token revoke <id|name>
 ```
 
 The device registry: a management view over every client paired with this
@@ -99,6 +105,115 @@ Probes a registered host's `/health` over its E2E channel — a fresh dial +
 handshake each call (a host has no standing connection, unlike a paired
 client). Confirms the host is reachable and this daemon can still drive it.
 Exits non-zero on an unreachable host or a non-2xx response.
+
+## `share-inference`
+
+```bash
+agentproto devices share-inference on
+agentproto devices share-inference off
+```
+
+Opt THIS daemon in (or out) of exposing its own local inference endpoint(s)
+— the `llmEndpoint` sidecar's `GET /v1/models` and `POST
+/v1/chat/completions` — to a paired controller. Writes
+`features.deviceInferenceShare` to `config.json`; restart `agentproto serve`
+(or the daemon) for a change to take effect.
+
+**Two independent gates, both required**, from either side:
+
+- On THIS machine (B): `deviceInferenceShare` on (this command) AND
+  `features.llmEndpoint` on (`agentproto llm gateway status`; it defaults on
+  once a named endpoint is configured).
+- On the pairing itself: the OTHER daemon (A) must have registered this one
+  as a **host** — `agentproto pair offer --host` here, `agentproto devices
+  add` there. An ordinary remote-control pairing never gets these routes,
+  whatever `share-inference` is set to — see
+  [pair.md](./pair.md#offer--daemon-side).
+
+Once both are on, A addresses this daemon's endpoints transparently as
+`<endpointId>@<device>` — e.g. a model string `ollama@my-host/llama3.1:8b`
+routed through A's own llm-endpoint gateway forwards to B's `ollama`
+endpoint, over the paired E2E channel, with no open inbound port on B.
+Offline/unreachable surfaces as a normal upstream error, not a hang.
+
+## `allow-spawn`
+
+```bash
+agentproto devices allow-spawn on
+agentproto devices allow-spawn off
+```
+
+Opt THIS daemon in (or out) of being usable as an `agent_start({ sandbox:
+"device:<name>" })` target — letting a paired controller spawn and drive agent
+sessions on this machine's own daemon, exactly as `sandbox: "e2b"` proxies a
+cloud box. The same HOST-scoped pairing requirement applies as for
+`share-inference`: the controlling daemon must have registered this one as a
+host (`pair offer --host` here, then `devices add` there) — a plain
+remote-control pairing never gets these routes.
+
+Default **off**. Writes `features.deviceSpawnAllow` to `config.json`; restart
+`agentproto serve` (or the daemon) for a change to take effect.
+
+## `sessions`
+
+```bash
+agentproto devices sessions my-host
+agentproto devices sessions my-host --session <sessionId> [--lines 100] [--clean] [--json]
+```
+
+Read-only access to a registered host's own session list (or, with
+`--session`, a tail of one session's output) — forwarded live over the host's
+E2E channel.
+
+| Flag | Description |
+|------|-------------|
+| `--session <id>` | Fetch one session's output instead of the session list. |
+| `--lines <n>` | When fetching output, return the last N lines (default: provider decided). |
+| `--clean` | Strip ANSI codes from output lines. |
+| `--json` | Emit raw JSON from the daemon's response. |
+
+Without `--session`, prints the host's session list as JSON. Exits non-zero if
+the host is unreachable.
+
+## `join-token`
+
+```bash
+agentproto devices join-token create <name> [--ttl <duration>] [--max-uses <n>]
+agentproto devices join-token list   [--json]
+agentproto devices join-token revoke <id|name>
+```
+
+Manage **AGENTPROTO_JOIN credentials** — long-lived, revocable, reusable
+tokens a box daemon reads from its `AGENTPROTO_JOIN` env var at boot to
+auto-register itself as a host on this daemon. No offer URL to relay by hand.
+
+### `join-token create`
+
+Mints a new join token and prints it **once** — it is never shown again by
+`list`. Set it as the box daemon's `AGENTPROTO_JOIN` env var (e.g. a GitHub
+Actions secret or a Kubernetes secret).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--ttl <duration>` | `90d` | Lifetime of the token — `90d`, `24h`, `30m`, `45s`, etc. |
+| `--max-uses <n>` | unlimited | Reuse ceiling; revoked automatically once reached. |
+
+### `join-token list`
+
+Lists all tokens for this daemon: id, name, createdAt, expiresAt, use count,
+last used, and revocation status. Never shows the token secret itself.
+`--json` emits `{ tokens: [...] }`.
+
+### `join-token revoke`
+
+Stops a token's standing accept loop. A box that already joined through it
+keeps its host registration — use `agentproto devices revoke <device>` to
+drop the registered device separately if needed.
+
+A box daemon started with a valid `AGENTPROTO_JOIN` URL dials in at boot and
+this daemon adds it to its host registry automatically (same effect as
+running `agentproto devices add` by hand, but fully automated). See also the
+`AGENTPROTO_JOIN` boot-time handling in [`serve.md`](./serve.md#agentproto_join).
 
 ## See also
 

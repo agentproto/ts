@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/apps",
-  "version": "0.14.0",
+  "version": "0.16.0",
   "description": "@agentproto/apps — a home for ready-made agentproto apps (teams of agents + their workflows), declared with @agentproto/app-kit. Import a team (code-team, content-team, …) and use any of its agents/workflows from your own host: in-process via toMastraAgents(), or emit its manifests to disk.",
   "keywords": [
     "agentproto",
@@ -11,7 +11,7 @@
     "app-kit",
     "open-standard"
   ],
-  "homepage": "https://agentproto.sh/docs/aip-42",
+  "homepage": "https://agentproto.sh/docs/aip-53",
   "repository": {
     "type": "git",
     "url": "https://github.com/agentproto/ts",
@@ -154,6 +154,7 @@
   "files": [
     "dist",
     "repo-maintenance",
+    "session-steward",
     "README.md",
     "LICENSE"
   ],

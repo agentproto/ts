@@ -9,6 +9,7 @@ import { agentsStep } from "./steps/agents.js"
 import { authStep } from "./steps/auth.js"
 import { clientsStep } from "./steps/clients.js"
 import { devicesStep } from "./steps/devices.js"
+import { rendezvousStep } from "./steps/rendezvous.js"
 import { skillsStep } from "./steps/skills.js"
 import { firstRunStep } from "./steps/first-run.js"
 import { localModelsStep } from "./steps/local-models.js"
@@ -22,6 +23,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
   authStep,
   clientsStep,
   devicesStep,
+  rendezvousStep,
   skillsStep,
   localModelsStep,
   llmGatewayStep,

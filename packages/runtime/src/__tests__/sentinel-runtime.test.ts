@@ -413,4 +413,177 @@ describe("SentinelRuntime", () => {
     expect(updated?.status).toBe("active")
     expect(updated?.spec.target).toEqual({ kind: "session", sessionId: "sess_resumed", urgency: "next-turn" })
   })
+
+  describe("closed subjects (merged/closed PR)", () => {
+    const readParked = (path: string): Array<Record<string, unknown>> =>
+      readFileSync(path, "utf8").trim().split("\n").map(l => JSON.parse(l) as Record<string, unknown>)
+
+    it("parks post-merge non-terminal noise instead of waking or reviving the session", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "sentinel-closed-"))
+      const parkedPath = join(dir, "sentinels-parked.jsonl")
+      try {
+        const store = createSentinelStore({ persist: false })
+        const provider = createFakeSentinelProvider()
+        const subject = "fake:pr-1558"
+        const sentinel = newSentinel(store, { sessionId: "sess_dead", subject, match: singleMatch(subject, ["*"]) })
+        provider.emit(makeFakeEvent({ id: "evt_merged", type: "fake.pull_request.closed", subject, terminal: true }))
+        provider.emit(makeFakeEvent({ id: "evt_suite", type: "fake.check_suite.completed", subject }))
+
+        let restarts = 0
+        const registry = stubRegistry(async () => okResult())
+        const runtime = createSentinelRuntime({
+          store,
+          registry,
+          resolveProvider: resolverFor(provider),
+          isSessionAlive: () => false,
+          restartSession: async () => {
+            restarts++
+            return "sess_revived"
+          },
+          parkedPath,
+        })
+
+        await runtime.pollOnce()
+
+        // Only the terminal (merge) notice was delivered; the check_suite
+        // failure after the merge was parked and never woke anything.
+        expect(registry.calls.map(c => (c.msg.data as { id: string }).id)).toEqual(["evt_merged"])
+        expect(restarts).toBe(0)
+        expect(store.get(sentinel.id)?.closedSubjects).toEqual([subject])
+        const parked = readParked(parkedPath)
+        expect(parked).toHaveLength(1)
+        expect((parked[0]!.event as { id: string }).id).toBe("evt_suite")
+        expect(parked[0]!.reason).toContain("already closed")
+        // Marked seen so it is never reconsidered.
+        expect(store.isSeen(sentinel.id, "evt_suite")).toBe(true)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it("a reopen lifts the closed mark so later events deliver again", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "sentinel-closed-"))
+      try {
+        const store = createSentinelStore({ persist: false })
+        const provider = createFakeSentinelProvider()
+        const subject = "fake:pr-7"
+        const sentinel = newSentinel(store, { subject, match: singleMatch(subject, ["*"]) })
+        provider.emit(makeFakeEvent({ id: "e1", type: "fake.pull_request.closed", subject, terminal: true }))
+        provider.emit(makeFakeEvent({ id: "e2", type: "fake.pull_request.reopened", subject }))
+        provider.emit(makeFakeEvent({ id: "e3", type: "fake.check_suite.completed", subject }))
+
+        const registry = stubRegistry(async () => okResult())
+        const runtime = createSentinelRuntime({
+          store,
+          registry,
+          resolveProvider: resolverFor(provider),
+          isSessionAlive: () => true,
+          restartSession: async id => id,
+          parkedPath: join(dir, "parked.jsonl"),
+        })
+        await runtime.pollOnce()
+
+        expect(registry.calls.map(c => (c.msg.data as { id: string }).id)).toEqual(["e1", "e2", "e3"])
+        expect(store.get(sentinel.id)?.closedSubjects).toEqual([])
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+  })
+
+  describe("sessions closed with a deliberate outcome", () => {
+    for (const endedReason of ["operator-completed", "steward-completed", "steward-abandoned", "operator-stopped"]) {
+      it(`never resumes a session ended "${endedReason}" — notice goes to its live parent`, async () => {
+        const store = createSentinelStore({ persist: false })
+        const provider = createFakeSentinelProvider()
+        newSentinel(store, { sessionId: "sess_done" })
+        provider.emit(makeFakeEvent({ id: "evt_1", type: "fake.widget.created", subject: "fake:widget-1" }))
+
+        let restarts = 0
+        const registry = stubRegistry(async msg => {
+          if (msg.to === "sess_done") throw new SessionNotAliveError(msg.to, "exited", "sendMessage")
+          return okResult()
+        })
+        const runtime = createSentinelRuntime({
+          store,
+          registry,
+          resolveProvider: resolverFor(provider),
+          isSessionAlive: id => id === "sess_parent",
+          restartSession: async () => {
+            restarts++
+            return "sess_revived"
+          },
+          sessionInfo: id => (id === "sess_done" ? { endedReason, parentSessionId: "sess_parent" } : undefined),
+        })
+
+        await runtime.pollOnce()
+
+        expect(restarts).toBe(0)
+        expect(registry.calls.map(c => c.msg.to)).toEqual(["sess_done", "sess_parent"])
+        const forwarded = registry.calls[1]!.msg
+        expect(forwarded.urgency).toBe("fyi")
+        expect(forwarded.text).toContain("sess_done")
+      })
+    }
+
+    it("with no live parent, parks the notice (inbox journal) and still does not resume", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "sentinel-closed-"))
+      const parkedPath = join(dir, "sentinels-parked.jsonl")
+      try {
+        const store = createSentinelStore({ persist: false })
+        const provider = createFakeSentinelProvider()
+        const sentinel = newSentinel(store, { sessionId: "sess_done" })
+        provider.emit(makeFakeEvent({ id: "evt_1", type: "fake.widget.created", subject: "fake:widget-1" }))
+
+        let restarts = 0
+        const registry = stubRegistry(async msg => {
+          throw new SessionNotAliveError(msg.to, "exited", "sendMessage")
+        })
+        const runtime = createSentinelRuntime({
+          store,
+          registry,
+          resolveProvider: resolverFor(provider),
+          isSessionAlive: () => false,
+          restartSession: async () => {
+            restarts++
+            return "sess_revived"
+          },
+          sessionInfo: () => ({ endedReason: "operator-completed" }),
+          parkedPath,
+        })
+
+        await runtime.pollOnce()
+
+        expect(restarts).toBe(0)
+        expect(registry.calls).toHaveLength(1)
+        expect(store.get(sentinel.id)?.status).toBe("orphaned")
+        const parked = readFileSync(parkedPath, "utf8").trim().split("\n").map(l => JSON.parse(l) as Record<string, unknown>)
+        expect(parked).toHaveLength(1)
+        expect(parked[0]!.reason).toContain("operator-completed")
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it("still resumes a session that died for a non-deliberate reason (crashed)", async () => {
+      const store = createSentinelStore({ persist: false })
+      const provider = createFakeSentinelProvider()
+      newSentinel(store, { sessionId: "sess_crashed" })
+      provider.emit(makeFakeEvent({ id: "evt_1", type: "fake.widget.created", subject: "fake:widget-1" }))
+      const registry = stubRegistry(async msg => {
+        if (msg.to === "sess_crashed") throw new SessionNotAliveError(msg.to, "error", "sendMessage")
+        return okResult()
+      })
+      const runtime = createSentinelRuntime({
+        store,
+        registry,
+        resolveProvider: resolverFor(provider),
+        isSessionAlive: () => false,
+        restartSession: async () => "sess_resumed",
+        sessionInfo: () => ({ endedReason: "crashed" }),
+      })
+      await runtime.pollOnce()
+      expect(registry.calls.map(c => c.msg.to)).toEqual(["sess_crashed", "sess_resumed"])
+    })
+  })
 })

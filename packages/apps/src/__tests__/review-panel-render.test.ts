@@ -3,6 +3,7 @@ import {
   ageOf,
   esc,
   laneStatusChip,
+  liveSessionUrl,
   renderDetail,
   renderList,
   renderLaneDetail,
@@ -139,6 +140,19 @@ describe("renderLaneDetail", () => {
     expect(html).toContain("SQL injection")
     expect(html).toContain("db.ts:42")
     expect(html).toContain("unsanitized input")
+  })
+})
+
+describe("liveSessionUrl", () => {
+  it("builds the live-session widget URL with the sessionId query param", () => {
+    expect(liveSessionUrl("https://daemon.example", "sess_reviewer")).toBe(
+      "https://daemon.example/apps/@agentproto/live-session/ui?sessionId=sess_reviewer",
+    )
+  })
+  it("URL-encodes a sessionId with reserved characters", () => {
+    expect(liveSessionUrl("https://daemon.example", "sess/weird id&x")).toBe(
+      "https://daemon.example/apps/@agentproto/live-session/ui?sessionId=sess%2Fweird%20id%26x",
+    )
   })
 })
 

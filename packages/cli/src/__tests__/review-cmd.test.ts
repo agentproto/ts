@@ -10,9 +10,20 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { buildAttestation, manifestSha, type Attestation, type LaneResult } from "@agentproto/review"
-import { BLOCK_START, HOOK_SCRIPT, reviewInit } from "../commands/review-init.js"
-import { EXIT, prRefFromUrl, renderVerdict, runReview } from "../commands/review.js"
+import {
+  attestationSha256,
+  buildAttestation,
+  manifestSha,
+  parseReviewManifest,
+  rangeSha,
+  resolvePacks,
+  PACK_DIGEST_ALG,
+  type Attestation,
+  type LaneResult,
+} from "@agentproto/review"
+import { createReviewPackLoader } from "@agentproto/runtime"
+import { BLOCK_START, HOOK_SCRIPT, defaultPackNamespace, reviewInit } from "../commands/review-init.js"
+import { EXIT, VERIFY_EXIT, prRefFromUrl, renderVerdict, runReview } from "../commands/review.js"
 
 vi.setConfig({ testTimeout: 30_000 })
 
@@ -129,6 +140,20 @@ describe("review init", () => {
     expect((await reviewInit({ cwd: repo, ci: "github" })).noop).toBe(true)
   })
 
+  it("--ci github passes --allowed-signers only when .agentproto/allowed_signers already exists", async () => {
+    const withoutFile = await scratchRepo()
+    await reviewInit({ cwd: withoutFile, ci: "github" })
+    const wfWithout = await readFile(join(withoutFile, ".github", "workflows", "review.yml"), "utf8")
+    expect(wfWithout).not.toContain("--allowed-signers")
+
+    const withFile = await scratchRepo()
+    await mkdir(join(withFile, ".agentproto"), { recursive: true })
+    await writeFile(join(withFile, ".agentproto", "allowed_signers"), "me@example.com namespaces=\"agentproto-review\" ssh-ed25519 AAAA\n")
+    await reviewInit({ cwd: withFile, ci: "github" })
+    const wfWith = await readFile(join(withFile, ".github", "workflows", "review.yml"), "utf8")
+    expect(wfWith).toContain("review verify --if-exported --annotate github --allowed-signers .agentproto/allowed_signers")
+  })
+
   it("the installed hook gates a real push on the CLI's exit code", async () => {
     const repo = await scratchRepo()
     const remote = await realpath(await mkdtemp(join(tmpdir(), "agp-review-remote-")))
@@ -173,6 +198,48 @@ describe("review init", () => {
     expect(gate).toHaveLength(3)
     // origin/HEAD isn't set in this scratch remote ⇒ the manifest's base applies.
     expect(gate[0]).toBe("agentproto review run --binding local --supersede")
+  })
+
+  it("--pack scaffolds REVIEW.md AND adds a uses[] entry in one write; a second --pack with the same ref is a no-op", async () => {
+    const repo = await scratchRepo()
+    const first = await reviewInit({ cwd: repo, pack: "@agentproto/review-pack-core" })
+    expect(first.noop).toBe(false)
+    expect(first.steps.find((s) => s.path.endsWith("REVIEW.md"))).toMatchObject({ action: "created" })
+
+    const review = await readFile(join(repo, "REVIEW.md"), "utf8")
+    const { parseReviewManifest } = await import("@agentproto/review")
+    const m = parseReviewManifest(review)
+    expect(m.uses).toEqual([{ pack: "@agentproto/review-pack-core", as: "core", overrides: {}, allowCommands: false }])
+
+    const second = await reviewInit({ cwd: repo, pack: "@agentproto/review-pack-core" })
+    expect(second.steps.find((s) => s.path.endsWith("REVIEW.md"))).toMatchObject({ action: "unchanged" })
+    expect(await readFile(join(repo, "REVIEW.md"), "utf8")).toBe(review)
+
+    // A different --as for the SAME ref is still a no-op (idempotent by ref).
+    const third = await reviewInit({ cwd: repo, pack: "@agentproto/review-pack-core", packAs: "other" })
+    expect(third.steps.find((s) => s.path.endsWith("REVIEW.md"))).toMatchObject({ action: "unchanged" })
+  })
+
+  it("--pack on an EXISTING REVIEW.md adds a uses[] entry, preserving the file's comments", async () => {
+    const repo = await scratchRepo()
+    await reviewInit({ cwd: repo }) // scaffold first, no --pack
+    const before = await readFile(join(repo, "REVIEW.md"), "utf8")
+    expect(before).toContain("# An agent reviewer lane")
+
+    const res = await reviewInit({ cwd: repo, pack: "./packs/core", packAs: "core" })
+    expect(res.steps.find((s) => s.path.endsWith("REVIEW.md"))).toMatchObject({ action: "updated" })
+    const after = await readFile(join(repo, "REVIEW.md"), "utf8")
+    expect(after).toContain("# An agent reviewer lane") // comment survived — no full re-serialization
+    const { parseReviewManifest } = await import("@agentproto/review")
+    expect(parseReviewManifest(after).uses).toEqual([{ pack: "./packs/core", as: "core", overrides: {}, allowCommands: false }])
+  })
+})
+
+describe("defaultPackNamespace", () => {
+  it("derives a slug from an npm name, a relative path, or a pinned git ref", () => {
+    expect(defaultPackNamespace("@agentproto/review-pack-core")).toBe("core")
+    expect(defaultPackNamespace("./packs/security-extra")).toBe("security-extra")
+    expect(defaultPackNamespace(`git+https://example.com/org/review-pack-foo.git#${"a".repeat(40)}`)).toBe("foo")
   })
 })
 
@@ -256,6 +323,45 @@ describe("review verify", () => {
     expect(bad.err).toMatch(/::error title=review attestation invalid::/)
   })
 
+  it("resolves a composedFrom reference in the export dir; a missing or tampered prior fails it (exit 1)", async () => {
+    const repo = await verifyRepo()
+    await writeFile(join(repo.dir, "c.txt"), "c\n")
+    sh(repo.dir, "add", "-A")
+    sh(repo.dir, "commit", "-qm", "second change")
+    const head = sh(repo.dir, "rev-parse", "HEAD")
+
+    const prior = attest(repo.baseSha, repo.headSha, { runId: "run-prior" })
+    const current = attest(repo.baseSha, head, {
+      runId: "run-current",
+      lanes: [
+        {
+          ...passLanes[0]!,
+          composedFrom: { rangeSha: rangeSha({ baseSha: repo.baseSha, headSha: repo.headSha }), headSha: repo.headSha, attestationSha256: attestationSha256(prior) },
+        },
+      ],
+    })
+    await mkdir(join(repo.dir, ".reviews"))
+    await writeFile(join(repo.dir, ".reviews", "demo-local-prior.json"), JSON.stringify(prior))
+    await writeFile(join(repo.dir, ".reviews", "demo-local-current.json"), JSON.stringify(current))
+
+    const ok = await captureRun(["verify", "--cwd", repo.dir, "--json"])
+    expect(ok.code).toBe(VERIFY_EXIT.ok)
+
+    // The prior attestation changes after the fact (its digest no longer
+    // matches composedFrom.attestationSha256) — the reference no longer
+    // resolves, even though `current`'s own content still verifies fine.
+    await writeFile(join(repo.dir, ".reviews", "demo-local-prior.json"), JSON.stringify({ ...prior, verdict: "pass", lanes: [{ ...passLanes[0], status: "fail" }] }))
+    const tampered = await captureRun(["verify", "--cwd", repo.dir, "--json"])
+    expect(tampered.code).toBe(VERIFY_EXIT.invalid)
+    expect(JSON.parse(tampered.out).problems[0]).toMatch(/does not match composedFrom.attestationSha256/)
+
+    // Removing the prior entirely: the reference doesn't resolve at all.
+    await rm(join(repo.dir, ".reviews", "demo-local-prior.json"))
+    const missing = await captureRun(["verify", "--cwd", repo.dir, "--json"])
+    expect(missing.code).toBe(VERIFY_EXIT.invalid)
+    expect(JSON.parse(missing.out).problems[0]).toMatch(/not found in/)
+  })
+
   it("accepts HEAD^ when HEAD only commits the export; 4 when nothing matches; 5 with --if-exported and no exportDir", async () => {
     const repo = await verifyRepo()
     await mkdir(join(repo.dir, ".reviews"))
@@ -273,6 +379,109 @@ describe("review verify", () => {
 
     await writeFile(join(repo.dir, "REVIEW.md"), MANIFEST.replace("verdict: {exportDir: .reviews}\n", ""))
     expect((await captureRun(["verify", "--cwd", repo.dir, "--if-exported"])).code).toBe(5)
+  })
+
+  describe("review pack digests", () => {
+    const PACK_MANIFEST = [
+      "---",
+      "kind: review",
+      "id: demo",
+      "target: {kind: git-range, base: main}",
+      "uses:",
+      "  - {pack: ./packs/core, as: core}",
+      "checks:",
+      '  - {id: ok, kind: command, run: "true"}',
+      "bindings:",
+      "  local: {checks: [ok, core/lint]}",
+      "verdict: {exportDir: .reviews}",
+      "---",
+      "",
+    ].join("\n")
+
+    async function packRepo(): Promise<{ dir: string; baseSha: string; headSha: string }> {
+      const dir = await scratchRepo()
+      await writeFile(join(dir, "REVIEW.md"), PACK_MANIFEST)
+      await mkdir(join(dir, "packs", "core"), { recursive: true })
+      await writeFile(
+        join(dir, "packs", "core", "REVIEW.md"),
+        ["---", "kind: review-pack", "id: core", "version: 1.0.0", "checks:", "  - {id: lint, kind: command, run: echo lint}", "---", ""].join("\n"),
+      )
+      sh(dir, "add", "-A")
+      sh(dir, "commit", "-qm", "review + pack")
+      const baseSha = sh(dir, "rev-parse", "HEAD")
+      sh(dir, "checkout", "-qb", "feature")
+      await writeFile(join(dir, "b.txt"), "b\n")
+      sh(dir, "add", "-A")
+      sh(dir, "commit", "-qm", "change")
+      sh(dir, "remote", "add", "origin", "git@github.com:acme/demo.git")
+      return { dir, baseSha, headSha: sh(dir, "rev-parse", "HEAD") }
+    }
+
+    async function realPackDigest(dir: string) {
+      const manifest = parseReviewManifest(PACK_MANIFEST)
+      const loader = createReviewPackLoader({ repoRoot: dir, manifestDir: dir })
+      return (await resolvePacks(manifest, loader)).packs[0]!
+    }
+
+    it("passes when the attestation's pack digest matches what this checkout resolves right now", async () => {
+      const repo = await packRepo()
+      await mkdir(join(repo.dir, ".reviews"))
+      const pack = await realPackDigest(repo.dir)
+      const att = attest(repo.baseSha, repo.headSha, { manifestSha: manifestSha(PACK_MANIFEST), packs: [pack] })
+      await writeFile(join(repo.dir, ".reviews", "demo-local.json"), JSON.stringify(att))
+      const ok = await captureRun(["verify", "--cwd", repo.dir, "--json"])
+      expect(ok.code).toBe(0)
+      expect(JSON.parse(ok.out)).toMatchObject({ ok: true })
+    })
+
+    it("fails when the attestation's pack digest does not match what this checkout resolves now", async () => {
+      const repo = await packRepo()
+      await mkdir(join(repo.dir, ".reviews"))
+      const pack = await realPackDigest(repo.dir)
+      const att = attest(repo.baseSha, repo.headSha, {
+        manifestSha: manifestSha(PACK_MANIFEST),
+        packs: [{ ...pack, sha256: "0".repeat(64) }],
+      })
+      await writeFile(join(repo.dir, ".reviews", "demo-local.json"), JSON.stringify(att))
+      const bad = await captureRun(["verify", "--cwd", repo.dir, "--json"])
+      expect(bad.code).toBe(VERIFY_EXIT.invalid)
+      expect(JSON.parse(bad.out).problems[0]).toMatch(/pack '.\/packs\/core' content changed/)
+    })
+
+    it("reports (but does not fail on) a pack this checkout can't resolve", async () => {
+      const repo = await packRepo()
+      await mkdir(join(repo.dir, ".reviews"))
+      const att = attest(repo.baseSha, repo.headSha, {
+        manifestSha: manifestSha(PACK_MANIFEST),
+        packs: [{ ref: "./packs/core", id: "core", version: "1.0.0", alg: PACK_DIGEST_ALG, sha256: "1".repeat(64) }],
+      })
+      await writeFile(join(repo.dir, ".reviews", "demo-local.json"), JSON.stringify(att))
+      // Delete the pack directory so it can no longer resolve.
+      await rm(join(repo.dir, "packs"), { recursive: true, force: true })
+      const result = await captureRun(["verify", "--cwd", repo.dir, "--json"])
+      expect(result.code).toBe(0)
+      expect(JSON.parse(result.out).packNotes[0]).toMatch(/not resolvable/)
+    })
+
+    it("fails — never mis-verifies — when the attestation's pack digest was computed under an alg this checkout doesn't know", async () => {
+      const repo = await packRepo()
+      await mkdir(join(repo.dir, ".reviews"))
+      const pack = await realPackDigest(repo.dir)
+      const att = attest(repo.baseSha, repo.headSha, {
+        manifestSha: manifestSha(PACK_MANIFEST),
+        // Same sha256 as what this checkout would actually compute — proves
+        // the alg check runs BEFORE the digest comparison, not after: a
+        // coincidentally-matching hex digest under an unrecognized recipe
+        // must still fail, never silently pass.
+        packs: [{ ...pack, alg: "agentproto-pack-digest/v2-from-the-future" as typeof pack.alg }],
+      })
+      await writeFile(join(repo.dir, ".reviews", "demo-local.json"), JSON.stringify(att))
+      const bad = await captureRun(["verify", "--cwd", repo.dir, "--json"])
+      expect(bad.code).toBe(VERIFY_EXIT.invalid)
+      expect(JSON.parse(bad.out).problems[0]).toMatch(
+        /attested with digest algorithm 'agentproto-pack-digest\/v2-from-the-future'.*only knows 'agentproto-pack-digest\/v1'/,
+      )
+    })
   })
 })
 

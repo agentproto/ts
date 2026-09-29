@@ -1,5 +1,68 @@
 # @agentproto/cli
 
+## 1.4.1
+
+### Patch Changes
+
+- Updated dependencies [d2df24b]
+  - @agentproto/model-catalog@0.11.3
+  - @agentproto/llm-endpoint@0.11.1
+
+## 1.4.0
+
+### Minor Changes
+
+- 8c5ee51: `device` sandbox provider (DEVICES-PLAN PR-D): a paired HOST device (reverse pairing, `HostRegistry`) is now usable as an `agent_start({ sandbox: "device:<name>" })` target, spawning and proxying an agent session on that device's own daemon exactly like `sandbox: "e2b"` proxies a cloud box today — prompt/output/events/kill all work from the driving daemon, and the session shows up in `session_list` with its device.
+
+  On the receiving device, this is opt-in and off by default: `agentproto devices allow-spawn on|off` (`features.deviceSpawnAllow`) gates a new `/device-spawn/*` route family, reachable only over a pairing the other side registered as a host (`pair offer --host` + `devices add`) — mirrors `devices share-inference`'s gate shape. A device's own filesystem is unrelated to the driving daemon's, so a spawn with no explicit `cwd` is no longer forwarded as a host-shaped path that would ENOENT remotely; the box's own `agent_start` resolves its own default instead (new `SandboxProviderHandle.omitCwdWhenImplicit` flag, additive for every other provider).
+
+- 5ce6cdc: Join-token host visibility follow-ups (SANDBOX-VISIBILITY-JOIN, stacked on #1517/#1535): a CI-joined box's `AGENTPROTO_JOIN_PROVIDER`/`AGENTPROTO_JOIN_LABELS` env are now forwarded into the sandbox the same gated way `AGENTPROTO_JOIN` already is, and `join-token-registry.ts` synthesizes `"<token name> #<pr>"` for a box that doesn't self-report a name (it never knows the token's own name — only the home daemon does).
+
+  A failed `addHost()` round trip (the daemon dialing back into a joined box's self-minted offer) is now recorded on the join token as `lastJoinError`/`lastJoinErrorAt` instead of only logging it — `useCount` bumping with no matching device update is no longer silent. The box's self-offer TTL widened from 60s to 3min to give that round trip more slack under real broker latency.
+
+  `HostRegistry` now caches the last successful `GET /sessions*` response per host and serves it (`stale: true`, with a capture timestamp) when a subsequent forward to an offline host fails — wired through `device-registry.ts`'s `forwardHttp`, the `device_sessions` MCP tool, and `GET /devices/:id/sessions[/:id/output]`. A join-token-added host is now tagged (`HostRecord.addedVia`) and pruned after `joinedHostTtlMs` (default 7 days) of no `lastSeen` activity; a manually paired host (`pair offer --host` + `devices add`) is never auto-pruned.
+
+- 21a117c: Add session inference-binding (agent_start.inference) with harness fit-check, relocate pi models sync into llm-endpoint
+- de2decc: Review attestation signing and composition: `@agentproto/review` gains `canonicalJson`, `canonicalAttestationBytes`, and `attestationSha256` plus optional `Attestor.signature` and `LaneResult.composedFrom` fields. `@agentproto/runtime` adds `review-signing.ts` (SSH-keygen-based `signAttestation`/`verifySignedAttestation`, key management, `ReviewConfig`) and `review-compose.ts` (delta re-review composition). `@agentproto/cli` adds the `review key` subcommand and `verify --allowed-signers/--require-signed` (exit code 6). The review panel shows signed/unsigned badges.
+
+### Patch Changes
+
+- Updated dependencies [d4ac86e]
+- Updated dependencies [d000369]
+- Updated dependencies [d4ac86e]
+- Updated dependencies [904f3d4]
+- Updated dependencies [21a117c]
+- Updated dependencies [de2decc]
+- Updated dependencies [6f53567]
+- Updated dependencies [9a9a3e7]
+  - @agentproto/model-catalog@0.11.2
+  - @agentproto/worktree@0.13.0
+  - @agentproto/llm-endpoint@0.11.0
+  - @agentproto/apps@0.16.0
+  - @agentproto/sandbox-box@0.2.18
+  - @agentproto/sandbox-e2b@0.5.8
+
+## 1.3.0
+
+### Minor Changes
+
+- 3619a5f: Device inference over pair/v2: a controller can address a paired host's local models transparently as `<endpointId>@<device>` (e.g. `ollama@work-mac/llama3.1:8b`), routed over the paired E2E channel with no open inbound port. Includes the opt-in `features.deviceInferenceShare` flag + `agentproto devices share-inference on|off` (gated by host-scoped pairings via a daemon-injected `x-agentproto-host-scope` header), the streaming `POST /devices/:id/exec-stream/<subpath>` relay, corporate-proxy support (`HTTPS_PROXY`/`NO_PROXY`) for rendezvous dials, and a `doctor` rendezvous reachability step.
+- a3ec1d6: Add capability bundles (bundle_list/create/update/delete, /mcp/imported/<id> passthrough), agent_start.daemonMount, and opencode install-mcp/skills support
+- 83ffc2d: Fast worktree removal (rename to same-volume `.trash` + prune + detached background delete) wired into cleanup-worktree and gc, plus `agentproto maintain --all` with repeatable `--repo` to maintain every repo owning worktrees under the worktrees root.
+- b7b85d6: Join tokens (SANDBOX-VISIBILITY-JOIN): a daemon can now mint a long-lived, revocable, reusable credential (`join_token_create`/`join_token_list`/`join_token_revoke` MCP tools, `POST/GET /devices/join-tokens` + `DELETE /devices/join-tokens/:id` REST routes, `agentproto devices join-token create|list|revoke` in `@agentproto/cli`) that a box daemon reads from its `AGENTPROTO_JOIN` env var at boot to auto-register itself as a host (`HostRegistry.add`, DEVICES-PLAN PR-C) with no offer URL to relay by hand — new `createJoinTokenRegistry`/`JoinTokenRegistry` in `@agentproto/runtime`, wired into `createGateway`'s `joinTokens` option, and boot-time `AGENTPROTO_JOIN` handling in `agentproto serve`. `HostRecord`/`Device` gain optional self-reported `provider`/`sandboxId`/`labels`, set via `HostRegistry.add`'s new optional `meta` parameter. New `device_sessions` MCP tool + `GET /devices/:id/sessions[/:sessionId/output]` REST routes + `agentproto devices sessions` (and the new `DeviceRegistry.forwardHttp`/`GET /sessions/:id/output` it's built on) let one daemon read another registered host's session list and tail a session's output over the same E2E channel `/devices/:id/exec` already uses. `@agentproto/apps`'s builtin Session Chat launcher additionally allowlists `device_list`/`device_sessions` for its UI.
+
+### Patch Changes
+
+- Updated dependencies [3619a5f]
+- Updated dependencies [83ffc2d]
+- Updated dependencies [b7b85d6]
+- Updated dependencies [4ecd91b]
+  - @agentproto/llm-endpoint@0.10.0
+  - @agentproto/worktree@0.12.0
+  - @agentproto/apps@0.15.0
+  - @agentproto/sandbox-box@0.2.17
+  - @agentproto/sandbox-e2b@0.5.7
+
 ## 1.2.0
 
 ### Minor Changes

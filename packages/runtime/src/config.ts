@@ -188,6 +188,25 @@ export interface FeaturesConfig {
    *  an opt-in feature; when off, the `llm-endpoint` custom route is not
    *  registered and the `llm_endpoint_*` MCP tools are not exposed. */
   llmEndpoint?: boolean
+  /** Expose this daemon's local inference endpoint(s) (the `llmEndpoint`
+   *  sidecar above) to paired controllers over a HOST-scoped pairing —
+   *  `GET /device-inference/v1/models` + `POST
+   *  /device-inference/v1/chat/completions` in http-server.ts. Default
+   *  false: even with `llmEndpoint` on, a plain remote-control pairing (or
+   *  `serve --connect`) never gets these routes regardless of this flag —
+   *  it also requires the pairing itself to be host-scoped (`pair offer
+   *  --host` + `devices add`). Toggle via `agentproto devices
+   *  share-inference on|off`. */
+  deviceInferenceShare?: boolean
+  /** Opt this daemon in to being usable as an `agent_start({ sandbox:
+   *  "device:<name>" })` target (DEVICES-PLAN PR-D) — exposes
+   *  `/device-spawn/*` in http-server.ts, a self-proxy onto this daemon's
+   *  own `/mcp` + `/sessions/:id/events/stream`. Default false: even with
+   *  this on, only a HOST-scoped pairing (`pair offer --host` + `devices
+   *  add`) can reach the routes — a plain remote-control pairing never can,
+   *  whatever this is set to. Toggle via `agentproto devices allow-spawn
+   *  on|off`. */
+  deviceSpawnAllow?: boolean
 }
 
 /**
@@ -323,6 +342,24 @@ export interface ProvenanceConfig {
 }
 
 /**
+ * Approvals policy (`packages/runtime/src/approvals/`, E1a) — config for
+ * the `web_click` human decision channel. See `AIP-7-AMENDMENT.md` for the
+ * full channel design.
+ */
+export interface ApprovalsConfig {
+  /**
+   * Origins allowed to decide a pending approval through `POST
+   * /approvals/:id/decision` (in addition to the daemon's own per-boot
+   * bearer token, which is ALWAYS required on that route regardless of
+   * this list). Default empty — `web_click` is OFF until at least one
+   * origin is configured. Lockout-shaped like `daemon.allowedOrigins`,
+   * but a SEPARATE list: the general browser-origin allowlist is not
+   * automatically trusted to decide approvals.
+   */
+  webOrigins?: string[]
+}
+
+/**
  * Sentinel auto-link policy (AIP-60 §6, step 4) — whether a PR an executor
  * session opens gets a sentinel created for it automatically.
  */
@@ -334,6 +371,18 @@ export interface SentinelConfig {
    *  otherwise `false`, logged once. Explicitly setting this always wins
    *  over that probe. Per-spawn opt-out: `agent_start.sentinel: false`. */
   autoWatchPrs?: boolean
+}
+
+/**
+ * Review-primitive host policy (`@agentproto/review` + `review-runner.ts`).
+ */
+export interface ReviewConfig {
+  /** The owner identity attestation signatures claim (`attestor.signature.
+   *  principal`) — see `review-signing.ts`'s `resolvePrincipal`. When unset,
+   *  the daemon falls back to `git config user.email` of the reviewed repo,
+   *  then a host-derived value; this never blocks signing, it only lets an
+   *  operator pin one identity across every repo the daemon reviews. */
+  principal?: string
 }
 
 /**
@@ -521,8 +570,12 @@ export interface AgentprotoConfig {
   sessions?: SessionsConfig
   /** Provenance policy — the opt-in `gh` PATH shim. See {@link ProvenanceConfig}. */
   provenance?: ProvenanceConfig
+  /** Approvals policy — the `web_click` origin allowlist. See {@link ApprovalsConfig}. */
+  approvals?: ApprovalsConfig
   /** Sentinel auto-link policy. See {@link SentinelConfig}. */
   sentinel?: SentinelConfig
+  /** Review-primitive host policy. See {@link ReviewConfig}. */
+  review?: ReviewConfig
   /** Daemon-side AGENTS.md resolution/injection policy. See {@link AgentsMdConfig}. */
   agentsMd?: AgentsMdConfig
   /** Daemon-side session titler (`session-titler.ts`). DEFAULT OFF — when

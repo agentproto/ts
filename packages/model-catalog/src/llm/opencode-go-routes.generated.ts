@@ -51,22 +51,6 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     vendor: "deepseek",
     provider: "opencode-go",
   },
-  "opencode-go/glm-5": {
-    inputPer1M: 1,
-    outputPer1M: 3.2,
-    cacheReadMultiplier: 0.2,
-    addedAt: "2026-02-11",
-    vendor: "z-ai",
-    provider: "opencode-go",
-  },
-  "opencode-go/glm-5.1": {
-    inputPer1M: 1.4,
-    outputPer1M: 4.4,
-    cacheReadMultiplier: 0.185714,
-    addedAt: "2026-04-07",
-    vendor: "z-ai",
-    provider: "opencode-go",
-  },
   "opencode-go/glm-5.2": {
     inputPer1M: 1.4,
     outputPer1M: 4.4,
@@ -149,14 +133,6 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     vendor: "tencent",
     provider: "opencode-go",
   },
-  "opencode-go/kimi-k2.5": {
-    inputPer1M: 0.6,
-    outputPer1M: 3,
-    cacheReadMultiplier: 0.166667,
-    addedAt: "2026-01-27",
-    vendor: "moonshotai",
-    provider: "opencode-go",
-  },
   "opencode-go/kimi-k2.6": {
     inputPer1M: 0.95,
     outputPer1M: 4,
@@ -196,22 +172,6 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     vendor: "meituan",
     provider: "opencode-go",
   },
-  "opencode-go/mimo-v2-omni": {
-    inputPer1M: 0.4,
-    outputPer1M: 2,
-    cacheReadMultiplier: 0.2,
-    addedAt: "2026-03-18",
-    vendor: "xiaomi",
-    provider: "opencode-go",
-  },
-  "opencode-go/mimo-v2-pro": {
-    inputPer1M: 1,
-    outputPer1M: 3,
-    cacheReadMultiplier: 0.2,
-    addedAt: "2026-03-18",
-    vendor: "xiaomi",
-    provider: "opencode-go",
-  },
   "opencode-go/mimo-v2.5": {
     inputPer1M: 0.14,
     outputPer1M: 0.28,
@@ -242,15 +202,6 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     cacheReadMultiplier: 0.008333,
     addedAt: "2026-09-22",
     vendor: "xiaomi",
-    provider: "opencode-go",
-  },
-  "opencode-go/minimax-m2.5": {
-    inputPer1M: 0.3,
-    outputPer1M: 1.2,
-    cacheReadMultiplier: 0.2,
-    cacheWriteMultiplier: 1.25,
-    addedAt: "2026-02-12",
-    vendor: "minimax",
     provider: "opencode-go",
   },
   "opencode-go/minimax-m2.7": {
@@ -284,30 +235,6 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     cacheReadMultiplier: 0.02,
     addedAt: "2026-09-02",
     vendor: "meta",
-    provider: "opencode-go",
-  },
-  "opencode-go/omen-alpha": {
-    inputPer1M: 0.2,
-    outputPer1M: 0.66,
-    cacheReadMultiplier: 0.2,
-    addedAt: "2026-09-04",
-    vendor: "opencode",
-    provider: "opencode-go",
-  },
-  "opencode-go/ox-alpha-free": {
-    inputPer1M: 0,
-    outputPer1M: 0,
-    addedAt: "2026-08-21",
-    vendor: "opencode",
-    provider: "opencode-go",
-  },
-  "opencode-go/qwen3.5-plus": {
-    inputPer1M: 0.2,
-    outputPer1M: 1.2,
-    cacheReadMultiplier: 0.1,
-    cacheWriteMultiplier: 1.25,
-    addedAt: "2026-02-16",
-    vendor: "qwen",
     provider: "opencode-go",
   },
   "opencode-go/qwen3.6-plus": {
@@ -374,7 +301,6 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
  * that is what an Anthropic client puts in `ANTHROPIC_MODEL` / on the wire.
  */
 export const OPENCODE_GO_ANTHROPIC_MODELS: readonly string[] = [
-  "minimax-m2.5",
   "minimax-m2.7",
   "minimax-m3",
   "qwen3.8-flash",

@@ -53,28 +53,6 @@
           "cache_read": 0.003
         }
       },
-      "glm-5": {
-        "id": "glm-5",
-        "name": "GLM-5",
-        "family": "glm",
-        "release_date": "2026-02-11",
-        "cost": {
-          "input": 1,
-          "output": 3.2,
-          "cache_read": 0.2
-        }
-      },
-      "glm-5.1": {
-        "id": "glm-5.1",
-        "name": "GLM-5.1",
-        "family": "glm",
-        "release_date": "2026-04-07",
-        "cost": {
-          "input": 1.4,
-          "output": 4.4,
-          "cache_read": 0.26
-        }
-      },
       "glm-5.2": {
         "id": "glm-5.2",
         "name": "GLM-5.2",
@@ -202,17 +180,6 @@
           "cache_read": 0.042
         }
       },
-      "kimi-k2.5": {
-        "id": "kimi-k2.5",
-        "name": "Kimi K2.5",
-        "family": "kimi-k2",
-        "release_date": "2026-01-27",
-        "cost": {
-          "input": 0.6,
-          "output": 3,
-          "cache_read": 0.1
-        }
-      },
       "kimi-k2.6": {
         "id": "kimi-k2.6",
         "name": "Kimi K2.6",
@@ -268,28 +235,6 @@
           "cache_read": 0
         }
       },
-      "mimo-v2-omni": {
-        "id": "mimo-v2-omni",
-        "name": "MiMo V2 Omni",
-        "family": "mimo-v2-omni",
-        "release_date": "2026-03-18",
-        "cost": {
-          "input": 0.4,
-          "output": 2,
-          "cache_read": 0.08
-        }
-      },
-      "mimo-v2-pro": {
-        "id": "mimo-v2-pro",
-        "name": "MiMo V2 Pro",
-        "family": "mimo-v2-pro",
-        "release_date": "2026-03-18",
-        "cost": {
-          "input": 1,
-          "output": 3,
-          "cache_read": 0.2
-        }
-      },
       "mimo-v2.5": {
         "id": "mimo-v2.5",
         "name": "MiMo V2.5",
@@ -332,21 +277,6 @@
           "input": 0.435,
           "output": 0.87,
           "cache_read": 0.003625
-        }
-      },
-      "minimax-m2.5": {
-        "id": "minimax-m2.5",
-        "name": "MiniMax-M2.5",
-        "family": "minimax-m2.5",
-        "release_date": "2026-02-12",
-        "provider": {
-          "npm": "@ai-sdk/anthropic"
-        },
-        "cost": {
-          "input": 0.3,
-          "output": 1.2,
-          "cache_read": 0.06,
-          "cache_write": 0.375
         }
       },
       "minimax-m2.7": {
@@ -404,38 +334,6 @@
           "input": 0.1,
           "output": 0.2,
           "cache_read": 0.002
-        }
-      },
-      "omen-alpha": {
-        "id": "omen-alpha",
-        "name": "Omen Alpha",
-        "release_date": "2026-09-04",
-        "cost": {
-          "input": 0.2,
-          "output": 0.66,
-          "cache_read": 0.04
-        }
-      },
-      "ox-alpha-free": {
-        "id": "ox-alpha-free",
-        "name": "Ox Alpha Free (Unlimited)",
-        "release_date": "2026-08-21",
-        "cost": {
-          "input": 0,
-          "output": 0,
-          "cache_read": 0
-        }
-      },
-      "qwen3.5-plus": {
-        "id": "qwen3.5-plus",
-        "name": "Qwen3.5 Plus",
-        "family": "qwen3.5",
-        "release_date": "2026-02-16",
-        "cost": {
-          "input": 0.2,
-          "output": 1.2,
-          "cache_read": 0.02,
-          "cache_write": 0.25
         }
       },
       "qwen3.6-plus": {

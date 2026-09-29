@@ -1,16 +1,15 @@
 {
   "name": "@agentproto/pack",
-  "version": "0.2.2",
-  "description": "@agentproto/pack — AIP-52 PACK.md reference implementation. A bundle that assembles a plugin, apps, knowledge, and a playbook into one installable unit.",
+  "version": "0.2.3",
+  "description": "@agentproto/pack — PACK.md reference implementation (unassigned AIP, spec not yet written). A bundle that assembles a plugin, apps, knowledge, and a playbook into one installable unit.",
   "keywords": [
     "agentproto",
-    "aip-52",
     "pack",
     "definePack",
     "open-standard",
     "agentic"
   ],
-  "homepage": "https://agentproto.sh/docs/aip-52",
+  "homepage": "https://github.com/agentproto/ts/tree/main/packages/pack",
   "repository": {
     "type": "git",
     "url": "https://github.com/agentproto/ts",

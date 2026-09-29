@@ -28,13 +28,14 @@
  * `~/.agentproto`.
  */
 
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises"
+import { mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import {
   ledgerKeyOf,
   type Attestation,
   type LedgerKey,
+  type PackDigest,
   type ReviewPrRef,
   type RubricDigest,
 } from "@agentproto/review"
@@ -61,6 +62,9 @@ export interface PrStatusSnapshot {
   state: "open" | "merged" | "closed"
   reviews: Array<{ login: string; state: string; submittedAt: string }>
   checks?: Array<{ name: string; conclusion: string | null }>
+  /** The PR's head commit at fetch time — absent from snapshots taken
+   *  before this field existed. */
+  headSha?: string
 }
 
 /** The mutable annotations sidecar of a ledger entry. */
@@ -90,8 +94,12 @@ export interface ReviewLedger {
   put(entry: LedgerEntry): Promise<string>
   get(key: LedgerKey): Promise<LedgerEntry | undefined>
   /** A reusable verdict for `key`: a clean (not dirty) `pass`/`block` whose
-   *  rubric digests still match. `incomplete` is never reused. */
-  lookupCached(key: LedgerKey, rubrics: readonly RubricDigest[]): Promise<LedgerEntry | undefined>
+   *  rubric AND pack digests still match. `incomplete` is never reused. */
+  lookupCached(
+    key: LedgerKey,
+    rubrics: readonly RubricDigest[],
+    packs?: readonly PackDigest[],
+  ): Promise<LedgerEntry | undefined>
   findByRunId(runId: string): Promise<LedgerEntry | undefined>
   /** Entries matching `filter`, newest first. */
   list(filter?: ReviewLedgerFilter): Promise<LedgerEntry[]>
@@ -145,6 +153,15 @@ const sameRubrics = (a: readonly RubricDigest[], b: readonly RubricDigest[]): bo
   return norm(a) === norm(b)
 }
 
+const samePacks = (a: readonly PackDigest[], b: readonly PackDigest[]): boolean => {
+  const norm = (r: readonly PackDigest[]) =>
+    r
+      .map((d) => `${d.ref}\0${d.id}\0${d.version}\0${d.alg}\0${d.sha256}`)
+      .sort()
+      .join("\n")
+  return norm(a) === norm(b)
+}
+
 async function readEntry(path: string): Promise<LedgerEntry | undefined> {
   try {
     const parsed = JSON.parse(await readFile(path, "utf8")) as LedgerEntry
@@ -184,9 +201,36 @@ export function createReviewLedger(opts: { root?: string } = {}): ReviewLedger {
   // `requesterSessionId -> Set<entry file path>` — built once (a single full
   // scan) on first use by `list({requesterSessionIds})`, then kept current by
   // `indexRequester` on every `put()`. Never rescanned after that: a lookup
-  // is index hits + a targeted `readEntry` per hit, not a directory walk.
+  // is index hits + a targeted `readEntryCached` per hit, not a directory walk.
   const requesterIndex = new Map<string, Set<string>>()
   let requesterIndexBuilt = false
+
+  // Parsed-entry cache: `path -> {mtimeMs, size, entry}`. `put()` (this
+  // ledger's own write path) drops a path's entry outright; a single `stat`
+  // guards every read against anyone else's write too (the daemon and a
+  // stand-alone `review` CLI invocation both construct a `ReviewLedger` over
+  // the same root — see `packages/cli/src/commands/review.ts` — so an
+  // in-process-only invalidation would go stale the moment the CLI writes).
+  // `stat` + JSON-parse of a several-KB attestation is a large win on a hit;
+  // annotations (`<rangeSha>.annotations.json`) are deliberately NOT part of
+  // this cache — `getAnnotations` always reads fresh, so a cached row can
+  // never carry a stale `pr`/`prState`.
+  const entryCache = new Map<string, { mtimeMs: number; size: number; entry: LedgerEntry | undefined }>()
+
+  async function readEntryCached(path: string): Promise<LedgerEntry | undefined> {
+    let s
+    try {
+      s = await stat(path)
+    } catch {
+      entryCache.delete(path)
+      return undefined
+    }
+    const cached = entryCache.get(path)
+    if (cached && cached.mtimeMs === s.mtimeMs && cached.size === s.size) return cached.entry
+    const entry = await readEntry(path)
+    entryCache.set(path, { mtimeMs: s.mtimeMs, size: s.size, entry })
+    return entry
+  }
 
   function indexRequester(entry: LedgerEntry): void {
     const sessionId = entry.attestation.requester?.sessionId
@@ -222,7 +266,7 @@ export function createReviewLedger(opts: { root?: string } = {}): ReviewLedger {
       for (const manifestDir of await subdirs(repoDir)) {
         for (const bindingDir of await subdirs(manifestDir)) {
           for (const file of await jsonFiles(bindingDir)) {
-            const entry = await readEntry(file)
+            const entry = await readEntryCached(file)
             if (!entry) continue
             const a = entry.attestation
             if (filter.repoRemote !== undefined && a.target.repoRemote !== filter.repoRemote) continue
@@ -246,23 +290,25 @@ export function createReviewLedger(opts: { root?: string } = {}): ReviewLedger {
       // requester's index pointer first when the new attestation's requester
       // differs, so a stale `sessionId -> path` entry never resolves to a
       // file that no longer attests that session.
-      const previous = await readEntry(path)
+      const previous = await readEntryCached(path)
       const prevSessionId = previous?.attestation.requester?.sessionId
       const nextSessionId = entry.attestation.requester?.sessionId
       if (prevSessionId && prevSessionId !== nextSessionId) requesterIndex.get(prevSessionId)?.delete(path)
       await writeJsonAtomic(path, entry)
+      entryCache.delete(path)
       indexRequester(entry)
       return path
     },
     async get(key) {
-      return readEntry(keyPath(root, key))
+      return readEntryCached(keyPath(root, key))
     },
-    async lookupCached(key, rubrics) {
-      const entry = await readEntry(keyPath(root, key))
+    async lookupCached(key, rubrics, packs = []) {
+      const entry = await readEntryCached(keyPath(root, key))
       if (!entry) return undefined
       const a = entry.attestation
       if (a.verdict === "incomplete" || a.dirty) return undefined
       if (!sameRubrics(a.rubrics ?? [], rubrics)) return undefined
+      if (!samePacks(a.packs ?? [], packs)) return undefined
       return entry
     },
     async findByRunId(runId) {
@@ -275,7 +321,7 @@ export function createReviewLedger(opts: { root?: string } = {}): ReviewLedger {
       for (const sessionId of filter.requesterSessionIds) {
         for (const path of requesterIndex.get(sessionId) ?? []) paths.add(path)
       }
-      const entries = (await Promise.all([...paths].map(readEntry))).filter((e): e is LedgerEntry => e !== undefined)
+      const entries = (await Promise.all([...paths].map(readEntryCached))).filter((e): e is LedgerEntry => e !== undefined)
       const { requesterSessionIds: _requesterSessionIds, ...rest } = filter
       const filtered = entries.filter(entry => {
         const a = entry.attestation
