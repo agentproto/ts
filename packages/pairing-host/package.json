@@ -1,0 +1,65 @@
+{
+  "name": "@agentproto/pairing-host",
+  "version": "0.0.0",
+  "description": "@agentproto/pairing-host — the host side of AIP-59 pairing as a library: offer store, pair/v2 handshake over an untrusted rendezvous, persisted pairings with reconnect and revocation, a default ws rendezvous dialer, a loopback HTTP forwarder for the paired channel, and an optional local-device bearer credential. Lets a non-daemon host embed pairing without depending on @agentproto/runtime.",
+  "keywords": [
+    "agentproto",
+    "aip-59",
+    "pairing",
+    "e2e",
+    "rendezvous",
+    "tunnel"
+  ],
+  "homepage": "https://agentproto.sh",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/pairing-host"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": false,
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@agentproto/acp": "workspace:*",
+    "@agentproto/secrets": "workspace:*",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.9.5",
+    "@types/ws": "^8.18.1",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
