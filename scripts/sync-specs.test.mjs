@@ -159,3 +159,36 @@ test("--check never writes the lock", (t) => {
   assert.equal(res.status, 0, res.stdout + res.stderr)
   assert.equal(existsSync(lock), false)
 })
+
+test("without --source-sha, a source outside an agentproto/agentproto checkout does not move the lock", (t) => {
+  const { tmp, source, target, allowlist } = makeFixture(t)
+  writeSchema(join(source, "aip-1", "draft"), { type: "object" })
+  writeAllowlist(allowlist, [])
+  const lock = join(tmp, "canonical.lock.json")
+  const res = run(["--source", source, "--target", target, "--allowlist", allowlist, "--lock", lock])
+  assert.equal(res.status, 0, res.stdout + res.stderr)
+  assert.equal(existsSync(lock), false)
+  assert.match(res.stderr, /NOT updated/)
+})
+
+test("--check fails on a hand-written file that sync-specs does not vendor", (t) => {
+  const { source, target, allowlist } = makeFixture(t)
+  writeSchema(join(source, "aip-1", "draft"), { type: "object" })
+  writeSchema(join(target, "aip-1", "draft"), { type: "object" })
+  writeFileSync(join(target, "aip-1", "draft", "NOTES.md"), "# hand-written\n")
+  writeAllowlist(allowlist, [])
+  const res = run(["--source", source, "--target", target, "--allowlist", allowlist, "--check"])
+  assert.equal(res.status, 1)
+  assert.match(res.stderr, /not from canonical/)
+  assert.match(res.stderr, /NOTES\.md/)
+})
+
+test("--check ignores dotfiles like .DS_Store", (t) => {
+  const { source, target, allowlist } = makeFixture(t)
+  writeSchema(join(source, "aip-1", "draft"), { type: "object" })
+  writeSchema(join(target, "aip-1", "draft"), { type: "object" })
+  writeFileSync(join(target, "aip-1", ".DS_Store"), "")
+  writeAllowlist(allowlist, [])
+  const res = run(["--source", source, "--target", target, "--allowlist", allowlist, "--check"])
+  assert.equal(res.status, 0, res.stdout + res.stderr)
+})

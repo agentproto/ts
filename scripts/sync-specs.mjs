@@ -19,6 +19,10 @@
  * The target (`ts/specs/resources/`) is fully replaced — files removed
  * upstream are removed here too, so the vendored copy never drifts.
  *
+ * specs/resources is sync-only: `--check` also fails on any file there that
+ * this script does not vendor (hand-written .md, notes, …). Spec text is
+ * authored in agentproto/agentproto, never here.
+ *
  * Known, pending-spec drift — fields ts ships ahead of what canonical has
  * ratified — is recorded in `specs/spec-drift-allowlist.json` (file + dot
  * path + reason). Both `--check` and a plain sync are allowlist-aware:
@@ -229,7 +233,12 @@ function graftKnownDrift(source, oldTarget, fields) {
 // sync (which rewrites this lock) moves the pin.
 function resolveSourceSha() {
   if (sourceSha) return sourceSha
+  // Only trust git when `source` really lives in an agentproto/agentproto
+  // checkout: git walks up to the nearest .git, so a plain directory nested
+  // inside another repo would otherwise report THAT repo's commit.
   try {
+    const remote = execFileSync("git", ["-C", source, "remote", "get-url", "origin"], { encoding: "utf8" }).trim()
+    if (!/agentproto\/agentproto(\.git)?$/.test(remote)) return undefined
     return execFileSync("git", ["-C", source, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()
   } catch {
     return undefined
@@ -302,6 +311,25 @@ function collectVendoredFiles(root) {
   return out.sort()
 }
 
+/** Every regular file under `root` that sync-specs does NOT vendor. These
+ *  can only have been hand-written in ts, which would make ts a second
+ *  editorial source for the AIPs; --check rejects them. Dotfiles
+ *  (.DS_Store and the like) are ignored. */
+function collectUnknownFiles(root) {
+  const out = []
+  const walk = dir => {
+    for (const ent of readdirSync(dir)) {
+      if (ent.startsWith(".")) continue
+      const full = path.join(dir, ent)
+      const st = statSync(full)
+      if (st.isDirectory()) walk(full)
+      else if (st.isFile() && !isVendoredFile(dir, ent)) out.push(path.relative(root, full))
+    }
+  }
+  walk(root)
+  return out.sort()
+}
+
 const sourceFiles = collectVendoredFiles(source)
 const targetFiles = existsSync(TARGET) ? collectVendoredFiles(TARGET) : []
 const sourceSet = new Set(sourceFiles)
@@ -349,12 +377,14 @@ const drift = toCopy.length > 0 || toRemove.length > 0
 
 if (mode === "check") {
   const integrity = checkAllowlistIntegrity(allowlist, source)
-  if (drift || !integrity.ok) {
+  const unknown = existsSync(TARGET) ? collectUnknownFiles(TARGET) : []
+  if (drift || !integrity.ok || unknown.length) {
     process.stderr.write(
       `sync-specs --check: vendored files drift from ${source}\n` +
         (toCopy.length ? `  changed/added (${toCopy.length}): ${toCopy.slice(0, 5).join(", ")}${toCopy.length > 5 ? ", …" : ""}\n` : "") +
         (toRemove.length ? `  stale (${toRemove.length}): ${toRemove.slice(0, 5).join(", ")}${toRemove.length > 5 ? ", …" : ""}\n` : "") +
         (!integrity.ok ? integrity.message : "") +
+        (unknown.length ? `  not from canonical (${unknown.length}) — author these in agentproto/agentproto, not here: ${unknown.join(", ")}\n` : "") +
         `Re-run scripts/sync-specs.mjs (no --check) to refresh.\n`
     )
     process.exit(1)
