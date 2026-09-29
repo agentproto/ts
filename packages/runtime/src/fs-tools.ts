@@ -32,10 +32,18 @@ import {
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
+import { type AppBoundary, resolveBoundaryPath } from "./app-boundary.js"
 import { paginate } from "./tool-envelope.js"
 
 export interface RegisterFsToolsOptions {
   workspace: string
+  /**
+   * When set, the caller is an app-spawned session: relative paths resolve
+   * against `boundary.root` (the app dir) instead of `workspace`, reads are
+   * limited to the readable zones, and writes to the writable zones. See
+   * `app-boundary.ts`.
+   */
+  boundary?: AppBoundary
 }
 
 class FsPathError extends Error {
@@ -79,7 +87,12 @@ export function registerFsTools(
   server: McpServer,
   opts: RegisterFsToolsOptions,
 ): void {
-  const anchor = makeAnchor(opts.workspace)
+  const workspaceAnchor = makeAnchor(opts.workspace)
+  const boundary = opts.boundary
+  const readAnchor = (input: string): string =>
+    boundary ? resolveBoundaryPath(boundary, input, "read") : workspaceAnchor(input)
+  const writeAnchor = (input: string): string =>
+    boundary ? resolveBoundaryPath(boundary, input, "write") : workspaceAnchor(input)
 
   server.tool(
     "file_read",
@@ -115,7 +128,7 @@ export function registerFsTools(
         ),
     },
     async ({ path, encoding, offset, limit }) => {
-      const abs = anchor(path)
+      const abs = readAnchor(path)
       const buf = await readFile(abs)
       const isBase64 = encoding === "base64"
       if (offset === undefined && limit === undefined) {
@@ -153,7 +166,7 @@ export function registerFsTools(
       content: z.string().describe("File body (UTF-8)."),
     },
     async ({ path, content }) => {
-      const abs = anchor(path)
+      const abs = writeAnchor(path)
       await mkdir(dirname(abs), { recursive: true })
       await writeFile(abs, content, "utf8")
       return text("ok")
@@ -180,7 +193,7 @@ export function registerFsTools(
         .describe("Opaque token from a prior call's `nextCursor`."),
     },
     async ({ path, limit, cursor }) => {
-      const abs = anchor(path && path.length > 0 ? path : ".")
+      const abs = readAnchor(path && path.length > 0 ? path : ".")
       const entries = await readdir(abs, { withFileTypes: true })
       const lines = entries.map(e =>
         e.isDirectory() ? `[DIR]  ${e.name}` : `[FILE] ${e.name}`,
@@ -198,7 +211,7 @@ export function registerFsTools(
     "Stat a file or directory in the workspace.",
     { path: z.string().describe("Workspace-relative path.") },
     async ({ path }) => {
-      const abs = anchor(path)
+      const abs = readAnchor(path)
       const info = await stat(abs)
       return text({
         name: abs.split("/").pop() ?? path,
@@ -216,7 +229,7 @@ export function registerFsTools(
     "Create a directory (recursive) in the workspace.",
     { path: z.string().describe("Workspace-relative directory path.") },
     async ({ path }) => {
-      const abs = anchor(path)
+      const abs = writeAnchor(path)
       await mkdir(abs, { recursive: true })
       return text("ok")
     },
@@ -227,7 +240,7 @@ export function registerFsTools(
     "Delete a file or empty directory in the workspace.",
     { path: z.string().describe("Workspace-relative path.") },
     async ({ path }) => {
-      const abs = anchor(path)
+      const abs = writeAnchor(path)
       await rm(abs, { recursive: true, force: true })
       return text("ok")
     },

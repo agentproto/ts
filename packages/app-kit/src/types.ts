@@ -215,6 +215,20 @@ export interface AppAccepts {
 }
 
 /**
+ * Boundary policy for sessions the app spawns. The daemon confines them to
+ * the app's fs zones (app source read-only; run workspace + data dir
+ * writable; everything else denied).
+ *
+ * - `"best-effort"` (default): a harness that cannot enforce the zones still
+ *   spawns, with an explicit `session:harness-warning`.
+ * - `"required"`: the spawn is refused (`app_boundary_unenforceable`) when the
+ *   zones cannot be enforced on the chosen harness / platform.
+ */
+export interface AppBoundariesDefinition {
+  readonly enforce?: "required" | "best-effort"
+}
+
+/**
  * Input to `defineApp`. Each `agents[]` entry is an already-validated
  * `AgentHandle` (bare, no body) or an `AgentEntry` (handle + body).
  *
@@ -300,6 +314,11 @@ export interface AppDefinition {
    */
   readonly externalReadRoots?: readonly string[]
   /**
+   * Filesystem boundary policy for sessions this app spawns (`app_run`, app
+   * workflow agent steps). See {@link AppBoundariesDefinition}.
+   */
+  readonly boundaries?: AppBoundariesDefinition
+  /**
    * Coarse grouping surfaced in catalogs/trees — e.g. `"book"` groups the
    * VS Code Apps tree's "Books" section. Freeform: app-kit does not
    * validate against a fixed enum, since new categories may appear without
@@ -380,6 +399,8 @@ export interface AppHandle {
    *  {@link AppDefinition.externalReadRoots}). Not yet normalized/validated —
    *  that happens at install time in `performInstall`. */
   readonly externalReadRoots?: readonly string[]
+  /** Boundary policy (see {@link AppDefinition.boundaries}). */
+  readonly boundaries?: AppBoundariesDefinition
   /** Coarse grouping surfaced in catalogs/trees (see {@link AppDefinition.category}). */
   readonly category?: string
 

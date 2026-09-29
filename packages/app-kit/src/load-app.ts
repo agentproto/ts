@@ -43,6 +43,7 @@ import { parseWorkspaceManifest, workspaceFromManifest } from "@agentproto/works
 import type {
   AgentEntry,
   AppArtifactDecl,
+  AppBoundariesDefinition,
   AppDataDefinition,
   AppDefinition,
   AppDevDefinition,
@@ -107,6 +108,7 @@ interface AppFrontmatter {
   readonly dev?: AppDevDefinition
   readonly data?: AppDataDefinition
   readonly externalReadRoots?: readonly string[]
+  readonly boundaries?: AppBoundariesDefinition
   readonly category?: string
 }
 
@@ -283,6 +285,19 @@ function parseAppFrontmatter(data: Record<string, unknown>, appPath: string): Ap
       )
     }
   }
+  if (data.boundaries !== undefined) {
+    const b = data.boundaries as { enforce?: unknown } | null
+    if (
+      typeof b !== "object" ||
+      b === null ||
+      Array.isArray(b) ||
+      (b.enforce !== undefined && b.enforce !== "required" && b.enforce !== "best-effort")
+    ) {
+      throw new AppLoadError(
+        `'${appPath}': frontmatter 'boundaries' must be an object whose optional 'enforce' is "required" or "best-effort".`,
+      )
+    }
+  }
   if (data.category !== undefined && (typeof data.category !== "string" || data.category.trim() === "")) {
     throw new AppLoadError(`'${appPath}': frontmatter 'category' must be a non-empty string.`)
   }
@@ -432,6 +447,7 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
     ...(fm.dev !== undefined ? { dev: fm.dev } : {}),
     ...(fm.data !== undefined ? { data: fm.data } : {}),
     ...(fm.externalReadRoots !== undefined ? { externalReadRoots: fm.externalReadRoots } : {}),
+    ...(fm.boundaries !== undefined ? { boundaries: fm.boundaries } : {}),
     ...(fm.category !== undefined ? { category: fm.category } : {}),
   })
 }

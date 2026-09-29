@@ -1255,6 +1255,34 @@ export interface AgentCliStartOptions {
    * see `define-agent-cli.ts` / `print-arm.ts` for where this is applied.
    */
   commandSandbox?: SandboxMode
+  /**
+   * Host-declared filesystem zones for an app boundary (`app_run` / app
+   * workflow sessions). Engages the OS sandbox unconditionally (Seatbelt /
+   * bwrap; fail-closed when no backend exists, and incompatible with
+   * `commandSandbox: "off"`) and switches it to: cwd + `readOnly` readable,
+   * only `writable` (plus toolchain/config scratch) writable, `hidden`
+   * unreadable. See `SandboxZones` in `@agentproto/command-sandbox`.
+   * For claude-code the writable zones are also registered as
+   * `permissions.additionalDirectories` so the harness doesn't prompt for
+   * writes the sandbox already allows.
+   */
+  fsZones?: AgentCliFsZones
+  /**
+   * Keep the host repo's instruction files out of the session's context.
+   * claude-code: every ANCESTOR directory of `cwd` gets its CLAUDE.md /
+   * CLAUDE.local.md / .claude/CLAUDE.md / .claude/rules/** added to the
+   * isolated `settings.json`'s `claudeMdExcludes` (the app's own CLAUDE.md,
+   * in `cwd`, still loads). Adapters with no such switch ignore this; the
+   * caller is expected to warn (see `agentCliSupportsHostContextIsolation`).
+   */
+  isolateHostContext?: boolean
+}
+
+/** Filesystem zones handed to the driver — see {@link AgentCliStartOptions.fsZones}. */
+export interface AgentCliFsZones {
+  readOnly: string[]
+  writable: string[]
+  hidden?: string[]
 }
 
 /**

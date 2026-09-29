@@ -33,6 +33,8 @@ import {
 } from "../app-tools.js"
 import { createDaemonToolRegistry, mergeAppAndDaemonToolRegistry } from "../workflow-tool-registry.js"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
+import { boundaryFromMeta } from "../app-boundary.js"
+import { resolveCommandSandbox } from "@agentproto/command-sandbox"
 import { createSessionsRegistry } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import { registerMcpApps } from "../mcp-apps-adapter.js"
@@ -457,6 +459,54 @@ describe("app_* verbs", () => {
     expect(stopped.killed).toEqual([sessionId])
     expect(stopped.status).toBe("cancelled")
     expect(registry.get(sessionId)?.status).toBe("killed")
+  })
+
+  it("app_run: the spawned session carries the app boundary (app dir read-only, data dir writable) and the harness gets fs zones", async () => {
+    await buildFixtureApp(dir, { toolId: "known_tool" })
+    const startSession = fakeStartSession()
+    const { client, registry, appRegistry } = await setup({
+      startSession,
+      resolveAgentAdapter: async (slug: string) =>
+        slug === "mastra-agent"
+          ? { startSession, commandPreview: "mock-adapter", supportsFsZones: true, supportsHostContextIsolation: true }
+          : null,
+    })
+    await client.callTool({ name: "app_install", arguments: { dir } })
+    const ran = parseToolJson(
+      await client.callTool({ name: "app_run", arguments: { appId: "@test/fixture-app" } }),
+    )
+    const installed = appRegistry.getApp("@test/fixture-app")!
+    const meta = registry.get(ran.sessions[0].sessionId)?.meta
+    const boundary = boundaryFromMeta(meta)
+    expect(boundary?.root).toBe(installed.dir)
+    expect(boundary?.readOnly).toEqual([installed.dir])
+    expect(boundary?.writable).toEqual([installed.dataDir])
+    const spawnOpts = startSession.mock.calls[0]![0] as { isolateHostContext?: boolean; fsZones?: { readOnly: string[] } }
+    expect(spawnOpts.isolateHostContext).toBe(true)
+    if (resolveCommandSandbox() !== null) expect(spawnOpts.fsZones?.readOnly).toEqual([installed.dir])
+  })
+
+  it('app_run: a manifest with boundaries.enforce "required" refuses a harness that cannot confine native tools', async () => {
+    const app = defineApp({
+      id: "@test/strict-app",
+      name: "Strict",
+      boundaries: { enforce: "required" },
+      agents: [
+        {
+          agent: defineAgent({ schema: "agent/v1", id: "worker", description: "w", model: "claude-sonnet-5" }),
+          body: "do it",
+        },
+      ],
+    })
+    await app.emit(dir)
+    const { client, startSession, appRegistry } = await setup()
+    await client.callTool({ name: "app_install", arguments: { dir } })
+    expect(appRegistry.getApp("@test/strict-app")?.boundaries).toEqual({ enforce: "required" })
+    const res = parseToolJson(
+      await client.callTool({ name: "app_run", arguments: { appId: "@test/strict-app" } }),
+    )
+    expect(JSON.stringify(res)).toMatch(/app_boundary_unenforceable|cannot be enforced/)
+    expect(startSession).not.toHaveBeenCalled()
   })
 
   it("app_status flags dirMissing:true once the run's app dir is gone", async () => {

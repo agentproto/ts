@@ -20,6 +20,7 @@ import {
   resolveCommandSandbox,
   type SandboxMode,
   type SandboxPolicy,
+  type SandboxZones,
 } from "@agentproto/command-sandbox"
 
 /**
@@ -127,6 +128,15 @@ export interface WrapAgentCliSpawnOptions {
   extraWritePaths?: string[]
   /** Merged with the config file's own `adapterSpawn.extraReadPaths`. */
   extraReadPaths?: string[]
+  /**
+   * Host-declared filesystem zones (see `SandboxZones`). When present the
+   * confinement is ALWAYS engaged — `mode` defaults to `"workspace"`
+   * regardless of the workspace's config file, an explicit `"off"` is
+   * refused, and the cwd's own `.agentproto/command-sandbox.json` extra
+   * paths are ignored (the app being confined must not be able to widen its
+   * own boundary from a file the boundary is meant to make read-only).
+   */
+  zones?: SandboxZones
   /** Adapter/arm identifier for the fail-closed error message. */
   label: string
 }
@@ -167,8 +177,15 @@ export async function wrapAgentCliSpawn(
   opts: WrapAgentCliSpawnOptions,
 ): Promise<[string, string[]]> {
   const cfg = await loadAdapterSpawnSandboxConfig(opts.cwd)
-  const mode = opts.mode ?? cfg.mode
+  const mode = opts.zones ? (opts.mode ?? "workspace") : (opts.mode ?? cfg.mode)
   if (mode === undefined) return [bin, args]
+  if (mode === "off" && opts.zones) {
+    throw new Error(
+      `agent-cli '${opts.label}': filesystem zones (an app boundary) cannot be ` +
+        `combined with commandSandbox "off" — the zones are only enforceable ` +
+        `through the OS sandbox. Refusing to spawn.`,
+    )
+  }
   if (mode === "off") {
     console.error(
       `[agent-cli] ⚠ spawning '${opts.label}' UNCONFINED — no OS-level ` +
@@ -186,18 +203,20 @@ export async function wrapAgentCliSpawn(
         `unconfined execution, or install the missing backend.`,
     )
   }
+  const fileCfg = opts.zones ? undefined : cfg
   const policy: SandboxPolicy = {
     workspace: opts.cwd,
     extraReadPaths: [
       ...defaultToolchainReadPaths(),
-      ...cfg.extraReadPaths,
+      ...(fileCfg?.extraReadPaths ?? []),
       ...(opts.extraReadPaths ?? []),
     ],
     extraWritePaths: [
       ...defaultToolchainWritePaths(),
-      ...cfg.extraWritePaths,
+      ...(fileCfg?.extraWritePaths ?? []),
       ...(opts.extraWritePaths ?? []),
     ],
+    ...(opts.zones ? { zones: opts.zones } : {}),
     network: mode === "strict" || cfg.network === "deny" ? "deny" : "allow",
   }
   const wrapped = backend.wrap([bin, ...args], policy)

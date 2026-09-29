@@ -104,8 +104,16 @@ const realFs: AgentsMdFs = {
 export async function findAgentsMdPath(
   cwd: string,
   fsIo: AgentsMdFs = realFs,
+  stopAt?: string,
 ): Promise<string | undefined> {
-  const toplevel = await fsIo.gitToplevel(cwd)
+  const gitTop = await fsIo.gitToplevel(cwd)
+  // `stopAt` (an app boundary root) bounds the walk tighter than git does: an
+  // app installed inside a host monorepo must not resolve the host's AGENTS.md.
+  const stop = stopAt !== undefined ? resolve(stopAt) : undefined
+  const cwdAbs = resolve(cwd)
+  const stopInScope =
+    stop !== undefined && (cwdAbs === stop || cwdAbs.startsWith(stop.endsWith("/") ? stop : `${stop}/`))
+  const toplevel = stopInScope ? stop : gitTop
   // Not in a git repo ⇒ only `cwd` itself is in scope — no walk.
   if (toplevel === undefined) {
     const candidate = join(cwd, "AGENTS.md")
@@ -168,8 +176,9 @@ export async function resolveAgentsMd(
   cwd: string,
   inlineMaxKb: number = DEFAULT_AGENTS_MD_INLINE_MAX_KB,
   fsIo: AgentsMdFs = realFs,
+  stopAt?: string,
 ): Promise<AgentsMdResolution> {
-  const path = await findAgentsMdPath(cwd, fsIo)
+  const path = await findAgentsMdPath(cwd, fsIo, stopAt)
   if (path === undefined) {
     return { mode: "absent", contractLine: cdContractLine }
   }

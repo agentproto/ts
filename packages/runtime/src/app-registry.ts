@@ -100,6 +100,10 @@ export interface InstalledApp {
    *  (app-external.ts) only ever resolve a path under one of these, and only
    *  when the caller's `root` argument exact-string-matches an entry here. */
   readonly externalReadRoots?: readonly string[]
+  /** Boundary policy declared by the app (AIP-42 `boundaries`) — see
+   *  app-boundary.ts. `enforce: "required"` makes a spawn refuse instead of
+   *  warn when the fs zones can't be enforced on the chosen harness. */
+  readonly boundaries?: { readonly enforce?: "required" | "best-effort" }
   readonly dev?: {
     readonly launch: readonly {
       readonly name: string

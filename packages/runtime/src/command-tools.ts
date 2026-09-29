@@ -85,6 +85,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { SESSION_ID_ENV, WORKSPACE_SLUG_ENV, mintSessionId, type SessionsRegistry } from "./sessions.js"
 import { stampPrProvenance } from "./pr-provenance-stamp.js"
+import { type AppBoundary, boundaryToSandboxZones, resolveBoundaryPath } from "./app-boundary.js"
 import type { ToolCallRecord } from "./tool-call-record.js"
 import {
   COMMAND_SANDBOX_MODE_ENV,
@@ -146,6 +147,16 @@ export interface RegisterCommandToolsOptions {
    *  for the plain daemon-wide `/mcp` mount with no such query param —
    *  fabricating one there would be worse than leaving it absent. */
   callerSessionId?: string
+  /**
+   * The caller's app boundary (app-spawned session), resolved per request
+   * from `callerSessionId`. When set: `cwd` defaults to the app dir and must
+   * sit inside a readable zone, and the command is ALWAYS run under the
+   * zoned OS sandbox (app source read-only, run workspace + data dir
+   * writable) regardless of the workspace's `command-sandbox.json` mode.
+   * With `enforce: "required"` and no sandbox backend the call fails closed;
+   * best-effort runs unconfined with an explicit `warning` on the result.
+   */
+  boundary?: AppBoundary
 }
 
 export function makeCwdAnchor(workspace: string): (input: string | undefined) => string {
@@ -274,8 +285,12 @@ export function registerCommandTools(
         warnedInterpreters.add(baseName)
         console.error(`[command_execute] ⚠ ${interpreterWarning}`)
       }
-      const resolvedCwd = anchorCwd(cwd)
+      const boundary = opts.boundary
+      const resolvedCwd = boundary
+        ? resolveBoundaryPath(boundary, cwd && cwd.length > 0 ? cwd : ".", "read")
+        : anchorCwd(cwd)
       const limit = Math.min(timeoutMs ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)
+      let boundaryWarning: string | undefined
       // OS-level confinement — opt-in via `.agentproto/command-sandbox.json`
       // (or forced by `AGENTPROTO_COMMAND_SANDBOX_MODE`). Default mode "off"
       // ⇒ argv unchanged (today's behavior; see command-sandbox.ts for why
@@ -288,7 +303,29 @@ export function registerCommandTools(
       let execCommand = command
       let execArgs = args ?? []
       const sandboxCfg = await loadSandboxConfig(opts.workspace)
-      if (sandboxCfg.mode !== "off") {
+      if (boundary) {
+        const backend = resolveCommandSandbox()
+        if (backend) {
+          const wrapped = backend.wrap([command, ...(args ?? [])], {
+            workspace: boundary.root,
+            extraReadPaths: [],
+            zones: boundaryToSandboxZones(boundary),
+            network: sandboxCfg.network,
+          })
+          execCommand = wrapped[0] ?? command
+          execArgs = wrapped.slice(1)
+        } else if (boundary.enforce === "required") {
+          throw new Error(
+            `app '${boundary.appId}' declares boundaries.enforce "required" but no OS sandbox ` +
+              `backend is available on ${process.platform}; refusing to run '${command}' unconfined.`,
+          )
+        } else {
+          boundaryWarning =
+            `app boundary for '${boundary.appId}' NOT enforced on this command: no OS sandbox ` +
+            `backend on ${process.platform}. The command ran unconfined.`
+          console.error(`[command_execute] ⚠ ${boundaryWarning}`)
+        }
+      } else if (sandboxCfg.mode !== "off") {
         const backend = resolveCommandSandbox()
         if (backend) {
           const wrapped = backend.wrap([command, ...(args ?? [])], {
@@ -412,7 +449,9 @@ export function registerCommandTools(
             text: JSON.stringify({
               ...result,
               sessionId: desc.id,
-              ...(interpreterWarning ? { warning: interpreterWarning } : {}),
+              ...(interpreterWarning || boundaryWarning
+                ? { warning: [interpreterWarning, boundaryWarning].filter(Boolean).join(" ") }
+                : {}),
             }),
           },
         ],

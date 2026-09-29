@@ -103,6 +103,18 @@ import {
 } from "./workspace-rules.js"
 import { deriveSessionTitle } from "./session-title.js"
 import { isAbsolute, join } from "node:path"
+import {
+  APP_BOUNDARY_UNENFORCEABLE,
+  FsZoneError,
+  assessBoundaryEnforcement,
+  boundaryFromMeta,
+  boundaryMeta,
+  boundaryToSandboxZones,
+  resolveBoundaryPath,
+  unenforceableMessage,
+  unenforceableWarning,
+  type AppBoundary,
+} from "./app-boundary.js"
 import { syncPiModels } from "@agentproto/llm-endpoint"
 import {
   fitCheckForTarget,
@@ -1070,6 +1082,7 @@ export interface SpawnAgentSessionDeps {
   resolveAgentsMd?: (
     cwd: string,
     inlineMaxKb?: number,
+    opts?: { stopAt?: string },
   ) => Promise<AgentsMdResolution>
   /** Resolves + shapes the per-workspace RULES.md for a spawn (see
    *  `workspace-rules.ts`): the path of the workspace's `RULES.md`, inlined
@@ -1162,6 +1175,18 @@ export interface SpawnAgentSessionInput {
    *  the model driving the session has no way to know its own appId unless
    *  told. Absent on a spawn made outside `app_run`. */
   appId?: string
+  /**
+   * Filesystem boundary for this spawn (see `app-boundary.ts`): app source
+   * read-only, run workspace + data dir writable, the rest denied. Set by
+   * `app_run` and by app-workflow agent steps; a child spawned by an
+   * already-boundaried session inherits its parent's boundary instead (this
+   * field cannot widen it). Makes the spawn: refuse `worktree`, resolve
+   * AGENTS.md no higher than the boundary root, isolate host CLAUDE.md, and
+   * either confine the harness's native tools through the OS sandbox or
+   * warn / refuse (`boundaries.enforce: "required"`) — never silently
+   * downgrade.
+   */
+  appBoundary?: AppBoundary
   /** Reattach to a pre-existing adapter-native session (claude-code's
    *  conversation id, hermes' chat handle, …) instead of starting
    *  blank. Not exposed on the MCP `agent_start` tool today — only the
@@ -1446,6 +1471,10 @@ export type SpawnAgentSessionResult =
       code:
         | "adapter_not_found"
         | "no_cwd"
+        | "app_boundary_cwd_outside"
+        | "app_boundary_worktree"
+        | "app_boundary_sandbox"
+        | "app_boundary_unenforceable"
         | "orchestrator_not_enabled"
         | "orchestrator_max_depth_exceeded"
         | "orchestrator_child_quota_exceeded"
@@ -1722,7 +1751,38 @@ export async function spawnAgentSession(
         "list`) to `agent_start`.",
     }
   }
-  let cwd = input.cwd
+  // App boundary: a child of an already-boundaried session inherits the
+  // parent's boundary (an explicit `input.appBoundary` can never widen it).
+  // Every identity signal is consulted — inheriting is only ever restrictive.
+  let appBoundary: AppBoundary | undefined
+  for (const candidate of [callerScope?.ownerSessionId, input.autoParentSessionId, input.parentSessionId]) {
+    if (!candidate) continue
+    const inherited = boundaryFromMeta(registry.get(candidate)?.meta)
+    if (inherited) {
+      appBoundary = inherited
+      break
+    }
+  }
+  appBoundary = appBoundary ?? input.appBoundary
+  if (appBoundary && input.worktree !== undefined && input.worktree !== false) {
+    return {
+      ok: false,
+      code: "app_boundary_worktree",
+      message:
+        `agent_start: \`worktree\` isolation is not available inside app '${appBoundary.appId}' — ` +
+        "the worktree would sit outside the app's filesystem zones.",
+    }
+  }
+  if (appBoundary && input.sandbox !== undefined) {
+    return {
+      ok: false,
+      code: "app_boundary_sandbox",
+      message:
+        `agent_start: \`sandbox\` spawns are not available inside app '${appBoundary.appId}' — a ` +
+        "same-machine sandbox provider would run outside the app's filesystem zones.",
+    }
+  }
+  let cwd = input.cwd ?? (appBoundary && !input.workspaceSlug ? appBoundary.root : undefined)
   let resolvedSlug = input.workspaceSlug
   if (!cwd || !resolvedSlug) {
     try {
@@ -1795,6 +1855,18 @@ export async function spawnAgentSession(
         "agent_start: no cwd resolvable. Pass `cwd` explicitly, " +
         "or pass `workspaceSlug` matching `agentproto workspace list`, " +
         "or set an active workspace via `agentproto workspace use <slug>`.",
+    }
+  }
+  if (appBoundary) {
+    try {
+      resolveBoundaryPath(appBoundary, cwd, "read")
+    } catch (err) {
+      if (!(err instanceof FsZoneError)) throw err
+      return {
+        ok: false,
+        code: "app_boundary_cwd_outside",
+        message: `agent_start: cwd is outside the app boundary of '${appBoundary.appId}': ${err.message}`,
+      }
     }
   }
   // WP3 — `appServe` only makes sense against a box: reject a non-sandbox
@@ -1919,7 +1991,7 @@ export async function spawnAgentSession(
   // Non-fatal spawn-time notices, surfaced on the success result (`warnings`)
   // AND logged. Populated by the worktree decision below (shared-dirty-cwd).
   const spawnWarnings: string[] = []
-  if (input.sandbox === undefined) {
+  if (input.sandbox === undefined && !appBoundary) {
     const mode = resolveWorktreeIsolation
       ? await resolveWorktreeIsolation()
       : await loadWorktreeIsolation()
@@ -2571,6 +2643,44 @@ export async function spawnAgentSession(
         " for a sandbox spawn.",
     }
   }
+  // ── App boundary: enforceability (never a silent downgrade) ─────────────
+  // Daemon file tools / command_execute are always confined by identity. The
+  // harness's NATIVE tools are confined only through the OS sandbox + a
+  // zone-aware adapter; when that isn't possible the spawn is refused (app
+  // declared `boundaries.enforce: "required"`) or carries an explicit
+  // `session:harness-warning`.
+  let boundaryFsZones: ReturnType<typeof boundaryToSandboxZones> | undefined
+  let boundaryIsolateContext = false
+  const boundaryWarnings: string[] = []
+  if (appBoundary) {
+    const enforcement = assessBoundaryEnforcement({
+      ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
+      harnessSupportsFsZones: resolved?.supportsFsZones === true,
+    })
+    if (enforcement.enforced) {
+      boundaryFsZones = boundaryToSandboxZones(appBoundary)
+    } else if (appBoundary.enforce === "required") {
+      return {
+        ok: false,
+        code: APP_BOUNDARY_UNENFORCEABLE,
+        message: `agent_start: ${unenforceableMessage(appBoundary, enforcement.reasons)}`,
+      }
+    } else {
+      boundaryWarnings.push(unenforceableWarning(appBoundary, enforcement.reasons))
+    }
+    if (resolved?.supportsHostContextIsolation) {
+      boundaryIsolateContext = true
+    } else {
+      boundaryWarnings.push(
+        `app '${appBoundary.appId}': this harness cannot exclude the host repository's ` +
+          "CLAUDE.md/AGENTS.md — host instructions may be loaded into the session.",
+      )
+    }
+    for (const w of boundaryWarnings) {
+      spawnWarnings.push(w)
+      console.warn(`[agent_start] ${w}`)
+    }
+  }
   // ── Billing-auth resolution (DECISIONS 4/9/10) ──────────────────
   // The runtime decides provider → ordered mode → setEnv/scrub → credential
   // source → fingerprint, and emits BOTH the mechanical `spec` the driver
@@ -3004,9 +3114,13 @@ export async function spawnAgentSession(
   let agentsMdResolution: AgentsMdResolution
   const resolveAgentsMdForSpawn =
     resolveAgentsMd ??
-    (async (cwdArg: string) => realResolveAgentsMd(cwdArg, await loadAgentsMdInlineMaxKb()))
+    (async (cwdArg: string, _kb?: number, o?: { stopAt?: string }) =>
+      realResolveAgentsMd(cwdArg, await loadAgentsMdInlineMaxKb(), undefined, o?.stopAt))
   try {
-    agentsMdResolution = await resolveAgentsMdForSpawn(cwd)
+    // An app session sees only the app's own AGENTS.md, never the host repo's.
+    agentsMdResolution = appBoundary
+      ? await resolveAgentsMdForSpawn(cwd, undefined, { stopAt: appBoundary.root })
+      : await resolveAgentsMdForSpawn(cwd)
   } catch {
     // AGENTS.md resolution is advisory-on-top-of-the-role: a read failure must
     // never block a spawn the caller asked for. Fall through to absent — the
@@ -3559,7 +3673,10 @@ export async function spawnAgentSession(
         // spawn. Fall through with no PATH shim (unchanged behaviour).
         ghProvenanceEnv = {}
       }
-      commandSandbox = await resolveEffectiveCommandSandbox(input.commandSandbox, cwd)
+      commandSandbox = await resolveEffectiveCommandSandbox(
+        input.commandSandbox ?? (boundaryFsZones ? "workspace" : undefined),
+        cwd,
+      )
       agentSession = await resolved!.startSession({
         cwd,
         ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
@@ -3578,6 +3695,8 @@ export async function spawnAgentSession(
         ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
         ...(input.permissionHold ? { permissionHold: true } : {}),
         ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
+        ...(boundaryFsZones ? { fsZones: boundaryFsZones } : {}),
+        ...(boundaryIsolateContext ? { isolateHostContext: true } : {}),
         // Session identity (SESSION_ID_ENV's doc, sessions.ts) — minted
         // above as `mintedSessionId` (not left to `spawnAgent`'s own
         // default) specifically so it's known here, before the child ever
@@ -3703,7 +3822,14 @@ export async function spawnAgentSession(
       // descriptor — the task ledger's board resolution reads it BEFORE the
       // lineage walk (see `resolveBoardId` in task-ledger.ts). Rides the
       // generic `meta` hint map so future spawn-time hints need no new field.
-      ...(input.boardId ? { meta: { boardId: input.boardId } } : {}),
+      ...(input.boardId || appBoundary
+        ? {
+            meta: {
+              ...(input.boardId ? { boardId: input.boardId } : {}),
+              ...(appBoundary ? boundaryMeta(appBoundary) : {}),
+            },
+          }
+        : {}),
       ...(input.origin ? { origin: input.origin } : {}),
       depth: recordedDepth,
       ...(commandPreview ? { commandPreview } : {}),
@@ -3756,6 +3882,7 @@ export async function spawnAgentSession(
     // `sendPrompt` below) also covers the non-`wait` path, which never
     // calls `sendPrompt` at all.
     if (initialTitle) desc.title = initialTitle
+    if (boundaryWarnings.length > 0) registry.emitHarnessWarning(desc.id, boundaryWarnings, input.label)
     // Stamp the AGENTS.md resolution onto the descriptor (WP-R2) so
     // `sessions --json` / the summaries view can report the resolved path +
     // mode. `agentsMdMode` is non-optional once resolution ran — always set

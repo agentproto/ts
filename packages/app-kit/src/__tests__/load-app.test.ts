@@ -455,6 +455,42 @@ describe("loadAppHandle — category", () => {
   })
 })
 
+describe("loadAppHandle — boundaries", () => {
+  const soloAgent = () =>
+    defineAgent({ schema: "agent/v1", id: "solo", description: "Solo agent.", model: "claude-sonnet-5" })
+
+  it("round-trips boundaries.enforce", async () => {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-load-boundaries-"))
+    try {
+      await defineApp({
+        agents: [{ agent: soloAgent(), body: "Solo." }],
+        boundaries: { enforce: "required" },
+      }).emit(d)
+      const loaded = await loadAppHandle(d)
+      expect(loaded.boundaries).toEqual({ enforce: "required" })
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  })
+
+  it("throws AppLoadError on an unknown boundaries.enforce value", async () => {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-load-badboundaries-"))
+    try {
+      const { appPath } = await defineApp({ agents: [{ agent: soloAgent(), body: "Solo." }] }).emit(d)
+      const parsed = matter(await readFile(appPath, "utf8"))
+      await writeFile(
+        appPath,
+        matter.stringify(parsed.content, { ...parsed.data, boundaries: { enforce: "sometimes" } }),
+        "utf8",
+      )
+      await expect(loadAppHandle(d)).rejects.toThrow(AppLoadError)
+      await expect(loadAppHandle(d)).rejects.toThrow(/frontmatter 'boundaries'/)
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("loadAppHandle — frontmatter strictness posture (AIP-53)", () => {
   const solo = () =>
     defineAgent({ schema: "agent/v1", id: "solo", description: "Solo agent.", model: "claude-sonnet-5" })

@@ -69,6 +69,8 @@ export interface PrintArmOptions {
    *  AGENTS.md grant (`AgentCliStartOptions.additionalReadPaths`). READ
    *  exceptions only; never widens writes. */
   extraReadPaths?: string[]
+  /** See `AgentCliStartOptions.fsZones`. */
+  fsZones?: { readOnly: string[]; writable: string[]; hidden?: string[] }
   /**
    * The explicitly requested model id — when set, a wire event that
    * truthfully reports which model the agent ACTUALLY started on (today:
@@ -180,6 +182,7 @@ export function createPrintSession(
         cwd: opts.cwd,
         ...(opts.extraWritePaths ? { extraWritePaths: opts.extraWritePaths } : {}),
         ...(opts.extraReadPaths ? { extraReadPaths: opts.extraReadPaths } : {}),
+        ...(opts.fsZones ? { zones: opts.fsZones } : {}),
         label: "print-arm",
       })
       const child = spawn(execBin, execArgs, {

@@ -124,7 +124,7 @@ import {
 import { registerCatalogOverlay } from "@agentproto/model-catalog/overlay"
 import { loadCachedCatalogVoices } from "../provider-catalog.js"
 import { getBrowserAdapter, browserAdapters } from "@agentproto/adapter-browser"
-import { createAgentCliRuntime } from "@agentproto/driver-agent-cli"
+import { agentCliSupportsHostContextIsolation, createAgentCliRuntime } from "@agentproto/driver-agent-cli"
 import { readHermesUsage } from "@agentproto/adapter-hermes"
 import { readOpenCodeUsage } from "@agentproto/adapter-opencode"
 import { readClaudeCodeUsage } from "@agentproto/adapter-claude-code"
@@ -475,7 +475,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(Object.keys(modelProviders).length > 0 ? { modelProviders } : {}),
       }
       return {
-        async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, onActivity, permissionHold, auth, commandSandbox, additionalReadPaths, env }) {
+        async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, onActivity, permissionHold, auth, commandSandbox, additionalReadPaths, env, fsZones, isolateHostContext }) {
           // Build config.options only when there's something to set — an
           // empty object would pass undefined validation but trips the
           // "no declared options" early-return in composeSpawn. Caller-
@@ -515,8 +515,16 @@ export async function runServe(args: readonly string[]): Promise<number> {
             // file, the headless browser's install + Chrome bundle).
             ...(additionalReadPaths?.length ? { additionalReadPaths } : {}),
             ...(env ? { env } : {}),
+            // App-boundary fs zones + isolated host context (the runtime only
+            // passes these to adapters that advertise support below).
+            ...(fsZones ? { fsZones } : {}),
+            ...(isolateHostContext ? { isolateHostContext: true } : {}),
           })
         },
+        // Every agent-cli arm except `proprietary` (which owns its own
+        // process) wraps its spawn through the OS sandbox, where zones apply.
+        supportsFsZones: adapter.handle.protocol !== "proprietary",
+        supportsHostContextIsolation: agentCliSupportsHostContextIsolation(slug),
         commandPreview:
           `${adapter.handle.bin} ${(adapter.handle.bin_args ?? []).join(" ")}`.trim(),
         ...(slug === "hermes" ? { readUsage: (sid: string) => readHermesUsage(sid) } : {}),
