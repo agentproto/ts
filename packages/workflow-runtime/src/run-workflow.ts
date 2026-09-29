@@ -1021,6 +1021,10 @@ function defaultRunGateCommand(spec: {
     })
 
     child.on("error", () => {
+      // A spawn-level error (e.g. ENOENT) means there's no process to time
+      // out on — clear the timeout timer here so a slow drain window can't
+      // race it and mislabel this result `timedOut: true`.
+      clearTimeout(timeoutTimer)
       exitCode = 1
       drainTimer = setTimeout(() => finish(1), GATE_STDIO_DRAIN_MS).unref()
       maybeFinish()
@@ -1162,9 +1166,9 @@ async function withStepTimeout<T>(
   fn: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
   const controller = new AbortController()
-  const onParentAbort = (): void => controller.abort(parentSignal!.reason)
-  if (parentSignal?.aborted) controller.abort(parentSignal.reason)
-  else parentSignal?.addEventListener("abort", onParentAbort, { once: true })
+  const onParentAbort = (sig: AbortSignal): void => controller.abort(sig.reason)
+  if (parentSignal?.aborted) onParentAbort(parentSignal)
+  else parentSignal?.addEventListener("abort", () => onParentAbort(parentSignal), { once: true })
 
   let timedOut = false
   const timer = setTimeout(() => {
