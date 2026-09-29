@@ -1,7 +1,7 @@
 /**
- * `POST /a2a/apps/:appId` — A2A JSON-RPC 2.0 task ingress for one installed
- * app. `message/send` starts an `app_run` for an exposed agent skill,
- * `tasks/get` reports it, `tasks/cancel` stops it. Everything runs through the
+ * `POST /a2a/apps/:appId` — A2A 1.0 JSON-RPC 2.0 task ingress for one
+ * installed app. `SendMessage` starts an `app_run` for an exposed agent skill,
+ * `GetTask` reports it, `CancelTask` stops it. Everything runs through the
  * daemon's own `app_run` / `app_status` / `app_stop` / `app_artifact_get`
  * tools via `dispatchTool` (the same in-process dispatcher the REST
  * `tool-call` twin uses), so there is one implementation of a run.
@@ -17,12 +17,14 @@ import type { IncomingMessage, ServerResponse } from "node:http"
 import { loadAppHandle } from "@agentproto/app-kit"
 import type { AppRegistry } from "./app-registry.js"
 import {
+  A2A_SUPPORTED_VERSIONS,
   JSON_RPC_ERROR,
   buildTask,
   createA2aTaskLedger,
   extractSkillRequest,
   mapAppArtifact,
   mapRunState,
+  negotiateVersion,
   resolveExposedSkill,
   TERMINAL_TASK_STATES,
   unwrapToolResult,
@@ -63,6 +65,13 @@ class RpcFailure extends Error {
   }
 }
 
+const PUSH_CONFIG_METHODS: ReadonlySet<string> = new Set([
+  "CreateTaskPushNotificationConfig",
+  "GetTaskPushNotificationConfig",
+  "ListTaskPushNotificationConfigs",
+  "DeleteTaskPushNotificationConfig",
+])
+
 function send(res: ServerResponse, status: number, body: JsonRpcResponse): void {
   res.writeHead(status, { "content-type": "application/json" })
   res.end(JSON.stringify(body))
@@ -87,14 +96,14 @@ function parseParts(raw: unknown): A2aPart[] {
   if (!Array.isArray(raw)) throw new RpcFailure(JSON_RPC_ERROR.invalidParams, "message.parts must be an array")
   const parts: A2aPart[] = []
   for (const p of raw) {
-    if (!isRecord(p) || typeof p.kind !== "string") {
-      throw new RpcFailure(JSON_RPC_ERROR.invalidParams, "each message part needs a string `kind`")
+    if (!isRecord(p)) throw new RpcFailure(JSON_RPC_ERROR.invalidParams, "each message part must be an object")
+    if ("text" in p) {
+      if (typeof p.text !== "string") throw new RpcFailure(JSON_RPC_ERROR.invalidParams, "part.text must be a string")
+      parts.push({ text: p.text })
+    } else if (!("raw" in p || "url" in p || "data" in p)) {
+      throw new RpcFailure(JSON_RPC_ERROR.invalidParams, "each message part needs one of text, raw, url or data")
     }
-    if (p.kind === "text") {
-      if (typeof p.text !== "string") throw new RpcFailure(JSON_RPC_ERROR.invalidParams, "text part needs a string `text`")
-      parts.push({ kind: "text", text: p.text })
-    }
-    // file/data parts are accepted but carry no prompt text in this wave.
+    // raw/url/data parts are accepted but carry no prompt text in this wave.
   }
   return parts
 }
@@ -140,6 +149,23 @@ export async function handleA2aTaskRequest(
   const method = rpc.method
   const params = isRecord(rpc.params) ? rpc.params : {}
 
+  const requested = negotiateVersion(
+    typeof req.headers["a2a-version"] === "string" ? req.headers["a2a-version"] : undefined,
+    new URL(req.url ?? "/", "http://localhost").searchParams.get("version"),
+  )
+  if (!requested.supported) {
+    send(res, 200, {
+      jsonrpc: "2.0",
+      id,
+      error: {
+        code: JSON_RPC_ERROR.versionNotSupported,
+        message: `A2A version "${requested.version}" is not supported; supported: ${A2A_SUPPORTED_VERSIONS.join(", ")}`,
+        data: { supportedVersions: A2A_SUPPORTED_VERSIONS },
+      },
+    })
+    return true
+  }
+
   const installed = deps.appRegistry.getApp(appId)
   if (!installed) {
     send(res, 404, { jsonrpc: "2.0", id, error: { code: JSON_RPC_ERROR.unsupportedOperation, message: `no installed app "${appId}"` } })
@@ -165,7 +191,7 @@ export async function handleA2aTaskRequest(
     }
     const run = status.data as unknown as A2aRunView
     let artifacts: A2aArtifact[] | undefined
-    if (mapRunState(run) === "completed" && installed.artifact) {
+    if (mapRunState(run) === "TASK_STATE_COMPLETED" && installed.artifact) {
       const art = await call("app_artifact_get", { appId })
       if (art.ok && art.data) artifacts = mapAppArtifact(art.data)
     }
@@ -174,7 +200,7 @@ export async function handleA2aTaskRequest(
 
   try {
     switch (method) {
-      case "message/send": {
+      case "SendMessage": {
         let handle: A2aAppHandleLike
         try {
           handle = await loadHandle(installed.dir)
@@ -182,11 +208,11 @@ export async function handleA2aTaskRequest(
           throw new RpcFailure(JSON_RPC_ERROR.internal, `could not read app manifest: ${err instanceof Error ? err.message : String(err)}`)
         }
         if (handle.accepts?.tasks !== true) {
-          throw new RpcFailure(JSON_RPC_ERROR.unsupportedOperation, `method "message/send" is not allowed for app "${appId}": its manifest does not declare accepts.tasks: true`)
+          throw new RpcFailure(JSON_RPC_ERROR.unsupportedOperation, `method "SendMessage" is not allowed for app "${appId}": its manifest does not declare accepts.tasks: true`)
         }
         const rawMessage = params.message
-        if (!isRecord(rawMessage) || rawMessage.role !== "user") {
-          throw new RpcFailure(JSON_RPC_ERROR.invalidParams, 'params.message must be an object with role "user"')
+        if (!isRecord(rawMessage) || rawMessage.role !== "ROLE_USER") {
+          throw new RpcFailure(JSON_RPC_ERROR.invalidParams, 'params.message must be an object with role "ROLE_USER"')
         }
         const parts = parseParts(rawMessage.parts)
         const { skill, prompt } = extractSkillRequest(
@@ -220,15 +246,15 @@ export async function handleA2aTaskRequest(
           skill,
           createdAt: new Date().toISOString(),
         })
-        send(res, 200, { jsonrpc: "2.0", id, result: await readTask(started.appRunId) })
+        send(res, 200, { jsonrpc: "2.0", id, result: { task: await readTask(started.appRunId) } })
         return true
       }
-      case "tasks/get": {
+      case "GetTask": {
         if (typeof params.id !== "string" || !params.id) throw new RpcFailure(JSON_RPC_ERROR.invalidParams, "params.id (task id) is required")
         send(res, 200, { jsonrpc: "2.0", id, result: await readTask(params.id) })
         return true
       }
-      case "tasks/cancel": {
+      case "CancelTask": {
         if (typeof params.id !== "string" || !params.id) throw new RpcFailure(JSON_RPC_ERROR.invalidParams, "params.id (task id) is required")
         const before = await readTask(params.id)
         if (TERMINAL_TASK_STATES.has(before.status.state)) {
@@ -239,11 +265,14 @@ export async function handleA2aTaskRequest(
         send(res, 200, { jsonrpc: "2.0", id, result: await readTask(params.id) })
         return true
       }
-      case "message/stream":
-      case "tasks/resubscribe":
-        throw new RpcFailure(JSON_RPC_ERROR.unsupportedOperation, `method "${method}" is not supported: this agent does not advertise streaming`)
+      case "SendStreamingMessage":
+      case "SubscribeToTask":
+      case "ListTasks":
+        throw new RpcFailure(JSON_RPC_ERROR.unsupportedOperation, `method "${method}" is not supported by this endpoint`)
+      case "GetExtendedAgentCard":
+        throw new RpcFailure(JSON_RPC_ERROR.extendedAgentCardNotConfigured, "this agent has no extended agent card")
       default:
-        if (method.startsWith("tasks/pushNotificationConfig/")) {
+        if (PUSH_CONFIG_METHODS.has(method)) {
           throw new RpcFailure(JSON_RPC_ERROR.pushNotificationNotSupported, "push notifications are not supported")
         }
         throw new RpcFailure(JSON_RPC_ERROR.methodNotFound, `method not found: ${method}`)

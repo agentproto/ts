@@ -4,7 +4,7 @@
  * id, and everything about a task's state is derived from that run, never
  * held separately. The only thing persisted here is a small append-only
  * ledger of which runs were created through A2A (and for which skill), so
- * `tasks/get` can tell an A2A task from an ordinary `app_run` and survives a
+ * `GetTask` can tell an A2A task from an ordinary `app_run` and survives a
  * daemon restart.
  *
  * The JSON-RPC / Task shapes below are the subset of the A2A protocol
@@ -16,7 +16,21 @@ import { appendFile, mkdir, readFile } from "node:fs/promises"
 import { join } from "node:path"
 
 /** A2A spec version the field names and error codes below follow. */
-export const A2A_PROTOCOL_VERSION = "0.3.0"
+export const A2A_PROTOCOL_VERSION = "1.0"
+
+/** `Major.Minor` versions this ingress serves. An empty version means `0.3`
+ *  (spec compat rule), which is not served: the 0.3 method names are gone. */
+export const A2A_SUPPORTED_VERSIONS: readonly string[] = [A2A_PROTOCOL_VERSION]
+
+/** Resolve the requested version from the `A2A-Version` header, else the
+ *  `?version=` query param; empty means `0.3`. */
+export function negotiateVersion(
+  header: string | undefined,
+  query: string | null | undefined,
+): { version: string; supported: boolean } {
+  const version = header?.trim() || query?.trim() || "0.3"
+  return { version, supported: A2A_SUPPORTED_VERSIONS.includes(version) }
+}
 
 // ── JSON-RPC 2.0 ───────────────────────────────────────────────────────
 
@@ -49,38 +63,42 @@ export const JSON_RPC_ERROR = {
   taskNotCancelable: -32002,
   pushNotificationNotSupported: -32003,
   unsupportedOperation: -32004,
+  contentTypeNotSupported: -32005,
+  invalidAgentResponse: -32006,
+  extendedAgentCardNotConfigured: -32007,
+  extensionSupportRequired: -32008,
+  versionNotSupported: -32009,
 } as const
 
 // ── A2A Task shapes ────────────────────────────────────────────────────
 
 export type A2aTaskState =
-  | "submitted"
-  | "working"
-  | "input-required"
-  | "completed"
-  | "canceled"
-  | "failed"
-  | "rejected"
-  | "auth-required"
-  | "unknown"
+  | "TASK_STATE_SUBMITTED"
+  | "TASK_STATE_WORKING"
+  | "TASK_STATE_INPUT_REQUIRED"
+  | "TASK_STATE_COMPLETED"
+  | "TASK_STATE_CANCELED"
+  | "TASK_STATE_FAILED"
+  | "TASK_STATE_REJECTED"
+  | "TASK_STATE_AUTH_REQUIRED"
 
-export type A2aPart =
-  | { kind: "text"; text: string; metadata?: Record<string, unknown> }
-  | {
-      kind: "file"
-      file: { bytes: string; name?: string; mimeType?: string }
-      metadata?: Record<string, unknown>
-    }
-  | { kind: "data"; data: Record<string, unknown>; metadata?: Record<string, unknown> }
+/** Flat oneof (ProtoJSON): exactly one of `text` / `raw` (base64 bytes) /
+ *  `url` / `data` is set; there is no `kind` discriminator. */
+export type A2aPart = {
+  metadata?: Record<string, unknown>
+  filename?: string
+  mediaType?: string
+} & ({ text: string } | { raw: string } | { url: string } | { data: unknown })
 
 export interface A2aMessage {
-  kind: "message"
   messageId: string
-  role: "user" | "agent"
-  parts: A2aPart[]
   contextId?: string
   taskId?: string
+  role: "ROLE_USER" | "ROLE_AGENT"
+  parts: A2aPart[]
   metadata?: Record<string, unknown>
+  extensions?: string[]
+  referenceTaskIds?: string[]
 }
 
 export interface A2aArtifact {
@@ -89,22 +107,26 @@ export interface A2aArtifact {
   description?: string
   parts: A2aPart[]
   metadata?: Record<string, unknown>
+  extensions?: string[]
 }
 
 export interface A2aTask {
-  kind: "task"
   id: string
-  contextId: string
-  status: { state: A2aTaskState; timestamp?: string; message?: A2aMessage }
+  contextId?: string
+  status: { state: A2aTaskState; message?: A2aMessage; timestamp?: string }
   artifacts?: A2aArtifact[]
+  history?: A2aMessage[]
   metadata?: Record<string, unknown>
 }
 
+/** `SendMessage` result: a oneof wrapper, `{task}` or `{message}`. */
+export type A2aSendMessageResponse = { task: A2aTask } | { message: A2aMessage }
+
 export const TERMINAL_TASK_STATES: ReadonlySet<A2aTaskState> = new Set([
-  "completed",
-  "failed",
-  "canceled",
-  "rejected",
+  "TASK_STATE_COMPLETED",
+  "TASK_STATE_FAILED",
+  "TASK_STATE_CANCELED",
+  "TASK_STATE_REJECTED",
 ])
 
 // ── manifest surface (lane 2's `handle.accepts` / `handle.exposes`) ────
@@ -131,7 +153,7 @@ export function resolveExposedSkill(
 const SKILL_PREFIX_RE = /^\s*skill:\s*(\S+)\s*([\s\S]*)$/
 
 /**
- * Pull the requested skill and the prompt text out of a `message/send`
+ * Pull the requested skill and the prompt text out of a `SendMessage`
  * message. `metadata.skill` wins; otherwise the first text part may begin
  * `skill:<id>` (the remainder of that part stays in the prompt). A skill id
  * written in Agent Card form (`<appId>/<skillId>`) is accepted too.
@@ -145,7 +167,7 @@ export function extractSkillRequest(
   let prefixed: string | undefined
   let firstText = true
   for (const part of message.parts) {
-    if (part.kind !== "text") continue
+    if (!("text" in part) || typeof part.text !== "string") continue
     if (firstText) {
       firstText = false
       const m = SKILL_PREFIX_RE.exec(part.text)
@@ -168,20 +190,21 @@ export function extractSkillRequest(
 // ── run → task mapping ─────────────────────────────────────────────────
 
 /** `app_status`'s reconciled run status → A2A task state. A run that is
- *  still `running` with no session yet is `submitted`; once a session
- *  exists it is `working`. */
+ *  still `running` with no session yet is submitted; once a session exists it
+ *  is working. An unrecognised status is treated as failed (1.0 has no
+ *  `unknown` state). */
 export function mapRunState(run: { status?: string; sessions?: readonly unknown[] }): A2aTaskState {
   switch (run.status) {
     case "succeeded":
-      return "completed"
+      return "TASK_STATE_COMPLETED"
     case "failed":
-      return "failed"
+      return "TASK_STATE_FAILED"
     case "cancelled":
-      return "canceled"
+      return "TASK_STATE_CANCELED"
     case "running":
-      return (run.sessions?.length ?? 0) === 0 ? "submitted" : "working"
+      return (run.sessions?.length ?? 0) === 0 ? "TASK_STATE_SUBMITTED" : "TASK_STATE_WORKING"
     default:
-      return "unknown"
+      return "TASK_STATE_FAILED"
   }
 }
 
@@ -204,19 +227,17 @@ export function buildTask(input: {
   const { entry, run } = input
   const state = mapRunState(run)
   const task: A2aTask = {
-    kind: "task",
     id: entry.taskId,
     contextId: entry.contextId,
     status: {
       state,
       timestamp: run.endedAt ?? entry.createdAt,
-      ...(state === "failed" && run.error
+      ...(state === "TASK_STATE_FAILED" && run.error
         ? {
             message: {
-              kind: "message" as const,
               messageId: input.newId(),
-              role: "agent" as const,
-              parts: [{ kind: "text" as const, text: run.error }],
+              role: "ROLE_AGENT" as const,
+              parts: [{ text: run.error }],
               taskId: entry.taskId,
               contextId: entry.contextId,
             },
@@ -225,7 +246,7 @@ export function buildTask(input: {
     },
     metadata: { appId: entry.appId, skill: entry.skill },
   }
-  if (state === "completed" && input.artifacts && input.artifacts.length > 0) {
+  if (state === "TASK_STATE_COMPLETED" && input.artifacts && input.artifacts.length > 0) {
     task.artifacts = input.artifacts
   }
   return task
@@ -247,12 +268,9 @@ export function mapAppArtifact(reply: {
       ...(typeof reply.description === "string" ? { description: reply.description } : {}),
       parts: [
         {
-          kind: "file",
-          file: {
-            bytes: Buffer.from(reply.html, "utf8").toString("base64"),
-            mimeType: "text/html",
-            name: `${(name ?? "artifact").replace(/[^\w.-]+/g, "-")}.html`,
-          },
+          raw: Buffer.from(reply.html, "utf8").toString("base64"),
+          mediaType: "text/html",
+          filename: `${(name ?? "artifact").replace(/[^\w.-]+/g, "-")}.html`,
         },
       ],
     },
