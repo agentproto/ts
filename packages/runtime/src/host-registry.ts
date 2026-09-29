@@ -973,8 +973,36 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
       if (list.status < 200 || list.status >= 300 || list.body.byteLength > MAX_CACHED_SESSION_BODY_BYTES) return true
       const capturedAt = new Date(now()).toISOString()
       const prior = snapshots.get(fingerprint)
+      // Merge, not replace: sessions that were in the prior capture but are
+      // absent from this one (e.g. the runner already tore its session down
+      // by the last poll at teardown) stay in the stored list, marked
+      // `status: "gone"`, with their prior output tails kept — a finished
+      // host's history is exactly what these snapshots exist to preserve.
+      // The merged list is capped like a fresh one: at most
+      // `SNAPSHOT_MAX_SESSIONS` rows, newest activity first, and never
+      // larger than `MAX_CACHED_SESSION_BODY_BYTES` (oldest rows dropped
+      // first). An empty new list can therefore never overwrite a non-empty
+      // prior snapshot.
+      const rows = mergedSnapshotRows(list.body, prior?.listBody)
+        .sort((a, b) => snapshotRowTs(b) - snapshotRowTs(a))
+        .slice(0, SNAPSHOT_MAX_SESSIONS)
+      let mergedBody = snapshotListBody(list.body, rows)
+      while (mergedBody.byteLength > MAX_CACHED_SESSION_BODY_BYTES && rows.length > 0) {
+        rows.pop()
+        mergedBody = snapshotListBody(list.body, rows)
+      }
+      const rowIds = new Set(
+        rows.flatMap(r => (typeof r["id"] === "string" ? [r["id"]] : [])),
+      )
       const outputs = new Map<string, CapturedOutput>()
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const id = rows[i]?.["id"]
+        if (typeof id !== "string") continue
+        const priorOut = prior?.outputs.get(id)
+        if (priorOut) outputs.set(id, priorOut)
+      }
       for (const id of pickSnapshotSessionIds(list.body)) {
+        if (!rowIds.has(id)) continue
         try {
           const out = await get(`/sessions/${encodeURIComponent(id)}/output?lastN=${SNAPSHOT_OUTPUT_LINES}`)
           const parsed = out.status >= 200 && out.status < 300 ? parseOutputBody(out.body) : undefined
@@ -991,7 +1019,7 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
         capturedAt,
         listStatus: list.status,
         listHeaders: list.headers,
-        listBody: list.body,
+        listBody: mergedBody,
         outputs,
       })
       return true
@@ -1185,17 +1213,56 @@ function snapshotSessionRows(body: Uint8Array): Array<Record<string, unknown>> {
 }
 
 /** Ids of the sessions worth capturing output for: most recently active first,
- *  capped at `SNAPSHOT_MAX_SESSIONS`. */
+ *  capped at `SNAPSHOT_MAX_SESSIONS`. Rows from the NEW list only — a merged
+ *  "gone" row is already carried forward from the prior snapshot. */
 function pickSnapshotSessionIds(listBody: Uint8Array): string[] {
-  const ts = (r: Record<string, unknown>): number => {
-    const v = r["lastActivityAt"] ?? r["startedAt"]
-    return typeof v === "string" ? Date.parse(v) || 0 : 0
-  }
+  const ts = snapshotRowTs
   return snapshotSessionRows(listBody)
     .filter(r => typeof r["id"] === "string")
     .sort((a, b) => ts(b) - ts(a))
     .slice(0, SNAPSHOT_MAX_SESSIONS)
     .map(r => r["id"] as string)
+}
+
+/** Registration timestamp of a session row (0 when it has none). Note that
+ *  ended/exited rows sort fine — they usually carry `lastActivityAt` too, so
+ *  a session that already exited by the last capture still gets its output
+ *  tail picked up. */
+function snapshotRowTs(r: Record<string, unknown>): number {
+  const v = r["lastActivityAt"] ?? r["startedAt"]
+  return typeof v === "string" ? Date.parse(v) || 0 : 0
+}
+
+/** Prior and new session rows merged by id: rows only in the NEW list are
+ *  kept as-is; rows only in the PRIOR list are kept with `status: "gone"`
+ *  (their other fields preserved — the last descriptor the host ever
+ *  reported); rows in both take the new descriptor. */
+function mergedSnapshotRows(newBody: Uint8Array, priorBody: Uint8Array | undefined): Array<Record<string, unknown>> {
+  const prior = priorBody === undefined ? [] : snapshotSessionRows(priorBody)
+  const fresh = snapshotSessionRows(newBody)
+  const byId = new Map<string, Record<string, unknown>>()
+  for (const r of prior) if (typeof r["id"] === "string") byId.set(r["id"], r)
+  for (const r of fresh) if (typeof r["id"] === "string") byId.set(r["id"], r)
+  const rows: Array<Record<string, unknown>> = []
+  const seen = new Set<string>()
+  for (const r of fresh) {
+    rows.push(r)
+    if (typeof r["id"] === "string") seen.add(r["id"])
+  }
+  for (const [id, r] of byId) {
+    if (seen.has(id)) continue
+    rows.push({ ...r, id, status: "gone" })
+  }
+  return rows
+}
+
+/** Rebuild a `GET /sessions` response body from a new list wrapper plus the
+ *  (merged) session rows. */
+function snapshotListBody(newBody: Uint8Array, rows: Array<Record<string, unknown>>): Uint8Array {
+  const parsed = parseJsonBody(newBody)
+  const wrapper =
+    parsed !== null && typeof parsed === "object" ? (parsed as Record<string, unknown>) : { sessions: [], ok: true }
+  return new TextEncoder().encode(JSON.stringify({ ...wrapper, sessions: rows }))
 }
 
 function snapshotHasRunningSession(snap: HostSnapshot | undefined): boolean {
