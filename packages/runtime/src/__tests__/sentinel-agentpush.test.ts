@@ -6,7 +6,7 @@
  */
 
 import { createHmac } from "node:crypto"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { makeSetupLedger } from "@agentproto/provider-kit"
@@ -637,6 +637,16 @@ describe("agentpush credentials and readiness", () => {
     expect(provider.setupFields?.find(f => f.name === "apiKey")).toMatchObject({ required: true, sensitive: true })
     expect(provider.setupFields?.map(f => f.name)).toEqual(expect.arrayContaining(["baseUrl", "delivery"]))
     expect(provider.capabilities).toMatchObject({ push: true, poll: true, durable: true, needsPublicUrl: false, requiresAuth: true })
+  })
+
+  it("stores the API key in a 0600 file and never surfaces it via the lister", async () => {
+    const home = tmp()
+    const creds = makeSentinelCredsStore(home)
+    await creds.write("agentpush", { apiKey: "ak_secret_value", baseUrl: "https://ap.example" })
+    const dir = join(home, "sentinel-creds")
+    const files = readdirSync(dir)
+    expect(files.length).toBeGreaterThan(0)
+    for (const f of files) expect(statSync(join(dir, f)).mode & 0o777).toBe(0o600)
   })
 
   describe("list_sentinel_adapters", () => {
