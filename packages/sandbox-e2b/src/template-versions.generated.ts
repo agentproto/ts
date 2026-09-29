@@ -25,7 +25,7 @@ export const TEMPLATES = {
         "@agentproto/adapter-mastra-agent": "0.6.0",
         "@agentproto/adapter-opencode": "1.1.10"
       },
-      "builtAt": "2026-09-05T20:39:40Z"
+      "builtAt": "2026-09-29T19:24:53Z"
     },
   },
   dev: {
@@ -38,7 +38,7 @@ export const TEMPLATES = {
         "@agentproto/adapter-mastra-agent": "0.6.0",
         "@agentproto/adapter-opencode": "1.1.10"
       },
-      "builtAt": "2026-09-05T16:08:13Z"
+      "builtAt": "2026-09-29T19:24:53Z"
     },
   },
 } as const

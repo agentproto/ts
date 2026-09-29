@@ -2,25 +2,25 @@
 /**
  * scaffold-aip — generate a package skeleton for an AIP.
  *
- * Reads spec metadata from `../agentproto/specs/aip-<N>.mdx` (sibling
- * layout — same convention as `agentproto/site/scripts/sync-content.mjs`)
- * and emits a `packages/<slug>/` skeleton wired up to:
+ * Reads the doctype's JSON-Schema draft from the VENDORED
+ * `specs/resources/aip-<N>/draft/<DOCTYPE>.schema.json` (synced from
+ * canonical agentproto/agentproto by `scripts/sync-specs.mjs` — #1207:
+ * never a sibling `../agentproto` checkout) and emits a
+ * `packages/<slug>/` skeleton wired up to:
  *
  *   - @agentproto/define-doctype (the meta-factory)
  *   - tsup + tsconfig matching the existing tool/ + driver/core layout
  *   - vitest with a smoke test
  *   - manifest subpath (parseXManifest + xFromManifest)
  *
- * If `resources/aip-<N>/draft/<DOCTYPE>.schema.json` exists, the
- * scaffolder consumes it via `json-schema-to-typescript` (for the
- * `<Pascal>Definition` interface) and `json-schema-to-zod` (for the
- * manifest zod schema). When the schema is absent, fields stay as
- * TODOs — same as before.
+ * The scaffolder consumes the draft via `json-schema-to-typescript`
+ * (for the `<Pascal>Definition` interface) and `json-schema-to-zod`
+ * (for the manifest zod schema). A missing draft is a hard error.
  *
  * Usage:
  *   node scripts/scaffold-aip.mjs --aip 9 --slug operator --doctype OPERATOR
  *
- *   --aip      AIP number (required) — used to read frontmatter
+ *   --aip      AIP number (required) — locates the vendored JSON draft
  *   --slug     package slug (required) — package becomes @agentproto/<slug>
  *              and lives under packages/<slug>/
  *   --doctype  doctype name in UPPER (required) — used in file names like
@@ -34,23 +34,48 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs"
-import { dirname, join, resolve } from "node:path"
+import { dirname, join, relative, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import matter from "gray-matter"
 import { compile as compileJsonSchema } from "json-schema-to-typescript"
 import { jsonSchemaToZod } from "json-schema-to-zod"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const TS_ROOT = resolve(HERE, "..")
-const SPEC_DIR = resolve(TS_ROOT, "../agentproto/specs")
+
+// Specs come from the VENDORED tree (`specs/resources`), synced from
+// canonical agentproto/agentproto by scripts/sync-specs.mjs (#1207: never
+// a sibling `../agentproto` checkout). Override with --resources-dir.
+let RESOURCES_DIR = resolve(TS_ROOT, "specs", "resources")
 
 // ── arg parsing ──────────────────────────────────────────────────────
+const KNOWN_FLAGS = new Set([
+  "aip",
+  "slug",
+  "doctype",
+  "schema-only",
+  "inline-refs",
+  "resources-dir",
+])
 const args = parseArgs(process.argv.slice(2))
+for (const k of Object.keys(args)) {
+  if (!KNOWN_FLAGS.has(k)) {
+    console.error(`scaffold-aip: unknown flag --${k}`)
+    process.exit(2)
+  }
+}
+if (args["resources-dir"] !== undefined)
+  RESOURCES_DIR = resolve(String(args["resources-dir"]))
+if (!existsSync(RESOURCES_DIR)) {
+  console.error(
+    `scaffold-aip: specs/resources not found at ${RESOURCES_DIR} (vendored tree missing? run scripts/sync-specs.mjs)`,
+  )
+  process.exit(2)
+}
 if (!args.aip || !args.slug || !args.doctype) {
   console.error(
-    "Usage: scaffold-aip --aip <N> --slug <slug> --doctype <DOCTYPE> [--schema-only] [--inline-refs]",
+    "Usage: scaffold-aip --aip <N> --slug <slug> --doctype <DOCTYPE> [--schema-only] [--inline-refs] [--resources-dir <dir>]",
   )
-  process.exit(1)
+  process.exit(2)
 }
 // --schema-only: emit ONLY the schema.ts content to stdout (no package
 // scaffold, no writes). Used to re-cut schemas for already-existing
@@ -72,30 +97,19 @@ const DEFINE_FN = `define${PASCAL}`
 const PKG_NAME = `@agentproto/${SLUG}`
 const PKG_DIR = resolve(TS_ROOT, "packages", SLUG)
 
-// ── read spec metadata ───────────────────────────────────────────────
-const specPath = resolve(SPEC_DIR, `aip-${AIP}.mdx`)
-if (!existsSync(specPath)) {
-  console.error(`spec not found at ${specPath}`)
+// ── read the JSON-Schema draft (title/description come from it too) ──
+const schemaPath = resolve(RESOURCES_DIR, `aip-${AIP}/draft/${DOCTYPE}.schema.json`)
+if (!existsSync(schemaPath)) {
+  console.error(`--schema-only: no JSON Schema at ${relative(TS_ROOT, schemaPath)}`)
   process.exit(1)
 }
-const fm = matter(readFileSync(specPath, "utf8")).data
+const schema = JSON.parse(readFileSync(schemaPath, "utf8"))
 
-const title = String(fm.title ?? `AIP-${AIP}: ${DOCTYPE}.md`)
+const title = String(schema.title ?? `AIP-${AIP}: ${DOCTYPE}.md`)
 const description = String(
-  fm.description ??
+  schema.description ??
     `AIP-${AIP} reference implementation — ${DOCTYPE}.md doctype.`,
 )
-const layer = String(fm.layer ?? "")
-
-// ── optional: read JSON Schema for the doctype's frontmatter ─────────
-const schemaPath = resolve(
-  SPEC_DIR,
-  `resources/aip-${AIP}/draft/${DOCTYPE}.schema.json`,
-)
-const hasSchema = existsSync(schemaPath)
-const schema = hasSchema
-  ? JSON.parse(readFileSync(schemaPath, "utf8"))
-  : null
 
 // ── refuse to overwrite an existing package ──────────────────────────
 // `--schema-only` bypasses this guard — it emits to stdout, never to
@@ -106,23 +120,12 @@ if (!SCHEMA_ONLY && existsSync(PKG_DIR)) {
   process.exit(1)
 }
 
-// ── codegen from JSON Schema (when present) ──────────────────────────
+// ── codegen from JSON Schema ─────────────────────────────────────────
 // json-schema-to-typescript emits an `export interface <Pascal>Definition`
 // declaration; json-schema-to-zod emits a zod expression we splice into
-// the manifest module. Both fall back to TODO stubs when no schema ships.
-let definitionInterface = `export interface ${PASCAL}Definition {
-  id: string
-  description: string
-  // TODO: add spec-${AIP} fields here.
-}`
-let zodSchemaExpr = `z
-  .object({
-    schema: z.literal("agent${SLUG}/v1").optional(),
-    id: z.string().regex(/^[a-z0-9][a-z0-9._-]{1,79}$/),
-    description: z.string().min(1).max(2000),
-    // TODO: spec-${AIP} fields.
-  })
-  .loose()`
+// the manifest module.
+let definitionInterface
+let zodSchemaExpr
 // Identity + description-equivalent field detection. Each AIP doctype
 // uses its own conventions: tool/driver/operator/skill use `id`, policy
 // uses `slug`, lesson uses `slug`, etc. Likewise the LLM-facing prose
@@ -131,7 +134,7 @@ let zodSchemaExpr = `z
 // the generated createDoctype call afterwards if the heuristic is wrong.
 let identityField = "id"
 let descriptionField = "description"
-if (hasSchema && Array.isArray(schema.required)) {
+if (Array.isArray(schema.required)) {
   const req = schema.required
   if (req.includes("id")) identityField = "id"
   else if (req.includes("slug")) identityField = "slug"
@@ -145,29 +148,28 @@ if (hasSchema && Array.isArray(schema.required)) {
   else descriptionField = "" // skip the description check
 }
 
-if (hasSchema) {
-  // Inline cross-AIP $refs (e.g. AIP-15 WORKFLOW.schema.json references
-  // https://agentproto.dev/schemas/aip-16/IO.schema.json). Both
-  // json-schema-to-typescript and json-schema-to-zod try HTTP-resolve
-  // these by default and fail offline. Walk the schema, load referenced
-  // files from `resources/aip-N/draft/`, attach to `$defs`, rewrite refs
-  // to local `#/$defs/<key>` form. Idempotent across nested refs.
-  inlineExternalRefs(schema, resolve(SPEC_DIR, "resources"))
+// Inline cross-AIP $refs (e.g. AIP-15 WORKFLOW.schema.json references
+// https://agentproto.dev/schemas/aip-16/IO.schema.json). Both
+// json-schema-to-typescript and json-schema-to-zod try HTTP-resolve
+// these by default and fail offline. Walk the schema, load referenced
+// files from `<RESOURCES_DIR>/aip-N/draft/`, attach to `$defs`, rewrite refs
+// to local `#/$defs/<key>` form. Idempotent across nested refs.
+inlineExternalRefs(schema, RESOURCES_DIR)
 
-  // json-schema-to-typescript derives the top-level type name from the
-  // schema's `title`. Mutate a clone so the emitted interface is
-  // `<Pascal>Definition` instead of e.g. `LESSONMdFrontmatterAIP11`.
-  // The clone is throw-away — we don't write it back to disk.
-  const schemaForTs = JSON.parse(JSON.stringify(schema))
-  schemaForTs.title = `${PASCAL}Definition`
-  const compiled = await compileJsonSchema(schemaForTs, `${PASCAL}Definition`, {
-    bannerComment: "",
-    additionalProperties: false,
-    style: { semi: false, singleQuote: false },
-  })
-  // The compiler emits multiple interfaces (sub-objects, $defs). Keep
-  // them all — downstream code can reference SkillRef, ToolRef, etc.
-  definitionInterface = relaxMixedIndexSignatures(compiled.trim())
+// json-schema-to-typescript derives the top-level type name from the
+// schema's `title`. Mutate a clone so the emitted interface is
+// `<Pascal>Definition` instead of e.g. `LESSONMdFrontmatterAIP11`.
+// The clone is throw-away — we don't write it back to disk.
+const schemaForTs = JSON.parse(JSON.stringify(schema))
+schemaForTs.title = `${PASCAL}Definition`
+const compiled = await compileJsonSchema(schemaForTs, `${PASCAL}Definition`, {
+  bannerComment: "",
+  additionalProperties: false,
+  style: { semi: false, singleQuote: false },
+})
+// The compiler emits multiple interfaces (sub-objects, $defs). Keep
+// them all — downstream code can reference SkillRef, ToolRef, etc.
+definitionInterface = relaxMixedIndexSignatures(compiled.trim())
   // json-schema-to-zod@2.6.x collapses a top-level `oneOf` of `$ref`s
   // (the discriminator pattern AIP-6 + AIP-10 use) into a broken
   // `z.any().superRefine` block that always fails the exactly-one
@@ -198,20 +200,13 @@ if (hasSchema) {
   zodSrc = zodSrc
     .replace(/\.default\(\{\}\)/g, ".default({} as never)")
     .replace(/\.default\(\[\]\)/g, ".default([] as never)")
-  zodSchemaExpr = zodSrc
-}
+zodSchemaExpr = zodSrc
 
 // ── --schema-only short-circuit ──────────────────────────────────────
 // Emit just the schema.ts content to stdout and exit before any writes
 // hit the package directory. Lets callers refresh schemas in published
 // packages without dragging the rest of the skeleton along.
 if (SCHEMA_ONLY) {
-  if (!hasSchema) {
-    console.error(
-      `--schema-only: no JSON Schema at resources/aip-${AIP}/draft/${DOCTYPE}.schema.json`,
-    )
-    process.exit(1)
-  }
   process.stdout.write(
     `/**
  * AIP-${AIP} ${DOCTYPE}.md frontmatter zod schema.
@@ -376,11 +371,11 @@ write(
   "src/types.ts",
   `/**
  * AIP-${AIP} ${PASCAL}Definition + ${PASCAL}Handle.
- *${
-   hasSchema
-     ? `\n * \`${PASCAL}Definition\` was generated from\n * \`resources/aip-${AIP}/draft/${DOCTYPE}.schema.json\` via json-schema-to-typescript.\n * \`${PASCAL}Handle\` is the readonly view of the same shape; tighten it\n * by hand for fields that get defaults applied in build().`
-     : `\n * TODO: fill in fields from the AIP-${AIP} ${DOCTYPE}.md frontmatter.\n * The two universals (id + description) are the cross-AIP invariants\n * \`createDoctype\` enforces; everything else is spec-${AIP}-specific.`
- }
+ *
+ * \`${PASCAL}Definition\` was generated from
+ * \`resources/aip-${AIP}/draft/${DOCTYPE}.schema.json\` via json-schema-to-typescript.
+ * \`${PASCAL}Handle\` is the readonly view of the same shape; tighten it
+ * by hand for fields that get defaults applied in build().
  */
 
 ${definitionInterface}
@@ -400,13 +395,12 @@ const descriptionOverride =
       ? `\n  readDescription: (def) => def.${descriptionField},`
       : ""
 
-// When the spec ships a JSON Schema, extract the zod schema to its own
-// file so both authoring paths (defineX from TS, parseManifest from MD)
-// can run it. Single source of truth — every field-level constraint
-// (length, pattern, enum, default) flows from the JSON Schema.
-if (hasSchema) {
-  write(
-    "src/schema.ts",
+// Extract the zod schema to its own file so both authoring paths
+// (defineX from TS, parseManifest from MD) can run it. Single source of
+// truth — every field-level constraint (length, pattern, enum, default)
+// flows from the JSON Schema.
+write(
+  "src/schema.ts",
     `/**
  * AIP-${AIP} ${DOCTYPE}.md frontmatter zod schema.
  *
@@ -426,11 +420,9 @@ export const ${CAMEL}FrontmatterSchema = ${zodSchemaExpr}
 
 export type ${PASCAL}Frontmatter = z.infer<typeof ${CAMEL}FrontmatterSchema>
 `,
-  )
-}
+)
 
-const validateBody = hasSchema
-  ? `    const result = ${CAMEL}FrontmatterSchema.safeParse(def)
+const validateBody = `    const result = ${CAMEL}FrontmatterSchema.safeParse(def)
     if (!result.success) {
       throw new Error(
         \`${DEFINE_FN} (AIP-${AIP}): \${result.error.issues
@@ -441,13 +433,10 @@ const validateBody = hasSchema
     // TODO: spec-${AIP}-specific cross-field rules (if/then/allOf in
     // the JSON Schema) — those don't translate to zod cleanly and
     // belong here. See @agentproto/operator's autonomy=gated rule.`
-  : `    // TODO: spec-${AIP}-specific checks.`
 
-const validateImport = hasSchema
-  ? `\nimport { ${CAMEL}FrontmatterSchema } from "./schema.js"`
-  : ""
+const validateImport = `\nimport { ${CAMEL}FrontmatterSchema } from "./schema.js"`
 
-const validateParam = hasSchema ? "def" : "_def"
+const validateParam = "def"
 
 write(
   `src/define-${SLUG}.ts`,
@@ -459,12 +448,14 @@ import type { ${PASCAL}Definition, ${PASCAL}Handle } from "./types.js"
  *
  * Built on \`createDoctype\` so the cross-AIP invariants (id pattern,
  * description length, top-level freeze, "${DEFINE_FN} (AIP-${AIP}): …"
- * error prefix) run uniformly with every other AIP defineX.${
-   hasSchema
-     ? `\n *\n * Field-level validation runs the schema-derived zod from\n * \`./schema.ts\` against the input. Same source of truth as the .md\n * path uses (\`parse${PASCAL}Manifest\`), so a malformed TS-authored\n * definition fails with the same diagnostic as a malformed manifest.\n * Cross-field rules go in \`validate(def)\` after the zod check.`
-     : `\n *\n * Spec-${AIP}-specific validation goes in \`validate(def)\`; defaulting\n * and nested freezing in \`build(def)\`.`
- }${
-   hasSchema && (identityField !== "id" || descriptionField !== "description")
+ * error prefix) run uniformly with every other AIP defineX.
+ *
+ * Field-level validation runs the schema-derived zod from
+ * \`./schema.ts\` against the input. Same source of truth as the .md
+ * path uses (\`parse${PASCAL}Manifest\`), so a malformed TS-authored
+ * definition fails with the same diagnostic as a malformed manifest.
+ * Cross-field rules go in \`validate(def)\` after the zod check.${
+   identityField !== "id" || descriptionField !== "description"
      ? `\n *\n * Identity / description extractors detected from the JSON Schema:\n *   readIdentity: def.${identityField}${descriptionField ? `\n *   readDescription: def.${descriptionField}` : "\n *   readDescription: skipped (no string-y required field detected)"}.`
      : ""
  }
@@ -497,36 +488,23 @@ write(
  * frontmatter. Both inputs end up in \`${DEFINE_FN}\` so the cross-AIP
  * invariants run uniformly.
  *
- *${
-   hasSchema
-     ? `\n * The frontmatter zod schema below was generated from\n * \`resources/aip-${AIP}/draft/${DOCTYPE}.schema.json\` via json-schema-to-zod.\n * Re-run scaffold-aip to refresh after spec changes (or hand-tune\n * any constraint the converter doesn't capture cleanly).`
-     : `\n * TODO: tighten the frontmatter schema once the AIP-${AIP} fields are\n * decided. The skeleton accepts arbitrary extra keys via \\\`.loose()\\\`.`
- }
+ * The frontmatter zod schema below was generated from
+ * \`resources/aip-${AIP}/draft/${DOCTYPE}.schema.json\` via json-schema-to-zod.
+ * Re-run scaffold-aip to refresh after spec changes (or hand-tune
+ * any constraint the converter doesn't capture cleanly).
  */
 
 import matter from "gray-matter"
-${
-  hasSchema
-    ? `import { ${CAMEL}FrontmatterSchema, type ${PASCAL}Frontmatter } from "../schema.js"`
-    : `import { z } from "zod"`
-}
+import { ${CAMEL}FrontmatterSchema, type ${PASCAL}Frontmatter } from "../schema.js"
 import { ${DEFINE_FN} } from "../define-${SLUG}.js"
 import type { ${PASCAL}Definition, ${PASCAL}Handle } from "../types.js"
 
-${
-  hasSchema
-    ? `// Re-export so consumers can import the schema + inferred type either
+// Re-export so consumers can import the schema + inferred type either
 // from "@${PKG_NAME}/manifest" or directly from "@${PKG_NAME}/schema".
-export { ${CAMEL}FrontmatterSchema, type ${PASCAL}Frontmatter }`
-    : `export const ${CAMEL}ManifestFrontmatterSchema = ${zodSchemaExpr}
-
-export type ${PASCAL}ManifestFrontmatter = z.infer<
-  typeof ${CAMEL}ManifestFrontmatterSchema
->`
-}
+export { ${CAMEL}FrontmatterSchema, type ${PASCAL}Frontmatter }
 
 export interface ${PASCAL}Manifest {
-  frontmatter: ${hasSchema ? `${PASCAL}Frontmatter` : `${PASCAL}ManifestFrontmatter`}
+  frontmatter: ${PASCAL}Frontmatter
   body: string
 }
 
@@ -535,7 +513,7 @@ export function parse${PASCAL}Manifest(source: string): ${PASCAL}Manifest {
   if (Object.keys(parsed.data).length === 0) {
     throw new Error("parse${PASCAL}Manifest: missing or empty frontmatter")
   }
-  const result = ${hasSchema ? `${CAMEL}FrontmatterSchema` : `${CAMEL}ManifestFrontmatterSchema`}.safeParse(parsed.data)
+  const result = ${CAMEL}FrontmatterSchema.safeParse(parsed.data)
   if (!result.success) {
     throw new Error(
       \`parse${PASCAL}Manifest: invalid frontmatter — \${result.error.issues
@@ -556,48 +534,16 @@ export function ${CAMEL}FromManifest(manifest: ${PASCAL}Manifest): ${PASCAL}Hand
 `,
 )
 
-// Smoke-test template: only use the standard 3-assertion smoke when
-// there's NO schema (so the doctype really has just id + description
-// at runtime). When a schema is present, even if the heuristic picked
-// id + description for identity/desc, the schema almost always requires
-// MORE fields (name, version, profile, …) — constructing a valid
-// `{id, description}` smoke fails the schema's safeParse at runtime.
-// Generate the minimal "import works" test in that case; the author
-// writes a real smoke once they know the full required-set.
-const useStandardSmoke = !hasSchema
+// Smoke-test template: even if the heuristic picked id + description
+// for identity/desc, the schema almost always requires MORE fields
+// (name, version, profile, …) — constructing a valid `{id, description}`
+// smoke fails the schema's safeParse at runtime. Generate the minimal
+// "import works" test; the author writes a real smoke once they know
+// the full required-set.
 
 write(
   `src/__tests__/define-${SLUG}.test.ts`,
-  useStandardSmoke
-    ? `import { describe, it, expect } from "vitest"
-import { ${DEFINE_FN} } from "../define-${SLUG}.js"
-
-describe("${DEFINE_FN} (AIP-${AIP})", () => {
-  it("produces a frozen handle with defaults applied", () => {
-    const handle = ${DEFINE_FN}({
-      id: "smoke",
-      description: "Smoke-test ${SLUG}.",
-    } as never)
-    expect(handle.id).toBe("smoke")
-    expect(Object.isFrozen(handle)).toBe(true)
-  })
-
-  it("rejects invalid id (uppercase)", () => {
-    expect(() =>
-      ${DEFINE_FN}({ id: "BadCaps", description: "x" } as never),
-    ).toThrow(/${DEFINE_FN} \\(AIP-${AIP}\\): invalid id 'BadCaps'/)
-  })
-
-  it("rejects empty description", () => {
-    expect(() =>
-      ${DEFINE_FN}({ id: "ok", description: "" } as never),
-    ).toThrow(/description must be 1–2000 chars/)
-  })
-
-  // TODO: spec-${AIP}-specific tests for build()/validate() once those land.
-})
-`
-    : `import { describe, it, expect } from "vitest"
+  `import { describe, it, expect } from "vitest"
 import { ${DEFINE_FN} } from "../define-${SLUG}.js"
 
 describe("${DEFINE_FN} (AIP-${AIP})", () => {
@@ -675,7 +621,7 @@ SOFTWARE.
 )
 
 console.log(`✓ scaffolded ${PKG_NAME} at packages/${SLUG}/`)
-console.log(`  layer: ${layer || "(unset)"} · spec: ${title}`)
+console.log(`  spec: ${title}`)
 console.log(`  next: pnpm install && pnpm --filter=${PKG_NAME} build`)
 
 // ── helpers ──────────────────────────────────────────────────────────
@@ -688,17 +634,21 @@ function write(rel, content) {
 }
 
 function parseArgs(argv) {
+  const BOOLEAN_FLAGS = new Set(["schema-only", "inline-refs"])
   const out = {}
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (!a.startsWith("--")) continue
     const key = a.slice(2)
     const next = argv[i + 1]
-    if (next && !next.startsWith("--")) {
+    if (BOOLEAN_FLAGS.has(key)) {
+      out[key] = true
+    } else if (next && !next.startsWith("--")) {
       out[key] = next
       i++
     } else {
-      out[key] = true
+      console.error(`scaffold-aip: flag --${key} requires a value`)
+      process.exit(2)
     }
   }
   return out
@@ -1124,14 +1074,9 @@ function walkExternal(node, host, resourcesRoot, queue) {
         const innerPath = fragment ? fragment.replace(/^#/, "") : ""
         node.$ref = `#/$defs/${defKey}${innerPath}`
       } else {
-        // Spec ships a broken reference — e.g. AIP-15 points at
-        // aip-17/RUNTIME.schema.json while the file is RUNNER. Replace
-        // the ref with an empty schema (matches anything) so codegen
-        // proceeds; the package author can tighten by hand.
-        console.warn(
-          `  ⚠ external ref ${node.$ref} → ${filePath} not found; replacing with empty schema {}`,
+        throw new Error(
+          `scaffold-aip: broken external ref ${node.$ref} — ${filePath} not found in the vendored specs. Fix the ref in agentproto/agentproto and re-sync (scripts/sync-specs.mjs).`,
         )
-        delete node.$ref
       }
       return
     }

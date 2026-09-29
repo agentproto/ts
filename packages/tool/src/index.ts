@@ -36,6 +36,11 @@ export {
   type ToolManifestFrontmatter,
 } from "./manifest/index.js"
 export {
+  checkMinimalJsonSchema,
+  validateManifestIOBlocks,
+  type MinimalJsonSchemaIssue,
+} from "./json-schema.js"
+export {
   ToolError,
   toToolError,
   toToolResult,
