@@ -381,3 +381,55 @@ describe("spawnAgentSession — capability bundles (PLAN D phase 1)", () => {
     }, 20_000)
   })
 })
+
+describe("spawnAgentSession — native default mounts (P2)", () => {
+  const cc = (over: Partial<SpawnAgentSessionDeps> = {}) =>
+    baseDeps({
+      loadBundlesConfig: async () =>
+        bundlesFile([{ id: "harness-claude-code", label: "cc", mcpImports: ["imp1"], skills: [] }]),
+      loadImportedMcpsConfig: async () => importedMcps([{ id: "imp1", alias: "Chrome DevTools!" }]),
+      loadDefaultsConfig: async () => ({ adapters: { "claude-code": { bundles: ["harness-claude-code"] } } }),
+      ...over,
+    })
+
+  it("claude-code with default bundle harness-claude-code gets an http entry to /mcp/imported/<id> with callerSessionId", async () => {
+    const { deps, captured } = cc()
+    const result = await spawnAgentSession(deps, { adapter: "claude-code", cwd: "/tmp" })
+    expect(result.ok).toBe(true)
+    const ownId = result.ok ? result.descriptor.id : "(failed)"
+    const daemonUrl = "http://127.0.0.1:18790/mcp"
+    expect(captured[0]?.mcpServers).toEqual([
+      { name: "agentproto", transport: "http", ref: `${daemonUrl}?callerSessionId=${ownId}` },
+      { name: "chrome-devtools", transport: "http", ref: `${daemonUrl}/imported/imp1?callerSessionId=${ownId}` },
+    ])
+  })
+
+  it('explicit mcpServers: [] opts out of the self-mount only — default bundles still append to []', async () => {
+    const { deps, captured } = cc()
+    const result = await spawnAgentSession(deps, { adapter: "claude-code", cwd: "/tmp", mcpServers: [] })
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.mcpServers?.map(e => e.name)).toEqual(["chrome-devtools"])
+  })
+
+  it("a caller wanting zero mounts passes bundles: []", async () => {
+    const { deps, captured } = cc()
+    const result = await spawnAgentSession(deps, { adapter: "claude-code", cwd: "/tmp", mcpServers: [], bundles: [] })
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.mcpServers ?? []).toEqual([])
+  })
+
+  it('a "*" bundle expands to the current import set at spawn time', async () => {
+    const { deps, captured } = baseDeps({
+      loadBundlesConfig: async () => bundlesFile([{ id: "all", label: "All", mcpImports: "*", skills: [] }]),
+      loadImportedMcpsConfig: async () =>
+        importedMcps([
+          { id: "imp1", alias: "one" },
+          { id: "imp2", alias: "two" },
+        ]),
+    })
+    const result = await spawnAgentSession(deps, { adapter: "opencode", cwd: "/tmp", bundles: ["all"] })
+    expect(result.ok).toBe(true)
+    expect(captured[0]?.mcpServers?.map(e => e.name)).toEqual(["one", "two"])
+  })
+})
+
