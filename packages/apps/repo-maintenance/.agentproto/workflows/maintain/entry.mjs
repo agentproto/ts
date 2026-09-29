@@ -4,7 +4,7 @@
 // only checks the top-level id/kind sequence, never nested step bodies).
 //
 // This has to be entry-based for ONE reason: the `review` map step's
-// per-candidate `model` selector picks haiku vs sonnet from `item
+// per-candidate `model` selector picks the small vs large reviewer model from `item
 // .residualFileCount` at RUN time. `@agentproto/workflow`'s `defineWorkflow`
 // (the pure-.md / TS-authored path) hard-rejects a non-string `model` on a
 // `kind:"agent"` step — "a run-time selector is only available on the

@@ -18,8 +18,8 @@ The `maintain` workflow, one run:
    `maxReviews` (default 40) per run, newest tip first, then the larger
    residual; the rest wait for the next run (one turn per unique tip sha,
    parallelism 4, each reviewer in its own disposable detached worktree
-   under the OS tmp dir, never the live checkout): haiku when the
-   candidate's residual is 3 files or fewer, sonnet otherwise — by default;
+   under the OS tmp dir, never the live checkout): sonnet when the
+   candidate's residual is 3 files or fewer, opus otherwise — by default;
    the models are the `review.small` / `review.large` **model roles** (an
    explicit `reviewModelSmall`/`reviewModelLarge` input wins, then the repo's
    `agentproto.json` `models`, then the daemon config `models`, then the

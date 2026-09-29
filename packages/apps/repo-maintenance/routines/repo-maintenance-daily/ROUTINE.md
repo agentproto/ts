@@ -44,8 +44,8 @@ with `applyMerged: false`. Every run:
 
 1. Plans `worktree_gc` and `branch_gc` (dry run — nothing is touched).
 2. Fans the `@agentproto/repo-maintenance-reviewer` agent out over every
-   unmerged branch candidate (haiku when its residual is 3 files or fewer,
-   sonnet otherwise), one turn per unique tip sha. Each turn records a
+   unmerged branch candidate (sonnet when its residual is 3 files or fewer,
+   opus otherwise), one turn per unique tip sha. Each turn records a
    verdict via `branch_gc_verdict` — recording never deletes anything.
 3. Re-plans to confirm every candidate got a verdict, and reports the gaps.
 4. Reports a markdown summary, and notifies (when `notify` is configured)
