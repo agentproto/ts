@@ -53,7 +53,13 @@ import { appDataDir, DEFAULT_APP_DATA_SUBDIR } from "./app-data.js"
 import { reconcileAppRunStatus } from "./app-run-liveness.js"
 import { compactWorkflowRunStatus } from "./orchestration-tools.js"
 import { appStateLedgerExists, appStateSnapshot } from "./app-state.js"
-import { loadAppCatalogFile } from "./app-catalog.js"
+import {
+  loadAppCatalogFile,
+  createRemoteCatalogClient,
+  resolveCatalogSources,
+  type RemoteCatalogClient,
+} from "./app-catalog.js"
+import { loadConfig, type CatalogConfig } from "./config.js"
 import { builtinPanelCatalogEntries } from "./builtin-apps.js"
 import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
 import { catchErrors, type ToolTransformer } from "@agentproto/tool"
@@ -580,6 +586,11 @@ export interface RegisterAppToolsOptions {
    *  Defaults to `~/.agentproto/app-catalog.json`. Missing file → empty
    *  catalog (never an error). */
   catalogPath?: string
+  /** Remote-catalog fetcher (5 min in-memory cache). Defaults to a fresh
+   *  client per `registerAppTools` call; tests inject one. */
+  remoteCatalog?: RemoteCatalogClient
+  /** Loads the daemon config for `catalog.sources`. Defaults to `loadConfig`. */
+  loadCatalogConfig?: () => Promise<{ catalog?: CatalogConfig }>
 }
 
 /** Expand a leading `~` (bare or `~/…`) against `os.homedir()`. Any other
@@ -1682,25 +1693,36 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     },
   )
 
+  const remoteCatalog = opts.remoteCatalog ?? createRemoteCatalogClient()
+  const loadCatalogConfig = opts.loadCatalogConfig ?? (() => loadConfig())
+
   server.tool(
     "app_catalog",
     "List browsable apps from the catalog file (default `~/.agentproto/app-catalog.json`, " +
       "tolerates a missing file), merged with installed-app status — every entry reports " +
-      "`installed`, `hasUi`, `hasArtifact`, and `hasSkill`. Installed apps absent from the catalog file are included too, " +
-      "as are the five always-on builtin panels (category `builtin`) — they need no `app_install`.",
+      "`installed`, `hasUi`, `hasArtifact`, and `hasSkill`. Remote catalog `sources` (config " +
+      "`catalog.sources`, else `sources` in the catalog file) are fetched and appended after " +
+      "local entries, deduped by `appId` (first wins); their entries carry `source` for " +
+      "`app_install`. A failing source is reported in a trailing `{ warnings: [...] }` content " +
+      "block, never as an error. Installed apps absent from the catalog are included too, " +
+      "as are the always-on builtin panels (category `builtin`) — they need no `app_install`.",
     {
       scopeId: z
         .string()
         .optional()
         .describe("Reserved for future scope-aware filtering. Currently unused."),
+      refresh: z
+        .boolean()
+        .optional()
+        .describe("Bypass the 5-minute remote-source cache and refetch every source."),
     },
-    async () => {
+    async input => {
       const catalog = await loadAppCatalogFile(opts.catalogPath)
       const installedApps = appRegistry.listApps()
       const installedById = new Map(installedApps.map(a => [a.appId, a]))
       const seen = new Set<string>()
 
-      const entries = catalog.apps.map(entry => {
+      const entries: Array<Record<string, unknown>> = catalog.apps.map(entry => {
         const installed = installedById.get(entry.appId)
         seen.add(entry.appId)
         const name = entry.name ?? installed?.name
@@ -1717,6 +1739,38 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           hasSkill: installed?.skill !== undefined,
         }
       })
+
+      let configSources: unknown
+      try {
+        configSources = (await loadCatalogConfig()).catalog?.sources
+      } catch {
+        // unreadable config → fall back to the catalog file's sources
+      }
+      const sources = resolveCatalogSources(catalog.sources, configSources)
+      const remote =
+        sources.length > 0
+          ? await remoteCatalog.fetchSources(sources, { refresh: input.refresh === true })
+          : { entries: [], warnings: [] }
+
+      for (const entry of remote.entries) {
+        if (seen.has(entry.appId)) continue
+        seen.add(entry.appId)
+        const installed = installedById.get(entry.appId)
+        const name = entry.name ?? installed?.name
+        const description = entry.description ?? installed?.description
+        entries.push({
+          appId: entry.appId,
+          ...(name ? { name } : {}),
+          ...(description ? { description } : {}),
+          ...(entry.category ? { category: entry.category } : {}),
+          source: entry.source,
+          ...(entry.placement ? { placement: entry.placement } : {}),
+          installed: installed !== undefined,
+          hasUi: installed?.ui !== undefined,
+          hasArtifact: installed?.artifact !== undefined,
+          hasSkill: installed?.skill !== undefined,
+        })
+      }
 
       for (const app of installedApps) {
         if (seen.has(app.appId)) continue
@@ -1735,9 +1789,15 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       // Builtin panels (sessions-panel, agents-overview, bureau-sessions,
       // session-story, live-session) — always present, no app_install
       // step, never persisted to ~/.agentproto/apps.json.
-      entries.push(...builtinPanelCatalogEntries())
+      entries.push(...builtinPanelCatalogEntries().map(e => ({ ...e })))
 
-      return textResult(entries)
+      // Entries stay the first content block (a bare JSON array) so existing
+      // clients keep parsing; warnings ride in a second block only when present.
+      const result = textResult(entries) as { content: { type: "text"; text: string }[] }
+      if (remote.warnings.length > 0) {
+        result.content.push({ type: "text", text: JSON.stringify({ warnings: remote.warnings }) })
+      }
+      return result
     },
   )
 
