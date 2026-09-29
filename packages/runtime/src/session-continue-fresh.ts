@@ -21,6 +21,7 @@
  * checkpoint moved from/to.
  */
 
+import { boundaryFromMeta } from "./app-boundary.js"
 import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
 import type { ContextCheckpoint } from "./context-checkpoint.js"
 import { computeContextPct } from "./context-continuity.js"
@@ -178,6 +179,8 @@ export async function continueAgentSessionFresh(
     keepAlive: prev.keepAlive,
     notifyParentOnCrash: prev.notifyParentOnCrash,
     permissionHold: prev.permissionHold,
+    // The fresh session stays inside the same app boundary as `prev`.
+    ...(boundaryFromMeta(prev.meta) ? { appBoundary: boundaryFromMeta(prev.meta)! } : {}),
   }
 
   const result: SpawnAgentSessionResult = await spawnAgentSession(deps, spawnInput)

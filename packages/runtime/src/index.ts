@@ -145,6 +145,7 @@ import { createFileStepCache } from "./workflow-step-cache.js"
 import { withDeferredTools } from "./deferred-tools.js"
 export { resolveDeferredToolsGatewayOption, type DeferredToolsConfig } from "./deferred-tools.js"
 import { withToolExclusion, withToolSubset } from "./tool-subset.js"
+import { boundaryFromMeta, boundaryRestartOptions } from "./app-boundary.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createPrProvenanceReconciler, type OpenPrResolver } from "./pr-provenance-reconciler.js"
 import { createActivityProjector, type PrStateResolver } from "./activities.js"
@@ -1792,9 +1793,18 @@ export async function createGateway(
                 prefix: "resume",
               })
               const resolvedBaseUrl = authSpec?.baseUrl ?? descriptor.route?.baseUrl
+              // App boundary survives a lazy resume (fs zones + host-context isolation).
+              const resumeBoundary = boundaryFromMeta(descriptor.meta)
               return await adapter.startSession({
                 cwd,
                 resumeSessionId,
+                ...(resumeBoundary
+                  ? boundaryRestartOptions(resumeBoundary, {
+                      supportsFsZones: adapter.supportsFsZones === true,
+                      supportsHostContextIsolation: adapter.supportsHostContextIsolation === true,
+                      ...(descriptor.commandSandbox === "off" ? { commandSandbox: "off" as const } : {}),
+                    })
+                  : {}),
                 // Point the respawned adapter at the SAME persistent
                 // isolated-config dir the original spawn used — the
                 // provider's conversation store lives inside it, so this is
@@ -2009,6 +2019,8 @@ export async function createGateway(
         // Agent-step sessions get this gateway mounted (scoped to the agent's
         // declared tools) — same default `agent_start` applies.
         daemonMcpUrl,
+        // Hidden from app-workflow sessions (app-boundary.ts).
+        daemonWorkspace: workspace,
         // Compile a loaded WORKFLOW.md handle into a runnable RuntimeWorkflow
         // for `workflow_run_file` / `startFromFile`. `tool` steps resolve
         // through `createDaemonToolRegistry` — a per-handle registry scanning
@@ -2437,11 +2449,24 @@ export async function createGateway(
     if (callerSessionId) {
       server = withToolExclusion(server, new Set([APP_STATE_APPEND_TOOL_NAME]))
     }
+    // App boundary (app-boundary.ts): the caller's fs zones ride on its
+    // session descriptor. Recovered here from the trusted callerSessionId so
+    // fs tools and command_execute confine an app-spawned session. Raw PTY
+    // terminals run unconfined shells, so they are not mounted for it.
+    const boundary = callerSessionId
+      ? boundaryFromMeta(sessions.get(callerSessionId)?.meta)
+      : undefined
+    if (boundary) {
+      server = withToolExclusion(
+        server,
+        new Set(["terminal_start", "terminal_input", "terminal_output", "terminal_kill"]),
+      )
+    }
     // Canonical filesystem tools so remote MCP clients (cloud
     // workspace-providers, IDEs, ad-hoc tooling) can read/write the
     // workspace without each implementing AIP-aware glue. Names match
     // `@modelcontextprotocol/server-filesystem` for drop-in compat.
-    registerFsTools(server, { workspace })
+    registerFsTools(server, { workspace, ...(boundary ? { boundary } : {}) })
     // Cheap, read-only liveness probe. Registered early so it is available
     // even when deferred tools hide the rest of the surface.
     registerDaemonHealthTools(server, {
@@ -2473,6 +2498,7 @@ export async function createGateway(
       workspace,
       registry: sessions,
       ...(callerSessionId ? { callerSessionId } : {}),
+      ...(boundary ? { boundary } : {}),
     })
     // Approvals (E1a) — model-visible request/get/wait/consume are safe
     // everywhere (they can request and consume, never decide) and register
@@ -2676,6 +2702,7 @@ export async function createGateway(
       appRegistry,
       dispatchTool,
       callImportedTool: callImportedAppTool,
+      daemonWorkspace: workspace,
       ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
       ...(workflowRunner ? { workflowRunner } : {}),
     })

@@ -35,6 +35,7 @@ import { APP_UI_DISCOVERY_TOOLS } from "@agentproto/app-client/runner-select"
 import type { ToolHandle } from "@agentproto/tool"
 import { createDaemonToolRegistry, type AppToolRegistry } from "./workflow-tool-registry.js"
 import { spawnAgentSession } from "./session-spawn.js"
+import { buildAppBoundary } from "./app-boundary.js"
 import type { SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
@@ -519,6 +520,9 @@ async function readAppRefs(
 }
 
 export interface RegisterAppToolsOptions {
+  /** The daemon's own workspace root — hidden from `app_run` sessions (see
+   *  `app-boundary.ts`). */
+  daemonWorkspace?: string
   registry: SessionsRegistry
   /** Required for `app_install`'s adapter-resolves check and `app_run`'s
    *  spawn. Omitted → both return a clear "not enabled" error, mirroring
@@ -796,6 +800,7 @@ export async function performInstall(
     ...(handle.artifacts ? { artifacts: handle.artifacts } : {}),
     ...(handle.dev ? { dev: handle.dev } : {}),
     ...(externalReadRoots ? { externalReadRoots } : {}),
+    ...(handle.boundaries ? { boundaries: { ...handle.boundaries } } : {}),
   })
 
   return { ok: true, record }
@@ -1077,6 +1082,12 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
             ...(harness !== adapter ? { harness } : {}),
             ...(spawnModel !== undefined ? { model: spawnModel } : {}),
             cwd: input.cwd ?? app.dir,
+            appBoundary: buildAppBoundary({
+              app,
+              // An operator-chosen cwd outside the app is readable, never writable.
+              ...(input.cwd !== undefined ? { extraReadOnly: [input.cwd] } : {}),
+              ...(opts.daemonWorkspace !== undefined ? { daemonWorkspace: opts.daemonWorkspace } : {}),
+            }),
             ...(spawnPrompt ? { prompt: spawnPrompt } : {}),
             ...(spawnOptions ? { options: spawnOptions } : {}),
             ...(input.access ? { access: input.access } : {}),

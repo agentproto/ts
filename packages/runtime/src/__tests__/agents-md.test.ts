@@ -203,3 +203,27 @@ describe("loadAgentsMdInlineMaxKb — config field > default", () => {
     ).toBe(16)
   })
 })
+describe("findAgentsMdPath — stopAt (app boundary root)", () => {
+  const host = resolve("/host")
+  const app = join(host, "apps", "yt")
+
+  it("does not walk above the app root into the host repo's AGENTS.md", async () => {
+    const fsIo = fakeFs({ files: { [join(host, "AGENTS.md")]: bytes(10) }, toplevel: host })
+    expect(await findAgentsMdPath(app, fsIo)).toBe(join(host, "AGENTS.md"))
+    expect(await findAgentsMdPath(app, fsIo, app)).toBeUndefined()
+    const res = await resolveAgentsMd(app, undefined, fsIo, app)
+    expect(res.mode).toBe("absent")
+  })
+
+  it("still finds the app's own AGENTS.md, from the root or a subdirectory", async () => {
+    const own = join(app, "AGENTS.md")
+    const fsIo = fakeFs({ files: { [own]: bytes(10), [join(host, "AGENTS.md")]: bytes(10) }, toplevel: host })
+    expect(await findAgentsMdPath(app, fsIo, app)).toBe(own)
+    expect(await findAgentsMdPath(join(app, "scripts"), fsIo, app)).toBe(own)
+  })
+
+  it("ignores stopAt when the cwd is outside it", async () => {
+    const fsIo = fakeFs({ files: { [join(host, "AGENTS.md")]: bytes(10) }, toplevel: host })
+    expect(await findAgentsMdPath(join(host, "other"), fsIo, app)).toBe(join(host, "AGENTS.md"))
+  })
+})

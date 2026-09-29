@@ -367,6 +367,61 @@ per bundle path, output captured to `.agentproto/ui-build.log`) → serve.
 Omit `build` to keep committing the bundle, unchanged from before this
 existed.
 
+## Boundaries — fs zones for app-spawned sessions
+
+Set `boundaries: { enforce: "required" | "best-effort" }` on `defineApp` (or
+`boundaries:` in `APP.md`'s frontmatter) to declare how strictly the daemon
+must confine sessions the app spawns — `app_run`, and workflow agent steps
+whose workflow carries this app's `appId`:
+
+```ts
+defineApp({
+  id: "@acme/transcriber",
+  boundaries: { enforce: "required" },
+  // ...
+})
+```
+
+For every such session the daemon builds one **boundary** with three zones:
+
+| Zone | Contents | Access |
+| --- | --- | --- |
+| read-only | the installed app dir (source, `.agentproto/`, `scripts/`) | read |
+| writable | the app's `data/` dir, and the workflow run's `$run.workspace` (`app_run` has no run workspace: writable is `data/` only) | read + write |
+| everything else | including the daemon's own workspace and any host monorepo the app happens to be installed inside | denied |
+
+The boundary is enforced on two independent surfaces:
+
+1. **Daemon file/command tools** (`file_read`, `file_write`, `directory_*`,
+   `command_execute`, …) — always enforced, identity-based: the daemon
+   recovers the caller's boundary from its own session record, resolves
+   relative paths against the app dir, and rejects reads/writes outside the
+   zones (including through symlinks). This does not depend on the harness.
+2. **The harness's own native tools** (a claude-code session's Bash, Write,
+   Edit, …) — enforced by wrapping the harness in an OS sandbox
+   (`@agentproto/command-sandbox`: macOS Seatbelt or Linux bubblewrap) built
+   from the same zones, plus, on adapters that support it, excluding the host
+   repository's `CLAUDE.md`/`AGENTS.md` from context so an app session never
+   inherits instructions from the monorepo it's installed inside.
+
+Surface 2 needs an adapter that supports fs zones and an available OS sandbox
+backend. When it can't be enforced:
+
+- `boundaries.enforce: "best-effort"` (the default) still spawns the session
+  — daemon tools remain confined — and emits a `session:harness-warning`
+  naming the reason (no sandbox backend on this platform, the adapter doesn't
+  support `fsZones`, or `commandSandbox: "off"` was requested explicitly).
+- `boundaries.enforce: "required"` refuses the spawn instead of downgrading
+  silently (`app_boundary_unenforceable`).
+
+**Deferred:** the `AGENT.md` `tools:` allowlist becoming an *enforced*
+allowlist on adapters that support it (today it's advisory — an agent can
+still reach native Bash next to an allowlisted `command_execute`). Also out
+of scope for this phase: a network-capable sandboxed process reaching the
+daemon's HTTP API directly (bypasses the identity-based check the MCP path
+uses), and boundary enforcement on daemon-wide MCP tools other than
+file/command/terminal.
+
 ## Runtime note
 
 `toMastraAgents` is the path where a `body` becomes a **true** model

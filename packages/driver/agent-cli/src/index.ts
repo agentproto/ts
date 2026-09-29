@@ -80,6 +80,10 @@ export {
   type ProprietaryProtocolOptions,
 } from "./protocol/proprietary.js"
 export {
+  agentCliSupportsHostContextIsolation,
+  hostContextExcludes,
+} from "./host-context.js"
+export {
   agentCliFrontmatterSchema,
   runtimeConfigSchema,
   type AgentCliFrontmatter,
@@ -130,6 +134,7 @@ export type {
   AgentCliRuntime,
   AgentCliRuntimeSession,
   AgentCliStartOptions,
+  AgentCliFsZones,
   AgentCliCapabilities,
   AgentCliInstallMethod,
   AgentCliVersionCheck,

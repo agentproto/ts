@@ -10,6 +10,7 @@ import { createPrintSession } from "./protocol/print-arm.js"
 import { createProprietaryProtocolArm } from "./protocol/proprietary.js"
 import { composeSpawn, RuntimeConfigError } from "./manifest/compose.js"
 import { wrapAgentCliSpawn } from "./command-sandbox-wrap.js"
+import { hostContextExcludes } from "./host-context.js"
 import { terminateChildTree } from "./process-tree.js"
 import { resolveNpxFastPath } from "./npx-fast-path.js"
 import {
@@ -438,8 +439,19 @@ export function createAgentCliRuntime(
         const isolatedSettings: Record<string, unknown> = {
           attribution: { commit: "", pr: "", sessionUrl: false },
         }
-        if (permissionMode) {
-          isolatedSettings.permissions = { defaultMode: permissionMode }
+        const isolatedPermissions: Record<string, unknown> = {}
+        if (permissionMode) isolatedPermissions.defaultMode = permissionMode
+        if (opts?.fsZones?.writable.length) {
+          // The OS sandbox already allows these; registering them keeps the
+          // harness from prompting on (or refusing) a write it can't tell is
+          // in-bounds — the run workspace sits outside the app-dir cwd.
+          isolatedPermissions.additionalDirectories = opts.fsZones.writable
+        }
+        if (Object.keys(isolatedPermissions).length > 0) {
+          isolatedSettings.permissions = isolatedPermissions
+        }
+        if (opts?.isolateHostContext) {
+          isolatedSettings.claudeMdExcludes = hostContextExcludes(cwd)
         }
         writeFileSync(
           join(claudeConfigDir, "settings.json"),
@@ -471,6 +483,7 @@ export function createAgentCliRuntime(
           ...(opts?.mcpServers ? { mcpServers: opts.mcpServers } : {}),
           printConfig: definition.print,
           commandSandbox: opts?.commandSandbox,
+          ...(opts?.fsZones ? { fsZones: opts.fsZones } : {}),
           ...(claudeConfigDir ? { extraWritePaths: [claudeConfigDir] } : {}),
           // Exact-file read grant — see the ACP arm's wrapAgentCliSpawn call.
           ...(opts?.additionalReadPaths?.length
@@ -501,6 +514,7 @@ export function createAgentCliRuntime(
           {
             mode: opts?.commandSandbox,
             cwd,
+            ...(opts?.fsZones ? { zones: opts.fsZones } : {}),
             ...(claudeConfigDir ? { extraWritePaths: [claudeConfigDir] } : {}),
             // Exact-file read grant (see additionalReadPaths above):
             // READ-only exceptions to the confinement boundary, never writes.

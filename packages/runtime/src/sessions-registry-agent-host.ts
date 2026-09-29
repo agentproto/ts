@@ -20,6 +20,16 @@ import { exportAgentSession } from "./transcript-export.js"
 import type { RoutinePolicy } from "./step-run-types.js"
 import { normalizeSkillsOption } from "./spawn-defaults.js"
 import type { EffortLevel } from "./session-config.js"
+import {
+  APP_BOUNDARY_UNENFORCEABLE,
+  assessBoundaryEnforcement,
+  boundaryMeta,
+  boundaryToSandboxZones,
+  resolveBoundaryPath,
+  unenforceableMessage,
+  unenforceableWarning,
+  type AppBoundary,
+} from "./app-boundary.js"
 
 /**
  * The daemon-gateway mount a workflow agent step's (host) session gets —
@@ -147,6 +157,15 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
        * racing a cancel is never caught here (only `releaseAll` applies).
        */
       signal?: AbortSignal
+      /**
+       * Fs zones for every session this host spawns (the run belongs to an
+       * installed app — see `app-boundary.ts`): native tools are confined by
+       * the OS sandbox when the harness supports it, an unenforceable spawn
+       * is refused (`boundaries.enforce: required`) or warned about, and the
+       * boundary rides on the session's meta so the daemon gateway can
+       * confine its file/command tools. Omitted ⇒ unchanged behaviour.
+       */
+      boundary?: AppBoundary
     },
   ) {}
 
@@ -183,7 +202,23 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
     },
   ): Promise<string> {
     const workspaceSlug = opts.workspaceSlug ?? this.opts?.workspaceSlug ?? "default"
-    const cwd = opts.cwd ?? this.opts?.cwd ?? process.cwd()
+    let cwd = opts.cwd ?? this.opts?.cwd ?? process.cwd()
+    const boundary = this.opts?.boundary
+    if (boundary) {
+      if (opts.sandbox !== undefined) {
+        throw new Error(
+          `agent step spawn refused (app_boundary_sandbox): \`sandbox\` spawns are not available inside app '${boundary.appId}' — ` +
+            "fs zones cannot follow a session into a remote box",
+        )
+      }
+      try {
+        cwd = resolveBoundaryPath(boundary, cwd, "read")
+      } catch (err) {
+        throw new Error(
+          `agent step spawn refused (app_boundary_cwd_outside): cwd is outside the app boundary of '${boundary.appId}': ${(err as Error).message}`,
+        )
+      }
+    }
     const spawnKey = opts.stepKey ?? opts.stepId
     if (spawnKey !== undefined) this.opts?.onSpawnStarted?.(spawnKey)
 
@@ -293,6 +328,30 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
         `harness.role ("${harness.role}"): this spawn path applies no role-based tool policy — not applied`,
       )
     }
+    let fsZones: ReturnType<typeof boundaryToSandboxZones> | undefined
+    let isolateHostContext = false
+    if (boundary) {
+      const enforcement = assessBoundaryEnforcement({
+        harnessSupportsFsZones: resolved.supportsFsZones === true,
+      })
+      if (enforcement.enforced) {
+        fsZones = boundaryToSandboxZones(boundary)
+      } else if (boundary.enforce === "required") {
+        throw new Error(
+          `agent step spawn refused (${APP_BOUNDARY_UNENFORCEABLE}): ${unenforceableMessage(boundary, enforcement.reasons)}`,
+        )
+      } else {
+        harnessWarnings.push(unenforceableWarning(boundary, enforcement.reasons))
+      }
+      if (resolved.supportsHostContextIsolation) {
+        isolateHostContext = true
+      } else {
+        harnessWarnings.push(
+          `app '${boundary.appId}': this harness cannot exclude the host repository's ` +
+            "CLAUDE.md/AGENTS.md — host instructions may be loaded into the session.",
+        )
+      }
+    }
     const mcpServers = agentStepMcpServers({
       adapter,
       daemonMcpUrl: this.opts?.daemonMcpUrl,
@@ -301,6 +360,8 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
     })
     const agentSession = await resolved.startSession({
       cwd,
+      ...(fsZones ? { fsZones } : {}),
+      ...(isolateHostContext ? { isolateHostContext: true } : {}),
       configDir: adapterConfigDirFor(stepSessionId),
       env: {
         [SESSION_ID_ENV]: stepSessionId,
@@ -320,12 +381,17 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       adapterConfigDir: adapterConfigDirFor(stepSessionId),
       label: this.stepLabel(adapter, opts),
       origin: "workflow",
-      ...(this.opts?.run
+      ...(this.opts?.run || boundary
         ? {
             meta: {
-              workflowRunId: this.opts.run.runId,
-              workflowId: this.opts.run.workflowId,
-              ...(opts.stepKey ?? opts.stepId ? { workflowStepId: (opts.stepKey ?? opts.stepId)! } : {}),
+              ...(this.opts?.run
+                ? {
+                    workflowRunId: this.opts.run.runId,
+                    workflowId: this.opts.run.workflowId,
+                    ...(opts.stepKey ?? opts.stepId ? { workflowStepId: (opts.stepKey ?? opts.stepId)! } : {}),
+                  }
+                : {}),
+              ...(boundary ? boundaryMeta(boundary) : {}),
             },
           }
         : {}),

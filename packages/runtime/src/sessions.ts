@@ -3492,6 +3492,13 @@ export interface SessionsRegistry {
    * descriptor); the registry only forwards it. */
   emitConfigChanged(ev: SessionConfigChangedEvent): void
   /**
+   * Announce a `session:harness-warning` for a session — an explicit,
+   * non-fatal "the host could not honor part of what was asked" notice (the
+   * app-boundary fs zones not enforceable on this harness, …). Best-effort
+   * observability; no-op when the registry has no event bus.
+   */
+  emitHarnessWarning(sessionId: string, warnings: readonly string[], label?: string): void
+  /**
    * Switch the reasoning/compute budget (effort) on a LIVE agent-cli session
    * without restarting it — the live-effort verb (SPEC §4.2, build step 5),
    * `POST /sessions/:id/effort` + `agent_set_effort`. Delegates to the driver
@@ -9414,6 +9421,16 @@ export function createSessionsRegistry(opts?: {
         }
       }
       return result.applied ? { ...result, model: modelId } : result
+    },
+    emitHarnessWarning(sessionId, warnings, label) {
+      if (warnings.length === 0) return
+      sessionEvents?.emit({
+        type: "session:harness-warning",
+        sessionId,
+        warnings: [...warnings],
+        ...(label ? { label } : {}),
+        ts: new Date().toISOString(),
+      })
     },
     emitConfigChanged(ev) {
       // Best-effort forward — restart-with-override (session-restart-core.ts)

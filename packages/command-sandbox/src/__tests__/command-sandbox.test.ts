@@ -8,7 +8,7 @@
 
 import { describe, it, expect, afterEach } from "vitest"
 import { execFileSync } from "node:child_process"
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync, symlinkSync } from "node:fs"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
@@ -17,6 +17,7 @@ import {
   ADAPTER_COMMAND_SANDBOX_MODE_ENV,
   COMMAND_SANDBOX_MODE_ENV,
   buildBwrapArgs,
+  canonicalizePath,
   buildSeatbeltProfile,
   bwrapSandbox,
   loadAdapterSpawnSandboxConfig,
@@ -68,6 +69,81 @@ describe("buildSeatbeltProfile", () => {
       network: "allow",
     })
     expect(p).not.toContain("/opt/toolchain")
+  })
+})
+
+describe("zoned sandbox policy", () => {
+  const zoned = {
+    workspace: "/apps/yt",
+    extraReadPaths: ["/cache"],
+    extraWritePaths: ["/cfg"],
+    zones: {
+      readOnly: ["/apps/shared"],
+      writable: ["/runs/r1", "/apps/yt/data"],
+      hidden: ["/host-repo"],
+    },
+    network: "allow" as const,
+  }
+
+  it("seatbelt: denies all writes, hidden subtrees, then re-opens ro zones before writable zones (last match wins)", () => {
+    const p = buildSeatbeltProfile(zoned)
+    const at = (needle: string) => {
+      const i = p.indexOf(needle)
+      expect(i, needle).toBeGreaterThanOrEqual(0)
+      return i
+    }
+    const denyWrites = at("(deny file-write*)")
+    const hidden = at('(deny file-read* file-write* (subpath "/host-repo"))')
+    const roApp = at('(allow file-read* (subpath "/apps/yt"))')
+    const roShared = at('(allow file-read* (subpath "/apps/shared"))')
+    const rwData = at('(allow file-read* file-write* (subpath "/apps/yt/data"))')
+    const rwRun = at('(allow file-read* file-write* (subpath "/runs/r1"))')
+    const rwCfg = at('(allow file-read* file-write* (subpath "/cfg"))')
+    expect(denyWrites).toBeLessThan(hidden)
+    expect(hidden).toBeLessThan(roApp)
+    expect(roApp).toBeLessThan(rwData)
+    expect(roShared).toBeLessThan(rwRun)
+    expect(rwCfg).toBeGreaterThan(roApp)
+    // The workspace is NOT implicitly writable under zones.
+    expect(p).not.toContain('(allow file-read* file-write* (subpath "/apps/yt"))')
+    expect(p).toContain('(allow file-read* (subpath "/cache"))')
+  })
+
+  it("seatbelt: an un-zoned policy is unchanged (no global write deny)", () => {
+    const p = buildSeatbeltProfile({ ...zoned, zones: undefined })
+    expect(p).not.toContain("(deny file-write*)")
+    expect(p).toContain('(allow file-read* file-write* (subpath "/apps/yt"))')
+  })
+
+  it("bwrap: binds the workspace read-only and each writable zone read-write AFTER it", () => {
+    const args = buildBwrapArgs(["x"], zoned)
+    const idx = (flag: string, path: string) => {
+      for (let i = 0; i < args.length - 2; i++) {
+        if (args[i] === flag && args[i + 1] === path) return i
+      }
+      return -1
+    }
+    const roApp = idx("--ro-bind", "/apps/yt")
+    expect(roApp).toBeGreaterThan(-1)
+    expect(idx("--bind", "/apps/yt")).toBe(-1)
+    expect(idx("--ro-bind-try", "/apps/shared")).toBeGreaterThan(-1)
+    expect(idx("--bind-try", "/apps/yt/data")).toBeGreaterThan(roApp)
+    expect(idx("--bind-try", "/runs/r1")).toBeGreaterThan(roApp)
+    expect(args).not.toContain("/host-repo")
+  })
+
+  it("canonicalizePath resolves symlinks in the existing prefix and keeps a non-existent tail", async () => {
+    const base = await mkdtemp(join(tmpdir(), "sbx-canon-"))
+    try {
+      await mkdir(join(base, "real"))
+      symlinkSync(join(base, "real"), join(base, "link"))
+      const real = canonicalizePath(join(base, "real"))
+      expect(canonicalizePath(join(base, "link", "not", "yet"))).toBe(
+        join(real, "not", "yet"),
+      )
+    } finally {
+      await rm(base, { recursive: true, force: true })
+    }
   })
 })
 
@@ -516,6 +592,81 @@ describe.skipIf(!canRunSeatbelt)("seatbelt end-to-end", () => {
 
 // End-to-end: only where bubblewrap actually exists. Skipped on macOS.
 const canRunBwrap = process.platform === "linux" && bwrapPath() !== null
+
+describe.skipIf(!canRunSeatbelt)("seatbelt end-to-end: zones", () => {
+  const run = (profile: string, ...argv: string[]): boolean => {
+    try {
+      execFileSync("sandbox-exec", ["-p", profile, ...argv], { stdio: "pipe" })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  it("denies a native write under the read-only app dir, allows the data dir + run workspace, keeps reads", async () => {
+    const base = await mkdtemp(join(homedir(), ".agentproto-sbxzone-"))
+    try {
+      const app = join(base, "app")
+      const data = join(app, "data")
+      const runWs = join(base, "runs", "r1")
+      await mkdir(join(app, "scripts"), { recursive: true })
+      await mkdir(data, { recursive: true })
+      await mkdir(runWs, { recursive: true })
+      await writeFile(join(app, "scripts", "dedup.py"), "original")
+
+      const profile = buildSeatbeltProfile({
+        workspace: app,
+        extraReadPaths: [],
+        zones: { readOnly: [], writable: [runWs, data] },
+        network: "allow",
+      })
+
+      // Reads of app source still work.
+      expect(run(profile, "/bin/cat", join(app, "scripts", "dedup.py"))).toBe(true)
+      // Rewrite / create / delete / rename under the app dir: all denied.
+      expect(run(profile, "/bin/sh", "-c", `echo pwned > '${join(app, "scripts", "dedup.py")}'`)).toBe(false)
+      expect(run(profile, "/usr/bin/touch", join(app, "new.txt"))).toBe(false)
+      expect(run(profile, "/bin/rm", join(app, "scripts", "dedup.py"))).toBe(false)
+      expect(readFileSync(join(app, "scripts", "dedup.py"), "utf8")).toBe("original")
+      // Writable zones: the run workspace and the (nested) app data dir.
+      expect(run(profile, "/usr/bin/touch", join(runWs, "out.txt"))).toBe(true)
+      expect(run(profile, "/usr/bin/touch", join(data, "cache.txt"))).toBe(true)
+      expect(existsSync(join(runWs, "out.txt"))).toBe(true)
+      expect(existsSync(join(data, "cache.txt"))).toBe(true)
+      // A sibling under $HOME that no zone names: neither readable nor writable.
+      const other = join(base, "other")
+      await mkdir(other)
+      await writeFile(join(other, "s.txt"), "secret")
+      expect(run(profile, "/bin/cat", join(other, "s.txt"))).toBe(false)
+      expect(run(profile, "/usr/bin/touch", join(other, "w.txt"))).toBe(false)
+    } finally {
+      await rm(base, { recursive: true, force: true })
+    }
+  })
+
+  it("hides a host directory (reads AND writes) but lets a zone inside it through", async () => {
+    const host = await mkdtemp(join(tmpdir(), "sbxhost-"))
+    try {
+      const app = join(host, "apps", "yt")
+      await mkdir(app, { recursive: true })
+      await writeFile(join(host, "AGENTS.md"), "host rules")
+      await writeFile(join(app, "APP.md"), "app")
+
+      const profile = buildSeatbeltProfile({
+        workspace: app,
+        extraReadPaths: [],
+        zones: { readOnly: [], writable: [], hidden: [host] },
+        network: "allow",
+      })
+      expect(run(profile, "/bin/cat", join(host, "AGENTS.md"))).toBe(false)
+      expect(run(profile, "/usr/bin/touch", join(host, "x"))).toBe(false)
+      expect(run(profile, "/bin/cat", join(app, "APP.md"))).toBe(true)
+      expect(run(profile, "/usr/bin/touch", join(app, "x"))).toBe(false)
+    } finally {
+      await rm(host, { recursive: true, force: true })
+    }
+  })
+})
 
 describe.runIf(canRunBwrap)("bwrap end-to-end", () => {
   it("allows a bound workspace read but denies an unbound sibling", async () => {

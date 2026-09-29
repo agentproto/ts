@@ -36,7 +36,7 @@ import { join, relative } from "node:path"
 import matter from "gray-matter"
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { WorkspaceHandle } from "@agentproto/workspace"
-import type { AgentEntry, AppArtifactDecl, AppArtifactSurface, AppDataDefinition, AppDevDefinition, AppSkillSurface, AppUiDefinition, EmittedApp } from "./types.js"
+import type { AgentEntry, AppArtifactDecl, AppArtifactSurface, AppBoundariesDefinition, AppDataDefinition, AppDevDefinition, AppSkillSurface, AppUiDefinition, EmittedApp } from "./types.js"
 import { stripOwner } from "./refs.js"
 
 interface EmitInput {
@@ -55,6 +55,7 @@ interface EmitInput {
   readonly dev?: AppDevDefinition
   readonly data?: AppDataDefinition
   readonly externalReadRoots?: readonly string[]
+  readonly boundaries?: AppBoundariesDefinition
   readonly category?: string
 }
 
@@ -158,6 +159,7 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
     ...(app.dev !== undefined ? { dev: app.dev } : {}),
     ...(app.data !== undefined ? { data: app.data } : {}),
     ...(app.externalReadRoots !== undefined ? { externalReadRoots: app.externalReadRoots } : {}),
+    ...(app.boundaries !== undefined ? { boundaries: app.boundaries } : {}),
     ...(app.category !== undefined ? { category: app.category } : {}),
   }
   await writeFile(appPath, toManifest(appFrontmatter, app.description ?? ""), "utf8")

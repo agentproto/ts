@@ -46,10 +46,10 @@
  * configured with.
  */
 
-import { existsSync } from "node:fs"
+import { existsSync, realpathSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { homedir } from "node:os"
-import { resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
 
 export type SandboxMode = "off" | "workspace" | "strict"
 
@@ -82,7 +82,31 @@ export interface SandboxPolicy {
    * omitted by a caller built against the pre-`extraWritePaths` shape.
    */
   extraWritePaths?: string[]
+  /**
+   * Filesystem zones. When set, the policy switches from "the workspace is
+   * read+write" to an explicit read-only / writable split, and EVERY write
+   * outside the writable zones (and a small set of scratch locations a
+   * process cannot run without: `/dev`, the OS temp dirs) is denied:
+   *
+   * - the `workspace` (the session's cwd) becomes READ-ONLY;
+   * - `readOnly` paths are readable, not writable;
+   * - `writable` paths are readable and writable;
+   * - `hidden` paths are denied for read AND write (Seatbelt; bwrap hides
+   *   them by never binding them), except where a readable/writable zone
+   *   re-opens a subtree inside them — zones always win over `hidden`.
+   *
+   * `extraReadPaths` / `extraWritePaths` keep their meaning on top of the
+   * zones (toolchain caches, the per-spawn claude config dir).
+   */
+  zones?: SandboxZones
   network: "deny" | "allow"
+}
+
+/** The filesystem-zone half of a {@link SandboxPolicy}. */
+export interface SandboxZones {
+  readOnly: string[]
+  writable: string[]
+  hidden?: string[]
 }
 
 export interface CommandSandbox {
@@ -257,6 +281,36 @@ function sbplQuote(p: string): string {
 }
 
 /**
+ * Resolve `p` through symlinks even when it (or its tail) doesn't exist yet:
+ * realpath the nearest existing ancestor and re-append the rest. Seatbelt
+ * matches `subpath` against the real path of the vnode, so a zone given as
+ * `/tmp/x` (a symlink into `/private/tmp`) or a not-yet-created run
+ * workspace must be canonicalized or the rule silently never matches.
+ */
+export function canonicalizePath(p: string): string {
+  const abs = resolve(p)
+  const tail: string[] = []
+  let cur = abs
+  for (;;) {
+    try {
+      return join(realpathSync(cur), ...tail)
+    } catch {
+      const parent = dirname(cur)
+      if (parent === cur) return abs
+      tail.unshift(cur.slice(parent.length).replace(/^\/+/, ""))
+      cur = parent
+    }
+  }
+}
+
+/** Scratch locations a process can't run without; writable under zones. */
+const SEATBELT_SCRATCH_WRITE_PATHS: readonly string[] = [
+  "/dev",
+  "/private/tmp",
+  "/private/var/folders",
+]
+
+/**
  * Build a macOS Seatbelt (SBPL) profile for the policy. Strategy: start
  * permissive (`allow default`) so interpreters can read their runtime + system
  * libraries, then DENY the whole home directory (the crown jewels — ~/.ssh,
@@ -265,11 +319,19 @@ function sbplQuote(p: string): string {
  * (read+write — e.g. a toolchain's self-managed install dir living under
  * `$HOME`, which a read-only re-allow can't satisfy). SBPL is
  * last-match-wins, so the workspace/extra re-allows override the home deny.
- * Strict mode also denies all network. Exported for testing.
+ * Strict mode also denies all network.
+ *
+ * With `policy.zones` the shape changes (see {@link SandboxZones}): hidden
+ * writes are denied globally (bar OS scratch dirs), hidden subtrees are
+ * denied, then read-only and writable zones are re-opened in that order (so a writable data dir inside
+ * a read-only app dir wins). Exported for testing.
  */
 export function buildSeatbeltProfile(policy: SandboxPolicy): string {
   const home = homedir()
-  const ws = resolve(policy.workspace)
+  const zones = policy.zones
+  const canon = (p: string): string =>
+    zones ? canonicalizePath(p) : resolve(p)
+  const ws = canon(policy.workspace)
   const parts = [
     "(version 1)",
     "(allow default)",
@@ -283,14 +345,39 @@ export function buildSeatbeltProfile(policy: SandboxPolicy): string {
     // any OTHER file under $HOME. Without this, no npx-spawned adapter
     // (claude-agent-acp included) can even start under `workspace` mode.
     `(allow file-read-metadata (subpath "${sbplQuote(home)}"))`,
-    `(allow file-read* file-write* (subpath "${sbplQuote(ws)}"))`,
   ]
-  for (const extra of policy.extraReadPaths) {
-    parts.push(`(allow file-read* (subpath "${sbplQuote(resolve(extra))}"))`)
+  if (zones) {
+    parts.push("(deny file-write*)")
+    for (const scratch of SEATBELT_SCRATCH_WRITE_PATHS) {
+      parts.push(`(allow file-read* file-write* (subpath "${scratch}"))`)
+    }
+    for (const h of zones.hidden ?? []) {
+      const p = sbplQuote(canon(h))
+      parts.push(`(deny file-read* file-write* (subpath "${p}"))`)
+      // Same ancestor-lstat reason as $HOME above: the app dir lives INSIDE
+      // the hidden host repo, and path resolution stats every ancestor.
+      parts.push(`(allow file-read-metadata (subpath "${p}"))`)
+    }
+    for (const ro of [policy.workspace, ...zones.readOnly]) {
+      parts.push(`(allow file-read* (subpath "${sbplQuote(canon(ro))}"))`)
+    }
+    for (const extra of policy.extraReadPaths) {
+      parts.push(`(allow file-read* (subpath "${sbplQuote(canon(extra))}"))`)
+    }
+    for (const rw of zones.writable) {
+      parts.push(
+        `(allow file-read* file-write* (subpath "${sbplQuote(canon(rw))}"))`,
+      )
+    }
+  } else {
+    parts.push(`(allow file-read* file-write* (subpath "${sbplQuote(ws)}"))`)
+    for (const extra of policy.extraReadPaths) {
+      parts.push(`(allow file-read* (subpath "${sbplQuote(resolve(extra))}"))`)
+    }
   }
   for (const extra of policy.extraWritePaths ?? []) {
     parts.push(
-      `(allow file-read* file-write* (subpath "${sbplQuote(resolve(extra))}"))`,
+      `(allow file-read* file-write* (subpath "${sbplQuote(canon(extra))}"))`,
     )
   }
   if (policy.network === "deny") parts.push("(deny network*)")
@@ -347,10 +434,23 @@ export function buildBwrapArgs(argv: string[], policy: SandboxPolicy): string[] 
     "/tmp",
   ]
   for (const d of BWRAP_SYSTEM_DIRS) out.push("--ro-bind-try", d, d)
-  out.push("--bind", ws, ws)
+  const zones = policy.zones
+  // Zoned: the workspace is read-only and each writable zone is bound
+  // read-write AFTER it — a later mount over a subtree of an earlier one
+  // wins, so a writable data dir inside a read-only app dir stays writable.
+  // `hidden` needs no mounts: anything not bound is invisible.
+  out.push(zones ? "--ro-bind" : "--bind", ws, ws)
   for (const extra of policy.extraReadPaths) {
     const p = resolve(extra)
     out.push("--ro-bind-try", p, p)
+  }
+  for (const ro of zones?.readOnly ?? []) {
+    const p = resolve(ro)
+    out.push("--ro-bind-try", p, p)
+  }
+  for (const rw of zones?.writable ?? []) {
+    const p = resolve(rw)
+    out.push("--bind-try", p, p)
   }
   for (const extra of policy.extraWritePaths ?? []) {
     const p = resolve(extra)

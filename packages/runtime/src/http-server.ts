@@ -517,7 +517,26 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  read-only grant; writes and sibling reads stay denied. Adapters
      *  that can't model the grant ignore it. */
     additionalReadPaths?: string[]
+    /** App-boundary filesystem zones (app source read-only, run workspace +
+     *  data dir writable, `hidden` denied) for the adapter's OWN process
+     *  tree — forwarded to the driver's `runtime.start({ fsZones })`, which
+     *  confines it through the OS sandbox (always engaged; refuses
+     *  `commandSandbox: "off"`) and, on claude-code, registers the writable
+     *  zones as `additionalDirectories`. Only passed to adapters whose
+     *  resolver entry sets `supportsFsZones`. */
+    fsZones?: { readOnly: string[]; writable: string[]; hidden?: string[] }
+    /** Don't load the host repo's CLAUDE.md/AGENTS.md above the session cwd
+     *  (claude-code: `claudeMdExcludes`). Only passed to adapters whose
+     *  resolver entry sets `supportsHostContextIsolation`. */
+    isolateHostContext?: boolean
   }): Promise<AgentSessionLike>
+  /** True when `startSession` honours `fsZones` (native tools confined by the
+   *  OS sandbox). Omitted/false ⇒ an app-boundary spawn on this adapter gets
+   *  an explicit `session:harness-warning` (or is refused when the app
+   *  declares `boundaries.enforce: "required"`). */
+  supportsFsZones?: boolean
+  /** True when `startSession` honours `isolateHostContext`. */
+  supportsHostContextIsolation?: boolean
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
   /** Best-effort per-session usage reader (adapter-specific, e.g. hermes

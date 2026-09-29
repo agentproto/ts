@@ -46,6 +46,7 @@ import type { AppRegistry, InstalledApp } from "./app-registry.js"
 import { createRunEventLog, readRunEvents, DEFAULT_RUNS_ROOT, type RunEventLog, type RunEventEnvelope } from "./run-event-log.js"
 import { loadWorkspacesConfig, getActiveWorkspace } from "./workspaces-config.js"
 import { ensureRunWorkspace, runWorkspacePaths } from "./run-workspace.js"
+import { buildAppBoundary, isPathWithin, type AppBoundary } from "./app-boundary.js"
 import { copyFile, mkdir, readFile } from "node:fs/promises"
 
 // ── Public types ─────────────────────────────────────────────────────
@@ -1936,6 +1937,9 @@ export function createWorkflowRunner(opts: {
    *  a step can call daemon tools the same way an `agent_start` child can.
    *  See `agentStepMcpServers`. Omitted ⇒ no gateway mount. */
   daemonMcpUrl?: string
+  /** The daemon's own workspace root — kept out of reach of app-workflow
+   *  sessions (their fs boundary hides it; see `app-boundary.ts`). */
+  daemonWorkspace?: string
   /** Absolute path for the persistence file. Defaults to ~/.agentproto/workflow-runs.json */
   persistPath?: string
   /** Enable filesystem persistence. Defaults to `true` when `persistPath` is
@@ -1995,6 +1999,30 @@ export function createWorkflowRunner(opts: {
   const leaseTtlMs = opts.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS
   const heartbeatIntervalMs = opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS
   const now = opts.now ?? (() => new Date())
+
+  // App boundary for a run's agent-step sessions: only runs attributed to an
+  // installed app get one (read-only app source, writable run workspace +
+  // app data dir). An operator-chosen `cwd` outside the app is readable.
+  const boundaryForRun = (run: WorkflowRun): AppBoundary | undefined => {
+    if (run.appId === undefined || opts.appRegistry === undefined) return undefined
+    const app = opts.appRegistry.getApp(run.appId)
+    if (!app) return undefined
+    const appDir = resolvePath(app.dir)
+    // A cwd that merely defaulted to the daemon workspace (F25 fallback) is
+    // never widened into a readable zone.
+    const extraReadOnly =
+      run.cwd !== undefined &&
+      !isPathWithin(resolvePath(run.cwd), appDir) &&
+      (opts.daemonWorkspace === undefined || resolvePath(run.cwd) !== resolvePath(opts.daemonWorkspace))
+        ? [resolvePath(run.cwd)]
+        : []
+    return buildAppBoundary({
+      app,
+      ...(run.workspace !== undefined ? { runWorkspace: run.workspace } : {}),
+      extraReadOnly,
+      ...(opts.daemonWorkspace !== undefined ? { daemonWorkspace: opts.daemonWorkspace } : {}),
+    })
+  }
 
   const runs = shouldPersist ? loadRuns(persistPath, runsRoot) : new Map<string, RunState>()
 
@@ -2189,6 +2217,7 @@ export function createWorkflowRunner(opts: {
       const workflow = journal && input.cacheKey === undefined
         ? forceCacheableWorkflow(translateStages(input.stages, input.workflowId))
         : translateStages(input.stages, input.workflowId)
+      const boundary = boundaryForRun(run)
       const agents: SessionsRegistryAgentHost = new SessionsRegistryAgentHost(
         registry,
         sessionEvents,
@@ -2215,6 +2244,7 @@ export function createWorkflowRunner(opts: {
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }
             : {}),
           ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
+          ...(boundary ? { boundary } : {}),
         },
       )
       state.agents = agents
@@ -2345,6 +2375,7 @@ export function createWorkflowRunner(opts: {
       eventLog?.append({ type: "run.created", data: { workflowId: handle.id } })
       eventLog?.append({ type: "run.started", data: {} })
 
+      const boundary = boundaryForRun(run)
       const agents: SessionsRegistryAgentHost = new SessionsRegistryAgentHost(
         registry,
         sessionEvents,
@@ -2370,6 +2401,7 @@ export function createWorkflowRunner(opts: {
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }
             : {}),
           ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
+          ...(boundary ? { boundary } : {}),
         },
       )
       state.agents = agents
@@ -2695,6 +2727,7 @@ export function createWorkflowRunner(opts: {
       eventLog?.append({ type: "run.created", data: { workflowId: orig.workflowId, retryOf: originalRunId } })
       eventLog?.append({ type: "run.started", data: {} })
 
+      const boundary = boundaryForRun(run)
       const agents: SessionsRegistryAgentHost = new SessionsRegistryAgentHost(
         registry,
         sessionEvents,
@@ -2720,6 +2753,7 @@ export function createWorkflowRunner(opts: {
             ? { resolveSandboxProvider: opts.resolveSandboxProvider }
             : {}),
           ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
+          ...(boundary ? { boundary } : {}),
         },
       )
       state.agents = agents

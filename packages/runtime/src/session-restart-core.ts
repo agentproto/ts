@@ -44,6 +44,7 @@
  * announced via `session:config-changed` (#490).
  */
 
+import { boundaryFromMeta, boundaryMeta, boundaryRestartOptions } from "./app-boundary.js"
 import {
   adapterConfigDirFor,
   mintSessionId,
@@ -765,8 +766,18 @@ export async function restartAgentSession(
     // the lineage is resumable from here on even if THIS restart lands as
     // a digest fallback.
     const restartConfigDir = prev.adapterConfigDir ?? adapterConfigDirFor(restartedSessionId)
+    // App boundary survives a restart: same fs zones + host-context isolation.
+    const prevBoundary = boundaryFromMeta(prev.meta)
+    const boundaryStart = prevBoundary
+      ? boundaryRestartOptions(prevBoundary, {
+          supportsFsZones: resolved.supportsFsZones === true,
+          supportsHostContextIsolation: resolved.supportsHostContextIsolation === true,
+          ...(prev.commandSandbox === "off" ? { commandSandbox: "off" as const } : {}),
+        })
+      : {}
     const agentSession = await resolved.startSession({
       cwd,
+      ...boundaryStart,
       ...(resumeSessionId ? { resumeSessionId } : {}),
       configDir: restartConfigDir,
       ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),
@@ -839,6 +850,7 @@ export async function restartAgentSession(
         : {}),
       ...(prev.label ? { label: prev.label } : {}),
       ...(prev.mcpServers ? { mcpServers: prev.mcpServers } : {}),
+      ...(prevBoundary ? { meta: boundaryMeta(prevBoundary) } : {}),
       ...(effModel ? { model: effModel } : {}),
       // Decomposed config-axis echoes (SPEC §3.7) — carried forward from `prev`
       // and overlaid with any override so every axis round-trips onto the fresh

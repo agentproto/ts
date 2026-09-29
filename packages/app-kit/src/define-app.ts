@@ -103,6 +103,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
     : undefined
   const externalReadRoots = def.externalReadRoots ? Object.freeze([...def.externalReadRoots]) : undefined
   const data = def.data ? Object.freeze({ ...def.data }) : undefined
+  const boundaries = def.boundaries ? Object.freeze({ ...def.boundaries }) : undefined
   const category = def.category
 
   validateAttachment(agents, workflows)
@@ -134,6 +135,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
     ...(dev !== undefined ? { dev } : {}),
     ...(data !== undefined ? { data } : {}),
     ...(externalReadRoots !== undefined ? { externalReadRoots } : {}),
+    ...(boundaries !== undefined ? { boundaries } : {}),
     ...(category !== undefined ? { category } : {}),
 
     async toMastraAgents(opts: ToMastraAgentOptions, only?: readonly string[]) {
@@ -176,6 +178,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
           ...(dev !== undefined ? { dev } : {}),
           ...(data !== undefined ? { data } : {}),
           ...(externalReadRoots !== undefined ? { externalReadRoots } : {}),
+          ...(boundaries !== undefined ? { boundaries } : {}),
           ...(category !== undefined ? { category } : {}),
         },
         dir,
