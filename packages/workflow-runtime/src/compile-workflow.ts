@@ -858,7 +858,7 @@ function compileStep(step: any, ctx: Ctx): RunStep {
       assertKnownStepRefs(inputs, ctx.knownStepIds, `tool step '${id}' inputs`, {
         makeError: (message) => new WorkflowCompileError(message),
       })
-      const timeoutMs = f<number | undefined>(step, "timeout_ms")
+      const timeoutMs = assertStepTimeoutMs(id, "tool", step.timeout_ms)
       return {
         kind: "tool",
         id,
