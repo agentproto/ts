@@ -43,7 +43,12 @@ export function parseDevToolsActivePort(text: string): DevToolsEndpoint | undefi
 }
 
 /** Wait until Chromium has written `DevToolsActivePort` in `dir`; the file is stale-proof because the dir is ours and fresh per launch. */
-export async function readDevToolsEndpoint(dir: string, timeoutMs: number, sleep: (ms: number) => Promise<void>): Promise<DevToolsEndpoint> {
+export async function readDevToolsEndpoint(
+  dir: string,
+  timeoutMs: number,
+  sleep: (ms: number) => Promise<void>,
+  hasExited?: () => boolean,
+): Promise<DevToolsEndpoint> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
     try {
@@ -52,6 +57,7 @@ export async function readDevToolsEndpoint(dir: string, timeoutMs: number, sleep
     } catch {
       // not written yet
     }
+    if (hasExited?.()) throw new Error(`[chromium] the browser exited before it opened a DevTools port (profile dir ${dir})`)
     if (Date.now() >= deadline) throw new Error(`[chromium] DevToolsActivePort did not appear in ${dir} within ${Math.round(timeoutMs / 1000)}s`)
     await sleep(50)
   }

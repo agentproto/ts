@@ -123,7 +123,7 @@ export async function openSession(opts: OpenSessionOptions): Promise<CamofoxSess
   }
 
   if (opts.injectCookies !== false) {
-    await rest("POST", `/sessions/${userId}/cookies`, {
+    await rest("POST", `/sessions/${encodeURIComponent(userId)}/cookies`, {
       cookies: opts.cookies ? [...opts.cookies] : [],
       sessionKey: userId,
     })
@@ -157,7 +157,7 @@ export async function openSession(opts: OpenSessionOptions): Promise<CamofoxSess
     })
     tabId = String(tab["tabId"] ?? tab["id"] ?? "")
     if (opts.storageState && opts.url) {
-      await rest("POST", `/tabs/${tabId}/navigate`, {
+      await rest("POST", `/tabs/${encodeURIComponent(tabId)}/navigate`, {
         userId,
         url: opts.url,
         waitUntil: "domcontentloaded",
@@ -169,11 +169,11 @@ export async function openSession(opts: OpenSessionOptions): Promise<CamofoxSess
   writeState(stateFile, state)
 
   const evaluate = async <T = unknown>(expression: string): Promise<T> => {
-    const r = await rest("POST", `/tabs/${tabId}/evaluate`, { userId, expression })
+    const r = await rest("POST", `/tabs/${encodeURIComponent(tabId)}/evaluate`, { userId, expression })
     return (r["result"] ?? r["value"]) as T
   }
   const goto = async (u: string, waitUntil = "domcontentloaded"): Promise<void> => {
-    await rest("POST", `/tabs/${tabId}/navigate`, { userId, url: u, waitUntil })
+    await rest("POST", `/tabs/${encodeURIComponent(tabId)}/navigate`, { userId, url: u, waitUntil })
     if (settleMs > 0) await sleep(settleMs)
   }
   const screenshot = async (
@@ -183,7 +183,7 @@ export async function openSession(opts: OpenSessionOptions): Promise<CamofoxSess
     const qs = new URLSearchParams({ userId, format })
     if (o.selector) qs.set("selector", o.selector)
     if (o.quality != null) qs.set("quality", String(o.quality))
-    const res = await doFetch(`${base}/tabs/${tabId}/screenshot?${qs.toString()}`)
+    const res = await doFetch(`${base}/tabs/${encodeURIComponent(tabId)}/screenshot?${qs.toString()}`)
     if (!res.ok) throw new Error(`screenshot -> ${res.status}: ${(await res.text()).slice(0, 160)}`)
     const buf = Buffer.from(await res.arrayBuffer())
     // Trust the bytes, not the requested format: a wrong mimeType makes vision APIs reject the image.
@@ -225,16 +225,16 @@ export async function openSession(opts: OpenSessionOptions): Promise<CamofoxSess
     screenshot,
     goto,
     click: async selector => {
-      await rest("POST", `/tabs/${tabId}/click`, { userId, selector })
+      await rest("POST", `/tabs/${encodeURIComponent(tabId)}/click`, { userId, selector })
     },
     type: async (selector, text) => {
-      await rest("POST", `/tabs/${tabId}/type`, { userId, selector, text })
+      await rest("POST", `/tabs/${encodeURIComponent(tabId)}/type`, { userId, selector, text })
     },
     press: async key => {
-      await rest("POST", `/tabs/${tabId}/press`, { userId, key })
+      await rest("POST", `/tabs/${encodeURIComponent(tabId)}/press`, { userId, key })
     },
     startNetCapture: async (urlPattern, max) => {
-      await rest("POST", `/tabs/${tabId}/capture`, {
+      await rest("POST", `/tabs/${encodeURIComponent(tabId)}/capture`, {
         userId,
         sessionKey: userId,
         ...(urlPattern ? { urlPattern } : {}),
@@ -242,13 +242,13 @@ export async function openSession(opts: OpenSessionOptions): Promise<CamofoxSess
       })
     },
     readNetCapture: async () => {
-      const r = await rest("GET", `/tabs/${tabId}/capture?userId=${encodeURIComponent(userId)}`)
+      const r = await rest("GET", `/tabs/${encodeURIComponent(tabId)}/capture?userId=${encodeURIComponent(userId)}`)
       const reqs = r["requests"]
       return Array.isArray(reqs) ? (reqs as Awaited<ReturnType<CamofoxSession["readNetCapture"]>>) : []
     },
     close: async () => {
       try {
-        await rest("DELETE", `/tabs/${tabId}?userId=${encodeURIComponent(userId)}`)
+        await rest("DELETE", `/tabs/${encodeURIComponent(tabId)}?userId=${encodeURIComponent(userId)}`)
       } catch {
         // best effort
       }

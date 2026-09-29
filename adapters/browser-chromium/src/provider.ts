@@ -8,12 +8,15 @@ import {
   liveProfileLockPid,
   resolveDedicatedProfileDir,
   type BrowserAttachOptions,
+  type BrowserCookie,
+  type BrowserCookieSource,
   type BrowserDriver,
   type BrowserHealth,
   type BrowserHostContext,
   type BrowserInstance,
   type BrowserLaunchOptions,
   type BrowserProvider,
+  type FullProfileGrantProof,
 } from "@agentproto/driver-browser"
 import type { BrowserContext } from "playwright-core"
 import { attachChromiumDriver, CHROMIUM_PROVIDER_ID, type ChromiumBrowserDriver } from "./driver.js"
@@ -29,8 +32,10 @@ import {
 export interface ChromiumLaunchOptions extends BrowserLaunchOptions {
   /** A dedicated dir to use instead of `<dataDir>/profiles/<profile|label|main>`. A default Chrome dir is refused. */
   userDataDir?: string
-  /** Always refused with `browser:profile-refused`; full-profile access arrives with the grant model. */
+  /** Refused with `browser:profile-refused` unless `fullProfileGrant` is active. */
   fullProfile?: boolean
+  /** Proof of a recorded full-profile grant (AIP-63 C3); unlocks `fullProfile` only, never a default user-data-dir. */
+  fullProfileGrant?: FullProfileGrantProof
   /** Extra Chromium switches. `--user-data-dir`, `--remote-debugging-*` and `--full-profile` are refused. */
   args?: readonly string[]
   /** Chromium/Chrome binary; beats the provider config and `CHROMIUM_EXECUTABLE_PATH`. Playwright's Chromium by default. */
@@ -41,6 +46,8 @@ export interface ChromiumProviderConfig {
   /** Root of the dedicated profile dirs. Default `~/.agentproto/browser/chromium`. */
   dataDir?: string
   executablePath?: string
+  /** Supplies the granted cookies added to the context on every attach; only granted domains, per paired device. */
+  cookieSource?: BrowserCookieSource
   /** Test seam: how `playwright-core` is loaded. */
   loadPlaywright?: PlaywrightLoader
   sleep?: (ms: number) => Promise<void>
@@ -62,6 +69,7 @@ const DESCRIPTION =
 interface Entry {
   dir: string
   id: string
+  profile: string
   context: BrowserContext
   cdp: string
   port: number
@@ -105,15 +113,20 @@ export function createChromiumProvider(config: ChromiumProviderConfig = {}): Chr
       throw err
     }
 
+    let contextClosed = false
+    context.on("close", () => {
+      contextClosed = true
+    })
     try {
-      const endpoint = await readDevToolsEndpoint(dir, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, sleep)
+      const endpoint = await readDevToolsEndpoint(dir, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, sleep, () => contextClosed)
       const entry: Entry = {
         dir,
         id,
+        profile: opts.profile ?? opts.label ?? "main",
         context,
         port: endpoint.port,
         cdp: `ws://127.0.0.1:${endpoint.port}${endpoint.browserWsPath}`,
-        closed: false,
+        closed: contextClosed,
         drivers: new Set(),
       }
       context.on("close", () => {
@@ -136,6 +149,7 @@ export function createChromiumProvider(config: ChromiumProviderConfig = {}): Chr
       ...(opts.label !== undefined ? { label: opts.label } : {}),
       ...(opts.userDataDir !== undefined ? { userDataDir: opts.userDataDir } : {}),
       ...(opts.fullProfile !== undefined ? { fullProfile: opts.fullProfile } : {}),
+      ...(opts.fullProfileGrant ? { fullProfileGrant: opts.fullProfileGrant } : {}),
       ...(config.env ? { env: config.env } : {}),
     })
     // Refusals are done; create the dir now so the registry key is the real path on every call (tmp dirs are symlinks on macOS).
@@ -183,7 +197,10 @@ export function createChromiumProvider(config: ChromiumProviderConfig = {}): Chr
 
       async attach(attachOpts?: BrowserAttachOptions): Promise<BrowserDriver> {
         if (entry.closed) throw new Error(`[chromium] instance ${entry.id} is stopped`)
-        const cookies = cookiesFromSessionPayload(attachOpts?.sessionPayload)
+        const cookies: BrowserCookie[] = [
+          ...(config.cookieSource ? await config.cookieSource({ providerId: CHROMIUM_PROVIDER_ID, profile: entry.profile }) : []),
+          ...cookiesFromSessionPayload(attachOpts?.sessionPayload),
+        ]
         const driver = await attachChromiumDriver(entry.context, {
           ...(attachOpts?.initialUrl ? { initialUrl: attachOpts.initialUrl } : {}),
           cookies,

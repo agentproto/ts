@@ -306,11 +306,21 @@ export function createBrowserSupervisor(opts: BrowserSupervisorOptions): Browser
     }
   }
 
+  // A mutex: every transition (start/restart/recovery) chains onto whatever is
+  // currently in flight instead of racing it, so `instance`/`bootId` are never
+  // clobbered by two launch loops running at once.
   function run<T>(fn: () => Promise<T>): Promise<T> {
-    const p = fn().finally(() => {
-      if (busy === p) busy = null
-    })
-    busy = p
+    const previous = busy ?? Promise.resolve()
+    const p: Promise<T> = previous.catch(() => {}).then(fn)
+    const tracked: Promise<void> = p
+      .then(
+        () => undefined,
+        () => undefined,
+      )
+      .then(() => {
+        if (busy === tracked) busy = null
+      })
+    busy = tracked
     return p
   }
 

@@ -14,6 +14,7 @@ import {
   chromeUserDataDir,
   type ChromeProfile,
 } from "./chrome-profiles.js"
+import { FullProfileGrantError, type FullProfileProof } from "@agentproto/browser-profiles"
 import { cloneChromeProfile, type CloneResult } from "./clone.js"
 import {
   installChromeMcp,
@@ -32,6 +33,12 @@ export {
   chromeLocalStatePath,
 } from "./chrome-profiles.js"
 export type { ChromeProfile } from "./chrome-profiles.js"
+export {
+  createLocalBrowserConsent,
+  grantFullProfileClone,
+  LOCAL_BROWSER_SESSION_ID,
+} from "./consent.js"
+export type { FullProfileConsent, LocalConsentOptions } from "./consent.js"
 export { cloneChromeProfile } from "./clone.js"
 export type { CloneOptions, CloneResult } from "./clone.js"
 export {
@@ -87,6 +94,11 @@ export interface SetupOptions {
    *  refresh the imported-mcps entry, e.g. after a chrome-devtools-mcp
    *  upgrade). Default false. */
   skipClone?: boolean
+  /** The clone copies every cookie of the profile, so it needs a recorded
+   *  full-profile grant (`grantFullProfileClone`). Required unless
+   *  `skipClone` is set; a missing or revoked grant throws before anything
+   *  is read or copied. */
+  fullProfileGrant?: FullProfileProof
   /** Skip the chrome-devtools-mcp install step. Only safe when a
    *  prior setup already populated `chromeMcpPrefix`. */
   skipInstall?: boolean
@@ -122,6 +134,12 @@ export interface SetupResult {
  * directories.
  */
 export async function setup(opts: SetupOptions): Promise<SetupResult> {
+  if (!opts.skipClone && opts.fullProfileGrant?.isActive() !== true) {
+    throw new FullProfileGrantError(
+      "setup: cloning a Chrome profile is a full-profile grant. Record one first " +
+        "(`agentproto-browser setup --full-profile`), or pass skipClone."
+    )
+  }
   const profiles = await listChromeProfiles()
   const profile = profiles.find(p => p.directory === opts.profileDirectory)
   if (!profile) {

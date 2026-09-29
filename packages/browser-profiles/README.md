@@ -39,6 +39,22 @@ const session = await resolveSession(descriptor, {
 
 A detector sees cookie names and expiry only, never values. A domain with no registered detector is `unknown`, never `authed`. A failed cookie-store read is `unknown` too, never "not logged in".
 
+## Consent, grants and the ledger
+
+Importing cookies from a Chrome profile is a recorded, revocable grant (AIP-63 draft, number provisional).
+
+- **Explicit domains only.** `validateGrantDomains` rejects `*`, `*.example.com`, a bare TLD, a leading dot, a public suffix and an empty list, each with a typed `GrantDomainError`.
+- **Per-domain consent.** `createConsentHost({ prompt })` asks a human once per domain through the injected `ConsentPrompt`, after a presence scan that reports counts only. Without a `prompt` the host is non-interactive: `importFromChrome` fails with `NonInteractiveConsentError` unless the caller passes `domains` and `yes`.
+- **Remote sinks.** A grant that also feeds a remote sink needs an explicit sink acknowledgement, recorded as its own ledger row.
+- **Per device.** A grant carries the paired device fingerprint. `host.cookieSourceFor({ deviceId })` serves only that device's active grants; another device gets `browser:consent_required`. Revoking a pairing stops honoring its grants (`isDevicePaired`).
+- **Full profile.** `grantFullProfile` records `fullProfile: true`, local sink only, and returns `FULL_PROFILE_WARNING`. `host.fullProfileProof(...)` is what `@agentproto/driver-browser` asks for before it honors `--full-profile`. The kit still never launches against the default user-data-dir, and revocation takes effect at the next launch.
+- **Ledger.** `createConsentLedger({ path })` appends one JSON row per grant, revoke, sink acknowledgement and agent denial to `~/.agentproto/bureau/consent.jsonl` by default (file 0600, directory 0700). Rows are hash-chained (`seq`, `prev`), carry counts and salted cookie-name hashes, and never a cookie value. `verifyChain()` detects edits.
+- **Revoke.** `host.revoke(grantId)` deletes the derived cookie jar, recomputes the session descriptor, calls the optional `deleteExtraDerived` hook (for example a profile clone) and appends a revoke row. It is idempotent.
+- **Agents.** `createAgentConsentSurface(host)` lets an agent refresh and revoke. It cannot grant, add a domain, add a sink or change the profile; each refusal appends a `deny` row and throws `AgentGrantRefusedError`.
+- **Doctor.** `runDoctor({ port, profile })` checks that `Local State` is readable and the Cookies db is copyable. EPERM is reported as a missing Full Disk Access grant and names the exact binary. The Keychain is probed only with `checkKeychain: true`. Any failure recommends native login.
+
+Cookie values are never logged, returned or written to the ledger. Grants and derived cookies are stored unencrypted (encryption at rest is out of scope for now).
+
 ## What stays private
 
 Kept out of this package on purpose:

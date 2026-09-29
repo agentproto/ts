@@ -16,6 +16,7 @@ import {
   type BrowserInstance,
   type BrowserLaunchOptions,
   type BrowserProvider,
+  type FullProfileGrantProof,
 } from "@agentproto/driver-browser"
 import { CdpConnection } from "./cdp.js"
 import { attachChromeDriver, CHROME_PROVIDER_ID, type ChromeCdpDriver } from "./driver.js"
@@ -33,8 +34,10 @@ import { CHROME_ENV_VAR, resolveChrome } from "./resolve.js"
 export interface ChromeLaunchOptions extends BrowserLaunchOptions {
   /** A dedicated dir to use instead of `<dataDir>/profiles/<profile|label|main>`. A default Chrome dir is refused. */
   userDataDir?: string
-  /** Always refused with `browser:profile-refused`; full-profile access arrives with the grant model. */
+  /** Refused with `browser:profile-refused` unless `fullProfileGrant` is active. */
   fullProfile?: boolean
+  /** Proof of a recorded full-profile grant (AIP-63 C3); unlocks `fullProfile` only, never a default user-data-dir. */
+  fullProfileGrant?: FullProfileGrantProof
   /** Extra Chrome switches. `--user-data-dir`, `--remote-debugging-*` and `--full-profile` are refused. */
   args?: readonly string[]
   /** Chrome binary; beats the provider config, `CHROME_EXECUTABLE_PATH` and discovery. */
@@ -45,7 +48,7 @@ export interface ChromeProviderConfig {
   /** Root of the dedicated profile dirs. Default `~/.agentproto/browser/chrome`. */
   dataDir?: string
   executablePath?: string
-  /** Supplies the granted cookies injected through `Network.setCookies` on every attach. The interface only: grants come later. */
+  /** Supplies the granted cookies injected through `Network.setCookies` on every attach. `@agentproto/browser-profiles` builds one that returns only granted domains, per paired device. */
   cookieSource?: BrowserCookieSource
   /** Test seam: replaces system Chrome discovery. */
   findChrome?: () => string | undefined
@@ -142,6 +145,7 @@ export function createChromeProvider(config: ChromeProviderConfig = {}): ChromeP
       ...(opts.label !== undefined ? { label: opts.label } : {}),
       ...(opts.userDataDir !== undefined ? { userDataDir: opts.userDataDir } : {}),
       ...(opts.fullProfile !== undefined ? { fullProfile: opts.fullProfile } : {}),
+      ...(opts.fullProfileGrant ? { fullProfileGrant: opts.fullProfileGrant } : {}),
       ...(config.env ? { env: config.env } : {}),
     })
     // Refusals are done; create the dir now so the registry key is the real path on every call.
