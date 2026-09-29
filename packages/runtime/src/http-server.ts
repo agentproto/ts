@@ -23,6 +23,7 @@
 import { buildLabeledStatsReport } from "./process-stats.js"
 import { getHostLoadService } from "./host-load.js"
 import { parseBrowserMode } from "./browser-mount.js"
+import { defaultBrowserAdapterIds } from "./browser-adapters.js"
 import { randomUUID } from "node:crypto"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import { Readable, type Duplex } from "node:stream"
@@ -6230,7 +6231,7 @@ async function handleSessions(
         ? listBrowserAdapters()
             .map(a => a.id)
             .join(", ")
-        : "camofox, bureau"
+        : defaultBrowserAdapterIds().join(", ")
       json(404, {
         error: "adapter_not_found",
         adapter: adapterId,

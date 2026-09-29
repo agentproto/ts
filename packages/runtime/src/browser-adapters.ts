@@ -23,6 +23,7 @@ import {
   type AdapterHandle,
   type AdapterLister,
 } from "@agentproto/provider-kit"
+import { browserAdapters, getBrowserAdapter } from "@agentproto/adapter-browser"
 import type {
   BrowserAdapterInfo,
   BrowserAdapterLister,
@@ -108,4 +109,36 @@ export function makeBrowserAdapterLister(opts: {
       return entries.map(entry => makeBrowserHandle(entry, resolveBrowserAdapter))
     },
   })
+}
+
+// ── Default resolution (the `@agentproto/adapter-browser` facade) ─────────────
+
+/**
+ * The one built-in adapter table the daemon, the HTTP route and the CLI share:
+ * the `@agentproto/adapter-browser` facade (kit providers camofox, bureau,
+ * chromium behind the legacy handle shape). Hosts that want a different set
+ * still inject their own `resolveBrowserAdapter` / `listBrowserAdapters`.
+ */
+export function defaultBrowserAdapterResolution(): {
+  resolveBrowserAdapter: BrowserAdapterResolver
+  listBrowserAdapters: BrowserAdapterLister
+} {
+  return {
+    resolveBrowserAdapter: id => getBrowserAdapter(id),
+    listBrowserAdapters: () =>
+      Object.values(browserAdapters).map(a => ({
+        id: a.id,
+        name: a.name,
+        description: a.description,
+        defaultPort: a.defaultPort,
+        location: a.location,
+        install: a.install,
+        config: a.config,
+      })),
+  }
+}
+
+/** Ids of the built-in adapters, for "not found, available: ..." messages. */
+export function defaultBrowserAdapterIds(): string[] {
+  return Object.keys(browserAdapters)
 }

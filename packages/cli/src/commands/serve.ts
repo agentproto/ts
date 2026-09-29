@@ -95,6 +95,7 @@ import {
   reconcileSandboxLedger,
   makeSandboxResolver,
   makeSandboxCredsStore,
+  defaultBrowserAdapterResolution,
   resolveEffectiveLlmEndpointFlag,
   type AgentAdapterResolver,
   type AdapterAuthDescriptor,
@@ -124,7 +125,6 @@ import {
 } from "../util/auth-providers-store.js"
 import { registerCatalogOverlay } from "@agentproto/model-catalog/overlay"
 import { loadCachedCatalogVoices } from "../provider-catalog.js"
-import { getBrowserAdapter, browserAdapters } from "@agentproto/adapter-browser"
 import { agentCliSupportsHostContextIsolation, createAgentCliRuntime } from "@agentproto/driver-agent-cli"
 import { readHermesUsage } from "@agentproto/adapter-hermes"
 import { readOpenCodeUsage } from "@agentproto/adapter-opencode"
@@ -577,17 +577,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
   const spawnPty = await loadNodePtyFactory()
 
   // ── browser adapter resolver + lister (powers MCP start_browser / browser_adapter_list) ──
-  const resolveBrowserAdapter = (id: string) => getBrowserAdapter(id)
-  const listBrowserAdapters = () =>
-    Object.values(browserAdapters).map(a => ({
-      id: a.id,
-      name: a.name,
-      description: a.description,
-      defaultPort: a.defaultPort,
-      location: a.location,
-      install: a.install,
-      config: a.config,
-    }))
+  const { resolveBrowserAdapter, listBrowserAdapters } = defaultBrowserAdapterResolution()
 
   // ── MCP credential broker (dependency-injected into runtime) ──
   // Runtime is intentionally auth-free; the CLI wires the broker here
