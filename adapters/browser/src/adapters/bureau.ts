@@ -1,6 +1,7 @@
-import type { BrowserAdapterHandle, BrowserAdapterStartOptions, BrowserAdapterInstance } from "../types.js"
-import { resolveLaunch } from "../lib/resolve-launch.js"
-import { camofoxAdapter } from "./camofox.js"
+import { camofox } from "@agentproto/adapter-browser-camofox"
+import { createProcessProvider } from "../providers/process-provider.js"
+import { toAdapterHandle } from "../providers/to-adapter-handle.js"
+import type { BrowserAdapterHandle } from "../types.js"
 
 function resolveBureauCmd(
   launchCmd: string | undefined,
@@ -12,7 +13,7 @@ function resolveBureauCmd(
   return { file: "bureau", args: ["serve"] }
 }
 
-export const bureauAdapter: BrowserAdapterHandle = {
+export const bureauProvider = createProcessProvider({
   id: "bureau",
   name: "Bureau (Camofox + MCP capability server)",
   description:
@@ -20,20 +21,10 @@ export const bureauAdapter: BrowserAdapterHandle = {
     "spawns bureau serve which exposes browser tools as MCP-over-HTTP.",
   defaultPort: 8830,
   healthPath: "/health",
-
-  location: "local",
-
-  install: [
-    {
-      method: "path",
-      // `bureau` CLI must be on PATH (e.g. installed via `npm i -g @agentik/bureau`
-      // or linked from the monorepo workspace bin).
-    },
-  ],
-
+  install: [{ method: "path" }],
   config: [
-    // bureau inherits camofox's CAMOFOX_SERVE_CMD implicitly — camofoxAdapter.ensure
-    // is called first inside `ensure` and reads that env var itself.
+    // bureau inherits camofox's CAMOFOX_SERVE_CMD implicitly: the camofox
+    // provider is launched first in `prepare` and reads that env var itself.
     {
       id: "bureau-serve-cmd",
       kind: "prompt",
@@ -50,30 +41,24 @@ export const bureauAdapter: BrowserAdapterHandle = {
       persist: { env: "BUREAU_PORT" },
     },
   ],
-
-  async ensure(opts: BrowserAdapterStartOptions): Promise<BrowserAdapterInstance> {
-    const timeoutMs = opts.timeoutMs ?? 60_000
-    const log = opts.log
-
+  resolveLocalCmd: (opts) => resolveBureauCmd(opts.launchCmd, opts.env),
+  async prepare(opts, ctx) {
     // Camofox must be up before bureau serve can start.
-    const cam = await camofoxAdapter.ensure({
-      port: opts.camofoxPort ?? 9377,
-      launchCmd: undefined,
-      env: opts.env,
-      timeoutMs,
-      log,
-    })
-
-    return resolveLaunch({
-      handle: this,
-      opts,
-      label: "bureau",
-      resolveLocalCmd: () => resolveBureauCmd(opts.launchCmd, opts.env),
-      // PORT must reflect the resolved port — extraEnv receives it as a factory arg.
-      extraEnv: (port) => ({
-        CAMOFOX_URL: cam.baseUrl,
-        PORT: String(port),
-      }),
-    })
+    const cam = await camofox.launch(
+      {
+        port: opts.camofoxPort ?? 9377,
+        ...(opts.env ? { env: opts.env } : {}),
+        ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+      },
+      ctx,
+    )
+    const camofoxUrl = cam.endpoints.rest ?? "http://127.0.0.1:9377"
+    // PORT must reflect the resolved port.
+    return (port) => ({ CAMOFOX_URL: camofoxUrl, PORT: String(port) })
   },
-}
+})
+
+export const bureauAdapter: BrowserAdapterHandle = toAdapterHandle(bureauProvider, {
+  defaultPort: 8830,
+  healthPath: "/health",
+})
