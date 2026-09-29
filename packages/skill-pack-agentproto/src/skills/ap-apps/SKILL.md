@@ -1,6 +1,6 @@
 ---
 name: ap-apps
-description: Install and run agentproto APPs (AIP-42 bundles of agents and workflows) — app_install, app_apply/unapply to scopes, app_run with concurrent or sequenced agents, app_status/app_stop, and app data/artifact/skill reads. Trigger when asked to install or run an agentproto app, bundle, or app-kit package.
+description: Install and run agentproto APPs (AIP-53 bundles of agents and workflows) — app_install, app_apply/unapply to scopes, app_run with concurrent or sequenced agents, app_status/app_stop, and app data/artifact/skill reads. Trigger when asked to install or run an agentproto app, bundle, or app-kit package.
 ---
 
 # ap-apps
@@ -67,7 +67,7 @@ app_uninstall({ "appId": "..." })   // remove the record (refuses while applied 
 
 ## Pointers
 
-- agentproto — daemon overview; AIP-42 app bundle spec.
+- agentproto — daemon overview; AIP-53 app bundle spec.
 - ap-workflows — the workflow engine app WORKFLOW.md files compile into.
 - ap-spawn-agent — what an app run does under the hood, one spawn per agent.
 - pb-build-app — packaged authoring workflow for new apps.

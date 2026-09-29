@@ -43,9 +43,11 @@ import {
   type SentinelCreds,
 } from "./sentinel-providers/registry.js"
 import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
+import { WEBHOOK_SLUG } from "./sentinel-providers/webhook.js"
 import type {
   SentinelProviderHandle,
   SentinelProviderCapabilities,
+  SentinelProviderReadiness,
 } from "./sentinel-providers/types.js"
 
 /** Creds-store / ledger family key -> `~/.agentproto/sentinel-creds/`. */
@@ -55,10 +57,15 @@ export const SENTINEL_FAMILY = "sentinel"
  *  `list_sentinel_adapters`. NEVER carries a cred value. */
 export interface SentinelAdapterInfo {
   capabilities: SentinelProviderCapabilities
+  /** Present for providers that can be installed-but-not-operational (the
+   *  `webhook` provider without a public URL / hook scope). `ready:false`
+   *  carries the actionable `reason`, and the entry's status is downgraded
+   *  to `available`. */
+  readiness?: SentinelProviderReadiness
 }
 
-/** Static catalog of built-in providers. `webhook`/`agentpush` land in later
- *  steps (design §12). A third-party `agentproto/adapter-<slug>` package
+/** Static catalog of built-in providers. `agentpush` lands in a later step
+ *  (design §12). A third-party `agentproto/adapter-<slug>` package
  *  still lists via `discoverExtras` below. */
 export const SENTINEL_CATALOG: AdapterCatalog = [
   {
@@ -69,6 +76,16 @@ export const SENTINEL_CATALOG: AdapterCatalog = [
       "credentials, no webhook — diffs successive snapshots on a poll timer.",
     packageName: "@agentproto/runtime",
     hint: "github · zero-infra",
+  },
+  {
+    slug: WEBHOOK_SLUG,
+    name: "GitHub Webhook",
+    description:
+      "Push-based PR/repo watcher over a GitHub repository webhook — " +
+      "near-real-time, one shared hook per repo. Needs a public daemon URL " +
+      "(named tunnel or AGENTPROTO_PUBLIC_URL) and a gh token with admin:repo_hook.",
+    packageName: "@agentproto/runtime",
+    hint: "github · push · needs public URL",
   },
 ]
 
@@ -108,15 +125,42 @@ export function makeSentinelLister(opts: {
   credsStore: CredsStore<SentinelCreds>
   ledger: SetupLedger
 }): AdapterLister<SentinelAdapterInfo> {
-  return makeAdapterLister<SentinelProviderHandle, SentinelAdapterInfo>({
+  const resolver = makeSentinelResolver(opts.credsStore)
+  const base = makeAdapterLister<SentinelProviderHandle, SentinelAdapterInfo>({
     catalog: SENTINEL_CATALOG,
-    resolver: makeSentinelResolver(opts.credsStore),
+    resolver,
     ledger: opts.ledger,
     credsStore: opts.credsStore,
     toInfo: toSentinelInfo,
     discoverExtras: () =>
       discoverSentinelHandles(new Set(SENTINEL_CATALOG.map(c => c.slug))),
   })
+
+  // The kit's status engine is I/O-free (installed + setup only) and has no
+  // reason field, so operational readiness (public URL, hook scope) is layered
+  // on here: a provider that declares `readiness()` and fails it is listed as
+  // `available` with the reason in `info.readiness` — never a false `ready`.
+  return async () => {
+    const entries = await base()
+    return Promise.all(
+      entries.map(async entry => {
+        if (entry.status === "supported" || !entry.info) return entry
+        const handle = await resolver(entry.slug)
+        if (!handle?.readiness) return entry
+        let readiness: SentinelProviderReadiness
+        try {
+          readiness = await handle.readiness()
+        } catch (err) {
+          readiness = { ready: false, reason: err instanceof Error ? err.message : String(err) }
+        }
+        return {
+          ...entry,
+          ...(readiness.ready ? {} : { status: "available" as const }),
+          info: { ...entry.info, readiness },
+        }
+      }),
+    )
+  }
 }
 
 /**

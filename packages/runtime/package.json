@@ -4,6 +4,8 @@
   "description": "@agentproto/runtime — long-running gateway that turns an agentproto workspace into a live runtime. Composes @agentproto/mcp-server (CRUD verbs) with HTTP transport, HEARTBEAT.md autonomy loop, and append-only conversation persistence. Drop a workspace dir, point your MCP client at it, and the agent ticks on its own.",
   "keywords": [
     "agentproto",
+    "aip-46",
+    "aip-58",
     "runtime",
     "gateway",
     "mcp",
@@ -169,6 +171,8 @@
     "@agentproto/driver-agent-cli": "workspace:*",
     "@agentproto/driver-http": "workspace:*",
     "@agentproto/eval-reporters": "workspace:*",
+    "@agentproto/governance": "workspace:*",
+    "@agentproto/governance-engine": "workspace:*",
     "@agentproto/llm-endpoint": "workspace:*",
     "@agentproto/manifest": "workspace:*",
     "@agentproto/mcp-server": "workspace:*",

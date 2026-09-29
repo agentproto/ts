@@ -32,7 +32,7 @@ function r(aip: number, id: string): { aip: number; id: string } {
   return { aip, id }
 }
 
-/** Fixtures over four real AIP families: app (42), pack (52), sandbox (61), tool (14). */
+/** Fixtures over four real AIP families: app (42), pack (52), sandbox (9999: fake placeholder, 61 is now INFERENCE), tool (14). */
 function buildFixtures() {
   const app = { id: "book-companion", name: "Book Companion" } as AppLike
   const pack = { name: "the-agentic-coder" } as PackLike
@@ -48,7 +48,7 @@ function buildFixtures() {
   cat.registerFamily<PackLike>(52, { family: "pack", keyBy: h => h.name }, packs)
   const sandboxes = createRegistry<SandboxLike>({ family: "sandbox", keyBy: h => h.id })
   sandboxes.register(sandbox)
-  cat.registerFamily<SandboxLike>(61, { family: "sandbox", keyBy: h => h.id }, sandboxes)
+  cat.registerFamily<SandboxLike>(9999, { family: "sandbox", keyBy: h => h.id }, sandboxes)
   const tools = createRegistry<ToolLike>({ family: "tool", keyBy: h => h.id })
   tools.register(tool)
   cat.registerFamily<ToolLike>(14, { family: "tool", keyBy: h => h.id }, tools)
@@ -60,9 +60,9 @@ describe("RefCatalog — AIP-54 invariants", () => {
     const { cat, app, pack, sandbox, tool } = buildFixtures()
     expect(cat.resolveStrict(r(42, "book-companion")).handle).toBe(app)
     expect(cat.resolveStrict(r(52, "the-agentic-coder")).handle).toBe(pack)
-    expect(cat.resolveStrict(r(61, "e2b-main")).handle).toBe(sandbox)
+    expect(cat.resolveStrict(r(9999, "e2b-main")).handle).toBe(sandbox)
     expect(cat.resolveStrict(r(14, "search-web")).handle).toBe(tool)
-    expect(cat.familyOf(61)).toBe("sandbox")
+    expect(cat.familyOf(9999)).toBe("sandbox")
     // version on the ref does not affect lookup identity
     expect(cat.resolveStrict({ ...r(42, "book-companion"), version: "1.0.0" }).handle).toBe(app)
   })
@@ -90,14 +90,14 @@ describe("RefCatalog — AIP-54 invariants", () => {
     const sandboxes2 = createRegistry<SandboxLike>({ family: "sandbox", keyBy: h => h.id })
     const alt = { id: "e2b-main", provider: "e2b-alt" }
     sandboxes2.register(alt)
-    cat.registerFamily<SandboxLike>(61, { family: "sandbox", keyBy: h => h.id }, sandboxes2)
-    expect(cat.resolveStrict(r(61, "e2b-main")).handle).toBe(alt)
-    expect(cat.resolveStrict(r(61, "e2b-main")).handle).not.toBe(sandbox)
+    cat.registerFamily<SandboxLike>(9999, { family: "sandbox", keyBy: h => h.id }, sandboxes2)
+    expect(cat.resolveStrict(r(9999, "e2b-main")).handle).toBe(alt)
+    expect(cat.resolveStrict(r(9999, "e2b-main")).handle).not.toBe(sandbox)
   })
 
   it("familyOfHandles exposes the family registry list", () => {
     const { cat } = buildFixtures()
-    expect(cat.familyOfHandles(61)).toHaveLength(1)
+    expect(cat.familyOfHandles(9999)).toHaveLength(1)
     expect(cat.familyOfHandles(99)).toEqual([])
   })
 })
@@ -105,9 +105,9 @@ describe("RefCatalog — AIP-54 invariants", () => {
 describe("refFor — typed ref derivation", () => {
   it("derives a frozen ref from a real handle using the family keyBy", () => {
     const { sandbox, tool } = buildFixtures()
-    const sbxRef = refFor({ aip: 61, keyBy: (h: SandboxLike) => h.id }, sandbox)
+    const sbxRef = refFor({ aip: 9999, keyBy: (h: SandboxLike) => h.id }, sandbox)
     const toolRef = refFor({ aip: 14, keyBy: (h: ToolLike) => h.id }, tool)
-    expect(sbxRef).toEqual({ aip: 61, id: "e2b-main" })
+    expect(sbxRef).toEqual({ aip: 9999, id: "e2b-main" })
     expect(Object.isFrozen(sbxRef)).toBe(true)
     expect(toolRef).toEqual({ aip: 14, id: "search-web" })
   })

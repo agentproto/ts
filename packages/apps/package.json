@@ -11,7 +11,7 @@
     "app-kit",
     "open-standard"
   ],
-  "homepage": "https://agentproto.sh/docs/aip-42",
+  "homepage": "https://agentproto.sh/docs/aip-53",
   "repository": {
     "type": "git",
     "url": "https://github.com/agentproto/ts",
@@ -154,6 +154,7 @@
   "files": [
     "dist",
     "repo-maintenance",
+    "session-steward",
     "README.md",
     "LICENSE"
   ],

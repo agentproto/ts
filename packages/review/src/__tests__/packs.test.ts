@@ -1,9 +1,12 @@
+import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { describe, it, expect } from "vitest"
 import {
   parsePackManifest,
   parseReviewManifest,
   resolvePacks,
+  computePackDigestSha256,
+  PACK_DIGEST_ALG,
   PackManifestError,
   ReviewManifestError,
   type PackLoader,
@@ -100,6 +103,57 @@ describe("parsePackManifest", () => {
   })
 })
 
+describe("computePackDigestSha256 — the v1 digest recipe", () => {
+  /** Reimplements the documented byte layout independently of the source
+   *  under test — proves the DOCUMENTED recipe (not just internal
+   *  self-consistency) reproduces the digest from raw files. */
+  function referenceDigest(reviewMdSource: string, rubrics: Array<{ path: string; content: string }>): string {
+    const sha256 = (s: string) => createHash("sha256").update(s, "utf8").digest("hex")
+    const lines = [`REVIEW.md\0${sha256(reviewMdSource)}`, ...rubrics.map((r) => `${r.path}\0${sha256(r.content)}`)]
+    lines.sort()
+    return sha256(lines.join("\n"))
+  }
+
+  it("reproduces the documented layout for REVIEW.md + one rubric", () => {
+    const review = "---\nkind: review-pack\nid: x\nversion: 1.0.0\n---\n"
+    const rubrics = [{ path: "./rubrics/correctness.md", content: "Find bugs.\n" }]
+    const got = computePackDigestSha256(
+      review,
+      rubrics.map((r) => ({ path: r.path, bytes: Buffer.from(r.content, "utf8") })),
+    )
+    expect(got).toBe(referenceDigest(review, rubrics))
+    expect(got).toMatch(/^[0-9a-f]{64}$/)
+  })
+
+  it("reproduces the documented layout for several rubrics regardless of input order (sorted before hashing)", () => {
+    const review = "---\nkind: review-pack\nid: x\nversion: 1.0.0\n---\n"
+    const rubrics = [
+      { path: "./rubrics/z-last.md", content: "z\n" },
+      { path: "./rubrics/a-first.md", content: "a\n" },
+      { path: "./rubrics/m-mid.md", content: "m\n" },
+    ]
+    const got = computePackDigestSha256(
+      review,
+      rubrics.map((r) => ({ path: r.path, bytes: Buffer.from(r.content, "utf8") })),
+    )
+    expect(got).toBe(referenceDigest(review, rubrics))
+    // Order-independence: reversing the INPUT order still reproduces the
+    // same digest (lines are sorted before hashing, not hashed in place).
+    const reversed = computePackDigestSha256(
+      review,
+      [...rubrics].reverse().map((r) => ({ path: r.path, bytes: Buffer.from(r.content, "utf8") })),
+    )
+    expect(reversed).toBe(got)
+  })
+
+  it("changes when the REVIEW.md source changes, even with identical rubrics", () => {
+    const rubrics = [{ path: "./rubrics/correctness.md", bytes: Buffer.from("Find bugs.\n", "utf8") }]
+    const a = computePackDigestSha256("---\nkind: review-pack\nid: x\nversion: 1.0.0\n---\n", rubrics)
+    const b = computePackDigestSha256("---\nkind: review-pack\nid: x\nversion: 1.0.1\n---\n", rubrics)
+    expect(a).not.toBe(b)
+  })
+})
+
 describe("resolvePacks", () => {
   const loader = fakeLoader({ packs: { "./core-pack": { source: CORE_PACK_SOURCE } }, rubrics: CORE_RUBRICS })
 
@@ -130,7 +184,7 @@ describe("resolvePacks", () => {
     expect(correctness.rubricBase).toBe("/packs/core")
     expect(resolved.manifest.bindings.local!.checks).toEqual(["types", "core/correctness", "core/security"])
     expect(resolved.packs).toHaveLength(1)
-    expect(resolved.packs[0]).toMatchObject({ ref: "./core-pack", id: "core", version: "1.0.0" })
+    expect(resolved.packs[0]).toMatchObject({ ref: "./core-pack", id: "core", version: "1.0.0", alg: PACK_DIGEST_ALG })
     expect(resolved.packs[0]!.sha256).toMatch(/^[0-9a-f]{64}$/)
     expect(resolved.packByNamespace.core).toEqual(resolved.packs[0])
   })

@@ -2,7 +2,7 @@
   "name": "@agentproto/review-pack-core",
   "version": "0.1.0",
   "private": true,
-  "description": "@agentproto/review-pack-core — a first-party review pack (AIP-15 review primitive, Step 5): correctness, security, and test-coverage rubrics a REVIEW.md can `uses:` instead of hand-writing its own. Files-only: REVIEW.md + rubrics/, no build step. Private for now — publishing a review pack to npm is out of scope until the pack format settles; consume it by relative path (`uses: [{pack: ../packages/review-pack-core, as: core}]`) until then.",
+  "description": "@agentproto/review-pack-core — a first-party review pack (agentproto review primitive, Step 5): correctness, security, and test-coverage rubrics a REVIEW.md can `uses:` instead of hand-writing its own. Files-only: REVIEW.md + rubrics/, no build step. Private for now — publishing a review pack to npm is out of scope until the pack format settles; consume it by relative path (`uses: [{pack: ../packages/review-pack-core, as: core}]`) until then.",
   "keywords": [
     "agentproto",
     "review",

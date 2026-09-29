@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-54/WS-REF.schema.json",
+  "title": "ws:// resource ref (AIP-54)",
+  "description": "Validates a ws:// resource reference string — the resource scheme of AIP-54, absorbed from superseded AIP-27. A ws:// ref points at a resource in the world (a workspace file, a URL, an identity, a transaction, a persona); the collection segment maps to a kind by the normative table in AIP-54 §Reference syntax, never by string manipulation. ws:// refs are tenant-local by mandate: hosts MUST resolve them in the same tenant scope as the citing file and reject cross-tenant bindings. This schema constrains the URI envelope and the collection vocabulary only; per-kind body grammar is owned by each kind's AIP.",
+  "type": "string",
+  "pattern": "^ws://[a-z][a-z0-9-]*/\\S+$",
+  "examples": [
+    "ws://operators/atlas",
+    "ws://wikis/platform/http-server",
+    "ws://workspaces/@acme/agentik-studio",
+    "ws://roles/seo-specialist",
+    "ws://companies/acme-co/teams/growth"
+  ],
+  "x-collection-enum": [
+    "operators",
+    "personas",
+    "users",
+    "companies",
+    "collections",
+    "wikis",
+    "workspaces",
+    "skills",
+    "identities",
+    "playbooks",
+    "agencies",
+    "tools",
+    "roles",
+    "assemblies",
+    "actions",
+    "policies",
+    "workflows",
+    "offices",
+    "avatars",
+    "orgs",
+    "guilds"
+  ],
+  "x-collection-enum-note": "The authoritative collection→kind table is AIP-54 §Reference syntax, parsed directly from specs/aip-54.mdx by scripts/check-refs.mjs — the spec is the fixture. This enum is a convenience mirror for validators; a collection absent from the spec's table MUST be treated as unknown regardless of this list. Add a row to AIP-54's table first, then mirror it here.",
+  "x-resolution-rules": [
+    "Dispatch: take the segment up to the first '/' as the collection, map to a kind via the AIP-54 table; an unknown collection is a parse-time failure (UnknownRefCollection).",
+    "Tenant-local: hosts MUST resolve in the citing file's tenant scope and MUST reject cross-tenant bindings (AIP-23 — identity_xref_unresolvable).",
+    "Loud failure: an unresolvable ws:// ref is a typed failure, never a silent dangling string.",
+    "Round-trip: ws://<collection>/<body> and <kind>:<body> denote the same ref; rewriting MUST NOT introduce an @<workspace> suffix — the tenant-scope envelope MUST stay closed.",
+    "Source of truth: the kind's owning AIP owns what exists; the ref is only the wire shape."
+  ]
+}

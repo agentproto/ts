@@ -165,7 +165,32 @@ export interface SentinelHandle {
  *  provider can register a webhook (push) or just start polling. */
 export type DeliveryPreference =
   | { mode: "poll"; intervalMs: number }
-  | { mode: "push"; callbackUrl: string; secret: string }
+  | {
+      mode: "push"
+      /** Public daemon origin the provider should call back into. A push
+       *  provider that owns its own secret/route (the `webhook` provider)
+       *  ignores or derives both; absent when no public URL is known. */
+      callbackUrl?: string
+      secret?: string
+    }
+
+/** The delivery a runtime/tool should request from `provider`: poll when it
+ *  can poll (cheap, zero infra), otherwise push. Keeps every `create`/
+ *  `attach` call site from hardcoding `mode: "poll"` now that push-only
+ *  providers exist. */
+export function deliveryPreferenceFor(
+  provider: Pick<SentinelProviderHandle, "capabilities">,
+  intervalMs: number,
+): DeliveryPreference {
+  return provider.capabilities.poll ? { mode: "poll", intervalMs } : { mode: "push" }
+}
+
+/** Whether a provider can operate right now, and if not, why. */
+export interface SentinelProviderReadiness {
+  ready: boolean
+  /** Human-readable, actionable reason when `ready` is false. */
+  reason?: string
+}
 
 /**
  * A pluggable adapter that turns a sentinel spec into a stream of
@@ -191,11 +216,16 @@ export interface SentinelProviderHandle extends AdapterHandle {
   poll?(handle: SentinelHandle, limit: number): Promise<{ events: SentinelEvent[]; cursor: string }>
   ack?(handle: SentinelHandle, cursor: string): Promise<void>
   /** Push mode: verify + parse one inbound HTTP request into events (called
-   *  by the `"sentinel"` dialect on `POST /inbound/sentinel/:id`). */
+   *  by the `"sentinel"` dialect on `POST /inbound/sentinel-<hookKey>`). */
   parseInbound?(
     req: { rawBody: string; headers: Record<string, string | string[] | undefined> },
     handle: SentinelHandle,
   ): { ok: true; events: SentinelEvent[] } | { ok: false; reason: string }
   /** Default `types` for a subject scheme when the spec leaves it undefined. */
   defaultTypes(subject: string): string[]
+  /** Optional operational-readiness probe (public URL known, auth scope
+   *  sufficient, ...). Consulted by `list_sentinel_adapters` and provider
+   *  auto-selection. Absent = always ready. Never throws — a probe failure
+   *  is `{ready:false, reason}`. */
+  readiness?(): Promise<SentinelProviderReadiness>
 }

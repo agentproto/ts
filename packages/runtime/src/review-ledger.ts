@@ -156,7 +156,7 @@ const sameRubrics = (a: readonly RubricDigest[], b: readonly RubricDigest[]): bo
 const samePacks = (a: readonly PackDigest[], b: readonly PackDigest[]): boolean => {
   const norm = (r: readonly PackDigest[]) =>
     r
-      .map((d) => `${d.ref}\0${d.id}\0${d.version}\0${d.sha256}`)
+      .map((d) => `${d.ref}\0${d.id}\0${d.version}\0${d.alg}\0${d.sha256}`)
       .sort()
       .join("\n")
   return norm(a) === norm(b)

@@ -19,6 +19,11 @@
  * `~/.agentproto/sentinels-parked.jsonl` and the sentinel is marked
  * `orphaned`.
  *
+ * Push providers (`webhook`) have no `poll()`: the daemon's inbound route
+ * hands their parsed events to `deliverPushed`, which runs the SAME
+ * per-event pipeline (seen -> match -> deliver -> markSeen -> lifetime) so
+ * dedup, `until` and dead-session handling behave identically to polling.
+ *
  * Cadence: 15s while any pollable sentinel had an event in the last 10 min,
  * 60s otherwise (design §3) — a self-rescheduling `setTimeout` rather than
  * `setInterval` so the interval can adapt tick to tick.
@@ -36,11 +41,11 @@ import {
 } from "./session-message.js"
 import { SessionNotAliveError, type SendMessageResult } from "./sessions.js"
 import type { Sentinel, SentinelStatus, SentinelStore } from "./sentinel-store.js"
-import type {
-  DeliveryPreference,
-  SentinelEvent,
-  SentinelMatchClause,
-  SentinelProviderHandle,
+import {
+  deliveryPreferenceFor,
+  type SentinelEvent,
+  type SentinelMatchClause,
+  type SentinelProviderHandle,
 } from "./sentinel-providers/types.js"
 
 // ── Constants ─────────────────────────────────────────────────────────
@@ -53,6 +58,17 @@ const POLL_BATCH_LIMIT = 50
 /** Statuses whose provider-side watch stays live — the sentinel keeps
  *  polling even while `orphaned` (design §2: "the provider-side watch is
  *  never cancelled just because a session died"). */
+/** End reasons that mean a human/steward closed the session on purpose —
+ *  a sentinel notice must never resurrect it. */
+const DELIBERATE_END_REASONS: ReadonlySet<string> = new Set([
+  "operator-completed",
+  "operator-stopped",
+  "steward-completed",
+  "steward-abandoned",
+])
+
+const CLOSED_SUBJECTS_CAP = 500
+
 const POLLABLE_STATUSES: ReadonlySet<SentinelStatus> = new Set(["active", "orphaned"])
 
 function agentprotoHome(): string {
@@ -146,6 +162,11 @@ export interface SentinelRuntimeOptions {
   isSessionAlive: (sessionId: string) => boolean
   /** Same hook `inbound-router.ts` uses (`index.ts`'s `restartInboundSession`). */
   restartSession: (sessionId: string) => Promise<string>
+  /** Looks up a session's end reason + parent. When the target ended with a
+   *  deliberate outcome (`operator-completed`, `steward-*`, `operator-stopped`)
+   *  the sentinel never resumes it — the notice goes to the parent (if alive)
+   *  or is parked. Omitted → every dead target is resumed (legacy). */
+  sessionInfo?: (sessionId: string) => { endedReason?: string; parentSessionId?: string } | undefined
   /** Poll cadence while "hot" (an event landed within `hotWindowMs`).
    *  Default 15s. */
   activeIntervalMs?: number
@@ -168,6 +189,12 @@ export interface SentinelRuntime {
   /** Force one poll tick across every poll-capable, pollable sentinel —
    *  used by tests and (later) `sentinel_poll_now`. */
   pollOnce(): Promise<void>
+  /** Deliver events a push provider already parsed + verified (the
+   *  `/inbound/sentinel-<hookKey>` route) to one sentinel, through the same
+   *  dedup/match/lifetime pipeline the poll loop uses. `failed: true` means a
+   *  delivery threw and was NOT marked seen — the caller should answer 5xx so
+   *  the sender can redeliver. Unknown or non-live sentinels are a no-op. */
+  deliverPushed(sentinelId: string, events: readonly SentinelEvent[]): Promise<{ delivered: number; failed: boolean }>
 }
 
 export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRuntime {
@@ -229,6 +256,32 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     })
   }
 
+  /** The target was closed on purpose: never resume it. Hand the notice to
+   *  its live parent (as `fyi`, so it lands in the inbox without forcing a
+   *  turn); with no live parent, park it in the journal. */
+  async function routeAroundClosedSession(
+    sentinel: Sentinel,
+    event: SentinelEvent,
+    msg: SessionMessage,
+    sessionId: string,
+    info: { endedReason?: string; parentSessionId?: string },
+  ): Promise<void> {
+    const parentId = info.parentSessionId
+    if (parentId && opts.isSessionAlive(parentId)) {
+      try {
+        await opts.registry.sendMessage(
+          { ...msg, to: parentId, urgency: "fyi", text: `[for closed session ${sessionId}] ${msg.text}` },
+          { source: "sentinel", origin: sentinel.id },
+        )
+        return
+      } catch (err) {
+        if (!(err instanceof SessionNotAliveError)) throw err
+      }
+    }
+    parkEvent(sentinel, event, `session ${sessionId} closed (${info.endedReason}); not resuming, no live parent`)
+    markOrphaned(sentinel)
+  }
+
   async function handleDeadSession(
     sentinel: Sentinel,
     event: SentinelEvent,
@@ -243,6 +296,12 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       // still sees as alive (a race) — park rather than spin retrying.
       parkEvent(sentinel, event, "session reported alive but sendMessage rejected it")
       markOrphaned(sentinel)
+      return
+    }
+
+    const info = opts.sessionInfo?.(sessionId)
+    if (info?.endedReason && DELIBERATE_END_REASONS.has(info.endedReason)) {
+      await routeAroundClosedSession(sentinel, event, msg, sessionId, info)
       return
     }
 
@@ -331,28 +390,53 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     }
   }
 
-  // ── Poll ──────────────────────────────────────────────────────────
+  // ── Closed subjects (merged/closed PR) ──────────────────────────────
 
-  async function pollSentinel(sentinel: Sentinel): Promise<void> {
-    const provider = await opts.resolveProvider(sentinel.provider)
-    if (!provider || !provider.poll) return
-
-    let result: { events: SentinelEvent[]; cursor: string }
-    try {
-      result = await provider.poll(sentinel.handle, POLL_BATCH_LIMIT)
-    } catch (err) {
-      store.update(sentinel.id, { lastError: describeError(err) })
-      return
+  /** Maintains `closedSubjects` from the event stream and reports whether
+   *  `event.subject` is closed AFTER this event (a terminal event closes its
+   *  own subject; a `.reopened` event reopens it). Only subjects the spec
+   *  actually watches are tracked. */
+  function trackClosure(sentinel: Sentinel, event: SentinelEvent): boolean {
+    const closed = sentinel.closedSubjects ?? []
+    const isClosed = closed.includes(event.subject)
+    if (event.terminal === true) {
+      if (isClosed || !sentinel.spec.match.some(c => matchesSubject(c.subject, event.subjects))) return isClosed
+      const next = [...closed, event.subject].slice(-CLOSED_SUBJECTS_CAP)
+      store.update(sentinel.id, { closedSubjects: next })
+      return true
     }
+    if (isClosed && event.type.endsWith(".reopened")) {
+      store.update(sentinel.id, { closedSubjects: closed.filter(s => s !== event.subject) })
+      return false
+    }
+    return isClosed
+  }
 
+  // ── Shared per-event pipeline (poll + push) ─────────────────────────
+
+  async function processEvents(
+    sentinelId: string,
+    provider: SentinelProviderHandle,
+    events: readonly SentinelEvent[],
+  ): Promise<{ haltedOnError: boolean; delivered: number }> {
     let haltedOnError = false
+    let delivered = 0
 
-    for (const event of result.events) {
-      const current = store.get(sentinel.id)
-      if (!current) return // removed mid-batch
+    for (const event of events) {
+      const current = store.get(sentinelId)
+      if (!current) break // removed mid-batch
       if (!POLLABLE_STATUSES.has(current.status)) break // paused/expired/error — stop watching
 
       if (store.isSeen(current.id, event.id)) continue
+
+      const closedNow = trackClosure(current, event)
+      if (closedNow && !event.terminal) {
+        // Post-merge/close noise (a check_suite failing after the merge):
+        // journal it, never wake or resume anything for it.
+        parkEvent(current, event, `subject ${event.subject} already closed`)
+        store.markSeen(current.id, event.id)
+        continue
+      }
 
       if (!eventMatchesSpec(current, event, provider)) {
         // Filtered out, not a delivery attempt — still mark it seen so it's
@@ -374,6 +458,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         break
       }
       store.markSeen(current.id, event.id)
+      delivered++
 
       const updated = store.update(current.id, {
         eventCount: current.eventCount + 1,
@@ -381,6 +466,25 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       })
       if (updated) await applyLifetime(updated, event, provider)
     }
+
+    return { haltedOnError, delivered }
+  }
+
+  // ── Poll ──────────────────────────────────────────────────────────
+
+  async function pollSentinel(sentinel: Sentinel): Promise<void> {
+    const provider = await opts.resolveProvider(sentinel.provider)
+    if (!provider || !provider.poll) return
+
+    let result: { events: SentinelEvent[]; cursor: string }
+    try {
+      result = await provider.poll(sentinel.handle, POLL_BATCH_LIMIT)
+    } catch (err) {
+      store.update(sentinel.id, { lastError: describeError(err) })
+      return
+    }
+
+    const { haltedOnError } = await processEvents(sentinel.id, provider, result.events)
 
     if (!haltedOnError) {
       const latest = store.get(sentinel.id)
@@ -408,6 +512,35 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     } finally {
       inFlight = false
     }
+  }
+
+  // ── Push ────────────────────────────────────────────────────────────
+
+  /** Per-sentinel serial chain: two concurrent deliveries of the same event
+   *  (a GitHub redelivery racing the original) must not both pass `isSeen`
+   *  before either calls `markSeen`. */
+  const pushChains = new Map<string, Promise<unknown>>()
+
+  function deliverPushed(
+    sentinelId: string,
+    events: readonly SentinelEvent[],
+  ): Promise<{ delivered: number; failed: boolean }> {
+    const run = async (): Promise<{ delivered: number; failed: boolean }> => {
+      const sentinel = store.get(sentinelId)
+      if (!sentinel || !POLLABLE_STATUSES.has(sentinel.status)) return { delivered: 0, failed: false }
+      const provider = await opts.resolveProvider(sentinel.provider)
+      if (!provider) return { delivered: 0, failed: false }
+      const { haltedOnError, delivered } = await processEvents(sentinelId, provider, events)
+      return { delivered, failed: haltedOnError }
+    }
+    const prev = pushChains.get(sentinelId) ?? Promise.resolve()
+    const next = prev.then(run, run)
+    const tail = next.catch(() => undefined)
+    pushChains.set(sentinelId, tail)
+    void tail.then(() => {
+      if (pushChains.get(sentinelId) === tail) pushChains.delete(sentinelId)
+    })
+    return next
   }
 
   // ── Timer ─────────────────────────────────────────────────────────
@@ -447,7 +580,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         })
         continue
       }
-      const delivery: DeliveryPreference = { mode: "poll", intervalMs: activeIntervalMs }
+      const delivery = deliveryPreferenceFor(provider, activeIntervalMs)
       try {
         const handle = await provider.attach(sentinel.handle, delivery)
         store.update(sentinel.id, { handle })
@@ -469,5 +602,6 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       }
     },
     pollOnce,
+    deliverPushed,
   }
 }

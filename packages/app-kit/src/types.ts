@@ -143,7 +143,7 @@ export interface AppArtifactDecl {
 }
 
 /**
- * A Cowork skill the app ships — a directory containing `SKILL.md` (AIP-42)
+ * A Cowork skill the app ships — a directory containing `SKILL.md` (AIP-3)
  * plus optional assets (scripts, templates). `path` is the absolute path to
  * the directory; `emit` copies it to `.agentproto/skill/`. The daemon exposes
  * the content via `app_skill_get` — the host agent (Cowork) calls `save_skill`

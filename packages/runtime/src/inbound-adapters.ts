@@ -15,6 +15,11 @@ export type InboundProvider =
   | "slack"
   | "generic"
   | "native"
+  /** GitHub repo webhooks feeding the `webhook` sentinel provider (AIP-60).
+   *  Not a user-registrable endpoint dialect: `handleProviderInbound` routes
+   *  `/inbound/sentinel-<hookKey>` straight into the sentinel runtime, and the
+   *  provider verifies with this dialect's `X-Hub-Signature-256` check. */
+  | "sentinel"
 
 export const INBOUND_PROVIDERS: readonly InboundProvider[] = [
   "agentpush",
@@ -23,6 +28,7 @@ export const INBOUND_PROVIDERS: readonly InboundProvider[] = [
   "slack",
   "generic",
   "native",
+  "sentinel",
 ]
 
 export type NormalizeInboundResult =
@@ -48,6 +54,10 @@ export function normalizeInbound(
       return normalizeGeneric(body, ctx)
     case "native":
       return normalizeNative(body, ctx)
+    case "sentinel":
+      // Sentinel deliveries are normalized by the provider itself
+      // (sentinel-github-normalize.ts), never into an InboundMessage.
+      return { ok: false, error: "sentinel_not_an_inbound_message" }
     default:
       // Exhaustiveness guard — provider is typed, but keep TS happy.
       return { ok: false, error: "unsupported_provider" }
@@ -74,6 +84,8 @@ export function verifyInboundSignature(
       return verifySlackSignature(input)
     case "generic":
       return verifyHmacHexHeader(input, "x-agentproto-signature")
+    case "sentinel":
+      return verifyHmacHexHeader(input, "x-hub-signature-256")
     case "native":
       return { ok: false, reason: "native uses the sessions bearer gate" }
     default:

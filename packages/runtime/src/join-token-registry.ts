@@ -174,6 +174,12 @@ export interface JoinTokenRegistryDeps {
    *  are logged and swallowed: a bad/unreachable offer from one join must not
    *  crash the standing accept loop. */
   addHost: (offerUrl: string, name?: string, meta?: HostJoinMeta) => Promise<unknown>
+  /** Called when a joined box says goodbye just before it exits (see
+   *  `JoinHello.goodbye`), with its daemon fingerprint — normally
+   *  `hostRegistry.snapshotNow`, so the box's final session output is captured
+   *  while it can still answer. The box waits for this to settle (bounded on
+   *  its side), so it should not hang. Errors are logged and swallowed. */
+  flushHost?: (fingerprint: string) => Promise<unknown>
   /** Injectable clock (ms). Defaults to Date.now. */
   now?: () => number
   /** Diagnostic log sink. */
@@ -230,6 +236,11 @@ interface JoinHello {
   provider?: unknown
   sandboxId?: unknown
   labels?: unknown
+  /** Set by a box that is about to exit: the join is NOT a new registration
+   *  (no `offerUrl`, the use isn't counted) — capture the host named by
+   *  `fingerprint` one last time, then close. */
+  goodbye?: unknown
+  fingerprint?: unknown
 }
 
 function parseJoinHello(clientName: string | undefined): JoinHello | null {
@@ -404,8 +415,29 @@ export function createJoinTokenRegistry(deps: JoinTokenRegistryDeps): JoinTokenR
     await loop.done.catch(() => {})
   }
 
-  async function handleJoined(session: PairingSession, record: JoinTokenRecord): Promise<void> {
+  async function handleJoined(
+    session: PairingSession,
+    record: JoinTokenRecord,
+    prevLastUsedAt: string | undefined,
+  ): Promise<void> {
     const hello = parseJoinHello(session.clientName)
+    if (hello?.goodbye === true) {
+      // A goodbye is bookkeeping, not a join: give back the use the auth
+      // check consumed so it can't exhaust `maxUses` or fake `lastUsedAt`.
+      record.useCount = Math.max(0, record.useCount - 1)
+      if (prevLastUsedAt === undefined) delete record.lastUsedAt
+      else record.lastUsedAt = prevLastUsedAt
+      await persist()
+      if (typeof hello.fingerprint === "string" && hello.fingerprint && deps.flushHost) {
+        try {
+          await deps.flushHost(hello.fingerprint)
+          log(`[join-tokens] "${record.name}": final snapshot taken for ${hello.fingerprint} (goodbye)`)
+        } catch (err) {
+          log(`[join-tokens] "${record.name}": final snapshot for ${hello.fingerprint} failed: ${errMsg(err)}`)
+        }
+      }
+      return
+    }
     if (!hello || typeof hello.offerUrl !== "string" || !hello.offerUrl) {
       log(`[join-tokens] "${record.name}": joined box sent no self-offer — nothing added`)
       return
@@ -471,6 +503,7 @@ export function createJoinTokenRegistry(deps: JoinTokenRegistryDeps): JoinTokenR
       backoff = reconnectMinMs
 
       let capturedSession: PairingSession | null = null
+      let prevLastUsedAt: string | undefined
       let wrapped: E2eFrameSink
       try {
         const identity = await deps.loadIdentity()
@@ -487,6 +520,7 @@ export function createJoinTokenRegistry(deps: JoinTokenRegistryDeps): JoinTokenR
                 // iterations. Consume the use here (not after) so a wrong
                 // token never counts against maxUses.
                 if (!isActive(record)) return false
+                prevLastUsedAt = record.lastUsedAt
                 record.useCount += 1
                 record.lastUsedAt = new Date(now()).toISOString()
                 await persist()
@@ -507,7 +541,7 @@ export function createJoinTokenRegistry(deps: JoinTokenRegistryDeps): JoinTokenR
       }
 
       if (capturedSession) {
-        await handleJoined(capturedSession, record)
+        await handleJoined(capturedSession, record, prevLastUsedAt)
       }
       wrapped.close("join complete")
       // Reusable by design: loop straight back to re-parking for the next box.
