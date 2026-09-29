@@ -39,6 +39,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 // composite action is `uses: ./.github/actions/agentproto-run`), so the pure
 // artifact-ledger helpers are on disk two levels up from `.github/actions/*/`.
 import { parseArtifactMarkers } from "../../../scripts/lib/artifact-ledger.mjs"
+import { detectAdapterCrash } from "./crash-signals.mjs"
 import { describeRunProgress } from "../../../scripts/lib/workflow-progress.mjs"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -467,6 +468,11 @@ async function main() {
   // re-discovering the artifact. Best-effort: an empty ledger degrades to the
   // stamp scripts' discovery fallback (which now warns loudly).
   const artifacts = []
+  // Adapter-death signals harvested from each session's RAW output — see
+  // crash-signals.mjs. A run can reach status=done while the adapter inside
+  // the box was OOM-killed mid-turn (agentproto/ts#1597); that must read as
+  // a failure, not a green lane with no review.
+  const crashSignals = []
   // Cap the dump fan-out — a pathological run should not flood the job log.
   for (const sid of [...sessionIds].slice(0, 8)) {
     const desc = listedSessions.find((s) => s?.id === sid)
@@ -543,6 +549,9 @@ async function main() {
       } catch {
         // non-JSON envelope — scan the raw string as-is
       }
+      for (const hit of detectAdapterCrash(harvestText)) {
+        crashSignals.push(`${sid}: ${hit}`)
+      }
       for (const rec of parseArtifactMarkers(harvestText, { sessionId: sid })) {
         if (artifacts.some((a) => JSON.stringify(a) === JSON.stringify(rec))) continue
         artifacts.push(rec)
@@ -590,13 +599,21 @@ async function main() {
         "fallback reviewer should take over.",
     )
   }
+  const adapterCrashed = !timedOut && run.status === "done" && crashSignals.length > 0
+  if (adapterCrashed) {
+    console.error(
+      "driver: run reached status=done but a session's output shows the adapter died " +
+        `inside the box (${crashSignals.join("; ")}) — treating as FAILURE so the calling ` +
+        "job's fallback reviewer takes over instead of passing blind.",
+    )
+  }
   // Every consumer in ci.yml tests `outputs.status == 'done'`, so "timed-out"
   // reads exactly like the empty string this step used to emit when it threw —
   // no gate behaviour changes. What DOES change: `provenance` and `artifacts`
   // are now emitted on the timeout path too, so a run that posted its review
   // and THEN hung no longer looks (to the postcheck's live-head recount) like
   // nothing was posted — which is what arms a duplicate fallback review.
-  const finalStatus = timedOut ? "timed-out" : silentNoop ? "failed" : run.status
+  const finalStatus = timedOut ? "timed-out" : silentNoop || adapterCrashed ? "failed" : run.status
   await writeGithubOutput("run-id", runId)
   await writeGithubOutput("status", finalStatus)
   // Single-line JSON (no newline) — safe for the `name=value` GITHUB_OUTPUT form.

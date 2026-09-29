@@ -363,7 +363,7 @@ jobs:
       # prompt branches in entry.mjs) — a `pnpm test`-only gate would miss this
       # file entirely (it lives outside packages/**/adapters/**).
       - name: Run pr-review entry tests
-        run: node --test .github/agentproto-workflows/pr-review/entry.test.mjs
+        run: node --test .github/agentproto-workflows/pr-review/entry.test.mjs .github/actions/agentproto-run/crash-signals.test.mjs
 
       # Guards the CI artifact ledger — the pure record/marker/select helpers
       # the delivery helper, the agentproto-run driver, and both stamp scripts

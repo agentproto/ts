@@ -12,7 +12,7 @@
   },
   "resources": {
     "cpuCount": 2,
-    "memoryMb": 2048
+    "memoryMb": 4096
   },
   "templates": {
     "stable": {

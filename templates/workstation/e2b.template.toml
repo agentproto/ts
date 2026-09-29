@@ -20,7 +20,7 @@ description = "agentproto workstation — Node, git, pinned @agentproto/cli, bak
 # passed as CLI flags (`--cpu-count` / `--memory-mb`) at create time — see the
 # build commands below and README.md. The keys here are a human-readable RECORD.
 cpu_count = 2
-memory_mb = 2048
+memory_mb = 4096
 
 [build]
 dockerfile = "Dockerfile"
@@ -38,6 +38,6 @@ OPENCODE_RUNTIME_VERSION = "1.18.28"
 
 # Build (from templates/workstation/ — see README.md). The resource flags are
 # REQUIRED — the toml keys above are ignored by `template create`:
-#   e2b template create agentproto-workstation --cpu-count 2 --memory-mb 2048 -d Dockerfile
+#   e2b template create agentproto-workstation --cpu-count 2 --memory-mb 4096 -d Dockerfile
 # Dev variant (same Dockerfile, different alias):
-#   e2b template create agentproto-workstation-dev --cpu-count 2 --memory-mb 2048 -d Dockerfile
+#   e2b template create agentproto-workstation-dev --cpu-count 2 --memory-mb 4096 -d Dockerfile
