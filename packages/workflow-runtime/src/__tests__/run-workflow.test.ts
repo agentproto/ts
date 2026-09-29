@@ -882,6 +882,28 @@ describe("runWorkflow — tool step timeoutMs (F45)", () => {
     await expect(runWorkflow({ workflow: wf })).rejects.toThrow(/step 't': timed out after 100ms/)
     expect(Date.now() - start).toBeLessThan(2000)
   })
+
+  it("does not leak an 'abort' listener on the run's signal after a tool step completes (regression)", async () => {
+    const { getEventListeners } = await import("node:events")
+    const ac = new AbortController()
+    const wf: RuntimeWorkflow = {
+      id: "tool-no-listener-leak",
+      steps: [
+        {
+          kind: "tool",
+          id: "d",
+          tool: doubleTool,
+          candidates,
+          input: (b) => ({ n: (b.input as { n: number }).n }),
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, input: { n: 1 }, signal: ac.signal })
+    // withStepTimeout registers an 'abort' listener on the run signal for
+    // every tool step it wraps — the listener MUST be torn down once the
+    // step settles, or a long/multi-step run leaks one per step.
+    expect(getEventListeners(ac.signal, "abort")).toHaveLength(0)
+  })
 })
 
 describe("runWorkflow — kind: gate (AIP-15 P3)", () => {

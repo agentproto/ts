@@ -1167,8 +1167,13 @@ async function withStepTimeout<T>(
 ): Promise<T> {
   const controller = new AbortController()
   const onParentAbort = (sig: AbortSignal): void => controller.abort(sig.reason)
+  // The listener registered below must be the SAME function reference passed
+  // to `removeEventListener` in `finally` — a fresh closure at each call site
+  // (`() => onParentAbort(parentSignal)`) would never actually be removed,
+  // leaking a listener on `parentSignal` for every step this wraps.
+  const onParentAbortEvent = (): void => onParentAbort(parentSignal!)
   if (parentSignal?.aborted) onParentAbort(parentSignal)
-  else parentSignal?.addEventListener("abort", () => onParentAbort(parentSignal), { once: true })
+  else parentSignal?.addEventListener("abort", onParentAbortEvent, { once: true })
 
   let timedOut = false
   const timer = setTimeout(() => {
@@ -1183,7 +1188,7 @@ async function withStepTimeout<T>(
     throw err
   } finally {
     clearTimeout(timer)
-    parentSignal?.removeEventListener("abort", onParentAbort)
+    parentSignal?.removeEventListener("abort", onParentAbortEvent)
   }
 }
 
