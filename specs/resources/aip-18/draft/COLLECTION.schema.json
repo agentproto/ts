@@ -241,7 +241,7 @@
       "type": "object",
       "required": ["name", "type"],
       "additionalProperties": false,
-      "description": "Definition of one field on a collection's item schema. Merge-by-name. Type drift between parent and child is HARD refused.",
+      "description": "Definition of one field on a collection's item schema (an entry in `fields[]`). Merge-by-name. Type drift between parent and child is HARD refused. Identical to `fieldShape` plus a REQUIRED `name`; keep the two property lists in sync.",
       "properties": {
         "name": {
           "type": "string",
@@ -282,8 +282,8 @@
           "description": "Required when type=enum. Children may narrow to a subset; widening to a superset is permitted (it does not invalidate instances)."
         },
         "items": {
-          "$ref": "#/$defs/fieldDef",
-          "description": "Required when type=array. Recursive shape — describes the inner item type."
+          "$ref": "#/$defs/fieldShape",
+          "description": "Required when type=array. Recursive shape — describes the inner item type. Carries no `name` (see `fieldShape`)."
         },
         "refKind": {
           "type": "string",
@@ -311,7 +311,128 @@
           "default": true,
           "description": "OPTIONAL deprecation flag. A child may set false to mark an inherited field deprecated; the host preserves the field in the resolved schema (so existing items still validate) but flags new uses via lint. Setting enabled:false on a field a child does not inherit is invalid."
         }
-      }
+      },
+      "allOf": [
+        {
+          "description": "type=enum requires `enum`.",
+          "if": {
+            "required": ["type"],
+            "properties": { "type": { "const": "enum" } }
+          },
+          "then": { "required": ["enum"] }
+        },
+        {
+          "description": "type=array requires `items`.",
+          "if": {
+            "required": ["type"],
+            "properties": { "type": { "const": "array" } }
+          },
+          "then": { "required": ["items"] }
+        },
+        {
+          "description": "type=ref requires `refKind`.",
+          "if": {
+            "required": ["type"],
+            "properties": { "type": { "const": "ref" } }
+          },
+          "then": { "required": ["refKind"] }
+        }
+      ]
+    },
+    "fieldShape": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "description": "Name-less field definition: the shape of an array field's `items:`. Identical to `fieldDef` minus `name` — an inner value type has no name of its own, and `name` is only meaningful (and required) for entries in `fields[]`. Keep the two property lists in sync.",
+      "properties": {
+        "type": {
+          "enum": [
+            "string",
+            "number",
+            "boolean",
+            "enum",
+            "date",
+            "datetime",
+            "text",
+            "url",
+            "ref",
+            "array"
+          ],
+          "description": "Field type. Drift across composition (parent string -> child number) is HARD refused (`collection_field_type_drift`)."
+        },
+        "required": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether items MUST declare this field. A child may narrow false -> true; loosening true -> false is permitted (it removes a constraint without invalidating instances)."
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "Prose describing what the field captures."
+        },
+        "enum": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true,
+          "description": "Required when type=enum. Children may narrow to a subset; widening to a superset is permitted (it does not invalidate instances)."
+        },
+        "items": {
+          "$ref": "#/$defs/fieldShape",
+          "description": "Required when type=array. Recursive shape — describes the inner item type. Carries no `name` (see `fieldShape`)."
+        },
+        "refKind": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$",
+          "description": "Required when type=ref. The target collection's `name`. Hosts validate that ref values point at items of this collection."
+        },
+        "pattern": {
+          "type": "string",
+          "description": "OPTIONAL regex constraint. Only valid when type=string."
+        },
+        "min": {
+          "type": "number",
+          "description": "OPTIONAL minimum. For type=number: minimum value. For type=array: minimum length."
+        },
+        "max": {
+          "type": "number",
+          "description": "OPTIONAL maximum. For type=number: maximum value. For type=array: maximum length."
+        },
+        "format": {
+          "type": "string",
+          "description": "OPTIONAL named format. Common values: email, uri, semver, uuid, slug. Only valid when type=string. Hosts MAY interpret unknown formats as advisory."
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "OPTIONAL deprecation flag. A child may set false to mark an inherited field deprecated; the host preserves the field in the resolved schema (so existing items still validate) but flags new uses via lint. Setting enabled:false on a field a child does not inherit is invalid."
+        }
+      },
+      "allOf": [
+        {
+          "description": "type=enum requires `enum`.",
+          "if": {
+            "required": ["type"],
+            "properties": { "type": { "const": "enum" } }
+          },
+          "then": { "required": ["enum"] }
+        },
+        {
+          "description": "type=array requires `items`.",
+          "if": {
+            "required": ["type"],
+            "properties": { "type": { "const": "array" } }
+          },
+          "then": { "required": ["items"] }
+        },
+        {
+          "description": "type=ref requires `refKind`.",
+          "if": {
+            "required": ["type"],
+            "properties": { "type": { "const": "ref" } }
+          },
+          "then": { "required": ["refKind"] }
+        }
+      ]
     },
     "item": {
       "type": "object",
@@ -388,7 +509,7 @@
         },
         "dueAt": {
           "type": "string",
-          "description": "OPTIONAL — deadline value. Format depends on collection.deadline.kind: ISO date for target-date, ISO datetime for window, RRULE-like for recurrent."
+          "description": "OPTIONAL — deadline value. Format depends on collection.deadline.kind: ISO date for target-date, ISO datetime for window, RRULE-like for recurrent. Same quoting rule as `createdAt`: producers SHOULD quote date and datetime values; consumers MAY accept a native date/timestamp."
         },
         "attachments": {
           "type": "array",
@@ -417,12 +538,12 @@
         "createdAt": {
           "type": "string",
           "format": "date-time",
-          "description": "OPTIONAL — ISO 8601 creation timestamp."
+          "description": "OPTIONAL — ISO 8601 creation timestamp. Producers SHOULD write it as a quoted YAML string (createdAt: \"2026-04-26T09:14:00Z\"): some YAML 1.1 parsers resolve an unquoted ISO timestamp to a native timestamp, which is not a string. Consumers MAY accept a native timestamp and normalize it to an ISO 8601 string before validating."
         },
         "updatedAt": {
           "type": "string",
           "format": "date-time",
-          "description": "OPTIONAL — ISO 8601 last-update timestamp."
+          "description": "OPTIONAL — ISO 8601 last-update timestamp. Same quoting rule as `createdAt`: producers SHOULD quote it; consumers MAY accept a native timestamp."
         },
         "metadata": {
           "type": "object",
