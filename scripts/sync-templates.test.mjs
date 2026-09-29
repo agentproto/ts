@@ -113,8 +113,8 @@ test("write mode generates all artifacts and is idempotent (second run = no diff
     // resources recorded from versions.json, and threaded into the documented
     // build command as CLI FLAGS (the toml itself is not read by `template create`).
     assert.match(toml, /cpu_count = 2/)
-    assert.match(toml, /memory_mb = 2048/)
-    assert.match(toml, /--cpu-count 2 --memory-mb 2048 -d Dockerfile/)
+    assert.match(toml, /memory_mb = 4096/)
+    assert.match(toml, /--cpu-count 2 --memory-mb 4096 -d Dockerfile/)
 
     // Dockerfile: one ARG per adapter (never a space-separated list), pins
     // baked as ARG defaults, and a SINGLE `npm i -g` for the baked toolchain

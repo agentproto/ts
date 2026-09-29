@@ -2,7 +2,7 @@
 # DO NOT EDIT — edit versions.json and re-run the sync script instead.
 #
 # agentproto-workstation e2b template image. Build (from this directory):
-#   e2b template create agentproto-workstation --cpu-count 2 --memory-mb 2048 -d Dockerfile   # see README.md
+#   e2b template create agentproto-workstation --cpu-count 2 --memory-mb 4096 -d Dockerfile   # see README.md
 # (the resource flags are REQUIRED — e2b.template.toml is not read by `template create`).
 #
 # The e2b CLI has NO --build-arg; the pins below are ARG DEFAULTS resolved
