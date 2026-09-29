@@ -19,8 +19,6 @@
 //   - treats a malformed judge reply as `active` with confidence 0 (never
 //     acted on).
 
-import { tmpdir } from "node:os"
-
 const DEFAULT_IDLE_MINUTES = 30
 const DEFAULT_MIN_CONFIDENCE = 0.8
 // The agent judge's model is the `judge.session` model ROLE, resolved at run
@@ -605,7 +603,6 @@ export default {
           id: "judgeOne",
           kind: "agent",
           agent: { ref: JUDGE_REF },
-          cwd: tmpdir(),
           prompt: "$item.judgePrompt",
           model: b => b.steps.settings?.judgeModel,
         },
