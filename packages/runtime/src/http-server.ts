@@ -21,6 +21,7 @@
  */
 
 import { buildLabeledStatsReport } from "./process-stats.js"
+import { getHostLoadService } from "./host-load.js"
 import { parseBrowserMode } from "./browser-mount.js"
 import { randomUUID } from "node:crypto"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
@@ -2568,7 +2569,51 @@ export async function startHttpServer(
           return
         }
 
-// Sessions routes — only registered when the gateway was
+        // GET /host/load?detail=summary|full&fresh=true&budgetMs=<ms> - host-wide
+        // load report (loadavg vs cores, CPU, RAM/swap, per-disk IO, heaviest
+        // processes with their owning session, warnings). Same JSON the
+        // `host_load` MCP tool returns; bounded to ~2s by default, slow probes
+        // land in `partial`. Read-only, like the other sessions GETs.
+        if (opts.sessions && path === "/host/load" && req.method === "GET") {
+          const json = (status: number, body: unknown): void => {
+            res.writeHead(status, { "content-type": "application/json" })
+            res.end(JSON.stringify(body))
+          }
+          const reqUrl = req.url ?? ""
+          const params = new URLSearchParams(reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "")
+          const detail = params.get("detail")
+          if (detail !== null && detail !== "summary" && detail !== "full") {
+            json(400, {
+              error: "invalid_detail",
+              message: `?detail must be "summary" or "full", got ${JSON.stringify(detail)}.`,
+            })
+            return
+          }
+          const budgetRaw = params.get("budgetMs")
+          const budgetMs = budgetRaw === null ? undefined : Number(budgetRaw)
+          if (budgetMs !== undefined && (!Number.isInteger(budgetMs) || budgetMs < 300 || budgetMs > 60_000)) {
+            json(400, {
+              error: "invalid_budget",
+              message: `?budgetMs must be an integer between 300 and 60000, got ${JSON.stringify(budgetRaw)}.`,
+            })
+            return
+          }
+          try {
+            json(
+              200,
+              await getHostLoadService().report(opts.sessions.list({ includeArchived: true }), {
+                ...(detail ? { detail } : {}),
+                ...(params.get("fresh") === "true" ? { fresh: true } : {}),
+                ...(budgetMs !== undefined ? { budgetMs } : {}),
+              }),
+            )
+          } catch (err) {
+            json(500, { error: "host_load_failed", message: err instanceof Error ? err.message : String(err) })
+          }
+          return
+        }
+
+        // Sessions routes — only registered when the gateway was
         // built with a SessionsRegistry. /sessions, /sessions/:id,
         // /sessions/:id/stream (SSE), POST /sessions/:id/kill,
         // DELETE /sessions/:id (forget after exit).
