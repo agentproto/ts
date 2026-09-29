@@ -131,16 +131,61 @@ export function outcomeCardFor(session: Pick<SessionDescriptor, "outcome"> | nul
 /** Max characters of the list row's outcome hint. */
 export const OUTCOME_HINT_MAX = 80
 
+const clampHint = (flat: string): string =>
+  flat.length > OUTCOME_HINT_MAX ? `${flat.slice(0, OUTCOME_HINT_MAX - 1)}…` : flat
+
+/**
+ * A short, readable cause for a session that died (daemon `lastError`, often
+ * multi-line and long). Strips the `agent_start: ` prefix, drops `.npmrc` /
+ * `NODE_AUTH_TOKEN` warning lines, takes the first meaningful line and maps
+ * known shapes to concise text; anything else falls back to that line,
+ * clamped to {@link OUTCOME_HINT_MAX}. `undefined` when nothing meaningful.
+ */
+export function failureCauseFor(lastError: string | undefined): string | undefined {
+  if (!lastError) return undefined
+  const lines = lastError
+    .replace(/^\s*agent_start:\s*/i, "")
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(l => l && !/\.npmrc|NODE_AUTH_TOKEN/i.test(l))
+  const first = lines[0]
+  if (!first) return undefined
+  const setup = /worktree setup hook failed(?:\s*\(exit\s*(\d+)\))?\s*:\s*(.+)$/i.exec(first)
+  if (setup) return clampHint(`setup failed · ${(setup[2] ?? "").trim()}`)
+  const mode = /unknown_mode\b.*?Mode '([^']+)'/i.exec(first) ?? /Mode '([^']+)' is not declared/i.exec(first)
+  if (mode) return clampHint(`spawn failed · unknown mode '${mode[1]}'`)
+  const branch =
+    /branch(?: named)? ['"`]?([^'"`\s]+)['"`]? already exists/i.exec(first) ??
+    /already exists.*branch ['"`]?([^'"`\s]+)/i.exec(first)
+  if (branch) return clampHint(`branch ${branch[1]} already exists`)
+  return clampHint(first.replace(/\s+/g, " "))
+}
+
+export interface OutcomeHint {
+  text: string
+  muted: boolean
+  /** True for a failure cause — rendered in the error color. */
+  error?: true
+  /** Row tooltip — the full `lastError`, set only alongside `error`. */
+  title?: string
+}
+
 /**
  * The sessions list row's one-line outcome hint for an ENDED session: the
  * first {@link OUTCOME_HINT_MAX} chars of the summary, or "no output" (muted)
- * for an empty outcome. `undefined` for a live session or one without an
+ * for an empty outcome; for an errored session with a `lastError`, the
+ * derived cause ({@link failureCauseFor}, error-styled). `undefined` for a live session or one without an
  * outcome — the row keeps its usual activity line. Works on the full outcome
  * or the daemon's compact `{ status, summary }` list projection alike.
  */
 export function outcomeHintFor(
-  session: Pick<SessionSummary, "status" | "outcome">,
-): { text: string; muted: boolean } | undefined {
+  session: Pick<SessionSummary, "status" | "outcome"> & { lastError?: string },
+): OutcomeHint | undefined {
+  // A session that died with a recorded cause says WHY (not "no output").
+  if (session.status === "error") {
+    const cause = failureCauseFor(session.lastError)
+    if (cause) return { text: cause, muted: false, error: true, title: session.lastError }
+  }
   const o = session.outcome
   if (!o) return undefined
   if (session.status !== "exited" && session.status !== "killed" && session.status !== "error") return undefined

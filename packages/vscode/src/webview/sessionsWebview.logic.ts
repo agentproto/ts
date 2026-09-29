@@ -525,6 +525,10 @@ export interface WebviewRow {
   message: string | undefined
   /** True when `message` is the muted "no output" hint of an empty outcome. */
   messageMuted: boolean
+  /** True when `message` is a failure cause (errored session) — error-styled. */
+  messageError: boolean
+  /** Row tooltip for `message` — the full `lastError` of a failed session. */
+  messageTitle: string | undefined
   /** Line 3 lead segment — "⑂ <worktree>" for an isolated session, the
    *  WORKSPACE label for an in-place one (the posture is the default, so it
    *  isn't worth a word — where it runs is), or "" to render no line at all
@@ -602,15 +606,16 @@ export interface WebviewRow {
   orphaned: boolean
 }
 
-/** The five attention sections, in fixed priority order. */
-export type SectionKey = "needs-you" | "running" | "attention" | "quiet" | "earlier"
+/** The six attention sections, in fixed priority order. */
+export type SectionKey = "needs-you" | "running" | "attention" | "failed" | "quiet" | "earlier"
 
-export const SECTION_ORDER: readonly SectionKey[] = ["needs-you", "running", "attention", "quiet", "earlier"]
+export const SECTION_ORDER: readonly SectionKey[] = ["needs-you", "running", "attention", "failed", "quiet", "earlier"]
 
 const SECTION_LABELS: Readonly<Record<SectionKey, string>> = {
   "needs-you": "Needs you",
   running: "Running",
   attention: "Attention",
+  failed: "Failed",
   quiet: "Quiet",
   earlier: "Earlier",
 }
@@ -633,7 +638,7 @@ const SECTION_BY_STATUS: Readonly<Record<WebviewRowStatus, SectionKey>> = {
   // with the live sessions rather than sinking into Quiet.
   delegating: "running",
   stalled: "attention",
-  failed: "attention",
+  failed: "failed",
   // Parked = quiet but supervised (a watcher, not a bg task); awaiting-bg =
   // quiet but with its own background tasks still pending. Both stay in the
   // same single Quiet list as everything else — distinguished by their tell
@@ -809,6 +814,8 @@ function toRow(
     idMono: identity.idMono,
     message,
     messageMuted: hint?.muted === true,
+    messageError: hint?.error === true,
+    messageTitle: hint?.title,
     tag: inPlace ? (ws?.label ?? "") : isolation,
     tagTitle: tagTitleParts.length > 0 ? tagTitleParts.join(" · ") : undefined,
     logo: adapterLogoFor(session.adapterSlug ?? session.kind),

@@ -641,6 +641,9 @@ export interface SessionListCompactItem {
    *  transcript — the exact gap that made a session whose turn died on an
    *  upstream API error look identical to a healthy idle one. */
   lastTurnErroredAt?: SessionDescriptor["lastTurnErroredAt"]
+  /** Mirrors `SessionDescriptor.lastError` (capped at 2000 chars) — why an
+   *  errored session died (spawn failure, crash). Absent otherwise. */
+  lastError?: string
   /** Mirrors `SessionDescriptor.lastTurnErrorMessage` — the captured error
    *  text for `lastTurnErroredAt`. Absent when that timestamp is absent, or
    *  when the adapter reported `reason:"error"` with no in-band `error`
@@ -708,6 +711,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   contextSizeSource: s.contextSizeSource,
   contextUsed: s.contextUsed,
   ...(s.outcome ? { outcome: compactOutcome(s.outcome) } : {}),
+  ...(s.lastError ? { lastError: s.lastError.slice(0, 2000) } : {}),
   ...(s.lastTurnErroredAt !== undefined ? { lastTurnErroredAt: s.lastTurnErroredAt } : {}),
   ...(s.lastTurnErrorMessage !== undefined ? { lastTurnErrorMessage: s.lastTurnErrorMessage } : {}),
   ...(s.lastTurnReason !== undefined ? { lastTurnReason: s.lastTurnReason } : {}),

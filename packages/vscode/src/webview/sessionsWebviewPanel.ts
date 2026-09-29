@@ -4,7 +4,7 @@
  * "Attention-first sections" (validated 2026-08-07): the seven status tabs are
  * gone. Status is no longer a control — it is the sort order the list
  * organizes itself into. Every session falls into one of five fixed-priority
- * sections (Needs you → Running → Attention → Quiet → Earlier), and navigation
+ * sections (Needs you → Running → Attention → Failed → Quiet → Earlier), and navigation
  * collapses to two axes: a top PROJECT RAIL (All + per-workspace chips, each
  * with a count and an ochre "awaiting" dot) and an `Agents | Auto` SEGMENTED
  * CONTROL (human- vs machine-origin, the latter grouped into Gate reviews /
@@ -119,6 +119,8 @@ interface RenderRow {
   idMono: string | undefined
   message: string | undefined
   messageMuted: boolean
+  messageError: boolean
+  messageTitle: string | undefined
   tag: string
   tagTitle: string | undefined
   logo: RenderLogo
@@ -256,6 +258,8 @@ function toRenderRow(
     idMono: row.idMono,
     message: row.message,
     messageMuted: row.messageMuted,
+    messageError: row.messageError,
+    messageTitle: row.messageTitle,
     tag: row.tag,
     tagTitle: row.tagTitle,
     logo: toRenderLogo(row.logo, webview, extensionUri),
@@ -1020,6 +1024,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .name .rtw.closed { transform: rotate(-90deg); }
     .msg { color: var(--dim); font-size: 12px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .msg.muted { font-style: italic; opacity: 0.75; }
+    .msg.error { color: var(--vscode-errorForeground, var(--stalled)); }
     .meta-loc { margin-top: 3px; font-size: 11px; color: var(--faint); }
     .meta { display: flex; gap: 8px; margin-top: 1px; align-items: center; font-size: 11px; color: var(--faint); flex-wrap: wrap; }
     .meta .harness { display: inline-flex; align-items: center; gap: 4px; }
@@ -1318,7 +1323,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
           '<span class="' + dotClasses + '"' + wsStyle + '></span>' +
           '<div class="mid">' +
             '<div class="name">' + nameLine + '</div>' +
-            (r.message ? '<div class="msg' + (r.messageMuted ? ' muted' : '') + '">' + escapeHtml(r.message) + '</div>' : '') +
+            (r.message ? '<div class="msg' + (r.messageMuted ? ' muted' : '') + (r.messageError ? ' error' : '') + '"' + (r.messageTitle ? ' title="' + escapeHtml(r.messageTitle) + '"' : '') + '>' + escapeHtml(r.message) + '</div>' : '') +
             (metaLocHTML(r) ? '<div class="meta-loc">' + metaLocHTML(r) + '</div>' : '') +
             '<div class="meta">' + metaHTML(r, depth) + '</div>' +
           '</div>' +

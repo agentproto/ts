@@ -416,7 +416,7 @@ describe("sectionFor", () => {
     expect(sectionFor(session({ awaitingInput: true }))).toBe("needs-you")
     expect(sectionFor(session({ busy: true }))).toBe("running")
     expect(sectionFor(session({ busy: true, lastActivityAt: "2026-01-01T23:00:00Z" }), NOW)).toBe("attention")
-    expect(sectionFor(session({ status: "error" }))).toBe("attention")
+    expect(sectionFor(session({ status: "error" }))).toBe("failed")
     expect(sectionFor(session({ busy: false }))).toBe("quiet")
     expect(sectionFor(session({ status: "exited" }))).toBe("earlier")
     expect(sectionFor(session({ status: "killed", killedMidTurn: true }))).toBe("earlier")
@@ -428,23 +428,26 @@ describe("sectionFor", () => {
 })
 
 describe("buildSessionsWebviewModel — attention sections", () => {
-  it("organizes the agents lane into the five sections in fixed order", () => {
+  it("organizes the agents lane into the six sections in fixed order", () => {
     const sessions = [
       session({ id: "await", cwd: "/Code/studio", awaitingInput: true }),
       session({ id: "bg", cwd: "/Code/studio", busy: false, pendingBgTasks: 1 }),
       session({ id: "run", cwd: "/Code/studio", busy: true }),
       session({ id: "fail", cwd: "/Code/studio", status: "error" }),
+      session({ id: "stall", cwd: "/Code/studio", busy: true, lastActivityAt: "2026-01-01T23:00:00Z" }),
       session({ id: "idle", cwd: "/Code/studio", busy: false }),
       session({ id: "done", cwd: "/Code/studio", status: "exited" }),
     ]
     const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
-    expect(model.groups.map(g => g.key)).toEqual(["needs-you", "running", "attention", "quiet", "earlier"])
-    expect(model.groups.map(g => g.label)).toEqual(["Needs you", "Running", "Attention", "Quiet", "Earlier"])
+    expect(model.groups.map(g => g.key)).toEqual(["needs-you", "running", "attention", "failed", "quiet", "earlier"])
+    expect(model.groups.map(g => g.label)).toEqual(["Needs you", "Running", "Attention", "Failed", "Quiet", "Earlier"])
     // The awaiting-bg session lands in the same Quiet list as the plain idle
     // session — no dedicated section of its own.
     expect(model.groups.find(g => g.key === "quiet")?.rows.map(r => r.id).sort()).toEqual(["bg", "idle"])
     expect(model.groups.find(g => g.key === "earlier")?.hint).toBe("last 24 h")
-    expect(model.shownCount).toBe(6)
+    expect(model.groups.find(g => g.key === "failed")?.rows.map(r => r.id)).toEqual(["fail"])
+    expect(model.groups.find(g => g.key === "attention")?.rows.map(r => r.id)).toEqual(["stall"])
+    expect(model.shownCount).toBe(7)
   })
 
   it("omits empty sections", () => {
@@ -474,14 +477,30 @@ describe("buildSessionsWebviewModel — attention sections", () => {
     expect([legacy.message, legacy.messageMuted]).toEqual(["Running the gate", false])
   })
 
-  it("groups stalled and failed together under Attention", () => {
+  it("splits stalled (Attention) from failed (Failed)", () => {
     const sessions = [
       session({ id: "stalled", cwd: "/Code/studio", busy: true, lastActivityAt: "2026-01-01T23:00:00Z" }),
       session({ id: "failed", cwd: "/Code/studio", status: "error" }),
     ]
     const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
-    const attention = model.groups.find(g => g.key === "attention")
-    expect(attention?.rows.map(r => r.id).sort()).toEqual(["failed", "stalled"])
+    expect(model.groups.find(g => g.key === "attention")?.rows.map(r => r.id)).toEqual(["stalled"])
+    expect(model.groups.find(g => g.key === "failed")?.rows.map(r => r.id)).toEqual(["failed"])
+  })
+
+  it("a failed row shows its cause, error-styled, with the full lastError as tooltip", () => {
+    const lastError = "agent_start: spawn failed \u2014 [unknown_mode at config.mode] Mode 'background' is not declared"
+    const model = buildSessionsWebviewModel(
+      [session({ cwd: "/Code/studio", status: "error", lastError, outcome: { status: "empty" } })],
+      studioConfig,
+      opts(),
+    )
+    const row = model.groups[0]!.rows[0]! as WebviewRow
+    expect([row.message, row.messageMuted, row.messageError, row.messageTitle]).toEqual([
+      "spawn failed \u00b7 unknown mode 'background'",
+      false,
+      true,
+      lastError,
+    ])
   })
 
   it("maps a row's fields from the reused pure helpers", () => {

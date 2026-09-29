@@ -2185,6 +2185,9 @@ export interface SessionSummary {
    *  `SessionDescriptor.lastTurnErroredAt`. Stamped at turn-end, cleared on
    *  the next turn that completes without one. */
   lastTurnErroredAt?: string
+  /** `SessionDescriptor.lastError` (spawn/crash cause), capped at 2000 chars
+   *  for the list projection. Lets a list view say WHY an errored row died. */
+  lastError?: string
   origin?: string
   parentSessionId?: string
   depth?: number
@@ -2294,6 +2297,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     pendingBgTasks: desc.pendingBgTasks,
     backgroundTasks: desc.backgroundTasks,
     lastTurnErroredAt: desc.lastTurnErroredAt,
+    ...(desc.lastError ? { lastError: desc.lastError.slice(0, 2000) } : {}),
     origin: desc.origin,
     parentSessionId: desc.parentSessionId,
     depth: desc.depth,
