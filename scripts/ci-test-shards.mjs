@@ -15,6 +15,12 @@
  * running ten times longer than the rest. Weights are seconds from a local
  * forced `turbo run test` (2026-09-28) — only their relative order matters,
  * and a stale entry costs balance, never correctness.
+ *
+ *   node scripts/ci-test-shards.mjs --shard 2 --of 4 --extras
+ *
+ * `--extras` prints the `--filter`s of packages a shard's tests need BUILT but
+ * that are not in its dependency graph (see BUILD_EXTRAS) — the old single job
+ * built the whole workspace, so nothing had to say so out loud.
  */
 
 import { execFileSync } from 'node:child_process'
@@ -38,6 +44,24 @@ export const WEIGHTS = {
   '@agentproto/driver-agent-cli': 25,
   '@agentproto/corpus': 23,
   '@agentproto/workflow-runtime': 22,
+}
+
+/**
+ * Packages a tested package's suite loads from `dist/` WITHOUT declaring a
+ * dependency on them, so `turbo`'s `^build` never builds them in a shard.
+ * Keyed by the tested package; each entry is built (unscoped by `--affected`,
+ * since a cache hit is cheap and the suite needs it whether or not it changed)
+ * in any shard that runs that package.
+ */
+export const BUILD_EXTRAS = {
+  // resolve.test.ts "resolves jcode": workspace-local adapter resolution reads
+  // adapters/jcode/dist; jcode is deliberately not a dependency of the cli.
+  '@agentproto/cli': ['@agentproto/adapter-jcode'],
+}
+
+/** Extra build targets for one shard's packages (see BUILD_EXTRAS), sorted and deduped. */
+export function buildExtras(shardNames, extras = BUILD_EXTRAS) {
+  return [...new Set(shardNames.flatMap((n) => extras[n] ?? []))].sort()
 }
 
 /**
@@ -97,7 +121,9 @@ function main(argv) {
     console.error('ci-test-shards: found no workspace packages with a test script — refusing to emit an empty shard')
     process.exit(1)
   }
-  for (const name of partition(names, of)[shard - 1]) console.log(`--filter=${name}`)
+  const shardNames = partition(names, of)[shard - 1]
+  const out = argv.includes('--extras') ? buildExtras(shardNames) : shardNames
+  for (const name of out) console.log(`--filter=${name}`)
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) main(process.argv.slice(2))

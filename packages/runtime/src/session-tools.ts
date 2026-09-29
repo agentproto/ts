@@ -50,10 +50,11 @@ import {
 import {
   loadImportedMcps,
   saveImportedMcps,
-  addImport,
+  addImportWithSecrets,
   removeImport,
   type ImportedMcpEntry,
 } from "./mcp-imports.js"
+import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import {
   loadBundles,
   createBundle,
@@ -2239,14 +2240,21 @@ export function registerSessionTools(
           }
         }
         const cfg = await loadImportedMcps()
-        const next = addImport(cfg, {
-          snapshot,
-          ...(input.alias ? { alias: input.alias } : {}),
-        })
-        await saveImportedMcps(next)
-        const entry = next.imports.find(e => e.id === snapshot.id)
+        const added = await addImportWithSecrets(
+          cfg,
+          {
+            snapshot,
+            ...(input.alias ? { alias: input.alias } : {}),
+          },
+          getMcpCredentialDeps()
+        )
+        await saveImportedMcps(added.config)
+        const out =
+          added.warnings.length > 0
+            ? { ...added.entry, warnings: added.warnings }
+            : added.entry
         return {
-          content: [{ type: "text", text: JSON.stringify(entry) }],
+          content: [{ type: "text", text: JSON.stringify(out) }],
         }
       } catch (err) {
         return {
@@ -2510,9 +2518,11 @@ export function registerSessionTools(
       label: z.string().min(1).describe("Human-readable name."),
       description: z.string().min(1).optional(),
       mcpImports: z
-        .array(z.string().min(1))
+        .union([z.array(z.string().min(1)), z.literal("*")])
         .optional()
-        .describe("Imported-MCP ids from `mcp_imported_list`. Default []."),
+        .describe(
+          "Imported-MCP ids from `mcp_imported_list`, or \"*\" for every import present at spawn time (opt-in; floods the tool palette). Default [].",
+        ),
       includeDaemon: z
         .boolean()
         .optional()
@@ -2559,7 +2569,7 @@ export function registerSessionTools(
       id: z.string().min(1).describe("Existing bundle id."),
       label: z.string().min(1).optional(),
       description: z.string().min(1).optional(),
-      mcpImports: z.array(z.string().min(1)).optional(),
+      mcpImports: z.union([z.array(z.string().min(1)), z.literal("*")]).optional(),
       includeDaemon: z.boolean().optional(),
       skills: z.array(z.string().min(1)).optional(),
     },

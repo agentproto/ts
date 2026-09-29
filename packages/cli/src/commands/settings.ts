@@ -263,6 +263,14 @@ function printReport(report: SettingsApplyReport, bundle: SettingsBundle): void 
         report.missingAdapters.map(a => `  agentproto install ${a.slug}   # v${a.version}\n`).join(""),
     )
   }
+  if (report.mcpDanglingSecrets.length > 0) {
+    process.stdout.write(
+      `\nImported MCPs whose secrets were NOT carried over (supply them locally; key names only):\n` +
+        report.mcpDanglingSecrets
+          .map(d => `  - ${d.id}: ${[...(d.headers ?? []).map(k => `headers.${k}`), ...(d.env ?? []).map(k => `env.${k}`)].join(", ")}\n`)
+          .join(""),
+    )
+  }
   const skippedDetails = [
     ...report.authProfiles.skipped,
     ...report.harnessPresets.skipped,

@@ -44,6 +44,7 @@ import {
 } from "./sentinel-providers/registry.js"
 import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
 import { WEBHOOK_SLUG } from "./sentinel-providers/webhook.js"
+import { AGENTPUSH_SLUG } from "./sentinel-providers/agentpush.js"
 import type {
   SentinelProviderHandle,
   SentinelProviderCapabilities,
@@ -58,15 +59,16 @@ export const SENTINEL_FAMILY = "sentinel"
 export interface SentinelAdapterInfo {
   capabilities: SentinelProviderCapabilities
   /** Present for providers that can be installed-but-not-operational (the
-   *  `webhook` provider without a public URL / hook scope). `ready:false`
+   *  `webhook` provider without a public URL / hook scope, `agentpush`
+   *  without an API key). `ready:false`
    *  carries the actionable `reason`, and the entry's status is downgraded
    *  to `available`. */
   readiness?: SentinelProviderReadiness
 }
 
-/** Static catalog of built-in providers. `agentpush` lands in a later step
- *  (design §12). A third-party `agentproto/adapter-<slug>` package
- *  still lists via `discoverExtras` below. */
+/** Static catalog of built-in providers. A third-party
+ *  `agentproto/adapter-<slug>` package still lists via `discoverExtras`
+ *  below. */
 export const SENTINEL_CATALOG: AdapterCatalog = [
   {
     slug: LOCAL_GH_SLUG,
@@ -86,6 +88,17 @@ export const SENTINEL_CATALOG: AdapterCatalog = [
       "(named tunnel or AGENTPROTO_PUBLIC_URL) and a gh token with admin:repo_hook.",
     packageName: "@agentproto/runtime",
     hint: "github · push · needs public URL",
+  },
+  {
+    slug: AGENTPUSH_SLUG,
+    name: "agentpush",
+    description:
+      "Hosted event subscriptions over agentpush — GitHub App installs, Telegram, " +
+      "generic hooks. Events queue server-side and survive daemon downtime; delivered " +
+      "by poll (default, no public URL) or push. Needs an agentpush workspace API key " +
+      "(`setup_sentinel_provider`, or an imported `agentpush` MCP alias).",
+    packageName: "@agentproto/runtime",
+    hint: "any source · durable · needs API key",
   },
 ]
 
@@ -201,11 +214,9 @@ export interface RegisterSentinelAdapterToolsOptions {
  * Register the sentinel family's adapter-kit MCP tools on the server:
  *   - `list_sentinel_adapters`  (parameterless; status + capabilities, no creds)
  *   - `setup_sentinel_provider` (multi-field; fields are union of every
- *     configurable provider's declared `setupFields`, all SENSITIVE and
- *     never echoed). With no built-in providers in step 2, both tools start
- *     out listing/accepting only whatever third-party packages are
- *     installed — never a hard error, just an empty catalog until step 3
- *     (`local-gh`) or a third-party package lands.
+ *     configurable provider's declared `setupFields`; sensitive ones are
+ *     never echoed). Only providers that declare `setupFields` (built-in
+ *     `agentpush`, plus any third-party package) are configurable.
  */
 export async function registerSentinelAdapterTools(
   server: McpServer,
@@ -232,8 +243,9 @@ export async function registerSentinelAdapterTools(
     server,
     toolName: "setup_sentinel_provider",
     description:
-      "Configure a sentinel provider that requires credentials. Each field " +
-      "is SENSITIVE — stored 0600 and never echoed back in tool results. " +
+      "Configure a sentinel provider that requires credentials (e.g. `agentpush`: " +
+      "`apiKey`, optional `baseUrl`, optional `delivery` = poll|push). Sensitive " +
+      "fields are stored 0600 and never echoed back in tool results. " +
       "Only the fields a given provider declares are stored.",
     validSlugs,
     fields,
@@ -255,6 +267,17 @@ export async function registerSentinelAdapterTools(
         return {
           ok: false,
           hint: `missing required field(s): ${missing.join(", ")}`,
+        }
+      }
+
+      if (slug === AGENTPUSH_SLUG) {
+        const delivery = fields.delivery?.trim().toLowerCase()
+        if (delivery && delivery !== "poll" && delivery !== "push") {
+          return { ok: false, hint: "delivery must be `poll` or `push`" }
+        }
+        const baseUrl = fields.baseUrl?.trim()
+        if (baseUrl && !/^https?:\/\/[^\s/]+/.test(baseUrl)) {
+          return { ok: false, hint: "baseUrl must be an http(s) URL" }
         }
       }
 
