@@ -2253,6 +2253,10 @@ export async function createGateway(
     resolveProvider: resolveSentinelProviderResolved,
     isSessionAlive,
     restartSession: restartInboundSession,
+    sessionInfo: id => {
+      const desc = sessions.get(id)
+      return desc ? { endedReason: desc.endedReason, parentSessionId: desc.parentSessionId } : undefined
+    },
   })
 
   // Inbound watcher — polls an agentpush source on a timer and spawns

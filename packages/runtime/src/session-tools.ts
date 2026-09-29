@@ -90,6 +90,8 @@ import {
   type SessionWrapupEntry,
   type SessionWrapupSignals,
 } from "./session-wrapup.js"
+import { buildSessionEvidence, readRecentTurnsSync } from "./session-evidence.js"
+import { judgeSessionWithJev, resolveJevApiKey } from "./jev-client.js"
 import type { SpawnAgentSessionDeps } from "./session-spawn.js"
 import {
   collectSessionSnapshots,
@@ -4579,6 +4581,86 @@ export function registerSessionTools(
         }
       }
     }
+  )
+
+  // ── session_evidence — read-only judge input (FIX-9B) ─────────────
+  // The session-steward workflow's `evidence` step: one compact object per
+  // `judge`-class session for its judge agent. Read-only, cheap, in-process
+  // (a bounded transcript tail + at most one worktree lookup). Deliberately
+  // separate from the wrapup tools — it classifies nothing and acts on
+  // nothing.
+  server.tool(
+    "session_evidence",
+    "READ-ONLY — a compact evidence object for ONE session, as fed to the " +
+      "session-steward judge: label, cwd, adapter, status, keepAlive, " +
+      "awaitingInput, busy, idle minutes, the last ~10 user/assistant turns " +
+      "(trimmed to ~3 KB total, newest kept first), and — for a session in a " +
+      "linked worktree — branch, dirty counts, ahead/behind and PR state/number. " +
+      "Mutates nothing.",
+    {
+      sessionId: z.string().min(1).describe("Session id or name."),
+    },
+    async input => {
+      const desc = registry.findByIdOrName(input.sessionId)
+      if (!desc) {
+        return {
+          content: [{ type: "text", text: `session_evidence: no session "${input.sessionId}"` }],
+          isError: true,
+        }
+      }
+      if (callerScope) {
+        const subtree = collectSubtree(callerScope.ownerSessionId, registry.list({ includeArchived: true }))
+        if (!subtree.has(desc.id)) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ error: "orchestrator_session_out_of_scope" }) }],
+            isError: true,
+          }
+        }
+      }
+      const turns = desc.eventsPath ? readRecentTurnsSync(desc.eventsPath) : []
+      let worktree: WorktreeStatusView | undefined
+      const scope = sessionWorktreeScope(desc)
+      if (scope && listWorktreeStatuses) {
+        try {
+          const views = await listWorktreeStatuses(scope.repoRoot, { paths: [scope.worktreePath] })
+          worktree = views[0]
+        } catch {
+          // Best-effort — evidence without the worktree view is still evidence.
+        }
+      }
+      const evidence = buildSessionEvidence({ desc, turns, ...(worktree ? { worktree } : {}), nowMs: Date.now() })
+      return { content: [{ type: "text", text: JSON.stringify(evidence) }] }
+    },
+  )
+
+  // ── session_judge_jev — Jev judge backend for the steward (FIX-9B) ──
+  // One Jev (TypeSafe System One) `choice` call over the five wrap-up
+  // verdicts, state = a `session_evidence` object. Never an MCP error: a
+  // missing key or any Jev failure comes back as `ok:false` so the workflow
+  // falls back to its agent judge. Acts on nothing.
+  server.tool(
+    "session_judge_jev",
+    "Judge ONE idle session with Jev (TypeSafe System One): a calibrated " +
+      "`choice` over done/abandoned/blocked/needs-input/active, with " +
+      "probabilities. `evidence` is the session's `session_evidence` object. " +
+      "The key is JEV_API_KEY from the daemon env (or the host secret " +
+      "resolver). Returns `{ ok:true, verdict, confidence, probabilities, " +
+      "model }` or `{ ok:false, error, noKey? }` — never an error result, " +
+      "never a mutation.",
+    {
+      sessionId: z.string().min(1).describe("The judged session's id (echoed back)."),
+      evidence: z.record(z.string(), z.unknown()).describe("The `session_evidence` object, sent as Jev's `state`."),
+      model: z.string().optional().describe("Jev model. Default `jev-latest`."),
+    },
+    async input => {
+      const judgement = await judgeSessionWithJev({
+        sessionId: input.sessionId,
+        evidence: input.evidence,
+        apiKey: await resolveJevApiKey(),
+        ...(input.model ? { model: input.model } : {}),
+      })
+      return { content: [{ type: "text", text: JSON.stringify(judgement) }] }
+    },
   )
 
   server.tool(
