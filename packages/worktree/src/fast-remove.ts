@@ -41,7 +41,7 @@
  */
 
 import { spawn } from "node:child_process"
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { rename } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
 import { execArgv, execGit } from "./exec.js"
@@ -54,10 +54,13 @@ export const WORKTREE_TRASH_PIDFILE = ".deleting"
 
 // One deleter per pool, removing `.trash/*` one dir after another and looping
 // until a pass finds nothing (so a dir parked mid-run is still picked up).
-// Dotfiles (the pid file) are not matched by `*`. The EXIT trap drops the pid
-// file; a killed deleter leaves a stale one, which `isPidAlive` detects.
+// Dotfiles (the pid file) are not matched by `*`. The deleter records its OWN
+// pid (`$$`) after arming the EXIT trap that drops the file — so the file is
+// always written before the trap can fire and can never outlive the deleter,
+// however fast a small tree drains. A killed deleter leaves a stale file,
+// which `isPidAlive` detects.
 const DELETER_SCRIPT =
-	'trap \'rm -f "$1/.deleting"\' EXIT; n=1; while [ "$n" -gt 0 ]; do n=0; for d in "$1"/*; do [ -e "$d" ] || continue; rm -rf "$d"; n=1; done; done'
+	'trap \'rm -f "$1/.deleting"\' EXIT; echo $$ > "$1/.deleting"; n=1; while [ "$n" -gt 0 ]; do n=0; for d in "$1"/*; do [ -e "$d" ] || continue; rm -rf "$d"; n=1; done; done'
 
 function isPidAlive(pid: number): boolean {
 	try {
@@ -68,10 +71,22 @@ function isPidAlive(pid: number): boolean {
 	}
 }
 
+// Records its own pid, so returns undefined (see `ensureTrashDeleter`). Until
+// the deleter claims the file, a placeholder holding THIS process's pid keeps a
+// second deleter from spawning; it is dropped if the spawn itself fails so a
+// long-lived parent (the daemon) never masks a deleter that never started.
 function defaultSpawnDeleter(trashParent: string): number | undefined {
+	const pidFile = join(trashParent, WORKTREE_TRASH_PIDFILE)
+	try {
+		writeFileSync(pidFile, String(process.pid))
+	} catch {
+		// best-effort: worst case a second deleter is spawned next time
+	}
 	const child = spawn("sh", ["-c", DELETER_SCRIPT, "_", trashParent], { detached: true, stdio: "ignore" })
+	child.on("error", () => rmSync(pidFile, { force: true }))
 	child.unref()
-	return child.pid
+	if (child.pid === undefined) rmSync(pidFile, { force: true })
+	return undefined
 }
 
 /**
@@ -80,7 +95,10 @@ function defaultSpawnDeleter(trashParent: string): number | undefined {
  * their own `rm -rf` at once, storming the disk; now a live pid in
  * `.deleting` means the running deleter will pick the new dir up, so no
  * second one is spawned. A stale pid file (dead process) is replaced.
- * `spawnDeleter` is the test seam; it returns the spawned child's pid.
+ * `spawnDeleter` is the test seam; it returns the spawned child's pid for
+ * this function to record, or `undefined` when the spawner records it itself
+ * (the default: the parent writing it AFTER spawn raced the child's exit trap
+ * and could leave a stale file for a deleter that had already finished).
  */
 export function ensureTrashDeleter(
 	trashParent: string,
