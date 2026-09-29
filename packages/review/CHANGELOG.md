@@ -1,5 +1,18 @@
 # @agentproto/review
 
+## 0.4.0
+
+### Minor Changes
+
+- e9400e1: Algorithm-tag the review pack digest (agentproto-pack-digest/v1)
+- 7b442f7: Align @agentproto/review with AIP-62: add defineReview, generate the manifest, pack and attestation zod schemas from the spec's JSON schemas, and split git pack pins at the first '#' (the runtime pack loader used the last).
+
+### Patch Changes
+
+- Updated dependencies [461df5e]
+  - @agentproto/define-doctype@0.1.3
+  - @agentproto/workflow@0.7.1
+
 ## 0.3.0
 
 ### Minor Changes

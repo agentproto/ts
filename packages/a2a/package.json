@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/a2a",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "@agentproto/a2a — typed A2A (Agent2Agent) Agent Card and builders for agentproto apps. Hand-written from the A2A JSON spec; no SDK dependency.",
   "keywords": [
     "agentproto",

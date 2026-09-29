@@ -1,5 +1,15 @@
 # @agentproto/corpus-cli
 
+## 0.10.2
+
+### Patch Changes
+
+- 9f7a254: The bundled AIP schemas (`dist/specs/resources`) are re-synced with agentproto/agentproto main: `HARNESS.schema.json` moves from `aip-52/draft` to `pending/harness`, `GOVERNANCE.schema.json` (AIP-7) gains the approval-request doctype and signature evidence fields, and the AIP-54 REF / AIP-55 PRODUCT example descriptions are corrected.
+- Updated dependencies [aa5e4bd]
+- Updated dependencies [e8fc640]
+  - @agentproto/corpus@0.8.2
+  - @agentproto/corpus-presets@0.2.14
+
 ## 0.10.1
 
 ### Patch Changes

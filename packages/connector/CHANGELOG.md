@@ -1,5 +1,13 @@
 # @agentproto/connector
 
+## 0.1.14
+
+### Patch Changes
+
+- Updated dependencies [88f2836]
+  - @agentproto/provider-kit@0.4.6
+  - @agentproto/secrets@1.1.1
+
 ## 0.1.13
 
 ### Patch Changes

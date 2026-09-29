@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/browser-profiles",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Browser session and profile model: saveable session descriptors (zod), Chrome profile discovery, camofox session reuse, and typed injection seams (AuthSignalRegistry, accountSwitcher, SessionSource registry).",
   "keywords": [
     "agentproto",

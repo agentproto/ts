@@ -1,5 +1,12 @@
 # @agentproto/agencies-mastra
 
+## 0.1.5
+
+### Patch Changes
+
+- @agentproto/governance@0.1.5
+- @agentproto/agencies@0.1.5
+
 ## 0.1.4
 
 ### Patch Changes

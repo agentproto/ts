@@ -1,5 +1,14 @@
 # @agentproto/driver
 
+## 0.2.5
+
+### Patch Changes
+
+- Updated dependencies [461df5e]
+  - @agentproto/define-doctype@0.1.3
+  - @agentproto/manifest@0.2.3
+  - @agentproto/tool@0.3.2
+
 ## 0.2.4
 
 ### Patch Changes

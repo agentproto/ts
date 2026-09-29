@@ -1,5 +1,14 @@
 # @agentproto/collection
 
+## 0.1.4
+
+### Patch Changes
+
+- bc6e7af: fix(collection): sync the vendored AIP-18 COLLECTION schema and spec-example fixtures with agentproto/agentproto#49
+- e8fc640: fix(collection): make the AIP-18 schema satisfiable so defineCollection accepts valid docs
+- Updated dependencies [461df5e]
+  - @agentproto/define-doctype@0.1.3
+
 ## 0.1.3
 
 ### Patch Changes

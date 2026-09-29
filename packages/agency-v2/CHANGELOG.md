@@ -1,5 +1,12 @@
 # @agentproto/agency-v2
 
+## 0.1.4
+
+### Patch Changes
+
+- Updated dependencies [461df5e]
+  - @agentproto/define-doctype@0.1.3
+
 ## 0.1.3
 
 ### Patch Changes

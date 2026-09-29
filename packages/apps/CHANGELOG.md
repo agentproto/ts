@@ -1,5 +1,30 @@
 # @agentproto/apps
 
+## 0.17.0
+
+### Minor Changes
+
+- b63c311: Model roles: one config for which model the reviewers and judges use. The daemon config gains a `models` map (role → model id, or `{ model, route?, profile? }`), resolved as explicit input > repo `agentproto.json` `models` > daemon config `models` > built-in default (`DEFAULT_MODEL_ROLES`: `review.small`, `review.large`, `review.pr`, `judge.session`). `config_set models.<role>` warns (does not block) on a model id the catalog does not know, `config_get` lists the roles, and the new read-only `model_roles` tool reports each role's resolved model and source. An AGENT.md `model: role:<name>` is resolved before adapter selection and `app_run` spawn. The repo-maintenance `maintain` workflow (`reviewModelSmall`/`reviewModelLarge`) and the session-steward (`judgeModel`) now default to their roles instead of hard-coded ids; explicit inputs still win.
+- a48ec1f: New `session-steward` built-in app: a workflow that classifies idle agent sessions, closes rule-certain ones, judges the ambiguous ones (Jev when `JEV_API_KEY` resolves, else a one-shot agent judge), and closes or flags only confident verdicts — a dry run by default. `@agentproto/cli` adds the `agentproto steward` command over it. `@agentproto/runtime` adds the read-only `session_evidence` and `session_judge_jev` MCP tools plus the exported `jev-client` and `session-evidence` modules behind them.
+
+### Patch Changes
+
+- 51561f3: Model roles no longer default to Haiku: `review.small` and `judge.session` now default to `claude-sonnet-5-5`, and `review.large` (and the retry reviewer) to `claude-opus-5-5`. Override any role via `models` in `agentproto.json` / the daemon config as before.
+- 461df5e: Package-metadata refresh accompanying the vendored-specs resync (PR #1554): homepage URLs and keyword tags renumbered to the ratified AIP numbers (app-kit/apps → AIP-53, mastra → AIP-52, define-doctype → AIP-56, wallet → AIP-49), a stale agentik.net homepage corrected (redaction), new keyword tags (pair-client → AIP-59, runtime → AIP-46/AIP-58), and test/doc-comment updates replacing the retired sandbox AIP-61 placeholder with a 9999 fixture number (product, ref), plus bundled SKILL.md renumbering (skill-pack-agentproto) and a routine doc comment aligned with the now-upstream `targetAgent` variant. No runtime behavior changes.
+- 2973a57: repo-maintenance: the review agents (the maintain workflow's large-residual reviewer and the repo-maintenance reviewer agent) now default to `claude-sonnet-5-5` instead of `claude-sonnet-5`. Override per run with the workflow's `reviewModelLarge` input as before.
+
+  @agentproto/runtime: test-only update asserting the new default review model id in the repo-maintenance workflow routing tests.
+
+- Updated dependencies [d9cd5d7]
+- Updated dependencies [dfeebb6]
+- Updated dependencies [88f2836]
+- Updated dependencies [461df5e]
+- Updated dependencies [6a1bedc]
+  - @agentproto/app-kit@1.4.0
+  - @agentproto/app-client@0.4.1
+  - @agentproto/agent@0.2.5
+  - @agentproto/workflow@0.7.1
+
 ## 0.16.0
 
 ### Minor Changes

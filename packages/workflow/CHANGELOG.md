@@ -1,5 +1,12 @@
 # @agentproto/workflow
 
+## 0.7.1
+
+### Patch Changes
+
+- Updated dependencies [461df5e]
+  - @agentproto/define-doctype@0.1.3
+
 ## 0.7.0
 
 ### Minor Changes

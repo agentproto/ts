@@ -1,5 +1,26 @@
 # @agentproto/worktree
 
+## 0.14.0
+
+### Minor Changes
+
+- 14e2494: Refactored branch_gc's background-job machinery into a shared `createBackgroundJobRegistry` (`background-jobs.ts`) and extended background mode + `*_status` polling to `worktree_gc` and `session_wrapup_plan`: new `worktree_gc_status` / `session_wrapup_status` tools, new optional `wait`/`waitMs` params on `worktree_gc` and `session_wrapup_plan`, and new `worktreeGcJobsDir`/`sessionWrapupJobsDir` runtime options (`@agentproto/runtime`).
+
+  `removeWorktreeFast`'s cleanliness gate is now re-derived from git's real worktree-removal refusal rule (ignored files tolerated, untracked files refused even under `status.showUntrackedFiles=no`, locked worktrees refused), and trash deletion is serialized into a single detached deleter per pool: new exported `ensureTrashDeleter` / `WORKTREE_TRASH_PIDFILE`, new `spawnDeleter` options, and changed non-force removal-refusal semantics (`@agentproto/worktree`).
+
+- 78cd278: feat(worktree): throttle heavy worktree provisioning through a daemon-wide FIFO queue. `depsCmd`, `cloneGlobs` and setup hooks now run at most `worktrees.provisionConcurrency` (default 2, `0` = unlimited, env `AGENTPROTO_WORKTREES_PROVISION_CONCURRENCY`) at a time, fair across callers, with optional per-repo caps and a `provisionLoadFactor` load guard. Killing a `starting` session drops its queued provisioning or terminates a running install's whole process tree and removes the half-made worktree. Sessions report `provisioning: { state, position, phase, startedAt }` in `agent_sessions_list`, `session_list` and `agentproto sessions`, and the event bus emits `session:provisioning` events.
+
+### Patch Changes
+
+- 88f2836: Weekly minor/patch dependency bumps across workspaces (@modelcontextprotocol/sdk 1.30.0 → 1.30.1, @anthropic-ai/claude-agent-sdk 0.3.282 → 0.3.283, turbo 2.10.12 → 2.11.5, @tauri-apps/* 2.12, @tanstack/react-query 5.104, e2b 2.51, @earendil-works/pi-tui 0.87, tsx 4.23.15, @types/vscode 1.138).
+- 2b36ea0: Fix a race in the fast-remove background deleter that could leave a stale `.trash/.deleting` pid file behind. The parent used to write the pid file after spawning the deleter, so a fast deleter could drain the trash and run its EXIT trap first, leaving a permanent stale file (a stale pid could then wrongly suppress spawning a deleter after PID reuse). The deleter now writes its own pid after installing its trap, and the parent only writes a placeholder before the spawn.
+- Updated dependencies [88f2836]
+- Updated dependencies [036c9df]
+  - @agentproto/harness@0.4.7
+  - @agentproto/workflow-runtime@0.15.0
+  - @agentproto/driver@0.2.5
+  - @agentproto/tool@0.3.2
+
 ## 0.13.0
 
 ### Minor Changes
