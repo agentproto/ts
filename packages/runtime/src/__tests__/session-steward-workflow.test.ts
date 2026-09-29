@@ -242,10 +242,10 @@ describe("session-steward workflow — run (fake tools + fake judge)", () => {
     // Nothing mutating is ever dispatched.
     expect(calls.some(c => c.name === "session_wrapup_apply")).toBe(false)
     expect(calls.some(c => c.name === "agent_prompt")).toBe(false)
-    // Judges still ran (one per judge candidate, caller excluded), on haiku,
+    // Judges still ran (one per judge candidate, caller excluded), on sonnet,
     // and every judge session was released after its turn.
     expect(j.spawns).toHaveLength(6)
-    expect(new Set(j.spawns.map(s => s.model))).toEqual(new Set(["claude-haiku-4-5-20251001"]))
+    expect(new Set(j.spawns.map(s => s.model))).toEqual(new Set(["claude-sonnet-5-5"]))
     expect(j.released.sort()).toEqual(j.spawns.map(s => s.id).sort())
     expect(out.report).toContain("dry run")
     expect(out.report).toContain("none (dry run)")
@@ -462,10 +462,10 @@ describe("session-steward workflow — Jev judge backend", () => {
     }
 
     it("follows the daemon `models` config", async () => {
-      daemonModels = { "judge.session": "claude-sonnet-5-5" }
+      daemonModels = { "judge.session": "claude-opus-5-5" }
       try {
         const r = await judgeModels({})
-        expect(r.models).toEqual(["claude-sonnet-5-5"])
+        expect(r.models).toEqual(["claude-opus-5-5"])
         expect(r.roleCalls).toHaveLength(1)
       } finally {
         daemonModels = {}
@@ -473,9 +473,9 @@ describe("session-steward workflow — Jev judge backend", () => {
     })
 
     it("an explicit judgeModel input beats the configured role", async () => {
-      daemonModels = { "judge.session": "claude-sonnet-5-5" }
+      daemonModels = { "judge.session": "claude-opus-5-5" }
       try {
-        expect((await judgeModels({ judgeModel: "claude-opus-5-5" })).models).toEqual(["claude-opus-5-5"])
+        expect((await judgeModels({ judgeModel: "explicit-judge-model" })).models).toEqual(["explicit-judge-model"])
       } finally {
         daemonModels = {}
       }

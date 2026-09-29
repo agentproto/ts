@@ -280,8 +280,8 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     const reviewSpawns = spawns.filter(s => s.stepId === "reviewOne")
     expect(reviewSpawns).toHaveLength(2)
     const byModel = new Map(reviewSpawns.map(s => [s.model, s]))
-    expect(byModel.get("claude-haiku-4-5-20251001")).toBeDefined() // SHA_A: residualFileCount 2 <= 3
-    expect(byModel.get("claude-sonnet-5-5")).toBeDefined() // SHA_B: residualFileCount 4 > 3
+    expect(byModel.get("claude-sonnet-5-5")).toBeDefined() // SHA_A: residualFileCount 2 <= 3 (review.small)
+    expect(byModel.get("claude-opus-5-5")).toBeDefined() // SHA_B: residualFileCount 4 > 3 (review.large)
 
     // SHA_B (no verdict): nudged in its OWN session, then one fresh
     // large-model retry — and still a gap. SHA_A: neither.
@@ -292,7 +292,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(nudges[0]!.prompt).toContain(SHA_B)
     const retries = spawns.filter(s => s.stepId === "reviewRetryLarge")
     expect(retries).toHaveLength(1)
-    expect(retries[0]!.model).toBe("claude-sonnet-5-5")
+    expect(retries[0]!.model).toBe("claude-opus-5-5")
     expect(sends.find(s => s.sessionId === retries[0]!.id)!.prompt).toContain(`(tip ${SHA_B})`)
     const checkedShas = calls.filter(c => c.name === "branch_gc_verdict_get").map(c => c.inputs.sha)
     expect(checkedShas.filter(sha => sha === SHA_A)).toHaveLength(1)
@@ -923,21 +923,21 @@ describe("repo-maintenance maintain workflow — reviewer models come from model
   }
 
   it("the daemon `models` config drives the small, large and retry reviewers", async () => {
-    daemonModels = { "review.small": "claude-sonnet-5-5", "review.large": "claude-opus-5-5" }
+    daemonModels = { "review.small": "claude-opus-5-5", "review.large": "claude-sonnet-5-5" }
     try {
-      expect(await reviewerModels({})).toEqual({ small: "claude-sonnet-5-5", large: "claude-opus-5-5", retry: "claude-opus-5-5" })
+      expect(await reviewerModels({})).toEqual({ small: "claude-opus-5-5", large: "claude-sonnet-5-5", retry: "claude-sonnet-5-5" })
     } finally {
       daemonModels = {}
     }
   })
 
   it("an explicit reviewModelSmall/Large input beats the configured role", async () => {
-    daemonModels = { "review.small": "claude-sonnet-5-5", "review.large": "claude-opus-5-5" }
+    daemonModels = { "review.small": "claude-opus-5-5", "review.large": "claude-sonnet-5-5" }
     try {
-      expect(await reviewerModels({ reviewModelSmall: "claude-haiku-4-5-20251001", reviewModelLarge: "claude-sonnet-5-5" })).toEqual({
-        small: "claude-haiku-4-5-20251001",
-        large: "claude-sonnet-5-5",
-        retry: "claude-sonnet-5-5",
+      expect(await reviewerModels({ reviewModelSmall: "explicit-small-model", reviewModelLarge: "explicit-large-model" })).toEqual({
+        small: "explicit-small-model",
+        large: "explicit-large-model",
+        retry: "explicit-large-model",
       })
     } finally {
       daemonModels = {}

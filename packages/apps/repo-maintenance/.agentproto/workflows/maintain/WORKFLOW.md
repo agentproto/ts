@@ -114,8 +114,8 @@ steps:
     name: Review every unmerged branch
     description: >-
       One reviewer-agent turn per branch name, parallelism 4. Model is
-      picked per item by entry.mjs: haiku when residualFileCount <= 3, else
-      sonnet. The agent records its verdict via branch_gc_verdict — one call
+      picked per item by entry.mjs: sonnet when residualFileCount <= 3, else
+      opus (the `review.small` / `review.large` model roles). The agent records its verdict via branch_gc_verdict — one call
       PER tip the item carries (an item may hold a local + a remote tip that
       diverged); this step never applies anything. After the turn,
       branch_gc_verdict_get checks the store for EVERY tip; with any

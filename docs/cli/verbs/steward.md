@@ -21,7 +21,7 @@ One run:
    `judge`-class sessions, most RAM first.
 4. Judges each one: with **Jev** (TypeSafe System One — a calibrated choice
    with probabilities) when `JEV_API_KEY` resolves, else a one-shot **agent
-   judge** (haiku). A Jev failure falls back to the agent judge for that
+   judge** (sonnet). A Jev failure falls back to the agent judge for that
    session; a malformed or failed judgement is `active` and never acted on.
 5. With `--ask-sessions`: asks low-confidence idle sessions directly whether
    they're done (one prompt each, ~3 min bounded wait).

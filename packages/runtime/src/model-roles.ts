@@ -45,13 +45,13 @@ export type ModelRoleSource = "input" | "workspace" | "daemon" | "default"
 /** The built-in defaults — the ONLY hard-coded model ids for these jobs. */
 export const DEFAULT_MODEL_ROLES: Readonly<Record<string, string>> = {
   /** Reviewer for a small residual (repo-maintenance `review` step). */
-  "review.small": "claude-haiku-4-5-20251001",
+  "review.small": "claude-sonnet-5-5",
   /** Reviewer for a large residual + the retry reviewer. */
-  "review.large": "claude-sonnet-5-5",
+  "review.large": "claude-opus-5-5",
   /** CI pull-request reviewer (mirrors `.github/agentic-review.json`'s `reviewerModel`). */
   "review.pr": "openrouter/z-ai/glm-5.3-flash",
   /** The session-steward's agent judge. */
-  "judge.session": "claude-haiku-4-5-20251001",
+  "judge.session": "claude-sonnet-5-5",
 }
 
 /** Prefix an agent manifest's `model:` uses to reference a role. */
