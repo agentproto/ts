@@ -108,6 +108,7 @@ import {
 import { CatalogProviderSchema, type CatalogProvider } from "@agentproto/model-catalog"
 import { loadOrCreateIdentity } from "@agentproto/secrets/identity"
 import { buildDaemonTunnelServerOptions } from "../util/tunnel-serve.js"
+import { dialRendezvous } from "@agentproto/pairing-host"
 import { resolveProxyDialOptions } from "../util/proxy-dial.js"
 import { homedir } from "node:os"
 import { join as joinPath } from "node:path"
@@ -1750,39 +1751,7 @@ async function daemonDialRendezvous(
   signal: AbortSignal,
 ): Promise<FrameSink> {
   const { agent } = resolveProxyDialOptions(url)
-  const ws = new WebSocket(url, agent ? { agent } : undefined)
-  await new Promise<void>((resolve, reject) => {
-    const cleanup = (): void => {
-      ws.off("open", onOpen)
-      ws.off("error", onError)
-      signal.removeEventListener("abort", onAbort)
-    }
-    const onOpen = (): void => {
-      cleanup()
-      resolve()
-    }
-    const onError = (err: Error): void => {
-      cleanup()
-      reject(err)
-    }
-    const onAbort = (): void => {
-      cleanup()
-      try {
-        ws.close()
-      } catch {
-        /* ignore */
-      }
-      reject(new Error("dial aborted"))
-    }
-    if (signal.aborted) {
-      onAbort()
-      return
-    }
-    ws.once("open", onOpen)
-    ws.once("error", onError)
-    signal.addEventListener("abort", onAbort)
-  })
-  return wrapWebSocket(ws as unknown as Parameters<typeof wrapWebSocket>[0])
+  return dialRendezvous(url, signal, agent ? { agent } : {})
 }
 
 /**
