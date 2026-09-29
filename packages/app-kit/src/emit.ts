@@ -36,7 +36,7 @@ import { join, relative } from "node:path"
 import matter from "gray-matter"
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { WorkspaceHandle } from "@agentproto/workspace"
-import type { AgentEntry, AppArtifactDecl, AppArtifactSurface, AppDataDefinition, AppDevDefinition, AppSkillSurface, AppUiDefinition, EmittedApp } from "./types.js"
+import type { AgentEntry, AppAccepts, AppArtifactDecl, AppArtifactSurface, AppDataDefinition, AppDevDefinition, AppExposes, AppPlacement, AppRequirements, AppSkillSurface, AppUiDefinition, EmittedApp } from "./types.js"
 import { stripOwner } from "./refs.js"
 
 interface EmitInput {
@@ -48,6 +48,10 @@ interface EmitInput {
   readonly version?: string
   readonly description?: string
   readonly requires?: readonly string[]
+  readonly requirements?: AppRequirements
+  readonly placement?: AppPlacement
+  readonly exposes?: AppExposes
+  readonly accepts?: AppAccepts
   readonly ui?: AppUiDefinition
   readonly artifact?: AppArtifactSurface
   readonly skill?: AppSkillSurface
@@ -150,7 +154,12 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
     agents: agentRefs,
     workflows: workflowRefs,
     ...(app.workspace ? { workspace: app.workspace.id } : {}),
-    ...(app.requires !== undefined ? { requires: app.requires } : {}),
+    ...requiresFrontmatter(app),
+    ...(app.placement !== undefined && app.placement !== "any" ? { placement: app.placement } : {}),
+    ...(app.exposes && (app.exposes.agents.length > 0 || app.exposes.workflows.length > 0)
+      ? { exposes: { agents: app.exposes.agents, workflows: app.exposes.workflows } }
+      : {}),
+    ...(app.accepts?.tasks ? { accepts: { tasks: true } } : {}),
     ...(uiFrontmatter !== undefined ? { ui: uiFrontmatter } : {}),
     ...(artifactFrontmatter !== undefined ? { artifact: artifactFrontmatter } : {}),
     ...(skillFrontmatter !== undefined ? { skill: skillFrontmatter } : {}),
@@ -171,6 +180,18 @@ export async function emitApp(app: EmitInput, dir: string): Promise<EmittedApp> 
     ...(artifactPath ? { artifactPath } : {}),
     ...(skillPath ? { skillPath } : {}),
   }
+}
+
+/** Legacy flat array while only app ids are declared; object form once any
+ *  host requirement (browser/fs/gpu/secrets) is set. Defaults are omitted. */
+function requiresFrontmatter(app: EmitInput): Record<string, unknown> {
+  const r = app.requirements
+  if (r && (r.browser || r.fs || r.gpu || r.secrets.length > 0)) {
+    return {
+      requires: { browser: r.browser, fs: r.fs, gpu: r.gpu, secrets: r.secrets, apps: r.apps },
+    }
+  }
+  return app.requires !== undefined ? { requires: app.requires } : {}
 }
 
 function toManifest(handle: object, body: string): string {

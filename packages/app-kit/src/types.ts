@@ -182,6 +182,38 @@ export interface AppDataDefinition {
   readonly dir?: string
 }
 
+/** Where an app may run. Semantics only — nothing schedules on it yet. */
+export type AppPlacement = "local" | "box" | "any" | "split"
+
+/**
+ * What an app needs from its host. All keys optional on input; the resolved
+ * form ({@link AppHandle.requirements}) always carries every key.
+ */
+export interface AppRequirements {
+  /** Needs the user's real browser (Bureau / local-browser). Default false. */
+  readonly browser: boolean
+  /** Needs the user's local filesystem beyond app data. Default false. */
+  readonly fs: boolean
+  /** Needs a GPU. Default false. */
+  readonly gpu: boolean
+  /** Env/secret names the app needs. Default `[]`. */
+  readonly secrets: readonly string[]
+  /** Other app ids this app depends on. Default `[]`. */
+  readonly apps: readonly string[]
+}
+
+/** A2A-visible surfaces. Ids must exist in the app's agents / workflows. */
+export interface AppExposes {
+  readonly agents: readonly string[]
+  readonly workflows: readonly string[]
+}
+
+/** What the app accepts from other agents over A2A. */
+export interface AppAccepts {
+  /** Accept A2A tasks. Default false. */
+  readonly tasks: boolean
+}
+
 /**
  * Input to `defineApp`. Each `agents[]` entry is an already-validated
  * `AgentHandle` (bare, no body) or an `AgentEntry` (handle + body).
@@ -226,8 +258,19 @@ export interface AppDefinition {
   readonly version?: string
   /** App description. Becomes the `APP.md` body. */
   readonly description?: string
-  /** APP ids this app depends on. */
-  readonly requires?: readonly string[]
+  /**
+   * What the app needs from its host. Either the legacy array of APP ids this
+   * app depends on (`["@acme/shared"]`, same as `requires: { apps: [...] }`)
+   * or the object form `{ browser?, fs?, gpu?, secrets?, apps? }`.
+   */
+  readonly requires?: readonly string[] | Partial<AppRequirements>
+  /** Where the app may run. Default `"any"`. Semantics only. */
+  readonly placement?: AppPlacement
+  /** A2A-visible agents/workflows. Default: nothing exposed. Every id must
+   *  name one of the app's own agents/workflows. */
+  readonly exposes?: Partial<AppExposes>
+  /** What the app accepts over A2A. Default: `{ tasks: false }`. */
+  readonly accepts?: Partial<AppAccepts>
   /** An HTML surface the app ships alongside its agents. */
   readonly ui?: AppUiDefinition
   /** A persistent HTML dashboard (Cowork artifact) the app ships. `path`
@@ -308,8 +351,18 @@ export interface AppHandle {
   readonly version?: string
   /** App description. */
   readonly description?: string
-  /** APP ids this app depends on. */
+  /** APP ids this app depends on (the `apps` of {@link requirements}); absent
+   *  when none were declared. Kept as a flat id list — the runtime's
+   *  dependency checks read it. */
   readonly requires?: readonly string[]
+  /** What the app needs from its host, every key resolved to its default. */
+  readonly requirements: AppRequirements
+  /** Where the app may run. Defaults to `"any"`. Semantics only. */
+  readonly placement: AppPlacement
+  /** A2A-visible agents/workflows. Empty lists when nothing is exposed. */
+  readonly exposes: AppExposes
+  /** What the app accepts over A2A. Defaults to `{ tasks: false }`. */
+  readonly accepts: AppAccepts
   /** An HTML surface the app ships alongside its agents. */
   readonly ui?: AppUiDefinition
   /** A persistent HTML dashboard (Cowork artifact) the app ships. */
