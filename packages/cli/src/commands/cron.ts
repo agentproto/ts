@@ -14,6 +14,7 @@
  */
 
 import { parseArgs } from "node:util"
+import { resolve } from "node:path"
 import {
   discoverDaemon,
   printNoDaemonError,
@@ -28,9 +29,9 @@ const USAGE = `agentproto cron — manage durable cron jobs on the daemon
 Usage:
   agentproto cron add --schedule <cron-expr>
                       (--command <cmd> [--args <arg>...] [--cwd <dir>] [--timeout-ms <duration>]
-                       | --adapter <slug> --prompt <text> [--cwd <dir>] [--model <id>]
-                       | --target-session <id> --prompt <text>)
-                      [--label <text>] [--once] [--json]
+| --adapter <slug> --prompt <text> [--cwd <dir>] [--model <id>]
+                        | --target-session <id> --prompt <text>)
+                      [--options-json <json|@file>] [--label <text>] [--once] [--json]
   agentproto cron list [--json]
   agentproto cron remove <id>
   agentproto cron run    <id> [--json]
@@ -53,10 +54,20 @@ Three action kinds:
                           place — no new session is spawned. Use for a
                           durable session a cron job periodically checks in on.
 
+--options-json <json|@file> (agent kind only): extra agent_start spawn fields
+  beyond the discrete flags, so a cron job can spawn a session exactly like
+  \`agentproto sessions start\` does at a fixed time. The daemon validates the
+  merged fields with the same agent_start schema (mcpServers, accessProfile,
+  worktree, sandbox, label, title, auth, …). Discrete flags (--cwd, --model,
+  --adapter) win over a colliding key in --options-json. A "kind" key is
+  refused — the action kind comes from the discrete flags only.
+
 Examples:
   agentproto cron add --schedule "* * * * *" --command echo --args hello --once
   agentproto cron add --schedule "0 9 * * 1-5" --adapter claude-code --prompt "daily standup"
   agentproto cron add --schedule "*/15 * * * *" --target-session sess_abc123 --prompt "status?"
+  agentproto cron add --schedule "0 */2 * * *" --adapter pi --model openrouter/z-ai/glm-5.3-flash \
+    --prompt "health check" --options-json '{"mcpServers":[{"name":"gateway","transport":"http","ref":"http://127.0.0.1:18790/mcp"}]}'
   agentproto cron list --json
   agentproto cron remove <id>
   agentproto cron run    <id>
@@ -107,6 +118,7 @@ async function runCronAdd(args: readonly string[]): Promise<number> {
       prompt:           { type: "string" },
       cwd:              { type: "string" },
       model:            { type: "string" },
+      "options-json":   { type: "string" },
       "timeout-ms":     { type: "string" },
       label:            { type: "string" },
       once:             { type: "boolean", default: false },
@@ -159,6 +171,52 @@ async function runCronAdd(args: readonly string[]): Promise<number> {
     commandTimeoutMs = parsed.ms
   }
 
+  // Parse --options-json client-side (same @file convention as
+  // `sessions start --options-json`) so malformed JSON fails fast, before
+  // any network activity. Agent-kind only: those fields are agent_start
+  // spawn fields; --command / --target-session actions have no equivalent.
+  let extraAgentFields: Record<string, unknown> | undefined
+  if (values["options-json"] !== undefined) {
+    if (!values.adapter) {
+      process.stderr.write(
+        "agentproto cron add: --options-json only applies to --adapter (agent) jobs\n",
+      )
+      return 2
+    }
+    const raw = values["options-json"] as string
+    let text: string
+    if (raw.startsWith("@")) {
+      const filePath = resolve(raw.slice(1))
+      try {
+        const { readFile } = await import("node:fs/promises")
+        text = await readFile(filePath, "utf8")
+      } catch (err) {
+        process.stderr.write(
+          `agentproto cron add: could not read --options-json file "${filePath}": ${err instanceof Error ? err.message : String(err)}\n`,
+        )
+        return 2
+      }
+    } else {
+      text = raw
+    }
+    try {
+      const parsed: unknown = JSON.parse(text)
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("expected a JSON object of agent_start fields")
+      }
+      const fields = parsed as Record<string, unknown>
+      if ("kind" in fields) {
+        throw new Error('"kind" is derived from the discrete flags and cannot be overridden')
+      }
+      extraAgentFields = fields
+    } catch (err) {
+      process.stderr.write(
+        `agentproto cron add: invalid --options-json: ${err instanceof Error ? err.message : String(err)}\n`,
+      )
+      return 2
+    }
+  }
+
   const action = values.command
     ? {
         kind: "command" as const,
@@ -174,6 +232,9 @@ async function runCronAdd(args: readonly string[]): Promise<number> {
           prompt: values.prompt as string,
         }
       : {
+          // Discrete flags win over a colliding key in --options-json; the
+          // daemon validates the merged fields with the agent_start schema.
+          ...extraAgentFields,
           kind: "agent" as const,
           adapter: values.adapter as string,
           prompt: values.prompt as string,
