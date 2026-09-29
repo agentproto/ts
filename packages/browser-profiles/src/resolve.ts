@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs"
 import { readFileSync } from "node:fs"
 import type { BrowserDriver } from "@agentproto/driver-browser"
+import { z } from "zod"
 import { defaultAuthSignalRegistry, type AuthSignalRegistry } from "./auth-signals.js"
 import { openSession, type CamofoxSession, type OpenSessionOptions } from "./camofox-session.js"
 import { resolveChromeProfile, verifyChromeIdentity } from "./chrome-identity.js"
@@ -56,10 +57,37 @@ export type ResolvedSession =
   | { backend: "chrome"; driver: BrowserDriver }
   | { backend: "camofox"; session: CamofoxSession }
 
-/** Read a cookie-file jar, domain-scoped. */
+const rawCookieSchema = z
+  .object({
+    name: z.string(),
+    value: z.string(),
+    domain: z.string(),
+    path: z.string().optional(),
+    httpOnly: z.boolean().optional(),
+    secure: z.boolean().optional(),
+    sameSite: z.string().optional(),
+    expires: z.number().optional(),
+    expirationDate: z.number().optional(),
+    session: z.boolean().optional(),
+  })
+  .loose()
+
+const rawCookieFileSchema = z.union([
+  z.array(rawCookieSchema),
+  z.object({ cookies: z.array(rawCookieSchema).optional() }).loose(),
+])
+
+/** Read a cookie-file jar, domain-scoped. Malformed or foreign JSON degrades to an empty jar. */
 function gatherFromFile(path: string, domains: readonly string[]): SessionCookie[] {
-  const raw: unknown = JSON.parse(readFileSync(path, "utf8"))
-  const arr = (Array.isArray(raw) ? raw : ((raw as { cookies?: unknown }).cookies ?? [])) as RawCookie[]
+  let raw: unknown
+  try {
+    raw = JSON.parse(readFileSync(path, "utf8"))
+  } catch {
+    throw new SessionResolveError(`cookie file "${path}" is not valid JSON`)
+  }
+  const parsed = rawCookieFileSchema.safeParse(raw)
+  if (!parsed.success) throw new SessionResolveError(`cookie file "${path}" does not hold a cookie jar`)
+  const arr = (Array.isArray(parsed.data) ? parsed.data : (parsed.data.cookies ?? [])) as RawCookie[]
   return dedupeCookies(arr.filter(c => domainMatches(c.domain, domains)).map(toSessionCookie))
 }
 

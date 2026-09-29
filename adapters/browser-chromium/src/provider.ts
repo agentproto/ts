@@ -113,8 +113,12 @@ export function createChromiumProvider(config: ChromiumProviderConfig = {}): Chr
       throw err
     }
 
+    let contextClosed = false
+    context.once("close", () => {
+      contextClosed = true
+    })
     try {
-      const endpoint = await readDevToolsEndpoint(dir, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, sleep)
+      const endpoint = await readDevToolsEndpoint(dir, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, sleep, () => contextClosed)
       const entry: Entry = {
         dir,
         id,
@@ -122,7 +126,7 @@ export function createChromiumProvider(config: ChromiumProviderConfig = {}): Chr
         context,
         port: endpoint.port,
         cdp: `ws://127.0.0.1:${endpoint.port}${endpoint.browserWsPath}`,
-        closed: false,
+        closed: contextClosed,
         drivers: new Set(),
       }
       context.on("close", () => {

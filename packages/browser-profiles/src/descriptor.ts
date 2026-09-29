@@ -239,7 +239,8 @@ export function parseSessionDescriptor(json: unknown): SessionDescriptor {
 
 /** Persisted storageState of an owned camofox session: `<CAMOFOX_PROFILES_DIR or ~/.agentproto/camofox-profiles>/<id>.json`. */
 export function ownedStorageStatePath(id: string): string {
-  return join(process.env["CAMOFOX_PROFILES_DIR"] ?? join(homedir(), ".agentproto", "camofox-profiles"), `${id}.json`)
+  const safeId = id.replace(/[^\w.-]/g, "_")
+  return join(process.env["CAMOFOX_PROFILES_DIR"] ?? join(homedir(), ".agentproto", "camofox-profiles"), `${safeId}.json`)
 }
 
 // ---------------------------------------------------------------------------
