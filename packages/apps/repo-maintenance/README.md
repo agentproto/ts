@@ -19,7 +19,12 @@ The `maintain` workflow, one run:
    residual; the rest wait for the next run (one turn per unique tip sha,
    parallelism 4, each reviewer in its own disposable detached worktree
    under the OS tmp dir, never the live checkout): haiku when the
-   candidate's residual is 3 files or fewer, sonnet otherwise. Three spawn
+   candidate's residual is 3 files or fewer, sonnet otherwise — by default;
+   the models are the `review.small` / `review.large` **model roles** (an
+   explicit `reviewModelSmall`/`reviewModelLarge` input wins, then the repo's
+   `agentproto.json` `models`, then the daemon config `models`, then the
+   built-in default — see `@agentproto/runtime`'s `model-roles.ts`; inspect
+   with the `model_roles` tool, change with `config_set models.review.small`). Three spawn
    failures in a row stop the fan-out (the engine's circuit breaker) and
    the report lists every distinct failure reason. Each turn records a verdict via `branch_gc_verdict` —
    recording a verdict never deletes anything. A turn that ends without a

@@ -710,7 +710,13 @@ export async function runServe(args: readonly string[]): Promise<number> {
     hostsPath: joinPath(agentprotoHome, "hosts.json"),
     dial: daemonDialRendezvous,
     log: line => process.stderr.write(`${color.dim}${line}${color.reset}\n`),
+    ...envMs("AGENTPROTO_HOST_ENDED_TTL_MS", "endedTtlMs"),
+    ...envMs("AGENTPROTO_HOST_ENDED_RETENTION_MS", "endedRetentionMs"),
   })
+  // Resume polling joined hosts that survived a restart (bounded, staggered),
+  // then mark/delete ended joined hosts on a slow cadence (one in-memory pass).
+  void hostRegistry.start().catch(() => undefined)
+  setInterval(() => void hostRegistry.sweep().catch(() => undefined), HOST_SWEEP_INTERVAL_MS).unref()
 
   // ── JOIN TOKEN registry (SANDBOX-VISIBILITY-JOIN) ──
   // Mints long-lived, revocable, reusable credentials for `AGENTPROTO_JOIN`;
@@ -728,6 +734,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
     dial: daemonDialRendezvous,
     addHost: (offerUrl, name, meta) => hostRegistry.add(offerUrl, name, meta),
     flushHost: fingerprint => hostRegistry.snapshotNow(fingerprint),
+    endHost: fingerprint => hostRegistry.markEnded(fingerprint, "goodbye"),
     log: line => process.stderr.write(`${color.dim}${line}${color.reset}\n`),
   })
 
@@ -1536,6 +1543,16 @@ const JOIN_DIAL_TIMEOUT_MS = 15_000
 const JOIN_HANDSHAKE_TIMEOUT_MS = 15_000
 /** How long a leaving box waits for its join daemon to finish the final capture. */
 const JOIN_GOODBYE_WAIT_MS = 20_000
+/** Cadence of the joined-host ended/retention sweep. */
+const HOST_SWEEP_INTERVAL_MS = 60_000
+
+/** `{ [key]: n }` from a non-negative-integer env var (0 disables), else `{}`. */
+function envMs<K extends string>(name: string, key: K): { [P in K]?: number } {
+  const raw = process.env[name]
+  const n = raw === undefined || raw.trim() === "" ? Number.NaN : Number(raw)
+  return Number.isInteger(n) && n >= 0 ? ({ [key]: n } as { [P in K]?: number }) : {}
+}
+
 /** Hard ceiling on the whole goodbye (dial + handshake + wait) at shutdown. */
 const JOIN_GOODBYE_TOTAL_MS = 30_000
 /** How long the box's own self-offer needs to live — long enough for the

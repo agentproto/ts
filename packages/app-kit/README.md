@@ -91,6 +91,37 @@ An app may also declare `requires: ["@acme/shared", ...]` — app ids that must 
 applied to the same scope before this one can run. The runtime validates the
 graph when mounting apps via `app_apply`.
 
+### Placement, requirements, and A2A exposure
+
+Four optional `APP.md` keys describe where an app can run and what it exposes.
+They are **semantics only** — nothing schedules or serves on them yet. All are
+validated by `defineApp` (`AppDefinitionError`) and `loadAppHandle`
+(`AppLoadError`), surfaced on `AppHandle`, and written by `emit` only when they
+differ from the default.
+
+```yaml
+placement: any            # "local" | "box" | "any" | "split"   (default "any")
+requires:
+  browser: false          # needs the user's real browser (Bureau / local-browser)
+  fs: false               # needs the user's local filesystem beyond app data
+  gpu: false
+  secrets: []             # env/secret names the app needs
+  apps: []                # other app ids this app depends on
+exposes:                  # A2A-visible surfaces (default: none exposed)
+  agents: []              # ids from `agents:`
+  workflows: []           # ids from `workflows:`
+accepts:
+  tasks: false            # accept A2A tasks (default false)
+```
+
+- An unknown `placement`, or an `exposes.*` id that isn't one of the app's own
+  agents/workflows, is a validation error.
+- `requires` also still accepts the legacy flat array (`requires: ["@acme/shared"]`,
+  equivalent to `requires: { apps: [...] }`).
+- On the handle: `placement`, `exposes`, `accepts` and `requirements` (every key
+  resolved to its default) are always present. `handle.requires` stays the flat
+  list of app ids (absent when none) so existing dependency checks keep working.
+
 ## UI surfaces, artifacts, dev-launch, and the artifact surface
 
 Beyond agents and workflows, an app can declare four optional surfaces that

@@ -513,3 +513,132 @@ describe("loadAppHandle — frontmatter strictness posture (AIP-53)", () => {
     }
   })
 })
+
+describe("loadAppHandle — placement / requires / exposes / accepts", () => {
+  const soloAgent = () =>
+    defineAgent({
+      schema: "agent/v1",
+      id: "solo",
+      description: "Solo agent.",
+      model: "claude-sonnet-5",
+      workflows: [{ ref: "do-it" }],
+    })
+  const doIt = () =>
+    defineWorkflow({
+      id: "do-it",
+      name: "Do it",
+      description: "Does it.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [{ id: "s", kind: "tool", tool: "noop" }],
+    })
+
+  async function withDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-load-manifest-fields-"))
+    try {
+      return await fn(d)
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  }
+
+  /** Emit a valid app, then splice extra frontmatter lines into its APP.md. */
+  async function emitWithFrontmatter(dir: string, extra: string[]): Promise<void> {
+    const { appPath } = await defineApp({
+      id: "@test/fields",
+      agents: [{ agent: soloAgent(), body: "Solo." }],
+      workflows: [doIt()],
+    }).emit(dir)
+    const src = await readFile(appPath, "utf8")
+    await writeFile(appPath, src.replace(/^---\n/, `---\n${extra.join("\n")}\n`))
+  }
+
+  it("applies defaults when the keys are absent", async () => {
+    await withDir(async (dir) => {
+      await defineApp({ agents: [{ agent: soloAgent(), body: "Solo." }], workflows: [doIt()] }).emit(dir)
+      const loaded = await loadAppHandle(dir)
+      expect(loaded.placement).toBe("any")
+      expect(loaded.requirements).toEqual({ browser: false, fs: false, gpu: false, secrets: [], apps: [] })
+      expect(loaded.requires).toBeUndefined()
+      expect(loaded.exposes).toEqual({ agents: [], workflows: [] })
+      expect(loaded.accepts).toEqual({ tasks: false })
+    })
+  })
+
+  it("round-trips all four fields (emit → load → equal)", async () => {
+    await withDir(async (dir) => {
+      const app = defineApp({
+        id: "@test/fields",
+        agents: [{ agent: soloAgent(), body: "Solo." }],
+        workflows: [doIt()],
+        placement: "box",
+        requires: { browser: true, gpu: true, secrets: ["OPENAI_API_KEY"], apps: ["@test/base"] },
+        exposes: { agents: ["solo"], workflows: ["do-it"] },
+        accepts: { tasks: true },
+      })
+      await app.emit(dir)
+      const loaded = await loadAppHandle(dir)
+      expect(loaded.placement).toBe("box")
+      expect(loaded.requirements).toEqual(app.requirements)
+      expect(loaded.requirements).toEqual({
+        browser: true,
+        fs: false,
+        gpu: true,
+        secrets: ["OPENAI_API_KEY"],
+        apps: ["@test/base"],
+      })
+      expect(loaded.requires).toEqual(["@test/base"])
+      expect(loaded.exposes).toEqual({ agents: ["solo"], workflows: ["do-it"] })
+      expect(loaded.accepts).toEqual({ tasks: true })
+    })
+  })
+
+  it("accepts the object form of requires from hand-written frontmatter", async () => {
+    await withDir(async (dir) => {
+      await emitWithFrontmatter(dir, ["placement: split", "requires:", "  fs: true", "  apps: ['@test/x']"])
+      const loaded = await loadAppHandle(dir)
+      expect(loaded.placement).toBe("split")
+      expect(loaded.requirements.fs).toBe(true)
+      expect(loaded.requires).toEqual(["@test/x"])
+    })
+  })
+
+  it("rejects an unknown placement", async () => {
+    await withDir(async (dir) => {
+      await emitWithFrontmatter(dir, ["placement: cloud"])
+      await expect(loadAppHandle(dir)).rejects.toThrow(AppLoadError)
+      await expect(loadAppHandle(dir)).rejects.toThrow(/placement.*"local", "box", "any", "split".*"cloud"/)
+    })
+  })
+
+  it("rejects exposes.agents naming an undeclared agent", async () => {
+    await withDir(async (dir) => {
+      await emitWithFrontmatter(dir, ["exposes:", "  agents: [ghost]"])
+      await expect(loadAppHandle(dir)).rejects.toThrow(AppLoadError)
+      await expect(loadAppHandle(dir)).rejects.toThrow(/exposes\.agents.*'ghost'/)
+    })
+  })
+
+  it("rejects exposes.workflows naming an undeclared workflow", async () => {
+    await withDir(async (dir) => {
+      await emitWithFrontmatter(dir, ["exposes:", "  workflows: [ghost-wf]"])
+      await expect(loadAppHandle(dir)).rejects.toThrow(/exposes\.workflows.*'ghost-wf'/)
+    })
+  })
+
+  it("rejects malformed requires / accepts values", async () => {
+    await withDir(async (dir) => {
+      await emitWithFrontmatter(dir, ["requires:", "  browser: yes-please"])
+      await expect(loadAppHandle(dir)).rejects.toThrow(/requires\.browser.*boolean/)
+    })
+    await withDir(async (dir) => {
+      await emitWithFrontmatter(dir, ["requires:", "  secrets: [1, 2]"])
+      await expect(loadAppHandle(dir)).rejects.toThrow(/requires\.secrets/)
+    })
+    await withDir(async (dir) => {
+      await emitWithFrontmatter(dir, ["accepts:", "  tasks: sometimes"])
+      await expect(loadAppHandle(dir)).rejects.toThrow(/accepts\.tasks.*boolean/)
+    })
+  })
+})

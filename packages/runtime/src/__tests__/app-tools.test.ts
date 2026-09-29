@@ -8,6 +8,8 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
 import { cp, mkdtemp, readFile, rm, mkdir, writeFile } from "node:fs/promises"
+import { createServer, type Server } from "node:http"
+import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
 import { isAbsolute, join } from "node:path"
 import matter from "gray-matter"
@@ -21,10 +23,13 @@ import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import { compileWorkflow, runWorkflow, type AgentStep } from "@agentproto/workflow-runtime"
 import {
   registerAppTools,
+  type RegisterAppToolsOptions,
   resolveAgentRefsForWorkflow,
   resolveAppToolsForWorkflow,
   sanitizeOutputBlocks,
   buildAgentRunSpawnConfig,
+  loadAgentPromptDefaults,
+  resolveAgentModelRef,
 } from "../app-tools.js"
 import { createDaemonToolRegistry, mergeAppAndDaemonToolRegistry } from "../workflow-tool-registry.js"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
@@ -94,6 +99,8 @@ async function setup(opts: {
   dispatchTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>
   callImportedTool?: (alias: string, tool: string, args: Record<string, unknown>) => Promise<unknown>
   catalogPath?: string
+  loadCatalogConfig?: () => Promise<{ catalog?: { sources?: { url: string }[] } }>
+  remoteCatalog?: RegisterAppToolsOptions["remoteCatalog"]
   waitForSessionTerminal?: (sessionId: string) => Promise<void>
 } = {}) {
   const registry = createSessionsRegistry({ persist: false })
@@ -126,6 +133,9 @@ async function setup(opts: {
     ...(opts.dispatchTool ? { dispatchTool: opts.dispatchTool } : {}),
     ...(opts.callImportedTool ? { callImportedTool: opts.callImportedTool } : {}),
     ...(opts.catalogPath ? { catalogPath: opts.catalogPath } : {}),
+    // Never read the developer's real ~/.agentproto/config.json.
+    loadCatalogConfig: opts.loadCatalogConfig ?? (async () => ({})),
+    ...(opts.remoteCatalog ? { remoteCatalog: opts.remoteCatalog } : {}),
   })
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
@@ -1507,6 +1517,80 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
     expect(step.model).toBe("claude-sonnet-5")
   })
 
+  it("agent.ref resolution: an AGENT.md `model: role:<name>` resolves through the model-role resolver before adapter selection", async () => {
+    const app = defineApp({
+      id: "@test/agent-step-app-role",
+      name: "Agent Step App (model role)",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "role:review.large",
+            workflows: [{ ref: "do-thing-role" }],
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      workflows: [
+        defineWorkflow({
+          id: "do-thing-role",
+          name: "Do thing",
+          description: "Does a thing via an agent step.",
+          version: "0.1.0",
+          inputs: {},
+          outputs: {},
+          steps: [{ id: "step1", kind: "agent", agent: { ref: "worker" }, prompt: "Do the thing." }],
+        }),
+      ],
+    })
+    await app.emit(dir)
+
+    const { client, appRegistry } = await setup()
+    const installed = parseToolJson(await client.callTool({ name: "app_install", arguments: { dir } }))
+    const handle = await loadWorkflowHandle(installed.workflows[0].path as string)
+    const compileWith = async (resolver?: (role: string) => Promise<string | undefined>) =>
+      compileWorkflow(handle, {
+        tools: {},
+        candidates: [],
+        agentRefs: await resolveAgentRefsForWorkflow(appRegistry, handle.id, resolver),
+      }).steps[0] as AgentStep
+
+    const seen: string[] = []
+    const resolved = await compileWith(async role => {
+      seen.push(role)
+      return "claude-sonnet-5-5"
+    })
+    expect(seen).toEqual(["review.large"])
+    expect(resolved.model).toBe("claude-sonnet-5-5")
+    expect(resolved.adapter).toBe("claude-code")
+
+    // No resolver / an unresolvable role never leaks the raw `role:` string.
+    expect((await compileWith()).model).toBeUndefined()
+    expect((await compileWith(async () => undefined)).model).toBeUndefined()
+  })
+
+  it("resolveAgentModelRef passes plain ids through and only resolves role: refs", async () => {
+    const resolver = async (role: string) => `resolved:${role}`
+    expect(await resolveAgentModelRef("claude-sonnet-5-5", resolver)).toBe("claude-sonnet-5-5")
+    expect(await resolveAgentModelRef("role:judge.session", resolver)).toBe("resolved:judge.session")
+    expect(await resolveAgentModelRef(undefined, resolver)).toBeUndefined()
+    expect(await resolveAgentModelRef("role:judge.session")).toBeUndefined()
+  })
+
+  it("loadAgentPromptDefaults resolves a role: model for app_run", async () => {
+    const agentDir = join(dir, "role-agent")
+    await mkdir(agentDir, { recursive: true })
+    const agentPath = join(agentDir, "AGENT.md")
+    await writeFile(
+      agentPath,
+      "---\nschema: agent/v1\nid: role-agent\ndescription: d\nversion: 1.0.0\nmodel: role:judge.session\n---\n\nBody.\n",
+    )
+    expect((await loadAgentPromptDefaults(agentPath, async r => `m-for-${r}`)).model).toBe("m-for-judge.session")
+    expect((await loadAgentPromptDefaults(agentPath)).model).toBeUndefined()
+  })
+
   it("compiling a bundled workflow's agent-step against a DIFFERENT app's registry fails naming the ref", async () => {
     const app = defineApp({
       id: "@test/agent-step-app-2",
@@ -2315,6 +2399,91 @@ describe("app_catalog", () => {
     expect(notInstalled.installed).toBe(false)
     expect(notInstalled.hasUi).toBe(false)
     expect(notInstalled.hasArtifact).toBe(false)
+  })
+
+  describe("remote sources", () => {
+    let srv: Server
+    let base: string
+    let hits: number
+    let body: unknown
+    beforeEach(async () => {
+      hits = 0
+      body = {
+        entries: [
+          {
+            appId: "@remote/store-app",
+            name: "Store App",
+            placement: "box",
+            source: { kind: "git", url: "https://example.com/r.git", ref: "main", sha: "abc123" },
+          },
+          { appId: "@test/not-installed", source: { kind: "agentapp", url: "https://example.com/x.agentapp", sha256: "f".repeat(64), version: "1.0.0" } },
+        ],
+      }
+      srv = createServer((_req, res) => {
+        hits++
+        res.setHeader("content-type", "application/json")
+        res.end(JSON.stringify(body))
+      })
+      await new Promise<void>(r => srv.listen(0, "127.0.0.1", r))
+      base = `http://127.0.0.1:${(srv.address() as AddressInfo).port}`
+    })
+    afterEach(async () => {
+      await new Promise(r => srv.close(r))
+    })
+
+    it("appends remote entries after local ones, deduped, with source; config sources win over file", async () => {
+      const catalogPath = join(catalogDir, "app-catalog.json")
+      await writeFile(
+        catalogPath,
+        JSON.stringify({
+          apps: [{ appId: "@test/not-installed", name: "Local", dir: "/catalog/other" }],
+          sources: [{ url: "http://127.0.0.1:1/never-used" }],
+        }),
+        "utf8",
+      )
+      const { client } = await setup({
+        catalogPath,
+        loadCatalogConfig: async () => ({ catalog: { sources: [{ url: `${base}/catalog.json` }] } }),
+      })
+      const res = await client.callTool({ name: "app_catalog", arguments: {} })
+      const entries = parseToolJson(res).filter((e: any) => e.category !== "builtin")
+      expect(entries.map((e: any) => e.appId)).toEqual(["@test/not-installed", "@remote/store-app"])
+      expect(entries[0].dir).toBe("/catalog/other")
+      expect(entries[0].source).toBeUndefined()
+      expect(entries[1]).toMatchObject({
+        installed: false,
+        placement: "box",
+        source: { kind: "git", url: "https://example.com/r.git", ref: "main", sha: "abc123" },
+      })
+      expect((res as { content: unknown[] }).content).toHaveLength(1)
+    })
+
+    it("reads sources from the catalog file when config has none; refresh bypasses the cache", async () => {
+      const catalogPath = join(catalogDir, "app-catalog.json")
+      await writeFile(catalogPath, JSON.stringify({ apps: [], sources: [{ url: `${base}/c.json` }] }), "utf8")
+      const { client } = await setup({ catalogPath })
+      await client.callTool({ name: "app_catalog", arguments: {} })
+      await client.callTool({ name: "app_catalog", arguments: {} })
+      expect(hits).toBe(1)
+      await client.callTool({ name: "app_catalog", arguments: { refresh: true } })
+      expect(hits).toBe(2)
+    })
+
+    it("reports a failing source in a warnings block instead of failing", async () => {
+      body = "not a catalog"
+      const { client } = await setup({
+        catalogPath: join(catalogDir, "missing.json"),
+        loadCatalogConfig: async () => ({ catalog: { sources: [{ url: `${base}/c.json` }] } }),
+      })
+      const res = (await client.callTool({ name: "app_catalog", arguments: {} })) as {
+        content: { text: string }[]
+        isError?: boolean
+      }
+      expect(res.isError).toBeUndefined()
+      expect(res.content).toHaveLength(2)
+      expect(JSON.parse(res.content[1]!.text).warnings[0]).toContain(`${base}/c.json`)
+      expect(JSON.parse(res.content[0]!.text).filter((e: any) => e.category !== "builtin")).toEqual([])
+    })
   })
 
   it("tolerates a missing catalog file, still lists installed apps", async () => {

@@ -34,6 +34,7 @@ import type {
 } from "./types.js"
 import { refKey } from "./refs.js"
 import { emitApp } from "./emit.js"
+import { normalizeManifestFields } from "./manifest-fields.js"
 
 export class AppDefinitionError extends Error {
   constructor(message: string) {
@@ -93,7 +94,23 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
   const name = def.name
   const version = def.version ?? (id ? "0.1.0" : undefined)
   const description = def.description
-  const requires = def.requires ? Object.freeze([...def.requires]) : undefined
+  const fields = normalizeManifestFields(
+    { placement: def.placement, requires: def.requires, exposes: def.exposes, accepts: def.accepts },
+    { agents: agents.map(e => e.agent.id), workflows: workflows.map(w => w.id) },
+    msg => new AppDefinitionError(msg),
+  )
+  const requires = fields.requires ? Object.freeze([...fields.requires]) : undefined
+  const requirements = Object.freeze({
+    ...fields.requirements,
+    secrets: Object.freeze([...fields.requirements.secrets]),
+    apps: Object.freeze([...fields.requirements.apps]),
+  })
+  const placement = fields.placement
+  const exposes = Object.freeze({
+    agents: Object.freeze([...fields.exposes.agents]),
+    workflows: Object.freeze([...fields.exposes.workflows]),
+  })
+  const accepts = Object.freeze({ ...fields.accepts })
   const ui = def.ui ? Object.freeze({ ...def.ui }) : undefined
   const artifact = def.artifact ? Object.freeze({ ...def.artifact }) : undefined
   const skill = def.skill ? Object.freeze({ ...def.skill }) : undefined
@@ -128,6 +145,10 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
     ...(version !== undefined ? { version } : {}),
     ...(description !== undefined ? { description } : {}),
     ...(requires !== undefined ? { requires } : {}),
+    requirements,
+    placement,
+    exposes,
+    accepts,
     ...(ui !== undefined ? { ui } : {}),
     ...(artifact !== undefined ? { artifact } : {}),
     ...(skill !== undefined ? { skill } : {}),
@@ -171,6 +192,10 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
           ...(version !== undefined ? { version } : {}),
           ...(description !== undefined ? { description } : {}),
           ...(requires !== undefined ? { requires } : {}),
+          requirements,
+          placement,
+          exposes,
+          accepts,
           ...(ui !== undefined ? { ui } : {}),
           ...(artifact !== undefined ? { artifact } : {}),
           ...(skill !== undefined ? { skill } : {}),

@@ -30,6 +30,7 @@ import { createHash } from "node:crypto"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
+import type { ModelRolesConfig } from "./model-roles.js"
 import { validateConfig } from "./config-schema.js"
 
 export const CONFIG_VERSION = 1 as const
@@ -152,6 +153,17 @@ export interface TitlerConfig {
    *  daemon's environment; without a key the titler falls back to the
    *  local (first-prompt-line) title. */
   model?: string
+}
+
+export interface CatalogSourceConfig {
+  /** HTTP(S) URL returning `{ entries: AppCatalogEntry[] }`. */
+  url: string
+}
+
+export interface CatalogConfig {
+  /** Remote app-catalog sources merged into `app_catalog`. When set, these
+   *  win over `sources` in `~/.agentproto/app-catalog.json`. */
+  sources?: CatalogSourceConfig[]
 }
 
 export interface TunnelConfig {
@@ -578,6 +590,13 @@ export interface AgentprotoConfig {
   review?: ReviewConfig
   /** Daemon-side AGENTS.md resolution/injection policy. See {@link AgentsMdConfig}. */
   agentsMd?: AgentsMdConfig
+  /** Model roles: ROLE → model id (or `{ model, route?, profile? }`), the
+   *  one place reviewer/judge models are configured. Layer 3 of the
+   *  precedence documented in `model-roles.ts` (input > workspace
+   *  `agentproto.json` > this > built-in default). Role names contain dots,
+   *  so `getConfigKey`/`setConfigKey` treat everything after `models.` as
+   *  ONE key (`models.review.pr` → `models["review.pr"]`). */
+  models?: ModelRolesConfig
   /** Daemon-side session titler (`session-titler.ts`). DEFAULT OFF — when
    *  `enabled` is not explicitly true the titler is a complete no-op and
    *  nothing renames anything. When on, at the end of the FIRST completed
@@ -591,6 +610,8 @@ export interface AgentprotoConfig {
    *  user prompt, 6 whole words) on any failure. A user-created label is
    *  NEVER overwritten, and a session is titled at most once. */
   titler?: TitlerConfig
+  /** App catalog settings (`app-catalog.ts`). See {@link CatalogConfig}. */
+  catalog?: CatalogConfig
   /** Named connection profiles. See `ProfileConfig` for the merge
    *  semantics — a profile's fields shallow-override the top-level
    *  defaults for the selected run. */
@@ -751,6 +772,16 @@ export async function saveConfig(
   await fs.rename(tmp, target)
 }
 
+/** Split a dotted key into path segments. `models.<role>` is the one
+ *  exception: role names are themselves dotted (`review.pr`), so everything
+ *  after `models.` is a single segment. */
+export function splitConfigPath(dotted: string): string[] {
+  if (dotted.startsWith("models.") && dotted.length > "models.".length) {
+    return ["models", dotted.slice("models.".length)]
+  }
+  return dotted.split(".")
+}
+
 /**
  * Read a dot-notation key (`daemon.port`) out of a config. Returns
  * `undefined` when any segment is missing.
@@ -760,7 +791,7 @@ export function getConfigKey(
   dotted: string,
 ): unknown {
   let cur: unknown = cfg
-  for (const part of dotted.split(".")) {
+  for (const part of splitConfigPath(dotted)) {
     if (cur == null || typeof cur !== "object") return undefined
     cur = (cur as Record<string, unknown>)[part]
   }
@@ -777,7 +808,7 @@ export function setConfigKey(
   dotted: string,
   value: unknown,
 ): AgentprotoConfig {
-  const parts = dotted.split(".")
+  const parts = splitConfigPath(dotted)
   const out: AgentprotoConfig = { ...cfg }
   let cur: Record<string, unknown> = out as Record<string, unknown>
   for (let i = 0; i < parts.length - 1; i++) {

@@ -38,6 +38,7 @@ import type {
   AdapterListEntry,
 } from "./http-server.js"
 import { agentStartInputShape, mcpBool } from "./agent-start-schema.js"
+import { statsDetailOf, statsParamSchema, withSessionStats } from "./process-stats.js"
 import { promptInputSchema } from "./spawn-field-schemas.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
@@ -1229,6 +1230,7 @@ export function registerAgentTools(
     ...(s.lastTurnErrorMessage !== undefined ? { lastTurnErrorMessage: s.lastTurnErrorMessage } : {}),
     ...(s.lastTurnReason !== undefined ? { lastTurnReason: s.lastTurnReason } : {}),
     ...(s.lastTurnEmpty !== undefined ? { lastTurnEmpty: s.lastTurnEmpty } : {}),
+    ...(s.stats !== undefined ? { stats: s.stats } : {}),
   })
   const agentSessionsListSchema = z.object({
     kind: z
@@ -1245,6 +1247,12 @@ export function registerAgentTools(
       .enum(["starting", "running", "exited", "killed", "error"])
       .optional()
       .describe("Filter by exact status (overrides onlyAlive)."),
+    stats: statsParamSchema.describe(
+      "Resource stats per live session (process-tree RSS, %CPU, process count, " +
+        "top commands by RSS) under each row's `stats`. `true` = summary; " +
+        "`\"full\"` adds every process. Same sampler as `session_list({stats})`; " +
+        "see `session_stats` for the host-level view.",
+    ),
     ...pageParamsShape,
   })
   type AgentSessionsListInput = z.infer<typeof agentSessionsListSchema>
@@ -1279,6 +1287,10 @@ export function registerAgentTools(
         rows = rows.filter(
           s => s.status === "running" || s.status === "starting",
         )
+      }
+      const statsDetail = statsDetailOf(input.stats)
+      if (statsDetail) {
+        rows = await withSessionStats(rows, registry.list({ includeArchived: true }), statsDetail)
       }
       return rows
     },

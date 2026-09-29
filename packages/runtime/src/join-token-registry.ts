@@ -180,6 +180,11 @@ export interface JoinTokenRegistryDeps {
    *  while it can still answer. The box waits for this to settle (bounded on
    *  its side), so it should not hang. Errors are logged and swallowed. */
   flushHost?: (fingerprint: string) => Promise<unknown>
+  /** Called after the goodbye's final capture (even if it failed), with the
+   *  same fingerprint — normally `hostRegistry.markEnded`, so a departed CI
+   *  box stops reading as a live host immediately. Errors are logged and
+   *  swallowed. */
+  endHost?: (fingerprint: string) => Promise<unknown>
   /** Injectable clock (ms). Defaults to Date.now. */
   now?: () => number
   /** Diagnostic log sink. */
@@ -434,6 +439,13 @@ export function createJoinTokenRegistry(deps: JoinTokenRegistryDeps): JoinTokenR
           log(`[join-tokens] "${record.name}": final snapshot taken for ${hello.fingerprint} (goodbye)`)
         } catch (err) {
           log(`[join-tokens] "${record.name}": final snapshot for ${hello.fingerprint} failed: ${errMsg(err)}`)
+        }
+      }
+      if (typeof hello.fingerprint === "string" && hello.fingerprint && deps.endHost) {
+        try {
+          await deps.endHost(hello.fingerprint)
+        } catch (err) {
+          log(`[join-tokens] "${record.name}": marking ${hello.fingerprint} ended failed: ${errMsg(err)}`)
         }
       }
       return

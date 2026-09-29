@@ -28,6 +28,7 @@ import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { loadAppHandle, loadAppBundledTools, peekAppUi, type AppUiBuildConfig } from "@agentproto/app-kit"
 import { ensureAppUiBuilt } from "./app-ui-build.js"
+import { parseModelRoleRef } from "./model-roles.js"
 import { loadAgent } from "@agentproto/agent"
 import type { AnyRef } from "@agentproto/agent"
 import type { AgentRefResolution } from "@agentproto/workflow-runtime"
@@ -39,12 +40,28 @@ import { buildAppBoundary } from "./app-boundary.js"
 import type { SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
-import { createAppRegistry, type AppRegistry, type InstalledApp, type InstalledAppRef } from "./app-registry.js"
+import { createAppRegistry, type AppRegistry, type AppSource, type InstalledApp, type InstalledAppRef } from "./app-registry.js"
+import {
+  APP_INSTALL_EXCLUSIVE_ERROR,
+  appInstallInputSchema,
+  isAgentappUrl,
+  remoteGitSha,
+  stageAgentApp,
+  stageGitApp,
+  swapInStaged,
+  type StagedApp,
+} from "./app-remote-install.js"
 import { appDataDir, DEFAULT_APP_DATA_SUBDIR } from "./app-data.js"
 import { reconcileAppRunStatus } from "./app-run-liveness.js"
 import { compactWorkflowRunStatus } from "./orchestration-tools.js"
 import { appStateLedgerExists, appStateSnapshot } from "./app-state.js"
-import { loadAppCatalogFile } from "./app-catalog.js"
+import {
+  loadAppCatalogFile,
+  createRemoteCatalogClient,
+  resolveCatalogSources,
+  type RemoteCatalogClient,
+} from "./app-catalog.js"
+import { loadConfig, type CatalogConfig } from "./config.js"
 import { builtinPanelCatalogEntries } from "./builtin-apps.js"
 import { paginate, pageParamsShape, toolText, type PageParams } from "./tool-envelope.js"
 import { catchErrors, type ToolTransformer } from "@agentproto/tool"
@@ -145,6 +162,25 @@ async function waitForSessionTerminal(
  *  run on claude-code. Anything else keeps the pre-F26 blanket default. */
 export const MODEL_ROUTED_ADAPTER = "claude-code"
 
+/** Resolves a model ROLE (`review.large`) to a model id — see `model-roles.ts`. */
+export type ModelRoleResolver = (role: string) => Promise<string | undefined>
+
+/**
+ * An AGENT.md `model:` may be `role:<name>` (see `model-roles.ts`) instead of
+ * a model id: resolve it now, before adapter selection or spawn. A role that
+ * cannot be resolved yields `undefined` (the adapter's own default) rather
+ * than leaking the raw `role:` string to a model API.
+ */
+export async function resolveAgentModelRef(
+  model: string | undefined,
+  resolveRole?: ModelRoleResolver,
+): Promise<string | undefined> {
+  if (model === undefined) return undefined
+  const role = parseModelRoleRef(model)
+  if (role === undefined) return model
+  return resolveRole ? resolveRole(role) : undefined
+}
+
 function defaultAdapterForModel(model: string | undefined): string {
   if (model === undefined) return DEFAULT_AGENT_ADAPTER
   const bare = model.includes("/") ? model.slice(model.lastIndexOf("/") + 1) : model
@@ -193,6 +229,7 @@ function agentMetadataAdapter(metadata: { [k: string]: unknown } | undefined): s
 export async function resolveAgentRefsForWorkflow(
   appRegistry: AppRegistry,
   workflowId: string,
+  resolveRole?: ModelRoleResolver,
 ): Promise<Record<string, AgentRefResolution> | undefined> {
   const app = appRegistry.listApps().find(a => a.workflows.some(w => w.id === workflowId))
   if (!app) return undefined
@@ -203,7 +240,7 @@ export async function resolveAgentRefsForWorkflow(
     let tools: string[] | undefined
     try {
       const { handle } = await loadAgent(agent.path)
-      model = typeof handle.model === "string" ? handle.model : undefined
+      model = await resolveAgentModelRef(typeof handle.model === "string" ? handle.model : undefined, resolveRole)
       metadataAdapter = agentMetadataAdapter(handle.metadata)
       // String tool ids only — they scope the daemon gateway an agent step's
       // session gets (sessions-registry-agent-host.ts). A structured ref has
@@ -321,9 +358,13 @@ export function buildAgentRunSpawnConfig(
 /** Load an AGENT.md's declared model (string form only — a structured
  *  `ModelRef` has no single id to pass as `agent_start.model`) and body,
  *  for `buildAgentRunSpawnConfig`. */
-export async function loadAgentPromptDefaults(agentPath: string): Promise<{ model?: string; body: string }> {
+export async function loadAgentPromptDefaults(
+  agentPath: string,
+  resolveRole?: ModelRoleResolver,
+): Promise<{ model?: string; body: string }> {
   const { handle, body } = await loadAgent(agentPath)
-  return { ...(typeof handle.model === "string" ? { model: handle.model } : {}), body }
+  const model = await resolveAgentModelRef(typeof handle.model === "string" ? handle.model : undefined, resolveRole)
+  return { ...(model !== undefined ? { model } : {}), body }
 }
 
 function textResult(body: unknown): { content: { type: "text"; text: string }[] } {
@@ -536,6 +577,8 @@ export interface RegisterAppToolsOptions {
    * failing one step at a time deep into a run.
    */
   listRegisteredToolIds: () => Promise<string[]>
+  /** Resolves an AGENT.md `model: role:<name>` at `app_run` time. */
+  resolveModelRole?: ModelRoleResolver
   /** When wired, `app_status` folds in workflow runs whose `workflowId`
    *  belongs to the app — any run of one of its bundled WORKFLOW.md files,
    *  however it was started (`workflow_run_file`, `workflow_start`, …).
@@ -543,6 +586,9 @@ export interface RegisterAppToolsOptions {
   workflowRunner?: WorkflowRunner
   /** Absolute path for the persistence file. Defaults to `~/.agentproto/apps.json`. */
   persistPath?: string
+  /** Root for remote-installed apps (`<appsDir>/<slug>`, `app_install {url|file}`).
+   *  Defaults to `apps/` next to `persistPath` (the daemon state dir). */
+  appsDir?: string
   /** Enable filesystem persistence. Defaults to `true` when `persistPath` is
    *  explicitly supplied, `false` otherwise — mirrors workflow-runner.ts. */
   persist?: boolean
@@ -571,6 +617,11 @@ export interface RegisterAppToolsOptions {
    *  Defaults to `~/.agentproto/app-catalog.json`. Missing file → empty
    *  catalog (never an error). */
   catalogPath?: string
+  /** Remote-catalog fetcher (5 min in-memory cache). Defaults to a fresh
+   *  client per `registerAppTools` call; tests inject one. */
+  remoteCatalog?: RemoteCatalogClient
+  /** Loads the daemon config for `catalog.sources`. Defaults to `loadConfig`. */
+  loadCatalogConfig?: () => Promise<{ catalog?: CatalogConfig }>
 }
 
 /** Expand a leading `~` (bare or `~/…`) against `os.homedir()`. Any other
@@ -622,6 +673,8 @@ export interface PerformInstallOptions {
    *  a relative path is taken relative to the app dir (like the APP.md
    *  `data.dir` hint). Wins over every other source. */
   readonly dataDir?: string
+  /** Provenance recorded on the installed-app record (remote installs). */
+  readonly source?: AppSource
 }
 
 /**
@@ -801,32 +854,96 @@ export async function performInstall(
     ...(handle.dev ? { dev: handle.dev } : {}),
     ...(externalReadRoots ? { externalReadRoots } : {}),
     ...(handle.boundaries ? { boundaries: { ...handle.boundaries } } : {}),
+    ...(opts?.source !== undefined ? { source: opts.source } : {}),
   })
 
   return { ok: true, record }
 }
 
 export function registerAppTools(server: McpServer, opts: RegisterAppToolsOptions): void {
-  const { registry, resolveAgentAdapter, listRegisteredToolIds, workflowRunner, dispatchTool, callImportedTool } =
+  const { registry, resolveAgentAdapter, listRegisteredToolIds, workflowRunner, dispatchTool, callImportedTool, resolveModelRole } =
     opts
   const appRegistry: AppRegistry = opts.appRegistry ?? createAppRegistry({
     ...(opts.persistPath !== undefined ? { persistPath: opts.persistPath } : {}),
     ...(opts.persist !== undefined ? { persist: opts.persist } : {}),
   })
 
+  const appsDir =
+    opts.appsDir ?? join(dirname(opts.persistPath ?? join(homedir(), ".agentproto", "apps.json")), "apps")
+
+  /** Swap a staged remote tree in at `<appsDir>/<slug>` and run the normal
+   *  `performInstall` on it; a failed install puts the previous tree back. */
+  const installStaged = async (
+    staged: StagedApp,
+    dataDir?: string,
+  ): Promise<Awaited<ReturnType<typeof performInstall>>> => {
+    const target = join(appsDir, staged.slug)
+    const appDir = staged.subdir === "" ? target : join(target, staged.subdir)
+    const previousDataDir = appRegistry.listApps().find(a => a.dir === appDir)?.dataDir
+    let swap: Awaited<ReturnType<typeof swapInStaged>>
+    try {
+      swap = await swapInStaged({
+        tmpDir: staged.tmpDir,
+        target,
+        ...(previousDataDir !== undefined ? { previousDataDir } : {}),
+      })
+    } catch (err) {
+      await staged.discard()
+      return { ok: false, error: err instanceof Error ? err.message : String(err) }
+    }
+    let result: Awaited<ReturnType<typeof performInstall>>
+    try {
+      result = await performInstall(appDir, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
+        ...(dataDir !== undefined ? { dataDir } : {}),
+        source: staged.source,
+      })
+    } catch (err) {
+      await swap.rollback()
+      throw err
+    }
+    if (!result.ok) {
+      await swap.rollback()
+      return result
+    }
+    await swap.commit()
+    return result
+  }
+
+  const stageFromUrl = (input: { url: string; ref?: string; subdir?: string }): Promise<StagedApp> =>
+    isAgentappUrl(input.url)
+      ? stageAgentApp({ appsDir, url: input.url })
+      : stageGitApp({
+          appsDir,
+          url: input.url,
+          ...(input.ref !== undefined ? { ref: input.ref } : {}),
+          ...(input.subdir !== undefined ? { subdir: input.subdir } : {}),
+        })
+
   server.tool(
     "app_install",
-    "Install an @agentproto/app-kit app from its emitted directory " +
-      "(`<dir>/.agentproto/APP.md` — see `defineApp().emit(dir)`). Validates every " +
+    "Install an @agentproto/app-kit app. Exactly one source: `{dir}` — an emitted app " +
+      "directory on disk (`<dir>/.agentproto/APP.md`, see `defineApp().emit(dir)`); " +
+      "`{url, ref?, subdir?}` — a git repo (shallow-cloned into `<daemon state dir>/apps/<slug>`, " +
+      "the installed commit pinned in `source.sha`); `{url}` ending in `.agentapp` — a packed " +
+      "bundle fetched over https/file (digest-verified, pinned in `source.sha256`); `{file}` — a " +
+      "local `.agentapp` path. Remote installs are kept current with `app_resync`. Validates every " +
       "WORKFLOW.md `tool` step's id against the daemon's dispatchable tools (missing " +
       "ids are reported ALL at once, instead of failing one at a time at " +
       "STEP-DISPATCH time) and checks the `mastra-agent` adapter resolves. Agent-" +
       "declared tool refs (workspace tools like `read_file`) are the adapter's own " +
       "business and are never validated here — see `unvalidatedAgentTools` on the " +
       "result. Re-installing the same appId upserts (and keeps its existing " +
-      "`dataDir` unless a new one is passed).",
+      "`dataDir` unless a new one is passed); a failed remote re-install leaves the " +
+      "previous install untouched.",
     {
-      dir: z.string().describe("Absolute path to the app's directory."),
+      dir: z.string().optional().describe("Absolute path to the app's directory (local install)."),
+      url: z
+        .string()
+        .optional()
+        .describe("Git URL (https://…, git@…, file://…) or a .agentapp URL (https://…/x.agentapp, file:///…/x.agentapp)."),
+      ref: z.string().optional().describe("Git branch or tag to install (with a git `url`). Default: the remote HEAD."),
+      subdir: z.string().optional().describe("Path of the app inside the git repo (with a git `url`). Default: the repo root."),
+      file: z.string().optional().describe("Absolute path to a local .agentapp bundle."),
       dataDir: z
         .string()
         .optional()
@@ -836,12 +953,82 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
             "dataDir, else the APP.md `data.dir` hint, else `<dir>/data`.",
         ),
     },
-    async input => {
-      const result = await performInstall(input.dir, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
-        ...(input.dataDir !== undefined ? { dataDir: input.dataDir } : {}),
-      })
+    async rawInput => {
+      const present = Object.fromEntries(Object.entries(rawInput).filter(([, v]) => v !== undefined))
+      const parsed = appInstallInputSchema.safeParse(present)
+      if (!parsed.success) return errorResult(`app_install: ${APP_INSTALL_EXCLUSIVE_ERROR}`)
+      const input = parsed.data
+      if ("dir" in input) {
+        const result = await performInstall(input.dir, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
+          ...(input.dataDir !== undefined ? { dataDir: input.dataDir } : {}),
+        })
+        if (!result.ok) return errorResult(`app_install: ${result.error}`)
+        return textResult(result.record)
+      }
+      if ("url" in input && isAgentappUrl(input.url) && (input.ref !== undefined || input.subdir !== undefined)) {
+        return errorResult("app_install: `ref`/`subdir` only apply to git URLs, not a .agentapp.")
+      }
+      let staged: StagedApp
+      try {
+        staged =
+          "file" in input
+            ? await stageAgentApp({ appsDir, file: input.file })
+            : await stageFromUrl(input)
+      } catch (err) {
+        return errorResult(`app_install: ${err instanceof Error ? err.message : String(err)}`)
+      }
+      const result = await installStaged(staged, input.dataDir)
       if (!result.ok) return errorResult(`app_install: ${result.error}`)
       return textResult(result.record)
+    },
+  )
+
+  server.tool(
+    "app_resync",
+    "Re-check an app installed from git or a `.agentapp` against its source and reinstall it if " +
+      "the source moved. Git: `git ls-remote` for the installed `ref` vs the pinned `source.sha`. " +
+      "`.agentapp`: re-download and compare the bundle's verified `sha256` with the pinned one. " +
+      "Returns `{changed:false}` when current, `{changed:true, from, to}` after a reinstall " +
+      "(data dir kept). Apps installed from a local `dir` have no source to resync.",
+    { appId: z.string() },
+    async input => {
+      const app = appRegistry.getApp(input.appId)
+      if (!app) return errorResult(`app_resync: no installed app "${input.appId}".`)
+      const source = app.source
+      if (source === undefined || source.kind === "local") {
+        return errorResult(
+          `app_resync: app "${input.appId}" was installed from a local dir — nothing to resync (re-run app_install).`,
+        )
+      }
+      try {
+        let staged: StagedApp
+        let from: string
+        if (source.kind === "git") {
+          from = source.sha
+          const remote = await remoteGitSha(source.url, source.ref)
+          if (remote === source.sha) return textResult({ appId: input.appId, changed: false })
+          staged = await stageGitApp({
+            appsDir,
+            url: source.url,
+            ...(source.ref !== undefined ? { ref: source.ref } : {}),
+            ...(source.subdir !== undefined ? { subdir: source.subdir } : {}),
+          })
+        } else {
+          from = source.sha256
+          staged = await stageAgentApp({ appsDir, url: source.url })
+          if (staged.source.kind === "agentapp" && staged.source.sha256 === source.sha256) {
+            await staged.discard()
+            return textResult({ appId: input.appId, changed: false })
+          }
+        }
+        const result = await installStaged(staged)
+        if (!result.ok) return errorResult(`app_resync: ${result.error}`)
+        const next = result.record.source
+        const to = next?.kind === "git" ? next.sha : next?.kind === "agentapp" ? next.sha256 : from
+        return textResult({ appId: result.record.appId, changed: true, from, to })
+      } catch (err) {
+        return errorResult(`app_resync: ${err instanceof Error ? err.message : String(err)}`)
+      }
     },
   )
 
@@ -867,6 +1054,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     description: app.description,
     dir: app.dir,
     dataDir: app.dataDir,
+    ...(app.source !== undefined ? { source: app.source } : {}),
     ...(app.dirMissing ? { dirMissing: true } : {}),
     agents: app.agents.map(a => a.id),
     workflows: app.workflows.map(w => w.id),
@@ -1052,7 +1240,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           spawnOptions = { agent: agentPath }
           if (spawnModel === undefined) {
             try {
-              spawnModel = (await loadAgentPromptDefaults(agentPath)).model
+              spawnModel = (await loadAgentPromptDefaults(agentPath, resolveModelRole)).model
             } catch (err) {
               errors.push({
                 agentId,
@@ -1063,7 +1251,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           }
         } else {
           try {
-            const defaults = await loadAgentPromptDefaults(agentPath)
+            const defaults = await loadAgentPromptDefaults(agentPath, resolveModelRole)
             const built = buildAgentRunSpawnConfig(defaults, { model, prompt: input.prompt })
             spawnModel = built.model
             spawnPrompt = built.prompt
@@ -1290,6 +1478,7 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       return textResult({
         appRunId: run.appRunId,
         appId: run.appId,
+        ...(app?.source !== undefined ? { source: app.source } : {}),
         status: reconciledStatus,
         startedAt: run.startedAt,
         ...(reconciledStatus !== "running" && run.endedAt
@@ -1542,25 +1731,36 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
     },
   )
 
+  const remoteCatalog = opts.remoteCatalog ?? createRemoteCatalogClient()
+  const loadCatalogConfig = opts.loadCatalogConfig ?? (() => loadConfig())
+
   server.tool(
     "app_catalog",
     "List browsable apps from the catalog file (default `~/.agentproto/app-catalog.json`, " +
       "tolerates a missing file), merged with installed-app status — every entry reports " +
-      "`installed`, `hasUi`, `hasArtifact`, and `hasSkill`. Installed apps absent from the catalog file are included too, " +
-      "as are the five always-on builtin panels (category `builtin`) — they need no `app_install`.",
+      "`installed`, `hasUi`, `hasArtifact`, and `hasSkill`. Remote catalog `sources` (config " +
+      "`catalog.sources`, else `sources` in the catalog file) are fetched and appended after " +
+      "local entries, deduped by `appId` (first wins); their entries carry `source` for " +
+      "`app_install`. A failing source is reported in a trailing `{ warnings: [...] }` content " +
+      "block, never as an error. Installed apps absent from the catalog are included too, " +
+      "as are the always-on builtin panels (category `builtin`) — they need no `app_install`.",
     {
       scopeId: z
         .string()
         .optional()
         .describe("Reserved for future scope-aware filtering. Currently unused."),
+      refresh: z
+        .boolean()
+        .optional()
+        .describe("Bypass the 5-minute remote-source cache and refetch every source."),
     },
-    async () => {
+    async input => {
       const catalog = await loadAppCatalogFile(opts.catalogPath)
       const installedApps = appRegistry.listApps()
       const installedById = new Map(installedApps.map(a => [a.appId, a]))
       const seen = new Set<string>()
 
-      const entries = catalog.apps.map(entry => {
+      const entries: Array<Record<string, unknown>> = catalog.apps.map(entry => {
         const installed = installedById.get(entry.appId)
         seen.add(entry.appId)
         const name = entry.name ?? installed?.name
@@ -1577,6 +1777,38 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
           hasSkill: installed?.skill !== undefined,
         }
       })
+
+      let configSources: unknown
+      try {
+        configSources = (await loadCatalogConfig()).catalog?.sources
+      } catch {
+        // unreadable config → fall back to the catalog file's sources
+      }
+      const sources = resolveCatalogSources(catalog.sources, configSources)
+      const remote =
+        sources.length > 0
+          ? await remoteCatalog.fetchSources(sources, { refresh: input.refresh === true })
+          : { entries: [], warnings: [] }
+
+      for (const entry of remote.entries) {
+        if (seen.has(entry.appId)) continue
+        seen.add(entry.appId)
+        const installed = installedById.get(entry.appId)
+        const name = entry.name ?? installed?.name
+        const description = entry.description ?? installed?.description
+        entries.push({
+          appId: entry.appId,
+          ...(name ? { name } : {}),
+          ...(description ? { description } : {}),
+          ...(entry.category ? { category: entry.category } : {}),
+          source: entry.source,
+          ...(entry.placement ? { placement: entry.placement } : {}),
+          installed: installed !== undefined,
+          hasUi: installed?.ui !== undefined,
+          hasArtifact: installed?.artifact !== undefined,
+          hasSkill: installed?.skill !== undefined,
+        })
+      }
 
       for (const app of installedApps) {
         if (seen.has(app.appId)) continue
@@ -1595,9 +1827,15 @@ export function registerAppTools(server: McpServer, opts: RegisterAppToolsOption
       // Builtin panels (sessions-panel, agents-overview, bureau-sessions,
       // session-story, live-session) — always present, no app_install
       // step, never persisted to ~/.agentproto/apps.json.
-      entries.push(...builtinPanelCatalogEntries())
+      entries.push(...builtinPanelCatalogEntries().map(e => ({ ...e })))
 
-      return textResult(entries)
+      // Entries stay the first content block (a bare JSON array) so existing
+      // clients keep parsing; warnings ride in a second block only when present.
+      const result = textResult(entries) as { content: { type: "text"; text: string }[] }
+      if (remote.warnings.length > 0) {
+        result.content.push({ type: "text", text: JSON.stringify({ warnings: remote.warnings }) })
+      }
+      return result
     },
   )
 

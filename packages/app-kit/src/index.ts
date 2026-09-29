@@ -42,6 +42,17 @@ export { emitApp } from "./emit.js"
 export { loadAppHandle, AppLoadError, resolveAppUIRoot, peekAppUi } from "./load-app.js"
 export type { AppUiPeek } from "./load-app.js"
 export { loadAppBundledTools } from "./load-app-tools.js"
+export {
+  packApp,
+  unpackApp,
+  aggregateSha256,
+  collectFiles,
+  isManifest,
+  safeId,
+  AGENTAPP_FORMAT,
+  AgentAppPackError,
+} from "./pack.js"
+export type { AgentAppManifest, BundleFile, AgentAppPackErrorCode } from "./pack.js"
 export { refKey, stripOwner } from "./refs.js"
 export type {
   AppDefinition,
@@ -59,6 +70,10 @@ export type {
   AppBoundariesDefinition,
   AppDataDefinition,
   AppDevDefinition,
+  AppPlacement,
+  AppRequirements,
+  AppExposes,
+  AppAccepts,
   ToMastraAgentOptions,
   EmittedApp,
 } from "./types.js"

@@ -37,8 +37,9 @@ inputs:
     default: jev-latest
   judgeModel:
     type: string
-    description: Model for the agent judge.
-    default: claude-haiku-4-5-20251001
+    description: >-
+      Model for the agent judge. Default: the `judge.session` model role
+      (repo agentproto.json `models` > daemon config `models` > built-in).
   maxJudged:
     type: number
     description: Most `judge` sessions judged per run, most RAM first.
@@ -54,6 +55,15 @@ inputs:
     description: The calling session's id — never a candidate.
 outputs: {}
 steps:
+  - id: modelRoles
+    kind: tool
+    name: Resolve the judge model role
+    tool: model_roles
+    inputs:
+      roles:
+        - judge.session
+      inputs:
+        judge.session: $input.judgeModel
   - id: settings
     kind: transform
     name: Resolve inputs with their defaults
