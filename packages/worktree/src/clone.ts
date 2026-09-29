@@ -1,6 +1,7 @@
 import { mkdir, lstat } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { execArgv } from "./exec.js"
+import { ProvisionCancelledError } from "./provision-scheduler.js"
 import { expandCloneGlob } from "./glob.js"
 
 /**
@@ -17,7 +18,8 @@ import { expandCloneGlob } from "./glob.js"
  * Never a symlink: the clone must be an independent, writable tree a
  * package manager can repair/mutate without touching the source checkout.
  */
-async function cloneEntry(src: string, dest: string): Promise<void> {
+async function cloneEntry(src: string, dest: string, signal?: AbortSignal): Promise<void> {
+  const execOpts = signal ? { signal } : {}
   await mkdir(dirname(dest), { recursive: true })
   const platform = process.platform
   const cloneArgs =
@@ -27,10 +29,13 @@ async function cloneEntry(src: string, dest: string): Promise<void> {
         ? ["-r", "--reflink=auto", src, dest]
         : null
   if (cloneArgs) {
-    const result = await execArgv("cp", cloneArgs, dirname(dest))
+    const result = await execArgv("cp", cloneArgs, dirname(dest), execOpts)
     if (result.exitCode === 0) return
+    // A killed `cp` exits non-zero too; never fall through to a second copy.
+    if (signal?.aborted) throw new ProvisionCancelledError()
   }
-  const fallback = await execArgv("cp", ["-R", src, dest], dirname(dest))
+  const fallback = await execArgv("cp", ["-R", src, dest], dirname(dest), execOpts)
+  if (signal?.aborted) throw new ProvisionCancelledError()
   if (fallback.exitCode !== 0) {
     throw new Error(
       `clone of '${src}' into '${dest}' failed: ${fallback.stderr || fallback.stdout}`,
@@ -45,20 +50,23 @@ async function cloneEntry(src: string, dest: string): Promise<void> {
  * the package manager runs — turning `depsCmd` into a quick verify/repair
  * instead of a full reinstall. Skips an entry whose destination already
  * exists — same never-clobber rule `linkPaths`/`writeFiles` follow in
- * `provision-worktree.body.ts`.
+ * `provision-worktree.body.ts`. `signal` cancels mid-copy (the `cp` process
+ * group is killed) with {@link ProvisionCancelledError}.
  */
 export async function cloneEntries(
   repoRoot: string,
   cwd: string,
   patterns: readonly string[],
+  signal?: AbortSignal,
 ): Promise<void> {
   for (const pattern of patterns) {
     const matches = await expandCloneGlob(repoRoot, pattern)
     for (const rel of matches) {
+      if (signal?.aborted) throw new ProvisionCancelledError()
       const dest = join(cwd, rel)
       const existing = await lstat(dest).catch(() => null)
       if (existing) continue
-      await cloneEntry(join(repoRoot, rel), dest)
+      await cloneEntry(join(repoRoot, rel), dest, signal)
     }
   }
 }

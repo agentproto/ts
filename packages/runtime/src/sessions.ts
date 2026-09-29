@@ -113,7 +113,11 @@ import {
 import { foldUsageFrameWindow, resetContextWindowForModel, type ContextSizeSource } from "./context-window.js"
 import { resolveWorktreeIdentity } from "./worktree-identity.js"
 import type { SessionAppServeInfo } from "./sandbox-app-serve.js"
-import type { WorktreeAutoReclaimer } from "./worktree-isolation.js"
+import type {
+  WorktreeAutoReclaimer,
+  WorktreeProvisionPhase,
+  WorktreeProvisionProgress,
+} from "./worktree-isolation.js"
 import type { AgentsMdMode } from "./agents-md.js"
 import {
   computeContextContinuityStatus,
@@ -980,6 +984,25 @@ export interface SessionHandoff {
   at: string
 }
 
+/**
+ * Where a still-`starting` session's worktree provisioning stands in the
+ * daemon-wide provisioning queue (heavy phases, `depsCmd` above all, are
+ * throttled so a burst of spawns cannot melt the host). Present only while
+ * provisioning is in flight; cleared when it finishes, fails, or is cancelled.
+ */
+export interface SessionProvisioning {
+  /** `queued`: waiting for a heavy-phase slot. `running`: provisioning is
+   *  actually executing (the cheap prep, or a granted heavy segment). */
+  state: "queued" | "running"
+  /** 1-based projected dispatch position; only while `queued`. */
+  position?: number
+  /** The phase queued for (`queued`) or currently executing (`running`). */
+  phase: WorktreeProvisionPhase
+  /** ISO-8601 instant provisioning began (the spawn), constant across the
+   *  queued and running states so `now - startedAt` is the total wait. */
+  startedAt: string
+}
+
 export interface SessionDescriptor {
   id: string
   kind: SessionKind
@@ -989,6 +1012,9 @@ export interface SessionDescriptor {
   command: string
   pid: number | null
   status: SessionStatus
+  /** Worktree-provisioning progress of a `starting` row — see
+   *  {@link SessionProvisioning}. Absent once the session left `starting`. */
+  provisioning?: SessionProvisioning
   /** Unambiguous liveness signal, stamped at read time (list()/get()/
    *  findByIdOrName) — true iff `status` is "running" or "starting", the
    *  same test the daemon uses internally (validateAgentTurn). Ephemeral:
@@ -2085,6 +2111,9 @@ export interface SessionSummary {
   command: string
   pid: number | null
   status: SessionStatus
+  /** Worktree-provisioning progress while `starting` — see
+   *  `SessionDescriptor.provisioning`. */
+  provisioning?: SessionProvisioning
   startedAt: string
   endedAt?: string
   exitCode?: number
@@ -2213,6 +2242,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     command: desc.command,
     pid: desc.pid,
     status: desc.status,
+    ...(desc.provisioning ? { provisioning: { ...desc.provisioning } } : {}),
     startedAt: desc.startedAt,
     endedAt: desc.endedAt,
     exitCode: desc.exitCode,
@@ -2415,6 +2445,10 @@ interface SessionRuntime {
   /** Guard: true once session:exited has been emitted to sessionEvents.
    *  Prevents duplicate emissions when both kill() and an OS exit event fire. */
   exitedEmitted?: boolean
+  /** Cancels this row's in-flight worktree provisioning (queued entry dropped,
+   *  running child tree killed). Set by `spawnAgentPending`'s `onCancel`;
+   *  fired once from `emitExited`, the funnel every terminal path shares. */
+  provisionCancel?: () => void
   /** Per-session cost cap. When set, the turn-end finally block checks
    *  the accumulated costUsd against this ceiling and kills the session
    *  if exceeded. */
@@ -3187,6 +3221,13 @@ export interface SessionsRegistry {
    *  killed it mid-provision. A terminal descriptor is never resurrected.
    *  Also a no-op for an unknown id (the row was removed entirely). */
   settlePendingAgent(id: string, outcome: PendingAgentOutcome): void
+  /** Record a provisioning progress report for `id`: updates the row's
+   *  {@link SessionProvisioning} (`queued` / `started` / `phase`; `done`
+   *  clears it) and emits `session:provisioning` on the bus. Also emits for an
+   *  id with no registry row (a synchronous provision, whose session doesn't
+   *  exist until it finishes) — only the descriptor update is skipped. Never
+   *  touches a row that already left `starting`. */
+  reportProvisioning(id: string, progress: WorktreeProvisionProgress): void
   /** Spawn a process under a real PTY (node-pty). Bytes flow through
    *  the registry's byte ring buffer + emitter; attach with
    *  `attachPty(id, ...)`. Throws when the registry was constructed
@@ -4176,7 +4217,13 @@ export interface SpawnAgentInput {
 export type SpawnAgentPendingInput = Omit<
   SpawnAgentInput,
   "agentSession" | "commandPreview" | "resumable" | "nativeTerminalResume" | "initialPrompt"
->
+> & {
+  /** Invoked once when the placeholder reaches a terminal status (killed, or
+   *  settled failed) while provisioning may still be in flight — the hook
+   *  that aborts the provisioner so a killed spawn leaves no queued entry
+   *  and no orphaned install. Never invoked after a successful settle. */
+  onCancel?: () => void
+}
 
 /** The deferred outcome `settlePendingAgent` resolves a placeholder with —
  *  see that method's doc. */
@@ -4798,6 +4845,20 @@ export function createSessionsRegistry(opts?: {
   // Emit session:exited once per session, deduplicated via exitedEmitted flag.
   const emitExited = (rt: SessionRuntime): void => {
     if (rt.exitedEmitted) return
+    // Terminal means provisioning is over, one way or another: drop the
+    // progress field, and abort whatever provisioning may still be queued or
+    // running for this row (its queue entry is dropped, its child tree
+    // killed). Once-only via the hook clearing itself.
+    delete rt.desc.provisioning
+    const cancelProvision = rt.provisionCancel
+    if (cancelProvision) {
+      rt.provisionCancel = undefined
+      try {
+        cancelProvision()
+      } catch {
+        // A cancel hook must never break the exit funnel.
+      }
+    }
     // The one exit funnel every terminal path goes through — derive what
     // the session produced before anything announces its death, so a
     // `session:exited` consumer reading the descriptor already sees it.
@@ -8387,7 +8448,13 @@ export function createSessionsRegistry(opts?: {
         maxCostUsd: input.maxCostUsd,
         costBudget: input.costBudget,
         ...(input.permissionHold ? { permissionHold: true } : {}),
+        ...(input.onCancel ? { provisionCancel: input.onCancel } : {}),
       }
+      // Provisioning is under way from the first instant: the cheap prep
+      // (`git worktree add`) runs unthrottled, so the row starts as `running`
+      // in the `worktree` phase and flips to `queued` only if the heavy
+      // segment has to wait for a slot.
+      desc.provisioning = { state: "running", phase: "worktree", startedAt: desc.startedAt }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
       linkContinuedTo(input.resumedFrom, id)
@@ -8408,6 +8475,36 @@ export function createSessionsRegistry(opts?: {
       desc.eventsPath = sessionEventsPath(desc.id, transcriptBaseDir)
       return desc
     },
+    reportProvisioning(id, progress) {
+      const rt = sessions.get(id)
+      const ts = new Date().toISOString()
+      if (rt && rt.desc.status === "starting") {
+        const startedAt = rt.desc.provisioning?.startedAt ?? rt.desc.startedAt
+        if (progress.kind === "queued") {
+          rt.desc.provisioning = {
+            state: "queued",
+            position: progress.position,
+            phase: progress.phase,
+            startedAt,
+          }
+        } else if (progress.kind === "done") {
+          delete rt.desc.provisioning
+        } else {
+          rt.desc.provisioning = { state: "running", phase: progress.phase, startedAt }
+        }
+        schedulePersist()
+      }
+      sessionEvents?.emit({
+        type: "session:provisioning",
+        sessionId: id,
+        kind: progress.kind,
+        ...(progress.kind !== "done" ? { phase: progress.phase } : {}),
+        ...(progress.kind === "queued" ? { position: progress.position } : {}),
+        ...(progress.kind === "done" ? { outcome: progress.outcome } : {}),
+        ...(rt?.desc.label ? { label: rt.desc.label } : {}),
+        ts,
+      })
+    },
     settlePendingAgent(id, outcome) {
       const rt = sessions.get(id)
       if (rt && rt.desc.status !== "starting") {
@@ -8421,6 +8518,9 @@ export function createSessionsRegistry(opts?: {
         if (outcome.ok) void outcome.agentSession.close().catch(() => undefined)
         return
       }
+      // Provisioning finished (ok or not): nothing left to cancel or report.
+      rt.provisionCancel = undefined
+      delete rt.desc.provisioning
       if (!outcome.ok) {
         rt.desc.status = "error"
         rt.desc.lastError = outcome.message
@@ -10545,6 +10645,8 @@ function loadHistorySnapshot(
           killedMidTurn: desc.busy === true,
         }
       : desc
+    // A row loaded from disk has no live provisioning, whatever it recorded.
+    delete reclassified.provisioning
     // Unconditional, not `if (wasAlive)`: a ghost carries no child/
     // agentSession, so it is idle whatever the snapshot claimed — and rows
     // that were ALREADY terminal can carry frozen flags too. Two ways in: a

@@ -6166,3 +6166,117 @@ describe("spawnAgentSession — preset lastUsedAt stamp", () => {
     expect(result.ok).toBe(true)
   })
 })
+
+// ── worktree provisioning queue: progress, descriptor field, cancellation ────
+describe("spawnAgentSession — provisioning progress and cancellation (daemon-wide queue)", () => {
+  const ORIGINAL = "/repo/checkout"
+  const isolated: WorktreeProvisionOutcome = { isolated: true, cwd: "/root/repo/q", branch: "wt/q" }
+
+  function queueDeps() {
+    const events = createSessionEventBus()
+    const registry = createSessionsRegistry({ persist: false, sessionEvents: events })
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const { deps } = baseDeps({ registry, resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree, calls, resolve, reject } = deferredProvisioner()
+    const seen: { kind: string; phase?: string; position?: number; outcome?: string; sessionId: string }[] = []
+    events.onAny(e => {
+      if (e.type === "session:provisioning") seen.push(e)
+    })
+    return {
+      registry,
+      calls,
+      resolve,
+      reject,
+      seen,
+      deps: { ...deps, provisionWorktree, resolveWorktreeIsolation: pinMode("on-request") },
+    }
+  }
+
+  it("hands the provisioner a signal, the parent as callerId, and a progress sink wired to the row", async () => {
+    const { deps, calls, registry, resolve, seen } = queueDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: ORIGINAL,
+      worktree: { async: true },
+      parentSessionId: "ses_parent",
+    })
+    if (!result.ok) throw new Error("expected success")
+    const id = result.descriptor.id
+    const req = calls[0]!
+    expect(req.signal).toBeInstanceOf(AbortSignal)
+    expect(req.signal?.aborted).toBe(false)
+    expect(req.callerId).toBe("ses_parent")
+
+    // A fresh async spawn already reads as provisioning ("running" the cheap prep).
+    expect(registry.get(id)?.provisioning).toMatchObject({ state: "running", phase: "worktree" })
+
+    req.onProgress?.({ kind: "queued", position: 2, phase: "deps" })
+    expect(registry.get(id)?.provisioning).toMatchObject({ state: "queued", position: 2, phase: "deps" })
+    // The compact list projection carries it too.
+    expect(registry.list().find(s => s.id === id)?.provisioning).toMatchObject({ state: "queued", position: 2 })
+
+    req.onProgress?.({ kind: "started", phase: "deps" })
+    const running = registry.get(id)?.provisioning
+    expect(running).toMatchObject({ state: "running", phase: "deps" })
+    expect(running?.position).toBeUndefined()
+
+    req.onProgress?.({ kind: "phase", phase: "setup" })
+    expect(registry.get(id)?.provisioning).toMatchObject({ state: "running", phase: "setup" })
+
+    expect(seen.map(e => e.kind)).toEqual(["queued", "started", "phase"])
+    expect(seen[0]).toMatchObject({ sessionId: id, position: 2, phase: "deps" })
+
+    resolve(isolated)
+    await vi.waitFor(() => expect(registry.get(id)?.status).toBe("running"))
+    // Once the session is up, the field is gone.
+    expect(registry.get(id)?.provisioning).toBeUndefined()
+  })
+
+  it("killing a starting session aborts its provisioning signal and clears the field", async () => {
+    const { deps, calls, registry, seen } = queueDeps()
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: ORIGINAL, worktree: { async: true } })
+    if (!result.ok) throw new Error("expected success")
+    const id = result.descriptor.id
+    const req = calls[0]!
+    req.onProgress?.({ kind: "queued", position: 1, phase: "deps" })
+    expect(req.signal?.aborted).toBe(false)
+
+    registry.kill(id)
+
+    expect(req.signal?.aborted).toBe(true)
+    expect(registry.get(id)?.status).not.toBe("starting")
+    expect(registry.get(id)?.provisioning).toBeUndefined()
+    // A late report from the (now cancelled) provisioner never resurrects the field.
+    req.onProgress?.({ kind: "done", outcome: "cancelled" })
+    expect(registry.get(id)?.provisioning).toBeUndefined()
+    expect(seen.at(-1)).toMatchObject({ kind: "done", outcome: "cancelled" })
+  })
+
+  it("a provisioning that fails ends the row without leaving a stale provisioning field", async () => {
+    const { deps, registry, reject, calls } = queueDeps()
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: ORIGINAL, worktree: { async: true } })
+    if (!result.ok) throw new Error("expected success")
+    const id = result.descriptor.id
+    calls[0]!.onProgress?.({ kind: "started", phase: "deps" })
+    reject(new Error("depsCmd failed"))
+    await vi.waitFor(() => expect(registry.get(id)?.status).toBe("error"))
+    expect(registry.get(id)?.provisioning).toBeUndefined()
+  })
+
+  it("the synchronous path still emits progress events keyed by the minted session id (no row to update)", async () => {
+    const { deps, calls, seen, resolve } = queueDeps()
+    const pending = spawnAgentSession(deps, { adapter: "mock", cwd: ORIGINAL, worktree: { async: false } })
+    await vi.waitFor(() => expect(calls).toHaveLength(1))
+    const req = calls[0]!
+    expect(req.signal).toBeUndefined()
+    req.onProgress?.({ kind: "queued", position: 1, phase: "deps" })
+    expect(seen).toHaveLength(1)
+    expect(seen[0]!.sessionId).toMatch(/^sess_/)
+    resolve(isolated)
+    const result = await pending
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected success")
+    // The event carried the id the session then adopted.
+    expect(seen[0]!.sessionId).toBe(result.descriptor.id)
+  })
+})

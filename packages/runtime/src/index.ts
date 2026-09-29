@@ -758,6 +758,8 @@ export {
   parseWorktreeIsolationMode,
   WORKTREE_ISOLATION_ENV,
   DEFAULT_WORKTREE_ISOLATION,
+  WORKTREE_PROVISION_CONCURRENCY_ENV,
+  DEFAULT_WORKTREE_PROVISION_CONCURRENCY,
 } from "./worktree-isolation.js"
 export type {
   WorktreeField,
@@ -766,6 +768,8 @@ export type {
   WorktreeAutoReclaimer,
   WorktreeProvisionRequest,
   WorktreeProvisionOutcome,
+  WorktreeProvisionPhase,
+  WorktreeProvisionProgress,
   WorktreeDecision,
   WorktreeRequest,
 } from "./worktree-isolation.js"

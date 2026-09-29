@@ -122,6 +122,13 @@ inserted between `WORKSPACE` and `STATUS` showing the worktree's leaf directory
 name. The full path and the worktree id are shown in the `--watch` detail pane
 and in `--json`.
 
+A session whose worktree is still being provisioned reports `starting` plus
+what it is doing: `starting queued #2` while it waits for a provisioning slot
+(see [`worktree`](./worktree.md#provisioning-concurrency)), or `starting deps`
+/ `starting setup` etc. once it holds one. `sessions show <id>` prints a
+`provision:` line, and `--json` carries the full
+`provisioning: { state, position, phase, startedAt }` object.
+
 ### `--stats[=full]` (who is eating the host)
 
 ```bash

@@ -1205,6 +1205,7 @@ export function registerAgentTools(
     name: s.name,
     label: s.label,
     status: s.status,
+    ...(s.provisioning ? { provisioning: { ...s.provisioning } } : {}),
     pty: s.pty,
     command: s.command,
     cwd: s.cwd,
@@ -1262,7 +1263,7 @@ export function registerAgentTools(
     description: "List agent-CLI sessions tracked by the daemon. Equivalent to `session_list({kind: 'agent-cli'})`. " +
       "Each entry includes `kind`, `status`, age, etc. Use this when you only want " +
       "the agent-CLI subset. COMPACT BY DEFAULT: each entry is a slim projection " +
-      "(id/kind/name/label/status/command/cwd/model/busy/awaitingInput/blockedOn/" +
+      "(id/kind/name/label/status/provisioning/command/cwd/model/busy/awaitingInput/blockedOn/" +
       "lastActivityAt/startedAt/exitCode/depth/parentSessionId/lastTurnErroredAt); " +
       "pass `full: true` " +
       "(or `compact: false`) for the complete, unprojected per-session record.",

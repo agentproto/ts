@@ -37,6 +37,25 @@ export {
 export { expandGlob, expandCloneGlob, globToRegExp, GlobTraversalError } from "./glob.js"
 export { cloneEntries } from "./clone.js"
 export {
+  DEFAULT_PROVISION_CONCURRENCY,
+  DEFAULT_PROVISION_LIMITS,
+  PROVISION_CONCURRENCY_ENV,
+  ProvisionCancelledError,
+  ProvisionScheduler,
+  provisionScheduler,
+  parseProvisionLimits,
+  runWithProvisionContext,
+  currentProvisionContext,
+  type AcquireRequest,
+  type ProvisionLease,
+  type ProvisionLimits,
+  type ProvisionPhase,
+  type ProvisionProgress,
+  type ProvisionRunContext,
+  type SchedulerOptions,
+  type SchedulerSnapshot,
+} from "./provision-scheduler.js"
+export {
   CONFIG_FILENAME,
   parseConfig,
   normalizeHook,

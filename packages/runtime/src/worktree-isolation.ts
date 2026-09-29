@@ -30,6 +30,18 @@ export type { WorktreeIsolationMode }
  *  the `worktrees.isolation` config field — see `loadWorktreeIsolation`. */
 export const WORKTREE_ISOLATION_ENV = "AGENTPROTO_WORKTREES_ISOLATION"
 
+/** Env override for the daemon-wide cap on concurrently running HEAVY
+ *  worktree-provisioning segments (`depsCmd` etc.). Highest-priority source,
+ *  ahead of `worktrees.provisionConcurrency`. Enforced by
+ *  `@agentproto/worktree`'s scheduler (which reads the same env name); the
+ *  runtime only carries the name and the default for the config registry. */
+export const WORKTREE_PROVISION_CONCURRENCY_ENV = "AGENTPROTO_WORKTREES_PROVISION_CONCURRENCY"
+
+/** Default cap on concurrently running heavy provisioning segments. Mirrors
+ *  `@agentproto/worktree`'s `DEFAULT_PROVISION_CONCURRENCY` (a CLI test pins
+ *  the two together — the runtime takes no dependency on that package). */
+export const DEFAULT_WORKTREE_PROVISION_CONCURRENCY = 2
+
 /** The default when nothing is configured. Back-compat-preserving: a caller
  *  that passes no `worktree` field spawns exactly where it asked. */
 export const DEFAULT_WORKTREE_ISOLATION: WorktreeIsolationMode = "on-request"
@@ -100,7 +112,29 @@ export interface WorktreeProvisionRequest {
    *  substitute, and why the daemon opts in while `agentproto worktree new`
    *  doesn't. */
   retrySetupOnFailure?: boolean
+  /** Cancels this provisioning: a queued one is dropped from the daemon-wide
+   *  provisioning queue, a running one has its child process tree killed (no
+   *  orphaned `pnpm install`). The provisioner then rejects. */
+  signal?: AbortSignal
+  /** Whose spawn this is, for the scheduler's fair-share dispatch (the parent
+   *  session id, or an anonymous key for a top-level spawn). */
+  callerId?: string
+  /** Progress of the heavy provisioning segment (queued / started / phase /
+   *  done). Best-effort; never throws into the provisioner. */
+  onProgress?: (progress: WorktreeProvisionProgress) => void
 }
+
+/** Phases of a worktree provisioning. `worktree` is the unthrottled
+ *  `git worktree add` step; the rest are the throttled heavy ones. */
+export type WorktreeProvisionPhase = "worktree" | "clone" | "deps" | "copy" | "setup"
+
+/** Structural mirror of `@agentproto/worktree`'s `ProvisionProgress` (the
+ *  runtime deliberately takes no dependency on that package). */
+export type WorktreeProvisionProgress =
+  | { kind: "queued"; position: number; phase: WorktreeProvisionPhase }
+  | { kind: "started"; phase: WorktreeProvisionPhase }
+  | { kind: "phase"; phase: WorktreeProvisionPhase }
+  | { kind: "done"; outcome: "ok" | "failed" | "cancelled" }
 
 /** The provisioner's outcome. `isolated: false` is NOT a failure — it means
  *  there was nothing to isolate (`cwd` sits in no git repo), and the caller
