@@ -312,9 +312,15 @@ export function createBrowserSupervisor(opts: BrowserSupervisorOptions): Browser
   function run<T>(fn: () => Promise<T>): Promise<T> {
     const previous = busy ?? Promise.resolve()
     const p: Promise<T> = previous.catch(() => {}).then(fn)
-    busy = p.finally(() => {
-      if (busy === p) busy = null
-    })
+    const tracked: Promise<void> = p
+      .then(
+        () => undefined,
+        () => undefined,
+      )
+      .then(() => {
+        if (busy === tracked) busy = null
+      })
+    busy = tracked
     return p
   }
 

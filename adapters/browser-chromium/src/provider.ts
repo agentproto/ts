@@ -114,7 +114,7 @@ export function createChromiumProvider(config: ChromiumProviderConfig = {}): Chr
     }
 
     let contextClosed = false
-    context.once("close", () => {
+    context.on("close", () => {
       contextClosed = true
     })
     try {
