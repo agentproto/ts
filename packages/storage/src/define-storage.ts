@@ -1,6 +1,9 @@
 import { createDoctype } from "@agentproto/define-doctype"
+import { policyFrontmatterSchema } from "@agentproto/policy"
 import { storageFrontmatterSchema } from "./schema.js"
 import type {
+  PolicyRefBlock,
+  PolicyRefEntry,
   StorageRuntimeHandle,
   StorageRuntimeInput,
 } from "./types.js"
@@ -29,6 +32,53 @@ import type {
  *                   SHOULD agree on conventional keys
  *                   (bridgeable / transport / pairsWith / serverReachable).
  */
+/**
+ * An inline policy entry carries the AIP-38 `schema: "policy/v1"`
+ * literal; `{ ref }` / `{ file }` pointers do not and skip AIP-38
+ * validation (their target is resolved elsewhere, never here).
+ */
+function isInlinePolicyEntry(entry: PolicyRefEntry): boolean {
+  return (
+    typeof entry === "object" &&
+    entry !== null &&
+    !Array.isArray(entry) &&
+    (entry as { schema?: unknown }).schema === "policy/v1"
+  )
+}
+
+/**
+ * Validate the AIP-38 `policy` block. PARSE-AND-SURFACE ONLY — no
+ * enforcement. Each INLINE entry (`schema: "policy/v1"`) is checked
+ * against the shared AIP-38 frontmatter zod (same source of truth the
+ * `.md` policy path uses); `{ ref }` / `{ file }` pointers pass through
+ * untouched. Mirrors the role-catalog baseline-policy wiring.
+ */
+function validatePolicyBlock(policy: PolicyRefBlock): void {
+  const entries: PolicyRefEntry[] = Array.isArray(policy) ? policy : [policy]
+  for (const entry of entries) {
+    if (!isInlinePolicyEntry(entry)) continue
+    const result = policyFrontmatterSchema.safeParse(entry)
+    if (!result.success) {
+      throw new Error(
+        `defineStorage (AIP-35): policy block — ${result.error.issues
+          .map((i) => `${i.path.join(".")}: ${i.message}`)
+          .join("; ")}`,
+      )
+    }
+  }
+}
+
+/**
+ * Freeze the policy block for the handle: each entry shallow-frozen,
+ * arrays frozen. Same immutability contract as `capabilities`.
+ */
+function freezePolicyBlock(policy: PolicyRefBlock): PolicyRefBlock {
+  if (Array.isArray(policy)) {
+    return Object.freeze(policy.map(e => Object.freeze({ ...e }))) as PolicyRefBlock
+  }
+  return Object.freeze({ ...policy })
+}
+
 const defineStorageInner = createDoctype<
   StorageRuntimeInput,
   StorageRuntimeHandle
@@ -61,14 +111,16 @@ const defineStorageInner = createDoctype<
     // TODO: spec-35-specific cross-field rules (if/then/allOf in
     // the JSON Schema) — those don't translate to zod cleanly and
     // belong here. See @agentproto/operator's autonomy=gated rule.
+    if (def.policy !== undefined) validatePolicyBlock(def.policy)
   },
   build(def) {
     // Re-attach the runtime slots after validation. Capabilities are
     // shallow-frozen here so registry consumers can rely on
     // immutability; factory is left as-is (it's a function ref).
-    const { factory, capabilities, ...manifest } = def
+    const { factory, capabilities, policy, ...manifest } = def
     return {
       ...manifest,
+      ...(policy !== undefined ? { policy: freezePolicyBlock(policy) } : {}),
       ...(factory !== undefined ? { factory } : {}),
       ...(capabilities !== undefined
         ? { capabilities: Object.freeze({ ...capabilities }) }

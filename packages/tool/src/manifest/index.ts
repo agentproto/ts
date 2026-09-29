@@ -1,5 +1,6 @@
 import matter from "gray-matter"
 import { z, type ZodType } from "zod"
+import { validateManifestIOBlocks } from "../json-schema.js"
 import { defineTool } from "../define-tool.js"
 import type { ApprovalClass, ToolContext, ToolHandle } from "../types.js"
 
@@ -59,6 +60,9 @@ export const toolManifestFrontmatterSchema = z.object({
   // structurally loose here (validated as objects, not deep-checked against
   // the AIP-16 meta-schema); preserved so a manifest's declared IO contract
   // survives the parse → handle round-trip instead of being silently dropped.
+  // Minimal well-formedness (correct JSON types on type/properties/required/
+  // items/$ref/enum) is enforced in `parseToolManifest` via
+  // `validateManifestIOBlocks` — see `../json-schema.ts`.
   inputs: z.record(z.string(), z.unknown()).optional(),
   outputs: z.record(z.string(), z.unknown()).optional(),
 
@@ -97,8 +101,14 @@ export function parseToolManifest(source: string): ToolManifest {
         .join("; ")}`
     )
   }
+  // AIP-16 IO blocks: minimal JSON-Schema well-formedness at parse time
+  // (typed keys, not full validation — ajv handles that at invocation).
+  validateManifestIOBlocks(result.data.id, result.data)
+
   return { frontmatter: result.data, body: parsed.content }
 }
+
+export { checkMinimalJsonSchema } from "../json-schema.js"
 
 /**
  * Build a {@link ToolHandle} from a manifest that has no companion TS module.

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest"
+import type { PolicyDefinition } from "@agentproto/policy"
 import { defineStorage } from "../define-storage.js"
 
 describe("defineStorage (AIP-35)", () => {
@@ -84,5 +85,78 @@ describe("defineStorage (AIP-35)", () => {
       // Factory is retained with its declared type — invocable.
       expect(handle.factory?.({ bucket: "y" })).toEqual({ id: "cb-y" })
     })
+  })
+})
+
+describe("defineStorage: AIP-38 policy block (parse-and-surface)", () => {
+  // Annotated so `schema` keeps the "policy/v1" literal type (matches
+  // PolicyDefinition's discriminated union arm).
+  const inlinePolicy: PolicyDefinition = {
+    schema: "policy/v1",
+    version: "1.0.0",
+    default: "deny" as const,
+    grants: [
+      {
+        principal: "role://operator",
+        actions: [{ action: "storage:commit" }],
+      },
+    ],
+  }
+
+  it("surfaces an inline policy object on the handle", () => {
+    const handle = defineStorage({
+      provider: "cloud-bucket",
+      config: {},
+      policy: inlinePolicy,
+    })
+    expect(handle.policy).toEqual(inlinePolicy)
+  })
+
+  it("accepts { ref } / { file } pointer entries without AIP-38 validation", () => {
+    const handle = defineStorage({
+      provider: "cloud-bucket",
+      config: {},
+      policy: [{ ref: "@acme/policies/storage" }, { file: "./policies.md" }],
+    })
+    expect(handle.policy).toEqual([
+      { ref: "@acme/policies/storage" },
+      { file: "./policies.md" },
+    ])
+  })
+
+  it("freezes the policy block (single entry + array form)", () => {
+    const single = defineStorage({
+      provider: "cloud-bucket",
+      config: {},
+      policy: inlinePolicy,
+    })
+    expect(Object.isFrozen(single.policy as object)).toBe(true)
+
+    const multi = defineStorage({
+      provider: "cloud-bucket",
+      config: {},
+      policy: [inlinePolicy, { ref: "@acme/other" }],
+    }) as { policy: object[] }
+    expect(Object.isFrozen(multi.policy)).toBe(true)
+    for (const entry of multi.policy) expect(Object.isFrozen(entry)).toBe(true)
+  })
+
+  it("rejects a malformed inline policy entry via @agentproto/policy", () => {
+    expect(() =>
+      defineStorage({
+        provider: "cloud-bucket",
+        config: {},
+        // version is not semver — fails the shared AIP-38 frontmatter schema
+        policy: { schema: "policy/v1", version: "not-semver" },
+      }),
+    ).toThrow(/defineStorage \(AIP-35\): policy block/)
+  })
+
+  it("omits policy from the handle when not provided", () => {
+    const handle = defineStorage({
+      provider: "cloud-bucket",
+      config: {},
+    })
+    expect(handle.policy).toBeUndefined()
   })
 })
