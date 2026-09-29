@@ -41,7 +41,10 @@ export function deriveLocalBearer(rec: LocalDeviceRecord): string {
 
 export interface ParsedBearer {
   fingerprint: string
-  mac: Buffer
+  /** Raw base64url as presented (NOT re-encoded from the decoded buffer — the
+   *  trailing bits of a 32-byte MAC are dropped by base64url decoding, so the
+   *  last character must be compared in string form). */
+  mac: string
 }
 
 export function parseLocalBearer(bearer: string): ParsedBearer | null {
@@ -50,17 +53,20 @@ export function parseLocalBearer(bearer: string): ParsedBearer | null {
   if (parts.length !== 3 || parts[0] !== LOCAL_BEARER_PREFIX) return null
   const [, fingerprint, mac] = parts as [string, string, string]
   if (!/^[0-9a-f]{32}$/.test(fingerprint) || !/^[A-Za-z0-9_-]+$/.test(mac)) return null
-  return { fingerprint, mac: Buffer.from(mac, "base64url") }
+  return { fingerprint, mac }
 }
 
 /** Constant-time MAC check. Runs the same HMAC + compare for an unknown
  *  fingerprint (against a throwaway secret) so the miss path costs the same. */
 export function verifyLocalBearer(rec: LocalDeviceRecord | undefined, parsed: ParsedBearer | null): boolean {
   const target = rec ?? { fingerprint: "0".repeat(32), secret: randomBytes(32).toString("base64url") }
-  const expected = macOf(target)
-  const presented = parsed?.mac ?? Buffer.alloc(0)
+  const expected = macOf(target).toString("base64url")
+  const presented = parsed?.mac ?? ""
   const sameLength = presented.length === expected.length
-  const equal = timingSafeEqual(expected, sameLength ? presented : Buffer.alloc(expected.length))
+  const equal = timingSafeEqual(
+    Buffer.from(expected),
+    Buffer.from(sameLength ? presented : "0".repeat(expected.length)),
+  )
   return Boolean(rec) && parsed !== null && sameLength && equal
 }
 
