@@ -173,6 +173,26 @@ describe("A2A task ingress", () => {
     })
   })
 
+  it("routes both the literal-slash and the URL-encoded appId spelling to the same app", async () => {
+    await withServer(async rpc => {
+      const literal = await rpc(APP_ID, sendReq("solo"))
+      expect(literal.json.result.id).toBe("run-1")
+      const encoded = await rpc(encodeURIComponent(APP_ID), sendReq("solo"))
+      expect(encoded.json.result.id).toBe("run-2")
+      expect(encoded.json.result.metadata.appId).toBe(APP_ID)
+      // A task created under one spelling is readable through the other.
+      const viaEncoded = await rpc(encodeURIComponent(APP_ID), { jsonrpc: "2.0", id: 3, method: "tasks/get", params: { id: "run-1" } })
+      expect(viaEncoded.json.result.id).toBe("run-1")
+      const viaLiteral = await rpc(APP_ID, { jsonrpc: "2.0", id: 4, method: "tasks/get", params: { id: "run-2" } })
+      expect(viaLiteral.json.result.id).toBe("run-2")
+      // Lowercase percent-hex decodes the same way.
+      const lower = await rpc("%40test%2fa2a-app", sendReq("solo"))
+      expect(lower.json.result).toBeDefined()
+      const bad = await rpc("%E0%A4%A", sendReq("solo"))
+      expect(bad.status).toBe(400)
+    })
+  })
+
   it("persists the task ledger so tasks/get survives a restart", async () => {
     await withServer(async rpc => {
       await rpc(APP_ID, sendReq("solo"))

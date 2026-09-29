@@ -110,8 +110,15 @@ export async function handleA2aTaskRequest(
   deps: A2aTaskHttpDeps,
 ): Promise<boolean> {
   const m = A2A_APP_PATH_RE.exec(path)
-  if (!m || req.method !== "POST" || m[1]!.includes("/.well-known/")) return false
-  const appId = decodeURIComponent(m[1]!)
+  if (!m || req.method !== "POST") return false
+  let appId: string
+  try {
+    appId = decodeURIComponent(m[1]!)
+  } catch {
+    send(res, 400, { jsonrpc: "2.0", id: null, error: { code: JSON_RPC_ERROR.invalidRequest, message: "malformed percent-encoding in app id" } })
+    return true
+  }
+  if (appId.includes("/.well-known/")) return false
 
   const body = await readBody(req)
   if ("tooLarge" in body) {
