@@ -28,6 +28,8 @@ import {
   resolveAppToolsForWorkflow,
   sanitizeOutputBlocks,
   buildAgentRunSpawnConfig,
+  loadAgentPromptDefaults,
+  resolveAgentModelRef,
 } from "../app-tools.js"
 import { createDaemonToolRegistry, mergeAppAndDaemonToolRegistry } from "../workflow-tool-registry.js"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
@@ -1463,6 +1465,80 @@ describe("declarative agent-step round-trip (WP-B4)", () => {
     expect(step.adapter).toBe("mastra-agent")
     expect(step.options).toBeUndefined()
     expect(step.model).toBe("claude-sonnet-5")
+  })
+
+  it("agent.ref resolution: an AGENT.md `model: role:<name>` resolves through the model-role resolver before adapter selection", async () => {
+    const app = defineApp({
+      id: "@test/agent-step-app-role",
+      name: "Agent Step App (model role)",
+      agents: [
+        {
+          agent: defineAgent({
+            schema: "agent/v1",
+            id: "worker",
+            description: "A worker agent.",
+            model: "role:review.large",
+            workflows: [{ ref: "do-thing-role" }],
+          }),
+          body: "You do the thing.",
+        },
+      ],
+      workflows: [
+        defineWorkflow({
+          id: "do-thing-role",
+          name: "Do thing",
+          description: "Does a thing via an agent step.",
+          version: "0.1.0",
+          inputs: {},
+          outputs: {},
+          steps: [{ id: "step1", kind: "agent", agent: { ref: "worker" }, prompt: "Do the thing." }],
+        }),
+      ],
+    })
+    await app.emit(dir)
+
+    const { client, appRegistry } = await setup()
+    const installed = parseToolJson(await client.callTool({ name: "app_install", arguments: { dir } }))
+    const handle = await loadWorkflowHandle(installed.workflows[0].path as string)
+    const compileWith = async (resolver?: (role: string) => Promise<string | undefined>) =>
+      compileWorkflow(handle, {
+        tools: {},
+        candidates: [],
+        agentRefs: await resolveAgentRefsForWorkflow(appRegistry, handle.id, resolver),
+      }).steps[0] as AgentStep
+
+    const seen: string[] = []
+    const resolved = await compileWith(async role => {
+      seen.push(role)
+      return "claude-sonnet-5-5"
+    })
+    expect(seen).toEqual(["review.large"])
+    expect(resolved.model).toBe("claude-sonnet-5-5")
+    expect(resolved.adapter).toBe("claude-code")
+
+    // No resolver / an unresolvable role never leaks the raw `role:` string.
+    expect((await compileWith()).model).toBeUndefined()
+    expect((await compileWith(async () => undefined)).model).toBeUndefined()
+  })
+
+  it("resolveAgentModelRef passes plain ids through and only resolves role: refs", async () => {
+    const resolver = async (role: string) => `resolved:${role}`
+    expect(await resolveAgentModelRef("claude-sonnet-5-5", resolver)).toBe("claude-sonnet-5-5")
+    expect(await resolveAgentModelRef("role:judge.session", resolver)).toBe("resolved:judge.session")
+    expect(await resolveAgentModelRef(undefined, resolver)).toBeUndefined()
+    expect(await resolveAgentModelRef("role:judge.session")).toBeUndefined()
+  })
+
+  it("loadAgentPromptDefaults resolves a role: model for app_run", async () => {
+    const agentDir = join(dir, "role-agent")
+    await mkdir(agentDir, { recursive: true })
+    const agentPath = join(agentDir, "AGENT.md")
+    await writeFile(
+      agentPath,
+      "---\nschema: agent/v1\nid: role-agent\ndescription: d\nversion: 1.0.0\nmodel: role:judge.session\n---\n\nBody.\n",
+    )
+    expect((await loadAgentPromptDefaults(agentPath, async r => `m-for-${r}`)).model).toBe("m-for-judge.session")
+    expect((await loadAgentPromptDefaults(agentPath)).model).toBeUndefined()
   })
 
   it("compiling a bundled workflow's agent-step against a DIFFERENT app's registry fails naming the ref", async () => {

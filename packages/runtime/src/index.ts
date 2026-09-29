@@ -47,6 +47,21 @@ import {
 } from "./browser-tools.js"
 import { registerAuthProfileTools } from "./auth-profile-tools.js"
 import { registerConfigTools, type ConfigToolsDeps } from "./config-tools.js"
+import { modelRoles, registerModelRolesTools } from "./model-roles-tools.js"
+export {
+  DEFAULT_MODEL_ROLES,
+  MODEL_ROLE_REF_PREFIX,
+  listModelRoles,
+  parseModelRoleRef,
+  resolveModelRole,
+  type ModelRoleContext,
+  type ModelRoleEntry,
+  type ModelRoleSource,
+  type ModelRoleValue,
+  type ModelRolesConfig,
+  type ResolvedModelRole,
+} from "./model-roles.js"
+export { loadWorkspaceModelRoles, type ModelRolesInput, type ModelRolesOutput } from "./model-roles-tools.js"
 import { registerHarnessPresetTools } from "./harness-preset-tools.js"
 import { registerUserPresetTools } from "./user-preset-tools.js"
 import { registerCredentialDiscoveryTools } from "./credential-discovery.js"
@@ -1886,6 +1901,10 @@ export async function createGateway(
   // this closes over a box filled in once `mcpServerFactory` exists further
   // down — a tick firing before boot completes is not a real scenario, but
   // the box makes "not ready yet" a clear error instead of a crash either way.
+  // AGENT.md `model: role:<name>` → model id, via the same layered resolver
+  // the `model_roles` tool serves (active workspace + daemon config + defaults).
+  const resolveModelRoleId = async (role: string): Promise<string | undefined> =>
+    (await modelRoles({ roles: [role] })).roles[0]?.model
   const dispatchToolBox: { fn?: (name: string, inputs: Record<string, unknown>) => Promise<unknown> } = {}
   const dispatchTool = async (name: string, inputs: Record<string, unknown>): Promise<unknown> => {
     if (!dispatchToolBox.fn) {
@@ -2039,7 +2058,7 @@ export async function createGateway(
           })
           return compileWorkflow(handle, {
             ...merged,
-            agentRefs: await resolveAgentRefsForWorkflow(appRegistry, handle.id),
+            agentRefs: await resolveAgentRefsForWorkflow(appRegistry, handle.id, resolveModelRoleId),
           })
         },
         // App state ledger bridge: runs whose workflow belongs to an
@@ -2609,6 +2628,9 @@ export async function createGateway(
     // `DEFAULT_ORCHESTRATOR_TOOLS` (orchestrator-gateway.ts), so a scoped
     // child orchestrator can never reconfigure the daemon it runs on.
     registerConfigTools(server, configToolsDeps)
+    // `model_roles` — read-only role → model listing (model-roles.ts). Same
+    // root-only exposure; workflow `tool` steps reach it through dispatchTool.
+    registerModelRolesTools(server)
     // Persisted harness→profile bindings (harness_preset_list/create/delete/
     // set_default). Same no-host-wiring stance as the auth-profile tools —
     // the store reads/writes the fixed `~/.agentproto/harness-presets.json`.
@@ -2676,6 +2698,7 @@ export async function createGateway(
       appRegistry,
       dispatchTool,
       callImportedTool: callImportedAppTool,
+      resolveModelRole: resolveModelRoleId,
       ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
       ...(workflowRunner ? { workflowRunner } : {}),
     })

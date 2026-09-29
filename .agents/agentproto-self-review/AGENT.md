@@ -3,6 +3,10 @@ schema: agent/v1
 id: agentproto-self-review
 description: Illustrative AIP-42 manifest transcribing this repo's own .github/agentic-review.json config (model, skills, escalation policy) and AGENTS.md's two hard rules into the AIP-42 per-agent manifest format. Not wired to any runtime path — nothing currently resolves a WORKFLOW.md agent step (see .github/agentproto-workflows/*/entry.mjs) against an AGENT.md. Exists to make the format's applicability concrete, and to give a real transcription target if that wiring is ever built.
 version: 1.0.0
+# Fallback only: this manifest transcribes .github/agentic-review.json (whose model
+# stays authoritative for CI) and no runtime path loads it. A manifest that IS run by
+# the daemon should say `model: role:<name>` (e.g. role:review.large) so the model is
+# configured once, in the `models` config — see packages/runtime/src/model-roles.ts.
 model: claude-sonnet-5-5
 skills:
   - aip-conventions
