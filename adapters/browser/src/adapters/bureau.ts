@@ -53,8 +53,11 @@ export const bureauProvider = createProcessProvider({
       ctx,
     )
     const camofoxUrl = cam.endpoints.rest ?? "http://127.0.0.1:9377"
-    // PORT must reflect the resolved port.
-    return (port) => ({ CAMOFOX_URL: camofoxUrl, PORT: String(port) })
+    return {
+      // PORT must reflect the resolved port.
+      env: (port) => ({ CAMOFOX_URL: camofoxUrl, PORT: String(port) }),
+      stop: () => cam.stop(),
+    }
   },
 })
 

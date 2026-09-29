@@ -47,6 +47,20 @@ export const browserOptionSchema = z
   .refine((o) => o.type !== "enum" || (o.enum !== undefined && o.enum.length > 0), {
     message: "an option of type 'enum' must list its values in 'enum'",
   })
+  .refine((o) => o.type === "enum" || o.enum === undefined, {
+    message: "'enum' is only valid when type is 'enum'",
+  })
+  .refine(
+    (o) => {
+      if (o.default === undefined) return true
+      if (o.type === "boolean") return typeof o.default === "boolean"
+      if (o.type === "integer") return typeof o.default === "number" && Number.isInteger(o.default)
+      if (o.type === "string") return typeof o.default === "string"
+      // enum
+      return typeof o.default === "string" && (o.enum?.includes(o.default) ?? false)
+    },
+    { message: "'default' must match 'type' (and be one of 'enum' when type is 'enum')" },
+  )
 export type BrowserOption = z.infer<typeof browserOptionSchema>
 
 /** Post-install configuration prompt; matches the prompt arm of AIP-45 setup steps. */
@@ -66,19 +80,21 @@ export type BrowserConfigStep = z.infer<typeof browserConfigStepSchema>
  * The declarative half of a provider. Everything but `launch`, so it can be
  * validated, serialized, listed and shipped without running any code.
  */
-export const browserManifestSchema = z.object({
-  id: z.string().regex(/^[a-z0-9][a-z0-9._-]{1,79}$/, "must be lower-kebab, 2-80 chars"),
-  name: z.string().min(1),
-  description: z.string().min(1).max(2000),
-  version: z.string().min(1),
-  transport: browserTransportSchema,
-  location: browserLocationSchema,
-  capabilities: browserCapabilitiesSchema.default(() => browserCapabilitiesSchema.parse({})),
-  install: z.array(browserInstallSchema).default([]),
-  requires: browserRequiresSchema.default({}),
-  options: z.array(browserOptionSchema).default([]),
-  config: z.array(browserConfigStepSchema).default([]),
-})
+export const browserManifestSchema = z
+  .object({
+    id: z.string().regex(/^[a-z0-9][a-z0-9._-]{1,79}$/, "must be lower-kebab, 2-80 chars"),
+    name: z.string().min(1),
+    description: z.string().min(1).max(2000),
+    version: z.string().min(1),
+    transport: browserTransportSchema,
+    location: browserLocationSchema,
+    capabilities: browserCapabilitiesSchema.default(() => browserCapabilitiesSchema.parse({})),
+    install: z.array(browserInstallSchema).default([]),
+    requires: browserRequiresSchema.default({}),
+    options: z.array(browserOptionSchema).default([]),
+    config: z.array(browserConfigStepSchema).default([]),
+  })
+  .strict()
 export type BrowserManifest = z.infer<typeof browserManifestSchema>
 export type BrowserManifestInput = z.input<typeof browserManifestSchema>
 

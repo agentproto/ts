@@ -171,7 +171,14 @@ export function createChromeProvider(config: ChromeProviderConfig = {}): ChromeP
   }
 
   function connection(entry: Entry): Promise<CdpConnection> {
-    entry.conn ??= CdpConnection.connect(entry.cdp)
+    if (!entry.conn) {
+      const attempt: Promise<CdpConnection> = CdpConnection.connect(entry.cdp).catch((err: unknown) => {
+        // Do not cache a rejected connect forever: the next attach should retry.
+        if (entry.conn === attempt) entry.conn = undefined
+        throw err
+      })
+      entry.conn = attempt
+    }
     return entry.conn
   }
 

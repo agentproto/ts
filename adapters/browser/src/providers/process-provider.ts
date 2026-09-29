@@ -27,8 +27,16 @@ export interface ProcessProviderSpec {
   config?: BrowserConfigStep[]
   requires?: BrowserRequires
   resolveLocalCmd: (opts: FacadeLaunchOptions) => ReturnType<ResolveLaunchConfig["resolveLocalCmd"]>
-  /** Runs before the spawn (bureau starts camofox here) and returns extra env for the child. */
-  prepare?: (opts: FacadeLaunchOptions, ctx: BrowserHostContext) => Promise<(port: number) => Record<string, string>>
+  /**
+   * Runs before the spawn (bureau starts camofox here). `env` supplies extra env for the
+   * child; `stop` releases whatever `prepare` started — called immediately if the spawn
+   * that follows fails, and wired into the returned instance's `stop()` on success, so a
+   * dependency `prepare` launches is never orphaned.
+   */
+  prepare?: (
+    opts: FacadeLaunchOptions,
+    ctx: BrowserHostContext,
+  ) => Promise<{ env: (port: number) => Record<string, string>; stop: () => Promise<void> }>
   killProcessGroup?: boolean
 }
 
@@ -78,21 +86,28 @@ export function createProcessProvider(spec: ProcessProviderSpec): FacadeProvider
     requires: spec.requires ?? {},
     async launch(rawOpts, ctx) {
       const opts: FacadeLaunchOptions = rawOpts
-      const extraEnv = spec.prepare ? await spec.prepare(opts, ctx) : undefined
-      const instance = await resolveLaunch({
-        handle: {
-          id: spec.id,
-          defaultPort: spec.defaultPort,
-          healthPath: spec.healthPath,
-          location: "local",
-          ...(spec.requires ? { requires: spec.requires } : {}),
-        },
-        opts: toStartOptions(opts, ctx),
-        label: spec.id,
-        resolveLocalCmd: () => spec.resolveLocalCmd(opts),
-        ...(extraEnv ? { extraEnv } : {}),
-        ...(spec.killProcessGroup ? { killProcessGroup: true } : {}),
-      })
+      const prepared = spec.prepare ? await spec.prepare(opts, ctx) : undefined
+      let instance: Awaited<ReturnType<typeof resolveLaunch>>
+      try {
+        instance = await resolveLaunch({
+          handle: {
+            id: spec.id,
+            defaultPort: spec.defaultPort,
+            healthPath: spec.healthPath,
+            location: "local",
+            ...(spec.requires ? { requires: spec.requires } : {}),
+          },
+          opts: toStartOptions(opts, ctx),
+          label: spec.id,
+          resolveLocalCmd: () => spec.resolveLocalCmd(opts),
+          ...(prepared ? { extraEnv: prepared.env } : {}),
+          ...(spec.killProcessGroup ? { killProcessGroup: true } : {}),
+        })
+      } catch (err) {
+        // The spawn that `prepare` started (e.g. bureau's camofox) must not outlive this failure.
+        await prepared?.stop().catch(() => {})
+        throw err
+      }
       let stopped = false
       return {
         id: `${spec.id}:${opts.label ?? "default"}@${new URL(instance.baseUrl).host}`,
@@ -112,6 +127,7 @@ export function createProcessProvider(spec: ProcessProviderSpec): FacadeProvider
           if (stopped) return
           stopped = true
           if (!instance.wasAlreadyRunning) await instance.stop()
+          await prepared?.stop().catch(() => {})
         },
       }
     },

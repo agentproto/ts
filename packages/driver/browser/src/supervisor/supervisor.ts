@@ -143,6 +143,10 @@ export function createBrowserSupervisor(opts: BrowserSupervisorOptions): Browser
   let timer: unknown
   let closed = true
   let busy: Promise<unknown> | null = null
+  /** Set only while a `launchOnce()` is in flight; lets `stop()` cancel it instead of waiting out the budget. */
+  let currentLaunchAbort: AbortController | null = null
+  /** The single in-flight `start()`/`restart()` launch, so concurrent callers share it instead of double-launching. */
+  let pendingLaunch: Promise<BrowserInstance> | null = null
 
   function setState(next: SupervisorState): void {
     if (next === state) return
@@ -171,7 +175,9 @@ export function createBrowserSupervisor(opts: BrowserSupervisorOptions): Browser
   async function launchOnce(): Promise<BrowserInstance> {
     const abort = new AbortController()
     const external = opts.hostContext?.signal
-    external?.addEventListener("abort", () => abort.abort(), { once: true })
+    const onExternalAbort = (): void => abort.abort()
+    external?.addEventListener("abort", onExternalAbort, { once: true })
+    currentLaunchAbort = abort
     let budgetTimer: unknown
     const budget = new Promise<never>((_, reject) => {
       budgetTimer = clock.setTimeout(() => {
@@ -186,11 +192,15 @@ export function createBrowserSupervisor(opts: BrowserSupervisorOptions): Browser
     try {
       return await Promise.race([launched, budget])
     } catch (err) {
-      // A launch that finishes after its budget must not leak a live browser.
+      // A launch that finishes after its budget (or a cancelled one) must not leak a live browser.
       void launched.then((late) => late.stop().catch(() => {}), () => {})
       throw err
     } finally {
       clock.clearTimeout(budgetTimer)
+      // Detach from the host's long-lived signal and stop treating this controller as
+      // cancellable: a host abort *after* a successful launch must not kill a healthy browser.
+      external?.removeEventListener("abort", onExternalAbort)
+      if (currentLaunchAbort === abort) currentLaunchAbort = null
     }
   }
 
@@ -304,14 +314,32 @@ export function createBrowserSupervisor(opts: BrowserSupervisorOptions): Browser
     return p
   }
 
+  /** Run `fn` as the single tracked launch, so concurrent `start()`/`restart()` share it. */
+  function beginLaunch(fn: () => Promise<BrowserInstance>): Promise<BrowserInstance> {
+    if (pendingLaunch) return pendingLaunch
+    const p = run(fn).finally(() => {
+      if (pendingLaunch === p) pendingLaunch = null
+    })
+    pendingLaunch = p
+    return p
+  }
+
   return {
     async start() {
       if (state === "crash-looping" && crashLoopSource === "supervisor") {
         throw new BrowserCrashLoopError(recentFailures(), windowMs, lastError)
       }
       if (instance && !closed) return instance
+      if (pendingLaunch) return pendingLaunch
+      if (busy) {
+        // A recovery tick (or a restart) is already launching; wait for it instead of
+        // racing a second concurrent launch loop.
+        await busy.catch(() => {})
+        if (instance && !closed) return instance
+        if (pendingLaunch) return pendingLaunch
+      }
       closed = false
-      const launched = await run(async () => {
+      const launched = beginLaunch(async () => {
         try {
           return await launchLoop()
         } catch (err) {
@@ -324,12 +352,14 @@ export function createBrowserSupervisor(opts: BrowserSupervisorOptions): Browser
     },
 
     async restart() {
+      if (pendingLaunch) return pendingLaunch
+      if (busy) await busy.catch(() => {})
       failures = []
       lastError = undefined
       if (timer !== undefined) clock.clearTimeout(timer)
       closed = false
       crashLoopSource = null
-      const launched = await run(async () => {
+      const launched = beginLaunch(async () => {
         await stopInstance()
         await sweep()
         return launchLoop()
@@ -343,6 +373,8 @@ export function createBrowserSupervisor(opts: BrowserSupervisorOptions): Browser
     async stop() {
       closed = true
       if (timer !== undefined) clock.clearTimeout(timer)
+      // Cancel an in-flight launch instead of waiting out its full budget.
+      currentLaunchAbort?.abort()
       await busy?.catch(() => {})
       await stopInstance()
       await sweep()
