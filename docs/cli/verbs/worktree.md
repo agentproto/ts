@@ -160,6 +160,38 @@ isolates every root spawn, `never` turns it off (and rejects an explicit
 **not** auto-removed on session exit — it holds the agent's work; reclaim it
 with `rm` / `archive` / `gc` above.
 
+### Provisioning concurrency
+
+The heavy part of provisioning (`depsCmd`, `cloneGlobs`/`copyGlobs`, and the
+`worktree.setup` hooks) is throttled by a daemon-wide scheduler, so a burst of
+`agent_start({worktree})` spawns can no longer run five `pnpm install`s against
+one store at once. At most `worktrees.provisionConcurrency` (default `2`, `0` =
+unlimited; env `AGENTPROTO_WORKTREES_PROVISION_CONCURRENCY`) heavy segments run
+at a time; the rest queue FIFO, fair across callers (a parent that already
+holds a slot goes behind one that holds none). `git worktree add` and other
+cheap steps are never queued, and a provisioning with no heavy phase skips the
+queue entirely. See [config-schema](../reference/config-schema.md#worktrees-object)
+for `provisionConcurrencyByRepo` and the optional `provisionLoadFactor` load
+guard.
+
+While a spawn waits, `agentproto sessions` shows `starting queued #2`, and
+`agent_sessions_list` / `session_list` carry
+`provisioning: { state: "queued" | "running", position, phase, startedAt }`.
+The daemon also emits `session:provisioning` events (`queued`, `started`,
+`phase`, `done`).
+
+Killing a `starting` session cancels its provisioning: a queued entry is
+dropped, and a running install has its whole process tree terminated (SIGTERM
+to the process group, SIGKILL after a grace period), so no orphaned `pnpm`
+survives. A cancelled provisioning removes the half-made worktree and branch;
+a provisioning that merely fails keeps its worktree for inspection, as before.
+
+Two limits: the queue lives in the daemon, so `agentproto worktree new` (its
+own short-lived process) throttles only against itself, not against the
+daemon's spawns; and the synchronous `agent_start` path (`worktree: { async:
+false }` or `wait: true`) is throttled and emits events but has no session row
+yet, so it shows no `provisioning` field and cannot be cancelled mid-provision.
+
 ## See also
 
 - [`workspace.md`](./workspace.md) — registering workspaces the daemon binds sessions to

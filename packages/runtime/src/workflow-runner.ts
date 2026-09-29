@@ -91,7 +91,7 @@ export type WorkflowRunStatus =
 export interface WorkflowStageState {
   index: number
   label?: string
-  status: "pending" | "running" | "done" | "failed" | "skipped"
+  status: "pending" | "running" | "done" | "failed" | "skipped" | "cancelled"
   steps: RoutineStepState[]
 }
 
@@ -794,6 +794,21 @@ const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000
 // ── Persistence helpers (mirrors routine-runner.ts exactly) ──────────
 
 /**
+ * A stage's terminal status once every one of its steps has been resolved
+ * to done/cancelled/skipped/failed on a CANCELLED run — `cancelled` unless
+ * one of its steps genuinely `failed` (e.g. before the cancel landed), in
+ * which case the stage stays `failed`: a cancel doesn't erase an earlier
+ * real failure. Bug: both finalization paths below used to hardcode
+ * `stage.status = "failed"` for a cancelled run's touched stage, so
+ * `workflow_status` reported a `failed` stage under a `cancelled` run even
+ * though every step in it was done/cancelled/skipped — nothing in the stage
+ * had actually failed.
+ */
+function cancelledStageStatus(stage: WorkflowStageState): "cancelled" | "failed" {
+  return stage.steps.some(s => s.status === "failed") ? "failed" : "cancelled"
+}
+
+/**
  * F44b: a run reload finds in a terminal status (already `cancelled` on
  * disk — e.g. `cancel()`'s synchronous status flip + `persist()` landed but
  * the daemon died before the run's own promise chain unwound into
@@ -839,7 +854,9 @@ function finalizeStuckSteps(run: WorkflowRun): boolean {
     }
     if (stageTouched) {
       anyTouched = true
-      if (stage.status !== "done" && stage.status !== "failed") stage.status = "failed"
+      if (stage.status !== "done" && stage.status !== "failed") {
+        stage.status = cancelled ? cancelledStageStatus(stage) : "failed"
+      }
     }
   }
   return anyTouched
@@ -1805,7 +1822,7 @@ async function executeRunWorkflow(
             eventLog?.append({ stepId: step.label, type: "step.skipped", data: { reason: "run-cancelled" } })
           }
         }
-        if (stageTouched || stage.status === "running") stage.status = "failed"
+        if (stageTouched || stage.status === "running") stage.status = cancelledStageStatus(stage)
       }
       runningSteps.clear()
       state.run.status = "cancelled"

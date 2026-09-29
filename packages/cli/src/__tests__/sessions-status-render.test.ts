@@ -15,6 +15,7 @@ import {
   statusBadge,
   statusLabel,
   statusColour,
+  provisioningLabel,
 } from "../commands/sessions.js"
 
 /** Bare live descriptor — turn idle, nothing pending, out of grace. */
@@ -129,5 +130,28 @@ describe("statusColour", () => {
     expect(statusColour(live({ status: "error" }))).toBe("\x1b[31m")
     expect(statusColour(live({ status: "starting" }))).toBe("\x1b[33m")
     expect(statusColour(live({ status: "exited" }))).toBe("\x1b[2m")
+  })
+})
+
+describe("provisioning progress on a starting row", () => {
+  it("provisioningLabel: queued with a position, queued without one, else the phase", () => {
+    expect(provisioningLabel({ state: "queued", position: 2, phase: "deps" })).toBe("queued #2")
+    expect(provisioningLabel({ state: "queued", phase: "deps" })).toBe("queued")
+    expect(provisioningLabel({ state: "running", phase: "deps" })).toBe("deps")
+    expect(provisioningLabel({ state: "running" })).toBe("provisioning")
+    expect(provisioningLabel(undefined)).toBe("")
+  })
+
+  it("statusLabel shows where a starting session stands in the queue", () => {
+    expect(statusLabel({ status: "starting", provisioning: { state: "queued", position: 3, phase: "deps" } })).toBe(
+      "starting queued #3",
+    )
+    expect(statusLabel({ status: "starting", provisioning: { state: "running", phase: "setup" } })).toBe(
+      "starting setup",
+    )
+  })
+
+  it("a terminal row ignores a stale provisioning field", () => {
+    expect(statusLabel({ status: "killed", provisioning: { state: "queued", position: 1 } })).toBe("killed")
   })
 })

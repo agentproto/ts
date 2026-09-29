@@ -15,6 +15,7 @@ export default createTsupConfig({
     "workspaces-config": "src/workspaces-config.ts",
     config: "src/config.ts",
     "config-schema": "src/config-schema.ts",
+    bundles: "src/bundles.ts",
     "mcp-imports": "src/mcp-imports.ts",
     "resume-strategies": "src/resume-strategies.ts",
     "session-presence": "src/session-presence.ts",

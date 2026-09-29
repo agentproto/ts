@@ -112,7 +112,10 @@ agentproto config set daemon.port 18791
   // isolates spawned agents into one. See "worktrees" below.
   "worktrees": {
     "root": "~/.agentproto/worktrees",
-    "isolation": "on-request"
+    "isolation": "on-request",
+    "provisionConcurrency": 2,
+    "provisionConcurrencyByRepo": { "~/code/big-monorepo": 1 },
+    "provisionLoadFactor": 0
   },
 
   // Spawn-time policy for `agent_start` (dedupe, attach). See "spawn" below.
@@ -255,6 +258,9 @@ policy for isolating spawned agent sessions into one.
 | ------ | ------ | ------------------------------------------------------------------------------------------------------------- |
 | `root` | string | Absolute path new worktrees are created under (layout `<root>/<repoName>/<slug>`). Resolution order: `--root` flag > `AGENTPROTO_WORKTREES_ROOT` env > this field > the hardcoded default `~/.agentproto/worktrees`. |
 | `isolation` | `"always"` \| `"on-request"` \| `"never"` | Policy for `agent_start`'s `worktree` field. `on-request` (default) isolates only when a spawn passes `worktree`; `always` isolates every **root** spawn whose cwd is inside a git repo (a spawn made through an orchestrator inherits its parent's tree; a cwd outside any repo spawns plain); `never` turns it off and **rejects** an explicit `worktree` rather than silently ignoring it. Resolution order: `AGENTPROTO_WORKTREES_ISOLATION` env > this field > the default `on-request`. The worktree is **not** auto-removed on session exit — reclaim it with `agentproto worktree rm\|archive\|gc`. |
+| `provisionConcurrency` | integer >= 0 | Daemon-wide cap on concurrently running **heavy** provisioning phases (`depsCmd`, `cloneGlobs`/`copyGlobs`, `worktree.setup` hooks). Excess `agent_start({worktree})` spawns wait in a FIFO queue (fair across callers) and show `provisioning: { state: "queued", position }`. `0` disables the cap. Default `2`. Resolution order: `AGENTPROTO_WORKTREES_PROVISION_CONCURRENCY` env > this field > the default. Hot-applied: a change takes effect on the next provisioning without a daemon restart. `git worktree add` and the other cheap steps are never queued. |
+| `provisionConcurrencyByRepo` | object | Extra per-repo cap, `{ "<repo path or directory name>": cap }` (`~/` expands; a bare name matches the repo's directory name). Applies **in addition to** `provisionConcurrency`, never looser than it. Invalid entries are ignored. |
+| `provisionLoadFactor` | number | Optional load guard. When `> 0`, a queued provisioning is not admitted while the 1-minute load average exceeds `cores x provisionLoadFactor`, unless nothing is running (an idle scheduler always admits one, so a permanently loaded host cannot deadlock). Default `0` (off). |
 
 ### `spawn: object`
 

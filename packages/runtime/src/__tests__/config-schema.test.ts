@@ -37,7 +37,13 @@ describe("agentprotoConfigSchema", () => {
       tunnel: { host: "wss://tunnel.example.com/connect", autoconnect: true, e2e: false },
       features: { pty: true, llmEndpoint: false },
       pairing: { rendezvous: "wss://rdv.example.com", autoconnect: true },
-      worktrees: { root: "/code/worktrees", isolation: "on-request" },
+      worktrees: {
+        root: "/code/worktrees",
+        isolation: "on-request",
+        provisionConcurrency: 2,
+        provisionConcurrencyByRepo: { "~/code/big": 1, monorepo: 0 },
+        provisionLoadFactor: 1.5,
+      },
       spawn: { attach: "always", dedupe: "always" },
       sessions: { attentionDelaySec: 60, eventsDir: "/code/sessions" },
       provenance: { wrapGh: false },
@@ -323,5 +329,43 @@ describe("user-facing metadata never uses an em dash", () => {
     for (const entry of CONFIG_KEYS_NOT_EXPOSED) {
       expect(entry.reason, `${entry.path} reason`).not.toContain("—")
     }
+  })
+})
+
+describe("worktrees.provision* keys", () => {
+  it("registers the three provisioning knobs as hot, writable defaults", () => {
+    for (const path of [
+      "worktrees.provisionConcurrency",
+      "worktrees.provisionConcurrencyByRepo",
+      "worktrees.provisionLoadFactor",
+    ]) {
+      const entry = findConfigKey(path)
+      expect(entry, path).toBeDefined()
+      expect(entry).toMatchObject({ apply: "hot", writable: true })
+    }
+    expect(findConfigKey("worktrees.provisionConcurrency")).toMatchObject({
+      env: "AGENTPROTO_WORKTREES_PROVISION_CONCURRENCY",
+      default: 2,
+    })
+  })
+
+  it("accepts 0 (unlimited) and positive caps, rejects negatives, fractions and strings", () => {
+    expect(validateConfigKeyValue("worktrees.provisionConcurrency", 0)).toEqual({ ok: true })
+    expect(validateConfigKeyValue("worktrees.provisionConcurrency", 4)).toEqual({ ok: true })
+    for (const bad of [-1, 1.5, "2"]) {
+      expect(validateConfigKeyValue("worktrees.provisionConcurrency", bad).ok, String(bad)).toBe(false)
+    }
+  })
+
+  it("validates the per-repo map and the load factor", () => {
+    expect(validateConfigKeyValue("worktrees.provisionConcurrencyByRepo", { "~/code/x": 1 })).toEqual({ ok: true })
+    expect(validateConfigKeyValue("worktrees.provisionConcurrencyByRepo", { x: -1 }).ok).toBe(false)
+    expect(validateConfigKeyValue("worktrees.provisionLoadFactor", 2)).toEqual({ ok: true })
+    expect(validateConfigKeyValue("worktrees.provisionLoadFactor", -0.5).ok).toBe(false)
+  })
+
+  it("a config carrying the new fields validates with no issues", () => {
+    const r = validateConfig({ worktrees: { provisionConcurrency: 3, provisionConcurrencyByRepo: { a: 1 } } })
+    expect(r.issues).toEqual([])
   })
 })

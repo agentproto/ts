@@ -3,6 +3,7 @@ import { dirname } from "node:path"
 import { normalizeHook, type AgentprotoConfig } from "./config.js"
 import { hookEnv, resolveWorktreesTurboCacheDir, type WorktreeEnvContext } from "./env.js"
 import { execShell, type ExecResult } from "./exec.js"
+import { ProvisionCancelledError } from "./provision-scheduler.js"
 
 /** One hook command's result, kept for error reporting / logging. */
 export interface HookRun {
@@ -146,25 +147,34 @@ async function appendHookLog(
  * Both attempts are logged (when `logPath` is given); the thrown
  * `HookError` carries the RETRY's own result, since that's the one the
  * caller is actually giving up on.
+ *
+ * `opts.signal` cancels the run: the running hook's whole process tree is
+ * killed (see `ExecOptions.signal`) and {@link ProvisionCancelledError} is
+ * thrown instead of a `HookError`, with no retry.
  */
 export async function runSetup(
   config: AgentprotoConfig,
   ctx: WorktreeEnvContext,
-  opts: { logPath?: string; retryOnFailure?: boolean } = {},
+  opts: { logPath?: string; retryOnFailure?: boolean; signal?: AbortSignal } = {},
 ): Promise<HookRun[]> {
   const commands = normalizeHook(config.worktree?.setup)
   const runs: HookRun[] = []
   const env = { ...hookEnv(ctx), TURBO_CACHE_DIR: resolveWorktreesTurboCacheDir() }
+  const execOpts = { env, ...(opts.signal ? { signal: opts.signal } : {}) }
   for (const command of commands) {
-    let result = await execShell(command, ctx.worktreePath, { env })
+    if (opts.signal?.aborted) throw new ProvisionCancelledError()
+    let result = await execShell(command, ctx.worktreePath, execOpts)
     let run = { command, result }
     runs.push(run)
     await appendHookLog(opts.logPath, command, result)
+    // A killed hook is a cancellation, not a hook failure, and is never retried.
+    if (opts.signal?.aborted) throw new ProvisionCancelledError()
     if (result.exitCode !== 0 && opts.retryOnFailure) {
-      result = await execShell(command, ctx.worktreePath, { env })
+      result = await execShell(command, ctx.worktreePath, execOpts)
       run = { command, result }
       runs.push(run)
       await appendHookLog(opts.logPath, `${command} (retry 1/1)`, result)
+      if (opts.signal?.aborted) throw new ProvisionCancelledError()
     }
     if (result.exitCode !== 0) throw new HookError("setup", run, opts.logPath)
   }

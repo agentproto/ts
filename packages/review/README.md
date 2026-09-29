@@ -121,7 +121,7 @@ ships three of them.
 **Pack format.** A pack is a directory whose own `REVIEW.md` declares
 `kind: review-pack`, `id`, `version` (semver), `description`, and `checks[]`
 in the normal check syntax — nothing else. A pack declares NO `bindings`, NO
-`prepare`, and NO `effects: true` check (each is a parse error): a pack is
+`prepare`, and NO `effects: true` check (each is a `parsePackManifest` error): a pack is
 checks + rubrics, never a workflow of its own. An agent check inside a pack
 may OMIT `preset` — presets are host-specific, so the consumer supplies one.
 Rubric paths are relative to the pack's own root.
@@ -160,8 +160,9 @@ its bindings explicitly — the implied `default` binding only knows LOCAL
 checks, and silently excluding every pack check that way would be exactly
 the kind of misleading-verdict trap this package's parse-time validation
 exists to catch. An agent check that still has no `preset` after `overrides`
-and `uses[].preset` (and none in the pack itself) is a parse-time error
-naming the check.
+and `uses[].preset` (and none in the pack itself) is an error naming the
+check, raised by `resolvePacks` (a `ReviewManifestError`) — not by
+`parseReviewManifest`, which has not loaded the pack yet.
 
 **Resolution.** `resolvePacks(manifest, loader)` is the pure package's half
 of this — it merges a manifest's `uses[]` in, given an injected
@@ -227,8 +228,9 @@ computed under two different, unstated recipes as if they meant the same
 thing is exactly the mis-verify a versioned `alg` exists to rule out.
 
 **Security.** A pack's `command` checks run shell commands in the
-CONSUMER's checkout — third-party code execution. They're a parse error
-unless the `uses` entry sets `allowCommands: true`. A relative-path pack is
+CONSUMER's checkout — third-party code execution. `resolvePacks` rejects
+them (a `ReviewManifestError`, not a `parseReviewManifest` one — the pack isn't
+loaded until then) unless the `uses` entry sets `allowCommands: true`. A relative-path pack is
 exempt — but "the ref string looks relative" is never enough by itself:
 the loader only exempts a relative pack whose resolved root (realpath'd,
 so a symlink can't point outside and still count) sits INSIDE the reviewed
@@ -249,6 +251,17 @@ own rubric needs to live outside it. Checked once, at `resolvePacks` time
 (before any lane runs), so a violating pack never reaches a reviewer
 session at all — the whole review fails with a clear error naming the
 check instead.
+
+Rubric confinement is a PACK rule only: a check declared directly in a
+REVIEW.md may point its `rubric` anywhere (relative to that REVIEW.md's
+directory) — local rubric paths are unconfined, pack rubric paths are
+confined to the pack root.
+
+**Git pins.** A git pack ref is `git+https://<url>#<40-hex-sha>` and nothing
+else (no ssh, file, ext or plain http; no floating branch, tag or short sha).
+The pin starts at the FIRST `#`, so the url contains neither `#` nor
+whitespace — the same shape `REVIEW.schema.json` accepts. `parseGitPackRef`
+is the one parser the manifest and the daemon's pack loader both use.
 
 **Verify.** `review verify` re-checks `packs[]` digests against what THIS
 checkout's `uses[]` resolves to RIGHT NOW, but only when every pack
@@ -294,12 +307,16 @@ verdict:
   rangeSha,                       // sha256("<baseSha>..<headSha>")
   lanes: [{ id, kind, status: "pass"|"fail"|"skipped"|"timeout", blocking,
             findings: [{ severity, title, detail, file?, line? }], durationMs,
-            error?, sessionId?, preset?, summary?, exitCode? }],
+            error?, sessionId?, preset?, summary?, model?, exitCode?,
+            composedFrom?: { rangeSha, headSha, attestationSha256 } }],  // delta-composed agent lane
   verdict: "pass" | "block" | "incomplete",
-  attestor: { daemon, presets },
+  attestor: { daemon, presets, signature?: { alg: "ssh-ed25519", keyFingerprint,
+              principal, signedAt, sig } },   // signed by the daemon's key — see `agentproto review key`
   rubrics: [{ check, path, sha256 }],   // agent-lane rubric digests
   packs?: [{ ref, id, version, alg, sha256 }],   // resolved uses[] pack digests — see Review packs
   dirty?: true,                   // tracked changes were present while lanes ran
+  requester?: { sessionId?, gitAuthor?: { name, email } },   // who asked; not authenticated
+  pr?: { provider: "github", repo, number, url },
   createdAt
 }
 ```
@@ -309,17 +326,34 @@ is the CI check. It recomputes the manifest sha from the REVIEW.md the
 verifier sees, compares the range, re-folds the verdict from the lanes (so a
 hand-edited verdict is caught), and rejects a dirty-tree attestation.
 
+**Signing.** The daemon signs each attestation with an ssh-ed25519 key
+(namespace `agentproto-review`, generated at `~/.agentproto/keys/review_ed25519`
+on first use; `agentproto review key` prints the fingerprint and an
+`allowed_signers` line). `review verify` checks the signature against
+`.agentproto/allowed_signers` (or `--allowed-signers`); an invalid signature is
+always exit 6, a missing one only with `--require-signed`.
+
+**Composition.** With `compose` (default on), an agent lane can reuse a prior
+passing attestation from the daemon's OWN ledger and review only the delta
+above that attestation's head. The prior must be the same repo, binding,
+manifest sha and lane rubric digest, have the same base and a head that is a
+strict ancestor of the new head, be `pass` (verdict and that lane) and not
+`dirty` — and, for a pack check, carry an identical pack digest. The lane
+records `composedFrom` pointing at the prior attestation. Command lanes are
+never composed; `nocache` implies `compose: false`.
+
 ## Using it from the daemon
 
 `@agentproto/runtime` registers these tools:
 
 | Tool | What it does |
 |---|---|
-| `review_run({ cwd, manifestPath?, binding?, base?, head?, nocache?, wait? })` | Resolves the range, runs prepare, freezes the range, runs the lanes in parallel, folds the verdict, and writes the ledger. If the ledger already holds a clean `pass`/`block` for the same `(repoRemote, manifestSha, binding, rangeSha)` with matching rubric digests, it returns that with `cached: true`. `wait: false` returns a `runId` right away. |
+| `review_run({ cwd, manifestPath?, binding?, base?, head?, nocache?, compose?, wait?, requesterSessionId?, pr?, supersede? })` | Resolves the range, runs prepare, freezes the range, runs the lanes in parallel, folds the verdict, and writes the ledger. If the ledger already holds a clean `pass`/`block` for the same `(repoRemote, manifestSha, binding, rangeSha)` with matching rubric digests, it returns that with `cached: true`. `compose` (default true) lets agent lanes review only the delta over a prior passing attestation. `requesterSessionId` (default: the calling session) is recorded as `attestation.requester.sessionId`; `pr` records the GitHub PR; `supersede` cancels in-flight reviews of an older head of the same repo + binding + base. `wait: false` returns a `runId` right away. |
 | `review_status({ runId })` | Polls a run: lanes settled so far, then the attestation. |
-| `review_cancel({ runId })` | Cancels a run. Unstarted lanes are skipped, running lanes and reviewer sessions are killed, and the verdict is `incomplete`. |
+| `review_cancel({ runId })` | Cancels a run. Unstarted lanes are skipped, running lanes and reviewer sessions are killed, and the run ends `cancelled`: NO verdict and no attestation are recorded (the CLI exits `2`). |
 | `review_ledger({ cwd?, repoRemote?, range?, binding? })` | Lists attestations. `range` is `<base>..<head>` or a rangeSha. |
 | `review_export({ runId \| repoRemote+rangeSha, outPath? })` | Writes the standalone attestation JSON. |
+| `review_pr({ runId? \| rangeSha? \| range? \| cwd? \| prUrl? })` | Follows a recorded review to its GitHub pull request (via the host's `gh`), records the link, and appends a PR-state snapshot to the ledger entry's annotations — never to the attestation. |
 
 ```jsonc
 // review_run

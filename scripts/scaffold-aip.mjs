@@ -48,7 +48,7 @@ const SPEC_DIR = resolve(TS_ROOT, "../agentproto/specs")
 const args = parseArgs(process.argv.slice(2))
 if (!args.aip || !args.slug || !args.doctype) {
   console.error(
-    "Usage: scaffold-aip --aip <N> --slug <slug> --doctype <DOCTYPE> [--schema-only]",
+    "Usage: scaffold-aip --aip <N> --slug <slug> --doctype <DOCTYPE> [--schema-only] [--inline-refs]",
   )
   process.exit(1)
 }
@@ -56,6 +56,7 @@ if (!args.aip || !args.slug || !args.doctype) {
 // scaffold, no writes). Used to re-cut schemas for already-existing
 // packages when the JSON Schema or this generator's logic changes.
 const SCHEMA_ONLY = Boolean(args["schema-only"])
+const INLINE_REFS = Boolean(args["inline-refs"])
 
 const AIP = Number(args.aip)
 const SLUG = args.slug
@@ -172,14 +173,20 @@ if (hasSchema) {
   // `z.any().superRefine` block that always fails the exactly-one
   // check. Detect that case and emit `z.discriminatedUnion(...)`
   // ourselves before falling back to the generic codegen.
-  const discriminatedUnionExpr = tryDiscriminatedUnion(schema)
+  // json-schema-to-zod cannot follow `$ref` (it emits `z.any()`, a silent
+  // validation hole). `--inline-refs` hands it a copy with every local
+  // `#/$defs/<key>` ref inlined (opt-in: it tightens every ref'd field from
+  // `z.any()` to its real shape, which an existing package must adopt
+  // deliberately). The TS interface above still uses the ref'd original.
+  const zodSchema = INLINE_REFS ? inlineLocalRefs(schema, schema.$defs ?? {}) : schema
+  const discriminatedUnionExpr = tryDiscriminatedUnion(zodSchema)
   // json-schema-to-zod emits the zod v3 `.refine(pred, "msg")` shape;
   // zod v4 takes `.refine(pred, { message: "msg" })`. Walk the output
   // and rewrite — paren-aware (a regex would break on the nested
   // commas inside the predicate's arrow function args).
   let zodSrc = upgradeRefineToV4(
     (discriminatedUnionExpr ??
-      jsonSchemaToZod(schema, { module: "none" }))
+      jsonSchemaToZod(zodSchema, { module: "none", parserOverride: oneOfOverride }))
       .trim()
       .replace(/;$/, ""),
   )
@@ -798,6 +805,96 @@ function relaxMixedIndexSignatures(tsSrc) {
 }
 
 /**
+ * Replace every local `{ "$ref": "#/$defs/<key>", ...siblings }` with the
+ * referenced definition merged with its siblings (siblings win, as in
+ * 2020-12). A ref that would recurse into itself is left in place. `$defs`
+ * itself is passed through untouched. Returns a new tree.
+ */
+function inlineLocalRefs(node, defs, stack = []) {
+  if (Array.isArray(node)) return node.map((n) => inlineLocalRefs(n, defs, stack))
+  if (!node || typeof node !== "object") return node
+  if (typeof node.$ref === "string") {
+    const m = node.$ref.match(/^#\/\$defs\/([^/]+)$/)
+    if (m && defs[m[1]] && !stack.includes(m[1])) {
+      const { $ref: _ref, ...siblings } = node
+      return {
+        ...inlineLocalRefs(defs[m[1]], defs, [...stack, m[1]]),
+        ...inlineLocalRefs(siblings, defs, stack),
+      }
+    }
+  }
+  const out = {}
+  for (const [k, v] of Object.entries(node)) {
+    out[k] = k === "$defs" ? v : inlineLocalRefs(v, defs, stack)
+  }
+  return out
+}
+
+function renderZod(schema) {
+  return jsonSchemaToZod(schema, { module: "none", parserOverride: oneOfOverride }).trim().replace(/;$/, "")
+}
+
+/**
+ * json-schema-to-zod renders every `oneOf` as an "exactly one branch
+ * passes" `superRefine`, whose only diagnostic is a count. When the branches
+ * are provably disjoint that check is redundant and only hides the real
+ * issue, so emit a plain zod union instead:
+ *   - every branch is an object sharing a property whose `const` values are
+ *     pairwise distinct  →  `z.discriminatedUnion`;
+ *   - branch kinds (`const` → typeof, else `type`) are pairwise distinct
+ *     →  `z.union`.
+ * Anything else falls through to the library's default. Also restores
+ * `propertyNames` on record schemas.
+ */
+function oneOfOverride(schema, refs) {
+  // json-schema-to-zod drops `propertyNames`; a map whose keys are
+  // constrained (e.g. binding ids) must keep that constraint.
+  if (
+    schema.type === "object" &&
+    !schema.properties &&
+    schema.propertyNames &&
+    schema.additionalProperties &&
+    typeof schema.additionalProperties === "object"
+  ) {
+    const rec = `z.record(${renderZod(schema.propertyNames)}, ${renderZod(schema.additionalProperties)})`
+    return (
+      rec +
+      (schema.description ? `.describe(${JSON.stringify(schema.description)})` : "")
+    )
+  }
+  const branches = schema.oneOf
+  if (!Array.isArray(branches) || branches.length < 2) return
+  if (!branches.every((b) => b && typeof b === "object")) return
+
+  const tail =
+    (schema.description ? `.describe(${JSON.stringify(schema.description)})` : "") +
+    (schema.default !== undefined ? `.default(${JSON.stringify(schema.default)})` : "")
+  const render = renderZod
+
+  if (branches.every((b) => b.type === "object" && b.properties)) {
+    const shared = Object.keys(branches[0].properties).filter((k) =>
+      branches.every((b) => k in b.properties),
+    )
+    for (const k of shared) {
+      const literals = branches.map((b) => b.properties[k]?.const)
+      if (
+        literals.every((v) => typeof v === "string" || typeof v === "number") &&
+        new Set(literals).size === literals.length
+      ) {
+        return `z.discriminatedUnion(${JSON.stringify(k)}, [${branches.map(render).join(", ")}])${tail}`
+      }
+    }
+  }
+
+  const kinds = branches.map((b) =>
+    b.const !== undefined ? `const:${typeof b.const}` : typeof b.type === "string" ? b.type : undefined,
+  )
+  if (kinds.every((k) => k !== undefined) && new Set(kinds).size === kinds.length) {
+    return `z.union([${branches.map(render).join(", ")}])${tail}`
+  }
+}
+
+/**
  * Detect a top-level `oneOf` whose branches share a literal-`const`
  * discriminator field, and emit `z.discriminatedUnion(...)` directly.
  *
@@ -900,7 +997,7 @@ function tryDiscriminatedUnion(schema) {
     // guard against unusual shapes).
     delete merged.oneOf
     delete merged.allOf
-    const expr = jsonSchemaToZod(merged, { module: "none" })
+    const expr = jsonSchemaToZod(merged, { module: "none", parserOverride: oneOfOverride })
       .trim()
       .replace(/;$/, "")
     branchZodExprs.push(expr)

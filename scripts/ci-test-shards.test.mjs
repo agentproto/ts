@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { DEFAULT_WEIGHT, WEIGHTS, partition } from './ci-test-shards.mjs'
+import { BUILD_EXTRAS, DEFAULT_WEIGHT, WEIGHTS, buildExtras, partition } from './ci-test-shards.mjs'
 
 const names = [...Object.keys(WEIGHTS), ...Array.from({ length: 40 }, (_, i) => `@agentproto/pkg-${String(i).padStart(2, '0')}`)]
 
@@ -48,4 +48,25 @@ test('more shards than packages leaves the extras empty, never drops a package',
 
 test('rejects a non-positive shard count', () => {
   assert.throws(() => partition(names, 0), /positive integer/)
+})
+
+test('the shard running the cli also builds the adapter its jcode smoke test loads', () => {
+  const shards = partition(names, 4)
+  const holder = shards.find((s) => s.includes('@agentproto/cli'))
+  assert.deepEqual(buildExtras(holder), ['@agentproto/adapter-jcode'])
+  for (const s of shards.filter((s) => s !== holder)) assert.deepEqual(buildExtras(s), [])
+})
+
+test('buildExtras dedupes targets shared by several tested packages', () => {
+  assert.deepEqual(buildExtras(['a', 'b', 'c'], { a: ['x', 'y'], b: ['y'] }), ['x', 'y'])
+})
+
+test('BUILD_EXTRAS only names packages that exist in the workspace', async () => {
+  const { execFileSync } = await import('node:child_process')
+  const root = new URL('..', import.meta.url).pathname
+  const all = new Set(JSON.parse(execFileSync('pnpm', ['ls', '-r', '--depth', '-1', '--json'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 64 * 1024 * 1024 })).map((p) => p.name))
+  for (const [tested, extras] of Object.entries(BUILD_EXTRAS)) {
+    assert.ok(all.has(tested), `${tested} is not a workspace package`)
+    for (const e of extras) assert.ok(all.has(e), `${e} (extra of ${tested}) is not a workspace package`)
+  }
 })

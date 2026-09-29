@@ -124,6 +124,7 @@ import { resolveSentinelProvider } from "./sentinel-providers/registry.js"
 import { makePublicUrlResolver, setSentinelPublicUrlSource } from "./sentinel-public-url.js"
 import { builtinProviderCapabilities } from "./remote-providers/registry.js"
 import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
+import { AGENTPUSH_SLUG } from "./sentinel-providers/agentpush.js"
 import { registerSentinelTools } from "./sentinel-tools.js"
 import { createSentinelAutoLinker } from "./sentinel-autolink.js"
 import { makeTelegramBotCredsStore, registerTelegramBotTools } from "./telegram-bot-creds.js"
@@ -571,6 +572,33 @@ export type {
   StatsDetail,
 } from "./process-stats.js"
 export {
+  DEFAULT_HOST_LOAD_BUDGET_MS,
+  DEFAULT_HOST_LOAD_THRESHOLDS,
+  buildHostLoadReport,
+  collectHostSample,
+  computeHostWarnings,
+  createDefaultHostProbes,
+  createHostLoadService,
+  describeOwner,
+  getHostLoadService,
+} from "./host-load.js"
+export type {
+  DiskLoad,
+  HostLoadCpu,
+  HostLoadDetail,
+  HostLoadMemory,
+  HostLoadReport,
+  HostLoadService,
+  HostLoadSwap,
+  HostLoadThresholds,
+  HostProbes,
+  HostProcess,
+  HostProcessOwner,
+  HostSessionRollup,
+  HostWarning,
+  HostWarningKind,
+} from "./host-load.js"
+export {
   continueInterruptedSessions,
   continueSkipReason,
   runContinueOnBootPass,
@@ -730,6 +758,8 @@ export {
   parseWorktreeIsolationMode,
   WORKTREE_ISOLATION_ENV,
   DEFAULT_WORKTREE_ISOLATION,
+  WORKTREE_PROVISION_CONCURRENCY_ENV,
+  DEFAULT_WORKTREE_PROVISION_CONCURRENCY,
 } from "./worktree-isolation.js"
 export type {
   WorktreeField,
@@ -738,6 +768,8 @@ export type {
   WorktreeAutoReclaimer,
   WorktreeProvisionRequest,
   WorktreeProvisionOutcome,
+  WorktreeProvisionPhase,
+  WorktreeProvisionProgress,
   WorktreeDecision,
   WorktreeRequest,
 } from "./worktree-isolation.js"
@@ -1741,7 +1773,8 @@ export async function createGateway(
   // `config.sentinel.autoWatchPrs` resolver — read fresh on every opened PR
   // (never cached), same read-per-call discipline as
   // `resolveMessagingDefaults`. Unset in config ⇒ default true only when
-  // `local-gh` is actually usable (`gh auth status` succeeds), else false
+  // `local-gh` (`gh auth status` succeeds) or `agentpush` (API key set) is
+  // actually usable, else false
   // with a one-line log so a laptop with no `gh` auth doesn't silently
   // watch nothing without explanation.
   let loggedNoAutoWatchDefault = false
@@ -1749,7 +1782,12 @@ export async function createGateway(
     const cfg = await loadConfig().catch((): { sentinel?: { autoWatchPrs?: boolean } } => ({}))
     if (cfg.sentinel?.autoWatchPrs !== undefined) return cfg.sentinel.autoWatchPrs
     const provider = await resolveSentinelProviderResolved(LOCAL_GH_SLUG)
-    const ok = provider ? await provider.check() : false
+    let ok = provider ? await provider.check() : false
+    if (!ok) {
+      // agentpush (when set up) can watch PRs without a local `gh`.
+      const push = await resolveSentinelProviderResolved(AGENTPUSH_SLUG)
+      ok = push ? await push.check().catch(() => false) : false
+    }
     if (!ok && !loggedNoAutoWatchDefault) {
       loggedNoAutoWatchDefault = true
       console.warn(

@@ -42,6 +42,29 @@ function deliveringAgentSession(): AgentSessionLike {
   }
 }
 
+/** Same delivery, but the tool result arrives in opencode's ACP shape:
+ *  `{ output, metadata }` instead of a bare string. */
+function opencodeDeliveringAgentSession(): AgentSessionLike {
+  return {
+    sessionId: "deliver-opencode",
+    async *send() {
+      yield { kind: "tool-call", toolName: "bash", toolCallId: "t1", arguments: {} }
+      yield {
+        kind: "tool-result",
+        toolName: "bash",
+        toolCallId: "t1",
+        result: {
+          output: `posting review…\n${ARTIFACT_MARKER}${RECORD}\ncreated review id=5000347376`,
+          metadata: { exit: 0, truncated: false },
+        },
+      }
+      yield { kind: "turn-end", reason: "completed" }
+    },
+    async cancel() {},
+    async close() {},
+  }
+}
+
 async function ringLinesAfterOneTurn(agent: AgentSessionLike): Promise<string[]> {
   const sessionEvents = createSessionEventBus()
   const registry = createSessionsRegistry({ sessionEvents, persist: false })
@@ -75,6 +98,20 @@ describe("artifact-marker ring passthrough", () => {
     }
     expect(parsed.kind).toBe("review")
     expect(parsed.id).toBe(5000347376)
+  })
+
+  it("carries the marker from an opencode-shaped { output } result too", async () => {
+    const lines = await ringLinesAfterOneTurn(opencodeDeliveringAgentSession())
+    const markerLine = lines.find(l => l.includes(ARTIFACT_MARKER))
+    expect(markerLine).toBeDefined()
+    const idx = markerLine!.indexOf(ARTIFACT_MARKER)
+    const parsed = JSON.parse(markerLine!.slice(idx + ARTIFACT_MARKER.length).trim()) as {
+      kind: string
+      id: number
+    }
+    expect(parsed.kind).toBe("review")
+    expect(parsed.id).toBe(5000347376)
+    expect(lines.some(l => l.includes("[tool-result]"))).toBe(true)
   })
 
   it("still emits the lossy one-line summary for humans", async () => {

@@ -614,7 +614,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
       }`,
     )
   }
-  // Imported-MCP secret seam (P0: wired, unused until P1). ref =
+  // Imported-MCP secret seam (P1: used by import + resolveImportConnection + migrate-secrets). ref =
   // `<keychain path>#<account>`, e.g. `agentproto/mcp-import/<id>#header:Authorization`.
   const mcpSecretStore = new KeychainStore()
   const splitMcpSecretRef = (ref: string): { path: string; account: string } => {

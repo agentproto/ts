@@ -19,13 +19,9 @@
  */
 
 import matter from "gray-matter"
-import { z } from "zod"
 import {
   assertUnique,
   finalizeBindings,
-  idSchema,
-  DEFAULT_AGENT_TIMEOUT_MS,
-  DEFAULT_COMMAND_TIMEOUT_MS,
   ReviewManifestError,
   type AgentCheck,
   type CommandCheck,
@@ -33,52 +29,10 @@ import {
   type ReviewManifest,
 } from "./manifest.js"
 import { sha256Hex } from "./attestation.js"
+import { reviewPackFrontmatterSchema, type ReviewPackFrontmatter } from "./pack-schema.js"
 import type { PackDigest, Severity } from "./types.js"
 
-const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
-
-const packCommandCheckSchema = z
-  .object({
-    id: idSchema,
-    kind: z.literal("command"),
-    run: z.string().min(1),
-    cwd: z.string().min(1).optional(),
-    blocking: z.boolean().optional(),
-    timeoutMs: z.number().int().positive().optional(),
-    effects: z.boolean().optional(),
-    description: z.string().optional(),
-  })
-  .strict()
-
-const packAgentCheckSchema = z
-  .object({
-    id: idSchema,
-    kind: z.literal("agent"),
-    /** Presets are host-specific — a pack's own agent checks may omit one;
-     *  the consuming `uses[]` entry (or its `overrides`) must supply it. */
-    preset: z.string().min(1).optional(),
-    rubric: z.string().min(1),
-    blockOn: z.enum(["high", "medium", "low"]).optional(),
-    blocking: z.boolean().optional(),
-    timeoutMs: z.number().int().positive().optional(),
-    effects: z.boolean().optional(),
-    description: z.string().optional(),
-  })
-  .strict()
-
-/** No `bindings`, no `prepare`, no `target` — a pack is checks + rubrics
- *  only; declaring any of those is an unrecognized-key parse error. */
-const packFrontmatterSchema = z
-  .object({
-    kind: z.literal("review-pack"),
-    id: idSchema,
-    version: z.string().regex(SEMVER, "must be semver (x.y.z)"),
-    description: z.string().optional(),
-    checks: z.array(z.discriminatedUnion("kind", [packCommandCheckSchema, packAgentCheckSchema])).min(1),
-  })
-  .strict()
-
-type PackFrontmatter = z.infer<typeof packFrontmatterSchema>
+type PackFrontmatter = ReviewPackFrontmatter
 
 /** A pack's command check — identical shape to a consumer's own. */
 export type PackCommandCheck = CommandCheck
@@ -117,20 +71,14 @@ export class PackManifestError extends Error {
 }
 
 function normalizePackCheck(c: PackFrontmatter["checks"][number]): PackCheck {
-  if (c.effects === true) {
-    throw new PackManifestError(
-      `check '${c.id}': a review pack may not declare an 'effects: true' check — a pack's command checks ` +
-        `run in the CONSUMER's checkout and must never be mutation-capable`,
-    )
-  }
   if (c.kind === "command") {
     return {
       id: c.id,
       kind: "command",
       run: c.run,
       ...(c.cwd !== undefined ? { cwd: c.cwd } : {}),
-      blocking: c.blocking ?? true,
-      timeoutMs: c.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
+      blocking: c.blocking,
+      timeoutMs: c.timeoutMs,
       effects: false,
       ...(c.description !== undefined ? { description: c.description } : {}),
     }
@@ -140,9 +88,9 @@ function normalizePackCheck(c: PackFrontmatter["checks"][number]): PackCheck {
     kind: "agent",
     ...(c.preset !== undefined ? { preset: c.preset } : {}),
     rubric: c.rubric,
-    blockOn: c.blockOn ?? "high",
-    blocking: c.blocking ?? true,
-    timeoutMs: c.timeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS,
+    blockOn: c.blockOn,
+    blocking: c.blocking,
+    timeoutMs: c.timeoutMs,
     effects: false,
     ...(c.description !== undefined ? { description: c.description } : {}),
   }
@@ -155,11 +103,23 @@ export function parsePackManifest(source: string): PackManifest {
   if (Object.keys(parsed.data).length === 0) {
     throw new PackManifestError("missing or empty frontmatter")
   }
-  const result = packFrontmatterSchema.safeParse(parsed.data)
+  const result = reviewPackFrontmatterSchema.safeParse(parsed.data)
   if (!result.success) {
-    throw new PackManifestError(
-      `invalid frontmatter — ${result.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`,
-    )
+    const checks = (parsed.data as { checks?: unknown[] }).checks
+    const lines = result.error.issues.map((i) => {
+      const [head, idx, field] = i.path
+      if (head === "checks" && field === "effects" && typeof idx === "number") {
+        const id = (checks?.[idx] as { id?: unknown } | undefined)?.id
+        return (
+          `check '${String(id)}': a review pack may not declare an 'effects: true' check — a pack's command checks ` +
+          `run in the CONSUMER's checkout and must never be mutation-capable`
+        )
+      }
+      return `${i.path.join(".")}: ${i.message}`
+    })
+    // A schema-level effects rejection is reported bare (as before); anything else is a frontmatter error.
+    const onlyEffects = result.error.issues.every((i) => i.path[0] === "checks" && i.path[2] === "effects")
+    throw new PackManifestError(onlyEffects ? lines[0]! : `invalid frontmatter — ${lines.join("; ")}`)
   }
   const fm = result.data
   const checks = fm.checks.map(normalizePackCheck)

@@ -1,8 +1,9 @@
-import { describe, it, expect, afterEach } from "vitest"
+import { describe, it, expect, afterEach, vi } from "vitest"
 import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { runSetup, runTeardown, HookError } from "../lifecycle.js"
+import { ProvisionCancelledError } from "../provision-scheduler.js"
 import type { AgentprotoConfig } from "../config.js"
 import type { WorktreeEnvContext } from "../env.js"
 
@@ -291,4 +292,55 @@ describe("runTeardown", () => {
     const fullLog = await readFile(logPath, "utf8")
     expect(fullLog).toContain("cleanup failed")
   })
+})
+
+describe("runSetup cancellation", () => {
+  const cleanupPaths: string[] = []
+  afterEach(async () => {
+    while (cleanupPaths.length) await rm(cleanupPaths.pop()!, { recursive: true, force: true })
+  })
+
+  async function makeCtx(): Promise<WorktreeEnvContext> {
+    const dir = await mkdtemp(join(tmpdir(), "wt-lifecycle-abort-"))
+    cleanupPaths.push(dir)
+    return { sourceCheckoutPath: dir, worktreePath: dir, branchName: "wt/test" }
+  }
+
+  it("an already-aborted signal throws ProvisionCancelledError without running any hook", async () => {
+    const ctx = await makeCtx()
+    const marker = join(ctx.worktreePath, "ran")
+    const ac = new AbortController()
+    ac.abort()
+    await expect(
+      runSetup({ worktree: { setup: [`touch ${JSON.stringify(marker)}`] } }, ctx, { signal: ac.signal }),
+    ).rejects.toBeInstanceOf(ProvisionCancelledError)
+    await expect(readFile(marker, "utf8")).rejects.toThrow()
+  })
+
+  it("aborting a running hook kills it and throws ProvisionCancelledError, not HookError, with no retry", async () => {
+    const ctx = await makeCtx()
+    const counter = join(ctx.worktreePath, "count")
+    const script = join(ctx.worktreePath, "slow.mjs")
+    await writeFile(
+      script,
+      `import { appendFileSync } from "node:fs"\nappendFileSync(${JSON.stringify(counter)}, "x")\nsetTimeout(() => {}, 60000)`,
+      "utf8",
+    )
+    const ac = new AbortController()
+    const running = runSetup({ worktree: { setup: [`node ${JSON.stringify(script)}`] } }, ctx, {
+      signal: ac.signal,
+      retryOnFailure: true,
+    })
+    const settled = running.then(
+      () => "resolved" as const,
+      (err: unknown) => err,
+    )
+    await vi.waitFor(async () => expect(await readFile(counter, "utf8")).toBe("x"))
+    ac.abort()
+    const outcome = await settled
+    expect(outcome).toBeInstanceOf(ProvisionCancelledError)
+    expect(outcome).not.toBeInstanceOf(HookError)
+    // Started exactly once: an abort is never retried.
+    expect(await readFile(counter, "utf8")).toBe("x")
+  }, 20_000)
 })

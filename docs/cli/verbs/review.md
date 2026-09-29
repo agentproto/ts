@@ -10,7 +10,7 @@ agentproto review verify [<attestation.json | dir>] [--cwd <dir>]
                          [--binding <name>] [--verdict pass|block|incomplete|any]
                          [--if-exported] [--allowed-signers <file>]
                          [--require-signed] [--annotate github] [--json]
-agentproto review init   [--cwd <dir>] [--ci github] [--json]
+agentproto review init   [--cwd <dir>] [--ci github] [--pack <ref> [--as <ns>]] [--json]
 agentproto review key    [show] [--principal <id>] [--cwd <dir>] [--json]
 ```
 
@@ -30,9 +30,11 @@ that didn't reach a verdict:
 |------|---------|
 | `0` | `pass` |
 | `1` | `block` — a blocking lane failed |
-| `2` | `incomplete` — a lane timed out / was skipped, or the daemon wasn't reachable. **Not** a rejection: fix and retry. |
+| `2` | `incomplete` — a lane timed out / was skipped, or the daemon wasn't reachable. **Not** a rejection: fix and retry. A run cancelled by `--supersede` (or `review_cancel`) records no verdict or attestation at all and also exits `2`. |
 | `3` | the review could not run (bad `REVIEW.md`, unresolvable range) |
-| `6` | signature invalid or missing when `--require-signed` (`verify` only) |
+| `4` | no attestation for the range (`verify` only) |
+| `5` | `--if-exported` and the manifest declares no `verdict.exportDir` (`verify` only) |
+| `6` | signature invalid, or missing when `--require-signed` (`verify` only) |
 | `64` | usage error |
 
 ## `run`
@@ -89,6 +91,11 @@ nothing to do"):
   runs `agentproto review run --binding local --supersede` over the merge-base
   with the remote's default branch (`AGENTPROTO_REVIEW_BASE` overrides the ref).
   Bypass once with `git push --no-verify`.
+- `--pack <ref> [--as <ns>]`: adds a `uses:` entry for a review pack to
+  `REVIEW.md` (creating the file first if absent), namespaced `<ns>` (default:
+  derived from the ref). Idempotent by `pack` ref — a second `--pack` with the
+  same ref is a no-op regardless of `--as`. A git ref must be
+  `git+https://<url>#<40-hex-sha>`; the pin starts at the FIRST `#`.
 - `--ci github`: a `ci` binding and `.github/workflows/review.yml`, which runs
   `review run --headless --binding ci` on `pull_request` and then
   `review verify --if-exported`. An `incomplete` headless run (agent lanes

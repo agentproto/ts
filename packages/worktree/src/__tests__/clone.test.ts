@@ -32,6 +32,7 @@ vi.mock("../exec.js", async (importOriginal) => {
 const { execArgv: realExecArgv } = await vi.importActual<typeof import("../exec.js")>("../exec.js")
 
 import { cloneEntries } from "../clone.js"
+import { ProvisionCancelledError } from "../provision-scheduler.js"
 
 const realPlatform = process.platform
 function setPlatform(value: NodeJS.Platform): void {
@@ -101,6 +102,39 @@ describe("cloneEntries", () => {
 
     const content = await readFile(join(cwd, "cache.db"), "utf8")
     expect(content).toBe("already-there\n")
+  })
+
+  it("an already-aborted signal throws ProvisionCancelledError before copying anything", async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), "clone-src-"))
+    cleanupPaths.push(repoRoot)
+    const cwd = await mkdtemp(join(tmpdir(), "clone-dest-"))
+    cleanupPaths.push(cwd)
+    await writeFile(join(repoRoot, "cache.db"), "x\n")
+    const ac = new AbortController()
+    ac.abort()
+
+    await expect(cloneEntries(repoRoot, cwd, ["cache.db"], ac.signal)).rejects.toBeInstanceOf(
+      ProvisionCancelledError,
+    )
+    expect(execArgvMock).not.toHaveBeenCalled()
+  })
+
+  it("a cp killed by an abort is a cancellation, not the clone-failed error or the fallback copy", async () => {
+    const repoRoot = await mkdtemp(join(tmpdir(), "clone-src-"))
+    cleanupPaths.push(repoRoot)
+    const cwd = await mkdtemp(join(tmpdir(), "clone-dest-"))
+    cleanupPaths.push(cwd)
+    await writeFile(join(repoRoot, "cache.db"), "x\n")
+    const ac = new AbortController()
+    execArgvMock.mockImplementationOnce(async (): Promise<ExecResult> => {
+      ac.abort()
+      return { exitCode: 143, stdout: "", stderr: "" }
+    })
+
+    await expect(cloneEntries(repoRoot, cwd, ["cache.db"], ac.signal)).rejects.toBeInstanceOf(
+      ProvisionCancelledError,
+    )
+    expect(execArgvMock).toHaveBeenCalledTimes(1)
   })
 
   it("is a no-op when no pattern matches anything", async () => {

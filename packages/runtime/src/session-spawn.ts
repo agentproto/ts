@@ -909,6 +909,63 @@ export function slugifyMcpImportName(alias: string, fallbackId: string): string 
   return slug || fallbackId
 }
 
+export interface MountImportsContext {
+  /** Bundle id — only used to label warnings. */
+  bundleId: string
+  /** Daemon `/mcp` base URL. Undefined (sandbox spawn / no URL configured)
+   *  ⇒ nothing is mounted; the caller reports that skip once. */
+  mcpMountUrl: string | undefined
+  /** Id of the session being spawned, baked in as `callerSessionId`. */
+  sessionId: string
+  imported: ImportedMcpsConfig
+  /** `mcpServers` already on the spawn — an entry with the same name wins. */
+  existing: readonly AcpMcpServer[]
+}
+
+/**
+ * Pure expansion of a bundle's `mcpImports` into native `http` mcpServers
+ * entries pointing at the daemon's `/mcp/imported/<id>` passthrough.
+ * `"*"` expands to every currently imported MCP. Rules (unchanged from the
+ * former inline loop): a removed/unknown id is skipped with a warning; a
+ * name collision with an existing (or earlier-mounted) entry keeps the
+ * existing one and warns; no `mcpMountUrl` mounts nothing. For claude-code
+ * the mount name is the slugified alias on purpose — a session-level entry
+ * shadows an ambient same-named one at the SDK layer.
+ */
+export function mountImports(
+  ids: readonly string[] | "*",
+  ctx: MountImportsContext,
+): { mounts: AcpMcpServer[]; warnings: string[] } {
+  const mounts: AcpMcpServer[] = []
+  const warnings: string[] = []
+  if (!ctx.mcpMountUrl) return { mounts, warnings }
+  const taken = new Set(ctx.existing.map(e => e.name))
+  const wanted = ids === "*" ? ctx.imported.imports.map(e => e.id) : ids
+  for (const importId of wanted) {
+    const entry = ctx.imported.imports.find(e => e.id === importId)
+    if (!entry) {
+      warnings.push(
+        `agent_start: bundle "${ctx.bundleId}" references removed MCP import "${importId}" — skipped.`,
+      )
+      continue
+    }
+    const name = slugifyMcpImportName(entry.alias, importId)
+    if (taken.has(name)) {
+      warnings.push(
+        `agent_start: bundle "${ctx.bundleId}"'s import "${name}" collides with an ` +
+          "existing mcpServers entry name — the existing one wins.",
+      )
+      continue
+    }
+    taken.add(name)
+    const ref =
+      `${ctx.mcpMountUrl}/imported/${encodeURIComponent(importId)}` +
+      `?callerSessionId=${encodeURIComponent(ctx.sessionId)}`
+    mounts.push({ name, transport: "http", ref })
+  }
+  return { mounts, warnings }
+}
+
 /** Strip ANSI escapes and drop the ACP framing/marker noise (`── … ──`
  *  turn frames + `[thought]` / `[tool]` lines) so the lines read as plain,
  *  human-friendly text. Used by `agent_output({clean})` and the
@@ -2247,27 +2304,15 @@ export async function spawnAgentSession(
       importedConfig ??= deps.loadImportedMcpsConfig
         ? await deps.loadImportedMcpsConfig()
         : await loadImportedMcps()
-      for (const importId of bundle.mcpImports) {
-        const entry = importedConfig.imports.find(e => e.id === importId)
-        if (!entry) {
-          spawnWarnings.push(
-            `agent_start: bundle "${bundleId}" references removed MCP import "${importId}" — skipped.`,
-          )
-          continue
-        }
-        const name = slugifyMcpImportName(entry.alias, importId)
-        if ((mcpServers ?? []).some(e => e.name === name)) {
-          spawnWarnings.push(
-            `agent_start: bundle "${bundleId}"'s import "${name}" collides with an ` +
-              "existing mcpServers entry name — the existing one wins.",
-          )
-          continue
-        }
-        const ref =
-          `${mcpMountUrl}/imported/${encodeURIComponent(importId)}` +
-          `?callerSessionId=${encodeURIComponent(mintedSessionId)}`
-        mcpServers = [...(mcpServers ?? []), { name, transport: "http", ref }]
-      }
+      const mounted = mountImports(bundle.mcpImports, {
+        bundleId,
+        mcpMountUrl,
+        sessionId: mintedSessionId,
+        imported: importedConfig,
+        existing: mcpServers ?? [],
+      })
+      spawnWarnings.push(...mounted.warnings)
+      if (mounted.mounts.length > 0) mcpServers = [...(mcpServers ?? []), ...mounted.mounts]
       if (bundle.includeDaemon) {
         if ((mcpServers ?? []).some(e => e.name === "agentproto")) {
           spawnWarnings.push(
@@ -3145,9 +3190,14 @@ export async function spawnAgentSession(
     // sitting in "starting" forever.
     if (worktreeRequest?.async && provisionWorktree) {
       const defaultModel = resolved?.defaultModel
+      // Killing the placeholder aborts this controller (via the registry's
+      // exit funnel): a queued provisioning drops out of the daemon-wide
+      // queue, a running one has its install's process tree killed.
+      const provisionAbort = new AbortController()
       const pendingDesc = registry.spawnAgentPending({
         id: mintedSessionId,
         ...resumeLineageFields,
+        onCancel: () => provisionAbort.abort(),
         workspaceSlug: resolvedSlug,
         cwd,
         adapterSlug: input.adapter,
@@ -3248,6 +3298,9 @@ export async function spawnAgentSession(
                 // failure, so bound it here rather than have the caller pay
                 // for an entirely fresh worktree. See `runSetup`'s doc.
                 retrySetupOnFailure: true,
+                signal: provisionAbort.signal,
+                ...(parentSessionId ? { callerId: parentSessionId } : {}),
+                onProgress: progress => registry.reportProvisioning(pendingDesc.id, progress),
               }),
           )
         } catch (err) {
@@ -3379,6 +3432,12 @@ export async function spawnAgentSession(
               setupLogPath: worktreeSetupLogPath(mintedSessionId),
               // Same reasoning as the async branch above — see `runSetup`'s doc.
               retrySetupOnFailure: true,
+              // No registry row exists yet (and no abort handle: the caller holds
+              // the RPC open), so this branch gets the throttling and the
+              // `session:provisioning` events keyed by the id the session will
+              // have, but no descriptor field and no mid-provision cancellation.
+              ...(parentSessionId ? { callerId: parentSessionId } : {}),
+              onProgress: progress => registry.reportProvisioning(mintedSessionId, progress),
             }),
         )
       } catch (err) {

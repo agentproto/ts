@@ -7,6 +7,7 @@
  */
 
 import { execFileSync } from "node:child_process"
+import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -293,6 +294,19 @@ describe("createReviewPackLoader — git", () => {
     await mkdir(repoRoot, { recursive: true })
     const loader = createReviewPackLoader({ repoRoot, manifestDir: repoRoot, cacheDir: join(workdir, "cache") })
     await expect(loader.load("git+https://127.0.0.1:1/pack.git#main")).rejects.toThrow(/pinned to a full 40-hex commit sha/)
+  })
+
+  it("splits the pin at the FIRST '#' (AIP-62), so a '#' in the path can't smuggle a different url — no network needed", async () => {
+    const repoRoot = join(workdir, "repo")
+    await mkdir(repoRoot, { recursive: true })
+    const cacheDir = join(workdir, "cache")
+    const loader = createReviewPackLoader({ repoRoot, manifestDir: repoRoot, cacheDir })
+    // Split at the last '#', this would clone 'https://127.0.0.1:1/a#b/pack.git' at the sha; split at the
+    // first (the schema's `[^\s#]+#<40-hex>`), the "sha" is 'b/pack.git#<sha>' and the ref is rejected.
+    await expect(loader.load(`git+https://127.0.0.1:1/a#b/pack.git#${"a".repeat(40)}`)).rejects.toThrow(
+      /pinned to a full 40-hex commit sha/,
+    )
+    expect(existsSync(cacheDir)).toBe(false)
   })
 
   // Defense in depth: the loader validates the transport itself rather than

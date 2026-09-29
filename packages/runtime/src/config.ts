@@ -266,6 +266,34 @@ export interface WorktreesConfig {
    * asked (see `worktree-isolation.ts`).
    */
   isolation?: WorktreeIsolationMode
+  /**
+   * Max worktree provisionings running their HEAVY phases (`cloneGlobs`,
+   * `depsCmd`, `copyGlobs`, the `worktree.setup` hooks) at once, daemon-wide.
+   * A burst of `agent_start({worktree})` spawns otherwise runs that many
+   * concurrent `pnpm install`s against one store on one disk (the 2026-09-28
+   * incident: load average 170, installs 3.5x slower). The rest wait in a
+   * FIFO queue, fair across spawning callers. `git worktree add` and the
+   * cheap prep stay unthrottled. Resolution order:
+   * `AGENTPROTO_WORKTREES_PROVISION_CONCURRENCY` env > this field > the
+   * default `2`. An integer >= 1; `0` means unlimited (the pre-queue
+   * behavior). Invalid values fall back to the default.
+   */
+  provisionConcurrency?: number
+  /**
+   * Per-repo overrides of {@link provisionConcurrency}, additional to (never
+   * looser than) the global cap. Keys are an absolute repo-root path (`~/`
+   * expands) or a bare repo directory name; values as above. Example:
+   * `{ "agentik-studio": 1 }` serializes installs of that repo even when
+   * other repos may install two at a time.
+   */
+  provisionConcurrencyByRepo?: Record<string, number>
+  /**
+   * Optional load guard: hold back starting a NEW heavy segment while the
+   * 1-minute load average exceeds `cores x provisionLoadFactor`. Unset / `0`
+   * = off (the default). Never blocks when nothing is running, so a loaded
+   * host cannot deadlock the queue.
+   */
+  provisionLoadFactor?: number
 }
 
 /**
