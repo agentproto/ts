@@ -16,6 +16,7 @@ import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import { compileWorkflow, runWorkflow } from "@agentproto/workflow-runtime"
 import type { AgentSessionHost } from "@agentproto/workflow-runtime"
 import { createDaemonToolRegistry, type DispatchTool } from "../workflow-tool-registry.js"
+import { modelRoles } from "../model-roles-tools.js"
 
 const WORKFLOW_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -137,6 +138,16 @@ function mcpResult(value: unknown): { content: Array<{ type: "text"; text: strin
   return { content: [{ type: "text", text: JSON.stringify(value) }] }
 }
 
+/** Daemon `models` block the fake `model_roles` tool resolves against (reset by each test that sets it). */
+let daemonModels: Record<string, unknown> = {}
+
+/** The REAL `model_roles` resolver over an in-memory daemon config — no disk, no workspace layer. */
+async function modelRolesResult(inputs: Record<string, unknown>) {
+  return mcpResult(
+    await modelRoles(inputs as never, { loadCfg: async () => ({ models: daemonModels }) as never, resolveRoot: async () => undefined }),
+  )
+}
+
 /** What `branch_gc_review_worktree` answers (no real git here). */
 function reviewWorktreeResult(inputs: Record<string, unknown>) {
   return mcpResult(inputs.action === "add" ? { path: inputs.path, sha: inputs.sha } : { removed: inputs.paths ?? [] })
@@ -198,6 +209,7 @@ describe("repo-maintenance maintain workflow — shape", () => {
     expect(handle.id).toBe("maintain")
     const stepIds = handle.steps.map(s => `${s.id}:${s.kind}`)
     expect(stepIds).toEqual([
+      "modelRoles:tool",
       "worktreeGcPlan:tool",
       "branchGcPlan:tool",
       "reviewQueue:transform",
@@ -247,6 +259,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
         return mcpResult({ sha: inputs.sha, found: !missing, missing, record: missing ? null : { sha: inputs.sha } })
       }
       if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
       throw new Error(`unexpected tool '${name}'`)
     })
 
@@ -340,6 +353,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
         return mcpResult({ exitCode: 0, stdout: "", stderr: "" })
       }
       if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
       throw new Error(`unexpected tool '${name}'`)
     })
 
@@ -397,6 +411,7 @@ describe("repo-maintenance maintain workflow — missing-verdict retry", () => {
         return mcpResult({ sha: inputs.sha, found: !missing, missing, record: missing ? null : { sha: inputs.sha } })
       }
       if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
       throw new Error(`unexpected tool '${name}'`)
     })
     const { host, spawns, sends } = recordingAgentHost()
@@ -494,6 +509,7 @@ describe("repo-maintenance maintain workflow — rendered reviewer prompt", () =
       if (name === "branch_gc") return mcpResult(plan)
       if (name === "branch_gc_verdict_get") return mcpResult({ found: true, missing: false })
       if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
       throw new Error(`unexpected tool '${name}'`)
     })
     const sessionToSha = new Map<string, string>()
@@ -720,6 +736,7 @@ describe("repo-maintenance maintain workflow — at scale (FIX-3 dogfood)", () =
         return mcpResult({ sha: inputs.sha, found: !missing, missing, record: null })
       }
       if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
       throw new Error(`unexpected tool '${name}'`)
     })
     const spawns: Array<{ stepId?: string; stepKey?: string; cwd?: string }> = []
@@ -871,5 +888,59 @@ describe("repo-maintenance maintain workflow — at scale (FIX-3 dogfood)", () =
     expect(output.report).toContain("  - 4× step 'reviewOne': agent spawn failed — spawn node ENOENT")
     expect(output.gaps).toHaveLength(4)
     expect(output.report).not.toContain("every review candidate has a recorded verdict")
+  })
+})
+
+describe("repo-maintenance maintain workflow — reviewer models come from model roles", () => {
+  async function reviewerModels(input: Record<string, unknown>) {
+    let branchGcCallCount = 0
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      if (name === "worktree_gc") return mcpResult(inputs.apply ? { mode: "apply", outcomes: [] } : worktreeGcPlanFixture())
+      if (name === "branch_gc") {
+        branchGcCallCount++
+        return mcpResult(branchGcPlanFixture(branchGcCallCount >= 2))
+      }
+      if (name === "branch_gc_verdict_get") {
+        const missing = inputs.sha !== SHA_A
+        return mcpResult({ sha: inputs.sha, found: !missing, missing, record: missing ? null : { sha: inputs.sha } })
+      }
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
+      throw new Error(`unexpected tool '${name}'`)
+    })
+    const { host, spawns } = recordingAgentHost()
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    await runWorkflow({ workflow: compiled, agents: host, input: { repoRoot: "/repo", applyMerged: false, ...input } })
+    return {
+      small: spawns.find(s => s.stepId === "reviewOne" && s.stepKey === "reviewOne[0]")?.model,
+      large: spawns.find(s => s.stepId === "reviewOne" && s.stepKey === "reviewOne[1]")?.model,
+      retry: spawns.find(s => s.stepId === "reviewRetryLarge")?.model,
+    }
+  }
+
+  it("the daemon `models` config drives the small, large and retry reviewers", async () => {
+    daemonModels = { "review.small": "claude-sonnet-5-5", "review.large": "claude-opus-5-5" }
+    try {
+      expect(await reviewerModels({})).toEqual({ small: "claude-sonnet-5-5", large: "claude-opus-5-5", retry: "claude-opus-5-5" })
+    } finally {
+      daemonModels = {}
+    }
+  })
+
+  it("an explicit reviewModelSmall/Large input beats the configured role", async () => {
+    daemonModels = { "review.small": "claude-sonnet-5-5", "review.large": "claude-opus-5-5" }
+    try {
+      expect(await reviewerModels({ reviewModelSmall: "claude-haiku-4-5-20251001", reviewModelLarge: "claude-sonnet-5-5" })).toEqual({
+        small: "claude-haiku-4-5-20251001",
+        large: "claude-sonnet-5-5",
+        retry: "claude-sonnet-5-5",
+      })
+    } finally {
+      daemonModels = {}
+    }
   })
 })
