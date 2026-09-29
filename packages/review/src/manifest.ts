@@ -4,8 +4,9 @@
  * is the declaration and whose body is free-form documentation. This module
  * parses a *string*; reading the file off disk is the host's job.
  *
- * Field-level shape runs through the strict zod below. The cross-field rules
- * that make a review sound run after it, here, at PARSE time — a manifest that
+ * Field-level shape runs through the zod schema generated from AIP-62's
+ * `REVIEW.schema.json` (`./schema.ts`). The cross-field rules that make a
+ * review sound run after it, here, at PARSE time — a manifest that
  * could produce a misleading verdict never gets as far as a run:
  *   - check ids are unique;
  *   - a binding may only reference declared checks (unknown ref = error);
@@ -19,11 +20,16 @@
  */
 
 import matter from "gray-matter"
-import { z } from "zod"
+import type { z } from "zod"
 import type { Quorum, Severity } from "./types.js"
+import { parseGitPackRef, GitPackRefError } from "./git-pack-ref.js"
+import { reviewFrontmatterSchema, type ReviewFrontmatter } from "./schema.js"
+
+export { reviewFrontmatterSchema, type ReviewFrontmatter }
 
 /** Default per-lane timeouts, applied when a check omits `timeoutMs`. A lane
- *  is ALWAYS bounded — an unbounded lane could hang a review forever. */
+ *  is ALWAYS bounded — an unbounded lane could hang a review forever. These
+ *  mirror the `default`s in `REVIEW.schema.json` (a test pins them). */
 export const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60_000
 export const DEFAULT_AGENT_TIMEOUT_MS = 15 * 60_000
 
@@ -33,123 +39,8 @@ export const DEFAULT_BINDING = "default"
 /** The default range base when `target.base` is omitted. */
 export const DEFAULT_BASE_REF = "origin/main"
 
-export const idSchema = z.string().regex(/^[a-z][a-z0-9-]*$/, "must be lowercase kebab-case ([a-z][a-z0-9-]*)").max(64)
-
-/** A check id in a binding's `prepare`/`checks`: a local id, or a namespaced
- *  `<as>/<id>` referencing a `uses[]` pack's check. */
-const checkRefSchema = z
-  .string()
-  .regex(/^[a-z][a-z0-9-]*(?:\/[a-z][a-z0-9-]*)?$/, "must be a check id or <namespace>/<id>")
-  .max(129)
-
-const commandCheckSchema = z
-  .object({
-    id: idSchema,
-    kind: z.literal("command"),
-    /** Shell command line (run via `sh -c`). May carry `{name}` placeholders —
-     *  see `substitutePlaceholders`. */
-    run: z.string().min(1),
-    /** Working directory, relative to the repo root. Default: the repo root. */
-    cwd: z.string().min(1).optional(),
-    blocking: z.boolean().optional(),
-    timeoutMs: z.number().int().positive().optional(),
-    effects: z.boolean().optional(),
-    description: z.string().optional(),
-  })
-  .strict()
-
-const agentCheckSchema = z
-  .object({
-    id: idSchema,
-    kind: z.literal("agent"),
-    /** Harness preset id the reviewer session spawns under (the daemon's
-     *  existing preset surface — no model/auth config lives here). */
-    preset: z.string().min(1),
-    /** Path to the markdown rubric, relative to the REVIEW.md's directory. */
-    rubric: z.string().min(1),
-    blockOn: z.enum(["high", "medium", "low"]).optional(),
-    blocking: z.boolean().optional(),
-    timeoutMs: z.number().int().positive().optional(),
-    effects: z.boolean().optional(),
-    description: z.string().optional(),
-  })
-  .strict()
-
-const bindingSchema = z
-  .object({
-    /** Informational trigger label (`pre-push`, `pr`, …). Nothing in this
-     *  package dispatches on it — hooks/CI shims select a binding by name. */
-    on: z.string().min(1).optional(),
-    prepare: z.array(checkRefSchema).optional(),
-    checks: z.array(checkRefSchema).min(1),
-    quorum: z.literal("all-blocking-pass").optional(),
-  })
-  .strict()
-
-const overrideSchema = z
-  .object({
-    blockOn: z.enum(["high", "medium", "low"]).optional(),
-    blocking: z.boolean().optional(),
-    timeoutMs: z.number().int().positive().optional(),
-    preset: z.string().min(1).optional(),
-  })
-  .strict()
-
-const usesEntrySchema = z
-  .object({
-    /** `npm name | ./relative/path | git+https://...#<40-hex sha>`. */
-    pack: z.string().min(1),
-    /** Namespace: the pack's checks become `<as>/<id>`. */
-    as: idSchema,
-    /** Subset of the pack's checks to import. Default: all. */
-    checks: z.array(idSchema).optional(),
-    /** Default harness preset for the pack's agent checks (presets are
-     *  host-specific, so a pack's own agent checks may omit one). */
-    preset: z.string().min(1).optional(),
-    /** Per-check field overrides, keyed by the pack's own (unnamespaced)
-     *  check id. */
-    overrides: z.record(idSchema, overrideSchema).optional(),
-    /** A pack's `command` checks run shell commands in the consumer's
-     *  checkout — third-party code execution. Required (true) for any
-     *  non-relative pack that declares one; relative-path packs are exempt
-     *  (same repo, same trust). Default false. */
-    allowCommands: z.boolean().optional(),
-  })
-  .strict()
-
-const targetSchema = z.union([
-  z.literal("git-range"),
-  z
-    .object({
-      kind: z.literal("git-range"),
-      /** Ref the default range is cut from: `merge-base(<base>)..HEAD`. */
-      base: z.string().min(1).optional(),
-    })
-    .strict(),
-])
-
-export const reviewFrontmatterSchema = z
-  .object({
-    kind: z.literal("review"),
-    id: idSchema,
-    name: z.string().min(1).optional(),
-    description: z.string().optional(),
-    target: targetSchema,
-    checks: z.array(z.discriminatedUnion("kind", [commandCheckSchema, agentCheckSchema])).min(1),
-    bindings: z.record(idSchema, bindingSchema).optional(),
-    uses: z.array(usesEntrySchema).optional(),
-    verdict: z
-      .object({
-        /** Default directory `review_export` writes attestations into when
-         *  the caller names no `outPath` (relative to the repo root). */
-        exportDir: z.string().min(1).optional(),
-      })
-      .strict()
-      .optional(),
-  })
-  .strict()
-
-export type ReviewFrontmatter = z.infer<typeof reviewFrontmatterSchema>
+/** A review definition as authored: the frontmatter shape, before defaults. */
+export type ReviewDefinition = z.input<typeof reviewFrontmatterSchema>
 
 /** A normalized command check — every default applied. */
 export interface CommandCheck {
@@ -239,9 +130,13 @@ export interface ReviewManifest {
 }
 
 export class ReviewManifestError extends Error {
+  /** The diagnostic without the `parseReviewManifest: ` prefix, so another
+   *  entry point (`defineReview`) can re-prefix it and stay byte-identical. */
+  readonly detail: string
   constructor(message: string) {
     super(`parseReviewManifest: ${message}`)
     this.name = "ReviewManifestError"
+    this.detail = message
   }
 }
 
@@ -252,28 +147,20 @@ function normalizeCheck(c: ReviewFrontmatter["checks"][number]): ReviewCheck {
       kind: "command",
       run: c.run,
       ...(c.cwd !== undefined ? { cwd: c.cwd } : {}),
-      blocking: c.blocking ?? true,
-      timeoutMs: c.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
-      effects: c.effects ?? false,
+      blocking: c.blocking,
+      timeoutMs: c.timeoutMs,
+      effects: c.effects,
       ...(c.description !== undefined ? { description: c.description } : {}),
     }
-  }
-  if (c.effects === true) {
-    // An agent that edits the tree is a fixer, not a reviewer. Step 1 runs
-    // prepare steps as plain commands through the workflow engine's gate
-    // machinery; an agent prepare step has no executor yet.
-    throw new ReviewManifestError(
-      `check '${c.id}': 'effects: true' is only supported on command checks — an agent check is always a read-only reviewer`,
-    )
   }
   return {
     id: c.id,
     kind: "agent",
     preset: c.preset,
     rubric: c.rubric,
-    blockOn: c.blockOn ?? "high",
-    blocking: c.blocking ?? true,
-    timeoutMs: c.timeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS,
+    blockOn: c.blockOn,
+    blocking: c.blocking,
+    timeoutMs: c.timeoutMs,
     effects: false,
     ...(c.description !== undefined ? { description: c.description } : {}),
   }
@@ -287,46 +174,21 @@ export function assertUnique(ids: readonly string[], label: string): void {
   }
 }
 
-/** A 40-hex git commit sha — the only pin `uses[].pack` accepts for a
- *  `git+` ref. */
-const FULL_SHA = /^[0-9a-f]{40}$/
-
-function normalizeUse(u: z.infer<typeof usesEntrySchema>): ReviewUse {
-  if (u.pack.startsWith("git+")) {
-    // Only https:// is accepted — ssh://, file://, ext:: (arbitrary local
-    // command execution), and plain http:// are all rejected outright. This
-    // also closes an argument-injection angle for free: every accepted ref's
-    // URL literally starts with "https://", so it can never be mistaken for
-    // a `git clone` flag (which requires a leading '-').
-    if (!u.pack.startsWith("git+https://")) {
-      throw new ReviewManifestError(
-        `uses '${u.as}': git pack ref '${u.pack}' must use git+https:// — other git transports ` +
-          `(ssh://, file://, ext::, plain http://) are not accepted`,
-      )
-    }
-    const hash = u.pack.indexOf("#")
-    const pin = hash === -1 ? "" : u.pack.slice(hash + 1)
-    if (!FULL_SHA.test(pin)) {
-      throw new ReviewManifestError(
-        `uses '${u.as}': git pack ref '${u.pack}' must be pinned to a full 40-hex commit sha ` +
-          `(git+https://...#<sha>) — a floating branch, tag, or short sha is not reproducible`,
-      )
-    }
-  }
+function normalizeUse(u: NonNullable<ReviewFrontmatter["uses"]>[number]): ReviewUse {
   return {
     pack: u.pack,
     as: u.as,
     ...(u.checks !== undefined ? { checks: u.checks } : {}),
     ...(u.preset !== undefined ? { preset: u.preset } : {}),
     overrides: u.overrides ?? {},
-    allowCommands: u.allowCommands ?? false,
+    allowCommands: u.allowCommands,
   }
 }
 
 /** Binding structure with every default filled in, but check/prepare refs
  *  NOT yet validated against `byId` — the shared shape both the immediate
  *  (no-`uses`) path and {@link resolvePacks} finalize from. */
-function normalizeBindings(declared: Record<string, z.infer<typeof bindingSchema>>): Record<string, ReviewBinding> {
+function normalizeBindings(declared: NonNullable<ReviewFrontmatter["bindings"]>): Record<string, ReviewBinding> {
   const out: Record<string, ReviewBinding> = {}
   for (const [name, b] of Object.entries(declared)) {
     out[name] = {
@@ -334,7 +196,7 @@ function normalizeBindings(declared: Record<string, z.infer<typeof bindingSchema
       ...(b.on !== undefined ? { on: b.on } : {}),
       prepare: b.prepare ?? [],
       checks: b.checks,
-      quorum: b.quorum ?? "all-blocking-pass",
+      quorum: b.quorum,
     }
   }
   return out
@@ -400,7 +262,49 @@ export function finalizeBindings(
   return bindings
 }
 
-/** Parse + validate a REVIEW.md source string. Throws {@link ReviewManifestError}.
+/** One human-readable line per schema issue. Two failures get a purpose-built
+ *  message instead of the schema's generic one: `effects: true` on an agent
+ *  check (the union arm rejects it with only "expected false") and an
+ *  unpinned / non-https git pack ref (the schema's regex can't say why). */
+function describeIssues(issues: readonly z.core.$ZodIssue[], data: unknown): string {
+  const fm = data as { checks?: unknown[]; uses?: unknown[] } | undefined
+  return issues
+    .map((i) => {
+      const path = i.path.join(".")
+      const [head, idx, field] = i.path
+      if (head === "checks" && field === "effects" && typeof idx === "number") {
+        const c = fm?.checks?.[idx] as { kind?: unknown } | undefined
+        if (c?.kind === "agent") return `${path}: 'effects: true' is only supported on command checks`
+      }
+      if (head === "uses" && field === "pack" && typeof idx === "number" && i.path.length === 3) {
+        const pack = (fm?.uses?.[idx] as { pack?: unknown } | undefined)?.pack
+        if (typeof pack === "string" && pack.startsWith("git+")) {
+          try {
+            parseGitPackRef(pack)
+          } catch (e) {
+            if (e instanceof GitPackRefError) return `${path}: ${e.message}`
+          }
+        }
+      }
+      return `${path}: ${i.message}`
+    })
+    .join("; ")
+}
+
+/** Field-shape validation against the generated schema, for an
+ *  already-parsed frontmatter object. Shared by `parseReviewManifest` and
+ *  `defineReview`, so a malformed REVIEW.md and a malformed definition fail
+ *  with the same diagnostic. Throws {@link ReviewManifestError}. */
+export function checkReviewFrontmatter(data: unknown): ReviewFrontmatter {
+  const result = reviewFrontmatterSchema.safeParse(data)
+  if (!result.success) {
+    throw new ReviewManifestError(`invalid frontmatter — ${describeIssues(result.error.issues, data)}`)
+  }
+  return result.data
+}
+
+/** Apply the cross-field rules to schema-valid frontmatter and build the
+ *  normalized manifest. Throws {@link ReviewManifestError}.
  *
  *  When the manifest declares `uses[]`, binding validation for a namespaced
  *  ref (`<as>/<id>`) is DEFERRED to {@link resolvePacks} — the pack's checks
@@ -408,21 +312,7 @@ export function finalizeBindings(
  *  error naming a pack check can't be raised here. A manifest with `uses[]`
  *  must declare its bindings explicitly (the implied `default` binding only
  *  knows local checks, which would silently exclude every pack check). */
-export function parseReviewManifest(source: string): ReviewManifest {
-  const parsed = matter(source)
-  if (Object.keys(parsed.data).length === 0) {
-    throw new ReviewManifestError("missing or empty frontmatter")
-  }
-  const result = reviewFrontmatterSchema.safeParse(parsed.data)
-  if (!result.success) {
-    throw new ReviewManifestError(
-      `invalid frontmatter — ${result.error.issues
-        .map((i) => `${i.path.join(".")}: ${i.message}`)
-        .join("; ")}`,
-    )
-  }
-  const fm = result.data
-
+export function buildReviewManifest(fm: ReviewFrontmatter, body: string): ReviewManifest {
   const checks = fm.checks.map(normalizeCheck)
   assertUnique(
     checks.map((c) => c.id),
@@ -463,19 +353,28 @@ export function parseReviewManifest(source: string): ReviewManifest {
     bindings = raw
   }
 
-  const target = fm.target === "git-range" ? { kind: "git-range" as const } : fm.target
+  const base = typeof fm.target === "string" ? DEFAULT_BASE_REF : fm.target.base
   return {
     kind: "review",
     id: fm.id,
     ...(fm.name !== undefined ? { name: fm.name } : {}),
     ...(fm.description !== undefined ? { description: fm.description } : {}),
-    target: { kind: "git-range", base: target.base ?? DEFAULT_BASE_REF },
+    target: { kind: "git-range", base },
     checks,
     bindings,
     uses,
     verdict: { ...(fm.verdict?.exportDir !== undefined ? { exportDir: fm.verdict.exportDir } : {}) },
-    body: parsed.content,
+    body,
   }
+}
+
+/** Parse + validate a REVIEW.md source string. Throws {@link ReviewManifestError}. */
+export function parseReviewManifest(source: string): ReviewManifest {
+  const parsed = matter(source)
+  if (Object.keys(parsed.data).length === 0) {
+    throw new ReviewManifestError("missing or empty frontmatter")
+  }
+  return buildReviewManifest(checkReviewFrontmatter(parsed.data), parsed.content)
 }
 
 /** Look up a check by id. Throws {@link ReviewManifestError} on a miss. */

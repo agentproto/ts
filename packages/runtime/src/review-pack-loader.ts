@@ -44,11 +44,9 @@ import { mkdir, mkdtemp, readFile, realpath, rename, rm } from "node:fs/promises
 import { existsSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
-import { parsePackManifest, type PackLoader, type PackSource } from "@agentproto/review"
+import { GitPackRefError, parseGitPackRef, parsePackManifest, type PackLoader, type PackSource } from "@agentproto/review"
 
 export const defaultReviewPackCacheDir = (): string => join(homedir(), ".agentproto", "review-packs")
-
-const FULL_SHA = /^[0-9a-f]{40}$/
 
 function execFileP(
   bin: string,
@@ -161,20 +159,17 @@ async function loadNpm(ref: string, repoRoot: string): Promise<PackSource> {
 }
 
 async function loadGit(ref: string, cacheDir: string, env: NodeJS.ProcessEnv | undefined): Promise<PackSource> {
-  const rest = ref.slice("git+".length)
-  // Defense in depth: `parseReviewManifest` already rejects a non-https
-  // scheme, but this is the code that actually shells out to `git` — it
-  // doesn't get to assume the caller validated first.
-  if (!rest.startsWith("https://")) {
-    throw new Error(
-      `git pack ref '${ref}' must use git+https:// — other git transports (ssh://, file://, ext::, plain http://) are not accepted`,
-    )
-  }
-  const hashAt = rest.lastIndexOf("#")
-  const sha = hashAt === -1 ? "" : rest.slice(hashAt + 1)
-  const url = hashAt === -1 ? rest : rest.slice(0, hashAt)
-  if (!FULL_SHA.test(sha)) {
-    throw new Error(`git pack ref '${ref}' must be pinned to a full 40-hex commit sha (git+https://...#<sha>)`)
+  // Defense in depth: `parseReviewManifest` already screens the ref, but this
+  // is the code that actually shells out to `git` — it doesn't get to assume
+  // the caller validated first. It uses the SAME parser the manifest does, so
+  // the two cannot disagree on where the pin starts (the first `#`).
+  let url: string
+  let sha: string
+  try {
+    ;({ url, sha } = parseGitPackRef(ref))
+  } catch (err) {
+    if (err instanceof GitPackRefError) throw new Error(err.message)
+    throw err
   }
   const dest = join(cacheDir, sha)
   if (existsSync(join(dest, "REVIEW.md"))) return loadFromRoot(dest, "git", false)

@@ -3195,6 +3195,9 @@ importers:
 
   packages/review:
     dependencies:
+      '@agentproto/define-doctype':
+        specifier: workspace:*
+        version: link:../define-doctype
       '@agentproto/workflow':
         specifier: workspace:*
         version: link:../workflow
