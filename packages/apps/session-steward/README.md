@@ -27,7 +27,7 @@ loader path can carry.
      report, `judgedBy: jev:<jevModel>`.
    - **Agent** (`judge: "agent"`, `auto` without a key, or any Jev failure
      for that session — reported as such): one turn of
-     `@agentproto/session-steward-judge` on `judgeModel` (default: the `judge.session` model role — explicit input > repo `agentproto.json` `models` > daemon config `models` > built-in haiku; see `model_roles`),
+     `@agentproto/session-steward-judge` on `judgeModel` (default: the `judge.session` model role — explicit input > repo `agentproto.json` `models` > daemon config `models` > built-in sonnet; see `model_roles`),
      strict JSON verdict. A malformed reply is `active`, confidence 0. The
      judge session is released (killed + archived) when its item settles.
    Verdicts: `done|abandoned|blocked|needs-input|active`. A judge error never
