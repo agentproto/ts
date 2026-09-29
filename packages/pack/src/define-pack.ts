@@ -3,12 +3,11 @@ import { packFrontmatterSchema } from "./schema.js"
 import type { PackDefinition, PackHandle, PackStatus } from "./types.js"
 
 /**
- * Reference implementation of `definePack` (PACK.md — unassigned AIP,
- * no spec written yet; see the `aip:` field below for why the error
- * prefix still reads "AIP-52").
+ * Reference implementation of `definePack` (AIP-64 — PACK.md,
+ * pack/v1; see specs/aip-64.mdx in agentproto/agentproto).
  *
  * Built on `createDoctype` so the cross-AIP invariants (id pattern,
- * description length, top-level freeze, "definePack (AIP-52): …"
+ * description length, top-level freeze, "definePack (AIP-64): …"
  * error prefix) run uniformly with every other AIP defineX.
  *
  * Field-level validation runs the schema-derived zod from
@@ -22,13 +21,13 @@ import type { PackDefinition, PackHandle, PackStatus } from "./types.js"
  *   readDescription: def.description.
  */
 export const definePack = createDoctype<PackDefinition, PackHandle>({
-  // NOT a real AIP-52 claim — AIP-52 is ADAPTER (agentadapter/v1,
-  // @agentproto/mastra). PACK.md has no AIP number assigned; there is
-  // no collision (ADAPTER is a code contract, not a createDoctype
-  // registrant) and nothing else keys off this number, but there's
-  // also no real number to put here instead. Left as-is pending a
-  // decision — see the PR that introduced this comment.
-  aip: 52,
+  // AIP-64 (PACK.md, pack/v1 — agentproto/agentproto#56). The prefix
+  // historically read "AIP-52" because it predated the spec: AIP-52 is
+  // ADAPTER (agentadapter/v1, @agentproto/mastra), and the old comments
+  // mislabeled PACK as unassigned while borrowing that number. AIP-64
+  // was assigned to PACK and the spec fixed the label (§Error prefix);
+  // this renumber resolves the spec's open question 1.
+  aip: 64,
   name: "pack",
   readIdentity: (def) => def.name,
   readDescription: (def) => def.description,
@@ -36,7 +35,7 @@ export const definePack = createDoctype<PackDefinition, PackHandle>({
     const result = packFrontmatterSchema.safeParse(def)
     if (!result.success) {
       throw new Error(
-        `definePack (AIP-52): ${result.error.issues
+        `definePack (AIP-64): ${result.error.issues
           .map((i) => `${i.path.join(".")}: ${i.message}`)
           .join("; ")}`,
       )
@@ -48,14 +47,14 @@ export const definePack = createDoctype<PackDefinition, PackHandle>({
       Array.isArray(def.plugin.includes) && def.plugin.includes.length > 0
     if (!hasInline && !hasIncludes) {
       throw new Error(
-        "definePack (AIP-52): plugin requires either `inline: true` or a non-empty `includes` list",
+        "definePack (AIP-64): plugin requires either `inline: true` or a non-empty `includes` list",
       )
     }
     // Cross-field pricing rule: a priced bundle must have a positive
     // bundle price.
     if (def.pricing && def.pricing.bundle <= 0) {
       throw new Error(
-        "definePack (AIP-52): pricing.bundle must be > 0 when pricing is present",
+        "definePack (AIP-64): pricing.bundle must be > 0 when pricing is present",
       )
     }
   },

@@ -5,9 +5,10 @@
  * published skill packs), apps, a knowledge workspace selection, and an
  * optional playbook to generate — plus pricing and non-technical blockers.
  *
- * No AIP is assigned to PACK.md yet — this is not AIP-52 (that's
- * ADAPTER — agentadapter/v1, implemented by @agentproto/mastra). PACK
- * has no spec draft in agentproto/agentproto today.
+ * Spec: AIP-64 (PACK.md, pack/v1) — specs/aip-64.mdx in
+ * agentproto/agentproto. Note: AIP-52 is ADAPTER (agentadapter/v1,
+ * implemented by @agentproto/mastra), a different thing entirely; the
+ * error prefix briefly read "AIP-52" before the spec was written.
  *
  * Authoring paths:
  *   - TS:  `definePack({...})` → `PackHandle`
