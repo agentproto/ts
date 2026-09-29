@@ -139,11 +139,19 @@ export function createCamofoxProvider(config: CamofoxProviderConfig = {}): Camof
         env: cmd.isLaunchctl ? env : { CAMOFOX_PORT: String(port), ...env },
       })
       pid = cmd.isLaunchctl ? undefined : child.pid
+      let exited = false
+      if (!cmd.isLaunchctl) {
+        const spawned = child as unknown as { once?: (event: "exit", cb: () => void) => void }
+        spawned.once?.("exit", () => {
+          exited = true
+        })
+      }
 
       const waitMs = opts.initialWaitMs ?? opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
       const deadline = Date.now() + waitMs
       let up = false
       while (Date.now() < deadline) {
+        if (exited) break
         await sleep(pollMs)
         if ((await probe()) !== null) {
           up = true
@@ -152,6 +160,9 @@ export function createCamofoxProvider(config: CamofoxProviderConfig = {}): Camof
         log?.(`[camofox] waiting for ${origin}/health`)
       }
       if (!up) {
+        if (exited) {
+          throw new Error(`[camofox] the launch command exited before ${origin}/health answered`)
+        }
         if (opts.initialWaitMs === undefined) {
           if (pid !== undefined) terminate(pid)
           throw new Error(`[camofox] ${origin} did not answer within ${Math.round(waitMs / 1000)}s`)

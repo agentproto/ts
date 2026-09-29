@@ -95,7 +95,11 @@ async function runLevel(
       const setupStarted = Date.now()
       try {
         instance = await launch(`conformance-${level}`)
-        driver = await withTimeout(instance.attach(), timeoutMs, "attach")
+        driver = await withTimeout(
+          instance.attach(options.fixture?.url ? { initialUrl: options.fixture.url } : undefined),
+          timeoutMs,
+          "attach",
+        )
       } catch (err) {
         const step = instance ? "attach" : "launch"
         results.push({

@@ -1,19 +1,19 @@
 {
-  "name": "@agentproto/adapter-browser",
-  "version": "0.1.2",
-  "description": "@agentproto/adapter-browser — browser service adapters for agentproto. Manages Camofox (stealth Firefox) and Bureau (Camofox + MCP capability server) as first-class process handles: health-check, idempotent launch, structured stop.",
+  "name": "@agentproto/adapter-browser-chrome",
+  "version": "0.0.0",
+  "description": "System Chrome provider for agentproto: a defineBrowser provider that launches the installed Chrome on a fresh dedicated profile dir, attaches over CDP and injects granted cookies. Never touches the default profile.",
   "keywords": [
     "agentproto",
     "browser",
-    "camofox",
-    "bureau",
-    "adapter"
+    "chrome",
+    "cdp",
+    "provider"
   ],
   "homepage": "https://agentproto.sh",
   "repository": {
     "type": "git",
     "url": "https://github.com/agentproto/ts",
-    "directory": "adapters/browser"
+    "directory": "adapters/browser-chrome"
   },
   "bugs": {
     "url": "https://github.com/agentproto/ts/issues"
@@ -44,18 +44,18 @@
     "build": "tsup",
     "clean": "rm -rf dist",
     "check-types": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/adapter-browser-camofox": "workspace:*",
-    "@agentproto/adapter-browser-chromium": "workspace:*",
-    "@agentproto/browser-process": "workspace:*",
-    "@agentproto/driver-browser": "workspace:*"
+    "@agentproto/driver-browser": "workspace:*",
+    "ws": "^8.21.3",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.9.5",
+    "@types/ws": "^8.18.1",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7"
