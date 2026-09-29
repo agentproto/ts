@@ -2676,7 +2676,7 @@ export function registerOrchestrationTools(
               `cron action kind "tool" cannot dispatch '${input.action.tool}': not in this server's tool subset`,
             )
           }
-          const job = cronScheduler.create({
+          const job = await cronScheduler.create({
             label: input.label,
             schedule: input.schedule,
             recurring: input.recurring ?? true,
@@ -2723,12 +2723,14 @@ export function registerOrchestrationTools(
       active: j.active,
       nextRunAt: j.nextRunAt,
       lastRunAt: j.lastRunAt,
+      // A failed last run must be visible without `full: true`.
+      lastOk: j.lastResult?.ok,
     })
     registerBuiltinTool<CronListInput, CronJob[]>(server, {
       id: "cron_list",
       description: "List all cron jobs (active and inactive) with their schedule, last result, and next fire time. " +
           "COMPACT BY DEFAULT: each entry is a slim projection (id/label/schedule/" +
-          "recurring/active/nextRunAt/lastRunAt); pass `full: true` (or `compact: false`) " +
+          "recurring/active/nextRunAt/lastRunAt/lastOk); pass `full: true` (or `compact: false`) " +
           "for the complete job record including action/createdAt/lastResult.",
       inputSchema: cronListSchema,
       handler: async () => cronScheduler.list(),
@@ -2876,7 +2878,7 @@ export function registerOrchestrationTools(
       {},
       async () => {
         try {
-          const result = routineRegistrar.reconcile()
+          const result = await routineRegistrar.reconcile()
           return { content: [{ type: "text", text: JSON.stringify(result) }] }
         } catch (err) {
           return {

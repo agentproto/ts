@@ -4253,6 +4253,36 @@ describe("spawnAgentSession — access.profileRef (named auth profile)", () => {
     oauthState.impl = async () => "sk-ant-oat01-fresh-from-keychain"
   })
 
+  it("an auth-profile id passed as `adapter` gets the profileRef hint, not install advice", async () => {
+    authProfileState.profiles["claude-subs-agentik"] = {
+      id: "claude-subs-agentik",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      source: "claude-code-oauth",
+    }
+    const { deps } = baseDeps({ resolveAgentAdapter: async () => null })
+    const result = await spawnAgentSession(deps, { adapter: "claude-subs-agentik", cwd: "/tmp" })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected refusal")
+    expect(result.code).toBe("adapter_not_found")
+    expect(result.message).toBe(
+      'agent_start: adapter "claude-subs-agentik" could not be resolved. ' +
+        "'claude-subs-agentik' is an auth profile (endpoint 'anthropic'), not an adapter; " +
+        "use adapter: 'claude-code' (or the adapter that bills that endpoint) with " +
+        "access.profileRef: 'claude-subs-agentik' (or presetId).",
+    )
+    expect(result.message).not.toContain("agentproto install")
+  })
+
+  it("an unknown adapter that is not a profile id keeps the mid-rebuild / install advice", async () => {
+    const { deps } = baseDeps({ resolveAgentAdapter: async () => null })
+    const result = await spawnAgentSession(deps, { adapter: "no-such-adapter", cwd: "/tmp" })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected refusal")
+    expect(result.message).toContain("mid-rebuild")
+    expect(result.message).toContain("agentproto install no-such-adapter")
+  })
+
   it("a source-backed profile resolves the credential FRESH via Mode 3 (reuses the same recipe resolver)", async () => {
     authProfileState.profiles["anthropic-sub"] = {
       id: "anthropic-sub",

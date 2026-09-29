@@ -17,6 +17,7 @@ import {
   parseReviewManifest,
   rangeSha,
   resolvePacks,
+  PACK_DIGEST_ALG,
   type Attestation,
   type LaneResult,
 } from "@agentproto/review"
@@ -452,7 +453,7 @@ describe("review verify", () => {
       await mkdir(join(repo.dir, ".reviews"))
       const att = attest(repo.baseSha, repo.headSha, {
         manifestSha: manifestSha(PACK_MANIFEST),
-        packs: [{ ref: "./packs/core", id: "core", version: "1.0.0", sha256: "1".repeat(64) }],
+        packs: [{ ref: "./packs/core", id: "core", version: "1.0.0", alg: PACK_DIGEST_ALG, sha256: "1".repeat(64) }],
       })
       await writeFile(join(repo.dir, ".reviews", "demo-local.json"), JSON.stringify(att))
       // Delete the pack directory so it can no longer resolve.
@@ -460,6 +461,26 @@ describe("review verify", () => {
       const result = await captureRun(["verify", "--cwd", repo.dir, "--json"])
       expect(result.code).toBe(0)
       expect(JSON.parse(result.out).packNotes[0]).toMatch(/not resolvable/)
+    })
+
+    it("fails — never mis-verifies — when the attestation's pack digest was computed under an alg this checkout doesn't know", async () => {
+      const repo = await packRepo()
+      await mkdir(join(repo.dir, ".reviews"))
+      const pack = await realPackDigest(repo.dir)
+      const att = attest(repo.baseSha, repo.headSha, {
+        manifestSha: manifestSha(PACK_MANIFEST),
+        // Same sha256 as what this checkout would actually compute — proves
+        // the alg check runs BEFORE the digest comparison, not after: a
+        // coincidentally-matching hex digest under an unrecognized recipe
+        // must still fail, never silently pass.
+        packs: [{ ...pack, alg: "agentproto-pack-digest/v2-from-the-future" as typeof pack.alg }],
+      })
+      await writeFile(join(repo.dir, ".reviews", "demo-local.json"), JSON.stringify(att))
+      const bad = await captureRun(["verify", "--cwd", repo.dir, "--json"])
+      expect(bad.code).toBe(VERIFY_EXIT.invalid)
+      expect(JSON.parse(bad.out).problems[0]).toMatch(
+        /attested with digest algorithm 'agentproto-pack-digest\/v2-from-the-future'.*only knows 'agentproto-pack-digest\/v1'/,
+      )
     })
   })
 })

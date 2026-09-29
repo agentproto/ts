@@ -42,8 +42,9 @@ import { Cron } from "croner"
 import { loadAllowlist, runCommand } from "./command-tools.js"
 import { SESSION_ID_ENV, WORKSPACE_SLUG_ENV, mintSessionId, type SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
-import type { AgentAdapterResolver } from "./http-server.js"
+import type { AgentAdapterLister, AgentAdapterResolver } from "./http-server.js"
 import { restartAgentSession } from "./session-restart-core.js"
+import { authProfileAsAdapterHint, type AuthProfileLookup } from "./adapter-slug-hint.js"
 import { toAgentStartCall, type DetachedAgentStartInput } from "./agent-start-schema.js"
 
 // ── Public types ─────────────────────────────────────────────────────
@@ -100,6 +101,65 @@ export function assertCronActionAllowed(action: CronAction): void {
   }
 }
 
+/**
+ * The host adapter slug an agent-spawning action will resolve when it fires,
+ * or undefined when there's nothing to check up front: no explicit
+ * `adapter`/`harness` (a `presetId` supplies it), or a `sandbox` spawn (the
+ * box resolves its own adapter). Covers both the native `kind:"agent"` shape
+ * and `kind:"tool"` → `agent_start` (what a routine's `target.agent` lowers to).
+ */
+function hostAdapterSlugOf(action: CronAction): string | undefined {
+  const fields: Record<string, unknown> | undefined =
+    action.kind === "agent"
+      ? action
+      : action.kind === "tool" && action.tool === "agent_start"
+        ? action.inputs
+        : undefined
+  if (!fields || fields.sandbox !== undefined) return undefined
+  const slug = fields.adapter ?? fields.harness
+  return typeof slug === "string" && slug.length > 0 ? slug : undefined
+}
+
+export interface CronAdapterCheckDeps {
+  resolveAgentAdapter?: AgentAdapterResolver
+  /** Auth-profile lookup by id — only used to word the error when the slug is a profile id. */
+  getAuthProfile?: AuthProfileLookup
+  /** Installed-adapter lister — only used to list valid slugs in the error. */
+  listAgentAdapters?: AgentAdapterLister
+}
+
+/**
+ * Throws when an agent-spawning `action` names a host adapter that doesn't
+ * resolve — so a job that can only ever fail at fire time is refused at
+ * create time instead. No-op when there's no resolver wired, no explicit
+ * adapter, or the spawn is sandboxed. Never applied to jobs rehydrated from
+ * disk: those keep loading and fail at fire time as before.
+ */
+export async function assertCronAdapterResolvable(
+  action: CronAction,
+  deps: CronAdapterCheckDeps,
+): Promise<void> {
+  const slug = hostAdapterSlugOf(action)
+  if (!slug || !deps.resolveAgentAdapter) return
+  // `resolveAgentAdapter` collapses failures to null by contract; guard a throw anyway.
+  const resolved = await deps.resolveAgentAdapter(slug).catch(() => null)
+  if (resolved) return
+
+  let hint = await authProfileAsAdapterHint(slug, deps.getAuthProfile)
+  if (!hint) {
+    const installed = await deps.listAgentAdapters?.().catch(() => undefined)
+    if (installed && installed.length > 0) {
+      hint = `Installed adapters: ${installed.map(a => a.slug).sort().join(", ")}.`
+    } else {
+      hint = `If it has never been installed, run \`agentproto install ${slug}\` first.`
+    }
+  }
+  throw new Error(
+    `cron action adapter '${slug}' could not be resolved — refusing to create a job ` +
+      `that would fail at fire time. ${hint}`,
+  )
+}
+
 export interface CronJob {
   id: string
   label?: string
@@ -120,8 +180,10 @@ export interface CronJob {
 
 export interface CronScheduler {
   /**
-   * Create and persist a new cron job. Validates the schedule expression
-   * immediately — throws if it's unparseable. Returns the created job.
+   * Create and persist a new cron job. Validates the schedule expression and,
+   * for an agent-spawning action, that its host adapter resolves
+   * (`assertCronAdapterResolvable`) — rejects if either is invalid. Returns
+   * the created job.
    */
   create(input: {
     label?: string
@@ -130,7 +192,7 @@ export interface CronScheduler {
     timezone?: string
     recurring?: boolean
     action: CronAction
-  }): CronJob
+  }): Promise<CronJob>
 
   list(): CronJob[]
   get(id: string): CronJob | undefined
@@ -269,6 +331,9 @@ export function createCronScheduler(opts: {
    * clearly at fire time rather than silently no-op'ing.
    */
   dispatchTool?: (name: string, inputs: Record<string, unknown>) => Promise<unknown>
+  /** Wording-only helpers for the create-time adapter check — see `assertCronAdapterResolvable`. */
+  getAuthProfile?: CronAdapterCheckDeps["getAuthProfile"]
+  listAgentAdapters?: AgentAdapterLister
   /** Workspace dir — used for the command allowlist. */
   workspace: string
   /** Absolute path for the persistence file. Defaults to ~/.agentproto/cron-jobs.json */
@@ -563,10 +628,15 @@ export function createCronScheduler(opts: {
   // ── Public interface ──────────────────────────────────────────────
 
   return {
-    create({ label, schedule, timezone, recurring = true, action }) {
+    async create({ label, schedule, timezone, recurring = true, action }) {
       assertCronActionAllowed(action)
       // Validate schedule — throws SyntaxError if invalid.
       const cronInstance = parseCron(schedule, timezone)
+      await assertCronAdapterResolvable(action, {
+        resolveAgentAdapter,
+        getAuthProfile: opts.getAuthProfile,
+        listAgentAdapters: opts.listAgentAdapters,
+      })
       const id = `cron_${randomUUID()}`
       const next = nextFireDate(cronInstance)
       const job: CronJob = {

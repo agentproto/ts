@@ -2,11 +2,12 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentproto.sh/schemas/aip-7/GOVERNANCE.schema.json",
   "title": "agentgovernance/v1 (AIP-7)",
-  "description": "Validates the four AIP-7 doctypes: signature (approval event), audit-event (append-only log line), policy (declarative autonomy rule), and governance.workspace/v1 (workspace manifest, root or view). Branch on the `doctype` (or for the workspace, the `schema`) field.",
+  "description": "Validates the five AIP-7 doctypes: signature (approval event), audit-event (append-only log line), policy (declarative autonomy rule), approval-request (pending human decision over a pinned payload), and governance.workspace/v1 (workspace manifest, root or view). Branch on the `doctype` (or for the workspace, the `schema`) field.",
   "oneOf": [
     { "$ref": "#/$defs/signature" },
     { "$ref": "#/$defs/auditEvent" },
     { "$ref": "#/$defs/policy" },
+    { "$ref": "#/$defs/approvalRequest" },
     { "$ref": "#/$defs/workspace" }
   ],
   "$defs": {
@@ -112,7 +113,38 @@
           "maxLength": 4000,
           "description": "Required when decision is 'reject'. Recommended for 'approve' in multi-signer flows."
         },
+        "documentHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Lowercase hex SHA-256 of the artifact's bytes at signing time. For a signature that resolves an approval-request, MUST equal that request's payloadHash."
+        },
         "signer": { "$ref": "#/$defs/signer" },
+        "signerKind": {
+          "enum": ["operator", "user", "counterparty", "agent", "external"],
+          "description": "What kind of principal signed. An approve that resolves an approval-request MUST carry 'user'."
+        },
+        "method": {
+          "enum": ["typed_name", "agent_confirm", "click_through", "esign_external"],
+          "description": "How the signature was produced. An approve that resolves an approval-request MUST carry 'click_through'."
+        },
+        "evidence": {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": true,
+          "properties": {
+            "kind": {
+              "enum": ["typed_name", "agent_confirm", "click_through", "esign_external"],
+              "description": "MUST equal `method` when both are present."
+            },
+            "ipAddress": { "type": "string" },
+            "userAgent": { "type": "string" },
+            "signedUrlToken": {
+              "type": "string",
+              "description": "click_through: a value unique to this decision. For a ui_card decision, the hash of the one-time ticket, never the ticket."
+            }
+          },
+          "description": "Method-specific evidence. Shape shown is for click_through; other methods define their own members."
+        },
         "signedAt": { "$ref": "#/$defs/isoDateTime" },
         "policy": { "$ref": "#/$defs/policyRef" },
         "signature": { "$ref": "#/$defs/signatureBlock" },
@@ -128,6 +160,120 @@
           "then": { "required": ["reason"] }
         }
       ]
+    },
+    "approvalRequest": {
+      "type": "object",
+      "title": "approval-request (pending human decision over a pinned payload)",
+      "required": [
+        "$schema",
+        "doctype",
+        "id",
+        "kind",
+        "title",
+        "payloadHash",
+        "status",
+        "requestedBy",
+        "channels",
+        "requestedAt"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "$schema": { "$ref": "#/$defs/schemaTag" },
+        "doctype": { "const": "approval-request" },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "description": "Opaque unique identifier, stable for the life of the request."
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Free-form class of the thing being approved."
+        },
+        "title": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "preview": {
+          "description": "JSON value supplied by the requester for a human-facing surface to render. Opaque to the host and NOT covered by payloadHash."
+        },
+        "payloadHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Lowercase hex SHA-256 of the UTF-8 bytes of the canonical JSON of the pinned payload (keys sorted recursively by UTF-16 code unit, arrays in order, undefined as null)."
+        },
+        "status": {
+          "enum": ["pending", "approved", "denied", "expired", "consumed"],
+          "description": "pending -> approved | denied | expired; approved -> consumed. denied, expired, and consumed are terminal."
+        },
+        "requestedBy": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["sessionId"],
+              "additionalProperties": false,
+              "properties": {
+                "sessionId": { "type": "string", "minLength": 1 }
+              }
+            },
+            {
+              "type": "object",
+              "required": ["operator"],
+              "additionalProperties": false,
+              "properties": {
+                "operator": { "const": true }
+              }
+            }
+          ],
+          "description": "The requester: an agent session, or the operator acting directly. Only the requester (an operator for operator-made requests) may consume."
+        },
+        "taskId": { "type": "string", "minLength": 1 },
+        "appId": { "type": "string", "minLength": 1 },
+        "channels": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/approvalChannel" },
+          "description": "Human channels allowed to decide this request. A decision on any other channel MUST be rejected. Empty when no declared channel is enabled."
+        },
+        "requestedAt": { "$ref": "#/$defs/isoDateTime" },
+        "expiresAt": { "$ref": "#/$defs/isoDateTime" },
+        "decision": {
+          "type": "object",
+          "required": ["decision", "channel", "decidedAt"],
+          "additionalProperties": false,
+          "properties": {
+            "decision": { "enum": ["approved", "denied"] },
+            "channel": { "$ref": "#/$defs/approvalChannel" },
+            "decidedAt": { "$ref": "#/$defs/isoDateTime" },
+            "signaturePath": {
+              "type": "string",
+              "description": "Workspace-relative path to the signature.json. Present only when decision is 'approved', and written after the signature exists."
+            }
+          }
+        },
+        "consumedAt": { "$ref": "#/$defs/isoDateTime" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "enum": ["approved", "denied", "consumed"] } } },
+          "then": { "required": ["decision"] }
+        },
+        {
+          "if": { "properties": { "status": { "const": "consumed" } } },
+          "then": { "required": ["consumedAt"] }
+        },
+        {
+          "if": {
+            "required": ["decision"],
+            "properties": { "decision": { "properties": { "decision": { "const": "denied" } } } }
+          },
+          "then": { "properties": { "decision": { "not": { "required": ["signaturePath"] } } } }
+        }
+      ]
+    },
+    "approvalChannel": {
+      "enum": ["web_click", "ui_card"],
+      "description": "A declared human channel. web_click: bearer credential plus an Origin on a configured allowlist. ui_card: one-time ticket minted per card render, app-only decide action, served on a surface agent sessions cannot reach. Further channels MAY be registered; each MUST satisfy the AIP-7 human channel rule."
     },
     "auditEvent": {
       "type": "object",

@@ -26,6 +26,7 @@ import { readCodexMcpServers } from "./codex-config.js"
 import type { McpConnectionConfig } from "./mcp-client-pool.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import { parseMcpServerEntry, type DiscoveredMcp } from "./mcp-discovery.js"
+import { connectionOf, resolveImportConnection } from "./mcp-import-resolve.js"
 import { IMPORTED_MCPS_PATH, loadImportedMcps } from "./mcp-imports.js"
 
 export type McpServerConfigSource = "session" | "project" | "user" | "imported"
@@ -116,7 +117,7 @@ export async function resolveMcpServer(
       alias,
       source: "imported",
       origin: importsPath,
-      config: connectionOf(imported.snapshot),
+      config: (await resolveImportConnection(imported, getMcpCredentialDeps())).config,
     }
   }
   return null
@@ -147,17 +148,6 @@ function found(
   const m = parseMcpServerEntry({ source: "workspace", scope: origin, name: alias, raw })
   if (!m) return null
   return { alias, source, origin, config: connectionOf(m) }
-}
-
-function connectionOf(m: DiscoveredMcp): McpConnectionConfig {
-  return {
-    type: m.type,
-    ...(m.command !== undefined ? { command: m.command } : {}),
-    ...(m.args !== undefined ? { args: m.args } : {}),
-    ...(m.env !== undefined ? { env: m.env } : {}),
-    ...(m.url !== undefined ? { url: m.url } : {}),
-    ...(m.headers !== undefined ? { headers: m.headers } : {}),
-  }
 }
 
 /** A session's `AcpMcpServer` — `ref` is the command (stdio) or the url

@@ -12,7 +12,13 @@ import { existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
 import { realpathSync } from "node:fs"
-import { removeWorktreeFast, sweepWorktreeTrash, WORKTREE_TRASH_DIRNAME } from "../fast-remove.js"
+import {
+	removeWorktreeFast,
+	sweepWorktreeTrash,
+	ensureTrashDeleter,
+	WORKTREE_TRASH_DIRNAME,
+	WORKTREE_TRASH_PIDFILE,
+} from "../fast-remove.js"
 import { execGit } from "../exec.js"
 
 const cleanupPaths: string[] = []
@@ -124,6 +130,66 @@ describe("removeWorktreeFast", () => {
 		expect(dirs).toHaveLength(0)
 	}, 20_000)
 
+	it("renames a clean worktree holding only gitignored files (node_modules) to the trash — no slow removal", async () => {
+		const repoRoot = await makeRepo()
+		await writeFile(join(repoRoot, ".gitignore"), "node_modules/\n")
+		await execGit(repoRoot, ["add", ".gitignore"])
+		await execGit(repoRoot, ["commit", "-m", "ignore node_modules"])
+		const wtDir = await addWorktree(repoRoot, "ignored-only")
+		await mkdir(join(wtDir, "node_modules"), { recursive: true })
+		await writeFile(join(wtDir, "node_modules", "x"), "dep\n")
+		const { dirs, spawnRemoval } = spyRemoval()
+
+		await removeWorktreeFast(repoRoot, wtDir, { spawnRemoval })
+
+		expect(existsSync(wtDir)).toBe(false)
+		expect(await listWorktreePaths(repoRoot)).not.toContain(wtDir)
+		expect(dirs).toHaveLength(1)
+		expect(dirs[0]?.startsWith(join(repoRoot, "pool", WORKTREE_TRASH_DIRNAME))).toBe(true)
+		expect(await readFile(join(dirs[0] ?? "", "node_modules", "x"), "utf8")).toBe("dep\n")
+	}, 20_000)
+
+	it("refuses a worktree with an untracked, unignored file and leaves it intact", async () => {
+		const repoRoot = await makeRepo()
+		const wtDir = await addWorktree(repoRoot, "untracked")
+		await writeFile(join(wtDir, "new.txt"), "fresh\n")
+		const { dirs, spawnRemoval } = spyRemoval()
+
+		await expect(removeWorktreeFast(repoRoot, wtDir, { spawnRemoval })).rejects.toThrow(
+			/contains modified or untracked files/,
+		)
+		expect(existsSync(join(wtDir, "new.txt"))).toBe(true)
+		expect(await listWorktreePaths(repoRoot)).toContain(wtDir)
+		expect(dirs).toHaveLength(0)
+	}, 20_000)
+
+	it("still refuses an untracked file when the user config hides untracked files (status.showUntrackedFiles=no)", async () => {
+		const repoRoot = await makeRepo()
+		await execGit(repoRoot, ["config", "status.showUntrackedFiles", "no"])
+		const wtDir = await addWorktree(repoRoot, "hidden-untracked")
+		await writeFile(join(wtDir, "work.txt"), "real work\n")
+		const { dirs, spawnRemoval } = spyRemoval()
+
+		await expect(removeWorktreeFast(repoRoot, wtDir, { spawnRemoval })).rejects.toThrow(
+			/contains modified or untracked files/,
+		)
+		expect(existsSync(join(wtDir, "work.txt"))).toBe(true)
+		expect(await listWorktreePaths(repoRoot)).toContain(wtDir)
+		expect(dirs).toHaveLength(0)
+	}, 20_000)
+
+	it("refuses a locked worktree and leaves it registered", async () => {
+		const repoRoot = await makeRepo()
+		const wtDir = await addWorktree(repoRoot, "locked")
+		await execGit(repoRoot, ["worktree", "lock", wtDir])
+		const { dirs, spawnRemoval } = spyRemoval()
+
+		await expect(removeWorktreeFast(repoRoot, wtDir, { spawnRemoval })).rejects.toThrow(/locked/)
+		expect(existsSync(wtDir)).toBe(true)
+		expect(await listWorktreePaths(repoRoot)).toContain(wtDir)
+		expect(dirs).toHaveLength(0)
+	}, 20_000)
+
 	it("force removes a dirty tree whose dirt was authorized upstream", async () => {
 		const repoRoot = await makeRepo()
 		const wtDir = await addWorktree(repoRoot, "forced")
@@ -167,6 +233,62 @@ describe("removeWorktreeFast", () => {
 			/not a linked worktree/,
 		)
 		expect(dirs).toHaveLength(0)
+	}, 20_000)
+})
+
+describe("serialized background deleter", () => {
+	it("two removals in a row spawn ONE deleter for the pool", async () => {
+		const repoRoot = await makeRepo()
+		const a = await addWorktree(repoRoot, "burst-a")
+		const b = await addWorktree(repoRoot, "burst-b")
+		const spawned: string[] = []
+		// process.pid is alive for the whole test, standing in for a running deleter.
+		const spawnDeleter = (trashParent: string) => {
+			spawned.push(trashParent)
+			return process.pid
+		}
+
+		await removeWorktreeFast(repoRoot, a, { spawnDeleter })
+		await removeWorktreeFast(repoRoot, b, { spawnDeleter })
+
+		const trashParent = join(repoRoot, "pool", WORKTREE_TRASH_DIRNAME)
+		expect(spawned).toEqual([trashParent])
+		expect(await readFile(join(trashParent, WORKTREE_TRASH_PIDFILE), "utf8")).toBe(String(process.pid))
+		// Both worktrees are parked for that one deleter to drain.
+		expect((await readdir(trashParent)).filter((n) => n !== WORKTREE_TRASH_PIDFILE)).toHaveLength(2)
+	}, 30_000)
+
+	it("respawns when the pid file is stale", async () => {
+		const trashParent = await mkdtemp(join(tmpdir(), "wt-fast-trash-"))
+		cleanupPaths.push(trashParent)
+		await writeFile(join(trashParent, WORKTREE_TRASH_PIDFILE), "2147483646")
+		const spawned: string[] = []
+
+		ensureTrashDeleter(trashParent, (dir) => {
+			spawned.push(dir)
+			return process.pid
+		})
+
+		expect(spawned).toEqual([trashParent])
+		expect(await readFile(join(trashParent, WORKTREE_TRASH_PIDFILE), "utf8")).toBe(String(process.pid))
+	})
+
+	it("the real deleter drains every trash dir and removes its pid file", async () => {
+		const trashParent = await mkdtemp(join(tmpdir(), "wt-fast-trash-"))
+		cleanupPaths.push(trashParent)
+		for (const name of ["one", "two", "three"]) {
+			await mkdir(join(trashParent, name, "node_modules"), { recursive: true })
+			await writeFile(join(trashParent, name, "node_modules", "x"), "y\n")
+		}
+
+		ensureTrashDeleter(trashParent)
+
+		const deadline = Date.now() + 10_000
+		for (;;) {
+			if ((await readdir(trashParent)).length === 0) break
+			if (Date.now() > deadline) throw new Error(`trash never drained: ${await readdir(trashParent)}`)
+			await new Promise((r) => setTimeout(r, 100))
+		}
 	}, 20_000)
 })
 

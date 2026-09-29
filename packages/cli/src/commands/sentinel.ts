@@ -47,11 +47,17 @@ REQUIRED unless the daemon has some other default wired.
 
 \`--urgency\` one of: fyi | next-turn | steer | interrupt (default next-turn).
 \`--until\`   closed (alias for subject_terminal, default for \`watch pr\`) | never.
-\`--provider\` defaults to \`local-gh\` (zero-infra, uses the host's authenticated
-             \`gh\` CLI) — the only built-in provider today.
+\`--provider\` local-gh | webhook. \`local-gh\` polls the host's authenticated \`gh\`
+             CLI (zero infra). \`webhook\` is near-real-time push via a GitHub repo
+             hook: it needs a public daemon URL (a named tunnel or
+             AGENTPROTO_PUBLIC_URL) and a \`gh\` token with admin:repo_hook — see
+             \`list_sentinel_adapters\` for readiness. Omitted, the daemon picks
+             \`webhook\` only when a stable public URL exists and webhook is ready,
+             else \`local-gh\`.
 
 Examples:
   agentproto sentinel watch pr https://github.com/agentproto/ts/pull/1501 --session sess_abc123
+  agentproto sentinel watch pr https://github.com/agentproto/ts/pull/1501 --session sess_abc123 --provider webhook
   agentproto sentinel watch github:agentproto/ts --types 'github.issue_comment.*' --session sess_abc123
   agentproto sentinel list
   agentproto sentinel status sen_01ABC...

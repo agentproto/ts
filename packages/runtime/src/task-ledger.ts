@@ -11,9 +11,21 @@
  *
  * State machine (deliberately small):
  *   pending ⇄ in_progress → done | failed
- *   pending | in_progress → cancelled
+ *   in_progress ⇄ awaiting_approval → cancelled (denied)
+ *   pending | in_progress | awaiting_approval → cancelled
  *   done → pending only via an explicit reopen (creator/operator; bumps rev,
  *   records who in `meta.reopenedBy` — no silent resurrection)
+ *
+ * Approval gate — `awaiting_approval` (E1b, on top of E1a's approvals
+ * engine): a task parked on one or more `approvalIds` (with an optional
+ * `artifacts` trail pointing at session artifacts or approval payloads).
+ * `linkApproval` is the synchronous wiring point a caller uses at
+ * `approval_request` time (see `session-event-bus.ts`'s
+ * `ApprovalRequestedEvent` doc); `task_update` can set the same fields
+ * directly. The ledger itself subscribes to `approval:decided`: approved →
+ * `in_progress`; denied → `cancelled` with `meta.reason = "denied"` — a
+ * SYSTEM transition, not subject to the update() ACL (mirrors `settleVerify`
+ * and `releaseTask` below).
  *
  * Ownership (two roles, no per-field matrix):
  *   - `owner` absent = claimable. Claim is CAS — succeeds only if `owner` is
@@ -85,7 +97,11 @@ import {
   promises as fsp,
 } from "node:fs"
 
-import type { SessionEventBus, TaskChangedEvent } from "./session-event-bus.js"
+import type {
+  ApprovalDecidedEvent,
+  SessionEventBus,
+  TaskChangedEvent,
+} from "./session-event-bus.js"
 import type { GateSpec, JudgeGateSpec, CostGateSpec } from "./supervisor.js"
 import {
   runCommand as defaultRunCommand,
@@ -98,6 +114,7 @@ import type { RunCommandInput, ExecuteResult } from "./command-tools.js"
 export const TASK_STATUSES = [
   "pending",
   "in_progress",
+  "awaiting_approval",
   "done",
   "failed",
   "cancelled",
@@ -125,6 +142,17 @@ export type TaskVerification =
   | { kind: "gate"; policyId?: string; exitCode?: number; ts: string }
   | { kind: "human"; ts: string }
 
+/**
+ * A link on a task, pointing either at a durable session artifact
+ * (`session-artifacts.ts` — content-addressed, `sessionId` + `key` +
+ * `sha256`) or at one of E1a's approval payloads (`approvalId`, resolved
+ * through the approvals engine). Opaque to the ledger — it never dereferences
+ * either shape, only stores and returns it.
+ */
+export type TaskArtifactLink =
+  | { sessionId: string; key: string; sha256: string }
+  | { approvalId: string }
+
 export interface TaskRecord {
   taskId: string
   /** Scope — see the board rules in the module docblock. */
@@ -138,6 +166,13 @@ export interface TaskRecord {
   createdBy: string
   /** INFORMATIONAL in v1 — no scheduler reads it. */
   blockedBy?: string[]
+  /** Approvals (E1a's `ApprovalRecord.id`s) gating this task. Set via
+   *  `linkApproval` or `task_update`. Driving one into `awaiting_approval`
+   *  requires this to end up non-empty. */
+  approvalIds?: string[]
+  /** Evidence trail — session artifacts and/or approval payload pointers.
+   *  See {@link TaskArtifactLink}. */
+  artifacts?: TaskArtifactLink[]
   /** Every session that ever claimed this task (append-only) — one of the
    *  two edges the Activity projector will join on later. */
   sessions?: string[]
@@ -447,6 +482,12 @@ export interface TaskUpdateInput {
   evidence?: { policyId: string }
   /** Free-text note, stamped into `meta.note` (last-write-wins). */
   note?: string
+  /** Replace the linked approval ids. Owner-settable (like `note`) — not
+   *  gated behind the manager-only field-edit check. */
+  approvalIds?: string[]
+  /** Replace the linked artifact/approval evidence trail. Owner-settable,
+   *  same as `approvalIds`. */
+  artifacts?: TaskArtifactLink[]
 }
 
 /**
@@ -467,6 +508,17 @@ export interface TaskLedger {
   get(taskId: string, caller: TaskCaller): TaskRecord | undefined
   claim(input: TaskClaimInput, caller: TaskCaller): TaskWriteResult
   update(input: TaskUpdateInput, caller: TaskCaller): TaskWriteResult
+  /**
+   * Link an approval to a task — the synchronous wiring point a caller uses
+   * at `approval_request` time (see `ApprovalRequestedEvent`'s doc in
+   * `session-event-bus.ts`): appends `approvalId` to `approvalIds`
+   * (idempotent) and, when the task is `in_progress`, moves it to
+   * `awaiting_approval`. Requires owner or manager; the task must already be
+   * `in_progress` or `awaiting_approval` (a pending/closed task has nothing
+   * running to wait on). No `rev` — this is an internal wiring verb, not a
+   * caller-facing CAS write.
+   */
+  linkApproval(taskId: string, approvalId: string, caller: TaskCaller): TaskWriteResult
   /** The caller's default board — the spawn-stamped `meta.boardId` (when
    *  present) else `tree:<root>` for a session caller, `ws:<workspaceSlug>`
    *  for the operator. Exposed so the tool/HTTP layers can echo it without
@@ -722,6 +774,11 @@ export function createTaskLedger(opts: {
   // whose session did not survive the restart. Never fail them — tasks are
   // intent, not runs. Silent (no events): nothing changed that a subscriber
   // saw happen, mirroring the activity projector's silent prime.
+  //
+  // The `status !== "in_progress"` guard is also the E1b "no release while
+  // waiting" rule: an `awaiting_approval` task's owner survives a daemon
+  // restart untouched — it is a DIFFERENT status, not in_progress, so it
+  // never enters this loop. Deliberate, not incidental.
 
   for (const task of tasks.values()) {
     if (task.status !== "in_progress") continue
@@ -733,6 +790,9 @@ export function createTaskLedger(opts: {
   }
 
   // ── owner-death release (passive liveness) ───────────────────────
+  // Same E1b guard as boot recovery above: `status !== "in_progress"` skips
+  // an `awaiting_approval` task even if its owner just exited — it is not
+  // released while a human decision is outstanding.
 
   const unsubscribeExited = sessionEvents.on("session:exited", ev => {
     for (const task of tasks.values()) {
@@ -745,6 +805,32 @@ export function createTaskLedger(opts: {
       )
     }
   })
+
+  // ── approval gate settlement (E1b) ────────────────────────────────
+  // A SYSTEM transition, like the Tier-1 verify settle below — not subject
+  // to update()'s ACL. Only a task still `awaiting_approval` reacts; a task
+  // that already moved on (manually reverted to in_progress, cancelled) is
+  // left alone, same stale-outcome guard `settleVerify` uses.
+
+  const unsubscribeApprovalDecided = sessionEvents.on(
+    "approval:decided",
+    (ev: ApprovalDecidedEvent) => {
+      for (const task of tasks.values()) {
+        if (task.status !== "awaiting_approval") continue
+        if (!task.approvalIds?.includes(ev.approvalId)) continue
+        if (ev.decision === "approved") {
+          task.status = "in_progress"
+        } else {
+          task.status = "cancelled"
+          task.closedAt = new Date().toISOString()
+          setMeta(task, "reason", "denied")
+        }
+        touch(task)
+        emitChanged(task, "status")
+        schedulePersist()
+      }
+    },
+  )
 
   // ── Tier-1 verification (background) ─────────────────────────────
 
@@ -801,7 +887,11 @@ export function createTaskLedger(opts: {
 
   const ALLOWED_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
     pending: ["in_progress", "cancelled"],
-    in_progress: ["pending", "done", "failed", "cancelled"],
+    in_progress: ["pending", "done", "failed", "cancelled", "awaiting_approval"],
+    // Manual escape hatches alongside the system-driven approval:decided
+    // transition below: back to in_progress (abandon the wait), or a
+    // manager cancel — same as any other open status.
+    awaiting_approval: ["in_progress", "cancelled"],
     // done → pending is the explicit reopen verb (manager-only, checked
     // separately); failed/cancelled are terminal in v1.
     done: ["pending"],
@@ -981,6 +1071,18 @@ export function createTaskLedger(opts: {
           error: "cannot start an unowned task — claim it first (task_claim)",
         }
       }
+      if (target === "awaiting_approval") {
+        // A link riding along in the same write counts — same one-write
+        // convenience as the reassign-then-start case above.
+        const approvalIdsAfter = input.approvalIds ?? task.approvalIds
+        if (!approvalIdsAfter || approvalIdsAfter.length === 0) {
+          return {
+            ok: false,
+            conflict: false,
+            error: "cannot enter awaiting_approval with no linked approvalIds",
+          }
+        }
+      }
 
       // Remaining done-tier validations — still no mutation yet.
       let evidenceVerification: TaskVerification | undefined
@@ -1049,7 +1151,9 @@ export function createTaskLedger(opts: {
             input.title !== undefined ||
             input.description !== undefined ||
             input.blockedBy !== undefined ||
-            input.note !== undefined
+            input.note !== undefined ||
+            input.approvalIds !== undefined ||
+            input.artifacts !== undefined
           applySideEdits(task, input)
           if (hadSideEdits) {
             touch(task)
@@ -1119,6 +1223,46 @@ export function createTaskLedger(opts: {
     return { ok: true, task }
   }
 
+  // ── linkApproval ─────────────────────────────────────────────────
+
+  const linkApproval = (
+    taskId: string,
+    approvalId: string,
+    caller: TaskCaller,
+  ): TaskWriteResult => {
+    const task = lookup(taskId, caller)
+    if (!task) return notFound(taskId)
+    const manager = isManager(caller, task)
+    const owner = isOwner(caller, task)
+    if (!manager && !owner) {
+      return {
+        ok: false,
+        conflict: false,
+        error: "only the task's owner, its creator, or the operator may link an approval",
+      }
+    }
+    if (task.status !== "in_progress" && task.status !== "awaiting_approval") {
+      return {
+        ok: false,
+        conflict: false,
+        error: `cannot link an approval to a ${task.status} task`,
+      }
+    }
+    if (!task.approvalIds?.includes(approvalId)) {
+      task.approvalIds = [...(task.approvalIds ?? []), approvalId]
+    }
+    const enteringWait = task.status !== "awaiting_approval"
+    if (enteringWait) task.status = "awaiting_approval"
+    touch(task)
+    emitChanged(
+      task,
+      enteringWait ? "status" : "edited",
+      caller.kind === "session" ? caller.sessionId : undefined,
+    )
+    schedulePersist()
+    return { ok: true, task }
+  }
+
   /** Non-status field edits shared by every accepted write path. ACL was
    *  already checked by the caller. */
   const applySideEdits = (task: TaskRecord, input: TaskUpdateInput): void => {
@@ -1128,6 +1272,8 @@ export function createTaskLedger(opts: {
     if (input.description !== undefined) task.description = input.description
     if (input.blockedBy !== undefined) task.blockedBy = [...input.blockedBy]
     if (input.note !== undefined) setMeta(task, "note", input.note)
+    if (input.approvalIds !== undefined) task.approvalIds = [...input.approvalIds]
+    if (input.artifacts !== undefined) task.artifacts = [...input.artifacts]
   }
 
   return {
@@ -1136,12 +1282,14 @@ export function createTaskLedger(opts: {
     get: (taskId, caller) => lookup(taskId, caller),
     claim,
     update,
+    linkApproval,
     resolveBoardId,
     snapshot: () => Array.from(tasks.values()),
     dispose() {
       if (disposed) return
       disposed = true
       unsubscribeExited()
+      unsubscribeApprovalDecided()
       if (persistTimer) {
         clearTimeout(persistTimer)
         persistTimer = null

@@ -58,6 +58,7 @@ import {
   serviceableModelRoutes,
   suggestModelSlugs,
 } from "./catalog-models.js"
+import { authProfileAsAdapterHint } from "./adapter-slug-hint.js"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import {
   getAuthProfile,
@@ -2109,6 +2110,21 @@ export async function spawnAgentSession(
   // `spawnAgent` via `SpawnAgentInput.id` so the descriptor ends up with
   // this exact id rather than a second, different one (PR 7 / Gap 7).
   const mintedSessionId = mintSessionId()
+  // A direct spawn that reattaches an adapter-native conversation some
+  // existing row already owns (`POST /sessions { resumeSessionId }`) is a
+  // revival of that row — record the lineage rather than forking silently.
+  const resumeSource = input.resumeSessionId
+    ? registry
+        .list()
+        .filter(
+          d => d.adapterSessionId === input.resumeSessionId && d.adapterSlug === input.adapter,
+        )
+        .sort((x, y) => (x.startedAt ?? "").localeCompare(y.startedAt ?? ""))
+        .at(-1)
+    : undefined
+  const resumeLineageFields = resumeSource
+    ? { resumedFrom: resumeSource.id, resumeVia: "resumed via ACP" }
+    : {}
   // Default the daemon's own gateway onto spawns that supplied no
   // `mcpServers` — two distinct rationales, one mechanism (see
   // `shouldInjectDaemonSelfMount` for the per-adapter reasoning):
@@ -2483,14 +2499,18 @@ export async function spawnAgentSession(
     // `resolveAdapter`) already returns successfully through that window,
     // so reaching this branch at all means either the adapter has never
     // resolved in this process, or it went unresolvable long enough to
-    // exhaust that grace period.
+    // exhaust that grace period. Unless the slug is an auth-profile id — then
+    // neither "mid-rebuild" nor "install it" applies, and the shared hint
+    // (same text as cron's create-time check) says what was meant.
+    const profileHint = await authProfileAsAdapterHint(input.adapter, getAuthProfile)
     return {
       ok: false,
       code: "adapter_not_found",
-      message:
-        `agent_start: adapter "${input.adapter}" could not be resolved. If it was ` +
-        `working a moment ago, something may be mid-rebuild — wait and retry. If it ` +
-        `has never been installed, run \`agentproto install ${input.adapter}\` first.`,
+      message: profileHint
+        ? `agent_start: adapter "${input.adapter}" could not be resolved. ${profileHint}`
+        : `agent_start: adapter "${input.adapter}" could not be resolved. If it was ` +
+          `working a moment ago, something may be mid-rebuild — wait and retry. If it ` +
+          `has never been installed, run \`agentproto install ${input.adapter}\` first.`,
     }
   }
   if (resolveHostAuth && !resolved) {
@@ -3126,6 +3146,7 @@ export async function spawnAgentSession(
       const defaultModel = resolved?.defaultModel
       const pendingDesc = registry.spawnAgentPending({
         id: mintedSessionId,
+        ...resumeLineageFields,
         workspaceSlug: resolvedSlug,
         cwd,
         adapterSlug: input.adapter,
@@ -3559,6 +3580,7 @@ export async function spawnAgentSession(
     const initialSystemPrompt = composedPreamble(effectivePrompt, input.prompt)
     const desc = registry.spawnAgent({
       id: mintedSessionId,
+      ...resumeLineageFields,
       workspaceSlug: resolvedSlug,
       cwd,
       agentSession,

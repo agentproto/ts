@@ -3,7 +3,7 @@ schema: agent/v1
 id: agentproto-self-review
 description: Illustrative AIP-42 manifest transcribing this repo's own .github/agentic-review.json config (model, skills, escalation policy) and AGENTS.md's two hard rules into the AIP-42 per-agent manifest format. Not wired to any runtime path — nothing currently resolves a WORKFLOW.md agent step (see .github/agentproto-workflows/*/entry.mjs) against an AGENT.md. Exists to make the format's applicability concrete, and to give a real transcription target if that wiring is ever built.
 version: 1.0.0
-model: claude-sonnet-5
+model: claude-sonnet-5-5
 skills:
   - aip-conventions
 boundaries:

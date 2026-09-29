@@ -105,11 +105,24 @@ export interface RubricDigest {
  *  written; `id`/`version` come from the pack's own REVIEW.md. A digest edit
  *  (the pack's REVIEW.md, or any rubric it selects) changes what the pack's
  *  lanes check, so it's part of what the verdict attests — same role as
- *  {@link RubricDigest} for a locally-declared check. */
+ *  {@link RubricDigest} for a locally-declared check.
+ *
+ *  `alg` names the RECIPE `sha256` was computed under — which bytes, in
+ *  what order, with what separators (see `packs.ts`'s
+ *  `computePackDigestSha256` for the exact v1 layout, documented there and
+ *  in `packages/review/README.md`'s "Review packs" section). It is NOT the
+ *  hash function (that's always sha256) — it's a version tag for the
+ *  format itself, so a future recipe change never gets compared against an
+ *  older one as if they were the same thing. This travels inside a SIGNED
+ *  attestation and is expensive to change after the fact, so it's
+ *  versioned from day one even though only one version exists yet. A
+ *  verifier that doesn't recognize `alg` must refuse to compare rather
+ *  than silently mis-verify — see `verifyPackDigests` in the CLI. */
 export interface PackDigest {
   ref: string
   id: string
   version: string
+  alg: "agentproto-pack-digest/v1"
   sha256: string
 }
 

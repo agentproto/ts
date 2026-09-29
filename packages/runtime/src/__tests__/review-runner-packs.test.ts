@@ -117,7 +117,7 @@ describe("review runner — uses[] review packs", () => {
     expect(att.verdict).toBe("pass")
     expect(att.lanes.map((l) => l.id)).toEqual(["files", "core/correctness"])
     expect(att.packs).toEqual([
-      { ref: "./packs/core", id: "core", version: "1.0.0", sha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
+      { ref: "./packs/core", id: "core", version: "1.0.0", alg: "agentproto-pack-digest/v1", sha256: expect.stringMatching(/^[0-9a-f]{64}$/) },
     ])
     expect(calls).toHaveLength(1)
     expect(calls[0]!.preset).toBe("kimi")
