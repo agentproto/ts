@@ -1632,6 +1632,38 @@ describe("compileWorkflow — subworkflow input projection", () => {
   })
 })
 
+describe("compileWorkflow — declarative tool step timeout_ms (F45)", () => {
+  it("compiles a tool step's timeout_ms onto the runtime ToolStep as timeoutMs", () => {
+    const wf = defineWorkflow({
+      name: "Double",
+      id: "double-timeout",
+      description: "A tool step with an explicit timeout_ms.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [
+        { id: "d", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" }, timeout_ms: 5000 },
+      ],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    expect(compiled.steps[0]).toMatchObject({ kind: "tool", id: "d", timeoutMs: 5000 })
+  })
+
+  it("omitting timeout_ms leaves ToolStep.timeoutMs undefined (runtime applies its own default)", () => {
+    const wf = defineWorkflow({
+      name: "Double",
+      id: "double-no-timeout",
+      description: "A tool step with no timeout_ms.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [{ id: "d", kind: "tool", tool: "demo.double", inputs: { n: "$input.n" } }],
+    })
+    const compiled = compileWorkflow(wf, { tools, candidates })
+    expect((compiled.steps[0] as { timeoutMs?: number }).timeoutMs).toBeUndefined()
+  })
+})
+
 describe("compileWorkflow — declarative gate step (AIP-15 P3)", () => {
   it("compiles command/args/cwd/report/timeout_ms field-for-field", () => {
     const wf = defineWorkflow({

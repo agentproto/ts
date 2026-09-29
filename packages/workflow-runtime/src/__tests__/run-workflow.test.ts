@@ -846,6 +846,44 @@ describe("runWorkflow — agent step harness (AIP-15 P2)", () => {
   })
 })
 
+describe("runWorkflow — tool step timeoutMs (F45)", () => {
+  // A driver whose underlying work never settles on its own — only when the
+  // signal it's given aborts. Mimics a `kind: cli` subprocess whose stdio
+  // pipe is held open by an orphaned grandchild: the driver never resolves
+  // or rejects by itself, so the ONLY thing that can end the step is the
+  // per-step timeout aborting its signal.
+  const hangTool = defineTool({
+    id: "demo.hang",
+    description: "Never settles on its own; only reacts to its signal aborting.",
+    inputSchema: z.object({}),
+    outputSchema: z.object({}),
+  })
+  const hangProvider = defineDriver({
+    id: "hang-builtin",
+    name: "Hang",
+    description: "Simulates a driver call that never completes on its own.",
+    kind: "builtin",
+    implements: [{ tool: "demo.hang", version: "0.1.0" }],
+    implementations: [
+      implementTool(hangTool, ({ signal }) => {
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true })
+        })
+      }),
+    ],
+  })
+
+  it("an unbounded tool step fails with a clear 'timed out after Nms' error instead of hanging forever", async () => {
+    const wf: RuntimeWorkflow = {
+      id: "tool-timeout",
+      steps: [{ kind: "tool", id: "t", tool: hangTool, candidates: [hangProvider], input: () => ({}), timeoutMs: 100 }],
+    }
+    const start = Date.now()
+    await expect(runWorkflow({ workflow: wf })).rejects.toThrow(/step 't': timed out after 100ms/)
+    expect(Date.now() - start).toBeLessThan(2000)
+  })
+})
+
 describe("runWorkflow — kind: gate (AIP-15 P3)", () => {
   it("passes on exit code 0, parses stdout as the report, and binds { ok, exitCode, report }", async () => {
     const runGateCommand = vi.fn(async () => ({
@@ -1102,7 +1140,7 @@ describe("runWorkflow — kind: gate (AIP-15 P3)", () => {
           },
         ],
       }
-      // No runGateCommand override — the real execFile path runs, in dir.
+      // No runGateCommand override — the real spawn-based default runner runs, in dir.
       const { output } = await runWorkflow({ workflow: wf, input: { dir } })
       expect(output).toMatchObject({ ok: true, exitCode: 0 })
       expect(readFileSync(join(dir, "marker-from-gate.txt"), "utf8")).toBe("ok")
@@ -1129,7 +1167,7 @@ describe("runWorkflow — kind: gate (AIP-15 P3)", () => {
       }
       setTimeout(() => ac.abort(), 100)
       const startedAt = Date.now()
-      // No runGateCommand override — exercises the real execFile + `signal` path.
+      // No runGateCommand override — exercises the real spawn-based default runner + `signal` path.
       await expect(runWorkflow({ workflow: wf, input: { dir }, signal: ac.signal })).rejects.toThrow(
         WorkflowCancelledError,
       )
@@ -1142,6 +1180,54 @@ describe("runWorkflow — kind: gate (AIP-15 P3)", () => {
       rmSync(dir, { recursive: true, force: true })
     }
   }, 20000) // real `node` spawn — see the timeout note above.
+
+  it("resolves quickly with the parsed report even when the command leaves a detached grandchild holding stdout/stderr open (F45)", async () => {
+    // Mirrors the real F45 repro at the `kind: gate` layer: the command
+    // prints its report and exits — its own work is done — but a
+    // grandchild it spawned (stdio: 'inherit', detached: true, simulating a
+    // headless-Chrome renderer helper reparented off this process) keeps
+    // the write end of stdout/stderr open for 5s after. The old
+    // `close`-based completion (via `execFile`) would hang for that whole
+    // window; the fix completes as soon as the command's own process exits.
+    const script = [
+      "const { spawn } = require('node:child_process');",
+      "process.stdout.write(JSON.stringify({ checked: 3 }));",
+      "const gc = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], " +
+        "{ stdio: ['ignore', 'inherit', 'inherit'], detached: true });",
+      "gc.unref();",
+      "process.exit(0);",
+    ].join(" ")
+    const wf: RuntimeWorkflow = {
+      id: "gate-orphan-grandchild",
+      steps: [{ kind: "gate", id: "g", command: "node", args: ["-e", script] }],
+    }
+    const start = Date.now()
+    // No runGateCommand override — exercises the real spawn-based default runner.
+    const { output } = await runWorkflow({ workflow: wf })
+    expect(Date.now() - start).toBeLessThan(4000)
+    expect(output).toEqual({ ok: true, exitCode: 0, report: { checked: 3 } })
+  }, 8000)
+
+  it("an unbounded gate step fails with 'timed out after Nms' via its own default timeout, not just a caller-set signal", async () => {
+    const wf: RuntimeWorkflow = {
+      id: "gate-default-timeout",
+      steps: [
+        {
+          kind: "gate",
+          id: "g",
+          command: "node",
+          args: ["-e", "setInterval(() => {}, 1000)"], // never exits on its own
+          timeoutMs: 150,
+        },
+      ],
+    }
+    const start = Date.now()
+    // No runGateCommand override — exercises the real spawn-based default
+    // runner's own timeoutMs handling (distinct from the caller `signal`
+    // path the cancel test above covers).
+    await expect(runWorkflow({ workflow: wf })).rejects.toThrow(/gate failed after 1 attempt\(s\)/)
+    expect(Date.now() - start).toBeLessThan(4000)
+  }, 8000)
 
   it("a signal already aborted before a retry attempt skips the reprompt and the command, throwing WorkflowCancelledError", async () => {
     const sendPromptAndWait = vi.fn(async () => {})

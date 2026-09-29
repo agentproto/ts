@@ -53,6 +53,12 @@ export interface ToolStep<
   /** Cache this step's output under the run's cacheKey; only its `input` is hashed
    *  (not `context`/secrets). Default false. */
   cacheable?: boolean
+  /** Hard wall-clock cap for this step's dispatch (driver resolve + execute),
+   *  in ms. Bounds a driver that never settles its own promise (e.g. a `kind:
+   *  cli` subprocess whose stdio pipe is held open by an orphaned grandchild
+   *  process — F45) rather than relying on the driver to self-timeout.
+   *  Default {@link DEFAULT_STEP_TIMEOUT_MS} when unset. */
+  timeoutMs?: number
 }
 
 /** A pure in-run computation (combine / filter / shape) — no tool dispatch. */
@@ -107,6 +113,11 @@ export interface TolerantFanOutResult<T = unknown> {
 /** Default for {@link MapStep.maxConsecutiveSpawnFailures} /
  *  {@link PipelineStep.maxConsecutiveSpawnFailures}. */
 export const DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES = 3
+
+/** Default for {@link ToolStep.timeoutMs} / {@link GateStep.timeoutMs} when
+ *  the step declares none — 10 minutes. Bounds an otherwise-unbounded `tool`
+ *  or `gate` step dispatch (F45). */
+export const DEFAULT_STEP_TIMEOUT_MS = 10 * 60 * 1000
 
 /**
  * Run a sub-step once per element of an array, optionally with bounded
@@ -499,7 +510,9 @@ export interface GateStep {
   /** Path (relative to `cwd`), of a JSON report file, consulted when stdout
    *  doesn't itself parse as JSON. */
   reportPath?: string
-  /** Hard wall-clock cap for a single command invocation, in ms. */
+  /** Hard wall-clock cap for a single command invocation, in ms. Default
+   *  {@link DEFAULT_STEP_TIMEOUT_MS} when unset — a gate's subprocess is
+   *  never left to run unbounded (F45). */
   timeoutMs?: number
   /** Re-run on a failing exit code, up to `maxAttempts` (default 1 = no
    *  retry — a single attempt, fail immediately on a non-zero exit). */

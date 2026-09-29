@@ -152,6 +152,35 @@ interface SubprocessResult {
   stderr: string
 }
 
+/** Ceiling on how long to wait, after the direct child's own `exit`, for its
+ *  stdio to finish draining before giving up on it — see {@link
+ *  runSubprocess}'s doc. The ordinary case (no orphaned grandchild sharing
+ *  the pipe) resolves far sooner: as soon as both streams themselves `end`. */
+const STDIO_DRAIN_MS = 2_000
+
+/** How long a killed process group gets before an unresponsive survivor is
+ *  escalated from SIGTERM to SIGKILL. */
+const KILL_GRACE_MS = 2_000
+
+/**
+ * Spawn `bin` and resolve once the DIRECT child exits — never wait on the
+ * ChildProcess `close` event, which only fires once its stdout/stderr pipes
+ * have also closed. A tool that spawns a subprocess of its own (e.g.
+ * headless Chrome) with inherited/piped stdio can leave an orphaned
+ * grandchild (reparented to pid 1, outside this driver's process tree) still
+ * holding the write end of that pipe open long after the direct child — and
+ * the tool's own work — has finished; `close` would then never fire and the
+ * step would hang indefinitely even though the tool already completed
+ * (F45). `exit` only depends on the direct child's own lifetime, so it's the
+ * right completion signal; a short drain window afterward still gives any
+ * already-in-flight `data` events a chance to land before the streams are
+ * torn down.
+ *
+ * Spawned detached (own process group) so an abort/timeout can kill the
+ * WHOLE group — including any orphan sharing it — via `process.kill(-pid)`,
+ * not just the direct child (`child.kill()` alone would leave the orphan
+ * running, the exact condition that caused F45).
+ */
 async function runSubprocess(args: {
   bin: string
   argv: readonly string[]
@@ -164,34 +193,77 @@ async function runSubprocess(args: {
       env: args.env,
       cwd: args.cwd,
       stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
     })
 
     let stdout = ""
     let stderr = ""
+    let settled = false
+    let stdoutEnded = !child.stdout
+    let stderrEnded = !child.stderr
+    let exited: { exitCode: number } | undefined
+    let drainTimer: NodeJS.Timeout | undefined
+
+    const killGroup = (sig: NodeJS.Signals): void => {
+      if (typeof child.pid !== "number") return
+      try {
+        if (process.platform !== "win32") process.kill(-child.pid, sig)
+        else child.kill(sig)
+      } catch {
+        // Already gone.
+      }
+    }
+
+    let killTimer: NodeJS.Timeout | undefined
+    const onAbort = () => {
+      killGroup("SIGTERM")
+      killTimer = setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS).unref()
+    }
+    if (args.signal.aborted) onAbort()
+    else args.signal.addEventListener("abort", onAbort, { once: true })
+
+    const finish = (outcome: { exitCode: number } | { error: Error }): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(killTimer)
+      clearTimeout(drainTimer)
+      args.signal.removeEventListener("abort", onAbort)
+      child.stdout?.destroy()
+      child.stderr?.destroy()
+      if ("error" in outcome) reject(new CliDriverError("upstream_error", outcome.error.message))
+      else resolve({ exitCode: outcome.exitCode, stdout, stderr })
+    }
+
+    // Resolve as soon as the direct child has exited AND both its stdio
+    // streams have themselves ended — the ordinary case, settling almost
+    // immediately. `drainTimer` (started once `exit` fires) is only a
+    // ceiling: an orphaned grandchild still holding the pipe open keeps a
+    // stream from ever emitting `end`, so without it this would degrade
+    // back into the `close`-shaped hang this function exists to avoid.
+    const maybeFinish = (): void => {
+      if (exited && stdoutEnded && stderrEnded) finish(exited)
+    }
+
     child.stdout?.on("data", chunk => {
       stdout += chunk.toString()
+    })
+    child.stdout?.on("end", () => {
+      stdoutEnded = true
+      maybeFinish()
     })
     child.stderr?.on("data", chunk => {
       stderr += chunk.toString()
     })
-
-    const onAbort = () => {
-      child.kill("SIGTERM")
-    }
-    if (args.signal.aborted) {
-      child.kill("SIGTERM")
-    } else {
-      args.signal.addEventListener("abort", onAbort, { once: true })
-    }
-
-    child.on("error", err => {
-      args.signal.removeEventListener("abort", onAbort)
-      reject(new CliDriverError("upstream_error", err.message))
+    child.stderr?.on("end", () => {
+      stderrEnded = true
+      maybeFinish()
     })
 
-    child.on("close", code => {
-      args.signal.removeEventListener("abort", onAbort)
-      resolve({ exitCode: code ?? 0, stdout, stderr })
+    child.on("error", err => finish({ error: err }))
+    child.on("exit", (code, signal) => {
+      exited = { exitCode: code ?? (signal ? 1 : 0) }
+      drainTimer = setTimeout(() => finish(exited!), STDIO_DRAIN_MS).unref()
+      maybeFinish()
     })
   })
 }

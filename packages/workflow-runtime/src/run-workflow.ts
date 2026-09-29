@@ -9,7 +9,7 @@
 
 import { runTool } from "@agentproto/driver"
 import { createHash } from "node:crypto"
-import { execFile } from "node:child_process"
+import { spawn } from "node:child_process"
 import { copyFile, cp, mkdir, readFile, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 import { z } from "zod"
@@ -36,7 +36,7 @@ import type {
   TolerantFanOutResult,
   WorkflowRunResult,
 } from "./types.js"
-import { DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES } from "./types.js"
+import { DEFAULT_MAX_CONSECUTIVE_SPAWN_FAILURES, DEFAULT_STEP_TIMEOUT_MS } from "./types.js"
 import { materializeKnowledge, resolveKnowledgeSelectors } from "./knowledge.js"
 
 /** Thrown by a `suspend` step when no host `resume` hook is provided. */
@@ -903,17 +903,39 @@ function tryParseJson(text: string): unknown {
   }
 }
 
+/** Ceiling on how long to wait, after a gate's DIRECT child exits, for its
+ *  stdio to finish draining before giving up on it — see {@link
+ *  defaultRunGateCommand}'s doc. The ordinary case (no orphaned grandchild
+ *  sharing the pipe) resolves far sooner: as soon as both streams `end`. */
+const GATE_STDIO_DRAIN_MS = 2_000
+
+/** How long a killed gate process group gets before an unresponsive survivor
+ *  is escalated from SIGTERM to SIGKILL. */
+const GATE_KILL_GRACE_MS = 2_000
+
 /**
  * The runtime's own subprocess runner for `kind: "gate"` steps, used when no
  * `runGateCommand` host hook is injected — a plain `node:child_process`
  * argv-vector invocation (no shell interpolation). Exit code 0 always
  * resolves (never rejects on a non-zero exit); a timeout resolves with
- * `timedOut: true` and whatever partial output was captured. `spec.signal`
- * (the run's cancel signal) is threaded straight into `execFile`'s own
- * `signal` option, which kills the child process — a cancelled run must not
- * leave a gate's subprocess running unsupervised any more than it leaves an
- * agent step's session running; {@link execGateStep} re-checks the signal
- * right after this resolves to turn the kill into a `WorkflowCancelledError`.
+ * `timedOut: true` and whatever partial output was captured.
+ *
+ * Settles on the DIRECT child's own `exit`, never on `close` — `close` only
+ * fires once the child's stdout/stderr pipes have also closed, and a
+ * subprocess that spawns its own child with inherited/piped stdio (e.g.
+ * headless Chrome) can leave an orphaned grandchild holding that pipe open
+ * long after the gate command itself finished, hanging the step forever
+ * even though the command already completed (F45). A short drain window
+ * after `exit` still gives any already-in-flight `data` a chance to land.
+ *
+ * `spec.timeoutMs` defaults to {@link DEFAULT_STEP_TIMEOUT_MS} when unset —
+ * a gate's subprocess is never left unbounded. On timeout, or when
+ * `spec.signal` aborts (a cancelled run must not leave a gate's subprocess
+ * running any more than it leaves an agent step's session running —
+ * {@link execGateStep} re-checks the signal right after this resolves to
+ * turn the kill into a `WorkflowCancelledError`), the WHOLE process group is
+ * killed via `process.kill(-pid)` (spawned detached), not just the direct
+ * child — so an orphaned grandchild sharing that group doesn't survive it.
  */
 function defaultRunGateCommand(spec: {
   command: string
@@ -922,22 +944,92 @@ function defaultRunGateCommand(spec: {
   timeoutMs?: number
   signal?: AbortSignal
 }): Promise<GateCommandResult> {
+  const timeoutMs = spec.timeoutMs ?? DEFAULT_STEP_TIMEOUT_MS
   return new Promise((resolve) => {
-    execFile(
-      spec.command,
-      [...spec.args],
-      { cwd: spec.cwd, timeout: spec.timeoutMs, maxBuffer: 10 * 1024 * 1024, signal: spec.signal },
-      (err, stdout, stderr) => {
-        if (!err) {
-          resolve({ exitCode: 0, stdout, stderr })
-          return
-        }
-        const nodeErr = err as NodeJS.ErrnoException & { code?: number | string; killed?: boolean; signal?: string }
-        const timedOut = nodeErr.killed === true && nodeErr.signal !== undefined && spec.timeoutMs !== undefined
-        const exitCode = typeof nodeErr.code === "number" ? nodeErr.code : 1
-        resolve({ exitCode, stdout, stderr, ...(timedOut ? { timedOut: true } : {}) })
-      },
-    )
+    const child = spawn(spec.command, [...spec.args], {
+      cwd: spec.cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+    })
+
+    let stdout = ""
+    let stderr = ""
+    let settled = false
+    let timedOut = false
+    let stdoutEnded = !child.stdout
+    let stderrEnded = !child.stderr
+    let exitCode: number | undefined
+    let drainTimer: NodeJS.Timeout | undefined
+
+    const killGroup = (sig: NodeJS.Signals): void => {
+      if (typeof child.pid !== "number") return
+      try {
+        if (process.platform !== "win32") process.kill(-child.pid, sig)
+        else child.kill(sig)
+      } catch {
+        // Already gone.
+      }
+    }
+
+    let killTimer: NodeJS.Timeout | undefined
+    const kill = (): void => {
+      killGroup("SIGTERM")
+      killTimer = setTimeout(() => killGroup("SIGKILL"), GATE_KILL_GRACE_MS).unref()
+    }
+
+    const onAbort = () => kill()
+    if (spec.signal?.aborted) kill()
+    else spec.signal?.addEventListener("abort", onAbort, { once: true })
+
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true
+      kill()
+    }, timeoutMs).unref()
+
+    const finish = (code: number): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(killTimer)
+      clearTimeout(timeoutTimer)
+      clearTimeout(drainTimer)
+      spec.signal?.removeEventListener("abort", onAbort)
+      child.stdout?.destroy()
+      child.stderr?.destroy()
+      resolve({ exitCode: code, stdout, stderr, ...(timedOut ? { timedOut: true } : {}) })
+    }
+
+    // See the CLI driver's `runSubprocess` for why this resolves on `exit` +
+    // both streams' own `end` (the ordinary case, near-instant) with
+    // `drainTimer` only as a ceiling for the orphan-holds-the-pipe case.
+    const maybeFinish = (): void => {
+      if (exitCode !== undefined && stdoutEnded && stderrEnded) finish(exitCode)
+    }
+
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString()
+    })
+    child.stdout?.on("end", () => {
+      stdoutEnded = true
+      maybeFinish()
+    })
+    child.stderr?.on("data", (chunk) => {
+      stderr += chunk.toString()
+    })
+    child.stderr?.on("end", () => {
+      stderrEnded = true
+      maybeFinish()
+    })
+
+    child.on("error", () => {
+      exitCode = 1
+      drainTimer = setTimeout(() => finish(1), GATE_STDIO_DRAIN_MS).unref()
+      maybeFinish()
+    })
+    child.on("exit", (code, signal) => {
+      exitCode = code ?? (signal ? 1 : 0)
+      drainTimer = setTimeout(() => finish(exitCode!), GATE_STDIO_DRAIN_MS).unref()
+      maybeFinish()
+    })
   })
 }
 
@@ -1050,6 +1142,47 @@ async function execGateStep(step: GateStep, ctx: RunCtx, b: Bindings): Promise<u
   return last
 }
 
+/**
+ * Bound a `tool` step's dispatch with its own hard wall-clock cap
+ * (independent of any tool-contract-level `timeoutMs` `runTool` already
+ * enforces — F45 found NEITHER layer actually terminated a step whose
+ * driver never settled its promise). `fn` receives a signal that aborts
+ * either when `timeoutMs` elapses OR `parentSignal` (the run's own cancel
+ * signal) aborts first — either way the driver underneath (the CLI driver's
+ * `runSubprocess`, `defaultRunGateCommand`) is expected to kill its
+ * subprocess on abort, same as a cancelled run already relies on. Only the
+ * TIMER-triggered abort is reported as `'step '<id>': timed out after
+ * <n>ms'`; a parent-signal abort rethrows whatever `fn` itself produced, so
+ * a run cancel keeps its existing error shape.
+ */
+async function withStepTimeout<T>(
+  stepId: string,
+  timeoutMs: number,
+  parentSignal: AbortSignal | undefined,
+  fn: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController()
+  const onParentAbort = (): void => controller.abort(parentSignal!.reason)
+  if (parentSignal?.aborted) controller.abort(parentSignal.reason)
+  else parentSignal?.addEventListener("abort", onParentAbort, { once: true })
+
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort(new Error(`step '${stepId}': timed out after ${timeoutMs}ms`))
+  }, timeoutMs)
+
+  try {
+    return await fn(controller.signal)
+  } catch (err) {
+    if (timedOut) throw new Error(`step '${stepId}': timed out after ${timeoutMs}ms`)
+    throw err
+  } finally {
+    clearTimeout(timer)
+    parentSignal?.removeEventListener("abort", onParentAbort)
+  }
+}
+
 /** A cache hit still surfaces as a step (F35): fire `onStepStart` with
  *  `{ cached: true }` and flag it so its completion is tagged too. */
 function cacheHit(ctx: RunCtx, step: RunStep, output: unknown): unknown {
@@ -1105,15 +1238,17 @@ async function execStepBody(
     case "tool": {
       const input = step.input(b)
       const runIt = (): Promise<unknown> =>
-        runTool({
-          tool: step.tool,
-          candidates: step.candidates,
-          input,
-          context: step.context ? step.context(b) : undefined,
-          resolverContext: step.resolverContext,
-          secrets: step.secrets,
-          signal,
-        })
+        withStepTimeout(step.id, step.timeoutMs ?? DEFAULT_STEP_TIMEOUT_MS, signal, (sig) =>
+          runTool({
+            tool: step.tool,
+            candidates: step.candidates,
+            input,
+            context: step.context ? step.context(b) : undefined,
+            resolverContext: step.resolverContext,
+            secrets: step.secrets,
+            signal: sig,
+          }),
+        )
       if (!isCacheEnabled(ctx, step)) {
         ctx.onStepStart?.(step.id)
         return runIt()

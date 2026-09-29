@@ -843,6 +843,7 @@ function compileStep(step: any, ctx: Ctx): RunStep {
       assertKnownStepRefs(inputs, ctx.knownStepIds, `tool step '${id}' inputs`, {
         makeError: (message) => new WorkflowCompileError(message),
       })
+      const timeoutMs = f<number | undefined>(step, "timeout_ms")
       return {
         kind: "tool",
         id,
@@ -853,6 +854,7 @@ function compileStep(step: any, ctx: Ctx): RunStep {
           ? (b) => opts.contextFor!(toolId, b)
           : undefined,
         ...(step.cacheable ? { cacheable: true } : {}),
+        ...(timeoutMs !== undefined ? { timeoutMs } : {}),
       }
     }
 
