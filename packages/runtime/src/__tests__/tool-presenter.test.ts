@@ -104,6 +104,15 @@ describe("formatToolResult", () => {
     )
     expect(result).toBe("3 matches found")
   })
+
+  it("extracts text from an opencode-shaped { output, metadata } result", () => {
+    expect(formatToolResult("bash", { output: "wt/feature\n", metadata: { exit: 0 } }, false)).toBe(
+      "wt/feature",
+    )
+    expect(
+      formatToolResult("bash", { output: "line 1\nline 2\nline 3", metadata: {} }, false),
+    ).toBe("3 lines, 20B")
+  })
 })
 
 describe("artifactMarkerLines", () => {
@@ -117,6 +126,14 @@ describe("artifactMarkerLines", () => {
   it("extracts markers from an MCP-shaped content array", () => {
     const result = {
       content: [{ type: "text", text: `${ARTIFACT_MARKER}${record}` }],
+    }
+    expect(artifactMarkerLines(result)).toEqual([`${ARTIFACT_MARKER}${record}`])
+  })
+
+  it("extracts markers from an opencode-shaped { output, metadata } result", () => {
+    const result = {
+      output: `posting review…\n${ARTIFACT_MARKER}${record}\ncreated review id=5000347376`,
+      metadata: { exit: 0 },
     }
     expect(artifactMarkerLines(result)).toEqual([`${ARTIFACT_MARKER}${record}`])
   })

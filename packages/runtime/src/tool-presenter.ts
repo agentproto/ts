@@ -115,6 +115,12 @@ function extractText(value: unknown): string | null {
   if (isRecord(value)) {
     if (typeof value.text === "string") return value.text
     if (typeof value.message === "string") return value.message
+    // ACP agents such as opencode wrap a tool's stdout as `{ output, metadata }`
+    // (claude-code sends a bare string). Without this key the ring showed no
+    // [tool-result] line at all for opencode, and the CI artifact-ledger
+    // passthrough (`artifactMarkerLines`) never saw the delivery helper's
+    // `::agentproto-artifact::` marker — `driver: artifacts=[]` on every run.
+    if (typeof value.output === "string") return value.output
     if (Array.isArray(value.content)) return extractText(value.content)
     if (typeof value.error === "string") return value.error
     if (isRecord(value.error) && typeof value.error.message === "string") {
