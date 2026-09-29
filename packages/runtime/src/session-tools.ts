@@ -50,10 +50,11 @@ import {
 import {
   loadImportedMcps,
   saveImportedMcps,
-  addImport,
+  addImportWithSecrets,
   removeImport,
   type ImportedMcpEntry,
 } from "./mcp-imports.js"
+import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import {
   loadBundles,
   createBundle,
@@ -84,6 +85,13 @@ import {
   type SessionOutcomeCompact,
 } from "./session-outcome.js"
 import { processTreeRss } from "./process-memory.js"
+import {
+  buildLabeledStatsReport,
+  statsDetailOf,
+  statsParamSchema,
+  withSessionStats,
+  type ProcessStatsService,
+} from "./process-stats.js"
 import {
   planSessionWrapup,
   type SessionWrapupClass,
@@ -474,6 +482,9 @@ export interface RegisterSessionToolsOptions {
   /** Forwarded to `registerAgentTools` — see
    *  `RegisterAgentToolsOptions.provisionWorktree`. */
   provisionWorktree?: RegisterAgentToolsOptions["provisionWorktree"]
+  /** Process-stats sampler behind `session_list({stats})` / `session_stats`.
+   *  Defaults to the process-wide shared service; tests inject a fake table. */
+  processStats?: ProcessStatsService
   /** Forwarded to `registerAgentTools` — see
    *  `RegisterAgentToolsOptions.resolveWorktreeIsolation`. */
   resolveWorktreeIsolation?: RegisterAgentToolsOptions["resolveWorktreeIsolation"]
@@ -643,6 +654,9 @@ export interface SessionListCompactItem {
   /** Mirrors `SessionDescriptor.rssBytes` — only present when the request
    *  opted in with `withMemory: true` (it costs a `ps` spawn). */
   rssBytes?: number
+  /** Mirrors `SessionDescriptor.stats` - only present when the request opted
+   *  in with `stats: true | "full"`. */
+  stats?: SessionDescriptor["stats"]
 }
 
 /** Public MCP descriptor projection. Resume environment is required by the
@@ -691,6 +705,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   ...(s.lastTurnEmpty !== undefined ? { lastTurnEmpty: s.lastTurnEmpty } : {}),
   ...(s.interrupted ? { interrupted: true as const } : {}),
   ...(s.rssBytes !== undefined ? { rssBytes: s.rssBytes } : {}),
+  ...(s.stats !== undefined ? { stats: s.stats } : {}),
 })
 
 // ── batch compact projections (tool-transformer migration) ───────────────
@@ -1086,6 +1101,15 @@ export function registerSessionTools(
           "spawn per call; omitted otherwise, so a plain listing never pays " +
           "for it.",
       ),
+    stats: statsParamSchema.describe(
+      "Resource stats per live session - process-tree RSS, %CPU, process " +
+        "count and the top commands by RSS (normalized: `pnpm install`, " +
+        "`vitest`, `tsc`, `git`, …), under each row's `stats`. `true` = " +
+        "summary; `\"full\"` = also every process (pid, ppid, command, RSS, " +
+        "CPU, elapsed). Sampled on demand and cached ~3s; rows with no live " +
+        "process carry no `stats`. Use `session_stats` for the host-level " +
+        "view (daemon / provisioning / orphan buckets, load, free memory).",
+    ),
     ...pageParamsShape,
   })
   type SessionListInput = z.infer<typeof sessionListSchema>
@@ -1156,6 +1180,15 @@ export function registerSessionTools(
           })
         }
       }
+      const statsDetail = statsDetailOf(input.stats)
+      if (statsDetail) {
+        rows = await withSessionStats(
+          rows,
+          registry.list({ includeArchived: true }),
+          statsDetail,
+          opts.processStats,
+        )
+      }
       return rows.map(publicSessionDescriptor)
     },
     transformers: [
@@ -1166,6 +1199,49 @@ export function registerSessionTools(
         itemKey: "sessions",
       }),
     ],
+  })
+
+  // ── session_stats ────────────────────────────────────────────────
+  // The host-level companion to `session_list({stats})`: who is eating RAM /
+  // CPU right now, per session, plus the buckets a per-session view can't
+  // show (the daemon itself, worktree provisioning not yet attached to a
+  // session, agentproto-looking orphans of dead sessions) and the host's load
+  // + free memory. Read-only: orphans are reported, never killed.
+  registerBuiltinTool<
+    { detail?: "summary" | "full"; fresh?: boolean },
+    Awaited<ReturnType<typeof buildLabeledStatsReport>>
+  >(server, {
+    id: "session_stats",
+    description:
+      "Resource usage per session, sampled from the OS process table: RSS bytes, %CPU, " +
+      "process count and top commands by RSS for every live session, sorted by RSS " +
+      "(each row labelled with the session's `label`/`name`), plus `daemon` " +
+      "(the daemon process + its own children), `provisioning` (worktree setup " +
+      "work such as `pnpm install` not yet attached to a session, with `inFlight` " +
+      "provisions), `orphans` (processes that look agentproto-owned but belong to " +
+      "no live session - reported only, never killed), `totals`, and `host` " +
+      "(load average, free/total memory). `detail:\"full\"` adds every process " +
+      "(pid, command, RSS, CPU, elapsed) per row. Cached ~3s; `fresh:true` " +
+      "forces a new sample. A subtree-scoped caller sees only its own sessions " +
+      "(no daemon/provisioning/orphan buckets).",
+    inputSchema: z.object({
+      detail: z.enum(["summary", "full"]).optional().describe('Default "summary".'),
+      fresh: mcpBool.optional().describe("Bypass the ~3s cache and sample now."),
+    }),
+    handler: async input => {
+      const all = registry.list({ includeArchived: true })
+      const visible = callerScope
+        ? collectSubtree(callerScope.ownerSessionId, all)
+        : undefined
+      return buildLabeledStatsReport({
+        sessions: all,
+        ...(input.detail ? { detail: input.detail } : {}),
+        ...(input.fresh ? { fresh: true } : {}),
+        ...(visible ? { visible } : {}),
+        ...(opts.processStats ? { service: opts.processStats } : {}),
+      })
+    },
+    transformers: [catchErrors()],
   })
 
   // ── session_continue_interrupted ─────────────────────────────────
@@ -2115,14 +2191,21 @@ export function registerSessionTools(
           }
         }
         const cfg = await loadImportedMcps()
-        const next = addImport(cfg, {
-          snapshot,
-          ...(input.alias ? { alias: input.alias } : {}),
-        })
-        await saveImportedMcps(next)
-        const entry = next.imports.find(e => e.id === snapshot.id)
+        const added = await addImportWithSecrets(
+          cfg,
+          {
+            snapshot,
+            ...(input.alias ? { alias: input.alias } : {}),
+          },
+          getMcpCredentialDeps()
+        )
+        await saveImportedMcps(added.config)
+        const out =
+          added.warnings.length > 0
+            ? { ...added.entry, warnings: added.warnings }
+            : added.entry
         return {
-          content: [{ type: "text", text: JSON.stringify(entry) }],
+          content: [{ type: "text", text: JSON.stringify(out) }],
         }
       } catch (err) {
         return {
@@ -2386,9 +2469,11 @@ export function registerSessionTools(
       label: z.string().min(1).describe("Human-readable name."),
       description: z.string().min(1).optional(),
       mcpImports: z
-        .array(z.string().min(1))
+        .union([z.array(z.string().min(1)), z.literal("*")])
         .optional()
-        .describe("Imported-MCP ids from `mcp_imported_list`. Default []."),
+        .describe(
+          "Imported-MCP ids from `mcp_imported_list`, or \"*\" for every import present at spawn time (opt-in; floods the tool palette). Default [].",
+        ),
       includeDaemon: z
         .boolean()
         .optional()
@@ -2435,7 +2520,7 @@ export function registerSessionTools(
       id: z.string().min(1).describe("Existing bundle id."),
       label: z.string().min(1).optional(),
       description: z.string().min(1).optional(),
-      mcpImports: z.array(z.string().min(1)).optional(),
+      mcpImports: z.union([z.array(z.string().min(1)), z.literal("*")]).optional(),
       includeDaemon: z.boolean().optional(),
       skills: z.array(z.string().min(1)).optional(),
     },

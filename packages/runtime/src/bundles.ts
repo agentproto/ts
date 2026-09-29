@@ -20,8 +20,11 @@ export interface Bundle {
   label: string
   description?: string
   /** Imported-MCP ids (`mcp_imported_list`) to mount as native MCP servers
-   *  on a spawn carrying this bundle. */
-  mcpImports: string[]
+   *  on a spawn carrying this bundle. `"*"` expands at spawn time to the
+   *  CURRENT import set (never validated at save time, never dangling).
+   *  Opt-in only: no default config ships a bundle with `"*"` (dozens of
+   *  tools per import would flood every harness palette). */
+  mcpImports: string[] | "*"
   /** Also mount the daemon's own scoped `/mcp` — the same entry the
    *  claude-code/hermes self-mount default builds. */
   includeDaemon?: boolean
@@ -37,7 +40,7 @@ const bundleSchema = z.object({
   id: bundleIdSchema,
   label: z.string().min(1),
   description: z.string().min(1).optional(),
-  mcpImports: z.array(z.string().min(1)),
+  mcpImports: z.union([z.array(z.string().min(1)), z.literal("*")]),
   includeDaemon: z.boolean().optional(),
   skills: z.array(z.string().min(1)),
 }) satisfies z.ZodType<Bundle>
@@ -90,11 +93,12 @@ export class BundleValidationError extends Error {}
  *  (`mcp_imported_remove`). Used by `bundle_list` to flag dangling refs and
  *  by the spawn-expansion path to skip them with a warning. */
 export function danglingImports(bundle: Bundle, importedIds: ReadonlySet<string>): string[] {
+  if (bundle.mcpImports === "*") return []
   return bundle.mcpImports.filter(id => !importedIds.has(id))
 }
 
-async function assertImportsKnown(mcpImports: string[]): Promise<void> {
-  if (mcpImports.length === 0) return
+async function assertImportsKnown(mcpImports: string[] | "*"): Promise<void> {
+  if (mcpImports === "*" || mcpImports.length === 0) return
   const imported = await loadImportedMcps()
   const validIds = new Set(imported.imports.map(e => e.id))
   const unknown = mcpImports.filter(id => !validIds.has(id))

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { test } from "node:test"
@@ -124,4 +124,38 @@ test("--check passes on this repo's real vendored tree and allowlist", () => {
   // network, no sibling agentproto/agentproto checkout in CI).
   const res = run(["--check"])
   assert.equal(res.status, 0, res.stdout + res.stderr)
+})
+
+test("a plain sync pins the canonical commit in the lock file", (t) => {
+  const { tmp, source, target, allowlist } = makeFixture(t)
+  writeSchema(join(source, "aip-1", "draft"), { type: "object" })
+  writeAllowlist(allowlist, [])
+  const lock = join(tmp, "canonical.lock.json")
+  const sha = "0123456789abcdef0123456789abcdef01234567"
+  const res = run(["--source", source, "--target", target, "--allowlist", allowlist, "--lock", lock, "--source-sha", sha])
+  assert.equal(res.status, 0, res.stdout + res.stderr)
+  assert.deepEqual(JSON.parse(readFileSync(lock, "utf8")), { repo: "agentproto/agentproto", sha })
+})
+
+test("a sync with no drift still refreshes the lock", (t) => {
+  const { tmp, source, target, allowlist } = makeFixture(t)
+  writeSchema(join(source, "aip-1", "draft"), { type: "object" })
+  writeSchema(join(target, "aip-1", "draft"), { type: "object" })
+  writeAllowlist(allowlist, [])
+  const lock = join(tmp, "canonical.lock.json")
+  const sha = "fedcba9876543210fedcba9876543210fedcba98"
+  const res = run(["--source", source, "--target", target, "--allowlist", allowlist, "--lock", lock, "--source-sha", sha])
+  assert.equal(res.status, 0, res.stdout + res.stderr)
+  assert.equal(JSON.parse(readFileSync(lock, "utf8")).sha, sha)
+})
+
+test("--check never writes the lock", (t) => {
+  const { tmp, source, target, allowlist } = makeFixture(t)
+  writeSchema(join(source, "aip-1", "draft"), { type: "object" })
+  writeSchema(join(target, "aip-1", "draft"), { type: "object" })
+  writeAllowlist(allowlist, [])
+  const lock = join(tmp, "canonical.lock.json")
+  const res = run(["--source", source, "--target", target, "--allowlist", allowlist, "--lock", lock, "--source-sha", "0123456789abcdef0123456789abcdef01234567", "--check"])
+  assert.equal(res.status, 0, res.stdout + res.stderr)
+  assert.equal(existsSync(lock), false)
 })

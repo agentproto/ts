@@ -14,6 +14,7 @@ import { compileWorkflow, runWorkflow } from "@agentproto/workflow-runtime"
 import type { AgentSessionHost } from "@agentproto/workflow-runtime"
 import { createDaemonToolRegistry, type DispatchTool } from "../workflow-tool-registry.js"
 import { judgeSessionWithJev } from "../jev-client.js"
+import { modelRoles } from "../model-roles-tools.js"
 
 const WORKFLOW_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -62,6 +63,16 @@ function mcpResult(value: unknown): { content: Array<{ type: "text"; text: strin
   return { content: [{ type: "text", text: JSON.stringify(value) }] }
 }
 
+/** Daemon `models` block the fake `model_roles` tool resolves against. */
+let daemonModels: Record<string, unknown> = {}
+
+/** The REAL `model_roles` resolver over an in-memory daemon config. */
+async function modelRolesResult(inputs: Record<string, unknown>) {
+  return mcpResult(
+    await modelRoles(inputs as never, { loadCfg: async () => ({ models: daemonModels }) as never, resolveRoot: async () => undefined }),
+  )
+}
+
 function fakeTools(opts: {
   entries: PlanEntry[]
   keepAlive?: Set<string>
@@ -108,6 +119,7 @@ function fakeTools(opts: {
     }
     if (name === "agent_prompt") return mcpResult({ ok: true, sessionId: inputs.sessionId, queued: true })
     if (name === "session_monitor") return mcpResult({ sessionId: inputs.sessionId, event: "turn-end", source: "bus" })
+    if (name === "model_roles") return modelRolesResult(inputs)
     throw new Error(`unexpected tool '${name}'`)
   })
   return { dispatchTool, calls }
@@ -190,6 +202,7 @@ describe("session-steward workflow — shape", () => {
     const handle = await loadWorkflowHandle(WORKFLOW_PATH)
     expect(handle.id).toBe("session-steward")
     expect(handle.steps.map(s => `${s.id}:${s.kind}`)).toEqual([
+      "modelRoles:tool",
       "settings:transform",
       "plan:tool",
       "candidates:transform",
@@ -438,5 +451,34 @@ describe("session-steward workflow — Jev judge backend", () => {
     const { dispatchTool } = fakeTools({ entries: [entry("nokey2", "judge", 100)], jev: realJev(jevFetch({}), null) })
     const out = await run(dispatchTool, judgeHost({ nokey2: verdict("nokey2", "active", 0.2) }).host, { judge: "jev" })
     expect(out.report).toContain("jev failed: JEV_API_KEY not set")
+  })
+
+  describe("judge model comes from the judge.session role", () => {
+    const judgeModels = async (input: Record<string, unknown>) => {
+      const f = fakeTools({ entries: [entry("roleone", "judge", 100)] })
+      const j = judgeHost({ roleone: verdict("roleone", "active", 0.2) })
+      await run(f.dispatchTool, j.host, { judge: "agent", ...input })
+      return { models: j.spawns.map(s => s.model), roleCalls: f.calls.filter(c => c.name === "model_roles") }
+    }
+
+    it("follows the daemon `models` config", async () => {
+      daemonModels = { "judge.session": "claude-sonnet-5-5" }
+      try {
+        const r = await judgeModels({})
+        expect(r.models).toEqual(["claude-sonnet-5-5"])
+        expect(r.roleCalls).toHaveLength(1)
+      } finally {
+        daemonModels = {}
+      }
+    })
+
+    it("an explicit judgeModel input beats the configured role", async () => {
+      daemonModels = { "judge.session": "claude-sonnet-5-5" }
+      try {
+        expect((await judgeModels({ judgeModel: "claude-opus-5-5" })).models).toEqual(["claude-opus-5-5"])
+      } finally {
+        daemonModels = {}
+      }
+    })
   })
 })

@@ -75,6 +75,10 @@
       "deepmerge-ts": ">=8.0.0",
       "browserslist": ">=4.28.7",
       "smol-toml": ">=1.7.1"
-    }
+    },
+    "onlyBuiltDependencies": [
+      "@google/genai",
+      "node-pty"
+    ]
   }
 }

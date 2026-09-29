@@ -17,7 +17,8 @@ import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 import type { McpProxyRegistry, ProxyAliasSummary } from "../mcp-proxy.js"
 import type { ImportedMcpsConfig } from "../mcp-imports.js"
 import type { DiscoveredMcp } from "../mcp-discovery.js"
-import { computeCapabilitiesInventory } from "../capabilities-inventory.js"
+import { computeCapabilitiesInventory, computeImportedReach } from "../capabilities-inventory.js"
+import { normUrl, stdioKey, sameNativeUpstream } from "../mcp-import-resolve.js"
 
 const IMPORTED_SNAPSHOT: DiscoveredMcp = {
   id: "claude-code:global:chrome-devtools",
@@ -101,6 +102,7 @@ describe("computeCapabilitiesInventory", () => {
         status: "connected",
         toolCount: 7,
         usedBySessions: ["sess-1"],
+        reach: {},
       },
     ])
 
@@ -214,5 +216,126 @@ describe("capabilities_inventory MCP tool", () => {
     expect(Array.isArray(inventory.skills.byHarness)).toBe(true)
 
     await client.close()
+  })
+})
+
+describe("capabilities inventory — per-import reach (P2)", () => {
+  const adapters = [
+    { slug: "claude-code", protocol: "acp" },
+    { slug: "hermes", protocol: "acp" },
+    { slug: "opencode", protocol: "acp" },
+    { slug: "printer", protocol: "print" },
+  ] as never
+  const bundles = {
+    version: 1 as const,
+    bundles: [
+      { id: "harness-claude-code", label: "cc", mcpImports: ["a"], skills: [] },
+      { id: "everything", label: "all", mcpImports: "*" as const, skills: [] },
+      { id: "withdaemon", label: "d", mcpImports: [], includeDaemon: true, skills: [] },
+    ],
+  }
+
+  it("empty defaults: daemon-default harnesses are indirect, the rest none", () => {
+    const m = computeImportedReach(["a"], adapters, {}, bundles)
+    expect(m.get("a")).toEqual({ "claude-code": "indirect", hermes: "indirect", opencode: "none", printer: "none" })
+  })
+
+  it("a default bundle makes its imports native for that adapter only", () => {
+    const m = computeImportedReach(["a", "b"], adapters, { defaults: { adapters: { "claude-code": { bundles: ["harness-claude-code"] } } } }, bundles)
+    expect(m.get("a")?.["claude-code"]).toBe("native")
+    expect(m.get("b")?.["claude-code"]).toBe("indirect")
+    expect(m.get("a")?.hermes).toBe("indirect")
+  })
+
+  it('"*" is native for every listed import; non-ACP adapters never native; includeDaemon/daemonMount make on-request adapters indirect', () => {
+    const m = computeImportedReach(
+      ["a", "b"],
+      adapters,
+      { defaults: { bundles: ["everything"], adapters: { opencode: { bundles: ["withdaemon"] }, hermes: { daemonMount: true } } } },
+      bundles,
+    )
+    expect(m.get("b")).toEqual({ "claude-code": "native", hermes: "native", opencode: "native", printer: "none" })
+    const n = computeImportedReach(["a"], adapters, { defaults: { adapters: { opencode: { bundles: ["withdaemon"] } } } }, bundles)
+    expect(n.get("a")?.opencode).toBe("indirect")
+  })
+
+  it("is wired into the inventory (via injected loadBundles/loadConfig) without leaking bundle content", async () => {
+    const inventory = await computeCapabilitiesInventory({
+      listAgentAdapters: async () => [{ slug: "claude-code", protocol: "acp", packageName: "@agentproto/nope" }] as never,
+      loadImportedMcps: async () => IMPORTED_CONFIG,
+      discoverMcps: async () => [],
+      loadConfig: async () => ({ defaults: { adapters: { "claude-code": { bundles: ["harness-claude-code"] } } } }),
+      loadBundles: async () => ({
+        version: 1,
+        bundles: [{ id: "harness-claude-code", label: "cc", mcpImports: [IMPORTED_SNAPSHOT.id], skills: [] }],
+      }),
+    })
+    expect(inventory.mcp.imported[0]?.reach).toEqual({ "claude-code": "native" })
+  })
+})
+
+describe("capabilities inventory — alsoNativeIn (P3)", () => {
+  const mk = (over: Partial<DiscoveredMcp> & Pick<DiscoveredMcp, "id" | "name">): DiscoveredMcp => ({
+    source: "claude-code",
+    scope: "global",
+    type: "http",
+    ...over,
+  })
+  const importOf = (snapshot: DiscoveredMcp, alias?: string): ImportedMcpsConfig => ({
+    version: 1,
+    imports: [{ id: snapshot.id, alias: alias ?? snapshot.name, addedAt: "2026-01-01T00:00:00.000Z", snapshot }],
+  })
+  const run = (cfg: ImportedMcpsConfig, discovered: DiscoveredMcp[]) =>
+    computeCapabilitiesInventory({
+      loadImportedMcps: async () => cfg,
+      discoverMcps: async () => discovered,
+      loadConfig: async () => ({}),
+      loadBundles: async () => ({ version: 1, bundles: [] }),
+    })
+
+  it("url normalization table", () => {
+    const base = "http://127.0.0.1:8080/mcp"
+    for (const u of [
+      "http://localhost:8080/mcp",
+      "http://localhost:8080/mcp/",
+      "http://127.0.0.1:8080/mcp?callerSessionId=abc",
+      "http://127.0.0.1:8080/mcp?deferred=1&callerSessionId=x",
+      "http://[::1]:8080/mcp",
+    ]) {
+      expect(normUrl(u), u).toBe(normUrl(base))
+    }
+    expect(normUrl("http://127.0.0.1:8081/mcp")).not.toBe(normUrl(base))
+    expect(normUrl("http://127.0.0.1:8080/other")).not.toBe(normUrl(base))
+  })
+
+  it("stdio match uses command basename and ignores absolute-path args", () => {
+    const a = mk({ id: "a", name: "a", type: "stdio", command: "/usr/local/bin/npx", args: ["-y", "pkg", "--profile", "/Users/x/.profile-a"] })
+    const b = mk({ id: "b", name: "b", type: "stdio", command: "npx", args: ["-y", "pkg", "--profile", "/tmp/other"] })
+    const c = mk({ id: "c", name: "c", type: "stdio", command: "npx", args: ["-y", "other-pkg"] })
+    expect(stdioKey(a)).toBe(stdioKey(b))
+    expect(sameNativeUpstream(a, b)).toBe(true)
+    expect(sameNativeUpstream(a, c)).toBe(false)
+  })
+
+  it("reports a native duplicate with sameName, excludes the import's own id, and leaks no upstream values", async () => {
+    const snap = mk({ id: "claude-code:global:Foo Bar", name: "Foo Bar", url: "http://localhost:9/mcp", headers: { Authorization: "Bearer shh" } })
+    const dupSame = mk({ id: "cursor:global:foo-bar", source: "cursor", name: "foo-bar", url: "http://127.0.0.1:9/mcp/?deferred=1" })
+    const dupOther = mk({ id: "workspace:workspace:w:x", source: "workspace", scope: "workspace:w", name: "x", url: "http://127.0.0.1:9/mcp" })
+    const unrelated = mk({ id: "cursor:global:z", source: "cursor", name: "z", url: "http://127.0.0.1:10/mcp" })
+    const inv = await run(importOf(snap, "Foo Bar"), [snap, dupSame, dupOther, unrelated])
+    expect(inv.mcp.imported[0]?.alsoNativeIn).toEqual([
+      { source: "cursor", scope: "global", name: "foo-bar", sameName: true },
+      { source: "workspace", scope: "workspace:w", name: "x", sameName: false },
+    ])
+    const json = JSON.stringify(inv.mcp.imported)
+    expect(json).not.toContain("shh")
+    expect(json).not.toContain("127.0.0.1")
+    expect(json).not.toContain("localhost")
+  })
+
+  it("omits alsoNativeIn when only the import's own entry matches", async () => {
+    const snap = mk({ id: "claude-code:global:solo", name: "solo", url: "http://localhost:9/mcp" })
+    const inv = await run(importOf(snap), [snap])
+    expect(inv.mcp.imported[0]?.alsoNativeIn).toBeUndefined()
   })
 })

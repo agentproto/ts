@@ -141,3 +141,22 @@ describe("bundle store", () => {
     await expect(loadBundles()).resolves.toEqual({ version: 1, bundles: [] })
   })
 })
+
+describe('bundle mcpImports "*" wildcard', () => {
+  it("is accepted without validation, is never dangling, and round-trips", async () => {
+    // No imports exist at all — "*" must still save.
+    const b = await createBundle({ id: "everything", label: "All", mcpImports: "*", skills: [] })
+    expect(b.mcpImports).toBe("*")
+    expect((await getBundle("everything"))?.mcpImports).toBe("*")
+    expect(danglingImports(b, new Set())).toEqual([])
+    const updated = await updateBundle("everything", { label: "All 2" })
+    expect(updated.mcpImports).toBe("*")
+  })
+
+  it("a list can be widened to \"*\" via update, and other strings are rejected", async () => {
+    await importFixture("x")
+    await createBundle({ id: "b1", label: "B", mcpImports: ["x"], skills: [] })
+    await expect(updateBundle("b1", { mcpImports: "*" })).resolves.toMatchObject({ mcpImports: "*" })
+    await expect(updateBundle("b1", { mcpImports: "all" as never })).rejects.toThrow()
+  })
+})
