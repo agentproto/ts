@@ -1,20 +1,22 @@
 {
-  "name": "@agentproto/plugin-local-browser",
-  "version": "0.3.0",
-  "description": "@agentproto/plugin-local-browser — bridge a real local Chrome profile (cookies, logins, extensions) into the agentproto daemon as an MCP server. Picks one of the user's existing Chrome profiles, clones it into `~/.agentproto/chrome-profile/`, installs `chrome-devtools-mcp` into a plugin-owned dir, and registers it in `~/.agentproto/imported-mcps.json` so the daemon proxies its browser tools through `/mcp`. Tunnel-connected hosts can then drive the user's authenticated browser without any extra plumbing.",
+  "name": "@agentproto/browser-profiles",
+  "version": "0.0.0",
+  "description": "Browser session and profile model: saveable session descriptors (zod), Chrome profile discovery, camofox session reuse, and typed injection seams (AuthSignalRegistry, accountSwitcher, SessionSource registry).",
   "keywords": [
     "agentproto",
-    "plugin",
+    "browser",
+    "profiles",
+    "sessions",
     "chrome",
-    "chrome-devtools",
-    "mcp",
-    "local-browser"
+    "camofox",
+    "open-standard",
+    "agentic"
   ],
   "homepage": "https://agentproto.sh",
   "repository": {
     "type": "git",
     "url": "https://github.com/agentproto/ts",
-    "directory": "packages/plugin-local-browser"
+    "directory": "packages/browser-profiles"
   },
   "bugs": {
     "url": "https://github.com/agentproto/ts/issues"
@@ -32,9 +34,6 @@
     },
     "./package.json": "./package.json"
   },
-  "bin": {
-    "agentproto-browser": "dist/cli.mjs"
-  },
   "files": [
     "dist",
     "README.md",
@@ -48,11 +47,13 @@
     "build": "tsup",
     "clean": "rm -rf dist",
     "check-types": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/browser-profiles": "workspace:*"
+    "@agentproto/driver-browser": "workspace:*",
+    "@agentproto/tool": "workspace:*",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
