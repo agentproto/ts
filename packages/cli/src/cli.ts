@@ -32,6 +32,7 @@ import { runWorkspace } from "./commands/workspace.js"
 import { runSessions } from "./commands/sessions.js"
 import { runConversation } from "./commands/conversation.js"
 import { runUsage } from "./commands/usage.js"
+import { runHost } from "./commands/host.js"
 import { runBrain } from "./commands/brain.js"
 import { runTunnel } from "./commands/tunnel.js"
 import { runSentinel } from "./commands/sentinel.js"
@@ -106,6 +107,7 @@ Usage:
   agentproto sessions  stop <id-or-name>
   agentproto conversation locate <sessionId | native-jsonl-path> [--json]
                                            session ↔ native transcript, either direction
+  agentproto host     load [--full] [--json] [--watch <s>] [--budget <ms>]   host load report + warnings
   agentproto usage    rollup --window <5h|7d|P7D> [--profile <ref>] [--json]
                                            local spend estimate over a rolling window
   agentproto brain    query "<query>" [--workspace <slug>] [--topk <n>] [--json]
@@ -253,6 +255,7 @@ const VERBS = new Set([
   "sessions",
   "conversation",
   "usage",
+  "host",
   "brain",
   "tunnel",
   "remote",
@@ -364,6 +367,8 @@ async function main(argv: readonly string[]): Promise<number> {
       return runSessions(rest)
     case "conversation":
       return runConversation(rest)
+    case "host":
+      return runHost(rest)
     case "usage":
       return runUsage(rest)
     case "brain":

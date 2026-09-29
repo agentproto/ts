@@ -571,6 +571,33 @@ export type {
   StatsDetail,
 } from "./process-stats.js"
 export {
+  DEFAULT_HOST_LOAD_BUDGET_MS,
+  DEFAULT_HOST_LOAD_THRESHOLDS,
+  buildHostLoadReport,
+  collectHostSample,
+  computeHostWarnings,
+  createDefaultHostProbes,
+  createHostLoadService,
+  describeOwner,
+  getHostLoadService,
+} from "./host-load.js"
+export type {
+  DiskLoad,
+  HostLoadCpu,
+  HostLoadDetail,
+  HostLoadMemory,
+  HostLoadReport,
+  HostLoadService,
+  HostLoadSwap,
+  HostLoadThresholds,
+  HostProbes,
+  HostProcess,
+  HostProcessOwner,
+  HostSessionRollup,
+  HostWarning,
+  HostWarningKind,
+} from "./host-load.js"
+export {
   continueInterruptedSessions,
   continueSkipReason,
   runContinueOnBootPass,
