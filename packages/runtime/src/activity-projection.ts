@@ -518,7 +518,7 @@ export interface ActivityRunStepSlice {
 export interface ActivityWorkflowStageSlice {
   index: number
   label?: string
-  status: "pending" | "running" | "done" | "failed" | "skipped"
+  status: "pending" | "running" | "done" | "failed" | "skipped" | "cancelled"
   steps: readonly ActivityRunStepSlice[]
 }
 
