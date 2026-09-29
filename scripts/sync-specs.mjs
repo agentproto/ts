@@ -35,15 +35,16 @@
  *     so re-running this script never reverts a known, deliberate drift.
  *
  * CI checks out the public agentproto/agentproto repo and passes it via
- * `--source`, so the full vendored-vs-canonical diff runs on every PR (a
- * canonical spec change turns ts CI red until this script is run — by
- * design). Without `--source` and with no sibling checkout at
+ * `--source`, so the full vendored-vs-canonical diff runs on every PR (at
+ * the commit pinned in specs/canonical.lock.json, so a canonical merge
+ * never breaks ts CI; running this script moves the pin). Without `--source` and with no sibling checkout at
  * DEFAULT_SOURCE, `--check` degrades to the network-free half of the gate:
  * the allowlist presence assertions above, which need only the vendored
  * copy and the allowlist file.
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { execFileSync } from "node:child_process"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -53,6 +54,8 @@ const TS_ROOT = path.resolve(__dirname, "..")
 const DEFAULT_SOURCE = path.resolve(TS_ROOT, "../agentproto/specs/resources")
 let TARGET = path.resolve(TS_ROOT, "specs/resources")
 let ALLOWLIST_PATH = path.resolve(TS_ROOT, "specs/spec-drift-allowlist.json")
+let LOCK_PATH = path.resolve(TS_ROOT, "specs/canonical.lock.json")
+let sourceSha
 
 const args = process.argv.slice(2)
 let source = DEFAULT_SOURCE
@@ -70,9 +73,11 @@ for (let i = 0; i < args.length; i++) {
   // this repo's real specs/resources tree.
   else if (a === "--target") TARGET = path.resolve(args[++i])
   else if (a === "--allowlist") ALLOWLIST_PATH = path.resolve(args[++i])
+  else if (a === "--source-sha") sourceSha = args[++i]
+  else if (a === "--lock") LOCK_PATH = path.resolve(args[++i])
   else if (a === "--help" || a === "-h") {
     process.stdout.write(
-      "Usage: sync-specs.mjs [--source <dir>] [--check | --dry-run]\n"
+      "Usage: sync-specs.mjs [--source <dir>] [--source-sha <sha>] [--check | --dry-run]\n"
     )
     process.exit(0)
   } else {
@@ -217,6 +222,33 @@ function graftKnownDrift(source, oldTarget, fields) {
   return grafted
 }
 
+// ── Canonical lock ────────────────────────────────────────────────────
+// specs/canonical.lock.json pins the agentproto/agentproto commit the
+// vendored tree was synced from. CI checks canonical out AT THIS SHA (not
+// main), so a canonical merge can never turn ts CI red on its own; only a
+// sync (which rewrites this lock) moves the pin.
+function resolveSourceSha() {
+  if (sourceSha) return sourceSha
+  try {
+    return execFileSync("git", ["-C", source, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()
+  } catch {
+    return undefined
+  }
+}
+
+function writeLock() {
+  const sha = resolveSourceSha()
+  if (!sha || !/^[0-9a-f]{40}$/.test(sha)) {
+    process.stderr.write(
+      `sync-specs: could not resolve the canonical commit for ${source}; ` +
+        `${path.relative(TS_ROOT, LOCK_PATH)} NOT updated (pass --source-sha <40-hex sha>).\n`
+    )
+    return
+  }
+  writeFileSync(LOCK_PATH, `${JSON.stringify({ repo: "agentproto/agentproto", sha }, null, 2)}\n`)
+  process.stdout.write(`sync-specs: pinned canonical ${sha.slice(0, 12)} in ${path.relative(TS_ROOT, LOCK_PATH)}\n`)
+}
+
 const allowlist = loadAllowlist()
 
 if (!existsSync(source)) {
@@ -333,6 +365,7 @@ if (mode === "check") {
 
 if (!drift) {
   process.stdout.write(`sync-specs: ${sourceFiles.length} files already in sync.\n`)
+  if (mode === "write") writeLock()
   process.exit(0)
 }
 
@@ -363,3 +396,5 @@ process.stdout.write(
   `sync-specs: wrote ${toCopy.length} file${toCopy.length === 1 ? "" : "s"}, ` +
     `removed ${toRemove.length} stale.\n`
 )
+
+writeLock()
