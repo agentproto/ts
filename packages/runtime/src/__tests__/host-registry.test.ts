@@ -770,7 +770,7 @@ describe("createHostRegistry", () => {
           const out = u.pathname.match(/^\/upstream\/sessions\/([^/]+)\/output$/)
           const body = out
             ? { sessionId: out[1], status: "running", lines: state.lines[out[1]!] ?? [] }
-            : { sessions: state.sessions }
+: { sessions: state.sessions }
           return {
             status: 200,
             headers: { forEach: (cb: (v: string, k: string) => void) => cb("application/json", "content-type") },
@@ -878,6 +878,90 @@ describe("createHostRegistry", () => {
         if (path.endsWith("lastN=1")) expect(body.lines).toEqual(["VERDICT: approve"])
       }
       expect(registry.getSessionsSnapshot(fingerprint, "/sessions/sess_zzz/output")).toBeUndefined()
+    })
+
+    it("a later capture with an EMPTY session list merges instead of replacing: the prior session, status 'gone', and its output survive", async () => {
+      const state = {
+        sessions: [{ id: "sess_a", status: "running", lastActivityAt: "2026-09-28T20:00:00Z" }],
+        lines: { sess_a: ["turn 1", "VERDICT: approve"] },
+      }
+      stubSessions(state)
+      const { registry, fingerprint } = await joinedHost({ snapshotIntervalMs: 60_000 })
+      expect(await registry.snapshotNow(fingerprint)).toBe(true)
+
+      state.sessions = []
+      state.lines["sess_a"] = []
+      expect(await registry.snapshotNow(fingerprint)).toBe(true)
+
+      const list = registry.getSessionsSnapshot(fingerprint, "/sessions")
+      expect(list?.stale).toBe(true)
+      const rows = JSON.parse(Buffer.from(list!.body).toString("utf8")).sessions
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ id: "sess_a", status: "gone" })
+      expect(rows[0].lastActivityAt).toBe("2026-09-28T20:00:00Z")
+
+      // The kept output is servable for the merged "gone" session —
+      // device_sessions with a sessionId returns it, not a 404/empty.
+      for (const path of [
+        "/sessions/sess_a/output",
+        "/sessions/sess_a/output?lastN=10",
+        "/sessions/sess_a/output?clean=1",
+      ]) {
+        const out = registry.getSessionsSnapshot(fingerprint, path)
+        expect(out?.stale, path).toBe(true)
+        const body = JSON.parse(Buffer.from(out!.body).toString("utf8"))
+        expect(body.lines).toContain("VERDICT: approve")
+        expect(body.lines).toEqual(["turn 1", "VERDICT: approve"])
+        if (path.endsWith("lastN=10")) expect(body.lines.length).toBeLessThanOrEqual(10)
+      }
+    })
+
+    it("an exited session present in the new list is captured with its output tail", async () => {
+      const state = {
+        sessions: [
+          { id: "sess_live", status: "exited", lastActivityAt: "2026-09-28T21:00:00Z" },
+          { id: "sess_old", status: "exited", lastActivityAt: "2026-09-27T00:00:00Z" },
+        ],
+        lines: { sess_live: ["working…", "VERDICT: approve"], sess_old: ["stale"] },
+      }
+      stubSessions(state)
+      const { registry, fingerprint } = await joinedHost({ snapshotIntervalMs: 60_000 })
+      expect(await registry.snapshotNow(fingerprint)).toBe(true)
+
+      const out = registry.getSessionsSnapshot(fingerprint, "/sessions/sess_live/output?lastN=2")
+      expect(out?.stale).toBe(true)
+      const body = JSON.parse(Buffer.from(out!.body).toString("utf8"))
+      expect(body.sessionId).toBe("sess_live")
+      expect(body.lines).toEqual(["working…", "VERDICT: approve"])
+      // An exited row is in the stored list (not only running ones).
+      const rows = JSON.parse(
+        Buffer.from(registry.getSessionsSnapshot(fingerprint, "/sessions")!.body).toString("utf8"),
+      ).sessions
+      expect(rows.find((r: { id: string }) => r.id === "sess_live")?.status).toBe("exited")
+    })
+
+    it("the merged list stays capped: at most SNAPSHOT_MAX_SESSIONS rows survive", async () => {
+      const sessions = Array.from({ length: 25 }, (_, i) => ({
+        id: `s${String(i).padStart(2, "0")}`,
+        status: "exited",
+        lastActivityAt: new Date(Date.parse("2026-09-28T00:00:00Z") + i * 60_000).toISOString(),
+      }))
+      const state = { sessions, lines: Object.fromEntries(sessions.map(s => [s.id, ["tail"]])) }
+      stubSessions(state)
+      const { registry, fingerprint } = await joinedHost({ snapshotIntervalMs: 60_000 })
+      expect(await registry.snapshotNow(fingerprint)).toBe(true)
+      // Now the box is empty except it reports one brand-new session.
+      state.sessions = [{ id: "fresh", status: "running", lastActivityAt: "2026-09-29T00:00:00Z" }]
+      expect(await registry.snapshotNow(fingerprint)).toBe(true)
+
+      const rows = JSON.parse(
+        Buffer.from(registry.getSessionsSnapshot(fingerprint, "/sessions")!.body).toString("utf8"),
+      ).sessions
+      expect(rows).toHaveLength(20)
+      expect(rows[0]).toMatchObject({ id: "fresh" })
+      expect(rows.some((r: { id: string }) => r.id === "s00")).toBe(false) // oldest dropped
+      expect(rows.some((r: { id: string }) => r.id === "s05")).toBe(false) // and the next five
+      expect(rows.some((r: { id: string }) => r.id === "s06")).toBe(true) // newest 19 gone-rows kept
     })
 
     it("the background poll starts on join, takes a snapshot on its own, and backs off (never gives up) once unreachable", async () => {
