@@ -9,6 +9,6 @@ export default createTsupConfig({
   format: ["esm"],
   splitting: true,
   dts: true,
-  external: ["@agentproto/browser-process"],
+  external: ["@agentproto/adapter-browser-camofox", "@agentproto/browser-process", "@agentproto/driver-browser"],
   noExternal: [],
 })

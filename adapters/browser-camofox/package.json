@@ -1,19 +1,20 @@
 {
-  "name": "@agentproto/adapter-browser",
-  "version": "0.1.2",
-  "description": "@agentproto/adapter-browser — browser service adapters for agentproto. Manages Camofox (stealth Firefox) and Bureau (Camofox + MCP capability server) as first-class process handles: health-check, idempotent launch, structured stop.",
+  "name": "@agentproto/adapter-browser-camofox",
+  "version": "0.0.0",
+  "description": "Camofox browser provider for agentproto: a defineBrowser provider over the camofox stealth-Firefox REST server, with an idempotent launch, a health mapping, and a BrowserDriver.",
   "keywords": [
     "agentproto",
     "browser",
     "camofox",
-    "bureau",
-    "adapter"
+    "camoufox",
+    "provider",
+    "stealth"
   ],
   "homepage": "https://agentproto.sh",
   "repository": {
     "type": "git",
     "url": "https://github.com/agentproto/ts",
-    "directory": "adapters/browser"
+    "directory": "adapters/browser-camofox"
   },
   "bugs": {
     "url": "https://github.com/agentproto/ts/issues"
@@ -44,13 +45,12 @@
     "build": "tsup",
     "clean": "rm -rf dist",
     "check-types": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/adapter-browser-camofox": "workspace:*",
-    "@agentproto/browser-process": "workspace:*",
-    "@agentproto/driver-browser": "workspace:*"
+    "@agentproto/driver-browser": "workspace:*",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
