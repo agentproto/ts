@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import type { SessionOutcome } from "../client/types.js"
-import { OUTCOME_HINT_MAX, outcomeCardFor, outcomeHintFor } from "./sessionOutcome.logic.js"
+import { OUTCOME_HINT_MAX, failureCauseFor, outcomeCardFor, outcomeHintFor } from "./sessionOutcome.logic.js"
 
 const base = (over: Partial<SessionOutcome> = {}): SessionOutcome => ({
   source: "derived",
@@ -107,5 +107,53 @@ describe("outcomeHintFor", () => {
 
   it("says 'no output', muted, for an empty outcome", () => {
     expect(outcomeHintFor({ status: "exited", outcome: { status: "empty" } })).toEqual({ text: "no output", muted: true })
+  })
+})
+
+describe("failureCauseFor", () => {
+  it("maps a worktree setup hook failure to its command", () => {
+    expect(
+      failureCauseFor(
+        "agent_start: worktree provisioning failed \u2014 worktree setup hook failed (exit 1): pnpm build\nnpm warn something",
+      ),
+    ).toBe("setup failed \u00b7 pnpm build")
+  })
+
+  it("maps an unknown adapter mode", () => {
+    expect(
+      failureCauseFor("agent_start: spawn failed \u2014 [unknown_mode at config.mode] Mode 'background' is not declared by adapter x"),
+    ).toBe("spawn failed \u00b7 unknown mode 'background'")
+  })
+
+  it("maps an existing branch", () => {
+    expect(failureCauseFor("agent_start: fatal: a branch named 'feat/x' already exists")).toBe("branch feat/x already exists")
+  })
+
+  it("skips .npmrc / NODE_AUTH_TOKEN warning lines and falls back to the first line, clamped", () => {
+    expect(failureCauseFor("warn Unknown env config NODE_AUTH_TOKEN in .npmrc\nboom happened")).toBe("boom happened")
+    const long = failureCauseFor("word ".repeat(60))!
+    expect(long.length).toBe(OUTCOME_HINT_MAX)
+    expect(long.endsWith("\u2026")).toBe(true)
+  })
+
+  it("is undefined when there is nothing meaningful", () => {
+    expect(failureCauseFor(undefined)).toBeUndefined()
+    expect(failureCauseFor("agent_start: \n.npmrc warning")).toBeUndefined()
+  })
+})
+
+describe("outcomeHintFor \u2014 errored session", () => {
+  it("shows the cause (not muted, error-flagged, full lastError as title) instead of 'no output'", () => {
+    const lastError = "agent_start: spawn failed \u2014 Mode 'background' is not declared"
+    expect(outcomeHintFor({ status: "error", lastError, outcome: { status: "empty" } })).toEqual({
+      text: "spawn failed \u00b7 unknown mode 'background'",
+      muted: false,
+      error: true,
+      title: lastError,
+    })
+  })
+
+  it("keeps 'no output' when the error session has no lastError", () => {
+    expect(outcomeHintFor({ status: "error", outcome: { status: "empty" } })).toEqual({ text: "no output", muted: true })
   })
 })

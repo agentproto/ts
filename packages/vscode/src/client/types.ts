@@ -520,6 +520,9 @@ export interface SessionSummary {
    *  `SessionDescriptor.lastTurnErroredAt` above. Stamped at turn-end,
    *  cleared on the next turn that completes without one. */
   lastTurnErroredAt?: string
+  /** Mirrors `SessionDescriptor.lastError` — the recorded cause of an errored
+   *  session (spawn failure, crash); may be multi-line and long. */
+  lastError?: string
   /** Busy-descendant count (#session-visibility, subtree rollup) — drives the
    *  "delegating" state for an idle parent waiting on its busy subtree. */
   childrenBusy?: number
