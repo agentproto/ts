@@ -155,6 +155,7 @@ function toBrowserCookie(c: SessionCookie): BrowserCookie {
 
 const isPosix = process.platform !== "win32"
 const HUMAN: LedgerActor = { kind: "human" }
+const SYSTEM: LedgerActor = { kind: "system" }
 
 export function createConsentHost(opts: ConsentHostOptions): ConsentHost {
   const { grants, ledger, store, chrome } = opts
@@ -179,7 +180,13 @@ export function createConsentHost(opts: ConsentHostOptions): ConsentHost {
   const readJar = (grantId: string): BrowserCookie[] => {
     const file = jarPath(grantId)
     if (!existsSync(file)) return []
-    const parsed = jarSchema.safeParse(JSON.parse(readFileSync(file, "utf8")))
+    let raw: unknown
+    try {
+      raw = JSON.parse(readFileSync(file, "utf8"))
+    } catch {
+      return []
+    }
+    const parsed = jarSchema.safeParse(raw)
     return parsed.success ? parsed.data.cookies : []
   }
 
@@ -347,7 +354,7 @@ export function createConsentHost(opts: ConsentHostOptions): ConsentHost {
     },
 
     async refresh(grantId, o = {}) {
-      const actor = o.actor ?? HUMAN
+      const actor = o.actor ?? SYSTEM
       const grant = grants.get(grantId)
       if (!grant || !usable(grant, actor.deviceId) || !grant.domains) throw new ConsentRequiredError()
       const cookies = chrome.readCookies(grant.source.profile, grant.domains).map(toBrowserCookie)
@@ -411,6 +418,7 @@ export function createConsentHost(opts: ConsentHostOptions): ConsentHost {
       }
     },
 
+    // Serves domain grants only. A full-profile grant is honored through `fullProfileProof`, never as injected cookies.
     cookieSourceFor(scope = {}) {
       return ({ providerId, profile }) => {
         const out: BrowserCookie[] = []

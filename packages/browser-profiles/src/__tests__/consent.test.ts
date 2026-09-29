@@ -482,6 +482,20 @@ describe.skipIf(!sqliteAvailable())("consent host", () => {
       expect(rows().at(-1)).toMatchObject({ event: "refresh", actor: { kind: "agent", via: "mcp" }, domains: ["github.com"] })
     })
 
+    it("treats domain case and duplicates as the same set, and records refresh as a system action", async () => {
+      const { grant } = await host.importFromChrome({ sessionId: "s1", profile: "Default", domains: ["github.com"], yes: true })
+      const agent = createAgentConsentSurface(host)
+      await expect(agent.sync({ grantId: grant.id, domains: ["GitHub.com", "github.com"] })).resolves.toMatchObject({ grantId: grant.id })
+      await host.refresh(grant.id)
+      expect(rows().at(-1)).toMatchObject({ event: "refresh", actor: { kind: "system" } })
+    })
+
+    it("serves nothing (no throw) when a cookie jar file is corrupt", async () => {
+      const { grant } = await host.importFromChrome({ sessionId: "s1", profile: "Default", domains: ["github.com"], yes: true })
+      writeFileSync(join(jarDir, `${grant.id}.json`), "{not json")
+      expect(host.cookieSourceFor()({ providerId: "chromium", profile: "s1" })).toEqual([])
+    })
+
     it("cannot add a domain: refused, appended as deny, grant unchanged", async () => {
       const { grant } = await host.importFromChrome({ sessionId: "s1", profile: "Default", domains: ["github.com"], yes: true })
       const agent = createAgentConsentSurface(host)

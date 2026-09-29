@@ -37,8 +37,11 @@ export function createAgentConsentSurface(host: ConsentHost, who: { deviceId?: s
     if (!g || !grantServesDevice(g, who.deviceId)) throw new ConsentRequiredError()
     return g
   }
-  const sameSet = (a: readonly string[], b: readonly string[]): boolean =>
-    a.length === b.length && a.every(x => b.includes(x.toLowerCase()))
+  const sameSet = (a: readonly string[], b: readonly string[]): boolean => {
+    const left = new Set(a.map(x => x.toLowerCase()))
+    const right = new Set(b.map(x => x.toLowerCase()))
+    return left.size === right.size && [...left].every(x => right.has(x))
+  }
 
   return {
     async sync(input) {

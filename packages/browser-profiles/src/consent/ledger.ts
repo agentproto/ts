@@ -115,7 +115,7 @@ export interface ConsentLedgerOptions {
 
 export interface ConsentLedger {
   readonly path: string
-  /** Validate, stamp and append one record. Throws {@link LedgerRecordInvalidError} and writes nothing on a bad record. */
+  /** Validate, stamp and append one record. One writer process only: concurrent processes can duplicate `seq` and break the chain, which `verifyChain` reports. Throws {@link LedgerRecordInvalidError} and writes nothing on a bad record. */
   append(entry: LedgerEntry): LedgerRecord
   read(): LedgerRecord[]
   /** True when every `prev` matches the SHA-256 of the line before it and `seq` counts up from 0. */
