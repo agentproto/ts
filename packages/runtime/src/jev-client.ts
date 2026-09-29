@@ -15,6 +15,8 @@
 
 import { z } from "zod"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
+import { loadConfig } from "./config.js"
+import type { JevConfig } from "./config.js"
 
 export const JEV_DEFAULT_URL = "https://api.typesafe.ai/v1/systemone"
 export const JEV_DEFAULT_MODEL = "jev-latest"
@@ -155,9 +157,29 @@ export async function callJevSystemOne(
   }
 }
 
-/** `JEV_API_KEY` from the daemon's env, else the host-injected secret
- *  resolver (the same broker sandbox env passthrough uses), else null. */
+/** Config-file loader seam — production reads `~/.agentproto/config.json`
+ *  via {@link loadConfig}; tests inject a stub so resolution never touches
+ *  (or leaks) a real user config. */
+export type JevConfigLoader = () => Promise<{ jev?: JevConfig }>
+let configLoader: JevConfigLoader = loadConfig
+/** Test-only: swap the config source used by `resolveJevApiKey` /
+ *  `resolveJevConfig`. Pass `loadConfig` to restore production behavior. */
+export function setJevConfigLoader(loader: JevConfigLoader): void {
+  configLoader = loader
+}
+
+/** Resolve the Jev API key: `jev.apiKey` from `~/.agentproto/config.json`
+ *  first (Jev is a first-party dependency — the key belongs in agentproto's
+ *  own config, not a workspace env file), then the `JEV_API_KEY`
+ *  environment variable, then the host-injected secret resolver (the same
+ *  broker sandbox env passthrough uses), else null. */
 export async function resolveJevApiKey(env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+  try {
+    const cfg = (await configLoader()).jev?.apiKey
+    if (cfg && cfg.trim()) return cfg.trim()
+  } catch {
+    // config unreadable — fall through to the env var
+  }
   const fromEnv = env[JEV_API_KEY_ENV]
   if (fromEnv && fromEnv.trim()) return fromEnv.trim()
   const resolver = getMcpCredentialDeps().resolveSandboxSecret
@@ -167,6 +189,20 @@ export async function resolveJevApiKey(env: NodeJS.ProcessEnv = process.env): Pr
     return v && v.trim() ? v.trim() : null
   } catch {
     return null
+  }
+}
+
+/** Jev model/baseUrl preferences from the config file (`jev.model`,
+ *  `jev.baseUrl`), for callers that take an optional model override. */
+export async function resolveJevConfig(): Promise<{ model?: string; baseUrl?: string }> {
+  try {
+    const jev = (await configLoader()).jev
+    return {
+      ...(jev?.model?.trim() ? { model: jev.model.trim() } : {}),
+      ...(jev?.baseUrl?.trim() ? { baseUrl: jev.baseUrl.trim() } : {}),
+    }
+  } catch {
+    return {}
   }
 }
 
