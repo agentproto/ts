@@ -63,12 +63,23 @@ jobs:
       # B) No pending changesets (i.e. the "Version Packages" PR was just
       #    merged) → publishes every package whose version isn't yet on npm
       #    and creates a GitHub release per package.
+      # The publish step pushes ~100 git tags back-to-back on a big release,
+      # and GitHub's ref-write path has answered HTTP 429 mid-burst
+      # (2026-09-29, run 36603549866), failing the step even though the
+      # reconcile step below repaired the tags on the next run. We wrap the
+      # publish command in a bounded retry (scripts/publish-with-retry.mjs,
+      # up to 3 attempts with backoff on transient signatures: HTTP 429,
+      # "fatal error in commit_refs", "remote rejected", sideband disconnect).
+      # A retry is safe because `changeset publish` is idempotent — it skips
+      # versions already on npm — and the reconcile step repairs tags, so a
+      # re-run converges instead of double-publishing. Non-transient failures
+      # exit immediately with the original exit code.
       - name: Version or publish
         id: changesets
         uses: changesets/action@v1
         with:
           version: pnpm changeset version
-          publish: pnpm release:ci
+          publish: node scripts/publish-with-retry.mjs
           commit: "chore(release): version packages"
           title: "chore(release): version packages"
           createGithubReleases: true
