@@ -93,6 +93,7 @@ import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import type { AppRegistry } from "./app-registry.js"
 import { performAppToolCall, performBuiltinPanelToolCall, type AppToolCallDeps } from "./app-tools.js"
+import { handleA2aTaskRequest, type A2aTaskHttpConfig } from "./a2a-task-http.js"
 import { injectStandaloneAppBridge } from "./app-ui-apps.js"
 import { resolveAppUiBuildState } from "./app-ui-build.js"
 import { renderAppUiBuildingHtml, renderAppUiErrorHtml } from "./app-ui-placeholder.js"
@@ -1130,6 +1131,10 @@ export interface RuntimeHttpServerOptions {
    *  index.ts hands `registerAppTools`; omitted ⇒ tool-call dispatch reports
    *  "not enabled", the UI route still serves. */
   appToolCallDeps?: AppToolCallDeps
+  /** Optional — A2A task ingress (`POST /a2a/apps/:appId`) ledger dir and
+   *  manifest loader; defaults suit a real daemon. Needs `appRegistry` and
+   *  `appToolCallDeps.dispatchTool` to be wired. */
+  a2aTasks?: A2aTaskHttpConfig
   /** Optional — when wired, enables `POST /inbound`, the push-ingress
    *  counterpart to `inbound-watcher.ts`'s poll loop. A human reply
    *  (e.g. from agentpush's Telegram webhook) routes into the session
@@ -4340,6 +4345,13 @@ export async function startHttpServer(
             opts.resolveAgentAdapter,
           )
           if (handled) return
+        }
+
+        // A2A task ingress — POST /a2a/apps/:appId (JSON-RPC 2.0), see a2a-task-http.ts.
+        if (opts.appRegistry && path.startsWith("/a2a/apps/") && req.method === "POST") {
+          if (guardBrowserOrigin(req, res)) return
+          if (!authorize(req, res)) return
+          if (await handleA2aTaskRequest(req, res, path, { ...opts.a2aTasks, appRegistry: opts.appRegistry, ...(opts.appToolCallDeps?.dispatchTool ? { dispatchTool: opts.appToolCallDeps.dispatchTool } : {}) })) return
         }
 
         res.writeHead(404, { "content-type": "application/json" })
