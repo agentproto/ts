@@ -8,7 +8,7 @@ import { parseAgentManifest } from "@agentproto/agent/manifest"
 import { defineWorkflow } from "@agentproto/workflow"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import { parseWorkspaceManifest } from "@agentproto/workspace/manifest"
-import { defineApp } from "../define-app.js"
+import { defineApp, AppDefinitionError } from "../define-app.js"
 
 const reviewerBody =
   "You are a rigorous reviewer.\nReport findings. Change nothing.\nNever run gh pr merge."
@@ -406,5 +406,50 @@ describe("emit — category", () => {
       await rm(withCategory, { recursive: true, force: true })
       await rm(without, { recursive: true, force: true })
     }
+  })
+})
+
+describe("emit — placement / requires / exposes / accepts", () => {
+  const agent = () =>
+    defineAgent({ schema: "agent/v1", id: "solo", description: "Solo agent.", model: "claude-sonnet-5" })
+
+  it("omits the keys entirely when they are at their defaults", async () => {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-emit-defaults-"))
+    try {
+      const { appPath } = await defineApp({ agents: [{ agent: agent(), body: "Solo." }] }).emit(d)
+      const data = matter(await readFile(appPath, "utf8")).data
+      for (const key of ["placement", "requires", "exposes", "accepts"]) {
+        expect(key in data).toBe(false)
+      }
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  })
+
+  it("writes declared values into APP.md frontmatter", async () => {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-emit-fields-"))
+    try {
+      const { appPath } = await defineApp({
+        agents: [{ agent: agent(), body: "Solo." }],
+        placement: "local",
+        requires: { browser: true, secrets: ["TOKEN"] },
+        exposes: { agents: ["solo"] },
+        accepts: { tasks: true },
+      }).emit(d)
+      const data = matter(await readFile(appPath, "utf8")).data
+      expect(data.placement).toBe("local")
+      expect(data.requires).toEqual({ browser: true, fs: false, gpu: false, secrets: ["TOKEN"], apps: [] })
+      expect(data.exposes).toEqual({ agents: ["solo"], workflows: [] })
+      expect(data.accepts).toEqual({ tasks: true })
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  })
+
+  it("defineApp rejects an unknown placement and undeclared exposes ids", () => {
+    const base = { agents: [{ agent: agent(), body: "Solo." }] }
+    expect(() => defineApp({ ...base, placement: "cloud" as never })).toThrow(AppDefinitionError)
+    expect(() => defineApp({ ...base, exposes: { agents: ["ghost"] } })).toThrow(/exposes\.agents.*'ghost'/)
+    expect(() => defineApp({ ...base, exposes: { workflows: ["ghost"] } })).toThrow(/exposes\.workflows.*'ghost'/)
   })
 })

@@ -4,12 +4,12 @@ collection: bugs
 id: BUG-1042
 title: Login form crashes on Safari 17 with autofill enabled
 
-# Universal-ish fields — collection.ownership says assignee is optional
+# Universal-ish fields — collection.ownership says owner is optional
 status: triaged
-assignee: ws://operators/eng-frontend-lead
+owner: ws://operators/eng-frontend-lead
 tags: [auth, safari, autofill, regression]
-createdAt: 2026-04-26T09:14:00Z
-updatedAt: 2026-04-27T11:02:00Z
+createdAt: "2026-04-26T09:14:00Z"
+updatedAt: "2026-04-27T11:02:00Z"
 attachments:
   - sources/2026-04-26-safari-crash-trace.txt
 

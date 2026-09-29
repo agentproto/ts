@@ -10,8 +10,8 @@ coLeads:
   - ws://operators/cfo-assistant
   - ws://operators/coo-assistant
 tags: [finance, runway]
-createdAt: 2026-03-15T00:00:00Z
-updatedAt: 2026-04-25T16:00:00Z
+createdAt: "2026-03-15T00:00:00Z"
+updatedAt: "2026-04-25T16:00:00Z"
 
 # Collection-specific fields
 objective: Extend operating runway by 6 months without raising a new round
@@ -23,7 +23,7 @@ metric: runway_months
 target: 18
 current: 12.5
 quarter: 2026-Q2
-targetDate: 2026-06-30
+targetDate: "2026-06-30"
 ---
 
 # Extend operating runway by 6 months without raising

@@ -53,11 +53,20 @@ export function registerDeviceTools(
       "(client|host), kind (browser|cli|daemon, best-effort from the " +
       "client's self-reported name; always daemon for a host), rendezvous, " +
       "createdAt, lastSeen, scope (host, when granted via `pair offer " +
-      "--host`), and online (a channel/forward is active right now). " +
-      "Read-only.",
-    {},
-    async () => {
-      const devices = await registry.list()
+      "--host`), online (a channel/forward is active right now or a " +
+      "recent contact succeeded), and for hosts lastProbeAt/lastError " +
+      "(last contact attempt and why it failed). Joined CI hosts that are " +
+      "gone (said goodbye, or unreachable past the TTL) are hidden unless " +
+      "includeEnded is set; a manually added host unreachable past the TTL " +
+      "shows stale: true. Read-only.",
+    {
+      includeEnded: z
+        .boolean()
+        .optional()
+        .describe("Also list ended (gone) joined hosts, marked ended: true."),
+    },
+    async ({ includeEnded }) => {
+      const devices = await registry.list({ includeEnded: includeEnded === true })
       return text({ devices })
     },
   )

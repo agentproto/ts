@@ -254,10 +254,10 @@ describe("defineProduct — `on` accepts the aip:// URI form (AIP-54)", () => {
   const price = { model: "one-time", amountMinor: 1, currency: "usd" } as const
 
   it("parses the URI form into the same normalized ref as the object form", () => {
-    const viaUri = defineProduct({ id: "p", kind: "pricing", on: "aip://42/book-companion", price })
-    const viaObj = defineProduct({ id: "p", kind: "pricing", on: { aip: 42, id: "book-companion" }, price })
+    const viaUri = defineProduct({ id: "p", kind: "pricing", on: "aip://53/book-companion", price })
+    const viaObj = defineProduct({ id: "p", kind: "pricing", on: { aip: 53, id: "book-companion" }, price })
     expect(viaUri.on).toEqual(viaObj.on)
-    expect(viaUri.on).toEqual({ aip: 42, id: "book-companion" })
+    expect(viaUri.on).toEqual({ aip: 53, id: "book-companion" })
   })
 
   it("parses the pinned URI form aip://<aip>/<id>@<version>", () => {
@@ -271,9 +271,9 @@ describe("defineProduct — `on` accepts the aip:// URI form (AIP-54)", () => {
   })
 
   it("attachPricing works with the URI form, including its derived default id", () => {
-    const p = attachPricing("aip://42/book-companion", price)
-    expect(p.on).toEqual({ aip: 42, id: "book-companion" })
-    expect(p.id).toBe("pricing-one-time-42-book-companion")
+    const p = attachPricing("aip://53/book-companion", price)
+    expect(p.on).toEqual({ aip: 53, id: "book-companion" })
+    expect(p.id).toBe("pricing-one-time-53-book-companion")
   })
 
   it("rejects a malformed aip:// URI loudly and specifically", () => {
