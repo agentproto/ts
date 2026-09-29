@@ -1,7 +1,7 @@
 # `agentproto devices`
 
 ```text
-agentproto devices list   [--json]
+agentproto devices list   [--json] [--include-ended]
 agentproto devices rename <fingerprint|name> <new-name>
 agentproto devices revoke <fingerprint|name>
 agentproto devices add    <offer-url> [--name <label>]
@@ -46,14 +46,25 @@ browser@iphone.local  b2c3d4e5f607189c3e5d7f1a2b4c6d0a  client  browser   no    
   recognisable shape (`browser@<host>` for the web pair page,
   `<user>@<host>` for the CLI). A custom `--name` at `pair accept` overrides
   the default and loses the signal.
-- `online` reflects whether a channel (an offer or a standing reconnect) is
-  served for that device *right now* (client) or a `devices status`/`exec`
-  call is in flight for it *right now* (host) — it is not persisted, and
-  always starts `false` on a fresh daemon boot until a client reconnects or a
-  host is probed. A host has no standing connection, so unlike a client its
-  `online` is not a live heartbeat — see [below](#add).
+- `online` is true while a channel (an offer or a standing reconnect) is
+  served for that device (client), or, for a host, while a forward/snapshot is
+  in flight or a contact succeeded within the last 2 minutes. Joined (CI)
+  hosts are probed in the background (bounded concurrency, exponential
+  backoff while unreachable), so `online`/`lastSeen` track reality; a manually
+  added host has no standing connection and is only refreshed by use. `online`
+  is not persisted, but `lastSeen` is (throttled).
+- Hosts also carry `lastProbeAt` (last contact attempt) and `lastError` (why
+  the most recent attempt failed; absent after a success).
+- A **joined** host unreachable past the TTL (default 2 h) is marked
+  `ended`, or immediately when the box says goodbye at teardown, and is hidden
+  from `list`; pass `--include-ended` to show it (`[ended]`). Ended hosts are
+  deleted after the retention (default 7 d). A manually added host, and any
+  client device, is never ended or deleted; a manual host unreachable past the
+  TTL only shows `[stale]`. Tune the daemon with `AGENTPROTO_HOST_ENDED_TTL_MS`
+  and `AGENTPROTO_HOST_ENDED_RETENTION_MS` (`0` disables that step).
 - `scope: host` marks a pairing/host granted under an offer minted with
   `agentproto pair offer --host` — visible from either side of that pairing.
+- `--include-ended` also lists ended joined hosts (`GET /devices?includeEnded=1`).
 - `--json` emits `{ devices: [...] }` with the same fields.
 
 ## `rename`

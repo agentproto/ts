@@ -39,7 +39,7 @@ import { loadConfig, saveConfig, setConfigKey } from "@agentproto/runtime/config
 const USAGE = `agentproto devices — manage devices known to this daemon
 
 Usage:
-  agentproto devices list   [--json]
+  agentproto devices list   [--json] [--include-ended]
   agentproto devices rename <fingerprint|name> <new-name>
   agentproto devices revoke <fingerprint|name>
   agentproto devices add    <offer-url> [--name <label>]
@@ -51,7 +51,9 @@ Usage:
   agentproto devices --help
 
   list     Every device this daemon knows: name, fingerprint, role, kind,
-           rendezvous, createdAt, lastSeen, online, scope.
+           rendezvous, createdAt, lastSeen, online, scope. Joined CI hosts that
+           are gone (said goodbye, or unreachable past the TTL) are hidden
+           unless --include-ended.
   rename   Give a device a new label (cosmetic only).
   revoke   Drop a device so it can no longer reconnect (same as
            \`agentproto pair revoke\`).
@@ -128,6 +130,8 @@ interface DeviceRow {
   online: boolean
   legacy?: boolean
   scope?: "host"
+  ended?: boolean
+  stale?: boolean
 }
 
 export async function runDevices(args: readonly string[]): Promise<number> {
@@ -175,7 +179,7 @@ async function runList(args: readonly string[]): Promise<number> {
     args: [...args],
     allowPositionals: false,
     strict: true,
-    options: { json: { type: "boolean" } },
+    options: { json: { type: "boolean" }, "include-ended": { type: "boolean" } },
   })
 
   const report = await discoverDaemon()
@@ -186,7 +190,7 @@ async function runList(args: readonly string[]): Promise<number> {
 
   let rows: DeviceRow[]
   try {
-    const body = await httpGetJson<{ devices: DeviceRow[] }>(`${report.found.url}/devices`)
+    const body = await httpGetJson<{ devices: DeviceRow[] }>(`${report.found.url}/devices${values["include-ended"] ? "?includeEnded=1" : ""}`)
     rows = body.devices ?? []
   } catch (err) {
     process.stderr.write(
@@ -208,7 +212,7 @@ async function runList(args: readonly string[]): Promise<number> {
   )
   for (const d of rows) {
     process.stdout.write(
-      `${(d.name ?? "").slice(0, 20).padEnd(20)}  ${d.fingerprint.padEnd(32)}  ${d.role.padEnd(6)}  ${d.kind.padEnd(8)}  ${(d.online ? "yes" : "no").padEnd(6)}  ${(d.lastSeen ?? "").padEnd(22)}  ${d.rendezvous ?? ""}${d.legacy ? "  [legacy: re-pair]" : ""}${d.scope === "host" ? "  [scope: host]" : ""}\n`,
+      `${(d.name ?? "").slice(0, 20).padEnd(20)}  ${d.fingerprint.padEnd(32)}  ${d.role.padEnd(6)}  ${d.kind.padEnd(8)}  ${(d.online ? "yes" : "no").padEnd(6)}  ${(d.lastSeen ?? "").padEnd(22)}  ${d.rendezvous ?? ""}${d.legacy ? "  [legacy: re-pair]" : ""}${d.scope === "host" ? "  [scope: host]" : ""}${d.ended ? "  [ended]" : ""}${d.stale ? "  [stale]" : ""}\n`,
     )
   }
   return 0

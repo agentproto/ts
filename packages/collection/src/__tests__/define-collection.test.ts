@@ -78,16 +78,75 @@ describe("defineCollection (AIP-18)", () => {
     ).toThrow(/defineCollection \(AIP-18\)/)
   })
 
-  it("rejects a field with type=enum but no enum values (cross-field-ish, still a required-shape check)", () => {
-    expect(() =>
-      defineCollection({
-        ...MINIMAL_SCHEMA,
-        fields: [{ name: "priority", type: "enum" }],
-      } as unknown as CollectionDefinition),
-    ).not.toThrow() // AIP-18's fieldDef doesn't make `enum` conditionally
-    // required at the JSON-Schema level (no if/then on `type`), so this is
-    // legal per the canonical schema even though it's a modeling footgun —
-    // documented as a possible spec gap in the PR, not fixed here.
+  describe("field companion keys (if/then on $defs/fieldDef and $defs/fieldShape)", () => {
+    const withFields = (fields: unknown[]) =>
+      ({ ...MINIMAL_SCHEMA, fields }) as unknown as CollectionDefinition
+
+    it("rejects type=enum without enum", () => {
+      expect(() =>
+        defineCollection(withFields([{ name: "priority", type: "enum" }])),
+      ).toThrow(/fields\.0\.enum: enum is required when type=enum/)
+    })
+
+    it("accepts type=enum with enum", () => {
+      expect(() =>
+        defineCollection(withFields([{ name: "priority", type: "enum", enum: ["low", "high"] }])),
+      ).not.toThrow()
+    })
+
+    it("rejects type=array without items", () => {
+      expect(() =>
+        defineCollection(withFields([{ name: "tags", type: "array" }])),
+      ).toThrow(/fields\.0\.items: items is required when type=array/)
+    })
+
+    it("rejects type=ref without refKind", () => {
+      expect(() =>
+        defineCollection(withFields([{ name: "reviewer", type: "ref" }])),
+      ).toThrow(/fields\.0\.refKind: refKind is required when type=ref/)
+    })
+
+    it("accepts type=ref with refKind", () => {
+      expect(() =>
+        defineCollection(withFields([{ name: "reviewer", type: "ref", refKind: "engineer" }])),
+      ).not.toThrow()
+    })
+
+    it("enforces the companion keys inside nested items (enum in items)", () => {
+      expect(() =>
+        defineCollection(withFields([{ name: "sev", type: "array", items: { type: "enum" } }])),
+      ).toThrow(/fields\.0\.items\.enum: enum is required when type=enum/)
+    })
+
+    it("enforces the companion keys inside nested items (array of array)", () => {
+      expect(() =>
+        defineCollection(withFields([{ name: "m", type: "array", items: { type: "array" } }])),
+      ).toThrow(/fields\.0\.items\.items: items is required when type=array/)
+    })
+
+    it("accepts a name-less nested array (array of array of string)", () => {
+      expect(() =>
+        defineCollection(
+          withFields([
+            { name: "m", type: "array", items: { type: "array", items: { type: "string" } } },
+          ]),
+        ),
+      ).not.toThrow()
+    })
+
+    it("rejects a `name` inside items (name is only valid on fields[] entries)", () => {
+      expect(() =>
+        defineCollection(
+          withFields([{ name: "tags", type: "array", items: { name: "tag", type: "string" } }]),
+        ),
+      ).toThrow(/defineCollection \(AIP-18\)/)
+    })
+
+    it("still requires `name` on fields[] entries", () => {
+      expect(() => defineCollection(withFields([{ type: "string" }]))).toThrow(
+        /defineCollection \(AIP-18\)/,
+      )
+    })
   })
 
   it("rejects a recursive array field whose inner `items` violates fieldDef's own shape", () => {

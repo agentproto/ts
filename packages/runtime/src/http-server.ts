@@ -8998,7 +8998,9 @@ async function handleDevices(
   const devices = createDeviceRegistry(registry, hostRegistry)
 
   if (path === "/devices" && req.method === "GET") {
-    json(200, { devices: await devices.list() })
+    const qs = new URLSearchParams((req.url ?? "").split("?")[1] ?? "")
+    const includeEnded = ["1", "true"].includes(qs.get("includeEnded") ?? "")
+    json(200, { devices: await devices.list({ includeEnded }) })
     return true
   }
 

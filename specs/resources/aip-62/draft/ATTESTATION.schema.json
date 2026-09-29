@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-62/ATTESTATION.schema.json",
+  "title": "agentproto.review.attestation/v1",
+  "description": "A review verdict bound to a manifest and a frozen git range. The `verdict` MUST equal the fold of `lanes` (AIP-62 verdict fold); a verifier recomputes it. `attestor.signature`, when present, covers the canonical JSON of the attestation with `attestor.signature` removed. Mutable annotations (PR status) live outside this document and are never signed.",
+  "type": "object",
+  "required": [
+    "schema",
+    "runId",
+    "reviewId",
+    "manifestSha",
+    "binding",
+    "target",
+    "rangeSha",
+    "lanes",
+    "verdict",
+    "attestor",
+    "rubrics",
+    "createdAt"
+  ],
+  "properties": {
+    "schema": { "const": "agentproto.review.attestation/v1" },
+    "runId": { "type": "string", "pattern": "^review-.+$" },
+    "reviewId": { "type": "string", "description": "The REVIEW.md id." },
+    "manifestSha": { "$ref": "#/$defs/sha256", "description": "sha256 of the REVIEW.md source bytes." },
+    "binding": { "type": "string", "minLength": 1 },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repoRemote", "baseSha", "headSha"],
+      "properties": {
+        "repoRemote": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Normalized origin URL (scheme and credentials stripped, scp form converted to host/path, .git and trailing slashes stripped), or `local:<absolute root>` when the repo has no origin."
+        },
+        "baseSha": { "type": "string", "minLength": 1 },
+        "headSha": { "type": "string", "minLength": 1 }
+      }
+    },
+    "rangeSha": {
+      "$ref": "#/$defs/sha256",
+      "description": "sha256 of the UTF-8 string `<baseSha>..<headSha>`."
+    },
+    "lanes": { "type": "array", "items": { "$ref": "#/$defs/lane" } },
+    "verdict": { "enum": ["pass", "block", "incomplete"] },
+    "attestor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["daemon", "presets"],
+      "properties": {
+        "daemon": { "type": "string" },
+        "presets": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "signature": { "$ref": "#/$defs/signature" }
+      }
+    },
+    "rubrics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["check", "path", "sha256"],
+        "properties": {
+          "check": { "type": "string" },
+          "path": { "type": "string" },
+          "sha256": { "$ref": "#/$defs/sha256" }
+        }
+      }
+    },
+    "packs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ref", "id", "version", "alg", "sha256"],
+        "properties": {
+          "ref": { "type": "string", "description": "The uses[].pack string as written." },
+          "id": { "type": "string" },
+          "version": { "type": "string" },
+          "alg": {
+            "const": "agentproto-pack-digest/v1",
+            "description": "The digest recipe tag. A verifier that does not recognize it MUST refuse to compare."
+          },
+          "sha256": { "$ref": "#/$defs/sha256" }
+        }
+      }
+    },
+    "dirty": {
+      "const": true,
+      "description": "Present (as true) only when tracked files had uncommitted changes at freeze time."
+    },
+    "requester": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "description": "Informational provenance. Names the requester; does not authenticate them.",
+      "properties": {
+        "sessionId": { "type": "string" },
+        "gitAuthor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "email"],
+          "properties": {
+            "name": { "type": "string" },
+            "email": { "type": "string" }
+          }
+        }
+      }
+    },
+    "pr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "repo", "number", "url"],
+      "properties": {
+        "provider": { "const": "github" },
+        "repo": { "type": "string", "pattern": "^[^/]+/[^/]+$" },
+        "number": { "type": "integer", "minimum": 1 },
+        "url": { "type": "string" }
+      }
+    },
+    "createdAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "title", "detail"],
+      "properties": {
+        "severity": { "enum": ["high", "medium", "low"] },
+        "title": { "type": "string" },
+        "detail": { "type": "string" },
+        "file": { "type": "string", "description": "Repo-relative." },
+        "line": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "lane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "status", "blocking", "findings", "durationMs"],
+      "properties": {
+        "id": { "type": "string" },
+        "kind": { "enum": ["command", "agent"] },
+        "status": { "enum": ["pass", "fail", "skipped", "timeout"] },
+        "blocking": { "type": "boolean" },
+        "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
+        "durationMs": { "type": "number", "minimum": 0 },
+        "error": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "preset": { "type": "string" },
+        "summary": { "type": "string" },
+        "exitCode": { "type": "integer" },
+        "model": { "type": "string" },
+        "composedFrom": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rangeSha", "headSha", "attestationSha256"],
+          "description": "Agent lanes only. The prior passing attestation this lane built on; the lane itself reviewed only headSha..<this attestation's head>.",
+          "properties": {
+            "rangeSha": { "$ref": "#/$defs/sha256" },
+            "headSha": { "type": "string", "minLength": 1 },
+            "attestationSha256": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alg", "keyFingerprint", "principal", "signedAt", "sig"],
+      "properties": {
+        "alg": { "const": "ssh-ed25519" },
+        "keyFingerprint": { "type": "string", "pattern": "^SHA256:.+$" },
+        "principal": {
+          "type": "string",
+          "description": "A claim, matched against an allowed_signers principal at verify time. Not authenticated by the signature on its own."
+        },
+        "signedAt": { "type": "string", "format": "date-time" },
+        "sig": { "type": "string", "description": "Armored SSHSIG produced by `ssh-keygen -Y sign -n agentproto-review`." }
+      }
+    }
+  }
+}
