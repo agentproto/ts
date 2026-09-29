@@ -34,9 +34,10 @@ import { promises as fs } from "node:fs"
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { DEAD_CONNECTION_RE, openMcpClient, safeClose } from "./mcp-client-pool.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
-import { resolveImportConnection } from "./mcp-import-resolve.js"
+import { liveSourcePaths, resolveImportConnection } from "./mcp-import-resolve.js"
 import {
   loadImportedMcps,
+  secretRefKeys,
   IMPORTED_MCPS_PATH,
   type ImportedMcpEntry,
 } from "./mcp-imports.js"
@@ -53,6 +54,13 @@ interface ProxyClient {
   /** Last connection error message, kept so listAliases can surface
    *  diagnostics to the operator without re-throwing on every list. */
   lastError: string | null
+  /** mtime signature of the live source file(s) (`resolve: "live"` only);
+   *  a change forces a reconnect so rotated/edited source config applies. */
+  liveSig?: string
+  /** Set by the last resolution attempt. */
+  stale?: { reason: string }
+  /** Name healed in memory when the source entry was renamed. */
+  originName?: string
 }
 
 export interface ProxyToolDescriptor {
@@ -75,6 +83,12 @@ export interface ProxyAliasSummary {
   status: "connected" | "error" | "pending"
   toolCount: number
   lastError?: string
+  /** `live` re-reads the source harness config; `snapshot` uses the stored copy. */
+  resolve?: "live" | "snapshot"
+  /** Set when the last resolution could not use the live source / a secret. */
+  stale?: { reason: string }
+  /** Header/env KEY names held behind secret refs (never values). */
+  secretRefKeys?: { headers?: string[]; env?: string[] }
 }
 
 export interface CallResult {
@@ -112,7 +126,10 @@ export class McpProxyRegistry {
       // some, close them.
       mtimeMs = 0
     }
-    if (this.hasReadOnce && mtimeMs === this.lastMtimeMs) return
+    if (this.hasReadOnce && mtimeMs === this.lastMtimeMs) {
+      await this.invalidateLiveSources()
+      return
+    }
 
     const config = await loadImportedMcps().catch(() => ({
       version: 1 as const,
@@ -135,8 +152,8 @@ export class McpProxyRegistry {
         // different command). Detect by comparing serialised
         // snapshots; on mismatch, force reconnect.
         if (
-          JSON.stringify(existing.entry.snapshot) !==
-          JSON.stringify(entry.snapshot)
+          JSON.stringify([existing.entry.snapshot, existing.entry.secretRefs, existing.entry.resolve]) !==
+          JSON.stringify([entry.snapshot, entry.secretRefs, entry.resolve])
         ) {
           await safeClose(existing.client)
           this.clients.set(entry.id, freshPlaceholder(entry))
@@ -149,6 +166,37 @@ export class McpProxyRegistry {
     }
     this.lastMtimeMs = mtimeMs
     this.hasReadOnce = true
+    await this.invalidateLiveSources()
+  }
+
+  /**
+   * For `live` entries, stat the source config file(s); an mtime change
+   * closes the client and installs a fresh placeholder so the next call
+   * re-resolves against the edited source. First sight only records the
+   * signature.
+   */
+  private async invalidateLiveSources(): Promise<void> {
+    for (const [id, c] of Array.from(this.clients.entries())) {
+      if (c.entry.resolve !== "live") continue
+      const paths = await liveSourcePaths(c.entry)
+      const parts: string[] = []
+      for (const p of paths) {
+        try {
+          parts.push(`${p}:${(await fs.stat(p)).mtimeMs}`)
+        } catch {
+          parts.push(`${p}:-`)
+        }
+      }
+      const sig = parts.join("|")
+      if (c.liveSig === undefined) {
+        c.liveSig = sig
+      } else if (c.liveSig !== sig) {
+        await safeClose(c.client)
+        const fresh = freshPlaceholder(c.entry)
+        fresh.liveSig = sig
+        this.clients.set(id, fresh)
+      }
+    }
   }
 
   /**
@@ -162,7 +210,10 @@ export class McpProxyRegistry {
     if (!handle) return null
     if (handle.client) return handle
     try {
-      const client = await openClient(handle.entry)
+      const opened = await openClient(handle.entry)
+      const client = opened.client
+      handle.stale = opened.stale
+      handle.originName = opened.originName
       handle.client = client
       handle.lastError = null
       // Eagerly fetch tools so listTools doesn't pay the round-trip
@@ -202,6 +253,9 @@ export class McpProxyRegistry {
           : "pending",
       toolCount: c.tools?.length ?? 0,
       ...(c.lastError ? { lastError: c.lastError } : {}),
+      ...(c.entry.resolve ? { resolve: c.entry.resolve } : {}),
+      ...(c.stale ? { stale: c.stale } : {}),
+      ...(secretRefKeys(c.entry) ? { secretRefKeys: secretRefKeys(c.entry) } : {}),
     }))
   }
 
@@ -320,11 +374,23 @@ function toDescriptor(tool: {
  * http/sse open over the network. Returns a connected `Client` on
  * success; throws with a useful message on failure.
  */
-async function openClient(entry: ImportedMcpEntry): Promise<Client> {
-  const { config } = await resolveImportConnection(entry, getMcpCredentialDeps())
-  return openMcpClient(config, {
+async function openClient(entry: ImportedMcpEntry): Promise<{
+  client: Client
+  stale?: { reason: string }
+  originName?: string
+}> {
+  const { config, stale, origin } = await resolveImportConnection(
+    entry,
+    getMcpCredentialDeps()
+  )
+  const client = await openMcpClient(config, {
     label: `import "${entry.alias}"`,
     // claude-code `.mcp.json` semantics; parity with McpClientPool.
     expandHeaders: true,
   })
+  return {
+    client,
+    ...(stale ? { stale } : {}),
+    ...(origin ? { originName: origin.name } : {}),
+  }
 }

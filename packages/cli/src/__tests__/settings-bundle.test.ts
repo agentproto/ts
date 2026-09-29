@@ -502,3 +502,56 @@ describe("readSettingsBundle / writeSettingsBundle", () => {
     await expect(readSettingsBundle(file)).rejects.toThrow(/missing or malformed "authProfiles"/)
   })
 })
+
+// ── P1: secret refs in the bundle ─────────────────────────────────────────
+
+describe("imported MCP secretRefs in settings bundles", () => {
+  const REF = "agentproto/mcp-import/claude-code:global:up#header:Authorization"
+  const withRefs = (): SettingsGatherDeps =>
+    fakeGatherDeps({
+      loadImportedMcps: async () => ({
+        version: 1,
+        imports: [
+          {
+            id: "claude-code:global:up",
+            alias: "up",
+            addedAt: "2026-05-10T00:00:00.000Z",
+            origin: { kind: "claude-code", scope: "global", name: "up" },
+            resolve: "live",
+            secretRefs: { headers: { Authorization: REF } },
+            snapshot: {
+              id: "claude-code:global:up",
+              source: "claude-code",
+              scope: "global",
+              name: "up",
+              type: "http",
+              url: "https://up.example/mcp",
+              headers: { Authorization: "<secretRef>" },
+            },
+          },
+        ],
+      }),
+    })
+
+  it("export carries secretRef KEY names only (no refs, no values)", async () => {
+    const { bundle } = await gatherSettingsBundle({}, withRefs())
+    const mcp = bundle.mcpServers[0]!
+    expect(mcp.secretRefKeys).toEqual({ headers: ["Authorization"] })
+    expect(mcp.resolve).toBe("live")
+    expect(JSON.stringify(bundle)).not.toContain(REF)
+    expect(JSON.stringify(bundle)).not.toContain("agentproto/mcp-import")
+  })
+
+  it("apply reports the dangling secret keys and adds empty placeholders", async () => {
+    const { bundle } = await gatherSettingsBundle({}, withRefs())
+    const deps = fakeApplyDeps()
+    const report = await applySettingsBundle(bundle, {}, deps)
+    expect(report.mcpServers.added).toEqual(["claude-code:global:up"])
+    expect(report.mcpDanglingSecrets).toEqual([
+      { id: "claude-code:global:up", headers: ["Authorization"] },
+    ])
+    const saved = await deps.loadImportedMcps()
+    expect(saved.imports[0]!.snapshot.headers).toEqual({ Authorization: "" })
+    expect(saved.imports[0]!.secretRefs).toBeUndefined()
+  })
+})

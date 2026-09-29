@@ -93,6 +93,11 @@
       "import": "./dist/release-check.mjs",
       "default": "./dist/release-check.mjs"
     },
+    "./bundles": {
+      "types": "./dist/bundles.d.ts",
+      "import": "./dist/bundles.mjs",
+      "default": "./dist/bundles.mjs"
+    },
     "./mcp-imports": {
       "types": "./dist/mcp-imports.d.ts",
       "import": "./dist/mcp-imports.mjs",

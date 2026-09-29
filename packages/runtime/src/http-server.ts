@@ -20,6 +20,7 @@
  * tool calls become a real use case.
  */
 
+import { buildLabeledStatsReport } from "./process-stats.js"
 import { parseBrowserMode } from "./browser-mount.js"
 import { randomUUID } from "node:crypto"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
@@ -149,9 +150,10 @@ import type { HarnessCapabilities } from "@agentproto/provider-kit"
 import {
   loadImportedMcps,
   saveImportedMcps,
-  addImport,
+  addImportWithSecrets,
   removeImport,
 } from "./mcp-imports.js"
+import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import { exportAgentSession } from "./transcript-export.js"
 import { parseWindow, rollupUsage } from "./usage-rollup.js"
 import { projectSessionUsage } from "./usage.js"
@@ -3422,13 +3424,23 @@ export async function startHttpServer(
             return
           }
           const cfg = await loadImportedMcps()
-          const next = addImport(cfg, {
-            snapshot,
-            ...(body.alias ? { alias: body.alias } : {}),
-          })
-          await saveImportedMcps(next)
+          const added = await addImportWithSecrets(
+            cfg,
+            {
+              snapshot,
+              ...(body.alias ? { alias: body.alias } : {}),
+            },
+            getMcpCredentialDeps()
+          )
+          await saveImportedMcps(added.config)
           res.writeHead(201, { "content-type": "application/json" })
-          res.end(JSON.stringify(next.imports.find(e => e.id === snapshot.id)))
+          res.end(
+            JSON.stringify(
+              added.warnings.length > 0
+                ? { ...added.entry, warnings: added.warnings }
+                : added.entry
+            )
+          )
           return
         }
         const importMatch = path.match(/^\/mcps\/imports\/(.+)$/)
@@ -3921,7 +3933,7 @@ export async function startHttpServer(
               id: String(body?.id ?? ""),
               label: String(body?.label ?? ""),
               ...(body?.description ? { description: body.description } : {}),
-              mcpImports: Array.isArray(body?.mcpImports) ? body.mcpImports : [],
+              mcpImports: Array.isArray(body?.mcpImports) ? body.mcpImports : body?.mcpImports === "*" ? "*" : [],
               ...(body?.includeDaemon !== undefined ? { includeDaemon: body.includeDaemon } : {}),
               skills: Array.isArray(body?.skills) ? body.skills : [],
             })
@@ -5807,6 +5819,36 @@ async function handleSessions(
     }
     res.writeHead(200, { etag, "content-type": "application/json" })
     res.end(serialized)
+    return true
+  }
+
+  // GET /sessions/stats?detail=summary|full&fresh=true - per-session process
+  // resource stats (RSS, %CPU, process count, top commands) from the shared
+  // sampler, plus the daemon / provisioning / orphan buckets and host
+  // load + free memory. Same report the `session_stats` MCP tool returns.
+  if (path === "/sessions/stats" && req.method === "GET") {
+    const reqUrl = req.url ?? ""
+    const params = new URLSearchParams(reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "")
+    const detail = params.get("detail")
+    if (detail !== null && detail !== "summary" && detail !== "full") {
+      json(400, {
+        error: "invalid_detail",
+        message: `?detail must be "summary" or "full", got ${JSON.stringify(detail)}.`,
+      })
+      return true
+    }
+    try {
+      json(
+        200,
+        await buildLabeledStatsReport({
+          sessions: registry.list({ includeArchived: true }),
+          ...(detail ? { detail } : {}),
+          ...(params.get("fresh") === "true" ? { fresh: true } : {}),
+        }),
+      )
+    } catch (err) {
+      json(500, { error: "stats_failed", message: err instanceof Error ? err.message : String(err) })
+    }
     return true
   }
 
