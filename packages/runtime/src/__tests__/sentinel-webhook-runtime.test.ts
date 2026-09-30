@@ -87,6 +87,7 @@ describe("sentinel runtime — webhook fire path", () => {
 
     provider.emit(evt("evt_1"))
     await runtime.pollOnce()
+    await runtime.webhookOutbox.dispatch() // the enqueue's fire-and-forget chain drains here
 
     const rows = runtime.webhookOutbox.rows()
     expect(rows).toHaveLength(1)
@@ -130,6 +131,7 @@ describe("sentinel runtime — webhook fire path", () => {
 
     provider.emit(evt("evt_1"))
     await runtime.pollOnce()
+    await runtime.webhookOutbox.dispatch()
 
     const row = runtime.webhookOutbox.rows()[0]!
     expect(row.status).toBe("pending")
@@ -187,6 +189,7 @@ describe("sentinel runtime — webhook fire path", () => {
 
     provider.emit(evt("evt_1"))
     await runtime.pollOnce()
+    await runtime.webhookOutbox.dispatch()
     expect(store.get(sentinel.id)!.status).toBe("active")
 
     store.update(sentinel.id, { spec: { ...webhookSpec(), until: { kind: "at", ms: Date.now() - 1000 } } })
@@ -323,6 +326,7 @@ describe("sentinel runtime — webhook fire path", () => {
     // Pre-deliver once with the single secret.
     provider.emit(evt("evt_a"))
     await runtime.pollOnce()
+    await runtime.webhookOutbox.dispatch()
     expect(seenReplays[0]!.replay.secrets).toEqual([whsecSecret])
     expect(store.isSeen(sentinel.id, "evt_a")).toBe(true)
 
@@ -333,6 +337,7 @@ describe("sentinel runtime — webhook fire path", () => {
     provider.emit(evt("evt_b"))
     now = tRotation + 60_000 // inside the 10-min window
     await runtime.pollOnce()
+    await runtime.webhookOutbox.dispatch()
     expect(seenReplays.length).toBe(2)
     expect(seenReplays[1]!.replay.secrets).toEqual([whsecSecret2, whsecSecret])
 
@@ -340,6 +345,7 @@ describe("sentinel runtime — webhook fire path", () => {
     provider.emit(evt("evt_c"))
     now = tRotation + 11 * 60_000
     await runtime.pollOnce()
+    await runtime.webhookOutbox.dispatch()
     expect(seenReplays[2]!.replay.secrets).toEqual([whsecSecret2])
 
     // And the dual-sign header space: `v1,<A> v1,<B>` — distinct signatures.

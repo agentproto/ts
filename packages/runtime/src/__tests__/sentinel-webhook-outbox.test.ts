@@ -39,7 +39,7 @@ function makeOutbox(opts?: {
     ...(opts?.filePath ? { filePath: opts.filePath } : {}),
     ...(opts?.nowMs ? { nowMs: opts.nowMs } : {}),
     ...(opts?.deliver ? { deliverEvent: opts.deliver } : {}),
-    secretsFor: sentinelId => replay(sentinelId),
+    secretsFor: sentinelId => sidecarReplay(sentinelId),
     isExpired: opts?.isExpired ?? (() => false),
     onTerminal: (sentinelId, row) => acks.push({ sentinelId, row }),
   })
@@ -48,7 +48,7 @@ function makeOutbox(opts?: {
 
 // Secrets sidecar stand-in: each sentinel id gets the same replay config.
 const secretMap = new Map<string, DeliveryReplay>()
-function replay(sentinelId: string): DeliveryReplay | null {
+function sidecarReplay(sentinelId: string): DeliveryReplay | null {
   return secretMap.get(sentinelId) ?? null
 }
 
