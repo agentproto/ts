@@ -104,6 +104,23 @@ describe("daemon", () => {
     expect((await a.apply(fake.io)).ok).toBe(true)
     expect(fake.calls).toEqual(["ensureDaemon"])
   })
+
+  it("Windows, not installed ⇒ install the scheduled task then start, default yes", async () => {
+    const win = createFakeContext({ platform: "win32" })
+    const actions = await daemonStep.plan?.(
+      [
+        { id: "daemon.health", title: "", status: "missing", fix: "agentproto daemon install" },
+        { id: "daemon.service", title: "", status: "warn", fix: "agentproto daemon install" },
+      ],
+      win,
+      none,
+    )
+    const a = action(actions ?? [], "daemon.install")
+    expect(a.default).toBe(true)
+    const fake = createFakeSetup(win)
+    expect((await a.apply(fake.io)).ok).toBe(true)
+    expect(fake.calls).toEqual(["daemon install", "daemon start"])
+  })
 })
 
 describe("agents", () => {

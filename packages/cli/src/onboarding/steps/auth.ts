@@ -97,7 +97,8 @@ export const authStep: OnboardingStep = {
     if (pending.length > 0) {
       actions.push({
         id: "auth.import",
-        title: "Import the credentials found on this machine as auth profiles",
+        title:
+          "Found logins from tools already installed here (claude-code, codex, gemini, …). Import them as agentproto credentials so spawned agents can bill through them?",
         default: true,
         choices: pending.map((p) => ({
           value: `${p.origin} ${p.endpoint}`,

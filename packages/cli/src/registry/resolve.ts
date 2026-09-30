@@ -962,7 +962,8 @@ export async function listInstalledAdapters(opts?: {
           notImportable.push(slug)
         } else {
           console.warn(
-            `[agentproto/cli] listInstalledAdapters: skipping broken adapter '${slug}': ${msg}`
+            `[agentproto/cli] listInstalledAdapters: skipping adapter '${slug}' — the package is on disk but cannot be imported ` +
+              `(dist missing or malformed?): ${msg}. Fix: reinstall it (\`npm i -g @agentproto/adapter-${slug}\`) or reinstall the CLI.`
           )
         }
       }
@@ -983,7 +984,8 @@ export async function listInstalledAdapters(opts?: {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       console.warn(
-        `[agentproto/cli] listInstalledAdapters: skipping broken workspace-local adapter '${slug}': ${msg}`
+        `[agentproto/cli] listInstalledAdapters: skipping broken workspace-local adapter '${slug}' — it exists in this workspace but cannot be imported` +
+          ` (build it: \`pnpm --filter ./adapters/${slug} build\`): ${msg}`
       )
     }
   }

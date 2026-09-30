@@ -2,10 +2,12 @@
  * `agentproto daemon <install|uninstall|start|stop|status|logs>`
  *
  * Service-management shim. On macOS we wrap `launchctl` with a
- * generated `~/Library/LaunchAgents/sh.agentproto.plist`; on Linux
- * we'll wrap `systemctl --user` once that path is finished (the
- * verb prints "not yet" until then). Windows: same, NSSM/Task
- * Scheduler is on the followup list.
+ * generated `~/Library/LaunchAgents/sh.agentproto.plist`; on Windows
+ * we wrap the Task Scheduler — a per-user `schtasks /SC ONLOGON`
+ * task (no admin needed) whose payload is a generated
+ * `~/.agentproto/agentproto-daemon.cmd` launcher. On Linux we'll
+ * wrap `systemctl --user` once that path is finished (the verb
+ * prints "not yet" until then).
  *
  * The plist's `ProgramArguments` is built from `~/.agentproto/config.json`'s
  * `daemon.*` keys (workspace, port, bind, allowedOrigins). The user
@@ -60,12 +62,12 @@ export const LAUNCHD_LABEL = LABEL
 const USAGE = `agentproto daemon — run agentproto serve as a background service
 
 Usage:
-  agentproto daemon install [--dry-run]   register service + start it (macOS launchd today)
+  agentproto daemon install [--dry-run]   register service + start it (macOS launchd, Windows Task Scheduler)
   agentproto daemon uninstall             stop + deregister service
-  agentproto daemon start                 launchctl kickstart (idempotent; never kills a healthy daemon)
-  agentproto daemon restart               launchctl kickstart -k (kill + relaunch; replaces \`pnpm killport 18790\`)
-  agentproto daemon stop                  launchctl kill SIGTERM
-  agentproto daemon status                installed? loaded? /health reachable?
+  agentproto daemon start                 start the service (idempotent; never kills a healthy daemon)
+  agentproto daemon restart               kill + relaunch (replaces \`pnpm killport 18790\`)
+  agentproto daemon stop                  stop the service
+  agentproto daemon status                installed? running? /health reachable?
   agentproto daemon logs [--lines <N>]    tail daemon.log
 
 Configure defaults via \`agentproto config set\` before \`install\`:
@@ -79,10 +81,34 @@ export async function runDaemon(args: readonly string[]): Promise<number> {
     process.stdout.write(USAGE)
     return args.length === 0 ? 2 : 0
   }
+  if (osPlatform() === "win32") {
+    const sub = args[0]
+    switch (sub) {
+      case "install":
+        return runWinInstall(args.slice(1))
+      case "uninstall":
+        return runWinUninstall()
+      case "start":
+        return runWinStart()
+      case "restart":
+        return runWinRestart()
+      case "stop":
+        return runWinStop()
+      case "status":
+        return runWinStatus()
+      case "logs":
+        return runLogs(args.slice(1))
+      default:
+        process.stderr.write(
+          `agentproto daemon: unknown sub-verb "${sub}".\n\n${USAGE}`,
+        )
+        return 2
+    }
+  }
   if (osPlatform() !== "darwin") {
     process.stderr.write(
-      `agentproto daemon: ${osPlatform()} not yet supported. macOS (launchd) ships today; ` +
-        "Linux (systemd --user) and Windows are on the follow-up list. " +
+      `agentproto daemon: ${osPlatform()} not yet supported. macOS (launchd) and Windows (Task Scheduler) ship today; ` +
+        "Linux (systemd --user) is on the follow-up list. " +
         "In the meantime: `agentproto serve &; disown` will detach the daemon from your shell.\n",
     )
     return 2
@@ -127,10 +153,10 @@ export function launchdPlistPath(home: string = homedir()): string {
   return join(home, "Library", "LaunchAgents", `${LABEL}.plist`)
 }
 
-function paths(): Paths {
+function paths(home: string = homedir()): Paths {
   return {
-    plist: launchdPlistPath(),
-    log: join(homedir(), ".agentproto", "daemon.log"),
+    plist: launchdPlistPath(home),
+    log: join(home, ".agentproto", "daemon.log"),
     // process.execPath is the Node binary running THIS process (the
     // one running `agentproto daemon install`). Captures fnm / nvm /
     // homebrew / system Node correctly. argv[1] is the cli.mjs entry
@@ -868,6 +894,257 @@ function xmlEscape(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
+}
+
+// ---------------------------------------------------------------------------
+// Windows (schtasks)
+//
+// No plist on Windows — the equivalent generated file is
+// `~/.agentproto/agentproto-daemon.cmd`, a one-line cmd launcher whose args
+// come out of the same `buildServeArgv(cfg)` snapshot launchd's
+// `ProgramArguments` uses. `schtasks /TR` is a single stored command string
+// whose quoting rules (re-parsed by Task Scheduler AND by cmd routinely) are
+// hostile to multi-argv payloads and to output redirection, so the task's
+// /TR is just the quoted launcher path; the .cmd file is where redirection
+// (`>> daemon.log 2>&1`) and argv quoting live. Per-user task (HKCU) — no
+// admin required. Same three-part `status` shape as the launchd branch.
+// ---------------------------------------------------------------------------
+
+/** The Task Scheduler task name. Exported for read-only probes (doctor,
+ *  the onboarding daemon step's `schtasks /Query`). */
+export const SCHTASKS_TASK_NAME = "agentproto-daemon"
+
+/** Where `daemon install` writes the Windows launcher. */
+export function schtasksTaskScriptPath(home: string = homedir()): string {
+  return join(home, ".agentproto", `${SCHTASKS_TASK_NAME}.cmd`)
+}
+
+/** Injectable sync step ahead of `kickstart` — see the PATH self-heal
+ *  section above. */
+export type SchtasksFn = (args: string[]) => Promise<LaunchctlResult>
+
+/** The /TR payload for a task whose payload is a single launcher path —
+ *  double-quoted (Task Scheduler stores it verbatim; the outer quoting is
+ *  what keeps paths with spaces intact). Pure — unit-tested without real
+ *  schtasks. */
+export function renderSchtasksTr(commandPath: string): string {
+  return `"${commandPath.replace(/"/g, '\\"')}"`
+}
+
+/** The launcher .cmd's body: quoted argv + merged stdout/stderr redirection
+ *  into `~/.agentproto/daemon.log` (the plist equivalents are
+ *  StandardOutPath/StandardErrorPath). Pure — unit-tested without real cmd. */
+export function renderWinDaemonScript(argv: readonly string[], logPath: string): string {
+  const q = (a: string): string =>
+    a.includes(" ") || a.includes('"') ? `"${a.replace(/"/g, '""')}"` : a
+  return `@echo off\n${argv.map(q).join(" ")} >> "${logPath}" 2>&1\n`
+}
+
+function schtasks(args: string[]): Promise<LaunchctlResult> {
+  return new Promise(resolve => {
+    const child = spawn("schtasks", args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
+    let stdout = ""
+    let stderr = ""
+    child.stdout?.setEncoding("utf8").on("data", c => (stdout += c))
+    child.stderr?.setEncoding("utf8").on("data", c => (stderr += c))
+    child.on("error", err => resolve({ code: 127, stdout, stderr: err.message }))
+    child.on("exit", code => resolve({ code: code ?? 1, stdout, stderr }))
+  })
+}
+
+export async function runWinInstall(
+  args: readonly string[] = [],
+  schtasksFn: SchtasksFn = schtasks,
+  /** Home override — tests point this at a temp dir so no real launcher is
+   *  ever written. */
+  home: string = homedir(),
+): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    allowPositionals: false,
+    strict: true,
+    options: { "dry-run": { type: "boolean" } },
+  })
+  const cfg = await loadConfig()
+  const p = paths(home)
+  const scriptPath = schtasksTaskScriptPath(home)
+  const script = renderWinDaemonScript([...p.argv, ...buildServeArgv(cfg)], p.log)
+  const create = [
+    "/Create", "/TN", SCHTASKS_TASK_NAME,
+    // Per-user task under HKCU, runs at logon, overwrite any previous one.
+    // No elevation required.
+    "/SC", "ONLOGON", "/F",
+    "/TR", renderSchtasksTr(scriptPath),
+  ]
+
+  if (values["dry-run"]) {
+    process.stdout.write(
+      `# Would write ${scriptPath}:\n\n${script}\n# schtasks ${create.join(" ")}\n# schtasks /Run /TN ${SCHTASKS_TASK_NAME}\n`,
+    )
+    return 0
+  }
+
+  await fs.mkdir(dirname(p.log), { recursive: true })
+  try {
+    await fs.writeFile(scriptPath, script, "utf8")
+  } catch (err) {
+    process.stderr.write(
+      `agentproto daemon install: failed to write launcher: ${err instanceof Error ? err.message : String(err)}\n`,
+    )
+    return 1
+  }
+  process.stdout.write(`agentproto daemon: wrote ${scriptPath}\n`)
+
+  const created = await schtasksFn(create)
+  if (created.code !== 0) {
+    process.stderr.write(
+      `agentproto daemon install: schtasks create failed (exit ${created.code})\n${created.stderr}\n`,
+    )
+    return 1
+  }
+  const started = await schtasksFn(["/Run", "/TN", SCHTASKS_TASK_NAME])
+  if (started.code !== 0) {
+    process.stderr.write(
+      `agentproto daemon install: task registered but schtasks start failed (exit ${started.code})\n${started.stderr}\n`,
+    )
+    return 1
+  }
+  process.stdout.write(
+    `agentproto daemon: registered as a scheduled task at logon and started. Tail logs: agentproto daemon logs\n`,
+  )
+  return 0
+}
+
+export async function runWinUninstall(
+  schtasksFn: SchtasksFn = schtasks,
+): Promise<number> {
+  // Best-effort stop first — a task mid-run can't be deleted cleanly.
+  await schtasksFn(["/End", "/TN", SCHTASKS_TASK_NAME])
+  const out = await schtasksFn(["/Delete", "/TN", SCHTASKS_TASK_NAME, "/F"])
+  if (out.code !== 0) {
+    if (/\b(ERROR:)?\s*the system cannot find|does not exist|no such task/i.test(out.stderr + out.stdout)) {
+      process.stdout.write(
+        `agentproto daemon: scheduled task ${SCHTASKS_TASK_NAME} already absent\n`,
+      )
+      return 0
+    }
+    process.stderr.write(
+      `agentproto daemon uninstall: schtasks delete failed (exit ${out.code})\n${out.stderr}\n`,
+    )
+    return 1
+  }
+  process.stdout.write(`agentproto daemon: removed scheduled task ${SCHTASKS_TASK_NAME}\n`)
+  return 0
+}
+
+export async function runWinStart(
+  schtasksFn: SchtasksFn = schtasks,
+  health: HealthFetchFn = fetchHealth,
+  probeAttempts = 20,
+): Promise<number> {
+  const out = await schtasksFn(["/Run", "/TN", SCHTASKS_TASK_NAME])
+  if (out.code !== 0) {
+    process.stderr.write(
+      `agentproto daemon start: ${out.stderr || "schtasks exited " + out.code}\n` +
+        `  Run \`agentproto daemon install\` first.\n`,
+    )
+    return out.code
+  }
+  printLifecycleInfo("started", await waitForHealth(health, probeAttempts, 300))
+  return 0
+}
+
+export async function runWinRestart(
+  schtasksFn: SchtasksFn = schtasks,
+  health: HealthFetchFn = fetchHealth,
+  probeAttempts = 20,
+): Promise<number> {
+  // /End fails harmlessly when the task isn't mid-run; /Run always relaunches.
+  await schtasksFn(["/End", "/TN", SCHTASKS_TASK_NAME])
+  const out = await schtasksFn(["/Run", "/TN", SCHTASKS_TASK_NAME])
+  if (out.code !== 0) {
+    process.stderr.write(
+      `agentproto daemon restart: ${out.stderr || "schtasks exited " + out.code}\n` +
+        `  Run \`agentproto daemon install\` first.\n`,
+    )
+    return out.code
+  }
+  printLifecycleInfo("restarted", await waitForHealth(health, probeAttempts, 300))
+  return 0
+}
+
+export async function runWinStop(schtasksFn: SchtasksFn = schtasks): Promise<number> {
+  const out = await schtasksFn(["/End", "/TN", SCHTASKS_TASK_NAME])
+  if (out.code !== 0) {
+    process.stderr.write(
+      `agentproto daemon stop: ${out.stderr || "schtasks exited " + out.code}\n`,
+    )
+    return out.code
+  }
+  process.stdout.write("agentproto daemon: task ended\n")
+  return 0
+}
+
+export async function runWinStatus(schtasksFn: SchtasksFn = schtasks): Promise<number> {
+  const p = paths()
+  const cfg = await loadConfig()
+  const port = cfg.daemon?.port ?? 18790
+  const bind = cfg.daemon?.bind ?? "127.0.0.1"
+
+  // 1. task registered? (`schtasks /Query /TN <name>` exits 0 iff found.)
+  const query = await schtasksFn(["/Query", "/TN", SCHTASKS_TASK_NAME])
+  const installed = query.code === 0
+  // Task Scheduler prints a `Status:` line ("Ready", "Running", …); grab it
+  // best-effort so an output-format change degrades to just the state word.
+  const status = query.stdout.match(/^\s*Status:\s*(\S.*)$/m)?.[1]?.trim() ?? null
+
+  // 2. /health probe — same shape as the launchd branch.
+  let health: string | null = null
+  let release: string | null = null
+  let buildSource: ReleaseBuildSource = null
+  try {
+    const res = await fetch(`http://${bind}:${port}/health`, {
+      signal: AbortSignal.timeout(800),
+    })
+    if (res.ok) {
+      const body = (await res.json().catch(() => ({}))) as {
+        workspace?: string
+        uptimeMs?: number
+        version?: string | null
+        build?: DaemonHealthInfo["build"]
+      }
+      health =
+        `ok${body.version ? ` · v${body.version}` : ""}${renderBuild(body.build)}` +
+        ` · workspace=${body.workspace ?? "?"} · up ${humaniseUptime(body.uptimeMs ?? 0)}`
+      buildSource = body.build?.source === "workspace" ? "workspace" : "tarball"
+      release = await renderReleaseStatus(body.version ?? null, buildSource)
+    } else {
+      health = `HTTP ${res.status}`
+    }
+  } catch {
+    health = "unreachable"
+  }
+
+  process.stdout.write(
+    `agentproto daemon status\n` +
+      `  task:      ${installed ? "registered" : "not registered"} (${SCHTASKS_TASK_NAME})\n` +
+      `  schtasks:  ${installed ? (status ?? "registered") : "not registered"}` +
+      `\n` +
+      `  /health:   ${health}  (http://${bind}:${port})\n` +
+      `  release:   ${release ?? "unknown"}\n` +
+      `  config:    ${CONFIG_FILE_PATH()}\n` +
+      `  logs:      ${p.log}\n`,
+  )
+  try {
+    const buf = await fs.readFile(p.log, "utf8")
+    const tail = buf.split("\n").slice(-6).join("\n").trim()
+    if (tail) {
+      process.stdout.write(`\n  recent logs:\n${indent(tail, "    ")}\n`)
+    }
+  } catch {
+    /* no log yet */
+  }
+  return installed ? 0 : 1
 }
 
 interface LaunchctlResult {
