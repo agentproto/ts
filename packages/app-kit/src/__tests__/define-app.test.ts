@@ -479,11 +479,30 @@ describe("defineApp — ui.extensions.openai v1 contract", () => {
     ).toThrow(/declares 'inline' more than once/)
   })
 
+  it("rejects a sibling vendor namespace next to openai", () => {
+    // `ui.extensions` accepts ONLY the `openai` namespace — a sibling key
+    // (typo, future vendor block, hand-authored drift) is rejected with the
+    // exact field path rather than silently carried through.
+    expect(() =>
+      app({
+        html: "<html><body>Panel</body></html>",
+        tools: ["dossier_list"],
+        extensions: { openai: {}, chatgpt: {} },
+      }),
+    ).toThrow(AppDefinitionError)
+    expect(() =>
+      app({
+        html: "<html><body>Panel</body></html>",
+        tools: ["dossier_list"],
+        extensions: { openai: {}, chatgpt: {} },
+      }),
+    ).toThrow(/ui\.extensions\.chatgpt.*not supported/)
+  })
+
   it("openai-v1-rejects-unknown-extension-keys", () => {
     // Cut v1 features do not parse as "future-compatible" placeholders —
     // they fail with the exact field path so nothing is half-advertised.
     for (const [location, badObject] of [
-      ["namespace: extensions only accepts openai", { forms: {} }],
       ["cut: openai.forms", { forms: {} }],
       ["cut: openai.settings", { settings: {} }],
       ["cut: openai.resources", { resources: { write: true } }],

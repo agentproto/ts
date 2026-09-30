@@ -49,7 +49,7 @@ import type {
   AppDevDefinition,
   AppHandle,
   AppUiBuildConfig,
-  OpenAIAppUiExtension,
+  AppUiDefinition,
 } from "./types.js"
 import { defineApp } from "./define-app.js"
 import { AppLoadError } from "./errors.js"
@@ -75,9 +75,13 @@ interface AppFrontmatterUi {
     readonly frameDomains?: readonly string[]
   }
   readonly build?: AppUiBuildConfig
-  /** Namespaced vendor extension metadata; `openai` is the only namespace
-   *  (validated by `defineApp`, which this loader re-runs through). */
-  readonly extensions?: { readonly openai?: unknown }
+  /**
+   * Namespaced vendor extension metadata. Passed through to `defineApp`
+   * UNFILTERED (not just `openai`) so its namespace check — `ui.extensions`
+   * accepts ONLY `openai` — actually runs against a hand-authored APP.md's
+   * sibling keys too, not just the TS-authoring path.
+   */
+  readonly extensions?: { readonly [key: string]: unknown }
 }
 
 interface AppFrontmatterArtifact {
@@ -423,14 +427,13 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
       ...(fm.ui.port !== undefined ? { port: fm.ui.port } : {}),
       ...(fm.ui.csp !== undefined ? { csp: fm.ui.csp } : {}),
       ...(build !== undefined ? { build } : {}),
+      // Pass through UNFILTERED — `defineApp`'s
+      // `validateOpenAIExtensionsNamespace` rejects any sibling vendor key
+      // (a typo, a future vendor block, hand-authored drift) with the same
+      // diagnostic the TS-authoring path throws. Pre-filtering to `openai`
+      // here would silently drop those instead of failing loudly.
       ...(fm.ui.extensions !== undefined
-        ? {
-            extensions: {
-              ...(fm.ui.extensions.openai !== undefined
-                ? { openai: fm.ui.extensions.openai as unknown as OpenAIAppUiExtension }
-                : {}),
-            },
-          }
+        ? { extensions: fm.ui.extensions as unknown as AppUiDefinition["extensions"] }
         : {}),
     }
   }
