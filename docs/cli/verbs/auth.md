@@ -279,9 +279,11 @@ agentproto auth cred list --json
 agentproto auth cred rm my-api
 ```
 
-`set` writes the secret to the OS keychain (not `credentials.json`) and
-persists the non-secret provider definition (`apiBase`, `audience`,
-`description`) to `~/.agentproto/auth-providers.json`. `--audience` defaults
+`set` writes the secret to the OS key store (not `credentials.json`) — macOS
+Keychain, or on Windows a DPAPI-protected file per slot under
+`~/.agentproto/keychain-dpapi/` — and persists the non-secret provider
+definition (`apiBase`, `audience`, `description`) to
+`~/.agentproto/auth-providers.json`. `--audience` defaults
 to `"mcp"`. `list`/`rm` also accept `ls` / `remove`|`delete` as aliases.
 A spawned agent's `mcpServers[].credentialRef` (matching the registered
 `id`, optionally `"<id>/<account>"`) resolves through this broker at spawn

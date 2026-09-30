@@ -134,15 +134,25 @@ describe("platform guard", () => {
   it("throws a clear error on a non-macOS platform (read)", async () => {
     pinPlatform("linux")
     await expect(readKeychainToken("svc", "acct")).rejects.toThrow(
-      /only supports macOS/,
+      /only supports macOS and Windows/,
     )
   })
 
-  it("throws a clear error on a non-macOS platform (write)", async () => {
+  it("win32 dispatches to the DPAPI backend (write + read + delete)", async () => {
     pinPlatform("win32")
-    await expect(writeKeychainToken("svc", "acct", "t")).rejects.toThrow(
-      /only supports macOS/,
+    vi.clearAllMocks()
+    execFileMock.mockImplementation(
+      (_cmd: string, _args: string[], _opts: unknown, cb: (e: unknown, r: unknown) => void) =>
+        cb(null, { stdout: "1" }),
     )
+    // The DPAPI backend runs through the same mocked execFile: the write
+    // must issue a `powershell` command (its argv carries the -Command
+    // script), never the `security` CLI, and must not throw.
+    await expect(writeKeychainToken("svc", "acct", "t")).resolves.toBeUndefined()
+    const call = execFileMock.mock.calls[0] as [string, string[]]
+    expect(call[0]).toBe("powershell")
+    expect(call[1]).toContain("-NoProfile")
+    expect(JSON.stringify(call[1])).toContain("ProtectedData]::Protect")
   })
 
   it("does not guard the pure resolveAccount helper", () => {

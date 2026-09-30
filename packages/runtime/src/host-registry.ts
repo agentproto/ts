@@ -1047,7 +1047,7 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
   async function forwardHttp(idOrName: string, req: ForwardHttpRequest): Promise<ForwardHttpResponse> {
     await ensureLoaded()
     const record = findHost(idOrName)
-    if (!record) throw new Error(`no host matched "${idOrName}"`)
+    if (!record) throw hostLookupError(idOrName)
 
     onlineCounts.set(record.fingerprint, (onlineCounts.get(record.fingerprint) ?? 0) + 1)
     let client: TunnelClient | undefined
@@ -1071,7 +1071,7 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
   ): Promise<ForwardHttpStreamResponse> {
     await ensureLoaded()
     const record = findHost(idOrName)
-    if (!record) throw new Error(`no host matched "${idOrName}"`)
+    if (!record) throw hostLookupError(idOrName)
 
     onlineCounts.set(record.fingerprint, (onlineCounts.get(record.fingerprint) ?? 0) + 1)
     let decremented = false
@@ -1357,4 +1357,18 @@ function isEnoent(err: unknown): boolean {
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * The one "no host matched" lookup failure, with the pairing-direction hint
+ * that made `pair offer --host` (recap E9) take three attempts live: devices
+ * resolve role:host only, and an offer accepted on the WRONG side inverts
+ * the roles. The message prefix stays grep-compatible ("no host matched").
+ */
+export function hostLookupError(idOrName: string): Error {
+  return new Error(
+    `no host matched "${idOrName}" — devices resolve role:host only: ` +
+      `if you accepted an offer on the other machine, the roles may be ` +
+      `inverted; see \`agentproto pair --help\``,
+  )
 }

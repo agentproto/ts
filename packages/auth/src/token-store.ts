@@ -1,13 +1,23 @@
 /**
- * Keychain helpers — read/write a token in the platform Keychain.
+ * Keychain helpers — read/write a token in the platform key store.
  *
- * Uses the macOS `security` CLI. On non-macOS hosts, callers should swap this
- * module for a platform-appropriate equivalent (libsecret on Linux, Credential
- * Manager on Windows).
+ * Platform switch:
+ * - macOS → the `security` CLI.
+ * - Windows → a DPAPI-protected file per slot (`win-token-store.ts`, .NET
+ *   `ProtectedData` at `CurrentUser` scope via PowerShell; per-user
+ *   encryption, no PowerShell `Get-StoredCredential` module needed).
+ * - Anything else (Linux) → still unsupported; libsecret would be the
+ *   equivalent to bring next.
  */
 
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
+
+import {
+  deleteDpapiToken,
+  readDpapiToken,
+  writeDpapiToken,
+} from "./win-token-store.js"
 
 const exec = promisify(execFile)
 
@@ -21,9 +31,9 @@ const exec = promisify(execFile)
 function assertKeychainSupported(): void {
   if (process.platform !== "darwin") {
     throw new Error(
-      `@agentproto/auth token-store: the Keychain backend only supports macOS ` +
-        `(got platform "${process.platform}"). Provide a libsecret (Linux) or ` +
-        `Credential Manager (Windows) implementation to run here.`,
+      `@agentproto/auth token-store: the Keychain backend only supports macOS and Windows ` +
+        `(got platform "${process.platform}"). Provide a libsecret (Linux) implementation ` +
+        `to run here.`,
     )
   }
 }
@@ -37,11 +47,12 @@ export function resolveAccount(
   return account.replace("{server}", server)
 }
 
-/** Read a token from the Keychain. Returns undefined if not found. */
+/** Read a token from the platform key store. Returns undefined if not found. */
 export async function readKeychainToken(
   service: string,
   account: string,
 ): Promise<string | undefined> {
+  if (process.platform === "win32") return readDpapiToken(service, account)
   assertKeychainSupported()
   try {
     const { stdout } = await exec("security", [
@@ -59,12 +70,13 @@ export async function readKeychainToken(
   }
 }
 
-/** Write a token to the Keychain (-U updates in place). */
+/** Write a token to the platform key store (upsert). */
 export async function writeKeychainToken(
   service: string,
   account: string,
   token: string,
 ): Promise<void> {
+  if (process.platform === "win32") return writeDpapiToken(service, account, token)
   assertKeychainSupported()
   await exec("security", [
     "add-generic-password",
@@ -80,13 +92,14 @@ export async function writeKeychainToken(
   ])
 }
 
-/** Remove a token from the Keychain. Returns true if an entry was deleted,
+/** Remove a token from the platform key store. Returns true if an entry was deleted,
  *  false when none existed (a delete of an absent entry is not an error —
  *  the desired end state, "no credential at this slot", already holds). */
 export async function deleteKeychainToken(
   service: string,
   account: string,
 ): Promise<boolean> {
+  if (process.platform === "win32") return deleteDpapiToken(service, account)
   assertKeychainSupported()
   try {
     await exec("security", [

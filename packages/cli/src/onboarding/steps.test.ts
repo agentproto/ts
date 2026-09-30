@@ -8,6 +8,7 @@ import { preflightStep } from "./steps/preflight.js"
 import { workspaceStep } from "./steps/workspace.js"
 import { daemonStep } from "./steps/daemon.js"
 import { agentsStep, parseNpxPackage } from "./steps/agents.js"
+import { connectMachinesStep, DIRECTIONS } from "./steps/connect-machines.js"
 import { authStep } from "./steps/auth.js"
 import { clientsStep } from "./steps/clients.js"
 import { devicesStep } from "./steps/devices.js"
@@ -18,7 +19,7 @@ import { llmGatewayStep } from "./steps/llm-gateway.js"
 import { ONBOARDING_STEPS } from "./registry.js"
 import { runChecks } from "./run.js"
 import type { StepCheck } from "./types.js"
-import { HOME, createFakeContext, createFakeFs, healthyFiles } from "./__fixtures__/fake-context.js"
+import { HOME, createFakeContext, createFakeFs, defaultExec, healthyFiles } from "./__fixtures__/fake-context.js"
 import { createFakeSetup } from "./__fixtures__/fake-setup.js"
 
 function byId(checks: StepCheck[], id: string): StepCheck {
@@ -43,6 +44,7 @@ describe("healthy machine", () => {
       "workspace",
       "daemon",
       "agents",
+      "connect-machines",
       "auth",
       "clients",
       "devices",
@@ -57,8 +59,9 @@ describe("healthy machine", () => {
     const ctx = createFakeContext()
     await runChecks(ONBOARDING_STEPS, ctx)
     expect(ctx.fs.writes).toEqual([])
-    // Only read-only probes were spawned.
-    for (const call of ctx.execCalls) expect(call).toMatch(/^(launchctl print |bash -lc probe-)/)
+    // Only read-only probes were spawned (`launchctl print`, the adapter
+    // `probe-*` version checks, and the recap-B4 `command -v` shell probes).
+    for (const call of ctx.execCalls) expect(call).toMatch(/^(launchctl print |bash -lc (probe-|command -v ))/)
   })
 })
 
@@ -313,6 +316,59 @@ describe("agents", () => {
     expect(byId(checks, "agents.mastracode-inprocess")).toMatchObject({ status: "ok", detail: "available (in-process)" })
     expect(ctx.execCalls.some((c) => c.includes("npm view"))).toBe(false)
   })
+
+  // ── recap B4: stale daemon PATH diagnosis ──────────────────────────────
+
+  it("an adapter installed in the shell but missing from the daemon PATH warns with the restart fix", async () => {
+    const checks = await agentsStep.detect(
+      createFakeContext({
+        // opencode is the only catalog adapter the default exec leaves absent.
+        exec: (cmd, args) => {
+          const script = args[1] ?? ""
+          if (script === "command -v opencode") return { code: 0, stdout: "/opt/new/bin/opencode\n", stderr: "" }
+          return defaultExec(cmd, args)
+        },
+        health: { version: "1.0.0", uptimeMs: 1, path: "/usr/bin:/bin" }, // daemon PATH lacks /opt/new/bin
+      }),
+    )
+    const c = byId(checks, "agents.opencode")
+    expect(c.status).toBe("warn")
+    expect(c.detail).toContain("opencode is installed in your login shell (/opt/new/bin/opencode) but not visible to the daemon")
+    expect(c.detail).toContain("PATH captured at daemon start")
+    expect(c.fix).toBe("agentproto daemon restart")
+    // Not counted as "not installed": the install action would be wrong.
+    expect(byId(checks, "agents.not-installed").detail).not.toContain("opencode")
+  })
+
+  it("the shell probe is skipped when the daemon is not running", async () => {
+    const ctx = createFakeContext({
+      exec: (cmd, args) => {
+        const script = args[1] ?? ""
+        if (script === "command -v opencode") return { code: 0, stdout: "/opt/new/bin/opencode\n", stderr: "" }
+        return defaultExec(cmd, args)
+      },
+      health: null, // daemon down → no diagnosis, plain absent entry
+    })
+    const checks = await agentsStep.detect(ctx)
+    expect(ctx.execCalls.some((c) => c.includes("command -v opencode"))).toBe(false)
+    const c = checks.find((x) => x.id === "agents.not-installed")
+    expect(c?.detail).toContain("opencode")
+  })
+
+  it("no hint when the daemon PATH already contains the binary's directory", async () => {
+    const checks = await agentsStep.detect(
+      createFakeContext({
+        exec: (cmd, args) => {
+          const script = args[1] ?? ""
+          if (script === "command -v opencode") return { code: 0, stdout: "/usr/bin/opencode\n", stderr: "" }
+          return defaultExec(cmd, args)
+        },
+        health: { version: "1.0.0", uptimeMs: 1, path: "/usr/bin:/bin" },
+      }),
+    )
+    expect(checks.find((x) => x.id === "agents.opencode")).toBeUndefined()
+    expect(byId(checks, "agents.not-installed").detail).toContain("opencode")
+  })
 })
 
 describe("parseNpxPackage", () => {
@@ -429,7 +485,9 @@ describe("clients", () => {
 
 describe("devices", () => {
   it("no pairings is skipped", async () => {
-    const checks = await devicesStep.detect(createFakeContext())
+    const checks = await devicesStep.detect(
+      createFakeContext({ sources: { loadDevices: async () => [] } }),
+    )
     expect(checks).toEqual([
       expect.objectContaining({ id: "devices.count", status: "skipped" }),
     ])
@@ -498,6 +556,62 @@ describe("devices", () => {
     expect(byId(checks, "devices.count").detail).toContain("not checked")
   })
 })
+
+describe("connect-machines", () => {
+  const nonePaired = createFakeContext({ sources: { loadDevices: async () => [] } })
+
+  /** A minimal SetupIO-like stub that just records log.message lines. */
+  function printed() {
+    const logs: string[] = []
+    const io = { log: { message: (m: string) => logs.push(m) } }
+    return { io, logs }
+  }
+
+  it("a paired machine is settled; nothing paired proposes the direction", async () => {
+    const paired = await connectMachinesStep.detect(createFakeContext())
+    expect(byId(paired, "connect-machines.direction")).toMatchObject({ status: "ok", data: { count: 1 } })
+
+    const none = await connectMachinesStep.detect(nonePaired)
+    const c = byId(none, "connect-machines.direction")
+    expect(c).toMatchObject({ status: "warn" })
+    expect(c.detail).toContain("no machines paired")
+  })
+
+  it("the pilotable direction prints the host-offer commands with the CONTROLLER side explicit", async () => {
+    const checks = await connectMachinesStep.detect(nonePaired)
+    const [action] = (await connectMachinesStep.plan?.(checks, nonePaired, new Map())) ?? []
+    expect(action?.title).toContain("pilot")
+    const { io, logs } = printed()
+    const result = await (action as unknown as { apply: (io: unknown, selected?: string[]) => Promise<{ detail: string }> }).apply(io, [DIRECTIONS.pilotable])
+    expect(result.detail).toBe("commands printed above")
+    const text = logs.join("\n")
+    expect(text).toContain("agentproto pair offer --host")
+    expect(text).toContain("agentproto devices add <offer-url>")
+    expect(text).toContain("CONTROLLER")
+  })
+
+  it("the piloting direction names both sides of the client offer", async () => {
+    const checks = await connectMachinesStep.detect(nonePaired)
+    const [action] = (await connectMachinesStep.plan?.(checks, nonePaired, new Map())) ?? []
+    const { io, logs } = printed()
+    const result = await (action as unknown as { apply: (io: unknown, selected?: string[]) => Promise<{ detail: string }> }).apply(io, [DIRECTIONS.pilot])
+    expect(result.detail).toBe("commands printed above")
+    const text = logs.join("\n")
+    expect(text).toContain("agentproto pair offer")
+    expect(text).toContain("agentproto pair accept")
+  })
+
+  it("skip prints nothing", async () => {
+    const checks = await connectMachinesStep.detect(nonePaired)
+    const [action] = (await connectMachinesStep.plan?.(checks, nonePaired, new Map())) ?? []
+    const result = await (action as unknown as { apply: (io: unknown, selected?: string[]) => Promise<{ detail: string | undefined }> }).apply(ioNothing(), [DIRECTIONS.skip])
+    expect(result.detail).toBe("skipped")
+  })
+})
+
+function ioNothing(): unknown {
+  return { log: { message: () => {} } }
+}
 
 describe("rendezvous", () => {
   it("reachable direct reports ok with the hosted default url", async () => {
