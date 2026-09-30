@@ -186,21 +186,37 @@ export async function cancelSentinelWatch(
   return true
 }
 
+/** The wire view of a target: for a `webhook` target this is the REDACTED
+ *  shape — `url` yes, plus `hasSecret:true`/`secretRedacted:true`. The
+ *  secret material (or even its `secretRef` handle) NEVER crosses a
+ *  listing/get view (plan §4 W-B task 4 — code-verified leak closed here). */
+export type SentinelTargetView =
+  | Exclude<SentinelTarget, { kind: "webhook" }>
+  | { kind: "webhook"; url: string; hasSecret: true; secretRedacted: true }
+
 /** Compact wire view of a sentinel for tool/HTTP results — the internal-only
- *  fields (`handle`, `seen`, `terminalSubjects`) never leave the daemon. */
+ *  fields (`handle`, `seen`, `terminalSubjects`) and any secret material
+ *  never leave the daemon. */
 export interface SentinelView {
   id: string
   provider: string
   status: SentinelStatus
   match: SentinelMatchClause[]
   until: SentinelUntil
-  target: SentinelTarget
+  target: SentinelTargetView
   group?: string
   label?: string
   createdTs: number
   eventCount: number
   lastEventTs?: number
   lastError?: string
+}
+
+function targetView(target: SentinelTarget): SentinelTargetView {
+  if (target.kind === "webhook") {
+    return { kind: "webhook", url: target.url, hasSecret: true, secretRedacted: true }
+  }
+  return target
 }
 
 export function sentinelView(s: Sentinel): SentinelView {
@@ -210,7 +226,7 @@ export function sentinelView(s: Sentinel): SentinelView {
     status: s.status,
     match: s.spec.match,
     until: s.spec.until,
-    target: s.spec.target,
+    target: targetView(s.spec.target),
     ...(s.spec.group ? { group: s.spec.group } : {}),
     ...(s.spec.label ? { label: s.spec.label } : {}),
     createdTs: s.createdTs,
