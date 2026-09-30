@@ -225,20 +225,15 @@ describe("sentinel runtime — webhook fire path", () => {
       runtime1.webhookOutbox.flushSync()
       expect(store1.isSeen(sentinel1.id, "evt_1")).toBe(false)
 
-      // Run 2 (post-restore): fresh store+runtime over the same files.
-      const store2 = createSentinelStore({ persist: false })
-      const sentinel2 = store2.create({
-        provider: "fake",
-        handle: { provider: "fake", remoteId: "fake:widget-1", cursor: "1" },
-        spec: webhookSpec(),
-      })
-      const provider2 = createFakeSentinelProvider()
+      // Run 2 (post-restore): the STORE persists too — same store1 +
+      // provider1 in memory, a fresh runtime instance reads the persisted
+      // outbox file and re-dispatches the pending row at start().
       const run2Deliveries: Array<Uint8Array | undefined> = []
       let attempts = 0
       const runtime2 = createSentinelRuntime({
-        store: store2,
+        store: store1,
         registry: stubRegistry([]),
-        resolveProvider: async slug => (slug === provider2.slug ? provider2 : null),
+        resolveProvider: async slug => (slug === provider1.slug ? provider1 : null),
         isSessionAlive: () => true,
         restartSession: async id => id,
         outboxPath,
@@ -252,7 +247,7 @@ describe("sentinel runtime — webhook fire path", () => {
 
       const row = runtime2.webhookOutbox.rows()[0]!
       expect(row.status).toBe("delivered")
-      expect(store2.isSeen(sentinel2.id, "evt_1")).toBe(true)
+      expect(store1.isSeen(sentinel1.id, "evt_1")).toBe(true)
 
       // Re-delivered bytes are BIT-IDENTICAL to the stored bytes.
       expect(Buffer.from(run2Deliveries[0]!)).toEqual(Buffer.from(row.bodyBytes, "base64"))
