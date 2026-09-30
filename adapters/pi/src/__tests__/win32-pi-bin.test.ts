@@ -116,4 +116,48 @@ describe("locate/resolve on win32", () => {
       resolveWindowsPiSpawn("pi", ARGS, { ...WIN, pathEnv: "empty", exists: () => false }),
     ).toBeUndefined()
   })
+
+  it("shell:true fallback quotes a shim path containing a space", () => {
+    const spacedDir = join("C:\\Program Files", "pi-agent-bin")
+    const shim = shimPath(spacedDir)
+    const res = resolveWindowsPiSpawn("pi", ARGS, {
+      ...WIN,
+      pathEnv: spacedDir,
+      exists: (p) => p === shim,
+    })
+    expect(res).toBeDefined()
+    expect(res!.shell).toBe(true)
+    expect(res!.bin).toBe(`"${shim}"`)
+    // args here don't contain spaces, so they pass through unquoted
+    expect(res!.args).toEqual([...ARGS])
+  })
+
+  it("shell:true fallback quotes an arg containing a space too", () => {
+    const dir = CUR_BIN_DIR
+    const shim = shimPath(dir)
+    const argsWithSpace = ["--session", "a session id"] as const
+    const res = resolveWindowsPiSpawn("pi", argsWithSpace, {
+      ...WIN,
+      pathEnv: dir,
+      exists: (p) => p === shim,
+    })
+    expect(res!.args).toEqual(["--session", `"a session id"`])
+  })
+
+  it("an explicit absolute AGENTPROTO_PI_BIN override takes precedence over an unrelated pi hit on PATH", () => {
+    const overrideDir = join("/", "custom", "bin")
+    const shim = shimPath(overrideDir)
+    const otherDir = "other-pi-on-path"
+    const otherShim = shimPath(otherDir)
+    const res = resolveWindowsPiSpawn(shim, ARGS, {
+      ...WIN,
+      pathEnv: otherDir,
+      // Both the override AND an unrelated PATH entry resolve — the
+      // override must win, not the PATH scan.
+      exists: (p) => p === shim || p === otherShim,
+    })
+    expect(res).toBeDefined()
+    expect(res!.bin).toBe(shim)
+    expect(res!.shell).toBe(true)
+  })
 })

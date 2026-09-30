@@ -6,9 +6,14 @@
  * pi session start died with `spawn pi ENOENT` (WIN11, agentproto 1.7.1).
  *
  * Policy (mirrors win32-spawn.ts's stage-1/stage-2, win32 only):
- *   1. Scan `PATH` for the first hit of `<entry>/pi.exe`, `<entry>/pi.cmd`,
- *      `<entry>/pi.bat`, or a plain extensionless `<entry>/pi` (in that
- *      order — first entry wins, within an entry shim-aware).
+ *   0. An explicit absolute `bin` (an `AGENTPROTO_PI_BIN` override, or a
+ *      manifest `bin` with separators) always wins — checked BEFORE the
+ *      PATH scan, so a deliberately-pinned install is never shadowed by an
+ *      unrelated `pi` resolving earlier on PATH.
+ *   1. Otherwise scan `PATH` for the first hit of `<entry>/pi.exe`,
+ *      `<entry>/pi.cmd`, `<entry>/pi.bat`, or a plain extensionless
+ *      `<entry>/pi` (in that order — first entry wins, within an entry
+ *      shim-aware).
  *   2. `.exe` / extensionless (real native binary or POSIX-layout shell
  *      script dir) → spawn directly.
  *   3. `.cmd`/`.bat` shim → prefer the stage-1 rewrite: when a sibling
@@ -16,12 +21,27 @@
  *      the shim (npm global-prefix layout), spawn
  *      `{ bin: node, args: [packageEntryJs, …] }` — `shell:false`, no
  *      cmd.exe sees our argv. Else stage 2: spawn the `.cmd` with
- *      `shell: true` (args here are adapter-internal constants; user shell
- *      input never reaches this path).
+ *      `shell: true`, quoting `bin`/each arg when it contains whitespace
+ *      (args here are adapter-internal constants; user shell input never
+ *      reaches this path, but a shim path under a spaced dir — e.g. a
+ *      custom npm prefix or a spaced user profile — still needs quoting to
+ *      survive cmd.exe's unescaped argv join).
  */
 
 import { existsSync } from "node:fs"
 import { isAbsolute, join } from "node:path"
+
+/** Quote a `shell: true` argv token for cmd.exe when it contains whitespace.
+ *  Node's `shell: true` does no escaping of its own — it just joins
+ *  `[bin, ...args]` with spaces and hands the result to `cmd.exe /d /s /c`
+ *  — so an unquoted path containing a space (a custom npm prefix like
+ *  `C:\Program Files\npm`, or a spaced user profile dir) splits into
+ *  multiple tokens and misresolves or ENOENTs. Doubling any embedded `"`
+ *  mirrors cmd.exe's own escaping convention. */
+function quoteForShell(value: string): string {
+  if (!/\s/.test(value)) return value
+  return `"${value.replace(/"/g, '""')}"`
+}
 
 export interface WindowsPiBinResolution {
   bin: string
@@ -104,13 +124,17 @@ function findPiPackageEntry(
 }
 
 /** Resolve the pi spawn on win32:
- *  - no PATH hit → `undefined` (caller reports its own spawn ENOENT, and the
- *    error message still names the bare spec — same UX as POSIX).
+ *  - an explicit absolute `bin` always wins over the PATH scan (see module
+ *    doc policy step 0).
+ *  - no PATH hit (and no explicit absolute `bin`) → `undefined` (caller
+ *    reports its own spawn ENOENT, and the error message still names the
+ *    bare spec — same UX as POSIX).
  *  - `.exe` or extensionless `pi` → spawn directly, `shell` unset.
  *  - `.cmd`/`.bat` shim WITH a sibling package entry JS →
  *    `{ bin: node, args: [entryJs, ...rest] }`.
  *  - `.cmd`/`.bat` shim WITHOUT a sibling → spawn the shim with
- *    `shell: true` (args are adapter-internal constants only).
+ *    `shell: true`, `bin`/each arg quoted if it contains whitespace (args
+ *    are adapter-internal constants only).
  *  Returns `undefined` on POSIX (no divergence there). */
 export function resolveWindowsPiSpawn(
   bin: string,
@@ -120,11 +144,31 @@ export function resolveWindowsPiSpawn(
   if ((deps?.platform ?? process.platform) !== "win32") return undefined
   const exists = deps?.exists ?? existsSync
   const pathEnv = deps?.pathEnv ?? process.env.PATH ?? ""
+
+  // Explicit absolute path override (AGENTPROTO_PI_BIN, or a manifest `bin`
+  // with separators) always wins — checked BEFORE the PATH scan so a
+  // deliberately-pinned install is never shadowed by an unrelated `pi` that
+  // happens to resolve earlier on PATH. Apply the same per-extension policy
+  // a PATH-scanned shim would get.
+  if (isAbsolute(bin)) {
+    if (/\.(?:cmd|bat)$/i.test(bin)) {
+      const entryJs = findPiPackageEntry(join(bin, ".."), exists)
+      if (entryJs) {
+        return {
+          bin: deps?.execPath ?? process.execPath,
+          args: [entryJs, ...args],
+        }
+      }
+      return { bin: quoteForShell(bin), args: args.map(quoteForShell), shell: true }
+    }
+    // `.exe` or extensionless explicit path — spawn directly, no PATH scan
+    // or shell needed.
+    return { bin, args }
+  }
+
   const located = locateWindowsPi(pathEnv, { exists })
 
-  // Not found on PATH at all: if the caller passed an EXPLICIT path (env
-  // override or a manifest with separators), honor it like the fs layout
-  // above would; otherwise fall through to the bare spec and let the OS
+  // Not found on PATH at all: fall through to the bare spec and let the OS
   // produce the ENOENT surface.
   if (located) {
     if (located.kind === "shim") {
@@ -135,23 +179,10 @@ export function resolveWindowsPiSpawn(
           args: [entryJs, ...args],
         }
       }
-      return { bin: located.path, args, shell: true }
+      return { bin: quoteForShell(located.path), args: args.map(quoteForShell), shell: true }
     }
     // exe / native
     return { bin: located.path, args }
-  }
-
-  // Explicit absolute path override (AGENTPROTO_PI_BIN) — apply the same
-  // per-extension policy without a PATH scan.
-  if (isAbsolute(bin) && /\.(?:cmd|bat)$/i.test(bin)) {
-    const entryJs = findPiPackageEntry(join(bin, ".."), exists)
-    if (entryJs) {
-      return {
-        bin: deps?.execPath ?? process.execPath,
-        args: [entryJs, ...args],
-      }
-    }
-    return { bin, args, shell: true }
   }
 
   return undefined
