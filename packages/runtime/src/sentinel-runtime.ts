@@ -324,7 +324,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       const target = sentinel?.spec.target
       if (!sentinel || target?.kind !== "webhook") return null
       const stored: SentinelWebhookSecret | undefined = store.getSentinelSecret(
-        (target as SentinelWebhookTargetAtRest).secretRef,
+        (target as unknown as SentinelWebhookTargetAtRest).secretRef,
       )
       if (!stored) return null
       const windowMs = opts.secretRotationWindowMs ?? WEBHOOK_SECRET_ROTATION_WINDOW_MS
@@ -355,7 +355,8 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     const updated = store.get(sentinelId)
     if (!updated) return
     store.update(sentinelId, { eventCount: updated.eventCount + 1, lastEventTs: nowMs() })
-    const event = row.event
+    const withEvent = row as unknown as { event?: SentinelEvent }
+    const event = withEvent.event
     if (!event) return
     const provider = await opts.resolveProvider(sentinel.provider)
     if (!provider) return

@@ -44,7 +44,7 @@ function makeOutbox(opts: Opts = {}) {
       (async () => ({ ok: true, delivery: { attempts: 1, lastAt: new Date().toISOString() } })),
     secretsFor: sentinelId => secretMap.get(sentinelId) ?? null,
     isExpired: opts.isExpired ?? (() => false),
-    onTerminal: (sentinelId, row) => acks.push({ sentinelId, row }),
+    onTerminal: (sentinelId: string, row: PersistedOutboxRow) => acks.push({ sentinelId, row }),
   })
   return { outbox, acks }
 }
@@ -161,7 +161,7 @@ describe("sentinel webhook outbox", () => {
         },
         secretsFor: () => replayOf(),
         isExpired: () => false,
-        onTerminal: (sentinelId, row) => secondAcks.push({ sentinelId, row }),
+        onTerminal: (sentinelId: string, row: PersistedOutboxRow) => secondAcks.push({ sentinelId, row }),
       })
       await outbox2.resumeDeliveries()
 
