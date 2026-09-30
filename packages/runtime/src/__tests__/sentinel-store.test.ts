@@ -81,7 +81,7 @@ describe("SentinelStore", () => {
   it("drops the sidecar secret row when the sentinel is removed", () => {
     const store = createSentinelStore({ persist: false })
     const sentinel = store.create({ provider: "fake", handle: { provider: "fake" }, spec: webhookTestSpec })
-    const ref = (sentinel.spec.target as { secretRef: string }).secretRef
+    const ref = (sentinel.spec.target as { secretRef?: string }).secretRef as string
     expect(store.remove(sentinel.id)).toBe(true)
     expect(store.getSentinelSecret(ref)).toBeUndefined()
   })
@@ -92,7 +92,7 @@ describe("SentinelStore", () => {
     try {
       const store1 = createSentinelStore({ filePath, persist: true, debounceMs: 0 })
       const sentinel = store1.create({ provider: "fake", handle: { provider: "fake" }, spec: webhookTestSpec })
-      const ref = (sentinel.spec.target as { secretRef: string }).secretRef
+      const ref = (sentinel.spec.target as { secretRef?: string }).secretRef as string
       store1.flushSync()
 
       const secretsPath = join(dir, "sentinels-secrets.json")
@@ -114,7 +114,7 @@ describe("SentinelStore", () => {
   it("rotation: putSentinelSecret keeps prevSecret + rotatedAt for the dual-sign window", () => {
     const store = createSentinelStore({ persist: false })
     const sentinel = store.create({ provider: "fake", handle: { provider: "fake" }, spec: webhookTestSpec })
-    const ref = (sentinel.spec.target as { secretRef: string }).secretRef
+    const ref = (sentinel.spec.target as { secretRef?: string }).secretRef as string
     const nextSecret = "whsec_" + Buffer.from(new Uint8Array(32).fill(9)).toString("base64")
 
     const result = store.putSentinelSecret(ref, { secret: nextSecret })

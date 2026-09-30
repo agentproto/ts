@@ -260,9 +260,7 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
   // ── Dispatch worker (serialized; one POST in flight) ────────────────
 
   const oldestTerminalRowKey = (): string | undefined => {
-    const terminal = rows
-      .values()
-      .toArray()
+    const terminal = [...rows.values()]
       .filter(row => row.status === "delivered" || row.status === "dead")
       .sort((a, b) => (a.terminalAt ?? a.createdAt) - (b.terminalAt ?? b.createdAt))
       .at(0)
@@ -336,10 +334,7 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
 
   const enqueueDispatch = (): void => {
     const run = async (): Promise<void> => {
-      const pending = rows
-        .values()
-        .toArray()
-        .filter(row => row.status === "pending")
+      const pending = [...rows.values()].filter(row => row.status === "pending")
       for (const row of pending) await dispatchRow(row)
       reapDelivered()
       schedulePersist()

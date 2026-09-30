@@ -14,7 +14,7 @@ import { join } from "node:path"
 
 import { createSentinelStore } from "../sentinel-store.js"
 import { createSentinelRuntime } from "../sentinel-runtime.js"
-import { toWebhookEnvelope } from "../sentinel-webhook-outbox.js"
+import { toWebhookEnvelope, type PersistedOutboxRow } from "../sentinel-webhook-outbox.js"
 import { createFakeSentinelProvider, makeFakeEvent } from "../sentinel-providers/fake.js"
 import { serializeEnvelope, type DeliveryOutcome, type DeliveryReplay } from "../webhook-egress/delivery.js"
 import { signWebhook } from "../webhook-egress/signing.js"
@@ -76,7 +76,7 @@ describe("sentinel runtime — webhook fire path", () => {
       resolveProvider: async slug => (slug === provider.slug ? provider : null),
       isSessionAlive: () => true,
       restartSession: async id => id,
-      deliverEvent: async (input: { replay: DeliveryReplay; row: { bodyBytes?: string; event: unknown } }) => {
+      deliverEvent: async (input: { replay: DeliveryReplay; row: PersistedOutboxRow }) => {
         attempt++
         deliverCalls.push({
           replay: input.replay,
@@ -329,7 +329,7 @@ describe("sentinel runtime — webhook fire path", () => {
     expect(store.isSeen(sentinel.id, "evt_a")).toBe(true)
 
     // Rotate: putSentinelSecret with a new secret keeps prevSecret + rotatedAt.
-    const ref = (store.get(sentinel.id)!.spec.target as { secretRef: string }).secretRef
+    const ref = (store.get(sentinel.id)!.spec.target as { secretRef?: string }).secretRef as string
     store.putSentinelSecret(ref, { secret: whsecSecret2 })
 
     provider.emit(evt("evt_b"))
