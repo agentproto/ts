@@ -20,9 +20,10 @@ One run:
 3. Collects compact, read-only evidence (`session_evidence`) for up to 15
    `judge`-class sessions, most RAM first.
 4. Judges each one: with **Jev** (TypeSafe System One — a calibrated choice
-   with probabilities) when `JEV_API_KEY` resolves, else a one-shot **agent
-   judge** (sonnet). A Jev failure falls back to the agent judge for that
-   session; a malformed or failed judgement is `active` and never acted on.
+   with probabilities) when `jev.apiKey` from `~/.agentproto/config.json` or
+   the `JEV_API_KEY` env var resolves, else a one-shot **agent judge**
+   (sonnet). A Jev failure falls back to the agent judge for that session; a
+   malformed or failed judgement is `active` and never acted on.
 5. With `--ask-sessions`: asks low-confidence idle sessions directly whether
    they're done (one prompt each, ~3 min bounded wait).
 6. With `--apply`: confident (≥ `--min-confidence`) `done`/`abandoned`
@@ -38,7 +39,7 @@ acting.
 | `--apply` | `false` | Close / flag sessions. Without it: plan + verdicts only, nothing is touched. |
 | `--idle <min>` | `30` | Idle threshold in minutes. |
 | `--min-confidence <x>` | `0.8` | Judge confidence (0..1) needed to act on a verdict. |
-| `--judge <backend>` | `auto` | `auto` (Jev when `JEV_API_KEY` resolves, else the agent judge), `jev`, or `agent`. |
+| `--judge <backend>` | `auto` | `auto` (Jev when `jev.apiKey` config or `JEV_API_KEY` env resolves, else the agent judge), `jev`, or `agent`. |
 | `--ask-sessions` | `false` | Ask low-confidence sessions directly — spends a turn in their conversation. |
 | `--wait` | `false` | Block until the run ends, then print its markdown report. Exit `0` when done, `1` when it failed or was cancelled. |
 | `--json` | `false` | Print the raw `workflow_run_file` reply (with `--wait`: the finished run record). |

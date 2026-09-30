@@ -145,6 +145,24 @@ agentproto config set daemon.port 18791
   "features": {
     "pty": true,
     "llmEndpoint": false
+  },
+
+  // Model-role overrides — which model each built-in job uses.
+  // Each key is a dotted role name; the value is a model id string or
+  // { model, route?, profile? }. See "models" below.
+  "models": {
+    "review.small": "claude-sonnet-5-5",
+    "review.large": "claude-opus-5-5",
+    "review.pr": "openrouter/z-ai/glm-5.3-flash",
+    "judge.session": "claude-sonnet-5-5"
+  },
+
+  // Jev (TypeSafe System One) judge configuration for the session steward.
+  // See "jev" below.
+  "jev": {
+    "apiKey": "...",
+    "model": "jev-latest",
+    "baseUrl": "https://api.typesafe.ai/v1/systemone"
   }
 }
 ```
@@ -312,6 +330,48 @@ Daemon feature toggles. All fields are optional; defaults are conservative
 | ------------- | --------- | ------- |
 | `pty`         | `boolean` | Informational hint that PTY support is desired. The daemon still detects `node-pty`'s presence at runtime. |
 | `llmEndpoint` | `boolean` | Enable the local `@agentproto/llm-endpoint` proxy sidecar. When `true`, the daemon registers the `llm-endpoint` route and exposes the `llm_endpoint_*` MCP tools. Default `false` — opt-in because the sidecar spawns a child process and binds an extra port. |
+
+### `models: Record<string, string | object>`
+
+Model-role overrides — which model each built-in automated job uses. Each
+key is a dotted role name; the value is either a bare model id string or
+`{ model: string, route?: string, profile?: string }`.
+
+Precedence (highest to lowest): explicit run input → the repo's
+`agentproto.json` `models` → this daemon config → built-in default. Read the
+resolved table and its sources with `config_get models` or the read-only
+`model_roles` MCP tool.
+
+Built-in roles and their defaults:
+
+| Role | Default | Description |
+| ---- | ------- | ----------- |
+| `review.small` | `claude-sonnet-5-5` | Reviewer for a small residual (repo-maintenance `review` step). |
+| `review.large` | `claude-opus-5-5` | Reviewer for a large residual and the retry reviewer. |
+| `review.pr` | `openrouter/z-ai/glm-5.3-flash` | CI pull-request reviewer. |
+| `judge.session` | `claude-sonnet-5-5` | Session-steward agent judge. |
+
+Override a role:
+
+```bash
+agentproto config set models.review.small claude-haiku-5
+agentproto config set models.judge.session claude-opus-5-5
+```
+
+An id unknown to the model catalog is warned about at set time but accepted.
+A `AGENT.md` step may reference a role with `model: role:<name>`, resolved
+before adapter selection.
+
+### `jev: object`
+
+Configuration for the Jev (TypeSafe System One) judge backend used by the
+[session steward](../verbs/steward.md). All fields are optional.
+
+| Field      | Type     | Meaning |
+| ---------- | -------- | ------- |
+| `apiKey`   | `string` | Jev judge API key. Read **before** the `JEV_API_KEY` env var, so the key can live in agentproto's own config rather than a workspace env file. Not writable via `config_set`; hand-edit `~/.agentproto/config.json` (mode `0600` recommended for this field). |
+| `model`    | `string` | Jev model id. Default `"jev-latest"`. Writable via `config_set jev.model <id>`. |
+| `baseUrl`  | `string` | Jev endpoint override. Default `https://api.typesafe.ai/v1/systemone`. Writable via `config_set jev.baseUrl <url>`. |
 
 ### `tunnel: object`
 
