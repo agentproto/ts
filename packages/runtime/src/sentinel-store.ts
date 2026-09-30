@@ -469,8 +469,13 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
       const sentinel = sentinels.get(id)
       if (sentinel?.spec.target.kind === "webhook") {
         // The secret sidecar row dies with its sentinel — no orphaned material.
-        if (secrets.delete((sentinel.spec.target as SentinelWebhookTargetAtRest).secretRef)) {
-          scheduleSecretsPersist()
+        // Structural narrow per the documented W-C pass (see the interface's
+        // doc comment): only a denatured target carries `secretRef`.
+        const atRest = sentinel.spec.target as Partial<SentinelWebhookTargetAtRest>
+        if (typeof atRest.secretRef === "string" && atRest.secretRef.length > 0) {
+          if (secrets.delete(atRest.secretRef)) {
+            scheduleSecretsPersist()
+          }
         }
       }
       const existed = sentinels.delete(id)
