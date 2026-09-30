@@ -1,5 +1,11 @@
 # @agentproto/adapter-mastracode-inprocess
 
+## 0.3.19
+
+### Patch Changes
+
+- @agentproto/driver-agent-cli@2.6.3
+
 ## 0.3.18
 
 ### Patch Changes
