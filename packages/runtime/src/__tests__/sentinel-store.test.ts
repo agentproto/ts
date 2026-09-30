@@ -32,7 +32,7 @@ describe("SentinelStore", () => {
     expect(store.get(sentinel.id)).toEqual(sentinel)
   })
 
-  it("rejects a routine or webhook target at create time (frozen shape, not implemented)", () => {
+  it("rejects a routine target at create time (still frozen, not implemented)", () => {
     const store = createSentinelStore({ persist: false })
     expect(() =>
       store.create({
@@ -40,15 +40,107 @@ describe("SentinelStore", () => {
         handle: { provider: "fake" },
         spec: { ...testSpec, target: { kind: "routine", routineId: "rt_1" } },
       }),
-    ).toThrow(SentinelTargetNotImplementedError)
+    ).toThrow(/not implemented/)
+    expect(store.list()).toEqual([])
+  })
+
+  const whsecSecret = "whsec_" + Buffer.from(new Uint8Array(32).fill(7)).toString("base64")
+  const webhookTestSpec: SentinelSpec = {
+    ...testSpec,
+    target: { kind: "webhook", url: "https://example.com/hook", secret: whsecSecret },
+  }
+
+  it("accepts a webhook target (W-B unfreeze) and denatures the secret into the sidecar at rest", () => {
+    const store = createSentinelStore({ persist: false })
+    const sentinel = store.create({ provider: "fake", handle: { provider: "fake" }, spec: webhookTestSpec })
+    expect(sentinel.status).toBe("active")
+
+    // At rest the record carries {url, secretRef} — never the raw secret.
+    const target = sentinel.spec.target as { kind: string; url: string; secretRef?: string; secret?: string }
+    expect(target.kind).toBe("webhook")
+    expect(target.url).toBe("https://example.com/hook")
+    expect(target.secretRef).toMatch(/^swsec_/)
+    expect(target.secret).toBeUndefined()
+
+    // The sidecar row holds the material; the only material-bearing accessor.
+    const stored = store.getSentinelSecret(target.secretRef!)!
+    expect(stored.secret).toBe(whsecSecret)
+  })
+
+  it("rejects a webhook target with neither secret nor secretRef", () => {
+    const store = createSentinelStore({ persist: false })
     expect(() =>
       store.create({
         provider: "fake",
         handle: { provider: "fake" },
-        spec: { ...testSpec, target: { kind: "webhook", url: "https://example.com/hook", secret: "s3cr3t" } },
+        spec: { ...testSpec, target: { kind: "webhook", url: "https://example.com/hook" } as typeof testSpec.target },
       }),
-    ).toThrow(/not implemented/)
-    expect(store.list()).toEqual([])
+    ).toThrow(/missing its signing secret/)
+  })
+
+  it("drops the sidecar secret row when the sentinel is removed", () => {
+    const store = createSentinelStore({ persist: false })
+    const sentinel = store.create({ provider: "fake", handle: { provider: "fake" }, spec: webhookTestSpec })
+    const ref = (sentinel.spec.target as { secretRef: string }).secretRef
+    expect(store.remove(sentinel.id)).toBe(true)
+    expect(store.getSentinelSecret(ref)).toBeUndefined()
+  })
+
+  it("persists webhook secrets in the sidecar (atomically, 0600) and reloads across instances", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-secrets-"))
+    const filePath = join(dir, "sentinels.json")
+    try {
+      const store1 = createSentinelStore({ filePath, persist: true, debounceMs: 0 })
+      const sentinel = store1.create({ provider: "fake", handle: { provider: "fake" }, spec: webhookTestSpec })
+      const ref = (sentinel.spec.target as { secretRef: string }).secretRef
+      store1.flushSync()
+
+      const secretsPath = join(dir, "sentinels-secrets.json")
+      const raw = JSON.parse(readFileSync(secretsPath, "utf8")) as Record<string, { secret: string }>
+      expect(raw[ref]?.secret).toBe(whsecSecret)
+      // On disk never inside the main record either.
+      expect(readFileSync(filePath, "utf8")).not.toContain(whsecSecret)
+      // tmp-file idiom same as the store itself — 0600.
+      const mode = statSync(secretsPath).mode & 0o777
+      expect(mode).toBe(0o600)
+
+      const store2 = createSentinelStore({ filePath, persist: true })
+      expect(store2.getSentinelSecret(ref)?.secret).toBe(whsecSecret)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("rotation: putSentinelSecret keeps prevSecret + rotatedAt for the dual-sign window", () => {
+    const store = createSentinelStore({ persist: false })
+    const sentinel = store.create({ provider: "fake", handle: { provider: "fake" }, spec: webhookTestSpec })
+    const ref = (sentinel.spec.target as { secretRef: string }).secretRef
+    const nextSecret = "whsec_" + Buffer.from(new Uint8Array(32).fill(9)).toString("base64")
+
+    const result = store.putSentinelSecret(ref, { secret: nextSecret })
+    expect(result?.hasPrevSecret).toBe(true)
+    expect(result?.rotatedAt).toBeDefined()
+
+    const row = store.getSentinelSecret(ref)!
+    expect(row.secret).toBe(nextSecret)
+    expect(row.prevSecret).toBe(whsecSecret)
+
+    // Same secret again — no rotation stamped.
+    const same = store.putSentinelSecret(ref, { secret: nextSecret })
+    expect(same?.hasPrevSecret).toBe(true) // row still keeps the previous rotation
+    const row2 = store.getSentinelSecret(ref)!
+    expect(row2.secret).toBe(nextSecret)
+    expect(row2.rotatedAt).toBe(row.rotatedAt)
+  })
+
+  it("isExpired consults until.at read-only", () => {
+    const store = createSentinelStore({ persist: false })
+    const sentinel = store.create({ provider: "fake", handle: { provider: "fake" }, spec: webhookTestSpec })
+    store.update(sentinel.id, { spec: { ...webhookTestSpec, until: { kind: "at", ms: 5 } } })
+    expect(store.isExpired(sentinel.id)).toBe(true)
+    store.update(sentinel.id, { spec: { ...webhookTestSpec, until: { kind: "never" } } })
+    expect(store.isExpired(sentinel.id)).toBe(false)
+    expect(store.isExpired("sen_missing")).toBe(false)
   })
 
   it("lists sentinels", () => {
