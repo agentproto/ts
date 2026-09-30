@@ -126,6 +126,12 @@ export interface DeviceSnapshot {
   createdAt: string
   lastSeen: string
   legacy?: true
+  /** Host devices (this daemon's own `hosts.json`) only: why the latest
+   *  dial/handshake attempt failed (absent when it succeeded) and when it
+   *  was probed — the devices step flags a persistently-failing host
+   *  channel with the re-pair remediation hint (BOOTSTRAP P3 item 4). */
+  hostLastProbeAt?: string
+  hostLastError?: string
 }
 
 export interface FirstRunResult {

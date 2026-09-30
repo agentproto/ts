@@ -57,13 +57,24 @@ describe("renderWinDaemonScript", () => {
       "C:\\Users\\u\\.agentproto\\daemon.log",
     )
     expect(body).toBe(
-      '@echo off\n"C:\\Program Files\\node.exe" C:\\cli.mjs serve --port 18790 >> "C:\\Users\\u\\.agentproto\\daemon.log" 2>&1\n',
+      '@echo off\ncd /d "%USERPROFILE%"\n"C:\\Program Files\\node.exe" C:\\cli.mjs serve --port 18790 >> "C:\\Users\\u\\.agentproto\\daemon.log" 2>&1\n',
     )
   })
 
   it("doubles embedded quotes so cmd keeps them literal", () => {
     expect(renderWinDaemonScript(["--allow-origin", 'a "b"'], "log")).toContain('--allow-origin ')
     expect(renderWinDaemonScript(["--allow-origin", 'a "b"'], "log")).toContain('"a ""b"""')
+  })
+
+  it("starts with a cd /d so the daemon never runs from C:\\Windows\\System32 (WIN11 field test 2026-09-30: System32 runtime.json EPERM)", () => {
+    const noWorkspace = renderWinDaemonScript(["node", "cli.mjs", "serve"], "log")
+    expect(noWorkspace.split("\n")[1]).toBe('cd /d "%USERPROFILE%"')
+
+    const withWorkspace = renderWinDaemonScript(["node", "cli.mjs", "serve"], "log", "C:\\ws\\mine")
+    expect(withWorkspace.split("\n")[1]).toBe('cd /d "C:\\ws\\mine"')
+
+    const quoted = renderWinDaemonScript(["node", "cli.mjs", "serve"], "log", 'C:\\a "b"')
+    expect(quoted.split("\n")[1]).toBe('cd /d "C:\\a ""b"""')
   })
 })
 
@@ -200,8 +211,101 @@ describe("runWinUninstall / start / restart / stop", () => {
 
   it("stop ends the task, failing when /End does", async () => {
     const fake: SchtasksFn = async () => ({ code: 0, stdout: "", stderr: "" })
-    expect(await runWinStop(fake)).toBe(0)
+    // Explicit dead-port health stubs: the default deps would probe a REAL
+    // daemon port, and these tests must stay hermetic.
+    expect(await runWinStop(fake, { health: async () => null })).toBe(0)
     expect(await runWinStop(async () => ({ code: 1, stdout: "", stderr: "not yet running" }))).toBe(1)
+  })
+
+  it("stop with a dead port right after /End writes 'task ended' and never kills (healthy release)", async () => {
+    const fake: SchtasksFn = async () => ({ code: 0, stdout: "", stderr: "" })
+    const out = captureStdout()
+    const code = await runWinStop(fake, {
+      health: async () => null,
+      killTree: async (pid: number) => {
+        throw new Error("never called: " + pid)
+      },
+      readDaemonPid: async () => {
+        throw new Error("never called")
+      },
+      releaseDelayMs: 0,
+    })
+    out.restore()
+    expect(code).toBe(0)
+    expect(out.chunks.join("")).toContain("task ended")
+  })
+
+  it("a port STILL answering after /End kills the recorded pid tree and confirms the release (WIN11 field test 2026-09-30: the node child kept listening, so a later `start` reused a zombie daemon)", async () => {
+    const fake: SchtasksFn = async () => ({ code: 0, stdout: "", stderr: "" })
+    const killed: number[] = []
+    let probes = 0
+    const out = captureStdout()
+    const code = await runWinStop(fake, {
+      health: async () => {
+        probes++
+        // First probe: still alive (with the pid). Post-kill probes: dead.
+        return probes === 1 ? { url: "http://127.0.0.1:18790", pid: 4242 } : null
+      },
+      killTree: async (pid: number) => {
+        killed.push(pid)
+        return 0
+      },
+      readDaemonPid: async () => {
+        throw new Error("should not need fallback: /health exposes the pid")
+      },
+      releaseDelayMs: 0,
+    })
+    out.restore()
+    expect(code).toBe(0)
+    expect(killed).toEqual([4242])
+    expect(out.chunks.join("")).toContain("port released")
+  })
+
+  it("when /health carries no pid the recorded runtime.json pid is used as the fallback", async () => {
+    const fake: SchtasksFn = async () => ({ code: 0, stdout: "", stderr: "" })
+    const killed: number[] = []
+    let probes = 0
+    captureStdout()
+    const code = await runWinStop(fake, {
+      health: async () => {
+        probes++
+        return probes === 1 ? { url: "http://127.0.0.1:18790" } : null
+      },
+      killTree: async (pid: number) => {
+        killed.push(pid)
+        return 0
+      },
+      readDaemonPid: async () => 1987,
+      releaseDelayMs: 0,
+    })
+    expect(code).toBe(0)
+    expect(killed).toEqual([1987])
+  })
+
+  it("an unkillable port (pid tree killed but still answering after 3 re-probes) is surfaced, not lied about", async () => {
+    const fake: SchtasksFn = async () => ({ code: 0, stdout: "", stderr: "" })
+    const killed: number[] = []
+    const errChunks: string[] = []
+    const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+      errChunks.push(String(chunk))
+      return true
+    })
+    try {
+      const code = await runWinStop(fake, {
+        health: async () => ({ url: "http://127.0.0.1:18790", pid: 123 }),
+        killTree: async (pid: number) => {
+          killed.push(pid)
+          return 0
+        },
+        readDaemonPid: async () => null,
+        releaseDelayMs: 0,
+      })
+      expect(code).toBe(0)
+      expect(killed).toEqual([123])
+      expect(errChunks.join("")).toContain("port still answering")
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it("start surfaces the schtasks failure code", async () => {

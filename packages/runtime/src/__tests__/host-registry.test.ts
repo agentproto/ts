@@ -31,7 +31,7 @@ import {
   type PairingSession,
 } from "@agentproto/secrets/pairing"
 import { generateIdentity, identityFingerprint, type DaemonIdentity } from "@agentproto/secrets/identity"
-import { createHostRegistry, type HostRegistry } from "../host-registry.js"
+import { createHostRegistry, readHostsSnapshot, type HostRegistry } from "../host-registry.js"
 import { connect, type Middleware } from "./frame-harness.js"
 
 const realSetTimeout = globalThis.setTimeout
@@ -1054,6 +1054,52 @@ describe("createHostRegistry", () => {
       expect(JSON.parse(await readFile(hostsPath, "utf8")).hosts[0].lastError).toBeUndefined()
     })
 
+    it("after 5 consecutive failed dials it logs the re-pair remediation hint ONCE — a later success resets the streak", async () => {
+      const hintLines: string[] = []
+      const { registry, fingerprint, dial, advance } = await joinedHost({
+        log: (line: string) => hintLines.push(line),
+        onlineGraceMs: 10_000,
+      })
+      const working = dial.getMockImplementation()!
+      advance(11_000)
+      dial.mockImplementation(async () => {
+        throw new Error("handshake timed out")
+      })
+      const hints = (): number => hintLines.filter(l => /devices add/.test(l) && /pair offer --host/.test(l)).length
+      // 5 consecutive failures: exactly one log line at the threshold.
+      for (let i = 0; i < 5; i++) {
+        await expect(
+          registry.forwardHttp(fingerprint, { method: "GET", path: "/health" }),
+        ).rejects.toThrow(/could not reach host/)
+      }
+      expect(hints()).toBe(1)
+      // The streak never re-logs on further failures of the same arc.
+      advance(1_000)
+      await expect(
+        registry.forwardHttp(fingerprint, { method: "GET", path: "/health" }),
+      ).rejects.toThrow()
+      expect(hints()).toBe(1)
+
+      // A successful dial resets the counter: 5 fresh failures log again, not earlier.
+      dial.mockImplementation(working)
+      await new Promise(r => setTimeout(r, 25))
+      advance(1_000)
+      await expect(registry.forwardHttp(fingerprint, { method: "GET", path: "/health" })).resolves.toBeDefined()
+      expect(registry.isOnline(fingerprint)).toBe(true)
+      dial.mockImplementation(async () => {
+        throw new Error("handshake timed out")
+      })
+      // ...and once more after the reset: the fifth failure after the streak
+      // reset logs again (the first four do not).
+      for (let i = 0; i < 5; i++) {
+        advance(1_000)
+        await expect(
+          registry.forwardHttp(fingerprint, { method: "GET", path: "/health" }),
+        ).rejects.toThrow()
+      }
+      expect(hints()).toBe(2)
+    })
+
     it("start() resumes polling join-added hosts loaded from disk (a daemon restart), and skips manual hosts", async () => {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
       try {
@@ -1282,5 +1328,41 @@ describe("createHostRegistry", () => {
         registry.forwardHttpStream(fingerprint, { method: "GET", path: "/health" }),
       ).rejects.toThrow(/could not reach host/)
     })
+  })
+})
+
+/** `readHostsSnapshot` — the read-only `readPairingsSnapshot` twin
+ *  (`agentproto doctor`'s devices check; BOOTSTRAP P3 item 4). */
+describe("readHostsSnapshot", () => {
+  it("returns the persisted records read-only; [] for a missing or malformed file", async () => {
+    const tpl = await mkdtemp(join(tmpdir(), "agentproto-hosts-snap-"))
+    try {
+      const path = join(tpl, "hosts.json")
+      expect(await readHostsSnapshot(path)).toEqual([])
+      expect(await readHostsSnapshot(join(tpl, "missing.json"))).toEqual([])
+
+      const rec = {
+        fingerprint: "a".repeat(32),
+        name: "win-studio",
+        daemonX25519Pub: "b64-1",
+        daemonEd25519Pub: "b64-2",
+        rendezvousUrl: "ws://rdv/v1",
+        pairRoot: "b64-3",
+        createdAt: "2026-09-30T00:00:00.000Z",
+        lastSeen: "2026-09-30T00:00:00.000Z",
+        lastProbeAt: "2026-09-30T01:00:00.000Z",
+        lastError: "handshake timed out",
+      }
+      await writeFile(path, JSON.stringify({ v: 1, hosts: [rec] }), "utf8")
+      const snapshots = await readHostsSnapshot(path)
+      expect(snapshots).toEqual([rec])
+      // Read-only: untouched bytes afterwards.
+      expect(JSON.parse(await readFile(path, "utf8")).hosts).toHaveLength(1)
+
+      await writeFile(path, "{ not json", "utf8")
+      expect(await readHostsSnapshot(path)).toEqual([])
+    } finally {
+      await rm(tpl, { recursive: true, force: true }).catch(() => {})
+    }
   })
 })

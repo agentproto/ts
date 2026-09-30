@@ -122,6 +122,21 @@ const DEFAULT_PROBE_CONCURRENCY = 4
 /** Gap between the first polls of hosts resumed at boot, so a long list doesn't dial in one burst. */
 const RESUME_STAGGER_MS = 500
 const MAX_LAST_ERROR_CHARS = 300
+/** Consecutive failed dial/handshake attempts after which the daemon logs
+ *  the re-pair remediation hint (BOOTSTRAP P3 item 4, WIN11 field test
+ *  2026-09-30: after a Windows reboot the old host registration never
+ *  handshook again, and the controller's log showed nothing actionable
+ *  until the operator revoked and re-added). */
+const HOST_HANDSHAKE_FAILURE_HINT_THRESHOLD = 5
+/** One-line remediation logged once per failure streak once the threshold
+ *  is crossed. Deliberately NOT a protocol change — the pairing itself is
+ *  fine; a fresh host-scoped offer re-binds it. */
+export const HOST_HANDSHAKE_REMEDIATION_HINT =
+  "host handshake failing — the controller should re-run `agentproto devices add` " +
+  "with a fresh `pair offer --host` (a reboot/reinstall on the host invalidates the old registration)"
+/** Consecutive failed dials per host fingerprint — reset on a successful
+ *  dial, never persisted (diag-only, dies with the process). */
+const handshakeFailures = new Map<string, number>()
 /** Minimum gap between `hosts.json` writes for a pure `lastSeen` bump. */
 const DEFAULT_LAST_SEEN_PERSIST_MS = 30_000
 const DEFAULT_SNAPSHOT_INTERVAL_MS = 15_000
@@ -759,6 +774,8 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
   async function markReached(record: HostRecord): Promise<void> {
     const t = now()
     lastReachedAt.set(record.fingerprint, t)
+    // A success clears the failure streak that drives the re-pair hint.
+    handshakeFailures.delete(record.fingerprint)
     record.lastSeen = new Date(t).toISOString()
     record.lastProbeAt = record.lastSeen
     const hadError = record.lastError !== undefined
@@ -775,6 +792,18 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
   async function markUnreachable(record: HostRecord, message: string): Promise<void> {
     record.lastProbeAt = new Date(now()).toISOString()
     const error = message.slice(0, MAX_LAST_ERROR_CHARS)
+    // Diag-only: count the consecutive-failure streak and, once it's long
+    // enough that transient flakiness is ruled out, log the re-pair
+    // remediation line — exactly once per streak so daemon.log doesn't
+    // drown in it.
+    const failures = (handshakeFailures.get(record.fingerprint) ?? 0) + 1
+    handshakeFailures.set(record.fingerprint, failures)
+    if (failures === HOST_HANDSHAKE_FAILURE_HINT_THRESHOLD) {
+      log(
+        `[hosts] ${record.fingerprint} (${record.name}): failed to dial/handshake ${failures} times in a row — ` +
+          HOST_HANDSHAKE_REMEDIATION_HINT,
+      )
+    }
     if (record.lastError === error) return
     record.lastError = error
     await persist().catch(err => log(`[hosts] lastError persist failed: ${errMsg(err)}`))
@@ -1329,6 +1358,23 @@ function isHostsFile(v: unknown): v is HostsFile {
   if (rec["v"] !== HOSTS_VERSION) return false
   if (!Array.isArray(rec["hosts"])) return false
   return rec["hosts"].every(isHostRecord)
+}
+
+/** Read-only snapshot of `hosts.json` (the read-only twin of
+ *  `readPairingsSnapshot`): for callers that just want the persisted
+ *  records — e.g. `agentproto doctor`'s devices check flagging a host
+ *  channel that persistently fails its handshake (BOOTSTRAP P3 item 4).
+ *  No dial, no rendezvous, no `loadIdentity` deps. Never throws — a
+ *  missing or malformed file yields `[]`. */
+export async function readHostsSnapshot(path?: string): Promise<HostRecord[]> {
+  try {
+    const raw = await readFile(path ?? defaultHostsPath(), "utf8")
+    const parsed: unknown = JSON.parse(raw)
+    if (!isHostsFile(parsed)) return []
+    return parsed.hosts.map(rec => ({ ...rec }))
+  } catch {
+    return []
+  }
 }
 
 function isHostRecord(v: unknown): v is HostRecord {

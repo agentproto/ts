@@ -11,7 +11,7 @@ import { loadConfig } from "@agentproto/runtime/config"
 import { loadWorkspacesConfig } from "@agentproto/runtime/workspaces-config"
 import { fetchLatestCliVersion } from "@agentproto/runtime/release-check"
 import { discoverCredentials } from "@agentproto/runtime/credential-discovery"
-import { readPairingsSnapshot } from "@agentproto/runtime"
+import { readPairingsSnapshot, readHostsSnapshot } from "@agentproto/runtime"
 import { listAuthProfiles } from "@agentproto/auth"
 import { probeLoginShellPath } from "../commands/daemon.js"
 import { detectAgents, loadInstallState } from "../commands/install-mcp.js"
@@ -113,14 +113,32 @@ export function createStepContext(cliVersion: string): StepContext {
       discoverCredentials: async () => discoverCredentials(),
       detectClients: () => detectAgents(),
       loadMcpInstallState: () => loadInstallState(),
-      loadDevices: async () =>
-        (await readPairingsSnapshot()).map(r => ({
+      loadDevices: async () => {
+        const pairings = (await readPairingsSnapshot()).map(r => ({
           fingerprint: r.fingerprint,
           name: r.name,
           createdAt: r.createdAt,
           lastSeen: r.lastSeen,
-          ...(r.legacy ? { legacy: true } : {}),
-        })),
+          ...(r.legacy ? { legacy: true as const } : {}),
+        }))
+        const clientFps = new Set(pairings.map(p => p.fingerprint))
+        // This daemon's own host devices (`hosts.json`) merged into the
+        // same snapshot: only the dial-liveness fields the devices step
+        // needs (probe time + last error) cross into it — never `pairRoot`
+        // or public keys. A fingerprint already present as a client pairing
+        // is skipped (recorded there first).
+        const hosts = (await readHostsSnapshot())
+          .filter(h => !h.ended && !clientFps.has(h.fingerprint))
+          .map(h => ({
+            fingerprint: h.fingerprint,
+            name: h.name,
+            createdAt: h.createdAt,
+            lastSeen: h.lastSeen,
+            ...(h.lastProbeAt ? { hostLastProbeAt: h.lastProbeAt } : {}),
+            ...(h.lastError ? { hostLastError: h.lastError } : {}),
+          }))
+        return [...pairings, ...hosts]
+      },
       skillTargets: async () => (await resolveSkillFanOutTargets()).targets,
       resolveSkillPackDir: () => resolveSkillPackDir(undefined, { allowFetch: false }),
       latestSkillPackVersion: () => npmLatestVersion("@agentproto/skill-pack-agentproto", NETWORK_TIMEOUT_MS),
