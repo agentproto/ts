@@ -49,6 +49,7 @@ import type {
   AppDevDefinition,
   AppHandle,
   AppUiBuildConfig,
+  OpenAIAppUiExtension,
 } from "./types.js"
 import { defineApp } from "./define-app.js"
 import { AppLoadError } from "./errors.js"
@@ -74,6 +75,9 @@ interface AppFrontmatterUi {
     readonly frameDomains?: readonly string[]
   }
   readonly build?: AppUiBuildConfig
+  /** Namespaced vendor extension metadata; `openai` is the only namespace
+   *  (validated by `defineApp`, which this loader re-runs through). */
+  readonly extensions?: { readonly openai?: unknown }
 }
 
 interface AppFrontmatterArtifact {
@@ -419,6 +423,15 @@ export async function loadAppHandle(dir: string): Promise<AppHandle> {
       ...(fm.ui.port !== undefined ? { port: fm.ui.port } : {}),
       ...(fm.ui.csp !== undefined ? { csp: fm.ui.csp } : {}),
       ...(build !== undefined ? { build } : {}),
+      ...(fm.ui.extensions !== undefined
+        ? {
+            extensions: {
+              ...(fm.ui.extensions.openai !== undefined
+                ? { openai: fm.ui.extensions.openai as unknown as OpenAIAppUiExtension }
+                : {}),
+            },
+          }
+        : {}),
     }
   }
 
