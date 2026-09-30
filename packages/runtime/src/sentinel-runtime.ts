@@ -39,8 +39,24 @@ import {
   type MessageUrgency,
   type SessionMessage,
 } from "./session-message.js"
+import { createHash } from "node:crypto"
+
 import { SessionNotAliveError, type SendMessageResult } from "./sessions.js"
-import type { Sentinel, SentinelStatus, SentinelStore } from "./sentinel-store.js"
+import type {
+  Sentinel,
+  SentinelStatus,
+  SentinelStore,
+  SentinelWebhookSecret,
+  SentinelWebhookTargetAtRest,
+  WEBHOOK_SECRET_ROTATION_WINDOW_MS,
+} from "./sentinel-store.js"
+import {
+  createSentinelWebhookOutbox,
+  type SentinelWebhookOutboxOptions,
+  type SentinelWebhookOutbox,
+  type SentinelWebhookOutboxRow,
+} from "./sentinel-webhook-outbox.js"
+import type { DeliveryReplay } from "./webhook-egress/delivery.js"
 import {
   deliveryPreferenceFor,
   type SentinelEvent,
@@ -179,11 +195,24 @@ export interface SentinelRuntimeOptions {
   parkedPath?: string
   nowMs?: () => number
   log?: (line: string) => void
+  /** Override persist path for the webhook outbox (tests). Default
+   *  `~/.agentproto/sentinel-webhook-outbox.json`. Present ⇒ persisted. */
+  outboxPath?: string
+  /** DI boundary (not module fakes): replaces W-A's `deliverEventEnvelope`
+   *  as the outbox's POST boundary. When given (and `outboxPath` is not),
+   *  outbox disk persistence defaults OFF — tests must not sweep the
+   *  operator's real outbox file. */
+  deliverEvent?: SentinelWebhookOutboxOptions["deliverEvent"]
+  /** Force the outbox's disk persistence on/off explicitly. */
+  outboxPersist?: boolean
+  /** Rotation window for the dual-sign delivery. Default 10 min. */
+  secretRotationWindowMs?: number
 }
 
 export interface SentinelRuntime {
   /** Re-attaches every pollable sentinel to its provider, then starts the
-   *  poll timer. */
+   *  poll timer. Startup ALSO runs the `until.at` expiry sweep and resumes
+   *  every persisted webhook outbox row (by exact stored bytes). */
   start(): Promise<void>
   stop(): void
   /** Force one poll tick across every poll-capable, pollable sentinel —
@@ -195,6 +224,9 @@ export interface SentinelRuntime {
    *  delivery threw and was NOT marked seen — the caller should answer 5xx so
    *  the sender can redeliver. Unknown or non-live sentinels are a no-op. */
   deliverPushed(sentinelId: string, events: readonly SentinelEvent[]): Promise<{ delivered: number; failed: boolean }>
+  /** The persisted outbox behind every `target.kind === "webhook"` sentinel —
+   *  rows in, terminal-state acks out (see `sentinel-webhook-outbox.ts`). */
+  readonly webhookOutbox: SentinelWebhookOutbox
 }
 
 export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRuntime {
@@ -229,6 +261,113 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
   function markOrphaned(sentinel: Sentinel): void {
     const current = store.get(sentinel.id)
     if (current && current.status !== "orphaned") store.update(sentinel.id, { status: "orphaned" })
+  }
+
+  // ── Expiry (plan §4 W-B task 2 — consulted BEFORE every phase that can
+  // deliver; until-at was previously applied only AFTER an event crossed
+  // the whole pipeline, so an expired sub could deliver its first post-
+  // expiry event and an idle expired sub never expired) ───────────────
+
+  /** Pure `until` consultation — never mutates. Sweep callers flip status. */
+  function isExpiredSpec(sentinel: Sentinel): boolean {
+    return sentinel.spec.until.kind === "at" && nowMs() >= sentinel.spec.until.ms
+  }
+
+  /** The gate a delivery-capable phase consults: gone or expired — no. */
+  function isDeliverableLive(sentinelId: string): boolean {
+    const current = store.get(sentinelId)
+    return current !== undefined && current.status !== "expired" && !isExpiredSpec(current)
+  }
+
+  /** Startup + per-tick sweep: flip every expired-but-still-active sentinel
+   *  to `status: "expired"` ("ended:expired") and cancel its provider-side
+   *  watch. */
+  async function sweepExpiredSentinels(): Promise<number> {
+    let swept = 0
+    for (const sentinel of store.list()) {
+      if (sentinel.status === "active" && isExpiredSpec(sentinel)) {
+        await expireSentinel(sentinel)
+        swept++
+      }
+    }
+    if (swept > 0) log(`[sentinel-runtime] expiry sweep: ${swept} sentinel(s) flipped to expired`)
+    return swept
+  }
+
+  async function expireSentinel(sentinel: Sentinel): Promise<void> {
+    if (store.get(sentinel.id)?.status !== "expired") {
+      store.update(sentinel.id, { status: "expired" })
+    }
+    const provider = await opts.resolveProvider(sentinel.provider)
+    if (!provider) return
+    try {
+      await provider.cancel(sentinel.handle)
+    } catch (err) {
+      log(`[sentinel-runtime] expiry cancel failed for ${sentinel.id}: ${describeError(err)}`)
+    }
+  }
+
+  // ── Webhook fire path (plan §4 W-B task 3 — persisted outbox owns the
+  // delivery; ack-after-terminal only) ────────────────────────────────
+
+  const outbox = createSentinelWebhookOutbox({
+    ...(opts.outboxPath !== undefined ? { filePath: opts.outboxPath } : {}),
+    nowMs,
+    ...(opts.outboxPersist !== undefined ? { persist: opts.outboxPersist } : {}),
+    ...(opts.deliverEvent !== undefined ? { deliverEvent: opts.deliverEvent } : {}),
+    log,
+    /** Signing secrets for the stored `{url, secretRef}` target — dual-sign
+     *  while the rotation window from `rotatedAt` is open. */
+    secretsFor: (sentinelId: string): DeliveryReplay | null => {
+      const sentinel = store.get(sentinelId)
+      const target = sentinel?.spec.target
+      if (!sentinel || target?.kind !== "webhook") return null
+      const stored: SentinelWebhookSecret | undefined = store.getSentinelSecret(
+        (target as SentinelWebhookTargetAtRest).secretRef,
+      )
+      if (!stored) return null
+      const windowMs = opts.secretRotationWindowMs ?? WEBHOOK_SECRET_ROTATION_WINDOW_MS
+      const secretsOut = [stored.secret]
+      if (stored.prevSecret && stored.rotatedAt !== undefined && nowMs() - stored.rotatedAt < windowMs) {
+        secretsOut.push(stored.prevSecret)
+      }
+      // Deterministic subscription identity for the replay path (W-C owns
+      // the canonical-JSON `subscriptionId()`; the wire `webhook-id` header
+      // carries the EVENT id — this subId never enters a signature).
+      const subId = `sub_${createHash("sha256").update(`${sentinelId}:${target.url}`).digest("hex").slice(0, 32)}`
+      return { subId, callbackUrl: target.url, secrets: secretsOut }
+    },
+    /** Expiry gate consulted BEFORE every dispatch (plan §4 W-B task 2b). */
+    isExpired: (sentinelId: string): boolean => !isDeliverableLive(sentinelId),
+    /** Ack-at-least-once, only after the row reached terminal status. */
+    onTerminal: (sentinelId: string, row: SentinelWebhookOutboxRow): void => {
+      void ackAfterTerminalRow(sentinelId, row)
+    },
+  })
+
+  async function ackAfterTerminalRow(sentinelId: string, row: SentinelWebhookOutboxRow): Promise<void> {
+    const sentinel = store.get(sentinelId)
+    if (!sentinel) return // removed mid-flight — nothing to ack
+    if (store.isSeen(sentinelId, row.eventId)) return
+
+    store.markSeen(sentinelId, row.eventId)
+    const updated = store.get(sentinelId)
+    if (!updated) return
+    store.update(sentinelId, { eventCount: updated.eventCount + 1, lastEventTs: nowMs() })
+    const event = row.event
+    if (!event) return
+    const provider = await opts.resolveProvider(sentinel.provider)
+    if (!provider) return
+    const current = store.get(sentinelId)
+    if (current) {
+      if (current.spec.until.kind === "subject_terminal") {
+        checkSubjectTerminalExpiry(current, event)
+        const latest = store.get(sentinelId)
+        if (latest) await applyLifetime(latest, event, provider)
+      } else {
+        await applyLifetime(current, event, provider)
+      }
+    }
   }
 
   // ── Delivery ─────────────────────────────────────────────────────────
@@ -427,6 +566,14 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       if (!current) break // removed mid-batch
       if (!POLLABLE_STATUSES.has(current.status)) break // paused/expired/error — stop watching
 
+      // Ingress expiry gate (poll and push alike) — plan §4 W-B task 2a:
+      // an event that arrives after `until.at` must not create a
+      // delivery-capable row (or a parked notice); flip first, then stop.
+      if (isExpiredSpec(current)) {
+        await expireSentinel(current)
+        break
+      }
+
       if (store.isSeen(current.id, event.id)) continue
 
       const closedNow = trackClosure(current, event)
@@ -442,6 +589,22 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         // Filtered out, not a delivery attempt — still mark it seen so it's
         // never reconsidered on a later tick.
         store.markSeen(current.id, event.id)
+        continue
+      }
+
+      if (current.spec.target.kind === "webhook") {
+        // Webhook fire path: the persisted outbox owns the delivery; the
+        // event is acked (markSeen / counters / lifetime) ONLY once its
+        // outbox row reaches terminal status. Enqueue idempotently dedups.
+        try {
+          await outbox.enqueue({ sentinelId: current.id, event })
+        } catch (err) {
+          // Don't mark seen — row bookkeeping blew; leave the at-least-once
+          // promise to the dedup/outbox key on the next tick.
+          log(`[sentinel-runtime] webhook enqueue failed: ${describeError(err)}`)
+          haltedOnError = true
+          break
+        }
         continue
       }
 
@@ -505,6 +668,10 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     if (inFlight) return
     inFlight = true
     try {
+      // Periodic sweep (plan §4 W-B task 2c): flip expired sentinels and
+      // reap delivered / age-out pending webhook outbox rows.
+      await sweepExpiredSentinels()
+      outbox.sweep()
       const pollable = store.list().filter(s => POLLABLE_STATUSES.has(s.status))
       for (const sentinel of pollable) {
         await pollSentinel(sentinel)
@@ -528,6 +695,11 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     const run = async (): Promise<{ delivered: number; failed: boolean }> => {
       const sentinel = store.get(sentinelId)
       if (!sentinel || !POLLABLE_STATUSES.has(sentinel.status)) return { delivered: 0, failed: false }
+      // Ingress expiry gate for push-mode (plan §4 W-B task 2a).
+      if (isExpiredSpec(sentinel)) {
+        await expireSentinel(sentinel)
+        return { delivered: 0, failed: false }
+      }
       const provider = await opts.resolveProvider(sentinel.provider)
       if (!provider) return { delivered: 0, failed: false }
       const { haltedOnError, delivered } = await processEvents(sentinelId, provider, events)
@@ -593,6 +765,11 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
   return {
     async start(): Promise<void> {
       await reattachAll()
+      // Startup duties (plan §4 W-B tasks 2c + 3): flip anything already
+      // past its `until.at`, then re-dispatch every persisted outbox row
+      // by its exact stored bytes.
+      await sweepExpiredSentinels()
+      await outbox.dispatch()
       if (!timer) scheduleNext()
     },
     stop(): void {
@@ -603,5 +780,6 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     },
     pollOnce,
     deliverPushed,
+    webhookOutbox: outbox,
   }
 }
