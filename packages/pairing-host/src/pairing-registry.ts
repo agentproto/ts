@@ -449,6 +449,12 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
   // so the gated line names it via the error message itself.
   const handshakeFailureGate = createReconnectLogGate({ now })
 
+  // Same gate shape for the POST-reply close reason surfaced by
+  // `daemonHandshakeOverSink`'s log hook — the step the observed flaps break
+  // at (Noise OK, reply sent, remote hangs up before/around the first
+  // forwarded exchange).
+  const handshakeCloseGate = createReconnectLogGate({ now })
+
   /** fingerprint → record. Source of truth in memory; disk is the mirror. */
   const pairings = new Map<string, PairingRecord>()
   /** fingerprint → count of channels currently served (offer or reconnect).
@@ -724,7 +730,18 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
               capturedHello = hello
               return { reply: encodePairingMessage(result.reply), keys: result.session }
             },
-            { timeoutMs: handshakeTimeoutMs },
+            {
+              timeoutMs: handshakeTimeoutMs,
+              // Post-handshake close reason (BOOTSTRAP P4 item 2, field
+              // evidence: the flaps break AFTER the reply is sent, and the
+              // reason was captured at this exact layer and discarded).
+              // Gated like the handshake-failure log so a flap's retry loop
+              // doesn't bury daemon.log.
+              log: line => {
+                const gated = handshakeCloseGate.onFailure(spec.key, `[pairing] ${spec.key}: ${line}`)
+                if (gated) log(gated)
+              },
+            },
           )
         } catch (err) {
           if (signal.aborted) break
@@ -746,6 +763,7 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
           continue
         }
         handshakeFailureGate.onSuccess(spec.key)
+        handshakeCloseGate.onSuccess(spec.key)
 
         if (legacyPeer) {
           sendOutdatedNotice(wrapped)
