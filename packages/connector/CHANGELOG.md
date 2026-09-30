@@ -1,5 +1,11 @@
 # @agentproto/connector
 
+## 0.1.16
+
+### Patch Changes
+
+- @agentproto/secrets@1.2.1
+
 ## 0.1.15
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # @agentproto/pairing-host
 
+## 0.2.1
+
+### Patch Changes
+
+- @agentproto/secrets@1.2.1
+- @agentproto/acp@0.9.1
+
 ## 0.2.0
 
 ### Minor Changes
