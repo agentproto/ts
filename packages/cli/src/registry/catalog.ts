@@ -116,6 +116,16 @@ export const CATALOG: readonly CatalogEntry[] = [
   },
   {
     type: "agent-cli",
+    slug: "copilot-cli",
+    name: "GitHub Copilot",
+    description:
+      "GitHub's official Copilot CLI in ACP mode (`copilot --acp --stdio`). " +
+      "Public github.com and GitHub Enterprise (GH_HOST).",
+    packageName: "@agentproto/adapter-copilot-cli",
+    hint: "github · ACP · resumable",
+  },
+  {
+    type: "agent-cli",
     slug: "hermes",
     name: "Hermes",
     description:
