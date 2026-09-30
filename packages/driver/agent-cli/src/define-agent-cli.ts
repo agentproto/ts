@@ -13,6 +13,7 @@ import { wrapAgentCliSpawn } from "./command-sandbox-wrap.js"
 import { hostContextExcludes } from "./host-context.js"
 import { terminateChildTree } from "./process-tree.js"
 import { resolveNpxFastPath } from "./npx-fast-path.js"
+import { resolveWindowsBatchSpawn, windowsBatchShellOption } from "./win32-spawn.js"
 import {
   applyModelCommand,
   createArmSessionControls,
@@ -321,6 +322,15 @@ export function createAgentCliRuntime(
       }
       const spawnBin = npxFast?.bin ?? resolvedBin
       const spawnArgs = npxFast?.args ?? composed.binArgs
+      // Win32 batch-file shims (see `win32-spawn.ts`'s module doc — recap
+      // point 10, the Windows-host device-sandbox `spawn EINVAL`): rewrite
+      // npm `.cmd` shims to their real node entry (preferred, stays
+      // shell:false) BEFORE the arms spawn, so both arms inherit a clean
+      // argv; whatever still ends in `.cmd`/`.bat` gets `shell: true`
+      // inside the arm via `windowsBatchShellOption`.
+      const batchRewrite = resolveWindowsBatchSpawn(spawnBin, spawnArgs)
+      const finalBin = batchRewrite?.bin ?? spawnBin
+      const finalArgs = batchRewrite?.args ?? spawnArgs
 
       // Exact-file read grant (`AgentCliStartOptions.additionalReadPaths`):
       // the runtime hands down the exact AGENTS.md path(s) an inherited
@@ -473,8 +483,8 @@ export function createAgentCliRuntime(
         // PrintArmOptions.expectedModel).
         const printModel = config?.options?.model
         return createPrintSession({
-          bin: spawnBin,
-          baseArgs: spawnArgs,
+          bin: finalBin,
+          baseArgs: finalArgs,
           cwd,
           env,
           ...(opts?.resumeSessionId
@@ -509,8 +519,8 @@ export function createAgentCliRuntime(
         // calls — is denied out-of-workspace reads/writes. Off by default;
         // see `wrapAgentCliSpawn`'s doc for the fail-closed contract.
         const [execBin, execArgs] = await wrapAgentCliSpawn(
-          spawnBin,
-          spawnArgs,
+          finalBin,
+          finalArgs,
           {
             mode: opts?.commandSandbox,
             cwd,
@@ -529,6 +539,11 @@ export function createAgentCliRuntime(
           env,
           stdio: ["pipe", "pipe", "pipe"],
           signal: opts?.signal,
+          // Win32: a `.cmd`/`.bat` bin that `resolveWindowsBatchSpawn`
+          // couldn't rewrite to its node entry needs the shell — Node
+          // refuses to spawn batch files directly (CVE-2024-27980, the
+          // recap-10 `spawn EINVAL`). POSIX: `{}` — unchanged.
+          ...windowsBatchShellOption(execBin),
         })
         child = spawned
 

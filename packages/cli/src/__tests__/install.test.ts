@@ -168,7 +168,7 @@ describe("agentproto install — adapter package bootstrap", () => {
     expect(argv).toEqual(["install", "-g", "@agentproto/adapter-claude-code"])
     expect(resolveAdapterMock).toHaveBeenCalledTimes(2)
     const stdout = io.out.join("")
-    expect(stdout).toMatch(/\[bootstrap\] installing @agentproto\/adapter-claude-code/)
+    expect(stdout).toMatch(/\[bootstrap\] running: npm i -g @agentproto\/adapter-claude-code/)
     io.restore()
   })
 
