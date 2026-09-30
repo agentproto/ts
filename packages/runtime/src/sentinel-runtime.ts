@@ -48,8 +48,9 @@ import type {
   SentinelStore,
   SentinelWebhookSecret,
   SentinelWebhookTargetAtRest,
-  WEBHOOK_SECRET_ROTATION_WINDOW_MS,
 } from "./sentinel-store.js"
+// A VALUE import (not `import type`): the runtime scopes the rotation window.
+import { WEBHOOK_SECRET_ROTATION_WINDOW_MS } from "./sentinel-store.js"
 import {
   createSentinelWebhookOutbox,
   type SentinelWebhookOutboxOptions,
