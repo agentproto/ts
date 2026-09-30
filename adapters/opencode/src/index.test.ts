@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { composeSpawn, RuntimeConfigError } from "@agentproto/driver-agent-cli"
+
 import { opencode, readOpenCodeUsage } from "./index.js"
 
 describe("@agentproto/adapter-opencode", () => {
@@ -94,6 +96,72 @@ describe("@agentproto/adapter-opencode", () => {
       typeof entry === "string" ? entry : entry.id,
     )
     expect(new Set(ids).size).toBe(ids.length)
+  })
+})
+
+/**
+ * Spawn-time `effort` (the `[unknown_option at config.options.effort]` bug).
+ *
+ * opencode's ACP server DOES accept `session/set_config_option(configId:
+ * "effort")` — but only for models that advertise an `effort` config option
+ * (category `thought_level`), and the accepted vocabulary is model-dependent
+ * (probed live against `opencode acp` 1.18.x: one reasoning model offered
+ * `high | max | default`; `opencode run --variant` help also names `minimal`).
+ * Hence a free-form `string`, config-applied, with no argv template — exactly
+ * like `model`. Before the fix the manifest declared only `model`, so a
+ * generic `agent_start({ effort })` passthrough died at compose time.
+ */
+describe("@agentproto/adapter-opencode — effort option", () => {
+  it("declares effort as a free-form, config-applied string option", () => {
+    const effort = opencode.options?.find((o) => o.id === "effort")
+    expect(effort).toBeDefined()
+    // string (not enum): the vocabulary is model-dependent, so a static enum
+    // would reject labels valid for other models this adapter routes to.
+    expect(effort?.type).toBe("string")
+    expect(effort?.enum).toBeUndefined()
+    // Applied via ACP set_config_option, not argv — `opencode acp` has no
+    // effort/variant flag (`--variant` is a `run`-subcommand flag).
+    expect(effort?.bin_args_template).toBeUndefined()
+    expect(effort?.bin_args_prepend).toBeUndefined()
+    expect(effort?.description).toMatch(/thought level|effort/i)
+  })
+
+  it("accepts an effort value through the driver's spawn composer (no `unknown_option`)", () => {
+    const composed = composeSpawn(opencode, { options: { effort: "high" } })
+    // Config-applied → the value never leaks into argv.
+    expect(composed.binArgs).toEqual(opencode.bin_args)
+  })
+
+  it("passes an arbitrary label through rather than rejecting it client-side", () => {
+    // The server is the authority on the model's vocabulary; the adapter must
+    // not gate it. A label the model doesn't offer is ignored best-effort by
+    // the ACP layer, never a spawn failure.
+    const composed = composeSpawn(opencode, { options: { effort: "minimal" } })
+    expect(composed.binArgs).toEqual(opencode.bin_args)
+  })
+
+  it("forwards effort alongside model without disturbing model's config apply", () => {
+    const composed = composeSpawn(opencode, {
+      options: { model: "openrouter/anthropic/claude-sonnet-4-6", effort: "max" },
+    })
+    expect(composed.binArgs).toEqual(opencode.bin_args)
+  })
+
+  it("rejects a non-string effort value with option_type_mismatch", () => {
+    try {
+      composeSpawn(opencode, { options: { effort: 5 as unknown as string } })
+      throw new Error("expected composeSpawn to throw")
+    } catch (err) {
+      expect(err).toBeInstanceOf(RuntimeConfigError)
+      expect((err as RuntimeConfigError).code).toBe("option_type_mismatch")
+      expect((err as RuntimeConfigError).path).toBe("config.options.effort")
+    }
+  })
+
+  it("still rejects a genuinely unknown option id", () => {
+    expect(() => composeSpawn(opencode, { options: { bogus: "x" } })).toThrowError(
+      /unknown_option/,
+    )
   })
 })
 
