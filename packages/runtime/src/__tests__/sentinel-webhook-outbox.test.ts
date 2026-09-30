@@ -151,7 +151,7 @@ describe("sentinel webhook outbox", () => {
       expect(firstAcks).toHaveLength(0)
 
       // Instance 2 (post-restart): re-persisted state drives the resume.
-      const secondAcks: Array<{ sentinelId: string }> = []
+      const secondAcks: Array<{ sentinelId: string; row: PersistedOutboxRow }> = []
       const resumedBytes: Array<string> = []
       const outbox2 = createSentinelWebhookOutbox({
         filePath,
