@@ -91,7 +91,7 @@ import type { RemoteController, EnableInput } from "./remote-controller.js"
 import type { PairingRegistry } from "./pairing-registry.js"
 import type { HostRegistry, ForwardHttpResponse } from "./host-registry.js"
 import type { JoinTokenRegistry } from "./join-token-registry.js"
-import { createDeviceRegistry } from "./device-registry.js"
+import { createDeviceRegistry, promptHostSession } from "./device-registry.js"
 import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import type { AppRegistry } from "./app-registry.js"
@@ -4130,6 +4130,23 @@ export async function startHttpServer(
         // /device-spawn/sessions/:id/events/stream, etc.
         if (path === "/device-spawn" || path.startsWith("/device-spawn/")) {
           const handled = await handleDeviceSpawn(
+            req,
+            res,
+            path,
+            opts.port,
+            opts.deviceSpawnAllow === true,
+          )
+          if (handled) return
+        }
+
+        // Device-prompt route (BOOTSTRAP P4 item 1) — the RECEIVING side of
+        // `device_prompt` / `agentproto devices prompt`: self-proxies onto
+        // this daemon's own POST /sessions/:id/prompt for a paired
+        // HOST-scoped controller. Registered beside /device-spawn and gated
+        // by the same two gates (checked inside the handler): the host-scope
+        // header, then the deviceSpawnAllow opt-in.
+        if (path.startsWith("/device-prompt/")) {
+          const handled = await handleDevicePrompt(
             req,
             res,
             path,
@@ -8284,6 +8301,115 @@ async function handleDeviceSpawn(
 }
 
 /**
+ * `/device-prompt/:sessionId` (BOOTSTRAP P4 item 1) — the RECEIVING side of
+ * `device_prompt` / `agentproto devices prompt`: a paired HOST-scoped
+ * controller prompting a session that lives on THIS daemon. Self-proxies the
+ * request onto this daemon's own `POST /sessions/:id/prompt` — the exact
+ * route a local `agentproto sessions prompt` drives — so the queueing rules
+ * (FIFO behind an in-flight turn, `interrupt`/`force`) are identical by
+ * construction, never re-implemented.
+ *
+ * Gated by BOTH `HOST_SCOPE_HEADER` AND the `deviceSpawnAllow` opt-in — the
+ * same two-gate shape as `/device-spawn/*`, for the same reason: a forwarded
+ * `http_request` lands as loopback traffic, so without these gates ANY
+ * pairing (an ordinary remote-control one included) could write to this
+ * daemon's sessions through its own forward path. Prompting is a write, and
+ * it uses the same opt-in switch as spawning because it is the same class of
+ * "drive agent sessions on this daemon from afar" capability —
+ * `agentproto devices allow-spawn on|off` governs both.
+ */
+async function handleDevicePrompt(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  port: number,
+  spawnAllowed: boolean,
+): Promise<boolean> {
+  const json = (status: number, body: unknown): void => {
+    res.writeHead(status, { "content-type": "application/json" })
+    res.end(JSON.stringify(body))
+  }
+
+  const promptMatch = path.match(/^\/device-prompt\/([^/?]+)(\?.*)?$/)
+  if (!promptMatch) return false
+  const sessionId = decodeURIComponent(promptMatch[1] ?? "")
+  if (!sessionId) return false
+
+  if (req.headers[HOST_SCOPE_HEADER] !== "1") {
+    json(403, {
+      error: "host_scope_required",
+      message:
+        "device-prompt is reachable only over a host-scoped pairing (the far end must have " +
+        "registered this daemon via `agentproto pair offer --host` + `agentproto devices add`)",
+    })
+    return true
+  }
+  if (!spawnAllowed) {
+    json(403, {
+      error: "spawn_disabled",
+      message: "this host has not opted in — run `agentproto devices allow-spawn on` on it",
+    })
+    return true
+  }
+  if (req.method !== "POST") {
+    json(405, { error: "method_not_allowed", message: "POST /device-prompt/:sessionId" })
+    return true
+  }
+
+  const chunks: Buffer[] = []
+  for await (const chunk of req) chunks.push(chunk as Buffer)
+  const body = Buffer.concat(chunks)
+
+  const headers: Record<string, string> = {}
+  for (const [k, v] of Object.entries(req.headers)) {
+    if (v === undefined) continue
+    const lower = k.toLowerCase()
+    if (lower === "connection" || lower === "keep-alive" || lower === "transfer-encoding") continue
+    if (lower === "upgrade" || lower === "host" || lower === "content-length") continue
+    if (lower === HOST_SCOPE_HEADER) continue
+    headers[k] = Array.isArray(v) ? v.join(", ") : v
+  }
+  // The forwarded query rides along (`?wait=false` from the controller's
+  // fire-and-forget arm) — the inner route's own wait semantics apply. Read
+  // it off `req.url`: the dispatcher hands handlers a query-stripped `path`.
+  const rawUrl = req.url ?? ""
+  const query = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?")) : ""
+  let upstreamRes: globalThis.Response
+  try {
+    upstreamRes = await fetch(
+      `http://127.0.0.1:${port}/sessions/${encodeURIComponent(sessionId)}/prompt${query}`,
+      {
+        method: "POST",
+        headers,
+        ...(body.length > 0 ? { body } : {}),
+        // Cast rationale — see `handleDeviceSpawn`'s identical cast above.
+      } as Parameters<typeof fetch>[1],
+    )
+  } catch (err) {
+    json(502, {
+      error: "self_proxy_unreachable",
+      message: err instanceof Error ? err.message : String(err),
+    })
+    return true
+  }
+
+  const resHeaders: Record<string, string> = {}
+  upstreamRes.headers.forEach((v, k) => {
+    if (k === "content-length" || k === "connection") return
+    resHeaders[k] = v
+  })
+  res.writeHead(upstreamRes.status, resHeaders)
+  if (!upstreamRes.body) {
+    res.end()
+    return true
+  }
+  // A prompt reply is always a small buffered JSON body — read it whole.
+  const resBuf = Buffer.from(await upstreamRes.arrayBuffer())
+  res.end(resBuf)
+  return true
+}
+
+/**
  * REST twin of the MCP `remote_enable` / `remote_disable` / `remote_status`
  * tools (remote-tools.ts) — same `RemoteController` singleton, so the two
  * surfaces can never disagree about whether a tunnel is up. Exists for
@@ -9404,6 +9530,41 @@ async function handleDevices(
       writeDeviceSessionsResponse(res2)
     } catch (err) {
       json(502, { error: "forward_failed", message: err instanceof Error ? err.message : String(err) })
+    }
+    return true
+  }
+
+  // Device session prompt (BOOTSTRAP P4 item 1) — the write counterpart of
+  // the two read routes above: POST a turn to a registered host's session,
+  // over the same E2E forward. `?wait=true` blocks until the prompted turn
+  // drains (see promptHostSession); default fire-and-forget. The host-side
+  // gates (host-scoped pairing + deviceSpawnAllow) live on the HOST's
+  // /device-prompt route — this controller route only needs a registered
+  // host to forward to.
+  const deviceSessionPromptMatch = path.match(/^\/devices\/([^/]+)\/sessions\/([^/]+)\/prompt$/)
+  if (deviceSessionPromptMatch && req.method === "POST") {
+    if (!hostRegistry) {
+      json(404, { error: "no_host_registry", message: "this daemon has no host registry wired" })
+      return true
+    }
+    const target = decodeURIComponent(deviceSessionPromptMatch[1] ?? "")
+    const sessionId = decodeURIComponent(deviceSessionPromptMatch[2] ?? "")
+    const body = (await readJsonBody(req)) as Record<string, unknown> | null
+    const b = body && typeof body === "object" ? body : {}
+    const reqUrl = req.url ?? ""
+    const qs = new URLSearchParams(reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "")
+    try {
+      const result = await promptHostSession(hostRegistry, target, sessionId, {
+        prompt: b["prompt"],
+        interrupt: b["interrupt"] === true,
+        force: b["force"] === true,
+        wait: ["1", "true"].includes(qs.get("wait") ?? ""),
+        ...(qs.get("waitPollMs") ? { pollMs: Number(qs.get("waitPollMs")) } : {}),
+        ...(qs.get("maxWaitMs") ? { maxWaitMs: Number(qs.get("maxWaitMs")) } : {}),
+      })
+      json(result.ok ? 200 : result.status ?? 400, result)
+    } catch (err) {
+      json(502, { error: "prompt_forward_failed", message: err instanceof Error ? err.message : String(err) })
     }
     return true
   }

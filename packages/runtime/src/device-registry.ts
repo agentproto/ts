@@ -203,3 +203,201 @@ export function createDeviceRegistry(pairing: PairingRegistry, hosts?: HostRegis
     },
   }
 }
+
+// ── device prompt (BOOTSTRAP P4 item 1) ─────────────────────────
+
+/** The host-side route `promptHostSession` forwards to — served by the HOST
+ *  daemon's `/device-prompt/:sessionId` (http-server.ts), gated by the same
+ *  host-scoped-pairing + `deviceSpawnAllow` two-gate as `/device-spawn/*`. */
+export const DEVICE_PROMPT_PATH_PREFIX = "/device-prompt"
+
+export interface PromptHostSessionInput {
+  /**
+   * The turn to deliver — same shapes local `agent_prompt` accepts: a
+   * non-empty string, a content block object, or a non-empty array of
+   * content blocks. Validated here (never forwarded ill-formed).
+   */
+  prompt: unknown
+  /** When the host session is mid-turn, redirect instead of queueing
+   *  (mirrors local `agent_prompt`'s `interrupt`). Default false. */
+  interrupt?: boolean
+  /** With a mid-turn session, jump the FRONT of the FIFO instead of the
+   *  back (mirrors local `agent_prompt`'s `force`). Default false. */
+  force?: boolean
+  /** Block until the prompted turn drains (the session goes idle with an
+   *  empty queue) instead of fire-and-forget. Default false. */
+  wait?: boolean
+  /** Poll cadence while `wait`ing, ms — clamped to [10, 10_000], default
+   *  1_000. Each poll is a fresh E2E dial to the host, so don't set this
+   *  low in production; the clamp floor exists for tests. */
+  pollMs?: number
+  /** Give up `wait`ing after this long (ms). 0 (default) = wait forever. */
+  maxWaitMs?: number
+  /** Injectable delay for tests. Default a real setTimeout sleep. */
+  sleep?: (ms: number) => Promise<void>
+}
+
+export interface PromptHostSessionResult {
+  ok: boolean
+  /** The enqueue landed in the host session's FIFO (it was mid-turn) —
+   *  present on the fire-and-forget arm only. */
+  pending?: boolean
+  queueId?: string
+  queuePosition?: number
+  /** Present on the `wait` arm: how long the turn took to drain. */
+  waitedMs?: number
+  /** The host's HTTP status, when the enqueue itself failed. */
+  status?: number
+  message?: string
+}
+
+/** Is `prompt` one of the shapes local `agent_prompt` accepts? Kept in sync
+ *  with `POST /sessions/:id/prompt`'s own validation (http-server.ts). */
+function isValidPrompt(prompt: unknown): boolean {
+  if (typeof prompt === "string") return prompt.length > 0
+  if (Array.isArray(prompt)) {
+    return prompt.length > 0 && prompt.every(b => b !== null && typeof b === "object")
+  }
+  return prompt !== null && typeof prompt === "object"
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/** A forwarded non-2xx body is the host's JSON error envelope when it is one
+ *  — surface its human `message`, not the raw envelope string. */
+function httpErrorMessage(body: Uint8Array): string {
+  const raw = Buffer.from(body).toString("utf8")
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (parsed !== null && typeof parsed === "object" && typeof (parsed as { message?: unknown })["message"] === "string") {
+      return (parsed as { message: string })["message"]
+    }
+  } catch {
+    /* not JSON — raw body is the message */
+  }
+  return raw
+}
+
+/**
+ * Prompt a HOST device's session — the write counterpart of `device_sessions`
+ * (BOOTSTRAP P4 item 1). Forwards `POST /device-prompt/:sessionId` over the
+ * host's E2E channel (`HostRegistry.forwardHttp`, the same dial the read
+ * verbs use); the host daemon, if it has opted in (`deviceSpawnAllow`) and
+ * the pairing is host-scoped, calls its own `POST
+ * /sessions/:id/prompt` — queueing rules identical to a local prompt.
+ *
+ * Fire-and-forget by default (the enqueue's 202 comes straight back);
+ * `wait: true` then polls the host's `GET /sessions/:id` until the session
+ * is idle with an empty queue (or dies, or `maxWaitMs` elapses). Never
+ * silently serves stale data — a failed forward throws, there is no
+ * snapshot fallback for a write.
+ */
+export async function promptHostSession(
+  hosts: HostRegistry | undefined,
+  target: string,
+  sessionId: string,
+  input: PromptHostSessionInput,
+): Promise<PromptHostSessionResult> {
+  if (!hosts) {
+    throw new Error(
+      "this daemon has no host registry wired — device prompt is unavailable (internal " +
+        "configuration issue, not a user error)",
+    )
+  }
+  if (!isValidPrompt(input.prompt)) {
+    return {
+      ok: false,
+      message:
+        "`prompt` must be a non-empty string, a content block object, or an array of content blocks.",
+    }
+  }
+
+  const pollMs = Math.min(Math.max(input.pollMs ?? 1_000, 10), 10_000)
+  const delay = input.sleep ?? sleep
+
+  const enqueueBody: Record<string, unknown> = { prompt: input.prompt, queue: true }
+  if (input.interrupt) enqueueBody.interrupt = true
+  if (input.force) enqueueBody.force = true
+
+  const startedAt = Date.now()
+  let enqueueRes: ForwardHttpResponse
+  try {
+    enqueueRes = await hosts.forwardHttp(target, {
+      method: "POST",
+      path: `${DEVICE_PROMPT_PATH_PREFIX}/${encodeURIComponent(sessionId)}?wait=false`,
+      headers: { "content-type": "application/json" },
+      body: new Uint8Array(Buffer.from(JSON.stringify(enqueueBody), "utf8")),
+    })
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) }
+  }
+  if (enqueueRes.status < 200 || enqueueRes.status >= 300) {
+    return { ok: false, status: enqueueRes.status, message: httpErrorMessage(enqueueRes.body) }
+  }
+
+  let enqueueParsed: Record<string, unknown> = {}
+  try {
+    const parsed: unknown = JSON.parse(Buffer.from(enqueueRes.body).toString("utf8"))
+    if (parsed !== null && typeof parsed === "object") enqueueParsed = parsed as Record<string, unknown>
+  } catch {
+    /* the host's 202 body is informational only */
+  }
+
+  if (!input.wait) {
+    const pending = enqueueParsed["pending"] === true
+    return {
+      ok: true,
+      ...(pending
+        ? {
+            pending: true,
+            ...(typeof enqueueParsed["queueId"] === "string" ? { queueId: enqueueParsed["queueId"] } : {}),
+            ...(typeof enqueueParsed["queuePosition"] === "number"
+              ? { queuePosition: enqueueParsed["queuePosition"] }
+              : {}),
+          }
+        : {}),
+    }
+  }
+
+  // `wait` arm: poll the host's own session descriptor until the turn the
+  // prompt joined drains. An idle session dispatched the prompt immediately,
+  // so the very first poll can already see it busy or done.
+  for (;;) {
+    await delay(pollMs)
+    const waitedMs = Date.now() - startedAt
+    let descRes: ForwardHttpResponse
+    try {
+      descRes = await hosts.forwardHttp(target, {
+        method: "GET",
+        path: `/sessions/${encodeURIComponent(sessionId)}`,
+      })
+    } catch (err) {
+      return { ok: false, waitedMs, message: err instanceof Error ? err.message : String(err) }
+    }
+    if (descRes.status === 404) {
+      return { ok: false, waitedMs, status: 404, message: `session ${sessionId} not found on host ${target}` }
+    }
+    if (descRes.status < 200 || descRes.status >= 300) {
+      return { ok: false, waitedMs, status: descRes.status, message: httpErrorMessage(descRes.body) }
+    }
+    let descriptor: Record<string, unknown> = {}
+    try {
+      const parsed: unknown = JSON.parse(Buffer.from(descRes.body).toString("utf8"))
+      if (parsed !== null && typeof parsed === "object") descriptor = parsed as Record<string, unknown>
+    } catch {
+      return { ok: false, waitedMs, status: descRes.status, message: "host returned a non-JSON session descriptor" }
+    }
+    if (descriptor["alive"] === false) {
+      return { ok: false, waitedMs, message: `session ${sessionId} ended while waiting for its turn to drain` }
+    }
+    const queue = Array.isArray(descriptor["promptQueue"]) ? (descriptor["promptQueue"] as unknown[]) : []
+    if (descriptor["busy"] !== true && queue.length === 0) {
+      return { ok: true, waitedMs }
+    }
+    if (input.maxWaitMs !== undefined && input.maxWaitMs > 0 && waitedMs >= input.maxWaitMs) {
+      return { ok: false, waitedMs, message: `timed out after ${waitedMs}ms waiting for the turn to drain` }
+    }
+  }
+}

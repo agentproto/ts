@@ -47,6 +47,7 @@ Usage:
   agentproto devices share-inference on|off
   agentproto devices allow-spawn on|off
   agentproto devices sessions <fingerprint|name> [--session <id>] [--lines <n>] [--clean] [--json]
+  agentproto devices prompt <fingerprint|name> --session <id> --prompt <text> [--wait]
   agentproto devices join-token create|list|revoke ...  (see --help on that subcommand)
   agentproto devices --help
 
@@ -80,12 +81,18 @@ Usage:
            pairing never gets it). Default off. Writes
            features.deviceSpawnAllow to config.json — restart \`agentproto
            serve\` (or the daemon) for a change to take effect.
-  sessions Read-only: a registered host's own session list, or (with
-           --session) a tail of one session's output — forwarded live over
-           the host's E2E channel.
-  join-token   Mint/list/revoke a long-lived, reusable AGENTPROTO_JOIN
-           credential so a box daemon can auto-register as a host on boot,
-           no offer URL to relay by hand.
+   sessions Read-only: a registered host's own session list, or (with
+            --session) a tail of one session's output — forwarded live over
+            the host's E2E channel.
+   prompt   Send a follow-up turn to one of a registered host's sessions —
+            the write counterpart of \`sessions\`. Queueing rules are
+            identical to \`agentproto sessions prompt\`: fire-and-forget by
+            default, queued behind an in-flight turn; --wait blocks until
+            the turn drains. Requires the host to have opted in
+            (\`agentproto devices allow-spawn on\`).
+   join-token   Mint/list/revoke a long-lived, reusable AGENTPROTO_JOIN
+            credential so a box daemon can auto-register as a host on boot,
+            no offer URL to relay by hand.
 `
 
 const JOIN_TOKEN_USAGE = `agentproto devices join-token — manage AGENTPROTO_JOIN credentials
@@ -159,6 +166,8 @@ export async function runDevices(args: readonly string[]): Promise<number> {
       return runAllowSpawn(args.slice(1))
     case "sessions":
       return runSessions(args.slice(1))
+    case "prompt":
+      return runPrompt(args.slice(1))
     case "join-token":
       return runJoinToken(args.slice(1))
     case undefined:
@@ -166,7 +175,7 @@ export async function runDevices(args: readonly string[]): Promise<number> {
       return 0
     default:
       process.stderr.write(
-        `agentproto devices: unknown subcommand "${sub}"\n  Known: list | rename | revoke | add | status | share-inference | allow-spawn | sessions | join-token\n`,
+        `agentproto devices: unknown subcommand "${sub}"\n  Known: list | rename | revoke | add | status | share-inference | allow-spawn | sessions | prompt | join-token\n`,
       )
       return 2
   }
@@ -524,6 +533,81 @@ async function runSessions(args: readonly string[]): Promise<number> {
     return 0
   }
   process.stdout.write(JSON.stringify(sessions, null, 2) + "\n")
+  return 0
+}
+
+// ── prompt ───────────────────────────────────────────────────────
+
+async function runPrompt(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      session: { type: "string" },
+      prompt: { type: "string", short: "p" },
+      wait: { type: "boolean" },
+      interrupt: { type: "boolean" },
+      force: { type: "boolean" },
+      json: { type: "boolean" },
+    },
+  })
+  const target = positionals[0]
+  if (!target || !values.session || !values.prompt) {
+    process.stderr.write(
+      "agentproto devices prompt: missing <fingerprint|name>, --session or --prompt.\n" +
+        "  Try: agentproto devices prompt <fp-or-name> --session <id> --prompt \"go check X\"\n" +
+        "       agentproto devices prompt <fp-or-name> --session <id> --prompt \"...\" --wait\n",
+    )
+    return 2
+  }
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto devices prompt")
+    return 2
+  }
+
+  const url = `${report.found.url}/devices/${encodeURIComponent(target)}/sessions/${encodeURIComponent(
+    values.session,
+  )}/prompt${values.wait ? "?wait=true" : ""}`
+  const body: Record<string, unknown> = { prompt: values.prompt }
+  if (values.interrupt) body.interrupt = true
+  if (values.force) body.force = true
+
+  let result: Record<string, unknown>
+  try {
+    result = await httpPostJson<Record<string, unknown>>(url, body, report.found.token)
+  } catch (err) {
+    process.stderr.write(
+      `agentproto devices prompt: ${err instanceof Error ? err.message : String(err)}\n`,
+    )
+    return 1
+  }
+
+  if (values.json) {
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+    return result.ok === true ? 0 : 1
+  }
+  if (result.ok !== true) {
+    process.stderr.write(
+      `agentproto devices prompt: ${typeof result.message === "string" ? result.message : JSON.stringify(result)}\n`,
+    )
+    return 1
+  }
+  if (values.wait) {
+    const waitedMs = typeof result.waitedMs === "number" ? result.waitedMs : 0
+    process.stdout.write(
+      `agentproto devices prompt: turn complete on ${values.session} @ ${target} (${(waitedMs / 1000).toFixed(1)}s)\n`,
+    )
+  } else if (result.pending === true) {
+    process.stdout.write(
+      `agentproto devices prompt: queued for ${values.session} @ ${target}` +
+        ` (position ${String(result.queuePosition)})\n`,
+    )
+  } else {
+    process.stdout.write(`agentproto devices prompt: sent to ${values.session} @ ${target}\n`)
+  }
   return 0
 }
 

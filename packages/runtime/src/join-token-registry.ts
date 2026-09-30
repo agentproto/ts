@@ -542,7 +542,12 @@ export function createJoinTokenRegistry(deps: JoinTokenRegistryDeps): JoinTokenR
             capturedSession = result.session
             return { reply: encodePairingMessage(result.reply), keys: result.session }
           },
-          { timeoutMs: handshakeTimeoutMs },
+          {
+            timeoutMs: handshakeTimeoutMs,
+            // Post-handshake close reason (BOOTSTRAP P4 item 2) — same
+            // diagnostic hook the pairing-host accept-loop wires.
+            log: line => log(`[join-tokens] "${record.name}": ${line}`),
+          },
         )
       } catch (err) {
         if (signal.aborted) break

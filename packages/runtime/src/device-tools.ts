@@ -19,10 +19,18 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { DeviceRegistry } from "./device-registry.js"
+import { promptHostSession } from "./device-registry.js"
+import type { HostRegistry } from "./host-registry.js"
 import type { JoinTokenRegistry } from "./join-token-registry.js"
 
 export interface RegisterDeviceToolsOptions {
   registry: DeviceRegistry
+  /** Optional — the underlying host registry (`device_add`'s), when wired.
+   *  `device_prompt` needs it directly: its wait-loop dials the host more
+   *  than once, which `DeviceRegistry.forwardHttp`'s snapshot fallback
+   *  would happily answer from cache. When absent, `device_prompt` is not
+   *  registered. */
+  hosts?: HostRegistry
   /** Optional (SANDBOX-VISIBILITY-JOIN) — when wired, registers
    *  `join_token_create`/`join_token_list`/`join_token_revoke`. */
   joinTokens?: JoinTokenRegistry
@@ -45,7 +53,7 @@ export function registerDeviceTools(
   server: McpServer,
   opts: RegisterDeviceToolsOptions,
 ): void {
-  const { registry, joinTokens } = opts
+  const { registry, hosts: registryHosts, joinTokens } = opts
 
   server.tool(
     "device_list",
@@ -179,6 +187,66 @@ export function registerDeviceTools(
       }
     },
   )
+
+  if (registryHosts) {
+    server.tool(
+      "device_prompt",
+      "Send a prompt (a follow-up turn) to a session on a registered HOST " +
+        "device — the write counterpart of device_sessions, forwarded live " +
+        "over the host's E2E channel. Queueing rules are identical to a " +
+        "local agent_prompt: fire-and-forget by default, queued behind the " +
+        "session's in-flight turn, `interrupt`/`force` to redirect or jump " +
+        "the queue. wait: true blocks until the prompted turn drains. " +
+        "Requires the HOST daemon to have opted in (agentproto devices " +
+        "allow-spawn on) over a host-scoped pairing — the same gate as " +
+        "device spawn; refused for a plain remote-control pairing or an " +
+        "unknown target.",
+      {
+        target: z.string().describe("The host's fingerprint or name (see device_list)."),
+        sessionId: z.string().min(1).describe("The session id ON the host to prompt."),
+        prompt: z
+          .union([z.string(), z.record(z.string(), z.unknown()), z.array(z.record(z.string(), z.unknown()))])
+          .describe("Non-empty string, a content block, or an array of content blocks."),
+        wait: z.boolean().optional().describe("Block until the prompted turn drains. Default false."),
+        interrupt: z
+          .boolean()
+          .optional()
+          .describe("Mid-turn: redirect instead of queueing (agent_prompt's interrupt). Default false."),
+        force: z
+          .boolean()
+          .optional()
+          .describe("Mid-turn: jump the FRONT of the FIFO (agent_prompt's force). Default false."),
+        pollMs: z
+          .number()
+          .int()
+          .min(10)
+          .max(10_000)
+          .optional()
+          .describe("Poll cadence while waiting, ms. Default 1000. Each poll is a fresh E2E dial."),
+        maxWaitMs: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Give up waiting after this long (ms). Default: wait forever."),
+      },
+      async ({ target, sessionId, prompt, wait, interrupt, force, pollMs, maxWaitMs }) => {
+        try {
+          const result = await promptHostSession(registryHosts, target, sessionId, {
+            prompt,
+            ...(wait ? { wait: true } : {}),
+            ...(interrupt ? { interrupt: true } : {}),
+            ...(force ? { force: true } : {}),
+            ...(pollMs !== undefined ? { pollMs } : {}),
+            ...(maxWaitMs !== undefined ? { maxWaitMs } : {}),
+          })
+          return text(result)
+        } catch (err) {
+          return text({ ok: false, message: err instanceof Error ? err.message : String(err) })
+        }
+      },
+    )
+  }
 
   if (joinTokens) {
     server.tool(

@@ -823,7 +823,8 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     const attempts = [epoch, epoch - 1]
     let lastErr: unknown
     let hungUpOnHello = 0
-    for (const e of attempts) {
+    for (let attempt = 1; attempt <= attempts.length; attempt++) {
+      const e = attempts[attempt - 1]!
       const { route, auth } = await deriveEpochTokens(record.pairRoot, e)
       let raw: FrameSink
       try {
@@ -833,25 +834,52 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
         continue
       }
       try {
-        const started = await startClientHandshake({
-          daemonX25519Pub: record.daemonX25519Pub,
-          daemonEd25519Pub: record.daemonEd25519Pub,
-          authToken: auth,
-          clientName: record.name,
+        // Capture the remote close reason from the RAW transport from the
+        // very first instant — a host closing mid-handshake or in the gap
+        // before the tunnel hello must still be explainable (neither
+        // holdFrames nor the E2E wrap replays a close that fired before the
+        // subscription; the raw sink's does, subscribed this early).
+        let rawCloseReason: string | undefined
+        const offRawClose = raw.onClose(reason => {
+          rawCloseReason = reason ?? "unknown"
         })
-        const wrapped = await clientHandshakeOverSink(
-          raw,
-          encodePairingMessage(started.hello),
-          replyBytes => started.complete(decodePairingReply(replyBytes)),
-          { timeoutMs: handshakeTimeoutMs },
-        )
-        const client = createTunnelClient({ sink: wrapped })
-        await client.ready()
+        let client: TunnelClient
+        try {
+          const started = await startClientHandshake({
+            daemonX25519Pub: record.daemonX25519Pub,
+            daemonEd25519Pub: record.daemonEd25519Pub,
+            authToken: auth,
+            clientName: record.name,
+          })
+          const wrapped = await clientHandshakeOverSink(
+            raw,
+            encodePairingMessage(started.hello),
+            replyBytes => started.complete(decodePairingReply(replyBytes)),
+            { timeoutMs: handshakeTimeoutMs },
+          )
+          client = createTunnelClient({ sink: wrapped })
+          // Post-handshake step: the host must follow its handshake reply
+          // with the tunnel `hello` frame. If the host instead closes (a
+          // tombstone close for a revoked pairing, a persist failure on its
+          // side, a crash), `client.ready()` alone would sit out its full
+          // 10s hello timeout and mask the real remote close reason. Racing
+          // it against the sink's close turns a silent 10s hang into an
+          // immediate, reason-carrying failure — and the close reason into
+          // a diagnostic: this is exactly where the observed E2E channel
+          // flaps break (the Noise handshake succeeds, the NEXT message
+          // never arrives).
+          await awaitTunnelHello(client, wrapped, record, () => rawCloseReason)
+        } finally {
+          offRawClose()
+        }
         await markReached(record)
         return client
       } catch (err) {
         lastErr = err
         if (err instanceof Error && /transport closed during handshake/.test(err.message)) hungUpOnHello++
+        log(
+          `[hosts] ${record.name} (${record.fingerprint}) attempt ${attempt}/${attempts.length} failed: ${errMsg(err)}`,
+        )
         try {
           raw.close("handshake failed")
         } catch {
@@ -863,9 +891,10 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     // Every attempt reached a host that hung up on our hello: the likeliest
     // cause is a host still on pair/v1, which refuses a v2 hello without a
     // word (mirrors pair-transport.ts's openPairChannel).
+    const helloTimedOut = lastErr instanceof Error && /did not send hello/.test(lastErr.message)
     const hint =
-      hungUpOnHello === attempts.length
-        ? ` — the host hung up on the pair/v2 hello; if it runs an older agentproto ` +
+      hungUpOnHello === attempts.length || helloTimedOut
+        ? ` — the host hung up on (or never sent) the post-handshake tunnel hello; if it runs an older agentproto ` +
           `(pair/v1), upgrade it and re-pair: run \`agentproto pair offer --host\` on the ` +
           `host, then \`agentproto devices add\` here. (${PAIRING_PROTOCOL_OUTDATED_MESSAGE})`
         : ""
@@ -1148,6 +1177,57 @@ export function createHostRegistry(deps: HostRegistryDeps): HostRegistry {
     sweep,
     start: sweep,
   }
+}
+
+/**
+ * Race `client.ready()` (the post-handshake tunnel `hello` frame) against the
+ * sink closing. A host that closes right after completing the Noise handshake
+ * — a revoked-pairing tombstone close, a persist failure on its side — would
+ * otherwise leave `ready()` waiting out its full 10s hello timeout, reporting
+ * a generic "did not send hello" instead of the remote close reason. This is
+ * the step the observed E2E channel flaps break at (handshake OK, next message
+ * never arrives), so it is where the reason must surface. The close path
+ * rejects immediately with the reason in the message; the ready path resolves
+ * normally (and unsubscribes).
+ */
+async function awaitTunnelHello(
+  client: Pick<TunnelClient, "ready">,
+  sink: FrameSink,
+  record: Pick<HostRecord, "fingerprint" | "name">,
+  closeReason: () => string | undefined,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    // The host may have closed in the gap between the handshake resolving
+    // and the hello being awaited — the reason was captured by the caller's
+    // own early `onClose` subscription.
+    if (!sink.isOpen) {
+      reject(
+        new Error(
+          `host ${record.fingerprint} (${record.name}) closed the channel after handshake: ${closeReason() ?? "unknown"}`,
+        ),
+      )
+      return
+    }
+    const offClose = sink.onClose(reason => {
+      reject(
+        new Error(
+          `host ${record.fingerprint} (${record.name}) closed the channel after handshake: ${reason ?? "unknown"}`,
+        ),
+      )
+    })
+    client
+      .ready()
+      .then(
+        () => {
+          offClose()
+          resolve()
+        },
+        err => {
+          offClose()
+          reject(err)
+        },
+      )
+  })
 }
 
 /**
