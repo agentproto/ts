@@ -137,12 +137,16 @@ are Zod-validated at the boundary rather than trusted.
 
 ## Token storage
 
-`token-store.ts` wraps the macOS `security` CLI and **guards the platform** —
-`readKeychainToken` / `writeKeychainToken` throw a clear error on non-macOS hosts
-rather than silently returning `undefined` (which would re-prompt every run).
-Swap this module for libsecret (Linux) / Credential Manager (Windows) to run
-elsewhere. `resolveAccount(account, server)` expands the `{server}` template in a
-`tokenStore.account` spec.
+`token-store.ts` is the platform switch and **guards the platform** —
+`readKeychainToken` / `writeKeychainToken` throw a clear error where no backend
+exists rather than silently returning `undefined` (which would re-prompt every
+run). macOS wraps the `security` CLI; Windows (recap D7) seals one
+DPAPI-protected file per slot under `~/.agentproto/keychain-dpapi/` via .NET
+`ProtectedData` at `CurrentUser` scope through PowerShell — per-user
+encryption, zero npm dependencies, and nothing beyond stock Windows
+(Get-StoredCredential is NOT required). Linux is still unimplemented;
+libsecret would be the equivalent there. `resolveAccount(account, server)`
+expands the `{server}` template in a `tokenStore.account` spec.
 
 ## Credential store
 

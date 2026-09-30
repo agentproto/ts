@@ -17,6 +17,7 @@ import { join } from "node:path"
 import type { AgentCliHandle } from "@agentproto/driver-agent-cli"
 import { catalogByType } from "../../registry/catalog.js"
 import { interpretVersionCheck } from "../../commands/install.js"
+import { fetchHealth } from "../../commands/daemon.js"
 import type { OnboardingStep, StepCheck, StepContext } from "../types.js"
 import { readManifestVersion } from "./_util.js"
 
@@ -37,9 +38,49 @@ type Handle = Pick<AgentCliHandle, "version_check" | "bin" | "bin_args">
 
 type Presence =
   | { slug: string; name: string; state: "usable"; status: "ok" | "warn"; detail: string; version: string | null; fix?: string }
+  | { slug: string; name: string; state: "stalePath"; resolved: string }
   | { slug: string; name: string; state: "absent" | "unresolvable" }
 
 const SEMVER = /(\d+\.\d+\.\d+[^\s)]*)/
+
+/**
+ * Recap B4 (doctor detects a stale daemon PATH): when a harness binary is
+ * installed in the user's login shell but the running daemon's PATH (captured
+ * at daemon start) lost that directory, the spawn will fail `ENOENT` even
+ * though every CLI-side probe says "installed". The diagnosis runs only when
+ * the daemon is up AND its /health carries the `path` field (older daemons
+ * omit it) AND the login-shell probe resolves the binary — anything less and
+ * there is nothing compared, so we fall back to the plain "absent" verdict.
+ * Pure: (dirList, resolved) both strings — trivially unit-testable.
+ */
+export function isStaleDaemonPath(
+  daemonPath: string | null | undefined,
+  shellResolved: string | null,
+): boolean {
+  if (!daemonPath || !shellResolved) return false
+  const dirs = daemonPath.split(":")
+  const parent = shellResolved.replace(/[/\\][^/\\]+$/, "")
+  return !dirs.includes(parent)
+}
+
+export function stalePathHint(slug: string, resolved: string): string {
+  const bin = slug
+  return (
+    `${bin} is installed in your login shell (${resolved}) but not visible to the daemon ` +
+    `(PATH captured at daemon start) — run \`agentproto daemon restart\``
+  )
+}
+
+/** Detect the shell-side install of an absent adapter (recap B4). Returns the
+ *  resolved binary path, or null. Never throws; never crosses the daemon. */
+async function shellProbe(ctx: StepContext, slug: string): Promise<string | null> {
+  const [execCmd, execArgs]: [string, string[]] =
+    ctx.platform === "win32" ? ["cmd", ["/c", `where ${slug}`]] : ["bash", ["-lc", `command -v ${slug}`]]
+  const out = await ctx.exec(execCmd, execArgs, { timeoutMs: PROBE_TIMEOUT_MS }).catch(() => null)
+  if (!out || out.code !== 0) return null
+  const line = out.stdout.trim().split(/\r?\n/)[0]
+  return line || null
+}
 
 function firstToken(cmd: string): string {
   return cmd.trim().split(/\s+/)[0] ?? ""
@@ -152,11 +193,41 @@ export const agentsStep: OnboardingStep = {
   async detect(ctx) {
     const entries = catalogByType("agent-cli")
     const results = await Promise.all(entries.map((e) => probeAdapter(ctx, e.slug, e.name)))
-    const absent = results.filter((r) => r.state !== "usable").map((r) => r.slug)
+
+    // Recap B4: an absent adapter may actually be installed in the user's
+    // shell, invisible to the daemon's start-time PATH. Only when something
+    // probed absent, the daemon answers /health, and /health carries its
+    // PATH does this extra comparison run (never probed on a dead daemon).
+    const plainlyAbsent = results.filter((r) => r.state === "absent")
+    if (plainlyAbsent.length > 0) {
+      const config = await ctx.sources.loadConfig().catch(() => null)
+      const health = await fetchHealth({ config: config ?? undefined, fetchImpl: ctx.fetch }).catch(() => null)
+      if (config && health) {
+        for (const r of plainlyAbsent) {
+          const resolved = await shellProbe(ctx, r.slug)
+          if (resolved && isStaleDaemonPath(health.path, resolved)) {
+            results[results.indexOf(r)] = { slug: r.slug, name: r.name, state: "stalePath", resolved }
+          }
+        }
+      }
+    }
+
+    const absent = results.filter((r) => r.state === "absent").map((r) => r.slug)
     const unresolvable = results.filter((r) => r.state === "unresolvable").map((r) => r.slug)
 
     const checks: StepCheck[] = []
     for (const r of results) {
+      if (r.state === "stalePath") {
+        checks.push({
+          id: `agents.${r.slug}`,
+          title: r.name,
+          status: "warn",
+          detail: stalePathHint(r.slug, r.resolved),
+          fix: "agentproto daemon restart",
+          data: { slug: r.slug, version: null },
+        })
+        continue
+      }
       if (r.state !== "usable") continue
       checks.push({
         id: `agents.${r.slug}`,
@@ -167,7 +238,10 @@ export const agentsStep: OnboardingStep = {
         data: { slug: r.slug, version: r.version },
       })
     }
-    if (checks.length === 0) {
+    const anythingFound = checks.some(
+      (c) => c.status === "ok" || c.status === "warn",
+    )
+    if (!anythingFound) {
       checks.push({
         id: "agents.none",
         title: "Agent harnesses",

@@ -107,7 +107,11 @@ export function healthySources(): StepSources {
     loadMcpInstallState: async () => ({
       entries: [{ agent: "cursor", configPath: `${HOME}/.cursor/mcp.json`, transport: "stdio", registeredAt: "" }],
     }),
-    loadDevices: async () => [],
+    loadDevices: async () => [
+      // One recently-seen device: the healthy machine already paired one, so
+      // both `devices` and `connect-machines` come back ok/skipped-clean.
+      { fingerprint: "fp1", name: "laptop", createdAt: "2026-01-01T00:00:00.000Z", lastSeen: "2026-09-26T00:00:00.000Z" },
+    ],
     skillTargets: async () => [
       { slug: "claude-code", target: { format: "claude-plugin", unit: "whole-pack", outDir: "~/.claude/plugins/agentproto" } },
       { slug: "hermes", target: { format: "flat-dir", dir: "~/.hermes/skills" } },

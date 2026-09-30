@@ -328,6 +328,13 @@ describe("createHostRegistry", () => {
       expect(dial).not.toHaveBeenCalled()
     })
 
+    it("the 'no host matched' error carries the pairing-direction hint (recap E9)", async () => {
+      const registry = createHostRegistry({ hostsPath, dial: vi.fn() })
+      await expect(registry.forwardHttp("no-such-host", { method: "GET", path: "/health" })).rejects.toThrow(
+        /roles may be inverted; see `agentproto pair --help`/,
+      )
+    })
+
     it("dials the current epoch, forwards the request, and updates lastSeen + isOnline", async () => {
       const identity = await generateIdentity()
       const { url, auth, fingerprint } = await makeOffer(identity, { scope: "host" })

@@ -6,6 +6,7 @@ import { preflightStep } from "./steps/preflight.js"
 import { workspaceStep } from "./steps/workspace.js"
 import { daemonStep } from "./steps/daemon.js"
 import { agentsStep } from "./steps/agents.js"
+import { connectMachinesStep } from "./steps/connect-machines.js"
 import { authStep } from "./steps/auth.js"
 import { clientsStep } from "./steps/clients.js"
 import { devicesStep } from "./steps/devices.js"
@@ -20,6 +21,7 @@ export const ONBOARDING_STEPS: readonly OnboardingStep[] = [
   workspaceStep,
   daemonStep,
   agentsStep,
+  connectMachinesStep,
   authStep,
   clientsStep,
   devicesStep,

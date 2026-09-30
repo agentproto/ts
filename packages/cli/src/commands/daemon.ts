@@ -257,6 +257,9 @@ export interface DaemonHealthInfo {
   pid?: number
   node?: string
   entry?: string | null
+  /** The PATH the daemon captured at start (recap B4) — `null` when the
+   *  daemon predates the field or runs with no PATH at all. */
+  path?: string | null
   workspace?: string
   uptimeMs?: number
 }

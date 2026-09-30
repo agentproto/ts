@@ -1929,6 +1929,11 @@ export async function startHttpServer(
         pid: process.pid,
         node: process.execPath,
         entry: process.argv[1] ?? null,
+        // The PATH the daemon captured at start (recap B4): doctor compares
+        // it against the login shell's to diagnose "installed in your shell
+        // but not visible to the daemon". Additive — older CLI readers
+        // ignore the field, and it is absent when a daemon predates it.
+        path: process.env["PATH"] ?? null,
         resumeSessionsOnBoot: opts.meta.resumeSessionsOnBoot === true,
         continueInterruptedOnBoot: opts.meta.continueInterruptedOnBoot === true,
         idleReapAfterMs: opts.meta.idleReapAfterMs ?? 0,

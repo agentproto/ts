@@ -151,6 +151,7 @@ describe("agentproto doctor", () => {
       "preflight",
       "workspace",
       "daemon",
+      "connect-machines",
       "auth",
       "clients",
       "devices",

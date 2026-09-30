@@ -1,9 +1,10 @@
 /**
  * KeychainStore — `CredentialStore` backed by the platform Keychain.
  *
- * Wraps the low-level `token-store.ts` helpers (macOS `security` CLI today).
- * The Keychain only holds one opaque string per entry, so `kind`/`expiresAt`/
- * `metadata` are packed into a small JSON envelope that IS that string.
+ * Wraps the low-level `token-store.ts` helpers (macOS `security` CLI; a
+ * DPAPI-protected file per slot on Windows). The key store only holds one
+ * opaque string per entry, so `kind`/`expiresAt`/`metadata` are packed
+ * into a small JSON envelope that IS that string.
  *
  * Back-compat: an entry written before this store existed (or by any other
  * tool) is a bare token string, not an envelope. `read` falls back to

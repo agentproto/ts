@@ -110,7 +110,9 @@ the local copy.
 
 Separate from everything above: `agentproto auth cred set|list|rm` manages
 credentials for MCP servers a *spawned agent* mounts, not this daemon's own
-host auth. The secret itself goes to the OS keychain; only the non-secret
+host auth. The secret itself goes to the OS key store — macOS Keychain on
+macOS, a DPAPI-protected file per slot under `~/.agentproto/keychain-dpapi/`
+on Windows (per-user encryption); only the non-secret
 provider definition (`apiBase`, `audience`, `description`) is persisted to
 `~/.agentproto/auth-providers.json`. A session's
 `mcpServers[].credentialRef` (`"<id>"` or `"<id>/<account>"`) resolves
