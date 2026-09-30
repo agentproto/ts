@@ -933,11 +933,26 @@ export function renderSchtasksTr(commandPath: string): string {
 
 /** The launcher .cmd's body: quoted argv + merged stdout/stderr redirection
  *  into `~/.agentproto/daemon.log` (the plist equivalents are
- *  StandardOutPath/StandardErrorPath). Pure — unit-tested without real cmd. */
-export function renderWinDaemonScript(argv: readonly string[], logPath: string): string {
+ *  StandardOutPath/StandardErrorPath). Pure — unit-tested without real cmd.
+ *
+ *  Win field test (BOOTSTRAP P3, 2026-09-30): Task Scheduler ran the task
+ *  from `C:\Windows\System32` (no working directory in `schtasks /TR`), so
+ *  the daemon tried to create `.agentproto/runtime.json` under System32 and
+ *  died EPERM. The first line therefore `cd /d`s to a writable home before
+ *  anything execs: the configured `daemon.workspace` when one is set,
+ *  `%USERPROFILE%` (expanded by cmd at run time — never a hardcoded path)
+ *  otherwise. */
+export function renderWinDaemonScript(
+  argv: readonly string[],
+  logPath: string,
+  cwd?: string,
+): string {
   const q = (a: string): string =>
     a.includes(" ") || a.includes('"') ? `"${a.replace(/"/g, '""')}"` : a
-  return `@echo off\n${argv.map(q).join(" ")} >> "${logPath}" 2>&1\n`
+  const cdLine = cwd
+    ? `cd /d "${cwd.replace(/"/g, '""')}"`
+    : `cd /d "%USERPROFILE%"`
+  return `@echo off\n${cdLine}\n${argv.map(q).join(" ")} >> "${logPath}" 2>&1\n`
 }
 
 function schtasks(args: string[]): Promise<LaunchctlResult> {
@@ -968,7 +983,14 @@ export async function runWinInstall(
   const cfg = await loadConfig()
   const p = paths(home)
   const scriptPath = schtasksTaskScriptPath(home)
-  const script = renderWinDaemonScript([...p.argv, ...buildServeArgv(cfg)], p.log)
+  const script = renderWinDaemonScript(
+    [...p.argv, ...buildServeArgv(cfg)],
+    p.log,
+    // Working directory for the launcher (see renderWinDaemonScript's doc —
+    // System32 default breaks runtime.json). Explicit workspace wins;
+    // otherwise %USERPROFILE% expanded at run time by cmd.
+    cfg.daemon?.workspace,
+  )
   const create = [
     "/Create", "/TN", SCHTASKS_TASK_NAME,
     // Per-user task under HKCU, runs at logon, overwrite any previous one.
@@ -1073,7 +1095,58 @@ export async function runWinRestart(
   return 0
 }
 
-export async function runWinStop(schtasksFn: SchtasksFn = schtasks): Promise<number> {
+/** Synchronous app-stop surgery: `schtasks /End` reports the task ended,
+ *  but (WIN11 field test 2026-09-30, BOOTSTRAP P3 item 3) the node child it
+ *  spawned keeps LISTENING on the daemon port — a later `start` reuses the
+ *  task and the new code never loads. After `/End`, therefore: probe
+ *  `/health`, and if the port still answers, kill the recorded PID tree
+ *  (`taskkill /PID <pid> /T /F` — win32 only) and re-probe. Everything is
+ *  injectable so the tests never touch schtasks, taskkill, or the network. */
+export interface WinStopDeps {
+  health?: HealthFetchFn
+  /** Kill a process tree by pid. Default: win32 `taskkill /T /F`. */
+  killTree?: (pid: number) => Promise<number>
+  /** The daemon PID recorded at start — `~/.agentproto/runtime.json`'s
+   *  `pid` field by default. Fallback when `/health` doesn't expose one. */
+  readDaemonPid?: () => Promise<number | null>
+  /** Delay before post-kill re-probes (tests set 0 to stay hermetic). */
+  releaseDelayMs?: number
+}
+
+/** One `taskkill /PID <pid> /T /F` — kills the node daemon AND its whole
+ *  child tree. No port killer, SO_REUSEADDR, or task-snapshot parsing: the
+ *  recorded pid is the authority, matching how `start`/`/health` report it. */
+async function taskkillTree(pid: number): Promise<number> {
+  return new Promise(resolve => {
+    const child = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      windowsHide: true,
+      stdio: ["ignore", "ignore", "ignore"],
+    })
+    child.on("error", () => resolve(127))
+    child.on("exit", code => resolve(code ?? 1))
+  })
+}
+
+/** The `pid` field of the serve daemon's home runtime.json — `null` when
+ *  missing/malformed/absent-pid. Keep the read bounded: one JSON parse,
+ *  never a config load (this must work even when the daemon is wedged). */
+async function readHomeRuntimePid(): Promise<number | null> {
+  try {
+    const raw = await fs.readFile(
+      join(homedir(), ".agentproto", "runtime.json"),
+      "utf8",
+    )
+    const parsed = JSON.parse(raw) as { pid?: unknown }
+    return typeof parsed.pid === "number" ? parsed.pid : null
+  } catch {
+    return null
+  }
+}
+
+export async function runWinStop(
+  schtasksFn: SchtasksFn = schtasks,
+  deps: WinStopDeps = {},
+): Promise<number> {
   const out = await schtasksFn(["/End", "/TN", SCHTASKS_TASK_NAME])
   if (out.code !== 0) {
     process.stderr.write(
@@ -1082,6 +1155,46 @@ export async function runWinStop(schtasksFn: SchtasksFn = schtasks): Promise<num
     return out.code
   }
   process.stdout.write("agentproto daemon: task ended\n")
+
+  const health = deps.health ?? fetchHealth
+  const killTree = deps.killTree ?? taskkillTree
+  const readPid = deps.readDaemonPid ?? readHomeRuntimePid
+  const delay = deps.releaseDelayMs ?? 500
+  const wait = (): Promise<void> =>
+    delay > 0 ? new Promise(r => setTimeout(r, delay)) : Promise.resolve()
+
+  // Verify the port is actually released — /End doesn't kill children.
+  const leftover = await health()
+  if (leftover) {
+    const pid = leftover.pid ?? (await readPid())
+    if (pid === null || pid === undefined) {
+      process.stderr.write(
+        `agentproto daemon stop: task ended but port still answering and no pid found\n` +
+          `  (already-listening daemon on the port? — kill it manually)\n`,
+      )
+      return 0
+    }
+    const killCode = await killTree(pid)
+    if (killCode !== 0) {
+      process.stderr.write(
+        `agentproto daemon stop: taskkill /PID ${pid} exited ${killCode}\n`,
+      )
+    }
+    // Give the socket a beat to release, then check — up to 3 attempts.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await wait()
+      if (!(await health())) {
+        process.stdout.write(
+          `agentproto daemon stop: killed pid ${pid} tree (port released)\n`,
+        )
+        return 0
+      }
+    }
+    process.stderr.write(
+      `agentproto daemon stop: killed pid ${pid} but port still answering\n` +
+        `  check what owns the port and kill it manually\n`,
+    )
+  }
   return 0
 }
 

@@ -803,6 +803,8 @@ export { registerPairingTools, type RegisterPairingToolsOptions } from "./pairin
 export {
   createHostRegistry,
   HOSTS_VERSION,
+  readHostsSnapshot,
+  HOST_HANDSHAKE_REMEDIATION_HINT,
   type HostRegistry,
   type HostRegistryDeps,
   type HostRecord,

@@ -34,6 +34,7 @@
  *      values validated upstream — free-form shell input never goes here.
  */
 
+import { existsSync } from "node:fs"
 import { basename, dirname, join } from "node:path"
 
 /** True when `exe` is a batch file Node on Windows refuses to spawn
@@ -89,6 +90,13 @@ export function resolveWindowsBatchSpawn(
   const stem = basename(bin).replace(/\.(?:bat|cmd)$/i, "")
   if (stem !== "npx" && stem !== "npm") return undefined
   const script = join(dirname(bin), "node_modules", "npm", "bin", `${stem}-cli.js`)
-  if (!(deps?.exists ?? (() => false))(script)) return undefined
+  // Default to the fs-level check. The WIN11 field test (2026-09-30) shipped
+  // a dist where the production caller passed no deps at all, so this branch
+  // evaluated a placeholder `() => false` and the stage-1 rewrite silently
+  // never took — every spawn fell to the `shell: true` fallback and cmd.exe
+  // mangled the quoted `C:\Program Files\...` path (the "ACP connection
+  // closed" wall). Tests inject this via `deps`; production must hit the
+  // real filesystem.
+  if (!(deps?.exists ?? existsSync)(script)) return undefined
   return { bin: deps?.execPath ?? process.execPath, args: [script, ...args] }
 }

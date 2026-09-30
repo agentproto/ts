@@ -7,7 +7,9 @@
  */
 
 import { describe, expect, it } from "vitest"
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
+import { tmpdir } from "node:os"
 import {
   isWindowsBatchFile,
   resolveWindowsBatchSpawn,
@@ -77,6 +79,31 @@ describe("resolveWindowsBatchSpawn", () => {
         exists: () => true,
       })
     ).toBeUndefined()
+  })
+
+  it("with NO deps (the production call shape) defaults to the real filesystem — the shipped-dist regression (WIN11 2026-09-30): a placeholder predicate made the rewrite always return undefined, dropping every spawn into shell:true where cmd.exe mangled the quoted `C:\\Program Files\\…` path", () => {
+    // Real fs, deterministic: a Node-install layout under a path WITH A
+    // SPACE (mirrors `C:\Program Files\nodejs`), actually probed by
+    // existsSync — proving the default deps path returns the rewrite.
+    const parent = mkdtempSync(join(tmpdir(), "agp-win32-"))
+    const nodeDir = join(parent, "Program Files nodejs")
+    mkdirSync(nodeDir, { recursive: true })
+    try {
+      mkdirSync(join(nodeDir, "node_modules", "npm", "bin"), { recursive: true })
+      const entry = join(nodeDir, "node_modules", "npm", "bin", "npx-cli.js")
+      writeFileSync(entry, "// shim target", "utf8")
+      const shim = join(nodeDir, "npx.cmd")
+      writeFileSync(shim, "@echo off\r\nnode \"%~dp0\\node_modules\\npm\\bin\\npx-cli.js\" %*\r\n", "utf8")
+
+      const res = resolveWindowsBatchSpawn(shim, ["-y", "opencode-ai", "acp"], WIN)
+      expect(res).toBeDefined()
+      expect(res!.bin).toBe(process.execPath)
+      expect(res!.args).toEqual([entry, "-y", "opencode-ai", "acp"])
+      // Nothing is written by the resolution — pure read.
+      expect(res!.args[0]).toContain(" ")
+    } finally {
+      rmSync(parent, { recursive: true, force: true })
+    }
   })
 })
 

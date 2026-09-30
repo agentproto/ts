@@ -576,6 +576,53 @@ describe("devices", () => {
     expect(byId(checks, "devices.count").status).toBe("warn")
     expect(byId(checks, "devices.count").detail).toContain("not checked")
   })
+
+  it("a host device with a RECENT dial error warns with the re-pair remediation hint", async () => {
+    const checks = await devicesStep.detect(
+      createFakeContext({
+        now: () => NOW,
+        sources: {
+          loadDevices: async () => [
+            {
+              fingerprint: "fph",
+              name: "win-studio",
+              createdAt: "2026-09-01T00:00:00.000Z",
+              lastSeen: "2026-09-26T00:00:00.000Z",
+              hostLastProbeAt: "2026-09-26T23:40:00.000Z",
+              hostLastError: "could not reach host fph via ws://rdv: handshake timed out",
+            },
+          ],
+        },
+      }),
+    )
+    expect(byId(checks, "devices.host-channel.fph")).toMatchObject({
+      status: "warn",
+      detail: expect.stringContaining("host channel failing"),
+    })
+    expect(byId(checks, "devices.host-channel.fph").fix).toContain("agentproto devices add")
+    expect(byId(checks, "devices.host-channel.fph").fix).toContain("pair offer --host")
+  })
+
+  it("a host device whose last dial error is stale (not probed recently) does not warn", async () => {
+    const checks = await devicesStep.detect(
+      createFakeContext({
+        now: () => NOW,
+        sources: {
+          loadDevices: async () => [
+            {
+              fingerprint: "fph",
+              name: "win-studio",
+              createdAt: "2026-09-01T00:00:00.000Z",
+              lastSeen: "2026-09-01T00:00:00.000Z",
+              hostLastProbeAt: "2026-09-24T00:00:00.000Z",
+              hostLastError: "handshake timed out",
+            },
+          ],
+        },
+      }),
+    )
+    expect(checks.find(c => c.id.startsWith("devices.host-channel"))).toBeUndefined()
+  })
 })
 
 describe("connect-machines", () => {
