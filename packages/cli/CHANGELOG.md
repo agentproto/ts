@@ -1,5 +1,12 @@
 # @agentproto/cli
 
+## 1.7.3
+
+### Patch Changes
+
+- Updated dependencies [85051ab]
+  - @agentproto/driver-agent-cli@2.6.4
+
 ## 1.7.2
 
 ### Patch Changes

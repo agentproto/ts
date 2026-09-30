@@ -1,5 +1,12 @@
 # @agentproto/runtime
 
+## 5.6.1
+
+### Patch Changes
+
+- Updated dependencies [85051ab]
+  - @agentproto/driver-agent-cli@2.6.4
+
 ## 5.6.0
 
 ### Minor Changes
