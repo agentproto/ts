@@ -388,3 +388,196 @@ describe("defineApp — absolute artifact.path / skill.path (AIP-53 rule 7)", ()
     ).toThrow(/`skill\.path`.*absolute.*skills\/my-skill/)
   })
 })
+
+describe("defineApp — ui.extensions.openai v1 contract", () => {
+    const solo = () =>
+      defineAgent({
+        schema: "agent/v1" as const,
+        id: "solo",
+        description: "Solo agent with a ui.",
+        model: "claude-sonnet-5",
+        workflows: [],
+      })
+    type AppDef = NonNullable<Parameters<typeof defineApp>[0]>
+    const app = (ui: Record<string, unknown>) =>
+      defineApp({ agents: [{ agent: solo(), body: "Solo." }], ui } as unknown as AppDef)
+
+  const fileEntry = (extensions: readonly string[]) => ({ type: "file", extensions })
+  const openai = (ext: Record<string, unknown>) => ({ extensions: { openai: ext } })
+  const extension = (openaiExt: Record<string, unknown>, tools: string[] = ["dossier_list"]) => ({
+    html: "<html><body>Panel</body></html>",
+    tools,
+    ...openai(openaiExt),
+  })
+
+  it("app-without-openai-extension-is-unchanged", async () => {
+    const plain = { html: "<html><body>Panel</body></html>", title: "Panel", tools: ["dossier_list"] }
+    const handle = app(plain)
+    expect(handle.ui).toEqual({ ...plain })
+    expect(handle.ui).toMatchObject({ title: "Panel", tools: ["dossier_list"] })
+    expect(Object.isFrozen(handle.ui)).toBe(true)
+  })
+
+  it("file-entrypoint-validates-dot-extensions", async () => {
+    for (const [input, output] of [
+      // valid: lowercase normalization preserves the same set
+      [[".md", ".STL"], [".md", ".stl"]],
+      [[".pdf"], [".pdf"]],
+    ] as const) {
+      const handle = app(extension({ entrypoints: [{ type: "global" }, fileEntry([...input])] }))
+      const eps = (handle.ui!.extensions as { openai: { entrypoints: { type: string; extensions?: string[] }[] } }).openai.entrypoints
+      expect(eps).toEqual([
+        { type: "global" },
+        { type: "file", extensions: [...output] },
+      ])
+    }
+    // table-driven rejections, each naming ui.extensions.openai.entrypoints
+    // with the reason the declaration cannot be advertised as-is.
+    for (const [name, extensions] of [
+      ["empty", []],
+      ["too many", ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "aa", "bb", "cc", "dd", "ee", "ff", "gg"]],
+      ["not dot-prefixed", ["md"]],
+      ["starts with a symbol", [".+md"]],
+      ["uppercase duplicate", [".md", ".MD"]],
+      ["exact duplicate", [".md", ".md"]],
+    ] as const) {
+      expect(() =>
+        app(extension({ entrypoints: [fileEntry(extensions as readonly string[])] })),
+      ).toThrow(AppDefinitionError)
+      expect(() =>
+        app(extension({ entrypoints: [fileEntry(extensions as readonly string[])] })),
+      ).toThrow(/ui\.extensions\.openai\.entrypoints/)
+    }
+  })
+
+  it("mentions-tool-must-be-allowlisted", () => {
+    expect(() =>
+      app(
+        extension({ mentions: { searchTool: "dossier_mentions" } } as never, ["dossier_list"]),
+      ),
+    ).toThrow(/ui\.extensions\.openai\.mentions\.searchTool.*'dossier_mentions'.*dossier_list/)
+    // non-empty searchTool that IS in tools parses.
+    const handle = app(extension({ mentions: { searchTool: "dossier_mentions" } }, ["dossier_list", "dossier_mentions"]))
+    expect((handle.ui!.extensions as { openai: { mentions: { searchTool: string } } }).openai.mentions).toEqual({
+      searchTool: "dossier_mentions",
+    })
+  })
+
+  it("openai-display-preference-must-be-available", () => {
+    expect(() =>
+      app(
+        extension({ display: { availableModes: ["inline"], preferredMode: "fullscreen" } }),
+      ),
+    ).toThrow(/ui\.extensions\.openai\.display\.preferredMode.*'fullscreen'.*availableModes/)
+    expect(() =>
+      app(extension({ display: { availableModes: ["inline", "fullscreen"], preferredMode: "fullscreen" } })),
+    ).not.toThrow()
+    // empty or duplicate mode lists fail.
+    expect(() => app(extension({ display: { availableModes: [] } }))).toThrow(/availableModes.*non-empty/)
+    expect(() =>
+      app(extension({ display: { availableModes: ["inline", "inline"] } })),
+    ).toThrow(/declares 'inline' more than once/)
+  })
+
+  it("rejects a sibling vendor namespace next to openai", () => {
+    // `ui.extensions` accepts ONLY the `openai` namespace — a sibling key
+    // (typo, future vendor block, hand-authored drift) is rejected with the
+    // exact field path rather than silently carried through.
+    expect(() =>
+      app({
+        html: "<html><body>Panel</body></html>",
+        tools: ["dossier_list"],
+        extensions: { openai: {}, chatgpt: {} },
+      }),
+    ).toThrow(AppDefinitionError)
+    expect(() =>
+      app({
+        html: "<html><body>Panel</body></html>",
+        tools: ["dossier_list"],
+        extensions: { openai: {}, chatgpt: {} },
+      }),
+    ).toThrow(/ui\.extensions\.chatgpt.*not supported/)
+  })
+
+  it("openai-v1-rejects-unknown-extension-keys", () => {
+    // Cut v1 features do not parse as "future-compatible" placeholders —
+    // they fail with the exact field path so nothing is half-advertised.
+    for (const [location, badObject] of [
+      ["cut: openai.forms", { forms: {} }],
+      ["cut: openai.settings", { settings: {} }],
+      ["cut: openai.resources", { resources: { write: true } }],
+      ["cut: openai.files", { files: { open: true } }],
+      ["cut: openai.deepLinks", { deepLinks: true }],
+      ["cut: openai.pluginManifest", { pluginManifest: {} }],
+      ["cut: openai.elicitation", { elicitation: {} }],
+      ["unknown entrypoint field", { entrypoints: [{ type: "global", audience: "user" }] }],
+      ["unknown icon field", { icons: [{ src: "https://x/y.png", badge: "x" }] }],
+      ["unknown mentions field", { mentions: { searchTool: "dossier_list", web: true } }],
+    ] as const) {
+      expect(
+        () => app(extension(badObject as Record<string, unknown>)),
+        location,
+      ).toThrow(AppDefinitionError)
+    }
+  })
+
+  it("validates entrypoint count/types and icon src rules", () => {
+    expect(() => app(extension({ entrypoints: [] }))).toThrow(/1\.\.3/)
+    expect(() =>
+      app(
+        extension({
+          entrypoints: [{ type: "global" }, { type: "global" }, { type: "thread" }, { type: "file", extensions: [".md"] }],
+        }),
+      ),
+    ).toThrow(/1\.\.3/)
+    expect(() =>
+      app(extension({ entrypoints: [{ type: "global" }, { type: "global" }] })),
+    ).toThrow(/more than once/)
+    expect(() =>
+      app(extension({ entrypoints: [{ type: "window" }] })),
+    ).toThrow(/"global", "thread" or "file"/)
+    // icons: ≥1, HTTPS or data:image/…;base64 (inline SVG data allowed).
+    expect(() => app(extension({ icons: [] }))).toThrow(/at least one icon/)
+    expect(() =>
+      app(extension({ icons: [{ src: "http://insecure/x.png" }] })),
+    ).toThrow(/HTTPS URL or a 'data:image/)
+    expect(() =>
+      app(extension({ icons: [{ src: "data:image/png;base64,not base64!!" }] })),
+    ).toThrow(/HTTPS URL or a 'data:image/)
+    expect(() =>
+      app(extension({ icons: [{ src: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>" }] })),
+    ).not.toThrow()
+    const handle = app(
+      extension({
+        icons: [
+          { src: "data:image/svg+xml;base64,PHN2Zy8+", sizes: ["512x512"], theme: "dark" },
+          { src: "https://cdn.example.com/32.png", mimeType: "image/png" },
+        ],
+      }),
+    )
+    const icons = (handle.ui!.extensions as { openai: { icons: { src: string }[] } }).openai.icons
+    expect(icons).toEqual([
+      { src: "data:image/svg+xml;base64,PHN2Zy8+", sizes: ["512x512"], theme: "dark" },
+      { src: "https://cdn.example.com/32.png", mimeType: "image/png" },
+    ])
+  })
+
+  it("freezes the whole extensions tree on the AppHandle", () => {
+    const handle = app(
+      extension({
+        entrypoints: [fileEntry([".md"])],
+        icons: [{ src: "https://cdn.example.com/32.png" }],
+        display: { availableModes: ["inline"] },
+        mentions: { searchTool: "dossier_list" },
+      }),
+    )
+    const ext = (handle.ui!.extensions as unknown as Record<string, unknown>).openai as Record<string, unknown>
+    expect(Object.isFrozen(handle.ui!.extensions)).toBe(true)
+    expect(Object.isFrozen(ext)).toBe(true)
+    expect(Object.isFrozen(ext.entrypoints)).toBe(true)
+    expect(Object.isFrozen((ext.entrypoints as unknown[])[1])).toBe(true)
+    expect(Object.isFrozen((ext.icons as unknown[])[0])).toBe(true)
+    expect(Object.isFrozen(ext.display)).toBe(true)
+    expect(Object.isFrozen(ext.mentions)).toBe(true)
+  })
+})

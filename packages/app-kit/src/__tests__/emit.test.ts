@@ -453,3 +453,55 @@ describe("emit — placement / requires / exposes / accepts", () => {
     expect(() => defineApp({ ...base, exposes: { workflows: ["ghost"] } })).toThrow(/exposes\.workflows.*'ghost'/)
   })
 })
+
+describe("emit — ui.extensions.openai", () => {
+  const solo = () =>
+    defineAgent({ schema: "agent/v1" as const, id: "solo", description: "Solo agent.", model: "claude-sonnet-5" })
+  const ext = {
+    entrypoints: [
+      { type: "global" },
+      { type: "thread" },
+      { type: "file", extensions: [".md", ".pdf"] },
+    ],
+    icons: [{ src: "data:image/svg+xml;base64,PHN2Zy8+", mimeType: "image/svg+xml" }],
+    display: { availableModes: ["inline", "fullscreen"], preferredMode: "fullscreen" },
+    mentions: { searchTool: "dossier_mentions" },
+  }
+
+  it("writes ui.extensions.openai verbatim into APP.md frontmatter", async () => {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-emit-openai-"))
+    try {
+      const { appPath } = await defineApp({
+        agents: [{ agent: solo(), body: "Solo." }],
+        ui: {
+          html: "<html></html>",
+          title: "Dossier desk",
+          tools: ["dossier_list", "dossier_read", "dossier_mentions"],
+          extensions: { openai: ext } as never,
+        },
+      }).emit(d)
+      const parsed = matter(await readFile(appPath, "utf8"))
+      expect(parsed.data.ui.extensions.openai).toEqual(ext)
+      // yaml-stable: re-stringifying the same frontmatter yields the same raw yaml line set
+      const raw = await readFile(appPath, "utf8")
+      expect(matter(matter.stringify(`\n`, parsed.data)).data).toEqual(parsed.data)
+      expect(raw).toContain("extensions:")
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  })
+
+  it("omits ui.extensions entirely when the app declares none", async () => {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-emit-bare-"))
+    try {
+      const { appPath } = await defineApp({
+        agents: [{ agent: solo(), body: "Solo." }],
+        ui: { html: "<html></html>", title: "Panel" },
+      }).emit(d)
+      const parsed = matter(await readFile(appPath, "utf8"))
+      expect("extensions" in parsed.data.ui).toBe(false)
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  })
+})
