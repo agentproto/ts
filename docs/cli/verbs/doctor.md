@@ -14,6 +14,7 @@ and changes nothing: no file writes, no process starts, no prompts.
 | `workspace` | yes | At least one registered workspace · cwd inside one |
 | `daemon` | yes | `/health` on the configured port (version + uptime, vs this CLI) · macOS: launchd plist installed + loaded, plist PATH fresh vs your login shell |
 | `agents` | yes | Each catalog adapter: package resolvable + its `version_check` presence probe passes. At least one needed |
+| `connect-machines` | no | Paired device count (`~/.agentproto/pairings.json`). Warns if no devices are paired and prints the exact pairing commands for the chosen direction (pilot vs be piloted) |
 | `auth` | no | Auth profiles (count, enabled) · credentials `auth discover` finds that aren't imported yet |
 | `clients` | no | Each detected coding client: agentproto MCP server still present in its config, pinned URL matches the daemon port |
 | `devices` | no | Paired device count (`~/.agentproto/pairings.json`) · any device never seen, or not seen in 30+ days |

@@ -27,6 +27,7 @@ re-implementation), then re-checks the step and shows the result.
 | `workspace` | No workspace ⇒ register the cwd (slug from the dir name, editable) | yes | `workspace add` |
 | `daemon` | macOS: install the launchd service, then start it. Installed but down ⇒ start. Stale PATH / other version ⇒ restart. Linux: a detached `serve` (service support is coming) | yes (restart: no) | `daemon install` + `daemon start` / `daemon restart` / `install-mcp`'s serve fallback |
 | `agents` | Multiselect of catalog harnesses not installed. Nothing pre-selected if one works, else claude-code | — | `install <slug>` |
+| `connect-machines` | Skipped if any device is already paired. Otherwise proposes a direction prompt: "Pilot other machines" (offer on the other side, accept here) or "Be piloted" (offer `--host` here, add the URL on the controller). Default choice is skip | skip | Prints the exact pairing commands for the chosen direction — never runs `pair offer`/`accept` itself |
 | `auth` | Multiselect of discovered, not-imported credentials (all pre-selected). Then an optional API key (provider + masked input). Prints runnable models per harness | yes / no | `auth profile import` / `auth provider set` |
 | `clients` | Multiselect of detected clients without the MCP server (pre-selected). Wrong port ⇒ update | yes | `install-mcp --agent … --yes` / `install-mcp --update` |
 | `skills` | Missing or stale skill pack ⇒ install it | yes | `install skill/agentproto-pack --force` |
