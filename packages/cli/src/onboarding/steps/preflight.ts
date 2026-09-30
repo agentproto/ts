@@ -19,7 +19,13 @@ function checkNode(ctx: StepContext): StepCheck {
   const cmp = compareVersions(version, MIN_NODE_VERSION)
   const data = { version, required: `>=${MIN_NODE_VERSION}` }
   if (Number.isNaN(cmp)) {
-    return { id: "preflight.node", title: "Node.js", status: "warn", detail: `could not parse version "${ctx.nodeVersion}"`, data }
+    return {
+      id: "preflight.node",
+      title: "Node.js",
+      status: "warn",
+      detail: `could not parse node -v output "${ctx.nodeVersion}" (the raw version found — is the node on PATH a shim?)`,
+      data,
+    }
   }
   return cmp >= 0
     ? { id: "preflight.node", title: "Node.js", status: "ok", detail: `v${version} (>= ${MIN_NODE_VERSION})`, data }
@@ -28,7 +34,7 @@ function checkNode(ctx: StepContext): StepCheck {
         title: "Node.js",
         status: "broken",
         detail: `v${version} is older than the required ${MIN_NODE_VERSION}`,
-        fix: "install Node.js 20.9 or newer (https://nodejs.org)",
+        fix: `install Node.js 20.9 or newer (Node 22 LTS is the known-good choice: https://nodejs.org)`,
         data,
       }
 }

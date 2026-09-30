@@ -173,6 +173,27 @@ describe("daemon", () => {
     const checks = await daemonStep.detect(createFakeContext({ platform: "linux" }))
     expect(byId(checks, "daemon.service")).toMatchObject({ status: "warn", fix: "agentproto serve" })
   })
+
+  it("windows: scheduled task registered ⇒ ok; unregistered ⇒ daemon install fix", async () => {
+    const registered = await daemonStep.detect(
+      createFakeContext({
+        platform: "win32",
+        exec: () => ({ code: 0, stdout: "TaskName: agentproto-daemon\nStatus: Running\n", stderr: "" }),
+      }),
+    )
+    expect(byId(registered, "daemon.service")).toMatchObject({ status: "ok", title: "Scheduled task" })
+    expect(byId(registered, "daemon.health").status).toBe("ok")
+
+    const unregistered = await daemonStep.detect(
+      createFakeContext({
+        platform: "win32",
+        exec: () => ({ code: 1, stdout: "", stderr: "INFO: No tasks found." }),
+        health: null,
+      }),
+    )
+    expect(byId(unregistered, "daemon.service")).toMatchObject({ status: "warn", fix: "agentproto daemon install" })
+    expect(byId(unregistered, "daemon.health").fix).toBe("agentproto daemon install")
+  })
 })
 
 describe("agents", () => {

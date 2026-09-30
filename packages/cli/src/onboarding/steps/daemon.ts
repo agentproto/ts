@@ -6,6 +6,7 @@
 
 import {
   LAUNCHD_LABEL,
+  SCHTASKS_TASK_NAME,
   computeFreshDaemonPath,
   extractPlistPathValue,
   fetchHealth,
@@ -22,6 +23,12 @@ async function checkHealth(ctx: StepContext, serviceInstalled: boolean): Promise
   const config = await ctx.sources.loadConfig()
   const port = config.daemon?.port ?? DEFAULT_PORT
   const info = await fetchHealth({ config, fetchImpl: ctx.fetch })
+  const managedFix =
+    ctx.platform === "win32"
+      ? serviceInstalled
+        ? "agentproto daemon start"
+        : "agentproto daemon install"
+      : null
   if (!info) {
     return {
       id: "daemon.health",
@@ -33,7 +40,7 @@ async function checkHealth(ctx: StepContext, serviceInstalled: boolean): Promise
           ? serviceInstalled
             ? "agentproto daemon start"
             : "agentproto daemon install"
-          : "agentproto serve",
+          : managedFix ?? "agentproto serve",
       data: { port, reachable: false },
     }
   }
@@ -53,7 +60,7 @@ async function checkHealth(ctx: StepContext, serviceInstalled: boolean): Promise
       title: "Daemon /health",
       status: "warn",
       detail: `${version}${up} at ${info.url}, but this CLI is v${ctx.cliVersion}`,
-      fix: ctx.platform === "darwin" ? "agentproto daemon restart" : "restart `agentproto serve`",
+      fix: ctx.platform === "darwin" ? "agentproto daemon restart" : managedFix ?? "restart `agentproto serve`",
       data,
     }
   }
@@ -91,6 +98,31 @@ async function checkService(
       }
 }
 
+async function checkTask(
+  ctx: StepContext,
+  taskName: string,
+): Promise<StepCheck> {
+  const out = await ctx.exec("schtasks", ["/Query", "/TN", taskName], { timeoutMs: 3_000 })
+  if (out.code !== 0) {
+    return {
+      id: "daemon.service",
+      title: "Scheduled task",
+      status: "warn",
+      detail: "not registered (a foreground `agentproto serve` also works)",
+      fix: "agentproto daemon install",
+      data: { task: taskName, installed: false, running: false },
+    }
+  }
+  const running = /^\s*Status:\s*Running/im.test(out.stdout)
+  return {
+    id: "daemon.service",
+    title: "Scheduled task",
+    status: "ok",
+    detail: running ? "registered · running" : "registered",
+    data: { task: taskName, installed: true, running },
+  }
+}
+
 async function checkPlistPath(ctx: StepContext, plistXml: string): Promise<StepCheck> {
   const current = extractPlistPathValue(plistXml)
   const probed = await ctx.sources.loginShellPath().catch(() => null)
@@ -119,6 +151,11 @@ export const daemonStep: OnboardingStep = {
   title: "Daemon",
   required: true,
   async detect(ctx) {
+    if (ctx.platform === "win32") {
+      const task = await checkTask(ctx, SCHTASKS_TASK_NAME)
+      const installed = task.status === "ok"
+      return [await checkHealth(ctx, installed), task]
+    }
     if (ctx.platform !== "darwin") {
       return [
         await checkHealth(ctx, false),
@@ -142,6 +179,32 @@ export const daemonStep: OnboardingStep = {
     const service = checks.find((c) => c.id === "daemon.service")
     const path = checks.find((c) => c.id === "daemon.path")
     const actions: SetupAction[] = []
+    if (ctx.platform === "win32") {
+      if (service?.status === "warn" && service.fix === "agentproto daemon install") {
+        actions.push({
+          id: "daemon.install",
+          title: "Install the daemon as a scheduled task at logon and start it",
+          default: true,
+          async apply(io) {
+            const installed = await io.verbs.daemon(["install"])
+            if (installed !== 0) return { ok: false, detail: `daemon install exited ${installed}` }
+            const started = await io.verbs.daemon(["start"])
+            return started === 0 ? { ok: true, detail: "installed and started" } : { ok: false, detail: `daemon start exited ${started}` }
+          },
+        })
+      } else if (health?.status === "missing") {
+        actions.push({
+          id: "daemon.start",
+          title: "Start the daemon",
+          default: true,
+          async apply(io) {
+            const code = await io.verbs.daemon(["start"])
+            return code === 0 ? { ok: true, detail: "started" } : { ok: false, detail: `daemon start exited ${code}` }
+          },
+        })
+      }
+      return actions
+    }
     if (ctx.platform !== "darwin") {
       if (health?.status === "missing") {
         actions.push({

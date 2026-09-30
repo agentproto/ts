@@ -154,26 +154,36 @@ Write-Host "    The opencode CLI itself is separate: npm i -g opencode-ai"
 Write-Host "    Install adapters from THIS SAME PowerShell window the daemon is about to inherit (the daemon PATH is captured at launch)."
 
 # --- 6. Daemon ----------------------------------------------------------------
-# No service support on Windows yet: the daemon must run in a window that stays open.
+# The CLI's `agentproto daemon install` registers a per-user scheduled task
+# (schtasks, no admin) that keeps the daemon alive across logons. Newer CLI
+# builds have it; fall back to the open-window serve workaround when they don't.
+$daemonOk = $false
 try {
   $doctor = @(& $CliCmd doctor --only daemon 2>&1) -join "`n"
+  $daemonOk = ($LASTEXITCODE -eq 0) -and ($doctor -match "(?i)\bok\b")
 }
 catch {
-  $doctor = ""
+  $daemonOk = $false
 }
-$daemonOk = ($LASTEXITCODE -eq 0) -and ($doctor -match "(?i)\bok\b")
 if ($daemonOk) {
   Info "Daemon already healthy"
 }
 else {
-  Info "Starting the daemon in a new minimized PowerShell window"
-  Info "(no Windows service support yet - that window must stay open; closing it stops the daemon)"
-  # Same shim logic: the daemon window must be able to run `agentproto serve`
-  # under whatever policy this session ended up with — use the .cmd shim in
-  # the fallback branch.
-  $serveCommand = if ($script:PolicyChangeFailed) { "agentproto.cmd serve" } else { "agentproto serve" }
-  Start-Process powershell -ArgumentList '-NoExit', '-Command', $serveCommand -WindowStyle Minimized
-  Start-Sleep -Seconds 3
+  Info "Registering the daemon as a scheduled task (agentproto daemon install)"
+  & $CliCmd daemon install
+  if ($LASTEXITCODE -eq 0) {
+    Info "Daemon installed as a scheduled task (runs at logon; survives closing windows)"
+  }
+  else {
+    Warn "daemon install failed (exit $LASTEXITCODE) - older CLI or ALREADY a daemon running? Falling back to a detached serve window."
+    Info "(no Windows service support on this CLI - that window must stay open; closing it stops the daemon)"
+    # Same shim logic: the daemon window must be able to run `agentproto serve`
+    # under whatever policy this session ended up with - use the .cmd shim in
+    # the fallback branch.
+    $serveCommand = if ($script:PolicyChangeFailed) { "agentproto.cmd serve" } else { "agentproto serve" }
+    Start-Process powershell -ArgumentList '-NoExit', '-Command', $serveCommand -WindowStyle Minimized
+    Start-Sleep -Seconds 3
+  }
 }
 
 # --- 7. Doctor ----------------------------------------------------------------

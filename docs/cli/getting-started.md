@@ -57,7 +57,7 @@ missing, and applies your choices with the same verbs you'd run by hand:
 |------|----------------|
 | preflight | Stops on a too-old Node; offers a CLI update |
 | workspace | Registers the current directory when none is registered |
-| daemon | Installs + starts the background service (macOS), or starts `serve` |
+| daemon | Installs + starts the background service (macOS launchd, Windows scheduled task), or starts `serve` on Linux |
 | agents | Installs agent harnesses (claude-code pre-selected on a fresh machine) |
 | auth | Imports the logins/keys it finds; optionally adds an API key |
 | clients | Registers the MCP server with detected coding clients |
@@ -102,6 +102,17 @@ See [`verbs/workspace.md`](./verbs/workspace.md).
 
 The daemon boots a local HTTP gateway — sessions, MCP, events — bound
 to the workspace you just registered.
+
+On **macOS** and **Windows**, let the OS keep it running in the
+background (`agentproto daemon install` — launchd plist on macOS, a
+per-user scheduled task at logon on Windows):
+
+```bash
+agentproto daemon install
+```
+
+On **Linux** (or anywhere, one-off), run `serve` in the foreground or
+detached:
 
 ```bash
 agentproto serve --workspace /path/to/your/project

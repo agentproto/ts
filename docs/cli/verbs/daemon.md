@@ -1,18 +1,19 @@
 # `agentproto daemon`
 
 ```text
-agentproto daemon install [--dry-run]   register service + start it (macOS launchd)
+agentproto daemon install [--dry-run]   register service + start it (macOS launchd, Windows Task Scheduler)
 agentproto daemon uninstall             stop + deregister service
-agentproto daemon start                 launchctl kickstart (idempotent; never kills healthy)
-agentproto daemon restart               launchctl kickstart -k (kill + relaunch)
-agentproto daemon stop                  launchctl kill SIGTERM
-agentproto daemon status                installed? loaded? /health reachable?
+agentproto daemon start                 start the service (idempotent; never kills healthy)
+agentproto daemon restart               kill + relaunch
+agentproto daemon stop                  stop the service
+agentproto daemon status                installed? running? /health reachable?
 agentproto daemon logs [--lines <N>]    tail daemon.log
 ```
 
 Runs `agentproto serve` as a background service via the host's
-service manager. Today: **macOS launchd only**. Linux (`systemctl --user`)
-and Windows ship later; until then the verb prints a clear "not
+service manager. Today: **macOS launchd** and **Windows Task
+Scheduler** (per-user scheduled task at logon). Linux (`systemctl
+--user`) ships later; until then the verb prints a clear "not
 supported" message and points you at `agentproto serve &; disown`.
 
 The daemon picks up its config from `~/.agentproto/config.json` via
@@ -35,7 +36,17 @@ Logs (stdout + stderr) go to `~/.agentproto/daemon.log`.
 - **Linux:** not yet supported. Fall back to
   `agentproto serve &; disown` or your own `systemd --user` unit
   pointing at `agentproto serve`.
-- **Windows:** not yet supported.
+- **Windows:** `agentproto daemon install` registers a **per-user
+  scheduled task** (`schtasks /Create /TN agentproto-daemon /SC ONLOGON
+  /F` — no admin required) whose payload is a generated
+  `~/.agentproto/agentproto-daemon.cmd` launcher that captures the same
+  `node cli.mjs serve …` argv snapshot the macOS plist does, and merges
+  stdout+stderr into `~/.agentproto/daemon.log`. `install` then starts
+  the task once; `start`/`restart`/`stop` map to `schtasks /Run`,
+  `/End` + `/Run`, and `/End`. `status` queries the task and probes
+  `/health` with the same three-part shape as the macOS branch. The
+  task runs at user logon, so the daemon survives closing the terminal
+  window.
 
 ## Subverbs
 
