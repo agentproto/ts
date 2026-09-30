@@ -1,5 +1,12 @@
 # @agentproto/adapter-jcode
 
+## 0.2.19
+
+### Patch Changes
+
+- Updated dependencies [3d9626a]
+  - @agentproto/driver-agent-cli@2.6.1
+
 ## 0.2.18
 
 ### Patch Changes

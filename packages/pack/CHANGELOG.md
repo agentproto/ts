@@ -1,5 +1,11 @@
 # @agentproto/pack
 
+## 0.2.5
+
+### Patch Changes
+
+- 88c6d45: Renumber PACK to AIP-64 and fix definePack error prefix
+
 ## 0.2.4
 
 ### Patch Changes

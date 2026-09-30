@@ -1,5 +1,11 @@
 # @agentproto/tool
 
+## 0.4.0
+
+### Minor Changes
+
+- 4243c75: Wire AIP-38 policy block into storage; add AIP-16 IO schema well-formedness checks to tool manifests
+
 ## 0.3.2
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-browser-chromium",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Chromium browser provider for agentproto: a defineBrowser provider that launches Playwright's Chromium on a dedicated profile dir, with an idempotent launch, CDP access and a BrowserDriver.",
   "keywords": [
     "agentproto",

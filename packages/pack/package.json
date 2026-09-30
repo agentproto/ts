@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/pack",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "@agentproto/pack — PACK.md reference implementation (AIP-64, specs/aip-64.mdx). A bundle that assembles a plugin, apps, knowledge, and a playbook into one installable unit.",
   "keywords": [
     "agentproto",

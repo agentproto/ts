@@ -1,5 +1,11 @@
 # @agentproto/adapter-knowledge-files
 
+## 0.2.13
+
+### Patch Changes
+
+- @agentproto/knowledge-engine@0.2.6
+
 ## 0.2.12
 
 ### Patch Changes
