@@ -1,5 +1,11 @@
 # @agentproto/runtime
 
+## 5.6.0
+
+### Minor Changes
+
+- 76876bc: Add webhook-egress primitives: signing, SSRF-guarded POST, challenges
+
 ## 5.5.0
 
 ### Minor Changes
