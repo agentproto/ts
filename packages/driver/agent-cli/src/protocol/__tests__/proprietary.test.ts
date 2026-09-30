@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from "vitest"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
 import type { AgentCliClient, AgentCliHandle } from "../../types.js"
 
 const fakeClient: AgentCliClient = {
@@ -94,5 +97,32 @@ describe("createProprietaryProtocolArm", () => {
         definition: minimalDefinition,
       }),
     ).rejects.toThrow(/could not load adapter package 'totally-nonexistent-package-xyz'/)
+  })
+
+  it("loads an ABSOLUTE filesystem path through a file:// URL rewire — issue #1637 defect 1 (win32 `Received protocol 'c:'`; the rewire is behavior-identical, and a clean import, on POSIX too)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agp-proprietary-abs-"))
+    try {
+      // A REAL on-disk module — a dynamic `import()` of a filesystem path
+      // cannot be vi.mock'd by specifier, and the production shape
+      // (`withResolvedProprietaryAdapter` in packages/cli) hands the arm a
+      // fully-resolved absolute .mjs/.cjs path exactly like this one.
+      const file = join(dir, "real-adapter.mjs")
+      writeFileSync(
+        file,
+        `export function createAgentCliClient() { return globalThis.__absAdapterClient }`,
+        "utf8",
+      )
+      ;(globalThis as { __absAdapterClient?: unknown }).__absAdapterClient = fakeClient
+
+      const arm = await createProprietaryProtocolArm({
+        // Deliberately a raw absolute path — the exact win32-breaking shape.
+        adapter: file,
+        definition: minimalDefinition,
+      })
+      expect(arm).toBe(fakeClient)
+    } finally {
+      delete (globalThis as { __absAdapterClient?: unknown }).__absAdapterClient
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
