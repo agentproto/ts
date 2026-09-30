@@ -757,6 +757,48 @@ export type {
   SentinelTarget,
 } from "./sentinel-providers/types.js"
 export type { SentinelView } from "./sentinel-tools.js"
+// Webhook egress primitives (W-A of .plans/sentinel-mcp-events):
+// Standard Webhooks signing, SSRF-guarded POST gate, challenge verification,
+// signed event delivery. Consumed in-process by the mcp-events adapter (W-C).
+export {
+  signWebhook,
+  decodeWhsecSecret,
+  encodeWhsecSecret,
+  type WebhookSignInput,
+  type WebhookSignatureHeaders,
+} from "./webhook-egress/signing.js"
+export {
+  ssrfFetch,
+  SsrfFetchError,
+  isPubliclyRoutable,
+  setEgressDispatcherForTests,
+  type SsrfFetchInit,
+  type SsrfFetchResult,
+  type SsrfFetchReason,
+  type EgressDispatcher,
+} from "./webhook-egress/ssrf-fetch.js"
+export {
+  verifyCallback,
+  challengeReasonForSsrf,
+  normalizeCallbackUrl,
+  resetChallengeCacheForTests,
+  challengeCacheSize,
+  type VerifyCallbackInput,
+  type ChallengeOutcome,
+  type ChallengeFailureReason,
+} from "./webhook-egress/challenge.js"
+export {
+  deliverEventEnvelope,
+  deliveryBackoffDelay,
+  serializeEnvelope,
+  envelopeClampedBytes,
+  CLAMP_LIMIT_BYTES,
+  MAX_ATTEMPTS,
+  type DeliveryReplay,
+  type DeliveryState,
+  type DeliveryOutcome,
+  type McpEventEnvelope,
+} from "./webhook-egress/delivery.js"
 export type {
   LlmEndpointStatusReport,
   LlmEndpointDescriptor,
