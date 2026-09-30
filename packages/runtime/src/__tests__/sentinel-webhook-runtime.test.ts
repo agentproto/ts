@@ -86,7 +86,8 @@ describe("sentinel runtime — webhook fire path", () => {
       },
     })
 
-    provider.emit(evt("evt_1"))
+    const landed = evt("evt_1")
+    provider.emit(landed)
     await runtime.pollOnce()
     await runtime.webhookOutbox.dispatch() // the enqueue's fire-and-forget chain drains here
 
@@ -99,7 +100,7 @@ describe("sentinel runtime — webhook fire path", () => {
     expect(deliverCalls).toHaveLength(1)
 
     // I2 — sent bytes == the frozen envelope serialization of the same event.
-    const expectedBytes = Buffer.from(serializeEnvelope(toWebhookEnvelope(evt("evt_1"))))
+    const expectedBytes = Buffer.from(serializeEnvelope(toWebhookEnvelope(landed)))
     expect(Buffer.from(deliverCalls[0]!.bytes!)).toEqual(expectedBytes)
 
     // The signing secret came from the sidecar (never from the record).
@@ -294,7 +295,7 @@ describe("sentinel runtime — webhook fire path", () => {
     const tRotation = Date.parse("2026-09-30T00:00:00Z")
     let now = tRotation
 
-    const store = createSentinelStore({ persist: false })
+    const store = createSentinelStore({ persist: false, nowMs: () => now })
     const provider = createFakeSentinelProvider()
     const sentinel = store.create({
       provider: "fake",
@@ -320,6 +321,7 @@ describe("sentinel runtime — webhook fire path", () => {
     })
 
     // Pre-deliver once with the single secret.
+    console.log("DEBUG-REF", sentinel.id)
     provider.emit(evt("evt_a"))
     await runtime.pollOnce()
     await runtime.webhookOutbox.dispatch()
