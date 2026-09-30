@@ -14,8 +14,9 @@ import { join } from "node:path"
 
 import { createSentinelStore } from "../sentinel-store.js"
 import { createSentinelRuntime } from "../sentinel-runtime.js"
+import { toWebhookEnvelope } from "../sentinel-webhook-outbox.js"
 import { createFakeSentinelProvider, makeFakeEvent } from "../sentinel-providers/fake.js"
-import { serializeEnvelope, toWebhookEnvelope, type DeliveryOutcome, type DeliveryReplay } from "../webhook-egress/delivery.js"
+import { serializeEnvelope, type DeliveryOutcome, type DeliveryReplay } from "../webhook-egress/delivery.js"
 import { signWebhook } from "../webhook-egress/signing.js"
 import type { SessionMessage } from "../session-message.js"
 
