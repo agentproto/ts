@@ -799,6 +799,18 @@ export {
   type DeliveryOutcome,
   type McpEventEnvelope,
 } from "./webhook-egress/delivery.js"
+// Sentinel webhook fire path (W-B of .plans/sentinel-mcp-events): persisted
+// outbox rows, dispatch + ack-after-terminal, restart resume.
+export {
+  createSentinelWebhookOutbox,
+  toWebhookEnvelope,
+  webhookRequestId,
+  type SentinelWebhookOutbox,
+  type SentinelWebhookOutboxOptions,
+  type SentinelWebhookOutboxRow,
+  type SentinelWebhookOutboxStatus,
+  type PersistedOutboxRow,
+} from "./sentinel-webhook-outbox.js"
 export type {
   LlmEndpointStatusReport,
   LlmEndpointDescriptor,
