@@ -1,5 +1,11 @@
 # @agentproto/adapter-knowledge-gbrain-doc
 
+## 0.2.8
+
+### Patch Changes
+
+- @agentproto/knowledge-engine@0.2.6
+
 ## 0.2.7
 
 ### Patch Changes

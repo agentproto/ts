@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-browser-camofox",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Camofox browser provider for agentproto: a defineBrowser provider over the camofox stealth-Firefox REST server, with an idempotent launch, a health mapping, and a BrowserDriver.",
   "keywords": [
     "agentproto",

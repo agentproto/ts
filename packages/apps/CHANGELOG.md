@@ -1,5 +1,12 @@
 # @agentproto/apps
 
+## 0.17.1
+
+### Patch Changes
+
+- c0101dd: Fix the session-steward agent judge lane: the `judgeOne` step forced `cwd: tmpdir()`, which lies outside the app boundary's readable zones, so every agent judge spawn was refused (`app_boundary_cwd_outside`) and judged candidates silently fell back to verdict `active`. Dropping the explicit `cwd` lets the agent host fall back to the run cwd (the app root), which is inside the boundary.
+  - @agentproto/app-kit@1.4.1
+
 ## 0.17.0
 
 ### Minor Changes

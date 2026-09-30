@@ -1,5 +1,39 @@
 # @agentproto/runtime
 
+## 5.4.0
+
+### Minor Changes
+
+- 5b6f5d7: Add a `jev` config section (`jev.apiKey`, `jev.model`, `jev.baseUrl`) to `~/.agentproto/config.json`. `resolveJevApiKey` reads `jev.apiKey` before the `JEV_API_KEY` env var, giving agentproto's first-party judge secret a home in its own config instead of a workspace env file.
+- 5b6f5d7: Add a `jev` config section to the runtime. `jev.apiKey` becomes the primary source for the Jev judge API key (falling back to `JEV_API_KEY` and the host secret resolver), and new `jev.model` / `jev.baseUrl` entries let users pick the judge model and endpoint override; both flow into the session steward's Jev judge tool via the new exported `resolveJevConfig()`.
+
+### Patch Changes
+
+- Updated dependencies [3d9626a]
+- Updated dependencies [a68d1d6]
+- Updated dependencies [4243c75]
+- Updated dependencies [c0101dd]
+  - @agentproto/driver-agent-cli@2.6.1
+  - @agentproto/driver-browser@0.2.0
+  - @agentproto/pairing-host@0.2.0
+  - @agentproto/adapter-browser@0.3.0
+  - @agentproto/driver@0.3.0
+  - @agentproto/secrets@1.2.0
+  - @agentproto/workflow-runtime@0.16.0
+  - @agentproto/tool@0.4.0
+  - @agentproto/apps@0.17.1
+  - @agentproto/plugin-local-browser@0.3.2
+  - @agentproto/app-kit@1.4.1
+  - @agentproto/driver-http@0.1.10
+  - @agentproto/governance-engine@0.1.10
+  - @agentproto/mcp-server@0.4.2
+  - @agentproto/acp@0.9.1
+  - @agentproto/sandbox@0.7.3
+  - @agentproto/review@0.4.0
+  - @agentproto/eval-reporters@0.2.20
+  - @agentproto/telemetry-langfuse@0.2.18
+  - @agentproto/workspace-brain@0.4.10
+
 ## 5.3.0
 
 ### Minor Changes

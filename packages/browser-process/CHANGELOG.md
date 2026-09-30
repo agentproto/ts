@@ -1,5 +1,11 @@
 # @agentproto/browser-process
 
+## 0.2.0
+
+### Minor Changes
+
+- a68d1d6: Publish the browser stack packages that consumer apps depend on. Camofox, Chrome and Chromium browser providers, the browser session/profile model, the BrowserDriver, and the embedded pairing-host library are now published to npm under their existing public versions; adapter-browser, browser-process, driver, secrets and workflow-runtime carry forward their current versions so dependent bumps resolve.
+
 ## 0.1.2
 
 ### Patch Changes

@@ -1,5 +1,35 @@
 # @agentproto/cli
 
+## 1.6.0
+
+### Minor Changes
+
+- c892ea6: Add --options-json to cron add for agent_start spawn fields
+
+### Patch Changes
+
+- 3d9626a: Windows P0 fixes from the WIN11 onboarding test.
+
+  - `agentproto setup <slug>` now auto-installs the adapter package (`npm i -g`, the package manager that owns the CLI) before failing on a missing `@agentproto/adapter-<slug>`, shared with `agentproto install`'s existing bootstrap; dry-run prints what would run and npm failures keep the original clear error.
+  - Adapter launches (ACP + print arms) are win32-aware: npm `.cmd` shims are rewritten to their real `node …-cli.js` entry (staying `shell:false`), and any remaining `.cmd`/`.bat` bin spawns with `shell: true` — Node ≥ 18.20.2 refuses direct batch-file spawning with `spawn EINVAL` (CVE-2024-27980), which is what killed device-sandbox spawns onto joined Windows hosts.
+  - `npm` invocations in the install verb go through cmd.exe on Windows (a shell-less npm spawn is ENOENT there — libuv resolves only `.exe` and npm global bins are `.cmd` shims).
+  - `scripts/bootstrap/install.ps1` sets ExecutionPolicy (CurrentUser only) from Restricted to RemoteSigned, prints the exact command and its undo, and always invokes npm via `npm.cmd` so the script works even when group policy refuses the change.
+
+- Updated dependencies [3d9626a]
+- Updated dependencies [a68d1d6]
+- Updated dependencies [c0101dd]
+  - @agentproto/driver-agent-cli@2.6.1
+  - @agentproto/pairing-host@0.2.0
+  - @agentproto/adapter-browser@0.3.0
+  - @agentproto/driver@0.3.0
+  - @agentproto/secrets@1.2.0
+  - @agentproto/apps@0.17.1
+  - @agentproto/app-kit@1.4.1
+  - @agentproto/worktree@0.14.1
+  - @agentproto/acp@0.9.1
+  - @agentproto/sandbox-box@0.2.20
+  - @agentproto/sandbox-e2b@0.5.10
+
 ## 1.5.0
 
 ### Minor Changes
