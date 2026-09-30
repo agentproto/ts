@@ -642,3 +642,123 @@ describe("loadAppHandle — placement / requires / exposes / accepts", () => {
     })
   })
 })
+
+describe("loadAppHandle — ui.extensions.openai v1 contract", () => {
+  const solo = () =>
+    defineAgent({
+      schema: "agent/v1" as const,
+      id: "solo",
+      description: "Solo agent.",
+      model: "claude-sonnet-5",
+      workflows: [],
+    })
+  const ext = {
+    entrypoints: [{ type: "global" }, { type: "file", extensions: [".md", ".pdf"] }],
+    icons: [{ src: "https://cdn.example.com/32.png", mimeType: "image/png" }],
+    display: { availableModes: ["inline", "fullscreen"], preferredMode: "fullscreen" },
+    mentions: { searchTool: "dossier_mentions" },
+  }
+  type AppDef = NonNullable<Parameters<typeof defineApp>[0]>
+
+  const withDir = async <T>(fn: (dir: string) => Promise<T>): Promise<T> => {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-load-openai-"))
+    try {
+      return await fn(d)
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  }
+
+  it("openai-ui-extension-round-trips-through-emit-load", async () => {
+    const html = "<html><body>Dossier desk</body></html>"
+    const mkApp = () =>
+      defineApp({
+        agents: [{ agent: solo(), body: "Solo." }],
+        ui: { html, title: "Dossier desk", tools: ["dossier_list", "dossier_mentions"], extensions: { openai: ext } as never },
+      } as unknown as AppDef)
+    await withDir(async (dir) => {
+      const app = mkApp()
+      await app.emit(dir)
+      const loaded = await loadAppHandle(dir)
+      expect(loaded.ui?.extensions).toEqual({ openai: ext })
+      expect(loaded.ui?.extensions).toEqual(app.ui?.extensions)
+    })
+  })
+
+  it("app-without-openai-extension-is-unchanged through load", async () => {
+    await withDir(async (dir) => {
+      const app = defineApp({
+        agents: [{ agent: solo(), body: "Solo." }],
+        ui: { html: "<html><body>Panel</body></html>", title: "Panel", tools: ["dossier_list"] },
+      })
+      await app.emit(dir)
+      const loaded = await loadAppHandle(dir)
+      expect(!("extensions" in (loaded.ui as unknown as Readonly<Record<string, unknown>>))).toBe(true)
+      expect(loaded.ui?.title).toBe("Panel")
+      expect(loaded.ui?.tools).toEqual(["dossier_list"])
+    })
+  })
+
+  it("converges TS-authored and hand-authored APP.md on the same normalized ui", async () => {
+    await withDir(async (tsDir) => {
+      const app = defineApp({
+        agents: [{ agent: solo(), body: "Solo." }],
+        ui: {
+          html: "<html><body>Dossier desk</body></html>",
+          title: "Dossier desk",
+          tools: ["dossier_list", "dossier_mentions"],
+          extensions: { openai: ext } as never,
+        },
+      } as unknown as AppDef)
+      await app.emit(tsDir)
+      const fromTs = await loadAppHandle(tsDir)
+
+      // Hand-authored APP.md — strip the emitted ui block and re-inject it hand-written.
+      await withDir(async (handDir) => {
+        const { appPath } = await defineApp({ agents: [{ agent: solo(), body: "Solo." }] }).emit(handDir)
+        await mkdir(join(handDir, ".agentproto", "ui"), { recursive: true })
+        await writeFile(join(handDir, ".agentproto", "ui", "index.html"), "<html><body>Dossier desk</body></html>", "utf8")
+        const src = await readFile(appPath, "utf8")
+        const uiYaml = [
+          "ui:",
+          "  path: .agentproto/ui/index.html",
+          "  title: Dossier desk",
+          "  tools: [dossier_list, dossier_mentions]",
+          "  extensions:",
+          "    openai:",
+          "      entrypoints:",
+          "        - { type: global }",
+          "        - { type: file, extensions: [.md, .pdf] }",
+          "      icons:",
+          "        - { src: 'https://cdn.example.com/32.png', mimeType: image/png }",
+          "      display:",
+          "        availableModes: [inline, fullscreen]",
+          "        preferredMode: fullscreen",
+          "      mentions:",
+          "        searchTool: dossier_mentions",
+        ]
+        await writeFile(appPath, src.replace(/^---\n/, `---\n${uiYaml.join("\n")}\n`))
+        const fromHand = await loadAppHandle(handDir)
+        expect(fromHand.ui).toEqual(fromTs.ui)
+      })
+    })
+  })
+
+  it("load rejects unknown extension keys with the exact field path", async () => {
+    await withDir(async (dir) => {
+      await defineApp({
+        agents: [{ agent: solo(), body: "Solo." }],
+        ui: { html: "<html>true</html>", title: "Panel", tools: ["dossier_list"] },
+      }).emit(dir)
+      const { appPath } = await defineApp({ agents: [{ agent: solo(), body: "Solo." }] }).emit(dir)
+      const src = await readFile(appPath, "utf8")
+      const injected = src.replace(
+        /^---\n/,
+        `---\nui:\n  path: .agentproto/ui/index.html\n  tools: [dossier_list]\n  extensions:\n    openai:\n      settings: {}\n`,
+      )
+      await writeFile(appPath, injected)
+      expect(injected).toContain("settings: {}")
+      await expect(loadAppHandle(dir)).rejects.toThrow(/ui\.extensions\.openai\.settings/)
+    })
+  })
+})

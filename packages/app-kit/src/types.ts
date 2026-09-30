@@ -121,6 +121,59 @@ export interface AppUiDefinition {
   /** How to (re)build this UI's bundle when it's missing or stale. Absent
    *  means today's behavior: the bundle must already exist on disk. */
   readonly build?: AppUiBuildConfig
+  /**
+   * Namespaced vendor metadata for this UI. Only `openai` exists today; an
+   * app that omits the whole block emits, installs, serves, and renders
+   * exactly as before (portable MCP Apps host).
+   */
+  readonly extensions?: {
+    readonly openai?: OpenAIAppUiExtension
+  }
+}
+
+/** One icon for the generated app UI tool (OpenAI extension surface). */
+export interface OpenAIIcon {
+  /** Non-empty HTTPS URL, or `data:image/…;base64,…` (inline SVG data allowed). */
+  readonly src: string
+  readonly mimeType?: string
+  readonly sizes?: readonly string[]
+  readonly theme?: "light" | "dark"
+}
+
+/**
+ * How an OpenAI-class host may surface the app's single generated UI tool:
+ * a global sidebar entry, a per-thread panel, or a file-extension viewer.
+ * Entrypoints are metadata — never separate panels — so all of them render
+ * the same `ui://` resource and share the app's tools allowlist.
+ */
+export type OpenAIEntrypoint =
+  | { readonly type: "global" }
+  | { readonly type: "thread" }
+  | {
+      readonly type: "file"
+      /** 1..32 unique, lowercase dot-prefixed suffixes; e.g. `.md`, `.stl`. */
+      readonly extensions: readonly `.${string}`[]
+    }
+
+/**
+ * The `ui.extensions.openai` block. Every field is optional; validation
+ * (shared by `defineApp` and `loadAppHandle` via `defineApp`) rejects cut /
+ * unknown keys with the exact field path instead of silently advertising
+ * something the runtime does not implement.
+ */
+export interface OpenAIAppUiExtension {
+  /** 1..3 entries; no duplicate type; file extensions unique after lowercase. */
+  readonly entrypoints?: readonly OpenAIEntrypoint[]
+  /** Applied to the generated app UI tool. At least one when present. */
+  readonly icons?: readonly OpenAIIcon[]
+  readonly display?: {
+    readonly availableModes?: readonly ("inline" | "fullscreen")[]
+    readonly preferredMode?: "inline" | "fullscreen"
+  }
+  readonly mentions?: {
+    /** Existing daemon tool id; MUST occur in this same UI's `tools`. */
+    readonly searchTool: string
+  }
 }
 
 /**

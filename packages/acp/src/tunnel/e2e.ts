@@ -377,6 +377,18 @@ export interface HandshakeOverSinkOptions {
   timeoutMs?: number
   /** Forwarded to `wrapE2E`. */
   wrap?: WrapE2EOptions
+  /**
+   * Optional diagnostic sink for the POST-HANDSHAKE close (BOOTSTRAP P4 item
+   * 2, field evidence 2026-09-30): the observed E2E flaps break exactly here
+   * — the Noise handshake completes, the reply is sent, and THEN the remote
+   * hangs up. Without this hook the close reason dies inside the returned
+   * sink unless the caller remembers to subscribe, and a caller that races
+   * (or the pre-subscription close gap) loses it entirely. Fired at most
+   * once per handshake, with the remote's close reason when it gave one.
+   * `daemonHandshakeOverSink` fires it for the daemon side — the field
+   * evidence's exact hook (the reason was captured here and discarded).
+   */
+  log?: (line: string) => void
 }
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000
@@ -523,5 +535,18 @@ export async function daemonHandshakeOverSink(
     throw err
   }
   view.send({ t: "e2e_handshake", d: base64Encode(result.reply) })
+  // The reply is out — from here to the caller's first read of the wrapped
+  // sink, a remote hang-up (a controller closing after a failed exchange, a
+  // flap) would otherwise be invisible: the reason only lived on the sink's
+  // own onClose. Surface it once, with the reason, if a log was given.
+  if (opts.log) {
+    const log = opts.log
+    let logged = false
+    view.onClose(reason => {
+      if (logged) return
+      logged = true
+      log(`daemon handshake channel closed by remote after reply: ${reason ?? "unknown"}`)
+    })
+  }
   return wrapE2E(view, result.keys, opts.wrap)
 }

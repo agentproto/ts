@@ -243,6 +243,33 @@ describe.each(AEADS)("wrapE2E ordering and lifecycle under async crypto (%s)", (
     expect(c.isOpen).toBe(true)
     expect(d.isOpen).toBe(true)
   })
+
+  it("daemonHandshakeOverSink's log hook surfaces the remote's post-reply close reason (BOOTSTRAP P4 item 2)", async () => {
+    const { a, b } = connect()
+    const logs: string[] = []
+    const [c] = await Promise.all([
+      clientHandshakeOverSink(a, new TextEncoder().encode("HELLO"), async () => KEYS_A, {
+        wrap: { aead },
+      }),
+      daemonHandshakeOverSink(
+        b,
+        async () => ({ reply: new TextEncoder().encode("REPLY"), keys: KEYS_B }),
+        {
+          wrap: { aead },
+          log: line => logs.push(line),
+        },
+      ),
+    ])
+    expect(logs).toEqual([])
+
+    // The remote (controller) hangs up right after the handshake — the step
+    // the observed E2E flaps break at. The reason must reach the log, not
+    // die inside the sink.
+    c.close("flap: transport reset")
+    await vi.waitFor(() => expect(logs).toHaveLength(1))
+    expect(logs[0]).toContain("closed by remote after reply")
+    expect(logs[0]).toContain("flap: transport reset")
+  })
 })
 
 describe("portable base64 in the tunnel core matches Buffer", () => {

@@ -1,5 +1,12 @@
 # @agentproto/adapter-antigravity
 
+## 0.2.15
+
+### Patch Changes
+
+- Updated dependencies [6bace2a]
+  - @agentproto/driver-agent-cli@2.6.2
+
 ## 0.2.14
 
 ### Patch Changes

@@ -1366,3 +1366,97 @@ describe("readHostsSnapshot", () => {
     }
   })
 })
+describe("createHostRegistry — post-handshake diagnostics (BOOTSTRAP P4 item 2)", () => {
+  let tmp: string
+  let hostsPath: string
+
+  beforeEach(async () => {
+    tmp = await mkdtemp(join(tmpdir(), "agentproto-hosts-p4-"))
+    hostsPath = join(tmp, "hosts.json")
+    stubUpstream()
+  })
+  afterEach(async () => {
+    vi.unstubAllGlobals()
+    await rm(tmp, { recursive: true, force: true }).catch(() => {})
+  })
+
+  /** A fake daemon that completes the pair/v2 handshake — the Noise exchange
+   *  the flap evidence shows SUCCEEDING — then closes the channel WITHOUT
+   *  ever serving (so the tunnel `hello` frame never arrives). This is the
+   *  exact shape a revoked-pairing tombstone close or a persist failure on
+   *  the host produces. */
+  function makeHandshakeThenCloseDial(identity: DaemonIdentity, offerAuth: string, closeReason: string) {
+    let pairRootServer: string | null = null
+    const verifyAuthToken = async (token: string): Promise<boolean> => {
+      if (token === offerAuth) return true
+      if (!pairRootServer) return false
+      const epoch = currentEpoch()
+      for (const e of [epoch, epoch - 1]) {
+        if (token === (await deriveEpochTokens(pairRootServer, e)).auth) return true
+      }
+      return false
+    }
+    const dial = vi.fn(async () => {
+      const { a, b } = connect()
+      void (async () => {
+        let session: PairingSession | null = null
+        const wrapped: E2eFrameSink = await daemonHandshakeOverSink(
+          a,
+          async helloBytes => {
+            const hello = decodePairingHello(helloBytes)
+            const result = await respondToHandshake(hello, { identity, verifyAuthToken })
+            session = result.session
+            return { reply: encodePairingMessage(result.reply), keys: result.session }
+          },
+          { timeoutMs: 2_000 },
+        )
+        if (pairRootServer === null && session) pairRootServer = await derivePairRoot(session)
+        // Handshake done — die at the NEXT step, with a reason.
+        wrapped.close(closeReason)
+      })().catch(() => undefined)
+      return b
+    })
+    const waitReady = (): Promise<void> => vi.waitFor(() => expect(pairRootServer).not.toBeNull())
+    return { dial, waitReady }
+  }
+
+  it("rejects PROMPTLY with the remote close reason when the host closes after the handshake (never a 10s hello timeout)", async () => {
+    const identity = await generateIdentity()
+    const { url, auth, fingerprint } = await makeOffer(identity, { scope: "host" })
+    const { dial, waitReady } = makeHandshakeThenCloseDial(identity, auth, "persist failed")
+    const registry = createHostRegistry({ hostsPath, dial, handshakeTimeoutMs: 2_000 })
+    await registry.add(url, "office-mac")
+    await waitReady()
+
+    const started = Date.now()
+    // The old behaviour raced `client.ready()`'s full 10s hello timeout and
+    // reported a generic "did not send hello"; the fix surfaces the close.
+    await expect(
+      registry.forwardHttp(fingerprint, { method: "GET", path: "/health" }),
+    ).rejects.toThrow(/closed the channel after handshake: persist failed/)
+    expect(Date.now() - started).toBeLessThan(9_000)
+  })
+
+  it("logs each failed attempt with the host's name + fingerprint and which step it died at", async () => {
+    const identity = await generateIdentity()
+    const { url, auth, fingerprint } = await makeOffer(identity, { scope: "host" })
+    const { dial, waitReady } = makeHandshakeThenCloseDial(identity, auth, "revoked")
+    const logs: string[] = []
+    const registry = createHostRegistry({
+      hostsPath,
+      dial,
+      handshakeTimeoutMs: 2_000,
+      log: line => logs.push(line),
+    })
+    await registry.add(url, "office-mac")
+    await waitReady()
+
+    await expect(
+      registry.forwardHttp(fingerprint, { method: "GET", path: "/health" }),
+    ).rejects.toThrow(/closed the channel after handshake: revoked/)
+
+    const attemptLines = logs.filter(l => l.includes("office-mac") && l.includes(fingerprint) && l.includes("attempt 1/2"))
+    expect(attemptLines).toHaveLength(1)
+    expect(attemptLines[0]).toMatch(/closed the channel after handshake: revoked/)
+  })
+})
