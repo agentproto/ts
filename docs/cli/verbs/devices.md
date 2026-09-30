@@ -9,6 +9,7 @@ agentproto devices status <fingerprint|name>
 agentproto devices share-inference on|off
 agentproto devices allow-spawn on|off
 agentproto devices sessions <fingerprint|name> [--session <id>] [--lines <n>] [--clean] [--json]
+agentproto devices prompt  <fingerprint|name> --session <id> --prompt <text> [--wait] [--interrupt] [--force]
 agentproto devices join-token create <name> [--ttl <duration>] [--max-uses <n>]
 agentproto devices join-token list   [--json]
 agentproto devices join-token revoke <id|name>
@@ -185,6 +186,33 @@ E2E channel.
 
 Without `--session`, prints the host's session list as JSON. Exits non-zero if
 the host is unreachable.
+
+## `prompt`
+
+```bash
+agentproto devices prompt my-host --session <sessionId> --prompt "go check X"
+agentproto devices prompt my-host --session <sessionId> --prompt "..." --wait
+```
+
+Send a follow-up turn to one of a registered host's sessions — the write
+counterpart of `sessions`. Forwarded over the host's E2E channel with the
+same queueing rules as `agentproto sessions prompt`: fire-and-forget by
+default (returns immediately after enqueueing), FIFO behind any in-flight
+turn.
+
+Requires the host to have opted in (`agentproto devices allow-spawn on`) and
+the usual host-scoped pairing (`pair offer --host` / `devices add`).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--session <id>` | *(required)* | Session on the remote host to prompt. |
+| `--prompt <text>` | *(required)* | The turn text to send. |
+| `--wait` | `false` | Block until the turn fully drains; prints elapsed time on completion. |
+| `--interrupt` | `false` | Interrupt any in-flight turn before enqueuing. |
+| `--force` | `false` | Force the turn even if a turn is already in flight. |
+
+Exit codes: `0` on success (sent, queued, or drained), `1` on a remote or
+network error, `2` on missing required arguments.
 
 ## `join-token`
 

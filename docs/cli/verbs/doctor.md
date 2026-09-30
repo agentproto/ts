@@ -17,7 +17,7 @@ and changes nothing: no file writes, no process starts, no prompts.
 | `connect-machines` | no | Paired device count (`~/.agentproto/pairings.json`). Warns if no devices are paired and prints the exact pairing commands for the chosen direction (pilot vs be piloted) |
 | `auth` | no | Auth profiles (count, enabled) · credentials `auth discover` finds that aren't imported yet |
 | `clients` | no | Each detected coding client: agentproto MCP server still present in its config, pinned URL matches the daemon port |
-| `devices` | no | Paired device count (`~/.agentproto/pairings.json`) · any device never seen, or not seen in 30+ days |
+| `devices` | no | Paired device count (`~/.agentproto/pairings.json`) · any device never seen, or not seen in 30+ days · any registered host whose dial/handshake has been failing recently (prints the re-pair remediation hint) |
 | `rendezvous` | no | Whether the configured (or hosted-default) rendezvous broker is reachable, direct or through an `HTTPS_PROXY` — surfaces proxy-related dial failures that would otherwise only appear deep inside `pair accept`/`devices add` |
 | `skills` | no | Each skill-capable adapter: agentproto skill pack installed and current |
 | `local-models` ("Inference endpoints") | no | Each named LLM-gateway endpoint (`~/.agentproto/llm-endpoints.json`, plus `forge` if `FORGE_BASE_URL` is set) answers `GET <baseUrl>/models`; for a reachable one, its connector's own model listing (load state, context size) |
