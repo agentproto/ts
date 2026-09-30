@@ -1,4 +1,10 @@
 {
   "title": "Guides",
-  "pages": ["mcp-in-coding-cli", "create-agentproto-app", "app-agent-tools", "no-admin-install"]
+  "pages": [
+    "mcp-in-coding-cli",
+    "create-agentproto-app",
+    "distribute-an-app",
+    "app-agent-tools",
+    "no-admin-install"
+  ]
 }
