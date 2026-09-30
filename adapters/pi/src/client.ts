@@ -44,6 +44,7 @@ import {
   type PiResponse,
   type PiSessionEvent,
 } from "./pi-events.js"
+import { resolveWindowsPiSpawn } from "./win32-pi-bin.js"
 
 /** Env var the bridge extension reads to find its per-session config JSON. */
 const BRIDGE_CONFIG_ENV = "PI_MCP_BRIDGE_CONFIG"
@@ -350,10 +351,23 @@ export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient
         }
       }
 
-      const proc = spawn(resolveBin(opts.env), args, {
+      // Win32: the manifest `bin: "pi"` may only exist on PATH as a `.cmd`
+      // shim (npm global or curl installer — issue #1637), which Node's
+      // `spawn` without `shell` cannot PATHEXT-resolve (`spawn pi ENOENT`).
+      // Resolve it to the real exe / node entry / shell-escaped shim first;
+      // POSIX returns `undefined` and the bare spec spawns as before.
+      const binSpec = resolveBin(opts.env)
+      const winResolved = resolveWindowsPiSpawn(binSpec, args, {
+        platform: process.platform,
+        pathEnv: childEnv["PATH"] ?? process.env["PATH"],
+      })
+      const spawnBin = winResolved?.bin ?? binSpec
+      const spawnArgs = [...(winResolved?.args ?? args)]
+      const proc = spawn(spawnBin, spawnArgs, {
         cwd: opts.cwd,
         env: childEnv,
         stdio: ["pipe", "pipe", "pipe"],
+        ...(winResolved?.shell ? { shell: true } : {}),
       })
       child = proc
       attachReaders(proc)

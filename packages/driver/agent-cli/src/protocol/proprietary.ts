@@ -29,6 +29,8 @@
  * arm receiving `clientInfo` derived from the manifest.
  */
 
+import { isAbsolute } from "node:path"
+import { pathToFileURL } from "node:url"
 import type { AgentCliClient, AgentCliHandle } from "../types.js"
 
 export interface ProprietaryProtocolOptions {
@@ -47,7 +49,18 @@ export async function createProprietaryProtocolArm(
 ): Promise<AgentCliClient> {
   let mod: Record<string, unknown>
   try {
-    mod = (await import(options.adapter)) as Record<string, unknown>
+    // `withResolvedProprietaryAdapter` (packages/cli/src/registry/resolve.ts)
+    // may hand us an ABSOLUTE filesystem path (adapter resolved to a real
+    // .js/.cjs/.mjs file). A dynamic `import()` of such a path works on
+    // POSIX (the loader resolves it against cwd) but fails on win32 with
+    // `ERR_UNSUPPORTED_ESM_URL_SCHEME` / `Received protocol 'c:'` — the
+    // WIN11 field test in issue #1637. Rewriting absolute paths to
+    // `file://` URLs is behavior-identical on POSIX and fixes win32; a
+    // bare package specifier (no absolute path) imports as-is.
+    const target = isAbsolute(options.adapter)
+      ? pathToFileURL(options.adapter).href
+      : options.adapter
+    mod = (await import(target)) as Record<string, unknown>
   } catch (err) {
     const cause = err instanceof Error ? err.message : String(err)
     throw new Error(
