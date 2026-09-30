@@ -343,6 +343,7 @@ describe("cron_list transformer migration", () => {
     for (const j of compact.jobs) {
       expect(Object.keys(j).sort()).toEqual([
         "active",
+        "finished",
         "id",
         "label",
         "lastOk",
@@ -353,6 +354,7 @@ describe("cron_list transformer migration", () => {
       ])
       // A failed last run is visible without `full: true`.
       expect(j.lastOk).toBe(true)
+      expect(j.finished).toBe(false)
     }
 
     const full = JSON.parse(

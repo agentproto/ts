@@ -70,6 +70,15 @@ function makeFakeCronScheduler(): CronScheduler {
     get(id) {
       return jobs.get(id)
     },
+    async update(id, patch) {
+      const job = jobs.get(id)
+      if (!job) throw new Error(`cron job not found: ${id}`)
+      Object.assign(job, patch)
+      return job
+    },
+    runs() {
+      return { runs: [] }
+    },
     delete(id) {
       if (!jobs.has(id)) throw new Error(`cron job not found: ${id}`)
       jobs.delete(id)

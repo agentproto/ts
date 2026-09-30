@@ -2658,6 +2658,7 @@ export function registerOrchestrationTools(
           "When false, fires once then deactivates. Default true.",
         ),
         label: z.string().optional().describe("Human-readable label for the job."),
+        timezone: z.string().optional().describe("IANA timezone for interpreting the schedule. Defaults to host local time."),
         action: cronActionSchema.describe(
           "What to do when the job fires. 'command' runs an allowlisted shell command; " +
           "'agent' spawns a brand-new agent session and takes every agent_start field " +
@@ -2679,6 +2680,7 @@ export function registerOrchestrationTools(
           const job = await cronScheduler.create({
             label: input.label,
             schedule: input.schedule,
+            timezone: input.timezone,
             recurring: input.recurring ?? true,
             action: input.action,
           })
@@ -2721,6 +2723,7 @@ export function registerOrchestrationTools(
       schedule: j.schedule,
       recurring: j.recurring,
       active: j.active,
+      finished: j.finished ?? false,
       nextRunAt: j.nextRunAt,
       lastRunAt: j.lastRunAt,
       // A failed last run must be visible without `full: true`.
@@ -2730,7 +2733,7 @@ export function registerOrchestrationTools(
       id: "cron_list",
       description: "List all cron jobs (active and inactive) with their schedule, last result, and next fire time. " +
           "COMPACT BY DEFAULT: each entry is a slim projection (id/label/schedule/" +
-          "recurring/active/nextRunAt/lastRunAt/lastOk); pass `full: true` (or `compact: false`) " +
+          "recurring/active/finished/nextRunAt/lastRunAt/lastOk); pass `full: true` (or `compact: false`) " +
           "for the complete job record including action/createdAt/lastResult.",
       inputSchema: cronListSchema,
       handler: async () => cronScheduler.list(),
@@ -2744,6 +2747,49 @@ export function registerOrchestrationTools(
         }),
       ],
     })
+
+    server.tool(
+      "cron_update",
+      "Edit a cron job's schedule, label, timezone, recurrence, action, or active state. Set active false to pause and true to resume.",
+      {
+        jobId: z.string().min(1),
+        schedule: z.string().min(1).optional(),
+        label: z.string().nullable().optional(),
+        timezone: z.string().nullable().optional(),
+        recurring: z.boolean().optional(),
+        active: z.boolean().optional(),
+        action: cronActionSchema.optional(),
+      },
+      async input => {
+        try {
+          if (input.action?.kind === "tool" && opts.toolSubset && !opts.toolSubset.has(input.action.tool)) {
+            throw new Error(`cron action kind "tool" cannot dispatch '${input.action.tool}': not in this server's tool subset`)
+          }
+          const { jobId, ...patch } = input
+          const job = await cronScheduler.update(jobId, patch)
+          return { content: [{ type: "text", text: JSON.stringify(job) }] }
+        } catch (err) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) }], isError: true }
+        }
+      },
+    )
+
+    server.tool(
+      "cron_runs",
+      "Read cron fire history, newest first. Use nextCursor for the next page.",
+      {
+        jobId: z.string().min(1).optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+        cursor: z.string().min(1).optional(),
+      },
+      async input => {
+        try {
+          return { content: [{ type: "text", text: JSON.stringify(cronScheduler.runs(input)) }] }
+        } catch (err) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }) }], isError: true }
+        }
+      },
+    )
 
     server.tool(
       "cron_delete",
