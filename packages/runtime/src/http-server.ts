@@ -24,7 +24,7 @@ import { buildLabeledStatsReport } from "./process-stats.js"
 import { getHostLoadService } from "./host-load.js"
 import { parseBrowserMode } from "./browser-mount.js"
 import { defaultBrowserAdapterIds } from "./browser-adapters.js"
-import { randomUUID } from "node:crypto"
+import { randomUUID, randomBytes } from "node:crypto"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 import { Readable, type Duplex } from "node:stream"
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web"
@@ -63,8 +63,20 @@ import {
 } from "./session-message.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
-import type { SentinelStore } from "./sentinel-store.js"
-import type { SentinelProviderHandle } from "./sentinel-providers/types.js"
+import { mintSentinelId, type SentinelStore } from "./sentinel-store.js"
+import {
+  deliveryPreferenceFor,
+  singleMatch,
+  type SentinelHandle,
+  type SentinelSpec,
+  type SentinelTarget,
+  type SentinelProviderHandle,
+  type SentinelUntil,
+} from "./sentinel-providers/types.js"
+import { GITHUB_DEFAULT_PR_TYPES } from "./sentinel-github-normalize.js"
+import { autoSelectProviderSlug } from "./sentinel-provider-select.js"
+import { parsePrUrl } from "./review-pr.js"
+import { decodeWhsecSecret, encodeWhsecSecret } from "./webhook-egress/signing.js"
 import { handleSentinelInbound, type SentinelInboundDeps } from "./sentinel-inbound.js"
 import {
   createSentinelWatch,
@@ -7933,6 +7945,17 @@ async function handleSentinels(
     }
     const b = body as Record<string, unknown>
     const until = b.until === "subject_terminal" || b.until === "never" ? b.until : undefined
+
+    // Webhook-target branch (W-B): `target:{kind:"webhook", url, secret?}`
+    // rides directly alongside the subject/prUrl sugar. The raw secret
+    // never lands in the persisted spec — the store denatures it into its
+    // secret sidecar (secretRef) and the response is always a REDACTED
+    // sentinelView ({url, hasSecret:true, secretRedacted:true}).
+    const target = b.target as { kind?: string; url?: string; secret?: string } | undefined
+    if (target?.kind === "webhook") {
+      await handleWebhookTargetSentinel(json, until, target, b, deps)
+      return true
+    }
     const input: SentinelWatchInput = {
       ...(typeof b.subject === "string" ? { subject: b.subject } : {}),
       ...(typeof b.prUrl === "string" ? { prUrl: b.prUrl } : {}),
@@ -7984,6 +8007,114 @@ async function handleSentinels(
   }
 
   return false
+}
+
+/**
+ * POST /sentinels `target:{kind:"webhook"}` branch (W-B). Same validation
+ * style as `createSentinelWatch`: subject (or prUrl sugar), types, until
+ * (`subject_terminal` | `never` | an `untilMs` epoch-ms → `until:{kind:"at"}`),
+ * optional explicit `provider` (else auto-select), the callback `url` and an
+ * optional `secret` (`whsec_…`; a fresh one is minted when omitted). The
+ * store denatures the secret into its sidecar at create — the response is
+ * always a REDACTED sentinelView; the raw secret is never echoed.
+ */
+async function handleWebhookTargetSentinel(
+  json: (status: number, body: unknown) => void,
+  untilWire: string | undefined,
+  target: { url?: string; secret?: string },
+  b: Record<string, unknown>,
+  deps: SentinelHttpDeps,
+): Promise<void> {
+  let subject: string
+  let types = Array.isArray(b.types) ? b.types.filter((f): f is string => typeof f === "string") : undefined
+  if (typeof b.subject === "string" && b.subject.length > 0) {
+    subject = b.subject
+  } else if (typeof b.prUrl === "string") {
+    const parsed = parsePrUrl(b.prUrl)
+    if (!parsed) {
+      json(400, { error: "invalid_pr_url", message: `could not parse a github.com PR URL from "${b.prUrl}"` })
+      return
+    }
+    subject = `github:${parsed.repo}#${parsed.number}`
+    if (!types) types = [...GITHUB_DEFAULT_PR_TYPES]
+  } else {
+    json(400, { error: "missing_subject", message: "provide either `subject` or `prUrl`" })
+    return
+  }
+
+  let until: SentinelUntil
+  {
+    const untilMs = typeof b.untilMs === "number" && Number.isFinite(b.untilMs) ? b.untilMs : undefined
+    if (untilWire === "subject_terminal") until = { kind: "subject_terminal" }
+    else if (untilMs !== undefined && untilMs > 0) until = { kind: "at", ms: untilMs }
+    else until = { kind: "never" }
+  }
+
+  const url = target.url
+  if (typeof url !== "string" || !/^https:\/\//.test(url)) {
+    json(400, { error: "invalid_webhook_url", message: "target.url must be an https:// callback URL" })
+    return
+  }
+  let secret: string
+  if (typeof target.secret === "string" && decodeWhsecSecret(target.secret)) {
+    secret = target.secret
+  } else if (target.secret !== undefined) {
+    json(400, {
+      error: "invalid_webhook_secret",
+      message: "target.secret must be whsec_... whose base64 decodes to 24..64 bytes",
+    })
+    return
+  } else {
+    secret = encodeWhsecSecret(randomBytes(32))
+  }
+
+  const providerSlug =
+    typeof b.provider === "string" && b.provider.length > 0
+      ? b.provider
+      : await autoSelectProviderSlug({ resolveProvider: deps.resolveProvider })
+  const provider = await deps.resolveProvider(providerSlug)
+  if (!provider) {
+    json(400, { error: "unknown_provider", message: `provider "${providerSlug}" is not available` })
+    return
+  }
+
+  const spec: SentinelSpec = {
+    match: singleMatch(subject, types),
+    until,
+    // Raw secret material never lands in the persisted spec — the store's
+    // create path denatures it into the sidecar row under a `secretRef`.
+    target: { kind: "webhook", url, secret } as SentinelTarget,
+    provider: providerSlug,
+  }
+
+  // Minted before `create` so a provider that stamps the id remotely
+  // (agentpush's consumerRef) names the same sentinel the store records —
+  // same discipline as `createSentinelWatch`.
+  const id = mintSentinelId()
+  let handle: SentinelHandle
+  try {
+    handle = await provider.create(spec, deliveryPreferenceFor(provider, deps.activeIntervalMs ?? 15_000), { sentinelId: id })
+  } catch (err) {
+    json(400, {
+      error: "provider_create_failed",
+      message: err instanceof Error ? err.message : String(err),
+    })
+    return
+  }
+
+  try {
+    const sentinel = deps.store.create({ id, spec, provider: providerSlug, handle })
+    json(201, sentinelView(sentinel))
+  } catch (err) {
+    // The provider-side watch exists but the record was refused — cancel to
+    // avoid an orphaned remote monitor.
+    try {
+      await provider.cancel(handle)
+    } catch {
+      // best-effort — same tradeoff as `cancelSentinelWatch`
+    }
+    json(400, { error: "create_failed", message: err instanceof Error ? err.message : String(err) })
+  }
 }
 
 /**
