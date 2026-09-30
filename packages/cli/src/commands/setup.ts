@@ -32,7 +32,7 @@ import {
   type AdapterWizardStep,
   type WizardStepResult,
 } from "@agentproto/provider-kit"
-import { resolveAdapter } from "../registry/resolve.js"
+import { resolveAdapterWithBootstrap } from "../registry/adapter-bootstrap.js"
 import { CATALOG } from "../registry/catalog.js"
 import {
   runShellCapturing,
@@ -541,10 +541,23 @@ export async function runSetupCommand(args: readonly string[]): Promise<number> 
     )
     return 2
   }
-  const adapter = await resolveAdapter(slug)
+  // Recap point 5 (WIN11 test): on a fresh machine the adapter PACKAGE
+  // itself isn't installed — resolution used to die with "can't find
+  // package '@agentproto/adapter-<slug>'" and left the verb useless.
+  // Attempt `npm i -g` first (shared with `agentproto install`'s own
+  // bootstrap, see registry/adapter-bootstrap.ts) and keep the original
+  // clear error when even that fails.
+  const resolved = await resolveAdapterWithBootstrap(slug, {
+    dryRun: values["dry-run"] ?? false,
+    verb: "setup",
+  })
+  if (!resolved.ok) {
+    if (resolved.error instanceof Error) throw resolved.error
+    throw new Error(String(resolved.error))
+  }
   return runSetup({
     slug,
-    handle: adapter.handle,
+    handle: resolved.adapter!.handle,
     force: values.force ?? false,
     dryRun: values["dry-run"] ?? false,
     ...(values.only ? { only: values.only } : {}),

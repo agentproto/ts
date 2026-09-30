@@ -38,10 +38,15 @@ import { join } from "node:path"
 import { parseArgs } from "node:util"
 import type { AgentCliHandle, AgentCliInstallMethod } from "@agentproto/driver-agent-cli"
 import { resolveAdapter } from "../registry/resolve.js"
+import { CATALOG } from "../registry/catalog.js"
+import {
+  bootstrapAdapterPackage,
+  isMissingAdapterPackageError,
+  spawnNpmInherit,
+} from "../registry/adapter-bootstrap.js"
 import { runSetup } from "./setup.js"
 import { runInstallProfile } from "./install-profile.js"
 import { runInstallSkill } from "./install-skill.js"
-import { CATALOG } from "../registry/catalog.js"
 import { binOnPath } from "../registry/acp-generic.js"
 import {
   parseNpmPackageFromHint,
@@ -173,38 +178,26 @@ export async function runInstall(args: readonly string[]): Promise<number> {
   // pushing the user out of the verb's purpose. When the slug maps to a
   // known catalog entry (so we're confident the npm package exists), run
   // `npm i -g` ourselves first, then re-resolve. A --dry-run only prints
-  // what would run; an npm failure surfaces the manual path.
+  // what would run; an npm failure surfaces the manual path. The shared
+  // implementation lives in registry/adapter-bootstrap.ts (extracted so
+  // `agentproto setup <slug>` gets the same recap-point-5 auto-install).
   let adapter: Awaited<ReturnType<typeof resolveAdapter>>
   try {
     adapter = await resolveAdapter(slug)
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    const isMissingPackage =
-      /could not load adapter|Cannot find package|ERR_MODULE_NOT_FOUND/i.test(
-        msg
-      ) && msg.includes(`@agentproto/adapter-${slug}`)
+    if (!isMissingAdapterPackageError(err, slug)) throw err
     const catalogEntry = CATALOG.find((e) => e.slug === slug)
-    if (!isMissingPackage || !catalogEntry?.packageName) throw err
+    if (!catalogEntry?.packageName) throw err
 
-    const pkg = catalogEntry.packageName
     if (values["dry-run"]) {
       process.stdout.write(
-        `agentproto install: [bootstrap] would run: npm i -g ${pkg}\n` +
-          `  (then read ${pkg}'s manifest and run its install[] steps)\n`
+        `agentproto install: [bootstrap] would run: npm i -g ${catalogEntry.packageName}\n` +
+          `  (then read ${catalogEntry.packageName}'s manifest and run its install[] steps)\n`
       )
       return 0
     }
-    process.stdout.write(
-      `agentproto install: [bootstrap] installing ${pkg}…\n`
-    )
-    const code = await spawnInherit("npm", ["install", "-g", pkg])
-    if (code !== 0) {
-      process.stderr.write(
-        `agentproto install: npm i -g ${pkg} failed (exit ${code}). ` +
-          `Install it manually: npm i -g ${pkg}\n`
-      )
-      return code
-    }
+    const code = await bootstrapAdapterPackage(slug)
+    if (code !== 0) return code
     // Re-resolve in the same process. Node ≥23 can retain a negative
     // package.json lookup after the first miss, so `resolveAdapter` has a
     // narrow filesystem fallback for that poisoned-cache signature. Keeping
@@ -216,8 +209,8 @@ export async function runInstall(args: readonly string[]): Promise<number> {
       const cause =
         retryErr instanceof Error ? retryErr.message : String(retryErr)
       process.stderr.write(
-        `agentproto install: ${pkg} installed but could not be loaded: ${cause}\n` +
-          `Verify ${pkg} has a valid package.json export under \`npm root -g\`, then retry.\n`
+        `agentproto install: ${catalogEntry.packageName} installed but could not be loaded: ${cause}\n` +
+          `Verify ${catalogEntry.packageName} has a valid package.json export under \`npm root -g\`, then retry.\n`
       )
       return 1
     }
@@ -361,7 +354,10 @@ async function runStep(
       const argv = ["install"]
       if (step.global) argv.push("-g")
       argv.push(step.package)
-      return spawnInherit("npm", argv)
+      // npm is a `.cmd` shim on Windows — spawn through cmd.exe there (see
+      // adapter-bootstrap.ts's spawnNpmInherit; a shell-less npm spawn is
+      // ENOENT under libuv and a literal `.cmd` spawn is EINVAL).
+      return spawnNpmInherit(argv)
     }
     case "brew": {
       if (!step.package) {
@@ -439,7 +435,7 @@ async function runStep(
       }
       const npmPkg = parseNpmPackageFromHint(installHint)
       if (npmPkg) {
-        return spawnInherit("npm", ["install", "-g", npmPkg])
+        return spawnNpmInherit(["install", "-g", npmPkg])
       }
       const shell = parseShellHint(installHint)
       if (shell) {

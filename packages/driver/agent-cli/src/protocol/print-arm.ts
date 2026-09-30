@@ -29,6 +29,7 @@ import { join } from "node:path"
 import type { SandboxMode } from "@agentproto/command-sandbox"
 import { toFileBasedMcpServers } from "../mcp-servers.js"
 import { terminateChildTree } from "../process-tree.js"
+import { windowsBatchShellOption } from "../win32-spawn.js"
 import { wrapAgentCliSpawn } from "../command-sandbox-wrap.js"
 import type {
   AcpMcpServer,
@@ -189,6 +190,11 @@ export function createPrintSession(
         cwd: opts.cwd,
         env: opts.env,
         stdio: ["ignore", "pipe", "pipe"],
+        // Win32: only reached for a `.cmd`/`.bat` bin that
+        // `resolveWindowsBatchSpawn` couldn't rewrite to its node entry
+        // (see `win32-spawn.ts` — Node refuses direct batch spawning,
+        // CVE-2024-27980, the recap-10 `spawn EINVAL`). POSIX: `{}`.
+        ...windowsBatchShellOption(execBin),
       })
       activeChild = child
 
