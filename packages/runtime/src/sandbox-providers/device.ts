@@ -20,6 +20,28 @@ import type { HostRegistry } from "../host-registry.js"
 import { startDeviceSandboxBridge } from "../device-sandbox-bridge.js"
 
 /**
+ * Classify a spawn's sandbox target as a paired REMOTE DEVICE (`device:<fp>`
+ * / `device:<name>`) — the case `spawnAgentSession` must not compose
+ * controller-local workspace contracts onto (BOOTSTRAP P5 / agentproto/ts
+ * #1637: the controller's own AGENTS.md pointer, resolved at the
+ * CONTROLLER's cwd, rode into the remote prompt and ENOENT'd there — a Mac
+ * `/Volumes/...` path read as `C:\Volumes\...` on Windows). `sandbox` is the
+ * caller's raw `agent_start.sandbox` value as `spawnAgentSession` sees it
+ * before `bootSandboxAgentSession` resolves a provider: the bare-string
+ * form (`"device:<fp>"`) or the inline-spec object form (`{ provider:
+ * "device:<fp>" }`). The device family is identified by its `device:` slug
+ * prefix — every other provider (`local`, `e2b`, `box`, `modal`,
+ * `daytona`) is either a same-machine target or a box this daemon
+ * provisions, neither of which makes a controller-resolved path unreadable.
+ */
+export function isDeviceSandboxTarget(
+  sandbox: string | { provider?: string } | undefined,
+): boolean {
+  const slug = typeof sandbox === "string" ? sandbox : sandbox?.provider ?? ""
+  return slug.startsWith("device:")
+}
+
+/**
  * Build the `device:<name>` sandbox provider for a specific target device.
  * `target` is whatever `HostRegistry.forwardHttp/forwardHttpStream` accepts
  * as `idOrName` — a fingerprint or the device's user-given name.

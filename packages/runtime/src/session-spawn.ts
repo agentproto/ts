@@ -170,6 +170,7 @@ import {
   type SandboxSpec,
 } from "@agentproto/sandbox"
 import { createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
+import { isDeviceSandboxTarget } from "./sandbox-providers/device.js"
 import {
   readSandboxLedger,
   recordSandboxBoot,
@@ -1539,6 +1540,36 @@ function composedPreamble(
   if (!composed.endsWith(tail)) return undefined
   const pre = composed.slice(0, composed.length - tail.length)
   return pre || undefined
+}
+
+/**
+ * The device-spawn counterpart of {@link cdContractLine} (BOOTSTRAP P5 /
+ * #1637): a sentence present in the composed prompt of every `device:<fp>`
+ * spawn filling the slot the controller-suppressed AGENTS.md resolution
+ * would otherwise have held the cd-contract in. Unlike the local
+ * cd-contract's "the daemon fixes this contract ONCE" guarantee (which a
+ * remote agent_prompt-delivered turn makes FALSE from the controller's
+ * seat — the controller resolved nothing), this one names the actual
+ * truth: the TARGET device's own daemon is the one holding the session's
+ * contract knowledge, its resolution state is the agent's own to establish
+ * (an `AGENTS.md` at the session's cwd is the agent's — not the
+ * controller's — to find and read), and no path the controller could
+ * possibly name is readable across the pairing. Path-free by
+ * construction: never names a host path, so it cannot leak a
+ * `/Volumes/...` pointer onto a Windows box the way the bug did.
+ *
+ * `device` is the bare target name the caller pinned (`"device:<fp>"`'s
+ * `<fp>`), for context only — the sentence is correct for any name.
+ */
+export function deviceContractLine(device: string): string {
+  return (
+    `This session was spawned remotely on paired device "${device}" by the ` +
+    `controlling daemon — its own workspace (and any AGENTS.md along that ` +
+    `path) is on ANOTHER machine and has not been injected here. If your ` +
+    `resolved cwd has an AGENTS.md, treat it as binding on your next tool ` +
+    `call (read it first); if you \`cd\` somewhere else (a nested repo ` +
+    `included), re-resolve and re-read the AGENTS.md of wherever you end up.`
+  )
 }
 
 export async function spawnAgentSession(
@@ -3116,20 +3147,47 @@ export async function spawnAgentSession(
     resolveAgentsMd ??
     (async (cwdArg: string, _kb?: number, o?: { stopAt?: string }) =>
       realResolveAgentsMd(cwdArg, await loadAgentsMdInlineMaxKb(), undefined, o?.stopAt))
-  try {
-    // An app session sees only the app's own AGENTS.md, never the host repo's.
-    agentsMdResolution = appBoundary
-      ? await resolveAgentsMdForSpawn(cwd, undefined, { stopAt: appBoundary.root })
-      : await resolveAgentsMdForSpawn(cwd)
-  } catch {
-    // AGENTS.md resolution is advisory-on-top-of-the-role: a read failure must
-    // never block a spawn the caller asked for. Fall through to absent — the
-    // prompt is composed without an AGENTS.md block and the descriptor carries
-    // "absent", exactly as if no file existed. The cd-contract sentence is
-    // still included: it's a static, always-true fact independent of whether
-    // resolution itself succeeded, so a read failure shouldn't silently drop
-    // the one guarantee that never depended on the file being readable.
-    agentsMdResolution = { mode: "absent", contractLine: cdContractLine }
+  // BOOTSTRAP P5 (#1637) — workspace-local contracts only compose when the
+  // spawn's cwd is on THIS daemon's filesystem. A `device:<fp>` sandbox
+  // target is another machine's daemon: the box's own `agent_start`
+  // resolves the AGENTS.md of `host.start`'s cwd (its own `agents-md.ts`
+  // machinery, hit by every locally-created session there — the Windows
+  // field report's `agentsMdMode: "absent"` on a box-resolved session is
+  // precisely this machinery reporting), and its first prompt arrives via
+  // `agent_prompt`, which does NOT re-run composition. So resolving the
+  // contract at the CONTROLLER's cwd here can only ever inject a block the
+  // remote cannot act on — an inline Mac path read as `C:\Volumes\...`
+  // (field-verified in `sess_4e92ea62`), or a pointer naming a file that
+  // does not exist on the box. Suppress resolution entirely instead: the
+  // composed prompt carries only transportable text (role preamble,
+  // promptAppend, the parent lineage line, the caller's own prompt), no
+  // path points at a controller-side file, and one remote-local contract
+  // resolution (the box's) stands in for this controller-side one — no
+  // double preamble, because the box never injects its own composition on
+  // top of a prompt POST (it only ever composes at its own `agent_start`).
+  const isDeviceSandboxSpawn = isDeviceSandboxTarget(input.sandbox)
+  const deviceTargetName =
+    typeof input.sandbox === "string"
+      ? input.sandbox.slice("device:".length)
+      : (input.sandbox?.provider ?? "").slice("device:".length)
+  if (isDeviceSandboxSpawn) {
+    agentsMdResolution = { mode: "absent", contractLine: deviceContractLine(deviceTargetName) }
+  } else {
+    try {
+      // An app session sees only the app's own AGENTS.md, never the host repo's.
+      agentsMdResolution = appBoundary
+        ? await resolveAgentsMdForSpawn(cwd, undefined, { stopAt: appBoundary.root })
+        : await resolveAgentsMdForSpawn(cwd)
+    } catch {
+      // AGENTS.md resolution is advisory-on-top-of-the-role: a read failure must
+      // never block a spawn the caller asked for. Fall through to absent — the
+      // prompt is composed without an AGENTS.md block and the descriptor carries
+      // "absent", exactly as if no file existed. The cd-contract sentence is
+      // still included: it's a static, always-true fact independent of whether
+      // resolution itself succeeded, so a read failure shouldn't silently drop
+      // the one guarantee that never depended on the file being readable.
+      agentsMdResolution = { mode: "absent", contractLine: cdContractLine }
+    }
   }
   const agentsMdParts = [agentsMdResolution.block, agentsMdResolution.contractLine].filter(
     (p): p is string => !!p,
@@ -3137,8 +3195,14 @@ export async function spawnAgentSession(
   // Exact-file read grant backing an inherited AGENTS.md pointer — see
   // additionalReadPathsForAgentsMd's doc. Threaded to the adapter below
   // (startSession opts + env) so the pointer contract is actually readable
-  // through the session's own workspace tools.
-  const agentsMdReadPaths = additionalReadPathsForAgentsMd(agentsMdResolution, cwd)
+  // through the session's own workspace tools. Skipped for a device spawn
+  // (#1637): the resolution was suppressed above, so a grant orbiting a
+  // CONTROLLER-side pointer would ask the remote for a path that does not
+  // exist on it — the grant references this daemon's filesystem only when
+  // this daemon is the one resolving.
+  const agentsMdReadPaths = isDeviceSandboxSpawn
+    ? undefined
+    : additionalReadPathsForAgentsMd(agentsMdResolution, cwd)
   // Plus the headless browser's install + Chrome bundle, so a
   // `commandSandbox`-confined adapter tree can still launch them.
   const additionalReadPaths = [...(agentsMdReadPaths ?? []), ...browserReadPaths]
@@ -3157,13 +3221,21 @@ export async function spawnAgentSession(
   let workspaceRulesResolution: WorkspaceRulesResolution = {}
   const resolveWorkspaceRulesForSpawn =
     resolveWorkspaceRules ?? realResolveWorkspaceRules
-  try {
-    workspaceRulesResolution = await resolveWorkspaceRulesForSpawn(resolvedSlug)
-  } catch {
-    // RULES.md is advisory: a read failure must never block a spawn a caller
-    // asked for. Fall through to "as if absent" — same posture as AGENTS.md's
-    // own try/catch fallback above.
-    workspaceRulesResolution = {}
+  // Device spawn skip (#1637, same reason as the AGENTS.md suppression
+  // above): RULES.md is resolved from THIS daemon's own workspace state
+  // bucket and inlined in full — controller-workspace content naming
+  // controller-local context a remote device has no way to act on. The
+  // target device's own daemon resolves its own workspace's rules if the
+  // spawned session lands in one of its workspaces.
+  if (!isDeviceSandboxSpawn) {
+    try {
+      workspaceRulesResolution = await resolveWorkspaceRulesForSpawn(resolvedSlug)
+    } catch {
+      // RULES.md is advisory: a read failure must never block a spawn a caller
+      // asked for. Fall through to "as if absent" — same posture as AGENTS.md's
+      // own try/catch fallback above.
+      workspaceRulesResolution = {}
+    }
   }
   const rulesMdParts = workspaceRulesResolution.block ? [workspaceRulesResolution.block] : []
   // Preamble composition only applies to a plain-string ask — see
@@ -3365,7 +3437,9 @@ export async function spawnAgentSession(
       })
       // Stamp the AGENTS.md resolution (WP-R2) on the pending descriptor so
       // the deferred prompt pickup + the settled row both reflect it — same
-      // fields as the sync path's `spawnAgent` stamp below.
+      // fields as the sync path's `spawnAgent` stamp below. Device spawn
+      // (#1637): the controller resolution is suppressed — "absent"/no path,
+      // same meaning the sync-path comment above documents.
       pendingDesc.agentsMd = agentsMdResolution.path
       pendingDesc.agentsMdMode = agentsMdResolution.mode
       // Stamp the resolved per-workspace RULES.md path (WP-R4), when one was
@@ -3887,6 +3961,12 @@ export async function spawnAgentSession(
     // `sessions --json` / the summaries view can report the resolved path +
     // mode. `agentsMdMode` is non-optional once resolution ran — always set
     // here, even for "absent" (a real, reported state, not a missing field).
+    // For a device spawn (#1637) the controller resolution was suppressed:
+    // "absent" here means "NOT RESOLVED on this daemon", and `agentsMd`
+    // stays undefined — no controller-side path is recorded that the
+    // device's agent (or an operator reading either side's descriptor)
+    // could mistake for a locally-readable file. The device's own daemon
+    // stamps its own descriptor with ITS resolution.
     desc.agentsMd = agentsMdResolution.path
     desc.agentsMdMode = agentsMdResolution.mode
     // Stamp the resolved per-workspace RULES.md path (WP-R4), when one was

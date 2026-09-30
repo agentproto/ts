@@ -1,5 +1,11 @@
 # @agentproto/app-kit
 
+## 1.5.0
+
+### Minor Changes
+
+- eb3d4d5: Add ui.extensions.openai v1 contract (entrypoints/icons/display/mentions) with emit/load round-trip
+
 ## 1.4.1
 
 ### Patch Changes
