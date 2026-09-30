@@ -1,5 +1,11 @@
 # @agentproto/runtime
 
+## 5.5.0
+
+### Minor Changes
+
+- a4f3130: Add cron job updates and paginated, durable run history
+
 ## 5.4.1
 
 ### Patch Changes
