@@ -823,10 +823,14 @@ export {
 } from "./join-token-registry.js"
 export {
   createDeviceRegistry,
+  promptHostSession,
+  DEVICE_PROMPT_PATH_PREFIX,
   type Device,
   type DeviceRole,
   type DeviceKind,
   type DeviceRegistry,
+  type PromptHostSessionInput,
+  type PromptHostSessionResult,
 } from "./device-registry.js"
 export { registerDeviceTools, type RegisterDeviceToolsOptions } from "./device-tools.js"
 export {
@@ -2646,6 +2650,7 @@ export async function createGateway(
       // pair_revoke; both surfaces stay live.
       registerDeviceTools(server, {
         registry: createDeviceRegistry(opts.pairingRegistry, opts.hostRegistry),
+        ...(opts.hostRegistry ? { hosts: opts.hostRegistry } : {}),
         ...(opts.joinTokens ? { joinTokens: opts.joinTokens } : {}),
       })
     }

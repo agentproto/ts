@@ -440,6 +440,15 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
   // a successful dial resets the key. Backoff/timing is unchanged.
   const dialFailureGate = createReconnectLogGate({ now })
 
+  // Rate-limit handshake-failure logging per loop key, same rationale as
+  // `dialFailureGate`: a flap (peer closing mid-handshake, in bursts during an
+  // E2E channel outage) re-dials on backoff forever, and an un-gated line per
+  // attempt buries daemon.log. Unlike a dial failure, a HANDSHAKE failure
+  // means the peer was actually reached — the step it died at (pre-hello
+  // transport close vs. hello timeout vs. rejected token) is the diagnostic,
+  // so the gated line names it via the error message itself.
+  const handshakeFailureGate = createReconnectLogGate({ now })
+
   /** fingerprint → record. Source of truth in memory; disk is the mirror. */
   const pairings = new Map<string, PairingRecord>()
   /** fingerprint → count of channels currently served (offer or reconnect).
@@ -721,11 +730,22 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
           if (signal.aborted) break
           // A park timeout, a rejected offer, or a tampered hello. Fail closed
           // and re-dial after a short backoff (park timeouts are common + benign).
-          void err
+          // Gate the log like a dial failure (bursts during a flap must not
+          // bury daemon.log) but still NAME the step: the error message from
+          // `daemonHandshakeOverSink` distinguishes a transport close
+          // mid-handshake (`transport closed during handshake: <reason>`) from
+          // a hello timeout — exactly what the next channel flap needs to
+          // self-explain on this end.
+          const line = handshakeFailureGate.onFailure(
+            spec.key,
+            `[pairing] handshake for ${spec.key} failed: ${errMsg(err)}`,
+          )
+          if (line) log(line)
           await sleep(backoff, signal)
           backoff = Math.min(backoff * 2, reconnectMaxMs)
           continue
         }
+        handshakeFailureGate.onSuccess(spec.key)
 
         if (legacyPeer) {
           sendOutdatedNotice(wrapped)
@@ -770,13 +790,21 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
         onlineCounts.set(ctx.fingerprint, (onlineCounts.get(ctx.fingerprint) ?? 0) + 1)
         log(`[pairing] channel up (${ctx.mode}) for ${ctx.fingerprint} via ${spec.key}`)
 
-        await waitClosed(wrapped, signal)
+        const closeReason = await waitClosed(wrapped, signal)
         channels.delete(handle)
         await handle.close().catch(() => {})
         const remaining = (onlineCounts.get(ctx.fingerprint) ?? 1) - 1
         if (remaining > 0) onlineCounts.set(ctx.fingerprint, remaining)
         else onlineCounts.delete(ctx.fingerprint)
-        log(`[pairing] channel closed (${ctx.mode}) for ${ctx.fingerprint}`)
+        // The close reason is the diagnostic when a channel dies right after
+        // coming up (the observed E2E flap: Noise OK, then the connection
+        // breaks before/at the first forwarded request) — name it when the
+        // remote told us why, "remote closed without a reason" otherwise.
+        log(
+          `[pairing] channel closed (${ctx.mode}) for ${ctx.fingerprint}${
+            closeReason !== undefined ? `: ${closeReason}` : " (remote closed without a reason)"
+          }`,
+        )
 
         if (spec.singleUse) break
       } finally {
@@ -1165,19 +1193,22 @@ function sendOutdatedNotice(sink: E2eFrameSink): void {
  *  told `pairing_revoked` before it closes. */
 const REVOKED = Symbol("pairing revoked")
 
-function waitClosed(sink: E2eFrameSink, signal: AbortSignal): Promise<void> {
+/** Resolve when the sink closes (or `signal` aborts, closing it first) — with
+ *  the close reason the remote gave, when any, so the caller's log can say WHY
+ *  the channel came down. */
+function waitClosed(sink: E2eFrameSink, signal: AbortSignal): Promise<string | undefined> {
   return new Promise(resolve => {
     if (!sink.isOpen) {
-      resolve()
+      resolve(undefined)
       return
     }
     let settled = false
-    const finish = (): void => {
+    const finish = (reason: string | undefined): void => {
       if (settled) return
       settled = true
-      resolve()
+      resolve(reason)
     }
-    sink.onClose(() => finish())
+    sink.onClose(reason => finish(reason))
     signal.addEventListener("abort", () => {
       if (signal.reason === REVOKED) {
         sink.send(revokedFrame())
@@ -1185,7 +1216,7 @@ function waitClosed(sink: E2eFrameSink, signal: AbortSignal): Promise<void> {
       } else {
         sink.close("registry shutdown")
       }
-      finish()
+      finish("registry shutdown")
     })
   })
 }

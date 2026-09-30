@@ -8,6 +8,7 @@ import { describe, it, expect, vi } from "vitest"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { registerDeviceTools } from "../device-tools.js"
 import type { Device, DeviceRegistry } from "../device-registry.js"
+import type { ForwardHttpRequest, HostRegistry } from "../host-registry.js"
 import type { JoinTokenRegistry } from "../join-token-registry.js"
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -274,5 +275,68 @@ describe("join_token_create / join_token_list / join_token_revoke", () => {
       ok: false,
       message: 'no join token matched "nope"',
     })
+  })
+})
+
+describe("device_prompt (BOOTSTRAP P4 item 1)", () => {
+  function fakeHosts(forwardHttp: HostRegistry["forwardHttp"]): HostRegistry {
+    return {
+      add: vi.fn(),
+      list: vi.fn(async () => []),
+      rename: vi.fn(async () => false),
+      revoke: vi.fn(async () => false),
+      isOnline: () => false,
+      forwardHttp,
+      forwardHttpStream: vi.fn(),
+      getSessionsSnapshot: () => undefined,
+      snapshotNow: vi.fn(async () => false),
+      markEnded: vi.fn(async () => false),
+      sweep: vi.fn(async () => {}),
+      start: vi.fn(async () => {}),
+    }
+  }
+
+  it("is not registered when no HostRegistry is wired", async () => {
+    const { server, handlers } = fakeServer()
+    registerDeviceTools(server, { registry: fakeRegistry([device()]) })
+    expect(handlers.has("device_prompt")).toBe(false)
+  })
+
+  it("forwards the prompt to the host registry and relays the fire-and-forget result", async () => {
+    const { server, handlers } = fakeServer()
+    const forwardHttp = vi.fn(async (_id: string, req: ForwardHttpRequest) => {
+      expect(req.method).toBe("POST")
+      expect(req.path).toBe("/device-prompt/s1?wait=false")
+      expect(JSON.parse(Buffer.from(req.body!).toString("utf8"))).toEqual({ prompt: "hi", queue: true })
+      return { status: 202, headers: {}, body: new Uint8Array(Buffer.from(JSON.stringify({ ok: true, id: "s1", queued: true }))) }
+    })
+    registerDeviceTools(server, { registry: fakeRegistry([device()]), hosts: fakeHosts(forwardHttp) })
+    expect(await callTool(handlers, "device_prompt", { target: "office-mac", sessionId: "s1", prompt: "hi" })).toEqual({
+      ok: true,
+    })
+  })
+
+  it("relays the host's refusal (spawn not opted in) as ok:false with its message", async () => {
+    const { server, handlers } = fakeServer()
+    const forwardHttp = vi.fn(async () => ({
+      status: 403,
+      headers: {},
+      body: new Uint8Array(Buffer.from(JSON.stringify({ error: "spawn_disabled", message: "this host has not opted in" }))),
+    }))
+    registerDeviceTools(server, { registry: fakeRegistry([device()]), hosts: fakeHosts(forwardHttp) })
+    expect(
+      await callTool(handlers, "device_prompt", { target: "office-mac", sessionId: "s1", prompt: "hi" }),
+    ).toMatchObject({ ok: false, status: 403 })
+  })
+
+  it("an unknown/non-host target surfaces the registry's error message", async () => {
+    const { server, handlers } = fakeServer()
+    const forwardHttp = vi.fn(async () => {
+      throw new Error("no host matched \"ghost\"")
+    })
+    registerDeviceTools(server, { registry: fakeRegistry([device()]), hosts: fakeHosts(forwardHttp) })
+    expect(
+      await callTool(handlers, "device_prompt", { target: "ghost", sessionId: "s1", prompt: "hi" }),
+    ).toEqual({ ok: false, message: 'no host matched "ghost"' })
   })
 })
