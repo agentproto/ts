@@ -55,6 +55,60 @@ describe("CronScheduler", () => {
     tmpDirs = []
   })
 
+  it("updates and pauses a job without changing it after invalid input", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const scheduler = createCronScheduler({ ...makeDeps(workspace), workspace })
+    try {
+      const job = await scheduler.create({ schedule: "* * * * *", action: { kind: "command", command: "echo" } })
+      const paused = await scheduler.update(job.id, { active: false, label: "paused", schedule: "0 9 * * *" })
+      expect(paused).toMatchObject({ active: false, finished: false, label: "paused", schedule: "0 9 * * *" })
+      expect(paused.nextRunAt).toBeUndefined()
+      await expect(scheduler.update(job.id, { schedule: "invalid schedule" })).rejects.toThrow()
+      expect(scheduler.get(job.id)?.schedule).toBe("0 9 * * *")
+      const resumed = await scheduler.update(job.id, { active: true, action: { kind: "command", command: "pwd" } })
+      expect(resumed.active).toBe(true)
+      expect(resumed.nextRunAt).toBeTruthy()
+      expect(resumed.action).toEqual({ kind: "command", command: "pwd" })
+    } finally {
+      scheduler.shutdown()
+    }
+  })
+
+  it("persists a bounded run ledger with cursor pagination and a structured spawn id", async () => {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const persistPath = join(workspace, "cron-jobs.json")
+    const deps = makeDeps(workspace)
+    const dispatchTool = vi.fn(async () => ({ content: [{ type: "text", text: JSON.stringify({ id: "spawned-123" }) }] }))
+    const scheduler = createCronScheduler({ ...deps, workspace, persistPath, dispatchTool })
+    let jobId: string
+    try {
+      const job = await scheduler.create({ schedule: "* * * * *", action: { kind: "agent", prompt: "hello" } })
+      jobId = job.id
+      for (let i = 0; i < 52; i++) await scheduler.run(job.id)
+      const first = scheduler.runs({ jobId, limit: 20 })
+      expect(first.runs).toHaveLength(20)
+      expect(first.runs[0]).toMatchObject({ jobId, ok: true, sessionId: "spawned-123" })
+      expect(first.runs[0]?.runId).toMatch(/^run_/)
+      expect(first.runs[0]?.startedAt).toBeTruthy()
+      expect(first.runs[0]?.endedAt).toBeTruthy()
+      const second = scheduler.runs({ jobId, limit: 20, cursor: first.nextCursor })
+      const third = scheduler.runs({ jobId, limit: 20, cursor: second.nextCursor })
+      expect([...first.runs, ...second.runs, ...third.runs]).toHaveLength(50)
+      expect(third.nextCursor).toBeUndefined()
+      expect(() => scheduler.runs({ jobId, cursor: "missing" })).toThrow(/cursor/)
+    } finally {
+      scheduler.shutdown()
+    }
+    const reloaded = createCronScheduler({ ...deps, workspace, persistPath, dispatchTool })
+    try {
+      expect(reloaded.runs({ jobId: jobId!, limit: 100 }).runs).toHaveLength(50)
+    } finally {
+      reloaded.shutdown()
+    }
+  })
+
   it("create() — valid schedule returns a job with nextRunAt", async () => {
     const workspace = makeTmpWorkspace()
     tmpDirs.push(workspace)
@@ -176,6 +230,7 @@ describe("CronScheduler", () => {
       await scheduler.run(job.id)
       const after = scheduler.get(job.id)!
       expect(after.active).toBe(false)
+      expect(after.finished).toBe(true)
       expect(after.nextRunAt).toBeUndefined()
     } finally {
       scheduler.shutdown()

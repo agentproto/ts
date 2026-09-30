@@ -19,9 +19,10 @@
  * one-shot jobs that were missed while the daemon was down are fired
  * immediately on the next tick after restart.
  *
- * PERSISTENCE: `~/.agentproto/cron-jobs.json`, atomic write-tmp+rename.
- * Job DEFINITIONS (not run state) survive restarts. `nextRunAt` is
- * recomputed from now on load when a past fire time is detected.
+ * PERSISTENCE: `~/.agentproto/cron-jobs.json` and its `.runs.json` ledger,
+ * each saved by atomic write-tmp+rename. The ledger retains the last 50
+ * completed fires per job. `nextRunAt` is recomputed from now on load when
+ * a past fire time is detected.
  *
  * EVENTS: `cron:fired`, `cron:succeeded`, `cron:failed` emitted on the
  * shared SessionEventBus so outcomes are visible via session_events_poll
@@ -173,9 +174,36 @@ export interface CronJob {
   createdAt: string
   /** When false, the job will not fire. */
   active: boolean
+  /** A one-shot job has fired and will not fire again unless explicitly resumed. */
+  finished?: boolean
   nextRunAt?: string
   lastRunAt?: string
   lastResult?: { ok: boolean; summary: string }
+}
+
+export interface CronRun {
+  runId: string
+  jobId: string
+  startedAt: string
+  endedAt: string
+  ok: boolean
+  sessionId?: string
+  result: string
+  error?: string
+}
+
+export interface CronUpdate {
+  label?: string | null
+  schedule?: string
+  timezone?: string | null
+  recurring?: boolean
+  active?: boolean
+  action?: CronAction
+}
+
+export interface CronRunsPage {
+  runs: CronRun[]
+  nextCursor?: string
 }
 
 export interface CronScheduler {
@@ -196,6 +224,8 @@ export interface CronScheduler {
 
   list(): CronJob[]
   get(id: string): CronJob | undefined
+  update(id: string, patch: CronUpdate): Promise<CronJob>
+  runs(input?: { jobId?: string; limit?: number; cursor?: string }): CronRunsPage
 
   /**
    * Permanently remove a job. Throws if not found.
@@ -233,6 +263,42 @@ const DEFAULT_PERSIST_PATH = (): string =>
   join(homedir(), ".agentproto", "cron-jobs.json")
 
 const TICK_INTERVAL_MS = 20_000
+const MAX_RUNS_PER_JOB = 50
+
+function ledgerPath(persistPath: string): string {
+  return `${persistPath}.runs.json`
+}
+
+function loadRuns(path: string): Map<string, CronRun[]> {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"))
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return new Map()
+    const runs = new Map<string, CronRun[]>()
+    for (const [jobId, value] of Object.entries(parsed)) {
+      if (Array.isArray(value)) {
+        runs.set(jobId, value.filter((run): run is CronRun =>
+          run && typeof run.runId === "string" && run.jobId === jobId &&
+          typeof run.startedAt === "string" && typeof run.endedAt === "string" &&
+          typeof run.ok === "boolean" && typeof run.result === "string",
+        ).slice(-MAX_RUNS_PER_JOB))
+      }
+    }
+    return runs
+  } catch {
+    return new Map()
+  }
+}
+
+function saveRuns(runs: Map<string, CronRun[]>, path: string): void {
+  try {
+    mkdirSync(dirname(path), { recursive: true })
+    const tmp = `${path}.tmp.${process.pid}`
+    writeFileSync(tmp, JSON.stringify(Object.fromEntries(runs), null, 2) + "\n", "utf8")
+    renameSync(tmp, path)
+  } catch {
+    // Match job persistence: a disk failure must not crash the daemon.
+  }
+}
 
 // ── Persistence helpers ──────────────────────────────────────────────
 
@@ -265,6 +331,9 @@ function loadJobs(persistPath: string): Map<string, JobState> {
     // Ensure required fields have defaults for forward-compat.
     job.recurring = job.recurring ?? true
     job.active = job.active ?? true
+    if (job.finished === undefined && !job.recurring && !job.active && !!job.lastRunAt) {
+      job.finished = true
+    }
     result.set(job.id, { job })
   }
   return result
@@ -349,6 +418,14 @@ export function createCronScheduler(opts: {
   const shouldPersist = opts.persist ?? (opts.persistPath !== undefined)
 
   const jobs = shouldPersist ? loadJobs(persistPath) : new Map<string, JobState>()
+  const runHistory = shouldPersist ? loadRuns(ledgerPath(persistPath)) : new Map<string, CronRun[]>()
+  const appendRun = (run: CronRun): void => {
+    const history = runHistory.get(run.jobId) ?? []
+    history.push(run)
+    if (history.length > MAX_RUNS_PER_JOB) history.splice(0, history.length - MAX_RUNS_PER_JOB)
+    runHistory.set(run.jobId, history)
+    if (shouldPersist) saveRuns(runHistory, ledgerPath(persistPath))
+  }
 
   // Rehydrate cronInstance for every loaded job and recompute nextRunAt if stale.
   for (const state of jobs.values()) {
@@ -378,7 +455,7 @@ export function createCronScheduler(opts: {
 
   // ── Action executor ───────────────────────────────────────────────
 
-  const executeAction = async (job: CronJob): Promise<{ ok: boolean; summary: string }> => {
+  const executeAction = async (job: CronJob): Promise<{ ok: boolean; summary: string; sessionId?: string }> => {
     const action = job.action
 
     if (action.kind === "command") {
@@ -500,7 +577,14 @@ export function createCronScheduler(opts: {
       if (!ok) {
         throw new Error(`cron job '${job.id}': tool '${action.tool}' failed: ${summary}`)
       }
-      return { ok: true, summary: `tool '${action.tool}': ${summary}` }
+      let sessionId: string | undefined
+      if (action.tool === "agent_start") {
+        try {
+          const body = JSON.parse(summary) as { id?: unknown }
+          if (typeof body.id === "string") sessionId = body.id
+        } catch { /* The tool result may be plain text. */ }
+      }
+      return { ok: true, summary: `tool '${action.tool}': ${summary}`, sessionId }
     }
 
     // action.kind === "agent" — lowered to the real `agent_start` handler
@@ -530,6 +614,7 @@ export function createCronScheduler(opts: {
     }
     return {
       ok: true,
+      sessionId,
       summary: sessionId
         ? `spawned session ${sessionId} (adapter=${action.adapter ?? action.harness ?? "preset"})`
         : `agent_start: ${summary}`,
@@ -546,28 +631,39 @@ export function createCronScheduler(opts: {
     state.running = true
 
     try {
-    const { job } = state
-    const now = new Date().toISOString()
-    job.lastRunAt = now
+      const { job } = state
+      const startedAt = new Date().toISOString()
+      job.lastRunAt = startedAt
+      sessionEvents.emit({ type: "cron:fired", jobId: job.id, label: job.label, ts: startedAt })
 
-    sessionEvents.emit({ type: "cron:fired", jobId: job.id, label: job.label, ts: now })
-
-    let result: { ok: boolean; summary: string }
-    try {
-      result = await executeAction(job)
-    } catch (err) {
-      const error = err instanceof Error ? err.message : String(err)
-      result = { ok: false, summary: error }
-      sessionEvents.emit({
-        type: "cron:failed",
+      let result: { ok: boolean; summary: string; sessionId?: string }
+      let error: string | undefined
+      try {
+        result = await executeAction(job)
+      } catch (err) {
+        error = err instanceof Error ? err.message : String(err)
+        result = { ok: false, summary: error }
+      }
+      const endedAt = new Date().toISOString()
+      appendRun({
+        runId: `run_${randomUUID()}`,
         jobId: job.id,
-        label: job.label,
-        error,
-        ts: new Date().toISOString(),
+        startedAt,
+        endedAt,
+        ok: result.ok,
+        ...(result.sessionId ? { sessionId: result.sessionId } : {}),
+        result: result.summary,
+        ...(error ? { error } : {}),
       })
-      job.lastResult = result
+      if (error) {
+        sessionEvents.emit({ type: "cron:failed", jobId: job.id, label: job.label, error, ts: endedAt })
+      } else {
+        sessionEvents.emit({ type: "cron:succeeded", jobId: job.id, label: job.label, summary: result.summary, ts: endedAt })
+      }
+      job.lastResult = { ok: result.ok, summary: result.summary }
       if (!job.recurring) {
         job.active = false
+        job.finished = true
         job.nextRunAt = undefined
         state.cronInstance?.stop()
         state.cronInstance = undefined
@@ -576,29 +672,6 @@ export function createCronScheduler(opts: {
         job.nextRunAt = next?.toISOString()
       }
       persistNow()
-      return
-    }
-
-    sessionEvents.emit({
-      type: "cron:succeeded",
-      jobId: job.id,
-      label: job.label,
-      summary: result.summary,
-      ts: new Date().toISOString(),
-    })
-
-    job.lastResult = result
-    if (!job.recurring) {
-      // One-shot: deactivate after firing.
-      job.active = false
-      job.nextRunAt = undefined
-      state.cronInstance?.stop()
-      state.cronInstance = undefined
-    } else if (state.cronInstance) {
-      const next = nextFireDate(state.cronInstance)
-      job.nextRunAt = next?.toISOString()
-    }
-    persistNow()
     } finally {
       state.running = false
     }
@@ -648,6 +721,7 @@ export function createCronScheduler(opts: {
         action,
         createdAt: new Date().toISOString(),
         active: true,
+        finished: false,
         nextRunAt: next?.toISOString(),
       }
       jobs.set(id, { job, cronInstance })
@@ -663,11 +737,60 @@ export function createCronScheduler(opts: {
       return jobs.get(id)?.job
     },
 
+    async update(id, patch) {
+      const state = jobs.get(id)
+      if (!state) throw new Error(`cron job not found: ${id}`)
+      if (state.running) throw new Error(`cron job is running: ${id}`)
+      const job = state.job
+      const schedule = patch.schedule ?? job.schedule
+      const timezone = patch.timezone === null ? undefined : (patch.timezone ?? job.timezone)
+      const action = patch.action ?? job.action
+      if (!schedule) throw new Error("cron schedule must not be empty")
+      assertCronActionAllowed(action)
+      const cronInstance = parseCron(schedule, timezone)
+      await assertCronAdapterResolvable(action, {
+        resolveAgentAdapter,
+        getAuthProfile: opts.getAuthProfile,
+        listAgentAdapters: opts.listAgentAdapters,
+      })
+      const active = patch.active ?? job.active
+      const next = active ? nextFireDate(cronInstance) : null
+      state.cronInstance?.stop()
+      state.cronInstance = active ? cronInstance : undefined
+      job.schedule = schedule
+      job.timezone = timezone
+      job.action = action
+      job.recurring = patch.recurring ?? job.recurring
+      if (patch.label !== undefined) job.label = patch.label === null ? undefined : patch.label
+      job.active = active
+      if (active) job.finished = false
+      job.nextRunAt = next?.toISOString()
+      persistNow()
+      return job
+    },
+
+    runs({ jobId, limit = 20, cursor }: { jobId?: string; limit?: number; cursor?: string } = {}) {
+      if (jobId && !jobs.has(jobId)) throw new Error(`cron job not found: ${jobId}`)
+      if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+        throw new Error("limit must be an integer from 1 to 200")
+      }
+      const all = (jobId
+        ? runHistory.get(jobId) ?? []
+        : Array.from(runHistory.values()).flat()
+      ).slice().sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.runId.localeCompare(a.runId))
+      const start = cursor ? all.findIndex(run => run.runId === cursor) + 1 : 0
+      if (cursor && start === 0) throw new Error("invalid cron runs cursor")
+      const runs = all.slice(start, start + limit)
+      return { runs, ...(start + limit < all.length ? { nextCursor: runs[runs.length - 1]?.runId } : {}) }
+    },
+
     delete(id) {
       const state = jobs.get(id)
       if (!state) throw new Error(`cron job not found: ${id}`)
       state.cronInstance?.stop()
       jobs.delete(id)
+      runHistory.delete(id)
+      if (shouldPersist) saveRuns(runHistory, ledgerPath(persistPath))
       persistNow()
     },
 

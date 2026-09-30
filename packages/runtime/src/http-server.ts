@@ -9452,6 +9452,8 @@ async function handleDevices(
  * /cron routes:
  *   POST   /cron          → create a new cron job
  *   GET    /cron          → list all cron jobs
+ *   GET    /cron/runs     → page through run history
+ *   PATCH  /cron/:id      → update or pause/resume a cron job
  *   DELETE /cron/:id      → delete a cron job
  *   POST   /cron/:id/run  → manually fire a cron job
  */
@@ -9468,6 +9470,23 @@ async function handleCron(
 
   if (path === "/cron" && req.method === "GET") {
     json(200, { jobs: scheduler.list() })
+    return true
+  }
+
+  if (path === "/cron/runs" && req.method === "GET") {
+    const params = new URL(req.url ?? "/", "http://localhost").searchParams
+    const rawLimit = params.get("limit")
+    const limit = rawLimit === null ? undefined : Number(rawLimit)
+    try {
+      json(200, scheduler.runs({
+        jobId: params.get("jobId") ?? undefined,
+        limit,
+        cursor: params.get("cursor") ?? undefined,
+      }))
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      json(message.includes("not found") ? 404 : 400, { error: "runs_failed", message })
+    }
     return true
   }
 
@@ -9492,6 +9511,7 @@ async function handleCron(
       const job = await scheduler.create({
         label: typeof b.label === "string" ? b.label : undefined,
         schedule,
+        timezone: typeof b.timezone === "string" ? b.timezone : undefined,
         recurring: typeof b.recurring === "boolean" ? b.recurring : true,
         action: action as import("./cron-scheduler.js").CronAction,
       })
@@ -9542,6 +9562,34 @@ async function handleCron(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       json(404, { error: "job_not_found", message: msg })
+    }
+    return true
+  }
+
+  if (req.method === "PATCH") {
+    const body = await readJsonBody(req)
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    const b = body as Record<string, unknown>
+    const allowed = new Set(["schedule", "label", "timezone", "recurring", "active", "action"])
+    if (Object.keys(b).some(key => !allowed.has(key)) ||
+        (b.schedule !== undefined && (typeof b.schedule !== "string" || !b.schedule)) ||
+        (b.label !== undefined && b.label !== null && typeof b.label !== "string") ||
+        (b.timezone !== undefined && b.timezone !== null && typeof b.timezone !== "string") ||
+        (b.recurring !== undefined && typeof b.recurring !== "boolean") ||
+        (b.active !== undefined && typeof b.active !== "boolean") ||
+        (b.action !== undefined && (!b.action || typeof b.action !== "object" || Array.isArray(b.action)))) {
+      json(400, { error: "invalid_body" })
+      return true
+    }
+    try {
+      const job = await scheduler.update(jobId, b as import("./cron-scheduler.js").CronUpdate)
+      json(200, job)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      json(message.includes("not found") ? 404 : 400, { error: "update_failed", message })
     }
     return true
   }

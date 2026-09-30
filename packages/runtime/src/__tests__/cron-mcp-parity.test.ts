@@ -86,6 +86,27 @@ async function call(client: Client, name: string, args: Record<string, unknown>)
 const okResult = (body: unknown) => ({ content: [{ type: "text", text: JSON.stringify(body) }] })
 
 describe("cron_create schema — kind:\"tool\"", () => {
+  it("exposes cron_update and paginated cron_runs", async () => {
+    const { scheduler } = makeScheduler({ dispatchTool: async () => ({ content: [{ type: "text", text: "ok" }] }) })
+    const client = await buildClient(scheduler)
+    const created = await call(client, "cron_create", {
+      schedule: "* * * * *", action: { kind: "tool", tool: "session_list" },
+    })
+    const jobId = (JSON.parse(created.text) as { jobId: string }).jobId
+    const paused = await call(client, "cron_update", { jobId, active: false, label: "paused" })
+    expect(paused.isError).toBe(false)
+    expect(JSON.parse(paused.text)).toMatchObject({ active: false, label: "paused" })
+    await call(client, "cron_run", { jobId })
+    await call(client, "cron_run", { jobId })
+    const page = await call(client, "cron_runs", { jobId, limit: 1 })
+    expect(page.isError).toBe(false)
+    const body = JSON.parse(page.text) as { runs: Array<{ jobId: string }>; nextCursor: string }
+    expect(body.runs).toHaveLength(1)
+    expect(body.runs[0]?.jobId).toBe(jobId)
+    expect(body.nextCursor).toBeTruthy()
+    const next = await call(client, "cron_runs", { jobId, limit: 1, cursor: body.nextCursor })
+    expect((JSON.parse(next.text) as { runs: unknown[] }).runs).toHaveLength(1)
+  })
   it("accepts a tool action and cron_list (full) returns it", async () => {
     const { scheduler } = makeScheduler()
     const client = await buildClient(scheduler)
