@@ -1,5 +1,18 @@
 # @agentproto/runtime
 
+## 5.4.1
+
+### Patch Changes
+
+- 91d29b3: Windows P1 onboarding fixes (recap D7/E9/B4): the auth key store grows a Windows backend (one DPAPI-protected file per slot under `~/.agentproto/keychain-dpapi/`, .NET `ProtectedData` at `CurrentUser` scope via PowerShell — zero npm deps); `agentproto setup`/doctor gains a "Connect machines" step that prints the exact pairing commands for the chosen direction (pilot vs be piloted), and `/health` now reports the daemon's start-time PATH so the doctor's agents step can diagnose "installed in your shell but not visible to the daemon" with a `agentproto daemon restart` hint; the "no host matched" device error carries a pairing-direction hint.
+- Updated dependencies [91d29b3]
+  - @agentproto/auth@1.1.2
+  - @agentproto/llm-endpoint@0.11.3
+  - @agentproto/secrets@1.2.1
+  - @agentproto/acp@0.9.1
+  - @agentproto/pairing-host@0.2.1
+  - @agentproto/sandbox@0.7.4
+
 ## 5.4.0
 
 ### Minor Changes
