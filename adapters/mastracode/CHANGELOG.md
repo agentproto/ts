@@ -1,5 +1,12 @@
 # @agentproto/adapter-mastracode
 
+## 0.3.26
+
+### Patch Changes
+
+- Updated dependencies [6bace2a]
+  - @agentproto/driver-agent-cli@2.6.2
+
 ## 0.3.25
 
 ### Patch Changes
