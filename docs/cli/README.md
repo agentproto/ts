@@ -88,6 +88,7 @@ Pick whichever matches what you're trying to do:
 - [Runtime profiles](./concepts/runtime-profiles.md) — `runtime-profile/<name>` scaffolding
 - [Swarms](./concepts/swarms.md) — manifest + kernel cycle model
 - [Credentials](./concepts/credentials.md) — how host tokens are stored
+- [Device fleet](./concepts/device-fleet.md) — driving a fleet of paired hosts from one controller: the three capabilities, bring-up, addressing, and the F1–F12 failure taxonomy
 - [Hooks and sandbox](./concepts/hooks-and-sandbox.md) — the two enforcement planes (ACP semantic gate vs. OS sandbox), the 3-tier cross-harness coverage matrix, and config surfaces (`.agentproto/hooks.json`, `.agentproto/command-sandbox.json`)
 - [Session transcripts](./concepts/session-transcripts.md) — structured per-session capture, event kinds, native vs daemon export
 
