@@ -17,6 +17,7 @@ import { discoverCredentials } from "@agentproto/runtime/credential-discovery"
 import { readPairingsSnapshot, readHostsSnapshot } from "@agentproto/runtime"
 import { listAuthProfiles } from "@agentproto/auth"
 import { globalNodeModulesDir, probeLoginShellPath } from "../commands/daemon.js"
+import { cliInstallSource } from "../registry/install-source.js"
 import { detectAgents, loadInstallState } from "../commands/install-mcp.js"
 import { resolveSkillFanOutTargets } from "../commands/install-skill.js"
 import { resolveSkillPackDir } from "../commands/skill-install/pack-resolve.js"
@@ -133,6 +134,10 @@ export function createStepContext(cliVersion: string): StepContext {
       loginShellPath: () => probeLoginShellPath(),
       resolveAdapterHandle: async (slug) => (await resolveAdapter(slug)).handle,
       nodeExecPath: () => process.execPath,
+      cliInstallSource: () => {
+        const entry = process.argv[1] ?? null
+        return { source: cliInstallSource(entry), entry }
+      },
       resolveAdapterPackage: (slug, fromNode) => {
         // `import.meta.url` is the CLI's own install — the exact anchor the
         // daemon's manifest-loader uses. `fromNode` instead anchors inside

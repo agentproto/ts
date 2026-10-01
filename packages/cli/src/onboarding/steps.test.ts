@@ -94,6 +94,26 @@ describe("preflight", () => {
     expect(c.detail).toContain("could not check")
   })
 
+  it("a workspace build warns with the npm install fix, never a local folder", async () => {
+    const checks = await preflightStep.detect(
+      createFakeContext({
+        sources: {
+          cliInstallSource: () => ({ source: "workspace", entry: "/code/agentproto/packages/cli/dist/cli.mjs" }),
+        },
+      }),
+    )
+    const c = byId(checks, "preflight.cli-source")
+    expect(c.status).toBe("warn")
+    expect(c.fix).toBe("npm i -g @agentproto/cli@latest")
+    expect(c.detail).toContain("workspace build")
+    expect(c.data).toMatchObject({ source: "workspace", entry: "/code/agentproto/packages/cli/dist/cli.mjs" })
+  })
+
+  it("a published npm install adds no CLI-source check", async () => {
+    const checks = await preflightStep.detect(createFakeContext())
+    expect(checks.find((c) => c.id === "preflight.cli-source")).toBeUndefined()
+  })
+
   it("missing ~/.agentproto warns; unwritable is broken", async () => {
     const missing = await preflightStep.detect(createFakeContext({ fs: createFakeFs({}) }))
     expect(byId(missing, "preflight.home").status).toBe("warn")

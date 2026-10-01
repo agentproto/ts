@@ -80,6 +80,26 @@ of `RunAtLoad`.
 command without touching the filesystem or launchd. Useful for
 verifying the captured flags before committing.
 
+`install` also prints the exact `node` + CLI `entry` it captured, and
+whether that entry is the published npm install or a **workspace build**
+(a monorepo/dev checkout). When it is a workspace build the service would
+run that local folder, so it warns loudly with the npm fix:
+
+```text
+agentproto daemon: service will run:
+  node:    /Users/me/.nvm/versions/node/v22.22.0/bin/node  (nvm, global prefix /Users/me/.nvm/versions/node/v22.22.0)
+  entry:   /code/agentproto/packages/cli/dist/cli.mjs
+  source:  workspace build (LOCAL FOLDER — not the npm install)
+  ! this is a workspace/dev checkout, not the npm-installed CLI — the service
+    will run that local folder. To run the published CLI instead:
+      npm i -g @agentproto/cli@latest   (then re-run: agentproto daemon install)
+```
+
+This is the field-observed failure mode: run `agentproto setup` from a
+monorepo checkout and the daemon is installed from the local `dist/` instead
+of npm. `agentproto doctor`/`agentproto setup` flag the same thing in their
+preflight step.
+
 ### `uninstall`
 
 ```bash

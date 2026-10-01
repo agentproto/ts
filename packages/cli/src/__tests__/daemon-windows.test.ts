@@ -118,6 +118,28 @@ describe("runWinInstall", () => {
     }
   })
 
+  it("reports the captured node/entry/source so a local-folder install is visible", async () => {
+    const home = tempHome()
+    try {
+      const fake: SchtasksFn = async () => ({ code: 0, stdout: "", stderr: "" })
+      const out = captureStdout()
+      const code = await runWinInstall([], fake, home)
+      out.restore()
+
+      expect(code).toBe(0)
+      const text = out.chunks.join("")
+      expect(text).toContain("service will run:")
+      expect(text).toContain("node:")
+      expect(text).toContain("source:")
+      // This test runs under vitest (a node_modules entry) ⇒ published, so
+      // the local-folder warning must NOT fire.
+      expect(text).toContain("published npm install")
+      expect(text).not.toContain("LOCAL FOLDER")
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
   it("a schtasks create failure is a failed install (exit code, no /Run)", async () => {
     const home = tempHome()
     try {

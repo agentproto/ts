@@ -67,6 +67,28 @@ async function checkCliVersion(ctx: StepContext): Promise<StepCheck> {
   return { id: "preflight.cli-version", title: "CLI version", status: "ok", detail: `${ctx.cliVersion} (latest)`, data }
 }
 
+/**
+ * Which `agentproto` is running this wizard. A published `npm i -g` install
+ * is fine; a **workspace/monorepo build** is not, because `agentproto daemon
+ * install` bakes the CLI entry into the service — so the daemon would be
+ * installed from a local folder (a `dist/` path) instead of npm. Flag it with
+ * the npm install, never a local copy.
+ */
+function checkCliSource(ctx: StepContext): StepCheck | null {
+  const { source, entry } = ctx.sources.cliInstallSource()
+  if (source !== "workspace") return null
+  return {
+    id: "preflight.cli-source",
+    title: "CLI install source",
+    status: "warn",
+    detail:
+      `this agentproto is a workspace build (${entry ? tildify(ctx, entry) : "?"}), not the npm install — ` +
+      `\`agentproto daemon install\` would run that local folder`,
+    fix: "npm i -g @agentproto/cli@latest",
+    data: { source, entry },
+  }
+}
+
 async function checkHomeDir(ctx: StepContext): Promise<StepCheck> {
   const dir = join(ctx.homedir, ".agentproto")
   const shown = tildify(ctx, dir)
@@ -94,7 +116,10 @@ export const preflightStep: OnboardingStep = {
   title: "Preflight",
   required: true,
   async detect(ctx) {
-    return [checkNode(ctx), checkPlatform(ctx), await checkCliVersion(ctx), await checkHomeDir(ctx)]
+    const checks = [checkNode(ctx), checkPlatform(ctx), await checkCliVersion(ctx), await checkHomeDir(ctx)]
+    const source = checkCliSource(ctx)
+    if (source) checks.push(source)
+    return checks
   },
   stopIf(checks) {
     const blocker = checks.find(
@@ -104,17 +129,23 @@ export const preflightStep: OnboardingStep = {
   },
   async plan(checks) {
     const cli = checks.find((c) => c.id === "preflight.cli-version")
-    if (cli?.status !== "warn" || !cli.fix) return []
+    const source = checks.find((c) => c.id === "preflight.cli-source")
+    const outdated = cli?.status === "warn" && Boolean(cli.fix)
+    const localBuild = source?.status === "warn"
+    if (!outdated && !localBuild) return []
+    const why = localBuild
+      ? "Replace this workspace build with the published CLI (npm i -g @agentproto/cli@latest)"
+      : "Update the CLI (npm i -g @agentproto/cli@latest)"
     return [
       {
         id: "preflight.update-cli",
-        title: "Update the CLI (npm i -g @agentproto/cli@latest)",
+        title: why,
         default: false,
         streamsOutput: true,
         async apply(io) {
           const code = await io.verbs.updateCli()
           return code === 0
-            ? { ok: true, detail: "updated — re-run `agentproto setup` to continue on the new version" }
+            ? { ok: true, detail: "installed from npm — re-run `agentproto setup` to continue on the published CLI" }
             : { ok: false, detail: `npm exited ${code}` }
         },
       },
