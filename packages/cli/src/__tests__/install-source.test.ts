@@ -41,6 +41,16 @@ describe("cliInstallSource", () => {
     expect(cliInstallSource(undefined)).toBe("unknown")
     expect(cliInstallSource("")).toBe("unknown")
   })
+
+  it("a win32 global npm install is published (backslash separators)", () => {
+    expect(
+      cliInstallSource("C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@agentproto\\cli\\dist\\cli.mjs"),
+    ).toBe("published")
+  })
+
+  it("a win32 workspace/monorepo dist is a workspace build", () => {
+    expect(cliInstallSource("C:\\code\\agentproto\\packages\\cli\\dist\\cli.mjs")).toBe("workspace")
+  })
 })
 
 describe("describeNodeInstall", () => {
@@ -91,5 +101,15 @@ describe("renderServiceTarget", () => {
     )
     expect(out).toContain("workspace build (LOCAL FOLDER")
     expect(out).toContain("npm i -g @agentproto/cli@latest")
+  })
+
+  it("a win32 published entry says so and does not warn", () => {
+    const out = renderServiceTarget(
+      "C:\\Program Files\\nodejs\\node.exe",
+      "C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\@agentproto\\cli\\dist\\cli.mjs",
+      "win32",
+    )
+    expect(out).toContain("published npm install")
+    expect(out).not.toContain("LOCAL FOLDER")
   })
 })

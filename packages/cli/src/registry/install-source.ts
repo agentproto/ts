@@ -26,7 +26,10 @@ export type CliInstallSource = "published" | "workspace" | "unknown"
  */
 export function cliInstallSource(entry: string | null | undefined): CliInstallSource {
   if (!entry) return "unknown"
-  return entry.includes("/node_modules/") || entry.includes("/.npm/") ? "published" : "workspace"
+  // Normalize Windows separators (`C:\…\node_modules\…`) so this matches both
+  // POSIX and win32-style paths — see describeNodeInstall for the same trick.
+  const norm = entry.split("\\").join("/")
+  return norm.includes("/node_modules/") || norm.includes("/.npm/") ? "published" : "workspace"
 }
 
 /** Which Node a binary belongs to — enough to tell the user "nvm vs system". */

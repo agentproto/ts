@@ -119,6 +119,10 @@ function probeLoginShellNpm(): Promise<{ node: string; prefix: string } | null> 
     const child = spawn(...userShellArgv(script), { stdio: ["ignore", "pipe", "ignore"] })
     const timer = setTimeout(() => {
       child.kill()
+      // SIGTERM can be ignored by a hung shell; escalate after a grace period
+      // so we don't leak the child. Harmless either way since resolve(null)
+      // already fired.
+      setTimeout(() => child.kill("SIGKILL"), 1_000).unref()
       resolve(null)
     }, 5_000)
     child.stdout?.setEncoding("utf8").on("data", (c: string) => (out += c))
