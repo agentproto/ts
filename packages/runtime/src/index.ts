@@ -2722,15 +2722,15 @@ export async function createGateway(
       // registered hosts (PR-C) — role/kind/online layered on top of
       // pair_list's records. device_revoke has the exact effect of
       // pair_revoke; both surfaces stay live.
-    registerDeviceTools(server, {
-      registry: createDeviceRegistry(opts.pairingRegistry, opts.hostRegistry),
-      ...(opts.hostRegistry ? { hosts: opts.hostRegistry } : {}),
-      // BOOTSTRAP P7a — controller→host id resolution for `device_prompt`
-      // (issue #1637). The gateway-scoped registry, not the caller's scope:
-      // a controller descriptor lives daemon-wide.
-      ...(sessions ? { sessions: sessions as unknown as DevicePromptSessionsLike } : {}),
-      ...(opts.joinTokens ? { joinTokens: opts.joinTokens } : {}),
-    })
+      registerDeviceTools(server, {
+        registry: createDeviceRegistry(opts.pairingRegistry, opts.hostRegistry),
+        ...(opts.hostRegistry ? { hosts: opts.hostRegistry } : {}),
+        // BOOTSTRAP P7a — controller→host id resolution for `device_prompt`
+        // (issue #1637). The gateway-scoped registry, not the caller's scope:
+        // a controller descriptor lives daemon-wide.
+        ...(sessions ? { sessions: sessions as unknown as DevicePromptSessionsLike } : {}),
+        ...(opts.joinTokens ? { joinTokens: opts.joinTokens } : {}),
+      })
     }
     // Agent-session orchestration — operators (Mastra agents in
     // cloud Guilde, Claude Code as a sub-agent, …) drive long-running

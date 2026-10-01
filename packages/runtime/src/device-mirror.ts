@@ -476,6 +476,24 @@ async function fetchHostDescriptorSnapshot(
   }
 }
 
+/** The non-templated members of `SessionCurrentPhase` — the `tool-call:${string}`
+ *  arm is checked separately by prefix. Validating the host-reported phase
+ *  against this (rather than casting it straight through) keeps an older or
+ *  misbehaving host from stamping an arbitrary string into the controller
+ *  descriptor's typed union. */
+const SESSION_CURRENT_PHASES = new Set<string>([
+  "thinking",
+  "awaiting-input",
+  "awaiting-permission",
+  "idle",
+  "completed",
+  "killed",
+])
+
+function isSessionCurrentPhase(value: string): value is SessionDescriptor["currentPhase"] & string {
+  return SESSION_CURRENT_PHASES.has(value) || value.startsWith("tool-call:")
+}
+
 /** Cheap live-projection refresh (P7b-2's last bullet): copy the host
  *  snapshot's liveness/activity/usage scalars onto the controller
  *  descriptor. Controller-local fields (label, agentsMdMode, sandboxId…)
@@ -500,8 +518,8 @@ function refreshDescriptorFromHost(
     if (alreadyBusy !== host["busy"]) desc.busy = host["busy"]
   }
   const hostPhase = host["currentPhase"]
-  if (typeof hostPhase === "string" && hostPhase.length > 0) {
-    desc.currentPhase = hostPhase as SessionDescriptor["currentPhase"]
+  if (typeof hostPhase === "string" && isSessionCurrentPhase(hostPhase)) {
+    desc.currentPhase = hostPhase
   }
   if (typeof host["costUsd"] === "number" && !Number.isNaN(host["costUsd"] as number)) {
     const cost = host["costUsd"] as number

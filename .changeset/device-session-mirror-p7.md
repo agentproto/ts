@@ -1,6 +1,6 @@
 ---
-"@agentproto/runtime": patch
-"@agentproto/sandbox": patch
+"@agentproto/runtime": minor
+"@agentproto/sandbox": minor
 ---
 
 Device session mirroring (BOOTSTRAP P7, refs #1637): a controller spawning into
