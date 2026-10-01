@@ -77,7 +77,7 @@ tools in-process behind a local ACP host and never raise
 
 | Tier | Adapters | Raises `request_permission`? | Plane 1 reach | Plane 2 reach |
 |---|---|---|---|---|
-| **1 — Blockable** | claude-code, codex, gemini, grok-cli, hermes, opencode, openclaw | Yes, client-mediated | Log **and** gate/deny | Confined (both axes) |
+| **1 — Blockable** | claude-code, codex, copilot-cli, gemini, grok-cli, hermes, opencode, openclaw | Yes, client-mediated | Log **and** gate/deny | Confined (both axes) |
 | **2 — Observable only** | claude-sdk, mastra-agent | No — in-process, `bypassPermissions`; ACP is transport only | Log only (after the fact) | Confined (both axes) |
 | **3 — Opaque** | antigravity, jcode, pi, mastracode, mastracode-inprocess | No ACP surface at all | Neither, without a bespoke per-harness shim | Confined (both axes) |
 

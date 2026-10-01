@@ -12,7 +12,7 @@ and changes nothing: no file writes, no process starts, no prompts.
 |------|----------|--------|
 | `preflight` | yes | Node.js ≥ 20.9.0 · OS (darwin/linux) · CLI version vs npm latest · `~/.agentproto` writable |
 | `workspace` | yes | At least one registered workspace · cwd inside one |
-| `daemon` | yes | `/health` on the configured port (version + uptime, vs this CLI) · macOS: launchd plist installed + loaded, plist PATH fresh vs your login shell |
+| `daemon` | yes | `/health` on the configured port (version + uptime, vs this CLI) · macOS: launchd plist installed + loaded, plist PATH fresh vs your login shell · Node/adapter mismatch: when the daemon's Node binary (from `/health` `info.node`) differs from this CLI's Node, checks which catalog adapters resolve under the CLI's Node but not the daemon's — warns with the exact `npm i -g @agentproto/adapter-<slug> …` reinstall command |
 | `agents` | yes | Each catalog adapter: package resolvable + its `version_check` presence probe passes. At least one needed |
 | `connect-machines` | no | Paired device count (`~/.agentproto/pairings.json`). Warns if no devices are paired and prints the exact pairing commands for the chosen direction (pilot vs be piloted) |
 | `auth` | no | Auth profiles (count, enabled) · credentials `auth discover` finds that aren't imported yet |
