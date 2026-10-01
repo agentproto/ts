@@ -1,5 +1,33 @@
 # @agentproto/cli
 
+## 1.9.0
+
+### Minor Changes
+
+- a878968: Add apps step to onboarding wizard
+- ffb38a6: `agentproto sessions board [--json] [--watch] [--all]`: an at-a-glance
+  session-status board. Every session gets one Badge — ACTIVE (running +
+  busy), IDLE (running, parked, young or keepAlive), STALE (running, idle
+  past the 15-min reap-risk age without keepAlive, or interrupted
+  mid-turn), AWAITING (awaitingInput/awaitingPermission), BLOCKED
+  (blockedOn set), ENDED (with endedReason), and with `--all` the
+  `kind:"command"` execution-log rows — sorted by attention-worthiness
+  behind a one-line summary header (`485 sessions — 3 blocked · 6 stale ·
+5 active · 470 ended`). `--json` emits the classes plus every evidence
+  field the rules read (keepAlive, interrupted, continuedFrom handoff
+  edge, blockedOn, idleMs, costUsd when usage exists); `--watch` re-renders
+  every 2s on a TTY (q to quit).
+
+### Patch Changes
+
+- Updated dependencies [a878968]
+- Updated dependencies [a878968]
+  - @agentproto/apps@0.18.0
+  - @agentproto/driver-agent-cli@2.7.0
+  - @agentproto/worktree@0.14.3
+  - @agentproto/sandbox-box@0.2.23
+  - @agentproto/sandbox-e2b@0.5.13
+
 ## 1.8.0
 
 ### Minor Changes

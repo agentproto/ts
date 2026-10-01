@@ -1,5 +1,65 @@
 # @agentproto/runtime
 
+## 5.8.0
+
+### Minor Changes
+
+- a878968: OpenAI MCP-extensions carriage (W-B): `AgnoMcpApp` gains an optional namespaced
+  `openai` descriptor (§3.2 tool/resource metadata + icons); `performInstall`
+  carries the app-kit-normalized `ui.extensions.openai` through `InstalledApp.ui`
+  structurally; `registerMcpApps` serializes the declared entrypoints and icons
+  under the generated UI tool's `_meta["openai/ui"]` and the display
+  available/preferred modes under the `ui://` resource's `_meta["openai/ui"]`;
+  `registerUiResource` accepts extra namespaced `meta` refused for the canonical
+  `ui` key. Apps without `ui.extensions.openai` install and serve byte-identically.
+- a878968: PR provenance reconciler: a third, TEXTUAL attribution lane — at each executor
+  session's turn-end/exit, PR urls printed in the session's own ASSISTANT output
+  (bounded transcript-tail read, same window `session_evidence` uses) are
+  recorded on `SessionDescriptor.openedPrs` with adapter `"output-scan"` when no
+  other lane already carried them. A mention never stamps a footer or opens a
+  sentinel footgun by itself: dedupe is per-url (in-memory for the run,
+  `openedPrs` across restarts), and the lane is in-process with zero network —
+  it reads the session's existing events.jsonl tail only.
+- d0be488: List installed adapters in the generic adapter_not_found error
+
+### Patch Changes
+
+- 0b76d49: fix(device-spawn): retry a flapping host channel once, and surface the host's
+  first-turn failure. Two device-spawn UX defects from cross-device field
+  dogfood (Mac Studio → Windows 11 / Mac Pro hosts):
+
+  - **Silent spawn hang.** A `device:<fp>` spawn whose E2E channel to the host
+    was flapping failed with a transport-class error and surfaced as a bare MCP
+    `Request timed out` — no retry, no actionable message. The inner
+    `agent_start` over the host channel is now wrapped in ONE automatic retry
+    with a ~2s back-off on transport-class failures (`device_unreachable`,
+    `transport closed`, `handshake timed out`, `ECONNRESET`, …); on a spent
+    budget it returns `device_spawn_unreachable` (HTTP 400) naming the target,
+    the attempts, and the guidance to retry / run `agentproto devices status`.
+    Non-transport failures (the host's own `adapter_not_found`, a bad model id)
+    still fail immediately, and local/e2b/Box spawns are unchanged.
+  - **Silent empty turns on a bad model id.** A device spawn whose model id did
+    not resolve on the host completed its first turn EMPTY, leaving a
+    healthy-looking `running` session while the adapter's real
+    "model not found"/"invalid model" line sat only in the host's ring buffer.
+    The sandbox proxy now surfaces that raw host line as a `notice` on a
+    failed/empty FIRST turn (rendered into `agent_output`), and the descriptor
+    is stamped `firstTurnFailed: true`.
+
+- 2d4457e: Send a device spawn's first prompt inside agent_start, in one dial
+
+  `StartAgentArgs.prompt` now accepts a content block / block array (not just a
+  string), exposing the inner `agent_start` schema's existing verbatim-prompt
+  capability to harness callers; the device-sandbox bridge uses it to carry the
+  controller-composed prompt in the spawn dial.
+
+- Updated dependencies [a878968]
+- Updated dependencies [a878968]
+  - @agentproto/apps@0.18.0
+  - @agentproto/mcp-server@0.5.0
+  - @agentproto/driver-agent-cli@2.7.0
+  - @agentproto/sandbox@0.8.1
+
 ## 5.7.0
 
 ### Minor Changes

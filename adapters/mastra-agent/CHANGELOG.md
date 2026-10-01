@@ -1,5 +1,18 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.7.21
+
+### Patch Changes
+
+- Updated dependencies [0b76d49]
+- Updated dependencies [2d4457e]
+- Updated dependencies [a878968]
+- Updated dependencies [a878968]
+- Updated dependencies [d0be488]
+- Updated dependencies [a878968]
+  - @agentproto/runtime@5.8.0
+  - @agentproto/driver-agent-cli@2.7.0
+
 ## 0.7.20
 
 ### Patch Changes
