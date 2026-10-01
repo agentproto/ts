@@ -432,6 +432,9 @@ export function registerAgentTools(
           ...(resolveWorktreeIsolation ? { resolveWorktreeIsolation } : {}),
           ...(listCatalogModels ? { listCatalogModels } : {}),
           ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
+          // Lets the generic `adapter_not_found` error name the installed
+          // adapters (session-spawn.ts) instead of only saying "install it".
+          ...(listAgentAdapters ? { listAgentAdapters } : {}),
         },
         {
           ...spawnInput,

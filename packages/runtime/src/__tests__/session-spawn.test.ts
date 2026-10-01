@@ -4283,6 +4283,36 @@ describe("spawnAgentSession — access.profileRef (named auth profile)", () => {
     expect(result.message).toContain("agentproto install no-such-adapter")
   })
 
+  it("an unknown adapter names the INSTALLED adapters when a lister is wired (F8)", async () => {
+    const { deps } = baseDeps({
+      resolveAgentAdapter: async () => null,
+      listAgentAdapters: async () => [
+        { slug: "hermes", name: "Hermes", version: "1.0.0", description: "", protocol: "acp", streaming: true, packageName: "@agentproto/adapter-hermes", modes: [] },
+        { slug: "claude-code", name: "Claude Code", version: "1.0.0", description: "", protocol: "acp", streaming: true, packageName: "@anthropic/claude-code", modes: [] },
+        { slug: "pi", name: "pi", version: "1.0.0", description: "", protocol: "acp", streaming: true, packageName: "@agentproto/pi", modes: [] },
+      ],
+    })
+    const result = await spawnAgentSession(deps, { adapter: "no-such-adapter", cwd: "/tmp" })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected refusal")
+    expect(result.code).toBe("adapter_not_found")
+    expect(result.message).toContain("mid-rebuild")
+    expect(result.message).toContain("Installed adapters: claude-code, hermes, pi.")
+    expect(result.message).not.toContain("agentproto install no-such-adapter")
+  })
+
+  it("an unknown adapter falls back to the install advice when the lister returns empty", async () => {
+    const { deps } = baseDeps({
+      resolveAgentAdapter: async () => null,
+      listAgentAdapters: async () => [],
+    })
+    const result = await spawnAgentSession(deps, { adapter: "no-such-adapter", cwd: "/tmp" })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected refusal")
+    expect(result.message).toContain("mid-rebuild")
+    expect(result.message).toContain("agentproto install no-such-adapter")
+  })
+
   it("a source-backed profile resolves the credential FRESH via Mode 3 (reuses the same recipe resolver)", async () => {
     authProfileState.profiles["anthropic-sub"] = {
       id: "anthropic-sub",

@@ -2696,6 +2696,7 @@ export async function startHttpServer(
             opts.resolveSandboxProvider,
             opts.webhookNotifier,
             opts.ensureLlmEndpointRunning,
+            opts.listAgentAdapters,
             opts.deviceMirrorSync,
           )
           if (handled) return
@@ -5848,6 +5849,9 @@ async function handleSessions(
   resolveSandboxProvider?: SpawnAgentSessionDeps["resolveSandboxProvider"],
   webhookNotifier?: SpawnAgentSessionDeps["webhookNotifier"],
   ensureLlmEndpointRunning?: SpawnAgentSessionDeps["ensureLlmEndpointRunning"],
+  // Lets the generic `adapter_not_found` error name the installed adapters
+  // (session-spawn.ts) instead of only saying "install it".
+  listAgentAdapters?: AgentAdapterLister,
   // BOOTSTRAP P7b — the device-mirror read-sync hook. Absent ⇒ no sync
   // (older wiring keeps today's behaviour unchanged).
   deviceMirrorSync?: (idOrName: string) => Promise<unknown>,
@@ -6081,6 +6085,7 @@ async function handleSessions(
         ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
         ...(webhookNotifier ? { webhookNotifier } : {}),
         ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
+        ...(listAgentAdapters ? { listAgentAdapters } : {}),
       },
       spawnArgs,
     )
@@ -6183,6 +6188,7 @@ async function handleSessions(
         ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
         ...(webhookNotifier ? { webhookNotifier } : {}),
         ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
+        ...(listAgentAdapters ? { listAgentAdapters } : {}),
       },
       spawnArgs,
     )
