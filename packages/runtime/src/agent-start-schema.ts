@@ -566,6 +566,21 @@ export const agentStartInputShape = {
         "`sandbox` there); ignored when `cwd` isn't a git repo. NOT " +
         `auto-removed on session close — tear down with \`agentproto worktree rm\`. ${help("worktree")}`
     ),
+  // CONTROLLER-INTERNAL (issue #1647) — NOT for tool callers. The device
+  // sandbox proxy (`bootSandboxAgentSession`, session-spawn.ts) stamps it
+  // when it forwards an explicit `workspaceSlug` across the /device-spawn
+  // bridge, so the TARGET daemon's `agent_start` treats the slug as
+  // bridge-ffi: registry-first, no active-workspace fallback — an
+  // unresolvable slug fails loudly (`device_bridge_workspace_unknown`)
+  // instead of silently landing wherever the target happens to have active.
+  deviceBridge: mcpBool
+    .optional()
+    .describe(
+      "Internal: set by the controller's device-sandbox bridge when this " +
+        "spawn crossed a device pairing. Do not set — an explicit " +
+        "`workspaceSlug` that the target daemon has not registered fails " +
+        "instead of falling back to its active workspace."
+    ),
 }
 
 export const agentStartInputSchema = z.object(agentStartInputShape)

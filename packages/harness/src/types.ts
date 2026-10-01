@@ -58,6 +58,14 @@ export interface StartAgentArgs {
   adapter: string
   cwd?: string
   workspaceSlug?: string
+  /** CONTROLLER-side marker (issue #1647): set by the device-sandbox proxy
+   *  (`agent_start({ sandbox: "device:<fp>" })`) when forwarding an
+   *  EXPLICIT caller-supplied `workspaceSlug` over the `/device-spawn`
+   *  bridge. Marks the receive-side `agent_start` so an unresolvable slug
+   *  on the TARGET daemon's registry fails loudly
+   *  (`device_bridge_workspace_unknown`) instead of silently falling back
+   *  to the target's active workspace. Never set on a local spawn. */
+  deviceBridge?: boolean
   prompt?: string
   label?: string
   model?: string
