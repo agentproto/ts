@@ -1,5 +1,12 @@
 # @agentproto/adapter-hermes
 
+## 0.4.28
+
+### Patch Changes
+
+- Updated dependencies [a878968]
+  - @agentproto/driver-agent-cli@2.7.0
+
 ## 0.4.27
 
 ### Patch Changes

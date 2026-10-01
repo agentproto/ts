@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-copilot-cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "@agentproto/adapter-copilot-cli — AIP-45 AGENT-CLI adapter for GitHub's official Copilot CLI (`copilot --acp --stdio`). Public github.com and GitHub Enterprise (GH_HOST).",
   "keywords": [
     "agentproto",
