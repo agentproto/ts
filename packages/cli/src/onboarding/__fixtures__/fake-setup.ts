@@ -56,6 +56,7 @@ export function createFakeSetup(ctx: StepContext, opts: FakeSetupOptions = {}): 
       return c === 0 ? { ok: true } : { ok: false, error: "spawn failed" }
     },
     appInstalled: () => false,
+    appInstall: async (dir) => code(`appInstall ${dir}`),
   }
   type Answer = string[] | boolean | string | null
   /** Next scripted answer if it has the right shape, else the default. */

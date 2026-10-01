@@ -163,6 +163,8 @@ export interface SetupVerbs {
   firstRun(slug: string, prompt: string, onLine: (line: string) => void): Promise<FirstRunResult>
   /** Is an app with this id installed (`~/.agentproto/apps.json`)? */
   appInstalled(appId: string): boolean
+  /** `agentproto app install <dir>` — register an app id→dir mapping. */
+  appInstall(dir: string): Promise<number>
 }
 
 export interface SetupIO {
@@ -242,6 +244,10 @@ export interface StepSources {
   resolveSkillPackDir(): Promise<string | null>
   /** Latest published skill pack version, `null` when offline/slow. */
   latestSkillPackVersion(): Promise<string | null>
+  /** A built-in app dir resolvable from the CLI package, or `null`. */
+  resolveBuiltinAppDir(appId: string): Promise<string | null>
+  /** Is an app with this id installed (`~/.agentproto/apps.json`)? */
+  appInstalled(appId: string): boolean
 }
 
 export interface StepContext {
