@@ -4643,12 +4643,14 @@ export function registerSessionTools(
         .min(1)
         .describe("Session ids or names, from `session_wrapup_plan`."),
       verdict: z
-        .enum(["done", "abandoned", "blocked", "needs-input"])
+        .enum(["done", "abandoned", "partial", "failed", "blocked", "needs-input"])
         .describe(
-          "What the session's work amounted to. \"done\"/\"abandoned\" CLOSE " +
-            "the session (`endedReason:'steward-completed'`/" +
-            "`'steward-abandoned'`); \"blocked\"/\"needs-input\" only FLAG it " +
-            "(`SessionDescriptor.wrapupFlag`) — the session keeps running.",
+          "What the session's work amounted to. \"done\"/\"abandoned\"/" +
+            "\"partial\"/\"failed\" CLOSE the session (`endedReason:" +
+            "'steward-completed'`/`'steward-abandoned'` — done only), the " +
+            "verdict nuance kept on the outcome; \"blocked\"/\"needs-input\" " +
+            "only FLAG it (`SessionDescriptor.wrapupFlag`) — the session " +
+            "keeps running.",
         ),
       note: z.string().optional().describe("Free-text note recorded on the outcome or the flag."),
       judgedBy: z
