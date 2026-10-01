@@ -92,6 +92,14 @@ Usage:
   agentproto sessions [--watch] [--simple] [--json]
                               (--simple: with --watch, the flat-table picker
                                instead of the 3-pane dashboard)
+  agentproto sessions board [--json] [--watch] [--all] [--no-color]
+                              (at-a-glance status board: every session
+                               classified ACTIVE / IDLE / STALE / AWAITING /
+                               BLOCKED / ENDED (+ COMMAND log rows with --all),
+                               sorted by attention-worthiness, with a one-line
+                               summary header. --json emits the classes plus
+                               their evidence fields. --watch re-renders every
+                               2s, q to quit.)
   agentproto sessions --stats[=full] [--json] [--no-color]
                               (RAM / CPU / process count per session, sorted
                                by RAM, with a totals row, the daemon and
@@ -370,6 +378,10 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   if (sub === "queue") return runQueue(args.slice(1))
   if (sub === "inbox") return runInbox(args.slice(1))
   if (sub === "message") return runMessage(args.slice(1))
+  if (sub === "board") {
+    const { runBoard } = await import("./sessions-board.js")
+    return runBoard(args.slice(1))
+  }
 
   let statsMode: StatsMode | undefined
   let listArgs: readonly string[] = args
