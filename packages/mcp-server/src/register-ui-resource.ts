@@ -40,6 +40,13 @@ export interface RegisterUiResourceOptions {
   csp?: UiResourceCsp
   /** Ask the host to draw a border around the panel. Default `true`. */
   prefersBorder?: boolean
+  /** Extra NAMESPACED metadata (e.g. OpenAI display hints) added as
+   *  siblings of the canonical `_meta.ui` on BOTH resources/list and
+   *  resources/read. A caller-supplied `ui` key is refused (throws) so the
+   *  canonical CSP/border metadata can never be overwritten; unknown
+   *  top-level keys are left as namespaced vendor metadata — standard MCP
+   *  extensibility lets a host ignore them without changing behavior. */
+  meta?: Record<string, unknown>
 }
 
 export function registerUiResource(
@@ -47,11 +54,17 @@ export function registerUiResource(
   opts: RegisterUiResourceOptions,
 ): RegisteredResource {
   const { uri, html } = opts
+  if ("ui" in (opts.meta ?? {})) {
+    throw new Error(
+      "registerUiResource: meta must not carry a `ui` key — `_meta.ui` is canonical (prefersBorder/csp) and cannot be overridden.",
+    )
+  }
   const resourceMeta = {
     ui: {
       prefersBorder: opts.prefersBorder ?? true,
       ...(opts.csp ? { csp: opts.csp } : {}),
     },
+    ...(opts.meta ? opts.meta : {}),
   }
   return server.registerResource(
     opts.name,

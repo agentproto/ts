@@ -8,9 +8,49 @@
  * McpServer and is the canonical consumer of this type).
  */
 
+import type {
+  OpenAIAppUiExtension,
+  OpenAIEntrypoint,
+  OpenAIIcon,
+} from "@agentproto/app-kit"
 import type { z } from "zod"
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type {
+  OpenAIAppUiExtension,
+  OpenAIEntrypoint,
+  OpenAIIcon,
+}
+
+export type OpenAIDisplayMode = "inline" | "fullscreen"
+
+/** §3.2 — serialized onto the generated app UI tool's
+ *  `_meta["openai/ui"]`. Entrypoints are metadata only, never separate
+ *  panels; the wire shape is what the OpenAI MCP Extensions spec prescribes
+ *  for tool-level extension metadata. */
+export interface OpenAIUiToolMetadata {
+  readonly entrypoints?: readonly OpenAIEntrypoint[]
+}
+
+/** §3.2 — serialized onto the `ui://` resource's `_meta["openai/ui"]` as a
+ *  PRE-INITIALIZE hint for OpenAI-class hosts: how they may size the panel
+ *  before the standard display-mode capability exchange runs. Standard
+ *  MCP Apps hosts ignore this key and keep the portable behavior. */
+export interface OpenAIUiResourceMetadata {
+  readonly availableDisplayModes?: readonly OpenAIDisplayMode[]
+  readonly preferredDisplayMode?: OpenAIDisplayMode
+}
+
+/** The whole namespaced OpenAI projection of one normalized
+ *  `InstalledApp.ui.extensions.openai` block — the shape both the tool
+ *  serializer and the resource serializer read. Omitted entirely for apps
+ *  without extensions (I5). */
+export interface OpenAIAppDescriptor {
+  readonly tool?: OpenAIUiToolMetadata
+  readonly resource?: OpenAIUiResourceMetadata
+  readonly icons?: readonly OpenAIIcon[]
+}
+
 export interface AgnoMcpApp<TInput = unknown, TOutput = unknown> {
   id: string
   title: string
@@ -36,4 +76,10 @@ export interface AgnoMcpApp<TInput = unknown, TOutput = unknown> {
      *  `@agentik/session-chat` app's standalone url on the daemon origin. */
     frameDomains?: string[]
   }
+  /** Namespaced OpenAI MCP-extensions projection (§3.2). Present only when
+   *  the app declares `ui.extensions.openai`; absent ⇒ identical tool,
+   *  resource, and wire snapshot as before (I1/I5). Sources from the app's
+   *  normalized `AppUiDefinition.extensions.openai` (W-A's app-kit
+   *  contract, carried through install as `InstalledApp.ui.extensions`). */
+  openai?: OpenAIAppDescriptor
 }

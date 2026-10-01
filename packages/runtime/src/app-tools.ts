@@ -26,7 +26,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import matter from "gray-matter"
 import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { loadAppHandle, loadAppBundledTools, peekAppUi, type AppUiBuildConfig } from "@agentproto/app-kit"
+import { loadAppHandle, loadAppBundledTools, peekAppUi, type AppUiBuildConfig, type OpenAIAppUiExtension } from "@agentproto/app-kit"
 import { ensureAppUiBuilt } from "./app-ui-build.js"
 import { parseModelRoleRef } from "./model-roles.js"
 import { loadAgent } from "@agentproto/agent"
@@ -510,6 +510,10 @@ interface AppRefsUi {
     readonly frameDomains?: readonly string[]
   }
   readonly build?: AppUiBuildConfig
+  /** Raw APP.md `ui.extensions` frontmatter — structurally preserved here;
+   *  the normalized OpenAI projection (`handle.ui.extensions`, already
+   *  validated by app-kit) is what actually persists. */
+  readonly extensions?: { readonly openai?: OpenAIAppUiExtension }
 }
 
 interface AppRefsArtifact {
@@ -783,6 +787,14 @@ export async function performInstall(
         ...(handle.ui?.tools !== undefined ? { tools: handle.ui.tools } : {}),
         ...(handle.ui?.csp !== undefined ? { csp: handle.ui.csp } : {}),
         ...(handle.ui?.build !== undefined ? { build: handle.ui.build } : {}),
+        // OpenAI MCP-extensions carrier (plan W-B): the normalized,
+        // app-kit-validated `ui.extensions` block persists verbatim on the
+        // installed record — `makeInstalledAppUiApps` (W-C) is the only
+        // consumer. Frozen already by app-kit; spread-cloned here so the
+        // persisted shape stays a plain JSON-safe object (apps.json is
+        // what actually freezes it). Apps without the block install
+        // identically to before (plan I1).
+        ...(handle.ui?.extensions !== undefined ? { extensions: handle.ui.extensions } : {}),
       }
     : undefined
 
