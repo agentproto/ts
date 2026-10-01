@@ -11,7 +11,7 @@ import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/com
 import { trackWorktreeProvision } from "./process-stats.js"
 import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
-import type { AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
+import type { AgentAdapterLister, AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
   loadWorkspacesConfig,
   findWorkspace,
@@ -1019,6 +1019,12 @@ export interface SpawnAgentSessionDeps {
    *  tool and HTTP route each have their own "not enabled" response
    *  shape for the missing-resolver case). */
   resolveAgentAdapter: AgentAdapterResolver
+  /** Installed-adapter lister — ONLY used to enumerate the valid slugs in
+   *  the generic `adapter_not_found` error, so a genuinely unknown adapter
+   *  name names what IS installed instead of just saying "install it".
+   *  Omitted ⇒ the error keeps its previous wording. Mirrors
+   *  `CronAdapterCheckDeps.listAgentAdapters` (cron's create-time check). */
+  listAgentAdapters?: AgentAdapterLister
   /** Optional orchestrator-injection builder (WP3). See
    *  `RegisterAgentToolsOptions.buildOrchestratorMcp` for the full
    *  contract. Omitted → `orchestrator` is rejected with
@@ -1758,6 +1764,7 @@ export async function spawnAgentSession(
   const {
     registry,
     resolveAgentAdapter,
+    listAgentAdapters,
     buildOrchestratorMcp,
     daemonMcpUrl,
     callerScope,
@@ -2778,6 +2785,22 @@ export async function spawnAgentSession(
     // (same text as cron's create-time check) says what was meant.
     const profileHint = await authProfileAsAdapterHint(input.adapter, getAuthProfile)
     const gatewayHint = profileHint ? undefined : gatewayAsAdapterHint(input.adapter)
+    // Generic case (not an auth-profile id, not a route/gateway-like slug):
+    // name the INSTALLED adapters so an unknown slug is actionable — "install
+    // it" alone doesn't say what `it` could have been a typo of. Same shape
+    // as the cron create-time check (`assertCronAdapterResolvable`).
+    let installedHint: string | undefined
+    if (!profileHint && !gatewayHint) {
+      const installed = await listAgentAdapters?.().catch(() => undefined)
+      installedHint =
+        installed && installed.length > 0
+          ? `Installed adapters: ${installed.map(a => a.slug).sort().join(", ")}.`
+          : undefined
+    }
+    const genericHint =
+      `If it was working a moment ago, something may be mid-rebuild — wait and retry. ` +
+      (installedHint ??
+        `If it has never been installed, run \`agentproto install ${input.adapter}\` first.`)
     return {
       ok: false,
       code: "adapter_not_found",
@@ -2785,9 +2808,7 @@ export async function spawnAgentSession(
         ? `agent_start: adapter "${input.adapter}" could not be resolved. ${profileHint}`
         : gatewayHint
           ? `agent_start: adapter "${input.adapter}" could not be resolved. ${gatewayHint}`
-          : `agent_start: adapter "${input.adapter}" could not be resolved. If it was ` +
-            `working a moment ago, something may be mid-rebuild — wait and retry. If it ` +
-            `has never been installed, run \`agentproto install ${input.adapter}\` first.`,
+          : `agent_start: adapter "${input.adapter}" could not be resolved. ${genericHint}`,
     }
   }
   if (resolveHostAuth && !resolved) {
