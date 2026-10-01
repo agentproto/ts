@@ -4643,12 +4643,14 @@ export function registerSessionTools(
         .min(1)
         .describe("Session ids or names, from `session_wrapup_plan`."),
       verdict: z
-        .enum(["done", "abandoned", "blocked", "needs-input"])
+        .enum(["done", "abandoned", "partial", "failed", "blocked", "needs-input"])
         .describe(
-          "What the session's work amounted to. \"done\"/\"abandoned\" CLOSE " +
-            "the session (`endedReason:'steward-completed'`/" +
-            "`'steward-abandoned'`); \"blocked\"/\"needs-input\" only FLAG it " +
-            "(`SessionDescriptor.wrapupFlag`) — the session keeps running.",
+          "What the session's work amounted to. \"done\"/\"abandoned\"/" +
+            "\"partial\"/\"failed\" CLOSE the session (`endedReason:" +
+            "'steward-completed'`/`'steward-abandoned'` — done only), the " +
+            "verdict nuance kept on the outcome; \"blocked\"/\"needs-input\" " +
+            "only FLAG it (`SessionDescriptor.wrapupFlag`) — the session " +
+            "keeps running.",
         ),
       note: z.string().optional().describe("Free-text note recorded on the outcome or the flag."),
       judgedBy: z
@@ -4710,7 +4712,9 @@ export function registerSessionTools(
             return { sessionId: desc.id, ok: false as const, class: entry.class, error: "ambiguous_needs_judge" }
           }
           const action: "closed" | "flagged" =
-            input.verdict === "done" || input.verdict === "abandoned" ? "closed" : "flagged"
+            (input.verdict === "done" || input.verdict === "abandoned"
+              ? "closed"
+              : "flagged")
           const applied = registry.closeWithOutcome(desc.id, {
             verdict: input.verdict,
             ...(input.note !== undefined ? { note: input.note } : {}),
@@ -4743,6 +4747,110 @@ export function registerSessionTools(
         }
       }
     }
+  )
+
+  // ── session_mark_completed — steward combo verb ─────────────────────
+  // Set a Level-2 outcome (verdict + summary + judgedBy) AND close in one
+  // call — the "combo: set outcome + stop" composition over
+  // `registry.closeWithOutcome`, same primitive `session_wrapup_apply`
+  // drives, minus the plan/classifier gate: this is the DECLARED path, an
+  // operator (or an agent with judgedBy) reaching a verdict directly.
+  // `closeWithOutcome` carries its own guards: refuses anything that isn't a
+  // live idle agent-cli row, and records blocked/needs-input as a non-closing
+  // wrapupFlag — the same liveness contract every steward close obeys.
+  server.tool(
+    "session_mark_completed",
+    "Mark a live session as completed — closes it with verdict:'done' and " +
+      "tags it as steward-completed. Use when a human (or an agent's judge) " +
+      "decides the session's work is done — the declared path: no wrapup " +
+      "plan, no classification. One call fuses what would otherwise be " +
+      "`session_wrapup_apply` without a plan: the verdict (with an optional " +
+      "summary + who judged it) is written onto the session's Level-2 " +
+      "`SessionOutcome` and the session is closed gracefully "
+      + "the same way wrapup-apply does, left lazy-resumable (never deleted). " +
+      "`verdict:'partial'`/'failed'/'abandoned' close as not-completed " +
+      "(`endedReason:'steward-abandoned'`); `'blocked'`/'needs-input' are " +
+      "NOT completions — the session stays running and the verdict is " +
+      "recorded as a flag instead. Refused (result ok:false) when the " +
+      "session is missing, not agent-cli, already terminal, mid-turn/" +
+      "awaiting input/permission, or has a background task in flight.",
+    {
+      sessionId: z.string().min(1).describe("Session id or name — from `session_list`, must be a live agent-cli session."),
+      verdict: z
+        .enum(["done", "abandoned", "partial", "failed", "blocked", "needs-input"])
+        .optional()
+        .describe(
+          "Default 'done'. 'done' closes as completed " +
+            "(`endedReason:'steward-completed'`); 'partial'/'failed'/" +
+            "'abandoned' close as not-completed (steward-abandoned) with the " +
+            "verdict nuance kept on the outcome; 'blocked'/'needs-input' " +
+            "flag instead — the session keeps running.",
+        ),
+      summary: z.string().optional().describe("Overrides the outcome's derived summary (trimmed to the same cap as the derived one)."),
+      note: z.string().optional().describe("Free-text note explaining the verdict."),
+      judgedBy: z
+        .string()
+        .optional()
+        .describe(
+          "A judge session id — sets the outcome's source to 'judged'. " +
+            "Omitted ⇒ 'declared', judgedBy:'steward-rules'.",
+        ),
+    },
+    async input => {
+      const desc = registry.findByIdOrName(input.sessionId)
+      if (!desc) {
+        return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "not_found", sessionId: input.sessionId }) }] }
+      }
+      if (callerScope) {
+        const subtree = collectSubtree(callerScope.ownerSessionId, registry.list({ includeArchived: true }))
+        if (!subtree.has(desc.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  ok: false,
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_mark_completed: session "${desc.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only mark sessions it (transitively) spawned.",
+                  sessionId: desc.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      const verdict = input.verdict ?? "done"
+      // A TERMINAL session has no turn left to complete — refuse it as a
+      // distinct error instead of letting closeWithOutcome fold it into the
+      // generic stale refusal, so the caller sees NOT-live vs BUSY as two
+      // different things.
+      const status = registry.get(desc.id)?.status ?? desc.status
+      if (status !== "running" && status !== "starting") {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ ok: false, error: "not_live", status, sessionId: desc.id }) }],
+          isError: true,
+        }
+      }
+      const source: "judged" | "declared" = input.judgedBy ? "judged" : "declared"
+      const applied = registry.closeWithOutcome(desc.id, {
+        verdict,
+        ...(input.summary !== undefined ? { summary: input.summary } : {}),
+        ...(input.note !== undefined ? { note: input.note } : {}),
+        judgedBy: input.judgedBy ?? "steward-rules",
+        source,
+      })
+      const out = {
+        ok: applied,
+        sessionId: desc.id,
+        verdict,
+        action: verdict === "blocked" || verdict === "needs-input" ? "flagged" : "closed",
+        ...(!applied ? { error: "refused_stale_or_busy" } : {}),
+      }
+      return { content: [{ type: "text", text: JSON.stringify(applied ? { ...out, endedReason: registry.get(desc.id)?.endedReason } : out) }] }
+    },
   )
 
   // ── session_evidence — read-only judge input (FIX-9B) ─────────────

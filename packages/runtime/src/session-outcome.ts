@@ -61,8 +61,11 @@ export interface SessionOutcome {
    *  `empty` — no assistant text and no artifacts. */
   status: "produced" | "empty"
   /** Level 2 only: what a judge/declaration decided the session's work
-   *  amounted to. Absent on a plain Level 1 `"derived"` outcome. */
-  verdict?: "done" | "abandoned" | "blocked" | "needs-input"
+   *  amounted to. `blocked`/`needs-input` never close (flagged instead);
+   *  `abandoned`/`partial`/`failed` all close as not-completed
+   *  (`endedReason:"steward-abandoned"`), the verdict nuance kept here.
+   *  Absent on a plain Level 1 `"derived"` outcome. */
+  verdict?: "done" | "abandoned" | "partial" | "failed" | "blocked" | "needs-input"
   /** Level 2 only: who reached `verdict` — a session id (a judge agent) or
    *  the literal `"steward-rules"` for a deterministic close with no judge
    *  in the loop. Absent on a plain Level 1 `"derived"` outcome. */
