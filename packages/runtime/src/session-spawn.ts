@@ -1530,6 +1530,7 @@ export type SpawnAgentSessionResult =
         | "sandbox_boot_failed"
         | "sandbox_reconnect_failed"
         | "sandbox_proxy_failed"
+        | "device_spawn_unreachable"
         | "sandbox_reuse_ambiguous"
         | "sandbox_app_serve_failed"
         | "sandbox_cwd_invalid"
@@ -4355,7 +4356,9 @@ type SandboxBootResult =
         | "sandbox_proxy_failed"
         | "sandbox_app_serve_failed"
         | "sandbox_cwd_invalid"
+        | "device_spawn_unreachable"
       message: string
+      details?: Record<string, unknown>
     }
 
 /**
@@ -4521,6 +4524,85 @@ const HOST_ONLY_PATH_PATTERNS: readonly RegExp[] = [
 
 function looksLikeHostOnlyPath(p: string): boolean {
   return HOST_ONLY_PATH_PATTERNS.some(re => re.test(p))
+}
+
+/**
+ * Transport-class device-spawn failures worth ONE automatic retry — the E2E
+ * channel to a paired host can flap (the Noise handshake succeeds, the NEXT
+ * message never arrives; a revoked/tombstone close; a mid-stream reset), the
+ * exact field-observed shape that surfaced as a bare `Request timed out`
+ * after the whole MCP timeout, with no retry. These are all fast, retryable
+ * transport faults, NOT the host daemon's own rejection of the spawn (e.g.
+ * `adapter_not_found`), which must fail immediately without a retry. Matched
+ * on the message because every hop (host-registry → device bridge → MCP
+ * client) re-wraps the cause in a plain `Error`.
+ */
+const DEVICE_TRANSPORT_ERROR_RE =
+  /device_unreachable|transport closed|handshake timed out|did not send hello|closed the channel after handshake|socket hang up|other side closed|ECONNRESET|ECONNREFUSED|EPIPE|ETIMEDOUT|fetch failed/i
+
+/** See {@link DEVICE_TRANSPORT_ERROR_RE}. */
+export function isDeviceTransportError(err: unknown): boolean {
+  return DEVICE_TRANSPORT_ERROR_RE.test(err instanceof Error ? err.message : String(err))
+}
+
+/** Back-off between the two device-spawn attempts (one retry). */
+const DEVICE_SPAWN_RETRY_DELAY_MS = 2_000
+
+/**
+ * Final failure of a device spawn after the retry budget is spent — carries
+ * the target + attempt count so the caller can return a 4xx naming both.
+ */
+export class DeviceSpawnUnreachableError extends Error {
+  readonly target: string
+  readonly attempts: number
+  constructor(target: string, attempts: number, cause: unknown) {
+    const detail = cause instanceof Error ? cause.message : String(cause)
+    super(
+      `agent_start: could not reach paired device "${target}" over its host channel after ` +
+        `${attempts} attempt${attempts === 1 ? "" : "s"} — the host channel may be flapping; ` +
+        `retry in a few seconds and check \`agentproto devices status ${target}\`. ` +
+        `Last error: ${detail}`,
+    )
+    this.name = "DeviceSpawnUnreachableError"
+    this.target = target
+    this.attempts = attempts
+  }
+}
+
+/** Target fingerprint/name of a `device:<target>` sandbox slug, else undefined. */
+function deviceTargetOf(sandbox: string | SandboxSpecInput): string | undefined {
+  const slug = typeof sandbox === "string" ? sandbox : sandbox.provider
+  return slug.startsWith("device:") ? slug.slice("device:".length) : undefined
+}
+
+/**
+ * Wrap a device spawn's E2E `host.start()` in ONE automatic retry with a
+ * short back-off when the failure is transport-class (see
+ * `isDeviceTransportError`). A non-transport failure (the host's own
+ * `agent_start` rejecting the adapter, a bad model id, …) is rethrown
+ * unchanged so it keeps its existing classification. On a spent budget the
+ * failure is rethrown as a `DeviceSpawnUnreachableError` naming the target,
+ * the attempts, and the retry guidance.
+ */
+async function startDeviceSessionWithRetry(
+  host: SandboxAgentSessionHost,
+  args: Parameters<SandboxAgentSessionHost["start"]>[0],
+  target: string,
+): Promise<Awaited<ReturnType<SandboxAgentSessionHost["start"]>>> {
+  const attempts = 2
+  let lastErr: unknown
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await host.start(args)
+    } catch (err) {
+      lastErr = err
+      if (!isDeviceTransportError(err)) throw err
+      if (attempt < attempts) {
+        await new Promise(resolve => setTimeout(resolve, DEVICE_SPAWN_RETRY_DELAY_MS))
+      }
+    }
+  }
+  throw new DeviceSpawnUnreachableError(target, attempts, lastErr)
 }
 
 /**
@@ -4782,10 +4864,15 @@ async function bootSandboxAgentSession(opts: {
   // the box's own `agent_start` apply its normal default-cwd resolution,
   // same as an ordinary non-sandboxed local spawn.
   const omitCwd = handle.omitCwdWhenImplicit === true && !opts.explicitCwd
+  // A `device:<fp>` spawn crosses the E2E host channel — the one spawn path
+  // where a flapping transport is common enough to warrant ONE automatic
+  // retry (see `startDeviceSessionWithRetry`). Every other provider (local,
+  // e2b, Box, …) keeps the exact single-attempt behaviour.
+  const deviceTarget = deviceTargetOf(opts.sandbox)
   let remoteSessionId: string
   let resolvedCwd = boxCwd
   try {
-    const remoteDesc = await host.start({
+    const startArgs = {
       adapter: opts.adapter,
       ...(omitCwd ? {} : { cwd: boxCwd }),
       // Issue #1647 — DEVICE-BRIDGE ONLY: forward an EXPLICIT
@@ -4806,7 +4893,11 @@ async function bootSandboxAgentSession(opts: {
       ...(opts.effort ? { effort: opts.effort } : {}),
       ...(opts.label ? { label: opts.label } : {}),
       ...(opts.auth ? { auth: opts.auth } : {}),
-    })
+    }
+    const remoteDesc =
+      deviceTarget !== undefined
+        ? await startDeviceSessionWithRetry(host, startArgs, deviceTarget)
+        : await host.start(startArgs)
     remoteSessionId = remoteDesc.id
     if (omitCwd && remoteDesc.cwd) resolvedCwd = remoteDesc.cwd
   } catch (err) {
@@ -4815,6 +4906,18 @@ async function bootSandboxAgentSession(opts: {
     // failure is never a silent orphan.
     await host.stop().catch(() => undefined)
     recordSandboxState(host.sandboxId, "stopped")
+    // A device spawn whose E2E channel never came up (after the retry) is a
+    // transport failure, not the host daemon rejecting the adapter — surface
+    // it as its own 4xx (see `http-server.ts`) so a caller gets an actionable
+    // "channel may be flapping" instead of a generic 500.
+    if (err instanceof DeviceSpawnUnreachableError) {
+      return {
+        ok: false,
+        code: "device_spawn_unreachable",
+        message: err.message,
+        details: { target: err.target, attempts: err.attempts },
+      }
+    }
     return {
       ok: false,
       code: "sandbox_proxy_failed",
@@ -4848,6 +4951,9 @@ async function bootSandboxAgentSession(opts: {
       remoteSessionId,
       lifecyclePolicy,
       ledger: { sandboxId: host.sandboxId, provider: providerSlug },
+      // Device spawns only: surface a first-turn failure's raw host line
+      // (see `surfaceHostTurnErrors`).
+      ...(deviceTarget !== undefined ? { surfaceHostTurnErrors: true } : {}),
     }),
     commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
     sandboxId: host.sandboxId,

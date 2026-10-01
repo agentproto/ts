@@ -44,6 +44,47 @@ const MAX_CONSECUTIVE_POLL_FAILURES = 6
 /** Pause between failed polls — no tight error loop against a sick box. */
 const POLL_RETRY_DELAY_MS = 5_000
 
+/** A host ring-buffer line that looks like the adapter's own failure report —
+ *  used to surface a device spawn's first-turn failure (a bad model id ends
+ *  the turn EMPTY, with the underlying "model not found"/"invalid model"
+ *  line only in the HOST's ring buffer, never in its structured transcript,
+ *  so it would otherwise be swallowed across the E2E boundary). Deliberately
+ *  narrow: an explicit `[error]`/`[warning]` marker, or the model-resolution
+ *  phrasings pi/other adapters print. */
+const HOST_ERROR_LINE_RE =
+  /\[(?:error|warning)\]|\berror\b|\bwarning\b|invalid model|model not found|unknown model|unsupported model/i
+
+/** Strip CSI/SGR ANSI escape sequences so the marker match sees plain text. */
+function stripAnsiCodes(s: string): string {
+  return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
+}
+
+/**
+ * Read the box's raw `agent_output` ring buffer and yield the lines that look
+ * like the adapter's own failure report as a single `notice` event — the one
+ * channel that lands in the controller's ring buffer (`agent_output`) and
+ * durable transcript without counting as assistant text (so the empty-turn
+ * classification is preserved). Best-effort: an unreachable box yields
+ * nothing rather than failing the turn.
+ */
+async function* harvestHostErrorNotice(
+  host: Pick<SandboxAgentSessionHost, "output">,
+  remoteSessionId: string,
+): AsyncGenerator<AgentStreamEvent> {
+  let tail: string
+  try {
+    tail = await host.output(remoteSessionId, MAX_OUTPUT_LINES)
+  } catch {
+    return
+  }
+  const lines = tail
+    .split(/\r?\n/)
+    .map(l => stripAnsiCodes(l).trim())
+    .filter(l => l.length > 0 && HOST_ERROR_LINE_RE.test(l))
+  if (lines.length === 0) return
+  yield { kind: "notice", text: lines.join("\n") }
+}
+
 /** Record `kind`s the box's transcript writer produces FROM an adapter's
  *  own stream (`transcript-writer.ts`'s `recordEvent` switch) — the exact
  *  set a local session's `send()` can yield. Other on-disk kinds
@@ -97,6 +138,15 @@ export interface SandboxAgentSessionProxyOpts {
    *  `~/.agentproto/sandboxes.json`. Best-effort: a ledger failure never
    *  blocks or fails the teardown. */
   ledger?: { sandboxId: string; provider: string }
+  /** Device-spawn only: when the box's FIRST turn ends errored or EMPTY,
+   *  read the box's raw `agent_output` ring buffer and surface the adapter's
+   *  own failure line as a `notice` — the box's structured transcript does
+   *  NOT carry it (a bad model id ends the turn empty with the real error
+   *  only in the ring buffer), so without this the controller sees a
+   *  healthy-looking `running` session with an empty turn and no cause.
+   *  Off for every other provider (local/e2b/Box keep byte-identical
+   *  behaviour). */
+  surfaceHostTurnErrors?: boolean
 }
 
 /**
@@ -351,6 +401,9 @@ export function createSandboxAgentSessionProxy(
   // bus, since nothing else writes to THIS session's transcript
   // concurrently.
   let transcriptCursor = 0
+  // How many turns this proxy has driven — gates the first-turn-only host
+  // error surfacing (see `surfaceHostTurnErrors`).
+  let turnsSent = 0
 
   return {
     sessionId: remoteSessionId,
@@ -358,6 +411,8 @@ export function createSandboxAgentSessionProxy(
     async *send(message: unknown): AsyncIterable<AgentStreamEvent> {
       const prompt = extractPromptText(message)
       lastPrompt = prompt
+      const isFirstTurn = turnsSent === 0
+      turnsSent++
 
       // Capture a race-free cursor BEFORE sending: an extremely fast turn
       // (a synchronous/near-instant adapter echo is plausible for a
@@ -399,15 +454,32 @@ export function createSandboxAgentSessionProxy(
 
       try {
         let sawTurnEnd = false
+        let sawAssistantText = false
+        let sawToolCall = false
         for await (const record of readSseRecords(sseBody)) {
           if (typeof record.seq === "number") transcriptCursor = record.seq
           const evt = recordToStreamEvent(record)
           if (!evt) continue
-          yield evt
+          if (evt.kind === "text-delta" && evt.text?.trim()) sawAssistantText = true
+          else if (evt.kind === "tool-call") sawToolCall = true
           if (evt.kind === "turn-end") {
             sawTurnEnd = true
+            // Device first-turn failure surfacing: the box's structured
+            // transcript carries no cause for an EMPTY turn (a bad model id),
+            // and an `error` reason may have its message only in the box's
+            // ring buffer. Pull that raw line into the controller's view
+            // BEFORE the terminal turn-end so it reads as part of this turn.
+            if (
+              opts.surfaceHostTurnErrors &&
+              isFirstTurn &&
+              (evt.reason === "error" || (!sawAssistantText && !sawToolCall))
+            ) {
+              yield* harvestHostErrorNotice(host, remoteSessionId)
+            }
+            yield evt
             break
           }
+          yield evt
         }
         if (!sawTurnEnd) {
           // The connection closed (box HTTP server gone, not just the
