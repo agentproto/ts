@@ -144,7 +144,7 @@ describe("session_mark_completed", () => {
     registry.shutdown()
   })
 
-  it("refuses a busy session — ok:false, stays running", async () => {
+  it("refuses a busy session — ok:false refused_stale_or_busy, stays running", async () => {
     const { client, registry, close } = await buildHarness()
     const desc = registry.spawnAgent({
       workspaceSlug: "default",
@@ -157,7 +157,7 @@ describe("session_mark_completed", () => {
     const res = await client.callTool({ name: "session_mark_completed", arguments: { sessionId: desc.id } })
     const parsed = JSON.parse(textOf(res)) as { ok: boolean; error?: string }
     expect(parsed.ok).toBe(false)
-    expect(parsed.error).toBe("refused_not_closable")
+    expect(parsed.error).toBe("refused_stale_or_busy")
     expect(registry.get(desc.id)?.status).toBe("running")
 
     await close()
@@ -168,6 +168,25 @@ describe("session_mark_completed", () => {
     const { client, registry, close } = await buildHarness()
     const res = await client.callTool({ name: "session_mark_completed", arguments: { sessionId: "nope" } })
     expect(JSON.parse(textOf(res))).toMatchObject({ ok: false, error: "not_found", sessionId: "nope" })
+    await close()
+    registry.shutdown()
+  })
+
+  it("refuses an already-terminal session as not_live (distinct from busy refusals)", async () => {
+    const { client, registry, close } = await buildHarness()
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: idleAgentSession("acp-mc-5"),
+      adapterSlug: "claude-code",
+    })
+    registry.kill(desc.id, undefined, "operator-stopped")
+
+    const res = await client.callTool({ name: "session_mark_completed", arguments: { sessionId: desc.id } })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((res as any).isError).toBe(true)
+    expect(JSON.parse(textOf(res))).toMatchObject({ ok: false, error: "not_live", status: "killed", sessionId: desc.id })
+
     await close()
     registry.shutdown()
   })

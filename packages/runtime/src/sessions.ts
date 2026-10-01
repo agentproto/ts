@@ -3306,7 +3306,7 @@ export type PermissionRespondResult =
  *  SessionOutcome} / {@link SessionDescriptor.wrapupFlag} for the field
  *  meanings. */
 export interface CloseWithOutcomeInput {
-  verdict: "done" | "abandoned" | "blocked" | "needs-input"
+  verdict: "done" | "abandoned" | "partial" | "failed" | "blocked" | "needs-input"
   /** Overrides the outcome's derived summary when given (e.g. a judge's own
    *  written summary) — trimmed the same way `deriveSessionOutcome` trims
    *  `lastAssistantText`. Omitted keeps whatever `deriveSessionOutcome`
@@ -10347,6 +10347,9 @@ export function createSessionsRegistry(opts?: {
         return true
       }
 
+      // "done" closes as finished work; every other terminal verdict
+      // ("abandoned"/"partial"/"failed") closes as not-completed — the
+      // Level-2 `outcome.verdict` below keeps the nuance either way.
       const reason: SessionEndReason = input.verdict === "done" ? "steward-completed" : "steward-abandoned"
 
       rt.desc.killedMidTurn = false // guaranteed by the busy guard above

@@ -4691,7 +4691,6 @@ export function registerSessionTools(
           ...(wrapupCallerSessionId ? { callerSessionId: wrapupCallerSessionId } : {}),
         })
         const entryById = new Map(entries.map(e => [e.sessionId, e]))
-  verdict: "done" | "abandoned" | "partial" | "failed" | "blocked" | "needs-input"
 
         const source: "judged" | "declared" = input.judgedBy ? "judged" : "declared"
         const judgedBy = input.judgedBy ?? "steward-rules"
@@ -4760,7 +4759,9 @@ export function registerSessionTools(
   server.tool(
     "session_mark_completed",
     "Mark a live session as completed — closes it with verdict:'done' and " +
-      "tags it as steward-completed. One call fuses what would otherwise be " +
+      "tags it as steward-completed. Use when a human (or an agent's judge) " +
+      "decides the session's work is done — the declared path: no wrapup " +
+      "plan, no classification. One call fuses what would otherwise be " +
       "`session_wrapup_apply` without a plan: the verdict (with an optional " +
       "summary + who judged it) is written onto the session's Level-2 " +
       "`SessionOutcome` and the session is closed gracefully "
@@ -4820,6 +4821,17 @@ export function registerSessionTools(
         }
       }
       const verdict = input.verdict ?? "done"
+      // A TERMINAL session has no turn left to complete — refuse it as a
+      // distinct error instead of letting closeWithOutcome fold it into the
+      // generic stale refusal, so the caller sees NOT-live vs BUSY as two
+      // different things.
+      const status = registry.get(desc.id)?.status ?? desc.status
+      if (status !== "running" && status !== "starting") {
+        return {
+          content: [{ type: "text", text: JSON.stringify({ ok: false, error: "not_live", status, sessionId: desc.id }) }],
+          isError: true,
+        }
+      }
       const source: "judged" | "declared" = input.judgedBy ? "judged" : "declared"
       const applied = registry.closeWithOutcome(desc.id, {
         verdict,
@@ -4833,7 +4845,7 @@ export function registerSessionTools(
         sessionId: desc.id,
         verdict,
         action: verdict === "blocked" || verdict === "needs-input" ? "flagged" : "closed",
-        ...(!applied ? { error: "refused_not_closable" } : {}),
+        ...(!applied ? { error: "refused_stale_or_busy" } : {}),
       }
       return { content: [{ type: "text", text: JSON.stringify(applied ? { ...out, endedReason: registry.get(desc.id)?.endedReason } : out) }] }
     },
