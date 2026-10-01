@@ -6075,7 +6075,8 @@ async function handleSessions(
                 result.code === "worktree_requires_explicit_repo" ||
                 result.code === "access_profile_not_found" ||
                 result.code === "access_profile_ineligible" ||
-                result.code === "sandbox_cwd_invalid"
+                result.code === "sandbox_cwd_invalid" ||
+                result.code === "device_spawn_unreachable"
                 ? 400
                 : 500
       json(status, {
@@ -6174,7 +6175,8 @@ async function handleSessions(
                   result.code === "worktree_requires_explicit_repo" ||
                   result.code === "access_profile_not_found" ||
                   result.code === "access_profile_ineligible" ||
-                  result.code === "sandbox_cwd_invalid"
+                  result.code === "sandbox_cwd_invalid" ||
+                  result.code === "device_spawn_unreachable"
                 ? 400
                 : 500
       json(status, {

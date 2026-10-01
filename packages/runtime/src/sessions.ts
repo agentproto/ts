@@ -1284,6 +1284,17 @@ export interface SessionDescriptor {
    *  turn end (normal or abnormal); absent when the turn ended with no
    *  reason to report. */
   lastTurnReason?: string
+  /** Device-spawn only: true when this session's FIRST turn ended errored or
+   *  EMPTY — the field-observed shape where a `device:<fp>` spawn lands on a
+   *  host whose adapter rejects the model id and the turn completes with no
+   *  assistant output, leaving the controller a healthy-looking `running`
+   *  session. Stamped at the first turn-end (`runAgentTurn`) for a remote
+   *  session whose `sandboxProvider` is in the `device:` family; the raw
+   *  host-side error line is surfaced separately as a `notice` (see
+   *  `sandbox-agent-session-proxy.ts`'s `surfaceHostTurnErrors`). Absent for
+   *  local/e2b/Box sessions and for a device whose first turn was
+   *  productive. */
+  firstTurnFailed?: boolean
   /** DERIVED, read-time only (never persisted — stripped by `snapshotRows`,
    *  stamped by `stampInterrupted` in list()/get()/findByIdOrName). True when
    *  this session died with a turn in flight under a daemon restart —
@@ -5907,6 +5918,21 @@ export function createSessionsRegistry(opts?: {
         }
         break
       }
+      case "notice": {
+        // Daemon-synthesized banners are written straight to the transcript
+        // (`transcriptWriter.recordEvent`, never through `send()`), so no
+        // adapter reaches this case — the only producer is the sandbox proxy
+        // forwarding a HOST session's notice. Render it so a device spawn's
+        // surfaced host-side error line lands in `agent_output` too, not just
+        // `agent_export`. Not assistant text, so the empty-turn
+        // classification is unaffected.
+        if (evt.text) {
+          for (const line of evt.text.split(/\r?\n/)) {
+            if (line.trim()) appendLine(rt, `\x1b[2m[notice] ${line}\x1b[0m`, "stderr")
+          }
+        }
+        break
+      }
       case "plan": {
         const entries = evt.entries ?? []
         const done = entries.filter(e => e.status === "completed").length
@@ -7484,6 +7510,16 @@ export function createSessionsRegistry(opts?: {
         } else if (rt.desc.lastTurnReason !== undefined) {
           delete rt.desc.lastTurnReason
         }
+        // Device-spawn first-turn failure — see `firstTurnFailed`'s doc.
+        if (
+          rt.desc.remote === true &&
+          rt.desc.sandboxProvider?.startsWith("device:") &&
+          rt.desc.turnsCompleted === 1 &&
+          (emptyTurn || turnEndReason === "error")
+        ) {
+          rt.desc.firstTurnFailed = true
+          schedulePersist()
+        }
 
         // ── Activity summary (secondary dynamic label) ───────────────
         // Regenerate the persisted "what is this session doing now" line
@@ -7581,6 +7617,16 @@ export function createSessionsRegistry(opts?: {
           rt.desc.lastTurnReason = turnEndReason
         } else if (rt.desc.lastTurnReason !== undefined) {
           delete rt.desc.lastTurnReason
+        }
+        // Device-spawn first-turn failure — see `firstTurnFailed`'s doc.
+        if (
+          rt.desc.remote === true &&
+          rt.desc.sandboxProvider?.startsWith("device:") &&
+          rt.desc.turnsCompleted === 1 &&
+          turnEndReason === "error"
+        ) {
+          rt.desc.firstTurnFailed = true
+          schedulePersist()
         }
         if (sessionEvents) {
           sessionEvents.emit({

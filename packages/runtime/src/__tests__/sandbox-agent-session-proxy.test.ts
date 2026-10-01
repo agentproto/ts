@@ -219,3 +219,144 @@ describe("sandbox proxy — structured SSE stream", () => {
     ])
   })
 })
+
+describe("sandbox proxy — device first-turn failure surfacing (surfaceHostTurnErrors)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  const WARNING_LINE =
+    "\x1b[33m[warning] empty turn — no assistant output, no tool call. " +
+    "Likely an invalid model id or a provider that returned nothing.\x1b[0m"
+
+  it("surfaces the box's raw error line as a notice before an EMPTY first turn-end", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        sseResponse([
+          { seq: 1, ts: "t", kind: "user-prompt", sessionId: "remote_1", text: "go" },
+          { seq: 2, ts: "t", kind: "turn-end", sessionId: "remote_1", reason: "completed" },
+        ]),
+      ),
+    )
+    // Ring buffer has the prompt echo + the warning; only the warning surfaces.
+    const output = vi.fn(async () => `── ▶ go ──\n${WARNING_LINE}\n── turn-end (completed) ──`)
+    const host = makeHost({ output })
+    const proxy = createSandboxAgentSessionProxy({
+      host,
+      remoteSessionId: "remote_1",
+      surfaceHostTurnErrors: true,
+    })
+
+    const events = await collect(proxy.send("go"))
+
+    expect(events).toEqual([
+      {
+        kind: "notice",
+        text:
+          "[warning] empty turn — no assistant output, no tool call. " +
+          "Likely an invalid model id or a provider that returned nothing.",
+      },
+      { kind: "turn-end", reason: "completed" },
+    ])
+    expect(output).toHaveBeenCalledTimes(1)
+  })
+
+  it("surfaces the box's error line when the first turn ends with reason 'error'", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        sseResponse([
+          { seq: 1, ts: "t", kind: "turn-end", sessionId: "remote_1", reason: "error" },
+        ]),
+      ),
+    )
+    const output = vi.fn(async () => "[error] model not found: prism-ml/ternary-bonsai-2-27b")
+    const host = makeHost({ output })
+    const proxy = createSandboxAgentSessionProxy({
+      host,
+      remoteSessionId: "remote_1",
+      surfaceHostTurnErrors: true,
+    })
+
+    const events = await collect(proxy.send("go"))
+
+    expect(events).toEqual([
+      { kind: "notice", text: "[error] model not found: prism-ml/ternary-bonsai-2-27b" },
+      { kind: "turn-end", reason: "error" },
+    ])
+  })
+
+  it("does NOT surface anything for a non-device session (flag omitted)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        sseResponse([{ seq: 1, ts: "t", kind: "turn-end", sessionId: "remote_1", reason: "completed" }]),
+      ),
+    )
+    const output = vi.fn(async () => WARNING_LINE)
+    const host = makeHost({ output })
+    const proxy = createSandboxAgentSessionProxy({ host, remoteSessionId: "remote_1" })
+
+    const events = await collect(proxy.send("go"))
+
+    expect(events).toEqual([{ kind: "turn-end", reason: "completed" }])
+    expect(output).not.toHaveBeenCalled()
+  })
+
+  it("does NOT surface anything when the first turn was productive", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        sseResponse([
+          { seq: 1, ts: "t", kind: "text-delta", sessionId: "remote_1", text: "hello\n" },
+          { seq: 2, ts: "t", kind: "turn-end", sessionId: "remote_1", reason: "completed" },
+        ]),
+      ),
+    )
+    const output = vi.fn(async () => WARNING_LINE)
+    const host = makeHost({ output })
+    const proxy = createSandboxAgentSessionProxy({
+      host,
+      remoteSessionId: "remote_1",
+      surfaceHostTurnErrors: true,
+    })
+
+    const events = await collect(proxy.send("go"))
+
+    expect(events).toEqual([
+      { kind: "text-delta", text: "hello\n" },
+      { kind: "turn-end", reason: "completed" },
+    ])
+    expect(output).not.toHaveBeenCalled()
+  })
+
+  it("only surfaces on the FIRST turn, not a later empty turn", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(async () =>
+        sseResponse([
+          { seq: 1, ts: "t", kind: "text-delta", sessionId: "remote_1", text: "hello\n" },
+          { seq: 2, ts: "t", kind: "turn-end", sessionId: "remote_1", reason: "completed" },
+        ]),
+      )
+      .mockImplementationOnce(async () =>
+        sseResponse([{ seq: 3, ts: "t", kind: "turn-end", sessionId: "remote_1", reason: "completed" }]),
+      )
+    vi.stubGlobal("fetch", fetchMock)
+
+    const output = vi.fn(async () => WARNING_LINE)
+    const host = makeHost({ output })
+    const proxy = createSandboxAgentSessionProxy({
+      host,
+      remoteSessionId: "remote_1",
+      surfaceHostTurnErrors: true,
+    })
+
+    await collect(proxy.send("go"))
+    const second = await collect(proxy.send("again"))
+
+    expect(second).toEqual([{ kind: "turn-end", reason: "completed" }])
+    expect(output).not.toHaveBeenCalled()
+  })
+})

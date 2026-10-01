@@ -657,6 +657,10 @@ export interface SessionListCompactItem {
    *  completed turn produced zero assistant output and zero tool calls.
    *  Absent (not `false`) on a productive turn. */
   lastTurnEmpty?: SessionDescriptor["lastTurnEmpty"]
+  /** Mirrors `SessionDescriptor.firstTurnFailed` — device-spawn only: the
+   *  first turn ended errored or empty (bad model id / host-side adapter
+   *  error). Absent otherwise. */
+  firstTurnFailed?: SessionDescriptor["firstTurnFailed"]
   /** Mirrors the derived `SessionDescriptor.interrupted` — true when a daemon
    *  restart killed this session mid-turn and that turn was NOT re-run
    *  (`session_continue_interrupted` sends it a continue prompt). Absent
@@ -716,6 +720,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   ...(s.lastTurnErrorMessage !== undefined ? { lastTurnErrorMessage: s.lastTurnErrorMessage } : {}),
   ...(s.lastTurnReason !== undefined ? { lastTurnReason: s.lastTurnReason } : {}),
   ...(s.lastTurnEmpty !== undefined ? { lastTurnEmpty: s.lastTurnEmpty } : {}),
+  ...(s.firstTurnFailed ? { firstTurnFailed: true as const } : {}),
   ...(s.interrupted ? { interrupted: true as const } : {}),
   ...(s.rssBytes !== undefined ? { rssBytes: s.rssBytes } : {}),
   ...(s.stats !== undefined ? { stats: s.stats } : {}),

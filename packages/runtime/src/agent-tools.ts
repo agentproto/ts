@@ -921,6 +921,11 @@ export function registerAgentTools(
                 // Surfaced so a caller can distinguish "idle" from "mid tool
                 // call" without guessing from empty output.
                 ...(desc.blockedOn ? { blockedOn: desc.blockedOn } : {}),
+                // Device-spawn first-turn failure (bad model id / host-side
+                // adapter error) — see `SessionDescriptor.firstTurnFailed`.
+                // The underlying host error line rides the `lines` tail above
+                // (surfaced as a `notice` by the sandbox proxy).
+                ...(desc.firstTurnFailed ? { firstTurnFailed: true } : {}),
                 ...(activityFallback ? { activityFallback: true } : {}),
                 // An ended session's derived outcome (what it produced) —
                 // the ring above is empty for a row reloaded after a restart.
@@ -1231,6 +1236,7 @@ export function registerAgentTools(
     ...(s.lastTurnErrorMessage !== undefined ? { lastTurnErrorMessage: s.lastTurnErrorMessage } : {}),
     ...(s.lastTurnReason !== undefined ? { lastTurnReason: s.lastTurnReason } : {}),
     ...(s.lastTurnEmpty !== undefined ? { lastTurnEmpty: s.lastTurnEmpty } : {}),
+    ...(s.firstTurnFailed ? { firstTurnFailed: true as const } : {}),
     ...(s.stats !== undefined ? { stats: s.stats } : {}),
   })
   const agentSessionsListSchema = z.object({
