@@ -16,6 +16,7 @@ import { rendezvousStep } from "./steps/rendezvous.js"
 import { skillsStep } from "./steps/skills.js"
 import { localModelsStep } from "./steps/local-models.js"
 import { llmGatewayStep } from "./steps/llm-gateway.js"
+import { globalNodeModulesDir } from "../commands/daemon.js"
 import { ONBOARDING_STEPS } from "./registry.js"
 import { runChecks } from "./run.js"
 import type { StepCheck } from "./types.js"
@@ -194,6 +195,71 @@ describe("daemon", () => {
     )
     expect(byId(unregistered, "daemon.service")).toMatchObject({ status: "warn", fix: "agentproto daemon install" })
     expect(byId(unregistered, "daemon.health").fix).toBe("agentproto daemon install")
+  })
+
+  it("warns with the exact reinstall command when the daemon's Node can't see this CLI's adapters (F4)", async () => {
+    const checks = await daemonStep.detect(
+      createFakeContext({
+        health: { version: "1.0.0", node: "/old/node/bin/node" },
+        sources: {
+          nodeExecPath: () => "/new/node/bin/node",
+          resolveAdapterPackage: (slug, fromNode) =>
+            fromNode === "/new/node/bin/node" && (slug === "pi" || slug === "opencode")
+              ? `/new/node/lib/node_modules/@agentproto/adapter-${slug}/package.json`
+              : null,
+        },
+      }),
+    )
+    expect(byId(checks, "daemon.node-adapters")).toMatchObject({
+      status: "warn",
+      fix: "npm i -g @agentproto/adapter-opencode @agentproto/adapter-pi",
+    })
+  })
+
+  it("no node/adapter check when the daemon and this CLI run the same Node", async () => {
+    const checks = await daemonStep.detect(
+      createFakeContext({
+        health: { version: "1.0.0", node: "/same/node/bin/node" },
+        sources: {
+          nodeExecPath: () => "/same/node/bin/node",
+          resolveAdapterPackage: () => "/x/package.json",
+        },
+      }),
+    )
+    expect(checks.find((c) => c.id === "daemon.node-adapters")).toBeUndefined()
+  })
+
+  it("no node/adapter check when the daemon's Node already sees every adapter", async () => {
+    const checks = await daemonStep.detect(
+      createFakeContext({
+        health: { version: "1.0.0", node: "/a/node/bin/node" },
+        sources: {
+          nodeExecPath: () => "/b/node/bin/node",
+          resolveAdapterPackage: () => "/pkg/package.json",
+        },
+      }),
+    )
+    expect(checks.find((c) => c.id === "daemon.node-adapters")).toBeUndefined()
+  })
+
+  it("no node/adapter check when /health predates the node field", async () => {
+    const checks = await daemonStep.detect(createFakeContext({ health: { version: "1.0.0" } }))
+    expect(checks.find((c) => c.id === "daemon.node-adapters")).toBeUndefined()
+  })
+})
+
+describe("globalNodeModulesDir", () => {
+  it("derives the global node_modules from a POSIX Node binary", () => {
+    expect(globalNodeModulesDir("/Users/x/.nvm/versions/node/v22.1.0/bin/node", "darwin")).toBe(
+      "/Users/x/.nvm/versions/node/v22.1.0/lib/node_modules",
+    )
+    expect(globalNodeModulesDir("/opt/homebrew/bin/node", "linux")).toBe("/opt/homebrew/lib/node_modules")
+  })
+
+  it("derives the global node_modules from a Windows Node binary", () => {
+    expect(globalNodeModulesDir("C:\\Program Files\\nodejs\\node.exe", "win32")).toBe(
+      "C:\\Program Files\\nodejs\\node_modules",
+    )
   })
 })
 

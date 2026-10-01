@@ -226,6 +226,15 @@ export interface StepSources {
   /** Resolve an adapter's AIP-45 handle (`resolveAdapter`); throws when the
    *  package isn't resolvable. */
   resolveAdapterHandle(slug: string): Promise<Pick<AgentCliHandle, "version_check" | "bin" | "bin_args">>
+  /** The Node binary this CLI process runs under (`process.execPath`). */
+  nodeExecPath(): string
+  /** Resolve a global `@agentproto/adapter-<slug>` package the way the
+   *  daemon's manifest loader does — `createRequire(import.meta.url).resolve(
+   *  '<pkg>/package.json')`. Pass `fromNode` to resolve as if from the global
+   *  install of that Node binary instead (the doctor compares the daemon's
+   *  Node against this CLI's). Returns the absolute `package.json` path, or
+   *  `null` when the package isn't installed for that Node. */
+  resolveAdapterPackage(slug: string, fromNode?: string): string | null
   /** Named auth profiles (what `auth profile list` reads). */
   listAuthProfiles(): Promise<AuthProfile[]>
   /** Local credentials found on this host (what `auth discover` runs). */

@@ -95,6 +95,8 @@ export function healthySources(): StepSources {
       bin: slug,
       version_check: { cmd: `probe-${slug}`, parse: "v(\\S+)", range: "*" },
     }),
+    nodeExecPath: () => "/usr/local/bin/node",
+    resolveAdapterPackage: () => null,
     listAuthProfiles: async () => [
       { id: "anthropic-cc", endpoint: "anthropic", method: "oauth-bearer", origin: "claude-code" },
     ],

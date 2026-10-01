@@ -10,16 +10,26 @@ import {
   computeFreshDaemonPath,
   extractPlistPathValue,
   fetchHealth,
+  globalNodeModulesDir,
   humaniseUptime,
   launchdPlistPath,
   pathNeedsRefresh,
+  type DaemonHealthInfo,
 } from "../../commands/daemon.js"
+import { catalogByType } from "../../registry/catalog.js"
 import type { OnboardingStep, SetupAction, StepCheck, StepContext } from "../types.js"
 import { readText, tildify } from "./_util.js"
 
 const DEFAULT_PORT = 18790
 
-async function checkHealth(ctx: StepContext, serviceInstalled: boolean): Promise<StepCheck> {
+interface HealthResult {
+  check: StepCheck
+  /** The `/health` body when reachable, else `null` — the node/adapter check
+   *  needs the daemon's Node binary (`info.node`). */
+  info: DaemonHealthInfo | null
+}
+
+async function checkHealth(ctx: StepContext, serviceInstalled: boolean): Promise<HealthResult> {
   const config = await ctx.sources.loadConfig()
   const port = config.daemon?.port ?? DEFAULT_PORT
   const info = await fetchHealth({ config, fetchImpl: ctx.fetch })
@@ -31,17 +41,20 @@ async function checkHealth(ctx: StepContext, serviceInstalled: boolean): Promise
       : null
   if (!info) {
     return {
-      id: "daemon.health",
-      title: "Daemon /health",
-      status: "missing",
-      detail: `not reachable on port ${port}`,
-      fix:
-        ctx.platform === "darwin"
-          ? serviceInstalled
-            ? "agentproto daemon start"
-            : "agentproto daemon install"
-          : managedFix ?? "agentproto serve",
-      data: { port, reachable: false },
+      info: null,
+      check: {
+        id: "daemon.health",
+        title: "Daemon /health",
+        status: "missing",
+        detail: `not reachable on port ${port}`,
+        fix:
+          ctx.platform === "darwin"
+            ? serviceInstalled
+              ? "agentproto daemon start"
+              : "agentproto daemon install"
+            : managedFix ?? "agentproto serve",
+        data: { port, reachable: false },
+      },
     }
   }
   const data = {
@@ -56,15 +69,63 @@ async function checkHealth(ctx: StepContext, serviceInstalled: boolean): Promise
   const version = info.version ? `v${info.version}` : "unknown version"
   if (info.version && info.version !== ctx.cliVersion) {
     return {
-      id: "daemon.health",
-      title: "Daemon /health",
-      status: "warn",
-      detail: `${version}${up} at ${info.url}, but this CLI is v${ctx.cliVersion}`,
-      fix: ctx.platform === "darwin" ? "agentproto daemon restart" : managedFix ?? "restart `agentproto serve`",
-      data,
+      info,
+      check: {
+        id: "daemon.health",
+        title: "Daemon /health",
+        status: "warn",
+        detail: `${version}${up} at ${info.url}, but this CLI is v${ctx.cliVersion}`,
+        fix: ctx.platform === "darwin" ? "agentproto daemon restart" : managedFix ?? "restart `agentproto serve`",
+        data,
+      },
     }
   }
-  return { id: "daemon.health", title: "Daemon /health", status: "ok", detail: `${version}${up} at ${info.url}`, data }
+  return {
+    info,
+    check: { id: "daemon.health", title: "Daemon /health", status: "ok", detail: `${version}${up} at ${info.url}`, data },
+  }
+}
+
+/**
+ * F4 — node/adapter mismatch. Global `@agentproto/adapter-*` packages resolve
+ * relative to the CLI's own install (`registry/manifest-loader.ts`'s
+ * `createRequire(import.meta.url)`), which lives under whichever Node
+ * installed the CLI. After an nvm/fnm switch the daemon can be running a
+ * DIFFERENT Node than the one the user just installed adapters under: that
+ * Node's global install has no adapters, so `agent_start` fails
+ * `adapter "<x>" could not be resolved` while the packages look installed.
+ *
+ * `/health` reports the daemon's Node (`info.node`); compare it against this
+ * CLI's Node and, when the two differ, ask each Node's global install whether
+ * it can see the catalog's adapters. Any adapter this CLI's Node resolves but
+ * the daemon's does not is the mismatch — warn with the exact reinstall
+ * command. Same Node (the common case), an older daemon without `node`, or no
+ * divergence in what resolves ⇒ nothing to report (the `agents` step already
+ * covers genuinely-uninstalled adapters).
+ */
+async function checkNodeAdapterMismatch(ctx: StepContext, info: DaemonHealthInfo): Promise<StepCheck | null> {
+  const daemonNode = info.node
+  if (!daemonNode) return null
+  const cliNode = ctx.sources.nodeExecPath()
+  if (globalNodeModulesDir(daemonNode, ctx.platform) === globalNodeModulesDir(cliNode, ctx.platform)) return null
+  const missing = catalogByType("agent-cli").filter(
+    (entry) =>
+      ctx.sources.resolveAdapterPackage(entry.slug, cliNode) !== null &&
+      ctx.sources.resolveAdapterPackage(entry.slug, daemonNode) === null,
+  )
+  if (missing.length === 0) return null
+  const slugs = missing.map((entry) => entry.slug)
+  const packages = missing.map((entry) => entry.packageName ?? `@agentproto/adapter-${entry.slug}`)
+  return {
+    id: "daemon.node-adapters",
+    title: "Adapters / Node version",
+    status: "warn",
+    detail:
+      `the daemon runs ${daemonNode}, but ${slugs.join(", ")} resolve only under this ` +
+      `CLI's Node (${cliNode}) — the daemon can't see them`,
+    fix: `npm i -g ${packages.join(" ")}`,
+    data: { daemonNode, cliNode, missing: slugs },
+  }
 }
 
 async function checkService(
@@ -154,11 +215,18 @@ export const daemonStep: OnboardingStep = {
     if (ctx.platform === "win32") {
       const task = await checkTask(ctx, SCHTASKS_TASK_NAME)
       const installed = task.status === "ok"
-      return [await checkHealth(ctx, installed), task]
+      const health = await checkHealth(ctx, installed)
+      const checks = [health.check, task]
+      if (health.info) {
+        const mismatch = await checkNodeAdapterMismatch(ctx, health.info)
+        if (mismatch) checks.push(mismatch)
+      }
+      return checks
     }
     if (ctx.platform !== "darwin") {
-      return [
-        await checkHealth(ctx, false),
+      const health = await checkHealth(ctx, false)
+      const checks: StepCheck[] = [
+        health.check,
         {
           id: "daemon.service",
           title: "Service manager",
@@ -167,11 +235,21 @@ export const daemonStep: OnboardingStep = {
           fix: "agentproto serve",
         },
       ]
+      if (health.info) {
+        const mismatch = await checkNodeAdapterMismatch(ctx, health.info)
+        if (mismatch) checks.push(mismatch)
+      }
+      return checks
     }
     const plistPath = launchdPlistPath(ctx.homedir)
     const plistXml = await readText(ctx, plistPath)
-    const checks = [await checkHealth(ctx, plistXml !== null), await checkService(ctx, plistXml, plistPath)]
+    const health = await checkHealth(ctx, plistXml !== null)
+    const checks = [health.check, await checkService(ctx, plistXml, plistPath)]
     if (plistXml !== null) checks.push(await checkPlistPath(ctx, plistXml))
+    if (health.info) {
+      const mismatch = await checkNodeAdapterMismatch(ctx, health.info)
+      if (mismatch) checks.push(mismatch)
+    }
     return checks
   },
   async plan(checks, ctx) {

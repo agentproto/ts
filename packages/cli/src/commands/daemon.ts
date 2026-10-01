@@ -40,7 +40,7 @@
 import { spawn } from "node:child_process"
 import { promises as fs } from "node:fs"
 import { homedir, platform as osPlatform } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, join, posix as pathPosix, win32 as pathWin32 } from "node:path"
 import { parseArgs } from "node:util"
 import {
   compareVersions,
@@ -151,6 +151,25 @@ interface Paths {
 /** Where `daemon install` writes the launchd plist. */
 export function launchdPlistPath(home: string = homedir()): string {
   return join(home, "Library", "LaunchAgents", `${LABEL}.plist`)
+}
+
+/**
+ * The global `node_modules` directory of the Node install a binary belongs to:
+ * `<prefix>/lib/node_modules` on POSIX, `<prefix>/node_modules` on Windows.
+ *
+ * The doctor's node/adapter-mismatch check (F4) uses this to ask whether the
+ * Node the daemon runs under can see the globally-installed `@agentproto/
+ * adapter-*` packages. Global installs land under whichever Node ran
+ * `npm i -g`, so after an nvm/fnm switch the daemon's Node and this CLI's Node
+ * can differ — and the daemon's Node then resolves no adapters.
+ */
+export function globalNodeModulesDir(nodeExecPath: string, platform: NodeJS.Platform): string {
+  // Select the path dialect from the ARGUMENT, not the host: doctor may be
+  // asked about a Windows daemon from a POSIX machine (and the test suite
+  // runs the win32 case on macOS).
+  const path = platform === "win32" ? pathWin32 : pathPosix
+  const binDir = path.dirname(nodeExecPath)
+  return platform === "win32" ? path.join(binDir, "node_modules") : path.join(path.dirname(binDir), "lib", "node_modules")
 }
 
 function paths(home: string = homedir()): Paths {

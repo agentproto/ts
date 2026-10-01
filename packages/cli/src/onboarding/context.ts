@@ -5,6 +5,7 @@
 
 import { spawn } from "node:child_process"
 import { promises as fs } from "node:fs"
+import { createRequire } from "node:module"
 import { arch, homedir, platform } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -15,7 +16,7 @@ import { fetchLatestCliVersion } from "@agentproto/runtime/release-check"
 import { discoverCredentials } from "@agentproto/runtime/credential-discovery"
 import { readPairingsSnapshot, readHostsSnapshot } from "@agentproto/runtime"
 import { listAuthProfiles } from "@agentproto/auth"
-import { probeLoginShellPath } from "../commands/daemon.js"
+import { globalNodeModulesDir, probeLoginShellPath } from "../commands/daemon.js"
 import { detectAgents, loadInstallState } from "../commands/install-mcp.js"
 import { resolveSkillFanOutTargets } from "../commands/install-skill.js"
 import { resolveSkillPackDir } from "../commands/skill-install/pack-resolve.js"
@@ -131,6 +132,21 @@ export function createStepContext(cliVersion: string): StepContext {
       latestCliVersion: () => fetchLatestCliVersion({ timeoutMs: NETWORK_TIMEOUT_MS }),
       loginShellPath: () => probeLoginShellPath(),
       resolveAdapterHandle: async (slug) => (await resolveAdapter(slug)).handle,
+      nodeExecPath: () => process.execPath,
+      resolveAdapterPackage: (slug, fromNode) => {
+        // `import.meta.url` is the CLI's own install — the exact anchor the
+        // daemon's manifest-loader uses. `fromNode` instead anchors inside
+        // that Node's global node_modules, so a caller can ask what the
+        // daemon's Node would resolve (F4).
+        const anchor = fromNode
+          ? join(globalNodeModulesDir(fromNode, platform()), ".agentproto-anchor")
+          : import.meta.url
+        try {
+          return createRequire(anchor).resolve(`@agentproto/adapter-${slug}/package.json`)
+        } catch {
+          return null
+        }
+      },
       listAuthProfiles: () => listAuthProfiles(),
       discoverCredentials: async () => discoverCredentials(),
       detectClients: () => detectAgents(),
