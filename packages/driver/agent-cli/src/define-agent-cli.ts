@@ -745,6 +745,14 @@ export function createAgentCliRuntime(
       return {
         sessionId,
         pid: child?.pid,
+        // Transport liveness, delegated to the arm (see the fields' docs on
+        // AgentCliRuntimeSession). An arm that models no long-lived
+        // connection reports nothing, which reads as "connected" — there is
+        // no stream for it to have lost, and nothing to subscribe to.
+        isConnected: () => arm.isConnected?.() ?? true,
+        ...(arm.onDisconnect
+          ? { onDisconnect: (listener: (err: Error) => void) => arm.onDisconnect!(listener) }
+          : {}),
         // Live model/mode/effort switches + the capability read-surface,
         // all pure arm delegation — shared with every host that builds
         // its own session over another transport. See session-controls.ts.

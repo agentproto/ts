@@ -316,6 +316,28 @@ export const RESUME_ID_REJECTED_RE =
   /not found|does not support|not supported|unsupported/i
 
 /**
+ * Matches the OTHER way a resume attempt dies: the freshly-spawned adapter
+ * took its transport down while the resume RPC was still in flight, so the
+ * ACP SDK rejected the pending `session/load` with its connection-close
+ * error instead of a protocol-level answer.
+ *
+ * This is what a `session_restart` of a transport-dead session looked like
+ * in the field (2026-09-25, `sess_950d1251`): the restart spawned a new
+ * wrapper, the wrapper died mid-`loadSession`, and the operator got a bare
+ * "ACP connection closed" — no fallback, because the message says nothing
+ * about the id being rejected, which is all {@link RESUME_ID_REJECTED_RE}
+ * looks for.
+ *
+ * Treated as a fallback trigger for the same reason a rejected id is: the
+ * stored conversation could not be rehydrated, and a fresh spawn (plus the
+ * daemon-transcript digest) is strictly better than handing the operator an
+ * error and no session. It costs exactly one retry — if the adapter is
+ * broken in general rather than on this id, the retry fails too and the real
+ * error propagates.
+ */
+export const RESUME_CONNECTION_LOST_RE = /connection closed|connection lost|epipe/i
+
+/**
  * Generic filesystem-fallback: for each known adapter strategy that
  * defines an `fsProbe`, run it against this session's cwd. If a
  * resume id is found, attach it to the descriptor's resumeMetadata.

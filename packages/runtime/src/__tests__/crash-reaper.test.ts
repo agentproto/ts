@@ -50,30 +50,88 @@ function row(over: Partial<SessionDescriptor> & { id: string }): SessionDescript
 }
 
 /** A stub registry that records every `markCrashed` call and always
- *  succeeds — so a test asserts EXACTLY which rows the policy selected. */
+ *  succeeds — so a test asserts EXACTLY which rows the policy selected, and
+ *  with which crash reason. */
 function stubRegistry(rows: SessionDescriptor[]): {
   registry: CrashReaperRegistry
   crashed: string[]
+  reasons: Array<string | undefined>
 } {
   const crashed: string[] = []
+  const reasons: Array<string | undefined> = []
   const registry: CrashReaperRegistry = {
     list: () => rows,
-    markCrashed: id => {
+    markCrashed: (id, reason) => {
       crashed.push(id)
+      reasons.push(reason)
       return true
     },
   }
-  return { registry, crashed }
+  return { registry, crashed, reasons }
 }
 
 const THIRTY_SEC = 30_000
 
 describe("runCrashDetectPass — candidate selection", () => {
   it("marks a running agent-cli session whose pid is confirmed dead", () => {
-    const { registry, crashed } = stubRegistry([row({ id: "dead" })])
+    const { registry, crashed, reasons } = stubRegistry([row({ id: "dead" })])
     const summary = runCrashDetectPass({ registry, crashDetectIntervalMs: THIRTY_SEC })
     expect(summary).toEqual({ enabled: true, candidates: 1, crashed: 1, ids: ["dead"] })
     expect(crashed).toEqual(["dead"])
+    expect(reasons).toEqual(["process-gone"])
+  })
+
+  // ── The transport axis (the gap this sweep used to have) ───────────────
+  // A pid probe structurally cannot see a dead ACP stream: the wrapper
+  // process is still there, so `processAlive` stays true forever while every
+  // prompt rejects "ACP connection closed". `sess_950d1251` sat like that for
+  // 40+ minutes on 2026-09-25, reported `running` / `alive: true` throughout.
+
+  it("marks a session whose ADAPTER CONNECTION is dead even though its process is alive", () => {
+    const { registry, crashed, reasons } = stubRegistry([
+      row({ id: "zombie", processAlive: true, adapterConnected: false }),
+    ])
+    const summary = runCrashDetectPass({ registry, crashDetectIntervalMs: THIRTY_SEC })
+    expect(summary.candidates).toBe(1)
+    expect(crashed).toEqual(["zombie"])
+    // The banner must name the death that was actually observed — "process
+    // gone (pid N)" would be a straight-up lie for this row.
+    expect(reasons).toEqual(["transport-closed"])
+  })
+
+  it("marks a transport-dead session with no pid at all (the transport axis is not pid-gated)", () => {
+    const { registry, crashed } = stubRegistry([
+      row({ id: "nopid-zombie", pid: null, processAlive: undefined, adapterConnected: false }),
+    ])
+    expect(runCrashDetectPass({ registry, crashDetectIntervalMs: THIRTY_SEC }).crashed).toBe(1)
+    expect(crashed).toEqual(["nopid-zombie"])
+  })
+
+  it("does NOT mark a session whose connection is alive or unprobed", () => {
+    const { registry, crashed } = stubRegistry([
+      row({ id: "connected", processAlive: true, adapterConnected: true }),
+      row({ id: "unprobed", processAlive: true, adapterConnected: undefined }),
+    ])
+    expect(runCrashDetectPass({ registry, crashDetectIntervalMs: THIRTY_SEC }).crashed).toBe(0)
+    expect(crashed).toEqual([])
+  })
+
+  it("prefers the transport reason when BOTH axes report dead", () => {
+    const { registry, reasons } = stubRegistry([
+      row({ id: "doubly-dead", processAlive: false, adapterConnected: false }),
+    ])
+    runCrashDetectPass({ registry, crashDetectIntervalMs: THIRTY_SEC })
+    expect(reasons).toEqual(["transport-closed"])
+  })
+
+  it("still refuses a transport-dead row that is remote, non-agent-cli, or already terminal", () => {
+    const { registry, crashed } = stubRegistry([
+      row({ id: "remote", remote: true, adapterConnected: false }),
+      row({ id: "pty", kind: "terminal", pty: true, adapterConnected: false }),
+      row({ id: "killed", status: "killed", adapterConnected: false }),
+    ])
+    expect(runCrashDetectPass({ registry, crashDetectIntervalMs: THIRTY_SEC }).crashed).toBe(0)
+    expect(crashed).toEqual([])
   })
 
   it("does NOT mark a session whose pid is confirmed alive", () => {
@@ -276,6 +334,34 @@ describe("registry.markCrashed — the crash action", () => {
     expect(reg.markCrashed(desc.id)).toBe(false)
     // Unknown id ⇒ false.
     expect(reg.markCrashed("nope")).toBe(false)
+    reg.shutdown()
+  })
+
+  it("names the transport in lastError + banner when the reason is transport-closed", () => {
+    const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: liveAgentSession("acp-1", { value: false }),
+      adapterSlug: "claude-code",
+    })
+    const lines: string[] = []
+    const detach = reg.attach(desc.id, line => lines.push(line))
+
+    expect(reg.markCrashed(desc.id, "transport-closed")).toBe(true)
+
+    const after = reg.get(desc.id)!
+    expect(after.status).toBe("error")
+    expect(after.endedReason).toBe("crashed")
+    // The pid is NOT reported as gone — it may well still be running, and
+    // saying otherwise sends whoever reads this row hunting the wrong thing.
+    expect(after.lastError).toContain("connection closed")
+    expect(after.lastError).not.toContain("process gone")
+    expect(lines.some(l => l.includes("[crashed]") && l.includes("connection closed"))).toBe(true)
+    // Same as every other crash path: lazy-resumable, not deleted.
+    expect(isResumable(after)).toBe(true)
+
+    detach?.()
     reg.shutdown()
   })
 

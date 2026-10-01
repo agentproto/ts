@@ -220,6 +220,36 @@ export type SteerOutcome = "steered" | "promptRequired" | "unsupported"
 
 export interface AcpClient {
   readonly connection: ClientSideConnection
+  /**
+   * Whether the underlying JSON-RPC connection is still open. Reads the SDK
+   * connection's own abort signal (`ClientSideConnection.signal`), which is
+   * aborted synchronously the moment the transport closes — so this is a
+   * FRESH fact at call time, never a cached flag that can go stale.
+   *
+   * The pull counterpart to {@link AcpClient.onDisconnect}: a sweep (the
+   * daemon's crash-detect pass) can ask "is this session's adapter actually
+   * reachable?" without waiting for a prompt to fail.
+   */
+  isConnected(): boolean
+  /**
+   * Subscribe to transport death. `listener` fires at most once, when the
+   * JSON-RPC connection to the agent goes away — the subprocess's stdout
+   * ended, the transport errored, or the SDK closed the connection for any
+   * other reason — and fires SYNCHRONOUSLY if it's already gone by the time
+   * you subscribe (so there is no window where a late subscriber misses it).
+   *
+   * This is the only push signal for the failure mode a pid probe cannot
+   * see: the wrapper process is still alive (`process.kill(pid, 0)`
+   * succeeds) but its ACP stream is dead, so every subsequent RPC rejects
+   * with "ACP connection closed" while the host still believes the session
+   * is running.
+   *
+   * Also fires for an ORDERLY teardown (the host's own `close()` aborts the
+   * same controller), so a consumer that only cares about UNEXPECTED death
+   * must gate on its own "did I ask for this?" state — the daemon does that
+   * via the session's status (`markCrashed` only acts on a `running` row).
+   */
+  onDisconnect(listener: (err: Error) => void): void
   /** Negotiated agent capabilities returned from `initialize`. */
   readonly agentCapabilities: Record<string, unknown> | undefined
   /** The TOP-LEVEL `_meta` of the `initialize` response (sibling of
@@ -499,6 +529,25 @@ export async function createAcpClient(
     stream,
   )
 
+  // Transport-death subscription. `connection.signal` is the SDK's own
+  // AbortController: `Connection.close()` aborts it with the close error
+  // (`new Error("ACP connection closed")` when the stream simply ended), and
+  // that happens the instant the subprocess's stdout reader completes — long
+  // before anything else in the stack notices.
+  const onDisconnect = (listener: (err: Error) => void): void => {
+    const signal = connection.signal
+    const fire = (): void => {
+      const reason: unknown = signal.reason
+      listener(reason instanceof Error ? reason : new Error("ACP connection closed"))
+    }
+    // Already dead by the time this subscriber arrived — `addEventListener`
+    // on an aborted signal never fires, so report it directly. This is what
+    // makes subscribing AFTER connect (the daemon does, once it has the
+    // session handle) race-free.
+    if (signal.aborted) fire()
+    else signal.addEventListener("abort", fire, { once: true })
+  }
+
   const initResponse = await connection.initialize({
     protocolVersion: options.protocolVersion ?? PROTOCOL_VERSION_DEFAULT,
     clientCapabilities: clientCapabilitiesFromOptions(options),
@@ -516,6 +565,8 @@ export async function createAcpClient(
 
   return {
     connection,
+    isConnected: () => !connection.signal.aborted,
+    onDisconnect,
     agentCapabilities: (initResponse as { agentCapabilities?: Record<string, unknown> })
       .agentCapabilities,
     initMeta,

@@ -54,6 +54,14 @@ function makeResolver(opts: {
    *  message (simulates the adapter rejecting an unknown/never-
    *  persisted resume id) — the tool should retry without it. */
   rejectResumeOnce?: boolean
+  /** Make the first resume attempt die the way a wrapper that takes its
+   *  TRANSPORT down mid-`session/load` does: the ACP SDK rejects the pending
+   *  RPC with its connection-close error, which says nothing about the id
+   *  being rejected. This is how `session_restart` of a transport-dead
+   *  session failed in the field (2026-09-25, `sess_950d1251`) — the
+   *  fresh-spawn fallback never fired and the operator got an error and no
+   *  session. */
+  closeConnectionOnResumeOnce?: boolean
   /** Manifest-declared `capabilities.resumable`, surfaced on the resolved
    *  adapter descriptor exactly like `AgentAdapterResolver.resumable` in
    *  production — stamped onto the NEW descriptor by `restartAgentSession`. */
@@ -108,6 +116,12 @@ function makeResolver(opts: {
       if (opts.rejectResumeOnce && sessOpts.resumeSessionId && !rejected) {
         rejected = true
         throw new Error("Resource not found")
+      }
+      if (opts.closeConnectionOnResumeOnce && sessOpts.resumeSessionId && !rejected) {
+        rejected = true
+        // Verbatim the message `@agentclientprotocol/sdk`'s `Connection.close`
+        // rejects every pending request with.
+        throw new Error("ACP connection closed")
       }
       return fakeAgentSession(slug)
     },
@@ -444,6 +458,43 @@ describe("session_restart", () => {
 
     // First call attempted the resume id and was rejected; second call
     // (the actual spawn that succeeded) carried no resumeSessionId.
+    expect(calls).toHaveLength(2)
+    expect(calls[0]?.resumeSessionId).toBe(prev.adapterSessionId)
+    expect(calls[1]?.resumeSessionId).toBeUndefined()
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("agent/ACP: retries as a fresh spawn when the adapter takes its connection down mid-resume", async () => {
+    // Regression for the restart half of the transport-liveness bug: a
+    // wrapper that dies during `session/load` rejects with "ACP connection
+    // closed", which matches nothing in `RESUME_ID_REJECTED_RE`. That left
+    // `session_restart` throwing that bare message back at the operator with
+    // no session at all — the observed failure on `sess_950d1251`. The
+    // stored conversation is just as unrecoverable as a rejected id, so it
+    // must degrade to the same flagged fresh spawn.
+    const { client, registry, calls, close } = await buildHarness({
+      closeConnectionOnResumeOnce: true,
+    })
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+    })
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.resumeFallback).toBe(true)
+    expect(desc.id).not.toBe(prev.id)
     expect(calls).toHaveLength(2)
     expect(calls[0]?.resumeSessionId).toBe(prev.adapterSessionId)
     expect(calls[1]?.resumeSessionId).toBeUndefined()
