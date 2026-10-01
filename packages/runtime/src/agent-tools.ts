@@ -151,6 +151,12 @@ function missingSessionIdError(tool: string): {
 
 export interface RegisterAgentToolsOptions {
   registry: SessionsRegistry
+  /** Optional (BOOTSTRAP P7b) — device-mirror sync hook (device-mirror.ts's
+   *  `syncDeviceMirror` pre-bound to the daemon's registry + host registry).
+   *  `agent_output` calls it before reading so a device-sandboxed session's
+   *  HOST turns land in the transcript first. The hook no-ops for local
+   *  sessions, so wiring it unconditionally costs nothing. */
+  deviceMirrorSync?: (idOrName: string) => Promise<unknown>
   /** Optional adapter resolver — required for `agent_start`
    *  (the others work with raw spawn sessions too). When unset the
    *  start tool returns a clear error pointing at the host wiring. */
@@ -329,6 +335,7 @@ export function registerAgentTools(
     messagingAllowSiblings,
     messagingAgentInterrupt,
     ensureLlmEndpointRunning,
+    deviceMirrorSync,
   } = opts
   // Effective `interrupt` when a call leaves it unset: config default, else
   // false. An explicit boolean on the call always wins (checked at each site).
@@ -860,6 +867,16 @@ export function registerAgentTools(
     async input => {
       const sessionId = resolveSessionIdArg(input)
       if (!sessionId) return missingSessionIdError("agent_output")
+      // BOOTSTRAP P7b — device-mirror read sync: pull the host's new turns
+      // into the transcript/descriptor before tailing (best-effort, device
+      // sessions only — the hook no-ops for local sessions).
+      if (deviceMirrorSync) {
+        try {
+          await deviceMirrorSync(sessionId)
+        } catch {
+          // never fail a read over the sync hook
+        }
+      }
       const desc = registry.get(sessionId)
       if (!desc) {
         return {

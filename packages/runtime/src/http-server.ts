@@ -91,7 +91,7 @@ import type { RemoteController, EnableInput } from "./remote-controller.js"
 import type { PairingRegistry } from "./pairing-registry.js"
 import type { HostRegistry, ForwardHttpResponse } from "./host-registry.js"
 import type { JoinTokenRegistry } from "./join-token-registry.js"
-import { createDeviceRegistry, promptHostSession } from "./device-registry.js"
+import { createDeviceRegistry, promptDeviceSession, type DevicePromptSessionsLike } from "./device-registry.js"
 import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import type { AppRegistry } from "./app-registry.js"
@@ -1068,6 +1068,14 @@ export interface RuntimeHttpServerOptions {
    *  tail) — plus the `join_token_create/list/revoke` and `device_sessions`
    *  MCP tools. Without it those routes 404. */
   joinTokens?: JoinTokenRegistry
+  /** Optional (BOOTSTRAP P7b) — the device-mirror sync hook
+   *  (`device-mirror.ts`'s `syncDeviceMirror` pre-bound to this daemon's
+   *  registry + host registry). When wired, the session READ routes
+   *  (`GET /sessions/:id`, its `/output` tail, `/export`, `/events`,
+   *  `/conversation`) sync host turns into the controller transcript
+   *  BEFORE reading. The hook itself no-ops for local sessions, so this
+   *  can be wired unconditionally without a device spawn costing anything. */
+  deviceMirrorSync?: (idOrName: string) => Promise<unknown>
   /** Optional — the session lifecycle event bus. When wired alongside
    *  `sessions`, `eventRing`, enables `GET /sessions/:id/wait` (a blocking
    *  long-poll that resolves when the session fires a lifecycle event).
@@ -2676,6 +2684,7 @@ export async function startHttpServer(
             opts.resolveSandboxProvider,
             opts.webhookNotifier,
             opts.ensureLlmEndpointRunning,
+            opts.deviceMirrorSync,
           )
           if (handled) return
         }
@@ -4316,7 +4325,7 @@ export async function startHttpServer(
               return
             }
           }
-          const handled = await handleDevices(req, res, path, opts.pairings, opts.hostRegistry, opts.joinTokens)
+          const handled = await handleDevices(req, res, path, opts.pairings, opts.hostRegistry, opts.joinTokens, opts.sessions)
           if (handled) return
         }
 
@@ -5827,6 +5836,9 @@ async function handleSessions(
   resolveSandboxProvider?: SpawnAgentSessionDeps["resolveSandboxProvider"],
   webhookNotifier?: SpawnAgentSessionDeps["webhookNotifier"],
   ensureLlmEndpointRunning?: SpawnAgentSessionDeps["ensureLlmEndpointRunning"],
+  // BOOTSTRAP P7b — the device-mirror read-sync hook. Absent ⇒ no sync
+  // (older wiring keeps today's behaviour unchanged).
+  deviceMirrorSync?: (idOrName: string) => Promise<unknown>,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -6727,6 +6739,15 @@ async function handleSessions(
   if (outputMatch && req.method === "GET") {
     const id = decodeURIComponent(outputMatch[1] ?? "")
     if (!id) return false
+    // BOOTSTRAP P7b — make a device-mirrored session's HOST turns visible
+    // before the ring-buffer tail is read (best-effort; absent ⇒ unchanged).
+    if (deviceMirrorSync) {
+      try {
+        await deviceMirrorSync(id)
+      } catch {
+        // never fail a read over the sync hook
+      }
+    }
     const desc = registry.findByIdOrName(id)
     if (!desc) {
       json(404, { error: "no_such_session", id })
@@ -7275,6 +7296,15 @@ async function handleSessions(
       })
       return true
     }
+    // BOOTSTRAP P7b — sync a device-mirrored session's host turns in
+    // before reading (best-effort; absent ⇒ unchanged).
+    if (deviceMirrorSync) {
+      try {
+        await deviceMirrorSync(id)
+      } catch {
+        // never fail a read over the sync hook
+      }
+    }
     const reqUrl = req.url ?? ""
     const qs = new URLSearchParams(
       reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "",
@@ -7290,6 +7320,15 @@ async function handleSessions(
     // (claude-code JSONL / hermes SQLite) and returns a rendered
     // transcript. Query params: format (markdown|json), adapter, cwd.
     // Read-only GET, no auth gate (same policy as /preview).
+    // BOOTSTRAP P7b — sync a device-mirrored session's host turns in
+    // before reading (best-effort; absent ⇒ unchanged).
+    if (deviceMirrorSync) {
+      try {
+        await deviceMirrorSync(id)
+      } catch {
+        // never fail a read over the sync hook
+      }
+    }
     const reqUrl = req.url ?? ""
     const qs = new URLSearchParams(
       reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "",
@@ -7331,6 +7370,15 @@ async function handleSessions(
     // panel can render rich components instead of the collapsed
     // markdown/JSON transcript. Read-only GET, no auth gate (same
     // policy as /export / /preview).
+    // BOOTSTRAP P7b — sync a device-mirrored session's host turns into
+    // events.jsonl BEFORE reading (best-effort; absent ⇒ unchanged).
+    if (deviceMirrorSync) {
+      try {
+        await deviceMirrorSync(id)
+      } catch {
+        // never fail a read over the sync hook
+      }
+    }
     const reqUrl = req.url ?? ""
     const qs = new URLSearchParams(
       reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "",
@@ -7753,6 +7801,18 @@ async function handleSessions(
     if (!resolvedDesc) {
       json(404, { error: "session_not_found", id: rawIdOrName })
       return true
+    }
+    // BOOTSTRAP P7b — read-time device mirror: sync (then reflect the host
+    // snapshot in) a device-sandboxed session's descriptor BEFORE
+    // projecting. Best-effort hook; absent ⇒ unchanged behaviour.
+    // `findByIdOrName`/`get` return the LIVE descriptor object, so the sync's
+    // in-place mutations are already visible on `resolvedDesc`.
+    if (deviceMirrorSync) {
+      try {
+        await deviceMirrorSync(id)
+      } catch {
+        // never fail a read over the sync hook
+      }
     }
     const reqUrlForFields = req.url ?? ""
     const qsForFields = reqUrlForFields.includes("?")
@@ -9276,6 +9336,9 @@ async function handleDevices(
   registry: PairingRegistry,
   hostRegistry?: HostRegistry,
   joinTokens?: JoinTokenRegistry,
+  // BOOTSTRAP P7a — the session registry, so `POST /devices/:id/sessions/
+  // :sessionId/prompt` can resolve a controller id to its mapped host id.
+  devicePromptSessions?: DevicePromptSessionsLike,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -9554,7 +9617,7 @@ async function handleDevices(
     const reqUrl = req.url ?? ""
     const qs = new URLSearchParams(reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "")
     try {
-      const result = await promptHostSession(hostRegistry, target, sessionId, {
+      const result = await promptDeviceSession(hostRegistry, devicePromptSessions, target, sessionId, {
         prompt: b["prompt"],
         interrupt: b["interrupt"] === true,
         force: b["force"] === true,

@@ -19,7 +19,10 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import type { DeviceRegistry } from "./device-registry.js"
-import { promptHostSession } from "./device-registry.js"
+import {
+  promptDeviceSession,
+  type DevicePromptSessionsLike,
+} from "./device-registry.js"
 import type { HostRegistry } from "./host-registry.js"
 import type { JoinTokenRegistry } from "./join-token-registry.js"
 
@@ -31,6 +34,11 @@ export interface RegisterDeviceToolsOptions {
    *  would happily answer from cache. When absent, `device_prompt` is not
    *  registered. */
   hosts?: HostRegistry
+  /** Optional (BOOTSTRAP P7a) — the session registry, for `device_prompt`
+   *  to resolve a CONTROLLER session id onto its mapped HOST session id
+   *  (the issue #1637 id split). Absent ⇒ no controller-id resolution and
+   *  the tool keeps behaving exactly as before. */
+  sessions?: DevicePromptSessionsLike
   /** Optional (SANDBOX-VISIBILITY-JOIN) — when wired, registers
    *  `join_token_create`/`join_token_list`/`join_token_revoke`. */
   joinTokens?: JoinTokenRegistry
@@ -53,7 +61,7 @@ export function registerDeviceTools(
   server: McpServer,
   opts: RegisterDeviceToolsOptions,
 ): void {
-  const { registry, hosts: registryHosts, joinTokens } = opts
+  const { registry, hosts: registryHosts, joinTokens, sessions } = opts
 
   server.tool(
     "device_list",
@@ -193,17 +201,27 @@ export function registerDeviceTools(
       "device_prompt",
       "Send a prompt (a follow-up turn) to a session on a registered HOST " +
         "device — the write counterpart of device_sessions, forwarded live " +
-        "over the host's E2E channel. Queueing rules are identical to a " +
-        "local agent_prompt: fire-and-forget by default, queued behind the " +
-        "session's in-flight turn, `interrupt`/`force` to redirect or jump " +
-        "the queue. wait: true blocks until the prompted turn drains. " +
+        "over the host's E2E channel. sessionId accepts EITHER the host " +
+        "session id or a local controller session id spawned with " +
+        "`sandbox: \"device:<fp>\"` (P7a — the controller descriptor's " +
+        "hostSessionId mapping is substituted when the exact id 404s). " +
+        "Queueing rules are identical to a local agent_prompt: " +
+        "fire-and-forget by default, queued behind the session's " +
+        "in-flight turn, `interrupt`/`force` to redirect or jump the " +
+        "queue. wait: true blocks until the prompted turn drains. " +
         "Requires the HOST daemon to have opted in (agentproto devices " +
         "allow-spawn on) over a host-scoped pairing — the same gate as " +
         "device spawn; refused for a plain remote-control pairing or an " +
         "unknown target.",
       {
         target: z.string().describe("The host's fingerprint or name (see device_list)."),
-        sessionId: z.string().min(1).describe("The session id ON the host to prompt."),
+        sessionId: z
+          .string()
+          .min(1)
+          .describe(
+            "The session id ON the host — or a controller session id " +
+              "spawned against `device:<fp>` (resolved via its hostSessionId).",
+          ),
         prompt: z
           .union([z.string(), z.record(z.string(), z.unknown()), z.array(z.record(z.string(), z.unknown()))])
           .describe("Non-empty string, a content block, or an array of content blocks."),
@@ -232,7 +250,7 @@ export function registerDeviceTools(
       },
       async ({ target, sessionId, prompt, wait, interrupt, force, pollMs, maxWaitMs }) => {
         try {
-          const result = await promptHostSession(registryHosts, target, sessionId, {
+          const result = await promptDeviceSession(registryHosts, sessions, target, sessionId, {
             prompt,
             ...(wait ? { wait: true } : {}),
             ...(interrupt ? { interrupt: true } : {}),

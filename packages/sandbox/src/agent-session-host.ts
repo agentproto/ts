@@ -97,6 +97,15 @@ export interface BootedSandbox {
    * absent or doesn't include the target port.
    */
   ports?: Record<number, string>
+  /**
+   * The paired host's identity, present ONLY for the `device` sandbox
+   * provider (`device:<fingerprint-or-name>` targets — the provider can
+   * never guarantee it for a generic vendor sandbox). `fingerprint` is the
+   * resolved REAL fingerprint of the registered host the sandbox
+   * bridged onto, even when the caller addressed the device by its
+   * user-given name — see `createDeviceSandboxProvider` in the runtime.
+   */
+  device?: { fingerprint: string }
   /** Tear down the sandbox. */
   stop(): Promise<void>
   /** Pause the sandbox instead of killing it — keeps it reconnectable via
@@ -233,6 +242,10 @@ export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
    *  `BootedSandbox.ports` so the runtime can record them on the session
    *  descriptor without reaching into the booted handle after the fact. */
   ports?: Record<number, string>
+  /** The paired host's resolved fingerprint — forwarded from
+   *  `BootedSandbox.device`, present only for the `device` provider
+   *  (BOOTSTRAP P7a's `hostFingerprint` source). */
+  device?: BootedSandbox["device"]
   /** Expose an app port and return its public URL — forwarded from
    *  `BootedSandbox.expose`. Absent when the provider doesn't support it. */
   expose?: BootedSandbox["expose"]

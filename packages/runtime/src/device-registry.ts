@@ -204,7 +204,7 @@ export function createDeviceRegistry(pairing: PairingRegistry, hosts?: HostRegis
   }
 }
 
-// ── device prompt (BOOTSTRAP P4 item 1) ─────────────────────────
+// ── device prompt (BOOTSTRAP P4 item 1; P7a id-mapping) ──────────
 
 /** The host-side route `promptHostSession` forwards to — served by the HOST
  *  daemon's `/device-prompt/:sessionId` (http-server.ts), gated by the same
@@ -399,5 +399,130 @@ export async function promptHostSession(
     if (input.maxWaitMs !== undefined && input.maxWaitMs > 0 && waitedMs >= input.maxWaitMs) {
       return { ok: false, waitedMs, message: `timed out after ${waitedMs}ms waiting for the turn to drain` }
     }
+  }
+}
+
+// ── controller id → host id resolution (BOOTSTRAP P7a / #1637) ───────────
+
+/** A narrow slice of the sessions registry `promptDeviceSession` needs —
+ *  kept minimal so tests stub one function. */
+export interface DevicePromptSessionsLike {
+  findByIdOrName(idOrName: string): { id: string; hostSessionId?: string; hostFingerprint?: string } | undefined
+}
+
+/** Is this failure the "the given session id doesn't exist on the host"
+ *  shape — the only case P7a's controller-id resolution may rescue? A
+ *  `no session "<id>"` envelope (the host's `enqueuePrompt` 404, the shape
+ *  behind the field finding's `{"ok":false,"status":404,…}`) is the match;
+ *  ANY other failure (pairing gate, wait arm, prompt validation) must pass
+ *  through untouched rather than get masked by a mapping retry. */
+export function isNoSessionPromptFailure(result: PromptHostSessionResult): boolean {
+  if (result.ok) return false
+  if (result.status === 404) return true
+  return typeof result.message === "string" && /no session/i.test(result.message)
+}
+
+/** The controller→host mapping for one id, resolved against the LOCAL
+ *  registry — dial-free. Answers `kind: "controller"` only when a local
+ *  descriptor with that controller id carries BOTH `hostSessionId` AND a
+ *  device identity whose fingerprint-or-name belongs to the SAME target
+ *  device (exact-string when no `hosts` registry is wired — the raw
+ *  `device:<…>` target round-tripped; fingerprint-vs-name reversed against
+ *  the host records otherwise). Resolution order at the call site stays
+ *  (a) exact host-id first (promoted by the direct-attempt 404),
+ *  (b) this mapping second. */
+export async function resolveDevicePromptMapping(
+  sessions: DevicePromptSessionsLike | undefined,
+  hosts: HostRegistry | undefined,
+  sessionId: string,
+  target: string,
+): Promise<{ kind: "controller"; hostSessionId: string } | { kind: "none" }> {
+  if (!sessions) return { kind: "none" }
+  const desc = sessions.findByIdOrName(sessionId)
+  if (
+    !desc ||
+    desc.hostSessionId === undefined ||
+    desc.hostSessionId.length === 0 ||
+    !desc.hostFingerprint
+  ) {
+    return { kind: "none" }
+  }
+  const targetId = await deviceTargetFingerprint(hosts, target)
+  if (desc.hostFingerprint !== target && desc.hostFingerprint !== targetId) {
+    return { kind: "none" }
+  }
+  return { kind: "controller", hostSessionId: desc.hostSessionId }
+}
+
+/** The target's canonical fingerprint, when a host records list can
+ *  reverse it (a `device:<name>` target); the raw target otherwise. */
+async function deviceTargetFingerprint(
+  hosts: HostRegistry | undefined,
+  target: string,
+): Promise<string | undefined> {
+  if (!hosts) return undefined
+  try {
+    const known = (await hosts.list()).find(
+      h => h.fingerprint === target || h.name === target,
+    )
+    return known?.fingerprint
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * `device_prompt` with P7a id resolution (#1637). Resolution order:
+ *
+ *   (a) exact host session id match — the current behavior, tried FIRST,
+ *       exactly as `promptHostSession` always has;
+ *   (b) controller-id → host-id via the local registry: when (a) fails
+ *       with a no-session failure AND a local device descriptor maps the
+ *       given id (`hostSessionId` stamped at device spawn), retry once
+ *       against the mapped host id.
+ *
+ * Any other failure passes through untouched — the mapping must never mask
+ * a pairing gate, a prompt-validation rejection, or a wait-arm error. When
+ * both fail, the error names the host and the mapping so the operator
+ * knows both halves were checked.
+ */
+export async function promptDeviceSession(
+  hosts: HostRegistry | undefined,
+  sessions: DevicePromptSessionsLike | undefined,
+  target: string,
+  sessionId: string,
+  input: PromptHostSessionInput,
+): Promise<PromptHostSessionResult> {
+  const direct = await promptHostSession(hosts, target, sessionId, input)
+  if (direct.ok || !isNoSessionPromptFailure(direct)) {
+    return direct
+  }
+  const mapping = await resolveDevicePromptMapping(sessions, hosts, sessionId, target)
+  if (mapping.kind !== "controller" || mapping.hostSessionId === sessionId) {
+    return {
+      ...direct,
+      // Both halves already checked at the "no mapping" branch: the direct
+      // dial and the dial-free resolution. Frame it actionably.
+      ...(isNoSessionPromptFailure(direct)
+        ? { message: `no session "${sessionId}" on host ${target} and no controller descriptor maps it` }
+        : {}),
+    }
+  }
+  const mapped = await promptHostSession(
+    hosts,
+    target,
+    mapping.hostSessionId,
+    input,
+  )
+  if (mapped.ok) return mapped
+  return {
+    ...mapped,
+    // Both halves failed — make the error say so. When the mapped attempt
+    // ALSO reads as "no such session", substitute the actionable
+    // no-session envelope; any other mapped failure (gate, transient)
+    // keeps its own message.
+    ...(isNoSessionPromptFailure(mapped)
+      ? { message: `no session "${sessionId}" on host ${target} and no controller descriptor maps it` }
+      : {}),
   }
 }
