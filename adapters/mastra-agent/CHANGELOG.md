@@ -1,5 +1,12 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.7.21
+
+### Patch Changes
+
+- Updated dependencies [0b76d49]
+  - @agentproto/runtime@5.7.1
+
 ## 0.7.20
 
 ### Patch Changes
