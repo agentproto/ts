@@ -171,6 +171,22 @@ import {
 } from "@agentproto/sandbox"
 import { createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
 import { isDeviceSandboxTarget } from "./sandbox-providers/device.js"
+
+/** BOOTSTRAP P7a — the raw `device:<fp|name>` target a spawn pinned, when
+ *  its sandbox is a paired device (bare-string or inline-spec form). The
+ *  fallback `hostFingerprint` when the provider didn't resolve a real
+ *  fingerprint (older runtime pieces): it stores the same idOrName string
+ *  `HostRegistry.forwardHttp` accepts, so device_prompt/list reads that
+ *  match on `fingerprint OR name` still resolve. */
+function deviceTargetFromSpec(
+  sandbox: string | unknown,
+): string | undefined {
+  const slug = typeof sandbox === "string" ? sandbox : (sandbox as { provider?: string } | undefined)?.provider ?? ""
+  if (!slug.startsWith("device:")) return undefined
+  const target = slug.slice("device:".length).trim()
+  return target.length > 0 ? target : undefined
+}
+
 import {
   readSandboxLedger,
   recordSandboxBoot,
@@ -3672,6 +3688,15 @@ export async function spawnAgentSession(
     let sandboxPorts: Record<number, string> | undefined
     let appServe: SessionAppServeInfo | undefined
     let commandSandbox: SandboxMode | undefined
+    // BOOTSTRAP P7a — device-sandbox identity mapping. For a
+    // `device:<fp|name>` spawn, the HOST's inner `agent_start` creates the
+    // real conversation on the host's own daemon (a different session id —
+    // issue #1637's `sess_305be17c` vs `sess_cf318f00`), and the proxy's
+    // `sessionId` IS that host session id. Stamp the pairing onto the
+    // controller descriptor so `device_prompt` can resolve a controller id
+    // to the host id and the read paths can mirror host turns.
+    let hostSessionId: string | undefined
+    let hostFingerprint: string | undefined
 
     if (input.sandbox !== undefined) {
       const booted = await bootSandboxAgentSession({
@@ -3712,6 +3737,18 @@ export async function spawnAgentSession(
       sandboxTeardown = booted.sandboxTeardown
       sandboxPorts = booted.sandboxPorts
       appServe = booted.appServe
+      if (isDeviceSandboxTarget(input.sandbox)) {
+        // BOOTSTRAP P7a — persist the controller→host id mapping. The proxy's
+        // `sessionId` is the HOST's own session id (the inner `agent_start`'s
+        // descriptor); an older host that returns no usable id leaves the
+        // fields unset — everything downstream tolerates absence.
+        hostSessionId = booted.agentSession.sessionId
+        if (typeof hostSessionId === "string" && hostSessionId.length === 0) {
+          hostSessionId = undefined
+        }
+        hostFingerprint =
+          booted.deviceFingerprint ?? deviceTargetFromSpec(input.sandbox) ?? undefined
+      }
       // The box may have gotten a DIFFERENT cwd than the host resolved
       // above (the provider's own `defaultCwd`, when the caller passed no
       // explicit `cwd` — see `bootSandboxAgentSession`) — reflect that on
@@ -3935,6 +3972,10 @@ export async function spawnAgentSession(
           }
         : {}),
       ...(sandboxId ? { remote: true, sandboxId } : {}),
+      // BOOTSTRAP P7a — device-sandbox identity mapping (see above). Only
+      // meaningful for a device sandbox; absent for every local/cloud spawn.
+      ...(hostSessionId ? { hostSessionId } : {}),
+      ...(hostFingerprint ? { hostFingerprint } : {}),
       ...(sandboxProvider ? { sandboxProvider } : {}),
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
       ...(sandboxPorts ? { sandboxPorts } : {}),
@@ -4174,6 +4215,11 @@ type SandboxBootResult =
       /** WP3 — the in-box app-serve outcome (`input.appServe`), stamped onto
        *  the descriptor by the caller. Absent when no appServe was requested. */
       appServe?: SessionAppServeInfo
+      /** BOOTSTRAP P7a — the paired host's REAL fingerprint, present only for
+       *  a `device:<fp|name>` sandbox spawn (`BootedSandbox.device` — the
+       *  device provider resolves a name target to its fingerprint at boot).
+       *  Stamped onto the descriptor's `hostFingerprint` by the caller. */
+      deviceFingerprint?: string
     }
   | {
       ok: false
@@ -4665,6 +4711,10 @@ async function bootSandboxAgentSession(opts: {
     cwd: resolvedCwd,
     provider: providerSlug,
     sandboxTeardown: lifecyclePolicy.teardown,
+    // BOOTSTRAP P7a — the device provider resolves the paired host's REAL
+    // fingerprint at boot (even for a name target); forward it so the
+    // caller can stamp `hostFingerprint` on the descriptor.
+    ...(host.device ? { deviceFingerprint: host.device.fingerprint } : {}),
     ...(host.ports && Object.keys(host.ports).length > 0 ? { sandboxPorts: host.ports } : {}),
     ...(appServe ? { appServe } : {}),
     // The proxy flattens the box's stream to text (documented limitation),

@@ -1183,6 +1183,14 @@ export interface SessionDescriptor {
    *  process gone (pid 1234) — session crashed"). Not a stack trace or raw
    *  error, just enough for a UI/log line. Absent unless something set it. */
   lastError?: string
+  /** BOOTSTRAP P7b — why the LAST device-mirror sync against this
+   *  session's host failed (`device-mirror.ts`), for readers to show
+   *  "host unreachable" instead of silently rendering a stale mirrored
+   *  transcript. Ephemeral: stamped on the descriptor at read time when a
+   *  sync fails, CLEARED by the next successful sync. Absent (never "")
+   *  for a session that is not device-mirrored or whose last sync passed.
+   */
+  mirrorError?: string
   /** ISO 8601 timestamp of the crash-detect sweep that flipped this row to
    *  `endedReason:"crashed"`. Absent for every other terminal path. */
   crashedAt?: string
@@ -2053,6 +2061,27 @@ export interface SessionDescriptor {
   remote?: boolean
   /** Provider-assigned sandbox id (`BootedSandbox.sandboxId`), when `remote` is true. */
   sandboxId?: string
+  /**
+   * BOOTSTRAP P7a — for a `device:<fp|name>` sandbox spawn: the id of the
+   * session the HOST's own daemon created (`BootedSandbox`'s inner
+   * `agent_start` descriptor.id, i.e. the sandbox proxy's `sessionId`). The
+   * conversation with the remote device lives THERE, not under this
+   * descriptor's id — `device_prompt` and the read paths use this to bridge
+   * the twin daemons (issue #1637: a controller "sess_305be17c" vs host
+   * "sess_cf318f00"). Absent for a local/cloud spawn, or when the host
+   * failed to return a usable id at spawn time. Persisted via the same
+   * descriptor spread as every other field.
+   */
+  hostSessionId?: string
+  /**
+   * BOOTSTRAP P7a — for a `device:<fp|name>` sandbox spawn: the paired
+   * host's identity as pinned by the spawn's own sandbox spec, resolved by
+   * the device provider to the REAL fingerprint when it can (a saved
+   * fallback keeps the raw `fp-or-name` target — every consumer matches
+   * `HostRegistry.forwardHttp`'s `fingerprint OR name`). Only meaningful
+   * alongside {@link hostSessionId}; absent for every other spawn.
+   */
+  hostFingerprint?: string
   /** Sandbox provider slug (`agent_start.sandbox`'s provider, e.g. `"e2b"`,
    *  `"local"`), when `remote` is true. Identifies WHERE the box lives, not
    *  just THAT one exists — the VS Code panel's sandbox chip names it in its
@@ -2212,6 +2241,10 @@ export interface SessionSummary {
   browserLocation?: "local" | "cloud"
   remote?: boolean
   sandboxId?: string
+  /** Device-sandbox identity mapping — see `SessionDescriptor.hostSessionId`. */
+  hostSessionId?: string
+  /** Device-sandbox identity mapping — see `SessionDescriptor.hostFingerprint`. */
+  hostFingerprint?: string
   sandboxTeardown?: "kill" | "pause"
   sandboxPorts?: Record<number, string>
   appServe?: SessionAppServeInfo
@@ -2311,6 +2344,8 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     browserLocation: desc.browserLocation,
     remote: desc.remote,
     sandboxId: desc.sandboxId,
+    hostSessionId: desc.hostSessionId,
+    hostFingerprint: desc.hostFingerprint,
     sandboxTeardown: desc.sandboxTeardown,
     sandboxPorts: desc.sandboxPorts,
     appServe: desc.appServe,
@@ -3965,6 +4000,36 @@ export interface SessionsRegistry {
    *  one. Returns false (no-op) for an unknown id or a non-`agent-cli`
    *  session. */
   recordNotice(id: string, text: string): boolean
+  /**
+   * BOOTSTRAP P7b — append pre-shaped MIRROR records (from
+   * `device-mirror.ts`) into an agent-cli session's durable transcript.
+   * Each record already carries its own `kind` + `origin: "device"` +
+   * `hostSeq` fields; this assigns the controller-local `seq`/`ts` the
+   * session's own writer would (`recordMirrorEvents`), in file order.
+   * Deliberately BYPASSES `recordEvent`'s kind/coalescing logic — a mirror
+   * replay must be byte-faithful to what was computed, never re-shaped or
+   * debounced. Returns the number of records written; 0 for an unknown id,
+   * a non-`agent-cli` session, or a session that is not device-mirrored at
+   * all (the caller checked, but double-checks here to keep a local session's
+   * transcript mirror-free even on a stale caller).
+   */
+  appendDeviceMirrorRecords(
+    id: string,
+    records: readonly Record<string, unknown>[],
+  ): number
+  /**
+   * Scan the same transcript `appendDeviceMirrorRecords` writes, computed
+   * against the registry's OWN transcript base dir (the mirror reader
+   * `device-mirror.ts` must never re-derive the path). Returns the mirror
+   * cursor (max `hostSeq` among `origin: "device"` records — 0 when this
+   * session has never been mirrored) and the ordered controller-local
+   * user-prompt texts (kind `user-prompt`, NOT device-tagged) the seed walk
+   * matches against the host transcript. File absent/empty ⇒ all empty.
+   */
+  scanDeviceMirrorState(id: string): {
+    cursor: number
+    localPromptTexts: readonly string[]
+  }
   /** List permission requests currently parked in the pending-permissions
    *  inbox across all permission-hold sessions, newest last. Optionally
    *  filtered to one session. */
@@ -4186,6 +4251,15 @@ export interface SpawnAgentInput {
   remote?: boolean
   /** Provider-assigned sandbox id, when `remote` is true. */
   sandboxId?: string
+  /** Device-sandbox identity mapping (BOOTSTRAP P7a) — the HOST session id
+   *  the device provider's inner `agent_start` created; stamped onto
+   *  {@link SessionDescriptor.hostSessionId}. Omit for every non-device
+   *  spawn (or when the host returned no usable id). */
+  hostSessionId?: string
+  /** Device-sandbox identity mapping (BOOTSTRAP P7a) — the paired host's
+   *  fingerprint (or the raw `device:<…>` target when the provider couldn't
+   *  resolve one); stamped onto {@link SessionDescriptor.hostFingerprint}. */
+  hostFingerprint?: string
   /** Sandbox provider slug, when `remote` is true — see
    *  `SessionDescriptor.sandboxProvider`. */
   sandboxProvider?: string
@@ -8273,6 +8347,11 @@ export function createSessionsRegistry(opts?: {
         ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
         ...(input.remote ? { remote: true } : {}),
         ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
+        // Device-sandbox identity mapping (BOOTSTRAP P7a) — rides the same
+        // `...desc` persistence every other field does, so it survives a
+        // daemon restart.
+        ...(input.hostSessionId ? { hostSessionId: input.hostSessionId } : {}),
+        ...(input.hostFingerprint ? { hostFingerprint: input.hostFingerprint } : {}),
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
@@ -8425,6 +8504,11 @@ export function createSessionsRegistry(opts?: {
         ...(priorCommandSessionId ? { priorCommandSessionId } : {}),
         ...(input.remote ? { remote: true } : {}),
         ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
+        // Device-sandbox identity mapping (BOOTSTRAP P7a) — same rule as
+        // `spawnAgent` (the pending path settles through `spawnAgent`, but
+        // recording it here keeps a placeholder accurate too).
+        ...(input.hostSessionId ? { hostSessionId: input.hostSessionId } : {}),
+        ...(input.hostFingerprint ? { hostFingerprint: input.hostFingerprint } : {}),
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
@@ -10187,6 +10271,43 @@ export function createSessionsRegistry(opts?: {
       appendLine(rt, text, "stdout")
       transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text })
       return true
+    },
+    appendDeviceMirrorRecords(id, records) {
+      const rt = sessions.get(id)
+      if (!rt || rt.desc.kind !== "agent-cli" || !rt.desc.hostSessionId) return 0
+      baseTranscriptWriter.recordMirrorEvents(rt.desc.id, records)
+      return records.length
+    },
+    scanDeviceMirrorState(id) {
+      // Same per-line scanner `highestSeqOnDisk` (transcript-writer.ts) uses —
+      // one read, two projections. The path is derived from THIS registry's
+      // own transcript base dir so tests with an injected `transcriptDir`
+      // never disagree with the device-mirror module's reads.
+      let raw: string
+      try {
+        raw = readFileSync(sessionEventsPath(id, transcriptBaseDir), "utf8")
+      } catch {
+        return { cursor: 0, localPromptTexts: [] as string[] }
+      }
+      let cursor = 0
+      const localPromptTexts: string[] = []
+      for (const line of raw.split("\n")) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        let rec: Record<string, unknown>
+        try {
+          rec = JSON.parse(trimmed) as Record<string, unknown>
+        } catch {
+          continue
+        }
+        if (rec["origin"] === "device") {
+          const hostSeq = rec["hostSeq"]
+          if (typeof hostSeq === "number" && Number.isFinite(hostSeq) && hostSeq > cursor) cursor = hostSeq
+        } else if (rec["kind"] === "user-prompt" && typeof rec["text"] === "string" && rec["text"].length > 0) {
+          localPromptTexts.push(rec["text"] as string)
+        }
+      }
+      return { cursor, localPromptTexts }
     },
     archiveSession(id) {
       const rt = sessions.get(id)

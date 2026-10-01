@@ -293,6 +293,17 @@ export interface TranscriptWriter extends SessionObserver {
    *  flattening. Coalesces consecutive text-delta/thought chunks the same
    *  way the ring buffer does. */
   recordEvent(sessionId: string, evt: AgentStreamEvent): void
+  /** BOOTSTRAP P7b — append PRE-SHAPED mirror records (from
+   *  `device-mirror.ts`) verbatim, each already carrying its own `kind`,
+   *  `origin: "device"`, `hostSeq`, and `sourceRef`. Bypasses `recordEvent`'s
+   *  kind-specific logic and coalescing entirely: a mirrored replay must be
+   *  recorded exactly as it was computed. Still stamps the controller-local
+   *  `seq`/`ts` ordering fields and notifies live subscribers, same as any
+   *  write. A no-op for an empty list. */
+  recordMirrorEvents(
+    sessionId: string,
+    records: readonly Record<string, unknown>[],
+  ): void
   /** Record a durable `usage_snapshot` recap at a turn boundary or on
    *  session exit — the cumulative cost/token/context view resolved by
    *  `deriveSessionUsage`. Distinct from the high-frequency `usage_update`
@@ -579,6 +590,11 @@ export function createTranscriptWriter(opts?: { baseDir?: string }): TranscriptW
         messageKind: record.kind,
         urgency: record.urgency,
       })
+    },
+    recordMirrorEvents(sessionId, records) {
+      if (records.length === 0) return
+      const state = getState(sessionId)
+      for (const record of records) writeRecord(sessionId, state, record)
     },
     recordEvent(sessionId, evt) {
       const state = getState(sessionId)

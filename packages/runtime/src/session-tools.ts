@@ -432,6 +432,10 @@ export interface RegisterSessionToolsOptions {
    *  let the operator drive imported MCPs (chrome-devtools, goose-bridge,
    *  …) through the daemon as a single MCP entry point. */
   mcpProxy?: McpProxyRegistry
+  /** Forwarded to `registerAgentTools` — see
+   *  `RegisterAgentToolsOptions.deviceMirrorSync` (BOOTSTRAP P7b: the
+   *  device-mirror read-sync hook, called before `agent_output` tails). */
+  deviceMirrorSync?: RegisterAgentToolsOptions["deviceMirrorSync"]
   /** Whether the registry was constructed with a PTY factory — when
    *  true, expose the four terminal session tools. When false, the
    *  tools return a clear "not configured" error. */
@@ -668,6 +672,11 @@ export interface SessionListCompactItem {
   /** Mirrors `SessionDescriptor.stats` - only present when the request opted
    *  in with `stats: true | "full"`. */
   stats?: SessionDescriptor["stats"]
+  // Device-sandbox identity mapping (BOOTSTRAP P7a) — see the descriptor
+  // fields' docs. A device-mirrored row carries them even in the compact
+  // projection so "host: <id>" is list-visible.
+  hostSessionId?: SessionDescriptor["hostSessionId"]
+  hostFingerprint?: SessionDescriptor["hostFingerprint"]
 }
 
 /** Public MCP descriptor projection. Resume environment is required by the
@@ -719,6 +728,11 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   ...(s.interrupted ? { interrupted: true as const } : {}),
   ...(s.rssBytes !== undefined ? { rssBytes: s.rssBytes } : {}),
   ...(s.stats !== undefined ? { stats: s.stats } : {}),
+  // Device-sandbox identity mapping (BOOTSTRAP P7a) — a device-mirrored row
+  // surfaces which HOST session id the real conversation lives under, so a
+  // UI can show "host: <id>" straight off the list.
+  ...(s.hostSessionId ? { hostSessionId: s.hostSessionId } : {}),
+  ...(s.hostFingerprint ? { hostFingerprint: s.hostFingerprint } : {}),
 })
 
 // ── batch compact projections (tool-transformer migration) ───────────────

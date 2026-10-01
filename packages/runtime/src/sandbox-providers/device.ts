@@ -53,11 +53,11 @@ export function createDeviceSandboxProvider(
   return {
     async boot(_spec: SandboxSpec, _opts: SandboxBootOpts): Promise<BootedSandbox> {
       const hosts = await hostRegistry.list()
-      const known = hosts.some(h => h.fingerprint === target || h.name === target)
+      const known = hosts.find(h => h.fingerprint === target || h.name === target)
       if (!known) {
         throw new Error(
           `device sandbox: no paired host device matches "${target}" — run \`agentproto ` +
-            "devices add <offer-url>\` here first (the offer must come from `agentproto pair " +
+            "devices add <offer-url>` here first (the offer must come from `agentproto pair " +
             "offer --host` run ON that device). Check `agentproto devices list` for known devices.",
         )
       }
@@ -66,6 +66,7 @@ export function createDeviceSandboxProvider(
       return {
         mcpUrl: bridge.mcpUrl,
         sandboxId: `device-${target}-${randomUUID()}`,
+        device: { fingerprint: known.fingerprint },
         async stop(): Promise<void> {
           // Only the local relay — the remote device's daemon and its
           // session are NOT ours to tear down (see module doc).

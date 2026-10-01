@@ -713,8 +713,9 @@ import type { HostRegistry } from "./host-registry.js"
 import { createDeviceSandboxProvider } from "./sandbox-providers/device.js"
 import type { SandboxProviderHandle } from "./sandbox-providers/types.js"
 import type { JoinTokenRegistry } from "./join-token-registry.js"
-import { createDeviceRegistry } from "./device-registry.js"
+import { createDeviceRegistry, type DevicePromptSessionsLike } from "./device-registry.js"
 import { registerDeviceTools } from "./device-tools.js"
+import { syncDeviceMirror } from "./device-mirror.js"
 import { registerDaemonHealthTools } from "./daemon-health-tools.js"
 import { registerToolHelpTool } from "./tool-help-mcp.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
@@ -866,6 +867,9 @@ export {
 export {
   createDeviceRegistry,
   promptHostSession,
+  promptDeviceSession,
+  resolveDevicePromptMapping,
+  isNoSessionPromptFailure,
   DEVICE_PROMPT_PATH_PREFIX,
   type Device,
   type DeviceRole,
@@ -873,8 +877,20 @@ export {
   type DeviceRegistry,
   type PromptHostSessionInput,
   type PromptHostSessionResult,
+  type DevicePromptSessionsLike,
 } from "./device-registry.js"
 export { registerDeviceTools, type RegisterDeviceToolsOptions } from "./device-tools.js"
+export {
+  syncDeviceMirror,
+  fetchHostTurns,
+  mirrorCursorForSession,
+  hostRecordToMirrorRecord,
+  seedWalkForTranscript,
+  type DeviceMirrorSyncResult,
+  type FetchHostTurnsResult,
+  type HostEventRecord,
+  type DeviceMirrorTarget,
+} from "./device-mirror.js"
 export {
   createReconnectLogGate,
   type ReconnectLogGate,
@@ -2096,6 +2112,22 @@ export async function createGateway(
   // share the one instance — same persistence defaults as before this WP.
   const appRegistry = createAppRegistry({ persist })
 
+  // BOOTSTRAP P7a/P7b closures — the device mirror + id resolution all
+  // route through (BUG-1637's two-halves fix):
+  //
+  //   - `deviceMirrorSync` — the read-time sync hook. Bound to THIS
+  //     registry + the daemon's host registry; syncDeviceMirror no-ops for
+  //     sessions without a device identity, so it is safe to hand to every
+  //     read path unconditionally.
+  //   - the `device_prompt` tool's `sessions` slice — controller-session →
+  //     host-session resolution (device-registry.ts's `promptDeviceSession`).
+  // Note: the scoped-orchestrator SUB-gateway factory shares the same
+  // module-level closures (sessions singleton), so a scoped child resolves
+  // ids the same way — its own subtree only can't own a device spawn's
+  // controller descriptor it didn't mint anyway.
+  const deviceMirrorSync = (idOrName: string): Promise<unknown> =>
+    syncDeviceMirror(sessions, opts.hostRegistry, idOrName)
+
   // Whether the `@agentik/session-chat` studio app is installed with a `ui`
   // block — resolved at call time (not boot) so `app_install`/`app_uninstall`
   // of that app is reflected without a daemon restart. Shared by the
@@ -2693,6 +2725,10 @@ export async function createGateway(
       registerDeviceTools(server, {
         registry: createDeviceRegistry(opts.pairingRegistry, opts.hostRegistry),
         ...(opts.hostRegistry ? { hosts: opts.hostRegistry } : {}),
+        // BOOTSTRAP P7a — controller→host id resolution for `device_prompt`
+        // (issue #1637). The gateway-scoped registry, not the caller's scope:
+        // a controller descriptor lives daemon-wide.
+        ...(sessions ? { sessions: sessions as unknown as DevicePromptSessionsLike } : {}),
         ...(opts.joinTokens ? { joinTokens: opts.joinTokens } : {}),
       })
     }
@@ -2706,6 +2742,10 @@ export async function createGateway(
       workspace,
       mcpProxy,
       ptyEnabled: opts.spawnPty != null,
+      // BOOTSTRAP P7b — read-time device-mirror sync (forwarded to
+      // `registerAgentTools`; `agent_output` pulls the device session's
+      // host turns in before tailing). No-op for local sessions.
+      deviceMirrorSync,
       // Phase 4: lets an `agent_start` carrying `costBudget` auto-attach a
       // windowed cost-budget governance policy on the spawned session.
       supervisor,
@@ -3235,6 +3275,9 @@ export async function createGateway(
     daemonMcpUrl,
     ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
     resolveSandboxProvider: resolveSandboxProviderResolved,
+    // BOOTSTRAP P7b — read-time device-mirror sync for the session routes
+    // (GET /sessions/:id, /output, /export, /events, /conversation).
+    deviceMirrorSync,
     // Same notifier `agent_start` registers `notifyUrl` with, so an HTTP
     // spawn's per-session webhook fires too.
     webhookNotifier,
