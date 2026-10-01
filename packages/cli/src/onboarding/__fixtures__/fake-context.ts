@@ -96,6 +96,9 @@ export function healthySources(): StepSources {
       version_check: { cmd: `probe-${slug}`, parse: "v(\\S+)", range: "*" },
     }),
     nodeExecPath: () => "/usr/local/bin/node",
+    // Healthy machine: the CLI is the published npm install, not a workspace
+    // build, so the preflight source check stays quiet.
+    cliInstallSource: () => ({ source: "published", entry: "/usr/local/lib/node_modules/@agentproto/cli/dist/cli.mjs" }),
     resolveAdapterPackage: () => null,
     listAuthProfiles: async () => [
       { id: "anthropic-cc", endpoint: "anthropic", method: "oauth-bearer", origin: "claude-code" },

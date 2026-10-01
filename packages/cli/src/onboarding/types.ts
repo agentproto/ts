@@ -16,6 +16,7 @@ import type { AuthProfile } from "@agentproto/auth"
 import type { AgentCliHandle } from "@agentproto/driver-agent-cli"
 import type { AgentDetection, InstallState } from "../commands/install-mcp.js"
 import type { SkillFanOutTarget } from "../commands/install-skill.js"
+import type { CliInstallSource } from "../registry/install-source.js"
 
 export type StepStatus = "ok" | "warn" | "missing" | "broken" | "skipped"
 
@@ -228,6 +229,12 @@ export interface StepSources {
   resolveAdapterHandle(slug: string): Promise<Pick<AgentCliHandle, "version_check" | "bin" | "bin_args">>
   /** The Node binary this CLI process runs under (`process.execPath`). */
   nodeExecPath(): string
+  /** Where the CLI running this wizard lives — `published` (an `npm i -g`
+   *  install) or `workspace` (a monorepo/dev checkout, i.e. the local
+   *  folder), plus the entry path. The preflight step flags a `workspace`
+   *  build because `daemon install` would bake that local folder into the
+   *  service; the fix is an npm install, never a local copy. */
+  cliInstallSource(): { source: CliInstallSource; entry: string | null }
   /** Resolve a global `@agentproto/adapter-<slug>` package the way the
    *  daemon's manifest loader does — `createRequire(import.meta.url).resolve(
    *  '<pkg>/package.json')`. Pass `fromNode` to resolve as if from the global

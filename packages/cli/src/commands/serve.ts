@@ -139,6 +139,7 @@ import {
 import { installAdapter } from "../registry/install-driver.js"
 import { listCatalogModelsFromInstalled } from "../registry/catalog-models.js"
 import { CATALOG } from "../registry/catalog.js"
+import { cliInstallSource } from "../registry/install-source.js"
 import WebSocket from "ws"
 
 interface ServeOpts {
@@ -771,13 +772,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         build: {
           sha: __CLI_BUILD_SHA__,
           builtAt: __CLI_BUILT_AT__,
-          source: (() => {
-            const entry = process.argv[1] ?? ""
-            if (!entry) return "unknown"
-            return entry.includes("/node_modules/") || entry.includes("/.npm/")
-              ? "published"
-              : "workspace"
-          })(),
+          source: cliInstallSource(process.argv[1]),
         },
         // BOOT.md is silly for a tunnel daemon — skip it.
         boot: false,

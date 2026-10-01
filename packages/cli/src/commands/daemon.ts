@@ -55,6 +55,7 @@ import {
 } from "@agentproto/runtime/config"
 
 import { discoverDaemon, httpGetJson } from "./_daemon-helpers.js"
+import { renderServiceTarget } from "../registry/install-source.js"
 
 const LABEL = "sh.agentproto"
 /** launchd job label — exported for read-only probes (`agentproto doctor`). */
@@ -232,7 +233,8 @@ async function runInstall(args: readonly string[]): Promise<number> {
 
   if (values["dry-run"]) {
     process.stdout.write(
-      `# Would write ${p.plist}:\n\n${plist}\n# launchctl bootstrap gui/$(id -u) ${p.plist}\n`,
+      `# Would install a service running:\n${renderServiceTarget(p.argv[0], process.argv[1] ?? null)}\n` +
+        `# Would write ${p.plist}:\n\n${plist}\n# launchctl bootstrap gui/$(id -u) ${p.plist}\n`,
     )
     return 0
   }
@@ -241,6 +243,9 @@ async function runInstall(args: readonly string[]): Promise<number> {
   await fs.mkdir(dirname(p.log), { recursive: true })
   await fs.writeFile(p.plist, plist, "utf8")
   process.stdout.write(`agentproto daemon: wrote ${p.plist}\n`)
+  process.stdout.write(
+    `agentproto daemon: service will run:\n${renderServiceTarget(p.argv[0], process.argv[1] ?? null)}`,
+  )
 
   // If a previous version is loaded, bootout first so bootstrap
   // doesn't fail with "service already bootstrapped".
@@ -1020,7 +1025,8 @@ export async function runWinInstall(
 
   if (values["dry-run"]) {
     process.stdout.write(
-      `# Would write ${scriptPath}:\n\n${script}\n# schtasks ${create.join(" ")}\n# schtasks /Run /TN ${SCHTASKS_TASK_NAME}\n`,
+      `# Would install a service running:\n${renderServiceTarget(p.argv[0], process.argv[1] ?? null, "win32")}\n` +
+        `# Would write ${scriptPath}:\n\n${script}\n# schtasks ${create.join(" ")}\n# schtasks /Run /TN ${SCHTASKS_TASK_NAME}\n`,
     )
     return 0
   }
@@ -1035,6 +1041,9 @@ export async function runWinInstall(
     return 1
   }
   process.stdout.write(`agentproto daemon: wrote ${scriptPath}\n`)
+  process.stdout.write(
+    `agentproto daemon: service will run:\n${renderServiceTarget(p.argv[0], process.argv[1] ?? null, "win32")}`,
+  )
 
   const created = await schtasksFn(create)
   if (created.code !== 0) {

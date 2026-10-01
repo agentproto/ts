@@ -45,6 +45,24 @@ describe("preflight", () => {
     expect(action(actions, "preflight.update-cli").default).toBe(false)
   })
 
+  it("a workspace build offers the npm install, default no", async () => {
+    const actions = await planOf(preflightStep, [
+      {
+        id: "preflight.cli-source",
+        title: "CLI install source",
+        status: "warn",
+        fix: "npm i -g @agentproto/cli@latest",
+        detail: "this agentproto is a workspace build",
+      },
+    ])
+    const a = action(actions, "preflight.update-cli")
+    expect(a.default).toBe(false)
+    expect(a.title).toContain("published CLI")
+    const fake = createFakeSetup(ctx)
+    await a.apply(fake.io)
+    expect(fake.calls).toEqual(["npm i -g @agentproto/cli@latest"])
+  })
+
   it("nothing to do on a healthy preflight", async () => {
     expect(await planOf(preflightStep, await preflightStep.detect(ctx))).toEqual([])
     expect(preflightStep.stopIf?.(await preflightStep.detect(ctx))).toBeNull()

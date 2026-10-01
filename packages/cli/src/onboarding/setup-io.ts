@@ -93,6 +93,48 @@ function clackPrompts(output: Writable): SetupPrompts {
   }
 }
 
+/** `[file, args]` that run `script` in the USER's shell: a login shell on
+ *  POSIX (profile-sourced PATH, so nvm/fnm/asdf resolve), cmd.exe on Windows. */
+function userShellArgv(script: string): [string, string[]] {
+  if (process.platform === "win32") {
+    return [process.env["ComSpec"] ?? "cmd.exe", ["/d", "/s", "/c", script]]
+  }
+  const shell = process.env.SHELL && process.env.SHELL.trim() !== "" ? process.env.SHELL : "/bin/sh"
+  return [shell, ["-lc", script]]
+}
+
+/**
+ * Resolve the node/npm global prefix the USER's login shell would install
+ * into. A GUI launcher or a minimal-PATH process can resolve a DIFFERENT
+ * node/npm than the interactive shell (the nvm-vs-system trap, F4); probing
+ * the login shell lets `updateCli` report the target so the user can veto
+ * before the wrong global install is clobbered. `null` when the probe fails
+ * or the platform has no login shell. Never rejects.
+ */
+function probeLoginShellNpm(): Promise<{ node: string; prefix: string } | null> {
+  if (process.platform === "win32") return Promise.resolve(null)
+  const script = 'printf "%s\\n%s\\n" "$(command -v node 2>/dev/null)" "$(npm prefix -g 2>/dev/null)"'
+  return new Promise((resolve) => {
+    let out = ""
+    const child = spawn(...userShellArgv(script), { stdio: ["ignore", "pipe", "ignore"] })
+    const timer = setTimeout(() => {
+      child.kill()
+      resolve(null)
+    }, 5_000)
+    child.stdout?.setEncoding("utf8").on("data", (c: string) => (out += c))
+    child.once("error", () => {
+      clearTimeout(timer)
+      resolve(null)
+    })
+    child.once("exit", (code) => {
+      clearTimeout(timer)
+      if (code !== 0) return resolve(null)
+      const [node, prefix] = out.trim().split("\n")
+      resolve(node && prefix ? { node, prefix } : null)
+    })
+  })
+}
+
 function realVerbs(cwd: string): SetupVerbs {
   return {
     workspace: (args) => runWorkspace(args),
@@ -106,12 +148,25 @@ function realVerbs(cwd: string): SetupVerbs {
     installMcp: (args) => runInstallMcp(args),
     installSkill: (slug, args) => runInstallSkill(slug, args),
     llmEndpoints: (args) => runLlm(args),
-    updateCli: () =>
-      new Promise((resolve) => {
-        const child = spawn("npm", ["i", "-g", "@agentproto/cli@latest"], { stdio: "inherit" })
+    updateCli: async () => {
+      // Always the registry (`@latest`), never a local folder — and run in the
+      // user's shell so the version manager that owns their node/npm resolves,
+      // reporting WHICH node/prefix it targets so they can veto the wrong one.
+      const cmd = "npm i -g @agentproto/cli@latest"
+      const target = await probeLoginShellNpm()
+      const where = target
+        ? `your login shell's node ${target.node} (global prefix ${target.prefix})`
+        : `this process's node ${process.execPath}`
+      process.stdout.write(
+        `agentproto: installing @agentproto/cli@latest from npm with ${where}\n` +
+          `  (never a local folder — re-run \`agentproto setup\` after this finishes)\n`,
+      )
+      return new Promise<number>((resolve) => {
+        const child = spawn(...userShellArgv(cmd), { stdio: "inherit" })
         child.once("error", () => resolve(127))
         child.once("exit", (code) => resolve(code ?? 1))
-      }),
+      })
+    },
     modelsSummary: () => modelsSummary(),
     firstRun: (slug, prompt, onLine) => runFirstSession(slug, prompt, onLine, { cwd }),
     appInstalled: (appId) => findInstalledAppDir(appId) !== undefined,

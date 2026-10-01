@@ -23,7 +23,7 @@ re-implementation), then re-checks the step and shows the result.
 
 | Step | Proposes | Default | Runs |
 |------|----------|---------|------|
-| `preflight` | Node too old ⇒ **stops** with the fix. Outdated CLI ⇒ update | no | `npm i -g @agentproto/cli@latest` |
+| `preflight` | Node too old ⇒ **stops** with the fix. Outdated CLI ⇒ update. **Workspace/local build** (running from a monorepo checkout rather than the npm install) ⇒ replace it with the published CLI | no | `npm i -g @agentproto/cli@latest` |
 | `workspace` | No workspace ⇒ register the cwd (slug from the dir name, editable) | yes | `workspace add` |
 | `daemon` | macOS: install the launchd service, then start it. Installed but down ⇒ start. Stale PATH / other version ⇒ restart. Linux: a detached `serve` (service support is coming) | yes (restart: no) | `daemon install` + `daemon start` / `daemon restart` / `install-mcp`'s serve fallback |
 | `agents` | Multiselect of catalog harnesses not installed. Nothing pre-selected if one works, else claude-code | — | `install <slug>` |
@@ -52,6 +52,25 @@ remote tunnel.
 
 Without a terminal, `--yes` or `--dry-run` is required; otherwise the
 wizard exits `78` with a hint.
+
+#### Updating the CLI
+
+The preflight update action always installs from the **npm registry**
+(`npm i -g @agentproto/cli@latest`) — never a local folder. It runs in your
+**login shell**, so the version manager that owns your `node`/`npm`
+(nvm/fnm/asdf/…) resolves, and it prints the resolved node + global prefix
+*before* installing so you can veto the wrong one:
+
+```text
+agentproto: installing @agentproto/cli@latest from npm with your login shell's node /Users/me/.nvm/versions/node/v22.22.0/bin/node (global prefix /Users/me/.nvm/versions/node/v22.22.0)
+  (never a local folder — re-run `agentproto setup` after this finishes)
+```
+
+The same step flags a **workspace build**: if the `agentproto` running the
+wizard lives in a monorepo checkout (not under `node_modules`/`.npm`),
+`agentproto daemon install` would bake that local `dist/` path into the
+daemon service. The check warns with the npm fix so the daemon runs the
+published CLI, not a local folder.
 
 ### Resume
 
