@@ -60,20 +60,39 @@ export function registerMcpApps(
     // 1. Resource: HTML panel served at ui://<id>/view. registerUiResource
     //    duplicates _meta.ui onto both resources/list and resources/read
     //    (hosts read csp from the read result first; see its header).
+    //    openai.resource (when the app declares one) rides alongside as
+    //    `_meta["openai/ui"]` display hints — namespaced sibling metadata,
+    //    never overwriting the canonical `ui` block (plan I5 / §3.2).
     registerUiResource(server, {
       name: app.id,
       uri: resourceUri,
       html,
       description: app.description,
       csp: app.csp,
+      ...(app.openai?.resource !== undefined
+        ? {
+            // Namespaced under `openai/ui` per §3.2 — a sibling of the
+            // canonical `_meta.ui`, never an overwrite of it.
+            meta: { "openai/ui": JSON.parse(JSON.stringify(app.openai.resource)) },
+          }
+        : {}),
     })
 
     // 2. Tool — _meta.ui.resourceUri at definition level so the host
     //    can pre-associate the panel before the handler even runs.
+    //    `_meta["openai/ui"]` carries the declared entrypoints AND the
+    //    declared icons (projected tool `icons` — this SDK's
+    //    registerTool drops the standard top-level icons field from the
+    //    tools/list payload, so the namespaced record is the vehicle that
+    //    survives to OpenAI-class hosts). All on the SAME single tool —
+    //    entrypoint count never changes the tool/resource count (I2),
+    //    and an app without any openai block serializes byte-identical
+    //    to before (I1/I5).
     server.registerTool(
       app.id,
       {
         description: app.description ?? app.title,
+        ...(app.openai !== undefined ? { title: app.title } : {}),
         inputSchema: app.inputSchema.shape,
         annotations: {
           readOnlyHint: true,
@@ -84,9 +103,19 @@ export function registerMcpApps(
             resourceUri,
             visibility: ["model", "app"],
           },
+          ...(app.openai?.tool?.entrypoints !== undefined || app.openai?.icons !== undefined
+            ? {
+                "openai/ui": {
+                  ...(app.openai.tool?.entrypoints !== undefined
+                    ? { entrypoints: JSON.parse(JSON.stringify(app.openai.tool.entrypoints)) }
+                    : {}),
+                  ...(app.openai.icons !== undefined ? { icons: JSON.parse(JSON.stringify(app.openai.icons)) } : {}),
+                },
+              }
+            : {}),
         },
       },
-      async (args) => {
+      async (args: Record<string, unknown>) => {
         const initData = app.execute ? await app.execute(args) : {}
         return {
           content: [

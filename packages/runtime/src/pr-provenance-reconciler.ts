@@ -20,6 +20,10 @@
  *   B. BRANCH — resolve the OPEN PR for the session cwd's current branch
  *      (via the injected {@link OpenPrResolver} port), the fallback for
  *      adapters whose tool calls aren't recorded.
+ *   C. TEXTUAL — pull-request urls mentioned in the session's own assistant
+ *      output (bounded transcript-tail scan); records on `openedPrs`
+ *      (adapter "output-scan") but never stamps a footer — a mention is
+ *      not proof of creation.
  *
  * Turn-end/exit are only poll checkpoints, never an assertion the PR is
  * ready: the real predicate is "did this session create a PR / does an open
@@ -40,6 +44,8 @@ import { stampFooterOnPr, type GhRunner } from "./pr-provenance-stamp.js"
 import type { FooterSession } from "./pr-provenance.js"
 import { readToolCallRecords } from "./tool-call-log.js"
 import type { ToolCallRecord } from "./tool-call-record.js"
+import { readRecentTurnsSync } from "./session-evidence.js"
+import { parsePrUrl } from "./review-pr.js"
 
 /**
  * Resolve the OPEN pull request for a session's working directory — i.e. the
@@ -57,6 +63,10 @@ export type OpenPrResolver = (cwd: string) => Promise<{ number: number; url: str
 export interface ReconcilerSession extends FooterSession {
   worktreePath?: string
   openedPrs?: readonly { url: string; number?: number }[]
+  /** Ephemeral transcript path the live registry stamps on every read
+   *  (see `SessionDescriptor.eventsPath`); lane C's bounded tail read
+   *  needs it. Absent from test fakes without a transcript on disk. */
+  eventsPath?: string
 }
 
 /** PR number from a forge PR url (`…/pull/42`), for `openedPrs` rows recorded
@@ -105,6 +115,10 @@ export function createPrProvenanceReconciler(opts: {
   // the first, mid-turn stamp that lands before any usage is known.
   const costRefreshedPrUrls = new Set<string>()
   const lastPollAt = new Map<string, number>()
+  // Lane C's dedupe: urls already recorded from an assistant-output mention
+  // this daemon run (across sessions — a url is claimed at most once per
+  // run even if two sessions both printed it; `openedPrs` covers restarts).
+  const scannedPrUrls = new Set<string>()
 
   const reconcile = async (sessionId: string, terminal: boolean): Promise<void> => {
     const desc = opts.registry.get(sessionId)
@@ -173,6 +187,44 @@ export function createPrProvenanceReconciler(opts: {
       if (!record.createdPrUrl || record.createdPrNumber === undefined) continue
       if (!shouldStamp(record.createdPrUrl)) continue
       await stamp({ number: record.createdPrNumber, url: record.createdPrUrl })
+    }
+
+    // Lane C — TEXTUAL: pull-request urls mentioned in the session's own
+    // ASSISTANT output (a bounded tail read of its events.jsonl, same window
+    // shape session_evidence already reads). Covers the session whose tool
+    // calls lane A never saw recorded AND whose branch→PR answer lane B
+    // missed or raced (branch already switched / unmountable cwd / no gh):
+    // such a harness still almost always PRINTS the `…/pull/<n>` url it just
+    // created. A mention is not proof of creation, so this lane never
+    // stamps a footer — it only records the PR on `openedPrs` (adapter
+    // "output-scan") so the session ↔ PR link at least exists for the
+    // supervisor/polling lanes to consume. In-process, zero network: the
+    // read is the same file the transcript writer already owns; dedupe is
+    // the url set below + the descriptor's `openedPrs` (over restarts).
+    if (desc.eventsPath) {
+      for (const turn of readRecentTurnsSync(desc.eventsPath)) {
+        if (turn.role !== "assistant") continue
+        const re = /https?:\/\/[^\s<>"]+/g
+        let m: RegExpExecArray | null
+        while ((m = re.exec(turn.text)) !== null) {
+          const url = m[0].replace(/[.,;:)\]]+$/, "")
+          const parsed = parsePrUrl(url)
+          if (!parsed) continue
+          if (desc.openedPrs?.some(known => known.url === url)) continue
+          if (scannedPrUrls.has(url)) continue
+          scannedPrUrls.add(url)
+          try {
+            opts.registry.recordOpenedPr(sessionId, {
+              adapter: "output-scan",
+              number: parsed.number,
+              url,
+            })
+          } catch {
+            // Bubble nothing: a registry hiccup must not break the stamp
+            // lanes that would otherwise run after/beside this one.
+          }
+        }
+      }
     }
 
     // Lane B — branch→PR reconciliation, the fallback for adapters whose tool

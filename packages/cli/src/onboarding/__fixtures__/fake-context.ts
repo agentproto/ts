@@ -118,6 +118,11 @@ export function healthySources(): StepSources {
     ],
     resolveSkillPackDir: async () => "/pack",
     latestSkillPackVersion: async () => "0.8.3",
+    resolveBuiltinAppDir: async (appId: string) => {
+      const slug = appId.replace(/^@agentproto\//, "")
+      return `/builtin-apps/${slug}`
+    },
+    appInstalled: (appId: string) => appId === "@agentproto/ops-panel",
   }
 }
 

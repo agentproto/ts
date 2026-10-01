@@ -50,6 +50,7 @@ describe("healthy machine", () => {
       "devices",
       "rendezvous",
       "skills",
+      "apps",
       "local-models",
       "llm-gateway",
     ])

@@ -6,6 +6,8 @@
 import { spawn } from "node:child_process"
 import { promises as fs } from "node:fs"
 import { arch, homedir, platform } from "node:os"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import WebSocket from "ws"
 import { loadConfig } from "@agentproto/runtime/config"
 import { loadWorkspacesConfig } from "@agentproto/runtime/workspaces-config"
@@ -17,10 +19,30 @@ import { probeLoginShellPath } from "../commands/daemon.js"
 import { detectAgents, loadInstallState } from "../commands/install-mcp.js"
 import { resolveSkillFanOutTargets } from "../commands/install-skill.js"
 import { resolveSkillPackDir } from "../commands/skill-install/pack-resolve.js"
+import { findInstalledAppDir } from "../app-serve.js"
 import { resolveAdapter } from "../registry/resolve.js"
 import { npmLatestVersion } from "../registry/freshness.js"
 import { resolveProxyDialOptions } from "../util/proxy-dial.js"
+import { pathExists } from "../commands/skill-install/shared.js"
 import type { ExecFn, StepContext, StepFs, WebSocketProbeResult } from "./types.js"
+
+async function collectNodeModulesRoots(start: string): Promise<string[]> {
+  const seen = new Set<string>()
+  const roots: string[] = []
+  let cur = start
+  for (let i = 0; i < 20; i++) {
+    if (seen.has(cur)) break
+    seen.add(cur)
+    const candidate = join(cur, "node_modules")
+    if (await pathExists(candidate)) roots.push(candidate)
+    const pnpmCandidate = join(cur, "node_modules", ".pnpm", "node_modules")
+    if (await pathExists(pnpmCandidate)) roots.push(pnpmCandidate)
+    const parent = dirname(cur)
+    if (parent === cur) break
+    cur = parent
+  }
+  return roots
+}
 
 const NETWORK_TIMEOUT_MS = 3_000
 
@@ -142,6 +164,18 @@ export function createStepContext(cliVersion: string): StepContext {
       skillTargets: async () => (await resolveSkillFanOutTargets()).targets,
       resolveSkillPackDir: () => resolveSkillPackDir(undefined, { allowFetch: false }),
       latestSkillPackVersion: () => npmLatestVersion("@agentproto/skill-pack-agentproto", NETWORK_TIMEOUT_MS),
+      resolveBuiltinAppDir: async (appId: string) => {
+        const slug = appId.replace(/^@agentproto\//, "")
+        const starts = [dirname(fileURLToPath(import.meta.url)), process.cwd()]
+        for (const start of starts) {
+          for (const root of await collectNodeModulesRoots(start)) {
+            const candidate = join(root, "@agentproto", "apps", slug)
+            if (await pathExists(candidate)) return candidate
+          }
+        }
+        return null
+      },
+      appInstalled: (appId: string) => findInstalledAppDir(appId) !== undefined,
     },
   }
 }

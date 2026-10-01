@@ -7,6 +7,9 @@
  */
 
 import { describe, expect, it, vi } from "vitest"
+import { mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { createSessionEventBus, type SessionEvent } from "../session-event-bus.js"
 import {
   createPrProvenanceReconciler,
@@ -544,5 +547,89 @@ describe("createPrProvenanceReconciler — recorded-tool-call lane", () => {
     bus.emit(exited("sess_exec"))
     await flush()
     expect(edits.length).toBe(1)
+  })
+})
+
+describe("createPrProvenanceReconciler — textual mention lane (C)", () => {
+  /** A minimal events.jsonl whose transcript tail carries a user turn and
+   *  assistant text deltas mentioning PR urls. */
+  const writeTranscript = (lines: string[]): string => {
+    const dir = mkdtempSync(join(tmpdir(), "pr-scan-"))
+    const path = join(dir, "events.jsonl")
+    writeFileSync(path, lines.join("\n") + "\n")
+    return path
+  }
+
+  const mentionLines = [
+    JSON.stringify({ kind: "user-prompt", text: "open a PR" }),
+    JSON.stringify({ kind: "text-delta", text: "Working on it." }),
+    JSON.stringify({ kind: "turn-end" }),
+    JSON.stringify({ kind: "text-delta", text: "Opened " }),
+    JSON.stringify({ kind: "text-delta", text: PR.url + "." }),
+  ]
+
+  it("records a PR mentioned in assistant output, with adapter output-scan", async () => {
+    const session = execSession({ eventsPath: writeTranscript(mentionLines) })
+    const { reg, recorded } = fakeRegistry([session, SUPER])
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      listToolCalls: async () => [],
+      sessionEvents: bus,
+      resolveOpenPr: vi.fn<OpenPrResolver>(async () => null),
+      run: okRun,
+    })
+
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+    expect(recorded).toEqual([{ sessionId: "sess_exec", number: PR.number, url: PR.url }])
+    // A mention is not proof of creation: NO footer stamp for it.
+    expect(session.openedPrs?.[0]?.url).toBe(PR.url)
+
+    // Second turn-end: dedupes (nothing new recorded).
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+    expect(recorded.length).toBe(1)
+  })
+
+  it("ignores a PR already recorded on the descriptor, and ignores user-turn mentions", async () => {
+    // The USER'S turn mentions a PR; the assistant's tail mentions the
+    // already-recorded one.
+    const lines = [
+      JSON.stringify({ kind: "user-prompt", text: "see https://github.com/other/thing/pull/7, open mine" }),
+      JSON.stringify({ kind: "text-delta", text: `Opened ${PR.url}` }),
+    ]
+    const session = execSession({
+      eventsPath: writeTranscript(lines),
+      openedPrs: [{ url: PR.url, number: PR.number }],
+    })
+    const { reg, recorded } = fakeRegistry([session, SUPER])
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      listToolCalls: async () => [],
+      sessionEvents: bus,
+      resolveOpenPr: async () => null,
+      run: okRun,
+    })
+
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+    expect(recorded).toEqual([])
+  })
+
+  it("skips lane C entirely when the descriptor has no eventsPath", async () => {
+    const session = execSession()
+    const { reg, recorded } = fakeRegistry([session, SUPER])
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      listToolCalls: async () => [],
+      sessionEvents: bus,
+      resolveOpenPr: vi.fn<OpenPrResolver>(async () => null),
+    })
+    expect(() => bus.emit(turnEnd("sess_exec"))).not.toThrow()
+    await flush()
+    expect(recorded).toEqual([])
   })
 })

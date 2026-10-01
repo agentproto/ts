@@ -115,6 +115,10 @@ function realVerbs(cwd: string): SetupVerbs {
     modelsSummary: () => modelsSummary(),
     firstRun: (slug, prompt, onLine) => runFirstSession(slug, prompt, onLine, { cwd }),
     appInstalled: (appId) => findInstalledAppDir(appId) !== undefined,
+    appInstall: async (dir) => {
+      const { runAppInstall } = await import("../commands/app.js")
+      return runAppInstall([dir])
+    },
   }
 }
 

@@ -38,7 +38,16 @@ export { opsPanel } from "./ops-panel/index.js"
 export { configApp } from "./config/index.js"
 export { sessionViewer } from "./session-viewer/index.js"
 
-export type { AgnoMcpApp } from "./mcp-app-types.js"
+export type {
+  AgnoMcpApp,
+  OpenAIAppDescriptor,
+  OpenAIUiToolMetadata,
+  OpenAIUiResourceMetadata,
+  OpenAIDisplayMode,
+  OpenAIAppUiExtension,
+  OpenAIEntrypoint,
+  OpenAIIcon,
+} from "./mcp-app-types.js"
 export { panelBridgeScript } from "./panel-bridge.js"
 export { makeSessionsPanelApp, sessionsPanelApp } from "./sessions-panel/index.js"
 export type { SessionsPanelOps, SessionsInput, SessionsOutput } from "./sessions-panel/index.js"

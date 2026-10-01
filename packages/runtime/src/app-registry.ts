@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { join, dirname } from "node:path"
 import { mkdirSync, readFileSync, existsSync, writeFileSync, renameSync } from "node:fs"
+import type { OpenAIAppUiExtension } from "@agentproto/app-kit"
 
 /** A ref pair as materialized by `@agentproto/app-kit`'s `emit` — an
  *  agent/workflow id plus the absolute path to its manifest on disk. */
@@ -76,6 +77,16 @@ export interface InstalledApp {
       readonly command: string
       readonly cwd?: string
       readonly sources?: readonly string[]
+    }
+    /** Namespaced OpenAI MCP-extensions declaration (plan §3.1), carried
+     *  structurally from the app's normalized `AppUiDefinition.extensions`
+     *  by `performInstall` (app-tools.ts is the ONLY writer; every other
+     *  reader treats this as already-validated — validation happened in
+     *  app-kit at `defineApp`/load time, install is not a second gate).
+     *  Frozen as a plain JSON-safe object so `apps.json` persistence is
+     *  byte-stable. Absent ⇒ the app is portable-only. */
+    readonly extensions?: {
+      readonly openai?: OpenAIAppUiExtension
     }
   }
   /** A persistent HTML dashboard (Cowork artifact) the app ships. `path` is

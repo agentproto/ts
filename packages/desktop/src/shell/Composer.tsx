@@ -5,6 +5,7 @@
 
 import { useState, type KeyboardEvent } from "react"
 
+import { useKeyboardViewport } from "./useKeyboardViewport"
 import { daemonPrompt } from "../data/daemon"
 import type { SessionDescriptor } from "../data/types"
 
@@ -20,6 +21,10 @@ export function Composer({ session }: ComposerProps) {
   const [text, setText] = useState("")
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // On mobile, keep the composer above the soft keyboard: --kb-inset offset
+  // + focused-field reveal (no-op on desktop — no visualViewport overlap).
+  useKeyboardViewport()
 
   const live = canSendTo(session)
   const trimmed = text.trim()
