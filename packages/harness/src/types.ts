@@ -66,7 +66,14 @@ export interface StartAgentArgs {
    *  (`device_bridge_workspace_unknown`) instead of silently falling back
    *  to the target's active workspace. Never set on a local spawn. */
   deviceBridge?: boolean
-  prompt?: string
+  /** Initial prompt. A plain string is composed with the target daemon's
+   *  role/AGENTS.md disposition preamble (spawn + `agent_prompt` combined);
+   *  a content block or block array is sent to the adapter verbatim. The
+   *  device-sandbox bridge carries the CONTROLLER-composed prompt as a
+   *  content block so the target daemon does not recompose it — the
+   *  single-dial device spawn (F2) delivers spawn + first turn in ONE
+   *  `agent_start` call instead of a second `agent_prompt` dial. */
+  prompt?: string | Record<string, unknown> | unknown[]
   label?: string
   model?: string
   /** Canonical provider route for a routed model.  This must travel with a

@@ -3853,6 +3853,14 @@ export async function spawnAgentSession(
         ...(authSpec ? { authSpec } : {}),
         ...(descriptorRoute ? { route: descriptorRoute } : {}),
         ...(input.appServe ? { appServe: input.appServe } : {}),
+        // F2 single-dial spawn — DEVICE ONLY: carry the composed initial
+        // prompt INSIDE the inner `agent_start` (see `bootSandboxAgentSession`'s
+        // `initialPrompt`) so the device bridge makes ONE dial, not two. The
+        // controller still drives/records the first turn through the proxy
+        // below (`registry.spawnAgent`'s `initialPrompt` / the `wait`
+        // `sendPrompt`); `promptCarriedInStart` stops the proxy from
+        // re-sending it. Non-device sandboxes are untouched (two-dial shape).
+        ...(isDeviceSpawn && effectivePrompt !== undefined ? { initialPrompt: effectivePrompt } : {}),
       })
       if (!booted.ok) return booted
       agentSession = booted.agentSession
@@ -4655,6 +4663,18 @@ async function bootSandboxAgentSession(opts: {
   /** WP3 — serve an app UI from inside the box; see
    *  `SpawnAgentSessionInput.appServe`. */
   appServe?: SandboxAppServeSpec
+  /** DEVICE-ONLY (F2 single-dial spawn): the controller-composed initial
+   *  prompt, carried INSIDE the inner `agent_start` so ONE device-bridge
+   *  `forwardHttpStream` dial delivers both the spawn and the first turn.
+   *  Previously the prompt went as a SECOND concurrent `agent_prompt` dial
+   *  that failed at ~15s on a flapping channel (session created, prompt never
+   *  delivered — field-observed repeatedly). Forwarded as a content block so
+   *  the target daemon sends it VERBATIM (its `agent_start` block form skips
+   *  role/AGENTS.md recomposition), which keeps the host's recorded
+   *  user-prompt text identical to the controller's so the read-time device
+   *  mirror's seed walk still matches rather than re-merging the turn.
+   *  Ignored for every non-device provider. */
+  initialPrompt?: string | Record<string, unknown> | unknown[]
 }): Promise<SandboxBootResult> {
   const providerSlug = typeof opts.sandbox === "string" ? opts.sandbox : opts.sandbox.provider
   if (!opts.resolveSandboxProvider) {
@@ -4869,6 +4889,15 @@ async function bootSandboxAgentSession(opts: {
   // retry (see `startDeviceSessionWithRetry`). Every other provider (local,
   // e2b, Box, …) keeps the exact single-attempt behaviour.
   const deviceTarget = deviceTargetOf(opts.sandbox)
+  // F2 single-dial spawn — only the DEVICE bridge carries the prompt inside
+  // the spawn. Wrapped as a content block (see `initialPrompt`'s doc) so the
+  // target's `agent_start` sends it verbatim instead of recomposing it.
+  const carriedPrompt =
+    deviceTarget !== undefined && opts.initialPrompt !== undefined
+      ? typeof opts.initialPrompt === "string"
+        ? [{ type: "text", text: opts.initialPrompt }]
+        : opts.initialPrompt
+      : undefined
   let remoteSessionId: string
   let resolvedCwd = boxCwd
   try {
@@ -4893,6 +4922,8 @@ async function bootSandboxAgentSession(opts: {
       ...(opts.effort ? { effort: opts.effort } : {}),
       ...(opts.label ? { label: opts.label } : {}),
       ...(opts.auth ? { auth: opts.auth } : {}),
+      // F2 — the initial prompt rides the SAME dial as the spawn (device only).
+      ...(carriedPrompt !== undefined ? { prompt: carriedPrompt } : {}),
     }
     const remoteDesc =
       deviceTarget !== undefined
@@ -4954,6 +4985,9 @@ async function bootSandboxAgentSession(opts: {
       // Device spawns only: surface a first-turn failure's raw host line
       // (see `surfaceHostTurnErrors`).
       ...(deviceTarget !== undefined ? { surfaceHostTurnErrors: true } : {}),
+      // F2 — when the first prompt rode the spawn dial, don't re-send it as a
+      // second `agent_prompt` dial (see `promptCarriedInStart`).
+      ...(carriedPrompt !== undefined ? { promptCarriedInStart: true } : {}),
     }),
     commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
     sandboxId: host.sandboxId,

@@ -147,6 +147,14 @@ export interface SandboxAgentSessionProxyOpts {
    *  Off for every other provider (local/e2b/Box keep byte-identical
    *  behaviour). */
   surfaceHostTurnErrors?: boolean
+  /** Device-spawn only (F2 single-dial spawn): the session's FIRST prompt
+   *  was already carried INSIDE `host.start()`'s `agent_start` (the
+   *  controller's `bootSandboxAgentSession` forwards it), so the proxy must
+   *  NOT send it again over a second `agent_prompt` dial. The first `send()`
+   *  then only OPENS the box's event stream to consume the already-running
+   *  turn; every later `send()` prompts normally. Off for every other
+   *  provider (local/e2b/Box keep byte-identical behaviour). */
+  promptCarriedInStart?: boolean
 }
 
 /**
@@ -430,7 +438,13 @@ export function createSandboxAgentSessionProxy(
       // `sendPromptAndWait`, which uses the same cursor-first pattern)
       // so a mid-turn fallback never starts from a stale cursor.
       const since = await host.currentEventsCursor()
-      await host.prompt(remoteSessionId, prompt)
+      // F2 single-dial spawn: the first prompt rode inside `host.start()`'s
+      // `agent_start`, so re-sending it here would be the second concurrent
+      // `forwardHttpStream` dial this fix removes (and would double-deliver
+      // the turn). Just consume the stream below.
+      if (!(opts.promptCarriedInStart && isFirstTurn)) {
+        await host.prompt(remoteSessionId, prompt)
+      }
 
       const controller = new AbortController()
       let sseBody: ReadableStream<Uint8Array> | undefined

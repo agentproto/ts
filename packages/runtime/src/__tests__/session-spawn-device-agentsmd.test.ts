@@ -89,6 +89,20 @@ import { isDeviceSandboxTarget } from "../sandbox-providers/device.js"
 import { cdContractLine, resolveAgentsMd } from "../agents-md.js"
 
 const CONTROLLER_CWD = "/Volumes/SSDExternalMacStudio/Code/products/agentik/agentik-studio/projects/agentproto/ts"
+
+/** The prompt the controller forwarded to the DEVICE. Since the F2
+ *  single-dial fix it rides INSIDE `host.start`'s `agent_start` (as a content
+ *  block), not a second `host.prompt` dial. */
+function carriedPromptText(call = 0): string {
+  const args = startMock.mock.calls[call]?.[0] as Record<string, unknown> | undefined
+  const prompt = args?.prompt
+  const blocks = Array.isArray(prompt) ? prompt : [prompt]
+  return blocks
+    .filter((b): b is { text?: unknown } => typeof b === "object" && b !== null)
+    .map(b => (typeof b.text === "string" ? b.text : ""))
+    .join("\n")
+}
+
 const CONTROLLER_AGENTS_MD_PATH = `${CONTROLLER_CWD}/AGENTS.md`
 const CONTROLLER_AGENTS_MD_BLOCK =
   `--- AGENTS.md (${CONTROLLER_AGENTS_MD_PATH}) ---\ncontroller contract content\n--- end AGENTS.md ---`
@@ -262,8 +276,10 @@ describe("spawnAgentSession — device sandbox: controller workspace contracts s
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error("expected success")
     expect(resolveAgentsMdSpy).not.toHaveBeenCalled()
-    expect(hostPromptMock).toHaveBeenCalledTimes(1)
-    const crossed = String(hostPromptMock.mock.calls[0]?.[1] ?? "")
+    // F2 — the prompt crossed in the SPAWN dial (single dial), not a second
+    // `agent_prompt` dial.
+    expect(hostPromptMock).not.toHaveBeenCalled()
+    const crossed = carriedPromptText()
     expect(crossed).toContain("do the remote thing")
     expect(crossed).not.toContain("/Volumes")
     expect(crossed).not.toContain("controller content")
@@ -284,8 +300,8 @@ describe("spawnAgentSession — device sandbox: controller workspace contracts s
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error("expected success")
     expect(resolveAgentsMdSpy).not.toHaveBeenCalled()
-    expect(hostPromptMock).toHaveBeenCalledTimes(1)
-    const crossed = String(hostPromptMock.mock.calls[0]?.[1] ?? "")
+    expect(hostPromptMock).not.toHaveBeenCalled()
+    const crossed = carriedPromptText()
     expect(crossed).toContain("remote task")
     expect(result.descriptor.agentsMdMode).toBe("absent")
   })
@@ -301,7 +317,7 @@ describe("spawnAgentSession — device sandbox: controller workspace contracts s
     })
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error("expected success")
-    const crossed = String(hostPromptMock.mock.calls[0]?.[1] ?? "")
+    const crossed = carriedPromptText()
     expect(crossed).not.toContain("/Volumes/SSDExternalMacStudio")
     expect(crossed).not.toContain("C:\\Volumes")
     // The remote's OWN cwd is fine to appear — it does not.
@@ -320,7 +336,7 @@ describe("spawnAgentSession — device sandbox: controller workspace contracts s
     })
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error("expected success")
-    const crossed = String(hostPromptMock.mock.calls[0]?.[1] ?? "")
+    const crossed = carriedPromptText()
     expect(crossed).toContain("Explicit inherited instruction: follow repo conventions A/B/C.")
     expect(crossed).toContain("the actual ask")
   })
