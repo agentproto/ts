@@ -228,6 +228,36 @@ export const opencode: AgentCliHandle = defineAgentCli({
         "provider prefix, so silently keeping the server's default model " +
         "would run a model (and a bill) the operator didn't ask for.",
     },
+    {
+      id: "effort",
+      // string, NOT enum: opencode advertises an `effort` config option
+      // (category `thought_level`) ONLY for models that have a reasoning
+      // axis, and the accepted vocabulary is MODEL-DEPENDENT — probed live
+      // against `opencode acp` 1.18.x, one reasoning model offered
+      // `high | max | default` while opencode's own `run --variant` help
+      // names `high, max, minimal`. A static enum would reject labels that
+      // are valid for models this adapter also routes to, so the value is
+      // passed through and the server decides. Applied via ACP
+      // `session/set_config_option(configId:"effort")` after the session is
+      // created — `define-agent-cli.ts` reads `config.options.effort` and
+      // forwards it to the ACP arm's `connect({effort})`; there is no
+      // `opencode acp` CLI flag for it (`--variant` is a `run`-subcommand
+      // flag, and the adapter spawns `acp`). The apply is best-effort and
+      // non-fatal (`packages/acp`): a label the resolved model doesn't offer,
+      // or a model with no effort axis at all, is warned about and ignored
+      // rather than killing the spawn. Omit to keep the model's own default.
+      type: "string" as const,
+      description:
+        "Reasoning effort (opencode's per-model thought level / `variant`). " +
+        "Applied via ACP session/set_config_option(configId:\"effort\") after " +
+        "the session is created; no `opencode acp` CLI flag exists for it. " +
+        "The accepted vocabulary is MODEL-DEPENDENT — opencode advertises an " +
+        "`effort` config option only for models with a reasoning axis, with " +
+        "values like `high`/`max`/`default` (its `--variant` help also names " +
+        "`minimal`). A label the resolved model doesn't offer is ignored " +
+        "best-effort (never fails the spawn), and a model with no effort axis " +
+        "ignores it entirely. Omit to keep the model's own default.",
+    },
   ],
   continuation: {
     default: "native-resume",
