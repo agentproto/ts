@@ -301,8 +301,8 @@ describe("syncDeviceMirror into a real registry", () => {
     await awaitMirroredRecords("sess_ctrl2", 6)
     const raw = readAllRecords("sess_ctrl2")
     // Everything including the first turn got mirrored (seed 0 with no
-    // local prompts)… …but the LOCAL side here has no turn-1 either, so
-    // there's no visible duplicate content, only the mirrored history.
+    // local prompts); the controller transcript here has no local turn-1
+    // either, so only the mirrored history exists — no duplicate content.
     const mirrored = raw.filter(r => r["origin"] === "device")
     expect(mirrored.some(r => r["hostSeq"] === 5 && r["kind"] === "user-prompt")).toBe(true)
   })
