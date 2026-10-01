@@ -8,9 +8,15 @@
  * `status:"running"` until the next prompt's RPC fails. A parked session
  * with no next prompt never gets that chance; the crash is silent forever.
  *
- * This pass sweeps the registry, finds agent-cli sessions whose OS process
- * is provably gone (`processAlive === false`, a fresh `process.kill(pid,0)`
- * probe), and MARKS them crashed (`registry.markCrashed`): flips the row to
+ * The same is true one layer up, for a reason a pid probe can never catch:
+ * an ACP wrapper's PROCESS can outlive its own JSON-RPC stream. The stream
+ * ends, `process.kill(pid, 0)` keeps succeeding, and the row reports
+ * `running`/`alive: true` while every prompt rejects "ACP connection
+ * closed". So this pass probes BOTH axes — process liveness AND transport
+ * liveness (`adapterConnected`, from the live session's `isConnected()`).
+ *
+ * This pass sweeps the registry, finds agent-cli sessions provably dead on
+ * either axis, and MARKS them crashed (`registry.markCrashed`): flips the row to
  * `error`/`endedReason:"crashed"`, records a short `lastError`, and clears
  * the dead binding so the row stays lazy-resumable — same shape as
  * idle-reaper's `reapIdle`, except this pass is DISCOVERING a death that
@@ -31,7 +37,11 @@
  * observability.
  */
 
-import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
+import type {
+  SessionCrashReason,
+  SessionDescriptor,
+  SessionsRegistry,
+} from "./sessions.js"
 
 /** Tally of one crash-detect sweep, for the periodic log line + tests. */
 export interface CrashDetectSummary {
@@ -54,28 +64,51 @@ export interface CrashDetectSummary {
  *  function decoupled from the full registry surface. */
 export interface CrashReaperRegistry {
   list(opts?: { includeArchived?: boolean }): readonly SessionDescriptor[]
-  markCrashed(id: string): boolean
+  markCrashed(id: string, reason?: SessionCrashReason): boolean
 }
 
 /**
  * Crash policy for one row. True iff it is a LOCAL agent-cli session that is
- * `running` with a real pid whose OS process is provably gone. NEVER marks:
+ * `running` and provably dead on EITHER liveness axis (see below). NEVER
+ * marks:
  *   - a non-agent-cli kind (PTY/`command`/browser — those get an OS exit
  *     event, they're never silently dead);
  *   - a non-`running` row (already exited/killed/errored/starting);
- *   - a row with no `pid` (nothing to probe);
  *   - a `remote` row (a sandboxed/remote session's process isn't ours to
- *     probe — `processAlive` isn't meaningful for it);
- *   - a row whose `processAlive` isn't explicitly `false` (undefined means
+ *     probe — neither axis is meaningful for it);
+ *   - a row where NEITHER axis reports an explicit `false` (undefined means
  *     unprobed/not-applicable, true means alive — only a confirmed-dead
  *     probe is grounds to mark).
+ *
+ * The two axes, and why one isn't enough:
+ *
+ *   - PROCESS (`pid` + `processAlive === false`) — the original ground. A
+ *     row with no `pid` has nothing to probe, hence the pid guard.
+ *   - TRANSPORT (`adapterConnected === false`) — the adapter's JSON-RPC
+ *     stream is closed. This is the gap the process axis structurally cannot
+ *     close: an ACP wrapper routinely OUTLIVES its own stdio stream, so
+ *     `process.kill(pid, 0)` keeps succeeding for a session that can never
+ *     answer another prompt. Observed live 2026-09-25 (`sess_950d1251`,
+ *     "ACP connection closed" at 15:04Z, still `running`/`alive: true` 40+
+ *     minutes later). Deliberately NOT gated on `pid`: a dead transport is
+ *     conclusive whether or not we know a pid, and the two axes are
+ *     independent.
  */
 function isCrashed(desc: SessionDescriptor): boolean {
   if (desc.kind !== "agent-cli") return false
   if (desc.status !== "running") return false
   if (desc.remote === true) return false
+  if (desc.adapterConnected === false) return true
   if (desc.pid === null || desc.pid === undefined) return false
   return desc.processAlive === false
+}
+
+/** Which axis condemned this row — the `reason` handed to `markCrashed` so
+ *  the crash banner names the death that was actually observed. Transport
+ *  first: when both axes are dead the stream close is the more specific,
+ *  more actionable fact (and it's the one that happened first). */
+function crashReasonFor(desc: SessionDescriptor): SessionCrashReason {
+  return desc.adapterConnected === false ? "transport-closed" : "process-gone"
 }
 
 /**
@@ -113,7 +146,7 @@ export function runCrashDetectPass(opts: {
     ids: [],
   }
   for (const d of candidates) {
-    if (registry.markCrashed(d.id)) {
+    if (registry.markCrashed(d.id, crashReasonFor(d))) {
       summary.crashed++
       summary.ids.push(d.id)
     }

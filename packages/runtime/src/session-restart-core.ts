@@ -61,6 +61,7 @@ import {
   augmentWithFsResume,
   describeResumePath,
   RESUME_ID_REJECTED_RE,
+  RESUME_CONNECTION_LOST_RE,
   type RestartStrategy,
 } from "./resume-strategies.js"
 import {
@@ -1048,7 +1049,17 @@ export async function restartAgentSession(
     desc = await spawnWithResume(strategy.resumeSessionId)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    if (strategy.resumeSessionId && RESUME_ID_REJECTED_RE.test(msg)) {
+    // Two ways a resume attempt can fail without the adapter being broken:
+    // it rejected the id (RESUME_ID_REJECTED_RE), or it took its transport
+    // down mid-`loadSession` (RESUME_CONNECTION_LOST_RE — the shape that left
+    // `session_restart` of a transport-dead session returning a bare "ACP
+    // connection closed" with no session at all). Both mean the stored
+    // conversation couldn't be rehydrated, and both are better served by one
+    // fresh-spawn retry + the transcript digest below than by an error.
+    if (
+      strategy.resumeSessionId &&
+      (RESUME_ID_REJECTED_RE.test(msg) || RESUME_CONNECTION_LOST_RE.test(msg))
+    ) {
       desc = await spawnWithResume(undefined)
       resumeFallback = true
     } else {

@@ -183,6 +183,36 @@ export interface AgentSessionLike {
    *  adapter-specific forensics. Undefined for drivers that don't
    *  expose a process (e.g. a future non-subprocess transport). */
   pid?: number
+  /** Whether the driver's transport to the adapter is still usable, read
+   *  fresh at call time — mirrors `@agentproto/driver-agent-cli`'s
+   *  `AgentCliRuntimeSession.isConnected` without importing it (same
+   *  driver-decoupled structural-mirror reasoning as `setModel` below).
+   *
+   *  The liveness axis `pid` can't cover: an ACP wrapper process commonly
+   *  survives its own JSON-RPC stream, so `processAlive` says "alive" while
+   *  every RPC rejects with "ACP connection closed". Projected onto
+   *  `SessionDescriptor.adapterConnected` at read time and read by the
+   *  crash-detect sweep.
+   *
+   *  Optional, and `true`-by-absence on purpose: a sandbox proxy or a
+   *  print-arm session has no long-lived connection to lose, so only an
+   *  explicit `false` is evidence of death. */
+  isConnected?(): boolean
+  /** Subscribe to transport death — the push half of the axis `isConnected`
+   *  polls. Fires at most once, and SYNCHRONOUSLY if the transport is
+   *  already gone when the listener is attached, which is what lets the
+   *  registry wire this up at bind time without racing a connection that
+   *  died during spawn.
+   *
+   *  It fires on an ORDERLY teardown too (the host's own `close()` aborts
+   *  the same signal). The registry's listener is safe against that by
+   *  construction: it routes into `markCrashed`, which refuses any row that
+   *  isn't still `running` — and `kill()`/`reapIdle` both flip `status`
+   *  before they close the connection.
+   *
+   *  Absent for session shapes with no long-lived connection (sandbox
+   *  proxy, print arm, future transports). */
+  onDisconnect?(listener: (err: Error) => void): void
   send(message: unknown): AsyncIterable<AgentStreamEvent>
   cancel(): Promise<void>
   /** Resolve a permission request the driver parked in permission-hold mode
@@ -1145,6 +1175,26 @@ export interface SessionDescriptor {
    *  every process. Ephemeral and opt-in (`session_list`/`agent_sessions_list`
    *  `stats`), never persisted; absent for a row with no live process. */
   stats?: Omit<import("./process-stats.js").SessionResourceStats, "sessionId">
+  /** Whether the LIVE agent session's transport to its adapter is still
+   *  usable — `AgentCliRuntimeSession.isConnected()`, read at the same
+   *  points and with the same ephemeral, never-persisted contract as
+   *  {@link processAlive}.
+   *
+   *  This is the second, independent liveness axis, and the one `pid` alone
+   *  cannot answer. An ACP adapter's wrapper process routinely OUTLIVES its
+   *  own JSON-RPC stream: the stream ends (the wrapper closed stdout, the
+   *  child it fronts died, the transport errored), `process.kill(pid, 0)`
+   *  still succeeds, and the row keeps reporting `running`/`alive` forever
+   *  while every prompt rejects with "ACP connection closed". Observed live
+   *  on 2026-09-25 (`sess_950d1251`), 40+ minutes after the connection
+   *  died, with UIs still showing "Idle · live".
+   *
+   *  `false` ⇒ provably dead transport, and the crash-detect sweep's second
+   *  ground for marking a row crashed. Absent ⇒ no live binding to ask (a
+   *  terminal row, or one whose adapter models no long-lived connection) —
+   *  absent is NOT "disconnected", exactly as absent `processAlive` is not
+   *  "dead". */
+  adapterConnected?: boolean
   /** Count of live supervisors currently blocked waiting on this session —
    *  HTTP `GET /sessions/:id/wait` long-polls and `session_monitor`
    *  subscriptions, both via `monitorSessionWait` (#session-visibility).
@@ -2851,6 +2901,33 @@ function stampInterrupted(desc: SessionDescriptor): void {
  * half of the VS Code posture picker's native-vs-advisory resolution: without
  * it the client can only offer prompt-injected advisory postures.
  */
+/**
+ * Read-time projection of the LIVE agent session's TRANSPORT liveness onto
+ * the descriptor (`adapterConnected`) — the `isConnected()` sibling of
+ * `stampProcessAlive`, and the only way a caller that holds a descriptor can
+ * see the failure mode a pid probe misses: wrapper alive, ACP stream dead.
+ *
+ * Same convention as `stampProcessAlive`/`stampLiveModes`: ephemeral, never
+ * persisted, and the field is DELETED rather than set false when there's no
+ * live binding to ask — a dead row must not read as "disconnected" (that
+ * would make the crash-detect sweep try to re-kill every terminal session),
+ * and an adapter that models no long-lived connection must not either.
+ */
+function stampAdapterConnected(desc: SessionDescriptor, rt: SessionRuntime): void {
+  const probe = rt.agentSession?.isConnected
+  if (!probe) {
+    delete desc.adapterConnected
+    return
+  }
+  try {
+    desc.adapterConnected = probe.call(rt.agentSession)
+  } catch {
+    // A driver whose liveness probe itself throws tells us nothing we can
+    // act on — treat it as unprobed rather than as proof of death.
+    delete desc.adapterConnected
+  }
+}
+
 function stampLiveModes(desc: SessionDescriptor, rt: SessionRuntime): void {
   const modes = rt.agentSession?.availableModes
   if (modes && modes.length > 0) {
@@ -2885,6 +2962,31 @@ export function isResumable(desc: SessionDescriptor): boolean {
     !!desc.cwd &&
     !desc.archived
   )
+}
+
+/**
+ * Which death `markCrashed` is recording. Both leave the row equally dead
+ * and equally lazy-resumable — this only picks the `lastError`/banner
+ * wording, so whoever reads the row afterwards knows which liveness axis
+ * actually failed.
+ *
+ *   - `"process-gone"`     — the pid probe came back dead (`processAlive:
+ *     false`). The original, and still the common, crash shape.
+ *   - `"transport-closed"` — the adapter's JSON-RPC stream is closed while
+ *     its process is (or may be) alive: `AgentSessionLike.isConnected()`
+ *     returned false. Invisible to the pid probe, which is exactly why this
+ *     ground exists.
+ */
+export type SessionCrashReason = "process-gone" | "transport-closed"
+
+/** The `lastError` / `[crashed]` banner text for each {@link
+ *  SessionCrashReason}. One function so the descriptor field, the ring
+ *  buffer line and the durable transcript notice can never word the same
+ *  crash three different ways. */
+function crashReasonText(reason: SessionCrashReason, pid: number | null | undefined): string {
+  return reason === "transport-closed"
+    ? `adapter connection closed (pid ${pid ?? "?"} may still be running) — session crashed`
+    : `adapter process gone (pid ${pid}) — session crashed`
 }
 
 /**
@@ -3927,8 +4029,19 @@ export interface SessionsRegistry {
    *  violate — it refuses (returns false, no-op) a session that is not a
    *  live (`running`) agent-cli row, so it is idempotent and safe to call on
    *  an already-terminal or non-agent-cli row. Returns true iff a row was
-   *  actually marked crashed. */
-  markCrashed(id: string): boolean
+   *  actually marked crashed.
+   *
+   *  `reason` names WHICH death was discovered, and is the only thing that
+   *  differs between the sweep's two grounds. Omitted ⇒ `"process-gone"`,
+   *  the original pid-probe wording ("adapter process gone (pid N) — session
+   *  crashed"). `"transport-closed"` is the case a pid probe cannot see: the
+   *  wrapper process is still alive but its ACP stream ended, so the row
+   *  would otherwise sit `running`/`alive` forever while every prompt
+   *  rejects with "ACP connection closed". Only the `lastError`/banner text
+   *  changes — every other effect (status, endedReason, cleared binding,
+   *  `session:exited`) is identical, because in both cases the session is
+   *  equally dead and equally resumable. */
+  markCrashed(id: string, reason?: SessionCrashReason): boolean
   /** Flip a LIVE, mid-turn agent-cli row to `stalledSinceMs:<ts>` — the
    *  primitive the turn-liveness watchdog (`runStallWatchdogPass`) drives on
    *  a periodic sweep when a turn's adapter stream has gone silent past the
@@ -6401,7 +6514,29 @@ export function createSessionsRegistry(opts?: {
     rt: SessionRuntime,
     resumedFrom: "daemon-restart" | "restarted" = "daemon-restart",
   ): Promise<void> => {
-    if (rt.agentSession) return
+    if (rt.agentSession) {
+      // A bound session is normally proof of life — but a bound session whose
+      // TRANSPORT is provably dead is the exact shape this whole path used to
+      // be blind to: `rt.agentSession` set, `status: "running"`, and every
+      // prompt rejecting "ACP connection closed" into the void. Reconcile it
+      // here, at the choke point every prompt path (sendPrompt, enqueuePrompt,
+      // queue drain) already funnels through, so the very next prompt revives
+      // the session instead of dispatching into a dead socket.
+      //
+      // Normally the push watcher (`bindAgentSession`) has already done this
+      // within microseconds of the close; this is the backstop for a session
+      // whose adapter exposes no `onDisconnect` subscription, and the reason a
+      // prompt never has to wait up to a sweep interval to find out.
+      //
+      // `markCrashedInternal` clears the binding, so control falls through to
+      // the resume below. If it refuses (the row is already terminal), the
+      // binding stays and we return — `validateAgentTurn` then raises
+      // `SessionNotAliveError`, a clear error rather than a silent drop.
+      if (rt.agentSession.isConnected?.() === false) {
+        markCrashedInternal(rt.desc.id, "transport-closed")
+      }
+      if (rt.agentSession) return
+    }
     if (!resumeAgent) return
     // Descriptor-level eligibility (§5): agent-cli with the resume essentials
     // (adapterSlug, adapterSessionId, cwd) and not archived. PTY/command/
@@ -6463,7 +6598,7 @@ export function createSessionsRegistry(opts?: {
           recordFailedResume(rt)
           return
         }
-        rt.agentSession = fresh
+        bindAgentSession(rt, fresh)
         bindOutOfTurnEvents(rt)
         stampCapabilities(rt)
         rt.adapterSlug = adapterSlug
@@ -6574,6 +6709,113 @@ export function createSessionsRegistry(opts?: {
     } finally {
       rt.resumePromise = undefined
     }
+  }
+
+  /**
+   * The crash-mark ACTION, shared by the `markCrashed` registry method (the
+   * crash-detect sweep's entry point) and the push-based transport watcher
+   * below. See `SessionsRegistry.markCrashed` for the full contract.
+   *
+   * The `status !== "running"` guard is doing double duty. For the sweep
+   * it's idempotence. For the transport watcher it's the entire "was this
+   * death expected?" test: `kill()` and `reapIdle()` both flip `status`
+   * BEFORE closing the adapter connection, so the disconnect their own
+   * teardown triggers arrives here and is correctly refused as a no-op —
+   * only a connection that died while the row still believed it was running
+   * is a crash.
+   */
+  const markCrashedInternal = (
+    id: string,
+    reason: SessionCrashReason = "process-gone",
+  ): boolean => {
+    const rt = sessions.get(id)
+    if (!rt) return false
+    // Only a LIVE agent-cli row can be marked crashed — same guard as
+    // reapIdle, kept honest for any caller regardless of what the sweep
+    // already filtered for.
+    if (rt.desc.kind !== "agent-cli" || rt.desc.status !== "running") {
+      return false
+    }
+    const pid = rt.desc.pid
+    // A recent driver-reported usage-cap error (Claude Code's "hit your
+    // session limit" et al) explains the process going away far better
+    // than a generic "crashed" — the crash-detect sweep only ever
+    // observes the pid gone, never why, so lean on the last `error`
+    // stream event this session saw.
+    const providerLimitMessage = isProviderLimitError(rt.lastErrorMessage)
+      ? rt.lastErrorMessage
+      : undefined
+    // A provider-limit death outranks the discovered `reason`: whichever
+    // liveness axis failed, a driver-reported cap is the truer explanation.
+    // Otherwise `reason` picks the wording ("process-gone" vs
+    // "transport-closed") so the banner names the axis that actually failed.
+    const detail = providerLimitMessage
+      ? `provider usage limit hit: ${providerLimitMessage}`
+      : crashReasonText(reason, pid)
+    rt.desc.status = "error"
+    rt.desc.endedAt = new Date().toISOString()
+    rt.desc.endedReason = providerLimitMessage ? "provider-limit" : "crashed"
+    rt.desc.crashedAt = rt.desc.endedAt
+    rt.desc.lastError = detail
+    if (rt.agentSession) {
+      releaseOutOfTurnEvents(rt)
+      delete rt.desc.backgroundTasks
+      // Durable usage recap on exit — before close() flushes the stream.
+      recordExitUsageSnapshot(rt)
+      void rt.agentSession.close().catch(() => undefined)
+      void transcriptWriter.close(rt.desc.id)
+      tracedSessions.delete(rt.desc.id)
+      // THE difference from a plain kill(): drop the binding so the row is
+      // immediately lazy-resumable — `maybeResumeAgent` early-returns while
+      // `rt.agentSession` is set. adapterSessionId/cwd stay on the
+      // descriptor, so `isResumable` still holds.
+      rt.agentSession = undefined
+    }
+    schedulePersist()
+    const banner = providerLimitMessage
+      ? `[provider-limit] ${providerLimitMessage}`
+      : `[crashed] ${detail}`
+    appendLine(rt, banner, "stderr")
+    transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: banner })
+    // The usual lifecycle exit (carrying reason:"crashed" or "provider-limit"
+    // via emitExited, which reads desc.endedReason) so existing
+    // session:exited consumers see the row leave "running".
+    emitExited(rt)
+    return true
+  }
+
+  /**
+   * Bind an agent session onto its runtime handle AND subscribe to its
+   * transport death — the single place `rt.agentSession` is ever assigned a
+   * live session, so spawn, lazy resume, and adopt-into-existing-row all get
+   * the same watcher without each remembering to add it.
+   *
+   * What it buys: the daemon learns an ACP stream died the INSTANT it dies,
+   * instead of at the next crash-detect sweep (≤30s later) or — for a parked
+   * session nobody prompts — never. That was the `sess_950d1251` failure:
+   * connection closed at 15:04Z, row still `running`/`alive: true` 40+
+   * minutes later, `agent_prompt` going nowhere.
+   *
+   * Orderly teardown is not special-cased here on purpose: `markCrashed`'s
+   * own `running`-only guard already rejects it (see above), so this stays a
+   * one-line subscription rather than a second copy of the liveness rules.
+   */
+  const bindAgentSession = (rt: SessionRuntime, session: AgentSessionLike): void => {
+    rt.agentSession = session
+    session.onDisconnect?.(err => {
+      const id = rt.desc.id
+      // Re-read the CURRENT binding rather than closing over `session`: by
+      // the time a stale connection's abort lands, the row may already have
+      // been resumed onto a fresh session. Crash-marking then would kill a
+      // healthy session on the strength of its dead predecessor.
+      if (rt.agentSession !== session) return
+      if (markCrashedInternal(id, "transport-closed")) {
+        console.warn(
+          `[sessions] ${id}: adapter connection closed (${err.message}) — ` +
+            "marked crashed; the row stays lazy-resumable.",
+        )
+      }
+    })
   }
 
   /**
@@ -8426,7 +8668,6 @@ export function createSessionsRegistry(opts?: {
       }
       const rt: SessionRuntime = {
         desc,
-        agentSession: input.agentSession,
         adapterSlug: input.adapterSlug,
         recentLines: [],
         recentBytes: [],
@@ -8443,6 +8684,15 @@ export function createSessionsRegistry(opts?: {
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
       linkContinuedTo(input.resumedFrom, id)
+      // Bind the agent session onto `rt` BEFORE the consumers below that read
+      // `rt.agentSession` (`bindOutOfTurnEvents`, `stampCapabilities`,
+      // `armUsageRefresh`). `bindAgentSession` is the single place that
+      // assignment — and the transport-death watcher — is made, so binding
+      // here keeps main's ordering: a connection that already died fires the
+      // watcher synchronously and the row is correctly reported dead from the
+      // start, rather than these consumers silently no-op'ing on an unbound
+      // `rt.agentSession`.
+      bindAgentSession(rt, input.agentSession)
       bindOutOfTurnEvents(rt)
       stampCapabilities(rt)
       // Live usage refresh for reader-equipped adapters (hermes/opencode/
@@ -8672,7 +8922,7 @@ export function createSessionsRegistry(opts?: {
         emitExited(rt)
         return
       }
-      rt.agentSession = outcome.agentSession
+      bindAgentSession(rt, outcome.agentSession)
       bindOutOfTurnEvents(rt)
       stampCapabilities(rt)
       rt.readUsage = outcome.readUsage
@@ -9776,6 +10026,7 @@ export function createSessionsRegistry(opts?: {
           stampCurrentStatus(rt)
           stampWatchers(desc)
           stampLiveModes(desc, rt)
+          stampAdapterConnected(desc, rt)
           desc.childrenBusy = childrenBusy.get(desc.id) ?? 0
           desc.queuedPrompts = desc.promptQueue?.length ?? 0
           return desc
@@ -9851,6 +10102,7 @@ export function createSessionsRegistry(opts?: {
         stampCurrentStatus(rt)
         stampWatchers(desc)
         stampLiveModes(desc, rt)
+        stampAdapterConnected(desc, rt)
         desc.childrenBusy = childrenBusyCounts().get(desc.id) ?? 0
         desc.queuedPrompts = desc.promptQueue?.length ?? 0
       }
@@ -10200,56 +10452,8 @@ export function createSessionsRegistry(opts?: {
       emitExited(rt)
       return true
     },
-    markCrashed(id) {
-      const rt = sessions.get(id)
-      if (!rt) return false
-      // Only a LIVE agent-cli row can be marked crashed — same guard as
-      // reapIdle, kept honest for any caller regardless of what the sweep
-      // already filtered for.
-      if (rt.desc.kind !== "agent-cli" || rt.desc.status !== "running") {
-        return false
-      }
-      const pid = rt.desc.pid
-      // A recent driver-reported usage-cap error (Claude Code's "hit your
-      // session limit" et al) explains the process going away far better
-      // than a generic "crashed" — the crash-detect sweep only ever
-      // observes the pid gone, never why, so lean on the last `error`
-      // stream event this session saw.
-      const providerLimitMessage = isProviderLimitError(rt.lastErrorMessage)
-        ? rt.lastErrorMessage
-        : undefined
-      rt.desc.status = "error"
-      rt.desc.endedAt = new Date().toISOString()
-      rt.desc.endedReason = providerLimitMessage ? "provider-limit" : "crashed"
-      rt.desc.crashedAt = rt.desc.endedAt
-      rt.desc.lastError = providerLimitMessage
-        ? `provider usage limit hit: ${providerLimitMessage}`
-        : `adapter process gone (pid ${pid}) — session crashed`
-      if (rt.agentSession) {
-        releaseOutOfTurnEvents(rt)
-        delete rt.desc.backgroundTasks
-        // Durable usage recap on exit — before close() flushes the stream.
-        recordExitUsageSnapshot(rt)
-        void rt.agentSession.close().catch(() => undefined)
-        void transcriptWriter.close(rt.desc.id)
-        tracedSessions.delete(rt.desc.id)
-        // THE difference from a plain kill(): drop the binding so the row is
-        // immediately lazy-resumable — `maybeResumeAgent` early-returns while
-        // `rt.agentSession` is set. adapterSessionId/cwd stay on the
-        // descriptor, so `isResumable` still holds.
-        rt.agentSession = undefined
-      }
-      schedulePersist()
-      const banner = providerLimitMessage
-        ? `[provider-limit] ${providerLimitMessage}`
-        : `[crashed] adapter process gone (pid ${pid}) — session crashed`
-      appendLine(rt, banner, "stderr")
-      transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: banner })
-      // The usual lifecycle exit (carrying reason:"crashed" or "provider-limit"
-      // via emitExited, which reads desc.endedReason) so existing
-      // session:exited consumers see the row leave "running".
-      emitExited(rt)
-      return true
+    markCrashed(id, reason = "process-gone") {
+      return markCrashedInternal(id, reason)
     },
     markStalled(id, stalledSinceMs) {
       const rt = sessions.get(id)

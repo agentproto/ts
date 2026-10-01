@@ -76,6 +76,7 @@ import {
   describeResumePath,
   tokenizeCommand,
   RESUME_ID_REJECTED_RE,
+  RESUME_CONNECTION_LOST_RE,
 } from "@agentproto/runtime/resume-strategies"
 import {
   buildStory,
@@ -3934,11 +3935,13 @@ async function executeRestartWithFallback(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     // Adapter doesn't recognize the resume id — typically means the
-    // session never got past the spawn (no turn happened). Retry
-    // without resume so the user at least gets the command back.
+    // session never got past the spawn (no turn happened) — or it took its
+    // transport down mid-resume. Either way the stored conversation can't be
+    // rehydrated; retry without resume so the user at least gets the command
+    // back. Same pair of triggers as `restartAgentSession`'s own fallback.
     if (
       built.body.resumeSessionId &&
-      RESUME_ID_REJECTED_RE.test(msg)
+      (RESUME_ID_REJECTED_RE.test(msg) || RESUME_CONNECTION_LOST_RE.test(msg))
     ) {
       const { resumeSessionId, ...rest } = built.body
       void resumeSessionId
@@ -4321,8 +4324,12 @@ async function runRestart(args: readonly string[]): Promise<number> {
       )
       return 1
     }
-    // Adapter doesn't know the resume id — retry without it.
-    if (body.resumeSessionId && RESUME_ID_REJECTED_RE.test(msg)) {
+    // Adapter doesn't know the resume id, or died mid-resume — retry
+    // without it (see `RESUME_CONNECTION_LOST_RE`'s doc).
+    if (
+      body.resumeSessionId &&
+      (RESUME_ID_REJECTED_RE.test(msg) || RESUME_CONNECTION_LOST_RE.test(msg))
+    ) {
       try {
         const { resumeSessionId: _, ...rest } = body
         void _

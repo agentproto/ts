@@ -199,6 +199,10 @@ export function createAcpProtocolArm(
   let client: AcpClient | null = null
   let session: AcpClientSession | null = null
   const pendingByTurn = new Map<string, AsyncIterable<StreamEvent>>()
+  // Disconnect subscribers registered BEFORE `connect()` created the client.
+  // Drained (and then unused) in `connect`; a later subscriber attaches
+  // straight to the live client instead.
+  const earlyDisconnectListeners: Array<(err: Error) => void> = []
 
   return {
     get sessionId(): string | undefined {
@@ -215,6 +219,17 @@ export function createAcpProtocolArm(
     },
     get currentModeId(): string | undefined {
       return session?.currentModeId
+    },
+    isConnected(): boolean {
+      // Pre-connect (`client === null`) reports true: nothing has died yet,
+      // and a host that reads `false` here would tear down a session that was
+      // merely still starting. Post-connect this defers to the SDK
+      // connection's own abort signal — a live read, never a cached flag.
+      return client?.isConnected() ?? true
+    },
+    onDisconnect(listener) {
+      if (client) client.onDisconnect(listener)
+      else earlyDisconnectListeners.push(listener)
     },
     async connect(opts: AgentCliConnectOptions) {
       const permissionHandler =
@@ -244,6 +259,15 @@ export function createAcpProtocolArm(
           requestPermission: async params => permissionHandler(params),
         },
       })
+      // Attach any disconnect subscriber that arrived before the client
+      // existed, BEFORE the first RPC below: `loadSession`/`newSession` are
+      // exactly where a wrapper that dies on startup takes the connection
+      // down with it, and a subscriber attached afterwards would still be
+      // told (the client reports an already-aborted signal synchronously) —
+      // attaching here just means it's told at the right moment.
+      for (const listener of earlyDisconnectListeners.splice(0)) {
+        client.onDisconnect(listener)
+      }
       // When the host hands us a `resumeSessionId`, reattach to the
       // agent's existing session via `loadSession` so the conversation
       // (model context, tool history, working files) carries over a

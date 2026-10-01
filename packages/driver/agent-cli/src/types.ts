@@ -1091,6 +1091,29 @@ export interface AgentCliClient {
    */
   readonly sessionId?: string
   /**
+   * Whether this arm's transport to the agent is still usable — a FRESH
+   * read, never a cached flag (the ACP arm asks the SDK connection's own
+   * abort signal). `true` before `connect()` resolves: nothing has died
+   * yet, so "not connected" would be a lie.
+   *
+   * Only the ACP arm implements this; arms with no long-lived connection
+   * (print — a fresh subprocess per turn; proprietary in-process) omit it,
+   * and every caller treats absence as "no transport to lose."
+   */
+  isConnected?(): boolean
+  /**
+   * Subscribe to transport death — the push half of the liveness surface
+   * whose pull half is {@link isConnected}. Fires at most once, and fires
+   * synchronously if the transport is ALREADY gone when you subscribe, so a
+   * host that only gets the handle after `connect()` can never miss it.
+   *
+   * Only the ACP arm implements this; arms with no long-lived connection
+   * omit it (there is no transport to lose). Also fires on an orderly
+   * `close()` — the "was this death expected?" judgement belongs to the
+   * host, which knows whether it asked for the teardown.
+   */
+  onDisconnect?(listener: (err: Error) => void): void
+  /**
    * Diagnostic hook — returns the last N lines of the child's stderr,
    * joined with newlines. Set by the runner after spawn; read by
    * `promptTurn` to enrich error events with process-level context.
@@ -1377,6 +1400,34 @@ export interface AgentCliRuntimeSession {
    * WebSocket transport).
    */
   readonly pid?: number
+  /**
+   * Whether the adapter's transport is still usable, read FRESH at call
+   * time. The pull half of the transport-liveness surface (the push half is
+   * {@link AgentCliStartOptions.onDisconnect}) and the answer to a question
+   * `pid` cannot: the wrapper process can be alive and reported by
+   * `process.kill(pid, 0)` while its stdio JSON-RPC stream is closed, at
+   * which point every RPC rejects with "ACP connection closed" and the
+   * session is dead in every way that matters.
+   *
+   * `true` before anything has died, and for arms that hold no long-lived
+   * connection at all (the print arm re-spawns per turn — there is no
+   * transport to lose between turns). A host must therefore treat only an
+   * explicit `false` as evidence of death, never the absence of `true`.
+   */
+  isConnected?(): boolean
+  /**
+   * Subscribe to transport death — the push half of the surface whose pull
+   * half is {@link isConnected}. Fires at most once, and SYNCHRONOUSLY if
+   * the transport already died before you subscribed, so a host that wires
+   * this up after `start()` resolves cannot miss a connection that failed in
+   * between.
+   *
+   * Fires for an orderly `close()` too: only the host knows whether it asked
+   * for the teardown, so the "was this expected?" judgement stays there (the
+   * daemon makes it by refusing to crash-mark a row that isn't `running`).
+   * Absent for arms with no long-lived connection.
+   */
+  onDisconnect?(listener: (err: Error) => void): void
   send(message: unknown): AsyncIterable<StreamEvent>
   cancel(): Promise<void>
   /**
