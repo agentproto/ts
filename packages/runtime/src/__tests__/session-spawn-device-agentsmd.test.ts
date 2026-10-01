@@ -312,6 +312,7 @@ describe("spawnAgentSession — device sandbox: controller workspace contracts s
     const deps = makeDeps()
     const result = await spawnAgentSession(deps, {
       adapter: "opencode-cli",
+      workspaceSlug: "controller-repo", // P8 #1647: a device spawn must name its landing spot
       prompt: "the actual ask",
       promptAppend: "Explicit inherited instruction: follow repo conventions A/B/C.",
       sandbox: "device:win-host",

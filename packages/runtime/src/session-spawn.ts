@@ -59,7 +59,7 @@ import {
   serviceableModelRoutes,
   suggestModelSlugs,
 } from "./catalog-models.js"
-import { authProfileAsAdapterHint } from "./adapter-slug-hint.js"
+import { authProfileAsAdapterHint, gatewayAsAdapterHint } from "./adapter-slug-hint.js"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import {
   getAuthProfile,
@@ -1127,6 +1127,21 @@ export interface SpawnAgentSessionInput {
   harness?: string
   cwd?: string
   workspaceSlug?: string
+  /** CONTROLLER-side marker (issue #1647): set ONLY by the device-sandbox
+   *  proxy path when the controller dials the TARGET daemon's own
+   *  `agent_start` through the `/device-spawn` bridge (the bridge carries
+   *  no ambient marker paths — the controller-side spawn already knows
+   *  which spawns cross a device). On the TARGET daemon this marks the
+   *  spawn as arriving "through the bridge", so an unresolvable
+   *  `workspaceSlug` there fails loudly with the slug + the target's known
+   *  slugs instead of silently falling through to the active workspace.
+   *  NEVER set (never expose) on a local spawn — local fallback semantics
+   *  are deliberately unchanged. Stripped by the controller before the
+   *  inner `agent_start` call (the target's own schema has no such field;
+   *  an unknown extra key there would 400 an otherwise-fine spawn). Controller
+   *  input arriving with this field is consumed immediately (read + delete,
+   *  never an error) so it can't leak into spawn defaults or the registry. */
+  deviceBridge?: boolean
   /** Trusted-loopback parent-lineage hint (WP-R1). Attributes this spawn to a
    *  logical parent session so it nests under that node in the sessions tree,
    *  filling the gap that otherwise leaves an anonymous `agent_start` (an
@@ -1506,6 +1521,8 @@ export type SpawnAgentSessionResult =
         | "worktree_provisioner_not_enabled"
         | "worktree_provision_failed"
         | "worktree_requires_explicit_repo"
+        | "device_spawn_requires_repo_identity"
+        | "device_bridge_workspace_unknown"
         | "worktree_async_wait_conflict"
       message: string
       details?: Record<string, unknown>
@@ -1576,6 +1593,15 @@ export async function spawnAgentSession(
   deps: SpawnAgentSessionDeps,
   input: SpawnAgentSessionInput,
 ): Promise<SpawnAgentSessionResult> {
+  // CONTROLLER marker (issue #1647) — read ONCE here, then stripped from
+  // the rest of the spawn. Nothing downstream (descriptor, registry rows,
+  // adapter options) ever sees it: a `spawnAgentSession` input field is not
+  // a spawn default, and a `POST /sessions/agent` body field would
+  // otherwise STAMP the tunnel-arrival flag onto descriptors meant for a
+  // local workflow. The check below against `input.deviceBridge` uses this
+  // captured value; after stripping, only the boolean stays in scope.
+  const deviceBridgeArrival = input.deviceBridge === true
+  if (input.deviceBridge !== undefined) delete input.deviceBridge
   // `inference` (SESSION-INFERENCE-BINDING): resolved FIRST, before presets
   // or the model/route reconciliation below, into ordinary `model`/`route`/
   // `access`/`auth`/`deferredTools` values — everything downstream of this
@@ -1747,6 +1773,13 @@ export async function spawnAgentSession(
   // workspace fallback still resolves `cwd` for it exactly as before.
   const explicitCwd = input.cwd !== undefined
   const explicitWorkspaceSlug = input.workspaceSlug !== undefined
+  // P8 hoist (issue #1647) — the device-target classification computed ONCE
+  // here, before cwd resolution: the device guard below must be able to ask
+  // "did the caller name a repo WITHOUT the fallback having filled `cwd` in
+  // first", and every later device branch (AGENTS.md/RULES.md suppression,
+  // the bridge's workspaceSlug/deviceBridge forwarding in the sandbox boot)
+  // consults the same flag instead of re-computing it.
+  const isDeviceSpawn = isDeviceSandboxTarget(input.sandbox)
   // Hoisted above the cwd-resolution fallback (its usual home is right
   // before the depth/quota gates below) — the explicit-repo guard right
   // after this needs to know the spawn's depth BEFORE resolving `cwd`,
@@ -1780,6 +1813,38 @@ export async function spawnAgentSession(
         "daemon's active workspace. Pass `cwd` (an explicit path inside the repo " +
         "to worktree from) or `workspaceSlug` (a slug from `agentproto workspace " +
         "list`) to `agent_start`.",
+    }
+  }
+  // Device explicit-repo guard (issue #1647) — the device-sandbox analog of
+  // the worktree guard above, placed in the same early clause so it
+  // fires before cwd resolution can fill `cwd`/`resolvedSlug` from the
+  // target daemon's ACTIVE workspace. An `agent_start({ sandbox:
+  // "device:<fp>" })` that names NEITHER `cwd` NOR `workspaceSlug` has no
+  // caller-declared landing spot on the target machine at all — the
+  // inner (host-side) resolve would silently fall through to whatever
+  // workspace the TARGET daemon has active right now (field-verified in
+  // #1647: a WIN11 host landed `C:\Users\jerem` instead of the daemon's
+  // configured `daemon.workspace` dir or the intended project — wrong
+  // files, wrong AGENTS.md context, wrong git repo, no error). Unlike the
+  // worktree guard this one is NOT depth-gated: a nested device spawn with
+  // neither field is no better off — the parent cwd it would inherit lives
+  // on the CONTROLLER's filesystem and could never be a valid target path,
+  // and the omit-cwd dance would leave the target's active workspace as the
+  // only thing standing to resolve.
+  if (
+    isDeviceSpawn &&
+    !explicitCwd &&
+    !explicitWorkspaceSlug
+  ) {
+    return {
+      ok: false,
+      code: "device_spawn_requires_repo_identity",
+      message:
+        "agent_start: a `device:<fp>` spawn must name where to land on the target " +
+        "machine — pass `cwd` (an absolute path on the target) or `workspaceSlug` " +
+        "(a workspace slug registered on the target daemon). Refusing to guess " +
+        "from the target's active workspace. See " +
+        "https://github.com/agentproto/ts/issues/1647.",
     }
   }
   // App boundary: a child of an already-boundaried session inherits the
@@ -1824,6 +1889,38 @@ export async function spawnAgentSession(
           if (ws) {
             cwd = ws.path
             resolvedSlug = ws.slug
+          } else if (deviceBridgeArrival) {
+            // DEVICE-BRIDGE ONLY (issue #1647): a spawn that crossed the
+            // /device-spawn bridge carrying an explicit `workspaceSlug` that
+            // THIS (target) daemon's registry can't resolve must fail loudly
+            // — never fall through to the active workspace, never to
+            // "default". This is the shim the guard on the CONTROLLER side
+            // can't reach: the controller validated nothing about the
+            // TARGET's registry (it can't see it cheaply), so the unknown
+            // slug is discovered HERE and must be reported with every detail
+            // a caller needs to fix it: the slug, the device it was destined
+            // for, and the slugs this daemon does know. Registry listing is
+            // cheap (one config read already paid for above).
+            return {
+              ok: false,
+              code: "device_bridge_workspace_unknown",
+              message:
+                `agent_start: device-bridge spawn named workspaceSlug ` +
+                `"${input.workspaceSlug}", which is not registered on this ` +
+                `daemon (known: ${
+                  config.workspaces.map(w => w.slug).join(", ") || "(none)"
+                }). ` +
+                "Pass one of these, or an explicit target-local `cwd`. " +
+                "Refusing to fall back to the active workspace.",
+              ...(config.workspaces.length >= 0
+                ? {
+                    details: {
+                      workspaceSlug: input.workspaceSlug,
+                      knownWorkspaceSlugs: config.workspaces.map(w => w.slug),
+                    },
+                  }
+                : {}),
+            }
           }
         } else if (callerScope) {
           // Scoped (nested) spawn with neither `cwd` nor `workspaceSlug`:
@@ -1878,7 +1975,10 @@ export async function spawnAgentSession(
     }
   }
   resolvedSlug = resolvedSlug ?? "default"
-  if (!cwd) {
+  if (!cwd && !isDeviceSpawn) {
+    // (With the device explicit-repo guard above, `isDeviceSpawn && !cwd`
+    // can only be a slug-only spawn — cwd resolution is reserved for the
+    // TARGET's own agent_start, so the controller never 404s on it.)
     return {
       ok: false,
       code: "no_cwd",
@@ -1888,6 +1988,14 @@ export async function spawnAgentSession(
         "or set an active workspace via `agentproto workspace use <slug>`.",
     }
   }
+  // P8 device slop-gap: the only device spawn still carrying no cwd at this
+  // point is the slug-only one — the target's `agent_start` resolves its own
+  // cwd, and `bootSandboxAgentSession` stamps the REMOTE cwd back into
+  // `cwd`/the descriptor once the remote answers. Neutralize to "" here so
+  // the downstream string consumers type-check (`worktreeFields(cwd)` and
+  // friends take a plain string; the device branch keeps them suppressed or
+  // remote-fed in practice), and so a registry row never records `undefined`.
+  cwd = cwd ?? ""
   if (appBoundary) {
     try {
       resolveBoundaryPath(appBoundary, cwd, "read")
@@ -2652,14 +2760,17 @@ export async function spawnAgentSession(
     // neither "mid-rebuild" nor "install it" applies, and the shared hint
     // (same text as cron's create-time check) says what was meant.
     const profileHint = await authProfileAsAdapterHint(input.adapter, getAuthProfile)
+    const gatewayHint = profileHint ? undefined : gatewayAsAdapterHint(input.adapter)
     return {
       ok: false,
       code: "adapter_not_found",
       message: profileHint
         ? `agent_start: adapter "${input.adapter}" could not be resolved. ${profileHint}`
-        : `agent_start: adapter "${input.adapter}" could not be resolved. If it was ` +
-          `working a moment ago, something may be mid-rebuild — wait and retry. If it ` +
-          `has never been installed, run \`agentproto install ${input.adapter}\` first.`,
+        : gatewayHint
+          ? `agent_start: adapter "${input.adapter}" could not be resolved. ${gatewayHint}`
+          : `agent_start: adapter "${input.adapter}" could not be resolved. If it was ` +
+            `working a moment ago, something may be mid-rebuild — wait and retry. If it ` +
+            `has never been installed, run \`agentproto install ${input.adapter}\` first.`,
     }
   }
   if (resolveHostAuth && !resolved) {
@@ -3165,7 +3276,13 @@ export async function spawnAgentSession(
   // resolution (the box's) stands in for this controller-side one — no
   // double preamble, because the box never injects its own composition on
   // top of a prompt POST (it only ever composes at its own `agent_start`).
-  const isDeviceSandboxSpawn = isDeviceSandboxTarget(input.sandbox)
+  // Reuse the hoisted detector (computed near the top, BEFORE cwd resolution
+  // — see the device explicit-repo guard there for why it must run early)
+  // rather than re-computing it: same flag, mapped onto this late scope.
+  // Reuse the hoisted detector (computed BEFORE cwd resolution — see the
+  // device explicit-repo guard up top for why the classification has to run
+  // early) instead of re-computing it here.
+  const isDeviceSandboxSpawn = isDeviceSpawn
   const deviceTargetName =
     typeof input.sandbox === "string"
       ? input.sandbox.slice("device:".length)
@@ -3678,6 +3795,13 @@ export async function spawnAgentSession(
         sandbox: input.sandbox,
         resolveSandboxProvider,
         adapter: input.adapter,
+        // controllers half of the #1647 pairing: the caller's EXPLICIT slug
+        // rides the bridge so the TARGET daemon resolves it against ITS
+        // registry (and fails loudly there when it can't). Undefined for
+        // an implicit slug — the target then deals in `cwd`/active default
+        // exactly as before (and the top-level no-identity guard already
+        // refused the whole spawn before this point).
+        ...(explicitWorkspaceSlug ? { workspaceSlug: input.workspaceSlug } : {}),
         // The host's own resolved `cwd` — valid as-is for a same-machine
         // provider (`local`); a genuinely remote box (e2b/Box) has its own,
         // disjoint filesystem (AIP-36 `mounts`, out of scope here — see the
@@ -4368,6 +4492,13 @@ async function bootSandboxAgentSession(opts: {
   sandbox: string | SandboxSpecInput
   resolveSandboxProvider?: SandboxProviderResolver
   adapter: string
+  /** The controller-resolved `workspaceSlug`, when the CALLER named one
+   *  explicitly (`explicitWorkspaceSlug`) — forwarded onto the BOX's own
+   *  `agent_start` ONLY for the device provider, stamped `deviceBridge:
+   *  true` there (issue #1647): the target daemon must resolve the slug
+   *  against ITS OWN registry and fail loudly when it can't, without the
+   *  controller being able to say so itself. */
+  workspaceSlug?: string
   /** The HOST's resolved cwd for this spawn — see `explicitCwd` for whether
    *  the caller actually asked for this path, or it's just where cwd
    *  resolution fell through to (active workspace / worktree). */
@@ -4611,6 +4742,18 @@ async function bootSandboxAgentSession(opts: {
     const remoteDesc = await host.start({
       adapter: opts.adapter,
       ...(omitCwd ? {} : { cwd: boxCwd }),
+      // Issue #1647 — DEVICE-BRIDGE ONLY: forward an EXPLICIT
+      // caller-supplied `workspaceSlug` to the target daemon's own
+      // `agent_start`, marked as arriving over the device bridge so the
+      // target resolves it against ITS registry and fails loudly
+      // (`device_bridge_workspace_unknown`) when it can't — never
+      // silently falling back to its active workspace. The device
+      // provider is the ONLY provider where a "workspace" means the
+      // remote machine's own registry, so no other provider gets this
+      // field; a same-machine provider (e2b/local) is untouched.
+      ...(isDeviceSandboxTarget(opts.sandbox) && opts.workspaceSlug !== undefined
+        ? { workspaceSlug: opts.workspaceSlug, deviceBridge: true }
+        : {}),
       ...(opts.mcpServers ? { mcpServers: toMcpServerMounts(opts.mcpServers) } : {}),
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.route ? { route: opts.route } : {}),

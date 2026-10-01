@@ -6070,9 +6070,11 @@ async function handleSessions(
                 result.code === "orchestrator_child_quota_exceeded" ||
                 result.code === "role_spawn_denied"
               ? 409
-            : result.code === "invalid_role" ||
+              : result.code === "invalid_role" ||
                 result.code === "browser_unsupported" ||
                 result.code === "worktree_requires_explicit_repo" ||
+                result.code === "device_spawn_requires_repo_identity" ||
+                result.code === "device_bridge_workspace_unknown" ||
                 result.code === "access_profile_not_found" ||
                 result.code === "access_profile_ineligible" ||
                 result.code === "sandbox_cwd_invalid"
@@ -6172,6 +6174,8 @@ async function handleSessions(
               : result.code === "invalid_role" ||
                   result.code === "browser_unsupported" ||
                   result.code === "worktree_requires_explicit_repo" ||
+                  result.code === "device_spawn_requires_repo_identity" ||
+                  result.code === "device_bridge_workspace_unknown" ||
                   result.code === "access_profile_not_found" ||
                   result.code === "access_profile_ineligible" ||
                   result.code === "sandbox_cwd_invalid"

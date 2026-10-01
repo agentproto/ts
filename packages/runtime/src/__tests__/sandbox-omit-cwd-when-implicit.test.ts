@@ -118,6 +118,7 @@ describe("bootSandboxAgentSession — omitCwdWhenImplicit (device sandbox)", () 
   it("omitCwdWhenImplicit + no explicit cwd: host.start() is called with NO cwd field at all", async () => {
     const result = await spawnAgentSession(makeDeps(registry, true), {
       adapter: "whatever-cli",
+      workspaceSlug: "host-repo", // P8 #1647: a device spawn must name its landing spot
       sandbox: "device:work-mac",
     })
     expect(result.ok).toBe(true)
@@ -130,6 +131,7 @@ describe("bootSandboxAgentSession — omitCwdWhenImplicit (device sandbox)", () 
     startMock.mockResolvedValue({ id: "remote_sess_1", cwd: "/home/device-user/workspace" })
     const result = await spawnAgentSession(makeDeps(registry, true), {
       adapter: "whatever-cli",
+      workspaceSlug: "host-repo",
       sandbox: "device:work-mac",
     })
     expect(result.ok).toBe(true)
@@ -140,6 +142,7 @@ describe("bootSandboxAgentSession — omitCwdWhenImplicit (device sandbox)", () 
   it("omitCwdWhenImplicit + no explicit cwd + remote reports no cwd: descriptor.cwd falls back to the host's own resolved cwd", async () => {
     const result = await spawnAgentSession(makeDeps(registry, true), {
       adapter: "whatever-cli",
+      workspaceSlug: "host-repo",
       sandbox: "device:work-mac",
     })
     expect(result.ok).toBe(true)
@@ -161,6 +164,7 @@ describe("bootSandboxAgentSession — omitCwdWhenImplicit (device sandbox)", () 
   it("omitCwdWhenImplicit unset (default false) + no explicit cwd: cwd IS forwarded — today's behavior for every other provider is unchanged", async () => {
     const result = await spawnAgentSession(makeDeps(registry, false), {
       adapter: "whatever-cli",
+      workspaceSlug: "host-repo",
       sandbox: "device:work-mac",
     })
     expect(result.ok).toBe(true)
