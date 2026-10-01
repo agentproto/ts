@@ -9,6 +9,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "test": "pnpm exec vitest run",
     "tauri": "tauri",
     "check-types": "tsc --noEmit"
   },

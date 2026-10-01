@@ -487,6 +487,16 @@
 .composer {
   padding: 10px 16px 12px;
 }
+
+/* Mobile keyboard lift: --kb-inset is written by useKeyboardViewport from
+ * window.visualViewport (0px on desktop, so this is layout-neutral there).
+ * Bottom padding additionally respects the home-indicator safe area. */
+.composer {
+  margin-bottom: var(--kb-inset, 0px);
+}
+.composer {
+  padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+}
 .composer .box {
   border: 1px solid var(--color-border);
   border-radius: calc(var(--rounded-lg) + 3px);
