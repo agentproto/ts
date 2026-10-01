@@ -1,5 +1,62 @@
 # @agentproto/runtime
 
+## 5.7.0
+
+### Minor Changes
+
+- f6b1555: Device session mirroring (BOOTSTRAP P7, refs #1637): a controller spawning into
+  `sandbox: "device:<fp|name>"` can now BOTH address the host conversation and
+  read turns that happened on the host.
+
+  - P7a: a device spawn stamps `hostSessionId` + `hostFingerprint` onto the
+    controller descriptor (the device provider resolves the paired host's real
+    fingerprint even for a name target); `device_prompt` (tool + REST route)
+    accepts a controller session id and substitutes its mapped host id when the
+    exact id 404s, with an actionable error naming the host when both fail; the
+    fields ride `session_list`'s compact projection (`device_sessions`' list body
+    is host-authored, so controller-side ids surface via the session descriptors).
+  - P7b: read-time device-mirror (`device-mirror.ts`) — the session READ paths
+    (`GET /sessions/:id` and its `/output`, `/events`, `/export`,
+    `/conversation` twins, plus the `agent_output` tool) sync host turns into the
+    controller transcript before reading, tagged `origin: "device"` + `hostSeq` +
+    `sourceRef: "device:<fp>"`, with a restart-safe dedup cursor derived from the
+    mirrored file itself and a `mirrorError` marker (never stale data) when the
+    host is unreachable. Consumes EXISTING host endpoints only; hosts older than
+    the id-mapping fields keep today's behaviour.
+  - The sandbox package only gains an optional `device?.fingerprint` on
+    `BootedSandbox` / `SandboxAgentSessionHost` (device-provider metadata).
+
+- 662ce60: Add webhook-egress primitives + sentinel webhook target/outbox (signing, SSRF gate, challenge verify, bounded-retry delivery, persisted dispatch/resume)
+- f6b1555: Device session mirroring (BOOTSTRAP P7, refs #1637): a controller spawning into
+  `sandbox: "device:<fp|name>"` can now BOTH address the host conversation and
+  read turns that happened on the host.
+
+  - P7a: a device spawn stamps `hostSessionId` + `hostFingerprint` onto the
+    controller descriptor (the device provider resolves the paired host's real
+    fingerprint even for a name target); `device_prompt` (tool + REST route)
+    accepts a controller session id and substitutes its mapped host id when the
+    exact id 404s, with an actionable error naming the host when both fail; the
+    fields ride `session_list`'s compact projection.
+  - P7b: read-time device-mirror (`device-mirror.ts`) — the session READ paths
+    (`GET /sessions/:id` and its `/output`, `/events`, `/export`,
+    `/conversation` twins, plus the `agent_output` tool) sync host turns into the
+    controller transcript before reading, tagged `origin: "device"` + `hostSeq` +
+    `sourceRef: "device:<fp>"`, with a restart-safe dedup cursor and a
+    `mirrorError` marker when the host is unreachable. Consumes EXISTING host
+    endpoints only; hosts older than the id-mapping fields keep today's behaviour.
+  - Minor (not patch) because runtime adds new exports
+    (`promptDeviceSession`, `syncDeviceMirror`, …) and sandbox adds the optional
+    `device?.fingerprint` field on `BootedSandbox`.
+
+### Patch Changes
+
+- 399fd2a: Device spawn must name where to land: an `agent_start({ sandbox: "device:<fp>" })` with neither `cwd` nor `workspaceSlug` now fails 4xx with `device_spawn_requires_repo_identity` (issue #1647 field report — it used to silently land in the target daemon's active workspace, wrong files/wrong AGENTS.md). An explicit `workspaceSlug` on a device spawn is forwarded over the bridge (marked `deviceBridge: true`) so the TARGET daemon resolves it against its own registry: there it fails 4xx with `device_bridge_workspace_unknown` naming the slug and the target's known slugs instead of falling back to the active workspace. Local spawn semantics are unchanged. `adapter_not_found` for a route-like slug (e.g. `opencode-go`) is now actionable — it names the corrective `adapter`/`model`/`route` usage. `StartAgentArgs` gains the internal `deviceBridge` bridge marker.
+- Updated dependencies [f6b1555]
+- Updated dependencies [f6b1555]
+- Updated dependencies [85051ab]
+  - @agentproto/sandbox@0.8.0
+  - @agentproto/driver-agent-cli@2.6.4
+
 ## 5.6.0
 
 ### Minor Changes

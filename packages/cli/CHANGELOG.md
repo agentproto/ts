@@ -1,5 +1,19 @@
 # @agentproto/cli
 
+## 1.8.0
+
+### Minor Changes
+
+- b6c356e: Add @agentproto/adapter-copilot-cli (GitHub Copilot CLI ACP adapter)
+
+### Patch Changes
+
+- Updated dependencies [85051ab]
+  - @agentproto/driver-agent-cli@2.6.4
+  - @agentproto/worktree@0.14.2
+  - @agentproto/sandbox-box@0.2.22
+  - @agentproto/sandbox-e2b@0.5.12
+
 ## 1.7.2
 
 ### Patch Changes
