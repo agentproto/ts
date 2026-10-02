@@ -237,7 +237,8 @@ Context intake profile (for example full or lean).
 ## auth
 
 Deterministic billing-auth mode + EXPLICIT credential for adapters that
-declare it (today: claude-code). EXPLICIT credential selection, not
+declare a subscription login and/or an API-key provider (any other adapter
+fails with `unsupported_auth_mode`). EXPLICIT credential selection, not
 scrub-by-absence: `mode` picks 'subscription' (default) or 'api-key';
 `token`/`apiKey` (matching the resolved mode) is the secret VALUE, merged
 against `~/.agentproto/config.json`'s

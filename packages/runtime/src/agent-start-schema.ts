@@ -283,8 +283,10 @@ export const agentStartInputShape = {
     .optional()
     .describe(
       "Explicit billing-auth mode + credential for adapters that declare it " +
-        "(today: claude-code) — 'subscription' (default) bills the Max/Pro " +
-        "plan, 'api-key' bills API credits. FAILS FAST with no fallback if the " +
+        "(those that declare a subscription login and/or an API-key provider; " +
+        "any other fails with unsupported_auth_mode) — 'subscription' " +
+        "(default) bills the user's subscription login, 'api-key' bills API " +
+        "credits. FAILS FAST with no fallback if the " +
         `resolved mode has no credential configured anywhere. ${help("auth")}`
     ),
   mcpServers: jsonTolerant(

@@ -33,11 +33,14 @@ describe("antigravity adapter manifest", () => {
   })
 
   it("declares NO api-key auth env vars (keyring + Google Sign-In only)", () => {
-    // Honest: there is no documented API-key env var, so no auth.state.env,
-    // no provider, no authSubscription.
+    // Honest: there is no documented API-key env var, so no auth.state.env
+    // and no provider.
     expect(antigravity.auth?.state?.env).toBeUndefined()
     expect(antigravity.provider).toBeUndefined()
-    expect(antigravity.authSubscription).toBeUndefined()
+  })
+
+  it("declares the Google Sign-In login as an external subscription (no bearer injected)", () => {
+    expect(antigravity.authSubscription).toEqual({ external: true })
   })
 
   it("declares no fixed models list (exact slugs unverified — free-form `model` option instead)", () => {

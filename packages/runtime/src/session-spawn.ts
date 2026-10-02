@@ -1239,8 +1239,8 @@ export interface SpawnAgentSessionInput {
   preset?: UserPreset
   /**
    * Deterministic billing-auth mode + EXPLICIT credential for adapters that
-   * declare an env-var vocabulary for it (today: claude-code — see
-   * `AgentCliAuth.modes` in `@agentproto/driver-agent-cli`). `mode` wins over
+   * declare it (an `authSubscription` login and/or an API-key `provider`
+   * in their manifest — see `AdapterAuthDescriptor`). `mode` wins over
    * `~/.agentproto/config.json`'s `defaults.adapters.<slug>.auth.mode`
    * (default `"subscription"`); the credential (`token` for `"subscription"`,
    * `apiKey` for `"api-key"`) wins over the config field matching the

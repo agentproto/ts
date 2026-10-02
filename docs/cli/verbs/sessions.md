@@ -303,7 +303,7 @@ reattached later.
 | `--model <id>` | Adapter model option. |
 | `--base-url <url>` | Manifest `base_url` option (claude-code/claude-sdk) — injected as `ANTHROPIC_BASE_URL`. |
 | `--auth-token <token>` | Manifest `auth_token` option — injected as `ANTHROPIC_AUTH_TOKEN`. |
-| `--auth subscription\|api-key` | Deterministic billing-auth mode + inline credential for adapters that declare it (today: claude-code). This is the *inline* billing selector; the first-class config axis is a **named auth profile** (`access.profileRef`) — see [Config axes](#config-axes-mcphttp). |
+| `--auth subscription\|api-key` | Deterministic billing-auth mode + inline credential for adapters that declare a subscription login (`authSubscription`) and/or an API-key provider in their manifest; any other adapter fails the spawn with `unsupported_auth_mode`. This is the *inline* billing selector; the first-class config axis is a **named auth profile** (`access.profileRef`) — see [Config axes](#config-axes-mcphttp). |
 | `--options-json <json\|@file>` | Object form of manifest-declared AIP-45 options; merged with `--base-url`/`--auth-token`/`--auth`/`--model`/`--effort` (discrete flags win on collision). |
 | `--prompt <text>`, `-p` | Initial user turn. |
 | `--label <text>` | UI label for this session. |
