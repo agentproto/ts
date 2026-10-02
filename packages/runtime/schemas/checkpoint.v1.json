@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "number",
+      "const": 1
+    },
+    "checkpointId": {
+      "type": "string"
+    },
+    "sourceSessionId": {
+      "type": "string"
+    },
+    "createdAt": {
+      "type": "string",
+      "description": "ISO 8601 creation timestamp."
+    },
+    "contextPct": {
+      "type": "number",
+      "description": "Context percentage that triggered the checkpoint."
+    },
+    "policy": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "manual",
+            "ask",
+            "auto"
+          ]
+        },
+        "warnAtPct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "compactAtPct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "continueFreshAtPct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "hardStopAtPct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "goal": {
+          "type": "boolean"
+        },
+        "plan": {
+          "type": "boolean"
+        },
+        "decisions": {
+          "type": "boolean"
+        },
+        "changedFiles": {
+          "type": "boolean"
+        },
+        "gitStatus": {
+          "type": "boolean"
+        },
+        "tests": {
+          "type": "boolean"
+        },
+        "errors": {
+          "type": "boolean"
+        },
+        "risks": {
+          "type": "boolean"
+        },
+        "nextStep": {
+          "type": "boolean"
+        },
+        "config": {
+          "type": "boolean"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "mode",
+        "warnAtPct",
+        "compactAtPct",
+        "continueFreshAtPct",
+        "hardStopAtPct",
+        "goal",
+        "plan",
+        "decisions",
+        "changedFiles",
+        "gitStatus",
+        "tests",
+        "errors",
+        "risks",
+        "nextStep",
+        "config",
+        "label"
+      ],
+      "additionalProperties": {}
+    },
+    "sections": {
+      "type": "object",
+      "properties": {
+        "goal": {
+          "type": "string"
+        },
+        "plan": {
+          "type": "string"
+        },
+        "decisions": {
+          "type": "string"
+        },
+        "changedFiles": {
+          "type": "string"
+        },
+        "gitStatus": {
+          "type": "string"
+        },
+        "tests": {
+          "type": "string"
+        },
+        "errors": {
+          "type": "string"
+        },
+        "risks": {
+          "type": "string"
+        },
+        "nextStep": {
+          "type": "string"
+        },
+        "config": {
+          "type": "string"
+        },
+        "notes": {
+          "description": "Free-text notes the operator attached to the handoff.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": {},
+      "description": "Sections requested and present. A section with nothing real to say is omitted, never a placeholder."
+    },
+    "handoffTurn": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "answered",
+            "skipped",
+            "failed"
+          ],
+          "description": "answered: the source session replied with a valid summary; skipped: not requested or no live idle session; failed: asked but timed out / unusable reply."
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "additionalProperties": {}
+    },
+    "recentDigest": {
+      "type": "string"
+    },
+    "originalTranscriptPath": {
+      "type": "string"
+    },
+    "checkpointPath": {
+      "type": "string"
+    },
+    "nextAction": {
+      "type": "string",
+      "enum": [
+        "continue",
+        "compact_then_continue",
+        "ask"
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "checkpointId",
+    "sourceSessionId",
+    "createdAt",
+    "contextPct",
+    "policy",
+    "sections",
+    "recentDigest",
+    "originalTranscriptPath",
+    "checkpointPath",
+    "nextAction"
+  ],
+  "additionalProperties": {},
+  "title": "AgentProto context checkpoint",
+  "description": "Structured handoff document persisted next to a session's events.jsonl and used to seed a fresh continuation session."
+}

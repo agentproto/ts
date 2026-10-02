@@ -7273,6 +7273,9 @@ export function createSessionsRegistry(opts?: {
       const result = await continueAgentSessionFresh(
         { registry, resolveAgentAdapter },
         rt.desc,
+        // The session is at its context limit: don't spend another turn on
+        // a handoff question, extract from the transcript instead.
+        { askSource: false },
       )
       appendLine(
         rt,

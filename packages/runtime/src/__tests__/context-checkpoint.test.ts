@@ -69,7 +69,8 @@ describe("buildContextCheckpoint", () => {
     const checkpoint = await buildContextCheckpoint(desc, { contextPct: 75 })
     expect(checkpoint.sourceSessionId).toBe("sess_test")
     expect(checkpoint.contextPct).toBe(75)
-    expect(checkpoint.sections.goal).toContain("Implement feature")
+    expect(checkpoint.schemaVersion).toBe(1)
+    expect(checkpoint.sections.goal).toBe("hello")
     expect(checkpoint.sections.config).toContain("claude-sonnet-5")
     expect(checkpoint.sections.gitStatus).toBeDefined()
     expect(checkpoint.recentDigest).toContain("hello")
@@ -83,9 +84,15 @@ describe("buildContextCheckpoint", () => {
   })
 
   it("caps each section to a bounded size", async () => {
-    const desc = baseDesc({ title: "x".repeat(5000) })
-    const checkpoint = await buildContextCheckpoint(desc, { contextPct: 75 })
+    vi.mocked(exportDaemonEventsSession).mockResolvedValue({
+      meta: {},
+      messages: [{ role: "user", text: "x".repeat(5000) }],
+    })
+    const checkpoint = await buildContextCheckpoint(baseDesc(), { contextPct: 75 })
     expect((checkpoint.sections.goal ?? "").length).toBeLessThanOrEqual(1300)
+    const long = baseDesc({ lastError: "e".repeat(5000) })
+    const withLongError = await buildContextCheckpoint(long, { contextPct: 75 })
+    expect((withLongError.sections.errors ?? "").length).toBeLessThanOrEqual(1300)
   })
 
   it("gracefully handles missing transcript", async () => {
@@ -93,6 +100,11 @@ describe("buildContextCheckpoint", () => {
     const desc = baseDesc()
     const checkpoint = await buildContextCheckpoint(desc, { contextPct: 75 })
     expect(checkpoint.recentDigest).toContain("no daemon transcript")
+    // Falls back to the descriptor title; nothing else is invented.
+    expect(checkpoint.sections.goal).toBe("Implement feature")
+    expect(checkpoint.sections.decisions).toBeUndefined()
+    expect(checkpoint.sections.nextStep).toBeUndefined()
+    expect(checkpoint.sections.tests).toBe("no test run recorded")
   })
 })
 

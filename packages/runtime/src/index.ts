@@ -2897,6 +2897,7 @@ export async function createGateway(
       // Phase 4: lets an `agent_start` carrying `costBudget` auto-attach a
       // windowed cost-budget governance policy on the spawned session.
       supervisor,
+      taskLedger,
       buildOrchestratorMcp: orchestratorInjector,
       // Same `?callerSessionId=` query that attributes `command_execute` back
       // to the calling session (above) — here it's the implicit auto-parent so

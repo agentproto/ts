@@ -77,6 +77,8 @@ import {
 import { buildSessionCapabilities } from "./session-capabilities.js"
 import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } from "./context-checkpoint.js"
 import { continueAgentSessionFresh } from "./session-continue-fresh.js"
+import { createCheckpointSources } from "./checkpoint-extract.js"
+import type { TaskLedger } from "./task-ledger.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
 import {
   compactOutcome,
@@ -515,6 +517,11 @@ export interface RegisterSessionToolsOptions {
    *  to auto-attach a windowed cost-budget policy for an `agent_start` carrying
    *  `costBudget` (phase 4). See `RegisterAgentToolsOptions.supervisor`. */
   supervisor?: RegisterAgentToolsOptions["supervisor"]
+  /** Task ledger — lets `session_checkpoint` / `session_continue_fresh` fill
+   *  the checkpoint's `nextStep` from the session's open tasks. Optional:
+   *  without it (and without `supervisor` for the last gate result) the
+   *  checkpoint falls back to the transcript alone. */
+  taskLedger?: TaskLedger
   /** Forwarded to `registerAgentTools` — config.json
    *  `defaults.agentPromptInterrupt`, the unset-default for `interrupt` on
    *  `agent_prompt` / `message_parent`. See
@@ -1050,6 +1057,10 @@ export function registerSessionTools(
     reviewRunner,
     listAgentAdapters,
   } = opts
+  const checkpointSources = createCheckpointSources({
+    ...(opts.supervisor ? { supervisor: opts.supervisor } : {}),
+    ...(opts.taskLedger ? { taskLedger: opts.taskLedger } : {}),
+  })
   const ptyEnabled = opts.ptyEnabled === true
   // Point the module-level branch_gc job registry at the injected dir (tests
   // use this to avoid writing into the real home directory). Last write wins.
@@ -1748,6 +1759,24 @@ export function registerSessionTools(
         .string()
         .min(1)
         .describe("Session id or name — from `session_list`."),
+      notes: z
+        .string()
+        .max(4000)
+        .optional()
+        .describe(
+          "Operator notes to carry over verbatim in the checkpoint's `notes` " +
+            "section — decisions, constraints, anything the next session must know."
+        ),
+      askSource: z
+        .boolean()
+        .optional()
+        .describe(
+          "Ask the live source session to summarise itself (goal, decisions, " +
+            "tests, risks, next step) as a short handoff turn before the " +
+            "checkpoint is built. Default true; ignored (falls back to " +
+            "transcript extraction) when the session is dead, busy or doesn't " +
+            "answer within ~60s. Set false to avoid sending the session a prompt."
+        ),
     },
     async input => {
       const desc = registry.findByIdOrName(input.idOrName)
@@ -1790,7 +1819,13 @@ export function registerSessionTools(
         }
       }
       const pct = computeContextPct(desc.contextSize, desc.contextUsed) ?? policy.continueFreshAtPct
-      const checkpoint = await buildContextCheckpoint(desc, { contextPct: pct })
+      const checkpoint = await buildContextCheckpoint(desc, {
+        contextPct: pct,
+        registry,
+        sources: checkpointSources,
+        ...(input.notes !== undefined ? { notes: input.notes } : {}),
+        ...(input.askSource !== undefined ? { askSource: input.askSource } : {}),
+      })
       await persistCheckpoint(checkpoint)
       return {
         content: [
@@ -1801,8 +1836,10 @@ export function registerSessionTools(
                 sessionId: desc.id,
                 checkpointId: checkpoint.checkpointId,
                 checkpointPath: checkpoint.checkpointPath,
+                schemaVersion: checkpoint.schemaVersion,
                 contextPct: checkpoint.contextPct,
                 nextAction: checkpoint.nextAction,
+                handoffTurn: checkpoint.handoffTurn,
               },
               null,
               2,
@@ -1870,6 +1907,24 @@ export function registerSessionTools(
         })
         .optional()
         .describe("Switch the fresh session's billing wallet to a named auth profile."),
+      notes: z
+        .string()
+        .max(4000)
+        .optional()
+        .describe(
+          "Operator notes to carry over verbatim in the checkpoint's `notes` " +
+            "section — decisions, constraints, anything the next session must know."
+        ),
+      askSource: z
+        .boolean()
+        .optional()
+        .describe(
+          "Ask the live source session to summarise itself (goal, decisions, " +
+            "tests, risks, next step) as a short handoff turn before the " +
+            "checkpoint is built. Default true; ignored (falls back to " +
+            "transcript extraction) when the session is dead, busy or doesn't " +
+            "answer within ~60s. Set false to avoid sending the session a prompt."
+        ),
     },
     async input => {
       if (!resolveAgentAdapter) {
@@ -1931,6 +1986,9 @@ export function registerSessionTools(
           ...(input.adapter !== undefined ? { adapter: input.adapter } : {}),
           ...(input.model !== undefined ? { model: input.model } : {}),
           ...(input.access !== undefined ? { access: input.access } : {}),
+          ...(input.notes !== undefined ? { notes: input.notes } : {}),
+          ...(input.askSource !== undefined ? { askSource: input.askSource } : {}),
+          sources: checkpointSources,
         })
         return {
           content: [
