@@ -109,6 +109,7 @@ function realDialWebSocket(url: string, opts: { timeoutMs?: number } = {}): Prom
     const timer = setTimeout(() => finish({ ok: false, via, error: `timed out after ${timeoutMs}ms` }), timeoutMs)
     ws.once("open", onOpen)
     ws.once("error", onError)
+    ws.on("error", () => {})
   })
 }
 

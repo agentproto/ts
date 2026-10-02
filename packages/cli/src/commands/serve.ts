@@ -1287,6 +1287,9 @@ async function runOneTunnel(
   if (opts.token) headers.authorization = `Bearer ${opts.token}`
 
   const ws = new WebSocket(opts.connect, { headers })
+  // Aborting a CONNECTING socket makes `ws` emit an async 'error' after the dial
+  // listeners are gone; unhandled it crashes the daemon.
+  ws.on("error", () => {})
 
   // Wait for OPEN (or fail).
   await new Promise<void>((resolve, reject) => {
@@ -1301,11 +1304,12 @@ async function runOneTunnel(
     ws.once("open", onOpen)
     ws.once("error", onError)
     if (signal.aborted) {
-      ws.close()
+      ws.terminate()
       reject(new Error("Aborted before WS opened."))
     }
     signal.addEventListener("abort", () => {
-      ws.close()
+      if (ws.readyState === WebSocket.CONNECTING) ws.terminate()
+      else ws.close()
       reject(new Error("Aborted while WS connecting."))
     })
   })
