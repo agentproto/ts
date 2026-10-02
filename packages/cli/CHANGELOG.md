@@ -1,5 +1,34 @@
 # @agentproto/cli
 
+## 1.10.0
+
+### Minor Changes
+
+- a75032a: Add per-session index sidecar and `sessions find`/`recap` commands
+- 53a0276: Doctor node/adapter mismatch check (F4): the daemon step now compares the Node
+  binary the daemon runs under (`/health` `info.node`) against this CLI's Node
+  and, when the two differ, asks each Node's global install whether it can see
+  the catalog's `@agentproto/adapter-*` packages (same `createRequire` anchor
+  the daemon's manifest-loader uses). Any adapter this CLI's Node resolves but
+  the daemon's does not warns with the exact reinstall command
+  (`npm i -g @agentproto/adapter-<slug> …`) — the failure mode where global
+  adapters installed under one Node (nvm/fnm switch) are invisible to the
+  daemon's Node, so `agent_start` fails `adapter "<x>" could not be resolved`
+  while the packages look installed. Same Node, an older daemon without the
+  `node` field, or no divergence in what resolves reports nothing.
+
+### Patch Changes
+
+- 20dd08f: Session-index follow-up fixes that missed the #1665 squash: capText slices by code point (no lone-surrogate split at the 500/300 boundary), backfilled `startedAt` uses the transcript's birthtime, and `sessions find --limit` is capped at 200 to match the MCP surface.
+- 3959962: fix(runtime): detect a dead ACP connection instead of reporting it alive — a
+  second, independent liveness axis (`adapterConnected`) so a row whose ACP
+  transport died is no longer reported as running/Idle forever.
+- 35e3fc6: Warn when the daemon would run from a local workspace build, not npm
+- Updated dependencies [3959962]
+  - @agentproto/acp@0.10.0
+  - @agentproto/driver-agent-cli@2.7.1
+  - @agentproto/pairing-host@0.2.3
+
 ## 1.9.0
 
 ### Minor Changes

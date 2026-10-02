@@ -1,5 +1,11 @@
 # @agentproto/mcp-server
 
+## 0.6.0
+
+### Minor Changes
+
+- a8d3495: Add MCP Events adapter and native events/* JSON-RPC transport
+
 ## 0.5.0
 
 ### Minor Changes
