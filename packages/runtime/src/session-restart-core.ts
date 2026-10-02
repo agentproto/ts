@@ -523,14 +523,17 @@ export interface RestartAgentSessionOptions {
 // new row (continuedFrom/continuedTo chain), even though the registry can
 // revive the dead row IN PLACE — same id — via the lazy resume-on-prompt
 // primitive (`maybeResumeAgent`, sessions.ts). Users saw a "new
-// conversation" every time. These helpers are the ONE shared decision both
+// conversation" every time. These helpers are the ONE shared decision all
 // restart paths go through:
 //
 //   - `session_restart` (explicit operator action) — tries the in-place
 //     revival first when the row is ended + resumable + carries no override
 //     axes; on success returns the SAME id with `sameId: true`.
-//   - `restartInboundSession` (AUTOMATIC — sentinel + inbound router) —
-//     same helper, but `allowDeliberateEnd` stays false: a deliberate end
+//   - INBOUND (watcher + push router — a HUMAN writing to the session) —
+//     same helper with `allowDeliberateEnd: true`: explicit human intent,
+//     so even a deliberate end may be revived in place.
+//   - the SENTINEL (AUTOMATIC) — same helper with
+//     `allowDeliberateEnd: false`: a deliberate end
 //     (`operator-completed`/`operator-stopped`/`steward-completed`/
 //     `steward-abandoned`, `DELIBERATE_END_REASONS`) is never revived in
 //     place; it falls back to today's new-id restart unchanged. (The
@@ -543,9 +546,11 @@ export interface RestartAgentSessionOptions {
 
 export interface RestartPreferInPlaceOptions extends RestartAgentSessionOptions {
   /** Whether a deliberate end (see `DELIBERATE_END_REASONS`) may still be
-   *  restarted. Default false — automatic paths never revive a deliberate
-   *  end. `session_restart` passes true: an explicit operator action is
-   *  deliberate intent, so the row may come back in place when resumable. */
+   *  restarted. Default false — the AUTOMATIC path (sentinel) never
+   *  revives a deliberate end. The human-intent paths pass true:
+   *  `session_restart` (explicit operator action) and the inbound
+   *  watcher/push router (a human writing to the session) both revive a
+   *  deliberate end in place when the row is resumable. */
   allowDeliberateEnd?: boolean
 }
 
@@ -619,11 +624,11 @@ export async function tryRestartInPlace(
   return live
 }
 
-/** The full shared restart decision for the AUTOMATIC paths: in-place
- *  revival when eligible, else today's new-id `restartAgentSession`
- *  unchanged. `restartInboundSession` (sentinel + inbound router) calls
- *  this with `forceAgentResume: true` and the default
- *  `allowDeliberateEnd: false`. */
+/** The full shared restart decision for the routing paths (sentinel +
+ *  inbound): in-place revival when eligible, else today's new-id
+ *  `restartAgentSession` unchanged. Callers pass `forceAgentResume: true`
+ *  and their own `allowDeliberateEnd` — false for the sentinel
+ *  (automatic), true for inbound (human intent). */
 export async function restartPreferInPlace(
   registry: SessionsRegistry,
   resolveAgentAdapter: AgentAdapterResolver,

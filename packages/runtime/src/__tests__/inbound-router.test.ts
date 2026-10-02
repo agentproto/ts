@@ -2,6 +2,9 @@ import { describe, it, expect, vi } from "vitest"
 import { routeInboundMessage, attributeInboundText } from "../inbound-router.js"
 import type { InboundMessage, InboundRouterDeps } from "../inbound-router.js"
 import type { TransmitterBinding, TransmitterBindingStore } from "../transmitter-bindings.js"
+import { makeRestartForRouting } from "../index.js"
+import { createSessionsRegistry, type AgentSessionLike, type AgentSessionResumer } from "../sessions.js"
+import type { AgentAdapterResolver } from "../http-server.js"
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -205,6 +208,81 @@ describe("routeInboundMessage", () => {
       sessionId: "sess_1",
       mode: "route",
     })
+  })
+
+  it('mode "route" revives a DELIBERATELY-ended bound session IN PLACE (inbound = human intent)', async () => {
+    // PR C follow-up: an inbound message is a human explicitly writing to
+    // the session, so the restart hook index.ts wires for the inbound
+    // watcher/push router passes allowDeliberateEnd:true — a deliberate end
+    // (operator-completed / steward-*) is revived IN PLACE when the row is
+    // resumable. This drives the REAL factory + registry, not a mock
+    // restartSession: the router → restartInboundSession → restartPreferInPlace
+    // chain is the production wiring.
+    const resumeCalls: Array<string | undefined> = []
+    const resumedSession = (id: string): AgentSessionLike => ({
+      sessionId: id,
+      async *send() {},
+      async cancel() {},
+      async close() {},
+    })
+    const resumeAgent: AgentSessionResumer = async ({ resumeSessionId }) => {
+      resumeCalls.push(resumeSessionId)
+      return resumedSession(`resumed_${resumeSessionId}`)
+    }
+    const registry = createSessionsRegistry({ persist: false, resumeAgent })
+    const resolver: AgentAdapterResolver = async slug => ({
+      async startSession() {
+        return resumedSession(`spawn_${slug}`)
+      },
+      commandPreview: `mock-${slug}`,
+    })
+    const restartSession = makeRestartForRouting(
+      { sessions: registry, resolveAgentAdapter: resolver },
+      { name: "restartInboundSession", allowDeliberateEnd: true },
+    )
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: { sessionId: "acp_orig", async *send() {}, async cancel() {}, async close() {} },
+      adapterSlug: "hermes",
+    })
+    // A deliberate end with a CLEARED binding (reapIdle clears it; the
+    // relabel simulates the operator-completed stamp — the policy under test
+    // is the flag, not the death mechanics).
+    registry.reapIdle(prev.id)
+    prev.endedReason = "operator-completed"
+    // Captured BEFORE the route: a successful in-place resume REFRESHES
+    // adapterSessionId onto the new ACP session id.
+    const prevAcpId = prev.adapterSessionId
+
+    const { store } = makeBindingStore({
+      alias: "agentpush",
+      source: "+33600000000",
+      contactRef: "alice",
+      sessionId: prev.id,
+      mode: "route",
+      lastSeenTs: 100,
+    })
+    const enqueuePrompt = vi.fn()
+    const deps = makeDeps({
+      bindings: store,
+      enqueuePrompt,
+      isSessionAlive: vi.fn(() => false),
+      restartSession,
+    })
+
+    const msg = makeMsg()
+    const result = await routeInboundMessage(deps, msg, "route")
+
+    // Revived IN PLACE: same id, no new row, no restarted-routed.
+    expect(result).toEqual({ action: "routed", sessionId: prev.id })
+    expect(resumeCalls).toEqual([prevAcpId])
+    expect(registry.list()).toHaveLength(1)
+    expect(registry.get(prev.id)?.status).toBe("running")
+    expect(enqueuePrompt).toHaveBeenCalledWith(prev.id, msg.text, { queue: true })
+
+    registry.shutdown()
   })
 
   it('mode "route" with no binding skips without spawning', async () => {

@@ -4129,14 +4129,13 @@ export function registerSessionTools(
       // in-place resume (`triggerResume` — the primitive lazy resume-on-
       // prompt uses): the conversation comes back on the SAME id, no new
       // row, no continuedFrom/continuedTo chain. Only when that is
-      // ineligible (alive / PTY / command / archived / overrides / a
+      //  ineligible (alive / PTY / command / archived / overrides / a
       // resume-capped row) or the resume doesn't take do we fall through
       // to today's strategy decision below, unchanged. `allowDeliberateEnd`
       // is true here: session_restart is an EXPLICIT operator action, so a
       // deliberate end (operator-completed / steward-*) may still be
       // revived in place — the never-revive guard protects the AUTOMATIC
-      // paths (sentinel + inbound), not a human asking for this session
-      // back.
+      // path (the sentinel), not a human asking for this session back.
       const inPlace = await tryRestartInPlace(registry, prev, {
         allowDeliberateEnd: true,
       })
