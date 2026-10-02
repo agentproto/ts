@@ -141,6 +141,13 @@ import {
   type SessionOutcomeCompact,
 } from "./session-outcome.js"
 import { isProviderLimitError, type SessionEndReason } from "./session-end-reason.js"
+import {
+  INDEX_TAIL_BYTES,
+  indexEntryFromDescriptor,
+  readTranscriptTail,
+  writeSessionIndex,
+  type TranscriptPrompt,
+} from "./session-index.js"
 import { dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
@@ -2520,6 +2527,12 @@ interface SessionRuntime {
   lastAssistantText?: string
   /** Set by a tool call: the next text-delta starts a new message. */
   lastAssistantTextSealed?: boolean
+  /** The most recent user prompt for this session (the caller's own ask, with
+   *  any daemon-composed system preamble stripped), captured at turn start so
+   *  the index sidecar can carry it without a transcript read on the write
+   *  path. In-memory only; backfill recovers it from the transcript tail for
+   *  rows this daemon never ran. */
+  lastUserPrompt?: TranscriptPrompt
   /** The most recent driver-reported `error` stream event's message this
    *  session lifetime, kept so a LATER death that carries no error text of
    *  its own (a bare "adapter process gone", from `markCrashed`'s pid probe)
@@ -3636,6 +3649,16 @@ export interface SessionsRegistry {
    *  so `interruptedAtBoot === bootId` means "interrupted by the restart that
    *  preceded THIS boot" (continue-interrupted). */
   readonly bootId: string
+  /** Absolute base dir this registry's per-session transcripts AND index
+   *  sidecars live under — the SAME dir the writers use (`sessions.eventsDir`
+   *  config > default). Exposed so `session_search`/`session_recap` (and a
+   *  daemon-startup backfill) read the sidecars this registry writes without
+   *  re-deriving the path. */
+  readonly transcriptBaseDir: string
+  /** Flush any throttled index-sidecar writes immediately. Called at
+   *  shutdown; exposed so a test can assert a trailing write landed without
+   *  waiting out the throttle window. Best-effort and synchronous. */
+  flushSessionIndexes(): void
   /** Book one automatic continue prompt against `id` (increment
    *  `autoContinueAttempts`, stamp `lastAutoContinueBoot = bootId`) and
    *  persist. Called by the continue-on-boot pass BEFORE it sends, so the
@@ -5072,6 +5095,9 @@ export function createSessionsRegistry(opts?: {
     // the session produced before anything announces its death, so a
     // `session:exited` consumer reading the descriptor already sees it.
     recordOutcome(rt)
+    // Refresh the sidecar now: an exit is a terminal state, so its index
+    // must land regardless of the throttled turn-end writes.
+    writeIndexNow(rt)
     // A dead PTY has no transcript left to discover — stop its link probe.
     rt.linkProbeStop?.()
     // A dying session must never leave a held permission RPC dangling — cancel
@@ -5453,6 +5479,70 @@ export function createSessionsRegistry(opts?: {
     persistTimer = setTimeout(() => {
       void persistSnapshot()
     }, PERSIST_DEBOUNCE_MS)
+  }
+
+  // ── Per-session index sidecar (sessions find / session_recap) ─────────
+  // A compact `<sessionsDir>/<id>/index.json` kept best-effort and throttled.
+  // Turn-end schedules a trailing write (never one per streaming frame);
+  // spawn/rename/exit write immediately. A failed index write is swallowed
+  // and can never fail a session write. See `session-index.ts`.
+  const INDEX_WRITE_THROTTLE_MS = 400
+  const dirtyIndexIds = new Set<string>()
+  let indexFlushTimer: ReturnType<typeof setTimeout> | undefined
+
+  /** The transcript-derived slice of an entry: prefer the live in-memory
+   *  buffers (a turn's just-finished output may not have hit the debounced
+   *  transcript writer yet), fall back to a bounded tail read only when a
+   *  field is missing (a row loaded from history, a rename of an old row). */
+  const captureIndexTail = (
+    rt: SessionRuntime,
+  ): { lastUserPrompt?: TranscriptPrompt; lastOutputText?: string } => {
+    let lastUserPrompt = rt.lastUserPrompt
+    let lastOutputText = rt.lastAssistantText
+    if (lastUserPrompt === undefined || lastOutputText === undefined) {
+      const tail = readTranscriptTail(sessionEventsPath(rt.desc.id, transcriptBaseDir), INDEX_TAIL_BYTES)
+      if (lastUserPrompt === undefined && tail.prompts.length > 0) {
+        lastUserPrompt = tail.prompts[tail.prompts.length - 1]
+      }
+      if (lastOutputText === undefined) lastOutputText = tail.lastOutputText
+    }
+    return {
+      ...(lastUserPrompt ? { lastUserPrompt } : {}),
+      ...(lastOutputText ? { lastOutputText } : {}),
+    }
+  }
+
+  const writeIndexNow = (rt: SessionRuntime): void => {
+    try {
+      writeSessionIndex(indexEntryFromDescriptor(rt.desc, captureIndexTail(rt)), transcriptBaseDir)
+    } catch {
+      // best-effort — an index write must never fail a session write
+    }
+  }
+
+  const flushDirtyIndexes = (): void => {
+    if (indexFlushTimer) {
+      clearTimeout(indexFlushTimer)
+      indexFlushTimer = undefined
+    }
+    if (dirtyIndexIds.size === 0) return
+    const ids = [...dirtyIndexIds]
+    dirtyIndexIds.clear()
+    for (const id of ids) {
+      const rt = sessions.get(id)
+      if (rt) writeIndexNow(rt)
+    }
+  }
+
+  const scheduleIndexWrite = (rt: SessionRuntime): void => {
+    if (shutdownDone) return
+    dirtyIndexIds.add(rt.desc.id)
+    if (indexFlushTimer) return
+    indexFlushTimer = setTimeout(() => {
+      indexFlushTimer = undefined
+      flushDirtyIndexes()
+    }, INDEX_WRITE_THROTTLE_MS)
+    indexFlushTimer.unref?.()
   }
 
   /**
@@ -7513,6 +7603,10 @@ export function createSessionsRegistry(opts?: {
             }
           : undefined
       )
+      // Capture the caller's own ask (system preamble stripped, mirroring the
+      // transcript writer) so the index sidecar carries it without a
+      // transcript read on the write path.
+      rt.lastUserPrompt = { ts: new Date().toISOString(), text: promptTextForIndex(message, turnOpts?.system) }
       // ACP's `prompt` field expects ContentBlock[] (or a single
       // block). Hosts that send a raw string get auto-wrapped into
       // `{type: "text", text: "..."}` so callers can hand us
@@ -7956,6 +8050,10 @@ export function createSessionsRegistry(opts?: {
           })
         }
       }
+
+      // A turn just ended (normal or abnormal) — refresh the sidecar on the
+      // throttled trailing schedule, never per streaming frame.
+      scheduleIndexWrite(rt)
 
       // ── FIFO queue drain (session-queue-ux) ──────────────────────
       // Runs after every turn that ended on its own, normal or abnormal —
@@ -8412,6 +8510,10 @@ export function createSessionsRegistry(opts?: {
 
   const registry: SessionsRegistry = {
     bootId,
+    transcriptBaseDir,
+    flushSessionIndexes() {
+      flushDirtyIndexes()
+    },
     recordAutoContinue(id) {
       const rt = sessions.get(id)
       if (!rt) return
@@ -8501,6 +8603,7 @@ export function createSessionsRegistry(opts?: {
         emitExited(rt)
       })
       schedulePersist()
+      writeIndexNow(rt)
       return desc
     },
     register(input) {
@@ -8555,6 +8658,7 @@ export function createSessionsRegistry(opts?: {
         emitExited(rt)
       })
       schedulePersist()
+      writeIndexNow(rt)
       return desc
     },
     spawnAgent(input) {
@@ -8719,6 +8823,7 @@ export function createSessionsRegistry(opts?: {
       schedulePersist()
       // Write point 1/3: cwd/adapterSlug/adapterSessionId are all known
       // at spawn — record the link before the first turn even runs.
+      writeIndexNow(rt)
       recordConversationLink(rt)
       // Stamp the transcript path on the spawn response itself — the
       // caller shouldn't have to wait for a get() to learn WHERE the
@@ -8863,6 +8968,7 @@ export function createSessionsRegistry(opts?: {
         "stdout"
       )
       schedulePersist()
+      writeIndexNow(rt)
       desc.eventsPath = sessionEventsPath(desc.id, transcriptBaseDir)
       return desc
     },
@@ -8948,6 +9054,7 @@ export function createSessionsRegistry(opts?: {
       schedulePersist()
       // Write point 1/3 (deferred): cwd/adapterSlug/adapterSessionId only
       // became known now — same reasoning as `spawnAgent`'s own call.
+      writeIndexNow(rt)
       recordConversationLink(rt)
       // Fire-and-forget the initial prompt (if any) — deferred here,
       // specifically, so it never dispatches into a tree that wasn't built
@@ -9197,6 +9304,7 @@ export function createSessionsRegistry(opts?: {
         emitExited(rt)
       })
       schedulePersist()
+      writeIndexNow(rt)
       return desc
     },
     recordCommand(input) {
@@ -10653,6 +10761,9 @@ export function createSessionsRegistry(opts?: {
         ts: new Date().toISOString(),
       })
       stampReadLiveness(rt.desc)
+      // A rename is a write-path event — refresh the sidecar immediately so
+      // `sessions find` by the new label resolves at once.
+      writeIndexNow(rt)
       return rt.desc
     },
     setKeepAlive(id, keepAlive) {
@@ -10820,6 +10931,8 @@ export function createSessionsRegistry(opts?: {
     if (shutdownDone) return
     shutdownDone = true
     if (persistTimer) clearTimeout(persistTimer)
+    // Land any throttled index-sidecar writes before the final snapshot flush.
+    flushDirtyIndexes()
     if (persist) {
       try {
         process.off("exit", onProcessExit)
@@ -11118,6 +11231,26 @@ function loadHistorySnapshot(
       })
     }
   }
+}
+
+/** The caller's own ask for the index sidecar: the outgoing message's text
+ *  blocks, with a daemon-composed system preamble stripped off the front —
+ *  mirrors `transcript-writer.ts`'s `recordPrompt` extraction so `sessions
+ *  find`/`recap` show the human's words, not the boilerplate. */
+function promptTextForIndex(message: unknown, system: string | undefined): string {
+  const text =
+    typeof message === "string"
+      ? message
+      : (Array.isArray(message) ? message : [message])
+          .map(b =>
+            b && typeof b === "object" && typeof (b as { text?: unknown }).text === "string"
+              ? (b as { text: string }).text
+              : "",
+          )
+          .filter(Boolean)
+          .join("\n")
+  if (system && text.startsWith(system)) return text.slice(system.length).replace(/^\n\n/, "")
+  return text
 }
 
 /** Minimal shell-quote — wraps args containing whitespace or quotes

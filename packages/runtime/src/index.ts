@@ -114,6 +114,7 @@ import { sweepAppRuns } from "./app-run-liveness.js"
 import { loadConfig } from "./config.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
 import { defaultTranscriptBaseDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
+import { backfillSessionIndexes } from "./session-index.js"
 import { resolveResumeAuth, restartAgentSession } from "./session-restart-core.js"
 import { createTransmitterBindingStore } from "./transmitter-bindings.js"
 import { createInboundEndpointStore } from "./inbound-endpoints.js"
@@ -535,6 +536,28 @@ export {
   isProviderLimitError,
   type SessionEndReason,
 } from "./session-end-reason.js"
+export { defaultTranscriptBaseDir, sessionEventsPath, sessionTranscriptDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
+export {
+  INDEX_DEFAULT_LIMIT,
+  INDEX_MAX_OUTPUT,
+  INDEX_MAX_PROMPT,
+  INDEX_TAIL_BYTES,
+  backfillSessionIndexes,
+  buildSessionRecap,
+  deriveIndexFromTranscript,
+  indexEntryFromDescriptor,
+  matchesSessionQuery,
+  readAllSessionIndexes,
+  readSessionIndex,
+  readTranscriptTail,
+  searchSessionIndexes,
+  sessionIndexPath,
+  writeSessionIndex,
+  type SessionIndexEntry,
+  type SessionRecap,
+  type TranscriptPrompt,
+  type TranscriptTail,
+} from "./session-index.js"
 export type {
   AgentSessionLike,
   AgentStreamEvent,
@@ -1505,6 +1528,15 @@ export interface GatewayHandle {
   continueInterruptedOnBoot(opts?: {
     isServed?: (desc: SessionDescriptor) => boolean
   }): Promise<ContinueOnBootSummary>
+  /** Daemon-startup backfill for the per-session index sidecars
+   *  (`session-index.ts`): create a compact `index.json` for every session dir
+   *  that lacks one, recovering the last prompt/output from the transcript
+   *  tail (never a whole-file parse). Synchronous and best-effort — a store
+   *  with thousands of sessions pays one readdir plus one bounded read per
+   *  missing index. serve.ts calls this once at boot so `agentproto sessions
+   *  find`/`recap` answer instantly even for sessions that predate the
+   *  sidecar. */
+  backfillSessionIndexes(): { scanned: number; created: number; skipped: number }
   stop(): Promise<void>
 }
 
@@ -3562,6 +3594,17 @@ export async function createGateway(
         concurrency: bootResumeConcurrency(),
         ...(passOpts?.isServed ? { isServed: passOpts.isServed } : {}),
       })
+    },
+    backfillSessionIndexes() {
+      // Best-effort: a broken sessions store must never gate the daemon being
+      // up. The live registry's descriptors enrich each recovered entry.
+      try {
+        return backfillSessionIndexes(sessions.transcriptBaseDir, {
+          descriptors: sessions.list({ includeArchived: true }),
+        })
+      } catch {
+        return { scanned: 0, created: 0, skipped: 0 }
+      }
     },
     async stop() {
       heartbeat.stop()
