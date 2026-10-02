@@ -9,6 +9,8 @@
     "no-admin-install",
     "fleets",
     "gates",
+    "cron",
+    "workflows",
     "sentinels"
   ]
 }
