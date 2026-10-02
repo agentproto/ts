@@ -112,6 +112,25 @@ provenance reconciler) - no `sentinel watch` call needed. This is
 usable), with a per-spawn opt-out (`agent_start`'s `sentinel: false`). See
 the [sentinels guide](../guides/sentinels.md) for the full flow.
 
+## Sentinel model, MCP surface and webhook target
+
+A sentinel is a record in `~/.agentproto/sentinels.json` with a `match` (OR
+over `{ subject, types }` clauses), an `until` (`subject_terminal`, `at`,
+`count` or `never`), and a `target` (`session`, or the Experimental `webhook`
+target). Events are deduplicated per sentinel on the last 1000 event ids.
+
+The same operations are exposed to agents as the MCP tools `sentinel_watch`,
+`sentinel_list`, `sentinel_unwatch`, `sentinel_poll_now`,
+`list_sentinel_adapters` and `setup_sentinel_provider`, and over REST as
+`POST /sentinels`, `GET /sentinels`, `GET /sentinels/:id` and
+`DELETE /sentinels/:id`.
+
+The signed-delivery `webhook` target (Standard Webhooks signature, secret
+rotation, callback verification, SSRF rules, retry schedule, persisted outbox)
+is documented in the
+[Sentinel webhook target reference](../reference/sentinel-webhook.md)
+(Experimental).
+
 ## Examples
 
 ```bash
@@ -133,5 +152,6 @@ agentproto sentinel rm sen_01ABC...
 ## See also
 
 - [sentinels guide](../guides/sentinels.md) - end-to-end: wake an agent when CI or a review lands on its PR
+- [Sentinel webhook target reference](../reference/sentinel-webhook.md) - signed delivery, outbox, SSRF, retries (Experimental)
 - [`serve.md`](./serve.md) - daemon that hosts sentinels
 - [`tunnel.md`](./tunnel.md) - public tunnels, needed for the `webhook` provider

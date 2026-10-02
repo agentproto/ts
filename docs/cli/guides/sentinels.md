@@ -114,6 +114,13 @@ with production sentinels today).
 
 With neither configured, `--provider` omitted always resolves to `local-gh`.
 
+- **`webhook` target** - a sentinel can also deliver matching events as signed
+  HTTP POSTs to a callback URL instead of into a session's inbox. This is a
+  different thing from the `webhook` provider above. The signature scheme,
+  secret rotation, callback verification, SSRF rules, retry schedule and
+  persisted outbox are in the
+  [Sentinel webhook target reference](../reference/sentinel-webhook.md).
+
 ## What it doesn't do
 
 - **No backfill.** A sentinel only sees events from the moment it's created
