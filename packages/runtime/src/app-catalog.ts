@@ -14,12 +14,9 @@ import { readFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { z } from "zod"
+import type { AppSource } from "./app-registry.js"
 
-// Lane 1 (agentproto/ts#1570) defines this in app-registry.ts; dedupe on rebase.
-export type AppSource =
-  | { kind: "local" }
-  | { kind: "git"; url: string; ref?: string; sha: string; subdir?: string }
-  | { kind: "agentapp"; url: string; sha256: string; version: string }
+export type { AppSource }
 
 export type AppPlacement = "local" | "box" | "any" | "split"
 
