@@ -3,7 +3,9 @@
 > Ready-to-run checklist. Each row maps to a Contract Map §2 entry and a
 > grep-able test name. Run: `pnpm test` in `packages/runtime` (or the full
 > monorepo gate). Test names are grep-able via
-> `rg '<test-name>' packages/runtime/src/__tests__/`.
+> `rg '<test-name>' packages/runtime/src/__tests__/`. Section
+> [Validation réelle](#validation-réelle-v-1-live-2026-10-02) en bas : rapport
+> du probe live V-1 (daemon réel + events qui remontent).
 
 ## Transport
 
@@ -78,3 +80,79 @@
 ## Secret redaction
 
 - [ ] `sentinel-view-redacts-secret` — `sentinelView()` outputs `{kind:"webhook", url, hasSecret:true, secretRedacted:true}`; raw secret never in listing/get view
+
+## Validation réelle (v1 live run — 2026-10-02)
+
+Preuve hors-tests, exécutée sur un daemon réel servi depuis le build worktree
+(`packages/cli/dist/cli.mjs`, port 18791, séparé du daemon de prod) :
+
+- **Capability + liste live** — `initialize`/`server/discover` sur `/mcp`
+  renvoie `capabilities.events:{}`; `events/list` (JSON-RPC natif, POST curl)
+  liste les 4 définitions avec wire shape verbatim (`name`, `description`,
+  `delivery:["webhook"]`, `inputSchema` repo/number, `payloadSchema` CloudEvents).
+- **Subscription réelle** — `events/subscribe` (`github.pull_request.closed`,
+  repo `agentiknet/merge-gate-sandbox#3`, `ttlMs:null`) : challenge signé envoyé
+  au récepteur derrière un tunnel cloudflared HTTPS public (le filtre SSRF
+  bloque le loopback, donc URL publique obligatoire — by-design), echo `<200>`,
+  header `x-mcp-subscription-id` présent; row créée dans `sentinels.json` avec
+  `secretRef` (secret jamais exposé dans les listings — `secretRedacted:true`).
+- **Event + delivery réels** — fermeture de la PR réelle → poll local-gh →
+  outbox webhook → POST signé reçu par le récepteur INDEPENDANT qui VÉRIFIE
+  lui-même la signature Standard Webhooks (HMAC `webhook-id|timestamp|body`):
+  `evt_9f73e7238ffee55ee7ebcae9`, envelope verbatim
+  (`eventId/name/timestamp/data/cursor:null`), `signature: VALID`, 2 s après
+  le close (poll 60 s → 15 s actif).
+- **Unsubscribe réel** — `events/unsubscribe` renvoie `{}` idempotent; la row
+  disparaît du store ET de la listing; un re-close de la PR après unsubscribe
+  ne déclenche AUCUN delivery (count figé).
+- **Client externe (codex CLI)** — codex (0.157.0, transport streamable http +
+  bearer) atteint le daemon et invoque les méthodes naties `events/list`,
+  `events/subscribe`, `events/unsubscribe` avec les réponses JSON attendues
+  (`sub_…/refreshBefore/cursor:null`, `{}`, -32602 catégorisée sur secret
+  invalide). Transcript : `/tmp/codex-probe-results.json` (boxe les réponses
+  brutes + la delivery VÉRIFIÉE).
+- **Régression fixée pendant la validation** — `ssrf-sends-original-host-header`:
+  la connexion par IP pré-validée utilisait l'IP comme header HTTP Host — les
+  vhosts (edge cloudflared/CF testé live) répondaient 403/421 → tout subscriber
+  name-based aurait été catégorisé `non_2xx` à tort. Fix + test de régression
+  dans le même PR que W-C/W-E.
+
+## Validation réelle (V-1, live 2026-10-02)
+
+Rapport de la validation hors-tests (daemon réel servi depuis le build de la
+branch W-C, endpoints `/mcp` natifs, transport streamable-HTTP + bearer) :
+
+- [x] `server/discover` expose bien `events:{}` en plus de tools/resources sur
+  le daemon réel (port 18791, build indépendant du prod).
+- [x] `events/list` renvoie les 4 définitions github réelles du registry
+  (`github.pull_request.closed`, `github.pull_request.synchronize`,
+  `github.pull_request_review.submitted`, `github.check_suite.completed`)
+  avec description/delivery/inputSchema/payloadSchema complets.
+- [x] `events/subscribe` effectue le challenge signé standard借着 webhook-id /
+  webhook-timestamp / webhook-signature / X-MCP-Subscription-Id → récepteur
+  local derrière un tunnel cloudflared (URL publique HTTPS requise — le filtre
+  SSRF bloque le loopback sur le chemin réel, by design). Le récepteur répond
+  200 en écho `{"challenge":"…"}`.
+- [x] Event RÉEL : la fermeture de la PR `agentiknet/merge-gate-sandbox#3`
+  (provider local-gh) charge l'outbox → POST signé reçu, signature re-vérifiée
+  indépendamment (`VALID`) par le récepteur, envelope verbatim
+  (`eventId/name/timestamp/data/cursor:null`).
+- [x] `events/unsubscribe` → `{}` idempotent, row supprimée du store ; le
+  re-close de la PR après désabonnement ne génère plus aucune delivery.
+- [x] `refreshBefore` = `null` (sub `ttlMs` null = never), conforme §2 row.
+- [x] listing sentinel redactions : la row webhook est vue avec
+  `hasSecret: true, secretRedacted: true`, aucun secret sur le listing.
+
+**Régression détectée et fixée pendant V-1** : `ssrf-sends-original-host-header`
+— `rawPost` liait l'HTTP Host header à l'IP connectée ; tout vhost (ex. edge
+cloudflared) répondait 403/421 → faussement catégorisé `non_2xx`. Fix sur PR
+#1673 avec test dédié (`ssrf-sends-original-host-header`).
+
+Limites honnêtes du probe :
+- codex CLI (0.157.0) atteint le daemon via streamable-HTTP + bearer et appelle
+  les 3 méthodes natives, mais son sandbox local bloque l'accès à 127.0.0.1
+  sans `network_access=true` et il ne lit pas l'env `MCP_EVENTS_SECRET` dans la
+  sandbox — secret passé inliné dans les prompts (transcript `/tmp/codex-probe*-results.json`).
+- la symétrie sentinel ↔ mcp-events est prouvée par le code (même
+  `SentinelStore`, même outbox, même runtime de poll) — pas re-provoquée via la
+  CLI `sentinel watch` dans le probe live.
