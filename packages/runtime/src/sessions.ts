@@ -2241,6 +2241,9 @@ export interface SessionSummary {
    *  `unarchiveSession`. Absent on rows archived before this field existed. */
   archivedAt?: string
   keepAlive?: boolean
+  /** Steward wrap-up flag — a blocked/needs-input verdict that deliberately
+   *  left the session running; see `SessionDescriptor.wrapupFlag`. */
+  wrapupFlag?: { verdict: "blocked" | "needs-input"; note?: string; judgedBy?: string; at: string }
   pinned?: boolean
   pty?: boolean
   name?: string
@@ -2396,6 +2399,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     blockedOn: desc.blockedOn,
     stalledSinceMs: desc.stalledSinceMs,
     pendingBgTasks: desc.pendingBgTasks,
+    ...(desc.wrapupFlag ? { wrapupFlag: desc.wrapupFlag } : {}),
     backgroundTasks: desc.backgroundTasks,
     lastTurnErroredAt: desc.lastTurnErroredAt,
     ...(desc.lastError ? { lastError: desc.lastError.slice(0, 2000) } : {}),

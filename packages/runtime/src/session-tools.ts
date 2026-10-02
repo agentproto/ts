@@ -595,6 +595,7 @@ const mcpNumber = z.preprocess(
 export interface SessionListCompactItem {
   id: string
   kind: SessionDescriptor["kind"]
+  origin?: string
   name?: string
   label?: string
   status: SessionDescriptor["status"]
@@ -703,6 +704,7 @@ const publicSessionDescriptor = (
 export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem => ({
   id: s.id,
   kind: s.kind,
+  ...(s.origin ? { origin: s.origin } : {}),
   name: s.name,
   label: s.label,
   status: s.status,

@@ -447,4 +447,41 @@ describe("session list pagination (PR-2, additive)", () => {
       registry.shutdown()
     }
   })
+
+  it("compact projection (default) exposes origin so UIs can group roots", async () => {
+    const { client, registry, close } = await buildHarness()
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: workspace,
+      agentSession: fakeAgentSession("agent"),
+      adapterSlug: "fake",
+    })
+    registry.get(desc.id)!.origin = "cron"
+    try {
+      const result = await client.callTool({ name: "session_list", arguments: {} })
+      const page = JSON.parse(textOf(result)) as { sessions: Array<Record<string, unknown>> }
+      expect(page.sessions.find(s => s.id === desc.id)?.origin).toBe("cron")
+    } finally {
+      await close()
+      registry.shutdown()
+    }
+  })
+
+  it("listSummaries exposes wrapupFlag (steward wrap-up verdict)", () => {
+    const registry = createSessionsRegistry({ persist: false, spawnPty: fakePtyFactory })
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: workspace,
+      agentSession: fakeAgentSession("agent"),
+      adapterSlug: "fake",
+    })
+    const wrapupFlag = { verdict: "blocked" as const, note: "needs a human", at: "2026-10-02T00:00:00.000Z" }
+    registry.get(desc.id)!.wrapupFlag = wrapupFlag
+    try {
+      const { summaries } = registry.listSummaries()
+      expect(summaries.find(s => s.id === desc.id)?.wrapupFlag).toEqual(wrapupFlag)
+    } finally {
+      registry.shutdown()
+    }
+  })
 })
