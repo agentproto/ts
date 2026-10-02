@@ -52,7 +52,16 @@ import type {
   RouteSpec,
 } from "./session-config.js"
 import type { CostBudget } from "@agentproto/auth"
-import type { AgentAdapterResolver } from "./http-server.js"
+import type { AdapterCapabilitiesLister, AgentAdapterResolver } from "./http-server.js"
+import type { QuotaReadableProfile, RemainingQuotaReader } from "./remaining-quota.js"
+import {
+  HANDOFF_OPTION_PREFIX,
+  buildHandoffSuggestions,
+  handoffSuggestionLines,
+  harnessDisplayName,
+  listHandoffHarnesses,
+  parseHandoffOption,
+} from "./handoff-suggestion.js"
 import type {
   SessionEventBus,
   SessionAwaitingQuestion,
@@ -2597,6 +2606,15 @@ interface SessionRuntime {
    *  Called by kill() best-effort — the descriptor is already flipped
    *  to "killed" before this fires. */
   browserStop?: () => Promise<void>
+  /** Reasons a `session:handoff-suggested` was already emitted for this
+   *  session — each reason fires at most once (a quota-threshold suggestion
+   *  is additionally keyed per window, see `quotaSuggestedResetsAt`). */
+  handoffSuggested?: Set<string>
+  /** `resetsAt` of the quota window a threshold suggestion was last made
+   *  for — a window is only suggested once. */
+  quotaSuggestedResetsAt?: string
+  /** Epoch ms of the last quota read, to throttle the poll. */
+  quotaCheckedAt?: number
   /** Guard: true once session:exited has been emitted to sessionEvents.
    *  Prevents duplicate emissions when both kill() and an OS exit event fire. */
   exitedEmitted?: boolean
@@ -4772,6 +4790,22 @@ export function createSessionsRegistry(opts?: {
    *  When omitted, auto-continuation degrades to a hard-stop instead of
    *  spawning a replacement session. */
   resolveAgentAdapter?: AgentAdapterResolver
+  /** Harness capability lister — the "which installed harness has usable
+   *  credentials" signal behind handoff suggestions (the `handoff:<harness>`
+   *  options of the `ask`-mode context question and the
+   *  `session:handoff-suggested` event). Omitted → nothing is suggested. */
+  listHarnessCapabilities?: AdapterCapabilitiesLister
+  /** Proactive quota watch for `contextContinuity.handoffAtQuotaRemaining`:
+   *  the reader + the profile resolver for the session's `accessProfile`.
+   *  Omitted → the threshold is inert. */
+  quotaWatch?: {
+    reader: RemainingQuotaReader
+    resolveProfile: (profileRef: string) => Promise<QuotaReadableProfile | undefined>
+    /** Rolling window to read. Default "5h". */
+    window?: string
+    /** Minimum ms between two reads for one session. Default 5 min. */
+    minIntervalMs?: number
+  }
   /** Optional — best-effort exit-time worktree auto-reclaim, called from
    *  `emitExited` for a session whose `worktreeAutoProvisioned` flag is set
    *  (see that field's doc). Injected by the CLI over `@agentproto/worktree`;
@@ -6920,6 +6954,7 @@ export function createSessionsRegistry(opts?: {
     // via emitExited, which reads desc.endedReason) so existing
     // session:exited consumers see the row leave "running".
     emitExited(rt)
+    if (providerLimitMessage) void suggestHandoff(rt, "provider-limit", "exit")
     return true
   }
 
@@ -7214,6 +7249,110 @@ export function createSessionsRegistry(opts?: {
     }
   }
 
+  /**
+   * Announce — never perform — a cross-harness handoff: a
+   * `session:handoff-suggested` event plus readable transcript lines carrying
+   * the command in clear. Once per `key` per session; silent when no other
+   * harness is eligible. Best-effort: never throws.
+   */
+  async function suggestHandoff(
+    rt: SessionRuntime,
+    reason: "provider-limit" | "quota-threshold",
+    key: string,
+    quota?: { remaining: number; window: string },
+  ): Promise<void> {
+    try {
+      const tag = `${reason}:${key}`
+      if (rt.handoffSuggested?.has(tag)) return
+      ;(rt.handoffSuggested ??= new Set()).add(tag)
+      const fromHarness = rt.desc.harness ?? rt.desc.adapterSlug ?? "claude-code"
+      const harnesses = await listHandoffHarnesses(fromHarness, opts?.listHarnessCapabilities)
+      if (harnesses.length === 0) return
+      const suggestions = buildHandoffSuggestions(rt.desc.id, harnesses)
+      for (const line of handoffSuggestionLines({
+        sessionId: rt.desc.id,
+        fromHarness,
+        reason,
+        suggestions,
+        ...(quota ? { quota } : {}),
+      })) {
+        appendLine(rt, line, "stderr")
+        transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: line })
+      }
+      sessionEvents?.emit({
+        type: "session:handoff-suggested",
+        sessionId: rt.desc.id,
+        fromHarness,
+        reason,
+        suggestions,
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts: new Date().toISOString(),
+      })
+    } catch {
+      // a suggestion is a courtesy — it must never break the exit/turn path
+    }
+  }
+
+  /** Proactive quota threshold (`contextContinuity.handoffAtQuotaRemaining`):
+   *  suggest once per quota window when the session's auth profile is at or
+   *  under the threshold. Throttled; best-effort. */
+  async function evaluateQuotaHandoff(rt: SessionRuntime): Promise<void> {
+    const watch = opts?.quotaWatch
+    const threshold = rt.desc.contextContinuity?.handoffAtQuotaRemaining
+    const profileRef = rt.desc.accessProfile?.profileRef
+    if (!watch || threshold === undefined || !profileRef || rt.desc.kind !== "agent-cli") return
+    const now = Date.now()
+    if (rt.quotaCheckedAt !== undefined && now - rt.quotaCheckedAt < (watch.minIntervalMs ?? 300_000)) return
+    rt.quotaCheckedAt = now
+    try {
+      const profile = await watch.resolveProfile(profileRef)
+      if (!profile) return
+      const window = watch.window ?? "5h"
+      const quota = await watch.reader.readRemainingQuota(profile, window)
+      if (!quota || quota.remaining > threshold) return
+      if (rt.quotaSuggestedResetsAt === quota.resetsAt) return
+      rt.quotaSuggestedResetsAt = quota.resetsAt
+      await suggestHandoff(rt, "quota-threshold", quota.resetsAt, {
+        remaining: quota.remaining,
+        window: quota.window,
+      })
+    } catch {
+      // best-effort — a failing reader must never break the turn boundary
+    }
+  }
+
+  /** The user picked a `handoff:<harness>` option: the same path as
+   *  `POST /sessions/:id/handoff`. The source session is left running, like
+   *  the explicit verb. */
+  async function performContextHandoff(rt: SessionRuntime, harness: string): Promise<void> {
+    rt.desc.awaitingInput = false
+    rt.desc.awaitingQuestion = undefined
+    const pct = computeContextPct(rt.desc.contextSize, rt.desc.contextUsed)
+    if (pct !== null) rt.desc.contextContinuityAckedAtPct = pct
+    schedulePersist()
+    if (!resolveAgentAdapter) {
+      appendLine(rt, "[context] handoff requested but no adapter resolver is configured", "stderr")
+      return
+    }
+    try {
+      const result = await continueAgentSessionFresh({ registry, resolveAgentAdapter }, rt.desc, {
+        harness,
+      })
+      appendLine(
+        rt,
+        `[context] handed off to ${harnessDisplayName(harness)} as ${result.descriptor.id} (checkpoint ${result.checkpoint.checkpointId})`,
+        "stdout",
+      )
+      schedulePersist()
+    } catch (err) {
+      appendLine(
+        rt,
+        `[context] handoff to ${harness} failed: ${err instanceof Error ? err.message : String(err)}`,
+        "stderr",
+      )
+    }
+  }
+
   async function performContextHardStop(rt: SessionRuntime, pct: number): Promise<void> {
     appendLine(
       rt,
@@ -7308,11 +7447,19 @@ export function createSessionsRegistry(opts?: {
         // `contextContinuityStateForPct`), so it's never suppressed by this.
         const ackedAtPct = rt.desc.contextContinuityAckedAtPct
         if (ackedAtPct !== undefined && pct <= ackedAtPct) return
+        const handoffHarnesses = await listHandoffHarnesses(
+          rt.desc.harness ?? rt.desc.adapterSlug ?? "claude-code",
+          opts?.listHarnessCapabilities,
+        )
         rt.desc.awaitingInput = true
         rt.desc.awaitingQuestion = {
           source: "structured",
           text: `Context is at ${pct}%. Continue fresh to avoid losing continuity?`,
-          options: ["continue-fresh", "keep-going"],
+          options: [
+            "continue-fresh",
+            ...handoffHarnesses.map(h => `${HANDOFF_OPTION_PREFIX}${h}`),
+            "keep-going",
+          ],
         }
         appendLine(
           rt,
@@ -7774,6 +7921,7 @@ export function createSessionsRegistry(opts?: {
         recordExitUsageSnapshot(rt)
         schedulePersist()
         emitExited(rt)
+        if (rt.desc.endedReason === "provider-limit") void suggestHandoff(rt, "provider-limit", "exit")
       }
     } finally {
       // Captured BEFORE `busy` flips: the awaits further down this block let
@@ -7921,6 +8069,9 @@ export function createSessionsRegistry(opts?: {
 
         // ── Context-continuity policy evaluation ─────────────────────
         await evaluateContextContinuity(rt)
+        if (opts?.quotaWatch && rt.desc.contextContinuity?.handoffAtQuotaRemaining !== undefined) {
+          await evaluateQuotaHandoff(rt)
+        }
 
         // ── Cost cap (best-effort, turn-granular) ────────────────────
         const overBudget =
@@ -8518,7 +8669,10 @@ export function createSessionsRegistry(opts?: {
     const trimmed = message.trim().toLowerCase()
     const matched = question.options.find(o => o.toLowerCase() === trimmed)
     if (!matched) return undefined
-    const handler = STRUCTURED_QUESTION_HANDLERS[matched.toLowerCase()]
+    const handoffHarness = parseHandoffOption(matched)
+    const handler = handoffHarness
+      ? (r: SessionRuntime) => performContextHandoff(r, handoffHarness)
+      : STRUCTURED_QUESTION_HANDLERS[matched.toLowerCase()]
     if (!handler) return undefined
     return { question, matched, handler }
   }

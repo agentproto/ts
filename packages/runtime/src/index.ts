@@ -185,6 +185,8 @@ import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler, DEFAULT_OBSERVE_TIMEOUT_MS } from "./cron-scheduler.js"
 import { createSessionTurnObserver } from "./cron-turn-observer.js"
 import { getAuthProfile } from "@agentproto/auth"
+import { AnthropicRemainingQuotaReader } from "./remaining-quota.js"
+import { toQuotaReadableProfile } from "./usage-rollup-service.js"
 import { createRoutineRegistrar } from "./routine-registrar.js"
 import { createDaemonToolRegistry, mergeAppAndDaemonToolRegistry } from "./workflow-tool-registry.js"
 export type {
@@ -1995,6 +1997,19 @@ export async function createGateway(
       ? { transcriptDir: defaultTranscriptBaseDir() }
       : {}),
     ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
+    ...(opts.listHarnessCapabilities
+      ? { listHarnessCapabilities: opts.listHarnessCapabilities }
+      : {}),
+    // Inert unless a session's `contextContinuity.handoffAtQuotaRemaining`
+    // is set; only then does the live probe (one 1-token call, throttled)
+    // ever run.
+    quotaWatch: {
+      reader: new AnthropicRemainingQuotaReader({ liveProbe: true }),
+      resolveProfile: async ref => {
+        const profile = await getAuthProfile(ref)
+        return profile ? toQuotaReadableProfile(profile) : undefined
+      },
+    },
     ...(opts.persistPath ? { persistPath: opts.persistPath } : {}),
     ...(opts.spawnPty ? { spawnPty: opts.spawnPty } : {}),
     ...(opts.runWorktreeAutoReclaim ? { runWorktreeAutoReclaim: opts.runWorktreeAutoReclaim } : {}),
