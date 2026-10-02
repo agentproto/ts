@@ -1248,7 +1248,8 @@ async function runFind(args: readonly string[]): Promise<number> {
       process.stderr.write("agentproto sessions find: --limit must be a positive integer\n")
       return 2
     }
-    limit = n
+    // Match the MCP surface's ceiling so the two never disagree.
+    limit = Math.min(200, n)
   }
   const baseDir = await resolveSessionsBaseDir()
   const entries = readAllSessionIndexes(baseDir)

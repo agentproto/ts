@@ -8,6 +8,7 @@ import {
   backfillSessionIndexes,
   buildSessionRecap,
   deriveIndexFromTranscript,
+  indexEntryFromDescriptor,
   matchesSessionQuery,
   readAllSessionIndexes,
   readSessionIndex,
@@ -62,6 +63,18 @@ describe("sidecar read/write", () => {
 })
 
 describe("readTranscriptTail (bounded)", () => {
+  it("caps text at a code-point boundary without splitting a surrogate pair", () => {
+    const astral = "😀".repeat(600) // 600 code points / 1200 UTF-16 units
+    const e = indexEntryFromDescriptor(
+      { id: "s", kind: "agent-cli", workspaceSlug: "d", command: "c", pid: null, status: "running", startedAt: "t" } as never,
+      { lastUserPrompt: { ts: "t", text: astral } },
+    )
+    const text = e.lastUserPrompt!.text
+    expect(Array.from(text).length).toBeLessThanOrEqual(INDEX_MAX_PROMPT)
+    const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+    expect(loneSurrogate.test(text)).toBe(false)
+  })
+
   it("extracts the last user prompt and last assistant run from the window", () => {
     writeEvents("sess_t", [
       { kind: "user-prompt", ts: "2026-09-01T10:00:00Z", text: "first ask" },
