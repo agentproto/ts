@@ -7,6 +7,7 @@
     "distribute-an-app",
     "app-agent-tools",
     "no-admin-install",
-    "fleets"
+    "fleets",
+    "gates"
   ]
 }
