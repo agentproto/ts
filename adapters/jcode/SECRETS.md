@@ -11,5 +11,10 @@ jcode reads provider credentials from env vars or from its config directory
 - `GROQ_API_KEY` — Groq
 - `MISTRAL_API_KEY` — Mistral
 
-Interactive login (`jcode login --provider <name>`) stores tokens in the OS
-keyring / `~/.jcode/` directory — the adapter does not manage these.
+Subscription logins (`jcode login --provider claude` for Claude Max,
+`--provider openai` for ChatGPT/Codex) store OAuth tokens in
+`~/.jcode/auth.json` and `~/.jcode/openai-auth.json`. The adapter declares
+them as external `authSubscription` surfaces: with `auth.mode:
+"subscription"` the runtime verifies the login exists, injects nothing, and
+scrubs the api-key vars above. Other logins are stored by jcode itself and the
+adapter does not manage them.

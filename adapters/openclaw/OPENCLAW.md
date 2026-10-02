@@ -136,6 +136,24 @@ runtime itself sets `OPENCLAW_SHELL=acp`.
 | `OPENCLAW_GATEWAY_PASSWORD`     | Alternative password-based auth                   |
 
 If both `OPENCLAW_GATEWAY_TOKEN` and a persisted config exist, the
-env var wins. Underlying provider keys (Anthropic, OpenAI, …) are
-configured *inside* OpenClaw via `openclaw config` — they are not
-read directly by the bridge.
+env var wins. Underlying provider credentials (Anthropic, OpenAI, …) are
+configured *inside* OpenClaw — they are not read directly by the bridge.
+
+### Billing mode: Gateway-managed
+
+The credentials above only authenticate the bridge to the Gateway. Which
+account pays for the model is decided by the Gateway's own auth profiles,
+and OpenClaw supports both kinds (checked against `openclaw` 2026.5.18):
+
+- **Subscription / OAuth login** — `openclaw models auth login --provider
+  <id>` (provider plugin OAuth or device-code flow),
+  `openclaw models auth login-github-copilot`, or
+  `openclaw models auth setup-token`.
+- **API key** — `openclaw models auth paste-token` / `openclaw configure`.
+
+The adapter therefore declares **no `authSubscription`** and no fixed
+`provider`: it has no model routing of its own, so the runtime can neither
+inject a subscription credential, verify that a login exists, nor scrub
+conflicting keys. agentproto reports it as Gateway-managed, not as an
+agentproto-managed subscription or API-key adapter. Check or change the
+Gateway's login with `openclaw models status` / `openclaw models auth list`.

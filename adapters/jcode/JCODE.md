@@ -43,7 +43,28 @@ jcode reads provider API keys from the environment:
 | Groq       | `GROQ_API_KEY`       |
 | Mistral    | `MISTRAL_API_KEY`    |
 
-Interactive login is also available: `jcode login --provider <name>`.
+### Subscription login (Claude Max / ChatGPT)
+
+jcode also has native OAuth logins, separate from its API-key routes (checked
+against `jcode` 0.88.0, `jcode login --help`, and the upstream `OAUTH.md` /
+`docs/AUTH_CREDENTIAL_SOURCES.md`):
+
+| Login                       | Command                           | Stored in                |
+|-----------------------------|-----------------------------------|--------------------------|
+| Claude Max (`claude`)       | `jcode login --provider claude`   | `~/.jcode/auth.json`     |
+| ChatGPT / Codex (`openai`)  | `jcode login --provider openai`   | `~/.jcode/openai-auth.json` |
+
+The adapter declares both as external `authSubscription` surfaces (scoped to
+the `anthropic` and `openai` providers): with `auth.mode: "subscription"` the
+runtime checks the login is present, injects no bearer, and scrubs the
+matching API-key env vars so a leftover key cannot take over. `claude` and
+`anthropic-api` (likewise `openai` / `openai-api`) are different jcode
+providers — a Claude Max login does not make the API-key route usable, and
+vice versa. Other jcode logins (Gemini, Copilot, Antigravity) are not
+declared yet.
+
+Interactive login: `jcode login --provider <name>`; check with
+`jcode auth status`.
 
 ## Capabilities
 

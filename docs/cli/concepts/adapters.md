@@ -91,6 +91,23 @@ agentproto-mastra acp --model openrouter/z-ai/glm-5.2
 See [`models.md`](../verbs/models.md) to list mastra-agent's models with
 provider-key status.
 
+## Auth modes
+
+How each adapter bills, as declared in its manifest (`authSubscription` =
+the user's own CLI login can be used; `agentproto adapters list` and `/agents`
+read the same declaration). "Own login" means `auth.mode: "subscription"`
+is accepted and the runtime verifies the CLI's existing login instead of
+injecting a key.
+
+| Adapter        | Own login (subscription) | Notes                                                                 |
+| -------------- | ------------------------ | --------------------------------------------------------------------- |
+| `jcode`        | Yes: Claude Max, ChatGPT | `jcode login --provider claude\|openai`; API-key routes are separate. |
+| `openclaw`     | Gateway-managed          | The Gateway holds the model login (OAuth or key); the adapter only authenticates to the Gateway and declares no `authSubscription`. |
+| `mastra-agent` | No, API key by design    | First-party runtime; model keys come from the spawn env.              |
+
+The other adapters are documented in their own manifests; this table lists
+only the ones whose mode is easy to misread.
+
 ## Authoring an adapter
 
 The `defineAgentCli` API lives in `@agentproto/driver-agent-cli`. A

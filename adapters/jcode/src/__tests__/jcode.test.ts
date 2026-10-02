@@ -35,4 +35,14 @@ describe("jcode adapter manifest", () => {
     expect(jcode.print?.resume).toEqual({ flag: "--resume", kind: "value" })
     expect(jcode.capabilities?.resumable).toBe(true)
   })
+
+  it("declares the anthropic- and openai-scoped external subscriptions (jcode's own Claude Max + ChatGPT logins)", () => {
+    // External: the runtime injects no bearer — it verifies `jcode login`'s
+    // own ~/.jcode stores via the `jcode` provision recipe and scrubs the
+    // api-key vars so a leftover key can't override the subscription.
+    expect(jcode.authSubscription).toEqual([
+      { external: true, provider: "anthropic" },
+      { external: true, provider: "openai" },
+    ])
+  })
 })
