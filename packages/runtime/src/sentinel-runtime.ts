@@ -76,8 +76,12 @@ const POLL_BATCH_LIMIT = 50
  *  polling even while `orphaned` (design §2: "the provider-side watch is
  *  never cancelled just because a session died"). */
 /** End reasons that mean a human/steward closed the session on purpose —
- *  a sentinel notice must never resurrect it. */
-const DELIBERATE_END_REASONS: ReadonlySet<string> = new Set([
+ *  a sentinel notice must never resurrect it. Exported for the shared
+ *  restart core (session-restart-core.ts): the in-place resume path gates on
+ *  the same set so an AUTOMATIC restart (sentinel / inbound) never revives a
+ *  deliberate end, while an explicit `session_restart` (operator action)
+ *  still may. */
+export const DELIBERATE_END_REASONS: ReadonlySet<string> = new Set([
   "operator-completed",
   "operator-stopped",
   "steward-completed",
