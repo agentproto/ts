@@ -23,10 +23,19 @@
 
 import { describe, it, expect, vi } from "vitest"
 
-import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
+import {
+  createSessionsRegistry,
+  interruptDeliveryNotice,
+  type AgentSessionLike,
+} from "../sessions.js"
 
 function wrapped(text: string): string {
   return JSON.stringify({ type: "text", text })
+}
+
+/** What the model receives for a prompt an interrupt cut a turn to deliver. */
+function delivered(text: string, from: string): string {
+  return wrapped(`${interruptDeliveryNotice(from)}\n\n${text}`)
 }
 
 /** First turn hangs until cancel()/release(); every later turn completes
@@ -155,7 +164,7 @@ describe("queued prompts survive an interrupt of the turn they wait behind", () 
     // to end on its own, then drains.
     expect(events).toEqual([
       `turn1-start:${wrapped("first")}`,
-      `turn2-start:${wrapped("redirect now")}`,
+      `turn2-start:${delivered("redirect now", "user")}`,
       `turn3-start:${wrapped("queued note")}`,
     ])
     reg.shutdown()
@@ -180,9 +189,41 @@ describe("queued prompts survive an interrupt of the turn they wait behind", () 
     expect(cancelSpy).toHaveBeenCalledTimes(1)
     expect(events).toEqual([
       `turn1-start:${wrapped("first")}`,
-      `turn2-start:${wrapped("third")}`,
+      `turn2-start:${delivered("third", "user")}`,
+      // The delivered turn ended on its own, so the FIFO drain resumes.
       `turn3-start:${wrapped("second")}`,
     ])
+    reg.shutdown()
+  })
+
+  it("deliver-now tells the model the cancel was a delivery from <origin>, not a stop", async () => {
+    const { reg, id, events } = spawn()
+    const first = reg.sendPrompt(id, "supervising")
+    await Promise.resolve()
+    await reg.enqueuePrompt(id, "child report", {
+      queue: true,
+      source: "child:sess_child1",
+      origin: "child:sess_child1",
+    })
+
+    const item = reg.get(id)!.promptQueue![0]!
+    await reg.deliverQueuedPrompt(id, item.id)
+    await first
+    await waitUntil(() => events.length === 2)
+
+    expect(events[1]).toBe(`turn2-start:${delivered("child report", "child sess_child1")}`)
+    expect(events[1]).toContain("NOT a stop request")
+    reg.shutdown()
+  })
+
+  it("a bare Stop adds no delivery notice to the next prompt", async () => {
+    const { reg, id, events } = spawn()
+    const first = reg.sendPrompt(id, "first")
+    await Promise.resolve()
+    await reg.interruptSession(id)
+    await first
+    await reg.sendPrompt(id, "next")
+    expect(events[1]).toBe(`turn2-start:${wrapped("next")}`)
     reg.shutdown()
   })
 

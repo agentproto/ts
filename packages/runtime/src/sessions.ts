@@ -2850,6 +2850,20 @@ const INTERRUPT_CALLER_LABELS: Record<string, string> = {
   deliverQueuedPrompt: "a queue deliver-now (session_queue_deliver)",
 }
 
+/** System line prefixed to the prompt that a daemon interrupt cut a turn to
+ *  deliver (deliver-now, `interrupt: true`). The model otherwise sees only a
+ *  cancelled turn followed by a new prompt, which it cannot tell apart from a
+ *  human pressing Stop, and a supervisor that reads it that way parks itself
+ *  waiting for a go-ahead nobody is going to give. `from` is a
+ *  `promptOriginLabel`. */
+export function interruptDeliveryNotice(from: string): string {
+  return (
+    `[agentproto] Your previous turn was interrupted to deliver this message immediately ` +
+    `(from ${from}). This is NOT a stop request: handle it, then resume the work you were ` +
+    `doing unless it tells you otherwise.`
+  )
+}
+
 /** Stamp the derived `desc.alive` liveness signal (§SessionDescriptor.alive):
  *  true iff the row's status counts as alive — the same "running" or
  *  "starting" test `validateAgentTurn` (and every internal isAlive check)
@@ -6553,7 +6567,10 @@ export function createSessionsRegistry(opts?: {
    * is a fresh microtask via the `void (async () => ...)()` below, not
    * a direct recursive call).
    *
-   * `onlyId` dispatches that item instead of the head (deliver-now).
+   * `onlyId` dispatches that item instead of the head (deliver-now), and
+   * tells the model its previous turn was cut to deliver it
+   * (`interruptDeliveryNotice`) so the cancel never reads as a Stop. The
+   * delivered turn's own `finally` then resumes the normal FIFO drain.
    * No-op while another turn is already running — a prompt admitted during
    * the ending turn's awaited `finally` took the slot, and ITS `finally`
    * drains next. Slicing the item off here anyway would only have it
@@ -6577,6 +6594,7 @@ export function createSessionsRegistry(opts?: {
     }
     rt.desc.promptQueue = queue.filter(p => !batch.includes(p))
     schedulePersist()
+    const interruptedFor = onlyId ? promptOriginLabel(next) : undefined
     void (async () => {
       try {
         await maybeResumeAgent(rt)
@@ -6585,8 +6603,9 @@ export function createSessionsRegistry(opts?: {
           await runMessageTurn(
             liveRt,
             batch.map(p => p.envelope!),
-            "turn",
+            onlyId ? "interrupt" : "turn",
             next.source,
+            interruptedFor,
           )
           return
         }
@@ -6597,11 +6616,10 @@ export function createSessionsRegistry(opts?: {
           await answerStructuredQuestion(liveRt, answer)
           return
         }
-        await runAgentTurn(
-          liveRt,
-          next.message,
-          next.source ? { promptSource: next.source } : undefined
-        )
+        await runAgentTurn(liveRt, next.message, {
+          ...(next.source ? { promptSource: next.source } : {}),
+          ...(interruptedFor !== undefined ? { interruptedFor } : {}),
+        })
       } catch (err) {
         appendLine(
           rt,
@@ -7475,6 +7493,7 @@ export function createSessionsRegistry(opts?: {
     envelopes: readonly SessionMessage[],
     via: MessageDeliveryVia,
     promptSource?: string,
+    interruptedFor?: string,
   ): Promise<void> => {
     const at = new Date().toISOString()
     const turnSeq = (rt.desc.turnsCompleted ?? 0) + 1
@@ -7484,6 +7503,7 @@ export function createSessionsRegistry(opts?: {
     removeFromInbox(rt, new Set(delivered.map(m => m.id)))
     await runAgentTurn(rt, renderSessionMessages(delivered), {
       ...(promptSource ? { promptSource } : {}),
+      ...(interruptedFor !== undefined ? { interruptedFor } : {}),
       messages: delivered,
     })
   }
@@ -7497,7 +7517,15 @@ export function createSessionsRegistry(opts?: {
     // a human operator. Recording-only: never alters turn behavior.
     // `messages` marks a typed-message turn (`runMessageTurn`): `message`
     // is then the rendered envelope tags.
-    turnOpts?: { promptSource?: string; system?: string; messages?: readonly SessionMessage[] }
+    // `interruptedFor` (a `promptOriginLabel`) marks a turn that a daemon
+    // interrupt cut the previous turn to deliver — see
+    // `interruptDeliveryNotice`.
+    turnOpts?: {
+      promptSource?: string
+      system?: string
+      messages?: readonly SessionMessage[]
+      interruptedFor?: string
+    }
   ): Promise<void> => {
     if (!rt.agentSession) {
       throw new Error("runAgentTurn: session has no agentSession")
@@ -7516,6 +7544,19 @@ export function createSessionsRegistry(opts?: {
       // A human line opening with the envelope sentinel is escaped, so text
       // outside an `<agentproto-message>` tag is always the human's.
       message = escapeHumanPrompt(message)
+    }
+    if (turnOpts?.interruptedFor !== undefined) {
+      // Outermost system slice, ahead of any preamble composed above, so the
+      // "system is a prefix of the prompt" invariant the transcript relies on
+      // still holds. Block prompts carry it as a leading text block (system
+      // slices are string-only, see `recordPrompt`).
+      const notice = interruptDeliveryNotice(turnOpts.interruptedFor)
+      if (typeof message === "string") {
+        message = `${notice}\n\n${message}`
+        turnOpts = { ...turnOpts, system: turnOpts.system ? `${notice}\n\n${turnOpts.system}` : notice }
+      } else {
+        message = [{ type: "text", text: notice }, ...(Array.isArray(message) ? message : [message])]
+      }
     }
     // `fyi` messages never wake a session; the next turn it runs anyway
     // opens with a one-line typed digest of them (a `system-prompt` slice,
@@ -9554,8 +9595,9 @@ export function createSessionsRegistry(opts?: {
       // of throwing the busy rejection. Without this, `interrupt` was
       // silently dropped on the blocking path — the caller asked to
       // redirect the session and got a 409 (or, worse, nothing).
-      if (opts?.interrupt && rtPre?.busy) {
-        await interruptInFlightTurn(rtPre, id, "sendPrompt")
+      const interrupted = opts?.interrupt === true && rtPre?.busy === true
+      if (interrupted) {
+        await interruptInFlightTurn(rtPre!, id, "sendPrompt")
       }
       if (rtPre) await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "sendPrompt")
@@ -9569,6 +9611,7 @@ export function createSessionsRegistry(opts?: {
       await runAgentTurn(rt, message, {
         ...(opts?.source ? { promptSource: opts.source } : {}),
         ...(opts?.system ? { system: opts.system } : {}),
+        ...(interrupted ? { interruptedFor: promptOriginLabel({ source: opts?.source }) } : {}),
       })
     },
     async enqueuePrompt(id, message, opts) {
@@ -9633,8 +9676,17 @@ export function createSessionsRegistry(opts?: {
       }
       await maybeResumeAgent(rtPre)
       const rt = validateAgentTurn(id, "enqueuePrompt")
+      const interruptedFor = interrupted
+        ? promptOriginLabel({ source: opts?.source, origin: opts?.origin })
+        : undefined
       if (envelope) {
-        void runMessageTurn(rt, [envelope], interrupted ? "interrupt" : "turn", opts?.source).catch(err => {
+        void runMessageTurn(
+          rt,
+          [envelope],
+          interrupted ? "interrupt" : "turn",
+          opts?.source,
+          interruptedFor,
+        ).catch(err => {
           appendLine(rtPre, `[error] ${err instanceof Error ? err.message : String(err)}`, "stderr")
         })
         return { queued: false }
@@ -9656,7 +9708,10 @@ export function createSessionsRegistry(opts?: {
       // the ring buffer as `[error]` lines so the SSE consumer sees
       // them; admission already succeeded so there's nothing else to
       // report back to the original caller.
-      void runAgentTurn(rt, message, opts?.source ? { promptSource: opts.source } : undefined).catch(err => {
+      void runAgentTurn(rt, message, {
+        ...(opts?.source ? { promptSource: opts.source } : {}),
+        ...(interruptedFor !== undefined ? { interruptedFor } : {}),
+      }).catch(err => {
         appendLine(
           rtPre,
           `[error] ${err instanceof Error ? err.message : String(err)}`,
