@@ -1707,7 +1707,7 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
   })
 
   describe("self-mount `deferred` resolution: spawn override > native tool search > role > gateway default", () => {
-    const URL = "http://127.0.0.1:18790/mcp"
+    const DAEMON_MCP_URL = "http://127.0.0.1:18790/mcp"
     type Expected = "deferred=1" | "deferred=0" | "none"
     // [label, adapter, harness declares nativeToolSearch, role, agent_start.deferredTools, expected `?deferred=`]
     const table: Array<[string, string, boolean, "executor" | "supervisor", boolean | undefined, Expected]> = [
@@ -1723,7 +1723,7 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
     it.each(table)("%s", async (_label, adapter, nativeToolSearch, role, deferredTools, expected) => {
       const startSession = vi.fn(async () => fakeAgentSession())
       const { deps } = baseDeps({
-        daemonMcpUrl: URL,
+        daemonMcpUrl: DAEMON_MCP_URL,
         loadDefaultsConfig: async () => ({ mcp: { deferredTools: true } }),
         resolveAgentAdapter: async () => ({
           startSession: startSession as any,
@@ -1749,7 +1749,7 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
 
     it("a caller-supplied mount keeps its own ?deferred= regardless of the harness", async () => {
       const { deps } = baseDeps({
-        daemonMcpUrl: URL,
+        daemonMcpUrl: DAEMON_MCP_URL,
         resolveAgentAdapter: async () => ({
           startSession: vi.fn(async () => fakeAgentSession()) as any,
           commandPreview: "mock-adapter",
@@ -1760,7 +1760,7 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
         adapter: "claude-code",
         cwd: "/tmp",
         role: "executor",
-        mcpServers: [{ name: "agentproto", transport: "http", ref: `${URL}?deferred=1` }],
+        mcpServers: [{ name: "agentproto", transport: "http", ref: `${DAEMON_MCP_URL}?deferred=1` }],
       })
       expect(result.ok).toBe(true)
       if (!result.ok) return
