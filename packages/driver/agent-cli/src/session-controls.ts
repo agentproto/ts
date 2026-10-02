@@ -211,6 +211,70 @@ export async function applyModelCommand(
 }
 
 /**
+ * Parse a single `key=value` logfmt line into a flat map. Values may be
+ * bare (`small=false`) or double-quoted (`message="stream error"`,
+ * `error.error="AI_APICallError: …"`); a quoted value's inner `\"` / `\\`
+ * escapes are unescaped. Deliberately tiny — this only ever reads
+ * opencode's structured stderr log lines, not a general logfmt corpus.
+ */
+function parseLogfmtLine(line: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  const re = /([A-Za-z0-9_.-]+)=("(?:[^"\\]|\\.)*"|\S+)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(line)) !== null) {
+    const key = m[1]!
+    let value = m[2]!
+    if (value.startsWith('"')) {
+      value = value.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\")
+    }
+    out[key] = value
+  }
+  return out
+}
+
+/**
+ * Strip a leading error-class prefix off a provider error string so the
+ * operator sees the human reason, not the class: `"AI_APICallError: Go
+ * usage limit exceeded"` → `"Go usage limit exceeded"`. A message with no
+ * recognizable `…Error:` / `…Exception:` prefix is returned verbatim.
+ */
+function providerMessageFromError(raw: string): string {
+  const m = raw.match(/^[A-Za-z_][\w.]*(?:Error|Exception)\s*:\s*([\s\S]+)$/)
+  return (m ? m[1]! : raw).trim()
+}
+
+/**
+ * Parse an opencode-style logfmt stderr line into the provider error it
+ * reports, or `undefined` when the line is not a turn-fatal provider
+ * error.
+ *
+ * opencode's ACP server treats a provider 429 / usage-cap as retryable and
+ * loops internally; it logs the reason ONLY to stderr — e.g.
+ *
+ *   timestamp=2026-10-02T12:20:59.007Z level=ERROR run=f897ee16 \
+ *     message="stream error" providerID=opencode-go modelID=glm-5.3-flash \
+ *     session.id=ses_x small=false agent=build \
+ *     error.error="AI_APICallError: Go usage limit exceeded"
+ *
+ * — while `session/prompt` never resolves, so the daemon sees a silent,
+ * 0-token, busy session forever. Surfacing that line as the turn's error
+ * is what turns the hang into a readable failure. `agent=title` /
+ * `small=true` lines are opencode's background title generator and MUST
+ * NOT fail the user's turn, so they are ignored.
+ */
+export function parseStderrStreamError(line: string): string | undefined {
+  if (!line.includes("stream error")) return undefined
+  const fields = parseLogfmtLine(line)
+  if ((fields.level ?? "").toUpperCase() !== "ERROR") return undefined
+  if (fields.message !== "stream error") return undefined
+  if (fields.small === "true") return undefined
+  if (fields.agent === "title") return undefined
+  const raw = fields["error.error"] ?? fields.error
+  if (!raw) return undefined
+  return providerMessageFromError(raw)
+}
+
+/**
  * Send a turn and yield the arm's events for it.
  *
  * Re-attaches the recent stderr tail to error events. The ACP layer
@@ -218,22 +282,88 @@ export async function applyModelCommand(
  * almost always has a more useful line ("npx claude-agent-acp: not
  * authenticated, run `claude login`"). Hosts read `error.data` when
  * present, falling back to `message` for older payloads.
+ *
+ * When `stderrTurnError` is supplied, a line it parses into a message
+ * (see {@link parseStderrStreamError}) is surfaced as THIS turn's error:
+ * the turn is cancelled and ended with `reason:"error"` instead of hanging
+ * forever on a `prompt` the server never resolves. Only armed for adapters
+ * whose transport retries silently (opencode); every other adapter keeps
+ * the exact prior behavior.
  */
 export async function* promptTurn(
   arm: AgentCliClient,
   turnId: string,
   message: unknown,
+  stderrTurnError?: (line: string) => string | undefined,
 ): AsyncIterable<StreamEvent> {
-  await arm.send(turnId, message)
   const stderrTail = arm._stderrTail
-  for await (const evt of arm.events()) {
-    if (evt.kind === "error" && typeof stderrTail === "function") {
-      const tail = stderrTail()
-      if (tail) {
-        const existing = (evt.error.data ?? {}) as Record<string, unknown>
-        evt.error.data = { ...existing, stderr: tail }
+
+  // Subscribe BEFORE `send` so a provider error logged while the prompt is
+  // being dispatched isn't missed. The parser filters for turn-fatal lines
+  // only (title-generator noise is dropped inside it).
+  const pendingErrors: string[] = []
+  let wake: (() => void) | undefined
+  const unsubscribe =
+    stderrTurnError && arm._onStderrLine
+      ? arm._onStderrLine(line => {
+          const parsed = stderrTurnError(line)
+          if (parsed === undefined) return
+          pendingErrors.push(parsed)
+          wake?.()
+          wake = undefined
+        })
+      : undefined
+
+  let iterator: AsyncIterator<StreamEvent> | undefined
+  try {
+    await arm.send(turnId, message)
+    iterator = arm.events()[Symbol.asyncIterator]()
+    while (true) {
+      if (pendingErrors.length > 0) {
+        // The provider error only exists on stderr and the server is stuck
+        // retrying — stop it and end the turn with the reason.
+        await arm.cancel(turnId).catch(() => {})
+        yield {
+          kind: "error",
+          sessionId: arm.sessionId,
+          error: {
+            message: pendingErrors.join("\n"),
+            data: { stderr: stderrTail?.() ?? "" },
+          },
+        }
+        yield {
+          kind: "turn-end",
+          sessionId: arm.sessionId ?? "",
+          reason: "error",
+        }
+        return
       }
+      const nextEvent = iterator.next()
+      const stderrArrived = new Promise<void>(resolve => {
+        wake = resolve
+      })
+      const winner = await Promise.race([
+        nextEvent.then(result => ({ source: "event" as const, result })),
+        stderrArrived.then(() => ({ source: "stderr" as const })),
+      ])
+      if (winner.source === "stderr") continue
+      if (winner.result.done) return
+      const evt = winner.result.value
+      if (evt.kind === "error" && typeof stderrTail === "function") {
+        const tail = stderrTail()
+        if (tail) {
+          const existing = (evt.error.data ?? {}) as Record<string, unknown>
+          evt.error.data = { ...existing, stderr: tail }
+        }
+      }
+      yield evt
     }
-    yield evt
+  } finally {
+    unsubscribe?.()
+    // Release the underlying prompt stream best-effort. Never awaited: a
+    // server still stuck in its internal retry loop may not settle the
+    // pending `next()`, and blocking teardown on that would reintroduce
+    // the very hang this path exists to break.
+    void iterator?.return?.()?.catch?.(() => {})
   }
 }

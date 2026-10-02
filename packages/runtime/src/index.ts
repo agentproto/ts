@@ -589,6 +589,9 @@ export { ResumeDisabledError } from "./sessions.js"
 // Session identity env var names injected into every spawned process
 // (assigned last, after caller-supplied env, so they cannot be forged).
 export { SESSION_ID_ENV, WORKSPACE_SLUG_ENV } from "./sessions.js"
+// Turn error stamped by the stall watchdog when a turn has produced no
+// output/usage since its prompt (a provider silently retrying).
+export { NO_OUTPUT_STALL_TURN_ERROR } from "./sessions.js"
 export type {
   EagerResumeOutcome,
   EagerResumeSkipReason,

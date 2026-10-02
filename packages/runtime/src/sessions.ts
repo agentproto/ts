@@ -508,6 +508,44 @@ function isBackgroundToolCallArguments(args: unknown): boolean {
 }
 
 /**
+ * Turn error attached when a turn has produced NO output and NO usage since
+ * its prompt and then goes silent past the stall threshold — the provider is
+ * almost certainly retrying internally (opencode's silent 429 loop) and the
+ * daemon would otherwise only report `stalledSinceMs` with no reason. Set by
+ * `markStalled`; cleared at the next turn-end like every other turn error.
+ */
+export const NO_OUTPUT_STALL_TURN_ERROR =
+  "no output since prompt — provider retrying?"
+
+/**
+ * True when a stream event proves the turn's provider produced real output
+ * or usage — the signal that distinguishes "slow" from "silently retrying".
+ * Gates the stall watchdog's provider-retry turn error (see `markStalled`):
+ * a turn with NO such event since its prompt, silent for `turnStallAfterMs`,
+ * is treated as a stuck provider rather than a slow one.
+ *
+ * Control-plane events (`available-commands`) are deliberately excluded;
+ * task/permission edges ARE included, since a long background task or a
+ * pending permission legitimately goes quiet without being a dead stream.
+ */
+function isTurnOutputEvent(evt: AgentStreamEvent): boolean {
+  switch (evt.kind) {
+    case "text-delta":
+      return !!evt.text?.trim()
+    case "thought":
+    case "tool-call":
+    case "tool-result":
+    case "plan":
+    case "usage_update":
+    case "background-task":
+    case "agent-prompt":
+      return true
+    default:
+      return false
+  }
+}
+
+/**
  * Defensively narrow an "agent-prompt" event's `options` (typed `unknown`
  * — see `AgentStreamEvent.options`) into a flat label list. Accepts plain
  * strings, or objects exposing `label`/`name`/`id`/`optionId` (covers both
@@ -2595,6 +2633,13 @@ interface SessionRuntime {
   /** `Date.now()` when the current turn started; folded into
    *  `desc.durationMs` and cleared when the turn ends. */
   turnStartedAtMs?: number
+  /** True once THIS turn has produced any output or usage — an assistant
+   *  text delta, a tool call/result, a thought, a plan, or a `usage_update`.
+   *  Reset at every turn start. Read by `markStalled`: a turn that goes
+   *  silent with NO output/usage at all is a provider stuck retrying (and
+   *  gets a readable turn error), whereas a turn that streamed something
+   *  and THEN stalled keeps the pre-existing stalled-only behavior. */
+  turnHadOutput?: boolean
   /** True once an authoritative cost has been observed from the adapter —
    *  either its `readUsage` returned a `costUsd`, or a `usage_update` carried
    *  a `cost` block. Drives the `"adapter"` vs `"computed"` source decision at
@@ -7519,6 +7564,7 @@ export function createSessionsRegistry(opts?: {
     rt.toolCallIdsThisTurn = new Set()
     rt.toolCallsThisTurn = 0
     rt.turnStartedAtMs = Date.now()
+    rt.turnHadOutput = false
     // Clear a stale parked-with-background-tasks flag from the prior turn —
     // the session was re-prompted, so it is by definition no longer parked:
     // this turn will see whatever its background tasks produced. Counter
@@ -7688,6 +7734,10 @@ export function createSessionsRegistry(opts?: {
         if (evt.kind === "tool-result" && evt.toolCallId) {
           pendingToolCallIds.delete(evt.toolCallId)
         }
+        // Any output or usage proves the provider is producing something —
+        // a later stall is then "slow", not "silently retrying", so the
+        // stall watchdog must NOT attach a provider-retry turn error.
+        if (isTurnOutputEvent(evt)) rt.turnHadOutput = true
         if (evt.kind === "error" && evt.error?.message) {
           turnErrorMessage = evt.error.message
         }
@@ -8252,6 +8302,7 @@ export function createSessionsRegistry(opts?: {
     rt.toolCallIdsThisTurn = new Set()
     rt.toolCallsThisTurn = 0
     rt.turnStartedAtMs = Date.now()
+    rt.turnHadOutput = false
     // No longer parked — same as a prompted turn start.
     if (rt.desc.pendingBgTasks !== undefined) {
       delete rt.desc.pendingBgTasks
@@ -10580,6 +10631,16 @@ export function createSessionsRegistry(opts?: {
       if (rt.desc.busy !== true || rt.desc.blockedOn !== undefined) return false
       if (rt.desc.stalledSinceMs !== undefined) return false
       rt.desc.stalledSinceMs = stalledSinceMs
+      // A turn that has produced NOTHING at all since its prompt and gone
+      // silent is a provider stuck retrying, not a slow one — give it a
+      // readable reason instead of only `stalledSinceMs` (the live incident:
+      // opencode swallowing a 429 into an internal retry loop forever). A
+      // turn that streamed output/usage first keeps the pre-existing
+      // stalled-only behavior.
+      if (rt.turnHadOutput !== true) {
+        rt.desc.lastTurnErroredAt = new Date().toISOString()
+        rt.desc.lastTurnErrorMessage = NO_OUTPUT_STALL_TURN_ERROR
+      }
       schedulePersist()
       sessionEvents?.emit({
         type: "session:stalled",
